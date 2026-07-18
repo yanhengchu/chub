@@ -1,0 +1,23 @@
+app:
+  name: "Hub"
+  version: "0.1.0"
+
+node:
+  id: "macbook"
+  name: "MacBook"
+  type: "macos"
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+
+security:
+  enabled: true
+
+tasks:
+  default_timeout: 30
+
+logs:
+  file: "logs/hub.log"
+  level: "INFO"
+  max_lines: 100
