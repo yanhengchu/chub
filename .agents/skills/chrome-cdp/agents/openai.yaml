@@ -1,0 +1,4 @@
+interface:
+  display_name: "Chrome CDP"
+  short_description: "Manage a persistent local Chrome CDP session"
+  default_prompt: "Use $chrome-cdp to manage or connect to the persistent local Chrome CDP session."
