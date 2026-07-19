@@ -2,7 +2,7 @@
 
 Hub 是一个面向个人设备的轻量管理服务。第一阶段使用同一套 Python 工程分别运行在 macOS 和 Ubuntu 上。
 
-当前完成 M2 里程碑：在 M1 基础能力之上增加 Bearer Token 认证、统一 API 错误响应、节点状态采集和受保护的状态接口。
+当前完成 M3 里程碑：提供 Bearer Token 保护的节点状态、白名单任务列表和任务执行接口，以及通用、macOS 和 Ubuntu 检查任务。
 
 ## 环境要求
 
@@ -40,7 +40,7 @@ export HUB_CONFIG_FILE="/absolute/path/to/settings.yaml"
 http://127.0.0.1:8080/api/health
 ```
 
-健康检查不需要 Token。节点状态接口已经受 Token 保护，任务与日志接口将在后续里程碑实现。
+健康检查不需要 Token。节点状态、任务列表和任务执行接口已经受 Token 保护；日志接口将在后续里程碑实现。
 
 节点状态接口需要 Bearer Token：
 
@@ -51,6 +51,20 @@ curl \
 ```
 
 未设置 `HUB_TOKEN` 时服务仍可启动，但受保护接口返回 `503 security_not_configured`。旧配置中的 `security.enabled` 已移除；第一阶段不支持关闭认证。
+
+查看当前平台任务并执行一个任务：
+
+```bash
+curl \
+  -H "Authorization: Bearer ${HUB_TOKEN}" \
+  http://127.0.0.1:8080/api/tasks
+
+curl \
+  -H "Authorization: Bearer ${HUB_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"task":"check_system","params":{}}' \
+  http://127.0.0.1:8080/api/tasks/run
+```
 
 ## 测试
 
