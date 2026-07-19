@@ -1,7 +1,11 @@
+import os
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
+from pydantic import SecretStr
 
+from app.core import config
 from app.core.config import load_settings
 
 
@@ -42,7 +46,8 @@ def test_load_settings_allows_missing_token_during_startup(
     config_file.write_text(VALID_CONFIG, encoding="utf-8")
     monkeypatch.delenv("HUB_TOKEN", raising=False)
 
-    settings = load_settings(config_file)
+    with patch("app.core.config.load_dotenv"):
+        settings = load_settings(config_file)
 
     assert settings.security.token is None
 
@@ -57,6 +62,69 @@ def test_load_settings_treats_blank_token_as_missing(
     settings = load_settings(config_file)
 
     assert settings.security.token is None
+
+
+def test_load_settings_reads_project_env_file(
+    tmp_path: Path,
+) -> None:
+    config_file = tmp_path / "settings.yaml"
+    env_file = tmp_path / ".env"
+    config_file.write_text(VALID_CONFIG, encoding="utf-8")
+    env_file.write_text(
+        "HUB_TOKEN=token-loaded-from-local-env-file\n",
+        encoding="utf-8",
+    )
+    with (
+        patch.dict(os.environ, {}, clear=False),
+        patch.object(config, "DEFAULT_ENV_FILE", env_file),
+    ):
+        os.environ.pop("HUB_TOKEN", None)
+        settings = load_settings(config_file)
+
+    assert settings.security.token == SecretStr("token-loaded-from-local-env-file")
+
+
+def test_system_environment_overrides_project_env_file(
+    tmp_path: Path,
+) -> None:
+    config_file = tmp_path / "settings.yaml"
+    env_file = tmp_path / ".env"
+    config_file.write_text(VALID_CONFIG, encoding="utf-8")
+    env_file.write_text("HUB_TOKEN=token-from-file\n", encoding="utf-8")
+    with (
+        patch.dict(
+            os.environ,
+            {"HUB_TOKEN": "token-from-system-environment"},
+        ),
+        patch.object(config, "DEFAULT_ENV_FILE", env_file),
+    ):
+        settings = load_settings(config_file)
+
+    assert settings.security.token == SecretStr("token-from-system-environment")
+
+
+def test_project_env_file_can_select_node_config(tmp_path: Path) -> None:
+    config_file = tmp_path / "selected-settings.yaml"
+    env_file = tmp_path / ".env"
+    config_file.write_text(VALID_CONFIG, encoding="utf-8")
+    env_file.write_text(
+        (
+            "HUB_TOKEN=token-from-env-file\n"
+            f"HUB_CONFIG_FILE={config_file}\n"
+        ),
+        encoding="utf-8",
+    )
+
+    with (
+        patch.dict(os.environ, {}, clear=False),
+        patch.object(config, "DEFAULT_ENV_FILE", env_file),
+    ):
+        os.environ.pop("HUB_TOKEN", None)
+        os.environ.pop("HUB_CONFIG_FILE", None)
+        settings = load_settings()
+
+    assert settings.node.id == "test"
+    assert settings.security.token == SecretStr("token-from-env-file")
 
 
 def test_load_settings_rejects_missing_file(tmp_path: Path) -> None:

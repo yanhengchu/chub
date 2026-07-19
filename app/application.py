@@ -80,6 +80,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application = FastAPI(
         title=resolved_settings.app.name,
         version=resolved_settings.app.version,
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
     )
     application.state.settings = resolved_settings
     application.state.detected_platform = detected_platform

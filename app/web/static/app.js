@@ -4,13 +4,25 @@ const SESSION_TOKEN_KEY = "hub.sessionToken";
 const LOCAL_TOKEN_KEY = "hub.savedToken";
 
 const elements = {
+  accessCard: document.querySelector("#access-card"),
+  accessTitle: document.querySelector("#access-title"),
+  accessBadge: document.querySelector("#access-badge"),
   tokenForm: document.querySelector("#token-form"),
   tokenInput: document.querySelector("#token-input"),
   rememberToken: document.querySelector("#remember-token"),
-  clearToken: document.querySelector("#clear-token"),
+  connectSubmit: document.querySelector("#connect-submit"),
+  cancelChange: document.querySelector("#cancel-change"),
+  connectedBar: document.querySelector("#connected-bar"),
+  connectedNode: document.querySelector("#connected-node"),
+  connectedMeta: document.querySelector("#connected-meta"),
+  connectedSummary: document.querySelector("#connected-summary"),
   connectionBadge: document.querySelector("#connection-badge"),
+  toggleStatus: document.querySelector("#toggle-status"),
+  changeToken: document.querySelector("#change-token"),
+  clearToken: document.querySelector("#clear-token"),
   globalMessage: document.querySelector("#global-message"),
   dashboard: document.querySelector("#dashboard"),
+  statusCard: document.querySelector("#status-details"),
   refreshStatus: document.querySelector("#refresh-status"),
   statusContent: document.querySelector("#status-content"),
   statusMessage: document.querySelector("#status-message"),
@@ -20,6 +32,8 @@ const elements = {
   taskResultTitle: document.querySelector("#task-result-title"),
   taskResultBadge: document.querySelector("#task-result-badge"),
   taskResultMessage: document.querySelector("#task-result-message"),
+  taskResultFields: document.querySelector("#task-result-fields"),
+  taskResultRawWrap: document.querySelector("#task-result-raw-wrap"),
   taskResult: document.querySelector("#task-result"),
   loadLogs: document.querySelector("#load-logs"),
   logsMessage: document.querySelector("#logs-message"),
@@ -29,6 +43,95 @@ const elements = {
 let activeToken = "";
 let taskRunning = false;
 let accessVersion = 0;
+let connectionAttempt = 0;
+
+const TASK_TEXT = {
+  show_version: ["版本信息", "查看 Hub、Python、节点和平台版本。"],
+  check_system: ["系统检查", "检查 CPU、内存、磁盘和系统运行时长。"],
+  check_codex: ["Codex 检查", "检查 Codex 是否可用并显示版本。"],
+  check_docker: ["Docker 检查", "检查 Docker、Compose 和容器状态。"],
+};
+
+const STATUS_TEXT = {
+  success: "成功",
+  failed: "失败",
+  timeout: "超时",
+};
+
+const MESSAGE_TEXT = {
+  "Version information collected": "版本信息已获取",
+  "System status collected": "系统状态已获取",
+  "Codex is available": "Codex 可用",
+  "Codex is not installed or not available on PATH": "未安装 Codex，或 Codex 不在 PATH 中",
+  "Codex is not available": "Codex 不可用",
+  "Codex cannot be executed": "Codex 无法执行",
+  "Unable to read Codex version": "无法读取 Codex 版本",
+  "Docker is available": "Docker 可用",
+  "Docker CLI is not installed or not available on PATH": "未安装 Docker CLI，或 Docker 不在 PATH 中",
+  "Docker CLI is not available": "Docker CLI 不可用",
+  "Docker CLI cannot be executed": "Docker CLI 无法执行",
+  "Unable to read Docker client version": "无法读取 Docker 客户端版本",
+  "Docker service is not available": "Docker 服务不可用",
+  "Docker returned an unexpected status": "Docker 返回了无法识别的状态",
+  "Task execution timed out": "任务执行超时",
+  "Task execution failed": "任务执行失败",
+};
+
+const RESULT_LABELS = {
+  available: "可用",
+  boot_time: "系统启动时间",
+  cli_available: "CLI 可用",
+  client_version: "客户端版本",
+  compose_available: "Compose 可用",
+  compose_version: "Compose 版本",
+  containers: "容器",
+  cpu_percent: "CPU 使用率",
+  disk_percent: "磁盘使用率",
+  disk_total_bytes: "磁盘总量",
+  disk_used_bytes: "磁盘已用",
+  hostname: "主机名",
+  hub_version: "Hub 版本",
+  memory_percent: "内存使用率",
+  memory_total_bytes: "内存总量",
+  memory_used_bytes: "内存已用",
+  node_id: "节点 ID",
+  operating_system: "操作系统",
+  operating_system_version: "系统版本",
+  path: "程序路径",
+  platform: "平台",
+  python_version: "Python 版本",
+  server_available: "服务端可用",
+  server_version: "服务端版本",
+  uptime_seconds: "运行时长",
+  version: "版本",
+};
+
+const BYTE_FIELDS = new Set([
+  "memory_total_bytes",
+  "memory_used_bytes",
+  "disk_total_bytes",
+  "disk_used_bytes",
+]);
+
+function taskText(task) {
+  const text = TASK_TEXT[task.name];
+  return text
+    ? { title: text[0], description: text[1] }
+    : { title: task.title, description: task.description };
+}
+
+function platformText(platform) {
+  return {
+    macos: "macOS",
+    ubuntu: "Ubuntu",
+    windows: "Windows",
+    unknown: "未知平台",
+  }[platform] || platform;
+}
+
+function messageText(message) {
+  return MESSAGE_TEXT[message] || message;
+}
 
 function setMessage(target, message, kind = "") {
   target.textContent = message;
@@ -38,18 +141,67 @@ function setMessage(target, message, kind = "") {
   }
 }
 
-function setConnection(label, kind = "muted") {
-  elements.connectionBadge.textContent = label;
-  elements.connectionBadge.className = `badge badge-${kind}`;
+function setBadge(target, label, kind = "muted") {
+  target.textContent = label;
+  target.className = `badge badge-${kind}`;
 }
 
 function clearProtectedView() {
   elements.dashboard.hidden = true;
+  elements.connectedBar.hidden = true;
+  elements.statusCard.hidden = true;
   elements.statusContent.replaceChildren();
   elements.taskList.replaceChildren();
   elements.taskResultWrap.hidden = true;
+  elements.taskResultFields.replaceChildren();
+  elements.taskResultRawWrap.hidden = true;
   elements.logsOutput.hidden = true;
   elements.logsOutput.textContent = "";
+}
+
+function showDisconnectedView(message = "输入启动 Hub 时配置的 Token。", kind = "") {
+  elements.accessCard.hidden = false;
+  elements.accessTitle.textContent = "连接此节点";
+  elements.connectSubmit.textContent = "连接节点";
+  elements.connectSubmit.disabled = false;
+  elements.cancelChange.hidden = true;
+  setBadge(elements.accessBadge, "未连接");
+  setMessage(elements.globalMessage, message, kind);
+  elements.tokenInput.focus();
+}
+
+function setStatusDetailsExpanded(expanded) {
+  elements.statusCard.hidden = !expanded;
+  elements.toggleStatus.setAttribute("aria-expanded", String(expanded));
+  elements.toggleStatus.textContent = expanded ? "收起详情" : "展开详情";
+}
+
+function showConnectedView(status, resetDetails = false) {
+  elements.accessCard.hidden = true;
+  elements.connectedBar.hidden = false;
+  elements.dashboard.hidden = false;
+  elements.connectedNode.textContent = status.node.name;
+  elements.connectedMeta.textContent =
+    `${platformText(status.node.detected_platform)} · ${status.system.hostname || "未知主机"}`;
+  setBadge(elements.connectionBadge, "已连接", "success");
+  if (resetDetails) {
+    setStatusDetailsExpanded(false);
+  }
+}
+
+function showCredentialChange() {
+  elements.accessCard.hidden = false;
+  elements.accessTitle.textContent = "更换访问凭证";
+  elements.connectSubmit.textContent = "验证并更换";
+  elements.cancelChange.hidden = false;
+  elements.rememberToken.checked = Boolean(localStorage.getItem(LOCAL_TOKEN_KEY));
+  setBadge(elements.accessBadge, "待验证");
+  setMessage(
+    elements.globalMessage,
+    "新 Token 验证成功后才会替换当前连接。",
+  );
+  elements.tokenInput.value = "";
+  elements.tokenInput.focus();
 }
 
 function storeToken(token, remember) {
@@ -74,8 +226,8 @@ function errorDetails(payload, fallback) {
   };
 }
 
-async function apiFetch(path, options = {}) {
-  if (!activeToken) {
+async function apiFetch(path, options = {}, token = activeToken) {
+  if (!token) {
     throw { code: "authentication_required", message: "请先输入 Hub Token。" };
   }
 
@@ -85,7 +237,7 @@ async function apiFetch(path, options = {}) {
       ...options,
       headers: {
         ...options.headers,
-        Authorization: `Bearer ${activeToken}`,
+        Authorization: `Bearer ${token}`,
       },
     });
   } catch {
@@ -112,20 +264,23 @@ async function apiFetch(path, options = {}) {
 function handleAccessError(error) {
   if (error.code === "invalid_credentials" || error.code === "authentication_required") {
     removeStoredToken();
-    setConnection("认证失败", "failed");
-    setMessage(elements.globalMessage, "Token 无效或已变更，请重新输入。", "error");
+    activeToken = "";
+    accessVersion += 1;
     clearProtectedView();
+    showDisconnectedView("Token 无效或已变更，请重新输入。", "error");
     return true;
   }
   if (error.code === "security_not_configured") {
-    setConnection("未配置认证", "timeout");
-    setMessage(elements.globalMessage, "Hub 尚未配置 HUB_TOKEN，请在服务端配置后重启。", "error");
+    removeStoredToken();
+    activeToken = "";
+    accessVersion += 1;
     clearProtectedView();
+    showDisconnectedView(
+      "Hub 尚未配置 HUB_TOKEN，请在服务端配置后重启。",
+      "error",
+    );
+    setBadge(elements.accessBadge, "未配置认证", "timeout");
     return true;
-  }
-  if (error.code === "network_error") {
-    setConnection("连接失败", "failed");
-    setMessage(elements.globalMessage, error.message, "error");
   }
   return false;
 }
@@ -172,7 +327,7 @@ function addMetric(label, value) {
 function renderStatus(data) {
   elements.statusContent.replaceChildren();
   addMetric("节点", data.node.name);
-  addMetric("平台", data.node.detected_platform);
+  addMetric("平台", platformText(data.node.detected_platform));
   addMetric("主机", data.system.hostname || "—");
   addMetric("Hub 版本", data.hub.version);
   addMetric("CPU", `${data.system.cpu_percent.toFixed(1)}%`);
@@ -185,6 +340,58 @@ function renderStatus(data) {
     `${data.system.disk_percent.toFixed(1)}% · ${formatBytes(data.system.disk_used_bytes)}`,
   );
   addMetric("运行时长", formatUptime(data.system.uptime_seconds));
+  elements.connectedSummary.textContent =
+    `CPU ${data.system.cpu_percent.toFixed(1)}% · ` +
+    `内存 ${data.system.memory_percent.toFixed(1)}% · ` +
+    `磁盘 ${data.system.disk_percent.toFixed(1)}%`;
+}
+
+async function connectWithToken(token, remember, savedCredential = false) {
+  const attempt = ++connectionAttempt;
+  const replacingActiveConnection = Boolean(activeToken);
+  elements.connectSubmit.disabled = true;
+  setBadge(elements.accessBadge, "验证中");
+  setMessage(
+    elements.globalMessage,
+    savedCredential ? "正在验证已保存凭证…" : "正在验证 Token…",
+  );
+
+  try {
+    const status = await apiFetch("/api/status", {}, token);
+    if (attempt !== connectionAttempt) {
+      return;
+    }
+    activeToken = token;
+    accessVersion += 1;
+    storeToken(token, remember);
+    renderStatus(status);
+    showConnectedView(status, true);
+    setMessage(elements.statusMessage, "状态已更新。", "success");
+    await loadTasks();
+  } catch (error) {
+    if (attempt !== connectionAttempt) {
+      return;
+    }
+    if (replacingActiveConnection) {
+      setBadge(elements.accessBadge, "验证失败", "failed");
+      setMessage(
+        elements.globalMessage,
+        error.message || "新 Token 验证失败，原连接保持有效。",
+        "error",
+      );
+      elements.tokenInput.focus();
+      return;
+    }
+    handleAccessError(error);
+    if (error.code === "network_error") {
+      showDisconnectedView(error.message, "error");
+      setBadge(elements.accessBadge, "连接失败", "failed");
+    }
+  } finally {
+    if (attempt === connectionAttempt) {
+      elements.connectSubmit.disabled = false;
+    }
+  }
 }
 
 async function loadStatus() {
@@ -193,50 +400,121 @@ async function loadStatus() {
   try {
     const data = await apiFetch("/api/status");
     if (requestVersion !== accessVersion) {
-      return false;
+      return;
     }
     renderStatus(data);
+    showConnectedView(data);
     setMessage(elements.statusMessage, "状态已更新。", "success");
-    return true;
   } catch (error) {
     if (requestVersion !== accessVersion) {
-      return false;
+      return;
     }
-    handleAccessError(error);
-    setMessage(elements.statusMessage, error.message || "状态读取失败。", "error");
-    return false;
+    if (!handleAccessError(error)) {
+      setMessage(elements.statusMessage, error.message || "状态读取失败。", "error");
+    }
   }
 }
 
-function setTaskButtonsDisabled(disabled) {
+function setTaskButtonsDisabled(disabled, activeButton = null) {
   elements.taskList.querySelectorAll("button").forEach((button) => {
     button.disabled = disabled;
+    button.classList.toggle(
+      "task-button-running",
+      disabled && button === activeButton,
+    );
+    button.classList.toggle(
+      "task-button-paused",
+      disabled && button !== activeButton,
+    );
   });
+  if (activeButton) {
+    activeButton.textContent = disabled ? "执行中…" : "执行";
+  }
 }
 
 function renderTaskResult(task, data) {
+  const display = taskText(task);
   elements.taskResultWrap.hidden = false;
-  elements.taskResultTitle.textContent = task.title;
-  elements.taskResultBadge.textContent = data.status;
+  elements.taskResultTitle.textContent = display.title;
+  elements.taskResultBadge.textContent = STATUS_TEXT[data.status] || data.status;
   elements.taskResultBadge.className = `badge badge-${data.status}`;
-  elements.taskResultMessage.textContent = `${data.message} · ${data.duration_ms} ms`;
+  elements.taskResultMessage.textContent =
+    `${messageText(data.message)} · ${data.duration_ms} 毫秒`;
+  renderResultFields(data.result);
   elements.taskResult.textContent = data.result
     ? JSON.stringify(data.result, null, 2)
     : "无附加结果";
+  elements.taskResultRawWrap.hidden = !data.result;
+  elements.taskResultRawWrap.open = false;
 }
 
-async function runTask(task) {
+function resultValue(key, value) {
+  if (value === null || value === undefined) {
+    return "—";
+  }
+  if (typeof value === "boolean") {
+    return value ? "是" : "否";
+  }
+  if (BYTE_FIELDS.has(key) && Number.isFinite(value)) {
+    return formatBytes(value);
+  }
+  if (key === "uptime_seconds" && Number.isFinite(value)) {
+    return formatUptime(value);
+  }
+  if (key.endsWith("_percent") && Number.isFinite(value)) {
+    return `${value.toFixed(1)}%`;
+  }
+  if (key === "platform") {
+    return platformText(value);
+  }
+  if (key === "containers" && typeof value === "object") {
+    return [
+      `总数：${value.total ?? "—"}`,
+      `运行中：${value.running ?? "—"}`,
+      `已暂停：${value.paused ?? "—"}`,
+      `已停止：${value.stopped ?? "—"}`,
+    ].join("\n");
+  }
+  if (typeof value === "object") {
+    return JSON.stringify(value, null, 2);
+  }
+  return String(value);
+}
+
+function renderResultFields(result) {
+  elements.taskResultFields.replaceChildren();
+  if (!result) {
+    elements.taskResultFields.hidden = true;
+    return;
+  }
+  elements.taskResultFields.hidden = false;
+  Object.entries(result).forEach(([key, value]) => {
+    const row = document.createElement("div");
+    const label = document.createElement("dt");
+    const content = document.createElement("dd");
+    row.className = "result-field";
+    label.textContent = RESULT_LABELS[key] || key;
+    content.textContent = resultValue(key, value);
+    row.append(label, content);
+    elements.taskResultFields.append(row);
+  });
+}
+
+async function runTask(task, triggerButton) {
   if (taskRunning) {
     return;
   }
   taskRunning = true;
   const requestVersion = accessVersion;
-  setTaskButtonsDisabled(true);
+  const display = taskText(task);
+  setTaskButtonsDisabled(true, triggerButton);
   elements.taskResultWrap.hidden = false;
-  elements.taskResultTitle.textContent = task.title;
+  elements.taskResultTitle.textContent = display.title;
   elements.taskResultBadge.textContent = "执行中";
   elements.taskResultBadge.className = "badge badge-muted";
-  elements.taskResultMessage.textContent = "任务正在执行，请稍候…";
+  elements.taskResultMessage.textContent = `${display.title}正在执行，请稍候…`;
+  elements.taskResultFields.hidden = true;
+  elements.taskResultRawWrap.hidden = true;
   elements.taskResult.textContent = "";
 
   try {
@@ -253,14 +531,15 @@ async function runTask(task) {
     if (requestVersion !== accessVersion) {
       return;
     }
-    handleAccessError(error);
-    elements.taskResultBadge.textContent = "请求失败";
-    elements.taskResultBadge.className = "badge badge-failed";
-    elements.taskResultMessage.textContent = error.message || "任务请求失败。";
-    elements.taskResult.textContent = "";
+    if (!handleAccessError(error)) {
+      elements.taskResultBadge.textContent = "请求失败";
+      elements.taskResultBadge.className = "badge badge-failed";
+      elements.taskResultMessage.textContent = error.message || "任务请求失败。";
+      elements.taskResult.textContent = "";
+    }
   } finally {
     taskRunning = false;
-    setTaskButtonsDisabled(false);
+    setTaskButtonsDisabled(false, triggerButton);
   }
 }
 
@@ -272,17 +551,18 @@ function renderTasks(tasks) {
   }
 
   tasks.forEach((task) => {
+    const display = taskText(task);
     const item = document.createElement("article");
     const content = document.createElement("div");
     const title = document.createElement("h3");
     const description = document.createElement("p");
     const button = document.createElement("button");
     item.className = "task-item";
-    title.textContent = task.title;
-    description.textContent = task.description;
+    title.textContent = display.title;
+    description.textContent = display.description;
     button.type = "button";
     button.textContent = "执行";
-    button.addEventListener("click", () => runTask(task));
+    button.addEventListener("click", () => runTask(task, button));
     content.append(title, description);
     item.append(content, button);
     elements.taskList.append(item);
@@ -296,17 +576,16 @@ async function loadTasks() {
   try {
     const data = await apiFetch("/api/tasks");
     if (requestVersion !== accessVersion) {
-      return false;
+      return;
     }
     renderTasks(data.tasks);
-    return true;
   } catch (error) {
     if (requestVersion !== accessVersion) {
-      return false;
+      return;
     }
-    handleAccessError(error);
-    setMessage(elements.tasksMessage, error.message || "任务列表读取失败。", "error");
-    return false;
+    if (!handleAccessError(error)) {
+      setMessage(elements.tasksMessage, error.message || "任务列表读取失败。", "error");
+    }
   }
 }
 
@@ -328,25 +607,12 @@ async function loadLogs() {
     if (requestVersion !== accessVersion) {
       return;
     }
-    handleAccessError(error);
-    elements.logsOutput.hidden = true;
-    setMessage(elements.logsMessage, error.message || "日志读取失败。", "error");
+    if (!handleAccessError(error)) {
+      elements.logsOutput.hidden = true;
+      setMessage(elements.logsMessage, error.message || "日志读取失败。", "error");
+    }
   } finally {
     elements.loadLogs.disabled = false;
-  }
-}
-
-async function loadDashboard(rememberAfterValidation = null) {
-  const requestVersion = accessVersion;
-  elements.dashboard.hidden = false;
-  setConnection("连接中", "muted");
-  const results = await Promise.all([loadStatus(), loadTasks()]);
-  if (requestVersion === accessVersion && results.some(Boolean)) {
-    if (rememberAfterValidation !== null) {
-      storeToken(activeToken, rememberAfterValidation);
-    }
-    setConnection("已连接", "success");
-    setMessage(elements.globalMessage, "已连接到 Hub。", "success");
   }
 }
 
@@ -355,35 +621,55 @@ elements.tokenForm.addEventListener("submit", (event) => {
   const token = elements.tokenInput.value.trim();
   if (!token) {
     setMessage(elements.globalMessage, "请输入 Hub Token。", "error");
+    elements.tokenInput.focus();
     return;
   }
-  activeToken = token;
-  accessVersion += 1;
-  removeStoredToken();
   elements.tokenInput.value = "";
-  loadDashboard(elements.rememberToken.checked);
+  connectWithToken(token, elements.rememberToken.checked);
+});
+
+elements.changeToken.addEventListener("click", showCredentialChange);
+
+elements.toggleStatus.addEventListener("click", () => {
+  const expanded = elements.toggleStatus.getAttribute("aria-expanded") === "true";
+  setStatusDetailsExpanded(!expanded);
+});
+
+elements.cancelChange.addEventListener("click", () => {
+  connectionAttempt += 1;
+  elements.connectSubmit.disabled = false;
+  if (!activeToken) {
+    showDisconnectedView();
+    return;
+  }
+  elements.accessCard.hidden = true;
+  elements.tokenInput.value = "";
 });
 
 elements.clearToken.addEventListener("click", () => {
+  if (!window.confirm("确定清除此设备保存的 Hub Token 吗？")) {
+    return;
+  }
+  connectionAttempt += 1;
   activeToken = "";
   accessVersion += 1;
   removeStoredToken();
   elements.tokenInput.value = "";
   elements.rememberToken.checked = false;
   clearProtectedView();
-  setConnection("未连接", "muted");
-  setMessage(elements.globalMessage, "凭证已从此浏览器清除。", "success");
+  showDisconnectedView("凭证已从此浏览器清除。", "success");
 });
 
 elements.refreshStatus.addEventListener("click", loadStatus);
 elements.loadLogs.addEventListener("click", loadLogs);
 
-const savedToken = sessionStorage.getItem(SESSION_TOKEN_KEY)
-  || localStorage.getItem(LOCAL_TOKEN_KEY)
-  || "";
+const savedSessionToken = sessionStorage.getItem(SESSION_TOKEN_KEY);
+const savedLocalToken = localStorage.getItem(LOCAL_TOKEN_KEY);
+const savedToken = savedSessionToken || savedLocalToken || "";
 if (savedToken) {
-  activeToken = savedToken;
-  accessVersion += 1;
-  elements.rememberToken.checked = Boolean(localStorage.getItem(LOCAL_TOKEN_KEY));
-  loadDashboard();
+  elements.rememberToken.checked = Boolean(savedLocalToken);
+  setBadge(elements.accessBadge, "自动连接");
+  connectWithToken(savedToken, Boolean(savedLocalToken), true);
+} else {
+  showDisconnectedView();
 }

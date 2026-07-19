@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
+from dotenv import load_dotenv
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -18,6 +19,7 @@ from pydantic import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_FILE = PROJECT_ROOT / "config" / "settings.yaml"
+DEFAULT_ENV_FILE = PROJECT_ROOT / ".env"
 
 
 class StrictModel(BaseModel):
@@ -91,6 +93,7 @@ def _read_yaml(path: Path) -> dict[str, Any]:
 
 
 def load_settings(config_file: str | Path | None = None) -> Settings:
+    load_dotenv(DEFAULT_ENV_FILE, override=False)
     configured_path = config_file or os.getenv("HUB_CONFIG_FILE") or DEFAULT_CONFIG_FILE
     path = Path(configured_path).expanduser().resolve()
     data = _read_yaml(path)

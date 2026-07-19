@@ -18,13 +18,46 @@
     </header>
 
     <main>
-      <section class="card access-card" aria-labelledby="access-title">
+      <section id="connected-bar" class="card connected-bar" hidden aria-label="当前连接">
+        <div class="connected-top">
+          <div>
+            <p class="section-kicker">当前节点</p>
+            <div class="connected-identity">
+              <h2 id="connected-node">Hub Node</h2>
+              <span id="connection-badge" class="badge badge-success">已连接</span>
+            </div>
+            <p id="connected-meta" class="connected-meta"></p>
+            <p id="connected-summary" class="connected-summary"></p>
+          </div>
+          <div class="connected-actions">
+            <button
+              id="toggle-status"
+              class="button-secondary"
+              type="button"
+              aria-expanded="false"
+              aria-controls="status-details"
+            >展开详情</button>
+            <button id="change-token" class="button-secondary" type="button">更换凭证</button>
+            <button id="clear-token" class="button-danger" type="button">清除凭证</button>
+          </div>
+        </div>
+        <div id="status-details" class="status-details" hidden aria-labelledby="status-title">
+          <div class="section-heading">
+            <h2 id="status-title">节点详细状态</h2>
+            <button id="refresh-status" class="button-secondary" type="button">刷新状态</button>
+          </div>
+          <div id="status-content" class="status-grid" aria-live="polite"></div>
+          <p id="status-message" class="message"></p>
+        </div>
+      </section>
+
+      <section id="access-card" class="card access-card" aria-labelledby="access-title">
         <div class="section-heading">
           <div>
             <p class="section-kicker">访问凭证</p>
             <h2 id="access-title">连接此节点</h2>
           </div>
-          <span id="connection-badge" class="badge badge-muted">未连接</span>
+          <span id="access-badge" class="badge badge-muted">未连接</span>
         </div>
         <form id="token-form">
           <label for="token-input">Hub Token</label>
@@ -38,14 +71,14 @@
               placeholder="输入 HUB_TOKEN"
               required
             >
-            <button type="submit">连接</button>
+            <button id="connect-submit" type="submit">连接节点</button>
           </div>
           <div class="access-actions">
             <label class="remember-option">
               <input id="remember-token" type="checkbox">
               在此设备记住 Token
             </label>
-            <button id="clear-token" class="button-link" type="button">清除凭证</button>
+            <button id="cancel-change" class="button-link" type="button" hidden>取消更换</button>
           </div>
         </form>
         <p class="hint">默认仅保存在当前浏览器会话。请只在可信设备上选择记住。</p>
@@ -55,25 +88,14 @@
       </section>
 
       <div id="dashboard" class="dashboard" hidden>
-        <section class="card status-card" aria-labelledby="status-title">
-          <div class="section-heading">
-            <div>
-              <p class="section-kicker">节点概览</p>
-              <h2 id="status-title">运行状态</h2>
-            </div>
-            <button id="refresh-status" class="button-secondary" type="button">刷新</button>
-          </div>
-          <div id="status-content" class="status-grid" aria-live="polite"></div>
-          <p id="status-message" class="message"></p>
-        </section>
-
         <section class="card tasks-card" aria-labelledby="tasks-title">
           <div class="section-heading">
             <div>
-              <p class="section-kicker">白名单操作</p>
+              <p class="section-kicker">节点任务</p>
               <h2 id="tasks-title">可用任务</h2>
             </div>
           </div>
+          <p class="section-description">仅展示当前节点支持的安全检查任务。</p>
           <div id="task-list" class="task-list"></div>
           <p id="tasks-message" class="message" aria-live="polite"></p>
           <div id="task-result-wrap" class="result-panel" hidden>
@@ -82,7 +104,11 @@
               <span id="task-result-badge" class="badge badge-muted"></span>
             </div>
             <p id="task-result-message"></p>
-            <pre id="task-result"></pre>
+            <dl id="task-result-fields" class="result-fields"></dl>
+            <details id="task-result-raw-wrap">
+              <summary>查看原始结果</summary>
+              <pre id="task-result"></pre>
+            </details>
           </div>
         </section>
 
@@ -97,6 +123,7 @@
           <p id="logs-message" class="message">按需读取最近 50 行，不会自动刷新。</p>
           <pre id="logs-output" class="logs-output" hidden></pre>
         </section>
+
       </div>
     </main>
 
