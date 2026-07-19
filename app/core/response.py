@@ -9,6 +9,11 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 
 DataT = TypeVar("DataT")
+SECURITY_HEADERS = {
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+}
 
 
 class ApiResponse(BaseModel, Generic[DataT]):
@@ -53,7 +58,7 @@ def error_response(
     return JSONResponse(
         status_code=status_code,
         content=body.model_dump(),
-        headers=headers,
+        headers={**SECURITY_HEADERS, **(headers or {})},
     )
 
 

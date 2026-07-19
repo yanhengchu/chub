@@ -127,6 +127,43 @@ def test_project_env_file_can_select_node_config(tmp_path: Path) -> None:
     assert settings.security.token == SecretStr("token-from-env-file")
 
 
+def test_relative_config_path_is_resolved_from_project_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    config_file = project_root / "config" / "settings.local.yaml"
+    config_file.parent.mkdir(parents=True)
+    config_file.write_text(VALID_CONFIG, encoding="utf-8")
+    monkeypatch.setattr(config, "PROJECT_ROOT", project_root)
+    monkeypatch.setenv("HUB_CONFIG_FILE", "config/settings.local.yaml")
+
+    settings = load_settings()
+
+    assert settings.node.id == "test"
+
+
+@pytest.mark.parametrize(
+    ("filename", "expected_platform"),
+    [
+        ("settings.macos.example.yaml", "macos"),
+        ("settings.ubuntu.example.yaml", "ubuntu"),
+    ],
+)
+def test_platform_config_examples_are_valid(
+    filename: str,
+    expected_platform: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("HUB_TOKEN", raising=False)
+
+    with patch("app.core.config.load_dotenv"):
+        settings = load_settings(config.PROJECT_ROOT / "config" / filename)
+
+    assert settings.node.type == expected_platform
+    assert settings.security.token is None
+
+
 def test_load_settings_rejects_missing_file(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="Configuration file not found"):
         load_settings(tmp_path / "missing.yaml")

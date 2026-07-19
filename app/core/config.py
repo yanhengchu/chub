@@ -18,7 +18,7 @@ from pydantic import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_CONFIG_FILE = PROJECT_ROOT / "config" / "settings.yaml"
+DEFAULT_CONFIG_FILE = PROJECT_ROOT / "config" / "settings.local.yaml"
 DEFAULT_ENV_FILE = PROJECT_ROOT / ".env"
 
 
@@ -83,6 +83,12 @@ def _read_yaml(path: Path) -> dict[str, Any]:
         with path.open("r", encoding="utf-8") as file:
             content = yaml.safe_load(file)
     except FileNotFoundError as exc:
+        if path == DEFAULT_CONFIG_FILE:
+            raise RuntimeError(
+                "Configuration file not found: "
+                f"{path}. Copy the matching platform example to "
+                "config/settings.local.yaml"
+            ) from exc
         raise RuntimeError(f"Configuration file not found: {path}") from exc
     except yaml.YAMLError as exc:
         raise RuntimeError(f"Invalid YAML configuration: {path}") from exc
@@ -95,7 +101,10 @@ def _read_yaml(path: Path) -> dict[str, Any]:
 def load_settings(config_file: str | Path | None = None) -> Settings:
     load_dotenv(DEFAULT_ENV_FILE, override=False)
     configured_path = config_file or os.getenv("HUB_CONFIG_FILE") or DEFAULT_CONFIG_FILE
-    path = Path(configured_path).expanduser().resolve()
+    path = Path(configured_path).expanduser()
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    path = path.resolve()
     data = _read_yaml(path)
 
     security = data.setdefault("security", {})

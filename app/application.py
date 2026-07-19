@@ -19,6 +19,7 @@ from app.core.logger import configure_logging
 from app.core.platform import detect_platform
 from app.core.response import (
     ApiError,
+    SECURITY_HEADERS,
     api_error_handler,
     http_error_handler,
     internal_error_handler,
@@ -32,9 +33,7 @@ from app.web.routes import STATIC_DIR, router as web_router
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next) -> Response:
         response = await call_next(request)
-        response.headers["Cache-Control"] = "no-store"
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers.update(SECURITY_HEADERS)
         if request.url.path == "/" or request.url.path.startswith("/static/"):
             response.headers["Content-Security-Policy"] = (
                 "default-src 'self'; "

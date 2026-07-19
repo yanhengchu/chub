@@ -70,6 +70,27 @@ async def test_security_headers_apply_to_page_assets_and_api(
 
 
 @pytest.mark.anyio
+async def test_security_headers_apply_to_unhandled_errors(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+
+    @app.get("/test-error")
+    def test_error() -> None:
+        raise RuntimeError("test error")
+
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/test-error")
+
+    assert response.status_code == 500
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["referrer-policy"] == "no-referrer"
+    assert response.json()["error"]["code"] == "internal_error"
+
+
+@pytest.mark.anyio
 async def test_page_uses_external_script_only(settings: Settings) -> None:
     transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
