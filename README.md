@@ -2,7 +2,8 @@
 
 Hub 是一个面向个人设备的轻量管理服务。第一阶段使用同一套 Python 工程分别运行在 macOS 和 Ubuntu 上。
 
-当前完成 M4 里程碑：提供 Bearer Token 保护的节点状态、白名单任务和安全日志查看接口。
+当前进入 M5 验收：提供移动端优先的 Web 管理页面，以及 Bearer Token 保护的
+节点状态、白名单任务和安全日志查看接口。
 
 ## 环境要求
 
@@ -37,10 +38,13 @@ export HUB_CONFIG_FILE="/absolute/path/to/settings.yaml"
 启动后访问：
 
 ```text
+http://127.0.0.1:8080/
 http://127.0.0.1:8080/api/health
 ```
 
-健康检查不需要 Token。节点状态、任务列表、任务执行和日志接口均受 Token 保护。
+管理页面和健康检查不需要 Token；页面骨架不包含节点数据。节点状态、任务
+列表、任务执行和日志接口均受 Token 保护。页面默认仅在当前浏览器会话保存
+Token，只有勾选“在此设备记住 Token”后才会长期保存。
 
 节点状态接口需要 Bearer Token：
 

@@ -4,7 +4,11 @@ import logging
 
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
+from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
 
 from app.api.health import router as health_router
 from app.api.logs import router as logs_router
@@ -22,6 +26,27 @@ from app.core.response import (
 )
 from app.tasks.definitions import build_task_registry
 from app.tasks.executor import TaskExecutor
+from app.web.routes import STATIC_DIR, router as web_router
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next) -> Response:
+        response = await call_next(request)
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        if request.url.path == "/" or request.url.path.startswith("/static/"):
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'self'; "
+                "script-src 'self'; "
+                "style-src 'self'; "
+                "connect-src 'self'; "
+                "img-src 'self' data:; "
+                "object-src 'none'; "
+                "base-uri 'none'; "
+                "frame-ancestors 'none'"
+            )
+        return response
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -66,6 +91,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         resolved_settings,
         detected_platform,
     )
+    application.add_middleware(SecurityHeadersMiddleware)
     application.add_exception_handler(ApiError, api_error_handler)
     application.add_exception_handler(
         RequestValidationError,
@@ -77,4 +103,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(logs_router)
     application.include_router(status_router)
     application.include_router(tasks_router)
+    application.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+    application.include_router(web_router)
     return application

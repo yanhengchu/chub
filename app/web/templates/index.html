@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>{{ app_name }} 管理面板</title>
+    <link rel="stylesheet" href="/static/app.css">
+    <script src="/static/app.js" defer></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <div>
+        <p class="eyebrow">PERSONAL DEVICE HUB</p>
+        <h1>{{ app_name }}</h1>
+      </div>
+      <span class="version">v{{ app_version }}</span>
+    </header>
+
+    <main>
+      <section class="card access-card" aria-labelledby="access-title">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">访问凭证</p>
+            <h2 id="access-title">连接此节点</h2>
+          </div>
+          <span id="connection-badge" class="badge badge-muted">未连接</span>
+        </div>
+        <form id="token-form">
+          <label for="token-input">Hub Token</label>
+          <div class="token-row">
+            <input
+              id="token-input"
+              name="token"
+              type="password"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="输入 HUB_TOKEN"
+              required
+            >
+            <button type="submit">连接</button>
+          </div>
+          <div class="access-actions">
+            <label class="remember-option">
+              <input id="remember-token" type="checkbox">
+              在此设备记住 Token
+            </label>
+            <button id="clear-token" class="button-link" type="button">清除凭证</button>
+          </div>
+        </form>
+        <p class="hint">默认仅保存在当前浏览器会话。请只在可信设备上选择记住。</p>
+        <p id="global-message" class="message" role="status" aria-live="polite">
+          输入启动 Hub 时配置的 Token。
+        </p>
+      </section>
+
+      <div id="dashboard" class="dashboard" hidden>
+        <section class="card status-card" aria-labelledby="status-title">
+          <div class="section-heading">
+            <div>
+              <p class="section-kicker">节点概览</p>
+              <h2 id="status-title">运行状态</h2>
+            </div>
+            <button id="refresh-status" class="button-secondary" type="button">刷新</button>
+          </div>
+          <div id="status-content" class="status-grid" aria-live="polite"></div>
+          <p id="status-message" class="message"></p>
+        </section>
+
+        <section class="card tasks-card" aria-labelledby="tasks-title">
+          <div class="section-heading">
+            <div>
+              <p class="section-kicker">白名单操作</p>
+              <h2 id="tasks-title">可用任务</h2>
+            </div>
+          </div>
+          <div id="task-list" class="task-list"></div>
+          <p id="tasks-message" class="message" aria-live="polite"></p>
+          <div id="task-result-wrap" class="result-panel" hidden>
+            <div class="result-heading">
+              <strong id="task-result-title">任务结果</strong>
+              <span id="task-result-badge" class="badge badge-muted"></span>
+            </div>
+            <p id="task-result-message"></p>
+            <pre id="task-result"></pre>
+          </div>
+        </section>
+
+        <section class="card logs-card" aria-labelledby="logs-title">
+          <div class="section-heading">
+            <div>
+              <p class="section-kicker">诊断信息</p>
+              <h2 id="logs-title">近期日志</h2>
+            </div>
+            <button id="load-logs" class="button-secondary" type="button">读取日志</button>
+          </div>
+          <p id="logs-message" class="message">按需读取最近 50 行，不会自动刷新。</p>
+          <pre id="logs-output" class="logs-output" hidden></pre>
+        </section>
+      </div>
+    </main>
+
+    <footer>Hub 仅适合在可信网络中使用。</footer>
+  </body>
+</html>
