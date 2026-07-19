@@ -7,6 +7,7 @@ from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.health import router as health_router
+from app.api.logs import router as logs_router
 from app.api.status import router as status_router
 from app.api.tasks import router as tasks_router
 from app.core.config import Settings, load_settings
@@ -73,6 +74,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.add_exception_handler(StarletteHTTPException, http_error_handler)
     application.add_exception_handler(Exception, internal_error_handler)
     application.include_router(health_router)
+    application.include_router(logs_router)
     application.include_router(status_router)
     application.include_router(tasks_router)
     return application
