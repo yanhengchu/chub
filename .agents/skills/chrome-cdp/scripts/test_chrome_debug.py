@@ -45,15 +45,35 @@ class ChromeDebugTest(unittest.TestCase):
             self.assertIn("--remote-debugging-port=9222", command)
             self.assertIn(f"--user-data-dir={user_data_dir}", command)
             self.assertIn("--profile-directory=Profile 2", command)
+            self.assertNotIn("--headless", command)
+
+            headless_command = chrome_debug.build_launch_command(
+                Path(temporary_directory) / "chrome",
+                user_data_dir,
+                "Profile 2",
+                headless=True,
+            )
+            self.assertIn("--headless", headless_command)
 
     @patch("chrome_debug.listener_process_ids", return_value=[123])
     @patch("chrome_debug.probe_cdp", return_value="ws://127.0.0.1/devtools/browser/id")
-    @patch("chrome_debug.debug_cdp_main_process_ids", return_value=[123])
-    @patch("chrome_debug.debug_process_ids", return_value=[123])
+    @patch(
+        "chrome_debug.debug_processes",
+        return_value=[
+            ChromeProcess(
+                123,
+                Path("/opt/google/chrome/chrome"),
+                [
+                    "/opt/google/chrome/chrome",
+                    "--remote-debugging-port=9222",
+                    "--user-data-dir=/tmp/debug",
+                ],
+            )
+        ],
+    )
     def test_status_reports_running(
         self,
         _processes: object,
-        _cdp_processes: object,
         _probe: object,
         _listeners: object,
     ) -> None:
@@ -64,7 +84,9 @@ class ChromeDebugTest(unittest.TestCase):
             result = chrome_debug.status(root)
 
         self.assertEqual(result.state, "running")
+        self.assertEqual(result.mode, "headed")
         self.assertEqual(result.process_ids, [123])
+        _processes.assert_called_once_with(root)
 
     @patch("chrome_debug.request_debug_close")
     @patch("chrome_debug.status")
@@ -83,6 +105,7 @@ class ChromeDebugTest(unittest.TestCase):
             root = Path(temporary_directory).absolute()
             expected = chrome_debug.DebugStatus(
                 state="stopped",
+                mode=None,
                 endpoint=chrome_debug.CDP_ENDPOINT,
                 user_data_dir=str(root),
                 profile_directory="Profile 2",
@@ -223,6 +246,7 @@ class ChromeDebugTest(unittest.TestCase):
         root = Path("/tmp/debug").absolute()
         expected = chrome_debug.DebugStatus(
             state="stopped",
+            mode=None,
             endpoint=chrome_debug.CDP_ENDPOINT,
             user_data_dir=str(root),
             profile_directory=None,
@@ -235,18 +259,149 @@ class ChromeDebugTest(unittest.TestCase):
 
     @patch("chrome_debug.listener_process_ids", return_value=[999])
     @patch("chrome_debug.probe_cdp", return_value="ws://127.0.0.1/devtools/browser/id")
-    @patch("chrome_debug.debug_cdp_main_process_ids", return_value=[123])
-    @patch("chrome_debug.debug_process_ids", return_value=[123])
+    @patch(
+        "chrome_debug.debug_processes",
+        return_value=[
+            ChromeProcess(
+                123,
+                Path("/opt/google/chrome/chrome"),
+                [
+                    "/opt/google/chrome/chrome",
+                    "--remote-debugging-port=9222",
+                    "--user-data-dir=/tmp/debug",
+                ],
+            )
+        ],
+    )
     def test_status_rejects_cdp_owned_by_another_process(
         self,
         _processes: object,
-        _cdp_processes: object,
         _probe: object,
         _listeners: object,
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             result = chrome_debug.status(Path(temporary_directory))
         self.assertEqual(result.state, "broken")
+        self.assertIsNone(result.mode)
+
+    @patch("chrome_debug.status")
+    def test_start_rejects_switching_a_running_instance_mode(
+        self, status: object
+    ) -> None:
+        status.return_value = chrome_debug.DebugStatus(
+            state="running",
+            mode="headed",
+            endpoint=chrome_debug.CDP_ENDPOINT,
+            user_data_dir="/tmp/debug",
+            profile_directory="Default",
+            process_ids=[123],
+        )
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            self.create_profile(root)
+            with self.assertRaisesRegex(RuntimeError, "stop it before starting"):
+                chrome_debug.start(root, headless=True)
+
+    @patch("chrome_debug.status")
+    def test_start_is_idempotent_for_the_same_mode(self, status: object) -> None:
+        expected = chrome_debug.DebugStatus(
+            state="running",
+            mode="headless",
+            endpoint=chrome_debug.CDP_ENDPOINT,
+            user_data_dir="/tmp/debug",
+            profile_directory="Default",
+            process_ids=[123],
+        )
+        status.return_value = expected
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            self.create_profile(root)
+            self.assertEqual(
+                chrome_debug.start(root, headless=True),
+                expected,
+            )
+
+    @patch("chrome_debug.listener_process_ids", return_value=[101])
+    @patch("chrome_debug.probe_cdp", return_value="ws://127.0.0.1/devtools/browser/id")
+    @patch(
+        "chrome_debug.debug_processes",
+        return_value=[
+            ChromeProcess(
+                101,
+                Path("/opt/google/chrome/chrome"),
+                [
+                    "/opt/google/chrome/chrome",
+                    "--remote-debugging-port=9222",
+                    "--headless",
+                ],
+            )
+        ],
+    )
+    def test_status_reports_headless_mode(
+        self,
+        _processes: object,
+        _probe: object,
+        _listeners: object,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            result = chrome_debug.status(Path(temporary_directory))
+
+        self.assertEqual(result.state, "running")
+        self.assertEqual(result.mode, "headless")
+
+    @patch("chrome_debug.listener_process_ids", return_value=[123])
+    @patch("chrome_debug.debug_cdp_main_process_ids", return_value=[123])
+    @patch("chrome_debug.probe_cdp", return_value="ws://127.0.0.1:9222/devtools/browser/id")
+    @patch("chrome_debug.send_browser_close")
+    def test_cdp_close_requires_and_uses_owned_endpoint(
+        self,
+        send_close: object,
+        _probe: object,
+        _processes: object,
+        _listeners: object,
+    ) -> None:
+        self.assertTrue(chrome_debug.request_cdp_close(Path("/tmp/debug")))
+        send_close.assert_called_once_with(
+            "ws://127.0.0.1:9222/devtools/browser/id"
+        )
+
+    @patch("chrome_debug.force_debug_close_windows")
+    @patch("chrome_debug.request_debug_close")
+    @patch("chrome_debug.debug_main_process_ids", return_value=[123])
+    @patch("chrome_debug.wait_for_debug_exit", side_effect=[False, True])
+    @patch("chrome_debug.request_cdp_close", return_value=False)
+    @patch("chrome_debug.debug_process_ids", return_value=[123, 124])
+    def test_windows_headless_cleanup_uses_validated_force_stop_as_last_resort(
+        self,
+        _processes: object,
+        _cdp_close: object,
+        _wait: object,
+        _main_processes: object,
+        request_close: object,
+        force_close: object,
+    ) -> None:
+        root = Path("/tmp/debug")
+        with patch("chrome_debug.sys.platform", "win32"):
+            self.assertTrue(chrome_debug.close_owned_debug_processes(root))
+
+        request_close.assert_called_once_with(root, [123])
+        force_close.assert_called_once_with(root)
+
+    @patch("chrome_debug.run_process_command")
+    @patch("chrome_debug.debug_process_ids", return_value=[123, 124])
+    def test_windows_force_stop_uses_only_validated_debug_processes(
+        self, _processes: object, run_command: object
+    ) -> None:
+        run_command.return_value = Mock(returncode=0)
+
+        chrome_debug.force_debug_close_windows(Path("/tmp/debug"))
+
+        command = run_command.call_args.args[0]
+        self.assertIn("Get-Process -Id $ids", command[-1])
+        self.assertIn("Stop-Process -Force", command[-1])
+        self.assertIn("$ids = @(123,124)", command[-1])
 
     @patch("chrome_debug.wait_for_debug_exit", return_value=True)
     @patch("chrome_debug.request_debug_close")
@@ -274,6 +429,7 @@ class ChromeDebugTest(unittest.TestCase):
             self.create_profile(root)
             stopped = chrome_debug.DebugStatus(
                 state="stopped",
+                mode=None,
                 endpoint=chrome_debug.CDP_ENDPOINT,
                 user_data_dir=str(root),
                 profile_directory="Profile 2",
@@ -281,6 +437,7 @@ class ChromeDebugTest(unittest.TestCase):
             )
             broken = chrome_debug.DebugStatus(
                 state="broken",
+                mode=None,
                 endpoint=chrome_debug.CDP_ENDPOINT,
                 user_data_dir=str(root),
                 profile_directory="Profile 2",

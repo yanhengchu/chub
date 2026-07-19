@@ -91,6 +91,12 @@ Start the Debug Chrome:
 python3 scripts/chrome_debug.py start
 ```
 
+Start it without a visible window:
+
+```bash
+python3 scripts/chrome_debug.py start --headless
+```
+
 Check its state:
 
 ```bash
@@ -119,6 +125,15 @@ python3 scripts/chrome_debug.py select "Default"
 
 The lifecycle command reads `~/chrome-debug-data/.chrome-cdp.json`, starts Chrome with the active copied profile, and exposes CDP only at `127.0.0.1:9222`. Stop Debug Chrome before changing the active profile.
 
+The default start mode is headed so a user can complete interactive login or
+authentication. `--headless` starts the same managed profile without a visible
+window. The mode is a Chrome process startup property and cannot be changed while
+Chrome is running. Repeating `start` in the same mode is idempotent; requesting the
+other mode is rejected with an instruction to run `stop` first. `status` reports the
+mode of a running instance. A normal stop followed by a start in the other mode
+reuses persisted profile state, but active CDP connections and in-memory page state
+do not survive the restart.
+
 Identify Debug Chrome only when the process executable is the stable Google Chrome,
 its `--user-data-dir` exactly matches the managed directory, and it has the expected
 main/helper process shape. The owned CDP main process must also use the exact
@@ -128,6 +143,14 @@ main process, then waits for its validated helpers to exit. It must not close re
 Chrome or signal an unrelated process that merely carries matching arguments.
 
 `start` is idempotent when the owned Debug Chrome is already running. A running state requires both a working CDP endpoint and an owned main process launched for port `9222`. Refuse to start if the port belongs to another process or if an owned Chrome process exists without a working CDP endpoint. If startup times out, clean up the attempted Debug Chrome before returning an error.
+
+When CDP is available and owned by the managed Chrome instance, `stop` first sends
+the CDP `Browser.close` command so both headed and headless Chrome can close
+gracefully. Fall back to the platform process mechanism only after validating the
+owned process. On Windows, if an owned process has no working CDP endpoint and
+cannot respond to a normal window-close request, force-stop only the process IDs
+that still pass managed Chrome ownership validation. This last-resort cleanup may
+lose browser state that was not written to disk.
 
 ## Safety Boundaries
 
@@ -149,9 +172,12 @@ Use `python3` on macOS and Ubuntu. Use `py` on Windows when `python3` is unavail
 2. List regular Chrome profiles in text and JSON formats.
 3. Copy one selected profile to the default debug directory.
 4. Validate `profiles` and `profiles --json`.
-5. Run `start`, `status`, a second idempotent `start`, and `stop`.
+5. Run headed `start`, `status`, a second idempotent `start`, and `stop`; repeat
+   with `start --headless`.
 6. Confirm CDP listens only on `127.0.0.1:9222`, `stop` leaves no owned process, and regular Chrome is not stopped by Debug Chrome lifecycle commands.
-7. Confirm duplicate profile copying, copying while Debug Chrome runs, and profile selection while Debug Chrome runs are rejected safely.
+7. Confirm switching between headed and headless modes while running is rejected,
+   and that stopping then changing modes reuses persisted login state.
+8. Confirm duplicate profile copying, copying while Debug Chrome runs, and profile selection while Debug Chrome runs are rejected safely.
 
 On macOS, Ubuntu, and Windows, verify process ownership, CDP listener ownership, and complete helper-process cleanup. Also confirm that Debug Chrome lifecycle commands do not affect regular Chrome or unrelated processes carrying similar arguments. On Ubuntu and Windows, additionally verify normal Chrome shutdown through the platform-specific implementation.
 
@@ -159,7 +185,12 @@ Report the operating system, Chrome and Python versions, test totals, each faile
 
 ## Current Implementation State
 
-Profile discovery, safe one-time profile copying, and Debug Chrome lifecycle management have platform-specific implementations for stable Google Chrome on macOS, Ubuntu, and Windows. All three platform paths have passed automated tests and real-device validation.
+Profile discovery, safe one-time profile copying, and the original headed Debug
+Chrome lifecycle have platform-specific implementations for stable Google Chrome
+on macOS, Ubuntu, and Windows, with automated and real-device validation on all
+three platforms. Headless lifecycle and mode switching have passed automated tests
+and macOS real-device validation; Ubuntu and Windows real-device validation remains
+pending.
 
 The Playwright session helper is not implemented yet.
 

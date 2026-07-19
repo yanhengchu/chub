@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import ntpath
 import os
@@ -16,6 +17,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -42,11 +44,13 @@ CDP_PORT = 9222
 CDP_ENDPOINT = f"http://{CDP_HOST}:{CDP_PORT}"
 START_TIMEOUT = 15
 STOP_TIMEOUT = 15
+GRACEFUL_STOP_TIMEOUT = 5
 
 
 @dataclass(frozen=True)
 class DebugStatus:
     state: str
+    mode: str | None
     endpoint: str
     user_data_dir: str
     profile_directory: str | None
@@ -94,9 +98,13 @@ def chrome_executable() -> Path:
 
 
 def build_launch_command(
-    executable: Path, user_data_dir: Path, profile_directory: str
+    executable: Path,
+    user_data_dir: Path,
+    profile_directory: str,
+    *,
+    headless: bool = False,
 ) -> list[str]:
-    return [
+    command = [
         str(executable),
         f"--remote-debugging-address={CDP_HOST}",
         f"--remote-debugging-port={CDP_PORT}",
@@ -105,6 +113,9 @@ def build_launch_command(
         "--no-first-run",
         "--no-default-browser-check",
     ]
+    if headless:
+        command.append("--headless")
+    return command
 
 
 def command_arguments(command: str, *, windows: bool = False) -> list[str]:
@@ -149,6 +160,14 @@ def process_option(process: ChromeProcess, option: str) -> str | None:
         if argument == option and index + 1 < len(process.arguments):
             return process.arguments[index + 1]
     return None
+
+
+def process_has_option(process: ChromeProcess, option: str) -> bool:
+    prefix = f"{option}="
+    return any(
+        argument == option or argument.startswith(prefix)
+        for argument in process.arguments[1:]
+    )
 
 
 def process_uses_managed_user_data(
@@ -389,8 +408,19 @@ def status(user_data_dir: Path = DEFAULT_USER_DATA_DIR) -> DebugStatus:
     except RuntimeError:
         profile_directory = None
 
-    process_ids = debug_process_ids(root)
-    cdp_process_ids = debug_cdp_main_process_ids(root)
+    processes = debug_processes(root)
+    process_ids = [process.pid for process in processes]
+    cdp_main_processes = [
+        process
+        for process in processes
+        if process.process_type is None
+        and process_option(process, "--remote-debugging-port") == str(CDP_PORT)
+    ]
+    cdp_process_ids = [process.pid for process in cdp_main_processes]
+    cdp_modes = {
+        "headless" if process_has_option(process, "--headless") else "headed"
+        for process in cdp_main_processes
+    }
     websocket = probe_cdp()
     cdp_owned = bool(
         websocket and set(cdp_process_ids).intersection(listener_process_ids())
@@ -403,6 +433,7 @@ def status(user_data_dir: Path = DEFAULT_USER_DATA_DIR) -> DebugStatus:
         state = "stopped"
     return DebugStatus(
         state=state,
+        mode=next(iter(cdp_modes)) if cdp_owned and len(cdp_modes) == 1 else None,
         endpoint=CDP_ENDPOINT,
         user_data_dir=str(root),
         profile_directory=profile_directory,
@@ -410,18 +441,29 @@ def status(user_data_dir: Path = DEFAULT_USER_DATA_DIR) -> DebugStatus:
     )
 
 
-def start(user_data_dir: Path = DEFAULT_USER_DATA_DIR) -> DebugStatus:
+def start(
+    user_data_dir: Path = DEFAULT_USER_DATA_DIR, *, headless: bool = False
+) -> DebugStatus:
     root = user_data_dir.expanduser().absolute()
     profile_directory = load_profile_directory(root)
     current = status(root)
     if current.state == "running":
+        requested_mode = "headless" if headless else "headed"
+        if current.mode != requested_mode:
+            current_mode = current.mode or "unknown"
+            raise RuntimeError(
+                f"Debug Chrome is already running in {current_mode} mode; "
+                f"stop it before starting in {requested_mode} mode"
+            )
         return current
     if current.process_ids:
         raise RuntimeError("Debug Chrome process exists but CDP is not available")
     if port_is_in_use():
         raise RuntimeError(f"Port {CDP_PORT} is already used by another process")
 
-    command = build_launch_command(chrome_executable(), root, profile_directory)
+    command = build_launch_command(
+        chrome_executable(), root, profile_directory, headless=headless
+    )
     popen_options: dict[str, Any] = {
         "stdin": subprocess.DEVNULL,
         "stdout": subprocess.DEVNULL,
@@ -442,9 +484,8 @@ def start(user_data_dir: Path = DEFAULT_USER_DATA_DIR) -> DebugStatus:
         if current.state == "running":
             return current
         time.sleep(0.25)
-    main_process_ids = debug_main_process_ids(root)
-    if main_process_ids:
-        request_debug_close(root, main_process_ids)
+    if debug_process_ids(root):
+        close_owned_debug_processes(root)
     elif launched_process.poll() is None:
         launched_process.terminate()
     if not wait_for_debug_exit(root, timeout=STOP_TIMEOUT):
@@ -452,6 +493,64 @@ def start(user_data_dir: Path = DEFAULT_USER_DATA_DIR) -> DebugStatus:
             "Debug Chrome failed to start and its processes did not exit during cleanup"
         )
     raise RuntimeError("Debug Chrome did not expose CDP within 15 seconds")
+
+
+def send_browser_close(websocket_url: str) -> None:
+    parsed = urllib.parse.urlparse(websocket_url)
+    if (
+        parsed.scheme != "ws"
+        or parsed.hostname != CDP_HOST
+        or parsed.port != CDP_PORT
+        or not parsed.path.startswith("/devtools/browser/")
+    ):
+        raise RuntimeError("Refusing to close Chrome through an unexpected CDP endpoint")
+    port = parsed.port
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+
+    key = base64.b64encode(os.urandom(16)).decode("ascii")
+    with socket.create_connection((parsed.hostname, port), timeout=2) as connection:
+        request = (
+            f"GET {path} HTTP/1.1\r\n"
+            f"Host: {parsed.hostname}:{port}\r\n"
+            "Upgrade: websocket\r\n"
+            "Connection: Upgrade\r\n"
+            f"Sec-WebSocket-Key: {key}\r\n"
+            "Sec-WebSocket-Version: 13\r\n\r\n"
+        )
+        connection.sendall(request.encode("ascii"))
+        response = b""
+        while b"\r\n\r\n" not in response and len(response) < 8192:
+            chunk = connection.recv(1024)
+            if not chunk:
+                break
+            response += chunk
+        if not response.startswith(b"HTTP/1.1 101"):
+            raise RuntimeError("Chrome rejected the CDP WebSocket connection")
+
+        payload = b'{"id":1,"method":"Browser.close"}'
+        mask = os.urandom(4)
+        masked_payload = bytes(
+            value ^ mask[index % 4] for index, value in enumerate(payload)
+        )
+        connection.sendall(
+            bytes((0x81, 0x80 | len(payload))) + mask + masked_payload
+        )
+
+
+def request_cdp_close(user_data_dir: Path) -> bool:
+    websocket = probe_cdp()
+    if not websocket:
+        return False
+    owned_processes = set(debug_cdp_main_process_ids(user_data_dir))
+    if not owned_processes.intersection(listener_process_ids()):
+        return False
+    try:
+        send_browser_close(websocket)
+    except (OSError, RuntimeError):
+        return False
+    return True
 
 
 def request_debug_close(user_data_dir: Path, process_ids: list[int]) -> None:
@@ -480,6 +579,25 @@ def request_debug_close(user_data_dir: Path, process_ids: list[int]) -> None:
             raise RuntimeError(f"Unable to stop Debug Chrome: {exc}") from exc
 
 
+def force_debug_close_windows(user_data_dir: Path) -> None:
+    process_ids = debug_process_ids(user_data_dir)
+    if not process_ids:
+        return
+    pid_list = ",".join(str(pid) for pid in process_ids)
+    command = (
+        f"$ids = @({pid_list}); "
+        "Get-Process -Id $ids -ErrorAction SilentlyContinue | "
+        "Stop-Process -Force -ErrorAction Stop"
+    )
+    result = run_process_command(
+        ["powershell.exe", "-NoProfile", "-Command", command]
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Unable to force stop Debug Chrome: PowerShell exit {result.returncode}"
+        )
+
+
 def wait_for_debug_exit(user_data_dir: Path, timeout: float = STOP_TIMEOUT) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -489,17 +607,38 @@ def wait_for_debug_exit(user_data_dir: Path, timeout: float = STOP_TIMEOUT) -> b
     return not debug_process_ids(user_data_dir)
 
 
+def close_owned_debug_processes(user_data_dir: Path) -> bool:
+    if not debug_process_ids(user_data_dir):
+        return True
+
+    if request_cdp_close(user_data_dir) and wait_for_debug_exit(
+        user_data_dir, timeout=GRACEFUL_STOP_TIMEOUT
+    ):
+        return True
+
+    main_process_ids = debug_main_process_ids(user_data_dir)
+    all_process_ids = debug_process_ids(user_data_dir)
+    request_debug_close(user_data_dir, main_process_ids or all_process_ids)
+    fallback_timeout = (
+        GRACEFUL_STOP_TIMEOUT if sys.platform == "win32" else STOP_TIMEOUT
+    )
+    if wait_for_debug_exit(user_data_dir, timeout=fallback_timeout):
+        return True
+
+    if sys.platform == "win32":
+        force_debug_close_windows(user_data_dir)
+        return wait_for_debug_exit(user_data_dir, timeout=STOP_TIMEOUT)
+    return False
+
+
 def stop(user_data_dir: Path = DEFAULT_USER_DATA_DIR) -> DebugStatus:
     root = user_data_dir.expanduser().absolute()
-    all_process_ids = debug_process_ids(root)
-    if not all_process_ids:
+    if not debug_process_ids(root):
         return status(root)
 
-    main_process_ids = debug_main_process_ids(root)
-    request_debug_close(root, main_process_ids or all_process_ids)
-    if wait_for_debug_exit(root):
+    if close_owned_debug_processes(root):
         return status(root)
-    raise RuntimeError("Debug Chrome did not exit within 15 seconds")
+    raise RuntimeError("Debug Chrome did not exit during cleanup")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -522,14 +661,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Debug Chrome user-data directory (default: ~/chrome-debug-data).",
     )
     parser.add_argument("--json", action="store_true", help="Return JSON status.")
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="Start Debug Chrome without a visible window (start only).",
+    )
     return parser
 
 
 def main() -> int:
     args = build_parser().parse_args()
     try:
+        if args.headless and args.command != "start":
+            raise RuntimeError("--headless is only valid with the start command")
         if args.command == "start":
-            result = start(args.user_data_dir)
+            result = start(args.user_data_dir, headless=args.headless)
         elif args.command == "stop":
             result = stop(args.user_data_dir)
         elif args.command == "profiles":
@@ -581,6 +727,8 @@ def main() -> int:
         print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
     else:
         print(f"Debug Chrome: {result.state}")
+        if result.mode:
+            print(f"Mode: {result.mode}")
         print(f"CDP endpoint: {result.endpoint}")
         print(f"User Data: {result.user_data_dir}")
         if result.profile_directory:
