@@ -17,7 +17,7 @@ server:
   host: 127.0.0.1
   port: 8080
 security:
-  enabled: true
+  {}
 """
 
 
@@ -30,7 +30,8 @@ def test_load_settings_uses_environment_token(
 
     settings = load_settings(config_file)
 
-    assert settings.security.token == "secret-token"
+    assert settings.security.token is not None
+    assert settings.security.token.get_secret_value() == "secret-token"
     assert settings.node.id == "test"
 
 
@@ -43,7 +44,18 @@ def test_load_settings_allows_missing_token_during_startup(
 
     settings = load_settings(config_file)
 
-    assert settings.security.enabled is True
+    assert settings.security.token is None
+
+
+def test_load_settings_treats_blank_token_as_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_file = tmp_path / "settings.yaml"
+    config_file.write_text(VALID_CONFIG, encoding="utf-8")
+    monkeypatch.setenv("HUB_TOKEN", "   ")
+
+    settings = load_settings(config_file)
+
     assert settings.security.token is None
 
 

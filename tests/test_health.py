@@ -1,5 +1,6 @@
 import httpx
 import pytest
+from pydantic import SecretStr
 
 from app.application import create_app
 from app.core.config import Settings
@@ -30,3 +31,15 @@ def test_missing_token_logs_warning(
     create_app(settings)
 
     assert "HUB_TOKEN is not set" in capsys.readouterr().err
+
+
+def test_short_token_logs_warning(
+    settings: Settings, capsys: pytest.CaptureFixture[str]
+) -> None:
+    settings.security.token = SecretStr("short-token")
+
+    create_app(settings)
+
+    output = capsys.readouterr().err
+    assert "shorter than 32 characters" in output
+    assert "short-token" not in output

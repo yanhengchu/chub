@@ -3,11 +3,21 @@ from __future__ import annotations
 import logging
 
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.health import router as health_router
+from app.api.status import router as status_router
 from app.core.config import Settings, load_settings
 from app.core.logger import configure_logging
 from app.core.platform import detect_platform
+from app.core.response import (
+    ApiError,
+    api_error_handler,
+    http_error_handler,
+    internal_error_handler,
+    validation_error_handler,
+)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -16,9 +26,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     detected_platform = detect_platform()
     logger = logging.getLogger("hub.startup")
-    if resolved_settings.security.enabled and not resolved_settings.security.token:
+    if not resolved_settings.security.token:
         logger.warning(
             "HUB_TOKEN is not set; health check remains available but protected APIs are disabled"
+        )
+    elif len(resolved_settings.security.token.get_secret_value()) < 32:
+        logger.warning(
+            "HUB_TOKEN is shorter than 32 characters; use a longer random token"
         )
     if resolved_settings.node.type != detected_platform:
         logger.warning(
@@ -40,5 +54,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     application.state.settings = resolved_settings
     application.state.detected_platform = detected_platform
+    application.add_exception_handler(ApiError, api_error_handler)
+    application.add_exception_handler(
+        RequestValidationError,
+        validation_error_handler,
+    )
+    application.add_exception_handler(StarletteHTTPException, http_error_handler)
+    application.add_exception_handler(Exception, internal_error_handler)
     application.include_router(health_router)
+    application.include_router(status_router)
     return application

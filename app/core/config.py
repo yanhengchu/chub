@@ -6,7 +6,14 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    ValidationError,
+    field_validator,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -34,8 +41,15 @@ class ServerConfig(StrictModel):
 
 
 class SecurityConfig(StrictModel):
-    enabled: bool = True
-    token: str | None = None
+    token: SecretStr | None = None
+
+    @field_validator("token", mode="before")
+    @classmethod
+    def normalize_token(cls, value: object) -> object:
+        if isinstance(value, str):
+            value = value.strip()
+            return value or None
+        return value
 
 
 class TasksConfig(StrictModel):
