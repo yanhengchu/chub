@@ -2,7 +2,7 @@
 
 Hub 是一个面向个人设备的轻量管理服务。第一阶段使用同一套 Python 工程分别运行在 macOS 和 Ubuntu 上。
 
-第一阶段核心功能已通过双平台验收，当前正在补齐开发目录服务化运行交付。
+第一阶段核心功能与开发目录服务化运行已通过 macOS、Ubuntu 双平台验收。
 项目提供移动端优先的 Web 管理页面，以及 Bearer Token 保护的节点状态、
 白名单任务和安全日志查看接口。
 
@@ -49,7 +49,18 @@ cp config/settings.ubuntu.example.yaml config/settings.local.yaml
 ```
 
 首次安装会在 `~/.local/bin/chub` 创建指向当前工作区的命令链接。如果该目录
-尚未加入 `PATH`，安装命令会给出提示。重新打开终端后，可以从任意目录管理：
+尚未加入 `PATH`，安装命令会给出提示。Bash 用户可以将其持久加入
+`~/.bashrc`：
+
+```bash
+case ":$PATH:" in
+  *":$HOME/.local/bin:"*) ;;
+  *) export PATH="$HOME/.local/bin:$PATH" ;;
+esac
+```
+
+修改后在当前终端执行一次 `source ~/.bashrc`，后续新终端会自动生效。确认
+`command -v chub` 能够找到命令后，即可从任意目录管理：
 
 ```bash
 chub start
