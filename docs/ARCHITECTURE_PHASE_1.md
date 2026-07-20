@@ -1,5 +1,7 @@
 # Hub 第一阶段技术架构
 
+> 当前状态：M1–M6 已验收通过，正在补齐 M7 开发目录服务化运行交付。
+
 ## 1. 文档目的
 
 本文档将第一阶段 PRD 转换为可实施的技术方案，明确系统边界、模块职责、关键数据流、安全约束和验证方式。
@@ -474,9 +476,36 @@ HTTP 200 中的任务 `failed` 或 `timeout` 结果。
 2. 准备 Python 3.12 及以上环境和运行依赖。
 3. 从对应平台模板复制并修改 `config/settings.local.yaml`。
 4. 通过环境变量设置访问 Token。
-5. 启动 Hub Node，并根据需要配置操作系统级自启动。
+5. 首次执行 `./scripts/chub install`，安装当前用户的后台服务和 `chub` 管理命令。
 
-第一阶段先支持直接运行 Python 服务。系统服务、自启动和升级流程可以在节点功能稳定后补充，但部署文档必须说明手工启动和验证方式。
+后台服务直接使用当前 Git 工作区、项目内 `.venv`、`.env` 和
+`config/settings.local.yaml`，不复制源码或建立独立发布目录。macOS 使用
+LaunchAgent，Ubuntu 使用 systemd user service，两者均在用户登录后启动，
+并仅以当前普通用户身份运行。
+
+安装后通过统一命令管理：
+
+```text
+chub start
+chub stop
+chub restart
+chub status
+chub logs
+chub uninstall
+```
+
+服务定义和 `~/.local/bin/chub` 命令链接均绑定当前工作区绝对路径。移动或删除
+工作区后需要从新位置重新安装。源码、依赖或配置发生变化后，应通过
+`chub restart` 启动新进程重新加载。卸载只移除用户服务和属于当前工作区的
+命令链接，不删除源码、本机配置、虚拟环境和日志。
+
+`chub logs` 通过应用配置解析实际活动日志路径，不固定依赖默认文件名。应用
+日志继续使用内置轮转策略；macOS LaunchAgent 的标准输出和错误日志各限制为
+2 MB，并在下次启动服务时保留一份备份。Ubuntu 服务输出由 systemd journal
+管理。
+
+第一阶段不包含独立发布目录、自动升级、版本切换、回滚、菜单栏应用和无人登录
+时的系统级启动。
 
 ## 19. 第一开发里程碑
 

@@ -2,8 +2,9 @@
 
 Hub 是一个面向个人设备的轻量管理服务。第一阶段使用同一套 Python 工程分别运行在 macOS 和 Ubuntu 上。
 
-M1–M5 已完成，当前进入 M6 双平台验收。项目提供移动端优先的 Web 管理页面，
-以及 Bearer Token 保护的节点状态、白名单任务和安全日志查看接口。
+第一阶段核心功能已通过双平台验收，当前正在补齐开发目录服务化运行交付。
+项目提供移动端优先的 Web 管理页面，以及 Bearer Token 保护的节点状态、
+白名单任务和安全日志查看接口。
 
 ## 环境要求
 
@@ -40,6 +41,31 @@ cp config/settings.ubuntu.example.yaml config/settings.local.yaml
 ```bash
 .venv/bin/python main.py
 ```
+
+长期在当前开发目录运行时，可安装当前用户的后台服务：
+
+```bash
+./scripts/chub install
+```
+
+首次安装会在 `~/.local/bin/chub` 创建指向当前工作区的命令链接。如果该目录
+尚未加入 `PATH`，安装命令会给出提示。重新打开终端后，可以从任意目录管理：
+
+```bash
+chub start
+chub stop
+chub restart
+chub status
+chub logs
+chub uninstall
+```
+
+macOS 使用 LaunchAgent，Ubuntu 使用 systemd user service；两者均在当前用户
+登录后启动。服务直接依赖当前工作区和 `.venv`，移动项目目录后需要重新安装。
+源码、依赖或配置更新完成后执行 `chub restart`。卸载只移除用户服务和命令
+链接，不删除项目、本机配置或日志。`chub logs` 跟踪节点配置指定的活动日志；
+macOS 服务管理器的标准输出和错误日志超过 2 MB 后，会在下次启动时保留一份
+备份并重新开始记录。
 
 本地只验证健康检查时可以不设置 `HUB_TOKEN`。服务会输出安全警告并继续启动；后续受保护接口在没有 Token 时保持不可用。连接局域网或虚拟组网前应设置一个足够长的随机 Token。
 
@@ -121,7 +147,7 @@ curl \
 
 ## 文档
 
-- [第一阶段 PRD](docs/PRD_PHASE_1.md)
+- [第一阶段产品需求](docs/PRD_PHASE_1.md)
 - [第一阶段技术架构](docs/ARCHITECTURE_PHASE_1.md)
 - [第一阶段任务清单](docs/TASKS_PHASE_1.md)
 - [第一阶段验收记录](docs/ACCEPTANCE_PHASE_1.md)

@@ -1,0 +1,381 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+SERVICE_NAME="chub"
+MACOS_LABEL="com.chub.node"
+
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+while [[ -L "$SCRIPT_PATH" ]]; do
+    SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd)"
+    LINK_TARGET="$(readlink "$SCRIPT_PATH")"
+    if [[ "$LINK_TARGET" == /* ]]; then
+        SCRIPT_PATH="$LINK_TARGET"
+    else
+        SCRIPT_PATH="$SCRIPT_DIR/$LINK_TARGET"
+    fi
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd)"
+SCRIPT_PATH="$SCRIPT_DIR/$(basename "$SCRIPT_PATH")"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+PYTHON_BIN="$PROJECT_ROOT/.venv/bin/python"
+MAIN_FILE="$PROJECT_ROOT/main.py"
+ENV_FILE="$PROJECT_ROOT/.env"
+CONFIG_FILE="$PROJECT_ROOT/config/settings.local.yaml"
+COMMAND_DIR="${CHUB_COMMAND_DIR:-$HOME/.local/bin}"
+COMMAND_PATH="$COMMAND_DIR/chub"
+RUNTIME_PATH="$PROJECT_ROOT/.venv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+PLATFORM="${CHUB_TEST_PLATFORM:-$(uname -s)}"
+SERVICE_LOG_MAX_BYTES=$((2 * 1024 * 1024))
+
+usage() {
+    cat <<'EOF'
+Usage: chub <command>
+
+Commands:
+  install    Install and start the user service
+  start      Start the service
+  stop       Stop the service
+  restart    Restart the service and check its health
+  status     Show service status
+  logs       Follow Hub application logs
+  uninstall  Remove the user service and chub command
+  help       Show this help
+EOF
+}
+
+fail() {
+    echo "chub: $*" >&2
+    exit 1
+}
+
+platform_name() {
+    case "$PLATFORM" in
+        Darwin) echo "macos" ;;
+        Linux) echo "ubuntu" ;;
+        *) fail "unsupported platform: $PLATFORM" ;;
+    esac
+}
+
+check_project() {
+    [[ -x "$PYTHON_BIN" ]] || fail "Python environment not found: $PYTHON_BIN"
+    [[ -f "$MAIN_FILE" ]] || fail "Hub entry point not found: $MAIN_FILE"
+    [[ -f "$ENV_FILE" ]] || fail "configuration not found: $ENV_FILE"
+    [[ -f "$CONFIG_FILE" ]] || fail "configuration not found: $CONFIG_FILE"
+
+    local permissions
+    permissions="$("$PYTHON_BIN" - "$ENV_FILE" <<'PY'
+import os
+import stat
+import sys
+
+print(f"{stat.S_IMODE(os.stat(sys.argv[1]).st_mode):o}")
+PY
+)"
+    if [[ "$permissions" != "600" ]]; then
+        echo "chub: warning: $ENV_FILE permissions are $permissions; use chmod 600 .env" >&2
+    fi
+}
+
+configured_value() {
+    local name="$1"
+    (
+        cd "$PROJECT_ROOT"
+        "$PYTHON_BIN" - "$name" <<'PY'
+import sys
+
+from app.core.config import load_settings
+
+settings = load_settings()
+values = {
+    "log_file": settings.logs.file,
+    "port": settings.server.port,
+}
+print(values[sys.argv[1]])
+PY
+    )
+}
+
+rotate_service_logs() {
+    local log_file
+    for log_file in \
+        "$PROJECT_ROOT/logs/service.out.log" \
+        "$PROJECT_ROOT/logs/service.err.log"
+    do
+        [[ -f "$log_file" ]] || continue
+        "$PYTHON_BIN" - "$log_file" "$SERVICE_LOG_MAX_BYTES" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+max_bytes = int(sys.argv[2])
+if path.stat().st_size > max_bytes:
+    backup = path.with_name(f"{path.name}.1")
+    backup.unlink(missing_ok=True)
+    path.replace(backup)
+PY
+    done
+}
+
+macos_plist_path() {
+    echo "${CHUB_LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}/$MACOS_LABEL.plist"
+}
+
+systemd_unit_path() {
+    echo "${CHUB_SYSTEMD_USER_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user}/$SERVICE_NAME.service"
+}
+
+macos_domain() {
+    echo "gui/$(id -u)"
+}
+
+wait_for_macos_unload() {
+    local domain attempt
+    domain="$(macos_domain)"
+    for attempt in 1 2 3 4 5 6 7 8 9 10; do
+        if ! launchctl print "$domain/$MACOS_LABEL" >/dev/null 2>&1; then
+            return
+        fi
+        sleep 0.5
+    done
+    fail "macOS service did not stop"
+}
+
+stop_macos_service() {
+    local domain
+    domain="$(macos_domain)"
+    launchctl bootout "$domain/$MACOS_LABEL" >/dev/null 2>&1 || true
+    wait_for_macos_unload
+}
+
+start_macos_service() {
+    local domain plist_path
+    domain="$(macos_domain)"
+    plist_path="$(macos_plist_path)"
+    [[ -f "$plist_path" ]] || fail "service is not installed; run chub install"
+    if launchctl print "$domain/$MACOS_LABEL" >/dev/null 2>&1; then
+        launchctl kickstart "$domain/$MACOS_LABEL"
+    else
+        rotate_service_logs
+        launchctl bootstrap "$domain" "$plist_path"
+    fi
+}
+
+write_macos_service() {
+    local plist_path
+    plist_path="$(macos_plist_path)"
+    mkdir -p "$(dirname "$plist_path")" "$PROJECT_ROOT/logs"
+    {
+        echo '<?xml version="1.0" encoding="UTF-8"?>'
+        echo '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
+        echo '<plist version="1.0">'
+        echo '<dict>'
+        echo '  <key>Label</key>'
+        echo "  <string>$MACOS_LABEL</string>"
+        echo '  <key>ProgramArguments</key>'
+        echo '  <array>'
+        echo "    <string>$PYTHON_BIN</string>"
+        echo "    <string>$MAIN_FILE</string>"
+        echo '  </array>'
+        echo '  <key>WorkingDirectory</key>'
+        echo "  <string>$PROJECT_ROOT</string>"
+        echo '  <key>EnvironmentVariables</key>'
+        echo '  <dict>'
+        echo '    <key>PATH</key>'
+        echo "    <string>$RUNTIME_PATH</string>"
+        echo '  </dict>'
+        echo '  <key>RunAtLoad</key>'
+        echo '  <true/>'
+        echo '  <key>KeepAlive</key>'
+        echo '  <dict>'
+        echo '    <key>SuccessfulExit</key>'
+        echo '    <false/>'
+        echo '  </dict>'
+        echo '  <key>ThrottleInterval</key>'
+        echo '  <integer>5</integer>'
+        echo '  <key>StandardOutPath</key>'
+        echo "  <string>$PROJECT_ROOT/logs/service.out.log</string>"
+        echo '  <key>StandardErrorPath</key>'
+        echo "  <string>$PROJECT_ROOT/logs/service.err.log</string>"
+        echo '</dict>'
+        echo '</plist>'
+    } > "$plist_path"
+}
+
+write_systemd_service() {
+    local unit_path
+    unit_path="$(systemd_unit_path)"
+    mkdir -p "$(dirname "$unit_path")" "$PROJECT_ROOT/logs"
+    {
+        echo '[Unit]'
+        echo 'Description=Chub personal device node'
+        echo 'After=network.target'
+        echo 'StartLimitIntervalSec=60'
+        echo 'StartLimitBurst=5'
+        echo
+        echo '[Service]'
+        echo 'Type=simple'
+        printf 'WorkingDirectory=%s\n' "$PROJECT_ROOT"
+        printf 'ExecStart=%s %s\n' "$PYTHON_BIN" "$MAIN_FILE"
+        printf 'Environment=PATH=%s\n' "$RUNTIME_PATH"
+        echo 'Restart=on-failure'
+        echo 'RestartSec=5'
+        echo
+        echo '[Install]'
+        echo 'WantedBy=default.target'
+    } > "$unit_path"
+}
+
+install_command() {
+    mkdir -p "$COMMAND_DIR"
+    local path_command
+    path_command="$(type -P chub 2>/dev/null || true)"
+    if [[ -n "$path_command" ]]; then
+        local resolved_command
+        resolved_command="$(cd -P "$(dirname "$path_command")" && pwd)/$(basename "$path_command")"
+        if [[ -L "$resolved_command" ]]; then
+            resolved_command="$(readlink "$resolved_command")"
+        fi
+        if [[ "$resolved_command" != "$SCRIPT_PATH" ]]; then
+            fail "another chub command is already on PATH: $path_command"
+        fi
+    fi
+    if [[ -e "$COMMAND_PATH" || -L "$COMMAND_PATH" ]]; then
+        local existing_target
+        existing_target="$(readlink "$COMMAND_PATH" 2>/dev/null || true)"
+        if [[ "$existing_target" != "$SCRIPT_PATH" ]]; then
+            fail "refusing to replace existing command: $COMMAND_PATH"
+        fi
+    else
+        ln -s "$SCRIPT_PATH" "$COMMAND_PATH"
+    fi
+    case ":$PATH:" in
+        *":$COMMAND_DIR:"*) ;;
+        *) echo "chub: add $COMMAND_DIR to PATH to use chub from any directory" >&2 ;;
+    esac
+}
+
+install_service() {
+    check_project
+    install_command
+    case "$(platform_name)" in
+        macos)
+            local plist_path
+            plist_path="$(macos_plist_path)"
+            if [[ -f "$plist_path" ]]; then
+                stop_macos_service
+            fi
+            write_macos_service
+            start_macos_service
+            ;;
+        ubuntu)
+            write_systemd_service
+            systemctl --user daemon-reload
+            systemctl --user enable --now "$SERVICE_NAME.service"
+            ;;
+    esac
+    echo "Chub service installed from $PROJECT_ROOT"
+}
+
+start_service() {
+    case "$(platform_name)" in
+        macos) start_macos_service ;;
+        ubuntu) systemctl --user start "$SERVICE_NAME.service" ;;
+    esac
+}
+
+stop_service() {
+    case "$(platform_name)" in
+        macos) stop_macos_service ;;
+        ubuntu) systemctl --user stop "$SERVICE_NAME.service" ;;
+    esac
+}
+
+health_check() {
+    local port
+    port="$(configured_value port 2>/dev/null)" \
+        || fail "service restarted, but configuration could not be read"
+    local attempt
+    for attempt in 1 2 3 4 5 6 7 8 9 10; do
+        if "$PYTHON_BIN" - "$port" <<'PY' >/dev/null 2>&1
+import json
+import sys
+import urllib.request
+
+with urllib.request.urlopen(
+    f"http://127.0.0.1:{sys.argv[1]}/api/health", timeout=1
+) as response:
+    payload = json.load(response)
+    if response.status != 200 or payload.get("success") is not True:
+        raise SystemExit(1)
+PY
+        then
+            echo "Chub is healthy on 127.0.0.1:$port"
+            return
+        fi
+        sleep 0.5
+    done
+    fail "service did not become healthy; run chub logs"
+}
+
+restart_service() {
+    case "$(platform_name)" in
+        macos)
+            stop_macos_service
+            start_macos_service
+            ;;
+        ubuntu) systemctl --user restart "$SERVICE_NAME.service" ;;
+    esac
+    health_check
+}
+
+status_service() {
+    case "$(platform_name)" in
+        macos) launchctl print "gui/$(id -u)/$MACOS_LABEL" ;;
+        ubuntu) systemctl --user status "$SERVICE_NAME.service" --no-pager ;;
+    esac
+}
+
+show_logs() {
+    local log_file
+    log_file="$(configured_value log_file 2>/dev/null)" \
+        || fail "configuration could not be read"
+    [[ -f "$log_file" ]] || fail "application log not found: $log_file"
+    tail -n 100 -f "$log_file"
+}
+
+uninstall_service() {
+    case "$(platform_name)" in
+        macos)
+            local plist_path
+            plist_path="$(macos_plist_path)"
+            launchctl bootout "gui/$(id -u)/$MACOS_LABEL" >/dev/null 2>&1 || true
+            rm -f "$plist_path"
+            ;;
+        ubuntu)
+            local unit_path
+            unit_path="$(systemd_unit_path)"
+            systemctl --user disable --now "$SERVICE_NAME.service" >/dev/null 2>&1 || true
+            rm -f "$unit_path"
+            systemctl --user daemon-reload
+            ;;
+    esac
+    if [[ -L "$COMMAND_PATH" && "$(readlink "$COMMAND_PATH")" == "$SCRIPT_PATH" ]]; then
+        rm "$COMMAND_PATH"
+    fi
+    echo "Chub service uninstalled; project files and logs were kept"
+}
+
+command="${1:-help}"
+case "$command" in
+    install) install_service ;;
+    start) start_service ;;
+    stop) stop_service ;;
+    restart) restart_service ;;
+    status) status_service ;;
+    logs) show_logs ;;
+    uninstall) uninstall_service ;;
+    help|-h|--help) usage ;;
+    *) usage >&2; fail "unknown command: $command" ;;
+esac
