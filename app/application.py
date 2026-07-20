@@ -58,10 +58,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         logger.warning(
             "HUB_TOKEN is not set; health check remains available but protected APIs are disabled"
         )
-    elif len(resolved_settings.security.token.get_secret_value()) < 32:
-        logger.warning(
-            "HUB_TOKEN is shorter than 32 characters; use a longer random token"
-        )
     if resolved_settings.node.type != detected_platform:
         logger.warning(
             "configured_platform=%s detected_platform=%s",

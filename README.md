@@ -158,7 +158,9 @@ curl \
 
 ## 文档
 
-- [第一阶段产品需求](docs/PRD_PHASE_1.md)
-- [第一阶段技术架构](docs/ARCHITECTURE_PHASE_1.md)
-- [第一阶段任务清单](docs/TASKS_PHASE_1.md)
-- [第一阶段验收记录](docs/ACCEPTANCE_PHASE_1.md)
+第一阶段已完成并冻结归档：
+
+- [产品需求](docs/archive/phase-1/PRD.md)
+- [技术架构](docs/archive/phase-1/ARCHITECTURE.md)
+- [任务清单](docs/archive/phase-1/TASKS.md)
+- [验收记录](docs/archive/phase-1/ACCEPTANCE.md)
