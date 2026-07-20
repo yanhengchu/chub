@@ -26,6 +26,8 @@ htmlcov/
 
 logs/*.log
 logs/*.log.*
+data/codex-sessions.json
+data/codex-hooks/
 
 .DS_Store
 .idea/

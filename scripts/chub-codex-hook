@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+
+SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+
+
+def main() -> int:
+    chub_session_id = os.environ.get("CHUB_PTY_SESSION_ID", "")
+    hook_dir = os.environ.get("CHUB_PTY_HOOK_DIR", "")
+    if not SESSION_ID_PATTERN.fullmatch(chub_session_id) or not hook_dir:
+        return 0
+
+    try:
+        payload = json.load(sys.stdin)
+    except (json.JSONDecodeError, OSError):
+        return 0
+    codex_session_id = payload.get("session_id")
+    if not isinstance(codex_session_id, str) or not codex_session_id:
+        return 0
+    event = payload.get("hook_event_name", "SessionStart")
+    activity = {
+        "SessionStart": "idle",
+        "UserPromptSubmit": "working",
+        "Stop": "idle",
+    }.get(event)
+    if activity is None:
+        return 0
+
+    directory = Path(hook_dir).expanduser()
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / f"{chub_session_id}.json"
+    temporary = directory / f".{chub_session_id}.{os.getpid()}.tmp"
+    temporary.write_text(
+        json.dumps(
+            {
+                "chub_session_id": chub_session_id,
+                "codex_session_id": codex_session_id,
+                "cwd": payload.get("cwd"),
+                "source": payload.get("source"),
+                "activity": activity,
+            }
+        ),
+        encoding="utf-8",
+    )
+    os.chmod(temporary, 0o600)
+    temporary.replace(target)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

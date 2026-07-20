@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -206,6 +208,98 @@ def test_logs_uses_configured_log_path(
     finally:
         process.terminate()
         process.wait(timeout=3)
+
+
+def test_restart_checks_configured_listen_address(
+    service_env: tuple[dict[str, str], Path],
+    tmp_path: Path,
+) -> None:
+    class HealthHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            assert self.path == "/api/health"
+            body = b'{"success":true}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: object) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), HealthHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    config_file = tmp_path / "settings.yaml"
+    config_file.write_text(
+        "\n".join(
+            [
+                "app:",
+                "  name: Hub",
+                "  version: 0.1.0",
+                "node:",
+                "  id: test",
+                "  name: Test",
+                "  type: unknown",
+                "server:",
+                "  host: 127.0.0.1",
+                f"  port: {server.server_port}",
+                "security: {}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    env, _ = service_env
+    env["CHUB_TEST_PLATFORM"] = "Linux"
+    env["HUB_CONFIG_FILE"] = str(config_file)
+    try:
+        result = run_chub("restart", env, cwd=tmp_path)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+
+    assert result.returncode == 0, result.stderr
+    assert (
+        f"Chub is healthy on http://127.0.0.1:{server.server_port}/api/health"
+        in result.stdout
+    )
+
+
+def test_start_warns_when_listener_is_not_tailscale(
+    service_env: tuple[dict[str, str], Path],
+    tmp_path: Path,
+) -> None:
+    config_file = tmp_path / "settings.yaml"
+    config_file.write_text(
+        "\n".join(
+            [
+                "app:",
+                "  name: Hub",
+                "  version: 0.1.0",
+                "node:",
+                "  id: test",
+                "  name: Test",
+                "  type: unknown",
+                "server:",
+                "  host: 0.0.0.0",
+                "  port: 8080",
+                "security: {}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    env, _ = service_env
+    env["CHUB_TEST_PLATFORM"] = "Linux"
+    env["HUB_CONFIG_FILE"] = str(config_file)
+
+    result = run_chub("start", env, cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert "is not a Tailscale IP" in result.stderr
+    assert "Codex PTY will be disabled" in result.stderr
 
 
 @pytest.mark.parametrize("platform", ["Darwin", "Linux"])

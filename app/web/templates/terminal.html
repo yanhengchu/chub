@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="color-scheme" content="dark">
+    <title>{{ session.title or session.workspace_name }} · Codex PTY</title>
+    <link rel="stylesheet" href="/static/terminal.css">
+  </head>
+  <body>
+    <header>
+      <a href="/?view=codex">‹ 返回</a>
+      <div>
+        <strong title="{{ session.title or session.workspace_name }}">{{ session.title or session.workspace_name }}</strong>
+        <span>{{ session.cwd }}</span>
+      </div>
+      <span class="connection">PTY</span>
+    </header>
+    <main>
+      <iframe
+        title="Codex PTY"
+        src="/codex/{{ session.id }}/terminal/"
+        allow="clipboard-read; clipboard-write"
+      ></iframe>
+    </main>
+  </body>
+</html>

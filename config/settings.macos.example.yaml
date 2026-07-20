@@ -8,7 +8,8 @@ node:
   type: "macos"
 
 server:
-  host: "0.0.0.0"
+  # Replace with this node's Tailscale IP to enable remote Codex PTY.
+  host: "127.0.0.1"
   port: 8080
 
 security: {}
@@ -20,3 +21,10 @@ logs:
   file: "logs/hub.log"
   level: "INFO"
   max_lines: 100
+
+codex_pty:
+  enabled: true
+  workspace: "~/workspace"
+  data_file: "data/codex-sessions.json"
+  ticket_ttl_seconds: 600
+  max_running: 3

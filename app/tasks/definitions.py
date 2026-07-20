@@ -32,7 +32,7 @@ def build_task_registry(timeout_seconds: int) -> TaskRegistry:
             name="check_codex",
             title="Check Codex",
             description="Check whether Codex is available and report its version.",
-            platforms=frozenset({"macos"}),
+            platforms=frozenset({"macos", "ubuntu"}),
             timeout_seconds=timeout_seconds,
             params_model=EmptyTaskParams,
             handler=check_codex.run,

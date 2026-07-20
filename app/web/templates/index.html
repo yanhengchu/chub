@@ -30,24 +30,9 @@
             <p id="connected-summary" class="connected-summary"></p>
           </div>
           <div class="connected-actions">
-            <button
-              id="toggle-status"
-              class="button-secondary"
-              type="button"
-              aria-expanded="false"
-              aria-controls="status-details"
-            >展开详情</button>
-            <button id="change-token" class="button-secondary" type="button">更换凭证</button>
-            <button id="clear-token" class="button-danger" type="button">清除凭证</button>
+            <button id="refresh-status" class="button-secondary" type="button">刷新</button>
+            <button id="clear-token" class="button-danger" type="button">退出</button>
           </div>
-        </div>
-        <div id="status-details" class="status-details" hidden aria-labelledby="status-title">
-          <div class="section-heading">
-            <h2 id="status-title">节点详细状态</h2>
-            <button id="refresh-status" class="button-secondary" type="button">刷新状态</button>
-          </div>
-          <div id="status-content" class="status-grid" aria-live="polite"></div>
-          <p id="status-message" class="message"></p>
         </div>
       </section>
 
@@ -78,7 +63,6 @@
               <input id="remember-token" type="checkbox">
               在此设备记住 Token
             </label>
-            <button id="cancel-change" class="button-link" type="button" hidden>取消更换</button>
           </div>
         </form>
         <p class="hint">默认仅保存在当前浏览器会话。请只在可信设备上选择记住。</p>
@@ -98,6 +82,18 @@
           <p class="section-description">仅展示当前节点支持的安全检查任务。</p>
           <div id="task-list" class="task-list"></div>
           <p id="tasks-message" class="message" aria-live="polite"></p>
+          <div id="codex-panel" class="result-panel codex-panel" hidden>
+            <div class="result-heading">
+              <div>
+                <strong>Codex PTY</strong>
+                <p class="section-description">选择目录新建会话，或恢复已有会话。</p>
+              </div>
+              <button id="refresh-codex" class="button-secondary" type="button">刷新</button>
+            </div>
+            <div id="codex-workspaces" class="workspace-list"></div>
+            <p id="codex-message" class="message" aria-live="polite"></p>
+            <div id="codex-sessions" class="session-list"></div>
+          </div>
           <div id="task-result-wrap" class="result-panel" hidden>
             <div class="result-heading">
               <strong id="task-result-title">任务结果</strong>

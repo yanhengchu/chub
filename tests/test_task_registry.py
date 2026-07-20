@@ -15,7 +15,7 @@ def test_registry_filters_tasks_by_platform() -> None:
     unknown = [task.name for task in registry.list_for_platform("unknown")]
 
     assert macos == ["check_codex", "check_system", "show_version"]
-    assert ubuntu == ["check_docker", "check_system", "show_version"]
+    assert ubuntu == ["check_codex", "check_docker", "check_system", "show_version"]
     assert unknown == ["check_system", "show_version"]
 
 

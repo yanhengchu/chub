@@ -19,5 +19,12 @@ def settings(tmp_path: Path) -> Settings:
                 "level": "INFO",
                 "max_lines": 100,
             },
+            "codex_pty": {
+                "enabled": True,
+                "workspace": tmp_path / "workspace",
+                "data_file": tmp_path / "codex-sessions.json",
+                "ticket_ttl_seconds": 600,
+                "max_running": 3,
+            },
         }
     )

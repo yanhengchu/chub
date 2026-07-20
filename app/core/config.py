@@ -64,6 +64,14 @@ class LogsConfig(StrictModel):
     max_lines: int = Field(default=100, ge=1, le=500)
 
 
+class CodexPtyConfig(StrictModel):
+    enabled: bool = True
+    workspace: Path = Path("~/workspace")
+    data_file: Path = Path("data/codex-sessions.json")
+    ticket_ttl_seconds: int = Field(default=600, ge=60, le=3600)
+    max_running: int = Field(default=3, ge=1, le=10)
+
+
 class Settings(StrictModel):
     app: AppConfig
     node: NodeConfig
@@ -71,10 +79,14 @@ class Settings(StrictModel):
     security: SecurityConfig
     tasks: TasksConfig = TasksConfig()
     logs: LogsConfig = LogsConfig()
+    codex_pty: CodexPtyConfig = CodexPtyConfig()
 
     def resolve_runtime_paths(self) -> "Settings":
         if not self.logs.file.is_absolute():
             self.logs.file = PROJECT_ROOT / self.logs.file
+        self.codex_pty.workspace = self.codex_pty.workspace.expanduser().resolve()
+        if not self.codex_pty.data_file.is_absolute():
+            self.codex_pty.data_file = PROJECT_ROOT / self.codex_pty.data_file
         return self
 
 

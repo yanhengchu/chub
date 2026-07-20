@@ -30,3 +30,24 @@ def test_missing_token_logs_warning(
     create_app(settings)
 
     assert "HUB_TOKEN is not set" in capsys.readouterr().err
+
+
+def test_codex_pty_requires_tailscale_listener(
+    settings: Settings, capsys: pytest.CaptureFixture[str]
+) -> None:
+    settings.server.host = "0.0.0.0"
+
+    application = create_app(settings)
+
+    assert application.state.codex_pty_available is False
+    assert "Codex PTY is disabled" in capsys.readouterr().err
+
+
+def test_codex_pty_is_available_on_tailscale_listener(
+    settings: Settings,
+) -> None:
+    settings.server.host = "100.100.100.100"
+
+    application = create_app(settings)
+
+    assert application.state.codex_pty_available is True

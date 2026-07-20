@@ -25,7 +25,7 @@ ENV_FILE="$PROJECT_ROOT/.env"
 CONFIG_FILE="$PROJECT_ROOT/config/settings.local.yaml"
 COMMAND_DIR="${CHUB_COMMAND_DIR:-$HOME/.local/bin}"
 COMMAND_PATH="$COMMAND_DIR/chub"
-RUNTIME_PATH="$PROJECT_ROOT/.venv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+RUNTIME_PATH="$PROJECT_ROOT/.venv/bin:$HOME/.local/bin:$HOME/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 PLATFORM="${CHUB_TEST_PLATFORM:-$(uname -s)}"
 SERVICE_LOG_MAX_BYTES=$((2 * 1024 * 1024))
 
@@ -88,13 +88,48 @@ import sys
 from app.core.config import load_settings
 
 settings = load_settings()
+host = settings.server.host
+if host == "0.0.0.0":
+    health_host = "127.0.0.1"
+elif host == "::":
+    health_host = "[::1]"
+elif ":" in host and not host.startswith("["):
+    health_host = f"[{host}]"
+else:
+    health_host = host
 values = {
+    "health_url": f"http://{health_host}:{settings.server.port}/api/health",
     "log_file": settings.logs.file,
-    "port": settings.server.port,
+    "server_host": settings.server.host,
 }
 print(values[sys.argv[1]])
 PY
     )
+}
+
+check_codex_pty_requirements() {
+    local server_host
+    server_host="$(configured_value server_host 2>/dev/null)" \
+        || fail "configuration could not be read"
+    if ! (
+        cd "$PROJECT_ROOT"
+        "$PYTHON_BIN" - "$server_host" <<'PY'
+import sys
+
+from app.core.network import is_tailscale_ip
+
+raise SystemExit(0 if is_tailscale_ip(sys.argv[1]) else 1)
+PY
+    )
+    then
+        echo "chub: warning: server host $server_host is not a Tailscale IP; Codex PTY will be disabled" >&2
+    fi
+    local dependency
+    for dependency in codex ttyd tmux; do
+        if ! PATH="$RUNTIME_PATH" command -v "$dependency" >/dev/null 2>&1; then
+            echo "chub: warning: $dependency is not installed or not available on the service PATH; Codex PTY will be disabled" >&2
+        fi
+    done
 }
 
 rotate_service_logs() {
@@ -258,6 +293,7 @@ install_command() {
 
 install_service() {
     check_project
+    check_codex_pty_requirements
     install_command
     case "$(platform_name)" in
         macos)
@@ -279,6 +315,7 @@ install_service() {
 }
 
 start_service() {
+    check_codex_pty_requirements
     case "$(platform_name)" in
         macos) start_macos_service ;;
         ubuntu) systemctl --user start "$SERVICE_NAME.service" ;;
@@ -293,25 +330,25 @@ stop_service() {
 }
 
 health_check() {
-    local port
-    port="$(configured_value port 2>/dev/null)" \
+    local health_url
+    health_url="$(configured_value health_url 2>/dev/null)" \
         || fail "service restarted, but configuration could not be read"
     local attempt
     for attempt in 1 2 3 4 5 6 7 8 9 10; do
-        if "$PYTHON_BIN" - "$port" <<'PY' >/dev/null 2>&1
+        if "$PYTHON_BIN" - "$health_url" <<'PY' >/dev/null 2>&1
 import json
 import sys
 import urllib.request
 
 with urllib.request.urlopen(
-    f"http://127.0.0.1:{sys.argv[1]}/api/health", timeout=1
+    sys.argv[1], timeout=1
 ) as response:
     payload = json.load(response)
     if response.status != 200 or payload.get("success") is not True:
         raise SystemExit(1)
 PY
         then
-            echo "Chub is healthy on 127.0.0.1:$port"
+            echo "Chub is healthy on $health_url"
             return
         fi
         sleep 0.5
@@ -320,6 +357,7 @@ PY
 }
 
 restart_service() {
+    check_codex_pty_requirements
     case "$(platform_name)" in
         macos)
             stop_macos_service
