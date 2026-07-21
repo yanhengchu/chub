@@ -321,24 +321,3 @@ def _valid_origin(websocket: WebSocket) -> bool:
     return parsed.scheme in {"http", "https"} and parsed.netloc == websocket.headers.get(
         "host"
     )
-
-
-@api_router.post("/restart", response_model=ApiResponse[dict[str, str]])
-def restart_hub() -> ApiResponse[dict[str, str]]:
-    import shutil
-    import subprocess
-
-    command = shutil.which("chub")
-    if command is None:
-        return error_response(503, "command_not_found", "找不到 chub 命令，无法重启")
-
-    try:
-        subprocess.Popen(
-            [command, "restart"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except OSError:
-        return error_response(500, "restart_failed", "启动重启命令失败")
-
-    return ApiResponse(data={"status": "restarting"})
