@@ -80,6 +80,30 @@ async def test_access_issues_scoped_http_only_cookie(settings: Settings) -> None
 
 
 @pytest.mark.anyio
+async def test_access_revokes_old_session_tickets_before_issuing_new_one(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    manager = MagicMock()
+    tickets = MagicMock()
+    tickets.ttl_seconds = 600
+    tickets.issue.return_value = "new-ticket"
+    app.state.codex_pty_manager = manager
+    app.state.terminal_tickets = tickets
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/codex/sessions/session-1/access",
+            headers=authorization(settings),
+        )
+
+    assert response.status_code == 200
+    tickets.revoke_session.assert_called_once_with("session-1")
+    tickets.issue.assert_called_once_with("session-1")
+
+
+@pytest.mark.anyio
 async def test_archive_session_revokes_access_and_calls_manager(
     settings: Settings,
 ) -> None:

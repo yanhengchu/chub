@@ -29,10 +29,7 @@
             <p id="connected-meta" class="connected-meta"></p>
             <p id="connected-summary" class="connected-summary"></p>
           </div>
-          <div class="connected-actions">
-            <button id="refresh-status" class="button-secondary" type="button">刷新</button>
-            <button id="clear-token" class="button-danger" type="button">退出</button>
-          </div>
+          <button id="refresh-status" class="button-secondary" type="button">刷新</button>
         </div>
       </section>
 
@@ -79,45 +76,34 @@
               <h2 id="tasks-title">可用任务</h2>
             </div>
           </div>
-          <p class="section-description">仅展示当前节点支持的安全检查任务。</p>
+          <p class="section-description">任务独立成卡，结果在卡片底部显示。</p>
           <div id="task-list" class="task-list"></div>
           <p id="tasks-message" class="message" aria-live="polite"></p>
-          <div id="codex-panel" class="result-panel codex-panel" hidden>
-            <div class="result-heading">
-              <div>
-                <strong>Codex PTY</strong>
-                <p class="section-description">选择目录新建会话，或恢复已有会话。</p>
-              </div>
-              <button id="refresh-codex" class="button-secondary" type="button">刷新</button>
-            </div>
-            <div id="codex-workspaces" class="workspace-list"></div>
-            <p id="codex-message" class="message" aria-live="polite"></p>
-            <div id="codex-sessions" class="session-list"></div>
-          </div>
-          <div id="task-result-wrap" class="result-panel" hidden>
-            <div class="result-heading">
-              <strong id="task-result-title">任务结果</strong>
-              <span id="task-result-badge" class="badge badge-muted"></span>
-            </div>
-            <p id="task-result-message"></p>
-            <dl id="task-result-fields" class="result-fields"></dl>
-            <details id="task-result-raw-wrap">
-              <summary>查看原始结果</summary>
-              <pre id="task-result"></pre>
-            </details>
-          </div>
         </section>
 
-        <section class="card logs-card" aria-labelledby="logs-title">
+        <section class="card maintenance-card" aria-labelledby="maintenance-title">
           <div class="section-heading">
             <div>
-              <p class="section-kicker">诊断信息</p>
-              <h2 id="logs-title">近期日志</h2>
+              <p class="section-kicker">节点维护</p>
+              <h2 id="maintenance-title">次级操作</h2>
             </div>
-            <button id="load-logs" class="button-secondary" type="button">读取日志</button>
           </div>
-          <p id="logs-message" class="message">按需读取最近 50 行，不会自动刷新。</p>
-          <pre id="logs-output" class="logs-output" hidden></pre>
+          <p class="section-description">不常用操作集中在这里。</p>
+          <div class="maintenance-actions">
+            <button id="restart-hub" class="button-secondary" type="button">重启</button>
+            <button id="clear-token" class="button-danger" type="button">退出</button>
+          </div>
+          <div class="maintenance-logs">
+            <div class="section-heading">
+              <div>
+                <p class="section-kicker">诊断信息</p>
+                <h2 id="logs-title">近期日志</h2>
+              </div>
+              <button id="load-logs" class="button-secondary" type="button">读取日志</button>
+            </div>
+            <p id="logs-message" class="message">按需读取最近 50 行。</p>
+            <pre id="logs-output" class="logs-output" hidden></pre>
+          </div>
         </section>
 
       </div>

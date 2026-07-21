@@ -68,7 +68,7 @@ def run_chub(
     ("platform", "service_file", "manager_call"),
     [
         ("Darwin", "launch-agents/com.chub.node.plist", "launchctl bootstrap"),
-        ("Linux", "systemd/chub.service", "systemctl --user enable --now"),
+        ("Linux", "systemd/chub.service", "systemctl --user enable"),
     ],
 )
 def test_install_writes_service_and_global_command(
@@ -104,6 +104,41 @@ def test_install_is_repeatable(
     result = run_chub("install", env)
 
     assert result.returncode == 0, result.stderr
+
+
+def test_install_adds_discovered_nvm_codex_directory_to_service_path(
+    service_env: tuple[dict[str, str], Path],
+    tmp_path: Path,
+) -> None:
+    env, _ = service_env
+    env["CHUB_TEST_PLATFORM"] = "Linux"
+    nvm_bin = tmp_path / "home" / ".nvm" / "versions" / "node" / "v24" / "bin"
+    nvm_bin.mkdir(parents=True)
+    codex = nvm_bin / "codex"
+    codex.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    codex.chmod(0o755)
+    env["PATH"] = f"{nvm_bin}:{env['PATH']}"
+
+    result = run_chub("install", env)
+
+    assert result.returncode == 0, result.stderr
+    service = Path(env["CHUB_SYSTEMD_USER_DIR"]) / "chub.service"
+    assert f"Environment=PATH={nvm_bin}:" in service.read_text(encoding="utf-8")
+
+
+def test_linux_install_restarts_service_to_apply_updated_environment(
+    service_env: tuple[dict[str, str], Path],
+) -> None:
+    env, calls = service_env
+    env["CHUB_TEST_PLATFORM"] = "Linux"
+
+    result = run_chub("install", env)
+
+    assert result.returncode == 0, result.stderr
+    manager_calls = calls.read_text(encoding="utf-8")
+    assert "systemctl --user daemon-reload" in manager_calls
+    assert "systemctl --user enable chub.service" in manager_calls
+    assert "systemctl --user restart chub.service" in manager_calls
 
 
 def test_install_refuses_to_replace_unrelated_command(

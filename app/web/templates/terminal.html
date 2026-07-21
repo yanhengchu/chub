@@ -7,7 +7,7 @@
     <title>{{ session.title or session.workspace_name }} · Codex PTY</title>
     <link rel="stylesheet" href="/static/terminal.css">
   </head>
-  <body>
+  <body data-session-id="{{ session.id }}" data-page-id="{{ page.id }}">
     <header>
       <a href="/?view=codex">‹ 返回</a>
       <div>
@@ -23,5 +23,6 @@
         allow="clipboard-read; clipboard-write"
       ></iframe>
     </main>
+    <script src="/static/terminal.js" defer></script>
   </body>
 </html>

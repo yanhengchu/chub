@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from urllib.parse import urlsplit
 
 import httpx
 import websockets
 from fastapi import APIRouter, Depends, Request, Response, WebSocket
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from starlette.websockets import WebSocketDisconnect
 
@@ -22,6 +23,7 @@ from app.web.routes import WEB_DIR
 
 
 COOKIE_NAME = "chub_terminal"
+LOGGER = logging.getLogger("hub.codex.terminal")
 api_router = APIRouter(
     prefix="/api/codex",
     tags=["codex"],
@@ -65,6 +67,7 @@ def access_session(
     response: Response,
 ) -> ApiResponse[SessionAccessData]:
     request.app.state.codex_pty_manager.ensure_terminal(session_id)
+    request.app.state.terminal_tickets.revoke_session(session_id)
     ticket = request.app.state.terminal_tickets.issue(session_id)
     response.set_cookie(
         COOKIE_NAME,
@@ -87,24 +90,35 @@ def access_session(
     "/sessions/{session_id}/stop",
     response_model=ApiResponse[SessionInfo],
 )
-def stop_session(session_id: str, request: Request) -> ApiResponse[SessionInfo]:
+async def stop_session(session_id: str, request: Request) -> ApiResponse[SessionInfo]:
     request.app.state.terminal_tickets.revoke_session(session_id)
-    return ApiResponse(
-        data=request.app.state.codex_pty_manager.stop_session(session_id)
+    request.app.state.terminal_connections.close_session(session_id)
+    data = await asyncio.to_thread(
+        request.app.state.codex_pty_manager.stop_session,
+        session_id,
     )
+    return ApiResponse(data=data)
 
 
 @api_router.post("/sessions/{session_id}/archive", response_model=ApiResponse[None])
-def archive_session(session_id: str, request: Request) -> ApiResponse[None]:
+async def archive_session(session_id: str, request: Request) -> ApiResponse[None]:
     request.app.state.terminal_tickets.revoke_session(session_id)
-    request.app.state.codex_pty_manager.archive_session(session_id)
+    request.app.state.terminal_connections.close_session(session_id)
+    await asyncio.to_thread(
+        request.app.state.codex_pty_manager.archive_session,
+        session_id,
+    )
     return ApiResponse(data=None)
 
 
 @api_router.delete("/sessions/{session_id}", response_model=ApiResponse[None])
-def delete_session(session_id: str, request: Request) -> ApiResponse[None]:
+async def delete_session(session_id: str, request: Request) -> ApiResponse[None]:
     request.app.state.terminal_tickets.revoke_session(session_id)
-    request.app.state.codex_pty_manager.delete_session(session_id)
+    request.app.state.terminal_connections.close_session(session_id)
+    await asyncio.to_thread(
+        request.app.state.codex_pty_manager.delete_session,
+        session_id,
+    )
     return ApiResponse(data=None)
 
 
@@ -120,17 +134,37 @@ def _terminal_authorized(connection: Request | WebSocket, session_id: str) -> bo
     response_class=HTMLResponse,
     include_in_schema=False,
 )
-def terminal_page(request: Request, session_id: str) -> HTMLResponse:
+async def terminal_page(request: Request, session_id: str) -> HTMLResponse:
     if not _terminal_authorized(request, session_id):
         raise ApiError(401, "terminal_access_required", "Terminal access expired")
     session = request.app.state.codex_pty_manager.get_session(session_id)
+    page = request.app.state.terminal_connections.open_page(
+        session_id,
+        request.cookies[COOKIE_NAME],
+    )
     return templates.TemplateResponse(
         request=request,
         name="terminal.html",
         context={
             "session": session,
+            "page": page,
         },
     )
+
+
+@web_router.get(
+    "/codex/{session_id}/connection/{page_id}",
+    include_in_schema=False,
+)
+async def terminal_connection_status(
+    request: Request,
+    session_id: str,
+    page_id: str,
+) -> JSONResponse:
+    state = request.app.state.terminal_connections.page_state(session_id, page_id)
+    if state is None:
+        return JSONResponse({"state": "unknown"}, status_code=404)
+    return JSONResponse({"state": state})
 
 
 @web_router.websocket("/codex/{session_id}/terminal/ws")
@@ -142,16 +176,31 @@ async def terminal_websocket(websocket: WebSocket, session_id: str) -> None:
     if "tty" not in {item.strip() for item in offered.split(",")}:
         await websocket.close(code=4400)
         return
-    manager = websocket.app.state.codex_pty_manager
-    backend_url = manager.backend_ws_url(session_id)
-    session = manager.get_session(session_id)
     await websocket.accept(subprotocol="tty")
+    manager = websocket.app.state.codex_pty_manager
+    ticket = websocket.cookies[COOKIE_NAME]
+    connection, released = await websocket.app.state.terminal_connections.claim(
+        session_id,
+        ticket,
+    )
     try:
+        if not released:
+            LOGGER.warning(
+                "session_id=%s old terminal connection did not release; recycling ttyd",
+                session_id,
+            )
+            await asyncio.to_thread(manager.restart_terminal_backend, session_id)
+        backend_url = manager.backend_ws_url(session_id)
+        session = manager.get_session(session_id)
         async with websockets.connect(
             backend_url,
             origin=f"http://127.0.0.1:{session.ttyd_port}",
             subprotocols=["tty"],
         ) as backend:
+            if not websocket.app.state.terminal_connections.activate(connection):
+                await websocket.close(code=4410, reason="Terminal connection superseded")
+                return
+
             async def client_to_backend() -> None:
                 while True:
                     message = await websocket.receive()
@@ -172,6 +221,7 @@ async def terminal_websocket(websocket: WebSocket, session_id: str) -> None:
             tasks = [
                 asyncio.create_task(client_to_backend()),
                 asyncio.create_task(backend_to_client()),
+                asyncio.create_task(connection.takeover.wait()),
             ]
             done, pending = await asyncio.wait(
                 tasks,
@@ -181,14 +231,22 @@ async def terminal_websocket(websocket: WebSocket, session_id: str) -> None:
                 task.cancel()
             await asyncio.gather(*pending, return_exceptions=True)
             for task in done:
-                task.result()
+                if not task.cancelled():
+                    task.result()
     except (
         OSError,
         RuntimeError,
         WebSocketDisconnect,
-        websockets.ConnectionClosed,
+        websockets.WebSocketException,
     ):
         return
+    finally:
+        websocket.app.state.terminal_connections.release(connection)
+        if connection.takeover.is_set():
+            try:
+                await websocket.close(code=4409, reason="Terminal opened elsewhere")
+            except RuntimeError:
+                pass
 
 
 @web_router.api_route(
@@ -263,3 +321,24 @@ def _valid_origin(websocket: WebSocket) -> bool:
     return parsed.scheme in {"http", "https"} and parsed.netloc == websocket.headers.get(
         "host"
     )
+
+
+@api_router.post("/restart", response_model=ApiResponse[dict[str, str]])
+def restart_hub() -> ApiResponse[dict[str, str]]:
+    import shutil
+    import subprocess
+
+    command = shutil.which("chub")
+    if command is None:
+        return error_response(503, "command_not_found", "找不到 chub 命令，无法重启")
+
+    try:
+        subprocess.Popen(
+            [command, "restart"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        return error_response(500, "restart_failed", "启动重启命令失败")
+
+    return ApiResponse(data={"status": "restarting"})

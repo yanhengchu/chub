@@ -22,10 +22,13 @@ async def test_home_page_is_public_and_contains_no_token(settings: Settings) -> 
     assert 'id="connected-bar"' in response.text
     assert "更换凭证" not in response.text
     assert "清除凭证" not in response.text
-    assert ">退出</button>" in response.text
+    assert 'id="refresh-status"' in response.text
     assert "节点任务" in response.text
-    assert "Codex PTY" in response.text
-    assert "查看原始结果" in response.text
+    assert "节点维护" in response.text
+    assert "重启" in response.text
+    assert "退出" in response.text
+    assert 'id="task-list"' in response.text
+    assert "maintenance-logs" in response.text
     assert 'id="status-details"' not in response.text
     assert "展开详情" not in response.text
     assert settings.security.token.get_secret_value() not in response.text
@@ -38,10 +41,12 @@ async def test_web_assets_are_available(settings: Settings) -> None:
         script = await client.get("/static/app.js")
         stylesheet = await client.get("/static/app.css")
         terminal_stylesheet = await client.get("/static/terminal.css")
+        terminal_script = await client.get("/static/terminal.js")
 
     assert script.status_code == 200
     assert stylesheet.status_code == 200
     assert terminal_stylesheet.status_code == 200
+    assert terminal_script.status_code == 200
     assert "innerHTML" not in script.text
     assert "sessionStorage" in script.text
     assert "localStorage" in script.text
@@ -49,11 +54,30 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "accessVersion" in script.text
     assert "connectWithToken" in script.text
     assert "确定退出当前节点吗" in script.text
+    assert "createTaskCard" in script.text
+    assert "createCodexCard" in script.text
+    assert "createCodexSession" in script.text
+    assert "enterCodexSession" in script.text
+    assert "stopCodexSession" in script.text
+    assert "archiveCodexSession" in script.text
+    assert "removeCodexSession" in script.text
+    assert "renderCodexWorkspaces" in script.text
+    assert "renderCodexSessions" in script.text
+    assert "formatSessionTime" in script.text
+    assert "dependencyMessage" in script.text
+    assert "task-card-result" in script.text
+    assert "Codex PTY" in script.text
     assert "版本信息" in script.text
     assert "task-button-running" in script.text
     assert "task-button-paused" in script.text
     assert "showCodexPanel" in script.text
+    assert "restartHub" in script.text
+    assert "scrollCodexPanelIntoView" in script.text
+    assert "/api/codex/restart" in script.text
+    assert "window.scrollTo" in script.text
+    assert "scrollIntoView" not in script.text
     assert "/api/codex/sessions" in script.text
+    assert "connection" in terminal_script.text
 
 
 @pytest.mark.anyio
@@ -70,8 +94,11 @@ async def test_terminal_page_uses_session_title(settings: Settings) -> None:
     )
     tickets = MagicMock()
     tickets.valid.return_value = True
+    connections = MagicMock()
+    connections.open_page.return_value.id = "page-1"
     app.state.codex_pty_manager = manager
     app.state.terminal_tickets = tickets
+    app.state.terminal_connections = connections
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(
@@ -83,6 +110,30 @@ async def test_terminal_page_uses_session_title(settings: Settings) -> None:
 
     assert response.status_code == 200
     assert "真实会话标题 · Codex PTY" in response.text
+    assert 'src="/static/terminal.js"' in response.text
+    assert 'data-page-id="page-1"' in response.text
+
+
+@pytest.mark.anyio
+async def test_terminal_page_detects_when_another_device_takes_over(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    connections = MagicMock()
+    connections.page_state.return_value = "displaced"
+    app.state.terminal_connections = connections
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        cookies={"chub_terminal": "old-ticket"},
+    ) as client:
+        response = await client.get("/codex/session-1/connection/page-1")
+
+    assert response.status_code == 200
+    assert response.json() == {"state": "displaced"}
+    connections.page_state.assert_called_once_with("session-1", "page-1")
 
 
 @pytest.mark.anyio
