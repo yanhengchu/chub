@@ -39,6 +39,28 @@ async def test_home_page_is_public_and_contains_no_token(settings: Settings) -> 
 
 
 @pytest.mark.anyio
+async def test_home_page_uses_configured_page_title(settings: Settings) -> None:
+    settings.app.page_title = "Ubuntu · Hub"
+    transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/")
+
+    assert "<title>Ubuntu · Hub</title>" in response.text
+    assert "<h1>Hub</h1>" in response.text
+
+
+@pytest.mark.anyio
+async def test_home_page_title_keeps_backward_compatible_default(
+    settings: Settings,
+) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/")
+
+    assert "<title>Hub 管理面板</title>" in response.text
+
+
+@pytest.mark.anyio
 async def test_web_assets_are_available(settings: Settings) -> None:
     transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:

@@ -29,6 +29,7 @@ class StrictModel(BaseModel):
 class AppConfig(StrictModel):
     name: str = Field(min_length=1)
     version: str = Field(min_length=1)
+    page_title: str | None = Field(default=None, min_length=1)
 
 
 class NodeConfig(StrictModel):

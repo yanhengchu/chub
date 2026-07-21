@@ -31,6 +31,7 @@ cp config/settings.ubuntu.example.yaml config/settings.local.yaml
 
 - `HUB_TOKEN`：节点访问令牌。
 - `HUB_CONFIG_FILE`：默认 `config/settings.local.yaml`。
+- `app.page_title`：浏览器标签标题，可按节点设置，例如 `MacBook · Hub` 或 `Ubuntu · Hub`；省略时使用 `Hub 管理面板`。
 - `.env` 和 `config/settings.local.yaml` 都只保留本机内容，已加入 Git 忽略。
 
 两个平台模板默认只监听 `127.0.0.1`。如果需要手机远程访问，把 `server.host` 改成该节点自己的 Tailscale IP，不要改成 `0.0.0.0` 或普通局域网地址。

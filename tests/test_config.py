@@ -162,6 +162,7 @@ def test_platform_config_examples_are_valid(
 
     assert settings.node.type == expected_platform
     assert settings.security.token is None
+    assert settings.app.page_title == f"{settings.node.name} · Hub"
 
 
 def test_load_settings_rejects_missing_file(tmp_path: Path) -> None:

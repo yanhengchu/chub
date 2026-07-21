@@ -20,6 +20,8 @@ def index(request: Request) -> HTMLResponse:
         name="index.html",
         context={
             "app_name": settings.app.name,
+            "page_title": settings.app.page_title
+            or f"{settings.app.name} 管理面板",
             "app_version": settings.app.version,
         },
     )

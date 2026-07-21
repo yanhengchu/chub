@@ -1,6 +1,7 @@
 app:
   name: "Hub"
   version: "0.1.0"
+  page_title: "Ubuntu · Hub"
 
 node:
   id: "ubuntu"
