@@ -85,6 +85,25 @@ def test_restart_resets_unverified_running_activity(
     assert manager.store.get(session.id).activity == "unknown"
 
 
+def test_restart_terminal_backend_recycles_ttyd_without_stopping_tmux(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = CodexPtyManager(settings)
+    session = native_session("88888888-8888-4888-8888-888888888888")
+    session.status = "running"
+    manager.get_session = MagicMock(return_value=session)
+    manager._require_available = MagicMock()
+    manager._stop_backend = MagicMock()
+    manager.ensure_terminal = MagicMock(return_value=session)
+
+    restarted = manager.restart_terminal_backend(session.id)
+
+    manager._stop_backend.assert_called_once_with(session)
+    manager.ensure_terminal.assert_called_once_with(session.id)
+    assert restarted is session
+
+
 def test_archive_uses_codex_cli_and_removes_mapping(
     settings: Settings,
     monkeypatch: pytest.MonkeyPatch,

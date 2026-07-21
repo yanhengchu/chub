@@ -160,6 +160,14 @@ class CodexPtyManager:
             self.store.save(session)
             return session
 
+    def restart_terminal_backend(self, session_id: str) -> CodexSession:
+        """Recycle ttyd while preserving the tmux session and Codex process."""
+        self._require_available()
+        with self._lock:
+            session = self.get_session(session_id)
+            self._stop_backend(session)
+            return self.ensure_terminal(session_id)
+
     def stop_session(self, session_id: str) -> SessionInfo:
         with self._lock:
             session = self.get_session(session_id)

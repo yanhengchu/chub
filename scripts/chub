@@ -29,6 +29,22 @@ RUNTIME_PATH="$PROJECT_ROOT/.venv/bin:$HOME/.local/bin:$HOME/.npm-global/bin:/op
 PLATFORM="${CHUB_TEST_PLATFORM:-$(uname -s)}"
 SERVICE_LOG_MAX_BYTES=$((2 * 1024 * 1024))
 
+add_runtime_command_dir() {
+    local command_path command_dir
+    command_path="$(type -P "$1" 2>/dev/null || true)"
+    [[ -n "$command_path" ]] || return 0
+    command_dir="$(cd -P "$(dirname "$command_path")" && pwd)"
+    case ":$RUNTIME_PATH:" in
+        *":$command_dir:"*) ;;
+        *) RUNTIME_PATH="$command_dir:$RUNTIME_PATH" ;;
+    esac
+}
+
+for runtime_command in codex ttyd tmux docker; do
+    add_runtime_command_dir "$runtime_command"
+done
+unset runtime_command
+
 usage() {
     cat <<'EOF'
 Usage: chub <command>
@@ -308,7 +324,8 @@ install_service() {
         ubuntu)
             write_systemd_service
             systemctl --user daemon-reload
-            systemctl --user enable --now "$SERVICE_NAME.service"
+            systemctl --user enable "$SERVICE_NAME.service"
+            systemctl --user restart "$SERVICE_NAME.service"
             ;;
     esac
     echo "Chub service installed from $PROJECT_ROOT"

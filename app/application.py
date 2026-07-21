@@ -15,6 +15,7 @@ from app.api.health import router as health_router
 from app.api.logs import router as logs_router
 from app.api.status import router as status_router
 from app.api.tasks import router as tasks_router
+from app.codex.connections import TerminalConnectionRegistry
 from app.codex.manager import CodexPtyManager
 from app.codex.routes import api_router as codex_api_router
 from app.codex.routes import web_router as codex_web_router
@@ -127,6 +128,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.terminal_tickets = TerminalTicketStore(
         resolved_settings.codex_pty.ticket_ttl_seconds
     )
+    application.state.terminal_connections = TerminalConnectionRegistry()
     application.state.task_registry = build_task_registry(
         resolved_settings.tasks.default_timeout
     )
