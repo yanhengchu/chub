@@ -61,6 +61,7 @@ class TasksConfig(StrictModel):
 
 class LogsConfig(StrictModel):
     file: Path = Path("logs/hub.log")
+    operations_file: Path = Path("logs/operations.log")
     level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     max_lines: int = Field(default=100, ge=1, le=500)
 
@@ -85,6 +86,8 @@ class Settings(StrictModel):
     def resolve_runtime_paths(self) -> "Settings":
         if not self.logs.file.is_absolute():
             self.logs.file = PROJECT_ROOT / self.logs.file
+        if not self.logs.operations_file.is_absolute():
+            self.logs.operations_file = PROJECT_ROOT / self.logs.operations_file
         self.codex_pty.workspace = self.codex_pty.workspace.expanduser().resolve()
         if not self.codex_pty.data_file.is_absolute():
             self.codex_pty.data_file = PROJECT_ROOT / self.codex_pty.data_file

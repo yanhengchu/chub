@@ -11,6 +11,7 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CHUB = PROJECT_ROOT / "scripts" / "chub"
+WEB_RESTART = PROJECT_ROOT / "scripts" / "chub-web-restart"
 
 
 @pytest.fixture
@@ -62,6 +63,33 @@ def run_chub(
         capture_output=True,
         check=False,
     )
+
+
+@pytest.mark.parametrize(
+    ("platform", "manager_call"),
+    [
+        ("Darwin", "launchctl kickstart -k gui/"),
+        ("Linux", "systemctl --user restart chub.service"),
+    ],
+)
+def test_web_restart_uses_atomic_service_manager_restart(
+    service_env: tuple[dict[str, str], Path],
+    platform: str,
+    manager_call: str,
+) -> None:
+    env, calls = service_env
+    env["CHUB_TEST_PLATFORM"] = platform
+
+    result = subprocess.run(
+        ["bash", str(WEB_RESTART)],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert manager_call in calls.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize(

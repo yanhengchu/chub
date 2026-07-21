@@ -16,6 +16,7 @@ def settings(tmp_path: Path) -> Settings:
             "tasks": {"default_timeout": 30},
             "logs": {
                 "file": tmp_path / "hub.log",
+                "operations_file": tmp_path / "operations.log",
                 "level": "INFO",
                 "max_lines": 100,
             },

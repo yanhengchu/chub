@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, Request
 
 from app.core.response import ApiResponse
 from app.core.security import require_token
+from app.services.operation_log import log_operation
 from app.tasks.models import TaskListData, TaskRunRequest, TaskRunResult
 
 
@@ -30,8 +31,23 @@ def run_task(
     payload: TaskRunRequest,
     request: Request,
 ) -> ApiResponse[TaskRunResult]:
-    result = request.app.state.task_executor.run(
-        payload.task,
-        payload.params,
+    try:
+        result = request.app.state.task_executor.run(
+            payload.task,
+            payload.params,
+        )
+    except Exception:
+        log_operation(
+            request,
+            action="run_task",
+            status="failed",
+            target=payload.task,
+        )
+        raise
+    log_operation(
+        request,
+        action="run_task",
+        status=result.status.value,
+        target=payload.task,
     )
     return ApiResponse(data=result)

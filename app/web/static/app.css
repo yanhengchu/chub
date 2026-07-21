@@ -417,6 +417,68 @@ input[type="password"] {
   margin-top: 0;
 }
 
+.log-actions,
+.log-tabs,
+.log-detail-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+select {
+  min-height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 0.65rem;
+  color: var(--ink);
+  background: white;
+}
+
+.button-link {
+  display: inline-flex;
+  min-height: 40px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 0.85rem;
+  color: var(--accent-dark);
+  background: white;
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.log-tabs {
+  margin-top: 0.9rem;
+}
+
+.log-tab {
+  min-height: 36px;
+  color: var(--muted);
+  background: #edf2ed;
+}
+
+.log-tab.is-active {
+  color: white;
+  background: var(--accent);
+}
+
+.log-detail-card {
+  margin-top: 1rem;
+}
+
+.log-detail-toolbar label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.log-detail-output {
+  max-height: none;
+  min-height: 60vh;
+}
+
 .result-panel {
   margin-top: 1rem;
   border-top: 1px solid var(--line);

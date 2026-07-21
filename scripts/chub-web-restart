@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+SERVICE_NAME="chub"
+MACOS_LABEL="com.chub.node"
+PLATFORM="${CHUB_TEST_PLATFORM:-$(uname -s)}"
+
+case "$PLATFORM" in
+    Darwin)
+        exec launchctl kickstart -k "gui/$(id -u)/$MACOS_LABEL"
+        ;;
+    Linux)
+        exec systemctl --user restart "$SERVICE_NAME.service"
+        ;;
+    *)
+        echo "chub-web-restart: unsupported platform: $PLATFORM" >&2
+        exit 1
+        ;;
+esac

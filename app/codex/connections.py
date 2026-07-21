@@ -74,10 +74,20 @@ class TerminalConnectionRegistry:
         self,
         session_id: str,
         ticket: str,
+        page_id: str,
     ) -> tuple[TerminalConnection, bool]:
         """Reserve ttyd for a page, asking the old connection to release first."""
         lock = self._locks.setdefault(session_id, asyncio.Lock())
         async with lock:
+            page = self._pages.get(page_id)
+            if (
+                page is None
+                or page.session_id != session_id
+                or page.ticket != ticket
+                or page.state == "closed"
+            ):
+                raise ValueError("Terminal page does not match its access ticket")
+
             previous = self._connections.get(session_id)
             released = True
             if previous is not None and not previous.released.is_set():
@@ -90,10 +100,6 @@ class TerminalConnectionRegistry:
                 except TimeoutError:
                     released = False
 
-            page_id = self._ticket_pages.get((session_id, ticket))
-            page = self._pages.get(page_id) if page_id else None
-            if page is None:
-                page = self.open_page(session_id, ticket)
             page.state = "waiting"
             page.updated_at = time.monotonic()
 

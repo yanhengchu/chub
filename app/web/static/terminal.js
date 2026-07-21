@@ -10,6 +10,10 @@ async function checkTerminalOwnership() {
       `/codex/${encodeURIComponent(sessionId)}/connection/${encodeURIComponent(pageId)}`,
       { cache: "no-store", credentials: "same-origin" },
     );
+    if (response.status === 404) {
+      window.location.replace("/?view=codex");
+      return;
+    }
     if (!response.ok) {
       return;
     }

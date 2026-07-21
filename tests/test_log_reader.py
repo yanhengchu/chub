@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from app.services.log_reader import LogReadError, tail_log
+from app.services.log_reader import LogReadError, read_log_page, tail_log
 
 
 def test_tail_log_returns_last_lines_in_original_order(tmp_path: Path) -> None:
@@ -122,3 +122,20 @@ def test_tail_log_wraps_read_errors(tmp_path: Path) -> None:
     with patch.object(Path, "open", side_effect=PermissionError):
         with pytest.raises(LogReadError):
             tail_log(log, 10)
+
+
+def test_log_page_advances_past_a_line_larger_than_read_window(
+    tmp_path: Path,
+) -> None:
+    log = tmp_path / "hub.log"
+    log.write_text("x" * (300 * 1024), encoding="utf-8")
+
+    first, first_cursor = read_log_page(log, 500)
+    assert len(first) == 1
+    assert first[0].endswith("[truncated]")
+    assert first_cursor is not None
+    assert first_cursor < log.stat().st_size
+
+    second, second_cursor = read_log_page(log, 500, before=first_cursor)
+    assert len(second) == 1
+    assert second_cursor is None

@@ -31,6 +31,8 @@ const elements = {
   codexSessionCount: null,
   refreshCodex: null,
   loadLogs: document.querySelector("#load-logs"),
+  logLines: document.querySelector("#log-lines"),
+  logTabs: document.querySelectorAll("[data-log-source]"),
   logsMessage: document.querySelector("#logs-message"),
   logsOutput: document.querySelector("#logs-output"),
 };
@@ -39,6 +41,7 @@ let activeToken = "";
 let taskRunning = false;
 let accessVersion = 0;
 let connectionAttempt = 0;
+let activeLogSource = "operations";
 
 const TASK_TEXT = {
   show_version: ["版本信息", "查看 Hub、Python、节点和平台版本。"],
@@ -139,6 +142,40 @@ function setMessage(target, message, kind = "") {
 function setBadge(target, label, kind = "muted") {
   target.textContent = label;
   target.className = `badge badge-${kind}`;
+}
+
+function sleep(milliseconds) {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+async function hubInstanceId() {
+  const response = await fetch("/api/health", { cache: "no-store" });
+  const payload = await response.json();
+  if (!response.ok || payload.success !== true) {
+    throw new Error("无法读取当前 Hub 实例状态。");
+  }
+  return payload.data.instance_id;
+}
+
+async function waitForHubRestart(previousInstanceId) {
+  await sleep(1000);
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    try {
+      const response = await fetch("/api/health", { cache: "no-store" });
+      const payload = await response.json();
+      if (
+        response.ok
+        && payload.success === true
+        && payload.data.instance_id !== previousInstanceId
+      ) {
+        return;
+      }
+    } catch {
+      // A temporary connection failure is expected while the service restarts.
+    }
+    await sleep(500);
+  }
+  throw new Error("重启后未能连接 Hub，请稍后刷新页面检查服务状态。");
 }
 
 function clearProtectedView() {
@@ -943,7 +980,8 @@ async function loadLogs() {
   elements.loadLogs.disabled = true;
   setMessage(elements.logsMessage, "正在读取日志…");
   try {
-    const data = await apiFetch("/api/logs?lines=50");
+    const lines = elements.logLines.value;
+    const data = await apiFetch(`/api/logs/page?source=${activeLogSource}&lines=${lines}`);
     if (requestVersion !== accessVersion) {
       return;
     }
@@ -964,6 +1002,18 @@ async function loadLogs() {
     elements.loadLogs.disabled = false;
   }
 }
+
+elements.logTabs.forEach((tab) => {
+  tab.addEventListener("click", () => {
+    activeLogSource = tab.dataset.logSource;
+    elements.logTabs.forEach((item) => {
+      const selected = item === tab;
+      item.classList.toggle("is-active", selected);
+      item.setAttribute("aria-selected", String(selected));
+    });
+    loadLogs();
+  });
+});
 
 elements.tokenForm.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -987,8 +1037,11 @@ elements.restartHub.addEventListener("click", async () => {
   elements.restartHub.disabled = true;
   setMessage(elements.globalMessage, "正在下发重启命令…");
   try {
+    const previousInstanceId = await hubInstanceId();
     await apiFetch("/api/maintenance/restart", { method: "POST" });
-    setMessage(elements.globalMessage, "重启命令已下发。", "success");
+    setMessage(elements.globalMessage, "重启命令已下发，正在等待 Hub 恢复…");
+    await waitForHubRestart(previousInstanceId);
+    setMessage(elements.globalMessage, "Chub 已重启并恢复连接。", "success");
   } catch (error) {
     if (!handleAccessError(error)) {
       setMessage(elements.globalMessage, error.message || "重启失败。", "error");

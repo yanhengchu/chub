@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from uuid import uuid4
 
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
@@ -123,6 +124,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     application.state.settings = resolved_settings
+    application.state.instance_id = uuid4().hex
     application.state.detected_platform = detected_platform
     application.state.codex_pty_available = codex_pty_available
     application.state.codex_pty_manager = codex_pty_manager

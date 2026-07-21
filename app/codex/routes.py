@@ -19,6 +19,7 @@ from app.codex.models import (
 )
 from app.core.response import ApiError, ApiResponse, error_response
 from app.core.security import require_token
+from app.services.operation_log import log_operation
 from app.web.routes import WEB_DIR
 
 
@@ -52,9 +53,23 @@ def create_session(
     payload: SessionCreateRequest,
     request: Request,
 ) -> ApiResponse[SessionInfo]:
-    return ApiResponse(
-        data=request.app.state.codex_pty_manager.create_session(payload.workspace_id)
+    try:
+        session = request.app.state.codex_pty_manager.create_session(payload.workspace_id)
+    except Exception:
+        log_operation(
+            request,
+            action="create_codex_session",
+            status="failed",
+            target=payload.workspace_id,
+        )
+        raise
+    log_operation(
+        request,
+        action="create_codex_session",
+        status="succeeded",
+        target=session.id,
     )
+    return ApiResponse(data=session)
 
 
 @api_router.post(
@@ -66,9 +81,18 @@ def access_session(
     request: Request,
     response: Response,
 ) -> ApiResponse[SessionAccessData]:
-    request.app.state.codex_pty_manager.ensure_terminal(session_id)
-    request.app.state.terminal_tickets.revoke_session(session_id)
-    ticket = request.app.state.terminal_tickets.issue(session_id)
+    try:
+        request.app.state.codex_pty_manager.ensure_terminal(session_id)
+        request.app.state.terminal_tickets.revoke_session(session_id)
+        ticket = request.app.state.terminal_tickets.issue(session_id)
+    except Exception:
+        log_operation(
+            request,
+            action="access_codex_session",
+            status="failed",
+            target=session_id,
+        )
+        raise
     response.set_cookie(
         COOKIE_NAME,
         ticket,
@@ -77,6 +101,12 @@ def access_session(
         samesite="strict",
         secure=False,
         path=f"/codex/{session_id}",
+    )
+    log_operation(
+        request,
+        action="access_codex_session",
+        status="succeeded",
+        target=session_id,
     )
     return ApiResponse(
         data=SessionAccessData(
@@ -93,9 +123,24 @@ def access_session(
 async def stop_session(session_id: str, request: Request) -> ApiResponse[SessionInfo]:
     request.app.state.terminal_tickets.revoke_session(session_id)
     request.app.state.terminal_connections.close_session(session_id)
-    data = await asyncio.to_thread(
-        request.app.state.codex_pty_manager.stop_session,
-        session_id,
+    try:
+        data = await asyncio.to_thread(
+            request.app.state.codex_pty_manager.stop_session,
+            session_id,
+        )
+    except Exception:
+        log_operation(
+            request,
+            action="stop_codex_session",
+            status="failed",
+            target=session_id,
+        )
+        raise
+    log_operation(
+        request,
+        action="stop_codex_session",
+        status="succeeded",
+        target=session_id,
     )
     return ApiResponse(data=data)
 
@@ -104,9 +149,24 @@ async def stop_session(session_id: str, request: Request) -> ApiResponse[Session
 async def archive_session(session_id: str, request: Request) -> ApiResponse[None]:
     request.app.state.terminal_tickets.revoke_session(session_id)
     request.app.state.terminal_connections.close_session(session_id)
-    await asyncio.to_thread(
-        request.app.state.codex_pty_manager.archive_session,
-        session_id,
+    try:
+        await asyncio.to_thread(
+            request.app.state.codex_pty_manager.archive_session,
+            session_id,
+        )
+    except Exception:
+        log_operation(
+            request,
+            action="archive_codex_session",
+            status="failed",
+            target=session_id,
+        )
+        raise
+    log_operation(
+        request,
+        action="archive_codex_session",
+        status="succeeded",
+        target=session_id,
     )
     return ApiResponse(data=None)
 
@@ -115,9 +175,24 @@ async def archive_session(session_id: str, request: Request) -> ApiResponse[None
 async def delete_session(session_id: str, request: Request) -> ApiResponse[None]:
     request.app.state.terminal_tickets.revoke_session(session_id)
     request.app.state.terminal_connections.close_session(session_id)
-    await asyncio.to_thread(
-        request.app.state.codex_pty_manager.delete_session,
-        session_id,
+    try:
+        await asyncio.to_thread(
+            request.app.state.codex_pty_manager.delete_session,
+            session_id,
+        )
+    except Exception:
+        log_operation(
+            request,
+            action="delete_codex_session",
+            status="failed",
+            target=session_id,
+        )
+        raise
+    log_operation(
+        request,
+        action="delete_codex_session",
+        status="succeeded",
+        target=session_id,
     )
     return ApiResponse(data=None)
 
@@ -176,13 +251,22 @@ async def terminal_websocket(websocket: WebSocket, session_id: str) -> None:
     if "tty" not in {item.strip() for item in offered.split(",")}:
         await websocket.close(code=4400)
         return
+    page_id = websocket.query_params.get("page_id")
+    if not page_id:
+        await websocket.close(code=4401)
+        return
     await websocket.accept(subprotocol="tty")
     manager = websocket.app.state.codex_pty_manager
     ticket = websocket.cookies[COOKIE_NAME]
-    connection, released = await websocket.app.state.terminal_connections.claim(
-        session_id,
-        ticket,
-    )
+    try:
+        connection, released = await websocket.app.state.terminal_connections.claim(
+            session_id,
+            ticket,
+            page_id,
+        )
+    except ValueError:
+        await websocket.close(code=4401, reason="Terminal page access expired")
+        return
     try:
         if not released:
             LOGGER.warning(

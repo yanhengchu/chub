@@ -17,6 +17,20 @@ class LogReadError(Exception):
     pass
 
 
+def redact_log_line(
+    line: str,
+    sensitive_values: tuple[str, ...],
+    *,
+    max_line_bytes: int | None = MAX_LINE_BYTES,
+) -> str:
+    redacted = _redact(line, sensitive_values)
+    return (
+        _truncate_line(redacted, max_line_bytes)
+        if max_line_bytes is not None
+        else redacted
+    )
+
+
 def _truncate_line(value: str, max_line_bytes: int) -> str:
     encoded = value.encode("utf-8")
     if len(encoded) <= max_line_bytes:
@@ -82,3 +96,49 @@ def tail_log(
         )
         for line in selected
     ]
+
+
+def read_log_page(
+    path: Path,
+    lines: int,
+    *,
+    before: int | None = None,
+    sensitive_values: tuple[str, ...] = (),
+) -> tuple[list[str], int | None]:
+    try:
+        with path.open("rb") as file:
+            file.seek(0, 2)
+            size = file.tell()
+            end = size if before is None else min(max(before, 0), size)
+            start = max(0, end - MAX_READ_BYTES)
+            file.seek(start)
+            content = file.read(end - start)
+    except FileNotFoundError:
+        return [], None
+    except OSError as exc:
+        raise LogReadError("Unable to read Hub log") from exc
+
+    chunks = content.splitlines(keepends=True)
+    if start > 0 and chunks:
+        partial = chunks.pop(0)
+        if not chunks:
+            return (
+                [
+                    redact_log_line(
+                        partial.decode("utf-8", errors="replace"),
+                        sensitive_values,
+                    )
+                ],
+                start,
+            )
+    selected = chunks[-lines:]
+    selected_start = end - sum(len(chunk) for chunk in selected)
+    next_cursor = selected_start if selected_start > 0 else None
+    values = [
+        redact_log_line(
+            chunk.rstrip(b"\r\n").decode("utf-8", errors="replace"),
+            sensitive_values,
+        )
+        for chunk in selected
+    ]
+    return values, next_cursor

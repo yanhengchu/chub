@@ -25,3 +25,13 @@ def index(request: Request) -> HTMLResponse:
             "app_version": settings.app.version,
         },
     )
+
+
+@router.get("/logs", response_class=HTMLResponse, include_in_schema=False)
+def log_details(request: Request) -> HTMLResponse:
+    settings = request.app.state.settings
+    return templates.TemplateResponse(
+        request=request,
+        name="logs.html",
+        context={"app_name": settings.app.name},
+    )

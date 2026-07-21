@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>日志详情 · {{ app_name }}</title>
+    <link rel="stylesheet" href="/static/app.css">
+    <script src="/static/logs.js" defer></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <div>
+        <p class="eyebrow">PERSONAL DEVICE HUB</p>
+        <h1>日志详情</h1>
+      </div>
+      <a class="button-link" href="/">返回首页</a>
+    </header>
+    <main>
+      <section class="card log-detail-card">
+        <div class="log-detail-toolbar">
+          <label>日志来源
+            <select id="detail-log-source">
+              <option value="operations">操作日志</option>
+              <option value="application">应用日志</option>
+              <option value="service-out">服务标准输出</option>
+              <option value="service-error">服务错误输出</option>
+            </select>
+          </label>
+          <button id="refresh-detail-logs" class="button-secondary" type="button">刷新</button>
+          <button id="load-earlier-logs" class="button-secondary" type="button">加载更早</button>
+          <button id="download-detail-logs" class="button-secondary" type="button">下载日志</button>
+        </div>
+        <p id="detail-logs-message" class="message">正在读取最近 500 行…</p>
+        <pre id="detail-logs-output" class="logs-output log-detail-output"></pre>
+      </section>
+    </main>
+  </body>
+</html>

@@ -7,7 +7,8 @@ from app.core.config import Settings
 
 @pytest.mark.anyio
 async def test_health_is_public(settings: Settings) -> None:
-    transport = httpx.ASGITransport(app=create_app(settings))
+    app = create_app(settings)
+    transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/api/health")
 
@@ -18,6 +19,7 @@ async def test_health_is_public(settings: Settings) -> None:
             "service": "hub",
             "status": "ok",
             "version": "0.1.0",
+            "instance_id": app.state.instance_id,
         },
     }
 

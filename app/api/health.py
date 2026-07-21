@@ -11,6 +11,7 @@ class HealthData(BaseModel):
     service: str
     status: str
     version: str
+    instance_id: str
 
 
 @router.get("/health", response_model=ApiResponse[HealthData])
@@ -21,5 +22,6 @@ def health(request: Request) -> ApiResponse[HealthData]:
             service=settings.app.name.lower(),
             status="ok",
             version=settings.app.version,
+            instance_id=request.app.state.instance_id,
         )
     )

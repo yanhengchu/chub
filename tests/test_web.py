@@ -31,6 +31,8 @@ async def test_home_page_is_public_and_contains_no_token(settings: Settings) -> 
     assert "重启 Chub" in response.text
     assert "退出" in response.text
     assert 'id="task-list"' in response.text
+    assert "data-log-source" in response.text
+    assert 'href="/logs"' in response.text
     assert "maintenance-logs" in response.text
     assert '<h3 id="logs-title">近期日志</h3>' in response.text
     assert 'id="status-details"' not in response.text
@@ -102,11 +104,32 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "restartHub" in script.text
     assert "scrollCodexPanelIntoView" in script.text
     assert "/api/maintenance/restart" in script.text
+    assert "/api/health" in script.text
+    assert "waitForHubRestart" in script.text
+    assert "previousInstanceId" in script.text
+    assert "Chub 已重启并恢复连接" in script.text
     assert "/api/codex/restart" not in script.text
     assert "window.scrollTo" in script.text
     assert "scrollIntoView" not in script.text
     assert "/api/codex/sessions" in script.text
     assert "connection" in terminal_script.text
+    assert "response.status === 404" in terminal_script.text
+
+
+@pytest.mark.anyio
+async def test_log_details_page_and_script_are_available(settings: Settings) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        page = await client.get("/logs")
+        script = await client.get("/static/logs.js")
+
+    assert page.status_code == 200
+    assert 'id="detail-log-source"' in page.text
+    assert "加载更早" in page.text
+    assert script.status_code == 200
+    assert "/api/logs/page" in script.text
+    assert "/api/logs/download" in script.text
+    assert "innerHTML" not in script.text
 
 
 @pytest.mark.anyio
@@ -141,6 +164,8 @@ async def test_terminal_page_uses_session_title(settings: Settings) -> None:
     assert "真实会话标题 · Codex PTY" in response.text
     assert 'src="/static/terminal.js"' in response.text
     assert 'data-page-id="page-1"' in response.text
+    assert "page_id=page-1" in response.text
+    assert "disableLeaveAlert=true" in response.text
 
 
 @pytest.mark.anyio

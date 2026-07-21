@@ -109,9 +109,20 @@
                 <p class="section-kicker">诊断信息</p>
                 <h3 id="logs-title">近期日志</h3>
               </div>
-              <button id="load-logs" class="button-secondary" type="button">读取日志</button>
+              <div class="log-actions">
+                <select id="log-lines" aria-label="日志行数">
+                  <option value="50">50 行</option>
+                  <option value="100">100 行</option>
+                </select>
+                <button id="load-logs" class="button-secondary" type="button">刷新</button>
+                <a class="button-link" href="/logs">日志详情</a>
+              </div>
             </div>
-            <p id="logs-message" class="message">按需读取最近 50 行。</p>
+            <div class="log-tabs" role="tablist" aria-label="日志类型">
+              <button class="log-tab is-active" data-log-source="operations" type="button" role="tab" aria-selected="true">操作日志</button>
+              <button class="log-tab" data-log-source="application" type="button" role="tab" aria-selected="false">运行日志</button>
+            </div>
+            <p id="logs-message" class="message">默认读取最近 50 行操作日志。</p>
             <pre id="logs-output" class="logs-output" hidden></pre>
           </div>
         </section>

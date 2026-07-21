@@ -104,6 +104,59 @@ async def test_logs_requires_authentication(settings: Settings) -> None:
 
 
 @pytest.mark.anyio
+async def test_log_page_reads_only_allowlisted_source(settings: Settings) -> None:
+    settings.logs.operations_file.write_text("one\ntwo\nthree\n", encoding="utf-8")
+    transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            "/api/logs/page?source=operations&lines=2",
+            headers=authorization(settings),
+        )
+        invalid = await client.get(
+            "/api/logs/page?source=../../etc/passwd",
+            headers=authorization(settings),
+        )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["lines"] == ["two", "three"]
+    assert response.json()["data"]["next_cursor"] is not None
+    assert invalid.status_code == 422
+
+
+@pytest.mark.anyio
+async def test_log_download_redacts_token(settings: Settings) -> None:
+    token = settings.security.token
+    assert token is not None
+    secret = token.get_secret_value()
+    settings.logs.operations_file.write_text(f"token={secret}\n", encoding="utf-8")
+    transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            "/api/logs/download?source=operations",
+            headers=authorization(settings),
+        )
+
+    assert response.status_code == 200
+    assert response.text == "token=[REDACTED]"
+    assert "attachment" in response.headers["content-disposition"]
+
+
+@pytest.mark.anyio
+async def test_log_download_does_not_truncate_long_lines(settings: Settings) -> None:
+    long_line = "x" * (9 * 1024)
+    settings.logs.operations_file.write_text(long_line, encoding="utf-8")
+    transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            "/api/logs/download?source=operations",
+            headers=authorization(settings),
+        )
+
+    assert response.status_code == 200
+    assert response.text == long_line
+
+
+@pytest.mark.anyio
 async def test_log_read_failure_is_controlled_and_other_endpoints_survive(
     settings: Settings,
 ) -> None:
