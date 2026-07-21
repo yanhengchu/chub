@@ -23,12 +23,16 @@ async def test_home_page_is_public_and_contains_no_token(settings: Settings) -> 
     assert "更换凭证" not in response.text
     assert "清除凭证" not in response.text
     assert 'id="refresh-status"' in response.text
-    assert "节点任务" in response.text
+    assert "节点任务" not in response.text
+    assert 'id="codex-card-host"' in response.text
     assert "节点维护" in response.text
-    assert "重启" in response.text
+    assert "维护检查" in response.text
+    assert "服务操作" in response.text
+    assert "重启 Chub" in response.text
     assert "退出" in response.text
     assert 'id="task-list"' in response.text
     assert "maintenance-logs" in response.text
+    assert '<h3 id="logs-title">近期日志</h3>' in response.text
     assert 'id="status-details"' not in response.text
     assert "展开详情" not in response.text
     assert settings.security.token.get_secret_value() not in response.text
@@ -66,14 +70,17 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "formatSessionTime" in script.text
     assert "dependencyMessage" in script.text
     assert "task-card-result" in script.text
+    assert "远程开发" in script.text
     assert "Codex PTY" in script.text
+    assert "管理并接管本机 Codex CLI 会话。" in script.text
     assert "版本信息" in script.text
     assert "task-button-running" in script.text
     assert "task-button-paused" in script.text
     assert "showCodexPanel" in script.text
     assert "restartHub" in script.text
     assert "scrollCodexPanelIntoView" in script.text
-    assert "/api/codex/restart" in script.text
+    assert "/api/maintenance/restart" in script.text
+    assert "/api/codex/restart" not in script.text
     assert "window.scrollTo" in script.text
     assert "scrollIntoView" not in script.text
     assert "/api/codex/sessions" in script.text

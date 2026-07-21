@@ -21,6 +21,7 @@ const elements = {
   dashboard: document.querySelector("#dashboard"),
   refreshStatus: document.querySelector("#refresh-status"),
   restartHub: document.querySelector("#restart-hub"),
+  codexCardHost: document.querySelector("#codex-card-host"),
   taskList: document.querySelector("#task-list"),
   tasksMessage: document.querySelector("#tasks-message"),
   codexPanel: null,
@@ -339,7 +340,7 @@ async function connectWithToken(token, remember, savedCredential = false) {
     storeToken(token, remember);
     renderStatus(status);
     showConnectedView(status);
-    await loadTasks();
+    await Promise.all([loadTasks(), loadCodexSessions()]);
     if (new URLSearchParams(window.location.search).get("view") === "codex") {
       await showCodexPanel();
     }
@@ -541,7 +542,8 @@ function createTaskCard(task) {
 function createCodexCard() {
   const card = document.createElement("article");
   const header = document.createElement("div");
-  const title = document.createElement("h3");
+  const kicker = document.createElement("p");
+  const title = document.createElement("h2");
   const description = document.createElement("p");
   const panel = document.createElement("div");
   const currentHint = document.createElement("p");
@@ -553,13 +555,18 @@ function createCodexCard() {
   const workspaceList = document.createElement("div");
   const sessionList = document.createElement("div");
 
-  card.className = "task-card codex-card";
+  card.className = "card codex-card";
+  card.setAttribute("aria-labelledby", "codex-title");
   header.className = "section-heading codex-card-heading";
   panel.className = "codex-panel";
   panel.id = "codex-panel";
   panel.hidden = false;
+  kicker.className = "section-kicker";
+  kicker.textContent = "远程开发";
+  title.id = "codex-title";
   title.textContent = "Codex PTY";
-  description.textContent = "会话管理。";
+  description.className = "section-description";
+  description.textContent = "管理并接管本机 Codex CLI 会话。";
   refreshButton.type = "button";
   refreshButton.id = "refresh-codex";
   refreshButton.className = "button-secondary";
@@ -580,7 +587,8 @@ function createCodexCard() {
   header.append(
     (() => {
       const copy = document.createElement("div");
-      copy.append(title, description);
+      copy.className = "card-heading-copy";
+      copy.append(kicker, title, description);
       return copy;
     })(),
     refreshButton,
@@ -603,7 +611,7 @@ function createCodexCard() {
   elements.codexSessionCount = sessionsDividerLabel;
   elements.refreshCodex = refreshButton;
 
-  refreshButton.addEventListener("click", () => loadCodexSessions(false));
+  refreshButton.addEventListener("click", loadCodexSessions);
   return card;
 }
 
@@ -711,27 +719,36 @@ function dependencyMessage(dependencies) {
   return missing.length ? `缺少依赖：${missing.join("、")}` : "";
 }
 
+function setCodexButtonBusy(button, busy) {
+  if (busy) {
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    return;
+  }
+  button.disabled = false;
+  button.removeAttribute("aria-busy");
+}
+
 async function createCodexSession(workspaceId, button) {
   if (!elements.codexMessage) {
     return;
   }
 
-  button.disabled = true;
-  setMessage(elements.codexMessage, "正在创建会话…");
+  setMessage(elements.codexMessage, "");
+  setCodexButtonBusy(button, true);
   try {
     await apiFetch("/api/codex/sessions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ workspace_id: workspaceId }),
     });
-    setMessage(elements.codexMessage, "会话已创建。", "success");
-    await loadCodexSessions(false);
+    await loadCodexSessions();
   } catch (error) {
     if (!handleAccessError(error)) {
       setMessage(elements.codexMessage, error.message || "会话创建失败。", "error");
     }
   } finally {
-    button.disabled = false;
+    setCodexButtonBusy(button, false);
   }
 }
 
@@ -740,6 +757,7 @@ async function enterCodexSession(sessionId, button) {
     return;
   }
 
+  setMessage(elements.codexMessage, "");
   button.disabled = true;
   try {
     const data = await apiFetch(`/api/codex/sessions/${sessionId}/access`, {
@@ -760,20 +778,19 @@ async function stopCodexSession(sessionId, button) {
     return;
   }
 
-  button.disabled = true;
-  setMessage(elements.codexMessage, "正在停止会话…");
+  setMessage(elements.codexMessage, "");
+  setCodexButtonBusy(button, true);
   try {
     await apiFetch(`/api/codex/sessions/${sessionId}/stop`, {
       method: "POST",
     });
-    setMessage(elements.codexMessage, "会话已停止。", "success");
-    await loadCodexSessions(false);
+    await loadCodexSessions();
   } catch (error) {
     if (!handleAccessError(error)) {
       setMessage(elements.codexMessage, error.message || "停止失败。", "error");
     }
   } finally {
-    button.disabled = false;
+    setCodexButtonBusy(button, false);
   }
 }
 
@@ -782,24 +799,19 @@ async function archiveCodexSession(sessionId, button) {
     return;
   }
 
-  if (button) {
-    button.disabled = true;
-  }
-  setMessage(elements.codexMessage, "正在归档会话…");
+  setMessage(elements.codexMessage, "");
+  setCodexButtonBusy(button, true);
   try {
     await apiFetch(`/api/codex/sessions/${sessionId}/archive`, {
       method: "POST",
     });
-    setMessage(elements.codexMessage, "会话已归档。", "success");
-    await loadCodexSessions(false);
+    await loadCodexSessions();
   } catch (error) {
     if (!handleAccessError(error)) {
       setMessage(elements.codexMessage, error.message || "归档失败。", "error");
     }
   } finally {
-    if (button) {
-      button.disabled = false;
-    }
+    setCodexButtonBusy(button, false);
   }
 }
 
@@ -808,28 +820,23 @@ async function removeCodexSession(sessionId, button) {
     return;
   }
 
-  if (button) {
-    button.disabled = true;
-  }
-  setMessage(elements.codexMessage, "正在删除会话…");
+  setMessage(elements.codexMessage, "");
+  setCodexButtonBusy(button, true);
   try {
     await apiFetch(`/api/codex/sessions/${sessionId}`, {
       method: "DELETE",
     });
-    setMessage(elements.codexMessage, "会话已删除。", "success");
-    await loadCodexSessions(false);
+    await loadCodexSessions();
   } catch (error) {
     if (!handleAccessError(error)) {
       setMessage(elements.codexMessage, error.message || "删除失败。", "error");
     }
   } finally {
-    if (button) {
-      button.disabled = false;
-    }
+    setCodexButtonBusy(button, false);
   }
 }
 
-async function loadCodexSessions(announce = true) {
+async function loadCodexSessions() {
   if (
     !elements.codexPanel ||
     !elements.codexWorkspaces ||
@@ -850,9 +857,7 @@ async function loadCodexSessions(announce = true) {
     elements.codexSessionCount.textContent = `共 ${data.sessions.length} 个会话`;
     const missing = dependencyMessage(data.dependencies);
     if (data.available) {
-      if (announce) {
-        setMessage(elements.codexMessage, "");
-      }
+      setMessage(elements.codexMessage, "");
     } else {
       setMessage(
         elements.codexMessage,
@@ -904,16 +909,14 @@ async function showCodexPanel() {
 
 function renderTasks(tasks) {
   elements.taskList.replaceChildren();
-  elements.taskList.prepend(createCodexCard());
   if (!tasks.length) {
-    setMessage(elements.tasksMessage, "当前平台没有可用任务。");
+    setMessage(elements.tasksMessage, "当前平台没有可用检查。");
   } else {
     tasks.forEach((task) => {
       elements.taskList.append(createTaskCard(task));
     });
-    setMessage(elements.tasksMessage, "节点功能已加载。", "success");
+    setMessage(elements.tasksMessage, "维护检查已加载。", "success");
   }
-  void loadCodexSessions(false);
 }
 
 async function loadTasks() {
@@ -984,7 +987,7 @@ elements.restartHub.addEventListener("click", async () => {
   elements.restartHub.disabled = true;
   setMessage(elements.globalMessage, "正在下发重启命令…");
   try {
-    await apiFetch("/api/codex/restart", { method: "POST" });
+    await apiFetch("/api/maintenance/restart", { method: "POST" });
     setMessage(elements.globalMessage, "重启命令已下发。", "success");
   } catch (error) {
     if (!handleAccessError(error)) {
@@ -1012,6 +1015,7 @@ elements.clearToken.addEventListener("click", () => {
 const savedSessionToken = sessionStorage.getItem(SESSION_TOKEN_KEY);
 const savedLocalToken = localStorage.getItem(LOCAL_TOKEN_KEY);
 const savedToken = savedSessionToken || savedLocalToken || "";
+elements.codexCardHost.replaceChildren(createCodexCard());
 if (savedToken) {
   elements.rememberToken.checked = Boolean(savedLocalToken);
   setBadge(elements.accessBadge, "自动连接");

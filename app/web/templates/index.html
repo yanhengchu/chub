@@ -20,7 +20,7 @@
     <main>
       <section id="connected-bar" class="card connected-bar" hidden aria-label="当前连接">
         <div class="connected-top">
-          <div>
+          <div class="card-heading-copy">
             <p class="section-kicker">当前节点</p>
             <div class="connected-identity">
               <h2 id="connected-node">Hub Node</h2>
@@ -29,13 +29,16 @@
             <p id="connected-meta" class="connected-meta"></p>
             <p id="connected-summary" class="connected-summary"></p>
           </div>
-          <button id="refresh-status" class="button-secondary" type="button">刷新</button>
+          <div class="connected-actions">
+            <button id="refresh-status" class="button-secondary" type="button">刷新</button>
+            <button id="clear-token" class="button-danger" type="button">退出</button>
+          </div>
         </div>
       </section>
 
       <section id="access-card" class="card access-card" aria-labelledby="access-title">
         <div class="section-heading">
-          <div>
+          <div class="card-heading-copy">
             <p class="section-kicker">访问凭证</p>
             <h2 id="access-title">连接此节点</h2>
           </div>
@@ -69,35 +72,42 @@
       </section>
 
       <div id="dashboard" class="dashboard" hidden>
-        <section class="card tasks-card" aria-labelledby="tasks-title">
-          <div class="section-heading">
-            <div>
-              <p class="section-kicker">节点任务</p>
-              <h2 id="tasks-title">可用任务</h2>
-            </div>
-          </div>
-          <p class="section-description">任务独立成卡，结果在卡片底部显示。</p>
-          <div id="task-list" class="task-list"></div>
-          <p id="tasks-message" class="message" aria-live="polite"></p>
-        </section>
+        <div id="codex-card-host"></div>
 
         <section class="card maintenance-card" aria-labelledby="maintenance-title">
           <div class="section-heading">
-            <div>
+            <div class="card-heading-copy">
               <p class="section-kicker">节点维护</p>
-              <h2 id="maintenance-title">次级操作</h2>
+              <h2 id="maintenance-title">维护工具</h2>
+              <p class="section-description">集中完成节点检查、服务操作和问题诊断。</p>
             </div>
           </div>
-          <p class="section-description">不常用操作集中在这里。</p>
-          <div class="maintenance-actions">
-            <button id="restart-hub" class="button-secondary" type="button">重启</button>
-            <button id="clear-token" class="button-danger" type="button">退出</button>
+
+          <div class="maintenance-section">
+            <div class="maintenance-heading">
+              <p class="section-kicker">维护检查</p>
+              <h3>可用检查</h3>
+            </div>
+            <div id="task-list" class="task-list"></div>
+            <p id="tasks-message" class="message" aria-live="polite"></p>
           </div>
-          <div class="maintenance-logs">
-            <div class="section-heading">
+
+          <div class="maintenance-section">
+            <div class="maintenance-heading">
+              <p class="section-kicker">服务操作</p>
+              <h3>Chub 服务</h3>
+            </div>
+            <p class="section-description">操作会短暂中断当前连接。</p>
+            <div class="maintenance-actions">
+              <button id="restart-hub" class="button-secondary" type="button">重启 Chub</button>
+            </div>
+          </div>
+
+          <div class="maintenance-section maintenance-logs">
+            <div class="maintenance-heading maintenance-heading-actions">
               <div>
                 <p class="section-kicker">诊断信息</p>
-                <h2 id="logs-title">近期日志</h2>
+                <h3 id="logs-title">近期日志</h3>
               </div>
               <button id="load-logs" class="button-secondary" type="button">读取日志</button>
             </div>
@@ -105,7 +115,6 @@
             <pre id="logs-output" class="logs-output" hidden></pre>
           </div>
         </section>
-
       </div>
     </main>
 

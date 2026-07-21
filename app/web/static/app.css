@@ -116,6 +116,13 @@ h2 {
   gap: 1rem;
 }
 
+.connected-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
 .connected-identity {
   display: flex;
   align-items: center;
@@ -359,8 +366,17 @@ input[type="password"] {
   overflow-wrap: anywhere;
 }
 
-.codex-card-heading > div {
+.card-heading-copy {
+  display: grid;
+  gap: 0.25rem;
   min-width: 0;
+}
+
+.card-heading-copy > .section-kicker,
+.card-heading-copy > .section-description,
+.card-heading-copy > .connected-meta,
+.card-heading-copy > .connected-summary {
+  margin: 0;
 }
 
 .codex-card-heading > button {
@@ -369,7 +385,25 @@ input[type="password"] {
 }
 
 .maintenance-card {
-  margin-top: 1rem;
+  display: grid;
+  gap: 1rem;
+}
+
+.maintenance-section {
+  border-top: 1px solid var(--line);
+  padding-top: 1rem;
+}
+
+.maintenance-heading h3 {
+  margin: 0.15rem 0 0;
+  font-size: 1rem;
+}
+
+.maintenance-heading-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
 }
 
 .maintenance-actions {
@@ -380,9 +414,7 @@ input[type="password"] {
 }
 
 .maintenance-logs {
-  margin-top: 1rem;
-  border-top: 1px solid var(--line);
-  padding-top: 1rem;
+  margin-top: 0;
 }
 
 .result-panel {

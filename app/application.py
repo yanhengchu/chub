@@ -13,6 +13,7 @@ from starlette.responses import Response
 
 from app.api.health import router as health_router
 from app.api.logs import router as logs_router
+from app.api.maintenance import router as maintenance_router
 from app.api.status import router as status_router
 from app.api.tasks import router as tasks_router
 from app.codex.connections import TerminalConnectionRegistry
@@ -147,6 +148,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.add_exception_handler(Exception, internal_error_handler)
     application.include_router(health_router)
     application.include_router(logs_router)
+    application.include_router(maintenance_router)
     application.include_router(status_router)
     application.include_router(tasks_router)
     application.include_router(codex_api_router)
