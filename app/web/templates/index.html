@@ -74,6 +74,41 @@
       <div id="dashboard" class="dashboard" hidden>
         <div id="codex-card-host"></div>
 
+        <section class="card design-documents-card" aria-labelledby="design-documents-title">
+          <div class="section-heading">
+            <div class="card-heading-copy">
+              <p class="section-kicker">项目资料</p>
+              <h2 id="design-documents-title">设计文档</h2>
+              <p class="section-description">查看功能方案、实现范围和验收标准。</p>
+            </div>
+            <span class="badge badge-muted">{{ design_documents|length }} 份</span>
+          </div>
+          <div class="design-document-list design-document-list-compact">
+            {% for document in design_documents %}
+            <a
+              class="design-document-item"
+              href="/project-docs/{{ document.id }}"
+              target="_blank"
+              rel="noopener"
+            >
+              <span class="design-document-copy">
+                <strong>{{ document.title }}</strong>
+                <span>{{ document.summary }}</span>
+              </span>
+              <span class="design-document-meta">
+                <span class="badge badge-success">{{ document.status }}</span>
+                <time datetime="{{ document.updated_at.isoformat() }}">{{ document.updated_at.strftime('%Y-%m-%d') }}</time>
+              </span>
+            </a>
+            {% else %}
+            <p class="empty-state">暂无设计文档。</p>
+            {% endfor %}
+          </div>
+          <div class="document-card-actions">
+            <a class="button-link" href="/project-docs" target="_blank" rel="noopener">查看全部文档</a>
+          </div>
+        </section>
+
         <section class="card maintenance-card" aria-labelledby="maintenance-title">
           <div class="section-heading">
             <div class="card-heading-copy">

@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>设计文档 · {{ app_name }}</title>
+    <link rel="stylesheet" href="/static/app.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <div>
+        <p class="eyebrow">项目资料</p>
+        <h1>设计文档</h1>
+      </div>
+      <a class="button-link" href="/">返回首页</a>
+    </header>
+
+    <main>
+      <section class="card document-list-card" aria-labelledby="document-list-title">
+        <div class="card-heading-copy">
+          <p class="section-kicker">全部文档</p>
+          <h2 id="document-list-title">功能方案与验收标准</h2>
+          <p class="section-description">共 {{ documents|length }} 份设计文档。</p>
+        </div>
+        <div class="design-document-list">
+          {% for document in documents %}
+          <a class="design-document-item" href="/project-docs/{{ document.id }}">
+            <span class="design-document-copy">
+              <strong>{{ document.title }}</strong>
+              <span>{{ document.summary }}</span>
+            </span>
+            <span class="design-document-meta">
+              <span class="badge badge-success">{{ document.status }}</span>
+              <time datetime="{{ document.updated_at.isoformat() }}">{{ document.updated_at.strftime('%Y-%m-%d') }}</time>
+            </span>
+          </a>
+          {% else %}
+          <p class="empty-state">暂无设计文档。</p>
+          {% endfor %}
+        </div>
+      </section>
+    </main>
+
+    <footer>Hub 设计文档只读展示。</footer>
+  </body>
+</html>

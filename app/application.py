@@ -43,7 +43,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next) -> Response:
         response = await call_next(request)
         response.headers.update(SECURITY_HEADERS)
-        if request.url.path == "/" or request.url.path.startswith("/static/"):
+        if (
+            request.url.path == "/"
+            or request.url.path.startswith("/static/")
+            or request.url.path.startswith("/project-docs")
+        ):
             response.headers["Content-Security-Policy"] = (
                 "default-src 'self'; "
                 "script-src 'self'; "

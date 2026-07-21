@@ -23,19 +23,34 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from chrome_process import (
-    ChromeProcess,
-    is_stable_chrome_executable,
-    linux_chrome_processes,
-    run_process_command,
-)
-from profile_store import (
-    MANIFEST_FILE,
-    active_profile,
-    copied_profiles,
-    profile_display_name,
-    select_profile,
-)
+try:
+    from .chrome_process import (
+        ChromeProcess,
+        is_stable_chrome_executable,
+        linux_chrome_processes,
+        run_process_command,
+    )
+    from .profile_store import (
+        MANIFEST_FILE,
+        active_profile,
+        copied_profiles,
+        profile_display_name,
+        select_profile,
+    )
+except ImportError:
+    from chrome_process import (
+        ChromeProcess,
+        is_stable_chrome_executable,
+        linux_chrome_processes,
+        run_process_command,
+    )
+    from profile_store import (
+        MANIFEST_FILE,
+        active_profile,
+        copied_profiles,
+        profile_display_name,
+        select_profile,
+    )
 
 
 DEFAULT_USER_DATA_DIR = Path.home() / "chrome-debug-data"

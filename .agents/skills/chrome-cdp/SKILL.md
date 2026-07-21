@@ -152,6 +152,31 @@ cannot respond to a normal window-close request, force-stop only the process IDs
 that still pass managed Chrome ownership validation. This last-resort cleanup may
 lose browser state that was not written to disk.
 
+## Reuse Debug Chrome with Playwright
+
+Install the Skill dependency once:
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
+Import `session` from `scripts/playwright_session.py` and use it as an async
+context manager. It verifies that the CDP endpoint belongs to the managed Debug
+Chrome before and after connecting, reuses the first browser context and page,
+and creates a page only when the context is empty. Pass `ensure_page=False` when
+the caller requires a non-mutating connection.
+
+```python
+from scripts.playwright_session import session
+
+async with session() as chrome:
+    await chrome.page.goto("https://example.com")
+```
+
+Leaving the context disconnects Playwright but does not stop the managed Debug
+Chrome. Start and stop Chrome explicitly with `chrome_debug.py`; `session()` does
+not change its lifecycle or profile selection.
+
 ## Safety Boundaries
 
 - Bind CDP to `127.0.0.1`; never expose the debugging port to the network.
@@ -178,6 +203,8 @@ Use `python3` on macOS and Ubuntu. Use `py` on Windows when `python3` is unavail
 7. Confirm switching between headed and headless modes while running is rejected,
    and that stopping then changing modes reuses persisted login state.
 8. Confirm duplicate profile copying, copying while Debug Chrome runs, and profile selection while Debug Chrome runs are rejected safely.
+9. Connect twice with `session()`, open a temporary local test page, and confirm
+   leaving each context disconnects Playwright without stopping Debug Chrome.
 
 On macOS, Ubuntu, and Windows, verify process ownership, CDP listener ownership, and complete helper-process cleanup. Also confirm that Debug Chrome lifecycle commands do not affect regular Chrome or unrelated processes carrying similar arguments. On Ubuntu and Windows, additionally verify normal Chrome shutdown through the platform-specific implementation.
 
@@ -192,6 +219,7 @@ three platforms. Headless lifecycle and mode switching have passed automated tes
 and macOS real-device validation; Ubuntu and Windows real-device validation remains
 pending.
 
-The Playwright session helper is not implemented yet.
+The Playwright session helper is implemented with automated coverage and macOS
+real-device validation. Ubuntu and Windows real-device validation remains pending.
 
 When asked to use an unimplemented capability, state that it is pending and continue with the next agreed implementation step instead of inventing commands.

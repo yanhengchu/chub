@@ -25,6 +25,10 @@ async def test_home_page_is_public_and_contains_no_token(settings: Settings) -> 
     assert 'id="refresh-status"' in response.text
     assert "节点任务" not in response.text
     assert 'id="codex-card-host"' in response.text
+    assert 'id="design-documents-title"' in response.text
+    assert "配置驱动的网页下载自动化方案" in response.text
+    assert 'href="/project-docs/automation-download"' in response.text
+    assert 'href="/project-docs"' in response.text
     assert "节点维护" in response.text
     assert "维护检查" in response.text
     assert "服务操作" in response.text
@@ -130,6 +134,27 @@ async def test_log_details_page_and_script_are_available(settings: Settings) -> 
     assert "/api/logs/page" in script.text
     assert "/api/logs/download" in script.text
     assert "innerHTML" not in script.text
+
+
+@pytest.mark.anyio
+async def test_design_document_pages_render_markdown(settings: Settings) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        listing = await client.get("/project-docs")
+        detail = await client.get("/project-docs/automation-download")
+        missing = await client.get("/project-docs/not-registered")
+
+    assert listing.status_code == 200
+    assert "配置驱动的网页下载自动化方案" in listing.text
+    assert detail.status_code == 200
+    assert '<article class="markdown-body">' in detail.text
+    assert "<h2" in detail.text
+    assert "核心流程" in detail.text
+    assert missing.status_code == 404
+
+    for response in [listing, detail]:
+        assert "default-src 'self'" in response.headers["content-security-policy"]
+        assert response.headers["x-content-type-options"] == "nosniff"
 
 
 @pytest.mark.anyio
