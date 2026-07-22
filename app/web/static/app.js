@@ -2,6 +2,9 @@
 
 const SESSION_TOKEN_KEY = "hub.sessionToken";
 const LOCAL_TOKEN_KEY = "hub.savedToken";
+const CODEX_RETURN_KEY = "hub.codexReturnToDashboard";
+const CODEX_REFRESH_KEY = "hub.codexRefreshOnReturn";
+const CODEX_CARD_CACHE_KEY = "hub.codexCardCache";
 
 const elements = {
   accessCard: document.querySelector("#access-card"),
@@ -24,6 +27,11 @@ const elements = {
   codexCardHost: document.querySelector("#codex-card-host"),
   automationBrowserBadge: document.querySelector("#automation-browser-badge"),
   automationBrowserControl: document.querySelector("#automation-browser-control"),
+  automationBrowserMode: document.querySelector("#automation-browser-mode"),
+  automationFeishuBadge: document.querySelector("#automation-feishu-badge"),
+  automationFeishuCheck: document.querySelector("#automation-feishu-check"),
+  automationFeishuLogin: document.querySelector("#automation-feishu-login"),
+  automationFeishuQr: document.querySelector("#automation-feishu-qr"),
   automationCount: document.querySelector("#automation-count"),
   automationList: document.querySelector("#automation-list"),
   automationMessage: document.querySelector("#automation-message"),
@@ -54,6 +62,9 @@ let connectionAttempt = 0;
 let activeLogSource = "operations";
 let automationPollTimer = null;
 let automationBrowserState = "unavailable";
+let feishuQrObjectUrl = "";
+let feishuQrLoading = false;
+let feishuQrVersion = 0;
 
 const TASK_TEXT = {
   show_version: ["版本信息", "查看 Hub、Python、节点和平台版本。"],
@@ -205,6 +216,7 @@ function clearProtectedView() {
   elements.connectedBar.hidden = true;
   elements.taskList.replaceChildren();
   elements.automationList.replaceChildren();
+  elements.codexCardHost.replaceChildren();
   if (automationPollTimer) {
     window.clearTimeout(automationPollTimer);
     automationPollTimer = null;
@@ -213,9 +225,14 @@ function clearProtectedView() {
   elements.codexWorkspaces = null;
   elements.codexSessions = null;
   elements.codexMessage = null;
+  elements.codexSessionCount = null;
   elements.refreshCodex = null;
   elements.logsOutput.hidden = true;
   elements.logsOutput.textContent = "";
+  releaseFeishuQr();
+  sessionStorage.removeItem(CODEX_CARD_CACHE_KEY);
+  sessionStorage.removeItem(CODEX_RETURN_KEY);
+  sessionStorage.removeItem(CODEX_REFRESH_KEY);
 }
 
 function showDisconnectedView(message = "输入启动 Hub 时配置的 Token。", kind = "") {
@@ -402,6 +419,7 @@ async function connectWithToken(token, remember, savedCredential = false) {
     activeToken = token;
     accessVersion += 1;
     storeToken(token, remember);
+    ensureCodexCard();
     renderStatus(status);
     showConnectedView(status);
     await Promise.all([loadTasks(), loadCodexSessions(), loadAutomations()]);
@@ -679,6 +697,13 @@ function createCodexCard() {
   return card;
 }
 
+function ensureCodexCard() {
+  if (elements.codexPanel) {
+    return;
+  }
+  elements.codexCardHost.replaceChildren(createCodexCard());
+}
+
 function renderCodexWorkspaces(workspaces, available) {
   if (!elements.codexWorkspaces) {
     return;
@@ -769,6 +794,51 @@ function renderCodexSessions(sessions) {
   });
 }
 
+function renderCodexData(data) {
+  if (
+    !Array.isArray(data?.workspaces)
+    || !Array.isArray(data?.sessions)
+    || typeof data?.available !== "boolean"
+    || !data?.dependencies
+    || typeof data.dependencies !== "object"
+  ) {
+    return false;
+  }
+  renderCodexWorkspaces(data.workspaces, data.available);
+  renderCodexSessions(data.sessions);
+  elements.codexSessionCount.textContent = `共 ${data.sessions.length} 个会话`;
+  const missing = dependencyMessage(data.dependencies);
+  if (data.available) {
+    setMessage(elements.codexMessage, "");
+  } else {
+    setMessage(
+      elements.codexMessage,
+      missing || data.unavailable_reason || "Codex PTY 不可用。",
+      "error",
+    );
+  }
+  return true;
+}
+
+function restoreCodexCardCache() {
+  try {
+    const cached = JSON.parse(sessionStorage.getItem(CODEX_CARD_CACHE_KEY) || "null");
+    if (!renderCodexData(cached)) {
+      sessionStorage.removeItem(CODEX_CARD_CACHE_KEY);
+    }
+  } catch {
+    sessionStorage.removeItem(CODEX_CARD_CACHE_KEY);
+  }
+}
+
+function storeCodexCardCache(data) {
+  try {
+    sessionStorage.setItem(CODEX_CARD_CACHE_KEY, JSON.stringify(data));
+  } catch {
+    // A storage quota failure must not break the live Codex card.
+  }
+}
+
 function formatSessionTime(value) {
   const date = new Date(value);
   return Number.isNaN(date.getTime())
@@ -827,6 +897,7 @@ async function enterCodexSession(sessionId, button) {
     const data = await apiFetch(`/api/codex/sessions/${sessionId}/access`, {
       method: "POST",
     });
+    sessionStorage.setItem(CODEX_RETURN_KEY, "1");
     window.location.assign(data.terminal_url);
   } catch (error) {
     if (!handleAccessError(error)) {
@@ -916,18 +987,8 @@ async function loadCodexSessions() {
   }
   try {
     const data = await apiFetch("/api/codex/sessions");
-    renderCodexWorkspaces(data.workspaces, data.available);
-    renderCodexSessions(data.sessions);
-    elements.codexSessionCount.textContent = `共 ${data.sessions.length} 个会话`;
-    const missing = dependencyMessage(data.dependencies);
-    if (data.available) {
-      setMessage(elements.codexMessage, "");
-    } else {
-      setMessage(
-        elements.codexMessage,
-        missing || data.unavailable_reason || "Codex PTY 不可用。",
-        "error",
-      );
+    if (renderCodexData(data)) {
+      storeCodexCardCache(data);
     }
   } catch (error) {
     if (!handleAccessError(error)) {
@@ -1029,8 +1090,8 @@ async function runAutomation(task, button) {
     await apiFetch(`/api/automations/${encodeURIComponent(task.id)}/run`, {
       method: "POST",
     });
-    setMessage(elements.automationMessage, `${task.name}已受理，正在等待执行。`, "success");
-    await loadAutomations(true);
+    setMessage(elements.automationMessage, "");
+    await loadAutomations();
   } catch (error) {
     if (!handleAccessError(error)) {
       setMessage(
@@ -1053,29 +1114,104 @@ async function controlAutomationBrowser() {
     return;
   }
   elements.automationBrowserControl.disabled = true;
+  elements.automationBrowserMode.disabled = true;
   elements.automationBrowserControl.textContent = action === "start" ? "启动中…" : "停止中…";
   try {
-    const result = await apiFetch(`/api/automations/browser/${action}`, {
-      method: "POST",
-    });
-    setMessage(elements.automationMessage, result.message, "success");
+    const options = { method: "POST" };
+    if (action === "start") {
+      options.headers = { "Content-Type": "application/json" };
+      options.body = JSON.stringify({ mode: elements.automationBrowserMode.value });
+    }
+    await apiFetch(`/api/automations/browser/${action}`, options);
+    setMessage(elements.automationMessage, "");
     await loadAutomations();
   } catch (error) {
     if (!handleAccessError(error)) {
+      await loadAutomations();
       setMessage(
         elements.automationMessage,
         error.message || "Debug Chrome 操作失败。",
         "error",
       );
-      await loadAutomations();
     }
+  }
+}
+
+async function checkFeishuEnvironment() {
+  releaseFeishuQr();
+  elements.automationFeishuCheck.disabled = true;
+  elements.automationFeishuCheck.textContent = "检查中…";
+  setBadge(elements.automationFeishuBadge, "检查中", "muted");
+  try {
+    await apiFetch("/api/automations/environment/feishu/check", { method: "POST" });
+    setMessage(elements.automationMessage, "");
+    await loadAutomations();
+  } catch (error) {
+    if (!handleAccessError(error)) {
+      await loadAutomations();
+      setMessage(
+        elements.automationMessage,
+        error.message || "飞书环境检查失败。",
+        "error",
+      );
+    }
+  }
+}
+
+function releaseFeishuQr() {
+  feishuQrVersion += 1;
+  if (feishuQrObjectUrl) {
+    URL.revokeObjectURL(feishuQrObjectUrl);
+    feishuQrObjectUrl = "";
+  }
+  feishuQrLoading = false;
+  elements.automationFeishuQr.removeAttribute("src");
+  elements.automationFeishuLogin.hidden = true;
+}
+
+async function loadFeishuQr() {
+  if (feishuQrLoading || feishuQrObjectUrl || !activeToken) {
+    return;
+  }
+  const requestVersion = accessVersion;
+  const qrVersion = feishuQrVersion;
+  feishuQrLoading = true;
+  try {
+    const response = await fetch("/api/automations/environment/feishu/qr", {
+      headers: { Authorization: `Bearer ${activeToken}` },
+      cache: "no-store",
+    });
+    if (response.status === 401) {
+      throw { code: "invalid_credentials", message: "Token 无效或已变更。" };
+    }
+    if (!response.ok) {
+      throw { code: "feishu_qr_unavailable", message: "飞书登录二维码读取失败。" };
+    }
+    const blob = await response.blob();
+    if (requestVersion !== accessVersion || qrVersion !== feishuQrVersion) {
+      return;
+    }
+    feishuQrObjectUrl = URL.createObjectURL(blob);
+    elements.automationFeishuQr.src = feishuQrObjectUrl;
+  } catch (error) {
+    if (requestVersion !== accessVersion || handleAccessError(error)) {
+      return;
+    }
+    setMessage(
+      elements.automationMessage,
+      error.message || "飞书登录二维码读取失败。",
+      "error",
+    );
+  } finally {
+    feishuQrLoading = false;
   }
 }
 
 function renderAutomations(data) {
   elements.automationList.replaceChildren();
   const browserRunning = data.browser_state === "running";
-  const automationBusy = data.tasks.some((task) => ["queued", "running"].includes(task.state.status));
+  const feishuChecking = data.feishu_environment.state === "checking";
+  const automationBusy = feishuChecking || data.tasks.some((task) => ["queued", "running"].includes(task.state.status));
   automationBrowserState = data.browser_state;
   setBadge(
     elements.automationBrowserBadge,
@@ -1086,9 +1222,39 @@ function renderAutomations(data) {
     !["running", "stopped"].includes(data.browser_state)
     || (browserRunning && automationBusy)
   );
-  elements.automationBrowserControl.textContent = browserRunning
-    ? automationBusy ? "任务执行中" : "停止"
-    : "启动";
+  elements.automationBrowserMode.hidden = data.browser_state !== "stopped";
+  elements.automationBrowserMode.disabled = data.browser_state !== "stopped";
+  elements.automationBrowserControl.textContent = browserRunning ? "停止" : "启动";
+  const feishuTime = automationTime(data.feishu_environment.checked_at);
+  const feishuBadgeKind = {
+    available: "success",
+    login_required: "timeout",
+    failed: "failed",
+    browser_stopped: "muted",
+    checking: "muted",
+    unchecked: "muted",
+  }[data.feishu_environment.state] || "muted";
+  setBadge(
+    elements.automationFeishuBadge,
+    `${data.feishu_environment.message}${feishuTime ? ` · ${feishuTime}` : ""}`,
+    feishuBadgeKind,
+  );
+  elements.automationFeishuCheck.disabled = !browserRunning || automationBusy;
+  elements.automationFeishuCheck.textContent = feishuChecking
+    ? "检查中…"
+    : data.feishu_environment.state === "unchecked"
+      || data.feishu_environment.state === "browser_stopped"
+      ? "检查"
+      : "重新检查";
+  if (
+    data.feishu_environment.state === "login_required"
+    && data.feishu_environment.qr_available
+  ) {
+    elements.automationFeishuLogin.hidden = false;
+    loadFeishuQr();
+  } else {
+    releaseFeishuQr();
+  }
   elements.automationCount.textContent = `已启用 ${data.enabled_count} 个任务`;
 
   if (!data.enabled) {
@@ -1100,7 +1266,6 @@ function renderAutomations(data) {
     empty.className = "empty-state";
     empty.textContent = "暂无自动化任务，请先配置 automations.local.yaml。";
     elements.automationList.append(empty);
-    setMessage(elements.automationMessage, data.browser_message);
     return false;
   }
 
@@ -1109,7 +1274,8 @@ function renderAutomations(data) {
     const item = document.createElement("article");
     const copy = document.createElement("div");
     const name = document.createElement("strong");
-    const meta = document.createElement("span");
+    const status = document.createElement("span");
+    const reason = document.createElement("span");
     const button = document.createElement("button");
     const busy = ["queued", "running"].includes(task.state.status);
     active = active || busy;
@@ -1117,21 +1283,23 @@ function renderAutomations(data) {
     copy.className = "automation-item-copy";
     name.textContent = task.name;
     const time = automationTime(task.state.finished_at || task.state.started_at);
-    meta.textContent = `${automationStatusText(task.state.status)}${time ? ` · ${time}` : ""} · ${task.state.message}`;
+    status.className = "automation-item-status";
+    status.textContent = `${automationStatusText(task.state.status)}${time ? ` · ${time}` : ""}`;
+    reason.className = "automation-item-reason";
+    reason.textContent = task.state.message || "暂无状态说明";
     button.type = "button";
     button.className = "button-secondary automation-run";
     button.textContent = busy ? "执行中…" : "运行";
-    button.disabled = !browserRunning || !task.enabled || busy;
+    button.disabled = !browserRunning || !task.enabled || busy || feishuChecking;
     button.addEventListener("click", () => runAutomation(task, button));
-    copy.append(name, meta);
+    copy.append(name, status, reason);
     item.append(copy, button);
     elements.automationList.append(item);
   });
-  setMessage(elements.automationMessage, data.browser_message, browserRunning ? "success" : "error");
   return active;
 }
 
-async function loadAutomations(fromRun = false) {
+async function loadAutomations() {
   const requestVersion = accessVersion;
   elements.refreshAutomations.disabled = true;
   try {
@@ -1139,6 +1307,7 @@ async function loadAutomations(fromRun = false) {
     if (requestVersion !== accessVersion) {
       return;
     }
+    setMessage(elements.automationMessage, "");
     const active = renderAutomations(data);
     if (automationPollTimer) {
       window.clearTimeout(automationPollTimer);
@@ -1146,14 +1315,19 @@ async function loadAutomations(fromRun = false) {
     }
     if (active) {
       automationPollTimer = window.setTimeout(loadAutomations, 1000);
-    } else if (fromRun) {
-      setMessage(elements.automationMessage, "任务状态已更新。", "success");
     }
   } catch (error) {
     if (requestVersion !== accessVersion) {
       return;
     }
     if (!handleAccessError(error)) {
+      automationBrowserState = "unknown";
+      setBadge(elements.automationBrowserBadge, "检查失败", "failed");
+      elements.automationBrowserControl.disabled = true;
+      elements.automationBrowserMode.hidden = true;
+      elements.automationBrowserMode.disabled = true;
+      setBadge(elements.automationFeishuBadge, "检查失败", "failed");
+      elements.automationFeishuCheck.disabled = true;
       setMessage(elements.automationMessage, error.message || "自动化任务读取失败。", "error");
     }
   } finally {
@@ -1184,8 +1358,6 @@ function renderProjectDocuments(data) {
     const time = document.createElement("time");
     link.className = "design-document-item";
     link.href = `/project-docs/${encodeURIComponent(item.id)}`;
-    link.target = "_blank";
-    link.rel = "noopener";
     copy.className = "design-document-copy";
     title.textContent = item.title;
     summary.textContent = item.summary;
@@ -1287,6 +1459,17 @@ elements.refreshAutomations.addEventListener("click", () => loadAutomations());
 elements.refreshProjectDocs.addEventListener("click", loadProjectDocuments);
 elements.loadLogs.addEventListener("click", loadLogs);
 elements.automationBrowserControl.addEventListener("click", controlAutomationBrowser);
+elements.automationFeishuCheck.addEventListener("click", checkFeishuEnvironment);
+
+window.addEventListener("pageshow", (event) => {
+  if (sessionStorage.getItem(CODEX_REFRESH_KEY) !== "1") {
+    return;
+  }
+  sessionStorage.removeItem(CODEX_REFRESH_KEY);
+  if (event.persisted && activeToken) {
+    loadCodexSessions();
+  }
+});
 
 elements.restartHub.addEventListener("click", async () => {
   if (!window.confirm("确定重启当前节点吗？重启过程中页面会短暂失联。")) {
@@ -1328,8 +1511,9 @@ elements.clearToken.addEventListener("click", () => {
 const savedSessionToken = sessionStorage.getItem(SESSION_TOKEN_KEY);
 const savedLocalToken = localStorage.getItem(LOCAL_TOKEN_KEY);
 const savedToken = savedSessionToken || savedLocalToken || "";
-elements.codexCardHost.replaceChildren(createCodexCard());
+ensureCodexCard();
 if (savedToken) {
+  restoreCodexCardCache();
   elements.rememberToken.checked = Boolean(savedLocalToken);
   setBadge(elements.accessBadge, "自动连接");
   connectWithToken(savedToken, Boolean(savedLocalToken), true);

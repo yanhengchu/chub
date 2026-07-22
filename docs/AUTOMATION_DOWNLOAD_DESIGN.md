@@ -1,6 +1,6 @@
-# 配置驱动的网页下载自动化方案
+# 配置驱动的飞书文档下载自动化方案
 
-> 状态：首版基础能力已实现，真实网站配置和下载验收待完成。
+> 状态：核心功能已实现，并已通过飞书 Wiki 文档 Markdown 下载验收。
 
 ## 1. Chub 首页交互卡片
 
@@ -11,10 +11,11 @@
 自动化任务
 按计划复用浏览器登录状态执行固定任务
 
-Debug Chrome：已连接       已启用 2 个任务
+Debug Chrome：运行中 · 有界面模式       已启用 1 个任务
 
-月度报表下载          上次成功 · 今天 08:30      运行
-资料归档下载          下次执行 · 明天 09:00      运行
+V 国内业务周报                              运行
+成功 · 2026/07/22 11:29:00
+下载完成
 
                                         全部任务
 ```
@@ -23,16 +24,58 @@ Debug Chrome：已连接       已启用 2 个任务
 - 桌面端双列布局使用卡片自身内容高度，内容从顶部连续排列，不随同排较高卡片拉伸；手机端单列同样保持自然高度。
 - 卡片独立加载和展示错误；任务运行、状态轮询及浏览器启停只更新自动化卡片，不触发其他卡片刷新。
 - 卡片展示 Debug Chrome 状态、启用任务数量，以及最近或即将执行的少量任务；尚未接入调度时只展示最近结果。
-- 每个任务行展示名称、最近结果或下次执行时间，并提供一个“运行”按钮；浏览器未运行或任务已经执行时禁用该按钮。
+- 首页和“全部任务”页面使用统一的任务行：名称下第一行展示状态与时间，第二行独立展示状态原因，并提供一个“运行”按钮；浏览器未运行或任务正在执行时禁用该按钮。
 - 点击“全部任务”进入次级页面；手动运行、运行中、成功和失败都应有明确反馈。
 - 完整任务列表和最近结果放在次级页面，配置仍由本机 YAML 管理，首页保持简洁。
 
 卡片内单独提供“浏览器环境”行，它是所有任务的运行前提，不属于 YAML 任务：
 
-- 未启动时展示“启动”，默认启动有界面模式，便于人工登录和处理验证码。
-- 已运行时展示模式和“停止”；自动化任务执行期间禁止停止。
+- 未启动时展示启动模式选择器和“启动”；默认有界面模式，便于人工登录和处理验证码，也可明确选择无界面模式。
+- 已运行时展示模式和“停止”；自动化任务执行期间“停止”按钮保持禁用且文案不变，任务执行状态只在对应任务行展示。
+- 启动模式是 Chrome 进程属性，运行中不能切换；切换时必须先停止，再以另一模式启动，并继续复用同一独立 profile。
+- 有界面模式下手动关闭全部 Chrome 窗口后，进程和 CDP 端口可能仍然存活；飞书检查或任务执行会由 CDP session 自动创建并保留一个受管空白基础页，恢复 Playwright 连接能力，任务仍只关闭自己创建的业务页面。
 - 启停按钮等待 Debug Chrome 最终状态后再提示成功，失败时展示 profile 未初始化、端口冲突等明确原因。
 - 启动和停止都写入操作日志；不会影响用户日常 Chrome，只管理 `chrome-cdp` 拥有的独立实例。
+
+浏览器环境下方提供独立的“飞书环境”行，用于人工检查 Debug Chrome 中的飞书登录状态：
+
+```text
+浏览器环境   运行中 · 有界面模式       停止
+飞书环境     登录有效 · 11:30          检查
+```
+
+- 状态包括“未检查”“检查中”“登录有效”“需要登录”“检查失败”和“浏览器未启动”。检查结果展示最后检查时间，只表示最近一次结果，不作为永久有效的登录凭据。
+- 仅在用户点击“检查”时访问飞书，首页刷新不自动检查，避免频繁创建页面和请求飞书。
+- 检查固定打开 `https://qw6xxurweq.feishu.cn/drive/home/`，使用带 Chub 标记的专用页面，不操作用户已有标签页；后续检查优先复用已保留的同一页面，避免产生多个登录标签。
+- 页面进入 `qw6xxurweq.feishu.cn` 时判定登录有效；最终进入 `accounts.feishu.cn` 的任意路径时判定需要登录；进入其他域名、访问超时或页面异常时判定检查失败。判断登录页以域名为准，不依赖易变化的完整路径和查询参数。
+- 不使用 `networkidle` 等待飞书停止所有网络请求；导航完成后等待页面进入已知业务域名或登录域名，并由整体超时兜底。
+- 检查与自动化任务共用浏览器文件锁。任务执行期间禁用“检查”，检查期间也不能启动另一个自动化任务。
+- Debug Chrome 未启动时显示“浏览器未启动”并禁用检查；停止、重启或切换 profile 后清除上次结果并恢复“未检查”。
+- 检测到需要登录时保留登录页面；飞书环境区域直接展开当前可用的登录二维码，用户无需切换到 Debug Chrome 即可扫码。检查成功、进入异常域名、超时或发生异常时关闭 Chub 创建的检查页面，不关闭 Debug Chrome。
+- 有界面和无界面模式都通过飞书环境区域展示二维码；有界面模式仍保留登录标签，无界面模式无需为了扫码切换启动模式。
+- 飞书环境检查只判断租户云文档的整体登录状态；具体文档是否存在、账号是否有权限以及页面操作入口是否可用，仍由任务执行时的 `login.check` 判断。
+
+需要登录时，飞书环境区域展开为：
+
+```text
+飞书环境     需要登录 · 14:36          重新检查
+
+                 [ 飞书登录二维码 ]
+              请使用飞书移动端扫码登录
+```
+
+- 飞书环境右侧只保留一个操作按钮：初始状态显示“检查”，首次检查完成后统一显示“重新检查”；二维码区域不再增加第二个操作按钮。
+- 二维码直接显示在“飞书环境”区域内，不创建独立页面或弹窗；手机端保持居中并限制宽度，避免撑开自动化卡片。
+- 登录页已经处于扫码模式时，直接截取 `.new-scan-qrcode-container .newLogin_scan-QR-code canvas`。
+- 二维码 Canvas 不可见且存在 `.enter-credential` 或 `[data-test="login-phone-input"]` 时，点击 `.switch-login-mode-container`，等待二维码 Canvas 可见后截图。切换按钮是双向操作，必须先判断当前模式，不能无条件点击。
+- `.qr-scan-mask-cover` 可见时表示二维码需要刷新；点击该区域，等待二维码重新生成后再截图。
+- 二维码模式和账号登录模式均无法识别时，状态改为“检查失败”，不截取整个登录页面作为降级结果。
+- 只截取二维码 Canvas，不截取手机号、邮箱、账号信息或完整登录页面；不读取 Cookie、Token 和浏览器存储。
+- 二维码截图保存在自动化私有临时目录，文件权限限制为当前用户；图片接口必须通过 Hub Token 鉴权并返回 `Cache-Control: no-store`。
+- 前端通过带认证请求获取二维码图片并创建临时对象地址，图片更新、登录成功、Debug Chrome 停止或页面离开时立即释放旧对象地址。
+- “重新检查”复用已保留并带 Chub 标记的登录页面；二维码过期时刷新并替换当前图片，不重复创建登录标签。
+- 用户扫码后点击右侧“重新检查”；已跳转回 `qw6xxurweq.feishu.cn` 时显示“登录有效”，清理二维码临时文件并关闭 Chub 登录页面。仍位于 `accounts.feishu.cn` 时继续显示二维码和“需要登录”。
+- 二维码属于短期登录凭证，不写入日志、状态 JSON 或长期缓存；服务重启后不恢复旧二维码。
 
 ## 2. 核心主流程
 
@@ -57,9 +100,9 @@ Debug Chrome：已连接       已启用 2 个任务
 
 ## 3. 目标与边界
 
-通过配置描述固定网站的页面操作流程，复用已启动的 Debug Chrome 登录状态，完成文件下载、校验和安全落盘。
+通过配置描述飞书 Wiki 文档的页面操作流程，复用已启动的 Debug Chrome 飞书登录状态，完成 Markdown 文件下载、校验和安全落盘。
 
-首版聚焦单网站、单任务、单文件下载。网站差异放在配置中，浏览器连接、下载处理、日志和任务互斥由公共执行器统一负责。
+当前聚焦飞书文档的单任务、单文件下载。具体文档地址和页面步骤放在本机配置中，浏览器连接、下载处理、日志和任务互斥由公共执行器统一负责；公共执行器仍保留扩展其他固定网站任务的能力。
 
 ## 4. 配置示例
 
@@ -69,53 +112,60 @@ Debug Chrome：已连接       已启用 2 个任务
 version: 1
 
 tasks:
-  monthly-report:
-    name: 月度报表下载
+  feishu-weekly-report:
+    name: 飞书业务周报
     enabled: true
 
     browser:
       session: debug-chrome
-      start_url: https://example.com/reports
+      start_url: https://tenant.feishu.cn/wiki/document-id
       allowed_hosts:
-        - example.com
+        - tenant.feishu.cn
 
     login:
+      redirect_hosts:
+        - accounts.feishu.cn
       check:
-        selector: "[data-testid='user-avatar']"
-        timeout_ms: 10000
-      expired_message: 登录状态已失效，请重新登录 Debug Chrome
+        selector: 'button[data-selector="more-menu"][data-e2e="suite-more-btn"]'
+        timeout_ms: 20000
+      expired_message: 飞书登录状态已失效或当前账号无权访问文档，请检查 Debug Chrome
 
     steps:
+      - action: click
+        selector: 'button[data-selector="more-menu"][data-e2e="suite-more-btn"]'
+
+      - action: click
+        selector: 'div[role="menuitem"][aria-haspopup="true"][data-menu-id$="-EXPORT"]'
+
       - action: wait
-        selector: "#report-list"
-        timeout_ms: 15000
-
-      - action: hover
-        selector: "[data-report='monthly']"
+        selector: 'li[role="menuitem"].navigation-bar__moreMenu_v3-export-doc-markdown'
 
       - action: click
-        selector: "button.open-download-menu"
+        selector: 'li[role="menuitem"].navigation-bar__moreMenu_v3-export-doc-markdown'
+
+      - action: wait
+        selector: '.ud__modal__content:has(.ud__modal__titleContent:text-is("导出 Markdown 设置"))'
 
       - action: click
-        selector: "button.download-pdf"
+        selector: '.ud__modal__content:has(.ud__modal__titleContent:text-is("导出 Markdown 设置")) .ud__modal__footer button.ud__button--filled:text-is("导出")'
         expect: download
-        timeout_ms: 60000
+        timeout_ms: 120000
 
     output:
-      directory: monthly-report/downloads
-      filename: "monthly-report-{date:%Y-%m}.pdf"
+      directory: feishu-weekly-report
+      filename: "feishu-weekly-report-{date:%Y-%m-%d}.md"
       conflict: replace
       timezone: Asia/Shanghai
 
     validation:
       non_empty: true
       extensions:
-        - .pdf
-      min_bytes: 1024
-      signature: pdf
+        - .md
+      min_bytes: 1
+      signature: markdown
 
     execution:
-      timeout_ms: 120000
+      timeout_ms: 180000
       lock_timeout_ms: 1000
       safe_step_retries: 1
 ```
@@ -132,9 +182,12 @@ tasks:
 
 ### `login`
 
+- `redirect_hosts`：登录失效后可能跳转到的登录页域名；命中后任务立即失败并使用 `expired_message`。
 - `check.selector`：进入任务页面后用于确认登录状态的元素。
 - `check.timeout_ms`：登录状态检查超时。
 - `expired_message`：登录失效时返回的明确提示。
+
+登录页跳转和登录元素检查失败都直接结束任务并使用 `expired_message`。`redirect_hosts` 不属于业务导航白名单，任务不会在登录页继续执行操作。
 
 登录密码、Token 和 Cookie 不写入 YAML，登录状态由独立 Debug Chrome profile 保存。
 
@@ -168,9 +221,9 @@ tasks:
 - `non_empty`：拒绝空文件。
 - `extensions`：允许的文件扩展名。
 - `min_bytes`：最小文件大小。
-- `signature`：基础文件签名校验；例如 `pdf` 必须以 `%PDF-` 开始。
+- `signature`：文件类型校验器；`pdf` 检查 `%PDF-` 文件头，`zip` 检查 `PK` 文件头，`markdown` 检查有效 UTF-8 文本。
 
-扩展名和大小不能证明文件内容有效。例如登录失效时，网站可能返回 HTML 错误页并使用 `.pdf` 文件名。首版对已声明的文件类型执行基础签名校验；不支持的类型必须明确失败或在任务实现前补充校验器，不能静默退化为只看扩展名。
+扩展名和大小不能证明文件内容有效。例如登录失效时，网站可能返回 HTML 错误页并使用目标文件名。首版对 PDF、ZIP 和 Markdown 执行对应类型校验；Markdown 没有固定文件头，当前以 UTF-8 文本有效性作为基础校验。纯空白内容和 HTML 错误页识别属于后续校验增强项。不支持的类型必须明确失败或在任务实现前补充校验器，不能静默退化为只看扩展名。
 
 ### `execution`
 
@@ -225,7 +278,7 @@ tasks:
 
 Web 触发的 Runner 完成后必须主动写入最终 `succeeded` 或 `failed` 操作日志，不能依赖页面继续轮询；Manager 读取状态时仅负责补偿异常退出或旧状态遗漏的最终日志。Runner 子进程不继承 Hub Token 的值。
 
-## 9. 首版范围
+## 9. 当前范围
 
 包含：
 
@@ -235,7 +288,7 @@ Web 触发的 Runner 完成后必须主动写入最终 `succeeded` 或 `failed` 
 - Playwright 标准 `Download` 事件。
 - 单任务单文件下载。
 - 登录状态检查、共享浏览器跨进程互斥、任务超时和安全步骤有限重试。
-- 临时文件、基础文件签名校验和原子落盘。
+- 临时文件、PDF/ZIP 文件头与 Markdown 文本校验，以及原子落盘。
 - 命令行手动执行，为后续系统定时任务提供统一入口。
 
 暂不包含：
@@ -259,7 +312,7 @@ Web 触发的 Runner 完成后必须主动写入最终 `succeeded` 或 `failed` 
 - 任务只操作并清理自己创建的页面和弹窗，用户已有页面在成功和失败路径中都不受影响。
 - Playwright 断开后 Debug Chrome 及其中的登录状态仍然保留。
 - 下载触发步骤失败时不会自动从头重试，避免重复产生下载或服务端副作用。
-- `.pdf` 等已声明类型会进行基础文件签名校验，HTML 错误页不会被当作成功文件保存。
+- PDF、ZIP 和 Markdown 等已声明类型会执行对应的基础类型校验；Markdown 对纯空白内容和 HTML 错误页的识别属于后续增强项。
 - 日志能够定位失败步骤，且不泄露登录凭据和浏览器敏感状态。
 
 ## 11. 实现状态与后续顺序
@@ -270,5 +323,7 @@ Web 触发的 Runner 完成后必须主动写入最终 `succeeded` 或 `failed` 
 - [x] 实现共享浏览器文件锁、后台 Runner、原子状态、临时文件与签名校验。
 - [x] 实现首页卡片、全部任务页面和手动运行状态轮询。
 - [x] 实现首页 Debug Chrome 状态、启动和停止控制及最终状态确认。
-- [ ] 用一个真实网站完成手动执行验收。
+- [x] 完成飞书 Wiki 文档 Markdown 下载的真实流程与手动执行验收。
+- [x] 实现首页飞书环境登录状态检查及最近检查结果展示。
+- [x] 实现飞书登录二维码提取、安全展示、刷新与登录后清理。
 - [ ] 明确 Debug Chrome 常驻策略，稳定后接入各平台系统定时任务。

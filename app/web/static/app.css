@@ -449,10 +449,44 @@ input[type="password"] {
   margin-top: 0.35rem;
 }
 
-.automation-browser-row > button {
+.automation-browser-actions {
+  display: flex;
   flex: none;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.automation-browser-actions > button {
   min-width: 4.5rem;
   white-space: nowrap;
+}
+
+.automation-feishu-login {
+  display: grid;
+  justify-items: center;
+  gap: 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.9rem;
+  background: white;
+}
+
+.automation-feishu-login[hidden] {
+  display: none;
+}
+
+.automation-feishu-login img {
+  display: block;
+  width: min(200px, 100%);
+  height: auto;
+  image-rendering: auto;
+}
+
+.automation-feishu-login p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-align: center;
 }
 
 .automation-list {
@@ -480,12 +514,20 @@ input[type="password"] {
 
 .automation-item-copy span {
   margin-top: 0.25rem;
-  overflow: hidden;
   color: var(--muted);
   font-size: 0.72rem;
   line-height: 1.4;
+}
+
+.automation-item-copy .automation-item-status {
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.automation-item-copy .automation-item-reason {
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .automation-run {
@@ -571,6 +613,10 @@ input[type="password"] {
   max-width: 900px;
   margin-top: 2rem;
   margin-inline: auto;
+}
+
+.standalone-list-card {
+  margin-top: 2rem;
 }
 
 .markdown-body {
@@ -1037,7 +1083,14 @@ footer {
     flex-direction: column;
   }
 
-  .automation-browser-row > button {
+  .automation-browser-actions {
+    align-items: stretch;
+    flex-direction: column;
+    width: 100%;
+  }
+
+  .automation-browser-actions > button,
+  .automation-browser-actions > select {
     width: 100%;
   }
 

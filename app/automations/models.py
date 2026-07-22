@@ -44,11 +44,23 @@ class LoginCheckConfig(StrictAutomationModel):
 
 
 class LoginConfig(StrictAutomationModel):
+    redirect_hosts: list[str] = Field(default_factory=list)
     check: LoginCheckConfig
     expired_message: str = Field(
         default="登录状态已失效，请重新登录 Debug Chrome",
         min_length=1,
     )
+
+    @field_validator("redirect_hosts")
+    @classmethod
+    def normalize_redirect_hosts(cls, value: list[str]) -> list[str]:
+        hosts = []
+        for item in value:
+            host = item.strip().lower().rstrip(".")
+            if not host or "/" in host or ":" in host:
+                raise ValueError("redirect_hosts must contain hostnames only")
+            hosts.append(host)
+        return list(dict.fromkeys(hosts))
 
 
 class AutomationStep(StrictAutomationModel):
@@ -113,7 +125,7 @@ class ValidationConfig(StrictAutomationModel):
     non_empty: bool = True
     extensions: list[str] = Field(min_length=1)
     min_bytes: int = Field(default=1, ge=1)
-    signature: Literal["pdf", "zip"]
+    signature: Literal["pdf", "zip", "markdown"]
 
     @field_validator("extensions")
     @classmethod
@@ -131,6 +143,7 @@ class ValidationConfig(StrictAutomationModel):
         compatible = {
             "pdf": {".pdf"},
             "zip": {".zip", ".docx", ".xlsx", ".pptx"},
+            "markdown": {".md", ".markdown"},
         }[self.signature]
         if not compatible.intersection(self.extensions):
             raise ValueError("signature is incompatible with configured extensions")
@@ -210,11 +223,28 @@ class AutomationTaskPublic(StrictAutomationModel):
     state: AutomationState
 
 
+class FeishuEnvironmentState(StrictAutomationModel):
+    state: Literal[
+        "unchecked",
+        "checking",
+        "available",
+        "login_required",
+        "failed",
+        "browser_stopped",
+    ] = "unchecked"
+    message: str = "未检查"
+    checked_at: datetime | None = None
+    qr_available: bool = False
+
+
 class AutomationListData(StrictAutomationModel):
     enabled: bool
     browser_state: Literal["running", "stopped", "invalid", "unavailable"]
     browser_message: str
     browser_mode: str | None = None
+    feishu_environment: FeishuEnvironmentState = Field(
+        default_factory=FeishuEnvironmentState
+    )
     enabled_count: int = 0
     tasks: list[AutomationTaskPublic]
 
@@ -229,3 +259,7 @@ class BrowserControlResult(StrictAutomationModel):
     state: Literal["running", "stopped"]
     mode: str | None = None
     message: str
+
+
+class BrowserStartRequest(StrictAutomationModel):
+    mode: Literal["headed", "headless"] = "headed"

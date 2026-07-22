@@ -9,7 +9,7 @@
   </head>
   <body data-session-id="{{ session.id }}" data-page-id="{{ page.id }}">
     <header>
-      <a href="/?view=codex">‹ 返回</a>
+      <a id="return-codex" href="/?view=codex">‹ 返回</a>
       <div>
         <strong title="{{ session.title or session.workspace_name }}">{{ session.title or session.workspace_name }}</strong>
         <span>{{ session.cwd }}</span>

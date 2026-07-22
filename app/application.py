@@ -57,7 +57,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                 "script-src 'self'; "
                 "style-src 'self'; "
                 "connect-src 'self'; "
-                "img-src 'self' data:; "
+                "img-src 'self' data: blob:; "
                 "object-src 'none'; "
                 "base-uri 'none'; "
                 "frame-ancestors 'none'"

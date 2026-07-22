@@ -28,16 +28,28 @@ async def test_home_page_is_public_and_contains_no_token(settings: Settings) -> 
     assert 'id="automation-title"' in response.text
     assert 'id="automation-list"' in response.text
     assert 'id="automation-browser-control"' in response.text
+    assert 'id="automation-browser-mode"' in response.text
+    assert 'id="automation-feishu-badge"' in response.text
+    assert 'id="automation-feishu-check"' in response.text
+    assert 'id="automation-feishu-login"' in response.text
+    assert 'id="automation-feishu-qr"' in response.text
+    assert 'id="automation-feishu-verify"' not in response.text
+    assert "飞书环境" in response.text
+    assert "有界面模式" in response.text
+    assert "无界面模式" in response.text
     assert 'id="refresh-automations"' in response.text
+    assert "复用登录状态执行任务。" in response.text
     assert 'id="refresh-project-docs"' in response.text
     assert 'id="project-docs-count"' in response.text
     assert 'href="/automations"' in response.text
     assert 'id="design-documents-title"' in response.text
-    assert "配置驱动的网页下载自动化方案" in response.text
-    assert "首版已实现" in response.text
+    assert "配置驱动的飞书文档下载自动化方案" in response.text
+    assert "已实现并验收" in response.text
     assert "1 份文档" in response.text
     assert 'href="/project-docs/automation-download"' in response.text
+    assert 'target="_blank"' not in response.text
     assert 'href="/project-docs"' in response.text
+    assert 'href="/project-docs" target="_blank"' not in response.text
     assert "节点维护" in response.text
     assert "维护检查" in response.text
     assert "服务操作" in response.text
@@ -98,6 +110,11 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert terminal_script.status_code == 200
     assert "innerHTML" not in script.text
     assert "/api/automations/browser/" in script.text
+    assert "automationBrowserMode.value" in script.text
+    browser_control_error = script.text.split(
+        'error.message || "Debug Chrome 操作失败。"', 1
+    )[0].rsplit("} catch (error) {", 1)[1]
+    assert "await loadAutomations();" in browser_control_error
     assert "/api/project-docs" in script.text
     assert "loadProjectDocuments" in script.text
     assert "正在刷新文档列表" not in script.text
@@ -110,13 +127,21 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "确定退出当前节点吗" in script.text
     assert "createTaskCard" in script.text
     assert "createCodexCard" in script.text
+    assert "ensureCodexCard" in script.text
+    assert "elements.codexCardHost.replaceChildren();" in script.text
     assert "createCodexSession" in script.text
     assert "enterCodexSession" in script.text
+    assert "CODEX_REFRESH_KEY" in script.text
+    assert 'window.addEventListener("pageshow"' in script.text
     assert "stopCodexSession" in script.text
     assert "archiveCodexSession" in script.text
     assert "removeCodexSession" in script.text
     assert "renderCodexWorkspaces" in script.text
     assert "renderCodexSessions" in script.text
+    assert "renderCodexData" in script.text
+    assert "restoreCodexCardCache" in script.text
+    assert "storeCodexCardCache" in script.text
+    assert "hub.codexCardCache" in script.text
     assert "formatSessionTime" in script.text
     assert "dependencyMessage" in script.text
     assert "task-card-result" in script.text
@@ -129,6 +154,7 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "showCodexPanel" in script.text
     assert "restartHub" in script.text
     assert "scrollCodexPanelIntoView" in script.text
+    assert "任务状态已更新。" not in script.text
     assert "/api/maintenance/restart" in script.text
     assert "/api/health" in script.text
     assert "waitForHubRestart" in script.text
@@ -141,6 +167,8 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "scrollIntoView" not in script.text
     assert "/api/codex/sessions" in script.text
     assert "connection" in terminal_script.text
+    assert "window.history.back()" in terminal_script.text
+    assert "hub.codexReturnToDashboard" in terminal_script.text
     assert "response.status === 404" in terminal_script.text
     assert ".section-heading > .button-link" in stylesheet.text
     assert "white-space: nowrap" in stylesheet.text
@@ -180,9 +208,12 @@ async def test_automation_details_page_and_script_are_available(
 
     assert page.status_code == 200
     assert "全部任务" in page.text
+    assert "返回首页" not in page.text
+    assert "standalone-list-card" in page.text
     assert 'id="detail-automation-list"' in page.text
     assert script.status_code == 200
     assert "/api/automations?all_tasks=true" in script.text
+    assert "showMessage(data.browser_message" not in script.text
     assert "innerHTML" not in script.text
     assert "default-src 'self'" in page.headers["content-security-policy"]
 
@@ -196,14 +227,17 @@ async def test_design_document_pages_render_markdown(settings: Settings) -> None
         missing = await client.get("/project-docs/not-registered")
 
     assert listing.status_code == 200
-    assert "配置驱动的网页下载自动化方案" in listing.text
+    assert "配置驱动的飞书文档下载自动化方案" in listing.text
+    assert "返回首页" not in listing.text
+    assert "standalone-list-card" in listing.text
+    assert 'target="_blank"' not in listing.text
     assert detail.status_code == 200
     assert "返回全部文档" not in detail.text
     assert "document-navigation" not in detail.text
     assert "document-updated" not in detail.text
     assert "Hub 设计文档只读展示" not in detail.text
     assert '<p class="eyebrow">设计文档</p>' not in detail.text
-    assert '<span class="badge badge-success">首版已实现</span>' not in detail.text
+    assert '<span class="badge badge-success">已实现并验收</span>' not in detail.text
     assert '<article class="markdown-body">' in detail.text
     assert "<h2" in detail.text
     assert "核心主流程" in detail.text
@@ -264,6 +298,7 @@ async def test_terminal_page_uses_session_title(settings: Settings) -> None:
     assert response.status_code == 200
     assert "真实会话标题 · Codex PTY" in response.text
     assert 'src="/static/terminal.js"' in response.text
+    assert 'id="return-codex"' in response.text
     assert 'data-page-id="page-1"' in response.text
     assert "page_id=page-1" in response.text
     assert "disableLeaveAlert=true" in response.text
@@ -307,6 +342,7 @@ async def test_security_headers_apply_to_page_assets_and_api(
         assert response.headers["referrer-policy"] == "no-referrer"
     for response in [page, asset]:
         assert "default-src 'self'" in response.headers["content-security-policy"]
+        assert "img-src 'self' data: blob:" in response.headers["content-security-policy"]
         assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
     assert "content-security-policy" not in api.headers
 

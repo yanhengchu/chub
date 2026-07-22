@@ -48,6 +48,8 @@ def _host_allowed(url: str, allowed_hosts: list[str]) -> bool:
 def _check_navigation(url: str, task: AutomationTaskConfig) -> None:
     if url == "about:blank":
         return
+    if _host_allowed(url, task.login.redirect_hosts):
+        raise AutomationFailed(task.login.expired_message)
     if not _host_allowed(url, task.browser.allowed_hosts):
         raise AutomationFailed("页面跳转到了未允许的域名")
 
@@ -87,11 +89,19 @@ def _validate_download(
     extension = (target_suffix or path.suffix).lower()
     if extension not in task.validation.extensions:
         raise AutomationFailed("下载文件扩展名不符合配置")
-    expected = SIGNATURES[task.validation.signature]
-    with path.open("rb") as file:
-        actual = file.read(len(expected))
-    if actual != expected:
-        raise AutomationFailed("下载文件签名校验失败")
+    if task.validation.signature == "markdown":
+        try:
+            content = path.read_text(encoding="utf-8-sig")
+        except UnicodeDecodeError as exc:
+            raise AutomationFailed("下载文件不是有效的 UTF-8 Markdown 文本") from exc
+        if "\x00" in content:
+            raise AutomationFailed("下载文件不是有效的 Markdown 文本")
+    else:
+        expected = SIGNATURES[task.validation.signature]
+        with path.open("rb") as file:
+            actual = file.read(len(expected))
+        if actual != expected:
+            raise AutomationFailed("下载文件签名校验失败")
     return size
 
 
@@ -134,7 +144,7 @@ async def _run_browser_task(
         page.on("popup", track_page)
 
     session = session_factory()
-    async with session(ensure_page=False) as chrome:
+    async with session(ensure_page=True) as chrome:
         page = await chrome.context.new_page()
         track_page(page)
         try:

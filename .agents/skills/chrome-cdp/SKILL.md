@@ -166,6 +166,16 @@ Chrome before and after connecting, reuses the first browser context and page,
 and creates a page only when the context is empty. Pass `ensure_page=False` when
 the caller requires a non-mutating connection.
 
+If a headed Chrome process remains alive after all of its windows have been
+closed, Playwright may reject the CDP connection because no default page context
+is available. With `ensure_page=True`, `session()` checks the local CDP target
+list before connecting and creates one managed `about:blank` page when no page
+target exists. It rechecks once if a connection race still occurs. The recovery
+page remains open as the base Debug Chrome window;
+callers should continue creating and closing only their own task pages.
+`ensure_page=False` never creates this recovery target and preserves the
+non-mutating connection contract.
+
 ```python
 from scripts.playwright_session import session
 

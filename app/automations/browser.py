@@ -46,8 +46,8 @@ def debug_chrome_status() -> tuple[str, str, str | None]:
     return "invalid", "Debug Chrome 状态异常", None
 
 
-def start_debug_chrome():
-    return _chrome_debug_module().start(headless=False)
+def start_debug_chrome(mode: str = "headed"):
+    return _chrome_debug_module().start(headless=mode == "headless")
 
 
 def stop_debug_chrome():

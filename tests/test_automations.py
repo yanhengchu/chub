@@ -12,11 +12,12 @@ import pytest
 
 from app.automations.config import load_automations
 from app.automations.lock import file_lock
-from app.automations.manager import AutomationManager
-from app.automations.models import AutomationState
+from app.automations.manager import AutomationManager, _feishu_environment_for_url
+from app.automations.models import AutomationState, FeishuEnvironmentState
 from app.automations.operations import log_final_operation
 from app.automations.runner import (
     AutomationFailed,
+    _check_navigation,
     _run_browser_task,
     _validate_download,
     run_automation,
@@ -95,6 +96,38 @@ def test_load_automations_requires_exactly_one_download(tmp_path: Path) -> None:
         load_automations(path)
 
 
+def test_login_redirect_host_uses_expired_message(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    data = automation_data()
+    data["tasks"]["monthly-report"]["login"] = {
+        "redirect_hosts": ["ACCOUNTS.EXAMPLE.COM."],
+        "check": {"selector": "#user"},
+        "expired_message": "登录状态已失效",
+    }
+    config_file = tmp_path / "automations.yaml"
+    config_file.write_text(
+        __import__("yaml").safe_dump(data, allow_unicode=True),
+        encoding="utf-8",
+    )
+    task = load_automations(config_file).tasks["monthly-report"]
+
+    with pytest.raises(AutomationFailed, match="登录状态已失效"):
+        _check_navigation("https://accounts.example.com/login", task)
+
+
+def test_unlisted_redirect_host_remains_disallowed(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    config_file = configure_automations(settings, tmp_path)
+    task = load_automations(config_file).tasks["monthly-report"]
+
+    with pytest.raises(AutomationFailed, match="未允许的域名"):
+        _check_navigation("https://unexpected.example.net/login", task)
+
+
 def test_state_store_writes_atomic_private_json(tmp_path: Path) -> None:
     store = AutomationStateStore(tmp_path)
     state = AutomationState(task_id="task", status="queued", run_id="run")
@@ -117,6 +150,57 @@ def test_download_validation_rejects_html_saved_as_pdf(
     path.write_text("<html>login</html>", encoding="utf-8")
 
     with pytest.raises(AutomationFailed, match="签名校验失败"):
+        _validate_download(path, task)
+
+
+def test_download_validation_accepts_utf8_markdown(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    data = automation_data()
+    task_data = data["tasks"]["monthly-report"]
+    task_data["output"]["filename"] = "report.md"
+    task_data["validation"] = {
+        "non_empty": True,
+        "extensions": [".md"],
+        "min_bytes": 1,
+        "signature": "markdown",
+    }
+    config_file = tmp_path / "automations.yaml"
+    config_file.write_text(
+        __import__("yaml").safe_dump(data, allow_unicode=True),
+        encoding="utf-8",
+    )
+    task = load_automations(config_file).tasks["monthly-report"]
+    path = tmp_path / "report.md"
+    path.write_text("# 国内业务周报\n\n本周进展。\n", encoding="utf-8")
+
+    assert _validate_download(path, task) == path.stat().st_size
+
+
+def test_download_validation_rejects_binary_saved_as_markdown(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    data = automation_data()
+    task_data = data["tasks"]["monthly-report"]
+    task_data["output"]["filename"] = "report.md"
+    task_data["validation"] = {
+        "non_empty": True,
+        "extensions": [".md"],
+        "min_bytes": 1,
+        "signature": "markdown",
+    }
+    config_file = tmp_path / "automations.yaml"
+    config_file.write_text(
+        __import__("yaml").safe_dump(data, allow_unicode=True),
+        encoding="utf-8",
+    )
+    task = load_automations(config_file).tasks["monthly-report"]
+    path = tmp_path / "report.md"
+    path.write_bytes(b"\x00\x01binary")
+
+    with pytest.raises(AutomationFailed, match="Markdown"):
         _validate_download(path, task)
 
 
@@ -346,6 +430,104 @@ def test_manager_does_not_pass_hub_token_value_to_runner(
     assert popen.call_args.kwargs["env"]["HUB_TOKEN"] == ""
 
 
+def test_feishu_environment_url_classification() -> None:
+    checked_at = datetime.now().astimezone()
+
+    available = _feishu_environment_for_url(
+        "https://qw6xxurweq.feishu.cn/drive/home/",
+        checked_at=checked_at,
+    )
+    login_required = _feishu_environment_for_url(
+        "https://accounts.feishu.cn/accounts/page/login?redirect=1",
+        checked_at=checked_at,
+    )
+    failed = _feishu_environment_for_url(
+        "https://unexpected.example.com/",
+        checked_at=checked_at,
+    )
+
+    assert available.state == "available"
+    assert login_required.state == "login_required"
+    assert failed.state == "failed"
+
+
+def test_manager_checks_and_caches_feishu_environment(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    configure_automations(settings, tmp_path)
+    manager = AutomationManager(settings)
+    checked_at = datetime.now().astimezone()
+
+    async def fake_check():
+        return FeishuEnvironmentState(
+            state="available",
+            message="登录有效",
+            checked_at=checked_at,
+        )
+
+    with (
+        patch(
+            "app.automations.manager.debug_chrome_status",
+            return_value=("running", "Debug Chrome 已运行", "有界面模式"),
+        ),
+        patch.object(manager, "_check_feishu_page", fake_check),
+    ):
+        result = manager.check_feishu_environment()
+        listing = manager.list()
+
+    assert result.state == "available"
+    assert listing.feishu_environment == result
+
+
+def test_manager_resets_feishu_environment_when_browser_stops(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    configure_automations(settings, tmp_path)
+    manager = AutomationManager(settings)
+    manager._set_feishu_environment(
+        FeishuEnvironmentState(state="available", message="登录有效")
+    )
+
+    with patch(
+        "app.automations.manager.debug_chrome_status",
+        return_value=("stopped", "Debug Chrome 未启动", None),
+    ):
+        stopped = manager.list()
+
+    assert stopped.feishu_environment.state == "browser_stopped"
+
+
+def test_manager_stores_private_feishu_qr_and_clears_it_on_browser_stop(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    configure_automations(settings, tmp_path)
+    manager = AutomationManager(settings)
+    manager._save_feishu_qr(b"\x89PNG\r\n\x1a\ncontent")
+    manager._set_feishu_environment(
+        FeishuEnvironmentState(
+            state="login_required",
+            message="需要登录",
+            qr_available=True,
+        )
+    )
+    content = manager.feishu_qr_content()
+    path = settings.automations.data_dir / "runtime" / "feishu-login-qr.png"
+
+    assert content == b"\x89PNG\r\n\x1a\ncontent"
+    assert path.stat().st_mode & 0o777 == 0o600
+
+    with patch(
+        "app.automations.manager.debug_chrome_status",
+        return_value=("stopped", "Debug Chrome 未启动", None),
+    ):
+        manager.list()
+
+    assert not path.exists()
+
+
 def test_manager_logs_final_web_operation_once(
     settings: Settings,
     tmp_path: Path,
@@ -430,11 +612,30 @@ def test_manager_starts_debug_chrome_and_confirms_final_state(
     with patch(
         "app.automations.manager.start_debug_chrome",
         return_value=SimpleNamespace(state="running", mode="headed"),
-    ):
+    ) as start:
         result = manager.control_browser("start")
 
     assert result.state == "running"
     assert result.mode == "有界面模式"
+    start.assert_called_once_with("headed")
+
+
+def test_manager_starts_debug_chrome_headless(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    configure_automations(settings, tmp_path)
+    manager = AutomationManager(settings)
+
+    with patch(
+        "app.automations.manager.start_debug_chrome",
+        return_value=SimpleNamespace(state="running", mode="headless"),
+    ) as start:
+        result = manager.control_browser("start", "headless")
+
+    assert result.state == "running"
+    assert result.mode == "无界面模式"
+    start.assert_called_once_with("headless")
 
 
 def test_manager_refuses_to_stop_browser_while_automation_lock_is_held(
