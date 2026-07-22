@@ -74,6 +74,13 @@ class CodexPtyConfig(StrictModel):
     max_running: int = Field(default=3, ge=1, le=10)
 
 
+class AutomationsConfig(StrictModel):
+    enabled: bool = True
+    config_file: Path = Path("config/automations.local.yaml")
+    data_dir: Path = Path("data/automations")
+    max_home_tasks: int = Field(default=3, ge=1, le=10)
+
+
 class Settings(StrictModel):
     app: AppConfig
     node: NodeConfig
@@ -82,6 +89,7 @@ class Settings(StrictModel):
     tasks: TasksConfig = TasksConfig()
     logs: LogsConfig = LogsConfig()
     codex_pty: CodexPtyConfig = CodexPtyConfig()
+    automations: AutomationsConfig = AutomationsConfig()
 
     def resolve_runtime_paths(self) -> "Settings":
         if not self.logs.file.is_absolute():
@@ -91,6 +99,10 @@ class Settings(StrictModel):
         self.codex_pty.workspace = self.codex_pty.workspace.expanduser().resolve()
         if not self.codex_pty.data_file.is_absolute():
             self.codex_pty.data_file = PROJECT_ROOT / self.codex_pty.data_file
+        if not self.automations.config_file.is_absolute():
+            self.automations.config_file = PROJECT_ROOT / self.automations.config_file
+        if not self.automations.data_dir.is_absolute():
+            self.automations.data_dir = PROJECT_ROOT / self.automations.data_dir
         return self
 
 

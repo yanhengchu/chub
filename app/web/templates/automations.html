@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>自动化任务 · {{ app_name }}</title>
+    <link rel="stylesheet" href="/static/app.css">
+    <script src="/static/automations.js" defer></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <div>
+        <p class="eyebrow">自动化</p>
+        <h1>自动化任务</h1>
+      </div>
+      <a class="button-link" href="/">返回首页</a>
+    </header>
+    <main>
+      <section class="card automation-detail-card" aria-labelledby="automation-detail-title">
+        <div class="section-heading">
+          <div class="card-heading-copy">
+            <p class="section-kicker">任务状态</p>
+            <h2 id="automation-detail-title">全部任务</h2>
+            <p class="section-description">查看任务最近状态并手动运行。</p>
+          </div>
+          <button id="refresh-automations" class="button-secondary" type="button">刷新</button>
+        </div>
+        <div class="automation-summary">
+          <span id="detail-browser-badge" class="badge badge-muted">正在检查</span>
+          <span id="detail-automation-count">0 个任务</span>
+        </div>
+        <div id="detail-automation-list" class="automation-list"></div>
+        <p id="detail-automation-message" class="message" aria-live="polite"></p>
+      </section>
+    </main>
+    <footer>自动化任务不会自行启动或停止 Debug Chrome。</footer>
+  </body>
+</html>

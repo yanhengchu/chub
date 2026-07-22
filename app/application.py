@@ -13,8 +13,10 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from app.api.health import router as health_router
+from app.api.automations import router as automations_router
 from app.api.logs import router as logs_router
 from app.api.maintenance import router as maintenance_router
+from app.api.project_documents import router as project_documents_router
 from app.api.status import router as status_router
 from app.api.tasks import router as tasks_router
 from app.codex.connections import TerminalConnectionRegistry
@@ -22,6 +24,7 @@ from app.codex.manager import CodexPtyManager
 from app.codex.routes import api_router as codex_api_router
 from app.codex.routes import web_router as codex_web_router
 from app.codex.tickets import TerminalTicketStore
+from app.automations.manager import AutomationManager
 from app.core.config import Settings, load_settings
 from app.core.logger import configure_logging
 from app.core.network import is_tailscale_ip
@@ -47,6 +50,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             request.url.path == "/"
             or request.url.path.startswith("/static/")
             or request.url.path.startswith("/project-docs")
+            or request.url.path.startswith("/automations")
         ):
             response.headers["Content-Security-Policy"] = (
                 "default-src 'self'; "
@@ -144,6 +148,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         resolved_settings,
         detected_platform,
     )
+    application.state.automation_manager = AutomationManager(resolved_settings)
     application.add_middleware(SecurityHeadersMiddleware)
     application.add_exception_handler(ApiError, api_error_handler)
     application.add_exception_handler(
@@ -153,8 +158,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.add_exception_handler(StarletteHTTPException, http_error_handler)
     application.add_exception_handler(Exception, internal_error_handler)
     application.include_router(health_router)
+    application.include_router(automations_router)
     application.include_router(logs_router)
     application.include_router(maintenance_router)
+    application.include_router(project_documents_router)
     application.include_router(status_router)
     application.include_router(tasks_router)
     application.include_router(codex_api_router)

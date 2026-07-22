@@ -1,0 +1,48 @@
+version: 1
+
+tasks:
+  monthly-report:
+    name: "月度报表下载"
+    description: "从固定网站下载月度报表。"
+    enabled: false
+
+    browser:
+      session: debug-chrome
+      start_url: "https://example.com/reports"
+      allowed_hosts:
+        - example.com
+
+    login:
+      check:
+        selector: "[data-testid='user-avatar']"
+        timeout_ms: 10000
+      expired_message: "登录状态已失效，请重新登录 Debug Chrome"
+
+    steps:
+      - action: wait
+        selector: "#report-list"
+        timeout_ms: 15000
+      - action: click
+        selector: "button.open-download-menu"
+      - action: click
+        selector: "button.download-pdf"
+        expect: download
+        timeout_ms: 60000
+
+    output:
+      directory: "monthly-report/downloads"
+      filename: "monthly-report-{date:%Y-%m}.pdf"
+      conflict: replace
+      timezone: "Asia/Shanghai"
+
+    validation:
+      non_empty: true
+      extensions:
+        - .pdf
+      min_bytes: 1024
+      signature: pdf
+
+    execution:
+      timeout_ms: 120000
+      lock_timeout_ms: 1000
+      safe_step_retries: 1

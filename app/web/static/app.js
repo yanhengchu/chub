@@ -22,6 +22,16 @@ const elements = {
   refreshStatus: document.querySelector("#refresh-status"),
   restartHub: document.querySelector("#restart-hub"),
   codexCardHost: document.querySelector("#codex-card-host"),
+  automationBrowserBadge: document.querySelector("#automation-browser-badge"),
+  automationBrowserControl: document.querySelector("#automation-browser-control"),
+  automationCount: document.querySelector("#automation-count"),
+  automationList: document.querySelector("#automation-list"),
+  automationMessage: document.querySelector("#automation-message"),
+  refreshAutomations: document.querySelector("#refresh-automations"),
+  projectDocsList: document.querySelector(".design-document-list-compact"),
+  projectDocsCount: document.querySelector("#project-docs-count"),
+  projectDocsMessage: document.querySelector("#project-docs-message"),
+  refreshProjectDocs: document.querySelector("#refresh-project-docs"),
   taskList: document.querySelector("#task-list"),
   tasksMessage: document.querySelector("#tasks-message"),
   codexPanel: null,
@@ -42,6 +52,8 @@ let taskRunning = false;
 let accessVersion = 0;
 let connectionAttempt = 0;
 let activeLogSource = "operations";
+let automationPollTimer = null;
+let automationBrowserState = "unavailable";
 
 const TASK_TEXT = {
   show_version: ["版本信息", "查看 Hub、Python、节点和平台版本。"],
@@ -178,10 +190,25 @@ async function waitForHubRestart(previousInstanceId) {
   throw new Error("重启后未能连接 Hub，请稍后刷新页面检查服务状态。");
 }
 
+async function refreshCardsAfterRestart() {
+  await Promise.all([
+    loadStatus(),
+    loadTasks(),
+    loadCodexSessions(),
+    loadAutomations(),
+    loadLogs(),
+  ]);
+}
+
 function clearProtectedView() {
   elements.dashboard.hidden = true;
   elements.connectedBar.hidden = true;
   elements.taskList.replaceChildren();
+  elements.automationList.replaceChildren();
+  if (automationPollTimer) {
+    window.clearTimeout(automationPollTimer);
+    automationPollTimer = null;
+  }
   elements.codexPanel = null;
   elements.codexWorkspaces = null;
   elements.codexSessions = null;
@@ -377,7 +404,7 @@ async function connectWithToken(token, remember, savedCredential = false) {
     storeToken(token, remember);
     renderStatus(status);
     showConnectedView(status);
-    await Promise.all([loadTasks(), loadCodexSessions()]);
+    await Promise.all([loadTasks(), loadCodexSessions(), loadAutomations()]);
     if (new URLSearchParams(window.location.search).get("view") === "codex") {
       await showCodexPanel();
     }
@@ -975,6 +1002,234 @@ async function loadTasks() {
   }
 }
 
+function automationStatusText(state) {
+  return {
+    idle: "尚未执行",
+    queued: "等待执行",
+    running: "执行中",
+    success: "成功",
+    failed: "失败",
+  }[state] || state;
+}
+
+function automationTime(value) {
+  if (!value) {
+    return "";
+  }
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? ""
+    : date.toLocaleString("zh-CN", { hour12: false });
+}
+
+async function runAutomation(task, button) {
+  button.disabled = true;
+  button.textContent = "受理中…";
+  try {
+    await apiFetch(`/api/automations/${encodeURIComponent(task.id)}/run`, {
+      method: "POST",
+    });
+    setMessage(elements.automationMessage, `${task.name}已受理，正在等待执行。`, "success");
+    await loadAutomations(true);
+  } catch (error) {
+    if (!handleAccessError(error)) {
+      setMessage(
+        elements.automationMessage,
+        error.message || "自动化任务启动失败。",
+        "error",
+      );
+    }
+  } finally {
+    button.textContent = "运行";
+  }
+}
+
+async function controlAutomationBrowser() {
+  const action = automationBrowserState === "running" ? "stop" : "start";
+  if (
+    action === "stop"
+    && !window.confirm("确定停止 Debug Chrome 吗？已打开的调试浏览器页面会关闭。")
+  ) {
+    return;
+  }
+  elements.automationBrowserControl.disabled = true;
+  elements.automationBrowserControl.textContent = action === "start" ? "启动中…" : "停止中…";
+  try {
+    const result = await apiFetch(`/api/automations/browser/${action}`, {
+      method: "POST",
+    });
+    setMessage(elements.automationMessage, result.message, "success");
+    await loadAutomations();
+  } catch (error) {
+    if (!handleAccessError(error)) {
+      setMessage(
+        elements.automationMessage,
+        error.message || "Debug Chrome 操作失败。",
+        "error",
+      );
+      await loadAutomations();
+    }
+  }
+}
+
+function renderAutomations(data) {
+  elements.automationList.replaceChildren();
+  const browserRunning = data.browser_state === "running";
+  const automationBusy = data.tasks.some((task) => ["queued", "running"].includes(task.state.status));
+  automationBrowserState = data.browser_state;
+  setBadge(
+    elements.automationBrowserBadge,
+    `${data.browser_message}${data.browser_mode ? ` · ${data.browser_mode}` : ""}`,
+    browserRunning ? "success" : data.browser_state === "stopped" ? "timeout" : "failed",
+  );
+  elements.automationBrowserControl.disabled = (
+    !["running", "stopped"].includes(data.browser_state)
+    || (browserRunning && automationBusy)
+  );
+  elements.automationBrowserControl.textContent = browserRunning
+    ? automationBusy ? "任务执行中" : "停止"
+    : "启动";
+  elements.automationCount.textContent = `已启用 ${data.enabled_count} 个任务`;
+
+  if (!data.enabled) {
+    setMessage(elements.automationMessage, "自动化任务未启用。", "error");
+    return false;
+  }
+  if (!data.tasks.length) {
+    const empty = document.createElement("p");
+    empty.className = "empty-state";
+    empty.textContent = "暂无自动化任务，请先配置 automations.local.yaml。";
+    elements.automationList.append(empty);
+    setMessage(elements.automationMessage, data.browser_message);
+    return false;
+  }
+
+  let active = false;
+  data.tasks.forEach((task) => {
+    const item = document.createElement("article");
+    const copy = document.createElement("div");
+    const name = document.createElement("strong");
+    const meta = document.createElement("span");
+    const button = document.createElement("button");
+    const busy = ["queued", "running"].includes(task.state.status);
+    active = active || busy;
+    item.className = "automation-item";
+    copy.className = "automation-item-copy";
+    name.textContent = task.name;
+    const time = automationTime(task.state.finished_at || task.state.started_at);
+    meta.textContent = `${automationStatusText(task.state.status)}${time ? ` · ${time}` : ""} · ${task.state.message}`;
+    button.type = "button";
+    button.className = "button-secondary automation-run";
+    button.textContent = busy ? "执行中…" : "运行";
+    button.disabled = !browserRunning || !task.enabled || busy;
+    button.addEventListener("click", () => runAutomation(task, button));
+    copy.append(name, meta);
+    item.append(copy, button);
+    elements.automationList.append(item);
+  });
+  setMessage(elements.automationMessage, data.browser_message, browserRunning ? "success" : "error");
+  return active;
+}
+
+async function loadAutomations(fromRun = false) {
+  const requestVersion = accessVersion;
+  elements.refreshAutomations.disabled = true;
+  try {
+    const data = await apiFetch("/api/automations");
+    if (requestVersion !== accessVersion) {
+      return;
+    }
+    const active = renderAutomations(data);
+    if (automationPollTimer) {
+      window.clearTimeout(automationPollTimer);
+      automationPollTimer = null;
+    }
+    if (active) {
+      automationPollTimer = window.setTimeout(loadAutomations, 1000);
+    } else if (fromRun) {
+      setMessage(elements.automationMessage, "任务状态已更新。", "success");
+    }
+  } catch (error) {
+    if (requestVersion !== accessVersion) {
+      return;
+    }
+    if (!handleAccessError(error)) {
+      setMessage(elements.automationMessage, error.message || "自动化任务读取失败。", "error");
+    }
+  } finally {
+    elements.refreshAutomations.disabled = false;
+  }
+}
+
+function projectDocumentDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function renderProjectDocuments(data) {
+  elements.projectDocsList.replaceChildren();
+  data.documents.forEach((item) => {
+    const link = document.createElement("a");
+    const copy = document.createElement("span");
+    const title = document.createElement("strong");
+    const summary = document.createElement("span");
+    const meta = document.createElement("span");
+    const badge = document.createElement("span");
+    const time = document.createElement("time");
+    link.className = "design-document-item";
+    link.href = `/project-docs/${encodeURIComponent(item.id)}`;
+    link.target = "_blank";
+    link.rel = "noopener";
+    copy.className = "design-document-copy";
+    title.textContent = item.title;
+    summary.textContent = item.summary;
+    meta.className = "design-document-meta";
+    badge.className = "badge badge-success";
+    badge.textContent = item.status;
+    time.dateTime = item.updated_at;
+    time.textContent = projectDocumentDate(item.updated_at);
+    copy.append(title, summary);
+    meta.append(badge, time);
+    link.append(copy, meta);
+    elements.projectDocsList.append(link);
+  });
+  if (!data.documents.length) {
+    const empty = document.createElement("p");
+    empty.className = "empty-state";
+    empty.textContent = "暂无设计文档。";
+    elements.projectDocsList.append(empty);
+  }
+  elements.projectDocsCount.textContent = `${data.count} 份文档`;
+}
+
+async function loadProjectDocuments() {
+  const requestVersion = accessVersion;
+  elements.refreshProjectDocs.disabled = true;
+  setMessage(elements.projectDocsMessage, "");
+  try {
+    const data = await apiFetch("/api/project-docs");
+    if (requestVersion !== accessVersion) {
+      return;
+    }
+    renderProjectDocuments(data);
+  } catch (error) {
+    if (requestVersion !== accessVersion) {
+      return;
+    }
+    if (!handleAccessError(error)) {
+      setMessage(elements.projectDocsMessage, error.message || "文档列表读取失败。", "error");
+    }
+  } finally {
+    elements.refreshProjectDocs.disabled = false;
+  }
+}
+
 async function loadLogs() {
   const requestVersion = accessVersion;
   elements.loadLogs.disabled = true;
@@ -1028,7 +1283,10 @@ elements.tokenForm.addEventListener("submit", (event) => {
 });
 
 elements.refreshStatus.addEventListener("click", loadStatus);
+elements.refreshAutomations.addEventListener("click", () => loadAutomations());
+elements.refreshProjectDocs.addEventListener("click", loadProjectDocuments);
 elements.loadLogs.addEventListener("click", loadLogs);
+elements.automationBrowserControl.addEventListener("click", controlAutomationBrowser);
 
 elements.restartHub.addEventListener("click", async () => {
   if (!window.confirm("确定重启当前节点吗？重启过程中页面会短暂失联。")) {
@@ -1041,6 +1299,8 @@ elements.restartHub.addEventListener("click", async () => {
     await apiFetch("/api/maintenance/restart", { method: "POST" });
     setMessage(elements.globalMessage, "重启命令已下发，正在等待 Hub 恢复…");
     await waitForHubRestart(previousInstanceId);
+    setMessage(elements.globalMessage, "Chub 已恢复，正在同步卡片状态…");
+    await refreshCardsAfterRestart();
     setMessage(elements.globalMessage, "Chub 已重启并恢复连接。", "success");
   } catch (error) {
     if (!handleAccessError(error)) {

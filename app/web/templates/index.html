@@ -74,6 +74,33 @@
       <div id="dashboard" class="dashboard" hidden>
         <div id="codex-card-host"></div>
 
+        <section class="card automation-card" aria-labelledby="automation-title">
+          <div class="section-heading">
+            <div class="card-heading-copy">
+              <p class="section-kicker">自动化</p>
+              <h2 id="automation-title">自动化任务</h2>
+              <p class="section-description">复用浏览器登录状态执行固定任务。</p>
+            </div>
+            <button id="refresh-automations" class="button-secondary" type="button">刷新</button>
+          </div>
+          <div class="automation-browser-row">
+            <div class="automation-browser-copy">
+              <strong>浏览器环境</strong>
+              <span id="automation-browser-badge" class="badge badge-muted">正在检查</span>
+            </div>
+            <button id="automation-browser-control" class="button-secondary" type="button" disabled>检查中…</button>
+          </div>
+          <div class="automation-summary">
+            <span>配置任务</span>
+            <span id="automation-count">0 个任务</span>
+          </div>
+          <div id="automation-list" class="automation-list"></div>
+          <p id="automation-message" class="message" aria-live="polite"></p>
+          <div class="card-footer-actions">
+            <a class="button-link" href="/automations">全部任务</a>
+          </div>
+        </section>
+
         <section class="card design-documents-card" aria-labelledby="design-documents-title">
           <div class="section-heading">
             <div class="card-heading-copy">
@@ -81,7 +108,7 @@
               <h2 id="design-documents-title">设计文档</h2>
               <p class="section-description">查看功能方案、实现范围和验收标准。</p>
             </div>
-            <span class="badge badge-muted">{{ design_documents|length }} 份</span>
+            <button id="refresh-project-docs" class="button-secondary" type="button">刷新</button>
           </div>
           <div class="design-document-list design-document-list-compact">
             {% for document in design_documents %}
@@ -104,8 +131,12 @@
             <p class="empty-state">暂无设计文档。</p>
             {% endfor %}
           </div>
-          <div class="document-card-actions">
+          <p id="project-docs-message" class="message" aria-live="polite"></p>
+          <div class="card-footer">
+            <span id="project-docs-count" class="card-footer-meta">{{ design_document_count }} 份文档</span>
+            <div class="card-footer-actions">
             <a class="button-link" href="/project-docs" target="_blank" rel="noopener">查看全部文档</a>
+            </div>
           </div>
         </section>
 
@@ -142,20 +173,22 @@
             <div class="maintenance-heading maintenance-heading-actions">
               <div>
                 <p class="section-kicker">诊断信息</p>
-                <h3 id="logs-title">近期日志</h3>
+                <h3 id="logs-title">日志</h3>
               </div>
-              <div class="log-actions">
+              <a class="button-link" href="/logs">日志详情</a>
+            </div>
+            <div class="log-toolbar" role="group" aria-label="日志显示设置">
+              <div class="log-tabs" role="tablist" aria-label="日志类型">
+                <button class="log-tab is-active" data-log-source="operations" type="button" role="tab" aria-selected="true">操作日志</button>
+                <button class="log-tab" data-log-source="application" type="button" role="tab" aria-selected="false">运行日志</button>
+              </div>
+              <div class="log-toolbar-controls">
                 <select id="log-lines" aria-label="日志行数">
                   <option value="50">50 行</option>
                   <option value="100">100 行</option>
                 </select>
                 <button id="load-logs" class="button-secondary" type="button">刷新</button>
-                <a class="button-link" href="/logs">日志详情</a>
               </div>
-            </div>
-            <div class="log-tabs" role="tablist" aria-label="日志类型">
-              <button class="log-tab is-active" data-log-source="operations" type="button" role="tab" aria-selected="true">操作日志</button>
-              <button class="log-tab" data-log-source="application" type="button" role="tab" aria-selected="false">运行日志</button>
             </div>
             <p id="logs-message" class="message">默认读取最近 50 行操作日志。</p>
             <pre id="logs-output" class="logs-output" hidden></pre>

@@ -20,6 +20,7 @@ router = APIRouter(tags=["web"])
 @router.get("/", response_class=HTMLResponse, include_in_schema=False)
 def index(request: Request) -> HTMLResponse:
     settings = request.app.state.settings
+    design_documents = list_design_documents()
     return templates.TemplateResponse(
         request=request,
         name="index.html",
@@ -28,7 +29,8 @@ def index(request: Request) -> HTMLResponse:
             "page_title": settings.app.page_title
             or f"{settings.app.name} 管理面板",
             "app_version": settings.app.version,
-            "design_documents": list_design_documents()[:5],
+            "design_documents": design_documents[:5],
+            "design_document_count": len(design_documents),
         },
     )
 
@@ -39,6 +41,16 @@ def log_details(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(
         request=request,
         name="logs.html",
+        context={"app_name": settings.app.name},
+    )
+
+
+@router.get("/automations", response_class=HTMLResponse, include_in_schema=False)
+def automation_details(request: Request) -> HTMLResponse:
+    settings = request.app.state.settings
+    return templates.TemplateResponse(
+        request=request,
+        name="automations.html",
         context={"app_name": settings.app.name},
     )
 

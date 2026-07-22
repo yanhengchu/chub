@@ -1,0 +1,231 @@
+from __future__ import annotations
+
+from datetime import datetime
+from pathlib import Path
+from string import Formatter
+from typing import Literal
+from urllib.parse import urlparse
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+class StrictAutomationModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class BrowserConfig(StrictAutomationModel):
+    session: Literal["debug-chrome"] = "debug-chrome"
+    start_url: str
+    allowed_hosts: list[str] = Field(min_length=1)
+
+    @field_validator("start_url")
+    @classmethod
+    def validate_start_url(cls, value: str) -> str:
+        parsed = urlparse(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("start_url must be an HTTP(S) URL")
+        return value
+
+    @field_validator("allowed_hosts")
+    @classmethod
+    def normalize_hosts(cls, value: list[str]) -> list[str]:
+        hosts = []
+        for item in value:
+            host = item.strip().lower().rstrip(".")
+            if not host or "/" in host or ":" in host:
+                raise ValueError("allowed_hosts must contain hostnames only")
+            hosts.append(host)
+        return list(dict.fromkeys(hosts))
+
+
+class LoginCheckConfig(StrictAutomationModel):
+    selector: str = Field(min_length=1)
+    timeout_ms: int = Field(default=10_000, ge=100, le=120_000)
+
+
+class LoginConfig(StrictAutomationModel):
+    check: LoginCheckConfig
+    expired_message: str = Field(
+        default="登录状态已失效，请重新登录 Debug Chrome",
+        min_length=1,
+    )
+
+
+class AutomationStep(StrictAutomationModel):
+    action: Literal["goto", "wait", "hover", "click", "dispatch_event"]
+    selector: str | None = None
+    url: str | None = None
+    event: str | None = None
+    expect: Literal["download"] | None = None
+    timeout_ms: int = Field(default=30_000, ge=100, le=120_000)
+
+    @model_validator(mode="after")
+    def validate_action_fields(self) -> "AutomationStep":
+        if self.action == "goto":
+            if not self.url or self.selector or self.event or self.expect:
+                raise ValueError("goto requires only url")
+            parsed = urlparse(self.url)
+            if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+                raise ValueError("goto url must be an HTTP(S) URL")
+            return self
+
+        if not self.selector or self.url:
+            raise ValueError(f"{self.action} requires selector and does not accept url")
+        if self.action == "dispatch_event":
+            if not self.event:
+                raise ValueError("dispatch_event requires event")
+        elif self.event:
+            raise ValueError(f"{self.action} does not accept event")
+        if self.expect and self.action not in {"click", "dispatch_event"}:
+            raise ValueError("expect: download requires click or dispatch_event")
+        return self
+
+
+class OutputConfig(StrictAutomationModel):
+    directory: Path
+    filename: str = Field(min_length=1)
+    conflict: Literal["replace", "skip", "fail"] = "fail"
+    timezone: str = Field(min_length=1)
+
+    @field_validator("directory")
+    @classmethod
+    def validate_relative_directory(cls, value: Path) -> Path:
+        if value.is_absolute() or ".." in value.parts:
+            raise ValueError("output directory must be a safe relative path")
+        return value
+
+    @field_validator("filename")
+    @classmethod
+    def validate_filename(cls, value: str) -> str:
+        if Path(value).name != value or value in {".", ".."}:
+            raise ValueError("filename must not contain a path")
+        try:
+            for _, field_name, _, conversion in Formatter().parse(value):
+                if field_name is not None and (field_name != "date" or conversion):
+                    raise ValueError
+            value.format(date=datetime(2000, 1, 1))
+        except (KeyError, ValueError) as exc:
+            raise ValueError("filename supports only the date format variable") from exc
+        return value
+
+
+class ValidationConfig(StrictAutomationModel):
+    non_empty: bool = True
+    extensions: list[str] = Field(min_length=1)
+    min_bytes: int = Field(default=1, ge=1)
+    signature: Literal["pdf", "zip"]
+
+    @field_validator("extensions")
+    @classmethod
+    def normalize_extensions(cls, value: list[str]) -> list[str]:
+        normalized = []
+        for item in value:
+            extension = item.lower()
+            if not extension.startswith(".") or "/" in extension or "\\" in extension:
+                raise ValueError("extensions must use values such as .pdf")
+            normalized.append(extension)
+        return list(dict.fromkeys(normalized))
+
+    @model_validator(mode="after")
+    def validate_signature_extension(self) -> "ValidationConfig":
+        compatible = {
+            "pdf": {".pdf"},
+            "zip": {".zip", ".docx", ".xlsx", ".pptx"},
+        }[self.signature]
+        if not compatible.intersection(self.extensions):
+            raise ValueError("signature is incompatible with configured extensions")
+        return self
+
+
+class ExecutionConfig(StrictAutomationModel):
+    timeout_ms: int = Field(default=120_000, ge=1_000, le=3_600_000)
+    lock_timeout_ms: int = Field(default=1_000, ge=0, le=60_000)
+    safe_step_retries: int = Field(default=1, ge=0, le=3)
+
+
+class AutomationTaskConfig(StrictAutomationModel):
+    name: str = Field(min_length=1)
+    description: str = ""
+    enabled: bool = True
+    browser: BrowserConfig
+    login: LoginConfig
+    steps: list[AutomationStep] = Field(min_length=1)
+    output: OutputConfig
+    validation: ValidationConfig
+    execution: ExecutionConfig = ExecutionConfig()
+
+    @model_validator(mode="after")
+    def validate_download_step(self) -> "AutomationTaskConfig":
+        downloads = sum(step.expect == "download" for step in self.steps)
+        if downloads != 1:
+            raise ValueError("each task must contain exactly one download step")
+        start_host = urlparse(self.browser.start_url).hostname
+        if start_host and start_host.lower() not in self.browser.allowed_hosts:
+            raise ValueError("start_url host must be included in allowed_hosts")
+        return self
+
+
+class AutomationsFile(StrictAutomationModel):
+    version: Literal[1] = 1
+    tasks: dict[str, AutomationTaskConfig] = Field(default_factory=dict)
+
+    @field_validator("tasks")
+    @classmethod
+    def validate_task_ids(
+        cls, value: dict[str, AutomationTaskConfig]
+    ) -> dict[str, AutomationTaskConfig]:
+        for task_id in value:
+            if not task_id or any(
+                character not in "abcdefghijklmnopqrstuvwxyz0123456789-_"
+                for character in task_id
+            ):
+                raise ValueError("task ids may contain lowercase letters, digits, - and _")
+        return value
+
+
+AutomationStatus = Literal["idle", "queued", "running", "success", "failed"]
+
+
+class AutomationState(StrictAutomationModel):
+    task_id: str
+    status: AutomationStatus = "idle"
+    run_id: str | None = None
+    trigger: Literal["web", "cli", "schedule"] | None = None
+    process_id: int | None = None
+    operation_id: str | None = None
+    source_ip: str | None = None
+    operation_logged: bool = False
+    message: str = "尚未执行"
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    output_file: str | None = None
+    output_bytes: int | None = None
+
+
+class AutomationTaskPublic(StrictAutomationModel):
+    id: str
+    name: str
+    description: str
+    enabled: bool
+    state: AutomationState
+
+
+class AutomationListData(StrictAutomationModel):
+    enabled: bool
+    browser_state: Literal["running", "stopped", "invalid", "unavailable"]
+    browser_message: str
+    browser_mode: str | None = None
+    enabled_count: int = 0
+    tasks: list[AutomationTaskPublic]
+
+
+class AutomationRunAccepted(StrictAutomationModel):
+    task_id: str
+    run_id: str
+    status: Literal["queued"] = "queued"
+
+
+class BrowserControlResult(StrictAutomationModel):
+    state: Literal["running", "stopped"]
+    mode: str | None = None
+    message: str

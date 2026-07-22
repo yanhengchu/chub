@@ -25,8 +25,17 @@ async def test_home_page_is_public_and_contains_no_token(settings: Settings) -> 
     assert 'id="refresh-status"' in response.text
     assert "节点任务" not in response.text
     assert 'id="codex-card-host"' in response.text
+    assert 'id="automation-title"' in response.text
+    assert 'id="automation-list"' in response.text
+    assert 'id="automation-browser-control"' in response.text
+    assert 'id="refresh-automations"' in response.text
+    assert 'id="refresh-project-docs"' in response.text
+    assert 'id="project-docs-count"' in response.text
+    assert 'href="/automations"' in response.text
     assert 'id="design-documents-title"' in response.text
     assert "配置驱动的网页下载自动化方案" in response.text
+    assert "首版已实现" in response.text
+    assert "1 份文档" in response.text
     assert 'href="/project-docs/automation-download"' in response.text
     assert 'href="/project-docs"' in response.text
     assert "节点维护" in response.text
@@ -38,7 +47,15 @@ async def test_home_page_is_public_and_contains_no_token(settings: Settings) -> 
     assert "data-log-source" in response.text
     assert 'href="/logs"' in response.text
     assert "maintenance-logs" in response.text
-    assert '<h3 id="logs-title">近期日志</h3>' in response.text
+    assert '<h3 id="logs-title">日志</h3>' in response.text
+    assert 'class="log-toolbar" role="group" aria-label="日志显示设置"' in response.text
+    assert 'class="log-toolbar-controls"' in response.text
+    logs_heading = response.text.split(
+        '<div class="maintenance-heading maintenance-heading-actions">', 1
+    )[1].split('</div>\n            <div class="log-toolbar"', 1)[0]
+    assert logs_heading.count("button-link") == 1
+    assert 'id="log-lines"' not in logs_heading
+    assert 'id="load-logs"' not in logs_heading
     assert 'id="status-details"' not in response.text
     assert "展开详情" not in response.text
     assert settings.security.token.get_secret_value() not in response.text
@@ -80,6 +97,11 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert terminal_stylesheet.status_code == 200
     assert terminal_script.status_code == 200
     assert "innerHTML" not in script.text
+    assert "/api/automations/browser/" in script.text
+    assert "/api/project-docs" in script.text
+    assert "loadProjectDocuments" in script.text
+    assert "正在刷新文档列表" not in script.text
+    assert "文档列表已更新" not in script.text
     assert "sessionStorage" in script.text
     assert "localStorage" in script.text
     assert "Authorization" in script.text
@@ -110,6 +132,8 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "/api/maintenance/restart" in script.text
     assert "/api/health" in script.text
     assert "waitForHubRestart" in script.text
+    assert "refreshCardsAfterRestart" in script.text
+    assert "Chub 已恢复，正在同步卡片状态" in script.text
     assert "previousInstanceId" in script.text
     assert "Chub 已重启并恢复连接" in script.text
     assert "/api/codex/restart" not in script.text
@@ -118,6 +142,15 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "/api/codex/sessions" in script.text
     assert "connection" in terminal_script.text
     assert "response.status === 404" in terminal_script.text
+    assert ".section-heading > .button-link" in stylesheet.text
+    assert "white-space: nowrap" in stylesheet.text
+    assert ".dashboard > .card" in stylesheet.text
+    assert "#codex-card-host" in stylesheet.text
+    assert "align-self: start" in stylesheet.text
+    assert ".maintenance-card" in stylesheet.text
+    assert "align-content: start" in stylesheet.text
+    assert ".markdown-body > :first-child" in stylesheet.text
+    assert ".message:empty" in stylesheet.text
 
 
 @pytest.mark.anyio
@@ -137,6 +170,24 @@ async def test_log_details_page_and_script_are_available(settings: Settings) -> 
 
 
 @pytest.mark.anyio
+async def test_automation_details_page_and_script_are_available(
+    settings: Settings,
+) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        page = await client.get("/automations")
+        script = await client.get("/static/automations.js")
+
+    assert page.status_code == 200
+    assert "全部任务" in page.text
+    assert 'id="detail-automation-list"' in page.text
+    assert script.status_code == 200
+    assert "/api/automations?all_tasks=true" in script.text
+    assert "innerHTML" not in script.text
+    assert "default-src 'self'" in page.headers["content-security-policy"]
+
+
+@pytest.mark.anyio
 async def test_design_document_pages_render_markdown(settings: Settings) -> None:
     transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -147,14 +198,39 @@ async def test_design_document_pages_render_markdown(settings: Settings) -> None
     assert listing.status_code == 200
     assert "配置驱动的网页下载自动化方案" in listing.text
     assert detail.status_code == 200
+    assert "返回全部文档" not in detail.text
+    assert "document-navigation" not in detail.text
+    assert "document-updated" not in detail.text
+    assert "Hub 设计文档只读展示" not in detail.text
+    assert '<p class="eyebrow">设计文档</p>' not in detail.text
+    assert '<span class="badge badge-success">首版已实现</span>' not in detail.text
     assert '<article class="markdown-body">' in detail.text
     assert "<h2" in detail.text
-    assert "核心流程" in detail.text
+    assert "核心主流程" in detail.text
     assert missing.status_code == 404
 
     for response in [listing, detail]:
         assert "default-src 'self'" in response.headers["content-security-policy"]
         assert response.headers["x-content-type-options"] == "nosniff"
+
+
+@pytest.mark.anyio
+async def test_project_document_card_api_is_protected(settings: Settings) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        unauthorized = await client.get("/api/project-docs")
+        response = await client.get(
+            "/api/project-docs",
+            headers={
+                "Authorization": "Bearer test-token-that-is-long-enough-for-tests"
+            },
+        )
+
+    assert unauthorized.status_code == 401
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["count"] >= 1
+    assert data["documents"][0]["id"] == "automation-download"
 
 
 @pytest.mark.anyio

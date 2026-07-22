@@ -7,6 +7,7 @@
 
 config/settings.local.yaml
 config/settings.*.local.yaml
+config/automations.local.yaml
 
 __pycache__/
 *.py[cod]
@@ -28,6 +29,7 @@ logs/*.log
 logs/*.log.*
 data/codex-sessions.json
 data/codex-hooks/
+data/automations/
 
 .DS_Store
 .idea/

@@ -37,7 +37,7 @@ DOCUMENTS = (
         id="automation-download",
         title="配置驱动的网页下载自动化方案",
         summary="复用 Debug Chrome 登录状态，按配置执行页面操作并安全下载文件。",
-        status="方案确认",
+        status="首版已实现",
         relative_path="AUTOMATION_DOWNLOAD_DESIGN.md",
     ),
 )

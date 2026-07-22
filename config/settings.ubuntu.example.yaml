@@ -29,3 +29,9 @@ codex_pty:
   data_file: "data/codex-sessions.json"
   ticket_ttl_seconds: 600
   max_running: 3
+
+automations:
+  enabled: true
+  config_file: "config/automations.local.yaml"
+  data_dir: "data/automations"
+  max_home_tasks: 3

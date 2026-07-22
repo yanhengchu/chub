@@ -8,24 +8,10 @@
     <link rel="stylesheet" href="/static/app.css">
   </head>
   <body>
-    <header class="site-header document-header">
-      <div>
-        <p class="eyebrow">设计文档</p>
-        <h1>{{ document.title }}</h1>
-      </div>
-      <a class="button-link" href="/project-docs">全部文档</a>
-    </header>
-
     <main>
       <section class="card document-detail-card">
-        <div class="document-summary">
-          <span class="badge badge-success">{{ document.status }}</span>
-          <time datetime="{{ document.updated_at.isoformat() }}">更新于 {{ document.updated_at.strftime('%Y-%m-%d %H:%M') }}</time>
-        </div>
         <article class="markdown-body">{{ document.html|safe }}</article>
       </section>
     </main>
-
-    <footer>Hub 设计文档只读展示。</footer>
   </body>
 </html>

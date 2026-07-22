@@ -105,6 +105,11 @@ h2 {
   margin-top: 1rem;
 }
 
+.dashboard > .card,
+#codex-card-host {
+  align-self: start;
+}
+
 .connected-bar {
   display: block;
 }
@@ -159,6 +164,12 @@ h2 {
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
+}
+
+.section-heading > button,
+.section-heading > .button-link {
+  flex: none;
+  white-space: nowrap;
 }
 
 form {
@@ -260,6 +271,10 @@ input[type="password"] {
 
 .message-success {
   color: var(--accent);
+}
+
+.message:empty {
+  display: none;
 }
 
 .badge {
@@ -390,9 +405,91 @@ input[type="password"] {
 }
 
 .design-documents-card,
+.automation-card,
+.automation-detail-card,
 .document-list-card {
   display: grid;
   gap: 1rem;
+}
+
+.design-documents-card,
+.automation-card,
+.maintenance-card {
+  align-content: start;
+}
+
+.automation-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.automation-browser-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.75rem;
+  background: white;
+}
+
+.automation-browser-copy,
+.automation-browser-copy strong {
+  display: block;
+}
+
+.automation-browser-copy .badge {
+  display: inline-block;
+  margin-top: 0.35rem;
+}
+
+.automation-browser-row > button {
+  flex: none;
+  min-width: 4.5rem;
+  white-space: nowrap;
+}
+
+.automation-list {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.automation-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.75rem;
+  background: white;
+}
+
+.automation-item-copy,
+.automation-item-copy strong,
+.automation-item-copy span {
+  display: block;
+  min-width: 0;
+}
+
+.automation-item-copy span {
+  margin-top: 0.25rem;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.automation-run {
+  min-width: 4.5rem;
 }
 
 .design-document-list {
@@ -449,42 +546,42 @@ input[type="password"] {
   margin-top: 0.35rem;
 }
 
-.document-card-actions {
-  display: flex;
-  justify-content: flex-end;
-}
-
-.document-header {
-  align-items: flex-start;
-}
-
-.document-header h1 {
-  max-width: 50rem;
-  font-size: clamp(1.65rem, 6vw, 2.5rem);
-  line-height: 1.08;
-}
-
-.document-detail-card {
-  max-width: 900px;
-  margin-inline: auto;
-}
-
-.document-summary {
+.card-footer,
+.card-footer-actions {
   display: flex;
   align-items: center;
-  gap: 0.65rem;
-  border-bottom: 1px solid var(--line);
-  padding-bottom: 1rem;
+  gap: 0.75rem;
+}
+
+.card-footer {
+  justify-content: space-between;
+}
+
+.card-footer-actions {
+  justify-content: flex-end;
+  margin-left: auto;
+}
+
+.card-footer-meta {
   color: var(--muted);
   font-size: 0.78rem;
 }
 
+.document-detail-card {
+  max-width: 900px;
+  margin-top: 2rem;
+  margin-inline: auto;
+}
+
 .markdown-body {
-  padding-top: 0.5rem;
   color: var(--ink);
   font-size: 0.94rem;
   line-height: 1.75;
   overflow-wrap: anywhere;
+}
+
+.markdown-body > :first-child {
+  margin-top: 0;
 }
 
 .markdown-body h1,
@@ -586,13 +683,23 @@ input[type="password"] {
   margin-top: 0;
 }
 
-.log-actions,
+.log-toolbar,
 .log-tabs,
+.log-toolbar-controls,
 .log-detail-toolbar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 0.55rem;
+}
+
+.log-toolbar {
+  justify-content: space-between;
+  margin-top: 0.9rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.55rem;
+  background: #f5f7f3;
 }
 
 select {
@@ -616,10 +723,6 @@ select {
   font-size: 0.82rem;
   font-weight: 700;
   text-decoration: none;
-}
-
-.log-tabs {
-  margin-top: 0.9rem;
 }
 
 .log-tab {
@@ -920,16 +1023,29 @@ footer {
   }
 
   .workspace-list,
-  .session-item {
+  .session-item,
+  .automation-item {
     grid-template-columns: 1fr;
+  }
+
+  .automation-run {
+    width: 100%;
+  }
+
+  .automation-browser-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .automation-browser-row > button {
+    width: 100%;
   }
 
   .session-actions {
     justify-content: flex-end;
   }
 
-  .design-document-item,
-  .document-header {
+  .design-document-item {
     align-items: stretch;
     flex-direction: column;
   }
@@ -943,6 +1059,15 @@ footer {
 
   .design-document-meta time {
     margin-top: 0;
+  }
+
+  .log-toolbar,
+  .log-toolbar-controls {
+    align-items: stretch;
+  }
+
+  .log-toolbar-controls {
+    margin-left: auto;
   }
 }
 
