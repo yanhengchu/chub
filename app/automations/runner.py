@@ -10,12 +10,18 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.automations.browser import session_factory
-from app.automations.config import load_automations
+from app.automations.config import load_automations, load_linked_documents_extension
+from app.automations.extensions import (
+    ExtensionFailed,
+    extract_linked_documents,
+    linked_filename,
+)
 from app.automations.lock import LockBusy, file_lock
 from app.automations.models import (
     AutomationState,
     AutomationStep,
     AutomationTaskConfig,
+    LinkedDocumentResult,
 )
 from app.automations.operations import log_final_operation
 from app.automations.store import AutomationStateStore
@@ -229,6 +235,119 @@ async def _run_browser_task(
                     LOGGER.warning("Unable to close automation page", exc_info=True)
 
 
+def _run_task_once(
+    task: AutomationTaskConfig,
+    settings: Settings,
+    run_id: str,
+) -> tuple[Path, int, bool]:
+    return asyncio.run(
+        asyncio.wait_for(
+            _run_browser_task(task, settings, run_id),
+            timeout=task.execution.timeout_ms / 1000,
+        )
+    )
+
+
+def _clear_linked_markdown_files(directory: Path, data_dir: Path) -> None:
+    output_root = (data_dir / "downloads").resolve()
+    resolved_directory = (output_root / directory).resolve()
+    if not resolved_directory.is_relative_to(output_root):
+        raise AutomationFailed("关联文档输出目录超出自动化数据目录")
+    _ensure_private_directory(resolved_directory, output_root)
+    for entry in resolved_directory.iterdir():
+        if entry.suffix.lower() == ".md" and (entry.is_file() or entry.is_symlink()):
+            entry.unlink()
+
+
+def _run_linked_documents(
+    task: AutomationTaskConfig,
+    source: Path,
+    settings: Settings,
+    run_id: str,
+) -> list[LinkedDocumentResult]:
+    if task.extension is None:
+        return []
+    try:
+        extension = load_linked_documents_extension(task.extension)
+        documents = extract_linked_documents(
+            source,
+            task.browser.start_url,
+            extension,
+        )
+    except (RuntimeError, ExtensionFailed) as exc:
+        raise AutomationFailed(str(exc)) from exc
+
+    try:
+        timezone = ZoneInfo(task.output.timezone)
+    except ZoneInfoNotFoundError as exc:
+        raise AutomationFailed("输出时区无效") from exc
+    date_directory = datetime.now(timezone).strftime("%Y-%m-%d")
+    output_directory = task.output.directory / "linked" / date_directory
+    _clear_linked_markdown_files(output_directory, settings.automations.data_dir)
+    used_filenames: set[str] = set()
+    results = []
+    for index, document in enumerate(documents, start=1):
+        filename = linked_filename(document.name, index, used_filenames)
+        linked_task = task.model_copy(
+            update={
+                "name": document.name,
+                "extension": None,
+                "browser": task.browser.model_copy(
+                    update={
+                        "start_url": document.url,
+                        "allowed_hosts": [urlparse(document.url).hostname],
+                    }
+                ),
+                "output": task.output.model_copy(
+                    update={
+                        "directory": output_directory,
+                        "filename": filename,
+                    }
+                ),
+            }
+        )
+        try:
+            target, _, skipped = _run_task_once(
+                linked_task,
+                settings,
+                f"{run_id}-{index:02d}",
+            )
+            results.append(
+                LinkedDocumentResult(
+                    name=document.name,
+                    status="success",
+                    message="目标文件已存在，已跳过" if skipped else "下载完成",
+                    output_file=str(target),
+                )
+            )
+        except TimeoutError:
+            results.append(
+                LinkedDocumentResult(
+                    name=document.name,
+                    status="failed",
+                    message="下载超时",
+                )
+            )
+        except Exception as exc:
+            LOGGER.exception(
+                "automation=%s linked_document=%s failed",
+                task.name,
+                index,
+            )
+            results.append(
+                LinkedDocumentResult(
+                    name=document.name,
+                    status="failed",
+                    message=(
+                        str(exc) if isinstance(exc, AutomationFailed) else "下载失败"
+                    ),
+                )
+            )
+        if results[-1].status == "failed" and not extension.download.continue_on_error:
+            break
+    return results
+
+
 def run_automation(
     settings: Settings,
     task_id: str,
@@ -236,7 +355,7 @@ def run_automation(
     trigger: str = "cli",
     run_id: str | None = None,
 ) -> AutomationState:
-    config = load_automations(settings.automations.config_file)
+    config = load_automations(*settings.automations.config_files)
     task = config.tasks.get(task_id)
     if task is None:
         raise AutomationFailed("自动化任务不存在")
@@ -272,25 +391,56 @@ def run_automation(
                     )
                     store.write(running)
                     try:
-                        target, size, skipped = asyncio.run(
-                            asyncio.wait_for(
-                                _run_browser_task(task, settings, resolved_run_id),
-                                timeout=task.execution.timeout_ms / 1000,
-                            )
+                        target, size, skipped = _run_task_once(
+                            task,
+                            settings,
+                            resolved_run_id,
                         )
+                        extension_error = None
+                        try:
+                            linked_documents = _run_linked_documents(
+                                task,
+                                target,
+                                settings,
+                                resolved_run_id,
+                            )
+                        except AutomationFailed as exc:
+                            linked_documents = []
+                            extension_error = str(exc)
+                        linked_successes = sum(
+                            item.status == "success" for item in linked_documents
+                        )
+                        linked_failures = len(linked_documents) - linked_successes
+                        if extension_error:
+                            message = (
+                                "主周报成功 · 关联文档处理失败："
+                                f"{extension_error}"
+                            )
+                        elif linked_documents:
+                            message = (
+                                f"下载完成 · 主周报成功 · 关联文档 "
+                                f"{linked_successes}/{len(linked_documents)} 成功"
+                            )
+                        else:
+                            message = "目标文件已存在，已跳过" if skipped else "下载完成"
                         result = AutomationState(
                             task_id=task_id,
-                            status="success",
+                            status=(
+                                "failed"
+                                if extension_error or linked_failures
+                                else "success"
+                            ),
                             run_id=resolved_run_id,
                             trigger=trigger,
                             process_id=os.getpid(),
                             operation_id=operation_id,
                             source_ip=source_ip,
-                            message="目标文件已存在，已跳过" if skipped else "下载完成",
+                            message=message,
                             started_at=started,
                             finished_at=datetime.now().astimezone(),
                             output_file=str(target),
                             output_bytes=size,
+                            linked_documents=linked_documents,
                         )
                     except TimeoutError:
                         result = AutomationState(

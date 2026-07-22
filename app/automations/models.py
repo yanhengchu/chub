@@ -166,6 +166,7 @@ class AutomationTaskConfig(StrictAutomationModel):
     output: OutputConfig
     validation: ValidationConfig
     execution: ExecutionConfig = ExecutionConfig()
+    extension: Literal["v-weekly-report-linked-documents"] | None = None
 
     @model_validator(mode="after")
     def validate_download_step(self) -> "AutomationTaskConfig":
@@ -196,7 +197,93 @@ class AutomationsFile(StrictAutomationModel):
         return value
 
 
+class FeishuDocumentTask(StrictAutomationModel):
+    name: str = Field(min_length=1)
+    url: str
+    enabled: bool = True
+    format: Literal["markdown"] = "markdown"
+    extension: Literal["v-weekly-report-linked-documents"] | None = None
+
+    @field_validator("url")
+    @classmethod
+    def validate_feishu_document_url(cls, value: str) -> str:
+        parsed = urlparse(value)
+        host = (parsed.hostname or "").lower().rstrip(".")
+        try:
+            port = parsed.port
+        except ValueError as exc:
+            raise ValueError("url contains an invalid port") from exc
+        if (
+            parsed.scheme != "https"
+            or not host.endswith(".feishu.cn")
+            or not parsed.path.startswith("/wiki/")
+            or parsed.username is not None
+            or parsed.password is not None
+            or port is not None
+        ):
+            raise ValueError("url must be an HTTPS Feishu Wiki document URL")
+        return value
+
+
+class FeishuDocumentFile(StrictAutomationModel):
+    version: Literal[2]
+    tasks: dict[str, FeishuDocumentTask] = Field(default_factory=dict)
+
+    @field_validator("tasks")
+    @classmethod
+    def validate_task_ids(
+        cls, value: dict[str, FeishuDocumentTask]
+    ) -> dict[str, FeishuDocumentTask]:
+        for task_id in value:
+            if not task_id or any(
+                character not in "abcdefghijklmnopqrstuvwxyz0123456789-_"
+                for character in task_id
+            ):
+                raise ValueError("task ids may contain lowercase letters, digits, - and _")
+        return value
+
+
+class AutomationTemplate(StrictAutomationModel):
+    version: Literal[1] = 1
+    format: Literal["markdown"]
+    task: AutomationTaskConfig
+
+
+class LinkedDocumentsSourceConfig(StrictAutomationModel):
+    section: str = Field(min_length=1)
+    link_type: Literal["markdown"] = "markdown"
+    allowed_paths: list[str] = Field(min_length=1)
+    max_documents: int = Field(default=20, ge=1, le=100)
+
+    @field_validator("allowed_paths")
+    @classmethod
+    def validate_allowed_paths(cls, value: list[str]) -> list[str]:
+        if any(not item.startswith("/") or ".." in item for item in value):
+            raise ValueError("allowed_paths must contain safe absolute URL paths")
+        return list(dict.fromkeys(value))
+
+
+class LinkedDocumentsDownloadConfig(StrictAutomationModel):
+    template: Literal["feishu-document-download"]
+    format: Literal["markdown"] = "markdown"
+    continue_on_error: bool = True
+
+
+class LinkedDocumentsTemplate(StrictAutomationModel):
+    version: Literal[1] = 1
+    type: Literal["feishu-linked-documents"]
+    source: LinkedDocumentsSourceConfig
+    download: LinkedDocumentsDownloadConfig
+
+
 AutomationStatus = Literal["idle", "queued", "running", "success", "failed"]
+
+
+class LinkedDocumentResult(StrictAutomationModel):
+    name: str
+    status: Literal["success", "failed"]
+    message: str
+    output_file: str | None = None
 
 
 class AutomationState(StrictAutomationModel):
@@ -213,6 +300,7 @@ class AutomationState(StrictAutomationModel):
     finished_at: datetime | None = None
     output_file: str | None = None
     output_bytes: int | None = None
+    linked_documents: list[LinkedDocumentResult] = Field(default_factory=list)
 
 
 class AutomationTaskPublic(StrictAutomationModel):

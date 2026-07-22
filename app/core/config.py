@@ -76,9 +76,18 @@ class CodexPtyConfig(StrictModel):
 
 class AutomationsConfig(StrictModel):
     enabled: bool = True
-    config_file: Path = Path("config/automations.local.yaml")
+    shared_config_file: Path = Path("config/automations.yaml")
+    local_config_file: Path = Path("config/automations.local.yaml")
+    config_file: Path | None = None
     data_dir: Path = Path("data/automations")
     max_home_tasks: int = Field(default=3, ge=1, le=10)
+
+    @property
+    def config_files(self) -> tuple[Path, Path]:
+        return (
+            self.shared_config_file,
+            self.config_file or self.local_config_file,
+        )
 
 
 class Settings(StrictModel):
@@ -99,7 +108,18 @@ class Settings(StrictModel):
         self.codex_pty.workspace = self.codex_pty.workspace.expanduser().resolve()
         if not self.codex_pty.data_file.is_absolute():
             self.codex_pty.data_file = PROJECT_ROOT / self.codex_pty.data_file
-        if not self.automations.config_file.is_absolute():
+        if not self.automations.shared_config_file.is_absolute():
+            self.automations.shared_config_file = (
+                PROJECT_ROOT / self.automations.shared_config_file
+            )
+        if not self.automations.local_config_file.is_absolute():
+            self.automations.local_config_file = (
+                PROJECT_ROOT / self.automations.local_config_file
+            )
+        if (
+            self.automations.config_file is not None
+            and not self.automations.config_file.is_absolute()
+        ):
             self.automations.config_file = PROJECT_ROOT / self.automations.config_file
         if not self.automations.data_dir.is_absolute():
             self.automations.data_dir = PROJECT_ROOT / self.automations.data_dir

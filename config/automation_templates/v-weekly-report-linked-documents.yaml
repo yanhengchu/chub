@@ -1,0 +1,15 @@
+version: 1
+type: feishu-linked-documents
+
+source:
+  section: "各端周报"
+  link_type: markdown
+  allowed_paths:
+    - /wiki/
+    - /docx/
+  max_documents: 20
+
+download:
+  template: feishu-document-download
+  format: markdown
+  continue_on_error: true

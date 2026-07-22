@@ -530,6 +530,21 @@ input[type="password"] {
   white-space: normal;
 }
 
+.automation-linked-details {
+  margin-top: 0.4rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.automation-linked-details summary {
+  cursor: pointer;
+}
+
+.automation-item-copy .automation-linked-details span {
+  margin-left: 0.9rem;
+  overflow-wrap: anywhere;
+}
+
 .automation-run {
   min-width: 4.5rem;
 }

@@ -100,75 +100,48 @@ V 国内业务周报                              运行
 
 ## 3. 目标与边界
 
-通过配置描述飞书 Wiki 文档的页面操作流程，复用已启动的 Debug Chrome 飞书登录状态，完成 Markdown 文件下载、校验和安全落盘。
+复用已启动的 Debug Chrome 飞书登录状态，按照版本管理的固定流程完成飞书 Wiki 文档下载、校验和安全落盘。
 
-当前聚焦飞书文档的单任务、单文件下载。具体文档地址和页面步骤放在本机配置中，浏览器连接、下载处理、日志和任务互斥由公共执行器统一负责；公共执行器仍保留扩展其他固定网站任务的能力。
+当前聚焦飞书文档的单任务、单文件 Markdown 下载。多端共用的文档名称和链接放在公共配置中，仅当前节点使用的放在本机配置中；页面步骤放在随代码发布的固定模板中；浏览器连接、下载处理、日志和任务互斥由公共执行器统一负责。Word 和 PDF 暂未实现，配置时会被明确拒绝。
 
 ## 4. 配置示例
 
-网站和下载流程统一配置在本机文件 `config/automations.local.yaml`：
+公共文件 `config/automations.yaml` 和本机文件 `config/automations.local.yaml` 使用相同格式，只维护文档清单：
 
 ```yaml
-version: 1
+version: 2
 
 tasks:
   feishu-weekly-report:
     name: 飞书业务周报
-    enabled: true
-
-    browser:
-      session: debug-chrome
-      start_url: https://tenant.feishu.cn/wiki/document-id
-      allowed_hosts:
-        - tenant.feishu.cn
-
-    login:
-      redirect_hosts:
-        - accounts.feishu.cn
-      check:
-        selector: 'button[data-selector="more-menu"][data-e2e="suite-more-btn"]'
-        timeout_ms: 20000
-      expired_message: 飞书登录状态已失效或当前账号无权访问文档，请检查 Debug Chrome
-
-    steps:
-      - action: click
-        selector: 'button[data-selector="more-menu"][data-e2e="suite-more-btn"]'
-
-      - action: click
-        selector: 'div[role="menuitem"][aria-haspopup="true"][data-menu-id$="-EXPORT"]'
-
-      - action: wait
-        selector: 'li[role="menuitem"].navigation-bar__moreMenu_v3-export-doc-markdown'
-
-      - action: click
-        selector: 'li[role="menuitem"].navigation-bar__moreMenu_v3-export-doc-markdown'
-
-      - action: wait
-        selector: '.ud__modal__content:has(.ud__modal__titleContent:text-is("导出 Markdown 设置"))'
-
-      - action: click
-        selector: '.ud__modal__content:has(.ud__modal__titleContent:text-is("导出 Markdown 设置")) .ud__modal__footer button.ud__button--filled:text-is("导出")'
-        expect: download
-        timeout_ms: 120000
-
-    output:
-      directory: feishu-weekly-report
-      filename: "feishu-weekly-report-{date:%Y-%m-%d}.md"
-      conflict: replace
-      timezone: Asia/Shanghai
-
-    validation:
-      non_empty: true
-      extensions:
-        - .md
-      min_bytes: 1
-      signature: markdown
-
-    execution:
-      timeout_ms: 180000
-      lock_timeout_ms: 1000
-      safe_step_retries: 1
+    url: https://tenant.feishu.cn/wiki/document-id
 ```
+
+固定页面流程位于 `config/automation_templates/feishu-document-download.yaml`，纳入 Git 并随版本发布。它集中维护登录检查、页面选择器、下载步骤、超时、输出策略和 Markdown 校验。加载时程序根据任务 ID 和链接生成任务专属的域名白名单、下载目录及文件名，然后交给通用 Runner。模板不是本机业务配置，不应在部署环境中单独定制。
+
+`V 国内业务周报` 在任务配置中增加专属扩展：
+
+```yaml
+tasks:
+  v-domestic-weekly-report:
+    name: V 国内业务周报
+    url: https://tenant.feishu.cn/wiki/document-id
+    extension: v-weekly-report-linked-documents
+```
+
+扩展规则维护在随版本发布的 `config/automation_templates/v-weekly-report-linked-documents.yaml`。主周报完成校验和落盘后，扩展定位“各端周报”章节，只提取该章节到下一个同级标题之间的 Markdown 链接，并限制为与主文档相同租户、飞书 `/wiki/` 或 `/docx/` 文档路径和最多 20 份文档。裸链接、章节外链接、其他租户及其他业务系统链接不会执行。
+
+关联文档按原文顺序串行下载，继续复用 `feishu-document-download.yaml`，输出到：
+
+```text
+data/automations/downloads/v-domestic-weekly-report/
+  v-domestic-weekly-report-2026-07-22.md
+  linked/2026-07-22/
+    01-产品端周报.md
+    02-运营端周报.md
+```
+
+每份文档独立使用单文档超时。同日重新执行且主周报解析成功后，先清理当前任务当天 `linked/<日期>/` 目录内的旧 Markdown，再写入本次结果；主周报、其他日期、子目录和非 Markdown 文件不受影响，避免链接减少后残留旧文档。某份失败后继续处理剩余文档；主文件和本次已经成功的关联文件不会回滚。全部关联文档成功时任务成功，任一关联文档失败时任务最终标记失败并显示成功数量，页面可展开查看每份文档的结果。主周报中未找到目标章节、没有合法链接或超过数量上限时不会清理旧关联目录，主文件仍保留，但扩展阶段和整体任务标记失败。
 
 ## 5. 配置约定
 
@@ -257,7 +230,12 @@ tasks:
 
 ## 7. 配置与调度边界
 
-`config/automations.local.yaml` 只描述任务、网站、页面操作和下载结果，不承载平台定时表达式；示例配置使用 `config/automations.example.yaml`，本机真实配置不提交。
+自动化任务有两个来源：
+
+- `config/automations.yaml`：公共任务，纳入 Git 并随版本发布，供多个节点共用。
+- `config/automations.local.yaml`：本机任务，不提交，只在当前节点生效；初始示例使用 `config/automations.example.yaml`。
+
+系统按“公共任务在前、本机任务在后”的顺序加载并合并列表。任一文件不存在时视为空配置；两个文件出现相同任务 ID 时明确报错，不允许本机任务静默覆盖公共任务。两类文件都只描述任务名称和飞书 Wiki 链接，不承载页面步骤或平台定时表达式。旧版 `version: 1` 完整步骤配置暂时保持兼容，便于已有部署平滑迁移。
 
 调度配置独立管理，负责定义任务 ID、执行时间和启用状态，再调用统一任务入口。macOS、Ubuntu 和 Windows 的系统调度器只负责触发任务，不直接包含网站操作逻辑。
 
@@ -317,7 +295,7 @@ Web 触发的 Runner 完成后必须主动写入最终 `succeeded` 或 `failed` 
 
 ## 11. 实现状态与后续顺序
 
-- [x] 确定自动化任务目录和 `automations.local.yaml` 配置模型。
+- [x] 实现公共 `automations.yaml` 与本机 `automations.local.yaml` 双来源任务配置。
 - [x] 实现严格配置校验、导航白名单和受控步骤执行器。
 - [x] 接入 Chrome CDP `session(ensure_page=False)`，实现任务专用页面和标准下载捕获。
 - [x] 实现共享浏览器文件锁、后台 Runner、原子状态、临时文件与签名校验。

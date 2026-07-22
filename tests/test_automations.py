@@ -10,14 +10,28 @@ from unittest.mock import patch
 
 import pytest
 
-from app.automations.config import load_automations
+from app.automations.config import (
+    load_automations,
+    load_linked_documents_extension,
+)
+from app.automations.extensions import (
+    ExtensionFailed,
+    extract_linked_documents,
+    linked_filename,
+)
 from app.automations.lock import file_lock
 from app.automations.manager import AutomationManager, _feishu_environment_for_url
-from app.automations.models import AutomationState, FeishuEnvironmentState
+from app.automations.models import (
+    AutomationState,
+    FeishuEnvironmentState,
+    LinkedDocumentResult,
+)
 from app.automations.operations import log_final_operation
 from app.automations.runner import (
     AutomationFailed,
     _check_navigation,
+    _clear_linked_markdown_files,
+    _run_linked_documents,
     _run_browser_task,
     _validate_download,
     run_automation,
@@ -94,6 +108,350 @@ def test_load_automations_requires_exactly_one_download(tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="exactly one download step"):
         load_automations(path)
+
+
+def test_load_feishu_document_config_expands_fixed_template(tmp_path: Path) -> None:
+    path = tmp_path / "automations.yaml"
+    path.write_text(
+        """\
+version: 2
+tasks:
+  weekly-report:
+    name: 国内业务周报
+    url: https://tenant.feishu.cn/wiki/document-id
+    extension: v-weekly-report-linked-documents
+""",
+        encoding="utf-8",
+    )
+
+    task = load_automations(path).tasks["weekly-report"]
+
+    assert task.name == "国内业务周报"
+    assert task.browser.start_url == "https://tenant.feishu.cn/wiki/document-id"
+    assert task.browser.allowed_hosts == ["tenant.feishu.cn"]
+    assert task.output.directory == Path("weekly-report")
+    assert task.output.filename == "weekly-report-{date:%Y-%m-%d}.md"
+    assert task.validation.signature == "markdown"
+    assert task.extension == "v-weekly-report-linked-documents"
+    assert sum(step.expect == "download" for step in task.steps) == 1
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://tenant.feishu.cn/wiki/document-id",
+        "https://example.com/wiki/document-id",
+        "https://tenant.feishu.cn/drive/home/",
+        "https://user@tenant.feishu.cn/wiki/document-id",
+        "https://tenant.feishu.cn:8443/wiki/document-id",
+    ],
+)
+def test_load_feishu_document_config_rejects_unsafe_url(
+    tmp_path: Path,
+    url: str,
+) -> None:
+    path = tmp_path / "automations.yaml"
+    path.write_text(
+        __import__("yaml").safe_dump(
+            {
+                "version": 2,
+                "tasks": {
+                    "weekly-report": {
+                        "name": "国内业务周报",
+                        "url": url,
+                    }
+                },
+            },
+            allow_unicode=True,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="Feishu Wiki document URL"):
+        load_automations(path)
+
+
+def test_load_feishu_document_config_rejects_unsupported_format(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "automations.yaml"
+    path.write_text(
+        """\
+version: 2
+tasks:
+  weekly-report:
+    name: 国内业务周报
+    url: https://tenant.feishu.cn/wiki/document-id
+    format: pdf
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="markdown"):
+        load_automations(path)
+
+
+def test_load_automations_merges_shared_and_local_files(tmp_path: Path) -> None:
+    shared = tmp_path / "automations.yaml"
+    local = tmp_path / "automations.local.yaml"
+    shared.write_text(
+        """\
+version: 2
+tasks:
+  shared-report:
+    name: 公共周报
+    url: https://tenant.feishu.cn/wiki/shared-document
+""",
+        encoding="utf-8",
+    )
+    local.write_text(
+        """\
+version: 2
+tasks:
+  local-report:
+    name: 本机周报
+    url: https://tenant.feishu.cn/wiki/local-document
+""",
+        encoding="utf-8",
+    )
+
+    config = load_automations(shared, local)
+
+    assert list(config.tasks) == ["shared-report", "local-report"]
+
+
+def test_load_automations_allows_missing_source_file(tmp_path: Path) -> None:
+    shared = tmp_path / "automations.yaml"
+    shared.write_text(
+        """\
+version: 2
+tasks:
+  shared-report:
+    name: 公共周报
+    url: https://tenant.feishu.cn/wiki/shared-document
+""",
+        encoding="utf-8",
+    )
+
+    config = load_automations(shared, tmp_path / "automations.local.yaml")
+
+    assert list(config.tasks) == ["shared-report"]
+
+
+def test_load_automations_rejects_duplicate_task_ids(tmp_path: Path) -> None:
+    shared = tmp_path / "automations.yaml"
+    local = tmp_path / "automations.local.yaml"
+    content = """\
+version: 2
+tasks:
+  duplicate-report:
+    name: 重复周报
+    url: https://tenant.feishu.cn/wiki/document-id
+"""
+    shared.write_text(content, encoding="utf-8")
+    local.write_text(content, encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="Duplicate automation task id"):
+        load_automations(shared, local)
+
+
+def test_extract_linked_documents_uses_section_and_tenant_only(tmp_path: Path) -> None:
+    source = tmp_path / "weekly.md"
+    source.write_text(
+        """\
+# 周报
+
+[章节外文档](https://tenant.feishu.cn/wiki/outside)
+
+## 各端周报
+
+- [产品端周报](https://tenant.feishu.cn/wiki/product#heading)
+- [销售端周报](https://tenant.feishu.cn/docx/sales)
+- [重复文档](https://tenant.feishu.cn/wiki/product)
+- [其他租户](https://other.feishu.cn/wiki/other)
+- [其他系统](https://example.com/wiki/external)
+- https://tenant.feishu.cn/wiki/bare-url
+
+## 后续事项
+
+[后续文档](https://tenant.feishu.cn/wiki/after)
+""",
+        encoding="utf-8",
+    )
+    template = load_linked_documents_extension(
+        "v-weekly-report-linked-documents"
+    )
+
+    documents = extract_linked_documents(
+        source,
+        "https://tenant.feishu.cn/wiki/source",
+        template,
+    )
+
+    assert [(item.name, item.url) for item in documents] == [
+        ("产品端周报", "https://tenant.feishu.cn/wiki/product"),
+        ("销售端周报", "https://tenant.feishu.cn/docx/sales"),
+    ]
+
+
+def test_extract_linked_documents_requires_configured_section(tmp_path: Path) -> None:
+    source = tmp_path / "weekly.md"
+    source.write_text("# 周报\n", encoding="utf-8")
+    template = load_linked_documents_extension(
+        "v-weekly-report-linked-documents"
+    )
+
+    with pytest.raises(ExtensionFailed, match="未找到"):
+        extract_linked_documents(
+            source,
+            "https://tenant.feishu.cn/wiki/source",
+            template,
+        )
+
+
+def test_linked_filename_is_safe_and_unique() -> None:
+    used = set()
+
+    first = linked_filename('产品/端：周报*', 1, used)
+    second = linked_filename('产品/端：周报*', 1, used)
+
+    assert first == "01-产品-端-周报.md"
+    assert second == "01-产品-端-周报-2.md"
+
+
+def test_clear_linked_markdown_files_is_limited_to_current_directory(
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "data"
+    current = data_dir / "downloads" / "weekly" / "linked" / "2026-07-22"
+    other_date = data_dir / "downloads" / "weekly" / "linked" / "2026-07-21"
+    nested = current / "nested"
+    nested.mkdir(parents=True)
+    other_date.mkdir(parents=True)
+    stale = current / "01-stale.md"
+    preserved_file = current / "notes.txt"
+    preserved_nested = nested / "manual.md"
+    preserved_other_date = other_date / "01-report.md"
+    stale.write_text("stale", encoding="utf-8")
+    preserved_file.write_text("keep", encoding="utf-8")
+    preserved_nested.write_text("keep", encoding="utf-8")
+    preserved_other_date.write_text("keep", encoding="utf-8")
+
+    _clear_linked_markdown_files(
+        Path("weekly/linked/2026-07-22"),
+        data_dir,
+    )
+
+    assert not stale.exists()
+    assert preserved_file.exists()
+    assert preserved_nested.exists()
+    assert preserved_other_date.exists()
+
+
+def test_linked_documents_continue_after_one_download_fails(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    config_file = tmp_path / "automations.yaml"
+    config_file.write_text(
+        """\
+version: 2
+tasks:
+  weekly-report:
+    name: 国内业务周报
+    url: https://tenant.feishu.cn/wiki/source
+    extension: v-weekly-report-linked-documents
+""",
+        encoding="utf-8",
+    )
+    task = load_automations(config_file).tasks["weekly-report"]
+    source = tmp_path / "weekly.md"
+    source.write_text(
+        """\
+# 各端周报
+[产品端](https://tenant.feishu.cn/wiki/product)
+[销售端](https://tenant.feishu.cn/wiki/sales)
+""",
+        encoding="utf-8",
+    )
+    output = tmp_path / "sales.md"
+    output.write_text("# 销售端", encoding="utf-8")
+    calls = []
+
+    def fake_run(linked_task, *_args):
+        calls.append(linked_task)
+        if linked_task.name == "产品端":
+            raise AutomationFailed("页面入口不可用")
+        return output, output.stat().st_size, False
+
+    with patch("app.automations.runner._run_task_once", fake_run):
+        results = _run_linked_documents(
+            task,
+            source,
+            settings,
+            "run-1",
+        )
+
+    assert [item.status for item in results] == ["failed", "success"]
+    assert len(calls) == 2
+    assert calls[1].output.directory.parts[-3:-1] == (
+        "weekly-report",
+        "linked",
+    )
+    assert len(calls[1].output.directory.parts[-1]) == 10
+    assert calls[1].output.filename == "02-销售端.md"
+
+
+def test_run_automation_reports_partial_linked_download_failure(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    config_file = tmp_path / "automations.yaml"
+    config_file.write_text(
+        """\
+version: 2
+tasks:
+  weekly-report:
+    name: 国内业务周报
+    url: https://tenant.feishu.cn/wiki/source
+    extension: v-weekly-report-linked-documents
+""",
+        encoding="utf-8",
+    )
+    settings.automations.config_file = config_file
+    settings.automations.data_dir = tmp_path / "data"
+    source = tmp_path / "weekly.md"
+    source.write_text("# 各端周报\n", encoding="utf-8")
+    linked_results = [
+        LinkedDocumentResult(
+            name="产品端",
+            status="success",
+            message="下载完成",
+            output_file=str(tmp_path / "product.md"),
+        ),
+        LinkedDocumentResult(
+            name="销售端",
+            status="failed",
+            message="下载超时",
+        ),
+    ]
+
+    with (
+        patch(
+            "app.automations.runner._run_task_once",
+            return_value=(source, source.stat().st_size, False),
+        ),
+        patch(
+            "app.automations.runner._run_linked_documents",
+            return_value=linked_results,
+        ),
+    ):
+        result = run_automation(settings, "weekly-report", run_id="run-1")
+
+    assert result.status == "failed"
+    assert result.output_file == str(source)
+    assert result.message == "下载完成 · 主周报成功 · 关联文档 1/2 成功"
+    assert result.linked_documents == linked_results
 
 
 def test_login_redirect_host_uses_expired_message(

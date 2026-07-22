@@ -90,6 +90,19 @@ function render(data) {
     button.disabled = !running || !task.enabled || busy || environmentChecking;
     button.addEventListener("click", () => run(task, button));
     copy.append(title, status, reason);
+    if (task.state.linked_documents?.length) {
+      const details = document.createElement("details");
+      const summary = document.createElement("summary");
+      summary.textContent = `关联文档明细（${task.state.linked_documents.length}）`;
+      details.className = "automation-linked-details";
+      details.append(summary);
+      task.state.linked_documents.forEach((linkedDocument) => {
+        const row = document.createElement("span");
+        row.textContent = `${linkedDocument.status === "success" ? "成功" : "失败"} · ${linkedDocument.name} · ${linkedDocument.message}`;
+        details.append(row);
+      });
+      copy.append(details);
+    }
     item.append(copy, button);
     list.append(item);
   });

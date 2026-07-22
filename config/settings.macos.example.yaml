@@ -32,6 +32,7 @@ codex_pty:
 
 automations:
   enabled: true
-  config_file: "config/automations.local.yaml"
+  shared_config_file: "config/automations.yaml"
+  local_config_file: "config/automations.local.yaml"
   data_dir: "data/automations"
   max_home_tasks: 3

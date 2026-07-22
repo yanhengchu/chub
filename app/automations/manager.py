@@ -238,7 +238,7 @@ class AutomationManager:
 
     def _load_config(self):
         try:
-            return load_automations(self._settings.automations.config_file)
+            return load_automations(*self._settings.automations.config_files)
         except RuntimeError as exc:
             raise ApiError(
                 503,

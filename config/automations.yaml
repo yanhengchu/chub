@@ -1,0 +1,4 @@
+version: 2
+
+# Tasks in this file are version-controlled and shared by every deployed node.
+tasks: {}

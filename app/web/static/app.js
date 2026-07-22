@@ -1264,7 +1264,7 @@ function renderAutomations(data) {
   if (!data.tasks.length) {
     const empty = document.createElement("p");
     empty.className = "empty-state";
-    empty.textContent = "暂无自动化任务，请先配置 automations.local.yaml。";
+    empty.textContent = "暂无自动化任务，请先配置 automations.yaml 或 automations.local.yaml。";
     elements.automationList.append(empty);
     return false;
   }
@@ -1293,6 +1293,19 @@ function renderAutomations(data) {
     button.disabled = !browserRunning || !task.enabled || busy || feishuChecking;
     button.addEventListener("click", () => runAutomation(task, button));
     copy.append(name, status, reason);
+    if (task.state.linked_documents?.length) {
+      const details = document.createElement("details");
+      const summary = document.createElement("summary");
+      summary.textContent = `关联文档明细（${task.state.linked_documents.length}）`;
+      details.className = "automation-linked-details";
+      details.append(summary);
+      task.state.linked_documents.forEach((linkedDocument) => {
+        const row = document.createElement("span");
+        row.textContent = `${linkedDocument.status === "success" ? "成功" : "失败"} · ${linkedDocument.name} · ${linkedDocument.message}`;
+        details.append(row);
+      });
+      copy.append(details);
+    }
     item.append(copy, button);
     elements.automationList.append(item);
   });

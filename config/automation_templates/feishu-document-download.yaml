@@ -1,0 +1,57 @@
+version: 1
+format: markdown
+
+task:
+  name: "飞书文档下载"
+  description: "从飞书 Wiki 下载 Markdown 归档。"
+  enabled: true
+
+  browser:
+    session: debug-chrome
+    start_url: "https://tenant.feishu.cn/wiki/document-id"
+    allowed_hosts:
+      - tenant.feishu.cn
+
+  login:
+    redirect_hosts:
+      - accounts.feishu.cn
+    check:
+      selector: 'button[data-selector="more-menu"][data-e2e="suite-more-btn"]'
+      timeout_ms: 20000
+    expired_message: "飞书登录状态已失效或当前账号无权访问文档，请在有界面 Debug Chrome 中检查"
+
+  steps:
+    - action: click
+      selector: 'button[data-selector="more-menu"][data-e2e="suite-more-btn"]'
+    - action: click
+      selector: 'div[role="menuitem"][aria-haspopup="true"][data-menu-id$="-EXPORT"]'
+    - action: wait
+      selector: 'li[role="menuitem"].navigation-bar__moreMenu_v3-export-doc-markdown'
+      timeout_ms: 10000
+    - action: click
+      selector: 'li[role="menuitem"].navigation-bar__moreMenu_v3-export-doc-markdown'
+    - action: wait
+      selector: '.ud__modal__content:has(.ud__modal__titleContent:text-is("导出 Markdown 设置"))'
+      timeout_ms: 10000
+    - action: click
+      selector: '.ud__modal__content:has(.ud__modal__titleContent:text-is("导出 Markdown 设置")) .ud__modal__footer button.ud__button--filled:text-is("导出")'
+      expect: download
+      timeout_ms: 120000
+
+  output:
+    directory: template
+    filename: "template-{date:%Y-%m-%d}.md"
+    conflict: replace
+    timezone: Asia/Shanghai
+
+  validation:
+    non_empty: true
+    extensions:
+      - .md
+    min_bytes: 1
+    signature: markdown
+
+  execution:
+    timeout_ms: 180000
+    lock_timeout_ms: 1000
+    safe_step_retries: 1
