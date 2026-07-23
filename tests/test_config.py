@@ -52,6 +52,22 @@ def test_load_settings_allows_missing_token_during_startup(
     assert settings.security.token is None
 
 
+def test_load_settings_ignores_removed_legacy_tasks_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_file = tmp_path / "settings.yaml"
+    config_file.write_text(
+        f"{VALID_CONFIG}\ntasks:\n  default_timeout: 30\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("HUB_TOKEN", raising=False)
+
+    with patch("app.core.config.load_dotenv"):
+        settings = load_settings(config_file)
+
+    assert "tasks" not in settings.model_fields_set
+
+
 def test_load_settings_treats_blank_token_as_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

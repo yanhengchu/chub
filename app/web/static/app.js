@@ -40,8 +40,6 @@ const elements = {
   projectDocsCount: document.querySelector("#project-docs-count"),
   projectDocsMessage: document.querySelector("#project-docs-message"),
   refreshProjectDocs: document.querySelector("#refresh-project-docs"),
-  taskList: document.querySelector("#task-list"),
-  tasksMessage: document.querySelector("#tasks-message"),
   codexPanel: null,
   codexWorkspaces: null,
   codexMessage: null,
@@ -56,7 +54,6 @@ const elements = {
 };
 
 let activeToken = "";
-let taskRunning = false;
 let accessVersion = 0;
 let connectionAttempt = 0;
 let activeLogSource = "operations";
@@ -66,81 +63,6 @@ let feishuQrObjectUrl = "";
 let feishuQrLoading = false;
 let feishuQrVersion = 0;
 
-const TASK_TEXT = {
-  show_version: ["版本信息", "查看 Hub、Python、节点和平台版本。"],
-  check_system: ["系统检查", "检查 CPU、内存、磁盘和系统运行时长。"],
-  check_codex: ["Codex 检查", "检查 Codex 是否可用并显示版本。"],
-  check_docker: ["Docker 检查", "检查 Docker、Compose 和容器状态。"],
-};
-
-const STATUS_TEXT = {
-  success: "成功",
-  failed: "失败",
-  timeout: "超时",
-};
-
-const MESSAGE_TEXT = {
-  "Version information collected": "版本信息已获取",
-  "System status collected": "系统状态已获取",
-  "Codex is available": "Codex 可用",
-  "Codex is not installed or not available on PATH": "未安装 Codex，或 Codex 不在 PATH 中",
-  "Codex is not available": "Codex 不可用",
-  "Codex cannot be executed": "Codex 无法执行",
-  "Unable to read Codex version": "无法读取 Codex 版本",
-  "Docker is available": "Docker 可用",
-  "Docker CLI is not installed or not available on PATH": "未安装 Docker CLI，或 Docker 不在 PATH 中",
-  "Docker CLI is not available": "Docker CLI 不可用",
-  "Docker CLI cannot be executed": "Docker CLI 无法执行",
-  "Unable to read Docker client version": "无法读取 Docker 客户端版本",
-  "Docker service is not available": "Docker 服务不可用",
-  "Docker returned an unexpected status": "Docker 返回了无法识别的状态",
-  "Task execution timed out": "任务执行超时",
-  "Task execution failed": "任务执行失败",
-};
-
-const RESULT_LABELS = {
-  available: "可用",
-  boot_time: "系统启动时间",
-  cli_available: "CLI 可用",
-  client_version: "客户端版本",
-  compose_available: "Compose 可用",
-  compose_version: "Compose 版本",
-  containers: "容器",
-  cpu_percent: "CPU 使用率",
-  disk_percent: "磁盘使用率",
-  disk_total_bytes: "磁盘总量",
-  disk_used_bytes: "磁盘已用",
-  hostname: "主机名",
-  hub_version: "Hub 版本",
-  memory_percent: "内存使用率",
-  memory_total_bytes: "内存总量",
-  memory_used_bytes: "内存已用",
-  node_id: "节点 ID",
-  operating_system: "操作系统",
-  operating_system_version: "系统版本",
-  path: "程序路径",
-  platform: "平台",
-  python_version: "Python 版本",
-  server_available: "服务端可用",
-  server_version: "服务端版本",
-  uptime_seconds: "运行时长",
-  version: "版本",
-};
-
-const BYTE_FIELDS = new Set([
-  "memory_total_bytes",
-  "memory_used_bytes",
-  "disk_total_bytes",
-  "disk_used_bytes",
-]);
-
-function taskText(task) {
-  const text = TASK_TEXT[task.name];
-  return text
-    ? { title: text[0], description: text[1] }
-    : { title: task.title, description: task.description };
-}
-
 function platformText(platform) {
   return {
     macos: "macOS",
@@ -148,10 +70,6 @@ function platformText(platform) {
     windows: "Windows",
     unknown: "未知平台",
   }[platform] || platform;
-}
-
-function messageText(message) {
-  return MESSAGE_TEXT[message] || message;
 }
 
 function setMessage(target, message, kind = "") {
@@ -204,7 +122,6 @@ async function waitForHubRestart(previousInstanceId) {
 async function refreshCardsAfterRestart() {
   await Promise.all([
     loadStatus(),
-    loadTasks(),
     loadCodexSessions(),
     loadAutomations(),
     loadLogs(),
@@ -214,7 +131,6 @@ async function refreshCardsAfterRestart() {
 function clearProtectedView() {
   elements.dashboard.hidden = true;
   elements.connectedBar.hidden = true;
-  elements.taskList.replaceChildren();
   elements.automationList.replaceChildren();
   elements.codexCardHost.replaceChildren();
   if (automationPollTimer) {
@@ -336,65 +252,6 @@ function handleAccessError(error) {
   return false;
 }
 
-function formatBytes(bytes) {
-  if (!Number.isFinite(bytes) || bytes < 0) {
-    return "—";
-  }
-  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
-  let value = bytes;
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit += 1;
-  }
-  return `${value.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
-}
-
-function formatUptime(seconds) {
-  if (!Number.isFinite(seconds) || seconds < 0) {
-    return "—";
-  }
-  const days = Math.floor(seconds / 86400);
-  const hours = Math.floor((seconds % 86400) / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  return [days ? `${days}天` : "", hours ? `${hours}小时` : "", `${minutes}分钟`]
-    .filter(Boolean)
-    .join(" ");
-}
-
-function resultValue(key, value) {
-  if (value === null || value === undefined) {
-    return "—";
-  }
-  if (typeof value === "boolean") {
-    return value ? "是" : "否";
-  }
-  if (BYTE_FIELDS.has(key) && Number.isFinite(value)) {
-    return formatBytes(value);
-  }
-  if (key === "uptime_seconds" && Number.isFinite(value)) {
-    return formatUptime(value);
-  }
-  if (key.endsWith("_percent") && Number.isFinite(value)) {
-    return `${value.toFixed(1)}%`;
-  }
-  if (key === "platform") {
-    return platformText(value);
-  }
-  if (key === "containers" && typeof value === "object") {
-    return [
-      `总数：${value.total ?? "—"}`,
-      `运行中：${value.running ?? "—"}`,
-      `已暂停：${value.paused ?? "—"}`,
-      `已停止：${value.stopped ?? "—"}`,
-    ].join("\n");
-  }
-  if (typeof value === "object") {
-    return JSON.stringify(value, null, 2);
-  }
-  return String(value);
-}
-
 function renderStatus(data) {
   elements.connectedSummary.textContent =
     `CPU ${data.system.cpu_percent.toFixed(1)}% · ` +
@@ -422,7 +279,7 @@ async function connectWithToken(token, remember, savedCredential = false) {
     ensureCodexCard();
     renderStatus(status);
     showConnectedView(status);
-    await Promise.all([loadTasks(), loadCodexSessions(), loadAutomations()]);
+    await Promise.all([loadCodexSessions(), loadAutomations()]);
     if (new URLSearchParams(window.location.search).get("view") === "codex") {
       await showCodexPanel();
     }
@@ -462,163 +319,6 @@ async function loadStatus() {
   } finally {
     elements.refreshStatus.disabled = false;
   }
-}
-
-function setTaskButtonsDisabled(disabled, activeButton = null) {
-  elements.taskList
-    .querySelectorAll("button.task-run-button")
-    .forEach((button) => {
-      button.disabled = disabled;
-      button.classList.toggle(
-        "task-button-running",
-        disabled && button === activeButton,
-      );
-      button.classList.toggle(
-        "task-button-paused",
-        disabled && button !== activeButton,
-      );
-    });
-  if (activeButton) {
-    activeButton.textContent = disabled ? "执行中…" : "执行";
-  }
-}
-
-function renderResultFieldsInto(fieldsEl, result) {
-  fieldsEl.replaceChildren();
-  if (!result) {
-    fieldsEl.hidden = true;
-    return;
-  }
-  fieldsEl.hidden = false;
-  Object.entries(result).forEach(([key, value]) => {
-    const row = document.createElement("div");
-    const label = document.createElement("dt");
-    const content = document.createElement("dd");
-    row.className = "result-field";
-    label.textContent = RESULT_LABELS[key] || key;
-    content.textContent = resultValue(key, value);
-    row.append(label, content);
-    fieldsEl.append(row);
-  });
-}
-
-function createTaskResultArea() {
-  const root = document.createElement("div");
-  const heading = document.createElement("div");
-  const label = document.createElement("strong");
-  const badge = document.createElement("span");
-  const message = document.createElement("p");
-  const fields = document.createElement("dl");
-  const rawWrap = document.createElement("details");
-  const summary = document.createElement("summary");
-  const raw = document.createElement("pre");
-
-  root.className = "task-card-result";
-  root.hidden = true;
-  heading.className = "result-heading";
-  label.textContent = "执行结果";
-  badge.className = "badge badge-muted";
-  badge.textContent = "等待执行";
-  message.className = "message";
-  fields.className = "result-fields";
-  rawWrap.hidden = true;
-  summary.textContent = "查看原始结果";
-
-  heading.append(label, badge);
-  rawWrap.append(summary, raw);
-  root.append(heading, message, fields, rawWrap);
-
-  return { root, badge, message, fields, rawWrap, raw, hasResult: false };
-}
-
-function renderTaskResultInto(resultRefs, task, data) {
-  const display = taskText(task);
-  resultRefs.root.hidden = false;
-  resultRefs.hasResult = true;
-  resultRefs.badge.textContent = STATUS_TEXT[data.status] || data.status;
-  resultRefs.badge.className = `badge badge-${data.status}`;
-  resultRefs.message.textContent =
-    `${messageText(data.message)} · ${data.duration_ms} 毫秒`;
-  renderResultFieldsInto(resultRefs.fields, data.result);
-  resultRefs.raw.textContent = data.result
-    ? JSON.stringify(data.result, null, 2)
-    : "无附加结果";
-  resultRefs.rawWrap.hidden = !data.result;
-  resultRefs.rawWrap.open = false;
-  resultRefs.root.dataset.taskTitle = display.title;
-}
-
-function renderTaskFailureInto(resultRefs, task, error) {
-  const display = taskText(task);
-  resultRefs.root.hidden = false;
-  resultRefs.hasResult = true;
-  resultRefs.badge.textContent = "请求失败";
-  resultRefs.badge.className = "badge badge-muted";
-  resultRefs.message.textContent = error.message || "任务请求失败。";
-  resultRefs.fields.hidden = true;
-  resultRefs.rawWrap.hidden = true;
-  resultRefs.raw.textContent = "";
-  resultRefs.root.dataset.taskTitle = display.title;
-}
-
-async function runTask(task, triggerButton, resultRefs) {
-  if (taskRunning) {
-    return;
-  }
-  taskRunning = true;
-  const requestVersion = accessVersion;
-  setTaskButtonsDisabled(true, triggerButton);
-
-  try {
-    const data = await apiFetch("/api/tasks/run", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ task: task.name, params: {} }),
-    });
-    if (requestVersion !== accessVersion) {
-      return;
-    }
-    renderTaskResultInto(resultRefs, task, data);
-  } catch (error) {
-    if (requestVersion !== accessVersion) {
-      return;
-    }
-    if (!handleAccessError(error)) {
-      if (!resultRefs.hasResult) {
-        renderTaskFailureInto(resultRefs, task, error);
-      }
-      setMessage(elements.tasksMessage, `${taskText(task).title}执行失败：${error.message || "任务请求失败。"}`);
-    }
-  } finally {
-    taskRunning = false;
-    setTaskButtonsDisabled(false, triggerButton);
-  }
-}
-
-function createTaskCard(task) {
-  const display = taskText(task);
-  const card = document.createElement("article");
-  const top = document.createElement("div");
-  const title = document.createElement("h3");
-  const description = document.createElement("p");
-  const actions = document.createElement("div");
-  const button = document.createElement("button");
-  const resultRefs = createTaskResultArea();
-
-  card.className = "task-card";
-  top.className = "task-card-top";
-  actions.className = "task-card-actions";
-  title.textContent = display.title;
-  description.textContent = display.description;
-  button.type = "button";
-  button.textContent = "执行";
-  button.className = "task-action-button task-run-button";
-  button.addEventListener("click", () => runTask(task, button, resultRefs));
-
-  top.append(title, description);
-  actions.append(button);
-  card.append(top, actions, resultRefs.root);
-  return card;
 }
 
 function createCodexCard() {
@@ -1030,37 +730,6 @@ async function showCodexPanel() {
   window.history.replaceState(null, "", "/?view=codex");
   await loadCodexSessions();
   await scrollCodexPanelIntoView();
-}
-
-function renderTasks(tasks) {
-  elements.taskList.replaceChildren();
-  if (!tasks.length) {
-    setMessage(elements.tasksMessage, "当前平台没有可用检查。");
-  } else {
-    tasks.forEach((task) => {
-      elements.taskList.append(createTaskCard(task));
-    });
-    setMessage(elements.tasksMessage, "维护检查已加载。", "success");
-  }
-}
-
-async function loadTasks() {
-  const requestVersion = accessVersion;
-  setMessage(elements.tasksMessage, "正在读取任务列表…");
-  try {
-    const data = await apiFetch("/api/tasks");
-    if (requestVersion !== accessVersion) {
-      return;
-    }
-    renderTasks(data.tasks);
-  } catch (error) {
-    if (requestVersion !== accessVersion) {
-      return;
-    }
-    if (!handleAccessError(error)) {
-      setMessage(elements.tasksMessage, error.message || "任务列表读取失败。", "error");
-    }
-  }
 }
 
 function automationStatusText(state) {

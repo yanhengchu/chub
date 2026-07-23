@@ -13,7 +13,6 @@ def settings(tmp_path: Path) -> Settings:
             "node": {"id": "test-node", "name": "Test Node", "type": "unknown"},
             "server": {"host": "127.0.0.1", "port": 8080},
             "security": {"token": "test-token-that-is-long-enough-for-tests"},
-            "tasks": {"default_timeout": 30},
             "logs": {
                 "file": tmp_path / "hub.log",
                 "operations_file": tmp_path / "operations.log",

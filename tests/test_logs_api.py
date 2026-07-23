@@ -177,13 +177,8 @@ async def test_log_read_failure_is_controlled_and_other_endpoints_survive(
                 "/api/status",
                 headers=authorization(settings),
             )
-            tasks_response = await client.get(
-                "/api/tasks",
-                headers=authorization(settings),
-            )
 
     assert logs_response.status_code == 503
     assert logs_response.json()["error"]["code"] == "logs_unavailable"
     assert health_response.status_code == 200
     assert status_response.status_code == 200
-    assert tasks_response.status_code == 200

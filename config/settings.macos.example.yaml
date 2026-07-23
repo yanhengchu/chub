@@ -15,9 +15,6 @@ server:
 
 security: {}
 
-tasks:
-  default_timeout: 30
-
 logs:
   file: "logs/hub.log"
   level: "INFO"

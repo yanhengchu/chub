@@ -90,7 +90,7 @@ cp config/automations.example.yaml config/automations.local.yaml
 .venv/bin/python -m app.automations.command run <task-id>
 ```
 
-Runner 不会自行启动或停止 Debug Chrome。飞书 Wiki Markdown 下载已经完成真实流程验收；当前尚未接入系统定时器，新增任务仍需逐项验收后再启用调度。
+Runner 不会自行启动或停止 Debug Chrome。飞书 Wiki Markdown 下载已经完成真实流程验收；周报整理依赖各端人员的实际完成情况，因此保留人工确认后手动执行，不接入固定时间调度。新增任务仍需逐项验收后再决定执行方式。
 
 `V 国内业务周报` 可以启用专属的 `v-weekly-report-linked-documents` 扩展。主周报下载成功后，扩展只解析“各端周报”章节内同租户的飞书 Wiki 或 Docx 文档链接，去重后串行下载 Markdown 到主任务目录的 `linked/<日期>/` 子目录。单份关联文档失败不会阻止后续文档，并在任务状态中展示汇总及可展开明细。同日重新执行时会先清理该任务当天关联目录中的旧 Markdown，保证目录只反映本次执行结果。
 
@@ -98,7 +98,6 @@ Runner 不会自行启动或停止 Debug Chrome。飞书 Wiki Markdown 下载已
 
 - `/api/health`：健康检查。
 - `/api/status`：节点状态。
-- `/api/tasks` 和 `/api/tasks/run`：白名单任务。
 - `/api/automations`：自动化任务状态和手动运行。
 - `/api/logs`：活动日志。
 - `/api/maintenance/*`：节点维护操作。

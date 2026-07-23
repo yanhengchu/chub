@@ -51,23 +51,26 @@ async def test_home_page_is_public_and_contains_no_token(settings: Settings) -> 
     assert 'href="/project-docs"' in response.text
     assert 'href="/project-docs" target="_blank"' not in response.text
     assert "节点维护" in response.text
-    assert "维护检查" in response.text
-    assert "服务操作" in response.text
+    assert "维护检查" not in response.text
+    assert 'class="card service-card"' in response.text
+    assert '<h2 id="service-title">Chub 服务</h2>' in response.text
+    assert 'class="service-action-item"' in response.text
+    assert "重新加载代码和配置" in response.text
     assert "重启 Chub" in response.text
     assert "退出" in response.text
-    assert 'id="task-list"' in response.text
+    assert 'id="task-list"' not in response.text
     assert "data-log-source" in response.text
     assert 'href="/logs"' in response.text
-    assert "maintenance-logs" in response.text
-    assert '<h3 id="logs-title">日志</h3>' in response.text
+    assert 'class="card logs-card"' in response.text
+    assert '<h2 id="logs-title">日志</h2>' in response.text
     assert 'class="log-toolbar" role="group" aria-label="日志显示设置"' in response.text
     assert 'class="log-toolbar-controls"' in response.text
     logs_heading = response.text.split(
-        '<div class="maintenance-heading maintenance-heading-actions">', 1
-    )[1].split('</div>\n            <div class="log-toolbar"', 1)[0]
-    assert logs_heading.count("button-link") == 1
+        '<section class="card logs-card"', 1
+    )[1].split('<div class="log-toolbar"', 1)[0]
+    assert logs_heading.count("button-link") == 0
     assert 'id="log-lines"' not in logs_heading
-    assert 'id="load-logs"' not in logs_heading
+    assert 'id="load-logs"' in logs_heading
     assert 'id="status-details"' not in response.text
     assert "展开详情" not in response.text
     assert settings.security.token.get_secret_value() not in response.text
@@ -82,6 +85,17 @@ async def test_home_page_uses_configured_page_title(settings: Settings) -> None:
 
     assert "<title>Ubuntu · Hub</title>" in response.text
     assert "<h1>Hub</h1>" in response.text
+
+
+@pytest.mark.anyio
+async def test_removed_task_api_is_not_available(settings: Settings) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        list_response = await client.get("/api/tasks")
+        run_response = await client.post("/api/tasks/run", json={})
+
+    assert list_response.status_code == 404
+    assert run_response.status_code == 404
 
 
 @pytest.mark.anyio
@@ -125,7 +139,7 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "accessVersion" in script.text
     assert "connectWithToken" in script.text
     assert "确定退出当前节点吗" in script.text
-    assert "createTaskCard" in script.text
+    assert "createTaskCard" not in script.text
     assert "createCodexCard" in script.text
     assert "ensureCodexCard" in script.text
     assert "elements.codexCardHost.replaceChildren();" in script.text
@@ -144,13 +158,9 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "hub.codexCardCache" in script.text
     assert "formatSessionTime" in script.text
     assert "dependencyMessage" in script.text
-    assert "task-card-result" in script.text
     assert "远程开发" in script.text
     assert "Codex PTY" in script.text
     assert "管理并接管本机 Codex CLI 会话。" in script.text
-    assert "版本信息" in script.text
-    assert "task-button-running" in script.text
-    assert "task-button-paused" in script.text
     assert "showCodexPanel" in script.text
     assert "restartHub" in script.text
     assert "scrollCodexPanelIntoView" in script.text
@@ -175,7 +185,8 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert ".dashboard > .card" in stylesheet.text
     assert "#codex-card-host" in stylesheet.text
     assert "align-self: start" in stylesheet.text
-    assert ".maintenance-card" in stylesheet.text
+    assert ".service-card" in stylesheet.text
+    assert ".logs-card" in stylesheet.text
     assert "align-content: start" in stylesheet.text
     assert ".markdown-body > :first-child" in stylesheet.text
     assert ".message:empty" in stylesheet.text

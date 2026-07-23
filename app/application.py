@@ -18,7 +18,6 @@ from app.api.logs import router as logs_router
 from app.api.maintenance import router as maintenance_router
 from app.api.project_documents import router as project_documents_router
 from app.api.status import router as status_router
-from app.api.tasks import router as tasks_router
 from app.codex.connections import TerminalConnectionRegistry
 from app.codex.manager import CodexPtyManager
 from app.codex.routes import api_router as codex_api_router
@@ -37,8 +36,6 @@ from app.core.response import (
     internal_error_handler,
     validation_error_handler,
 )
-from app.tasks.definitions import build_task_registry
-from app.tasks.executor import TaskExecutor
 from app.web.routes import STATIC_DIR, router as web_router
 
 
@@ -140,14 +137,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         resolved_settings.codex_pty.ticket_ttl_seconds
     )
     application.state.terminal_connections = TerminalConnectionRegistry()
-    application.state.task_registry = build_task_registry(
-        resolved_settings.tasks.default_timeout
-    )
-    application.state.task_executor = TaskExecutor(
-        application.state.task_registry,
-        resolved_settings,
-        detected_platform,
-    )
     application.state.automation_manager = AutomationManager(resolved_settings)
     application.add_middleware(SecurityHeadersMiddleware)
     application.add_exception_handler(ApiError, api_error_handler)
@@ -163,7 +152,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(maintenance_router)
     application.include_router(project_documents_router)
     application.include_router(status_router)
-    application.include_router(tasks_router)
     application.include_router(codex_api_router)
     application.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     application.include_router(codex_web_router)

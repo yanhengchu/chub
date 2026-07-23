@@ -1,1 +1,0 @@
-"""Ubuntu Hub tasks."""

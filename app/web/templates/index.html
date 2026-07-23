@@ -157,58 +157,52 @@
           </div>
         </section>
 
-        <section class="card maintenance-card" aria-labelledby="maintenance-title">
+        <section class="card service-card" aria-labelledby="service-title">
           <div class="section-heading">
             <div class="card-heading-copy">
               <p class="section-kicker">节点维护</p>
-              <h2 id="maintenance-title">维护工具</h2>
-              <p class="section-description">集中完成节点检查、服务操作和问题诊断。</p>
+              <h2 id="service-title">Chub 服务</h2>
+              <p class="section-description">管理当前节点上的 Chub 服务。</p>
             </div>
           </div>
-
-          <div class="maintenance-section">
-            <div class="maintenance-heading">
-              <p class="section-kicker">维护检查</p>
-              <h3>可用检查</h3>
+          <div class="service-action-item">
+            <div class="service-action-copy">
+              <strong>重启服务</strong>
+              <span>重新加载代码和配置，过程中连接会短暂中断。</span>
             </div>
-            <div id="task-list" class="task-list"></div>
-            <p id="tasks-message" class="message" aria-live="polite"></p>
-          </div>
-
-          <div class="maintenance-section">
-            <div class="maintenance-heading">
-              <p class="section-kicker">服务操作</p>
-              <h3>Chub 服务</h3>
-            </div>
-            <p class="section-description">操作会短暂中断当前连接。</p>
-            <div class="maintenance-actions">
+            <div class="service-action-controls">
               <button id="restart-hub" class="button-secondary" type="button">重启 Chub</button>
             </div>
           </div>
+        </section>
 
-          <div class="maintenance-section maintenance-logs">
-            <div class="maintenance-heading maintenance-heading-actions">
-              <div>
-                <p class="section-kicker">诊断信息</p>
-                <h3 id="logs-title">日志</h3>
-              </div>
+        <section class="card logs-card" aria-labelledby="logs-title">
+          <div class="section-heading">
+            <div class="card-heading-copy">
+              <p class="section-kicker">诊断信息</p>
+              <h2 id="logs-title">日志</h2>
+              <p class="section-description">查看当前节点最近的操作和运行记录。</p>
+            </div>
+            <button id="load-logs" class="button-secondary" type="button">刷新</button>
+          </div>
+          <div class="log-toolbar" role="group" aria-label="日志显示设置">
+            <div class="log-tabs" role="tablist" aria-label="日志类型">
+              <button class="log-tab is-active" data-log-source="operations" type="button" role="tab" aria-selected="true">操作日志</button>
+              <button class="log-tab" data-log-source="application" type="button" role="tab" aria-selected="false">运行日志</button>
+            </div>
+            <div class="log-toolbar-controls">
+              <select id="log-lines" aria-label="日志行数">
+                <option value="50">50 行</option>
+                <option value="100">100 行</option>
+              </select>
+            </div>
+          </div>
+          <p id="logs-message" class="message">默认读取最近 50 行操作日志。</p>
+          <pre id="logs-output" class="logs-output" hidden></pre>
+          <div class="card-footer">
+            <div class="card-footer-actions">
               <a class="button-link" href="/logs">日志详情</a>
             </div>
-            <div class="log-toolbar" role="group" aria-label="日志显示设置">
-              <div class="log-tabs" role="tablist" aria-label="日志类型">
-                <button class="log-tab is-active" data-log-source="operations" type="button" role="tab" aria-selected="true">操作日志</button>
-                <button class="log-tab" data-log-source="application" type="button" role="tab" aria-selected="false">运行日志</button>
-              </div>
-              <div class="log-toolbar-controls">
-                <select id="log-lines" aria-label="日志行数">
-                  <option value="50">50 行</option>
-                  <option value="100">100 行</option>
-                </select>
-                <button id="load-logs" class="button-secondary" type="button">刷新</button>
-              </div>
-            </div>
-            <p id="logs-message" class="message">默认读取最近 50 行操作日志。</p>
-            <pre id="logs-output" class="logs-output" hidden></pre>
           </div>
         </section>
       </div>

@@ -14,6 +14,7 @@ from pydantic import (
     SecretStr,
     ValidationError,
     field_validator,
+    model_validator,
 )
 
 
@@ -55,10 +56,6 @@ class SecurityConfig(StrictModel):
         return value
 
 
-class TasksConfig(StrictModel):
-    default_timeout: int = Field(default=30, ge=1, le=300)
-
-
 class LogsConfig(StrictModel):
     file: Path = Path("logs/hub.log")
     operations_file: Path = Path("logs/operations.log")
@@ -95,10 +92,17 @@ class Settings(StrictModel):
     node: NodeConfig
     server: ServerConfig
     security: SecurityConfig
-    tasks: TasksConfig = TasksConfig()
     logs: LogsConfig = LogsConfig()
     codex_pty: CodexPtyConfig = CodexPtyConfig()
     automations: AutomationsConfig = AutomationsConfig()
+
+    @model_validator(mode="before")
+    @classmethod
+    def discard_legacy_tasks_config(cls, value: object) -> object:
+        if isinstance(value, dict):
+            value = dict(value)
+            value.pop("tasks", None)
+        return value
 
     def resolve_runtime_paths(self) -> "Settings":
         if not self.logs.file.is_absolute():
