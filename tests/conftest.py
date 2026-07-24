@@ -26,6 +26,11 @@ def settings(tmp_path: Path) -> Settings:
                 "ticket_ttl_seconds": 600,
                 "max_running": 3,
             },
+            "automations": {
+                "shared_config_file": tmp_path / "automations.yaml",
+                "local_config_file": tmp_path / "automations.local.yaml",
+                "data_dir": tmp_path / "automations",
+            },
             "project_documents": {
                 "state_file": tmp_path / "project-documents.json",
             },

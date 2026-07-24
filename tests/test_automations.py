@@ -238,7 +238,7 @@ tasks:
     assert list(config.tasks) == ["shared-report"]
 
 
-def test_load_automations_rejects_duplicate_task_ids(tmp_path: Path) -> None:
+def test_load_automations_deduplicates_identical_task_ids(tmp_path: Path) -> None:
     shared = tmp_path / "automations.yaml"
     local = tmp_path / "automations.local.yaml"
     content = """\
@@ -251,7 +251,39 @@ tasks:
     shared.write_text(content, encoding="utf-8")
     local.write_text(content, encoding="utf-8")
 
-    with pytest.raises(RuntimeError, match="Duplicate automation task id"):
+    config = load_automations(shared, local)
+
+    assert list(config.tasks) == ["duplicate-report"]
+
+
+def test_load_automations_rejects_conflicting_task_ids(tmp_path: Path) -> None:
+    shared = tmp_path / "automations.yaml"
+    local = tmp_path / "automations.local.yaml"
+    shared.write_text(
+        """\
+version: 2
+tasks:
+  duplicate-report:
+    name: 公共周报
+    url: https://tenant.feishu.cn/wiki/shared
+""",
+        encoding="utf-8",
+    )
+    local.write_text(
+        """\
+version: 2
+tasks:
+  duplicate-report:
+    name: 本机周报
+    url: https://tenant.feishu.cn/wiki/local
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="Conflicting automation task id 'duplicate-report'",
+    ):
         load_automations(shared, local)
 
 

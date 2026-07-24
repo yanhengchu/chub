@@ -19,7 +19,7 @@ from app.automations.browser import (
     start_debug_chrome,
     stop_debug_chrome,
 )
-from app.automations.config import load_automations
+from app.automations.config import DuplicateAutomationTaskError, load_automations
 from app.automations.models import (
     AutomationListData,
     AutomationRunAccepted,
@@ -239,6 +239,12 @@ class AutomationManager:
     def _load_config(self):
         try:
             return load_automations(*self._settings.automations.config_files)
+        except DuplicateAutomationTaskError as exc:
+            raise ApiError(
+                503,
+                "automation_config_conflict",
+                f"自动化任务配置冲突：{exc.task_id}",
+            ) from exc
         except RuntimeError as exc:
             raise ApiError(
                 503,

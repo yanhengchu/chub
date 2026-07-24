@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -26,6 +27,13 @@ EXTENSION_PATHS = {
         TEMPLATE_PATH.parent / "v-weekly-report-linked-documents.yaml"
     ),
 }
+LOGGER = logging.getLogger("hub.automations.config")
+
+
+class DuplicateAutomationTaskError(RuntimeError):
+    def __init__(self, task_id: str) -> None:
+        self.task_id = task_id
+        super().__init__(f"Conflicting automation task id '{task_id}'")
 
 
 def _read_yaml(path: Path, *, label: str) -> dict:
@@ -79,17 +87,18 @@ def _load_automation_file(path: Path) -> AutomationsFile:
 
 def load_automations(*paths: Path) -> AutomationsFile:
     tasks = {}
-    sources = {}
     for path in paths:
         loaded = _load_automation_file(path)
         for task_id, task in loaded.tasks.items():
             if task_id in tasks:
-                raise RuntimeError(
-                    "Duplicate automation task id "
-                    f"'{task_id}' in {sources[task_id]} and {path}"
-                )
+                if task == tasks[task_id]:
+                    LOGGER.warning(
+                        "Ignoring identical duplicate automation task: id=%s",
+                        task_id,
+                    )
+                    continue
+                raise DuplicateAutomationTaskError(task_id)
             tasks[task_id] = task
-            sources[task_id] = path
     return AutomationsFile(version=1, tasks=tasks)
 
 
