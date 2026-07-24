@@ -127,6 +127,7 @@ class CodexPtyManager:
         self._require_available()
         with self._lock:
             session = self.get_session(session_id)
+            tmux_was_running = session.status == "running"
             process = self._processes.get(session.id)
             if process is not None and process.poll() is None and session.ttyd_port:
                 return session
@@ -143,18 +144,28 @@ class CodexPtyManager:
             self._ensure_profile()
             port = self._available_port()
             command = self._ttyd_command(session, port)
-            process = subprocess.Popen(
-                command,
-                cwd=PROJECT_ROOT,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-            self._wait_for_port(process, port)
+            try:
+                process = subprocess.Popen(
+                    command,
+                    cwd=PROJECT_ROOT,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+                self._wait_for_port(process, port)
+            except Exception:
+                if not tmux_was_running:
+                    session.status = "error"
+                session.error = "terminal_backend_failed"
+                session.updated_at = utc_now()
+                self.store.save(session)
+                raise
             self._processes[session.id] = process
             session.ttyd_pid = process.pid
             session.ttyd_port = port
-            session.activity = "unknown"
+            session.status = "running"
+            if not tmux_was_running:
+                session.activity = "unknown"
             session.error = None
             session.updated_at = utc_now()
             self.store.save(session)
@@ -322,6 +333,8 @@ class CodexPtyManager:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
+        if session.status == "error" and tmux.returncode != 0:
+            return
         status = "running" if tmux.returncode == 0 else (
             "stopped" if session.codex_session_id else "new"
         )

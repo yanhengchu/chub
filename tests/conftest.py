@@ -26,5 +26,8 @@ def settings(tmp_path: Path) -> Settings:
                 "ticket_ttl_seconds": 600,
                 "max_running": 3,
             },
+            "project_documents": {
+                "state_file": tmp_path / "project-documents.json",
+            },
         }
     )

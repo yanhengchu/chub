@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "documents": [
+    {
+      "id": "openclaw-research",
+      "title": "OpenClaw 方案调研",
+      "summary": "分析 OpenClaw 的主体架构，以及它与 Chub 后续发展的关系。",
+      "status": "调研中",
+      "path": "OPENCLAW_RESEARCH.md"
+    },
+    {
+      "id": "automation-download",
+      "title": "配置驱动的飞书文档下载自动化方案",
+      "summary": "复用 Debug Chrome 飞书登录状态，按配置安全下载 Wiki 文档 Markdown。",
+      "status": "已实现并验收",
+      "path": "AUTOMATION_DOWNLOAD_DESIGN.md"
+    }
+  ]
+}

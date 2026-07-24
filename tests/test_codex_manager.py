@@ -104,6 +104,100 @@ def test_restart_terminal_backend_recycles_ttyd_without_stopping_tmux(
     assert restarted is session
 
 
+@pytest.mark.parametrize(
+    ("status", "initial_activity", "expected_activity"),
+    [
+        ("running", "idle", "idle"),
+        ("running", "working", "working"),
+        ("stopped", "idle", "unknown"),
+    ],
+)
+def test_terminal_backend_reconnect_preserves_running_tmux_activity(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    status: str,
+    initial_activity: str,
+    expected_activity: str,
+) -> None:
+    manager = CodexPtyManager(settings)
+    session = native_session("99999999-9999-4999-8999-999999999999")
+    session.status = status
+    session.activity = initial_activity
+    manager.get_session = MagicMock(return_value=session)
+    manager._require_available = MagicMock()
+    manager._ensure_profile = MagicMock()
+    manager._available_port = MagicMock(return_value=12345)
+    manager._ttyd_command = MagicMock(return_value=["ttyd"])
+    manager._wait_for_port = MagicMock()
+    manager._running_tmux_count = MagicMock(return_value=0)
+    process = MagicMock(pid=1234)
+    monkeypatch.setattr(
+        "app.codex.manager.subprocess.Popen",
+        MagicMock(return_value=process),
+    )
+
+    result = manager.ensure_terminal(session.id)
+
+    assert result.activity == expected_activity
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_status"),
+    [
+        ("stopped", "error"),
+        ("running", "running"),
+    ],
+)
+def test_terminal_backend_failure_records_retryable_error(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    status: str,
+    expected_status: str,
+) -> None:
+    manager = CodexPtyManager(settings)
+    session = native_session("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+    session.status = status
+    manager.get_session = MagicMock(return_value=session)
+    manager._require_available = MagicMock()
+    manager._ensure_profile = MagicMock()
+    manager._available_port = MagicMock(return_value=12345)
+    manager._ttyd_command = MagicMock(return_value=["ttyd"])
+    manager._running_tmux_count = MagicMock(return_value=0)
+    monkeypatch.setattr(
+        "app.codex.manager.subprocess.Popen",
+        MagicMock(side_effect=OSError("failed")),
+    )
+
+    with pytest.raises(OSError):
+        manager.ensure_terminal(session.id)
+
+    stored = manager.store.get(session.id)
+    assert stored.status == expected_status
+    assert stored.error == "terminal_backend_failed"
+
+
+def test_refresh_preserves_terminal_error_until_retry(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = CodexPtyManager(settings)
+    session = native_session("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+    session.status = "error"
+    session.error = "terminal_backend_failed"
+    manager.store.save(session)
+    monkeypatch.setattr("app.codex.manager.shutil.which", lambda _name: "/tmux")
+    monkeypatch.setattr(
+        "app.codex.manager.subprocess.run",
+        MagicMock(return_value=CompletedProcess([], 1)),
+    )
+
+    manager._refresh_status(session)
+
+    stored = manager.store.get(session.id)
+    assert stored.status == "error"
+    assert stored.error == "terminal_backend_failed"
+
+
 def test_archive_uses_codex_cli_and_removes_mapping(
     settings: Settings,
     monkeypatch: pytest.MonkeyPatch,

@@ -1,18 +1,7 @@
 const sessionId = document.body.dataset.sessionId;
 const pageId = document.body.dataset.pageId;
-const returnLink = document.querySelector("#return-codex");
-const CODEX_RETURN_KEY = "hub.codexReturnToDashboard";
 const CODEX_REFRESH_KEY = "hub.codexRefreshOnReturn";
-
-function returnToDashboard(event) {
-  if (sessionStorage.getItem(CODEX_RETURN_KEY) !== "1") {
-    return;
-  }
-  event.preventDefault();
-  sessionStorage.removeItem(CODEX_RETURN_KEY);
-  sessionStorage.setItem(CODEX_REFRESH_KEY, "1");
-  window.history.back();
-}
+sessionStorage.setItem(CODEX_REFRESH_KEY, "1");
 
 async function checkTerminalOwnership() {
   if (!sessionId || !pageId || document.visibilityState === "hidden") {
@@ -41,4 +30,3 @@ async function checkTerminalOwnership() {
 
 window.setInterval(checkTerminalOwnership, 1000);
 document.addEventListener("visibilitychange", checkTerminalOwnership);
-returnLink.addEventListener("click", returnToDashboard);

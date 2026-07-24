@@ -480,23 +480,56 @@ input[type="password"] {
   gap: 0.7rem;
 }
 
-.design-document-item {
+.document-archive-action {
+  min-width: 4rem;
+  min-height: 36px;
+  padding: 0.45rem 0.75rem;
+  white-space: nowrap;
+}
+
+.document-filter-toolbar {
   display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 1rem;
+}
+
+.document-filter-toolbar > button {
+  min-height: 36px;
+  padding: 0.45rem 0.75rem;
+}
+
+.document-filter-toolbar > .is-active {
+  color: white;
+  background: var(--accent);
+}
+
+.design-document-item {
   min-width: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: 0.85rem;
   color: var(--ink);
   background: white;
-  text-decoration: none;
 }
 
 .design-document-item:hover {
   border-color: #9fb9a8;
   background: #f3f7f2;
+}
+
+.design-document-main {
+  display: block;
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.design-document-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-top: 0.7rem;
 }
 
 .design-document-copy,
@@ -518,15 +551,16 @@ input[type="password"] {
 }
 
 .design-document-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
   flex: none;
   color: var(--muted);
   font-size: 0.72rem;
-  text-align: right;
 }
 
 .design-document-meta time {
-  display: block;
-  margin-top: 0.35rem;
+  display: inline;
 }
 
 .card-footer,
@@ -829,8 +863,7 @@ pre {
   display: none;
 }
 
-.codex-divider,
-.codex-create-divider {
+.codex-divider {
   display: flex;
   align-items: center;
   gap: 0.65rem;
@@ -840,9 +873,7 @@ pre {
 }
 
 .codex-divider::before,
-.codex-divider::after,
-.codex-create-divider::before,
-.codex-create-divider::after {
+.codex-divider::after {
   height: 1px;
   flex: 1;
   background: var(--line);
@@ -852,6 +883,57 @@ pre {
 .codex-sessions-divider {
   margin-top: 0;
   margin-bottom: 0.55rem;
+}
+
+.codex-create-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 0.75rem;
+}
+
+.codex-workspace-dialog {
+  width: min(30rem, calc(100% - 2rem));
+  max-width: none;
+  border: 0;
+  border-radius: 18px;
+  padding: 0;
+  color: var(--ink);
+  background: transparent;
+}
+
+.codex-workspace-dialog::backdrop {
+  background: rgb(19 31 23 / 42%);
+  backdrop-filter: blur(2px);
+}
+
+.codex-workspace-dialog-surface {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 1rem;
+  background: var(--paper);
+  box-shadow: 0 20px 55px rgb(19 31 23 / 24%);
+}
+
+.codex-workspace-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.codex-workspace-dialog-header h3 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.codex-workspace-dialog-close {
+  flex: none;
+  color: var(--muted);
+}
+
+.codex-workspace-dialog .workspace-list {
+  grid-template-columns: 1fr;
+  margin-top: 0.85rem;
 }
 
 .codex-panel .result-heading > div {
@@ -1017,6 +1099,22 @@ footer {
     grid-template-columns: 1fr;
   }
 
+  .codex-create-actions > button {
+    width: 100%;
+  }
+
+  .codex-workspace-dialog {
+    width: 100%;
+    max-height: calc(100% - 1rem);
+    margin: auto 0 0;
+    border-radius: 18px 18px 0 0;
+  }
+
+  .codex-workspace-dialog-surface {
+    border-radius: 18px 18px 0 0;
+    padding: 1rem 1rem calc(1rem + env(safe-area-inset-bottom));
+  }
+
   .automation-run {
     width: 100%;
   }
@@ -1050,16 +1148,20 @@ footer {
     justify-content: flex-end;
   }
 
-  .design-document-item {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
   .design-document-meta {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.4rem;
     text-align: left;
+  }
+
+  .design-document-footer {
+    align-items: flex-end;
+  }
+
+  .design-document-meta time {
+    padding-left: 0.55rem;
   }
 
   .design-document-meta time {
@@ -1069,6 +1171,23 @@ footer {
   .log-toolbar,
   .log-toolbar-controls {
     align-items: stretch;
+  }
+
+  .log-toolbar,
+  .log-tabs {
+    flex-wrap: nowrap;
+  }
+
+  .log-toolbar {
+    gap: 0.35rem;
+  }
+
+  .log-tabs {
+    gap: 0.3rem;
+  }
+
+  .log-tab {
+    padding-inline: 0.7rem;
   }
 
   .log-toolbar-controls {

@@ -30,6 +30,7 @@ logs/*.log.*
 data/codex-sessions.json
 data/codex-hooks/
 data/automations/
+data/project-documents.json
 
 .DS_Store
 .idea/

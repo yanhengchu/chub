@@ -15,25 +15,39 @@
           <h2 id="document-list-title">功能方案与验收标准</h2>
           <p class="section-description">共 {{ documents|length }} 份设计文档。</p>
         </div>
-        <div class="design-document-list">
+        <div class="document-filter-toolbar" role="group" aria-label="文档筛选">
+          <button class="button-secondary is-active" type="button" data-document-filter="all">全部</button>
+          <button class="button-secondary" type="button" data-document-filter="current">当前</button>
+          <button class="button-secondary" type="button" data-document-filter="archived">已归档</button>
+        </div>
+        <p id="document-list-message" class="message{% if documents_error %} message-error{% endif %}" aria-live="polite">{{ documents_error or '' }}</p>
+        <div id="document-list" class="design-document-list">
           {% for document in documents %}
-          <a class="design-document-item" href="/project-docs/{{ document.id }}">
-            <span class="design-document-copy">
-              <strong>{{ document.title }}</strong>
-              <span>{{ document.summary }}</span>
-            </span>
-            <span class="design-document-meta">
-              <span class="badge badge-success">{{ document.status }}</span>
-              <time datetime="{{ document.updated_at.isoformat() }}">{{ document.updated_at.strftime('%Y-%m-%d') }}</time>
-            </span>
-          </a>
+          <article class="design-document-item" data-archived="{{ 'true' if document.archived else 'false' }}">
+            <a class="design-document-main" href="/project-docs/{{ document.id }}">
+              <span class="design-document-copy">
+                <strong>{{ document.title }}</strong>
+                <span>{{ document.summary }}</span>
+              </span>
+            </a>
+            <div class="design-document-footer">
+              <span class="design-document-meta">
+                <span class="badge badge-{{ 'muted' if document.archived else 'success' }}">{{ '已归档' if document.archived else document.status }}</span>
+                <time datetime="{{ document.updated_at.isoformat() }}">{{ document.updated_at.strftime('%Y-%m-%d') }}</time>
+              </span>
+              <button class="button-secondary document-archive-action" type="button" data-document-id="{{ document.id }}" data-archived="{{ 'true' if document.archived else 'false' }}">{{ '恢复' if document.archived else '归档' }}</button>
+            </div>
+          </article>
           {% else %}
+          {% if not documents_error %}
           <p class="empty-state">暂无设计文档。</p>
+          {% endif %}
           {% endfor %}
         </div>
       </section>
     </main>
 
-    <footer>Hub 设计文档只读展示。</footer>
+    <footer>Hub 设计文档展示，归档管理需连接节点。</footer>
+    <script src="/static/design_documents.js" defer></script>
   </body>
 </html>

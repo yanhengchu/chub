@@ -87,6 +87,10 @@ class AutomationsConfig(StrictModel):
         )
 
 
+class ProjectDocumentsConfig(StrictModel):
+    state_file: Path = Path("data/project-documents.json")
+
+
 class Settings(StrictModel):
     app: AppConfig
     node: NodeConfig
@@ -95,6 +99,7 @@ class Settings(StrictModel):
     logs: LogsConfig = LogsConfig()
     codex_pty: CodexPtyConfig = CodexPtyConfig()
     automations: AutomationsConfig = AutomationsConfig()
+    project_documents: ProjectDocumentsConfig = ProjectDocumentsConfig()
 
     @model_validator(mode="before")
     @classmethod
@@ -127,6 +132,10 @@ class Settings(StrictModel):
             self.automations.config_file = PROJECT_ROOT / self.automations.config_file
         if not self.automations.data_dir.is_absolute():
             self.automations.data_dir = PROJECT_ROOT / self.automations.data_dir
+        if not self.project_documents.state_file.is_absolute():
+            self.project_documents.state_file = (
+                PROJECT_ROOT / self.project_documents.state_file
+            )
         return self
 
 

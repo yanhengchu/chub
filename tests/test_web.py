@@ -44,9 +44,11 @@ async def test_home_page_is_public_and_contains_no_token(settings: Settings) -> 
     assert 'href="/automations"' in response.text
     assert 'id="design-documents-title"' in response.text
     assert "配置驱动的飞书文档下载自动化方案" in response.text
+    assert "OpenClaw 方案调研" in response.text
     assert "已实现并验收" in response.text
-    assert "1 份文档" in response.text
+    assert "2 份文档" in response.text
     assert 'href="/project-docs/automation-download"' in response.text
+    assert 'href="/project-docs/openclaw-research"' in response.text
     assert 'target="_blank"' not in response.text
     assert 'href="/project-docs"' in response.text
     assert 'href="/project-docs" target="_blank"' not in response.text
@@ -88,6 +90,33 @@ async def test_home_page_uses_configured_page_title(settings: Settings) -> None:
 
 
 @pytest.mark.anyio
+async def test_home_page_reports_design_document_index_error(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.design_documents.DOCUMENTS_INDEX",
+        Path("/missing/design_documents.json"),
+    )
+    transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/")
+        api_response = await client.get(
+            "/api/project-docs",
+            headers={
+                "Authorization": (
+                    f"Bearer {settings.security.token.get_secret_value()}"
+                )
+            },
+        )
+
+    assert response.status_code == 200
+    assert "设计文档暂时无法加载，请检查文档索引。" in response.text
+    assert api_response.status_code == 503
+    assert api_response.json()["error"]["code"] == "project_document_index_unavailable"
+
+
+@pytest.mark.anyio
 async def test_removed_task_api_is_not_available(settings: Settings) -> None:
     transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -114,11 +143,13 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         script = await client.get("/static/app.js")
+        polling_script = await client.get("/static/codex_polling.js")
         stylesheet = await client.get("/static/app.css")
         terminal_stylesheet = await client.get("/static/terminal.css")
         terminal_script = await client.get("/static/terminal.js")
 
     assert script.status_code == 200
+    assert polling_script.status_code == 200
     assert stylesheet.status_code == 200
     assert terminal_stylesheet.status_code == 200
     assert terminal_script.status_code == 200
@@ -141,17 +172,44 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "确定退出当前节点吗" in script.text
     assert "createTaskCard" not in script.text
     assert "createCodexCard" in script.text
+    assert 'createButton.textContent = "新建会话"' in script.text
+    assert 'workspaceDialogTitle.textContent = "选择工作目录"' in script.text
+    assert "workspaceDialog.showModal()" in script.text
+    assert "workspaceDialog.close()" in script.text
     assert "ensureCodexCard" in script.text
     assert "elements.codexCardHost.replaceChildren();" in script.text
     assert "createCodexSession" in script.text
     assert "enterCodexSession" in script.text
     assert "CODEX_REFRESH_KEY" in script.text
+    assert 'sessionStorage.setItem(CODEX_REFRESH_KEY, "1")' in script.text
     assert 'window.addEventListener("pageshow"' in script.text
+    assert 'document.addEventListener("visibilitychange"' in script.text
+    assert "PROJECT_DOCS_REFRESH_KEY" in script.text
     assert "stopCodexSession" in script.text
     assert "archiveCodexSession" in script.text
     assert "removeCodexSession" in script.text
     assert "renderCodexWorkspaces" in script.text
     assert "renderCodexSessions" in script.text
+    assert "会话运行中 · 等待输入" in script.text
+    assert "会话运行中 · 执行中" in script.text
+    assert "会话运行中 · 状态未知" in script.text
+    assert "会话已停止 · 可恢复" in script.text
+    assert "尚未启动 · 可进入" in script.text
+    assert "终端访问异常 · 可重试" in script.text
+    assert "会话异常 · 可重试" in script.text
+    assert "CODEX_POLL_FAST_MS = 2000" in script.text
+    assert "CODEX_POLL_SLOW_MS = 8000" in script.text
+    assert "CODEX_POLL_SLOW_AFTER_MS = 2 * 60 * 1000" in script.text
+    assert 'session.status === "running" && session.activity === "working"' in polling_script.text
+    assert "loadCodexSessions({ background: true })" in script.text
+    assert "loadCodexSessions({ force: true })" in script.text
+    assert "codexLoadPromise" in script.text
+    assert "codexMutationCount" in script.text
+    assert "codexSessionsSignature" in script.text
+    assert "codexLoadPromise = null" in script.text
+    assert "codexMutationCount = 0" in script.text
+    assert "if (handleAccessError(error))" in script.text
+    assert "loadProjectDocuments({ clearMessage: false })" in script.text
     assert "renderCodexData" in script.text
     assert "restoreCodexCardCache" in script.text
     assert "storeCodexCardCache" in script.text
@@ -177,8 +235,8 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "scrollIntoView" not in script.text
     assert "/api/codex/sessions" in script.text
     assert "connection" in terminal_script.text
-    assert "window.history.back()" in terminal_script.text
-    assert "hub.codexReturnToDashboard" in terminal_script.text
+    assert "window.history.back()" not in terminal_script.text
+    assert "hub.codexReturnToDashboard" not in terminal_script.text
     assert "response.status === 404" in terminal_script.text
     assert ".section-heading > .button-link" in stylesheet.text
     assert "white-space: nowrap" in stylesheet.text
@@ -274,8 +332,10 @@ async def test_project_document_card_api_is_protected(settings: Settings) -> Non
     assert unauthorized.status_code == 401
     assert response.status_code == 200
     data = response.json()["data"]
-    assert data["count"] >= 1
-    assert data["documents"][0]["id"] == "automation-download"
+    assert data["count"] >= 2
+    assert {
+        document["id"] for document in data["documents"]
+    } >= {"automation-download", "openclaw-research"}
 
 
 @pytest.mark.anyio
@@ -309,7 +369,8 @@ async def test_terminal_page_uses_session_title(settings: Settings) -> None:
     assert response.status_code == 200
     assert "真实会话标题 · Codex PTY" in response.text
     assert 'src="/static/terminal.js"' in response.text
-    assert 'id="return-codex"' in response.text
+    assert 'id="return-codex"' not in response.text
+    assert "<header>" not in response.text
     assert 'data-page-id="page-1"' in response.text
     assert "page_id=page-1" in response.text
     assert "disableLeaveAlert=true" in response.text
@@ -385,7 +446,8 @@ async def test_page_uses_external_script_only(settings: Settings) -> None:
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/")
 
-    assert response.text.count("<script") == 1
+    assert response.text.count("<script") == 2
+    assert '<script src="/static/codex_polling.js" defer></script>' in response.text
     assert "<script src=\"/static/app.js\" defer></script>" in response.text
 
 

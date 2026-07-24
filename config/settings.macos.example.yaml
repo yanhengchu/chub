@@ -33,3 +33,6 @@ automations:
   local_config_file: "config/automations.local.yaml"
   data_dir: "data/automations"
   max_home_tasks: 3
+
+project_documents:
+  state_file: "data/project-documents.json"

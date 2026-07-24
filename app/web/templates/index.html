@@ -6,6 +6,7 @@
     <meta name="color-scheme" content="light">
     <title>{{ page_title }}</title>
     <link rel="stylesheet" href="/static/app.css">
+    <script src="/static/codex_polling.js" defer></script>
     <script src="/static/app.js" defer></script>
   </head>
   <body>
@@ -125,34 +126,36 @@
             <div class="card-heading-copy">
               <p class="section-kicker">项目资料</p>
               <h2 id="design-documents-title">设计文档</h2>
-              <p class="section-description">查看功能方案、实现范围和验收标准。</p>
+              <p class="section-description">查看方案、实现范围和验收标准。</p>
             </div>
             <button id="refresh-project-docs" class="button-secondary" type="button">刷新</button>
           </div>
           <div class="design-document-list design-document-list-compact">
             {% for document in design_documents %}
-            <a
-              class="design-document-item"
-              href="/project-docs/{{ document.id }}"
-            >
-              <span class="design-document-copy">
-                <strong>{{ document.title }}</strong>
-                <span>{{ document.summary }}</span>
-              </span>
-              <span class="design-document-meta">
-                <span class="badge badge-success">{{ document.status }}</span>
-                <time datetime="{{ document.updated_at.isoformat() }}">{{ document.updated_at.strftime('%Y-%m-%d') }}</time>
-              </span>
-            </a>
+            <article class="design-document-item">
+              <a class="design-document-main" href="/project-docs/{{ document.id }}">
+                <span class="design-document-copy">
+                  <strong>{{ document.title }}</strong>
+                  <span>{{ document.summary }}</span>
+                </span>
+              </a>
+              <div class="design-document-footer">
+                <span class="design-document-meta">
+                  <span class="badge badge-success">{{ document.status }}</span>
+                  <time datetime="{{ document.updated_at.isoformat() }}">{{ document.updated_at.strftime('%Y-%m-%d') }}</time>
+                </span>
+                <button class="button-secondary document-archive-action" type="button" data-document-id="{{ document.id }}">归档</button>
+              </div>
+            </article>
             {% else %}
             <p class="empty-state">暂无设计文档。</p>
             {% endfor %}
           </div>
-          <p id="project-docs-message" class="message" aria-live="polite"></p>
+          <p id="project-docs-message" class="message{% if design_documents_error %} message-error{% endif %}" aria-live="polite">{{ design_documents_error or '' }}</p>
           <div class="card-footer">
             <span id="project-docs-count" class="card-footer-meta">{{ design_document_count }} 份文档</span>
             <div class="card-footer-actions">
-            <a class="button-link" href="/project-docs">查看全部文档</a>
+            <a id="all-project-docs" class="button-link" href="/project-docs">查看全部文档</a>
             </div>
           </div>
         </section>
@@ -181,14 +184,14 @@
             <div class="card-heading-copy">
               <p class="section-kicker">诊断信息</p>
               <h2 id="logs-title">日志</h2>
-              <p class="section-description">查看当前节点最近的操作和运行记录。</p>
+              <p class="section-description">查看节点最近的操作和运行记录。</p>
             </div>
             <button id="load-logs" class="button-secondary" type="button">刷新</button>
           </div>
           <div class="log-toolbar" role="group" aria-label="日志显示设置">
             <div class="log-tabs" role="tablist" aria-label="日志类型">
-              <button class="log-tab is-active" data-log-source="operations" type="button" role="tab" aria-selected="true">操作日志</button>
-              <button class="log-tab" data-log-source="application" type="button" role="tab" aria-selected="false">运行日志</button>
+              <button class="log-tab is-active" data-log-source="operations" type="button" role="tab" aria-label="操作日志" aria-selected="true">操作</button>
+              <button class="log-tab" data-log-source="application" type="button" role="tab" aria-label="运行日志" aria-selected="false">运行</button>
             </div>
             <div class="log-toolbar-controls">
               <select id="log-lines" aria-label="日志行数">

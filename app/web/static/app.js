@@ -2,8 +2,8 @@
 
 const SESSION_TOKEN_KEY = "hub.sessionToken";
 const LOCAL_TOKEN_KEY = "hub.savedToken";
-const CODEX_RETURN_KEY = "hub.codexReturnToDashboard";
 const CODEX_REFRESH_KEY = "hub.codexRefreshOnReturn";
+const PROJECT_DOCS_REFRESH_KEY = "hub.projectDocsRefreshOnReturn";
 const CODEX_CARD_CACHE_KEY = "hub.codexCardCache";
 
 const elements = {
@@ -40,12 +40,15 @@ const elements = {
   projectDocsCount: document.querySelector("#project-docs-count"),
   projectDocsMessage: document.querySelector("#project-docs-message"),
   refreshProjectDocs: document.querySelector("#refresh-project-docs"),
+  allProjectDocs: document.querySelector("#all-project-docs"),
   codexPanel: null,
   codexWorkspaces: null,
   codexMessage: null,
   codexSessions: null,
   codexSessionCount: null,
   refreshCodex: null,
+  createCodex: null,
+  codexWorkspaceDialog: null,
   loadLogs: document.querySelector("#load-logs"),
   logLines: document.querySelector("#log-lines"),
   logTabs: document.querySelectorAll("[data-log-source]"),
@@ -62,6 +65,16 @@ let automationBrowserState = "unavailable";
 let feishuQrObjectUrl = "";
 let feishuQrLoading = false;
 let feishuQrVersion = 0;
+let codexPollTimer = null;
+let codexPollUnchangedSince = 0;
+let codexShouldPoll = false;
+let codexSessionSignature = "";
+let codexLoadPromise = null;
+let codexMutationCount = 0;
+
+const CODEX_POLL_FAST_MS = 2000;
+const CODEX_POLL_SLOW_MS = 8000;
+const CODEX_POLL_SLOW_AFTER_MS = 2 * 60 * 1000;
 
 function platformText(platform) {
   return {
@@ -129,6 +142,9 @@ async function refreshCardsAfterRestart() {
 }
 
 function clearProtectedView() {
+  stopCodexPolling({ reset: true });
+  codexLoadPromise = null;
+  codexMutationCount = 0;
   elements.dashboard.hidden = true;
   elements.connectedBar.hidden = true;
   elements.automationList.replaceChildren();
@@ -143,12 +159,14 @@ function clearProtectedView() {
   elements.codexMessage = null;
   elements.codexSessionCount = null;
   elements.refreshCodex = null;
+  elements.createCodex = null;
+  elements.codexWorkspaceDialog = null;
   elements.logsOutput.hidden = true;
   elements.logsOutput.textContent = "";
   releaseFeishuQr();
   sessionStorage.removeItem(CODEX_CARD_CACHE_KEY);
-  sessionStorage.removeItem(CODEX_RETURN_KEY);
   sessionStorage.removeItem(CODEX_REFRESH_KEY);
+  sessionStorage.removeItem(PROJECT_DOCS_REFRESH_KEY);
 }
 
 function showDisconnectedView(message = "输入启动 Hub 时配置的 Token。", kind = "") {
@@ -280,6 +298,7 @@ async function connectWithToken(token, remember, savedCredential = false) {
     renderStatus(status);
     showConnectedView(status);
     await Promise.all([loadCodexSessions(), loadAutomations()]);
+    refreshCardsOnReturn({ codexAlreadyFresh: true });
     if (new URLSearchParams(window.location.search).get("view") === "codex") {
       await showCodexPanel();
     }
@@ -331,9 +350,15 @@ function createCodexCard() {
   const currentHint = document.createElement("p");
   const sessionsDivider = document.createElement("div");
   const sessionsDividerLabel = document.createElement("span");
-  const createDivider = document.createElement("div");
-  const createDividerLabel = document.createElement("span");
   const refreshButton = document.createElement("button");
+  const createActions = document.createElement("div");
+  const createButton = document.createElement("button");
+  const workspaceDialog = document.createElement("dialog");
+  const workspaceDialogSurface = document.createElement("div");
+  const workspaceDialogHeader = document.createElement("div");
+  const workspaceDialogTitle = document.createElement("h3");
+  const workspaceDialogClose = document.createElement("button");
+  const workspaceDialogDescription = document.createElement("p");
   const workspaceList = document.createElement("div");
   const sessionList = document.createElement("div");
 
@@ -359,8 +384,24 @@ function createCodexCard() {
   currentHint.setAttribute("aria-live", "polite");
   sessionsDivider.className = "codex-divider codex-sessions-divider";
   sessionsDividerLabel.textContent = "正在读取会话";
-  createDivider.className = "codex-create-divider";
-  createDividerLabel.textContent = "新建";
+  createActions.className = "codex-create-actions";
+  createButton.type = "button";
+  createButton.id = "create-codex";
+  createButton.className = "button-secondary";
+  createButton.textContent = "新建会话";
+  createButton.disabled = true;
+  workspaceDialog.className = "codex-workspace-dialog";
+  workspaceDialog.setAttribute("aria-labelledby", "codex-workspace-dialog-title");
+  workspaceDialogSurface.className = "codex-workspace-dialog-surface";
+  workspaceDialogHeader.className = "codex-workspace-dialog-header";
+  workspaceDialogTitle.id = "codex-workspace-dialog-title";
+  workspaceDialogTitle.textContent = "选择工作目录";
+  workspaceDialogClose.type = "button";
+  workspaceDialogClose.className = "button-link codex-workspace-dialog-close";
+  workspaceDialogClose.setAttribute("aria-label", "关闭目录选择");
+  workspaceDialogClose.textContent = "关闭";
+  workspaceDialogDescription.className = "section-description";
+  workspaceDialogDescription.textContent = "选择一个固定目录新建 Codex 会话。";
   workspaceList.className = "workspace-list";
   workspaceList.id = "codex-workspaces";
   sessionList.className = "session-list";
@@ -376,15 +417,21 @@ function createCodexCard() {
     refreshButton,
   );
   sessionsDivider.append(sessionsDividerLabel);
-  createDivider.append(createDividerLabel);
+  createActions.append(createButton);
+  workspaceDialogHeader.append(workspaceDialogTitle, workspaceDialogClose);
+  workspaceDialogSurface.append(
+    workspaceDialogHeader,
+    workspaceDialogDescription,
+    workspaceList,
+  );
+  workspaceDialog.append(workspaceDialogSurface);
   panel.append(
     currentHint,
     sessionsDivider,
     sessionList,
-    createDivider,
-    workspaceList,
+    createActions,
   );
-  card.append(header, panel);
+  card.append(header, panel, workspaceDialog);
 
   elements.codexPanel = panel;
   elements.codexWorkspaces = workspaceList;
@@ -392,8 +439,21 @@ function createCodexCard() {
   elements.codexSessions = sessionList;
   elements.codexSessionCount = sessionsDividerLabel;
   elements.refreshCodex = refreshButton;
+  elements.createCodex = createButton;
+  elements.codexWorkspaceDialog = workspaceDialog;
 
   refreshButton.addEventListener("click", loadCodexSessions);
+  createButton.addEventListener("click", () => {
+    if (!workspaceDialog.open) {
+      workspaceDialog.showModal();
+    }
+  });
+  workspaceDialogClose.addEventListener("click", () => workspaceDialog.close());
+  workspaceDialog.addEventListener("click", (event) => {
+    if (event.target === workspaceDialog) {
+      workspaceDialog.close();
+    }
+  });
   return card;
 }
 
@@ -410,6 +470,7 @@ function renderCodexWorkspaces(workspaces, available) {
   }
 
   elements.codexWorkspaces.replaceChildren();
+  let hasAvailableWorkspace = false;
   workspaces.forEach((workspace) => {
     const button = document.createElement("button");
     const name = document.createElement("strong");
@@ -417,6 +478,7 @@ function renderCodexWorkspaces(workspaces, available) {
     button.type = "button";
     button.className = "workspace-button";
     button.disabled = !available || !workspace.available;
+    hasAvailableWorkspace ||= !button.disabled;
     name.textContent = workspace.name;
     path.textContent = workspace.path;
     button.append(name, path);
@@ -426,6 +488,9 @@ function renderCodexWorkspaces(workspaces, available) {
     );
     elements.codexWorkspaces.append(button);
   });
+  if (elements.createCodex) {
+    elements.createCodex.disabled = !available || !hasAvailableWorkspace;
+  }
 }
 
 function renderCodexSessions(sessions) {
@@ -457,14 +522,19 @@ function renderCodexSessions(sessions) {
     main.type = "button";
     title.textContent = session.title || session.workspace_name;
     title.title = title.textContent;
-    const state =
-      session.status !== "running"
-        ? "可恢复"
-        : session.activity === "working"
-          ? "执行中"
-          : session.activity === "idle"
-            ? "等待输入"
-            : "运行中";
+    const state = session.error
+      ? "终端访问异常 · 可重试"
+      : session.status === "new"
+        ? "尚未启动 · 可进入"
+        : session.status === "error"
+          ? "会话异常 · 可重试"
+          : session.status !== "running"
+            ? "会话已停止 · 可恢复"
+            : session.activity === "working"
+              ? "会话运行中 · 执行中"
+              : session.activity === "idle"
+                ? "会话运行中 · 等待输入"
+                : "会话运行中 · 状态未知";
     meta.textContent =
       `${state} · ` +
       `${formatSessionTime(session.updated_at)} · ${session.cwd}`;
@@ -494,7 +564,21 @@ function renderCodexSessions(sessions) {
   });
 }
 
-function renderCodexData(data) {
+function codexSessionsSignature(sessions) {
+  return JSON.stringify(
+    sessions.map((session) => [
+      session.id,
+      session.status,
+      session.activity,
+      session.updated_at,
+      session.title,
+      session.cwd,
+      session.codex_session_id,
+    ]),
+  );
+}
+
+function renderCodexData(data, { sessionsOnly = false } = {}) {
   if (
     !Array.isArray(data?.workspaces)
     || !Array.isArray(data?.sessions)
@@ -504,18 +588,23 @@ function renderCodexData(data) {
   ) {
     return false;
   }
-  renderCodexWorkspaces(data.workspaces, data.available);
+  if (!sessionsOnly) {
+    renderCodexWorkspaces(data.workspaces, data.available);
+  }
   renderCodexSessions(data.sessions);
+  codexSessionSignature = codexSessionsSignature(data.sessions);
   elements.codexSessionCount.textContent = `共 ${data.sessions.length} 个会话`;
-  const missing = dependencyMessage(data.dependencies);
-  if (data.available) {
-    setMessage(elements.codexMessage, "");
-  } else {
-    setMessage(
-      elements.codexMessage,
-      missing || data.unavailable_reason || "Codex PTY 不可用。",
-      "error",
-    );
+  if (!sessionsOnly) {
+    const missing = dependencyMessage(data.dependencies);
+    if (data.available) {
+      setMessage(elements.codexMessage, "");
+    } else {
+      setMessage(
+        elements.codexMessage,
+        missing || data.unavailable_reason || "Codex PTY 不可用。",
+        "error",
+      );
+    }
   }
   return true;
 }
@@ -568,21 +657,38 @@ async function createCodexSession(workspaceId, button) {
     return;
   }
 
-  setMessage(elements.codexMessage, "");
+  const workspaceButtons = Array.from(
+    elements.codexWorkspaces?.querySelectorAll("button") || [],
+  );
+  const disabledStates = workspaceButtons.map((item) => item.disabled);
+  setMessage(elements.codexMessage, "正在创建会话…");
+  workspaceButtons.forEach((item) => {
+    item.disabled = true;
+  });
   setCodexButtonBusy(button, true);
+  beginCodexMutation();
   try {
     await apiFetch("/api/codex/sessions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ workspace_id: workspaceId }),
     });
-    await loadCodexSessions();
+    await loadCodexSessions({ force: true });
+    elements.codexWorkspaceDialog?.close();
   } catch (error) {
     if (!handleAccessError(error)) {
       setMessage(elements.codexMessage, error.message || "会话创建失败。", "error");
     }
   } finally {
-    setCodexButtonBusy(button, false);
+    workspaceButtons.forEach((item, index) => {
+      if (item.isConnected) {
+        item.disabled = disabledStates[index];
+      }
+    });
+    if (button.isConnected) {
+      setCodexButtonBusy(button, false);
+    }
+    endCodexMutation();
   }
 }
 
@@ -593,18 +699,21 @@ async function enterCodexSession(sessionId, button) {
 
   setMessage(elements.codexMessage, "");
   button.disabled = true;
+  beginCodexMutation();
   try {
     const data = await apiFetch(`/api/codex/sessions/${sessionId}/access`, {
       method: "POST",
     });
-    sessionStorage.setItem(CODEX_RETURN_KEY, "1");
+    sessionStorage.setItem(CODEX_REFRESH_KEY, "1");
     window.location.assign(data.terminal_url);
   } catch (error) {
     if (!handleAccessError(error)) {
+      await loadCodexSessions({ force: true });
       setMessage(elements.codexMessage, error.message || "打开失败。", "error");
     }
   } finally {
     button.disabled = false;
+    endCodexMutation();
   }
 }
 
@@ -615,17 +724,19 @@ async function stopCodexSession(sessionId, button) {
 
   setMessage(elements.codexMessage, "");
   setCodexButtonBusy(button, true);
+  beginCodexMutation();
   try {
     await apiFetch(`/api/codex/sessions/${sessionId}/stop`, {
       method: "POST",
     });
-    await loadCodexSessions();
+    await loadCodexSessions({ force: true });
   } catch (error) {
     if (!handleAccessError(error)) {
       setMessage(elements.codexMessage, error.message || "停止失败。", "error");
     }
   } finally {
     setCodexButtonBusy(button, false);
+    endCodexMutation();
   }
 }
 
@@ -636,17 +747,19 @@ async function archiveCodexSession(sessionId, button) {
 
   setMessage(elements.codexMessage, "");
   setCodexButtonBusy(button, true);
+  beginCodexMutation();
   try {
     await apiFetch(`/api/codex/sessions/${sessionId}/archive`, {
       method: "POST",
     });
-    await loadCodexSessions();
+    await loadCodexSessions({ force: true });
   } catch (error) {
     if (!handleAccessError(error)) {
       setMessage(elements.codexMessage, error.message || "归档失败。", "error");
     }
   } finally {
     setCodexButtonBusy(button, false);
+    endCodexMutation();
   }
 }
 
@@ -657,21 +770,99 @@ async function removeCodexSession(sessionId, button) {
 
   setMessage(elements.codexMessage, "");
   setCodexButtonBusy(button, true);
+  beginCodexMutation();
   try {
     await apiFetch(`/api/codex/sessions/${sessionId}`, {
       method: "DELETE",
     });
-    await loadCodexSessions();
+    await loadCodexSessions({ force: true });
   } catch (error) {
     if (!handleAccessError(error)) {
       setMessage(elements.codexMessage, error.message || "删除失败。", "error");
     }
   } finally {
     setCodexButtonBusy(button, false);
+    endCodexMutation();
   }
 }
 
-async function loadCodexSessions() {
+function clearCodexPollTimer() {
+  if (codexPollTimer) {
+    window.clearTimeout(codexPollTimer);
+    codexPollTimer = null;
+  }
+}
+
+function stopCodexPolling({ reset = false } = {}) {
+  clearCodexPollTimer();
+  if (reset) {
+    codexShouldPoll = false;
+    codexPollUnchangedSince = 0;
+    codexSessionSignature = "";
+  }
+}
+
+function scheduleCodexPoll(delay) {
+  clearCodexPollTimer();
+  if (
+    !codexShouldPoll
+    || codexMutationCount > 0
+    || document.visibilityState !== "visible"
+    || !activeToken
+  ) {
+    return;
+  }
+  codexPollTimer = window.setTimeout(() => {
+    codexPollTimer = null;
+    loadCodexSessions({ background: true });
+  }, delay);
+}
+
+function updateCodexPolling(data, stateChanged) {
+  const plan = window.codexPollPlan({
+    sessions: data.sessions,
+    stateChanged,
+    unchangedSince: codexPollUnchangedSince,
+    now: Date.now(),
+    visible: document.visibilityState === "visible",
+    authenticated: Boolean(activeToken),
+    mutating: codexMutationCount > 0,
+    fastDelay: CODEX_POLL_FAST_MS,
+    slowDelay: CODEX_POLL_SLOW_MS,
+    slowAfter: CODEX_POLL_SLOW_AFTER_MS,
+  });
+  codexShouldPoll = plan.shouldPoll;
+  codexPollUnchangedSince = plan.unchangedSince;
+  if (!plan.shouldPoll) {
+    stopCodexPolling();
+    return;
+  }
+  if (plan.delay !== null) {
+    scheduleCodexPoll(plan.delay);
+  }
+}
+
+function beginCodexMutation() {
+  codexMutationCount += 1;
+  clearCodexPollTimer();
+  if (elements.refreshCodex) {
+    elements.refreshCodex.disabled = true;
+  }
+}
+
+function endCodexMutation() {
+  codexMutationCount = Math.max(0, codexMutationCount - 1);
+  if (codexMutationCount === 0 && elements.refreshCodex) {
+    elements.refreshCodex.disabled = false;
+  }
+  if (codexMutationCount === 0 && codexShouldPoll) {
+    scheduleCodexPoll(CODEX_POLL_FAST_MS);
+  }
+}
+
+async function loadCodexSessions(options = {}) {
+  const background = options?.background === true;
+  const force = options?.force === true;
   if (
     !elements.codexPanel ||
     !elements.codexWorkspaces ||
@@ -682,21 +873,68 @@ async function loadCodexSessions() {
     return;
   }
 
-  if (elements.refreshCodex) {
+  if (codexLoadPromise) {
+    await codexLoadPromise;
+    if (!force) {
+      return;
+    }
+    if (!activeToken || !elements.codexPanel) {
+      return;
+    }
+  }
+  const requestVersion = accessVersion;
+  if (!background && elements.refreshCodex) {
     elements.refreshCodex.disabled = true;
   }
+  const loadPromise = (async () => {
+    try {
+      const data = await apiFetch("/api/codex/sessions");
+      if (requestVersion !== accessVersion) {
+        return;
+      }
+      if (background && codexMutationCount > 0) {
+        return;
+      }
+      const previousSignature = codexSessionSignature;
+      const nextSignature = Array.isArray(data?.sessions)
+        ? codexSessionsSignature(data.sessions)
+        : "";
+      const stateChanged = nextSignature !== previousSignature;
+      if (
+        (!background || stateChanged)
+        && renderCodexData(data, { sessionsOnly: background })
+      ) {
+        storeCodexCardCache(data);
+      } else if (background && !stateChanged) {
+        storeCodexCardCache(data);
+      }
+      if (Array.isArray(data?.sessions)) {
+        updateCodexPolling(data, stateChanged);
+      }
+    } catch (error) {
+      if (requestVersion !== accessVersion) {
+        return;
+      }
+      if (handleAccessError(error)) {
+        return;
+      }
+      if (background) {
+        scheduleCodexPoll(CODEX_POLL_SLOW_MS);
+      } else {
+        setMessage(elements.codexMessage, error.message || "会话读取失败。", "error");
+      }
+    } finally {
+      if (!background && codexMutationCount === 0 && elements.refreshCodex) {
+        elements.refreshCodex.disabled = false;
+      }
+    }
+  })();
+  codexLoadPromise = loadPromise;
   try {
-    const data = await apiFetch("/api/codex/sessions");
-    if (renderCodexData(data)) {
-      storeCodexCardCache(data);
-    }
-  } catch (error) {
-    if (!handleAccessError(error)) {
-      setMessage(elements.codexMessage, error.message || "会话读取失败。", "error");
-    }
+    return await loadPromise;
   } finally {
-    if (elements.refreshCodex) {
-      elements.refreshCodex.disabled = false;
+    if (codexLoadPromise === loadPromise) {
+      codexLoadPromise = null;
     }
   }
 }
@@ -1031,6 +1269,7 @@ function projectDocumentDate(value) {
 function renderProjectDocuments(data) {
   elements.projectDocsList.replaceChildren();
   data.documents.forEach((item) => {
+    const card = document.createElement("article");
     const link = document.createElement("a");
     const copy = document.createElement("span");
     const title = document.createElement("strong");
@@ -1038,7 +1277,10 @@ function renderProjectDocuments(data) {
     const meta = document.createElement("span");
     const badge = document.createElement("span");
     const time = document.createElement("time");
-    link.className = "design-document-item";
+    const footer = document.createElement("div");
+    const archive = document.createElement("button");
+    card.className = "design-document-item";
+    link.className = "design-document-main";
     link.href = `/project-docs/${encodeURIComponent(item.id)}`;
     copy.className = "design-document-copy";
     title.textContent = item.title;
@@ -1048,10 +1290,17 @@ function renderProjectDocuments(data) {
     badge.textContent = item.status;
     time.dateTime = item.updated_at;
     time.textContent = projectDocumentDate(item.updated_at);
+    archive.className = "button-secondary document-archive-action";
+    archive.type = "button";
+    archive.dataset.documentId = item.id;
+    archive.textContent = "归档";
     copy.append(title, summary);
     meta.append(badge, time);
-    link.append(copy, meta);
-    elements.projectDocsList.append(link);
+    link.append(copy);
+    footer.className = "design-document-footer";
+    footer.append(meta, archive);
+    card.append(link, footer);
+    elements.projectDocsList.append(card);
   });
   if (!data.documents.length) {
     const empty = document.createElement("p");
@@ -1062,10 +1311,34 @@ function renderProjectDocuments(data) {
   elements.projectDocsCount.textContent = `${data.count} 份文档`;
 }
 
-async function loadProjectDocuments() {
+async function archiveProjectDocument(button) {
+  const documentId = button.dataset.documentId;
+  if (!documentId || !window.confirm("归档后，该文档将从首页移除。确定继续吗？")) {
+    return;
+  }
+  button.disabled = true;
+  try {
+    await apiFetch(`/api/project-docs/${encodeURIComponent(documentId)}/archive`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ archived: true }),
+    });
+    setMessage(elements.projectDocsMessage, "文档已归档。", "success");
+    await loadProjectDocuments({ clearMessage: false });
+  } catch (error) {
+    if (!handleAccessError(error)) {
+      setMessage(elements.projectDocsMessage, error.message || "文档归档失败。", "error");
+    }
+    button.disabled = false;
+  }
+}
+
+async function loadProjectDocuments({ clearMessage = true } = {}) {
   const requestVersion = accessVersion;
   elements.refreshProjectDocs.disabled = true;
-  setMessage(elements.projectDocsMessage, "");
+  if (clearMessage) {
+    setMessage(elements.projectDocsMessage, "");
+  }
   try {
     const data = await apiFetch("/api/project-docs");
     if (requestVersion !== accessVersion) {
@@ -1083,6 +1356,13 @@ async function loadProjectDocuments() {
     elements.refreshProjectDocs.disabled = false;
   }
 }
+
+elements.projectDocsList.addEventListener("click", (event) => {
+  const button = event.target.closest(".document-archive-action");
+  if (button) {
+    archiveProjectDocument(button);
+  }
+});
 
 async function loadLogs() {
   const requestVersion = accessVersion;
@@ -1139,17 +1419,42 @@ elements.tokenForm.addEventListener("submit", (event) => {
 elements.refreshStatus.addEventListener("click", loadStatus);
 elements.refreshAutomations.addEventListener("click", () => loadAutomations());
 elements.refreshProjectDocs.addEventListener("click", loadProjectDocuments);
+elements.allProjectDocs.addEventListener("click", () => {
+  sessionStorage.setItem(PROJECT_DOCS_REFRESH_KEY, "1");
+});
 elements.loadLogs.addEventListener("click", loadLogs);
 elements.automationBrowserControl.addEventListener("click", controlAutomationBrowser);
 elements.automationFeishuCheck.addEventListener("click", checkFeishuEnvironment);
 
-window.addEventListener("pageshow", (event) => {
-  if (sessionStorage.getItem(CODEX_REFRESH_KEY) !== "1") {
+function refreshCardsOnReturn({ codexAlreadyFresh = false } = {}) {
+  if (!activeToken) {
     return;
   }
-  sessionStorage.removeItem(CODEX_REFRESH_KEY);
-  if (event.persisted && activeToken) {
-    loadCodexSessions();
+
+  if (sessionStorage.getItem(CODEX_REFRESH_KEY) === "1") {
+    sessionStorage.removeItem(CODEX_REFRESH_KEY);
+    if (!codexAlreadyFresh) {
+      loadCodexSessions();
+    }
+  }
+  if (sessionStorage.getItem(PROJECT_DOCS_REFRESH_KEY) === "1") {
+    sessionStorage.removeItem(PROJECT_DOCS_REFRESH_KEY);
+    loadProjectDocuments();
+  }
+}
+
+window.addEventListener("pageshow", () => {
+  refreshCardsOnReturn();
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") {
+    refreshCardsOnReturn();
+    if (codexShouldPoll) {
+      loadCodexSessions({ background: true });
+    }
+  } else {
+    clearCodexPollTimer();
   }
 });
 

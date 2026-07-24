@@ -5,6 +5,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from app.services.design_documents import (
+    DesignDocumentIndexError,
     get_design_document,
     list_design_documents,
 )
@@ -20,7 +21,15 @@ router = APIRouter(tags=["web"])
 @router.get("/", response_class=HTMLResponse, include_in_schema=False)
 def index(request: Request) -> HTMLResponse:
     settings = request.app.state.settings
-    design_documents = list_design_documents()
+    design_documents_error = None
+    try:
+        design_documents = list_design_documents(
+            settings.project_documents.state_file,
+            include_archived=False,
+        )
+    except DesignDocumentIndexError:
+        design_documents = []
+        design_documents_error = "设计文档暂时无法加载，请检查文档索引。"
     return templates.TemplateResponse(
         request=request,
         name="index.html",
@@ -31,6 +40,7 @@ def index(request: Request) -> HTMLResponse:
             "app_version": settings.app.version,
             "design_documents": design_documents[:5],
             "design_document_count": len(design_documents),
+            "design_documents_error": design_documents_error,
         },
     )
 
@@ -58,12 +68,21 @@ def automation_details(request: Request) -> HTMLResponse:
 @router.get("/project-docs", response_class=HTMLResponse, include_in_schema=False)
 def design_documents(request: Request) -> HTMLResponse:
     settings = request.app.state.settings
+    documents_error = None
+    try:
+        documents = list_design_documents(
+            settings.project_documents.state_file,
+        )
+    except DesignDocumentIndexError:
+        documents = []
+        documents_error = "设计文档暂时无法加载，请检查文档索引。"
     return templates.TemplateResponse(
         request=request,
         name="design_documents.html",
         context={
             "app_name": settings.app.name,
-            "documents": list_design_documents(),
+            "documents": documents,
+            "documents_error": documents_error,
         },
     )
 
@@ -74,11 +93,20 @@ def design_documents(request: Request) -> HTMLResponse:
     include_in_schema=False,
 )
 def design_document_detail(request: Request, document_id: str) -> HTMLResponse:
-    document = get_design_document(document_id)
+    settings = request.app.state.settings
+    try:
+        document = get_design_document(
+            document_id,
+            settings.project_documents.state_file,
+        )
+    except DesignDocumentIndexError:
+        raise HTTPException(
+            status_code=503,
+            detail="Design document index unavailable",
+        ) from None
     if document is None:
         raise HTTPException(status_code=404, detail="Design document not found")
 
-    settings = request.app.state.settings
     return templates.TemplateResponse(
         request=request,
         name="design_document_detail.html",
