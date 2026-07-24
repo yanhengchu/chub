@@ -123,6 +123,7 @@ Runner 不会自行启动或停止 Debug Chrome。飞书 Wiki Markdown 下载已
 - [第二阶段高层计划](docs/TASKS_PHASE_2.md)
 - [Codex 手机远程方案探索](docs/CODEX_REMOTE_OPTIONS_PHASE_2.md)
 - [配置驱动的飞书文档下载自动化方案](docs/AUTOMATION_DOWNLOAD_DESIGN.md)
+- [工作周报生成技能设计方案](docs/WEEKLY_REPORT_SKILL_DESIGN.md)
 
 第一阶段归档：
 

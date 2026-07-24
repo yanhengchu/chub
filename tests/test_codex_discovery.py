@@ -93,3 +93,79 @@ def test_prefers_active_title_from_codex_state_database(tmp_path: Path) -> None:
     assert CodexSessionDiscovery(codex_home).session_archive_states() == {
         session_id: False
     }
+
+
+def test_discovers_latest_permission_mode_from_bounded_session_tail(
+    tmp_path: Path,
+) -> None:
+    codex_home = tmp_path / ".codex"
+    session_id = "55555555-5555-4555-8555-555555555555"
+    path = codex_home / "sessions" / f"{session_id}.jsonl"
+    write_jsonl(
+        path,
+        {
+            "type": "session_meta",
+            "payload": {
+                "id": session_id,
+                "cwd": "/workspace/chub",
+                "timestamp": "2026-07-20T08:00:00Z",
+            },
+        },
+    )
+    with path.open("a", encoding="utf-8") as file:
+        file.write(
+            json.dumps(
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "thread_settings_applied",
+                        "thread_settings": {
+                            "approval_policy": "on-request",
+                            "approvals_reviewer": "auto_review",
+                            "active_permission_profile": {"id": ":workspace"},
+                        },
+                    },
+                }
+            )
+            + "\n"
+        )
+
+    session = CodexSessionDiscovery(codex_home).discover()[0]
+
+    assert session.active_permission_mode == "auto-review"
+
+
+def test_discovers_read_only_permission_mode(tmp_path: Path) -> None:
+    codex_home = tmp_path / ".codex"
+    session_id = "66666666-6666-4666-8666-666666666666"
+    path = codex_home / "sessions" / f"{session_id}.jsonl"
+    write_jsonl(
+        path,
+        {
+            "type": "session_meta",
+            "payload": {
+                "id": session_id,
+                "cwd": "/workspace/chub",
+                "timestamp": "2026-07-20T08:00:00Z",
+            },
+        },
+    )
+    with path.open("a", encoding="utf-8") as file:
+        file.write(
+            json.dumps(
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "thread_settings_applied",
+                        "thread_settings": {
+                            "approval_policy": "on-request",
+                            "approvals_reviewer": "user",
+                            "active_permission_profile": {"id": ":read-only"},
+                        },
+                    },
+                }
+            )
+            + "\n"
+        )
+
+    assert CodexSessionDiscovery(codex_home).discover()[0].active_permission_mode == "read-only"

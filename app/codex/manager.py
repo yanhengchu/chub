@@ -17,6 +17,7 @@ import psutil
 from app.codex.discovery import CodexSessionDiscovery
 from app.codex.models import (
     CodexSession,
+    PermissionMode,
     SessionInfo,
     WorkspaceInfo,
     utc_now,
@@ -166,6 +167,7 @@ class CodexPtyManager:
             session.status = "running"
             if not tmux_was_running:
                 session.activity = "unknown"
+                session.active_permission_mode = session.permission_mode
             session.error = None
             session.updated_at = utc_now()
             self.store.save(session)
@@ -189,12 +191,63 @@ class CodexPtyManager:
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
+                still_running = subprocess.run(
+                    ["tmux", "has-session", "-t", self._tmux_name(session.id)],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                if still_running.returncode == 0:
+                    raise ApiError(
+                        503,
+                        "codex_session_stop_failed",
+                        "Codex session is still running",
+                    )
             self._stop_backend(session)
             session.status = "stopped"
+            session.active_permission_mode = None
             session.error = None
             session.updated_at = utc_now()
             self.store.save(session)
             return self._public(session)
+
+    def update_permission(
+        self,
+        session_id: str,
+        permission_mode: PermissionMode,
+    ) -> SessionInfo:
+        with self._lock:
+            session = self.get_session(session_id)
+            session.permission_mode = permission_mode
+            session.updated_at = utc_now()
+            self.store.save(session)
+            return self._public(session)
+
+    def update_permission_and_stop(
+        self,
+        session_id: str,
+        permission_mode: PermissionMode,
+    ) -> tuple[SessionInfo, bool]:
+        with self._lock:
+            session = self.get_session(session_id)
+            changed = session.permission_mode != permission_mode
+            if changed and session.status == "running":
+                self.stop_session(session_id)
+                updated = self.store.get(session_id)
+                if updated is None:
+                    raise ApiError(
+                        500,
+                        "codex_session_state_missing",
+                        "Codex session state disappeared after stopping",
+                    )
+                updated.permission_mode = permission_mode
+                updated.updated_at = utc_now()
+                self.store.save(updated)
+                return self._public(updated), True
+            session.permission_mode = permission_mode
+            session.updated_at = utc_now()
+            self.store.save(session)
+            return self._public(session), False
 
     def delete_session(self, session_id: str) -> None:
         session = self.get_session(session_id)
@@ -284,6 +337,13 @@ class CodexPtyManager:
             codex_session_id=session.codex_session_id,
             status=session.status,
             activity=session.activity,
+            permission_mode=session.permission_mode,
+            active_permission_mode=session.active_permission_mode,
+            permission_pending=(
+                session.status == "running"
+                and session.permission_mode
+                != (session.active_permission_mode or "ask")
+            ),
             error=session.error,
             created_at=session.created_at,
             updated_at=session.updated_at,
@@ -480,6 +540,8 @@ class CodexPtyManager:
             session.id,
             "--hook-dir",
             str(self.hook_dir),
+            "--permission-mode",
+            session.permission_mode,
         ]
         if session.codex_session_id:
             command.extend(["--codex-session", session.codex_session_id])
@@ -582,6 +644,18 @@ class CodexPtyManager:
                     changed = True
                 if discovered.title and existing.title != discovered.title:
                     existing.title = discovered.title
+                    changed = True
+                if (
+                    existing.status == "running"
+                    and discovered.active_permission_mode
+                    and existing.active_permission_mode
+                    != discovered.active_permission_mode
+                ):
+                    previous_active = existing.active_permission_mode or "ask"
+                    had_pending_change = existing.permission_mode != previous_active
+                    existing.active_permission_mode = discovered.active_permission_mode
+                    if not had_pending_change:
+                        existing.permission_mode = discovered.active_permission_mode
                     changed = True
                 if discovered.updated_at > existing.updated_at:
                     existing.updated_at = discovered.updated_at

@@ -6,7 +6,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
-from app.codex.models import CodexSession
+from app.codex.models import CodexSession, PermissionMode
+
+
+PERMISSION_TAIL_BYTES = 512 * 1024
+PERMISSION_MAX_LINE_BYTES = 256 * 1024
 
 
 class CodexSessionDiscovery:
@@ -78,9 +82,73 @@ class CodexSessionDiscovery:
             title=titles.get(session_id),
             codex_session_id=session_id,
             status="stopped",
+            active_permission_mode=self._read_permission_mode(path),
             created_at=timestamp,
             updated_at=updated_at,
         )
+
+    def _read_permission_mode(self, path: Path) -> PermissionMode | None:
+        try:
+            with path.open("rb") as file:
+                size = file.seek(0, 2)
+                start = max(0, size - PERMISSION_TAIL_BYTES)
+                file.seek(start)
+                data = file.read(PERMISSION_TAIL_BYTES)
+        except OSError:
+            return None
+        lines = data.splitlines()
+        if start and lines:
+            lines = lines[1:]
+        for raw_line in reversed(lines):
+            if len(raw_line) > PERMISSION_MAX_LINE_BYTES:
+                continue
+            try:
+                item = json.loads(raw_line)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            settings = self._permission_settings(item)
+            if settings is None:
+                continue
+            mode = self._permission_mode_from_settings(settings)
+            if mode is not None:
+                return mode
+        return None
+
+    @staticmethod
+    def _permission_settings(item: object) -> dict[str, object] | None:
+        if not isinstance(item, dict):
+            return None
+        payload = item.get("payload")
+        if not isinstance(payload, dict):
+            return None
+        if (
+            item.get("type") == "event_msg"
+            and payload.get("type") == "thread_settings_applied"
+            and isinstance(payload.get("thread_settings"), dict)
+        ):
+            return payload["thread_settings"]
+        if item.get("type") == "turn_context":
+            return payload
+        return None
+
+    @staticmethod
+    def _permission_mode_from_settings(
+        settings: dict[str, object],
+    ) -> PermissionMode | None:
+        active = settings.get("active_permission_profile")
+        profile_id = active.get("id") if isinstance(active, dict) else None
+        sandbox = settings.get("sandbox_policy")
+        sandbox_type = sandbox.get("type") if isinstance(sandbox, dict) else None
+        if profile_id == ":danger-full-access" or sandbox_type == "danger-full-access":
+            return "full-access"
+        if profile_id == ":read-only" or sandbox_type == "read-only":
+            return "read-only"
+        reviewer = settings.get("approvals_reviewer")
+        if profile_id == ":workspace" or sandbox_type == "workspace-write":
+            return "auto-review" if reviewer == "auto_review" else "ask"
+        if settings.get("approval_policy") == "never":
+            return "full-access"
+        return None
 
     def _read_titles(self) -> dict[str, str]:
         titles = self._read_database_titles()

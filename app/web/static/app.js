@@ -5,6 +5,12 @@ const LOCAL_TOKEN_KEY = "hub.savedToken";
 const CODEX_REFRESH_KEY = "hub.codexRefreshOnReturn";
 const PROJECT_DOCS_REFRESH_KEY = "hub.projectDocsRefreshOnReturn";
 const CODEX_CARD_CACHE_KEY = "hub.codexCardCache";
+const CODEX_PERMISSION_OPTIONS = [
+  ["ask", "Ask for approval", "在当前工作区操作，越界时由你确认。"],
+  ["auto-review", "Approve for me", "保持工作区边界，由 Codex 自动审核越界请求。"],
+  ["full-access", "Full access", "不受工作区沙箱限制，且不会请求操作审批。"],
+  ["read-only", "Read Only", "只能查看和分析，不能修改文件。"],
+];
 
 const elements = {
   accessCard: document.querySelector("#access-card"),
@@ -50,6 +56,10 @@ const elements = {
   refreshCodex: null,
   createCodex: null,
   codexWorkspaceDialog: null,
+  codexPermissionDialog: null,
+  codexPermissionForm: null,
+  codexPermissionCurrent: null,
+  codexPermissionNotice: null,
   loadLogs: document.querySelector("#load-logs"),
   logLines: document.querySelector("#log-lines"),
   logTabs: document.querySelectorAll("[data-log-source]"),
@@ -363,6 +373,18 @@ function createCodexCard() {
   const workspaceDialogDescription = document.createElement("p");
   const workspaceList = document.createElement("div");
   const sessionList = document.createElement("div");
+  const permissionDialog = document.createElement("dialog");
+  const permissionSurface = document.createElement("div");
+  const permissionHeader = document.createElement("div");
+  const permissionTitle = document.createElement("h3");
+  const permissionClose = document.createElement("button");
+  const permissionCurrent = document.createElement("p");
+  const permissionForm = document.createElement("form");
+  const permissionOptions = document.createElement("div");
+  const permissionNotice = document.createElement("p");
+  const permissionFooter = document.createElement("div");
+  const permissionCancel = document.createElement("button");
+  const permissionSave = document.createElement("button");
 
   card.className = "card codex-card";
   card.setAttribute("aria-labelledby", "codex-title");
@@ -408,6 +430,43 @@ function createCodexCard() {
   workspaceList.id = "codex-workspaces";
   sessionList.className = "session-list";
   sessionList.id = "codex-sessions";
+  permissionDialog.className = "codex-workspace-dialog codex-permission-dialog";
+  permissionDialog.setAttribute("aria-labelledby", "codex-permission-dialog-title");
+  permissionSurface.className = "codex-workspace-dialog-surface";
+  permissionHeader.className = "codex-workspace-dialog-header";
+  permissionTitle.id = "codex-permission-dialog-title";
+  permissionTitle.textContent = "会话权限";
+  permissionClose.type = "button";
+  permissionClose.className = "button-link codex-workspace-dialog-close";
+  permissionClose.setAttribute("aria-label", "关闭权限设置");
+  permissionClose.textContent = "关闭";
+  permissionCurrent.className = "codex-permission-current";
+  permissionForm.className = "codex-permission-form";
+  permissionOptions.className = "codex-permission-options";
+  CODEX_PERMISSION_OPTIONS.forEach(([value, label, description]) => {
+    const option = document.createElement("label");
+    const radio = document.createElement("input");
+    const copy = document.createElement("span");
+    const name = document.createElement("strong");
+    const detail = document.createElement("span");
+    option.className = "codex-permission-option";
+    radio.type = "radio";
+    radio.name = "permission_mode";
+    radio.value = value;
+    name.textContent = label;
+    detail.textContent = description;
+    copy.append(name, detail);
+    option.append(radio, copy);
+    permissionOptions.append(option);
+  });
+  permissionNotice.className = "codex-permission-notice";
+  permissionFooter.className = "codex-permission-footer";
+  permissionCancel.type = "button";
+  permissionCancel.className = "button-link";
+  permissionCancel.textContent = "取消";
+  permissionSave.type = "submit";
+  permissionSave.className = "button-secondary";
+  permissionSave.textContent = "保存";
 
   header.append(
     (() => {
@@ -427,13 +486,18 @@ function createCodexCard() {
     workspaceList,
   );
   workspaceDialog.append(workspaceDialogSurface);
+  permissionHeader.append(permissionTitle, permissionClose);
+  permissionFooter.append(permissionCancel, permissionSave);
+  permissionForm.append(permissionOptions, permissionNotice, permissionFooter);
+  permissionSurface.append(permissionHeader, permissionCurrent, permissionForm);
+  permissionDialog.append(permissionSurface);
   panel.append(
     currentHint,
     sessionsDivider,
     sessionList,
     createActions,
   );
-  card.append(header, panel, workspaceDialog);
+  card.append(header, panel, workspaceDialog, permissionDialog);
 
   elements.codexPanel = panel;
   elements.codexWorkspaces = workspaceList;
@@ -443,6 +507,10 @@ function createCodexCard() {
   elements.refreshCodex = refreshButton;
   elements.createCodex = createButton;
   elements.codexWorkspaceDialog = workspaceDialog;
+  elements.codexPermissionDialog = permissionDialog;
+  elements.codexPermissionForm = permissionForm;
+  elements.codexPermissionCurrent = permissionCurrent;
+  elements.codexPermissionNotice = permissionNotice;
 
   refreshButton.addEventListener("click", loadCodexSessions);
   createButton.addEventListener("click", () => {
@@ -456,6 +524,14 @@ function createCodexCard() {
       workspaceDialog.close();
     }
   });
+  permissionClose.addEventListener("click", () => permissionDialog.close());
+  permissionCancel.addEventListener("click", () => permissionDialog.close());
+  permissionDialog.addEventListener("click", (event) => {
+    if (event.target === permissionDialog) {
+      permissionDialog.close();
+    }
+  });
+  permissionForm.addEventListener("submit", saveCodexSessionPermission);
   return card;
 }
 
@@ -510,11 +586,15 @@ function renderCodexSessions(sessions) {
   }
 
   sessions.forEach((session) => {
+    const configuredPermission = normalizeCodexPermission(session.permission_mode);
     const item = document.createElement("article");
     const main = document.createElement("button");
     const text = document.createElement("span");
     const title = document.createElement("strong");
     const meta = document.createElement("span");
+    const permissionPanel = document.createElement("div");
+    const permission = document.createElement("button");
+    const permissionPending = document.createElement("span");
     const actions = document.createElement("div");
     const stop = document.createElement("button");
     const archive = document.createElement("button");
@@ -543,6 +623,25 @@ function renderCodexSessions(sessions) {
     text.append(title, meta);
     main.append(text);
     main.addEventListener("click", () => enterCodexSession(session.id, main));
+    const displayedPermission = session.status === "running"
+      ? normalizeCodexPermission(session.active_permission_mode)
+      : configuredPermission;
+    permissionPanel.className = "session-permission-panel";
+    permission.type = "button";
+    permission.className =
+      `session-permission session-permission-${displayedPermission}`;
+    permission.textContent = `${codexPermissionLabel(displayedPermission)} ▾`;
+    permission.setAttribute(
+      "aria-label",
+      `设置 ${title.textContent} 的会话权限`,
+    );
+    permission.addEventListener("click", () => openCodexPermissionDialog(session));
+    permissionPending.className = "session-permission-pending";
+    permissionPending.textContent = session.permission_pending
+      ? `待切换至${codexPermissionLabel(configuredPermission)}`
+      : "";
+    permissionPending.hidden = !session.permission_pending;
+    permissionPanel.append(permission, permissionPending);
     stop.type = "button";
     stop.className = "button-secondary session-action";
     stop.textContent = "停止";
@@ -561,7 +660,7 @@ function renderCodexSessions(sessions) {
     remove.addEventListener("click", () => removeCodexSession(session.id, remove));
     actions.className = "session-actions";
     actions.append(stop, archive, remove);
-    item.append(main, actions);
+    item.append(main, permissionPanel, actions);
     elements.codexSessions.append(item);
   });
 }
@@ -576,8 +675,89 @@ function codexSessionsSignature(sessions) {
       session.title,
       session.cwd,
       session.codex_session_id,
+      session.permission_mode,
+      session.active_permission_mode,
+      session.permission_pending,
     ]),
   );
+}
+
+function codexPermissionLabel(mode) {
+  return CODEX_PERMISSION_OPTIONS.find(([value]) => value === mode)?.[1]
+    || "Ask for approval";
+}
+
+function normalizeCodexPermission(mode) {
+  return ["ask", "auto-review", "read-only", "full-access"].includes(mode)
+    ? mode
+    : "ask";
+}
+
+function openCodexPermissionDialog(session) {
+  const dialog = elements.codexPermissionDialog;
+  const form = elements.codexPermissionForm;
+  if (!dialog || !form) {
+    return;
+  }
+  form.dataset.sessionId = session.id;
+  const configuredPermission = normalizeCodexPermission(session.permission_mode);
+  form.dataset.permissionMode = configuredPermission;
+  const activeMode = session.status === "running"
+    ? normalizeCodexPermission(session.active_permission_mode)
+    : configuredPermission;
+  elements.codexPermissionCurrent.textContent =
+    `当前：${codexPermissionLabel(activeMode)}`;
+  elements.codexPermissionNotice.textContent = session.status === "running"
+    ? "切换权限会立即停止当前会话；再次进入时按新权限恢复。"
+    : "权限将在下次进入会话时生效。";
+  const selected = form.elements.namedItem("permission_mode");
+  Array.from(selected || []).forEach((radio) => {
+    radio.checked = radio.value === configuredPermission;
+  });
+  if (!dialog.open) {
+    dialog.showModal();
+  }
+}
+
+async function saveCodexSessionPermission(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const sessionId = form.dataset.sessionId;
+  const data = new FormData(form);
+  const permissionMode = data.get("permission_mode");
+  const submit = form.querySelector('button[type="submit"]');
+  if (!sessionId || typeof permissionMode !== "string" || !submit) {
+    return;
+  }
+  if (
+    permissionMode === "full-access"
+    && form.dataset.permissionMode !== "full-access"
+    && !window.confirm(
+      "完全访问将取消工作区沙箱限制，并且不会请求操作审批。确定保存吗？",
+    )
+  ) {
+    return;
+  }
+  setCodexButtonBusy(submit, true);
+  beginCodexMutation();
+  try {
+    await apiFetch(`/api/codex/sessions/${sessionId}/permission`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ permission_mode: permissionMode }),
+    });
+    elements.codexPermissionDialog?.close();
+    await loadCodexSessions({ force: true });
+  } catch (error) {
+    if (!handleAccessError(error)) {
+      setMessage(elements.codexMessage, error.message || "权限保存失败。", "error");
+    }
+  } finally {
+    if (submit.isConnected) {
+      setCodexButtonBusy(submit, false);
+    }
+    endCodexMutation();
+  }
 }
 
 function renderCodexData(data, { sessionsOnly = false } = {}) {

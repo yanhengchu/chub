@@ -16,6 +16,8 @@ from app.codex.models import (
     SessionCreateRequest,
     SessionInfo,
     SessionListData,
+    SessionPermissionData,
+    SessionPermissionRequest,
 )
 from app.core.response import ApiError, ApiResponse, error_response
 from app.core.security import require_token
@@ -143,6 +145,59 @@ async def stop_session(session_id: str, request: Request) -> ApiResponse[Session
         target=session_id,
     )
     return ApiResponse(data=data)
+
+
+@api_router.patch(
+    "/sessions/{session_id}/permission",
+    response_model=ApiResponse[SessionPermissionData],
+)
+async def update_session_permission(
+    session_id: str,
+    payload: SessionPermissionRequest,
+    request: Request,
+) -> ApiResponse[SessionPermissionData]:
+    try:
+        session, auto_stopped = await asyncio.to_thread(
+            request.app.state.codex_pty_manager.update_permission_and_stop,
+            session_id,
+            payload.permission_mode,
+        )
+    except Exception:
+        log_operation(
+            request,
+            action="update_codex_session_permission",
+            status="failed",
+            target=session_id,
+        )
+        raise
+    log_operation(
+        request,
+        action="update_codex_session_permission",
+        status="succeeded",
+        target=session_id,
+    )
+    if auto_stopped:
+        request.app.state.terminal_tickets.revoke_session(session_id)
+        request.app.state.terminal_connections.close_session(session_id)
+        log_operation(
+            request,
+            action="stop_codex_session_for_permission",
+            status="succeeded",
+            target=session_id,
+        )
+    application = (
+        "stopped"
+        if auto_stopped
+        else "pending"
+        if session.permission_pending
+        else "saved"
+    )
+    return ApiResponse(
+        data=SessionPermissionData(
+            session=session,
+            application=application,
+        )
+    )
 
 
 @api_router.post("/sessions/{session_id}/archive", response_model=ApiResponse[None])

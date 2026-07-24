@@ -7,6 +7,49 @@ import shlex
 import subprocess
 
 
+def build_codex_command(
+    permission_mode: str,
+    codex_session: str | None = None,
+) -> list[str]:
+    codex = ["codex", "--profile", "chub"]
+    permission_args = {
+        "ask": [
+            "-c",
+            'default_permissions=":workspace"',
+            "-c",
+            'approval_policy="on-request"',
+            "-c",
+            'approvals_reviewer="user"',
+        ],
+        "auto-review": [
+            "-c",
+            'default_permissions=":workspace"',
+            "-c",
+            'approval_policy="on-request"',
+            "-c",
+            'approvals_reviewer="auto_review"',
+        ],
+        "read-only": [
+            "-c",
+            'default_permissions=":read-only"',
+            "-c",
+            'approval_policy="on-request"',
+            "-c",
+            'approvals_reviewer="user"',
+        ],
+        "full-access": [
+            "-c",
+            'default_permissions=":danger-full-access"',
+            "-c",
+            'approval_policy="never"',
+        ],
+    }
+    codex.extend(permission_args[permission_mode])
+    if codex_session:
+        codex.extend(["resume", codex_session])
+    return codex
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--name", required=True)
@@ -14,6 +57,11 @@ def main() -> int:
     parser.add_argument("--chub-session", required=True)
     parser.add_argument("--hook-dir", required=True)
     parser.add_argument("--codex-session")
+    parser.add_argument(
+        "--permission-mode",
+        choices=("ask", "auto-review", "read-only", "full-access"),
+        default="ask",
+    )
     args = parser.parse_args()
 
     existing = subprocess.run(
@@ -25,9 +73,7 @@ def main() -> int:
     if existing.returncode == 0:
         os.execvp("tmux", ["tmux", "attach-session", "-t", args.name])
 
-    codex = ["codex", "--profile", "chub"]
-    if args.codex_session:
-        codex.extend(["resume", args.codex_session])
+    codex = build_codex_command(args.permission_mode, args.codex_session)
     command = " ".join(
         (
             f"CHUB_PTY_SESSION_ID={shlex.quote(args.chub_session)}",

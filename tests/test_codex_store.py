@@ -30,3 +30,21 @@ def test_session_store_ignores_invalid_file(tmp_path: Path) -> None:
     path.write_text("not-json", encoding="utf-8")
 
     assert CodexSessionStore(path).list() == []
+
+
+def test_session_store_migrates_legacy_permission_modes(tmp_path: Path) -> None:
+    path = tmp_path / "sessions.json"
+    path.write_text(
+        (
+            '[{"id":"session-1","workspace_id":"chub","workspace_name":"Chub",'
+            f'"cwd":"{tmp_path}","permission_mode":"workspace-write",'
+            '"active_permission_mode":"read-only"}]'
+        ),
+        encoding="utf-8",
+    )
+
+    session = CodexSessionStore(path).get("session-1")
+
+    assert session is not None
+    assert session.permission_mode == "ask"
+    assert session.active_permission_mode == "read-only"

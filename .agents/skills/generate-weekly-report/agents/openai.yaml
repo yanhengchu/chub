@@ -1,0 +1,4 @@
+interface:
+  display_name: "生成工作周报"
+  short_description: "从自动化下载的各端材料提炼重点并生成可追溯的本地业务周报"
+  default_prompt: "使用 $generate-weekly-report 从自动化下载的各端周报生成本地正式周报和核对记录。"
