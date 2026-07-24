@@ -36,6 +36,21 @@ CACHE_DIRECTORIES = {
 }
 
 
+def cleanup_stale_staging(target: Path) -> None:
+    prefix = f".{target.name}.tmp-"
+    try:
+        candidates = list(target.parent.iterdir())
+    except FileNotFoundError:
+        return
+    for candidate in candidates:
+        if (
+            candidate.name.startswith(prefix)
+            and candidate.is_dir()
+            and not candidate.is_symlink()
+        ):
+            shutil.rmtree(candidate)
+
+
 def ignore_cache_directories(
     _directory: str, names: list[str]
 ) -> set[str]:
@@ -121,6 +136,7 @@ def copy_profile(
     *,
     source_user_data: Path | None = None,
     target: Path = DEFAULT_TARGET,
+    close_running: bool = True,
 ) -> Path:
     source_root = (source_user_data or default_user_data_dir()).expanduser().resolve()
     source_profile = ensure_valid_source(source_root, profile)
@@ -141,11 +157,15 @@ def copy_profile(
 
     if debug_process_ids(target):
         raise RuntimeError("Stop Debug Chrome before copying a regular Chrome profile")
-    if is_chrome_running():
+    regular_chrome_running = is_chrome_running()
+    if regular_chrome_running and not close_running:
+        raise RuntimeError("Close regular Chrome before copying a profile")
+    if regular_chrome_running:
         print("Chrome is running; requesting a normal exit before copying.")
         close_running_chrome()
 
     with profile_store_lock(target):
+        cleanup_stale_staging(target)
         manifest = existing_manifest(target)
         is_initialized = manifest is not None
         if (target / profile).exists():
@@ -241,6 +261,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_TARGET,
         help="Target user-data directory (default: ~/chrome-debug-data).",
     )
+    parser.add_argument(
+        "--require-stopped",
+        action="store_true",
+        help="Refuse to copy instead of requesting regular Chrome to exit.",
+    )
     return parser
 
 
@@ -251,6 +276,7 @@ def main() -> int:
             args.profile,
             source_user_data=args.source_user_data,
             target=args.target,
+            close_running=not args.require_stopped,
         )
     except (OSError, RuntimeError) as exc:
         print(f"chrome-cdp: {exc}", file=sys.stderr)

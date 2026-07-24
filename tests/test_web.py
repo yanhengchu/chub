@@ -28,6 +28,7 @@ async def test_home_page_is_public_and_contains_no_token(settings: Settings) -> 
     assert 'id="automation-title"' in response.text
     assert 'id="automation-list"' in response.text
     assert 'id="automation-browser-control"' in response.text
+    assert 'id="automation-browser-profile"' in response.text
     assert 'id="automation-browser-mode"' in response.text
     assert 'id="automation-feishu-badge"' in response.text
     assert 'id="automation-feishu-check"' in response.text
@@ -35,8 +36,8 @@ async def test_home_page_is_public_and_contains_no_token(settings: Settings) -> 
     assert 'id="automation-feishu-qr"' in response.text
     assert 'id="automation-feishu-verify"' not in response.text
     assert "飞书环境" in response.text
-    assert "有界面模式" in response.text
-    assert "无界面模式" in response.text
+    assert "有界面" in response.text
+    assert "无界面" in response.text
     assert 'id="refresh-automations"' in response.text
     assert "复用登录状态执行任务。" in response.text
     assert 'id="refresh-project-docs"' in response.text

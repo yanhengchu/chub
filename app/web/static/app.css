@@ -736,6 +736,13 @@ select {
   background: white;
 }
 
+#automation-browser-profile,
+#automation-browser-mode,
+#log-lines {
+  text-align: center;
+  text-align-last: center;
+}
+
 .button-link {
   display: inline-flex;
   min-height: 40px;

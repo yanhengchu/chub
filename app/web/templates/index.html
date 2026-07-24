@@ -90,9 +90,10 @@
               <span id="automation-browser-badge" class="badge badge-muted">正在检查</span>
             </div>
             <div class="automation-browser-actions">
+              <select id="automation-browser-profile" aria-label="浏览器用户" hidden></select>
               <select id="automation-browser-mode" aria-label="Debug Chrome 启动模式" hidden>
-                <option value="headed">有界面模式</option>
-                <option value="headless">无界面模式</option>
+                <option value="headed">有界面</option>
+                <option value="headless">无界面</option>
               </select>
               <button id="automation-browser-control" class="button-secondary" type="button" disabled>检查中…</button>
             </div>

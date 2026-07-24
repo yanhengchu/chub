@@ -325,11 +325,25 @@ class FeishuEnvironmentState(StrictAutomationModel):
     qr_available: bool = False
 
 
+class BrowserProfilePublic(StrictAutomationModel):
+    id: str
+    name: str
+    initialized: bool
+    source_available: bool
+    active: bool
+    initialization_state: Literal["idle", "running", "failed"] = "idle"
+    initialization_message: str | None = None
+
+
 class AutomationListData(StrictAutomationModel):
     enabled: bool
     browser_state: Literal["running", "stopped", "invalid", "unavailable"]
     browser_message: str
     browser_mode: str | None = None
+    browser_profile_id: str | None = None
+    browser_profile_name: str | None = None
+    browser_profiles: list[BrowserProfilePublic] = Field(default_factory=list)
+    browser_profiles_error: str | None = None
     feishu_environment: FeishuEnvironmentState = Field(
         default_factory=FeishuEnvironmentState
     )
@@ -346,8 +360,24 @@ class AutomationRunAccepted(StrictAutomationModel):
 class BrowserControlResult(StrictAutomationModel):
     state: Literal["running", "stopped"]
     mode: str | None = None
+    profile_id: str | None = None
+    profile_name: str | None = None
     message: str
 
 
 class BrowserStartRequest(StrictAutomationModel):
     mode: Literal["headed", "headless"] = "headed"
+    profile_id: str | None = Field(
+        default=None,
+        pattern=r"^(Default|Profile [0-9]+)$",
+    )
+
+
+class BrowserInitializationRequest(StrictAutomationModel):
+    profile_id: str = Field(pattern=r"^(Default|Profile [0-9]+)$")
+    mode: Literal["headed", "headless"] = "headed"
+
+
+class BrowserInitializationAccepted(StrictAutomationModel):
+    profile_id: str
+    status: Literal["initializing"] = "initializing"

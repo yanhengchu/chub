@@ -6,6 +6,8 @@ from app.automations.models import (
     AutomationListData,
     AutomationRunAccepted,
     BrowserControlResult,
+    BrowserInitializationAccepted,
+    BrowserInitializationRequest,
     BrowserStartRequest,
     FeishuEnvironmentState,
 )
@@ -25,8 +27,13 @@ def _control_browser(
     action: str,
     request: Request,
     mode: str = "headed",
+    profile_id: str | None = None,
 ) -> ApiResponse[BrowserControlResult]:
-    target = f"debug-chrome:{mode}" if action == "start" else "debug-chrome"
+    target = (
+        f"debug-chrome:{profile_id or 'active'}:{mode}"
+        if action == "start"
+        else "debug-chrome"
+    )
     operation_id = log_operation(
         request,
         action=f"{action}_debug_chrome",
@@ -41,7 +48,14 @@ def _control_browser(
         operation_id=operation_id,
     )
     try:
-        result = request.app.state.automation_manager.control_browser(action, mode)
+        if profile_id is None:
+            result = request.app.state.automation_manager.control_browser(action, mode)
+        else:
+            result = request.app.state.automation_manager.control_browser(
+                action,
+                mode,
+                profile_id,
+            )
     except Exception:
         log_operation(
             request,
@@ -69,7 +83,13 @@ def start_browser(
     request: Request,
     payload: BrowserStartRequest | None = None,
 ) -> ApiResponse[BrowserControlResult]:
-    return _control_browser("start", request, (payload or BrowserStartRequest()).mode)
+    resolved = payload or BrowserStartRequest()
+    return _control_browser(
+        "start",
+        request,
+        resolved.mode,
+        resolved.profile_id,
+    )
 
 
 @router.post(
@@ -78,6 +98,42 @@ def start_browser(
 )
 def stop_browser(request: Request) -> ApiResponse[BrowserControlResult]:
     return _control_browser("stop", request)
+
+
+@router.post(
+    "/browser/initialize",
+    response_model=ApiResponse[BrowserInitializationAccepted],
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def initialize_browser(
+    request: Request,
+    payload: BrowserInitializationRequest,
+) -> ApiResponse[BrowserInitializationAccepted]:
+    target = f"debug-chrome:{payload.profile_id}:{payload.mode}"
+    operation_id = log_operation(
+        request,
+        action="initialize_debug_chrome_profile",
+        status="requested",
+        target=target,
+    )
+    try:
+        accepted = request.app.state.automation_manager.initialize_browser(
+            payload.profile_id,
+            payload.mode,
+            operation_id=operation_id,
+            source_ip=request.client.host if request.client else "unknown",
+        )
+    except Exception as exc:
+        if not getattr(exc, "operation_logged", False):
+            log_operation(
+                request,
+                action="initialize_debug_chrome_profile",
+                status="failed",
+                target=target,
+                operation_id=operation_id,
+            )
+        raise
+    return ApiResponse(data=accepted)
 
 
 @router.post(

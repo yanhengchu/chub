@@ -11,6 +11,7 @@ from app.automations.models import (
     AutomationListData,
     AutomationRunAccepted,
     BrowserControlResult,
+    BrowserInitializationAccepted,
     FeishuEnvironmentState,
 )
 from app.core.config import Settings
@@ -27,11 +28,16 @@ async def test_automations_require_authentication(settings: Settings) -> None:
         run = await client.post("/api/automations/task/run")
         check_feishu = await client.post("/api/automations/environment/feishu/check")
         qr = await client.get("/api/automations/environment/feishu/qr")
+        initialize_browser = await client.post(
+            "/api/automations/browser/initialize",
+            json={"profile_id": "Profile 2", "mode": "headed"},
+        )
 
     assert listing.status_code == 401
     assert run.status_code == 401
     assert check_feishu.status_code == 401
     assert qr.status_code == 401
+    assert initialize_browser.status_code == 401
 
 
 @pytest.mark.anyio
@@ -54,8 +60,11 @@ async def test_automation_list_and_background_acceptance(
     )
     manager.control_browser.return_value = BrowserControlResult(
         state="running",
-        mode="有界面模式",
+        mode="有界面",
         message="Debug Chrome 已启动",
+    )
+    manager.initialize_browser.return_value = BrowserInitializationAccepted(
+        profile_id="Profile 2",
     )
     manager.check_feishu_environment.return_value = FeishuEnvironmentState(
         state="available",
@@ -81,6 +90,10 @@ async def test_automation_list_and_background_acceptance(
         )
         check_feishu = await client.post("/api/automations/environment/feishu/check")
         qr = await client.get("/api/automations/environment/feishu/qr")
+        initialize_browser = await client.post(
+            "/api/automations/browser/initialize",
+            json={"profile_id": "Profile 2", "mode": "headed"},
+        )
 
     assert listing.status_code == 200
     assert listing.json()["data"]["browser_state"] == "running"
@@ -91,6 +104,7 @@ async def test_automation_list_and_background_acceptance(
     assert check_feishu.status_code == 200
     assert check_feishu.json()["data"]["state"] == "available"
     assert qr.status_code == 200
+    assert initialize_browser.status_code == 202
     assert qr.headers["content-type"] == "image/png"
     assert "no-store" in qr.headers["cache-control"]
     manager.list.assert_called_once_with(home_only=False)
@@ -101,3 +115,21 @@ async def test_automation_list_and_background_acceptance(
     manager.control_browser.assert_called_once_with("start", "headless")
     manager.check_feishu_environment.assert_called_once_with()
     manager.feishu_qr_content.assert_called_once_with()
+    manager.initialize_browser.assert_called_once()
+
+
+@pytest.mark.anyio
+async def test_browser_profile_rejects_client_paths(settings: Settings) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers=AUTH,
+    ) as client:
+        response = await client.post(
+            "/api/automations/browser/initialize",
+            json={"profile_id": "../Default", "mode": "headed"},
+        )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "invalid_request"

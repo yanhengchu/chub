@@ -71,6 +71,16 @@ python3 scripts/copy_profile.py "Profile 2" \
   --target /path/to/chrome-debug-data
 ```
 
+For a web or unattended caller that must never close regular Chrome, use:
+
+```bash
+python3 scripts/copy_profile.py "Default" --require-stopped
+```
+
+This mode refuses to copy while regular Chrome is running instead of requesting
+Chrome to exit. The profile validation, isolated copy, rollback, and manifest
+behavior are otherwise unchanged.
+
 The first copy initializes `Local State` and the selected profile directory. Later copies add another profile to the same managed target without overwriting existing profiles. Each newly copied profile becomes the active profile for the next Debug Chrome start.
 
 Later copies merge only the selected profile's `Local State` metadata, preserving state accumulated by Debug Chrome. Profile operations are serialized, and a failed copy rolls back the new profile and metadata.

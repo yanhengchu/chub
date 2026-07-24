@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -21,6 +22,7 @@ from app.automations.extensions import (
 )
 from app.automations.lock import file_lock
 from app.automations.manager import AutomationManager, _feishu_environment_for_url
+from app.automations.browser import BrowserProfileInfo
 from app.automations.models import (
     AutomationState,
     FeishuEnvironmentState,
@@ -807,7 +809,7 @@ def test_manager_does_not_pass_hub_token_value_to_runner(
     with (
         patch(
             "app.automations.manager.debug_chrome_status",
-            return_value=("running", "Debug Chrome 已运行", "有界面模式"),
+            return_value=("running", "Debug Chrome 已运行", "有界面"),
         ),
         patch("app.automations.manager.subprocess.Popen") as popen,
     ):
@@ -859,7 +861,7 @@ def test_manager_checks_and_caches_feishu_environment(
     with (
         patch(
             "app.automations.manager.debug_chrome_status",
-            return_value=("running", "Debug Chrome 已运行", "有界面模式"),
+            return_value=("running", "Debug Chrome 已运行", "有界面"),
         ),
         patch.object(manager, "_check_feishu_page", fake_check),
     ):
@@ -1006,7 +1008,7 @@ def test_manager_starts_debug_chrome_and_confirms_final_state(
         result = manager.control_browser("start")
 
     assert result.state == "running"
-    assert result.mode == "有界面模式"
+    assert result.mode == "有界面"
     start.assert_called_once_with("headed")
 
 
@@ -1024,8 +1026,221 @@ def test_manager_starts_debug_chrome_headless(
         result = manager.control_browser("start", "headless")
 
     assert result.state == "running"
-    assert result.mode == "无界面模式"
+    assert result.mode == "无界面"
     start.assert_called_once_with("headless")
+
+
+def test_manager_starts_selected_initialized_profile(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    configure_automations(settings, tmp_path)
+    manager = AutomationManager(settings)
+
+    with (
+        patch(
+            "app.automations.manager.select_and_start_debug_chrome",
+            return_value=SimpleNamespace(
+                state="running",
+                mode="headed",
+                profile_directory="Profile 2",
+            ),
+        ) as start,
+        patch(
+            "app.automations.manager.browser_profiles",
+            return_value=(
+                [
+                    BrowserProfileInfo(
+                        id="Profile 2",
+                        name="工作",
+                        initialized=True,
+                        source_available=True,
+                        active=True,
+                    )
+                ],
+                None,
+            ),
+        ),
+    ):
+        result = manager.control_browser("start", "headed", "Profile 2")
+
+    assert result.profile_id == "Profile 2"
+    assert result.profile_name == "工作"
+    start.assert_called_once_with("Profile 2", "headed")
+
+
+def test_manager_lists_browser_profiles_and_current_profile(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    configure_automations(settings, tmp_path)
+    manager = AutomationManager(settings)
+    profile = BrowserProfileInfo(
+        id="Default",
+        name="默认用户",
+        initialized=True,
+        source_available=True,
+        active=True,
+    )
+
+    with (
+        patch(
+            "app.automations.manager.debug_chrome_status",
+            return_value=("running", "Debug Chrome 已运行", "有界面"),
+        ),
+        patch(
+            "app.automations.manager.current_debug_chrome_profile",
+            return_value="Default",
+        ),
+        patch(
+            "app.automations.manager.browser_profiles",
+            return_value=([profile], None),
+        ),
+    ):
+        result = manager.list()
+
+    assert result.browser_profile_id == "Default"
+    assert result.browser_profile_name == "默认用户"
+    assert result.browser_profiles[0].initialized is True
+
+
+def test_manager_initializes_profile_in_background_and_logs_final_state(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    configure_automations(settings, tmp_path)
+    manager = AutomationManager(settings)
+    profile = BrowserProfileInfo(
+        id="Profile 2",
+        name="工作",
+        initialized=False,
+        source_available=True,
+        active=False,
+    )
+    finished = threading.Event()
+
+    def initialize(_profile_id: str, _mode: str):
+        finished.set()
+        return SimpleNamespace(
+            state="running",
+            mode="headed",
+            profile_directory="Profile 2",
+        )
+
+    with (
+        patch(
+            "app.automations.manager.browser_profiles",
+            return_value=([profile], None),
+        ),
+        patch(
+            "app.automations.manager.debug_chrome_status",
+            return_value=("stopped", "Debug Chrome 未启动", None),
+        ),
+        patch(
+            "app.automations.manager.initialize_and_start_debug_chrome",
+            side_effect=initialize,
+        ),
+        patch("app.automations.manager.write_operation") as write_operation,
+    ):
+        accepted = manager.initialize_browser(
+            "Profile 2",
+            "headed",
+            operation_id="operation-1",
+            source_ip="100.64.0.1",
+        )
+        assert finished.wait(2)
+        for _ in range(100):
+            if write_operation.call_count >= 2:
+                break
+            __import__("time").sleep(0.01)
+
+    assert accepted.status == "initializing"
+    assert [call.kwargs["status"] for call in write_operation.call_args_list] == [
+        "started",
+        "succeeded",
+    ]
+
+
+def test_manager_recovers_interrupted_browser_initialization(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    configure_automations(settings, tmp_path)
+    state_path = (
+        settings.automations.data_dir
+        / "runtime"
+        / "browser-profile-initialization.json"
+    )
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "profile_id": "Profile 2",
+                "state": "running",
+                "message": "正在初始化浏览器用户",
+                "operation_id": "operation-1",
+                "source_ip": "100.64.0.1",
+                "target": "debug-chrome:Profile 2:headed",
+                "operation_logged": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with (
+        patch("app.automations.manager.write_operation") as write_operation,
+        patch("app.automations.manager.cleanup_interrupted_profile_copy") as cleanup,
+    ):
+        manager = AutomationManager(settings)
+
+    assert manager._browser_initialization["state"] == "failed"
+    assert "重启中断" in str(manager._browser_initialization["message"])
+    assert state_path.stat().st_mode & 0o777 == 0o600
+    write_operation.assert_called_once()
+    assert write_operation.call_args.kwargs["status"] == "failed"
+    cleanup.assert_called_once_with()
+
+
+def test_manager_logs_failed_when_initialization_thread_cannot_start(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    configure_automations(settings, tmp_path)
+    manager = AutomationManager(settings)
+    profile = BrowserProfileInfo(
+        id="Profile 2",
+        name="工作",
+        initialized=False,
+        source_available=True,
+        active=False,
+    )
+
+    with (
+        patch(
+            "app.automations.manager.browser_profiles",
+            return_value=([profile], None),
+        ),
+        patch(
+            "app.automations.manager.debug_chrome_status",
+            return_value=("stopped", "Debug Chrome 未启动", None),
+        ),
+        patch("app.automations.manager.threading.Thread.start", side_effect=OSError),
+        patch("app.automations.manager.write_operation") as write_operation,
+    ):
+        with pytest.raises(ApiError, match="无法启动浏览器用户初始化") as raised:
+            manager.initialize_browser(
+                "Profile 2",
+                "headed",
+                operation_id="operation-1",
+                source_ip="100.64.0.1",
+            )
+
+    assert getattr(raised.value, "operation_logged", False) is True
+    assert [call.kwargs["status"] for call in write_operation.call_args_list] == [
+        "started",
+        "failed",
+    ]
+    assert manager._browser_initialization["operation_logged"] is True
 
 
 def test_manager_refuses_to_stop_browser_while_automation_lock_is_held(

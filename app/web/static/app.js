@@ -27,6 +27,7 @@ const elements = {
   codexCardHost: document.querySelector("#codex-card-host"),
   automationBrowserBadge: document.querySelector("#automation-browser-badge"),
   automationBrowserControl: document.querySelector("#automation-browser-control"),
+  automationBrowserProfile: document.querySelector("#automation-browser-profile"),
   automationBrowserMode: document.querySelector("#automation-browser-mode"),
   automationFeishuBadge: document.querySelector("#automation-feishu-badge"),
   automationFeishuCheck: document.querySelector("#automation-feishu-check"),
@@ -62,6 +63,7 @@ let connectionAttempt = 0;
 let activeLogSource = "operations";
 let automationPollTimer = null;
 let automationBrowserState = "unavailable";
+let automationBrowserProfiles = [];
 let feishuQrObjectUrl = "";
 let feishuQrLoading = false;
 let feishuQrVersion = 0;
@@ -1021,15 +1023,42 @@ async function controlAutomationBrowser() {
     return;
   }
   elements.automationBrowserControl.disabled = true;
+  elements.automationBrowserProfile.disabled = true;
   elements.automationBrowserMode.disabled = true;
-  elements.automationBrowserControl.textContent = action === "start" ? "启动中…" : "停止中…";
+  const selectedProfile = automationBrowserProfiles.find(
+    (profile) => profile.id === elements.automationBrowserProfile.value,
+  );
+  if (action === "start" && !selectedProfile) {
+    setMessage(elements.automationMessage, "请选择浏览器用户。", "error");
+    await loadAutomations();
+    return;
+  }
+  const requiresInitialization = action === "start" && !selectedProfile.initialized;
+  if (
+    requiresInitialization
+    && !window.confirm(
+      "首次使用需要复制该浏览器用户。请先完全退出默认 Chrome；复制完成后将自动启动 Debug Chrome。确定继续吗？",
+    )
+  ) {
+    await loadAutomations();
+    return;
+  }
+  elements.automationBrowserControl.textContent = requiresInitialization
+    ? "初始化中…"
+    : action === "start" ? "启动中…" : "停止中…";
   try {
     const options = { method: "POST" };
     if (action === "start") {
       options.headers = { "Content-Type": "application/json" };
-      options.body = JSON.stringify({ mode: elements.automationBrowserMode.value });
+      options.body = JSON.stringify({
+        mode: elements.automationBrowserMode.value,
+        profile_id: selectedProfile.id,
+      });
     }
-    await apiFetch(`/api/automations/browser/${action}`, options);
+    const endpoint = requiresInitialization
+      ? "/api/automations/browser/initialize"
+      : `/api/automations/browser/${action}`;
+    await apiFetch(endpoint, options);
     setMessage(elements.automationMessage, "");
     await loadAutomations();
   } catch (error) {
@@ -1117,21 +1146,69 @@ async function loadFeishuQr() {
 function renderAutomations(data) {
   elements.automationList.replaceChildren();
   const browserRunning = data.browser_state === "running";
+  automationBrowserProfiles = data.browser_profiles || [];
+  const previousProfile = elements.automationBrowserProfile.value;
+  elements.automationBrowserProfile.replaceChildren();
+  automationBrowserProfiles.forEach((profile) => {
+    const option = document.createElement("option");
+    option.value = profile.id;
+    const availability = profile.initialized
+      ? profile.source_available ? "" : " · 源用户已不存在"
+      : " · 未初始化";
+    option.textContent = `${profile.name}${availability}`;
+    elements.automationBrowserProfile.append(option);
+  });
+  const preferredProfile = automationBrowserProfiles.find(
+    (profile) => profile.id === previousProfile,
+  ) || automationBrowserProfiles.find(
+    (profile) => profile.id === data.browser_profile_id,
+  ) || automationBrowserProfiles.find(
+    (profile) => profile.active && profile.initialized,
+  ) || automationBrowserProfiles.find(
+    (profile) => profile.initialized,
+  ) || automationBrowserProfiles[0];
+  if (preferredProfile) {
+    elements.automationBrowserProfile.value = preferredProfile.id;
+  }
+  const selectedProfile = automationBrowserProfiles.find(
+    (profile) => profile.id === elements.automationBrowserProfile.value,
+  );
+  const initializing = automationBrowserProfiles.some(
+    (profile) => profile.initialization_state === "running",
+  );
   const feishuChecking = data.feishu_environment.state === "checking";
-  const automationBusy = feishuChecking || data.tasks.some((task) => ["queued", "running"].includes(task.state.status));
+  const automationBusy = initializing || feishuChecking || data.tasks.some((task) => ["queued", "running"].includes(task.state.status));
   automationBrowserState = data.browser_state;
   setBadge(
     elements.automationBrowserBadge,
-    `${data.browser_message}${data.browser_mode ? ` · ${data.browser_mode}` : ""}`,
+    `${data.browser_message}${data.browser_profile_name ? ` · ${data.browser_profile_name}` : ""}${data.browser_mode ? ` · ${data.browser_mode}` : ""}`,
     browserRunning ? "success" : data.browser_state === "stopped" ? "timeout" : "failed",
   );
   elements.automationBrowserControl.disabled = (
     !["running", "stopped"].includes(data.browser_state)
     || (browserRunning && automationBusy)
+    || (!browserRunning && (!selectedProfile || !selectedProfile.source_available && !selectedProfile.initialized))
+    || initializing
   );
+  elements.automationBrowserProfile.hidden = data.browser_state !== "stopped";
+  elements.automationBrowserProfile.disabled = data.browser_state !== "stopped" || initializing;
   elements.automationBrowserMode.hidden = data.browser_state !== "stopped";
-  elements.automationBrowserMode.disabled = data.browser_state !== "stopped";
-  elements.automationBrowserControl.textContent = browserRunning ? "停止" : "启动";
+  elements.automationBrowserMode.disabled = data.browser_state !== "stopped" || initializing;
+  elements.automationBrowserControl.textContent = browserRunning
+    ? "停止"
+    : initializing
+      ? "初始化中…"
+      : selectedProfile && !selectedProfile.initialized
+        ? "初始化并启动"
+        : "启动";
+  const failedInitialization = selectedProfile?.initialization_state === "failed"
+    ? selectedProfile
+    : null;
+  if (failedInitialization?.initialization_message) {
+    setMessage(elements.automationMessage, failedInitialization.initialization_message, "error");
+  } else if (data.browser_profiles_error && !automationBrowserProfiles.length) {
+    setMessage(elements.automationMessage, data.browser_profiles_error, "error");
+  }
   const feishuTime = automationTime(data.feishu_environment.checked_at);
   const feishuBadgeKind = {
     available: "success",
@@ -1216,7 +1293,7 @@ function renderAutomations(data) {
     item.append(copy, button);
     elements.automationList.append(item);
   });
-  return active;
+  return active || initializing;
 }
 
 async function loadAutomations() {
@@ -1244,6 +1321,8 @@ async function loadAutomations() {
       automationBrowserState = "unknown";
       setBadge(elements.automationBrowserBadge, "检查失败", "failed");
       elements.automationBrowserControl.disabled = true;
+      elements.automationBrowserProfile.hidden = true;
+      elements.automationBrowserProfile.disabled = true;
       elements.automationBrowserMode.hidden = true;
       elements.automationBrowserMode.disabled = true;
       setBadge(elements.automationFeishuBadge, "检查失败", "failed");
@@ -1424,6 +1503,20 @@ elements.allProjectDocs.addEventListener("click", () => {
 });
 elements.loadLogs.addEventListener("click", loadLogs);
 elements.automationBrowserControl.addEventListener("click", controlAutomationBrowser);
+elements.automationBrowserProfile.addEventListener("change", () => {
+  if (automationBrowserState !== "stopped") {
+    return;
+  }
+  const selected = automationBrowserProfiles.find(
+    (profile) => profile.id === elements.automationBrowserProfile.value,
+  );
+  elements.automationBrowserControl.textContent = selected && !selected.initialized
+    ? "初始化并启动"
+    : "启动";
+  elements.automationBrowserControl.disabled = (
+    !selected || (!selected.initialized && !selected.source_available)
+  );
+});
 elements.automationFeishuCheck.addEventListener("click", checkFeishuEnvironment);
 
 function refreshCardsOnReturn({ codexAlreadyFresh = false } = {}) {
