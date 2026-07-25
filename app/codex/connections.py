@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import secrets
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Literal
@@ -27,6 +28,7 @@ class TerminalConnection:
     takeover: asyncio.Event = field(default_factory=asyncio.Event)
     released: asyncio.Event = field(default_factory=asyncio.Event)
     activated: bool = False
+    loop: asyncio.AbstractEventLoop | None = None
 
 
 class TerminalConnectionRegistry:
@@ -44,31 +46,34 @@ class TerminalConnectionRegistry:
         self._ticket_pages: dict[tuple[str, str], str] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._generations: dict[str, int] = {}
+        self._state_lock = threading.RLock()
 
     def open_page(self, session_id: str, ticket: str) -> TerminalPage:
-        self._prune_pages()
-        page_id = self._ticket_pages.get((session_id, ticket))
-        page = self._pages.get(page_id) if page_id else None
-        if page is not None and page.session_id == session_id:
-            page.state = "waiting"
-            page.updated_at = time.monotonic()
+        with self._state_lock:
+            self._prune_pages()
+            page_id = self._ticket_pages.get((session_id, ticket))
+            page = self._pages.get(page_id) if page_id else None
+            if page is not None and page.session_id == session_id:
+                page.state = "waiting"
+                page.updated_at = time.monotonic()
+                return page
+            page = TerminalPage(
+                id=secrets.token_urlsafe(24),
+                session_id=session_id,
+                ticket=ticket,
+            )
+            self._pages[page.id] = page
+            self._ticket_pages[(session_id, ticket)] = page.id
             return page
-        page = TerminalPage(
-            id=secrets.token_urlsafe(24),
-            session_id=session_id,
-            ticket=ticket,
-        )
-        self._pages[page.id] = page
-        self._ticket_pages[(session_id, ticket)] = page.id
-        return page
 
     def page_state(self, session_id: str, page_id: str) -> PageState | None:
-        self._prune_pages()
-        page = self._pages.get(page_id)
-        if page is None or page.session_id != session_id:
-            return None
-        page.updated_at = time.monotonic()
-        return page.state
+        with self._state_lock:
+            self._prune_pages()
+            page = self._pages.get(page_id)
+            if page is None or page.session_id != session_id:
+                return None
+            page.updated_at = time.monotonic()
+            return page.state
 
     async def claim(
         self,
@@ -79,19 +84,19 @@ class TerminalConnectionRegistry:
         """Reserve ttyd for a page, asking the old connection to release first."""
         lock = self._locks.setdefault(session_id, asyncio.Lock())
         async with lock:
-            page = self._pages.get(page_id)
-            if (
-                page is None
-                or page.session_id != session_id
-                or page.ticket != ticket
-                or page.state == "closed"
-            ):
-                raise ValueError("Terminal page does not match its access ticket")
-
-            previous = self._connections.get(session_id)
+            with self._state_lock:
+                page = self._pages.get(page_id)
+                if (
+                    page is None
+                    or page.session_id != session_id
+                    or page.ticket != ticket
+                    or page.state == "closed"
+                ):
+                    raise ValueError("Terminal page does not match its access ticket")
+                previous = self._connections.get(session_id)
             released = True
             if previous is not None and not previous.released.is_set():
-                previous.takeover.set()
+                self._signal(previous.takeover, previous.loop)
                 try:
                     await asyncio.wait_for(
                         previous.released.wait(),
@@ -100,57 +105,90 @@ class TerminalConnectionRegistry:
                 except TimeoutError:
                     released = False
 
-            page.state = "waiting"
-            page.updated_at = time.monotonic()
-
-            generation = self._generations.get(session_id, 0) + 1
-            self._generations[session_id] = generation
-            connection = TerminalConnection(session_id, generation, page.id)
-            self._connections[session_id] = connection
-            return connection, released
+            with self._state_lock:
+                if page.state == "closed":
+                    raise ValueError("Terminal page access expired while waiting")
+                page.state = "waiting"
+                page.updated_at = time.monotonic()
+                generation = self._generations.get(session_id, 0) + 1
+                self._generations[session_id] = generation
+                connection = TerminalConnection(
+                    session_id,
+                    generation,
+                    page.id,
+                    loop=asyncio.get_running_loop(),
+                )
+                self._connections[session_id] = connection
+                return connection, released
 
     def activate(self, connection: TerminalConnection) -> bool:
-        current = self._connections.get(connection.session_id)
-        if current is not connection:
-            return False
-        for page in self._pages.values():
-            if (
-                page.session_id == connection.session_id
-                and page.id != connection.page_id
-                and page.state == "active"
-            ):
-                page.state = "displaced"
-                page.updated_at = time.monotonic()
-        page = self._pages.get(connection.page_id)
-        if page is None:
-            return False
-        page.state = "active"
-        page.updated_at = time.monotonic()
-        connection.activated = True
-        return True
+        with self._state_lock:
+            current = self._connections.get(connection.session_id)
+            if current is not connection:
+                return False
+            for page in self._pages.values():
+                if (
+                    page.session_id == connection.session_id
+                    and page.id != connection.page_id
+                    and page.state == "active"
+                ):
+                    page.state = "displaced"
+                    page.updated_at = time.monotonic()
+            page = self._pages.get(connection.page_id)
+            if page is None or page.state == "closed":
+                return False
+            page.state = "active"
+            page.updated_at = time.monotonic()
+            connection.activated = True
+            return True
+
+    def has_active_connection(self, session_id: str) -> bool:
+        with self._state_lock:
+            connection = self._connections.get(session_id)
+            return bool(connection and not connection.released.is_set())
 
     def close_session(self, session_id: str) -> None:
-        connection = self._connections.get(session_id)
+        with self._state_lock:
+            connection = self._connections.pop(session_id, None)
+            now = time.monotonic()
+            for page in self._pages.values():
+                if page.session_id == session_id:
+                    page.state = "closed"
+                    page.updated_at = now
+            self._prune_pages()
         if connection is not None:
-            connection.takeover.set()
-        now = time.monotonic()
-        for page in self._pages.values():
-            if page.session_id == session_id:
-                page.state = "closed"
-                page.updated_at = now
-        self._prune_pages()
+            self._signal(connection.takeover, connection.loop)
+            self._signal(connection.released, connection.loop)
 
     def release(self, connection: TerminalConnection) -> None:
         connection.released.set()
-        current = self._connections.get(connection.session_id)
-        if current is connection:
-            self._connections.pop(connection.session_id, None)
-        if not connection.activated:
-            page = self._pages.get(connection.page_id)
-            if page is not None and page.state == "waiting":
-                page.state = "closed"
-                page.updated_at = time.monotonic()
-        self._prune_pages()
+        with self._state_lock:
+            current = self._connections.get(connection.session_id)
+            if current is connection:
+                self._connections.pop(connection.session_id, None)
+            if not connection.activated:
+                page = self._pages.get(connection.page_id)
+                if page is not None and page.state == "waiting":
+                    page.state = "closed"
+                    page.updated_at = time.monotonic()
+            self._prune_pages()
+
+    @staticmethod
+    def _signal(
+        event: asyncio.Event,
+        loop: asyncio.AbstractEventLoop | None,
+    ) -> None:
+        if loop is None or loop.is_closed():
+            event.set()
+            return
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+        if current_loop is loop:
+            event.set()
+        else:
+            loop.call_soon_threadsafe(event.set)
 
     def _prune_pages(self) -> None:
         cutoff = time.monotonic() - self.page_ttl

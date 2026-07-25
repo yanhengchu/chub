@@ -203,8 +203,12 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "archiveCodexSession" in script.text
     assert 'quickInteraction.textContent = "快速交互"' in script.text
     assert 'interactionHistory.textContent = "交互记录"' in script.text
-    assert "快速交互已提交" in script.text
+    assert "快速交互已提交" not in script.text
     assert "quick-interaction-submit" in script.text
+    assert "confirm_stop_unknown_terminal" in script.text
+    assert "点击执行会先停止当前实时会话" in script.text
+    assert "请确认影响后再次点击执行" in script.text
+    assert "unknownConfirmationInput" not in script.text
     assert 'close.textContent = "关闭"' not in script.text
     assert 'cancel.textContent = "取消"' not in script.text
     assert "removeCodexSession" not in script.text
@@ -213,6 +217,11 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "会话运行中 · 等待输入" in script.text
     assert "会话运行中 · 执行中" in script.text
     assert "会话运行中 · 状态未知" in script.text
+    assert "快速交互 · 执行中" in script.text
+    assert (
+        script.text.index('quickInteractionRunning\n      ? "快速交互 · 执行中"')
+        < script.text.index('session.error\n        ? "终端访问异常 · 可重试"')
+    )
     assert "会话已停止 · 可恢复" in script.text
     assert "尚未启动 · 可进入" in script.text
     assert "终端访问异常 · 可重试" in script.text
@@ -223,6 +232,8 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert 'session.status === "running" && session.activity === "working"' in polling_script.text
     assert "loadCodexSessions({ background: true })" in script.text
     assert "loadCodexSessions({ force: true })" in script.text
+    assert "session.quick_interaction_running" in script.text
+    assert "archive.disabled = !session.codex_session_id || quickInteractionRunning" in script.text
     assert "codexLoadPromise" in script.text
     assert "codexMutationCount" in script.text
     assert "codexSessionsSignature" in script.text
@@ -254,8 +265,11 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "previousInstanceId" in script.text
     assert "Chub 已重启并恢复连接" in script.text
     assert "/api/codex/restart" not in script.text
-    assert "window.scrollTo" not in script.text
-    assert "scrollIntoView" not in script.text
+    assert 'window.matchMedia("(pointer: coarse)")' in script.text
+    assert "window.visualViewport" in script.text
+    assert "prompt.blur()" in script.text
+    assert "const duration = 220" in script.text
+    assert "window.requestAnimationFrame(step)" in script.text
     assert "/api/codex/sessions" in script.text
     assert "connection" in terminal_script.text
     assert "window.history.back()" not in terminal_script.text
@@ -295,7 +309,13 @@ async def test_quick_interaction_history_page_is_available(settings: Settings) -
     assert script.status_code == 200
     assert "/quick-interactions" in script.text
     assert "task.prompt" in script.text
-    assert "refresh-quick-interactions" not in page.text
+    assert "任务仍在后台执行" not in script.text
+    assert 'id="quick-interaction-load-more"' in page.text
+    assert "PAGE_SIZE = 3" in script.text
+    assert "?offset=${offset}&limit=${PAGE_SIZE}" in script.text
+    assert "加载更多" in page.text
+    assert "let loadQueue = Promise.resolve()" in script.text
+    assert "appendPending" in script.text
     assert "quick-interaction-session" not in page.text
 
 

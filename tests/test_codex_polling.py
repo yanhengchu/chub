@@ -30,6 +30,11 @@ const base = {
 const working = [{ status: "running", activity: "working" }];
 const idle = [{ status: "running", activity: "idle" }];
 const unknown = [{ status: "running", activity: "unknown" }];
+const quick = [{
+  status: "stopped",
+  activity: "idle",
+  quick_interaction_running: true,
+}];
 const plans = {
   stopped: codexPollPlan({ ...base, sessions: idle }),
   fast: codexPollPlan({ ...base, sessions: working }),
@@ -39,6 +44,11 @@ const plans = {
     now: 122000,
   }),
   unknown: codexPollPlan({ ...base, sessions: unknown }),
+  quick: codexPollPlan({
+    ...base,
+    sessions: quick,
+    now: 122000,
+  }),
   changed: codexPollPlan({
     ...base,
     sessions: working,
@@ -82,6 +92,11 @@ process.stdout.write(JSON.stringify(plans));
         "shouldPoll": True,
         "unchangedSince": 1000,
         "delay": 8000,
+    }
+    assert plans["quick"] == {
+        "shouldPoll": True,
+        "unchangedSince": 1000,
+        "delay": 2000,
     }
     assert plans["changed"] == {
         "shouldPoll": True,

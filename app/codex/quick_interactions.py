@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import signal
 import subprocess
 import threading
 import uuid
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Iterator
 
@@ -19,6 +21,8 @@ from app.services.operation_log import write_operation
 MAX_RESULT_BYTES = 100_000
 MAX_EVENT_BYTES = 1_000_000
 TIMEOUT_SECONDS = 10 * 60
+MAX_STORED_TASKS = 30
+LOGGER = logging.getLogger("hub.codex.quick_interactions")
 
 
 class QuickInteractionManager:
@@ -29,6 +33,7 @@ class QuickInteractionManager:
         self._lock = threading.RLock()
         self._tasks: dict[str, QuickInteractionTask] = {}
         self._running_sessions: set[str] = set()
+        self._active_task_ids: set[str] = set()
         self._session_locks: dict[str, threading.RLock] = {}
         self._processes: dict[str, subprocess.Popen[bytes]] = {}
         self._operations: dict[str, tuple[str, str]] = {}
@@ -88,6 +93,7 @@ class QuickInteractionManager:
                 )
                 self._tasks[task.id] = task
                 self._running_sessions.add(session_id)
+                self._active_task_ids.add(task.id)
                 self._operations[task.id] = (operation_id, source_ip)
                 self._write()
         self._log_status(task.id, "requested", session.id)
@@ -99,7 +105,7 @@ class QuickInteractionManager:
             return self._session_locks.setdefault(session_id, threading.RLock())
 
     @contextmanager
-    def terminal_access_guard(self, session_id: str) -> Iterator[None]:
+    def session_operation_guard(self, session_id: str) -> Iterator[None]:
         with self._session_lock(session_id):
             with self._lock:
                 if session_id in self._running_sessions:
@@ -108,6 +114,11 @@ class QuickInteractionManager:
                         "quick_interaction_in_progress",
                         "该会话正在执行快速交互，请等待任务结束。",
                     )
+            yield
+
+    @contextmanager
+    def terminal_access_guard(self, session_id: str) -> Iterator[None]:
+        with self.session_operation_guard(session_id):
             yield
 
     def get(self, task_id: str) -> QuickInteractionTask:
@@ -126,6 +137,21 @@ class QuickInteractionManager:
                 if task.session_id == session_id
             ]
         return sorted(tasks, key=lambda item: item.created_at, reverse=True)
+
+    def active_sessions(self) -> dict[str, datetime]:
+        with self._lock:
+            active = set(self._running_sessions)
+            return {
+                session_id: max(
+                    (
+                        task.updated_at
+                        for task in self._tasks.values()
+                        if task.session_id == session_id
+                    ),
+                    default=utc_now(),
+                )
+                for session_id in active
+            }
 
     def _run(self, task_id: str, session: CodexSession, prompt: str) -> None:
         with self._lock:
@@ -178,10 +204,31 @@ class QuickInteractionManager:
                     pass
             with self._lock:
                 self._processes.pop(task_id, None)
-                self._running_sessions.discard(session.id)
-            self._log_status(task_id, self.get(task_id).status, session.id)
+            finished = self.get(task_id)
+            try:
+                self.codex_manager.update_session_timestamp(
+                    session.id,
+                    finished.updated_at,
+                )
+            except Exception:
+                LOGGER.warning(
+                    "Unable to update Codex session timestamp after quick interaction",
+                    exc_info=True,
+                )
+            finally:
+                with self._lock:
+                    self._running_sessions.discard(session.id)
+                    self._active_task_ids.discard(task_id)
+            self._log_status(task_id, finished.status, session.id)
             with self._lock:
                 self._operations.pop(task_id, None)
+                try:
+                    self._write()
+                except OSError:
+                    LOGGER.warning(
+                        "Unable to prune persisted quick interaction history",
+                        exc_info=True,
+                    )
 
     @staticmethod
     def _command(session: CodexSession, result_path: Path) -> list[str]:
@@ -290,12 +337,28 @@ class QuickInteractionManager:
 
     def _write(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        if len(self._tasks) > 100:
-            retained = sorted(
-                self._tasks.values(),
+        if len(self._tasks) > MAX_STORED_TASKS:
+            active = [
+                task
+                for task in self._tasks.values()
+                if (
+                    task.status in {"requested", "running"}
+                    or task.id in self._active_task_ids
+                )
+            ]
+            completed = sorted(
+                (
+                    task
+                    for task in self._tasks.values()
+                    if (
+                        task.status not in {"requested", "running"}
+                        and task.id not in self._active_task_ids
+                    )
+                ),
                 key=lambda item: item.updated_at,
                 reverse=True,
-            )[:100]
+            )
+            retained = active + completed[:max(0, MAX_STORED_TASKS - len(active))]
             self._tasks = {item.id: item for item in retained}
         temporary = self.path.with_suffix(".tmp")
         temporary.write_text(

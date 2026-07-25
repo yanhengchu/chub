@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from app.codex.manager import CodexPtyManager
-from app.codex.models import CodexSession, SessionInfo
+from app.codex.models import CodexSession, SessionInfo, utc_now
 from app.codex.store import CodexSessionStore
 from app.core.config import Settings
 from app.core.response import ApiError
@@ -20,6 +20,19 @@ def native_session(session_id: str) -> CodexSession:
         codex_session_id=session_id,
         status="stopped",
     )
+
+
+def test_update_session_timestamp_keeps_latest_time(settings: Settings) -> None:
+    manager = CodexPtyManager(settings)
+    session = native_session("99999999-9999-4999-8999-999999999999")
+    original = session.updated_at
+    latest = utc_now()
+    manager.store.save(session)
+
+    manager.update_session_timestamp(session.id, latest)
+    manager.update_session_timestamp(session.id, original)
+
+    assert manager.store.get(session.id).updated_at == latest
 
 
 @pytest.mark.parametrize(

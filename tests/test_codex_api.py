@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -5,8 +6,16 @@ import httpx
 import pytest
 
 from app.application import create_app
-from app.codex.models import CodexSession, SessionInfo, SessionListData, WorkspaceInfo
+from app.codex.models import (
+    CodexSession,
+    QuickInteractionTask,
+    SessionInfo,
+    SessionListData,
+    WorkspaceInfo,
+    utc_now,
+)
 from app.core.config import Settings
+from app.core.response import ApiError
 
 
 def authorization(settings: Settings) -> dict[str, str]:
@@ -50,6 +59,273 @@ async def test_codex_session_list_reports_workspaces(settings: Settings) -> None
     assert data["available"] is False
     assert data["workspaces"][0]["id"] == "home"
     assert data["dependencies"]["tmux"] is False
+
+
+@pytest.mark.anyio
+async def test_codex_session_list_includes_active_quick_interaction(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    manager = MagicMock()
+    manager.available.return_value = True
+    manager.unavailable_reason.return_value = None
+    manager.dependencies.return_value = {"codex": True, "ttyd": True, "tmux": True}
+    manager.workspaces.return_value = []
+    manager.list_sessions.return_value = [
+        SessionInfo(
+            id="session-1",
+            workspace_id="chub",
+            workspace_name="Chub",
+            cwd="/workspace/chub",
+            title=None,
+            codex_session_id="codex-session-1",
+            status="stopped",
+            activity="idle",
+            permission_mode="auto-review",
+            active_permission_mode=None,
+            permission_pending=False,
+            error=None,
+            created_at="2026-07-24T10:00:00Z",
+            updated_at="2026-07-24T10:01:00Z",
+        )
+    ]
+    quick_interactions = MagicMock()
+    quick_interactions.active_sessions.return_value = {
+        "session-1": datetime(2026, 7, 24, 10, 2, tzinfo=UTC)
+    }
+    app.state.codex_pty_manager = manager
+    app.state.quick_interactions = quick_interactions
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            "/api/codex/sessions",
+            headers=authorization(settings),
+        )
+
+    session = response.json()["data"]["sessions"][0]
+    assert session["quick_interaction_running"] is True
+    assert session["quick_interaction_updated_at"] == "2026-07-24T10:02:00Z"
+
+
+def quick_task() -> QuickInteractionTask:
+    return QuickInteractionTask(
+        id="task-1",
+        session_id="session-1",
+        prompt="检查状态",
+        status="requested",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+
+
+@pytest.mark.anyio
+async def test_quick_interaction_stops_idle_unconnected_terminal(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    manager = MagicMock()
+    session = CodexSession(
+        id="session-1",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd=Path("/workspace/chub"),
+        codex_session_id="codex-session-1",
+        status="running",
+        activity="idle",
+        permission_mode="auto-review",
+    )
+    manager.get_session.return_value = session
+    quick_interactions = MagicMock()
+    quick_interactions.submit.return_value = quick_task()
+    app.state.codex_pty_manager = manager
+    app.state.quick_interactions = quick_interactions
+    app.state.terminal_connections = MagicMock()
+    app.state.terminal_connections.has_active_connection.return_value = False
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/codex/sessions/session-1/quick-interactions",
+            headers=authorization(settings),
+            json={"prompt": "检查状态"},
+        )
+
+    assert response.status_code == 200
+    manager.stop_session.assert_called_once_with("session-1")
+    quick_interactions.submit.assert_called_once()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("activity", "connected", "confirm", "expected_code"),
+    [
+        ("working", False, False, "quick_interaction_terminal_working"),
+        ("idle", True, False, "quick_interaction_terminal_connected"),
+        (
+            "unknown",
+            False,
+            False,
+            "quick_interaction_terminal_confirmation_required",
+        ),
+    ],
+)
+async def test_quick_interaction_rejects_unsafe_terminal_switch(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    activity: str,
+    connected: bool,
+    confirm: bool,
+    expected_code: str,
+) -> None:
+    write_operation = MagicMock()
+    monkeypatch.setattr("app.codex.routes.write_operation", write_operation)
+    app = create_app(settings)
+    manager = MagicMock()
+    manager.get_session.return_value = CodexSession(
+        id="session-1",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd=Path("/workspace/chub"),
+        codex_session_id="codex-session-1",
+        status="running",
+        activity=activity,
+        permission_mode="auto-review",
+    )
+    quick_interactions = MagicMock()
+    app.state.codex_pty_manager = manager
+    app.state.quick_interactions = quick_interactions
+    app.state.terminal_connections = MagicMock()
+    app.state.terminal_connections.has_active_connection.return_value = connected
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/codex/sessions/session-1/quick-interactions",
+            headers=authorization(settings),
+            json={
+                "prompt": "检查状态",
+                "confirm_stop_unknown_terminal": confirm,
+            },
+        )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == expected_code
+    manager.stop_session.assert_not_called()
+    quick_interactions.submit.assert_not_called()
+    if expected_code == "quick_interaction_terminal_confirmation_required":
+        write_operation.assert_not_called()
+    else:
+        write_operation.assert_called_once()
+
+
+@pytest.mark.anyio
+async def test_quick_interaction_confirmed_unknown_terminal_is_stopped(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    manager = MagicMock()
+    manager.get_session.return_value = CodexSession(
+        id="session-1",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd=Path("/workspace/chub"),
+        codex_session_id="codex-session-1",
+        status="running",
+        activity="unknown",
+        permission_mode="auto-review",
+    )
+    quick_interactions = MagicMock()
+    quick_interactions.submit.return_value = quick_task()
+    app.state.codex_pty_manager = manager
+    app.state.quick_interactions = quick_interactions
+    app.state.terminal_connections = MagicMock()
+    app.state.terminal_connections.has_active_connection.return_value = False
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/codex/sessions/session-1/quick-interactions",
+            headers=authorization(settings),
+            json={
+                "prompt": "检查状态",
+                "confirm_stop_unknown_terminal": True,
+            },
+        )
+
+    assert response.status_code == 200
+    manager.stop_session.assert_called_once_with("session-1")
+
+
+@pytest.mark.anyio
+async def test_quick_interaction_rechecks_idle_terminal_before_stopping(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    manager = MagicMock()
+    base = CodexSession(
+        id="session-1",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd=Path("/workspace/chub"),
+        codex_session_id="codex-session-1",
+        status="running",
+        activity="idle",
+        permission_mode="auto-review",
+    )
+    manager.get_session.side_effect = [
+        base,
+        base.model_copy(update={"activity": "working"}),
+    ]
+    quick_interactions = MagicMock()
+    app.state.codex_pty_manager = manager
+    app.state.quick_interactions = quick_interactions
+    app.state.terminal_connections = MagicMock()
+    app.state.terminal_connections.has_active_connection.return_value = False
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/codex/sessions/session-1/quick-interactions",
+            headers=authorization(settings),
+            json={"prompt": "检查状态"},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "quick_interaction_terminal_working"
+    manager.stop_session.assert_not_called()
+    quick_interactions.submit.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_quick_interaction_history_is_paginated(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    tasks = [
+        quick_task().model_copy(update={"id": f"task-{index}"})
+        for index in range(7)
+    ]
+    quick_interactions = MagicMock()
+    quick_interactions.list_for_session.return_value = tasks
+    app.state.quick_interactions = quick_interactions
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        first = await client.get(
+            "/api/codex/sessions/session-1/quick-interactions",
+            headers=authorization(settings),
+        )
+        second = await client.get(
+            "/api/codex/sessions/session-1/quick-interactions?offset=3&limit=3",
+            headers=authorization(settings),
+        )
+
+    assert len(first.json()["data"]["tasks"]) == 3
+    assert first.json()["data"]["total"] == 7
+    assert first.json()["data"]["has_more"] is True
+    assert len(second.json()["data"]["tasks"]) == 3
+    assert second.json()["data"]["has_more"] is True
 
 
 @pytest.mark.anyio
@@ -123,6 +399,35 @@ async def test_archive_session_revokes_access_and_calls_manager(
     assert response.status_code == 200
     tickets.revoke_session.assert_called_once_with("session-1")
     manager.archive_session.assert_called_once_with("session-1")
+
+
+@pytest.mark.anyio
+async def test_archive_session_rejects_running_quick_interaction(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    manager = MagicMock()
+    quick_interactions = MagicMock()
+    guard = MagicMock()
+    guard.__enter__.side_effect = ApiError(
+        409,
+        "quick_interaction_in_progress",
+        "该会话正在执行快速交互，请等待任务结束。",
+    )
+    quick_interactions.session_operation_guard.return_value = guard
+    app.state.codex_pty_manager = manager
+    app.state.quick_interactions = quick_interactions
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/codex/sessions/session-1/archive",
+            headers=authorization(settings),
+        )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "quick_interaction_in_progress"
+    manager.archive_session.assert_not_called()
 
 
 @pytest.mark.anyio

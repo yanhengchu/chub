@@ -66,6 +66,8 @@ class SessionInfo(BaseModel):
     error: str | None
     created_at: datetime
     updated_at: datetime
+    quick_interaction_running: bool = False
+    quick_interaction_updated_at: datetime | None = None
 
 
 class SessionListData(BaseModel):
@@ -112,6 +114,7 @@ class QuickInteractionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     prompt: str = Field(min_length=1, max_length=8000)
+    confirm_stop_unknown_terminal: bool = False
 
     @field_validator("prompt")
     @classmethod
@@ -141,3 +144,5 @@ class QuickInteractionData(BaseModel):
 
 class QuickInteractionListData(BaseModel):
     tasks: list[QuickInteractionTask]
+    total: int
+    has_more: bool

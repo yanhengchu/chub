@@ -1,4 +1,5 @@
 import asyncio
+import threading
 
 import pytest
 
@@ -103,6 +104,67 @@ async def test_explicit_session_close_closes_pages_and_connection() -> None:
 
     assert connection.takeover.is_set()
     assert registry.page_state("session-1", page.id) == "closed"
+
+
+@pytest.mark.anyio
+async def test_session_close_from_worker_thread_wakes_async_connection() -> None:
+    registry = TerminalConnectionRegistry(release_timeout=1)
+    page = registry.open_page("session-1", "ticket-1")
+    connection, _ = await registry.claim("session-1", "ticket-1", page.id)
+    registry.activate(connection)
+
+    worker = threading.Thread(target=registry.close_session, args=("session-1",))
+    worker.start()
+    worker.join()
+
+    await asyncio.wait_for(connection.takeover.wait(), timeout=1)
+    await asyncio.wait_for(connection.released.wait(), timeout=1)
+    assert registry.has_active_connection("session-1") is False
+
+
+@pytest.mark.anyio
+async def test_claimed_connection_is_reported_until_release() -> None:
+    registry = TerminalConnectionRegistry(release_timeout=1)
+    page = registry.open_page("session-1", "ticket-1")
+    connection, _ = await registry.claim("session-1", "ticket-1", page.id)
+
+    assert registry.has_active_connection("session-1") is True
+    registry.activate(connection)
+    assert registry.has_active_connection("session-1") is True
+    registry.release(connection)
+    assert registry.has_active_connection("session-1") is False
+
+
+@pytest.mark.anyio
+async def test_closed_claim_cannot_activate_after_session_switch() -> None:
+    registry = TerminalConnectionRegistry(release_timeout=1)
+    page = registry.open_page("session-1", "ticket-1")
+    connection, _ = await registry.claim("session-1", "ticket-1", page.id)
+
+    registry.close_session("session-1")
+
+    assert registry.has_active_connection("session-1") is False
+    assert registry.activate(connection) is False
+    assert registry.page_state("session-1", page.id) == "closed"
+
+
+@pytest.mark.anyio
+async def test_waiting_takeover_cannot_claim_after_session_close() -> None:
+    registry = TerminalConnectionRegistry(release_timeout=1)
+    first_page = registry.open_page("session-1", "ticket-1")
+    first, _ = await registry.claim("session-1", "ticket-1", first_page.id)
+    registry.activate(first)
+    second_page = registry.open_page("session-1", "ticket-2")
+    second_claim = asyncio.create_task(
+        registry.claim("session-1", "ticket-2", second_page.id)
+    )
+    await first.takeover.wait()
+
+    registry.close_session("session-1")
+
+    with pytest.raises(ValueError):
+        await second_claim
+    assert registry.page_state("session-1", second_page.id) == "closed"
 
 
 @pytest.mark.anyio

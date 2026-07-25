@@ -685,6 +685,7 @@ async function openQuickInteractionDialog(session) {
   const title = document.createElement("h3");
   const form = document.createElement("form");
   const prompt = document.createElement("textarea");
+  const unknownNotice = document.createElement("p");
   const message = document.createElement("p");
   const submit = document.createElement("button");
   dialog.className = "codex-workspace-dialog quick-interaction-dialog";
@@ -697,6 +698,12 @@ async function openQuickInteractionDialog(session) {
   prompt.maxLength = 8000;
   prompt.placeholder = "输入要交给 Codex 执行的需求…";
   prompt.setAttribute("aria-label", "快速交互需求");
+  let confirmStopUnknownTerminal =
+    session.status === "running" && session.activity === "unknown";
+  unknownNotice.className = "quick-interaction-warning";
+  unknownNotice.textContent =
+    "点击执行会先停止当前实时会话，可能中断正在执行的任务，然后启动新任务。";
+  unknownNotice.hidden = !confirmStopUnknownTerminal;
   message.className = "message";
   message.setAttribute("aria-live", "polite");
   submit.type = "submit";
@@ -704,17 +711,69 @@ async function openQuickInteractionDialog(session) {
   submit.textContent = "执行";
   submit.setAttribute("form", form.id);
   heading.append(title, submit);
-  form.append(prompt, message);
+  form.append(prompt, unknownNotice, message);
   surface.append(heading, form);
   dialog.append(surface);
   document.body.append(dialog);
+  const card = elements.codexCardHost.querySelector(".codex-card");
+  const scrollCardToTop = () => {
+    const start = window.scrollY;
+    const target = Math.max(0, start + card.getBoundingClientRect().top);
+    const distance = target - start;
+    const duration = 220;
+    if (
+      Math.abs(distance) < 1
+      || window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ) {
+      window.scrollTo(0, target);
+      return;
+    }
+    const startedAt = performance.now();
+    const step = (now) => {
+      const progress = Math.min((now - startedAt) / duration, 1);
+      const eased = 1 - ((1 - progress) ** 3);
+      window.scrollTo(0, start + (distance * eased));
+      if (progress < 1) {
+        window.requestAnimationFrame(step);
+      }
+    };
+    window.requestAnimationFrame(step);
+  };
+  const restoreCardPosition = () => {
+    if (!card || !window.matchMedia("(pointer: coarse)").matches) {
+      return;
+    }
+    const viewport = window.visualViewport;
+    let restoreTimer = null;
+    const finishRestore = () => {
+      if (viewport) {
+        viewport.removeEventListener("resize", scheduleRestore);
+      }
+      scrollCardToTop();
+    };
+    const scheduleRestore = () => {
+      window.clearTimeout(restoreTimer);
+      restoreTimer = window.setTimeout(finishRestore, 180);
+    };
+    if (viewport) {
+      viewport.addEventListener("resize", scheduleRestore);
+    }
+    restoreTimer = window.setTimeout(finishRestore, 450);
+  };
   const closeDialog = () => {
+    prompt.blur();
     if (dialog.open) {
       dialog.close();
     }
-    dialog.remove();
   };
-  dialog.addEventListener("close", () => dialog.remove(), { once: true });
+  dialog.addEventListener(
+    "close",
+    () => {
+      dialog.remove();
+      restoreCardPosition();
+    },
+    { once: true },
+  );
   dialog.addEventListener("click", (event) => {
     if (event.target === dialog) {
       closeDialog();
@@ -729,17 +788,26 @@ async function openQuickInteractionDialog(session) {
       await apiFetch(`/api/codex/sessions/${encodeURIComponent(session.id)}/quick-interactions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: prompt.value.trim() }),
+        body: JSON.stringify({
+          prompt: prompt.value.trim(),
+          confirm_stop_unknown_terminal: confirmStopUnknownTerminal,
+        }),
       });
       closeDialog();
-      setMessage(
-        elements.codexMessage,
-        "快速交互已提交，可在交互记录中查看进度和结果。",
-        "success",
-      );
+      setMessage(elements.codexMessage, "");
+      loadCodexSessions({ force: true });
     } catch (error) {
       if (!handleAccessError(error)) {
-        setMessage(message, error.message || "快速交互提交失败。", "error");
+        if (
+          error.code
+          === "quick_interaction_terminal_confirmation_required"
+        ) {
+          confirmStopUnknownTerminal = true;
+          unknownNotice.hidden = false;
+          setMessage(message, "请确认影响后再次点击执行。", "error");
+        } else {
+          setMessage(message, error.message || "快速交互提交失败。", "error");
+        }
       }
       submit.disabled = false;
       prompt.disabled = false;
@@ -765,6 +833,7 @@ function renderCodexSessions(sessions) {
 
   sessions.forEach((session) => {
     const configuredPermission = normalizeCodexPermission(session.permission_mode);
+    const quickInteractionRunning = session.quick_interaction_running === true;
     const item = document.createElement("article");
     const main = document.createElement("button");
     const text = document.createElement("span");
@@ -784,28 +853,38 @@ function renderCodexSessions(sessions) {
     main.type = "button";
     title.textContent = session.title || session.workspace_name;
     title.title = title.textContent;
-    const state = session.error
-      ? "终端访问异常 · 可重试"
-      : session.status === "new"
-        ? "尚未启动 · 可进入"
+    const state = quickInteractionRunning
+      ? "快速交互 · 执行中"
+      : session.error
+        ? "终端访问异常 · 可重试"
         : session.status === "error"
           ? "会话异常 · 可重试"
-          : session.status !== "running"
-            ? "会话已停止 · 可恢复"
-            : session.activity === "working"
-              ? "会话运行中 · 执行中"
-              : session.activity === "idle"
-                ? "会话运行中 · 等待输入"
-                : "会话运行中 · 状态未知";
+          : session.status === "new"
+            ? "尚未启动 · 可进入"
+            : session.status !== "running"
+              ? "会话已停止 · 可恢复"
+              : session.activity === "working"
+                ? "会话运行中 · 执行中"
+                : session.activity === "idle"
+                  ? "会话运行中 · 等待输入"
+                  : "会话运行中 · 状态未知";
     meta.textContent =
       `${state} · ` +
-      `${formatSessionTime(session.updated_at)}`;
+      `${formatSessionTime(
+        quickInteractionRunning
+          ? session.quick_interaction_updated_at
+          : session.updated_at,
+      )}`;
     meta.className = "session-meta";
     path.className = "session-path";
     path.textContent = session.cwd;
     path.title = session.cwd;
     text.append(title, meta, path);
     main.append(text);
+    main.disabled = quickInteractionRunning;
+    if (quickInteractionRunning) {
+      main.title = "快速交互正在执行";
+    }
     main.addEventListener("click", () => enterCodexSession(session.id, main));
     const displayedPermission = session.status === "running"
       ? normalizeCodexPermission(session.active_permission_mode)
@@ -834,7 +913,10 @@ function renderCodexSessions(sessions) {
     archive.type = "button";
     archive.className = "button-secondary session-action";
     archive.textContent = "归档";
-    archive.disabled = !session.codex_session_id;
+    archive.disabled = !session.codex_session_id || quickInteractionRunning;
+    if (quickInteractionRunning) {
+      archive.title = "快速交互正在执行";
+    }
     archive.addEventListener("click", () =>
       archiveCodexSession(session.id, archive),
     );
@@ -843,12 +925,28 @@ function renderCodexSessions(sessions) {
     quickInteraction.className = "button-secondary session-action session-quick-interaction";
     quickInteraction.textContent = "快速交互";
     quickInteraction.disabled = !session.codex_session_id
-      || session.status === "running"
+      || (
+        session.status === "running"
+        && session.activity === "working"
+      )
+      || quickInteractionRunning
       || configuredPermission === "ask";
-    if (configuredPermission === "ask") {
+    if (quickInteractionRunning) {
+      quickInteraction.title = "快速交互正在执行";
+    } else if (configuredPermission === "ask") {
       quickInteraction.title = "Ask for approval 需要进入实时终端完成审批";
+    } else if (
+      session.status === "running"
+      && session.activity === "working"
+    ) {
+      quickInteraction.title = "实时会话正在执行";
+    } else if (
+      session.status === "running"
+      && session.activity === "unknown"
+    ) {
+      quickInteraction.title = "执行前需要确认停止状态未知的实时会话";
     } else if (session.status === "running") {
-      quickInteraction.title = "请先退出实时终端";
+      quickInteraction.title = "执行时将自动停止空闲的实时会话";
     } else if (!session.codex_session_id) {
       quickInteraction.title = "会话尚未启动";
     }
@@ -873,6 +971,8 @@ function codexSessionsSignature(sessions) {
       session.id,
       session.status,
       session.activity,
+      session.quick_interaction_running,
+      session.quick_interaction_updated_at,
       session.updated_at,
       session.title,
       session.cwd,

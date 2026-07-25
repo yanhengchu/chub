@@ -1017,6 +1017,13 @@ pre {
   white-space: nowrap;
 }
 
+.quick-interaction-warning {
+  margin: 0.85rem 0 0;
+  color: var(--warning);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
 .quick-interaction-history-card {
   display: grid;
   gap: 0.85rem;
@@ -1038,6 +1045,10 @@ pre {
 .quick-interaction-history {
   display: grid;
   gap: 0.75rem;
+}
+
+.quick-interaction-load-more {
+  justify-self: end;
 }
 
 .quick-interaction-history-item {

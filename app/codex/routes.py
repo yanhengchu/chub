@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime
 from uuid import uuid4
 from urllib.parse import urlsplit
 
 import httpx
 import websockets
-from fastapi import APIRouter, Depends, Request, Response, WebSocket
+from fastapi import APIRouter, Depends, Query, Request, Response, WebSocket
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from starlette.websockets import WebSocketDisconnect
@@ -43,13 +44,25 @@ templates = Jinja2Templates(directory=WEB_DIR / "templates")
 @api_router.get("/sessions", response_model=ApiResponse[SessionListData])
 def list_sessions(request: Request) -> ApiResponse[SessionListData]:
     manager = request.app.state.codex_pty_manager
+    quick_sessions: dict[str, datetime] = (
+        request.app.state.quick_interactions.active_sessions()
+    )
+    sessions = [
+        session.model_copy(
+            update={
+                "quick_interaction_running": session.id in quick_sessions,
+                "quick_interaction_updated_at": quick_sessions.get(session.id),
+            }
+        )
+        for session in manager.list_sessions()
+    ]
     return ApiResponse(
         data=SessionListData(
             available=manager.available(),
             unavailable_reason=manager.unavailable_reason(),
             dependencies=manager.dependencies(),
             workspaces=manager.workspaces(),
-            sessions=manager.list_sessions(),
+            sessions=sessions,
         )
     )
 
@@ -164,12 +177,71 @@ def submit_quick_interaction(
     operation_id = uuid4().hex
     source_ip = request.client.host if request.client else "unknown"
     try:
-        task = request.app.state.quick_interactions.submit(
-            session_id,
-            payload.prompt,
-            operation_id=operation_id,
-            source_ip=source_ip,
-        )
+        quick_interactions = request.app.state.quick_interactions
+        manager = request.app.state.codex_pty_manager
+        with quick_interactions.session_operation_guard(session_id):
+            session = manager.get_session(session_id)
+            if session.status == "running":
+                if session.activity == "working":
+                    raise ApiError(
+                        409,
+                        "quick_interaction_terminal_working",
+                        "实时会话正在执行，请等待当前任务结束。",
+                    )
+                if request.app.state.terminal_connections.has_active_connection(
+                    session_id
+                ):
+                    raise ApiError(
+                        409,
+                        "quick_interaction_terminal_connected",
+                        "实时终端仍在使用，请先退出终端。",
+                    )
+                if (
+                    session.activity == "unknown"
+                    and not payload.confirm_stop_unknown_terminal
+                ):
+                    raise ApiError(
+                        409,
+                        "quick_interaction_terminal_confirmation_required",
+                        "当前实时会话状态无法确认，请确认停止后再执行。",
+                    )
+                session = manager.get_session(session_id)
+                if session.status == "running" and session.activity == "working":
+                    raise ApiError(
+                        409,
+                        "quick_interaction_terminal_working",
+                        "实时会话正在执行，请等待当前任务结束。",
+                    )
+                if (
+                    session.status == "running"
+                    and session.activity == "unknown"
+                    and not payload.confirm_stop_unknown_terminal
+                ):
+                    raise ApiError(
+                        409,
+                        "quick_interaction_terminal_confirmation_required",
+                        "当前实时会话状态无法确认，请确认停止后再执行。",
+                    )
+                request.app.state.terminal_tickets.revoke_session(session_id)
+                request.app.state.terminal_connections.close_session(session_id)
+                if session.status == "running":
+                    manager.stop_session(session_id)
+            task = quick_interactions.submit(
+                session_id,
+                payload.prompt,
+                operation_id=operation_id,
+                source_ip=source_ip,
+            )
+    except ApiError as exc:
+        if exc.code != "quick_interaction_terminal_confirmation_required":
+            write_operation(
+                operation_id=operation_id,
+                action="quick_interaction",
+                status="failed",
+                target=session_id,
+                source_ip=source_ip,
+            )
+        raise
     except Exception:
         write_operation(
             operation_id=operation_id,
@@ -199,10 +271,16 @@ def get_quick_interaction(task_id: str, request: Request) -> ApiResponse[QuickIn
 def list_quick_interactions(
     session_id: str,
     request: Request,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=3, ge=1, le=20),
 ) -> ApiResponse[QuickInteractionListData]:
+    tasks = request.app.state.quick_interactions.list_for_session(session_id)
+    page = tasks[offset : offset + limit]
     return ApiResponse(
         data=QuickInteractionListData(
-            tasks=request.app.state.quick_interactions.list_for_session(session_id)
+            tasks=page,
+            total=len(tasks),
+            has_more=offset + len(page) < len(tasks),
         )
     )
 
@@ -265,10 +343,11 @@ async def archive_session(session_id: str, request: Request) -> ApiResponse[None
     request.app.state.terminal_tickets.revoke_session(session_id)
     request.app.state.terminal_connections.close_session(session_id)
     try:
-        await asyncio.to_thread(
-            request.app.state.codex_pty_manager.archive_session,
-            session_id,
-        )
+        def archive_with_guard() -> None:
+            with request.app.state.quick_interactions.session_operation_guard(session_id):
+                request.app.state.codex_pty_manager.archive_session(session_id)
+
+        await asyncio.to_thread(archive_with_guard)
     except Exception:
         log_operation(
             request,
@@ -291,10 +370,11 @@ async def delete_session(session_id: str, request: Request) -> ApiResponse[None]
     request.app.state.terminal_tickets.revoke_session(session_id)
     request.app.state.terminal_connections.close_session(session_id)
     try:
-        await asyncio.to_thread(
-            request.app.state.codex_pty_manager.delete_session,
-            session_id,
-        )
+        def delete_with_guard() -> None:
+            with request.app.state.quick_interactions.session_operation_guard(session_id):
+                request.app.state.codex_pty_manager.delete_session(session_id)
+
+        await asyncio.to_thread(delete_with_guard)
     except Exception:
         log_operation(
             request,

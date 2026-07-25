@@ -6,7 +6,13 @@ const token = sessionStorage.getItem("hub.sessionToken")
   || "";
 const message = document.querySelector("#quick-interaction-history-message");
 const history = document.querySelector("#quick-interaction-history");
+const loadMore = document.querySelector("#quick-interaction-load-more");
+const PAGE_SIZE = 3;
 let pollTimer = null;
+let loadedTasks = [];
+let totalTasks = 0;
+let loadQueue = Promise.resolve();
+let appendPending = false;
 
 function showMessage(text, kind = "") {
   message.textContent = text;
@@ -91,21 +97,63 @@ function renderTasks(tasks) {
   return active;
 }
 
-async function load() {
+function mergeLatestTasks(tasks) {
+  const latestIds = new Set(tasks.map((task) => task.id));
+  return [
+    ...tasks,
+    ...loadedTasks.filter((task) => !latestIds.has(task.id)),
+  ];
+}
+
+async function performLoad({ append = false } = {}) {
   window.clearTimeout(pollTimer);
   try {
-    const tasks = await request(
-      `/api/codex/sessions/${encodeURIComponent(sessionId)}/quick-interactions`,
+    const offset = append ? loadedTasks.length : 0;
+    const data = await request(
+      `/api/codex/sessions/${encodeURIComponent(sessionId)}/quick-interactions`
+      + `?offset=${offset}&limit=${PAGE_SIZE}`,
     );
-    const active = renderTasks(tasks.tasks);
-    showMessage(active ? "任务仍在后台执行，可以离开此页面。" : "");
+    loadedTasks = (append
+      ? [...loadedTasks, ...data.tasks]
+      : mergeLatestTasks(data.tasks)).slice(0, data.total);
+    totalTasks = data.total;
+    const active = renderTasks(loadedTasks);
+    loadMore.hidden = loadedTasks.length >= totalTasks;
+    showMessage("");
     if (active && document.visibilityState !== "hidden") {
       pollTimer = window.setTimeout(load, 1500);
     }
   } catch (error) {
     showMessage(error.message || "快速交互记录读取失败。", "error");
+    if (
+      loadedTasks.some((task) => ["requested", "running"].includes(task.status))
+      && document.visibilityState !== "hidden"
+    ) {
+      pollTimer = window.setTimeout(load, 1500);
+    }
   }
 }
+
+function load({ append = false } = {}) {
+  if (append && appendPending) {
+    return loadQueue;
+  }
+  if (append) {
+    appendPending = true;
+    loadMore.disabled = true;
+  }
+  const queued = loadQueue.then(() => performLoad({ append }));
+  loadQueue = queued.catch(() => {});
+  if (!append) {
+    return queued;
+  }
+  return queued.finally(() => {
+    appendPending = false;
+    loadMore.disabled = false;
+  });
+}
+
+loadMore.addEventListener("click", () => load({ append: true }));
 
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {

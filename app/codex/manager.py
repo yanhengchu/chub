@@ -10,6 +10,7 @@ import threading
 import time
 import tomllib
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 import psutil
@@ -222,6 +223,14 @@ class CodexPtyManager:
             session.updated_at = utc_now()
             self.store.save(session)
             return self._public(session)
+
+    def update_session_timestamp(self, session_id: str, updated_at: datetime) -> None:
+        with self._lock:
+            session = self.store.get(session_id)
+            if session is None or session.updated_at >= updated_at:
+                return
+            session.updated_at = updated_at
+            self.store.save(session)
 
     def update_permission_and_stop(
         self,

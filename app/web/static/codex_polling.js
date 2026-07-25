@@ -19,7 +19,10 @@
     const hasUnknownSession = sessions.some(
       (session) => session.status === "running" && session.activity === "unknown",
     );
-    const shouldPoll = hasWorkingSession || hasUnknownSession;
+    const hasQuickInteraction = sessions.some(
+      (session) => session.quick_interaction_running === true,
+    );
+    const shouldPoll = hasWorkingSession || hasUnknownSession || hasQuickInteraction;
     if (!shouldPoll) {
       return { shouldPoll: false, unchangedSince: 0, delay: null };
     }
@@ -37,9 +40,11 @@
     return {
       shouldPoll: true,
       unchangedSince: nextUnchangedSince,
-      delay: !hasWorkingSession || now - nextUnchangedSince >= slowAfter
-        ? slowDelay
-        : fastDelay,
+      delay: hasQuickInteraction
+        ? fastDelay
+        : !hasWorkingSession || now - nextUnchangedSince >= slowAfter
+          ? slowDelay
+          : fastDelay,
     };
   }
 
