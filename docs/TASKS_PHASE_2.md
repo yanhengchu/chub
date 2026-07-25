@@ -11,7 +11,7 @@
 - [x] 比较 PTY、remote-control 和 app-server，保留 `exec/resume` 作为补充方案。
 - [x] 明确 PTY 会话、节点页入口、终端子页面和 Codex 原生交互边界。
 - [x] 完成 PTY/Web Terminal 手机端首轮可用性实验。
-- [x] 统一发现本机全部未归档 Codex 会话，支持新建、进入、恢复、停止、归档和删除。
+- [x] 统一发现本机全部未归档 Codex 会话，支持新建、进入、恢复、停止和归档；删除能力保留在后台维护接口。
 - [x] 提供用户目录、Workspace 和 Chub 三个固定工作目录入口。
 - [x] 验证 SessionStart hook 可取得 Codex session ID，并按 ID 恢复会话。
 - [x] 实现 Codex Turn Hook 状态记录和“执行中 / 等待输入”展示。
@@ -20,8 +20,10 @@
 - [x] 确认直接 ttyd 断线会结束 Codex 子进程，正式方案增加 tmux 保持层。
 - [x] 完成 tmux 断线恢复、Codex resume 和进程清理的双平台验证。
 - [x] 节点页移除低价值维护检查，增加 Codex PTY 面板。
-- [x] 实现独立终端子页面、跨设备接管，以及返回后恢复 PTY 面板。
+- [x] 实现独立终端子页面、跨设备接管，以及依赖浏览器返回恢复首页浏览位置。
 - [x] 完成手机端会话管理、终端滚动、跨设备切换和节点页交互验收。
+- [x] 设计并实现普通网络快速交互：通过 `codex exec resume` 提交单次需求并轮询最终结果，与 ttyd 实时终端互斥。
+- [x] 在首页提供四种 Codex 会话权限模式，并在运行中切换权限时自动停止会话后于下次进入生效。
 - [x] 确定 ttyd 只监听本机，由 Chub 统一代理 HTTP/WebSocket。
 - [x] 实现绑定会话的短期 HttpOnly 凭证，保护终端 HTTP/WebSocket。
 - [x] 保留并整理 remote-control 与 app-server 候选方案。

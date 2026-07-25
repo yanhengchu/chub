@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from uuid import uuid4
 from urllib.parse import urlsplit
 
 import httpx
@@ -12,6 +13,9 @@ from fastapi.templating import Jinja2Templates
 from starlette.websockets import WebSocketDisconnect
 
 from app.codex.models import (
+    QuickInteractionData,
+    QuickInteractionListData,
+    QuickInteractionRequest,
     SessionAccessData,
     SessionCreateRequest,
     SessionInfo,
@@ -21,7 +25,7 @@ from app.codex.models import (
 )
 from app.core.response import ApiError, ApiResponse, error_response
 from app.core.security import require_token
-from app.services.operation_log import log_operation
+from app.services.operation_log import log_operation, write_operation
 from app.web.routes import WEB_DIR
 
 
@@ -84,7 +88,8 @@ def access_session(
     response: Response,
 ) -> ApiResponse[SessionAccessData]:
     try:
-        request.app.state.codex_pty_manager.ensure_terminal(session_id)
+        with request.app.state.quick_interactions.terminal_access_guard(session_id):
+            request.app.state.codex_pty_manager.ensure_terminal(session_id)
         request.app.state.terminal_tickets.revoke_session(session_id)
         ticket = request.app.state.terminal_tickets.issue(session_id)
     except Exception:
@@ -145,6 +150,61 @@ async def stop_session(session_id: str, request: Request) -> ApiResponse[Session
         target=session_id,
     )
     return ApiResponse(data=data)
+
+
+@api_router.post(
+    "/sessions/{session_id}/quick-interactions",
+    response_model=ApiResponse[QuickInteractionData],
+)
+def submit_quick_interaction(
+    session_id: str,
+    payload: QuickInteractionRequest,
+    request: Request,
+) -> ApiResponse[QuickInteractionData]:
+    operation_id = uuid4().hex
+    source_ip = request.client.host if request.client else "unknown"
+    try:
+        task = request.app.state.quick_interactions.submit(
+            session_id,
+            payload.prompt,
+            operation_id=operation_id,
+            source_ip=source_ip,
+        )
+    except Exception:
+        write_operation(
+            operation_id=operation_id,
+            action="quick_interaction",
+            status="failed",
+            target=session_id,
+            source_ip=source_ip,
+        )
+        raise
+    return ApiResponse(data=QuickInteractionData(task=task))
+
+
+@api_router.get(
+    "/quick-interactions/{task_id}",
+    response_model=ApiResponse[QuickInteractionData],
+)
+def get_quick_interaction(task_id: str, request: Request) -> ApiResponse[QuickInteractionData]:
+    return ApiResponse(
+        data=QuickInteractionData(task=request.app.state.quick_interactions.get(task_id))
+    )
+
+
+@api_router.get(
+    "/sessions/{session_id}/quick-interactions",
+    response_model=ApiResponse[QuickInteractionListData],
+)
+def list_quick_interactions(
+    session_id: str,
+    request: Request,
+) -> ApiResponse[QuickInteractionListData]:
+    return ApiResponse(
+        data=QuickInteractionListData(
+            tasks=request.app.state.quick_interactions.list_for_session(session_id)
+        )
+    )
 
 
 @api_router.patch(
@@ -260,6 +320,19 @@ def _terminal_authorized(connection: Request | WebSocket, session_id: str) -> bo
 
 
 @web_router.get(
+    "/codex/{session_id}/quick-interactions",
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
+async def quick_interaction_page(request: Request, session_id: str) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="quick_interactions.html",
+        context={"session_id": session_id},
+    )
+
+
+@web_router.get(
     "/codex/{session_id}",
     response_class=HTMLResponse,
     include_in_schema=False,
@@ -311,6 +384,7 @@ async def terminal_websocket(websocket: WebSocket, session_id: str) -> None:
         await websocket.close(code=4401)
         return
     await websocket.accept(subprotocol="tty")
+    LOGGER.info("terminal_websocket_accepted session_id=%s page_id=%s", session_id, page_id)
     manager = websocket.app.state.codex_pty_manager
     ticket = websocket.cookies[COOKIE_NAME]
     try:
@@ -372,12 +446,21 @@ async def terminal_websocket(websocket: WebSocket, session_id: str) -> None:
             for task in done:
                 if not task.cancelled():
                     task.result()
-    except (
-        OSError,
-        RuntimeError,
-        WebSocketDisconnect,
-        websockets.WebSocketException,
-    ):
+    except WebSocketDisconnect as exc:
+        LOGGER.info(
+            "terminal_websocket_disconnected session_id=%s page_id=%s code=%s",
+            session_id,
+            page_id,
+            exc.code,
+        )
+        return
+    except (OSError, RuntimeError, websockets.WebSocketException) as exc:
+        LOGGER.warning(
+            "terminal_websocket_failed session_id=%s page_id=%s error_type=%s",
+            session_id,
+            page_id,
+            type(exc).__name__,
+        )
         return
     finally:
         websocket.app.state.terminal_connections.release(connection)
@@ -429,7 +512,19 @@ async def terminal_http(
                 headers=headers,
                 content=await request.body(),
             )
-    except (httpx.HTTPError, ApiError):
+    except httpx.HTTPError as exc:
+        LOGGER.warning(
+            "terminal_http_proxy_failed session_id=%s error_type=%s",
+            session_id,
+            type(exc).__name__,
+        )
+        return error_response(502, "terminal_proxy_failed", "Terminal proxy failed")
+    except ApiError as exc:
+        LOGGER.warning(
+            "terminal_http_backend_unavailable session_id=%s error_code=%s",
+            session_id,
+            exc.code,
+        )
         return error_response(502, "terminal_proxy_failed", "Terminal proxy failed")
     response_headers = {
         key: value

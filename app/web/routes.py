@@ -37,6 +37,7 @@ def index(request: Request) -> HTMLResponse:
             "app_name": settings.app.name,
             "page_title": settings.app.page_title
             or f"{settings.app.name} 管理面板",
+            "site_title": settings.app.page_title or settings.app.name,
             "app_version": settings.app.version,
             "design_documents": design_documents[:5],
             "design_document_count": len(design_documents),

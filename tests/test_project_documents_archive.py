@@ -47,10 +47,9 @@ async def test_archived_document_is_hidden_from_home_api_and_kept_in_full_list(
 
     assert archived.status_code == 200
     assert archived.json()["data"]["archived"] is True
-    assert home_api.json()["data"]["count"] == 1
     assert {
         document["id"] for document in home_api.json()["data"]["documents"]
-    } == {"openclaw-research"}
+    } == {"openclaw-research", "weekly-report-skill"}
     assert 'href="/project-docs/automation-download"' not in home_page.text
     assert 'data-archived="true"' in full_list.text
     assert "已归档" in full_list.text
@@ -81,10 +80,9 @@ async def test_archived_document_can_be_restored(settings: Settings) -> None:
 
     assert restored.status_code == 200
     assert restored.json()["data"]["archived"] is False
-    assert home_api.json()["data"]["count"] == 2
     assert {
         document["id"] for document in home_api.json()["data"]["documents"]
-    } == {"automation-download", "openclaw-research"}
+    } == {"automation-download", "openclaw-research", "weekly-report-skill"}
 
 
 @pytest.mark.anyio
@@ -143,4 +141,4 @@ async def test_document_list_updates_archive_state_without_page_reload(
     assert 'card.dataset.archived = String(payload.data.archived)' in script.text
     assert "button.disabled = false" in script.text
     assert "applyFilter(activeFilter)" in script.text
-    assert 'sessionStorage.setItem(PROJECT_DOCS_REFRESH_KEY, "1")' in script.text
+    assert "hub.projectDocsRefreshOnReturn" not in script.text

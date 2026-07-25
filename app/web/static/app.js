@@ -2,15 +2,18 @@
 
 const SESSION_TOKEN_KEY = "hub.sessionToken";
 const LOCAL_TOKEN_KEY = "hub.savedToken";
-const CODEX_REFRESH_KEY = "hub.codexRefreshOnReturn";
-const PROJECT_DOCS_REFRESH_KEY = "hub.projectDocsRefreshOnReturn";
 const CODEX_CARD_CACHE_KEY = "hub.codexCardCache";
+const CARD_COLLAPSED_STATE_KEY = "hub.cardCollapsedState.v1";
 const CODEX_PERMISSION_OPTIONS = [
   ["ask", "Ask for approval", "在当前工作区操作，越界时由你确认。"],
   ["auto-review", "Approve for me", "保持工作区边界，由 Codex 自动审核越界请求。"],
   ["full-access", "Full access", "不受工作区沙箱限制，且不会请求操作审批。"],
   ["read-only", "Read Only", "只能查看和分析，不能修改文件。"],
 ];
+const CARD_RETURN_REFRESHERS = {
+  codex: () => loadCodexSessions(),
+  "project-docs": () => loadProjectDocuments(),
+};
 
 const elements = {
   accessCard: document.querySelector("#access-card"),
@@ -30,6 +33,10 @@ const elements = {
   dashboard: document.querySelector("#dashboard"),
   refreshStatus: document.querySelector("#refresh-status"),
   restartHub: document.querySelector("#restart-hub"),
+  restartDialog: document.querySelector("#restart-dialog"),
+  restartDialogClose: document.querySelector("#restart-dialog-close"),
+  restartDialogCancel: document.querySelector("#restart-dialog-cancel"),
+  restartDialogConfirm: document.querySelector("#restart-dialog-confirm"),
   codexCardHost: document.querySelector("#codex-card-host"),
   automationBrowserBadge: document.querySelector("#automation-browser-badge"),
   automationBrowserControl: document.querySelector("#automation-browser-control"),
@@ -47,7 +54,6 @@ const elements = {
   projectDocsCount: document.querySelector("#project-docs-count"),
   projectDocsMessage: document.querySelector("#project-docs-message"),
   refreshProjectDocs: document.querySelector("#refresh-project-docs"),
-  allProjectDocs: document.querySelector("#all-project-docs"),
   codexPanel: null,
   codexWorkspaces: null,
   codexMessage: null,
@@ -83,6 +89,8 @@ let codexShouldPoll = false;
 let codexSessionSignature = "";
 let codexLoadPromise = null;
 let codexMutationCount = 0;
+let cardsRefreshAt = 0;
+let cardCollapsedState = {};
 
 const CODEX_POLL_FAST_MS = 2000;
 const CODEX_POLL_SLOW_MS = 8000;
@@ -108,6 +116,100 @@ function setMessage(target, message, kind = "") {
 function setBadge(target, label, kind = "muted") {
   target.textContent = label;
   target.className = `badge badge-${kind}`;
+}
+
+function loadCardCollapsedState() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(CARD_COLLAPSED_STATE_KEY) || "{}");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+    return Object.fromEntries(
+      Object.entries(parsed).filter(([, value]) => typeof value === "boolean"),
+    );
+  } catch (_error) {
+    return {};
+  }
+}
+
+function saveCardCollapsedState() {
+  try {
+    localStorage.setItem(
+      CARD_COLLAPSED_STATE_KEY,
+      JSON.stringify(cardCollapsedState),
+    );
+  } catch (_error) {
+    // Storage can be unavailable in private browsing; keep the in-memory state.
+  }
+}
+
+function setupCollapsibleCard(card) {
+  if (!card || card.dataset.collapsibleReady === "1") {
+    return;
+  }
+  const heading = card.querySelector(".section-heading");
+  const headingCopy = card.querySelector("[data-card-heading]");
+  const content = card.querySelector("[data-card-content]");
+  if (!heading || !headingCopy || !content) {
+    return;
+  }
+  card.dataset.collapsibleReady = "1";
+  card.dataset.collapsibleCard = "";
+  const cardKey = card.dataset.cardKey;
+  if (!cardKey) {
+    return;
+  }
+  const initiallyCollapsed = typeof cardCollapsedState[cardKey] === "boolean"
+    ? cardCollapsedState[cardKey]
+    : card.dataset.collapsed === "true";
+  headingCopy.setAttribute("role", "button");
+  headingCopy.tabIndex = 0;
+  headingCopy.setAttribute("aria-expanded", String(!initiallyCollapsed));
+  card.classList.toggle("is-collapsed", initiallyCollapsed);
+  content.hidden = initiallyCollapsed;
+
+  const setCollapsed = (collapsed) => {
+    card.classList.toggle("is-collapsed", collapsed);
+    headingCopy.setAttribute("aria-expanded", String(!collapsed));
+    content.hidden = collapsed;
+    cardCollapsedState[cardKey] = collapsed;
+    saveCardCollapsedState();
+  };
+  const isInteractiveTarget = (target) => Boolean(
+    target.closest("button, a, input, select, textarea, summary"),
+  );
+
+  heading.addEventListener("click", (event) => {
+    if (isInteractiveTarget(event.target)) {
+      event.stopPropagation();
+      return;
+    }
+    event.stopPropagation();
+    setCollapsed(!card.classList.contains("is-collapsed"));
+  });
+  heading.addEventListener("pointerdown", (event) => {
+    if (isInteractiveTarget(event.target)) {
+      event.stopPropagation();
+    }
+  });
+  headingCopy.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") {
+      return;
+    }
+    event.preventDefault();
+    setCollapsed(!card.classList.contains("is-collapsed"));
+  });
+  card.addEventListener("click", (event) => {
+    if (!card.classList.contains("is-collapsed") || isInteractiveTarget(event.target)) {
+      return;
+    }
+    setCollapsed(false);
+  });
+}
+
+function setupCollapsibleCards() {
+  document.querySelectorAll("[data-collapsible-card]")
+    .forEach(setupCollapsibleCard);
 }
 
 function sleep(milliseconds) {
@@ -177,12 +279,11 @@ function clearProtectedView() {
   elements.logsOutput.textContent = "";
   releaseFeishuQr();
   sessionStorage.removeItem(CODEX_CARD_CACHE_KEY);
-  sessionStorage.removeItem(CODEX_REFRESH_KEY);
-  sessionStorage.removeItem(PROJECT_DOCS_REFRESH_KEY);
 }
 
 function showDisconnectedView(message = "输入启动 Hub 时配置的 Token。", kind = "") {
   elements.accessCard.hidden = false;
+  elements.restartHub.disabled = true;
   elements.accessTitle.textContent = "连接此节点";
   elements.connectSubmit.textContent = "连接节点";
   elements.connectSubmit.disabled = false;
@@ -195,6 +296,7 @@ function showConnectedView(status) {
   elements.accessCard.hidden = true;
   elements.connectedBar.hidden = false;
   elements.dashboard.hidden = false;
+  elements.restartHub.disabled = false;
   elements.connectedNode.textContent = status.node.name;
   elements.connectedMeta.textContent =
     `${platformText(status.node.detected_platform)} · ${status.system.hostname || "未知主机"}`;
@@ -310,10 +412,6 @@ async function connectWithToken(token, remember, savedCredential = false) {
     renderStatus(status);
     showConnectedView(status);
     await Promise.all([loadCodexSessions(), loadAutomations()]);
-    refreshCardsOnReturn({ codexAlreadyFresh: true });
-    if (new URLSearchParams(window.location.search).get("view") === "codex") {
-      await showCodexPanel();
-    }
   } catch (error) {
     if (attempt !== connectionAttempt) {
       return;
@@ -358,6 +456,7 @@ function createCodexCard() {
   const kicker = document.createElement("p");
   const title = document.createElement("h2");
   const description = document.createElement("p");
+  const cardContent = document.createElement("div");
   const panel = document.createElement("div");
   const currentHint = document.createElement("p");
   const sessionsDivider = document.createElement("div");
@@ -387,17 +486,22 @@ function createCodexCard() {
   const permissionSave = document.createElement("button");
 
   card.className = "card codex-card";
+  card.dataset.cardKey = "codex";
+  card.dataset.cardReturnRefresh = "true";
+  card.dataset.collapsibleCard = "";
   card.setAttribute("aria-labelledby", "codex-title");
   header.className = "section-heading codex-card-heading";
   panel.className = "codex-panel";
   panel.id = "codex-panel";
   panel.hidden = false;
+  cardContent.className = "card-content";
+  cardContent.dataset.cardContent = "";
   kicker.className = "section-kicker";
   kicker.textContent = "远程开发";
   title.id = "codex-title";
   title.textContent = "Codex PTY";
   description.className = "section-description";
-  description.textContent = "管理并接管本机 Codex CLI 会话。";
+  description.textContent = "远程管理本机 Codex 会话。";
   refreshButton.type = "button";
   refreshButton.id = "refresh-codex";
   refreshButton.className = "button-secondary";
@@ -472,6 +576,7 @@ function createCodexCard() {
     (() => {
       const copy = document.createElement("div");
       copy.className = "card-heading-copy";
+      copy.dataset.cardHeading = "";
       copy.append(kicker, title, description);
       return copy;
     })(),
@@ -497,7 +602,9 @@ function createCodexCard() {
     sessionList,
     createActions,
   );
-  card.append(header, panel, workspaceDialog, permissionDialog);
+  cardContent.append(panel);
+  card.append(header, cardContent, workspaceDialog, permissionDialog);
+  setupCollapsibleCard(card);
 
   elements.codexPanel = panel;
   elements.codexWorkspaces = workspaceList;
@@ -571,6 +678,77 @@ function renderCodexWorkspaces(workspaces, available) {
   }
 }
 
+async function openQuickInteractionDialog(session) {
+  const dialog = document.createElement("dialog");
+  const surface = document.createElement("div");
+  const heading = document.createElement("div");
+  const title = document.createElement("h3");
+  const form = document.createElement("form");
+  const prompt = document.createElement("textarea");
+  const message = document.createElement("p");
+  const submit = document.createElement("button");
+  dialog.className = "codex-workspace-dialog quick-interaction-dialog";
+  surface.className = "codex-workspace-dialog-surface";
+  heading.className = "codex-workspace-dialog-header";
+  title.textContent = "快速交互";
+  form.id = `quick-interaction-form-${session.id}`;
+  prompt.rows = 6;
+  prompt.required = true;
+  prompt.maxLength = 8000;
+  prompt.placeholder = "输入要交给 Codex 执行的需求…";
+  prompt.setAttribute("aria-label", "快速交互需求");
+  message.className = "message";
+  message.setAttribute("aria-live", "polite");
+  submit.type = "submit";
+  submit.className = "button-secondary quick-interaction-submit";
+  submit.textContent = "执行";
+  submit.setAttribute("form", form.id);
+  heading.append(title, submit);
+  form.append(prompt, message);
+  surface.append(heading, form);
+  dialog.append(surface);
+  document.body.append(dialog);
+  const closeDialog = () => {
+    if (dialog.open) {
+      dialog.close();
+    }
+    dialog.remove();
+  };
+  dialog.addEventListener("close", () => dialog.remove(), { once: true });
+  dialog.addEventListener("click", (event) => {
+    if (event.target === dialog) {
+      closeDialog();
+    }
+  });
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    submit.disabled = true;
+    prompt.disabled = true;
+    setMessage(message, "正在提交快速交互…");
+    try {
+      await apiFetch(`/api/codex/sessions/${encodeURIComponent(session.id)}/quick-interactions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: prompt.value.trim() }),
+      });
+      closeDialog();
+      setMessage(
+        elements.codexMessage,
+        "快速交互已提交，可在交互记录中查看进度和结果。",
+        "success",
+      );
+    } catch (error) {
+      if (!handleAccessError(error)) {
+        setMessage(message, error.message || "快速交互提交失败。", "error");
+      }
+      submit.disabled = false;
+      prompt.disabled = false;
+    }
+  });
+  dialog.showModal();
+  prompt.focus();
+}
+
 function renderCodexSessions(sessions) {
   if (!elements.codexSessions) {
     return;
@@ -592,13 +770,15 @@ function renderCodexSessions(sessions) {
     const text = document.createElement("span");
     const title = document.createElement("strong");
     const meta = document.createElement("span");
+    const path = document.createElement("span");
     const permissionPanel = document.createElement("div");
     const permission = document.createElement("button");
     const permissionPending = document.createElement("span");
     const actions = document.createElement("div");
+    const quickInteraction = document.createElement("button");
+    const interactionHistory = document.createElement("button");
     const stop = document.createElement("button");
     const archive = document.createElement("button");
-    const remove = document.createElement("button");
     item.className = "session-item";
     main.className = "session-enter";
     main.type = "button";
@@ -619,8 +799,12 @@ function renderCodexSessions(sessions) {
                 : "会话运行中 · 状态未知";
     meta.textContent =
       `${state} · ` +
-      `${formatSessionTime(session.updated_at)} · ${session.cwd}`;
-    text.append(title, meta);
+      `${formatSessionTime(session.updated_at)}`;
+    meta.className = "session-meta";
+    path.className = "session-path";
+    path.textContent = session.cwd;
+    path.title = session.cwd;
+    text.append(title, meta, path);
     main.append(text);
     main.addEventListener("click", () => enterCodexSession(session.id, main));
     const displayedPermission = session.status === "running"
@@ -654,12 +838,30 @@ function renderCodexSessions(sessions) {
     archive.addEventListener("click", () =>
       archiveCodexSession(session.id, archive),
     );
-    remove.type = "button";
-    remove.className = "button-link session-action";
-    remove.textContent = "删除";
-    remove.addEventListener("click", () => removeCodexSession(session.id, remove));
     actions.className = "session-actions";
-    actions.append(stop, archive, remove);
+    quickInteraction.type = "button";
+    quickInteraction.className = "button-secondary session-action session-quick-interaction";
+    quickInteraction.textContent = "快速交互";
+    quickInteraction.disabled = !session.codex_session_id
+      || session.status === "running"
+      || configuredPermission === "ask";
+    if (configuredPermission === "ask") {
+      quickInteraction.title = "Ask for approval 需要进入实时终端完成审批";
+    } else if (session.status === "running") {
+      quickInteraction.title = "请先退出实时终端";
+    } else if (!session.codex_session_id) {
+      quickInteraction.title = "会话尚未启动";
+    }
+    quickInteraction.addEventListener("click", () => openQuickInteractionDialog(session));
+    interactionHistory.type = "button";
+    interactionHistory.className =
+      "button-secondary session-action session-interaction-history";
+    interactionHistory.textContent = "交互记录";
+    interactionHistory.addEventListener("click", () => {
+      window.location.href =
+        `/codex/${encodeURIComponent(session.id)}/quick-interactions`;
+    });
+    actions.append(quickInteraction, interactionHistory, stop, archive);
     item.append(main, permissionPanel, actions);
     elements.codexSessions.append(item);
   });
@@ -886,7 +1088,6 @@ async function enterCodexSession(sessionId, button) {
     const data = await apiFetch(`/api/codex/sessions/${sessionId}/access`, {
       method: "POST",
     });
-    sessionStorage.setItem(CODEX_REFRESH_KEY, "1");
     window.location.assign(data.terminal_url);
   } catch (error) {
     if (!handleAccessError(error)) {
@@ -938,29 +1139,6 @@ async function archiveCodexSession(sessionId, button) {
   } catch (error) {
     if (!handleAccessError(error)) {
       setMessage(elements.codexMessage, error.message || "归档失败。", "error");
-    }
-  } finally {
-    setCodexButtonBusy(button, false);
-    endCodexMutation();
-  }
-}
-
-async function removeCodexSession(sessionId, button) {
-  if (!elements.codexMessage) {
-    return;
-  }
-
-  setMessage(elements.codexMessage, "");
-  setCodexButtonBusy(button, true);
-  beginCodexMutation();
-  try {
-    await apiFetch(`/api/codex/sessions/${sessionId}`, {
-      method: "DELETE",
-    });
-    await loadCodexSessions({ force: true });
-  } catch (error) {
-    if (!handleAccessError(error)) {
-      setMessage(elements.codexMessage, error.message || "删除失败。", "error");
     }
   } finally {
     setCodexButtonBusy(button, false);
@@ -1119,37 +1297,6 @@ async function loadCodexSessions(options = {}) {
       codexLoadPromise = null;
     }
   }
-}
-
-async function scrollCodexPanelIntoView() {
-  if (!elements.codexPanel) {
-    return;
-  }
-
-  await new Promise((resolve) => requestAnimationFrame(resolve));
-  await new Promise((resolve) => requestAnimationFrame(resolve));
-
-  if (elements.codexPanel.hidden) {
-    return;
-  }
-
-  const offset = Math.min(160, Math.max(24, Math.round(window.innerHeight * 0.18)));
-  const top = Math.max(
-    0,
-    window.scrollY + elements.codexPanel.getBoundingClientRect().top - offset,
-  );
-  window.scrollTo({ top, behavior: "smooth" });
-}
-
-async function showCodexPanel() {
-  if (!elements.codexPanel) {
-    return;
-  }
-
-  elements.codexPanel.hidden = false;
-  window.history.replaceState(null, "", "/?view=codex");
-  await loadCodexSessions();
-  await scrollCodexPanelIntoView();
 }
 
 function automationStatusText(state) {
@@ -1678,9 +1825,6 @@ elements.tokenForm.addEventListener("submit", (event) => {
 elements.refreshStatus.addEventListener("click", loadStatus);
 elements.refreshAutomations.addEventListener("click", () => loadAutomations());
 elements.refreshProjectDocs.addEventListener("click", loadProjectDocuments);
-elements.allProjectDocs.addEventListener("click", () => {
-  sessionStorage.setItem(PROJECT_DOCS_REFRESH_KEY, "1");
-});
 elements.loadLogs.addEventListener("click", loadLogs);
 elements.automationBrowserControl.addEventListener("click", controlAutomationBrowser);
 elements.automationBrowserProfile.addEventListener("change", () => {
@@ -1699,21 +1843,21 @@ elements.automationBrowserProfile.addEventListener("change", () => {
 });
 elements.automationFeishuCheck.addEventListener("click", checkFeishuEnvironment);
 
-function refreshCardsOnReturn({ codexAlreadyFresh = false } = {}) {
+function refreshCardsOnReturn() {
   if (!activeToken) {
     return;
   }
-
-  if (sessionStorage.getItem(CODEX_REFRESH_KEY) === "1") {
-    sessionStorage.removeItem(CODEX_REFRESH_KEY);
-    if (!codexAlreadyFresh) {
-      loadCodexSessions();
+  const now = Date.now();
+  if (now - cardsRefreshAt < 500) {
+    return;
+  }
+  cardsRefreshAt = now;
+  document.querySelectorAll('[data-card-return-refresh="true"]').forEach((card) => {
+    const refresh = CARD_RETURN_REFRESHERS[card.dataset.cardKey];
+    if (refresh) {
+      refresh();
     }
-  }
-  if (sessionStorage.getItem(PROJECT_DOCS_REFRESH_KEY) === "1") {
-    sessionStorage.removeItem(PROJECT_DOCS_REFRESH_KEY);
-    loadProjectDocuments();
-  }
+  });
 }
 
 window.addEventListener("pageshow", () => {
@@ -1731,15 +1875,13 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 
-elements.restartHub.addEventListener("click", async () => {
-  if (!window.confirm("确定重启当前节点吗？重启过程中页面会短暂失联。")) {
-    return;
-  }
-  elements.restartHub.disabled = true;
+async function restartHub() {
+  elements.restartDialogConfirm.disabled = true;
   setMessage(elements.globalMessage, "正在下发重启命令…");
   try {
     const previousInstanceId = await hubInstanceId();
     await apiFetch("/api/maintenance/restart", { method: "POST" });
+    elements.restartDialog.close();
     setMessage(elements.globalMessage, "重启命令已下发，正在等待 Hub 恢复…");
     await waitForHubRestart(previousInstanceId);
     setMessage(elements.globalMessage, "Chub 已恢复，正在同步卡片状态…");
@@ -1750,7 +1892,21 @@ elements.restartHub.addEventListener("click", async () => {
       setMessage(elements.globalMessage, error.message || "重启失败。", "error");
     }
   } finally {
-    elements.restartHub.disabled = false;
+    elements.restartDialogConfirm.disabled = false;
+  }
+}
+
+elements.restartHub.addEventListener("click", () => {
+  if (!elements.restartDialog.open) {
+    elements.restartDialog.showModal();
+  }
+});
+elements.restartDialogClose.addEventListener("click", () => elements.restartDialog.close());
+elements.restartDialogCancel.addEventListener("click", () => elements.restartDialog.close());
+elements.restartDialogConfirm.addEventListener("click", restartHub);
+elements.restartDialog.addEventListener("click", (event) => {
+  if (event.target === elements.restartDialog) {
+    elements.restartDialog.close();
   }
 });
 
@@ -1768,10 +1924,12 @@ elements.clearToken.addEventListener("click", () => {
   showDisconnectedView("已退出，凭证已从此浏览器清除。", "success");
 });
 
+cardCollapsedState = loadCardCollapsedState();
 const savedSessionToken = sessionStorage.getItem(SESSION_TOKEN_KEY);
 const savedLocalToken = localStorage.getItem(LOCAL_TOKEN_KEY);
 const savedToken = savedSessionToken || savedLocalToken || "";
 ensureCodexCard();
+setupCollapsibleCards();
 if (savedToken) {
   restoreCodexCardCache();
   elements.rememberToken.checked = Boolean(savedLocalToken);

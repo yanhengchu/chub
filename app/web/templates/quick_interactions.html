@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>快速交互记录</title>
+    <link rel="stylesheet" href="/static/app.css">
+    <script src="/static/quick_interactions.js" defer></script>
+  </head>
+  <body data-session-id="{{ session_id }}">
+    <main>
+      <section class="quick-interaction-history-card">
+        <p id="quick-interaction-history-message" class="message" aria-live="polite"></p>
+        <div id="quick-interaction-history" class="quick-interaction-history"></div>
+      </section>
+    </main>
+  </body>
+</html>

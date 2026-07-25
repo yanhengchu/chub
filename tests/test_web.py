@@ -39,27 +39,33 @@ async def test_home_page_is_public_and_contains_no_token(settings: Settings) -> 
     assert "有界面" in response.text
     assert "无界面" in response.text
     assert 'id="refresh-automations"' in response.text
-    assert "复用登录状态执行任务。" in response.text
+    assert "复用登录状态执行自动化任务。" in response.text
     assert 'id="refresh-project-docs"' in response.text
     assert 'id="project-docs-count"' in response.text
     assert 'href="/automations"' in response.text
     assert 'id="design-documents-title"' in response.text
+    assert 'data-card-key="project-docs"' in response.text
+    assert 'data-card-key="automations"' in response.text
+    assert 'data-card-key="logs"' in response.text
+    assert 'data-card-return-refresh="true"' in response.text
     assert "配置驱动的飞书文档下载自动化方案" in response.text
     assert "OpenClaw 方案调研" in response.text
+    assert "工作周报生成技能设计方案" in response.text
     assert "已实现并验收" in response.text
-    assert "2 份文档" in response.text
+    assert "份文档" in response.text
     assert 'href="/project-docs/automation-download"' in response.text
     assert 'href="/project-docs/openclaw-research"' in response.text
     assert 'target="_blank"' not in response.text
     assert 'href="/project-docs"' in response.text
     assert 'href="/project-docs" target="_blank"' not in response.text
-    assert "节点维护" in response.text
+    assert "节点维护" not in response.text
     assert "维护检查" not in response.text
-    assert 'class="card service-card"' in response.text
-    assert '<h2 id="service-title">Chub 服务</h2>' in response.text
-    assert 'class="service-action-item"' in response.text
-    assert "重新加载代码和配置" in response.text
-    assert "重启 Chub" in response.text
+    assert 'id="restart-hub"' in response.text
+    assert 'id="restart-dialog"' in response.text
+    assert "确认重启" in response.text
+    assert 'data-card-heading' in response.text
+    assert 'data-card-content' in response.text
+    assert 'data-collapsible-card' in response.text
     assert "退出" in response.text
     assert 'id="task-list"' not in response.text
     assert "data-log-source" in response.text
@@ -87,7 +93,7 @@ async def test_home_page_uses_configured_page_title(settings: Settings) -> None:
         response = await client.get("/")
 
     assert "<title>Ubuntu · Hub</title>" in response.text
-    assert "<h1>Hub</h1>" in response.text
+    assert "<h1>Ubuntu · Hub</h1>" in response.text
 
 
 @pytest.mark.anyio
@@ -181,14 +187,27 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "elements.codexCardHost.replaceChildren();" in script.text
     assert "createCodexSession" in script.text
     assert "enterCodexSession" in script.text
-    assert "CODEX_REFRESH_KEY" in script.text
-    assert 'sessionStorage.setItem(CODEX_REFRESH_KEY, "1")' in script.text
+    assert "CARD_RETURN_REFRESHERS" in script.text
+    assert "CARD_COLLAPSED_STATE_KEY" in script.text
+    assert "loadCardCollapsedState" in script.text
+    assert "saveCardCollapsedState" in script.text
+    assert "hub.cardCollapsedState.v1" in script.text
+    assert "hub.codexRefreshOnReturn" not in script.text
+    assert "hub.projectDocsRefreshOnReturn" not in script.text
+    assert 'data-card-return-refresh="true"' in script.text
+    assert "cardsRefreshAt" in script.text
+    assert 'now - cardsRefreshAt < 500' in script.text
     assert 'window.addEventListener("pageshow"' in script.text
     assert 'document.addEventListener("visibilitychange"' in script.text
-    assert "PROJECT_DOCS_REFRESH_KEY" in script.text
     assert "stopCodexSession" in script.text
     assert "archiveCodexSession" in script.text
-    assert "removeCodexSession" in script.text
+    assert 'quickInteraction.textContent = "快速交互"' in script.text
+    assert 'interactionHistory.textContent = "交互记录"' in script.text
+    assert "快速交互已提交" in script.text
+    assert "quick-interaction-submit" in script.text
+    assert 'close.textContent = "关闭"' not in script.text
+    assert 'cancel.textContent = "取消"' not in script.text
+    assert "removeCodexSession" not in script.text
     assert "renderCodexWorkspaces" in script.text
     assert "renderCodexSessions" in script.text
     assert "会话运行中 · 等待输入" in script.text
@@ -219,10 +238,13 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "dependencyMessage" in script.text
     assert "远程开发" in script.text
     assert "Codex PTY" in script.text
-    assert "管理并接管本机 Codex CLI 会话。" in script.text
-    assert "showCodexPanel" in script.text
+    assert "远程管理本机 Codex 会话。" in script.text
+    assert "showCodexPanel" not in script.text
+    assert "setupCollapsibleCard" in script.text
+    assert 'aria-expanded' in script.text
+    assert "is-collapsed" in script.text
     assert "restartHub" in script.text
-    assert "scrollCodexPanelIntoView" in script.text
+    assert "scrollCodexPanelIntoView" not in script.text
     assert "任务状态已更新。" not in script.text
     assert "/api/maintenance/restart" in script.text
     assert "/api/health" in script.text
@@ -232,23 +254,49 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "previousInstanceId" in script.text
     assert "Chub 已重启并恢复连接" in script.text
     assert "/api/codex/restart" not in script.text
-    assert "window.scrollTo" in script.text
+    assert "window.scrollTo" not in script.text
     assert "scrollIntoView" not in script.text
     assert "/api/codex/sessions" in script.text
     assert "connection" in terminal_script.text
     assert "window.history.back()" not in terminal_script.text
     assert "hub.codexReturnToDashboard" not in terminal_script.text
+    assert "view=codex" not in terminal_script.text
     assert "response.status === 404" in terminal_script.text
     assert ".section-heading > .button-link" in stylesheet.text
     assert "white-space: nowrap" in stylesheet.text
     assert ".dashboard > .card" in stylesheet.text
     assert "#codex-card-host" in stylesheet.text
     assert "align-self: start" in stylesheet.text
-    assert ".service-card" in stylesheet.text
+    assert ".restart-dialog" in stylesheet.text
+    assert "-webkit-tap-highlight-color: transparent" in stylesheet.text
     assert ".logs-card" in stylesheet.text
+    assert ".session-path" in stylesheet.text
+    assert ".session-actions" in stylesheet.text
+    assert ".quick-interaction-history" in stylesheet.text
+    assert "grid-template-columns: minmax(0, 1fr) auto;" in stylesheet.text
+    assert "grid-template-columns: 1fr;" in stylesheet.text
     assert "align-content: start" in stylesheet.text
     assert ".markdown-body > :first-child" in stylesheet.text
     assert ".message:empty" in stylesheet.text
+
+
+@pytest.mark.anyio
+async def test_quick_interaction_history_page_is_available(settings: Settings) -> None:
+    app = create_app(settings)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        page = await client.get("/codex/session-1/quick-interactions")
+        script = await client.get("/static/quick_interactions.js")
+
+    assert page.status_code == 200
+    assert 'data-session-id="session-1"' in page.text
+    assert 'class="card quick-interaction-history-card"' not in page.text
+    assert "返回首页" not in page.text
+    assert script.status_code == 200
+    assert "/quick-interactions" in script.text
+    assert "task.prompt" in script.text
+    assert "refresh-quick-interactions" not in page.text
+    assert "quick-interaction-session" not in page.text
 
 
 @pytest.mark.anyio
@@ -260,6 +308,7 @@ async def test_log_details_page_and_script_are_available(settings: Settings) -> 
 
     assert page.status_code == 200
     assert 'id="detail-log-source"' in page.text
+    assert "返回首页" not in page.text
     assert "加载更早" in page.text
     assert script.status_code == 200
     assert "/api/logs/page" in script.text

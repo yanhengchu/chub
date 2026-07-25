@@ -1,8 +1,5 @@
 const sessionId = document.body.dataset.sessionId;
 const pageId = document.body.dataset.pageId;
-const CODEX_REFRESH_KEY = "hub.codexRefreshOnReturn";
-sessionStorage.setItem(CODEX_REFRESH_KEY, "1");
-
 async function checkTerminalOwnership() {
   if (!sessionId || !pageId || document.visibilityState === "hidden") {
     return;
@@ -13,7 +10,7 @@ async function checkTerminalOwnership() {
       { cache: "no-store", credentials: "same-origin" },
     );
     if (response.status === 404) {
-      window.location.replace("/?view=codex");
+      window.location.replace("/");
       return;
     }
     if (!response.ok) {
@@ -21,7 +18,7 @@ async function checkTerminalOwnership() {
     }
     const state = await response.json();
     if (state.state === "displaced" || state.state === "closed") {
-      window.location.replace("/?view=codex");
+      window.location.replace("/");
     }
   } catch (_error) {
     // A temporary network failure must not navigate away from a working terminal.

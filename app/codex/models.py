@@ -96,3 +96,48 @@ class SessionPermissionData(BaseModel):
 class SessionAccessData(BaseModel):
     terminal_url: str
     expires_in: int
+
+
+QuickInteractionStatus = Literal[
+    "requested",
+    "running",
+    "succeeded",
+    "failed",
+    "timed_out",
+    "needs_terminal",
+]
+
+
+class QuickInteractionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    prompt: str = Field(min_length=1, max_length=8000)
+
+    @field_validator("prompt")
+    @classmethod
+    def validate_prompt(cls, value: str) -> str:
+        resolved = value.strip()
+        if not resolved:
+            raise ValueError("Prompt must not be blank")
+        return resolved
+
+
+class QuickInteractionTask(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    session_id: str
+    prompt: str | None = Field(default=None, max_length=8000)
+    status: QuickInteractionStatus
+    result: str | None = Field(default=None, max_length=100_000)
+    error: str | None = Field(default=None, max_length=2000)
+    created_at: datetime
+    updated_at: datetime
+
+
+class QuickInteractionData(BaseModel):
+    task: QuickInteractionTask
+
+
+class QuickInteractionListData(BaseModel):
+    tasks: list[QuickInteractionTask]

@@ -31,7 +31,7 @@ cp config/settings.ubuntu.example.yaml config/settings.local.yaml
 
 - `HUB_TOKEN`：节点访问令牌。
 - `HUB_CONFIG_FILE`：默认 `config/settings.local.yaml`。
-- `app.page_title`：浏览器标签标题，可按节点设置，例如 `MacBook · Hub` 或 `Ubuntu · Hub`；省略时使用 `Hub 管理面板`。
+- `app.page_title`：浏览器标签标题和首页顶部标题，可按节点设置，例如 `MacBook · Hub`、`Ubuntu · Hub` 或 `设备.hub`；省略时浏览器标签使用 `<app.name> 管理面板`，首页顶部使用 `app.name`。
 - `.env` 和 `config/settings.local.yaml` 都只保留本机内容，已加入 Git 忽略。
 
 两个平台模板默认只监听 `127.0.0.1`。如果需要手机远程访问，把 `server.host` 改成该节点自己的 Tailscale IP，不要改成 `0.0.0.0` 或普通局域网地址。
@@ -68,12 +68,15 @@ Codex PTY 依赖 `codex`、`ttyd` 和 `tmux`。安装服务时，Chub 会从当�
 
 - 从用户目录、Workspace、Chub 三个固定入口新建会话。
 - 查看本机未归档会话。
-- 进入、停止、归档或删除会话。
+- 进入、停止或归档会话；日常页面不提供删除入口，避免误删 Codex 历史。
+- 在首页切换 `Ask for approval`、`Approve for me`、`Full access` 和 `Read Only` 四种权限模式；运行中的会话切换权限时会自动停止，下一次进入时按新权限启动。
 - 区分尚未启动、运行、停止和异常等会话生命周期，以及执行中、等待输入和状态未知等活动状态；首页对执行中会话快速刷新，对运行中但状态未知的会话低频确认，进入等待输入或停止后结束轮询。
 
 节点页面同时提供操作日志和运行日志。首页可查看最近 50 或 100 行，日志详情页可按来源读取更早内容或下载经过敏感信息脱敏的当前日志文件。操作日志默认写入 `logs/operations.log`，并与应用日志一样自动轮转。
 
-会话内的权限模式、审批和 Full access 由 Codex CLI 原生界面处理。Chub 只负责工作区入口、会话生命周期、终端页面和可信网络边界。
+Chub 只负责权限模式选择和会话生命周期；具体审批交互、权限显示和命令执行仍由 Codex CLI 原生界面处理。首页权限选择会映射到 Codex 的工作区、只读和完全访问配置，运行中的会话切换权限会先停止当前 PTY，避免旧进程继续使用旧权限。
+
+Codex PTY 终端通过 WebSocket 持续传输输入和输出，依赖稳定的双向实时链路。Tailscale 跨网络访问时，即使首页和文档等普通 HTTP 页面可以正常打开，如果路径经过质量不稳定的 DERP 中继、存在较高抖动、丢包、MTU 问题或网络切换，仍可能出现 ttyd 页面外壳已加载但终端内容未显示、输入无响应或连接中断。这里的限制不只是带宽问题，链路稳定性和延迟同样重要。当前产品不提供基于轮询或终端快照的非实时降级模式，Codex PTY 应优先在稳定的 Tailscale 直连或可靠网络中使用。排查时查看浏览器网络面板中 `/codex/.../terminal/ws` 是否成功升级为 `101 Switching Protocols`，并结合应用日志中的 `terminal_websocket_*` 和 `terminal_http_*` 记录判断连接或上游 ttyd 是否失败。
 
 ## 自动化任务
 

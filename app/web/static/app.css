@@ -17,6 +17,19 @@
   box-sizing: border-box;
 }
 
+button,
+a,
+input,
+select,
+textarea,
+summary,
+[role="button"],
+.section-heading,
+.site-header-title,
+.card[data-collapsible-card] {
+  -webkit-tap-highlight-color: transparent;
+}
+
 body {
   margin: 0;
   min-width: 280px;
@@ -67,6 +80,27 @@ footer {
   padding: 2rem 0 1.25rem;
 }
 
+.site-header-title {
+  display: block;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+}
+
+.site-header-title:hover {
+  color: inherit;
+  background: transparent;
+}
+
+.site-header-title:focus-visible {
+  border-radius: 8px;
+}
+
 h1,
 h2,
 p {
@@ -78,6 +112,11 @@ h1 {
   font-size: clamp(2rem, 8vw, 3.25rem);
   letter-spacing: -0.055em;
   line-height: 0.95;
+}
+
+.site-header h1 {
+  font-size: clamp(1.65rem, 5vw, 2.5rem);
+  line-height: 1;
 }
 
 h2 {
@@ -170,6 +209,24 @@ h2 {
 .section-heading > .button-link {
   flex: none;
   white-space: nowrap;
+}
+
+.card[data-collapsible-card] > .section-heading {
+  cursor: pointer;
+}
+
+.card[data-collapsible-card].is-collapsed {
+  gap: 0;
+}
+
+.card[data-collapsible-card].is-collapsed > .section-heading > button {
+  display: none;
+}
+
+.card[data-collapsible-card] > [data-card-content] {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
 }
 
 form {
@@ -323,7 +380,6 @@ input[type="password"] {
   white-space: nowrap;
 }
 
-.service-card,
 .logs-card {
   display: grid;
   gap: 1rem;
@@ -339,7 +395,6 @@ input[type="password"] {
 
 .design-documents-card,
 .automation-card,
-.service-card,
 .logs-card {
   align-content: start;
 }
@@ -676,36 +731,47 @@ input[type="password"] {
   color: var(--accent-dark);
 }
 
-.service-action-item {
+.restart-dialog {
+  width: min(100% - 2rem, 440px);
+  padding: 0;
+  border: 0;
+  border-radius: 18px;
+  color: var(--ink);
+  background: transparent;
+  box-shadow: 0 20px 60px rgba(23, 35, 28, 0.2);
+}
+
+.restart-dialog::backdrop {
+  background: rgb(19 31 23 / 42%);
+  backdrop-filter: blur(2px);
+}
+
+.restart-dialog-surface {
+  padding: 1.25rem;
+  background: var(--paper);
+}
+
+.restart-dialog-header,
+.restart-dialog-footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 0.75rem;
-  background: white;
 }
 
-.service-action-copy,
-.service-action-copy strong,
-.service-action-copy span {
-  display: block;
+.restart-dialog-header h2 {
+  margin: 0;
 }
 
-.service-action-copy span {
-  margin-top: 0.3rem;
+.restart-dialog-surface > p {
+  margin: 0.9rem 0 0;
   color: var(--muted);
-  font-size: 0.78rem;
-  line-height: 1.45;
+  line-height: 1.55;
 }
 
-.service-action-controls {
-  flex: none;
-}
-
-.service-action-controls > button {
-  white-space: nowrap;
+.restart-dialog-footer {
+  justify-content: flex-end;
+  margin-top: 1.1rem;
 }
 
 .log-toolbar,
@@ -720,7 +786,6 @@ input[type="password"] {
 
 .log-toolbar {
   justify-content: space-between;
-  margin-top: 0.9rem;
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 0.55rem;
@@ -854,7 +919,6 @@ pre {
 
 .logs-output {
   max-height: 26rem;
-  margin-top: 0.8rem;
 }
 
 .codex-panel {
@@ -938,6 +1002,69 @@ pre {
   color: var(--muted);
 }
 
+.quick-interaction-dialog textarea {
+  display: block;
+  width: 100%;
+  min-height: 8rem;
+  margin-top: 0.85rem;
+  resize: vertical;
+}
+
+.quick-interaction-submit {
+  flex: none;
+  min-height: 36px;
+  padding: 0.4rem 0.75rem;
+  white-space: nowrap;
+}
+
+.quick-interaction-history-card {
+  display: grid;
+  gap: 0.85rem;
+  padding: 1rem 0;
+}
+
+.quick-interaction-history-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.quick-interaction-history-heading span {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.quick-interaction-history {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.quick-interaction-history-item {
+  display: grid;
+  gap: 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.8rem;
+  background: white;
+}
+
+.quick-interaction-history-label {
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.quick-interaction-history-content {
+  max-height: 24rem;
+}
+
+.quick-interaction-failed,
+.quick-interaction-timed_out,
+.quick-interaction-needs_terminal {
+  border-color: #e9b7ae;
+}
+
 .codex-workspace-dialog .workspace-list {
   grid-template-columns: 1fr;
   margin-top: 0.85rem;
@@ -1000,8 +1127,8 @@ pre {
 
 .session-item {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  align-items: center;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
   gap: 0.5rem;
   border: 1px solid var(--line);
   border-radius: 12px;
@@ -1010,6 +1137,7 @@ pre {
 }
 
 .session-enter {
+  grid-column: 1 / -1;
   min-width: 0;
   color: var(--ink);
   text-align: left;
@@ -1041,9 +1169,15 @@ pre {
   white-space: nowrap;
 }
 
+.session-enter .session-path {
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
 .session-permission-panel {
+  grid-column: 1;
   display: grid;
-  justify-items: center;
+  justify-items: start;
   gap: 0.2rem;
 }
 
@@ -1096,9 +1230,15 @@ pre {
 }
 
 .session-actions {
+  grid-column: 2;
   display: flex;
-  align-items: center;
-  gap: 0.3rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.4rem;
+}
+
+.session-actions .session-action {
+  margin: 0;
 }
 
 .codex-permission-current {
@@ -1222,9 +1362,17 @@ footer {
   }
 
   .workspace-list,
-  .session-item,
   .automation-item {
     grid-template-columns: 1fr;
+  }
+
+  .session-item {
+    grid-template-columns: 1fr;
+  }
+
+  .session-permission-panel,
+  .session-actions {
+    grid-column: 1;
   }
 
   .codex-create-actions > button {
@@ -1252,15 +1400,6 @@ footer {
     flex-direction: column;
   }
 
-  .service-action-item {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .service-action-controls > button {
-    width: 100%;
-  }
-
   .automation-browser-actions {
     align-items: stretch;
     flex-direction: column;
@@ -1278,8 +1417,9 @@ footer {
 
   .session-permission-panel {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
+    align-items: flex-start;
+    justify-content: flex-start;
+    flex-direction: column;
   }
 
   .design-document-meta {

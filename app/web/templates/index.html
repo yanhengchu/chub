@@ -11,12 +11,26 @@
   </head>
   <body>
     <header class="site-header">
-      <div>
+      <button id="restart-hub" class="site-header-title" type="button" aria-haspopup="dialog" aria-controls="restart-dialog">
         <p class="eyebrow">PERSONAL DEVICE HUB</p>
-        <h1>{{ app_name }}</h1>
-      </div>
+        <h1>{{ site_title }}</h1>
+      </button>
       <span class="version">v{{ app_version }}</span>
     </header>
+
+    <dialog id="restart-dialog" class="codex-workspace-dialog restart-dialog" aria-labelledby="restart-dialog-title">
+      <div class="codex-workspace-dialog-surface restart-dialog-surface">
+        <div class="codex-workspace-dialog-header restart-dialog-header">
+          <h2 id="restart-dialog-title">重启服务</h2>
+          <button id="restart-dialog-close" class="button-link restart-dialog-close" type="button" aria-label="关闭重启确认">关闭</button>
+        </div>
+        <p>重启会重新加载当前代码和配置，页面连接会短暂中断。确定要重启当前节点吗？</p>
+        <div class="restart-dialog-footer">
+          <button id="restart-dialog-cancel" class="button-link" type="button">取消</button>
+          <button id="restart-dialog-confirm" class="button-secondary" type="button">确认重启</button>
+        </div>
+      </div>
+    </dialog>
 
     <main>
       <section id="connected-bar" class="card connected-bar" hidden aria-label="当前连接">
@@ -75,15 +89,16 @@
       <div id="dashboard" class="dashboard" hidden>
         <div id="codex-card-host"></div>
 
-        <section class="card automation-card" aria-labelledby="automation-title">
+        <section class="card automation-card" data-card-key="automations" data-collapsible-card aria-labelledby="automation-title">
           <div class="section-heading">
-            <div class="card-heading-copy">
+            <div class="card-heading-copy" data-card-heading>
               <p class="section-kicker">自动化</p>
               <h2 id="automation-title">自动化任务</h2>
-              <p class="section-description">复用登录状态执行任务。</p>
+              <p class="section-description">复用登录状态执行自动化任务。</p>
             </div>
             <button id="refresh-automations" class="button-secondary" type="button">刷新</button>
           </div>
+          <div class="card-content" data-card-content>
           <div class="automation-browser-row">
             <div class="automation-browser-copy">
               <strong>浏览器环境</strong>
@@ -120,17 +135,19 @@
           <div class="card-footer-actions">
             <a class="button-link" href="/automations">全部任务</a>
           </div>
+          </div>
         </section>
 
-        <section class="card design-documents-card" aria-labelledby="design-documents-title">
+        <section class="card design-documents-card" data-card-key="project-docs" data-collapsible-card data-card-return-refresh="true" aria-labelledby="design-documents-title">
           <div class="section-heading">
-            <div class="card-heading-copy">
+            <div class="card-heading-copy" data-card-heading>
               <p class="section-kicker">项目资料</p>
               <h2 id="design-documents-title">设计文档</h2>
               <p class="section-description">查看方案、实现范围和验收标准。</p>
             </div>
             <button id="refresh-project-docs" class="button-secondary" type="button">刷新</button>
           </div>
+          <div class="card-content" data-card-content>
           <div class="design-document-list design-document-list-compact">
             {% for document in design_documents %}
             <article class="design-document-item">
@@ -159,36 +176,19 @@
             <a id="all-project-docs" class="button-link" href="/project-docs">查看全部文档</a>
             </div>
           </div>
-        </section>
-
-        <section class="card service-card" aria-labelledby="service-title">
-          <div class="section-heading">
-            <div class="card-heading-copy">
-              <p class="section-kicker">节点维护</p>
-              <h2 id="service-title">Chub 服务</h2>
-              <p class="section-description">管理当前节点上的 Chub 服务。</p>
-            </div>
-          </div>
-          <div class="service-action-item">
-            <div class="service-action-copy">
-              <strong>重启服务</strong>
-              <span>重新加载代码和配置，过程中连接会短暂中断。</span>
-            </div>
-            <div class="service-action-controls">
-              <button id="restart-hub" class="button-secondary" type="button">重启 Chub</button>
-            </div>
           </div>
         </section>
 
-        <section class="card logs-card" aria-labelledby="logs-title">
+        <section class="card logs-card" data-card-key="logs" data-collapsible-card data-collapsed="true" aria-labelledby="logs-title">
           <div class="section-heading">
-            <div class="card-heading-copy">
+            <div class="card-heading-copy" data-card-heading>
               <p class="section-kicker">诊断信息</p>
               <h2 id="logs-title">日志</h2>
               <p class="section-description">查看节点最近的操作和运行记录。</p>
             </div>
             <button id="load-logs" class="button-secondary" type="button">刷新</button>
           </div>
+          <div class="card-content" data-card-content>
           <div class="log-toolbar" role="group" aria-label="日志显示设置">
             <div class="log-tabs" role="tablist" aria-label="日志类型">
               <button class="log-tab is-active" data-log-source="operations" type="button" role="tab" aria-label="操作日志" aria-selected="true">操作</button>
@@ -207,6 +207,7 @@
             <div class="card-footer-actions">
               <a class="button-link" href="/logs">日志详情</a>
             </div>
+          </div>
           </div>
         </section>
       </div>

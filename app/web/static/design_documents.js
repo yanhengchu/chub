@@ -4,8 +4,6 @@ const SESSION_TOKEN_KEY = "hub.sessionToken";
 const LOCAL_TOKEN_KEY = "hub.savedToken";
 const token = sessionStorage.getItem(SESSION_TOKEN_KEY) || localStorage.getItem(LOCAL_TOKEN_KEY) || "";
 const FILTER_KEY = "hub.projectDocumentFilter";
-const PROJECT_DOCS_REFRESH_KEY = "hub.projectDocsRefreshOnReturn";
-sessionStorage.setItem(PROJECT_DOCS_REFRESH_KEY, "1");
 const list = document.querySelector("#document-list");
 const message = document.querySelector("#document-list-message");
 const filters = document.querySelectorAll("[data-document-filter]");
