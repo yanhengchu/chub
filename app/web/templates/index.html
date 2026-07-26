@@ -5,8 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="light">
     <title>{{ page_title }}</title>
-    <link rel="stylesheet" href="/static/app.css">
+    {% include "partials/app_styles.html" %}
     <script src="/static/codex_polling.js" defer></script>
+    <script src="/static/js/core/dashboard-core.js" defer></script>
+    <script src="/static/js/components/ui.js" defer></script>
+    <script src="/static/js/components/collapsible-card.js" defer></script>
+    <script src="/static/js/features/node-status.js" defer></script>
+    <script src="/static/js/features/codex-sessions.js" defer></script>
+    <script src="/static/js/features/automations.js" defer></script>
+    <script src="/static/js/features/project-documents.js" defer></script>
+    <script src="/static/js/features/logs.js" defer></script>
     <script src="/static/app.js" defer></script>
   </head>
   <body>

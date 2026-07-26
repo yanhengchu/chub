@@ -2,6 +2,13 @@
   "version": 1,
   "documents": [
     {
+      "id": "architecture-evolution",
+      "title": "Chub 前端 UI 模块化设计",
+      "summary": "在页面效果和 API 不变的前提下，拆分前端基础能力、功能模块、组件与样式层。",
+      "status": "首轮拆分已完成",
+      "path": "ARCHITECTURE_EVOLUTION_DESIGN.md"
+    },
+    {
       "id": "ai-session-state",
       "title": "Chub AI Session 状态模型设计",
       "summary": "定义供应方无关的 Session 与 Activity 状态、组合语义和 AI CLI 适配边界。",

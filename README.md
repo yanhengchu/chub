@@ -123,6 +123,7 @@ Runner 不会自行启动或停止 Debug Chrome。飞书 Wiki Markdown 下载已
 
 当前阶段：
 
+- [前端 UI 模块化设计](docs/ARCHITECTURE_EVOLUTION_DESIGN.md)
 - [第二阶段产品目标](docs/PRD_PHASE_2.md)
 - [第二阶段高层计划](docs/TASKS_PHASE_2.md)
 - [Codex 手机远程方案探索](docs/CODEX_REMOTE_OPTIONS_PHASE_2.md)

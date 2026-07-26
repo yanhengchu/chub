@@ -49,7 +49,12 @@ async def test_archived_document_is_hidden_from_home_api_and_kept_in_full_list(
     assert archived.json()["data"]["archived"] is True
     assert {
         document["id"] for document in home_api.json()["data"]["documents"]
-    } == {"ai-session-state", "openclaw-research", "weekly-report-skill"}
+    } == {
+        "ai-session-state",
+        "architecture-evolution",
+        "openclaw-research",
+        "weekly-report-skill",
+    }
     assert 'href="/project-docs/automation-download"' not in home_page.text
     assert 'data-archived="true"' in full_list.text
     assert "已归档" in full_list.text
@@ -84,6 +89,7 @@ async def test_archived_document_can_be_restored(settings: Settings) -> None:
         document["id"] for document in home_api.json()["data"]["documents"]
     } == {
         "ai-session-state",
+        "architecture-evolution",
         "automation-download",
         "openclaw-research",
         "weekly-report-skill",

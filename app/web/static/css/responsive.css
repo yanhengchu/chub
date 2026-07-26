@@ -1,0 +1,152 @@
+
+@media (max-width: 420px) {
+  .token-row,
+  .result-field {
+    grid-template-columns: 1fr;
+  }
+
+  .token-row button {
+    width: 100%;
+  }
+
+  .access-actions {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .connected-top {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .connected-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .workspace-list,
+  .automation-item {
+    grid-template-columns: 1fr;
+  }
+
+  .session-item {
+    grid-template-columns: 1fr;
+  }
+
+  .session-permission-panel,
+  .session-actions {
+    grid-column: 1;
+  }
+
+  .codex-create-actions > button {
+    width: 100%;
+  }
+
+  .codex-workspace-dialog {
+    width: 100%;
+    max-height: calc(100% - 1rem);
+    margin: auto 0 0;
+    border-radius: 18px 18px 0 0;
+  }
+
+  .codex-workspace-dialog-surface {
+    border-radius: 18px 18px 0 0;
+    padding: 1rem 1rem calc(1rem + env(safe-area-inset-bottom));
+  }
+
+  .automation-run {
+    width: 100%;
+  }
+
+  .automation-browser-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .automation-browser-actions {
+    align-items: stretch;
+    flex-direction: column;
+    width: 100%;
+  }
+
+  .automation-browser-actions > button,
+  .automation-browser-actions > select {
+    width: 100%;
+  }
+
+  .session-actions {
+    justify-content: flex-end;
+  }
+
+  .session-permission-panel {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .quick-interaction-composer-actions > button {
+    width: 100%;
+  }
+
+  .design-document-meta {
+    display: flex;
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.4rem;
+    text-align: left;
+  }
+
+  .design-document-footer {
+    align-items: flex-end;
+  }
+
+  .design-document-meta time {
+    padding-left: 0.55rem;
+  }
+
+  .design-document-meta time {
+    margin-top: 0;
+  }
+
+  .log-toolbar,
+  .log-toolbar-controls {
+    align-items: stretch;
+  }
+
+  .log-toolbar,
+  .log-tabs {
+    flex-wrap: nowrap;
+  }
+
+  .log-toolbar {
+    gap: 0.35rem;
+  }
+
+  .log-tabs {
+    gap: 0.3rem;
+  }
+
+  .log-tab {
+    padding-inline: 0.7rem;
+  }
+
+  .log-toolbar-controls {
+    margin-left: auto;
+  }
+}
+
+@media (min-width: 760px) {
+  :root {
+    --page-top-space: 1.5rem;
+  }
+
+  .card {
+    padding: 1.4rem;
+  }
+
+  .dashboard {
+    grid-template-columns: 1fr 1fr;
+  }
+
+}

@@ -18,7 +18,18 @@ async def test_home_page_is_public_and_contains_no_token(settings: Settings) -> 
     assert response.status_code == 200
     assert 'type="password"' in response.text
     assert 'src="/static/app.js"' in response.text
-    assert 'href="/static/app.css"' in response.text
+    expected_stylesheets = [
+        "/static/css/tokens.css",
+        "/static/css/base.css",
+        "/static/css/components.css",
+        "/static/css/responsive.css",
+    ]
+    stylesheet_positions = [
+        response.text.index(f'<link rel="stylesheet" href="{href}">')
+        for href in expected_stylesheets
+    ]
+    assert stylesheet_positions == sorted(stylesheet_positions)
+    assert 'href="/static/app.css"' not in response.text
     assert 'id="connected-bar"' in response.text
     assert "更换凭证" not in response.text
     assert "清除凭证" not in response.text
@@ -150,34 +161,56 @@ async def test_home_page_title_keeps_backward_compatible_default(
 async def test_web_assets_are_available(settings: Settings) -> None:
     transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        script = await client.get("/static/app.js")
+        scripts = [
+            await client.get("/static/js/core/dashboard-core.js"),
+            await client.get("/static/js/components/ui.js"),
+            await client.get("/static/js/components/collapsible-card.js"),
+            await client.get("/static/js/features/node-status.js"),
+            await client.get("/static/js/features/codex-sessions.js"),
+            await client.get("/static/js/features/automations.js"),
+            await client.get("/static/js/features/project-documents.js"),
+            await client.get("/static/js/features/logs.js"),
+            await client.get("/static/app.js"),
+        ]
         polling_script = await client.get("/static/codex_polling.js")
-        stylesheet = await client.get("/static/app.css")
+        removed_stylesheet = await client.get("/static/app.css")
+        stylesheets = [
+            await client.get("/static/css/tokens.css"),
+            await client.get("/static/css/base.css"),
+            await client.get("/static/css/components.css"),
+            await client.get("/static/css/responsive.css"),
+        ]
         terminal_stylesheet = await client.get("/static/terminal.css")
         terminal_script = await client.get("/static/terminal.js")
 
-    assert script.status_code == 200
+    assert all(script.status_code == 200 for script in scripts)
     assert polling_script.status_code == 200
-    assert stylesheet.status_code == 200
+    assert removed_stylesheet.status_code == 404
+    assert all(asset.status_code == 200 for asset in stylesheets)
     assert terminal_stylesheet.status_code == 200
     assert terminal_script.status_code == 200
-    assert "innerHTML" not in script.text
-    assert "/api/automations/browser/" in script.text
-    assert "automationBrowserMode.value" in script.text
-    browser_control_error = script.text.split(
+    dashboard_script = "\n".join(script.text for script in scripts)
+    script = MagicMock(text=dashboard_script)
+    stylesheet = MagicMock(
+        text="\n".join(asset.text for asset in stylesheets),
+    )
+    assert "innerHTML" not in dashboard_script
+    assert "/api/automations/browser/" in dashboard_script
+    assert "automationBrowserMode.value" in dashboard_script
+    browser_control_error = dashboard_script.split(
         'error.message || "Debug Chrome 操作失败。"', 1
     )[0].rsplit("} catch (error) {", 1)[1]
     assert "await loadAutomations();" in browser_control_error
-    assert "/api/project-docs" in script.text
-    assert "loadProjectDocuments" in script.text
-    assert "正在刷新文档列表" not in script.text
-    assert "文档列表已更新" not in script.text
-    assert "sessionStorage" in script.text
-    assert "localStorage" in script.text
-    assert "Authorization" in script.text
-    assert "accessVersion" in script.text
-    assert "connectWithToken" in script.text
-    assert "确定退出当前节点吗" in script.text
+    assert "/api/project-docs" in dashboard_script
+    assert "loadProjectDocuments" in dashboard_script
+    assert "正在刷新文档列表" not in dashboard_script
+    assert "文档列表已更新" not in dashboard_script
+    assert "sessionStorage" in dashboard_script
+    assert "localStorage" in dashboard_script
+    assert "Authorization" in dashboard_script
+    assert "accessVersion" in dashboard_script
+    assert "connectWithToken" in dashboard_script
+    assert "确定退出当前节点吗" in dashboard_script
     assert "createTaskCard" not in script.text
     assert "createCodexCard" in script.text
     assert 'createButton.textContent = "新建会话"' in script.text
@@ -309,7 +342,14 @@ async def test_quick_interaction_history_page_is_available(settings: Settings) -
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         page = await client.get("/codex/session-1/quick-interactions")
         script = await client.get("/static/quick_interactions.js")
-        stylesheet = await client.get("/static/app.css")
+        stylesheet_assets = [
+            await client.get("/static/css/components.css"),
+            await client.get("/static/css/responsive.css"),
+        ]
+
+    stylesheet = MagicMock(
+        text="\n".join(asset.text for asset in stylesheet_assets),
+    )
 
     assert page.status_code == 200
     assert 'data-session-id="session-1"' in page.text
@@ -562,9 +602,24 @@ async def test_page_uses_external_script_only(settings: Settings) -> None:
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/")
 
-    assert response.text.count("<script") == 2
-    assert '<script src="/static/codex_polling.js" defer></script>' in response.text
-    assert "<script src=\"/static/app.js\" defer></script>" in response.text
+    expected_scripts = [
+        "/static/codex_polling.js",
+        "/static/js/core/dashboard-core.js",
+        "/static/js/components/ui.js",
+        "/static/js/components/collapsible-card.js",
+        "/static/js/features/node-status.js",
+        "/static/js/features/codex-sessions.js",
+        "/static/js/features/automations.js",
+        "/static/js/features/project-documents.js",
+        "/static/js/features/logs.js",
+        "/static/app.js",
+    ]
+    assert response.text.count("<script") == len(expected_scripts)
+    positions = [
+        response.text.index(f'<script src="{source}" defer></script>')
+        for source in expected_scripts
+    ]
+    assert positions == sorted(positions)
 
 
 @pytest.mark.anyio

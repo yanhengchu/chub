@@ -1,0 +1,169 @@
+
+button,
+a,
+input,
+select,
+textarea,
+summary,
+[role="button"],
+.section-heading,
+.site-header-title,
+.card[data-collapsible-card] {
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  margin: 0;
+  min-width: 280px;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button {
+  min-height: 44px;
+  border: 0;
+  border-radius: 10px;
+  padding: 0.65rem 1rem;
+  color: white;
+  background: var(--accent);
+  cursor: pointer;
+  font-weight: 700;
+}
+
+button:hover {
+  background: var(--accent-dark);
+}
+
+button:focus-visible,
+input:focus-visible {
+  outline: 3px solid rgba(23, 107, 74, 0.25);
+  outline-offset: 2px;
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.site-header,
+main,
+footer {
+  width: min(100% - 2rem, 1080px);
+  margin-inline: auto;
+}
+
+.site-header {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  padding: var(--page-top-space) 0 1.25rem;
+}
+
+.site-header-title {
+  display: block;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+}
+
+.site-header-title:hover {
+  color: inherit;
+  background: transparent;
+}
+
+.site-header-title:focus-visible {
+  border-radius: 8px;
+}
+
+h1,
+h2,
+p {
+  margin-top: 0;
+}
+
+h1 {
+  margin-bottom: 0;
+  font-size: clamp(2rem, 8vw, 3.25rem);
+  letter-spacing: -0.055em;
+  line-height: 0.95;
+}
+
+.site-header h1 {
+  font-size: clamp(1.65rem, 5vw, 2.5rem);
+  line-height: 1;
+}
+
+h2 {
+  margin-bottom: 0;
+  font-size: 1.2rem;
+}
+
+.eyebrow,
+.section-kicker {
+  margin-bottom: 0.35rem;
+  color: var(--accent);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.version {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.dashboard {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.dashboard > .card,
+#codex-card-host {
+  align-self: start;
+}
+
+.connected-bar {
+  display: block;
+}
+
+.connected-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.connected-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.connected-identity {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.connected-meta {
+  margin: 0.4rem 0 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.connected-summary {
+  margin: 0.35rem 0 0;
+  color: var(--ink);
+  font-size: 0.84rem;
+  font-weight: 700;
+}

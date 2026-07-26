@@ -50,6 +50,14 @@ Chub 是个人维护的轻量设备管理服务，主要技术栈为 Python 3.12
 - 新增维护操作时，同时考虑操作日志的 `requested`、`started`、`succeeded` 和 `failed` 状态；无法由旧进程确认最终结果时，不要伪造成功日志。
 - 不随意引入前端框架、数据库、任务队列或其他复杂基础设施。
 
+## 前端目录与加载边界
+
+- 首页 JavaScript 按 `static/js/core/`、`static/js/components/`、`static/js/features/` 和 `static/app.js` 分层；`app.js` 只负责页面组合、跨功能协调和启动，新功能的请求、状态与渲染放入对应 Feature 文件。
+- 当前首轮拆分仍使用全局函数和固定 `defer` 顺序，不是 ES Modules。`index.html` 中的脚本顺序属于兼容契约，调整时必须同步顺序测试并完成浏览器回归。
+- 首页共享请求、认证、页面恢复和跨功能清理由 Core 承担；通用 DOM 行为放入 Components；Feature 之间不直接读取对方内部状态。
+- 公共页面样式通过 `templates/partials/app_styles.html` 统一加载，顺序固定为 `tokens.css`、`base.css`、`components.css`、`responsive.css`；不要恢复已删除的 `static/app.css`，也不要在各模板重复维护样式列表。
+- CSS 首轮按原规则顺序安全拆分，`components.css` 仍可能包含页面专用规则。后续只在真实页面改动时渐进归类，不为了目录整齐批量搬动导致层叠变化。
+
 ## 首页卡片规范
 
 - 重要功能和节点任务优先以独立卡片承载；卡片应拥有清晰、单一的职责，避免依赖其他卡片的内部状态。
