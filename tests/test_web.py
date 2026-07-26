@@ -66,6 +66,7 @@ async def test_home_page_is_public_and_contains_no_token(settings: Settings) -> 
     assert 'data-card-heading' in response.text
     assert 'data-card-content' in response.text
     assert 'data-collapsible-card' in response.text
+    assert response.text.count('class="card-content-inner"') == 3
     assert "退出" in response.text
     assert 'id="task-list"' not in response.text
     assert "data-log-source" in response.text
@@ -249,8 +250,18 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "远程管理本机 Codex 会话。" in script.text
     assert "showCodexPanel" not in script.text
     assert "setupCollapsibleCard" in script.text
+    assert "cardContentInner.append(panel, workspaceDialog, permissionDialog)" in script.text
+    assert "card.append(header, cardContent)" in script.text
     assert 'aria-expanded' in script.text
     assert "is-collapsed" in script.text
+    assert "setContentCollapsed" in script.text
+    assert "playContentAnimation" in script.text
+    assert "cancelContentAnimations" in script.text
+    assert "fadeTargets = Array.from(content.children)" in script.text
+    assert "CARD_FADE_DURATION_MS = 140" in script.text
+    assert "CARD_HEIGHT_DURATION_MS = 180" in script.text
+    assert "transition: gap 180ms ease 140ms" in stylesheet.text
+    assert 'matchMedia("(prefers-reduced-motion: reduce)")' in script.text
     assert "restartHub" in script.text
     assert "scrollCodexPanelIntoView" not in script.text
     assert "任务状态已更新。" not in script.text
@@ -317,6 +328,7 @@ async def test_quick_interaction_history_page_is_available(settings: Settings) -
     assert "confirm_stop_unknown_terminal" in script.text
     assert "点击执行会先停止当前实时终端" in page.text
     assert "请确认影响后再次点击执行" in script.text
+    assert "正在提交快速交互" not in script.text
     assert "任务仍在后台执行" not in script.text
     assert 'id="quick-interaction-load-more"' in page.text
     assert "PAGE_SIZE = 3" in script.text
@@ -326,17 +338,25 @@ async def test_quick_interaction_history_page_is_available(settings: Settings) -
     assert "appendPending" in script.text
     assert "Promise.allSettled" in script.text
     assert "renderSessionLoadError" in script.text
-    assert 'id="quick-interaction-session-meta"' in page.text
+    assert 'id="quick-interaction-session-meta"' not in page.text
     assert 'request("/api/codex/sessions")' in script.text
     assert "快速交互执行中" not in script.text
-    assert "sessionMeta.textContent = title" in script.text
+    assert "sessionMeta" not in script.text
     assert ".quick-interaction-page-heading h1" in stylesheet.text
     assert "item.dataset.taskId = task.id" in script.text
     assert "item.dataset.taskSignature === signature" in script.text
     assert "history.replaceChildren();" not in script.text
     assert "setComposerCollapsed(true)" in script.text
+    assert "waitForComposerCollapse()" in script.text
+    assert "COMPOSER_COLLAPSE_ANIMATION_MS = 320" in script.text
+    assert "COMPOSER_COLLAPSE_FALLBACK_MS = 380" in script.text
+    assert "await load();" in script.text
+    submit_flow = script.text[script.text.index('form.addEventListener("submit"'):]
+    assert submit_flow.index("setComposerCollapsed(true)") < submit_flow.index(
+        "await waitForComposerCollapse()"
+    ) < submit_flow.index("await load()")
     assert "if (!composerStateInitialized)" in script.text
-    assert "setComposerCollapsed(session.quick_interaction_running === true)" in script.text
+    assert "setComposerCollapsed(session.quick_interaction_running === true, { animate: false })" in script.text
     assert 'form.classList.toggle("is-collapsed", collapsed)' in script.text
     assert 'composerHeading.setAttribute("aria-expanded", String(!collapsed))' in script.text
     assert "window.requestAnimationFrame(preserveAnchor)" in script.text

@@ -10,12 +10,13 @@ const composerBody = document.querySelector("#quick-interaction-composer-body");
 const prompt = document.querySelector("#quick-interaction-prompt");
 const submit = document.querySelector("#quick-interaction-submit");
 const submitMessage = document.querySelector("#quick-interaction-submit-message");
-const sessionMeta = document.querySelector("#quick-interaction-session-meta");
 const warning = document.querySelector("#quick-interaction-warning");
 const historyMessage = document.querySelector("#quick-interaction-history-message");
 const history = document.querySelector("#quick-interaction-history");
 const loadMore = document.querySelector("#quick-interaction-load-more");
 const PAGE_SIZE = 3;
+const COMPOSER_COLLAPSE_ANIMATION_MS = 320;
+const COMPOSER_COLLAPSE_FALLBACK_MS = 380;
 let pollTimer = null;
 let loadedTasks = [];
 let totalTasks = 0;
@@ -204,16 +205,22 @@ function visibleHistoryAnchor() {
   }) || null;
 }
 
-function setComposerCollapsed(collapsed) {
+function setComposerCollapsed(collapsed, { animate = true } = {}) {
   if (composerCollapsed === collapsed) {
     return;
   }
   composerCollapsed = collapsed;
+  if (!animate) {
+    form.classList.add("is-initializing");
+  }
   const anchor = visibleHistoryAnchor();
   const anchorTop = anchor?.getBoundingClientRect().top;
   form.classList.toggle("is-collapsed", collapsed);
   composerHeading.setAttribute("aria-expanded", String(!collapsed));
   composerBody.inert = collapsed;
+  if (!animate) {
+    window.requestAnimationFrame(() => form.classList.remove("is-initializing"));
+  }
   if (!anchor) {
     return;
   }
@@ -226,11 +233,32 @@ function setComposerCollapsed(collapsed) {
     if (Math.abs(offset) > 0.5) {
       window.scrollBy(0, offset);
     }
-    if (now - startedAt < 220) {
+    if (now - startedAt < COMPOSER_COLLAPSE_ANIMATION_MS) {
       window.requestAnimationFrame(preserveAnchor);
     }
   };
   window.requestAnimationFrame(preserveAnchor);
+}
+
+function waitForComposerCollapse() {
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    let fallbackTimer = null;
+    const finish = () => {
+      window.clearTimeout(fallbackTimer);
+      composerBody.removeEventListener("transitionend", handleTransitionEnd);
+      resolve();
+    };
+    const handleTransitionEnd = (event) => {
+      if (event.propertyName === "grid-template-rows") {
+        finish();
+      }
+    };
+    composerBody.addEventListener("transitionend", handleTransitionEnd);
+    fallbackTimer = window.setTimeout(finish, COMPOSER_COLLAPSE_FALLBACK_MS);
+  });
 }
 
 function renderSession(session) {
@@ -241,10 +269,8 @@ function renderSession(session) {
   }
   if (!composerStateInitialized) {
     composerStateInitialized = true;
-    setComposerCollapsed(session.quick_interaction_running === true);
+    setComposerCollapsed(session.quick_interaction_running === true, { animate: false });
   }
-  const title = session.title || session.workspace_name || "Codex Session";
-  sessionMeta.textContent = title;
   confirmStopUnknownTerminal =
     session.status === "running" && session.activity === "unknown";
   warning.hidden = !confirmStopUnknownTerminal;
@@ -370,7 +396,6 @@ form.addEventListener("submit", async (event) => {
   }
   submit.disabled = true;
   prompt.disabled = true;
-  showMessage(submitMessage, "正在提交快速交互…");
   try {
     await request(
       `/api/codex/sessions/${encodeURIComponent(sessionId)}/quick-interactions`,
@@ -384,10 +409,11 @@ form.addEventListener("submit", async (event) => {
       },
     );
     prompt.value = "";
-    setComposerCollapsed(true);
     confirmStopUnknownTerminal = false;
     warning.hidden = true;
     showMessage(submitMessage, "");
+    setComposerCollapsed(true);
+    await waitForComposerCollapse();
     await load();
   } catch (error) {
     if (error.code === "quick_interaction_terminal_confirmation_required") {

@@ -99,6 +99,7 @@
             <button id="refresh-project-docs" class="button-secondary" type="button">刷新</button>
           </div>
           <div class="card-content" data-card-content>
+          <div class="card-content-inner">
           <div class="design-document-list design-document-list-compact">
             {% for document in design_documents %}
             <article class="design-document-item">
@@ -128,6 +129,7 @@
             </div>
           </div>
           </div>
+          </div>
         </section>
 
         <section class="card automation-card" data-card-key="automations" data-collapsible-card aria-labelledby="automation-title">
@@ -140,6 +142,7 @@
             <button id="refresh-automations" class="button-secondary" type="button">刷新</button>
           </div>
           <div class="card-content" data-card-content>
+          <div class="card-content-inner">
           <div class="automation-browser-row">
             <div class="automation-browser-copy">
               <strong>浏览器环境</strong>
@@ -177,6 +180,7 @@
             <a class="button-link" href="/automations">全部任务</a>
           </div>
           </div>
+          </div>
         </section>
 
         <section class="card logs-card" data-card-key="logs" data-collapsible-card data-collapsed="true" aria-labelledby="logs-title">
@@ -189,6 +193,7 @@
             <button id="load-logs" class="button-secondary" type="button">刷新</button>
           </div>
           <div class="card-content" data-card-content>
+          <div class="card-content-inner">
           <div class="log-toolbar" role="group" aria-label="日志显示设置">
             <div class="log-tabs" role="tablist" aria-label="日志类型">
               <button class="log-tab is-active" data-log-source="operations" type="button" role="tab" aria-label="操作日志" aria-selected="true">操作</button>
@@ -207,6 +212,7 @@
             <div class="card-footer-actions">
               <a class="button-link" href="/logs">日志详情</a>
             </div>
+          </div>
           </div>
           </div>
         </section>

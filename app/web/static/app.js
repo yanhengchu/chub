@@ -4,6 +4,8 @@ const SESSION_TOKEN_KEY = "hub.sessionToken";
 const LOCAL_TOKEN_KEY = "hub.savedToken";
 const CODEX_CARD_CACHE_KEY = "hub.codexCardCache";
 const CARD_COLLAPSED_STATE_KEY = "hub.cardCollapsedState.v1";
+const CARD_FADE_DURATION_MS = 140;
+const CARD_HEIGHT_DURATION_MS = 180;
 const CODEX_ENTRY_MODE_KEY = "hub.codexEntryMode.v1";
 const CODEX_PERMISSION_OPTIONS = [
   ["ask", "Ask for approval", "在当前工作区操作，越界时由你确认。"],
@@ -154,7 +156,6 @@ function setupCollapsibleCard(card) {
   if (!heading || !headingCopy || !content) {
     return;
   }
-  card.dataset.collapsibleReady = "1";
   card.dataset.collapsibleCard = "";
   const cardKey = card.dataset.cardKey;
   if (!cardKey) {
@@ -168,11 +169,95 @@ function setupCollapsibleCard(card) {
   headingCopy.setAttribute("aria-expanded", String(!initiallyCollapsed));
   card.classList.toggle("is-collapsed", initiallyCollapsed);
   content.hidden = initiallyCollapsed;
+  content.inert = initiallyCollapsed;
+  card.getBoundingClientRect();
+  card.dataset.collapsibleReady = "1";
+  let collapseAnimationVersion = 0;
+  let contentAnimations = [];
+
+  const cancelContentAnimations = () => {
+    contentAnimations.forEach((animation) => animation.cancel());
+    contentAnimations = [];
+  };
+
+  const playContentAnimation = (target, keyframes, options) => {
+    const animation = target.animate(keyframes, options);
+    contentAnimations.push(animation);
+    return animation.finished.catch(() => {});
+  };
+
+  const setContentCollapsed = async (collapsed) => {
+    collapseAnimationVersion += 1;
+    const animationVersion = collapseAnimationVersion;
+    const wasHidden = content.hidden;
+    const startHeight = wasHidden ? 0 : content.getBoundingClientRect().height;
+    const fadeTargets = Array.from(content.children);
+    if (fadeTargets.length === 0) {
+      fadeTargets.push(content);
+    }
+    const startOpacities = fadeTargets.map((target) => (
+      wasHidden ? 0 : Number.parseFloat(window.getComputedStyle(target).opacity)
+    ));
+    cancelContentAnimations();
+    content.inert = collapsed;
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduceMotion) {
+      content.hidden = collapsed;
+      content.style.removeProperty("height");
+      content.style.removeProperty("opacity");
+      content.style.removeProperty("overflow");
+      return;
+    }
+    content.hidden = false;
+    content.style.height = `${startHeight}px`;
+    content.style.overflow = "hidden";
+    if (collapsed) {
+      await Promise.all(fadeTargets.map((target, index) => playContentAnimation(
+        target,
+        [{ opacity: startOpacities[index] }, { opacity: 0 }],
+        { duration: CARD_FADE_DURATION_MS, easing: "ease", fill: "forwards" },
+      )));
+      if (animationVersion !== collapseAnimationVersion) {
+        return;
+      }
+      await playContentAnimation(
+        content,
+        [{ height: `${startHeight}px` }, { height: "0px" }],
+        {
+          duration: CARD_HEIGHT_DURATION_MS,
+          easing: "ease",
+          fill: "forwards",
+        },
+      );
+    } else {
+      const endHeight = content.scrollHeight;
+      await Promise.all([
+        playContentAnimation(
+          content,
+          [{ height: `${startHeight}px` }, { height: `${endHeight}px` }],
+          { duration: CARD_HEIGHT_DURATION_MS, easing: "ease", fill: "forwards" },
+        ),
+        ...fadeTargets.map((target, index) => playContentAnimation(
+          target,
+          [{ opacity: startOpacities[index] }, { opacity: 1 }],
+          { duration: CARD_FADE_DURATION_MS, easing: "ease", fill: "forwards" },
+        )),
+      ]);
+    }
+    if (animationVersion !== collapseAnimationVersion) {
+      return;
+    }
+    cancelContentAnimations();
+    content.style.removeProperty("height");
+    content.style.removeProperty("opacity");
+    content.style.removeProperty("overflow");
+    content.hidden = collapsed;
+  };
 
   const setCollapsed = (collapsed) => {
     card.classList.toggle("is-collapsed", collapsed);
     headingCopy.setAttribute("aria-expanded", String(!collapsed));
-    content.hidden = collapsed;
+    setContentCollapsed(collapsed);
     cardCollapsedState[cardKey] = collapsed;
     saveCardCollapsedState();
   };
@@ -458,6 +543,7 @@ function createCodexCard() {
   const title = document.createElement("h2");
   const description = document.createElement("p");
   const cardContent = document.createElement("div");
+  const cardContentInner = document.createElement("div");
   const panel = document.createElement("div");
   const currentHint = document.createElement("p");
   const sessionsDivider = document.createElement("div");
@@ -497,6 +583,7 @@ function createCodexCard() {
   panel.hidden = false;
   cardContent.className = "card-content";
   cardContent.dataset.cardContent = "";
+  cardContentInner.className = "card-content-inner";
   kicker.className = "section-kicker";
   kicker.textContent = "远程开发";
   title.id = "codex-title";
@@ -603,8 +690,9 @@ function createCodexCard() {
     sessionList,
     createActions,
   );
-  cardContent.append(panel);
-  card.append(header, cardContent, workspaceDialog, permissionDialog);
+  cardContentInner.append(panel, workspaceDialog, permissionDialog);
+  cardContent.append(cardContentInner);
+  card.append(header, cardContent);
   setupCollapsibleCard(card);
 
   elements.codexPanel = panel;

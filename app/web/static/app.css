@@ -217,8 +217,16 @@ h2 {
   cursor: pointer;
 }
 
+.card[data-collapsible-card][data-collapsible-ready="1"] {
+  transition: gap 180ms ease;
+}
+
 .card[data-collapsible-card].is-collapsed {
   gap: 0;
+}
+
+.card[data-collapsible-card][data-collapsible-ready="1"].is-collapsed {
+  transition: gap 180ms ease 140ms;
 }
 
 .card[data-collapsible-card].is-collapsed > .section-heading > button {
@@ -229,6 +237,14 @@ h2 {
   display: grid;
   gap: 1rem;
   min-width: 0;
+  min-height: 0;
+}
+
+.card-content-inner {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+  min-height: 0;
 }
 
 form {
@@ -1018,6 +1034,7 @@ pre {
   border-radius: 16px;
   padding: 1rem;
   background: white;
+  transition: gap 180ms ease;
 }
 
 .quick-interaction-composer-body {
@@ -1037,12 +1054,19 @@ pre {
 
 .quick-interaction-composer.is-collapsed {
   gap: 0;
+  transition: gap 180ms ease 140ms;
 }
 
 .quick-interaction-composer.is-collapsed .quick-interaction-composer-body {
   grid-template-rows: 0fr;
   opacity: 0;
   pointer-events: none;
+  transition: opacity 140ms ease, grid-template-rows 180ms ease 140ms;
+}
+
+.quick-interaction-composer.is-initializing,
+.quick-interaction-composer.is-initializing .quick-interaction-composer-body {
+  transition: none;
 }
 
 .quick-interaction-page-heading,
@@ -1095,13 +1119,15 @@ pre {
 }
 
 .quick-interaction-warning {
-  margin: 0.85rem 0 0;
+  margin: 0;
   color: var(--warning);
   font-size: 0.82rem;
   line-height: 1.5;
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .card[data-collapsible-card],
+  .quick-interaction-composer,
   .quick-interaction-composer-body {
     transition: none;
   }
