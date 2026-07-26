@@ -37,20 +37,30 @@ class QuickInteractionManager:
         self._session_locks: dict[str, threading.RLock] = {}
         self._processes: dict[str, subprocess.Popen[bytes]] = {}
         self._operations: dict[str, tuple[str, str]] = {}
-        recovered = self._load()
-        if recovered:
+        recovered_sessions = self._load()
+        if recovered_sessions:
             self._write()
+            for session_id in recovered_sessions:
+                try:
+                    self.codex_manager.recover_interrupted_quick_interaction(
+                        session_id
+                    )
+                except Exception:
+                    LOGGER.warning(
+                        "Unable to recover interrupted quick interaction activity",
+                        exc_info=True,
+                    )
         self.result_dir.mkdir(parents=True, exist_ok=True)
         os.chmod(self.result_dir, 0o700)
 
-    def _load(self) -> bool:
+    def _load(self) -> set[str]:
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
         except (FileNotFoundError, OSError, json.JSONDecodeError):
-            return False
+            return set()
         if not isinstance(payload, list):
-            return False
-        recovered = False
+            return set()
+        recovered_sessions: set[str] = set()
         for item in payload:
             try:
                 task = QuickInteractionTask.model_validate(item)
@@ -60,9 +70,9 @@ class QuickInteractionManager:
                 task.status = "failed"
                 task.error = "服务重启时任务未完成。"
                 task.updated_at = utc_now()
-                recovered = True
+                recovered_sessions.add(task.session_id)
             self._tasks[task.id] = task
-        return recovered
+        return recovered_sessions
 
     def submit(
         self,
@@ -76,8 +86,24 @@ class QuickInteractionManager:
             session = self.codex_manager.get_session(session_id)
             if not session.codex_session_id:
                 raise ApiError(409, "codex_session_not_started", "Codex session has not started yet")
-            if session.status == "running":
-                raise ApiError(409, "quick_interaction_terminal_active", "该会话已在实时终端中运行，请先停止终端。")
+            if session.status == "error":
+                raise ApiError(
+                    409,
+                    "quick_interaction_session_error",
+                    "会话当前异常，请先通过实时终端重试。",
+                )
+            if session.activity == "working":
+                raise ApiError(
+                    409,
+                    "quick_interaction_terminal_working",
+                    "实时终端正在执行，请等待当前任务结束。",
+                )
+            if session.status == "running" and session.activity != "idle":
+                raise ApiError(
+                    409,
+                    "quick_interaction_terminal_active",
+                    "当前实时终端状态不允许快速交互。",
+                )
             if session.permission_mode == "ask":
                 raise ApiError(409, "quick_interaction_requires_terminal", "Ask for approval 需要进入实时终端完成审批。")
             with self._lock:
@@ -121,6 +147,13 @@ class QuickInteractionManager:
         with self.session_operation_guard(session_id):
             yield
 
+    @contextmanager
+    def terminal_input_guard(self, session_id: str) -> Iterator[bool]:
+        with self._session_lock(session_id):
+            with self._lock:
+                allowed = session_id not in self._running_sessions
+            yield allowed
+
     def get(self, task_id: str) -> QuickInteractionTask:
         with self._lock:
             task = self._tasks.get(task_id)
@@ -153,6 +186,10 @@ class QuickInteractionManager:
                 for session_id in active
             }
 
+    def is_running(self, session_id: str) -> bool:
+        with self._lock:
+            return session_id in self._running_sessions
+
     def _run(self, task_id: str, session: CodexSession, prompt: str) -> None:
         with self._lock:
             task = self._tasks[task_id]
@@ -164,11 +201,13 @@ class QuickInteractionManager:
         error_path = self.result_dir / f"{task_id}.err"
         event_path = self.result_dir / f"{task_id}.jsonl"
         try:
+            self.codex_manager.set_activity(session.id, "working", "quick")
             self.result_dir.mkdir(parents=True, exist_ok=True)
             command = self._command(session, result_path)
             env = os.environ.copy()
             env["CHUB_PTY_SESSION_ID"] = session.id
             env["CHUB_PTY_HOOK_DIR"] = str(self.codex_manager.hook_dir)
+            env["CHUB_ACTIVITY_SOURCE"] = "quick"
             with (
                 error_path.open("w", encoding="utf-8") as error_file,
                 event_path.open("wb") as event_file,
@@ -206,9 +245,11 @@ class QuickInteractionManager:
                 self._processes.pop(task_id, None)
             finished = self.get(task_id)
             try:
-                self.codex_manager.update_session_timestamp(
+                self.codex_manager.set_activity(
                     session.id,
-                    finished.updated_at,
+                    "idle",
+                    "none",
+                    updated_at=finished.updated_at,
                 )
             except Exception:
                 LOGGER.warning(

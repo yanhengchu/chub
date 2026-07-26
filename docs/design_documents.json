@@ -2,6 +2,13 @@
   "version": 1,
   "documents": [
     {
+      "id": "ai-session-state",
+      "title": "Chub AI Session 状态模型设计",
+      "summary": "定义供应方无关的 Session 与 Activity 状态、组合语义和 AI CLI 适配边界。",
+      "status": "已实现并验收",
+      "path": "AI_SESSION_STATE_DESIGN.md"
+    },
+    {
       "id": "openclaw-research",
       "title": "OpenClaw 方案调研",
       "summary": "分析 OpenClaw 的主体架构，以及它与 Chub 后续发展的关系。",

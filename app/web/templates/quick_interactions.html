@@ -4,16 +4,39 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="light">
-    <title>快速交互记录</title>
+    <title>快速交互</title>
     <link rel="stylesheet" href="/static/app.css">
     <script src="/static/quick_interactions.js" defer></script>
   </head>
   <body data-session-id="{{ session_id }}">
     <main>
-      <section class="quick-interaction-history-card">
-        <p id="quick-interaction-history-message" class="message" aria-live="polite"></p>
-        <div id="quick-interaction-history" class="quick-interaction-history"></div>
-        <button id="quick-interaction-load-more" class="button-secondary quick-interaction-load-more" type="button" hidden>加载更多</button>
+      <section class="quick-interaction-page">
+        <form id="quick-interaction-form" class="quick-interaction-composer">
+          <div class="quick-interaction-page-heading" role="button" tabindex="0" aria-expanded="true" aria-controls="quick-interaction-composer-body">
+            <p class="section-kicker">Codex Session</p>
+            <h1>快速交互</h1>
+            <p id="quick-interaction-session-meta" class="section-description">正在读取会话…</p>
+          </div>
+          <div id="quick-interaction-composer-body" class="quick-interaction-composer-body">
+            <div class="quick-interaction-composer-body-inner">
+              <textarea id="quick-interaction-prompt" rows="6" maxlength="8000" required placeholder="输入要交给 Codex 执行的需求…" aria-label="快速交互需求" disabled></textarea>
+              <p id="quick-interaction-warning" class="quick-interaction-warning" hidden>点击执行会先停止当前实时终端，可能中断正在执行的任务，然后启动新任务。</p>
+              <p id="quick-interaction-submit-message" class="message" aria-live="polite"></p>
+              <div class="quick-interaction-composer-actions">
+                <button id="quick-interaction-submit" class="button-secondary" type="submit" disabled>执行</button>
+              </div>
+            </div>
+          </div>
+        </form>
+
+        <section class="quick-interaction-history-card">
+          <div class="quick-interaction-section-heading">
+            <h2>交互记录</h2>
+          </div>
+          <p id="quick-interaction-history-message" class="message" aria-live="polite"></p>
+          <div id="quick-interaction-history" class="quick-interaction-history"></div>
+          <button id="quick-interaction-load-more" class="button-secondary quick-interaction-load-more" type="button" hidden>加载更多</button>
+        </section>
       </section>
     </main>
   </body>

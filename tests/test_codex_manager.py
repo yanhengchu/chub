@@ -291,6 +291,30 @@ def test_hook_result_updates_turn_activity(settings: Settings) -> None:
     manager._consume_hook_result(session.id)
 
     assert manager.store.get(session.id).activity == "working"
+    assert manager.store.get(session.id).activity_source == "terminal"
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_activity"),
+    [("running", "unknown"), ("stopped", "idle")],
+)
+def test_recover_interrupted_quick_interaction_clears_activity_source(
+    settings: Settings,
+    status: str,
+    expected_activity: str,
+) -> None:
+    manager = CodexPtyManager(settings)
+    session = native_session("77777777-7777-4777-8777-777777777777")
+    session.status = status
+    session.activity = "working"
+    session.activity_source = "quick"
+    manager.store.save(session)
+
+    manager.recover_interrupted_quick_interaction(session.id)
+
+    recovered = manager.store.get(session.id)
+    assert recovered.activity == expected_activity
+    assert recovered.activity_source == "none"
 
 
 def test_delete_failure_preserves_mapping(

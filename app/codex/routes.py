@@ -141,13 +141,14 @@ def access_session(
     response_model=ApiResponse[SessionInfo],
 )
 async def stop_session(session_id: str, request: Request) -> ApiResponse[SessionInfo]:
-    request.app.state.terminal_tickets.revoke_session(session_id)
-    request.app.state.terminal_connections.close_session(session_id)
     try:
-        data = await asyncio.to_thread(
-            request.app.state.codex_pty_manager.stop_session,
-            session_id,
-        )
+        def stop_with_guard() -> SessionInfo:
+            with request.app.state.quick_interactions.session_operation_guard(session_id):
+                request.app.state.terminal_tickets.revoke_session(session_id)
+                request.app.state.terminal_connections.close_session(session_id)
+                return request.app.state.codex_pty_manager.stop_session(session_id)
+
+        data = await asyncio.to_thread(stop_with_guard)
     except Exception:
         log_operation(
             request,
@@ -186,15 +187,7 @@ def submit_quick_interaction(
                     raise ApiError(
                         409,
                         "quick_interaction_terminal_working",
-                        "实时会话正在执行，请等待当前任务结束。",
-                    )
-                if request.app.state.terminal_connections.has_active_connection(
-                    session_id
-                ):
-                    raise ApiError(
-                        409,
-                        "quick_interaction_terminal_connected",
-                        "实时终端仍在使用，请先退出终端。",
+                        "实时终端正在执行，请等待当前任务结束。",
                     )
                 if (
                     session.activity == "unknown"
@@ -203,14 +196,22 @@ def submit_quick_interaction(
                     raise ApiError(
                         409,
                         "quick_interaction_terminal_confirmation_required",
-                        "当前实时会话状态无法确认，请确认停止后再执行。",
+                        "当前实时终端状态无法确认，请确认停止后再执行。",
                     )
+                if session.activity == "idle":
+                    task = quick_interactions.submit(
+                        session_id,
+                        payload.prompt,
+                        operation_id=operation_id,
+                        source_ip=source_ip,
+                    )
+                    return ApiResponse(data=QuickInteractionData(task=task))
                 session = manager.get_session(session_id)
                 if session.status == "running" and session.activity == "working":
                     raise ApiError(
                         409,
                         "quick_interaction_terminal_working",
-                        "实时会话正在执行，请等待当前任务结束。",
+                        "实时终端正在执行，请等待当前任务结束。",
                     )
                 if (
                     session.status == "running"
@@ -220,7 +221,7 @@ def submit_quick_interaction(
                     raise ApiError(
                         409,
                         "quick_interaction_terminal_confirmation_required",
-                        "当前实时会话状态无法确认，请确认停止后再执行。",
+                        "当前实时终端状态无法确认，请确认停止后再执行。",
                     )
                 request.app.state.terminal_tickets.revoke_session(session_id)
                 request.app.state.terminal_connections.close_session(session_id)
@@ -295,11 +296,14 @@ async def update_session_permission(
     request: Request,
 ) -> ApiResponse[SessionPermissionData]:
     try:
-        session, auto_stopped = await asyncio.to_thread(
-            request.app.state.codex_pty_manager.update_permission_and_stop,
-            session_id,
-            payload.permission_mode,
-        )
+        def update_with_guard() -> tuple[SessionInfo, bool]:
+            with request.app.state.quick_interactions.session_operation_guard(session_id):
+                return request.app.state.codex_pty_manager.update_permission_and_stop(
+                    session_id,
+                    payload.permission_mode,
+                )
+
+        session, auto_stopped = await asyncio.to_thread(update_with_guard)
     except Exception:
         log_operation(
             request,
@@ -340,11 +344,11 @@ async def update_session_permission(
 
 @api_router.post("/sessions/{session_id}/archive", response_model=ApiResponse[None])
 async def archive_session(session_id: str, request: Request) -> ApiResponse[None]:
-    request.app.state.terminal_tickets.revoke_session(session_id)
-    request.app.state.terminal_connections.close_session(session_id)
     try:
         def archive_with_guard() -> None:
             with request.app.state.quick_interactions.session_operation_guard(session_id):
+                request.app.state.terminal_tickets.revoke_session(session_id)
+                request.app.state.terminal_connections.close_session(session_id)
                 request.app.state.codex_pty_manager.archive_session(session_id)
 
         await asyncio.to_thread(archive_with_guard)
@@ -367,11 +371,11 @@ async def archive_session(session_id: str, request: Request) -> ApiResponse[None
 
 @api_router.delete("/sessions/{session_id}", response_model=ApiResponse[None])
 async def delete_session(session_id: str, request: Request) -> ApiResponse[None]:
-    request.app.state.terminal_tickets.revoke_session(session_id)
-    request.app.state.terminal_connections.close_session(session_id)
     try:
         def delete_with_guard() -> None:
             with request.app.state.quick_interactions.session_operation_guard(session_id):
+                request.app.state.terminal_tickets.revoke_session(session_id)
+                request.app.state.terminal_connections.close_session(session_id)
                 request.app.state.codex_pty_manager.delete_session(session_id)
 
         await asyncio.to_thread(delete_with_guard)
@@ -499,10 +503,15 @@ async def terminal_websocket(websocket: WebSocket, session_id: str) -> None:
                     message = await websocket.receive()
                     if message.get("type") == "websocket.disconnect":
                         return
-                    if message.get("bytes") is not None:
-                        await backend.send(message["bytes"])
-                    elif message.get("text") is not None:
-                        await backend.send(message["text"])
+                    with websocket.app.state.quick_interactions.terminal_input_guard(
+                        session_id
+                    ) as allowed:
+                        if not allowed:
+                            continue
+                        if message.get("bytes") is not None:
+                            await backend.send(message["bytes"])
+                        elif message.get("text") is not None:
+                            await backend.send(message["text"])
 
             async def backend_to_client() -> None:
                 async for message in backend:

@@ -14,7 +14,7 @@
     slowAfter,
   }) {
     const hasWorkingSession = sessions.some(
-      (session) => session.status === "running" && session.activity === "working",
+      (session) => session.activity === "working",
     );
     const hasUnknownSession = sessions.some(
       (session) => session.status === "running" && session.activity === "unknown",

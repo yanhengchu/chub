@@ -4,11 +4,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 SessionStatus = Literal["new", "running", "stopped", "error"]
 TurnActivity = Literal["unknown", "working", "idle"]
+ActivitySource = Literal["none", "terminal", "quick"]
 PermissionMode = Literal["ask", "auto-review", "read-only", "full-access"]
 
 
@@ -27,6 +28,7 @@ class CodexSession(BaseModel):
     codex_session_id: str | None = None
     status: SessionStatus = "new"
     activity: TurnActivity = "unknown"
+    activity_source: ActivitySource = "none"
     permission_mode: PermissionMode = "ask"
     active_permission_mode: PermissionMode | None = None
     error: str | None = None
@@ -42,6 +44,17 @@ class CodexSession(BaseModel):
             "inherit": "ask",
             "workspace-write": "ask",
         }.get(value, value)
+
+    @model_validator(mode="after")
+    def normalize_activity_source(self) -> CodexSession:
+        if self.activity != "working":
+            self.activity_source = "none"
+        elif self.activity_source == "none":
+            if self.status == "running":
+                self.activity_source = "terminal"
+            else:
+                self.activity = "unknown"
+        return self
 
 
 class WorkspaceInfo(BaseModel):
@@ -60,6 +73,7 @@ class SessionInfo(BaseModel):
     codex_session_id: str | None
     status: SessionStatus
     activity: TurnActivity
+    activity_source: ActivitySource = "none"
     permission_mode: PermissionMode
     active_permission_mode: PermissionMode | None
     permission_pending: bool

@@ -33,6 +33,7 @@ def test_codex_hook_correlates_codex_and_chub_sessions(tmp_path: Path) -> None:
         "cwd": "/workspace",
         "source": "startup",
         "activity": "idle",
+        "activity_source": "none",
     }
 
 
@@ -42,6 +43,7 @@ def test_codex_hook_records_turn_activity(tmp_path: Path) -> None:
         **os.environ,
         "CHUB_PTY_SESSION_ID": "chub-session-id",
         "CHUB_PTY_HOOK_DIR": str(tmp_path),
+        "CHUB_ACTIVITY_SOURCE": "terminal",
     }
 
     for event, expected in (
@@ -65,3 +67,33 @@ def test_codex_hook_records_turn_activity(tmp_path: Path) -> None:
             (tmp_path / "chub-session-id.json").read_text(encoding="utf-8")
         )
         assert result["activity"] == expected
+        assert result["activity_source"] == (
+            "terminal" if expected == "working" else "none"
+        )
+
+
+def test_codex_hook_attributes_quick_interaction_activity(tmp_path: Path) -> None:
+    script = Path(__file__).parents[1] / "scripts" / "chub-codex-hook"
+    subprocess.run(
+        [str(script)],
+        input=json.dumps(
+            {
+                "session_id": "codex-session-id",
+                "hook_event_name": "UserPromptSubmit",
+            }
+        ),
+        text=True,
+        check=True,
+        env={
+            **os.environ,
+            "CHUB_PTY_SESSION_ID": "chub-session-id",
+            "CHUB_PTY_HOOK_DIR": str(tmp_path),
+            "CHUB_ACTIVITY_SOURCE": "quick",
+        },
+    )
+
+    result = json.loads(
+        (tmp_path / "chub-session-id.json").read_text(encoding="utf-8")
+    )
+    assert result["activity"] == "working"
+    assert result["activity_source"] == "quick"

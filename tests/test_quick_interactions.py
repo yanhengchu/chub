@@ -1,4 +1,5 @@
 import json
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -69,6 +70,9 @@ def test_restart_marks_running_task_failed_and_persists_state(tmp_path: Path) ->
     persisted = json.loads(state.read_text(encoding="utf-8"))
     assert persisted[0]["status"] == "failed"
     assert persisted[0]["error"] == "服务重启时任务未完成。"
+    quick_interactions.codex_manager.recover_interrupted_quick_interaction.assert_called_once_with(
+        "session-1"
+    )
 
 
 def test_list_for_session_returns_latest_first(tmp_path: Path) -> None:
@@ -109,6 +113,42 @@ def test_active_sessions_reports_only_running_session_ids(tmp_path: Path) -> Non
     active = quick_interactions.active_sessions()
 
     assert active == {"session-1": task.updated_at}
+
+
+def test_is_running_reports_session_input_lock(tmp_path: Path) -> None:
+    quick_interactions = manager(tmp_path)
+
+    assert quick_interactions.is_running("session-1") is False
+    quick_interactions._running_sessions.add("session-1")
+    assert quick_interactions.is_running("session-1") is True
+
+
+def test_terminal_input_guard_serializes_session_operations(tmp_path: Path) -> None:
+    quick_interactions = manager(tmp_path)
+    entered = threading.Event()
+
+    def enter_session_operation() -> None:
+        with quick_interactions.session_operation_guard("session-1"):
+            entered.set()
+
+    with quick_interactions.terminal_input_guard("session-1") as allowed:
+        assert allowed is True
+        worker = threading.Thread(target=enter_session_operation)
+        worker.start()
+        assert entered.wait(0.05) is False
+
+    worker.join(timeout=1)
+    assert entered.is_set()
+
+
+def test_terminal_input_guard_rejects_input_during_quick_interaction(
+    tmp_path: Path,
+) -> None:
+    quick_interactions = manager(tmp_path)
+    quick_interactions._running_sessions.add("session-1")
+
+    with quick_interactions.terminal_input_guard("session-1") as allowed:
+        assert allowed is False
 
 
 def test_local_history_retains_at_most_thirty_tasks(tmp_path: Path) -> None:
@@ -218,6 +258,7 @@ def test_local_history_keeps_finished_task_until_session_cleanup(
 def test_submit_rechecks_terminal_status(tmp_path: Path) -> None:
     quick_interactions = manager(tmp_path)
     quick_interactions.codex_manager.get_session.return_value.status = "running"
+    quick_interactions.codex_manager.get_session.return_value.activity = "working"
 
     with pytest.raises(ApiError) as error:
         quick_interactions.submit(
@@ -227,7 +268,49 @@ def test_submit_rechecks_terminal_status(tmp_path: Path) -> None:
             source_ip="127.0.0.1",
         )
 
-    assert error.value.code == "quick_interaction_terminal_active"
+    assert error.value.code == "quick_interaction_terminal_working"
+
+
+def test_submit_rejects_session_error(tmp_path: Path) -> None:
+    quick_interactions = manager(tmp_path)
+    session = quick_interactions.codex_manager.get_session.return_value
+    session.status = "error"
+    session.activity = "unknown"
+
+    with pytest.raises(ApiError) as error:
+        quick_interactions.submit(
+            "session-1",
+            "检查状态",
+            operation_id="operation-1",
+            source_ip="127.0.0.1",
+        )
+
+    assert error.value.code == "quick_interaction_session_error"
+
+
+def test_submit_allows_idle_running_terminal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    quick_interactions = manager(tmp_path)
+    session = quick_interactions.codex_manager.get_session.return_value
+    session.status = "running"
+    session.activity = "idle"
+    thread = MagicMock()
+    monkeypatch.setattr(
+        "app.codex.quick_interactions.threading.Thread",
+        MagicMock(return_value=thread),
+    )
+
+    task = quick_interactions.submit(
+        "session-1",
+        "检查状态",
+        operation_id="operation-1",
+        source_ip="127.0.0.1",
+    )
+
+    assert task.status == "requested"
+    thread.start.assert_called_once()
 
 
 def test_session_operation_rejects_running_quick_interaction(tmp_path: Path) -> None:

@@ -17,9 +17,11 @@ import psutil
 
 from app.codex.discovery import CodexSessionDiscovery
 from app.codex.models import (
+    ActivitySource,
     CodexSession,
     PermissionMode,
     SessionInfo,
+    TurnActivity,
     WorkspaceInfo,
     utc_now,
 )
@@ -168,6 +170,7 @@ class CodexPtyManager:
             session.status = "running"
             if not tmux_was_running:
                 session.activity = "unknown"
+                session.activity_source = "none"
                 session.active_permission_mode = session.permission_mode
             session.error = None
             session.updated_at = utc_now()
@@ -206,6 +209,9 @@ class CodexPtyManager:
                     )
             self._stop_backend(session)
             session.status = "stopped"
+            if session.activity_source == "terminal":
+                session.activity = "idle"
+                session.activity_source = "none"
             session.active_permission_mode = None
             session.error = None
             session.updated_at = utc_now()
@@ -230,6 +236,35 @@ class CodexPtyManager:
             if session is None or session.updated_at >= updated_at:
                 return
             session.updated_at = updated_at
+            self.store.save(session)
+
+    def set_activity(
+        self,
+        session_id: str,
+        activity: TurnActivity,
+        source: ActivitySource,
+        *,
+        updated_at: datetime | None = None,
+    ) -> None:
+        if (activity == "working") != (source != "none"):
+            raise ValueError("Working activity requires a source; other activity must not have one")
+        with self._lock:
+            session = self.store.get(session_id)
+            if session is None:
+                raise ApiError(404, "codex_session_not_found", "Codex session not found")
+            session.activity = activity
+            session.activity_source = source
+            session.updated_at = max(session.updated_at, updated_at or utc_now())
+            self.store.save(session)
+
+    def recover_interrupted_quick_interaction(self, session_id: str) -> None:
+        with self._lock:
+            session = self.store.get(session_id)
+            if session is None or session.activity_source != "quick":
+                return
+            session.activity = "unknown" if session.status == "running" else "idle"
+            session.activity_source = "none"
+            session.updated_at = utc_now()
             self.store.save(session)
 
     def update_permission_and_stop(
@@ -346,6 +381,7 @@ class CodexPtyManager:
             codex_session_id=session.codex_session_id,
             status=session.status,
             activity=session.activity,
+            activity_source=session.activity_source,
             permission_mode=session.permission_mode,
             active_permission_mode=session.active_permission_mode,
             permission_pending=(
@@ -371,14 +407,24 @@ class CodexPtyManager:
         session = self.store.get(session_id)
         codex_session_id = payload.get("codex_session_id")
         activity = payload.get("activity")
+        activity_source = payload.get("activity_source", "terminal")
         changed = False
         if session and isinstance(codex_session_id, str) and codex_session_id:
             if session.codex_session_id != codex_session_id:
                 session.codex_session_id = codex_session_id
                 changed = True
         if session and activity in {"working", "idle"}:
-            if session.activity != activity:
+            expected_source = (
+                activity_source
+                if activity == "working" and activity_source in {"terminal", "quick"}
+                else "none"
+            )
+            if (
+                session.activity != activity
+                or session.activity_source != expected_source
+            ):
                 session.activity = activity
+                session.activity_source = expected_source
                 changed = True
         if session and changed:
             session.updated_at = utc_now()
@@ -625,6 +671,7 @@ class CodexPtyManager:
             refreshed = self.store.get(session.id)
             if refreshed and refreshed.status == "running":
                 refreshed.activity = "unknown"
+                refreshed.activity_source = "none"
                 self.store.save(refreshed)
 
     def _sync_native_sessions(self) -> None:

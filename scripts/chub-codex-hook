@@ -32,6 +32,12 @@ def main() -> int:
     }.get(event)
     if activity is None:
         return 0
+    requested_source = os.environ.get("CHUB_ACTIVITY_SOURCE", "terminal")
+    activity_source = (
+        requested_source
+        if activity == "working" and requested_source in {"terminal", "quick"}
+        else "none"
+    )
 
     directory = Path(hook_dir).expanduser()
     directory.mkdir(parents=True, exist_ok=True)
@@ -45,6 +51,7 @@ def main() -> int:
                 "cwd": payload.get("cwd"),
                 "source": payload.get("source"),
                 "activity": activity,
+                "activity_source": activity_source,
             }
         ),
         encoding="utf-8",

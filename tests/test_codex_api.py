@@ -120,7 +120,7 @@ def quick_task() -> QuickInteractionTask:
 
 
 @pytest.mark.anyio
-async def test_quick_interaction_stops_idle_unconnected_terminal(
+async def test_quick_interaction_keeps_idle_unconnected_terminal_running(
     settings: Settings,
 ) -> None:
     app = create_app(settings)
@@ -152,7 +152,8 @@ async def test_quick_interaction_stops_idle_unconnected_terminal(
         )
 
     assert response.status_code == 200
-    manager.stop_session.assert_called_once_with("session-1")
+    manager.stop_session.assert_not_called()
+    app.state.terminal_connections.close_session.assert_not_called()
     quick_interactions.submit.assert_called_once()
 
 
@@ -161,7 +162,6 @@ async def test_quick_interaction_stops_idle_unconnected_terminal(
     ("activity", "connected", "confirm", "expected_code"),
     [
         ("working", False, False, "quick_interaction_terminal_working"),
-        ("idle", True, False, "quick_interaction_terminal_connected"),
         (
             "unknown",
             False,
@@ -220,6 +220,43 @@ async def test_quick_interaction_rejects_unsafe_terminal_switch(
 
 
 @pytest.mark.anyio
+async def test_quick_interaction_keeps_idle_connected_terminal_running(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    manager = MagicMock()
+    manager.get_session.return_value = CodexSession(
+        id="session-1",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd=Path("/workspace/chub"),
+        codex_session_id="codex-session-1",
+        status="running",
+        activity="idle",
+        permission_mode="auto-review",
+    )
+    quick_interactions = MagicMock()
+    quick_interactions.submit.return_value = quick_task()
+    app.state.codex_pty_manager = manager
+    app.state.quick_interactions = quick_interactions
+    app.state.terminal_connections = MagicMock()
+    app.state.terminal_connections.has_active_connection.return_value = True
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/codex/sessions/session-1/quick-interactions",
+            headers=authorization(settings),
+            json={"prompt": "检查状态"},
+        )
+
+    assert response.status_code == 200
+    manager.stop_session.assert_not_called()
+    app.state.terminal_connections.close_session.assert_not_called()
+    quick_interactions.submit.assert_called_once()
+
+
+@pytest.mark.anyio
 async def test_quick_interaction_confirmed_unknown_terminal_is_stopped(
     settings: Settings,
 ) -> None:
@@ -258,7 +295,7 @@ async def test_quick_interaction_confirmed_unknown_terminal_is_stopped(
 
 
 @pytest.mark.anyio
-async def test_quick_interaction_rechecks_idle_terminal_before_stopping(
+async def test_quick_interaction_rejects_if_idle_terminal_starts_working_on_submit(
     settings: Settings,
 ) -> None:
     app = create_app(settings)
@@ -273,11 +310,13 @@ async def test_quick_interaction_rechecks_idle_terminal_before_stopping(
         activity="idle",
         permission_mode="auto-review",
     )
-    manager.get_session.side_effect = [
-        base,
-        base.model_copy(update={"activity": "working"}),
-    ]
+    manager.get_session.return_value = base
     quick_interactions = MagicMock()
+    quick_interactions.submit.side_effect = ApiError(
+        409,
+        "quick_interaction_terminal_working",
+        "实时终端正在执行，请等待当前任务结束。",
+    )
     app.state.codex_pty_manager = manager
     app.state.quick_interactions = quick_interactions
     app.state.terminal_connections = MagicMock()
@@ -294,7 +333,7 @@ async def test_quick_interaction_rechecks_idle_terminal_before_stopping(
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "quick_interaction_terminal_working"
     manager.stop_session.assert_not_called()
-    quick_interactions.submit.assert_not_called()
+    quick_interactions.submit.assert_called_once()
 
 
 @pytest.mark.anyio
@@ -380,6 +419,33 @@ async def test_access_revokes_old_session_tickets_before_issuing_new_one(
 
 
 @pytest.mark.anyio
+async def test_access_rejects_running_quick_interaction(settings: Settings) -> None:
+    app = create_app(settings)
+    manager = MagicMock()
+    quick_interactions = MagicMock()
+    guard = MagicMock()
+    guard.__enter__.side_effect = ApiError(
+        409,
+        "quick_interaction_in_progress",
+        "该会话正在执行快速交互，请等待任务结束。",
+    )
+    quick_interactions.terminal_access_guard.return_value = guard
+    app.state.codex_pty_manager = manager
+    app.state.quick_interactions = quick_interactions
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/codex/sessions/session-1/access",
+            headers=authorization(settings),
+        )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "quick_interaction_in_progress"
+    manager.ensure_terminal.assert_not_called()
+
+
+@pytest.mark.anyio
 async def test_archive_session_revokes_access_and_calls_manager(
     settings: Settings,
 ) -> None:
@@ -417,6 +483,8 @@ async def test_archive_session_rejects_running_quick_interaction(
     quick_interactions.session_operation_guard.return_value = guard
     app.state.codex_pty_manager = manager
     app.state.quick_interactions = quick_interactions
+    app.state.terminal_tickets = MagicMock()
+    app.state.terminal_connections = MagicMock()
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -428,6 +496,65 @@ async def test_archive_session_rejects_running_quick_interaction(
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "quick_interaction_in_progress"
     manager.archive_session.assert_not_called()
+    app.state.terminal_tickets.revoke_session.assert_not_called()
+    app.state.terminal_connections.close_session.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_delete_session_rejects_running_quick_without_closing_terminal(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    guard = MagicMock()
+    guard.__enter__.side_effect = ApiError(
+        409,
+        "quick_interaction_in_progress",
+        "该会话正在执行快速交互，请等待任务结束。",
+    )
+    app.state.quick_interactions = MagicMock()
+    app.state.quick_interactions.session_operation_guard.return_value = guard
+    app.state.codex_pty_manager = MagicMock()
+    app.state.terminal_tickets = MagicMock()
+    app.state.terminal_connections = MagicMock()
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.delete(
+            "/api/codex/sessions/session-1",
+            headers=authorization(settings),
+        )
+
+    assert response.status_code == 409
+    app.state.codex_pty_manager.delete_session.assert_not_called()
+    app.state.terminal_tickets.revoke_session.assert_not_called()
+    app.state.terminal_connections.close_session.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_update_permission_rejects_running_quick_interaction(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    guard = MagicMock()
+    guard.__enter__.side_effect = ApiError(
+        409,
+        "quick_interaction_in_progress",
+        "该会话正在执行快速交互，请等待任务结束。",
+    )
+    app.state.quick_interactions = MagicMock()
+    app.state.quick_interactions.session_operation_guard.return_value = guard
+    app.state.codex_pty_manager = MagicMock()
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.patch(
+            "/api/codex/sessions/session-1/permission",
+            headers=authorization(settings),
+            json={"permission_mode": "auto-review"},
+        )
+
+    assert response.status_code == 409
+    app.state.codex_pty_manager.update_permission_and_stop.assert_not_called()
 
 
 @pytest.mark.anyio

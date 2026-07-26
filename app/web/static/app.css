@@ -11,6 +11,8 @@
   --accent-dark: #0f4f37;
   --danger: #a1372b;
   --warning: #956214;
+  --page-top-space: 1.25rem;
+  --content-card-top-space: 0.75rem;
 }
 
 * {
@@ -77,7 +79,7 @@ footer {
   display: flex;
   align-items: end;
   justify-content: space-between;
-  padding: 2rem 0 1.25rem;
+  padding: var(--page-top-space) 0 1.25rem;
 }
 
 .site-header-title {
@@ -641,12 +643,12 @@ input[type="password"] {
 
 .document-detail-card {
   max-width: 900px;
-  margin-top: 2rem;
+  margin-top: var(--content-card-top-space);
   margin-inline: auto;
 }
 
 .standalone-list-card {
-  margin-top: 2rem;
+  margin-top: var(--content-card-top-space);
 }
 
 .markdown-body {
@@ -834,7 +836,7 @@ select {
 }
 
 .log-detail-card {
-  margin-top: 1rem;
+  margin-top: var(--content-card-top-space);
 }
 
 .log-detail-toolbar label {
@@ -1002,16 +1004,91 @@ pre {
   color: var(--muted);
 }
 
-.quick-interaction-dialog textarea {
+.quick-interaction-page {
+  display: grid;
+  gap: 1rem;
+  margin-top: var(--content-card-top-space);
+}
+
+.quick-interaction-composer {
+  display: grid;
+  gap: 0.85rem;
+  margin-top: 0;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 1rem;
+  background: white;
+}
+
+.quick-interaction-composer-body {
+  display: grid;
+  grid-template-rows: 1fr;
+  min-height: 0;
+  opacity: 1;
+  transition: grid-template-rows 180ms ease, opacity 140ms ease;
+}
+
+.quick-interaction-composer-body-inner {
+  display: grid;
+  gap: 0.85rem;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.quick-interaction-composer.is-collapsed {
+  gap: 0;
+}
+
+.quick-interaction-composer.is-collapsed .quick-interaction-composer-body {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.quick-interaction-page-heading,
+.quick-interaction-section-heading {
+  display: block;
+}
+
+.quick-interaction-page-heading {
+  cursor: pointer;
+}
+
+.quick-interaction-page-heading:focus-visible {
+  border-radius: 8px;
+  outline: 3px solid rgba(23, 107, 74, 0.25);
+  outline-offset: 3px;
+}
+
+.quick-interaction-page-heading h1,
+.quick-interaction-section-heading h2 {
+  margin: 0;
+}
+
+.quick-interaction-page-heading h1 {
+  font-size: 1.2rem;
+  letter-spacing: 0;
+  line-height: 1.2;
+}
+
+.quick-interaction-page-heading .section-description {
+  margin-top: 0.3rem;
+}
+
+.quick-interaction-composer textarea {
   display: block;
   width: 100%;
   min-height: 8rem;
-  margin-top: 0.85rem;
+  margin: 0;
   resize: vertical;
 }
 
-.quick-interaction-submit {
-  flex: none;
+.quick-interaction-composer-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.quick-interaction-composer-actions > button {
   min-height: 36px;
   padding: 0.4rem 0.75rem;
   white-space: nowrap;
@@ -1024,10 +1101,16 @@ pre {
   line-height: 1.5;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .quick-interaction-composer-body {
+    transition: none;
+  }
+}
+
 .quick-interaction-history-card {
   display: grid;
   gap: 0.85rem;
-  padding: 1rem 0;
+  padding: 0;
 }
 
 .quick-interaction-history-heading {
@@ -1187,9 +1270,16 @@ pre {
 
 .session-permission-panel {
   grid-column: 1;
-  display: grid;
-  justify-items: start;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
   gap: 0.2rem;
+}
+
+.session-entry-mode {
+  border-color: #aeb6c5;
+  color: #4c5668;
+  background: #eef1f5;
 }
 
 .session-permission {
@@ -1428,9 +1518,13 @@ footer {
 
   .session-permission-panel {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     justify-content: flex-start;
-    flex-direction: column;
+    flex-wrap: wrap;
+  }
+
+  .quick-interaction-composer-actions > button {
+    width: 100%;
   }
 
   .design-document-meta {
@@ -1481,8 +1575,8 @@ footer {
 }
 
 @media (min-width: 760px) {
-  .site-header {
-    padding-top: 3rem;
+  :root {
+    --page-top-space: 1.5rem;
   }
 
   .card {

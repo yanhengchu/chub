@@ -201,38 +201,35 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert 'document.addEventListener("visibilitychange"' in script.text
     assert "stopCodexSession" in script.text
     assert "archiveCodexSession" in script.text
-    assert 'quickInteraction.textContent = "快速交互"' in script.text
-    assert 'interactionHistory.textContent = "交互记录"' in script.text
+    assert 'quickInteraction.textContent = "快速交互"' not in script.text
+    assert 'interactionHistory.textContent = "交互记录"' not in script.text
+    assert "CODEX_ENTRY_MODE_KEY" in script.text
+    assert "openCodexEntryDialog" not in script.text
+    assert "toggleCodexEntryMode" in script.text
+    assert "updateCodexEntryButton" in script.text
+    assert "点击切换为" in script.text
     assert "快速交互已提交" not in script.text
-    assert "quick-interaction-submit" in script.text
-    assert "confirm_stop_unknown_terminal" in script.text
-    assert "点击执行会先停止当前实时会话" in script.text
-    assert "请确认影响后再次点击执行" in script.text
+    assert "quick-interaction-submit" not in script.text
+    assert "confirm_stop_unknown_terminal" not in script.text
     assert "unknownConfirmationInput" not in script.text
-    assert 'close.textContent = "关闭"' not in script.text
-    assert 'cancel.textContent = "取消"' not in script.text
     assert "removeCodexSession" not in script.text
     assert "renderCodexWorkspaces" in script.text
     assert "renderCodexSessions" in script.text
-    assert "会话运行中 · 等待输入" in script.text
-    assert "会话运行中 · 执行中" in script.text
-    assert "会话运行中 · 状态未知" in script.text
+    assert "会话 · 等待输入" in script.text
+    assert "实时终端 · 执行中" in script.text
     assert "快速交互 · 执行中" in script.text
-    assert (
-        script.text.index('quickInteractionRunning\n      ? "快速交互 · 执行中"')
-        < script.text.index('session.error\n        ? "终端访问异常 · 可重试"')
-    )
-    assert "会话已停止 · 可恢复" in script.text
+    assert "会话 · 状态未知" in script.text
     assert "尚未启动 · 可进入" in script.text
     assert "终端访问异常 · 可重试" in script.text
     assert "会话异常 · 可重试" in script.text
     assert "CODEX_POLL_FAST_MS = 2000" in script.text
     assert "CODEX_POLL_SLOW_MS = 8000" in script.text
     assert "CODEX_POLL_SLOW_AFTER_MS = 2 * 60 * 1000" in script.text
-    assert 'session.status === "running" && session.activity === "working"' in polling_script.text
+    assert 'session.activity === "working"' in polling_script.text
     assert "loadCodexSessions({ background: true })" in script.text
     assert "loadCodexSessions({ force: true })" in script.text
     assert "session.quick_interaction_running" in script.text
+    assert "permission.disabled = quickInteractionRunning" in script.text
     assert "archive.disabled = !session.codex_session_id || quickInteractionRunning" in script.text
     assert "codexLoadPromise" in script.text
     assert "codexMutationCount" in script.text
@@ -265,11 +262,6 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "previousInstanceId" in script.text
     assert "Chub 已重启并恢复连接" in script.text
     assert "/api/codex/restart" not in script.text
-    assert 'window.matchMedia("(pointer: coarse)")' in script.text
-    assert "window.visualViewport" in script.text
-    assert "prompt.blur()" in script.text
-    assert "const duration = 220" in script.text
-    assert "window.requestAnimationFrame(step)" in script.text
     assert "/api/codex/sessions" in script.text
     assert "connection" in terminal_script.text
     assert "window.history.back()" not in terminal_script.text
@@ -292,6 +284,11 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "align-content: start" in stylesheet.text
     assert ".markdown-body > :first-child" in stylesheet.text
     assert ".message:empty" in stylesheet.text
+    assert "--page-top-space: 1.25rem" in stylesheet.text
+    assert "--page-top-space: 1.5rem" in stylesheet.text
+    assert "--content-card-top-space: 0.75rem" in stylesheet.text
+    assert "padding: var(--page-top-space) 0 1.25rem" in stylesheet.text
+    assert "margin-top: var(--content-card-top-space)" in stylesheet.text
 
 
 @pytest.mark.anyio
@@ -301,14 +298,25 @@ async def test_quick_interaction_history_page_is_available(settings: Settings) -
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         page = await client.get("/codex/session-1/quick-interactions")
         script = await client.get("/static/quick_interactions.js")
+        stylesheet = await client.get("/static/app.css")
 
     assert page.status_code == 200
     assert 'data-session-id="session-1"' in page.text
-    assert 'class="card quick-interaction-history-card"' not in page.text
     assert "返回首页" not in page.text
     assert script.status_code == 200
     assert "/quick-interactions" in script.text
     assert "task.prompt" in script.text
+    assert 'id="quick-interaction-form"' in page.text
+    assert 'id="quick-interaction-prompt"' in page.text
+    assert 'id="quick-interaction-submit"' in page.text
+    assert 'class="quick-interaction-composer-actions"' in page.text
+    assert 'id="quick-interaction-composer-body"' in page.text
+    assert page.text.index('id="quick-interaction-prompt"') < page.text.index(
+        'id="quick-interaction-submit"'
+    )
+    assert "confirm_stop_unknown_terminal" in script.text
+    assert "点击执行会先停止当前实时终端" in page.text
+    assert "请确认影响后再次点击执行" in script.text
     assert "任务仍在后台执行" not in script.text
     assert 'id="quick-interaction-load-more"' in page.text
     assert "PAGE_SIZE = 3" in script.text
@@ -316,7 +324,25 @@ async def test_quick_interaction_history_page_is_available(settings: Settings) -
     assert "加载更多" in page.text
     assert "let loadQueue = Promise.resolve()" in script.text
     assert "appendPending" in script.text
-    assert "quick-interaction-session" not in page.text
+    assert "Promise.allSettled" in script.text
+    assert "renderSessionLoadError" in script.text
+    assert 'id="quick-interaction-session-meta"' in page.text
+    assert 'request("/api/codex/sessions")' in script.text
+    assert "快速交互执行中" not in script.text
+    assert "sessionMeta.textContent = title" in script.text
+    assert ".quick-interaction-page-heading h1" in stylesheet.text
+    assert "item.dataset.taskId = task.id" in script.text
+    assert "item.dataset.taskSignature === signature" in script.text
+    assert "history.replaceChildren();" not in script.text
+    assert "setComposerCollapsed(true)" in script.text
+    assert "if (!composerStateInitialized)" in script.text
+    assert "setComposerCollapsed(session.quick_interaction_running === true)" in script.text
+    assert 'form.classList.toggle("is-collapsed", collapsed)' in script.text
+    assert 'composerHeading.setAttribute("aria-expanded", String(!collapsed))' in script.text
+    assert "window.requestAnimationFrame(preserveAnchor)" in script.text
+    assert ".quick-interaction-composer.is-collapsed" in stylesheet.text
+    assert "prefers-reduced-motion: reduce" in stylesheet.text
+    assert "await loadSession()" in script.text
 
 
 @pytest.mark.anyio
