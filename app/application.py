@@ -16,6 +16,7 @@ from app.api.health import router as health_router
 from app.api.automations import router as automations_router
 from app.api.logs import router as logs_router
 from app.api.maintenance import router as maintenance_router
+from app.api.openclaw import router as openclaw_router
 from app.api.project_documents import router as project_documents_router
 from app.api.status import router as status_router
 from app.codex.connections import TerminalConnectionRegistry
@@ -37,6 +38,7 @@ from app.core.response import (
     internal_error_handler,
     validation_error_handler,
 )
+from app.services.openclaw import OpenClawManager
 from app.web.routes import STATIC_DIR, router as web_router
 
 
@@ -118,6 +120,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     quick_interactions = QuickInteractionManager(
         resolved_settings.codex_pty.data_file,
         codex_pty_manager,
+        timeout_seconds=resolved_settings.codex_pty.quick_interaction_timeout_seconds,
     )
 
     @asynccontextmanager
@@ -145,6 +148,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     application.state.terminal_connections = TerminalConnectionRegistry()
     application.state.automation_manager = AutomationManager(resolved_settings)
+    application.state.openclaw_manager = OpenClawManager()
     application.add_middleware(SecurityHeadersMiddleware)
     application.add_exception_handler(ApiError, api_error_handler)
     application.add_exception_handler(
@@ -157,6 +161,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(automations_router)
     application.include_router(logs_router)
     application.include_router(maintenance_router)
+    application.include_router(openclaw_router)
     application.include_router(project_documents_router)
     application.include_router(status_router)
     application.include_router(codex_api_router)

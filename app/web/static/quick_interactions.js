@@ -17,6 +17,7 @@ const loadMore = document.querySelector("#quick-interaction-load-more");
 const PAGE_SIZE = 3;
 const COMPOSER_COLLAPSE_ANIMATION_MS = 320;
 const COMPOSER_COLLAPSE_FALLBACK_MS = 380;
+const LONG_RUNNING_THRESHOLD_MS = 10 * 60 * 1000;
 let pollTimer = null;
 let loadedTasks = [];
 let totalTasks = 0;
@@ -42,7 +43,13 @@ function formatTime(value) {
     : date.toLocaleString("zh-CN", { hour12: false });
 }
 
-function statusText(status) {
+function statusText(task) {
+  if (
+    task.status === "running"
+    && Date.now() - new Date(task.created_at).getTime() >= LONG_RUNNING_THRESHOLD_MS
+  ) {
+    return "执行时间较长，仍在运行";
+  }
   return {
     requested: "等待执行",
     running: "执行中",
@@ -50,7 +57,7 @@ function statusText(status) {
     failed: "执行失败",
     timed_out: "执行超时",
     needs_terminal: "需要实时终端",
-  }[status] || status;
+  }[task.status] || task.status;
 }
 
 async function request(path, options = {}) {
@@ -83,6 +90,8 @@ function taskSignature(task) {
     task.prompt,
     task.result,
     task.error,
+    task.pinned_at,
+    statusText(task),
   ]);
 }
 
@@ -97,18 +106,28 @@ function updateTaskItem(item, task) {
   {
     const heading = document.createElement("div");
     const status = document.createElement("strong");
+    const meta = document.createElement("div");
     const time = document.createElement("span");
+    const pinButton = document.createElement("button");
     const promptLabel = document.createElement("span");
     const promptContent = document.createElement("pre");
     item.className = `quick-interaction-history-item quick-interaction-${task.status}`;
     heading.className = "quick-interaction-history-heading";
-    status.textContent = statusText(task.status);
+    meta.className = "quick-interaction-history-meta";
+    status.textContent = statusText(task);
     time.textContent = formatTime(task.updated_at);
+    pinButton.className = "button-secondary quick-interaction-pin";
+    pinButton.type = "button";
+    pinButton.textContent = task.pinned_at ? "取消置顶" : "置顶";
+    pinButton.setAttribute("aria-label", pinButton.textContent);
+    pinButton.setAttribute("aria-pressed", String(Boolean(task.pinned_at)));
+    pinButton.addEventListener("click", () => setTaskPinned(task, pinButton));
     promptLabel.className = "quick-interaction-history-label";
     promptLabel.textContent = "提交内容";
     promptContent.className = "quick-interaction-history-content";
     promptContent.textContent = task.prompt || "历史任务未保存提交内容。";
-    heading.append(status, time);
+    meta.append(time, pinButton);
+    heading.append(status, meta);
     item.append(heading, promptLabel, promptContent);
     if (task.result || task.error) {
       const resultLabel = document.createElement("span");
@@ -119,6 +138,32 @@ function updateTaskItem(item, task) {
       result.textContent = task.result || task.error;
       item.append(resultLabel, result);
     }
+  }
+}
+
+async function setTaskPinned(task, button) {
+  button.disabled = true;
+  try {
+    await request(
+      `/api/codex/sessions/${encodeURIComponent(sessionId)}`
+      + `/quick-interactions/${encodeURIComponent(task.id)}/pin`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pinned: !task.pinned_at }),
+      },
+    );
+    loadedTasks = [];
+    totalTasks = 0;
+    await load();
+    showMessage(historyMessage, "");
+  } catch (error) {
+    button.disabled = false;
+    showMessage(
+      historyMessage,
+      error.message || "置顶状态更新失败。",
+      "error",
+    );
   }
 }
 

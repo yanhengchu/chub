@@ -20,16 +20,22 @@ from app.services.operation_log import write_operation
 
 MAX_RESULT_BYTES = 100_000
 MAX_EVENT_BYTES = 1_000_000
-TIMEOUT_SECONDS = 10 * 60
 MAX_STORED_TASKS = 30
 LOGGER = logging.getLogger("hub.codex.quick_interactions")
 
 
 class QuickInteractionManager:
-    def __init__(self, data_file: Path, codex_manager) -> None:
+    def __init__(
+        self,
+        data_file: Path,
+        codex_manager,
+        *,
+        timeout_seconds: int = 6 * 60 * 60,
+    ) -> None:
         self.path = data_file.with_name("codex-quick-interactions.json")
         self.result_dir = self.path.with_suffix("")
         self.codex_manager = codex_manager
+        self.timeout_seconds = timeout_seconds
         self._lock = threading.RLock()
         self._tasks: dict[str, QuickInteractionTask] = {}
         self._running_sessions: set[str] = set()
@@ -169,7 +175,51 @@ class QuickInteractionManager:
                 for task in self._tasks.values()
                 if task.session_id == session_id
             ]
-        return sorted(tasks, key=lambda item: item.created_at, reverse=True)
+        if not tasks:
+            return []
+        latest = max(tasks, key=lambda item: (item.created_at, item.id))
+        pinned = sorted(
+            (
+                task
+                for task in tasks
+                if task.id != latest.id and task.pinned_at is not None
+            ),
+            key=lambda item: (item.pinned_at, item.created_at, item.id),
+            reverse=True,
+        )
+        ordinary = sorted(
+            (
+                task
+                for task in tasks
+                if task.id != latest.id and task.pinned_at is None
+            ),
+            key=lambda item: (item.created_at, item.id),
+            reverse=True,
+        )
+        return [latest, *pinned, *ordinary]
+
+    def set_pinned(
+        self,
+        session_id: str,
+        task_id: str,
+        pinned: bool,
+    ) -> QuickInteractionTask:
+        self.codex_manager.get_session(session_id)
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None or task.session_id != session_id:
+                raise ApiError(
+                    404,
+                    "quick_interaction_not_found",
+                    "快速交互任务不存在。",
+                )
+            if pinned and task.pinned_at is None:
+                task.pinned_at = utc_now()
+                self._write()
+            elif not pinned and task.pinned_at is not None:
+                task.pinned_at = None
+                self._write()
+            return task.model_copy(deep=True)
 
     def active_sessions(self) -> dict[str, datetime]:
         with self._lock:
@@ -223,7 +273,10 @@ class QuickInteractionManager:
                 )
                 with self._lock:
                     self._processes[task_id] = process
-                process.communicate(input=prompt.encode("utf-8"), timeout=TIMEOUT_SECONDS)
+                process.communicate(
+                    input=prompt.encode("utf-8"),
+                    timeout=self.timeout_seconds,
+                )
             if process.returncode != 0:
                 error = self._json_error(event_path) or self._read_tail(error_path, 2000)
                 self._finish(task_id, "failed", error or "Codex 执行失败。")
@@ -232,7 +285,11 @@ class QuickInteractionManager:
             self._finish(task_id, "succeeded", result or "Codex 未返回最终结果。")
         except subprocess.TimeoutExpired:
             self._kill_process(process)
-            self._finish(task_id, "timed_out", "Codex 执行超时。")
+            self._finish(
+                task_id,
+                "timed_out",
+                f"Codex 已达到配置的执行上限（{self.timeout_seconds} 秒）。",
+            )
         except Exception:
             self._finish(task_id, "failed", "快速交互执行失败。")
         finally:
@@ -379,12 +436,30 @@ class QuickInteractionManager:
     def _write(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if len(self._tasks) > MAX_STORED_TASKS:
-            active = [
+            sessions_with_pinned = {
+                task.session_id
+                for task in self._tasks.values()
+                if task.pinned_at is not None
+            }
+            latest_by_session: dict[str, QuickInteractionTask] = {}
+            for task in self._tasks.values():
+                if task.session_id not in sessions_with_pinned:
+                    continue
+                latest = latest_by_session.get(task.session_id)
+                if latest is None or (task.created_at, task.id) > (
+                    latest.created_at,
+                    latest.id,
+                ):
+                    latest_by_session[task.session_id] = task
+            latest_task_ids = {task.id for task in latest_by_session.values()}
+            protected = [
                 task
                 for task in self._tasks.values()
                 if (
                     task.status in {"requested", "running"}
                     or task.id in self._active_task_ids
+                    or task.pinned_at is not None
+                    or task.id in latest_task_ids
                 )
             ]
             completed = sorted(
@@ -394,12 +469,16 @@ class QuickInteractionManager:
                     if (
                         task.status not in {"requested", "running"}
                         and task.id not in self._active_task_ids
+                        and task.pinned_at is None
+                        and task.id not in latest_task_ids
                     )
                 ),
                 key=lambda item: item.updated_at,
                 reverse=True,
             )
-            retained = active + completed[:max(0, MAX_STORED_TASKS - len(active))]
+            retained = protected + completed[
+                :max(0, MAX_STORED_TASKS - len(protected))
+            ]
             self._tasks = {item.id: item for item in retained}
         temporary = self.path.with_suffix(".tmp")
         temporary.write_text(

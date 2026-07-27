@@ -2,6 +2,7 @@
 
 const CARD_RETURN_REFRESHERS = {
   codex: () => loadCodexSessions(),
+  openclaw: () => loadOpenClaw(),
   "project-docs": () => loadProjectDocuments(),
 };
 

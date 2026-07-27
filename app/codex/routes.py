@@ -16,6 +16,7 @@ from starlette.websockets import WebSocketDisconnect
 from app.codex.models import (
     QuickInteractionData,
     QuickInteractionListData,
+    QuickInteractionPinRequest,
     QuickInteractionRequest,
     SessionAccessData,
     SessionCreateRequest,
@@ -284,6 +285,24 @@ def list_quick_interactions(
             has_more=offset + len(page) < len(tasks),
         )
     )
+
+
+@api_router.patch(
+    "/sessions/{session_id}/quick-interactions/{task_id}/pin",
+    response_model=ApiResponse[QuickInteractionData],
+)
+def set_quick_interaction_pinned(
+    session_id: str,
+    task_id: str,
+    payload: QuickInteractionPinRequest,
+    request: Request,
+) -> ApiResponse[QuickInteractionData]:
+    task = request.app.state.quick_interactions.set_pinned(
+        session_id,
+        task_id,
+        payload.pinned,
+    )
+    return ApiResponse(data=QuickInteractionData(task=task))
 
 
 @api_router.patch(

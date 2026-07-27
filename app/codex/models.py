@@ -139,6 +139,12 @@ class QuickInteractionRequest(BaseModel):
         return resolved
 
 
+class QuickInteractionPinRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pinned: bool
+
+
 class QuickInteractionTask(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -148,6 +154,7 @@ class QuickInteractionTask(BaseModel):
     status: QuickInteractionStatus
     result: str | None = Field(default=None, max_length=100_000)
     error: str | None = Field(default=None, max_length=2000)
+    pinned_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 

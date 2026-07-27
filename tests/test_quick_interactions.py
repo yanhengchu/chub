@@ -1,5 +1,6 @@
 import json
 import threading
+from datetime import timedelta
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -23,6 +24,18 @@ def manager(tmp_path: Path) -> QuickInteractionManager:
     )
     codex_manager.hook_dir = tmp_path / "hooks"
     return QuickInteractionManager(tmp_path / "codex-sessions.json", codex_manager)
+
+
+def test_quick_interaction_timeout_is_configurable(tmp_path: Path) -> None:
+    quick_interactions = manager(tmp_path)
+    configured = QuickInteractionManager(
+        tmp_path / "custom-codex-sessions.json",
+        quick_interactions.codex_manager,
+        timeout_seconds=7_200,
+    )
+
+    assert quick_interactions.timeout_seconds == 21_600
+    assert configured.timeout_seconds == 7_200
 
 
 def test_json_error_extracts_turn_failure_and_redacts_bearer(tmp_path: Path) -> None:
@@ -95,6 +108,108 @@ def test_list_for_session_returns_latest_first(tmp_path: Path) -> None:
 
     assert [task.id for task in tasks] == ["newer", "older"]
     assert tasks[0].prompt == "较新"
+
+
+def test_list_for_session_keeps_latest_before_pinned_and_ordinary(
+    tmp_path: Path,
+) -> None:
+    quick_interactions = manager(tmp_path)
+    base = utc_now()
+    tasks = [
+        QuickInteractionTask(
+            id="older-pinned",
+            session_id="session-1",
+            prompt="较早置顶",
+            status="succeeded",
+            result="完成",
+            pinned_at=base + timedelta(minutes=4),
+            created_at=base,
+            updated_at=base,
+        ),
+        QuickInteractionTask(
+            id="newer-pinned",
+            session_id="session-1",
+            prompt="较晚置顶",
+            status="succeeded",
+            result="完成",
+            pinned_at=base + timedelta(minutes=5),
+            created_at=base + timedelta(minutes=1),
+            updated_at=base + timedelta(minutes=1),
+        ),
+        QuickInteractionTask(
+            id="ordinary",
+            session_id="session-1",
+            prompt="普通记录",
+            status="succeeded",
+            result="完成",
+            created_at=base + timedelta(minutes=2),
+            updated_at=base + timedelta(minutes=2),
+        ),
+        QuickInteractionTask(
+            id="latest",
+            session_id="session-1",
+            prompt="最新记录",
+            status="succeeded",
+            result="完成",
+            created_at=base + timedelta(minutes=3),
+            updated_at=base + timedelta(minutes=3),
+        ),
+    ]
+    quick_interactions._tasks = {task.id: task for task in tasks}
+
+    listed = quick_interactions.list_for_session("session-1")
+
+    assert [task.id for task in listed] == [
+        "latest",
+        "newer-pinned",
+        "older-pinned",
+        "ordinary",
+    ]
+
+
+def test_set_pinned_persists_and_can_be_cancelled(tmp_path: Path) -> None:
+    quick_interactions = manager(tmp_path)
+    task = QuickInteractionTask(
+        id="task-1",
+        session_id="session-1",
+        prompt="检查状态",
+        status="succeeded",
+        result="完成",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    quick_interactions._tasks = {task.id: task}
+
+    pinned = quick_interactions.set_pinned("session-1", task.id, True)
+
+    assert pinned.pinned_at is not None
+    persisted = json.loads(quick_interactions.path.read_text(encoding="utf-8"))
+    assert persisted[0]["pinned_at"] is not None
+
+    unpinned = quick_interactions.set_pinned("session-1", task.id, False)
+
+    assert unpinned.pinned_at is None
+    persisted = json.loads(quick_interactions.path.read_text(encoding="utf-8"))
+    assert persisted[0]["pinned_at"] is None
+
+
+def test_set_pinned_rejects_task_from_another_session(tmp_path: Path) -> None:
+    quick_interactions = manager(tmp_path)
+    task = QuickInteractionTask(
+        id="task-1",
+        session_id="another-session",
+        prompt="检查状态",
+        status="succeeded",
+        result="完成",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    quick_interactions._tasks = {task.id: task}
+
+    with pytest.raises(ApiError) as error:
+        quick_interactions.set_pinned("session-1", task.id, True)
+
+    assert error.value.code == "quick_interaction_not_found"
 
 
 def test_active_sessions_reports_only_running_session_ids(tmp_path: Path) -> None:
@@ -208,6 +323,79 @@ def test_local_history_never_prunes_active_tasks(tmp_path: Path) -> None:
 
     assert len(quick_interactions._tasks) == 30
     assert {task.id for task in active} <= quick_interactions._tasks.keys()
+
+
+def test_local_history_never_prunes_pinned_tasks(tmp_path: Path) -> None:
+    quick_interactions = manager(tmp_path)
+    pinned = QuickInteractionTask(
+        id="pinned",
+        session_id="session-1",
+        prompt="长期保留",
+        status="succeeded",
+        result="完成",
+        pinned_at=utc_now(),
+        created_at=utc_now() - timedelta(days=30),
+        updated_at=utc_now() - timedelta(days=30),
+    )
+    completed = [
+        QuickInteractionTask(
+            id=f"completed-{index}",
+            session_id="session-1",
+            prompt=f"完成任务 {index}",
+            status="succeeded",
+            result="完成",
+            created_at=utc_now() + timedelta(minutes=index),
+            updated_at=utc_now() + timedelta(minutes=index),
+        )
+        for index in range(30)
+    ]
+    quick_interactions._tasks = {
+        task.id: task
+        for task in [pinned, *completed]
+    }
+
+    quick_interactions._write()
+
+    assert len(quick_interactions._tasks) == 30
+    assert pinned.id in quick_interactions._tasks
+
+
+def test_local_history_keeps_latest_when_all_older_tasks_are_pinned(
+    tmp_path: Path,
+) -> None:
+    quick_interactions = manager(tmp_path)
+    base = utc_now()
+    pinned = [
+        QuickInteractionTask(
+            id=f"pinned-{index}",
+            session_id="session-1",
+            prompt=f"置顶任务 {index}",
+            status="succeeded",
+            result="完成",
+            pinned_at=base + timedelta(minutes=index),
+            created_at=base + timedelta(minutes=index),
+            updated_at=base + timedelta(minutes=index),
+        )
+        for index in range(30)
+    ]
+    latest = QuickInteractionTask(
+        id="latest",
+        session_id="session-1",
+        prompt="最新任务",
+        status="succeeded",
+        result="完成",
+        created_at=base + timedelta(minutes=31),
+        updated_at=base + timedelta(minutes=31),
+    )
+    quick_interactions._tasks = {
+        task.id: task
+        for task in [*pinned, latest]
+    }
+
+    quick_interactions._write()
+
+    assert latest.id in quick_interactions._tasks
+    assert all(task.id in quick_interactions._tasks for task in pinned)
 
 
 def test_local_history_keeps_finished_task_until_session_cleanup(

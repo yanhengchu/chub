@@ -89,6 +89,18 @@
     width: 100%;
   }
 
+  .quick-interaction-pin {
+    min-height: 40px;
+  }
+
+  .openclaw-status-list {
+    grid-template-columns: 1fr;
+  }
+
+  .openclaw-actions {
+    flex-wrap: wrap;
+  }
+
   .design-document-meta {
     display: flex;
     align-items: flex-start;

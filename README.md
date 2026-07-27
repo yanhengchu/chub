@@ -2,7 +2,7 @@
 
 Hub 是一个面向个人设备的轻量管理服务。
 
-当前阶段已经完成 macOS 与 Ubuntu 的基础节点能力、移动端 Web 管理页面、受控任务接口，以及通过手机进入本机 Codex CLI 会话的 PTY 方案。Codex PTY 已于 2026-07-21 完成 macOS、Ubuntu 和手机端验收。
+第二阶段已于 2026-07-26 正式闭环：macOS 与 Ubuntu 基础节点能力、移动端 Web 管理页面、受控任务接口、Codex PTY 与快速交互、配置驱动自动化及前端 UI 模块化均已实现，并通过 Ubuntu、MacBook 和手机端验收。第三阶段以 OpenClaw 接入、飞书群机器人 Webhook 单向通知、微信 ClawBot 双向指令交互，以及其他 LLM 模型接入为核心，当前进入需求与方案设计。
 
 ## 快速开始
 
@@ -71,13 +71,23 @@ Codex PTY 依赖 `codex`、`ttyd` 和 `tmux`。安装服务时，Chub 会从当�
 - 进入、停止或归档会话；日常页面不提供删除入口，避免误删 Codex 历史。
 - 在首页切换 `Ask for approval`、`Approve for me`、`Full access` 和 `Read Only` 四种权限模式；运行中的会话切换权限时会自动停止，下一次进入时按新权限启动。
 - 区分尚未启动、运行、停止和异常等会话生命周期，以及执行中、等待输入和状态未知等活动状态；首页对执行中会话快速刷新，对运行中但状态未知的会话低频确认，进入等待输入或停止后结束轮询。
-- 同一 Codex session 提供“实时终端”和“快速交互”两种交互入口；首页使用显示当前模式的两态按钮，点击后直接切换为另一入口，再点击 Session 进入对应页面。快速交互页面统一提供后台单次任务提交、状态、最终结果和历史记录。实时终端等待输入时保持 TUI/tmux 运行并允许快速交互；实时终端执行中时拒绝快速交互，快速交互执行中时禁止进入实时终端。
+- 同一 Codex session 提供“实时终端”和“快速交互”两种交互入口；首页使用显示当前模式的两态按钮，点击后直接切换为另一入口，再点击 Session 进入对应页面。快速交互页面统一提供后台单次任务提交、状态、最终结果和历史记录，支持持久化置顶，列表依次展示最近一条、置顶记录和普通记录。实时终端等待输入时保持 TUI/tmux 运行并允许快速交互；实时终端执行中时拒绝快速交互，快速交互执行中时禁止进入实时终端。
 
 节点页面同时提供操作日志和运行日志。首页可查看最近 50 或 100 行，日志详情页可按来源读取更早内容或下载经过敏感信息脱敏的当前日志文件。操作日志默认写入 `logs/operations.log`，并与应用日志一样自动轮转。
 
 Chub 只负责权限模式选择和会话生命周期；具体审批交互、权限显示和命令执行仍由 Codex CLI 原生界面处理。首页权限选择会映射到 Codex 的工作区、只读和完全访问配置，运行中的会话切换权限会先停止当前 PTY，避免旧进程继续使用旧权限。
 
 Codex PTY 终端通过 WebSocket 持续传输输入和输出，依赖稳定的双向实时链路。Tailscale 跨网络访问时，即使首页和文档等普通 HTTP 页面可以正常打开，如果路径经过质量不稳定的 DERP 中继、存在较高抖动、丢包、MTU 问题或网络切换，仍可能出现 ttyd 页面外壳已加载但终端内容未显示、输入无响应或连接中断。这里的限制不只是带宽问题，链路稳定性和延迟同样重要。当前产品不提供基于轮询或终端快照的非实时降级模式，Codex PTY 应优先在稳定的 Tailscale 直连或可靠网络中使用。排查时查看浏览器网络面板中 `/codex/.../terminal/ws` 是否成功升级为 `101 Switching Protocols`，并结合应用日志中的 `terminal_websocket_*` 和 `terminal_http_*` 记录判断连接或上游 ttyd 是否失败。
+
+快速交互允许长任务持续执行：运行超过 10 分钟时页面提示“执行时间较长，仍在运行”，不将其误判为超时。真正的执行上限由 `codex_pty.quick_interaction_timeout_seconds` 配置，默认 `21600` 秒（6 小时），允许范围为 10 分钟至 24 小时；达到上限后才会终止进程并记录为超时。修改该配置后需要重启 Chub 服务。
+
+## OpenClaw Gateway
+
+首页 OpenClaw 卡片用于管理当前节点上的 Gateway。它展示安装、初始化、后台服务、连接探测、版本和监听状态，并提供固定的启动、停止和重启操作；停止和重启需要二次确认。Tailscale Serve 可用时，卡片只展示标准 HTTPS 访问地址，整个地址区域可点击进入控制台；本机 loopback 地址只作为排障入口，不在首页展示。所有接口均受 Hub Token 保护，操作以 Gateway 最终状态而不是命令进程退出作为成功依据，并写入完整操作日志。
+
+该卡片不提供安装、卸载、升级、初始化配置、控制台代理、任意命令或原始日志入口，也不会向页面返回 OpenClaw 配置和凭证。OpenClaw CLI 必须能从 Chub 服务的 `PATH` 找到；macOS 和 Ubuntu 使用同一套接口，由 OpenClaw 自身管理对应的 LaunchAgent 或 systemd user service。
+
+最近一次成功检测的 OpenClaw 展示状态按节点保存在浏览器会话中。从次级页面返回或首页被重建时，页面先恢复该状态，再静默刷新最新结果，避免卡片短暂回到空占位；刷新失败时保留上次结果并单独提示。退出节点或认证失效时会清理缓存。
 
 ## 自动化任务
 
@@ -106,6 +116,7 @@ Runner 不会自行启动或停止 Debug Chrome。飞书 Wiki Markdown 下载已
 - `/api/automations`：自动化任务状态和手动运行。
 - `/api/logs`：活动日志。
 - `/api/maintenance/*`：节点维护操作。
+- `/api/openclaw/*`：OpenClaw Gateway 状态和受控维护操作。
 - `/api/codex/*`：Codex 会话管理。
 
 项目资料列表和设计文档详情可直接通过 Chub 地址访问，便于阅读；页面内容不要求 Hub Token，因此文档不得包含 Token、Cookie、账号信息或其他本机秘密。归档状态管理仍需 Hub Token，状态保存在 `data/project-documents.json`；首页只展示当前文档，全部列表可筛选当前和已归档文档。Chub 仍只适合部署在可信网络中。
@@ -121,7 +132,14 @@ Runner 不会自行启动或停止 Debug Chrome。飞书 Wiki Markdown 下载已
 
 ## 文档
 
-当前阶段：
+第三阶段（规划中）：
+
+- [第三阶段产品目标](docs/PRD_PHASE_3.md)
+- [第三阶段高层计划](docs/TASKS_PHASE_3.md)
+- [OpenClaw 方案调研](docs/OPENCLAW_RESEARCH.md)
+- [OpenClaw 与消息通道接入设计](docs/OPENCLAW_INTEGRATION_DESIGN.md)
+
+第二阶段（已闭环）：
 
 - [前端 UI 模块化设计](docs/ARCHITECTURE_EVOLUTION_DESIGN.md)
 - [第二阶段产品目标](docs/PRD_PHASE_2.md)

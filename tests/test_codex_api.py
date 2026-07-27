@@ -368,6 +368,36 @@ async def test_quick_interaction_history_is_paginated(
 
 
 @pytest.mark.anyio
+async def test_quick_interaction_can_be_pinned(settings: Settings) -> None:
+    app = create_app(settings)
+    task = quick_task().model_copy(update={"pinned_at": utc_now()})
+    quick_interactions = MagicMock()
+    quick_interactions.set_pinned.return_value = task
+    app.state.quick_interactions = quick_interactions
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        unauthorized = await client.patch(
+            "/api/codex/sessions/session-1/quick-interactions/task-1/pin",
+            json={"pinned": True},
+        )
+        response = await client.patch(
+            "/api/codex/sessions/session-1/quick-interactions/task-1/pin",
+            headers=authorization(settings),
+            json={"pinned": True},
+        )
+
+    assert unauthorized.status_code == 401
+    assert response.status_code == 200
+    assert response.json()["data"]["task"]["pinned_at"] is not None
+    quick_interactions.set_pinned.assert_called_once_with(
+        "session-1",
+        "task-1",
+        True,
+    )
+
+
+@pytest.mark.anyio
 async def test_access_issues_scoped_http_only_cookie(settings: Settings) -> None:
     app = create_app(settings)
     manager = MagicMock()

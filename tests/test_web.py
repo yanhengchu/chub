@@ -36,6 +36,17 @@ async def test_home_page_is_public_and_contains_no_token(settings: Settings) -> 
     assert 'id="refresh-status"' in response.text
     assert "节点任务" not in response.text
     assert 'id="codex-card-host"' in response.text
+    assert 'id="openclaw-title"' in response.text
+    assert 'id="refresh-openclaw"' in response.text
+    assert 'id="openclaw-start"' in response.text
+    assert 'id="openclaw-restart"' in response.text
+    assert 'id="openclaw-stop"' in response.text
+    assert 'id="openclaw-access-url"' in response.text
+    assert 'id="openclaw-access-open"' in response.text
+    assert 'id="openclaw-access-unavailable"' in response.text
+    assert "远程访问未启用" in response.text
+    assert 'data-card-key="openclaw"' in response.text
+    assert 'class="openclaw-status-panel"' in response.text
     assert 'id="automation-title"' in response.text
     assert 'id="automation-list"' in response.text
     assert 'id="automation-browser-control"' in response.text
@@ -59,13 +70,12 @@ async def test_home_page_is_public_and_contains_no_token(settings: Settings) -> 
     assert 'data-card-key="automations"' in response.text
     assert 'data-card-key="logs"' in response.text
     assert 'data-card-return-refresh="true"' in response.text
-    assert "配置驱动的飞书文档下载自动化方案" in response.text
     assert "OpenClaw 方案调研" in response.text
-    assert "工作周报生成技能设计方案" in response.text
-    assert "已实现并验收" in response.text
+    assert "OpenClaw 与消息通道接入设计" in response.text
+    assert "待验收" in response.text
     assert "份文档" in response.text
-    assert 'href="/project-docs/automation-download"' in response.text
     assert 'href="/project-docs/openclaw-research"' in response.text
+    assert 'href="/project-docs/openclaw-integration"' in response.text
     assert 'target="_blank"' not in response.text
     assert 'href="/project-docs"' in response.text
     assert 'href="/project-docs" target="_blank"' not in response.text
@@ -77,7 +87,7 @@ async def test_home_page_is_public_and_contains_no_token(settings: Settings) -> 
     assert 'data-card-heading' in response.text
     assert 'data-card-content' in response.text
     assert 'data-collapsible-card' in response.text
-    assert response.text.count('class="card-content-inner"') == 3
+    assert response.text.count('class="card-content-inner"') == 4
     assert "退出" in response.text
     assert 'id="task-list"' not in response.text
     assert "data-log-source" in response.text
@@ -167,6 +177,7 @@ async def test_web_assets_are_available(settings: Settings) -> None:
             await client.get("/static/js/components/collapsible-card.js"),
             await client.get("/static/js/features/node-status.js"),
             await client.get("/static/js/features/codex-sessions.js"),
+            await client.get("/static/js/features/openclaw.js"),
             await client.get("/static/js/features/automations.js"),
             await client.get("/static/js/features/project-documents.js"),
             await client.get("/static/js/features/logs.js"),
@@ -196,6 +207,11 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     )
     assert "innerHTML" not in dashboard_script
     assert "/api/automations/browser/" in dashboard_script
+    assert "/api/openclaw/status" in dashboard_script
+    assert "/api/openclaw/${action}" in dashboard_script
+    assert "OPENCLAW_STATUS_CACHE_KEY" in dashboard_script
+    assert "restoreOpenClawCache" in dashboard_script
+    assert "状态刷新失败，当前展示上次检测结果" in dashboard_script
     assert "automationBrowserMode.value" in dashboard_script
     browser_control_error = dashboard_script.split(
         'error.message || "Debug Chrome 操作失败。"', 1
@@ -357,6 +373,8 @@ async def test_quick_interaction_history_page_is_available(settings: Settings) -
     assert script.status_code == 200
     assert "/quick-interactions" in script.text
     assert "task.prompt" in script.text
+    assert "quick-interaction-pin" in script.text
+    assert "/pin" in script.text
     assert 'id="quick-interaction-form"' in page.text
     assert 'id="quick-interaction-prompt"' in page.text
     assert 'id="quick-interaction-submit"' in page.text
@@ -491,7 +509,7 @@ async def test_project_document_card_api_is_protected(settings: Settings) -> Non
     assert data["count"] >= 2
     assert {
         document["id"] for document in data["documents"]
-    } >= {"automation-download", "openclaw-research"}
+    } >= {"openclaw-research", "openclaw-integration"}
 
 
 @pytest.mark.anyio
@@ -609,6 +627,7 @@ async def test_page_uses_external_script_only(settings: Settings) -> None:
         "/static/js/components/collapsible-card.js",
         "/static/js/features/node-status.js",
         "/static/js/features/codex-sessions.js",
+        "/static/js/features/openclaw.js",
         "/static/js/features/automations.js",
         "/static/js/features/project-documents.js",
         "/static/js/features/logs.js",

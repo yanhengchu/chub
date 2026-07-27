@@ -26,6 +26,7 @@ codex_pty:
   data_file: "data/codex-sessions.json"
   ticket_ttl_seconds: 600
   max_running: 3
+  quick_interaction_timeout_seconds: 21600
 
 automations:
   enabled: true

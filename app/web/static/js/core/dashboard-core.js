@@ -25,6 +25,25 @@ const elements = {
   restartDialogCancel: document.querySelector("#restart-dialog-cancel"),
   restartDialogConfirm: document.querySelector("#restart-dialog-confirm"),
   codexCardHost: document.querySelector("#codex-card-host"),
+  openclawBadge: document.querySelector("#openclaw-badge"),
+  openclawVersion: document.querySelector("#openclaw-version"),
+  openclawService: document.querySelector("#openclaw-service"),
+  openclawBind: document.querySelector("#openclaw-bind"),
+  openclawCheckedAt: document.querySelector("#openclaw-checked-at"),
+  openclawAccessUrl: document.querySelector("#openclaw-access-url"),
+  openclawAccessOpen: document.querySelector("#openclaw-access-open"),
+  openclawAccessUnavailable: document.querySelector("#openclaw-access-unavailable"),
+  openclawMessage: document.querySelector("#openclaw-message"),
+  refreshOpenclaw: document.querySelector("#refresh-openclaw"),
+  openclawStart: document.querySelector("#openclaw-start"),
+  openclawRestart: document.querySelector("#openclaw-restart"),
+  openclawStop: document.querySelector("#openclaw-stop"),
+  openclawDialog: document.querySelector("#openclaw-dialog"),
+  openclawDialogTitle: document.querySelector("#openclaw-dialog-title"),
+  openclawDialogMessage: document.querySelector("#openclaw-dialog-message"),
+  openclawDialogClose: document.querySelector("#openclaw-dialog-close"),
+  openclawDialogCancel: document.querySelector("#openclaw-dialog-cancel"),
+  openclawDialogConfirm: document.querySelector("#openclaw-dialog-confirm"),
   automationBrowserBadge: document.querySelector("#automation-browser-badge"),
   automationBrowserControl: document.querySelector("#automation-browser-control"),
   automationBrowserProfile: document.querySelector("#automation-browser-profile"),
@@ -112,6 +131,7 @@ async function refreshCardsAfterRestart() {
   await Promise.all([
     loadStatus(),
     loadCodexSessions(),
+    loadOpenClaw(),
     loadAutomations(),
     loadLogs(),
   ]);
@@ -125,6 +145,8 @@ function clearProtectedView() {
   elements.connectedBar.hidden = true;
   elements.automationList.replaceChildren();
   elements.codexCardHost.replaceChildren();
+  clearOpenClawCache();
+  resetOpenClawView();
   if (automationPollTimer) {
     window.clearTimeout(automationPollTimer);
     automationPollTimer = null;
@@ -265,8 +287,9 @@ async function connectWithToken(token, remember, savedCredential = false) {
     storeToken(token, remember);
     ensureCodexCard();
     renderStatus(status);
+    restoreOpenClawCache(status.node.id);
     showConnectedView(status);
-    await Promise.all([loadCodexSessions(), loadAutomations()]);
+    await Promise.all([loadCodexSessions(), loadOpenClaw(), loadAutomations()]);
   } catch (error) {
     if (attempt !== connectionAttempt) {
       return;
@@ -282,4 +305,3 @@ async function connectWithToken(token, remember, savedCredential = false) {
     }
   }
 }
-

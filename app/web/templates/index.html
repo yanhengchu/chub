@@ -12,6 +12,7 @@
     <script src="/static/js/components/collapsible-card.js" defer></script>
     <script src="/static/js/features/node-status.js" defer></script>
     <script src="/static/js/features/codex-sessions.js" defer></script>
+    <script src="/static/js/features/openclaw.js" defer></script>
     <script src="/static/js/features/automations.js" defer></script>
     <script src="/static/js/features/project-documents.js" defer></script>
     <script src="/static/js/features/logs.js" defer></script>
@@ -36,6 +37,20 @@
         <div class="restart-dialog-footer">
           <button id="restart-dialog-cancel" class="button-link" type="button">取消</button>
           <button id="restart-dialog-confirm" class="button-secondary" type="button">确认重启</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="openclaw-dialog" class="codex-workspace-dialog" aria-labelledby="openclaw-dialog-title">
+      <div class="codex-workspace-dialog-surface">
+        <div class="codex-workspace-dialog-header">
+          <h2 id="openclaw-dialog-title">确认操作</h2>
+          <button id="openclaw-dialog-close" class="button-link codex-workspace-dialog-close" type="button" aria-label="关闭 OpenClaw 操作确认">关闭</button>
+        </div>
+        <p id="openclaw-dialog-message"></p>
+        <div class="restart-dialog-footer">
+          <button id="openclaw-dialog-cancel" class="button-link" type="button">取消</button>
+          <button id="openclaw-dialog-confirm" class="button-secondary" type="button">确认</button>
         </div>
       </div>
     </dialog>
@@ -96,6 +111,64 @@
 
       <div id="dashboard" class="dashboard" hidden>
         <div id="codex-card-host"></div>
+
+        <section class="card openclaw-card" data-card-key="openclaw" data-collapsible-card data-card-return-refresh="true" aria-labelledby="openclaw-title">
+          <div class="section-heading">
+            <div class="card-heading-copy" data-card-heading>
+              <p class="section-kicker">Agent 网关</p>
+              <h2 id="openclaw-title">OpenClaw</h2>
+              <p class="section-description">查看网关状态并执行受控维护。</p>
+            </div>
+            <button id="refresh-openclaw" class="button-secondary" type="button">刷新</button>
+          </div>
+          <div class="card-content" data-card-content>
+            <div class="card-content-inner">
+              <div class="openclaw-status-panel">
+                <div class="openclaw-status-heading">
+                  <strong>Gateway</strong>
+                  <span id="openclaw-badge" class="badge badge-muted">正在检查</span>
+                </div>
+                <dl class="openclaw-status-list">
+                  <div>
+                    <dt>版本</dt>
+                    <dd id="openclaw-version">—</dd>
+                  </div>
+                  <div>
+                    <dt>后台服务</dt>
+                    <dd id="openclaw-service">—</dd>
+                  </div>
+                  <div>
+                    <dt>监听方式</dt>
+                    <dd id="openclaw-bind">—</dd>
+                  </div>
+                  <div>
+                    <dt>检查时间</dt>
+                    <dd id="openclaw-checked-at">—</dd>
+                  </div>
+                </dl>
+                <a id="openclaw-access-open" class="openclaw-access" href="#" hidden>
+                  <span class="openclaw-access-copy">
+                    <span>访问地址</span>
+                    <strong id="openclaw-access-url">—</strong>
+                  </span>
+                  <span class="openclaw-access-action">打开</span>
+                </a>
+                <div id="openclaw-access-unavailable" class="openclaw-access openclaw-access-disabled">
+                  <span class="openclaw-access-copy">
+                    <span>访问地址</span>
+                    <strong>远程访问未启用</strong>
+                  </span>
+                </div>
+                <p id="openclaw-message" class="message" aria-live="polite"></p>
+              </div>
+              <div class="openclaw-actions">
+                <button id="openclaw-start" class="button-secondary" type="button" hidden>启动</button>
+                <button id="openclaw-restart" class="button-secondary" type="button" hidden>重启</button>
+                <button id="openclaw-stop" class="button-danger" type="button" hidden>停止</button>
+              </div>
+            </div>
+          </div>
+        </section>
 
         <section class="card design-documents-card" data-card-key="project-docs" data-collapsible-card data-card-return-refresh="true" aria-labelledby="design-documents-title">
           <div class="section-heading">

@@ -80,6 +80,20 @@ def test_load_settings_treats_blank_token_as_missing(
     assert settings.security.token is None
 
 
+def test_quick_interaction_timeout_defaults_to_six_hours(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_file = tmp_path / "settings.yaml"
+    config_file.write_text(VALID_CONFIG, encoding="utf-8")
+    monkeypatch.delenv("HUB_TOKEN", raising=False)
+
+    with patch("app.core.config.load_dotenv"):
+        settings = load_settings(config_file)
+
+    assert settings.codex_pty.quick_interaction_timeout_seconds == 21_600
+
+
 def test_load_settings_reads_project_env_file(
     tmp_path: Path,
 ) -> None:

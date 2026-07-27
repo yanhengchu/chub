@@ -69,6 +69,11 @@ class CodexPtyConfig(StrictModel):
     data_file: Path = Path("data/codex-sessions.json")
     ticket_ttl_seconds: int = Field(default=600, ge=60, le=3600)
     max_running: int = Field(default=3, ge=1, le=10)
+    quick_interaction_timeout_seconds: int = Field(
+        default=6 * 60 * 60,
+        ge=10 * 60,
+        le=24 * 60 * 60,
+    )
 
 
 class AutomationsConfig(StrictModel):
