@@ -7,7 +7,7 @@ const CARD_RETURN_REFRESHERS = {
 };
 
 function refreshCardsOnReturn() {
-  if (!activeToken) {
+  if (!hasProtectedAccess()) {
     return;
   }
   const now = Date.now();
@@ -79,6 +79,7 @@ elements.clearToken.addEventListener("click", () => {
   }
   connectionAttempt += 1;
   activeToken = "";
+  tailscaleAccess = false;
   accessVersion += 1;
   removeStoredToken();
   elements.tokenInput.value = "";
@@ -93,11 +94,8 @@ const savedLocalToken = localStorage.getItem(LOCAL_TOKEN_KEY);
 const savedToken = savedSessionToken || savedLocalToken || "";
 ensureCodexCard();
 setupCollapsibleCards();
-if (savedToken) {
-  restoreCodexCardCache();
+restoreCodexCardCache();
+if (savedLocalToken) {
   elements.rememberToken.checked = Boolean(savedLocalToken);
-  setBadge(elements.accessBadge, "自动连接");
-  connectWithToken(savedToken, Boolean(savedLocalToken), true);
-} else {
-  showDisconnectedView();
 }
+connectWithTailscale(savedToken, Boolean(savedLocalToken));

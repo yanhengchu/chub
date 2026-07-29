@@ -47,6 +47,8 @@ async def test_home_page_is_public_and_contains_no_token(settings: Settings) -> 
     assert "远程访问未启用" in response.text
     assert 'data-card-key="openclaw"' in response.text
     assert 'class="openclaw-status-panel"' in response.text
+    assert 'id="openclaw-channels"' in response.text
+    assert 'id="openclaw-owner"' in response.text
     assert 'id="automation-title"' in response.text
     assert 'id="automation-list"' in response.text
     assert 'id="automation-browser-control"' in response.text
@@ -72,7 +74,7 @@ async def test_home_page_is_public_and_contains_no_token(settings: Settings) -> 
     assert 'data-card-return-refresh="true"' in response.text
     assert "OpenClaw 方案调研" in response.text
     assert "OpenClaw 与消息通道接入设计" in response.text
-    assert "待验收" in response.text
+    assert "部分实现，持续验收" in response.text
     assert "份文档" in response.text
     assert 'href="/project-docs/openclaw-research"' in response.text
     assert 'href="/project-docs/openclaw-integration"' in response.text
@@ -280,7 +282,9 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "loadCodexSessions({ force: true })" in script.text
     assert "session.quick_interaction_running" in script.text
     assert "permission.disabled = quickInteractionRunning" in script.text
-    assert "archive.disabled = !session.codex_session_id || quickInteractionRunning" in script.text
+    assert "archive.disabled = !session.codex_session_id" in script.text
+    assert "|| quickInteractionRunning" in script.text
+    assert "|| llmInteractionRunning" in script.text
     assert "codexLoadPromise" in script.text
     assert "codexMutationCount" in script.text
     assert "codexSessionsSignature" in script.text
@@ -389,7 +393,7 @@ async def test_quick_interaction_history_page_is_available(settings: Settings) -
     assert "正在提交快速交互" not in script.text
     assert "任务仍在后台执行" not in script.text
     assert 'id="quick-interaction-load-more"' in page.text
-    assert "PAGE_SIZE = 3" in script.text
+    assert "PAGE_SIZE = 5" in script.text
     assert "?offset=${offset}&limit=${PAGE_SIZE}" in script.text
     assert "加载更多" in page.text
     assert "let loadQueue = Promise.resolve()" in script.text
@@ -414,13 +418,26 @@ async def test_quick_interaction_history_page_is_available(settings: Settings) -
         "await waitForComposerCollapse()"
     ) < submit_flow.index("await load()")
     assert "if (!composerStateInitialized)" in script.text
-    assert "setComposerCollapsed(session.quick_interaction_running === true, { animate: false })" in script.text
+    assert "session.llm_interaction_running === true" in script.text
+    assert "|| session?.llm_interaction_running === true" in script.text
     assert 'form.classList.toggle("is-collapsed", collapsed)' in script.text
     assert 'composerHeading.setAttribute("aria-expanded", String(!collapsed))' in script.text
+    assert "const anchor = collapsed ? visibleHistoryAnchor() : null;" in script.text
     assert "window.requestAnimationFrame(preserveAnchor)" in script.text
     assert ".quick-interaction-composer.is-collapsed" in stylesheet.text
     assert "prefers-reduced-motion: reduce" in stylesheet.text
     assert "await loadSession()" in script.text
+    assert 'id="quick-interaction-engine"' in page.text
+    assert "Amazon Bedrock API" in script.text
+    assert 'let selectedEngine = "codex_cli"' in script.text
+    assert 'setEngine("codex_cli")' in script.text
+    assert 'window.addEventListener("pageshow"' in script.text
+    assert "task.engine" in script.text
+    assert "task.provider" in script.text
+    assert "task.model" in script.text
+    assert "meta.append(engine, time, pinButton)" in script.text
+    assert 'engine: selectedEngine' in script.text
+    assert ".quick-interaction-engine" in stylesheet.text
 
 
 @pytest.mark.anyio

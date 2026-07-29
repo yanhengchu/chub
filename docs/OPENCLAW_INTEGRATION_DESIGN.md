@@ -1,6 +1,6 @@
 # OpenClaw 与消息通道接入设计
 
-> 状态：接入流程初稿，待维护者验收。本文负责说明如何落地，不替代 `OPENCLAW_RESEARCH.md` 的背景调研。
+> 状态：接入流程持续实施；OpenClaw 与首个外部 LLM 已完成 MacBook、Ubuntu 首轮验收。本文负责说明如何落地，不替代 `OPENCLAW_RESEARCH.md` 的背景调研。
 
 ## 1. 文档目标
 
@@ -31,6 +31,9 @@
 - 高风险指令必须在执行前获得用户明确确认，不能由模型或通道直接执行。
 - OpenClaw Gateway 可部署在 MacBook 或 Ubuntu；两者采用同一逻辑方案，实施时按在线稳定性和访问条件选择。
 - 其他 LLM 使用维护者已有的 API、Token 和模型信息。
+- OpenClaw 已在 MacBook 与 Ubuntu 完成安装、交互式初始化、Gateway 后台运行和基础控制台验收。
+- 首个外部模型 `brclient/amazon.nova-pro` 已使用文件型 SecretRef 接入，并在 MacBook 与 Ubuntu 完成基础聊天验收。
+- 微信插件已纳入 OpenClaw 显式插件信任列表；ClawBot 基础双向消息、Owner 识别和真实 Tool Call 均已跑通，但当前模型偶发返回占位文本且不产生 Tool Call，暂不视为稳定完成。
 
 ### 2.2 实施时提供或确定
 
@@ -234,6 +237,25 @@ OpenClaw 生成用户可读结果
 - 只有 Chub 返回可验证的最终状态后，才能向用户和群机器人宣告成功。
 - OpenClaw 不可用时不能影响 Chub 原有入口。
 
+#### Tailscale 身份认证方案
+
+Chub 可以轻量借鉴 OpenClaw 的 `allowTailscale` 使用体验，为可信 Tailnet 内的浏览器或 OpenClaw Tool 提供可选的免 Hub Token 认证，但不复制 OpenClaw 的 Serve 身份 Header、`tailscale whois`、设备配对和权限升级体系。
+
+当前部署边界：
+
+- 提供默认开启、可显式关闭的 `security.allow_tailscale`，继续保留 Hub Token 作为兼容和应急认证方式。
+- 沿用 Chub 当前直接监听本机 Tailscale IP 的部署方式，不额外引入 Tailscale Serve。
+- 只检查请求的真实 socket 来源地址，不读取或信任客户端提交的转发 Header；服务监听地址和来源地址均为 Tailscale 地址时，允许免 Hub Token。
+- 当前个人 Tailnet 只加入维护者本人控制的设备，因此 Tailnet 内设备整体视为可信，不增加设备允许列表或多用户权限体系；如果成员或设备信任前提变化，再重新评估该边界。
+- 浏览器优先尝试 Tailscale 免 Token 认证，并保留已有 Hub Token 作为失败回退；回退认证也失败时才清除无效 Token，这种本地残留属于预期兼容行为。
+- 状态查询等只读能力可以先试点；状态变更、持续交互和高风险操作继续执行白名单、风险分级和逐次确认。
+- 操作日志只记录 Tailscale 来源 IP，不宣称能够识别真实用户。
+- 来源不是 Tailscale 地址、服务没有监听 Tailscale 地址或配置未启用时，继续要求 Hub Token。
+
+该轻量方案已经接入现有认证依赖和浏览器自动连接流程；直接访问、非 Tailscale 来源、伪造 Header 和 Token 回退已纳入测试，Codex WebSocket 继续通过受保护接口签发的前置票据建立连接。
+
+OpenClaw 自身的工具执行、沙箱、提权和审批权限不由上述 Tailnet 信任结论覆盖；相关权限收紧作为下一步独立工作处理，不纳入本次调整。
+
 ### 5.5 验证 OpenClaw 与 Chub
 
 在接入微信前先从 OpenClaw 本地 WebChat 或 TUI 完成：
@@ -389,13 +411,27 @@ POST 到固定飞书群机器人 Webhook
 
 ## 8. 其他 LLM 模型接入
 
-其他 LLM 只接入 OpenClaw，不直接接入微信插件或 Chub。
+模型供应商配置和 API Key 以当前用户的 OpenClaw 配置与 SecretRef 为唯一来源。OpenClaw 使用该配置完成消息通道中的对话和 Tool Calling；Chub 可通过独立的底层 LLM Service 只读解析同一配置并直接请求供应商 API，不通过 OpenClaw Gateway 转发，也不复制或再次持久化 Key。两边调用相互独立，任一服务不可用不应阻止另一边使用同一模型供应商。
+
+Chub 首版只支持文件型 `singleValue` SecretRef 和 `openai-completions` 兼容的文本调用，并遵守以下边界：
+
+- 配置和 Secret 在实际调用时懒加载，读取失败不阻止 Chub 启动或其他功能。
+- 配置解析结果按配置文件与 Secret 文件的修改状态缓存；任一文件变化时自动重新读取，轮换 Key 不需要复制配置。
+- Secret 文件必须限制为当前用户访问；Key 不进入日志、异常、响应、浏览器或测试夹具。
+- Provider、模型和 Base URL 只能来自本机配置，调用方不能提交任意地址或凭证。
+- 非本机 HTTP Base URL 被拒绝，远程模型地址必须使用 HTTPS。
+- HTTP 客户端使用长期连接池并随 Chub 生命周期关闭；并发数、请求超时、最大输出 Token 和最大响应字节数均有配置上限。
+- 认证失败、限流、供应商不可用、网络失败、超时、超大响应和无效响应使用独立错误码与可重试语义，不读取或透传供应商错误正文。
+- 当前通过快速交互页面复用内部 Service，不提供独立首页卡片、通用公共 LLM API、Tool Calling 或 Codex CLI 替代逻辑。
+
+Chub 首个基础 LLM 产品入口复用 Codex Session 的快速交互页面：操作栏通过单一按钮临时切换 `Codex CLI` 与 `Amazon Bedrock API`，页面重新进入时默认 Codex。两种执行方式只共用输入、历史、置顶、分页和状态展示；Bedrock 执行不进入 Codex 终端停止、权限检查、Session activity 或工作区上下文流程。历史任务保存执行方式及当次 Provider/模型快照，旧记录默认按 Codex CLI 解析。Bedrock 运行期间允许继续使用实时终端和调整 Codex 权限，但为保证历史归属稳定，不允许删除或归档对应 Session。
 
 推荐配置顺序：
 
 1. 配置一个主模型。
-2. 验证普通对话和结构化 Tool 调用。
-3. 设置请求超时、上下文和输出上限。
+2. 分别验证 OpenClaw 普通对话和 Chub 直接文本调用。
+3. 验证结构化 Tool 调用。
+4. 设置请求超时、上下文和输出上限。
 4. 如确有需要，再配置同能力等级的回退模型。
 5. 设置供应商费用或额度告警。
 
@@ -485,11 +521,12 @@ POST 到固定飞书群机器人 Webhook
 
 ### 12.1 OpenClaw 与模型
 
-- [ ] Gateway 可后台运行、重启和诊断。
-- [ ] Chub 卡片能区分未安装、未初始化、服务未安装、已停止、运行正常和异常状态。
-- [ ] Chub 卡片的启动、停止和重启只执行固定命令，并以 Gateway 最终状态作为结果。
-- [ ] Tailscale Serve 可用时，Chub 卡片只展示经过校验的 HTTPS 控制台入口。
-- [ ] 一个其他 LLM 完成普通对话与 Tool Calling。
+- [x] Gateway 已在 MacBook 与 Ubuntu 完成安装、初始化、后台运行和基础诊断。
+- [x] Chub 卡片在 MacBook 完成状态区分、固定维护操作和最终状态确认验收。
+- [x] MacBook 的 Tailscale Serve HTTPS 控制台入口已经过校验和页面验收。
+- [ ] 完成 Chub OpenClaw 卡片的 Ubuntu 实机验收。
+- [x] 首个其他 LLM 已在 MacBook 与 Ubuntu 完成普通对话。
+- [ ] 首个其他 LLM 稳定完成 Tool Calling；单次真实调用已验证，占位文本异常待收敛。
 - [ ] 模型失败、超时和限流反馈明确。
 
 ### 12.2 Chub
@@ -505,8 +542,8 @@ POST 到固定飞书群机器人 Webhook
 
 ### 12.4 微信 ClawBot
 
-- [ ] 插件与 OpenClaw 版本兼容。
-- [ ] 二维码登录、退出和重新授权正常。
+- [x] 插件与 OpenClaw 版本兼容，并已固定显式信任。
+- [ ] 二维码登录和 Gateway 重启后会话恢复已验证；退出与重新授权仍待验收。
 - [ ] 未授权账号不能访问 Chub 或执行任务。
 - [ ] 普通授权账号与高风险指定账号的权限隔离有效。
 - [ ] 多账号或多对端 Session 不串线。

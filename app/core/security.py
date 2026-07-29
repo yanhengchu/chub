@@ -6,16 +6,31 @@ from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.core.response import ApiError
+from app.core.network import is_tailscale_ip
 
 
 bearer_scheme = HTTPBearer(auto_error=False)
 AUTHENTICATE_HEADER = {"WWW-Authenticate": "Bearer"}
 
 
+def _allows_tailscale_request(request: Request) -> bool:
+    settings = request.app.state.settings
+    client_host = request.client.host if request.client else ""
+    return (
+        settings.security.allow_tailscale
+        and is_tailscale_ip(settings.server.host)
+        and is_tailscale_ip(client_host)
+    )
+
+
 def require_token(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ) -> None:
+    if _allows_tailscale_request(request):
+        request.state.authentication_method = "tailscale"
+        return
+
     configured_token = request.app.state.settings.security.token
     if configured_token is None:
         raise ApiError(
@@ -50,3 +65,4 @@ def require_token(
             "Invalid access token",
             headers=AUTHENTICATE_HEADER,
         )
+    request.state.authentication_method = "token"

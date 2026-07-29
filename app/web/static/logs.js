@@ -20,9 +20,10 @@ function setMessage(value, error = false) {
 }
 
 async function request(path) {
+  const savedToken = token();
   const response = await fetch(path, {
     cache: "no-store",
-    headers: { Authorization: `Bearer ${token()}` },
+    headers: savedToken ? { Authorization: `Bearer ${savedToken}` } : {},
   });
   if (!response.ok) {
     throw new Error(response.status === 401 ? "请返回首页连接节点后再查看日志。" : "日志读取失败。");

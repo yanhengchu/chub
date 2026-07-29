@@ -80,14 +80,79 @@ function openclawStatePresentation(state) {
   }[state] || ["状态未知", "failed"];
 }
 
+function openclawChannelPresentation(data) {
+  const state = data?.channel_state;
+  if (!state) {
+    return "—";
+  }
+  if (state === "running") {
+    return `${data.channel_running_count}/${data.channel_count} 运行正常`;
+  }
+  if (state === "degraded") {
+    return `${data.channel_running_count}/${data.channel_count} 运行正常`;
+  }
+  if (state === "stopped") {
+    return `${data.channel_count} 个异常`;
+  }
+  if (state === "not_configured") {
+    return "未配置";
+  }
+  if (state === "unavailable") {
+    return "不可检查";
+  }
+  return "检查失败";
+}
+
+function openclawOwnerPresentation(data) {
+  if (data?.owner_state === "configured") {
+    return `${data.owner_count} 个 Owner`;
+  }
+  if (data?.owner_state === "not_configured") {
+    return "未配置";
+  }
+  if (data?.owner_state === "unavailable") {
+    return "不可检查";
+  }
+  return "检查失败";
+}
+
+function openclawOverallPresentation(data) {
+  const gatewayPresentation = openclawStatePresentation(data.state);
+  if (data.state !== "running") {
+    return gatewayPresentation;
+  }
+  const channelLimited = Boolean(data.channel_state) && data.channel_state !== "running";
+  const ownerLimited = data.channel_count > 0 && data.owner_state !== "configured";
+  return channelLimited || ownerLimited
+    ? ["功能受限", "timeout"]
+    : gatewayPresentation;
+}
+
+function openclawOverallMessage(data) {
+  if (data.state !== "running") {
+    return data.message || "";
+  }
+  if (data.channel_state && data.channel_state !== "running") {
+    return data.channel_message || data.message || "";
+  }
+  if (data.channel_count > 0 && data.owner_state !== "configured") {
+    return data.owner_message || data.message || "";
+  }
+  return data.message || "";
+}
+
 function renderOpenClaw(data, { cache = true } = {}) {
   openclawState = data;
-  const [badgeText, badgeKind] = openclawStatePresentation(data.state);
+  const [badgeText, badgeKind] = openclawOverallPresentation(data);
   setBadge(elements.openclawBadge, badgeText, badgeKind);
   elements.openclawVersion.textContent = data.version || "—";
   elements.openclawService.textContent = data.service_manager
     ? `${data.service_manager} · ${data.service_loaded ? "已加载" : "未加载"}`
     : "—";
+  elements.openclawChannels.textContent = openclawChannelPresentation(data);
+  elements.openclawChannels.title = data.channel_message || "";
+  elements.openclawOwner.textContent = openclawOwnerPresentation(data);
+  elements.openclawOwner.title = data.owner_message || "";
   elements.openclawBind.textContent = data.bind_mode
     ? `${data.bind_mode}${data.port ? ` · ${data.port}` : ""}`
     : "—";
@@ -97,7 +162,7 @@ function renderOpenClaw(data, { cache = true } = {}) {
   elements.openclawAccessOpen.hidden = !accessUrl;
   elements.openclawAccessUnavailable.hidden = Boolean(accessUrl);
   elements.openclawAccessOpen.href = accessUrl || "#";
-  setMessage(elements.openclawMessage, data.message || "");
+  setMessage(elements.openclawMessage, openclawOverallMessage(data));
 
   const canStart = data.state === "stopped";
   const canControlRunning = ["running", "degraded"].includes(data.state);
@@ -119,6 +184,10 @@ function resetOpenClawView() {
   setBadge(elements.openclawBadge, "正在检查");
   elements.openclawVersion.textContent = "—";
   elements.openclawService.textContent = "—";
+  elements.openclawChannels.textContent = "—";
+  elements.openclawChannels.removeAttribute("title");
+  elements.openclawOwner.textContent = "—";
+  elements.openclawOwner.removeAttribute("title");
   elements.openclawBind.textContent = "—";
   elements.openclawCheckedAt.textContent = "—";
   elements.openclawAccessUrl.textContent = "—";

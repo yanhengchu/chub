@@ -28,6 +28,8 @@ const elements = {
   openclawBadge: document.querySelector("#openclaw-badge"),
   openclawVersion: document.querySelector("#openclaw-version"),
   openclawService: document.querySelector("#openclaw-service"),
+  openclawChannels: document.querySelector("#openclaw-channels"),
+  openclawOwner: document.querySelector("#openclaw-owner"),
   openclawBind: document.querySelector("#openclaw-bind"),
   openclawCheckedAt: document.querySelector("#openclaw-checked-at"),
   openclawAccessUrl: document.querySelector("#openclaw-access-url"),
@@ -80,6 +82,7 @@ const elements = {
 };
 
 let activeToken = "";
+let tailscaleAccess = false;
 let accessVersion = 0;
 let connectionAttempt = 0;
 let cardsRefreshAt = 0;
@@ -184,7 +187,20 @@ function showConnectedView(status) {
   elements.connectedNode.textContent = status.node.name;
   elements.connectedMeta.textContent =
     `${platformText(status.node.detected_platform)} · ${status.system.hostname || "未知主机"}`;
-  setBadge(elements.connectionBadge, "已连接", "success");
+  setBadge(
+    elements.connectionBadge,
+    tailscaleAccess ? "Tailnet 已连接" : "已连接",
+    "success",
+  );
+  elements.clearToken.hidden = tailscaleAccess && !activeToken;
+}
+
+function hasProtectedAccess() {
+  return Boolean(activeToken) || tailscaleAccess;
+}
+
+function authorizationHeaders(token = activeToken) {
+  return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
 function storeToken(token, remember) {
@@ -210,17 +226,13 @@ function errorDetails(payload, fallback) {
 }
 
 async function apiFetch(path, options = {}, token = activeToken) {
-  if (!token) {
-    throw { code: "authentication_required", message: "请先输入 Hub Token。" };
-  }
-
   let response;
   try {
     response = await fetch(path, {
       ...options,
       headers: {
         ...options.headers,
-        Authorization: `Bearer ${token}`,
+        ...authorizationHeaders(token),
       },
     });
   } catch {
@@ -248,6 +260,7 @@ function handleAccessError(error) {
   if (error.code === "invalid_credentials" || error.code === "authentication_required") {
     removeStoredToken();
     activeToken = "";
+    tailscaleAccess = false;
     accessVersion += 1;
     clearProtectedView();
     showDisconnectedView("Token 无效或已变更，请重新输入。", "error");
@@ -256,6 +269,7 @@ function handleAccessError(error) {
   if (error.code === "security_not_configured") {
     removeStoredToken();
     activeToken = "";
+    tailscaleAccess = false;
     accessVersion += 1;
     clearProtectedView();
     showDisconnectedView(
@@ -283,6 +297,7 @@ async function connectWithToken(token, remember, savedCredential = false) {
       return;
     }
     activeToken = token;
+    tailscaleAccess = false;
     accessVersion += 1;
     storeToken(token, remember);
     ensureCodexCard();
@@ -298,6 +313,51 @@ async function connectWithToken(token, remember, savedCredential = false) {
     if (error.code === "network_error") {
       showDisconnectedView(error.message, "error");
       setBadge(elements.accessBadge, "连接失败", "failed");
+    }
+  } finally {
+    if (attempt === connectionAttempt) {
+      elements.connectSubmit.disabled = false;
+    }
+  }
+}
+
+async function connectWithTailscale(fallbackToken = "", rememberFallback = false) {
+  const attempt = ++connectionAttempt;
+  elements.connectSubmit.disabled = true;
+  setBadge(elements.accessBadge, "检查 Tailnet");
+  setMessage(elements.globalMessage, "正在检查 Tailnet 可信访问…");
+
+  try {
+    const status = await apiFetch("/api/status", {}, "");
+    if (attempt !== connectionAttempt) {
+      return;
+    }
+    activeToken = "";
+    tailscaleAccess = true;
+    accessVersion += 1;
+    ensureCodexCard();
+    renderStatus(status);
+    restoreOpenClawCache(status.node.id);
+    showConnectedView(status);
+    await Promise.all([loadCodexSessions(), loadOpenClaw(), loadAutomations()]);
+  } catch (error) {
+    if (attempt !== connectionAttempt) {
+      return;
+    }
+    tailscaleAccess = false;
+    if (
+      fallbackToken
+      && (
+        error.code === "invalid_credentials"
+        || error.code === "authentication_required"
+      )
+    ) {
+      connectWithToken(fallbackToken, rememberFallback, true);
+    } else if (error.code === "network_error") {
+      showDisconnectedView(error.message, "error");
+      setBadge(elements.accessBadge, "连接失败", "failed");
+    } else {
+      showDisconnectedView();
     }
   } finally {
     if (attempt === connectionAttempt) {

@@ -30,10 +30,6 @@ function applyFilter(filter) {
 }
 
 async function updateArchiveState(button) {
-  if (!token) {
-    showMessage("请先返回首页连接节点，再管理文档归档状态。", "error");
-    return;
-  }
   const documentId = button.dataset.documentId;
   const archived = button.dataset.archived === "true";
   const action = archived ? "恢复" : "归档";
@@ -48,7 +44,7 @@ async function updateArchiveState(button) {
       {
         method: "PUT",
         headers: {
-          Authorization: `Bearer ${token}`,
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
           "Content-Type": "application/json",
         },
         body: JSON.stringify({ archived: !archived }),

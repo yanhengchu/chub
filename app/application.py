@@ -39,6 +39,7 @@ from app.core.response import (
     validation_error_handler,
 )
 from app.services.openclaw import OpenClawManager
+from app.llm import LlmService
 from app.web.routes import STATIC_DIR, router as web_router
 
 
@@ -92,7 +93,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     detected_platform = detect_platform()
     logger = logging.getLogger("hub.startup")
-    if not resolved_settings.security.token:
+    tailscale_access_available = (
+        resolved_settings.security.allow_tailscale
+        and is_tailscale_ip(resolved_settings.server.host)
+    )
+    if not resolved_settings.security.token and not tailscale_access_available:
         logger.warning(
             "HUB_TOKEN is not set; health check remains available but protected APIs are disabled"
         )
@@ -117,17 +122,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
 
     codex_pty_manager = CodexPtyManager(resolved_settings)
+    llm_service = LlmService(resolved_settings.llm)
     quick_interactions = QuickInteractionManager(
         resolved_settings.codex_pty.data_file,
         codex_pty_manager,
+        llm_service,
         timeout_seconds=resolved_settings.codex_pty.quick_interaction_timeout_seconds,
     )
 
     @asynccontextmanager
     async def lifespan(_application: FastAPI):
-        yield
-        quick_interactions.close()
-        codex_pty_manager.close()
+        try:
+            yield
+        finally:
+            await quick_interactions.aclose()
+            await llm_service.close()
+            codex_pty_manager.close()
 
     application = FastAPI(
         title=resolved_settings.app.name,
@@ -149,6 +159,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.terminal_connections = TerminalConnectionRegistry()
     application.state.automation_manager = AutomationManager(resolved_settings)
     application.state.openclaw_manager = OpenClawManager()
+    application.state.llm_service = llm_service
     application.add_middleware(SecurityHeadersMiddleware)
     application.add_exception_handler(ApiError, api_error_handler)
     application.add_exception_handler(

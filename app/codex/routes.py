@@ -48,11 +48,16 @@ def list_sessions(request: Request) -> ApiResponse[SessionListData]:
     quick_sessions: dict[str, datetime] = (
         request.app.state.quick_interactions.active_sessions()
     )
+    llm_sessions: dict[str, datetime] = (
+        request.app.state.quick_interactions.llm_active_sessions()
+    )
     sessions = [
         session.model_copy(
             update={
                 "quick_interaction_running": session.id in quick_sessions,
                 "quick_interaction_updated_at": quick_sessions.get(session.id),
+                "llm_interaction_running": session.id in llm_sessions,
+                "llm_interaction_updated_at": llm_sessions.get(session.id),
             }
         )
         for session in manager.list_sessions()
@@ -171,7 +176,7 @@ async def stop_session(session_id: str, request: Request) -> ApiResponse[Session
     "/sessions/{session_id}/quick-interactions",
     response_model=ApiResponse[QuickInteractionData],
 )
-def submit_quick_interaction(
+async def submit_quick_interaction(
     session_id: str,
     payload: QuickInteractionRequest,
     request: Request,
@@ -180,65 +185,80 @@ def submit_quick_interaction(
     source_ip = request.client.host if request.client else "unknown"
     try:
         quick_interactions = request.app.state.quick_interactions
-        manager = request.app.state.codex_pty_manager
-        with quick_interactions.session_operation_guard(session_id):
-            session = manager.get_session(session_id)
-            if session.status == "running":
-                if session.activity == "working":
-                    raise ApiError(
-                        409,
-                        "quick_interaction_terminal_working",
-                        "实时终端正在执行，请等待当前任务结束。",
-                    )
-                if (
-                    session.activity == "unknown"
-                    and not payload.confirm_stop_unknown_terminal
-                ):
-                    raise ApiError(
-                        409,
-                        "quick_interaction_terminal_confirmation_required",
-                        "当前实时终端状态无法确认，请确认停止后再执行。",
-                    )
-                if session.activity == "idle":
-                    task = quick_interactions.submit(
-                        session_id,
-                        payload.prompt,
-                        operation_id=operation_id,
-                        source_ip=source_ip,
-                    )
-                    return ApiResponse(data=QuickInteractionData(task=task))
-                session = manager.get_session(session_id)
-                if session.status == "running" and session.activity == "working":
-                    raise ApiError(
-                        409,
-                        "quick_interaction_terminal_working",
-                        "实时终端正在执行，请等待当前任务结束。",
-                    )
-                if (
-                    session.status == "running"
-                    and session.activity == "unknown"
-                    and not payload.confirm_stop_unknown_terminal
-                ):
-                    raise ApiError(
-                        409,
-                        "quick_interaction_terminal_confirmation_required",
-                        "当前实时终端状态无法确认，请确认停止后再执行。",
-                    )
-                request.app.state.terminal_tickets.revoke_session(session_id)
-                request.app.state.terminal_connections.close_session(session_id)
-                if session.status == "running":
-                    manager.stop_session(session_id)
-            task = quick_interactions.submit(
+        if payload.engine == "bedrock_api":
+            task = quick_interactions.submit_llm(
                 session_id,
                 payload.prompt,
                 operation_id=operation_id,
                 source_ip=source_ip,
             )
+            return ApiResponse(data=QuickInteractionData(task=task))
+        manager = request.app.state.codex_pty_manager
+
+        def submit_codex():
+            with quick_interactions.session_operation_guard(session_id):
+                session = manager.get_session(session_id)
+                if session.status == "running":
+                    if session.activity == "working":
+                        raise ApiError(
+                            409,
+                            "quick_interaction_terminal_working",
+                            "实时终端正在执行，请等待当前任务结束。",
+                        )
+                    if (
+                        session.activity == "unknown"
+                        and not payload.confirm_stop_unknown_terminal
+                    ):
+                        raise ApiError(
+                            409,
+                            "quick_interaction_terminal_confirmation_required",
+                            "当前实时终端状态无法确认，请确认停止后再执行。",
+                        )
+                    if session.activity == "idle":
+                        return quick_interactions.submit(
+                            session_id,
+                            payload.prompt,
+                            operation_id=operation_id,
+                            source_ip=source_ip,
+                        )
+                    session = manager.get_session(session_id)
+                    if session.status == "running" and session.activity == "working":
+                        raise ApiError(
+                            409,
+                            "quick_interaction_terminal_working",
+                            "实时终端正在执行，请等待当前任务结束。",
+                        )
+                    if (
+                        session.status == "running"
+                        and session.activity == "unknown"
+                        and not payload.confirm_stop_unknown_terminal
+                    ):
+                        raise ApiError(
+                            409,
+                            "quick_interaction_terminal_confirmation_required",
+                            "当前实时终端状态无法确认，请确认停止后再执行。",
+                        )
+                    request.app.state.terminal_tickets.revoke_session(session_id)
+                    request.app.state.terminal_connections.close_session(session_id)
+                    if session.status == "running":
+                        manager.stop_session(session_id)
+                return quick_interactions.submit(
+                    session_id,
+                    payload.prompt,
+                    operation_id=operation_id,
+                    source_ip=source_ip,
+                )
+
+        task = await asyncio.to_thread(submit_codex)
     except ApiError as exc:
         if exc.code != "quick_interaction_terminal_confirmation_required":
             write_operation(
                 operation_id=operation_id,
-                action="quick_interaction",
+                action=(
+                    "bedrock_quick_interaction"
+                    if payload.engine == "bedrock_api"
+                    else "quick_interaction"
+                ),
                 status="failed",
                 target=session_id,
                 source_ip=source_ip,
@@ -247,7 +267,11 @@ def submit_quick_interaction(
     except Exception:
         write_operation(
             operation_id=operation_id,
-            action="quick_interaction",
+            action=(
+                "bedrock_quick_interaction"
+                if payload.engine == "bedrock_api"
+                else "quick_interaction"
+            ),
             status="failed",
             target=session_id,
             source_ip=source_ip,
@@ -274,7 +298,7 @@ def list_quick_interactions(
     session_id: str,
     request: Request,
     offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=3, ge=1, le=20),
+    limit: int = Query(default=5, ge=1, le=20),
 ) -> ApiResponse[QuickInteractionListData]:
     tasks = request.app.state.quick_interactions.list_for_session(session_id)
     page = tasks[offset : offset + limit]
@@ -365,7 +389,7 @@ async def update_session_permission(
 async def archive_session(session_id: str, request: Request) -> ApiResponse[None]:
     try:
         def archive_with_guard() -> None:
-            with request.app.state.quick_interactions.session_operation_guard(session_id):
+            with request.app.state.quick_interactions.destructive_operation_guard(session_id):
                 request.app.state.terminal_tickets.revoke_session(session_id)
                 request.app.state.terminal_connections.close_session(session_id)
                 request.app.state.codex_pty_manager.archive_session(session_id)
@@ -392,7 +416,7 @@ async def archive_session(session_id: str, request: Request) -> ApiResponse[None
 async def delete_session(session_id: str, request: Request) -> ApiResponse[None]:
     try:
         def delete_with_guard() -> None:
-            with request.app.state.quick_interactions.session_operation_guard(session_id):
+            with request.app.state.quick_interactions.destructive_operation_guard(session_id):
                 request.app.state.terminal_tickets.revoke_session(session_id)
                 request.app.state.terminal_connections.close_session(session_id)
                 request.app.state.codex_pty_manager.delete_session(session_id)

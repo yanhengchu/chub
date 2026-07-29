@@ -920,13 +920,19 @@ pre {
 
 .quick-interaction-composer-actions {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
+  gap: 0.6rem;
 }
 
 .quick-interaction-composer-actions > button {
   min-height: 36px;
   padding: 0.4rem 0.75rem;
   white-space: nowrap;
+}
+
+.quick-interaction-engine {
+  margin-right: auto;
 }
 
 .quick-interaction-warning {
@@ -961,12 +967,17 @@ pre {
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 0.5rem;
 }
 
 .quick-interaction-history-meta span {
   color: var(--muted);
   font-size: 0.75rem;
+}
+
+.quick-interaction-engine-label {
+  white-space: nowrap;
 }
 
 .quick-interaction-pin {

@@ -36,6 +36,9 @@ def test_load_settings_uses_environment_token(
 
     assert settings.security.token is not None
     assert settings.security.token.get_secret_value() == "secret-token"
+    assert settings.security.allow_tailscale is True
+    assert settings.llm.enabled is True
+    assert settings.llm.config_source == "openclaw"
     assert settings.node.id == "test"
 
 
@@ -192,6 +195,8 @@ def test_platform_config_examples_are_valid(
 
     assert settings.node.type == expected_platform
     assert settings.security.token is None
+    assert settings.security.allow_tailscale is True
+    assert settings.llm.openclaw_config_file.name == "openclaw.json"
     assert settings.app.page_title == f"{settings.node.name} · Hub"
 
 

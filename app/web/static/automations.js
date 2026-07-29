@@ -17,12 +17,12 @@ function showMessage(text, kind = "") {
 }
 
 async function request(path, options = {}) {
-  if (!token) {
-    throw new Error("请先返回首页连接节点。");
-  }
   const response = await fetch(path, {
     ...options,
-    headers: { ...options.headers, Authorization: `Bearer ${token}` },
+    headers: {
+      ...options.headers,
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
   });
   const payload = await response.json();
   if (!response.ok || payload.success !== true) {

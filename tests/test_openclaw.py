@@ -93,9 +93,131 @@ def test_openclaw_status_is_derived_from_curated_json(
         "bind_mode",
         "port",
         "access_url",
+        "channel_state",
+        "channel_count",
+        "channel_running_count",
+        "channel_message",
+        "owner_state",
+        "owner_count",
+        "owner_message",
         "message",
         "checked_at",
     }
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_state", "expected_running", "expected_total"),
+    [
+        ({"channelAccounts": {}}, "not_configured", 0, 0),
+        (
+            {
+                "channelAccounts": {
+                    "openclaw-weixin": [
+                        {
+                            "enabled": True,
+                            "configured": True,
+                            "running": True,
+                            "restartPending": False,
+                            "lastError": None,
+                        }
+                    ]
+                }
+            },
+            "running",
+            1,
+            1,
+        ),
+        (
+            {
+                "channelAccounts": {
+                    "openclaw-weixin": [
+                        {
+                            "enabled": True,
+                            "configured": True,
+                            "running": False,
+                        }
+                    ]
+                }
+            },
+            "stopped",
+            0,
+            1,
+        ),
+        (
+            {
+                "channelAccounts": {
+                    "one": [
+                        {
+                            "enabled": True,
+                            "configured": True,
+                            "running": True,
+                        }
+                    ],
+                    "two": [
+                        {
+                            "enabled": True,
+                            "configured": True,
+                            "running": False,
+                        }
+                    ],
+                }
+            },
+            "degraded",
+            1,
+            2,
+        ),
+        ({}, "unknown", 0, 0),
+    ],
+)
+def test_openclaw_channel_status_is_aggregated(
+    payload: dict,
+    expected_state: str,
+    expected_running: int,
+    expected_total: int,
+) -> None:
+    status, channel_ids = OpenClawManager._parse_channel_status(payload)
+
+    assert status["channel_state"] == expected_state
+    assert status["channel_running_count"] == expected_running
+    assert status["channel_count"] == expected_total
+    assert len(channel_ids) <= expected_total
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_state", "expected_count"),
+    [
+        ({"native": "auto"}, "not_configured", 0),
+        ({"ownerAllowFrom": ["openclaw-weixin:user@im.wechat"]}, "configured", 1),
+        ({"ownerAllowFrom": []}, "not_configured", 0),
+        ({"ownerAllowFrom": "invalid"}, "unknown", 0),
+    ],
+)
+def test_openclaw_owner_status_only_exposes_summary(
+    payload: dict,
+    expected_state: str,
+    expected_count: int,
+) -> None:
+    status = OpenClawManager._parse_owner_status(payload)
+
+    assert status["owner_state"] == expected_state
+    assert status["owner_count"] == expected_count
+    assert "user@im.wechat" not in str(status)
+
+
+def test_openclaw_owner_status_requires_owner_for_configured_channel() -> None:
+    status = OpenClawManager._parse_owner_status(
+        {"ownerAllowFrom": ["telegram:123", "openclaw-weixin:user@im.wechat"]},
+        {"openclaw-weixin"},
+    )
+    unrelated = OpenClawManager._parse_owner_status(
+        {"ownerAllowFrom": ["telegram:123"]},
+        {"openclaw-weixin"},
+    )
+
+    assert status["owner_state"] == "configured"
+    assert status["owner_count"] == 1
+    assert unrelated["owner_state"] == "not_configured"
+    assert unrelated["owner_count"] == 0
 
 
 def test_tailscale_access_url_requires_https_ts_net_proxy_to_gateway() -> None:
@@ -159,6 +281,71 @@ def test_openclaw_status_reports_missing_cli(
     assert status.installed is False
 
 
+def test_openclaw_status_includes_channel_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = OpenClawManager()
+    run_json = MagicMock(
+        side_effect=[
+            status_payload(loaded=True, ready=True, port_status="listening"),
+            {
+                "channelAccounts": {
+                    "openclaw-weixin": [
+                        {
+                            "enabled": True,
+                            "configured": True,
+                            "running": True,
+                        }
+                    ]
+                }
+            },
+            {"ownerAllowFrom": ["openclaw-weixin:user@im.wechat"]},
+        ]
+    )
+    monkeypatch.setattr(manager, "_resolve_executable", lambda: "/usr/bin/openclaw")
+    monkeypatch.setattr(manager, "_run_json", run_json)
+    monkeypatch.setattr(manager, "_tailscale_access_url", lambda port: None)
+
+    status = manager.status()
+
+    assert status.state == "running"
+    assert status.channel_state == "running"
+    assert status.channel_running_count == 1
+    assert status.channel_count == 1
+    assert status.owner_state == "configured"
+    assert status.owner_count == 1
+    assert run_json.call_args_list[1].args[1] == ["channels", "status", "--json"]
+    assert run_json.call_args_list[2].args[1] == [
+        "config",
+        "get",
+        "commands",
+        "--json",
+    ]
+
+
+def test_openclaw_channel_check_failure_preserves_gateway_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = OpenClawManager()
+    run_json = MagicMock(
+        side_effect=[
+            status_payload(loaded=True, ready=True, port_status="listening"),
+            ApiError(502, "openclaw_command_failed", "failed"),
+            {"native": "auto"},
+        ]
+    )
+    monkeypatch.setattr(manager, "_resolve_executable", lambda: "/usr/bin/openclaw")
+    monkeypatch.setattr(manager, "_run_json", run_json)
+    monkeypatch.setattr(manager, "_tailscale_access_url", lambda port: None)
+
+    status = manager.status()
+
+    assert status.state == "running"
+    assert status.channel_state == "unknown"
+    assert status.channel_message == "消息通道状态检查失败，请刷新后重试。"
+    assert status.owner_state == "not_configured"
+
+
 def test_openclaw_start_waits_for_ready_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -166,14 +353,17 @@ def test_openclaw_start_waits_for_ready_state(
     stopped = openclaw_status("stopped")
     running = openclaw_status("running")
     status = MagicMock(side_effect=[stopped, running])
+    gateway_status = MagicMock(return_value=(running, "/usr/bin/openclaw"))
     run_json = MagicMock(return_value={})
     monkeypatch.setattr(manager, "status", status)
+    monkeypatch.setattr(manager, "_gateway_status", gateway_status)
     monkeypatch.setattr(manager, "_resolve_executable", lambda: "/usr/bin/openclaw")
     monkeypatch.setattr(manager, "_run_json", run_json)
 
     result = manager.control("start")
 
     assert result.state == "running"
+    gateway_status.assert_called_once_with()
     run_json.assert_called_once_with(
         "/usr/bin/openclaw",
         ["gateway", "start", "--json"],

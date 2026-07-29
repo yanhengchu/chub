@@ -8,13 +8,14 @@ const form = document.querySelector("#quick-interaction-form");
 const composerHeading = form.querySelector(".quick-interaction-page-heading");
 const composerBody = document.querySelector("#quick-interaction-composer-body");
 const prompt = document.querySelector("#quick-interaction-prompt");
+const engineToggle = document.querySelector("#quick-interaction-engine");
 const submit = document.querySelector("#quick-interaction-submit");
 const submitMessage = document.querySelector("#quick-interaction-submit-message");
 const warning = document.querySelector("#quick-interaction-warning");
 const historyMessage = document.querySelector("#quick-interaction-history-message");
 const history = document.querySelector("#quick-interaction-history");
 const loadMore = document.querySelector("#quick-interaction-load-more");
-const PAGE_SIZE = 3;
+const PAGE_SIZE = 5;
 const COMPOSER_COLLAPSE_ANIMATION_MS = 320;
 const COMPOSER_COLLAPSE_FALLBACK_MS = 380;
 const LONG_RUNNING_THRESHOLD_MS = 10 * 60 * 1000;
@@ -27,6 +28,8 @@ let currentSession = null;
 let confirmStopUnknownTerminal = false;
 let composerCollapsed = false;
 let composerStateInitialized = false;
+let selectedEngine = "codex_cli";
+let activeInteraction = false;
 
 function showMessage(element, text, kind = "") {
   element.textContent = text;
@@ -61,17 +64,12 @@ function statusText(task) {
 }
 
 async function request(path, options = {}) {
-  if (!token) {
-    const error = new Error("请先返回首页连接节点。");
-    error.code = "access_required";
-    throw error;
-  }
   const response = await fetch(path, {
     cache: "no-store",
     ...options,
     headers: {
-      Authorization: `Bearer ${token}`,
       ...(options.headers || {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
   });
   const payload = await response.json();
@@ -91,6 +89,9 @@ function taskSignature(task) {
     task.result,
     task.error,
     task.pinned_at,
+    task.engine,
+    task.provider,
+    task.model,
     statusText(task),
   ]);
 }
@@ -107,6 +108,7 @@ function updateTaskItem(item, task) {
     const heading = document.createElement("div");
     const status = document.createElement("strong");
     const meta = document.createElement("div");
+    const engine = document.createElement("span");
     const time = document.createElement("span");
     const pinButton = document.createElement("button");
     const promptLabel = document.createElement("span");
@@ -115,6 +117,13 @@ function updateTaskItem(item, task) {
     heading.className = "quick-interaction-history-heading";
     meta.className = "quick-interaction-history-meta";
     status.textContent = statusText(task);
+    engine.className = "quick-interaction-engine-label";
+    engine.textContent = task.engine === "bedrock_api"
+      ? "Amazon Bedrock API"
+      : "Codex CLI";
+    if (task.engine === "bedrock_api" && task.model) {
+      engine.title = `${task.provider || ""}${task.provider ? " · " : ""}${task.model}`;
+    }
     time.textContent = formatTime(task.updated_at);
     pinButton.className = "button-secondary quick-interaction-pin";
     pinButton.type = "button";
@@ -126,14 +135,16 @@ function updateTaskItem(item, task) {
     promptLabel.textContent = "提交内容";
     promptContent.className = "quick-interaction-history-content";
     promptContent.textContent = task.prompt || "历史任务未保存提交内容。";
-    meta.append(time, pinButton);
+    meta.append(engine, time, pinButton);
     heading.append(status, meta);
     item.append(heading, promptLabel, promptContent);
     if (task.result || task.error) {
       const resultLabel = document.createElement("span");
       const result = document.createElement("pre");
       resultLabel.className = "quick-interaction-history-label";
-      resultLabel.textContent = task.result ? "执行结果" : "失败原因";
+      resultLabel.textContent = task.result
+        ? task.engine === "bedrock_api" ? "回答结果" : "执行结果"
+        : "失败原因";
       result.className = "quick-interaction-history-content";
       result.textContent = task.result || task.error;
       item.append(resultLabel, result);
@@ -220,6 +231,15 @@ function submissionBlockReason(session) {
   if (!session) {
     return "正在读取会话状态…";
   }
+  if (activeInteraction) {
+    return "当前快速交互正在执行，请等待任务结束。";
+  }
+  if (selectedEngine === "bedrock_api") {
+    if (prompt.value.length > 4000) {
+      return "Amazon Bedrock API 单次最多支持 4000 个字符。";
+    }
+    return "";
+  }
   if (!session.codex_session_id) {
     return "会话尚未启动，请先通过实时终端建立会话。";
   }
@@ -240,6 +260,31 @@ function submissionBlockReason(session) {
   return "";
 }
 
+function engineLabel(engine) {
+  return engine === "bedrock_api" ? "Amazon Bedrock API" : "Codex CLI";
+}
+
+function setEngine(engine) {
+  selectedEngine = engine === "bedrock_api" ? "bedrock_api" : "codex_cli";
+  const nextEngine = selectedEngine === "codex_cli" ? "bedrock_api" : "codex_cli";
+  engineToggle.textContent = engineLabel(selectedEngine);
+  engineToggle.dataset.engine = selectedEngine;
+  engineToggle.title = `点击切换为${engineLabel(nextEngine)}`;
+  engineToggle.setAttribute(
+    "aria-label",
+    `当前执行方式为${engineLabel(selectedEngine)}，点击切换为${engineLabel(nextEngine)}`,
+  );
+  prompt.placeholder = selectedEngine === "bedrock_api"
+    ? "输入要交给 Amazon Bedrock API 回答的问题…"
+    : "输入要交给 Codex 执行的需求…";
+  prompt.maxLength = selectedEngine === "bedrock_api" ? 4000 : 8000;
+  submit.textContent = selectedEngine === "bedrock_api" ? "提问" : "执行";
+  showMessage(submitMessage, "");
+  if (currentSession) {
+    renderSession(currentSession);
+  }
+}
+
 function visibleHistoryAnchor() {
   if (window.scrollY <= 0) {
     return null;
@@ -258,7 +303,7 @@ function setComposerCollapsed(collapsed, { animate = true } = {}) {
   if (!animate) {
     form.classList.add("is-initializing");
   }
-  const anchor = visibleHistoryAnchor();
+  const anchor = collapsed ? visibleHistoryAnchor() : null;
   const anchorTop = anchor?.getBoundingClientRect().top;
   form.classList.toggle("is-collapsed", collapsed);
   composerHeading.setAttribute("aria-expanded", String(!collapsed));
@@ -314,19 +359,27 @@ function renderSession(session) {
   }
   if (!composerStateInitialized) {
     composerStateInitialized = true;
-    setComposerCollapsed(session.quick_interaction_running === true, { animate: false });
+    setComposerCollapsed(
+      session.quick_interaction_running === true
+        || session.llm_interaction_running === true,
+      { animate: false },
+    );
   }
   confirmStopUnknownTerminal =
     session.status === "running" && session.activity === "unknown";
-  warning.hidden = !confirmStopUnknownTerminal;
+  warning.hidden = selectedEngine !== "codex_cli" || !confirmStopUnknownTerminal;
   const reason = submissionBlockReason(session);
-  form.setAttribute("aria-busy", String(session.quick_interaction_running === true));
+  const busy = activeInteraction
+    || session.quick_interaction_running === true
+    || session.llm_interaction_running === true;
+  form.setAttribute("aria-busy", String(busy));
   submit.disabled = Boolean(reason);
-  prompt.disabled = session.quick_interaction_running === true;
-  if (reason && !session.quick_interaction_running) {
+  prompt.disabled = busy;
+  engineToggle.disabled = busy;
+  if (reason && !busy) {
     showMessage(submitMessage, reason);
   } else if (
-    session.quick_interaction_running
+    busy
     || !submitMessage.classList.contains("message-error")
   ) {
     showMessage(submitMessage, "");
@@ -336,6 +389,7 @@ function renderSession(session) {
 function renderSessionLoadError(error) {
   submit.disabled = true;
   prompt.disabled = false;
+  engineToggle.disabled = false;
   form.setAttribute("aria-busy", "false");
   submitMessage.dataset.sessionLoadError = "true";
   showMessage(
@@ -375,6 +429,7 @@ async function performLoad({ append = false } = {}) {
       : mergeLatestTasks(data.tasks)).slice(0, data.total);
     totalTasks = data.total;
     active = renderTasks(loadedTasks);
+    activeInteraction = active;
     loadMore.hidden = loadedTasks.length >= totalTasks;
     showMessage(historyMessage, "");
   } else {
@@ -391,10 +446,15 @@ async function performLoad({ append = false } = {}) {
   const session = sessionResult.status === "fulfilled"
     ? sessionResult.value
     : currentSession;
+  if (session) {
+    renderSession(session);
+  }
   const loadFailed = historyResult.status === "rejected"
     || sessionResult.status === "rejected";
   const shouldPoll = loadFailed
     || active
+    || session?.quick_interaction_running === true
+    || session?.llm_interaction_running === true
     || session?.activity === "working"
     || (session?.status === "running" && session.activity === "unknown");
   if (shouldPoll && document.visibilityState !== "hidden") {
@@ -433,6 +493,16 @@ composerHeading.addEventListener("keydown", (event) => {
   setComposerCollapsed(!composerCollapsed);
 });
 
+engineToggle.addEventListener("click", () => {
+  setEngine(selectedEngine === "codex_cli" ? "bedrock_api" : "codex_cli");
+});
+
+prompt.addEventListener("input", () => {
+  if (currentSession) {
+    renderSession(currentSession);
+  }
+});
+
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   const value = prompt.value.trim();
@@ -449,7 +519,9 @@ form.addEventListener("submit", async (event) => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           prompt: value,
-          confirm_stop_unknown_terminal: confirmStopUnknownTerminal,
+          engine: selectedEngine,
+          confirm_stop_unknown_terminal:
+            selectedEngine === "codex_cli" && confirmStopUnknownTerminal,
         }),
       },
     );
@@ -461,7 +533,10 @@ form.addEventListener("submit", async (event) => {
     await waitForComposerCollapse();
     await load();
   } catch (error) {
-    if (error.code === "quick_interaction_terminal_confirmation_required") {
+    if (
+      selectedEngine === "codex_cli"
+      && error.code === "quick_interaction_terminal_confirmation_required"
+    ) {
       confirmStopUnknownTerminal = true;
       warning.hidden = false;
       showMessage(submitMessage, "请确认影响后再次点击执行。", "error");
@@ -490,4 +565,9 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 
+window.addEventListener("pageshow", () => {
+  setEngine("codex_cli");
+});
+
+setEngine("codex_cli");
 load();

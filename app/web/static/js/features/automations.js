@@ -141,7 +141,7 @@ function releaseFeishuQr() {
 }
 
 async function loadFeishuQr() {
-  if (feishuQrLoading || feishuQrObjectUrl || !activeToken) {
+  if (feishuQrLoading || feishuQrObjectUrl || !hasProtectedAccess()) {
     return;
   }
   const requestVersion = accessVersion;
@@ -149,7 +149,7 @@ async function loadFeishuQr() {
   feishuQrLoading = true;
   try {
     const response = await fetch("/api/automations/environment/feishu/qr", {
-      headers: { Authorization: `Bearer ${activeToken}` },
+      headers: authorizationHeaders(),
       cache: "no-store",
     });
     if (response.status === 401) {

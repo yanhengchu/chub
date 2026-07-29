@@ -49,6 +49,76 @@ async def test_status_requires_authentication(settings: Settings) -> None:
 
 
 @pytest.mark.anyio
+async def test_status_accepts_tailscale_source_by_default(
+    settings: Settings,
+) -> None:
+    settings.server.host = "100.64.0.20"
+    transport = httpx.ASGITransport(
+        app=create_app(settings),
+        client=("100.64.0.21", 12345),
+    )
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/api/status")
+
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+
+
+@pytest.mark.anyio
+async def test_status_rejects_tailscale_source_when_disabled(
+    settings: Settings,
+) -> None:
+    settings.server.host = "100.64.0.20"
+    settings.security.allow_tailscale = False
+    transport = httpx.ASGITransport(
+        app=create_app(settings),
+        client=("100.64.0.21", 12345),
+    )
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/api/status")
+
+    assert response.status_code == 401
+
+
+@pytest.mark.anyio
+async def test_status_rejects_forwarded_tailscale_header_from_non_tailscale_source(
+    settings: Settings,
+) -> None:
+    settings.server.host = "100.64.0.20"
+    settings.security.allow_tailscale = True
+    transport = httpx.ASGITransport(
+        app=create_app(settings),
+        client=("127.0.0.1", 12345),
+    )
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            "/api/status",
+            headers={"X-Forwarded-For": "100.64.0.21"},
+        )
+
+    assert response.status_code == 401
+
+
+@pytest.mark.anyio
+async def test_status_requires_tailscale_listen_address_for_tokenless_access(
+    settings: Settings,
+) -> None:
+    settings.security.allow_tailscale = True
+    transport = httpx.ASGITransport(
+        app=create_app(settings),
+        client=("100.64.0.21", 12345),
+    )
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/api/status")
+
+    assert response.status_code == 401
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize(
     ("authorization", "code"),
     [

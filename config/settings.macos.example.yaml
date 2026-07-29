@@ -13,7 +13,10 @@ server:
   host: "127.0.0.1"
   port: 8080
 
-security: {}
+security:
+  # Allow direct requests from devices in the same tailnet without a Hub Token.
+  # This only takes effect when server.host is this node's Tailscale IP.
+  allow_tailscale: true
 
 logs:
   file: "logs/hub.log"
@@ -37,3 +40,15 @@ automations:
 
 project_documents:
   state_file: "data/project-documents.json"
+
+llm:
+  enabled: true
+  config_source: "openclaw"
+  openclaw_config_file: "~/.openclaw/openclaw.json"
+  # Set provider and model when OpenClaw has more than one candidate.
+  provider: null
+  model: null
+  timeout_seconds: 30
+  max_tokens: 512
+  max_concurrency: 2
+  max_response_bytes: 1048576

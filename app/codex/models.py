@@ -82,6 +82,8 @@ class SessionInfo(BaseModel):
     updated_at: datetime
     quick_interaction_running: bool = False
     quick_interaction_updated_at: datetime | None = None
+    llm_interaction_running: bool = False
+    llm_interaction_updated_at: datetime | None = None
 
 
 class SessionListData(BaseModel):
@@ -122,12 +124,14 @@ QuickInteractionStatus = Literal[
     "timed_out",
     "needs_terminal",
 ]
+QuickInteractionEngine = Literal["codex_cli", "bedrock_api"]
 
 
 class QuickInteractionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     prompt: str = Field(min_length=1, max_length=8000)
+    engine: QuickInteractionEngine = "codex_cli"
     confirm_stop_unknown_terminal: bool = False
 
     @field_validator("prompt")
@@ -137,6 +141,12 @@ class QuickInteractionRequest(BaseModel):
         if not resolved:
             raise ValueError("Prompt must not be blank")
         return resolved
+
+    @model_validator(mode="after")
+    def validate_engine_prompt_length(self) -> "QuickInteractionRequest":
+        if self.engine == "bedrock_api" and len(self.prompt) > 4000:
+            raise ValueError("Amazon Bedrock API prompt exceeds 4000 characters")
+        return self
 
 
 class QuickInteractionPinRequest(BaseModel):
@@ -150,6 +160,9 @@ class QuickInteractionTask(BaseModel):
 
     id: str
     session_id: str
+    engine: QuickInteractionEngine = "codex_cli"
+    provider: str | None = Field(default=None, max_length=200)
+    model: str | None = Field(default=None, max_length=500)
     prompt: str | None = Field(default=None, max_length=8000)
     status: QuickInteractionStatus
     result: str | None = Field(default=None, max_length=100_000)

@@ -85,8 +85,20 @@
     flex-wrap: wrap;
   }
 
+  .quick-interaction-composer-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
   .quick-interaction-composer-actions > button {
-    width: 100%;
+    width: auto;
+  }
+
+  .quick-interaction-engine {
+    min-width: 0;
+    margin-right: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .quick-interaction-pin {

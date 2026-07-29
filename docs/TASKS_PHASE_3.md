@@ -1,6 +1,6 @@
 # Chub 第三阶段高层计划
 
-> 状态：核心边界已确认，正在收敛首批场景、配置和验收基线。
+> 状态：OpenClaw 与首个外部 LLM 已完成 MacBook、Ubuntu 首轮验收，正在进入 Chub 受限能力与消息通道接入。
 
 ## 1. M1：边界与场景设计
 
@@ -20,6 +20,7 @@
 
 ## 2. M2：OpenClaw 最小接入
 
+- [x] 在 MacBook 与 Ubuntu 完成 OpenClaw 安装、初始化、Gateway 后台运行和基础控制台验收。
 - [x] 在 Chub 首页提供独立 OpenClaw 卡片，支持状态检查和固定的启动、停止、重启操作。
 - [x] OpenClaw 维护操作完成后核验 Gateway 最终状态，并记录完整操作生命周期。
 - [x] 完成 OpenClaw 卡片、Tailscale Serve HTTPS 入口和返回状态缓存的 MacBook 实机验收。
@@ -33,17 +34,22 @@
 
 - [ ] 确认飞书群机器人 Webhook 的消息格式、地址管理、限流和失败重试条件。
 - [ ] 打通飞书群机器人 Webhook 单向通知与结果推送。
-- [ ] 确认微信 ClawBot 的双向接口、认证、会话保持和网络条件。
-- [ ] 打通 ClawBot 与 OpenClaw 的双向消息和执行状态返回。
+- [x] 确认微信 ClawBot 的基础双向接口、Owner 认证、会话保持和网络条件。
+- [x] 打通 ClawBot 与 OpenClaw 的基础双向消息和普通结果返回。
+- [ ] 稳定 ClawBot 中的 Tool Calling 进度、最终结果和占位回复失败语义。
 - [ ] 验证 ClawBot 状态检查、白名单任务执行和结果查询。
 - [ ] 实现身份映射、重复消息、超时、失败反馈和高风险操作强制确认。
 
 ## 4. M4：其他 LLM 模型接入
 
 - [x] 确认由维护者提供现有 LLM API、Token 和模型信息。
-- [ ] 确认现有 API 的兼容协议、Base URL、模型名称和 Tool Calling 能力。
-- [ ] 设计凭证配置、模型选择、超时和额度限制。
-- [ ] 接入其他 LLM 模型并验证基础对话与工具调用。
+- [x] 确认首个 API 的兼容协议、Base URL 和模型名称。
+- [x] 使用独立密钥文件与 SecretRef 完成首个模型凭证配置。
+- [x] 在 MacBook 与 Ubuntu 接入 `brclient/amazon.nova-pro` 并完成基础对话验收。
+- [x] Chub 只读复用 OpenClaw Provider 与文件型 SecretRef，并完成一次独立的真实 API 文本调用。
+- [x] 在快速交互页面提供仅当前页面有效的 Codex CLI / Amazon Bedrock API 切换，并在本机历史中标记执行来源与模型快照。
+- [ ] 稳定验证首个模型的 Tool Calling 能力；已确认能成功调用，但仍存在偶发占位文本代替真实调用。
+- [ ] 完成超时、额度限制和回退模型策略。
 - [ ] 验证模型不可用、限流和失败时的降级反馈。
 
 ## 5. M5：端到端与安全验收
@@ -57,4 +63,4 @@
 
 ## 6. 当前任务
 
-接入方向已收敛，当前没有需要维护者提前决定的架构问题。Gateway 支持 MacBook 或 Ubuntu；飞书目标群由 Webhook 地址固定；微信只通过 ClawBot 双向交互，绑定与操作授权分离；高风险能力可只授予指定账号且执行前仍需确认；LLM 使用维护者现有 API。任务白名单、风险等级和各类连接参数在对应功能实施时提供并形成当次 PoC 验收标准。
+OpenClaw 与首个外部 LLM 的双端基线已经可用。下一步优先处理 OpenClaw 自身的工具执行、沙箱、提权和审批权限，再确定 OpenClaw 调用 Chub 的最小 Tool 集合。Chub 默认启用可显式关闭的轻量 Tailscale 免 Token 模式：当前个人 Tailnet 只加入维护者本人控制的设备，这些设备整体视为可信；服务直接监听本机 Tailscale IP，并仅按真实连接来源是否属于 Tailnet 判断。浏览器保留已有 Hub Token 作为 Tailscale 验证失败时的登录回退，回退认证失败后再清除。该模式不提供用户身份体系，也不替代能力白名单和高风险确认；如果 Tailnet 的设备信任前提变化，需要重新评估授权边界。任务白名单、风险等级和各类连接参数在对应功能实施时提供并形成当次 PoC 验收标准。

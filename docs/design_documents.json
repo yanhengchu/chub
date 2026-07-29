@@ -26,7 +26,7 @@
       "id": "openclaw-integration",
       "title": "OpenClaw 与消息通道接入设计",
       "summary": "定义 OpenClaw、飞书单向通知、微信 ClawBot、其他 LLM 与 Chub 的接入顺序、状态语义和安全边界。",
-      "status": "待验收",
+      "status": "部分实现，持续验收",
       "path": "OPENCLAW_INTEGRATION_DESIGN.md"
     },
     {
