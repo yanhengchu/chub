@@ -55,6 +55,32 @@
       </div>
     </dialog>
 
+    <dialog id="openclaw-weixin-dialog" class="codex-workspace-dialog" aria-labelledby="openclaw-weixin-dialog-title">
+      <div class="codex-workspace-dialog-surface openclaw-weixin-dialog-surface">
+        <div class="codex-workspace-dialog-header">
+          <h2 id="openclaw-weixin-dialog-title">绑定微信 ClawBot</h2>
+          <button id="openclaw-weixin-close" class="button-link codex-workspace-dialog-close" type="button" aria-label="关闭微信绑定">关闭</button>
+        </div>
+        <p class="openclaw-weixin-notice">重新扫码可能使该 ClawBot 在其他设备上的服务端绑定失效。绑定只建立消息通道，不会自动完成发送者配对或 Owner 授权。</p>
+        <div id="openclaw-weixin-qr-panel" class="openclaw-weixin-qr-panel" hidden>
+          <img id="openclaw-weixin-qr" alt="微信 ClawBot 绑定二维码">
+          <p>请使用手机微信扫码，并在手机上确认连接。</p>
+        </div>
+        <form id="openclaw-weixin-verify-form" class="openclaw-weixin-verify-form" hidden>
+          <label for="openclaw-weixin-verify-code">手机显示的数字验证码</label>
+          <div class="token-row">
+            <input id="openclaw-weixin-verify-code" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" maxlength="12" required>
+            <button type="submit">提交验证码</button>
+          </div>
+        </form>
+        <p id="openclaw-weixin-message" class="message" role="status" aria-live="polite">点击“生成二维码”开始绑定。</p>
+        <div class="restart-dialog-footer">
+          <button id="openclaw-weixin-cancel" class="button-danger" type="button" hidden>取消绑定</button>
+          <button id="openclaw-weixin-start" class="button-secondary" type="button">生成二维码</button>
+        </div>
+      </div>
+    </dialog>
+
     <main>
       <section id="connected-bar" class="card connected-bar" hidden aria-label="当前连接">
         <div class="connected-top">
@@ -112,7 +138,7 @@
       <div id="dashboard" class="dashboard" hidden>
         <div id="codex-card-host"></div>
 
-        <section class="card openclaw-card" data-card-key="openclaw" data-collapsible-card data-card-return-refresh="true" aria-labelledby="openclaw-title">
+        <section class="card openclaw-card" data-card-key="openclaw" data-collapsible-card aria-labelledby="openclaw-title">
           <div class="section-heading">
             <div class="card-heading-copy" data-card-heading>
               <p class="section-kicker">Agent 网关</p>
@@ -170,6 +196,7 @@
                 <p id="openclaw-message" class="message" aria-live="polite"></p>
               </div>
               <div class="openclaw-actions">
+                <button id="openclaw-bind-weixin" class="button-secondary" type="button" hidden>绑定微信</button>
                 <button id="openclaw-start" class="button-secondary" type="button" hidden>启动</button>
                 <button id="openclaw-restart" class="button-secondary" type="button" hidden>重启</button>
                 <button id="openclaw-stop" class="button-danger" type="button" hidden>停止</button>

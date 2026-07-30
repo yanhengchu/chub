@@ -37,6 +37,7 @@ const elements = {
   openclawAccessUnavailable: document.querySelector("#openclaw-access-unavailable"),
   openclawMessage: document.querySelector("#openclaw-message"),
   refreshOpenclaw: document.querySelector("#refresh-openclaw"),
+  openclawBindWeixin: document.querySelector("#openclaw-bind-weixin"),
   openclawStart: document.querySelector("#openclaw-start"),
   openclawRestart: document.querySelector("#openclaw-restart"),
   openclawStop: document.querySelector("#openclaw-stop"),
@@ -46,6 +47,15 @@ const elements = {
   openclawDialogClose: document.querySelector("#openclaw-dialog-close"),
   openclawDialogCancel: document.querySelector("#openclaw-dialog-cancel"),
   openclawDialogConfirm: document.querySelector("#openclaw-dialog-confirm"),
+  openclawWeixinDialog: document.querySelector("#openclaw-weixin-dialog"),
+  openclawWeixinClose: document.querySelector("#openclaw-weixin-close"),
+  openclawWeixinQrPanel: document.querySelector("#openclaw-weixin-qr-panel"),
+  openclawWeixinQr: document.querySelector("#openclaw-weixin-qr"),
+  openclawWeixinVerifyForm: document.querySelector("#openclaw-weixin-verify-form"),
+  openclawWeixinVerifyCode: document.querySelector("#openclaw-weixin-verify-code"),
+  openclawWeixinMessage: document.querySelector("#openclaw-weixin-message"),
+  openclawWeixinCancel: document.querySelector("#openclaw-weixin-cancel"),
+  openclawWeixinStart: document.querySelector("#openclaw-weixin-start"),
   automationBrowserBadge: document.querySelector("#automation-browser-badge"),
   automationBrowserControl: document.querySelector("#automation-browser-control"),
   automationBrowserProfile: document.querySelector("#automation-browser-profile"),
@@ -86,6 +96,8 @@ let tailscaleAccess = false;
 let accessVersion = 0;
 let connectionAttempt = 0;
 let cardsRefreshAt = 0;
+const dashboardNavigationEntry = performance.getEntriesByType("navigation")[0];
+const dashboardIsHistoryReturn = dashboardNavigationEntry?.type === "back_forward";
 
 function platformText(platform) {
   return {
@@ -302,9 +314,15 @@ async function connectWithToken(token, remember, savedCredential = false) {
     storeToken(token, remember);
     ensureCodexCard();
     renderStatus(status);
-    restoreOpenClawCache(status.node.id);
+    const openclawCacheRestored = restoreOpenClawCache(status.node.id);
     showConnectedView(status);
-    await Promise.all([loadCodexSessions(), loadOpenClaw(), loadAutomations()]);
+    const cardLoads = [loadCodexSessions(), loadAutomations()];
+    if (dashboardIsHistoryReturn && openclawCacheRestored) {
+      cardLoads.push(loadOpenClawWeixinStatus());
+    } else {
+      cardLoads.push(loadOpenClaw());
+    }
+    await Promise.all(cardLoads);
   } catch (error) {
     if (attempt !== connectionAttempt) {
       return;
@@ -337,9 +355,15 @@ async function connectWithTailscale(fallbackToken = "", rememberFallback = false
     accessVersion += 1;
     ensureCodexCard();
     renderStatus(status);
-    restoreOpenClawCache(status.node.id);
+    const openclawCacheRestored = restoreOpenClawCache(status.node.id);
     showConnectedView(status);
-    await Promise.all([loadCodexSessions(), loadOpenClaw(), loadAutomations()]);
+    const cardLoads = [loadCodexSessions(), loadAutomations()];
+    if (dashboardIsHistoryReturn && openclawCacheRestored) {
+      cardLoads.push(loadOpenClawWeixinStatus());
+    } else {
+      cardLoads.push(loadOpenClaw());
+    }
+    await Promise.all(cardLoads);
   } catch (error) {
     if (attempt !== connectionAttempt) {
       return;

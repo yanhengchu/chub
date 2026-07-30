@@ -1135,6 +1135,55 @@ a.openclaw-access:focus-visible {
   margin: 0;
 }
 
+.openclaw-weixin-dialog-surface {
+  width: min(28rem, calc(100vw - 2rem));
+}
+
+.openclaw-weixin-notice {
+  margin: 0.9rem 0 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.openclaw-weixin-qr-panel {
+  display: grid;
+  justify-items: center;
+  gap: 0.7rem;
+  margin-top: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.9rem;
+  background: white;
+}
+
+.openclaw-weixin-qr-panel[hidden],
+.openclaw-weixin-verify-form[hidden] {
+  display: none;
+}
+
+.openclaw-weixin-qr-panel img {
+  display: block;
+  width: min(240px, 100%);
+  height: auto;
+}
+
+.openclaw-weixin-qr-panel p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-align: center;
+}
+
+.openclaw-weixin-verify-form {
+  display: grid;
+  gap: 0.55rem;
+  margin-top: 1rem;
+}
+
+.openclaw-weixin-dialog-surface > .message {
+  margin: 1rem 0 0;
+}
+
 .codex-workspace-dialog .workspace-list {
   grid-template-columns: 1fr;
   margin-top: 0.85rem;

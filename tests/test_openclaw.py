@@ -1,9 +1,15 @@
 from unittest.mock import MagicMock
+import threading
+from pathlib import Path
 
 import pytest
 
 from app.core.response import ApiError
 from app.services.openclaw import OpenClawManager, OpenClawStatus
+from app.services.openclaw_weixin import (
+    OpenClawWeixinLogin,
+    extract_terminal_qr_png,
+)
 
 
 def status_payload(
@@ -409,3 +415,109 @@ def test_openclaw_operation_lock_rejects_concurrent_control() -> None:
         manager._operation_lock.release()
 
     assert error.value.code == "openclaw_operation_in_progress"
+
+
+def test_terminal_weixin_qr_is_converted_to_png() -> None:
+    size = 21
+    matrix = [
+        [row < 7 and column < 7 or (row + column) % 3 == 0 for column in range(size)]
+        for row in range(size)
+    ]
+    lines = []
+    for row in range(0, size, 2):
+        characters = ["█"]
+        for column in range(size):
+            top = matrix[row][column]
+            bottom = matrix[row + 1][column] if row + 1 < size else False
+            characters.append(
+                {
+                    (False, False): "█",
+                    (False, True): "▀",
+                    (True, False): "▄",
+                    (True, True): " ",
+                }[(top, bottom)]
+            )
+        characters.append("█")
+        lines.append("".join(characters))
+
+    content = extract_terminal_qr_png(
+        "用手机微信扫描以下二维码，以继续连接：\n"
+        + "\n".join(lines)
+        + "\nhttps://example.invalid/secret\n"
+    )
+
+    assert content is not None
+    assert content.startswith(b"\x89PNG\r\n\x1a\n")
+    assert b"example.invalid" not in content
+
+
+def test_weixin_login_output_tracks_scan_and_verification_states() -> None:
+    login = OpenClawWeixinLogin(threading.Lock())
+
+    login._consume_output("输入手机微信显示的数字，以继续连接：")
+    assert login.status().state == "needs_verification"
+
+    login._verification_submitted = True
+    login._consume_output("123456\r\n")
+    assert login.status().state == "confirming"
+
+    login._consume_output("\n正在验证\n")
+    assert login.status().state == "confirming"
+
+
+def test_weixin_cancel_waits_for_process_cleanup_and_releases_lock(
+    tmp_path: Path,
+) -> None:
+    executable = tmp_path / "openclaw"
+    executable.write_text(
+        "#!/bin/sh\n"
+        "trap 'exit 0' TERM\n"
+        "while :; do sleep 1; done\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o700)
+    operation_lock = threading.Lock()
+    login = OpenClawWeixinLogin(operation_lock)
+    login.start(
+        str(executable),
+        operation_id="test-operation",
+        source_ip="127.0.0.1",
+    )
+
+    result = login.cancel()
+
+    assert result.state == "cancelled"
+    assert login.status().state == "cancelled"
+    assert operation_lock.acquire(blocking=False) is True
+    operation_lock.release()
+
+
+def test_weixin_cancel_preserves_natural_completion_during_reader_cleanup() -> None:
+    operation_lock = threading.Lock()
+    login = OpenClawWeixinLogin(operation_lock)
+    process = MagicMock()
+    process.poll.return_value = 0
+    operation_lock.acquire()
+
+    class FinalizingReader:
+        def join(self, timeout=None) -> None:
+            with login._state_lock:
+                login._state = "succeeded"
+                login._message = "微信登录已完成"
+                login._process = None
+            operation_lock.release()
+
+        def is_alive(self) -> bool:
+            return False
+
+    login._process = process
+    login._reader_thread = FinalizingReader()
+
+    result = login.cancel()
+
+    assert result.state == "succeeded"
+    assert result.message == "微信登录已完成"
+    process.wait.assert_not_called()
+    process.kill.assert_not_called()
+    assert operation_lock.acquire(blocking=False) is True
+    operation_lock.release()

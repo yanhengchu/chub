@@ -1,12 +1,12 @@
 # Chub 第三阶段产品目标
 
-> 状态：OpenClaw 与首个外部 LLM 已完成 MacBook、Ubuntu 首轮验收，Chub 受限能力与消息通道待接入。第三阶段以 OpenClaw 接入、飞书群机器人 Webhook 单向通知、微信 ClawBot 双向指令交互，以及其他 LLM 模型接入为核心。
+> 状态：OpenClaw、微信 ClawBot、OpenClaw 外部模型和 Chub 基础 LLM 已完成 MacBook、Ubuntu 首轮验收。Chub 受限能力与飞书通道待接入。
 
 ## 1. 阶段定位
 
 第三阶段在第二阶段已闭环的单节点能力之上，探索 Chub 与外部 Agent、消息入口和模型服务的连接方式。
 
-Chub 继续负责可信设备能力、安全校验和最终状态确认；OpenClaw 作为上层 Agent 与编排入口。飞书群机器人 Webhook 用于向群聊单向推送通知和结果，微信 ClawBot 作为双向通道接收指令并返回状态和结果。其他 LLM 为 Agent 提供可配置的模型能力。OpenClaw Gateway 首轮可部署在 MacBook 或 Ubuntu，按实施时的在线条件选择，不将操作系统作为方案阻塞项。
+Chub 继续负责可信设备能力、安全校验和最终状态确认；OpenClaw 作为上层 Agent 与编排入口。飞书群机器人 Webhook 用于向群聊单向推送通知和结果，微信 ClawBot 作为双向通道接收指令并返回状态和结果。其他 LLM 同时为 OpenClaw 和 Chub 提供模型能力：OpenClaw 管理 Provider、模型和 SecretRef，Chub 只读复用配置并独立请求供应商 API。OpenClaw Gateway 首轮可部署在 MacBook 或 Ubuntu，按实施时的在线条件选择，不将操作系统作为方案阻塞项。
 
 ## 2. 核心方向
 
@@ -27,16 +27,17 @@ Chub 继续负责可信设备能力、安全校验和最终状态确认；OpenCl
 - 分别设计两种通道的鉴权、重复消息、超时、失败反馈和人工确认流程。
 - 双向通道不默认等同于无限权限；高风险指令必须在执行前获得明确确认。
 
-### 2.3 其他 LLM 模型接入
+### 2.3 OpenClaw 与 Chub 共享基础 LLM
 
-- 支持 OpenClaw 接入其他 LLM 模型完成理解、规划和回复。
-- 使用维护者提供的现有 API、Token 和模型信息接入；协议适配、凭证保存、路由和降级策略在实施时确定。
+- 支持 OpenClaw 接入其他 LLM 模型完成理解、规划、回复和 Tool Calling。
+- 支持 Chub 只读复用同一配置，通过内部 LLM Service 完成独立的固定文本调用。
+- 使用维护者提供的现有 API、Token 和模型信息接入；凭证只由 OpenClaw SecretRef 管理，Chub 不复制或再次持久化 Key。
 - 模型输出不能直接获得任意命令、任意路径或无限制状态变更能力。
 - 明确模型失败、超时、额度限制和不可用时的用户反馈。
 
 ## 3. 阶段目标
 
-- 完成 OpenClaw、飞书单向通知、微信 ClawBot 双向交互、其他 LLM 与 Chub 的整体边界设计。
+- 完成 OpenClaw、飞书单向通知、微信 ClawBot 双向交互、共享基础 LLM 与 Chub 的整体边界设计。
 - 分别打通飞书群机器人 Webhook 单向通知链路和 ClawBot 双向交互链路。
 - 验证 ClawBot 状态检查、白名单任务执行和结果查询的身份、会话、权限、确认、超时与错误语义。
 - 在明确安全边界后逐步开放实际操作，不把通道连通直接视为设备控制能力验收通过。
@@ -49,7 +50,7 @@ Chub 继续负责可信设备能力、安全校验和最终状态确认；OpenCl
 - OpenClaw 与 Chub 的集成方案和最小验证。
 - 飞书群机器人 Webhook 单向通知通道。
 - 微信 ClawBot 双向指令与交互通道。
-- 其他 LLM 模型的接入边界、配置和基础可用性验证。
+- OpenClaw 与 Chub 共享基础 LLM 的接入边界、配置和基础可用性验证。
 - 请求来源识别、认证、授权、操作确认和审计。
 - 超时、重试、重复消息、失败回复和最终状态确认。
 - macOS、Ubuntu 及手机/微信入口的真实链路验收。

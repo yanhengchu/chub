@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from app.codex.models import utc_now
 from app.core.response import ApiError
+from app.services.openclaw_weixin import OpenClawWeixinLogin, WeixinLoginStatus
 
 
 OpenClawState = Literal[
@@ -77,6 +78,7 @@ class OpenClawStatus(BaseModel):
 class OpenClawManager:
     def __init__(self) -> None:
         self._operation_lock = threading.Lock()
+        self.weixin_login = OpenClawWeixinLogin(self._operation_lock)
 
     @staticmethod
     def _resolve_executable() -> str | None:
@@ -317,6 +319,36 @@ class OpenClawManager:
             return self._wait_for_final_state(action)
         finally:
             self._operation_lock.release()
+
+    def start_weixin_login(
+        self,
+        *,
+        operation_id: str,
+        source_ip: str,
+    ) -> WeixinLoginStatus:
+        status, executable = self._gateway_status()
+        if executable is None or not status.installed:
+            raise ApiError(409, "openclaw_not_installed", "当前节点未安装 OpenClaw。")
+        if status.state == "unknown":
+            raise ApiError(
+                503,
+                "openclaw_status_unavailable",
+                "暂时无法确认 OpenClaw 状态，请刷新后重试。",
+            )
+        if not status.configured:
+            raise ApiError(
+                409,
+                "openclaw_not_configured",
+                "OpenClaw 尚未完成初始化配置。",
+            )
+        return self.weixin_login.start(
+            executable,
+            operation_id=operation_id,
+            source_ip=source_ip,
+        )
+
+    def close(self) -> None:
+        self.weixin_login.close()
 
     @staticmethod
     def _validate_action(action: str, status: OpenClawStatus) -> None:

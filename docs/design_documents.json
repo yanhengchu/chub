@@ -16,16 +16,9 @@
       "path": "AI_SESSION_STATE_DESIGN.md"
     },
     {
-      "id": "openclaw-research",
-      "title": "OpenClaw 方案调研",
-      "summary": "分析 OpenClaw 的主体架构，以及它与 Chub 后续发展的关系。",
-      "status": "第三阶段前置调研",
-      "path": "OPENCLAW_RESEARCH.md"
-    },
-    {
       "id": "openclaw-integration",
       "title": "OpenClaw 与消息通道接入设计",
-      "summary": "定义 OpenClaw、飞书单向通知、微信 ClawBot、其他 LLM 与 Chub 的接入顺序、状态语义和安全边界。",
+      "summary": "定义 OpenClaw、飞书单向通知、微信 ClawBot，以及 OpenClaw/Chub 共享基础 LLM 的接入顺序、状态语义和安全边界。",
       "status": "部分实现，持续验收",
       "path": "OPENCLAW_INTEGRATION_DESIGN.md"
     },

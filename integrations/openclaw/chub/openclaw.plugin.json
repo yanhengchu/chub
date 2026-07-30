@@ -1,0 +1,34 @@
+{
+  "id": "chub",
+  "name": "Chub",
+  "description": "Use explicitly allowlisted Chub capabilities through a fixed Tailnet connection.",
+  "version": "0.1.0",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "baseUrl": {
+        "type": "string",
+        "description": "Fixed Chub base URL on the local Tailnet."
+      },
+      "timeoutMs": {
+        "type": "integer",
+        "minimum": 500,
+        "maximum": 10000,
+        "default": 3000
+      }
+    }
+  },
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "tools": [
+      "chub_get_status"
+    ]
+  },
+  "toolMetadata": {
+    "chub_get_status": {
+      "optional": true
+    }
+  }
+}

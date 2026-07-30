@@ -41,6 +41,10 @@ async def test_home_page_is_public_and_contains_no_token(settings: Settings) -> 
     assert 'id="openclaw-start"' in response.text
     assert 'id="openclaw-restart"' in response.text
     assert 'id="openclaw-stop"' in response.text
+    assert 'id="openclaw-bind-weixin"' in response.text
+    assert 'id="openclaw-weixin-dialog"' in response.text
+    assert 'id="openclaw-weixin-qr"' in response.text
+    assert 'id="openclaw-weixin-verify-form"' in response.text
     assert 'id="openclaw-access-url"' in response.text
     assert 'id="openclaw-access-open"' in response.text
     assert 'id="openclaw-access-unavailable"' in response.text
@@ -72,11 +76,16 @@ async def test_home_page_is_public_and_contains_no_token(settings: Settings) -> 
     assert 'data-card-key="automations"' in response.text
     assert 'data-card-key="logs"' in response.text
     assert 'data-card-return-refresh="true"' in response.text
-    assert "OpenClaw 方案调研" in response.text
+    openclaw_card = response.text.split('data-card-key="openclaw"', 1)[1].split(
+        "</section>",
+        1,
+    )[0]
+    assert 'data-card-return-refresh="true"' not in openclaw_card
+    assert "OpenClaw 方案调研" not in response.text
     assert "OpenClaw 与消息通道接入设计" in response.text
     assert "部分实现，持续验收" in response.text
     assert "份文档" in response.text
-    assert 'href="/project-docs/openclaw-research"' in response.text
+    assert 'href="/project-docs/openclaw-research"' not in response.text
     assert 'href="/project-docs/openclaw-integration"' in response.text
     assert 'target="_blank"' not in response.text
     assert 'href="/project-docs"' in response.text
@@ -210,10 +219,22 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "innerHTML" not in dashboard_script
     assert "/api/automations/browser/" in dashboard_script
     assert "/api/openclaw/status" in dashboard_script
+    assert "/api/openclaw/weixin/login" in dashboard_script
     assert "/api/openclaw/${action}" in dashboard_script
     assert "OPENCLAW_STATUS_CACHE_KEY" in dashboard_script
     assert "restoreOpenClawCache" in dashboard_script
+    assert 'dashboardNavigationEntry?.type === "back_forward"' in dashboard_script
+    assert "if (dashboardIsHistoryReturn && openclawCacheRestored)" in dashboard_script
+    assert "cardLoads.push(loadOpenClawWeixinStatus())" in dashboard_script
     assert "状态刷新失败，当前展示上次检测结果" in dashboard_script
+    assert 'restart: ["正在重启", "muted"]' in dashboard_script
+    assert "operationVersion !== openclawOperationVersion" in dashboard_script
+    assert "if (openclawBusy) {" in dashboard_script
+    assert "正在重启 OpenClaw Gateway" not in dashboard_script
+    assert "OpenClaw Gateway 已停止" not in dashboard_script
+    assert "openclawWeixinPollFailures" in dashboard_script
+    assert "setTimeout(\n          pollOpenClawWeixinLogin,\n          retryDelay" in dashboard_script
+    assert "Promise.all([\n      apiFetch(\"/api/openclaw/status\")" not in dashboard_script
     assert "automationBrowserMode.value" in dashboard_script
     browser_control_error = dashboard_script.split(
         'error.message || "Debug Chrome 操作失败。"', 1
@@ -523,10 +544,13 @@ async def test_project_document_card_api_is_protected(settings: Settings) -> Non
     assert unauthorized.status_code == 401
     assert response.status_code == 200
     data = response.json()["data"]
-    assert data["count"] >= 2
+    assert data["count"] >= 1
     assert {
         document["id"] for document in data["documents"]
-    } >= {"openclaw-research", "openclaw-integration"}
+    } >= {"openclaw-integration"}
+    assert "openclaw-research" not in {
+        document["id"] for document in data["documents"]
+    }
 
 
 @pytest.mark.anyio

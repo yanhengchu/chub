@@ -6,6 +6,8 @@ import pytest
 from app.application import create_app
 from app.core.config import Settings
 from app.services.openclaw import OpenClawManager
+from app.services.openclaw_weixin import WeixinLoginStatus
+from app.codex.models import utc_now
 
 
 def authorization(settings: Settings) -> dict[str, str]:
@@ -128,3 +130,45 @@ async def test_openclaw_control_logs_failed_lifecycle(
         item.kwargs.get("operation_id") for item in log_operation.call_args_list
     ]
     assert operation_ids == [None, "operation-id", "operation-id"]
+
+
+@pytest.mark.anyio
+async def test_weixin_login_endpoints_are_protected_and_bounded(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    manager = MagicMock()
+    login_status = WeixinLoginStatus(
+        state="waiting_scan",
+        message="请扫码。",
+        qr_available=True,
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    manager.start_weixin_login.return_value = login_status
+    manager.weixin_login.status.return_value = login_status
+    manager.weixin_login.qr_content.return_value = b"\x89PNG\r\n\x1a\n"
+    app.state.openclaw_manager = manager
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        unauthorized = await client.post("/api/openclaw/weixin/login")
+        started = await client.post(
+            "/api/openclaw/weixin/login",
+            headers=authorization(settings),
+        )
+        current = await client.get(
+            "/api/openclaw/weixin/login",
+            headers=authorization(settings),
+        )
+        qr = await client.get(
+            "/api/openclaw/weixin/login/qr",
+            headers=authorization(settings),
+        )
+
+    assert unauthorized.status_code == 401
+    assert started.status_code == 202
+    assert current.json()["data"]["state"] == "waiting_scan"
+    assert qr.headers["content-type"] == "image/png"
+    assert qr.headers["cache-control"].startswith("no-store")
+    assert "secret" not in started.text

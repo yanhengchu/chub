@@ -129,6 +129,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         llm_service,
         timeout_seconds=resolved_settings.codex_pty.quick_interaction_timeout_seconds,
     )
+    openclaw_manager = OpenClawManager()
 
     @asynccontextmanager
     async def lifespan(_application: FastAPI):
@@ -138,6 +139,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await quick_interactions.aclose()
             await llm_service.close()
             codex_pty_manager.close()
+            openclaw_manager.close()
 
     application = FastAPI(
         title=resolved_settings.app.name,
@@ -158,7 +160,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     application.state.terminal_connections = TerminalConnectionRegistry()
     application.state.automation_manager = AutomationManager(resolved_settings)
-    application.state.openclaw_manager = OpenClawManager()
+    application.state.openclaw_manager = openclaw_manager
     application.state.llm_service = llm_service
     application.add_middleware(SecurityHeadersMiddleware)
     application.add_exception_handler(ApiError, api_error_handler)

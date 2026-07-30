@@ -2,7 +2,7 @@
 
 Hub 是一个面向个人设备的轻量管理服务。
 
-第二阶段已于 2026-07-26 正式闭环：macOS 与 Ubuntu 基础节点能力、移动端 Web 管理页面、受控任务接口、Codex PTY 与快速交互、配置驱动自动化及前端 UI 模块化均已实现，并通过 Ubuntu、MacBook 和手机端验收。第三阶段以 OpenClaw 接入、飞书群机器人 Webhook 单向通知、微信 ClawBot 双向指令交互，以及其他 LLM 模型接入为核心。OpenClaw 已在 MacBook 与 Ubuntu 完成安装、初始化、Gateway 运行和基础聊天的首轮验收，后续进入 Chub 受限能力接入与消息通道实施。
+第二阶段已于 2026-07-26 正式闭环：macOS 与 Ubuntu 基础节点能力、移动端 Web 管理页面、受控任务接口、Codex PTY 与快速交互、配置驱动自动化及前端 UI 模块化均已实现，并通过 Ubuntu、MacBook 和手机端验收。第三阶段以 OpenClaw 接入、飞书群机器人 Webhook 单向通知、微信 ClawBot 双向指令交互，以及 OpenClaw/Chub 共享基础 LLM 为核心。OpenClaw、微信 ClawBot 基础流程、OpenClaw 外部模型和 Chub 基础 LLM 已在 MacBook 与 Ubuntu 完成首轮验收。后续进入 OpenClaw 权限收敛、Chub 受限 Tool 和飞书通道实施。
 
 ## 快速开始
 
@@ -87,11 +87,13 @@ Codex 快速交互允许长任务持续执行：运行超过 10 分钟时页面�
 
 ## OpenClaw Gateway
 
-首页 OpenClaw 卡片用于管理当前节点上的 Gateway。它展示安装、初始化、后台服务、连接探测、版本、监听状态、消息通道运行摘要和当前通道的 Owner 权限摘要，并提供固定的启动、停止和重启操作；停止和重启需要二次确认。消息通道在 Gateway 就绪后独立检查，检查失败不会覆盖 Gateway 状态；已配置通道但未配置对应 Owner 时显示“功能受限”，不返回具体身份或凭证。Tailscale Serve 可用时，卡片只展示标准 HTTPS 访问地址，整个地址区域可点击进入控制台；本机 loopback 地址只作为排障入口，不在首页展示。所有接口均使用 Hub Token 或未被关闭的 Tailnet 可信访问，操作以 Gateway 最终状态而不是命令进程退出作为成功依据，并写入完整操作日志。
+首页 OpenClaw 卡片用于管理当前节点上的 Gateway。它展示安装、初始化、后台服务、连接探测、版本、监听状态、消息通道运行摘要和当前通道的 Owner 权限摘要，并提供固定的启动、停止和重启操作；停止和重启需要二次确认。卡片还可以发起受控的微信 ClawBot 登录，在短期模态框中展示绑定二维码，并在微信要求时提交手机显示的数字验证码；重新绑定可能使同一 ClawBot 在其他设备上的服务端绑定失效。消息通道在 Gateway 就绪后独立检查，检查失败不会覆盖 Gateway 状态；已配置通道但未配置对应 Owner 时显示“功能受限”，不返回具体身份或凭证。Tailscale Serve 可用时，卡片只展示标准 HTTPS 访问地址，整个地址区域可点击进入控制台；本机 loopback 地址只作为排障入口，不在首页展示。所有接口均使用 Hub Token 或未被关闭的 Tailnet 可信访问，操作以 Gateway 或登录进程的最终状态而不是命令进程成功创建作为成功依据，并写入完整操作日志。
+
+微信绑定使用固定的 `openclaw channels login --channel openclaw-weixin` 命令和单一短期登录会话。二维码只保存在 Chub 进程内存中，通过禁止缓存的受保护图片接口读取；原始命令输出、二维码内容、微信账号标识和登录凭证不会返回页面。关闭弹窗不会中断登录，显式取消、登录结束或 Chub 退出会清理二维码并终止残留进程。绑定成功只代表通道登录完成，不代表发送者配对或 Owner 权限已经配置。该页面流程已完成 MacBook 真实生成、扫码绑定、状态恢复和取消验收，Ubuntu 页面流程待单独验收。
 
 该卡片不提供安装、卸载、升级、初始化配置、控制台代理、任意命令或原始日志入口，也不会向页面返回 OpenClaw 配置和凭证。OpenClaw CLI 必须能从 Chub 服务的 `PATH` 找到；macOS 和 Ubuntu 使用同一套接口，由 OpenClaw 自身管理对应的 LaunchAgent 或 systemd user service。
 
-最近一次成功检测的 OpenClaw 展示状态按节点保存在浏览器会话中。从次级页面返回或首页被重建时，页面先恢复该状态，再静默刷新最新结果，避免卡片短暂回到空占位；刷新失败时保留上次结果并单独提示。退出节点或认证失效时会清理缓存。
+最近一次成功检测的 OpenClaw 展示状态按节点保存在浏览器会话中。首次进入或普通刷新首页时，页面先恢复缓存再检查最新状态；从快速交互等次级页面通过浏览器历史返回时，即使首页因 `no-store` 被重建，也只恢复缓存，不自动检查 OpenClaw。用户可通过卡片刷新按钮主动检查，启动、停止、重启及微信绑定成功仍只更新本卡片。刷新失败时保留上次结果并单独提示，退出节点或认证失效时清理缓存。
 
 ## 基础 LLM
 
@@ -129,7 +131,17 @@ Runner 不会自行启动或停止 Debug Chrome。飞书 Wiki Markdown 下载已
 
 项目资料列表和设计文档详情可直接通过 Chub 地址访问，便于阅读；页面内容不要求认证，因此文档不得包含 Token、Cookie、账号信息或其他本机秘密。归档状态管理仍需 Hub Token 或未被关闭的 Tailnet 可信访问，状态保存在 `data/project-documents.json`；首页只展示当前文档，全部列表可筛选当前和已归档文档。Chub 仍只适合部署在可信网络中。
 
-设计文档统一登记在 `docs/design_documents.json`。新增文档时添加 Markdown 文件，并在索引中配置唯一的小写连字符 `id`、`title`、`summary`、`status` 和相对于 `docs/` 的 `.md` 路径；索引或引用文件异常会在页面和运行日志中明确提示。
+### 设计文档管理
+
+README 是设计文档目录结构、状态和归档规则的维护入口；具体需求、方案和任务内容仍分别维护在对应文档中。
+
+- **当前文档**：仍描述当前有效需求、架构、功能或操作流程。已经实现或验收不代表应归档，只要内容仍是当前基线，就保留在 `docs/`。
+- **阶段记录**：阶段已经闭环，但内容仍被当前工作引用或尚未被新文档完整替代，可以暂留在 `docs/`，并明确闭环状态。
+- **归档文档**：已经被后续文档替代、仅用于历史追溯时，移动到 `docs/archive/phase-N/`，在文首标明已归档及当前替代文档。归档后原则上冻结，不再追加当前实现内容。
+
+设计文档统一登记在 `docs/design_documents.json`。新增当前文档时添加 Markdown 文件，并在索引中配置唯一的小写连字符 `id`、`title`、`summary`、`status` 和相对于 `docs/` 的 `.md` 路径；首页及“全部文档”页面的展示范围由该索引决定，不根据文件所在目录自动发现。归档文档不保留在索引中。
+
+归档或移动文档时，应同步更新 README 文档列表、`docs/design_documents.json` 和其他文档中的引用。索引或引用文件异常会在页面和运行日志中明确提示。
 
 ## 测试
 
@@ -144,7 +156,6 @@ Runner 不会自行启动或停止 Debug Chrome。飞书 Wiki Markdown 下载已
 
 - [第三阶段产品目标](docs/PRD_PHASE_3.md)
 - [第三阶段高层计划](docs/TASKS_PHASE_3.md)
-- [OpenClaw 方案调研](docs/OPENCLAW_RESEARCH.md)
 - [OpenClaw 与消息通道接入设计](docs/OPENCLAW_INTEGRATION_DESIGN.md)
 
 第二阶段（已闭环）：
@@ -162,3 +173,7 @@ Runner 不会自行启动或停止 Debug Chrome。飞书 Wiki Markdown 下载已
 - [技术架构](docs/archive/phase-1/ARCHITECTURE.md)
 - [任务清单](docs/archive/phase-1/TASKS.md)
 - [验收记录](docs/archive/phase-1/ACCEPTANCE.md)
+
+第三阶段归档：
+
+- [OpenClaw 方案调研](docs/archive/phase-3/OPENCLAW_RESEARCH.md)

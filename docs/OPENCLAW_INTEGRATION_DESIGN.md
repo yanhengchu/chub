@@ -1,121 +1,108 @@
 # OpenClaw 与消息通道接入设计
 
-> 状态：接入流程持续实施；OpenClaw 与首个外部 LLM 已完成 MacBook、Ubuntu 首轮验收。本文负责说明如何落地，不替代 `OPENCLAW_RESEARCH.md` 的背景调研。
+> 状态：部分实现，持续验收。OpenClaw、微信 ClawBot 基础流程、OpenClaw 外部模型、Chub 基础 LLM、当前可信单用户权限基线和首个 Chub 状态 Tool 已完成 MacBook TUI 与微信验收。状态 Tool 的 Ubuntu 验收、飞书通知和完整异常链路仍待实施。
 
-## 1. 文档目标
+日常安装和排障优先查看：
 
-第三阶段需要打通三类能力：
+- [安装 OpenClaw 和 Gateway](#41-安装-openclaw-和-gateway)
+- [状态检查流程](#42-状态检查流程)
+- [权限配置流程](#43-权限配置流程)
 
-1. OpenClaw 接入 Chub 与目标电脑。
-2. 两类消息通道：
-   - 飞书群机器人 Webhook：单向推送通知和结果；
-   - 微信 ClawBot：双向接收指令、返回状态，并为后续受控交互提供入口。
-3. 其他 LLM 模型接入 OpenClaw。
+## 1. 文档定位
 
-本文给出推荐拓扑、安装与连接顺序、消息和任务生命周期、安全边界、异常处理与验收步骤。尚未确认的外部接口不写成既定事实。
+本文记录第三阶段当前有效的实现基线、已验收操作流程，以及后续接入 Chub Tool 和消息通知时必须遵守的边界。归档背景调研见 `archive/phase-3/OPENCLAW_RESEARCH.md`，具体任务状态见 `TASKS_PHASE_3.md`。
 
-## 2. 已确认事实与待定配置
+第三阶段包含四条相关但相互独立的能力：
 
-### 2.1 已确认
+1. Chub 管理本机 OpenClaw Gateway 状态和固定生命周期操作。
+2. 微信 ClawBot 作为 OpenClaw 的双向私聊入口。
+3. OpenClaw 与 Chub 共享同一份模型配置，但分别直接调用模型供应商。
+4. OpenClaw 后续通过受限 Tool 调用 Chub；飞书群机器人后续只发送单向通知。
 
-- OpenClaw 使用常驻 Gateway 统一管理频道、Agent、会话、模型和工具。
-- 微信 ClawBot 通过腾讯维护的外部频道插件 `@tencent-weixin/openclaw-weixin` 接入 OpenClaw。
-- 插件通过二维码完成微信授权，登录状态保存在 OpenClaw 状态目录。
-- 微信入站消息由插件转换为 OpenClaw 频道消息，路由给 Agent；回复再由插件发送回原微信会话。
-- 插件与 OpenClaw 存在明确版本兼容要求，部署时必须固定并核对版本。
-- OpenClaw 可以配置不同模型供应商、默认模型和回退模型。
-- Chub 继续独立运行；OpenClaw 或微信通道不可用时，原有 Web、Codex 和自动化入口仍应可用。
-- 单向群通知只接入普通飞书群的自定义机器人 Webhook，不接入企业微信或普通微信群 Webhook。
-- 微信仅通过 ClawBot 双向收发指令、状态和结果。
-- ClawBot 首期只开放状态检查、白名单任务执行和结果查询。
-- 高风险指令必须在执行前获得用户明确确认，不能由模型或通道直接执行。
-- OpenClaw Gateway 可部署在 MacBook 或 Ubuntu；两者采用同一逻辑方案，实施时按在线稳定性和访问条件选择。
-- 其他 LLM 使用维护者已有的 API、Token 和模型信息。
-- OpenClaw 已在 MacBook 与 Ubuntu 完成安装、交互式初始化、Gateway 后台运行和基础控制台验收。
-- 首个外部模型 `brclient/amazon.nova-pro` 已使用文件型 SecretRef 接入，并在 MacBook 与 Ubuntu 完成基础聊天验收。
-- 微信插件已纳入 OpenClaw 显式插件信任列表；ClawBot 基础双向消息、Owner 识别和真实 Tool Call 均已跑通，但当前模型偶发返回占位文本且不产生 Tool Call，暂不视为稳定完成。
+本文不把以下状态混为一体：
 
-### 2.2 实施时提供或确定
+- Gateway 运行正常；
+- 消息通道进程运行；
+- 微信服务端仍绑定当前设备；
+- Owner 权限已配置；
+- 模型调用成功；
+- Tool 已执行并取得最终结果。
 
-- 首批开放的状态项、任务白名单及风险等级，在实现具体能力时逐项确定。
-- 维护者提供飞书群机器人 Webhook 地址；目标群由该地址固定，不另建群映射。默认发送明确配置的状态、任务最终结果和异常消息；启用签名校验时一并提供签名密钥。
-- ClawBot 使用已绑定并通过允许列表的微信账号；高风险能力还可以限制为指定账号。
-- 维护者在接入模型时提供 API、Token、Base URL 和模型名称，再验证协议及 Tool Calling 能力。
+## 2. 当前实现基线
 
-## 3. 推荐总体拓扑
+| 能力 | 当前状态 |
+|---|---|
+| MacBook、Ubuntu OpenClaw 安装、初始化和 Gateway 基线 | 已实现并完成首轮验收 |
+| Chub 首页 OpenClaw 卡片 | 已实现并完成 MacBook、Ubuntu 实机验收 |
+| Tailscale Serve HTTPS 控制台入口 | MacBook 已验收 |
+| OpenClaw 外部模型 | MacBook、Ubuntu 已完成普通对话验收 |
+| Chub 基础 LLM 与快速交互 Bedrock 入口 | 已实现并完成 MacBook、Ubuntu 真实调用验收 |
+| 微信插件安装、扫码、配对、Owner 和普通消息 | 已实现并完成双端首轮验收 |
+| Chub 首页生成微信绑定二维码 | 已完成 MacBook 真实生成、扫码绑定、状态恢复和取消验收；Ubuntu 待验收 |
+| 同一 ClawBot 切换 Gateway | 已确认新绑定使旧设备服务端绑定失效，旧设备可能保留本地信息 |
+| OpenClaw Tool Calling | 单次真实调用已跑通，偶发占位回复仍待稳定 |
+| OpenClaw 权限基线 | 本人微信身份、Owner、Gateway Shell 审批、敏感路径、Session、Skill 和 Elevated 已完成盘点与收尾 |
+| Gateway Shell 审批 | `cautious` 策略、本地 TUI 审批和微信 `/approve allow-once` 已验收 |
+| 用户文件与敏感路径规则 | 用户目录正常可操作；敏感路径行为约束已写入 OpenClaw 工作区 `AGENTS.md` |
+| OpenClaw 调用 Chub 受限 Tool | `chub_get_status` 已实现并完成 MacBook TUI、微信真实调用验收；Ubuntu 待验收 |
+| Chub Tool 幂等、超时、审批和高风险确认 | 当前只读状态 Tool 已完成超时、响应上限和错误收敛；其他能力暂不实施 |
+| 飞书群机器人单向通知 | 待实现 |
+| 连续电脑交互 | 后续扩展 |
 
-首轮建议只运行一个 OpenClaw Gateway，避免频道、会话和凭证被多个 Gateway 重复管理。
+当前总体关系：
 
 ```text
-                         ┌──────────────────────┐
-                         │ 其他 LLM 模型服务     │
-                         └──────────┬───────────┘
-                                    │ 模型请求
-                                    ▼
-微信用户 ◀──双向──▶ 微信 ClawBot ◀──▶ OpenClaw Gateway
+微信用户 ◀──双向──▶ 微信 ClawBot ◀──▶ OpenClaw Gateway ──▶ 模型供应商 API
                                       │
                                       ├── Agent / Session / Tool Policy
-                                      │
-                                      ├── Chub 专用适配工具
+                                      ├── chub_get_status（已实现，持续验收）
                                       │       ├──▶ MacBook Chub
                                       │       └──▶ Ubuntu Chub
-                                      │
-                                      └── 受控电脑交互能力
-                                              └──▶ 选定目标电脑
+                                      └── 连续电脑交互（后续）
 
-MacBook / Ubuntu Chub ──最终状态──▶ 通知适配器
-                                      │
-                                      ▼
-                          飞书群机器人 Webhook
-                                      │
-                                      ▼
-                                    飞书群
+快速交互页面 ──▶ Chub 基础 LLM Service ──直接调用──▶ 同一模型供应商 API
+                         │
+                         └──只读解析 OpenClaw Provider / 模型 / SecretRef
+
+Chub 最终事件 ──▶ 飞书通知适配器（待实现）──▶ 固定飞书群 Webhook
 ```
 
-推荐保持两条设备操作路径：
+MacBook 与 Ubuntu 可以分别安装 OpenClaw。由于同一个微信 ClawBot 同时只能绑定一个 Gateway，正式使用时只保留一个有效微信入口；另一台设备上的本地通道账号和 Owner 信息不能视为有效绑定证明。
 
-- **Chub 路径**：调用已经存在的固定 API，适合节点状态、自动化、Codex 会话和有明确最终状态的受控操作。
-- **OpenClaw 电脑交互路径**：承载需要连续观察、输入和反馈的远程操控或交互式操作。该路径必须按目标电脑单独授权，不借用 Chub Token 获得任意系统权限。
-
-两条路径的日志和事实来源不能混淆：Chub 是 Chub 操作状态的事实来源；OpenClaw 记录 Agent、频道、模型和工具调用过程。
-
-## 4. 组件职责
+## 3. 组件职责与边界
 
 | 组件 | 负责 | 不负责 |
 |---|---|---|
-| 微信 ClawBot | 双向接收用户消息、发送处理中状态和结果 | 判断设备操作是否最终成功 |
-| 飞书群机器人 Webhook | 单向发送通知、摘要和最终结果 | 接收指令、维护会话、控制电脑 |
-| OpenClaw Gateway | 频道、Agent、会话、模型、工具路由和策略 | 伪造 Chub 最终状态 |
-| 其他 LLM | 理解、规划、生成回复和工具调用意图 | 直接保存设备凭证或绕过工具策略 |
-| Chub 适配工具 | 将结构化 Tool 参数映射到固定 Chub API | 拼装任意 URL、路径或系统命令 |
-| Chub | 节点能力、安全校验、操作日志和最终状态 | 管理微信会话、模型上下文或频道凭证 |
-| 电脑交互适配 | 对选定电脑执行已授权的连续交互 | 默认获得所有电脑和所有系统权限 |
+| 微信 ClawBot | 接收私聊消息，返回处理中状态和最终回复 | 判断设备操作是否最终成功 |
+| OpenClaw Gateway | 频道、Agent、Session、模型、Tool 路由和策略 | 伪造 Chub 最终状态 |
+| 模型供应商 | 提供模型推理 API | 保存设备凭证或绕过 Tool Policy |
+| Chub 基础 LLM Service | 只读解析 OpenClaw 模型配置并完成固定文本调用 | 复制 Key、代理 OpenClaw 会话或执行 Tool Calling |
+| Chub 受限 Tool | 将固定 Schema 参数映射到固定 Chub 能力 | 接受任意 URL、路径、Shell 命令或 Token |
+| Chub | 节点能力、安全校验、操作日志和最终状态 | 管理微信会话或 OpenClaw 模型上下文 |
+| 飞书 Webhook | 向固定群发送明确配置的通知 | 接收指令、维护会话或控制设备 |
+| 电脑交互适配 | 对选定设备执行已授权的连续交互 | 默认获得所有设备和系统权限 |
 
-## 5. 部署与接入顺序
+核心原则：
 
-必须按以下顺序逐段验证，不能同时接入全部组件后再排障。
+- OpenClaw 不可用不能影响 Chub Web、Codex PTY、快速交互和自动化入口。
+- Chub LLM 调用不经过 OpenClaw Gateway；OpenClaw Gateway 停止时，只要配置和 Secret 文件仍有效，Chub 仍可直接调用供应商。
+- Chub LLM Service 不反向修改 OpenClaw 配置，也不保存第二份 API Key。
+- 模型回复、Tool 创建成功和 HTTP 200 都不能单独代表设备操作成功。
+- Chub 返回的最终状态是 Chub 操作的事实来源。
 
-### 5.1 确定 Gateway 主机
+## 4. 核心操作手册
 
-首选条件：
+本节集中保留安装、检查和权限调整需要执行的命令。实现边界和异常语义见后续章节。
 
-- 长期在线；
-- 能稳定访问外部模型和微信服务；
-- 能通过可信网络访问 MacBook 与 Ubuntu Chub；
-- 便于保护 OpenClaw 状态目录、模型凭证和 Hub Token；
-- 需要本机电脑交互时，具备相应系统权限。
+### 4.1 安装 OpenClaw 和 Gateway
 
-MacBook 与 Ubuntu 均可作为首个 Gateway 主机，方案和能力边界保持一致。实施时根据长期在线条件、网络可达性和本机交互需求选择，不需要在设计阶段预先固定。
-
-### 5.2 安装并验证 OpenClaw
-
-macOS 和 Ubuntu 首选 OpenClaw 官方安装脚本。脚本会检查运行环境、安装所需 Node.js 和 OpenClaw，并默认进入初始化流程：
+macOS 和 Ubuntu 优先使用官方安装脚本：
 
 ```bash
 curl -fsSL https://openclaw.ai/install.sh | bash
 ```
 
-如果本机已经自行维护符合 OpenClaw 要求的 Node.js，也可以使用 npm 安装 CLI：
+已经自行维护受支持 Node.js 时，也可以使用 npm：
 
 ```bash
 node -v
@@ -123,458 +110,489 @@ npm -v
 npm install -g openclaw@latest
 ```
 
-OpenClaw 当前支持 Node.js `22.22.3+`、`24.15+` 或 `25.9+`，推荐使用 Node.js 24，Node.js 23 不受支持。官方没有单独规定 npm 的最低版本；npm 应使用随受支持 Node.js 提供的兼容版本。不要只升级 npm 而保留不兼容的 Node.js。
-
-如果 Node.js 版本不满足要求，优先升级到受支持的 Node.js，再重新检查 `node -v` 和 `npm -v`。只有在 Node.js 已符合要求、但 npm 仍因版本过旧导致安装失败时，再升级 npm：
-
-```bash
-npm install -g npm@latest
-npm -v
-```
-
-使用官方安装脚本时，Node.js 检测和必要升级由脚本处理，通常不需要手动升级 npm。
-
-安装后按以下顺序验证。
-
-第一步确认 CLI 已经安装并能从当前 `PATH` 找到：
+完成 CLI 检查、首次初始化并安装 Gateway 后台服务：
 
 ```bash
 openclaw --version
-```
-
-该命令应输出版本号。如果提示 `command not found`，先检查安装日志和 npm 全局可执行目录，不继续安装 Gateway 服务。
-
-第二步运行只读诊断，检查配置和运行环境：
-
-```bash
 openclaw doctor
-```
-
-首次安装尚未完成初始化时，先执行：
-
-```bash
 openclaw onboard
-```
-
-Chub 首页提供独立的 OpenClaw 运维卡片，作为 Gateway 安装后的本机管理入口。卡片只读取 OpenClaw CLI 的结构化状态，并将启动、停止、重启映射为后端固定命令；接口继续使用 Hub Token，操作完成后必须再次检查 Gateway 最终状态，并记录 `requested`、`started`、`succeeded` 或 `failed`。Tailscale Serve 可用时，卡片从固定状态命令中校验代理目标和 `*.ts.net` HTTPS 地址，提供单一可点击入口；本机 loopback 地址只用于排障。页面不接收任意命令或路径，也不展示 OpenClaw 配置、模型凭证、频道凭证和原始命令输出。
-
-首版运维卡片不负责安装、卸载、升级、初始化配置、代理 OpenClaw 控制台或读取 OpenClaw 原始日志。它与后续“OpenClaw 调用 Chub Tool”是两个独立方向：前者由 Chub 管理本机 Gateway 生命周期，后者由 OpenClaw 通过受限 Tool 调用 Chub 能力。
-
-第三步安装并启动后台 Gateway。也可以在初始化时直接使用 `openclaw onboard --install-daemon` 一并完成：
-
-```bash
 openclaw gateway install
 openclaw gateway start
-openclaw gateway status
+openclaw gateway status --json
 openclaw gateway probe
 ```
 
-安装成功至少满足：
+也可以用 `openclaw onboard --install-daemon` 合并初始化和后台服务安装。macOS 使用 launchd，Ubuntu 使用 systemd user service；同一配置和端口不能同时运行多个 Gateway。
 
-- `openclaw --version` 输出已安装版本；
-- `openclaw doctor` 没有阻止启动的错误；
-- `openclaw gateway status` 显示 Gateway 运行中并且连接探测正常；
-- `openclaw gateway probe` 能连接到预期 Gateway；
-- 浏览器打开 `http://127.0.0.1:18789/` 可以访问本机控制界面。
-
-macOS 的后台服务由 launchd 管理，Ubuntu 默认使用 systemd user service。不要同时为同一配置和端口启动多个 Gateway 服务，也不要只因为 CLI 能输出版本号就认为 Gateway 已经部署成功。
-
-首轮只允许 Gateway 监听本机或可信私有网络，不直接暴露公网管理端口。
-
-### 5.3 接入第一个其他 LLM
-
-1. 选择供应商和具体模型。
-2. 在 Gateway 主机配置供应商凭证。
-3. 设置默认模型；如有需要再配置回退模型。
-4. 使用 OpenClaw 的模型状态或连接测试确认：
-   - 凭证有效；
-   - 模型可用；
-   - 超时、限流、额度或计费错误能够被区分。
-5. 在没有任何设备工具的情况下完成一次普通对话。
-
-模型凭证只由 OpenClaw 或其 SecretRef/环境配置管理，不写入 Chub 配置、Git、消息内容或操作日志。
-
-### 5.4 接入 Chub 专用工具
-
-建议新增一个范围明确的 OpenClaw Tool 适配层，不让 LLM 自行请求任意 Chub URL。
-
-首轮工具只提供固定只读能力，例如：
-
-- `chub_get_health(node_id)`
-- `chub_get_status(node_id)`
-- `chub_list_codex_sessions(node_id)`
-- `chub_get_automation_status(node_id, automation_id)`
-
-适配层维护固定节点表：
-
-```text
-node_id -> Chub base URL -> 独立 Hub Token 引用 -> 允许的能力
-```
-
-基本调用流程：
-
-```text
-用户意图
-  ↓
-LLM 选择 Chub Tool
-  ↓
-OpenClaw 校验 Tool Policy 与参数 Schema
-  ↓
-适配层按 node_id 查固定地址和凭证
-  ↓
-调用 Chub API
-  ↓
-解析 ApiResponse / ApiError
-  ↓
-OpenClaw 生成用户可读结果
-```
-
-要求：
-
-- Tool 参数不接受 base URL、文件路径、Shell 命令或 Hub Token。
-- 每个节点使用独立 Token；Token 只在 Gateway 主机解析。
-- Chub 返回 `requested` 或 `started` 时只能显示“已请求/执行中”。
-- 只有 Chub 返回可验证的最终状态后，才能向用户和群机器人宣告成功。
-- OpenClaw 不可用时不能影响 Chub 原有入口。
-
-#### Tailscale 身份认证方案
-
-Chub 可以轻量借鉴 OpenClaw 的 `allowTailscale` 使用体验，为可信 Tailnet 内的浏览器或 OpenClaw Tool 提供可选的免 Hub Token 认证，但不复制 OpenClaw 的 Serve 身份 Header、`tailscale whois`、设备配对和权限升级体系。
-
-当前部署边界：
-
-- 提供默认开启、可显式关闭的 `security.allow_tailscale`，继续保留 Hub Token 作为兼容和应急认证方式。
-- 沿用 Chub 当前直接监听本机 Tailscale IP 的部署方式，不额外引入 Tailscale Serve。
-- 只检查请求的真实 socket 来源地址，不读取或信任客户端提交的转发 Header；服务监听地址和来源地址均为 Tailscale 地址时，允许免 Hub Token。
-- 当前个人 Tailnet 只加入维护者本人控制的设备，因此 Tailnet 内设备整体视为可信，不增加设备允许列表或多用户权限体系；如果成员或设备信任前提变化，再重新评估该边界。
-- 浏览器优先尝试 Tailscale 免 Token 认证，并保留已有 Hub Token 作为失败回退；回退认证也失败时才清除无效 Token，这种本地残留属于预期兼容行为。
-- 状态查询等只读能力可以先试点；状态变更、持续交互和高风险操作继续执行白名单、风险分级和逐次确认。
-- 操作日志只记录 Tailscale 来源 IP，不宣称能够识别真实用户。
-- 来源不是 Tailscale 地址、服务没有监听 Tailscale 地址或配置未启用时，继续要求 Hub Token。
-
-该轻量方案已经接入现有认证依赖和浏览器自动连接流程；直接访问、非 Tailscale 来源、伪造 Header 和 Token 回退已纳入测试，Codex WebSocket 继续通过受保护接口签发的前置票据建立连接。
-
-OpenClaw 自身的工具执行、沙箱、提权和审批权限不由上述 Tailnet 信任结论覆盖；相关权限收紧作为下一步独立工作处理，不纳入本次调整。
-
-### 5.5 验证 OpenClaw 与 Chub
-
-在接入微信前先从 OpenClaw 本地 WebChat 或 TUI 完成：
-
-1. 查询 MacBook 健康状态。
-2. 查询 Ubuntu 健康状态。
-3. 查询一个不存在的节点，确认受控失败。
-4. 模拟 Chub 不可达和认证失败。
-5. 确认模型回复没有泄露 Hub Token、内部 URL 或原始敏感日志。
-
-通过后才能继续接入消息通道。
-
-## 6. 微信 ClawBot 双向通道
-
-### 6.1 安装与登录
-
-微信通道使用腾讯维护的外部插件：
+安装微信插件并扫码绑定当前微信 ClawBot：
 
 ```bash
 openclaw plugins install "@tencent-weixin/openclaw-weixin"
 openclaw config set plugins.entries.openclaw-weixin.enabled true
+openclaw gateway restart
 openclaw channels login --channel openclaw-weixin
+```
+
+Gateway 生命周期命令固定为：
+
+```bash
+openclaw gateway start --json
+openclaw gateway stop --json
+openclaw gateway restart --json
+```
+
+### 4.2 状态检查流程
+
+按以下顺序检查，不要只看 Gateway 进程：
+
+```bash
+openclaw --version
+openclaw gateway status --json
+openclaw gateway probe
+openclaw channels status --json
+openclaw channels status --probe --json
+openclaw config get commands.ownerAllowFrom
+openclaw exec-policy show
+openclaw sandbox explain --json
+openclaw config validate
+```
+
+启用 Tailscale Serve 时追加：
+
+```bash
+TAILSCALE_BE_CLI=1 tailscale serve status --json
+```
+
+- `gateway status/probe`：后台服务、进程、RPC、监听和端口；
+- `channels status --probe`：微信账号、通道运行状态和实时探测；
+- `commands.ownerAllowFrom`：Owner 是否仅包含预期微信；
+- `exec-policy show`：Shell Host、白名单和审批策略；
+- `sandbox explain`：沙箱、有效工具和 Elevated 状态；
+- `config validate`：配置结构是否有效；
+- `tailscale serve status`：HTTPS 是否仍代理到当前 Gateway。
+
+最终必须从当前微信发送消息并收到最终回复。同一 ClawBot 在其他设备重新扫码后，旧设备仍可能保留本地 Channel 和 Owner 信息，因此本地状态不能证明微信服务端仍绑定当前设备。
+
+### 4.3 权限配置流程
+
+#### 微信身份与 Owner
+
+当前插件使用 `pairing` 私聊策略。先检查待配对请求：
+
+```bash
+openclaw pairing list openclaw-weixin
+```
+
+只有确认是本人当前微信时才批准：
+
+```bash
+openclaw pairing approve openclaw-weixin <本人配对码> --notify
+```
+
+Owner 是完整列表，写入前必须先读取并保留所有有效条目：
+
+```bash
+openclaw config get commands.ownerAllowFrom
+openclaw config set commands.ownerAllowFrom \
+  '["openclaw-weixin:<本人微信发送者ID>"]' \
+  --strict-json
 openclaw gateway restart
 ```
 
-登录时终端显示二维码，由用户使用微信扫码并确认授权。部署前必须先核对 OpenClaw 与插件的当前兼容版本，不直接照搬历史版本号。
+当前个人使用基线：一个微信通道账号、一个允许发送者、一个 Owner、没有待审批的其他微信。不要批准未知配对请求。
 
-验证：
+#### Shell 执行与审批
 
-```bash
-openclaw plugins list
-openclaw channels status --probe
-openclaw --version
-```
-
-如存在多个微信账号，使用账号、频道和对端隔离私聊上下文：
+当前电脑由 Gateway 执行命令。白名单命令直接执行；未命中时请求审批；审批不可用或超时则拒绝：
 
 ```bash
-openclaw config set session.dmScope per-account-channel-peer
+openclaw exec-policy preset cautious
+openclaw config set tools.exec.strictInlineEval true --strict-json
+openclaw config set tools.exec.commandHighlighting true --strict-json
+openclaw exec-policy show
+openclaw config validate
 ```
 
-当前官方资料显示该插件主要支持微信私聊，群聊能力不能作为本阶段前提。
-
-### 6.2 消息处理流程
+有效策略：
 
 ```text
-微信用户发送消息
-  ↓
-腾讯微信通道插件接收并标准化
-  ↓
-OpenClaw 校验发送者配对/白名单
-  ↓
-按微信账号 + 频道 + 对端定位 Session
-  ↓
-Agent 调用其他 LLM
-  ↓
-LLM 回复，或选择 Chub/电脑交互 Tool
-  ↓
-OpenClaw 返回接收确认或处理中状态
-  ↓
-工具执行并产生最终状态
-  ↓
-OpenClaw 生成结果
-  ↓
-插件回复原微信私聊
+host=gateway
+security=allowlist
+ask=on-miss
+askFallback=deny
 ```
 
-### 6.3 操作分级与后续交互
+OpenClaw 工作区 `AGENTS.md` 同时约束：操作当前电脑时使用 `host="gateway"` 或省略 Host；只有用户明确指定已配对 Node 时才能使用 `node` 或 `auto`；Host 冲突时改用 Gateway 重试一次。
 
-ClawBot 是消息和交互通道，不应直接持有电脑权限。实际操控必须经过 OpenClaw 的 Tool Policy 和目标电脑适配。
+微信验收：
 
-操作分级建议：
+```text
+/new
+在当前 OpenClaw Gateway 所在电脑上调用 shell 执行 /usr/bin/uptime，并展示结果
+/approve <审批ID或短码> allow-once
+```
 
-| 等级 | 示例 | 默认处理 |
-|---|---|---|
-| L0 只读 | 状态、进程摘要、任务结果 | 已配对且获得授权的用户可直接执行 |
-| L1 可恢复操作 | 启动已验收的白名单任务 | 按任务风险策略执行；高风险任务必须确认 |
-| L2 持续交互 | 电脑界面操作、终端/Agent 多轮交互 | 建立有时限的交互会话 |
-| L3 高风险操作 | 删除、权限修改、重启或其他高影响操作 | 默认不开放；开放时必须逐次明确确认 |
+通过标准：真实产生 `exec(host="gateway")`；未批准前不执行；单次允许后成功；最终结果返回微信；命令不进入持久白名单。不要把 `bash`、`sh`、`zsh`、`python`、`node`、`osascript` 等通用解释器整体加入白名单。
 
-交互会话至少包含：
+#### 用户文件与敏感路径
 
-- `interaction_id`
-- 微信账号与对端标识
-- OpenClaw `session_key`
-- 目标设备与能力
-- 创建时间、最后活动时间和过期时间
-- 当前状态：`requested / awaiting_confirmation / running / waiting_input / succeeded / failed / expired`
+当前为本人微信控制本人设备的单用户场景，文件权限采用以下基线：
 
-同一微信消息不能因为重试而重复执行操作。消息接入层应生成或提取稳定的消息 ID，并与 `interaction_id` 建立幂等关系。
+- OpenClaw 继续以当前系统用户身份直接运行，Sandbox 保持关闭；
+- 不安装或依赖 Docker，不把文件工具限制到 OpenClaw Workspace；
+- 当前用户目录中的普通项目、文档、下载和用户自有文件可按任务需要读写；
+- 默认不访问其他用户目录和系统凭证存储；
+- `~/.ssh`、`~/.gnupg`、云服务凭证、密码库、系统钥匙串、浏览器登录数据，以及 OpenClaw、Chub、Codex 的 Secret 文件属于敏感路径；
+- `.env`、私钥、恢复码、Token 和 API Key 无论位于何处都按敏感数据处理。
 
-长操作不能保持沉默。建议：
+敏感路径规则维护在 `~/.openclaw/workspace/AGENTS.md`：无关任务不得读取敏感内容；修改、移动、删除、轮换或对外发送前必须说明准确目标和用途并获得明确确认；秘密不得进入回复、日志、Memory、生成文档或 Git。修改规则后通过 `/new` 创建新 Session，使启动上下文重新加载。
 
-1. 快速返回“已接收”；
-2. 真正开始后返回“执行中”；
-3. 需要用户输入时明确提问；
-4. 完成后返回最终结果；
-5. 原会话无法回复时记录投递失败并等待用户重新查询；只有明确配置为群通知的事件才发送到飞书，不把微信私聊内容自动转发到群。
+该方案是适合当前可信单用户环境的模型行为约束，不是操作系统级目录隔离。若以后允许其他微信身份、其他用户或不可信输入使用 OpenClaw，必须重新启用强制 Sandbox、独立 Agent 或更严格的文件工具边界。
 
-### 6.4 配对与访问控制
+#### Session 权限
 
-- ClawBot 登录绑定只代表通道建立成功，不自动授予设备操作权限。
-- 发起指令的微信账号必须通过配对或明确 allowlist；未授权账号即使能联系机器人，也不能连接 Chub 或执行任务。
-- 权限可按账号分级。普通授权账号只能使用只读或低风险白名单能力；高风险能力可以仅授予指定固定账号，并且执行前仍需逐次确认。
-- 多微信账号使用独立账号配置和 Session 范围。
-- 用户身份只能用于 OpenClaw 频道授权；Chub 操作日志继续记录固定来源和操作，不伪造多用户审计能力。
-- 二维码、登录凭证、上下文 Token 和插件状态目录不得进入 Git、Chub 日志或 LLM 上下文。
-- 解除授权、插件禁用和 Gateway 停止后，微信入口必须立即失效。
+当前只有一个 `main` Agent，跨 Agent 调用默认关闭，Session 工具可见范围使用默认 `tree`。`sessions_list`、`sessions_history`、`sessions_send`、`sessions_spawn`、`sessions_yield`、`subagents` 和 `session_status` 来自当前 Coding 工具基线。
 
-## 7. 飞书群机器人 Webhook 单向通道
+当前入口只有本人微信，`sessions_history` 返回有界、脱敏内容，Sub-agent 也受默认深度和并发限制，因此没有必须立即修复的 Session 权限异常。保留现状可以继续支持微信 `sessions_list` 和后续后台任务；不把可见范围改为 `agent`，避免为了跨入口查询反而扩大读取范围。以后实际启用跨会话发送或 Sub-agent 工作流时，再分别验收目标 Session、资源消耗和结果投递。
 
-### 7.1 定位
+#### Skill 与 Elevated 权限
 
-飞书群机器人 Webhook 只负责：
+当前可见 Skill 均来自 OpenClaw 内置包，没有用户安装或来源未知的 Skill。Skill 只提供任务说明和调用方式，不自动绕过现有 Tool Policy 与 Gateway Shell 审批；当前可信单用户场景没有必须禁用的 Skill。以后安装第三方 Skill 时，必须先核对来源、内容、所需命令和凭证，再决定是否启用。
 
-- 服务和节点状态通知；
-- 自动化任务完成或失败通知；
+Elevated 框架开关当前显示为启用，但没有配置任何 `allowFrom`，有效状态为 `allowedByConfig=false`，微信和本地 Session 都不能使用 Elevated。Sandbox 当前关闭时 Elevated 也不会提供额外宿主机能力，因此没有现存越权，也不需要为了形式上的开关立即修改配置。以后启用 Sandbox 或配置 Elevated 来源前必须重新评审。
+
+`openclaw security audit --json` 当前结果为 0 个 Critical；现有 Warning 不属于本轮权限异常。至此微信身份、Gateway Shell、用户文件、Session、Skill 和 Elevated 权限均已盘点，本轮权限调整完成并收尾。
+
+本结论只适用于当前“本人微信、单一 `main` Agent、本人设备和可信 Tailnet”的边界。新增其他用户或不可信消息入口、启用 Sandbox 或 Elevated、安装第三方 Skill，或者开放新的 Chub Tool 时，必须针对新增能力重新评审，不重新打开已经收尾的基础权限任务。
+
+### 4.4 Chub 首页状态与微信绑定
+
+首页首次连接、普通刷新或手动刷新 OpenClaw 卡片时请求：
+
+```http
+GET /api/openclaw/status
+```
+
+后端按条件调用 Gateway、Channel、Owner 和 Tailscale 状态命令。页面不会收到原始配置、Owner 身份、模型凭证或命令输出；刷新失败时保留最近一次成功结果。从次级页面历史返回时只恢复缓存，不自动检查 OpenClaw。
+
+Chub 卡片使用固定微信登录接口：
+
+```http
+POST   /api/openclaw/weixin/login
+GET    /api/openclaw/weixin/login
+GET    /api/openclaw/weixin/login/qr
+POST   /api/openclaw/weixin/login/verify
+DELETE /api/openclaw/weixin/login
+```
+
+二维码只保存在 Chub 内存中。页面不会收到二维码原始内容、备用链接、完整终端输出、微信身份或登录凭证。绑定、发送者配对和 Owner 是三个独立状态：
+
+```text
+channels login    → ClawBot 绑定当前 Gateway
+pairing approve   → 允许指定微信发送者访问
+ownerAllowFrom    → 授予指定身份 Owner 权限
+```
+
+同一 ClawBot 在另一台设备重新扫码后，原设备服务端绑定失效，但仍可能显示本地通道和 Owner 信息。最终验收必须从微信完成真实消息和最终回复。
+
+### 4.5 OpenClaw 与 Chub 共享基础 LLM
+
+模型配置和 API Key 以当前用户的 OpenClaw 配置与 SecretRef 为唯一来源：
+
+- OpenClaw 使用该配置完成对话和 Tool Calling；
+- Chub 通过独立 LLM Service 只读解析配置，并直接请求供应商 API；
+- 两端不互相转发请求，也不共享运行时会话；
+- Chub 不复制或再次持久化 API Key。
+
+Chub 当前只支持：
+
+- 文件型 `singleValue` SecretRef；
+- `openai-completions` 兼容的 `/chat/completions` 文本调用；
+- 固定 Provider、模型和 Base URL；
+- 远程 HTTPS 或本机 loopback HTTP；
+- 有界并发、超时、输出 Token 和响应字节数。
+
+Chub 配置只声明配置来源和选择条件：
+
+```yaml
+llm:
+  enabled: true
+  config_source: "openclaw"
+  openclaw_config_file: "~/.openclaw/openclaw.json"
+  provider: null
+  model: null
+```
+
+配置和 Secret 在首次调用时懒加载，并按文件修改状态自动刷新。配置缺失、Secret 权限不安全、认证失败、限流、网络错误、超时、超大响应和无效响应只影响本次 LLM 调用，不阻止 Chub 启动。
+
+快速交互页面提供：
+
+- `Codex CLI` / `Amazon Bedrock API` 单按钮切换；
+- 选择只在当前页面有效，刷新、离开重进或浏览器返回时默认 Codex；
+- 每次展示和加载 5 条历史；
+- 历史保存执行方式及 Provider/模型快照；
+- Bedrock 不读取工作区、不停止实时终端、不修改 Codex Session activity；
+- Bedrock 运行时允许使用实时终端和调整 Codex 权限；
+- 任一快速交互运行时禁止归档或删除对应 Session。
+
+当前不提供独立首页 LLM 卡片、通用公共 LLM API、通用 Chub Tool Calling 或 Codex CLI 替代逻辑。OpenClaw 仅通过独立的 `chub_get_status` Tool 查询当前设备 Chub 状态。
+
+## 5. OpenClaw 调用 Chub 状态 Tool
+
+### 5.1 实现范围与调用结构
+
+当前只开放一个无参数只读能力：
+
+- `chub_get_status()`
+
+调用结构：
+
+```text
+微信 ClawBot / OpenClaw TUI
+  ↓
+OpenClaw main Agent
+  ↓ chub_get_status({})
+Chub OpenClaw Plugin
+  ↓ GET 固定 Tailnet 地址的 /api/status
+当前 Gateway 所在设备的 Chub
+  ↓
+字段校验、筛选和错误收敛
+  ↓
+OpenClaw 生成最终回复
+```
+
+插件源码由 Chub 仓库的 `integrations/openclaw/chub/` 维护，插件 ID 为 `chub`。一个 Chub 插件统一维护连接、认证、错误和多个独立 Tool；当前只通过 OpenClaw `defineToolPlugin` 注册 Optional Tool `chub_get_status`，并由 `tools.alsoAllow` 显式开放。Tool Schema 是严格空对象，调用方不能提交 `node_id`、URL、IP、API 路径、文件路径、Shell 命令、Header 或 Hub Token。
+
+后续若增加明确能力，应在同一插件的 `src/tools/` 下增加独立 Tool，共用 `client.ts` 和 `errors.ts`；不能为每个函数创建插件，也不能增加接受任意 URL、路径或方法的通用 `chub_call`。
+
+插件只保留节点名称、平台、Chub 版本、CPU、内存、磁盘、系统运行时间和检查时间。原始 HTTP 响应、内部地址、异常堆栈和认证信息不进入模型结果。
+
+### 5.2 网络与认证
+
+插件只访问维护者配置的当前设备 Tailnet 地址，并在运行时再次校验目标属于 Tailscale IPv4 `100.64.0.0/10` 或 Tailscale IPv6 地址段。请求路径固定为 `/api/status`：
+
+- Chub 直接监听本机 Tailscale IP；
+- 使用 Chub 已有 `security.allow_tailscale` 认证；
+- 只判断真实 socket 来源，不信任转发 Header；
+- 插件不读取、复制或回退使用 Hub Token；
+- 禁止 HTTP 跳转，请求超时默认 3 秒、上限 10 秒，响应上限 64 KiB；
+- 网络、认证、超时、超大响应和无效响应映射为固定错误码，不透传原始正文。
+
+该信任边界不替代 Tool 白名单、高风险确认或 Gateway Shell 审批。当前可信单用户场景接受 Sandbox 关闭；以后如果 Tailnet、微信通道或 OpenClaw 加入其他用户或不可信输入，必须重新评估 Sandbox 和文件访问边界。
+
+### 5.3 安装、配置与验收
+
+#### 开发与构建
+
+插件源码固定维护在 `integrations/openclaw/chub/`：
+
+- `src/index.ts`：声明 Chub 插件和 Tool 清单；
+- `src/client.ts`：固定 Tailnet 连接、请求、响应上限和字段收敛；
+- `src/errors.ts`：统一安全错误码和对外信息；
+- `src/tools/get-status.ts`：实现 `chub_get_status`；
+- `src/tools/get-status.test.ts`：目标地址、认证、响应格式和大小边界测试；
+- `openclaw.plugin.json`：由 OpenClaw 构建器生成的插件与 Tool 契约；
+- `package.json` / `package-lock.json`：构建命令和锁定依赖。
+
+首次或干净环境使用锁文件安装，再构建、校验和测试：
+
+```bash
+cd integrations/openclaw/chub
+npm ci
+npm run plugin:build
+npm run plugin:validate
+npm test
+cd ../../..
+```
+
+`plugin:build` 编译 TypeScript 并同步 `openclaw.plugin.json`；`plugin:validate` 检查入口、清单和 `chub_get_status` 契约一致。修改源码后必须重新执行以上命令。
+
+#### 安装与注册
+
+首次安装：
+
+```bash
+openclaw plugins install ./integrations/openclaw/chub
+```
+
+更新已安装插件：
+
+```bash
+openclaw plugins install --force ./integrations/openclaw/chub
+```
+
+当前采用复制安装，运行副本位于 `~/.openclaw/extensions/chub/`，不是仓库源码链接；源码更新后必须重新构建并 `--force` 安装。
+
+注册包含三层配置：
+
+1. 读取 `plugins.allow`，保留原有值并加入 `chub`；
+2. 启用 `plugins.entries.chub`，在其 `config.baseUrl` 中设置当前设备固定 Tailnet 地址；
+3. 读取 `tools.alsoAllow`，保留原有值并加入 `chub_get_status`。
+
+```bash
+openclaw config get plugins.allow
+openclaw config set plugins.allow '<包含原值和chub的JSON数组>' \
+  --strict-json --replace
+openclaw config set plugins.entries.chub.enabled true --strict-json
+openclaw config set plugins.entries.chub.config.baseUrl \
+  'http://<当前设备的Tailscale-IP>:<Chub端口>'
+openclaw config set plugins.entries.chub.config.timeoutMs 3000 --strict-json
+openclaw config get tools.alsoAllow
+openclaw config set tools.alsoAllow \
+  '<包含原值和chub_get_status的JSON数组>' --strict-json
+```
+
+`plugins.allow` 和 `tools.alsoAllow` 都是完整列表，写入时必须合并而不能覆盖已有项目。本机地址只保存在 OpenClaw 本机配置中，不写入仓库，也不配置 Hub Token。
+
+完成配置后加载和检查：
+
+```bash
+openclaw config validate
+openclaw gateway restart --json
+openclaw plugins inspect chub --runtime --json
+```
+
+通过标准：插件为 `loaded`、`enabled=true`，只注册 `chub_get_status`，且没有诊断错误。TUI 中使用 `/tools verbose` 可查看当前 Session 的有效 Tool。
+
+#### 实际使用与验收
+
+TUI 或微信发送：
+
+```text
+调用 chub_get_status 检查当前设备的 Chub 状态，并展示结果
+```
+
+模型调用 `chub_get_status({})`，插件请求固定 `/api/status`、过滤响应，再由模型生成最终回复。该链路不调用 Shell，不触发 Shell 审批，也不读取 Hub Token。
+
+MacBook 已完成插件构建、清单校验、10 项单元测试，以及 TUI、微信的真实 Agent 调用验收。调用能够产生 `chub_get_status` Tool Call 并返回最终中文状态。下一步只需完成 Ubuntu 的构建、安装和真实调用验收。
+
+普通微信聊天不依赖 Chub Tool，不能因为 Tool 尚未实现而标记为未接入。
+
+## 6. 飞书群机器人通知（待实现）
+
+飞书只使用固定群的自定义机器人 Webhook，负责：
+
+- 节点或服务状态通知；
+- 自动化任务最终结果；
 - ClawBot 长任务最终摘要；
 - 需要人工处理的告警。
 
-它不负责：
-
-- 接收群消息；
-- 解析用户指令；
-- 维持 Agent Session；
-- 执行电脑操作。
-
-### 7.2 推送流程
+飞书 Webhook 不接收指令、不维护 Agent Session，也不控制设备。
 
 ```text
-Chub / OpenClaw 获得最终事件
+Chub / OpenClaw 最终事件
   ↓
 通知适配器校验事件类型和脱敏规则
   ↓
-生成受限长度的文本或 Markdown
+生成有界文本或 Markdown
   ↓
-POST 到固定飞书群机器人 Webhook
+POST 固定 Webhook
   ↓
-记录本次通知的成功、失败或限流
+记录通知成功、失败或限流
 ```
 
-### 7.3 安全与可靠性
+要求：
 
-- Webhook URL 等同凭证，只保存于本机秘密配置或环境变量。
-- Webhook 地址同时确定目标飞书群，维护者提供地址后不再单独配置群标识。
-- 如果机器人启用了签名校验，签名密钥与 Webhook URL 按同等敏感级别管理。
-- URL 不进入前端、日志、测试输出、LLM 上下文或 Git。
-- 只允许固定 Webhook 目标，不接受用户传入任意通知地址。
-- 通知失败不改变原业务操作的成功或失败语义。
-- 重试必须有次数和退避上限，并使用事件 ID 防止重复刷屏。
-- 消息只包含必要摘要；日志、用户内容、路径和错误堆栈在发送前脱敏或省略。
-- 具体消息类型、签名方式、大小和频率限制在接入时以飞书当前规则及机器人配置为准。
+- Webhook URL 和签名密钥按凭证管理；
+- 目标地址固定，不接受调用方传入任意 URL；
+- 通知内容不包含 Token、内部路径、原始日志或不必要的用户内容；
+- 失败使用有界重试和事件 ID 去重；
+- 通知失败不能改变原操作结果。
 
-## 8. 其他 LLM 模型接入
+## 7. 状态、权限与失败语义
 
-模型供应商配置和 API Key 以当前用户的 OpenClaw 配置与 SecretRef 为唯一来源。OpenClaw 使用该配置完成消息通道中的对话和 Tool Calling；Chub 可通过独立的底层 LLM Service 只读解析同一配置并直接请求供应商 API，不通过 OpenClaw Gateway 转发，也不复制或再次持久化 Key。两边调用相互独立，任一服务不可用不应阻止另一边使用同一模型供应商。
-
-Chub 首版只支持文件型 `singleValue` SecretRef 和 `openai-completions` 兼容的文本调用，并遵守以下边界：
-
-- 配置和 Secret 在实际调用时懒加载，读取失败不阻止 Chub 启动或其他功能。
-- 配置解析结果按配置文件与 Secret 文件的修改状态缓存；任一文件变化时自动重新读取，轮换 Key 不需要复制配置。
-- Secret 文件必须限制为当前用户访问；Key 不进入日志、异常、响应、浏览器或测试夹具。
-- Provider、模型和 Base URL 只能来自本机配置，调用方不能提交任意地址或凭证。
-- 非本机 HTTP Base URL 被拒绝，远程模型地址必须使用 HTTPS。
-- HTTP 客户端使用长期连接池并随 Chub 生命周期关闭；并发数、请求超时、最大输出 Token 和最大响应字节数均有配置上限。
-- 认证失败、限流、供应商不可用、网络失败、超时、超大响应和无效响应使用独立错误码与可重试语义，不读取或透传供应商错误正文。
-- 当前通过快速交互页面复用内部 Service，不提供独立首页卡片、通用公共 LLM API、Tool Calling 或 Codex CLI 替代逻辑。
-
-Chub 首个基础 LLM 产品入口复用 Codex Session 的快速交互页面：操作栏通过单一按钮临时切换 `Codex CLI` 与 `Amazon Bedrock API`，页面重新进入时默认 Codex。两种执行方式只共用输入、历史、置顶、分页和状态展示；Bedrock 执行不进入 Codex 终端停止、权限检查、Session activity 或工作区上下文流程。历史任务保存执行方式及当次 Provider/模型快照，旧记录默认按 Codex CLI 解析。Bedrock 运行期间允许继续使用实时终端和调整 Codex 权限，但为保证历史归属稳定，不允许删除或归档对应 Session。
-
-推荐配置顺序：
-
-1. 配置一个主模型。
-2. 分别验证 OpenClaw 普通对话和 Chub 直接文本调用。
-3. 验证结构化 Tool 调用。
-4. 设置请求超时、上下文和输出上限。
-4. 如确有需要，再配置同能力等级的回退模型。
-5. 设置供应商费用或额度告警。
-
-模型切换不能改变：
-
-- 可见的 Tool 列表；
-- Tool 参数 Schema；
-- 用户配对和 allowlist；
-- 高风险操作确认；
-- Chub 固定节点和能力映射。
-
-验收时分别验证认证失败、模型不存在、限流、额度耗尽、超时和不支持 Tool Calling 等情况。
-
-## 9. 状态与消息语义
-
-对用户和群机器人统一使用以下语义：
+### 7.1 状态语义
 
 | 状态 | 对外含义 |
 |---|---|
-| `received` | 微信/OpenClaw 已收到消息，尚未执行设备操作 |
-| `requested` | 已向工具或 Chub 请求操作 |
-| `awaiting_confirmation` | 高风险操作正在等待授权账号明确确认，尚未执行 |
+| `received` | 微信或 OpenClaw 已收到消息，尚未请求设备操作 |
+| `requested` | 已向 Tool 或 Chub 请求操作 |
+| `awaiting_confirmation` | 高风险操作等待指定账号确认，尚未执行 |
 | `running` | 目标系统确认正在执行 |
-| `waiting_input` | 需要用户继续输入或确认 |
+| `waiting_input` | 需要用户继续输入 |
 | `succeeded` | 目标系统确认最终成功 |
-| `failed` | 目标系统确认失败或已无法继续 |
-| `expired` | 交互会话超时关闭，不能继续复用 |
+| `failed` | 目标系统确认失败或无法继续 |
+| `expired` | 交互会话已过期，不能继续复用 |
 
-禁止把“微信已送达”“LLM 已回复”“Tool 已创建”或 HTTP 200 单独解释为设备操作成功。
+禁止把“微信已送达”“正在使用工具”“LLM 已回复”“Tool 已创建”或 HTTP 200 单独解释为设备操作成功。
 
-## 10. 失败与恢复
+### 7.2 权限分级
 
-| 故障 | 用户反馈 | 恢复原则 |
+| 等级 | 示例 | 默认处理 |
 |---|---|---|
-| 微信插件离线 | 微信入口不可用 | 原 Chub 与 OpenClaw 本地入口继续运行 |
-| Gateway 不可用 | ClawBot 无法处理 | 服务恢复后重新探测，不重复旧操作 |
-| LLM 认证/限流失败 | 明确模型不可用 | 可用回退模型时切换，否则停止 |
-| Chub 不可达 | 明确目标节点离线 | 不改用任意 Shell 绕过 |
-| Tool 超时 | 显示状态未知或失败 | 查询目标最终状态后再决定是否重试 |
-| Webhook 限流/失败 | 原任务结果不变 | 有界重试，最终记录通知失败 |
-| 微信重复消息 | 返回已有交互状态 | 通过消息 ID 保证幂等 |
-| 交互会话过期 | 提示重新发起 | 不恢复旧权限或旧确认 |
+| L0 只读 | 状态、任务结果 | 已配对并获得对应 Tool 权限后执行 |
+| L1 可恢复 | 启动白名单任务 | 按任务策略执行，必要时确认 |
+| L2 持续交互 | 电脑界面、终端多轮交互 | 建立有时限的交互会话 |
+| L3 高风险 | 删除、敏感文件修改、权限修改、重启 | 默认不开放；开放时逐次明确确认 |
 
-## 11. 分阶段实施
+ClawBot 登录、发送者配对和 Owner 都不自动授予 Chub 操作权限。具体能力仍由 Tool Policy、节点映射和任务白名单决定。
 
-### 阶段 A：OpenClaw 基线
+### 7.3 失败与恢复
 
-- 安装单一 Gateway。
-- 通过 Chub 独立卡片检查 Gateway 状态，并完成受控启动、停止和重启。
-- 接入一个其他 LLM。
-- 完成本地普通对话。
-- 不接入微信和电脑工具。
+| 故障 | 对外反馈 | 恢复原则 |
+|---|---|---|
+| 微信插件离线或已切换绑定 | 微信入口不可用 | Chub 和 OpenClaw 本地入口继续运行 |
+| Gateway 不可用 | ClawBot 无法处理 | 恢复后重新探测，不重复旧操作 |
+| LLM 认证、限流或超时 | 明确模型不可用 | 有已验收回退模型时切换，否则停止 |
+| Chub 不可达 | 明确目标节点离线 | 不使用任意 Shell 绕过 |
+| Tool 超时 | 显示状态未知或失败 | 查询目标最终状态后决定是否重试 |
+| 微信重复消息 | 返回已有交互状态 | 使用稳定消息 ID 保证幂等 |
+| 交互过期 | 提示重新发起 | 不恢复旧权限或旧确认 |
+| Webhook 失败 | 单独记录通知失败 | 不改变原任务结果 |
 
-### 阶段 B：Chub 只读工具
+长操作不能只返回固定的“正在使用工具”。后续实现至少需要 `received`、`running`、需要输入或确认、最终结果四类反馈；最终回复无法投递时记录投递失败，等待用户重新查询。
 
-- 接入 MacBook 与 Ubuntu 固定节点。
-- 只开放健康、状态和任务结果查询。
-- 验证认证、失败、超时和脱敏。
+## 8. 后续实施与验收
 
-### 阶段 C：飞书群机器人单向通知
+### 8.1 下一步顺序
 
-- 配置一个测试群 Webhook。
-- 只发送测试通知和固定最终结果。
-- 验证限流、失败和重复通知。
+1. 在 Ubuntu 构建、安装并真实调用同一 Tool。
+2. 验收认证失败、不可达和超时反馈。
+3. 稳定 Tool Calling 进度、最终结果和占位回复失败语义。
+4. 飞书通知和连续电脑交互按独立需求实施；其他 Chub Tool 暂不增加。
 
-### 阶段 D：ClawBot 双向消息
+微信插件安装记录使用 `@latest`，但当前实际加载版本已经验收。固定版本属于供应链稳定性优化，不是当前危险权限问题，暂不列入优先实施顺序。
 
-- 安装腾讯微信插件并扫码授权。
-- 只允许已配对且进入允许列表的用户。
-- 验证私聊消息、Session 隔离和结果回复。
+### 8.2 待验收清单
 
-### 阶段 E：首批白名单任务
+OpenClaw 与共享基础 LLM：
 
-- 在只读查询稳定后接入少量已验收任务。
-- 逐项确定目标节点、参数、风险等级和允许账号。
-- 验证请求、确认、执行中状态、最终结果和重复消息幂等。
+- [ ] OpenClaw 稳定完成结构化 Tool Calling。
+- [ ] 模型认证失败、限流、超时和回退反馈明确。
 
-### 后续扩展：远程操控与持续交互
+Chub Tool：
 
-- 不属于首个 PoC 的必需范围。
-- 选择一台目标电脑和一个明确场景。
-- 按操作等级设计权限、确认和过期。
-- 验证持续状态、用户输入、中断和最终结果。
-- 通过后再考虑第二台电脑或更多能力。
-
-## 12. 验收清单
-
-### 12.1 OpenClaw 与模型
-
-- [x] Gateway 已在 MacBook 与 Ubuntu 完成安装、初始化、后台运行和基础诊断。
-- [x] Chub 卡片在 MacBook 完成状态区分、固定维护操作和最终状态确认验收。
-- [x] MacBook 的 Tailscale Serve HTTPS 控制台入口已经过校验和页面验收。
-- [ ] 完成 Chub OpenClaw 卡片的 Ubuntu 实机验收。
-- [x] 首个其他 LLM 已在 MacBook 与 Ubuntu 完成普通对话。
-- [ ] 首个其他 LLM 稳定完成 Tool Calling；单次真实调用已验证，占位文本异常待收敛。
-- [ ] 模型失败、超时和限流反馈明确。
-
-### 12.2 Chub
-
-- [ ] MacBook 与 Ubuntu 使用固定 `node_id` 查询成功。
-- [ ] 非法节点、参数、Token 和不可达状态受控失败。
+- [x] MacBook 使用无参数 `chub_get_status` 查询成功。
+- [ ] Ubuntu 使用无参数 `chub_get_status` 查询成功。
+- [x] MacBook TUI、微信成功调用并收到最终状态。
+- [ ] 认证失败、不可达和超时状态受控失败。
 - [ ] OpenClaw 不可用不影响 Chub 原入口。
+- [x] Tool Schema 无参数，不接受任意 URL、路径、命令或凭证。
 
-### 12.3 飞书群机器人 Webhook
+微信 ClawBot：
 
-- [ ] 单向通知成功，群内消息不能反向触发操作。
-- [ ] Webhook 凭证未泄露，失败与限流不会改变原任务状态。
-
-### 12.4 微信 ClawBot
-
-- [x] 插件与 OpenClaw 版本兼容，并已固定显式信任。
-- [ ] 二维码登录和 Gateway 重启后会话恢复已验证；退出与重新授权仍待验收。
-- [ ] 未授权账号不能访问 Chub 或执行任务。
-- [ ] 普通授权账号与高风险指定账号的权限隔离有效。
+- [ ] Chub 首页二维码绑定流程完成 Ubuntu 实机验收。
+- [ ] 退出与重新授权流程完成验收。
+- [ ] 未授权账号不能调用 Chub Tool。
+- [ ] 普通账号和高风险指定账号权限隔离有效。
 - [ ] 多账号或多对端 Session 不串线。
 - [ ] 重复消息不会重复执行。
+- [ ] Tool 超时、断链和最终回复失败语义明确。
 
-### 12.5 首批白名单任务
+飞书和白名单任务：
 
-- [ ] 状态检查、任务执行和结果查询链路完整。
+- [ ] 固定飞书群单向通知链路完成。
 - [ ] 每个任务的目标、参数、风险等级和允许账号明确。
-- [ ] 高风险任务未经指定账号明确确认不会执行。
-- [ ] 超时、断链、取消和过期行为明确。
+- [ ] 高风险任务未经明确确认不会执行。
 - [ ] 最终成功来自目标系统，而不是模型推断。
 
-远程操控与持续交互在进入后续扩展时单独补充验收项，不作为首个 PoC 的通过条件。
+## 9. 参考资料
 
-## 13. Review 结论
-
-当前方案可以作为第三阶段接入流程基线。Gateway 平台、消息通道分工、首期 ClawBot 能力、高风险确认、微信授权原则和 LLM 来源已经明确，当前没有需要维护者提前决定的架构问题。
-
-任务白名单和风险等级随具体功能落地确定；飞书 Webhook 地址、微信授权账号以及 LLM 连接参数在对应接入步骤提供即可。实施前只需针对当次功能确认实际配置和验收输入，不再改变总体架构。
-
-文档已将飞书单向通知、微信双向会话、Chub 受控操作和后续电脑交互分层，避免把“绑定微信”直接等同于“拥有设备操作权限”。
-
-## 14. 参考资料
-
-- [OpenClaw 官方安装文档](https://docs.openclaw.ai/install)
-- [OpenClaw Gateway 运维文档](https://docs.openclaw.ai/gateway)
+- [OpenClaw 安装文档](https://docs.openclaw.ai/install)
+- [OpenClaw Gateway 文档](https://docs.openclaw.ai/gateway)
 - [OpenClaw 频道文档](https://docs.openclaw.ai/channels)
-- [OpenClaw 微信频道文档](https://docs.openclaw.ai/channels/openclaw-weixin)
+- [OpenClaw 微信频道文档](https://docs.openclaw.ai/channels/wechat)
 - [腾讯微信 OpenClaw 插件](https://github.com/Tencent/openclaw-weixin)
 - [OpenClaw 模型供应商文档](https://docs.openclaw.ai/concepts/model-providers)
 - [OpenClaw Tool 插件文档](https://docs.openclaw.ai/plugins/tool-plugins)
-- [OpenClaw 插件构建文档](https://docs.openclaw.ai/plugins/building-plugins)
-- [飞书自定义机器人使用指南](https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot)
+- [飞书自定义机器人指南](https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot)
