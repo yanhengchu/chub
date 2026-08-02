@@ -1,9 +1,20 @@
 "use strict";
 
 const sessionId = document.body.dataset.sessionId;
-const token = sessionStorage.getItem("hub.sessionToken")
-  || localStorage.getItem("hub.savedToken")
-  || "";
+const {
+  createClient,
+  engineLabel,
+  formatTime,
+  isRetryableRequestError,
+  pollDelay,
+  readPageSize: readQuickInteractionPageSize,
+  readToken: readQuickInteractionToken,
+  shouldPoll,
+  statusText,
+  submissionBlockReason: sharedSubmissionBlockReason,
+} = window.QuickInteractionCore;
+const token = readQuickInteractionToken();
+const quickInteractionClient = createClient({ token, sessionId });
 const form = document.querySelector("#quick-interaction-form");
 const composerHeading = form.querySelector(".quick-interaction-page-heading");
 const composerBody = document.querySelector("#quick-interaction-composer-body");
@@ -15,11 +26,11 @@ const warning = document.querySelector("#quick-interaction-warning");
 const historyMessage = document.querySelector("#quick-interaction-history-message");
 const history = document.querySelector("#quick-interaction-history");
 const loadMore = document.querySelector("#quick-interaction-load-more");
-const PAGE_SIZE = 5;
+const PAGE_SIZE = readQuickInteractionPageSize();
 const COMPOSER_COLLAPSE_ANIMATION_MS = 320;
 const COMPOSER_COLLAPSE_FALLBACK_MS = 380;
-const LONG_RUNNING_THRESHOLD_MS = 10 * 60 * 1000;
 let pollTimer = null;
+let pollFailureCount = 0;
 let loadedTasks = [];
 let totalTasks = 0;
 let loadQueue = Promise.resolve();
@@ -37,48 +48,6 @@ function showMessage(element, text, kind = "") {
   if (kind) {
     element.classList.add(`message-${kind}`);
   }
-}
-
-function formatTime(value) {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime())
-    ? ""
-    : date.toLocaleString("zh-CN", { hour12: false });
-}
-
-function statusText(task) {
-  if (
-    task.status === "running"
-    && Date.now() - new Date(task.created_at).getTime() >= LONG_RUNNING_THRESHOLD_MS
-  ) {
-    return "执行时间较长，仍在运行";
-  }
-  return {
-    requested: "等待执行",
-    running: "执行中",
-    succeeded: "已完成",
-    failed: "执行失败",
-    timed_out: "执行超时",
-    needs_terminal: "需要实时终端",
-  }[task.status] || task.status;
-}
-
-async function request(path, options = {}) {
-  const response = await fetch(path, {
-    cache: "no-store",
-    ...options,
-    headers: {
-      ...(options.headers || {}),
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-  });
-  const payload = await response.json();
-  if (!response.ok || payload.success !== true) {
-    const error = new Error(payload?.error?.message || "请求失败。");
-    error.code = payload?.error?.code || "request_failed";
-    throw error;
-  }
-  return payload.data;
 }
 
 function taskSignature(task) {
@@ -155,15 +124,7 @@ function updateTaskItem(item, task) {
 async function setTaskPinned(task, button) {
   button.disabled = true;
   try {
-    await request(
-      `/api/codex/sessions/${encodeURIComponent(sessionId)}`
-      + `/quick-interactions/${encodeURIComponent(task.id)}/pin`,
-      {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pinned: !task.pinned_at }),
-      },
-    );
+    await quickInteractionClient.setPinned(task.id, !task.pinned_at);
     loadedTasks = [];
     totalTasks = 0;
     await load();
@@ -228,40 +189,12 @@ function mergeLatestTasks(tasks) {
 }
 
 function submissionBlockReason(session) {
-  if (!session) {
-    return "正在读取会话状态…";
-  }
-  if (activeInteraction) {
-    return "当前快速交互正在执行，请等待任务结束。";
-  }
-  if (selectedEngine === "bedrock_api") {
-    if (prompt.value.length > 4000) {
-      return "Amazon Bedrock API 单次最多支持 4000 个字符。";
-    }
-    return "";
-  }
-  if (!session.codex_session_id) {
-    return "会话尚未启动，请先通过实时终端建立会话。";
-  }
-  if (session.status === "error") {
-    return "会话当前异常，请先通过实时终端重试。";
-  }
-  if (session.quick_interaction_running) {
-    return "当前快速交互正在执行，请等待任务结束。";
-  }
-  if (session.activity === "working") {
-    return session.activity_source === "terminal"
-      ? "实时终端正在执行，请等待当前任务结束。"
-      : "当前会话正在执行，请等待任务结束。";
-  }
-  if (session.permission_mode === "ask") {
-    return "Ask for approval 需要进入实时终端完成审批。";
-  }
-  return "";
-}
-
-function engineLabel(engine) {
-  return engine === "bedrock_api" ? "Amazon Bedrock API" : "Codex CLI";
+  return sharedSubmissionBlockReason({
+    session,
+    activeInteraction,
+    engine: selectedEngine,
+    promptLength: prompt.value.length,
+  });
 }
 
 function setEngine(engine) {
@@ -400,11 +333,7 @@ function renderSessionLoadError(error) {
 }
 
 async function loadSession() {
-  const data = await request("/api/codex/sessions");
-  const session = data.sessions.find((item) => item.id === sessionId);
-  if (!session) {
-    throw new Error("会话不存在或已经归档。");
-  }
+  const session = await quickInteractionClient.loadSession();
   renderSession(session);
   return session;
 }
@@ -413,10 +342,7 @@ async function performLoad({ append = false } = {}) {
   window.clearTimeout(pollTimer);
   const offset = append ? loadedTasks.length : 0;
   const [historyResult, sessionResult] = await Promise.allSettled([
-    request(
-      `/api/codex/sessions/${encodeURIComponent(sessionId)}/quick-interactions`
-      + `?offset=${offset}&limit=${PAGE_SIZE}`,
-    ),
+    quickInteractionClient.listTasks({ offset, limit: PAGE_SIZE }),
     loadSession(),
   ]);
   let active = loadedTasks.some(
@@ -451,14 +377,22 @@ async function performLoad({ append = false } = {}) {
   }
   const loadFailed = historyResult.status === "rejected"
     || sessionResult.status === "rejected";
-  const shouldPoll = loadFailed
-    || active
-    || session?.quick_interaction_running === true
-    || session?.llm_interaction_running === true
-    || session?.activity === "working"
-    || (session?.status === "running" && session.activity === "unknown");
-  if (shouldPoll && document.visibilityState !== "hidden") {
-    pollTimer = window.setTimeout(load, 1500);
+  const loadErrors = [historyResult, sessionResult]
+    .filter((result) => result.status === "rejected")
+    .map((result) => result.reason);
+  if (!loadFailed) {
+    pollFailureCount = 0;
+  } else if (loadErrors.some(isRetryableRequestError)) {
+    pollFailureCount += 1;
+  }
+  const keepPolling = shouldPoll({
+    loadFailed,
+    loadErrors,
+    activeInteraction: active,
+    session,
+  });
+  if (keepPolling && document.visibilityState !== "hidden") {
+    pollTimer = window.setTimeout(load, pollDelay(pollFailureCount));
   }
 }
 
@@ -512,19 +446,12 @@ form.addEventListener("submit", async (event) => {
   submit.disabled = true;
   prompt.disabled = true;
   try {
-    await request(
-      `/api/codex/sessions/${encodeURIComponent(sessionId)}/quick-interactions`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt: value,
-          engine: selectedEngine,
-          confirm_stop_unknown_terminal:
-            selectedEngine === "codex_cli" && confirmStopUnknownTerminal,
-        }),
-      },
-    );
+    await quickInteractionClient.submitTask({
+      prompt: value,
+      engine: selectedEngine,
+      confirmStopUnknownTerminal:
+        selectedEngine === "codex_cli" && confirmStopUnknownTerminal,
+    });
     prompt.value = "";
     confirmStopUnknownTerminal = false;
     warning.hidden = true;

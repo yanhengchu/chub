@@ -24,7 +24,7 @@
         <p class="eyebrow">PERSONAL DEVICE HUB</p>
         <h1>{{ site_title }}</h1>
       </button>
-      <span class="version">v{{ app_version }}</span>
+      <a id="site-settings" class="button-link site-settings-link" href="/settings" hidden>设置</a>
     </header>
 
     <dialog id="restart-dialog" class="codex-workspace-dialog restart-dialog" aria-labelledby="restart-dialog-title">
@@ -209,14 +209,48 @@
           <div class="section-heading">
             <div class="card-heading-copy" data-card-heading>
               <p class="section-kicker">项目资料</p>
-              <h2 id="design-documents-title">设计文档</h2>
-              <p class="section-description">查看方案、实现范围和验收标准。</p>
+              <h2 id="design-documents-title">项目文档</h2>
+              <p class="section-description">查看本周周报、设计方案和调研资料。</p>
             </div>
             <button id="refresh-project-docs" class="button-secondary" type="button">刷新</button>
           </div>
           <div class="card-content" data-card-content>
           <div class="card-content-inner">
-          <div class="design-document-list design-document-list-compact">
+          <section class="project-document-group" aria-labelledby="weekly-reports-title">
+            <h3 id="weekly-reports-title" class="document-group-title">本周周报</h3>
+            <div id="weekly-report-list" class="design-document-list design-document-list-compact">
+              {% for report in weekly_reports %}
+              <article class="design-document-item{% if not report.available %} design-document-item-unavailable{% endif %}">
+                {% if report.available %}
+                <a class="design-document-main" href="/weekly-reports/{{ report.period }}/{{ report.report_type }}">
+                  <span class="design-document-copy">
+                    <strong>{% if report.report_type == 'focus' %}本周重点事项{% else %}本周周报{% endif %}</strong>
+                    <span>{{ report.period }} · {{ report.summary }}</span>
+                  </span>
+                </a>
+                {% else %}
+                <div class="design-document-main">
+                  <span class="design-document-copy">
+                    <strong>{% if report.report_type == 'focus' %}本周重点事项{% else %}本周周报{% endif %}</strong>
+                    <span>{{ report.period }} · {{ report.summary }}</span>
+                  </span>
+                </div>
+                {% endif %}
+                <div class="design-document-footer">
+                  <span class="design-document-meta">
+                    <span class="badge {% if report.available %}badge-success{% else %}badge-muted{% endif %}">{{ report.status }}</span>
+                    {% if report.updated_at %}<time datetime="{{ report.updated_at.isoformat() }}">{{ report.updated_at.strftime('%Y-%m-%d') }}</time>{% endif %}
+                  </span>
+                </div>
+              </article>
+              {% else %}
+              <p class="empty-state">暂无周报工作区。</p>
+              {% endfor %}
+            </div>
+          </section>
+          <section class="project-document-group" aria-labelledby="design-list-title">
+          <h3 id="design-list-title" class="document-group-title">设计与调研</h3>
+          <div id="design-document-list" class="design-document-list design-document-list-compact">
             {% for document in design_documents %}
             <article class="design-document-item">
               <a class="design-document-main" href="/project-docs/{{ document.id }}">
@@ -237,9 +271,10 @@
             <p class="empty-state">暂无设计文档。</p>
             {% endfor %}
           </div>
+          </section>
           <p id="project-docs-message" class="message{% if design_documents_error %} message-error{% endif %}" aria-live="polite">{{ design_documents_error or '' }}</p>
           <div class="card-footer">
-            <span id="project-docs-count" class="card-footer-meta">{{ design_document_count }} 份文档</span>
+            <span id="project-docs-count" class="card-footer-meta">{{ design_document_count }} 份设计资料 · {{ available_weekly_report_count }} 份周报可查看</span>
             <div class="card-footer-actions">
             <a id="all-project-docs" class="button-link" href="/project-docs">查看全部文档</a>
             </div>

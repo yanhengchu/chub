@@ -9,6 +9,7 @@ from app.services.design_documents import (
     get_design_document,
     list_design_documents,
 )
+from app.services.weekly_reports import get_weekly_report, list_latest_weekly_reports
 
 
 WEB_DIR = Path(__file__).resolve().parent
@@ -30,6 +31,7 @@ def index(request: Request) -> HTMLResponse:
     except DesignDocumentIndexError:
         design_documents = []
         design_documents_error = "设计文档暂时无法加载，请检查文档索引。"
+    weekly_reports = list_latest_weekly_reports()
     return templates.TemplateResponse(
         request=request,
         name="index.html",
@@ -42,6 +44,33 @@ def index(request: Request) -> HTMLResponse:
             "design_documents": design_documents[:5],
             "design_document_count": len(design_documents),
             "design_documents_error": design_documents_error,
+            "weekly_reports": weekly_reports,
+            "available_weekly_report_count": sum(
+                report.available for report in weekly_reports
+            ),
+        },
+    )
+
+
+@router.get(
+    "/weekly-reports/{period}/{report_type}",
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
+def weekly_report_detail(
+    request: Request,
+    period: str,
+    report_type: str,
+) -> HTMLResponse:
+    report = get_weekly_report(period, report_type)
+    if report is None:
+        raise HTTPException(status_code=404, detail="Weekly report not found")
+    return templates.TemplateResponse(
+        request=request,
+        name="weekly_report_detail.html",
+        context={
+            "app_name": request.app.state.settings.app.name,
+            "report": report,
         },
     )
 
@@ -53,6 +82,19 @@ def log_details(request: Request) -> HTMLResponse:
         request=request,
         name="logs.html",
         context={"app_name": settings.app.name},
+    )
+
+
+@router.get("/settings", response_class=HTMLResponse, include_in_schema=False)
+def settings_page(request: Request) -> HTMLResponse:
+    settings = request.app.state.settings
+    return templates.TemplateResponse(
+        request=request,
+        name="settings.html",
+        context={
+            "app_name": settings.app.name,
+            "app_version": settings.app.version,
+        },
     )
 
 

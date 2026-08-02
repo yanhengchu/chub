@@ -23,11 +23,15 @@
   },
   "contracts": {
     "tools": [
-      "chub_get_status"
+      "chub_get_status",
+      "chub_send_notification"
     ]
   },
   "toolMetadata": {
     "chub_get_status": {
+      "optional": true
+    },
+    "chub_send_notification": {
       "optional": true
     }
   }

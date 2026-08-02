@@ -13,6 +13,7 @@ from app.services.design_documents import (
     set_design_document_archived,
 )
 from app.services.operation_log import log_operation
+from app.services.weekly_reports import list_latest_weekly_reports
 
 
 router = APIRouter(
@@ -31,9 +32,20 @@ class ProjectDocumentSummary(BaseModel):
     archived: bool
 
 
+class WeeklyReportSummary(BaseModel):
+    period: str
+    report_type: str
+    title: str
+    summary: str
+    status: str
+    updated_at: datetime | None
+    available: bool
+
+
 class ProjectDocumentListData(BaseModel):
     count: int
     documents: list[ProjectDocumentSummary]
+    weekly_reports: list[WeeklyReportSummary]
 
 
 class ProjectDocumentArchiveUpdate(BaseModel):
@@ -59,6 +71,10 @@ def list_project_documents(request: Request) -> ApiResponse[ProjectDocumentListD
             documents=[
                 ProjectDocumentSummary.model_validate(item, from_attributes=True)
                 for item in documents[:5]
+            ],
+            weekly_reports=[
+                WeeklyReportSummary.model_validate(item, from_attributes=True)
+                for item in list_latest_weekly_reports()
             ],
         )
     )

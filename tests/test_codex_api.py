@@ -1,6 +1,6 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import httpx
 import pytest
@@ -465,6 +465,151 @@ async def test_quick_interaction_history_is_paginated(
     assert first.json()["data"]["has_more"] is True
     assert len(second.json()["data"]["tasks"]) == 2
     assert second.json()["data"]["has_more"] is False
+    assert quick_interactions.list_for_session.call_args_list == [
+        call("session-1", order="task"),
+        call("session-1", order="task"),
+    ]
+
+
+@pytest.mark.anyio
+async def test_quick_interaction_history_supports_timeline_order(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    quick_interactions = MagicMock()
+    quick_interactions.list_for_session.return_value = [quick_task()]
+    app.state.quick_interactions = quick_interactions
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            "/api/codex/sessions/session-1/quick-interactions?order=timeline",
+            headers=authorization(settings),
+        )
+
+    assert response.status_code == 200
+    quick_interactions.list_for_session.assert_called_once_with(
+        "session-1",
+        order="timeline",
+    )
+
+
+@pytest.mark.anyio
+async def test_quick_interaction_timeline_cursor_is_stable_when_new_task_arrives(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    base = utc_now()
+
+    def timeline_task(task_id: str, minutes: int) -> QuickInteractionTask:
+        return quick_task().model_copy(
+            update={
+                "id": task_id,
+                "created_at": base + timedelta(minutes=minutes),
+                "updated_at": base + timedelta(minutes=minutes),
+            }
+        )
+
+    latest = timeline_task("latest", 3)
+    cursor_task = timeline_task("cursor", 2)
+    older = timeline_task("older", 1)
+    newly_arrived = timeline_task("newly-arrived", 4)
+    quick_interactions = MagicMock()
+    quick_interactions.list_for_session.side_effect = [
+        [latest, cursor_task, older],
+        [newly_arrived, latest, cursor_task, older],
+    ]
+    app.state.quick_interactions = quick_interactions
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        first = await client.get(
+            "/api/codex/sessions/session-1/quick-interactions",
+            params={"order": "timeline", "limit": 2},
+            headers=authorization(settings),
+        )
+        second = await client.get(
+            "/api/codex/sessions/session-1/quick-interactions",
+            params={
+                "order": "timeline",
+                "limit": 2,
+                "before_created_at": cursor_task.created_at.isoformat(),
+                "before_id": cursor_task.id,
+            },
+            headers=authorization(settings),
+        )
+
+    assert [task["id"] for task in first.json()["data"]["tasks"]] == [
+        "latest",
+        "cursor",
+    ]
+    assert [task["id"] for task in second.json()["data"]["tasks"]] == ["older"]
+    assert second.json()["data"]["has_more"] is False
+    assert second.json()["data"]["total"] == 4
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("params", "message"),
+    [
+        (
+            {"order": "timeline", "before_id": "task-1"},
+            "时间线游标必须同时包含创建时间和任务 ID。",
+        ),
+        (
+            {
+                "order": "timeline",
+                "before_created_at": "2026-08-01T10:00:00",
+                "before_id": "task-1",
+            },
+            "时间线游标的创建时间必须包含时区。",
+        ),
+        (
+            {
+                "order": "task",
+                "before_created_at": "2026-08-01T10:00:00Z",
+                "before_id": "task-1",
+            },
+            "时间线游标只能用于 timeline 排序。",
+        ),
+        (
+            {
+                "order": "timeline",
+                "offset": 1,
+                "before_created_at": "2026-08-01T10:00:00Z",
+                "before_id": "task-1",
+            },
+            "timeline 排序必须使用时间线游标，不能使用非零 offset。",
+        ),
+        (
+            {"order": "timeline", "offset": 1},
+            "timeline 排序必须使用时间线游标，不能使用非零 offset。",
+        ),
+    ],
+)
+async def test_quick_interaction_timeline_rejects_invalid_cursor(
+    settings: Settings,
+    params: dict[str, object],
+    message: str,
+) -> None:
+    app = create_app(settings)
+    quick_interactions = MagicMock()
+    app.state.quick_interactions = quick_interactions
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            "/api/codex/sessions/session-1/quick-interactions",
+            params=params,
+            headers=authorization(settings),
+        )
+
+    assert response.status_code == 422
+    assert response.json()["error"] == {
+        "code": "invalid_quick_interaction_cursor",
+        "message": message,
+    }
+    quick_interactions.list_for_session.assert_not_called()
 
 
 @pytest.mark.anyio

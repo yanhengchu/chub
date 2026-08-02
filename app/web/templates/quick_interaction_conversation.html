@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>快速交互 · 会话视图</title>
+    {% include "partials/app_styles.html" %}
+    <script src="/static/quick_interactions_core.js" defer></script>
+    <script src="/static/quick_interaction_conversation.js" defer></script>
+  </head>
+  <body class="conversation-body" data-session-id="{{ session_id }}">
+    <main>
+      <section class="conversation-page" aria-label="快速交互会话视图">
+        <div id="conversation-scroll" class="conversation-scroll">
+          <button id="conversation-load-earlier" class="button-secondary conversation-load-earlier" type="button" hidden>加载更早消息</button>
+          <p id="conversation-history-message" class="message conversation-history-message" aria-live="polite"></p>
+          <div id="conversation-feed" class="conversation-feed" aria-label="快速交互消息"></div>
+          <button id="conversation-jump-latest" class="button-secondary conversation-jump-latest" type="button" hidden>回到最新消息</button>
+        </div>
+
+        <form id="conversation-form" class="conversation-composer">
+          <p id="conversation-warning" class="quick-interaction-warning" hidden>点击发送会先停止当前实时终端，可能中断正在执行的任务，然后启动新任务。</p>
+          <p id="conversation-submit-message" class="message" aria-live="polite"></p>
+          <div class="conversation-composer-tools">
+            <button id="conversation-engine" class="button-secondary conversation-engine" type="button" disabled>Codex CLI</button>
+            <span>Enter 发送 · Shift + Enter 换行</span>
+          </div>
+          <div class="conversation-input-row">
+            <textarea id="conversation-prompt" rows="1" maxlength="8000" required placeholder="输入消息…" aria-label="快速交互需求" disabled></textarea>
+            <button id="conversation-submit" type="submit" disabled>发送</button>
+          </div>
+        </form>
+      </section>
+    </main>
+  </body>
+</html>

@@ -109,6 +109,15 @@ class LlmConfig(StrictModel):
     max_response_bytes: int = Field(default=1024 * 1024, ge=1024, le=8 * 1024 * 1024)
 
 
+class NotificationsConfig(StrictModel):
+    enabled: bool = True
+    registry_file: Path = Path("~/.config/chub/notifications/registry.yaml")
+    secrets_dir: Path = Path("~/.config/chub/notifications/secrets")
+    timeout_seconds: float = Field(default=5, ge=1, le=30)
+    max_message_bytes: int = Field(default=4000, ge=256, le=16 * 1024)
+    dedup_ttl_seconds: int = Field(default=600, ge=60, le=3600)
+
+
 class Settings(StrictModel):
     app: AppConfig
     node: NodeConfig
@@ -119,6 +128,7 @@ class Settings(StrictModel):
     automations: AutomationsConfig = AutomationsConfig()
     project_documents: ProjectDocumentsConfig = ProjectDocumentsConfig()
     llm: LlmConfig = LlmConfig()
+    notifications: NotificationsConfig = NotificationsConfig()
 
     @model_validator(mode="before")
     @classmethod
@@ -157,6 +167,12 @@ class Settings(StrictModel):
             )
         self.llm.openclaw_config_file = (
             self.llm.openclaw_config_file.expanduser().resolve()
+        )
+        self.notifications.registry_file = (
+            self.notifications.registry_file.expanduser().resolve()
+        )
+        self.notifications.secrets_dir = (
+            self.notifications.secrets_dir.expanduser().resolve()
         )
         return self
 

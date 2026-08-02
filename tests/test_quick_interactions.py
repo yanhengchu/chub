@@ -200,6 +200,49 @@ def test_list_for_session_keeps_latest_before_pinned_and_ordinary(
     ]
 
 
+def test_list_for_session_can_return_timeline_order(tmp_path: Path) -> None:
+    quick_interactions = manager(tmp_path)
+    base = utc_now()
+    tasks = [
+        QuickInteractionTask(
+            id="older-pinned",
+            session_id="session-1",
+            prompt="较早置顶",
+            status="succeeded",
+            result="完成",
+            pinned_at=base + timedelta(minutes=3),
+            created_at=base,
+            updated_at=base,
+        ),
+        QuickInteractionTask(
+            id="latest",
+            session_id="session-1",
+            prompt="最新记录",
+            status="succeeded",
+            result="完成",
+            created_at=base + timedelta(minutes=2),
+            updated_at=base + timedelta(minutes=2),
+        ),
+        QuickInteractionTask(
+            id="middle",
+            session_id="session-1",
+            prompt="中间记录",
+            status="succeeded",
+            result="完成",
+            created_at=base + timedelta(minutes=1),
+            updated_at=base + timedelta(minutes=1),
+        ),
+    ]
+    quick_interactions._tasks = {task.id: task for task in tasks}
+
+    listed = quick_interactions.list_for_session(
+        "session-1",
+        order="timeline",
+    )
+
+    assert [task.id for task in listed] == ["latest", "middle", "older-pinned"]
+
+
 def test_set_pinned_persists_and_can_be_cancelled(tmp_path: Path) -> None:
     quick_interactions = manager(tmp_path)
     task = QuickInteractionTask(

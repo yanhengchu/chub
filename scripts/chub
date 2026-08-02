@@ -56,6 +56,8 @@ Commands:
   restart    Restart the service and check its health
   status     Show service status
   logs       Follow Hub application logs
+  notification
+             Validate, list, test, or send configured notifications
   uninstall  Remove the user service and chub command
   help       Show this help
 EOF
@@ -430,6 +432,13 @@ case "$command" in
     restart) restart_service ;;
     status) status_service ;;
     logs) show_logs ;;
+    notification)
+        shift
+        (
+            cd "$PROJECT_ROOT"
+            "$PYTHON_BIN" -m app.notifications.command "$@"
+        )
+        ;;
     uninstall) uninstall_service ;;
     help|-h|--help) usage ;;
     *) usage >&2; fail "unknown command: $command" ;;

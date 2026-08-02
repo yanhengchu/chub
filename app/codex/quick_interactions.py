@@ -13,7 +13,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterator
 
-from app.codex.models import CodexSession, QuickInteractionTask, utc_now
+from app.codex.models import (
+    CodexSession,
+    QuickInteractionOrder,
+    QuickInteractionTask,
+    utc_now,
+)
 from app.core.response import ApiError
 from app.llm import LlmConfigurationError, LlmRequestError, LlmService
 from app.services.log_reader import redact_log_line
@@ -246,7 +251,12 @@ class QuickInteractionManager:
                 raise ApiError(404, "quick_interaction_not_found", "快速交互任务不存在。")
             return task.model_copy(deep=True)
 
-    def list_for_session(self, session_id: str) -> list[QuickInteractionTask]:
+    def list_for_session(
+        self,
+        session_id: str,
+        *,
+        order: QuickInteractionOrder = "task",
+    ) -> list[QuickInteractionTask]:
         self.codex_manager.get_session(session_id)
         with self._lock:
             tasks = [
@@ -256,6 +266,12 @@ class QuickInteractionManager:
             ]
         if not tasks:
             return []
+        if order == "timeline":
+            return sorted(
+                tasks,
+                key=lambda item: (item.created_at, item.id),
+                reverse=True,
+            )
         latest = max(tasks, key=lambda item: (item.created_at, item.id))
         pinned = sorted(
             (

@@ -19,6 +19,7 @@ const elements = {
   globalMessage: document.querySelector("#global-message"),
   dashboard: document.querySelector("#dashboard"),
   refreshStatus: document.querySelector("#refresh-status"),
+  siteSettings: document.querySelector("#site-settings"),
   restartHub: document.querySelector("#restart-hub"),
   restartDialog: document.querySelector("#restart-dialog"),
   restartDialogClose: document.querySelector("#restart-dialog-close"),
@@ -68,7 +69,8 @@ const elements = {
   automationList: document.querySelector("#automation-list"),
   automationMessage: document.querySelector("#automation-message"),
   refreshAutomations: document.querySelector("#refresh-automations"),
-  projectDocsList: document.querySelector(".design-document-list-compact"),
+  projectDocsList: document.querySelector("#design-document-list"),
+  weeklyReportsList: document.querySelector("#weekly-report-list"),
   projectDocsCount: document.querySelector("#project-docs-count"),
   projectDocsMessage: document.querySelector("#project-docs-message"),
   refreshProjectDocs: document.querySelector("#refresh-project-docs"),
@@ -158,6 +160,7 @@ function clearProtectedView() {
   codexMutationCount = 0;
   elements.dashboard.hidden = true;
   elements.connectedBar.hidden = true;
+  elements.siteSettings.hidden = true;
   elements.automationList.replaceChildren();
   elements.codexCardHost.replaceChildren();
   clearOpenClawCache();
@@ -195,6 +198,7 @@ function showConnectedView(status) {
   elements.accessCard.hidden = true;
   elements.connectedBar.hidden = false;
   elements.dashboard.hidden = false;
+  elements.siteSettings.hidden = false;
   elements.restartHub.disabled = false;
   elements.connectedNode.textContent = status.node.name;
   elements.connectedMeta.textContent =

@@ -11,6 +11,7 @@ SessionStatus = Literal["new", "running", "stopped", "error"]
 TurnActivity = Literal["unknown", "working", "idle"]
 ActivitySource = Literal["none", "terminal", "quick"]
 PermissionMode = Literal["ask", "auto-review", "read-only", "full-access"]
+QuickInteractionOrder = Literal["task", "timeline"]
 
 
 def utc_now() -> datetime:

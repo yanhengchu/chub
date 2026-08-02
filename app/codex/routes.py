@@ -16,6 +16,7 @@ from starlette.websockets import WebSocketDisconnect
 from app.codex.models import (
     QuickInteractionData,
     QuickInteractionListData,
+    QuickInteractionOrder,
     QuickInteractionPinRequest,
     QuickInteractionRequest,
     SessionAccessData,
@@ -299,14 +300,59 @@ def list_quick_interactions(
     request: Request,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=5, ge=1, le=20),
+    order: QuickInteractionOrder = Query(default="task"),
+    before_created_at: datetime | None = Query(default=None),
+    before_id: str | None = Query(default=None, min_length=1, max_length=100),
 ) -> ApiResponse[QuickInteractionListData]:
-    tasks = request.app.state.quick_interactions.list_for_session(session_id)
-    page = tasks[offset : offset + limit]
+    has_created_at = before_created_at is not None
+    has_id = before_id is not None
+    if has_created_at != has_id:
+        raise ApiError(
+            422,
+            "invalid_quick_interaction_cursor",
+            "时间线游标必须同时包含创建时间和任务 ID。",
+        )
+    if (
+        before_created_at is not None
+        and before_created_at.utcoffset() is None
+    ):
+        raise ApiError(
+            422,
+            "invalid_quick_interaction_cursor",
+            "时间线游标的创建时间必须包含时区。",
+        )
+    if order == "timeline" and offset != 0:
+        raise ApiError(
+            422,
+            "invalid_quick_interaction_cursor",
+            "timeline 排序必须使用时间线游标，不能使用非零 offset。",
+        )
+    if has_created_at and order != "timeline":
+        raise ApiError(
+            422,
+            "invalid_quick_interaction_cursor",
+            "时间线游标只能用于 timeline 排序。",
+        )
+    tasks = request.app.state.quick_interactions.list_for_session(
+        session_id,
+        order=order,
+    )
+    if before_created_at is not None and before_id is not None:
+        eligible = [
+            task
+            for task in tasks
+            if (task.created_at, task.id) < (before_created_at, before_id)
+        ]
+        page = eligible[:limit]
+        has_more = len(eligible) > len(page)
+    else:
+        page = tasks[offset : offset + limit]
+        has_more = offset + len(page) < len(tasks)
     return ApiResponse(
         data=QuickInteractionListData(
             tasks=page,
             total=len(tasks),
-            has_more=offset + len(page) < len(tasks),
+            has_more=has_more,
         )
     )
 
@@ -455,6 +501,22 @@ async def quick_interaction_page(request: Request, session_id: str) -> HTMLRespo
     return templates.TemplateResponse(
         request=request,
         name="quick_interactions.html",
+        context={"session_id": session_id},
+    )
+
+
+@web_router.get(
+    "/codex/{session_id}/quick-interactions/conversation",
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
+async def quick_interaction_conversation_page(
+    request: Request,
+    session_id: str,
+) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="quick_interaction_conversation.html",
         context={"session_id": session_id},
     )
 

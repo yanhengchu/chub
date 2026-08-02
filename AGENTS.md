@@ -33,6 +33,7 @@ Chub 是个人维护的轻量设备管理服务，主要技术栈为 Python 3.12
 ## 实现约束
 
 - API 保持统一的 `ApiResponse`/`ApiError` 响应结构。
+- 在 Chub 的 Codex PTY 或快速交互 Codex 模式中发送飞书通知时，直接使用 `chub notification send` 或 Chub 通知 API，不要通过 `openclaw agent` 间接调用；OpenClaw TUI 和微信入口才使用 `chub_send_notification`。
 - 受保护接口必须使用 Hub Token，或在默认启用的 `security.allow_tailscale` 未被关闭时接受来自真实 Tailscale socket 来源的请求；不得信任客户端转发 Header，健康检查除外。
 - 不允许客户端提供任意文件路径或任意系统命令，只能使用后端固定映射或白名单。
 - 不在日志、响应、测试输出或文档中暴露 Token、Authorization、终端票据等敏感数据。

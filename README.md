@@ -2,7 +2,7 @@
 
 Hub 是一个面向个人设备的轻量管理服务。
 
-第二阶段已于 2026-07-26 正式闭环：macOS 与 Ubuntu 基础节点能力、移动端 Web 管理页面、受控任务接口、Codex PTY 与快速交互、配置驱动自动化及前端 UI 模块化均已实现，并通过 Ubuntu、MacBook 和手机端验收。第三阶段以 OpenClaw 接入、飞书群机器人 Webhook 单向通知、微信 ClawBot 双向指令交互，以及 OpenClaw/Chub 共享基础 LLM 为核心。OpenClaw、微信 ClawBot 基础流程、OpenClaw 外部模型和 Chub 基础 LLM 已在 MacBook 与 Ubuntu 完成首轮验收。后续进入 OpenClaw 权限收敛、Chub 受限 Tool 和飞书通道实施。
+第二阶段已于 2026-07-26 正式闭环：macOS 与 Ubuntu 基础节点能力、移动端 Web 管理页面、受控任务接口、Codex PTY 与快速交互、配置驱动自动化及前端 UI 模块化均已实现，并通过 Ubuntu、MacBook 和手机端验收。第三阶段以 OpenClaw 接入、飞书群机器人 Webhook 单向通知、微信 ClawBot 双向指令交互，以及 OpenClaw/Chub 共享基础 LLM 为核心。OpenClaw、微信 ClawBot 基础流程、OpenClaw 外部模型、Chub 基础 LLM、权限基线和状态 Tool 已在 MacBook 与 Ubuntu 完成验收；飞书通知 Service、API、OpenClaw Tool、原文保护、显式 `@所有人` 和 Webhook 新日志保护均已实现并完成验收，当前首版收尾。
 
 ## 快速开始
 
@@ -73,7 +73,7 @@ Codex PTY 依赖 `codex`、`ttyd` 和 `tmux`。安装服务时，Chub 会从当�
 - 进入、停止或归档会话；日常页面不提供删除入口，避免误删 Codex 历史。
 - 在首页切换 `Ask for approval`、`Approve for me`、`Full access` 和 `Read Only` 四种权限模式；运行中的会话切换权限时会自动停止，下一次进入时按新权限启动。
 - 区分尚未启动、运行、停止和异常等会话生命周期，以及执行中、等待输入和状态未知等活动状态；首页对执行中会话快速刷新，对运行中但状态未知的会话低频确认，进入等待输入或停止后结束轮询。
-- 同一 Codex session 提供“实时终端”和“快速交互”两种交互入口；首页使用显示当前模式的两态按钮，点击后直接切换为另一入口，再点击 Session 进入对应页面。快速交互页面统一提供后台单次任务提交、状态、最终结果和历史记录，支持持久化置顶，列表依次展示最近一条、置顶记录和普通记录。实时终端等待输入时保持 TUI/tmux 运行并允许快速交互；实时终端执行中时拒绝快速交互，快速交互执行中时禁止进入实时终端。
+- 同一 Codex session 提供“实时终端”和“快速交互”两种交互入口；首页使用显示当前模式的两态按钮，点击后直接切换为另一入口，再点击 Session 进入对应页面。快速交互支持任务视图和会话视图，两者共享任务、状态、结果、置顶和执行逻辑；设置页保存当前浏览器的默认视图及每页 5 条或 10 条的分页数量，退出设置后从首页再次进入时生效，未设置或存储不可用时默认每页 5 条。任务视图按最近一条、置顶记录和普通记录组织，会话视图按时间线组织同一批记录。实时终端等待输入时保持 TUI/tmux 运行并允许快速交互；实时终端执行中时拒绝快速交互，快速交互执行中时禁止进入实时终端。
 
 节点页面同时提供操作日志和运行日志。首页可查看最近 50 或 100 行，日志详情页可按来源读取更早内容或下载经过敏感信息脱敏的当前日志文件。操作日志默认写入 `logs/operations.log`，并与应用日志一样自动轮转。
 
@@ -81,7 +81,7 @@ Chub 只负责权限模式选择和会话生命周期；具体审批交互、权
 
 Codex PTY 终端通过 WebSocket 持续传输输入和输出，依赖稳定的双向实时链路。Tailscale 跨网络访问时，即使首页和文档等普通 HTTP 页面可以正常打开，如果路径经过质量不稳定的 DERP 中继、存在较高抖动、丢包、MTU 问题或网络切换，仍可能出现 ttyd 页面外壳已加载但终端内容未显示、输入无响应或连接中断。这里的限制不只是带宽问题，链路稳定性和延迟同样重要。当前产品不提供基于轮询或终端快照的非实时降级模式，Codex PTY 应优先在稳定的 Tailscale 直连或可靠网络中使用。排查时查看浏览器网络面板中 `/codex/.../terminal/ws` 是否成功升级为 `101 Switching Protocols`，并结合应用日志中的 `terminal_websocket_*` 和 `terminal_http_*` 记录判断连接或上游 ttyd 是否失败。
 
-快速交互页面可在提交按钮左侧临时切换 `Codex CLI` 与 `Amazon Bedrock API`。选择只在当前页面有效，刷新、离开后重新进入或浏览器返回恢复页面时均默认回到 Codex CLI。Codex 模式沿用工作区、权限和实时终端互斥逻辑；Bedrock 模式直接调用 Chub 基础 LLM，不读取工作区、不停止实时终端，也不修改 Codex Session activity。两种任务共用本机交互历史、置顶和分页，并在时间左侧保存实际执行来源；Bedrock 记录同时保存提交时的 Provider 与模型快照。快速交互历史会保存提交内容和最终结果，运行日志与操作日志不记录正文。
+快速交互输入区可临时切换 `Codex CLI` 与 `Amazon Bedrock API`。选择只在当前页面有效，刷新、离开后重新进入或浏览器返回恢复页面时均默认回到 Codex CLI。Codex 模式沿用工作区、权限和实时终端互斥逻辑；Bedrock 模式直接调用 Chub 基础 LLM，不读取工作区、不停止实时终端，也不修改 Codex Session activity。两种任务共用本机交互历史、置顶和分页，并在时间左侧保存实际执行来源；Bedrock 记录同时保存提交时的 Provider 与模型快照。快速交互历史会保存提交内容和最终结果，运行日志与操作日志不记录正文。
 
 Codex 快速交互允许长任务持续执行：运行超过 10 分钟时页面提示“执行时间较长，仍在运行”，不将其误判为超时。真正的执行上限由 `codex_pty.quick_interaction_timeout_seconds` 配置，默认 `21600` 秒（6 小时），允许范围为 10 分钟至 24 小时；达到上限后才会终止进程并记录为超时。修改该配置后需要重启 Chub 服务。
 
@@ -89,11 +89,27 @@ Codex 快速交互允许长任务持续执行：运行超过 10 分钟时页面�
 
 首页 OpenClaw 卡片用于管理当前节点上的 Gateway。它展示安装、初始化、后台服务、连接探测、版本、监听状态、消息通道运行摘要和当前通道的 Owner 权限摘要，并提供固定的启动、停止和重启操作；停止和重启需要二次确认。卡片还可以发起受控的微信 ClawBot 登录，在短期模态框中展示绑定二维码，并在微信要求时提交手机显示的数字验证码；重新绑定可能使同一 ClawBot 在其他设备上的服务端绑定失效。消息通道在 Gateway 就绪后独立检查，检查失败不会覆盖 Gateway 状态；已配置通道但未配置对应 Owner 时显示“功能受限”，不返回具体身份或凭证。Tailscale Serve 可用时，卡片只展示标准 HTTPS 访问地址，整个地址区域可点击进入控制台；本机 loopback 地址只作为排障入口，不在首页展示。所有接口均使用 Hub Token 或未被关闭的 Tailnet 可信访问，操作以 Gateway 或登录进程的最终状态而不是命令进程成功创建作为成功依据，并写入完整操作日志。
 
-微信绑定使用固定的 `openclaw channels login --channel openclaw-weixin` 命令和单一短期登录会话。二维码只保存在 Chub 进程内存中，通过禁止缓存的受保护图片接口读取；原始命令输出、二维码内容、微信账号标识和登录凭证不会返回页面。关闭弹窗不会中断登录，显式取消、登录结束或 Chub 退出会清理二维码并终止残留进程。绑定成功只代表通道登录完成，不代表发送者配对或 Owner 权限已经配置。该页面流程已完成 MacBook 真实生成、扫码绑定、状态恢复和取消验收，Ubuntu 页面流程待单独验收。
+微信绑定使用固定的 `openclaw channels login --channel openclaw-weixin` 命令和单一短期登录会话。二维码只保存在 Chub 进程内存中，通过禁止缓存的受保护图片接口读取；原始命令输出、二维码内容、微信账号标识和登录凭证不会返回页面。关闭弹窗不会中断登录，显式取消、登录结束或 Chub 退出会清理二维码并终止残留进程。绑定成功只代表通道登录完成，不代表发送者配对或 Owner 权限已经配置。该页面流程已完成 MacBook、Ubuntu 的真实二维码生成、扫码绑定和基础交互验收。
 
 该卡片不提供安装、卸载、升级、初始化配置、控制台代理、任意命令或原始日志入口，也不会向页面返回 OpenClaw 配置和凭证。OpenClaw CLI 必须能从 Chub 服务的 `PATH` 找到；macOS 和 Ubuntu 使用同一套接口，由 OpenClaw 自身管理对应的 LaunchAgent 或 systemd user service。
 
 最近一次成功检测的 OpenClaw 展示状态按节点保存在浏览器会话中。首次进入或普通刷新首页时，页面先恢复缓存再检查最新状态；从快速交互等次级页面通过浏览器历史返回时，即使首页因 `no-store` 被重建，也只恢复缓存，不自动检查 OpenClaw。用户可通过卡片刷新按钮主动检查，启动、停止、重启及微信绑定成功仍只更新本卡片。刷新失败时保留上次结果并单独提示，退出节点或认证失效时清理缓存。
+
+## 飞书通知
+
+Chub 通过 `~/.config/chub/notifications/registry.yaml` 登记固定飞书目标，并从同目录 `secrets/` 下权限为 `600` 的独立文件读取 Webhook。通知模块只支持有界纯文本、已配置目标和可选人员别名；普通消息默认不提醒任何人，指定人员必须使用已配置 Open ID，`@所有人` 必须由目标显式允许且由用户本次明确要求。正文中的原始 `<at>` 标签会被转义，调用方不能提交任意 URL、Open ID、Secret 路径或飞书 JSON。
+
+受保护的 `/api/notifications/targets` 和 `/api/notifications/send` 复用 Hub Token/Tailnet 认证。统一 OpenClaw `chub` 插件提供 `chub_send_notification`，可从 TUI 或微信向已配置群发送消息。用户在当前请求中使用“消息内容：”提供正文时，插件通过 `message_received`/`llm_input` 读取进入模型前的原文，按本轮 `runId` 短期关联，并在 `before_tool_call` 中覆盖模型生成的正文参数；原文无法取得时阻止发送，只有用户要求 AI 编写正文时才允许 `generated` 模式。该会话访问需显式启用 `plugins.entries.chub.hooks.allowConversationAccess=true`。飞书 `code=0` 对外记录为 `accepted`，只代表请求被接受；短期请求 ID 防止重复发送，操作日志不记录正文、Webhook 或完整 Open ID，底层 HTTP 成功请求也不会记录完整 Webhook URL。当前 `test` 目标的普通消息、真实 Agent 原文保护和显式 `@所有人` 已完成验收，飞书通知首版收尾；指定人员提醒在提供 Open ID 后按需扩展。
+
+本机 AI 可使用脱敏命令校验、查看和测试配置：
+
+```bash
+chub notification validate
+chub notification list
+chub notification test --target test
+```
+
+`test` 会真实发送固定测试消息。Chub 的 Codex 实时终端和快速交互 Codex 模式直接使用 `chub notification send --target <target> --message <text>`，不要再通过 `openclaw agent` 绕行；OpenClaw TUI 和微信入口使用 `chub_send_notification`。两种方式均可按需使用已配置人员别名或明确允许的 `@所有人`。
 
 ## 基础 LLM
 
@@ -131,6 +147,8 @@ Runner 不会自行启动或停止 Debug Chrome。飞书 Wiki Markdown 下载已
 
 项目资料列表和设计文档详情可直接通过 Chub 地址访问，便于阅读；页面内容不要求认证，因此文档不得包含 Token、Cookie、账号信息或其他本机秘密。归档状态管理仍需 Hub Token 或未被关闭的 Tailnet 可信访问，状态保存在 `data/project-documents.json`；首页只展示当前文档，全部列表可筛选当前和已归档文档。Chub 仍只适合部署在可信网络中。
 
+首页“项目文档”同时展示设计调研资料与最新已生效周报周期的“本周重点事项”、“本周周报”。每个周期在周期结束后的第一个周二、服务器本地时间 00:00 生效；在此之前继续展示上一周期，不在首页累积展示历史周报。周报只从 `data/weekly-reports/<周期>/output/` 下的固定文件名读取；文件尚未生成时显示“待生成”，生成后自动提供只读详情入口。周报列表和详情与设计文档一样，属于可信网络内公开只读内容，不要求认证；内容不得包含凭证、账号信息、本机秘密或其他不适合直接访问的信息。
+
 ### 设计文档管理
 
 README 是设计文档目录结构、状态和归档规则的维护入口；具体需求、方案和任务内容仍分别维护在对应文档中。
@@ -152,7 +170,7 @@ README 是设计文档目录结构、状态和归档规则的维护入口；具�
 
 ## 文档
 
-第三阶段（规划中）：
+第三阶段（首版已实现，持续维护）：
 
 - [第三阶段产品目标](docs/PRD_PHASE_3.md)
 - [第三阶段高层计划](docs/TASKS_PHASE_3.md)

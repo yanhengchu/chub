@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>设置 · {{ app_name }}</title>
+    {% include "partials/app_styles.html" %}
+    <script src="/static/settings.js" defer></script>
+  </head>
+  <body>
+    <main>
+      <section class="card settings-card standalone-list-card" aria-labelledby="settings-title">
+        <div class="card-heading-copy">
+          <p class="section-kicker">本机偏好</p>
+          <h2 id="settings-title">设置</h2>
+          <p class="section-description">调整当前浏览器上的界面使用方式。</p>
+        </div>
+
+        <section class="settings-section" aria-labelledby="quick-interaction-view-title">
+          <div class="settings-section-heading">
+            <h3 id="quick-interaction-view-title">快速交互视图</h3>
+            <p>选择从首页进入快速交互时使用的页面形式。</p>
+          </div>
+          <fieldset class="settings-options">
+            <legend class="visually-hidden">快速交互视图</legend>
+            <label class="settings-option is-selected">
+              <input type="radio" name="quick-interaction-view" value="task" checked>
+              <span class="settings-option-copy">
+                <span class="settings-option-heading">
+                  <strong>任务视图</strong>
+                  <span class="badge badge-success" data-setting-state>当前使用</span>
+                </span>
+                <span>以任务卡片展示提交内容、状态和执行结果。</span>
+              </span>
+            </label>
+            <label class="settings-option">
+              <input type="radio" name="quick-interaction-view" value="conversation">
+              <span class="settings-option-copy">
+                <span class="settings-option-heading">
+                  <strong>会话视图</strong>
+                  <span class="badge badge-success" data-setting-state hidden>当前使用</span>
+                </span>
+                <span>以消息流展示提交内容和执行结果。</span>
+              </span>
+            </label>
+          </fieldset>
+          <label class="settings-field" for="quick-interaction-page-size">
+            <span>
+              <strong>每页数量</strong>
+              <small>用于任务视图和会话视图的首次加载与继续加载。</small>
+            </span>
+            <select id="quick-interaction-page-size" name="quick-interaction-page-size">
+              <option value="5" selected>5 条</option>
+              <option value="10">10 条</option>
+            </select>
+          </label>
+          <p id="settings-message" class="message" aria-live="polite"></p>
+        </section>
+
+        <section class="settings-section" aria-labelledby="about-title">
+          <div class="settings-section-heading">
+            <h3 id="about-title">关于 Chub</h3>
+          </div>
+          <dl class="settings-meta">
+            <div>
+              <dt>版本</dt>
+              <dd>v{{ app_version }}</dd>
+            </div>
+          </dl>
+        </section>
+      </section>
+    </main>
+    <footer>设置仅影响当前浏览器，不会改变节点或任务数据。</footer>
+  </body>
+</html>

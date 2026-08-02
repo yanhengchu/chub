@@ -52,3 +52,11 @@ llm:
   max_tokens: 512
   max_concurrency: 2
   max_response_bytes: 1048576
+
+notifications:
+  enabled: true
+  registry_file: "~/.config/chub/notifications/registry.yaml"
+  secrets_dir: "~/.config/chub/notifications/secrets"
+  timeout_seconds: 5
+  max_message_bytes: 4000
+  dedup_ttl_seconds: 600

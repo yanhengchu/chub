@@ -12,6 +12,49 @@ function projectDocumentDate(value) {
 }
 
 function renderProjectDocuments(data) {
+  elements.weeklyReportsList.replaceChildren();
+  data.weekly_reports.forEach((item) => {
+    const card = document.createElement("article");
+    const main = document.createElement(item.available ? "a" : "div");
+    const copy = document.createElement("span");
+    const title = document.createElement("strong");
+    const summary = document.createElement("span");
+    const footer = document.createElement("div");
+    const meta = document.createElement("span");
+    const badge = document.createElement("span");
+    card.className = item.available
+      ? "design-document-item"
+      : "design-document-item design-document-item-unavailable";
+    main.className = "design-document-main";
+    if (item.available) {
+      main.href = `/weekly-reports/${encodeURIComponent(item.period)}/${encodeURIComponent(item.report_type)}`;
+    }
+    copy.className = "design-document-copy";
+    title.textContent = item.report_type === "focus" ? "本周重点事项" : "本周周报";
+    summary.textContent = `${item.period} · ${item.summary}`;
+    footer.className = "design-document-footer";
+    meta.className = "design-document-meta";
+    badge.className = item.available ? "badge badge-success" : "badge badge-muted";
+    badge.textContent = item.status;
+    copy.append(title, summary);
+    main.append(copy);
+    meta.append(badge);
+    if (item.updated_at) {
+      const time = document.createElement("time");
+      time.dateTime = item.updated_at;
+      time.textContent = projectDocumentDate(item.updated_at);
+      meta.append(time);
+    }
+    footer.append(meta);
+    card.append(main, footer);
+    elements.weeklyReportsList.append(card);
+  });
+  if (!data.weekly_reports.length) {
+    const empty = document.createElement("p");
+    empty.className = "empty-state";
+    empty.textContent = "暂无周报工作区。";
+    elements.weeklyReportsList.append(empty);
+  }
   elements.projectDocsList.replaceChildren();
   data.documents.forEach((item) => {
     const card = document.createElement("article");
@@ -53,7 +96,8 @@ function renderProjectDocuments(data) {
     empty.textContent = "暂无设计文档。";
     elements.projectDocsList.append(empty);
   }
-  elements.projectDocsCount.textContent = `${data.count} 份文档`;
+  const availableWeeklyReports = data.weekly_reports.filter((item) => item.available).length;
+  elements.projectDocsCount.textContent = `${data.count} 份设计资料 · ${availableWeeklyReports} 份周报可查看`;
 }
 
 async function archiveProjectDocument(button) {
@@ -108,4 +152,3 @@ elements.projectDocsList.addEventListener("click", (event) => {
     archiveProjectDocument(button);
   }
 });
-

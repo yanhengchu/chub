@@ -7,10 +7,36 @@ import pytest
 from app.application import create_app
 from app.codex.models import CodexSession
 from app.core.config import Settings
+import app.services.weekly_reports as weekly_report_service
+
+
+@pytest.fixture
+def weekly_reports_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Path:
+    root = tmp_path / "weekly-reports"
+    period = "2026-07-27至2026-07-31"
+    output = root / period / "output"
+    output.mkdir(parents=True)
+    (output / f"本周工作重点确认清单-{period}.md").write_text(
+        "# 本周工作重点确认清单\n\n## 重点\n\n- 版本发布",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(weekly_report_service, "WEEKLY_REPORTS_ROOT", root)
+    monkeypatch.setattr(
+        weekly_report_service,
+        "_today",
+        lambda: weekly_report_service.date(2026, 8, 4),
+    )
+    return root
 
 
 @pytest.mark.anyio
-async def test_home_page_is_public_and_contains_no_token(settings: Settings) -> None:
+async def test_home_page_is_public_and_contains_no_token(
+    settings: Settings,
+    weekly_reports_root: Path,
+) -> None:
     transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/")
@@ -72,6 +98,13 @@ async def test_home_page_is_public_and_contains_no_token(settings: Settings) -> 
     assert 'id="project-docs-count"' in response.text
     assert 'href="/automations"' in response.text
     assert 'id="design-documents-title"' in response.text
+    assert "项目文档" in response.text
+    assert 'id="weekly-reports-title"' in response.text
+    assert 'id="weekly-report-list"' in response.text
+    assert "本周重点事项" in response.text
+    assert "本周周报" in response.text
+    assert 'href="/weekly-reports/2026-07-27至2026-07-31/focus"' in response.text
+    assert "待生成" in response.text
     assert 'data-card-key="project-docs"' in response.text
     assert 'data-card-key="automations"' in response.text
     assert 'data-card-key="logs"' in response.text
@@ -83,8 +116,8 @@ async def test_home_page_is_public_and_contains_no_token(settings: Settings) -> 
     assert 'data-card-return-refresh="true"' not in openclaw_card
     assert "OpenClaw 方案调研" not in response.text
     assert "OpenClaw 与消息通道接入设计" in response.text
-    assert "部分实现，持续验收" in response.text
-    assert "份文档" in response.text
+    assert "已实现并验收，持续维护" in response.text
+    assert "份设计资料 · 1 份周报可查看" in response.text
     assert 'href="/project-docs/openclaw-research"' not in response.text
     assert 'href="/project-docs/openclaw-integration"' in response.text
     assert 'target="_blank"' not in response.text
@@ -94,6 +127,9 @@ async def test_home_page_is_public_and_contains_no_token(settings: Settings) -> 
     assert "维护检查" not in response.text
     assert 'id="restart-hub"' in response.text
     assert 'id="restart-dialog"' in response.text
+    assert 'id="site-settings"' in response.text
+    assert 'href="/settings" hidden' in response.text
+    assert f"v{settings.app.version}" not in response.text
     assert "确认重启" in response.text
     assert 'data-card-heading' in response.text
     assert 'data-card-content' in response.text
@@ -116,6 +152,46 @@ async def test_home_page_is_public_and_contains_no_token(settings: Settings) -> 
     assert 'id="status-details"' not in response.text
     assert "展开详情" not in response.text
     assert settings.security.token.get_secret_value() not in response.text
+
+
+@pytest.mark.anyio
+async def test_settings_page_supports_quick_interaction_view_preference(
+    settings: Settings,
+) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/settings")
+        script = await client.get("/static/settings.js")
+
+    assert response.status_code == 200
+    assert "设置 · Hub" in response.text
+    assert "快速交互视图" in response.text
+    assert 'value="task" checked' in response.text
+    assert "任务视图" in response.text
+    assert "当前使用" in response.text
+    assert 'value="conversation"' in response.text
+    assert "会话视图" in response.text
+    assert 'id="quick-interaction-page-size"' in response.text
+    assert '<option value="5" selected>5 条</option>' in response.text
+    assert '<option value="10">10 条</option>' in response.text
+    assert "尚未开放" not in response.text
+    assert f"v{settings.app.version}" in response.text
+    assert "返回首页" not in response.text
+    assert script.status_code == 200
+    assert "hub.quickInteractionView.v1" in script.text
+    assert "hub.quickInteractionPageSize.v1" in script.text
+    assert "localStorage.setItem" in script.text
+    assert "下次从首页进入快速交互时生效" in script.text
+    assert response.headers["content-security-policy"] == (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self'; "
+        "connect-src 'self'; "
+        "img-src 'self' data: blob:; "
+        "object-src 'none'; "
+        "base-uri 'none'; "
+        "frame-ancestors 'none'"
+    )
 
 
 @pytest.mark.anyio
@@ -217,6 +293,9 @@ async def test_web_assets_are_available(settings: Settings) -> None:
         text="\n".join(asset.text for asset in stylesheets),
     )
     assert "innerHTML" not in dashboard_script
+    assert 'siteSettings: document.querySelector("#site-settings")' in dashboard_script
+    assert "elements.siteSettings.hidden = true" in dashboard_script
+    assert "elements.siteSettings.hidden = false" in dashboard_script
     assert "/api/automations/browser/" in dashboard_script
     assert "/api/openclaw/status" in dashboard_script
     assert "/api/openclaw/weixin/login" in dashboard_script
@@ -277,6 +356,9 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert 'quickInteraction.textContent = "快速交互"' not in script.text
     assert 'interactionHistory.textContent = "交互记录"' not in script.text
     assert "CODEX_ENTRY_MODE_KEY" in script.text
+    assert "QUICK_INTERACTION_VIEW_KEY" in script.text
+    assert "quickInteractionUrl" in script.text
+    assert '`${base}/conversation`' in script.text
     assert "openCodexEntryDialog" not in script.text
     assert "toggleCodexEntryMode" in script.text
     assert "updateCodexEntryButton" in script.text
@@ -382,6 +464,7 @@ async def test_quick_interaction_history_page_is_available(settings: Settings) -
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         page = await client.get("/codex/session-1/quick-interactions")
+        core_script = await client.get("/static/quick_interactions_core.js")
         script = await client.get("/static/quick_interactions.js")
         stylesheet_assets = [
             await client.get("/static/css/components.css"),
@@ -396,10 +479,18 @@ async def test_quick_interaction_history_page_is_available(settings: Settings) -
     assert 'data-session-id="session-1"' in page.text
     assert "返回首页" not in page.text
     assert script.status_code == 200
-    assert "/quick-interactions" in script.text
+    assert core_script.status_code == 200
+    assert page.text.index("/static/quick_interactions_core.js") < page.text.index(
+        "/static/quick_interactions.js"
+    )
+    assert "root.QuickInteractionCore" in core_script.text
+    assert "submissionBlockReason" in core_script.text
+    assert "createClient" in core_script.text
+    assert "quickInteractionClient" in script.text
+    assert "/quick-interactions" in core_script.text
     assert "task.prompt" in script.text
     assert "quick-interaction-pin" in script.text
-    assert "/pin" in script.text
+    assert "/pin" in core_script.text
     assert 'id="quick-interaction-form"' in page.text
     assert 'id="quick-interaction-prompt"' in page.text
     assert 'id="quick-interaction-submit"' in page.text
@@ -408,21 +499,21 @@ async def test_quick_interaction_history_page_is_available(settings: Settings) -
     assert page.text.index('id="quick-interaction-prompt"') < page.text.index(
         'id="quick-interaction-submit"'
     )
-    assert "confirm_stop_unknown_terminal" in script.text
+    assert "confirm_stop_unknown_terminal" in core_script.text
     assert "点击执行会先停止当前实时终端" in page.text
     assert "请确认影响后再次点击执行" in script.text
     assert "正在提交快速交互" not in script.text
     assert "任务仍在后台执行" not in script.text
     assert 'id="quick-interaction-load-more"' in page.text
-    assert "PAGE_SIZE = 5" in script.text
-    assert "?offset=${offset}&limit=${PAGE_SIZE}" in script.text
+    assert "PAGE_SIZE = readQuickInteractionPageSize()" in script.text
+    assert "quickInteractionClient.listTasks({ offset, limit: PAGE_SIZE })" in script.text
     assert "加载更多" in page.text
     assert "let loadQueue = Promise.resolve()" in script.text
     assert "appendPending" in script.text
     assert "Promise.allSettled" in script.text
     assert "renderSessionLoadError" in script.text
     assert 'id="quick-interaction-session-meta"' not in page.text
-    assert 'request("/api/codex/sessions")' in script.text
+    assert "quickInteractionClient.loadSession()" in script.text
     assert "快速交互执行中" not in script.text
     assert "sessionMeta" not in script.text
     assert ".quick-interaction-page-heading h1" in stylesheet.text
@@ -440,7 +531,9 @@ async def test_quick_interaction_history_page_is_available(settings: Settings) -
     ) < submit_flow.index("await load()")
     assert "if (!composerStateInitialized)" in script.text
     assert "session.llm_interaction_running === true" in script.text
-    assert "|| session?.llm_interaction_running === true" in script.text
+    assert "shouldPoll" in core_script.text
+    assert "pollDelay" in core_script.text
+    assert "loadErrors" in script.text
     assert 'form.classList.toggle("is-collapsed", collapsed)' in script.text
     assert 'composerHeading.setAttribute("aria-expanded", String(!collapsed))' in script.text
     assert "const anchor = collapsed ? visibleHistoryAnchor() : null;" in script.text
@@ -459,6 +552,53 @@ async def test_quick_interaction_history_page_is_available(settings: Settings) -
     assert "meta.append(engine, time, pinButton)" in script.text
     assert 'engine: selectedEngine' in script.text
     assert ".quick-interaction-engine" in stylesheet.text
+
+
+@pytest.mark.anyio
+async def test_quick_interaction_conversation_page_is_available(
+    settings: Settings,
+) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        page = await client.get(
+            "/codex/session-1/quick-interactions/conversation"
+        )
+        script = await client.get("/static/quick_interaction_conversation.js")
+        stylesheet = await client.get("/static/css/components.css")
+
+    assert page.status_code == 200
+    assert 'data-session-id="session-1"' in page.text
+    assert "Session Conversation" not in page.text
+    assert 'class="conversation-header"' not in page.text
+    assert 'id="conversation-scroll"' in page.text
+    assert 'id="conversation-feed"' in page.text
+    assert 'id="conversation-load-earlier"' in page.text
+    assert 'id="conversation-jump-latest"' in page.text
+    assert 'id="conversation-form"' in page.text
+    assert 'id="conversation-engine"' in page.text
+    assert page.text.index("/static/quick_interactions_core.js") < page.text.index(
+        "/static/quick_interaction_conversation.js"
+    )
+    assert script.status_code == 200
+    assert 'order: "timeline"' in script.text
+    assert "CONVERSATION_PAGE_SIZE = readConversationPageSize()" in script.text
+    assert "before: { createdAt: oldest.created_at, id: oldest.id }" in script.text
+    assert "conversationLoadQueue.then(performLoadEarlierConversation)" in script.text
+    assert "conversationPollDelay(conversationPollFailureCount)" in script.text
+    assert "resizeConversationPrompt" in script.text
+    assert "isConversationNearBottom" in script.text
+    assert 'event.key === "Enter"' in script.text
+    assert "if (!conversationSubmit.disabled)" in script.text
+    assert "canSubmitConversation" in script.text
+    assert "conversationEngine.disabled = true" in script.text
+    assert "conversationScroll.scrollTop" in script.text
+    assert "conversationClient.submitTask" in script.text
+    assert "conversationClient.setPinned" in script.text
+    assert "textContent" in script.text
+    assert "innerHTML" not in script.text
+    assert ".conversation-page" in stylesheet.text
+    assert ".conversation-message-user" in stylesheet.text
+    assert ".conversation-composer" in stylesheet.text
 
 
 @pytest.mark.anyio
@@ -530,7 +670,10 @@ async def test_design_document_pages_render_markdown(settings: Settings) -> None
 
 
 @pytest.mark.anyio
-async def test_project_document_card_api_is_protected(settings: Settings) -> None:
+async def test_project_document_card_api_is_protected(
+    settings: Settings,
+    weekly_reports_root: Path,
+) -> None:
     transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         unauthorized = await client.get("/api/project-docs")
@@ -545,12 +688,40 @@ async def test_project_document_card_api_is_protected(settings: Settings) -> Non
     assert response.status_code == 200
     data = response.json()["data"]
     assert data["count"] >= 1
+    assert [item["report_type"] for item in data["weekly_reports"]] == [
+        "focus",
+        "report",
+    ]
+    assert data["weekly_reports"][0]["available"] is True
+    assert data["weekly_reports"][1]["available"] is False
     assert {
         document["id"] for document in data["documents"]
     } >= {"openclaw-integration"}
     assert "openclaw-research" not in {
         document["id"] for document in data["documents"]
     }
+
+
+@pytest.mark.anyio
+async def test_weekly_report_detail_is_public_and_missing_report_is_404(
+    settings: Settings,
+    weekly_reports_root: Path,
+) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        detail = await client.get(
+            "/weekly-reports/2026-07-27%E8%87%B32026-07-31/focus"
+        )
+        pending = await client.get(
+            "/weekly-reports/2026-07-27%E8%87%B32026-07-31/report"
+        )
+        unsafe = await client.get("/weekly-reports/not-a-period/focus")
+
+    assert detail.status_code == 200
+    assert '<article class="markdown-body">' in detail.text
+    assert "本周工作重点确认清单" in detail.text
+    assert pending.status_code == 404
+    assert unsafe.status_code == 404
 
 
 @pytest.mark.anyio

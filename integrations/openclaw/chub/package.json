@@ -10,8 +10,8 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "plugin:build": "npm run build && openclaw plugins build --entry ./dist/index.js",
-    "plugin:validate": "npm run build && openclaw plugins validate --entry ./dist/index.js",
+    "plugin:build": "npm run build",
+    "plugin:validate": "npm run build && node --input-type=module -e \"const { default: plugin } = await import('./dist/index.js'); if (plugin.id !== 'chub' || typeof plugin.register !== 'function') process.exit(1)\"",
     "test": "vitest run"
   },
   "dependencies": {

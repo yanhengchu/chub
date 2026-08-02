@@ -8,6 +8,7 @@ from app.core.config import PROJECT_ROOT, LogsConfig
 
 LOG_FORMAT = "[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s"
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+SENSITIVE_HTTP_LOGGERS = ("httpx", "httpcore")
 
 
 def configure_logging(config: LogsConfig) -> None:
@@ -33,6 +34,9 @@ def configure_logging(config: LogsConfig) -> None:
 
     root_logger.addHandler(console_handler)
     root_logger.addHandler(file_handler)
+
+    for logger_name in SENSITIVE_HTTP_LOGGERS:
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
 
     operation_logger = logging.getLogger("hub.operations")
     for handler in operation_logger.handlers:

@@ -1,8 +1,18 @@
 # Chub OpenClaw Plugin
 
 Integrates OpenClaw with Chub through small, explicitly allowlisted tools that
-share one fixed Tailnet client. The current release only provides the optional,
-read-only `chub_get_status` tool.
+share one fixed Tailnet client. The plugin currently provides the optional
+`chub_get_status` and `chub_send_notification` tools.
+
+Notification requests containing a `消息内容：` marker use verbatim mode. The
+plugin captures the pre-model text by run ID and replaces the model-generated
+tool argument before execution. Enable the required conversation hook access:
+
+```bash
+openclaw config set \
+  plugins.entries.chub.hooks.allowConversationAccess true \
+  --strict-json
+```
 
 Build and validate:
 

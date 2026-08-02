@@ -16,6 +16,7 @@ from app.api.health import router as health_router
 from app.api.automations import router as automations_router
 from app.api.logs import router as logs_router
 from app.api.maintenance import router as maintenance_router
+from app.api.notifications import router as notifications_router
 from app.api.openclaw import router as openclaw_router
 from app.api.project_documents import router as project_documents_router
 from app.api.status import router as status_router
@@ -40,6 +41,7 @@ from app.core.response import (
 )
 from app.services.openclaw import OpenClawManager
 from app.llm import LlmService
+from app.notifications import NotificationService
 from app.web.routes import STATIC_DIR, router as web_router
 
 
@@ -52,6 +54,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             or request.url.path.startswith("/static/")
             or request.url.path.startswith("/project-docs")
             or request.url.path.startswith("/automations")
+            or request.url.path == "/settings"
         ):
             response.headers["Content-Security-Policy"] = (
                 "default-src 'self'; "
@@ -130,6 +133,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         timeout_seconds=resolved_settings.codex_pty.quick_interaction_timeout_seconds,
     )
     openclaw_manager = OpenClawManager()
+    notification_service = NotificationService(resolved_settings.notifications)
 
     @asynccontextmanager
     async def lifespan(_application: FastAPI):
@@ -138,6 +142,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finally:
             await quick_interactions.aclose()
             await llm_service.close()
+            await notification_service.close()
             codex_pty_manager.close()
             openclaw_manager.close()
 
@@ -162,6 +167,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.automation_manager = AutomationManager(resolved_settings)
     application.state.openclaw_manager = openclaw_manager
     application.state.llm_service = llm_service
+    application.state.notification_service = notification_service
     application.add_middleware(SecurityHeadersMiddleware)
     application.add_exception_handler(ApiError, api_error_handler)
     application.add_exception_handler(
@@ -174,6 +180,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(automations_router)
     application.include_router(logs_router)
     application.include_router(maintenance_router)
+    application.include_router(notifications_router)
     application.include_router(openclaw_router)
     application.include_router(project_documents_router)
     application.include_router(status_router)

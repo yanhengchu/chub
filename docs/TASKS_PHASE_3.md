@@ -1,6 +1,6 @@
 # Chub 第三阶段高层计划
 
-> 状态：OpenClaw、微信 ClawBot、OpenClaw 外部模型和 Chub 基础 LLM 已完成 MacBook、Ubuntu 首轮验收。当前正在进入 Chub 受限能力与消息通道接入。
+> 状态：第三阶段当前首版能力已完成主要实现与验收，进入持续维护。OpenClaw、微信 ClawBot、外部模型、Chub 基础 LLM、权限基线和 Chub 状态 Tool 已完成 MacBook、Ubuntu 验收；飞书通知 Service、API、OpenClaw Tool、原文保护、本机 `@所有人` 和 Webhook 日志保护已完成验收并收尾。指定人员提醒和连续电脑交互保留为后续按需扩展。
 
 ## 1. M1：边界与场景设计
 
@@ -25,21 +25,26 @@
 - [x] OpenClaw 维护操作完成后核验 Gateway 最终状态，并记录完整操作生命周期。
 - [x] 完成 OpenClaw 卡片、Tailscale Serve HTTPS 入口和返回状态缓存的 MacBook 实机验收。
 - [x] 完成 OpenClaw 卡片的 Ubuntu 实机验收。
-- [ ] 确定 OpenClaw 调用 Chub 的连接方式。
-- [ ] 提供最小、固定、只读的 Chub 能力适配。
-- [ ] 验证认证、超时、错误反馈和最终状态语义。
-- [ ] 确认接入可独立关闭，不影响现有节点能力。
+- [x] 确定 OpenClaw 调用 Chub 的固定 Tailnet 连接方式。
+- [x] 提供最小、固定、只读的 `chub_get_status` 能力适配。
+- [x] 实现认证、超时、超大响应和无效响应的受控错误反馈；专项实机故障验收暂不要求。
+- [x] 确认插件接入可独立关闭，不影响现有节点能力。
 
 ## 3. M3：飞书单向通知与微信双向通道
 
-- [ ] 确认飞书群机器人 Webhook 的消息格式、地址管理、限流和失败重试条件。
-- [ ] 打通飞书群机器人 Webhook 单向通知与结果推送。
+- [x] 确认飞书群机器人 Webhook 的消息格式、Secret 管理、大小限制和失败语义。
+- [x] 实现固定目标注册表、飞书 Provider、短期幂等和单向通知 API。
+- [x] 在统一 `chub` 插件中增加 `chub_send_notification`，完成 MacBook 真实 Agent 普通消息调用。
+- [x] 微信与 TUI 接入统一的 `chub_send_notification` 原文保护链路，当前首版不再单列重复验收。
+- [x] 在用户明确要求时完成 `@所有人` 真实验收。
+- [ ] 有 Open ID 后验收指定人员提醒。
+- [x] 抑制 `httpx/httpcore` INFO 请求日志，避免完整飞书 Webhook URL 进入 Hub 日志。
 - [x] 确认微信 ClawBot 的基础双向接口、Owner 认证、会话保持和网络条件。
 - [x] 打通 ClawBot 与 OpenClaw 的基础双向消息和普通结果返回。
 - [x] 在 MacBook 与 Ubuntu 完成插件安装、扫码登录、发送者配对、Owner 授权、Gateway 重启恢复和普通消息收发验收。
 - [x] 在 Chub 首页实现受控微信绑定会话、二维码展示、数字验证码提交和操作互斥。
 - [x] 在 MacBook 通过 Chub 首页完成真实二维码生成、扫码绑定、状态恢复和取消验收。
-- [ ] 在 Ubuntu 通过 Chub 首页完成二维码绑定流程验收。
+- [x] 在 Ubuntu 通过 Chub 首页完成二维码绑定流程验收。
 - [ ] 稳定 ClawBot 中的 Tool Calling 进度、最终结果和占位回复失败语义。
 - [ ] 验证 ClawBot 状态检查、白名单任务执行和结果查询。
 - [ ] 实现身份映射、重复消息、超时、失败反馈和高风险操作强制确认。
@@ -59,7 +64,7 @@
 
 ## 5. M5：端到端与安全验收
 
-- [ ] 完成飞书群机器人 Webhook 单向通知链路。
+- [x] 完成飞书群机器人 Webhook 普通消息单向通知链路。
 - [ ] 完成“微信 ClawBot ↔ OpenClaw/共享基础 LLM ↔ Chub/目标电脑”双向交互链路。
 - [ ] 验证请求、处理中状态、最终结果和操作日志可追踪。
 - [ ] 验证重复请求、超时、断链和服务不可用路径。
@@ -68,4 +73,4 @@
 
 ## 6. 当前任务
 
-OpenClaw 与 Chub 共享基础 LLM 的双端基线已经可用：OpenClaw 保存 Provider、模型和 SecretRef，Chub 只读复用配置并独立请求供应商 API。下一步优先处理 OpenClaw 自身的工具执行、沙箱、提权和审批权限，再确定 OpenClaw 调用 Chub 的最小 Tool 集合。Chub 默认启用可显式关闭的轻量 Tailscale 免 Token 模式：当前个人 Tailnet 只加入维护者本人控制的设备，这些设备整体视为可信；服务直接监听本机 Tailscale IP，并仅按真实连接来源是否属于 Tailnet 判断。浏览器保留已有 Hub Token 作为 Tailscale 验证失败时的登录回退，回退认证失败后再清除。该模式不提供用户身份体系，也不替代能力白名单和高风险确认；如果 Tailnet 的设备信任前提变化，需要重新评估授权边界。任务白名单、风险等级和各类连接参数在对应功能实施时提供并形成当次 PoC 验收标准。
+OpenClaw 与 Chub 共享基础 LLM 的双端基线已经可用；OpenClaw 权限基线和 `chub_get_status` 双平台验收已经收尾。飞书通知使用本机固定 target 注册表与独立 Secret 文件，Chub 提供受保护发送 API，统一 `chub` 插件提供 `chub_send_notification`；真实 Agent 原文调用、本机显式 `@所有人` 和 Webhook URL 新日志保护均已验收，飞书通知首版结束。指定人员提醒等待提供 Open ID，Chub 自动事件路由和连续电脑交互均作为后续独立需求，不阻塞当前首版。
