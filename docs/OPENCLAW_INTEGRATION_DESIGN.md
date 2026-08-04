@@ -256,7 +256,7 @@ llm:
   model: null
 ```
 
-Chub 支持读取文件型 `singleValue` SecretRef，并通过 OpenAI 兼容的 `/chat/completions` 接口调用模型。快速交互输入区可在 `Codex CLI` 和 `Amazon Bedrock API` 之间切换；选择只在当前页面生命周期内有效，重新进入默认恢复为 Codex CLI。任务视图和会话视图共享交互记录并标识实际使用的执行入口；每页可选 5 条或 10 条，默认 5 条。会话视图只改变 UI 组织方式，Bedrock 每次提交仍是独立调用，不自动获得前序任务上下文。
+Chub 支持读取文件型 `singleValue` SecretRef，并通过 OpenAI 兼容的 `/chat/completions` 接口调用模型。快速交互输入区可在 `Codex CLI` 和 `Amazon Bedrock API` 之间切换；选择只在当前页面生命周期内有效，重新进入默认恢复为 Codex CLI。交互记录会标识实际使用的执行入口；每次可加载 5 条或 10 条，默认 5 条。消息时间线只改变 UI 组织方式，Bedrock 每次提交仍是独立调用，不自动获得前序任务上下文。
 
 快速交互完成通知采用独立出站链路：`Chub 快速交互 → openclaw message send → 微信 ClawBot → 固定微信收件人`。它不是微信请求调用设备能力的反向链路，不运行 `openclaw agent`，也不允许通过通知触发新的 Chub 操作。Chub 只在任务成功、失败或超时后异步发送有界结果摘要；通知状态单独记录为发送中、已发送、失败或跳过，任何通知故障都不改变任务最终状态。
 

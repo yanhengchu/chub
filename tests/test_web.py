@@ -71,14 +71,23 @@ async def test_home_page_is_public_and_contains_no_token(
     assert 'id="openclaw-weixin-dialog"' in response.text
     assert 'id="openclaw-weixin-qr"' in response.text
     assert 'id="openclaw-weixin-verify-form"' in response.text
-    assert 'id="openclaw-access-url"' in response.text
     assert 'id="openclaw-access-open"' in response.text
-    assert 'id="openclaw-access-unavailable"' in response.text
-    assert "远程访问未启用" in response.text
+    assert 'id="openclaw-access-url"' not in response.text
+    assert 'id="openclaw-access-unavailable"' not in response.text
+    assert "远程访问未启用" not in response.text
     assert 'data-card-key="openclaw"' in response.text
     assert 'class="openclaw-status-panel"' in response.text
-    assert 'id="openclaw-channels"' in response.text
-    assert 'id="openclaw-owner"' in response.text
+    assert "网关状态" in response.text
+    assert "消息通道" in response.text
+    assert "访问入口" in response.text
+    assert 'class="openclaw-status-row openclaw-access"' in response.text
+    assert "微信通道" not in response.text
+    assert 'id="openclaw-channels" class="badge badge-muted"' in response.text
+    assert 'id="openclaw-owner"' not in response.text
+    assert 'id="openclaw-version"' not in response.text
+    assert 'id="openclaw-service"' not in response.text
+    assert 'id="openclaw-bind"' not in response.text
+    assert 'id="openclaw-checked-at"' not in response.text
     assert 'id="automation-title"' in response.text
     assert 'id="automation-list"' in response.text
     assert 'id="automation-browser-control"' in response.text
@@ -100,9 +109,15 @@ async def test_home_page_is_public_and_contains_no_token(
     assert 'id="design-documents-title"' in response.text
     assert "项目文档" in response.text
     assert 'id="weekly-reports-title"' in response.text
+    assert "本周周报 · 2026-07-27至2026-07-31" in response.text
     assert 'id="weekly-report-list"' in response.text
     assert "本周重点事项" in response.text
     assert "本周周报" in response.text
+    assert "重点范围与取舍确认" in response.text
+    assert "各端进展汇总" in response.text
+    assert 'class="weekly-report-heading"' in response.text
+    assert 'class="weekly-report-summary"' in response.text
+    assert "2026-07-27至2026-07-31 · 重点范围与取舍确认" not in response.text
     assert 'href="/weekly-reports/2026-07-27至2026-07-31/focus"' in response.text
     assert "待生成" in response.text
     assert 'data-card-key="project-docs"' in response.text
@@ -155,7 +170,7 @@ async def test_home_page_is_public_and_contains_no_token(
 
 
 @pytest.mark.anyio
-async def test_settings_page_supports_quick_interaction_view_preference(
+async def test_settings_page_supports_quick_interaction_page_size_preference(
     settings: Settings,
 ) -> None:
     transport = httpx.ASGITransport(app=create_app(settings))
@@ -165,12 +180,10 @@ async def test_settings_page_supports_quick_interaction_view_preference(
 
     assert response.status_code == 200
     assert "设置 · Hub" in response.text
-    assert "快速交互视图" in response.text
-    assert 'value="task" checked' in response.text
-    assert "任务视图" in response.text
-    assert "当前使用" in response.text
-    assert 'value="conversation"' in response.text
-    assert "会话视图" in response.text
+    assert "快速交互" in response.text
+    assert "调整会话历史记录的加载方式。" in response.text
+    assert 'name="quick-interaction-view"' not in response.text
+    assert "任务视图" not in response.text
     assert 'id="quick-interaction-page-size"' in response.text
     assert '<option value="5" selected>5 条</option>' in response.text
     assert '<option value="10">10 条</option>' in response.text
@@ -178,10 +191,10 @@ async def test_settings_page_supports_quick_interaction_view_preference(
     assert f"v{settings.app.version}" in response.text
     assert "返回首页" not in response.text
     assert script.status_code == 200
-    assert "hub.quickInteractionView.v1" in script.text
+    assert "hub.quickInteractionView.v1" not in script.text
     assert "hub.quickInteractionPageSize.v1" in script.text
     assert "localStorage.setItem" in script.text
-    assert "下次从首页进入快速交互时生效" in script.text
+    assert "下次进入快速交互时生效" in script.text
     assert response.headers["content-security-policy"] == (
         "default-src 'self'; "
         "script-src 'self'; "
@@ -302,6 +315,8 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "/api/openclaw/${action}" in dashboard_script
     assert "OPENCLAW_STATUS_CACHE_KEY" in dashboard_script
     assert "restoreOpenClawCache" in dashboard_script
+    assert 'data.owner_state === "not_configured"' in dashboard_script
+    assert 'data.owner_state === "unavailable"' in dashboard_script
     assert 'dashboardNavigationEntry?.type === "back_forward"' in dashboard_script
     assert "if (dashboardIsHistoryReturn && openclawCacheRestored)" in dashboard_script
     assert "cardLoads.push(loadOpenClawWeixinStatus())" in dashboard_script
@@ -321,6 +336,7 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "await loadAutomations();" in browser_control_error
     assert "/api/project-docs" in dashboard_script
     assert "loadProjectDocuments" in dashboard_script
+    assert 'document.createElement("time")' in dashboard_script
     assert "正在刷新文档列表" not in dashboard_script
     assert "文档列表已更新" not in dashboard_script
     assert "sessionStorage" in dashboard_script
@@ -356,9 +372,9 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert 'quickInteraction.textContent = "快速交互"' not in script.text
     assert 'interactionHistory.textContent = "交互记录"' not in script.text
     assert "CODEX_ENTRY_MODE_KEY" in script.text
-    assert "QUICK_INTERACTION_VIEW_KEY" in script.text
+    assert "QUICK_INTERACTION_VIEW_KEY" not in script.text
     assert "quickInteractionUrl" in script.text
-    assert '`${base}/conversation`' in script.text
+    assert "quick-interactions/conversation" in script.text
     assert "openCodexEntryDialog" not in script.text
     assert "toggleCodexEntryMode" in script.text
     assert "updateCodexEntryButton" in script.text
@@ -445,7 +461,7 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert ".logs-card" in stylesheet.text
     assert ".session-path" in stylesheet.text
     assert ".session-actions" in stylesheet.text
-    assert ".quick-interaction-history" in stylesheet.text
+    assert ".quick-interaction-history" not in stylesheet.text
     assert "grid-template-columns: minmax(0, 1fr) auto;" in stylesheet.text
     assert "grid-template-columns: 1fr;" in stylesheet.text
     assert "align-content: start" in stylesheet.text
@@ -459,113 +475,19 @@ async def test_web_assets_are_available(settings: Settings) -> None:
 
 
 @pytest.mark.anyio
-async def test_quick_interaction_history_page_is_available(settings: Settings) -> None:
-    app = create_app(settings)
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        page = await client.get("/codex/session-1/quick-interactions")
-        core_script = await client.get("/static/quick_interactions_core.js")
-        script = await client.get("/static/quick_interactions.js")
-        stylesheet_assets = [
-            await client.get("/static/css/components.css"),
-            await client.get("/static/css/responsive.css"),
-        ]
-
-    stylesheet = MagicMock(
-        text="\n".join(asset.text for asset in stylesheet_assets),
-    )
-
-    assert page.status_code == 200
-    assert 'data-session-id="session-1"' in page.text
-    assert "返回首页" not in page.text
-    assert script.status_code == 200
-    assert core_script.status_code == 200
-    assert page.text.index("/static/quick_interactions_core.js") < page.text.index(
-        "/static/quick_interactions.js"
-    )
-    assert "root.QuickInteractionCore" in core_script.text
-    assert "submissionBlockReason" in core_script.text
-    assert "createClient" in core_script.text
-    assert "quickInteractionClient" in script.text
-    assert "/quick-interactions" in core_script.text
-    assert "task.prompt" in script.text
-    assert "quick-interaction-pin" in script.text
-    assert "/pin" in core_script.text
-    assert 'id="quick-interaction-form"' in page.text
-    assert 'id="quick-interaction-prompt"' in page.text
-    assert 'id="quick-interaction-submit"' in page.text
-    assert 'class="quick-interaction-composer-actions"' in page.text
-    assert 'id="quick-interaction-composer-body"' in page.text
-    assert page.text.index('id="quick-interaction-prompt"') < page.text.index(
-        'id="quick-interaction-submit"'
-    )
-    assert "confirm_stop_unknown_terminal" in core_script.text
-    assert "点击执行会先停止当前实时终端" not in page.text
-    assert "请确认影响后再次点击执行" in script.text
-    assert "正在提交快速交互" not in script.text
-    assert "任务仍在后台执行" not in script.text
-    assert 'id="quick-interaction-load-more"' in page.text
-    assert "PAGE_SIZE = readQuickInteractionPageSize()" in script.text
-    assert "quickInteractionClient.listTasks({ offset, limit: PAGE_SIZE })" in script.text
-    assert "加载更多" in page.text
-    assert "let loadQueue = Promise.resolve()" in script.text
-    assert "appendPending" in script.text
-    assert "Promise.allSettled" in script.text
-    assert "renderSessionLoadError" in script.text
-    assert 'id="quick-interaction-session-meta"' not in page.text
-    assert "quickInteractionClient.loadSession()" in script.text
-    assert "快速交互执行中" not in script.text
-    assert "sessionMeta" not in script.text
-    assert ".quick-interaction-page-heading h1" in stylesheet.text
-    assert "item.dataset.taskId = task.id" in script.text
-    assert "item.dataset.taskSignature === signature" in script.text
-    assert "history.replaceChildren();" not in script.text
-    assert "setComposerCollapsed(true)" in script.text
-    assert "waitForComposerCollapse()" in script.text
-    assert "COMPOSER_COLLAPSE_ANIMATION_MS = 320" in script.text
-    assert "COMPOSER_COLLAPSE_FALLBACK_MS = 380" in script.text
-    assert "await load();" in script.text
-    submit_flow = script.text[script.text.index('form.addEventListener("submit"'):]
-    assert submit_flow.index("setComposerCollapsed(true)") < submit_flow.index(
-        "await waitForComposerCollapse()"
-    ) < submit_flow.index("await load()")
-    assert "if (!composerStateInitialized)" in script.text
-    assert "session.llm_interaction_running === true" in script.text
-    assert "shouldPoll" in core_script.text
-    assert "pollDelay" in core_script.text
-    assert "loadErrors" in script.text
-    assert 'form.classList.toggle("is-collapsed", collapsed)' in script.text
-    assert 'composerHeading.setAttribute("aria-expanded", String(!collapsed))' in script.text
-    assert "const anchor = collapsed ? visibleHistoryAnchor() : null;" in script.text
-    assert "window.requestAnimationFrame(preserveAnchor)" in script.text
-    assert ".quick-interaction-composer.is-collapsed" in stylesheet.text
-    assert "prefers-reduced-motion: reduce" in stylesheet.text
-    assert "await loadSession()" in script.text
-    assert 'id="quick-interaction-engine"' in page.text
-    assert "Amazon Bedrock API" in script.text
-    assert 'let selectedEngine = "codex_cli"' in script.text
-    assert 'setEngine("codex_cli")' in script.text
-    assert 'window.addEventListener("pageshow"' in script.text
-    assert "task.engine" in script.text
-    assert "task.provider" in script.text
-    assert "task.model" in script.text
-    assert "meta.append(engine, time, pinButton)" in script.text
-    assert 'engine: selectedEngine' in script.text
-    assert ".quick-interaction-engine" in stylesheet.text
-
-
-@pytest.mark.anyio
 async def test_quick_interaction_conversation_page_is_available(
     settings: Settings,
 ) -> None:
     transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        removed_page = await client.get("/codex/session-1/quick-interactions")
         page = await client.get(
             "/codex/session-1/quick-interactions/conversation"
         )
         script = await client.get("/static/quick_interaction_conversation.js")
         stylesheet = await client.get("/static/css/components.css")
 
+    assert removed_page.status_code == 404
     assert page.status_code == 200
     assert 'data-session-id="session-1"' in page.text
     assert "Session Conversation" not in page.text

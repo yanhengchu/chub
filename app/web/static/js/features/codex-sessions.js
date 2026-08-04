@@ -2,7 +2,6 @@
 
 const CODEX_CARD_CACHE_KEY = "hub.codexCardCache";
 const CODEX_ENTRY_MODE_KEY = "hub.codexEntryMode.v1";
-const QUICK_INTERACTION_VIEW_KEY = "hub.quickInteractionView.v1";
 const CODEX_PERMISSION_OPTIONS = [
   ["ask", "Ask for approval", "在当前工作区操作，越界时由你确认。"],
   ["auto-review", "Approve for me", "保持工作区边界，由 Codex 自动审核越界请求。"],
@@ -274,21 +273,8 @@ function codexEntryLabel(mode) {
   return mode === "quick" ? "快速交互" : "实时终端";
 }
 
-function quickInteractionView() {
-  try {
-    return localStorage.getItem(QUICK_INTERACTION_VIEW_KEY) === "conversation"
-      ? "conversation"
-      : "task";
-  } catch (_error) {
-    return "task";
-  }
-}
-
 function quickInteractionUrl(sessionId) {
-  const base = `/codex/${encodeURIComponent(sessionId)}/quick-interactions`;
-  return quickInteractionView() === "conversation"
-    ? `${base}/conversation`
-    : base;
+  return `/codex/${encodeURIComponent(sessionId)}/quick-interactions/conversation`;
 }
 
 function updateCodexEntryButton(session, trigger, mode) {

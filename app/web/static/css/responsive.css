@@ -4,10 +4,6 @@
     min-height: 36px;
   }
 
-  .settings-option-heading {
-    align-items: flex-start;
-  }
-
   .token-row,
   .result-field {
     grid-template-columns: 1fr;
@@ -93,26 +89,6 @@
     flex-wrap: wrap;
   }
 
-  .quick-interaction-composer-actions {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-
-  .quick-interaction-composer-actions > button {
-    width: auto;
-  }
-
-  .quick-interaction-engine {
-    min-width: 0;
-    margin-right: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .quick-interaction-pin {
-    min-height: 40px;
-  }
-
   .conversation-page {
     width: 100%;
   }
@@ -140,10 +116,6 @@
     margin-right: 0;
     overflow: hidden;
     text-overflow: ellipsis;
-  }
-
-  .openclaw-status-list {
-    grid-template-columns: 1fr;
   }
 
   .openclaw-actions {

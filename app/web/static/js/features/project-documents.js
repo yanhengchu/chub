@@ -12,15 +12,17 @@ function projectDocumentDate(value) {
 }
 
 function renderProjectDocuments(data) {
+  elements.weeklyReportsTitle.textContent = data.weekly_reports.length
+    ? `本周周报 · ${data.weekly_reports[0].period}`
+    : "本周周报";
   elements.weeklyReportsList.replaceChildren();
   data.weekly_reports.forEach((item) => {
     const card = document.createElement("article");
     const main = document.createElement(item.available ? "a" : "div");
     const copy = document.createElement("span");
+    const heading = document.createElement("span");
     const title = document.createElement("strong");
     const summary = document.createElement("span");
-    const footer = document.createElement("div");
-    const meta = document.createElement("span");
     const badge = document.createElement("span");
     card.className = item.available
       ? "design-document-item"
@@ -29,24 +31,24 @@ function renderProjectDocuments(data) {
     if (item.available) {
       main.href = `/weekly-reports/${encodeURIComponent(item.period)}/${encodeURIComponent(item.report_type)}`;
     }
-    copy.className = "design-document-copy";
+    copy.className = "weekly-report-copy";
+    heading.className = "weekly-report-heading";
     title.textContent = item.report_type === "focus" ? "本周重点事项" : "本周周报";
-    summary.textContent = `${item.period} · ${item.summary}`;
-    footer.className = "design-document-footer";
-    meta.className = "design-document-meta";
-    badge.className = item.available ? "badge badge-success" : "badge badge-muted";
-    badge.textContent = item.status;
-    copy.append(title, summary);
-    main.append(copy);
-    meta.append(badge);
+    summary.className = "weekly-report-summary";
     if (item.updated_at) {
       const time = document.createElement("time");
       time.dateTime = item.updated_at;
       time.textContent = projectDocumentDate(item.updated_at);
-      meta.append(time);
+      summary.append(time, document.createTextNode(` · ${item.summary}`));
+    } else {
+      summary.textContent = item.summary;
     }
-    footer.append(meta);
-    card.append(main, footer);
+    badge.className = item.available ? "badge badge-success" : "badge badge-muted";
+    badge.textContent = item.status;
+    heading.append(title, badge);
+    copy.append(heading, summary);
+    main.append(copy);
+    card.append(main);
     elements.weeklyReportsList.append(card);
   });
   if (!data.weekly_reports.length) {

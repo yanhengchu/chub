@@ -494,19 +494,6 @@ def _terminal_authorized(connection: Request | WebSocket, session_id: str) -> bo
 
 
 @web_router.get(
-    "/codex/{session_id}/quick-interactions",
-    response_class=HTMLResponse,
-    include_in_schema=False,
-)
-async def quick_interaction_page(request: Request, session_id: str) -> HTMLResponse:
-    return templates.TemplateResponse(
-        request=request,
-        name="quick_interactions.html",
-        context={"session_id": session_id},
-    )
-
-
-@web_router.get(
     "/codex/{session_id}/quick-interactions/conversation",
     response_class=HTMLResponse,
     include_in_schema=False,

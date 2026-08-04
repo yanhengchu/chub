@@ -150,48 +150,19 @@
           <div class="card-content" data-card-content>
             <div class="card-content-inner">
               <div class="openclaw-status-panel">
-                <div class="openclaw-status-heading">
-                  <strong>Gateway</strong>
-                  <span id="openclaw-badge" class="badge badge-muted">正在检查</span>
-                </div>
-                <dl class="openclaw-status-list">
-                  <div>
-                    <dt>版本</dt>
-                    <dd id="openclaw-version">—</dd>
+                <div class="openclaw-status-list">
+                  <div class="openclaw-status-row">
+                    <span class="openclaw-status-label">网关状态</span>
+                    <span id="openclaw-badge" class="badge badge-muted">正在检查</span>
                   </div>
-                  <div>
-                    <dt>后台服务</dt>
-                    <dd id="openclaw-service">—</dd>
+                  <div class="openclaw-status-row">
+                    <span class="openclaw-status-label">消息通道</span>
+                    <span id="openclaw-channels" class="badge badge-muted">正在检查</span>
                   </div>
-                  <div>
-                    <dt>消息通道</dt>
-                    <dd id="openclaw-channels">—</dd>
-                  </div>
-                  <div>
-                    <dt>通道权限</dt>
-                    <dd id="openclaw-owner">—</dd>
-                  </div>
-                  <div>
-                    <dt>监听方式</dt>
-                    <dd id="openclaw-bind">—</dd>
-                  </div>
-                  <div>
-                    <dt>检查时间</dt>
-                    <dd id="openclaw-checked-at">—</dd>
-                  </div>
-                </dl>
-                <a id="openclaw-access-open" class="openclaw-access" href="#" hidden>
-                  <span class="openclaw-access-copy">
-                    <span>访问地址</span>
-                    <strong id="openclaw-access-url">—</strong>
-                  </span>
-                  <span class="openclaw-access-action">打开</span>
-                </a>
-                <div id="openclaw-access-unavailable" class="openclaw-access openclaw-access-disabled">
-                  <span class="openclaw-access-copy">
-                    <span>访问地址</span>
-                    <strong>远程访问未启用</strong>
-                  </span>
+                  <a id="openclaw-access-open" class="openclaw-status-row openclaw-access" href="#" aria-label="打开 OpenClaw" hidden>
+                    <span class="openclaw-status-label">访问入口</span>
+                    <span class="openclaw-access-action">打开 ›</span>
+                  </a>
                 </div>
                 <p id="openclaw-message" class="message" aria-live="polite"></p>
               </div>
@@ -217,31 +188,31 @@
           <div class="card-content" data-card-content>
           <div class="card-content-inner">
           <section class="project-document-group" aria-labelledby="weekly-reports-title">
-            <h3 id="weekly-reports-title" class="document-group-title">本周周报</h3>
+            <h3 id="weekly-reports-title" class="document-group-title">本周周报{% if weekly_reports %} · {{ weekly_reports[0].period }}{% endif %}</h3>
             <div id="weekly-report-list" class="design-document-list design-document-list-compact">
               {% for report in weekly_reports %}
               <article class="design-document-item{% if not report.available %} design-document-item-unavailable{% endif %}">
                 {% if report.available %}
                 <a class="design-document-main" href="/weekly-reports/{{ report.period }}/{{ report.report_type }}">
-                  <span class="design-document-copy">
-                    <strong>{% if report.report_type == 'focus' %}本周重点事项{% else %}本周周报{% endif %}</strong>
-                    <span>{{ report.period }} · {{ report.summary }}</span>
+                  <span class="weekly-report-copy">
+                    <span class="weekly-report-heading">
+                      <strong>{% if report.report_type == 'focus' %}本周重点事项{% else %}本周周报{% endif %}</strong>
+                      <span class="badge badge-success">{{ report.status }}</span>
+                    </span>
+                    <span class="weekly-report-summary">{% if report.updated_at %}<time datetime="{{ report.updated_at.isoformat() }}">{{ report.updated_at.strftime('%Y-%m-%d') }}</time> · {% endif %}{{ report.summary }}</span>
                   </span>
                 </a>
                 {% else %}
                 <div class="design-document-main">
-                  <span class="design-document-copy">
-                    <strong>{% if report.report_type == 'focus' %}本周重点事项{% else %}本周周报{% endif %}</strong>
-                    <span>{{ report.period }} · {{ report.summary }}</span>
+                  <span class="weekly-report-copy">
+                    <span class="weekly-report-heading">
+                      <strong>{% if report.report_type == 'focus' %}本周重点事项{% else %}本周周报{% endif %}</strong>
+                      <span class="badge badge-muted">{{ report.status }}</span>
+                    </span>
+                    <span class="weekly-report-summary">{{ report.summary }}</span>
                   </span>
                 </div>
                 {% endif %}
-                <div class="design-document-footer">
-                  <span class="design-document-meta">
-                    <span class="badge {% if report.available %}badge-success{% else %}badge-muted{% endif %}">{{ report.status }}</span>
-                    {% if report.updated_at %}<time datetime="{{ report.updated_at.isoformat() }}">{{ report.updated_at.strftime('%Y-%m-%d') }}</time>{% endif %}
-                  </span>
-                </div>
               </article>
               {% else %}
               <p class="empty-state">暂无周报工作区。</p>

@@ -4,14 +4,14 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="light">
-    <title>快速交互 · 会话视图</title>
+    <title>快速交互</title>
     {% include "partials/app_styles.html" %}
     <script src="/static/quick_interactions_core.js" defer></script>
     <script src="/static/quick_interaction_conversation.js" defer></script>
   </head>
   <body class="conversation-body" data-session-id="{{ session_id }}">
     <main>
-      <section class="conversation-page" aria-label="快速交互会话视图">
+      <section class="conversation-page" aria-label="快速交互">
         <div id="conversation-scroll" class="conversation-scroll">
           <button id="conversation-load-earlier" class="button-secondary conversation-load-earlier" type="button" hidden>加载更早消息</button>
           <p id="conversation-history-message" class="message conversation-history-message" aria-live="polite"></p>

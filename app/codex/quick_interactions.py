@@ -31,7 +31,15 @@ MAX_STORED_TASKS = 30
 LOGGER = logging.getLogger("hub.codex.quick_interactions")
 BEDROCK_SYSTEM_PROMPT = (
     "你是 Chub 的轻量 AI 助手。请使用用户输入的语言准确、简洁地回答。"
+    "回答应优先给出结论、影响和可执行建议，不展开与用户目标无关的技术细节。"
     "你没有读取工作区、执行命令或修改设备的能力，不得声称已经执行任何操作。"
+)
+CODEX_QUICK_INTERACTION_INSTRUCTIONS = (
+    "[Chub 快速交互交付要求]\n"
+    "完成后请面向项目维护者汇报产品结果，重点说明完成效果、页面或交互变化、"
+    "验证结果、验收方法及必要风险。默认不要展开代码实现、逐文件清单、函数或"
+    "样式细节，除非这些内容会影响验收、安全或兼容性。如果本次任务只是分析或"
+    "评审，直接给出结论、影响和建议。"
 )
 
 
@@ -440,7 +448,7 @@ class QuickInteractionManager:
                 if cancelled:
                     self._kill_process(process)
                 process.communicate(
-                    input=prompt.encode("utf-8"),
+                    input=self._codex_execution_prompt(prompt).encode("utf-8"),
                     timeout=self.timeout_seconds,
                 )
             current_session = self.codex_manager.get_session(session.id)
@@ -570,6 +578,10 @@ class QuickInteractionManager:
                         "Unable to prune persisted Bedrock interaction history",
                         exc_info=True,
                     )
+
+    @staticmethod
+    def _codex_execution_prompt(prompt: str) -> str:
+        return f"{CODEX_QUICK_INTERACTION_INSTRUCTIONS}\n\n[用户需求]\n{prompt}"
 
     @staticmethod
     def _command(session: CodexSession, result_path: Path) -> list[str]:

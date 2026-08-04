@@ -76,13 +76,6 @@ function clearOpenClawCache() {
   }
 }
 
-function openclawTime(value) {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime())
-    ? "—"
-    : date.toLocaleString("zh-CN", { hour12: false });
-}
-
 function openclawStatePresentation(state) {
   return {
     unavailable: ["未安装", "muted"],
@@ -98,37 +91,33 @@ function openclawStatePresentation(state) {
 function openclawChannelPresentation(data) {
   const state = data?.channel_state;
   if (!state) {
-    return "—";
+    return ["状态未知", "muted"];
   }
   if (state === "running") {
-    return `${data.channel_running_count}/${data.channel_count} 运行正常`;
+    if (data.owner_state === "configured") {
+      return ["运行正常", "success"];
+    }
+    if (data.owner_state === "not_configured") {
+      return ["需要配置", "timeout"];
+    }
+    if (data.owner_state === "unavailable") {
+      return ["不可检查", "muted"];
+    }
+    return ["状态未知", "muted"];
   }
   if (state === "degraded") {
-    return `${data.channel_running_count}/${data.channel_count} 运行正常`;
+    return ["部分异常", "timeout"];
   }
   if (state === "stopped") {
-    return `${data.channel_count} 个异常`;
+    return ["通道异常", "failed"];
   }
   if (state === "not_configured") {
-    return "未配置";
+    return ["未配置", "muted"];
   }
   if (state === "unavailable") {
-    return "不可检查";
+    return ["不可检查", "muted"];
   }
-  return "检查失败";
-}
-
-function openclawOwnerPresentation(data) {
-  if (data?.owner_state === "configured") {
-    return `${data.owner_count} 个 Owner`;
-  }
-  if (data?.owner_state === "not_configured") {
-    return "未配置";
-  }
-  if (data?.owner_state === "unavailable") {
-    return "不可检查";
-  }
-  return "检查失败";
+  return ["检查失败", "failed"];
 }
 
 function openclawOverallPresentation(data) {
@@ -160,22 +149,13 @@ function renderOpenClaw(data, { cache = true } = {}) {
   openclawState = data;
   const [badgeText, badgeKind] = openclawOverallPresentation(data);
   setBadge(elements.openclawBadge, badgeText, badgeKind);
-  elements.openclawVersion.textContent = data.version || "—";
-  elements.openclawService.textContent = data.service_manager
-    ? `${data.service_manager} · ${data.service_loaded ? "已加载" : "未加载"}`
-    : "—";
-  elements.openclawChannels.textContent = openclawChannelPresentation(data);
-  elements.openclawChannels.title = data.channel_message || "";
-  elements.openclawOwner.textContent = openclawOwnerPresentation(data);
-  elements.openclawOwner.title = data.owner_message || "";
-  elements.openclawBind.textContent = data.bind_mode
-    ? `${data.bind_mode}${data.port ? ` · ${data.port}` : ""}`
-    : "—";
-  elements.openclawCheckedAt.textContent = openclawTime(data.checked_at);
+  const [channelText, channelKind] = openclawChannelPresentation(data);
+  setBadge(elements.openclawChannels, channelText, channelKind);
+  elements.openclawChannels.title = [data.channel_message, data.owner_message]
+    .filter(Boolean)
+    .join("；");
   const accessUrl = data.access_url || "";
-  elements.openclawAccessUrl.textContent = accessUrl || "—";
   elements.openclawAccessOpen.hidden = !accessUrl;
-  elements.openclawAccessUnavailable.hidden = Boolean(accessUrl);
   elements.openclawAccessOpen.href = accessUrl || "#";
   setMessage(elements.openclawMessage, openclawOverallMessage(data));
 
@@ -208,18 +188,10 @@ function resetOpenClawView() {
   openclawWeixinStatusAvailable = false;
   openclawWeixinPollFailures = 0;
   setBadge(elements.openclawBadge, "正在检查");
-  elements.openclawVersion.textContent = "—";
-  elements.openclawService.textContent = "—";
-  elements.openclawChannels.textContent = "—";
+  setBadge(elements.openclawChannels, "正在检查");
   elements.openclawChannels.removeAttribute("title");
-  elements.openclawOwner.textContent = "—";
-  elements.openclawOwner.removeAttribute("title");
-  elements.openclawBind.textContent = "—";
-  elements.openclawCheckedAt.textContent = "—";
-  elements.openclawAccessUrl.textContent = "—";
   elements.openclawAccessOpen.hidden = true;
   elements.openclawAccessOpen.href = "#";
-  elements.openclawAccessUnavailable.hidden = false;
   elements.openclawBindWeixin.hidden = true;
   elements.openclawStart.hidden = true;
   elements.openclawRestart.hidden = true;

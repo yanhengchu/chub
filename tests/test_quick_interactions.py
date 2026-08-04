@@ -9,7 +9,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.codex.models import CodexSession, QuickInteractionTask, utc_now
-from app.codex.quick_interactions import QuickInteractionManager
+from app.codex.quick_interactions import (
+    BEDROCK_SYSTEM_PROMPT,
+    CODEX_QUICK_INTERACTION_INSTRUCTIONS,
+    QuickInteractionManager,
+)
 from app.core.response import ApiError
 from app.llm import LlmCompletion
 
@@ -68,6 +72,18 @@ def test_command_creates_or_resumes_codex_session(tmp_path: Path) -> None:
     assert resume_command[-3:] == ["resume", "codex-session-1", "-"]
 
 
+def test_codex_execution_prompt_adds_delivery_guidance_without_changing_request(
+    tmp_path: Path,
+) -> None:
+    quick_interactions = manager(tmp_path)
+    prompt = quick_interactions._codex_execution_prompt("调整页面布局")
+
+    assert prompt.startswith(CODEX_QUICK_INTERACTION_INSTRUCTIONS)
+    assert prompt.endswith("[用户需求]\n调整页面布局")
+    assert "完成效果" in prompt
+    assert "验收方法" in prompt
+
+
 def test_submit_allows_new_session_and_prepares_managed_profile(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -89,6 +105,7 @@ def test_submit_allows_new_session_and_prepares_managed_profile(
     )
 
     assert task.status == "requested"
+    assert task.prompt == "执行第一条任务"
     quick_interactions.codex_manager.prepare_quick_interaction.assert_called_once_with()
     thread.start.assert_called_once_with()
 
@@ -825,6 +842,10 @@ async def test_bedrock_interaction_records_model_without_blocking_terminal(
     assert finished.result == "回答完成"
     assert finished.provider == "brclient"
     assert finished.model == "amazon.nova-pro"
+    llm_service.complete.assert_awaited_once_with(
+        "解释状态",
+        system_prompt=BEDROCK_SYSTEM_PROMPT,
+    )
     quick_interactions.codex_manager.set_activity.assert_not_called()
 
 
