@@ -3,6 +3,7 @@ import asyncio
 import threading
 from datetime import timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -13,7 +14,11 @@ from app.core.response import ApiError
 from app.llm import LlmCompletion
 
 
-def manager(tmp_path: Path, llm_service=None) -> QuickInteractionManager:
+def manager(
+    tmp_path: Path,
+    llm_service=None,
+    completion_notifier=None,
+) -> QuickInteractionManager:
     codex_manager = MagicMock()
     codex_manager.get_session.return_value = CodexSession(
         id="session-1",
@@ -29,6 +34,7 @@ def manager(tmp_path: Path, llm_service=None) -> QuickInteractionManager:
         tmp_path / "codex-sessions.json",
         codex_manager,
         llm_service,
+        completion_notifier,
     )
 
 
@@ -42,6 +48,49 @@ def test_quick_interaction_timeout_is_configurable(tmp_path: Path) -> None:
 
     assert quick_interactions.timeout_seconds == 21_600
     assert configured.timeout_seconds == 7_200
+
+
+def test_command_creates_or_resumes_codex_session(tmp_path: Path) -> None:
+    quick_interactions = manager(tmp_path)
+    session = quick_interactions.codex_manager.get_session.return_value
+
+    new_command = quick_interactions._command(
+        session.model_copy(update={"codex_session_id": None}),
+        tmp_path / "new-result.txt",
+    )
+    resume_command = quick_interactions._command(
+        session,
+        tmp_path / "resume-result.txt",
+    )
+
+    assert new_command[-1] == "-"
+    assert "resume" not in new_command
+    assert resume_command[-3:] == ["resume", "codex-session-1", "-"]
+
+
+def test_submit_allows_new_session_and_prepares_managed_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    quick_interactions = manager(tmp_path)
+    session = quick_interactions.codex_manager.get_session.return_value
+    session.codex_session_id = None
+    thread = MagicMock()
+    monkeypatch.setattr(
+        "app.codex.quick_interactions.threading.Thread",
+        MagicMock(return_value=thread),
+    )
+
+    task = quick_interactions.submit(
+        session.id,
+        "执行第一条任务",
+        operation_id="operation-1",
+        source_ip="127.0.0.1",
+    )
+
+    assert task.status == "requested"
+    quick_interactions.codex_manager.prepare_quick_interaction.assert_called_once_with()
+    thread.start.assert_called_once_with()
 
 
 def test_json_error_extracts_turn_failure_and_redacts_bearer(tmp_path: Path) -> None:
@@ -68,6 +117,85 @@ def test_json_error_extracts_turn_failure_and_redacts_bearer(tmp_path: Path) -> 
     )
 
 
+def test_quick_interaction_completion_notification_is_independent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    notifier = MagicMock(return_value=SimpleNamespace(status="sent", error=None))
+    quick_interactions = manager(tmp_path, completion_notifier=notifier)
+    task = QuickInteractionTask(
+        id="task-1",
+        session_id="session-1",
+        prompt="检查状态",
+        status="running",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    quick_interactions._tasks[task.id] = task
+    quick_interactions._operations[task.id] = ("operation-1", "127.0.0.1")
+
+    class ImmediateThread:
+        def __init__(self, *, target, args, daemon):
+            self.target = target
+            self.args = args
+
+        def start(self) -> None:
+            self.target(*self.args)
+
+    monkeypatch.setattr(
+        "app.codex.quick_interactions.threading.Thread",
+        ImmediateThread,
+    )
+
+    quick_interactions._finish(task.id, "succeeded", "完成")
+
+    finished = quick_interactions.get(task.id)
+    assert finished.status == "succeeded"
+    assert finished.result == "完成"
+    assert finished.notification_status == "sent"
+    notifier.assert_called_once()
+
+
+def test_notification_failure_does_not_change_task_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    notifier = MagicMock(
+        return_value=SimpleNamespace(status="failed", error="微信通知未送达。")
+    )
+    quick_interactions = manager(tmp_path, completion_notifier=notifier)
+    task = QuickInteractionTask(
+        id="task-1",
+        session_id="session-1",
+        prompt="检查状态",
+        status="running",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    quick_interactions._tasks[task.id] = task
+    quick_interactions._operations[task.id] = ("operation-1", "127.0.0.1")
+
+    class ImmediateThread:
+        def __init__(self, *, target, args, daemon):
+            self.target = target
+            self.args = args
+
+        def start(self) -> None:
+            self.target(*self.args)
+
+    monkeypatch.setattr(
+        "app.codex.quick_interactions.threading.Thread",
+        ImmediateThread,
+    )
+
+    quick_interactions._finish(task.id, "succeeded", "完成")
+
+    finished = quick_interactions.get(task.id)
+    assert finished.status == "succeeded"
+    assert finished.result == "完成"
+    assert finished.notification_status == "failed"
+    assert finished.notification_error == "微信通知未送达。"
+
 def test_restart_marks_running_task_failed_and_persists_state(tmp_path: Path) -> None:
     state = tmp_path / "codex-quick-interactions.json"
     task = QuickInteractionTask(
@@ -92,6 +220,28 @@ def test_restart_marks_running_task_failed_and_persists_state(tmp_path: Path) ->
     quick_interactions.codex_manager.recover_interrupted_quick_interaction.assert_called_once_with(
         "session-1"
     )
+
+
+def test_restart_marks_incomplete_notification_failed(tmp_path: Path) -> None:
+    state = tmp_path / "codex-quick-interactions.json"
+    task = QuickInteractionTask(
+        id="task-1",
+        session_id="session-1",
+        prompt="检查状态",
+        status="succeeded",
+        result="完成",
+        notification_status="sending",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    state.write_text(json.dumps([task.model_dump(mode="json")]), encoding="utf-8")
+
+    quick_interactions = manager(tmp_path)
+
+    recovered = quick_interactions.get("task-1")
+    assert recovered.status == "succeeded"
+    assert recovered.notification_status == "failed"
+    assert recovered.notification_error == "服务重启时微信通知未完成。"
 
 
 def test_restart_does_not_recover_bedrock_task_as_codex_activity(
@@ -586,6 +736,62 @@ def test_session_operation_rejects_running_quick_interaction(tmp_path: Path) -> 
             pass
 
     assert error.value.code == "quick_interaction_in_progress"
+
+
+def test_cancel_before_process_start_finishes_task_as_cancelled(tmp_path: Path) -> None:
+    quick_interactions = manager(tmp_path)
+    session = quick_interactions.codex_manager.get_session.return_value
+    task = QuickInteractionTask(
+        id="task-1",
+        session_id=session.id,
+        prompt="检查状态",
+        status="requested",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    quick_interactions._tasks[task.id] = task
+    quick_interactions._running_sessions.add(session.id)
+    quick_interactions._active_task_ids.add(task.id)
+    quick_interactions._cancelled_task_ids.add(task.id)
+    done = threading.Event()
+    quick_interactions._task_done_events[task.id] = done
+
+    quick_interactions._run(task.id, session, task.prompt or "")
+
+    finished = quick_interactions.get(task.id)
+    assert finished.status == "cancelled"
+    assert finished.error == "已由用户停止。"
+    assert done.is_set()
+    assert quick_interactions.is_running(session.id) is False
+
+
+def test_cancel_codex_session_kills_process_and_waits_for_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    quick_interactions = manager(tmp_path)
+    task = QuickInteractionTask(
+        id="task-1",
+        session_id="session-1",
+        prompt="检查状态",
+        status="running",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    process = MagicMock()
+    done = threading.Event()
+    quick_interactions._tasks[task.id] = task
+    quick_interactions._running_sessions.add(task.session_id)
+    quick_interactions._active_task_ids.add(task.id)
+    quick_interactions._processes[task.id] = process
+    quick_interactions._task_done_events[task.id] = done
+    kill = MagicMock(side_effect=lambda _process: done.set())
+    monkeypatch.setattr(quick_interactions, "_kill_process", kill)
+
+    assert quick_interactions.cancel_codex_session(task.session_id) is True
+
+    kill.assert_called_once_with(process)
+    assert task.id in quick_interactions._cancelled_task_ids
 
 
 @pytest.mark.anyio

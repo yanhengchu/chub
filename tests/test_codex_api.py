@@ -721,6 +721,50 @@ async def test_access_rejects_running_quick_interaction(settings: Settings) -> N
 
 
 @pytest.mark.anyio
+async def test_stop_cancels_running_quick_interaction_before_session(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    manager = MagicMock()
+    manager.stop_session.return_value = SessionInfo(
+        id="session-1",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd="/workspace/chub",
+        title=None,
+        codex_session_id="codex-session-1",
+        status="stopped",
+        activity="idle",
+        permission_mode="auto-review",
+        active_permission_mode=None,
+        permission_pending=False,
+        error=None,
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    quick_interactions = MagicMock()
+    events = []
+    quick_interactions.cancel_codex_session.side_effect = lambda _id: events.append("cancel")
+    manager.stop_session.side_effect = lambda _id: (
+        events.append("stop") or manager.stop_session.return_value
+    )
+    app.state.codex_pty_manager = manager
+    app.state.quick_interactions = quick_interactions
+    app.state.terminal_tickets = MagicMock()
+    app.state.terminal_connections = MagicMock()
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/codex/sessions/session-1/stop",
+            headers=authorization(settings),
+        )
+
+    assert response.status_code == 200
+    assert events == ["cancel", "stop"]
+
+
+@pytest.mark.anyio
 async def test_archive_session_revokes_access_and_calls_manager(
     settings: Settings,
 ) -> None:

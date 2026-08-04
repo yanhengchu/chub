@@ -40,6 +40,7 @@ from app.core.response import (
     validation_error_handler,
 )
 from app.services.openclaw import OpenClawManager
+from app.services.openclaw_completion_notifications import OpenClawCompletionNotifier
 from app.llm import LlmService
 from app.notifications import NotificationService
 from app.web.routes import STATIC_DIR, router as web_router
@@ -126,12 +127,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     codex_pty_manager = CodexPtyManager(resolved_settings)
     llm_service = LlmService(resolved_settings.llm)
+    completion_notifier = OpenClawCompletionNotifier(
+        resolved_settings.openclaw.quick_interaction_completion
+    )
     quick_interactions = QuickInteractionManager(
         resolved_settings.codex_pty.data_file,
         codex_pty_manager,
         llm_service,
+        completion_notifier.notify,
         timeout_seconds=resolved_settings.codex_pty.quick_interaction_timeout_seconds,
     )
+    codex_pty_manager.set_quick_interaction_checker(quick_interactions.is_running)
     openclaw_manager = OpenClawManager()
     notification_service = NotificationService(resolved_settings.notifications)
 

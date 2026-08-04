@@ -210,7 +210,7 @@
             <div class="card-heading-copy" data-card-heading>
               <p class="section-kicker">项目资料</p>
               <h2 id="design-documents-title">项目文档</h2>
-              <p class="section-description">查看本周周报、设计方案和调研资料。</p>
+              <p class="section-description">查看周报、设计方案和调研资料。</p>
             </div>
             <button id="refresh-project-docs" class="button-secondary" type="button">刷新</button>
           </div>
@@ -274,7 +274,6 @@
           </section>
           <p id="project-docs-message" class="message{% if design_documents_error %} message-error{% endif %}" aria-live="polite">{{ design_documents_error or '' }}</p>
           <div class="card-footer">
-            <span id="project-docs-count" class="card-footer-meta">{{ design_document_count }} 份设计资料 · {{ available_weekly_report_count }} 份周报可查看</span>
             <div class="card-footer-actions">
             <a id="all-project-docs" class="button-link" href="/project-docs">查看全部文档</a>
             </div>

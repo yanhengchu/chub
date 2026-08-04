@@ -73,6 +73,12 @@ const result = {
     activeInteraction: true,
     session,
   }),
+  notificationPending: core.shouldPoll({
+    loadFailed: false,
+    activeInteraction: false,
+    notificationPending: true,
+    session,
+  }),
   submission: {
     allowed: core.canSubmit({ prompt: "执行任务", session, blocked: false }),
     blank: core.canSubmit({ prompt: "   ", session, blocked: false }),
@@ -99,6 +105,7 @@ process.stdout.write(JSON.stringify(result));
         "serverError": True,
         "networkError": True,
         "activeDespitePermanentError": False,
+        "notificationPending": True,
         "submission": {
             "allowed": True,
             "blank": False,

@@ -150,7 +150,8 @@ def access_session(
 async def stop_session(session_id: str, request: Request) -> ApiResponse[SessionInfo]:
     try:
         def stop_with_guard() -> SessionInfo:
-            with request.app.state.quick_interactions.session_operation_guard(session_id):
+            with request.app.state.quick_interactions.stop_operation_guard(session_id):
+                request.app.state.quick_interactions.cancel_codex_session(session_id)
                 request.app.state.terminal_tickets.revoke_session(session_id)
                 request.app.state.terminal_connections.close_session(session_id)
                 return request.app.state.codex_pty_manager.stop_session(session_id)

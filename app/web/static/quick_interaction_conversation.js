@@ -22,9 +22,10 @@ const conversationClient = createConversationClient({
 const conversationForm = document.querySelector("#conversation-form");
 const conversationPrompt = document.querySelector("#conversation-prompt");
 const conversationEngine = document.querySelector("#conversation-engine");
+const conversationMore = document.querySelector("#conversation-more");
+const conversationMorePanel = document.querySelector("#conversation-more-panel");
 const conversationSubmit = document.querySelector("#conversation-submit");
 const conversationSubmitMessage = document.querySelector("#conversation-submit-message");
-const conversationWarning = document.querySelector("#conversation-warning");
 const conversationHistoryMessage = document.querySelector("#conversation-history-message");
 const conversationScroll = document.querySelector("#conversation-scroll");
 const conversationFeed = document.querySelector("#conversation-feed");
@@ -44,6 +45,7 @@ let conversationActive = false;
 let conversationSession = null;
 let conversationSelectedEngine = "codex_cli";
 let conversationConfirmStopUnknownTerminal = false;
+let conversationKeepBottomAfterPanelTransition = false;
 
 function showConversationMessage(element, text, kind = "") {
   element.textContent = text;
@@ -64,6 +66,8 @@ function conversationTaskSignature(task) {
     task.engine,
     task.provider,
     task.model,
+    task.notification_status,
+    task.notification_error,
     conversationStatusText(task),
   ]);
 }
@@ -73,6 +77,30 @@ function createConversationMeta(text) {
   meta.className = "conversation-message-meta";
   meta.textContent = text;
   return meta;
+}
+
+function createConversationNotification(task) {
+  const labels = {
+    pending: "待通知",
+    sending: "通知中",
+    sent: "已通知",
+    failed: "通知失败",
+    skipped: "未通知",
+  };
+  const label = labels[task.notification_status];
+  if (!label) {
+    return null;
+  }
+  const notification = createConversationMeta(label);
+  notification.classList.add(
+    "conversation-notification",
+    `conversation-notification-${task.notification_status}`,
+  );
+  if (task.notification_error) {
+    notification.title = task.notification_error;
+    notification.setAttribute("aria-label", `${label}：${task.notification_error}`);
+  }
+  return notification;
 }
 
 function updateConversationTurn(turn, task) {
@@ -100,20 +128,23 @@ function updateConversationTurn(turn, task) {
   const assistantBubble = document.createElement("div");
   const assistantContent = document.createElement("p");
   const assistantMeta = document.createElement("div");
-  const assistantInfo = createConversationMeta(
-    `${conversationEngineLabel(task.engine)} · ${formatConversationTime(task.updated_at)}`,
-  );
+  const assistantInfo = document.createElement("div");
+  const assistantEngine = createConversationMeta(conversationEngineLabel(task.engine));
+  const assistantTime = createConversationMeta(formatConversationTime(task.updated_at));
+  const notification = createConversationNotification(task);
   const pin = document.createElement("button");
   assistantMessage.className = "conversation-message conversation-message-assistant";
   assistantBubble.className = "conversation-bubble";
   assistantMeta.className = "conversation-assistant-meta";
+  assistantInfo.className = "conversation-assistant-info";
+  assistantInfo.append(assistantEngine, assistantTime);
   if (task.result || task.error) {
     assistantContent.textContent = task.result || task.error;
   } else {
     assistantContent.textContent = conversationStatusText(task);
     assistantBubble.classList.add("is-status");
   }
-  if (["failed", "timed_out", "needs_terminal"].includes(task.status)) {
+  if (["failed", "timed_out", "cancelled", "needs_terminal"].includes(task.status)) {
     assistantBubble.classList.add("is-error");
   }
   pin.type = "button";
@@ -122,7 +153,11 @@ function updateConversationTurn(turn, task) {
   pin.setAttribute("aria-pressed", String(Boolean(task.pinned_at)));
   pin.addEventListener("click", () => setConversationPinned(task, pin));
   assistantBubble.append(assistantContent);
-  assistantMeta.append(assistantInfo, pin);
+  assistantMeta.append(assistantInfo);
+  if (notification) {
+    assistantMeta.append(notification);
+  }
+  assistantMeta.append(pin);
   assistantMessage.append(assistantBubble, assistantMeta);
   turn.append(userMessage, assistantMessage);
 }
@@ -205,6 +240,33 @@ function resizeConversationPrompt() {
   }
 }
 
+function setConversationMoreExpanded(expanded, { restoreFocus = false } = {}) {
+  const keepAtBottom = isConversationNearBottom();
+  conversationMorePanel.classList.toggle("is-expanded", expanded);
+  conversationMorePanel.setAttribute("aria-hidden", String(!expanded));
+  conversationMorePanel.inert = !expanded;
+  conversationMore.setAttribute("aria-expanded", String(expanded));
+  conversationKeepBottomAfterPanelTransition = keepAtBottom;
+  if (!expanded && restoreFocus && !conversationMore.hidden && !conversationMore.disabled) {
+    conversationMore.focus();
+  }
+  if (keepAtBottom) {
+    window.requestAnimationFrame(() => {
+      conversationScroll.scrollTop = conversationScroll.scrollHeight;
+      updateConversationJumpLatest();
+    });
+  }
+}
+
+function updateConversationComposerActions() {
+  const hasPrompt = conversationPrompt.value.trim().length > 0;
+  conversationMore.hidden = hasPrompt;
+  conversationSubmit.hidden = !hasPrompt;
+  if (hasPrompt && conversationMorePanel.classList.contains("is-expanded")) {
+    setConversationMoreExpanded(false);
+  }
+}
+
 function mergeConversationTasks(tasks) {
   const merged = new Map(conversationTasks.map((task) => [task.id, task]));
   tasks.forEach((task) => merged.set(task.id, task));
@@ -245,6 +307,11 @@ function setConversationEngine(engine) {
     "aria-label",
     `当前执行方式为${conversationEngineLabel(conversationSelectedEngine)}，点击切换为${conversationEngineLabel(nextEngine)}`,
   );
+  conversationMore.setAttribute(
+    "aria-label",
+    `更多设置，当前执行方式为${conversationEngineLabel(conversationSelectedEngine)}`,
+  );
+  conversationMore.dataset.engine = conversationSelectedEngine;
   conversationPrompt.placeholder = conversationSelectedEngine === "bedrock_api"
     ? "输入要独立回答的问题…"
     : "输入消息…";
@@ -265,8 +332,6 @@ function renderConversationSession(session) {
   }
   conversationConfirmStopUnknownTerminal =
     session.status === "running" && session.activity === "unknown";
-  conversationWarning.hidden = conversationSelectedEngine !== "codex_cli"
-    || !conversationConfirmStopUnknownTerminal;
   const reason = conversationSubmissionBlockReason({
     session,
     activeInteraction: conversationActive,
@@ -276,8 +341,15 @@ function renderConversationSession(session) {
   const busy = conversationActive
     || session.quick_interaction_running === true
     || session.llm_interaction_running === true;
+  if (busy && conversationMorePanel.classList.contains("is-expanded")) {
+    setConversationMoreExpanded(false);
+  }
   conversationForm.setAttribute("aria-busy", String(busy));
   conversationSubmit.disabled = Boolean(reason);
+  conversationSubmit.textContent = conversationConfirmStopUnknownTerminal
+    ? "确认发送"
+    : "发送";
+  conversationMore.disabled = busy;
   conversationPrompt.disabled = busy;
   conversationEngine.disabled = busy;
   if (reason && !busy) {
@@ -289,6 +361,7 @@ function renderConversationSession(session) {
 
 function renderConversationSessionError(error) {
   conversationSubmit.disabled = true;
+  conversationMore.disabled = true;
   conversationPrompt.disabled = false;
   conversationEngine.disabled = true;
   conversationForm.setAttribute("aria-busy", "false");
@@ -352,6 +425,10 @@ async function performConversationLoad() {
     loadFailed: loadErrors.length > 0,
     loadErrors,
     activeInteraction: conversationActive,
+    notificationPending: conversationTasks.some((task) => (
+      task.notification_status === "pending"
+      || task.notification_status === "sending"
+    )),
     session,
   }) && document.visibilityState !== "hidden") {
     conversationPollTimer = window.setTimeout(
@@ -420,10 +497,38 @@ conversationEngine.addEventListener("click", () => {
   setConversationEngine(
     conversationSelectedEngine === "codex_cli" ? "bedrock_api" : "codex_cli",
   );
+  setConversationMoreExpanded(false, { restoreFocus: true });
+});
+
+conversationMore.addEventListener("click", () => {
+  setConversationMoreExpanded(
+    !conversationMorePanel.classList.contains("is-expanded"),
+  );
+});
+
+conversationMorePanel.addEventListener("transitionend", (event) => {
+  if (event.propertyName !== "grid-template-rows") {
+    return;
+  }
+  if (conversationKeepBottomAfterPanelTransition) {
+    conversationScroll.scrollTop = conversationScroll.scrollHeight;
+    updateConversationJumpLatest();
+  }
+  conversationKeepBottomAfterPanelTransition = false;
+});
+
+document.addEventListener("click", (event) => {
+  if (
+    conversationMorePanel.classList.contains("is-expanded")
+    && !conversationForm.contains(event.target)
+  ) {
+    setConversationMoreExpanded(false);
+  }
 });
 
 conversationPrompt.addEventListener("input", () => {
   resizeConversationPrompt();
+  updateConversationComposerActions();
   if (conversationSession) {
     renderConversationSession(conversationSession);
   }
@@ -456,6 +561,11 @@ conversationForm.addEventListener("submit", async (event) => {
   }
   conversationSubmit.disabled = true;
   conversationPrompt.disabled = true;
+  conversationMore.disabled = true;
+  conversationEngine.disabled = true;
+  if (conversationMorePanel.classList.contains("is-expanded")) {
+    setConversationMoreExpanded(false);
+  }
   try {
     const data = await conversationClient.submitTask({
       prompt: value,
@@ -466,8 +576,8 @@ conversationForm.addEventListener("submit", async (event) => {
     });
     conversationPrompt.value = "";
     resizeConversationPrompt();
+    updateConversationComposerActions();
     conversationConfirmStopUnknownTerminal = false;
-    conversationWarning.hidden = true;
     conversationActive = true;
     conversationTotal += conversationTasks.some((task) => task.id === data.task.id) ? 0 : 1;
     mergeConversationTasks([data.task]);
@@ -480,7 +590,6 @@ conversationForm.addEventListener("submit", async (event) => {
       && error.code === "quick_interaction_terminal_confirmation_required"
     ) {
       conversationConfirmStopUnknownTerminal = true;
-      conversationWarning.hidden = false;
       showConversationMessage(
         conversationSubmitMessage,
         "请确认影响后再次点击发送。",
@@ -515,8 +624,7 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 
-window.addEventListener("pageshow", () => setConversationEngine("codex_cli"));
-
 setConversationEngine("codex_cli");
 resizeConversationPrompt();
+updateConversationComposerActions();
 loadConversation();

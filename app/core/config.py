@@ -118,6 +118,32 @@ class NotificationsConfig(StrictModel):
     dedup_ttl_seconds: int = Field(default=600, ge=60, le=3600)
 
 
+class OpenClawCompletionNotificationConfig(StrictModel):
+    enabled: bool = True
+    weixin_account_id: str | None = Field(default=None, min_length=1, max_length=200)
+    weixin_recipient: str | None = Field(default=None, min_length=1, max_length=500)
+    timeout_seconds: int = Field(default=20, ge=1, le=60)
+    max_message_chars: int = Field(default=2000, ge=256, le=4000)
+
+    @field_validator("weixin_account_id", "weixin_recipient", mode="before")
+    @classmethod
+    def normalize_optional_identifier(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("weixin_recipient")
+    @classmethod
+    def validate_weixin_recipient(cls, value: str | None) -> str | None:
+        if value is not None and not value.endswith("@im.wechat"):
+            raise ValueError("weixin_recipient must be a Weixin recipient identifier")
+        return value
+
+
+class OpenClawConfig(StrictModel):
+    quick_interaction_completion: OpenClawCompletionNotificationConfig = (
+        OpenClawCompletionNotificationConfig()
+    )
+
+
 class Settings(StrictModel):
     app: AppConfig
     node: NodeConfig
@@ -129,6 +155,7 @@ class Settings(StrictModel):
     project_documents: ProjectDocumentsConfig = ProjectDocumentsConfig()
     llm: LlmConfig = LlmConfig()
     notifications: NotificationsConfig = NotificationsConfig()
+    openclaw: OpenClawConfig = OpenClawConfig()
 
     @model_validator(mode="before")
     @classmethod

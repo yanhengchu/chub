@@ -123,9 +123,17 @@ QuickInteractionStatus = Literal[
     "succeeded",
     "failed",
     "timed_out",
+    "cancelled",
     "needs_terminal",
 ]
 QuickInteractionEngine = Literal["codex_cli", "bedrock_api"]
+QuickInteractionNotificationStatus = Literal[
+    "pending",
+    "sending",
+    "sent",
+    "failed",
+    "skipped",
+]
 
 
 class QuickInteractionRequest(BaseModel):
@@ -168,6 +176,9 @@ class QuickInteractionTask(BaseModel):
     status: QuickInteractionStatus
     result: str | None = Field(default=None, max_length=100_000)
     error: str | None = Field(default=None, max_length=2000)
+    notification_status: QuickInteractionNotificationStatus | None = None
+    notification_error: str | None = Field(default=None, max_length=1000)
+    notification_updated_at: datetime | None = None
     pinned_at: datetime | None = None
     created_at: datetime
     updated_at: datetime

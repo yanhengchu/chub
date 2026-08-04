@@ -23,6 +23,13 @@
       "path": "OPENCLAW_INTEGRATION_DESIGN.md"
     },
     {
+      "id": "weixin-clawbot-context-token-ai-patch",
+      "title": "微信 ClawBot Context Token 持久化 AI 补丁规范",
+      "summary": "供 AI 在微信插件升级或重装后恢复 context token 持久化补丁，并完成安全复检与分层验收。",
+      "status": "本机已应用并验收，持续维护",
+      "path": "WEIXIN_CLAWBOT_CONTEXT_TOKEN_AI_PATCH.md"
+    },
+    {
       "id": "automation-download",
       "title": "配置驱动的飞书文档下载自动化方案",
       "summary": "复用 Debug Chrome 飞书登录状态，按配置安全下载 Wiki 文档 Markdown。",

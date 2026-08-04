@@ -251,9 +251,6 @@ function renderCodexWorkspaces(workspaces, available) {
 }
 
 function codexEntryMode(session) {
-  if (!session.codex_session_id) {
-    return "terminal";
-  }
   try {
     const stored = JSON.parse(localStorage.getItem(CODEX_ENTRY_MODE_KEY) || "{}");
     return stored?.[session.id] === "quick" ? "quick" : "terminal";
@@ -312,9 +309,6 @@ function updateCodexEntryButton(session, trigger, mode) {
 }
 
 function toggleCodexEntryMode(session, trigger) {
-  if (!session.codex_session_id) {
-    return;
-  }
   const currentMode = trigger.dataset.entryMode === "quick"
     ? "quick"
     : "terminal";
@@ -341,6 +335,9 @@ function renderCodexSessions(sessions) {
     const configuredPermission = normalizeCodexPermission(session.permission_mode);
     const quickInteractionRunning = session.quick_interaction_running === true;
     const llmInteractionRunning = session.llm_interaction_running === true;
+    const sessionRunning = session.status === "running"
+      || quickInteractionRunning
+      || session.activity === "working";
     const activitySource = session.activity_source || "none";
     const entryMode = codexEntryMode(session);
     const item = document.createElement("article");
@@ -427,14 +424,7 @@ function renderCodexSessions(sessions) {
     entry.type = "button";
     entry.className = "session-permission session-entry-mode";
     entry.dataset.entryMode = entryMode;
-    entry.disabled = !session.codex_session_id;
-    if (!session.codex_session_id) {
-      entry.textContent = "实时终端";
-      entry.setAttribute("aria-label", "当前交互入口为实时终端");
-      entry.title = "会话启动后可以选择快速交互";
-    } else {
-      updateCodexEntryButton(session, entry, entryMode);
-    }
+    updateCodexEntryButton(session, entry, entryMode);
     entry.addEventListener("click", () => toggleCodexEntryMode(session, entry));
     permissionPending.className = "session-permission-pending";
     permissionPending.textContent = session.permission_pending
@@ -445,10 +435,10 @@ function renderCodexSessions(sessions) {
     stop.type = "button";
     stop.className = "button-secondary session-action";
     stop.textContent = "停止";
-    stop.disabled = session.status !== "running" || quickInteractionRunning;
-    if (quickInteractionRunning) {
-      stop.title = "快速交互正在执行";
-    }
+    stop.disabled = !sessionRunning;
+    stop.title = quickInteractionRunning
+      ? "停止当前快速交互和会话"
+      : "";
     stop.addEventListener("click", () => stopCodexSession(session.id, stop));
     archive.type = "button";
     archive.className = "button-secondary session-action";

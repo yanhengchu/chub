@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from subprocess import CompletedProcess
 from unittest.mock import MagicMock
@@ -79,6 +80,48 @@ def test_sync_keeps_unindexed_active_native_session(
     assert manager.store.get(session.id) is not None
 
 
+def test_sync_merges_discovered_session_bound_to_new_chub_session(
+    settings: Settings,
+) -> None:
+    manager = CodexPtyManager(settings)
+    native_id = "23232323-2323-4232-8232-232323232323"
+    chub_session = CodexSession(
+        id="chub-session",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd=Path("/workspace/chub"),
+        permission_mode="auto-review",
+        status="stopped",
+    )
+    discovered = native_session(native_id)
+    discovered.title = "首次快速交互"
+    discovered.active_permission_mode = "auto-review"
+    manager.store.save(chub_session)
+    manager.store.save(discovered)
+    manager.discovery = MagicMock()
+    manager.discovery.discover.return_value = [discovered]
+    manager.discovery.session_archive_states.return_value = None
+
+    manager._sync_native_sessions()
+    assert len(manager.store.list()) == 2
+
+    manager.hook_dir.mkdir(parents=True, exist_ok=True)
+    (manager.hook_dir / f"{chub_session.id}.json").write_text(
+        json.dumps({"codex_session_id": native_id}),
+        encoding="utf-8",
+    )
+    manager._consume_hook_result(chub_session.id)
+    manager._sync_native_sessions()
+
+    sessions = manager.store.list()
+    assert len(sessions) == 1
+    assert sessions[0].id == chub_session.id
+    assert sessions[0].codex_session_id == native_id
+    assert sessions[0].title == "首次快速交互"
+    assert sessions[0].permission_mode == "auto-review"
+    assert sessions[0].active_permission_mode == "auto-review"
+
+
 def test_restart_resets_unverified_running_activity(
     settings: Settings,
     monkeypatch: pytest.MonkeyPatch,
@@ -96,6 +139,56 @@ def test_restart_resets_unverified_running_activity(
     manager = CodexPtyManager(settings)
 
     assert manager.store.get(session.id).activity == "unknown"
+
+
+def test_list_clears_stale_quick_activity_without_active_task(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = CodexPtyManager(settings)
+    session = native_session("67676767-6767-4767-8767-676767676767")
+    session.status = "stopped"
+    session.activity = "working"
+    session.activity_source = "quick"
+    manager.store.save(session)
+    manager.set_quick_interaction_checker(lambda _session_id: False)
+    manager.discovery = MagicMock()
+    manager.discovery.discover.return_value = [session]
+    manager.discovery.session_archive_states.return_value = None
+    monkeypatch.setattr("app.codex.manager.shutil.which", lambda _name: None)
+
+    listed = manager.list_sessions()
+
+    restored = next(item for item in listed if item.id == session.id)
+    assert restored.status == "stopped"
+    assert restored.activity == "idle"
+    assert restored.activity_source == "none"
+
+
+def test_late_quick_hook_cannot_restore_finished_activity(
+    settings: Settings,
+) -> None:
+    manager = CodexPtyManager(settings)
+    session = native_session("68686868-6868-4868-8868-686868686868")
+    session.status = "stopped"
+    session.activity = "idle"
+    manager.store.save(session)
+    manager.set_quick_interaction_checker(lambda _session_id: False)
+    manager.hook_dir.mkdir(parents=True, exist_ok=True)
+    (manager.hook_dir / f"{session.id}.json").write_text(
+        json.dumps({
+            "codex_session_id": session.codex_session_id,
+            "activity": "working",
+            "activity_source": "quick",
+        }),
+        encoding="utf-8",
+    )
+
+    manager._consume_hook_result(session.id)
+
+    restored = manager.store.get(session.id)
+    assert restored.activity == "idle"
+    assert restored.activity_source == "none"
 
 
 def test_restart_terminal_backend_recycles_ttyd_without_stopping_tmux(

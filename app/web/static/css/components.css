@@ -1117,13 +1117,6 @@ pre {
   margin-right: auto;
 }
 
-.quick-interaction-warning {
-  margin: 0;
-  color: var(--warning);
-  font-size: 0.82rem;
-  line-height: 1.5;
-}
-
 @media (prefers-reduced-motion: reduce) {
   .card[data-collapsible-card],
   .quick-interaction-composer,
@@ -1276,7 +1269,7 @@ pre {
 .conversation-message {
   display: grid;
   gap: 0.35rem;
-  width: min(82%, 46rem);
+  width: min(90%, 46rem);
 }
 
 .conversation-message-user {
@@ -1332,6 +1325,40 @@ pre {
   display: flex;
   align-items: center;
   gap: 0.65rem;
+  width: 100%;
+}
+
+.conversation-assistant-info {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin-right: auto;
+}
+
+.conversation-assistant-info > :not(:last-child)::after {
+  content: " ·";
+}
+
+.conversation-notification {
+  flex: none;
+  border-radius: 999px;
+  padding: 0.18rem 0.45rem;
+  color: var(--accent-dark);
+  background: #d9eee3;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.conversation-notification-pending,
+.conversation-notification-sending,
+.conversation-notification-skipped {
+  color: #59645c;
+  background: #e6ebe5;
+}
+
+.conversation-notification-failed {
+  color: var(--danger);
+  background: #f5ded9;
 }
 
 .conversation-pin {
@@ -1355,16 +1382,21 @@ pre {
   box-shadow: 0 6px 20px rgb(24 43 32 / 7%);
 }
 
-.conversation-composer > .message,
-.conversation-composer > .quick-interaction-warning {
+.conversation-composer > .message {
   margin: 0;
 }
 
 .conversation-input-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) 4.25rem;
   align-items: end;
   gap: 0.55rem;
+}
+
+.conversation-input-row > button {
+  grid-column: 2;
+  grid-row: 1;
+  width: 100%;
 }
 
 .conversation-input-row textarea {
@@ -1379,22 +1411,91 @@ pre {
   overflow-y: hidden;
 }
 
-.conversation-composer-tools {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
+.conversation-input-row > .conversation-more {
+  position: relative;
+  justify-self: end;
+  width: 44px;
+  min-height: 44px;
+  padding: 0;
+  font-size: 1.55rem;
+  font-weight: 400;
+  line-height: 1;
 }
 
-.conversation-composer-tools > span {
-  margin-left: auto;
+.conversation-input-row > .conversation-more[data-engine="bedrock_api"]::after {
+  content: "API";
+  position: absolute;
+  top: -0.28rem;
+  right: -0.25rem;
+  border: 2px solid var(--paper);
+  border-radius: 999px;
+  padding: 0.06rem 0.22rem;
+  color: white;
+  background: var(--accent-dark);
+  font-size: 0.5rem;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.conversation-more-panel {
+  display: grid;
+  grid-template-rows: 0fr;
+  min-height: 0;
+  margin-top: -0.5rem;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 140ms ease, grid-template-rows 180ms ease, margin-top 180ms ease, visibility 0s linear 180ms;
+}
+
+.conversation-more-panel.is-expanded {
+  grid-template-rows: 1fr;
+  margin-top: 0;
+  opacity: 1;
+  visibility: visible;
+  transition: grid-template-rows 180ms ease, margin-top 180ms ease, opacity 140ms ease 40ms;
+}
+
+.conversation-more-panel-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.conversation-more-setting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  border-top: 1px solid var(--line);
+  padding-top: 0.6rem;
+}
+
+.conversation-more-setting > div {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.conversation-more-setting strong {
+  font-size: 0.82rem;
+}
+
+.conversation-more-setting span {
   color: var(--muted);
   font-size: 0.7rem;
 }
 
 .conversation-engine {
+  flex: none;
   min-height: 32px;
   padding: 0.35rem 0.65rem;
   font-size: 0.75rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .conversation-more-panel,
+  .conversation-more-panel.is-expanded {
+    transition: none;
+  }
 }
 
 .openclaw-card {

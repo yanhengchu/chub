@@ -48,6 +48,7 @@
       succeeded: "已完成",
       failed: "执行失败",
       timed_out: "执行超时",
+      cancelled: "已停止",
       needs_terminal: "需要实时终端",
     }[task.status] || task.status;
   }
@@ -101,9 +102,6 @@
         ? "Amazon Bedrock API 单次最多支持 4000 个字符。"
         : "";
     }
-    if (!session.codex_session_id) {
-      return "会话尚未启动，请先通过实时终端建立会话。";
-    }
     if (session.status === "error") {
       return "会话当前异常，请先通过实时终端重试。";
     }
@@ -135,7 +133,13 @@
     );
   }
 
-  function shouldPoll({ loadFailed, loadErrors = [], activeInteraction, session }) {
+  function shouldPoll({
+    loadFailed,
+    loadErrors = [],
+    activeInteraction,
+    notificationPending = false,
+    session,
+  }) {
     const retryableLoadFailure = loadFailed
       && (loadErrors.length === 0 || loadErrors.some(isRetryableRequestError));
     if (loadFailed && loadErrors.length > 0 && !retryableLoadFailure) {
@@ -144,6 +148,7 @@
     return Boolean(
       retryableLoadFailure
       || activeInteraction
+      || notificationPending
       || session?.quick_interaction_running === true
       || session?.llm_interaction_running === true
       || session?.activity === "working"

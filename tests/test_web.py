@@ -95,7 +95,7 @@ async def test_home_page_is_public_and_contains_no_token(
     assert 'id="refresh-automations"' in response.text
     assert "复用登录状态执行自动化任务。" in response.text
     assert 'id="refresh-project-docs"' in response.text
-    assert 'id="project-docs-count"' in response.text
+    assert 'id="project-docs-count"' not in response.text
     assert 'href="/automations"' in response.text
     assert 'id="design-documents-title"' in response.text
     assert "项目文档" in response.text
@@ -117,7 +117,7 @@ async def test_home_page_is_public_and_contains_no_token(
     assert "OpenClaw 方案调研" not in response.text
     assert "OpenClaw 与消息通道接入设计" in response.text
     assert "已实现并验收，持续维护" in response.text
-    assert "份设计资料 · 1 份周报可查看" in response.text
+    assert "份设计资料 · 1 份周报可查看" not in response.text
     assert 'href="/project-docs/openclaw-research"' not in response.text
     assert 'href="/project-docs/openclaw-integration"' in response.text
     assert 'target="_blank"' not in response.text
@@ -500,7 +500,7 @@ async def test_quick_interaction_history_page_is_available(settings: Settings) -
         'id="quick-interaction-submit"'
     )
     assert "confirm_stop_unknown_terminal" in core_script.text
-    assert "点击执行会先停止当前实时终端" in page.text
+    assert "点击执行会先停止当前实时终端" not in page.text
     assert "请确认影响后再次点击执行" in script.text
     assert "正在提交快速交互" not in script.text
     assert "任务仍在后台执行" not in script.text
@@ -576,6 +576,13 @@ async def test_quick_interaction_conversation_page_is_available(
     assert 'id="conversation-jump-latest"' in page.text
     assert 'id="conversation-form"' in page.text
     assert 'id="conversation-engine"' in page.text
+    assert 'id="conversation-more"' in page.text
+    assert 'data-engine="codex_cli" disabled' in page.text
+    assert 'id="conversation-more-panel"' in page.text
+    assert 'aria-hidden="true" inert' in page.text
+    assert "当前执行方式" in page.text
+    assert "点击右侧按钮切换" in page.text
+    assert 'id="conversation-submit" type="submit" disabled hidden' in page.text
     assert page.text.index("/static/quick_interactions_core.js") < page.text.index(
         "/static/quick_interaction_conversation.js"
     )
@@ -586,6 +593,15 @@ async def test_quick_interaction_conversation_page_is_available(
     assert "conversationLoadQueue.then(performLoadEarlierConversation)" in script.text
     assert "conversationPollDelay(conversationPollFailureCount)" in script.text
     assert "resizeConversationPrompt" in script.text
+    assert "updateConversationComposerActions" in script.text
+    assert "setConversationMoreExpanded" in script.text
+    assert "conversationPrompt.value.trim().length > 0" in script.text
+    assert 'conversationMore.dataset.engine = conversationSelectedEngine' in script.text
+    assert 'conversationMorePanel.inert = !expanded' in script.text
+    assert 'restoreFocus: true' in script.text
+    assert '!conversationForm.contains(event.target)' in script.text
+    assert 'if (busy && conversationMorePanel.classList.contains("is-expanded"))' in script.text
+    assert 'window.addEventListener("pageshow", () => setConversationEngine("codex_cli"))' not in script.text
     assert "isConversationNearBottom" in script.text
     assert 'event.key === "Enter"' in script.text
     assert "if (!conversationSubmit.disabled)" in script.text
@@ -593,6 +609,11 @@ async def test_quick_interaction_conversation_page_is_available(
     assert "conversationEngine.disabled = true" in script.text
     assert "conversationScroll.scrollTop" in script.text
     assert "conversationClient.submitTask" in script.text
+    assert 'pending: "待通知"' in script.text
+    assert 'sent: "已通知"' in script.text
+    assert 'failed: "通知失败"' in script.text
+    assert 'skipped: "未通知"' in script.text
+    assert ".conversation-assistant-info" in stylesheet.text
     assert "conversationClient.setPinned" in script.text
     assert "textContent" in script.text
     assert "innerHTML" not in script.text

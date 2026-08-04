@@ -60,3 +60,12 @@ notifications:
   timeout_seconds: 5
   max_message_bytes: 4000
   dedup_ttl_seconds: 600
+
+openclaw:
+  quick_interaction_completion:
+    # Set the fixed recipient after it has messaged the ClawBot once.
+    enabled: true
+    weixin_account_id: null
+    weixin_recipient: null
+    timeout_seconds: 20
+    max_message_chars: 2000

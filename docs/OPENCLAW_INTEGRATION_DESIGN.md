@@ -12,6 +12,8 @@
 4. OpenClaw 通过受限 Tool 查询 Chub 状态。
 5. Chub 和 OpenClaw 向预先配置的飞书群发送单向通知。
 
+微信设备能力调用采用单向编排：微信 ClawBot 将请求交给 OpenClaw，OpenClaw 通过受限 Chub Tool 调用 Chub，Chub 返回结构化最终状态后由 OpenClaw 回复微信。Chub 不通过 Gateway、`openclaw agent` 或其他 OpenClaw 入口反向处理微信请求。
+
 ```text
 微信用户
   └── 微信 ClawBot
@@ -28,6 +30,8 @@ Chub 快速交互
   └── Chub LLM Service
         └── 模型供应商 API
 ```
+
+模型配置复用和 Chub 直接发送飞书是独立能力：前者是 Chub 只读读取配置并直连模型供应商，后者是 Chub 调用自身通知 Service；两者都不构成 Chub 对 OpenClaw 的反向调用。
 
 必须区分以下状态，不能用其中一个推断其他状态：
 
@@ -254,6 +258,12 @@ llm:
 
 Chub 支持读取文件型 `singleValue` SecretRef，并通过 OpenAI 兼容的 `/chat/completions` 接口调用模型。快速交互输入区可在 `Codex CLI` 和 `Amazon Bedrock API` 之间切换；选择只在当前页面生命周期内有效，重新进入默认恢复为 Codex CLI。任务视图和会话视图共享交互记录并标识实际使用的执行入口；每页可选 5 条或 10 条，默认 5 条。会话视图只改变 UI 组织方式，Bedrock 每次提交仍是独立调用，不自动获得前序任务上下文。
 
+快速交互完成通知采用独立出站链路：`Chub 快速交互 → openclaw message send → 微信 ClawBot → 固定微信收件人`。它不是微信请求调用设备能力的反向链路，不运行 `openclaw agent`，也不允许通过通知触发新的 Chub 操作。Chub 只在任务成功、失败或超时后异步发送有界结果摘要；通知状态单独记录为发送中、已发送、失败或跳过，任何通知故障都不改变任务最终状态。
+
+收件人必须在本机 Chub 配置的 `openclaw.quick_interaction_completion.weixin_recipient` 中固定，并先主动向 ClawBot 发送过消息，以便微信插件持久化当前会话的 context token。可选的 `weixin_account_id` 用于固定账号；未配置时仅允许恰好一个正常运行的微信账号。OpenClaw 微信插件的通用出站实现需要在调用方未显式传入 context token 时，按账号和固定收件人恢复已持久化 token；插件升级或重装后需确认该兼容修改仍然存在。
+
+当前微信插件需要额外兼容处理，原因是通道启动和通用出站发送可能运行在相互隔离的插件模块实例中，不能只依赖进程内 Map。补丁同时覆盖 token 落盘、出站实例惰性恢复、固定收件人回退和持久化文件 `600` 权限。面向后续 AI Agent 的恢复顺序、行为不变量、关键代码、参考 patch、升级复检和分层验收见 [微信 ClawBot Context Token 持久化 AI 补丁规范](WEIXIN_CLAWBOT_CONTEXT_TOKEN_AI_PATCH.md)。首页检测不得自动修改第三方插件，也不能只按插件版本号判断兼容性；上游版本可能回移或原生实现同等能力，应优先识别明确能力或必要行为特征。
+
 ### 5.3 Chub OpenClaw 插件
 
 插件位于 `integrations/openclaw/chub/`，插件 ID 为 `chub`。一个插件统一承载 Chub 相关 Tool 和必要 Hook，不为每个函数创建独立插件。
@@ -444,3 +454,5 @@ OpenClaw 插件通过 Hook 暂存本轮用户原文，并在 Tool 执行前用�
 7. 修改通知后，分别验证普通消息及本次涉及的提醒模式，并检查日志未泄露 Secret。
 
 当前 macOS、Ubuntu 的安装、Gateway、微信绑定、Owner、Shell 审批、Chub 状态 Tool 和飞书通知核心链路均已完成验收。后续发现真实异常时，将可复现问题补充为回归用例；不提前扩展未使用的权限、通知或连续电脑交互能力。
+
+下一项核心工作是选定首批低风险白名单能力，补齐微信请求、OpenClaw 会话、Chub 操作 ID、目标节点和最终回复的最小关联，并验证重复消息、超时、Tool 未实际调用、Chub 不可达和最终回复失败。飞书指定人员提醒等待 Open ID；连续电脑交互、自动事件通知和更多 Tool 均按真实需求另行设计，不属于当前默认待办。

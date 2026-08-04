@@ -20,15 +20,22 @@
         </div>
 
         <form id="conversation-form" class="conversation-composer">
-          <p id="conversation-warning" class="quick-interaction-warning" hidden>点击发送会先停止当前实时终端，可能中断正在执行的任务，然后启动新任务。</p>
           <p id="conversation-submit-message" class="message" aria-live="polite"></p>
-          <div class="conversation-composer-tools">
-            <button id="conversation-engine" class="button-secondary conversation-engine" type="button" disabled>Codex CLI</button>
-            <span>Enter 发送 · Shift + Enter 换行</span>
-          </div>
           <div class="conversation-input-row">
             <textarea id="conversation-prompt" rows="1" maxlength="8000" required placeholder="输入消息…" aria-label="快速交互需求" disabled></textarea>
-            <button id="conversation-submit" type="submit" disabled>发送</button>
+            <button id="conversation-more" class="button-secondary conversation-more" type="button" aria-label="更多设置，当前执行方式为 Codex CLI" aria-expanded="false" aria-controls="conversation-more-panel" data-engine="codex_cli" disabled>＋</button>
+            <button id="conversation-submit" type="submit" disabled hidden>发送</button>
+          </div>
+          <div id="conversation-more-panel" class="conversation-more-panel" aria-hidden="true" inert>
+            <div class="conversation-more-panel-inner">
+              <div class="conversation-more-setting">
+                <div>
+                  <strong>当前执行方式</strong>
+                  <span>点击右侧按钮切换</span>
+                </div>
+                <button id="conversation-engine" class="button-secondary conversation-engine" type="button" disabled>Codex CLI</button>
+              </div>
+            </div>
           </div>
         </form>
       </section>

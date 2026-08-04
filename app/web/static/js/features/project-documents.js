@@ -96,8 +96,6 @@ function renderProjectDocuments(data) {
     empty.textContent = "暂无设计文档。";
     elements.projectDocsList.append(empty);
   }
-  const availableWeeklyReports = data.weekly_reports.filter((item) => item.available).length;
-  elements.projectDocsCount.textContent = `${data.count} 份设计资料 · ${availableWeeklyReports} 份周报可查看`;
 }
 
 async function archiveProjectDocument(button) {

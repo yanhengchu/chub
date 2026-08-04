@@ -22,7 +22,6 @@ const prompt = document.querySelector("#quick-interaction-prompt");
 const engineToggle = document.querySelector("#quick-interaction-engine");
 const submit = document.querySelector("#quick-interaction-submit");
 const submitMessage = document.querySelector("#quick-interaction-submit-message");
-const warning = document.querySelector("#quick-interaction-warning");
 const historyMessage = document.querySelector("#quick-interaction-history-message");
 const history = document.querySelector("#quick-interaction-history");
 const loadMore = document.querySelector("#quick-interaction-load-more");
@@ -61,6 +60,8 @@ function taskSignature(task) {
     task.engine,
     task.provider,
     task.model,
+    task.notification_status,
+    task.notification_error,
     statusText(task),
   ]);
 }
@@ -104,7 +105,17 @@ function updateTaskItem(item, task) {
     promptLabel.textContent = "提交内容";
     promptContent.className = "quick-interaction-history-content";
     promptContent.textContent = task.prompt || "历史任务未保存提交内容。";
-    meta.append(engine, time, pinButton);
+    if (task.notification_status === "sent") {
+      const notification = document.createElement("span");
+      notification.textContent = "微信通知已发送";
+      meta.append(engine, time, notification, pinButton);
+    } else if (task.notification_status === "failed" || task.notification_status === "skipped") {
+      const notification = document.createElement("span");
+      notification.textContent = task.notification_error || "微信通知未送达";
+      meta.append(engine, time, notification, pinButton);
+    } else {
+      meta.append(engine, time, pinButton);
+    }
     heading.append(status, meta);
     item.append(heading, promptLabel, promptContent);
     if (task.result || task.error) {
@@ -300,7 +311,6 @@ function renderSession(session) {
   }
   confirmStopUnknownTerminal =
     session.status === "running" && session.activity === "unknown";
-  warning.hidden = selectedEngine !== "codex_cli" || !confirmStopUnknownTerminal;
   const reason = submissionBlockReason(session);
   const busy = activeInteraction
     || session.quick_interaction_running === true
@@ -389,6 +399,10 @@ async function performLoad({ append = false } = {}) {
     loadFailed,
     loadErrors,
     activeInteraction: active,
+    notificationPending: loadedTasks.some((task) => (
+      task.notification_status === "pending"
+      || task.notification_status === "sending"
+    )),
     session,
   });
   if (keepPolling && document.visibilityState !== "hidden") {
@@ -454,7 +468,6 @@ form.addEventListener("submit", async (event) => {
     });
     prompt.value = "";
     confirmStopUnknownTerminal = false;
-    warning.hidden = true;
     showMessage(submitMessage, "");
     setComposerCollapsed(true);
     await waitForComposerCollapse();
@@ -465,7 +478,6 @@ form.addEventListener("submit", async (event) => {
       && error.code === "quick_interaction_terminal_confirmation_required"
     ) {
       confirmStopUnknownTerminal = true;
-      warning.hidden = false;
       showMessage(submitMessage, "请确认影响后再次点击执行。", "error");
     } else {
       showMessage(

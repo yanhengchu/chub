@@ -117,12 +117,22 @@
     width: 100%;
   }
 
-  .conversation-message {
-    width: 90%;
+  .conversation-assistant-meta {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 0.45rem;
   }
 
-  .conversation-composer-tools > span {
-    display: none;
+  .conversation-assistant-info {
+    display: grid;
+    gap: 0.15rem;
+    min-width: 0;
+    margin-right: 0;
+  }
+
+  .conversation-assistant-info > :not(:last-child)::after {
+    content: none;
   }
 
   .conversation-engine {

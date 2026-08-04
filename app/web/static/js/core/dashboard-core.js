@@ -71,7 +71,6 @@ const elements = {
   refreshAutomations: document.querySelector("#refresh-automations"),
   projectDocsList: document.querySelector("#design-document-list"),
   weeklyReportsList: document.querySelector("#weekly-report-list"),
-  projectDocsCount: document.querySelector("#project-docs-count"),
   projectDocsMessage: document.querySelector("#project-docs-message"),
   refreshProjectDocs: document.querySelector("#refresh-project-docs"),
   codexPanel: null,

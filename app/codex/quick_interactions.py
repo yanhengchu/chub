@@ -11,7 +11,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 from app.codex.models import (
     CodexSession,
@@ -41,6 +41,7 @@ class QuickInteractionManager:
         data_file: Path,
         codex_manager,
         llm_service: LlmService | None = None,
+        completion_notifier: Callable[[QuickInteractionTask], object] | None = None,
         *,
         timeout_seconds: int = 6 * 60 * 60,
     ) -> None:
@@ -48,12 +49,15 @@ class QuickInteractionManager:
         self.result_dir = self.path.with_suffix("")
         self.codex_manager = codex_manager
         self.llm_service = llm_service
+        self.completion_notifier = completion_notifier
         self.timeout_seconds = timeout_seconds
         self._lock = threading.RLock()
         self._tasks: dict[str, QuickInteractionTask] = {}
         self._running_sessions: set[str] = set()
         self._running_llm_sessions: set[str] = set()
         self._active_task_ids: set[str] = set()
+        self._cancelled_task_ids: set[str] = set()
+        self._task_done_events: dict[str, threading.Event] = {}
         self._session_locks: dict[str, threading.RLock] = {}
         self._processes: dict[str, subprocess.Popen[bytes]] = {}
         self._operations: dict[str, tuple[str, str]] = {}
@@ -96,6 +100,11 @@ class QuickInteractionManager:
                 task.updated_at = utc_now()
                 if task.engine == "codex_cli":
                     recovered_sessions.add(task.session_id)
+            if task.notification_status in {"pending", "sending"}:
+                recovered_tasks = True
+                task.notification_status = "failed"
+                task.notification_error = "服务重启时微信通知未完成。"
+                task.notification_updated_at = utc_now()
             self._tasks[task.id] = task
         return recovered_sessions, recovered_tasks
 
@@ -109,8 +118,6 @@ class QuickInteractionManager:
     ) -> QuickInteractionTask:
         with self._session_lock(session_id):
             session = self.codex_manager.get_session(session_id)
-            if not session.codex_session_id:
-                raise ApiError(409, "codex_session_not_started", "Codex session has not started yet")
             if session.status == "error":
                 raise ApiError(
                     409,
@@ -131,6 +138,7 @@ class QuickInteractionManager:
                 )
             if session.permission_mode == "ask":
                 raise ApiError(409, "quick_interaction_requires_terminal", "Ask for approval 需要进入实时终端完成审批。")
+            self.codex_manager.prepare_quick_interaction()
             with self._lock:
                 if self._any_running(session_id):
                     raise ApiError(409, "quick_interaction_in_progress", "该会话已有快速交互任务正在执行。")
@@ -146,6 +154,7 @@ class QuickInteractionManager:
                 self._tasks[task.id] = task
                 self._running_sessions.add(session_id)
                 self._active_task_ids.add(task.id)
+                self._task_done_events[task.id] = threading.Event()
                 self._operations[task.id] = (operation_id, source_ip)
                 self._write()
         self._log_status(task.id, "requested", session.id)
@@ -351,6 +360,45 @@ class QuickInteractionManager:
         with self._lock:
             return session_id in self._running_sessions
 
+    def cancel_codex_session(self, session_id: str, *, timeout: float = 5) -> bool:
+        """Cancel the active Codex CLI interaction and wait for state cleanup."""
+        with self._session_lock(session_id):
+            with self._lock:
+                task = next(
+                    (
+                        item
+                        for item in self._tasks.values()
+                        if item.session_id == session_id
+                        and item.id in self._active_task_ids
+                        and item.engine == "codex_cli"
+                    ),
+                    None,
+                )
+                if task is None:
+                    return False
+                self._cancelled_task_ids.add(task.id)
+                process = self._processes.get(task.id)
+                done = self._task_done_events.get(task.id)
+            if process is not None:
+                self._kill_process(process)
+            if done is None or not done.wait(timeout):
+                raise ApiError(
+                    503,
+                    "quick_interaction_cancel_failed",
+                    "快速交互未能在限定时间内停止。",
+                )
+            return True
+
+    @contextmanager
+    def stop_operation_guard(self, session_id: str) -> Iterator[None]:
+        """Serialize stop with submit while allowing stop to cancel Codex work."""
+        with self._session_lock(session_id):
+            yield
+
+    def _is_cancelled(self, task_id: str) -> bool:
+        with self._lock:
+            return task_id in self._cancelled_task_ids
+
     def _run(self, task_id: str, session: CodexSession, prompt: str) -> None:
         with self._lock:
             task = self._tasks[task_id]
@@ -361,7 +409,11 @@ class QuickInteractionManager:
         result_path = self.result_dir / f"{task_id}.txt"
         error_path = self.result_dir / f"{task_id}.err"
         event_path = self.result_dir / f"{task_id}.jsonl"
+        creating_session = not session.codex_session_id
         try:
+            if self._is_cancelled(task_id):
+                self._finish(task_id, "cancelled", "已由用户停止。")
+                return
             self.codex_manager.set_activity(session.id, "working", "quick")
             self.result_dir.mkdir(parents=True, exist_ok=True)
             command = self._command(session, result_path)
@@ -384,13 +436,26 @@ class QuickInteractionManager:
                 )
                 with self._lock:
                     self._processes[task_id] = process
+                    cancelled = task_id in self._cancelled_task_ids
+                if cancelled:
+                    self._kill_process(process)
                 process.communicate(
                     input=prompt.encode("utf-8"),
                     timeout=self.timeout_seconds,
                 )
-            if process.returncode != 0:
+            current_session = self.codex_manager.get_session(session.id)
+            if self._is_cancelled(task_id):
+                self._finish(task_id, "cancelled", "已由用户停止。")
+            elif process.returncode != 0:
                 error = self._json_error(event_path) or self._read_tail(error_path, 2000)
                 self._finish(task_id, "failed", error or "Codex 执行失败。")
+                return
+            elif creating_session and not current_session.codex_session_id:
+                self._finish(
+                    task_id,
+                    "failed",
+                    "Codex 已执行，但未能保存会话标识，请通过实时终端重试。",
+                )
                 return
             result = self._read_limited(result_path, MAX_RESULT_BYTES)
             self._finish(task_id, "succeeded", result or "Codex 未返回最终结果。")
@@ -402,8 +467,19 @@ class QuickInteractionManager:
                 f"Codex 已达到配置的执行上限（{self.timeout_seconds} 秒）。",
             )
         except Exception:
-            self._finish(task_id, "failed", "快速交互执行失败。")
+            if self._is_cancelled(task_id):
+                self._finish(task_id, "cancelled", "已由用户停止。")
+            else:
+                self._finish(task_id, "failed", "快速交互执行失败。")
         finally:
+            if creating_session:
+                try:
+                    self.codex_manager.get_session(session.id)
+                except Exception:
+                    LOGGER.warning(
+                        "Unable to synchronize newly created Codex session",
+                        exc_info=True,
+                    )
             for path in (result_path, error_path, event_path):
                 try:
                     path.unlink()
@@ -428,6 +504,10 @@ class QuickInteractionManager:
                 with self._lock:
                     self._running_sessions.discard(session.id)
                     self._active_task_ids.discard(task_id)
+                    self._cancelled_task_ids.discard(task_id)
+                    done = self._task_done_events.pop(task_id, None)
+                    if done is not None:
+                        done.set()
             self._log_status(task_id, finished.status, session.id)
             with self._lock:
                 self._operations.pop(task_id, None)
@@ -499,11 +579,14 @@ class QuickInteractionManager:
             "read-only": ['-c', 'default_permissions=":read-only"', '-c', 'approval_policy="on-request"', '-c', 'approvals_reviewer="user"'],
             "full-access": ['-c', 'default_permissions=":danger-full-access"', '-c', 'approval_policy="never"'],
         }[session.permission_mode]
-        return [
+        command = [
             "codex", "exec", "--profile", "chub", "--json", *permission_args,
             "--output-last-message", str(result_path),
-            "resume", session.codex_session_id or "", "-",
         ]
+        if session.codex_session_id:
+            command.extend(["resume", session.codex_session_id])
+        command.append("-")
+        return command
 
     @staticmethod
     def _read_limited(path: Path, limit: int) -> str:
@@ -560,6 +643,7 @@ class QuickInteractionManager:
         provider: str | None = None,
         model: str | None = None,
     ) -> None:
+        notification_operation: tuple[str, str] | None = None
         with self._lock:
             task = self._tasks[task_id]
             task.status = status
@@ -572,7 +656,80 @@ class QuickInteractionManager:
             if model is not None:
                 task.model = model[:500]
             task.updated_at = utc_now()
+            if (
+                self.completion_notifier is not None
+                and task.notification_status is None
+                and status in {"succeeded", "failed", "timed_out"}
+            ):
+                task.notification_status = "pending"
+                task.notification_updated_at = task.updated_at
+                notification_operation = self._operations.get(task_id) or (
+                    uuid.uuid4().hex,
+                    "unknown",
+                )
             self._write()
+        if notification_operation is not None:
+            threading.Thread(
+                target=self._deliver_completion_notification,
+                args=(task_id, notification_operation),
+                daemon=True,
+            ).start()
+
+    def _deliver_completion_notification(
+        self,
+        task_id: str,
+        operation: tuple[str, str],
+    ) -> None:
+        operation_id, source_ip = operation
+        notification_operation_id = f"{operation_id}:weixin"
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None or task.notification_status != "pending":
+                return
+            task.notification_status = "sending"
+            task.notification_updated_at = utc_now()
+            self._write()
+            snapshot = task.model_copy(deep=True)
+        write_operation(
+            operation_id=notification_operation_id,
+            action="quick_interaction_weixin_notification",
+            status="requested",
+            target=snapshot.session_id,
+            source_ip=source_ip,
+        )
+        write_operation(
+            operation_id=notification_operation_id,
+            action="quick_interaction_weixin_notification",
+            status="started",
+            target=snapshot.session_id,
+            source_ip=source_ip,
+        )
+        try:
+            result = self.completion_notifier(snapshot) if self.completion_notifier else None
+            notification_status = getattr(result, "status", "failed")
+            notification_error = getattr(result, "error", None)
+            if notification_status not in {"sent", "failed", "skipped"}:
+                notification_status = "failed"
+                notification_error = "微信通知返回了无效状态。"
+        except Exception:
+            LOGGER.warning("Quick interaction Weixin notification failed", exc_info=True)
+            notification_status = "failed"
+            notification_error = "微信通知未送达。"
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None:
+                return
+            task.notification_status = notification_status
+            task.notification_error = notification_error[:1000] if notification_error else None
+            task.notification_updated_at = utc_now()
+            self._write()
+        write_operation(
+            operation_id=notification_operation_id,
+            action="quick_interaction_weixin_notification",
+            status="succeeded" if notification_status == "sent" else "failed",
+            target=snapshot.session_id,
+            source_ip=source_ip,
+        )
 
     def _log_status(self, task_id: str, status: str, target: str) -> None:
         with self._lock:

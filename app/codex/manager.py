@@ -12,6 +12,7 @@ import tomllib
 import uuid
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
 import psutil
 
@@ -44,7 +45,14 @@ class CodexPtyManager:
         self.hook_dir = settings.codex_pty.data_file.parent / "codex-hooks"
         self._processes: dict[str, subprocess.Popen[bytes]] = {}
         self._lock = threading.RLock()
+        self._quick_interaction_is_running: Callable[[str], bool] = lambda _id: False
         self._reconcile_saved_backends()
+
+    def set_quick_interaction_checker(
+        self,
+        checker: Callable[[str], bool],
+    ) -> None:
+        self._quick_interaction_is_running = checker
 
     @property
     def network_available(self) -> bool:
@@ -95,6 +103,7 @@ class CodexPtyManager:
         sessions = self.store.list()
         for session in sessions:
             self._refresh_status(session)
+            self._reconcile_quick_activity(session)
         return [self._public(session) for session in self.store.list()]
 
     def get_session(self, session_id: str) -> CodexSession:
@@ -104,7 +113,19 @@ class CodexPtyManager:
         if session is None:
             raise ApiError(404, "codex_session_not_found", "Codex session not found")
         self._refresh_status(session)
+        self._reconcile_quick_activity(session)
         return session
+
+    def _reconcile_quick_activity(self, session: CodexSession) -> None:
+        if (
+            session.activity_source != "quick"
+            or self._quick_interaction_is_running(session.id)
+        ):
+            return
+        session.activity = "idle" if session.status == "stopped" else "unknown"
+        session.activity_source = "none"
+        session.updated_at = utc_now()
+        self.store.save(session)
 
     def create_session(self, workspace_id: str) -> SessionInfo:
         self._require_available()
@@ -126,6 +147,12 @@ class CodexPtyManager:
         )
         self.store.save(session)
         return self._public(session)
+
+    def prepare_quick_interaction(self) -> None:
+        """Ensure headless Codex runs use the managed profile and session hook."""
+        self._require_available()
+        with self._lock:
+            self._ensure_profile()
 
     def ensure_terminal(self, session_id: str) -> CodexSession:
         self._require_available()
@@ -209,9 +236,8 @@ class CodexPtyManager:
                     )
             self._stop_backend(session)
             session.status = "stopped"
-            if session.activity_source == "terminal":
-                session.activity = "idle"
-                session.activity_source = "none"
+            session.activity = "idle"
+            session.activity_source = "none"
             session.active_permission_mode = None
             session.error = None
             session.updated_at = utc_now()
@@ -419,6 +445,13 @@ class CodexPtyManager:
                 if activity == "working" and activity_source in {"terminal", "quick"}
                 else "none"
             )
+            if (
+                activity == "working"
+                and expected_source == "quick"
+                and not self._quick_interaction_is_running(session_id)
+            ):
+                activity = "idle" if session.status == "stopped" else "unknown"
+                expected_source = "none"
             if (
                 session.activity != activity
                 or session.activity_source != expected_source
@@ -677,6 +710,7 @@ class CodexPtyManager:
     def _sync_native_sessions(self) -> None:
         with self._lock:
             stored = self.store.list()
+            stored = self._deduplicate_native_sessions(stored)
             by_codex_id = {
                 session.codex_session_id: session
                 for session in stored
@@ -729,6 +763,46 @@ class CodexPtyManager:
                 if native_id in archive_states and not archive_states[native_id]:
                     continue
                 self._remove_stale_session(session)
+
+    def _deduplicate_native_sessions(
+        self,
+        sessions: list[CodexSession],
+    ) -> list[CodexSession]:
+        """Collapse discovery records duplicated before a Chub hook was consumed."""
+        grouped: dict[str, list[CodexSession]] = {}
+        unique: list[CodexSession] = []
+        for session in sessions:
+            if session.codex_session_id:
+                grouped.setdefault(session.codex_session_id, []).append(session)
+            else:
+                unique.append(session)
+
+        for native_id, duplicates in grouped.items():
+            canonical = next(
+                (session for session in duplicates if session.id != native_id),
+                duplicates[0],
+            )
+            changed = False
+            for duplicate in duplicates:
+                if duplicate.id == canonical.id:
+                    continue
+                if not canonical.title and duplicate.title:
+                    canonical.title = duplicate.title
+                    changed = True
+                if (
+                    canonical.active_permission_mode is None
+                    and duplicate.active_permission_mode is not None
+                ):
+                    canonical.active_permission_mode = duplicate.active_permission_mode
+                    changed = True
+                if duplicate.updated_at > canonical.updated_at:
+                    canonical.updated_at = duplicate.updated_at
+                    changed = True
+                self.store.delete(duplicate.id)
+            if changed:
+                self.store.save(canonical)
+            unique.append(canonical)
+        return unique
 
     def _remove_stale_session(self, session: CodexSession) -> None:
         if shutil.which("tmux"):
