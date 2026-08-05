@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-ui-style="{{ 'cyber' if request.cookies.get('hub_ui_style') == 'cyber' else 'standard' }}">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="color-scheme" content="light">
+    <meta name="color-scheme" content="{{ 'dark' if request.cookies.get('hub_ui_style') == 'cyber' else 'light' }}">
     <title>设置 · {{ app_name }}</title>
     {% include "partials/app_styles.html" %}
     <script src="/static/settings.js" defer></script>
@@ -33,6 +33,79 @@
             </select>
           </label>
           <p id="settings-message" class="message" aria-live="polite"></p>
+        </section>
+
+        <section class="settings-section" aria-labelledby="style-settings-title">
+          <div class="settings-section-heading">
+            <h3 id="style-settings-title">界面风格</h3>
+            <p>查看可用风格及常用界面元素的实际效果。预览不会修改当前页面。</p>
+          </div>
+          <div class="style-option-row" data-style-option="standard">
+            <a class="style-option" href="/settings/styles/standard">
+              <span class="style-option-swatch" aria-hidden="true">
+                <i></i><i></i><i></i>
+              </span>
+              <span class="style-option-copy">
+                <span class="style-option-heading">
+                  <strong>Standard</strong>
+                  <span class="badge badge-success" data-style-badge>当前风格</span>
+                </span>
+                <small>简约标准版 · 清晰、克制、轻量的工具型界面</small>
+              </span>
+              <span class="style-option-action">预览</span>
+            </a>
+            <button class="button-secondary style-apply" type="button" data-style-apply="standard">使用中</button>
+          </div>
+          <div class="style-option-row" data-style-option="cyber">
+            <a class="style-option" href="/settings/styles/cyber">
+              <span class="style-option-swatch style-option-swatch-cyber" aria-hidden="true">
+                <i></i><i></i><i></i>
+              </span>
+              <span class="style-option-copy">
+                <span class="style-option-heading">
+                  <strong>Cyber</strong>
+                  <span class="badge badge-muted" data-style-badge>可用风格</span>
+                </span>
+                <small>科技终端版 · 深色、冷光、现代设备控制台</small>
+              </span>
+              <span class="style-option-action">预览</span>
+            </a>
+            <button class="button-secondary style-apply" type="button" data-style-apply="cyber">应用</button>
+          </div>
+          <div class="cyber-style-controls" aria-label="Cyber 代码雨设置">
+            <label class="cyber-style-control" for="cyber-rain-speed">
+              <span>
+                <strong>代码雨速度</strong>
+                <small>数值越高，下落越快。</small>
+              </span>
+              <span class="cyber-style-control-input">
+                <input id="cyber-rain-speed" type="range" min="10" max="100" value="60">
+                <output id="cyber-rain-speed-value" for="cyber-rain-speed">60%</output>
+              </span>
+            </label>
+            <label class="cyber-style-control" for="cyber-rain-brightness">
+              <span>
+                <strong>代码雨亮度</strong>
+                <small>调整整体亮度，并保留雨头明暗层次。</small>
+              </span>
+              <span class="cyber-style-control-input">
+                <input id="cyber-rain-brightness" type="range" min="10" max="100" value="70">
+                <output id="cyber-rain-brightness-value" for="cyber-rain-brightness">70%</output>
+              </span>
+            </label>
+            <label class="cyber-style-control" for="cyber-rain-density">
+              <span>
+                <strong>代码雨密度</strong>
+                <small>调整同屏显示的雨列数量。</small>
+              </span>
+              <span class="cyber-style-control-input">
+                <input id="cyber-rain-density" type="range" min="10" max="100" value="50">
+                <output id="cyber-rain-density-value" for="cyber-rain-density">50%</output>
+              </span>
+            </label>
+            <p id="cyber-style-settings-message" class="message" aria-live="polite"></p>
+          </div>
+          <p class="settings-section-note">风格选择保存在当前浏览器，可随时预览或切换。</p>
         </section>
 
         <section class="settings-section" aria-labelledby="about-title">

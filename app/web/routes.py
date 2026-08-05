@@ -98,6 +98,48 @@ def settings_page(request: Request) -> HTMLResponse:
     )
 
 
+@router.get(
+    "/settings/styles/standard",
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
+def standard_style_preview(request: Request) -> HTMLResponse:
+    settings = request.app.state.settings
+    return templates.TemplateResponse(
+        request=request,
+        name="style_preview_standard.html",
+        context={
+            "app_name": settings.app.name,
+            "style_name": "Standard",
+            "style_badge": "当前风格",
+            "style_description": "简约标准版以清晰信息层级、克制配色、自然高度卡片和轻量反馈为核心。",
+            "preview_body_class": "standard-preview",
+            "color_scheme": "light",
+        },
+    )
+
+
+@router.get(
+    "/settings/styles/cyber",
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
+def cyber_style_preview(request: Request) -> HTMLResponse:
+    settings = request.app.state.settings
+    return templates.TemplateResponse(
+        request=request,
+        name="style_preview_standard.html",
+        context={
+            "app_name": settings.app.name,
+            "style_name": "Cyber",
+            "style_badge": "设计预览",
+            "style_description": "科技终端版以深色控制台、冷色边缘光、等宽信息和明确状态为核心。",
+            "preview_body_class": "cyber-preview",
+            "color_scheme": "dark",
+        },
+    )
+
+
 @router.get("/automations", response_class=HTMLResponse, include_in_schema=False)
 def automation_details(request: Request) -> HTMLResponse:
     settings = request.app.state.settings

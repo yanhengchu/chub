@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-ui-style="{{ 'cyber' if request.cookies.get('hub_ui_style') == 'cyber' else 'standard' }}">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="color-scheme" content="light">
+    <meta name="color-scheme" content="{{ 'dark' if request.cookies.get('hub_ui_style') == 'cyber' else 'light' }}">
     <title>{{ page_title }}</title>
     {% include "partials/app_styles.html" %}
     <script src="/static/codex_polling.js" defer></script>
@@ -246,7 +246,7 @@
           <p id="project-docs-message" class="message{% if design_documents_error %} message-error{% endif %}" aria-live="polite">{{ design_documents_error or '' }}</p>
           <div class="card-footer">
             <div class="card-footer-actions">
-            <a id="all-project-docs" class="button-link" href="/project-docs">查看全部文档</a>
+            <a id="all-project-docs" class="button-link" href="/project-docs">全部文档</a>
             </div>
           </div>
           </div>

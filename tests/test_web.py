@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -44,6 +45,9 @@ async def test_home_page_is_public_and_contains_no_token(
     assert response.status_code == 200
     assert 'type="password"' in response.text
     assert 'src="/static/app.js"' in response.text
+    assert 'src="/static/theme.js"' in response.text
+    assert '<html lang="zh-CN" data-ui-style="standard">' in response.text
+    assert '<meta name="color-scheme" content="light">' in response.text
     expected_stylesheets = [
         "/static/css/tokens.css",
         "/static/css/base.css",
@@ -137,6 +141,8 @@ async def test_home_page_is_public_and_contains_no_token(
     assert 'href="/project-docs/openclaw-integration"' in response.text
     assert 'target="_blank"' not in response.text
     assert 'href="/project-docs"' in response.text
+    assert '>全部文档</a>' in response.text
+    assert "查看全部文档" not in response.text
     assert 'href="/project-docs" target="_blank"' not in response.text
     assert "节点维护" not in response.text
     assert "维护检查" not in response.text
@@ -170,6 +176,26 @@ async def test_home_page_is_public_and_contains_no_token(
 
 
 @pytest.mark.anyio
+async def test_cyber_style_is_rendered_before_assets_load(settings: Settings) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        client.cookies.set("hub_ui_style", "cyber")
+        pages = await asyncio.gather(
+            client.get("/"),
+            client.get("/settings"),
+            client.get("/automations"),
+            client.get("/logs"),
+            client.get("/project-docs"),
+            client.get("/codex/session-1/quick-interactions/conversation"),
+        )
+
+    assert all(page.status_code == 200 for page in pages)
+    for page in pages:
+        assert '<html lang="zh-CN" data-ui-style="cyber">' in page.text
+        assert '<meta name="color-scheme" content="dark">' in page.text
+
+
+@pytest.mark.anyio
 async def test_settings_page_supports_quick_interaction_page_size_preference(
     settings: Settings,
 ) -> None:
@@ -177,11 +203,24 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/settings")
         script = await client.get("/static/settings.js")
+        theme_script = await client.get("/static/theme.js")
 
     assert response.status_code == 200
     assert "设置 · Hub" in response.text
     assert "快速交互" in response.text
     assert "调整会话历史记录的加载方式。" in response.text
+    assert "界面风格" in response.text
+    assert "Standard" in response.text
+    assert "Cyber" in response.text
+    assert "当前风格" in response.text
+    assert 'href="/settings/styles/standard"' in response.text
+    assert 'href="/settings/styles/cyber"' in response.text
+    assert 'id="cyber-rain-speed"' in response.text
+    assert 'id="cyber-rain-brightness"' in response.text
+    assert 'id="cyber-rain-density"' in response.text
+    assert "风格选择保存在当前浏览器" in response.text
+    assert 'data-style-apply="standard"' in response.text
+    assert 'data-style-apply="cyber"' in response.text
     assert 'name="quick-interaction-view"' not in response.text
     assert "任务视图" not in response.text
     assert 'id="quick-interaction-page-size"' in response.text
@@ -194,6 +233,12 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
     assert "hub.quickInteractionView.v1" not in script.text
     assert "hub.quickInteractionPageSize.v1" in script.text
     assert "localStorage.setItem" in script.text
+    assert "hub.cyberRainSpeed.v1" in script.text
+    assert "hub.cyberRainBrightness.v1" in script.text
+    assert "hub.cyberRainDensity.v1" in script.text
+    assert "ChubTheme.applyStyle" in script.text
+    assert theme_script.status_code == 200
+    assert "hub.uiStyle.v1" in theme_script.text
     assert "下次进入快速交互时生效" in script.text
     assert response.headers["content-security-policy"] == (
         "default-src 'self'; "
@@ -205,6 +250,74 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
         "base-uri 'none'; "
         "frame-ancestors 'none'"
     )
+
+
+@pytest.mark.anyio
+async def test_standard_style_preview_is_static_and_available(
+    settings: Settings,
+) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/settings/styles/standard")
+        script = await client.get("/static/style-preview.js")
+
+    assert response.status_code == 200
+    assert "Standard 风格预览 · Hub" in response.text
+    assert "以下内容均为静态示例" in response.text
+    assert "节点状态" in response.text
+    assert "自动化任务" in response.text
+    assert "Codex 会话" in response.text
+    assert "控件与反馈" in response.text
+    assert "状态与折叠" in response.text
+    assert "暂无可展示内容" in response.text
+    assert "刷新失败，已保留上一次成功内容" in response.text
+    assert 'data-collapsible-card' in response.text
+    assert 'data-collapsible-persist="false"' in response.text
+    assert 'type="password"' in response.text
+    assert 'type="checkbox"' in response.text
+    assert 'href="#standard-conversation-preview"' not in response.text
+    assert 'id="standard-conversation-preview"' in response.text
+    assert "任务执行中，请稍候" in response.text
+    assert "已通知" in response.text
+    assert "待通知" in response.text
+    assert '<span class="conversation-message-meta">Codex CLI</span>' in response.text
+    assert "查看会话" not in response.text
+    assert 'class="button-link conversation-pin"' in response.text
+    assert 'id="preview-dialog"' in response.text
+    assert script.status_code == 200
+    assert "showModal" in script.text
+    assert "setupCollapsibleCards" in script.text
+
+
+@pytest.mark.anyio
+async def test_cyber_style_preview_is_available(settings: Settings) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/settings/styles/cyber")
+        script = await client.get("/static/style-preview.js")
+        theme_script = await client.get("/static/theme.js")
+
+    assert response.status_code == 200
+    assert "Cyber 风格预览 · Hub" in response.text
+    assert 'class="cyber-preview"' in response.text
+    assert 'content="dark"' in response.text
+    assert "科技终端版" in response.text
+    assert 'class="cyber-matrix"' in response.text
+    assert 'id="cyber-rain-speed"' not in response.text
+    assert 'id="cyber-rain-brightness"' not in response.text
+    assert "0x7F" not in response.text
+    assert '<div class="cyber-matrix" aria-hidden="true"></div>' in response.text
+    assert "节点状态" in response.text
+    assert "快速交互" in response.text
+    assert 'data-collapsible-persist="false"' in response.text
+    assert script.status_code == 200
+    assert theme_script.status_code == 200
+    assert "hub.cyberRainSpeed.v1" in theme_script.text
+    assert "hub.cyberRainBrightness.v1" in theme_script.text
+    assert "hub.cyberRainDensity.v1" in theme_script.text
+    assert "Math.random" in theme_script.text
+    assert "rainSequence" in theme_script.text
+    assert "Cyber 使用命令式说明和终端化主次按钮表达操作影响" in script.text
 
 
 @pytest.mark.anyio
@@ -272,6 +385,7 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         scripts = [
+            await client.get("/static/theme.js"),
             await client.get("/static/js/core/dashboard-core.js"),
             await client.get("/static/js/components/ui.js"),
             await client.get("/static/js/components/collapsible-card.js"),
@@ -297,6 +411,7 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert all(script.status_code == 200 for script in scripts)
     assert polling_script.status_code == 200
     assert removed_stylesheet.status_code == 404
+
     assert all(asset.status_code == 200 for asset in stylesheets)
     assert terminal_stylesheet.status_code == 200
     assert terminal_script.status_code == 200
@@ -339,6 +454,7 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert 'document.createElement("time")' in dashboard_script
     assert "正在刷新文档列表" not in dashboard_script
     assert "文档列表已更新" not in dashboard_script
+    assert "文档已归档" not in dashboard_script
     assert "sessionStorage" in dashboard_script
     assert "localStorage" in dashboard_script
     assert "Authorization" in dashboard_script
@@ -410,7 +526,7 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "codexLoadPromise = null" in script.text
     assert "codexMutationCount = 0" in script.text
     assert "if (handleAccessError(error))" in script.text
-    assert "loadProjectDocuments({ clearMessage: false })" in script.text
+    assert "loadProjectDocuments({ clearMessage: false })" not in script.text
     assert "renderCodexData" in script.text
     assert "restoreCodexCardCache" in script.text
     assert "storeCodexCardCache" in script.text
@@ -432,6 +548,8 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "fadeTargets = Array.from(content.children)" in script.text
     assert "CARD_FADE_DURATION_MS = 140" in script.text
     assert "CARD_HEIGHT_DURATION_MS = 180" in script.text
+    assert 'card.dataset.collapsiblePersist !== "false"' in script.text
+    assert "if (shouldPersist)" in script.text
     assert "transition: gap 180ms ease 140ms" in stylesheet.text
     assert 'matchMedia("(prefers-reduced-motion: reduce)")' in script.text
     assert "restartHub" in script.text
@@ -504,7 +622,7 @@ async def test_quick_interaction_conversation_page_is_available(
     assert 'aria-hidden="true" inert' in page.text
     assert "当前执行方式" in page.text
     assert "点击右侧按钮切换" in page.text
-    assert 'id="conversation-submit" type="submit" disabled hidden' in page.text
+    assert 'id="conversation-submit" class="button-secondary" type="submit" disabled hidden' in page.text
     assert page.text.index("/static/quick_interactions_core.js") < page.text.index(
         "/static/quick_interaction_conversation.js"
     )
@@ -540,8 +658,19 @@ async def test_quick_interaction_conversation_page_is_available(
     assert "textContent" in script.text
     assert "innerHTML" not in script.text
     assert ".conversation-page" in stylesheet.text
+    assert "width: min(100%, 1080px);" in stylesheet.text
+    assert "width: min(90%, 46rem);" not in stylesheet.text
+    assert "width: 90%;" in stylesheet.text
+    assert "max-width: 1080px;" in stylesheet.text
+    assert "width: min(100%, 720px);" not in stylesheet.text
     assert ".conversation-message-user" in stylesheet.text
     assert ".conversation-composer" in stylesheet.text
+    assert ":not(.site-header-title):not(.session-enter)::before" in stylesheet.text
+    assert 'a.button-link::before' in stylesheet.text
+    assert ':root[data-ui-style="cyber"] .openclaw-status-row .badge' in stylesheet.text
+    assert "font-size: 0.875rem;" in stylesheet.text
+    assert 'grid-template-columns: auto minmax(0, 1fr) minmax(4.25rem, max-content);' in stylesheet.text
+    assert "#conversation-submit" in stylesheet.text
 
 
 @pytest.mark.anyio
@@ -788,8 +917,9 @@ async def test_page_uses_external_script_only(settings: Settings) -> None:
         "/static/js/features/logs.js",
         "/static/app.js",
     ]
-    assert response.text.count("<script") == len(expected_scripts)
-    positions = [
+    assert response.text.count("<script") == len(expected_scripts) + 1
+    assert '<script src="/static/theme.js"></script>' in response.text
+    positions = [response.text.index('<script src="/static/theme.js"></script>')] + [
         response.text.index(f'<script src="{source}" defer></script>')
         for source in expected_scripts
     ]

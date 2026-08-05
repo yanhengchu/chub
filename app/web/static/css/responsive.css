@@ -1,5 +1,39 @@
 
 @media (max-width: 420px) {
+  .style-option {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .style-option-row {
+    grid-template-columns: 1fr;
+  }
+
+  .style-apply {
+    width: 100%;
+  }
+
+  .style-option-action {
+    grid-column: 2;
+  }
+
+  .cyber-style-control {
+    grid-template-columns: 1fr;
+    gap: 0.55rem;
+  }
+
+  .style-preview-actions > button {
+    width: 100%;
+  }
+
+  .style-preview-field {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .style-preview-field select {
+    width: 100%;
+  }
+
   .site-settings-link {
     min-height: 36px;
   }

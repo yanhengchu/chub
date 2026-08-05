@@ -45,7 +45,8 @@ function setupCollapsibleCard(card) {
   if (!cardKey) {
     return;
   }
-  const initiallyCollapsed = typeof cardCollapsedState[cardKey] === "boolean"
+  const shouldPersist = card.dataset.collapsiblePersist !== "false";
+  const initiallyCollapsed = shouldPersist && typeof cardCollapsedState[cardKey] === "boolean"
     ? cardCollapsedState[cardKey]
     : card.dataset.collapsed === "true";
   headingCopy.setAttribute("role", "button");
@@ -90,9 +91,11 @@ function setupCollapsibleCard(card) {
       content.style.removeProperty("height");
       content.style.removeProperty("opacity");
       content.style.removeProperty("overflow");
+      content.style.removeProperty("visibility");
       return;
     }
     content.hidden = false;
+    content.style.removeProperty("visibility");
     content.style.height = `${startHeight}px`;
     content.style.overflow = "hidden";
     if (collapsed) {
@@ -104,6 +107,8 @@ function setupCollapsibleCard(card) {
       if (animationVersion !== collapseAnimationVersion) {
         return;
       }
+      // Keep the content fully hidden while only the empty container height collapses.
+      content.style.visibility = "hidden";
       await playContentAnimation(
         content,
         [{ height: `${startHeight}px` }, { height: "0px" }],
@@ -136,14 +141,17 @@ function setupCollapsibleCard(card) {
     content.style.removeProperty("opacity");
     content.style.removeProperty("overflow");
     content.hidden = collapsed;
+    content.style.removeProperty("visibility");
   };
 
   const setCollapsed = (collapsed) => {
     card.classList.toggle("is-collapsed", collapsed);
     headingCopy.setAttribute("aria-expanded", String(!collapsed));
     setContentCollapsed(collapsed);
-    cardCollapsedState[cardKey] = collapsed;
-    saveCardCollapsedState();
+    if (shouldPersist) {
+      cardCollapsedState[cardKey] = collapsed;
+      saveCardCollapsedState();
+    }
   };
   const isInteractiveTarget = (target) => Boolean(
     target.closest("button, a, input, select, textarea, summary"),

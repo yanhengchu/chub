@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-ui-style="{{ 'cyber' if request.cookies.get('hub_ui_style') == 'cyber' else 'standard' }}">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="color-scheme" content="light">
+    <meta name="color-scheme" content="{{ 'dark' if request.cookies.get('hub_ui_style') == 'cyber' else 'light' }}">
     <title>快速交互</title>
     {% include "partials/app_styles.html" %}
     <script src="/static/quick_interactions_core.js" defer></script>
@@ -24,7 +24,7 @@
           <div class="conversation-input-row">
             <textarea id="conversation-prompt" rows="1" maxlength="8000" required placeholder="输入消息…" aria-label="快速交互需求" disabled></textarea>
             <button id="conversation-more" class="button-secondary conversation-more" type="button" aria-label="更多设置，当前执行方式为 Codex CLI" aria-expanded="false" aria-controls="conversation-more-panel" data-engine="codex_cli" disabled>＋</button>
-            <button id="conversation-submit" type="submit" disabled hidden>发送</button>
+          <button id="conversation-submit" class="button-secondary" type="submit" disabled hidden>发送</button>
           </div>
           <div id="conversation-more-panel" class="conversation-more-panel" aria-hidden="true" inert>
             <div class="conversation-more-panel-inner">

@@ -30,6 +30,7 @@ button {
   color: white;
   background: var(--accent);
   cursor: pointer;
+  font-size: 0.875rem;
   font-weight: 700;
 }
 

@@ -112,8 +112,7 @@ async function archiveProjectDocument(button) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ archived: true }),
     });
-    setMessage(elements.projectDocsMessage, "文档已归档。", "success");
-    await loadProjectDocuments({ clearMessage: false });
+    await loadProjectDocuments();
   } catch (error) {
     if (!handleAccessError(error)) {
       setMessage(elements.projectDocsMessage, error.message || "文档归档失败。", "error");
