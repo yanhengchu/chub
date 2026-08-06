@@ -668,6 +668,7 @@ async def test_quick_interaction_conversation_page_is_available(
     assert ":not(.site-header-title):not(.session-enter)::before" in stylesheet.text
     assert 'a.button-link::before' in stylesheet.text
     assert ':root[data-ui-style="cyber"] .openclaw-status-row .badge' in stylesheet.text
+    assert ':root[data-ui-style="cyber"] .workspace-button strong' in stylesheet.text
     assert "font-size: 0.875rem;" in stylesheet.text
     assert 'grid-template-columns: auto minmax(0, 1fr) minmax(4.25rem, max-content);' in stylesheet.text
     assert "#conversation-submit" in stylesheet.text

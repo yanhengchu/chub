@@ -2240,6 +2240,10 @@ a.openclaw-access:focus-visible {
   display: block;
 }
 
+:root[data-ui-style="cyber"] .workspace-button strong {
+  display: inline;
+}
+
 .workspace-button span {
   margin-top: 0.2rem;
   overflow: hidden;
