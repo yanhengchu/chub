@@ -95,6 +95,22 @@ class SessionListData(BaseModel):
     sessions: list[SessionInfo]
 
 
+QuotaStatus = Literal["available", "unavailable"]
+
+
+class CodexQuotaWindow(BaseModel):
+    remaining_percent: int = Field(ge=0, le=100)
+    window_duration_minutes: int = Field(ge=1)
+    resets_at: datetime
+
+
+class CodexQuotaData(BaseModel):
+    status: QuotaStatus
+    message: str | None = None
+    checked_at: datetime = Field(default_factory=utc_now)
+    windows: list[CodexQuotaWindow] = Field(default_factory=list)
+
+
 class SessionCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

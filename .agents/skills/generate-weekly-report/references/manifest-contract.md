@@ -7,7 +7,7 @@ The adapter mapping is JSON:
   "version": 1,
   "report_period": {
     "start": "2026-07-20",
-    "end": "2026-07-24",
+    "end": "2026-07-26",
     "timezone": "Asia/Shanghai"
   },
   "required_roles": [
@@ -56,6 +56,8 @@ The mapping declares the actual required roles so future profiles can change wit
 Supported `content_status`: `ready`, `needs-review`, `incomplete`, `still-editing`, `stale`, `manually-approved`. Only `ready` and `manually-approved` pass input validation.
 
 Always set `download_status` and `content_status` explicitly. The adapter never infers download success or content readiness from file existence.
+
+`report_period` always covers the current period's Monday through Sunday. Source documents may use different reporting windows, such as Monday through Friday, Monday through Saturday, or Tuesday through Saturday. A source belongs to the current period when its declared `usage_period` falls entirely within `report_period`. If the source spans a period boundary, use an explicit `heading-range` or maintainer-confirmed range; never include it solely because its download date or a portion of its content overlaps.
 
 Supported usage modes:
 

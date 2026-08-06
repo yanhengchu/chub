@@ -9,13 +9,13 @@ Generate local Markdown reports in two gated stages. Treat every automation down
 
 ## Prepare inputs
 
-1. Locate the reporting period, the previous formal report, and the current source documents.
+1. Derive the current period: it is the Monday-to-Sunday week whose processing window starts on Wednesday and ends on the following Tuesday, the fixed reporting day. Locate that period's selected `inputs/<download-batch>/`, the previous formal report, and the current source documents. A source may use a shorter or shifted range such as Monday-to-Friday or Tuesday-to-Saturday, but its declared `usage_period` must fall within the current period.
 2. If `manifest.json` does not exist, create a small explicit mapping JSON and run:
 
    ```bash
    python3 scripts/adapt_downloads.py \
      --data-root <project-data-directory> \
-     --source-root <automation-download-root> \
+     --source-root <data/weekly-reports/period/inputs/download-batch> \
      --workspace <data/weekly-reports/period> \
      --mapping <mapping.json>
    ```
@@ -24,13 +24,13 @@ Generate local Markdown reports in two gated stages. Treat every automation down
 4. Run `python3 scripts/validate_weekly_report.py inputs --manifest <manifest.json>`.
 5. Stop on missing required sources, unsafe paths, unreadable content, unresolved heading boundaries, changed hashes, or a blocking `content_status`. Continue with a gap only after the maintainer explicitly approves its exact scope.
 
-The adapter does not copy, move, or modify downloads. It records a constrained `source_root` and paths relative to it. Read [references/manifest-contract.md](references/manifest-contract.md) when creating or diagnosing a mapping.
+The adapter does not copy, move, or modify downloads. It records a constrained `source_root` inside the same period workspace and paths relative to it. Read [references/manifest-contract.md](references/manifest-contract.md) when creating or diagnosing a mapping.
 
 ## Stage A: confirm focus
 
 Read only each document's declared `usage` range. Read [references/v-report-profile.md](references/v-report-profile.md) while extracting V-business coverage and [references/review-rules.md](references/review-rules.md) for fact handling.
 
-Create `output/本周工作重点确认清单-<周期>.md` with:
+Create `output/本期工作重点确认清单-<周期>.md` with:
 
 - proposed inclusions, merges/weakening, and exclusions;
 - continuations from the previous report;
@@ -49,7 +49,7 @@ After confirmation, also write `output/weekly-report-confirmation.json` as the d
 
 Read [references/report-structure.md](references/report-structure.md). Use the confirmed checklist as the narrative, then return to the declared source ranges to verify every fact.
 
-Write `output/本周业务周报-<周期>.md`. Include 4–6 substantive summary items and a final `各端周报` section with source links. Do not put an input inventory or internal compilation notes at the top.
+Write `output/本期业务周报-<周期>.md`. Include 4–6 substantive summary items and a final `各端周报` section with source links. Do not put an input inventory or internal compilation notes at the top.
 
 Perform three reviews:
 

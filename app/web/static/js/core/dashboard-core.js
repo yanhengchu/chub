@@ -150,6 +150,8 @@ async function refreshCardsAfterRestart() {
 function clearProtectedView() {
   stopCodexPolling({ reset: true });
   codexLoadPromise = null;
+  codexQuotaLoadPromise = null;
+  codexQuotaLoadedAt = 0;
   codexMutationCount = 0;
   elements.dashboard.hidden = true;
   elements.connectedBar.hidden = true;
@@ -166,6 +168,7 @@ function clearProtectedView() {
   elements.codexWorkspaces = null;
   elements.codexSessions = null;
   elements.codexMessage = null;
+  elements.codexQuota = null;
   elements.codexSessionCount = null;
   elements.refreshCodex = null;
   elements.createCodex = null;
@@ -174,6 +177,7 @@ function clearProtectedView() {
   elements.logsOutput.textContent = "";
   releaseFeishuQr();
   sessionStorage.removeItem(CODEX_CARD_CACHE_KEY);
+  sessionStorage.removeItem(CODEX_QUOTA_CACHE_KEY);
 }
 
 function showDisconnectedView(message = "输入启动 Hub 时配置的 Token。", kind = "") {

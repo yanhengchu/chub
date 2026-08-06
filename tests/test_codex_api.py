@@ -7,6 +7,8 @@ import pytest
 
 from app.application import create_app
 from app.codex.models import (
+    CodexQuotaData,
+    CodexQuotaWindow,
     CodexSession,
     QuickInteractionTask,
     SessionInfo,
@@ -59,6 +61,36 @@ async def test_codex_session_list_reports_workspaces(settings: Settings) -> None
     assert data["available"] is False
     assert data["workspaces"][0]["id"] == "home"
     assert data["dependencies"]["tmux"] is False
+
+
+@pytest.mark.anyio
+async def test_codex_quota_is_protected_and_can_be_refreshed(settings: Settings) -> None:
+    app = create_app(settings)
+    rate_limits = MagicMock()
+    rate_limits.read.return_value = CodexQuotaData(
+        status="available",
+        windows=[
+            CodexQuotaWindow(
+                remaining_percent=75,
+                window_duration_minutes=15,
+                resets_at="2026-08-06T10:15:00Z",
+            )
+        ],
+    )
+    app.state.codex_rate_limits = rate_limits
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        denied = await client.get("/api/codex/quota")
+        response = await client.get(
+            "/api/codex/quota?refresh=true",
+            headers=authorization(settings),
+        )
+
+    assert denied.status_code == 401
+    assert response.status_code == 200
+    assert response.json()["data"]["windows"][0]["remaining_percent"] == 75
+    rate_limits.read.assert_called_once_with(force=True)
 
 
 @pytest.mark.anyio

@@ -14,6 +14,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.websockets import WebSocketDisconnect
 
 from app.codex.models import (
+    CodexQuotaData,
     QuickInteractionData,
     QuickInteractionListData,
     QuickInteractionOrder,
@@ -72,6 +73,14 @@ def list_sessions(request: Request) -> ApiResponse[SessionListData]:
             sessions=sessions,
         )
     )
+
+
+@api_router.get("/quota", response_model=ApiResponse[CodexQuotaData])
+def read_quota(
+    request: Request,
+    refresh: bool = Query(default=False),
+) -> ApiResponse[CodexQuotaData]:
+    return ApiResponse(data=request.app.state.codex_rate_limits.read(force=refresh))
 
 
 @api_router.post("/sessions", response_model=ApiResponse[SessionInfo])

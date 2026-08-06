@@ -78,10 +78,17 @@ def test_codex_execution_prompt_adds_delivery_guidance_without_changing_request(
     quick_interactions = manager(tmp_path)
     prompt = quick_interactions._codex_execution_prompt("调整页面布局")
 
-    assert prompt.startswith(CODEX_QUICK_INTERACTION_INSTRUCTIONS)
-    assert prompt.endswith("[用户需求]\n调整页面布局")
+    assert prompt.startswith("[用户需求]\n调整页面布局")
+    assert prompt.endswith(CODEX_QUICK_INTERACTION_INSTRUCTIONS)
     assert "完成效果" in prompt
     assert "验收方法" in prompt
+
+
+def test_session_title_uses_first_user_request_line(tmp_path: Path) -> None:
+    quick_interactions = manager(tmp_path)
+
+    assert quick_interactions._session_title("\n  修复首页会话标题  \n补充测试") == "修复首页会话标题"
+    assert quick_interactions._session_title("\n\n") == "快速交互"
 
 
 def test_submit_allows_new_session_and_prepares_managed_profile(
@@ -107,6 +114,10 @@ def test_submit_allows_new_session_and_prepares_managed_profile(
     assert task.status == "requested"
     assert task.prompt == "执行第一条任务"
     quick_interactions.codex_manager.prepare_quick_interaction.assert_called_once_with()
+    quick_interactions.codex_manager.set_initial_quick_interaction_title.assert_called_once_with(
+        session.id,
+        "执行第一条任务",
+    )
     thread.start.assert_called_once_with()
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -26,10 +27,12 @@ from app.automations.models import (
 from app.automations.operations import log_final_operation
 from app.automations.store import AutomationStateStore
 from app.core.config import Settings
+from app.services.weekly_reports import WEEKLY_REPORTS_ROOT, reporting_period
 
 
 LOGGER = logging.getLogger("hub.automations")
 SIGNATURES = {"pdf": b"%PDF-", "zip": b"PK"}
+_RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 
 class AutomationFailed(Exception):
@@ -63,6 +66,8 @@ def _check_navigation(url: str, task: AutomationTaskConfig) -> None:
 def _output_path(
     task: AutomationTaskConfig,
     data_dir: Path,
+    *,
+    output_root: Path | None = None,
 ) -> Path:
     try:
         timezone = ZoneInfo(task.output.timezone)
@@ -74,10 +79,10 @@ def _output_path(
         raise AutomationFailed("输出文件名格式无效") from exc
     if Path(filename).name != filename:
         raise AutomationFailed("输出文件名包含非法路径")
-    output_root = (data_dir / "downloads").resolve()
-    directory = (output_root / task.output.directory).resolve()
-    if not directory.is_relative_to(output_root):
-        raise AutomationFailed("输出目录超出自动化数据目录")
+    resolved_output_root = (output_root or data_dir / "downloads").resolve()
+    directory = (resolved_output_root / task.output.directory).resolve()
+    if not directory.is_relative_to(resolved_output_root):
+        raise AutomationFailed("输出目录超出受控范围")
     return directory / filename
 
 
@@ -140,6 +145,8 @@ async def _run_browser_task(
     task: AutomationTaskConfig,
     settings: Settings,
     run_id: str,
+    *,
+    output_root: Path | None = None,
 ) -> tuple[Path, int, bool]:
     task_pages = []
 
@@ -203,9 +210,15 @@ async def _run_browser_task(
             if download is None:
                 raise AutomationFailed("任务没有捕获到下载事件")
 
-            target = _output_path(task, settings.automations.data_dir)
-            output_root = (settings.automations.data_dir / "downloads").resolve()
-            _ensure_private_directory(target.parent, output_root)
+            target = _output_path(
+                task,
+                settings.automations.data_dir,
+                output_root=output_root,
+            )
+            resolved_output_root = (
+                output_root or settings.automations.data_dir / "downloads"
+            ).resolve()
+            _ensure_private_directory(target.parent, resolved_output_root)
             temporary = target.with_name(f".{target.name}.{run_id}.tmp")
             try:
                 await download.save_as(temporary)
@@ -239,21 +252,29 @@ def _run_task_once(
     task: AutomationTaskConfig,
     settings: Settings,
     run_id: str,
+    *,
+    output_root: Path | None = None,
 ) -> tuple[Path, int, bool]:
+    browser_kwargs = {"output_root": output_root} if output_root else {}
     return asyncio.run(
         asyncio.wait_for(
-            _run_browser_task(task, settings, run_id),
+            _run_browser_task(task, settings, run_id, **browser_kwargs),
             timeout=task.execution.timeout_ms / 1000,
         )
     )
 
 
-def _clear_linked_markdown_files(directory: Path, data_dir: Path) -> None:
-    output_root = (data_dir / "downloads").resolve()
-    resolved_directory = (output_root / directory).resolve()
-    if not resolved_directory.is_relative_to(output_root):
-        raise AutomationFailed("关联文档输出目录超出自动化数据目录")
-    _ensure_private_directory(resolved_directory, output_root)
+def _clear_linked_markdown_files(
+    directory: Path,
+    data_dir: Path,
+    *,
+    output_root: Path | None = None,
+) -> None:
+    resolved_output_root = (output_root or data_dir / "downloads").resolve()
+    resolved_directory = (resolved_output_root / directory).resolve()
+    if not resolved_directory.is_relative_to(resolved_output_root):
+        raise AutomationFailed("关联文档输出目录超出受控范围")
+    _ensure_private_directory(resolved_directory, resolved_output_root)
     for entry in resolved_directory.iterdir():
         if entry.suffix.lower() == ".md" and (entry.is_file() or entry.is_symlink()):
             entry.unlink()
@@ -264,6 +285,9 @@ def _run_linked_documents(
     source: Path,
     settings: Settings,
     run_id: str,
+    *,
+    output_root: Path | None = None,
+    linked_directory: Path | None = None,
 ) -> list[LinkedDocumentResult]:
     if task.extension is None:
         return []
@@ -282,8 +306,12 @@ def _run_linked_documents(
     except ZoneInfoNotFoundError as exc:
         raise AutomationFailed("输出时区无效") from exc
     date_directory = datetime.now(timezone).strftime("%Y-%m-%d")
-    output_directory = task.output.directory / "linked" / date_directory
-    _clear_linked_markdown_files(output_directory, settings.automations.data_dir)
+    output_directory = linked_directory or task.output.directory / "linked" / date_directory
+    _clear_linked_markdown_files(
+        output_directory,
+        settings.automations.data_dir,
+        output_root=output_root,
+    )
     used_filenames: set[str] = set()
     results = []
     for index, document in enumerate(documents, start=1):
@@ -307,10 +335,12 @@ def _run_linked_documents(
             }
         )
         try:
+            task_kwargs = {"output_root": output_root} if output_root else {}
             target, _, skipped = _run_task_once(
                 linked_task,
                 settings,
                 f"{run_id}-{index:02d}",
+                **task_kwargs,
             )
             results.append(
                 LinkedDocumentResult(
@@ -348,6 +378,31 @@ def _run_linked_documents(
     return results
 
 
+def _weekly_report_input_root(started: datetime, run_id: str) -> Path:
+    period = reporting_period(started.date())
+    workspace = WEEKLY_REPORTS_ROOT / period
+    inputs = workspace / "inputs"
+    workspace.mkdir(parents=True, exist_ok=True)
+    workspace.chmod(0o700)
+    inputs.mkdir(exist_ok=True)
+    inputs.chmod(0o700)
+    return inputs / f"{started:%Y-%m-%d-%H%M%S}-{run_id}"
+
+
+def _weekly_report_download_task(task: AutomationTaskConfig) -> AutomationTaskConfig:
+    return task.model_copy(
+        update={
+            "output": task.output.model_copy(
+                update={
+                    "directory": Path("."),
+                    "filename": "main.md",
+                    "conflict": "fail",
+                }
+            )
+        }
+    )
+
+
 def run_automation(
     settings: Settings,
     task_id: str,
@@ -363,6 +418,8 @@ def run_automation(
         raise AutomationFailed("自动化任务未启用")
 
     resolved_run_id = run_id or uuid4().hex
+    if _RUN_ID_PATTERN.fullmatch(resolved_run_id) is None:
+        raise AutomationFailed("运行标识包含非法字符")
     store = AutomationStateStore(settings.automations.data_dir)
     queued = store.read(task_id)
     operation_id = queued.operation_id if queued.run_id == resolved_run_id else None
@@ -391,18 +448,37 @@ def run_automation(
                     )
                     store.write(running)
                     try:
+                        input_root = None
+                        execution_task = task
+                        if task.extension == "v-weekly-report-linked-documents":
+                            input_root = _weekly_report_input_root(
+                                started,
+                                resolved_run_id,
+                            )
+                            execution_task = _weekly_report_download_task(task)
+                        task_kwargs = {"output_root": input_root} if input_root else {}
                         target, size, skipped = _run_task_once(
-                            task,
+                            execution_task,
                             settings,
                             resolved_run_id,
+                            **task_kwargs,
                         )
                         extension_error = None
                         try:
+                            linked_kwargs = (
+                                {
+                                    "output_root": input_root,
+                                    "linked_directory": Path("linked"),
+                                }
+                                if input_root
+                                else {}
+                            )
                             linked_documents = _run_linked_documents(
-                                task,
+                                execution_task,
                                 target,
                                 settings,
                                 resolved_run_id,
+                                **linked_kwargs,
                             )
                         except AutomationFailed as exc:
                             linked_documents = []

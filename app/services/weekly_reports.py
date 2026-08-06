@@ -22,13 +22,31 @@ MAX_REPORT_LINE_BYTES = 16 * 1024
 LOGGER = logging.getLogger("hub.weekly_reports")
 _PERIOD_PATTERN = re.compile(r"^(\d{4}-\d{2}-\d{2})至(\d{4}-\d{2}-\d{2})$")
 _REPORT_TYPES = {
-    "focus": ("本周工作重点确认清单", "本周重点确认", "重点范围与取舍确认"),
-    "report": ("本周业务周报", "本周汇总周报", "各端进展汇总"),
+    "focus": ("本期工作重点确认清单", "本期重点确认", "重点范围与取舍确认"),
+    "report": ("本期业务周报", "本期周报", "各端进展汇总"),
+}
+_LEGACY_REPORT_PREFIXES = {
+    "focus": "本周工作重点确认清单",
+    "report": "本周业务周报",
 }
 
 
 def _today() -> date:
     return datetime.now().astimezone().date()
+
+
+def reporting_period(today: date | None = None) -> str:
+    """Return the current period from Wednesday through next Tuesday.
+
+    A period covers the Monday-through-Sunday week in which its processing
+    window opens on Wednesday. It remains current through the following
+    Tuesday, the fixed reporting day.
+    """
+    value = today or _today()
+    current_monday = value - timedelta(days=value.weekday())
+    start = current_monday if value.weekday() >= 2 else current_monday - timedelta(days=7)
+    end = start + timedelta(days=6)
+    return f"{start:%Y-%m-%d}至{end:%Y-%m-%d}"
 
 
 @dataclass(frozen=True)
@@ -43,66 +61,28 @@ class WeeklyReportView:
     html: str | None = None
 
 
-def _period_directories() -> list[Path]:
-    try:
-        values = list(WEEKLY_REPORTS_ROOT.iterdir())
-    except (FileNotFoundError, OSError):
-        return []
-    periods = []
-    for path in values:
-        match = _PERIOD_PATTERN.fullmatch(path.name)
-        if match is None:
-            continue
-        try:
-            start = datetime.strptime(match.group(1), "%Y-%m-%d").date()
-            end = datetime.strptime(match.group(2), "%Y-%m-%d").date()
-            if start > end or not path.is_dir():
-                continue
-        except (OSError, ValueError):
-            continue
-        periods.append(path)
-    return sorted(
-        periods,
-        key=lambda path: path.name,
-        reverse=True,
-    )
-
-
 def _report_path(period: str, report_type: str) -> Path | None:
     if not _PERIOD_PATTERN.fullmatch(period) or report_type not in _REPORT_TYPES:
         return None
     prefix, _, _ = _REPORT_TYPES[report_type]
     root = WEEKLY_REPORTS_ROOT.resolve()
-    path = (root / period / "output" / f"{prefix}-{period}.md").resolve()
-    if not path.is_relative_to(root):
+    output = (root / period / "output").resolve()
+    if not output.is_relative_to(root):
         return None
-    return path
-
-
-def _activation_date(period: str) -> date | None:
-    match = _PERIOD_PATTERN.fullmatch(period)
-    if match is None:
-        return None
-    try:
-        end = datetime.strptime(match.group(2), "%Y-%m-%d").date()
-    except ValueError:
-        return None
-    days_until_tuesday = (1 - end.weekday()) % 7
-    if days_until_tuesday == 0:
-        days_until_tuesday = 7
-    return end + timedelta(days=days_until_tuesday)
+    for candidate_prefix in (prefix, _LEGACY_REPORT_PREFIXES[report_type]):
+        path = (output / f"{candidate_prefix}-{period}.md").resolve()
+        if not path.is_relative_to(root):
+            return None
+        try:
+            if path.is_file():
+                return path
+        except OSError:
+            return path
+    return (output / f"{prefix}-{period}.md").resolve()
 
 
 def list_latest_weekly_reports(*, today: date | None = None) -> list[WeeklyReportView]:
-    effective_date = today or _today()
-    periods = [
-        path
-        for path in _period_directories()
-        if (_activation_date(path.name) or date.max) <= effective_date
-    ]
-    if not periods:
-        return []
-    period = periods[0].name
+    period = reporting_period(today)
     reports = []
     for report_type, (_, title, summary) in _REPORT_TYPES.items():
         path = _report_path(period, report_type)

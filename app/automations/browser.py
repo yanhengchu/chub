@@ -141,16 +141,16 @@ def debug_chrome_status() -> tuple[str, str, str | None]:
     try:
         current = _chrome_debug_module().status()
     except Exception:
-        return "unavailable", "无法检查 Debug Chrome 状态", None
+        return "unavailable", "无法检查状态", None
     if current.state == "running":
         mode = {
             "headed": "有界面",
             "headless": "无界面",
         }.get(current.mode)
-        return "running", "Debug Chrome 已运行", mode
+        return "running", "已运行", mode
     if current.state == "stopped":
-        return "stopped", "Debug Chrome 未启动", None
-    return "invalid", "Debug Chrome 状态异常", None
+        return "stopped", "未启动", None
+    return "invalid", "状态异常", None
 
 
 def current_debug_chrome_profile() -> str | None:

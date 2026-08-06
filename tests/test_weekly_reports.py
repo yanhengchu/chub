@@ -17,13 +17,12 @@ def test_latest_weekly_reports_include_available_and_pending_slots(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(service, "WEEKLY_REPORTS_ROOT", tmp_path)
-    _write_report(tmp_path, "2026-07-20至2026-07-24", "focus", "# 旧周期")
-    _write_report(tmp_path, "2026-07-27至2026-07-31", "focus", "# 本周重点")
+    _write_report(tmp_path, "2026-07-27至2026-08-02", "focus", "# 本期重点")
 
     reports = service.list_latest_weekly_reports(today=date(2026, 8, 4))
 
     assert [report.report_type for report in reports] == ["focus", "report"]
-    assert all(report.period == "2026-07-27至2026-07-31" for report in reports)
+    assert all(report.period == "2026-07-27至2026-08-02" for report in reports)
     assert reports[0].available is True
     assert reports[0].status == "可查看"
     assert reports[1].available is False
@@ -37,11 +36,11 @@ def test_latest_weekly_reports_ignore_invalid_and_reversed_periods(
     monkeypatch.setattr(service, "WEEKLY_REPORTS_ROOT", tmp_path)
     (tmp_path / "2026-99-99至2026-99-99").mkdir()
     (tmp_path / "2026-08-07至2026-08-03").mkdir()
-    _write_report(tmp_path, "2026-07-27至2026-07-31", "focus", "# 本周重点")
+    _write_report(tmp_path, "2026-07-27至2026-08-02", "focus", "# 本期重点")
 
     reports = service.list_latest_weekly_reports(today=date(2026, 8, 4))
 
-    assert reports[0].period == "2026-07-27至2026-07-31"
+    assert reports[0].period == "2026-07-27至2026-08-02"
 
 
 def test_latest_weekly_reports_degrade_when_file_inspection_fails(
@@ -51,11 +50,6 @@ def test_latest_weekly_reports_degrade_when_file_inspection_fails(
         def is_file(self) -> bool:
             raise OSError("unavailable")
 
-    monkeypatch.setattr(
-        service,
-        "_period_directories",
-        lambda: [Path("2026-07-27至2026-07-31")],
-    )
     monkeypatch.setattr(service, "_report_path", lambda *_: UnreadablePath())
 
     reports = service.list_latest_weekly_reports(today=date(2026, 8, 4))
@@ -65,19 +59,47 @@ def test_latest_weekly_reports_degrade_when_file_inspection_fails(
     assert all(report.status == "待生成" for report in reports)
 
 
-def test_weekly_reports_switch_on_tuesday_after_period_end(
+def test_weekly_reports_switch_on_wednesday_and_remain_stable_through_tuesday(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(service, "WEEKLY_REPORTS_ROOT", tmp_path)
-    _write_report(tmp_path, "2026-07-20至2026-07-24", "focus", "# 上周重点")
-    _write_report(tmp_path, "2026-07-27至2026-07-31", "focus", "# 本周重点")
+    _write_report(tmp_path, "2026-07-27至2026-08-02", "focus", "# 上期重点")
+    _write_report(tmp_path, "2026-08-03至2026-08-09", "focus", "# 本期重点")
 
-    before_switch = service.list_latest_weekly_reports(today=date(2026, 8, 3))
-    at_switch = service.list_latest_weekly_reports(today=date(2026, 8, 4))
+    before_switch = service.list_latest_weekly_reports(today=date(2026, 8, 4))
+    at_switch = service.list_latest_weekly_reports(today=date(2026, 8, 5))
+    before_handover = service.list_latest_weekly_reports(today=date(2026, 8, 11))
 
-    assert before_switch[0].period == "2026-07-20至2026-07-24"
-    assert at_switch[0].period == "2026-07-27至2026-07-31"
+    assert before_switch[0].period == "2026-07-27至2026-08-02"
+    assert at_switch[0].period == "2026-08-03至2026-08-09"
+    assert before_handover[0].period == "2026-08-03至2026-08-09"
+
+
+def test_reporting_period_uses_current_week_after_wednesday() -> None:
+    assert service.reporting_period(date(2026, 8, 4)) == "2026-07-27至2026-08-02"
+    assert service.reporting_period(date(2026, 8, 5)) == "2026-08-03至2026-08-09"
+    assert service.reporting_period(date(2026, 8, 11)) == "2026-08-03至2026-08-09"
+    assert service.reporting_period(date(2026, 8, 12)) == "2026-08-10至2026-08-16"
+
+
+def test_weekly_report_detail_keeps_legacy_output_files_readable(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(service, "WEEKLY_REPORTS_ROOT", tmp_path)
+    period = "2026-08-03至2026-08-09"
+    output = tmp_path / period / "output"
+    output.mkdir(parents=True)
+    (output / f"本周工作重点确认清单-{period}.md").write_text(
+        "# 本期重点确认",
+        encoding="utf-8",
+    )
+
+    report = service.get_weekly_report(period, "focus")
+
+    assert report is not None
+    assert report.title == "本期重点确认"
 
 
 def test_weekly_report_detail_renders_sanitized_markdown(

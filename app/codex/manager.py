@@ -283,6 +283,20 @@ class CodexPtyManager:
             session.updated_at = max(session.updated_at, updated_at or utc_now())
             self.store.save(session)
 
+    def set_initial_quick_interaction_title(
+        self,
+        session_id: str,
+        title: str,
+    ) -> None:
+        """Keep a useful local title while Codex creates its native session."""
+        with self._lock:
+            session = self.store.get(session_id)
+            if session is None or session.codex_session_id or session.title:
+                return
+            session.title = title
+            session.updated_at = utc_now()
+            self.store.save(session)
+
     def recover_interrupted_quick_interaction(self, session_id: str) -> None:
         with self._lock:
             session = self.store.get(session_id)
@@ -722,9 +736,21 @@ class CodexPtyManager:
                 for session in discovered_sessions
                 if session.codex_session_id
             }
+            pending_quick_cwds = {
+                session.cwd
+                for session in stored
+                if (
+                    not session.codex_session_id
+                    and self._quick_interaction_is_running(session.id)
+                )
+            }
             for discovered in discovered_sessions:
                 existing = by_codex_id.get(discovered.codex_session_id)
                 if existing is None:
+                    # A fresh `codex exec` creates its native thread before the
+                    # SessionStart hook binds it to Chub's local session.
+                    if discovered.cwd in pending_quick_cwds:
+                        continue
                     self.store.save(discovered)
                     continue
                 changed = False
@@ -732,7 +758,7 @@ class CodexPtyManager:
                     existing.cwd = discovered.cwd
                     existing.workspace_name = discovered.workspace_name
                     changed = True
-                if discovered.title and existing.title != discovered.title:
+                if discovered.title and not existing.title:
                     existing.title = discovered.title
                     changed = True
                 if (

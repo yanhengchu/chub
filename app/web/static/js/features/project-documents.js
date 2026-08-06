@@ -13,8 +13,8 @@ function projectDocumentDate(value) {
 
 function renderProjectDocuments(data) {
   elements.weeklyReportsTitle.textContent = data.weekly_reports.length
-    ? `本周周报 · ${data.weekly_reports[0].period}`
-    : "本周周报";
+    ? `本期周报 · ${data.weekly_reports[0].period}`
+    : "本期周报";
   elements.weeklyReportsList.replaceChildren();
   data.weekly_reports.forEach((item) => {
     const card = document.createElement("article");
@@ -33,7 +33,7 @@ function renderProjectDocuments(data) {
     }
     copy.className = "weekly-report-copy";
     heading.className = "weekly-report-heading";
-    title.textContent = item.report_type === "focus" ? "本周重点事项" : "本周周报";
+    title.textContent = item.report_type === "focus" ? "本期重点确认" : "本期周报";
     summary.className = "weekly-report-summary";
     if (item.updated_at) {
       const time = document.createElement("time");

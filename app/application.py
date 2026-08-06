@@ -23,6 +23,7 @@ from app.api.status import router as status_router
 from app.codex.connections import TerminalConnectionRegistry
 from app.codex.manager import CodexPtyManager
 from app.codex.quick_interactions import QuickInteractionManager
+from app.codex.rate_limits import CodexRateLimitService
 from app.codex.routes import api_router as codex_api_router
 from app.codex.routes import web_router as codex_web_router
 from app.codex.tickets import TerminalTicketStore
@@ -126,6 +127,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
 
     codex_pty_manager = CodexPtyManager(resolved_settings)
+    codex_rate_limits = CodexRateLimitService()
     llm_service = LlmService(resolved_settings.llm)
     completion_notifier = OpenClawCompletionNotifier(
         resolved_settings.openclaw.quick_interaction_completion
@@ -165,6 +167,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.detected_platform = detected_platform
     application.state.codex_pty_available = codex_pty_available
     application.state.codex_pty_manager = codex_pty_manager
+    application.state.codex_rate_limits = codex_rate_limits
     application.state.quick_interactions = quick_interactions
     application.state.terminal_tickets = TerminalTicketStore(
         resolved_settings.codex_pty.ticket_ttl_seconds

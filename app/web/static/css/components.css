@@ -1637,6 +1637,13 @@ pre {
   display: none;
 }
 
+.codex-quota {
+  margin: 0 0 0.65rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
 .codex-divider {
   display: flex;
   align-items: center;

@@ -188,7 +188,7 @@
           <div class="card-content" data-card-content>
           <div class="card-content-inner">
           <section class="project-document-group" aria-labelledby="weekly-reports-title">
-            <h3 id="weekly-reports-title" class="document-group-title">本周周报{% if weekly_reports %} · {{ weekly_reports[0].period }}{% endif %}</h3>
+            <h3 id="weekly-reports-title" class="document-group-title">本期周报{% if weekly_reports %} · {{ weekly_reports[0].period }}{% endif %}</h3>
             <div id="weekly-report-list" class="design-document-list design-document-list-compact">
               {% for report in weekly_reports %}
               <article class="design-document-item{% if not report.available %} design-document-item-unavailable{% endif %}">
@@ -196,7 +196,7 @@
                 <a class="design-document-main" href="/weekly-reports/{{ report.period }}/{{ report.report_type }}">
                   <span class="weekly-report-copy">
                     <span class="weekly-report-heading">
-                      <strong>{% if report.report_type == 'focus' %}本周重点事项{% else %}本周周报{% endif %}</strong>
+                      <strong>{% if report.report_type == 'focus' %}本期重点确认{% else %}本期周报{% endif %}</strong>
                       <span class="badge badge-success">{{ report.status }}</span>
                     </span>
                     <span class="weekly-report-summary">{% if report.updated_at %}<time datetime="{{ report.updated_at.isoformat() }}">{{ report.updated_at.strftime('%Y-%m-%d') }}</time> · {% endif %}{{ report.summary }}</span>
@@ -206,7 +206,7 @@
                 <div class="design-document-main">
                   <span class="weekly-report-copy">
                     <span class="weekly-report-heading">
-                      <strong>{% if report.report_type == 'focus' %}本周重点事项{% else %}本周周报{% endif %}</strong>
+                      <strong>{% if report.report_type == 'focus' %}本期重点确认{% else %}本期周报{% endif %}</strong>
                       <span class="badge badge-muted">{{ report.status }}</span>
                     </span>
                     <span class="weekly-report-summary">{{ report.summary }}</span>

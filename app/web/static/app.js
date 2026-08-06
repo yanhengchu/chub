@@ -94,6 +94,7 @@ const savedToken = savedSessionToken || savedLocalToken || "";
 ensureCodexCard();
 setupCollapsibleCards();
 restoreCodexCardCache();
+restoreCodexQuotaCache();
 if (savedLocalToken) {
   elements.rememberToken.checked = Boolean(savedLocalToken);
 }

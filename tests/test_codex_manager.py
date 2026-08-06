@@ -122,6 +122,30 @@ def test_sync_merges_discovered_session_bound_to_new_chub_session(
     assert sessions[0].active_permission_mode == "auto-review"
 
 
+def test_sync_defers_native_session_while_new_quick_session_is_binding(
+    settings: Settings,
+) -> None:
+    manager = CodexPtyManager(settings)
+    chub_session = CodexSession(
+        id="chub-session",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd=Path("/workspace/chub"),
+        permission_mode="auto-review",
+        status="stopped",
+    )
+    discovered = native_session("24242424-2424-4242-8242-242424242424")
+    manager.store.save(chub_session)
+    manager.set_quick_interaction_checker(lambda session_id: session_id == chub_session.id)
+    manager.discovery = MagicMock()
+    manager.discovery.discover.return_value = [discovered]
+    manager.discovery.session_archive_states.return_value = None
+
+    manager._sync_native_sessions()
+
+    assert [session.id for session in manager.store.list()] == [chub_session.id]
+
+
 def test_restart_resets_unverified_running_activity(
     settings: Settings,
     monkeypatch: pytest.MonkeyPatch,

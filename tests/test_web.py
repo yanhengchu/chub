@@ -17,18 +17,18 @@ def weekly_reports_root(
     monkeypatch: pytest.MonkeyPatch,
 ) -> Path:
     root = tmp_path / "weekly-reports"
-    period = "2026-07-27至2026-07-31"
+    period = "2026-08-03至2026-08-09"
     output = root / period / "output"
     output.mkdir(parents=True)
-    (output / f"本周工作重点确认清单-{period}.md").write_text(
-        "# 本周工作重点确认清单\n\n## 重点\n\n- 版本发布",
+    (output / f"本期工作重点确认清单-{period}.md").write_text(
+        "# 本期工作重点确认清单\n\n## 重点\n\n- 版本发布",
         encoding="utf-8",
     )
     monkeypatch.setattr(weekly_report_service, "WEEKLY_REPORTS_ROOT", root)
     monkeypatch.setattr(
         weekly_report_service,
         "_today",
-        lambda: weekly_report_service.date(2026, 8, 4),
+        lambda: weekly_report_service.date(2026, 8, 5),
     )
     return root
 
@@ -113,16 +113,16 @@ async def test_home_page_is_public_and_contains_no_token(
     assert 'id="design-documents-title"' in response.text
     assert "项目文档" in response.text
     assert 'id="weekly-reports-title"' in response.text
-    assert "本周周报 · 2026-07-27至2026-07-31" in response.text
+    assert "本期周报 · 2026-08-03至2026-08-09" in response.text
     assert 'id="weekly-report-list"' in response.text
-    assert "本周重点事项" in response.text
-    assert "本周周报" in response.text
+    assert "本期重点确认" in response.text
+    assert "本期周报" in response.text
     assert "重点范围与取舍确认" in response.text
     assert "各端进展汇总" in response.text
     assert 'class="weekly-report-heading"' in response.text
     assert 'class="weekly-report-summary"' in response.text
-    assert "2026-07-27至2026-07-31 · 重点范围与取舍确认" not in response.text
-    assert 'href="/weekly-reports/2026-07-27至2026-07-31/focus"' in response.text
+    assert "2026-08-03至2026-08-09 · 重点范围与取舍确认" not in response.text
+    assert 'href="/weekly-reports/2026-08-03至2026-08-09/focus"' in response.text
     assert "待生成" in response.text
     assert 'data-card-key="project-docs"' in response.text
     assert 'data-card-key="automations"' in response.text
@@ -521,6 +521,14 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "|| quickInteractionRunning" in script.text
     assert "|| llmInteractionRunning" in script.text
     assert "codexLoadPromise" in script.text
+    assert "CODEX_QUOTA_CACHE_KEY" in script.text
+    assert "CODEX_QUOTA_REFRESH_MS = 5 * 60 * 1000" in script.text
+    assert "/api/codex/quota" in script.text
+    assert "额度：正在读取…" in script.text
+    assert "renderCodexQuota" in script.text
+    assert "Weekly" in script.text
+    assert "codexQuotaWindowLabel" in script.text
+    assert "refreshQuota: true" in script.text
     assert "codexMutationCount" in script.text
     assert "codexSessionsSignature" in script.text
     assert "codexLoadPromise = null" in script.text
@@ -783,16 +791,16 @@ async def test_weekly_report_detail_is_public_and_missing_report_is_404(
     transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         detail = await client.get(
-            "/weekly-reports/2026-07-27%E8%87%B32026-07-31/focus"
+            "/weekly-reports/2026-08-03%E8%87%B32026-08-09/focus"
         )
         pending = await client.get(
-            "/weekly-reports/2026-07-27%E8%87%B32026-07-31/report"
+            "/weekly-reports/2026-08-03%E8%87%B32026-08-09/report"
         )
         unsafe = await client.get("/weekly-reports/not-a-period/focus")
 
     assert detail.status_code == 200
     assert '<article class="markdown-body">' in detail.text
-    assert "本周工作重点确认清单" in detail.text
+    assert "本期工作重点确认清单" in detail.text
     assert pending.status_code == 404
     assert unsafe.status_code == 404
 

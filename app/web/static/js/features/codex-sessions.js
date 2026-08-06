@@ -1,7 +1,9 @@
 "use strict";
 
 const CODEX_CARD_CACHE_KEY = "hub.codexCardCache";
+const CODEX_QUOTA_CACHE_KEY = "hub.codexQuotaCache";
 const CODEX_ENTRY_MODE_KEY = "hub.codexEntryMode.v1";
+const CODEX_QUOTA_REFRESH_MS = 5 * 60 * 1000;
 const CODEX_PERMISSION_OPTIONS = [
   ["ask", "Ask for approval", "在当前工作区操作，越界时由你确认。"],
   ["auto-review", "Approve for me", "保持工作区边界，由 Codex 自动审核越界请求。"],
@@ -16,6 +18,8 @@ let codexPollUnchangedSince = 0;
 let codexShouldPoll = false;
 let codexSessionSignature = "";
 let codexLoadPromise = null;
+let codexQuotaLoadPromise = null;
+let codexQuotaLoadedAt = 0;
 let codexMutationCount = 0;
 
 function createCodexCard() {
@@ -28,6 +32,7 @@ function createCodexCard() {
   const cardContentInner = document.createElement("div");
   const panel = document.createElement("div");
   const currentHint = document.createElement("p");
+  const quota = document.createElement("p");
   const sessionsDivider = document.createElement("div");
   const sessionsDividerLabel = document.createElement("span");
   const refreshButton = document.createElement("button");
@@ -80,6 +85,10 @@ function createCodexCard() {
   currentHint.className = "message";
   currentHint.id = "codex-message";
   currentHint.setAttribute("aria-live", "polite");
+  quota.className = "codex-quota";
+  quota.id = "codex-quota";
+  quota.setAttribute("aria-live", "polite");
+  quota.textContent = "额度：正在读取…";
   sessionsDivider.className = "codex-divider codex-sessions-divider";
   sessionsDividerLabel.textContent = "正在读取会话";
   createActions.className = "codex-create-actions";
@@ -168,6 +177,7 @@ function createCodexCard() {
   permissionDialog.append(permissionSurface);
   panel.append(
     currentHint,
+    quota,
     sessionsDivider,
     sessionList,
     createActions,
@@ -180,6 +190,7 @@ function createCodexCard() {
   elements.codexPanel = panel;
   elements.codexWorkspaces = workspaceList;
   elements.codexMessage = currentHint;
+  elements.codexQuota = quota;
   elements.codexSessions = sessionList;
   elements.codexSessionCount = sessionsDividerLabel;
   elements.refreshCodex = refreshButton;
@@ -190,7 +201,9 @@ function createCodexCard() {
   elements.codexPermissionCurrent = permissionCurrent;
   elements.codexPermissionNotice = permissionNotice;
 
-  refreshButton.addEventListener("click", loadCodexSessions);
+  refreshButton.addEventListener("click", () =>
+    loadCodexSessions({ refreshQuota: true }),
+  );
   createButton.addEventListener("click", () => {
     if (!workspaceDialog.open) {
       workspaceDialog.showModal();
@@ -589,11 +602,121 @@ function restoreCodexCardCache() {
   }
 }
 
+function renderCodexQuota(data) {
+  if (!elements.codexQuota) {
+    return false;
+  }
+  if (!data || typeof data !== "object") {
+    return false;
+  }
+  if (data.status === "available" && Array.isArray(data.windows)) {
+    const windows = data.windows
+      .filter((window) =>
+        Number.isInteger(window?.remaining_percent)
+        && Number.isInteger(window?.window_duration_minutes)
+        && typeof window?.resets_at === "string",
+      )
+      .map((window) => {
+        const reset = new Date(window.resets_at);
+        const resetLabel = Number.isNaN(reset.getTime())
+          ? "重置时间未知"
+          : `将于 ${reset.toLocaleString("zh-CN", {
+            month: "numeric",
+            day: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false,
+          })} 重置`;
+        return `${codexQuotaWindowLabel(window.window_duration_minutes)}剩余 ${window.remaining_percent}%（${resetLabel}）`;
+      });
+    if (windows.length) {
+      const staleMessage = typeof data.message === "string" && data.message
+        ? `；${data.message}`
+        : "";
+      elements.codexQuota.textContent = `额度：${windows.join("；")}${staleMessage}`;
+      return true;
+    }
+  }
+  if (typeof data.message === "string" && data.message) {
+    elements.codexQuota.textContent = `额度：${data.message}`;
+    return true;
+  }
+  elements.codexQuota.textContent = "额度：暂不可用。";
+  return true;
+}
+
+function codexQuotaWindowLabel(durationMinutes) {
+  return durationMinutes === 7 * 24 * 60
+    ? "Weekly "
+    : `${durationMinutes} 分钟额度 `;
+}
+
+function restoreCodexQuotaCache() {
+  try {
+    const cached = JSON.parse(sessionStorage.getItem(CODEX_QUOTA_CACHE_KEY) || "null");
+    if (renderCodexQuota(cached)) {
+      const checkedAt = new Date(cached?.checked_at).getTime();
+      codexQuotaLoadedAt = Number.isNaN(checkedAt) || checkedAt > Date.now()
+        ? 0
+        : checkedAt;
+    } else {
+      sessionStorage.removeItem(CODEX_QUOTA_CACHE_KEY);
+    }
+  } catch {
+    sessionStorage.removeItem(CODEX_QUOTA_CACHE_KEY);
+  }
+}
+
+function storeCodexQuotaCache(data) {
+  try {
+    sessionStorage.setItem(CODEX_QUOTA_CACHE_KEY, JSON.stringify(data));
+  } catch {
+    // A storage quota failure must not break the live Codex card.
+  }
+}
+
 function storeCodexCardCache(data) {
   try {
     sessionStorage.setItem(CODEX_CARD_CACHE_KEY, JSON.stringify(data));
   } catch {
     // A storage quota failure must not break the live Codex card.
+  }
+}
+
+async function loadCodexQuota({ force = false } = {}) {
+  if (!elements.codexQuota || !hasProtectedAccess()) {
+    return;
+  }
+  if (!force && Date.now() - codexQuotaLoadedAt < CODEX_QUOTA_REFRESH_MS) {
+    return;
+  }
+  if (codexQuotaLoadPromise) {
+    return codexQuotaLoadPromise;
+  }
+  const requestVersion = accessVersion;
+  const loadPromise = (async () => {
+    try {
+      const data = await apiFetch(`/api/codex/quota${force ? "?refresh=true" : ""}`);
+      if (requestVersion !== accessVersion || !elements.codexQuota) {
+        return;
+      }
+      if (renderCodexQuota(data)) {
+        storeCodexQuotaCache(data);
+        codexQuotaLoadedAt = Date.now();
+      }
+    } catch (error) {
+      if (requestVersion === accessVersion) {
+        handleAccessError(error);
+      }
+    }
+  })();
+  codexQuotaLoadPromise = loadPromise;
+  try {
+    return await loadPromise;
+  } finally {
+    if (codexQuotaLoadPromise === loadPromise) {
+      codexQuotaLoadPromise = null;
+    }
   }
 }
 
@@ -808,6 +931,7 @@ function endCodexMutation() {
 async function loadCodexSessions(options = {}) {
   const background = options?.background === true;
   const force = options?.force === true;
+  const refreshQuota = options?.refreshQuota === true;
   if (
     !elements.codexPanel ||
     !elements.codexWorkspaces ||
@@ -833,6 +957,9 @@ async function loadCodexSessions(options = {}) {
   }
   const loadPromise = (async () => {
     try {
+      if (!background) {
+        void loadCodexQuota({ force: refreshQuota });
+      }
       const data = await apiFetch("/api/codex/sessions");
       if (requestVersion !== accessVersion) {
         return;

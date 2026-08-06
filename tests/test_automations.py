@@ -33,11 +33,15 @@ from app.automations.runner import (
     AutomationFailed,
     _check_navigation,
     _clear_linked_markdown_files,
+    _output_path,
     _run_linked_documents,
     _run_browser_task,
     _validate_download,
+    _weekly_report_download_task,
+    _weekly_report_input_root,
     run_automation,
 )
+import app.automations.runner as runner
 from app.automations.store import AutomationStateStore
 from app.core.config import Settings
 from app.core.response import ApiError
@@ -486,6 +490,49 @@ tasks:
     assert result.output_file == str(source)
     assert result.message == "下载完成 · 主周报成功 · 关联文档 1/2 成功"
     assert result.linked_documents == linked_results
+
+
+def test_weekly_report_downloads_use_the_active_period_input_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    settings: Settings,
+) -> None:
+    monkeypatch.setattr(runner, "WEEKLY_REPORTS_ROOT", tmp_path / "weekly-reports")
+
+    root = _weekly_report_input_root(
+        datetime(2026, 8, 5, 7, 5, 51),
+        "run-1",
+    )
+
+    assert root == (
+        tmp_path
+        / "weekly-reports"
+        / "2026-08-03至2026-08-09"
+        / "inputs"
+        / "2026-08-05-070551-run-1"
+    )
+    assert root.parent.stat().st_mode & 0o777 == 0o700
+
+    task = _weekly_report_download_task(
+        load_automations(
+            Path(__file__).parents[1] / "config" / "automations.yaml"
+        ).tasks["v-domestic-weekly-report"]
+    )
+    assert _output_path(
+        task,
+        settings.automations.data_dir,
+        output_root=root,
+    ) == root / "main.md"
+
+
+def test_run_automation_rejects_an_unsafe_run_id(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    configure_automations(settings, tmp_path)
+
+    with pytest.raises(AutomationFailed, match="运行标识"):
+        run_automation(settings, "monthly-report", run_id="../outside")
 
 
 def test_login_redirect_host_uses_expired_message(

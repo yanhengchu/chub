@@ -28,6 +28,7 @@ from app.services.operation_log import write_operation
 MAX_RESULT_BYTES = 100_000
 MAX_EVENT_BYTES = 1_000_000
 MAX_STORED_TASKS = 30
+MAX_SESSION_TITLE_LENGTH = 48
 LOGGER = logging.getLogger("hub.codex.quick_interactions")
 BEDROCK_SYSTEM_PROMPT = (
     "你是 Chub 的轻量 AI 助手。请使用用户输入的语言准确、简洁地回答。"
@@ -147,6 +148,11 @@ class QuickInteractionManager:
             if session.permission_mode == "ask":
                 raise ApiError(409, "quick_interaction_requires_terminal", "Ask for approval 需要进入实时终端完成审批。")
             self.codex_manager.prepare_quick_interaction()
+            if not session.codex_session_id:
+                self.codex_manager.set_initial_quick_interaction_title(
+                    session.id,
+                    self._session_title(prompt),
+                )
             with self._lock:
                 if self._any_running(session_id):
                     raise ApiError(409, "quick_interaction_in_progress", "该会话已有快速交互任务正在执行。")
@@ -581,7 +587,15 @@ class QuickInteractionManager:
 
     @staticmethod
     def _codex_execution_prompt(prompt: str) -> str:
-        return f"{CODEX_QUICK_INTERACTION_INSTRUCTIONS}\n\n[用户需求]\n{prompt}"
+        return f"[用户需求]\n{prompt}\n\n{CODEX_QUICK_INTERACTION_INSTRUCTIONS}"
+
+    @staticmethod
+    def _session_title(prompt: str) -> str:
+        for line in prompt.splitlines():
+            title = " ".join(line.split())
+            if title:
+                return title[:MAX_SESSION_TITLE_LENGTH]
+        return "快速交互"
 
     @staticmethod
     def _command(session: CodexSession, result_path: Path) -> list[str]:
