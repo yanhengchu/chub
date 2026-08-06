@@ -67,7 +67,8 @@ class LogsConfig(StrictModel):
 class CodexPtyConfig(StrictModel):
     enabled: bool = True
     workspace: Path = Path("~/workspace")
-    data_file: Path = Path("data/codex-sessions.json")
+    data_file: Path = Path("data/state/codex/sessions.json")
+    runtime_dir: Path = Path("data/runtime/codex")
     ticket_ttl_seconds: int = Field(default=600, ge=60, le=3600)
     max_running: int = Field(default=3, ge=1, le=10)
     quick_interaction_timeout_seconds: int = Field(
@@ -82,7 +83,9 @@ class AutomationsConfig(StrictModel):
     shared_config_file: Path = Path("config/automations.yaml")
     local_config_file: Path = Path("config/automations.local.yaml")
     config_file: Path | None = None
-    data_dir: Path = Path("data/automations")
+    state_dir: Path = Path("data/state/automations")
+    runtime_dir: Path = Path("data/runtime/automations")
+    artifacts_dir: Path = Path("data/artifacts/automations/downloads")
     max_home_tasks: int = Field(default=3, ge=1, le=10)
 
     @property
@@ -94,7 +97,7 @@ class AutomationsConfig(StrictModel):
 
 
 class ProjectDocumentsConfig(StrictModel):
-    state_file: Path = Path("data/project-documents.json")
+    state_file: Path = Path("data/state/project-documents.json")
 
 
 class LlmConfig(StrictModel):
@@ -173,6 +176,8 @@ class Settings(StrictModel):
         self.codex_pty.workspace = self.codex_pty.workspace.expanduser().resolve()
         if not self.codex_pty.data_file.is_absolute():
             self.codex_pty.data_file = PROJECT_ROOT / self.codex_pty.data_file
+        if not self.codex_pty.runtime_dir.is_absolute():
+            self.codex_pty.runtime_dir = PROJECT_ROOT / self.codex_pty.runtime_dir
         if not self.automations.shared_config_file.is_absolute():
             self.automations.shared_config_file = (
                 PROJECT_ROOT / self.automations.shared_config_file
@@ -186,8 +191,14 @@ class Settings(StrictModel):
             and not self.automations.config_file.is_absolute()
         ):
             self.automations.config_file = PROJECT_ROOT / self.automations.config_file
-        if not self.automations.data_dir.is_absolute():
-            self.automations.data_dir = PROJECT_ROOT / self.automations.data_dir
+        if not self.automations.state_dir.is_absolute():
+            self.automations.state_dir = PROJECT_ROOT / self.automations.state_dir
+        if not self.automations.runtime_dir.is_absolute():
+            self.automations.runtime_dir = PROJECT_ROOT / self.automations.runtime_dir
+        if not self.automations.artifacts_dir.is_absolute():
+            self.automations.artifacts_dir = (
+                PROJECT_ROOT / self.automations.artifacts_dir
+            )
         if not self.project_documents.state_file.is_absolute():
             self.project_documents.state_file = (
                 PROJECT_ROOT / self.project_documents.state_file

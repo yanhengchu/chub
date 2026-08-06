@@ -42,7 +42,7 @@ class CodexPtyManager:
         self.store = CodexSessionStore(settings.codex_pty.data_file)
         self.codex_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
         self.discovery = CodexSessionDiscovery(self.codex_home)
-        self.hook_dir = settings.codex_pty.data_file.parent / "codex-hooks"
+        self.hook_dir = settings.codex_pty.runtime_dir / "hooks"
         self._processes: dict[str, subprocess.Popen[bytes]] = {}
         self._lock = threading.RLock()
         self._quick_interaction_is_running: Callable[[str], bool] = lambda _id: False

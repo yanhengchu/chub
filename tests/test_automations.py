@@ -94,7 +94,9 @@ def configure_automations(settings: Settings, tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     settings.automations.config_file = config_file
-    settings.automations.data_dir = tmp_path / "data"
+    settings.automations.state_dir = tmp_path / "state"
+    settings.automations.runtime_dir = tmp_path / "runtime"
+    settings.automations.artifacts_dir = tmp_path / "artifacts"
     return config_file
 
 
@@ -361,8 +363,8 @@ def test_clear_linked_markdown_files_is_limited_to_current_directory(
     tmp_path: Path,
 ) -> None:
     data_dir = tmp_path / "data"
-    current = data_dir / "downloads" / "weekly" / "linked" / "2026-07-22"
-    other_date = data_dir / "downloads" / "weekly" / "linked" / "2026-07-21"
+    current = data_dir / "weekly" / "linked" / "2026-07-22"
+    other_date = data_dir / "weekly" / "linked" / "2026-07-21"
     nested = current / "nested"
     nested.mkdir(parents=True)
     other_date.mkdir(parents=True)
@@ -457,7 +459,9 @@ tasks:
         encoding="utf-8",
     )
     settings.automations.config_file = config_file
-    settings.automations.data_dir = tmp_path / "data"
+    settings.automations.state_dir = tmp_path / "state"
+    settings.automations.runtime_dir = tmp_path / "runtime"
+    settings.automations.artifacts_dir = tmp_path / "artifacts"
     source = tmp_path / "weekly.md"
     source.write_text("# 各端周报\n", encoding="utf-8")
     linked_results = [
@@ -520,7 +524,7 @@ def test_weekly_report_downloads_use_the_active_period_input_snapshot(
     )
     assert _output_path(
         task,
-        settings.automations.data_dir,
+        settings.automations.artifacts_dir,
         output_root=root,
     ) == root / "main.md"
 
@@ -648,7 +652,7 @@ def test_run_automation_updates_persistent_state(
     tmp_path: Path,
 ) -> None:
     configure_automations(settings, tmp_path)
-    output = tmp_path / "data" / "downloads" / "monthly" / "report.pdf"
+    output = settings.automations.artifacts_dir / "monthly" / "report.pdf"
     output.parent.mkdir(parents=True)
     output.write_bytes(b"%PDF-content")
 
@@ -660,7 +664,7 @@ def test_run_automation_updates_persistent_state(
 
     assert result.status == "success"
     assert result.output_file == str(output)
-    stored = AutomationStateStore(settings.automations.data_dir).read("monthly-report")
+    stored = AutomationStateStore(settings.automations.state_dir).read("monthly-report")
     assert stored.status == "success"
     assert stored.run_id == "run-1"
 
@@ -755,7 +759,7 @@ def test_run_automation_rejects_duplicate_task_lock(
     tmp_path: Path,
 ) -> None:
     configure_automations(settings, tmp_path)
-    lock_path = settings.automations.data_dir / "locks" / "task-monthly-report.lock"
+    lock_path = settings.automations.runtime_dir / "locks" / "task-monthly-report.lock"
 
     with file_lock(lock_path, 0):
         with pytest.raises(AutomationFailed, match="正在执行"):
@@ -786,7 +790,9 @@ def test_manager_reports_total_enabled_count_before_home_limit(
         encoding="utf-8",
     )
     settings.automations.config_file = config_file
-    settings.automations.data_dir = tmp_path / "data"
+    settings.automations.state_dir = tmp_path / "state"
+    settings.automations.runtime_dir = tmp_path / "runtime"
+    settings.automations.artifacts_dir = tmp_path / "artifacts"
     settings.automations.max_home_tasks = 1
     manager = AutomationManager(settings)
 
@@ -815,9 +821,11 @@ def test_manager_home_tasks_are_sorted_by_recent_activity(
         encoding="utf-8",
     )
     settings.automations.config_file = config_file
-    settings.automations.data_dir = tmp_path / "data"
+    settings.automations.state_dir = tmp_path / "state"
+    settings.automations.runtime_dir = tmp_path / "runtime"
+    settings.automations.artifacts_dir = tmp_path / "artifacts"
     settings.automations.max_home_tasks = 1
-    store = AutomationStateStore(settings.automations.data_dir)
+    store = AutomationStateStore(settings.automations.state_dir)
     now = datetime.now().astimezone()
     store.write(
         AutomationState(
@@ -953,7 +961,7 @@ def test_manager_stores_private_feishu_qr_and_clears_it_on_browser_stop(
         )
     )
     content = manager.feishu_qr_content()
-    path = settings.automations.data_dir / "runtime" / "feishu-login-qr.png"
+    path = settings.automations.runtime_dir / "feishu-login-qr.png"
 
     assert content == b"\x89PNG\r\n\x1a\ncontent"
     assert path.stat().st_mode & 0o777 == 0o600
@@ -973,7 +981,7 @@ def test_manager_logs_final_web_operation_once(
 ) -> None:
     configure_automations(settings, tmp_path)
     manager = AutomationManager(settings)
-    store = AutomationStateStore(settings.automations.data_dir)
+    store = AutomationStateStore(settings.automations.state_dir)
     store.write(
         AutomationState(
             task_id="monthly-report",
@@ -999,7 +1007,7 @@ def test_runner_logs_final_web_operation_without_manager_poll(
     tmp_path: Path,
 ) -> None:
     configure_automations(settings, tmp_path)
-    store = AutomationStateStore(settings.automations.data_dir)
+    store = AutomationStateStore(settings.automations.state_dir)
     store.write(
         AutomationState(
             task_id="monthly-report",
@@ -1214,8 +1222,7 @@ def test_manager_recovers_interrupted_browser_initialization(
 ) -> None:
     configure_automations(settings, tmp_path)
     state_path = (
-        settings.automations.data_dir
-        / "runtime"
+        settings.automations.state_dir
         / "browser-profile-initialization.json"
     )
     state_path.parent.mkdir(parents=True)
@@ -1296,7 +1303,7 @@ def test_manager_refuses_to_stop_browser_while_automation_lock_is_held(
 ) -> None:
     configure_automations(settings, tmp_path)
     manager = AutomationManager(settings)
-    lock_path = settings.automations.data_dir / "locks" / "debug-chrome.lock"
+    lock_path = settings.automations.runtime_dir / "locks" / "debug-chrome.lock"
 
     with file_lock(lock_path, 0):
         with pytest.raises(ApiError, match="自动化任务正在使用"):

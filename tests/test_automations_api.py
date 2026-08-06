@@ -45,7 +45,9 @@ async def test_automation_list_and_background_acceptance(
     settings: Settings,
     tmp_path: Path,
 ) -> None:
-    settings.automations.data_dir = tmp_path / "automations"
+    settings.automations.state_dir = tmp_path / "automation-state"
+    settings.automations.runtime_dir = tmp_path / "automation-runtime"
+    settings.automations.artifacts_dir = tmp_path / "automation-artifacts"
     app = create_app(settings)
     manager = MagicMock()
     manager.list.return_value = AutomationListData(
@@ -70,7 +72,7 @@ async def test_automation_list_and_background_acceptance(
         state="available",
         message="登录有效",
     )
-    qr_path = settings.automations.data_dir / "runtime" / "feishu-login-qr.png"
+    qr_path = settings.automations.runtime_dir / "feishu-login-qr.png"
     qr_path.parent.mkdir(parents=True)
     qr_path.write_bytes(b"\x89PNG\r\n\x1a\ncontent")
     manager.feishu_qr_content.return_value = qr_path.read_bytes()

@@ -1,0 +1,167 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+project_root=$(cd -- "$script_dir/.." && pwd)
+cd "$project_root"
+
+if pgrep -f -- "${project_root}/main.py" >/dev/null 2>&1; then
+  printf '%s\n' 'Chub is running. Stop it before migrating data.' >&2
+  exit 1
+fi
+
+move_path() {
+  local source=$1
+  local target=$2
+  if [[ ! -e "$source" ]]; then
+    return
+  fi
+  if [[ -e "$target" ]]; then
+    printf 'Migration target already exists: %s\n' "$target" >&2
+    exit 1
+  fi
+  mkdir -p "$(dirname -- "$target")"
+  mv -- "$source" "$target"
+}
+
+merge_json_array() {
+  local source=$1
+  local target=$2
+  if [[ ! -e "$source" ]]; then
+    return
+  fi
+  if [[ ! -e "$target" ]]; then
+    move_path "$source" "$target"
+    return
+  fi
+  .venv/bin/python - "$source" "$target" <<'PY'
+import json
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+source, target = map(Path, sys.argv[1:])
+old = json.loads(source.read_text(encoding="utf-8"))
+new = json.loads(target.read_text(encoding="utf-8"))
+if not isinstance(old, list) or not isinstance(new, list):
+    raise SystemExit("Expected JSON arrays while merging migration state")
+
+merged = {}
+for item in old + new:
+    if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+        raise SystemExit("Expected identified JSON records while merging migration state")
+    record_id = item["id"]
+    existing = merged.get(record_id)
+    if existing is None or str(item.get("updated_at", "")) >= str(existing.get("updated_at", "")):
+        merged[record_id] = item
+
+temporary = tempfile.NamedTemporaryFile(
+    mode="w", encoding="utf-8", dir=target.parent, delete=False
+)
+try:
+    with temporary:
+        json.dump(list(merged.values()), temporary, ensure_ascii=False, indent=2)
+        temporary.write("\n")
+    os.chmod(temporary.name, 0o600)
+    os.replace(temporary.name, target)
+    source.unlink()
+finally:
+    Path(temporary.name).unlink(missing_ok=True)
+PY
+}
+
+merge_archived_document_state() {
+  local source=$1
+  local target=$2
+  if [[ ! -e "$source" ]]; then
+    return
+  fi
+  if [[ ! -e "$target" ]]; then
+    move_path "$source" "$target"
+    return
+  fi
+  .venv/bin/python - "$source" "$target" <<'PY'
+import json
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+source, target = map(Path, sys.argv[1:])
+old = json.loads(source.read_text(encoding="utf-8"))
+new = json.loads(target.read_text(encoding="utf-8"))
+if not isinstance(old, dict) or not isinstance(new, dict):
+    raise SystemExit("Expected JSON objects while merging document state")
+old_ids = old.get("archived_document_ids", [])
+new_ids = new.get("archived_document_ids", [])
+if not all(isinstance(value, str) for value in old_ids + new_ids):
+    raise SystemExit("Expected archived document identifiers while merging state")
+payload = {"archived_document_ids": sorted(set(old_ids) | set(new_ids))}
+
+temporary = tempfile.NamedTemporaryFile(
+    mode="w", encoding="utf-8", dir=target.parent, delete=False
+)
+try:
+    with temporary:
+        json.dump(payload, temporary, ensure_ascii=False, separators=(",", ":"))
+        temporary.write("\n")
+    os.chmod(temporary.name, 0o600)
+    os.replace(temporary.name, target)
+    source.unlink()
+finally:
+    Path(temporary.name).unlink(missing_ok=True)
+PY
+}
+
+merge_directory() {
+  local source=$1
+  local target=$2
+  local entry
+  if [[ ! -d "$source" ]]; then
+    return
+  fi
+  if [[ ! -e "$target" ]]; then
+    mkdir -p "$(dirname -- "$target")"
+    mv -- "$source" "$target"
+    return
+  fi
+  if [[ ! -d "$target" ]]; then
+    printf 'Migration target already exists: %s\n' "$target" >&2
+    exit 1
+  fi
+  mkdir -p "$target"
+  shopt -s dotglob nullglob
+  for entry in "$source"/*; do
+    local destination="$target/$(basename -- "$entry")"
+    if [[ -d "$entry" ]]; then
+      merge_directory "$entry" "$destination"
+    elif [[ -e "$destination" ]]; then
+      printf 'Migration target already exists: %s\n' "$destination" >&2
+      exit 1
+    else
+      mv -- "$entry" "$target/"
+    fi
+  done
+  shopt -u dotglob nullglob
+  rmdir -- "$source"
+}
+
+merge_json_array data/codex-sessions.json data/state/codex/sessions.json
+merge_json_array data/codex-quick-interactions.json data/state/codex/quick-interactions.json
+merge_archived_document_state data/project-documents.json data/state/project-documents.json
+merge_directory data/codex-hooks data/runtime/codex/hooks
+merge_directory data/codex-quick-interactions data/runtime/codex/quick-interactions
+
+merge_directory data/automations/states data/state/automations
+move_path data/automations/runtime/browser-profile-initialization.json \
+  data/state/automations/browser-profile-initialization.json
+merge_directory data/automations/locks data/runtime/automations/locks
+merge_directory data/automations/logs data/runtime/automations/logs
+merge_directory data/automations/runtime data/runtime/automations
+merge_directory data/automations/downloads data/artifacts/automations/downloads
+merge_directory data/weekly-reports data/artifacts/weekly-reports
+
+find data/state data/runtime data/artifacts -type d -exec chmod 700 {} + 2>/dev/null || true
+find data/state data/runtime data/artifacts -type f -exec chmod 600 {} + 2>/dev/null || true
+printf '%s\n' 'Chub data migration completed. Review config/settings.local.yaml, then start Chub.'

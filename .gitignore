@@ -28,13 +28,9 @@ htmlcov/
 
 logs/*.log
 logs/*.log.*
-data/codex-sessions.json
-data/codex-hooks/
-data/codex-quick-interactions.json
-data/codex-quick-interactions/
-data/automations/
-data/weekly-reports/
-data/project-documents.json
+data/state/
+data/runtime/
+data/artifacts/
 
 .DS_Store
 .idea/

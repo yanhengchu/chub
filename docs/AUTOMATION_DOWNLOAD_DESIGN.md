@@ -176,7 +176,7 @@ tasks:
 `V 国内业务周报` 的本期周期固定为周一至周日。每周三至下周二，所有下载都归属本周的同一周期；下周二是固定报送日，自动化实际运行日期不改变归属。关联文档按原文顺序串行下载，继续复用 `feishu-document-download.yaml`，与主周报一起写入本期的新输入快照：
 
 ```text
-data/weekly-reports/2026-07-20至2026-07-26/
+data/artifacts/weekly-reports/2026-07-20至2026-07-26/
   inputs/2026-07-29-070551-<run-id>/
     main.md
     linked/

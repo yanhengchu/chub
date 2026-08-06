@@ -92,7 +92,7 @@ Chub 已通过 `V 国内业务周报` 自动化任务导出主周报及“各端
 ### 6.1 本地工作目录
 
 ```text
-data/weekly-reports/
+data/artifacts/weekly-reports/
 └── 2026-07-20至2026-07-26/
     ├── inputs/
     │   └── 2026-07-29-070551-<run-id>/
@@ -479,7 +479,7 @@ Manifest 应保存原始标题、标准化后的匹配值和边界判断依据�
 ## 15. 评审结论
 
 1. 周报周期固定为周一至周日，并在每周三切换；周三至次周二的所有下载和汇总保持同一周期。
-2. 周报专属自动化在 `data/weekly-reports/<周期>/inputs/<下载批次>/` 保存原始材料，Manifest 与 `output/` 位于同一周期工作区。
+2. 周报专属自动化在 `data/artifacts/weekly-reports/<周期>/inputs/<下载批次>/` 保存原始材料，Manifest 与 `output/` 位于同一周期工作区。
 3. 当前五份本期周报的必需角色由 Manifest 显式声明，并允许每周增加可选材料。
 4. 采用“两阶段生成”：先确认重点清单，再生成正式稿。
 5. 正式稿只生成本地 Markdown，核对记录完成后流程结束。

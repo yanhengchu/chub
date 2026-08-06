@@ -48,14 +48,15 @@ class QuickInteractionManager:
     def __init__(
         self,
         data_file: Path,
+        runtime_dir: Path,
         codex_manager,
         llm_service: LlmService | None = None,
         completion_notifier: Callable[[QuickInteractionTask], object] | None = None,
         *,
         timeout_seconds: int = 6 * 60 * 60,
     ) -> None:
-        self.path = data_file.with_name("codex-quick-interactions.json")
-        self.result_dir = self.path.with_suffix("")
+        self.path = data_file.with_name("quick-interactions.json")
+        self.result_dir = runtime_dir / "quick-interactions"
         self.codex_manager = codex_manager
         self.llm_service = llm_service
         self.completion_notifier = completion_notifier
@@ -439,6 +440,7 @@ class QuickInteractionManager:
                 error_path.open("w", encoding="utf-8") as error_file,
                 event_path.open("wb") as event_file,
             ):
+                self._set_private_permissions(error_path, event_path)
                 process = subprocess.Popen(
                     command,
                     cwd=session.cwd,
@@ -457,6 +459,7 @@ class QuickInteractionManager:
                     input=self._codex_execution_prompt(prompt).encode("utf-8"),
                     timeout=self.timeout_seconds,
                 )
+            self._set_private_permissions(result_path)
             current_session = self.codex_manager.get_session(session.id)
             if self._is_cancelled(task_id):
                 self._finish(task_id, "cancelled", "已由用户停止。")
@@ -618,6 +621,14 @@ class QuickInteractionManager:
     def _read_limited(path: Path, limit: int) -> str:
         with path.open("rb") as file:
             return file.read(limit).decode("utf-8", errors="replace")
+
+    @staticmethod
+    def _set_private_permissions(*paths: Path) -> None:
+        for path in paths:
+            try:
+                os.chmod(path, 0o600)
+            except FileNotFoundError:
+                continue
 
     @staticmethod
     def _read_tail(path: Path, limit: int) -> str:

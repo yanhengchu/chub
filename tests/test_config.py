@@ -97,6 +97,32 @@ def test_quick_interaction_timeout_defaults_to_six_hours(
     assert settings.codex_pty.quick_interaction_timeout_seconds == 21_600
 
 
+def test_runtime_data_defaults_are_separated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_file = tmp_path / "settings.yaml"
+    config_file.write_text(VALID_CONFIG, encoding="utf-8")
+    monkeypatch.delenv("HUB_TOKEN", raising=False)
+
+    with patch("app.core.config.load_dotenv"):
+        settings = load_settings(config_file)
+
+    assert settings.codex_pty.data_file.name == "sessions.json"
+    assert settings.codex_pty.runtime_dir.parts[-2:] == ("runtime", "codex")
+    assert settings.automations.state_dir.parts[-2:] == ("state", "automations")
+    assert settings.automations.runtime_dir.parts[-2:] == ("runtime", "automations")
+    assert settings.automations.artifacts_dir.parts[-3:] == (
+        "artifacts",
+        "automations",
+        "downloads",
+    )
+    assert settings.project_documents.state_file.parts[-2:] == (
+        "state",
+        "project-documents.json",
+    )
+
+
 def test_load_settings_reads_project_env_file(
     tmp_path: Path,
 ) -> None:

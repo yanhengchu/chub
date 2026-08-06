@@ -23,13 +23,16 @@ def settings(tmp_path: Path) -> Settings:
                 "enabled": True,
                 "workspace": tmp_path / "workspace",
                 "data_file": tmp_path / "codex-sessions.json",
+                "runtime_dir": tmp_path / "codex-runtime",
                 "ticket_ttl_seconds": 600,
                 "max_running": 3,
             },
             "automations": {
                 "shared_config_file": tmp_path / "automations.yaml",
                 "local_config_file": tmp_path / "automations.local.yaml",
-                "data_dir": tmp_path / "automations",
+                "state_dir": tmp_path / "automation-state",
+                "runtime_dir": tmp_path / "automation-runtime",
+                "artifacts_dir": tmp_path / "automation-artifacts",
             },
             "project_documents": {
                 "state_file": tmp_path / "project-documents.json",

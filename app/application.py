@@ -134,6 +134,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     quick_interactions = QuickInteractionManager(
         resolved_settings.codex_pty.data_file,
+        resolved_settings.codex_pty.runtime_dir,
         codex_pty_manager,
         llm_service,
         completion_notifier.notify,

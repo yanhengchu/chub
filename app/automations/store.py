@@ -9,8 +9,8 @@ from app.automations.models import AutomationState
 
 
 class AutomationStateStore:
-    def __init__(self, data_dir: Path) -> None:
-        self._state_dir = data_dir / "states"
+    def __init__(self, state_dir: Path) -> None:
+        self._state_dir = state_dir
 
     def path_for(self, task_id: str) -> Path:
         return self._state_dir / f"{task_id}.json"

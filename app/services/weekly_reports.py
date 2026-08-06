@@ -16,7 +16,7 @@ import markdown
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-WEEKLY_REPORTS_ROOT = PROJECT_ROOT / "data" / "weekly-reports"
+WEEKLY_REPORTS_ROOT = PROJECT_ROOT / "data" / "artifacts" / "weekly-reports"
 MAX_REPORT_LINES = 4_000
 MAX_REPORT_LINE_BYTES = 16 * 1024
 LOGGER = logging.getLogger("hub.weekly_reports")

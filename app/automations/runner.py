@@ -65,7 +65,7 @@ def _check_navigation(url: str, task: AutomationTaskConfig) -> None:
 
 def _output_path(
     task: AutomationTaskConfig,
-    data_dir: Path,
+    artifacts_dir: Path,
     *,
     output_root: Path | None = None,
 ) -> Path:
@@ -79,7 +79,7 @@ def _output_path(
         raise AutomationFailed("输出文件名格式无效") from exc
     if Path(filename).name != filename:
         raise AutomationFailed("输出文件名包含非法路径")
-    resolved_output_root = (output_root or data_dir / "downloads").resolve()
+    resolved_output_root = (output_root or artifacts_dir).resolve()
     directory = (resolved_output_root / task.output.directory).resolve()
     if not directory.is_relative_to(resolved_output_root):
         raise AutomationFailed("输出目录超出受控范围")
@@ -212,11 +212,11 @@ async def _run_browser_task(
 
             target = _output_path(
                 task,
-                settings.automations.data_dir,
+                settings.automations.artifacts_dir,
                 output_root=output_root,
             )
             resolved_output_root = (
-                output_root or settings.automations.data_dir / "downloads"
+                output_root or settings.automations.artifacts_dir
             ).resolve()
             _ensure_private_directory(target.parent, resolved_output_root)
             temporary = target.with_name(f".{target.name}.{run_id}.tmp")
@@ -266,11 +266,11 @@ def _run_task_once(
 
 def _clear_linked_markdown_files(
     directory: Path,
-    data_dir: Path,
+    artifacts_dir: Path,
     *,
     output_root: Path | None = None,
 ) -> None:
-    resolved_output_root = (output_root or data_dir / "downloads").resolve()
+    resolved_output_root = (output_root or artifacts_dir).resolve()
     resolved_directory = (resolved_output_root / directory).resolve()
     if not resolved_directory.is_relative_to(resolved_output_root):
         raise AutomationFailed("关联文档输出目录超出受控范围")
@@ -309,7 +309,7 @@ def _run_linked_documents(
     output_directory = linked_directory or task.output.directory / "linked" / date_directory
     _clear_linked_markdown_files(
         output_directory,
-        settings.automations.data_dir,
+        settings.automations.artifacts_dir,
         output_root=output_root,
     )
     used_filenames: set[str] = set()
@@ -420,12 +420,12 @@ def run_automation(
     resolved_run_id = run_id or uuid4().hex
     if _RUN_ID_PATTERN.fullmatch(resolved_run_id) is None:
         raise AutomationFailed("运行标识包含非法字符")
-    store = AutomationStateStore(settings.automations.data_dir)
+    store = AutomationStateStore(settings.automations.state_dir)
     queued = store.read(task_id)
     operation_id = queued.operation_id if queued.run_id == resolved_run_id else None
     source_ip = queued.source_ip if queued.run_id == resolved_run_id else None
-    task_lock = settings.automations.data_dir / "locks" / f"task-{task_id}.lock"
-    browser_lock = settings.automations.data_dir / "locks" / "debug-chrome.lock"
+    task_lock = settings.automations.runtime_dir / "locks" / f"task-{task_id}.lock"
+    browser_lock = settings.automations.runtime_dir / "locks" / "debug-chrome.lock"
 
     try:
         with file_lock(task_lock, 0):

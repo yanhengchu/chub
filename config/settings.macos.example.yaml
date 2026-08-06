@@ -26,7 +26,8 @@ logs:
 codex_pty:
   enabled: true
   workspace: "~/workspace"
-  data_file: "data/codex-sessions.json"
+  data_file: "data/state/codex/sessions.json"
+  runtime_dir: "data/runtime/codex"
   ticket_ttl_seconds: 600
   max_running: 3
   quick_interaction_timeout_seconds: 21600
@@ -35,11 +36,13 @@ automations:
   enabled: true
   shared_config_file: "config/automations.yaml"
   local_config_file: "config/automations.local.yaml"
-  data_dir: "data/automations"
+  state_dir: "data/state/automations"
+  runtime_dir: "data/runtime/automations"
+  artifacts_dir: "data/artifacts/automations/downloads"
   max_home_tasks: 3
 
 project_documents:
-  state_file: "data/project-documents.json"
+  state_file: "data/state/project-documents.json"
 
 llm:
   enabled: true

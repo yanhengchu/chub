@@ -35,7 +35,7 @@ def main() -> int:
         )
     except Exception as exc:
         if args.run_id:
-            store = AutomationStateStore(settings.automations.data_dir)
+            store = AutomationStateStore(settings.automations.state_dir)
             queued = store.read(args.task_id)
             failed = AutomationState(
                 task_id=args.task_id,

@@ -85,15 +85,14 @@ def _feishu_environment_for_url(
 class AutomationManager:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
-        self._store = AutomationStateStore(settings.automations.data_dir)
+        self._store = AutomationStateStore(settings.automations.state_dir)
         self._launch_lock = threading.Lock()
         self._state_lock = threading.Lock()
         self._qr_lock = threading.Lock()
         self._feishu_environment = FeishuEnvironmentState()
         self._feishu_checking = False
         self._browser_initialization_path = (
-            settings.automations.data_dir
-            / "runtime"
+            settings.automations.state_dir
             / "browser-profile-initialization.json"
         )
         self._browser_initialization: dict[str, object] = {
@@ -106,7 +105,7 @@ class AutomationManager:
             "operation_logged": True,
         }
         self._feishu_qr_path = (
-            settings.automations.data_dir / "runtime" / "feishu-login-qr.png"
+            settings.automations.runtime_dir / "feishu-login-qr.png"
         )
         self._clear_feishu_qr()
         self._recover_browser_initialization()
@@ -491,7 +490,7 @@ class AutomationManager:
                 FeishuEnvironmentState(state="checking", message="检查中")
             )
 
-        lock_path = self._settings.automations.data_dir / "locks" / "debug-chrome.lock"
+        lock_path = self._settings.automations.runtime_dir / "locks" / "debug-chrome.lock"
         try:
             with file_lock(lock_path, 0):
                 try:
@@ -559,7 +558,7 @@ class AutomationManager:
                     started_at=datetime.now().astimezone(),
                 )
             )
-            log_dir = self._settings.automations.data_dir / "logs"
+            log_dir = self._settings.automations.runtime_dir / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
             log_path = log_dir / f"{task_id}.log"
             try:
@@ -641,7 +640,7 @@ class AutomationManager:
                     "automation_browser_busy",
                     "自动化任务正在使用 Debug Chrome",
                 )
-        lock_path = self._settings.automations.data_dir / "locks" / "debug-chrome.lock"
+        lock_path = self._settings.automations.runtime_dir / "locks" / "debug-chrome.lock"
         try:
             with file_lock(lock_path, 0):
                 try:
@@ -753,7 +752,7 @@ class AutomationManager:
 
         def initialize() -> None:
             lock_path = (
-                self._settings.automations.data_dir
+                self._settings.automations.runtime_dir
                 / "locks"
                 / "debug-chrome.lock"
             )

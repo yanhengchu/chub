@@ -1,6 +1,7 @@
 import json
 import asyncio
 import threading
+import stat
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -36,6 +37,7 @@ def manager(
     codex_manager.hook_dir = tmp_path / "hooks"
     return QuickInteractionManager(
         tmp_path / "codex-sessions.json",
+        tmp_path / "runtime",
         codex_manager,
         llm_service,
         completion_notifier,
@@ -46,12 +48,24 @@ def test_quick_interaction_timeout_is_configurable(tmp_path: Path) -> None:
     quick_interactions = manager(tmp_path)
     configured = QuickInteractionManager(
         tmp_path / "custom-codex-sessions.json",
+        tmp_path / "runtime",
         quick_interactions.codex_manager,
         timeout_seconds=7_200,
     )
 
     assert quick_interactions.timeout_seconds == 21_600
     assert configured.timeout_seconds == 7_200
+
+
+def test_runtime_attachments_are_private(tmp_path: Path) -> None:
+    attachments = [tmp_path / "task.err", tmp_path / "task.jsonl"]
+    for path in attachments:
+        path.write_text("runtime output", encoding="utf-8")
+        path.chmod(0o664)
+
+    QuickInteractionManager._set_private_permissions(*attachments)
+
+    assert all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in attachments)
 
 
 def test_command_creates_or_resumes_codex_session(tmp_path: Path) -> None:
@@ -225,7 +239,7 @@ def test_notification_failure_does_not_change_task_result(
     assert finished.notification_error == "微信通知未送达。"
 
 def test_restart_marks_running_task_failed_and_persists_state(tmp_path: Path) -> None:
-    state = tmp_path / "codex-quick-interactions.json"
+    state = tmp_path / "quick-interactions.json"
     task = QuickInteractionTask(
         id="task-1",
         session_id="session-1",
@@ -251,7 +265,7 @@ def test_restart_marks_running_task_failed_and_persists_state(tmp_path: Path) ->
 
 
 def test_restart_marks_incomplete_notification_failed(tmp_path: Path) -> None:
-    state = tmp_path / "codex-quick-interactions.json"
+    state = tmp_path / "quick-interactions.json"
     task = QuickInteractionTask(
         id="task-1",
         session_id="session-1",
@@ -275,7 +289,7 @@ def test_restart_marks_incomplete_notification_failed(tmp_path: Path) -> None:
 def test_restart_does_not_recover_bedrock_task_as_codex_activity(
     tmp_path: Path,
 ) -> None:
-    state = tmp_path / "codex-quick-interactions.json"
+    state = tmp_path / "quick-interactions.json"
     task = QuickInteractionTask(
         id="task-1",
         session_id="session-1",
