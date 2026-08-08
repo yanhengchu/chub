@@ -22,7 +22,7 @@ Generate local Markdown reports in two gated stages. Treat every automation down
 
 3. Map roles by known document identity, never by linked-file order alone. Require `previous-report` plus every role listed in `required_roles`.
 4. Run `python3 scripts/validate_weekly_report.py inputs --manifest <manifest.json>`.
-5. Stop on missing required sources, unsafe paths, unreadable content, unresolved heading boundaries, changed hashes, or a blocking `content_status`. Continue with a gap only after the maintainer explicitly approves its exact scope.
+5. Stop on an invalid Monday-to-Sunday report period, a non-reference source without an explicit `usage_period`, a range whose end falls outside the current period, missing required sources, unsafe paths, unreadable content, unresolved heading boundaries, changed hashes, or a blocking `content_status`. Continue with a gap only after the maintainer explicitly approves its exact scope.
 
 The adapter does not copy, move, or modify downloads. It records a constrained `source_root` inside the same period workspace and paths relative to it. Read [references/manifest-contract.md](references/manifest-contract.md) when creating or diagnosing a mapping.
 
@@ -34,6 +34,9 @@ Then read only each document's declared `usage` range. Read [references/v-report
 
 Create `output/本期工作重点确认清单-<周期>.md` with:
 
+- when the main report declares OKRs, reproduce each OKR title and target text verbatim under `目标：`, then group current focus items beneath their one primary OKR;
+- a separate `其他重点工作` section for confirmed important work that is not part of a declared OKR;
+- a clear status on each focus item, using concise states such as `已处理`、`持续跟进`、`持续推进`、`评审中`、`待决策` or `资料已输出`;
 - proposed inclusions, merges/weakening, and exclusions;
 - continuations from the previous report;
 - a `重点关注内容对照` section that records the disposition of every main-report priority item;
@@ -42,17 +45,17 @@ Create `output/本期工作重点确认清单-<周期>.md` with:
 - source-by-source coverage;
 - a `维护者确认结果` section.
 
-Keep entries factual and short. Preserve key numbers, dates, versions, states, and ownership boundaries. Do not draft polished report prose yet.
+Keep entries factual and short. Preserve key numbers, dates, versions, states, and ownership boundaries. Use concrete dates for resolved or scheduled events. Do not draft polished report prose yet.
 
 Pause for explicit maintainer confirmation. Persist the confirmation time, decisions, approved gaps, final interpretations, and the manifest fingerprint in the checklist. Revalidate inputs immediately before Stage B; regenerate the checklist if any source hash changed.
 
-After confirmation, also write `output/weekly-report-confirmation.json` as the deterministic gate described in [references/manifest-contract.md](references/manifest-contract.md). Keep its decisions consistent with the checklist; the JSON supplements rather than replaces the human-readable confirmation.
+After confirmation, also write `output/weekly-report-confirmation.json` as the deterministic gate described in [references/manifest-contract.md](references/manifest-contract.md). Record the output-relative checklist path and its SHA-256, and keep its decisions and Manifest fingerprint consistent with the checklist; the JSON supplements rather than replaces the human-readable confirmation.
 
 ## Stage B: generate and review
 
 Read [references/report-structure.md](references/report-structure.md). Use the confirmed checklist as the narrative, then return to the declared source ranges to verify every fact.
 
-Write `output/本期业务周报-<周期>.md`. Include 4–6 substantive summary items and a final `各端周报` section with source links. Do not put an input inventory or internal compilation notes at the top.
+Write `output/本期业务周报-<周期>.md`. Use the confirmed report structure and a final `各端周报` section with source links. Apply any profile-specific `report_validation` requirements from the mapping. Do not generate a business summary by default; start directly with the business metrics or the first confirmed body section. Add a business summary only when the maintainer explicitly asks for one, and never repeat its content in the body. Do not put an input inventory or internal compilation notes at the top.
 
 Perform three reviews:
 
@@ -60,7 +63,7 @@ Perform three reviews:
 2. Accuracy: verify numbers, dates, versions, names, links, status, period, arithmetic direction, and responsibility.
 3. Copy: normalize headings, terminology, units, tense, duplication, and clarity without deleting needed context.
 
-After every maintainer correction, search the full report for stale versions of the affected fact and update the summary, body, risks, and links together.
+After every maintainer correction, search the full report for stale versions of the affected fact and update the summary (when present), body, risks, and links together.
 
 Write `output/周报生成核对记录-<周期>.md` containing the actual inputs and ranges, approved gaps, conflicts and resolutions, exclusions, source coverage table, maintainer corrections, residual searches, arithmetic checks, and validation output.
 

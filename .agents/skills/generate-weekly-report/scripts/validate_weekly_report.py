@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import re
+from datetime import date
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -80,6 +81,82 @@ def manifest_fingerprint(manifest: dict[str, Any]) -> str:
     return hashlib.sha256(canonical).hexdigest()
 
 
+def parse_date(value: Any, field: str, errors: list[str]) -> date | None:
+    if not isinstance(value, str):
+        errors.append(f"{field} 必须为 YYYY-MM-DD 日期")
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        errors.append(f"{field} 必须为 YYYY-MM-DD 日期")
+        return None
+
+
+def validate_periods(manifest: dict[str, Any], errors: list[str]) -> None:
+    report_period = manifest.get("report_period")
+    if not isinstance(report_period, dict):
+        errors.append("report_period 格式错误")
+        return
+    start = parse_date(report_period.get("start"), "report_period.start", errors)
+    end = parse_date(report_period.get("end"), "report_period.end", errors)
+    if start is None or end is None:
+        return
+    if start.weekday() != 0 or end.weekday() != 6 or (end - start).days != 6:
+        errors.append("report_period 必须为周一至周日的完整周期")
+    documents = manifest.get("documents")
+    if not isinstance(documents, list):
+        return
+    for item in documents:
+        if not isinstance(item, dict):
+            continue
+        usage = item.get("usage")
+        if isinstance(usage, dict) and usage.get("mode") == "reference-only":
+            continue
+        role = item.get("role", "<unknown>")
+        usage_period = item.get("usage_period")
+        if not isinstance(usage_period, dict):
+            errors.append(f"{role}: 缺少 usage_period")
+            continue
+        usage_start = parse_date(
+            usage_period.get("start"), f"{role}.usage_period.start", errors
+        )
+        usage_end = parse_date(
+            usage_period.get("end"), f"{role}.usage_period.end", errors
+        )
+        if usage_start is None or usage_end is None:
+            continue
+        if usage_start > usage_end:
+            errors.append(f"{role}: usage_period 开始日期晚于结束日期")
+        if not start <= usage_end <= end:
+            errors.append(f"{role}: usage_period 结束日期不在本期内")
+
+
+def report_validation(manifest: dict[str, Any], errors: list[str]) -> dict[str, Any]:
+    value = manifest.get("report_validation")
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        errors.append("report_validation 必须为对象")
+        return {}
+    for key in ("required_sections", "checklist_required_sections"):
+        sections = value.get(key, [])
+        if not isinstance(sections, list) or not all(
+            isinstance(section, str) and section.strip() for section in sections
+        ):
+            errors.append(f"report_validation.{key} 必须为非空字符串数组")
+    section_text = value.get("required_section_text", {})
+    if not isinstance(section_text, dict):
+        errors.append("report_validation.required_section_text 必须为对象")
+        return {}
+    for section, texts in section_text.items():
+        if not isinstance(section, str) or not section.strip() or not isinstance(texts, list):
+            errors.append("report_validation.required_section_text 格式错误")
+            continue
+        if not all(isinstance(text, str) and text.strip() for text in texts):
+            errors.append("report_validation.required_section_text 必须只包含非空文本")
+    return value
+
+
 def load_and_validate(manifest_path: Path) -> tuple[dict[str, Any], list[str]]:
     errors: list[str] = []
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -89,6 +166,8 @@ def load_and_validate(manifest_path: Path) -> tuple[dict[str, Any], list[str]]:
         errors.append("manifest.version 必须为 1")
     if manifest.get("fingerprint") != manifest_fingerprint(manifest):
         errors.append("Manifest fingerprint 无效或内容已被修改")
+    validate_periods(manifest, errors)
+    report_validation(manifest, errors)
     root = safe_source(manifest_path, manifest.get("source_root"))
     documents = manifest.get("documents")
     required = manifest.get("required_roles")
@@ -123,7 +202,10 @@ def load_and_validate(manifest_path: Path) -> tuple[dict[str, Any], list[str]]:
         expected = item.get("sha256")
         if not isinstance(expected, str) or digest(target) != expected:
             errors.append(f"{role}: 文件哈希已变化")
-        usage = item.get("usage", {})
+        usage = item.get("usage")
+        if not isinstance(usage, dict):
+            errors.append(f"{role}: usage 格式错误")
+            continue
         mode = usage.get("mode")
         if mode not in {"reference-only", "whole-document", "heading-range"}:
             errors.append(f"{role}: usage.mode 无效")
@@ -149,6 +231,18 @@ def load_and_validate(manifest_path: Path) -> tuple[dict[str, Any], list[str]]:
     return manifest, errors
 
 
+def safe_output_file(root: Path, value: Any) -> Path:
+    if not isinstance(value, str):
+        raise ValueError("确认记录缺少 checklist.path")
+    pure = PurePosixPath(value)
+    if pure.is_absolute() or ".." in pure.parts or pure.suffix.lower() != ".md":
+        raise ValueError(f"不安全的重点清单路径：{value}")
+    target = (root / Path(*pure.parts)).resolve()
+    if not target.is_relative_to(root) or not target.is_file():
+        raise ValueError(f"重点清单不存在或超出输出目录：{value}")
+    return target
+
+
 def load_confirmation(
     path: Path, manifest: dict[str, Any]
 ) -> tuple[dict[str, Any], list[str]]:
@@ -167,6 +261,27 @@ def load_confirmation(
     for key in ("approved_gaps", "allowed_markers"):
         if not isinstance(confirmation.get(key), list):
             errors.append(f"确认记录缺少 {key}")
+    checklist = confirmation.get("checklist")
+    if not isinstance(checklist, dict):
+        errors.append("确认记录缺少 checklist")
+        return confirmation, errors
+    try:
+        checklist_path = safe_output_file(path.parent, checklist.get("path"))
+        if checklist.get("sha256") != digest(checklist_path):
+            errors.append("重点清单哈希已变化")
+        checklist_text = checklist_path.read_text(encoding="utf-8")
+        if manifest.get("fingerprint") not in checklist_text:
+            errors.append("重点清单与当前 Manifest 不一致")
+        required_sections = ["维护者确认结果"]
+        validation = manifest.get("report_validation", {})
+        if isinstance(validation, dict):
+            required_sections.extend(validation.get("checklist_required_sections", []))
+        checklist_titles = [title for _, title in headings(checklist_text)]
+        for required in dict.fromkeys(required_sections):
+            if not any(required in title for title in checklist_titles):
+                errors.append(f"重点清单缺少章节：{required}")
+    except (OSError, UnicodeError, ValueError) as exc:
+        errors.append(str(exc))
     return confirmation, errors
 
 
@@ -190,10 +305,32 @@ def validate_report(
 ) -> list[str]:
     errors: list[str] = []
     text = report.read_text(encoding="utf-8")
-    titles = [title for _, title in headings(text)]
-    for required in ("业务摘要", "各端周报"):
+    report_headings = headings(text)
+    titles = [title for _, title in report_headings]
+    validation = manifest.get("report_validation", {})
+    configured_sections = (
+        validation.get("required_sections", []) if isinstance(validation, dict) else []
+    )
+    for required in dict.fromkeys(["各端周报", *configured_sections]):
         if not any(required in title for title in titles):
             errors.append(f"正式稿缺少章节：{required}")
+    section_text = (
+        validation.get("required_section_text", {})
+        if isinstance(validation, dict)
+        else {}
+    )
+    report_lines = text.splitlines()
+    for section, expected_texts in section_text.items():
+        section_lines = [line for line, title in report_headings if section in title]
+        if not section_lines:
+            continue
+        start = section_lines[0]
+        following = [line for line, _ in report_headings if line > start]
+        end = following[0] if following else len(report_lines) + 1
+        body = "\n".join(report_lines[start:end - 1])
+        for expected in expected_texts:
+            if expected not in body:
+                errors.append(f"{section} 缺少必备内容：{expected}")
     allowed_markers = confirmation.get("allowed_markers", [])
     text_without_allowed_markers = text
     for allowed_marker in allowed_markers:
@@ -213,7 +350,6 @@ def validate_report(
         line for line, title in headings(text) if "各端周报" in title
     ]
     source_section_line = source_heading_lines[-1] if source_heading_lines else None
-    report_lines = text.splitlines()
     for url in source_urls:
         occurrences = [
             line_no

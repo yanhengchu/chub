@@ -8,7 +8,7 @@ import hashlib
 import json
 import os
 import re
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -24,6 +24,63 @@ DATE = re.compile(r"(?<!\d)(20\d{2})[./年-](\d{1,2})[./月-](\d{1,2})日?")
 
 def fail(message: str) -> None:
     raise ValueError(message)
+
+
+def parse_date(value: Any, field: str) -> date:
+    if not isinstance(value, str):
+        fail(f"{field} 必须为 YYYY-MM-DD 日期")
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(f"{field} 必须为 YYYY-MM-DD 日期") from exc
+
+
+def validate_report_period(period: Any) -> tuple[date, date]:
+    if not isinstance(period, dict):
+        fail("report_period 格式错误")
+    start = parse_date(period.get("start"), "report_period.start")
+    end = parse_date(period.get("end"), "report_period.end")
+    if start.weekday() != 0 or end.weekday() != 6 or (end - start).days != 6:
+        fail("report_period 必须为周一至周日的完整周期")
+    return start, end
+
+
+def validate_usage_period(
+    item: dict[str, Any], report_start: date, report_end: date
+) -> None:
+    usage = item.get("usage", {})
+    if usage.get("mode") == "reference-only":
+        return
+    period = item.get("usage_period")
+    if not isinstance(period, dict):
+        fail(f"{item.get('role')}: 缺少 usage_period")
+    start = parse_date(period.get("start"), f"{item.get('role')}.usage_period.start")
+    end = parse_date(period.get("end"), f"{item.get('role')}.usage_period.end")
+    if start > end:
+        fail(f"{item.get('role')}: usage_period 开始日期晚于结束日期")
+    if not report_start <= end <= report_end:
+        fail(f"{item.get('role')}: usage_period 结束日期不在本期内")
+
+
+def validate_report_validation(value: Any) -> None:
+    if value is None:
+        return
+    if not isinstance(value, dict):
+        fail("report_validation 必须为对象")
+    for key in ("required_sections", "checklist_required_sections"):
+        sections = value.get(key, [])
+        if not isinstance(sections, list) or not all(
+            isinstance(section, str) and section.strip() for section in sections
+        ):
+            fail(f"report_validation.{key} 必须为非空字符串数组")
+    section_text = value.get("required_section_text", {})
+    if not isinstance(section_text, dict):
+        fail("report_validation.required_section_text 必须为对象")
+    for section, texts in section_text.items():
+        if not isinstance(section, str) or not section.strip() or not isinstance(texts, list):
+            fail("report_validation.required_section_text 格式错误")
+        if not all(isinstance(text, str) and text.strip() for text in texts):
+            fail("report_validation.required_section_text 必须只包含非空文本")
 
 
 def relative_file(root: Path, value: str) -> Path:
@@ -121,6 +178,8 @@ def main() -> int:
     for key in ("start", "end", "timezone"):
         if not isinstance(period.get(key), str) or not period[key]:
             fail(f"缺少 report_period.{key}")
+    report_start, report_end = validate_report_period(period)
+    validate_report_validation(mapping.get("report_validation"))
     required = mapping.get("required_roles")
     documents = mapping.get("documents")
     if not isinstance(required, list) or not required or not isinstance(documents, list):
@@ -137,13 +196,16 @@ def main() -> int:
             fail(f"{role} 缺少 path")
         status = item.get("content_status")
         download_status = item.get("download_status")
-        usage = item.get("usage", {})
+        usage = item.get("usage")
+        if not isinstance(usage, dict):
+            fail(f"{role} usage 必须为对象")
         if download_status not in ALLOWED_DOWNLOAD_STATUSES:
             fail(f"{role} 必须显式设置有效 download_status")
         if status not in ALLOWED_STATUSES:
             fail(f"{role} 必须显式设置有效 content_status")
         if usage.get("mode") not in ALLOWED_MODES:
             fail(f"{role} usage.mode 无效")
+        validate_usage_period(item, report_start, report_end)
         target = relative_file(source_root, path_value)
         stat = target.stat()
         output = dict(item)
@@ -171,6 +233,7 @@ def main() -> int:
         "data_root": Path(os.path.relpath(data_root, workspace)).as_posix(),
         "source_root": Path(source_relative).as_posix(),
         "required_roles": required,
+        "report_validation": mapping.get("report_validation"),
         "documents": output_docs,
         "generated_at": datetime.now().astimezone().isoformat(),
     }
