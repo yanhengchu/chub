@@ -1,6 +1,7 @@
 "use strict";
 
 let automationPollTimer = null;
+let automationEnvironmentPollTimer = null;
 let automationBrowserState = "unavailable";
 let automationBrowserProfiles = [];
 let feishuQrObjectUrl = "";
@@ -12,6 +13,7 @@ function automationStatusText(state) {
     idle: "尚未执行",
     queued: "等待执行",
     running: "执行中",
+    waiting: "等待更新",
     success: "成功",
     failed: "失败",
   }[state] || state;
@@ -27,15 +29,129 @@ function automationTime(value) {
     : date.toLocaleString("zh-CN", { hour12: false });
 }
 
+function automationStatusKind(state) {
+  return {
+    success: "success",
+    failed: "failed",
+    queued: "muted",
+    running: "timeout",
+    waiting: "timeout",
+    idle: "muted",
+  }[state] || "muted";
+}
+
+function automationTaskStatusText(task) {
+  if (task.reporting_period && task.state.status === "idle") {
+    return "待下载";
+  }
+  return automationStatusText(task.state.status);
+}
+
+function weeklyDownloadStatus(task) {
+  if (task.state.status === "success") {
+    return ["下载成功", "success"];
+  }
+  const linkedDocuments = task.state.linked_documents || [];
+  if (
+    task.state.validation_status === "failed"
+    && linkedDocuments.length
+    && linkedDocuments.every((document) => document.status === "success")
+  ) {
+    return ["下载成功", "success"];
+  }
+  if (task.state.status === "failed") {
+    return ["下载失败", "failed"];
+  }
+  if (task.state.status === "waiting") {
+    return ["资料待更新", "timeout"];
+  }
+  if (task.state.status === "running") {
+    return ["下载中", "timeout"];
+  }
+  if (task.state.status === "queued") {
+    return ["等待下载", "muted"];
+  }
+  return ["待下载", "muted"];
+}
+
+function weeklyValidationStatus(task) {
+  return {
+    pending: ["校验中", "timeout"],
+    waiting: ["等待各端更新", "timeout"],
+    passed: ["校验通过", "success"],
+    failed: ["校验失败", "failed"],
+  }[task.state.validation_status] || null;
+}
+
+function appendWeeklyReportMaterials(copy, task) {
+  if (!task.reporting_period || !task.main_document_name) {
+    return;
+  }
+  const materials = document.createElement("section");
+  const period = document.createElement("p");
+  const mainLabel = document.createElement("p");
+  const mainDocument = document.createElement("div");
+  const mainDocumentName = document.createElement("span");
+  const validationMessage = document.createElement("p");
+  const backgroundDocuments = (task.state.linked_documents || []).filter(
+    (linkedDocument) => linkedDocument.is_background,
+  );
+  const mainPassed = task.state.validation_status === "passed";
+  materials.className = "automation-weekly-materials";
+  period.className = "automation-weekly-period";
+  period.textContent = `本期下载 · ${task.reporting_period}`;
+  mainLabel.className = `automation-material-summary${mainPassed ? " is-success" : ""}`;
+  mainLabel.textContent = mainPassed ? "主文档 · 1/1 通过" : "主文档";
+  mainDocument.className = "automation-linked-document";
+  mainDocumentName.className = "automation-linked-document-name";
+  mainDocumentName.textContent = task.main_document_name;
+  mainDocument.append(mainDocumentName);
+  materials.append(period, mainLabel, mainDocument);
+  backgroundDocuments.forEach((linkedDocument) => {
+    const reference = document.createElement("div");
+    const referenceName = document.createElement("span");
+    const succeeded = linkedDocument.status === "success";
+    reference.className = `automation-linked-document${succeeded ? "" : " is-failed"}`;
+    referenceName.className = `automation-linked-document-name${succeeded ? "" : " is-failed"}`;
+    referenceName.textContent = `上周参考 · ${linkedDocument.name}`;
+    referenceName.setAttribute(
+      "aria-label",
+      `${linkedDocument.name}，${succeeded ? "上周参考已下载" : "上周参考下载失败"}`,
+    );
+    reference.append(referenceName);
+    materials.append(reference);
+  });
+  if (
+    ["failed", "waiting"].includes(task.state.validation_status)
+    && task.state.validation_message
+  ) {
+    const waiting = task.state.validation_status === "waiting";
+    validationMessage.className = `automation-material-summary${waiting ? "" : " is-failed"}`;
+    validationMessage.textContent = `${waiting ? "等待原因" : "校验原因"} · ${task.state.validation_message}`;
+    materials.append(validationMessage);
+  }
+  copy.append(materials);
+}
+
 async function runAutomation(task, button) {
   button.disabled = true;
-  button.textContent = "受理中…";
+  const shouldStartBrowser = automationBrowserState === "stopped";
+  button.textContent = shouldStartBrowser ? "启动浏览器…" : "受理中…";
   try {
+    if (shouldStartBrowser) {
+      await apiFetch("/api/automations/browser/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "headless" }),
+      });
+      await loadAutomationEnvironment();
+    }
+    button.textContent = "受理中…";
     await apiFetch(`/api/automations/${encodeURIComponent(task.id)}/run`, {
       method: "POST",
     });
     setMessage(elements.automationMessage, "");
-    await loadAutomations();
+    await Promise.all([loadAutomations(), loadAutomationEnvironment()]);
   } catch (error) {
     if (!handleAccessError(error)) {
       setMessage(
@@ -45,67 +161,135 @@ async function runAutomation(task, button) {
       );
     }
   } finally {
-    button.textContent = "运行";
+    button.textContent = shouldStartBrowser ? "启动并运行" : "运行";
   }
 }
 
-async function controlAutomationBrowser() {
-  const action = automationBrowserState === "running" ? "stop" : "start";
+function selectedAutomationBrowserMode() {
+  return Array.from(elements.automationBrowserModeInputs).find(
+    (input) => input.checked,
+  )?.value || "headless";
+}
+
+function selectedAutomationBrowserProfile() {
+  return automationBrowserProfiles.find(
+    (profile) => profile.id === elements.automationBrowserProfile.value,
+  );
+}
+
+function updateAutomationBrowserDialog() {
+  const selectedProfile = selectedAutomationBrowserProfile();
+  const requiresInitialization = selectedProfile && !selectedProfile.initialized;
+  const cannotInitialize = requiresInitialization && !selectedProfile.source_available;
+  elements.automationBrowserDialogConfirm.disabled = !selectedProfile || cannotInitialize;
+  elements.automationBrowserDialogConfirm.textContent = requiresInitialization
+    ? "初始化并启动"
+    : "启动";
+}
+
+function closeAutomationBrowserDialog() {
+  if (elements.automationBrowserDialog.open) {
+    elements.automationBrowserDialog.close();
+  }
+}
+
+function openAutomationBrowserDialog() {
+  updateAutomationBrowserDialog();
+  if (!elements.automationBrowserDialog.open) {
+    elements.automationBrowserDialog.showModal();
+  }
+}
+
+async function startAutomationBrowser(event) {
+  event.preventDefault();
+  const selectedProfile = selectedAutomationBrowserProfile();
+  if (!selectedProfile) {
+    setMessage(elements.automationEnvironmentMessage, "请选择浏览器账户。", "error");
+    return;
+  }
+  if (!selectedProfile.initialized && !selectedProfile.source_available) {
+    setMessage(elements.automationEnvironmentMessage, "该浏览器账户已不可用。", "error");
+    return;
+  }
+  const requiresInitialization = !selectedProfile.initialized;
   if (
-    action === "stop"
-    && !window.confirm("确定停止 Debug Chrome 吗？已打开的调试浏览器页面会关闭。")
+    requiresInitialization
+    && !window.confirm(
+      "首次使用需要复制该浏览器账户。请先完全退出默认 Chrome；复制完成后将自动启动 Debug Chrome。确定继续吗？",
+    )
   ) {
     return;
   }
   elements.automationBrowserControl.disabled = true;
   elements.automationBrowserProfile.disabled = true;
-  elements.automationBrowserMode.disabled = true;
-  const selectedProfile = automationBrowserProfiles.find(
-    (profile) => profile.id === elements.automationBrowserProfile.value,
-  );
-  if (action === "start" && !selectedProfile) {
-    setMessage(elements.automationMessage, "请选择浏览器用户。", "error");
-    await loadAutomations();
-    return;
-  }
-  const requiresInitialization = action === "start" && !selectedProfile.initialized;
-  if (
-    requiresInitialization
-    && !window.confirm(
-      "首次使用需要复制该浏览器用户。请先完全退出默认 Chrome；复制完成后将自动启动 Debug Chrome。确定继续吗？",
-    )
-  ) {
-    await loadAutomations();
-    return;
-  }
+  elements.automationBrowserModeInputs.forEach((input) => {
+    input.disabled = true;
+  });
+  elements.automationBrowserDialogCancel.disabled = true;
+  elements.automationBrowserDialogClose.disabled = true;
+  elements.automationBrowserDialogConfirm.disabled = true;
+  elements.automationBrowserDialogConfirm.textContent = requiresInitialization
+    ? "初始化中…"
+    : "启动中…";
   elements.automationBrowserControl.textContent = requiresInitialization
     ? "初始化中…"
-    : action === "start" ? "启动中…" : "停止中…";
+    : "启动中…";
   try {
-    const options = { method: "POST" };
-    if (action === "start") {
-      options.headers = { "Content-Type": "application/json" };
-      options.body = JSON.stringify({
-        mode: elements.automationBrowserMode.value,
-        profile_id: selectedProfile.id,
-      });
-    }
-    const endpoint = requiresInitialization
-      ? "/api/automations/browser/initialize"
-      : `/api/automations/browser/${action}`;
-    await apiFetch(endpoint, options);
-    setMessage(elements.automationMessage, "");
-    await loadAutomations();
+    await apiFetch(
+      requiresInitialization
+        ? "/api/automations/browser/initialize"
+        : "/api/automations/browser/start",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode: selectedAutomationBrowserMode(),
+          profile_id: selectedProfile.id,
+        }),
+      },
+    );
+    closeAutomationBrowserDialog();
+    setMessage(elements.automationEnvironmentMessage, "");
+    await Promise.all([loadAutomationEnvironment(), loadAutomations()]);
   } catch (error) {
     if (!handleAccessError(error)) {
-      await loadAutomations();
+      await Promise.all([loadAutomationEnvironment(), loadAutomations()]);
       setMessage(
-        elements.automationMessage,
+        elements.automationEnvironmentMessage,
+        error.message || "Debug Chrome 启动失败。",
+        "error",
+      );
+    }
+  }
+}
+
+async function stopAutomationBrowser() {
+  if (!window.confirm("确定停止 Debug Chrome 吗？已打开的调试浏览器页面会关闭。")) {
+    return;
+  }
+  elements.automationBrowserControl.disabled = true;
+  elements.automationBrowserControl.textContent = "停止中…";
+  try {
+    await apiFetch("/api/automations/browser/stop", { method: "POST" });
+    setMessage(elements.automationEnvironmentMessage, "");
+    await Promise.all([loadAutomationEnvironment(), loadAutomations()]);
+  } catch (error) {
+    if (!handleAccessError(error)) {
+      await Promise.all([loadAutomationEnvironment(), loadAutomations()]);
+      setMessage(
+        elements.automationEnvironmentMessage,
         error.message || "Debug Chrome 操作失败。",
         "error",
       );
     }
   }
+}
+
+function controlAutomationBrowser() {
+  if (automationBrowserState === "running") {
+    return stopAutomationBrowser();
+  }
+  openAutomationBrowserDialog();
 }
 
 async function checkFeishuEnvironment() {
@@ -115,13 +299,13 @@ async function checkFeishuEnvironment() {
   setBadge(elements.automationFeishuBadge, "检查中", "muted");
   try {
     await apiFetch("/api/automations/environment/feishu/check", { method: "POST" });
-    setMessage(elements.automationMessage, "");
-    await loadAutomations();
+    setMessage(elements.automationEnvironmentMessage, "");
+    await loadAutomationEnvironment();
   } catch (error) {
     if (!handleAccessError(error)) {
-      await loadAutomations();
+      await loadAutomationEnvironment();
       setMessage(
-        elements.automationMessage,
+        elements.automationEnvironmentMessage,
         error.message || "飞书环境检查失败。",
         "error",
       );
@@ -169,7 +353,7 @@ async function loadFeishuQr() {
       return;
     }
     setMessage(
-      elements.automationMessage,
+      elements.automationEnvironmentMessage,
       error.message || "飞书登录二维码读取失败。",
       "error",
     );
@@ -178,8 +362,7 @@ async function loadFeishuQr() {
   }
 }
 
-function renderAutomations(data) {
-  elements.automationList.replaceChildren();
+function renderAutomationEnvironment(data) {
   const browserRunning = data.browser_state === "running";
   automationBrowserProfiles = data.browser_profiles || [];
   const previousProfile = elements.automationBrowserProfile.value;
@@ -225,24 +408,27 @@ function renderAutomations(data) {
     || (!browserRunning && (!selectedProfile || !selectedProfile.source_available && !selectedProfile.initialized))
     || initializing
   );
-  elements.automationBrowserProfile.hidden = data.browser_state !== "stopped";
   elements.automationBrowserProfile.disabled = data.browser_state !== "stopped" || initializing;
-  elements.automationBrowserMode.hidden = data.browser_state !== "stopped";
-  elements.automationBrowserMode.disabled = data.browser_state !== "stopped" || initializing;
+  elements.automationBrowserModeInputs.forEach((input) => {
+    input.disabled = data.browser_state !== "stopped" || initializing;
+  });
   elements.automationBrowserControl.textContent = browserRunning
     ? "停止"
     : initializing
       ? "初始化中…"
-      : selectedProfile && !selectedProfile.initialized
-        ? "初始化并启动"
-        : "启动";
+      : "启动";
+  if (elements.automationBrowserDialog.open) {
+    updateAutomationBrowserDialog();
+    elements.automationBrowserDialogConfirm.disabled =
+      elements.automationBrowserControl.disabled;
+  }
   const failedInitialization = selectedProfile?.initialization_state === "failed"
     ? selectedProfile
     : null;
   if (failedInitialization?.initialization_message) {
-    setMessage(elements.automationMessage, failedInitialization.initialization_message, "error");
+    setMessage(elements.automationEnvironmentMessage, failedInitialization.initialization_message, "error");
   } else if (data.browser_profiles_error && !automationBrowserProfiles.length) {
-    setMessage(elements.automationMessage, data.browser_profiles_error, "error");
+    setMessage(elements.automationEnvironmentMessage, data.browser_profiles_error, "error");
   }
   const feishuTime = automationTime(data.feishu_environment.checked_at);
   const feishuBadgeKind = {
@@ -274,6 +460,18 @@ function renderAutomations(data) {
   } else {
     releaseFeishuQr();
   }
+  if (!data.enabled) {
+    setMessage(elements.automationEnvironmentMessage, "自动化任务未启用。", "error");
+  }
+
+  return initializing || feishuChecking;
+}
+
+function renderAutomations(data) {
+  elements.automationList.replaceChildren();
+  const browserRunning = data.browser_state === "running";
+  const feishuChecking = data.feishu_environment.state === "checking";
+  automationBrowserState = data.browser_state;
   elements.automationCount.textContent = `已启用 ${data.enabled_count} 个任务`;
 
   if (!data.enabled) {
@@ -292,35 +490,83 @@ function renderAutomations(data) {
   data.tasks.forEach((task) => {
     const item = document.createElement("article");
     const copy = document.createElement("div");
+    const heading = document.createElement("div");
     const name = document.createElement("strong");
     const status = document.createElement("span");
-    const reason = document.createElement("span");
+    const validationStatus = document.createElement("span");
     const button = document.createElement("button");
     const busy = ["queued", "running"].includes(task.state.status);
     active = active || busy;
     item.className = "automation-item";
     copy.className = "automation-item-copy";
-    name.textContent = task.name;
-    const time = automationTime(task.state.finished_at || task.state.started_at);
-    status.className = "automation-item-status";
-    status.textContent = `${automationStatusText(task.state.status)}${time ? ` · ${time}` : ""}`;
-    reason.className = "automation-item-reason";
-    reason.textContent = task.state.message || "暂无状态说明";
+    heading.className = "automation-item-heading";
+    name.textContent = task.title;
+    if (task.reporting_period) {
+      const [downloadText, downloadKind] = weeklyDownloadStatus(task);
+      const validation = weeklyValidationStatus(task);
+      status.className = `badge badge-${downloadKind}`;
+      status.textContent = downloadText;
+      if (validation) {
+        validationStatus.className = `badge badge-${validation[1]}`;
+        validationStatus.textContent = validation[0];
+      }
+    } else {
+      status.className = `badge badge-${automationStatusKind(task.state.status)}`;
+      status.textContent = automationTaskStatusText(task);
+    }
     button.type = "button";
     button.className = "button-secondary automation-run";
-    button.textContent = busy ? "执行中…" : "运行";
-    button.disabled = !browserRunning || !task.enabled || busy || feishuChecking;
+    button.textContent = busy
+      ? "执行中…"
+      : data.browser_state === "stopped" ? "启动并运行" : "运行";
+    button.disabled = (
+      !["running", "stopped"].includes(data.browser_state)
+      || !task.enabled
+      || busy
+      || feishuChecking
+    );
     button.addEventListener("click", () => runAutomation(task, button));
-    copy.append(name, status, reason);
-    if (task.state.linked_documents?.length) {
+    heading.append(name, status);
+    if (validationStatus.textContent) {
+      heading.append(validationStatus);
+    }
+    copy.append(heading);
+    appendWeeklyReportMaterials(copy, task);
+    const currentDocuments = (task.state.linked_documents || []).filter(
+      (linkedDocument) => !linkedDocument.is_background,
+    );
+    if (currentDocuments.length) {
       const details = document.createElement("details");
       const summary = document.createElement("summary");
-      summary.textContent = `关联文档明细（${task.state.linked_documents.length}）`;
+      const linkedSuccesses = currentDocuments.filter(
+        (linkedDocument) => linkedDocument.status === "success",
+      ).length;
+      const linkedFailures = currentDocuments.filter(
+        (linkedDocument) => linkedDocument.status === "failed",
+      ).length;
+      const linkedWaiting = currentDocuments.some(
+        (linkedDocument) => linkedDocument.status === "waiting",
+      );
+      summary.textContent = linkedWaiting
+        ? "各端周报 · 等待更新"
+        : `各端周报 · ${linkedSuccesses}/${currentDocuments.length} 通过`;
       details.className = "automation-linked-details";
+      summary.className = `automation-material-summary is-${linkedFailures ? "failed" : linkedWaiting ? "timeout" : "success"}`;
+      details.open = linkedFailures > 0 || linkedWaiting;
       details.append(summary);
-      task.state.linked_documents.forEach((linkedDocument) => {
-        const row = document.createElement("span");
-        row.textContent = `${linkedDocument.status === "success" ? "成功" : "失败"} · ${linkedDocument.name} · ${linkedDocument.message}`;
+      currentDocuments.forEach((linkedDocument) => {
+        const row = document.createElement("div");
+        const documentName = document.createElement("span");
+        const succeeded = linkedDocument.status === "success";
+        const waiting = linkedDocument.status === "waiting";
+        row.className = `automation-linked-document${succeeded ? "" : waiting ? " is-waiting" : " is-failed"}`;
+        documentName.className = `automation-linked-document-name${succeeded ? "" : waiting ? " is-waiting" : " is-failed"}`;
+        documentName.textContent = linkedDocument.name;
+        documentName.setAttribute(
+          "aria-label",
+          `${linkedDocument.name}，${succeeded ? "成功" : waiting ? "等待更新" : "失败"}`,
+        );
+        row.append(documentName);
         details.append(row);
       });
       copy.append(details);
@@ -328,7 +574,7 @@ function renderAutomations(data) {
     item.append(copy, button);
     elements.automationList.append(item);
   });
-  return active || initializing;
+  return active;
 }
 
 async function loadAutomations() {
@@ -353,18 +599,52 @@ async function loadAutomations() {
       return;
     }
     if (!handleAccessError(error)) {
-      automationBrowserState = "unknown";
-      setBadge(elements.automationBrowserBadge, "检查失败", "failed");
-      elements.automationBrowserControl.disabled = true;
-      elements.automationBrowserProfile.hidden = true;
-      elements.automationBrowserProfile.disabled = true;
-      elements.automationBrowserMode.hidden = true;
-      elements.automationBrowserMode.disabled = true;
-      setBadge(elements.automationFeishuBadge, "检查失败", "failed");
-      elements.automationFeishuCheck.disabled = true;
       setMessage(elements.automationMessage, error.message || "自动化任务读取失败。", "error");
     }
   } finally {
     elements.refreshAutomations.disabled = false;
+  }
+}
+
+async function loadAutomationEnvironment() {
+  const requestVersion = accessVersion;
+  elements.refreshAutomationEnvironment.disabled = true;
+  try {
+    const data = await apiFetch("/api/automations");
+    if (requestVersion !== accessVersion) {
+      return;
+    }
+    setMessage(elements.automationEnvironmentMessage, "");
+    const active = renderAutomationEnvironment(data);
+    if (automationEnvironmentPollTimer) {
+      window.clearTimeout(automationEnvironmentPollTimer);
+      automationEnvironmentPollTimer = null;
+    }
+    if (active) {
+      automationEnvironmentPollTimer = window.setTimeout(loadAutomationEnvironment, 1000);
+    }
+  } catch (error) {
+    if (requestVersion !== accessVersion) {
+      return;
+    }
+    if (!handleAccessError(error)) {
+      automationBrowserState = "unknown";
+      setBadge(elements.automationBrowserBadge, "检查失败", "failed");
+      elements.automationBrowserControl.disabled = true;
+      elements.automationBrowserProfile.disabled = true;
+      elements.automationBrowserModeInputs.forEach((input) => {
+        input.disabled = true;
+      });
+      elements.automationBrowserDialogConfirm.disabled = true;
+      setBadge(elements.automationFeishuBadge, "检查失败", "failed");
+      elements.automationFeishuCheck.disabled = true;
+      setMessage(
+        elements.automationEnvironmentMessage,
+        error.message || "自动化环境读取失败。",
+        "error",
+      );
+    }
+  } finally {
+    elements.refreshAutomationEnvironment.disabled = false;
   }
 }

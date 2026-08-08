@@ -21,7 +21,7 @@ The adapter mapping is JSON:
   "documents": [
     {
       "role": "previous-report",
-      "path": "linked/2026-07-24/previous.md",
+      "path": "linked/上周业务周报.md",
       "title": "上周业务周报",
       "source_url": "https://tenant.feishu.cn/wiki/document-id",
       "download_status": "succeeded",
@@ -30,7 +30,7 @@ The adapter mapping is JSON:
     },
     {
       "role": "product",
-      "path": "linked/2026-07-24/product.md",
+      "path": "linked/产品周报.md",
       "title": "产品周报",
       "download_status": "succeeded",
       "content_status": "ready",

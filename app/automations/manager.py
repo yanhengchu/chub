@@ -42,6 +42,7 @@ from app.automations.store import AutomationStateStore
 from app.core.config import PROJECT_ROOT, Settings
 from app.core.response import ApiError
 from app.services.operation_log import write_operation
+from app.services.weekly_reports import reporting_period
 
 
 FEISHU_ENVIRONMENT_URL = "https://qw6xxurweq.feishu.cn/drive/home/"
@@ -381,7 +382,7 @@ class AutomationManager:
                 )
                 self._store.write(state)
             if (
-                state.status in {"success", "failed"}
+                state.status in {"success", "waiting", "failed"}
                 and state.operation_id
                 and not state.operation_logged
             ):
@@ -435,22 +436,46 @@ class AutomationManager:
         config = self._load_config()
         browser_state, browser_message, browser_mode = debug_chrome_status()
         profiles, profiles_error, profile_id, profile_name = self._browser_profile_data()
-        tasks = [
-            AutomationTaskPublic(
-                id=task_id,
-                name=task.name,
-                description=task.description,
-                enabled=task.enabled,
-                state=self._current_state(task_id),
+        tasks = []
+        for task_id, task in config.tasks.items():
+            state = self._current_state(task_id)
+            current_period = None
+            main_document_name = None
+            if task.extension == "v-weekly-report-linked-documents":
+                current_period = reporting_period()
+                main_document_name = task.name
+                if state.period != current_period:
+                    if state.status in {"queued", "running"} and state.period:
+                        current_period = state.period
+                    else:
+                        state = AutomationState(
+                            task_id=task_id,
+                            period=current_period,
+                        )
+                else:
+                    main_document_name = state.main_document_name or task.name
+            tasks.append(
+                AutomationTaskPublic(
+                    id=task_id,
+                    name=task.name,
+                    title=task.title or task.name,
+                    description=task.description,
+                    enabled=task.enabled,
+                    reporting_period=current_period,
+                    main_document_name=main_document_name,
+                    state=state,
+                )
             )
-            for task_id, task in config.tasks.items()
-        ]
         tasks.sort(
             key=lambda item: (
                 item.state.finished_at or item.state.started_at
             ).timestamp()
             if item.state.finished_at or item.state.started_at
             else float("-inf"),
+            reverse=True,
+        )
+        tasks.sort(
+            key=lambda item: item.reporting_period is not None,
             reverse=True,
         )
         if home_only:
@@ -556,6 +581,11 @@ class AutomationManager:
                     source_ip=source_ip,
                     message="任务已受理",
                     started_at=datetime.now().astimezone(),
+                    period=(
+                        reporting_period()
+                        if task.extension == "v-weekly-report-linked-documents"
+                        else None
+                    ),
                 )
             )
             log_dir = self._settings.automations.runtime_dir / "logs"
@@ -598,6 +628,11 @@ class AutomationManager:
                         message="无法启动自动化 Runner",
                         started_at=datetime.now().astimezone(),
                         finished_at=datetime.now().astimezone(),
+                        period=(
+                            reporting_period()
+                            if task.extension == "v-weekly-report-linked-documents"
+                            else None
+                        ),
                     )
                 )
                 raise ApiError(500, "automation_start_failed", "无法启动自动化任务") from exc
@@ -609,7 +644,7 @@ class AutomationManager:
     def control_browser(
         self,
         action: str,
-        mode: str = "headed",
+        mode: str = "headless",
         profile_id: str | None = None,
     ) -> BrowserControlResult:
         if action not in {"start", "stop"}:

@@ -22,12 +22,8 @@ MAX_REPORT_LINE_BYTES = 16 * 1024
 LOGGER = logging.getLogger("hub.weekly_reports")
 _PERIOD_PATTERN = re.compile(r"^(\d{4}-\d{2}-\d{2})至(\d{4}-\d{2}-\d{2})$")
 _REPORT_TYPES = {
-    "focus": ("本期工作重点确认清单", "本期重点确认", "重点范围与取舍确认"),
-    "report": ("本期业务周报", "本期周报", "各端进展汇总"),
-}
-_LEGACY_REPORT_PREFIXES = {
-    "focus": "本周工作重点确认清单",
-    "report": "本周业务周报",
+    "focus": ("本期工作重点确认清单", "本期工作重点确认清单", "重点范围与取舍确认"),
+    "report": ("本期业务周报", "本期业务周报", "各端进展汇总"),
 }
 
 
@@ -69,16 +65,16 @@ def _report_path(period: str, report_type: str) -> Path | None:
     output = (root / period / "output").resolve()
     if not output.is_relative_to(root):
         return None
-    for candidate_prefix in (prefix, _LEGACY_REPORT_PREFIXES[report_type]):
-        path = (output / f"{candidate_prefix}-{period}.md").resolve()
-        if not path.is_relative_to(root):
-            return None
-        try:
-            if path.is_file():
-                return path
-        except OSError:
-            return path
-    return (output / f"{prefix}-{period}.md").resolve()
+    path = (output / f"{prefix}-{period}.md").resolve()
+    marker = (root / period / ".inputs-updated").resolve()
+    if not marker.is_relative_to(root):
+        return None
+    try:
+        if marker.is_file() and (not path.is_file() or marker.stat().st_mtime > path.stat().st_mtime):
+            return path.with_name(f".{path.name}.stale")
+    except OSError:
+        return path
+    return path
 
 
 def list_latest_weekly_reports(*, today: date | None = None) -> list[WeeklyReportView]:

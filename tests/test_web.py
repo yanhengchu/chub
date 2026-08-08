@@ -67,6 +67,7 @@ async def test_home_page_is_public_and_contains_no_token(
     assert "节点任务" not in response.text
     assert 'id="codex-card-host"' in response.text
     assert 'id="openclaw-title"' in response.text
+    assert "OpenClaw 环境" in response.text
     assert 'id="refresh-openclaw"' in response.text
     assert 'id="openclaw-start"' in response.text
     assert 'id="openclaw-restart"' in response.text
@@ -94,9 +95,25 @@ async def test_home_page_is_public_and_contains_no_token(
     assert 'id="openclaw-checked-at"' not in response.text
     assert 'id="automation-title"' in response.text
     assert 'id="automation-list"' in response.text
+    assert 'id="automation-environment-title"' in response.text
+    assert "自动化环境" in response.text
+    assert 'id="refresh-automation-environment"' in response.text
+    assert 'id="automation-environment-message"' in response.text
+    assert 'data-card-key="automation-environment"' in response.text
+    assert 'data-card-key="automation-environment" data-collapsible-card data-collapsed="true"' in response.text
+    assert response.text.index('data-card-key="automations"') < response.text.index(
+        'data-card-key="automation-environment"'
+    ) < response.text.index('data-card-key="openclaw"') < response.text.index(
+        'data-card-key="project-docs"'
+    ) < response.text.index('data-card-key="logs"')
     assert 'id="automation-browser-control"' in response.text
+    assert 'aria-controls="automation-browser-dialog"' in response.text
+    assert 'id="automation-browser-dialog"' in response.text
+    assert 'id="automation-browser-form"' in response.text
     assert 'id="automation-browser-profile"' in response.text
-    assert 'id="automation-browser-mode"' in response.text
+    assert 'name="automation-browser-mode" value="headless" checked' in response.text
+    assert 'name="automation-browser-mode" value="headed"' in response.text
+    assert 'id="automation-browser-mode"' not in response.text
     assert 'id="automation-feishu-badge"' in response.text
     assert 'id="automation-feishu-check"' in response.text
     assert 'id="automation-feishu-login"' in response.text
@@ -105,6 +122,9 @@ async def test_home_page_is_public_and_contains_no_token(
     assert "飞书环境" in response.text
     assert "有界面" in response.text
     assert "无界面" in response.text
+    assert response.text.index('value="headless" checked') < response.text.index(
+        'value="headed"'
+    )
     assert 'id="refresh-automations"' in response.text
     assert "复用登录状态执行自动化任务。" in response.text
     assert 'id="refresh-project-docs"' in response.text
@@ -115,8 +135,8 @@ async def test_home_page_is_public_and_contains_no_token(
     assert 'id="weekly-reports-title"' in response.text
     assert "本期周报 · 2026-08-03至2026-08-09" in response.text
     assert 'id="weekly-report-list"' in response.text
-    assert "本期重点确认" in response.text
-    assert "本期周报" in response.text
+    assert "本期工作重点确认清单" in response.text
+    assert "本期业务周报" in response.text
     assert "重点范围与取舍确认" in response.text
     assert "各端进展汇总" in response.text
     assert 'class="weekly-report-heading"' in response.text
@@ -155,7 +175,7 @@ async def test_home_page_is_public_and_contains_no_token(
     assert 'data-card-heading' in response.text
     assert 'data-card-content' in response.text
     assert 'data-collapsible-card' in response.text
-    assert response.text.count('class="card-content-inner"') == 4
+    assert response.text.count('class="card-content-inner"') == 5
     assert "退出" in response.text
     assert 'id="task-list"' not in response.text
     assert "data-log-source" in response.text
@@ -226,12 +246,17 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
     assert 'id="quick-interaction-page-size"' in response.text
     assert '<option value="5" selected>5 条</option>' in response.text
     assert '<option value="10">10 条</option>' in response.text
+    assert 'id="codex-default-permission"' in response.text
+    assert '<option value="full-access">Full access</option>' in response.text
+    assert "只影响后续新建的 Session，已有会话保持原权限。" in response.text
     assert "尚未开放" not in response.text
     assert f"v{settings.app.version}" in response.text
     assert "返回首页" not in response.text
     assert script.status_code == 200
     assert "hub.quickInteractionView.v1" not in script.text
     assert "hub.quickInteractionPageSize.v1" in script.text
+    assert "hub.codexDefaultPermission.v1" in script.text
+    assert "之后新建的 Session 将使用该权限" in script.text
     assert "localStorage.setItem" in script.text
     assert "hub.cyberRainSpeed.v1" in script.text
     assert "hub.cyberRainBrightness.v1" in script.text
@@ -444,11 +469,27 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "openclawWeixinPollFailures" in dashboard_script
     assert "setTimeout(\n          pollOpenClawWeixinLogin,\n          retryDelay" in dashboard_script
     assert "Promise.all([\n      apiFetch(\"/api/openclaw/status\")" not in dashboard_script
-    assert "automationBrowserMode.value" in dashboard_script
-    browser_control_error = dashboard_script.split(
-        'error.message || "Debug Chrome 操作失败。"', 1
-    )[0].rsplit("} catch (error) {", 1)[1]
-    assert "await loadAutomations();" in browser_control_error
+    assert "automationBrowserModeInputs" in dashboard_script
+    assert "loadAutomationEnvironment" in dashboard_script
+    assert "automationBrowserDialog.showModal()" in dashboard_script
+    assert "automationBrowserDialogConfirm" in dashboard_script
+    assert "appendWeeklyReportMaterials" in dashboard_script
+    assert "weeklyDownloadStatus" in dashboard_script
+    assert "weeklyValidationStatus" in dashboard_script
+    assert "下载成功" in dashboard_script
+    assert "校验通过" in dashboard_script
+    assert 'mainLabel.textContent = mainPassed ? "主文档 · 1/1 通过" : "主文档"' in dashboard_script
+    assert '`${waiting ? "等待原因" : "校验原因"} · ${task.state.validation_message}`' in dashboard_script
+    assert "上周参考 · ${linkedDocument.name}" in dashboard_script
+    assert "各端周报 · ${linkedSuccesses}/${currentDocuments.length} 通过" in dashboard_script
+    assert "automation-material-summary" in dashboard_script
+    assert "本期下载 ·" in dashboard_script
+    assert "待下载" in dashboard_script
+    assert "启动并运行" in dashboard_script
+    assert 'apiFetch("/api/automations/browser/start"' in dashboard_script
+    assert 'JSON.stringify({ mode: "headless" })' in dashboard_script
+    assert 'error.message || "Debug Chrome 启动失败。"' in dashboard_script
+    assert "Promise.all([loadAutomations(), loadAutomationEnvironment()])" in dashboard_script
     assert "/api/project-docs" in dashboard_script
     assert "loadProjectDocuments" in dashboard_script
     assert 'document.createElement("time")' in dashboard_script
@@ -495,6 +536,8 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "toggleCodexEntryMode" in script.text
     assert "updateCodexEntryButton" in script.text
     assert "点击切换为" in script.text
+    assert "actions.append(entry, stop, archive);" in script.text
+    assert "permissionPanel" not in script.text
     assert "快速交互已提交" not in script.text
     assert "quick-interaction-submit" not in script.text
     assert "confirm_stop_unknown_terminal" not in script.text
@@ -516,7 +559,8 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "loadCodexSessions({ background: true })" in script.text
     assert "loadCodexSessions({ force: true })" in script.text
     assert "session.quick_interaction_running" in script.text
-    assert "permission.disabled = quickInteractionRunning" in script.text
+    assert "CODEX_DEFAULT_PERMISSION_KEY" in script.text
+    assert 'permission_mode: readCodexDefaultPermission()' in script.text
     assert "archive.disabled = !session.codex_session_id" in script.text
     assert "|| quickInteractionRunning" in script.text
     assert "|| llmInteractionRunning" in script.text
@@ -546,7 +590,7 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "远程管理本机 Codex 会话。" in script.text
     assert "showCodexPanel" not in script.text
     assert "setupCollapsibleCard" in script.text
-    assert "cardContentInner.append(panel, workspaceDialog, permissionDialog)" in script.text
+    assert "cardContentInner.append(panel, workspaceDialog)" in script.text
     assert "card.append(header, cardContent)" in script.text
     assert 'aria-expanded' in script.text
     assert "is-collapsed" in script.text
@@ -587,6 +631,8 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert ".logs-card" in stylesheet.text
     assert ".session-path" in stylesheet.text
     assert ".session-actions" in stylesheet.text
+    assert "grid-column: 1 / -1;" in stylesheet.text
+    assert ".session-permission-panel" not in stylesheet.text
     assert ".quick-interaction-history" not in stylesheet.text
     assert "grid-template-columns: minmax(0, 1fr) auto;" in stylesheet.text
     assert "grid-template-columns: 1fr;" in stylesheet.text
@@ -714,6 +760,16 @@ async def test_automation_details_page_and_script_are_available(
     assert "standalone-list-card" in page.text
     assert 'id="detail-automation-list"' in page.text
     assert script.status_code == 200
+    assert "appendWeeklyReportMaterials" in script.text
+    assert "weeklyDownloadStatus" in script.text
+    assert "weeklyValidationStatus" in script.text
+    assert "下载成功" in script.text
+    assert "校验通过" in script.text
+    assert "automation-material-summary" in script.text
+    assert "本期下载 ·" in script.text
+    assert "启动并运行" in script.text
+    assert 'request("/api/automations/browser/start"' in script.text
+    assert 'JSON.stringify({ mode: "headless" })' in script.text
     assert "/api/automations?all_tasks=true" in script.text
     assert "showMessage(data.browser_message" not in script.text
     assert "innerHTML" not in script.text

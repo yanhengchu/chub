@@ -26,7 +26,7 @@ router = APIRouter(
 def _control_browser(
     action: str,
     request: Request,
-    mode: str = "headed",
+    mode: str = "headless",
     profile_id: str | None = None,
 ) -> ApiResponse[BrowserControlResult]:
     target = (

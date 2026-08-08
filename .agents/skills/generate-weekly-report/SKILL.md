@@ -9,14 +9,14 @@ Generate local Markdown reports in two gated stages. Treat every automation down
 
 ## Prepare inputs
 
-1. Derive the current period: it is the Monday-to-Sunday week whose processing window starts on Wednesday and ends on the following Tuesday, the fixed reporting day. Locate that period's selected `inputs/<download-batch>/`, the previous formal report, and the current source documents. A source may use a shorter or shifted range such as Monday-to-Friday or Tuesday-to-Saturday, but its declared `usage_period` must fall within the current period.
+1. Derive the current period: it is the Monday-to-Sunday week whose processing window starts on Wednesday and ends on the following Tuesday, the fixed reporting day. Locate that period's single current `inputs/`, the previous formal report, and the current source documents. A source may use a single reporting date or a shifted range such as Monday-to-Friday or a range starting before Monday; its declared reporting date or range end must fall within the current period.
 2. If `manifest.json` does not exist, create a small explicit mapping JSON and run:
 
    ```bash
    python3 scripts/adapt_downloads.py \
      --data-root <project-data-directory> \
-     --source-root <data/weekly-reports/period/inputs/download-batch> \
-     --workspace <data/weekly-reports/period> \
+     --source-root <data/artifacts/weekly-reports/period/inputs> \
+     --workspace <data/artifacts/weekly-reports/period> \
      --mapping <mapping.json>
    ```
 
@@ -28,12 +28,15 @@ The adapter does not copy, move, or modify downloads. It records a constrained `
 
 ## Stage A: confirm focus
 
-Read only each document's declared `usage` range. Read [references/v-report-profile.md](references/v-report-profile.md) while extracting V-business coverage and [references/review-rules.md](references/review-rules.md) for fact handling.
+Read the `重点关注内容` section of the downloaded `V 国内业务周报` before reading the declared `usage` ranges of the other sources. Treat every item in that section as an owner-provided priority signal: reconcile it against current source facts and classify it as included, merged, downgraded, excluded, or awaiting confirmation. Do not silently omit it, and do not turn an unverified concern into a conclusion.
+
+Then read only each document's declared `usage` range. Read [references/v-report-profile.md](references/v-report-profile.md) while extracting V-business coverage and [references/review-rules.md](references/review-rules.md) for fact handling.
 
 Create `output/本期工作重点确认清单-<周期>.md` with:
 
 - proposed inclusions, merges/weakening, and exclusions;
 - continuations from the previous report;
+- a `重点关注内容对照` section that records the disposition of every main-report priority item;
 - conflicts, missing information, and questions;
 - a proposed narrative of the formal report;
 - source-by-source coverage;

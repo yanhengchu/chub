@@ -97,7 +97,7 @@ openclaw gateway restart
 openclaw channels login --channel openclaw-weixin
 ```
 
-最后一条命令启动登录并显示二维码。Chub 首页 OpenClaw 卡片也可以调用同一登录能力展示二维码，用户不需要进入终端。
+最后一条命令启动登录并显示二维码。Chub 首页“OpenClaw 环境”卡片也可以调用同一登录能力展示二维码，用户不需要进入终端。
 
 扫码只建立 ClawBot 与 Gateway 的通道绑定；允许微信身份访问和授予 Owner 权限是后续两个独立步骤。
 
@@ -135,7 +135,7 @@ TAILSCALE_BE_CLI=1 tailscale serve status --json
 
 最后必须从当前微信发送一条消息并收到最终回复。本地显示 Channel 正常，不足以证明微信服务端仍绑定当前设备。
 
-Chub 首页 OpenClaw 卡片分别展示 Gateway、Channel、Owner 和 Tailscale 状态。卡片不会因从任意二级页面返回首页而自动刷新，用户需要时手动刷新；启动、停止、重启等卡内操作只刷新本卡片，并以最终状态结束操作。
+Chub 首页“OpenClaw 环境”卡片分别展示 Gateway、Channel、Owner 和 Tailscale 状态。该卡片位于“自动化环境”之后，不会因从任意二级页面返回首页而自动刷新，用户需要时手动刷新；启动、停止、重启等卡内操作只刷新本卡片，并以最终状态结束操作。
 
 ## 4. 权限配置
 
@@ -223,7 +223,7 @@ OpenClaw 工作区 `~/.openclaw/workspace/AGENTS.md` 应明确：操作当前电
 
 ## 5. Chub 接入
 
-### 5.1 首页 OpenClaw 卡片
+### 5.1 首页“OpenClaw 环境”卡片
 
 首页通过 `GET /api/openclaw/status` 分别检查 Gateway、Channel、Owner 和 Tailscale。启动、停止、重启、刷新和微信登录均使用后端固定操作，不接受任意系统命令。
 

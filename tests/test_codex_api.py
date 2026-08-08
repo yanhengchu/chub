@@ -64,6 +64,74 @@ async def test_codex_session_list_reports_workspaces(settings: Settings) -> None
 
 
 @pytest.mark.anyio
+async def test_create_session_uses_requested_permission_mode(settings: Settings) -> None:
+    app = create_app(settings)
+    manager = MagicMock()
+    manager.create_session.return_value = SessionInfo(
+        id="session-1",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd="/workspace/chub",
+        title=None,
+        codex_session_id=None,
+        status="new",
+        activity="unknown",
+        permission_mode="full-access",
+        active_permission_mode=None,
+        permission_pending=False,
+        error=None,
+        created_at="2026-08-07T10:00:00Z",
+        updated_at="2026-08-07T10:00:00Z",
+    )
+    app.state.codex_pty_manager = manager
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/codex/sessions",
+            headers=authorization(settings),
+            json={"workspace_id": "chub", "permission_mode": "full-access"},
+        )
+
+    assert response.status_code == 200
+    manager.create_session.assert_called_once_with("chub", "full-access")
+
+
+@pytest.mark.anyio
+async def test_create_session_defaults_to_full_access(settings: Settings) -> None:
+    app = create_app(settings)
+    manager = MagicMock()
+    manager.create_session.return_value = SessionInfo(
+        id="session-1",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd="/workspace/chub",
+        title=None,
+        codex_session_id=None,
+        status="new",
+        activity="unknown",
+        permission_mode="full-access",
+        active_permission_mode=None,
+        permission_pending=False,
+        error=None,
+        created_at="2026-08-07T10:00:00Z",
+        updated_at="2026-08-07T10:00:00Z",
+    )
+    app.state.codex_pty_manager = manager
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/codex/sessions",
+            headers=authorization(settings),
+            json={"workspace_id": "chub"},
+        )
+
+    assert response.status_code == 200
+    manager.create_session.assert_called_once_with("chub", "full-access")
+
+
+@pytest.mark.anyio
 async def test_codex_quota_is_protected_and_can_be_refreshed(settings: Settings) -> None:
     app = create_app(settings)
     rate_limits = MagicMock()
@@ -879,131 +947,3 @@ async def test_delete_session_rejects_running_quick_without_closing_terminal(
     app.state.codex_pty_manager.delete_session.assert_not_called()
     app.state.terminal_tickets.revoke_session.assert_not_called()
     app.state.terminal_connections.close_session.assert_not_called()
-
-
-@pytest.mark.anyio
-async def test_update_permission_rejects_running_quick_interaction(
-    settings: Settings,
-) -> None:
-    app = create_app(settings)
-    guard = MagicMock()
-    guard.__enter__.side_effect = ApiError(
-        409,
-        "quick_interaction_in_progress",
-        "该会话正在执行快速交互，请等待任务结束。",
-    )
-    app.state.quick_interactions = MagicMock()
-    app.state.quick_interactions.session_operation_guard.return_value = guard
-    app.state.codex_pty_manager = MagicMock()
-    transport = httpx.ASGITransport(app=app)
-
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.patch(
-            "/api/codex/sessions/session-1/permission",
-            headers=authorization(settings),
-            json={"permission_mode": "auto-review"},
-        )
-
-    assert response.status_code == 409
-    app.state.codex_pty_manager.update_permission_and_stop.assert_not_called()
-
-
-@pytest.mark.anyio
-async def test_update_session_permission_calls_manager(settings: Settings) -> None:
-    app = create_app(settings)
-    manager = MagicMock()
-    session = SessionInfo(
-        id="session-1",
-        workspace_id="chub",
-        workspace_name="Chub",
-        cwd="/workspace/chub",
-        title=None,
-        codex_session_id=None,
-        status="running",
-        activity="idle",
-        permission_mode="auto-review",
-        active_permission_mode="ask",
-        permission_pending=True,
-        error=None,
-        created_at="2026-07-24T10:00:00Z",
-        updated_at="2026-07-24T10:01:00Z",
-    )
-    manager.update_permission_and_stop.return_value = (session, False)
-    app.state.codex_pty_manager = manager
-    transport = httpx.ASGITransport(app=app)
-
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.patch(
-            "/api/codex/sessions/session-1/permission",
-            headers=authorization(settings),
-            json={"permission_mode": "auto-review"},
-        )
-
-    assert response.status_code == 200
-    assert response.json()["data"]["application"] == "pending"
-    assert response.json()["data"]["session"]["permission_pending"] is True
-    manager.update_permission_and_stop.assert_called_once_with(
-        "session-1",
-        "auto-review",
-    )
-
-
-@pytest.mark.anyio
-async def test_update_session_permission_auto_stops_idle_unconnected_session(
-    settings: Settings,
-) -> None:
-    app = create_app(settings)
-    manager = MagicMock()
-    session = SessionInfo(
-        id="session-1",
-        workspace_id="chub",
-        workspace_name="Chub",
-        cwd="/workspace/chub",
-        title=None,
-        codex_session_id="codex-session-1",
-        status="stopped",
-        activity="unknown",
-        permission_mode="full-access",
-        active_permission_mode=None,
-        permission_pending=False,
-        error=None,
-        created_at="2026-07-24T10:00:00Z",
-        updated_at="2026-07-24T10:01:00Z",
-    )
-    manager.update_permission_and_stop.return_value = (session, True)
-    tickets = MagicMock()
-    connections = MagicMock()
-    app.state.codex_pty_manager = manager
-    app.state.terminal_tickets = tickets
-    app.state.terminal_connections = connections
-    transport = httpx.ASGITransport(app=app)
-
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.patch(
-            "/api/codex/sessions/session-1/permission",
-            headers=authorization(settings),
-            json={"permission_mode": "full-access"},
-        )
-
-    assert response.status_code == 200
-    assert response.json()["data"]["application"] == "stopped"
-    tickets.revoke_session.assert_called_once_with("session-1")
-    connections.close_session.assert_called_once_with("session-1")
-
-
-@pytest.mark.anyio
-async def test_update_session_permission_rejects_unknown_mode(
-    settings: Settings,
-) -> None:
-    app = create_app(settings)
-    app.state.codex_pty_manager = MagicMock()
-    transport = httpx.ASGITransport(app=app)
-
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.patch(
-            "/api/codex/sessions/session-1/permission",
-            headers=authorization(settings),
-            json={"permission_mode": "custom"},
-        )
-
-    assert response.status_code == 422

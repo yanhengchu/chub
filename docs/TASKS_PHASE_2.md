@@ -23,7 +23,7 @@
 - [x] 实现独立终端子页面、跨设备接管，以及依赖浏览器返回恢复首页浏览位置。
 - [x] 完成手机端会话管理、终端滚动、跨设备切换和节点页交互验收。
 - [x] 设计并实现普通网络快速交互：通过 `codex exec resume` 提交单次需求并轮询最终结果，与 ttyd 实时终端互斥。
-- [x] 在首页提供四种 Codex 会话权限模式，并在运行中切换权限时自动停止会话后于下次进入生效。
+- [x] 在设置页提供四种新建 Codex Session 默认权限模式，默认 Full access；已有会话保持创建时的权限。
 - [x] 确定 ttyd 只监听本机，由 Chub 统一代理 HTTP/WebSocket。
 - [x] 实现绑定会话的短期 HttpOnly 凭证，保护终端 HTTP/WebSocket。
 - [x] 保留并整理 remote-control 与 app-server 候选方案。

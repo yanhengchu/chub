@@ -32,30 +32,119 @@ async function request(path, options = {}) {
 }
 
 function stateText(value) {
-  return { idle: "尚未执行", queued: "等待执行", running: "执行中", success: "成功", failed: "失败" }[value] || value;
+  return { idle: "尚未执行", queued: "等待执行", running: "执行中", waiting: "等待更新", success: "成功", failed: "失败" }[value] || value;
 }
 
-function stateTime(value) {
-  if (!value) {
-    return "";
+function stateKind(value) {
+  return {
+    success: "success",
+    failed: "failed",
+    queued: "muted",
+    running: "timeout",
+    waiting: "timeout",
+    idle: "muted",
+  }[value] || "muted";
+}
+
+function taskStatusText(task) {
+  if (task.reporting_period && task.state.status === "idle") {
+    return "待下载";
   }
-  const date = new Date(value);
-  return Number.isNaN(date.getTime())
-    ? ""
-    : date.toLocaleString("zh-CN", { hour12: false });
+  return stateText(task.state.status);
 }
 
-async function run(task, button) {
+function weeklyDownloadStatus(task) {
+  if (task.state.status === "success") {
+    return ["下载成功", "success"];
+  }
+  const linkedDocuments = task.state.linked_documents || [];
+  if (
+    task.state.validation_status === "failed"
+    && linkedDocuments.length
+    && linkedDocuments.every((document) => document.status === "success")
+  ) {
+    return ["下载成功", "success"];
+  }
+  if (task.state.status === "failed") {
+    return ["下载失败", "failed"];
+  }
+  if (task.state.status === "waiting") {
+    return ["资料待更新", "timeout"];
+  }
+  if (task.state.status === "running") {
+    return ["下载中", "timeout"];
+  }
+  if (task.state.status === "queued") {
+    return ["等待下载", "muted"];
+  }
+  return ["待下载", "muted"];
+}
+
+function weeklyValidationStatus(task) {
+  return {
+    pending: ["校验中", "timeout"],
+    waiting: ["等待各端更新", "timeout"],
+    passed: ["校验通过", "success"],
+    failed: ["校验失败", "failed"],
+  }[task.state.validation_status] || null;
+}
+
+function appendWeeklyReportMaterials(copy, task) {
+  if (!task.reporting_period || !task.main_document_name) {
+    return;
+  }
+  const materials = document.createElement("section");
+  const period = document.createElement("p");
+  const mainLabel = document.createElement("p");
+  const mainDocument = document.createElement("div");
+  const mainDocumentName = document.createElement("span");
+  const backgroundDocuments = (task.state.linked_documents || []).filter(
+    (linkedDocument) => linkedDocument.is_background,
+  );
+  const mainPassed = task.state.validation_status === "passed";
+  materials.className = "automation-weekly-materials";
+  period.className = "automation-weekly-period";
+  period.textContent = `本期下载 · ${task.reporting_period}`;
+  mainLabel.className = `automation-material-summary${mainPassed ? " is-success" : ""}`;
+  mainLabel.textContent = mainPassed ? "主文档 · 1/1 通过" : "主文档";
+  mainDocument.className = "automation-linked-document";
+  mainDocumentName.className = "automation-linked-document-name";
+  mainDocumentName.textContent = task.main_document_name;
+  mainDocument.append(mainDocumentName);
+  materials.append(period, mainLabel, mainDocument);
+  backgroundDocuments.forEach((linkedDocument) => {
+    const reference = document.createElement("div");
+    const referenceName = document.createElement("span");
+    const succeeded = linkedDocument.status === "success";
+    reference.className = `automation-linked-document${succeeded ? "" : " is-failed"}`;
+    referenceName.className = `automation-linked-document-name${succeeded ? "" : " is-failed"}`;
+    referenceName.textContent = `上周参考 · ${linkedDocument.name}`;
+    reference.append(referenceName);
+    materials.append(reference);
+  });
+  copy.append(materials);
+}
+
+async function run(task, button, browserState) {
   button.disabled = true;
-  button.textContent = "受理中…";
+  const shouldStartBrowser = browserState === "stopped";
+  button.textContent = shouldStartBrowser ? "启动浏览器…" : "受理中…";
   try {
+    if (shouldStartBrowser) {
+      await request("/api/automations/browser/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "headless" }),
+      });
+    }
+    button.textContent = "受理中…";
     await request(`/api/automations/${encodeURIComponent(task.id)}/run`, { method: "POST" });
     showMessage("");
     await load();
   } catch (error) {
     showMessage(error.message, "error");
     button.disabled = false;
-    button.textContent = "运行";
+    button.textContent = shouldStartBrowser ? "启动并运行" : "运行";
   }
 }
 
@@ -70,35 +159,83 @@ function render(data) {
   data.tasks.forEach((task) => {
     const item = document.createElement("article");
     const copy = document.createElement("div");
+    const heading = document.createElement("div");
     const title = document.createElement("strong");
     const status = document.createElement("span");
-    const reason = document.createElement("span");
+    const validationStatus = document.createElement("span");
     const button = document.createElement("button");
     const busy = ["queued", "running"].includes(task.state.status);
     active = active || busy;
     item.className = "automation-item";
     copy.className = "automation-item-copy";
-    title.textContent = task.name;
-    const time = stateTime(task.state.finished_at || task.state.started_at);
-    status.className = "automation-item-status";
-    status.textContent = `${stateText(task.state.status)}${time ? ` · ${time}` : ""}`;
-    reason.className = "automation-item-reason";
-    reason.textContent = task.state.message || "暂无状态说明";
+    heading.className = "automation-item-heading";
+    title.textContent = task.title;
+    if (task.reporting_period) {
+      const [downloadText, downloadKind] = weeklyDownloadStatus(task);
+      const validation = weeklyValidationStatus(task);
+      status.className = `badge badge-${downloadKind}`;
+      status.textContent = downloadText;
+      if (validation) {
+        validationStatus.className = `badge badge-${validation[1]}`;
+        validationStatus.textContent = validation[0];
+      }
+    } else {
+      status.className = `badge badge-${stateKind(task.state.status)}`;
+      status.textContent = taskStatusText(task);
+    }
     button.type = "button";
     button.className = "button-secondary automation-run";
-    button.textContent = busy ? "执行中…" : "运行";
-    button.disabled = !running || !task.enabled || busy || environmentChecking;
-    button.addEventListener("click", () => run(task, button));
-    copy.append(title, status, reason);
-    if (task.state.linked_documents?.length) {
+    button.textContent = busy
+      ? "执行中…"
+      : data.browser_state === "stopped" ? "启动并运行" : "运行";
+    button.disabled = (
+      !["running", "stopped"].includes(data.browser_state)
+      || !task.enabled
+      || busy
+      || environmentChecking
+    );
+    button.addEventListener("click", () => run(task, button, data.browser_state));
+    heading.append(title, status);
+    if (validationStatus.textContent) {
+      heading.append(validationStatus);
+    }
+    copy.append(heading);
+    appendWeeklyReportMaterials(copy, task);
+    const currentDocuments = (task.state.linked_documents || []).filter(
+      (linkedDocument) => !linkedDocument.is_background,
+    );
+    if (currentDocuments.length) {
       const details = document.createElement("details");
       const summary = document.createElement("summary");
-      summary.textContent = `关联文档明细（${task.state.linked_documents.length}）`;
+      const linkedSuccesses = currentDocuments.filter(
+        (linkedDocument) => linkedDocument.status === "success",
+      ).length;
+      const linkedFailures = currentDocuments.filter(
+        (linkedDocument) => linkedDocument.status === "failed",
+      ).length;
+      const linkedWaiting = currentDocuments.some(
+        (linkedDocument) => linkedDocument.status === "waiting",
+      );
+      summary.textContent = linkedWaiting
+        ? "各端周报 · 等待更新"
+        : `各端周报 · ${linkedSuccesses}/${currentDocuments.length} 通过`;
       details.className = "automation-linked-details";
+      summary.className = `automation-material-summary is-${linkedFailures ? "failed" : linkedWaiting ? "timeout" : "success"}`;
+      details.open = linkedFailures > 0 || linkedWaiting;
       details.append(summary);
-      task.state.linked_documents.forEach((linkedDocument) => {
-        const row = document.createElement("span");
-        row.textContent = `${linkedDocument.status === "success" ? "成功" : "失败"} · ${linkedDocument.name} · ${linkedDocument.message}`;
+      currentDocuments.forEach((linkedDocument) => {
+        const row = document.createElement("div");
+        const documentName = document.createElement("span");
+        const succeeded = linkedDocument.status === "success";
+        const waiting = linkedDocument.status === "waiting";
+        row.className = `automation-linked-document${succeeded ? "" : waiting ? " is-waiting" : " is-failed"}`;
+        documentName.className = `automation-linked-document-name${succeeded ? "" : waiting ? " is-waiting" : " is-failed"}`;
+        documentName.textContent = linkedDocument.name;
+        documentName.setAttribute(
+          "aria-label",
+          `${linkedDocument.name}，${succeeded ? "成功" : waiting ? "等待更新" : "失败"}`,
+        );
+        row.append(documentName);
         details.append(row);
       });
       copy.append(details);

@@ -93,7 +93,7 @@ def browser_profiles() -> tuple[list[BrowserProfileInfo], str | None]:
     return profiles, source_error
 
 
-def initialize_and_start_debug_chrome(profile_id: str, mode: str = "headed"):
+def initialize_and_start_debug_chrome(profile_id: str, mode: str = "headless"):
     chrome_debug = _chrome_debug_module()
     chrome_profiles, copy_profile, profile_store = _profile_modules()
     profiles, _ = browser_profiles()
@@ -123,7 +123,7 @@ def cleanup_interrupted_profile_copy() -> None:
         copy_profile.cleanup_stale_staging(target)
 
 
-def select_and_start_debug_chrome(profile_id: str, mode: str = "headed"):
+def select_and_start_debug_chrome(profile_id: str, mode: str = "headless"):
     chrome_debug = _chrome_debug_module()
     _, _, profile_store = _profile_modules()
     profiles, _ = browser_profiles()
@@ -161,7 +161,7 @@ def current_debug_chrome_profile() -> str | None:
     return current.profile_directory if current.state == "running" else None
 
 
-def start_debug_chrome(mode: str = "headed"):
+def start_debug_chrome(mode: str = "headless"):
     return _chrome_debug_module().start(headless=mode == "headless")
 
 

@@ -115,17 +115,7 @@ class SessionCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     workspace_id: Literal["home", "workspace", "chub"]
-
-
-class SessionPermissionRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    permission_mode: PermissionMode
-
-
-class SessionPermissionData(BaseModel):
-    session: SessionInfo
-    application: Literal["saved", "pending", "stopped"]
+    permission_mode: PermissionMode = "full-access"
 
 
 class SessionAccessData(BaseModel):

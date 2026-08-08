@@ -135,9 +135,9 @@ python3 scripts/chrome_debug.py select "Default"
 
 The lifecycle command reads `~/chrome-debug-data/.chrome-cdp.json`, starts Chrome with the active copied profile, and exposes CDP only at `127.0.0.1:9222`. Stop Debug Chrome before changing the active profile.
 
-The default start mode is headed so a user can complete interactive login or
-authentication. `--headless` starts the same managed profile without a visible
-window. The mode is a Chrome process startup property and cannot be changed while
+The default start mode is headless. Use headed mode when a user needs to complete
+interactive login or visually inspect behavior. The mode is a Chrome process
+startup property and cannot be changed while
 Chrome is running. Repeating `start` in the same mode is idempotent; requesting the
 other mode is rejected with an instruction to run `stop` first. `status` reports the
 mode of a running instance. A normal stop followed by a start in the other mode

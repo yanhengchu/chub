@@ -1,12 +1,17 @@
 "use strict";
 
 const QUICK_INTERACTION_PAGE_SIZE_KEY = "hub.quickInteractionPageSize.v1";
+const CODEX_DEFAULT_PERMISSION_KEY = "hub.codexDefaultPermission.v1";
 const CYBER_RAIN_SPEED_KEY = "hub.cyberRainSpeed.v1";
 const CYBER_RAIN_BRIGHTNESS_KEY = "hub.cyberRainBrightness.v1";
 const CYBER_RAIN_DENSITY_KEY = "hub.cyberRainDensity.v1";
 const settingsMessage = document.querySelector("#settings-message");
 const quickInteractionPageSize = document.querySelector(
   "#quick-interaction-page-size",
+);
+const codexDefaultPermission = document.querySelector("#codex-default-permission");
+const codexSessionSettingsMessage = document.querySelector(
+  "#codex-session-settings-message",
 );
 const cyberRainSpeed = document.querySelector("#cyber-rain-speed");
 const cyberRainBrightness = document.querySelector("#cyber-rain-brightness");
@@ -81,11 +86,43 @@ function saveQuickInteractionPageSize(value) {
   }
 }
 
+function readCodexDefaultPermission() {
+  try {
+    const value = localStorage.getItem(CODEX_DEFAULT_PERMISSION_KEY);
+    return ["ask", "auto-review", "read-only", "full-access"].includes(value)
+      ? value
+      : "full-access";
+  } catch (_error) {
+    return "full-access";
+  }
+}
+
+function saveCodexDefaultPermission(value) {
+  const selected = ["ask", "auto-review", "read-only", "full-access"].includes(value)
+    ? value
+    : "full-access";
+  try {
+    localStorage.setItem(CODEX_DEFAULT_PERMISSION_KEY, selected);
+    codexDefaultPermission.value = selected;
+    codexSessionSettingsMessage.textContent = "已保存，之后新建的 Session 将使用该权限。";
+    codexSessionSettingsMessage.className = "message message-success";
+  } catch (_error) {
+    codexDefaultPermission.value = readCodexDefaultPermission();
+    codexSessionSettingsMessage.textContent = "当前浏览器无法保存会话偏好。";
+    codexSessionSettingsMessage.className = "message message-error";
+  }
+}
+
 quickInteractionPageSize.addEventListener("change", () => {
   saveQuickInteractionPageSize(quickInteractionPageSize.value);
 });
 
 quickInteractionPageSize.value = readQuickInteractionPageSize();
+codexDefaultPermission.value = readCodexDefaultPermission();
+
+codexDefaultPermission.addEventListener("change", () => {
+  saveCodexDefaultPermission(codexDefaultPermission.value);
+});
 
 cyberRainSpeed.value = String(readRangePreference(CYBER_RAIN_SPEED_KEY, 60));
 cyberRainBrightness.value = String(readRangePreference(CYBER_RAIN_BRIGHTNESS_KEY, 70));

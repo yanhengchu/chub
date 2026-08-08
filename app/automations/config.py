@@ -61,6 +61,7 @@ def _expand_feishu_tasks(config: FeishuDocumentFile) -> AutomationsFile:
     for task_id, configured in config.tasks.items():
         task_data = template_data.copy()
         task_data["name"] = configured.name
+        task_data["title"] = configured.title
         task_data["enabled"] = configured.enabled
         task_data["extension"] = configured.extension
         task_data["browser"] = template_data["browser"].copy()

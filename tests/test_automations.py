@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -32,7 +33,8 @@ from app.automations.operations import log_final_operation
 from app.automations.runner import (
     AutomationFailed,
     _check_navigation,
-    _clear_linked_markdown_files,
+    _publish_weekly_inputs,
+    _prune_linked_markdown_files,
     _output_path,
     _run_linked_documents,
     _run_browser_task,
@@ -41,10 +43,15 @@ from app.automations.runner import (
     _weekly_report_input_root,
     run_automation,
 )
+from app.automations.weekly_validation import (
+    WeeklyValidationError,
+    validate_weekly_linked_document,
+)
 import app.automations.runner as runner
 from app.automations.store import AutomationStateStore
 from app.core.config import Settings
 from app.core.response import ApiError
+from app.services.weekly_reports import reporting_period
 
 
 def automation_data(**overrides) -> dict:
@@ -98,6 +105,21 @@ def configure_automations(settings: Settings, tmp_path: Path) -> Path:
     settings.automations.runtime_dir = tmp_path / "runtime"
     settings.automations.artifacts_dir = tmp_path / "artifacts"
     return config_file
+
+
+def linked_documents_template(*, required_current_documents: int = 1):
+    template = load_linked_documents_extension("v-weekly-report-linked-documents")
+    return template.model_copy(
+        update={
+            "source": template.source.model_copy(
+                update={
+                    "required_current_documents": required_current_documents,
+                    "required_current_document_roles": [],
+                    "required_background_references": 0,
+                }
+            )
+        }
+    )
 
 
 def test_load_automations_rejects_unknown_fields(tmp_path: Path) -> None:
@@ -318,9 +340,7 @@ def test_extract_linked_documents_uses_section_and_tenant_only(tmp_path: Path) -
 """,
         encoding="utf-8",
     )
-    template = load_linked_documents_extension(
-        "v-weekly-report-linked-documents"
-    )
+    template = linked_documents_template(required_current_documents=2)
 
     documents = extract_linked_documents(
         source,
@@ -332,6 +352,187 @@ def test_extract_linked_documents_uses_section_and_tenant_only(tmp_path: Path) -
         ("产品端周报", "https://tenant.feishu.cn/wiki/product"),
         ("销售端周报", "https://tenant.feishu.cn/docx/sales"),
     ]
+
+
+def test_extract_linked_documents_marks_background_weekly_reference(tmp_path: Path) -> None:
+    source = tmp_path / "weekly.md"
+    source.write_text(
+        """\
+# 上期正式周报
+
+# 各端周报
+[2026/07/27\\-2026/07/31（第一百三十四周）](https://tenant.feishu.cn/wiki/previous)
+[产品端周报](https://tenant.feishu.cn/wiki/product)
+""",
+        encoding="utf-8",
+    )
+    template = linked_documents_template()
+
+    documents = extract_linked_documents(
+        source,
+        "https://tenant.feishu.cn/wiki/source",
+        template,
+    )
+
+    assert [(item.name, item.url, item.is_background) for item in documents] == [
+        ("2026/07/27\\-2026/07/31（第一百三十四周）", "https://tenant.feishu.cn/wiki/previous", True),
+        ("产品端周报", "https://tenant.feishu.cn/wiki/product", False),
+    ]
+
+
+def test_extract_linked_documents_requires_all_configured_current_documents(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "weekly.md"
+    source.write_text(
+        """\
+# 各端周报
+[2026/07/27\\-2026/07/31（第一百三十四周）](https://tenant.feishu.cn/wiki/previous)
+[产品端周报](https://tenant.feishu.cn/wiki/product)
+[服务端周报](https://tenant.feishu.cn/wiki/server)
+[运营端周报](https://tenant.feishu.cn/wiki/operations)
+[数据端周报](https://tenant.feishu.cn/wiki/data)
+""",
+        encoding="utf-8",
+    )
+    template = linked_documents_template(required_current_documents=5)
+
+    with pytest.raises(ExtensionFailed, match="本期各端周报不足：需要 5 份，实际 4 份"):
+        extract_linked_documents(
+            source,
+            "https://tenant.feishu.cn/wiki/source",
+            template,
+        )
+
+
+def test_extract_linked_documents_requires_each_configured_business_role(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "weekly.md"
+    source.write_text(
+        """\
+# 各端周报
+[2026/07/27\\-2026/07/31（第一百三十四周）](https://tenant.feishu.cn/wiki/previous)
+[vivo产品周报](https://tenant.feishu.cn/docx/WOscdHEyCot8dSxinyNcMBRjnCc)
+[vivo音乐产品周报](https://tenant.feishu.cn/wiki/EtQFwaBJOiT0TpkciaYcm0t8nPb)
+[vivo运营周报](https://tenant.feishu.cn/wiki/Xr9wwhkWMiYLdFkHSHXcBaOznXP)
+[服务端开发部周报](https://tenant.feishu.cn/docx/Cy14d37JVoGe0nxCbJicvfQ7nke)
+[重复 vivo产品周报](https://tenant.feishu.cn/docx/different-product)
+""",
+        encoding="utf-8",
+    )
+    template = load_linked_documents_extension("v-weekly-report-linked-documents")
+
+    with pytest.raises(ExtensionFailed, match="缺少必需业务端：客户端"):
+        extract_linked_documents(
+            source,
+            "https://tenant.feishu.cn/wiki/source",
+            template,
+        )
+
+
+def test_extract_linked_documents_requires_background_reference(tmp_path: Path) -> None:
+    source = tmp_path / "weekly.md"
+    source.write_text(
+        """\
+# 各端周报
+[vivo产品周报](https://tenant.feishu.cn/docx/WOscdHEyCot8dSxinyNcMBRjnCc)
+[vivo音乐产品周报](https://tenant.feishu.cn/wiki/EtQFwaBJOiT0TpkciaYcm0t8nPb)
+[vivo运营周报](https://tenant.feishu.cn/wiki/Xr9wwhkWMiYLdFkHSHXcBaOznXP)
+[移动端周会](https://tenant.feishu.cn/wiki/HThowHH2GiQmTuk5bwIcvGRTnVp)
+[服务端开发部周报](https://tenant.feishu.cn/docx/Cy14d37JVoGe0nxCbJicvfQ7nke)
+""",
+        encoding="utf-8",
+    )
+    template = load_linked_documents_extension("v-weekly-report-linked-documents")
+
+    with pytest.raises(ExtensionFailed, match="上周参考不足：需要 1 份，实际 0 份"):
+        extract_linked_documents(
+            source,
+            "https://tenant.feishu.cn/wiki/source",
+            template,
+        )
+
+
+def test_extract_linked_documents_requires_configured_document_path(tmp_path: Path) -> None:
+    source = tmp_path / "weekly.md"
+    source.write_text(
+        """\
+# 各端周报
+[2026/07/27\\-2026/07/31（第一百三十四周）](https://tenant.feishu.cn/wiki/previous)
+[vivo产品周报](https://tenant.feishu.cn/docx/WOscdHEyCot8dSxinyNcMBRjnCc)
+[vivo音乐产品周报](https://tenant.feishu.cn/wiki/EtQFwaBJOiT0TpkciaYcm0t8nPb)
+[vivo运营周报](https://tenant.feishu.cn/wiki/Xr9wwhkWMiYLdFkHSHXcBaOznXP)
+[移动端周会](https://tenant.feishu.cn/wiki/not-the-client-document)
+[服务端开发部周报](https://tenant.feishu.cn/docx/Cy14d37JVoGe0nxCbJicvfQ7nke)
+""",
+        encoding="utf-8",
+    )
+    template = load_linked_documents_extension("v-weekly-report-linked-documents")
+
+    with pytest.raises(ExtensionFailed, match="缺少必需业务端：客户端"):
+        extract_linked_documents(
+            source,
+            "https://tenant.feishu.cn/wiki/source",
+            template,
+        )
+
+
+def test_weekly_linked_document_rejects_current_date_outside_period_declaration(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "weekly.md"
+    source.write_text(
+        """\
+# 产品端周报
+
+日期：2026-07-27至2026-07-31
+
+下周计划于 2026-08-05 完成发布。
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(WeeklyValidationError, match="未检测到本期"):
+        validate_weekly_linked_document(source, "2026-08-03至2026-08-09")
+
+
+@pytest.mark.parametrize(
+    "heading",
+    [
+        "## 日期：2026.8.3-2026.8.9",
+        "## **日期：2026\\-8\\-6**",
+        "## 日期：2026.7.31-2026.8.6",
+        "# 移动端周会 2026-08-07",
+        "# 服务端开发部周报（2026-8-3 至 2026-8-7）",
+    ],
+)
+def test_weekly_linked_document_accepts_current_source_title(
+    tmp_path: Path,
+    heading: str,
+) -> None:
+    source = tmp_path / "weekly.md"
+    prefix = "" if heading.startswith("# ") else "# 周报\n\n"
+    source.write_text(f"{prefix}{heading}\n", encoding="utf-8")
+
+    validate_weekly_linked_document(source, "2026-08-03至2026-08-09")
+
+
+def test_weekly_linked_document_ignores_later_current_date(tmp_path: Path) -> None:
+    source = tmp_path / "weekly.md"
+    source.write_text(
+        """\
+# 产品周报
+
+## 日期：2026-07-27至2026-07-31
+
+# 下周计划 2026-08-05
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(WeeklyValidationError, match="未检测到本期"):
+        validate_weekly_linked_document(source, "2026-08-03至2026-08-09")
 
 
 def test_extract_linked_documents_requires_configured_section(tmp_path: Path) -> None:
@@ -352,37 +553,41 @@ def test_extract_linked_documents_requires_configured_section(tmp_path: Path) ->
 def test_linked_filename_is_safe_and_unique() -> None:
     used = set()
 
-    first = linked_filename('产品/端：周报*', 1, used)
-    second = linked_filename('产品/端：周报*', 1, used)
+    first = linked_filename('产品/端：周报*', 1, used, identifier="first")
+    second = linked_filename('产品/端：周报*', 2, used, identifier="second")
 
-    assert first == "01-产品-端-周报.md"
-    assert second == "01-产品-端-周报-2.md"
+    assert first == "产品-端-周报.md"
+    assert second == "产品-端-周报-16367aac.md"
 
 
-def test_clear_linked_markdown_files_is_limited_to_current_directory(
+def test_prune_linked_markdown_files_removes_stale_current_sources(
     tmp_path: Path,
 ) -> None:
     data_dir = tmp_path / "data"
-    current = data_dir / "weekly" / "linked" / "2026-07-22"
-    other_date = data_dir / "weekly" / "linked" / "2026-07-21"
+    current = data_dir / "weekly" / "linked"
+    other_date = data_dir / "other" / "linked"
     nested = current / "nested"
     nested.mkdir(parents=True)
     other_date.mkdir(parents=True)
-    stale = current / "01-stale.md"
+    stale = current / "过期周报.md"
+    current_source = current / "当前周报.md"
     preserved_file = current / "notes.txt"
     preserved_nested = nested / "manual.md"
     preserved_other_date = other_date / "01-report.md"
     stale.write_text("stale", encoding="utf-8")
+    current_source.write_text("keep", encoding="utf-8")
     preserved_file.write_text("keep", encoding="utf-8")
     preserved_nested.write_text("keep", encoding="utf-8")
     preserved_other_date.write_text("keep", encoding="utf-8")
 
-    _clear_linked_markdown_files(
-        Path("weekly/linked/2026-07-22"),
+    _prune_linked_markdown_files(
+        Path("weekly/linked"),
         data_dir,
+        {"当前周报.md"},
     )
 
     assert not stale.exists()
+    assert current_source.exists()
     assert preserved_file.exists()
     assert preserved_nested.exists()
     assert preserved_other_date.exists()
@@ -424,7 +629,13 @@ tasks:
             raise AutomationFailed("页面入口不可用")
         return output, output.stat().st_size, False
 
-    with patch("app.automations.runner._run_task_once", fake_run):
+    with (
+        patch("app.automations.runner._run_task_once", fake_run),
+        patch(
+            "app.automations.runner.load_linked_documents_extension",
+            return_value=linked_documents_template(required_current_documents=2),
+        ),
+    ):
         results = _run_linked_documents(
             task,
             source,
@@ -434,12 +645,56 @@ tasks:
 
     assert [item.status for item in results] == ["failed", "success"]
     assert len(calls) == 2
-    assert calls[1].output.directory.parts[-3:-1] == (
-        "weekly-report",
-        "linked",
+    assert calls[1].output.directory == task.output.directory / "linked"
+    assert calls[1].output.filename == "销售端.md"
+
+
+def test_linked_documents_keep_previous_file_when_renamed_source_fails(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    config_file = tmp_path / "automations.yaml"
+    config_file.write_text(
+        """\
+version: 2
+tasks:
+  weekly-report:
+    name: 国内业务周报
+    url: https://tenant.feishu.cn/wiki/source
+    extension: v-weekly-report-linked-documents
+""",
+        encoding="utf-8",
     )
-    assert len(calls[1].output.directory.parts[-1]) == 10
-    assert calls[1].output.filename == "02-销售端.md"
+    task = load_automations(config_file).tasks["weekly-report"]
+    source = tmp_path / "weekly.md"
+    source.write_text(
+        "# 各端周报\n[新版产品周报](https://tenant.feishu.cn/wiki/product)\n",
+        encoding="utf-8",
+    )
+    linked = settings.automations.artifacts_dir / task.output.directory / "linked"
+    linked.mkdir(parents=True)
+    old_file = linked / "产品周报.md"
+    old_file.write_text("# 旧材料", encoding="utf-8")
+    (linked / ".sources.json").write_text(
+        '{"https://tenant.feishu.cn/wiki/product": "产品周报.md"}',
+        encoding="utf-8",
+    )
+
+    with (
+        patch(
+            "app.automations.runner._run_task_once",
+            side_effect=AutomationFailed("页面入口不可用"),
+        ),
+        patch(
+            "app.automations.runner.load_linked_documents_extension",
+            return_value=linked_documents_template(),
+        ),
+    ):
+        results = _run_linked_documents(task, source, settings, "run-1")
+
+    assert [item.status for item in results] == ["failed"]
+    assert old_file.exists()
+    assert not (linked / "新版产品周报.md").exists()
 
 
 def test_run_automation_reports_partial_linked_download_failure(
@@ -491,29 +746,27 @@ tasks:
         result = run_automation(settings, "weekly-report", run_id="run-1")
 
     assert result.status == "failed"
-    assert result.output_file == str(source)
-    assert result.message == "下载完成 · 主周报成功 · 关联文档 1/2 成功"
-    assert result.linked_documents == linked_results
+    assert result.output_file is None
+    assert result.validation_status == "failed"
+    assert result.message.startswith("本期校验失败：")
+    assert [item.status for item in result.linked_documents] == ["failed", "failed"]
+    assert result.linked_documents[1].message == "下载超时"
 
 
-def test_weekly_report_downloads_use_the_active_period_input_snapshot(
+def test_weekly_report_downloads_use_the_active_period_input_directory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     settings: Settings,
 ) -> None:
     monkeypatch.setattr(runner, "WEEKLY_REPORTS_ROOT", tmp_path / "weekly-reports")
 
-    root = _weekly_report_input_root(
-        datetime(2026, 8, 5, 7, 5, 51),
-        "run-1",
-    )
+    root = _weekly_report_input_root(datetime(2026, 8, 5, 7, 5, 51))
 
     assert root == (
         tmp_path
         / "weekly-reports"
         / "2026-08-03至2026-08-09"
         / "inputs"
-        / "2026-08-05-070551-run-1"
     )
     assert root.parent.stat().st_mode & 0o777 == 0o700
 
@@ -526,7 +779,287 @@ def test_weekly_report_downloads_use_the_active_period_input_snapshot(
         task,
         settings.automations.artifacts_dir,
         output_root=root,
-    ) == root / "main.md"
+    ) == root / "V 国内业务周报.md"
+
+
+def test_weekly_report_state_records_period_and_main_document(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    config_file = tmp_path / "automations.yaml"
+    config_file.write_text(
+        """\
+version: 2
+tasks:
+  weekly-report:
+    name: 国内业务周报
+    title: 国内业务周报下载
+    url: https://tenant.feishu.cn/wiki/source
+    extension: v-weekly-report-linked-documents
+""",
+        encoding="utf-8",
+    )
+    settings.automations.config_file = config_file
+    settings.automations.state_dir = tmp_path / "state"
+    settings.automations.runtime_dir = tmp_path / "runtime"
+    settings.automations.artifacts_dir = tmp_path / "artifacts"
+    output = tmp_path / "国内业务周报.md"
+    output.write_text("# 周报", encoding="utf-8")
+
+    with (
+        patch(
+            "app.automations.runner._run_task_once",
+            return_value=(output, output.stat().st_size, False),
+        ),
+        patch("app.automations.runner._run_linked_documents", return_value=[]),
+    ):
+        result = run_automation(settings, "weekly-report", run_id="run-1")
+
+    assert result.period == reporting_period(result.started_at.date())
+    assert result.main_document_name == "国内业务周报"
+
+
+def test_weekly_report_publishes_inputs_only_after_current_period_validation(
+    settings: Settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_file = tmp_path / "automations.yaml"
+    config_file.write_text(
+        """\
+version: 2
+tasks:
+  weekly-report:
+    name: 国内业务周报
+    url: https://tenant.feishu.cn/wiki/source
+    extension: v-weekly-report-linked-documents
+""",
+        encoding="utf-8",
+    )
+    settings.automations.config_file = config_file
+    settings.automations.state_dir = tmp_path / "state"
+    settings.automations.runtime_dir = tmp_path / "runtime"
+    settings.automations.artifacts_dir = tmp_path / "artifacts"
+    monkeypatch.setattr(runner, "WEEKLY_REPORTS_ROOT", tmp_path / "weekly-reports")
+    period = reporting_period()
+
+    def fake_run(task, _settings, _run_id, *, output_root=None):
+        target = output_root / task.output.directory / task.output.filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if task.name == "国内业务周报":
+            target.write_text(
+                "# 2026/07/27-2026/07/31（第一百三十四周）\n\n# 各端周报\n[2026/07/27\\-2026/07/31（第一百三十四周）](https://tenant.feishu.cn/wiki/previous)\n[vivo产品周报](https://tenant.feishu.cn/docx/WOscdHEyCot8dSxinyNcMBRjnCc)\n[vivo音乐产品周报](https://tenant.feishu.cn/wiki/EtQFwaBJOiT0TpkciaYcm0t8nPb)\n[vivo运营周报](https://tenant.feishu.cn/wiki/Xr9wwhkWMiYLdFkHSHXcBaOznXP)\n[移动端周会](https://tenant.feishu.cn/wiki/HThowHH2GiQmTuk5bwIcvGRTnVp)\n[服务端开发部周报](https://tenant.feishu.cn/docx/Cy14d37JVoGe0nxCbJicvfQ7nke)\n",
+                encoding="utf-8",
+            )
+        else:
+            target.write_text(
+                f"# 产品端周报\n\n## 日期：{period}\n",
+                encoding="utf-8",
+            )
+        return target, target.stat().st_size, False
+
+    with patch("app.automations.runner._run_task_once", side_effect=fake_run):
+        result = run_automation(settings, "weekly-report", run_id="run-1")
+
+    input_root = tmp_path / "weekly-reports" / period / "inputs"
+    assert result.status == "success"
+    assert result.validation_status == "passed"
+    assert (input_root / "国内业务周报.md").is_file()
+    assert (input_root / "linked" / "vivo产品周报.md").is_file()
+    assert (input_root.parent / ".inputs-updated").is_file()
+    assert not list(input_root.parent.glob(".inputs-run-1.*"))
+
+
+def test_weekly_input_publish_restores_inputs_and_marker_after_replace_failure(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "weekly"
+    input_root = workspace / "inputs"
+    staging_root = workspace / ".inputs-run-1.staging"
+    input_root.mkdir(parents=True)
+    staging_root.mkdir()
+    (input_root / "previous.md").write_text("previous", encoding="utf-8")
+    (staging_root / "current.md").write_text("current", encoding="utf-8")
+    marker = workspace / ".inputs-updated"
+    marker.write_text("previous-marker", encoding="utf-8")
+    original_replace = runner.os.replace
+
+    def fail_staging_replace(source, destination):
+        if Path(source) == staging_root and Path(destination) == input_root:
+            raise OSError("replace failed")
+        return original_replace(source, destination)
+
+    with patch("app.automations.runner.os.replace", side_effect=fail_staging_replace):
+        with pytest.raises(AutomationFailed, match="输入发布失败"):
+            _publish_weekly_inputs(staging_root, input_root, "run-1")
+
+    assert (input_root / "previous.md").read_text(encoding="utf-8") == "previous"
+    assert marker.read_text(encoding="utf-8") == "previous-marker"
+    assert staging_root.is_dir()
+
+
+def test_weekly_report_rejects_old_period_without_replacing_inputs(
+    settings: Settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_file = tmp_path / "automations.yaml"
+    config_file.write_text(
+        """\
+version: 2
+tasks:
+  weekly-report:
+    name: 国内业务周报
+    url: https://tenant.feishu.cn/wiki/source
+    extension: v-weekly-report-linked-documents
+""",
+        encoding="utf-8",
+    )
+    settings.automations.config_file = config_file
+    settings.automations.state_dir = tmp_path / "state"
+    settings.automations.runtime_dir = tmp_path / "runtime"
+    settings.automations.artifacts_dir = tmp_path / "artifacts"
+    monkeypatch.setattr(runner, "WEEKLY_REPORTS_ROOT", tmp_path / "weekly-reports")
+    period = reporting_period()
+    input_root = tmp_path / "weekly-reports" / period / "inputs"
+    input_root.mkdir(parents=True)
+    (input_root / "保留材料.md").write_text("旧的有效输入", encoding="utf-8")
+
+    def fake_run(task, _settings, _run_id, *, output_root=None):
+        target = output_root / task.output.directory / task.output.filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if task.name == "国内业务周报":
+            target.write_text(
+                "# 2026/07/27-2026/07/31（第一百三十四周）\n\n# 各端周报\n[2026/07/27\\-2026/07/31（第一百三十四周）](https://tenant.feishu.cn/wiki/previous)\n[vivo产品周报](https://tenant.feishu.cn/docx/WOscdHEyCot8dSxinyNcMBRjnCc)\n[vivo音乐产品周报](https://tenant.feishu.cn/wiki/EtQFwaBJOiT0TpkciaYcm0t8nPb)\n[vivo运营周报](https://tenant.feishu.cn/wiki/Xr9wwhkWMiYLdFkHSHXcBaOznXP)\n[移动端周会](https://tenant.feishu.cn/wiki/HThowHH2GiQmTuk5bwIcvGRTnVp)\n[服务端开发部周报](https://tenant.feishu.cn/docx/Cy14d37JVoGe0nxCbJicvfQ7nke)\n",
+                encoding="utf-8",
+            )
+        else:
+            target.write_text("# 产品端\n日期：2026-01-01\n", encoding="utf-8")
+        return target, target.stat().st_size, False
+
+    with patch("app.automations.runner._run_task_once", side_effect=fake_run):
+        result = run_automation(settings, "weekly-report", run_id="run-1")
+
+    assert result.status == "waiting"
+    assert result.validation_status == "waiting"
+    assert result.validation_message == (
+        f"关联文档“vivo产品周报”等待各端更新：未检测到本期（{period}）有效周期标题"
+    )
+    assert (input_root / "保留材料.md").is_file()
+    assert not (input_root.parent / ".inputs-updated").exists()
+    assert not list(input_root.parent.glob(".inputs-run-1.*"))
+
+
+def test_manager_resets_weekly_report_display_on_a_new_period(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    task = automation_data()["tasks"]["monthly-report"]
+    task.update(
+        {
+            "name": "V 国内业务周报",
+            "title": "V 国内业务周报下载",
+            "extension": "v-weekly-report-linked-documents",
+        }
+    )
+    config_file = tmp_path / "automations.yaml"
+    config_file.write_text(
+        __import__("yaml").safe_dump(
+            {"version": 1, "tasks": {"weekly-report": task}},
+            allow_unicode=True,
+        ),
+        encoding="utf-8",
+    )
+    settings.automations.config_file = config_file
+    settings.automations.state_dir = tmp_path / "state"
+    settings.automations.runtime_dir = tmp_path / "runtime"
+    settings.automations.artifacts_dir = tmp_path / "artifacts"
+    AutomationStateStore(settings.automations.state_dir).write(
+        AutomationState(
+            task_id="weekly-report",
+            status="success",
+            period="2026-08-03至2026-08-09",
+            main_document_name="上期周报",
+            linked_documents=[
+                LinkedDocumentResult(
+                    name="上期产品端周报",
+                    status="success",
+                    message="下载完成",
+                )
+            ],
+        )
+    )
+    manager = AutomationManager(settings)
+
+    with (
+        patch(
+            "app.automations.manager.debug_chrome_status",
+            return_value=("stopped", "Debug Chrome 未启动", None),
+        ),
+        patch(
+            "app.automations.manager.reporting_period",
+            return_value="2026-08-10至2026-08-16",
+        ),
+    ):
+        result = manager.list(home_only=False)
+
+    weekly = result.tasks[0]
+    assert weekly.title == "V 国内业务周报下载"
+    assert weekly.reporting_period == "2026-08-10至2026-08-16"
+    assert weekly.main_document_name == "V 国内业务周报"
+    assert weekly.state.status == "idle"
+    assert weekly.state.linked_documents == []
+
+
+def test_manager_keeps_an_active_weekly_report_visible_across_the_boundary(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    task = automation_data()["tasks"]["monthly-report"]
+    task.update(
+        {
+            "name": "V 国内业务周报",
+            "title": "V 国内业务周报下载",
+            "extension": "v-weekly-report-linked-documents",
+        }
+    )
+    config_file = tmp_path / "automations.yaml"
+    config_file.write_text(
+        __import__("yaml").safe_dump(
+            {"version": 1, "tasks": {"weekly-report": task}},
+            allow_unicode=True,
+        ),
+        encoding="utf-8",
+    )
+    settings.automations.config_file = config_file
+    settings.automations.state_dir = tmp_path / "state"
+    settings.automations.runtime_dir = tmp_path / "runtime"
+    settings.automations.artifacts_dir = tmp_path / "artifacts"
+    AutomationStateStore(settings.automations.state_dir).write(
+        AutomationState(
+            task_id="weekly-report",
+            status="running",
+            period="2026-08-03至2026-08-09",
+            process_id=os.getpid(),
+        )
+    )
+    manager = AutomationManager(settings)
+
+    with (
+        patch(
+            "app.automations.manager.debug_chrome_status",
+            return_value=("stopped", "Debug Chrome 未启动", None),
+        ),
+        patch(
+            "app.automations.manager.reporting_period",
+            return_value="2026-08-10至2026-08-16",
+        ),
+    ):
+        result = manager.list(home_only=False)
+
+    weekly = result.tasks[0]
+    assert weekly.reporting_period == "2026-08-03至2026-08-09"
+    assert weekly.state.status == "running"
 
 
 def test_run_automation_rejects_an_unsafe_run_id(
@@ -1058,13 +1591,13 @@ def test_manager_starts_debug_chrome_and_confirms_final_state(
 
     with patch(
         "app.automations.manager.start_debug_chrome",
-        return_value=SimpleNamespace(state="running", mode="headed"),
+        return_value=SimpleNamespace(state="running", mode="headless"),
     ) as start:
         result = manager.control_browser("start")
 
     assert result.state == "running"
-    assert result.mode == "有界面"
-    start.assert_called_once_with("headed")
+    assert result.mode == "无界面"
+    start.assert_called_once_with("headless")
 
 
 def test_manager_starts_debug_chrome_headless(

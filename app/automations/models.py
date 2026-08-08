@@ -158,6 +158,7 @@ class ExecutionConfig(StrictAutomationModel):
 
 class AutomationTaskConfig(StrictAutomationModel):
     name: str = Field(min_length=1)
+    title: str = ""
     description: str = ""
     enabled: bool = True
     browser: BrowserConfig
@@ -199,6 +200,7 @@ class AutomationsFile(StrictAutomationModel):
 
 class FeishuDocumentTask(StrictAutomationModel):
     name: str = Field(min_length=1)
+    title: str = ""
     url: str
     enabled: bool = True
     format: Literal["markdown"] = "markdown"
@@ -249,11 +251,46 @@ class AutomationTemplate(StrictAutomationModel):
     task: AutomationTaskConfig
 
 
+class RequiredCurrentDocumentRole(StrictAutomationModel):
+    name: str = Field(min_length=1)
+    title_prefixes: list[str] = Field(min_length=1)
+    document_paths: list[str] = Field(min_length=1)
+
+    @field_validator("title_prefixes")
+    @classmethod
+    def validate_title_prefixes(cls, value: list[str]) -> list[str]:
+        titles = [title.strip() for title in value]
+        if any(not title for title in titles):
+            raise ValueError("title_prefixes must not contain empty values")
+        if len({title.casefold() for title in titles}) != len(titles):
+            raise ValueError("title_prefixes must not contain duplicates")
+        return titles
+
+    @field_validator("document_paths")
+    @classmethod
+    def validate_document_paths(cls, value: list[str]) -> list[str]:
+        paths = [path.strip() for path in value]
+        if any(
+            not path.startswith(("/wiki/", "/docx/")) or ".." in path
+            for path in paths
+        ):
+            raise ValueError("document_paths must contain safe Feishu document paths")
+        if len(set(paths)) != len(paths):
+            raise ValueError("document_paths must not contain duplicates")
+        return paths
+
+
 class LinkedDocumentsSourceConfig(StrictAutomationModel):
     section: str = Field(min_length=1)
     link_type: Literal["markdown"] = "markdown"
     allowed_paths: list[str] = Field(min_length=1)
     max_documents: int = Field(default=20, ge=1, le=100)
+    required_current_documents: int = Field(default=1, ge=1, le=100)
+    required_current_document_roles: list[RequiredCurrentDocumentRole] = Field(
+        default_factory=list
+    )
+    background_reference_title_kind: Literal["period_week"] | None = None
+    required_background_references: int = Field(default=0, ge=0, le=100)
 
     @field_validator("allowed_paths")
     @classmethod
@@ -261,6 +298,44 @@ class LinkedDocumentsSourceConfig(StrictAutomationModel):
         if any(not item.startswith("/") or ".." in item for item in value):
             raise ValueError("allowed_paths must contain safe absolute URL paths")
         return list(dict.fromkeys(value))
+
+    @field_validator("required_current_document_roles")
+    @classmethod
+    def validate_required_current_document_roles(
+        cls, value: list[RequiredCurrentDocumentRole]
+    ) -> list[RequiredCurrentDocumentRole]:
+        if len({role.name.casefold() for role in value}) != len(value):
+            raise ValueError("required_current_document_roles must not contain duplicates")
+        return value
+
+    @model_validator(mode="after")
+    def validate_required_documents(self) -> "LinkedDocumentsSourceConfig":
+        if self.required_current_documents > self.max_documents:
+            raise ValueError("required_current_documents must not exceed max_documents")
+        if self.required_background_references > self.max_documents:
+            raise ValueError("required_background_references must not exceed max_documents")
+        if (
+            self.required_current_document_roles
+            and len(self.required_current_document_roles)
+            != self.required_current_documents
+        ):
+            raise ValueError(
+                "required_current_document_roles must match required_current_documents"
+            )
+        document_paths = [
+            path
+            for role in self.required_current_document_roles
+            for path in role.document_paths
+        ]
+        if len(set(document_paths)) != len(document_paths):
+            raise ValueError(
+                "required_current_document_roles must not share document_paths"
+            )
+        if self.required_background_references and not self.background_reference_title_kind:
+            raise ValueError(
+                "required_background_references requires background_reference_title_kind"
+            )
+        return self
 
 
 class LinkedDocumentsDownloadConfig(StrictAutomationModel):
@@ -276,14 +351,17 @@ class LinkedDocumentsTemplate(StrictAutomationModel):
     download: LinkedDocumentsDownloadConfig
 
 
-AutomationStatus = Literal["idle", "queued", "running", "success", "failed"]
+AutomationStatus = Literal[
+    "idle", "queued", "running", "waiting", "success", "failed"
+]
 
 
 class LinkedDocumentResult(StrictAutomationModel):
     name: str
-    status: Literal["success", "failed"]
+    status: Literal["success", "waiting", "failed"]
     message: str
     output_file: str | None = None
+    is_background: bool = False
 
 
 class AutomationState(StrictAutomationModel):
@@ -300,14 +378,25 @@ class AutomationState(StrictAutomationModel):
     finished_at: datetime | None = None
     output_file: str | None = None
     output_bytes: int | None = None
+    period: str | None = None
+    main_document_name: str | None = None
     linked_documents: list[LinkedDocumentResult] = Field(default_factory=list)
+    validation_status: Literal[
+        "not_applicable", "pending", "waiting", "passed", "failed"
+    ] = (
+        "not_applicable"
+    )
+    validation_message: str | None = None
 
 
 class AutomationTaskPublic(StrictAutomationModel):
     id: str
     name: str
+    title: str
     description: str
     enabled: bool
+    reporting_period: str | None = None
+    main_document_name: str | None = None
     state: AutomationState
 
 
@@ -366,7 +455,7 @@ class BrowserControlResult(StrictAutomationModel):
 
 
 class BrowserStartRequest(StrictAutomationModel):
-    mode: Literal["headed", "headless"] = "headed"
+    mode: Literal["headed", "headless"] = "headless"
     profile_id: str | None = Field(
         default=None,
         pattern=r"^(Default|Profile [0-9]+)$",
@@ -375,7 +464,7 @@ class BrowserStartRequest(StrictAutomationModel):
 
 class BrowserInitializationRequest(StrictAutomationModel):
     profile_id: str = Field(pattern=r"^(Default|Profile [0-9]+)$")
-    mode: Literal["headed", "headless"] = "headed"
+    mode: Literal["headed", "headless"] = "headless"
 
 
 class BrowserInitializationAccepted(StrictAutomationModel):

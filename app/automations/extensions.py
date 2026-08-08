@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +18,10 @@ MARKDOWN_LINK_PATTERN = re.compile(
     r"\[([^\]]+)\]\((https://[^\s)]+)(?:\s+[\"'][^)]*[\"'])?\)"
 )
 UNSAFE_FILENAME_PATTERN = re.compile(r'[\x00-\x1f<>:"/\\|?*＜＞：＂／＼uFF3C｜？＊]')
+BACKGROUND_WEEKLY_REFERENCE_PATTERN = re.compile(
+    r"^20\d{2}[./-]\d{1,2}[./-]\d{1,2}\s*(?:至|-|~)\s*"
+    r"20\d{2}[./-]\d{1,2}[./-]\d{1,2}(?:\s*[（(]第[^）)]+周[）)])?$"
+)
 
 
 class ExtensionFailed(Exception):
@@ -27,6 +32,12 @@ class ExtensionFailed(Exception):
 class LinkedDocument:
     name: str
     url: str
+    is_background: bool = False
+
+
+def _is_background_weekly_reference(name: str) -> bool:
+    normalized = name.replace("\\-", "-").replace("\\.", ".")
+    return BACKGROUND_WEEKLY_REFERENCE_PATTERN.fullmatch(normalized) is not None
 
 
 def _source_lines(path: Path) -> list[str]:
@@ -96,27 +107,76 @@ def extract_linked_documents(
             )
             if normalized_url in seen_urls:
                 continue
-            seen_urls.add(normalized_url)
             name = re.sub(r"\s+", " ", html.unescape(match.group(1))).strip()
+            seen_urls.add(normalized_url)
             documents.append(
-                LinkedDocument(name=name or f"document-{len(documents) + 1:02d}", url=normalized_url)
+                LinkedDocument(
+                    name=name or f"document-{len(documents) + 1:02d}",
+                    url=normalized_url,
+                    is_background=(
+                        template.source.background_reference_title_kind == "period_week"
+                        and _is_background_weekly_reference(name)
+                    ),
+                )
             )
             if len(documents) > template.source.max_documents:
                 raise ExtensionFailed("关联文档数量超过配置上限")
     if not documents:
         raise ExtensionFailed("“各端周报”章节中没有可下载的同租户飞书文档")
+    current_documents = sum(not document.is_background for document in documents)
+    if current_documents < template.source.required_current_documents:
+        raise ExtensionFailed(
+            "本期各端周报不足："
+            f"需要 {template.source.required_current_documents} 份，实际 {current_documents} 份"
+        )
+    missing_roles = [
+        role.name
+        for role in template.source.required_current_document_roles
+        if not any(
+            not document.is_background
+            and document.name.casefold().startswith(
+                tuple(title.casefold() for title in role.title_prefixes)
+            )
+            and urlparse(document.url).path in role.document_paths
+            for document in documents
+        )
+    ]
+    if missing_roles:
+        raise ExtensionFailed(
+            "本期各端周报缺少必需业务端：" + "、".join(missing_roles)
+        )
+    background_documents = sum(document.is_background for document in documents)
+    if background_documents < template.source.required_background_references:
+        raise ExtensionFailed(
+            "上周参考不足："
+            f"需要 {template.source.required_background_references} 份，实际 {background_documents} 份"
+        )
     return documents
 
 
-def linked_filename(name: str, index: int, used: set[str]) -> str:
+def linked_filename(
+    name: str,
+    index: int,
+    used: set[str],
+    *,
+    identifier: str | None = None,
+) -> str:
     safe_name = UNSAFE_FILENAME_PATTERN.sub("-", name)
     safe_name = re.sub(r"\s+", " ", safe_name).strip(" .-")[:80].rstrip(" .-")
     if not safe_name:
         safe_name = f"document-{index:02d}"
-    candidate = f"{index:02d}-{safe_name}.md"
+    candidate = f"{safe_name}.md"
+    if candidate.casefold() not in used:
+        used.add(candidate.casefold())
+        return candidate
+
+    if identifier:
+        candidate = (
+            f"{safe_name}-{hashlib.sha256(identifier.encode()).hexdigest()[:8]}.md"
+        )
     suffix = 2
     while candidate.casefold() in used:
-        candidate = f"{index:02d}-{safe_name}-{suffix}.md"
+        candidate = f"{safe_name}-{suffix}.md"
         suffix += 1
     used.add(candidate.casefold())
     return candidate

@@ -71,7 +71,6 @@
     grid-template-columns: 1fr;
   }
 
-  .session-permission-panel,
   .session-actions {
     grid-column: 1;
   }
@@ -107,20 +106,12 @@
     width: 100%;
   }
 
-  .automation-browser-actions > button,
-  .automation-browser-actions > select {
+  .automation-browser-actions > button {
     width: 100%;
   }
 
   .session-actions {
     justify-content: flex-end;
-  }
-
-  .session-permission-panel {
-    display: flex;
-    align-items: center;
-    justify-content: flex-start;
-    flex-wrap: wrap;
   }
 
   .conversation-page {

@@ -127,7 +127,11 @@ class CodexPtyManager:
         session.updated_at = utc_now()
         self.store.save(session)
 
-    def create_session(self, workspace_id: str) -> SessionInfo:
+    def create_session(
+        self,
+        workspace_id: str,
+        permission_mode: PermissionMode = "full-access",
+    ) -> SessionInfo:
         self._require_available()
         workspace = next(
             (item for item in self.workspaces() if item.id == workspace_id),
@@ -144,6 +148,7 @@ class CodexPtyManager:
             workspace_id=workspace.id,
             workspace_name=workspace.name,
             cwd=Path(workspace.path),
+            permission_mode=permission_mode,
         )
         self.store.save(session)
         return self._public(session)
@@ -244,18 +249,6 @@ class CodexPtyManager:
             self.store.save(session)
             return self._public(session)
 
-    def update_permission(
-        self,
-        session_id: str,
-        permission_mode: PermissionMode,
-    ) -> SessionInfo:
-        with self._lock:
-            session = self.get_session(session_id)
-            session.permission_mode = permission_mode
-            session.updated_at = utc_now()
-            self.store.save(session)
-            return self._public(session)
-
     def update_session_timestamp(self, session_id: str, updated_at: datetime) -> None:
         with self._lock:
             session = self.store.get(session_id)
@@ -306,32 +299,6 @@ class CodexPtyManager:
             session.activity_source = "none"
             session.updated_at = utc_now()
             self.store.save(session)
-
-    def update_permission_and_stop(
-        self,
-        session_id: str,
-        permission_mode: PermissionMode,
-    ) -> tuple[SessionInfo, bool]:
-        with self._lock:
-            session = self.get_session(session_id)
-            changed = session.permission_mode != permission_mode
-            if changed and session.status == "running":
-                self.stop_session(session_id)
-                updated = self.store.get(session_id)
-                if updated is None:
-                    raise ApiError(
-                        500,
-                        "codex_session_state_missing",
-                        "Codex session state disappeared after stopping",
-                    )
-                updated.permission_mode = permission_mode
-                updated.updated_at = utc_now()
-                self.store.save(updated)
-                return self._public(updated), True
-            session.permission_mode = permission_mode
-            session.updated_at = utc_now()
-            self.store.save(session)
-            return self._public(session), False
 
     def delete_session(self, session_id: str) -> None:
         session = self.get_session(session_id)

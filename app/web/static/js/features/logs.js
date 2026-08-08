@@ -56,21 +56,17 @@ elements.tokenForm.addEventListener("submit", (event) => {
 
 elements.refreshStatus.addEventListener("click", loadStatus);
 elements.refreshAutomations.addEventListener("click", () => loadAutomations());
+elements.refreshAutomationEnvironment.addEventListener("click", () => loadAutomationEnvironment());
 elements.refreshProjectDocs.addEventListener("click", loadProjectDocuments);
 elements.loadLogs.addEventListener("click", loadLogs);
 elements.automationBrowserControl.addEventListener("click", controlAutomationBrowser);
-elements.automationBrowserProfile.addEventListener("change", () => {
-  if (automationBrowserState !== "stopped") {
-    return;
+elements.automationBrowserProfile.addEventListener("change", updateAutomationBrowserDialog);
+elements.automationBrowserForm.addEventListener("submit", startAutomationBrowser);
+elements.automationBrowserDialogClose.addEventListener("click", closeAutomationBrowserDialog);
+elements.automationBrowserDialogCancel.addEventListener("click", closeAutomationBrowserDialog);
+elements.automationBrowserDialog.addEventListener("click", (event) => {
+  if (event.target === elements.automationBrowserDialog) {
+    closeAutomationBrowserDialog();
   }
-  const selected = automationBrowserProfiles.find(
-    (profile) => profile.id === elements.automationBrowserProfile.value,
-  );
-  elements.automationBrowserControl.textContent = selected && !selected.initialized
-    ? "初始化并启动"
-    : "启动";
-  elements.automationBrowserControl.disabled = (
-    !selected || (!selected.initialized && !selected.source_available)
-  );
 });
 elements.automationFeishuCheck.addEventListener("click", checkFeishuEnvironment);

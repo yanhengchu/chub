@@ -35,6 +35,26 @@
           <p id="settings-message" class="message" aria-live="polite"></p>
         </section>
 
+        <section class="settings-section" aria-labelledby="codex-session-settings-title">
+          <div class="settings-section-heading">
+            <h3 id="codex-session-settings-title">Codex 会话</h3>
+            <p>设置之后新建会话的默认权限。</p>
+          </div>
+          <label class="settings-field" for="codex-default-permission">
+            <span>
+              <strong>默认权限</strong>
+              <small>只影响后续新建的 Session，已有会话保持原权限。</small>
+            </span>
+            <select id="codex-default-permission" name="codex-default-permission">
+              <option value="full-access">Full access</option>
+              <option value="auto-review">Approve for me</option>
+              <option value="ask">Ask for approval</option>
+              <option value="read-only">Read Only</option>
+            </select>
+          </label>
+          <p id="codex-session-settings-message" class="message" aria-live="polite"></p>
+        </section>
+
         <section class="settings-section" aria-labelledby="style-settings-title">
           <div class="settings-section-heading">
             <h3 id="style-settings-title">界面风格</h3>
@@ -121,6 +141,6 @@
         </section>
       </section>
     </main>
-    <footer>设置仅影响当前浏览器，不会改变节点或任务数据。</footer>
+    <footer>设置保存在当前浏览器，不会改变已有会话、节点或任务数据。</footer>
   </body>
 </html>

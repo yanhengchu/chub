@@ -24,8 +24,10 @@ def test_latest_weekly_reports_include_available_and_pending_slots(
     assert [report.report_type for report in reports] == ["focus", "report"]
     assert all(report.period == "2026-07-27至2026-08-02" for report in reports)
     assert reports[0].available is True
+    assert reports[0].title == "本期工作重点确认清单"
     assert reports[0].status == "可查看"
     assert reports[1].available is False
+    assert reports[1].title == "本期业务周报"
     assert reports[1].status == "待生成"
 
 
@@ -83,7 +85,7 @@ def test_reporting_period_uses_current_week_after_wednesday() -> None:
     assert service.reporting_period(date(2026, 8, 12)) == "2026-08-10至2026-08-16"
 
 
-def test_weekly_report_detail_keeps_legacy_output_files_readable(
+def test_weekly_report_detail_ignores_legacy_output_files(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -98,8 +100,23 @@ def test_weekly_report_detail_keeps_legacy_output_files_readable(
 
     report = service.get_weekly_report(period, "focus")
 
-    assert report is not None
-    assert report.title == "本期重点确认"
+    assert report is None
+
+
+def test_weekly_report_is_pending_after_inputs_are_updated(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(service, "WEEKLY_REPORTS_ROOT", tmp_path)
+    period = "2026-08-03至2026-08-09"
+    _write_report(tmp_path, period, "focus", "# 本期重点确认")
+    marker = tmp_path / period / ".inputs-updated"
+    marker.write_text("updated", encoding="utf-8")
+    marker.touch()
+
+    report = service.get_weekly_report(period, "focus")
+
+    assert report is None
 
 
 def test_weekly_report_detail_renders_sanitized_markdown(

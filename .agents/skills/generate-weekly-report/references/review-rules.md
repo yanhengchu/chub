@@ -1,6 +1,7 @@
 # Fact and review rules
 
-- Apply priority: maintainer or owner's latest confirmation, explicit current-week meeting conclusion, current source report, previous report.
+- Apply priority: maintainer or owner's latest confirmation, the current V main report's `重点关注内容`, explicit current-week meeting conclusion, current source report, previous report.
+- Treat every `重点关注内容` item as a priority signal, not automatic proof. Reconcile it with current sources and retain its final disposition in the focus checklist.
 - Mark every previous-week item as continued, updated, closed, or excluded.
 - Separate root cause, preliminary judgment, verification action, and next step.
 - Do not turn “可能修复” into “将修复”, or “待排查” into a conclusion.

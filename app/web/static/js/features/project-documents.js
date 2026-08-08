@@ -33,7 +33,7 @@ function renderProjectDocuments(data) {
     }
     copy.className = "weekly-report-copy";
     heading.className = "weekly-report-heading";
-    title.textContent = item.report_type === "focus" ? "本期重点确认" : "本期周报";
+    title.textContent = item.title;
     summary.className = "weekly-report-summary";
     if (item.updated_at) {
       const time = document.createElement("time");

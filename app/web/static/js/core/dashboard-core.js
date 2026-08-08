@@ -52,8 +52,13 @@ const elements = {
   openclawWeixinStart: document.querySelector("#openclaw-weixin-start"),
   automationBrowserBadge: document.querySelector("#automation-browser-badge"),
   automationBrowserControl: document.querySelector("#automation-browser-control"),
+  automationBrowserDialog: document.querySelector("#automation-browser-dialog"),
+  automationBrowserForm: document.querySelector("#automation-browser-form"),
+  automationBrowserDialogClose: document.querySelector("#automation-browser-dialog-close"),
+  automationBrowserDialogCancel: document.querySelector("#automation-browser-dialog-cancel"),
+  automationBrowserDialogConfirm: document.querySelector("#automation-browser-dialog-confirm"),
   automationBrowserProfile: document.querySelector("#automation-browser-profile"),
-  automationBrowserMode: document.querySelector("#automation-browser-mode"),
+  automationBrowserModeInputs: document.querySelectorAll('input[name="automation-browser-mode"]'),
   automationFeishuBadge: document.querySelector("#automation-feishu-badge"),
   automationFeishuCheck: document.querySelector("#automation-feishu-check"),
   automationFeishuLogin: document.querySelector("#automation-feishu-login"),
@@ -62,6 +67,8 @@ const elements = {
   automationList: document.querySelector("#automation-list"),
   automationMessage: document.querySelector("#automation-message"),
   refreshAutomations: document.querySelector("#refresh-automations"),
+  automationEnvironmentMessage: document.querySelector("#automation-environment-message"),
+  refreshAutomationEnvironment: document.querySelector("#refresh-automation-environment"),
   projectDocsList: document.querySelector("#design-document-list"),
   weeklyReportsTitle: document.querySelector("#weekly-reports-title"),
   weeklyReportsList: document.querySelector("#weekly-report-list"),
@@ -75,10 +82,6 @@ const elements = {
   refreshCodex: null,
   createCodex: null,
   codexWorkspaceDialog: null,
-  codexPermissionDialog: null,
-  codexPermissionForm: null,
-  codexPermissionCurrent: null,
-  codexPermissionNotice: null,
   loadLogs: document.querySelector("#load-logs"),
   logLines: document.querySelector("#log-lines"),
   logTabs: document.querySelectorAll("[data-log-source]"),
@@ -143,11 +146,15 @@ async function refreshCardsAfterRestart() {
     loadCodexSessions(),
     loadOpenClaw(),
     loadAutomations(),
+    loadAutomationEnvironment(),
     loadLogs(),
   ]);
 }
 
 function clearProtectedView() {
+  if (elements.automationBrowserDialog.open) {
+    elements.automationBrowserDialog.close();
+  }
   stopCodexPolling({ reset: true });
   codexLoadPromise = null;
   codexQuotaLoadPromise = null;
@@ -163,6 +170,10 @@ function clearProtectedView() {
   if (automationPollTimer) {
     window.clearTimeout(automationPollTimer);
     automationPollTimer = null;
+  }
+  if (automationEnvironmentPollTimer) {
+    window.clearTimeout(automationEnvironmentPollTimer);
+    automationEnvironmentPollTimer = null;
   }
   elements.codexPanel = null;
   elements.codexWorkspaces = null;
@@ -317,7 +328,7 @@ async function connectWithToken(token, remember, savedCredential = false) {
     renderStatus(status);
     const openclawCacheRestored = restoreOpenClawCache(status.node.id);
     showConnectedView(status);
-    const cardLoads = [loadCodexSessions(), loadAutomations()];
+    const cardLoads = [loadCodexSessions(), loadAutomations(), loadAutomationEnvironment()];
     if (dashboardIsHistoryReturn && openclawCacheRestored) {
       cardLoads.push(loadOpenClawWeixinStatus());
     } else {
@@ -358,7 +369,7 @@ async function connectWithTailscale(fallbackToken = "", rememberFallback = false
     renderStatus(status);
     const openclawCacheRestored = restoreOpenClawCache(status.node.id);
     showConnectedView(status);
-    const cardLoads = [loadCodexSessions(), loadAutomations()];
+    const cardLoads = [loadCodexSessions(), loadAutomations(), loadAutomationEnvironment()];
     if (dashboardIsHistoryReturn && openclawCacheRestored) {
       cardLoads.push(loadOpenClawWeixinStatus());
     } else {

@@ -81,6 +81,34 @@
       </div>
     </dialog>
 
+    <dialog id="automation-browser-dialog" class="codex-workspace-dialog restart-dialog" aria-labelledby="automation-browser-dialog-title">
+      <form id="automation-browser-form" class="codex-workspace-dialog-surface restart-dialog-surface automation-browser-form">
+        <div class="codex-workspace-dialog-header restart-dialog-header">
+          <h2 id="automation-browser-dialog-title">启动浏览器</h2>
+          <button id="automation-browser-dialog-close" class="button-link restart-dialog-close" type="button" aria-label="关闭浏览器启动窗口">关闭</button>
+        </div>
+        <label class="automation-browser-field" for="automation-browser-profile">浏览器账户</label>
+        <select id="automation-browser-profile" aria-label="浏览器账户"></select>
+        <fieldset class="automation-browser-mode">
+          <legend>启动方式</legend>
+          <div class="automation-browser-mode-options">
+            <label>
+              <input type="radio" name="automation-browser-mode" value="headless" checked>
+              <span>无界面</span>
+            </label>
+            <label>
+              <input type="radio" name="automation-browser-mode" value="headed">
+              <span>有界面</span>
+            </label>
+          </div>
+        </fieldset>
+        <div class="restart-dialog-footer">
+          <button id="automation-browser-dialog-cancel" class="button-link" type="button">取消</button>
+          <button id="automation-browser-dialog-confirm" class="button-secondary" type="submit">启动</button>
+        </div>
+      </form>
+    </dialog>
+
     <main>
       <section id="connected-bar" class="card connected-bar" hidden aria-label="当前连接">
         <div class="connected-top">
@@ -138,12 +166,74 @@
       <div id="dashboard" class="dashboard" hidden>
         <div id="codex-card-host"></div>
 
+        <section class="card automation-card" data-card-key="automations" data-collapsible-card aria-labelledby="automation-title">
+          <div class="section-heading">
+            <div class="card-heading-copy" data-card-heading>
+              <p class="section-kicker">自动化</p>
+              <h2 id="automation-title">自动化任务</h2>
+              <p class="section-description">复用登录状态执行自动化任务。</p>
+            </div>
+            <button id="refresh-automations" class="button-secondary" type="button">刷新</button>
+          </div>
+          <div class="card-content" data-card-content>
+          <div class="card-content-inner">
+          <div class="automation-summary">
+            <span>配置任务</span>
+            <span id="automation-count">0 个任务</span>
+          </div>
+          <div id="automation-list" class="automation-list"></div>
+          <p id="automation-message" class="message" aria-live="polite"></p>
+          <div class="card-footer-actions">
+            <a class="button-link" href="/automations">全部任务</a>
+          </div>
+          </div>
+          </div>
+        </section>
+
+        <section class="card automation-environment-card" data-card-key="automation-environment" data-collapsible-card data-collapsed="true" aria-labelledby="automation-environment-title">
+          <div class="section-heading">
+            <div class="card-heading-copy" data-card-heading>
+              <p class="section-kicker">自动化</p>
+              <h2 id="automation-environment-title">自动化环境</h2>
+              <p class="section-description">管理浏览器与站点登录状态。</p>
+            </div>
+            <button id="refresh-automation-environment" class="button-secondary" type="button">刷新</button>
+          </div>
+          <div class="card-content" data-card-content>
+          <div class="card-content-inner">
+          <div class="automation-browser-row">
+            <div class="automation-browser-copy">
+              <strong>浏览器环境</strong>
+              <span id="automation-browser-badge" class="badge badge-muted">正在检查</span>
+            </div>
+            <div class="automation-browser-actions">
+              <button id="automation-browser-control" class="button-secondary" type="button" aria-haspopup="dialog" aria-controls="automation-browser-dialog" disabled>检查中…</button>
+            </div>
+          </div>
+          <div class="automation-browser-row">
+            <div class="automation-browser-copy">
+              <strong>飞书环境</strong>
+              <span id="automation-feishu-badge" class="badge badge-muted">未检查</span>
+            </div>
+            <div class="automation-browser-actions">
+              <button id="automation-feishu-check" class="button-secondary" type="button" disabled>检查</button>
+            </div>
+          </div>
+          <div id="automation-feishu-login" class="automation-feishu-login" hidden>
+            <img id="automation-feishu-qr" alt="飞书登录二维码">
+            <p>请使用飞书移动端扫码登录</p>
+          </div>
+          <p id="automation-environment-message" class="message" aria-live="polite"></p>
+          </div>
+          </div>
+        </section>
+
         <section class="card openclaw-card" data-card-key="openclaw" data-collapsible-card aria-labelledby="openclaw-title">
           <div class="section-heading">
             <div class="card-heading-copy" data-card-heading>
               <p class="section-kicker">Agent 网关</p>
-              <h2 id="openclaw-title">OpenClaw</h2>
-              <p class="section-description">查看网关状态并执行受控维护。</p>
+              <h2 id="openclaw-title">OpenClaw 环境</h2>
+              <p class="section-description">管理 Gateway 与消息通道状态。</p>
             </div>
             <button id="refresh-openclaw" class="button-secondary" type="button">刷新</button>
           </div>
@@ -196,7 +286,7 @@
                 <a class="design-document-main" href="/weekly-reports/{{ report.period }}/{{ report.report_type }}">
                   <span class="weekly-report-copy">
                     <span class="weekly-report-heading">
-                      <strong>{% if report.report_type == 'focus' %}本期重点确认{% else %}本期周报{% endif %}</strong>
+                      <strong>{{ report.title }}</strong>
                       <span class="badge badge-success">{{ report.status }}</span>
                     </span>
                     <span class="weekly-report-summary">{% if report.updated_at %}<time datetime="{{ report.updated_at.isoformat() }}">{{ report.updated_at.strftime('%Y-%m-%d') }}</time> · {% endif %}{{ report.summary }}</span>
@@ -206,7 +296,7 @@
                 <div class="design-document-main">
                   <span class="weekly-report-copy">
                     <span class="weekly-report-heading">
-                      <strong>{% if report.report_type == 'focus' %}本期重点确认{% else %}本期周报{% endif %}</strong>
+                      <strong>{{ report.title }}</strong>
                       <span class="badge badge-muted">{{ report.status }}</span>
                     </span>
                     <span class="weekly-report-summary">{{ report.summary }}</span>
@@ -248,57 +338,6 @@
             <div class="card-footer-actions">
             <a id="all-project-docs" class="button-link" href="/project-docs">全部文档</a>
             </div>
-          </div>
-          </div>
-          </div>
-        </section>
-
-        <section class="card automation-card" data-card-key="automations" data-collapsible-card aria-labelledby="automation-title">
-          <div class="section-heading">
-            <div class="card-heading-copy" data-card-heading>
-              <p class="section-kicker">自动化</p>
-              <h2 id="automation-title">自动化任务</h2>
-              <p class="section-description">复用登录状态执行自动化任务。</p>
-            </div>
-            <button id="refresh-automations" class="button-secondary" type="button">刷新</button>
-          </div>
-          <div class="card-content" data-card-content>
-          <div class="card-content-inner">
-          <div class="automation-browser-row">
-            <div class="automation-browser-copy">
-              <strong>浏览器环境</strong>
-              <span id="automation-browser-badge" class="badge badge-muted">正在检查</span>
-            </div>
-            <div class="automation-browser-actions">
-              <select id="automation-browser-profile" aria-label="浏览器用户" hidden></select>
-              <select id="automation-browser-mode" aria-label="Debug Chrome 启动模式" hidden>
-                <option value="headed">有界面</option>
-                <option value="headless">无界面</option>
-              </select>
-              <button id="automation-browser-control" class="button-secondary" type="button" disabled>检查中…</button>
-            </div>
-          </div>
-          <div class="automation-browser-row">
-            <div class="automation-browser-copy">
-              <strong>飞书环境</strong>
-              <span id="automation-feishu-badge" class="badge badge-muted">未检查</span>
-            </div>
-            <div class="automation-browser-actions">
-              <button id="automation-feishu-check" class="button-secondary" type="button" disabled>检查</button>
-            </div>
-          </div>
-          <div id="automation-feishu-login" class="automation-feishu-login" hidden>
-            <img id="automation-feishu-qr" alt="飞书登录二维码">
-            <p>请使用飞书移动端扫码登录</p>
-          </div>
-          <div class="automation-summary">
-            <span>配置任务</span>
-            <span id="automation-count">0 个任务</span>
-          </div>
-          <div id="automation-list" class="automation-list"></div>
-          <p id="automation-message" class="message" aria-live="polite"></p>
-          <div class="card-footer-actions">
-            <a class="button-link" href="/automations">全部任务</a>
           </div>
           </div>
           </div>

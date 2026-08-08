@@ -8,6 +8,35 @@ source:
     - /wiki/
     - /docx/
   max_documents: 20
+  required_current_documents: 5
+  required_current_document_roles:
+    - name: 产品商业化
+      title_prefixes:
+        - vivo产品周报
+      document_paths:
+        - /docx/WOscdHEyCot8dSxinyNcMBRjnCc
+    - name: 产品 OS
+      title_prefixes:
+        - vivo音乐产品周报
+      document_paths:
+        - /wiki/EtQFwaBJOiT0TpkciaYcm0t8nPb
+    - name: 运营
+      title_prefixes:
+        - vivo运营周报
+      document_paths:
+        - /wiki/Xr9wwhkWMiYLdFkHSHXcBaOznXP
+    - name: 客户端
+      title_prefixes:
+        - 移动端周会
+      document_paths:
+        - /wiki/HThowHH2GiQmTuk5bwIcvGRTnVp
+    - name: 服务端
+      title_prefixes:
+        - 服务端开发部周报
+      document_paths:
+        - /docx/Cy14d37JVoGe0nxCbJicvfQ7nke
+  background_reference_title_kind: period_week
+  required_background_references: 1
 
 download:
   template: feishu-document-download
