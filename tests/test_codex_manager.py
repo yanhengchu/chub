@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from app.codex.manager import CodexPtyManager
-from app.codex.models import CodexSession, SessionInfo, utc_now
+from app.codex.models import CodexSession, SessionInfo, WorkspaceInfo, utc_now
 from app.codex.store import CodexSessionStore
 from app.core.config import Settings
 from app.core.response import ApiError
@@ -21,6 +21,29 @@ def native_session(session_id: str) -> CodexSession:
         codex_session_id=session_id,
         status="stopped",
     )
+
+
+def test_create_session_persists_validated_model_defaults(settings: Settings) -> None:
+    manager = CodexPtyManager(settings)
+    manager._require_available = MagicMock()
+    manager.model_catalog = MagicMock()
+    manager.workspaces = MagicMock(
+        return_value=[
+            WorkspaceInfo(
+                id="chub",
+                name="Chub",
+                path="/workspace/chub",
+                available=True,
+            )
+        ]
+    )
+
+    created = manager.create_session("chub", "full-access", "gpt-test", "high")
+
+    manager.model_catalog.validate.assert_called_once_with("gpt-test", "high")
+    stored = manager.store.get(created.id)
+    assert stored.model == "gpt-test"
+    assert stored.reasoning_effort == "high"
 
 
 def test_update_session_timestamp_keeps_latest_time(settings: Settings) -> None:
@@ -91,11 +114,17 @@ def test_sync_merges_discovered_session_bound_to_new_chub_session(
         workspace_name="Chub",
         cwd=Path("/workspace/chub"),
         permission_mode="auto-review",
+        model="gpt-test",
+        reasoning_effort="high",
         status="stopped",
     )
     discovered = native_session(native_id)
     discovered.title = "首次快速交互"
     discovered.active_permission_mode = "auto-review"
+    discovered.model = "gpt-test"
+    discovered.reasoning_effort = "high"
+    discovered.active_model = "gpt-test"
+    discovered.active_reasoning_effort = "high"
     manager.store.save(chub_session)
     manager.store.save(discovered)
     manager.discovery = MagicMock()
@@ -120,6 +149,10 @@ def test_sync_merges_discovered_session_bound_to_new_chub_session(
     assert sessions[0].title == "首次快速交互"
     assert sessions[0].permission_mode == "auto-review"
     assert sessions[0].active_permission_mode == "auto-review"
+    assert sessions[0].model == "gpt-test"
+    assert sessions[0].reasoning_effort == "high"
+    assert sessions[0].active_model == "gpt-test"
+    assert sessions[0].active_reasoning_effort == "high"
 
 
 def test_sync_defers_native_session_while_new_quick_session_is_binding(
@@ -466,6 +499,20 @@ def test_ttyd_command_passes_session_permission(settings: Settings) -> None:
     assert command[permission_index + 1] == "full-access"
 
 
+def test_ttyd_command_passes_session_model_and_reasoning_level(
+    settings: Settings,
+) -> None:
+    manager = CodexPtyManager(settings)
+    session = native_session("14141414-1414-4414-8414-141414141414")
+    session.model = "gpt-test"
+    session.reasoning_effort = "high"
+
+    command = manager._ttyd_command(session, 12345)
+
+    assert command[command.index("--model") + 1] == "gpt-test"
+    assert command[command.index("--reasoning-effort") + 1] == "high"
+
+
 def test_sync_adopts_permission_changed_inside_codex(settings: Settings) -> None:
     manager = CodexPtyManager(settings)
     session = native_session("15151515-1515-4515-8515-151515151515")
@@ -489,6 +536,35 @@ def test_sync_adopts_permission_changed_inside_codex(settings: Settings) -> None
     synced = manager.store.get(session.id)
     assert synced.permission_mode == "auto-review"
     assert synced.active_permission_mode == "auto-review"
+
+
+def test_sync_adopts_model_changed_inside_codex(settings: Settings) -> None:
+    manager = CodexPtyManager(settings)
+    session = native_session("17171717-1717-4717-8717-171717171717")
+    session.model = "gpt-old"
+    session.reasoning_effort = "medium"
+    session.active_model = "gpt-old"
+    session.active_reasoning_effort = "medium"
+    manager.store.save(session)
+    discovered = session.model_copy(
+        update={
+            "model": "gpt-new",
+            "reasoning_effort": "high",
+            "active_model": "gpt-new",
+            "active_reasoning_effort": "high",
+        }
+    )
+    manager.discovery = MagicMock()
+    manager.discovery.discover.return_value = [discovered]
+    manager.discovery.session_archive_states.return_value = None
+
+    manager._sync_native_sessions()
+
+    synced = manager.store.get(session.id)
+    assert synced.model == "gpt-new"
+    assert synced.reasoning_effort == "high"
+    assert synced.active_model == "gpt-new"
+    assert synced.active_reasoning_effort == "high"
 
 
 def test_sync_does_not_overwrite_stopped_session_permission(

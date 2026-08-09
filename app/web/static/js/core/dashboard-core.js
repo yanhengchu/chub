@@ -179,6 +179,7 @@ function clearProtectedView() {
   elements.codexWorkspaces = null;
   elements.codexSessions = null;
   elements.codexMessage = null;
+  elements.codexModelPreference = null;
   elements.codexQuota = null;
   elements.codexSessionCount = null;
   elements.refreshCodex = null;

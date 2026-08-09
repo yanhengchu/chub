@@ -70,3 +70,20 @@ def test_build_codex_command_maps_permission_profile(
         "resume",
         "codex-session-id",
     ]
+
+
+def test_build_codex_command_adds_session_model_and_reasoning_level() -> None:
+    build_codex_command = run_path(str(LAUNCHER))["build_codex_command"]
+
+    command = build_codex_command(
+        "full-access",
+        "codex-session-id",
+        "gpt-test",
+        "high",
+    )
+
+    assert ["--model", "gpt-test"] == command[
+        command.index("--model") : command.index("--model") + 2
+    ]
+    assert 'model_reasoning_effort="high"' in command
+    assert command[-2:] == ["resume", "codex-session-id"]

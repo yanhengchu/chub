@@ -48,3 +48,5 @@ def test_session_store_migrates_legacy_permission_modes(tmp_path: Path) -> None:
     assert session is not None
     assert session.permission_mode == "ask"
     assert session.active_permission_mode == "read-only"
+    assert session.model is None
+    assert session.reasoning_effort is None

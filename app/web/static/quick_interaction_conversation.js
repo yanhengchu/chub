@@ -278,9 +278,7 @@ function renderConversationSession(session) {
   const busy = conversationActive || session.quick_interaction_running === true;
   conversationForm.setAttribute("aria-busy", String(busy));
   conversationSubmit.disabled = Boolean(reason);
-  conversationSubmit.textContent = conversationConfirmStopUnknownTerminal
-    ? "确认发送"
-    : "发送";
+  conversationSubmit.textContent = "发送";
   conversationPrompt.disabled = busy;
   if (reason && !busy) {
     showConversationMessage(conversationSubmitMessage, reason);

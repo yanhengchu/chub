@@ -17,8 +17,10 @@ from typing import Callable
 import psutil
 
 from app.codex.discovery import CodexSessionDiscovery
+from app.codex.model_catalog import CodexModelCatalog
 from app.codex.models import (
     ActivitySource,
+    CodexModelCatalogData,
     CodexSession,
     PermissionMode,
     SessionInfo,
@@ -42,6 +44,7 @@ class CodexPtyManager:
         self.store = CodexSessionStore(settings.codex_pty.data_file)
         self.codex_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
         self.discovery = CodexSessionDiscovery(self.codex_home)
+        self.model_catalog = CodexModelCatalog(self.codex_home)
         self.hook_dir = settings.codex_pty.runtime_dir / "hooks"
         self._processes: dict[str, subprocess.Popen[bytes]] = {}
         self._lock = threading.RLock()
@@ -131,8 +134,11 @@ class CodexPtyManager:
         self,
         workspace_id: str,
         permission_mode: PermissionMode = "full-access",
+        model: str | None = None,
+        reasoning_effort: str | None = None,
     ) -> SessionInfo:
         self._require_available()
+        self.model_catalog.validate(model, reasoning_effort)
         workspace = next(
             (item for item in self.workspaces() if item.id == workspace_id),
             None,
@@ -149,9 +155,14 @@ class CodexPtyManager:
             workspace_name=workspace.name,
             cwd=Path(workspace.path),
             permission_mode=permission_mode,
+            model=model,
+            reasoning_effort=reasoning_effort,
         )
         self.store.save(session)
         return self._public(session)
+
+    def read_model_catalog(self) -> CodexModelCatalogData:
+        return self.model_catalog.data()
 
     def prepare_quick_interaction(self) -> None:
         """Ensure headless Codex runs use the managed profile and session hook."""
@@ -204,6 +215,8 @@ class CodexPtyManager:
                 session.activity = "unknown"
                 session.activity_source = "none"
                 session.active_permission_mode = session.permission_mode
+                session.active_model = session.model
+                session.active_reasoning_effort = session.reasoning_effort
             session.error = None
             session.updated_at = utc_now()
             self.store.save(session)
@@ -396,6 +409,10 @@ class CodexPtyManager:
                 and session.permission_mode
                 != (session.active_permission_mode or "ask")
             ),
+            model=session.model,
+            reasoning_effort=session.reasoning_effort,
+            active_model=session.active_model,
+            active_reasoning_effort=session.active_reasoning_effort,
             error=session.error,
             created_at=session.created_at,
             updated_at=session.updated_at,
@@ -614,6 +631,10 @@ class CodexPtyManager:
         ]
         if session.codex_session_id:
             command.extend(["--codex-session", session.codex_session_id])
+        if session.model:
+            command.extend(["--model", session.model])
+        if session.reasoning_effort:
+            command.extend(["--reasoning-effort", session.reasoning_effort])
         return command
 
     @staticmethod
@@ -725,6 +746,23 @@ class CodexPtyManager:
                     existing.cwd = discovered.cwd
                     existing.workspace_name = discovered.workspace_name
                     changed = True
+                if (
+                    discovered.active_model
+                    and existing.active_model != discovered.active_model
+                ):
+                    existing.active_model = discovered.active_model
+                    existing.model = discovered.active_model
+                    changed = True
+                if (
+                    discovered.active_reasoning_effort
+                    and existing.active_reasoning_effort
+                    != discovered.active_reasoning_effort
+                ):
+                    existing.active_reasoning_effort = (
+                        discovered.active_reasoning_effort
+                    )
+                    existing.reasoning_effort = discovered.active_reasoning_effort
+                    changed = True
                 if discovered.title and not existing.title:
                     existing.title = discovered.title
                     changed = True
@@ -787,6 +825,24 @@ class CodexPtyManager:
                     and duplicate.active_permission_mode is not None
                 ):
                     canonical.active_permission_mode = duplicate.active_permission_mode
+                    changed = True
+                if (
+                    canonical.active_model is None
+                    and duplicate.active_model is not None
+                ):
+                    canonical.active_model = duplicate.active_model
+                    if canonical.model is None:
+                        canonical.model = duplicate.model
+                    changed = True
+                if (
+                    canonical.active_reasoning_effort is None
+                    and duplicate.active_reasoning_effort is not None
+                ):
+                    canonical.active_reasoning_effort = (
+                        duplicate.active_reasoning_effort
+                    )
+                    if canonical.reasoning_effort is None:
+                        canonical.reasoning_effort = duplicate.reasoning_effort
                     changed = True
                 if duplicate.updated_at > canonical.updated_at:
                     canonical.updated_at = duplicate.updated_at

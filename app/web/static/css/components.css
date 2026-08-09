@@ -185,6 +185,7 @@ input[type="password"] {
 .settings-field > span {
   display: grid;
   gap: 0.25rem;
+  min-width: 0;
 }
 
 .settings-field strong {
@@ -200,6 +201,7 @@ input[type="password"] {
 
 .settings-field select {
   flex: none;
+  max-width: 50%;
   min-width: 5.5rem;
 }
 
@@ -1795,11 +1797,19 @@ pre {
   display: none;
 }
 
+.codex-model-preference,
 .codex-quota {
-  margin: 0 0 0.65rem;
   color: var(--muted);
   font-size: 0.78rem;
   line-height: 1.5;
+}
+
+.codex-model-preference {
+  margin: 0;
+}
+
+.codex-quota {
+  margin: 0 0 0.65rem;
 }
 
 .codex-divider {

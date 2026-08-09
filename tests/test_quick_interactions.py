@@ -78,6 +78,21 @@ def test_command_creates_or_resumes_codex_session(tmp_path: Path) -> None:
     assert resume_command[-3:] == ["resume", "codex-session-1", "-"]
 
 
+def test_command_adds_session_model_and_reasoning_level(tmp_path: Path) -> None:
+    quick_interactions = manager(tmp_path)
+    session = quick_interactions.codex_manager.get_session.return_value.model_copy(
+        update={"model": "gpt-test", "reasoning_effort": "high"}
+    )
+
+    command = quick_interactions._command(session, tmp_path / "result.txt")
+
+    assert ["--model", "gpt-test"] == command[
+        command.index("--model") : command.index("--model") + 2
+    ]
+    assert 'model_reasoning_effort="high"' in command
+    assert command[-3:] == ["resume", "codex-session-1", "-"]
+
+
 def test_codex_execution_prompt_adds_delivery_guidance_without_changing_request(
     tmp_path: Path,
 ) -> None:

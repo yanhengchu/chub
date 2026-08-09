@@ -14,6 +14,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.websockets import WebSocketDisconnect
 
 from app.codex.models import (
+    CodexModelCatalogData,
     CodexQuotaData,
     QuickInteractionData,
     QuickInteractionListData,
@@ -68,6 +69,11 @@ def list_sessions(request: Request) -> ApiResponse[SessionListData]:
     )
 
 
+@api_router.get("/models", response_model=ApiResponse[CodexModelCatalogData])
+def list_models(request: Request) -> ApiResponse[CodexModelCatalogData]:
+    return ApiResponse(data=request.app.state.codex_pty_manager.read_model_catalog())
+
+
 @api_router.get("/quota", response_model=ApiResponse[CodexQuotaData])
 def read_quota(
     request: Request,
@@ -85,6 +91,8 @@ def create_session(
         session = request.app.state.codex_pty_manager.create_session(
             payload.workspace_id,
             payload.permission_mode,
+            payload.model,
+            payload.reasoning_effort,
         )
     except Exception:
         log_operation(

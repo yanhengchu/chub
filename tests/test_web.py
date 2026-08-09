@@ -247,6 +247,11 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
     assert '<option value="5" selected>5 条</option>' in response.text
     assert '<option value="10">10 条</option>' in response.text
     assert 'id="codex-default-permission"' in response.text
+    assert "设置之后新建会话的默认配置。" in response.text
+    assert 'id="codex-default-model"' in response.text
+    assert 'id="codex-default-reasoning-effort"' in response.text
+    assert "模型列表与默认值由当前节点的 Codex 提供。" in response.text
+    assert "工作区配置可能覆盖默认值；Ultra 会自动拆分并行任务。" in response.text
     assert '<option value="full-access">Full access</option>' in response.text
     assert "只影响后续新建的 Session，已有会话保持原权限。" in response.text
     assert "尚未开放" not in response.text
@@ -256,6 +261,9 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
     assert "hub.quickInteractionView.v1" not in script.text
     assert "hub.quickInteractionPageSize.v1" in script.text
     assert "hub.codexDefaultPermission.v1" in script.text
+    assert "hub.codexDefaultModel.v1" in script.text
+    assert "hub.codexDefaultReasoningEffort.v1" in script.text
+    assert "/api/codex/models" in script.text
     assert "之后新建的 Session 将使用该权限" in script.text
     assert "localStorage.setItem" in script.text
     assert "hub.cyberRainSpeed.v1" in script.text
@@ -561,12 +569,20 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "session.quick_interaction_running" in script.text
     assert "CODEX_DEFAULT_PERMISSION_KEY" in script.text
     assert 'permission_mode: readCodexDefaultPermission()' in script.text
+    assert "const preferredModel = readCodexDefaultModel()" in script.text
+    assert "const preferredEffort = readCodexDefaultReasoningEffort()" in script.text
+    assert "clearCodexModelPreferences()" in script.text
+    assert "await createRequest(null, null)" in script.text
     assert "archive.disabled = !session.codex_session_id" in script.text
     assert "|| quickInteractionRunning" in script.text
     assert "llmInteractionRunning" not in script.text
     assert "codexLoadPromise" in script.text
     assert "CODEX_QUOTA_CACHE_KEY" in script.text
     assert "CODEX_QUOTA_REFRESH_MS = 5 * 60 * 1000" in script.text
+    assert '"/api/codex/models"' in script.text
+    assert "新建默认：正在读取…" in script.text
+    assert "renderCodexModelPreference" in script.text
+    assert "新建默认：跟随 Codex 默认" in script.text
     assert "/api/codex/quota" in script.text
     assert "额度：正在读取…" in script.text
     assert "renderCodexQuota" in script.text
@@ -692,6 +708,8 @@ async def test_quick_interaction_conversation_page_is_available(
     assert "conversationEngine" not in script.text
     assert "conversationScroll.scrollTop" in script.text
     assert "conversationClient.submitTask" in script.text
+    assert 'conversationSubmit.textContent = "发送"' in script.text
+    assert '"确认发送"' not in script.text
     assert 'pending: "待通知"' in script.text
     assert 'sent: "已通知"' in script.text
     assert 'failed: "通知失败"' in script.text

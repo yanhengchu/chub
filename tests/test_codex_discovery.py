@@ -120,6 +120,8 @@ def test_discovers_latest_permission_mode_from_bounded_session_tail(
                     "payload": {
                         "type": "thread_settings_applied",
                         "thread_settings": {
+                            "model": "gpt-test",
+                            "reasoning_effort": "high",
                             "approval_policy": "on-request",
                             "approvals_reviewer": "auto_review",
                             "active_permission_profile": {"id": ":workspace"},
@@ -133,6 +135,51 @@ def test_discovers_latest_permission_mode_from_bounded_session_tail(
     session = CodexSessionDiscovery(codex_home).discover()[0]
 
     assert session.active_permission_mode == "auto-review"
+    assert session.model == "gpt-test"
+    assert session.reasoning_effort == "high"
+    assert session.active_model == "gpt-test"
+    assert session.active_reasoning_effort == "high"
+
+
+def test_discovers_latest_reasoning_field_across_event_formats(
+    tmp_path: Path,
+) -> None:
+    codex_home = tmp_path / ".codex"
+    session_id = "77777777-7777-4777-8777-777777777777"
+    path = codex_home / "sessions" / f"{session_id}.jsonl"
+    entries = [
+        {
+            "payload": {
+                "id": session_id,
+                "cwd": str(tmp_path),
+                "timestamp": "2026-08-09T08:00:00Z",
+            }
+        },
+        {
+            "type": "turn_context",
+            "payload": {"model": "gpt-old", "effort": "low"},
+        },
+        {
+            "type": "event_msg",
+            "payload": {
+                "type": "thread_settings_applied",
+                "thread_settings": {
+                    "model": "gpt-new",
+                    "reasoning_effort": "high",
+                },
+            },
+        },
+    ]
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "".join(f"{json.dumps(entry)}\n" for entry in entries),
+        encoding="utf-8",
+    )
+
+    session = CodexSessionDiscovery(codex_home).discover()[0]
+
+    assert session.model == "gpt-new"
+    assert session.reasoning_effort == "high"
 
 
 def test_discovers_read_only_permission_mode(tmp_path: Path) -> None:

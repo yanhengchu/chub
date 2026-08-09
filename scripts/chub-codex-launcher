@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shlex
 import subprocess
@@ -10,6 +11,8 @@ import subprocess
 def build_codex_command(
     permission_mode: str,
     codex_session: str | None = None,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> list[str]:
     codex = ["codex", "--profile", "chub"]
     permission_args = {
@@ -45,6 +48,12 @@ def build_codex_command(
         ],
     }
     codex.extend(permission_args[permission_mode])
+    if model:
+        codex.extend(["--model", model])
+    if reasoning_effort:
+        codex.extend(
+            ["-c", f"model_reasoning_effort={json.dumps(reasoning_effort)}"]
+        )
     if codex_session:
         codex.extend(["resume", codex_session])
     return codex
@@ -57,6 +66,8 @@ def main() -> int:
     parser.add_argument("--chub-session", required=True)
     parser.add_argument("--hook-dir", required=True)
     parser.add_argument("--codex-session")
+    parser.add_argument("--model")
+    parser.add_argument("--reasoning-effort")
     parser.add_argument(
         "--permission-mode",
         choices=("ask", "auto-review", "read-only", "full-access"),
@@ -73,7 +84,12 @@ def main() -> int:
     if existing.returncode == 0:
         os.execvp("tmux", ["tmux", "attach-session", "-t", args.name])
 
-    codex = build_codex_command(args.permission_mode, args.codex_session)
+    codex = build_codex_command(
+        args.permission_mode,
+        args.codex_session,
+        args.model,
+        args.reasoning_effort,
+    )
     command = " ".join(
         (
             f"CHUB_PTY_SESSION_ID={shlex.quote(args.chub_session)}",

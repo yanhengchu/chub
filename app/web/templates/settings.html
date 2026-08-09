@@ -38,7 +38,7 @@
         <section class="settings-section" aria-labelledby="codex-session-settings-title">
           <div class="settings-section-heading">
             <h3 id="codex-session-settings-title">Codex 会话</h3>
-            <p>设置之后新建会话的默认权限。</p>
+            <p>设置之后新建会话的默认配置。</p>
           </div>
           <label class="settings-field" for="codex-default-permission">
             <span>
@@ -50,6 +50,28 @@
               <option value="auto-review">Approve for me</option>
               <option value="ask">Ask for approval</option>
               <option value="read-only">Read Only</option>
+            </select>
+          </label>
+          <label class="settings-field" for="codex-default-model">
+            <span>
+              <strong>默认模型</strong>
+              <small>模型列表与默认值由当前节点的 Codex 提供。</small>
+            </span>
+            <select id="codex-default-model" name="codex-default-model" disabled>
+              <option value="">跟随 Codex 默认</option>
+            </select>
+          </label>
+          <label class="settings-field" for="codex-default-reasoning-effort">
+            <span>
+              <strong>默认等级</strong>
+              <small>工作区配置可能覆盖默认值；Ultra 会自动拆分并行任务。</small>
+            </span>
+            <select
+              id="codex-default-reasoning-effort"
+              name="codex-default-reasoning-effort"
+              disabled
+            >
+              <option value="">跟随模型默认</option>
             </select>
           </label>
           <p id="codex-session-settings-message" class="message" aria-live="polite"></p>

@@ -74,6 +74,10 @@ class CodexSessionDiscovery:
             json.JSONDecodeError,
         ):
             return None
+        thread_settings = self._read_thread_settings(path)
+        active_model, active_reasoning_effort = self._model_settings(
+            thread_settings
+        )
         return CodexSession(
             id=session_id,
             workspace_id="codex",
@@ -82,12 +86,18 @@ class CodexSessionDiscovery:
             title=titles.get(session_id),
             codex_session_id=session_id,
             status="stopped",
-            active_permission_mode=self._read_permission_mode(path),
+            active_permission_mode=self._permission_mode_from_settings(
+                thread_settings
+            ),
+            model=active_model,
+            reasoning_effort=active_reasoning_effort,
+            active_model=active_model,
+            active_reasoning_effort=active_reasoning_effort,
             created_at=timestamp,
             updated_at=updated_at,
         )
 
-    def _read_permission_mode(self, path: Path) -> PermissionMode | None:
+    def _read_thread_settings(self, path: Path) -> dict[str, object]:
         try:
             with path.open("rb") as file:
                 size = file.seek(0, 2)
@@ -95,10 +105,11 @@ class CodexSessionDiscovery:
                 file.seek(start)
                 data = file.read(PERMISSION_TAIL_BYTES)
         except OSError:
-            return None
+            return {}
         lines = data.splitlines()
         if start and lines:
             lines = lines[1:]
+        resolved: dict[str, object] = {}
         for raw_line in reversed(lines):
             if len(raw_line) > PERMISSION_MAX_LINE_BYTES:
                 continue
@@ -109,10 +120,25 @@ class CodexSessionDiscovery:
             settings = self._permission_settings(item)
             if settings is None:
                 continue
-            mode = self._permission_mode_from_settings(settings)
-            if mode is not None:
-                return mode
-        return None
+            for key, value in settings.items():
+                canonical_key = (
+                    "reasoning_effort"
+                    if key in {"effort", "reasoning_effort"}
+                    else key
+                )
+                resolved.setdefault(canonical_key, value)
+        return resolved
+
+    @staticmethod
+    def _model_settings(
+        settings: dict[str, object],
+    ) -> tuple[str | None, str | None]:
+        model = settings.get("model")
+        effort = settings.get("reasoning_effort")
+        return (
+            model if isinstance(model, str) and 0 < len(model) <= 128 else None,
+            effort if isinstance(effort, str) and 0 < len(effort) <= 32 else None,
+        )
 
     @staticmethod
     def _permission_settings(item: object) -> dict[str, object] | None:

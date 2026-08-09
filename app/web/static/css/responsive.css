@@ -1,5 +1,15 @@
 
 @media (max-width: 420px) {
+  .settings-field {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .settings-field select {
+    width: 100%;
+    max-width: none;
+  }
+
   .style-option {
     grid-template-columns: auto minmax(0, 1fr);
   }

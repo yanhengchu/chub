@@ -488,6 +488,15 @@ class QuickInteractionManager:
             "codex", "exec", "--profile", "chub", "--json", *permission_args,
             "--output-last-message", str(result_path),
         ]
+        if session.model:
+            command.extend(["--model", session.model])
+        if session.reasoning_effort:
+            command.extend(
+                [
+                    "-c",
+                    f"model_reasoning_effort={json.dumps(session.reasoning_effort)}",
+                ]
+            )
         if session.codex_session_id:
             command.extend(["resume", session.codex_session_id])
         command.append("-")

@@ -2,6 +2,8 @@
 
 const QUICK_INTERACTION_PAGE_SIZE_KEY = "hub.quickInteractionPageSize.v1";
 const CODEX_DEFAULT_PERMISSION_KEY = "hub.codexDefaultPermission.v1";
+const CODEX_DEFAULT_MODEL_KEY = "hub.codexDefaultModel.v1";
+const CODEX_DEFAULT_REASONING_EFFORT_KEY = "hub.codexDefaultReasoningEffort.v1";
 const CYBER_RAIN_SPEED_KEY = "hub.cyberRainSpeed.v1";
 const CYBER_RAIN_BRIGHTNESS_KEY = "hub.cyberRainBrightness.v1";
 const CYBER_RAIN_DENSITY_KEY = "hub.cyberRainDensity.v1";
@@ -10,6 +12,10 @@ const quickInteractionPageSize = document.querySelector(
   "#quick-interaction-page-size",
 );
 const codexDefaultPermission = document.querySelector("#codex-default-permission");
+const codexDefaultModel = document.querySelector("#codex-default-model");
+const codexDefaultReasoningEffort = document.querySelector(
+  "#codex-default-reasoning-effort",
+);
 const codexSessionSettingsMessage = document.querySelector(
   "#codex-session-settings-message",
 );
@@ -21,6 +27,17 @@ const cyberRainBrightnessValue = document.querySelector("#cyber-rain-brightness-
 const cyberRainDensityValue = document.querySelector("#cyber-rain-density-value");
 const cyberStyleSettingsMessage = document.querySelector("#cyber-style-settings-message");
 const styleOptionRows = document.querySelectorAll("[data-style-option]");
+let codexModels = [];
+let codexDefaultReasoningEffortId = "";
+
+const CODEX_REASONING_LABELS = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra High",
+  max: "Max",
+  ultra: "Ultra",
+};
 
 function renderStyleSelection(style) {
   styleOptionRows.forEach((row) => {
@@ -113,6 +130,146 @@ function saveCodexDefaultPermission(value) {
   }
 }
 
+function readCodexPreference(key) {
+  try {
+    return localStorage.getItem(key) || "";
+  } catch (_error) {
+    return "";
+  }
+}
+
+function saveCodexPreference(key, value) {
+  if (value) {
+    localStorage.setItem(key, value);
+  } else {
+    localStorage.removeItem(key);
+  }
+}
+
+function settingsToken() {
+  try {
+    return (
+      sessionStorage.getItem("hub.sessionToken")
+      || localStorage.getItem("hub.savedToken")
+      || ""
+    );
+  } catch (_error) {
+    return "";
+  }
+}
+
+function createOption(value, label) {
+  const option = document.createElement("option");
+  option.value = value;
+  option.textContent = label;
+  return option;
+}
+
+function defaultModelOptionLabel() {
+  return "跟随 Codex 默认";
+}
+
+function defaultReasoningOptionLabel(model) {
+  const effort = codexDefaultReasoningEffortId || model?.default_level || "";
+  const label = CODEX_REASONING_LABELS[effort] || effort;
+  return label ? `跟随 Codex 默认（${label}）` : "跟随 Codex 默认";
+}
+
+function selectedCodexModel() {
+  return codexModels.find((model) => model.id === codexDefaultModel.value) || null;
+}
+
+function renderCodexReasoningLevels(preferred = "") {
+  const model = selectedCodexModel();
+  const options = [createOption("", defaultReasoningOptionLabel(model))];
+  if (model) {
+    model.levels.forEach((level) => {
+      options.push(
+        createOption(level.id, CODEX_REASONING_LABELS[level.id] || level.id),
+      );
+    });
+  }
+  codexDefaultReasoningEffort.replaceChildren(...options);
+  const supported = model?.levels.some((level) => level.id === preferred);
+  codexDefaultReasoningEffort.value = supported ? preferred : "";
+  codexDefaultReasoningEffort.disabled = !model;
+  return Boolean(supported || !preferred);
+}
+
+function renderCodexModels(models, defaults = {}) {
+  const preferredModel = readCodexPreference(CODEX_DEFAULT_MODEL_KEY);
+  const preferredEffort = readCodexPreference(
+    CODEX_DEFAULT_REASONING_EFFORT_KEY,
+  );
+  codexModels = models;
+  codexDefaultReasoningEffortId = (
+    defaults.reasoningEffort || codexDefaultReasoningEffortId
+  );
+  const options = [createOption("", defaultModelOptionLabel())];
+  models.forEach((model) => {
+    options.push(createOption(model.id, model.name));
+  });
+  codexDefaultModel.replaceChildren(...options);
+  const modelAvailable = models.some((model) => model.id === preferredModel);
+  codexDefaultModel.value = modelAvailable ? preferredModel : "";
+  codexDefaultModel.disabled = false;
+  const effortAvailable = renderCodexReasoningLevels(
+    modelAvailable ? preferredEffort : "",
+  );
+  if ((!modelAvailable && preferredModel) || !effortAvailable) {
+    try {
+      saveCodexPreference(CODEX_DEFAULT_MODEL_KEY, codexDefaultModel.value);
+      saveCodexPreference(
+        CODEX_DEFAULT_REASONING_EFFORT_KEY,
+        codexDefaultReasoningEffort.value,
+      );
+      codexSessionSettingsMessage.textContent =
+        "之前保存的模型或等级当前不可用，已改为跟随 Codex 默认。";
+      codexSessionSettingsMessage.className = "message message-error";
+    } catch (_error) {
+      codexSessionSettingsMessage.textContent = "当前浏览器无法保存会话偏好。";
+      codexSessionSettingsMessage.className = "message message-error";
+    }
+  }
+}
+
+async function loadCodexModels() {
+  const token = settingsToken();
+  try {
+    const response = await fetch("/api/codex/models", {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    const payload = await response.json();
+    if (!response.ok || payload.success !== true || !Array.isArray(payload.data?.models)) {
+      throw new Error("model_catalog_unavailable");
+    }
+    renderCodexModels(payload.data.models, {
+      model: payload.data.default_model,
+      reasoningEffort: payload.data.default_reasoning_effort,
+    });
+  } catch (_error) {
+    try {
+      saveCodexPreference(CODEX_DEFAULT_MODEL_KEY, "");
+      saveCodexPreference(CODEX_DEFAULT_REASONING_EFFORT_KEY, "");
+    } catch (_storageError) {
+      // The error message below already covers unavailable browser storage.
+    }
+    codexDefaultModel.replaceChildren(
+      createOption("", defaultModelOptionLabel()),
+    );
+    codexDefaultModel.value = "";
+    codexDefaultModel.disabled = true;
+    codexDefaultReasoningEffort.replaceChildren(
+      createOption("", defaultReasoningOptionLabel(null)),
+    );
+    codexDefaultReasoningEffort.value = "";
+    codexDefaultReasoningEffort.disabled = true;
+    codexSessionSettingsMessage.textContent =
+      "暂时无法读取 Codex 模型，已改为跟随 Codex 默认。";
+    codexSessionSettingsMessage.className = "message message-error";
+  }
+}
+
 quickInteractionPageSize.addEventListener("change", () => {
   saveQuickInteractionPageSize(quickInteractionPageSize.value);
 });
@@ -123,6 +280,41 @@ codexDefaultPermission.value = readCodexDefaultPermission();
 codexDefaultPermission.addEventListener("change", () => {
   saveCodexDefaultPermission(codexDefaultPermission.value);
 });
+
+codexDefaultModel.addEventListener("change", () => {
+  try {
+    saveCodexPreference(CODEX_DEFAULT_MODEL_KEY, codexDefaultModel.value);
+    renderCodexReasoningLevels();
+    saveCodexPreference(CODEX_DEFAULT_REASONING_EFFORT_KEY, "");
+    codexSessionSettingsMessage.textContent =
+      "已保存，之后新建的 Session 将使用该模型与等级。";
+    codexSessionSettingsMessage.className = "message message-success";
+  } catch (_error) {
+    renderCodexModels(codexModels);
+    codexSessionSettingsMessage.textContent = "当前浏览器无法保存会话偏好。";
+    codexSessionSettingsMessage.className = "message message-error";
+  }
+});
+
+codexDefaultReasoningEffort.addEventListener("change", () => {
+  try {
+    saveCodexPreference(
+      CODEX_DEFAULT_REASONING_EFFORT_KEY,
+      codexDefaultReasoningEffort.value,
+    );
+    codexSessionSettingsMessage.textContent =
+      "已保存，之后新建的 Session 将使用该模型与等级。";
+    codexSessionSettingsMessage.className = "message message-success";
+  } catch (_error) {
+    renderCodexReasoningLevels(
+      readCodexPreference(CODEX_DEFAULT_REASONING_EFFORT_KEY),
+    );
+    codexSessionSettingsMessage.textContent = "当前浏览器无法保存会话偏好。";
+    codexSessionSettingsMessage.className = "message message-error";
+  }
+});
+
+loadCodexModels();
 
 cyberRainSpeed.value = String(readRangePreference(CYBER_RAIN_SPEED_KEY, 60));
 cyberRainBrightness.value = String(readRangePreference(CYBER_RAIN_BRIGHTNESS_KEY, 70));

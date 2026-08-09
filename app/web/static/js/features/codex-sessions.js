@@ -4,7 +4,17 @@ const CODEX_CARD_CACHE_KEY = "hub.codexCardCache";
 const CODEX_QUOTA_CACHE_KEY = "hub.codexQuotaCache";
 const CODEX_ENTRY_MODE_KEY = "hub.codexEntryMode.v1";
 const CODEX_DEFAULT_PERMISSION_KEY = "hub.codexDefaultPermission.v1";
+const CODEX_DEFAULT_MODEL_KEY = "hub.codexDefaultModel.v1";
+const CODEX_DEFAULT_REASONING_EFFORT_KEY = "hub.codexDefaultReasoningEffort.v1";
 const CODEX_QUOTA_REFRESH_MS = 5 * 60 * 1000;
+const CODEX_REASONING_LABELS = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra High",
+  max: "Max",
+  ultra: "Ultra",
+};
 const CODEX_PERMISSION_OPTIONS = [
   ["ask", "Ask for approval", "在当前工作区操作，越界时由你确认。"],
   ["auto-review", "Approve for me", "保持工作区边界，由 Codex 自动审核越界请求。"],
@@ -33,6 +43,7 @@ function createCodexCard() {
   const cardContentInner = document.createElement("div");
   const panel = document.createElement("div");
   const currentHint = document.createElement("p");
+  const modelPreference = document.createElement("p");
   const quota = document.createElement("p");
   const sessionsDivider = document.createElement("div");
   const sessionsDividerLabel = document.createElement("span");
@@ -74,6 +85,10 @@ function createCodexCard() {
   currentHint.className = "message";
   currentHint.id = "codex-message";
   currentHint.setAttribute("aria-live", "polite");
+  modelPreference.className = "codex-model-preference";
+  modelPreference.id = "codex-model-preference";
+  modelPreference.setAttribute("aria-live", "polite");
+  modelPreference.textContent = "新建默认：正在读取…";
   quota.className = "codex-quota";
   quota.id = "codex-quota";
   quota.setAttribute("aria-live", "polite");
@@ -123,6 +138,7 @@ function createCodexCard() {
   workspaceDialog.append(workspaceDialogSurface);
   panel.append(
     currentHint,
+    modelPreference,
     quota,
     sessionsDivider,
     sessionList,
@@ -136,6 +152,7 @@ function createCodexCard() {
   elements.codexPanel = panel;
   elements.codexWorkspaces = workspaceList;
   elements.codexMessage = currentHint;
+  elements.codexModelPreference = modelPreference;
   elements.codexQuota = quota;
   elements.codexSessions = sessionList;
   elements.codexSessionCount = sessionsDividerLabel;
@@ -144,7 +161,7 @@ function createCodexCard() {
   elements.codexWorkspaceDialog = workspaceDialog;
 
   refreshButton.addEventListener("click", () =>
-    loadCodexSessions({ refreshQuota: true }),
+    loadCodexSessions({ refreshModelPreference: true, refreshQuota: true }),
   );
   createButton.addEventListener("click", () => {
     if (!workspaceDialog.open) {
@@ -213,6 +230,31 @@ function readCodexDefaultPermission() {
       : "full-access";
   } catch (_error) {
     return "full-access";
+  }
+}
+
+function readCodexDefaultModel() {
+  try {
+    return localStorage.getItem(CODEX_DEFAULT_MODEL_KEY) || null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function readCodexDefaultReasoningEffort() {
+  try {
+    return localStorage.getItem(CODEX_DEFAULT_REASONING_EFFORT_KEY) || null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function clearCodexModelPreferences() {
+  try {
+    localStorage.removeItem(CODEX_DEFAULT_MODEL_KEY);
+    localStorage.removeItem(CODEX_DEFAULT_REASONING_EFFORT_KEY);
+  } catch (_error) {
+    // Session creation can still retry with defaults for this request.
   }
 }
 
@@ -513,6 +555,63 @@ function storeCodexCardCache(data) {
   }
 }
 
+function readCodexPreference(key) {
+  try {
+    return localStorage.getItem(key) || "";
+  } catch (_error) {
+    return "";
+  }
+}
+
+function codexReasoningLabel(effort) {
+  return CODEX_REASONING_LABELS[effort] || effort || "跟随模型默认";
+}
+
+function renderCodexModelPreference(data) {
+  if (!elements.codexModelPreference) {
+    return false;
+  }
+  const models = Array.isArray(data?.models) ? data.models : [];
+  const preferredModel = readCodexPreference(CODEX_DEFAULT_MODEL_KEY);
+  const preferredEffort = readCodexPreference(CODEX_DEFAULT_REASONING_EFFORT_KEY);
+  const selectedModelId = preferredModel || data?.default_model;
+  const model = models.find((item) => item?.id === selectedModelId);
+  if (!model || typeof model.name !== "string") {
+    elements.codexModelPreference.textContent = "新建默认：跟随 Codex 默认";
+    return false;
+  }
+  const levels = Array.isArray(model.levels) ? model.levels : [];
+  const selectedEffort = preferredModel
+    ? preferredEffort || model.default_level
+    : data?.default_reasoning_effort || model.default_level;
+  const effort = levels.some((level) => level?.id === selectedEffort)
+    ? selectedEffort
+    : model.default_level;
+  const modelAndEffort = `${model.name} · ${codexReasoningLabel(effort)}`;
+  elements.codexModelPreference.textContent = preferredModel
+    ? `新建默认：${modelAndEffort}`
+    : `新建默认：跟随 Codex 默认（${modelAndEffort}）`;
+  return true;
+}
+
+async function loadCodexModelPreference() {
+  if (!elements.codexModelPreference || !hasProtectedAccess()) {
+    return;
+  }
+  const requestVersion = accessVersion;
+  try {
+    const data = await apiFetch("/api/codex/models");
+    if (requestVersion === accessVersion) {
+      renderCodexModelPreference(data);
+    }
+  } catch (error) {
+    if (requestVersion === accessVersion && elements.codexModelPreference) {
+      elements.codexModelPreference.textContent = "新建默认：跟随 Codex 默认";
+      handleAccessError(error);
+    }
+  }
+}
+
 async function loadCodexQuota({ force = false } = {}) {
   if (!elements.codexQuota || !hasProtectedAccess()) {
     return;
@@ -589,17 +688,51 @@ async function createCodexSession(workspaceId, button) {
   });
   setCodexButtonBusy(button, true);
   beginCodexMutation();
+  let usedCodexDefaults = false;
   try {
-    await apiFetch("/api/codex/sessions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        workspace_id: workspaceId,
-        permission_mode: readCodexDefaultPermission(),
-      }),
-    });
+    const createRequest = (model, reasoningEffort) => apiFetch(
+      "/api/codex/sessions",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          workspace_id: workspaceId,
+          permission_mode: readCodexDefaultPermission(),
+          model,
+          reasoning_effort: reasoningEffort,
+        }),
+      },
+    );
+    const preferredModel = readCodexDefaultModel();
+    const preferredEffort = readCodexDefaultReasoningEffort();
+    try {
+      await createRequest(preferredModel, preferredEffort);
+    } catch (error) {
+      const preferenceErrors = new Set([
+        "codex_model_catalog_unavailable",
+        "codex_model_unavailable",
+        "codex_reasoning_effort_requires_model",
+        "codex_reasoning_effort_unsupported",
+      ]);
+      if (
+        (!preferredModel && !preferredEffort)
+        || !preferenceErrors.has(error.code)
+      ) {
+        throw error;
+      }
+      clearCodexModelPreferences();
+      await createRequest(null, null);
+      usedCodexDefaults = true;
+    }
     await loadCodexSessions({ force: true });
     elements.codexWorkspaceDialog?.close();
+    if (usedCodexDefaults) {
+      setMessage(
+        elements.codexMessage,
+        "原模型或等级当前不可用，已按 Codex 默认创建会话。",
+        "success",
+      );
+    }
   } catch (error) {
     if (!handleAccessError(error)) {
       setMessage(elements.codexMessage, error.message || "会话创建失败。", "error");
@@ -764,6 +897,7 @@ function endCodexMutation() {
 async function loadCodexSessions(options = {}) {
   const background = options?.background === true;
   const force = options?.force === true;
+  const refreshModelPreference = options?.refreshModelPreference === true;
   const refreshQuota = options?.refreshQuota === true;
   if (
     !elements.codexPanel ||
@@ -791,6 +925,13 @@ async function loadCodexSessions(options = {}) {
   const loadPromise = (async () => {
     try {
       if (!background) {
+        if (refreshModelPreference || !elements.codexModelPreference.dataset.loaded) {
+          void loadCodexModelPreference().finally(() => {
+            if (elements.codexModelPreference) {
+              elements.codexModelPreference.dataset.loaded = "true";
+            }
+          });
+        }
         void loadCodexQuota({ force: refreshQuota });
       }
       const data = await apiFetch("/api/codex/sessions");

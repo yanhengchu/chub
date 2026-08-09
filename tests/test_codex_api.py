@@ -7,6 +7,9 @@ import pytest
 
 from app.application import create_app
 from app.codex.models import (
+    CodexModelCatalogData,
+    CodexModelInfo,
+    CodexReasoningLevel,
     CodexQuotaData,
     CodexQuotaWindow,
     CodexSession,
@@ -94,7 +97,12 @@ async def test_create_session_uses_requested_permission_mode(settings: Settings)
         )
 
     assert response.status_code == 200
-    manager.create_session.assert_called_once_with("chub", "full-access")
+    manager.create_session.assert_called_once_with(
+        "chub",
+        "full-access",
+        None,
+        None,
+    )
 
 
 @pytest.mark.anyio
@@ -128,7 +136,96 @@ async def test_create_session_defaults_to_full_access(settings: Settings) -> Non
         )
 
     assert response.status_code == 200
-    manager.create_session.assert_called_once_with("chub", "full-access")
+    manager.create_session.assert_called_once_with(
+        "chub",
+        "full-access",
+        None,
+        None,
+    )
+
+
+@pytest.mark.anyio
+async def test_codex_model_catalog_is_protected_and_filtered_by_manager(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    manager = MagicMock()
+    manager.read_model_catalog.return_value = CodexModelCatalogData(
+        models=[
+            CodexModelInfo(
+                id="gpt-test",
+                name="GPT Test",
+                description="Test model",
+                default_level="medium",
+                levels=[CodexReasoningLevel(id="medium", description="Balanced")],
+            )
+        ],
+        default_model="gpt-test",
+        default_reasoning_effort="medium",
+    )
+    app.state.codex_pty_manager = manager
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        denied = await client.get("/api/codex/models")
+        response = await client.get(
+            "/api/codex/models",
+            headers=authorization(settings),
+        )
+
+    assert denied.status_code == 401
+    assert response.status_code == 200
+    assert response.json()["data"]["models"][0]["id"] == "gpt-test"
+    assert response.json()["data"]["default_model"] == "gpt-test"
+    assert response.json()["data"]["default_reasoning_effort"] == "medium"
+
+
+@pytest.mark.anyio
+async def test_create_session_uses_requested_model_and_reasoning_level(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    manager = MagicMock()
+    manager.create_session.return_value = SessionInfo(
+        id="session-1",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd="/workspace/chub",
+        title=None,
+        codex_session_id=None,
+        status="new",
+        activity="unknown",
+        permission_mode="full-access",
+        active_permission_mode=None,
+        permission_pending=False,
+        model="gpt-test",
+        reasoning_effort="high",
+        error=None,
+        created_at="2026-08-07T10:00:00Z",
+        updated_at="2026-08-07T10:00:00Z",
+    )
+    app.state.codex_pty_manager = manager
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/codex/sessions",
+            headers=authorization(settings),
+            json={
+                "workspace_id": "chub",
+                "permission_mode": "full-access",
+                "model": "gpt-test",
+                "reasoning_effort": "high",
+            },
+        )
+
+    assert response.status_code == 200
+    manager.create_session.assert_called_once_with(
+        "chub",
+        "full-access",
+        "gpt-test",
+        "high",
+    )
 
 
 @pytest.mark.anyio

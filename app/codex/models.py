@@ -32,6 +32,10 @@ class CodexSession(BaseModel):
     activity_source: ActivitySource = "none"
     permission_mode: PermissionMode = "ask"
     active_permission_mode: PermissionMode | None = None
+    model: str | None = Field(default=None, max_length=128)
+    reasoning_effort: str | None = Field(default=None, max_length=32)
+    active_model: str | None = Field(default=None, max_length=128)
+    active_reasoning_effort: str | None = Field(default=None, max_length=32)
     error: str | None = None
     ttyd_pid: int | None = None
     ttyd_port: int | None = None
@@ -78,6 +82,10 @@ class SessionInfo(BaseModel):
     permission_mode: PermissionMode
     active_permission_mode: PermissionMode | None
     permission_pending: bool
+    model: str | None = None
+    reasoning_effort: str | None = None
+    active_model: str | None = None
+    active_reasoning_effort: str | None = None
     error: str | None
     created_at: datetime
     updated_at: datetime
@@ -114,6 +122,27 @@ class SessionCreateRequest(BaseModel):
 
     workspace_id: Literal["home", "workspace", "chub"]
     permission_mode: PermissionMode = "full-access"
+    model: str | None = Field(default=None, max_length=128)
+    reasoning_effort: str | None = Field(default=None, max_length=32)
+
+
+class CodexReasoningLevel(BaseModel):
+    id: str
+    description: str
+
+
+class CodexModelInfo(BaseModel):
+    id: str
+    name: str
+    description: str
+    default_level: str | None
+    levels: list[CodexReasoningLevel]
+
+
+class CodexModelCatalogData(BaseModel):
+    models: list[CodexModelInfo]
+    default_model: str | None = None
+    default_reasoning_effort: str | None = None
 
 
 class SessionAccessData(BaseModel):
