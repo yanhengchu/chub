@@ -563,7 +563,7 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert 'permission_mode: readCodexDefaultPermission()' in script.text
     assert "archive.disabled = !session.codex_session_id" in script.text
     assert "|| quickInteractionRunning" in script.text
-    assert "|| llmInteractionRunning" in script.text
+    assert "llmInteractionRunning" not in script.text
     assert "codexLoadPromise" in script.text
     assert "CODEX_QUOTA_CACHE_KEY" in script.text
     assert "CODEX_QUOTA_REFRESH_MS = 5 * 60 * 1000" in script.text
@@ -669,14 +669,9 @@ async def test_quick_interaction_conversation_page_is_available(
     assert 'id="conversation-load-earlier"' in page.text
     assert 'id="conversation-jump-latest"' in page.text
     assert 'id="conversation-form"' in page.text
-    assert 'id="conversation-engine"' in page.text
-    assert 'id="conversation-more"' in page.text
-    assert 'data-engine="codex_cli" disabled' in page.text
-    assert 'id="conversation-more-panel"' in page.text
-    assert 'aria-hidden="true" inert' in page.text
-    assert "当前执行方式" in page.text
-    assert "点击右侧按钮切换" in page.text
-    assert 'id="conversation-submit" class="button-secondary" type="submit" disabled hidden' in page.text
+    assert 'id="conversation-engine"' not in page.text
+    assert 'id="conversation-more"' not in page.text
+    assert 'id="conversation-submit" class="button-secondary" type="submit" disabled' in page.text
     assert page.text.index("/static/quick_interactions_core.js") < page.text.index(
         "/static/quick_interaction_conversation.js"
     )
@@ -688,19 +683,13 @@ async def test_quick_interaction_conversation_page_is_available(
     assert "conversationPollDelay(conversationPollFailureCount)" in script.text
     assert "resizeConversationPrompt" in script.text
     assert "updateConversationComposerActions" in script.text
-    assert "setConversationMoreExpanded" in script.text
-    assert "conversationPrompt.value.trim().length > 0" in script.text
-    assert 'conversationMore.dataset.engine = conversationSelectedEngine' in script.text
-    assert 'conversationMorePanel.inert = !expanded' in script.text
-    assert 'restoreFocus: true' in script.text
-    assert '!conversationForm.contains(event.target)' in script.text
-    assert 'if (busy && conversationMorePanel.classList.contains("is-expanded"))' in script.text
-    assert 'window.addEventListener("pageshow", () => setConversationEngine("codex_cli"))' not in script.text
+    assert "setConversationMoreExpanded" not in script.text
+    assert "conversationSelectedEngine" not in script.text
     assert "isConversationNearBottom" in script.text
     assert 'event.key === "Enter"' in script.text
     assert "if (!conversationSubmit.disabled)" in script.text
     assert "canSubmitConversation" in script.text
-    assert "conversationEngine.disabled = true" in script.text
+    assert "conversationEngine" not in script.text
     assert "conversationScroll.scrollTop" in script.text
     assert "conversationClient.submitTask" in script.text
     assert 'pending: "待通知"' in script.text

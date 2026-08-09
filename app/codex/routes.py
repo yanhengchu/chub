@@ -48,16 +48,11 @@ def list_sessions(request: Request) -> ApiResponse[SessionListData]:
     quick_sessions: dict[str, datetime] = (
         request.app.state.quick_interactions.active_sessions()
     )
-    llm_sessions: dict[str, datetime] = (
-        request.app.state.quick_interactions.llm_active_sessions()
-    )
     sessions = [
         session.model_copy(
             update={
                 "quick_interaction_running": session.id in quick_sessions,
                 "quick_interaction_updated_at": quick_sessions.get(session.id),
-                "llm_interaction_running": session.id in llm_sessions,
-                "llm_interaction_updated_at": llm_sessions.get(session.id),
             }
         )
         for session in manager.list_sessions()
@@ -197,14 +192,6 @@ async def submit_quick_interaction(
     source_ip = request.client.host if request.client else "unknown"
     try:
         quick_interactions = request.app.state.quick_interactions
-        if payload.engine == "bedrock_api":
-            task = quick_interactions.submit_llm(
-                session_id,
-                payload.prompt,
-                operation_id=operation_id,
-                source_ip=source_ip,
-            )
-            return ApiResponse(data=QuickInteractionData(task=task))
         manager = request.app.state.codex_pty_manager
 
         def submit_codex():
@@ -266,11 +253,7 @@ async def submit_quick_interaction(
         if exc.code != "quick_interaction_terminal_confirmation_required":
             write_operation(
                 operation_id=operation_id,
-                action=(
-                    "bedrock_quick_interaction"
-                    if payload.engine == "bedrock_api"
-                    else "quick_interaction"
-                ),
+                action="quick_interaction",
                 status="failed",
                 target=session_id,
                 source_ip=source_ip,
@@ -279,11 +262,7 @@ async def submit_quick_interaction(
     except Exception:
         write_operation(
             operation_id=operation_id,
-            action=(
-                "bedrock_quick_interaction"
-                if payload.engine == "bedrock_api"
-                else "quick_interaction"
-            ),
+            action="quick_interaction",
             status="failed",
             target=session_id,
             source_ip=source_ip,

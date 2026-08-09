@@ -23,19 +23,7 @@
           <p id="conversation-submit-message" class="message" aria-live="polite"></p>
           <div class="conversation-input-row">
             <textarea id="conversation-prompt" rows="1" maxlength="8000" required placeholder="输入消息…" aria-label="快速交互需求" disabled></textarea>
-            <button id="conversation-more" class="button-secondary conversation-more" type="button" aria-label="更多设置，当前执行方式为 Codex CLI" aria-expanded="false" aria-controls="conversation-more-panel" data-engine="codex_cli" disabled>＋</button>
-          <button id="conversation-submit" class="button-secondary" type="submit" disabled hidden>发送</button>
-          </div>
-          <div id="conversation-more-panel" class="conversation-more-panel" aria-hidden="true" inert>
-            <div class="conversation-more-panel-inner">
-              <div class="conversation-more-setting">
-                <div>
-                  <strong>当前执行方式</strong>
-                  <span>点击右侧按钮切换</span>
-                </div>
-                <button id="conversation-engine" class="button-secondary conversation-engine" type="button" disabled>Codex CLI</button>
-              </div>
-            </div>
+            <button id="conversation-submit" class="button-secondary" type="submit" disabled>发送</button>
           </div>
         </form>
       </section>

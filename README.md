@@ -2,7 +2,7 @@
 
 Hub 是一个面向个人设备的轻量管理服务。
 
-第二阶段已于 2026-07-26 正式闭环：macOS 与 Ubuntu 基础节点能力、移动端 Web 管理页面、受控任务接口、Codex PTY 与快速交互、配置驱动自动化及前端 UI 模块化均已实现，并通过 Ubuntu、MacBook 和手机端验收。第三阶段首版也已闭环：OpenClaw 接入、微信 ClawBot 双向交互、OpenClaw/Chub 共享基础 LLM、受限 Chub 状态 Tool 和飞书群机器人 Webhook 单向通知均已实现，并在 MacBook 与 Ubuntu 完成核心链路验收。后续低风险状态变更能力由真实需求驱动，单独设计和验收，不作为第三阶段首版闭环条件。
+第二阶段已于 2026-07-26 正式闭环：macOS 与 Ubuntu 基础节点能力、移动端 Web 管理页面、受控任务接口、Codex PTY 与快速交互、配置驱动自动化及前端 UI 模块化均已实现，并通过 Ubuntu、MacBook 和手机端验收。第三阶段首版也已闭环：OpenClaw 接入、微信 ClawBot 双向交互、受限 Chub 状态 Tool 和飞书群机器人 Webhook 单向通知均已实现，并在 MacBook 与 Ubuntu 完成核心链路验收。后续低风险状态变更能力由真实需求驱动，单独设计和验收，不作为第三阶段首版闭环条件。
 
 ## 快速开始
 
@@ -32,7 +32,6 @@ cp config/settings.ubuntu.example.yaml config/settings.local.yaml
 - `HUB_TOKEN`：节点访问令牌。
 - `HUB_CONFIG_FILE`：默认 `config/settings.local.yaml`。
 - `security.allow_tailscale`：默认 `true`。当 `server.host` 为本机 Tailscale IP 时，来自同一 Tailnet 的真实连接可免 Hub Token；非 Tailscale 来源仍需 Token。不需要该能力时可显式设为 `false`。
-- `llm`：默认启用并从当前用户的 `~/.openclaw/openclaw.json` 只读加载模型配置和文件型 SecretRef。OpenClaw 只有一个 Provider/模型时自动选择；存在多个候选时需在 Chub 配置中指定 `provider` 和 `model`。
 - `app.page_title`：浏览器标签标题和首页顶部标题，可按节点设置，例如 `MacBook · Hub`、`Ubuntu · Hub` 或 `设备.hub`；省略时浏览器标签使用 `<app.name> 管理面板`，首页顶部使用 `app.name`。
 - `.env` 和 `config/settings.local.yaml` 都只保留本机内容，已加入 Git 忽略。
 
@@ -82,7 +81,7 @@ Chub 只负责新建会话的权限模式选择和会话生命周期；具体审
 
 Codex PTY 终端通过 WebSocket 持续传输输入和输出，依赖稳定的双向实时链路。Tailscale 跨网络访问时，即使首页和文档等普通 HTTP 页面可以正常打开，如果路径经过质量不稳定的 DERP 中继、存在较高抖动、丢包、MTU 问题或网络切换，仍可能出现 ttyd 页面外壳已加载但终端内容未显示、输入无响应或连接中断。这里的限制不只是带宽问题，链路稳定性和延迟同样重要。当前产品不提供基于轮询或终端快照的非实时降级模式，Codex PTY 应优先在稳定的 Tailscale 直连或可靠网络中使用。排查时查看浏览器网络面板中 `/codex/.../terminal/ws` 是否成功升级为 `101 Switching Protocols`，并结合应用日志中的 `terminal_websocket_*` 和 `terminal_http_*` 记录判断连接或上游 ttyd 是否失败。
 
-快速交互输入区可临时切换 `Codex CLI` 与 `Amazon Bedrock API`。选择只在当前页面有效，刷新、离开后重新进入或浏览器返回恢复页面时均默认回到 Codex CLI。Codex 模式沿用工作区、权限和实时终端互斥逻辑，并默认按完成效果、页面或交互变化、验证结果、验收方法及必要风险组织最终回复，避免向维护者展开无关代码细节；Bedrock 模式直接调用 Chub 基础 LLM，不读取工作区、不停止实时终端，也不修改 Codex Session activity。两种任务共用本机交互历史、置顶和分页，并在时间左侧保存实际执行来源；Bedrock 记录同时保存提交时的 Provider 与模型快照。快速交互历史会保存用户原始提交内容和最终结果，固定交付提示不写入任务正文，运行日志与操作日志也不记录正文。配置固定微信收件人后，任务成功、失败或超时会异步调用本机 `openclaw message send`，通过唯一运行中的 ClawBot 发送有界结果摘要；通知失败只单独显示，不改变任务最终状态。
+快速交互仅通过 `Codex CLI` 执行，沿用工作区、权限和实时终端互斥逻辑，并默认按完成效果、页面或交互变化、验证结果、验收方法及必要风险组织最终回复，避免向维护者展开无关代码细节。快速交互历史会保存用户原始提交内容和最终结果，固定交付提示不写入任务正文，运行日志与操作日志也不记录正文。配置固定微信收件人后，任务成功、失败或超时会异步调用本机 `openclaw message send`，通过唯一运行中的 ClawBot 发送有界结果摘要；通知失败只单独显示，不改变任务最终状态。
 
 Codex 快速交互允许长任务持续执行：运行超过 10 分钟时页面提示“执行时间较长，仍在运行”，不将其误判为超时。真正的执行上限由 `codex_pty.quick_interaction_timeout_seconds` 配置，默认 `21600` 秒（6 小时），允许范围为 10 分钟至 24 小时；达到上限后才会终止进程并记录为超时。修改该配置后需要重启 Chub 服务。
 
@@ -113,10 +112,6 @@ chub notification test --target test
 ```
 
 `test` 会真实发送固定测试消息。Chub 的 Codex 实时终端和快速交互 Codex 模式直接使用 `chub notification send --target <target> --message <text>`，不要再通过 `openclaw agent` 绕行；OpenClaw TUI 和微信入口使用 `chub_send_notification`。两种方式均可按需使用已配置人员别名或明确允许的 `@所有人`。
-
-## 基础 LLM
-
-Chub 提供独立的底层 LLM 模块，按数据模型、OpenClaw 配置源、`openai-completions` 传输和统一 Service 分层。它直接复用当前用户 OpenClaw 配置中的 Provider、模型和文件型 `singleValue` SecretRef，不复制或持久化 API Key，也不通过 OpenClaw Gateway 转发请求。配置和 Secret 在首次调用时懒加载，并按文件修改状态自动刷新；HTTP 客户端复用连接池，在 Chub 退出时关闭。首版只支持 `/chat/completions` 文本调用，默认最多并发 2 个请求、单次响应不超过 1 MiB；配置缺失、凭证权限不安全或模型不可用只会导致该次 LLM 调用失败，不阻止 Chub、Codex PTY 或自动化运行。当前仅通过快速交互页面提供固定 Bedrock 执行入口，不提供独立首页卡片或通用公共 LLM API。
 
 ## 自动化任务
 

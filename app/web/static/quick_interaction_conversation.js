@@ -4,7 +4,6 @@ const conversationSessionId = document.body.dataset.sessionId;
 const {
   canSubmit: canSubmitConversation,
   createClient: createConversationClient,
-  engineLabel: conversationEngineLabel,
   formatTime: formatConversationTime,
   isRetryableRequestError: isRetryableConversationError,
   pollDelay: conversationPollDelay,
@@ -21,9 +20,6 @@ const conversationClient = createConversationClient({
 });
 const conversationForm = document.querySelector("#conversation-form");
 const conversationPrompt = document.querySelector("#conversation-prompt");
-const conversationEngine = document.querySelector("#conversation-engine");
-const conversationMore = document.querySelector("#conversation-more");
-const conversationMorePanel = document.querySelector("#conversation-more-panel");
 const conversationSubmit = document.querySelector("#conversation-submit");
 const conversationSubmitMessage = document.querySelector("#conversation-submit-message");
 const conversationHistoryMessage = document.querySelector("#conversation-history-message");
@@ -43,9 +39,7 @@ let conversationHistoryExpanded = false;
 let conversationInitialized = false;
 let conversationActive = false;
 let conversationSession = null;
-let conversationSelectedEngine = "codex_cli";
 let conversationConfirmStopUnknownTerminal = false;
-let conversationKeepBottomAfterPanelTransition = false;
 
 function showConversationMessage(element, text, kind = "") {
   element.textContent = text;
@@ -63,9 +57,6 @@ function conversationTaskSignature(task) {
     task.result,
     task.error,
     task.pinned_at,
-    task.engine,
-    task.provider,
-    task.model,
     task.notification_status,
     task.notification_error,
     conversationStatusText(task),
@@ -129,7 +120,6 @@ function updateConversationTurn(turn, task) {
   const assistantContent = document.createElement("p");
   const assistantMeta = document.createElement("div");
   const assistantInfo = document.createElement("div");
-  const assistantEngine = createConversationMeta(conversationEngineLabel(task.engine));
   const assistantTime = createConversationMeta(formatConversationTime(task.updated_at));
   const notification = createConversationNotification(task);
   const pin = document.createElement("button");
@@ -137,7 +127,7 @@ function updateConversationTurn(turn, task) {
   assistantBubble.className = "conversation-bubble";
   assistantMeta.className = "conversation-assistant-meta";
   assistantInfo.className = "conversation-assistant-info";
-  assistantInfo.append(assistantEngine, assistantTime);
+  assistantInfo.append(assistantTime);
   if (task.result || task.error) {
     assistantContent.textContent = task.result || task.error;
   } else {
@@ -240,31 +230,7 @@ function resizeConversationPrompt() {
   }
 }
 
-function setConversationMoreExpanded(expanded, { restoreFocus = false } = {}) {
-  const keepAtBottom = isConversationNearBottom();
-  conversationMorePanel.classList.toggle("is-expanded", expanded);
-  conversationMorePanel.setAttribute("aria-hidden", String(!expanded));
-  conversationMorePanel.inert = !expanded;
-  conversationMore.setAttribute("aria-expanded", String(expanded));
-  conversationKeepBottomAfterPanelTransition = keepAtBottom;
-  if (!expanded && restoreFocus && !conversationMore.hidden && !conversationMore.disabled) {
-    conversationMore.focus();
-  }
-  if (keepAtBottom) {
-    window.requestAnimationFrame(() => {
-      conversationScroll.scrollTop = conversationScroll.scrollHeight;
-      updateConversationJumpLatest();
-    });
-  }
-}
-
 function updateConversationComposerActions() {
-  const hasPrompt = conversationPrompt.value.trim().length > 0;
-  conversationMore.hidden = hasPrompt;
-  conversationSubmit.hidden = !hasPrompt;
-  if (hasPrompt && conversationMorePanel.classList.contains("is-expanded")) {
-    setConversationMoreExpanded(false);
-  }
 }
 
 function mergeConversationTasks(tasks) {
@@ -296,34 +262,6 @@ async function setConversationPinned(task, button) {
   }
 }
 
-function setConversationEngine(engine) {
-  conversationSelectedEngine = engine === "bedrock_api" ? "bedrock_api" : "codex_cli";
-  const nextEngine = conversationSelectedEngine === "codex_cli"
-    ? "bedrock_api"
-    : "codex_cli";
-  conversationEngine.textContent = conversationEngineLabel(conversationSelectedEngine);
-  conversationEngine.title = `点击切换为${conversationEngineLabel(nextEngine)}`;
-  conversationEngine.setAttribute(
-    "aria-label",
-    `当前执行方式为${conversationEngineLabel(conversationSelectedEngine)}，点击切换为${conversationEngineLabel(nextEngine)}`,
-  );
-  conversationMore.setAttribute(
-    "aria-label",
-    `更多设置，当前执行方式为${conversationEngineLabel(conversationSelectedEngine)}`,
-  );
-  conversationMore.dataset.engine = conversationSelectedEngine;
-  conversationPrompt.placeholder = conversationSelectedEngine === "bedrock_api"
-    ? "输入要独立回答的问题…"
-    : "输入消息…";
-  conversationPrompt.maxLength = conversationSelectedEngine === "bedrock_api" ? 4000 : 8000;
-  if (conversationSubmitMessage.dataset.sessionLoadError !== "true") {
-    showConversationMessage(conversationSubmitMessage, "");
-  }
-  if (conversationSession) {
-    renderConversationSession(conversationSession);
-  }
-}
-
 function renderConversationSession(session) {
   conversationSession = session;
   if (conversationSubmitMessage.dataset.sessionLoadError === "true") {
@@ -335,23 +273,15 @@ function renderConversationSession(session) {
   const reason = conversationSubmissionBlockReason({
     session,
     activeInteraction: conversationActive,
-    engine: conversationSelectedEngine,
     promptLength: conversationPrompt.value.length,
   });
-  const busy = conversationActive
-    || session.quick_interaction_running === true
-    || session.llm_interaction_running === true;
-  if (busy && conversationMorePanel.classList.contains("is-expanded")) {
-    setConversationMoreExpanded(false);
-  }
+  const busy = conversationActive || session.quick_interaction_running === true;
   conversationForm.setAttribute("aria-busy", String(busy));
   conversationSubmit.disabled = Boolean(reason);
   conversationSubmit.textContent = conversationConfirmStopUnknownTerminal
     ? "确认发送"
     : "发送";
-  conversationMore.disabled = busy;
   conversationPrompt.disabled = busy;
-  conversationEngine.disabled = busy;
   if (reason && !busy) {
     showConversationMessage(conversationSubmitMessage, reason);
   } else if (busy || !conversationSubmitMessage.classList.contains("message-error")) {
@@ -361,9 +291,7 @@ function renderConversationSession(session) {
 
 function renderConversationSessionError(error) {
   conversationSubmit.disabled = true;
-  conversationMore.disabled = true;
   conversationPrompt.disabled = false;
-  conversationEngine.disabled = true;
   conversationForm.setAttribute("aria-busy", "false");
   conversationSubmitMessage.dataset.sessionLoadError = "true";
   showConversationMessage(
@@ -493,39 +421,6 @@ function loadEarlierConversation() {
   });
 }
 
-conversationEngine.addEventListener("click", () => {
-  setConversationEngine(
-    conversationSelectedEngine === "codex_cli" ? "bedrock_api" : "codex_cli",
-  );
-  setConversationMoreExpanded(false, { restoreFocus: true });
-});
-
-conversationMore.addEventListener("click", () => {
-  setConversationMoreExpanded(
-    !conversationMorePanel.classList.contains("is-expanded"),
-  );
-});
-
-conversationMorePanel.addEventListener("transitionend", (event) => {
-  if (event.propertyName !== "grid-template-rows") {
-    return;
-  }
-  if (conversationKeepBottomAfterPanelTransition) {
-    conversationScroll.scrollTop = conversationScroll.scrollHeight;
-    updateConversationJumpLatest();
-  }
-  conversationKeepBottomAfterPanelTransition = false;
-});
-
-document.addEventListener("click", (event) => {
-  if (
-    conversationMorePanel.classList.contains("is-expanded")
-    && !conversationForm.contains(event.target)
-  ) {
-    setConversationMoreExpanded(false);
-  }
-});
-
 conversationPrompt.addEventListener("input", () => {
   resizeConversationPrompt();
   updateConversationComposerActions();
@@ -549,7 +444,6 @@ conversationForm.addEventListener("submit", async (event) => {
   const reason = conversationSubmissionBlockReason({
     session: conversationSession,
     activeInteraction: conversationActive,
-    engine: conversationSelectedEngine,
     promptLength: conversationPrompt.value.length,
   });
   if (!canSubmitConversation({
@@ -561,18 +455,10 @@ conversationForm.addEventListener("submit", async (event) => {
   }
   conversationSubmit.disabled = true;
   conversationPrompt.disabled = true;
-  conversationMore.disabled = true;
-  conversationEngine.disabled = true;
-  if (conversationMorePanel.classList.contains("is-expanded")) {
-    setConversationMoreExpanded(false);
-  }
   try {
     const data = await conversationClient.submitTask({
       prompt: value,
-      engine: conversationSelectedEngine,
-      confirmStopUnknownTerminal:
-        conversationSelectedEngine === "codex_cli"
-        && conversationConfirmStopUnknownTerminal,
+      confirmStopUnknownTerminal: conversationConfirmStopUnknownTerminal,
     });
     conversationPrompt.value = "";
     resizeConversationPrompt();
@@ -586,8 +472,7 @@ conversationForm.addEventListener("submit", async (event) => {
     await loadConversation();
   } catch (error) {
     if (
-      conversationSelectedEngine === "codex_cli"
-      && error.code === "quick_interaction_terminal_confirmation_required"
+      error.code === "quick_interaction_terminal_confirmation_required"
     ) {
       conversationConfirmStopUnknownTerminal = true;
       showConversationMessage(
@@ -624,7 +509,6 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 
-setConversationEngine("codex_cli");
 resizeConversationPrompt();
 updateConversationComposerActions();
 loadConversation();

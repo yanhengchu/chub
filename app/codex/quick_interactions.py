@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
@@ -20,7 +19,6 @@ from app.codex.models import (
     utc_now,
 )
 from app.core.response import ApiError
-from app.llm import LlmConfigurationError, LlmRequestError, LlmService
 from app.services.log_reader import redact_log_line
 from app.services.operation_log import write_operation
 
@@ -30,11 +28,6 @@ MAX_EVENT_BYTES = 1_000_000
 MAX_STORED_TASKS = 30
 MAX_SESSION_TITLE_LENGTH = 48
 LOGGER = logging.getLogger("hub.codex.quick_interactions")
-BEDROCK_SYSTEM_PROMPT = (
-    "你是 Chub 的轻量 AI 助手。请使用用户输入的语言准确、简洁地回答。"
-    "回答应优先给出结论、影响和可执行建议，不展开与用户目标无关的技术细节。"
-    "你没有读取工作区、执行命令或修改设备的能力，不得声称已经执行任何操作。"
-)
 CODEX_QUICK_INTERACTION_INSTRUCTIONS = (
     "[Chub 快速交互交付要求]\n"
     "完成后请面向项目维护者汇报产品结果，重点说明完成效果、页面或交互变化、"
@@ -50,7 +43,6 @@ class QuickInteractionManager:
         data_file: Path,
         runtime_dir: Path,
         codex_manager,
-        llm_service: LlmService | None = None,
         completion_notifier: Callable[[QuickInteractionTask], object] | None = None,
         *,
         timeout_seconds: int = 6 * 60 * 60,
@@ -58,20 +50,17 @@ class QuickInteractionManager:
         self.path = data_file.with_name("quick-interactions.json")
         self.result_dir = runtime_dir / "quick-interactions"
         self.codex_manager = codex_manager
-        self.llm_service = llm_service
         self.completion_notifier = completion_notifier
         self.timeout_seconds = timeout_seconds
         self._lock = threading.RLock()
         self._tasks: dict[str, QuickInteractionTask] = {}
         self._running_sessions: set[str] = set()
-        self._running_llm_sessions: set[str] = set()
         self._active_task_ids: set[str] = set()
         self._cancelled_task_ids: set[str] = set()
         self._task_done_events: dict[str, threading.Event] = {}
         self._session_locks: dict[str, threading.RLock] = {}
         self._processes: dict[str, subprocess.Popen[bytes]] = {}
         self._operations: dict[str, tuple[str, str]] = {}
-        self._llm_tasks: dict[str, asyncio.Task[None]] = {}
         recovered_sessions, recovered_tasks = self._load()
         if recovered_tasks:
             self._write()
@@ -108,8 +97,7 @@ class QuickInteractionManager:
                 task.status = "failed"
                 task.error = "服务重启时任务未完成。"
                 task.updated_at = utc_now()
-                if task.engine == "codex_cli":
-                    recovered_sessions.add(task.session_id)
+                recovered_sessions.add(task.session_id)
             if task.notification_status in {"pending", "sending"}:
                 recovered_tasks = True
                 task.notification_status = "failed"
@@ -160,7 +148,6 @@ class QuickInteractionManager:
                 task = QuickInteractionTask(
                     id=str(uuid.uuid4()),
                     session_id=session_id,
-                    engine="codex_cli",
                     prompt=prompt,
                     status="requested",
                     created_at=utc_now(),
@@ -176,50 +163,8 @@ class QuickInteractionManager:
         threading.Thread(target=self._run, args=(task.id, session, prompt), daemon=True).start()
         return task
 
-    def submit_llm(
-        self,
-        session_id: str,
-        prompt: str,
-        *,
-        operation_id: str,
-        source_ip: str,
-    ) -> QuickInteractionTask:
-        if self.llm_service is None:
-            raise ApiError(503, "llm_unavailable", "Amazon Bedrock API 当前不可用。")
-        with self._session_lock(session_id):
-            self.codex_manager.get_session(session_id)
-            with self._lock:
-                if self._any_running(session_id):
-                    raise ApiError(
-                        409,
-                        "quick_interaction_in_progress",
-                        "该会话已有快速交互任务正在执行。",
-                    )
-                task = QuickInteractionTask(
-                    id=str(uuid.uuid4()),
-                    session_id=session_id,
-                    engine="bedrock_api",
-                    prompt=prompt,
-                    status="requested",
-                    created_at=utc_now(),
-                    updated_at=utc_now(),
-                )
-                self._tasks[task.id] = task
-                self._running_llm_sessions.add(session_id)
-                self._active_task_ids.add(task.id)
-                self._operations[task.id] = (operation_id, source_ip)
-                self._write()
-        self._log_status(task.id, "requested", session_id)
-        runner = asyncio.create_task(self._run_llm(task.id, prompt))
-        with self._lock:
-            self._llm_tasks[task.id] = runner
-        return task
-
     def _any_running(self, session_id: str) -> bool:
-        return (
-            session_id in self._running_sessions
-            or session_id in self._running_llm_sessions
-        )
+        return session_id in self._running_sessions
 
     def _session_lock(self, session_id: str) -> threading.RLock:
         with self._lock:
@@ -355,22 +300,6 @@ class QuickInteractionManager:
                 for session_id in active
             }
 
-    def llm_active_sessions(self) -> dict[str, datetime]:
-        with self._lock:
-            active = set(self._running_llm_sessions)
-            return {
-                session_id: max(
-                    (
-                        task.updated_at
-                        for task in self._tasks.values()
-                        if task.session_id == session_id
-                        and task.engine == "bedrock_api"
-                    ),
-                    default=utc_now(),
-                )
-                for session_id in active
-            }
-
     def is_running(self, session_id: str) -> bool:
         with self._lock:
             return session_id in self._running_sessions
@@ -385,7 +314,6 @@ class QuickInteractionManager:
                         for item in self._tasks.values()
                         if item.session_id == session_id
                         and item.id in self._active_task_ids
-                        and item.engine == "codex_cli"
                     ),
                     None,
                 )
@@ -536,58 +464,6 @@ class QuickInteractionManager:
                         exc_info=True,
                     )
 
-    async def _run_llm(self, task_id: str, prompt: str) -> None:
-        with self._lock:
-            task = self._tasks[task_id]
-            task.status = "running"
-            task.updated_at = utc_now()
-            self._write()
-        self._log_status(task_id, "started", task.session_id)
-        try:
-            if self.llm_service is None:
-                raise LlmConfigurationError("Amazon Bedrock API 当前不可用。")
-            completion = await self.llm_service.complete(
-                prompt,
-                system_prompt=BEDROCK_SYSTEM_PROMPT,
-            )
-            self._finish(
-                task_id,
-                "succeeded",
-                self._limit_text(completion.content, MAX_RESULT_BYTES),
-                provider=completion.provider,
-                model=completion.model,
-            )
-        except asyncio.CancelledError:
-            self._finish(task_id, "failed", "服务停止时任务未完成。")
-            raise
-        except LlmRequestError as exc:
-            self._finish(
-                task_id,
-                "timed_out" if exc.code == "timeout" else "failed",
-                str(exc),
-            )
-        except LlmConfigurationError as exc:
-            self._finish(task_id, "failed", str(exc))
-        except Exception:
-            LOGGER.warning("Bedrock quick interaction failed", exc_info=True)
-            self._finish(task_id, "failed", "Amazon Bedrock API 调用失败。")
-        finally:
-            finished = self.get(task_id)
-            with self._lock:
-                self._running_llm_sessions.discard(finished.session_id)
-                self._active_task_ids.discard(task_id)
-                self._llm_tasks.pop(task_id, None)
-            self._log_status(task_id, finished.status, finished.session_id)
-            with self._lock:
-                self._operations.pop(task_id, None)
-                try:
-                    self._write()
-                except OSError:
-                    LOGGER.warning(
-                        "Unable to prune persisted Bedrock interaction history",
-                        exc_info=True,
-                    )
-
     @staticmethod
     def _codex_execution_prompt(prompt: str) -> str:
         return f"[用户需求]\n{prompt}\n\n{CODEX_QUICK_INTERACTION_INSTRUCTIONS}"
@@ -676,9 +552,6 @@ class QuickInteractionManager:
         task_id: str,
         status: str,
         result: str,
-        *,
-        provider: str | None = None,
-        model: str | None = None,
     ) -> None:
         notification_operation: tuple[str, str] | None = None
         with self._lock:
@@ -688,10 +561,6 @@ class QuickInteractionManager:
                 task.result = result
             else:
                 task.error = result
-            if provider is not None:
-                task.provider = provider[:200]
-            if model is not None:
-                task.model = model[:500]
             task.updated_at = utc_now()
             if (
                 self.completion_notifier is not None
@@ -777,11 +646,7 @@ class QuickInteractionManager:
         operation_id, source_ip = operation
         write_operation(
             operation_id=operation_id,
-            action=(
-                "bedrock_quick_interaction"
-                if task is not None and task.engine == "bedrock_api"
-                else "quick_interaction"
-            ),
+            action="quick_interaction",
             status=status,
             target=target,
             source_ip=source_ip,
@@ -794,12 +659,6 @@ class QuickInteractionManager:
             self._kill_process(process)
 
     async def aclose(self) -> None:
-        with self._lock:
-            llm_tasks = list(self._llm_tasks.values())
-        for task in llm_tasks:
-            task.cancel()
-        if llm_tasks:
-            await asyncio.gather(*llm_tasks, return_exceptions=True)
         self.close()
 
     @staticmethod

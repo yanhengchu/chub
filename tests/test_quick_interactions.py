@@ -1,29 +1,22 @@
 import json
-import asyncio
 import threading
 import stat
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
 from app.codex.models import CodexSession, QuickInteractionTask, utc_now
 from app.codex.quick_interactions import (
-    BEDROCK_SYSTEM_PROMPT,
     CODEX_QUICK_INTERACTION_INSTRUCTIONS,
     QuickInteractionManager,
 )
 from app.core.response import ApiError
-from app.llm import LlmCompletion
 
 
-def manager(
-    tmp_path: Path,
-    llm_service=None,
-    completion_notifier=None,
-) -> QuickInteractionManager:
+def manager(tmp_path: Path, completion_notifier=None) -> QuickInteractionManager:
     codex_manager = MagicMock()
     codex_manager.get_session.return_value = CodexSession(
         id="session-1",
@@ -39,7 +32,6 @@ def manager(
         tmp_path / "codex-sessions.json",
         tmp_path / "runtime",
         codex_manager,
-        llm_service,
         completion_notifier,
     )
 
@@ -284,33 +276,6 @@ def test_restart_marks_incomplete_notification_failed(tmp_path: Path) -> None:
     assert recovered.status == "succeeded"
     assert recovered.notification_status == "failed"
     assert recovered.notification_error == "服务重启时微信通知未完成。"
-
-
-def test_restart_does_not_recover_bedrock_task_as_codex_activity(
-    tmp_path: Path,
-) -> None:
-    state = tmp_path / "quick-interactions.json"
-    task = QuickInteractionTask(
-        id="task-1",
-        session_id="session-1",
-        engine="bedrock_api",
-        prompt="检查状态",
-        status="running",
-        created_at=utc_now(),
-        updated_at=utc_now(),
-    )
-    state.write_text(
-        json.dumps([task.model_dump(mode="json")]),
-        encoding="utf-8",
-    )
-
-    quick_interactions = manager(tmp_path)
-
-    assert quick_interactions.get("task-1").status == "failed"
-    quick_interactions.codex_manager.recover_interrupted_quick_interaction.assert_not_called()
-    persisted = json.loads(state.read_text(encoding="utf-8"))
-    assert persisted[0]["status"] == "failed"
-    assert persisted[0]["error"] == "服务重启时任务未完成。"
 
 
 def test_list_for_session_returns_latest_first(tmp_path: Path) -> None:
@@ -834,81 +799,3 @@ def test_cancel_codex_session_kills_process_and_waits_for_cleanup(
 
     kill.assert_called_once_with(process)
     assert task.id in quick_interactions._cancelled_task_ids
-
-
-@pytest.mark.anyio
-async def test_bedrock_interaction_records_model_without_blocking_terminal(
-    tmp_path: Path,
-) -> None:
-    llm_service = MagicMock()
-    llm_service.complete = AsyncMock(
-        return_value=LlmCompletion(
-            content="回答完成",
-            provider="brclient",
-            model="amazon.nova-pro",
-        )
-    )
-    quick_interactions = manager(tmp_path, llm_service)
-
-    task = quick_interactions.submit_llm(
-        "session-1",
-        "解释状态",
-        operation_id="operation-1",
-        source_ip="127.0.0.1",
-    )
-    runner = quick_interactions._llm_tasks[task.id]
-    with quick_interactions.terminal_input_guard("session-1") as allowed:
-        assert allowed is True
-    await runner
-
-    finished = quick_interactions.get(task.id)
-    assert finished.status == "succeeded"
-    assert finished.engine == "bedrock_api"
-    assert finished.result == "回答完成"
-    assert finished.provider == "brclient"
-    assert finished.model == "amazon.nova-pro"
-    llm_service.complete.assert_awaited_once_with(
-        "解释状态",
-        system_prompt=BEDROCK_SYSTEM_PROMPT,
-    )
-    quick_interactions.codex_manager.set_activity.assert_not_called()
-
-
-@pytest.mark.anyio
-async def test_bedrock_interaction_blocks_destructive_operations_only(
-    tmp_path: Path,
-) -> None:
-    started = asyncio.Event()
-    release = asyncio.Event()
-    llm_service = MagicMock()
-
-    async def complete(*_args, **_kwargs):
-        started.set()
-        await release.wait()
-        return LlmCompletion(
-            content="完成",
-            provider="brclient",
-            model="amazon.nova-pro",
-        )
-
-    llm_service.complete = complete
-    quick_interactions = manager(tmp_path, llm_service)
-    task = quick_interactions.submit_llm(
-        "session-1",
-        "解释状态",
-        operation_id="operation-1",
-        source_ip="127.0.0.1",
-    )
-    await started.wait()
-
-    with quick_interactions.terminal_access_guard("session-1"):
-        pass
-    with quick_interactions.session_operation_guard("session-1"):
-        pass
-    with pytest.raises(ApiError) as error:
-        with quick_interactions.destructive_operation_guard("session-1"):
-            pass
-
-    assert error.value.code == "quick_interaction_in_progress"
-    release.set()
-    await quick_interactions._llm_tasks[task.id]

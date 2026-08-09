@@ -42,7 +42,6 @@ from app.core.response import (
 )
 from app.services.openclaw import OpenClawManager
 from app.services.openclaw_completion_notifications import OpenClawCompletionNotifier
-from app.llm import LlmService
 from app.notifications import NotificationService
 from app.web.routes import STATIC_DIR, router as web_router
 
@@ -128,7 +127,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     codex_pty_manager = CodexPtyManager(resolved_settings)
     codex_rate_limits = CodexRateLimitService()
-    llm_service = LlmService(resolved_settings.llm)
     completion_notifier = OpenClawCompletionNotifier(
         resolved_settings.openclaw.quick_interaction_completion
     )
@@ -136,7 +134,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         resolved_settings.codex_pty.data_file,
         resolved_settings.codex_pty.runtime_dir,
         codex_pty_manager,
-        llm_service,
         completion_notifier.notify,
         timeout_seconds=resolved_settings.codex_pty.quick_interaction_timeout_seconds,
     )
@@ -150,7 +147,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             yield
         finally:
             await quick_interactions.aclose()
-            await llm_service.close()
             await notification_service.close()
             codex_pty_manager.close()
             openclaw_manager.close()
@@ -176,7 +172,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.terminal_connections = TerminalConnectionRegistry()
     application.state.automation_manager = AutomationManager(resolved_settings)
     application.state.openclaw_manager = openclaw_manager
-    application.state.llm_service = llm_service
     application.state.notification_service = notification_service
     application.add_middleware(SecurityHeadersMiddleware)
     application.add_exception_handler(ApiError, api_error_handler)

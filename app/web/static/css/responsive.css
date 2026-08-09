@@ -136,13 +136,6 @@
     content: none;
   }
 
-  .conversation-engine {
-    min-width: 0;
-    margin-right: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
   .openclaw-actions {
     flex-wrap: wrap;
   }

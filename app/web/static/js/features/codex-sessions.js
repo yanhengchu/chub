@@ -277,7 +277,6 @@ function renderCodexSessions(sessions) {
 
   sessions.forEach((session) => {
     const quickInteractionRunning = session.quick_interaction_running === true;
-    const llmInteractionRunning = session.llm_interaction_running === true;
     const sessionRunning = session.status === "running"
       || quickInteractionRunning
       || session.activity === "working";
@@ -300,8 +299,6 @@ function renderCodexSessions(sessions) {
     title.title = title.textContent;
     const state = quickInteractionRunning
       ? "快速交互 · 执行中"
-      : llmInteractionRunning
-        ? "Amazon Bedrock API · 回答中"
       : session.activity === "working"
         ? activitySource === "quick"
           ? "快速交互 · 执行中"
@@ -322,8 +319,6 @@ function renderCodexSessions(sessions) {
       `${formatSessionTime(
         quickInteractionRunning
           ? session.quick_interaction_updated_at
-          : llmInteractionRunning
-            ? session.llm_interaction_updated_at
           : session.updated_at,
       )}`;
     meta.className = "session-meta";
@@ -361,12 +356,9 @@ function renderCodexSessions(sessions) {
     archive.className = "button-secondary session-action";
     archive.textContent = "归档";
     archive.disabled = !session.codex_session_id
-      || quickInteractionRunning
-      || llmInteractionRunning;
-    if (quickInteractionRunning || llmInteractionRunning) {
-      archive.title = llmInteractionRunning
-        ? "Amazon Bedrock API 正在回答"
-        : "快速交互正在执行";
+      || quickInteractionRunning;
+    if (quickInteractionRunning) {
+      archive.title = "快速交互正在执行";
     }
     archive.addEventListener("click", () =>
       archiveCodexSession(session.id, archive),
@@ -386,9 +378,7 @@ function codexSessionsSignature(sessions) {
       session.activity,
       session.activity_source,
       session.quick_interaction_running,
-      session.llm_interaction_running,
       session.quick_interaction_updated_at,
-      session.llm_interaction_updated_at,
       session.updated_at,
       session.title,
       session.cwd,

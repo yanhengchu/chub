@@ -53,10 +53,6 @@
     }[task.status] || task.status;
   }
 
-  function engineLabel(engine) {
-    return engine === "bedrock_api" ? "Amazon Bedrock API" : "Codex CLI";
-  }
-
   function canSubmit({ prompt, session, blocked }) {
     return Boolean(prompt.trim() && session && !blocked);
   }
@@ -88,7 +84,6 @@
   function submissionBlockReason({
     session,
     activeInteraction,
-    engine,
     promptLength,
   }) {
     if (!session) {
@@ -96,11 +91,6 @@
     }
     if (activeInteraction) {
       return "当前快速交互正在执行，请等待任务结束。";
-    }
-    if (engine === "bedrock_api") {
-      return promptLength > 4000
-        ? "Amazon Bedrock API 单次最多支持 4000 个字符。"
-        : "";
     }
     if (session.status === "error") {
       return "会话当前异常，请先通过实时终端重试。";
@@ -150,7 +140,6 @@
       || activeInteraction
       || notificationPending
       || session?.quick_interaction_running === true
-      || session?.llm_interaction_running === true
       || session?.activity === "working"
       || (session?.status === "running" && session.activity === "unknown")
     );
@@ -193,7 +182,7 @@
         );
       },
 
-      submitTask({ prompt, engine, confirmStopUnknownTerminal = false }) {
+      submitTask({ prompt, confirmStopUnknownTerminal = false }) {
         return request(
           token,
           `/api/codex/sessions/${encodedSessionId}/quick-interactions`,
@@ -202,7 +191,6 @@
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               prompt,
-              engine,
               confirm_stop_unknown_terminal: confirmStopUnknownTerminal,
             }),
           },
@@ -227,7 +215,6 @@
   const quickInteractionCore = Object.freeze({
     canSubmit,
     createClient,
-    engineLabel,
     formatTime,
     isRetryableRequestError,
     pollDelay,

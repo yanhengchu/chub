@@ -193,7 +193,6 @@ async def test_codex_session_list_includes_active_quick_interaction(
     quick_interactions.active_sessions.return_value = {
         "session-1": datetime(2026, 7, 24, 10, 2, tzinfo=UTC)
     }
-    quick_interactions.llm_active_sessions.return_value = {}
     app.state.codex_pty_manager = manager
     app.state.quick_interactions = quick_interactions
     transport = httpx.ASGITransport(app=app)
@@ -207,55 +206,6 @@ async def test_codex_session_list_includes_active_quick_interaction(
     session = response.json()["data"]["sessions"][0]
     assert session["quick_interaction_running"] is True
     assert session["quick_interaction_updated_at"] == "2026-07-24T10:02:00Z"
-
-
-@pytest.mark.anyio
-async def test_codex_session_list_exposes_bedrock_activity_separately(
-    settings: Settings,
-) -> None:
-    app = create_app(settings)
-    manager = MagicMock()
-    manager.available.return_value = True
-    manager.unavailable_reason.return_value = None
-    manager.dependencies.return_value = {"codex": True, "ttyd": True, "tmux": True}
-    manager.workspaces.return_value = []
-    manager.list_sessions.return_value = [
-        SessionInfo(
-            id="session-1",
-            workspace_id="chub",
-            workspace_name="Chub",
-            cwd="/workspace/chub",
-            title=None,
-            codex_session_id="codex-session-1",
-            status="running",
-            activity="idle",
-            permission_mode="auto-review",
-            active_permission_mode="auto-review",
-            permission_pending=False,
-            error=None,
-            created_at="2026-07-24T10:00:00Z",
-            updated_at="2026-07-24T10:01:00Z",
-        )
-    ]
-    quick_interactions = MagicMock()
-    quick_interactions.active_sessions.return_value = {}
-    quick_interactions.llm_active_sessions.return_value = {
-        "session-1": datetime(2026, 7, 24, 10, 3, tzinfo=UTC)
-    }
-    app.state.codex_pty_manager = manager
-    app.state.quick_interactions = quick_interactions
-    transport = httpx.ASGITransport(app=app)
-
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get(
-            "/api/codex/sessions",
-            headers=authorization(settings),
-        )
-
-    session = response.json()["data"]["sessions"][0]
-    assert session["quick_interaction_running"] is False
-    assert session["llm_interaction_running"] is True
-    assert session["llm_interaction_updated_at"] == "2026-07-24T10:03:00Z"
 
 
 def quick_task() -> QuickInteractionTask:
@@ -305,56 +255,6 @@ async def test_quick_interaction_keeps_idle_unconnected_terminal_running(
     manager.stop_session.assert_not_called()
     app.state.terminal_connections.close_session.assert_not_called()
     quick_interactions.submit.assert_called_once()
-
-
-@pytest.mark.anyio
-async def test_bedrock_quick_interaction_bypasses_codex_terminal_logic(
-    settings: Settings,
-) -> None:
-    app = create_app(settings)
-    manager = MagicMock()
-    quick_interactions = MagicMock()
-    quick_interactions.submit_llm.return_value = quick_task().model_copy(
-        update={"engine": "bedrock_api"}
-    )
-    app.state.codex_pty_manager = manager
-    app.state.quick_interactions = quick_interactions
-    app.state.terminal_tickets = MagicMock()
-    app.state.terminal_connections = MagicMock()
-    transport = httpx.ASGITransport(app=app)
-
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.post(
-            "/api/codex/sessions/session-1/quick-interactions",
-            headers=authorization(settings),
-            json={"prompt": "解释状态", "engine": "bedrock_api"},
-        )
-
-    assert response.status_code == 200
-    assert response.json()["data"]["task"]["engine"] == "bedrock_api"
-    quick_interactions.submit_llm.assert_called_once()
-    quick_interactions.session_operation_guard.assert_not_called()
-    manager.get_session.assert_not_called()
-    manager.stop_session.assert_not_called()
-    app.state.terminal_tickets.revoke_session.assert_not_called()
-    app.state.terminal_connections.close_session.assert_not_called()
-
-
-@pytest.mark.anyio
-async def test_bedrock_quick_interaction_limits_prompt_length(
-    settings: Settings,
-) -> None:
-    app = create_app(settings)
-    transport = httpx.ASGITransport(app=app)
-
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.post(
-            "/api/codex/sessions/session-1/quick-interactions",
-            headers=authorization(settings),
-            json={"prompt": "x" * 4001, "engine": "bedrock_api"},
-        )
-
-    assert response.status_code == 422
 
 
 @pytest.mark.anyio

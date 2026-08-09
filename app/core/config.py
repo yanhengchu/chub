@@ -100,18 +100,6 @@ class ProjectDocumentsConfig(StrictModel):
     state_file: Path = Path("data/state/project-documents.json")
 
 
-class LlmConfig(StrictModel):
-    enabled: bool = True
-    config_source: Literal["openclaw"] = "openclaw"
-    openclaw_config_file: Path = Path("~/.openclaw/openclaw.json")
-    provider: str | None = Field(default=None, min_length=1)
-    model: str | None = Field(default=None, min_length=1)
-    timeout_seconds: float = Field(default=30, ge=1, le=120)
-    max_tokens: int = Field(default=512, ge=1, le=8192)
-    max_concurrency: int = Field(default=2, ge=1, le=10)
-    max_response_bytes: int = Field(default=1024 * 1024, ge=1024, le=8 * 1024 * 1024)
-
-
 class NotificationsConfig(StrictModel):
     enabled: bool = True
     registry_file: Path = Path("~/.config/chub/notifications/registry.yaml")
@@ -156,7 +144,6 @@ class Settings(StrictModel):
     codex_pty: CodexPtyConfig = CodexPtyConfig()
     automations: AutomationsConfig = AutomationsConfig()
     project_documents: ProjectDocumentsConfig = ProjectDocumentsConfig()
-    llm: LlmConfig = LlmConfig()
     notifications: NotificationsConfig = NotificationsConfig()
     openclaw: OpenClawConfig = OpenClawConfig()
 
@@ -203,9 +190,6 @@ class Settings(StrictModel):
             self.project_documents.state_file = (
                 PROJECT_ROOT / self.project_documents.state_file
             )
-        self.llm.openclaw_config_file = (
-            self.llm.openclaw_config_file.expanduser().resolve()
-        )
         self.notifications.registry_file = (
             self.notifications.registry_file.expanduser().resolve()
         )

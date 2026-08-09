@@ -1,13 +1,13 @@
 # Chub 第三阶段高层计划
 
-> 状态：第三阶段首版已闭环并进入持续维护。OpenClaw、微信 ClawBot、外部模型、Chub 基础 LLM、权限基线、Chub 状态 Tool 和飞书通知基础能力已完成 MacBook、Ubuntu 核心链路验收。低风险状态变更能力、指定人员提醒和连续电脑交互均由后续真实需求驱动，不作为首版闭环条件。
+> 状态：第三阶段首版已闭环并进入持续维护。OpenClaw、微信 ClawBot、权限基线、Chub 状态 Tool 和飞书通知基础能力已完成 MacBook、Ubuntu 核心链路验收。BRClient 关停后，Chub 基础 LLM 与 Bedrock 快速交互入口已移除。低风险状态变更能力、指定人员提醒和连续电脑交互均由后续真实需求驱动，不作为首版闭环条件。
 
 ## 1. M1：边界与场景设计
 
-- [x] 确认第三阶段三条核心主线：OpenClaw、飞书单向通知与微信双向交互、OpenClaw/Chub 共享基础 LLM。
+- [x] 确认第三阶段核心主线：OpenClaw、飞书单向通知与微信双向交互。
 - [x] 完成 OpenClaw 与 Chub 关系的前置调研。
-- [x] 形成 OpenClaw、微信双通道、共享基础 LLM 与 Chub 的接入流程初稿。
-- [x] 明确 OpenClaw、飞书 Webhook、微信 ClawBot、共享基础 LLM 与 Chub 的职责和信任边界。
+- [x] 形成 OpenClaw、微信双通道与 Chub 的接入流程初稿。
+- [x] 明确 OpenClaw、飞书 Webhook、微信 ClawBot 与 Chub 的职责和信任边界。
 - [x] 固定微信设备能力调用方向为“微信 ClawBot → OpenClaw → Chub → OpenClaw → 微信 ClawBot”，不由 Chub 反向调用 OpenClaw。
 - [x] 确认 Gateway 可首装在 MacBook 或 Ubuntu，实施时按在线条件选择。
 - [x] 确认 ClawBot 首期 Chub 场景为通过受限 Tool 完成状态检查和结果返回。
@@ -48,17 +48,9 @@
 - [x] 在 Ubuntu 通过 Chub 首页完成二维码绑定流程验收。
 - [x] 验证 ClawBot 调用 `chub_get_status` 完成状态检查。
 
-## 4. M4：OpenClaw 与 Chub 共享基础 LLM
+## 4. M4：Chub 基础 LLM（已移除）
 
-- [x] 确认由维护者提供现有 LLM API、Token 和模型信息。
-- [x] 确认首个 API 的兼容协议、Base URL 和模型名称。
-- [x] 使用独立密钥文件与 SecretRef 完成首个模型凭证配置。
-- [x] 在 MacBook 与 Ubuntu 接入 `brclient/amazon.nova-pro` 并完成基础对话验收。
-- [x] Chub 只读复用 OpenClaw Provider 与文件型 SecretRef，并完成一次独立的真实 API 文本调用。
-- [x] 在快速交互页面提供仅当前页面有效的 Codex CLI / Amazon Bedrock API 切换，并在本机历史中标记执行来源与模型快照。
-- [x] 在 Ubuntu 完成 Chub 基础 LLM 和快速交互 Bedrock 入口的真实调用验收。
-- [x] 实现快速交互任务完成后通过固定 OpenClaw 微信账号和固定收件人异步发送有界结果摘要；通知状态与任务状态独立，已完成 macOS 页面任务、OpenClaw 命令和微信收件实机验收。
-- [x] 验证首个模型可以完成实际 Tool Calling；偶发占位文本、回退模型和额度策略按真实稳定性或成本需求继续优化。
+BRClient 即将关停，Chub 已移除共享基础 LLM 和快速交互中的 Bedrock 入口；后续如有独立需求，再单独设计新的模型接入。
 
 ## 5. M5：端到端与安全验收
 
@@ -93,4 +85,4 @@
 - Tool Calling 偶发占位文本、模型不可用、限流、回退模型和额度策略：先保持当前明确失败语义，出现真实稳定性或成本需求后再优化。
 - 更多 Chub Tool：必须由具体需求驱动，不以扩充 Tool 数量作为阶段目标。
 
-OpenClaw 与 Chub 共享基础 LLM、`chub_get_status`、微信基础双向消息和飞书通知首版均已收尾，第三阶段不再保留默认必做任务。
+`chub_get_status`、微信基础双向消息和飞书通知首版均已收尾，第三阶段不再保留默认必做任务。
