@@ -59,8 +59,8 @@ Chub 是个人维护的轻量设备管理服务，主要技术栈为 Python 3.12
 - 异步操作不能仅凭子进程成功创建就宣告完成；重启等操作应通过实例 ID、健康状态或其他最终状态确认结果。
 - 新增维护操作时，同时考虑操作日志的 `requested`、`started`、`succeeded` 和 `failed` 状态；无法由旧进程确认最终结果时，不要伪造成功日志。
 - 微信或 OpenClaw 触发 Chub 操作时，必须能够以非敏感标识关联入口请求、允许身份、OpenClaw 会话、Chub 操作 ID、目标节点和最终结果；不把模型回复或 Tool Call 已创建当作操作成功。
-- 外部 Agent 首先只调用固定只读或低风险白名单能力。重复消息、超时、断链和最终回复失败必须受控处理；高风险能力需要独立设计并逐次明确确认，不因 Owner、Tailnet 认证或模型判断自动放行。
-- 微信 ClawBot 的设备能力调用固定为“微信 ClawBot → OpenClaw → Chub → OpenClaw → 微信 ClawBot”。Chub 不得为处理该类请求反向调用 OpenClaw、Gateway 或 `openclaw agent`。唯一受控例外是由 Chub 页面发起的快速交互完成通知：任务结束后可用固定账号和固定收件人调用 `openclaw message send`，不得调用 Agent，也不得借此触发新的设备能力。Chub 只读复用 OpenClaw 的模型配置、直连模型供应商，以及直接调用自身通知能力均不属于反向调用。
+- 外部 Agent 首先只调用固定只读或低风险白名单能力。重复消息、超时、断链和最终回复失败必须受控处理；高风险能力需要独立设计并逐次明确确认，不因 Owner、Tailnet 认证或模型判断自动放行。唯一已批准的例外是“微信 Chub 模式”：固定 Tailnet 内的单一微信 Owner 通过 OpenClaw 进入 Chub 固定专用 Session 时，可使用该模式配置的 `Full access` 直接执行；该例外不适用于其他 Agent、身份、入口或 Session，撤销时关闭微信 Chub 模式。
+- 微信 ClawBot 的设备能力调用固定为“微信 ClawBot → OpenClaw → Chub → OpenClaw → 微信 ClawBot”。Chub 不得为处理该类请求反向调用 OpenClaw、Gateway 或 `openclaw agent`。唯一受控例外是 Chub 页面发起或已批准的微信 Chub 模式快速交互完成通知：任务结束后可用固定账号和固定收件人调用 `openclaw message send`，不得调用 Agent，也不得借此触发新的设备能力。Chub 只读复用 OpenClaw 的模型配置、直连模型供应商，以及直接调用自身通知能力均不属于反向调用。
 - 不随意引入前端框架、数据库、任务队列或其他复杂基础设施。
 
 ## 前端目录与加载边界

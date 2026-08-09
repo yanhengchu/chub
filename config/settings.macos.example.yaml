@@ -53,6 +53,10 @@ notifications:
   dedup_ttl_seconds: 600
 
 openclaw:
+  weixin_chub_mode:
+    # Explicitly enable only after the single-account WeChat private-message route is ready.
+    enabled: false
+    workspace_id: "chub"
   quick_interaction_completion:
     # Set the fixed recipient after it has messaged the ClawBot once.
     enabled: true

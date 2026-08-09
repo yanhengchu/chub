@@ -6,6 +6,7 @@ import {
 } from "openclaw/plugin-sdk/core";
 
 import type { ChubConfig } from "./client.js";
+import { fetchWeixinChubModeStatus } from "./client.js";
 import { getStatusTool } from "./tools/get-status.js";
 import {
   sendNotificationTool,
@@ -27,7 +28,33 @@ const configSchema = Type.Object({
     maximum: 10_000,
     default: 3_000,
   })),
+  wechatChubStatusMode: Type.Optional(Type.Boolean({
+    default: false,
+    description: "Test only: reply to Weixin direct messages with fixed Chub status without running an agent or LLM.",
+  })),
 });
+
+function wechatStatusReply(
+  status: Awaited<ReturnType<typeof fetchWeixinChubModeStatus>>,
+): string {
+  if (!status.available) {
+    return `Chub 微信模式检查失败：${status.message}。本次消息未调用 OpenClaw Agent 或 LLM。`;
+  }
+  if (!status.ready) {
+    if (status.code === "configuration_invalid") {
+      return "Chub 微信模式配置无效：固定工作区不可用。本次消息未调用 OpenClaw Agent 或 LLM。";
+    }
+    if (status.code === "codex_unavailable") {
+      return "Chub 微信模式未就绪：Codex 运行依赖不可用。本次消息未调用 OpenClaw Agent 或 LLM。";
+    }
+    return "Chub 微信模式当前未就绪。本次消息未调用 OpenClaw Agent 或 LLM。";
+  }
+  return [
+    "Chub 微信模式状态检查通过",
+    "Chub 状态路由可用；当前阶段不会提交微信任务。",
+    "本次消息未调用 OpenClaw Agent 或 LLM。",
+  ].join("\n");
+}
 
 const plugin: ReturnType<typeof definePluginEntry> = definePluginEntry({
   id: "chub",
@@ -42,6 +69,25 @@ const plugin: ReturnType<typeof definePluginEntry> = definePluginEntry({
       message: string;
       expiresAt: number;
     }>();
+
+    api.on("before_dispatch", async (event) => {
+      if (
+        config.wechatChubStatusMode !== true
+        || event.channel !== "openclaw-weixin"
+        || event.isGroup === true
+      ) {
+        return;
+      }
+
+      const status = await fetchWeixinChubModeStatus(config);
+      if (status.available && !status.enabled) {
+        return;
+      }
+      return {
+        handled: true,
+        text: wechatStatusReply(status),
+      };
+    });
 
     const rememberVerbatimMessage = (
       runId: string | undefined,

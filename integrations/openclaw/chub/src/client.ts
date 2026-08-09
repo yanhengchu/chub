@@ -5,6 +5,7 @@ const MAX_RESPONSE_BYTES = 64 * 1024;
 export type ChubConfig = {
   baseUrl?: string;
   timeoutMs?: number;
+  wechatChubStatusMode?: boolean;
 };
 
 export type ChubStatus = {
@@ -17,6 +18,13 @@ export type ChubStatus = {
   diskPercent?: number;
   uptimeSeconds?: number;
   checkedAt: string;
+};
+
+export type WeixinChubModeStatus = {
+  available: true;
+  enabled: boolean;
+  ready: boolean;
+  code: "ready" | "disabled" | "configuration_invalid" | "codex_unavailable";
 };
 
 export type NotificationRequest = {
@@ -69,6 +77,10 @@ export function apiUrl(baseUrl: string, path: string): URL {
 
 export function statusUrl(baseUrl: string): URL {
   return apiUrl(baseUrl, "/api/status");
+}
+
+export function weixinChubModeStatusUrl(baseUrl: string): URL {
+  return apiUrl(baseUrl, "/api/openclaw/wechat-chub-mode/status");
 }
 
 function finiteNumber(value: unknown): number | undefined {
@@ -229,6 +241,43 @@ function parseStatus(payload: unknown): ChubStatus {
   };
 }
 
+function parseWeixinChubModeStatus(payload: unknown): WeixinChubModeStatus {
+  if (!payload || typeof payload !== "object") {
+    throw new Error("invalid_chub_response");
+  }
+  const body = payload as Record<string, unknown>;
+  const data = body.data as Record<string, unknown> | undefined;
+  const code = data?.code;
+  if (
+    body.success !== true
+    || typeof data?.enabled !== "boolean"
+    || typeof data?.ready !== "boolean"
+    || ![
+      "ready",
+      "disabled",
+      "configuration_invalid",
+      "codex_unavailable",
+    ].includes(String(code))
+  ) {
+    throw new Error("invalid_chub_response");
+  }
+  const status = {
+    available: true as const,
+    enabled: data.enabled,
+    ready: data.ready,
+    code: code as WeixinChubModeStatus["code"],
+  };
+  if (
+    (status.code === "ready" && (!status.enabled || !status.ready))
+    || (status.code === "disabled" && (status.enabled || status.ready))
+    || (["configuration_invalid", "codex_unavailable"].includes(status.code)
+      && (!status.enabled || status.ready))
+  ) {
+    throw new Error("invalid_chub_response");
+  }
+  return status;
+}
+
 async function readBoundedBody(response: Response): Promise<Uint8Array> {
   if (!response.body) {
     return new Uint8Array();
@@ -299,6 +348,63 @@ export async function fetchChubStatus(
     }
     const bytes = await readBoundedBody(response);
     return parseStatus(JSON.parse(new TextDecoder().decode(bytes)));
+  } catch (error) {
+    if (error instanceof Error && error.name === "TimeoutError") {
+      return chubFailure("chub_timeout");
+    }
+    if (signal?.aborted) {
+      return chubFailure("chub_cancelled");
+    }
+    if (error instanceof Error && error.message === "chub_response_too_large") {
+      return chubFailure("chub_response_too_large");
+    }
+    if (error instanceof SyntaxError || (error instanceof Error && error.message === "invalid_chub_response")) {
+      return chubFailure("chub_response_invalid");
+    }
+    return chubFailure("chub_unreachable");
+  }
+}
+
+export async function fetchWeixinChubModeStatus(
+  config: ChubConfig,
+  signal?: AbortSignal,
+  fetchImpl: FetchLike = fetch,
+): Promise<WeixinChubModeStatus | ChubToolFailure> {
+  let url: URL;
+  try {
+    if (!config.baseUrl) {
+      throw new Error("invalid_chub_base_url");
+    }
+    url = weixinChubModeStatusUrl(config.baseUrl);
+  } catch (_error) {
+    return chubFailure("chub_configuration_invalid");
+  }
+
+  const timeoutSignal = AbortSignal.timeout(config.timeoutMs ?? 3_000);
+  const requestSignal = signal
+    ? AbortSignal.any([signal, timeoutSignal])
+    : timeoutSignal;
+  try {
+    const response = await fetchImpl(url, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      redirect: "error",
+      signal: requestSignal,
+    });
+    if (response.status === 401 || response.status === 403) {
+      return chubFailure("chub_authentication_failed");
+    }
+    if (!response.ok) {
+      return chubFailure("chub_status_unavailable");
+    }
+    const declaredLength = Number(response.headers.get("content-length") || "0");
+    if (declaredLength > MAX_RESPONSE_BYTES) {
+      throw new Error("chub_response_too_large");
+    }
+    const bytes = await readBoundedBody(response);
+    return parseWeixinChubModeStatus(
+      JSON.parse(new TextDecoder().decode(bytes)),
+    );
   } catch (error) {
     if (error instanceof Error && error.name === "TimeoutError") {
       return chubFailure("chub_timeout");

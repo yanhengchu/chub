@@ -15,6 +15,11 @@
         "minimum": 500,
         "maximum": 10000,
         "default": 3000
+      },
+      "wechatChubStatusMode": {
+        "type": "boolean",
+        "default": false,
+        "description": "Status-routing phase only: check the fixed Chub Weixin mode endpoint for direct messages without running an agent or LLM."
       }
     }
   },

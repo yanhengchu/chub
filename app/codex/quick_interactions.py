@@ -35,6 +35,7 @@ CODEX_QUICK_INTERACTION_INSTRUCTIONS = (
     "样式细节，除非这些内容会影响验收、安全或兼容性。如果本次任务只是分析或"
     "评审，直接给出结论、影响和建议。"
 )
+SERVICE_RESTART_ERROR = "服务重启导致正在执行的任务中断，请重新提交任务。"
 
 
 class QuickInteractionManager:
@@ -57,6 +58,7 @@ class QuickInteractionManager:
         self._running_sessions: set[str] = set()
         self._active_task_ids: set[str] = set()
         self._cancelled_task_ids: set[str] = set()
+        self._shutdown_task_ids: set[str] = set()
         self._task_done_events: dict[str, threading.Event] = {}
         self._session_locks: dict[str, threading.RLock] = {}
         self._processes: dict[str, subprocess.Popen[bytes]] = {}
@@ -95,7 +97,7 @@ class QuickInteractionManager:
             if task.status in {"requested", "running"}:
                 recovered_tasks = True
                 task.status = "failed"
-                task.error = "服务重启时任务未完成。"
+                task.error = SERVICE_RESTART_ERROR
                 task.updated_at = utc_now()
                 recovered_sessions.add(task.session_id)
             if task.notification_status in {"pending", "sending"}:
@@ -342,6 +344,10 @@ class QuickInteractionManager:
         with self._lock:
             return task_id in self._cancelled_task_ids
 
+    def _is_shutting_down(self, task_id: str) -> bool:
+        with self._lock:
+            return task_id in self._shutdown_task_ids
+
     def _run(self, task_id: str, session: CodexSession, prompt: str) -> None:
         with self._lock:
             task = self._tasks[task_id]
@@ -354,6 +360,8 @@ class QuickInteractionManager:
         event_path = self.result_dir / f"{task_id}.jsonl"
         creating_session = not session.codex_session_id
         try:
+            if self._is_shutting_down(task_id):
+                return
             if self._is_cancelled(task_id):
                 self._finish(task_id, "cancelled", "已由用户停止。")
                 return
@@ -389,6 +397,8 @@ class QuickInteractionManager:
                 )
             self._set_private_permissions(result_path)
             current_session = self.codex_manager.get_session(session.id)
+            if self._is_shutting_down(task_id):
+                return
             if self._is_cancelled(task_id):
                 self._finish(task_id, "cancelled", "已由用户停止。")
             elif process.returncode != 0:
@@ -406,12 +416,15 @@ class QuickInteractionManager:
             self._finish(task_id, "succeeded", result or "Codex 未返回最终结果。")
         except subprocess.TimeoutExpired:
             self._kill_process(process)
-            self._finish(
-                task_id,
-                "timed_out",
-                f"Codex 已达到配置的执行上限（{self.timeout_seconds} 秒）。",
-            )
+            if not self._is_shutting_down(task_id):
+                self._finish(
+                    task_id,
+                    "timed_out",
+                    f"Codex 已达到配置的执行上限（{self.timeout_seconds} 秒）。",
+                )
         except Exception:
+            if self._is_shutting_down(task_id):
+                return
             if self._is_cancelled(task_id):
                 self._finish(task_id, "cancelled", "已由用户停止。")
             else:
@@ -450,6 +463,7 @@ class QuickInteractionManager:
                     self._running_sessions.discard(session.id)
                     self._active_task_ids.discard(task_id)
                     self._cancelled_task_ids.discard(task_id)
+                    self._shutdown_task_ids.discard(task_id)
                     done = self._task_done_events.pop(task_id, None)
                     if done is not None:
                         done.set()
@@ -663,6 +677,16 @@ class QuickInteractionManager:
 
     def close(self) -> None:
         with self._lock:
+            task_ids = set(self._active_task_ids)
+            self._shutdown_task_ids.update(task_ids)
+            for task_id in task_ids:
+                task = self._tasks.get(task_id)
+                if task is not None:
+                    task.status = "failed"
+                    task.error = SERVICE_RESTART_ERROR
+                    task.updated_at = utc_now()
+            if task_ids:
+                self._write()
             processes = list(self._processes.values())
         for process in processes:
             self._kill_process(process)

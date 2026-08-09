@@ -66,3 +66,14 @@ def require_token(
             headers=AUTHENTICATE_HEADER,
         )
     request.state.authentication_method = "token"
+
+
+def require_tailscale(request: Request) -> None:
+    if _allows_tailscale_request(request):
+        request.state.authentication_method = "tailscale"
+        return
+    raise ApiError(
+        403,
+        "tailscale_required",
+        "A direct Tailscale connection is required",
+    )

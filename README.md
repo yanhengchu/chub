@@ -198,6 +198,7 @@ README 是设计文档目录结构、状态和归档规则的维护入口；具�
 - [第三阶段高层计划](docs/TASKS_PHASE_3.md)
 - [OpenClaw 与消息通道接入设计](docs/OPENCLAW_INTEGRATION_DESIGN.md)
 - [微信 ClawBot Context Token 持久化 AI 补丁规范](docs/WEIXIN_CLAWBOT_CONTEXT_TOKEN_AI_PATCH.md)
+- [微信 Chub 模式设计](docs/WEIXIN_CHUB_MODE_DESIGN.md)
 
 第二阶段（已闭环）：
 

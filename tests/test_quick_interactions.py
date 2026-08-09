@@ -265,7 +265,7 @@ def test_restart_marks_running_task_failed_and_persists_state(tmp_path: Path) ->
     assert quick_interactions.get("task-1").status == "failed"
     persisted = json.loads(state.read_text(encoding="utf-8"))
     assert persisted[0]["status"] == "failed"
-    assert persisted[0]["error"] == "服务重启时任务未完成。"
+    assert persisted[0]["error"] == "服务重启导致正在执行的任务中断，请重新提交任务。"
     quick_interactions.codex_manager.recover_interrupted_quick_interaction.assert_called_once_with(
         "session-1"
     )
@@ -814,3 +814,34 @@ def test_cancel_codex_session_kills_process_and_waits_for_cleanup(
 
     kill.assert_called_once_with(process)
     assert task.id in quick_interactions._cancelled_task_ids
+
+
+def test_close_marks_active_task_as_interrupted_before_killing_process(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    quick_interactions = manager(tmp_path)
+    task = QuickInteractionTask(
+        id="task-1",
+        session_id="session-1",
+        prompt="检查状态",
+        status="running",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    process = MagicMock()
+    quick_interactions._tasks[task.id] = task
+    quick_interactions._active_task_ids.add(task.id)
+    quick_interactions._processes[task.id] = process
+    kill = MagicMock()
+    monkeypatch.setattr(quick_interactions, "_kill_process", kill)
+
+    quick_interactions.close()
+
+    assert quick_interactions.get(task.id).status == "failed"
+    assert quick_interactions.get(task.id).error == (
+        "服务重启导致正在执行的任务中断，请重新提交任务。"
+    )
+    persisted = json.loads(quick_interactions.path.read_text(encoding="utf-8"))
+    assert persisted[0]["error"] == task.error
+    kill.assert_called_once_with(process)

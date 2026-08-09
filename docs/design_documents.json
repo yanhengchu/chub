@@ -30,6 +30,13 @@
       "path": "WEIXIN_CLAWBOT_CONTEXT_TOKEN_AI_PATCH.md"
     },
     {
+      "id": "weixin-chub-mode",
+      "title": "微信 Chub 模式设计",
+      "summary": "微信模式专用状态接口和无 LLM 状态路由已接入，后续实现 Chub 快速交互任务直通入口。",
+      "status": "专用状态路由已接入，任务提交待实现",
+      "path": "WEIXIN_CHUB_MODE_DESIGN.md"
+    },
+    {
       "id": "automation-download",
       "title": "配置驱动的飞书文档下载自动化方案",
       "summary": "复用 Debug Chrome 飞书登录状态，按配置安全下载 Wiki 文档 Markdown。",

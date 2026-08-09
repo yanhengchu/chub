@@ -37,6 +37,12 @@
 
   function statusText(task) {
     if (
+      task.status === "failed"
+      && task.error === "服务重启导致正在执行的任务中断，请重新提交任务。"
+    ) {
+      return "服务重启中断";
+    }
+    if (
       task.status === "running"
       && Date.now() - new Date(task.created_at).getTime() >= LONG_RUNNING_THRESHOLD_MS
     ) {

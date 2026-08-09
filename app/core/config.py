@@ -129,9 +129,17 @@ class OpenClawCompletionNotificationConfig(StrictModel):
         return value
 
 
+class OpenClawWeixinChubModeConfig(StrictModel):
+    enabled: bool = False
+    workspace_id: Literal["home", "workspace", "chub"] = "chub"
+
+
 class OpenClawConfig(StrictModel):
     quick_interaction_completion: OpenClawCompletionNotificationConfig = (
         OpenClawCompletionNotificationConfig()
+    )
+    weixin_chub_mode: OpenClawWeixinChubModeConfig = (
+        OpenClawWeixinChubModeConfig()
     )
 
 
