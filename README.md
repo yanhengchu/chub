@@ -1,8 +1,8 @@
-# Hub
+# Chub
 
-Hub 是一个面向个人设备的轻量管理服务。
+Chub 是一个面向个人设备的轻量管理服务；默认节点 Web 应用名为 `Hub`，可通过本机 `app.name` 和 `app.page_title` 调整页面名称。
 
-第二阶段已于 2026-07-26 正式闭环：macOS 与 Ubuntu 基础节点能力、移动端 Web 管理页面、受控任务接口、Codex PTY 与快速交互、配置驱动自动化及前端 UI 模块化均已实现，并通过 Ubuntu、MacBook 和手机端验收。第三阶段首版也已闭环：OpenClaw 接入、微信 ClawBot 双向交互、受限 Chub 状态 Tool 和飞书群机器人 Webhook 单向通知均已实现，并在 MacBook 与 Ubuntu 完成核心链路验收。后续低风险状态变更能力由真实需求驱动，单独设计和验收，不作为第三阶段首版闭环条件。
+第二阶段已于 2026-07-26 正式闭环：macOS 与 Ubuntu 基础节点能力、移动端 Web 管理页面、受控任务接口、Codex PTY 与快速交互、配置驱动自动化及前端 UI 模块化均已实现，并通过 Ubuntu、MacBook 和手机端验收。第三阶段也已闭环：OpenClaw 接入、微信 ClawBot 双向交互、微信 Chub 专用任务模式、受限 Chub 状态 Tool 和飞书群机器人 Webhook 单向通知均已实现，并在 macOS、Ubuntu 和真实微信完成核心链路验收。后续能力由真实需求驱动并单独设计，不作为现阶段遗留任务。
 
 ## 快速开始
 
@@ -93,7 +93,7 @@ Codex 快速交互允许长任务持续执行：运行超过 10 分钟时页面�
 
 微信 ClawBot 调用设备能力时，固定经过 `微信 ClawBot → OpenClaw → Chub → OpenClaw → 微信 ClawBot`：OpenClaw 负责入口身份和通道上下文，Chub 负责固定能力、安全校验和最终状态。微信 Chub 模式在模型调度前拦截，并把 Hook 提供的本次账号与发送者绑定到任务；Chub 仅为提交校验读取本机通道状态，并在任务结束后调用 `openclaw message send` 原路回送，不调用 Agent，也不触发新的设备操作。同一原生 Codex Session 同时只允许一个 writer：专用 Session 状态为 `unknown` 时，微信入口会关闭其页面访问、停止残留终端并确认 writer 已释放后提交；已有快速交互、明确执行中或仍被 writer 占用时拒绝，不维护额外队列。页面来源完成通知使用全局固定接收人，账号默认选择唯一健康 ClawBot。Chub 只读复用 OpenClaw 的模型配置并直连供应商、或直接调用自身飞书通知能力，均不属于反向调用。
 
-首页“OpenClaw 环境”卡片用于管理当前节点上的 Gateway，位于“自动化环境”之后。它展示安装、初始化、后台服务、连接探测、版本、监听状态、消息通道运行摘要和当前通道的 Owner 权限摘要，并提供固定的启动、停止和重启操作；停止和重启需要二次确认。卡片还可以发起受控的微信 ClawBot 登录，在短期模态框中展示绑定二维码，并在微信要求时提交手机显示的数字验证码；重新绑定可能使同一 ClawBot 在其他设备上的服务端绑定失效。消息通道在 Gateway 就绪后独立检查，检查失败不会覆盖 Gateway 状态；已配置通道但未配置对应 Owner 时显示“功能受限”，不返回具体身份或凭证。Tailscale Serve 可用时，卡片只展示标准 HTTPS 访问地址，整个地址区域可点击进入控制台；本机 loopback 地址只作为排障入口，不在首页展示。所有接口均使用 Hub Token 或未被关闭的 Tailnet 可信访问，操作以 Gateway 或登录进程的最终状态而不是命令进程成功创建作为成功依据，并写入完整操作日志。
+首页“OpenClaw 环境”卡片用于管理当前节点上的 Gateway，位于“自动化环境”之后。它展示 Gateway、消息通道和 Tailscale 访问入口，并提供固定的启动、停止和重启操作；停止和重启需要二次确认。Owner 检查结果合并到消息通道和总体状态，不单独展示身份或数量；未配置或检查失败时显示“功能受限”及受控提示。卡片还可以发起受控的微信 ClawBot 登录，在短期模态框中展示绑定二维码，并在微信要求时提交手机显示的数字验证码；重新绑定可能使同一 ClawBot 在其他设备上的服务端绑定失效。消息通道在 Gateway 就绪后独立检查，检查失败不会覆盖 Gateway 状态。Tailscale Serve 可用时，卡片只展示标准 HTTPS 访问地址，整个地址区域可点击进入控制台；本机 loopback 地址只作为排障入口，不在首页展示。所有接口均使用 Hub Token 或未被关闭的 Tailnet 可信访问，操作以 Gateway 或登录进程的最终状态而不是命令进程成功创建作为成功依据，并写入完整操作日志。
 
 微信绑定使用固定的 `openclaw channels login --channel openclaw-weixin` 命令和单一短期登录会话。二维码只保存在 Chub 进程内存中，通过禁止缓存的受保护图片接口读取；原始命令输出、二维码内容、微信账号标识和登录凭证不会返回页面。关闭弹窗不会中断登录，显式取消、登录结束或 Chub 退出会清理二维码并终止残留进程。绑定成功只代表通道登录完成，不代表发送者配对或 Owner 权限已经配置。该页面流程已完成 MacBook、Ubuntu 的真实二维码生成、扫码绑定和基础交互验收。
 
@@ -105,7 +105,7 @@ Codex 快速交互允许长任务持续执行：运行超过 10 分钟时页面�
 
 Chub 通过 `~/.config/chub/notifications/registry.yaml` 登记固定飞书目标，并从同目录 `secrets/` 下权限为 `600` 的独立文件读取 Webhook。通知模块只支持有界纯文本、已配置目标和可选人员别名；普通消息默认不提醒任何人，指定人员必须使用已配置 Open ID，`@所有人` 必须由目标显式允许且由用户本次明确要求。正文中的原始 `<at>` 标签会被转义，调用方不能提交任意 URL、Open ID、Secret 路径或飞书 JSON。
 
-受保护的 `/api/notifications/targets` 和 `/api/notifications/send` 复用 Hub Token/Tailnet 认证。统一 OpenClaw `chub` 插件提供 `chub_send_notification`，可从 TUI 或微信向已配置群发送消息。用户在当前请求中使用“消息内容：”提供正文时，插件通过 `message_received`/`llm_input` 读取进入模型前的原文，按本轮 `runId` 短期关联，并在 `before_tool_call` 中覆盖模型生成的正文参数；原文无法取得时阻止发送，只有用户要求 AI 编写正文时才允许 `generated` 模式。该会话访问需显式启用 `plugins.entries.chub.hooks.allowConversationAccess=true`。飞书 `code=0` 对外记录为 `accepted`，只代表请求被接受；短期请求 ID 防止重复发送，操作日志不记录正文、Webhook 或完整 Open ID，底层 HTTP 成功请求也不会记录完整 Webhook URL。当前 `test` 目标的普通消息、真实 Agent 原文保护和显式 `@所有人` 已完成验收，飞书通知首版收尾；指定人员提醒在提供 Open ID 后按需扩展。
+受保护的 `/api/notifications/targets` 和 `/api/notifications/send` 复用 Hub Token/Tailnet 认证。统一 OpenClaw `chub` 插件提供 `chub_send_notification`，可从 TUI 或微信向已配置群发送消息。用户在当前请求中使用“消息内容：”提供正文时，插件通过 `message_received`/`llm_input` 读取进入模型前的原文，按本轮 `runId` 短期关联，并在 `before_tool_call` 中覆盖模型生成的正文参数；原文无法取得时阻止发送，只有用户要求 AI 编写正文时才允许 `generated` 模式。该会话访问需显式启用 `plugins.entries.chub.hooks.allowConversationAccess=true`。飞书 `code=0` 对外记录为 `accepted`，只代表请求被接受；短期请求 ID 防止重复发送，操作日志不记录正文、Webhook 或完整 Open ID，底层 HTTP 成功请求也不会记录完整 Webhook URL。当前 `test` 目标的普通消息、真实 Agent 原文保护和显式 `@所有人` 已完成验收，并作为现行通知基线维护；指定人员提醒在提供 Open ID 后按需扩展。
 
 本机 AI 可使用脱敏命令校验、查看和测试配置：
 
@@ -149,7 +149,7 @@ Standard 是当前项目新增页面和新增功能的默认 UI 标准。新增�
 
 两套风格的普通文字按钮和按钮型导航入口统一使用 14px 字号，并复用相同的主次按钮语义。Cyber 为普通操作按钮及“设置”“全部文档”“全部任务”“日志详情”等按钮型导航入口增加 `>` 提示符；页面标题、Codex Session 主体、图标按钮、弹窗关闭/取消、置顶和正文链接不强行添加。快速交互发送按钮复用次级按钮样式并保持单行；OpenClaw 网关与消息通道状态在 Cyber 下使用带发光指示点的完整状态标签，Standard 继续使用轻量指示点与文字。
 
-Standard 与 Cyber 的完整设计规范、共同验收边界及 Cyber 代码雨参数规则统一维护在 `docs/ARCHITECTURE_EVOLUTION_DESIGN.md` 的“当前 UI 风格基线”章节；新增页面仍默认执行 Standard，并必须确认切换到 Cyber 后不存在未适配的浅色表面、横向溢出或交互退化。
+Standard 与 Cyber 的完整设计规范和共同维护边界统一记录在 `docs/ARCHITECTURE_EVOLUTION_DESIGN.md` 的“Standard 与 Cyber”章节；新增页面仍默认执行 Standard，并必须确认切换到 Cyber 后不存在未适配的浅色表面、横向溢出或交互退化。
 
 ## 接口
 
@@ -161,9 +161,9 @@ Standard 与 Cyber 的完整设计规范、共同验收边界及 Cyber 代码雨
 - `/api/openclaw/*`：OpenClaw Gateway 状态和受控维护操作。
 - `/api/codex/*`：Codex 会话管理。
 
-项目资料列表和设计文档详情可直接通过 Chub 地址访问，便于阅读；页面内容不要求认证，因此文档不得包含 Token、Cookie、账号信息或其他本机秘密。归档状态管理仍需 Hub Token 或未被关闭的 Tailnet 可信访问，状态保存在 `data/state/project-documents.json`；首页只展示当前文档，全部列表可筛选当前和已归档文档。Chub 仍只适合部署在可信网络中。
+项目资料列表和设计文档详情可直接通过 Chub 地址访问，便于阅读；页面内容不要求认证，因此文档不得包含 Token、Cookie、账号信息或其他本机秘密。归档状态管理仍需 Hub Token 或未被关闭的 Tailnet 可信访问，状态保存在 `data/state/project-documents.json`。首页最多展示 5 份未归档且状态为“已验收”的设计文档；“全部文档”保留索引中的其他当前状态，并可筛选当前和已归档文档。Chub 仍只适合部署在可信网络中。
 
-首页“项目文档”同时展示设计调研资料与当前“本期周报”。本期周期固定为周一至周日：每周三切换到当周周期，并从周三至下周二始终展示同一周期；下周二为固定报送日，不受自动化或汇总实际运行日期影响。周期工作区尚未创建或正式稿尚未生成时显示“待生成”，不继续展示旧周期；首页只从 `data/artifacts/weekly-reports/<周期>/output/` 下的固定文件名读取。周报列表和详情与设计文档一样，属于可信网络内公开只读内容，不要求认证；内容不得包含凭证、账号信息、本机秘密或其他不适合直接访问的信息。
+首页“项目文档”同时展示已验收设计资料与当前“本期周报”。本期周期固定为周一至周日：每周三切换到当周周期，并从周三至下周二始终展示同一周期；下周二为固定报送日，不受自动化或汇总实际运行日期影响。周期工作区尚未创建或正式稿尚未生成时显示“待生成”，不继续展示旧周期；首页只从 `data/artifacts/weekly-reports/<周期>/output/` 下的固定文件名读取。周报列表和详情与设计文档一样，属于可信网络内公开只读内容，不要求认证；内容不得包含凭证、账号信息、本机秘密或其他不适合直接访问的信息。
 
 ### 本机数据目录
 
@@ -183,7 +183,7 @@ README 是设计文档目录结构、状态和归档规则的维护入口；具�
 - **阶段记录**：阶段已经闭环，但内容仍被当前工作引用或尚未被新文档完整替代，可以暂留在 `docs/`，并明确闭环状态。
 - **归档文档**：已经被后续文档替代、仅用于历史追溯时，移动到 `docs/archive/phase-N/`，在文首标明已归档及当前替代文档。归档后原则上冻结，不再追加当前实现内容。
 
-设计文档统一登记在 `docs/design_documents.json`。新增当前文档时添加 Markdown 文件，并在索引中配置唯一的小写连字符 `id`、`title`、`summary`、`status` 和相对于 `docs/` 的 `.md` 路径；首页及“全部文档”页面的展示范围由该索引决定，不根据文件所在目录自动发现。`status` 统一使用 2–4 个汉字，只能选择“调研中”“待实现”“进行中”“待验收”“已验收”或“持续维护”，具体阶段说明写入摘要，不在标签中自定义。归档文档不保留在索引中。
+设计文档统一登记在 `docs/design_documents.json`。新增当前文档时添加 Markdown 文件，并在索引中配置唯一的小写连字符 `id`、`title`、`summary`、`status` 和相对于 `docs/` 的 `.md` 路径；“全部文档”展示索引中的所有登记项，首页再从未归档项目中选择最多 5 份“已验收”文档，不根据文件所在目录自动发现。`status` 统一使用 2–4 个汉字，只能选择“调研中”“待实现”“进行中”“待验收”“已验收”或“持续维护”，具体阶段说明写入摘要，不在标签中自定义。归档文档不保留在索引中。
 
 归档或移动文档时，应同步更新 README 文档列表、`docs/design_documents.json` 和其他文档中的引用。索引或引用文件异常会在页面和运行日志中明确提示。
 
@@ -196,31 +196,18 @@ README 是设计文档目录结构、状态和归档规则的维护入口；具�
 
 ## 文档
 
-第三阶段（首版已闭环，持续维护）：
+当前设计与维护文档：
 
-- [第三阶段产品目标](docs/PRD_PHASE_3.md)
-- [第三阶段高层计划](docs/TASKS_PHASE_3.md)
+- [前端 UI 模块化设计](docs/ARCHITECTURE_EVOLUTION_DESIGN.md)
+- [Chub AI Session 状态模型设计](docs/AI_SESSION_STATE_DESIGN.md)
+- [配置驱动的飞书文档下载自动化方案](docs/AUTOMATION_DOWNLOAD_DESIGN.md)
+- [工作周报生成技能设计方案](docs/WEEKLY_REPORT_SKILL_DESIGN.md)
 - [OpenClaw 与消息通道接入设计](docs/OPENCLAW_INTEGRATION_DESIGN.md)
 - [微信 ClawBot Context Token 持久化 AI 补丁规范](docs/WEIXIN_CLAWBOT_CONTEXT_TOKEN_AI_PATCH.md)
 - [微信 Chub 模式设计](docs/WEIXIN_CHUB_MODE_DESIGN.md)
 
-第二阶段（已闭环）：
+阶段归档：
 
-- [前端 UI 模块化设计](docs/ARCHITECTURE_EVOLUTION_DESIGN.md)
-- [Chub AI Session 状态模型设计](docs/AI_SESSION_STATE_DESIGN.md)
-- [第二阶段产品目标](docs/PRD_PHASE_2.md)
-- [第二阶段高层计划](docs/TASKS_PHASE_2.md)
-- [Codex 手机远程方案探索](docs/CODEX_REMOTE_OPTIONS_PHASE_2.md)
-- [配置驱动的飞书文档下载自动化方案](docs/AUTOMATION_DOWNLOAD_DESIGN.md)
-- [工作周报生成技能设计方案](docs/WEEKLY_REPORT_SKILL_DESIGN.md)
-
-第一阶段归档：
-
-- [产品需求](docs/archive/phase-1/PRD.md)
-- [技术架构](docs/archive/phase-1/ARCHITECTURE.md)
-- [任务清单](docs/archive/phase-1/TASKS.md)
-- [验收记录](docs/archive/phase-1/ACCEPTANCE.md)
-
-第三阶段归档：
-
-- [OpenClaw 方案调研](docs/archive/phase-3/OPENCLAW_RESEARCH.md)
+- [第一阶段归档](docs/archive/phase-1/README.md)
+- [第二阶段归档](docs/archive/phase-2/README.md)
+- [第三阶段归档](docs/archive/phase-3/README.md)

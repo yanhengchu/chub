@@ -1,9 +1,9 @@
 # Phase 2 Codex 手机远程方案探索
 
-> 当前状态：PTY 方案已于 2026-07-21 完成 macOS、Ubuntu 和手机端验收；普通网络快速交互消息时间线已落地，旧任务卡片视图已根据实际使用反馈移除，remote-control 与 app-server 作为备选保留。
+> 归档状态：第二阶段已闭环，PTY 与快速交互方案均已落地。当前行为以项目 README 和 [Chub AI Session 状态模型设计](../../AI_SESSION_STATE_DESIGN.md)为准，本文冻结为方案选择记录。
 
 Chub 后续不把产品会话模型限定为 Codex。供应方无关的 Session/Activity 状态、适配器边界和迁移方向
-见 [Chub AI Session 状态模型设计](AI_SESSION_STATE_DESIGN.md)；本文继续记录 Codex CLI 的具体实现。
+见 [Chub AI Session 状态模型设计](../../AI_SESSION_STATE_DESIGN.md)；本文保留第二阶段的 Codex CLI 方案背景。
 
 ## 1. 目标
 

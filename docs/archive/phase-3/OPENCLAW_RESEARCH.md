@@ -1,6 +1,6 @@
 # OpenClaw 方案调研
 
-> 状态：已归档；当前实现与后续方案以 `../../OPENCLAW_INTEGRATION_DESIGN.md` 为准。
+> 归档状态：第三阶段已闭环；当前实现与后续方案以 `../../OPENCLAW_INTEGRATION_DESIGN.md` 为准。本文冻结为方案调研记录。
 
 ## 1. 简介
 

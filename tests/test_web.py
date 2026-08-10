@@ -154,11 +154,11 @@ async def test_home_page_is_public_and_contains_no_token(
     )[0]
     assert 'data-card-return-refresh="true"' not in openclaw_card
     assert "OpenClaw 方案调研" not in response.text
-    assert "OpenClaw 与消息通道接入设计" in response.text
-    assert "持续维护" in response.text
+    assert "Chub 前端 UI 模块化设计" in response.text
+    assert "持续维护" not in response.text
     assert "份设计资料 · 1 份周报可查看" not in response.text
     assert 'href="/project-docs/openclaw-research"' not in response.text
-    assert 'href="/project-docs/openclaw-integration"' in response.text
+    assert 'href="/project-docs/architecture-evolution"' in response.text
     assert 'target="_blank"' not in response.text
     assert 'href="/project-docs"' in response.text
     assert '>全部文档</a>' in response.text
@@ -811,7 +811,7 @@ async def test_design_document_pages_render_markdown(settings: Settings) -> None
     assert '<span class="badge badge-success">已实现并验收</span>' not in detail.text
     assert '<article class="markdown-body">' in detail.text
     assert "<h2" in detail.text
-    assert "核心主流程" in detail.text
+    assert "Runner 流程" in detail.text
     assert missing.status_code == 404
 
     for response in [listing, detail]:
@@ -844,9 +844,15 @@ async def test_project_document_card_api_is_protected(
     ]
     assert data["weekly_reports"][0]["available"] is True
     assert data["weekly_reports"][1]["available"] is False
-    assert {
-        document["id"] for document in data["documents"]
-    } >= {"openclaw-integration"}
+    assert len(data["documents"]) == 5
+    assert {document["status"] for document in data["documents"]} == {"已验收"}
+    assert {document["id"] for document in data["documents"]} == {
+        "architecture-evolution",
+        "ai-session-state",
+        "weixin-chub-mode",
+        "automation-download",
+        "weekly-report-skill",
+    }
     assert "openclaw-research" not in {
         document["id"] for document in data["documents"]
     }

@@ -31,6 +31,9 @@ def index(request: Request) -> HTMLResponse:
     except DesignDocumentIndexError:
         design_documents = []
         design_documents_error = "设计文档暂时无法加载，请检查文档索引。"
+    featured_design_documents = [
+        document for document in design_documents if document.status == "已验收"
+    ]
     weekly_reports = list_latest_weekly_reports()
     return templates.TemplateResponse(
         request=request,
@@ -41,7 +44,7 @@ def index(request: Request) -> HTMLResponse:
             or f"{settings.app.name} 管理面板",
             "site_title": settings.app.page_title or settings.app.name,
             "app_version": settings.app.version,
-            "design_documents": design_documents[:5],
+            "design_documents": featured_design_documents[:5],
             "design_document_count": len(design_documents),
             "design_documents_error": design_documents_error,
             "weekly_reports": weekly_reports,

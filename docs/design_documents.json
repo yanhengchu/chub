@@ -4,7 +4,7 @@
     {
       "id": "architecture-evolution",
       "title": "Chub 前端 UI 模块化设计",
-      "summary": "在页面效果和 API 不变的前提下，拆分前端基础能力、功能模块、组件与样式层。",
+      "summary": "定义首页 Core、公共组件、Feature、样式层及 Standard/Cyber 的当前维护边界。",
       "status": "已验收",
       "path": "ARCHITECTURE_EVOLUTION_DESIGN.md"
     },
@@ -18,35 +18,35 @@
     {
       "id": "openclaw-integration",
       "title": "OpenClaw 与消息通道接入设计",
-      "summary": "定义 OpenClaw、飞书单向通知与微信 ClawBot 的接入顺序、状态语义和安全边界。",
+      "summary": "定义 OpenClaw Gateway、消息通道、Chub 插件、完成通知和微信路由的当前维护边界。",
       "status": "持续维护",
       "path": "OPENCLAW_INTEGRATION_DESIGN.md"
     },
     {
       "id": "weixin-clawbot-context-token-ai-patch",
       "title": "微信 ClawBot Context Token 持久化 AI 补丁规范",
-      "summary": "供 AI 在微信插件升级或重装后恢复 context token 持久化补丁，并完成安全复检与分层验收。",
+      "summary": "定义微信插件升级、重装或兼容异常后的 Context Token 能力复检与安全恢复规范。",
       "status": "持续维护",
       "path": "WEIXIN_CLAWBOT_CONTEXT_TOKEN_AI_PATCH.md"
     },
     {
       "id": "weixin-chub-mode",
       "title": "微信 Chub 模式设计",
-      "summary": "微信任务级原路回送与页面默认通知路由已明确隔离，等待最新插件加载后的真实微信验收。",
-      "status": "待验收",
+      "summary": "定义微信私聊直达 Chub 专用 Session、任务级原路回送、单写入者和单 Owner 安全边界。",
+      "status": "已验收",
       "path": "WEIXIN_CHUB_MODE_DESIGN.md"
     },
     {
       "id": "automation-download",
       "title": "配置驱动的飞书文档下载自动化方案",
-      "summary": "复用 Debug Chrome 飞书登录状态，按配置安全下载 Wiki 文档 Markdown。",
+      "summary": "定义受管 Debug Chrome、飞书登录检查、配置驱动下载与周报输入发布边界。",
       "status": "已验收",
       "path": "AUTOMATION_DOWNLOAD_DESIGN.md"
     },
     {
       "id": "weekly-report-skill",
       "title": "工作周报生成技能设计方案",
-      "summary": "基于上周周报和五份本周各端周报，分阶段生成重点清单、正式周报与核对记录。",
+      "summary": "定义自动化输入适配、重点确认门禁、正式周报生成与可追溯复核流程。",
       "status": "已验收",
       "path": "WEEKLY_REPORT_SKILL_DESIGN.md"
     }

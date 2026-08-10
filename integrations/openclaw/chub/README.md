@@ -1,8 +1,9 @@
 # Chub OpenClaw Plugin
 
-Integrates OpenClaw with Chub through small, explicitly allowlisted tools that
-share one fixed Tailnet client. The plugin currently provides the optional
-`chub_get_status` and `chub_send_notification` tools.
+Integrates OpenClaw with Chub through one fixed Tailnet client. The plugin
+provides the optional `chub_get_status` and `chub_send_notification` tools,
+verbatim-message protection, and the `before_dispatch` route used by Weixin
+Chub mode. The route has completed real macOS and Ubuntu validation.
 
 Notification requests containing a `消息内容：` marker use verbatim mode. The
 plugin captures the pre-model text by run ID and replaces the model-generated
@@ -17,7 +18,7 @@ openclaw config set \
 Build and validate:
 
 ```bash
-npm install
+npm ci
 npm run plugin:build
 npm run plugin:validate
 npm test
@@ -44,9 +45,10 @@ second migration switch. Each message first checks Chub's fixed mode status;
 `disabled` continues the normal OpenClaw flow, while `ready` submits the exact
 message text to `/api/openclaw/wechat-chub-mode/submit`. The Hook also submits
 the trusted inbound `accountId` and sender route as this task's immutable reply
-route. Current Weixin `2.4.6` exposes the private-message peer through
-`conversationId` (`OriginatingTo`) instead of `senderId`, so the Hook accepts
-that standard direct-message fallback. A successful submit is handled
+route. The Weixin plugin version used for the macOS and Ubuntu validation
+exposes the private-message peer through `conversationId` (`OriginatingTo`)
+instead of `senderId`, so the Hook accepts that standard direct-message
+fallback without binding the contract to one plugin version. A successful submit is handled
 immediately, and Chub later sends the
 final result only through that originating route. Unavailable, invalid, busy,
 or failed submissions remain
