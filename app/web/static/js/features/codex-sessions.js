@@ -577,20 +577,18 @@ function renderCodexModelPreference(data) {
   const selectedModelId = preferredModel || data?.default_model;
   const model = models.find((item) => item?.id === selectedModelId);
   if (!model || typeof model.name !== "string") {
-    elements.codexModelPreference.textContent = "新建默认：跟随 Codex 默认";
+    elements.codexModelPreference.textContent = "新建默认：暂时无法确认模型与等级";
     return false;
   }
   const levels = Array.isArray(model.levels) ? model.levels : [];
-  const selectedEffort = preferredModel
-    ? preferredEffort || model.default_level
-    : data?.default_reasoning_effort || model.default_level;
+  const selectedEffort = preferredEffort
+    || data?.default_reasoning_effort
+    || model.default_level;
   const effort = levels.some((level) => level?.id === selectedEffort)
     ? selectedEffort
     : model.default_level;
   const modelAndEffort = `${model.name} · ${codexReasoningLabel(effort)}`;
-  elements.codexModelPreference.textContent = preferredModel
-    ? `新建默认：${modelAndEffort}`
-    : `新建默认：跟随 Codex 默认（${modelAndEffort}）`;
+  elements.codexModelPreference.textContent = `新建默认：${modelAndEffort}`;
   return true;
 }
 
@@ -606,7 +604,7 @@ async function loadCodexModelPreference() {
     }
   } catch (error) {
     if (requestVersion === accessVersion && elements.codexModelPreference) {
-      elements.codexModelPreference.textContent = "新建默认：跟随 Codex 默认";
+      elements.codexModelPreference.textContent = "新建默认：暂时无法确认模型与等级";
       handleAccessError(error);
     }
   }

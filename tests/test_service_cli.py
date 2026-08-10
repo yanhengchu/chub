@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import stat
 import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -34,6 +35,12 @@ def service_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
         executable.chmod(0o755)
 
     env = os.environ.copy()
+    for name in (
+        "CHUB_ACTIVITY_SOURCE",
+        "CHUB_QUICK_TASK_ID",
+        "CHUB_QUICK_RESTART_DIR",
+    ):
+        env.pop(name, None)
     env.update(
         {
             "HOME": str(tmp_path / "home"),
@@ -90,6 +97,119 @@ def test_web_restart_uses_atomic_service_manager_restart(
 
     assert result.returncode == 0, result.stderr
     assert manager_call in calls.read_text(encoding="utf-8")
+
+
+def test_web_restart_is_deferred_inside_quick_interaction(
+    service_env: tuple[dict[str, str], Path],
+    tmp_path: Path,
+) -> None:
+    env, calls = service_env
+    request_dir = tmp_path / "restart-requests"
+    request_dir.mkdir()
+    env.update(
+        {
+            "CHUB_ACTIVITY_SOURCE": "quick",
+            "CHUB_QUICK_TASK_ID": "task-1",
+            "CHUB_QUICK_RESTART_DIR": str(request_dir),
+            "CHUB_TEST_PLATFORM": "Unsupported",
+        }
+    )
+
+    result = subprocess.run(
+        ["bash", str(WEB_RESTART)],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    request_file = request_dir / "task-1.request"
+    assert result.returncode == 0, result.stderr
+    assert request_file.is_file()
+    assert stat.S_IMODE(request_file.stat().st_mode) == 0o600
+    assert "restart registered" in result.stdout
+    assert not calls.exists()
+
+
+def test_web_restart_does_not_fall_back_when_quick_context_is_invalid(
+    service_env: tuple[dict[str, str], Path],
+) -> None:
+    env, calls = service_env
+    env.update(
+        {
+            "CHUB_ACTIVITY_SOURCE": "quick",
+            "CHUB_QUICK_TASK_ID": "task-1",
+            "CHUB_TEST_PLATFORM": "Darwin",
+        }
+    )
+
+    result = subprocess.run(
+        ["bash", str(WEB_RESTART)],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "deferred restart directory is unavailable" in result.stderr
+    assert not calls.exists()
+
+
+def test_web_restart_rejects_symlink_request_file(
+    service_env: tuple[dict[str, str], Path],
+    tmp_path: Path,
+) -> None:
+    env, calls = service_env
+    request_dir = tmp_path / "restart-requests"
+    request_dir.mkdir()
+    target = tmp_path / "unrelated"
+    target.write_text("keep", encoding="utf-8")
+    (request_dir / "task-1.request").symlink_to(target)
+    env.update(
+        {
+            "CHUB_ACTIVITY_SOURCE": "quick",
+            "CHUB_QUICK_TASK_ID": "task-1",
+            "CHUB_QUICK_RESTART_DIR": str(request_dir),
+            "CHUB_TEST_PLATFORM": "Darwin",
+        }
+    )
+
+    result = subprocess.run(
+        ["bash", str(WEB_RESTART)],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "deferred restart request is invalid" in result.stderr
+    assert target.read_text(encoding="utf-8") == "keep"
+    assert not calls.exists()
+
+
+def test_chub_restart_uses_same_quick_interaction_deferral(
+    service_env: tuple[dict[str, str], Path],
+    tmp_path: Path,
+) -> None:
+    env, calls = service_env
+    request_dir = tmp_path / "restart-requests"
+    request_dir.mkdir()
+    env.update(
+        {
+            "CHUB_ACTIVITY_SOURCE": "quick",
+            "CHUB_QUICK_TASK_ID": "task-1",
+            "CHUB_QUICK_RESTART_DIR": str(request_dir),
+        }
+    )
+
+    result = run_chub("restart", env)
+
+    assert result.returncode == 0, result.stderr
+    assert (request_dir / "task-1.request").is_file()
+    assert "restart registered" in result.stdout
+    assert not calls.exists()
 
 
 @pytest.mark.parametrize(

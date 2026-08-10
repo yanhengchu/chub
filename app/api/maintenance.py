@@ -25,6 +25,32 @@ def restart_hub(request: Request) -> ApiResponse[dict[str, str]]:
         status="requested",
         target="chub",
     )
+    if request.app.state.quick_interactions.has_active_tasks():
+        log_operation(
+            request,
+            action="restart_hub",
+            status="failed",
+            target="chub",
+            operation_id=operation_id,
+        )
+        return error_response(
+            409,
+            "quick_interaction_in_progress",
+            "当前有快速交互正在执行，请等待任务结束后重试。",
+        )
+    if request.app.state.deferred_restart.pending():
+        log_operation(
+            request,
+            action="restart_hub",
+            status="failed",
+            target="chub",
+            operation_id=operation_id,
+        )
+        return error_response(
+            409,
+            "restart_already_pending",
+            "Chub 已安排自动重启，无需重复操作。",
+        )
     command = PROJECT_ROOT / "scripts" / "chub-web-restart"
     if not command.is_file():
         log_operation(

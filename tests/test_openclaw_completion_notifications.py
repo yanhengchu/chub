@@ -4,20 +4,29 @@ from pathlib import Path
 
 import pytest
 
-from app.codex.models import QuickInteractionTask, utc_now
+from app.codex.models import (
+    QuickInteractionTask,
+    QuickInteractionWeixinRoute,
+    utc_now,
+)
 from app.core.config import OpenClawCompletionNotificationConfig
 from app.services.openclaw_completion_notifications import (
     OpenClawCompletionNotifier,
 )
 
 
-def task(*, result: str = "执行完成") -> QuickInteractionTask:
+def task(
+    *,
+    result: str = "执行完成",
+    notification_route: str = "default",
+) -> QuickInteractionTask:
     return QuickInteractionTask(
         id="task-1",
         session_id="session-1",
         prompt="执行任务",
         status="succeeded",
         result=result,
+        notification_route=notification_route,
         created_at=utc_now(),
         updated_at=utc_now(),
     )
@@ -181,3 +190,109 @@ def test_notification_reports_command_failure_without_details(
 def test_recipient_configuration_rejects_non_weixin_identifier() -> None:
     with pytest.raises(ValueError):
         OpenClawCompletionNotificationConfig(weixin_recipient="recipient-1")
+
+
+def test_weixin_task_uses_its_immutable_route_instead_of_global_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    command = executable(tmp_path)
+    calls: list[list[str]] = []
+
+    def run(arguments, **kwargs):
+        calls.append(arguments)
+        payload = (
+            {
+                "channelAccounts": {
+                    "openclaw-weixin": [
+                        {
+                            "accountId": "route-account",
+                            "enabled": True,
+                            "configured": True,
+                            "running": True,
+                        }
+                    ]
+                }
+            }
+            if len(calls) == 1
+            else {"result": {"messageId": "message-1"}}
+        )
+        kwargs["stdout"].write(json.dumps(payload).encode())
+        return subprocess.CompletedProcess(arguments, 0)
+
+    monkeypatch.setattr("shutil.which", lambda _name: str(command))
+    monkeypatch.setattr("subprocess.run", run)
+    notifier = OpenClawCompletionNotifier(
+        OpenClawCompletionNotificationConfig(
+            weixin_account_id="global-account",
+            weixin_recipient="global@im.wechat",
+        )
+    )
+    route = QuickInteractionWeixinRoute(
+        account_id="route-account",
+        recipient="origin@im.wechat",
+    )
+
+    result = notifier.notify(
+        task(notification_route="weixin-task"),
+        route,
+    )
+
+    assert result.status == "sent"
+    assert calls[1][calls[1].index("--account") + 1] == "route-account"
+    assert calls[1][calls[1].index("--target") + 1] == "origin@im.wechat"
+
+
+def test_weixin_task_fails_without_route_or_global_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "shutil.which",
+        lambda _name: pytest.fail("OpenClaw should not be inspected without the task route"),
+    )
+    notifier = OpenClawCompletionNotifier(
+        OpenClawCompletionNotificationConfig(
+            weixin_recipient="global@im.wechat",
+        )
+    )
+
+    result = notifier.notify(task(notification_route="weixin-task"))
+
+    assert result.status == "failed"
+    assert result.error == "微信原路回送信息不可用。"
+
+
+def test_weixin_route_validation_requires_one_healthy_clawbot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    command = executable(tmp_path)
+
+    def run(arguments, **kwargs):
+        kwargs["stdout"].write(json.dumps({
+            "channelAccounts": {
+                "openclaw-weixin": [
+                    {
+                        "accountId": account,
+                        "enabled": True,
+                        "configured": True,
+                        "running": True,
+                    }
+                    for account in ("account-1", "account-2")
+                ]
+            }
+        }).encode())
+        return subprocess.CompletedProcess(arguments, 0)
+
+    monkeypatch.setattr("shutil.which", lambda _name: str(command))
+    monkeypatch.setattr("subprocess.run", run)
+    notifier = OpenClawCompletionNotifier(OpenClawCompletionNotificationConfig())
+
+    error = notifier.validate_weixin_route(
+        QuickInteractionWeixinRoute(
+            account_id="account-1",
+            recipient="origin@im.wechat",
+        )
+    )
+
+    assert error == "未检测到唯一运行中的 ClawBot。"

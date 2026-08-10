@@ -1,4 +1,6 @@
+import fcntl
 import json
+import os
 from pathlib import Path
 from subprocess import CompletedProcess
 from unittest.mock import MagicMock
@@ -44,6 +46,48 @@ def test_create_session_persists_validated_model_defaults(settings: Settings) ->
     stored = manager.store.get(created.id)
     assert stored.model == "gpt-test"
     assert stored.reasoning_effort == "high"
+
+
+def test_writer_probe_detects_active_and_released_lock(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    manager = CodexPtyManager(settings)
+    manager.codex_home = tmp_path
+    native_id = "11111111-1111-4111-8111-111111111111"
+    lock_dir = tmp_path / "thread-writer-locks"
+    lock_dir.mkdir()
+    lock_path = lock_dir / f"{native_id}.lock"
+    descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert manager.has_active_writer(native_id) is True
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        assert manager.has_active_writer(native_id) is False
+    finally:
+        os.close(descriptor)
+
+
+def test_writer_probe_does_not_create_missing_lock(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    manager = CodexPtyManager(settings)
+    manager.codex_home = tmp_path
+
+    assert manager.has_active_writer(
+        "22222222-2222-4222-8222-222222222222"
+    ) is False
+    assert not (tmp_path / "thread-writer-locks").exists()
+
+
+def test_writer_probe_rejects_unsafe_native_id(settings: Settings) -> None:
+    manager = CodexPtyManager(settings)
+
+    with pytest.raises(ApiError) as error:
+        manager.has_active_writer("../../unexpected")
+
+    assert error.value.code == "codex_writer_status_unavailable"
 
 
 def test_update_session_timestamp_keeps_latest_time(settings: Settings) -> None:

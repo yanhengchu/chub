@@ -6,14 +6,14 @@
 
 ## 1. 恢复目标
 
-保证固定链路 `Chub 快速交互 → openclaw message send → 微信 ClawBot → 固定微信收件人` 在 Gateway 重启后仍能恢复最近一次有效 context token，并满足以下不变量：
+保证链路 `Chub 快速交互 → openclaw message send → 微信 ClawBot → 指定微信收件人` 在 Gateway 重启后仍能恢复最近一次有效 context token，并满足以下不变量：
 
 1. 入站消息按 `accountId + userId` 持久化最新 context token。
 2. Gateway 启动微信账号时恢复该账号的持久化 token。
-3. 出站发送未显式携带 token 时，按当前账号和固定收件人查询 token。
+3. 出站发送未显式携带 token 时，按调用方明确给出的账号和收件人查询 token。
 4. 出站模块的内存 Map 未命中时，从磁盘惰性恢复一次后重新查询。
 5. token 持久化文件每次写入后权限为 `600`。
-6. 找不到或无法使用 token 时明确失败，不尝试其他收件人，不调用 `openclaw agent`。
+6. 找不到或无法使用 token 时明确失败，不尝试其他账号或收件人，不调用 `openclaw agent`。
 
 满足上述行为即可视为等价实现，不要求上游代码与参考 patch 逐字相同。若上游已原生满足全部不变量，应保留上游实现，不重复打补丁。
 
@@ -30,8 +30,8 @@
 
 | 错误 | 优先判断 |
 |---|---|
-| `weixin_context_missing` | 当前出站实例没有取得该账号与收件人的 token；检查持久化、惰性恢复和固定收件人映射 |
-| `sendMessage ret=-2 errmsg=prepare failed` | 已取得 token，但微信侧通常不再接受；让固定收件人重新发一条消息刷新 token 后再验收 |
+| `weixin_context_missing` | 当前出站实例没有取得该账号与收件人的 token；检查持久化、惰性恢复和目标映射 |
+| `sendMessage ret=-2 errmsg=prepare failed` | 已取得 token，但微信侧通常不再接受；让对应收件人重新发一条消息刷新 token 后再验收 |
 
 文件存在不代表 token 有效，命令开始执行也不代表微信已经收到消息。
 
@@ -143,7 +143,7 @@ if (!contextToken) {
 
 真实发送有外部副作用，只在维护者已经授权验收时执行：
 
-1. 让固定收件人先向 ClawBot 发送一条新消息，刷新 token。
+1. 让待验收收件人先向对应 ClawBot 发送一条新消息，刷新 token。
 2. 使用固定 channel、固定 account 和固定 recipient 发送一条无敏感内容的测试消息。
 3. 确认 OpenClaw 命令返回成功。
 4. OpenClaw 命令成功只表示通道接受了发送请求；由维护者确认微信真实收到后，才算插件链路完成最终验收。
@@ -171,7 +171,7 @@ if (!contextToken) {
 | 状态 | 判定 |
 |---|---|
 | `compatible` | 固定配置、账号运行状态、等价代码能力和安全文件权限均通过只读检查 |
-| `not_activated` | 代码能力存在，但尚无持久化状态；提示固定收件人先发消息 |
+| `not_activated` | 代码能力存在，但尚无持久化状态；提示对应收件人先发消息 |
 | `repair_required` | 明确缺少必要行为、权限不安全或固定配置无效 |
 | `unknown` | 插件来源或结构变化，现有规则无法可靠判断 |
 
@@ -184,7 +184,7 @@ if (!contextToken) {
 - 持久化文件权限为 `600`。
 - Gateway 重启后启动实例恢复 token。
 - 出站模块内存未命中时可惰性恢复。
-- 固定收件人的 `openclaw message send` 返回成功；微信客户端最终送达仍以维护者页面验收反馈为准。
+- 对应账号与收件人的 `openclaw message send` 返回成功；微信客户端最终送达仍以维护者页面验收反馈为准。
 - Chub 通知 Service 返回 `sent`，Chub 重启后健康接口正常。
 
 Ubuntu 尚未针对同一插件版本做实机回归。插件升级后，AI 必须重新执行第 3～5 节，不能继承本节结论。若上游原生实现全部不变量，应移除本地兼容补丁、保留回归验证，并把本文状态更新为“上游已原生支持”。

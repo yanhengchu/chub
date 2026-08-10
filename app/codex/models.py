@@ -166,6 +166,34 @@ QuickInteractionNotificationStatus = Literal[
     "failed",
     "skipped",
 ]
+QuickInteractionDeferredRestartStatus = Literal[
+    "pending",
+    "succeeded",
+    "cleared",
+]
+QuickInteractionNotificationRoute = Literal["default", "weixin-task"]
+
+
+class QuickInteractionWeixinRoute(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    account_id: str = Field(min_length=1, max_length=200)
+    recipient: str = Field(min_length=1, max_length=500)
+
+    @field_validator("account_id", "recipient")
+    @classmethod
+    def normalize_identifier(cls, value: str) -> str:
+        resolved = value.strip()
+        if not resolved:
+            raise ValueError("Identifier must not be blank")
+        return resolved
+
+    @field_validator("recipient")
+    @classmethod
+    def validate_recipient(cls, value: str) -> str:
+        if not value.endswith("@im.wechat"):
+            raise ValueError("Recipient must be a Weixin identifier")
+        return value
 
 
 class QuickInteractionRequest(BaseModel):
@@ -198,8 +226,11 @@ class QuickInteractionTask(BaseModel):
     result: str | None = Field(default=None, max_length=100_000)
     error: str | None = Field(default=None, max_length=2000)
     notification_status: QuickInteractionNotificationStatus | None = None
+    notification_route: QuickInteractionNotificationRoute = "default"
     notification_error: str | None = Field(default=None, max_length=1000)
     notification_updated_at: datetime | None = None
+    deferred_restart_status: QuickInteractionDeferredRestartStatus | None = None
+    deferred_restart_updated_at: datetime | None = None
     pinned_at: datetime | None = None
     created_at: datetime
     updated_at: datetime

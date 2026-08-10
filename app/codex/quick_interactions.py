@@ -16,9 +16,11 @@ from app.codex.models import (
     CodexSession,
     QuickInteractionOrder,
     QuickInteractionTask,
+    QuickInteractionWeixinRoute,
     utc_now,
 )
 from app.core.response import ApiError
+from app.services.deferred_restart import DeferredRestartCoordinator
 from app.services.log_reader import redact_log_line
 from app.services.operation_log import write_operation
 
@@ -33,9 +35,19 @@ CODEX_QUICK_INTERACTION_INSTRUCTIONS = (
     "完成后请面向项目维护者汇报产品结果，重点说明完成效果、页面或交互变化、"
     "验证结果、验收方法及必要风险。默认不要展开代码实现、逐文件清单、函数或"
     "样式细节，除非这些内容会影响验收、安全或兼容性。如果本次任务只是分析或"
-    "评审，直接给出结论、影响和建议。"
+    "评审，直接给出结论、影响和建议。\n"
+    "如果本次任务需要重启 Chub，只能调用 scripts/chub-web-restart 一次；快速交互"
+    "环境会把重启登记为延迟操作。不得绕过该脚本直接调用 launchctl、systemctl 或"
+    "其他服务管理命令，也不得重复调用重启脚本。"
 )
 SERVICE_RESTART_ERROR = "服务重启导致正在执行的任务中断，请重新提交任务。"
+DEFERRED_RESTART_RESULT_SUFFIX = "本次处理已完成，即将重启 Chub 服务。"
+DEFERRED_RESTART_WAITING_SUFFIX = (
+    "本次处理已完成，已安排重启；正在等待其他 {count} 个快速交互结束，"
+    "全部完成后将自动重启 Chub。"
+)
+DEFERRED_RESTART_FAILED_SUFFIX = "Chub 重启登记失败，本次不会自动重启。"
+ACTIVE_WRITER_ERROR = "Codex Session 正在由其他进程使用，请等待任务结束或停止实时终端。"
 
 
 class QuickInteractionManager:
@@ -44,7 +56,12 @@ class QuickInteractionManager:
         data_file: Path,
         runtime_dir: Path,
         codex_manager,
-        completion_notifier: Callable[[QuickInteractionTask], object] | None = None,
+        completion_notifier: Callable[
+            [QuickInteractionTask, QuickInteractionWeixinRoute | None],
+            object,
+        ]
+        | None = None,
+        deferred_restart: DeferredRestartCoordinator | None = None,
         *,
         timeout_seconds: int = 6 * 60 * 60,
     ) -> None:
@@ -52,6 +69,7 @@ class QuickInteractionManager:
         self.result_dir = runtime_dir / "quick-interactions"
         self.codex_manager = codex_manager
         self.completion_notifier = completion_notifier
+        self.deferred_restart = deferred_restart
         self.timeout_seconds = timeout_seconds
         self._lock = threading.RLock()
         self._tasks: dict[str, QuickInteractionTask] = {}
@@ -63,6 +81,8 @@ class QuickInteractionManager:
         self._session_locks: dict[str, threading.RLock] = {}
         self._processes: dict[str, subprocess.Popen[bytes]] = {}
         self._operations: dict[str, tuple[str, str]] = {}
+        self._notification_routes: dict[str, QuickInteractionWeixinRoute] = {}
+        self.restart_request_dir = runtime_dir / "restart-requests"
         recovered_sessions, recovered_tasks = self._load()
         if recovered_tasks:
             self._write()
@@ -79,6 +99,8 @@ class QuickInteractionManager:
                     )
         self.result_dir.mkdir(parents=True, exist_ok=True)
         os.chmod(self.result_dir, 0o700)
+        self.restart_request_dir.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.restart_request_dir, 0o700)
 
     def _load(self) -> tuple[set[str], bool]:
         try:
@@ -90,10 +112,21 @@ class QuickInteractionManager:
         recovered_sessions: set[str] = set()
         recovered_tasks = False
         for item in payload:
+            if not isinstance(item, dict):
+                continue
+            task_payload = dict(item)
+            route_payload = task_payload.pop("_notification_route", None)
             try:
-                task = QuickInteractionTask.model_validate(item)
+                task = QuickInteractionTask.model_validate(task_payload)
             except ValueError:
                 continue
+            if task.notification_route == "weixin-task":
+                try:
+                    route = QuickInteractionWeixinRoute.model_validate(route_payload)
+                except ValueError:
+                    route = None
+                if route is not None:
+                    self._notification_routes[task.id] = route
             if task.status in {"requested", "running"}:
                 recovered_tasks = True
                 task.status = "failed"
@@ -115,8 +148,15 @@ class QuickInteractionManager:
         *,
         operation_id: str,
         source_ip: str,
+        notification_route: QuickInteractionWeixinRoute | None = None,
     ) -> QuickInteractionTask:
         with self._session_lock(session_id):
+            if self.deferred_restart is not None and self.deferred_restart.pending():
+                raise ApiError(
+                    409,
+                    "chub_restart_pending",
+                    "Chub 已安排重启，暂不接受新的快速交互。",
+                )
             session = self.codex_manager.get_session(session_id)
             if session.status == "error":
                 raise ApiError(
@@ -138,6 +178,19 @@ class QuickInteractionManager:
                 )
             if session.permission_mode == "ask":
                 raise ApiError(409, "quick_interaction_requires_terminal", "Ask for approval 需要进入实时终端完成审批。")
+            with self._lock:
+                if self._any_running(session_id):
+                    raise ApiError(
+                        409,
+                        "quick_interaction_in_progress",
+                        "该会话已有快速交互任务正在执行。",
+                    )
+            if self.codex_manager.has_active_writer(session.codex_session_id):
+                raise ApiError(
+                    409,
+                    "quick_interaction_writer_active",
+                    ACTIVE_WRITER_ERROR,
+                )
             self.codex_manager.prepare_quick_interaction()
             if not session.codex_session_id:
                 self.codex_manager.set_initial_quick_interaction_title(
@@ -152,6 +205,9 @@ class QuickInteractionManager:
                     session_id=session_id,
                     prompt=prompt,
                     status="requested",
+                    notification_route=(
+                        "weixin-task" if notification_route is not None else "default"
+                    ),
                     created_at=utc_now(),
                     updated_at=utc_now(),
                 )
@@ -160,6 +216,8 @@ class QuickInteractionManager:
                 self._active_task_ids.add(task.id)
                 self._task_done_events[task.id] = threading.Event()
                 self._operations[task.id] = (operation_id, source_ip)
+                if notification_route is not None:
+                    self._notification_routes[task.id] = notification_route
                 self._write()
         self._log_status(task.id, "requested", session.id)
         threading.Thread(target=self._run, args=(task.id, session, prompt), daemon=True).start()
@@ -306,6 +364,41 @@ class QuickInteractionManager:
         with self._lock:
             return session_id in self._running_sessions
 
+    def has_active_tasks(self) -> bool:
+        with self._lock:
+            return bool(self._active_task_ids)
+
+    def deferred_restart_ready(self) -> bool:
+        with self._lock:
+            if self._active_task_ids:
+                return False
+            return not any(
+                task.notification_status in {"pending", "sending"}
+                for task in self._tasks.values()
+            )
+
+    def record_deferred_restart_completion(
+        self,
+        task_id: str,
+        automatic: bool,
+        completed_at: datetime,
+    ) -> bool:
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None or task.status != "succeeded":
+                LOGGER.warning(
+                    "Unable to associate deferred restart completion with task %s",
+                    task_id,
+                )
+                return False
+            next_status = "succeeded" if automatic else "cleared"
+            if task.deferred_restart_status in {"succeeded", "cleared"}:
+                return False
+            task.deferred_restart_status = next_status
+            task.deferred_restart_updated_at = completed_at
+            self._write()
+            return True
+
     def cancel_codex_session(self, session_id: str, *, timeout: float = 5) -> bool:
         """Cancel the active Codex CLI interaction and wait for state cleanup."""
         with self._session_lock(session_id):
@@ -358,6 +451,7 @@ class QuickInteractionManager:
         result_path = self.result_dir / f"{task_id}.txt"
         error_path = self.result_dir / f"{task_id}.err"
         event_path = self.result_dir / f"{task_id}.jsonl"
+        restart_request_path = self.restart_request_dir / f"{task_id}.request"
         creating_session = not session.codex_session_id
         try:
             if self._is_shutting_down(task_id):
@@ -367,11 +461,18 @@ class QuickInteractionManager:
                 return
             self.codex_manager.set_activity(session.id, "working", "quick")
             self.result_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                restart_request_path.unlink()
+            except FileNotFoundError:
+                pass
             command = self._command(session, result_path)
             env = os.environ.copy()
             env["CHUB_PTY_SESSION_ID"] = session.id
             env["CHUB_PTY_HOOK_DIR"] = str(self.codex_manager.hook_dir)
             env["CHUB_ACTIVITY_SOURCE"] = "quick"
+            if self.deferred_restart is not None:
+                env["CHUB_QUICK_TASK_ID"] = task_id
+                env["CHUB_QUICK_RESTART_DIR"] = str(self.restart_request_dir)
             with (
                 error_path.open("w", encoding="utf-8") as error_file,
                 event_path.open("wb") as event_file,
@@ -403,6 +504,8 @@ class QuickInteractionManager:
                 self._finish(task_id, "cancelled", "已由用户停止。")
             elif process.returncode != 0:
                 error = self._json_error(event_path) or self._read_tail(error_path, 2000)
+                if self._is_active_writer_error(error):
+                    error = ACTIVE_WRITER_ERROR
                 self._finish(task_id, "failed", error or "Codex 执行失败。")
                 return
             elif creating_session and not current_session.codex_session_id:
@@ -413,6 +516,35 @@ class QuickInteractionManager:
                 )
                 return
             result = self._read_limited(result_path, MAX_RESULT_BYTES)
+            if restart_request_path.is_file() and self.deferred_restart is not None:
+                with self._lock:
+                    operation = self._operations.get(task_id) or (
+                        uuid.uuid4().hex,
+                        "unknown",
+                    )
+                    other_active_count = max(0, len(self._active_task_ids) - 1)
+                try:
+                    restart_registered = self.deferred_restart.request(
+                        operation_id=f"{operation[0]}:restart",
+                        task_id=task_id,
+                        source_ip=operation[1],
+                    )
+                except (ApiError, OSError):
+                    LOGGER.warning("Unable to register deferred restart", exc_info=True)
+                    result = self._append_result_suffix(
+                        result,
+                        DEFERRED_RESTART_FAILED_SUFFIX,
+                    )
+                else:
+                    if restart_registered:
+                        with self._lock:
+                            task = self._tasks[task_id]
+                            task.deferred_restart_status = "pending"
+                            task.deferred_restart_updated_at = utc_now()
+                    result = self._append_result_suffix(
+                        result,
+                        self._deferred_restart_suffix(other_active_count),
+                    )
             self._finish(task_id, "succeeded", result or "Codex 未返回最终结果。")
         except subprocess.TimeoutExpired:
             self._kill_process(process)
@@ -438,7 +570,12 @@ class QuickInteractionManager:
                         "Unable to synchronize newly created Codex session",
                         exc_info=True,
                     )
-            for path in (result_path, error_path, event_path):
+            for path in (
+                result_path,
+                error_path,
+                event_path,
+                restart_request_path,
+            ):
                 try:
                     path.unlink()
                 except FileNotFoundError:
@@ -477,6 +614,8 @@ class QuickInteractionManager:
                         "Unable to prune persisted quick interaction history",
                         exc_info=True,
                     )
+            if self.deferred_restart is not None:
+                self.deferred_restart.maybe_schedule()
 
     @staticmethod
     def _codex_execution_prompt(prompt: str) -> str:
@@ -522,6 +661,24 @@ class QuickInteractionManager:
             return file.read(limit).decode("utf-8", errors="replace")
 
     @staticmethod
+    def _append_result_suffix(result: str, suffix: str) -> str:
+        if result.rstrip().endswith(suffix):
+            return result.rstrip()
+        suffix_text = f"\n\n{suffix}"
+        suffix_bytes = suffix_text.encode("utf-8")
+        available = max(0, MAX_RESULT_BYTES - len(suffix_bytes))
+        base = result.encode("utf-8")[:available].decode("utf-8", errors="ignore")
+        return f"{base.rstrip()}{suffix_text}"
+
+    @staticmethod
+    def _deferred_restart_suffix(other_active_count: int) -> str:
+        if other_active_count:
+            return DEFERRED_RESTART_WAITING_SUFFIX.format(
+                count=other_active_count,
+            )
+        return DEFERRED_RESTART_RESULT_SUFFIX
+
+    @staticmethod
     def _set_private_permissions(*paths: Path) -> None:
         for path in paths:
             try:
@@ -557,6 +714,14 @@ class QuickInteractionManager:
             redact_log_line(messages[-1], (), max_line_bytes=2000)
             if messages
             else ""
+        )
+
+    @staticmethod
+    def _is_active_writer_error(message: str) -> bool:
+        normalized = message.casefold()
+        return (
+            "thread-store conflict" in normalized
+            and "active writer" in normalized
         )
 
     @classmethod
@@ -634,7 +799,12 @@ class QuickInteractionManager:
             source_ip=source_ip,
         )
         try:
-            result = self.completion_notifier(snapshot) if self.completion_notifier else None
+            route = self._notification_routes.get(task_id)
+            result = (
+                self.completion_notifier(snapshot, route)
+                if self.completion_notifier
+                else None
+            )
             notification_status = getattr(result, "status", "failed")
             notification_error = getattr(result, "error", None)
             if notification_status not in {"sent", "failed", "skipped"}:
@@ -659,6 +829,8 @@ class QuickInteractionManager:
             target=snapshot.session_id,
             source_ip=source_ip,
         )
+        if self.deferred_restart is not None:
+            self.deferred_restart.maybe_schedule()
 
     def _log_status(self, task_id: str, status: str, target: str) -> None:
         with self._lock:
@@ -759,9 +931,21 @@ class QuickInteractionManager:
                 :max(0, MAX_STORED_TASKS - len(protected))
             ]
             self._tasks = {item.id: item for item in retained}
+            self._notification_routes = {
+                task_id: route
+                for task_id, route in self._notification_routes.items()
+                if task_id in self._tasks
+            }
         temporary = self.path.with_suffix(".tmp")
+        payload = []
+        for item in self._tasks.values():
+            serialized = item.model_dump(mode="json")
+            route = self._notification_routes.get(item.id)
+            if route is not None:
+                serialized["_notification_route"] = route.model_dump(mode="json")
+            payload.append(serialized)
         temporary.write_text(
-            json.dumps([item.model_dump(mode="json") for item in self._tasks.values()], ensure_ascii=False, indent=2) + "\n",
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
         os.chmod(temporary, 0o600)

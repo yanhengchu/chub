@@ -36,3 +36,41 @@ async def test_restart_uses_chub_service_command(settings: Settings) -> None:
     assert response.json()["data"] == {"status": "restarting"}
     assert popen.call_args.args[0] == [str(command)]
     assert popen.call_args.kwargs["start_new_session"] is True
+
+
+@pytest.mark.anyio
+async def test_restart_rejects_active_quick_interaction(settings: Settings) -> None:
+    app = create_app(settings)
+    app.state.quick_interactions._active_task_ids.add("task-1")
+    transport = httpx.ASGITransport(app=app)
+
+    with patch("app.api.maintenance.subprocess.Popen") as popen:
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            headers={"Authorization": "Bearer test-token-that-is-long-enough-for-tests"},
+        ) as client:
+            response = await client.post("/api/maintenance/restart")
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "quick_interaction_in_progress"
+    popen.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_restart_rejects_existing_deferred_restart(settings: Settings) -> None:
+    app = create_app(settings)
+    app.state.deferred_restart.pending = lambda: True
+    transport = httpx.ASGITransport(app=app)
+
+    with patch("app.api.maintenance.subprocess.Popen") as popen:
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            headers={"Authorization": "Bearer test-token-that-is-long-enough-for-tests"},
+        ) as client:
+            response = await client.post("/api/maintenance/restart")
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "restart_already_pending"
+    popen.assert_not_called()

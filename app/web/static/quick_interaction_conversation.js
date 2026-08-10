@@ -59,6 +59,8 @@ function conversationTaskSignature(task) {
     task.pinned_at,
     task.notification_status,
     task.notification_error,
+    task.deferred_restart_status,
+    task.deferred_restart_updated_at,
     conversationStatusText(task),
   ]);
 }
@@ -150,6 +152,24 @@ function updateConversationTurn(turn, task) {
   assistantMeta.append(pin);
   assistantMessage.append(assistantBubble, assistantMeta);
   turn.append(userMessage, assistantMessage);
+  if (task.deferred_restart_status === "succeeded") {
+    const restartMessage = document.createElement("div");
+    const restartBubble = document.createElement("div");
+    const restartContent = document.createElement("p");
+    restartMessage.className = (
+      "conversation-message conversation-message-assistant conversation-message-system"
+    );
+    restartBubble.className = "conversation-bubble is-status";
+    restartContent.textContent = "Chub 已完成自动重启，服务已恢复。";
+    restartBubble.append(restartContent);
+    restartMessage.append(
+      restartBubble,
+      createConversationMeta(
+        `Chub 系统 · ${formatConversationTime(task.deferred_restart_updated_at)}`,
+      ),
+    );
+    turn.append(restartMessage);
+  }
 }
 
 function createConversationTurn(task) {
@@ -355,6 +375,9 @@ async function performConversationLoad() {
       task.notification_status === "pending"
       || task.notification_status === "sending"
     )),
+    restartPending: conversationTasks.some(
+      (task) => task.deferred_restart_status === "pending",
+    ),
     session,
   }) && document.visibilityState !== "hidden") {
     conversationPollTimer = window.setTimeout(

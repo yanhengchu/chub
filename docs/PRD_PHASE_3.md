@@ -6,7 +6,7 @@
 
 第三阶段在第二阶段已闭环的单节点能力之上，探索 Chub 与外部 Agent、消息入口和模型服务的连接方式。
 
-Chub 继续负责可信设备能力、安全校验和最终状态确认；OpenClaw 作为上层 Agent 与编排入口。微信设备能力调用固定为“微信 ClawBot → OpenClaw → Chub → OpenClaw → 微信 ClawBot”，Chub 不反向调用 OpenClaw 或 Gateway 来完成微信请求。Chub 页面发起的快速交互完成通知属于独立的受控出站场景，可通过固定账号和固定收件人调用 `openclaw message send`，但不调用 Agent 或触发新的设备能力。飞书群机器人 Webhook 用于向群聊单向推送通知和结果，微信 ClawBot 作为双向通道接收指令并返回状态和结果。OpenClaw Gateway 首轮可部署在 MacBook 或 Ubuntu，按实施时的在线条件选择，不将操作系统作为方案阻塞项。
+Chub 继续负责可信设备能力、安全校验和最终状态确认；OpenClaw 作为上层 Agent 与编排入口。微信设备能力调用固定为“微信 ClawBot → OpenClaw → Chub → OpenClaw → 微信 ClawBot”。微信 Chub 入站任务绑定本次消息的账号与发送者，并只通过该路由调用 `openclaw message send` 回送；Chub 页面发起的快速交互使用全局固定接收人，账号默认选择唯一健康 ClawBot，也允许兼容性配置明确覆盖。两者都不调用 Agent 或触发新的设备能力，且不可互相兜底。飞书群机器人 Webhook 用于向群聊单向推送通知和结果，微信 ClawBot 作为双向通道接收指令并返回状态和结果。OpenClaw Gateway 首轮可部署在 MacBook 或 Ubuntu，按实施时的在线条件选择，不将操作系统作为方案阻塞项。
 
 ## 2. 核心方向
 

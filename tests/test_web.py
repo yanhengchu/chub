@@ -155,7 +155,7 @@ async def test_home_page_is_public_and_contains_no_token(
     assert 'data-card-return-refresh="true"' not in openclaw_card
     assert "OpenClaw 方案调研" not in response.text
     assert "OpenClaw 与消息通道接入设计" in response.text
-    assert "已实现并验收，持续维护" in response.text
+    assert "持续维护" in response.text
     assert "份设计资料 · 1 份周报可查看" not in response.text
     assert 'href="/project-docs/openclaw-research"' not in response.text
     assert 'href="/project-docs/openclaw-integration"' in response.text
@@ -265,6 +265,7 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
     assert "hub.codexDefaultReasoningEffort.v1" in script.text
     assert "/api/codex/models" in script.text
     assert "之后新建的 Session 将使用该权限" in script.text
+    assert "之后新建的 Session 将使用该模型与等级" not in script.text
     assert "localStorage.setItem" in script.text
     assert "hub.cyberRainSpeed.v1" in script.text
     assert "hub.cyberRainBrightness.v1" in script.text
@@ -582,7 +583,9 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert '"/api/codex/models"' in script.text
     assert "新建默认：正在读取…" in script.text
     assert "renderCodexModelPreference" in script.text
-    assert "新建默认：跟随 Codex 默认" in script.text
+    assert "新建默认：暂时无法确认模型与等级" in script.text
+    assert "|| data?.default_reasoning_effort" in script.text
+    assert "跟随 Codex 默认（${modelAndEffort}）" not in script.text
     assert "/api/codex/quota" in script.text
     assert "额度：正在读取…" in script.text
     assert "renderCodexQuota" in script.text
@@ -714,6 +717,9 @@ async def test_quick_interaction_conversation_page_is_available(
     assert 'sent: "已通知"' in script.text
     assert 'failed: "通知失败"' in script.text
     assert 'skipped: "未通知"' in script.text
+    assert 'task.deferred_restart_status === "succeeded"' in script.text
+    assert "Chub 已完成自动重启，服务已恢复。" in script.text
+    assert 'task.deferred_restart_status === "pending"' in script.text
     assert ".conversation-assistant-info" in stylesheet.text
     assert "conversationClient.setPinned" in script.text
     assert "textContent" in script.text

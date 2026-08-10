@@ -6,6 +6,41 @@ SERVICE_NAME="chub"
 MACOS_LABEL="com.chub.node"
 PLATFORM="${CHUB_TEST_PLATFORM:-$(uname -s)}"
 
+if [[ "${CHUB_ACTIVITY_SOURCE:-}" == "quick" ]]; then
+    REQUEST_DIR="${CHUB_QUICK_RESTART_DIR:-}"
+    TASK_ID="${CHUB_QUICK_TASK_ID:-}"
+    if [[ -z "$REQUEST_DIR" || "$REQUEST_DIR" != /* || ! -d "$REQUEST_DIR" || -L "$REQUEST_DIR" ]]; then
+        echo "chub-web-restart: deferred restart directory is unavailable" >&2
+        exit 1
+    fi
+    case "$TASK_ID" in
+        ""|*[!A-Za-z0-9_-]*)
+            echo "chub-web-restart: deferred restart task id is invalid" >&2
+            exit 1
+            ;;
+    esac
+    REQUEST_FILE="$REQUEST_DIR/$TASK_ID.request"
+    if [[ -L "$REQUEST_FILE" || ( -e "$REQUEST_FILE" && ! -f "$REQUEST_FILE" ) ]]; then
+        echo "chub-web-restart: deferred restart request is invalid" >&2
+        exit 1
+    fi
+    if [[ ! -e "$REQUEST_FILE" ]]; then
+        umask 077
+        (set -o noclobber; : > "$REQUEST_FILE") 2>/dev/null || {
+            echo "chub-web-restart: unable to register deferred restart" >&2
+            exit 1
+        }
+    fi
+    if [[ -L "$REQUEST_FILE" || ! -f "$REQUEST_FILE" ]]; then
+        echo "chub-web-restart: deferred restart request is invalid" >&2
+        exit 1
+    fi
+    chmod 600 "$REQUEST_FILE"
+    echo "Chub restart registered after this quick interaction and all other active quick interactions finish."
+    echo "Finish the task normally; Chub will append the accurate restart status to the final response."
+    exit 0
+fi
+
 case "$PLATFORM" in
     Darwin)
         exec launchctl kickstart -k "gui/$(id -u)/$MACOS_LABEL"

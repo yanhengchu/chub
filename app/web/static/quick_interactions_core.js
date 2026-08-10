@@ -134,6 +134,7 @@
     loadErrors = [],
     activeInteraction,
     notificationPending = false,
+    restartPending = false,
     session,
   }) {
     const retryableLoadFailure = loadFailed
@@ -145,6 +146,7 @@
       retryableLoadFailure
       || activeInteraction
       || notificationPending
+      || restartPending
       || session?.quick_interaction_running === true
       || session?.activity === "working"
       || (session?.status === "running" && session.activity === "unknown")

@@ -8,7 +8,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from app.codex.models import CodexSession, QuickInteractionTask, utc_now
+from app.codex.models import (
+    CodexSession,
+    QuickInteractionTask,
+    QuickInteractionWeixinRoute,
+    utc_now,
+)
 from app.codex.quick_interactions import (
     CODEX_QUICK_INTERACTION_INSTRUCTIONS,
     QuickInteractionManager,
@@ -16,7 +21,11 @@ from app.codex.quick_interactions import (
 from app.core.response import ApiError
 
 
-def manager(tmp_path: Path, completion_notifier=None) -> QuickInteractionManager:
+def manager(
+    tmp_path: Path,
+    completion_notifier=None,
+    deferred_restart=None,
+) -> QuickInteractionManager:
     codex_manager = MagicMock()
     codex_manager.get_session.return_value = CodexSession(
         id="session-1",
@@ -27,12 +36,14 @@ def manager(tmp_path: Path, completion_notifier=None) -> QuickInteractionManager
         status="stopped",
         permission_mode="auto-review",
     )
+    codex_manager.has_active_writer.return_value = False
     codex_manager.hook_dir = tmp_path / "hooks"
     return QuickInteractionManager(
         tmp_path / "codex-sessions.json",
         tmp_path / "runtime",
         codex_manager,
         completion_notifier,
+        deferred_restart,
     )
 
 
@@ -103,6 +114,31 @@ def test_codex_execution_prompt_adds_delivery_guidance_without_changing_request(
     assert prompt.endswith(CODEX_QUICK_INTERACTION_INSTRUCTIONS)
     assert "完成效果" in prompt
     assert "验收方法" in prompt
+    assert "只能调用 scripts/chub-web-restart 一次" in prompt
+
+
+def test_result_suffix_stays_within_persisted_limit(tmp_path: Path) -> None:
+    quick_interactions = manager(tmp_path)
+
+    result = quick_interactions._append_result_suffix(
+        "a" * 100_000,
+        "本次处理已完成，即将重启 Chub 服务。",
+    )
+
+    assert len(result.encode("utf-8")) <= 100_000
+    assert result.endswith("本次处理已完成，即将重启 Chub 服务。")
+
+
+def test_restart_result_explains_waiting_for_other_quick_tasks(tmp_path: Path) -> None:
+    quick_interactions = manager(tmp_path)
+
+    assert quick_interactions._deferred_restart_suffix(0) == (
+        "本次处理已完成，即将重启 Chub 服务。"
+    )
+    assert quick_interactions._deferred_restart_suffix(2) == (
+        "本次处理已完成，已安排重启；正在等待其他 2 个快速交互结束，"
+        "全部完成后将自动重启 Chub。"
+    )
 
 
 def test_session_title_uses_first_user_request_line(tmp_path: Path) -> None:
@@ -202,7 +238,10 @@ def test_quick_interaction_completion_notification_is_independent(
     assert finished.status == "succeeded"
     assert finished.result == "完成"
     assert finished.notification_status == "sent"
-    notifier.assert_called_once()
+    notification_task, notification_route = notifier.call_args.args
+    assert notification_task.id == finished.id
+    assert notification_task.notification_status == "sending"
+    assert notification_route is None
 
 
 def test_notification_failure_does_not_change_task_result(
@@ -244,6 +283,40 @@ def test_notification_failure_does_not_change_task_result(
     assert finished.result == "完成"
     assert finished.notification_status == "failed"
     assert finished.notification_error == "微信通知未送达。"
+
+
+def test_weixin_notification_route_is_private_and_survives_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = manager(tmp_path)
+    thread = MagicMock()
+    monkeypatch.setattr(
+        "app.codex.quick_interactions.threading.Thread",
+        MagicMock(return_value=thread),
+    )
+    route = QuickInteractionWeixinRoute(
+        account_id="weixin-account",
+        recipient="owner@im.wechat",
+    )
+
+    task = first.submit(
+        "session-1",
+        "检查设备",
+        operation_id="operation-1",
+        source_ip="100.64.0.1",
+        notification_route=route,
+    )
+
+    public_payload = task.model_dump(mode="json")
+    assert public_payload["notification_route"] == "weixin-task"
+    assert "weixin-account" not in json.dumps(public_payload)
+    persisted = json.loads(first.path.read_text(encoding="utf-8"))
+    assert persisted[0]["_notification_route"] == route.model_dump(mode="json")
+
+    reloaded = manager(tmp_path)
+    assert reloaded.get(task.id).notification_route == "weixin-task"
+    assert reloaded._notification_routes[task.id] == route
 
 def test_restart_marks_running_task_failed_and_persists_state(tmp_path: Path) -> None:
     state = tmp_path / "quick-interactions.json"
@@ -707,6 +780,127 @@ def test_submit_rechecks_terminal_status(tmp_path: Path) -> None:
     assert error.value.code == "quick_interaction_terminal_working"
 
 
+def test_submit_rejects_active_native_writer(tmp_path: Path) -> None:
+    quick_interactions = manager(tmp_path)
+    quick_interactions.codex_manager.has_active_writer.return_value = True
+
+    with pytest.raises(ApiError) as error:
+        quick_interactions.submit(
+            "session-1",
+            "检查状态",
+            operation_id="operation-1",
+            source_ip="127.0.0.1",
+        )
+
+    assert error.value.code == "quick_interaction_writer_active"
+
+
+def test_active_writer_runtime_error_is_recognized() -> None:
+    assert QuickInteractionManager._is_active_writer_error(
+        "thread-store conflict: thread abc already has an active writer"
+    ) is True
+    assert QuickInteractionManager._is_active_writer_error(
+        "unrelated Codex failure"
+    ) is False
+
+
+def test_submit_rejects_new_task_while_restart_is_pending(tmp_path: Path) -> None:
+    deferred_restart = MagicMock()
+    deferred_restart.pending.return_value = True
+    quick_interactions = manager(
+        tmp_path,
+        deferred_restart=deferred_restart,
+    )
+
+    with pytest.raises(ApiError) as error:
+        quick_interactions.submit(
+            "session-1",
+            "检查状态",
+            operation_id="operation-1",
+            source_ip="127.0.0.1",
+        )
+
+    assert error.value.code == "chub_restart_pending"
+    quick_interactions.codex_manager.prepare_quick_interaction.assert_not_called()
+
+
+def test_deferred_restart_ready_waits_for_tasks_and_notifications(
+    tmp_path: Path,
+) -> None:
+    quick_interactions = manager(tmp_path)
+    task = QuickInteractionTask(
+        id="task-1",
+        session_id="session-1",
+        prompt="检查状态",
+        status="succeeded",
+        result="完成",
+        notification_status="sending",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    quick_interactions._tasks[task.id] = task
+
+    assert quick_interactions.deferred_restart_ready() is False
+    task.notification_status = "sent"
+    quick_interactions._active_task_ids.add(task.id)
+    assert quick_interactions.deferred_restart_ready() is False
+    quick_interactions._active_task_ids.clear()
+    assert quick_interactions.deferred_restart_ready() is True
+
+
+def test_deferred_restart_completion_distinguishes_automatic_and_manual(
+    tmp_path: Path,
+) -> None:
+    quick_interactions = manager(tmp_path)
+    task = QuickInteractionTask(
+        id="task-1",
+        session_id="session-1",
+        prompt="重启服务",
+        status="succeeded",
+        result="已安排重启。",
+        deferred_restart_status="pending",
+        deferred_restart_updated_at=utc_now(),
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    quick_interactions._tasks[task.id] = task
+    completed_at = utc_now()
+
+    assert quick_interactions.record_deferred_restart_completion(
+        task.id,
+        True,
+        completed_at,
+    ) is True
+    completed = quick_interactions.get(task.id)
+    assert completed.deferred_restart_status == "succeeded"
+    assert completed.deferred_restart_updated_at == completed_at
+    assert completed.result == "已安排重启。"
+
+    persisted = json.loads(quick_interactions.path.read_text(encoding="utf-8"))
+    assert persisted[0]["deferred_restart_status"] == "succeeded"
+
+    assert quick_interactions.record_deferred_restart_completion(
+        task.id,
+        False,
+        utc_now(),
+    ) is False
+    assert quick_interactions.get(task.id).deferred_restart_status == "succeeded"
+
+    manual_task = task.model_copy(
+        update={
+            "id": "task-2",
+            "deferred_restart_status": "pending",
+        }
+    )
+    quick_interactions._tasks[manual_task.id] = manual_task
+    assert quick_interactions.record_deferred_restart_completion(
+        manual_task.id,
+        False,
+        utc_now(),
+    ) is True
+    assert quick_interactions.get(manual_task.id).deferred_restart_status == "cleared"
+
+
 def test_submit_rejects_session_error(tmp_path: Path) -> None:
     quick_interactions = manager(tmp_path)
     session = quick_interactions.codex_manager.get_session.return_value
@@ -785,6 +979,68 @@ def test_cancel_before_process_start_finishes_task_as_cancelled(tmp_path: Path) 
     assert finished.error == "已由用户停止。"
     assert done.is_set()
     assert quick_interactions.is_running(session.id) is False
+
+
+def test_successful_task_registers_script_restart_and_appends_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    deferred_restart = MagicMock()
+    deferred_restart.pending.return_value = False
+    quick_interactions = manager(
+        tmp_path,
+        deferred_restart=deferred_restart,
+    )
+    session = quick_interactions.codex_manager.get_session.return_value
+    task = QuickInteractionTask(
+        id="task-1",
+        session_id=session.id,
+        prompt="修改配置并重启",
+        status="requested",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    quick_interactions._tasks[task.id] = task
+    quick_interactions._running_sessions.add(session.id)
+    quick_interactions._active_task_ids.add(task.id)
+    quick_interactions._task_done_events[task.id] = threading.Event()
+    quick_interactions._operations[task.id] = ("operation-1", "127.0.0.1")
+
+    class Process:
+        returncode = 0
+        pid = 12345
+
+        def __init__(self, command, env) -> None:
+            self.result_path = Path(command[command.index("--output-last-message") + 1])
+            self.request_path = (
+                Path(env["CHUB_QUICK_RESTART_DIR"])
+                / f"{env['CHUB_QUICK_TASK_ID']}.request"
+            )
+
+        def communicate(self, **_kwargs) -> None:
+            self.result_path.write_text("功能已完成。", encoding="utf-8")
+            self.request_path.touch()
+
+    monkeypatch.setattr(
+        "app.codex.quick_interactions.subprocess.Popen",
+        lambda command, **kwargs: Process(command, kwargs["env"]),
+    )
+
+    quick_interactions._run(task.id, session, task.prompt or "")
+
+    finished = quick_interactions.get(task.id)
+    assert finished.status == "succeeded"
+    assert finished.result == (
+        "功能已完成。\n\n本次处理已完成，即将重启 Chub 服务。"
+    )
+    assert finished.deferred_restart_status == "pending"
+    assert finished.deferred_restart_updated_at is not None
+    deferred_restart.request.assert_called_once_with(
+        operation_id="operation-1:restart",
+        task_id="task-1",
+        source_ip="127.0.0.1",
+    )
+    deferred_restart.maybe_schedule.assert_called()
 
 
 def test_cancel_codex_session_kills_process_and_waits_for_cleanup(

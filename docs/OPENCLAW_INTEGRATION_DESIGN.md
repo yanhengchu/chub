@@ -232,11 +232,11 @@ OpenClaw 工作区 `~/.openclaw/workspace/AGENTS.md` 应明确：操作当前电
 - Gateway 状态标签是唯一主要状态描述，不重复展示语义相同的文字。
 - “连接微信”是否可用由当前真实操作状态决定，不能因页面恢复缓存而永久置灰。
 
-快速交互完成通知采用独立出站链路：`Chub 快速交互 → openclaw message send → 微信 ClawBot → 固定微信收件人`。它不是微信请求调用设备能力的反向链路，不运行 `openclaw agent`，也不允许通过通知触发新的 Chub 操作。Chub 只在任务成功、失败或超时后异步发送有界结果摘要；通知状态单独记录为发送中、已发送、失败或跳过，任何通知故障都不改变任务最终状态。
+快速交互完成通知采用独立出站链路：`Chub 快速交互 → openclaw message send → 微信 ClawBot → 微信收件人`。它不运行 `openclaw agent`，也不允许通过通知触发新的 Chub 操作。Chub 只在任务成功、失败或超时后异步发送有界结果摘要；通知状态单独记录为发送中、已发送、失败或跳过，任何通知故障都不改变任务最终状态。
 
-收件人必须在本机 Chub 配置的 `openclaw.quick_interaction_completion.weixin_recipient` 中固定，并先主动向 ClawBot 发送过消息，以便微信插件持久化当前会话的 context token。可选的 `weixin_account_id` 用于固定账号；未配置时仅允许恰好一个正常运行的微信账号。OpenClaw 微信插件的通用出站实现需要在调用方未显式传入 context token 时，按账号和固定收件人恢复已持久化 token；插件升级或重装后需确认该兼容修改仍然存在。
+网页来源快速交互使用本机 `openclaw.quick_interaction_completion.weixin_recipient` 作为全局固定接收人；`weixin_account_id` 是可选兼容性覆盖，当前单 ClawBot 部署保持 `null`，发送时仅允许并自动选择恰好一个正常运行的微信账号。微信 Chub 入站任务不使用该默认值，而是将 `before_dispatch` 的可信账号和发送者绑定到本任务，完成时只按该路由回送。收件人必须先主动向对应 ClawBot 发送过消息，以便微信插件按账号与收件人持久化 Context Token；路由缺失或失效时通知失败，不切换目标。插件升级或重装后需确认该兼容能力仍然存在。
 
-当前微信插件需要额外兼容处理，原因是通道启动和通用出站发送可能运行在相互隔离的插件模块实例中，不能只依赖进程内 Map。补丁同时覆盖 token 落盘、出站实例惰性恢复、固定收件人回退和持久化文件 `600` 权限。面向后续 AI Agent 的恢复顺序、行为不变量、关键代码、参考 patch、升级复检和分层验收见 [微信 ClawBot Context Token 持久化 AI 补丁规范](WEIXIN_CLAWBOT_CONTEXT_TOKEN_AI_PATCH.md)。首页检测不得自动修改第三方插件，也不能只按插件版本号判断兼容性；上游版本可能回移或原生实现同等能力，应优先识别明确能力或必要行为特征。
+当前微信插件需要额外兼容处理，原因是通道启动和通用出站发送可能运行在相互隔离的插件模块实例中，不能只依赖进程内 Map。补丁同时覆盖 token 落盘、出站实例按账号与目标惰性恢复和持久化文件 `600` 权限。面向后续 AI Agent 的恢复顺序、行为不变量、关键代码、参考 patch、升级复检和分层验收见 [微信 ClawBot Context Token 持久化 AI 补丁规范](WEIXIN_CLAWBOT_CONTEXT_TOKEN_AI_PATCH.md)。首页检测不得自动修改第三方插件，也不能只按插件版本号判断兼容性；上游版本可能回移或原生实现同等能力，应优先识别明确能力或必要行为特征。
 
 ### 5.2 Chub OpenClaw 插件
 

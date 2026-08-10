@@ -54,11 +54,13 @@ notifications:
 
 openclaw:
   weixin_chub_mode:
-    # Explicitly enable only after the single-account WeChat private-message route is ready.
+    # Explicitly enable only after the single-Owner WeChat private-message route is ready.
     enabled: false
     workspace_id: "chub"
   quick_interaction_completion:
-    # Set the fixed recipient after it has messaged the ClawBot once.
+    # Default recipient for Chub/page-origin quick interactions only.
+    # Keep weixin_account_id null to select the only healthy ClawBot; set it only as a
+    # compatibility override. Weixin inbound tasks use their immutable task route.
     enabled: true
     weixin_account_id: null
     weixin_recipient: null

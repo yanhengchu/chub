@@ -19,7 +19,7 @@
       "wechatChubStatusMode": {
         "type": "boolean",
         "default": false,
-        "description": "Status-routing phase only: check the fixed Chub Weixin mode endpoint for direct messages without running an agent or LLM."
+        "description": "Route Weixin direct messages to the fixed Chub task endpoint without running an OpenClaw agent or LLM."
       }
     }
   },

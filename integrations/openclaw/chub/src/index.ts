@@ -6,7 +6,10 @@ import {
 } from "openclaw/plugin-sdk/core";
 
 import type { ChubConfig } from "./client.js";
-import { fetchWeixinChubModeStatus } from "./client.js";
+import {
+  fetchWeixinChubModeStatus,
+  submitWeixinChubModeTask,
+} from "./client.js";
 import { getStatusTool } from "./tools/get-status.js";
 import {
   sendNotificationTool,
@@ -30,7 +33,7 @@ const configSchema = Type.Object({
   })),
   wechatChubStatusMode: Type.Optional(Type.Boolean({
     default: false,
-    description: "Test only: reply to Weixin direct messages with fixed Chub status without running an agent or LLM.",
+    description: "Route Weixin direct messages to the fixed Chub task endpoint without running an OpenClaw agent or LLM.",
   })),
 });
 
@@ -42,7 +45,7 @@ function wechatStatusReply(
   }
   if (!status.ready) {
     if (status.code === "configuration_invalid") {
-      return "Chub 微信模式配置无效：固定工作区不可用。本次消息未调用 OpenClaw Agent 或 LLM。";
+      return "Chub 微信模式配置无效：工作区、权限、模型或微信回送配置不可用。本次消息未调用 OpenClaw Agent 或 LLM。";
     }
     if (status.code === "codex_unavailable") {
       return "Chub 微信模式未就绪：Codex 运行依赖不可用。本次消息未调用 OpenClaw Agent 或 LLM。";
@@ -54,6 +57,67 @@ function wechatStatusReply(
     "Chub 状态路由可用；当前阶段不会提交微信任务。",
     "本次消息未调用 OpenClaw Agent 或 LLM。",
   ].join("\n");
+}
+
+async function sha256(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(value),
+  );
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+async function submissionIdentity(
+  event: {
+    content: string;
+    channel?: string;
+    sessionKey?: string;
+    senderId?: string;
+    timestamp?: number;
+  },
+  context: {
+    accountId?: string;
+    conversationId?: string;
+    sessionKey?: string;
+    senderId?: string;
+  },
+): Promise<{ messageId: string; correlationId?: string } | null> {
+  if (!Number.isFinite(event.timestamp)) {
+    return null;
+  }
+  const sessionKey = context.sessionKey ?? event.sessionKey ?? "";
+  const messageDigest = await sha256(JSON.stringify([
+    event.channel ?? "",
+    context.accountId?.trim() ?? "",
+    context.conversationId ?? "",
+    context.senderId?.trim()
+      || event.senderId?.trim()
+      || context.conversationId?.trim()
+      || "",
+    event.timestamp,
+    event.content,
+  ]));
+  return {
+    messageId: `openclaw-weixin:${messageDigest}`,
+    correlationId: sessionKey
+      ? `openclaw-session:${await sha256(sessionKey)}`
+      : undefined,
+  };
+}
+
+function wechatSubmissionReply(
+  submission: Awaited<ReturnType<typeof submitWeixinChubModeTask>>,
+): string {
+  if (!submission.available) {
+    return `Chub 微信任务提交失败：${submission.message}\n本次消息未调用 OpenClaw Agent 或 LLM。`;
+  }
+  const lines = submission.duplicate
+    ? ["重复消息已确认，任务不会再次执行。", submission.message]
+    : [submission.message];
+  lines.push("本次消息未调用 OpenClaw Agent 或 LLM。");
+  return lines.join("\n");
 }
 
 const plugin: ReturnType<typeof definePluginEntry> = definePluginEntry({
@@ -70,7 +134,7 @@ const plugin: ReturnType<typeof definePluginEntry> = definePluginEntry({
       expiresAt: number;
     }>();
 
-    api.on("before_dispatch", async (event) => {
+    api.on("before_dispatch", async (event, context) => {
       if (
         config.wechatChubStatusMode !== true
         || event.channel !== "openclaw-weixin"
@@ -83,9 +147,42 @@ const plugin: ReturnType<typeof definePluginEntry> = definePluginEntry({
       if (status.available && !status.enabled) {
         return;
       }
+      if (!status.available || !status.ready) {
+        return {
+          handled: true,
+          text: wechatStatusReply(status),
+        };
+      }
+      const identity = await submissionIdentity(event, context);
+      if (identity === null) {
+        return {
+          handled: true,
+          text: "Chub 微信任务提交失败：微信消息缺少稳定标识，请重新发送。\n本次消息未调用 OpenClaw Agent 或 LLM。",
+        };
+      }
+      const replyAccountId = context.accountId?.trim();
+      const replyRecipient = context.senderId?.trim()
+        || event.senderId?.trim()
+        || context.conversationId?.trim();
+      if (
+        !replyAccountId
+        || !replyRecipient
+        || !replyRecipient.endsWith("@im.wechat")
+      ) {
+        return {
+          handled: true,
+          text: "Chub 微信任务提交失败：无法确认本次消息的微信回送路由，请重新发送。\n本次消息未调用 OpenClaw Agent 或 LLM。",
+        };
+      }
+      const submission = await submitWeixinChubModeTask(config, {
+        ...identity,
+        prompt: event.content,
+        replyAccountId,
+        replyRecipient,
+      });
       return {
         handled: true,
-        text: wechatStatusReply(status),
+        text: wechatSubmissionReply(submission),
       };
     });
 

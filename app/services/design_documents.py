@@ -17,6 +17,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DOCUMENTS_ROOT = PROJECT_ROOT / "docs"
 DOCUMENTS_INDEX = DOCUMENTS_ROOT / "design_documents.json"
 MAX_DOCUMENT_BYTES = 512 * 1024
+ALLOWED_DOCUMENT_STATUSES = frozenset(
+    {"调研中", "待实现", "进行中", "待验收", "已验收", "持续维护"}
+)
 LOGGER = logging.getLogger("hub.project_documents")
 _STATE_LOCK = Lock()
 _DOCUMENT_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
@@ -132,8 +135,7 @@ def _load_documents() -> tuple[DesignDocument, ...]:
             or not summary.strip()
             or len(summary) > 300
             or not isinstance(status, str)
-            or not status.strip()
-            or len(status) > 40
+            or status.strip() not in ALLOWED_DOCUMENT_STATUSES
             or not isinstance(relative_path, str)
             or not relative_path
         ):

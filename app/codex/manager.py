@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import os
+import re
 import shutil
 import socket
+import stat
 import subprocess
 import threading
 import time
@@ -36,6 +39,7 @@ from app.core.response import ApiError
 
 LOGGER = logging.getLogger("hub.codex")
 PROFILE_MARKER = "# Managed by Chub Codex PTY"
+CODEX_SESSION_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
 
 
 class CodexPtyManager:
@@ -169,6 +173,70 @@ class CodexPtyManager:
         self._require_available()
         with self._lock:
             self._ensure_profile()
+
+    def has_active_writer(self, codex_session_id: str | None) -> bool:
+        """Probe Codex's local writer lock without creating or modifying it."""
+        if not codex_session_id:
+            return False
+        if CODEX_SESSION_ID_PATTERN.fullmatch(codex_session_id) is None:
+            raise ApiError(
+                503,
+                "codex_writer_status_unavailable",
+                "Unable to verify Codex session writer state",
+            )
+        lock_path = (
+            self.codex_home
+            / "thread-writer-locks"
+            / f"{codex_session_id}.lock"
+        )
+        flags = (
+            os.O_RDWR
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        try:
+            descriptor = os.open(lock_path, flags)
+        except FileNotFoundError:
+            return False
+        except OSError as exc:
+            LOGGER.warning("Unable to open Codex writer lock", exc_info=True)
+            raise ApiError(
+                503,
+                "codex_writer_status_unavailable",
+                "Unable to verify Codex session writer state",
+            ) from exc
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise OSError("Codex writer lock is not a regular file")
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            return False
+        except OSError as exc:
+            LOGGER.warning("Unable to inspect Codex writer lock", exc_info=True)
+            raise ApiError(
+                503,
+                "codex_writer_status_unavailable",
+                "Unable to verify Codex session writer state",
+            ) from exc
+        finally:
+            os.close(descriptor)
+
+    def wait_for_writer_release(
+        self,
+        codex_session_id: str | None,
+        *,
+        timeout: float = 3.0,
+    ) -> bool:
+        deadline = time.monotonic() + max(0.0, timeout)
+        while self.has_active_writer(codex_session_id):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(0.05, remaining))
+        return True
 
     def ensure_terminal(self, session_id: str) -> CodexSession:
         self._require_available()

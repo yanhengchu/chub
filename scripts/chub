@@ -376,6 +376,10 @@ PY
 }
 
 restart_service() {
+    if [[ "${CHUB_ACTIVITY_SOURCE:-}" == "quick" ]]; then
+        "$PROJECT_ROOT/scripts/chub-web-restart"
+        return
+    fi
     check_codex_pty_requirements
     case "$(platform_name)" in
         macos)

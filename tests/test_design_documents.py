@@ -19,7 +19,7 @@ def configure_document(monkeypatch, root: Path, content: str) -> None:
                         "id": "design",
                         "title": "测试方案",
                         "summary": "测试摘要",
-                        "status": "讨论中",
+                        "status": "调研中",
                         "path": "design.md",
                     }
                 ],
@@ -113,6 +113,21 @@ def test_design_document_index_is_reloaded(monkeypatch, tmp_path: Path) -> None:
     assert [item.id for item in documents] == ["new-design"]
 
 
+def test_design_document_index_rejects_custom_status(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    configure_document(monkeypatch, tmp_path, "# 测试内容")
+    payload = json.loads(service.DOCUMENTS_INDEX.read_text(encoding="utf-8"))
+    payload["documents"][0]["status"] = "接口已接入，任务提交待实现"
+    service.DOCUMENTS_INDEX.write_text(
+        json.dumps(payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    assert service.list_design_documents() == []
+
+
 def test_design_document_index_rejects_unsafe_path(
     monkeypatch,
     tmp_path: Path,
@@ -166,3 +181,8 @@ def test_registered_project_documents_exist() -> None:
 
     assert documents
     assert all(service._document_path(document).is_file() for document in documents)
+    assert all(
+        document.status in service.ALLOWED_DOCUMENT_STATUSES
+        and 2 <= len(document.status) <= 4
+        for document in documents
+    )

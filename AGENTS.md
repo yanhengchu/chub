@@ -56,11 +56,14 @@ Chub 是个人维护的轻量设备管理服务，主要技术栈为 Python 3.12
 - 文件读取必须限制行数、字节数和单行长度，避免一次加载无界内容。
 - 后台服务行为需同时考虑 macOS 和 Ubuntu；无法实机验证的平台要在结果中说明。
 - Web 自重启使用 `scripts/chub-web-restart`，不要从服务内部执行 `bootout` 后再依赖同一子进程启动服务。
+- 快速交互中需要重启 Chub 时，只调用一次 `scripts/chub-web-restart` 登记延迟重启，不直接调用
+  `launchctl`、`systemctl` 或其他服务管理命令；继续完成任务和最终回复，由 Chub 在全部快速交互结束后重启。
 - 异步操作不能仅凭子进程成功创建就宣告完成；重启等操作应通过实例 ID、健康状态或其他最终状态确认结果。
 - 新增维护操作时，同时考虑操作日志的 `requested`、`started`、`succeeded` 和 `failed` 状态；无法由旧进程确认最终结果时，不要伪造成功日志。
-- 微信或 OpenClaw 触发 Chub 操作时，必须能够以非敏感标识关联入口请求、允许身份、OpenClaw 会话、Chub 操作 ID、目标节点和最终结果；不把模型回复或 Tool Call 已创建当作操作成功。
+- 微信或 OpenClaw 触发 Chub 操作时，必须能够以非敏感标识关联入口请求、允许身份、OpenClaw 会话、Chub 操作 ID、目标节点和最终结果；不把模型回复或 Tool Call 已创建当作操作成功。微信 Chub 模式的高权限提交入口只接受与 Chub 同节点的真实 Tailnet socket 来源；只读状态可在固定 Tailnet 内读取，跨节点提交必须另行设计调用方身份边界。
 - 外部 Agent 首先只调用固定只读或低风险白名单能力。重复消息、超时、断链和最终回复失败必须受控处理；高风险能力需要独立设计并逐次明确确认，不因 Owner、Tailnet 认证或模型判断自动放行。唯一已批准的例外是“微信 Chub 模式”：固定 Tailnet 内的单一微信 Owner 通过 OpenClaw 进入 Chub 固定专用 Session 时，可使用该模式配置的 `Full access` 直接执行；该例外不适用于其他 Agent、身份、入口或 Session，撤销时关闭微信 Chub 模式。
-- 微信 ClawBot 的设备能力调用固定为“微信 ClawBot → OpenClaw → Chub → OpenClaw → 微信 ClawBot”。Chub 不得为处理该类请求反向调用 OpenClaw、Gateway 或 `openclaw agent`。唯一受控例外是 Chub 页面发起或已批准的微信 Chub 模式快速交互完成通知：任务结束后可用固定账号和固定收件人调用 `openclaw message send`，不得调用 Agent，也不得借此触发新的设备能力。Chub 只读复用 OpenClaw 的模型配置、直连模型供应商，以及直接调用自身通知能力均不属于反向调用。
+- 微信 ClawBot 的设备能力调用固定为“微信 ClawBot → OpenClaw → Chub → OpenClaw → 微信 ClawBot”。Chub 不得为处理该类请求调用 OpenClaw Agent、Gateway Agent 路由或 `openclaw agent`。受控例外仅包括：提交微信 Chub 任务前读取本机通道状态以校验本次 Hook 路由；任务结束后使用该任务保存的账号和发送者调用 `openclaw message send`；页面来源快速交互使用全局固定接收人发送完成通知，账号默认选择唯一健康 ClawBot，可由兼容性配置明确覆盖。以上均不得触发新的设备能力，微信任务路由缺失或失效时不得回退到全局目标。Chub 只读复用 OpenClaw 的模型配置、直连模型供应商，以及直接调用自身通知能力均不属于反向调用。
+- Chub 功能涉及 OpenClaw 插件变更时，必须先在本仓库 `integrations/openclaw/chub/` 同步维护源码、静态清单、测试和插件说明，并在对应设计文档记录行为、配置、部署及验收变化；OpenClaw 实际加载目录只接收由本仓库构建并验证的运行产物，不得直接修改后形成仓库外的独立实现。
 - 不随意引入前端框架、数据库、任务队列或其他复杂基础设施。
 
 ## 前端目录与加载边界

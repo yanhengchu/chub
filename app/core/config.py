@@ -132,6 +132,23 @@ class OpenClawCompletionNotificationConfig(StrictModel):
 class OpenClawWeixinChubModeConfig(StrictModel):
     enabled: bool = False
     workspace_id: Literal["home", "workspace", "chub"] = "chub"
+    permission_mode: Literal[
+        "ask",
+        "auto-review",
+        "read-only",
+        "full-access",
+    ] = "full-access"
+    model: str | None = Field(default=None, min_length=1, max_length=128)
+    reasoning_effort: str | None = Field(default=None, min_length=1, max_length=32)
+    state_file: Path = Path("data/state/openclaw/weixin-chub-mode.json")
+
+    @field_validator("model", "reasoning_effort", mode="before")
+    @classmethod
+    def normalize_optional_selection(cls, value: object) -> object:
+        if isinstance(value, str):
+            value = value.strip()
+            return value or None
+        return value
 
 
 class OpenClawConfig(StrictModel):
@@ -197,6 +214,10 @@ class Settings(StrictModel):
         if not self.project_documents.state_file.is_absolute():
             self.project_documents.state_file = (
                 PROJECT_ROOT / self.project_documents.state_file
+            )
+        if not self.openclaw.weixin_chub_mode.state_file.is_absolute():
+            self.openclaw.weixin_chub_mode.state_file = (
+                PROJECT_ROOT / self.openclaw.weixin_chub_mode.state_file
             )
         self.notifications.registry_file = (
             self.notifications.registry_file.expanduser().resolve()

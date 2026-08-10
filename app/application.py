@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import subprocess
 from contextlib import asynccontextmanager
 from uuid import uuid4
 
@@ -29,7 +30,7 @@ from app.codex.routes import api_router as codex_api_router
 from app.codex.routes import web_router as codex_web_router
 from app.codex.tickets import TerminalTicketStore
 from app.automations.manager import AutomationManager
-from app.core.config import Settings, load_settings
+from app.core.config import PROJECT_ROOT, Settings, load_settings
 from app.core.logger import configure_logging
 from app.core.network import is_tailscale_ip
 from app.core.platform import detect_platform
@@ -43,6 +44,8 @@ from app.core.response import (
 )
 from app.services.openclaw import OpenClawManager
 from app.services.openclaw_completion_notifications import OpenClawCompletionNotifier
+from app.services.deferred_restart import DeferredRestartCoordinator
+from app.services.openclaw_weixin_chub_mode import WeixinChubModeManager
 from app.notifications import NotificationService
 from app.web.routes import STATIC_DIR, router as web_router
 
@@ -94,6 +97,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     resolved_settings = settings or load_settings()
+    instance_id = uuid4().hex
     configure_logging(resolved_settings.logs)
 
     detected_platform = detect_platform()
@@ -131,12 +135,51 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     completion_notifier = OpenClawCompletionNotifier(
         resolved_settings.openclaw.quick_interaction_completion
     )
+
+    def start_deferred_restart() -> None:
+        command = PROJECT_ROOT / "scripts" / "chub-web-restart"
+        if not command.is_file():
+            raise OSError("Chub restart command is unavailable")
+        subprocess.Popen(
+            [str(command)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+    deferred_restart = DeferredRestartCoordinator(
+        resolved_settings.codex_pty.data_file.with_name("deferred-restart.json"),
+        instance_id,
+        start_deferred_restart,
+    )
     quick_interactions = QuickInteractionManager(
         resolved_settings.codex_pty.data_file,
         resolved_settings.codex_pty.runtime_dir,
         codex_pty_manager,
         completion_notifier.notify,
+        deferred_restart,
         timeout_seconds=resolved_settings.codex_pty.quick_interaction_timeout_seconds,
+    )
+    deferred_restart.set_ready_check(quick_interactions.deferred_restart_ready)
+    deferred_restart.set_completion_handler(
+        quick_interactions.record_deferred_restart_completion
+    )
+    terminal_tickets = TerminalTicketStore(
+        resolved_settings.codex_pty.ticket_ttl_seconds
+    )
+    terminal_connections = TerminalConnectionRegistry()
+
+    def reclaim_weixin_terminal(session_id: str):
+        terminal_tickets.revoke_session(session_id)
+        terminal_connections.close_session(session_id)
+        return codex_pty_manager.stop_session(session_id)
+
+    weixin_chub_mode = WeixinChubModeManager(
+        resolved_settings,
+        codex_pty_manager,
+        quick_interactions,
+        completion_notifier.validate_weixin_route,
+        reclaim_weixin_terminal,
     )
     codex_pty_manager.set_quick_interaction_checker(quick_interactions.is_running)
     openclaw_manager = OpenClawManager()
@@ -144,6 +187,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_application: FastAPI):
+        deferred_restart.service_started()
         try:
             yield
         finally:
@@ -161,16 +205,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     application.state.settings = resolved_settings
-    application.state.instance_id = uuid4().hex
+    application.state.instance_id = instance_id
     application.state.detected_platform = detected_platform
     application.state.codex_pty_available = codex_pty_available
     application.state.codex_pty_manager = codex_pty_manager
     application.state.codex_rate_limits = codex_rate_limits
     application.state.quick_interactions = quick_interactions
-    application.state.terminal_tickets = TerminalTicketStore(
-        resolved_settings.codex_pty.ticket_ttl_seconds
-    )
-    application.state.terminal_connections = TerminalConnectionRegistry()
+    application.state.deferred_restart = deferred_restart
+    application.state.weixin_chub_mode = weixin_chub_mode
+    application.state.terminal_tickets = terminal_tickets
+    application.state.terminal_connections = terminal_connections
     application.state.automation_manager = AutomationManager(resolved_settings)
     application.state.openclaw_manager = openclaw_manager
     application.state.notification_service = notification_service

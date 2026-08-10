@@ -28,7 +28,6 @@ const cyberRainDensityValue = document.querySelector("#cyber-rain-density-value"
 const cyberStyleSettingsMessage = document.querySelector("#cyber-style-settings-message");
 const styleOptionRows = document.querySelectorAll("[data-style-option]");
 let codexModels = [];
-let codexDefaultReasoningEffortId = "";
 
 const CODEX_REASONING_LABELS = {
   low: "Low",
@@ -169,10 +168,8 @@ function defaultModelOptionLabel() {
   return "跟随 Codex 默认";
 }
 
-function defaultReasoningOptionLabel(model) {
-  const effort = codexDefaultReasoningEffortId || model?.default_level || "";
-  const label = CODEX_REASONING_LABELS[effort] || effort;
-  return label ? `跟随 Codex 默认（${label}）` : "跟随 Codex 默认";
+function defaultReasoningOptionLabel() {
+  return "跟随 Codex 默认";
 }
 
 function selectedCodexModel() {
@@ -181,7 +178,7 @@ function selectedCodexModel() {
 
 function renderCodexReasoningLevels(preferred = "") {
   const model = selectedCodexModel();
-  const options = [createOption("", defaultReasoningOptionLabel(model))];
+  const options = [createOption("", defaultReasoningOptionLabel())];
   if (model) {
     model.levels.forEach((level) => {
       options.push(
@@ -196,15 +193,12 @@ function renderCodexReasoningLevels(preferred = "") {
   return Boolean(supported || !preferred);
 }
 
-function renderCodexModels(models, defaults = {}) {
+function renderCodexModels(models) {
   const preferredModel = readCodexPreference(CODEX_DEFAULT_MODEL_KEY);
   const preferredEffort = readCodexPreference(
     CODEX_DEFAULT_REASONING_EFFORT_KEY,
   );
   codexModels = models;
-  codexDefaultReasoningEffortId = (
-    defaults.reasoningEffort || codexDefaultReasoningEffortId
-  );
   const options = [createOption("", defaultModelOptionLabel())];
   models.forEach((model) => {
     options.push(createOption(model.id, model.name));
@@ -216,7 +210,11 @@ function renderCodexModels(models, defaults = {}) {
   const effortAvailable = renderCodexReasoningLevels(
     modelAvailable ? preferredEffort : "",
   );
-  if ((!modelAvailable && preferredModel) || !effortAvailable) {
+  if (
+    (!modelAvailable && preferredModel)
+    || (!preferredModel && preferredEffort)
+    || !effortAvailable
+  ) {
     try {
       saveCodexPreference(CODEX_DEFAULT_MODEL_KEY, codexDefaultModel.value);
       saveCodexPreference(
@@ -243,10 +241,7 @@ async function loadCodexModels() {
     if (!response.ok || payload.success !== true || !Array.isArray(payload.data?.models)) {
       throw new Error("model_catalog_unavailable");
     }
-    renderCodexModels(payload.data.models, {
-      model: payload.data.default_model,
-      reasoningEffort: payload.data.default_reasoning_effort,
-    });
+    renderCodexModels(payload.data.models);
   } catch (_error) {
     try {
       saveCodexPreference(CODEX_DEFAULT_MODEL_KEY, "");
@@ -260,7 +255,7 @@ async function loadCodexModels() {
     codexDefaultModel.value = "";
     codexDefaultModel.disabled = true;
     codexDefaultReasoningEffort.replaceChildren(
-      createOption("", defaultReasoningOptionLabel(null)),
+      createOption("", defaultReasoningOptionLabel()),
     );
     codexDefaultReasoningEffort.value = "";
     codexDefaultReasoningEffort.disabled = true;
@@ -286,9 +281,8 @@ codexDefaultModel.addEventListener("change", () => {
     saveCodexPreference(CODEX_DEFAULT_MODEL_KEY, codexDefaultModel.value);
     renderCodexReasoningLevels();
     saveCodexPreference(CODEX_DEFAULT_REASONING_EFFORT_KEY, "");
-    codexSessionSettingsMessage.textContent =
-      "已保存，之后新建的 Session 将使用该模型与等级。";
-    codexSessionSettingsMessage.className = "message message-success";
+    codexSessionSettingsMessage.textContent = "";
+    codexSessionSettingsMessage.className = "message";
   } catch (_error) {
     renderCodexModels(codexModels);
     codexSessionSettingsMessage.textContent = "当前浏览器无法保存会话偏好。";
@@ -302,9 +296,8 @@ codexDefaultReasoningEffort.addEventListener("change", () => {
       CODEX_DEFAULT_REASONING_EFFORT_KEY,
       codexDefaultReasoningEffort.value,
     );
-    codexSessionSettingsMessage.textContent =
-      "已保存，之后新建的 Session 将使用该模型与等级。";
-    codexSessionSettingsMessage.className = "message message-success";
+    codexSessionSettingsMessage.textContent = "";
+    codexSessionSettingsMessage.className = "message";
   } catch (_error) {
     renderCodexReasoningLevels(
       readCodexPreference(CODEX_DEFAULT_REASONING_EFFORT_KEY),
