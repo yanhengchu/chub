@@ -20,5 +20,5 @@
 
 - 当前 Codex Session、Activity、单写入者和延迟重启规则见 [Chub AI Session 状态模型设计](../../AI_SESSION_STATE_DESIGN.md)。
 - 当前前端结构和 UI 基线见 [Chub 前端 UI 模块化设计](../../ARCHITECTURE_EVOLUTION_DESIGN.md)。
-- 当前自动化设计见 [配置驱动的飞书文档下载自动化方案](../../AUTOMATION_DOWNLOAD_DESIGN.md)。
+- 当前周报自动化与生成设计见 [本期工作周报自动化与生成设计](../../WEEKLY_REPORT_AUTOMATION_DESIGN.md)。
 - 当前产品入口和运行说明见[项目 README](../../../README.md)。

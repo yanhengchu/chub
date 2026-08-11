@@ -41,8 +41,22 @@ WeixinChubModeSubmissionCode = Literal[
     "submission_failed",
     "submission_interrupted",
 ]
+WeixinChubModeDispatchCode = Literal[
+    "mode_disabled",
+    "submitted",
+    "duplicate",
+    "in_progress",
+    "configuration_invalid",
+    "codex_unavailable",
+    "delivery_route_invalid",
+    "message_conflict",
+    "submission_failed",
+    "submission_interrupted",
+    "state_unavailable",
+]
 MAX_STORED_SUBMISSIONS = 5_000
 MAX_STATE_BYTES = 8 * 1024 * 1024
+MAX_DISPATCH_MESSAGE_CHARS = 3_000
 LOGGER = logging.getLogger("hub.openclaw.weixin_chub_mode")
 
 
@@ -63,10 +77,10 @@ class WeixinChubModeSubmission(_StrictModel):
     correlation_id: str | None = Field(default=None, max_length=500)
     operation_id: str = Field(min_length=1, max_length=128)
     delivery_route_fingerprint: str | None = Field(default=None, max_length=64)
-    status: Literal["reserved", "submitted", "rejected"]
+    status: Literal["reserved", "submitted", "rejected", "passed"]
     code: WeixinChubModeSubmissionCode
     message: str = Field(max_length=500)
-    http_status: Literal[409, 503] = 409
+    http_status: Literal[200, 409, 503] | None = None
     session_id: str | None = Field(default=None, max_length=128)
     task_id: str | None = Field(default=None, max_length=128)
     new_session: bool = False
@@ -95,6 +109,12 @@ class WeixinChubModeSubmissionResult(_StrictModel):
     code: Literal["submitted"] = "submitted"
     message: str
     task_summary: str | None = Field(default=None, max_length=48)
+
+
+class WeixinChubModeDispatchResult(_StrictModel):
+    protocol_version: Literal[2] = 2
+    disposition: Literal["pass", "reply"]
+    message: str | None = Field(default=None, max_length=3000)
 
 
 class WeixinChubModeManager:
@@ -176,7 +196,13 @@ class WeixinChubModeManager:
                 submission.status = "rejected"
                 submission.code = "submission_interrupted"
                 submission.message = "Chub 重启中断了本次提交，请发送一条新消息重试。"
+                submission.http_status = 409
                 submission.updated_at = utc_now()
+                changed = True
+            elif submission.status in {"submitted", "passed"} and (
+                submission.http_status != 200
+            ):
+                submission.http_status = 200
                 changed = True
         if changed:
             try:
@@ -513,6 +539,7 @@ class WeixinChubModeManager:
             reservation.status = "submitted"
             reservation.code = "submitted"
             reservation.message = "任务已提交，完成后将通过微信发送结果。"
+            reservation.http_status = 200
             reservation.session_id = session_id
             reservation.task_id = task.id
             reservation.new_session = new_session
@@ -543,6 +570,194 @@ class WeixinChubModeManager:
                     getattr(task, "summary", None) or build_task_summary(prompt)
                 ),
             )
+
+    def dispatch(
+        self,
+        *,
+        message_id: str,
+        prompt: str,
+        message_type: Literal["text", "voice"],
+        correlation_id: str | None,
+        source_ip: str,
+        delivery_route: QuickInteractionWeixinRoute,
+    ) -> WeixinChubModeDispatchResult:
+        """Route one trusted Weixin message through the single public contract."""
+        with self._lock:
+            if self._state_error:
+                self._log_standalone_dispatch("failed", source_ip)
+                return self._dispatch_failure("state_unavailable")
+
+            route_fingerprint = self._route_fingerprint(delivery_route)
+            duplicate = self._find_submission(message_id)
+            if duplicate is not None:
+                if duplicate.delivery_route_fingerprint != route_fingerprint:
+                    self._log_standalone_dispatch("failed", source_ip)
+                    return self._dispatch_failure("message_conflict")
+                if duplicate.status == "passed":
+                    self._log_standalone_dispatch("succeeded", source_ip)
+                    return WeixinChubModeDispatchResult(
+                        disposition="pass",
+                    )
+                try:
+                    submission = self.submit(
+                        message_id=message_id,
+                        prompt=prompt,
+                        correlation_id=correlation_id,
+                        source_ip=source_ip,
+                        delivery_route=delivery_route,
+                    )
+                except ApiError as exc:
+                    self._log_standalone_dispatch("failed", source_ip)
+                    return self._dispatch_failure_from_error(exc)
+                self._log_standalone_dispatch("succeeded", source_ip)
+                return WeixinChubModeDispatchResult(
+                    disposition="reply",
+                    message="该消息已处理，任务不会重复执行。",
+                )
+
+            readiness = self.status()
+            if readiness.code == "disabled":
+                if duplicate is None:
+                    try:
+                        self._remember_passed_dispatch(
+                            message_id=message_id,
+                            correlation_id=correlation_id,
+                            route_fingerprint=route_fingerprint,
+                            source_ip=source_ip,
+                        )
+                    except OSError:
+                        self._state_error = True
+                        return self._dispatch_failure("state_unavailable")
+                return WeixinChubModeDispatchResult(
+                    disposition="pass",
+                )
+
+            try:
+                submission = self.submit(
+                    message_id=message_id,
+                    prompt=prompt,
+                    correlation_id=correlation_id,
+                    source_ip=source_ip,
+                    delivery_route=delivery_route,
+                )
+            except ApiError as exc:
+                return self._dispatch_failure_from_error(exc)
+
+            if submission.duplicate:
+                return WeixinChubModeDispatchResult(
+                    disposition="reply",
+                    message="该消息已处理，任务不会重复执行。",
+                )
+            message = self._submission_dispatch_message(
+                submission,
+                prompt=prompt,
+                message_type=message_type,
+            )
+            return WeixinChubModeDispatchResult(
+                disposition="reply",
+                message=message,
+            )
+
+    @staticmethod
+    def _submission_dispatch_message(
+        submission: WeixinChubModeSubmissionResult,
+        *,
+        prompt: str,
+        message_type: Literal["text", "voice"],
+    ) -> str:
+        message = submission.message
+        if submission.task_summary:
+            message = "\n\n".join(
+                (
+                    "任务已提交",
+                    f"任务摘要：{submission.task_summary}",
+                    "完成后将原路发送结果。",
+                )
+            )
+        if message_type != "voice":
+            return message
+
+        prefix = f"{message}\n\n语音识别内容：\n"
+        truncated_suffix = "\n（语音识别内容过长，已截断）"
+        available = max(0, MAX_DISPATCH_MESSAGE_CHARS - len(prefix))
+        if len(prompt) <= available:
+            transcript = prompt
+        else:
+            body_length = max(0, available - len(truncated_suffix))
+            transcript = f"{prompt[:body_length]}{truncated_suffix}"
+        return f"{prefix}{transcript}"
+
+    def _remember_passed_dispatch(
+        self,
+        *,
+        message_id: str,
+        correlation_id: str | None,
+        route_fingerprint: str,
+        source_ip: str,
+    ) -> None:
+        operation_id = uuid4().hex
+        now = utc_now()
+        passed = WeixinChubModeSubmission(
+            message_id=message_id,
+            correlation_id=correlation_id,
+            operation_id=operation_id,
+            delivery_route_fingerprint=route_fingerprint,
+            status="passed",
+            code="mode_disabled",
+            message="微信 Chub 模式未启用，已放行原 OpenClaw 流程。",
+            http_status=200,
+            created_at=now,
+            updated_at=now,
+        )
+        next_state = self._state.model_copy(deep=True)
+        next_state.submissions.append(passed)
+        self._log_dispatch(operation_id, "requested", source_ip)
+        self._log_dispatch(operation_id, "started", source_ip)
+        try:
+            self._write_state(next_state)
+        except OSError:
+            self._log_dispatch(operation_id, "failed", source_ip)
+            raise
+        self._state = next_state
+        self._log_dispatch(operation_id, "succeeded", source_ip)
+
+    @staticmethod
+    def _dispatch_failure_from_error(
+        exc: ApiError,
+    ) -> WeixinChubModeDispatchResult:
+        code_map: dict[str, WeixinChubModeDispatchCode] = {
+            "weixin_chub_mode_in_progress": "in_progress",
+            "weixin_chub_mode_configuration_invalid": "configuration_invalid",
+            "weixin_chub_mode_codex_unavailable": "codex_unavailable",
+            "weixin_chub_mode_delivery_route_invalid": "delivery_route_invalid",
+            "weixin_chub_mode_message_conflict": "message_conflict",
+            "weixin_chub_mode_submission_interrupted": "submission_interrupted",
+            "weixin_chub_mode_state_unavailable": "state_unavailable",
+        }
+        return WeixinChubModeManager._dispatch_failure(
+            code_map.get(exc.code, "submission_failed")
+        )
+
+    @staticmethod
+    def _dispatch_failure(
+        code: WeixinChubModeDispatchCode,
+    ) -> WeixinChubModeDispatchResult:
+        messages = {
+            "in_progress": "任务提交失败：已有微信任务正在执行，请等待完成后重试。",
+            "configuration_invalid": (
+                "任务提交失败：微信 Chub 模式配置无效，请检查工作区、权限、模型和微信通知配置。"
+            ),
+            "codex_unavailable": "任务提交失败：Codex 当前不可用，请稍后重试。",
+            "delivery_route_invalid": "任务提交失败：无法确认本次消息的微信回送通道，请稍后重试。",
+            "message_conflict": "任务提交失败：该消息的回送通道与首次提交不一致。",
+            "submission_interrupted": "上次提交被 Chub 重启中断，请重新发送任务。",
+            "state_unavailable": "任务提交失败：Chub 当前状态不可用，请稍后重试。",
+            "submission_failed": "任务提交失败，请稍后重试。",
+        }
+        return WeixinChubModeDispatchResult(
+            disposition="reply",
+            message=messages.get(code, "任务提交失败，请稍后重试。"),
+        )
 
     def stop(self) -> bool:
         with self._lock:
@@ -694,7 +909,7 @@ class WeixinChubModeManager:
         if submission.status == "submitted":
             return self._result(submission, duplicate=True, task_summary=None)
         raise ApiError(
-            submission.http_status,
+            submission.http_status or 503,
             f"weixin_chub_mode_{submission.code}",
             submission.message,
         )
@@ -775,11 +990,35 @@ class WeixinChubModeManager:
     ) -> None:
         write_operation(
             operation_id=operation_id,
-            action="weixin_chub_mode_submit",
+            action="weixin_chub_mode_dispatch",
             status=status,
             target=target,
             source_ip=source_ip,
         )
+
+    def _log_dispatch(
+        self,
+        operation_id: str,
+        status: str,
+        source_ip: str,
+    ) -> None:
+        write_operation(
+            operation_id=operation_id,
+            action="weixin_chub_mode_dispatch",
+            status=status,
+            target=self.settings.node.id,
+            source_ip=source_ip,
+        )
+
+    def _log_standalone_dispatch(
+        self,
+        outcome: Literal["succeeded", "failed"],
+        source_ip: str,
+    ) -> None:
+        operation_id = uuid4().hex
+        self._log_dispatch(operation_id, "requested", source_ip)
+        self._log_dispatch(operation_id, "started", source_ip)
+        self._log_dispatch(operation_id, outcome, source_ip)
 
     def _write_state(self, state: WeixinChubModeState) -> None:
         state.submissions = sorted(

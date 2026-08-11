@@ -154,7 +154,7 @@ async def test_home_page_is_public_and_contains_no_token(
     )[0]
     assert 'data-card-return-refresh="true"' not in openclaw_card
     assert "OpenClaw 方案调研" not in response.text
-    assert "OpenClaw 与消息通道接入设计" in response.text
+    assert "OpenClaw–Chub 集成与 ClawBot 消息调度设计" in response.text
     assert "持续维护" in response.text
     assert "份设计资料 · 1 份周报可查看" not in response.text
     assert 'href="/project-docs/openclaw-research"' not in response.text
@@ -800,7 +800,7 @@ async def test_design_document_pages_render_markdown(settings: Settings) -> None
         missing = await client.get("/project-docs/not-registered")
 
     assert listing.status_code == 200
-    assert "配置驱动的飞书文档下载自动化方案" in listing.text
+    assert "本期工作周报自动化与生成设计" in listing.text
     assert "返回首页" not in listing.text
     assert "standalone-list-card" in listing.text
     assert 'target="_blank"' not in listing.text
@@ -813,7 +813,8 @@ async def test_design_document_pages_render_markdown(settings: Settings) -> None
     assert '<span class="badge badge-success">已实现并验收</span>' not in detail.text
     assert '<article class="markdown-body">' in detail.text
     assert "<h2" in detail.text
-    assert "Runner 流程" in detail.text
+    assert "阶段一：资料准备与发布" in detail.text
+    assert "阶段二：重点确认与正式生成" in detail.text
     assert missing.status_code == 404
 
     for response in [listing, detail]:

@@ -5,7 +5,7 @@ const MAX_RESPONSE_BYTES = 64 * 1024;
 export type ChubConfig = {
   baseUrl?: string;
   timeoutMs?: number;
-  wechatChubStatusMode?: boolean;
+  weixinChubMode?: boolean;
 };
 
 export type ChubStatus = {
@@ -20,24 +20,14 @@ export type ChubStatus = {
   checkedAt: string;
 };
 
-export type WeixinChubModeStatus = {
+export type WeixinChubModeDispatch = {
   available: true;
-  enabled: boolean;
-  ready: boolean;
-  code: "ready" | "disabled" | "configuration_invalid" | "codex_unavailable";
+  protocolVersion: 2;
+  disposition: "pass" | "reply";
+  message?: string;
 };
 
-export type WeixinChubModeSubmission = {
-  available: true;
-  accepted: true;
-  duplicate: boolean;
-  newSession: boolean;
-  code: "submitted";
-  message: string;
-  taskSummary?: string;
-};
-
-export type WeixinChubModeSubmissionFailure = {
+export type WeixinChubModeDispatchFailure = {
   available: false;
   error: string;
   message: string;
@@ -95,12 +85,8 @@ export function statusUrl(baseUrl: string): URL {
   return apiUrl(baseUrl, "/api/status");
 }
 
-export function weixinChubModeStatusUrl(baseUrl: string): URL {
-  return apiUrl(baseUrl, "/api/openclaw/wechat-chub-mode/status");
-}
-
-export function weixinChubModeSubmitUrl(baseUrl: string): URL {
-  return apiUrl(baseUrl, "/api/openclaw/wechat-chub-mode/submit");
+export function weixinChubModeDispatchUrl(baseUrl: string): URL {
+  return apiUrl(baseUrl, "/api/openclaw/wechat-chub-mode/dispatch");
 }
 
 function finiteNumber(value: unknown): number | undefined {
@@ -261,43 +247,6 @@ function parseStatus(payload: unknown): ChubStatus {
   };
 }
 
-function parseWeixinChubModeStatus(payload: unknown): WeixinChubModeStatus {
-  if (!payload || typeof payload !== "object") {
-    throw new Error("invalid_chub_response");
-  }
-  const body = payload as Record<string, unknown>;
-  const data = body.data as Record<string, unknown> | undefined;
-  const code = data?.code;
-  if (
-    body.success !== true
-    || typeof data?.enabled !== "boolean"
-    || typeof data?.ready !== "boolean"
-    || ![
-      "ready",
-      "disabled",
-      "configuration_invalid",
-      "codex_unavailable",
-    ].includes(String(code))
-  ) {
-    throw new Error("invalid_chub_response");
-  }
-  const status = {
-    available: true as const,
-    enabled: data.enabled,
-    ready: data.ready,
-    code: code as WeixinChubModeStatus["code"],
-  };
-  if (
-    (status.code === "ready" && (!status.enabled || !status.ready))
-    || (status.code === "disabled" && (status.enabled || status.ready))
-    || (["configuration_invalid", "codex_unavailable"].includes(status.code)
-      && (!status.enabled || status.ready))
-  ) {
-    throw new Error("invalid_chub_response");
-  }
-  return status;
-}
-
 async function readBoundedBody(response: Response): Promise<Uint8Array> {
   if (!response.body) {
     return new Uint8Array();
@@ -385,112 +334,44 @@ export async function fetchChubStatus(
   }
 }
 
-export async function fetchWeixinChubModeStatus(
-  config: ChubConfig,
-  signal?: AbortSignal,
-  fetchImpl: FetchLike = fetch,
-): Promise<WeixinChubModeStatus | ChubToolFailure> {
-  let url: URL;
-  try {
-    if (!config.baseUrl) {
-      throw new Error("invalid_chub_base_url");
-    }
-    url = weixinChubModeStatusUrl(config.baseUrl);
-  } catch (_error) {
-    return chubFailure("chub_configuration_invalid");
-  }
-
-  const timeoutSignal = AbortSignal.timeout(config.timeoutMs ?? 3_000);
-  const requestSignal = signal
-    ? AbortSignal.any([signal, timeoutSignal])
-    : timeoutSignal;
-  try {
-    const response = await fetchImpl(url, {
-      method: "GET",
-      headers: { Accept: "application/json" },
-      redirect: "error",
-      signal: requestSignal,
-    });
-    if (response.status === 401 || response.status === 403) {
-      return chubFailure("chub_authentication_failed");
-    }
-    if (!response.ok) {
-      return chubFailure("chub_status_unavailable");
-    }
-    const declaredLength = Number(response.headers.get("content-length") || "0");
-    if (declaredLength > MAX_RESPONSE_BYTES) {
-      throw new Error("chub_response_too_large");
-    }
-    const bytes = await readBoundedBody(response);
-    return parseWeixinChubModeStatus(
-      JSON.parse(new TextDecoder().decode(bytes)),
-    );
-  } catch (error) {
-    if (error instanceof Error && error.name === "TimeoutError") {
-      return chubFailure("chub_timeout");
-    }
-    if (signal?.aborted) {
-      return chubFailure("chub_cancelled");
-    }
-    if (error instanceof Error && error.message === "chub_response_too_large") {
-      return chubFailure("chub_response_too_large");
-    }
-    if (error instanceof SyntaxError || (error instanceof Error && error.message === "invalid_chub_response")) {
-      return chubFailure("chub_response_invalid");
-    }
-    return chubFailure("chub_unreachable");
-  }
-}
-
-const WEIXIN_SUBMISSION_ERRORS: Record<string, string> = {
-  weixin_chub_mode_in_progress: "任务提交失败：已有微信任务正在执行，请等待完成后重试。",
-  weixin_chub_mode_mode_disabled: "任务提交失败：微信 Chub 模式已关闭。",
-  weixin_chub_mode_configuration_invalid: "任务提交失败：微信 Chub 模式配置无效。",
-  weixin_chub_mode_codex_unavailable: "任务提交失败：Codex 当前不可用，请稍后重试。",
-  weixin_chub_mode_delivery_route_invalid: "任务提交失败：无法确认本次消息的微信回送通道，请稍后重试。",
-  weixin_chub_mode_message_conflict: "任务提交失败：该消息的回送通道与首次提交不一致。",
-  weixin_chub_mode_submission_failed: "任务提交失败，请稍后重试。",
-  weixin_chub_mode_submission_interrupted: "上次提交被 Chub 重启中断，请重新发送任务。",
-  weixin_chub_mode_state_unavailable: "任务提交失败：Chub 当前状态不可用，请稍后重试。",
-  weixin_chub_mode_source_required: "任务提交失败：OpenClaw 与 Chub 的连接校验未通过。",
-};
-
-function weixinSubmissionFailure(
+function weixinDispatchFailure(
   error: string,
-  message: string,
-): WeixinChubModeSubmissionFailure {
-  return { available: false, error, message };
+): WeixinChubModeDispatchFailure {
+  return {
+    available: false,
+    error,
+    message: "Chub 消息通道暂时不可用，请稍后重试。",
+  };
 }
 
-export async function submitWeixinChubModeTask(
+export async function dispatchWeixinChubMessage(
   config: ChubConfig,
   request: {
     messageId: string;
-    prompt: string;
+    content: string;
+    messageType: "text" | "voice";
     correlationId?: string;
     replyAccountId: string;
     replyRecipient: string;
   },
   signal?: AbortSignal,
   fetchImpl: FetchLike = fetch,
-): Promise<WeixinChubModeSubmission | WeixinChubModeSubmissionFailure> {
+): Promise<WeixinChubModeDispatch | WeixinChubModeDispatchFailure> {
   let url: URL;
   try {
     if (!config.baseUrl) {
       throw new Error("invalid_chub_base_url");
     }
-    url = weixinChubModeSubmitUrl(config.baseUrl);
+    url = weixinChubModeDispatchUrl(config.baseUrl);
   } catch (_error) {
-    return weixinSubmissionFailure(
-      "chub_configuration_invalid",
-      "任务提交失败：微信 Chub 模式连接配置无效。",
-    );
+    return weixinDispatchFailure("chub_configuration_invalid");
   }
   if (
     request.messageId.length === 0
     || request.messageId.length > 500
-    || request.prompt.trim().length === 0
-    || request.prompt.length > 8_000
+    || request.content.trim().length === 0
+    || request.content.length > 8_000
+    || !["text", "voice"].includes(request.messageType)
     || (request.correlationId?.length ?? 0) > 500
     || request.replyAccountId.trim().length === 0
     || request.replyAccountId.length > 200
@@ -498,10 +379,7 @@ export async function submitWeixinChubModeTask(
     || request.replyRecipient.length > 500
     || !request.replyRecipient.endsWith("@im.wechat")
   ) {
-    return weixinSubmissionFailure(
-      "weixin_chub_mode_request_invalid",
-      "任务提交失败：消息内容为空或超过长度限制。",
-    );
+    return weixinDispatchFailure("weixin_chub_mode_request_invalid");
   }
 
   const timeoutSignal = AbortSignal.timeout(
@@ -518,8 +396,10 @@ export async function submitWeixinChubModeTask(
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
+        protocol_version: 2,
         message_id: request.messageId,
-        prompt: request.prompt,
+        content: request.content,
+        message_type: request.messageType,
         correlation_id: request.correlationId,
         reply_account_id: request.replyAccountId,
         reply_recipient: request.replyRecipient,
@@ -544,12 +424,8 @@ export async function submitWeixinChubModeTask(
         : undefined;
       const error = typeof body?.error?.code === "string"
         ? body.error.code
-        : "weixin_chub_mode_submission_failed";
-      const message = WEIXIN_SUBMISSION_ERRORS[error]
-        ?? (response.status === 401 || response.status === 403
-          ? "任务提交失败：OpenClaw 未通过 Chub 微信任务入口认证。"
-          : "任务提交失败，请稍后重试。");
-      return weixinSubmissionFailure(error, message);
+        : "weixin_chub_mode_dispatch_failed";
+      return weixinDispatchFailure(error);
     }
     if (!payload || typeof payload !== "object") {
       throw new Error("invalid_chub_response");
@@ -558,61 +434,38 @@ export async function submitWeixinChubModeTask(
     const data = body.data as Record<string, unknown> | undefined;
     if (
       body.success !== true
-      || data?.accepted !== true
-      || typeof data?.duplicate !== "boolean"
-      || typeof data?.new_session !== "boolean"
-      || data?.code !== "submitted"
-      || typeof data?.message !== "string"
-      || data.message.length === 0
-      || data.message.length > 500
-      || !(
-        data.task_summary === null
-        || data.task_summary === undefined
-        || (
-          typeof data.task_summary === "string"
-          && data.task_summary.length > 0
-          && Array.from(data.task_summary).length <= 48
-        )
-      )
+      || data?.protocol_version !== 2
+      || !["pass", "reply"].includes(String(data?.disposition))
+      || (data.disposition === "reply" && (
+        typeof data.message !== "string"
+        || data.message.length === 0
+        || Array.from(data.message).length > 3_000
+      ))
+      || (data.disposition === "pass" && !(
+        data.message === null || data.message === undefined
+      ))
     ) {
       throw new Error("invalid_chub_response");
     }
     return {
       available: true,
-      accepted: true,
-      duplicate: data.duplicate,
-      newSession: data.new_session,
-      code: "submitted",
-      message: data.message,
-      taskSummary: typeof data.task_summary === "string"
-        ? data.task_summary
-        : undefined,
+      protocolVersion: 2,
+      disposition: data.disposition as "pass" | "reply",
+      message: typeof data.message === "string" ? data.message : undefined,
     };
   } catch (error) {
     if (error instanceof Error && error.name === "TimeoutError") {
-      return weixinSubmissionFailure(
-        "chub_timeout",
-        "任务提交确认超时，任务可能已经启动。\n请等待完成通知，不要立即重复发送。",
-      );
+      return weixinDispatchFailure("chub_timeout");
     }
     if (signal?.aborted) {
-      return weixinSubmissionFailure("chub_cancelled", "任务提交已取消。请重新发送任务。");
+      return weixinDispatchFailure("chub_cancelled");
     }
     if (error instanceof Error && error.message === "chub_response_too_large") {
-      return weixinSubmissionFailure(
-        "chub_response_too_large",
-        "任务提交失败：Chub 返回的任务状态超过限制。",
-      );
+      return weixinDispatchFailure("chub_response_too_large");
     }
     if (error instanceof Error && error.message === "invalid_chub_response") {
-      return weixinSubmissionFailure(
-        "chub_response_invalid",
-        "任务提交失败：Chub 返回了无法识别的任务状态。",
-      );
+      return weixinDispatchFailure("chub_response_invalid");
     }
-    return weixinSubmissionFailure(
-      "chub_unreachable",
-      "任务提交失败：当前设备的 Chub 暂时无法访问。",
-    );
+    return weixinDispatchFailure("chub_unreachable");
   }
 }

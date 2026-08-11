@@ -93,6 +93,8 @@ Codex 快速交互允许长任务持续执行：运行超过 10 分钟时页面�
 
 微信 ClawBot 调用设备能力时，固定经过 `微信 ClawBot → OpenClaw → Chub → OpenClaw → 微信 ClawBot`：OpenClaw 负责入口身份和通道上下文，Chub 负责固定能力、安全校验和最终状态。微信 Chub 模式在模型调度前拦截，并把 Hook 提供的本次账号与发送者绑定到任务；首次提交成功时立即回复由 Chub 生成的有界脱敏任务摘要，任务成功、失败或超时后再以相同摘要原路发送最终结果。语音任务的首次成功回执还会显示微信语音识别内容，整条回执有固定上限；普通文字、重复消息和失败回执不显示识别内容。Chub 仅为提交校验读取本机通道状态，并在任务结束后调用 `openclaw message send` 原路回送，不调用 Agent，也不触发新的设备操作。同一原生 Codex Session 同时只允许一个 writer：专用 Session 状态为 `unknown` 时，微信入口会关闭其页面访问、停止残留终端并确认 writer 已释放后提交；已有快速交互、明确执行中或仍被 writer 占用时拒绝，不维护额外队列。页面来源完成通知使用全局固定接收人，账号默认选择唯一健康 ClawBot。Chub 只读复用 OpenClaw 的模型配置并直连供应商、或直接调用自身飞书通知能力，均不属于反向调用。
 
+上述链路现已调整为 v2 单入口职责：插件只归一化可信通道信息并转发原始内容，Chub 单一 `dispatch` 接口处理模式检查、普通任务及全部同步业务回执；插件只放行或原样交付 Chub 文案。v2 已完成仓库验证和 macOS 真实文本/语音链路验收，Ubuntu 待配套部署验收。插件唯一源码位于本仓库 `integrations/openclaw/chub/`，OpenClaw 运行的是安装到其用户扩展目录中的部署副本，不能直接修改运行副本形成独立实现。结果查询与白名单任务后续仍在同一入口内扩展，当前边界统一见 `docs/OPENCLAW_INTEGRATION_DESIGN.md`。
+
 首页“OpenClaw 环境”卡片用于管理当前节点上的 Gateway，位于“自动化环境”之后。它展示 Gateway、消息通道和 Tailscale 访问入口，并提供固定的启动、停止和重启操作；停止和重启需要二次确认。Owner 检查结果合并到消息通道和总体状态，不单独展示身份或数量；未配置或检查失败时显示“功能受限”及受控提示。卡片还可以发起受控的微信 ClawBot 登录，在短期模态框中展示绑定二维码，并在微信要求时提交手机显示的数字验证码；重新绑定可能使同一 ClawBot 在其他设备上的服务端绑定失效。消息通道在 Gateway 就绪后独立检查，检查失败不会覆盖 Gateway 状态。Tailscale Serve 可用时，卡片只展示标准 HTTPS 访问地址，整个地址区域可点击进入控制台；本机 loopback 地址只作为排障入口，不在首页展示。所有接口均使用 Hub Token 或未被关闭的 Tailnet 可信访问，操作以 Gateway 或登录进程的最终状态而不是命令进程成功创建作为成功依据，并写入完整操作日志。
 
 微信绑定使用固定的 `openclaw channels login --channel openclaw-weixin` 命令和单一短期登录会话。二维码只保存在 Chub 进程内存中，通过禁止缓存的受保护图片接口读取；原始命令输出、二维码内容、微信账号标识和登录凭证不会返回页面。关闭弹窗不会中断登录，显式取消、登录结束或 Chub 退出会清理二维码并终止残留进程。绑定成功只代表通道登录完成，不代表发送者配对或 Owner 权限已经配置。该页面流程已完成 MacBook、Ubuntu 的真实二维码生成、扫码绑定和基础交互验收。
@@ -119,7 +121,7 @@ chub notification test --target test
 
 ## 自动化任务
 
-Chub 提供飞书文档下载自动化能力，复用独立 Debug Chrome 的登录状态。固定下载流程维护在随版本发布的 `config/automation_templates/feishu-document-download.yaml`；公共任务维护在随版本发布的 `config/automations.yaml`；本机任务维护在不提交的 `config/automations.local.yaml`。两类任务配置都只需填写名称和飞书 Wiki 链接，当前默认并仅支持 Markdown。首页将日常“自动化任务”与低频“自动化环境”分为两张独立卡片；后者默认折叠，统一管理浏览器账户、启动方式和站点登录状态。未启动时可在自动化环境中选择默认 Chrome 的普通 Profile 和有界面或无界面模式，默认无界面；未初始化的 Profile 会在确认默认 Chrome 已退出后通过现有 `chrome-cdp` 能力复制到独立目录。复制后的网站登录状态持续保存在 Debug Chrome 副本中，不与默认 Chrome 自动双向同步。首页还可以检查飞书登录状态、在需要登录时安全展示扫码二维码、运行任务，并在“全部任务”页面查看完整列表。详细规则见 `docs/AUTOMATION_DOWNLOAD_DESIGN.md`。
+Chub 提供飞书文档下载自动化能力，复用独立 Debug Chrome 的登录状态。固定下载流程维护在随版本发布的 `config/automation_templates/feishu-document-download.yaml`；公共任务维护在随版本发布的 `config/automations.yaml`；本机任务维护在不提交的 `config/automations.local.yaml`。两类任务配置都只需填写名称和飞书 Wiki 链接，当前默认并仅支持 Markdown。首页将日常“自动化任务”与低频“自动化环境”分为两张独立卡片；后者默认折叠，统一管理浏览器账户、启动方式和站点登录状态。未启动时可在自动化环境中选择默认 Chrome 的普通 Profile 和有界面或无界面模式，默认无界面；未初始化的 Profile 会在确认默认 Chrome 已退出后通过现有 `chrome-cdp` 能力复制到独立目录。复制后的网站登录状态持续保存在 Debug Chrome 副本中，不与默认 Chrome 自动双向同步。首页还可以检查飞书登录状态、在需要登录时安全展示扫码二维码、运行任务，并在“全部任务”页面查看完整列表。周报资料准备与生成的完整规则见 `docs/WEEKLY_REPORT_AUTOMATION_DESIGN.md`。
 
 创建本机配置：
 
@@ -200,12 +202,9 @@ README 是设计文档目录结构、状态和归档规则的维护入口；具�
 
 - [前端 UI 模块化设计](docs/ARCHITECTURE_EVOLUTION_DESIGN.md)
 - [Chub AI Session 状态模型设计](docs/AI_SESSION_STATE_DESIGN.md)
-- [配置驱动的飞书文档下载自动化方案](docs/AUTOMATION_DOWNLOAD_DESIGN.md)
-- [工作周报生成技能设计方案](docs/WEEKLY_REPORT_SKILL_DESIGN.md)
-- [OpenClaw 与消息通道接入设计](docs/OPENCLAW_INTEGRATION_DESIGN.md)
+- [本期工作周报自动化与生成设计](docs/WEEKLY_REPORT_AUTOMATION_DESIGN.md)
+- [OpenClaw–Chub 集成与 ClawBot 消息调度设计](docs/OPENCLAW_INTEGRATION_DESIGN.md)
 - [微信 ClawBot Context Token 持久化 AI 补丁规范](docs/WEIXIN_CLAWBOT_CONTEXT_TOKEN_AI_PATCH.md)
-- [微信 ClawBot 语音转写来源标记补丁规范](docs/WEIXIN_CLAWBOT_VOICE_TRANSCRIPT_ORIGIN_PATCH.md)
-- [微信 Chub 模式设计](docs/WEIXIN_CHUB_MODE_DESIGN.md)
 
 阶段归档：
 

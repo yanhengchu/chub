@@ -16,10 +16,10 @@
         "maximum": 10000,
         "default": 3000
       },
-      "wechatChubStatusMode": {
+      "weixinChubMode": {
         "type": "boolean",
         "default": false,
-        "description": "Route Weixin direct messages to the fixed Chub task endpoint without running an OpenClaw agent or LLM."
+        "description": "Forward Weixin direct messages to the single fixed Chub dispatch endpoint without running an OpenClaw agent or LLM."
       }
     }
   },

@@ -25,135 +25,36 @@ def same_node_tailscale_client(app):
     )
 
 
-@pytest.mark.anyio
-async def test_wechat_chub_mode_status_reports_disabled_from_tailscale(
-    settings: Settings,
-) -> None:
-    settings.server.host = "100.64.0.20"
-    app = create_app(settings)
-
-    async with tailscale_client(app) as client:
-        response = await client.get("/api/openclaw/wechat-chub-mode/status")
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "success": True,
-        "data": {"enabled": False, "ready": False, "code": "disabled"},
-    }
-
-
-@pytest.mark.anyio
-async def test_wechat_chub_mode_status_reports_ready(
-    settings: Settings,
-) -> None:
-    settings.server.host = "100.64.0.20"
-    settings.openclaw.weixin_chub_mode.enabled = True
-    settings.openclaw.quick_interaction_completion.enabled = True
-    settings.openclaw.quick_interaction_completion.weixin_recipient = "recipient"
-    app = create_app(settings)
-    app.state.codex_pty_manager.available = MagicMock(return_value=True)
-
-    async with tailscale_client(app) as client:
-        response = await client.get("/api/openclaw/wechat-chub-mode/status")
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "success": True,
-        "data": {"enabled": True, "ready": True, "code": "ready"},
-    }
-
-
-@pytest.mark.anyio
-async def test_wechat_chub_mode_status_reports_invalid_workspace(
-    settings: Settings,
-) -> None:
-    settings.server.host = "100.64.0.20"
-    settings.openclaw.weixin_chub_mode.enabled = True
-    settings.openclaw.weixin_chub_mode.workspace_id = "workspace"
-    app = create_app(settings)
-
-    async with tailscale_client(app) as client:
-        response = await client.get("/api/openclaw/wechat-chub-mode/status")
-
-    assert response.status_code == 200
-    assert response.json()["data"] == {
-        "enabled": True,
-        "ready": False,
-        "code": "configuration_invalid",
-    }
-
-
-@pytest.mark.anyio
-async def test_wechat_chub_mode_status_reports_unavailable_codex(
-    settings: Settings,
-) -> None:
-    settings.server.host = "100.64.0.20"
-    settings.openclaw.weixin_chub_mode.enabled = True
-    app = create_app(settings)
-    app.state.codex_pty_manager.available = MagicMock(return_value=False)
-
-    async with tailscale_client(app) as client:
-        response = await client.get("/api/openclaw/wechat-chub-mode/status")
-
-    assert response.status_code == 200
-    assert response.json()["data"] == {
-        "enabled": True,
-        "ready": False,
-        "code": "codex_unavailable",
-    }
-
-
-@pytest.mark.anyio
-async def test_wechat_chub_mode_status_rejects_token_and_forwarded_source(
-    settings: Settings,
-) -> None:
-    settings.server.host = "100.64.0.20"
-    app = create_app(settings)
-    token = settings.security.token
-    assert token is not None
-    transport = httpx.ASGITransport(
-        app=app,
-        client=("127.0.0.1", 12345),
+def dispatch_result(
+    *,
+    disposition: str = "reply",
+    message: str | None = "任务已提交。",
+):
+    return SimpleNamespace(
+        model_dump=lambda: {
+            "protocol_version": 2,
+            "disposition": disposition,
+            "message": message,
+        }
     )
 
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get(
-            "/api/openclaw/wechat-chub-mode/status",
-            headers={
-                "Authorization": f"Bearer {token.get_secret_value()}",
-                "X-Forwarded-For": "100.64.0.21",
-            },
-        )
-
-    assert response.status_code == 403
-    assert response.json()["error"]["code"] == "tailscale_required"
-
 
 @pytest.mark.anyio
-async def test_wechat_chub_mode_submit_accepts_only_bounded_fixed_fields(
+async def test_dispatch_accepts_only_bounded_fixed_fields(
     settings: Settings,
 ) -> None:
     settings.server.host = "100.64.0.20"
     app = create_app(settings)
-    app.state.weixin_chub_mode.submit = MagicMock(
-        return_value=SimpleNamespace(
-            model_dump=lambda: {
-                "accepted": True,
-                "duplicate": False,
-                "new_session": True,
-                "code": "submitted",
-                "message": "任务已提交。",
-                "task_summary": "检查设备状态",
-            }
-        )
-    )
+    app.state.weixin_chub_mode.dispatch = MagicMock(return_value=dispatch_result())
 
     async with same_node_tailscale_client(app) as client:
         response = await client.post(
-            "/api/openclaw/wechat-chub-mode/submit",
+            "/api/openclaw/wechat-chub-mode/dispatch",
             json={
+                "protocol_version": 2,
                 "message_id": " message-1 ",
-                "prompt": " 检查设备状态 ",
+                "content": " 检查设备状态 ",
+                "message_type": "text",
                 "correlation_id": " correlation-1 ",
                 "reply_account_id": " weixin-account ",
                 "reply_recipient": " owner@im.wechat ",
@@ -164,17 +65,15 @@ async def test_wechat_chub_mode_submit_accepts_only_bounded_fixed_fields(
     assert response.json() == {
         "success": True,
         "data": {
-            "accepted": True,
-            "duplicate": False,
-            "new_session": True,
-            "code": "submitted",
+            "protocol_version": 2,
+            "disposition": "reply",
             "message": "任务已提交。",
-            "task_summary": "检查设备状态",
         },
     }
-    app.state.weixin_chub_mode.submit.assert_called_once_with(
+    app.state.weixin_chub_mode.dispatch.assert_called_once_with(
         message_id="message-1",
-        prompt="检查设备状态",
+        prompt=" 检查设备状态 ",
+        message_type="text",
         correlation_id="correlation-1",
         source_ip="100.64.0.20",
         delivery_route=QuickInteractionWeixinRoute(
@@ -187,19 +86,85 @@ async def test_wechat_chub_mode_submit_accepts_only_bounded_fixed_fields(
 
 
 @pytest.mark.anyio
-async def test_wechat_chub_mode_submit_rejects_injected_configuration(
+async def test_dispatch_returns_pass_without_exposing_internal_state(
     settings: Settings,
 ) -> None:
     settings.server.host = "100.64.0.20"
     app = create_app(settings)
-    app.state.weixin_chub_mode.submit = MagicMock()
+    app.state.weixin_chub_mode.dispatch = MagicMock(
+        return_value=dispatch_result(
+            disposition="pass",
+            message=None,
+        )
+    )
 
     async with same_node_tailscale_client(app) as client:
         response = await client.post(
-            "/api/openclaw/wechat-chub-mode/submit",
+            "/api/openclaw/wechat-chub-mode/dispatch",
             json={
+                "protocol_version": 2,
                 "message_id": "message-1",
-                "prompt": "检查设备状态",
+                "content": "检查设备状态",
+                "message_type": "text",
+                "reply_account_id": "weixin-account",
+                "reply_recipient": "owner@im.wechat",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {
+        "protocol_version": 2,
+        "disposition": "pass",
+        "message": None,
+    }
+
+
+@pytest.mark.anyio
+async def test_dispatch_rejects_protocol_mismatch_before_routing(
+    settings: Settings,
+) -> None:
+    settings.server.host = "100.64.0.20"
+    app = create_app(settings)
+    app.state.weixin_chub_mode.dispatch = MagicMock()
+
+    async with same_node_tailscale_client(app) as client:
+        response = await client.post(
+            "/api/openclaw/wechat-chub-mode/dispatch",
+            json={
+                "protocol_version": 1,
+                "message_id": "message-1",
+                "content": "检查设备状态",
+                "message_type": "text",
+                "reply_account_id": "weixin-account",
+                "reply_recipient": "owner@im.wechat",
+            },
+        )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == (
+        "weixin_chub_mode_protocol_mismatch"
+    )
+    app.state.weixin_chub_mode.dispatch.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_dispatch_rejects_injected_configuration(
+    settings: Settings,
+) -> None:
+    settings.server.host = "100.64.0.20"
+    app = create_app(settings)
+    app.state.weixin_chub_mode.dispatch = MagicMock()
+
+    async with same_node_tailscale_client(app) as client:
+        response = await client.post(
+            "/api/openclaw/wechat-chub-mode/dispatch",
+            json={
+                "protocol_version": 2,
+                "message_id": "message-1",
+                "content": "检查设备状态",
+                "message_type": "text",
+                "reply_account_id": "weixin-account",
+                "reply_recipient": "owner@im.wechat",
                 "session_id": "arbitrary-session",
                 "model": "arbitrary-model",
             },
@@ -207,49 +172,47 @@ async def test_wechat_chub_mode_submit_rejects_injected_configuration(
 
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "invalid_request"
-    app.state.weixin_chub_mode.submit.assert_not_called()
+    app.state.weixin_chub_mode.dispatch.assert_not_called()
 
 
 @pytest.mark.anyio
-async def test_wechat_chub_mode_submit_requires_direct_tailscale_source(
+async def test_dispatch_requires_same_node_direct_tailscale_source(
     settings: Settings,
 ) -> None:
     settings.server.host = "100.64.0.20"
     app = create_app(settings)
-    token = settings.security.token
-    assert token is not None
-    transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 12345))
-
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.post(
-            "/api/openclaw/wechat-chub-mode/submit",
-            headers={
-                "Authorization": f"Bearer {token.get_secret_value()}",
-                "X-Forwarded-For": "100.64.0.21",
-            },
-            json={"message_id": "message-1", "prompt": "检查设备状态"},
-        )
-
-    assert response.status_code == 403
-    assert response.json()["error"]["code"] == "tailscale_required"
-
-
-@pytest.mark.anyio
-async def test_wechat_chub_mode_submit_rejects_other_tailscale_node(
-    settings: Settings,
-) -> None:
-    settings.server.host = "100.64.0.20"
-    app = create_app(settings)
-    app.state.weixin_chub_mode.submit = MagicMock()
+    app.state.weixin_chub_mode.dispatch = MagicMock()
 
     async with tailscale_client(app) as client:
         response = await client.post(
-            "/api/openclaw/wechat-chub-mode/submit",
-            json={"message_id": "message-1", "prompt": "检查设备状态"},
+            "/api/openclaw/wechat-chub-mode/dispatch",
+            json={
+                "protocol_version": 2,
+                "message_id": "message-1",
+                "content": "检查设备状态",
+                "message_type": "text",
+                "reply_account_id": "weixin-account",
+                "reply_recipient": "owner@im.wechat",
+            },
         )
 
     assert response.status_code == 403
     assert response.json()["error"]["code"] == (
         "weixin_chub_mode_source_required"
     )
-    app.state.weixin_chub_mode.submit.assert_not_called()
+    app.state.weixin_chub_mode.dispatch.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_old_status_and_submit_endpoints_are_removed(
+    settings: Settings,
+) -> None:
+    settings.server.host = "100.64.0.20"
+    app = create_app(settings)
+
+    async with same_node_tailscale_client(app) as client:
+        status = await client.get("/api/openclaw/wechat-chub-mode/status")
+        submit = await client.post("/api/openclaw/wechat-chub-mode/submit", json={})
+
+    assert status.status_code == 404
+    assert submit.status_code == 404

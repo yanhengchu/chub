@@ -1,6 +1,6 @@
 # Chub 第三阶段产品目标
 
-> 归档状态：第三阶段已闭环。当前架构与维护规则以 [OpenClaw 与消息通道接入设计](../../OPENCLAW_INTEGRATION_DESIGN.md)和[微信 Chub 模式设计](../../WEIXIN_CHUB_MODE_DESIGN.md)为准，本文冻结为阶段目标记录。
+> 归档状态：第三阶段已闭环。当前架构与维护规则以 [OpenClaw–Chub 集成与 ClawBot 消息调度设计](../../OPENCLAW_INTEGRATION_DESIGN.md)为准，本文冻结为阶段目标记录。
 
 ## 1. 阶段定位
 

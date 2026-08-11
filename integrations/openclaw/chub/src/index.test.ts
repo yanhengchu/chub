@@ -112,60 +112,64 @@ describe("notification verbatim hooks", () => {
   });
 });
 
+function dispatchResponse({
+  disposition = "reply",
+  message = "任务已提交\n\n任务摘要：检查状态\n\n完成后将原路发送结果。",
+}: {
+  disposition?: "pass" | "reply";
+  message?: string | null;
+} = {}) {
+  return new Response(JSON.stringify({
+    success: true,
+    data: {
+      protocol_version: 2,
+      disposition,
+      message,
+    },
+  }), { status: 200 });
+}
+
+const directEvent = {
+  channel: "openclaw-weixin",
+  content: "检查状态",
+  isGroup: false,
+  timestamp: 1_700_000_000_000,
+};
+
+const directContext = {
+  accountId: "weixin-account",
+  conversationId: "owner@im.wechat",
+  sessionKey: "weixin-session",
+};
+
 describe("Weixin Chub mode", () => {
-  it("submits a direct Weixin message without Agent or LLM dispatch", async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        success: true,
-        data: {
-          enabled: true,
-          ready: true,
-          code: "ready",
-        },
-      }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        success: true,
-        data: {
-          accepted: true,
-          duplicate: false,
-          new_session: true,
-          code: "submitted",
-          message: "任务已提交，完成后将通过微信发送结果。",
-          task_summary: "检查状态",
-        },
-      }), { status: 200 }));
+  it("uses one versioned dispatch request without Agent or LLM routing", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(dispatchResponse());
     vi.stubGlobal("fetch", fetchMock);
     const { hooks } = createPluginApi({
       baseUrl: "http://100.64.0.1:8080",
-      wechatChubStatusMode: true,
+      weixinChubMode: true,
     });
 
-    const result = await hooks.get("before_dispatch")?.({
-      channel: "openclaw-weixin",
-      content: "检查状态",
-      isGroup: false,
-      timestamp: 1_700_000_000_000,
-    }, {
-      accountId: "weixin-account",
-      conversationId: "owner@im.wechat",
-      sessionKey: "weixin-session",
-    });
+    const result = await hooks.get("before_dispatch")?.(
+      directEvent,
+      directContext,
+    );
 
     expect(result).toEqual({
       handled: true,
       text: "任务已提交\n\n任务摘要：检查状态\n\n完成后将原路发送结果。",
     });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(new URL(fetchMock.mock.calls[0][0]).pathname).toBe(
-      "/api/openclaw/wechat-chub-mode/status",
+      "/api/openclaw/wechat-chub-mode/dispatch",
     );
-    expect(new URL(fetchMock.mock.calls[1][0]).pathname).toBe(
-      "/api/openclaw/wechat-chub-mode/submit",
-    );
-    expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: "POST" });
-    const submitted = JSON.parse(fetchMock.mock.calls[1][1].body);
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "POST" });
+    const submitted = JSON.parse(fetchMock.mock.calls[0][1].body);
     expect(submitted).toMatchObject({
-      prompt: "检查状态",
+      protocol_version: 2,
+      content: "检查状态",
+      message_type: "text",
       reply_account_id: "weixin-account",
       reply_recipient: "owner@im.wechat",
     });
@@ -177,402 +181,209 @@ describe("Weixin Chub mode", () => {
     vi.unstubAllGlobals();
   });
 
-  it("accepts a task summary containing 48 Unicode characters", async () => {
-    const taskSummary = "😀".repeat(48);
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        success: true,
-        data: { enabled: true, ready: true, code: "ready" },
-      }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        success: true,
-        data: {
-          accepted: true,
-          duplicate: false,
-          new_session: false,
-          code: "submitted",
-          message: "任务已提交，完成后将通过微信发送结果。",
-          task_summary: taskSummary,
-        },
-      }), { status: 200 }));
+  it("passes the message back to the normal OpenClaw flow when Chub decides", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(dispatchResponse({
+      disposition: "pass",
+      message: null,
+    }));
     vi.stubGlobal("fetch", fetchMock);
     const { hooks } = createPluginApi({
       baseUrl: "http://100.64.0.1:8080",
-      wechatChubStatusMode: true,
+      weixinChubMode: true,
     });
 
-    const result = await hooks.get("before_dispatch")?.({
-      channel: "openclaw-weixin",
-      content: "检查 Unicode 摘要边界",
-      isGroup: false,
-      timestamp: 1_700_000_000_004,
-    }, {
-      accountId: "weixin-account",
-      conversationId: "owner@im.wechat",
-      sessionKey: "weixin-session",
-    });
-
-    expect(result).toEqual({
-      handled: true,
-      text: `任务已提交\n\n任务摘要：${taskSummary}\n\n完成后将原路发送结果。`,
-    });
+    await expect(hooks.get("before_dispatch")?.(
+      directEvent,
+      directContext,
+    )).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     vi.unstubAllGlobals();
   });
 
-  it("echoes the trusted transcript for a submitted Weixin voice message", async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        success: true,
-        data: { enabled: true, ready: true, code: "ready" },
-      }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        success: true,
-        data: {
-          accepted: true,
-          duplicate: false,
-          new_session: false,
-          code: "submitted",
-          message: "任务已提交，完成后将通过微信发送结果。",
-          task_summary: "检查语音识别是否准确",
-        },
-      }), { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
+  it("returns Chub-owned bounded business failures", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(dispatchResponse({
+      message: "任务提交失败：已有微信任务正在执行，请等待完成后重试。",
+    })));
     const { hooks } = createPluginApi({
       baseUrl: "http://100.64.0.1:8080",
-      wechatChubStatusMode: true,
+      weixinChubMode: true,
     });
 
-    const result = await hooks.get("before_dispatch")?.({
-      channel: "openclaw-weixin",
-      content: "[[chub-weixin-voice-transcript]]",
-      body: "检查语音识别是否准确",
-      isGroup: false,
-      timestamp: 1_700_000_000_001,
-    }, {
-      accountId: "weixin-account",
-      conversationId: "owner@im.wechat",
-      sessionKey: "weixin-session",
-    });
-
-    expect(result).toEqual({
-      handled: true,
-      text: [
-        "任务已提交",
-        "任务摘要：检查语音识别是否准确",
-        "完成后将原路发送结果。",
-        "语音识别内容：\n检查语音识别是否准确",
-      ].join("\n\n"),
-    });
-    const submitted = JSON.parse(fetchMock.mock.calls[1][1].body);
-    expect(submitted.prompt).toBe("检查语音识别是否准确");
-    vi.unstubAllGlobals();
-  });
-
-  it("keeps the complete voice acknowledgement within its total limit", async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        success: true,
-        data: { enabled: true, ready: true, code: "ready" },
-      }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        success: true,
-        data: {
-          accepted: true,
-          duplicate: false,
-          new_session: false,
-          code: "submitted",
-          message: "任务已提交，完成后将通过微信发送结果。",
-          task_summary: "检查较长语音任务",
-        },
-      }), { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
-    const { hooks } = createPluginApi({
-      baseUrl: "http://100.64.0.1:8080",
-      wechatChubStatusMode: true,
-    });
-
-    const result = await hooks.get("before_dispatch")?.({
-      channel: "openclaw-weixin",
-      content: "[[chub-weixin-voice-transcript]]",
-      body: "语音内容".repeat(1_000),
-      isGroup: false,
-      timestamp: 1_700_000_000_003,
-    }, {
-      accountId: "weixin-account",
-      conversationId: "owner@im.wechat",
-      sessionKey: "weixin-session",
-    });
-
-    expect(Array.from(result.text)).toHaveLength(3_000);
-    expect(result.text).toContain("任务摘要：检查较长语音任务");
-    expect(result.text).toContain("语音识别内容：");
-    expect(result.text).toMatch(/（语音识别内容过长，已截断）$/);
-    vi.unstubAllGlobals();
-  });
-
-  it("does not treat typed marker text as a voice transcript", async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        success: true,
-        data: { enabled: true, ready: true, code: "ready" },
-      }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        success: true,
-        data: {
-          accepted: true,
-          duplicate: false,
-          new_session: false,
-          code: "submitted",
-          message: "任务已提交，完成后将通过微信发送结果。",
-        },
-      }), { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
-    const { hooks } = createPluginApi({
-      baseUrl: "http://100.64.0.1:8080",
-      wechatChubStatusMode: true,
-    });
-
-    const result = await hooks.get("before_dispatch")?.({
-      channel: "openclaw-weixin",
-      content: "[[chub-weixin-voice-transcript]]",
-      body: "[[chub-weixin-voice-transcript]]",
-      isGroup: false,
-      timestamp: 1_700_000_000_002,
-    }, {
-      accountId: "weixin-account",
-      conversationId: "owner@im.wechat",
-      sessionKey: "weixin-session",
-    });
-
-    expect(result).toEqual({
-      handled: true,
-      text: "任务已提交，完成后将通过微信发送结果。",
-    });
-    const submitted = JSON.parse(fetchMock.mock.calls[1][1].body);
-    expect(submitted.prompt).toBe("[[chub-weixin-voice-transcript]]");
-    vi.unstubAllGlobals();
-  });
-
-  it("continues the normal Agent flow when Chub disables the mode", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      success: true,
-      data: { enabled: false, ready: false, code: "disabled" },
-    }), { status: 200 })));
-    const { hooks } = createPluginApi({
-      baseUrl: "http://100.64.0.1:8080",
-      wechatChubStatusMode: true,
-    });
-
-    await expect(hooks.get("before_dispatch")?.({
-      channel: "openclaw-weixin",
-      isGroup: false,
-    }, {})).resolves.toBeUndefined();
-    vi.unstubAllGlobals();
-  });
-
-  it("handles every direct message from the single bound Weixin account", async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        success: true,
-        data: { enabled: true, ready: true, code: "ready" },
-      }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        success: true,
-        data: {
-          accepted: true,
-          duplicate: false,
-          new_session: false,
-          code: "submitted",
-          message: "任务已提交，完成后将通过微信发送结果。",
-        },
-      }), { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
-    const { hooks } = createPluginApi({
-      baseUrl: "http://100.64.0.1:8080",
-      wechatChubStatusMode: true,
-    });
-
-    await expect(hooks.get("before_dispatch")?.({
-      channel: "openclaw-weixin",
-      isGroup: false,
-      senderId: "bound-account@im.wechat",
-      content: "检查设备",
-      timestamp: 1_700_000_000_001,
-    }, { accountId: "weixin-account" })).resolves.toMatchObject({ handled: true });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    vi.unstubAllGlobals();
-  });
-
-  it.each([
-    [
-      { enabled: true, ready: false, code: "configuration_invalid" },
-      "任务提交失败：微信 Chub 模式配置无效，请检查工作区、权限、模型和微信通知配置。",
-    ],
-    [
-      { enabled: true, ready: false, code: "codex_unavailable" },
-      "任务提交失败：Codex 当前不可用，请稍后重试。",
-    ],
-  ])("returns the specific Chub readiness failure", async (data, text) => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      success: true,
-      data,
-    }), { status: 200 })));
-    const { hooks } = createPluginApi({
-      baseUrl: "http://100.64.0.1:8080",
-      wechatChubStatusMode: true,
-    });
-
-    await expect(hooks.get("before_dispatch")?.({
-      channel: "openclaw-weixin",
-      isGroup: false,
-    }, {})).resolves.toEqual({ handled: true, text });
-    vi.unstubAllGlobals();
-  });
-
-  it("returns the Chub connection failure without falling back to an Agent", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network unavailable")));
-    const { hooks } = createPluginApi({
-      baseUrl: "http://100.64.0.1:8080",
-      wechatChubStatusMode: true,
-    });
-
-    await expect(hooks.get("before_dispatch")?.({
-      channel: "openclaw-weixin",
-      isGroup: false,
-    }, {})).resolves.toEqual({
-      handled: true,
-      text: "任务提交失败：当前设备的 Chub 暂时无法访问。",
-    });
-    vi.unstubAllGlobals();
-  });
-
-  it("replays a duplicate submission without changing its task", async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        success: true,
-        data: { enabled: true, ready: true, code: "ready" },
-      }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        success: true,
-        data: {
-          accepted: true,
-          duplicate: true,
-          new_session: false,
-          code: "submitted",
-          message: "任务已提交，完成后将通过微信发送结果。",
-        },
-      }), { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
-    const { hooks } = createPluginApi({
-      baseUrl: "http://100.64.0.1:8080",
-      wechatChubStatusMode: true,
-    });
-
-    await expect(hooks.get("before_dispatch")?.({
-      channel: "openclaw-weixin",
-      content: "检查设备",
-      timestamp: 1_700_000_000_002,
-      isGroup: false,
-      senderId: "owner@im.wechat",
-    }, { accountId: "weixin-account" })).resolves.toEqual({
-      handled: true,
-      text: "该消息已处理，任务不会重复执行。",
-    });
-    vi.unstubAllGlobals();
-  });
-
-  it("returns a bounded submit failure without falling back to an Agent", async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        success: true,
-        data: { enabled: true, ready: true, code: "ready" },
-      }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        success: false,
-        error: {
-          code: "weixin_chub_mode_in_progress",
-          message: "untrusted backend detail",
-        },
-      }), { status: 409 }));
-    vi.stubGlobal("fetch", fetchMock);
-    const { hooks } = createPluginApi({
-      baseUrl: "http://100.64.0.1:8080",
-      wechatChubStatusMode: true,
-    });
-
-    await expect(hooks.get("before_dispatch")?.({
-      channel: "openclaw-weixin",
-      content: "第二个任务",
-      timestamp: 1_700_000_000_003,
-      isGroup: false,
-      senderId: "owner@im.wechat",
-    }, { accountId: "weixin-account" })).resolves.toEqual({
+    await expect(hooks.get("before_dispatch")?.(
+      directEvent,
+      directContext,
+    )).resolves.toEqual({
       handled: true,
       text: "任务提交失败：已有微信任务正在执行，请等待完成后重试。",
     });
     vi.unstubAllGlobals();
   });
 
-  it("fails closed when the hook has no stable inbound timestamp", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      success: true,
-      data: { enabled: true, ready: true, code: "ready" },
-    }), { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
+  it("fails closed on protocol mismatch without falling back to an Agent", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      success: false,
+      error: { code: "weixin_chub_mode_protocol_mismatch", message: "detail" },
+    }), { status: 409 })));
     const { hooks } = createPluginApi({
       baseUrl: "http://100.64.0.1:8080",
-      wechatChubStatusMode: true,
+      weixinChubMode: true,
     });
 
-    await expect(hooks.get("before_dispatch")?.({
-      channel: "openclaw-weixin",
-      content: "检查设备",
-      isGroup: false,
-    }, {})).resolves.toEqual({
+    await expect(hooks.get("before_dispatch")?.(
+      directEvent,
+      directContext,
+    )).resolves.toEqual({
       handled: true,
-      text: "任务提交失败：无法确认本次微信消息，请重新发送。",
+      text: "Chub 消息通道暂时不可用，请稍后重试。",
     });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
     vi.unstubAllGlobals();
   });
 
-  it("fails closed when the inbound reply route is unavailable", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      success: true,
-      data: { enabled: true, ready: true, code: "ready" },
-    }), { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
+  it("fails closed when Chub is unavailable", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("unavailable")));
     const { hooks } = createPluginApi({
       baseUrl: "http://100.64.0.1:8080",
-      wechatChubStatusMode: true,
+      weixinChubMode: true,
     });
 
-    await expect(hooks.get("before_dispatch")?.({
-      channel: "openclaw-weixin",
-      content: "检查设备",
-      timestamp: 1_700_000_000_004,
-      isGroup: false,
-      senderId: "owner@im.wechat",
-    }, {})).resolves.toEqual({
+    await expect(hooks.get("before_dispatch")?.(
+      directEvent,
+      directContext,
+    )).resolves.toEqual({
       handled: true,
-      text: "任务提交失败：无法确认本次消息的微信回送通道，请稍后重试。",
+      text: "Chub 消息通道暂时不可用，请稍后重试。",
     });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
     vi.unstubAllGlobals();
   });
 
-  it("does not intercept groups or disabled mode", async () => {
-    const { hooks } = createPluginApi({ wechatChubStatusMode: true });
+  it("forwards trusted voice transcripts and returns Chub text unchanged", async () => {
+    const chubReply = [
+      "任务已提交",
+      "任务摘要：检查语音识别是否准确",
+      "完成后将原路发送结果。",
+      "语音识别内容：\n检查语音识别是否准确",
+    ].join("\n\n");
+    const fetchMock = vi.fn().mockResolvedValue(dispatchResponse({
+      message: chubReply,
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { hooks } = createPluginApi({
+      baseUrl: "http://100.64.0.1:8080",
+      weixinChubMode: true,
+    });
+
+    const result = await hooks.get("before_dispatch")?.({
+      ...directEvent,
+      content: "[[chub-weixin-voice-transcript]]",
+      body: "检查语音识别是否准确",
+    }, directContext);
+
+    expect(result.text).toBe(chubReply);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
+      content: "检查语音识别是否准确",
+      message_type: "voice",
+    });
+    vi.unstubAllGlobals();
+  });
+
+  it("does not rewrite or truncate a Chub-owned reply", async () => {
+    const chubReply = `Chub 原样回执：${"内容".repeat(1_400)}`;
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(dispatchResponse({
+      message: chubReply,
+    })));
+    const { hooks } = createPluginApi({
+      baseUrl: "http://100.64.0.1:8080",
+      weixinChubMode: true,
+    });
+
+    const result = await hooks.get("before_dispatch")?.({
+      ...directEvent,
+      content: "[[chub-weixin-voice-transcript]]",
+      body: "语音内容".repeat(1_000),
+    }, directContext);
+
+    expect(result.text).toBe(chubReply);
+    vi.unstubAllGlobals();
+  });
+
+  it("does not echo typed markers or duplicate voice messages", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(dispatchResponse({ message: "任务已提交。" }))
+      .mockResolvedValueOnce(dispatchResponse({
+        message: "该消息已处理，任务不会重复执行。",
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { hooks } = createPluginApi({
+      baseUrl: "http://100.64.0.1:8080",
+      weixinChubMode: true,
+    });
+
+    const typed = await hooks.get("before_dispatch")?.({
+      ...directEvent,
+      content: "[[chub-weixin-voice-transcript]]",
+      body: "[[chub-weixin-voice-transcript]]",
+    }, directContext);
+    const duplicate = await hooks.get("before_dispatch")?.({
+      ...directEvent,
+      content: "[[chub-weixin-voice-transcript]]",
+      body: "真实转写",
+    }, directContext);
+
+    expect(typed.text).toBe("任务已提交。");
+    expect(duplicate.text).toBe("该消息已处理，任务不会重复执行。");
+    expect(duplicate.text).not.toContain("语音识别内容");
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
+      content: "[[chub-weixin-voice-transcript]]",
+      message_type: "text",
+    });
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toMatchObject({
+      content: "真实转写",
+      message_type: "voice",
+    });
+    vi.unstubAllGlobals();
+  });
+
+  it("fails closed before dispatch without stable identity or reply route", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const { hooks } = createPluginApi({
+      baseUrl: "http://100.64.0.1:8080",
+      weixinChubMode: true,
+    });
 
     await expect(hooks.get("before_dispatch")?.({
-      channel: "openclaw-weixin",
+      ...directEvent,
+      timestamp: undefined,
+    }, directContext)).resolves.toEqual({
+      handled: true,
+      text: "Chub 消息通道暂时不可用，请稍后重试。",
+    });
+    await expect(hooks.get("before_dispatch")?.(
+      directEvent,
+      { sessionKey: "session" },
+    )).resolves.toEqual({
+      handled: true,
+      text: "Chub 消息通道暂时不可用，请稍后重试。",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it("does not intercept groups, other channels, or disabled plugin routing", async () => {
+    const enabled = createPluginApi({ weixinChubMode: true });
+    await expect(enabled.hooks.get("before_dispatch")?.({
+      ...directEvent,
       isGroup: true,
-    }, {})).resolves.toBeUndefined();
+    }, directContext)).resolves.toBeUndefined();
+    await expect(enabled.hooks.get("before_dispatch")?.({
+      ...directEvent,
+      channel: "telegram",
+    }, directContext)).resolves.toBeUndefined();
 
     const disabled = createPluginApi();
-    await expect(disabled.hooks.get("before_dispatch")?.({
-      channel: "openclaw-weixin",
-      isGroup: false,
-    }, {})).resolves.toBeUndefined();
+    await expect(disabled.hooks.get("before_dispatch")?.(
+      directEvent,
+      directContext,
+    )).resolves.toBeUndefined();
   });
 });

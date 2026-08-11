@@ -87,6 +87,160 @@ def configured_manager(
     )
 
 
+def test_dispatch_submits_with_chub_owned_reply(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+
+    with patch(
+        "app.services.openclaw_weixin_chub_mode.write_operation"
+    ) as write_operation:
+        result = manager.dispatch(
+            message_id="dispatch-message-1",
+            prompt="检查设备状态",
+            message_type="text",
+            correlation_id="correlation-1",
+            source_ip="100.64.0.21",
+            delivery_route=delivery_route(),
+        )
+
+    assert result.protocol_version == 2
+    assert result.disposition == "reply"
+    assert result.message == (
+        "任务已提交\n\n任务摘要：检查设备状态\n\n完成后将原路发送结果。"
+    )
+    quick_interactions.submit.assert_called_once()
+    dispatch_entries = [
+        call.kwargs
+        for call in write_operation.call_args_list
+        if call.kwargs["action"] == "weixin_chub_mode_dispatch"
+    ]
+    assert [entry["status"] for entry in dispatch_entries] == [
+        "requested",
+        "started",
+        "succeeded",
+    ]
+    persisted = json.loads(
+        settings.openclaw.weixin_chub_mode.state_file.read_text(encoding="utf-8")
+    )
+    assert persisted["submissions"][0]["http_status"] == 200
+
+
+def test_dispatch_persists_pass_decision_across_mode_change(
+    settings: Settings,
+) -> None:
+    manager = WeixinChubModeManager(settings, MagicMock(), MagicMock())
+
+    first = manager.dispatch(
+        message_id="dispatch-pass-1",
+        prompt="普通 OpenClaw 消息",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+    manager._state.configuration.enabled = True
+    duplicate = manager.dispatch(
+        message_id="dispatch-pass-1",
+        prompt="重复投递",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert first.disposition == duplicate.disposition == "pass"
+    persisted = json.loads(
+        settings.openclaw.weixin_chub_mode.state_file.read_text(encoding="utf-8")
+    )
+    assert persisted["submissions"][0]["status"] == "passed"
+    assert persisted["submissions"][0]["http_status"] == 200
+    assert "普通 OpenClaw 消息" not in json.dumps(persisted, ensure_ascii=False)
+
+
+def test_dispatch_returns_bounded_failure_instead_of_api_error(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    quick_interactions.is_running.return_value = True
+    manager._state.session_id = "session-1"
+
+    result = manager.dispatch(
+        message_id="dispatch-busy-1",
+        prompt="第二个任务",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.disposition == "reply"
+    assert result.message == "任务提交失败：已有微信任务正在执行，请等待完成后重试。"
+    quick_interactions.submit.assert_not_called()
+
+
+def test_duplicate_dispatch_is_logged_without_resubmitting(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    manager.dispatch(
+        message_id="dispatch-duplicate-1",
+        prompt="检查设备状态",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    with patch(
+        "app.services.openclaw_weixin_chub_mode.write_operation"
+    ) as write_operation:
+        result = manager.dispatch(
+            message_id="dispatch-duplicate-1",
+            prompt="重复投递",
+            message_type="text",
+            correlation_id=None,
+            source_ip="100.64.0.21",
+            delivery_route=delivery_route(),
+        )
+
+    assert result.message == "该消息已处理，任务不会重复执行。"
+    assert quick_interactions.submit.call_count == 1
+    dispatch_entries = [
+        call.kwargs
+        for call in write_operation.call_args_list
+        if call.kwargs["action"] == "weixin_chub_mode_dispatch"
+    ]
+    assert [entry["status"] for entry in dispatch_entries] == [
+        "requested",
+        "started",
+        "succeeded",
+    ]
+
+
+def test_dispatch_builds_bounded_voice_reply_in_chub(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, _quick_interactions = configured_manager(settings)
+    transcript = "语音内容" * 1_000
+
+    result = manager.dispatch(
+        message_id="dispatch-voice-1",
+        prompt=transcript,
+        message_type="voice",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.protocol_version == 2
+    assert result.disposition == "reply"
+    assert len(result.message or "") == 3_000
+    assert result.message is not None
+    assert "语音识别内容：\n语音内容" in result.message
+    assert result.message.endswith("（语音识别内容过长，已截断）")
+
+
 def test_submit_creates_one_private_session_and_replays_duplicate(
     settings: Settings,
 ) -> None:
@@ -271,7 +425,7 @@ def test_submit_replaces_session_when_explicit_model_no_longer_matches(
     )
 
 
-def test_submit_logs_complete_lifecycle_without_exposing_prompt(
+def test_submit_logs_dispatch_lifecycle_without_exposing_prompt(
     settings: Settings,
 ) -> None:
     manager, _codex_manager, _quick_interactions = configured_manager(settings)
@@ -286,18 +440,20 @@ def test_submit_logs_complete_lifecycle_without_exposing_prompt(
             source_ip="100.64.0.21",
         )
 
-    submit_entries = [
+    dispatch_entries = [
         call.kwargs
         for call in write_operation.call_args_list
-        if call.kwargs["action"] == "weixin_chub_mode_submit"
+        if call.kwargs["action"] == "weixin_chub_mode_dispatch"
     ]
-    assert [entry["status"] for entry in submit_entries] == [
+    assert [entry["status"] for entry in dispatch_entries] == [
         "requested",
         "started",
         "succeeded",
     ]
-    assert {entry["target"] for entry in submit_entries} == {settings.node.id}
-    assert all("不应出现在操作日志" not in str(entry) for entry in submit_entries)
+    assert {entry["target"] for entry in dispatch_entries} == {settings.node.id}
+    assert all(
+        "不应出现在操作日志" not in str(entry) for entry in dispatch_entries
+    )
 
 
 def test_submit_reclaims_unknown_session_before_quick_interaction(
@@ -512,6 +668,42 @@ def test_restart_recovers_reserved_submission_as_fixed_failure(
 
     assert error.value.code == "weixin_chub_mode_submission_interrupted"
     assert "发送一条新消息重试" in error.value.message
+
+
+def test_startup_repairs_legacy_success_http_status(
+    settings: Settings,
+) -> None:
+    settings.openclaw.weixin_chub_mode.enabled = True
+    state_file = settings.openclaw.weixin_chub_mode.state_file
+    state_file.write_text(
+        WeixinChubModeState(
+            configuration=WeixinChubModeRuntimeConfig(enabled=True),
+            submissions=[
+                WeixinChubModeSubmission(
+                    message_id="legacy-success",
+                    correlation_id=None,
+                    operation_id="operation-1",
+                    delivery_route_fingerprint=(
+                        WeixinChubModeManager._route_fingerprint(delivery_route())
+                    ),
+                    status="submitted",
+                    code="submitted",
+                    message="任务已提交。",
+                    http_status=409,
+                    session_id="session-1",
+                    task_id="task-1",
+                    created_at=utc_now(),
+                    updated_at=utc_now(),
+                )
+            ],
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+
+    WeixinChubModeManager(settings, MagicMock(), MagicMock())
+
+    payload = json.loads(state_file.read_text(encoding="utf-8"))
+    assert payload["submissions"][0]["http_status"] == 200
 
 
 def test_startup_configuration_change_resets_bound_session(

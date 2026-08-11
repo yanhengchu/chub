@@ -7,8 +7,7 @@ import {
 
 import type { ChubConfig } from "./client.js";
 import {
-  fetchWeixinChubModeStatus,
-  submitWeixinChubModeTask,
+  dispatchWeixinChubMessage,
 } from "./client.js";
 import { getStatusTool } from "./tools/get-status.js";
 import {
@@ -22,7 +21,7 @@ import {
 const VERBATIM_MESSAGE_TTL_MS = 5 * 60 * 1000;
 const VERBATIM_MESSAGE_MAX_RUNS = 100;
 const WEIXIN_VOICE_TRANSCRIPT_MARKER = "[[chub-weixin-voice-transcript]]";
-const WEIXIN_SUBMISSION_REPLY_MAX_CHARS = 3_000;
+const WEIXIN_CHANNEL_FAILURE = "Chub 消息通道暂时不可用，请稍后重试。";
 
 const configSchema = Type.Object({
   baseUrl: Type.Optional(Type.String({
@@ -33,29 +32,11 @@ const configSchema = Type.Object({
     maximum: 10_000,
     default: 3_000,
   })),
-  wechatChubStatusMode: Type.Optional(Type.Boolean({
+  weixinChubMode: Type.Optional(Type.Boolean({
     default: false,
-    description: "Route Weixin direct messages to the fixed Chub task endpoint without running an OpenClaw agent or LLM.",
+    description: "Forward Weixin direct messages to the single fixed Chub dispatch endpoint without running an OpenClaw agent or LLM.",
   })),
 });
-
-function wechatStatusReply(
-  status: Awaited<ReturnType<typeof fetchWeixinChubModeStatus>>,
-): string {
-  if (!status.available) {
-    return `任务提交失败：${status.message}。`;
-  }
-  if (!status.ready) {
-    if (status.code === "configuration_invalid") {
-      return "任务提交失败：微信 Chub 模式配置无效，请检查工作区、权限、模型和微信通知配置。";
-    }
-    if (status.code === "codex_unavailable") {
-      return "任务提交失败：Codex 当前不可用，请稍后重试。";
-    }
-    return "任务提交失败：微信 Chub 模式当前未就绪，请稍后重试。";
-  }
-  return "微信 Chub 模式已就绪。";
-}
 
 async function sha256(value: string): Promise<string> {
   const digest = await crypto.subtle.digest(
@@ -74,6 +55,7 @@ async function submissionIdentity(
     sessionKey?: string;
     senderId?: string;
     timestamp?: number;
+    messageType?: "text" | "voice";
   },
   context: {
     accountId?: string;
@@ -95,6 +77,7 @@ async function submissionIdentity(
       || context.conversationId?.trim()
       || "",
     event.timestamp,
+    event.messageType ?? "text",
     event.content,
   ]));
   return {
@@ -105,51 +88,17 @@ async function submissionIdentity(
   };
 }
 
-function wechatSubmissionReply(
-  submission: Awaited<ReturnType<typeof submitWeixinChubModeTask>>,
-  voiceTranscript?: string,
-): string {
-  if (!submission.available) {
-    return submission.message;
+function weixinMessage(event: { content: string; body?: string }): {
+  content: string;
+  messageType: "text" | "voice";
+} {
+  if (event.content === WEIXIN_VOICE_TRANSCRIPT_MARKER) {
+    const transcript = event.body?.trim();
+    if (transcript && transcript !== event.content) {
+      return { content: transcript, messageType: "voice" };
+    }
   }
-  if (submission.duplicate) {
-    return "该消息已处理，任务不会重复执行。";
-  }
-  const reply = submission.taskSummary
-    ? [
-      "任务已提交",
-      `任务摘要：${submission.taskSummary}`,
-      "完成后将原路发送结果。",
-    ].join("\n\n")
-    : submission.message;
-  if (!voiceTranscript) {
-    return reply;
-  }
-  const transcriptPrefix = `${reply}\n\n语音识别内容：\n`;
-  const truncatedSuffix = "\n（语音识别内容过长，已截断）";
-  const transcriptChars = Array.from(voiceTranscript);
-  const availableChars = Math.max(
-    0,
-    WEIXIN_SUBMISSION_REPLY_MAX_CHARS - Array.from(transcriptPrefix).length,
-  );
-  const transcript = transcriptChars.length <= availableChars
-    ? voiceTranscript
-    : `${transcriptChars.slice(
-      0,
-      Math.max(0, availableChars - Array.from(truncatedSuffix).length),
-    ).join("")}${truncatedSuffix}`;
-  return `${transcriptPrefix}${transcript}`;
-}
-
-function weixinVoiceTranscript(event: { content: string; body?: string }): string | undefined {
-  if (event.content !== WEIXIN_VOICE_TRANSCRIPT_MARKER) {
-    return undefined;
-  }
-  const transcript = event.body?.trim();
-  if (!transcript || transcript === event.content) {
-    return undefined;
-  }
-  return transcript;
+  return { content: event.content, messageType: "text" };
 }
 
 const plugin: ReturnType<typeof definePluginEntry> = definePluginEntry({
@@ -168,30 +117,19 @@ const plugin: ReturnType<typeof definePluginEntry> = definePluginEntry({
 
     api.on("before_dispatch", async (event, context) => {
       if (
-        config.wechatChubStatusMode !== true
+        config.weixinChubMode !== true
         || event.channel !== "openclaw-weixin"
         || event.isGroup === true
       ) {
         return;
       }
 
-      const status = await fetchWeixinChubModeStatus(config);
-      if (status.available && !status.enabled) {
-        return;
-      }
-      if (!status.available || !status.ready) {
-        return {
-          handled: true,
-          text: wechatStatusReply(status),
-        };
-      }
-      const voiceTranscript = weixinVoiceTranscript(event);
-      const prompt = voiceTranscript ?? event.content;
-      const identity = await submissionIdentity({ ...event, content: prompt }, context);
+      const message = weixinMessage(event);
+      const identity = await submissionIdentity({ ...event, ...message }, context);
       if (identity === null) {
         return {
           handled: true,
-          text: "任务提交失败：无法确认本次微信消息，请重新发送。",
+          text: WEIXIN_CHANNEL_FAILURE,
         };
       }
       const replyAccountId = context.accountId?.trim();
@@ -205,18 +143,27 @@ const plugin: ReturnType<typeof definePluginEntry> = definePluginEntry({
       ) {
         return {
           handled: true,
-          text: "任务提交失败：无法确认本次消息的微信回送通道，请稍后重试。",
+          text: WEIXIN_CHANNEL_FAILURE,
         };
       }
-      const submission = await submitWeixinChubModeTask(config, {
+      const dispatch = await dispatchWeixinChubMessage(config, {
         ...identity,
-        prompt,
+        ...message,
         replyAccountId,
         replyRecipient,
       });
+      if (!dispatch.available) {
+        return {
+          handled: true,
+          text: dispatch.message,
+        };
+      }
+      if (dispatch.disposition === "pass") {
+        return;
+      }
       return {
         handled: true,
-        text: wechatSubmissionReply(submission, voiceTranscript),
+        text: dispatch.message ?? WEIXIN_CHANNEL_FAILURE,
       };
     });
 

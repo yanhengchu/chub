@@ -11,33 +11,34 @@ from app.core.response import ApiError, ApiResponse
 from app.core.security import require_tailscale
 
 
-class WeixinChubModeStatusData(BaseModel):
-    enabled: bool
-    ready: bool
-    code: Literal[
-        "ready",
-        "disabled",
-        "configuration_invalid",
-        "codex_unavailable",
-    ]
+WEIXIN_CHUB_MODE_PROTOCOL_VERSION = 2
 
 
-class WeixinChubModeSubmitRequest(BaseModel):
+class WeixinChubModeDispatchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    protocol_version: int = Field(ge=1, le=100)
     message_id: str = Field(min_length=1, max_length=500)
-    prompt: str = Field(min_length=1, max_length=8000)
+    content: str = Field(min_length=1, max_length=8000)
+    message_type: Literal["text", "voice"]
     correlation_id: str | None = Field(default=None, max_length=500)
     reply_account_id: str = Field(min_length=1, max_length=200)
     reply_recipient: str = Field(min_length=1, max_length=500)
 
-    @field_validator("message_id", "prompt", "reply_account_id", "reply_recipient")
+    @field_validator("message_id", "reply_account_id", "reply_recipient")
     @classmethod
     def reject_blank(cls, value: str) -> str:
         resolved = value.strip()
         if not resolved:
             raise ValueError("Value must not be blank")
         return resolved
+
+    @field_validator("content")
+    @classmethod
+    def reject_blank_content(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Value must not be blank")
+        return value
 
     @field_validator("correlation_id")
     @classmethod
@@ -54,13 +55,10 @@ class WeixinChubModeSubmitRequest(BaseModel):
         return value
 
 
-class WeixinChubModeSubmissionData(BaseModel):
-    accepted: Literal[True]
-    duplicate: bool
-    new_session: bool
-    code: Literal["submitted"]
-    message: str = Field(max_length=500)
-    task_summary: str | None = Field(default=None, max_length=48)
+class WeixinChubModeDispatchData(BaseModel):
+    protocol_version: Literal[2]
+    disposition: Literal["pass", "reply"]
+    message: str | None = Field(default=None, max_length=3000)
 
 
 def require_same_node_tailscale(request: Request) -> None:
@@ -74,7 +72,7 @@ def require_same_node_tailscale(request: Request) -> None:
         raise ApiError(
             403,
             "weixin_chub_mode_source_required",
-            "微信 Chub 模式任务只接受本节点 OpenClaw 提交。",
+            "微信 Chub 模式只接受本节点 OpenClaw 调度。",
         )
 
 
@@ -85,32 +83,25 @@ router = APIRouter(
 )
 
 
-@router.get("/status", response_model=ApiResponse[WeixinChubModeStatusData])
-def get_wechat_chub_mode_status(
-    request: Request,
-) -> ApiResponse[WeixinChubModeStatusData]:
-    status = request.app.state.weixin_chub_mode.status()
-    return ApiResponse(
-        data=WeixinChubModeStatusData(
-            enabled=status.enabled,
-            ready=status.ready,
-            code=status.code,
-        )
-    )
-
-
 @router.post(
-    "/submit",
-    response_model=ApiResponse[WeixinChubModeSubmissionData],
+    "/dispatch",
+    response_model=ApiResponse[WeixinChubModeDispatchData],
     dependencies=[Depends(require_same_node_tailscale)],
 )
-def submit_wechat_chub_mode_task(
-    payload: WeixinChubModeSubmitRequest,
+def dispatch_wechat_chub_mode_message(
+    payload: WeixinChubModeDispatchRequest,
     request: Request,
-) -> ApiResponse[WeixinChubModeSubmissionData]:
-    result = request.app.state.weixin_chub_mode.submit(
+) -> ApiResponse[WeixinChubModeDispatchData]:
+    if payload.protocol_version != WEIXIN_CHUB_MODE_PROTOCOL_VERSION:
+        raise ApiError(
+            409,
+            "weixin_chub_mode_protocol_mismatch",
+            "OpenClaw 与 Chub 微信调度协议版本不匹配。",
+        )
+    result = request.app.state.weixin_chub_mode.dispatch(
         message_id=payload.message_id,
-        prompt=payload.prompt,
+        prompt=payload.content,
+        message_type=payload.message_type,
         correlation_id=payload.correlation_id,
         source_ip=request.client.host if request.client else "unknown",
         delivery_route=QuickInteractionWeixinRoute(
@@ -119,7 +110,5 @@ def submit_wechat_chub_mode_task(
         ),
     )
     return ApiResponse(
-        data=WeixinChubModeSubmissionData.model_validate(
-            result.model_dump()
-        )
+        data=WeixinChubModeDispatchData.model_validate(result.model_dump())
     )
