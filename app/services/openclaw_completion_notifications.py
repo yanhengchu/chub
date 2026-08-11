@@ -5,13 +5,17 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 
 from app.codex.models import QuickInteractionTask, QuickInteractionWeixinRoute
 from app.core.config import OpenClawCompletionNotificationConfig
+from app.services.deferred_restart import DeferredRestartOutcome
 
 
 MAX_COMMAND_OUTPUT_BYTES = 64 * 1024
+MAX_COMPLETION_MESSAGE_PARTS = 5
+OVERFLOW_MESSAGE = "结果超过微信发送上限，剩余内容请在 Chub 快速交互页面查看。"
 
 
 @dataclass(frozen=True)
@@ -21,7 +25,7 @@ class CompletionNotificationResult:
 
 
 class OpenClawCompletionNotifier:
-    """Deliver one bounded quick-interaction summary through the local Weixin bot."""
+    """Deliver bounded quick-interaction results through the local Weixin bot."""
 
     def __init__(self, config: OpenClawCompletionNotificationConfig) -> None:
         self.config = config
@@ -31,8 +35,46 @@ class OpenClawCompletionNotifier:
         task: QuickInteractionTask,
         route: QuickInteractionWeixinRoute | None = None,
     ) -> CompletionNotificationResult:
+        messages = self._messages_for(task)
+        return self._send(
+            task,
+            route,
+            messages,
+            disabled_message="微信完成通知未启用。",
+        )
+
+    def notify_restart(
+        self,
+        task: QuickInteractionTask,
+        route: QuickInteractionWeixinRoute | None,
+        outcome: DeferredRestartOutcome,
+    ) -> CompletionNotificationResult:
+        messages = {
+            "succeeded": "Chub 已完成自动重启，服务已恢复。",
+            "start_failed": "Chub 自动重启未能启动，当前服务仍在运行。",
+        }
+        message = messages.get(outcome)
+        if message is None:
+            return CompletionNotificationResult("skipped", "本次无需发送微信重启通知。")
+        if task.notification_route != "weixin-task":
+            return CompletionNotificationResult("skipped", "页面任务不发送微信重启通知。")
+        return self._send(
+            task,
+            route,
+            [message],
+            disabled_message="微信重启通知未启用。",
+        )
+
+    def _send(
+        self,
+        task: QuickInteractionTask,
+        route: QuickInteractionWeixinRoute | None,
+        messages: list[str],
+        *,
+        disabled_message: str,
+    ) -> CompletionNotificationResult:
         if not self.config.enabled:
-            return CompletionNotificationResult("skipped", "微信完成通知未启用。")
+            return CompletionNotificationResult("skipped", disabled_message)
         if task.notification_route == "weixin-task":
             if route is None:
                 return CompletionNotificationResult(
@@ -52,37 +94,47 @@ class OpenClawCompletionNotifier:
         executable = shutil.which("openclaw")
         if executable is None:
             return CompletionNotificationResult("failed", "OpenClaw 命令不可用。")
+        deadline = time.monotonic() + self.config.timeout_seconds
         try:
             account_id = self._running_weixin_account(
                 executable,
                 required_account_id=account_id,
                 require_unique=task.notification_route == "weixin-task",
+                timeout_seconds=self._remaining_timeout(deadline),
             )
-        except ValueError as exc:
+        except (OSError, subprocess.TimeoutExpired, UnicodeError, ValueError) as exc:
             return CompletionNotificationResult(
                 "failed" if task.notification_route == "weixin-task" else "skipped",
-                str(exc),
+                str(exc) if isinstance(exc, ValueError) else "无法确认 ClawBot 状态。",
             )
-        message = self._message_for(task)
-        try:
-            self._run_json(
-                executable,
-                [
-                    "message",
-                    "send",
-                    "--channel",
-                    "openclaw-weixin",
-                    "--account",
-                    account_id,
-                    "--target",
-                    recipient,
-                    "--message",
-                    message,
-                    "--json",
-                ],
-            )
-        except (OSError, subprocess.TimeoutExpired, ValueError):
-            return CompletionNotificationResult("failed", "微信通知未送达。")
+        sent = 0
+        for message in messages:
+            try:
+                self._run_json(
+                    executable,
+                    [
+                        "message",
+                        "send",
+                        "--channel",
+                        "openclaw-weixin",
+                        "--account",
+                        account_id,
+                        "--target",
+                        recipient,
+                        "--message",
+                        message,
+                        "--json",
+                    ],
+                    timeout_seconds=self._remaining_timeout(deadline),
+                )
+            except (OSError, subprocess.TimeoutExpired, UnicodeError, ValueError):
+                error = (
+                    f"微信通知部分送达（{sent}/{len(messages)}）。"
+                    if sent
+                    else "微信通知未送达。"
+                )
+                return CompletionNotificationResult("failed", error)
+            sent += 1
         return CompletionNotificationResult("sent")
 
     def validate_weixin_route(
@@ -111,7 +163,7 @@ class OpenClawCompletionNotifier:
         *,
         required_account_id: str | None = None,
         require_unique: bool = False,
-        timeout_seconds: int | None = None,
+        timeout_seconds: float | None = None,
     ) -> str:
         payload = self._run_json(
             executable,
@@ -150,27 +202,83 @@ class OpenClawCompletionNotifier:
             raise ValueError("未检测到唯一运行中的 ClawBot。")
         return running[0]
 
-    def _message_for(self, task: QuickInteractionTask) -> str:
-        status = {
-            "succeeded": "成功",
-            "failed": "失败",
-            "timed_out": "超时",
-        }.get(task.status, "结束")
+    def _messages_for(self, task: QuickInteractionTask) -> list[str]:
+        heading = {
+            "succeeded": "任务执行成功",
+            "failed": "任务执行失败",
+            "timed_out": "任务执行超时",
+        }.get(task.status, "任务执行结束")
         content = task.result if task.status == "succeeded" else task.error
-        prefix = f"快速交互已{status}\n"
-        suffix = "\n\n完整结果请在 Chub 快速交互页面查看。"
-        limit = self.config.max_message_chars - len(prefix) - len(suffix)
         summary = (content or "未返回结果。").strip()
-        if len(summary) > limit:
-            summary = f"{summary[: max(1, limit - 1)]}…"
-        return f"{prefix}{summary}{suffix}"
+        single_prefix = f"{heading}\n\n"
+        if len(single_prefix) + len(summary) <= self.config.max_message_chars:
+            return [f"{single_prefix}{summary}"]
+
+        multipart_prefix = f"{heading}（1/{MAX_COMPLETION_MESSAGE_PARTS}）\n\n"
+        content_limit = self.config.max_message_chars - len(multipart_prefix)
+        parts = self._split_text(summary, content_limit)
+        overflow = len(parts) > MAX_COMPLETION_MESSAGE_PARTS
+        if overflow:
+            visible = parts[: MAX_COMPLETION_MESSAGE_PARTS - 1]
+            remaining = "\n".join(parts[MAX_COMPLETION_MESSAGE_PARTS - 1 :])
+            final_limit = content_limit - len(OVERFLOW_MESSAGE) - 2
+            final, _remainder = self._take_part(remaining, final_limit)
+            parts = [*visible, f"{final.rstrip()}\n\n{OVERFLOW_MESSAGE}"]
+
+        total = len(parts)
+        return [
+            f"{heading}（{index}/{total}）\n\n{part}"
+            for index, part in enumerate(parts, start=1)
+        ]
+
+    @classmethod
+    def _split_text(cls, text: str, limit: int) -> list[str]:
+        parts: list[str] = []
+        remaining = text
+        while remaining:
+            part, remaining = cls._take_part(remaining, limit)
+            parts.append(part)
+        return parts
+
+    @staticmethod
+    def _take_part(text: str, limit: int) -> tuple[str, str]:
+        if len(text) <= limit:
+            return text, ""
+        minimum_break = max(1, limit // 2)
+        boundary = -1
+        for separator in (
+            "\n\n",
+            "\n",
+            "。",
+            "！",
+            "？",
+            ". ",
+            "! ",
+            "? ",
+            "；",
+            "; ",
+        ):
+            candidate = text.rfind(separator, minimum_break, limit)
+            if candidate >= 0:
+                candidate += len(separator)
+                boundary = max(boundary, candidate)
+        if boundary < minimum_break:
+            boundary = limit
+        return text[:boundary].rstrip(), text[boundary:].lstrip()
+
+    @staticmethod
+    def _remaining_timeout(deadline: float) -> float:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired("openclaw", 0)
+        return remaining
 
     def _run_json(
         self,
         executable: str,
         arguments: list[str],
         *,
-        timeout_seconds: int | None = None,
+        timeout_seconds: float | None = None,
     ) -> dict:
         with tempfile.TemporaryFile() as output:
             process = subprocess.run(

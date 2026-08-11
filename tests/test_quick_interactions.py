@@ -10,6 +10,7 @@ import pytest
 
 from app.codex.models import (
     CodexSession,
+    QuickInteractionDeferredRestartContext,
     QuickInteractionTask,
     QuickInteractionWeixinRoute,
     utc_now,
@@ -25,6 +26,7 @@ def manager(
     tmp_path: Path,
     completion_notifier=None,
     deferred_restart=None,
+    restart_notifier=None,
 ) -> QuickInteractionManager:
     codex_manager = MagicMock()
     codex_manager.get_session.return_value = CodexSession(
@@ -44,6 +46,7 @@ def manager(
         codex_manager,
         completion_notifier,
         deferred_restart,
+        restart_notifier=restart_notifier,
     )
 
 
@@ -646,6 +649,55 @@ def test_local_history_never_prunes_active_tasks(tmp_path: Path) -> None:
     assert {task.id for task in active} <= quick_interactions._tasks.keys()
 
 
+def test_local_history_never_prunes_pending_restart_task_or_private_route(
+    tmp_path: Path,
+) -> None:
+    quick_interactions = manager(tmp_path)
+    pending = QuickInteractionTask(
+        id="pending-restart",
+        session_id="session-pending",
+        prompt="等待重启",
+        status="succeeded",
+        result="已安排重启。",
+        notification_route="weixin-task",
+        deferred_restart_status="pending",
+        created_at=utc_now() - timedelta(days=30),
+        updated_at=utc_now() - timedelta(days=30),
+    )
+    completed = [
+        QuickInteractionTask(
+            id=f"completed-{index}",
+            session_id="session-completed",
+            prompt=f"完成任务 {index}",
+            status="succeeded",
+            result="完成",
+            created_at=utc_now() + timedelta(minutes=index),
+            updated_at=utc_now() + timedelta(minutes=index),
+        )
+        for index in range(30)
+    ]
+    route = QuickInteractionWeixinRoute(
+        account_id="weixin-account",
+        recipient="owner@im.wechat",
+    )
+    context = QuickInteractionDeferredRestartContext(
+        operation_id="operation-1:restart",
+        coordinator_operation_id="operation-1:restart",
+        source_ip="100.64.0.1",
+    )
+    quick_interactions._tasks = {
+        task.id: task for task in [pending, *completed]
+    }
+    quick_interactions._notification_routes[pending.id] = route
+    quick_interactions._deferred_restart_contexts[pending.id] = context
+
+    quick_interactions._write()
+
+    assert pending.id in quick_interactions._tasks
+    assert quick_interactions._notification_routes[pending.id] == route
+    assert quick_interactions._deferred_restart_contexts[pending.id] == context
+
+
 def test_local_history_never_prunes_pinned_tasks(tmp_path: Path) -> None:
     quick_interactions = manager(tmp_path)
     pinned = QuickInteractionTask(
@@ -866,11 +918,12 @@ def test_deferred_restart_completion_distinguishes_automatic_and_manual(
     quick_interactions._tasks[task.id] = task
     completed_at = utc_now()
 
-    assert quick_interactions.record_deferred_restart_completion(
+    quick_interactions.record_deferred_restart_completion(
+        "operation-1:restart",
         task.id,
-        True,
+        "succeeded",
         completed_at,
-    ) is True
+    )
     completed = quick_interactions.get(task.id)
     assert completed.deferred_restart_status == "succeeded"
     assert completed.deferred_restart_updated_at == completed_at
@@ -879,11 +932,12 @@ def test_deferred_restart_completion_distinguishes_automatic_and_manual(
     persisted = json.loads(quick_interactions.path.read_text(encoding="utf-8"))
     assert persisted[0]["deferred_restart_status"] == "succeeded"
 
-    assert quick_interactions.record_deferred_restart_completion(
+    quick_interactions.record_deferred_restart_completion(
+        "operation-1:restart",
         task.id,
-        False,
+        "cleared",
         utc_now(),
-    ) is False
+    )
     assert quick_interactions.get(task.id).deferred_restart_status == "succeeded"
 
     manual_task = task.model_copy(
@@ -893,12 +947,135 @@ def test_deferred_restart_completion_distinguishes_automatic_and_manual(
         }
     )
     quick_interactions._tasks[manual_task.id] = manual_task
-    assert quick_interactions.record_deferred_restart_completion(
+    quick_interactions.record_deferred_restart_completion(
+        "operation-2:restart",
         manual_task.id,
-        False,
+        "cleared",
         utc_now(),
-    ) is True
+    )
     assert quick_interactions.get(manual_task.id).deferred_restart_status == "cleared"
+
+
+def test_deferred_restart_completion_notifies_only_coalesced_weixin_task(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    notifier = MagicMock(return_value=SimpleNamespace(status="sent", error=None))
+    quick_interactions = manager(tmp_path, restart_notifier=notifier)
+    now = utc_now()
+    page_task = QuickInteractionTask(
+        id="page-task",
+        session_id="page-session",
+        prompt="页面重启",
+        status="succeeded",
+        result="已安排重启。",
+        deferred_restart_status="pending",
+        created_at=now,
+        updated_at=now,
+    )
+    weixin_task = page_task.model_copy(
+        update={
+            "id": "weixin-task",
+            "session_id": "weixin-session",
+            "prompt": "微信重启",
+            "notification_route": "weixin-task",
+        }
+    )
+    quick_interactions._tasks = {
+        page_task.id: page_task,
+        weixin_task.id: weixin_task,
+    }
+    quick_interactions._deferred_restart_contexts = {
+        page_task.id: QuickInteractionDeferredRestartContext(
+            operation_id="page-operation:restart",
+            coordinator_operation_id="page-operation:restart",
+            source_ip="100.64.0.1",
+        ),
+        weixin_task.id: QuickInteractionDeferredRestartContext(
+            operation_id="weixin-operation:restart",
+            coordinator_operation_id="page-operation:restart",
+            source_ip="100.64.0.2",
+        ),
+    }
+    route = QuickInteractionWeixinRoute(
+        account_id="weixin-account",
+        recipient="owner@im.wechat",
+    )
+    quick_interactions._notification_routes[weixin_task.id] = route
+
+    class ImmediateThread:
+        def __init__(self, *, target, args, daemon, name=None):
+            self.target = target
+            self.args = args
+
+        def start(self) -> None:
+            self.target(*self.args)
+
+    monkeypatch.setattr(
+        "app.codex.quick_interactions.threading.Thread",
+        ImmediateThread,
+    )
+
+    quick_interactions.record_deferred_restart_started(
+        "page-operation:restart",
+        page_task.id,
+        now,
+    )
+    quick_interactions.record_deferred_restart_completion(
+        "page-operation:restart",
+        page_task.id,
+        "succeeded",
+        now,
+    )
+
+    assert quick_interactions.get(page_task.id).deferred_restart_status == "succeeded"
+    assert (
+        quick_interactions.get(page_task.id).deferred_restart_notification_status
+        is None
+    )
+    completed_weixin = quick_interactions.get(weixin_task.id)
+    assert completed_weixin.deferred_restart_status == "succeeded"
+    assert completed_weixin.deferred_restart_notification_status == "sent"
+    notifier.assert_called_once()
+    assert notifier.call_args.args[1] == route
+    assert notifier.call_args.args[2] == "succeeded"
+    public_payload = completed_weixin.model_dump(mode="json")
+    assert "coordinator_operation_id" not in public_payload
+    assert "owner@im.wechat" not in json.dumps(public_payload)
+    persisted = json.loads(quick_interactions.path.read_text(encoding="utf-8"))
+    persisted_weixin = next(item for item in persisted if item["id"] == weixin_task.id)
+    assert persisted_weixin["_notification_route"] == route.model_dump(mode="json")
+    assert persisted_weixin["_deferred_restart_context"][
+        "coordinator_operation_id"
+    ] == "page-operation:restart"
+
+
+def test_restart_notification_interrupted_while_sending_is_not_retried(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "quick-interactions.json"
+    task = QuickInteractionTask(
+        id="task-1",
+        session_id="session-1",
+        prompt="重启",
+        status="succeeded",
+        result="完成",
+        notification_route="weixin-task",
+        deferred_restart_status="succeeded",
+        deferred_restart_notification_status="sending",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    state.write_text(json.dumps([task.model_dump(mode="json")]), encoding="utf-8")
+
+    quick_interactions = manager(tmp_path)
+
+    recovered = quick_interactions.get(task.id)
+    assert recovered.deferred_restart_notification_status == "failed"
+    assert recovered.deferred_restart_notification_error == (
+        "服务重启时微信重启通知未完成。"
+    )
+    assert quick_interactions.has_pending_deferred_restart_notifications() is False
 
 
 def test_submit_rejects_session_error(tmp_path: Path) -> None:
@@ -987,6 +1164,10 @@ def test_successful_task_registers_script_restart_and_appends_result(
 ) -> None:
     deferred_restart = MagicMock()
     deferred_restart.pending.return_value = False
+    deferred_restart.request.return_value = SimpleNamespace(
+        operation_id="operation-1:restart",
+        created=True,
+    )
     quick_interactions = manager(
         tmp_path,
         deferred_restart=deferred_restart,

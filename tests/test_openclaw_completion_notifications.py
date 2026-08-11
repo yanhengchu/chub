@@ -60,26 +60,26 @@ def test_notification_uses_only_running_account_and_fixed_recipient(
 ) -> None:
     command = executable(tmp_path)
     calls: list[list[str]] = []
-    responses = [
-        {
-            "channelAccounts": {
-                "openclaw-weixin": [
-                    {
-                        "accountId": "account-1",
-                        "enabled": True,
-                        "configured": True,
-                        "running": True,
-                        "restartPending": False,
-                    }
-                ]
-            }
-        },
-        {"result": {"messageId": "message-1"}},
-    ]
+    account_status = {
+        "channelAccounts": {
+            "openclaw-weixin": [
+                {
+                    "accountId": "account-1",
+                    "enabled": True,
+                    "configured": True,
+                    "running": True,
+                    "restartPending": False,
+                }
+            ]
+        }
+    }
 
     def run(arguments, **kwargs):
         calls.append(arguments)
-        kwargs["stdout"].write(json.dumps(responses.pop(0)).encode())
+        payload = account_status if len(calls) == 1 else {
+            "result": {"messageId": f"message-{len(calls) - 1}"}
+        }
+        kwargs["stdout"].write(json.dumps(payload).encode())
         return subprocess.CompletedProcess(arguments, 0)
 
     monkeypatch.setattr("shutil.which", lambda _name: str(command))
@@ -104,9 +104,166 @@ def test_notification_uses_only_running_account_and_fixed_recipient(
         "account-1",
     ]
     assert calls[1][calls[1].index("--target") + 1] == "recipient-1@im.wechat"
-    message = calls[1][calls[1].index("--message") + 1]
-    assert len(message) <= 256
-    assert message.endswith("完整结果请在 Chub 快速交互页面查看。")
+    messages = [call[call.index("--message") + 1] for call in calls[1:]]
+    assert len(messages) == 3
+    assert all(len(message) <= 256 for message in messages)
+    assert messages[0].startswith("任务执行成功（1/3）\n\n")
+    assert messages[-1].startswith("任务执行成功（3/3）\n\n")
+    assert "".join(message.split("\n\n", 1)[1] for message in messages) == (
+        "结果" * 300
+    )
+    assert all("完整结果请" not in message for message in messages)
+
+
+def test_short_notification_contains_complete_result_without_page_hint() -> None:
+    notifier = OpenClawCompletionNotifier(
+        OpenClawCompletionNotificationConfig(max_message_chars=256)
+    )
+
+    messages = notifier._messages_for(task(result="完整结果"))
+
+    assert messages == ["任务执行成功\n\n完整结果"]
+
+
+@pytest.mark.parametrize(
+    ("status", "error", "expected"),
+    [
+        ("failed", "执行失败原因", "任务执行失败\n\n执行失败原因"),
+        ("timed_out", "执行超时说明", "任务执行超时\n\n执行超时说明"),
+    ],
+)
+def test_notification_uses_task_status_heading(
+    status: str,
+    error: str,
+    expected: str,
+) -> None:
+    notifier = OpenClawCompletionNotifier(
+        OpenClawCompletionNotificationConfig(max_message_chars=256)
+    )
+    failed_task = task().model_copy(
+        update={"status": status, "result": None, "error": error}
+    )
+
+    assert notifier._messages_for(failed_task) == [expected]
+
+
+def test_notification_caps_long_result_at_five_messages() -> None:
+    notifier = OpenClawCompletionNotifier(
+        OpenClawCompletionNotificationConfig(max_message_chars=256)
+    )
+
+    messages = notifier._messages_for(task(result="很长的结果" * 1000))
+
+    assert len(messages) == 5
+    assert all(len(message) <= 256 for message in messages)
+    assert messages[0].startswith("任务执行成功（1/5）\n\n")
+    assert messages[-1].startswith("任务执行成功（5/5）\n\n")
+    assert messages[-1].endswith(
+        "结果超过微信发送上限，剩余内容请在 Chub 快速交互页面查看。"
+    )
+
+
+def test_notification_never_exceeds_configured_limit_at_separator_boundary() -> None:
+    notifier = OpenClawCompletionNotifier(
+        OpenClawCompletionNotificationConfig(max_message_chars=4000)
+    )
+
+    messages = notifier._messages_for(task(result=("段落内容。\n\n" * 600)[:4000]))
+
+    assert len(messages) > 1
+    assert all(len(message) <= 4000 for message in messages)
+
+
+def test_notification_reports_partial_delivery_and_stops(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    command = executable(tmp_path)
+    calls: list[list[str]] = []
+
+    def run(arguments, **kwargs):
+        calls.append(arguments)
+        if len(calls) == 1:
+            payload = {
+                "channelAccounts": {
+                    "openclaw-weixin": [
+                        {
+                            "accountId": "account-1",
+                            "enabled": True,
+                            "configured": True,
+                            "running": True,
+                        }
+                    ]
+                }
+            }
+            returncode = 0
+        else:
+            payload = {"result": {"messageId": f"message-{len(calls) - 1}"}}
+            returncode = 1 if len(calls) == 3 else 0
+        kwargs["stdout"].write(json.dumps(payload).encode())
+        return subprocess.CompletedProcess(arguments, returncode)
+
+    monkeypatch.setattr("shutil.which", lambda _name: str(command))
+    monkeypatch.setattr("subprocess.run", run)
+    notifier = OpenClawCompletionNotifier(
+        OpenClawCompletionNotificationConfig(
+            weixin_recipient="recipient-1@im.wechat",
+            max_message_chars=256,
+        )
+    )
+
+    result = notifier.notify(task(result="结果" * 300))
+
+    assert result.status == "failed"
+    assert result.error == "微信通知部分送达（1/3）。"
+    assert len(calls) == 3
+
+
+def test_notification_parts_share_one_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    command = executable(tmp_path)
+    calls: list[list[str]] = []
+    times = iter((0.0, 0.0, 0.0, 21.0))
+
+    def run(arguments, **kwargs):
+        calls.append(arguments)
+        payload = (
+            {
+                "channelAccounts": {
+                    "openclaw-weixin": [
+                        {
+                            "accountId": "account-1",
+                            "enabled": True,
+                            "configured": True,
+                            "running": True,
+                        }
+                    ]
+                }
+            }
+            if len(calls) == 1
+            else {"result": {"messageId": "message-1"}}
+        )
+        kwargs["stdout"].write(json.dumps(payload).encode())
+        return subprocess.CompletedProcess(arguments, 0)
+
+    monkeypatch.setattr("shutil.which", lambda _name: str(command))
+    monkeypatch.setattr("subprocess.run", run)
+    monkeypatch.setattr("time.monotonic", lambda: next(times))
+    notifier = OpenClawCompletionNotifier(
+        OpenClawCompletionNotificationConfig(
+            weixin_recipient="recipient-1@im.wechat",
+            timeout_seconds=20,
+            max_message_chars=256,
+        )
+    )
+
+    result = notifier.notify(task(result="结果" * 300))
+
+    assert result.status == "failed"
+    assert result.error == "微信通知部分送达（1/3）。"
+    assert len(calls) == 2
 
 
 def test_notification_does_not_fall_back_from_configured_stopped_account(
@@ -260,6 +417,72 @@ def test_weixin_task_fails_without_route_or_global_fallback(
 
     assert result.status == "failed"
     assert result.error == "微信原路回送信息不可用。"
+
+
+def test_restart_notification_uses_weixin_task_route(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    command = executable(tmp_path)
+    calls: list[list[str]] = []
+
+    def run(arguments, **kwargs):
+        calls.append(arguments)
+        payload = (
+            {
+                "channelAccounts": {
+                    "openclaw-weixin": [
+                        {
+                            "accountId": "route-account",
+                            "enabled": True,
+                            "configured": True,
+                            "running": True,
+                        }
+                    ]
+                }
+            }
+            if len(calls) == 1
+            else {"result": {"messageId": "message-1"}}
+        )
+        kwargs["stdout"].write(json.dumps(payload).encode())
+        return subprocess.CompletedProcess(arguments, 0)
+
+    monkeypatch.setattr("shutil.which", lambda _name: str(command))
+    monkeypatch.setattr("subprocess.run", run)
+    notifier = OpenClawCompletionNotifier(OpenClawCompletionNotificationConfig())
+    route = QuickInteractionWeixinRoute(
+        account_id="route-account",
+        recipient="origin@im.wechat",
+    )
+
+    result = notifier.notify_restart(
+        task(notification_route="weixin-task"),
+        route,
+        "succeeded",
+    )
+
+    assert result.status == "sent"
+    send = calls[1]
+    assert send[send.index("--account") + 1] == "route-account"
+    assert send[send.index("--target") + 1] == "origin@im.wechat"
+    assert send[send.index("--message") + 1] == (
+        "Chub 已完成自动重启，服务已恢复。"
+    )
+
+
+def test_restart_notification_skips_page_task_without_inspecting_openclaw(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "shutil.which",
+        lambda _name: pytest.fail("Page restart must not inspect OpenClaw"),
+    )
+    notifier = OpenClawCompletionNotifier(OpenClawCompletionNotificationConfig())
+
+    result = notifier.notify_restart(task(), None, "succeeded")
+
+    assert result.status == "skipped"
+    assert result.error == "页面任务不发送微信重启通知。"
 
 
 def test_weixin_route_validation_requires_one_healthy_clawbot(

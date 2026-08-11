@@ -168,7 +168,9 @@ QuickInteractionNotificationStatus = Literal[
 ]
 QuickInteractionDeferredRestartStatus = Literal[
     "pending",
+    "started",
     "succeeded",
+    "start_failed",
     "cleared",
 ]
 QuickInteractionNotificationRoute = Literal["default", "weixin-task"]
@@ -194,6 +196,14 @@ class QuickInteractionWeixinRoute(BaseModel):
         if not value.endswith("@im.wechat"):
             raise ValueError("Recipient must be a Weixin identifier")
         return value
+
+
+class QuickInteractionDeferredRestartContext(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    operation_id: str = Field(min_length=1, max_length=160)
+    coordinator_operation_id: str = Field(min_length=1, max_length=160)
+    source_ip: str = Field(min_length=1, max_length=128)
 
 
 class QuickInteractionRequest(BaseModel):
@@ -231,6 +241,12 @@ class QuickInteractionTask(BaseModel):
     notification_updated_at: datetime | None = None
     deferred_restart_status: QuickInteractionDeferredRestartStatus | None = None
     deferred_restart_updated_at: datetime | None = None
+    deferred_restart_notification_status: QuickInteractionNotificationStatus | None = None
+    deferred_restart_notification_error: str | None = Field(
+        default=None,
+        max_length=1000,
+    )
+    deferred_restart_notification_updated_at: datetime | None = None
     pinned_at: datetime | None = None
     created_at: datetime
     updated_at: datetime

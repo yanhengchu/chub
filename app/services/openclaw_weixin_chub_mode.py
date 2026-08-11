@@ -431,7 +431,6 @@ class WeixinChubModeManager:
                         "weixin_chub_mode_in_progress",
                         "微信专用 Session 正在执行任务，请等待完成。",
                     )
-                session_reclaimed = False
                 with self.quick_interactions.session_operation_guard(session_id):
                     session = self.codex_manager.get_session(session_id)
                     if not new_session and session.activity == "unknown":
@@ -441,7 +440,6 @@ class WeixinChubModeManager:
                             operation_id,
                             source_ip,
                         )
-                        session_reclaimed = True
                     task = self.quick_interactions.submit(
                         session_id,
                         prompt,
@@ -512,16 +510,7 @@ class WeixinChubModeManager:
 
             reservation.status = "submitted"
             reservation.code = "submitted"
-            reservation.message = (
-                "任务已提交，已创建新的微信专用 Session；完成后将通过微信回送结果。"
-                if new_session
-                else (
-                    "检测到微信专用 Session 状态未知，已停止残留会话并提交任务；"
-                    "完成后将通过微信回送结果。"
-                    if session_reclaimed
-                    else "任务已提交；完成后将通过微信回送结果。"
-                )
-            )
+            reservation.message = "任务已提交，完成后将通过微信发送结果。"
             reservation.session_id = session_id
             reservation.task_id = task.id
             reservation.new_session = new_session

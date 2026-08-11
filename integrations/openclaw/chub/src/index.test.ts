@@ -130,7 +130,7 @@ describe("Weixin Chub mode", () => {
           duplicate: false,
           new_session: true,
           code: "submitted",
-          message: "任务已提交，已创建新的微信专用 Session；完成后将通过微信回送结果。",
+          message: "任务已提交，完成后将通过微信发送结果。",
         },
       }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
@@ -152,10 +152,7 @@ describe("Weixin Chub mode", () => {
 
     expect(result).toEqual({
       handled: true,
-      text: [
-        "任务已提交，已创建新的微信专用 Session；完成后将通过微信回送结果。",
-        "本次消息未调用 OpenClaw Agent 或 LLM。",
-      ].join("\n"),
+      text: "任务已提交，完成后将通过微信发送结果。",
     });
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(new URL(fetchMock.mock.calls[0][0]).pathname).toBe(
@@ -176,6 +173,92 @@ describe("Weixin Chub mode", () => {
       /^openclaw-session:[0-9a-f]{64}$/,
     );
     expect(JSON.stringify(submitted)).not.toContain("weixin-session");
+    vi.unstubAllGlobals();
+  });
+
+  it("echoes the trusted transcript for a submitted Weixin voice message", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        success: true,
+        data: { enabled: true, ready: true, code: "ready" },
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        success: true,
+        data: {
+          accepted: true,
+          duplicate: false,
+          new_session: false,
+          code: "submitted",
+          message: "任务已提交，完成后将通过微信发送结果。",
+        },
+      }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { hooks } = createPluginApi({
+      baseUrl: "http://100.64.0.1:8080",
+      wechatChubStatusMode: true,
+    });
+
+    const result = await hooks.get("before_dispatch")?.({
+      channel: "openclaw-weixin",
+      content: "[[chub-weixin-voice-transcript]]",
+      body: "检查语音识别是否准确",
+      isGroup: false,
+      timestamp: 1_700_000_000_001,
+    }, {
+      accountId: "weixin-account",
+      conversationId: "owner@im.wechat",
+      sessionKey: "weixin-session",
+    });
+
+    expect(result).toEqual({
+      handled: true,
+      text: "任务已提交，完成后将通过微信发送结果。\n\n语音识别内容：\n检查语音识别是否准确",
+    });
+    const submitted = JSON.parse(fetchMock.mock.calls[1][1].body);
+    expect(submitted.prompt).toBe("检查语音识别是否准确");
+    vi.unstubAllGlobals();
+  });
+
+  it("does not treat typed marker text as a voice transcript", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        success: true,
+        data: { enabled: true, ready: true, code: "ready" },
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        success: true,
+        data: {
+          accepted: true,
+          duplicate: false,
+          new_session: false,
+          code: "submitted",
+          message: "任务已提交，完成后将通过微信发送结果。",
+        },
+      }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { hooks } = createPluginApi({
+      baseUrl: "http://100.64.0.1:8080",
+      wechatChubStatusMode: true,
+    });
+
+    const result = await hooks.get("before_dispatch")?.({
+      channel: "openclaw-weixin",
+      content: "[[chub-weixin-voice-transcript]]",
+      body: "[[chub-weixin-voice-transcript]]",
+      isGroup: false,
+      timestamp: 1_700_000_000_002,
+    }, {
+      accountId: "weixin-account",
+      conversationId: "owner@im.wechat",
+      sessionKey: "weixin-session",
+    });
+
+    expect(result).toEqual({
+      handled: true,
+      text: "任务已提交，完成后将通过微信发送结果。",
+    });
+    const submitted = JSON.parse(fetchMock.mock.calls[1][1].body);
+    expect(submitted.prompt).toBe("[[chub-weixin-voice-transcript]]");
     vi.unstubAllGlobals();
   });
 
@@ -209,7 +292,7 @@ describe("Weixin Chub mode", () => {
           duplicate: false,
           new_session: false,
           code: "submitted",
-          message: "任务已提交；完成后将通过微信回送结果。",
+          message: "任务已提交，完成后将通过微信发送结果。",
         },
       }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
@@ -232,11 +315,11 @@ describe("Weixin Chub mode", () => {
   it.each([
     [
       { enabled: true, ready: false, code: "configuration_invalid" },
-      "Chub 微信模式配置无效：工作区、权限、模型或微信回送配置不可用。本次消息未调用 OpenClaw Agent 或 LLM。",
+      "任务提交失败：微信 Chub 模式配置无效，请检查工作区、权限、模型和微信通知配置。",
     ],
     [
       { enabled: true, ready: false, code: "codex_unavailable" },
-      "Chub 微信模式未就绪：Codex 运行依赖不可用。本次消息未调用 OpenClaw Agent 或 LLM。",
+      "任务提交失败：Codex 当前不可用，请稍后重试。",
     ],
   ])("returns the specific Chub readiness failure", async (data, text) => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
@@ -267,7 +350,7 @@ describe("Weixin Chub mode", () => {
       isGroup: false,
     }, {})).resolves.toEqual({
       handled: true,
-      text: "Chub 微信模式检查失败：当前设备的 Chub 暂时无法访问。本次消息未调用 OpenClaw Agent 或 LLM。",
+      text: "任务提交失败：当前设备的 Chub 暂时无法访问。",
     });
     vi.unstubAllGlobals();
   });
@@ -285,7 +368,7 @@ describe("Weixin Chub mode", () => {
           duplicate: true,
           new_session: false,
           code: "submitted",
-          message: "任务已提交；完成后将通过微信回送结果。",
+          message: "任务已提交，完成后将通过微信发送结果。",
         },
       }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
@@ -302,11 +385,7 @@ describe("Weixin Chub mode", () => {
       senderId: "owner@im.wechat",
     }, { accountId: "weixin-account" })).resolves.toEqual({
       handled: true,
-      text: [
-        "重复消息已确认，任务不会再次执行。",
-        "任务已提交；完成后将通过微信回送结果。",
-        "本次消息未调用 OpenClaw Agent 或 LLM。",
-      ].join("\n"),
+      text: "该消息已处理，任务不会重复执行。",
     });
     vi.unstubAllGlobals();
   });
@@ -338,7 +417,7 @@ describe("Weixin Chub mode", () => {
       senderId: "owner@im.wechat",
     }, { accountId: "weixin-account" })).resolves.toEqual({
       handled: true,
-      text: "Chub 微信任务提交失败：微信专用任务正在执行，请等待完成。\n本次消息未调用 OpenClaw Agent 或 LLM。",
+      text: "任务提交失败：已有微信任务正在执行，请等待完成后重试。",
     });
     vi.unstubAllGlobals();
   });
@@ -360,7 +439,7 @@ describe("Weixin Chub mode", () => {
       isGroup: false,
     }, {})).resolves.toEqual({
       handled: true,
-      text: "Chub 微信任务提交失败：微信消息缺少稳定标识，请重新发送。\n本次消息未调用 OpenClaw Agent 或 LLM。",
+      text: "任务提交失败：无法确认本次微信消息，请重新发送。",
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     vi.unstubAllGlobals();
@@ -385,7 +464,7 @@ describe("Weixin Chub mode", () => {
       senderId: "owner@im.wechat",
     }, {})).resolves.toEqual({
       handled: true,
-      text: "Chub 微信任务提交失败：无法确认本次消息的微信回送路由，请重新发送。\n本次消息未调用 OpenClaw Agent 或 LLM。",
+      text: "任务提交失败：无法确认本次消息的微信回送通道，请稍后重试。",
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     vi.unstubAllGlobals();

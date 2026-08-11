@@ -61,6 +61,9 @@ function conversationTaskSignature(task) {
     task.notification_error,
     task.deferred_restart_status,
     task.deferred_restart_updated_at,
+    task.deferred_restart_notification_status,
+    task.deferred_restart_notification_error,
+    task.deferred_restart_notification_updated_at,
     conversationStatusText(task),
   ]);
 }
@@ -92,6 +95,33 @@ function createConversationNotification(task) {
   if (task.notification_error) {
     notification.title = task.notification_error;
     notification.setAttribute("aria-label", `${label}：${task.notification_error}`);
+  }
+  return notification;
+}
+
+function createRestartNotification(task) {
+  const labels = {
+    pending: "重启结果待通知",
+    sending: "重启结果通知中",
+    sent: "重启结果已通知",
+    failed: "重启结果通知失败",
+    skipped: "重启结果未通知",
+  };
+  const label = labels[task.deferred_restart_notification_status];
+  if (!label) {
+    return null;
+  }
+  const notification = createConversationMeta(label);
+  notification.classList.add(
+    "conversation-notification",
+    `conversation-notification-${task.deferred_restart_notification_status}`,
+  );
+  if (task.deferred_restart_notification_error) {
+    notification.title = task.deferred_restart_notification_error;
+    notification.setAttribute(
+      "aria-label",
+      `${label}：${task.deferred_restart_notification_error}`,
+    );
   }
   return notification;
 }
@@ -152,22 +182,37 @@ function updateConversationTurn(turn, task) {
   assistantMeta.append(pin);
   assistantMessage.append(assistantBubble, assistantMeta);
   turn.append(userMessage, assistantMessage);
-  if (task.deferred_restart_status === "succeeded") {
+  const restartMessages = {
+    succeeded: "Chub 已完成自动重启，服务已恢复。",
+    start_failed: "Chub 自动重启未能启动，当前服务仍在运行。",
+    cleared: "Chub 自动重启计划已由其他服务重启清除。",
+  };
+  const restartText = restartMessages[task.deferred_restart_status];
+  if (restartText) {
     const restartMessage = document.createElement("div");
     const restartBubble = document.createElement("div");
     const restartContent = document.createElement("p");
+    const restartMeta = document.createElement("div");
+    const restartNotification = createRestartNotification(task);
     restartMessage.className = (
       "conversation-message conversation-message-assistant conversation-message-system"
     );
     restartBubble.className = "conversation-bubble is-status";
-    restartContent.textContent = "Chub 已完成自动重启，服务已恢复。";
+    if (task.deferred_restart_status === "start_failed") {
+      restartBubble.classList.add("is-error");
+    }
+    restartContent.textContent = restartText;
     restartBubble.append(restartContent);
-    restartMessage.append(
-      restartBubble,
+    restartMeta.className = "conversation-assistant-info";
+    restartMeta.append(
       createConversationMeta(
         `Chub 系统 · ${formatConversationTime(task.deferred_restart_updated_at)}`,
       ),
     );
+    if (restartNotification) {
+      restartMeta.append(restartNotification);
+    }
+    restartMessage.append(restartBubble, restartMeta);
     turn.append(restartMessage);
   }
 }
@@ -374,9 +419,12 @@ async function performConversationLoad() {
     notificationPending: conversationTasks.some((task) => (
       task.notification_status === "pending"
       || task.notification_status === "sending"
+      || task.deferred_restart_notification_status === "pending"
+      || task.deferred_restart_notification_status === "sending"
     )),
     restartPending: conversationTasks.some(
-      (task) => task.deferred_restart_status === "pending",
+      (task) => task.deferred_restart_status === "pending"
+        || task.deferred_restart_status === "started",
     ),
     session,
   }) && document.visibilityState !== "hidden") {

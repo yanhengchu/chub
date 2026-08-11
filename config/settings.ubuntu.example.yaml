@@ -65,4 +65,5 @@ openclaw:
     weixin_account_id: null
     weixin_recipient: null
     timeout_seconds: 20
+    # Per-message limit; long results are numbered and sent in at most five parts.
     max_message_chars: 2000

@@ -64,14 +64,14 @@ OpenClaw 插件配置 `wechatChubStatusMode` 是部署级路由开关。该名�
 
 微信模式长期复用一个 Chub 管理的专用 Session，以保留 Codex 上下文。Session ID 只保存在 Chub 私有状态中，OpenClaw 和微信消息都不能读取或指定。
 
-- 没有有效 Session 时按固定配置创建一个新 Session，并明确提示上下文已重建。
+- 没有有效 Session 时按固定配置创建一个新 Session；提交确认统一保持简短，不展示 Session 创建或内部恢复细节。
 - 配置中的模型或推理等级为 `null` 时，只在首次创建时跟随 Codex 默认值；已有 Session 继续使用其实际配置。
 - 同一原生 Codex Session 同时只允许一个 writer，不维护额外消息队列。
 - 已有快速交互、明确执行中或 writer 仍被占用时拒绝新任务，不中断现有任务。
 - 专用 Session 状态为 `unknown` 时，Chub 可以撤销页面票据、停止残留终端，并在确认 writer 释放后提交；失败时保持关闭，不并行 `resume`。
 - Codex writer 探测依赖 `CODEX_HOME/thread-writer-locks/` 的只读兼容边界，Codex CLI 升级后需要回归此行为。
 
-快速交互要求重启 Chub 时沿用延迟重启机制：先保存结果并完成本次微信通知，再等待其他快速交互结束。自动重启后的 Chub 系统回复只追加到页面时间线，不额外发送第二条微信消息。
+快速交互要求重启 Chub 时沿用延迟重启机制：先保存结果并完成本次微信通知，再等待其他快速交互结束。多个任务提出的重启合并为一次节点操作，但各任务保留独立关联。新实例通过本机健康接口确认实例 ID 已变化后，页面时间线追加 Chub 系统回复；微信来源任务还使用本次保存的账号和发送者原路发送第二条重启结果，页面来源不发送。重启结果通知采用独立的至多一次状态，发送中再次中断时标记失败、不自动重试，也不回退全局收件人。
 
 ## 5. 幂等与状态
 
@@ -97,9 +97,9 @@ Chub 在创建任务前持久化预留记录：
 | Chub 页面快速交互 | 默认选择唯一健康 ClawBot，可由兼容配置覆盖 | 全局固定 `weixin_recipient` |
 | 微信 Chub 任务 | 本次 Hook 提供的 `accountId` | 本次私聊发送者 |
 
-微信任务完成时，Chub 使用任务保存的账号和发送者调用 `openclaw message send`。路由失效、账号停止或 Context Token 不可用时只将通知标记为失败，不改变 Codex 任务结果、不自动重试，也不改投全局收件人。
+文字任务提交成功时只确认任务已提交；语音任务首次提交成功时在同一回执中追加微信提供的语音识别内容，最多回显 3000 个字符，便于维护者核对识别准确性。重复消息和提交失败不追加识别内容，失败只返回有界原因，不重复解释 Agent 路由。任务完成后，Chub 使用任务保存的账号和发送者调用 `openclaw message send`：普通结果完整单条发送，超长结果编号分段且最多 5 条；整批共用一个超时，中途失败记录部分送达并停止。路由失效、账号停止或 Context Token 不可用时只将通知标记为失败，不改变 Codex 任务结果、不自动重试，也不改投全局收件人。
 
-Context Token 由微信插件按账号和发送者持久化，Chub 不读取或保存 Token。兼容补丁及升级恢复规则见[微信 ClawBot Context Token 持久化 AI 补丁规范](WEIXIN_CLAWBOT_CONTEXT_TOKEN_AI_PATCH.md)。
+Context Token 由微信插件按账号和发送者持久化，Chub 不读取或保存 Token。兼容补丁及升级恢复规则见[微信 ClawBot Context Token 持久化 AI 补丁规范](WEIXIN_CLAWBOT_CONTEXT_TOKEN_AI_PATCH.md)。微信插件当前还需保留可信语音来源标记，规则及升级恢复方式见[微信 ClawBot 语音转写来源标记补丁规范](WEIXIN_CLAWBOT_VOICE_TRANSCRIPT_ORIGIN_PATCH.md)。
 
 ## 7. 接口与源码边界
 
@@ -112,8 +112,8 @@ POST /api/openclaw/wechat-chub-mode/submit
 
 状态响应只包含 `enabled`、`ready` 和固定状态码。提交请求只接受有界的消息标识、任务正文、非敏感关联标识，以及 Hook 提供的账号和发送者；成功响应不包含 Session ID、任务 ID、正文、账号、收件人或配置。
 
-`integrations/openclaw/chub/` 是 Chub 插件的唯一源码。OpenClaw 实际加载目录只是构建产物；插件变更必须先同步维护仓库源码、静态清单、测试和说明，构建校验通过后再部署并重载 Gateway。第三方微信插件的 Context Token 补丁单独维护，不合并进 Chub 插件。
+`integrations/openclaw/chub/` 是 Chub 插件的唯一源码。OpenClaw 实际加载目录只是构建产物；插件变更必须先同步维护仓库源码、静态清单、测试和说明，构建校验通过后再部署并重载 Gateway。第三方微信插件的 Context Token 与语音来源标记补丁单独维护，不合并进 Chub 插件。
 
 ## 8. 当前结论
 
-微信 Chub 模式已在 macOS 和 Ubuntu 完成插件加载、真实私聊提交、专用 Session 创建与复用、忙时拒绝、最终结果原路回送和重新绑定后的链路验收。当前实现作为单 Owner、单 ClawBot、同节点部署的长期入口持续维护。
+微信 Chub 模式已在 macOS 和 Ubuntu 完成插件加载、真实私聊提交、专用 Session 创建与复用、忙时拒绝、最终结果原路回送和重新绑定后的链路验收；快速交互触发延迟重启时，任务完成结果与新实例恢复后的独立重启结果也已完成真实微信原路回送验收。当前实现作为单 Owner、单 ClawBot、同节点部署的长期入口持续维护。

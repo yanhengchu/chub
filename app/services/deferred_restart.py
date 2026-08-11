@@ -5,6 +5,7 @@ import logging
 import os
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Literal
@@ -17,6 +18,13 @@ from app.services.operation_log import write_operation
 
 
 LOGGER = logging.getLogger("hub.deferred_restart")
+DeferredRestartOutcome = Literal["succeeded", "start_failed", "cleared"]
+
+
+@dataclass(frozen=True)
+class DeferredRestartRegistration:
+    operation_id: str
+    created: bool
 
 
 class _StrictModel(BaseModel):
@@ -51,7 +59,10 @@ class DeferredRestartCoordinator:
         self.grace_seconds = grace_seconds
         self._lock = threading.RLock()
         self._ready_check: Callable[[], bool] = lambda: False
-        self._completion_handler: Callable[[str, bool, datetime], None] | None = None
+        self._started_handler: Callable[[str, str, datetime], None] | None = None
+        self._completion_handler: (
+            Callable[[str, str, DeferredRestartOutcome, datetime], None] | None
+        ) = None
         self._scheduled = False
         self._state_error = False
         self._state = self._load()
@@ -72,9 +83,18 @@ class DeferredRestartCoordinator:
 
     def set_completion_handler(
         self,
-        completion_handler: Callable[[str, bool, datetime], None],
+        completion_handler: Callable[
+            [str, str, DeferredRestartOutcome, datetime],
+            None,
+        ],
     ) -> None:
         self._completion_handler = completion_handler
+
+    def set_started_handler(
+        self,
+        started_handler: Callable[[str, str, datetime], None],
+    ) -> None:
+        self._started_handler = started_handler
 
     def pending(self) -> bool:
         with self._lock:
@@ -84,13 +104,20 @@ class DeferredRestartCoordinator:
         with self._lock:
             return self._state.model_copy(deep=True) if self._state else None
 
+    def requires_service_confirmation(self) -> bool:
+        with self._lock:
+            return (
+                self._state is not None
+                and self._state.requested_instance_id != self.instance_id
+            )
+
     def request(
         self,
         *,
         operation_id: str,
         task_id: str,
         source_ip: str,
-    ) -> bool:
+    ) -> DeferredRestartRegistration:
         with self._lock:
             if self._state_error:
                 raise ApiError(
@@ -99,7 +126,10 @@ class DeferredRestartCoordinator:
                     "延迟重启状态文件不可用，本次不会自动重启。",
                 )
             if self._state is not None:
-                return False
+                return DeferredRestartRegistration(
+                    operation_id=self._state.operation_id,
+                    created=False,
+                )
             now = utc_now()
             state = DeferredRestartState(
                 operation_id=operation_id,
@@ -118,7 +148,7 @@ class DeferredRestartCoordinator:
             target="chub",
             source_ip=source_ip,
         )
-        return True
+        return DeferredRestartRegistration(operation_id=operation_id, created=True)
 
     def service_started(self) -> bool:
         """Consume a request satisfied by any newer healthy Chub instance."""
@@ -126,6 +156,12 @@ class DeferredRestartCoordinator:
             state = self._state
             if state is None or state.requested_instance_id == self.instance_id:
                 return False
+            outcome: DeferredRestartOutcome = (
+                "succeeded" if state.status == "started" else "cleared"
+            )
+        if not self._notify_completion(state, outcome):
+            return False
+        with self._lock:
             try:
                 self._delete_state()
             except OSError:
@@ -146,7 +182,6 @@ class DeferredRestartCoordinator:
             target="chub",
             source_ip=state.source_ip,
         )
-        self._notify_completion(state, state.status == "started")
         return True
 
     def maybe_schedule(self) -> bool:
@@ -185,6 +220,7 @@ class DeferredRestartCoordinator:
                 LOGGER.warning("Unable to persist deferred restart start", exc_info=True)
                 return
             self._state = state
+        self._notify_started(state)
         write_operation(
             operation_id=state.operation_id,
             action="restart_hub",
@@ -202,36 +238,54 @@ class DeferredRestartCoordinator:
                 target="chub",
                 source_ip=state.source_ip,
             )
+            completion_recorded = self._notify_completion(state, "start_failed")
             with self._lock:
                 state_cleared = False
-                try:
-                    self._delete_state()
-                except OSError:
-                    self._state_error = True
-                    LOGGER.warning(
-                        "Unable to clear failed deferred restart state",
-                        exc_info=True,
-                    )
-                else:
-                    self._state = None
-                    self._state_error = False
-                    state_cleared = True
+                if completion_recorded:
+                    try:
+                        self._delete_state()
+                    except OSError:
+                        self._state_error = True
+                        LOGGER.warning(
+                            "Unable to clear failed deferred restart state",
+                            exc_info=True,
+                        )
+                    else:
+                        self._state = None
+                        self._state_error = False
+                        state_cleared = True
                 self._scheduled = False
-            if state_cleared:
-                self._notify_completion(state, False)
+            if not state_cleared and completion_recorded:
+                LOGGER.warning("Failed deferred restart state remains pending")
             LOGGER.warning("Unable to start deferred Chub restart", exc_info=True)
+
+    def _notify_started(self, state: DeferredRestartState) -> None:
+        if self._started_handler is None:
+            return
+        try:
+            self._started_handler(
+                state.operation_id,
+                state.requested_task_id,
+                state.updated_at,
+            )
+        except Exception:
+            LOGGER.warning(
+                "Unable to record deferred restart start",
+                exc_info=True,
+            )
 
     def _notify_completion(
         self,
         state: DeferredRestartState,
-        show_automatic_success: bool,
-    ) -> None:
+        outcome: DeferredRestartOutcome,
+    ) -> bool:
         if self._completion_handler is None:
-            return
+            return True
         try:
             self._completion_handler(
+                state.operation_id,
                 state.requested_task_id,
-                show_automatic_success,
+                outcome,
                 utc_now(),
             )
         except Exception:
@@ -239,6 +293,8 @@ class DeferredRestartCoordinator:
                 "Unable to record deferred restart completion",
                 exc_info=True,
             )
+            return False
+        return True
 
     def _write(self, state: DeferredRestartState) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)

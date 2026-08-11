@@ -14,13 +14,17 @@ from typing import Callable, Iterator
 
 from app.codex.models import (
     CodexSession,
+    QuickInteractionDeferredRestartContext,
     QuickInteractionOrder,
     QuickInteractionTask,
     QuickInteractionWeixinRoute,
     utc_now,
 )
 from app.core.response import ApiError
-from app.services.deferred_restart import DeferredRestartCoordinator
+from app.services.deferred_restart import (
+    DeferredRestartCoordinator,
+    DeferredRestartOutcome,
+)
 from app.services.log_reader import redact_log_line
 from app.services.operation_log import write_operation
 
@@ -63,12 +67,22 @@ class QuickInteractionManager:
         | None = None,
         deferred_restart: DeferredRestartCoordinator | None = None,
         *,
+        restart_notifier: Callable[
+            [
+                QuickInteractionTask,
+                QuickInteractionWeixinRoute | None,
+                DeferredRestartOutcome,
+            ],
+            object,
+        ]
+        | None = None,
         timeout_seconds: int = 6 * 60 * 60,
     ) -> None:
         self.path = data_file.with_name("quick-interactions.json")
         self.result_dir = runtime_dir / "quick-interactions"
         self.codex_manager = codex_manager
         self.completion_notifier = completion_notifier
+        self.restart_notifier = restart_notifier
         self.deferred_restart = deferred_restart
         self.timeout_seconds = timeout_seconds
         self._lock = threading.RLock()
@@ -82,6 +96,10 @@ class QuickInteractionManager:
         self._processes: dict[str, subprocess.Popen[bytes]] = {}
         self._operations: dict[str, tuple[str, str]] = {}
         self._notification_routes: dict[str, QuickInteractionWeixinRoute] = {}
+        self._deferred_restart_contexts: dict[
+            str,
+            QuickInteractionDeferredRestartContext,
+        ] = {}
         self.restart_request_dir = runtime_dir / "restart-requests"
         recovered_sessions, recovered_tasks = self._load()
         if recovered_tasks:
@@ -116,6 +134,10 @@ class QuickInteractionManager:
                 continue
             task_payload = dict(item)
             route_payload = task_payload.pop("_notification_route", None)
+            restart_context_payload = task_payload.pop(
+                "_deferred_restart_context",
+                None,
+            )
             try:
                 task = QuickInteractionTask.model_validate(task_payload)
             except ValueError:
@@ -127,6 +149,14 @@ class QuickInteractionManager:
                     route = None
                 if route is not None:
                     self._notification_routes[task.id] = route
+            try:
+                restart_context = QuickInteractionDeferredRestartContext.model_validate(
+                    restart_context_payload
+                )
+            except ValueError:
+                restart_context = None
+            if restart_context is not None:
+                self._deferred_restart_contexts[task.id] = restart_context
             if task.status in {"requested", "running"}:
                 recovered_tasks = True
                 task.status = "failed"
@@ -138,6 +168,13 @@ class QuickInteractionManager:
                 task.notification_status = "failed"
                 task.notification_error = "服务重启时微信通知未完成。"
                 task.notification_updated_at = utc_now()
+            if task.deferred_restart_notification_status == "sending":
+                recovered_tasks = True
+                task.deferred_restart_notification_status = "failed"
+                task.deferred_restart_notification_error = (
+                    "服务重启时微信重启通知未完成。"
+                )
+                task.deferred_restart_notification_updated_at = utc_now()
             self._tasks[task.id] = task
         return recovered_sessions, recovered_tasks
 
@@ -377,27 +414,199 @@ class QuickInteractionManager:
                 for task in self._tasks.values()
             )
 
+    def has_pending_deferred_restart_notifications(self) -> bool:
+        with self._lock:
+            return any(
+                task.deferred_restart_notification_status == "pending"
+                for task in self._tasks.values()
+            )
+
+    def record_deferred_restart_started(
+        self,
+        coordinator_operation_id: str,
+        requested_task_id: str,
+        started_at: datetime,
+    ) -> None:
+        with self._lock:
+            task_ids = self._deferred_restart_task_ids(
+                coordinator_operation_id,
+                requested_task_id,
+            )
+            contexts = {
+                task_id: self._deferred_restart_contexts.get(task_id)
+                for task_id in task_ids
+            }
+            for task_id in task_ids:
+                task = self._tasks[task_id]
+                if task.deferred_restart_status == "pending":
+                    task.deferred_restart_status = "started"
+                    task.deferred_restart_updated_at = started_at
+            if task_ids:
+                self._write()
+        for context in contexts.values():
+            if context is None or context.operation_id == coordinator_operation_id:
+                continue
+            write_operation(
+                operation_id=context.operation_id,
+                action="restart_hub",
+                status="started",
+                target="chub",
+                source_ip=context.source_ip,
+            )
+
     def record_deferred_restart_completion(
         self,
-        task_id: str,
-        automatic: bool,
+        coordinator_operation_id: str,
+        requested_task_id: str,
+        outcome: DeferredRestartOutcome,
         completed_at: datetime,
-    ) -> bool:
+    ) -> None:
+        with self._lock:
+            task_ids = self._deferred_restart_task_ids(
+                coordinator_operation_id,
+                requested_task_id,
+            )
+            if not task_ids:
+                LOGGER.warning(
+                    "Unable to associate deferred restart completion with operation %s",
+                    coordinator_operation_id,
+                )
+                return
+            contexts = {
+                task_id: self._deferred_restart_contexts.get(task_id)
+                for task_id in task_ids
+            }
+            notification_task_ids = []
+            for task_id in task_ids:
+                task = self._tasks[task_id]
+                if (
+                    task.status != "succeeded"
+                    or task.deferred_restart_status
+                    in {"succeeded", "start_failed", "cleared"}
+                ):
+                    continue
+                task.deferred_restart_status = outcome
+                task.deferred_restart_updated_at = completed_at
+                if (
+                    outcome in {"succeeded", "start_failed"}
+                    and task.notification_route == "weixin-task"
+                    and task.deferred_restart_notification_status is None
+                ):
+                    task.deferred_restart_notification_status = "pending"
+                    task.deferred_restart_notification_updated_at = completed_at
+                    notification_task_ids.append(task_id)
+            self._write()
+        final_log_status = "succeeded" if outcome in {"succeeded", "cleared"} else "failed"
+        for context in contexts.values():
+            if context is None or context.operation_id == coordinator_operation_id:
+                continue
+            write_operation(
+                operation_id=context.operation_id,
+                action="restart_hub",
+                status=final_log_status,
+                target="chub",
+                source_ip=context.source_ip,
+            )
+        for task_id in notification_task_ids:
+            self._start_deferred_restart_notification(task_id)
+
+    def resume_pending_deferred_restart_notifications(self) -> None:
+        with self._lock:
+            task_ids = [
+                task.id
+                for task in self._tasks.values()
+                if task.deferred_restart_notification_status == "pending"
+            ]
+        for task_id in task_ids:
+            self._start_deferred_restart_notification(task_id)
+
+    def _deferred_restart_task_ids(
+        self,
+        coordinator_operation_id: str,
+        requested_task_id: str,
+    ) -> list[str]:
+        task_ids = [
+            task_id
+            for task_id, context in self._deferred_restart_contexts.items()
+            if context.coordinator_operation_id == coordinator_operation_id
+            and task_id in self._tasks
+        ]
+        if requested_task_id in self._tasks and requested_task_id not in task_ids:
+            task_ids.append(requested_task_id)
+        return task_ids
+
+    def _start_deferred_restart_notification(self, task_id: str) -> None:
+        threading.Thread(
+            target=self._deliver_deferred_restart_notification,
+            args=(task_id,),
+            daemon=True,
+            name=f"chub-restart-notification-{task_id[:8]}",
+        ).start()
+
+    def _deliver_deferred_restart_notification(self, task_id: str) -> None:
         with self._lock:
             task = self._tasks.get(task_id)
-            if task is None or task.status != "succeeded":
-                LOGGER.warning(
-                    "Unable to associate deferred restart completion with task %s",
-                    task_id,
-                )
-                return False
-            next_status = "succeeded" if automatic else "cleared"
-            if task.deferred_restart_status in {"succeeded", "cleared"}:
-                return False
-            task.deferred_restart_status = next_status
-            task.deferred_restart_updated_at = completed_at
+            if (
+                task is None
+                or task.deferred_restart_notification_status != "pending"
+            ):
+                return
+            task.deferred_restart_notification_status = "sending"
+            task.deferred_restart_notification_updated_at = utc_now()
             self._write()
-            return True
+            snapshot = task.model_copy(deep=True)
+            context = self._deferred_restart_contexts.get(task_id)
+            route = self._notification_routes.get(task_id)
+        operation_id = (
+            f"{context.operation_id}:weixin"
+            if context is not None
+            else f"{task_id}:restart:weixin"
+        )
+        source_ip = context.source_ip if context is not None else "unknown"
+        for status in ("requested", "started"):
+            write_operation(
+                operation_id=operation_id,
+                action="quick_interaction_restart_weixin_notification",
+                status=status,
+                target=snapshot.session_id,
+                source_ip=source_ip,
+            )
+        try:
+            result = (
+                self.restart_notifier(
+                    snapshot,
+                    route,
+                    snapshot.deferred_restart_status,
+                )
+                if self.restart_notifier is not None
+                else None
+            )
+            notification_status = getattr(result, "status", "failed")
+            notification_error = getattr(result, "error", None)
+            if notification_status not in {"sent", "failed", "skipped"}:
+                notification_status = "failed"
+                notification_error = "微信重启通知返回了无效状态。"
+        except Exception:
+            LOGGER.warning("Deferred restart Weixin notification failed", exc_info=True)
+            notification_status = "failed"
+            notification_error = "微信重启通知未送达。"
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None:
+                return
+            task.deferred_restart_notification_status = notification_status
+            task.deferred_restart_notification_error = (
+                notification_error[:1000] if notification_error else None
+            )
+            task.deferred_restart_notification_updated_at = utc_now()
+            self._write()
+        write_operation(
+            operation_id=operation_id,
+            action="quick_interaction_restart_weixin_notification",
+            status="succeeded" if notification_status == "sent" else "failed",
+            target=snapshot.session_id,
+            source_ip=source_ip,
+        )
 
     def cancel_codex_session(self, session_id: str, *, timeout: float = 5) -> bool:
         """Cancel the active Codex CLI interaction and wait for state cleanup."""
@@ -524,7 +733,7 @@ class QuickInteractionManager:
                     )
                     other_active_count = max(0, len(self._active_task_ids) - 1)
                 try:
-                    restart_registered = self.deferred_restart.request(
+                    restart_registration = self.deferred_restart.request(
                         operation_id=f"{operation[0]}:restart",
                         task_id=task_id,
                         source_ip=operation[1],
@@ -536,11 +745,28 @@ class QuickInteractionManager:
                         DEFERRED_RESTART_FAILED_SUFFIX,
                     )
                 else:
-                    if restart_registered:
-                        with self._lock:
-                            task = self._tasks[task_id]
-                            task.deferred_restart_status = "pending"
-                            task.deferred_restart_updated_at = utc_now()
+                    restart_operation_id = f"{operation[0]}:restart"
+                    with self._lock:
+                        task = self._tasks[task_id]
+                        task.deferred_restart_status = "pending"
+                        task.deferred_restart_updated_at = utc_now()
+                        self._deferred_restart_contexts[task_id] = (
+                            QuickInteractionDeferredRestartContext(
+                                operation_id=restart_operation_id,
+                                coordinator_operation_id=(
+                                    restart_registration.operation_id
+                                ),
+                                source_ip=operation[1],
+                            )
+                        )
+                    if not restart_registration.created:
+                        write_operation(
+                            operation_id=restart_operation_id,
+                            action="restart_hub",
+                            status="requested",
+                            target="chub",
+                            source_ip=operation[1],
+                        )
                     result = self._append_result_suffix(
                         result,
                         self._deferred_restart_suffix(other_active_count),
@@ -909,6 +1135,9 @@ class QuickInteractionManager:
                 if (
                     task.status in {"requested", "running"}
                     or task.id in self._active_task_ids
+                    or task.deferred_restart_status in {"pending", "started"}
+                    or task.deferred_restart_notification_status
+                    in {"pending", "sending"}
                     or task.pinned_at is not None
                     or task.id in latest_task_ids
                 )
@@ -920,6 +1149,9 @@ class QuickInteractionManager:
                     if (
                         task.status not in {"requested", "running"}
                         and task.id not in self._active_task_ids
+                        and task.deferred_restart_status not in {"pending", "started"}
+                        and task.deferred_restart_notification_status
+                        not in {"pending", "sending"}
                         and task.pinned_at is None
                         and task.id not in latest_task_ids
                     )
@@ -936,6 +1168,11 @@ class QuickInteractionManager:
                 for task_id, route in self._notification_routes.items()
                 if task_id in self._tasks
             }
+            self._deferred_restart_contexts = {
+                task_id: context
+                for task_id, context in self._deferred_restart_contexts.items()
+                if task_id in self._tasks
+            }
         temporary = self.path.with_suffix(".tmp")
         payload = []
         for item in self._tasks.values():
@@ -943,6 +1180,11 @@ class QuickInteractionManager:
             route = self._notification_routes.get(item.id)
             if route is not None:
                 serialized["_notification_route"] = route.model_dump(mode="json")
+            restart_context = self._deferred_restart_contexts.get(item.id)
+            if restart_context is not None:
+                serialized["_deferred_restart_context"] = restart_context.model_dump(
+                    mode="json"
+                )
             payload.append(serialized)
         temporary.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2) + "\n",

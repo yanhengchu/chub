@@ -114,7 +114,12 @@ class OpenClawCompletionNotificationConfig(StrictModel):
     weixin_account_id: str | None = Field(default=None, min_length=1, max_length=200)
     weixin_recipient: str | None = Field(default=None, min_length=1, max_length=500)
     timeout_seconds: int = Field(default=20, ge=1, le=60)
-    max_message_chars: int = Field(default=2000, ge=256, le=4000)
+    max_message_chars: int = Field(
+        default=2000,
+        ge=256,
+        le=4000,
+        description="Maximum characters in each quick-interaction Weixin message part.",
+    )
 
     @field_validator("weixin_account_id", "weixin_recipient", mode="before")
     @classmethod

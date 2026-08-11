@@ -328,7 +328,7 @@ def test_submit_reclaims_unknown_session_before_quick_interaction(
             source_ip="100.64.0.21",
         )
 
-    assert "已停止残留会话并提交任务" in result.message
+    assert result.message == "任务已提交，完成后将通过微信发送结果。"
     reclaimer.assert_called_once_with("session-1")
     codex_manager.wait_for_writer_release.assert_called_once_with(
         "native-session-1",

@@ -442,16 +442,16 @@ export async function fetchWeixinChubModeStatus(
 }
 
 const WEIXIN_SUBMISSION_ERRORS: Record<string, string> = {
-  weixin_chub_mode_in_progress: "微信专用任务正在执行，请等待完成。",
-  weixin_chub_mode_mode_disabled: "微信 Chub 模式已关闭。",
-  weixin_chub_mode_configuration_invalid: "微信 Chub 模式配置无效。",
-  weixin_chub_mode_codex_unavailable: "Codex 运行依赖当前不可用。",
-  weixin_chub_mode_delivery_route_invalid: "原消息的微信回送路由当前不可用。",
-  weixin_chub_mode_message_conflict: "同一微信消息标识关联了不同回送路由。",
-  weixin_chub_mode_submission_failed: "微信任务提交失败。",
-  weixin_chub_mode_submission_interrupted: "上次提交被 Chub 重启中断，请发送一条新消息重试。",
-  weixin_chub_mode_state_unavailable: "微信 Chub 模式状态当前不可用。",
-  weixin_chub_mode_source_required: "OpenClaw 与 Chub 的同节点连接校验失败。",
+  weixin_chub_mode_in_progress: "任务提交失败：已有微信任务正在执行，请等待完成后重试。",
+  weixin_chub_mode_mode_disabled: "任务提交失败：微信 Chub 模式已关闭。",
+  weixin_chub_mode_configuration_invalid: "任务提交失败：微信 Chub 模式配置无效。",
+  weixin_chub_mode_codex_unavailable: "任务提交失败：Codex 当前不可用，请稍后重试。",
+  weixin_chub_mode_delivery_route_invalid: "任务提交失败：无法确认本次消息的微信回送通道，请稍后重试。",
+  weixin_chub_mode_message_conflict: "任务提交失败：该消息的回送通道与首次提交不一致。",
+  weixin_chub_mode_submission_failed: "任务提交失败，请稍后重试。",
+  weixin_chub_mode_submission_interrupted: "上次提交被 Chub 重启中断，请重新发送任务。",
+  weixin_chub_mode_state_unavailable: "任务提交失败：Chub 当前状态不可用，请稍后重试。",
+  weixin_chub_mode_source_required: "任务提交失败：OpenClaw 与 Chub 的连接校验未通过。",
 };
 
 function weixinSubmissionFailure(
@@ -482,7 +482,7 @@ export async function submitWeixinChubModeTask(
   } catch (_error) {
     return weixinSubmissionFailure(
       "chub_configuration_invalid",
-      "Chub 微信模式连接配置无效。",
+      "任务提交失败：微信 Chub 模式连接配置无效。",
     );
   }
   if (
@@ -499,7 +499,7 @@ export async function submitWeixinChubModeTask(
   ) {
     return weixinSubmissionFailure(
       "weixin_chub_mode_request_invalid",
-      "微信消息缺少有效正文或超过长度限制。",
+      "任务提交失败：消息内容为空或超过长度限制。",
     );
   }
 
@@ -546,8 +546,8 @@ export async function submitWeixinChubModeTask(
         : "weixin_chub_mode_submission_failed";
       const message = WEIXIN_SUBMISSION_ERRORS[error]
         ?? (response.status === 401 || response.status === 403
-          ? "OpenClaw 未通过 Chub 微信任务入口认证。"
-          : "微信任务提交失败。");
+          ? "任务提交失败：OpenClaw 未通过 Chub 微信任务入口认证。"
+          : "任务提交失败，请稍后重试。");
       return weixinSubmissionFailure(error, message);
     }
     if (!payload || typeof payload !== "object") {
@@ -579,27 +579,27 @@ export async function submitWeixinChubModeTask(
     if (error instanceof Error && error.name === "TimeoutError") {
       return weixinSubmissionFailure(
         "chub_timeout",
-        "Chub 微信任务提交超时，任务可能已经启动；请先等待完成通知，不要立即重复下达。",
+        "任务提交确认超时，任务可能已经启动。\n请等待完成通知，不要立即重复发送。",
       );
     }
     if (signal?.aborted) {
-      return weixinSubmissionFailure("chub_cancelled", "Chub 微信任务提交已取消。");
+      return weixinSubmissionFailure("chub_cancelled", "任务提交已取消。请重新发送任务。");
     }
     if (error instanceof Error && error.message === "chub_response_too_large") {
       return weixinSubmissionFailure(
         "chub_response_too_large",
-        "Chub 微信任务响应超过限制。",
+        "任务提交失败：Chub 返回的任务状态超过限制。",
       );
     }
     if (error instanceof Error && error.message === "invalid_chub_response") {
       return weixinSubmissionFailure(
         "chub_response_invalid",
-        "Chub 返回了无法识别的微信任务状态。",
+        "任务提交失败：Chub 返回了无法识别的任务状态。",
       );
     }
     return weixinSubmissionFailure(
       "chub_unreachable",
-      "当前设备的 Chub 暂时无法访问。",
+      "任务提交失败：当前设备的 Chub 暂时无法访问。",
     );
   }
 }

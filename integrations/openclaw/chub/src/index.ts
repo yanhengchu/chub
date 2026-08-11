@@ -21,6 +21,8 @@ import {
 
 const VERBATIM_MESSAGE_TTL_MS = 5 * 60 * 1000;
 const VERBATIM_MESSAGE_MAX_RUNS = 100;
+const WEIXIN_VOICE_TRANSCRIPT_MARKER = "[[chub-weixin-voice-transcript]]";
+const WEIXIN_VOICE_TRANSCRIPT_REPLY_MAX_CHARS = 3_000;
 
 const configSchema = Type.Object({
   baseUrl: Type.Optional(Type.String({
@@ -41,22 +43,18 @@ function wechatStatusReply(
   status: Awaited<ReturnType<typeof fetchWeixinChubModeStatus>>,
 ): string {
   if (!status.available) {
-    return `Chub 微信模式检查失败：${status.message}。本次消息未调用 OpenClaw Agent 或 LLM。`;
+    return `任务提交失败：${status.message}。`;
   }
   if (!status.ready) {
     if (status.code === "configuration_invalid") {
-      return "Chub 微信模式配置无效：工作区、权限、模型或微信回送配置不可用。本次消息未调用 OpenClaw Agent 或 LLM。";
+      return "任务提交失败：微信 Chub 模式配置无效，请检查工作区、权限、模型和微信通知配置。";
     }
     if (status.code === "codex_unavailable") {
-      return "Chub 微信模式未就绪：Codex 运行依赖不可用。本次消息未调用 OpenClaw Agent 或 LLM。";
+      return "任务提交失败：Codex 当前不可用，请稍后重试。";
     }
-    return "Chub 微信模式当前未就绪。本次消息未调用 OpenClaw Agent 或 LLM。";
+    return "任务提交失败：微信 Chub 模式当前未就绪，请稍后重试。";
   }
-  return [
-    "Chub 微信模式状态检查通过",
-    "Chub 状态路由可用；当前阶段不会提交微信任务。",
-    "本次消息未调用 OpenClaw Agent 或 LLM。",
-  ].join("\n");
+  return "微信 Chub 模式已就绪。";
 }
 
 async function sha256(value: string): Promise<string> {
@@ -109,15 +107,33 @@ async function submissionIdentity(
 
 function wechatSubmissionReply(
   submission: Awaited<ReturnType<typeof submitWeixinChubModeTask>>,
+  voiceTranscript?: string,
 ): string {
   if (!submission.available) {
-    return `Chub 微信任务提交失败：${submission.message}\n本次消息未调用 OpenClaw Agent 或 LLM。`;
+    return submission.message;
   }
-  const lines = submission.duplicate
-    ? ["重复消息已确认，任务不会再次执行。", submission.message]
-    : [submission.message];
-  lines.push("本次消息未调用 OpenClaw Agent 或 LLM。");
-  return lines.join("\n");
+  if (submission.duplicate) {
+    return "该消息已处理，任务不会重复执行。";
+  }
+  if (!voiceTranscript) {
+    return submission.message;
+  }
+  const transcriptChars = Array.from(voiceTranscript);
+  const transcript = transcriptChars.length <= WEIXIN_VOICE_TRANSCRIPT_REPLY_MAX_CHARS
+    ? voiceTranscript
+    : `${transcriptChars.slice(0, WEIXIN_VOICE_TRANSCRIPT_REPLY_MAX_CHARS).join("")}\n（语音识别内容过长，已截断）`;
+  return `${submission.message}\n\n语音识别内容：\n${transcript}`;
+}
+
+function weixinVoiceTranscript(event: { content: string; body?: string }): string | undefined {
+  if (event.content !== WEIXIN_VOICE_TRANSCRIPT_MARKER) {
+    return undefined;
+  }
+  const transcript = event.body?.trim();
+  if (!transcript || transcript === event.content) {
+    return undefined;
+  }
+  return transcript;
 }
 
 const plugin: ReturnType<typeof definePluginEntry> = definePluginEntry({
@@ -153,11 +169,13 @@ const plugin: ReturnType<typeof definePluginEntry> = definePluginEntry({
           text: wechatStatusReply(status),
         };
       }
-      const identity = await submissionIdentity(event, context);
+      const voiceTranscript = weixinVoiceTranscript(event);
+      const prompt = voiceTranscript ?? event.content;
+      const identity = await submissionIdentity({ ...event, content: prompt }, context);
       if (identity === null) {
         return {
           handled: true,
-          text: "Chub 微信任务提交失败：微信消息缺少稳定标识，请重新发送。\n本次消息未调用 OpenClaw Agent 或 LLM。",
+          text: "任务提交失败：无法确认本次微信消息，请重新发送。",
         };
       }
       const replyAccountId = context.accountId?.trim();
@@ -171,18 +189,18 @@ const plugin: ReturnType<typeof definePluginEntry> = definePluginEntry({
       ) {
         return {
           handled: true,
-          text: "Chub 微信任务提交失败：无法确认本次消息的微信回送路由，请重新发送。\n本次消息未调用 OpenClaw Agent 或 LLM。",
+          text: "任务提交失败：无法确认本次消息的微信回送通道，请稍后重试。",
         };
       }
       const submission = await submitWeixinChubModeTask(config, {
         ...identity,
-        prompt: event.content,
+        prompt,
         replyAccountId,
         replyRecipient,
       });
       return {
         handled: true,
-        text: wechatSubmissionReply(submission),
+        text: wechatSubmissionReply(submission, voiceTranscript),
       };
     });
 

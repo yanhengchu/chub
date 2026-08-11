@@ -154,11 +154,11 @@ async def test_home_page_is_public_and_contains_no_token(
     )[0]
     assert 'data-card-return-refresh="true"' not in openclaw_card
     assert "OpenClaw 方案调研" not in response.text
-    assert "Chub 前端 UI 模块化设计" in response.text
-    assert "持续维护" not in response.text
+    assert "OpenClaw 与消息通道接入设计" in response.text
+    assert "持续维护" in response.text
     assert "份设计资料 · 1 份周报可查看" not in response.text
     assert 'href="/project-docs/openclaw-research"' not in response.text
-    assert 'href="/project-docs/architecture-evolution"' in response.text
+    assert 'href="/project-docs/openclaw-integration"' in response.text
     assert 'target="_blank"' not in response.text
     assert 'href="/project-docs"' in response.text
     assert '>全部文档</a>' in response.text
@@ -717,9 +717,11 @@ async def test_quick_interaction_conversation_page_is_available(
     assert 'sent: "已通知"' in script.text
     assert 'failed: "通知失败"' in script.text
     assert 'skipped: "未通知"' in script.text
-    assert 'task.deferred_restart_status === "succeeded"' in script.text
+    assert 'succeeded: "Chub 已完成自动重启，服务已恢复。"' in script.text
     assert "Chub 已完成自动重启，服务已恢复。" in script.text
     assert 'task.deferred_restart_status === "pending"' in script.text
+    assert 'failed: "重启结果通知失败"' in script.text
+    assert "Chub 自动重启未能启动，当前服务仍在运行。" in script.text
     assert ".conversation-assistant-info" in stylesheet.text
     assert "conversationClient.setPinned" in script.text
     assert "textContent" in script.text
@@ -845,13 +847,9 @@ async def test_project_document_card_api_is_protected(
     assert data["weekly_reports"][0]["available"] is True
     assert data["weekly_reports"][1]["available"] is False
     assert len(data["documents"]) == 5
-    assert {document["status"] for document in data["documents"]} == {"已验收"}
-    assert {document["id"] for document in data["documents"]} == {
-        "architecture-evolution",
-        "ai-session-state",
-        "weixin-chub-mode",
-        "automation-download",
-        "weekly-report-skill",
+    assert any(document["status"] == "持续维护" for document in data["documents"])
+    assert "openclaw-integration" in {
+        document["id"] for document in data["documents"]
     }
     assert "openclaw-research" not in {
         document["id"] for document in data["documents"]

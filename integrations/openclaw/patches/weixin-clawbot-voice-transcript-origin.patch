@@ -1,0 +1,52 @@
+--- a/src/messaging/inbound.ts
++++ b/src/messaging/inbound.ts
+@@ -143,5 +143,6 @@ function generateMessageSid(): string {
+ export type WeixinMsgContext = {
+   Body: string;
++  BodyForAgent?: string;
+   From: string;
+   To: string;
+   AccountId: string;
+--- a/src/messaging/process-message.ts
++++ b/src/messaging/process-message.ts
+@@ -36,5 +36,6 @@ import { handleSlashCommand } from "./slash-commands.js";
+ 
+ const MEDIA_OUTBOUND_TEMP_DIR = path.join(resolvePreferredOpenClawTmpDir(), "weixin/media/outbound-temp");
++const CHUB_VOICE_TRANSCRIPT_MARKER = "[[chub-weixin-voice-transcript]]";
+ 
+ /** Dependencies for processOneMessage, injected by the monitor loop. */
+ export type ProcessMessageDeps = {
+@@ -166,7 +167,11 @@ export async function processOneMessage(
+ 
+   // --- Framework command authorization ---
+   const rawBody = ctx.Body?.trim() ?? "";
+-  ctx.CommandBody = rawBody;
++  const hasVoiceTranscript = full.item_list?.some(
++    (item) => item.type === MessageItemType.VOICE && Boolean(item.voice_item?.text?.trim()),
++  ) ?? false;
++  ctx.BodyForAgent = rawBody;
++  ctx.CommandBody = hasVoiceTranscript ? CHUB_VOICE_TRANSCRIPT_MARKER : rawBody;
+ 
+   const senderId = full.from_user_id ?? "";
+ 
+--- a/dist/src/messaging/process-message.js
++++ b/dist/src/messaging/process-message.js
+@@ -22,6 +22,7 @@
+ import { WeixinReplyProgressSender } from "./reply-progress-sender.js";
+ import { handleSlashCommand } from "./slash-commands.js";
+ const MEDIA_OUTBOUND_TEMP_DIR = path.join(resolvePreferredOpenClawTmpDir(), "weixin/media/outbound-temp");
++const CHUB_VOICE_TRANSCRIPT_MARKER = "[[chub-weixin-voice-transcript]]";
+ /** Extract text body from item_list (for slash command detection). */
+ function extractTextBody(itemList) {
+     if (!itemList?.length)
+@@ -104,7 +105,9 @@
+     const ctx = weixinMessageToMsgContext(full, deps.accountId, mediaOpts);
+     // --- Framework command authorization ---
+     const rawBody = ctx.Body?.trim() ?? "";
+-    ctx.CommandBody = rawBody;
++    const hasVoiceTranscript = full.item_list?.some((item) => item.type === MessageItemType.VOICE && Boolean(item.voice_item?.text?.trim())) ?? false;
++    ctx.BodyForAgent = rawBody;
++    ctx.CommandBody = hasVoiceTranscript ? CHUB_VOICE_TRANSCRIPT_MARKER : rawBody;
+     const senderId = full.from_user_id ?? "";
+     const { senderAllowedForCommands, commandAuthorized } = await resolveSenderCommandAuthorizationWithRuntime({
+         cfg: deps.config,

@@ -49,10 +49,12 @@ route. The Weixin plugin version used for the macOS and Ubuntu validation
 exposes the private-message peer through `conversationId` (`OriginatingTo`)
 instead of `senderId`, so the Hook accepts that standard direct-message
 fallback without binding the contract to one plugin version. A successful submit is handled
-immediately, and Chub later sends the
-final result only through that originating route. Unavailable, invalid, busy,
-or failed submissions remain
-handled failures and never fall back to Agent or LLM dispatch.
+immediately with a short fixed acknowledgement. For a trusted Weixin voice
+transcript, the first successful acknowledgement also echoes up to 3000
+characters of recognized text; typed messages, duplicates, and failures do not.
+Chub later sends the final result only through that originating route. Submission failures return only a
+bounded reason. Unavailable, invalid, busy, or failed submissions remain handled
+failures and never fall back to Agent or LLM dispatch.
 
 Groups and every message while the flag is disabled keep their normal
 OpenClaw behavior. The current deployment has one Owner and requires exactly
@@ -71,3 +73,9 @@ route is rejected. Chub/page-origin quick interactions use a globally configured
 recipient; the account is normally resolved as the only healthy ClawBot, with an
 optional compatibility override. This global route is never a fallback for
 Weixin inbound tasks.
+
+Completion results that fit the configured per-message limit are sent in full
+without a page hint. Longer results are split on readable boundaries, numbered,
+and sent sequentially in at most five parts. A partial delivery stops without
+automatic retry; only results beyond the five-part cap are truncated with a
+page hint.

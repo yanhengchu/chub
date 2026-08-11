@@ -1,7 +1,7 @@
 import httpx
 import pytest
 
-from app.application import create_app
+from app.application import _confirm_healthy_instance, create_app
 from app.core.config import Settings
 
 
@@ -22,6 +22,51 @@ async def test_health_is_public(settings: Settings) -> None:
             "instance_id": app.state.instance_id,
         },
     }
+
+
+@pytest.mark.anyio
+async def test_restart_recovery_waits_for_matching_healthy_instance(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    responses = ["old-instance", "new-instance"]
+    requested_urls = []
+
+    class Response:
+        status_code = 200
+
+        def json(self):
+            return {
+                "data": {
+                    "status": "ok",
+                    "instance_id": responses.pop(0),
+                }
+            }
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url):
+            requested_urls.append(str(url))
+            return Response()
+
+    async def no_delay(_seconds):
+        return None
+
+    monkeypatch.setattr("app.application.httpx.AsyncClient", Client)
+    monkeypatch.setattr("app.application.asyncio.sleep", no_delay)
+
+    await _confirm_healthy_instance(settings, "new-instance")
+
+    assert len(requested_urls) == 2
+    assert requested_urls[0].endswith("/api/health")
 
 
 def test_missing_token_logs_warning(

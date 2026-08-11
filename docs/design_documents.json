@@ -30,6 +30,13 @@
       "path": "WEIXIN_CLAWBOT_CONTEXT_TOKEN_AI_PATCH.md"
     },
     {
+      "id": "weixin-clawbot-voice-transcript-origin-patch",
+      "title": "微信 ClawBot 语音转写来源标记补丁规范",
+      "summary": "定义语音转写来源标记、提交回执回显及微信插件升级后的恢复边界。",
+      "status": "持续维护",
+      "path": "WEIXIN_CLAWBOT_VOICE_TRANSCRIPT_ORIGIN_PATCH.md"
+    },
+    {
       "id": "weixin-chub-mode",
       "title": "微信 Chub 模式设计",
       "summary": "定义微信私聊直达 Chub 专用 Session、任务级原路回送、单写入者和单 Owner 安全边界。",

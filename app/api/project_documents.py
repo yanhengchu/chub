@@ -65,15 +65,12 @@ def list_project_documents(request: Request) -> ApiResponse[ProjectDocumentListD
             "project_document_index_unavailable",
             "设计文档暂时无法加载。",
         ) from None
-    featured_documents = [
-        document for document in documents if document.status == "已验收"
-    ]
     return ApiResponse(
         data=ProjectDocumentListData(
             count=len(documents),
             documents=[
                 ProjectDocumentSummary.model_validate(item, from_attributes=True)
-                for item in featured_documents[:5]
+                for item in documents[:5]
             ],
             weekly_reports=[
                 WeeklyReportSummary.model_validate(item, from_attributes=True)

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import subprocess
 from contextlib import asynccontextmanager
+from contextlib import suppress
 from uuid import uuid4
 
+import httpx
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
@@ -48,6 +51,46 @@ from app.services.deferred_restart import DeferredRestartCoordinator
 from app.services.openclaw_weixin_chub_mode import WeixinChubModeManager
 from app.notifications import NotificationService
 from app.web.routes import STATIC_DIR, router as web_router
+
+
+async def _confirm_healthy_instance(
+    settings: Settings,
+    instance_id: str,
+) -> None:
+    logger = logging.getLogger("hub.deferred_restart")
+    host = settings.server.host
+    if host == "0.0.0.0":
+        host = "127.0.0.1"
+    elif host == "::":
+        host = "::1"
+    health_url = httpx.URL(
+        scheme="http",
+        host=host,
+        port=settings.server.port,
+        path="/api/health",
+    )
+    attempts = 0
+    async with httpx.AsyncClient(timeout=2) as client:
+        while True:
+            attempts += 1
+            try:
+                response = await client.get(health_url)
+                payload = response.json()
+                if (
+                    response.status_code == 200
+                    and isinstance(payload, dict)
+                    and isinstance(payload.get("data"), dict)
+                    and payload["data"].get("status") == "ok"
+                    and payload["data"].get("instance_id") == instance_id
+                ):
+                    return
+            except (httpx.HTTPError, ValueError):
+                pass
+            if attempts % 40 == 0:
+                logger.warning(
+                    "Waiting for healthy Chub instance before completing deferred restart"
+                )
+            await asyncio.sleep(0.25)
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
@@ -158,9 +201,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         codex_pty_manager,
         completion_notifier.notify,
         deferred_restart,
+        restart_notifier=completion_notifier.notify_restart,
         timeout_seconds=resolved_settings.codex_pty.quick_interaction_timeout_seconds,
     )
     deferred_restart.set_ready_check(quick_interactions.deferred_restart_ready)
+    deferred_restart.set_started_handler(
+        quick_interactions.record_deferred_restart_started
+    )
     deferred_restart.set_completion_handler(
         quick_interactions.record_deferred_restart_completion
     )
@@ -187,10 +234,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_application: FastAPI):
-        deferred_restart.service_started()
+        restart_recovery_task = None
+        if (
+            deferred_restart.requires_service_confirmation()
+            or quick_interactions.has_pending_deferred_restart_notifications()
+        ):
+            async def finish_restart_recovery() -> None:
+                await _confirm_healthy_instance(resolved_settings, instance_id)
+                while deferred_restart.requires_service_confirmation():
+                    consumed = await asyncio.to_thread(
+                        deferred_restart.service_started
+                    )
+                    if consumed:
+                        break
+                    await asyncio.sleep(1)
+                quick_interactions.resume_pending_deferred_restart_notifications()
+
+            restart_recovery_task = asyncio.create_task(finish_restart_recovery())
         try:
             yield
         finally:
+            if restart_recovery_task is not None:
+                restart_recovery_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await restart_recovery_task
             await quick_interactions.aclose()
             await notification_service.close()
             codex_pty_manager.close()

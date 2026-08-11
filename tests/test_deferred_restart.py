@@ -26,11 +26,13 @@ def test_deferred_restart_waits_until_ready_and_persists_private_state(
     )
     coordinator.set_ready_check(lambda: ready)
 
-    assert coordinator.request(
+    registration = coordinator.request(
         operation_id="operation-1",
         task_id="task-1",
         source_ip="127.0.0.1",
-    ) is True
+    )
+    assert registration.operation_id == "operation-1"
+    assert registration.created is True
     assert coordinator.maybe_schedule() is False
     assert stat.S_IMODE(state_file.stat().st_mode) == 0o600
     assert json.loads(state_file.read_text(encoding="utf-8"))["status"] == "waiting"
@@ -49,16 +51,19 @@ def test_deferred_restart_coalesces_requests(tmp_path: Path) -> None:
         MagicMock(),
     )
 
-    assert coordinator.request(
+    first = coordinator.request(
         operation_id="operation-1",
         task_id="task-1",
         source_ip="127.0.0.1",
-    ) is True
-    assert coordinator.request(
+    )
+    second = coordinator.request(
         operation_id="operation-2",
         task_id="task-2",
         source_ip="127.0.0.2",
-    ) is False
+    )
+    assert first.created is True
+    assert second.created is False
+    assert second.operation_id == "operation-1"
     assert coordinator.state().operation_id == "operation-1"
 
 
@@ -88,8 +93,11 @@ def test_new_instance_consumes_restart_satisfied_manually(tmp_path: Path) -> Non
     assert second.pending() is False
     assert not state_file.exists()
     assert write_operation.call_args.kwargs["status"] == "succeeded"
-    assert completion_handler.call_args.args[0] == "task-1"
-    assert completion_handler.call_args.args[1] is False
+    assert completion_handler.call_args.args[:3] == (
+        "operation-1",
+        "task-1",
+        "cleared",
+    )
 
 
 def test_new_instance_reports_automatic_restart_completion(tmp_path: Path) -> None:
@@ -102,6 +110,8 @@ def test_new_instance_reports_automatic_restart_completion(tmp_path: Path) -> No
         grace_seconds=0,
     )
     first.set_ready_check(lambda: True)
+    started_handler = MagicMock()
+    first.set_started_handler(started_handler)
     first.request(
         operation_id="operation-1",
         task_id="task-1",
@@ -120,8 +130,12 @@ def test_new_instance_reports_automatic_restart_completion(tmp_path: Path) -> No
 
     assert second.service_started() is True
 
-    assert completion_handler.call_args.args[0] == "task-1"
-    assert completion_handler.call_args.args[1] is True
+    assert started_handler.call_args.args[:2] == ("operation-1", "task-1")
+    assert completion_handler.call_args.args[:3] == (
+        "operation-1",
+        "task-1",
+        "succeeded",
+    )
     assert not state_file.exists()
 
 
@@ -184,8 +198,11 @@ def test_restart_start_failure_clears_gate(tmp_path: Path) -> None:
 
     assert coordinator.pending() is False
     assert not state_file.exists()
-    assert completion_handler.call_args.args[0] == "task-1"
-    assert completion_handler.call_args.args[1] is False
+    assert completion_handler.call_args.args[:3] == (
+        "operation-1",
+        "task-1",
+        "start_failed",
+    )
 
 
 def test_invalid_restart_state_blocks_new_request(tmp_path: Path) -> None:
