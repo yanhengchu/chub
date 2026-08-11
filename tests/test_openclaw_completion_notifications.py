@@ -19,11 +19,13 @@ def task(
     *,
     result: str = "执行完成",
     notification_route: str = "default",
+    summary: str | None = None,
 ) -> QuickInteractionTask:
     return QuickInteractionTask(
         id="task-1",
         session_id="session-1",
         prompt="执行任务",
+        summary=summary,
         status="succeeded",
         result=result,
         notification_route=notification_route,
@@ -125,11 +127,33 @@ def test_short_notification_contains_complete_result_without_page_hint() -> None
     assert messages == ["任务执行成功\n\n完整结果"]
 
 
+def test_notification_reuses_persisted_task_summary() -> None:
+    notifier = OpenClawCompletionNotifier(
+        OpenClawCompletionNotificationConfig(max_message_chars=256)
+    )
+
+    messages = notifier._messages_for(
+        task(result="完整结果", summary="检查 Ubuntu 服务状态")
+    )
+
+    assert messages == [
+        "任务执行成功\n\n任务摘要：检查 Ubuntu 服务状态\n\n完整结果"
+    ]
+
+
 @pytest.mark.parametrize(
     ("status", "error", "expected"),
     [
-        ("failed", "执行失败原因", "任务执行失败\n\n执行失败原因"),
-        ("timed_out", "执行超时说明", "任务执行超时\n\n执行超时说明"),
+        (
+            "failed",
+            "执行失败原因",
+            "任务执行失败\n\n任务摘要：检查设备状态\n\n执行失败原因",
+        ),
+        (
+            "timed_out",
+            "执行超时说明",
+            "任务执行超时\n\n任务摘要：检查设备状态\n\n执行超时说明",
+        ),
     ],
 )
 def test_notification_uses_task_status_heading(
@@ -140,7 +164,7 @@ def test_notification_uses_task_status_heading(
     notifier = OpenClawCompletionNotifier(
         OpenClawCompletionNotificationConfig(max_message_chars=256)
     )
-    failed_task = task().model_copy(
+    failed_task = task(summary="检查设备状态").model_copy(
         update={"status": status, "result": None, "error": error}
     )
 
@@ -161,6 +185,20 @@ def test_notification_caps_long_result_at_five_messages() -> None:
     assert messages[-1].endswith(
         "结果超过微信发送上限，剩余内容请在 Chub 快速交互页面查看。"
     )
+
+
+def test_multipart_notification_repeats_summary_within_each_limit() -> None:
+    notifier = OpenClawCompletionNotifier(
+        OpenClawCompletionNotificationConfig(max_message_chars=256)
+    )
+
+    messages = notifier._messages_for(
+        task(result="结果" * 300, summary="检查 Ubuntu 服务状态")
+    )
+
+    assert len(messages) > 1
+    assert all(len(message) <= 256 for message in messages)
+    assert all("任务摘要：检查 Ubuntu 服务状态" in message for message in messages)
 
 
 def test_notification_never_exceeds_configured_limit_at_separator_boundary() -> None:
@@ -456,7 +494,10 @@ def test_restart_notification_uses_weixin_task_route(
     )
 
     result = notifier.notify_restart(
-        task(notification_route="weixin-task"),
+        task(
+            notification_route="weixin-task",
+            summary="检查 Ubuntu 服务状态",
+        ),
         route,
         "succeeded",
     )
@@ -466,7 +507,8 @@ def test_restart_notification_uses_weixin_task_route(
     assert send[send.index("--account") + 1] == "route-account"
     assert send[send.index("--target") + 1] == "origin@im.wechat"
     assert send[send.index("--message") + 1] == (
-        "Chub 已完成自动重启，服务已恢复。"
+        "Chub 已完成自动重启，服务已恢复。\n\n"
+        "关联任务：检查 Ubuntu 服务状态"
     )
 
 

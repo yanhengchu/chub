@@ -60,6 +60,7 @@ class WeixinChubModeSubmissionData(BaseModel):
     new_session: bool
     code: Literal["submitted"]
     message: str = Field(max_length=500)
+    task_summary: str | None = Field(default=None, max_length=48)
 
 
 def require_same_node_tailscale(request: Request) -> None:

@@ -232,6 +232,7 @@ class QuickInteractionTask(BaseModel):
     id: str
     session_id: str
     prompt: str | None = Field(default=None, max_length=8000)
+    summary: str | None = Field(default=None, max_length=48)
     status: QuickInteractionStatus
     result: str | None = Field(default=None, max_length=100_000)
     error: str | None = Field(default=None, max_length=2000)

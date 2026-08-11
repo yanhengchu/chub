@@ -131,6 +131,7 @@ describe("Weixin Chub mode", () => {
           new_session: true,
           code: "submitted",
           message: "任务已提交，完成后将通过微信发送结果。",
+          task_summary: "检查状态",
         },
       }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
@@ -152,7 +153,7 @@ describe("Weixin Chub mode", () => {
 
     expect(result).toEqual({
       handled: true,
-      text: "任务已提交，完成后将通过微信发送结果。",
+      text: "任务已提交\n\n任务摘要：检查状态\n\n完成后将原路发送结果。",
     });
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(new URL(fetchMock.mock.calls[0][0]).pathname).toBe(
@@ -176,6 +177,48 @@ describe("Weixin Chub mode", () => {
     vi.unstubAllGlobals();
   });
 
+  it("accepts a task summary containing 48 Unicode characters", async () => {
+    const taskSummary = "😀".repeat(48);
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        success: true,
+        data: { enabled: true, ready: true, code: "ready" },
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        success: true,
+        data: {
+          accepted: true,
+          duplicate: false,
+          new_session: false,
+          code: "submitted",
+          message: "任务已提交，完成后将通过微信发送结果。",
+          task_summary: taskSummary,
+        },
+      }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { hooks } = createPluginApi({
+      baseUrl: "http://100.64.0.1:8080",
+      wechatChubStatusMode: true,
+    });
+
+    const result = await hooks.get("before_dispatch")?.({
+      channel: "openclaw-weixin",
+      content: "检查 Unicode 摘要边界",
+      isGroup: false,
+      timestamp: 1_700_000_000_004,
+    }, {
+      accountId: "weixin-account",
+      conversationId: "owner@im.wechat",
+      sessionKey: "weixin-session",
+    });
+
+    expect(result).toEqual({
+      handled: true,
+      text: `任务已提交\n\n任务摘要：${taskSummary}\n\n完成后将原路发送结果。`,
+    });
+    vi.unstubAllGlobals();
+  });
+
   it("echoes the trusted transcript for a submitted Weixin voice message", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({
@@ -190,6 +233,7 @@ describe("Weixin Chub mode", () => {
           new_session: false,
           code: "submitted",
           message: "任务已提交，完成后将通过微信发送结果。",
+          task_summary: "检查语音识别是否准确",
         },
       }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
@@ -212,10 +256,57 @@ describe("Weixin Chub mode", () => {
 
     expect(result).toEqual({
       handled: true,
-      text: "任务已提交，完成后将通过微信发送结果。\n\n语音识别内容：\n检查语音识别是否准确",
+      text: [
+        "任务已提交",
+        "任务摘要：检查语音识别是否准确",
+        "完成后将原路发送结果。",
+        "语音识别内容：\n检查语音识别是否准确",
+      ].join("\n\n"),
     });
     const submitted = JSON.parse(fetchMock.mock.calls[1][1].body);
     expect(submitted.prompt).toBe("检查语音识别是否准确");
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps the complete voice acknowledgement within its total limit", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        success: true,
+        data: { enabled: true, ready: true, code: "ready" },
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        success: true,
+        data: {
+          accepted: true,
+          duplicate: false,
+          new_session: false,
+          code: "submitted",
+          message: "任务已提交，完成后将通过微信发送结果。",
+          task_summary: "检查较长语音任务",
+        },
+      }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { hooks } = createPluginApi({
+      baseUrl: "http://100.64.0.1:8080",
+      wechatChubStatusMode: true,
+    });
+
+    const result = await hooks.get("before_dispatch")?.({
+      channel: "openclaw-weixin",
+      content: "[[chub-weixin-voice-transcript]]",
+      body: "语音内容".repeat(1_000),
+      isGroup: false,
+      timestamp: 1_700_000_000_003,
+    }, {
+      accountId: "weixin-account",
+      conversationId: "owner@im.wechat",
+      sessionKey: "weixin-session",
+    });
+
+    expect(Array.from(result.text)).toHaveLength(3_000);
+    expect(result.text).toContain("任务摘要：检查较长语音任务");
+    expect(result.text).toContain("语音识别内容：");
+    expect(result.text).toMatch(/（语音识别内容过长，已截断）$/);
     vi.unstubAllGlobals();
   });
 

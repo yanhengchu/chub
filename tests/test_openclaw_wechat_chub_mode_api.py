@@ -143,6 +143,7 @@ async def test_wechat_chub_mode_submit_accepts_only_bounded_fixed_fields(
                 "new_session": True,
                 "code": "submitted",
                 "message": "任务已提交。",
+                "task_summary": "检查设备状态",
             }
         )
     )
@@ -168,6 +169,7 @@ async def test_wechat_chub_mode_submit_accepts_only_bounded_fixed_fields(
             "new_session": True,
             "code": "submitted",
             "message": "任务已提交。",
+            "task_summary": "检查设备状态",
         },
     }
     app.state.weixin_chub_mode.submit.assert_called_once_with(

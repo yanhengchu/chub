@@ -22,7 +22,7 @@ import {
 const VERBATIM_MESSAGE_TTL_MS = 5 * 60 * 1000;
 const VERBATIM_MESSAGE_MAX_RUNS = 100;
 const WEIXIN_VOICE_TRANSCRIPT_MARKER = "[[chub-weixin-voice-transcript]]";
-const WEIXIN_VOICE_TRANSCRIPT_REPLY_MAX_CHARS = 3_000;
+const WEIXIN_SUBMISSION_REPLY_MAX_CHARS = 3_000;
 
 const configSchema = Type.Object({
   baseUrl: Type.Optional(Type.String({
@@ -115,14 +115,30 @@ function wechatSubmissionReply(
   if (submission.duplicate) {
     return "该消息已处理，任务不会重复执行。";
   }
+  const reply = submission.taskSummary
+    ? [
+      "任务已提交",
+      `任务摘要：${submission.taskSummary}`,
+      "完成后将原路发送结果。",
+    ].join("\n\n")
+    : submission.message;
   if (!voiceTranscript) {
-    return submission.message;
+    return reply;
   }
+  const transcriptPrefix = `${reply}\n\n语音识别内容：\n`;
+  const truncatedSuffix = "\n（语音识别内容过长，已截断）";
   const transcriptChars = Array.from(voiceTranscript);
-  const transcript = transcriptChars.length <= WEIXIN_VOICE_TRANSCRIPT_REPLY_MAX_CHARS
+  const availableChars = Math.max(
+    0,
+    WEIXIN_SUBMISSION_REPLY_MAX_CHARS - Array.from(transcriptPrefix).length,
+  );
+  const transcript = transcriptChars.length <= availableChars
     ? voiceTranscript
-    : `${transcriptChars.slice(0, WEIXIN_VOICE_TRANSCRIPT_REPLY_MAX_CHARS).join("")}\n（语音识别内容过长，已截断）`;
-  return `${submission.message}\n\n语音识别内容：\n${transcript}`;
+    : `${transcriptChars.slice(
+      0,
+      Math.max(0, availableChars - Array.from(truncatedSuffix).length),
+    ).join("")}${truncatedSuffix}`;
+  return `${transcriptPrefix}${transcript}`;
 }
 
 function weixinVoiceTranscript(event: { content: string; body?: string }): string | undefined {

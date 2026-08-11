@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import signal
 import subprocess
 import threading
@@ -33,6 +34,7 @@ MAX_RESULT_BYTES = 100_000
 MAX_EVENT_BYTES = 1_000_000
 MAX_STORED_TASKS = 30
 MAX_SESSION_TITLE_LENGTH = 48
+MAX_TASK_SUMMARY_LENGTH = 48
 LOGGER = logging.getLogger("hub.codex.quick_interactions")
 CODEX_QUICK_INTERACTION_INSTRUCTIONS = (
     "[Chub 快速交互交付要求]\n"
@@ -52,6 +54,46 @@ DEFERRED_RESTART_WAITING_SUFFIX = (
 )
 DEFERRED_RESTART_FAILED_SUFFIX = "Chub 重启登记失败，本次不会自动重启。"
 ACTIVE_WRITER_ERROR = "Codex Session 正在由其他进程使用，请等待任务结束或停止实时终端。"
+VOICE_TRANSCRIPT_MARKER = "[[chub-weixin-voice-transcript]]"
+SENSITIVE_SUMMARY_VALUE_PATTERN = re.compile(
+    r"(?i)\b(token|secret|password|passwd|webhook)"
+    r"(\s*[:=]\s*)(\S+)"
+)
+SENSITIVE_SUMMARY_REMAINDER_PATTERN = re.compile(
+    r"(?i)\b(authorization|cookie)(\s*[:=]\s*).+$"
+)
+FEISHU_WEBHOOK_PATTERN = re.compile(
+    r"https://open\.feishu\.cn/open-apis/bot/v2/hook/[^\s]+",
+    re.IGNORECASE,
+)
+
+
+def build_task_summary(prompt: str) -> str:
+    """Build one stable, bounded, non-semantic display summary."""
+    lines = []
+    for raw_line in prompt.replace(VOICE_TRANSCRIPT_MARKER, "").splitlines():
+        line = " ".join(raw_line.split())
+        if not line or line in {"[用户需求]", "[Chub 快速交互交付要求]"}:
+            continue
+        lines.append(line)
+    value = lines[0] if lines else "本次微信任务"
+    sentence = re.split(r"(?<=[。！？!?])", value, maxsplit=1)[0].strip()
+    value = sentence or value
+    value = SENSITIVE_SUMMARY_REMAINDER_PATTERN.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]",
+        value,
+    )
+    value = redact_log_line(value, (), max_line_bytes=None)
+    value = FEISHU_WEBHOOK_PATTERN.sub("[REDACTED]", value)
+    value = SENSITIVE_SUMMARY_VALUE_PATTERN.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]",
+        value,
+    )
+    value = " ".join(value.split()) or "本次微信任务"
+    characters = list(value)
+    if len(characters) <= MAX_TASK_SUMMARY_LENGTH:
+        return value
+    return "".join(characters[: MAX_TASK_SUMMARY_LENGTH - 1]).rstrip() + "…"
 
 
 class QuickInteractionManager:
@@ -241,6 +283,7 @@ class QuickInteractionManager:
                     id=str(uuid.uuid4()),
                     session_id=session_id,
                     prompt=prompt,
+                    summary=build_task_summary(prompt),
                     status="requested",
                     notification_route=(
                         "weixin-task" if notification_route is not None else "default"

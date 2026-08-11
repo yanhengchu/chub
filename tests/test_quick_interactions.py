@@ -18,6 +18,7 @@ from app.codex.models import (
 from app.codex.quick_interactions import (
     CODEX_QUICK_INTERACTION_INSTRUCTIONS,
     QuickInteractionManager,
+    build_task_summary,
 )
 from app.core.response import ApiError
 
@@ -151,6 +152,23 @@ def test_session_title_uses_first_user_request_line(tmp_path: Path) -> None:
     assert quick_interactions._session_title("\n\n") == "快速交互"
 
 
+def test_task_summary_is_stable_bounded_and_redacted() -> None:
+    assert build_task_summary("\n检查设备状态。\n补充说明") == "检查设备状态。"
+    assert build_task_summary("使用 Bearer secret-token 检查接口") == (
+        "使用 Bearer [REDACTED] 检查接口"
+    )
+    assert build_task_summary("webhook=https://example.test/private 执行通知") == (
+        "webhook=[REDACTED] 执行通知"
+    )
+    assert build_task_summary("Authorization: Bearer private-value 检查接口") == (
+        "Authorization: [REDACTED]"
+    )
+    assert build_task_summary("Cookie: session=private-value 检查页面") == (
+        "Cookie: [REDACTED]"
+    )
+    assert len(build_task_summary("任务" * 100)) == 48
+
+
 def test_submit_allows_new_session_and_prepares_managed_profile(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -173,6 +191,7 @@ def test_submit_allows_new_session_and_prepares_managed_profile(
 
     assert task.status == "requested"
     assert task.prompt == "执行第一条任务"
+    assert task.summary == "执行第一条任务"
     quick_interactions.codex_manager.prepare_quick_interaction.assert_called_once_with()
     quick_interactions.codex_manager.set_initial_quick_interaction_title.assert_called_once_with(
         session.id,

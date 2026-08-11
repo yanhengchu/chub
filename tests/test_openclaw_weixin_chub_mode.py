@@ -108,7 +108,9 @@ def test_submit_creates_one_private_session_and_replays_duplicate(
     assert first.accepted is True
     assert first.duplicate is False
     assert first.new_session is True
+    assert first.task_summary == "检查设备状态"
     assert duplicate.duplicate is True
+    assert duplicate.task_summary is None
     assert duplicate.message == first.message
     codex_manager.create_session.assert_called_once_with(
         "chub",
@@ -329,6 +331,7 @@ def test_submit_reclaims_unknown_session_before_quick_interaction(
         )
 
     assert result.message == "任务已提交，完成后将通过微信发送结果。"
+    assert result.task_summary == "检查设备"
     reclaimer.assert_called_once_with("session-1")
     codex_manager.wait_for_writer_release.assert_called_once_with(
         "native-session-1",

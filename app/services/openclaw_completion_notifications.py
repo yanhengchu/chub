@@ -58,6 +58,8 @@ class OpenClawCompletionNotifier:
             return CompletionNotificationResult("skipped", "本次无需发送微信重启通知。")
         if task.notification_route != "weixin-task":
             return CompletionNotificationResult("skipped", "页面任务不发送微信重启通知。")
+        if task.summary:
+            message = f"{message}\n\n关联任务：{task.summary}"
         return self._send(
             task,
             route,
@@ -210,11 +212,14 @@ class OpenClawCompletionNotifier:
         }.get(task.status, "任务执行结束")
         content = task.result if task.status == "succeeded" else task.error
         summary = (content or "未返回结果。").strip()
-        single_prefix = f"{heading}\n\n"
+        single_prefix = self._completion_prefix(heading, task.summary)
         if len(single_prefix) + len(summary) <= self.config.max_message_chars:
             return [f"{single_prefix}{summary}"]
 
-        multipart_prefix = f"{heading}（1/{MAX_COMPLETION_MESSAGE_PARTS}）\n\n"
+        multipart_prefix = self._completion_prefix(
+            f"{heading}（{MAX_COMPLETION_MESSAGE_PARTS}/{MAX_COMPLETION_MESSAGE_PARTS}）",
+            task.summary,
+        )
         content_limit = self.config.max_message_chars - len(multipart_prefix)
         parts = self._split_text(summary, content_limit)
         overflow = len(parts) > MAX_COMPLETION_MESSAGE_PARTS
@@ -227,9 +232,15 @@ class OpenClawCompletionNotifier:
 
         total = len(parts)
         return [
-            f"{heading}（{index}/{total}）\n\n{part}"
+            f"{self._completion_prefix(f'{heading}（{index}/{total}）', task.summary)}{part}"
             for index, part in enumerate(parts, start=1)
         ]
+
+    @staticmethod
+    def _completion_prefix(heading: str, task_summary: str | None) -> str:
+        if task_summary:
+            return f"{heading}\n\n任务摘要：{task_summary}\n\n"
+        return f"{heading}\n\n"
 
     @classmethod
     def _split_text(cls, text: str, limit: int) -> list[str]:

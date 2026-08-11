@@ -18,6 +18,7 @@ from app.codex.models import (
     QuickInteractionWeixinRoute,
     utc_now,
 )
+from app.codex.quick_interactions import build_task_summary
 from app.core.config import OpenClawWeixinChubModeConfig, Settings
 from app.core.response import ApiError
 from app.services.operation_log import write_operation
@@ -93,6 +94,7 @@ class WeixinChubModeSubmissionResult(_StrictModel):
     new_session: bool
     code: Literal["submitted"] = "submitted"
     message: str
+    task_summary: str | None = Field(default=None, max_length=48)
 
 
 class WeixinChubModeManager:
@@ -534,7 +536,13 @@ class WeixinChubModeManager:
                     target=session_id,
                     source_ip=source_ip,
                 )
-            return self._result(reservation, duplicate=False)
+            return self._result(
+                reservation,
+                duplicate=False,
+                task_summary=(
+                    getattr(task, "summary", None) or build_task_summary(prompt)
+                ),
+            )
 
     def stop(self) -> bool:
         with self._lock:
@@ -684,7 +692,7 @@ class WeixinChubModeManager:
         submission: WeixinChubModeSubmission,
     ) -> WeixinChubModeSubmissionResult:
         if submission.status == "submitted":
-            return self._result(submission, duplicate=True)
+            return self._result(submission, duplicate=True, task_summary=None)
         raise ApiError(
             submission.http_status,
             f"weixin_chub_mode_{submission.code}",
@@ -696,11 +704,13 @@ class WeixinChubModeManager:
         submission: WeixinChubModeSubmission,
         *,
         duplicate: bool,
+        task_summary: str | None,
     ) -> WeixinChubModeSubmissionResult:
         return WeixinChubModeSubmissionResult(
             duplicate=duplicate,
             new_session=submission.new_session,
             message=submission.message,
+            task_summary=task_summary,
         )
 
     def _reject(

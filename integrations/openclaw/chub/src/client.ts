@@ -34,6 +34,7 @@ export type WeixinChubModeSubmission = {
   newSession: boolean;
   code: "submitted";
   message: string;
+  taskSummary?: string;
 };
 
 export type WeixinChubModeSubmissionFailure = {
@@ -564,6 +565,15 @@ export async function submitWeixinChubModeTask(
       || typeof data?.message !== "string"
       || data.message.length === 0
       || data.message.length > 500
+      || !(
+        data.task_summary === null
+        || data.task_summary === undefined
+        || (
+          typeof data.task_summary === "string"
+          && data.task_summary.length > 0
+          && Array.from(data.task_summary).length <= 48
+        )
+      )
     ) {
       throw new Error("invalid_chub_response");
     }
@@ -574,6 +584,9 @@ export async function submitWeixinChubModeTask(
       newSession: data.new_session,
       code: "submitted",
       message: data.message,
+      taskSummary: typeof data.task_summary === "string"
+        ? data.task_summary
+        : undefined,
     };
   } catch (error) {
     if (error instanceof Error && error.name === "TimeoutError") {
