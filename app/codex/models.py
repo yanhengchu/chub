@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -115,6 +115,18 @@ class CodexQuotaData(BaseModel):
     message: str | None = None
     checked_at: datetime = Field(default_factory=utc_now)
     windows: list[CodexQuotaWindow] = Field(default_factory=list)
+
+
+class CodexDailyTokenUsage(BaseModel):
+    start_date: date
+    tokens: int = Field(ge=0)
+
+
+class CodexTokenUsageData(BaseModel):
+    status: QuotaStatus
+    message: str | None = None
+    checked_at: datetime = Field(default_factory=utc_now)
+    daily_usage: list[CodexDailyTokenUsage] = Field(default_factory=list)
 
 
 class SessionCreateRequest(BaseModel):

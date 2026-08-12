@@ -63,7 +63,7 @@ def list_project_documents(request: Request) -> ApiResponse[ProjectDocumentListD
         raise ApiError(
             503,
             "project_document_index_unavailable",
-            "设计文档暂时无法加载。",
+            "项目资料暂时无法加载。",
         ) from None
     return ApiResponse(
         data=ProjectDocumentListData(
@@ -120,7 +120,7 @@ def update_project_document_archive(
         raise ApiError(
             503,
             "project_document_index_unavailable",
-            "设计文档暂时无法加载。",
+            "项目资料暂时无法加载。",
         ) from None
     except OSError:
         log_operation(
@@ -143,7 +143,7 @@ def update_project_document_archive(
             target=document_id,
             operation_id=operation_id,
         )
-        raise ApiError(404, "project_document_not_found", "设计文档不存在。")
+        raise ApiError(404, "project_document_not_found", "项目资料不存在。")
     log_operation(
         request,
         action=action,

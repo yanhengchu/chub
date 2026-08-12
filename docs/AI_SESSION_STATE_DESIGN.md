@@ -97,7 +97,7 @@ Activity；页面可以另外展示具体执行入口，但不得因交互运行
 - `activity_source` 不记录上一次 Turn 来源，Turn 结束时必须立即清空。
 - 同一 Session 同一时刻最多允许一个执行中 Turn，因此 `terminal` 和 `quick` 不能同时存在。
 - Activity 只描述 Chub 已确认的 Turn 状态，不能替代原生 Codex writer 互斥判断；快速交互提交前还要检查 writer，实际 `resume` 仍需处理检查与启动之间的竞态冲突。
-- 微信 Chub 专用 Session 是 `unknown` 的受控处理例外：入口自动停止该 Session 的残留终端并确认 writer 释放，再提交快速交互；普通页面仍保留人工确认语义。
+- 微信通道当前绑定 Session 是 `unknown` 的受控处理例外：入口自动停止该 Session 的残留终端并确认 writer 释放，再提交快速交互；普通页面仍保留人工确认语义。
 - `activity_source=terminal` 时，`session_status` 必须为 `running`。
 
 ## 4. 合法组合与页面语义

@@ -30,7 +30,7 @@ def index(request: Request) -> HTMLResponse:
         )
     except DesignDocumentIndexError:
         design_documents = []
-        design_documents_error = "设计文档暂时无法加载，请检查文档索引。"
+        design_documents_error = "项目资料暂时无法加载，请检查资料索引。"
     weekly_reports = list_latest_weekly_reports()
     return templates.TemplateResponse(
         request=request,
@@ -160,7 +160,7 @@ def design_documents(request: Request) -> HTMLResponse:
         )
     except DesignDocumentIndexError:
         documents = []
-        documents_error = "设计文档暂时无法加载，请检查文档索引。"
+        documents_error = "项目资料暂时无法加载，请检查资料索引。"
     return templates.TemplateResponse(
         request=request,
         name="design_documents.html",

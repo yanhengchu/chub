@@ -8,9 +8,12 @@ import os
 from pathlib import Path
 import re
 from threading import Lock
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 import bleach
 import markdown
+from markdown.extensions import Extension
+from markdown.treeprocessors import Treeprocessor
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -23,6 +26,9 @@ ALLOWED_DOCUMENT_STATUSES = frozenset(
 LOGGER = logging.getLogger("hub.project_documents")
 _STATE_LOCK = Lock()
 _DOCUMENT_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+_PROJECT_DOCUMENT_PATHS = {
+    "@project/README.md": PROJECT_ROOT / "README.md",
+}
 
 
 @dataclass(frozen=True)
@@ -86,6 +92,63 @@ ALLOWED_ATTRIBUTES = {
     "h5": ["id"],
     "h6": ["id"],
 }
+
+
+class _ProjectDocumentLinkTreeprocessor(Treeprocessor):
+    def __init__(
+        self,
+        md: markdown.Markdown,
+        *,
+        source_path: Path,
+        registered_paths: dict[Path, str],
+    ) -> None:
+        super().__init__(md)
+        self.source_path = source_path
+        self.registered_paths = registered_paths
+
+    def run(self, root: object) -> None:
+        for element in root.iter("a"):
+            href = element.get("href")
+            if not href:
+                continue
+            parsed = urlsplit(href)
+            if parsed.scheme or parsed.netloc or parsed.path.startswith("/"):
+                continue
+            relative_path = unquote(parsed.path)
+            if not relative_path.lower().endswith(".md"):
+                continue
+            target_path = (self.source_path.parent / relative_path).resolve()
+            document_id = self.registered_paths.get(target_path)
+            if document_id is None:
+                element.attrib.pop("href", None)
+                continue
+            element.set(
+                "href",
+                urlunsplit(("", "", f"/project-docs/{document_id}", "", parsed.fragment)),
+            )
+
+
+class _ProjectDocumentLinkExtension(Extension):
+    def __init__(
+        self,
+        *,
+        source_path: Path,
+        registered_paths: dict[Path, str],
+    ) -> None:
+        super().__init__()
+        self.source_path = source_path
+        self.registered_paths = registered_paths
+
+    def extendMarkdown(self, md: markdown.Markdown) -> None:
+        md.treeprocessors.register(
+            _ProjectDocumentLinkTreeprocessor(
+                md,
+                source_path=self.source_path,
+                registered_paths=self.registered_paths,
+            ),
+            "project_document_links",
+            5,
+        )
 
 
 def _load_documents() -> tuple[DesignDocument, ...]:
@@ -159,6 +222,11 @@ def _load_documents() -> tuple[DesignDocument, ...]:
 
 
 def _document_path(document: DesignDocument) -> Path:
+    project_document = _PROJECT_DOCUMENT_PATHS.get(document.relative_path)
+    if project_document is not None:
+        return project_document.resolve()
+    if document.relative_path.startswith("@project/"):
+        raise ValueError("Unknown project document path alias")
     root = DOCUMENTS_ROOT.resolve()
     path = (root / document.relative_path).resolve()
     if not path.is_relative_to(root) or path.suffix.lower() != ".md":
@@ -304,9 +372,20 @@ def get_design_document(
         return None
 
     source = path.read_text(encoding="utf-8")
+    registered_paths = {
+        _document_path(item): item.id for item in registered_documents
+    }
     rendered = markdown.markdown(
         source,
-        extensions=["fenced_code", "tables", "toc"],
+        extensions=[
+            "fenced_code",
+            "tables",
+            "toc",
+            _ProjectDocumentLinkExtension(
+                source_path=path,
+                registered_paths=registered_paths,
+            ),
+        ],
         output_format="html",
     )
     cleaned = bleach.clean(

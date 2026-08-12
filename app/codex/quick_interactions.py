@@ -54,6 +54,7 @@ DEFERRED_RESTART_WAITING_SUFFIX = (
     "全部完成后将自动重启 Chub。"
 )
 DEFERRED_RESTART_FAILED_SUFFIX = "Chub 重启登记失败，本次不会自动重启。"
+MAX_WEIXIN_STATUS_TASKS = 10
 ACTIVE_WRITER_ERROR = "Codex Session 正在由其他进程使用，请等待任务结束或停止实时终端。"
 VOICE_TRANSCRIPT_MARKER = "[[chub-weixin-voice-transcript]]"
 SENSITIVE_SUMMARY_VALUE_PATTERN = re.compile(
@@ -73,6 +74,9 @@ FEISHU_WEBHOOK_PATTERN = re.compile(
 class WeixinTaskStatusCheck:
     outcome: str
     task: QuickInteractionTask | None = None
+    tasks: tuple[QuickInteractionTask, ...] = ()
+    running_count: int = 0
+    notification_outcome: str | None = None
 
 
 def build_task_summary(prompt: str) -> str:
@@ -428,12 +432,16 @@ class QuickInteractionManager:
             running = [
                 task for task in matching if task.status in {"requested", "running"}
             ]
-            if running:
-                task = max(running, key=lambda item: (item.updated_at, item.id))
-                return WeixinTaskStatusCheck(
-                    outcome="running",
-                    task=task.model_copy(deep=True),
-                )
+            sorted_running = sorted(
+                running,
+                key=lambda item: (item.updated_at, item.id),
+                reverse=True,
+            )
+            running_snapshots = tuple(
+                task.model_copy(deep=True)
+                for task in sorted_running[:MAX_WEIXIN_STATUS_TASKS]
+            )
+            running_count = len(sorted_running)
 
             ended = [
                 task
@@ -444,6 +452,14 @@ class QuickInteractionManager:
             if ended:
                 task = max(ended, key=lambda item: (item.updated_at, item.id))
                 if self.completion_notifier is None:
+                    if running_snapshots:
+                        return WeixinTaskStatusCheck(
+                            outcome="running",
+                            task=running_snapshots[0],
+                            tasks=running_snapshots,
+                            running_count=running_count,
+                            notification_outcome="notification_failed",
+                        )
                     return WeixinTaskStatusCheck(
                         outcome="notification_failed",
                         task=task.model_copy(deep=True),
@@ -464,9 +480,24 @@ class QuickInteractionManager:
                 ]
                 if sending:
                     task = max(sending, key=lambda item: (item.updated_at, item.id))
+                    if running_snapshots:
+                        return WeixinTaskStatusCheck(
+                            outcome="running",
+                            task=running_snapshots[0],
+                            tasks=running_snapshots,
+                            running_count=running_count,
+                            notification_outcome="notification_sending",
+                        )
                     return WeixinTaskStatusCheck(
                         outcome="notification_sending",
                         task=task.model_copy(deep=True),
+                    )
+                if running_snapshots:
+                    return WeixinTaskStatusCheck(
+                        outcome="running",
+                        task=running_snapshots[0],
+                        tasks=running_snapshots,
+                        running_count=running_count,
                     )
                 return WeixinTaskStatusCheck(outcome="empty")
 
@@ -490,12 +521,25 @@ class QuickInteractionManager:
                 else:
                     snapshot = task.model_copy(deep=True) if task is not None else None
             return WeixinTaskStatusCheck(
-                outcome="notification_failed",
-                task=snapshot,
+                outcome="running" if running_snapshots else "notification_failed",
+                task=running_snapshots[0] if running_snapshots else snapshot,
+                tasks=running_snapshots,
+                running_count=running_count,
+                notification_outcome=(
+                    "notification_failed" if running_snapshots else None
+                ),
             )
         with self._lock:
             task = self._tasks.get(task_id)
             snapshot = task.model_copy(deep=True) if task is not None else None
+        if running_snapshots:
+            return WeixinTaskStatusCheck(
+                outcome="running",
+                task=running_snapshots[0],
+                tasks=running_snapshots,
+                running_count=running_count,
+                notification_outcome="notification_queued",
+            )
         return WeixinTaskStatusCheck(outcome="notification_queued", task=snapshot)
 
     def set_pinned(

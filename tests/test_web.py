@@ -101,11 +101,13 @@ async def test_home_page_is_public_and_contains_no_token(
     assert 'id="automation-environment-message"' in response.text
     assert 'data-card-key="automation-environment"' in response.text
     assert 'data-card-key="automation-environment" data-collapsible-card data-collapsed="true"' in response.text
-    assert response.text.index('data-card-key="automations"') < response.text.index(
+    assert response.text.index('id="codex-card-host"') < response.text.index(
+        'data-card-key="project-docs"'
+    ) < response.text.index('data-card-key="automations"') < response.text.index(
         'data-card-key="automation-environment"'
     ) < response.text.index('data-card-key="openclaw"') < response.text.index(
-        'data-card-key="project-docs"'
-    ) < response.text.index('data-card-key="logs"')
+        'data-card-key="logs"'
+    )
     assert 'id="automation-browser-control"' in response.text
     assert 'aria-controls="automation-browser-dialog"' in response.text
     assert 'id="automation-browser-dialog"' in response.text
@@ -387,7 +389,7 @@ async def test_home_page_reports_design_document_index_error(
         )
 
     assert response.status_code == 200
-    assert "设计文档暂时无法加载，请检查文档索引。" in response.text
+    assert "项目资料暂时无法加载，请检查资料索引。" in response.text
     assert api_response.status_code == 503
     assert api_response.json()["error"]["code"] == "project_document_index_unavailable"
 
@@ -797,9 +799,22 @@ async def test_design_document_pages_render_markdown(settings: Settings) -> None
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         listing = await client.get("/project-docs")
         detail = await client.get("/project-docs/automation-download")
+        project_readme = await client.get("/project-docs/project-readme")
         missing = await client.get("/project-docs/not-registered")
 
     assert listing.status_code == 200
+    assert "项目说明、设计方案与维护文档" in listing.text
+    assert "份项目资料" in listing.text
+    assert "Hub 项目资料展示" in listing.text
+    assert "Chub 项目说明" in listing.text
+    assert 'href="/project-docs/project-readme"' in listing.text
+    assert '<span class="badge badge-success">持续维护</span>' in listing.text
+    assert project_readme.status_code == 200
+    assert "面向个人设备的轻量管理服务" in project_readme.text
+    assert 'href="/project-docs/chub-integration-capabilities"' in project_readme.text
+    assert 'href="/project-docs/ai-session-state"' in project_readme.text
+    assert 'href="docs/CHUB_INTEGRATION_CAPABILITIES.md"' not in project_readme.text
+    assert "docs/archive/phase-1/README.md" not in project_readme.text
     assert "本期工作周报自动化与生成设计" in listing.text
     assert "返回首页" not in listing.text
     assert "standalone-list-card" in listing.text

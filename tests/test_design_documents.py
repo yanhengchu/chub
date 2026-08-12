@@ -47,6 +47,56 @@ def test_design_document_markdown_is_sanitized(monkeypatch, tmp_path: Path) -> N
     assert "javascript:" not in document.html
 
 
+def test_registered_markdown_links_use_project_document_routes(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.md"
+    target = tmp_path / "target.md"
+    source.write_text(
+        "[已登记](target.md#section) [未登记](missing.md) "
+        "[网页](https://example.com)",
+        encoding="utf-8",
+    )
+    target.write_text("# Target", encoding="utf-8")
+    index = tmp_path / "design_documents.json"
+    index.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "documents": [
+                    {
+                        "id": "source",
+                        "title": "来源",
+                        "summary": "来源文档",
+                        "status": "持续维护",
+                        "path": "source.md",
+                    },
+                    {
+                        "id": "target",
+                        "title": "目标",
+                        "summary": "目标文档",
+                        "status": "持续维护",
+                        "path": "target.md",
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(service, "DOCUMENTS_ROOT", tmp_path)
+    monkeypatch.setattr(service, "DOCUMENTS_INDEX", index)
+
+    document = service.get_design_document("source")
+
+    assert document is not None
+    assert document.html is not None
+    assert 'href="/project-docs/target#section"' in document.html
+    assert '<a>未登记</a>' in document.html
+    assert 'href="https://example.com"' in document.html
+
+
 def test_design_document_rejects_unregistered_and_oversized_files(
     monkeypatch,
     tmp_path: Path,
@@ -81,6 +131,52 @@ def test_design_document_rejects_path_outside_docs(
         pass
     else:
         raise AssertionError("outside path should be rejected")
+
+
+def test_project_readme_uses_one_explicit_project_root_alias(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    readme = tmp_path / "README.md"
+    readme.write_text("# Project README", encoding="utf-8")
+    monkeypatch.setattr(
+        service,
+        "_PROJECT_DOCUMENT_PATHS",
+        {"@project/README.md": readme},
+    )
+
+    document = DesignDocument(
+        id="project-readme",
+        title="项目说明",
+        summary="测试",
+        status="持续维护",
+        relative_path="@project/README.md",
+    )
+
+    assert service._document_path(document) == readme.resolve()
+
+
+def test_unknown_project_root_alias_is_rejected(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    docs_root = tmp_path / "docs"
+    docs_root.mkdir()
+    monkeypatch.setattr(service, "DOCUMENTS_ROOT", docs_root)
+    document = DesignDocument(
+        id="project-secret",
+        title="越界文档",
+        summary="测试",
+        status="持续维护",
+        relative_path="@project/secret.md",
+    )
+
+    try:
+        service._document_path(document)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("unknown project path alias should be rejected")
 
 
 def test_design_document_index_is_reloaded(monkeypatch, tmp_path: Path) -> None:
@@ -184,5 +280,11 @@ def test_registered_project_documents_exist() -> None:
     assert all(
         document.status in service.ALLOWED_DOCUMENT_STATUSES
         and 2 <= len(document.status) <= 4
+        for document in documents
+    )
+    assert any(
+        document.id == "project-readme"
+        and document.status == "持续维护"
+        and service._document_path(document) == service.PROJECT_ROOT / "README.md"
         for document in documents
     )

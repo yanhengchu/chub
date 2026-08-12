@@ -227,6 +227,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         quick_interactions,
         completion_notifier.validate_weixin_route,
         reclaim_weixin_terminal,
+        codex_rate_limits,
     )
     codex_pty_manager.set_quick_interaction_checker(quick_interactions.is_running)
     openclaw_manager = OpenClawManager()

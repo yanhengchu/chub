@@ -95,7 +95,7 @@ function renderProjectDocuments(data) {
   if (!data.documents.length) {
     const empty = document.createElement("p");
     empty.className = "empty-state";
-    empty.textContent = "暂无设计文档。";
+    empty.textContent = "暂无项目资料。";
     elements.projectDocsList.append(empty);
   }
 }

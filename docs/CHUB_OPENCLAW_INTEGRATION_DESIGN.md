@@ -1,6 +1,6 @@
 # Chub–OpenClaw 接入设计
 
-> 状态：微信 ClawBot 单接口调度 v3 已完成仓库实现和自动化验证。验收基线方面，普通文本、可信语音、同步提交状态和异步最终结果已在 macOS、Ubuntu 验收，任务状态检查路由由维护者暂按验收通过；当前部署方面，v3 已在 macOS 生效，Ubuntu 使用本次版本前仍需同步部署 v3。本文只维护当前 OpenClaw、Chub 插件、微信专用任务、完成通知和安全边界，后续根据实际体验持续优化。
+> 状态：持续维护。本文描述当前微信 ClawBot 单入口调度、微信专用任务、完成通知和安全边界；具体能力状态与插件部署状态分别以能力清单和插件说明为准。Codex 状态路由的 Session 列表扩展已在当前节点完成真实微信验收，Ubuntu 尚待同步。
 
 当前可用插件、插件能力、固定 API 和消息路由统一登记在[Chub 集成能力清单](CHUB_INTEGRATION_CAPABILITIES.md)；本文只解释其架构与行为边界。
 
@@ -10,7 +10,7 @@ Chub 与 OpenClaw 当前提供四类能力：
 
 1. Chub 管理本机 OpenClaw Gateway；首页展示 Gateway、消息通道和访问入口，Owner 检查结果合并到通道与总体状态中。
 2. OpenClaw Agent 通过受限 Tool 查询 Chub 状态或发送飞书通知。
-3. 微信 Chub 模式在模型调度前拦截符合条件的私聊，只调用 Chub 单一调度入口；固定路由由 Chub 直接处理，其他非空业务正文提交 Codex 任务。
+3. 微信 Chub 模式在模型调度前拦截符合条件的私聊，只调用 Chub 单一调度入口；固定路由直接返回结果且不创建 Codex 任务，其他非空业务正文按普通任务处理。
 4. 微信 Chub 任务结束后通过任务保存的 ClawBot 路由发送最终结果；页面快速交互只有在完成通知和全局收件人均已配置时才发送微信结果。任务摘要只是提交状态和最终消息中的关联信息。
 
 ```text
@@ -19,7 +19,7 @@ OpenClaw Agent 能力（TUI 或未进入微信 Chub 模式的消息）
 
 微信 Chub 模式（当前实现）
   微信私聊 -> before_dispatch -> Chub 统一消息调度接口
-           -> 模式检查 / 任务状态检查 / 普通任务提交
+           -> 模式检查 / 固定只读路由 / 普通任务提交
            -> 普通任务进入 Chub 快速交互 + Codex CLI
            -> Hook 同步原路交付 Chub 回执
            -> 任务结束后由 Chub 使用 openclaw message send 发送最终通知
@@ -93,7 +93,7 @@ Chub 首页卡片只提供 Gateway、消息通道、Tailscale 访问入口、固
 
 这些是模型和应用约束，不是操作系统级隔离。如果允许其他微信身份或不可信输入访问，必须重新评估 Sandbox、独立 Agent 和文件工具权限。
 
-微信 Chub 模式是单独批准的例外：固定 Tailnet 内的单一 Owner 可以通过固定专用 Session 使用 `Full access`，不逐条审批。该权限不属于 OpenClaw Agent，也不扩展到其他账号、入口或 Session；关闭微信 Chub 模式即可撤销入口。
+微信 Chub 模式是单独批准的例外：固定 Tailnet 内的单一 Owner 可以通过微信通道当前绑定 Session 使用 `Full access`，不逐条审批。该权限随受控绑定关系生效，不属于 Session 的永久属性，也不扩展到其他账号或入口；关闭微信 Chub 模式即可撤销入口。
 
 ## 4. Chub OpenClaw 插件
 
@@ -114,15 +114,15 @@ POST /api/openclaw/wechat-chub-mode/dispatch
 
 插件只负责部署开关、微信私聊范围、可信账号与发送者、原始正文、语音来源归一化、幂等标识、固定 Tailnet 地址、超时和有界响应。它不识别业务指令，不检查 Codex 或 Session 状态，不生成或修改任务摘要、提交状态、语音回显和失败文案，也不让正文指定动作、接口、任务编号、Session、权限、模型、路径或命令。Chub 不可达、协议不匹配或响应无效时，插件只返回统一通道失败，不解释具体业务原因。
 
-Chub 统一调度接口处理模式关闭时放行、固定任务状态检查和普通快速交互提交；已登记路由及匹配条件以[Chub 集成能力清单](CHUB_INTEGRATION_CAPABILITIES.md)为准。
+Chub 统一调度接口处理模式关闭时放行、固定只读路由和普通快速交互提交；已登记路由及匹配条件以[Chub 集成能力清单](CHUB_INTEGRATION_CAPABILITIES.md)为准。
 
 插件使用 `weixinChubMode` 部署开关。Chub 与插件使用同一版本化调度协议；版本不匹配时明确失败，不回退 Agent。
 
-## 5. ClawBot 统一调度与专用任务
+## 5. ClawBot 统一调度与绑定任务
 
 ### 5.1 模式与路由
 
-Chub 配置 `openclaw.weixin_chub_mode` 决定业务状态和专用 Session 默认值：
+Chub 配置 `openclaw.weixin_chub_mode` 决定业务状态和当前绑定 Session 的匹配条件：
 
 ```yaml
 openclaw:
@@ -140,10 +140,12 @@ openclaw:
 | --- | --- | --- |
 | 关闭 | 任意 | 保持原 OpenClaw Agent / LLM 流程 |
 | 开启 | 关闭 | 调用统一接口，由 Chub 返回放行 |
-| 开启 | 已启用 | 固定状态短语由 Chub 直接处理，其他非空正文提交 Codex 任务 |
+| 开启 | 已启用 | Chub 执行已登记的固定路由，其他非空正文提交普通任务 |
 | 开启 | Chub 不可达或响应异常 | 返回受控失败，不回退 Agent / LLM |
 
-统一接口只匹配能力清单登记的固定状态检查短语，不接受任务编号、Session 或动作参数；未匹配的非空正文按普通任务提交规则处理。
+Chub 先判断是否命中能力清单登记的固定路由：命中时直接返回结果，不创建 Codex 任务；未命中的非空正文才按普通任务提交。具体短语、顺序和响应行为只在[能力清单](CHUB_INTEGRATION_CAPABILITIES.md)维护。消息正文不能提供任意 Session ID、任务编号、动作或目标接口；只允许固定 `codex switch` 路由使用实时列表编号切换绑定。
+
+Codex 状态路由按内部 Session ID 稳定排序，只展示符合当前配置且允许绑定的前 10 个 Session；`[Current]` 只标识后续普通任务的当前目标，不影响顺序。`Available` 和 `Busy` 均可绑定，`Unavailable` 不展示。查询本身不切换、创建、启动、停止或回收 Session；绑定切换由独立固定路由实时复检并原子写入，不依赖列表快照。切换时 Session 与用量读取共用一个 9 秒预算，成功后按 Codex 状态格式返回结果，以 `[Current]` 代替单独的成功文案，避免同步请求超时后才改变绑定。
 
 ### 5.2 提交状态与任务摘要
 
@@ -173,19 +175,22 @@ openclaw:
 - 微信消息只能提供正文，不能指定 Session、工作区、权限、模型、推理等级、文件路径、命令、接口或回送目标。
 - 回送账号和发送者只能来自 `before_dispatch` 的可信通道上下文，并在普通任务提交前确认对应账号是唯一健康 ClawBot。
 - 群聊、缺少稳定消息标识、缺少回送路由或路由不可信时不进入 Chub 任务。
-- 微信专用 Session 的 `Full access` 例外只适用于固定 Tailnet、当前单 Owner 和该专用 Session；关闭业务模式即撤销入口，不扩展给其他 Agent、身份、入口或 Session。
+- `Full access` 例外只适用于固定 Tailnet、当前单 Owner 和微信通道当时的绑定关系；Session 本身仍是普通 Chub Session，解除绑定后不保留微信入口授权。
 
 当前不支持第二个 Owner、多个并行 ClawBot 或跨节点提交，也不能通过放宽现有配置绕过身份认证、Session 隔离和调用方边界。
 
 ### 5.5 Session 复用与写入互斥
 
-普通微信任务长期复用一个 Chub 管理的专用 Session，以保留 Codex 上下文。Session ID 只保存在 Chub 私有状态中，OpenClaw 和微信消息不能读取或指定。
+普通微信任务默认复用 Chub 保存的当前绑定 Session，以保留 Codex 上下文。Session ID 只保存在 Chub 私有状态中，不向 OpenClaw 或微信消息暴露；用户只能通过固定编号路由在实时可绑定列表中切换。
 
-- 没有有效 Session 时按固定配置创建；模型或推理等级为 `null` 时仅在首次创建时跟随 Codex 默认值。
+- 绑定不存在或配置不匹配时，在下一次普通任务提交时按固定配置创建并绑定；暂时忙碌或不可提交不触发新建。
+- 切换只影响后续任务；原 Session 上的任务继续执行并使用任务保存的微信路由回送，因此不同 Session 可以并行执行微信任务。
 - 同一原生 Codex Session 同时只允许一个 writer，不维护额外消息队列。
 - 已有快速交互、明确执行中或 writer 仍被占用时拒绝新的普通任务，不中断现有任务。
-- 专用 Session 状态为 `unknown` 时，Chub 可以撤销页面票据、停止残留终端，并在确认 writer 释放后提交；失败时保持关闭，不并行 `resume`。
+- 当前绑定 Session 状态为 `unknown` 时，Chub 可以撤销页面票据、停止残留终端，并在确认 writer 释放后提交；失败时保持关闭，不并行 `resume`。
 - Writer 探测依赖 `CODEX_HOME/thread-writer-locks/` 的只读兼容边界，Codex CLI 升级后必须回归。
+
+任务状态检查按微信任务保存的原路账号和发送者关联全部 Session，不依赖当前绑定。多个任务执行中时汇总显示；同时存在通知失败的已结束任务时仍触发原路补发，避免被运行任务遮挡。
 
 ### 5.6 幂等与状态
 
@@ -250,8 +255,8 @@ HTTP 200、进程创建、Tool Call 发起、微信进度提示或本地 Channel
 | 微信只收到统一通道失败 | 检查 Chub 可达性、插件与 Chub 协议版本、插件运行时来源和 Hook |
 | 旧设备仍显示微信信息 | ClawBot 是否已在另一台设备重新绑定 |
 | 微信 Chub 消息进入 Agent | 插件路由开关、Chub 模式状态和运行时 Hook |
-| 微信 Chub 任务被拒绝 | 专用 Session 是否执行中、writer 是否占用、路由账号是否唯一健康 |
+| 微信 Chub 任务被拒绝 | 当前绑定 Session 是否执行中、writer 是否占用、路由账号是否唯一健康 |
 | 完成通知失败 | 任务保存的账号与发送者、Context Token 和当前通道状态 |
 | 飞书正文被改写 | `content_mode`、原文 Hook 和当前 `runId` 关联 |
 
-涉及插件、微信通道、权限或通知行为的变更，至少执行相应静态测试和配置校验，并在受影响平台做一次真实最终结果检查。Gateway、微信绑定、Owner、状态 Tool、飞书通知和微信 Chub 单入口 v3 均已纳入当前验收基线；普通文本、可信语音、同步提交状态和异步最终结果已在 macOS、Ubuntu 验收，任务状态检查路由由维护者暂按验收通过。
+涉及插件、微信通道、权限或通知行为的变更，至少执行相应静态测试和配置校验，并在受影响平台做一次真实最终结果检查。Gateway、微信绑定、Owner、状态 Tool、飞书通知和微信 Chub 单入口均已纳入验收基线；具体路由状态见[能力清单](CHUB_INTEGRATION_CAPABILITIES.md)，插件的平台部署状态见[插件说明](../integrations/openclaw/chub/README.md)。

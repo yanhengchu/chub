@@ -345,6 +345,97 @@ def test_status_check_returns_matching_running_weixin_task(tmp_path: Path) -> No
     assert checked.task.id == running.id
 
 
+def test_status_check_returns_all_matching_running_weixin_tasks(
+    tmp_path: Path,
+) -> None:
+    quick_interactions = manager(tmp_path)
+    route = QuickInteractionWeixinRoute(
+        account_id="weixin-account",
+        recipient="owner@im.wechat",
+    )
+    first = QuickInteractionTask(
+        id="running-1",
+        session_id="session-1",
+        prompt="任务一",
+        summary="任务一",
+        status="running",
+        notification_route="weixin-task",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    second = first.model_copy(
+        update={"id": "running-2", "session_id": "session-2", "summary": "任务二"}
+    )
+    quick_interactions._tasks = {first.id: first, second.id: second}
+    quick_interactions._notification_routes = {first.id: route, second.id: route}
+
+    checked = quick_interactions.check_weixin_task_status(
+        route,
+        operation_id="status-check-multiple",
+        source_ip="100.64.0.21",
+    )
+
+    assert checked.outcome == "running"
+    assert {task.id for task in checked.tasks} == {"running-1", "running-2"}
+
+
+def test_status_check_retries_failed_notification_while_other_task_runs(
+    tmp_path: Path,
+) -> None:
+    notifier_started = threading.Event()
+    notifier_release = threading.Event()
+
+    def notify(*_args):
+        notifier_started.set()
+        assert notifier_release.wait(timeout=2)
+        return SimpleNamespace(status="sent", error=None)
+
+    quick_interactions = manager(
+        tmp_path,
+        completion_notifier=MagicMock(side_effect=notify),
+    )
+    route = QuickInteractionWeixinRoute(
+        account_id="weixin-account",
+        recipient="owner@im.wechat",
+    )
+    running = QuickInteractionTask(
+        id="running-task",
+        session_id="session-1",
+        prompt="运行中",
+        summary="运行中",
+        status="running",
+        notification_route="weixin-task",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    ended = QuickInteractionTask(
+        id="ended-task",
+        session_id="session-2",
+        prompt="已完成",
+        summary="已完成",
+        status="succeeded",
+        result="完成",
+        notification_status="failed",
+        notification_route="weixin-task",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    quick_interactions._tasks = {running.id: running, ended.id: ended}
+    quick_interactions._notification_routes = {running.id: route, ended.id: route}
+
+    checked = quick_interactions.check_weixin_task_status(
+        route,
+        operation_id="status-check-running-and-ended",
+        source_ip="100.64.0.21",
+    )
+
+    assert checked.outcome == "running"
+    assert checked.tasks[0].id == running.id
+    assert checked.notification_outcome == "notification_queued"
+    assert notifier_started.wait(timeout=1)
+    notifier_release.set()
+
+
 def test_status_check_retries_failed_notification_through_original_route(
     tmp_path: Path,
 ) -> None:

@@ -4,16 +4,16 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="{{ 'dark' if request.cookies.get('hub_ui_style') == 'cyber' else 'light' }}">
-    <title>设计文档 · {{ app_name }}</title>
+    <title>项目资料 · {{ app_name }}</title>
     {% include "partials/app_styles.html" %}
   </head>
   <body>
     <main>
       <section class="card document-list-card standalone-list-card" aria-labelledby="document-list-title">
         <div class="card-heading-copy">
-          <p class="section-kicker">全部文档</p>
-          <h2 id="document-list-title">功能方案与验收标准</h2>
-          <p class="section-description">共 {{ documents|length }} 份设计文档。</p>
+          <p class="section-kicker">项目资料</p>
+          <h2 id="document-list-title">项目说明、设计方案与维护文档</h2>
+          <p class="section-description">共 {{ documents|length }} 份项目资料。</p>
         </div>
         <div class="document-filter-toolbar" role="group" aria-label="文档筛选">
           <button class="button-secondary is-active" type="button" data-document-filter="all">全部</button>
@@ -40,14 +40,14 @@
           </article>
           {% else %}
           {% if not documents_error %}
-          <p class="empty-state">暂无设计文档。</p>
+          <p class="empty-state">暂无项目资料。</p>
           {% endif %}
           {% endfor %}
         </div>
       </section>
     </main>
 
-    <footer>Hub 设计文档展示，归档管理需连接节点。</footer>
+    <footer>Hub 项目资料展示，归档管理需连接节点。</footer>
     <script src="/static/design_documents.js" defer></script>
   </body>
 </html>

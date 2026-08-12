@@ -2,6 +2,13 @@
   "version": 1,
   "documents": [
     {
+      "id": "project-readme",
+      "title": "Chub 项目说明",
+      "summary": "介绍 Chub 的产品定位、当前能力、使用入口、运行方式与维护约定。",
+      "status": "持续维护",
+      "path": "@project/README.md"
+    },
+    {
       "id": "architecture-evolution",
       "title": "Chub 前端 UI 模块化设计",
       "summary": "定义首页 Core、公共组件、Feature、样式层及 Standard/Cyber 的当前维护边界。",
@@ -19,7 +26,7 @@
       "id": "openclaw-integration",
       "title": "Chub–OpenClaw 接入设计",
       "summary": "定义 OpenClaw Gateway、Chub 插件及微信 ClawBot 单入口统一调度的当前边界。",
-      "status": "已验收",
+      "status": "持续维护",
       "path": "CHUB_OPENCLAW_INTEGRATION_DESIGN.md"
     },
     {
@@ -33,7 +40,7 @@
       "id": "weixin-clawbot-context-token-ai-patch",
       "title": "微信 ClawBot Context Token 持久化 AI 补丁规范",
       "summary": "定义微信插件升级、重装或兼容异常后的 Context Token 能力复检与安全恢复规范。",
-      "status": "持续维护",
+      "status": "已验收",
       "path": "WEIXIN_CLAWBOT_CONTEXT_TOKEN_AI_PATCH.md"
     },
     {
