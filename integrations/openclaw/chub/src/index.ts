@@ -161,6 +161,9 @@ const plugin: ReturnType<typeof definePluginEntry> = definePluginEntry({
       if (dispatch.disposition === "pass") {
         return;
       }
+      if (dispatch.disposition === "handled") {
+        return { handled: true };
+      }
       return {
         handled: true,
         text: dispatch.message ?? WEIXIN_CHANNEL_FAILURE,

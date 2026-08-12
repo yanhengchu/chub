@@ -9,6 +9,7 @@ import subprocess
 import threading
 import uuid
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterator
@@ -34,7 +35,7 @@ MAX_RESULT_BYTES = 100_000
 MAX_EVENT_BYTES = 1_000_000
 MAX_STORED_TASKS = 30
 MAX_SESSION_TITLE_LENGTH = 48
-MAX_TASK_SUMMARY_LENGTH = 48
+MAX_TASK_SUMMARY_LENGTH = 13
 LOGGER = logging.getLogger("hub.codex.quick_interactions")
 CODEX_QUICK_INTERACTION_INSTRUCTIONS = (
     "[Chub 快速交互交付要求]\n"
@@ -66,6 +67,12 @@ FEISHU_WEBHOOK_PATTERN = re.compile(
     r"https://open\.feishu\.cn/open-apis/bot/v2/hook/[^\s]+",
     re.IGNORECASE,
 )
+
+
+@dataclass(frozen=True)
+class WeixinTaskStatusCheck:
+    outcome: str
+    task: QuickInteractionTask | None = None
 
 
 def build_task_summary(prompt: str) -> str:
@@ -401,6 +408,95 @@ class QuickInteractionManager:
             reverse=True,
         )
         return [latest, *pinned, *ordinary]
+
+    def check_weixin_task_status(
+        self,
+        route: QuickInteractionWeixinRoute,
+        *,
+        operation_id: str,
+        source_ip: str,
+    ) -> WeixinTaskStatusCheck:
+        """Inspect one sender's tasks and retry an eligible original notification."""
+        notification_operation: tuple[str, str] | None = None
+        with self._lock:
+            matching = [
+                task
+                for task in self._tasks.values()
+                if task.notification_route == "weixin-task"
+                and self._notification_routes.get(task.id) == route
+            ]
+            running = [
+                task for task in matching if task.status in {"requested", "running"}
+            ]
+            if running:
+                task = max(running, key=lambda item: (item.updated_at, item.id))
+                return WeixinTaskStatusCheck(
+                    outcome="running",
+                    task=task.model_copy(deep=True),
+                )
+
+            ended = [
+                task
+                for task in matching
+                if task.status not in {"requested", "running"}
+                and task.notification_status in {None, "failed", "skipped"}
+            ]
+            if ended:
+                task = max(ended, key=lambda item: (item.updated_at, item.id))
+                if self.completion_notifier is None:
+                    return WeixinTaskStatusCheck(
+                        outcome="notification_failed",
+                        task=task.model_copy(deep=True),
+                    )
+                task.notification_status = "pending"
+                task.notification_error = None
+                task.notification_updated_at = utc_now()
+                self._operations[task.id] = (operation_id, source_ip)
+                self._write()
+                notification_operation = (operation_id, source_ip)
+                task_id = task.id
+            else:
+                sending = [
+                    task
+                    for task in matching
+                    if task.status not in {"requested", "running"}
+                    and task.notification_status in {"pending", "sending"}
+                ]
+                if sending:
+                    task = max(sending, key=lambda item: (item.updated_at, item.id))
+                    return WeixinTaskStatusCheck(
+                        outcome="notification_sending",
+                        task=task.model_copy(deep=True),
+                    )
+                return WeixinTaskStatusCheck(outcome="empty")
+
+        notification_thread = threading.Thread(
+            target=self._deliver_completion_notification,
+            args=(task_id, notification_operation),
+            daemon=True,
+            name=f"chub-status-notification-{task_id[:8]}",
+        )
+        try:
+            notification_thread.start()
+        except RuntimeError:
+            with self._lock:
+                task = self._tasks.get(task_id)
+                if task is not None and task.notification_status == "pending":
+                    task.notification_status = "failed"
+                    task.notification_error = "微信通知线程未能启动。"
+                    task.notification_updated_at = utc_now()
+                    self._write()
+                    snapshot = task.model_copy(deep=True)
+                else:
+                    snapshot = task.model_copy(deep=True) if task is not None else None
+            return WeixinTaskStatusCheck(
+                outcome="notification_failed",
+                task=snapshot,
+            )
+        with self._lock:
+            task = self._tasks.get(task_id)
+            snapshot = task.model_copy(deep=True) if task is not None else None
+        return WeixinTaskStatusCheck(outcome="notification_queued", task=snapshot)
 
     def set_pinned(
         self,

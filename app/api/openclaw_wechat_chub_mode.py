@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 from ipaddress import ip_address
-from typing import Literal
+from typing import Literal, Self
 
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.codex.models import QuickInteractionWeixinRoute
 from app.core.response import ApiError, ApiResponse
 from app.core.security import require_tailscale
 
 
-WEIXIN_CHUB_MODE_PROTOCOL_VERSION = 2
+WEIXIN_CHUB_MODE_PROTOCOL_VERSION = 3
 
 
 class WeixinChubModeDispatchRequest(BaseModel):
@@ -56,9 +56,17 @@ class WeixinChubModeDispatchRequest(BaseModel):
 
 
 class WeixinChubModeDispatchData(BaseModel):
-    protocol_version: Literal[2]
-    disposition: Literal["pass", "reply"]
+    protocol_version: Literal[3]
+    disposition: Literal["pass", "reply", "handled"]
     message: str | None = Field(default=None, max_length=3000)
+
+    @model_validator(mode="after")
+    def validate_disposition_message(self) -> Self:
+        if self.disposition in {"pass", "handled"} and self.message is not None:
+            raise ValueError("Pass and handled responses must not include a message")
+        if self.disposition == "reply" and not (self.message or "").strip():
+            raise ValueError("Reply responses must include a message")
+        return self
 
 
 def require_same_node_tailscale(request: Request) -> None:

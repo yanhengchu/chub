@@ -104,7 +104,7 @@ def test_dispatch_submits_with_chub_owned_reply(
             delivery_route=delivery_route(),
         )
 
-    assert result.protocol_version == 2
+    assert result.protocol_version == 3
     assert result.disposition == "reply"
     assert result.message == (
         "任务已提交\n\n任务摘要：检查设备状态\n\n完成后将原路发送结果。"
@@ -124,6 +124,171 @@ def test_dispatch_submits_with_chub_owned_reply(
         settings.openclaw.weixin_chub_mode.state_file.read_text(encoding="utf-8")
     )
     assert persisted["submissions"][0]["http_status"] == 200
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    ["检查任务状态", "任务状态", "查询任务结果", "任务结果"],
+)
+def test_dispatch_routes_fixed_task_status_prompts_without_codex(
+    settings: Settings,
+    prompt: str,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    quick_interactions.check_weixin_task_status.return_value = SimpleNamespace(
+        outcome="running",
+        task=SimpleNamespace(summary="设备状态检查"),
+    )
+
+    result = manager.dispatch(
+        message_id=f"status-{prompt}",
+        prompt=f"  {prompt}  ",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.disposition == "reply"
+    assert result.message == "任务正在执行\n\n任务摘要：设备状态检查"
+    quick_interactions.check_weixin_task_status.assert_called_once()
+    quick_interactions.submit.assert_not_called()
+
+
+def test_dispatch_retries_original_notification_and_suppresses_extra_reply(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    quick_interactions.check_weixin_task_status.return_value = SimpleNamespace(
+        outcome="notification_queued",
+        task=SimpleNamespace(summary="设备状态检查"),
+    )
+
+    result = manager.dispatch(
+        message_id="status-notification-sent",
+        prompt="检查任务状态",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.disposition == "handled"
+    assert result.message is None
+    quick_interactions.submit.assert_not_called()
+
+
+def test_status_check_persists_interrupted_reservation_before_side_effect(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+
+    def check_status(*_args, **_kwargs):
+        persisted = json.loads(
+            settings.openclaw.weixin_chub_mode.state_file.read_text(encoding="utf-8")
+        )
+        record = persisted["submissions"][0]
+        assert record["status"] == "reserved"
+        assert record["code"] == "submission_interrupted"
+        return SimpleNamespace(outcome="empty", task=None)
+
+    quick_interactions.check_weixin_task_status.side_effect = check_status
+
+    result = manager.dispatch(
+        message_id="status-reserved-first",
+        prompt="检查任务状态",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == "当前没有执行中或待通知的任务。"
+    persisted = json.loads(
+        settings.openclaw.weixin_chub_mode.state_file.read_text(encoding="utf-8")
+    )
+    assert persisted["submissions"][0]["status"] == "routed"
+
+
+@pytest.mark.parametrize(
+    ("outcome", "message"),
+    [
+        ("notification_sending", "任务已结束，结果正在原路发送。"),
+        ("notification_failed", "任务已结束，但结果通知失败，请稍后再次检查。"),
+        ("empty", "当前没有执行中或待通知的任务。"),
+    ],
+)
+def test_dispatch_returns_one_status_check_result(
+    settings: Settings,
+    outcome: str,
+    message: str,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    quick_interactions.check_weixin_task_status.return_value = SimpleNamespace(
+        outcome=outcome,
+        task=None,
+    )
+
+    result = manager.dispatch(
+        message_id=f"status-{outcome}",
+        prompt="任务状态",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.disposition == "reply"
+    assert result.message == message
+
+
+def test_duplicate_status_check_replays_without_rechecking(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    quick_interactions.check_weixin_task_status.return_value = SimpleNamespace(
+        outcome="empty",
+        task=None,
+    )
+
+    first = manager.dispatch(
+        message_id="status-duplicate",
+        prompt="检查任务状态",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+    duplicate = manager.dispatch(
+        message_id="status-duplicate",
+        prompt="任务结果",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert duplicate == first
+    quick_interactions.check_weixin_task_status.assert_called_once()
+
+
+def test_non_exact_status_prompt_is_submitted_as_normal_task(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+
+    result = manager.dispatch(
+        message_id="status-near-miss",
+        prompt="检查任务状态 123",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.disposition == "reply"
+    quick_interactions.check_weixin_task_status.assert_not_called()
+    quick_interactions.submit.assert_called_once()
 
 
 def test_dispatch_persists_pass_decision_across_mode_change(
@@ -233,7 +398,7 @@ def test_dispatch_builds_bounded_voice_reply_in_chub(
         delivery_route=delivery_route(),
     )
 
-    assert result.protocol_version == 2
+    assert result.protocol_version == 3
     assert result.disposition == "reply"
     assert len(result.message or "") == 3_000
     assert result.message is not None

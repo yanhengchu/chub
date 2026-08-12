@@ -11,16 +11,23 @@
     {
       "id": "ai-session-state",
       "title": "Chub AI Session 状态模型设计",
-      "summary": "定义供应方无关的 Session 与 Activity 状态、快速交互延迟重启交付和 AI CLI 适配边界。",
+      "summary": "定义 Chub 当前 Codex Session 与 Activity 状态、交互互斥和快速交互延迟重启边界。",
       "status": "已验收",
       "path": "AI_SESSION_STATE_DESIGN.md"
     },
     {
       "id": "openclaw-integration",
-      "title": "OpenClaw–Chub 集成与 ClawBot 消息调度设计",
+      "title": "Chub–OpenClaw 接入设计",
       "summary": "定义 OpenClaw Gateway、Chub 插件及微信 ClawBot 单入口统一调度的当前边界。",
       "status": "已验收",
-      "path": "OPENCLAW_INTEGRATION_DESIGN.md"
+      "path": "CHUB_OPENCLAW_INTEGRATION_DESIGN.md"
+    },
+    {
+      "id": "chub-integration-capabilities",
+      "title": "Chub 集成能力清单",
+      "summary": "统一维护 Chub 当前插件、插件能力、固定 API 和消息路由。",
+      "status": "持续维护",
+      "path": "CHUB_INTEGRATION_CAPABILITIES.md"
     },
     {
       "id": "weixin-clawbot-context-token-ai-patch",

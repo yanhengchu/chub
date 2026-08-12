@@ -154,7 +154,7 @@ async def test_home_page_is_public_and_contains_no_token(
     )[0]
     assert 'data-card-return-refresh="true"' not in openclaw_card
     assert "OpenClaw 方案调研" not in response.text
-    assert "OpenClaw–Chub 集成与 ClawBot 消息调度设计" in response.text
+    assert "Chub–OpenClaw 接入设计" in response.text
     assert "持续维护" in response.text
     assert "份设计资料 · 1 份周报可查看" not in response.text
     assert 'href="/project-docs/openclaw-research"' not in response.text

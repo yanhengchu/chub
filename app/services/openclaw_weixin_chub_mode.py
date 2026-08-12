@@ -40,6 +40,7 @@ WeixinChubModeSubmissionCode = Literal[
     "message_conflict",
     "submission_failed",
     "submission_interrupted",
+    "task_status_checked",
 ]
 WeixinChubModeDispatchCode = Literal[
     "mode_disabled",
@@ -77,13 +78,14 @@ class WeixinChubModeSubmission(_StrictModel):
     correlation_id: str | None = Field(default=None, max_length=500)
     operation_id: str = Field(min_length=1, max_length=128)
     delivery_route_fingerprint: str | None = Field(default=None, max_length=64)
-    status: Literal["reserved", "submitted", "rejected", "passed"]
+    status: Literal["reserved", "submitted", "rejected", "passed", "routed"]
     code: WeixinChubModeSubmissionCode
     message: str = Field(max_length=500)
     http_status: Literal[200, 409, 503] | None = None
     session_id: str | None = Field(default=None, max_length=128)
     task_id: str | None = Field(default=None, max_length=128)
     new_session: bool = False
+    dispatch_disposition: Literal["pass", "reply", "handled"] | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -108,13 +110,18 @@ class WeixinChubModeSubmissionResult(_StrictModel):
     new_session: bool
     code: Literal["submitted"] = "submitted"
     message: str
-    task_summary: str | None = Field(default=None, max_length=48)
+    task_summary: str | None = Field(default=None, max_length=13)
 
 
 class WeixinChubModeDispatchResult(_StrictModel):
-    protocol_version: Literal[2] = 2
-    disposition: Literal["pass", "reply"]
+    protocol_version: Literal[3] = 3
+    disposition: Literal["pass", "reply", "handled"]
     message: str | None = Field(default=None, max_length=3000)
+
+
+TASK_STATUS_CHECK_PROMPTS = frozenset(
+    {"检查任务状态", "任务状态", "查询任务结果", "任务结果"}
+)
 
 
 class WeixinChubModeManager:
@@ -598,6 +605,12 @@ class WeixinChubModeManager:
                     return WeixinChubModeDispatchResult(
                         disposition="pass",
                     )
+                if duplicate.status == "routed":
+                    self._log_standalone_dispatch("succeeded", source_ip)
+                    return WeixinChubModeDispatchResult(
+                        disposition=duplicate.dispatch_disposition or "reply",
+                        message=duplicate.message or None,
+                    )
                 try:
                     submission = self.submit(
                         message_id=message_id,
@@ -632,6 +645,15 @@ class WeixinChubModeManager:
                     disposition="pass",
                 )
 
+            if prompt.strip() in TASK_STATUS_CHECK_PROMPTS:
+                return self._dispatch_task_status(
+                    message_id=message_id,
+                    correlation_id=correlation_id,
+                    route_fingerprint=route_fingerprint,
+                    source_ip=source_ip,
+                    delivery_route=delivery_route,
+                )
+
             try:
                 submission = self.submit(
                     message_id=message_id,
@@ -657,6 +679,96 @@ class WeixinChubModeManager:
                 disposition="reply",
                 message=message,
             )
+
+    def _dispatch_task_status(
+        self,
+        *,
+        message_id: str,
+        correlation_id: str | None,
+        route_fingerprint: str,
+        source_ip: str,
+        delivery_route: QuickInteractionWeixinRoute,
+    ) -> WeixinChubModeDispatchResult:
+        operation_id = uuid4().hex
+        now = utc_now()
+        record = WeixinChubModeSubmission(
+            message_id=message_id,
+            correlation_id=correlation_id,
+            operation_id=operation_id,
+            delivery_route_fingerprint=route_fingerprint,
+            status="reserved",
+            code="submission_interrupted",
+            message="Chub 未能确认本次状态检查结果，请发送一条新消息重试。",
+            created_at=now,
+            updated_at=now,
+        )
+        next_state = self._state.model_copy(deep=True)
+        next_state.submissions.append(record)
+        self._log_dispatch(operation_id, "requested", source_ip)
+        self._log_dispatch(operation_id, "started", source_ip)
+        try:
+            self._write_state(next_state)
+        except OSError:
+            self._state_error = True
+            self._log_dispatch(operation_id, "failed", source_ip)
+            return self._dispatch_failure("state_unavailable")
+        self._state = next_state
+
+        try:
+            checked = self.quick_interactions.check_weixin_task_status(
+                delivery_route,
+                operation_id=operation_id,
+                source_ip=source_ip,
+            )
+        except Exception:
+            LOGGER.warning("Weixin task status check failed", exc_info=True)
+            result = WeixinChubModeDispatchResult(
+                disposition="reply",
+                message="任务状态检查失败，请稍后重试。",
+            )
+            log_status = "failed"
+        else:
+            task = checked.task
+            summary = getattr(task, "summary", None) or "本次微信任务"
+            if checked.outcome == "running":
+                result = WeixinChubModeDispatchResult(
+                    disposition="reply",
+                    message=f"任务正在执行\n\n任务摘要：{summary}",
+                )
+            elif checked.outcome == "notification_queued":
+                result = WeixinChubModeDispatchResult(disposition="handled")
+            elif checked.outcome == "notification_sending":
+                result = WeixinChubModeDispatchResult(
+                    disposition="reply",
+                    message="任务已结束，结果正在原路发送。",
+                )
+            elif checked.outcome == "notification_failed":
+                result = WeixinChubModeDispatchResult(
+                    disposition="reply",
+                    message="任务已结束，但结果通知失败，请稍后再次检查。",
+                )
+            else:
+                result = WeixinChubModeDispatchResult(
+                    disposition="reply",
+                    message="当前没有执行中或待通知的任务。",
+                )
+            log_status = "succeeded"
+
+        record.status = "routed"
+        record.code = "task_status_checked"
+        record.message = result.message or ""
+        record.http_status = 200
+        record.dispatch_disposition = result.disposition
+        record.updated_at = utc_now()
+        try:
+            self._replace_submission(record)
+        except OSError:
+            self._log_dispatch(operation_id, "failed", source_ip)
+            if result.disposition == "handled":
+                return result
+            return self._dispatch_failure("state_unavailable")
+        self._log_dispatch(operation_id, log_status, source_ip)
+        return result
 
     @staticmethod
     def _submission_dispatch_message(

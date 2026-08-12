@@ -116,13 +116,13 @@ function dispatchResponse({
   disposition = "reply",
   message = "任务已提交\n\n任务摘要：检查状态\n\n完成后将原路发送结果。",
 }: {
-  disposition?: "pass" | "reply";
+  disposition?: "pass" | "reply" | "handled";
   message?: string | null;
 } = {}) {
   return new Response(JSON.stringify({
     success: true,
     data: {
-      protocol_version: 2,
+      protocol_version: 3,
       disposition,
       message,
     },
@@ -167,7 +167,7 @@ describe("Weixin Chub mode", () => {
     expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "POST" });
     const submitted = JSON.parse(fetchMock.mock.calls[0][1].body);
     expect(submitted).toMatchObject({
-      protocol_version: 2,
+      protocol_version: 3,
       content: "检查状态",
       message_type: "text",
       reply_account_id: "weixin-account",
@@ -196,6 +196,25 @@ describe("Weixin Chub mode", () => {
       directEvent,
       directContext,
     )).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    vi.unstubAllGlobals();
+  });
+
+  it("suppresses an extra reply after Chub has handled delivery", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(dispatchResponse({
+      disposition: "handled",
+      message: null,
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { hooks } = createPluginApi({
+      baseUrl: "http://100.64.0.1:8080",
+      weixinChubMode: true,
+    });
+
+    await expect(hooks.get("before_dispatch")?.(
+      directEvent,
+      directContext,
+    )).resolves.toEqual({ handled: true });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     vi.unstubAllGlobals();
   });

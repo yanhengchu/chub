@@ -5,7 +5,9 @@ from unittest.mock import MagicMock
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
+from app.api.openclaw_wechat_chub_mode import WeixinChubModeDispatchData
 from app.application import create_app
 from app.codex.models import QuickInteractionWeixinRoute
 from app.core.config import Settings
@@ -32,11 +34,34 @@ def dispatch_result(
 ):
     return SimpleNamespace(
         model_dump=lambda: {
-            "protocol_version": 2,
+            "protocol_version": 3,
             "disposition": disposition,
             "message": message,
         }
     )
+
+
+@pytest.mark.parametrize(
+    ("disposition", "message"),
+    [
+        ("pass", "不应携带回复"),
+        ("handled", "不应携带回复"),
+        ("reply", None),
+        ("reply", "   "),
+    ],
+)
+def test_dispatch_response_rejects_invalid_message_combinations(
+    disposition: str,
+    message: str | None,
+) -> None:
+    with pytest.raises(ValidationError):
+        WeixinChubModeDispatchData.model_validate(
+            {
+                "protocol_version": 3,
+                "disposition": disposition,
+                "message": message,
+            }
+        )
 
 
 @pytest.mark.anyio
@@ -51,7 +76,7 @@ async def test_dispatch_accepts_only_bounded_fixed_fields(
         response = await client.post(
             "/api/openclaw/wechat-chub-mode/dispatch",
             json={
-                "protocol_version": 2,
+                "protocol_version": 3,
                 "message_id": " message-1 ",
                 "content": " 检查设备状态 ",
                 "message_type": "text",
@@ -65,7 +90,7 @@ async def test_dispatch_accepts_only_bounded_fixed_fields(
     assert response.json() == {
         "success": True,
         "data": {
-            "protocol_version": 2,
+            "protocol_version": 3,
             "disposition": "reply",
             "message": "任务已提交。",
         },
@@ -102,7 +127,7 @@ async def test_dispatch_returns_pass_without_exposing_internal_state(
         response = await client.post(
             "/api/openclaw/wechat-chub-mode/dispatch",
             json={
-                "protocol_version": 2,
+                "protocol_version": 3,
                 "message_id": "message-1",
                 "content": "检查设备状态",
                 "message_type": "text",
@@ -113,7 +138,7 @@ async def test_dispatch_returns_pass_without_exposing_internal_state(
 
     assert response.status_code == 200
     assert response.json()["data"] == {
-        "protocol_version": 2,
+        "protocol_version": 3,
         "disposition": "pass",
         "message": None,
     }
@@ -159,7 +184,7 @@ async def test_dispatch_rejects_injected_configuration(
         response = await client.post(
             "/api/openclaw/wechat-chub-mode/dispatch",
             json={
-                "protocol_version": 2,
+                "protocol_version": 3,
                 "message_id": "message-1",
                 "content": "检查设备状态",
                 "message_type": "text",
@@ -187,7 +212,7 @@ async def test_dispatch_requires_same_node_direct_tailscale_source(
         response = await client.post(
             "/api/openclaw/wechat-chub-mode/dispatch",
             json={
-                "protocol_version": 2,
+                "protocol_version": 3,
                 "message_id": "message-1",
                 "content": "检查设备状态",
                 "message_type": "text",

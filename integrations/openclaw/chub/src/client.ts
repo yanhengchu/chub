@@ -22,8 +22,8 @@ export type ChubStatus = {
 
 export type WeixinChubModeDispatch = {
   available: true;
-  protocolVersion: 2;
-  disposition: "pass" | "reply";
+  protocolVersion: 3;
+  disposition: "pass" | "reply" | "handled";
   message?: string;
 };
 
@@ -396,7 +396,7 @@ export async function dispatchWeixinChubMessage(
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        protocol_version: 2,
+        protocol_version: 3,
         message_id: request.messageId,
         content: request.content,
         message_type: request.messageType,
@@ -434,14 +434,14 @@ export async function dispatchWeixinChubMessage(
     const data = body.data as Record<string, unknown> | undefined;
     if (
       body.success !== true
-      || data?.protocol_version !== 2
-      || !["pass", "reply"].includes(String(data?.disposition))
+      || data?.protocol_version !== 3
+      || !["pass", "reply", "handled"].includes(String(data?.disposition))
       || (data.disposition === "reply" && (
         typeof data.message !== "string"
         || data.message.length === 0
         || Array.from(data.message).length > 3_000
       ))
-      || (data.disposition === "pass" && !(
+      || (["pass", "handled"].includes(String(data.disposition)) && !(
         data.message === null || data.message === undefined
       ))
     ) {
@@ -449,8 +449,8 @@ export async function dispatchWeixinChubMessage(
     }
     return {
       available: true,
-      protocolVersion: 2,
-      disposition: data.disposition as "pass" | "reply",
+      protocolVersion: 3,
+      disposition: data.disposition as "pass" | "reply" | "handled",
       message: typeof data.message === "string" ? data.message : undefined,
     };
   } catch (error) {

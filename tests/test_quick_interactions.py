@@ -154,19 +154,20 @@ def test_session_title_uses_first_user_request_line(tmp_path: Path) -> None:
 
 def test_task_summary_is_stable_bounded_and_redacted() -> None:
     assert build_task_summary("\n检查设备状态。\n补充说明") == "检查设备状态。"
-    assert build_task_summary("使用 Bearer secret-token 检查接口") == (
-        "使用 Bearer [REDACTED] 检查接口"
+    sensitive_prompts = (
+        "使用 Bearer secret-token 检查接口",
+        "webhook=https://example.test/private 执行通知",
+        "Authorization: Bearer private-value 检查接口",
+        "Cookie: session=private-value 检查页面",
     )
-    assert build_task_summary("webhook=https://example.test/private 执行通知") == (
-        "webhook=[REDACTED] 执行通知"
-    )
-    assert build_task_summary("Authorization: Bearer private-value 检查接口") == (
-        "Authorization: [REDACTED]"
-    )
-    assert build_task_summary("Cookie: session=private-value 检查页面") == (
-        "Cookie: [REDACTED]"
-    )
-    assert len(build_task_summary("任务" * 100)) == 48
+    for prompt in sensitive_prompts:
+        summary = build_task_summary(prompt)
+        assert len(summary) <= 13
+        assert "secret-token" not in summary
+        assert "private" not in summary
+        assert "session=" not in summary
+    assert build_task_summary("任务" * 100) == "任务" * 6 + "…"
+    assert build_task_summary("检查 Ubuntu 服务状态") == "检查 Ubuntu 服务…"
 
 
 def test_submit_allows_new_session_and_prepares_managed_profile(
@@ -305,6 +306,203 @@ def test_notification_failure_does_not_change_task_result(
     assert finished.result == "完成"
     assert finished.notification_status == "failed"
     assert finished.notification_error == "微信通知未送达。"
+
+
+def test_status_check_returns_matching_running_weixin_task(tmp_path: Path) -> None:
+    quick_interactions = manager(tmp_path)
+    route = QuickInteractionWeixinRoute(
+        account_id="weixin-account",
+        recipient="owner@im.wechat",
+    )
+    running = QuickInteractionTask(
+        id="running-task",
+        session_id="session-1",
+        prompt="检查设备",
+        summary="检查设备",
+        status="running",
+        notification_route="weixin-task",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    other = running.model_copy(update={"id": "other-task"})
+    quick_interactions._tasks = {running.id: running, other.id: other}
+    quick_interactions._notification_routes = {
+        running.id: route,
+        other.id: QuickInteractionWeixinRoute(
+            account_id="weixin-account",
+            recipient="other@im.wechat",
+        ),
+    }
+
+    checked = quick_interactions.check_weixin_task_status(
+        route,
+        operation_id="status-check-1",
+        source_ip="100.64.0.21",
+    )
+
+    assert checked.outcome == "running"
+    assert checked.task is not None
+    assert checked.task.id == running.id
+
+
+def test_status_check_retries_failed_notification_through_original_route(
+    tmp_path: Path,
+) -> None:
+    notifier_started = threading.Event()
+    notifier_release = threading.Event()
+
+    def notify(*_args):
+        notifier_started.set()
+        assert notifier_release.wait(timeout=2)
+        return SimpleNamespace(status="sent", error=None)
+
+    notifier = MagicMock(side_effect=notify)
+    quick_interactions = manager(tmp_path, completion_notifier=notifier)
+    route = QuickInteractionWeixinRoute(
+        account_id="weixin-account",
+        recipient="owner@im.wechat",
+    )
+    task = QuickInteractionTask(
+        id="ended-task",
+        session_id="session-1",
+        prompt="检查设备",
+        summary="检查设备",
+        status="succeeded",
+        result="设备正常",
+        notification_status="failed",
+        notification_route="weixin-task",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    quick_interactions._tasks[task.id] = task
+    quick_interactions._notification_routes[task.id] = route
+
+    checked = quick_interactions.check_weixin_task_status(
+        route,
+        operation_id="status-check-2",
+        source_ip="100.64.0.21",
+    )
+
+    assert checked.outcome == "notification_queued"
+    assert checked.task is not None
+    assert checked.task.notification_status in {"pending", "sending"}
+    assert notifier_started.wait(timeout=1)
+    assert quick_interactions.get(task.id).notification_status == "sending"
+    notifier_release.set()
+    for _attempt in range(100):
+        if quick_interactions.get(task.id).notification_status == "sent":
+            break
+        threading.Event().wait(0.01)
+    assert quick_interactions.get(task.id).notification_status == "sent"
+    notification_task, notification_route = notifier.call_args.args
+    assert notification_task.id == task.id
+    assert notification_route == route
+
+
+def test_status_check_does_not_duplicate_notification_in_progress(
+    tmp_path: Path,
+) -> None:
+    notifier = MagicMock(return_value=SimpleNamespace(status="sent", error=None))
+    quick_interactions = manager(tmp_path, completion_notifier=notifier)
+    route = QuickInteractionWeixinRoute(
+        account_id="weixin-account",
+        recipient="owner@im.wechat",
+    )
+    task = QuickInteractionTask(
+        id="sending-task",
+        session_id="session-1",
+        prompt="检查设备",
+        status="succeeded",
+        result="设备正常",
+        notification_status="sending",
+        notification_route="weixin-task",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    quick_interactions._tasks[task.id] = task
+    quick_interactions._notification_routes[task.id] = route
+
+    checked = quick_interactions.check_weixin_task_status(
+        route,
+        operation_id="status-check-3",
+        source_ip="100.64.0.21",
+    )
+
+    assert checked.outcome == "notification_sending"
+    notifier.assert_not_called()
+
+
+def test_status_check_restores_failed_state_when_notification_thread_cannot_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    notifier = MagicMock(return_value=SimpleNamespace(status="sent", error=None))
+    quick_interactions = manager(tmp_path, completion_notifier=notifier)
+    route = QuickInteractionWeixinRoute(
+        account_id="weixin-account",
+        recipient="owner@im.wechat",
+    )
+    task = QuickInteractionTask(
+        id="thread-failure-task",
+        session_id="session-1",
+        prompt="检查设备",
+        status="succeeded",
+        result="设备正常",
+        notification_status="failed",
+        notification_route="weixin-task",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    quick_interactions._tasks[task.id] = task
+    quick_interactions._notification_routes[task.id] = route
+
+    thread = MagicMock()
+    thread.start.side_effect = RuntimeError("cannot start")
+    monkeypatch.setattr(
+        "app.codex.quick_interactions.threading.Thread",
+        MagicMock(return_value=thread),
+    )
+
+    checked = quick_interactions.check_weixin_task_status(
+        route,
+        operation_id="status-check-thread-failure",
+        source_ip="100.64.0.21",
+    )
+
+    assert checked.outcome == "notification_failed"
+    assert quick_interactions.get(task.id).notification_status == "failed"
+    assert quick_interactions.get(task.id).notification_error == "微信通知线程未能启动。"
+    notifier.assert_not_called()
+
+
+def test_status_check_ignores_sent_and_other_sender_tasks(tmp_path: Path) -> None:
+    quick_interactions = manager(tmp_path)
+    route = QuickInteractionWeixinRoute(
+        account_id="weixin-account",
+        recipient="owner@im.wechat",
+    )
+    task = QuickInteractionTask(
+        id="sent-task",
+        session_id="session-1",
+        prompt="检查设备",
+        status="succeeded",
+        result="设备正常",
+        notification_status="sent",
+        notification_route="weixin-task",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    quick_interactions._tasks[task.id] = task
+    quick_interactions._notification_routes[task.id] = route
+
+    checked = quick_interactions.check_weixin_task_status(
+        route,
+        operation_id="status-check-4",
+        source_ip="100.64.0.21",
+    )
+
+    assert checked.outcome == "empty"
+    assert checked.task is None
 
 
 def test_weixin_notification_route_is_private_and_survives_restart(

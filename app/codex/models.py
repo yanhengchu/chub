@@ -232,6 +232,8 @@ class QuickInteractionTask(BaseModel):
     id: str
     session_id: str
     prompt: str | None = Field(default=None, max_length=8000)
+    # Keep the legacy bound so persisted tasks created before the 13-character
+    # summary limit remain readable after an upgrade.
     summary: str | None = Field(default=None, max_length=48)
     status: QuickInteractionStatus
     result: str | None = Field(default=None, max_length=100_000)

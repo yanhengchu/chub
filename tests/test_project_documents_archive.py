@@ -52,7 +52,7 @@ async def test_archived_document_is_hidden_from_home_api_and_kept_in_full_list(
     }
     assert "automation-download" not in visible_document_ids
     assert "openclaw-integration" in visible_document_ids
-    assert len(visible_document_ids) == 4
+    assert len(visible_document_ids) == 5
     assert 'href="/project-docs/automation-download"' not in home_page.text
     assert 'data-archived="true"' in full_list.text
     assert "已归档" in full_list.text

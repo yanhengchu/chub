@@ -6,7 +6,7 @@
 
 `@tencent-weixin/openclaw-weixin` 升级、重装或安装目录重建后，必须按本文重新检测；不得仅因旧缓存目录仍保留补丁而判断当前加载插件兼容。若上游已经原生满足本文不变量，应保留上游实现，不重复应用本地补丁。
 
-本文只维护腾讯微信插件内部的 Context Token 持久化、恢复和通用出站回退，不定义 Chub 插件的消息指令、统一调度接口、8 分钟提醒或“查看结果”业务路由；这些规则统一维护在[OpenClaw–Chub 集成与 ClawBot 消息调度设计](OPENCLAW_INTEGRATION_DESIGN.md)。Chub 和 Chub 插件不读取、保存或刷新 Token 正文。
+本文只维护腾讯微信插件内部的 Context Token 持久化、恢复和通用出站回退；Chub 的当前统一调度规则维护在[Chub–OpenClaw 接入设计](CHUB_OPENCLAW_INTEGRATION_DESIGN.md)。Chub 和 Chub 插件不读取、保存或刷新 Token 正文。
 
 ## 1. 当前兼容契约
 
@@ -142,8 +142,6 @@ if (!contextToken) {
 3. 使用 OpenClaw 自身命令重启 Gateway，并确认实例已替换、探测成功、目标账号处于 enabled、configured、running 且无错误状态。
 4. 让目标收件人先发送一条新消息，再进行一次无敏感内容的固定目标发送；命令成功后仍由维护者确认微信真实收到。
 5. 通过 Chub 快速交互完成一次结果通知，确认任务状态与通知状态独立，通知返回 `sent`。
-
-当前不要求“查看结果”验收；待后续查询路由按规范加入同一 `dispatch` 接口时，再增加一次真实验收：用户发送固定指令刷新 Token，Chub 只读查询最近任务并由 OpenClaw 原路回复，不创建新的 Codex 任务。该验收用于确认完整链路，不改变本补丁只负责 Token 能力的边界。
 
 真实发送有外部副作用，只在维护者已授权时执行。出现 `prepare failed` 时先刷新入站 token，不通过盲目重试或更换收件人规避。
 
