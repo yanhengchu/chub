@@ -64,11 +64,21 @@ chub start
 chub stop
 chub restart
 chub status
+chub worker-health
 chub logs
 chub uninstall
 ```
 
-macOS 使用 LaunchAgent，Ubuntu 使用 systemd user service。服务直接依赖当前工作区和 `.venv`；移动目录后需要重新安装，修改配置后使用 `chub restart` 生效。
+macOS 使用两个独立 LaunchAgent，Ubuntu 使用两个独立 systemd user service，分别承载 Web 和
+Quick Worker。`chub restart` 只重启 Web，不停止 Worker；`chub status` 同时显示两个服务，
+`chub worker-health` 通过本机私有 IPC 读取 Worker 健康信息。当前 Worker 已完成前三阶段的服务骨架、
+隔离任务底座、Session 租约和真实 Codex `exec/resume` 验证，任务协议默认关闭，尚未接管快速交互；页面、
+微信和翻译任务行为不变。前三阶段代码已在 macOS 完成隔离验证；Ubuntu 在同步部署时按设计文档记录的
+固定顺序验收，通过后再进入步骤四。
+
+服务直接依赖当前工作区和 `.venv`；移动目录或变更服务定义后需要重新安装。Web 配置变更使用
+`chub restart` 生效；正式启用 Worker 任务执行前，Worker 升级和配置变更仍通过重新安装生效，后续
+阶段会加入 draining 保护。
 
 ## 日常使用
 

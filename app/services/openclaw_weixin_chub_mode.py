@@ -1971,6 +1971,28 @@ class WeixinChubModeManager:
                 self._state = next_state
                 self._log_dispatch(operation_id, "started", source_ip)
             try:
+                account_results: queue.Queue[str] = queue.Queue(maxsize=1)
+
+                def read_account() -> None:
+                    try:
+                        if self.codex_account_reader is None:
+                            raise RuntimeError("Codex account reader is unavailable")
+                        quota, usage = self.codex_account_reader.read_account_status(
+                            force=True
+                        )
+                        account_results.put(self._codex_usage_message(quota, usage))
+                    except Exception:
+                        LOGGER.warning("Codex usage check failed", exc_info=True)
+                        account_results.put("Codex 用量查询失败，请稍后重试。")
+
+                deadline = time.monotonic() + CODEX_STATUS_TIMEOUT_SECONDS
+                try:
+                    threading.Thread(target=read_account, daemon=True).start()
+                except RuntimeError:
+                    LOGGER.warning(
+                        "Unable to start Codex usage check during slot synchronization"
+                    )
+                    account_results.put("Codex 用量查询失败，请稍后重试。")
                 sessions = self.codex_manager.list_sessions()
                 synced = self._build_synced_slots(
                     configuration,
@@ -2002,6 +2024,13 @@ class WeixinChubModeManager:
                         code="chub_slots_synced",
                         failed=True,
                     )
+            try:
+                usage_message = account_results.get(
+                    timeout=max(0.0, deadline - time.monotonic())
+                )
+            except queue.Empty:
+                LOGGER.warning("Codex usage check timed out during slot synchronization")
+                usage_message = "Codex 用量查询失败，请稍后重试。"
             with self._lock:
                 if (
                     self._state.configuration != configuration
@@ -2043,11 +2072,16 @@ class WeixinChubModeManager:
                     if not removed and not added
                     else f"槽位同步完成：清理 {removed} · 补充 {added} · 当前 {len(synced)}。"
                 )
-                listing = "\n".join(
-                    f"{item.slot}. {'[Current] ' if item.current else ''}{item.title} · {item.state}"
-                    for item in visible
-                ) or "当前没有已分配 Session。"
-                message = f"{status}\n{listing}"
+                if visible:
+                    session_lines = ["Active sessions:"]
+                    session_lines.extend(
+                        f"{item.slot}. {'[Current] ' if item.current else ''}{item.title} · {item.state}"
+                        for item in visible
+                    )
+                    sessions_message = "\n".join(session_lines)
+                else:
+                    sessions_message = "Active sessions: None"
+                message = f"{status}\n\n{sessions_message}\n\n{usage_message}"
                 now = utc_now()
                 record = reservation.model_copy(
                     update={

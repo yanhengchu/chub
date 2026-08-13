@@ -25,8 +25,8 @@
     {
       "id": "quick-interaction-worker",
       "title": "Chub 快速交互独立 Worker 与跨重启恢复设计",
-      "summary": "设计快速任务脱离 Web 生命周期、跨 Web 重启恢复及 macOS/Ubuntu 统一运行边界。",
-      "status": "调研中",
+      "summary": "设计快速任务脱离 Web 生命周期及跨 Web 重启恢复；步骤一至步骤三已完成，正式任务入口尚未切换。",
+      "status": "进行中",
       "path": "QUICK_INTERACTION_WORKER_DESIGN.md"
     },
     {

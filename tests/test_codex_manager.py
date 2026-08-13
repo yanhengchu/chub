@@ -194,6 +194,49 @@ def test_sync_keeps_unindexed_active_native_session(
     assert manager.store.get(session.id) is not None
 
 
+def test_sync_keeps_missing_native_session_while_quick_interaction_runs(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = CodexPtyManager(settings)
+    session = native_session("21212121-2121-4212-8212-212121212121")
+    manager.store.save(session)
+    manager.set_quick_interaction_checker(
+        lambda session_id: session_id == session.id
+    )
+    manager.discovery = MagicMock()
+    manager.discovery.discover.return_value = []
+    manager.discovery.session_archive_states.return_value = {}
+    monkeypatch.setattr("app.codex.manager.shutil.which", lambda _name: None)
+
+    manager._sync_native_sessions()
+
+    assert manager.store.get(session.id) is not None
+
+
+def test_sync_removes_missing_native_session_after_quick_interaction_finishes(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = CodexPtyManager(settings)
+    session = native_session("20202020-2020-4202-8202-202020202020")
+    manager.store.save(session)
+    running = True
+    manager.set_quick_interaction_checker(lambda _session_id: running)
+    manager.discovery = MagicMock()
+    manager.discovery.discover.return_value = []
+    manager.discovery.session_archive_states.return_value = {}
+    monkeypatch.setattr("app.codex.manager.shutil.which", lambda _name: None)
+
+    manager._sync_native_sessions()
+    assert manager.store.get(session.id) is not None
+
+    running = False
+    manager._sync_native_sessions()
+
+    assert manager.store.get(session.id) is None
+
+
 def test_sync_merges_discovered_session_bound_to_new_chub_session(
     settings: Settings,
 ) -> None:

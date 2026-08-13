@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import plistlib
 import stat
 import subprocess
 import threading
@@ -48,6 +49,7 @@ def service_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
             "CHUB_COMMAND_DIR": str(tmp_path / "commands"),
             "CHUB_LAUNCH_AGENTS_DIR": str(tmp_path / "launch-agents"),
             "CHUB_SYSTEMD_USER_DIR": str(tmp_path / "systemd"),
+            "CHUB_SERVICE_LOG_DIR": str(tmp_path / "logs"),
             "CHUB_TEST_CALLS": str(calls),
         }
     )
@@ -96,7 +98,9 @@ def test_web_restart_uses_atomic_service_manager_restart(
     )
 
     assert result.returncode == 0, result.stderr
-    assert manager_call in calls.read_text(encoding="utf-8")
+    manager_calls = calls.read_text(encoding="utf-8")
+    assert manager_call in manager_calls
+    assert "quick-worker" not in manager_calls
 
 
 def test_web_restart_is_deferred_inside_quick_interaction(
@@ -233,11 +237,62 @@ def test_install_writes_service_and_global_command(
     assert result.returncode == 0, result.stderr
     generated = Path(env["HOME"]).parent / service_file
     content = generated.read_text(encoding="utf-8")
+    if platform == "Darwin":
+        plistlib.loads(generated.read_bytes())
     assert str(PROJECT_ROOT) in content
     assert str(PROJECT_ROOT / ".venv" / "bin" / "python") in content
     assert (Path(env["CHUB_COMMAND_DIR"]) / "chub").resolve() == CHUB.resolve()
     assert manager_call in calls.read_text(encoding="utf-8")
     assert "HUB_TOKEN" not in content
+
+
+@pytest.mark.parametrize(
+    ("platform", "worker_file", "worker_identity"),
+    [
+        (
+            "Darwin",
+            "launch-agents/com.chub.quick-worker.plist",
+            "com.chub.quick-worker",
+        ),
+        (
+            "Linux",
+            "systemd/chub-quick-worker.service",
+            "app.quick_worker serve",
+        ),
+    ],
+)
+def test_install_writes_independent_quick_worker_service(
+    service_env: tuple[dict[str, str], Path],
+    platform: str,
+    worker_file: str,
+    worker_identity: str,
+) -> None:
+    env, calls = service_env
+    env["CHUB_TEST_PLATFORM"] = platform
+
+    result = run_chub("install", env)
+
+    assert result.returncode == 0, result.stderr
+    generated = Path(env["HOME"]).parent / worker_file
+    content = generated.read_text(encoding="utf-8")
+    assert worker_identity in content
+    assert str(PROJECT_ROOT) in content
+    assert "PartOf=" not in content
+    assert "com.chub.node" not in content
+    assert "chub.service" not in content
+    if platform == "Darwin":
+        assert "<key>Umask</key>" in content
+        assert "<integer>63</integer>" in content
+        assert stat.S_IMODE(
+            Path(env["CHUB_SERVICE_LOG_DIR"]).stat().st_mode
+        ) == 0o700
+        for name in ("quick-worker.out.log", "quick-worker.err.log"):
+            log_file = Path(env["CHUB_SERVICE_LOG_DIR"]) / name
+            assert stat.S_IMODE(log_file.stat().st_mode) == 0o600
+    else:
+        assert "UMask=0077" in content
+    manager_calls = calls.read_text(encoding="utf-8")
+    assert "quick-worker" in manager_calls
 
 
 @pytest.mark.parametrize("platform", ["Darwin", "Linux"])
@@ -286,6 +341,8 @@ def test_linux_install_restarts_service_to_apply_updated_environment(
     manager_calls = calls.read_text(encoding="utf-8")
     assert "systemctl --user daemon-reload" in manager_calls
     assert "systemctl --user enable chub.service" in manager_calls
+    assert "systemctl --user enable chub-quick-worker.service" in manager_calls
+    assert "systemctl --user restart chub-quick-worker.service" in manager_calls
     assert "systemctl --user restart chub.service" in manager_calls
 
 
@@ -303,6 +360,25 @@ def test_install_refuses_to_replace_unrelated_command(
     assert result.returncode != 0
     assert "refusing to replace existing command" in result.stderr
     assert command.read_text(encoding="utf-8") == "unrelated"
+
+
+def test_macos_install_refuses_symlink_worker_log(
+    service_env: tuple[dict[str, str], Path],
+    tmp_path: Path,
+) -> None:
+    env, _ = service_env
+    env["CHUB_TEST_PLATFORM"] = "Darwin"
+    log_dir = Path(env["CHUB_SERVICE_LOG_DIR"])
+    log_dir.mkdir()
+    target = tmp_path / "unrelated.log"
+    target.write_text("keep", encoding="utf-8")
+    (log_dir / "quick-worker.out.log").symlink_to(target)
+
+    result = run_chub("install", env)
+
+    assert result.returncode != 0
+    assert "service log is not a regular file" in result.stderr
+    assert target.read_text(encoding="utf-8") == "keep"
 
 
 def test_install_refuses_command_from_another_path(
@@ -498,6 +574,16 @@ def test_uninstall_removes_only_service_and_owned_command(
 
     assert result.returncode == 0, result.stderr
     assert not (Path(env["CHUB_COMMAND_DIR"]) / "chub").exists()
+    if platform == "Darwin":
+        assert not (
+            Path(env["CHUB_LAUNCH_AGENTS_DIR"])
+            / "com.chub.quick-worker.plist"
+        ).exists()
+    else:
+        assert not (
+            Path(env["CHUB_SYSTEMD_USER_DIR"])
+            / "chub-quick-worker.service"
+        ).exists()
     assert PROJECT_ROOT.exists()
     assert (PROJECT_ROOT / ".env").exists()
 
@@ -539,3 +625,96 @@ def test_service_commands_use_platform_manager(
 
     assert result.returncode == 0, result.stderr
     assert manager_call in calls.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("platform", "command", "web_call", "worker_call"),
+    [
+        (
+            "Darwin",
+            "start",
+            "com.chub.node",
+            "com.chub.quick-worker",
+        ),
+        (
+            "Darwin",
+            "stop",
+            "com.chub.node",
+            "com.chub.quick-worker",
+        ),
+        (
+            "Linux",
+            "start",
+            "start chub.service",
+            "start chub-quick-worker.service",
+        ),
+        (
+            "Linux",
+            "stop",
+            "stop chub.service",
+            "stop chub-quick-worker.service",
+        ),
+        (
+            "Linux",
+            "status",
+            "status chub.service",
+            "status chub-quick-worker.service",
+        ),
+    ],
+)
+def test_node_commands_manage_web_and_worker_as_separate_services(
+    service_env: tuple[dict[str, str], Path],
+    platform: str,
+    command: str,
+    web_call: str,
+    worker_call: str,
+) -> None:
+    env, calls = service_env
+    env["CHUB_TEST_PLATFORM"] = platform
+    assert run_chub("install", env).returncode == 0
+    calls.write_text("", encoding="utf-8")
+
+    result = run_chub(command, env)
+
+    assert result.returncode == 0, result.stderr
+    manager_calls = calls.read_text(encoding="utf-8")
+    assert web_call in manager_calls
+    assert worker_call in manager_calls
+
+
+def test_status_fails_when_worker_health_is_unavailable(
+    service_env: tuple[dict[str, str], Path],
+    tmp_path: Path,
+) -> None:
+    env, _ = service_env
+    env["CHUB_TEST_PLATFORM"] = "Linux"
+    config = tmp_path / "isolated-settings.yaml"
+    config.write_text(
+        f"""
+app:
+  name: Hub
+  version: 0.1.0
+node:
+  id: test-node
+  name: Test Node
+  type: unknown
+server:
+  host: 127.0.0.1
+  port: 8080
+security:
+  token: test-token-that-is-long-enough-for-tests
+logs:
+  file: {tmp_path / 'hub.log'}
+  operations_file: {tmp_path / 'operations.log'}
+codex_pty:
+  data_file: {tmp_path / 'state' / 'sessions.json'}
+  runtime_dir: {tmp_path / 'runtime-without-worker'}
+""",
+        encoding="utf-8",
+    )
+    env["HUB_CONFIG_FILE"] = str(config)
+
+    result = run_chub("status", env)
+
+    assert result.returncode != 0
+    assert "Quick Worker health is unavailable" in result.stderr

@@ -4,6 +4,8 @@ set -euo pipefail
 
 SERVICE_NAME="chub"
 MACOS_LABEL="com.chub.node"
+WORKER_SERVICE_NAME="chub-quick-worker"
+WORKER_MACOS_LABEL="com.chub.quick-worker"
 
 SCRIPT_PATH="${BASH_SOURCE[0]}"
 while [[ -L "$SCRIPT_PATH" ]]; do
@@ -28,6 +30,7 @@ COMMAND_PATH="$COMMAND_DIR/chub"
 RUNTIME_PATH="$PROJECT_ROOT/.venv/bin:$HOME/.local/bin:$HOME/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 PLATFORM="${CHUB_TEST_PLATFORM:-$(uname -s)}"
 SERVICE_LOG_MAX_BYTES=$((2 * 1024 * 1024))
+SERVICE_LOG_DIR="${CHUB_SERVICE_LOG_DIR:-$PROJECT_ROOT/logs}"
 
 add_runtime_command_dir() {
     local command_path command_dir
@@ -54,7 +57,9 @@ Commands:
   start      Start the service
   stop       Stop the service
   restart    Restart the service and check its health
-  status     Show service status
+  status     Show Web and Quick Worker service status
+  worker-health
+             Query Quick Worker health over private local IPC
   logs       Follow Hub application logs
   notification
              Validate, list, test, or send configured notifications
@@ -152,21 +157,63 @@ PY
 
 rotate_service_logs() {
     local log_file
-    for log_file in \
-        "$PROJECT_ROOT/logs/service.out.log" \
-        "$PROJECT_ROOT/logs/service.err.log"
-    do
+    for log_file in "$@"; do
         [[ -f "$log_file" ]] || continue
         "$PYTHON_BIN" - "$log_file" "$SERVICE_LOG_MAX_BYTES" <<'PY'
 from pathlib import Path
+import os
+import stat
 import sys
 
 path = Path(sys.argv[1])
 max_bytes = int(sys.argv[2])
-if path.stat().st_size > max_bytes:
+metadata = path.lstat()
+if not stat.S_ISREG(metadata.st_mode):
+    raise SystemExit(f"service log is not a regular file: {path}")
+if metadata.st_size > max_bytes:
     backup = path.with_name(f"{path.name}.1")
-    backup.unlink(missing_ok=True)
+    try:
+        backup_metadata = backup.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        if not stat.S_ISREG(backup_metadata.st_mode):
+            raise SystemExit(f"rotated service log is not a regular file: {backup}")
+        backup.unlink()
     path.replace(backup)
+    os.chmod(backup, 0o600)
+PY
+    done
+}
+
+secure_service_logs() {
+    local log_file
+    [[ "$SERVICE_LOG_DIR" == /* ]] || fail "service log directory must be absolute"
+    [[ ! -L "$SERVICE_LOG_DIR" ]] || fail "service log directory must not be a symlink"
+    mkdir -p "$SERVICE_LOG_DIR"
+    [[ -d "$SERVICE_LOG_DIR" && ! -L "$SERVICE_LOG_DIR" ]] \
+        || fail "service log directory is unavailable"
+    chmod 700 "$SERVICE_LOG_DIR"
+    for log_file in "$@"; do
+        "$PYTHON_BIN" - "$log_file" <<'PY'
+import os
+import stat
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+try:
+    metadata = path.lstat()
+except FileNotFoundError:
+    flags = os.O_CREAT | os.O_APPEND | os.O_WRONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags, 0o600)
+    os.close(descriptor)
+else:
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise SystemExit(f"service log is not a regular file: {path}")
+os.chmod(path, 0o600)
 PY
     done
 }
@@ -175,8 +222,16 @@ macos_plist_path() {
     echo "${CHUB_LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}/$MACOS_LABEL.plist"
 }
 
+worker_macos_plist_path() {
+    echo "${CHUB_LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}/$WORKER_MACOS_LABEL.plist"
+}
+
 systemd_unit_path() {
     echo "${CHUB_SYSTEMD_USER_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user}/$SERVICE_NAME.service"
+}
+
+worker_systemd_unit_path() {
+    echo "${CHUB_SYSTEMD_USER_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user}/$WORKER_SERVICE_NAME.service"
 }
 
 macos_domain() {
@@ -184,10 +239,11 @@ macos_domain() {
 }
 
 wait_for_macos_unload() {
+    local label="$1"
     local domain attempt
     domain="$(macos_domain)"
     for attempt in 1 2 3 4 5 6 7 8 9 10; do
-        if ! launchctl print "$domain/$MACOS_LABEL" >/dev/null 2>&1; then
+        if ! launchctl print "$domain/$label" >/dev/null 2>&1; then
             return
         fi
         sleep 0.5
@@ -199,18 +255,48 @@ stop_macos_service() {
     local domain
     domain="$(macos_domain)"
     launchctl bootout "$domain/$MACOS_LABEL" >/dev/null 2>&1 || true
-    wait_for_macos_unload
+    wait_for_macos_unload "$MACOS_LABEL"
+}
+
+stop_macos_worker() {
+    local domain
+    domain="$(macos_domain)"
+    launchctl bootout "$domain/$WORKER_MACOS_LABEL" >/dev/null 2>&1 || true
+    wait_for_macos_unload "$WORKER_MACOS_LABEL"
 }
 
 start_macos_service() {
-    local domain plist_path
+    local domain plist_path stdout_log stderr_log
     domain="$(macos_domain)"
     plist_path="$(macos_plist_path)"
+    stdout_log="$SERVICE_LOG_DIR/service.out.log"
+    stderr_log="$SERVICE_LOG_DIR/service.err.log"
     [[ -f "$plist_path" ]] || fail "service is not installed; run chub install"
     if launchctl print "$domain/$MACOS_LABEL" >/dev/null 2>&1; then
+        secure_service_logs "$stdout_log" "$stderr_log"
         launchctl kickstart "$domain/$MACOS_LABEL"
     else
-        rotate_service_logs
+        secure_service_logs "$stdout_log" "$stderr_log"
+        rotate_service_logs "$stdout_log" "$stderr_log"
+        secure_service_logs "$stdout_log" "$stderr_log"
+        launchctl bootstrap "$domain" "$plist_path"
+    fi
+}
+
+start_macos_worker() {
+    local domain plist_path stdout_log stderr_log
+    domain="$(macos_domain)"
+    plist_path="$(worker_macos_plist_path)"
+    stdout_log="$SERVICE_LOG_DIR/quick-worker.out.log"
+    stderr_log="$SERVICE_LOG_DIR/quick-worker.err.log"
+    [[ -f "$plist_path" ]] || fail "Quick Worker service is not installed; run chub install"
+    if launchctl print "$domain/$WORKER_MACOS_LABEL" >/dev/null 2>&1; then
+        secure_service_logs "$stdout_log" "$stderr_log"
+        launchctl kickstart "$domain/$WORKER_MACOS_LABEL"
+    else
+        secure_service_logs "$stdout_log" "$stderr_log"
+        rotate_service_logs "$stdout_log" "$stderr_log"
+        secure_service_logs "$stdout_log" "$stderr_log"
         launchctl bootstrap "$domain" "$plist_path"
     fi
 }
@@ -218,7 +304,7 @@ start_macos_service() {
 write_macos_service() {
     local plist_path
     plist_path="$(macos_plist_path)"
-    mkdir -p "$(dirname "$plist_path")" "$PROJECT_ROOT/logs"
+    mkdir -p "$(dirname "$plist_path")" "$SERVICE_LOG_DIR"
     {
         echo '<?xml version="1.0" encoding="UTF-8"?>'
         echo '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
@@ -247,10 +333,57 @@ write_macos_service() {
         echo '  </dict>'
         echo '  <key>ThrottleInterval</key>'
         echo '  <integer>5</integer>'
+        echo '  <key>Umask</key>'
+        echo '  <integer>63</integer>'
         echo '  <key>StandardOutPath</key>'
-        echo "  <string>$PROJECT_ROOT/logs/service.out.log</string>"
+        echo "  <string>$SERVICE_LOG_DIR/service.out.log</string>"
         echo '  <key>StandardErrorPath</key>'
-        echo "  <string>$PROJECT_ROOT/logs/service.err.log</string>"
+        echo "  <string>$SERVICE_LOG_DIR/service.err.log</string>"
+        echo '</dict>'
+        echo '</plist>'
+    } > "$plist_path"
+}
+
+write_macos_worker_service() {
+    local plist_path
+    plist_path="$(worker_macos_plist_path)"
+    mkdir -p "$(dirname "$plist_path")" "$SERVICE_LOG_DIR"
+    {
+        echo '<?xml version="1.0" encoding="UTF-8"?>'
+        echo '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
+        echo '<plist version="1.0">'
+        echo '<dict>'
+        echo '  <key>Label</key>'
+        echo "  <string>$WORKER_MACOS_LABEL</string>"
+        echo '  <key>ProgramArguments</key>'
+        echo '  <array>'
+        echo "    <string>$PYTHON_BIN</string>"
+        echo '    <string>-m</string>'
+        echo '    <string>app.quick_worker</string>'
+        echo '    <string>serve</string>'
+        echo '  </array>'
+        echo '  <key>WorkingDirectory</key>'
+        echo "  <string>$PROJECT_ROOT</string>"
+        echo '  <key>EnvironmentVariables</key>'
+        echo '  <dict>'
+        echo '    <key>PATH</key>'
+        echo "    <string>$RUNTIME_PATH</string>"
+        echo '  </dict>'
+        echo '  <key>RunAtLoad</key>'
+        echo '  <true/>'
+        echo '  <key>KeepAlive</key>'
+        echo '  <dict>'
+        echo '    <key>SuccessfulExit</key>'
+        echo '    <false/>'
+        echo '  </dict>'
+        echo '  <key>ThrottleInterval</key>'
+        echo '  <integer>5</integer>'
+        echo '  <key>Umask</key>'
+        echo '  <integer>63</integer>'
+        echo '  <key>StandardOutPath</key>'
+        echo "  <string>$SERVICE_LOG_DIR/quick-worker.out.log</string>"
+        echo '  <key>StandardErrorPath</key>'
+        echo "  <string>$SERVICE_LOG_DIR/quick-worker.err.log</string>"
         echo '</dict>'
         echo '</plist>'
     } > "$plist_path"
@@ -259,7 +392,7 @@ write_macos_service() {
 write_systemd_service() {
     local unit_path
     unit_path="$(systemd_unit_path)"
-    mkdir -p "$(dirname "$unit_path")" "$PROJECT_ROOT/logs"
+    mkdir -p "$(dirname "$unit_path")" "$SERVICE_LOG_DIR"
     {
         echo '[Unit]'
         echo 'Description=Chub personal device node'
@@ -272,6 +405,33 @@ write_systemd_service() {
         printf 'WorkingDirectory=%s\n' "$PROJECT_ROOT"
         printf 'ExecStart=%s %s\n' "$PYTHON_BIN" "$MAIN_FILE"
         printf 'Environment=PATH=%s\n' "$RUNTIME_PATH"
+        echo 'UMask=0077'
+        echo 'Restart=on-failure'
+        echo 'RestartSec=5'
+        echo
+        echo '[Install]'
+        echo 'WantedBy=default.target'
+    } > "$unit_path"
+}
+
+write_systemd_worker_service() {
+    local unit_path
+    unit_path="$(worker_systemd_unit_path)"
+    mkdir -p "$(dirname "$unit_path")" "$SERVICE_LOG_DIR"
+    {
+        echo '[Unit]'
+        echo 'Description=Chub Quick Worker'
+        echo 'After=network.target'
+        echo 'StartLimitIntervalSec=60'
+        echo 'StartLimitBurst=5'
+        echo
+        echo '[Service]'
+        echo 'Type=simple'
+        printf 'WorkingDirectory=%s\n' "$PROJECT_ROOT"
+        printf 'ExecStart=%s -m app.quick_worker serve\n' "$PYTHON_BIN"
+        printf 'Environment=PATH=%s\n' "$RUNTIME_PATH"
+        echo 'UMask=0077'
+        echo 'KillMode=control-group'
         echo 'Restart=on-failure'
         echo 'RestartSec=5'
         echo
@@ -315,18 +475,27 @@ install_service() {
     install_command
     case "$(platform_name)" in
         macos)
-            local plist_path
+            local plist_path worker_plist_path
             plist_path="$(macos_plist_path)"
+            worker_plist_path="$(worker_macos_plist_path)"
             if [[ -f "$plist_path" ]]; then
                 stop_macos_service
             fi
+            if [[ -f "$worker_plist_path" ]]; then
+                stop_macos_worker
+            fi
             write_macos_service
+            write_macos_worker_service
+            start_macos_worker
             start_macos_service
             ;;
         ubuntu)
             write_systemd_service
+            write_systemd_worker_service
             systemctl --user daemon-reload
             systemctl --user enable "$SERVICE_NAME.service"
+            systemctl --user enable "$WORKER_SERVICE_NAME.service"
+            systemctl --user restart "$WORKER_SERVICE_NAME.service"
             systemctl --user restart "$SERVICE_NAME.service"
             ;;
     esac
@@ -336,15 +505,27 @@ install_service() {
 start_service() {
     check_codex_pty_requirements
     case "$(platform_name)" in
-        macos) start_macos_service ;;
-        ubuntu) systemctl --user start "$SERVICE_NAME.service" ;;
+        macos)
+            start_macos_worker
+            start_macos_service
+            ;;
+        ubuntu)
+            systemctl --user start "$WORKER_SERVICE_NAME.service"
+            systemctl --user start "$SERVICE_NAME.service"
+            ;;
     esac
 }
 
 stop_service() {
     case "$(platform_name)" in
-        macos) stop_macos_service ;;
-        ubuntu) systemctl --user stop "$SERVICE_NAME.service" ;;
+        macos)
+            stop_macos_service
+            stop_macos_worker
+            ;;
+        ubuntu)
+            systemctl --user stop "$SERVICE_NAME.service"
+            systemctl --user stop "$WORKER_SERVICE_NAME.service"
+            ;;
     esac
 }
 
@@ -392,10 +573,29 @@ restart_service() {
 }
 
 status_service() {
+    local result=0
     case "$(platform_name)" in
-        macos) launchctl print "gui/$(id -u)/$MACOS_LABEL" ;;
-        ubuntu) systemctl --user status "$SERVICE_NAME.service" --no-pager ;;
+        macos)
+            launchctl print "gui/$(id -u)/$MACOS_LABEL" || result=$?
+            launchctl print "gui/$(id -u)/$WORKER_MACOS_LABEL" || result=$?
+            ;;
+        ubuntu)
+            systemctl --user status "$SERVICE_NAME.service" --no-pager || result=$?
+            systemctl --user status "$WORKER_SERVICE_NAME.service" --no-pager || result=$?
+            ;;
     esac
+    if ! quick_worker_health; then
+        echo "chub: Quick Worker health is unavailable" >&2
+        [[ "$result" -ne 0 ]] || result=1
+    fi
+    return "$result"
+}
+
+quick_worker_health() {
+    (
+        cd "$PROJECT_ROOT"
+        "$PYTHON_BIN" -m app.quick_worker health
+    )
 }
 
 show_logs() {
@@ -409,16 +609,22 @@ show_logs() {
 uninstall_service() {
     case "$(platform_name)" in
         macos)
-            local plist_path
+            local plist_path worker_plist_path
             plist_path="$(macos_plist_path)"
+            worker_plist_path="$(worker_macos_plist_path)"
             launchctl bootout "gui/$(id -u)/$MACOS_LABEL" >/dev/null 2>&1 || true
+            launchctl bootout "gui/$(id -u)/$WORKER_MACOS_LABEL" >/dev/null 2>&1 || true
             rm -f "$plist_path"
+            rm -f "$worker_plist_path"
             ;;
         ubuntu)
-            local unit_path
+            local unit_path worker_unit_path
             unit_path="$(systemd_unit_path)"
+            worker_unit_path="$(worker_systemd_unit_path)"
             systemctl --user disable --now "$SERVICE_NAME.service" >/dev/null 2>&1 || true
+            systemctl --user disable --now "$WORKER_SERVICE_NAME.service" >/dev/null 2>&1 || true
             rm -f "$unit_path"
+            rm -f "$worker_unit_path"
             systemctl --user daemon-reload
             ;;
     esac
@@ -435,6 +641,7 @@ case "$command" in
     stop) stop_service ;;
     restart) restart_service ;;
     status) status_service ;;
+    worker-health) quick_worker_health ;;
     logs) show_logs ;;
     notification)
         shift

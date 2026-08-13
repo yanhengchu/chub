@@ -914,14 +914,21 @@ def test_chub_sync_lists_compatible_sessions_and_marks_current(
     )
 
     assert result.message is not None
+    assert result.message.startswith(
+        "槽位同步完成：清理 0 · 补充 3 · 当前 3。\n\n"
+        "Active sessions:\n"
+    )
     assert "1. [Current] 微信 Chub · Available" in result.message
     assert "2. 项目维护 · Available" in result.message
     assert "3. 正在排障 · Busy" in result.message
+    assert result.message.endswith("Weekly 暂不可用 · Tokens 暂不可用")
     assert "不应显示" not in result.message
     persisted = json.loads(
         settings.openclaw.weixin_chub_mode.state_file.read_text(encoding="utf-8")
     )
     assert persisted["submissions"][0]["code"] == "chub_slots_synced"
+    assert persisted["submissions"][0]["message"] == result.message
+    account_reader.read_account_status.assert_called_once_with(force=True)
     quick_interactions.submit.assert_not_called()
 
 
@@ -1012,8 +1019,49 @@ def test_chub_sync_hides_unavailable_sessions(settings: Settings) -> None:
     )
 
     assert result.message is not None
-    assert result.message.endswith("当前没有已分配 Session。")
+    assert "\n\nActive sessions: None\n\n" in result.message
+    assert result.message.endswith("Weekly 暂不可用 · Tokens 暂不可用")
     assert "不可用会话" not in result.message
+
+
+def test_chub_sync_keeps_success_when_usage_lookup_fails(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    manager.codex_account_reader = MagicMock()
+    manager.codex_account_reader.read_account_status.side_effect = RuntimeError(
+        "unavailable"
+    )
+    codex_manager.list_sessions.return_value = [
+        CodexSession(
+            id="available-session",
+            workspace_id="chub",
+            workspace_name="Chub",
+            cwd="/project",
+            title="项目维护",
+            permission_mode="full-access",
+            status="stopped",
+            activity="idle",
+        )
+    ]
+
+    result = manager.dispatch(
+        message_id="chub-sync-usage-failure",
+        prompt="chub -s",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message is not None
+    assert result.message.startswith(
+        "槽位同步完成：清理 0 · 补充 1 · 当前 1。\n\n"
+        "Active sessions:\n"
+        "1. 项目维护 · Available"
+    )
+    assert result.message.endswith("Codex 用量查询失败，请稍后重试。")
+    assert manager.session_slot_matches(1, "available-session")
 
 
 def test_chub_sync_retains_configured_unavailable_slot(

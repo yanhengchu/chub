@@ -900,6 +900,12 @@ class CodexPtyManager:
                 native_id = session.codex_session_id
                 if not native_id or native_id in active_ids:
                     continue
+                # Discovery can briefly miss a native JSONL file while Codex is
+                # still finishing or moving it.  The quick-interaction registry
+                # is authoritative for the local Session lifetime during that
+                # window, so never prune an actively executing Session here.
+                if self._quick_interaction_is_running(session.id):
+                    continue
                 if native_id in archive_states and not archive_states[native_id]:
                     continue
                 self._remove_stale_session(session)
