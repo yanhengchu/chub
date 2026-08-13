@@ -868,6 +868,17 @@ async def test_archive_session_revokes_access_and_calls_manager(
     app = create_app(settings)
     manager = MagicMock()
     tickets = MagicMock()
+    events: list[str] = []
+    guard = MagicMock()
+    guard.__enter__.side_effect = lambda: events.append("guard-enter")
+    guard.__exit__.side_effect = lambda *_args: events.append("guard-exit") or False
+    app.state.quick_interactions = MagicMock()
+    app.state.quick_interactions.destructive_operation_guard.return_value = guard
+    manager.archive_session.side_effect = lambda _id: events.append("archive")
+    app.state.weixin_chub_mode = MagicMock()
+    app.state.weixin_chub_mode.release_session_slot.side_effect = (
+        lambda _id: events.append("release") or True
+    )
     app.state.codex_pty_manager = manager
     app.state.terminal_tickets = tickets
     transport = httpx.ASGITransport(app=app)
@@ -881,6 +892,70 @@ async def test_archive_session_revokes_access_and_calls_manager(
     assert response.status_code == 200
     tickets.revoke_session.assert_called_once_with("session-1")
     manager.archive_session.assert_called_once_with("session-1")
+    assert events == ["guard-enter", "archive", "guard-exit", "release"]
+
+
+@pytest.mark.anyio
+async def test_archive_session_logs_slot_release_failure_without_failing_archive(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_operation = MagicMock()
+    monkeypatch.setattr("app.codex.routes.write_operation", write_operation)
+    app = create_app(settings)
+    app.state.codex_pty_manager = MagicMock()
+    app.state.weixin_chub_mode = MagicMock()
+    app.state.weixin_chub_mode.release_session_slot.side_effect = OSError(
+        "disk unavailable"
+    )
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/codex/sessions/session-1/archive",
+            headers=authorization(settings),
+        )
+
+    assert response.status_code == 200
+    assert [item.kwargs["status"] for item in write_operation.call_args_list] == [
+        "requested",
+        "started",
+        "failed",
+    ]
+    assert {
+        item.kwargs["action"] for item in write_operation.call_args_list
+    } == {"weixin_chub_mode_session_slot_release"}
+
+
+@pytest.mark.anyio
+async def test_delete_session_releases_slot_after_destructive_guard(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    events: list[str] = []
+    guard = MagicMock()
+    guard.__enter__.side_effect = lambda: events.append("guard-enter")
+    guard.__exit__.side_effect = lambda *_args: events.append("guard-exit") or False
+    app.state.quick_interactions = MagicMock()
+    app.state.quick_interactions.destructive_operation_guard.return_value = guard
+    app.state.codex_pty_manager = MagicMock()
+    app.state.codex_pty_manager.delete_session.side_effect = (
+        lambda _id: events.append("delete")
+    )
+    app.state.weixin_chub_mode = MagicMock()
+    app.state.weixin_chub_mode.release_session_slot.side_effect = (
+        lambda _id: events.append("release") or True
+    )
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.delete(
+            "/api/codex/sessions/session-1",
+            headers=authorization(settings),
+        )
+
+    assert response.status_code == 200
+    assert events == ["guard-enter", "delete", "guard-exit", "release"]
 
 
 @pytest.mark.anyio

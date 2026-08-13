@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import stat
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -23,7 +23,9 @@ from app.core.response import ApiError
 from app.services.openclaw_weixin_chub_mode import (
     MAX_STATE_BYTES,
     WeixinChubModeManager,
+    WeixinChubModePendingRetry,
     WeixinChubModeRuntimeConfig,
+    WeixinChubModeSessionSlot,
     WeixinChubModeState,
     WeixinChubModeSubmission,
 )
@@ -80,20 +82,29 @@ def configured_manager(
     quick_interactions = MagicMock()
     quick_interactions.deferred_restart = None
     quick_interactions.is_running.return_value = False
+    quick_interactions.weixin_session_ids.return_value = set()
+    quick_interactions.weixin_task_status_snapshot.return_value = SimpleNamespace(
+        running_count=0,
+        pending_notification_count=0,
+        failed_notification_count=0,
+    )
     quick_interactions.submit.return_value = SimpleNamespace(id="task-1")
-    return (
-        WeixinChubModeManager(
+    manager = WeixinChubModeManager(
             settings,
             codex_manager,
             quick_interactions,
             MagicMock(return_value=None),
-        ),
+        )
+    manager.session_archiver = MagicMock()
+    manager._status_cache["readiness"] = (manager.status(), utc_now())
+    return (
+        manager,
         codex_manager,
         quick_interactions,
     )
 
 
-def test_dispatch_submits_with_chub_owned_reply(
+def test_dispatch_silently_submits_text_task(
     settings: Settings,
 ) -> None:
     manager, _codex_manager, quick_interactions = configured_manager(settings)
@@ -111,10 +122,8 @@ def test_dispatch_submits_with_chub_owned_reply(
         )
 
     assert result.protocol_version == 3
-    assert result.disposition == "reply"
-    assert result.message == (
-        "任务已提交\n\n任务摘要：检查设备状态\n\n完成后将原路发送结果。"
-    )
+    assert result.disposition == "handled"
+    assert result.message is None
     quick_interactions.submit.assert_called_once()
     dispatch_entries = [
         call.kwargs
@@ -134,21 +143,22 @@ def test_dispatch_submits_with_chub_owned_reply(
 
 @pytest.mark.parametrize(
     "prompt",
-    ["检查任务状态", "任务状态", "查询任务结果", "任务结果"],
+    ["chub", "查询状态", "状态查询", "检查状态", "状态检查"],
 )
-def test_dispatch_routes_fixed_task_status_prompts_without_codex(
+def test_dispatch_routes_chub_status_aliases_to_cached_overview(
     settings: Settings,
     prompt: str,
 ) -> None:
-    manager, _codex_manager, quick_interactions = configured_manager(settings)
-    quick_interactions.check_weixin_task_status.return_value = SimpleNamespace(
-        outcome="running",
-        task=SimpleNamespace(summary="设备状态检查"),
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    quick_interactions.weixin_task_status_snapshot.return_value = SimpleNamespace(
+        running_count=2,
+        pending_notification_count=1,
+        failed_notification_count=1,
     )
 
     result = manager.dispatch(
         message_id=f"status-{prompt}",
-        prompt=f"  {prompt}  ",
+        prompt=f"  《{prompt}》。  ",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -156,23 +166,100 @@ def test_dispatch_routes_fixed_task_status_prompts_without_codex(
     )
 
     assert result.disposition == "reply"
-    assert result.message == "任务正在执行\n\n任务摘要：设备状态检查"
-    quick_interactions.check_weixin_task_status.assert_called_once()
+    assert result.message is not None
+    assert result.message.startswith("Chub：正常")
+    assert "任务：执行中 2 · 待通知 1 · 通知失败 1" in result.message
+    assert "Codex 用量：缓存尚未初始化" in result.message
+    codex_manager.list_sessions.assert_not_called()
     quick_interactions.submit.assert_not_called()
 
 
-def test_dispatch_retries_original_notification_and_suppresses_extra_reply(
+def test_chub_status_message_id_cannot_later_submit_a_normal_task(
     settings: Settings,
 ) -> None:
     manager, _codex_manager, quick_interactions = configured_manager(settings)
-    quick_interactions.check_weixin_task_status.return_value = SimpleNamespace(
-        outcome="notification_queued",
-        task=SimpleNamespace(summary="设备状态检查"),
+
+    first = manager.dispatch(
+        message_id="shared-message-id",
+        prompt="chub",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+    duplicate = manager.dispatch(
+        message_id="shared-message-id",
+        prompt="执行普通任务",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
     )
 
+    assert duplicate == first
+    quick_interactions.submit.assert_not_called()
+
+
+def test_chub_status_does_not_wait_for_state_lock(settings: Settings) -> None:
+    manager, _codex_manager, _quick_interactions = configured_manager(settings)
+    result_holder: list[object] = []
+    completed = threading.Event()
+
+    def read_status() -> None:
+        result_holder.append(
+            manager.dispatch(
+                message_id="status-while-state-locked",
+                prompt="chub",
+                message_type="text",
+                correlation_id=None,
+                source_ip="100.64.0.21",
+                delivery_route=delivery_route(),
+            )
+        )
+        completed.set()
+
+    with manager._lock:
+        thread = threading.Thread(target=read_status)
+        thread.start()
+        assert completed.wait(timeout=0.5)
+    thread.join(timeout=1)
+
+    assert result_holder[0].message.startswith("Chub：正常")
+
+
+def test_chub_overview_failure_completes_ephemeral_dedup(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, _quick_interactions = configured_manager(settings)
+    manager._format_chub_overview = MagicMock(side_effect=RuntimeError("format"))
+
+    first = manager.dispatch(
+        message_id="overview-format-failure",
+        prompt="chub",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+    duplicate = manager.dispatch(
+        message_id="overview-format-failure",
+        prompt="chub",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert first.message == "Chub 状态总览生成失败，请稍后重试。"
+    assert duplicate == first
+
+
+def test_bare_codex_is_submitted_as_normal_task(settings: Settings) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+
     result = manager.dispatch(
-        message_id="status-notification-sent",
-        prompt="检查任务状态",
+        message_id="bare-codex",
+        prompt="codex",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -181,122 +268,155 @@ def test_dispatch_retries_original_notification_and_suppresses_extra_reply(
 
     assert result.disposition == "handled"
     assert result.message is None
-    quick_interactions.submit.assert_not_called()
+    quick_interactions.submit.assert_called_once()
 
 
-def test_dispatch_summarizes_parallel_weixin_tasks_and_notification_retry(
+def test_chub_refresh_populates_cache_and_respects_cooldown(
     settings: Settings,
 ) -> None:
-    manager, _codex_manager, quick_interactions = configured_manager(settings)
-    quick_interactions.check_weixin_task_status.return_value = SimpleNamespace(
-        outcome="running",
-        task=SimpleNamespace(summary="任务一"),
-        tasks=(
-            SimpleNamespace(summary="任务一"),
-            SimpleNamespace(summary="任务二"),
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager.system_status_reader = MagicMock(
+        return_value=SimpleNamespace(
+            system=SimpleNamespace(memory_percent=42, disk_percent=86)
+        )
+    )
+    manager.codex_account_reader = MagicMock()
+    manager.codex_account_reader.read_account_status.return_value = (
+        CodexQuotaData(status="unavailable"),
+        CodexTokenUsageData(status="unavailable"),
+    )
+    codex_manager.list_sessions.return_value = []
+
+    first = manager.dispatch(
+        message_id="chub-refresh-1",
+        prompt="chub refresh",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+    second = manager.dispatch(
+        message_id="chub-refresh-2",
+        prompt="chub -f",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert "系统：内存 42% · 磁盘 86% · 警告" in (first.message or "")
+    assert "刷新：部分数据刷新失败" in (first.message or "")
+    assert "刷新：部分数据刷新失败" in (second.message or "")
+    manager.system_status_reader.assert_called_once()
+    manager.codex_account_reader.read_account_status.assert_called_once_with(force=True)
+    assert codex_manager.list_sessions.call_count == 1
+
+
+def test_failed_account_refresh_preserves_last_success_timestamp(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    checked_at = utc_now() - timedelta(minutes=10)
+    manager._status_cache["account"] = (
+        (
+            CodexQuotaData(
+                status="available",
+                checked_at=checked_at,
+                windows=[
+                    CodexQuotaWindow(
+                        remaining_percent=50,
+                        window_duration_minutes=10_080,
+                        resets_at=checked_at + timedelta(days=1),
+                    )
+                ],
+            ),
+            CodexTokenUsageData(status="available", checked_at=checked_at),
         ),
-        notification_outcome="notification_queued",
+        checked_at,
     )
+    manager.codex_account_reader = MagicMock()
+    manager.codex_account_reader.read_account_status.return_value = (
+        CodexQuotaData(
+            status="available",
+            checked_at=checked_at,
+            message="refresh failed",
+        ),
+        CodexTokenUsageData(
+            status="available",
+            checked_at=checked_at,
+            message="refresh failed",
+        ),
+    )
+    codex_manager.list_sessions.return_value = []
 
     result = manager.dispatch(
-        message_id="status-parallel",
-        prompt="检查任务状态",
+        message_id="failed-account-refresh",
+        prompt="chub refresh",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
         delivery_route=delivery_route(),
     )
 
-    assert result.disposition == "reply"
-    assert result.message == (
-        "当前有 2 个任务正在执行：\n\n"
-        "1. 任务一\n"
-        "2. 任务二\n\n"
-        "另有已结束任务，结果将原路补发。"
-    )
+    assert manager._status_cache["account"][1] == checked_at
+    assert "已过期" in (result.message or "")
+    assert "刷新：部分数据刷新失败" in (result.message or "")
 
 
-def test_dispatch_routes_codex_status_without_submitting_task(
+def test_chub_overview_overlays_running_session_on_cached_snapshot(
     settings: Settings,
 ) -> None:
     manager, _codex_manager, quick_interactions = configured_manager(settings)
-    account_reader = MagicMock()
-    quota = CodexQuotaData(
-        status="available",
-        windows=[
-            CodexQuotaWindow(
-                remaining_percent=41,
-                window_duration_minutes=7 * 24 * 60,
-                resets_at="2026-08-18T00:00:00Z",
-            )
-        ],
+    manager._status_cache["sessions"] = (
+        (
+            SimpleNamespace(
+                slot=1,
+                session_id="session-1",
+                title="运行任务",
+                state="Available",
+                current=True,
+            ),
+        ),
+        utc_now(),
     )
-    usage = CodexTokenUsageData(
-        status="available",
-        daily_usage=[
-            {
-                "start_date": datetime.now().astimezone().date(),
-                "tokens": 123_456,
-            }
-        ],
-    )
-    account_reader.read_account_status.return_value = (quota, usage)
-    manager.codex_account_reader = account_reader
+    quick_interactions.is_running.side_effect = lambda session_id: session_id == "session-1"
 
     result = manager.dispatch(
-        message_id="codex-usage-1",
-        prompt="  codex  ",
+        message_id="busy-session-overview",
+        prompt="chub",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
         delivery_route=delivery_route(),
     )
 
-    assert result.disposition == "reply"
-    expected_date = datetime.now().astimezone().strftime("%m-%d")
-    assert result.message == (
-        f"Codex Usage: Weekly 41% left · Daily tokens 123.5K ({expected_date})\n"
-        "Active sessions: None"
-    )
-    account_reader.read_account_status.assert_called_once_with(force=True)
-    quick_interactions.submit.assert_not_called()
+    assert "Sessions：已分配 1 · 工作中 1" in (result.message or "")
+    assert "1. 运行任务 [Current] · Busy" in (result.message or "")
 
 
-def test_codex_status_route_returns_partial_result_when_daily_usage_is_unavailable(
+def test_chub_sync_failure_does_not_commit_partial_slots(
     settings: Settings,
 ) -> None:
-    manager, _codex_manager, quick_interactions = configured_manager(settings)
-    account_reader = MagicMock()
-    quota = CodexQuotaData(
-        status="available",
-        windows=[
-            CodexQuotaWindow(
-                remaining_percent=41,
-                window_duration_minutes=7 * 24 * 60,
-                resets_at="2026-08-18T00:00:00Z",
-            )
-        ],
-    )
-    usage = CodexTokenUsageData(
-        status="unavailable",
-    )
-    account_reader.read_account_status.return_value = (quota, usage)
-    manager.codex_account_reader = account_reader
+    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=1, session_id="missing")
+    ]
+    codex_manager.list_sessions.return_value = []
+    original_write = manager._write_state
+    manager._write_state = MagicMock(side_effect=OSError("write failed"))
 
     result = manager.dispatch(
-        message_id="codex-usage-partial",
-        prompt="codex",
+        message_id="chub-sync-write-failure",
+        prompt="补充槽位",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
         delivery_route=delivery_route(),
     )
 
-    assert result.message == (
-        "Codex Usage: Weekly 41% left · Daily tokens 暂不可用\n"
-        "Active sessions: None"
-    )
-    quick_interactions.submit.assert_not_called()
+    assert result.message == "任务提交失败：Chub 当前状态不可用，请稍后重试。"
+    assert manager.session_slot_matches(1, "missing")
+    manager._write_state = original_write
 
 
 def test_codex_status_does_not_report_missing_daily_bucket_as_zero() -> None:
@@ -326,11 +446,134 @@ def test_codex_status_route_requires_exact_prompt(settings: Settings) -> None:
         delivery_route=delivery_route(),
     )
 
-    assert result.message.startswith("任务已提交")
+    assert result.disposition == "handled"
+    assert result.message is None
     quick_interactions.submit.assert_called_once()
 
 
-def test_codex_status_lists_compatible_sessions_and_marks_current(
+@pytest.mark.parametrize("prompt", ["codex help", "Codex Help。", "《CODEX HELP》"])
+def test_codex_help_returns_command_list_without_codex_side_effects(
+    settings: Settings,
+    prompt: str,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+
+    result = manager.dispatch(
+        message_id=f"codex-help-{prompt}",
+        prompt=prompt,
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.disposition == "reply"
+    assert result.message == (
+        "Codex 命令\n\n"
+        "1. 切换N\n   切换到 Session N\n\n"
+        "2. codex new\n   新建 Session\n\n"
+        "3. 归档N\n   归档 Session N\n\n"
+        "4. codex retry\n   在当前 Session 继续未提交任务\n\n"
+        "5. 继续执行\n   新建 Session 并继续未提交任务\n\n"
+        "N 为 1–9，其他消息按普通任务处理"
+    )
+    codex_manager.list_sessions.assert_not_called()
+    codex_manager.create_session.assert_not_called()
+    quick_interactions.submit.assert_not_called()
+
+
+def test_duplicate_codex_help_replays_without_side_effects(settings: Settings) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+
+    first = manager.dispatch(
+        message_id="codex-help-duplicate",
+        prompt="codex help",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+    duplicate = manager.dispatch(
+        message_id="codex-help-duplicate",
+        prompt="codex help",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert duplicate == first
+    codex_manager.list_sessions.assert_not_called()
+    quick_interactions.submit.assert_not_called()
+
+
+def test_codex_help_with_business_text_remains_normal_task(settings: Settings) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+
+    result = manager.dispatch(
+        message_id="codex-help-business-text",
+        prompt="codex help me review this",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.disposition == "handled"
+    assert result.message is None
+    quick_interactions.submit.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    ["Chub。", "CHUB!", "chub？", "chub...", " chub ！ ", "《Chub》"],
+)
+def test_chub_status_ignores_trailing_punctuation(
+    settings: Settings,
+    prompt: str,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    result = manager.dispatch(
+        message_id=f"chub-punctuation-{prompt}",
+        prompt=prompt,
+        message_type="voice",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.disposition == "reply"
+    assert result.message is not None
+    assert result.message.startswith("Chub：正常")
+    quick_interactions.weixin_task_status_snapshot.assert_called_once()
+    quick_interactions.submit.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    ["CODEX status", "Codex status", "codex status"],
+)
+def test_codex_status_near_match_remains_a_normal_task_case_insensitively(
+    settings: Settings,
+    prompt: str,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+
+    result = manager.dispatch(
+        message_id=f"codex-usage-case-near-match-{prompt}",
+        prompt=prompt,
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.disposition == "handled"
+    assert result.message is None
+    quick_interactions.submit.assert_called_once()
+
+
+def test_chub_sync_lists_compatible_sessions_and_marks_current(
     settings: Settings,
 ) -> None:
     manager, codex_manager, quick_interactions = configured_manager(settings)
@@ -401,7 +644,7 @@ def test_codex_status_lists_compatible_sessions_and_marks_current(
 
     result = manager.dispatch(
         message_id="codex-status-sessions",
-        prompt="codex",
+        prompt="chub sync",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -409,18 +652,18 @@ def test_codex_status_lists_compatible_sessions_and_marks_current(
     )
 
     assert result.message is not None
-    assert "Active sessions:\n1. 项目维护 · Available" in result.message
-    assert "2. 正在排障 · Busy" in result.message
-    assert "3. 微信 Chub [Current] · Available" in result.message
+    assert "1. 微信 Chub [Current] · Available" in result.message
+    assert "2. 项目维护 · Available" in result.message
+    assert "3. 正在排障 · Busy" in result.message
     assert "不应显示" not in result.message
     persisted = json.loads(
         settings.openclaw.weixin_chub_mode.state_file.read_text(encoding="utf-8")
     )
-    assert persisted["submissions"][0]["code"] == "codex_status_checked"
+    assert persisted["submissions"][0]["code"] == "chub_slots_synced"
     quick_interactions.submit.assert_not_called()
 
 
-def test_codex_status_limits_id_sorted_sessions_without_reordering_current(
+def test_chub_sync_limits_id_sorted_sessions_without_reordering_current(
     settings: Settings,
 ) -> None:
     manager, codex_manager, _quick_interactions = configured_manager(settings)
@@ -461,7 +704,7 @@ def test_codex_status_limits_id_sorted_sessions_without_reordering_current(
 
     result = manager.dispatch(
         message_id="codex-status-limit",
-        prompt="codex",
+        prompt="chub sync",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -470,11 +713,13 @@ def test_codex_status_limits_id_sorted_sessions_without_reordering_current(
 
     assert result.message is not None
     assert "private-value" not in result.message
-    assert "[Current]" not in result.message
-    assert "另有 1 个" in result.message
+    assert "[Current]" in result.message
+    assert "候选 7" in result.message
+    assert "候选 8" not in result.message
+    assert "候选 8" not in result.message
 
 
-def test_codex_status_hides_unavailable_sessions(settings: Settings) -> None:
+def test_chub_sync_hides_unavailable_sessions(settings: Settings) -> None:
     manager, codex_manager, _quick_interactions = configured_manager(settings)
     manager.codex_account_reader = MagicMock()
     manager.codex_account_reader.read_account_status.return_value = (
@@ -497,7 +742,7 @@ def test_codex_status_hides_unavailable_sessions(settings: Settings) -> None:
 
     result = manager.dispatch(
         message_id="codex-status-unavailable",
-        prompt="codex",
+        prompt="chub sync",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -505,11 +750,86 @@ def test_codex_status_hides_unavailable_sessions(settings: Settings) -> None:
     )
 
     assert result.message is not None
-    assert result.message.endswith("Active sessions: None")
+    assert result.message.endswith("当前没有已分配 Session。")
     assert "不可用会话" not in result.message
 
 
-def test_codex_status_keeps_usage_when_session_lookup_fails(
+def test_chub_sync_retains_configured_unavailable_slot(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=3, session_id="broken")
+    ]
+    manager.codex_account_reader = MagicMock()
+    manager.codex_account_reader.read_account_status.return_value = (
+        CodexQuotaData(status="unavailable"),
+        CodexTokenUsageData(status="unavailable"),
+    )
+    broken = CodexSession(
+        id="broken",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd="/project",
+        title="故障上下文",
+        permission_mode="full-access",
+        status="error",
+        activity="unknown",
+    )
+    candidate = broken.model_copy(
+        update={"id": "candidate", "title": "等待候选", "status": "stopped", "activity": "idle"}
+    )
+    codex_manager.list_sessions.return_value = [broken, candidate]
+
+    result = manager.dispatch(
+        message_id="codex-status-retain-unavailable",
+        prompt="chub sync",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert "3. 故障上下文 · Unavailable" in (result.message or "")
+    assert manager.session_slot_matches(3, "broken")
+
+
+def test_codex_new_rejects_before_creation_when_nine_slots_are_full(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=slot, session_id=f"session-{slot}")
+        for slot in range(1, 10)
+    ]
+    codex_manager.list_sessions.return_value = [
+        CodexSession(
+            id=f"session-{slot}",
+            workspace_id="chub",
+            workspace_name="Chub",
+            cwd="/project",
+            permission_mode="full-access",
+            status="stopped",
+            activity="idle",
+        )
+        for slot in range(1, 10)
+    ]
+
+    result = manager.dispatch(
+        message_id="codex-new-full",
+        prompt="Codex New",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message is not None
+    assert "9 个微信 Session 槽位已满" in result.message
+    codex_manager.create_session.assert_not_called()
+
+
+def test_chub_refresh_keeps_cached_overview_when_session_lookup_fails(
     settings: Settings,
 ) -> None:
     manager, codex_manager, _quick_interactions = configured_manager(settings)
@@ -522,17 +842,16 @@ def test_codex_status_keeps_usage_when_session_lookup_fails(
 
     result = manager.dispatch(
         message_id="codex-status-session-failure",
-        prompt="codex",
+        prompt="chub refresh",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
         delivery_route=delivery_route(),
     )
 
-    assert result.message == (
-        "Codex Usage: Weekly 暂不可用 · Daily tokens 暂不可用\n"
-        "Active sessions: 暂不可用"
-    )
+    assert result.message is not None
+    assert "Sessions：缓存尚未初始化" in result.message
+    assert "刷新：部分数据刷新失败" in result.message
 
 
 def test_codex_status_session_matching_respects_explicit_model_and_effort() -> None:
@@ -623,7 +942,7 @@ def test_codex_status_marks_sessions_unavailable_while_restart_is_pending(
     assert manager._codex_session_dispatch_state(session) == "Unavailable"
 
 
-def test_codex_status_bounds_slow_session_lookup(
+def test_chub_refresh_bounds_slow_session_lookup(
     settings: Settings,
 ) -> None:
     manager, codex_manager, _quick_interactions = configured_manager(settings)
@@ -647,7 +966,7 @@ def test_codex_status_bounds_slow_session_lookup(
         ):
             result = manager.dispatch(
                 message_id="codex-status-timeout",
-                prompt="codex",
+                prompt="chub refresh",
                 message_type="text",
                 correlation_id=None,
                 source_ip="100.64.0.21",
@@ -657,7 +976,7 @@ def test_codex_status_bounds_slow_session_lookup(
         blocker.set()
 
     assert result.message is not None
-    assert result.message.endswith("Active sessions: 暂不可用")
+    assert "刷新：" in result.message
 
 
 def test_codex_switch_uses_id_order_and_allows_busy_target(
@@ -699,6 +1018,11 @@ def test_codex_switch_uses_id_order_and_allows_busy_target(
         ),
     ]
     by_id = {session.id: session for session in sessions}
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=1, session_id="a-current"),
+        WeixinChubModeSessionSlot(slot=2, session_id="b-busy"),
+        WeixinChubModeSessionSlot(slot=3, session_id="c-available"),
+    ]
     codex_manager.list_sessions.return_value = sessions
     codex_manager.get_session.side_effect = lambda session_id: by_id[session_id]
     quick_interactions.is_running.side_effect = (
@@ -712,7 +1036,7 @@ def test_codex_switch_uses_id_order_and_allows_busy_target(
 
     result = manager.dispatch(
         message_id="codex-switch-next",
-        prompt="codex switch",
+        prompt="Codex Switch",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -721,11 +1045,59 @@ def test_codex_switch_uses_id_order_and_allows_busy_target(
 
     assert result.message is not None
     assert result.message.startswith(
-        "Codex Usage: Weekly 暂不可用 · Daily tokens 暂不可用\n"
+        "切换状态：已切换到 Session 2。\n\n"
+        "Codex Usage: Weekly 暂不可用 · Daily tokens 暂不可用\n\n"
     )
     assert "2. 第二项 [Current] · Busy" in result.message
-    assert "已切换" not in result.message
     assert manager.session_id() == "b-busy"
+    quick_interactions.submit.assert_not_called()
+
+
+@pytest.mark.parametrize("prompt", ["切换2", "切换二", " 切换 二。 "])
+def test_chinese_switch_routes_to_numbered_session(
+    settings: Settings,
+    prompt: str,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager._state.session_id = "session-1"
+    sessions = [
+        CodexSession(
+            id=f"session-{slot}",
+            workspace_id="chub",
+            workspace_name="Chub",
+            cwd="/project",
+            title=f"第 {slot} 项",
+            permission_mode="full-access",
+            status="stopped",
+            activity="idle",
+        )
+        for slot in (1, 2)
+    ]
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=slot, session_id=f"session-{slot}")
+        for slot in (1, 2)
+    ]
+    codex_manager.list_sessions.return_value = sessions
+    codex_manager.get_session.return_value = sessions[1]
+    manager.codex_account_reader = MagicMock()
+    manager.codex_account_reader.read_account_status.return_value = (
+        CodexQuotaData(status="unavailable"),
+        CodexTokenUsageData(status="unavailable"),
+    )
+
+    result = manager.dispatch(
+        message_id=f"chinese-switch-{prompt}",
+        prompt=prompt,
+        message_type="voice",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message is not None
+    assert "2. 第 2 项 [Current] · Available" in result.message
+    assert "Task status:" not in result.message
+    assert manager.session_id() == "session-2"
     quick_interactions.submit.assert_not_called()
 
 
@@ -755,6 +1127,9 @@ def test_codex_switch_without_current_uses_first_visible_session(
         activity="idle",
     )
     codex_manager.list_sessions.return_value = [available, unavailable]
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=1, session_id="b-available")
+    ]
     codex_manager.get_session.return_value = available
     manager.codex_account_reader = MagicMock()
     manager.codex_account_reader.read_account_status.return_value = (
@@ -776,6 +1151,465 @@ def test_codex_switch_without_current_uses_first_visible_session(
     assert manager.session_id() == "b-available"
 
 
+@pytest.mark.parametrize("prompt", ["Codex Archive 2。", "归档2", "归档二", "归档 二"])
+def test_codex_archive_removes_target_and_clears_current_binding(
+    settings: Settings,
+    prompt: str,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    sessions = [
+        CodexSession(
+            id=f"session-{index}",
+            codex_session_id=f"native-{index}",
+            workspace_id="chub",
+            workspace_name="Chub",
+            cwd="/project",
+            title=f"候选 {index}",
+            permission_mode="full-access",
+            status="stopped",
+            activity="idle",
+        )
+        for index in (1, 2)
+    ]
+    by_id = {session.id: session for session in sessions}
+    manager._state.session_id = "session-2"
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=1, session_id="session-1"),
+        WeixinChubModeSessionSlot(slot=2, session_id="session-2"),
+    ]
+    remaining_sessions = list(sessions)
+    codex_manager.list_sessions.side_effect = lambda: list(remaining_sessions)
+    codex_manager.get_session.side_effect = lambda session_id: by_id[session_id]
+    manager.session_archiver.side_effect = lambda session_id: remaining_sessions.__setitem__(
+        slice(None),
+        [session for session in remaining_sessions if session.id != session_id],
+    )
+    manager.codex_account_reader = MagicMock()
+    manager.codex_account_reader.read_account_status.return_value = (
+        CodexQuotaData(status="unavailable"),
+        CodexTokenUsageData(status="unavailable"),
+    )
+
+    with patch(
+        "app.services.openclaw_weixin_chub_mode.write_operation"
+    ) as write_operation:
+        result = manager.dispatch(
+            message_id=f"archive-{prompt}",
+            prompt=prompt,
+            message_type="voice",
+            correlation_id=None,
+            source_ip="100.64.0.21",
+            delivery_route=delivery_route(),
+        )
+
+    assert result.message is not None
+    assert result.message.startswith(
+        "归档状态：Session 2 已归档，当前绑定已清除。\n\n"
+        "Codex Usage: Weekly 暂不可用 · Daily tokens 暂不可用\n\n"
+    )
+    assert "Codex Usage:" in result.message
+    assert "1. 候选 1 · Available" in result.message
+    assert "候选 2" not in result.message
+    assert "[Current]" not in result.message
+    manager.session_archiver.assert_called_once_with("session-2")
+    assert manager.session_id() is None
+    assert manager.session_slot_matches(2, "session-2") is False
+    quick_interactions.submit.assert_not_called()
+    archive_entries = [
+        call.kwargs
+        for call in write_operation.call_args_list
+        if call.kwargs["action"] == "archive_codex_session"
+    ]
+    assert [entry["status"] for entry in archive_entries] == [
+        "requested",
+        "started",
+        "succeeded",
+    ]
+
+
+def test_duplicate_codex_archive_does_not_archive_twice(settings: Settings) -> None:
+    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    session = CodexSession(
+        id="session-1",
+        codex_session_id="native-1",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd="/project",
+        title="待归档",
+        permission_mode="full-access",
+        status="stopped",
+        activity="idle",
+    )
+    codex_manager.list_sessions.return_value = [session]
+    codex_manager.get_session.return_value = session
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=1, session_id="session-1")
+    ]
+
+    first = manager.dispatch(
+        message_id="duplicate-archive",
+        prompt="归档一",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+    duplicate = manager.dispatch(
+        message_id="duplicate-archive",
+        prompt="归档一",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert duplicate == first
+    manager.session_archiver.assert_called_once_with("session-1")
+
+
+def test_codex_archive_status_preserves_freed_slot_for_codex_new(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    sessions = [
+        CodexSession(
+            id=f"session-{index}",
+            codex_session_id=f"native-{index}",
+            workspace_id="chub",
+            workspace_name="Chub",
+            cwd="/project",
+            title=f"候选 {index}",
+            permission_mode="full-access",
+            status="stopped",
+            activity="idle",
+        )
+        for index in range(1, 11)
+    ]
+    by_id = {session.id: session for session in sessions}
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=index, session_id=f"session-{index}")
+        for index in range(1, 10)
+    ]
+    remaining_sessions = list(sessions)
+    codex_manager.list_sessions.side_effect = lambda: list(remaining_sessions)
+    codex_manager.get_session.side_effect = lambda session_id: by_id[session_id]
+    manager.session_archiver.side_effect = lambda session_id: remaining_sessions.__setitem__(
+        slice(None),
+        [session for session in remaining_sessions if session.id != session_id],
+    )
+    manager.codex_account_reader = MagicMock()
+    manager.codex_account_reader.read_account_status.return_value = (
+        CodexQuotaData(status="unavailable"),
+        CodexTokenUsageData(status="unavailable"),
+    )
+
+    archived = manager.dispatch(
+        message_id="archive-preserves-slot",
+        prompt="归档2",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert archived.message is not None
+    assert "2. 候选 10" not in archived.message
+    assert "另有 1 个" in archived.message
+    assert manager.session_slot_matches(2, "session-10") is False
+
+    refreshed = manager.dispatch(
+        message_id="status-fills-freed-slot",
+        prompt="chub sync",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert refreshed.message is not None
+    assert "2. 候选 10 · Available" in refreshed.message
+    assert manager.session_slot_matches(2, "session-10") is True
+
+
+def test_codex_archive_does_not_fill_unassigned_candidate(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    sessions = [
+        CodexSession(
+            id=f"session-{index}",
+            codex_session_id=f"native-{index}",
+            workspace_id="chub",
+            workspace_name="Chub",
+            cwd="/project",
+            title=f"候选 {index}",
+            permission_mode="full-access",
+            status="stopped",
+            activity="idle",
+        )
+        for index in (1, 2)
+    ]
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=1, session_id="session-1")
+    ]
+    codex_manager.list_sessions.return_value = sessions
+    manager.codex_account_reader = MagicMock()
+    manager.codex_account_reader.read_account_status.return_value = (
+        CodexQuotaData(status="unavailable"),
+        CodexTokenUsageData(status="unavailable"),
+    )
+
+    archived = manager.dispatch(
+        message_id="archive-unassigned-candidate",
+        prompt="归档2",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert archived.message is not None
+    assert archived.message.startswith("归档状态：未归档，编号无效。\n\n")
+    assert "另有 1 个" in archived.message
+    manager.session_archiver.assert_not_called()
+    assert manager.session_slot_matches(2, "session-2") is False
+
+    manager.dispatch(
+        message_id="status-fills-archive-candidate",
+        prompt="chub sync",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert manager.session_slot_matches(2, "session-2") is True
+
+
+@pytest.mark.parametrize(
+    ("activity", "quick_running", "writer_active"),
+    [("working", False, False), ("idle", True, False), ("idle", False, True), ("unknown", False, False)],
+)
+def test_codex_archive_rejects_session_that_is_not_safely_idle(
+    settings: Settings,
+    activity: str,
+    quick_running: bool,
+    writer_active: bool,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    session = CodexSession(
+        id="session-1",
+        codex_session_id="native-1",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd="/project",
+        title="使用中",
+        permission_mode="full-access",
+        status="running" if activity != "unknown" else "stopped",
+        activity=activity,
+    )
+    codex_manager.list_sessions.return_value = [session]
+    codex_manager.get_session.return_value = session
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=1, session_id="session-1")
+    ]
+    quick_interactions.is_running.return_value = quick_running
+    codex_manager.has_active_writer.return_value = writer_active
+
+    result = manager.dispatch(
+        message_id=f"unsafe-archive-{activity}-{quick_running}-{writer_active}",
+        prompt="codex archive 1",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message is not None
+    assert "未归档" in result.message
+    manager.session_archiver.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    ["codex archive", "codex archive 0", "codex archive -1", "codex archive abc", "归档", "归档10", "归档零"],
+)
+def test_codex_archive_invalid_usage_is_not_submitted(
+    settings: Settings,
+    prompt: str,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+
+    result = manager.dispatch(
+        message_id=f"invalid-archive-{prompt}",
+        prompt=prompt,
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message is not None
+    assert result.message.startswith("用法：发送 codex archive n")
+    codex_manager.list_sessions.assert_not_called()
+    quick_interactions.submit.assert_not_called()
+
+
+def test_chinese_archive_business_text_is_submitted_as_normal_task(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+
+    result = manager.dispatch(
+        message_id="archive-business-text",
+        prompt="归档日志后再检查",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.disposition == "handled"
+    assert result.message is None
+    quick_interactions.submit.assert_called_once()
+
+
+def test_codex_archive_failure_keeps_slot_and_explains_possible_stop(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    session = CodexSession(
+        id="session-1",
+        codex_session_id="native-1",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd="/project",
+        title="待归档",
+        permission_mode="full-access",
+        status="stopped",
+        activity="idle",
+    )
+    codex_manager.list_sessions.return_value = [session]
+    codex_manager.get_session.return_value = session
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=1, session_id="session-1")
+    ]
+    manager.session_archiver.side_effect = ApiError(
+        503,
+        "codex_session_archive_failed",
+        "private failure",
+    )
+
+    result = manager.dispatch(
+        message_id="archive-command-failure",
+        prompt="归档1",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == (
+        "归档失败；Session 可能已停止，但未从列表移除。"
+        "请发送 chub 查看状态后再重试。"
+    )
+    assert manager.session_slot_matches(1, "session-1") is True
+
+
+def test_codex_archive_rejects_session_with_pending_retry(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    session = CodexSession(
+        id="session-1",
+        codex_session_id="native-1",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd="/project",
+        title="待续提",
+        permission_mode="full-access",
+        status="stopped",
+        activity="idle",
+    )
+    codex_manager.list_sessions.return_value = [session]
+    codex_manager.get_session.return_value = session
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=1, session_id="session-1")
+    ]
+    now = utc_now()
+    manager._state.pending_retry = WeixinChubModePendingRetry(
+        original_message_id="original-message",
+        prompt="继续处理任务",
+        delivery_route_fingerprint="a" * 64,
+        created_at=now,
+        expires_at=now + timedelta(minutes=10),
+        session_id="session-1",
+    )
+
+    result = manager.dispatch(
+        message_id="archive-with-pending-retry",
+        prompt="归档1",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message.startswith(
+        "归档状态：未归档，该 Session 关联一条待继续执行的任务。\n\n"
+    )
+    assert "Active sessions:\n1. 待续提 · Available" in result.message
+    manager.session_archiver.assert_not_called()
+
+
+def test_codex_archive_state_sync_failure_reports_partial_success(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    session = CodexSession(
+        id="session-1",
+        codex_session_id="native-1",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd="/project",
+        title="待归档",
+        permission_mode="full-access",
+        status="stopped",
+        activity="idle",
+    )
+    codex_manager.list_sessions.return_value = [session]
+    codex_manager.get_session.return_value = session
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=1, session_id="session-1")
+    ]
+    original_write = manager._write_state
+    write_count = 0
+
+    def fail_cleanup_write(state) -> None:
+        nonlocal write_count
+        write_count += 1
+        if write_count == 3:
+            raise OSError("write failed")
+        original_write(state)
+
+    manager._write_state = fail_cleanup_write
+
+    result = manager.dispatch(
+        message_id="archive-state-sync-failure",
+        prompt="归档1",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == (
+        "Session 已归档，但 Chub 未能同步列表状态。"
+        "请稍后发送 chub 查看状态。"
+    )
+    manager.session_archiver.assert_called_once_with("session-1")
+
+
 def test_codex_switch_number_uses_fresh_visible_list(settings: Settings) -> None:
     manager, codex_manager, _quick_interactions = configured_manager(settings)
     sessions = [
@@ -792,6 +1626,10 @@ def test_codex_switch_number_uses_fresh_visible_list(settings: Settings) -> None
         for index in range(1, 4)
     ]
     by_id = {session.id: session for session in sessions}
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=index, session_id=f"session-{index}")
+        for index in range(1, 4)
+    ]
     codex_manager.list_sessions.return_value = list(reversed(sessions))
     codex_manager.get_session.side_effect = lambda session_id: by_id[session_id]
     manager.codex_account_reader = MagicMock()
@@ -833,6 +1671,10 @@ def test_codex_switch_uses_one_deadline_and_reuses_session_scan(
         for index in (1, 2)
     ]
     by_id = {session.id: session for session in sessions}
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=index, session_id=f"session-{index}")
+        for index in (1, 2)
+    ]
     codex_manager.list_sessions.return_value = sessions
     codex_manager.get_session.side_effect = lambda session_id: by_id[session_id]
     account_release = threading.Event()
@@ -864,7 +1706,10 @@ def test_codex_switch_uses_one_deadline_and_reuses_session_scan(
         account_release.set()
 
     assert result.message is not None
-    assert result.message.startswith("Codex 用量查询失败，请稍后重试。\n")
+    assert result.message.startswith(
+        "切换状态：已切换到 Session 2。\n\n"
+        "Codex 用量查询失败，请稍后重试。\n"
+    )
     assert "2. 候选 2 [Current] · Available" in result.message
     assert manager.session_id() == "session-2"
     codex_manager.list_sessions.assert_called_once()
@@ -897,15 +1742,86 @@ def test_codex_switch_out_of_range_returns_fresh_list_without_changing_binding(
     )
 
     assert result.message is not None
-    assert result.message.startswith("编号无效。\nActive sessions:")
+    assert result.message.startswith("切换状态：未切换，编号无效。\n\n")
+    assert "Active sessions:" in result.message
     assert "1. 当前会话 [Current] · Available" in result.message
     assert manager.session_id() == "session-1"
     codex_manager.get_session.assert_not_called()
 
 
+def test_codex_switch_does_not_fill_unassigned_candidate(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    manager._state.session_id = "session-1"
+    sessions = [
+        CodexSession(
+            id=f"session-{index}",
+            workspace_id="chub",
+            workspace_name="Chub",
+            cwd="/project",
+            title=f"候选 {index}",
+            permission_mode="full-access",
+            status="stopped",
+            activity="idle",
+        )
+        for index in (1, 2)
+    ]
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=1, session_id="session-1")
+    ]
+    codex_manager.list_sessions.return_value = sessions
+    manager.codex_account_reader = MagicMock()
+    manager.codex_account_reader.read_account_status.return_value = (
+        CodexQuotaData(status="unavailable"),
+        CodexTokenUsageData(status="unavailable"),
+    )
+
+    switched = manager.dispatch(
+        message_id="switch-unassigned-candidate",
+        prompt="切换2",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert switched.message is not None
+    assert switched.message.startswith(
+        "切换状态：未切换，编号无效。"
+        "另有未登记的可用 Session，请先发送 chub sync 补充槽位后再切换。\n\n"
+    )
+    assert "另有 1 个" in switched.message
+    assert manager.session_id() == "session-1"
+    assert manager.session_slot_matches(2, "session-2") is False
+
+    manager.dispatch(
+        message_id="status-fills-switch-candidate",
+        prompt="chub sync",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert manager.session_slot_matches(2, "session-2") is True
+
+
 @pytest.mark.parametrize(
     "prompt",
-    ["codex switch 0", "codex switch -1", "codex switch abc", "codex switch 1 extra"],
+    [
+        "codex switch 0",
+        "codex switch -1",
+        "codex switch abc",
+        "codex switch 1 extra",
+        "切换10",
+        "切换-1",
+        "切换＋2",
+        "切换０",
+        "切换零",
+        "切换十",
+        "切换",
+    ],
 )
 def test_codex_switch_invalid_usage_is_not_submitted(
     settings: Settings,
@@ -926,6 +1842,32 @@ def test_codex_switch_invalid_usage_is_not_submitted(
     assert result.message.startswith("用法：发送 codex switch")
     codex_manager.list_sessions.assert_not_called()
     quick_interactions.submit.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    ["切换网络后再检查", "切换二再执行", "切换到备用节点"],
+)
+def test_chinese_switch_business_text_is_submitted_as_normal_task(
+    settings: Settings,
+    prompt: str,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+
+    result = manager.dispatch(
+        message_id=f"switch-business-text-{prompt}",
+        prompt=prompt,
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.disposition == "handled"
+    assert result.message is None
+    quick_interactions.submit.assert_called_once()
+    assert quick_interactions.submit.call_args.args[1] == prompt
+    assert manager.codex_account_reader is None
 
 
 def test_codex_switch_rejects_oversized_numeric_index(settings: Settings) -> None:
@@ -965,6 +1907,10 @@ def test_codex_switch_write_failure_keeps_previous_binding(
         for index in (1, 2)
     ]
     by_id = {session.id: session for session in sessions}
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=index, session_id=f"session-{index}")
+        for index in range(1, 4)
+    ]
     codex_manager.list_sessions.return_value = sessions
     codex_manager.get_session.side_effect = lambda session_id: by_id[session_id]
     original_write = manager._write_state
@@ -1013,6 +1959,10 @@ def test_duplicate_codex_switch_does_not_switch_twice(settings: Settings) -> Non
         for index in range(1, 4)
     ]
     by_id = {session.id: session for session in sessions}
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=index, session_id=f"session-{index}")
+        for index in range(1, 4)
+    ]
     codex_manager.list_sessions.return_value = sessions
     codex_manager.get_session.side_effect = lambda session_id: by_id[session_id]
     manager.codex_account_reader = MagicMock()
@@ -1062,82 +2012,13 @@ def test_legacy_codex_usage_route_record_remains_loadable() -> None:
     assert record.code == "codex_usage_checked"
 
 
-def test_status_check_persists_interrupted_reservation_before_side_effect(
-    settings: Settings,
-) -> None:
-    manager, _codex_manager, quick_interactions = configured_manager(settings)
-
-    def check_status(*_args, **_kwargs):
-        persisted = json.loads(
-            settings.openclaw.weixin_chub_mode.state_file.read_text(encoding="utf-8")
-        )
-        record = persisted["submissions"][0]
-        assert record["status"] == "reserved"
-        assert record["code"] == "submission_interrupted"
-        return SimpleNamespace(outcome="empty", task=None)
-
-    quick_interactions.check_weixin_task_status.side_effect = check_status
-
-    result = manager.dispatch(
-        message_id="status-reserved-first",
-        prompt="检查任务状态",
-        message_type="text",
-        correlation_id=None,
-        source_ip="100.64.0.21",
-        delivery_route=delivery_route(),
-    )
-
-    assert result.message == "当前没有执行中或待通知的任务。"
-    persisted = json.loads(
-        settings.openclaw.weixin_chub_mode.state_file.read_text(encoding="utf-8")
-    )
-    assert persisted["submissions"][0]["status"] == "routed"
-
-
-@pytest.mark.parametrize(
-    ("outcome", "message"),
-    [
-        ("notification_sending", "任务已结束，结果正在原路发送。"),
-        ("notification_failed", "任务已结束，但结果通知失败，请稍后再次检查。"),
-        ("empty", "当前没有执行中或待通知的任务。"),
-    ],
-)
-def test_dispatch_returns_one_status_check_result(
-    settings: Settings,
-    outcome: str,
-    message: str,
-) -> None:
-    manager, _codex_manager, quick_interactions = configured_manager(settings)
-    quick_interactions.check_weixin_task_status.return_value = SimpleNamespace(
-        outcome=outcome,
-        task=None,
-    )
-
-    result = manager.dispatch(
-        message_id=f"status-{outcome}",
-        prompt="任务状态",
-        message_type="text",
-        correlation_id=None,
-        source_ip="100.64.0.21",
-        delivery_route=delivery_route(),
-    )
-
-    assert result.disposition == "reply"
-    assert result.message == message
-
-
 def test_duplicate_status_check_replays_without_rechecking(
     settings: Settings,
 ) -> None:
     manager, _codex_manager, quick_interactions = configured_manager(settings)
-    quick_interactions.check_weixin_task_status.return_value = SimpleNamespace(
-        outcome="empty",
-        task=None,
-    )
-
     first = manager.dispatch(
         message_id="status-duplicate",
-        prompt="检查任务状态",
+        prompt="查询状态",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -1145,7 +2026,7 @@ def test_duplicate_status_check_replays_without_rechecking(
     )
     duplicate = manager.dispatch(
         message_id="status-duplicate",
-        prompt="任务结果",
+        prompt="状态查询",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -1153,25 +2034,31 @@ def test_duplicate_status_check_replays_without_rechecking(
     )
 
     assert duplicate == first
-    quick_interactions.check_weixin_task_status.assert_called_once()
+    quick_interactions.weixin_task_status_snapshot.assert_called_once()
+    assert manager._state.submissions == []
 
 
-def test_non_exact_status_prompt_is_submitted_as_normal_task(
+@pytest.mark.parametrize(
+    "prompt",
+    ["检查任务状态", "任务状态", "查询任务结果", "任务结果", "查询状态 123"],
+)
+def test_retired_or_non_exact_status_prompt_is_submitted_as_normal_task(
     settings: Settings,
+    prompt: str,
 ) -> None:
     manager, _codex_manager, quick_interactions = configured_manager(settings)
 
     result = manager.dispatch(
-        message_id="status-near-miss",
-        prompt="检查任务状态 123",
+        message_id=f"status-near-miss-{prompt}",
+        prompt=prompt,
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
         delivery_route=delivery_route(),
     )
 
-    assert result.disposition == "reply"
-    quick_interactions.check_weixin_task_status.assert_not_called()
+    assert result.disposition == "handled"
+    assert result.message is None
     quick_interactions.submit.assert_called_once()
 
 
@@ -1224,7 +2111,556 @@ def test_dispatch_returns_bounded_failure_instead_of_api_error(
     )
 
     assert result.disposition == "reply"
-    assert result.message == "任务提交失败：已有微信任务正在执行，请等待完成后重试。"
+    assert result.message == (
+        "任务提交失败：当前 Session 正在执行，本任务未提交。\n\n"
+        "如需新建 Session 并继续执行本任务，请回复："
+        "codex new retry 或“继续执行”。"
+    )
+    quick_interactions.submit.assert_not_called()
+
+
+def test_codex_new_creates_and_switches_without_submitting(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    codex_manager.create_session.return_value = SimpleNamespace(id="session-new")
+    manager.codex_account_reader = MagicMock()
+    manager.codex_account_reader.read_account_status.return_value = (
+        CodexQuotaData(status="unavailable"),
+        CodexTokenUsageData(status="unavailable"),
+    )
+    codex_manager.list_sessions.return_value = [
+        CodexSession(
+            id="session-new",
+            workspace_id="chub",
+            workspace_name="Chub",
+            cwd="/project",
+            permission_mode="full-access",
+            status="stopped",
+            activity="idle",
+        )
+    ]
+
+    result = manager.dispatch(
+        message_id="codex-new-1",
+        prompt="codex new",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message is not None
+    assert result.message.startswith(
+        "创建状态：Session 1 已创建并切换。\n\n"
+        "Codex Usage: Weekly 暂不可用 · Daily tokens 暂不可用\n\n"
+    )
+    assert "1. 未命名 Session [Current] · Available" in result.message
+    assert manager.session_id() == "session-new"
+    codex_manager.set_initial_quick_interaction_title.assert_not_called()
+    quick_interactions.submit.assert_not_called()
+
+
+def test_codex_new_status_does_not_fill_unassigned_candidate(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    sessions = [
+        CodexSession(
+            id=session_id,
+            workspace_id="chub",
+            workspace_name="Chub",
+            cwd="/project",
+            title=title,
+            permission_mode="full-access",
+            status="stopped",
+            activity="idle",
+        )
+        for session_id, title in (
+            ("session-1", "已有会话"),
+            ("candidate", "等待候选"),
+            ("session-new", "新建会话"),
+        )
+    ]
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=1, session_id="session-1")
+    ]
+    codex_manager.create_session.return_value = SimpleNamespace(id="session-new")
+    codex_manager.list_sessions.return_value = sessions
+    manager.codex_account_reader = MagicMock()
+    manager.codex_account_reader.read_account_status.return_value = (
+        CodexQuotaData(status="unavailable"),
+        CodexTokenUsageData(status="unavailable"),
+    )
+
+    result = manager.dispatch(
+        message_id="new-does-not-fill-candidate",
+        prompt="codex new",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message is not None
+    assert "2. 新建会话 [Current] · Available" in result.message
+    assert "等待候选" not in result.message
+    assert "另有 1 个" in result.message
+    assert manager.session_slot_matches(2, "session-new") is True
+    assert manager.session_slot_matches(3, "candidate") is False
+
+
+def test_internal_codex_status_does_not_fill_unassigned_candidate(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    sessions = [
+        CodexSession(
+            id=f"session-{index}",
+            workspace_id="chub",
+            workspace_name="Chub",
+            cwd="/project",
+            title=f"候选 {index}",
+            permission_mode="full-access",
+            status="stopped",
+            activity="idle",
+        )
+        for index in (1, 2)
+    ]
+    manager._state.session_id = "session-1"
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=1, session_id="session-1")
+    ]
+    codex_manager.list_sessions.return_value = sessions
+    manager.codex_account_reader = MagicMock()
+    manager.codex_account_reader.read_account_status.return_value = (
+        CodexQuotaData(status="unavailable"),
+        CodexTokenUsageData(status="unavailable"),
+    )
+    manager._refresh_chub_cache(force=True)
+    codex_manager.list_sessions.reset_mock()
+
+    internal_status = manager.codex_status_message()
+
+    assert "1. 候选 1 [Current] · Available" in internal_status
+    assert "候选 2" not in internal_status
+    codex_manager.list_sessions.assert_not_called()
+    assert manager.session_slot_matches(2, "session-2") is False
+
+    manager.dispatch(
+        message_id="active-status-fills-internal-candidate",
+        prompt="chub sync",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert manager.session_slot_matches(2, "session-2") is True
+
+
+def test_codex_operation_log_uses_operation_result_not_status_refresh(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    codex_manager.create_session.return_value = SimpleNamespace(id="session-new")
+    codex_manager.list_sessions.return_value = [
+        CodexSession(
+            id="session-new",
+            workspace_id="chub",
+            workspace_name="Chub",
+            cwd="/project",
+            permission_mode="full-access",
+            status="stopped",
+            activity="idle",
+        )
+    ]
+
+    with patch(
+        "app.services.openclaw_weixin_chub_mode.write_operation"
+    ) as write_operation:
+        created = manager.dispatch(
+            message_id="new-with-status-failure",
+            prompt="codex new",
+            message_type="text",
+            correlation_id=None,
+            source_ip="100.64.0.21",
+            delivery_route=delivery_route(),
+        )
+
+    assert created.message is not None
+    assert "Codex 用量查询失败" in created.message
+    dispatch_entries = [
+        call.kwargs
+        for call in write_operation.call_args_list
+        if call.kwargs["action"] == "weixin_chub_mode_dispatch"
+    ]
+    assert [entry["status"] for entry in dispatch_entries] == [
+        "requested",
+        "started",
+        "succeeded",
+    ]
+
+    with patch(
+        "app.services.openclaw_weixin_chub_mode.write_operation"
+    ) as write_operation:
+        manager.dispatch(
+            message_id="invalid-switch-log",
+            prompt="codex switch 0",
+            message_type="text",
+            correlation_id=None,
+            source_ip="100.64.0.21",
+            delivery_route=delivery_route(),
+        )
+
+    dispatch_entries = [
+        call.kwargs
+        for call in write_operation.call_args_list
+        if call.kwargs["action"] == "weixin_chub_mode_dispatch"
+    ]
+    assert [entry["status"] for entry in dispatch_entries] == [
+        "requested",
+        "started",
+        "failed",
+    ]
+
+
+def test_duplicate_codex_new_replays_status_without_creating_twice(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    codex_manager.create_session.return_value = SimpleNamespace(id="session-new")
+    codex_manager.list_sessions.return_value = [
+        CodexSession(
+            id="session-new",
+            workspace_id="chub",
+            workspace_name="Chub",
+            cwd="/project",
+            permission_mode="full-access",
+            status="stopped",
+            activity="idle",
+        )
+    ]
+
+    first = manager.dispatch(
+        message_id="codex-new-duplicate",
+        prompt="codex new",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+    duplicate = manager.dispatch(
+        message_id="codex-new-duplicate",
+        prompt="codex new",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert duplicate.message == first.message
+    codex_manager.create_session.assert_called_once()
+
+
+def test_codex_new_discards_unstarted_session_when_slot_state_write_fails(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    codex_manager.create_session.return_value = SimpleNamespace(id="session-new")
+    manager._write_state = MagicMock(side_effect=OSError("disk unavailable"))
+
+    with pytest.raises(OSError):
+        manager._create_session(manager.configuration())
+
+    codex_manager.discard_unstarted_session.assert_called_once_with("session-new")
+    assert manager.session_id() is None
+    assert manager._state.session_slots == []
+
+
+def test_chub_sync_uses_placeholder_for_untitled_session(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager.codex_account_reader = MagicMock()
+    manager.codex_account_reader.read_account_status.return_value = (
+        CodexQuotaData(status="unavailable"),
+        CodexTokenUsageData(status="unavailable"),
+    )
+    codex_manager.list_sessions.return_value = [
+        CodexSession(
+            id="untitled-session",
+            workspace_id="chub",
+            workspace_name="Chub",
+            cwd="/project",
+            title=None,
+            permission_mode="full-access",
+            status="stopped",
+            activity="idle",
+        )
+    ]
+
+    result = manager.dispatch(
+        message_id="codex-status-untitled",
+        prompt="chub sync",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert "1. 未命名 Session · Available" in (result.message or "")
+    quick_interactions.submit.assert_not_called()
+
+
+def test_codex_retry_submits_latest_busy_task_to_current_session(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    manager._state.session_id = "session-1"
+    quick_interactions.is_running.return_value = True
+    manager.dispatch(
+        message_id="busy-original-1",
+        prompt="继续检查设备",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+    quick_interactions.is_running.return_value = False
+
+    result = manager.dispatch(
+        message_id="retry-command-1",
+        prompt="Codex Retry",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == (
+        "刚才的任务已重新提交。\n\n"
+        "任务摘要：继续检查设备\n\n完成后将原路发送结果。"
+    )
+    quick_interactions.submit.assert_called_once()
+    assert quick_interactions.submit.call_args.args[1] == "继续检查设备"
+    assert manager._state.pending_retry is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["Codex New Retry。", "继续执行", " 继续执行。 ", "继续执行？！"],
+)
+def test_codex_new_retry_creates_session_and_submits_latest_busy_task(
+    settings: Settings,
+    command: str,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager._state.session_id = "session-1"
+    quick_interactions.is_running.return_value = True
+    manager.dispatch(
+        message_id=f"busy-original-{command}",
+        prompt="探索另一个问题",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    codex_manager.create_session.return_value = SimpleNamespace(id="session-2")
+    codex_manager.get_session.return_value = CodexSession(
+        id="session-2",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd="/project",
+        permission_mode="full-access",
+        status="stopped",
+        activity="idle",
+    )
+    quick_interactions.is_running.return_value = False
+    result = manager.dispatch(
+        message_id=f"combined-command-{command}",
+        prompt=command,
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == (
+        "已创建并切换到新的 Session，刚才的任务已重新提交。\n\n"
+        "任务摘要：探索另一个问题\n\n完成后将原路发送结果。"
+    )
+    assert manager.session_id() == "session-2"
+    assert quick_interactions.submit.call_args.args[:2] == (
+        "session-2",
+        "探索另一个问题",
+    )
+    assert manager._state.pending_retry is None
+
+
+def test_busy_task_replaces_previous_pending_retry(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    manager._state.session_id = "session-1"
+    quick_interactions.is_running.return_value = True
+
+    for message_id, prompt in (("busy-1", "第一个问题"), ("busy-2", "第二个问题")):
+        manager.dispatch(
+            message_id=message_id,
+            prompt=prompt,
+            message_type="text",
+            correlation_id=None,
+            source_ip="100.64.0.21",
+            delivery_route=delivery_route(),
+        )
+
+    assert manager._state.pending_retry is not None
+    assert manager._state.pending_retry.prompt == "第二个问题"
+    assert manager._state.pending_retry.original_message_id == "busy-2"
+
+
+def test_codex_retry_rejects_expired_or_different_route_without_side_effects(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager._state.session_id = "session-1"
+    quick_interactions.is_running.return_value = True
+    manager.dispatch(
+        message_id="busy-expired",
+        prompt="已经过期的任务",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+    assert manager._state.pending_retry is not None
+    manager._state.pending_retry.expires_at = utc_now() - timedelta(seconds=1)
+
+    result = manager.dispatch(
+        message_id="retry-expired",
+        prompt="继续执行",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == "没有可继续执行的任务，请重新发送任务内容。"
+    codex_manager.create_session.assert_not_called()
+    quick_interactions.submit.assert_not_called()
+
+
+def test_codex_new_retry_cannot_claim_task_from_different_route(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager._state.session_id = "session-1"
+    quick_interactions.is_running.return_value = True
+    manager.dispatch(
+        message_id="busy-other-route",
+        prompt="私有待继续任务",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    result = manager.dispatch(
+        message_id="retry-other-route",
+        prompt="继续执行",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(recipient="another-owner@im.wechat"),
+    )
+
+    assert result.message == "没有可继续执行的任务，请重新发送任务内容。"
+    codex_manager.create_session.assert_not_called()
+    quick_interactions.submit.assert_not_called()
+    assert manager._state.pending_retry is not None
+    assert manager._state.pending_retry.prompt == "私有待继续任务"
+
+
+def test_duplicate_codex_new_retry_does_not_create_or_submit_twice(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager._state.session_id = "session-1"
+    quick_interactions.is_running.return_value = True
+    manager.dispatch(
+        message_id="busy-for-duplicate",
+        prompt="只执行一次",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+    codex_manager.create_session.return_value = SimpleNamespace(id="session-2")
+    codex_manager.get_session.return_value = CodexSession(
+        id="session-2",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd="/project",
+        permission_mode="full-access",
+        status="stopped",
+        activity="idle",
+    )
+    quick_interactions.is_running.return_value = False
+
+    first = manager.dispatch(
+        message_id="combined-duplicate",
+        prompt="codex new retry",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+    duplicate = manager.dispatch(
+        message_id="combined-duplicate",
+        prompt="codex new retry",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert "已重新提交" in (first.message or "")
+    assert duplicate.message == first.message
+    codex_manager.create_session.assert_called_once()
+    quick_interactions.submit.assert_called_once()
+
+
+def test_retry_keeps_pending_task_when_current_session_is_still_busy(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    manager._state.session_id = "session-1"
+    quick_interactions.is_running.return_value = True
+    manager.dispatch(
+        message_id="busy-still-running",
+        prompt="稍后继续的任务",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    result = manager.dispatch(
+        message_id="retry-still-running",
+        prompt="codex retry",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message is not None
+    assert result.message.startswith("任务提交失败：当前 Session 正在执行")
+    assert manager._state.pending_retry is not None
+    assert manager._state.pending_retry.prompt == "稍后继续的任务"
+    assert manager._state.pending_retry.claimed_by_message_id is None
     quick_interactions.submit.assert_not_called()
 
 
@@ -1253,7 +2689,8 @@ def test_duplicate_dispatch_is_logged_without_resubmitting(
             delivery_route=delivery_route(),
         )
 
-    assert result.message == "该消息已处理，任务不会重复执行。"
+    assert result.disposition == "handled"
+    assert result.message is None
     assert quick_interactions.submit.call_count == 1
     dispatch_entries = [
         call.kwargs
@@ -1321,26 +2758,54 @@ def test_submit_creates_one_private_session_and_replays_duplicate(
         None,
         None,
     )
-    codex_manager.set_initial_quick_interaction_title.assert_called_once_with(
-        "session-1",
-        "微信 Chub",
-    )
+    codex_manager.set_initial_quick_interaction_title.assert_not_called()
     quick_interactions.submit.assert_called_once_with(
         "session-1",
         "检查设备状态",
         operation_id=quick_interactions.submit.call_args.kwargs["operation_id"],
         source_ip="100.64.0.21",
         notification_route=delivery_route(),
+        weixin_session_slot=1,
+        weixin_session_title="检查设备状态",
     )
     state_file = settings.openclaw.weixin_chub_mode.state_file
     assert stat.S_IMODE(state_file.stat().st_mode) == 0o600
     state_text = state_file.read_text(encoding="utf-8")
-    assert "检查设备状态" not in state_text
+    assert "不会再次执行" not in state_text
     assert "weixin-account" not in state_text
     assert "owner@im.wechat" not in state_text
     persisted = json.loads(state_text)
     assert persisted["session_id"] == "session-1"
     assert persisted["submissions"][0]["task_id"] == "task-1"
+
+
+def test_translation_is_enqueued_after_main_submission_is_persisted(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, _quick_interactions = configured_manager(settings)
+    manager.translation_manager = MagicMock()
+    original_replace = manager._replace_submission
+    persisted = False
+
+    def replace_and_mark(submission) -> None:
+        nonlocal persisted
+        original_replace(submission)
+        persisted = True
+
+    manager._replace_submission = replace_and_mark
+    manager.translation_manager.enqueue.side_effect = (
+        lambda **_kwargs: persisted or pytest.fail("translation queued too early")
+    )
+
+    manager.submit(
+        message_id="translation-order",
+        prompt="需要翻译的任务",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    manager.translation_manager.enqueue.assert_called_once()
 
 
 def test_submit_rejects_invalid_delivery_route_before_codex(
@@ -1471,6 +2936,8 @@ def test_submit_replaces_session_when_explicit_model_no_longer_matches(
         operation_id=quick_interactions.submit.call_args.kwargs["operation_id"],
         source_ip="100.64.0.21",
         notification_route=delivery_route(),
+        weixin_session_slot=1,
+        weixin_session_title="检查模型配置",
     )
 
 

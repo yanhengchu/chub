@@ -49,6 +49,8 @@ from app.services.openclaw import OpenClawManager
 from app.services.openclaw_completion_notifications import OpenClawCompletionNotifier
 from app.services.deferred_restart import DeferredRestartCoordinator
 from app.services.openclaw_weixin_chub_mode import WeixinChubModeManager
+from app.services.system_status import collect_system_status
+from app.services.weixin_translation import WeixinTranslationManager
 from app.notifications import NotificationService
 from app.web.routes import STATIC_DIR, router as web_router
 
@@ -204,7 +206,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         restart_notifier=completion_notifier.notify_restart,
         timeout_seconds=resolved_settings.codex_pty.quick_interaction_timeout_seconds,
     )
-    deferred_restart.set_ready_check(quick_interactions.deferred_restart_ready)
     deferred_restart.set_started_handler(
         quick_interactions.record_deferred_restart_started
     )
@@ -215,11 +216,39 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         resolved_settings.codex_pty.ticket_ttl_seconds
     )
     terminal_connections = TerminalConnectionRegistry()
+    weixin_translation = WeixinTranslationManager(
+        resolved_settings.openclaw.weixin_chub_mode,
+        codex_pty_manager,
+        quick_interactions,
+    )
+    deferred_restart.set_ready_check(quick_interactions.deferred_restart_ready)
 
     def reclaim_weixin_terminal(session_id: str):
         terminal_tickets.revoke_session(session_id)
         terminal_connections.close_session(session_id)
         return codex_pty_manager.stop_session(session_id)
+
+    def archive_weixin_session(session_id: str) -> None:
+        with quick_interactions.destructive_operation_guard(session_id):
+            session = codex_pty_manager.get_session(session_id)
+            if session.activity in {"working", "unknown"}:
+                raise ApiError(
+                    409,
+                    "quick_interaction_terminal_working",
+                    "Codex session is active or its state is unknown",
+                )
+            if (
+                session.codex_session_id
+                and codex_pty_manager.has_active_writer(session.codex_session_id)
+            ):
+                raise ApiError(
+                    409,
+                    "quick_interaction_writer_active",
+                    "Codex session still has an active writer",
+                )
+            terminal_tickets.revoke_session(session_id)
+            terminal_connections.close_session(session_id)
+            codex_pty_manager.archive_session(session_id)
 
     weixin_chub_mode = WeixinChubModeManager(
         resolved_settings,
@@ -228,7 +257,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         completion_notifier.validate_weixin_route,
         reclaim_weixin_terminal,
         codex_rate_limits,
+        translation_manager=weixin_translation,
+        session_archiver=archive_weixin_session,
+        system_status_reader=lambda: collect_system_status(
+            resolved_settings,
+            detected_platform,
+        ),
     )
+    completion_notifier.session_slot_validator = (
+        weixin_chub_mode.session_slot_matches
+    )
+    completion_notifier.codex_status_reader = weixin_chub_mode.codex_status_message
     codex_pty_manager.set_quick_interaction_checker(quick_interactions.is_running)
     openclaw_manager = OpenClawManager()
     notification_service = NotificationService(resolved_settings.notifications)
@@ -236,6 +275,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_application: FastAPI):
         restart_recovery_task = None
+        weixin_chub_mode.start_status_cache()
         if (
             deferred_restart.requires_service_confirmation()
             or quick_interactions.has_pending_deferred_restart_notifications()
@@ -259,6 +299,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 restart_recovery_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await restart_recovery_task
+            await asyncio.to_thread(weixin_translation.close)
             await quick_interactions.aclose()
             await notification_service.close()
             codex_pty_manager.close()
@@ -281,6 +322,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.quick_interactions = quick_interactions
     application.state.deferred_restart = deferred_restart
     application.state.weixin_chub_mode = weixin_chub_mode
+    application.state.weixin_translation = weixin_translation
     application.state.terminal_tickets = terminal_tickets
     application.state.terminal_connections = terminal_connections
     application.state.automation_manager = AutomationManager(resolved_settings)

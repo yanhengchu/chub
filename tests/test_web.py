@@ -997,6 +997,18 @@ async def test_security_headers_apply_to_unhandled_errors(
 
 
 @pytest.mark.anyio
+async def test_codex_sessions_use_placeholder_for_empty_title(
+    settings: Settings,
+) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/static/js/features/codex-sessions.js")
+
+    assert response.status_code == 200
+    assert 'session.title || "未命名 Session"' in response.text
+
+
+@pytest.mark.anyio
 async def test_page_uses_external_script_only(settings: Settings) -> None:
     transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:

@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <meta name="color-scheme" content="dark">
-    <title>{{ session.title or session.workspace_name }} · Codex PTY</title>
+    <title>{{ session.title or "未命名 Session" }} · Codex PTY</title>
     <link rel="stylesheet" href="/static/terminal.css">
   </head>
   <body data-session-id="{{ session.id }}" data-page-id="{{ page.id }}">

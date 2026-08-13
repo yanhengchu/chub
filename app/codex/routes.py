@@ -391,6 +391,7 @@ async def archive_session(session_id: str, request: Request) -> ApiResponse[None
             target=session_id,
         )
         raise
+    await asyncio.to_thread(_release_weixin_session_slot, request, session_id)
     log_operation(
         request,
         action="archive_codex_session",
@@ -418,6 +419,7 @@ async def delete_session(session_id: str, request: Request) -> ApiResponse[None]
             target=session_id,
         )
         raise
+    await asyncio.to_thread(_release_weixin_session_slot, request, session_id)
     log_operation(
         request,
         action="delete_codex_session",
@@ -425,6 +427,38 @@ async def delete_session(session_id: str, request: Request) -> ApiResponse[None]
         target=session_id,
     )
     return ApiResponse(data=None)
+
+
+def _release_weixin_session_slot(request: Request, session_id: str) -> None:
+    operation_id = uuid4().hex
+    source_ip = request.client.host if request.client else "unknown"
+    for status in ("requested", "started"):
+        write_operation(
+            operation_id=operation_id,
+            action="weixin_chub_mode_session_slot_release",
+            status=status,
+            target=session_id,
+            source_ip=source_ip,
+        )
+    try:
+        request.app.state.weixin_chub_mode.release_session_slot(session_id)
+    except Exception:
+        write_operation(
+            operation_id=operation_id,
+            action="weixin_chub_mode_session_slot_release",
+            status="failed",
+            target=session_id,
+            source_ip=source_ip,
+        )
+        LOGGER.warning("Unable to release Weixin Session slot", exc_info=True)
+        return
+    write_operation(
+        operation_id=operation_id,
+        action="weixin_chub_mode_session_slot_release",
+        status="succeeded",
+        target=session_id,
+        source_ip=source_ip,
+    )
 
 
 def _terminal_authorized(connection: Request | WebSocket, session_id: str) -> bool:

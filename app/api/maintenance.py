@@ -25,7 +25,7 @@ def restart_hub(request: Request) -> ApiResponse[dict[str, str]]:
         status="requested",
         target="chub",
     )
-    if request.app.state.quick_interactions.has_active_tasks():
+    if request.app.state.quick_interactions.has_restart_blocking_tasks():
         log_operation(
             request,
             action="restart_hub",

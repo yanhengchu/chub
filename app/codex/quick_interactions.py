@@ -54,7 +54,6 @@ DEFERRED_RESTART_WAITING_SUFFIX = (
     "全部完成后将自动重启 Chub。"
 )
 DEFERRED_RESTART_FAILED_SUFFIX = "Chub 重启登记失败，本次不会自动重启。"
-MAX_WEIXIN_STATUS_TASKS = 10
 ACTIVE_WRITER_ERROR = "Codex Session 正在由其他进程使用，请等待任务结束或停止实时终端。"
 VOICE_TRANSCRIPT_MARKER = "[[chub-weixin-voice-transcript]]"
 SENSITIVE_SUMMARY_VALUE_PATTERN = re.compile(
@@ -71,12 +70,10 @@ FEISHU_WEBHOOK_PATTERN = re.compile(
 
 
 @dataclass(frozen=True)
-class WeixinTaskStatusCheck:
-    outcome: str
-    task: QuickInteractionTask | None = None
-    tasks: tuple[QuickInteractionTask, ...] = ()
+class WeixinTaskStatusSnapshot:
     running_count: int = 0
-    notification_outcome: str | None = None
+    pending_notification_count: int = 0
+    failed_notification_count: int = 0
 
 
 def build_task_summary(prompt: str) -> str:
@@ -239,6 +236,10 @@ class QuickInteractionManager:
         operation_id: str,
         source_ip: str,
         notification_route: QuickInteractionWeixinRoute | None = None,
+        weixin_session_slot: int | None = None,
+        weixin_session_title: str | None = None,
+        kind: str = "standard",
+        translation_original: str | None = None,
     ) -> QuickInteractionTask:
         with self._session_lock(session_id):
             if self.deferred_restart is not None and self.deferred_restart.pending():
@@ -295,6 +296,10 @@ class QuickInteractionManager:
                     session_id=session_id,
                     prompt=prompt,
                     summary=build_task_summary(prompt),
+                    weixin_session_slot=weixin_session_slot,
+                    weixin_session_title=weixin_session_title,
+                    kind=kind,
+                    translation_original=translation_original,
                     status="requested",
                     notification_route=(
                         "weixin-task" if notification_route is not None else "default"
@@ -309,10 +314,48 @@ class QuickInteractionManager:
                 self._operations[task.id] = (operation_id, source_ip)
                 if notification_route is not None:
                     self._notification_routes[task.id] = notification_route
-                self._write()
+                try:
+                    self._write()
+                except OSError:
+                    self._tasks.pop(task.id, None)
+                    self._running_sessions.discard(session_id)
+                    self._active_task_ids.discard(task.id)
+                    self._task_done_events.pop(task.id, None)
+                    self._operations.pop(task.id, None)
+                    self._notification_routes.pop(task.id, None)
+                    raise
         self._log_status(task.id, "requested", session.id)
-        threading.Thread(target=self._run, args=(task.id, session, prompt), daemon=True).start()
+        try:
+            threading.Thread(
+                target=self._run,
+                args=(task.id, session, prompt),
+                daemon=True,
+            ).start()
+        except RuntimeError:
+            with self._lock:
+                self._tasks.pop(task.id, None)
+                self._running_sessions.discard(session_id)
+                self._active_task_ids.discard(task.id)
+                self._task_done_events.pop(task.id, None)
+                self._notification_routes.pop(task.id, None)
+                self._write()
+            self._log_status(task.id, "failed", session.id)
+            with self._lock:
+                self._operations.pop(task.id, None)
+            raise ApiError(
+                503,
+                "quick_interaction_start_failed",
+                "快速交互未能启动。",
+            ) from None
         return task
+
+    def weixin_session_ids(self) -> set[str]:
+        with self._lock:
+            return {
+                task.session_id
+                for task in self._tasks.values()
+                if task.notification_route == "weixin-task"
+            }
 
     def _any_running(self, session_id: str) -> bool:
         return session_id in self._running_sessions
@@ -413,134 +456,34 @@ class QuickInteractionManager:
         )
         return [latest, *pinned, *ordinary]
 
-    def check_weixin_task_status(
+    def weixin_task_status_snapshot(
         self,
         route: QuickInteractionWeixinRoute,
-        *,
-        operation_id: str,
-        source_ip: str,
-    ) -> WeixinTaskStatusCheck:
-        """Inspect one sender's tasks and retry an eligible original notification."""
-        notification_operation: tuple[str, str] | None = None
+    ) -> WeixinTaskStatusSnapshot:
+        """Return one sender's task counts without changing notification state."""
         with self._lock:
             matching = [
                 task
                 for task in self._tasks.values()
                 if task.notification_route == "weixin-task"
+                and task.kind == "standard"
                 and self._notification_routes.get(task.id) == route
             ]
-            running = [
-                task for task in matching if task.status in {"requested", "running"}
-            ]
-            sorted_running = sorted(
-                running,
-                key=lambda item: (item.updated_at, item.id),
-                reverse=True,
-            )
-            running_snapshots = tuple(
-                task.model_copy(deep=True)
-                for task in sorted_running[:MAX_WEIXIN_STATUS_TASKS]
-            )
-            running_count = len(sorted_running)
-
-            ended = [
-                task
-                for task in matching
-                if task.status not in {"requested", "running"}
-                and task.notification_status in {None, "failed", "skipped"}
-            ]
-            if ended:
-                task = max(ended, key=lambda item: (item.updated_at, item.id))
-                if self.completion_notifier is None:
-                    if running_snapshots:
-                        return WeixinTaskStatusCheck(
-                            outcome="running",
-                            task=running_snapshots[0],
-                            tasks=running_snapshots,
-                            running_count=running_count,
-                            notification_outcome="notification_failed",
-                        )
-                    return WeixinTaskStatusCheck(
-                        outcome="notification_failed",
-                        task=task.model_copy(deep=True),
-                    )
-                task.notification_status = "pending"
-                task.notification_error = None
-                task.notification_updated_at = utc_now()
-                self._operations[task.id] = (operation_id, source_ip)
-                self._write()
-                notification_operation = (operation_id, source_ip)
-                task_id = task.id
-            else:
-                sending = [
-                    task
-                    for task in matching
-                    if task.status not in {"requested", "running"}
+            return WeixinTaskStatusSnapshot(
+                running_count=sum(
+                    task.status in {"requested", "running"} for task in matching
+                ),
+                pending_notification_count=sum(
+                    task.status not in {"requested", "running"}
                     and task.notification_status in {"pending", "sending"}
-                ]
-                if sending:
-                    task = max(sending, key=lambda item: (item.updated_at, item.id))
-                    if running_snapshots:
-                        return WeixinTaskStatusCheck(
-                            outcome="running",
-                            task=running_snapshots[0],
-                            tasks=running_snapshots,
-                            running_count=running_count,
-                            notification_outcome="notification_sending",
-                        )
-                    return WeixinTaskStatusCheck(
-                        outcome="notification_sending",
-                        task=task.model_copy(deep=True),
-                    )
-                if running_snapshots:
-                    return WeixinTaskStatusCheck(
-                        outcome="running",
-                        task=running_snapshots[0],
-                        tasks=running_snapshots,
-                        running_count=running_count,
-                    )
-                return WeixinTaskStatusCheck(outcome="empty")
-
-        notification_thread = threading.Thread(
-            target=self._deliver_completion_notification,
-            args=(task_id, notification_operation),
-            daemon=True,
-            name=f"chub-status-notification-{task_id[:8]}",
-        )
-        try:
-            notification_thread.start()
-        except RuntimeError:
-            with self._lock:
-                task = self._tasks.get(task_id)
-                if task is not None and task.notification_status == "pending":
-                    task.notification_status = "failed"
-                    task.notification_error = "微信通知线程未能启动。"
-                    task.notification_updated_at = utc_now()
-                    self._write()
-                    snapshot = task.model_copy(deep=True)
-                else:
-                    snapshot = task.model_copy(deep=True) if task is not None else None
-            return WeixinTaskStatusCheck(
-                outcome="running" if running_snapshots else "notification_failed",
-                task=running_snapshots[0] if running_snapshots else snapshot,
-                tasks=running_snapshots,
-                running_count=running_count,
-                notification_outcome=(
-                    "notification_failed" if running_snapshots else None
+                    for task in matching
+                ),
+                failed_notification_count=sum(
+                    task.status not in {"requested", "running"}
+                    and task.notification_status in {None, "failed", "skipped"}
+                    for task in matching
                 ),
             )
-        with self._lock:
-            task = self._tasks.get(task_id)
-            snapshot = task.model_copy(deep=True) if task is not None else None
-        if running_snapshots:
-            return WeixinTaskStatusCheck(
-                outcome="running",
-                task=running_snapshots[0],
-                tasks=running_snapshots,
-                running_count=running_count,
-                notification_outcome="notification_queued",
-            )
-        return WeixinTaskStatusCheck(outcome="notification_queued", task=snapshot)
 
     def set_pinned(
         self,
@@ -588,13 +531,26 @@ class QuickInteractionManager:
         with self._lock:
             return bool(self._active_task_ids)
 
+    def has_restart_blocking_tasks(self) -> bool:
+        with self._lock:
+            return any(
+                (task := self._tasks.get(task_id)) is None
+                or task.kind != "translation"
+                for task_id in self._active_task_ids
+            )
+
     def deferred_restart_ready(self) -> bool:
         with self._lock:
-            if self._active_task_ids:
+            if any(
+                (task := self._tasks.get(task_id)) is None
+                or task.kind != "translation"
+                for task_id in self._active_task_ids
+            ):
                 return False
             return not any(
                 task.notification_status in {"pending", "sending"}
                 for task in self._tasks.values()
+                if task.kind != "translation"
             )
 
     def has_pending_deferred_restart_notifications(self) -> bool:
@@ -862,7 +818,7 @@ class QuickInteractionManager:
             env["CHUB_PTY_SESSION_ID"] = session.id
             env["CHUB_PTY_HOOK_DIR"] = str(self.codex_manager.hook_dir)
             env["CHUB_ACTIVITY_SOURCE"] = "quick"
-            if self.deferred_restart is not None:
+            if self.deferred_restart is not None and task.kind != "translation":
                 env["CHUB_QUICK_TASK_ID"] = task_id
                 env["CHUB_QUICK_RESTART_DIR"] = str(self.restart_request_dir)
             with (
@@ -885,7 +841,11 @@ class QuickInteractionManager:
                 if cancelled:
                     self._kill_process(process)
                 process.communicate(
-                    input=self._codex_execution_prompt(prompt).encode("utf-8"),
+                    input=(
+                        prompt
+                        if task.kind == "translation"
+                        else self._codex_execution_prompt(prompt)
+                    ).encode("utf-8"),
                     timeout=self.timeout_seconds,
                 )
             self._set_private_permissions(result_path)
@@ -908,7 +868,14 @@ class QuickInteractionManager:
                 )
                 return
             result = self._read_limited(result_path, MAX_RESULT_BYTES)
-            if restart_request_path.is_file() and self.deferred_restart is not None:
+            if task.kind == "translation" and not self._valid_translation_result(result):
+                self._finish(task_id, "failed", "Codex 未返回有效的润色与英文翻译。")
+                return
+            if (
+                task.kind != "translation"
+                and restart_request_path.is_file()
+                and self.deferred_restart is not None
+            ):
                 with self._lock:
                     operation = self._operations.get(task_id) or (
                         uuid.uuid4().hex,
@@ -1039,6 +1006,19 @@ class QuickInteractionManager:
         return "快速交互"
 
     @staticmethod
+    def _valid_translation_result(result: str) -> bool:
+        match = re.fullmatch(
+            r"润色：\n(?P<polished>\S(?:.*\S)?)\n\nEnglish：\n(?P<english>\S(?:.*\S)?)",
+            result.strip(),
+            flags=re.DOTALL,
+        )
+        return bool(
+            match
+            and match.group("polished").strip()
+            and match.group("english").strip()
+        )
+
+    @staticmethod
     def _command(session: CodexSession, result_path: Path) -> list[str]:
         permission_args = {
             "ask": ['-c', 'default_permissions=":workspace"', '-c', 'approval_policy="on-request"', '-c', 'approvals_reviewer="user"'],
@@ -1162,7 +1142,13 @@ class QuickInteractionManager:
             if (
                 self.completion_notifier is not None
                 and task.notification_status is None
-                and status in {"succeeded", "failed", "timed_out"}
+                and (
+                    status == "succeeded"
+                    or (
+                        task.kind != "translation"
+                        and status in {"failed", "timed_out"}
+                    )
+                )
             ):
                 task.notification_status = "pending"
                 task.notification_updated_at = task.updated_at
@@ -1172,11 +1158,21 @@ class QuickInteractionManager:
                 )
             self._write()
         if notification_operation is not None:
-            threading.Thread(
-                target=self._deliver_completion_notification,
-                args=(task_id, notification_operation),
-                daemon=True,
-            ).start()
+            try:
+                threading.Thread(
+                    target=self._deliver_completion_notification,
+                    args=(task_id, notification_operation),
+                    daemon=True,
+                ).start()
+            except RuntimeError:
+                with self._lock:
+                    task = self._tasks.get(task_id)
+                    if task is not None and task.notification_status == "pending":
+                        task.notification_status = "failed"
+                        task.notification_error = "微信通知线程未能启动。"
+                        task.notification_updated_at = utc_now()
+                        self._write()
+                LOGGER.warning("Unable to start completion notification thread")
 
     def _deliver_completion_notification(
         self,

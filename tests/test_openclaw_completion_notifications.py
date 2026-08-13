@@ -20,18 +20,62 @@ def task(
     result: str = "执行完成",
     notification_route: str = "default",
     summary: str | None = None,
+    weixin_session_slot: int | None = None,
+    weixin_session_title: str | None = None,
+    kind: str = "standard",
+    translation_original: str | None = None,
 ) -> QuickInteractionTask:
     return QuickInteractionTask(
         id="task-1",
         session_id="session-1",
         prompt="执行任务",
         summary=summary,
+        weixin_session_slot=weixin_session_slot,
+        weixin_session_title=weixin_session_title,
+        kind=kind,
+        translation_original=translation_original,
         status="succeeded",
         result=result,
         notification_route=notification_route,
         created_at=utc_now(),
         updated_at=utc_now(),
     )
+
+
+def test_translation_notification_contains_original_polish_and_english() -> None:
+    notifier = OpenClawCompletionNotifier(OpenClawCompletionNotificationConfig())
+
+    messages = notifier._messages_for(
+        task(
+            result="润色：\n请检查服务状态。\n\nEnglish：\nPlease check the service status.",
+            kind="translation",
+            translation_original="检查下服务咋样",
+        )
+    )
+
+    assert messages == [
+        "文本优化与翻译\n\n原文：\n检查下服务咋样\n\n"
+        "润色：\n请检查服务状态。\n\n"
+        "English：\nPlease check the service status."
+    ]
+
+
+def test_translation_notification_is_bounded_to_five_parts() -> None:
+    notifier = OpenClawCompletionNotifier(
+        OpenClawCompletionNotificationConfig(max_message_chars=256)
+    )
+
+    messages = notifier._messages_for(
+        task(
+            result="润色：\n" + "内容" * 2000 + "\n\nEnglish：\n" + "text " * 2000,
+            kind="translation",
+            translation_original="原文" * 1000,
+        )
+    )
+
+    assert len(messages) == 5
+    assert all(len(message) <= 256 for message in messages)
+    assert "结果超过微信发送上限" in messages[-1]
 
 
 def executable(tmp_path: Path) -> Path:
@@ -139,6 +183,31 @@ def test_notification_reuses_persisted_task_summary() -> None:
     assert messages == [
         "任务执行成功\n\n任务摘要：检查 Ubuntu 服务状态\n\n完整结果"
     ]
+
+
+def test_notification_includes_stable_session_and_marks_reused_slot() -> None:
+    notifier = OpenClawCompletionNotifier(
+        OpenClawCompletionNotificationConfig(max_message_chars=256)
+    )
+    completed = task(
+        result="完整结果",
+        summary="检查服务",
+        weixin_session_slot=3,
+        weixin_session_title="服务检查",
+    )
+
+    notifier.session_slot_validator = lambda slot, session_id: (
+        slot == 3 and session_id == "session-1"
+    )
+    assert notifier._messages_for(completed) == [
+        "任务执行成功\n\nSession：3 · 服务检查\n\n"
+        "任务摘要：检查服务\n\n完整结果"
+    ]
+
+    notifier.session_slot_validator = lambda _slot, _session_id: False
+    assert "Session：3 · 服务检查（已不可切换）" in notifier._messages_for(
+        completed
+    )[0]
 
 
 @pytest.mark.parametrize(
@@ -488,6 +557,12 @@ def test_restart_notification_uses_weixin_task_route(
     monkeypatch.setattr("shutil.which", lambda _name: str(command))
     monkeypatch.setattr("subprocess.run", run)
     notifier = OpenClawCompletionNotifier(OpenClawCompletionNotificationConfig())
+    notifier.codex_status_reader = lambda: (
+        "Codex Usage: Weekly 暂不可用 · Daily tokens 暂不可用\n\n"
+        "Active sessions:\n"
+        "1. codex new，我… · Available\n"
+        "3. 服务检查 [Current] · Available"
+    )
     route = QuickInteractionWeixinRoute(
         account_id="route-account",
         recipient="origin@im.wechat",
@@ -497,6 +572,8 @@ def test_restart_notification_uses_weixin_task_route(
         task(
             notification_route="weixin-task",
             summary="检查 Ubuntu 服务状态",
+            weixin_session_slot=3,
+            weixin_session_title="服务检查",
         ),
         route,
         "succeeded",
@@ -508,7 +585,12 @@ def test_restart_notification_uses_weixin_task_route(
     assert send[send.index("--target") + 1] == "origin@im.wechat"
     assert send[send.index("--message") + 1] == (
         "Chub 已完成自动重启，服务已恢复。\n\n"
-        "关联任务：检查 Ubuntu 服务状态"
+        "关联 Session：3 · 服务检查\n\n"
+        "关联任务：检查 Ubuntu 服务状态\n\n"
+        "Codex Usage: Weekly 暂不可用 · Daily tokens 暂不可用\n\n"
+        "Active sessions:\n"
+        "1. codex new，我… · Available\n"
+        "3. 服务检查 [Current] · Available"
     )
 
 
@@ -525,6 +607,55 @@ def test_restart_notification_skips_page_task_without_inspecting_openclaw(
 
     assert result.status == "skipped"
     assert result.error == "页面任务不发送微信重启通知。"
+
+
+def test_restart_notification_uses_unavailable_for_legacy_session_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    command = executable(tmp_path)
+    calls: list[list[str]] = []
+
+    def run(arguments, **kwargs):
+        calls.append(arguments)
+        payload = (
+            {
+                "channelAccounts": {
+                    "openclaw-weixin": [
+                        {
+                            "accountId": "route-account",
+                            "enabled": True,
+                            "configured": True,
+                            "running": True,
+                        }
+                    ]
+                }
+            }
+            if len(calls) == 1
+            else {"result": {"messageId": "message-1"}}
+        )
+        kwargs["stdout"].write(json.dumps(payload).encode())
+        return subprocess.CompletedProcess(arguments, 0)
+
+    monkeypatch.setattr("shutil.which", lambda _name: str(command))
+    monkeypatch.setattr("subprocess.run", run)
+    notifier = OpenClawCompletionNotifier(OpenClawCompletionNotificationConfig())
+    route = QuickInteractionWeixinRoute(
+        account_id="route-account",
+        recipient="origin@im.wechat",
+    )
+
+    result = notifier.notify_restart(
+        task(notification_route="weixin-task"),
+        route,
+        "succeeded",
+    )
+
+    assert result.status == "sent"
+    message = calls[1][calls[1].index("--message") + 1]
+    assert "关联 Session：Unavailable" in message
+    assert "关联任务：Unavailable" in message
+    assert "Codex Usage: 暂不可用\n\nActive sessions: 暂不可用" in message
 
 
 def test_weixin_route_validation_requires_one_healthy_clawbot(

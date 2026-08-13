@@ -186,6 +186,7 @@ QuickInteractionDeferredRestartStatus = Literal[
     "cleared",
 ]
 QuickInteractionNotificationRoute = Literal["default", "weixin-task"]
+QuickInteractionKind = Literal["standard", "translation"]
 
 
 class QuickInteractionWeixinRoute(BaseModel):
@@ -243,10 +244,16 @@ class QuickInteractionTask(BaseModel):
 
     id: str
     session_id: str
-    prompt: str | None = Field(default=None, max_length=8000)
+    # Internal translation tasks add a fixed bounded instruction around an
+    # otherwise API-limited 8000-character source.
+    prompt: str | None = Field(default=None, max_length=20_000)
     # Keep the legacy bound so persisted tasks created before the 13-character
     # summary limit remain readable after an upgrade.
     summary: str | None = Field(default=None, max_length=48)
+    weixin_session_slot: int | None = Field(default=None, ge=1, le=9)
+    weixin_session_title: str | None = Field(default=None, max_length=48)
+    kind: QuickInteractionKind = "standard"
+    translation_original: str | None = Field(default=None, max_length=8000)
     status: QuickInteractionStatus
     result: str | None = Field(default=None, max_length=100_000)
     error: str | None = Field(default=None, max_length=2000)

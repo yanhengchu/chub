@@ -337,7 +337,7 @@ function renderCodexSessions(sessions) {
     item.className = "session-item";
     main.className = "session-enter";
     main.type = "button";
-    title.textContent = session.title || session.workspace_name;
+    title.textContent = session.title || "未命名 Session";
     title.title = title.textContent;
     const state = quickInteractionRunning
       ? "快速交互 · 执行中"

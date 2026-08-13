@@ -48,6 +48,53 @@ def test_create_session_persists_validated_model_defaults(settings: Settings) ->
     assert stored.reasoning_effort == "high"
 
 
+def test_discard_unstarted_session_only_removes_local_session(
+    settings: Settings,
+) -> None:
+    manager = CodexPtyManager(settings)
+    local = CodexSession(
+        id="local-session",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd=Path("/workspace/chub"),
+        status="stopped",
+    )
+    native = native_session("native-session")
+    manager.store.save(local)
+    manager.store.save(native)
+
+    assert manager.discard_unstarted_session(local.id) is True
+    assert manager.store.get(local.id) is None
+    assert manager.discard_unstarted_session(native.id) is False
+    assert manager.store.get(native.id) is not None
+
+
+def test_list_sessions_hides_internal_translation_session(
+    settings: Settings,
+) -> None:
+    manager = CodexPtyManager(settings)
+    visible = CodexSession(
+        id="visible-session",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd=Path("/workspace/chub"),
+        status="stopped",
+    )
+    internal = visible.model_copy(
+        update={
+            "id": "translation-session",
+            "workspace_id": "weixin-translation",
+            "workspace_name": "微信文本优化与翻译",
+        }
+    )
+    manager.store.save(visible)
+    manager.store.save(internal)
+    manager._sync_native_sessions = MagicMock()
+    manager._refresh_status = MagicMock()
+
+    assert [session.id for session in manager.list_sessions()] == [visible.id]
+
+
 def test_writer_probe_detects_active_and_released_lock(
     settings: Settings,
     tmp_path: Path,

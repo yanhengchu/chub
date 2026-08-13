@@ -57,6 +57,12 @@ openclaw:
     # Explicitly enable only after the single-Owner WeChat private-message route is ready.
     enabled: false
     workspace_id: "chub"
+    # Mirror each ordinary task into one independent read-only translation Session.
+    # Opt in only after accepting the model/prompt-injection trust boundary.
+    translation_enabled: false
+    translation_queue_limit: 10
+    translation_max_wait_seconds: 1800
+    translation_max_input_chars: 8000
   quick_interaction_completion:
     # Default recipient for Chub/page-origin quick interactions only.
     # Keep weixin_account_id null to select the only healthy ClawBot; set it only as a

@@ -201,6 +201,69 @@ def test_submit_allows_new_session_and_prepares_managed_profile(
     thread.start.assert_called_once_with()
 
 
+def test_submit_thread_start_failure_rolls_back_registration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    quick_interactions = manager(tmp_path)
+    session = quick_interactions.codex_manager.get_session.return_value
+    thread = MagicMock()
+    thread.start.side_effect = RuntimeError("thread unavailable")
+    monkeypatch.setattr(
+        "app.codex.quick_interactions.threading.Thread",
+        MagicMock(return_value=thread),
+    )
+
+    with pytest.raises(ApiError) as error:
+        quick_interactions.submit(
+            session.id,
+            "执行任务",
+            operation_id="operation-start-failure",
+            source_ip="127.0.0.1",
+        )
+
+    assert error.value.code == "quick_interaction_start_failed"
+    assert quick_interactions.is_running(session.id) is False
+    assert quick_interactions._tasks == {}
+
+
+def test_submit_persistence_failure_rolls_back_registration(
+    tmp_path: Path,
+) -> None:
+    quick_interactions = manager(tmp_path)
+    session = quick_interactions.codex_manager.get_session.return_value
+    quick_interactions._write = MagicMock(side_effect=OSError("write failed"))
+
+    with pytest.raises(OSError):
+        quick_interactions.submit(
+            session.id,
+            "执行任务",
+            operation_id="operation-write-failure",
+            source_ip="127.0.0.1",
+        )
+
+    assert quick_interactions.is_running(session.id) is False
+    assert quick_interactions._tasks == {}
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        "润色：\n\nEnglish：\nEnglish",
+        "润色：\n中文\n\nEnglish：\n",
+        "前言\n润色：\n中文\n\nEnglish：\nEnglish",
+    ],
+)
+def test_translation_result_validation_rejects_invalid_shapes(result: str) -> None:
+    assert QuickInteractionManager._valid_translation_result(result) is False
+
+
+def test_translation_result_validation_accepts_exact_nonempty_sections() -> None:
+    assert QuickInteractionManager._valid_translation_result(
+        "润色：\n清晰中文\n\nEnglish：\nClear English"
+    )
+
+
 def test_json_error_extracts_turn_failure_and_redacts_bearer(tmp_path: Path) -> None:
     path = tmp_path / "events.jsonl"
     path.write_text(
@@ -308,7 +371,9 @@ def test_notification_failure_does_not_change_task_result(
     assert finished.notification_error == "微信通知未送达。"
 
 
-def test_status_check_returns_matching_running_weixin_task(tmp_path: Path) -> None:
+def test_weixin_task_status_snapshot_is_read_only_and_route_scoped(
+    tmp_path: Path,
+) -> None:
     quick_interactions = manager(tmp_path)
     route = QuickInteractionWeixinRoute(
         account_id="weixin-account",
@@ -334,80 +399,6 @@ def test_status_check_returns_matching_running_weixin_task(tmp_path: Path) -> No
         ),
     }
 
-    checked = quick_interactions.check_weixin_task_status(
-        route,
-        operation_id="status-check-1",
-        source_ip="100.64.0.21",
-    )
-
-    assert checked.outcome == "running"
-    assert checked.task is not None
-    assert checked.task.id == running.id
-
-
-def test_status_check_returns_all_matching_running_weixin_tasks(
-    tmp_path: Path,
-) -> None:
-    quick_interactions = manager(tmp_path)
-    route = QuickInteractionWeixinRoute(
-        account_id="weixin-account",
-        recipient="owner@im.wechat",
-    )
-    first = QuickInteractionTask(
-        id="running-1",
-        session_id="session-1",
-        prompt="任务一",
-        summary="任务一",
-        status="running",
-        notification_route="weixin-task",
-        created_at=utc_now(),
-        updated_at=utc_now(),
-    )
-    second = first.model_copy(
-        update={"id": "running-2", "session_id": "session-2", "summary": "任务二"}
-    )
-    quick_interactions._tasks = {first.id: first, second.id: second}
-    quick_interactions._notification_routes = {first.id: route, second.id: route}
-
-    checked = quick_interactions.check_weixin_task_status(
-        route,
-        operation_id="status-check-multiple",
-        source_ip="100.64.0.21",
-    )
-
-    assert checked.outcome == "running"
-    assert {task.id for task in checked.tasks} == {"running-1", "running-2"}
-
-
-def test_status_check_retries_failed_notification_while_other_task_runs(
-    tmp_path: Path,
-) -> None:
-    notifier_started = threading.Event()
-    notifier_release = threading.Event()
-
-    def notify(*_args):
-        notifier_started.set()
-        assert notifier_release.wait(timeout=2)
-        return SimpleNamespace(status="sent", error=None)
-
-    quick_interactions = manager(
-        tmp_path,
-        completion_notifier=MagicMock(side_effect=notify),
-    )
-    route = QuickInteractionWeixinRoute(
-        account_id="weixin-account",
-        recipient="owner@im.wechat",
-    )
-    running = QuickInteractionTask(
-        id="running-task",
-        session_id="session-1",
-        prompt="运行中",
-        summary="运行中",
-        status="running",
-        notification_route="weixin-task",
-        created_at=utc_now(),
-        updated_at=utc_now(),
-    )
     ended = QuickInteractionTask(
         id="ended-task",
         session_id="session-2",
@@ -420,180 +411,16 @@ def test_status_check_retries_failed_notification_while_other_task_runs(
         created_at=utc_now(),
         updated_at=utc_now(),
     )
-    quick_interactions._tasks = {running.id: running, ended.id: ended}
-    quick_interactions._notification_routes = {running.id: route, ended.id: route}
+    quick_interactions._tasks.update({running.id: running, ended.id: ended})
+    quick_interactions._notification_routes[ended.id] = route
 
-    checked = quick_interactions.check_weixin_task_status(
-        route,
-        operation_id="status-check-running-and-ended",
-        source_ip="100.64.0.21",
-    )
+    before = ended.model_copy(deep=True)
+    snapshot = quick_interactions.weixin_task_status_snapshot(route)
 
-    assert checked.outcome == "running"
-    assert checked.tasks[0].id == running.id
-    assert checked.notification_outcome == "notification_queued"
-    assert notifier_started.wait(timeout=1)
-    notifier_release.set()
-
-
-def test_status_check_retries_failed_notification_through_original_route(
-    tmp_path: Path,
-) -> None:
-    notifier_started = threading.Event()
-    notifier_release = threading.Event()
-
-    def notify(*_args):
-        notifier_started.set()
-        assert notifier_release.wait(timeout=2)
-        return SimpleNamespace(status="sent", error=None)
-
-    notifier = MagicMock(side_effect=notify)
-    quick_interactions = manager(tmp_path, completion_notifier=notifier)
-    route = QuickInteractionWeixinRoute(
-        account_id="weixin-account",
-        recipient="owner@im.wechat",
-    )
-    task = QuickInteractionTask(
-        id="ended-task",
-        session_id="session-1",
-        prompt="检查设备",
-        summary="检查设备",
-        status="succeeded",
-        result="设备正常",
-        notification_status="failed",
-        notification_route="weixin-task",
-        created_at=utc_now(),
-        updated_at=utc_now(),
-    )
-    quick_interactions._tasks[task.id] = task
-    quick_interactions._notification_routes[task.id] = route
-
-    checked = quick_interactions.check_weixin_task_status(
-        route,
-        operation_id="status-check-2",
-        source_ip="100.64.0.21",
-    )
-
-    assert checked.outcome == "notification_queued"
-    assert checked.task is not None
-    assert checked.task.notification_status in {"pending", "sending"}
-    assert notifier_started.wait(timeout=1)
-    assert quick_interactions.get(task.id).notification_status == "sending"
-    notifier_release.set()
-    for _attempt in range(100):
-        if quick_interactions.get(task.id).notification_status == "sent":
-            break
-        threading.Event().wait(0.01)
-    assert quick_interactions.get(task.id).notification_status == "sent"
-    notification_task, notification_route = notifier.call_args.args
-    assert notification_task.id == task.id
-    assert notification_route == route
-
-
-def test_status_check_does_not_duplicate_notification_in_progress(
-    tmp_path: Path,
-) -> None:
-    notifier = MagicMock(return_value=SimpleNamespace(status="sent", error=None))
-    quick_interactions = manager(tmp_path, completion_notifier=notifier)
-    route = QuickInteractionWeixinRoute(
-        account_id="weixin-account",
-        recipient="owner@im.wechat",
-    )
-    task = QuickInteractionTask(
-        id="sending-task",
-        session_id="session-1",
-        prompt="检查设备",
-        status="succeeded",
-        result="设备正常",
-        notification_status="sending",
-        notification_route="weixin-task",
-        created_at=utc_now(),
-        updated_at=utc_now(),
-    )
-    quick_interactions._tasks[task.id] = task
-    quick_interactions._notification_routes[task.id] = route
-
-    checked = quick_interactions.check_weixin_task_status(
-        route,
-        operation_id="status-check-3",
-        source_ip="100.64.0.21",
-    )
-
-    assert checked.outcome == "notification_sending"
-    notifier.assert_not_called()
-
-
-def test_status_check_restores_failed_state_when_notification_thread_cannot_start(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    notifier = MagicMock(return_value=SimpleNamespace(status="sent", error=None))
-    quick_interactions = manager(tmp_path, completion_notifier=notifier)
-    route = QuickInteractionWeixinRoute(
-        account_id="weixin-account",
-        recipient="owner@im.wechat",
-    )
-    task = QuickInteractionTask(
-        id="thread-failure-task",
-        session_id="session-1",
-        prompt="检查设备",
-        status="succeeded",
-        result="设备正常",
-        notification_status="failed",
-        notification_route="weixin-task",
-        created_at=utc_now(),
-        updated_at=utc_now(),
-    )
-    quick_interactions._tasks[task.id] = task
-    quick_interactions._notification_routes[task.id] = route
-
-    thread = MagicMock()
-    thread.start.side_effect = RuntimeError("cannot start")
-    monkeypatch.setattr(
-        "app.codex.quick_interactions.threading.Thread",
-        MagicMock(return_value=thread),
-    )
-
-    checked = quick_interactions.check_weixin_task_status(
-        route,
-        operation_id="status-check-thread-failure",
-        source_ip="100.64.0.21",
-    )
-
-    assert checked.outcome == "notification_failed"
-    assert quick_interactions.get(task.id).notification_status == "failed"
-    assert quick_interactions.get(task.id).notification_error == "微信通知线程未能启动。"
-    notifier.assert_not_called()
-
-
-def test_status_check_ignores_sent_and_other_sender_tasks(tmp_path: Path) -> None:
-    quick_interactions = manager(tmp_path)
-    route = QuickInteractionWeixinRoute(
-        account_id="weixin-account",
-        recipient="owner@im.wechat",
-    )
-    task = QuickInteractionTask(
-        id="sent-task",
-        session_id="session-1",
-        prompt="检查设备",
-        status="succeeded",
-        result="设备正常",
-        notification_status="sent",
-        notification_route="weixin-task",
-        created_at=utc_now(),
-        updated_at=utc_now(),
-    )
-    quick_interactions._tasks[task.id] = task
-    quick_interactions._notification_routes[task.id] = route
-
-    checked = quick_interactions.check_weixin_task_status(
-        route,
-        operation_id="status-check-4",
-        source_ip="100.64.0.21",
-    )
-
-    assert checked.outcome == "empty"
-    assert checked.task is None
+    assert snapshot.running_count == 1
+    assert snapshot.pending_notification_count == 0
+    assert snapshot.failed_notification_count == 1
+    assert quick_interactions.get(ended.id) == before
 
 
 def test_weixin_notification_route_is_private_and_survives_restart(
@@ -1206,6 +1033,44 @@ def test_deferred_restart_ready_waits_for_tasks_and_notifications(
     assert quick_interactions.deferred_restart_ready() is False
     quick_interactions._active_task_ids.clear()
     assert quick_interactions.deferred_restart_ready() is True
+
+
+def test_deferred_restart_ready_ignores_translation_work(tmp_path: Path) -> None:
+    quick_interactions = manager(tmp_path)
+    task = QuickInteractionTask(
+        id="translation-1",
+        session_id="translation-session",
+        prompt="translate",
+        kind="translation",
+        status="running",
+        notification_status="sending",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    quick_interactions._tasks[task.id] = task
+    quick_interactions._active_task_ids.add(task.id)
+
+    assert quick_interactions.deferred_restart_ready() is True
+
+
+def test_failed_translation_does_not_queue_notification(tmp_path: Path) -> None:
+    notifier = MagicMock()
+    quick_interactions = manager(tmp_path, completion_notifier=notifier)
+    task = QuickInteractionTask(
+        id="translation-1",
+        session_id="translation-session",
+        prompt="translate",
+        kind="translation",
+        status="running",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    quick_interactions._tasks[task.id] = task
+
+    quick_interactions._finish(task.id, "failed", "translation failed")
+
+    assert quick_interactions.get(task.id).notification_status is None
+    notifier.assert_not_called()
 
 
 def test_deferred_restart_completion_distinguishes_automatic_and_manual(

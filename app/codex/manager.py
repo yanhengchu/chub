@@ -111,7 +111,11 @@ class CodexPtyManager:
         for session in sessions:
             self._refresh_status(session)
             self._reconcile_quick_activity(session)
-        return [self._public(session) for session in self.store.list()]
+        return [
+            self._public(session)
+            for session in self.store.list()
+            if session.workspace_id != "weixin-translation"
+        ]
 
     def get_session(self, session_id: str) -> CodexSession:
         self._consume_hook_result(session_id)
@@ -164,6 +168,43 @@ class CodexPtyManager:
         )
         self.store.save(session)
         return self._public(session)
+
+    def create_translation_session(self) -> SessionInfo:
+        """Create the fixed, read-only Session used for text transformation."""
+        self._require_available()
+        workspace = self.settings.codex_pty.runtime_dir / "translation-workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+        os.chmod(workspace, 0o700)
+        session = CodexSession(
+            id=str(uuid.uuid4()),
+            workspace_id="weixin-translation",
+            workspace_name="微信文本优化与翻译",
+            cwd=workspace,
+            title="文本优化与翻译",
+            permission_mode="read-only",
+        )
+        self.store.save(session)
+        return self._public(session)
+
+    def discard_unstarted_session(self, session_id: str) -> bool:
+        """Remove a newly-created local Session before it gains native state."""
+        with self._lock:
+            session = self.store.get(session_id)
+            if session is None:
+                return True
+            if (
+                session.codex_session_id
+                or session.status != "stopped"
+                or session_id in self._processes
+            ):
+                return False
+            self.store.delete(session_id)
+            hook_file = self.hook_dir / f"{session_id}.json"
+            try:
+                hook_file.unlink()
+            except FileNotFoundError:
+                pass
+            return True
 
     def read_model_catalog(self) -> CodexModelCatalogData:
         return self.model_catalog.data()

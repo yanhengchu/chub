@@ -146,6 +146,11 @@ class OpenClawWeixinChubModeConfig(StrictModel):
     model: str | None = Field(default=None, min_length=1, max_length=128)
     reasoning_effort: str | None = Field(default=None, min_length=1, max_length=32)
     state_file: Path = Path("data/state/openclaw/weixin-chub-mode.json")
+    # Translation runs an LLM over untrusted message text and must be opted in.
+    translation_enabled: bool = False
+    translation_queue_limit: int = Field(default=10, ge=1, le=50)
+    translation_max_wait_seconds: int = Field(default=1800, ge=60, le=7200)
+    translation_max_input_chars: int = Field(default=8000, ge=256, le=8000)
 
     @field_validator("model", "reasoning_effort", mode="before")
     @classmethod
