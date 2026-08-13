@@ -54,12 +54,34 @@ class TranslationEntry(_StrictModel):
     error: str | None = Field(default=None, max_length=1000)
     created_at: datetime
     updated_at: datetime
+    generation: int = Field(default=0, ge=0)
+
+
+class TranslationRetiredSession(_StrictModel):
+    generation: int = Field(ge=0)
+    session_id: str = Field(min_length=1)
 
 
 class TranslationState(_StrictModel):
     version: Literal[1] = 1
+    enabled_override: bool | None = None
+    generation: int = Field(default=0, ge=0)
     session_id: str | None = None
+    session_generation: int = Field(default=0, ge=0)
+    retired_sessions: list[TranslationRetiredSession] = Field(
+        default_factory=list,
+        max_length=50,
+    )
     entries: list[TranslationEntry] = Field(default_factory=list, max_length=50)
+
+
+class TranslationSettingsStatus(_StrictModel):
+    enabled: bool
+    configured_default: bool
+    weixin_chub_mode_enabled: bool
+    queued: int = Field(ge=0)
+    running: int = Field(ge=0)
+    retiring_sessions: int = Field(ge=0)
 
 
 class WeixinTranslationManager:
@@ -76,11 +98,13 @@ class WeixinTranslationManager:
         self.quick_interactions = quick_interactions
         self.path = config.state_file.with_name("weixin-translation.json")
         self._lock = threading.RLock()
+        self._retire_lock = threading.Lock()
         self._wake = threading.Event()
         self._closed = False
         self._state_error = False
         self._state = self._load()
         self._worker: threading.Thread | None = None
+        self._retire_completed_sessions()
 
     def enqueue(
         self,
@@ -91,8 +115,6 @@ class WeixinTranslationManager:
         operation_id: str,
         source_ip: str,
     ) -> bool:
-        if not self.config.translation_enabled:
-            return False
         if self._state_error:
             self._reject(
                 operation_id,
@@ -109,6 +131,8 @@ class WeixinTranslationManager:
             )
             return False
         with self._lock:
+            if not self._enabled_locked():
+                return False
             if self._restart_pending():
                 self._reject(operation_id, source_ip)
                 return False
@@ -131,6 +155,7 @@ class WeixinTranslationManager:
                 route=route,
                 operation_id=f"{operation_id}:translation",
                 source_ip=source_ip,
+                generation=self._state.generation,
                 created_at=now,
                 updated_at=now,
             )
@@ -170,9 +195,60 @@ class WeixinTranslationManager:
         self._wake.set()
         return True
 
+    def status(self) -> TranslationSettingsStatus:
+        if self._state_error:
+            raise OSError("Weixin translation state is unavailable")
+        with self._lock:
+            return TranslationSettingsStatus(
+                enabled=self._enabled_locked(),
+                configured_default=self.config.translation_enabled,
+                weixin_chub_mode_enabled=self.config.enabled,
+                queued=sum(item.status == "queued" for item in self._state.entries),
+                running=sum(item.status == "running" for item in self._state.entries),
+                retiring_sessions=len(self._state.retired_sessions),
+            )
+
+    def set_enabled(self, enabled: bool) -> TranslationSettingsStatus:
+        if self._state_error:
+            raise OSError("Weixin translation state is unavailable")
+        with self._lock:
+            current = self._enabled_locked()
+            if current != enabled or self._state.enabled_override is None:
+                next_state = self._state.model_copy(deep=True)
+                next_state.enabled_override = enabled
+                if not enabled:
+                    self._retire_current_session(next_state)
+                elif not current:
+                    next_state.generation += 1
+                    next_state.session_generation = next_state.generation
+                    next_state.session_id = None
+                self._write(next_state)
+                self._state = next_state
+        self._retire_completed_sessions()
+        return self.status()
+
     def session_id(self) -> str | None:
         with self._lock:
             return self._state.session_id
+
+    def _enabled_locked(self) -> bool:
+        override = self._state.enabled_override
+        return self.config.translation_enabled if override is None else override
+
+    @staticmethod
+    def _retire_current_session(state: TranslationState) -> None:
+        if state.session_id is None:
+            return
+        if not any(
+            item.session_id == state.session_id for item in state.retired_sessions
+        ):
+            state.retired_sessions.append(
+                TranslationRetiredSession(
+                    generation=state.session_generation,
+                    session_id=state.session_id,
+                )
+            )
+        state.session_id = None
 
     def close(self) -> None:
         with self._lock:
@@ -215,6 +291,14 @@ class WeixinTranslationManager:
             return TranslationState()
         next_state = state.model_copy(deep=True)
         changed = False
+        enabled = (
+            self.config.translation_enabled
+            if next_state.enabled_override is None
+            else next_state.enabled_override
+        )
+        if not enabled and next_state.session_id is not None:
+            self._retire_current_session(next_state)
+            changed = True
         for entry in next_state.entries:
             if entry.status in {"queued", "running"}:
                 entry.status = "failed"
@@ -300,8 +384,9 @@ class WeixinTranslationManager:
             if self._restart_pending():
                 self._finish(entry.id, "failed", "Chub 重启，翻译任务已取消。")
                 self._log(entry.operation_id, "failed", entry.source_ip)
+                self._retire_completed_sessions()
                 return
-            session_id = self._ensure_session()
+            session_id = self._ensure_session(entry.generation)
             task = self.quick_interactions.submit(
                 session_id,
                 TRANSLATION_PROMPT.format(
@@ -351,6 +436,7 @@ class WeixinTranslationManager:
                         "Chub 重启，翻译任务已取消。",
                     )
                     self._log(entry.operation_id, "failed", entry.source_ip)
+                    self._retire_completed_sessions()
                     return
                 snapshot = self.quick_interactions.get(task.id)
                 notification_done = snapshot.notification_status not in {
@@ -369,18 +455,37 @@ class WeixinTranslationManager:
                         outcome if persisted else "failed",
                         entry.source_ip,
                     )
+                    self._retire_completed_sessions()
                     return
                 time.sleep(0.25)
             self._finish(entry.id, "failed", "服务关闭时翻译任务未完成。")
+            self._retire_completed_sessions()
             self._log(entry.operation_id, "failed", entry.source_ip)
         except Exception:
             LOGGER.warning("Weixin translation task failed", exc_info=True)
             self._finish(entry.id, "failed", "翻译任务未能启动。")
+            self._retire_completed_sessions()
             self._log(entry.operation_id, "failed", entry.source_ip)
 
-    def _ensure_session(self) -> str:
+    def _ensure_session(self, generation: int | None = None) -> str:
         with self._lock:
-            session_id = self._state.session_id
+            resolved_generation = (
+                self._state.generation if generation is None else generation
+            )
+            if (
+                self._state.session_generation == resolved_generation
+                and self._state.session_id is not None
+            ):
+                session_id = self._state.session_id
+            else:
+                session_id = next(
+                    (
+                        item.session_id
+                        for item in self._state.retired_sessions
+                        if item.generation == resolved_generation
+                    ),
+                    None,
+                )
         if session_id:
             try:
                 session = self.codex_manager.get_session(session_id)
@@ -394,7 +499,19 @@ class WeixinTranslationManager:
         created = self.codex_manager.create_translation_session()
         with self._lock:
             next_state = self._state.model_copy(deep=True)
-            next_state.session_id = created.id
+            if (
+                resolved_generation == next_state.generation
+                and self._enabled_locked()
+            ):
+                next_state.session_id = created.id
+                next_state.session_generation = resolved_generation
+            else:
+                next_state.retired_sessions.append(
+                    TranslationRetiredSession(
+                        generation=resolved_generation,
+                        session_id=created.id,
+                    )
+                )
             try:
                 self._write(next_state)
             except OSError:
@@ -402,6 +519,54 @@ class WeixinTranslationManager:
                 raise
             self._state = next_state
         return created.id
+
+    def _retire_completed_sessions(self) -> None:
+        if not self._retire_lock.acquire(blocking=False):
+            return
+        try:
+            with self._lock:
+                active_generations = {
+                    item.generation
+                    for item in self._state.entries
+                    if item.status in {"queued", "running"}
+                }
+                candidates = [
+                    item.model_copy()
+                    for item in self._state.retired_sessions
+                    if item.generation not in active_generations
+                ]
+            for binding in candidates:
+                try:
+                    removed = self.codex_manager.discard_unstarted_session(
+                        binding.session_id
+                    )
+                    if not removed:
+                        self.codex_manager.archive_session(binding.session_id)
+                except Exception:
+                    LOGGER.warning(
+                        "Unable to archive retired Weixin translation Session",
+                        exc_info=True,
+                    )
+                    continue
+                with self._lock:
+                    next_state = self._state.model_copy(deep=True)
+                    next_state.retired_sessions = [
+                        item
+                        for item in next_state.retired_sessions
+                        if item.session_id != binding.session_id
+                    ]
+                    try:
+                        self._write(next_state)
+                    except OSError:
+                        self._state_error = True
+                        LOGGER.warning(
+                            "Unable to persist retired translation Session cleanup",
+                            exc_info=True,
+                        )
+                        return
+                    self._state = next_state
+        finally:
+            self._retire_lock.release()
 
     def _finish(
         self,

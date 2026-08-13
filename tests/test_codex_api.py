@@ -355,6 +355,53 @@ async def test_quick_interaction_keeps_idle_unconnected_terminal_running(
 
 
 @pytest.mark.anyio
+async def test_page_quick_interaction_preserves_bound_weixin_session_context(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    manager = MagicMock()
+    manager.get_session.return_value = CodexSession(
+        id="session-1",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd=Path("/workspace/chub"),
+        title="设备状态检查",
+        codex_session_id="codex-session-1",
+        status="running",
+        activity="idle",
+        permission_mode="auto-review",
+    )
+    quick_interactions = MagicMock()
+    quick_interactions.submit.return_value = quick_task()
+    lock_order: list[str] = []
+    session_guard = MagicMock()
+    session_guard.__enter__.side_effect = lambda: lock_order.append("session-lock")
+    quick_interactions.session_operation_guard.return_value = session_guard
+    app.state.codex_pty_manager = manager
+    app.state.quick_interactions = quick_interactions
+    app.state.weixin_chub_mode = MagicMock()
+    app.state.weixin_chub_mode.session_slot.side_effect = lambda _session_id: (
+        lock_order.append("slot-snapshot") or 3
+    )
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/codex/sessions/session-1/quick-interactions",
+            headers=authorization(settings),
+            json={"prompt": "检查状态"},
+        )
+
+    assert response.status_code == 200
+    assert lock_order == ["slot-snapshot", "session-lock"]
+    app.state.weixin_chub_mode.session_slot.assert_called_once_with("session-1")
+    submitted = quick_interactions.submit.call_args
+    assert submitted.args == ("session-1", "检查状态")
+    assert submitted.kwargs["weixin_session_slot"] == 3
+    assert submitted.kwargs["weixin_session_title"] == "设备状态检查"
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize(
     ("activity", "connected", "confirm", "expected_code"),
     [

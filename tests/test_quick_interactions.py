@@ -420,6 +420,7 @@ def test_weixin_task_status_snapshot_is_read_only_and_route_scoped(
     assert snapshot.running_count == 1
     assert snapshot.pending_notification_count == 0
     assert snapshot.failed_notification_count == 1
+    assert snapshot.running_tasks == (("session-1", "检查设备"),)
     assert quick_interactions.get(ended.id) == before
 
 

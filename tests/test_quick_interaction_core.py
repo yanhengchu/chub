@@ -91,6 +91,20 @@ const result = {
     missingSession: core.canSubmit({ prompt: "执行任务", session: null, blocked: false }),
     blocked: core.canSubmit({ prompt: "执行任务", session, blocked: true }),
   },
+  switcherStatuses: [
+    { status: "stopped", activity: "idle", permission_mode: "full-access" },
+    { status: "running", activity: "working", permission_mode: "full-access" },
+    { status: "error", activity: "unknown", permission_mode: "full-access" },
+    { status: "stopped", activity: "idle", permission_mode: "ask" },
+    { status: "running", activity: "unknown", permission_mode: "full-access" },
+  ].map(core.sessionSwitcherStatus),
+  navigationModes: {
+    switchSession: core.sessionNavigationMode({}),
+    currentSession: core.sessionNavigationMode({ current: true }),
+    commandClick: core.sessionNavigationMode({ metaKey: true }),
+    controlClickCurrent: core.sessionNavigationMode({ current: true, ctrlKey: true }),
+    middleClick: core.sessionNavigationMode({ button: 1 }),
+  },
 };
 process.stdout.write(JSON.stringify(result));
 """
@@ -118,6 +132,14 @@ process.stdout.write(JSON.stringify(result));
             "blank": False,
             "missingSession": False,
             "blocked": False,
+        },
+        "switcherStatuses": ["待输入", "执行中", "异常", "需终端", "状态未知"],
+        "navigationModes": {
+            "switchSession": "replace",
+            "currentSession": "ignore",
+            "commandClick": "default",
+            "controlClickCurrent": "default",
+            "middleClick": "default",
         },
     }
 
@@ -161,3 +183,42 @@ const client = core.createClient({ token: "", sessionId: "session/one" });
         "/api/codex/sessions/session%2Fone/quick-interactions?limit=5&order=task",
         "/api/codex/sessions/session%2Fone/quick-interactions?limit=10&order=timeline&before_created_at=2026-08-02T10%3A00%3A00%2B08%3A00&before_id=task%2Fone",
     ]
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js is required for JavaScript behavior tests")
+def test_quick_interaction_client_loads_session_switcher_context() -> None:
+    program = """
+global.fetch = async () => ({
+  ok: true,
+  status: 200,
+  json: async () => ({
+    success: true,
+    data: { sessions: [{ id: "session-1" }, { id: "session-2" }] },
+  }),
+});
+const core = require(process.argv[1]);
+const client = core.createClient({ token: "", sessionId: "session-2" });
+(async () => {
+  const context = await client.loadSessionContext();
+  const session = await client.loadSession();
+  process.stdout.write(JSON.stringify({ context, session }));
+})().catch((error) => {
+  process.stderr.write(String(error));
+  process.exitCode = 1;
+});
+"""
+    result = subprocess.run(
+        [NODE, "-e", program, str(CORE_SCRIPT)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    behavior = json.loads(result.stdout)
+    assert behavior == {
+        "context": {
+            "session": {"id": "session-2"},
+            "sessions": [{"id": "session-1"}, {"id": "session-2"}],
+        },
+        "session": {"id": "session-2"},
+    }

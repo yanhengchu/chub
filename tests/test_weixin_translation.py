@@ -1,6 +1,9 @@
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from app.codex.models import CodexSession, QuickInteractionWeixinRoute
 from app.services.weixin_translation import (
@@ -23,6 +26,7 @@ def manager_without_worker(settings):
     config = settings.openclaw.weixin_chub_mode
     config.translation_enabled = True
     codex_manager = MagicMock()
+    codex_manager.discard_unstarted_session.return_value = False
     quick_interactions = MagicMock()
     quick_interactions.deferred_restart = None
     manager = WeixinTranslationManager(
@@ -229,6 +233,62 @@ def test_restart_marks_unfinished_translation_failed(settings) -> None:
     assert "未自动重试" in (manager._state.entries[0].error or "")
 
 
+def test_invalid_translation_state_fails_status_and_updates_closed(settings) -> None:
+    state_file = settings.openclaw.weixin_chub_mode.state_file.with_name(
+        "weixin-translation.json"
+    )
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    state_file.write_bytes(b"\xff\xfe")
+
+    manager = WeixinTranslationManager(
+        settings.openclaw.weixin_chub_mode,
+        MagicMock(),
+        MagicMock(),
+    )
+
+    with pytest.raises(OSError):
+        manager.status()
+    with pytest.raises(OSError):
+        manager.set_enabled(True)
+    assert not manager.enqueue(
+        message_id="invalid-state-message",
+        original="不应执行",
+        route=route(),
+        operation_id="invalid-state-operation",
+        source_ip="100.64.0.21",
+    )
+
+
+@pytest.mark.parametrize("content", [b"{", b"\xff\xfe"])
+def test_malformed_translation_state_is_unavailable(settings, content) -> None:
+    state_file = settings.openclaw.weixin_chub_mode.state_file.with_name(
+        "weixin-translation.json"
+    )
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    state_file.write_bytes(content)
+
+    manager = WeixinTranslationManager(
+        settings.openclaw.weixin_chub_mode,
+        MagicMock(),
+        MagicMock(),
+    )
+
+    with pytest.raises(OSError):
+        manager.status()
+
+
+def test_unreadable_translation_state_is_unavailable(settings) -> None:
+    with patch.object(Path, "read_bytes", side_effect=PermissionError("denied")):
+        manager = WeixinTranslationManager(
+            settings.openclaw.weixin_chub_mode,
+            MagicMock(),
+            MagicMock(),
+        )
+
+    with pytest.raises(OSError):
+        manager.status()
+
+
 def test_translation_session_is_reused_and_never_uses_numbered_slot(settings) -> None:
     manager, codex_manager, _quick_interactions = manager_without_worker(
         settings
@@ -247,6 +307,102 @@ def test_translation_session_is_reused_and_never_uses_numbered_slot(settings) ->
 
     assert manager._ensure_session() == "translation-session"
     codex_manager.create_translation_session.assert_not_called()
+
+
+def test_translation_setting_persists_across_manager_restart(settings) -> None:
+    settings.openclaw.weixin_chub_mode.translation_enabled = False
+    manager = WeixinTranslationManager(
+        settings.openclaw.weixin_chub_mode,
+        MagicMock(),
+        MagicMock(),
+    )
+
+    status = manager.set_enabled(True)
+
+    assert status.enabled is True
+    reloaded = WeixinTranslationManager(
+        settings.openclaw.weixin_chub_mode,
+        MagicMock(),
+        MagicMock(),
+    )
+    assert reloaded.status().enabled is True
+
+
+def test_disable_drains_existing_generation_and_reenable_uses_new_session(
+    settings,
+) -> None:
+    manager, codex_manager, _quick_interactions = manager_without_worker(settings)
+    manager._state.session_id = "old-session"
+    manager._state.session_generation = 0
+    codex_manager.get_session.return_value = CodexSession(
+        id="old-session",
+        workspace_id="weixin-translation",
+        workspace_name="微信文本优化与翻译",
+        cwd="/translation",
+        title="文本优化与翻译",
+        permission_mode="read-only",
+        status="stopped",
+        activity="idle",
+    )
+    codex_manager.create_translation_session.return_value = SimpleNamespace(
+        id="new-session"
+    )
+    assert manager.enqueue(
+        message_id="old-message",
+        original="关闭前的任务",
+        route=route(),
+        operation_id="old-operation",
+        source_ip="100.64.0.21",
+    )
+
+    disabled = manager.set_enabled(False)
+    assert disabled.enabled is False
+    assert disabled.queued == 1
+    assert not manager.enqueue(
+        message_id="disabled-message",
+        original="关闭后的任务",
+        route=route(),
+        operation_id="disabled-operation",
+        source_ip="100.64.0.21",
+    )
+    assert manager._ensure_session(0) == "old-session"
+    codex_manager.archive_session.assert_not_called()
+
+    manager.set_enabled(True)
+    assert manager.enqueue(
+        message_id="new-message",
+        original="重新开启后的任务",
+        route=route(),
+        operation_id="new-operation",
+        source_ip="100.64.0.21",
+    )
+    assert manager._ensure_session(1) == "new-session"
+
+    old_entry = next(
+        item for item in manager._state.entries if item.message_id == "old-message"
+    )
+    manager._finish(old_entry.id, "succeeded", None)
+    manager._retire_completed_sessions()
+
+    codex_manager.archive_session.assert_called_once_with("old-session")
+    assert manager.session_id() == "new-session"
+
+
+def test_retired_translation_session_cleanup_retries_after_failure(settings) -> None:
+    manager, codex_manager, _quick_interactions = manager_without_worker(settings)
+    manager._state.session_id = "old-session"
+    codex_manager.archive_session.side_effect = [OSError("busy"), None]
+
+    manager.set_enabled(False)
+
+    assert [item.session_id for item in manager._state.retired_sessions] == [
+        "old-session"
+    ]
+
+    manager.set_enabled(False)
+
+    assert manager._state.retired_sessions == []
+    assert codex_manager.archive_session.call_count == 2
 
 
 def test_translation_prompt_encodes_source_as_json_data() -> None:

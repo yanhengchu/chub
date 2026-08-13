@@ -26,6 +26,7 @@ from app.codex.models import (
     SessionInfo,
     SessionListData,
 )
+from app.codex.quick_interactions import build_task_summary
 from app.core.response import ApiError, ApiResponse, error_response
 from app.core.security import require_token
 from app.services.operation_log import log_operation, write_operation
@@ -201,10 +202,27 @@ async def submit_quick_interaction(
     try:
         quick_interactions = request.app.state.quick_interactions
         manager = request.app.state.codex_pty_manager
+        session_slot = request.app.state.weixin_chub_mode.session_slot(session_id)
 
         def submit_codex():
             with quick_interactions.session_operation_guard(session_id):
                 session = manager.get_session(session_id)
+
+                def submit_with_session_context():
+                    session_title = (
+                        build_task_summary(session.title or payload.prompt)
+                        if session_slot is not None
+                        else None
+                    )
+                    return quick_interactions.submit(
+                        session_id,
+                        payload.prompt,
+                        operation_id=operation_id,
+                        source_ip=source_ip,
+                        weixin_session_slot=session_slot,
+                        weixin_session_title=session_title,
+                    )
+
                 if session.status == "running":
                     if session.activity == "working":
                         raise ApiError(
@@ -222,12 +240,7 @@ async def submit_quick_interaction(
                             "当前实时终端状态无法确认，请确认停止后再执行。",
                         )
                     if session.activity == "idle":
-                        return quick_interactions.submit(
-                            session_id,
-                            payload.prompt,
-                            operation_id=operation_id,
-                            source_ip=source_ip,
-                        )
+                        return submit_with_session_context()
                     session = manager.get_session(session_id)
                     if session.status == "running" and session.activity == "working":
                         raise ApiError(
@@ -249,12 +262,7 @@ async def submit_quick_interaction(
                     request.app.state.terminal_connections.close_session(session_id)
                     if session.status == "running":
                         manager.stop_session(session_id)
-                return quick_interactions.submit(
-                    session_id,
-                    payload.prompt,
-                    operation_id=operation_id,
-                    source_ip=source_ip,
-                )
+                return submit_with_session_context()
 
         task = await asyncio.to_thread(submit_codex)
     except ApiError as exc:

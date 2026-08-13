@@ -74,12 +74,12 @@ class OpenClawCompletionNotifier:
 
     def _restart_codex_status(self) -> str:
         if self.codex_status_reader is None:
-            return "Codex Usage: 暂不可用\n\nActive sessions: 暂不可用"
+            return "Active sessions: 暂不可用\n\nWeekly 暂不可用 · Tokens 暂不可用"
         try:
             message = self.codex_status_reader()
         except Exception:
-            return "Codex Usage: 暂不可用\n\nActive sessions: 暂不可用"
-        return message or "Codex Usage: 暂不可用\n\nActive sessions: 暂不可用"
+            return "Active sessions: 暂不可用\n\nWeekly 暂不可用 · Tokens 暂不可用"
+        return message or "Active sessions: 暂不可用\n\nWeekly 暂不可用 · Tokens 暂不可用"
 
     def _send(
         self,

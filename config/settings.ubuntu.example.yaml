@@ -57,7 +57,8 @@ openclaw:
     # Explicitly enable only after the single-Owner WeChat private-message route is ready.
     enabled: false
     workspace_id: "chub"
-    # Mirror each ordinary task into one independent read-only translation Session.
+    # Initial default for the Settings-page translation switch. Later page changes
+    # are persisted in private Chub state without rewriting this file.
     # Opt in only after accepting the model/prompt-injection trust boundary.
     translation_enabled: false
     translation_queue_limit: 10

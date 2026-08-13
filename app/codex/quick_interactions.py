@@ -74,6 +74,7 @@ class WeixinTaskStatusSnapshot:
     running_count: int = 0
     pending_notification_count: int = 0
     failed_notification_count: int = 0
+    running_tasks: tuple[tuple[str, str], ...] = ()
 
 
 def build_task_summary(prompt: str) -> str:
@@ -482,6 +483,16 @@ class QuickInteractionManager:
                     task.status not in {"requested", "running"}
                     and task.notification_status in {None, "failed", "skipped"}
                     for task in matching
+                ),
+                running_tasks=tuple(
+                    (
+                        task.session_id,
+                        build_task_summary(
+                            task.summary or task.prompt or "本次微信任务"
+                        ),
+                    )
+                    for task in matching
+                    if task.status in {"requested", "running"}
                 ),
             )
 

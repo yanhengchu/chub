@@ -23,6 +23,13 @@
       "path": "AI_SESSION_STATE_DESIGN.md"
     },
     {
+      "id": "quick-interaction-worker",
+      "title": "Chub 快速交互独立 Worker 与跨重启恢复设计",
+      "summary": "设计快速任务脱离 Web 生命周期、跨 Web 重启恢复及 macOS/Ubuntu 统一运行边界。",
+      "status": "调研中",
+      "path": "QUICK_INTERACTION_WORKER_DESIGN.md"
+    },
+    {
       "id": "openclaw-integration",
       "title": "Chub–OpenClaw 接入设计",
       "summary": "定义 OpenClaw Gateway、Chub 插件及微信 ClawBot 单入口统一调度的当前边界。",

@@ -19,6 +19,12 @@ const codexDefaultReasoningEffort = document.querySelector(
 const codexSessionSettingsMessage = document.querySelector(
   "#codex-session-settings-message",
 );
+const weixinTranslationEnabled = document.querySelector(
+  "#weixin-translation-enabled",
+);
+const weixinTranslationMessage = document.querySelector(
+  "#weixin-translation-message",
+);
 const cyberRainSpeed = document.querySelector("#cyber-rain-speed");
 const cyberRainBrightness = document.querySelector("#cyber-rain-brightness");
 const cyberRainDensity = document.querySelector("#cyber-rain-density");
@@ -28,6 +34,8 @@ const cyberRainDensityValue = document.querySelector("#cyber-rain-density-value"
 const cyberStyleSettingsMessage = document.querySelector("#cyber-style-settings-message");
 const styleOptionRows = document.querySelectorAll("[data-style-option]");
 let codexModels = [];
+let weixinTranslationPollTimer = null;
+let weixinTranslationRequestVersion = 0;
 
 const CODEX_REASONING_LABELS = {
   low: "Low",
@@ -265,6 +273,102 @@ async function loadCodexModels() {
   }
 }
 
+function settingsHeaders(includeJson = false) {
+  const token = settingsToken();
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  if (includeJson) {
+    headers["Content-Type"] = "application/json";
+  }
+  return headers;
+}
+
+function renderWeixinTranslationStatus(status) {
+  weixinTranslationEnabled.checked = status.enabled === true;
+  weixinTranslationEnabled.disabled = false;
+  const active = Number(status.queued || 0) + Number(status.running || 0);
+  const parts = [];
+  if (active > 0) {
+    parts.push(`${active} 项翻译仍在处理中`);
+  }
+  if (!status.weixin_chub_mode_enabled) {
+    parts.push("微信 Chub 模式当前未启用");
+  }
+  weixinTranslationMessage.textContent = parts.join(" · ");
+  weixinTranslationMessage.className = "message";
+  if (weixinTranslationPollTimer !== null) {
+    window.clearTimeout(weixinTranslationPollTimer);
+    weixinTranslationPollTimer = null;
+  }
+  if (active > 0) {
+    weixinTranslationPollTimer = window.setTimeout(() => {
+      loadWeixinTranslationStatus(
+        "暂时无法刷新翻译任务状态，正在重试。",
+        true,
+      );
+    }, 2000);
+  }
+}
+
+async function loadWeixinTranslationStatus(
+  failureMessage = "暂时无法读取节点状态，请确认访问凭证或 Tailnet 连接。",
+  retry = false,
+) {
+  const requestVersion = ++weixinTranslationRequestVersion;
+  weixinTranslationEnabled.disabled = true;
+  try {
+    const response = await fetch("/api/settings/weixin-translation", {
+      headers: settingsHeaders(),
+    });
+    const payload = await response.json();
+    if (!response.ok || payload.success !== true) {
+      throw new Error(payload.error?.code || "settings_unavailable");
+    }
+    if (requestVersion !== weixinTranslationRequestVersion) {
+      return false;
+    }
+    renderWeixinTranslationStatus(payload.data);
+    return true;
+  } catch (_error) {
+    if (requestVersion !== weixinTranslationRequestVersion) {
+      return false;
+    }
+    weixinTranslationEnabled.disabled = true;
+    weixinTranslationMessage.textContent = failureMessage;
+    weixinTranslationMessage.className = "message message-error";
+    if (retry) {
+      weixinTranslationPollTimer = window.setTimeout(() => {
+        loadWeixinTranslationStatus(failureMessage, true);
+      }, 5000);
+    }
+    return false;
+  }
+}
+
+async function saveWeixinTranslationStatus(enabled) {
+  weixinTranslationRequestVersion += 1;
+  if (weixinTranslationPollTimer !== null) {
+    window.clearTimeout(weixinTranslationPollTimer);
+    weixinTranslationPollTimer = null;
+  }
+  weixinTranslationEnabled.disabled = true;
+  try {
+    const response = await fetch("/api/settings/weixin-translation", {
+      method: "PUT",
+      headers: settingsHeaders(true),
+      body: JSON.stringify({ enabled }),
+    });
+    const payload = await response.json();
+    if (!response.ok || payload.success !== true) {
+      throw new Error(payload.error?.code || "settings_update_failed");
+    }
+    renderWeixinTranslationStatus(payload.data);
+  } catch (_error) {
+    await loadWeixinTranslationStatus(
+      "设置结果未知，请稍后刷新页面重试。",
+    );
+  }
+}
+
 quickInteractionPageSize.addEventListener("change", () => {
   saveQuickInteractionPageSize(quickInteractionPageSize.value);
 });
@@ -308,6 +412,11 @@ codexDefaultReasoningEffort.addEventListener("change", () => {
 });
 
 loadCodexModels();
+loadWeixinTranslationStatus();
+
+weixinTranslationEnabled.addEventListener("change", () => {
+  saveWeixinTranslationStatus(weixinTranslationEnabled.checked);
+});
 
 cyberRainSpeed.value = String(readRangePreference(CYBER_RAIN_SPEED_KEY, 60));
 cyberRainBrightness.value = String(readRangePreference(CYBER_RAIN_BRIGHTNESS_KEY, 70));

@@ -275,15 +275,10 @@ describe("Weixin Chub mode", () => {
     vi.unstubAllGlobals();
   });
 
-  it("forwards trusted voice transcripts and returns Chub text unchanged", async () => {
-    const chubReply = [
-      "任务已提交",
-      "任务摘要：检查语音识别是否准确",
-      "完成后将原路发送结果。",
-      "语音识别内容：\n检查语音识别是否准确",
-    ].join("\n\n");
+  it("forwards trusted voice transcripts and honors Chub silent handling", async () => {
     const fetchMock = vi.fn().mockResolvedValue(dispatchResponse({
-      message: chubReply,
+      disposition: "handled",
+      message: null,
     }));
     vi.stubGlobal("fetch", fetchMock);
     const { hooks } = createPluginApi({
@@ -297,7 +292,7 @@ describe("Weixin Chub mode", () => {
       body: "检查语音识别是否准确",
     }, directContext);
 
-    expect(result.text).toBe(chubReply);
+    expect(result).toEqual({ handled: true });
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
       content: "检查语音识别是否准确",
       message_type: "voice",

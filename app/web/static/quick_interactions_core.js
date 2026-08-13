@@ -115,6 +115,43 @@
     return "";
   }
 
+  function sessionSwitcherStatus(session) {
+    if (
+      session.quick_interaction_running === true
+      || session.activity === "working"
+    ) {
+      return "执行中";
+    }
+    if (session.status === "error" || session.error) {
+      return "异常";
+    }
+    if (session.permission_mode === "ask") {
+      return "需终端";
+    }
+    if (
+      session.status === "new"
+      || session.status === "stopped"
+      || session.activity === "idle"
+    ) {
+      return "待输入";
+    }
+    return "状态未知";
+  }
+
+  function sessionNavigationMode({
+    button = 0,
+    current = false,
+    altKey = false,
+    ctrlKey = false,
+    metaKey = false,
+    shiftKey = false,
+  }) {
+    if (button !== 0 || altKey || ctrlKey || metaKey || shiftKey) {
+      return "default";
+    }
+    return current ? "ignore" : "replace";
+  }
+
   function isRetryableRequestError(error) {
     return error?.retryable !== false;
   }
@@ -155,18 +192,25 @@
 
   function createClient({ token, sessionId }) {
     const encodedSessionId = encodeURIComponent(sessionId);
+    async function loadSessionContext() {
+      const data = await request(token, "/api/codex/sessions");
+      const sessions = Array.isArray(data.sessions) ? data.sessions : [];
+      const session = sessions.find((item) => item.id === sessionId);
+      if (!session) {
+        const error = new Error("会话不存在或已经归档。");
+        error.code = "codex_session_not_found";
+        error.retryable = false;
+        throw error;
+      }
+      return { session, sessions };
+    }
+
     return Object.freeze({
       async loadSession() {
-        const data = await request(token, "/api/codex/sessions");
-        const session = data.sessions.find((item) => item.id === sessionId);
-        if (!session) {
-          const error = new Error("会话不存在或已经归档。");
-          error.code = "codex_session_not_found";
-          error.retryable = false;
-          throw error;
-        }
-        return session;
+        return (await loadSessionContext()).session;
       },
+
+      loadSessionContext,
 
       listTasks({
         offset = 0,
@@ -229,6 +273,8 @@
     readPageSize,
     readToken,
     request,
+    sessionNavigationMode,
+    sessionSwitcherStatus,
     statusText,
     submissionBlockReason,
     shouldPoll,

@@ -75,7 +75,6 @@ WeixinChubModeDispatchCode = Literal[
 ]
 MAX_STORED_SUBMISSIONS = 5_000
 MAX_STATE_BYTES = 8 * 1024 * 1024
-MAX_DISPATCH_MESSAGE_CHARS = 3_000
 MAX_PENDING_RETRY_PROMPT_CHARS = 8_000
 PENDING_RETRY_TTL_MINUTES = 10
 MAX_WEIXIN_SESSION_SLOTS = 9
@@ -166,9 +165,7 @@ TASK_STATUS_CHECK_PROMPTS = frozenset(
     {"查询状态", "状态查询", "检查状态", "状态检查"}
 )
 CHUB_STATUS_PROMPT = "chub"
-CHUB_REFRESH_PROMPTS = frozenset({"chub refresh", "chub -f"})
-CHUB_SYNC_PROMPT = "chub sync"
-CHUB_REFRESH_ALIASES = frozenset({"刷新状态"})
+CHUB_SYNC_PROMPTS = frozenset({"chub sync", "chub -s"})
 CHUB_SYNC_ALIASES = frozenset({"补充槽位"})
 CODEX_HELP_PROMPT = "codex help"
 CODEX_NEW_PROMPT = "codex new"
@@ -176,15 +173,21 @@ CODEX_RETRY_PROMPT = "codex retry"
 CODEX_NEW_RETRY_PROMPT = "codex new retry"
 CODEX_SWITCH_PROMPT = "codex switch"
 CODEX_SWITCH_PATTERN = re.compile(r"codex switch ([1-9]\d*)")
-CHINESE_SWITCH_PATTERN = re.compile(r"切换\s*([1-9一二三四五六七八九])")
+CODEX_SWITCH_TASK_PATTERN = re.compile(r"codex\s+switch\s+([1-9])", re.IGNORECASE)
+CHINESE_SWITCH_PATTERN = re.compile(
+    r"切换(?:会话)?\s*([1-9一二三四五六七八九])"
+)
 CHINESE_SWITCH_COMMAND_PATTERN = re.compile(
-    r"切换(?:\s*[+\-＋－]?[0-9０-９零〇一二三四五六七八九十百千万两]+)?"
+    r"切换(?:会话)?(?:\s*[+\-＋－]?[0-9０-９零〇一二三四五六七八九十百千万两]+)?"
 )
 CODEX_ARCHIVE_PROMPT = "codex archive"
 CODEX_ARCHIVE_PATTERN = re.compile(r"codex archive ([1-9]\d*)")
-CHINESE_ARCHIVE_PATTERN = re.compile(r"归档\s*([1-9一二三四五六七八九])")
+CODEX_ARCHIVE_TASK_PATTERN = re.compile(r"codex\s+archive\s+([1-9])", re.IGNORECASE)
+CHINESE_ARCHIVE_PATTERN = re.compile(
+    r"归档(?:会话)?\s*([1-9一二三四五六七八九])"
+)
 CHINESE_ARCHIVE_COMMAND_PATTERN = re.compile(
-    r"归档(?:\s*[+\-＋－]?[0-9０-９零〇一二三四五六七八九十百千万两]+)?"
+    r"归档(?:会话)?(?:\s*[+\-＋－]?[0-9０-９零〇一二三四五六七八九十百千万两]+)?"
 )
 CHINESE_SLOT_NUMBERS = {
     "一": 1,
@@ -197,29 +200,27 @@ CHINESE_SLOT_NUMBERS = {
     "八": 8,
     "九": 9,
 }
-CONTINUE_RETRY_PROMPTS = frozenset({"继续执行"})
+CONTINUE_RETRY_PROMPTS = frozenset({"新建会话执行"})
 WEEKLY_WINDOW_MINUTES = 7 * 24 * 60
 CODEX_STATUS_TIMEOUT_SECONDS = 9
-CHUB_REFRESH_COOLDOWN_SECONDS = 30
-CHUB_SYSTEM_CACHE_SECONDS = 60
-CHUB_ACCOUNT_CACHE_SECONDS = 5 * 60
 MAX_EPHEMERAL_STATUS_REPLIES = 256
 MAX_EPHEMERAL_STATUS_INFLIGHT = 64
+COMMAND_TASK_SEPARATORS = frozenset(":：,，.。;；!?！？")
 CODEX_HELP_MESSAGE = """Codex 命令
 
-1. 切换N
-   切换到 Session N
+1. codex new / 新建会话
+   新建并切换 Session；后接正文时直接执行
 
-2. codex new
-   新建 Session
+2. codex switch N / 切换N / 切换会话N
+   切换到 Session N；后接正文时直接执行
 
-3. 归档N
+3. codex archive N / 归档N / 归档会话N
    归档 Session N
 
 4. codex retry
    在当前 Session 继续未提交任务
 
-5. 继续执行
+5. codex new retry / 新建会话执行
    新建 Session 并继续未提交任务
 
 N 为 1–9，其他消息按普通任务处理"""
@@ -271,7 +272,6 @@ class WeixinChubModeManager:
         self._slot_lock = threading.RLock()
         self._status_condition = threading.Condition()
         self._status_refreshing = False
-        self._status_refresh_completed_at = 0.0
         self._status_refresh_succeeded = False
         self._status_refresh_note: str | None = None
         self._status_cache: dict[str, tuple[object, datetime]] = {}
@@ -798,21 +798,14 @@ class WeixinChubModeManager:
         if mode_enabled and (
             normalized_prompt in TASK_STATUS_CHECK_PROMPTS
             or normalized_codex_prompt == CHUB_STATUS_PROMPT
-            or normalized_codex_prompt in CHUB_REFRESH_PROMPTS
-            or normalized_prompt in CHUB_REFRESH_ALIASES
         ):
             return self._dispatch_chub_status(
                 message_id=message_id,
                 route_fingerprint=self._route_fingerprint(delivery_route),
-                source_ip=source_ip,
                 delivery_route=delivery_route,
-                refresh=(
-                    normalized_codex_prompt in CHUB_REFRESH_PROMPTS
-                    or normalized_prompt in CHUB_REFRESH_ALIASES
-                ),
             )
         if mode_enabled and (
-            normalized_codex_prompt == CHUB_SYNC_PROMPT
+            normalized_codex_prompt in CHUB_SYNC_PROMPTS
             or normalized_prompt in CHUB_SYNC_ALIASES
         ):
             return self._dispatch_chub_sync(
@@ -896,15 +889,6 @@ class WeixinChubModeManager:
                     source_ip=source_ip,
                 )
 
-            if normalized_codex_prompt == CODEX_NEW_PROMPT:
-                return self._dispatch_codex_new(
-                    message_id=message_id,
-                    correlation_id=correlation_id,
-                    route_fingerprint=route_fingerprint,
-                    source_ip=source_ip,
-                    delivery_route=delivery_route,
-                )
-
             if normalized_codex_prompt == CODEX_RETRY_PROMPT:
                 return self._dispatch_codex_retry(
                     message_id=message_id,
@@ -915,10 +899,28 @@ class WeixinChubModeManager:
                     create_new_session=False,
                 )
 
-            if (
-                normalized_codex_prompt == CODEX_NEW_RETRY_PROMPT
-                or normalized_prompt in CONTINUE_RETRY_PROMPTS
-            ):
+            retry_command, retry_task = self._split_command_task(
+                prompt,
+                (CODEX_NEW_RETRY_PROMPT, *CONTINUE_RETRY_PROMPTS),
+            )
+            if retry_command and retry_task is not None:
+                operation_id = uuid4().hex
+                self._log_dispatch(operation_id, "requested", source_ip)
+                self._log_dispatch(operation_id, "started", source_ip)
+                return self._remember_fixed_reply(
+                    message_id=message_id,
+                    correlation_id=correlation_id,
+                    operation_id=operation_id,
+                    route_fingerprint=route_fingerprint,
+                    source_ip=source_ip,
+                    message=(
+                        "“新建会话执行”只用于继续最近一条未提交任务，"
+                        "请不要附带新正文。"
+                    ),
+                    code="codex_retry_checked",
+                    failed=True,
+                )
+            if retry_command:
                 return self._dispatch_codex_retry(
                     message_id=message_id,
                     correlation_id=correlation_id,
@@ -928,12 +930,32 @@ class WeixinChubModeManager:
                     create_new_session=True,
                 )
 
-            chinese_archive = CHINESE_ARCHIVE_PATTERN.fullmatch(normalized_prompt)
-            if chinese_archive is not None:
-                slot = chinese_archive.group(1)
-                requested_index = (
-                    int(slot) if slot.isdigit() else CHINESE_SLOT_NUMBERS[slot]
+            new_command, new_task = self._split_command_task(
+                prompt,
+                (CODEX_NEW_PROMPT, "新建会话"),
+            )
+            if (
+                new_command
+                and not normalized_codex_prompt.startswith(CODEX_NEW_RETRY_PROMPT)
+            ):
+                return self._dispatch_codex_new(
+                    message_id=message_id,
+                    correlation_id=correlation_id,
+                    route_fingerprint=route_fingerprint,
+                    source_ip=source_ip,
+                    delivery_route=delivery_route,
+                    task_prompt=new_task,
                 )
+
+            archive_command = self._split_numbered_command_task(
+                prompt,
+                CODEX_ARCHIVE_TASK_PATTERN,
+            ) or self._split_numbered_command_task(
+                prompt,
+                CHINESE_ARCHIVE_PATTERN,
+            )
+            if archive_command is not None:
+                requested_index, archive_task = archive_command
                 return self._dispatch_codex_archive(
                     message_id=message_id,
                     correlation_id=correlation_id,
@@ -941,7 +963,7 @@ class WeixinChubModeManager:
                     source_ip=source_ip,
                     delivery_route=delivery_route,
                     requested_index=requested_index,
-                    invalid_usage=False,
+                    invalid_usage=archive_task is not None,
                 )
 
             if CHINESE_ARCHIVE_COMMAND_PATTERN.fullmatch(normalized_prompt):
@@ -974,12 +996,15 @@ class WeixinChubModeManager:
                     invalid_usage=invalid_usage,
                 )
 
-            chinese_switch = CHINESE_SWITCH_PATTERN.fullmatch(normalized_prompt)
-            if chinese_switch is not None:
-                slot = chinese_switch.group(1)
-                requested_index = (
-                    int(slot) if slot.isdigit() else CHINESE_SLOT_NUMBERS[slot]
-                )
+            switch_command = self._split_numbered_command_task(
+                prompt,
+                CODEX_SWITCH_TASK_PATTERN,
+            ) or self._split_numbered_command_task(
+                prompt,
+                CHINESE_SWITCH_PATTERN,
+            )
+            if switch_command is not None:
+                requested_index, switch_task = switch_command
                 return self._dispatch_codex_switch(
                     message_id=message_id,
                     correlation_id=correlation_id,
@@ -987,6 +1012,8 @@ class WeixinChubModeManager:
                     source_ip=source_ip,
                     requested_index=requested_index,
                     invalid_usage=False,
+                    delivery_route=delivery_route,
+                    task_prompt=switch_task,
                 )
 
             if CHINESE_SWITCH_COMMAND_PATTERN.fullmatch(normalized_prompt):
@@ -997,6 +1024,7 @@ class WeixinChubModeManager:
                     source_ip=source_ip,
                     requested_index=None,
                     invalid_usage=True,
+                    delivery_route=delivery_route,
                 )
 
             if normalized_codex_prompt == CODEX_SWITCH_PROMPT:
@@ -1007,6 +1035,7 @@ class WeixinChubModeManager:
                     source_ip=source_ip,
                     requested_index=None,
                     invalid_usage=False,
+                    delivery_route=delivery_route,
                 )
 
             if normalized_codex_prompt.startswith(CODEX_SWITCH_PROMPT):
@@ -1025,10 +1054,11 @@ class WeixinChubModeManager:
                     source_ip=source_ip,
                     requested_index=requested_index,
                     invalid_usage=invalid_usage,
+                    delivery_route=delivery_route,
                 )
 
             try:
-                submission = self.submit(
+                self.submit(
                     message_id=message_id,
                     prompt=prompt,
                     correlation_id=correlation_id,
@@ -1038,21 +1068,7 @@ class WeixinChubModeManager:
             except ApiError as exc:
                 return self._dispatch_failure_from_error(exc)
 
-            if submission.duplicate:
-                return WeixinChubModeDispatchResult(
-                    disposition="handled",
-                )
-            if message_type != "voice":
-                return WeixinChubModeDispatchResult(disposition="handled")
-            message = self._submission_dispatch_message(
-                submission,
-                prompt=prompt,
-                message_type=message_type,
-            )
-            return WeixinChubModeDispatchResult(
-                disposition="reply",
-                message=message,
-            )
+            return WeixinChubModeDispatchResult(disposition="handled")
 
     def _dispatch_codex_help(
         self,
@@ -1083,6 +1099,7 @@ class WeixinChubModeManager:
         route_fingerprint: str,
         source_ip: str,
         delivery_route: QuickInteractionWeixinRoute,
+        task_prompt: str | None = None,
     ) -> WeixinChubModeDispatchResult:
         operation_id = uuid4().hex
         self._log_dispatch(operation_id, "requested", source_ip)
@@ -1138,8 +1155,39 @@ class WeixinChubModeManager:
             )
         slot = self._slot_for_session(session_id)
         slot_text = f"Session {slot}" if slot is not None else "Session"
+        task_status = ""
+        if task_prompt is not None:
+            try:
+                submission = self.submit(
+                    message_id=self._command_task_message_id(message_id),
+                    prompt=task_prompt,
+                    correlation_id=correlation_id,
+                    source_ip=source_ip,
+                    delivery_route=delivery_route,
+                )
+            except ApiError as exc:
+                failure = self._dispatch_failure_from_error(exc)
+                message, _status_failed = self._codex_operation_message(
+                    f"创建状态：{slot_text} 已创建并切换，但任务未提交。\n\n"
+                    f"{failure.message or '任务提交失败，请稍后重试。'}"
+                )
+                return self._remember_fixed_reply(
+                    message_id=message_id,
+                    correlation_id=correlation_id,
+                    operation_id=operation_id,
+                    route_fingerprint=route_fingerprint,
+                    source_ip=source_ip,
+                    message=message,
+                    code="codex_session_created",
+                    session_id=session_id,
+                    failed=True,
+                )
+            task_status = (
+                f"\n\n任务状态：已提交。\n\n"
+                f"任务摘要：{submission.task_summary or build_task_summary(task_prompt)}"
+            )
         message, _status_failed = self._codex_operation_message(
-            f"创建状态：{slot_text} 已创建并切换。"
+            f"创建状态：{slot_text} 已创建并切换。{task_status}"
         )
         return self._remember_fixed_reply(
             message_id=message_id,
@@ -1336,6 +1384,13 @@ class WeixinChubModeManager:
         ).hexdigest()
         return f"retry-{digest}"
 
+    @staticmethod
+    def _command_task_message_id(command_message_id: str) -> str:
+        digest = hashlib.sha256(
+            f"{command_message_id}\0command-task".encode("utf-8")
+        ).hexdigest()
+        return f"command-task-{digest}"
+
     def _available_pending_retry(
         self,
         route_fingerprint: str,
@@ -1435,7 +1490,6 @@ class WeixinChubModeManager:
         try:
             threading.Thread(
                 target=self._refresh_chub_cache,
-                kwargs={"force": True},
                 daemon=True,
                 name="chub-status-cache-init",
             ).start()
@@ -1449,10 +1503,9 @@ class WeixinChubModeManager:
         *,
         message_id: str,
         route_fingerprint: str,
-        source_ip: str,
         delivery_route: QuickInteractionWeixinRoute,
-        refresh: bool,
     ) -> WeixinChubModeDispatchResult:
+        query_started_at = time.monotonic()
         wait_for_existing = False
         with self._status_condition:
             duplicate = self._submission_index.get(message_id)
@@ -1499,15 +1552,7 @@ class WeixinChubModeManager:
                 message="状态查询正在处理中，请稍后重试。",
             )
 
-        operation_id = uuid4().hex if refresh else None
-        if operation_id is not None:
-            self._log_dispatch(operation_id, "requested", source_ip)
-            self._log_dispatch(operation_id, "started", source_ip)
-        refresh_note = None
-        failed = False
-        if refresh:
-            refreshed, refresh_note = self._refresh_chub_cache(force=False)
-            failed = not refreshed
+        self._refresh_chub_cache()
         try:
             task_snapshot = self.quick_interactions.weixin_task_status_snapshot(
                 delivery_route
@@ -1522,12 +1567,14 @@ class WeixinChubModeManager:
         try:
             message = self._format_chub_overview(
                 route_fingerprint,
-                refresh_note=refresh_note,
+                elapsed_ms=max(
+                    1,
+                    round((time.monotonic() - query_started_at) * 1000),
+                ),
             )
         except Exception:
             LOGGER.warning("Unable to format Chub status overview", exc_info=True)
             message = "Chub 状态总览生成失败，请稍后重试。"
-            failed = True
         with self._status_condition:
             self._ephemeral_status_replies[message_id] = (
                 route_fingerprint,
@@ -1536,12 +1583,6 @@ class WeixinChubModeManager:
             )
             self._prune_ephemeral_status_replies(message_id)
             self._status_condition.notify_all()
-        if operation_id is not None:
-            self._log_dispatch(
-                operation_id,
-                "failed" if failed else "succeeded",
-                source_ip,
-            )
         return WeixinChubModeDispatchResult(disposition="reply", message=message)
 
     def _wait_for_ephemeral_reply(
@@ -1612,21 +1653,8 @@ class WeixinChubModeManager:
         ]:
             self._ephemeral_status_replies.pop(key, None)
 
-    def _refresh_chub_cache(self, *, force: bool) -> tuple[bool, str | None]:
+    def _refresh_chub_cache(self) -> tuple[bool, str | None]:
         with self._status_condition:
-            now = time.monotonic()
-            if (
-                not force
-                and self._status_refresh_completed_at
-                and now - self._status_refresh_completed_at
-                < CHUB_REFRESH_COOLDOWN_SECONDS
-            ):
-                return (
-                    self._status_refresh_succeeded,
-                    "刷新冷却中，已返回最近结果"
-                    if self._status_refresh_succeeded
-                    else self._status_refresh_note or "最近一次刷新失败，已返回现有缓存",
-                )
             if self._status_refreshing:
                 completed = self._status_condition.wait_for(
                     lambda: not self._status_refreshing,
@@ -1730,7 +1758,6 @@ class WeixinChubModeManager:
                         snapshot.value,
                         snapshot.checked_at,
                     )
-            self._status_refresh_completed_at = time.monotonic()
             self._status_refresh_succeeded = succeeded
             self._status_refresh_note = note
             self._status_refreshing = False
@@ -1792,55 +1819,44 @@ class WeixinChubModeManager:
         except RuntimeError:
             LOGGER.info("Unable to start Chub session snapshot update")
 
-    @staticmethod
-    def _snapshot_age(checked_at: datetime) -> int:
-        return max(0, int((utc_now() - checked_at).total_seconds()))
-
     def _format_chub_overview(
         self,
         route_fingerprint: str,
         *,
-        refresh_note: str | None = None,
+        elapsed_ms: int,
     ) -> str:
         with self._status_condition:
             cache = dict(self._status_cache)
             task_cached = self._task_status_cache.get(route_fingerprint)
+        anomalies: list[str] = []
         readiness_cached = cache.get("readiness")
-        if readiness_cached is None:
-            lines = ["Chub：状态初始化中"]
-        else:
-            readiness = readiness_cached[0]
-            lines = [
-                f"Chub：{'正常' if readiness.ready else '功能受限'} · {readiness.message}"
-            ]
+        readiness = readiness_cached[0] if readiness_cached is not None else None
+        lines = [f"Chub · {self._format_elapsed_time(elapsed_ms)}"]
+        if readiness is None:
+            anomalies.append("Chub 状态尚未初始化")
+        elif not readiness.ready:
+            anomalies.append(readiness.message)
         system_cached = cache.get("system")
-        if system_cached is None:
-            lines.append("系统：缓存尚未初始化")
-        else:
-            system, checked_at = system_cached
+        if system_cached is not None:
+            system = system_cached[0]
             memory = float(getattr(system.system, "memory_percent", 0.0))
             disk = float(getattr(system.system, "disk_percent", 0.0))
-            warning = " · 警告" if memory >= 85 or disk >= 85 else ""
-            age = self._snapshot_age(checked_at)
-            lines.append(
-                f"系统：内存 {memory:.0f}% · 磁盘 {disk:.0f}%{warning}"
-                f" · {age} 秒前"
-                f"{' · 已过期' if age >= CHUB_SYSTEM_CACHE_SECONDS else ''}"
-            )
+            if memory >= 85:
+                anomalies.append(f"内存使用率较高：{memory:.0f}%")
+            if disk >= 85:
+                anomalies.append(f"磁盘使用率较高：{disk:.0f}%")
         if task_cached is None:
-            lines.append("任务：缓存尚未初始化")
+            tasks = None
         else:
-            tasks, checked_at = task_cached
-            lines.append(
-                "任务：执行中 "
-                f"{int(getattr(tasks, 'running_count', 0))} · 待通知 "
-                f"{int(getattr(tasks, 'pending_notification_count', 0))} · 通知失败 "
-                f"{int(getattr(tasks, 'failed_notification_count', 0))}"
-                f" · {self._snapshot_age(checked_at)} 秒前"
+            tasks = task_cached[0]
+            failed_notifications = int(
+                getattr(tasks, "failed_notification_count", 0)
             )
+            if failed_notifications:
+                anomalies.append(f"{failed_notifications} 个任务结果通知失败")
         session_cached = cache.get("sessions")
         if session_cached is None:
-            lines.append("Sessions：缓存尚未初始化")
+            sessions = ()
         else:
             sessions, checked_at = session_cached
             display_states = {
@@ -1851,35 +1867,47 @@ class WeixinChubModeManager:
                 )
                 for item in sessions
             }
-            busy = sum(state == "Busy" for state in display_states.values())
-            unavailable = sum(item.state == "Unavailable" for item in sessions)
-            lines.append(
-                f"Sessions：已分配 {len(sessions)} · 工作中 {busy}"
-                f" · 不可用 {unavailable} · {self._snapshot_age(checked_at)} 秒前"
-            )
-            lines.extend(
-                f"{item.slot}. {item.title}{' [Current]' if item.current else ''} · {display_states[item.session_id]}"
-                for item in sessions
-            )
+        running_tasks = {
+            session_id: summary
+            for session_id, summary in getattr(tasks, "running_tasks", ())
+        }
         account_cached = cache.get("account")
         if account_cached is None:
-            lines.append("Codex 用量：缓存尚未初始化")
+            usage_message = "Weekly 暂不可用 · Tokens 暂不可用"
         else:
-            account, checked_at = account_cached
+            account = account_cached[0]
             quota, usage = account
             usage_message = self._codex_usage_message(quota, usage)
-            if usage_message.startswith("Codex Usage: "):
-                usage_message = "Codex 用量：" + usage_message.removeprefix(
-                    "Codex Usage: "
-                )
-            stale = self._snapshot_age(checked_at) >= CHUB_ACCOUNT_CACHE_SECONDS
-            lines.append(
-                f"{usage_message} · {self._snapshot_age(checked_at)} 秒前"
-                f"{' · 已过期' if stale else ''}"
+
+        if anomalies:
+            lines.extend(["", "异常"])
+            lines.extend(
+                f"{index}. {message}"
+                for index, message in enumerate(dict.fromkeys(anomalies), start=1)
             )
-        if refresh_note:
-            lines.append(f"刷新：{refresh_note}")
+
+        lines.extend(["", "Sessions"])
+        if sessions:
+            for item in sessions:
+                state = display_states[item.session_id]
+                current = "[Current] " if item.current else ""
+                lines.append(f"{item.slot}. {current}{item.title} · {state}")
+                task_summary = running_tasks.get(item.session_id)
+                if state == "Busy" and task_summary:
+                    lines.append(f"   Task: {task_summary}")
+        else:
+            lines.append("暂无已分配 Session" if session_cached else "暂不可用")
+
+        lines.extend(["", "Codex", "", usage_message])
         return "\n".join(lines)
+
+    @staticmethod
+    def _format_elapsed_time(elapsed_ms: int) -> str:
+        milliseconds = max(1, elapsed_ms)
+        if milliseconds < 1000:
+            return f"{milliseconds}ms"
+        seconds = f"{milliseconds / 1000:.1f}".removesuffix(".0")
+        return f"{seconds}s"
 
     def _dispatch_chub_sync(
         self,
@@ -1986,7 +2014,7 @@ class WeixinChubModeManager:
                         operation_id=operation_id,
                         route_fingerprint=route_fingerprint,
                         source_ip=source_ip,
-                        message="槽位状态已变化，本次未写入，请重新发送 chub sync。",
+                        message="槽位状态已变化，本次未写入，请重新发送 chub -s。",
                         code="chub_slots_synced",
                         failed=True,
                     )
@@ -2016,7 +2044,7 @@ class WeixinChubModeManager:
                     else f"槽位同步完成：清理 {removed} · 补充 {added} · 当前 {len(synced)}。"
                 )
                 listing = "\n".join(
-                    f"{item.slot}. {item.title}{' [Current]' if item.current else ''} · {item.state}"
+                    f"{item.slot}. {'[Current] ' if item.current else ''}{item.title} · {item.state}"
                     for item in visible
                 ) or "当前没有已分配 Session。"
                 message = f"{status}\n{listing}"
@@ -2149,6 +2177,63 @@ class WeixinChubModeManager:
             normalized = normalized[:-1].rstrip()
         return normalized
 
+    @staticmethod
+    def _strip_command_leading_punctuation(prompt: str) -> str:
+        value = prompt.strip()
+        while value and unicodedata.category(value[0]).startswith("P"):
+            value = value[1:].lstrip()
+        return value
+
+    @staticmethod
+    def _split_command_task(
+        prompt: str,
+        commands: tuple[str, ...],
+    ) -> tuple[bool, str | None]:
+        value = WeixinChubModeManager._strip_command_leading_punctuation(prompt)
+        folded = value.casefold()
+        for command in sorted(commands, key=len, reverse=True):
+            if not folded.startswith(command.casefold()):
+                continue
+            suffix = value[len(command) :]
+            if not suffix:
+                return True, None
+            if not (
+                suffix[0].isspace()
+                or suffix[0] in COMMAND_TASK_SEPARATORS
+            ):
+                continue
+            return True, WeixinChubModeManager._command_task_suffix(suffix)
+        return False, None
+
+    @staticmethod
+    def _command_task_suffix(suffix: str) -> str | None:
+        if not suffix or all(
+            char.isspace() or char in COMMAND_TASK_SEPARATORS for char in suffix
+        ):
+            return None
+        if suffix[0].isspace():
+            return suffix.lstrip().rstrip() or None
+        return suffix[1:].lstrip().rstrip() or None
+
+    @staticmethod
+    def _split_numbered_command_task(
+        prompt: str,
+        pattern: re.Pattern[str],
+    ) -> tuple[int, str | None] | None:
+        value = WeixinChubModeManager._strip_command_leading_punctuation(prompt)
+        match = pattern.match(value)
+        if match is None:
+            return None
+        slot = match.group(1)
+        suffix = value[match.end() :]
+        if suffix and not (
+            suffix[0].isspace()
+            or suffix[0] in COMMAND_TASK_SEPARATORS
+        ):
+            return None
+        requested_index = int(slot) if slot.isdigit() else CHINESE_SLOT_NUMBERS[slot]
+        return requested_index, WeixinChubModeManager._command_task_suffix(suffix)
+
     def _read_codex_status_message(
         self,
         configuration: WeixinChubModeRuntimeConfig,
@@ -2200,7 +2285,7 @@ class WeixinChubModeManager:
             LOGGER.warning("Codex session status check timed out")
             sessions_message = "Active sessions: 暂不可用"
             sessions_failed = True
-        message = f"{message}\n\n{sessions_message}"
+        message = f"{sessions_message}\n\n{message}"
         return message, account_failed or sessions_failed
 
     def _codex_sessions_message(
@@ -2254,7 +2339,10 @@ class WeixinChubModeManager:
             return self._dispatch_failure("state_unavailable")
         self._state = next_state
 
-        usage = "用法：发送 codex archive n 或归档N（1–9/一至九）。"
+        usage = (
+            "用法：发送 codex archive n、归档N 或归档会话N"
+            "（1–9/一至九）。"
+        )
         if invalid_usage or requested_index is None:
             return self._finish_codex_archive(
                 record,
@@ -2505,6 +2593,8 @@ class WeixinChubModeManager:
         source_ip: str,
         requested_index: int | None,
         invalid_usage: bool,
+        delivery_route: QuickInteractionWeixinRoute,
+        task_prompt: str | None = None,
     ) -> WeixinChubModeDispatchResult:
         operation_id = uuid4().hex
         now = utc_now()
@@ -2534,7 +2624,7 @@ class WeixinChubModeManager:
         usage = (
             "用法：发送 codex switch 切换到下一个 Session，"
             "发送 codex switch n 切换到指定编号，"
-            "或发送切换N（1–9/一至九）。"
+            "或发送切换N、切换会话N（1–9/一至九）。"
         )
         if invalid_usage:
             return self._finish_codex_switch(
@@ -2657,7 +2747,18 @@ class WeixinChubModeManager:
                 source_ip=source_ip,
                 failed=True,
             )
-        if target.id == self._state.session_id:
+        if task_prompt is not None and listed_state != "Available":
+            message, _status_failed = self._codex_operation_message(
+                "切换状态：未切换，目标 Session 正在执行，任务未提交。",
+                fill_session_candidates=False,
+            )
+            return self._finish_codex_switch(
+                record,
+                message,
+                source_ip=source_ip,
+                failed=True,
+            )
+        if target.id == self._state.session_id and task_prompt is None:
             message, _status_failed = self._codex_operation_message(
                 f"切换状态：未切换，Session {target_slot} 已是当前绑定。",
                 fill_session_candidates=False,
@@ -2677,7 +2778,9 @@ class WeixinChubModeManager:
             ):
                 raise ValueError("Session configuration changed")
             refreshed_state = self._codex_session_dispatch_state(refreshed)
-            if refreshed_state == "Unavailable":
+            if refreshed_state == "Unavailable" or (
+                task_prompt is not None and refreshed_state != "Available"
+            ):
                 raise ValueError("Session became unavailable")
         except Exception:
             LOGGER.info("Codex switch target is no longer available", exc_info=True)
@@ -2707,7 +2810,7 @@ class WeixinChubModeManager:
         )
         message = (
             f"切换状态：已切换到 Session {target_slot}。\n\n"
-            f"{usage_message}\n\n{sessions_message}"
+            f"{sessions_message}\n\n{usage_message}"
         )
 
         record.status = "routed"
@@ -2732,6 +2835,31 @@ class WeixinChubModeManager:
             self._log_dispatch(operation_id, "failed", source_ip)
             return self._dispatch_failure("state_unavailable")
         self._state = switched_state
+        if task_prompt is not None:
+            try:
+                submission = self.submit(
+                    message_id=self._command_task_message_id(message_id),
+                    prompt=task_prompt,
+                    correlation_id=correlation_id,
+                    source_ip=source_ip,
+                    delivery_route=delivery_route,
+                )
+            except ApiError as exc:
+                failure = self._dispatch_failure_from_error(exc)
+                return self._finish_codex_switch(
+                    record,
+                    f"切换状态：已切换到 Session {target_slot}，但任务未提交。\n\n"
+                    f"{failure.message or '任务提交失败，请稍后重试。'}",
+                    source_ip=source_ip,
+                    failed=True,
+                )
+            return self._finish_codex_switch(
+                record,
+                f"切换状态：已切换到 Session {target_slot}。\n\n"
+                "任务状态：已提交。\n\n"
+                f"任务摘要：{submission.task_summary or build_task_summary(task_prompt)}",
+                source_ip=source_ip,
+            )
         self._log_dispatch(operation_id, "succeeded", source_ip)
         return WeixinChubModeDispatchResult(disposition="reply", message=message)
 
@@ -2739,7 +2867,7 @@ class WeixinChubModeManager:
     def _switch_candidate_hint(remaining: int) -> str:
         if remaining <= 0:
             return ""
-        return "另有未登记的可用 Session，请先发送 chub sync 补充槽位后再切换。"
+        return "另有未登记的可用 Session，请先发送 chub -s 补充槽位后再切换。"
 
     def _read_visible_codex_sessions(
         self,
@@ -2810,8 +2938,8 @@ class WeixinChubModeManager:
         lines = ["Active sessions:"]
         for slot, session, state in visible:
             title = build_task_summary(session.title or "未命名 Session")
-            current = " [Current]" if session.id == current_session_id else ""
-            lines.append(f"{slot}. {title}{current} · {state}")
+            current = "[Current] " if session.id == current_session_id else ""
+            lines.append(f"{slot}. {current}{title} · {state}")
         if remaining:
             lines.append(f"另有 {remaining} 个")
         return "\n".join(lines)
@@ -2939,12 +3067,17 @@ class WeixinChubModeManager:
                 for entry in self._state.session_slots
             )
 
+    def session_slot(self, session_id: str) -> int | None:
+        """Return the current stable Weixin slot without changing slot state."""
+        with self._lock:
+            return self._slot_for_session(session_id)
+
     def codex_status_message(self) -> str:
         with self._status_condition:
             account_cached = self._status_cache.get("account")
             sessions_cached = self._status_cache.get("sessions")
         if account_cached is None:
-            usage_message = "Codex Usage: 暂不可用"
+            usage_message = "Weekly 暂不可用 · Tokens 暂不可用"
         else:
             quota, usage = account_cached[0]
             usage_message = self._codex_usage_message(quota, usage)
@@ -2954,12 +3087,12 @@ class WeixinChubModeManager:
             sessions = sessions_cached[0]
             lines = ["Active sessions:"]
             lines.extend(
-                f"{item.slot}. {item.title}{' [Current]' if item.current else ''} · "
+                f"{item.slot}. {'[Current] ' if item.current else ''}{item.title} · "
                 f"{'Busy' if self.quick_interactions.is_running(item.session_id) else item.state}"
                 for item in sessions
             )
             sessions_message = "\n".join(lines) if sessions else "Active sessions: None"
-        return f"{usage_message}\n\n{sessions_message}"
+        return f"{sessions_message}\n\n{usage_message}"
 
     def release_session_slot(self, session_id: str) -> bool:
         with self._slot_lock:
@@ -3050,12 +3183,9 @@ class WeixinChubModeManager:
             token_text = WeixinChubModeManager._compact_token_count(
                 today_bucket.tokens
             )
-            token_text += f" ({today_bucket.start_date:%m-%d})"
         else:
             token_text = "暂不可用"
-        return (
-            f"Codex Usage: Weekly {weekly_text} · Daily tokens {token_text}"
-        )
+        return f"Weekly {weekly_text} · Tokens {token_text}"
 
     @staticmethod
     def _compact_token_count(tokens: int) -> str:
@@ -3067,35 +3197,6 @@ class WeixinChubModeManager:
             if tokens >= divisor:
                 return f"{tokens / divisor:.1f}{suffix}"
         return str(tokens)
-
-    @staticmethod
-    def _submission_dispatch_message(
-        submission: WeixinChubModeSubmissionResult,
-        *,
-        prompt: str,
-        message_type: Literal["text", "voice"],
-    ) -> str:
-        parts = ["任务已提交"]
-        if submission.session_slot is not None and submission.session_title:
-            parts.append(
-                f"Session：{submission.session_slot} · {submission.session_title}"
-            )
-        if submission.task_summary:
-            parts.append(f"任务摘要：{submission.task_summary}")
-        parts.append("完成后将原路发送结果。")
-        message = "\n\n".join(parts)
-        if message_type != "voice":
-            return message
-
-        prefix = f"{message}\n\n语音识别内容：\n"
-        truncated_suffix = "\n（语音识别内容过长，已截断）"
-        available = max(0, MAX_DISPATCH_MESSAGE_CHARS - len(prefix))
-        if len(prompt) <= available:
-            transcript = prompt
-        else:
-            body_length = max(0, available - len(truncated_suffix))
-            transcript = f"{prompt[:body_length]}{truncated_suffix}"
-        return f"{prefix}{transcript}"
 
     def _remember_passed_dispatch(
         self,
@@ -3156,7 +3257,7 @@ class WeixinChubModeManager:
             "in_progress": (
                 "任务提交失败：当前 Session 正在执行，本任务未提交。\n\n"
                 "如需新建 Session 并继续执行本任务，请回复："
-                "codex new retry 或“继续执行”。"
+                "codex new retry 或“新建会话执行”。"
             ),
             "configuration_invalid": (
                 "任务提交失败：微信 Chub 模式配置无效，请检查工作区、权限、模型和微信通知配置。"
@@ -3468,6 +3569,9 @@ class WeixinChubModeManager:
             "quick_interaction_requires_terminal": "当前权限不支持微信快速交互。",
             "codex_model_unavailable": "所选 Codex 模型当前不可用。",
             "codex_reasoning_effort_unsupported": "所选推理等级当前不可用。",
+            "weixin_chub_mode_session_slots_full": (
+                "9 个微信 Session 槽位已满，请先归档或删除一个 Session。"
+            ),
         }
         return allowed.get(exc.code, "微信任务提交失败。")
 

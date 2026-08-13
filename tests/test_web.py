@@ -231,7 +231,12 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
     assert "设置 · Hub" in response.text
     assert "快速交互" in response.text
     assert "调整会话历史记录的加载方式。" in response.text
+    assert "调整浏览器偏好和节点功能。" in response.text
     assert "界面风格" in response.text
+    assert "微信处理" in response.text
+    assert 'id="weixin-translation-enabled"' in response.text
+    assert "会增加 Codex 用量，并将微信正文交给模型处理" in response.text
+    assert "关闭只阻止新翻译，已有任务继续完成" in response.text
     assert "Standard" in response.text
     assert "Cyber" in response.text
     assert "当前风格" in response.text
@@ -266,6 +271,14 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
     assert "hub.codexDefaultModel.v1" in script.text
     assert "hub.codexDefaultReasoningEffort.v1" in script.text
     assert "/api/codex/models" in script.text
+    assert "/api/settings/weixin-translation" in script.text
+    assert "项翻译仍在处理中" in script.text
+    assert "已开启，将从下一条微信普通任务开始处理" not in script.text
+    assert "已关闭，新任务不再翻译" not in script.text
+    assert "设置结果未知，请稍后刷新页面重试" in script.text
+    assert "暂时无法刷新翻译任务状态，正在重试" in script.text
+    assert "window.setTimeout" in script.text
+    assert 'id="weixin-translation-status"' not in response.text
     assert "之后新建的 Session 将使用该权限" in script.text
     assert "之后新建的 Session 将使用该模型与等级" not in script.text
     assert "localStorage.setItem" in script.text
@@ -690,6 +703,7 @@ async def test_quick_interaction_conversation_page_is_available(
     assert 'id="conversation-load-earlier"' in page.text
     assert 'id="conversation-jump-latest"' in page.text
     assert 'id="conversation-form"' in page.text
+    assert 'id="conversation-session-switcher"' in page.text
     assert 'id="conversation-engine"' not in page.text
     assert 'id="conversation-more"' not in page.text
     assert 'id="conversation-submit" class="button-secondary" type="submit" disabled' in page.text
@@ -713,6 +727,18 @@ async def test_quick_interaction_conversation_page_is_available(
     assert "conversationEngine" not in script.text
     assert "conversationScroll.scrollTop" in script.text
     assert "conversationClient.submitTask" in script.text
+    assert "conversationClient.loadSessionContext" in script.text
+    assert 'label.textContent = `${number} · ${status}`' in script.text
+    assert "conversationSessionStatus" in script.text
+    assert "conversationSessionNavigationMode" in script.text
+    assert 'link.setAttribute("aria-current", "page")' in script.text
+    assert "handleConversationSessionSwitch" in script.text
+    assert "window.location.replace(link.href)" in script.text
+    assert "mode === \"default\"" in script.text
+    assert "mode === \"ignore\"" in script.text
+    assert "hub.quickInteractionSessionNumbers.v1" in script.text
+    assert "hub.quickInteractionDraft.v1" in script.text
+    assert "sessionStorage.setItem(conversationDraftKey" in script.text
     assert 'conversationSubmit.textContent = "发送"' in script.text
     assert '"确认发送"' not in script.text
     assert 'pending: "待通知"' in script.text
@@ -736,6 +762,8 @@ async def test_quick_interaction_conversation_page_is_available(
     assert "width: min(100%, 720px);" not in stylesheet.text
     assert ".conversation-message-user" in stylesheet.text
     assert ".conversation-composer" in stylesheet.text
+    assert ".conversation-session-switcher" in stylesheet.text
+    assert ".conversation-session-switch.is-current" in stylesheet.text
     assert ":not(.site-header-title):not(.session-enter)::before" in stylesheet.text
     assert 'a.button-link::before' in stylesheet.text
     assert ':root[data-ui-style="cyber"] .openclaw-status-row .badge' in stylesheet.text

@@ -14,7 +14,7 @@
         <div class="card-heading-copy">
           <p class="section-kicker">本机偏好</p>
           <h2 id="settings-title">设置</h2>
-          <p class="section-description">调整当前浏览器上的界面使用方式。</p>
+          <p class="section-description">调整浏览器偏好和节点功能。</p>
         </div>
 
         <section class="settings-section" aria-labelledby="quick-interaction-settings-title">
@@ -33,6 +33,26 @@
             </select>
           </label>
           <p id="settings-message" class="message" aria-live="polite"></p>
+        </section>
+
+        <section class="settings-section" aria-labelledby="weixin-settings-title">
+          <div class="settings-section-heading">
+            <h3 id="weixin-settings-title">微信处理</h3>
+            <p>控制微信 Chub 普通任务的附加文本处理。</p>
+          </div>
+          <label class="settings-field" for="weixin-translation-enabled">
+            <span>
+              <strong>文本优化与翻译</strong>
+              <small>开启后，后续普通任务会额外收到原文、中文润色和 English；关闭只阻止新翻译，已有任务继续完成。此功能会增加 Codex 用量，并将微信正文交给模型处理。</small>
+            </span>
+            <input
+              id="weixin-translation-enabled"
+              name="weixin-translation-enabled"
+              type="checkbox"
+              disabled
+            >
+          </label>
+          <p id="weixin-translation-message" class="message" aria-live="polite"></p>
         </section>
 
         <section class="settings-section" aria-labelledby="codex-session-settings-title">
@@ -163,6 +183,6 @@
         </section>
       </section>
     </main>
-    <footer>设置保存在当前浏览器，不会改变已有会话、节点或任务数据。</footer>
+    <footer>界面与会话偏好保存在当前浏览器；节点功能设置由 Chub 安全保存。</footer>
   </body>
 </html>

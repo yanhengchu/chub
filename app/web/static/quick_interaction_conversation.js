@@ -9,6 +9,8 @@ const {
   pollDelay: conversationPollDelay,
   readPageSize: readConversationPageSize,
   readToken: readConversationToken,
+  sessionNavigationMode: conversationSessionNavigationMode,
+  sessionSwitcherStatus: conversationSessionStatus,
   shouldPoll: shouldPollConversation,
   statusText: conversationStatusText,
   submissionBlockReason: conversationSubmissionBlockReason,
@@ -27,7 +29,10 @@ const conversationScroll = document.querySelector("#conversation-scroll");
 const conversationFeed = document.querySelector("#conversation-feed");
 const conversationLoadEarlier = document.querySelector("#conversation-load-earlier");
 const conversationJumpLatest = document.querySelector("#conversation-jump-latest");
+const conversationSessionSwitcher = document.querySelector("#conversation-session-switcher");
 const CONVERSATION_PAGE_SIZE = readConversationPageSize();
+const CONVERSATION_SESSION_NUMBERS_KEY = "hub.quickInteractionSessionNumbers.v1";
+const conversationDraftKey = `hub.quickInteractionDraft.v1.${conversationSessionId}`;
 let conversationPollTimer = null;
 let conversationPollFailureCount = 0;
 let conversationLoadQueue = Promise.resolve();
@@ -40,6 +45,162 @@ let conversationInitialized = false;
 let conversationActive = false;
 let conversationSession = null;
 let conversationConfirmStopUnknownTerminal = false;
+let conversationSessionSwitcherSignature = "";
+
+function readConversationSessionNumbers(sessions) {
+  const activeIds = new Set(sessions.map((session) => session.id));
+  const fallbackSessions = [...sessions].sort((left, right) => {
+    const createdDifference = new Date(left.created_at) - new Date(right.created_at);
+    return createdDifference || left.id.localeCompare(right.id);
+  });
+  const fallback = new Map(
+    fallbackSessions.map((session, index) => [session.id, index + 1]),
+  );
+  try {
+    const stored = JSON.parse(
+      localStorage.getItem(CONVERSATION_SESSION_NUMBERS_KEY) || "{}",
+    );
+    const entries = stored?.sessions && typeof stored.sessions === "object"
+      ? stored.sessions
+      : {};
+    const assigned = new Map();
+    const used = new Set();
+    Object.entries(entries).forEach(([sessionId, number]) => {
+      if (
+        activeIds.has(sessionId)
+        && Number.isInteger(number)
+        && number > 0
+        && !used.has(number)
+      ) {
+        assigned.set(sessionId, number);
+        used.add(number);
+      }
+    });
+    let next = Number.isInteger(stored?.next) && stored.next > 0
+      ? stored.next
+      : 1;
+    fallbackSessions.forEach((session) => {
+      if (assigned.has(session.id)) {
+        return;
+      }
+      while (used.has(next)) {
+        next += 1;
+      }
+      assigned.set(session.id, next);
+      used.add(next);
+      next += 1;
+    });
+    localStorage.setItem(
+      CONVERSATION_SESSION_NUMBERS_KEY,
+      JSON.stringify({ next, sessions: Object.fromEntries(assigned) }),
+    );
+    return assigned;
+  } catch (_error) {
+    return fallback;
+  }
+}
+
+function handleConversationSessionSwitch(event) {
+  const link = event.target.closest?.(".conversation-session-switch");
+  if (!link || !conversationSessionSwitcher.contains(link)) {
+    return;
+  }
+  const mode = conversationSessionNavigationMode({
+    button: event.button,
+    current: link.getAttribute("aria-current") === "page",
+    altKey: event.altKey,
+    ctrlKey: event.ctrlKey,
+    metaKey: event.metaKey,
+    shiftKey: event.shiftKey,
+  });
+  if (mode === "ignore") {
+    event.preventDefault();
+    return;
+  }
+  if (mode === "default") {
+    return;
+  }
+  event.preventDefault();
+  window.location.replace(link.href);
+}
+
+function renderConversationSessionSwitcher(sessions) {
+  const numbers = readConversationSessionNumbers(sessions);
+  const ordered = [...sessions].sort((left, right) => (
+    numbers.get(left.id) - numbers.get(right.id)
+  ));
+  const signature = JSON.stringify(ordered.map((session) => [
+    session.id,
+    numbers.get(session.id),
+    conversationSessionStatus(session),
+  ]));
+  if (signature === conversationSessionSwitcherSignature) {
+    return;
+  }
+  conversationSessionSwitcherSignature = signature;
+  const previousScrollLeft = conversationSessionSwitcher.scrollLeft;
+  conversationSessionSwitcher.replaceChildren();
+  conversationSessionSwitcher.hidden = ordered.length <= 1;
+  if (ordered.length <= 1) {
+    return;
+  }
+  ordered.forEach((session) => {
+    const number = numbers.get(session.id);
+    const status = conversationSessionStatus(session);
+    const current = session.id === conversationSessionId;
+    const working = status === "执行中";
+    const link = document.createElement("a");
+    const dot = document.createElement("span");
+    const label = document.createElement("span");
+    link.className = "conversation-session-switch";
+    link.href = `/codex/${encodeURIComponent(session.id)}/quick-interactions/conversation`;
+    link.title = `切换到 Session ${number}，${status}`;
+    link.setAttribute(
+      "aria-label",
+      `Session ${number}，${status}${current ? "，当前 Session" : ""}`,
+    );
+    if (current) {
+      link.classList.add("is-current");
+      link.setAttribute("aria-current", "page");
+    }
+    if (working) {
+      link.classList.add("is-working");
+    }
+    dot.className = "conversation-session-dot";
+    dot.setAttribute("aria-hidden", "true");
+    label.textContent = `${number} · ${status}`;
+    link.append(dot, label);
+    conversationSessionSwitcher.append(link);
+  });
+  if (previousScrollLeft > 0) {
+    conversationSessionSwitcher.scrollLeft = previousScrollLeft;
+    return;
+  }
+  const current = conversationSessionSwitcher.querySelector("[aria-current='page']");
+  window.requestAnimationFrame(() => {
+    current?.scrollIntoView({ block: "nearest", inline: "center" });
+  });
+}
+
+function readConversationDraft() {
+  try {
+    return sessionStorage.getItem(conversationDraftKey) || "";
+  } catch (_error) {
+    return "";
+  }
+}
+
+function saveConversationDraft() {
+  try {
+    if (conversationPrompt.value) {
+      sessionStorage.setItem(conversationDraftKey, conversationPrompt.value);
+    } else {
+      sessionStorage.removeItem(conversationDraftKey);
+    }
+  } catch (_error) {
+    // Storage failure only affects draft persistence in this browser tab.
+  }
+}
 
 function showConversationMessage(element, text, kind = "") {
   element.textContent = text;
@@ -366,12 +527,12 @@ function renderConversationSessionError(error) {
 
 async function performConversationLoad() {
   window.clearTimeout(conversationPollTimer);
-  const [historyResult, sessionResult] = await Promise.allSettled([
+  const [historyResult, sessionContextResult] = await Promise.allSettled([
     conversationClient.listTasks({
       limit: CONVERSATION_PAGE_SIZE,
       order: "timeline",
     }),
-    conversationClient.loadSession(),
+    conversationClient.loadSessionContext(),
   ]);
   if (historyResult.status === "fulfilled") {
     const data = historyResult.value;
@@ -396,15 +557,16 @@ async function performConversationLoad() {
       "error",
     );
   }
-  if (sessionResult.status === "fulfilled") {
-    renderConversationSession(sessionResult.value);
+  if (sessionContextResult.status === "fulfilled") {
+    renderConversationSessionSwitcher(sessionContextResult.value.sessions);
+    renderConversationSession(sessionContextResult.value.session);
   } else {
-    renderConversationSessionError(sessionResult.reason);
+    renderConversationSessionError(sessionContextResult.reason);
   }
-  const session = sessionResult.status === "fulfilled"
-    ? sessionResult.value
+  const session = sessionContextResult.status === "fulfilled"
+    ? sessionContextResult.value.session
     : conversationSession;
-  const loadErrors = [historyResult, sessionResult]
+  const loadErrors = [historyResult, sessionContextResult]
     .filter((result) => result.status === "rejected")
     .map((result) => result.reason);
   if (loadErrors.length === 0) {
@@ -491,6 +653,7 @@ function loadEarlierConversation() {
 }
 
 conversationPrompt.addEventListener("input", () => {
+  saveConversationDraft();
   resizeConversationPrompt();
   updateConversationComposerActions();
   if (conversationSession) {
@@ -530,6 +693,7 @@ conversationForm.addEventListener("submit", async (event) => {
       confirmStopUnknownTerminal: conversationConfirmStopUnknownTerminal,
     });
     conversationPrompt.value = "";
+    saveConversationDraft();
     resizeConversationPrompt();
     updateConversationComposerActions();
     conversationConfirmStopUnknownTerminal = false;
@@ -568,6 +732,7 @@ conversationLoadEarlier.addEventListener("click", loadEarlierConversation);
 conversationJumpLatest.addEventListener("click", () => {
   conversationScroll.scrollTo({ top: conversationScroll.scrollHeight, behavior: "smooth" });
 });
+conversationSessionSwitcher.addEventListener("click", handleConversationSessionSwitch);
 conversationScroll.addEventListener("scroll", updateConversationJumpLatest, { passive: true });
 
 document.addEventListener("visibilitychange", () => {
@@ -578,6 +743,7 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 
+conversationPrompt.value = readConversationDraft();
 resizeConversationPrompt();
 updateConversationComposerActions();
 loadConversation();

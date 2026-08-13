@@ -558,10 +558,10 @@ def test_restart_notification_uses_weixin_task_route(
     monkeypatch.setattr("subprocess.run", run)
     notifier = OpenClawCompletionNotifier(OpenClawCompletionNotificationConfig())
     notifier.codex_status_reader = lambda: (
-        "Codex Usage: Weekly 暂不可用 · Daily tokens 暂不可用\n\n"
         "Active sessions:\n"
         "1. codex new，我… · Available\n"
-        "3. 服务检查 [Current] · Available"
+        "3. [Current] 服务检查 · Available\n\n"
+        "Weekly 暂不可用 · Tokens 暂不可用"
     )
     route = QuickInteractionWeixinRoute(
         account_id="route-account",
@@ -587,10 +587,10 @@ def test_restart_notification_uses_weixin_task_route(
         "Chub 已完成自动重启，服务已恢复。\n\n"
         "关联 Session：3 · 服务检查\n\n"
         "关联任务：检查 Ubuntu 服务状态\n\n"
-        "Codex Usage: Weekly 暂不可用 · Daily tokens 暂不可用\n\n"
         "Active sessions:\n"
         "1. codex new，我… · Available\n"
-        "3. 服务检查 [Current] · Available"
+        "3. [Current] 服务检查 · Available\n\n"
+        "Weekly 暂不可用 · Tokens 暂不可用"
     )
 
 
@@ -655,7 +655,7 @@ def test_restart_notification_uses_unavailable_for_legacy_session_context(
     message = calls[1][calls[1].index("--message") + 1]
     assert "关联 Session：Unavailable" in message
     assert "关联任务：Unavailable" in message
-    assert "Codex Usage: 暂不可用\n\nActive sessions: 暂不可用" in message
+    assert "Active sessions: 暂不可用\n\nWeekly 暂不可用 · Tokens 暂不可用" in message
 
 
 def test_weixin_route_validation_requires_one_healthy_clawbot(
