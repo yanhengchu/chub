@@ -23,6 +23,11 @@ EXPECTED_WORKSPACE_IDS = {
     "weixin-translation",
     "workspace",
 }
+LEGACY_RECOVERY_UNAVAILABLE_CODES = {
+    "worker_action_unavailable",
+    "worker_protocol_incompatible",
+    "worker_request_invalid",
+}
 
 
 def _blocker(code: str, message: str, *, count: int | None = None) -> dict[str, object]:
@@ -263,6 +268,7 @@ async def run_cutover_preflight(
     )
     checks["workspace_ids"] = sorted(workspaces)
 
+    worker_task_records: int | None = None
     if not require_production_worker:
         try:
             worker_task_records = _worker_task_record_count(settings)
@@ -302,14 +308,15 @@ async def run_cutover_preflight(
     except (OSError, ValueError):
         health = None
     checks["worker_health"] = health
+    is_production_worker = False
     if not isinstance(health, dict):
         blockers.append(_blocker("worker_unavailable", "Worker 健康检查不可用。"))
     else:
-        expected = (
+        is_production_worker = (
             health.get("protocol_version") == PROTOCOL_VERSION
             and health.get("code_version") == WORKER_CODE_VERSION
         )
-        if require_production_worker and not expected:
+        if require_production_worker and not is_production_worker:
             blockers.append(
                 _blocker("worker_version_mismatch", "Worker 协议或代码版本尚未切换到正式版本。")
             )
@@ -344,6 +351,7 @@ async def run_cutover_preflight(
             )
         worker_protocol = health.get("protocol_version")
         if isinstance(worker_protocol, int):
+            recovery_verification = "worker_query"
             try:
                 recovery = await worker_request(
                     settings,
@@ -356,24 +364,42 @@ async def run_cutover_preflight(
                     },
                 )
                 if recovery.get("success") is not True:
-                    raise ValueError("Worker recovery query failed")
-                recovery_data = recovery.get("data")
-                if not isinstance(recovery_data, dict):
-                    raise ValueError("Worker recovery data is invalid")
-                tasks = recovery_data.get("tasks")
-                if not isinstance(tasks, list):
-                    raise ValueError("Worker recovery task list is invalid")
-                recovery_count = len(
-                    [
-                        WorkerTaskSummary.model_validate_json(
-                            json.dumps(item, ensure_ascii=False)
-                        )
-                        for item in tasks
-                    ]
-                )
+                    error = recovery.get("error")
+                    error_code = error.get("code") if isinstance(error, dict) else None
+                    legacy_empty_store = (
+                        not require_production_worker
+                        and not is_production_worker
+                        and worker_task_records == 0
+                        and health.get("active_tasks") == 0
+                        and health.get("corrupt_tasks") == 0
+                        and health.get("test_tasks_enabled") is False
+                        and health.get("codex_tasks_enabled") is False
+                        and error_code in LEGACY_RECOVERY_UNAVAILABLE_CODES
+                    )
+                    if legacy_empty_store:
+                        recovery_count = 0
+                        recovery_verification = "empty_legacy_store"
+                    else:
+                        raise ValueError("Worker recovery query failed")
+                else:
+                    recovery_data = recovery.get("data")
+                    if not isinstance(recovery_data, dict):
+                        raise ValueError("Worker recovery data is invalid")
+                    tasks = recovery_data.get("tasks")
+                    if not isinstance(tasks, list):
+                        raise ValueError("Worker recovery task list is invalid")
+                    recovery_count = len(
+                        [
+                            WorkerTaskSummary.model_validate_json(
+                                json.dumps(item, ensure_ascii=False)
+                            )
+                            for item in tasks
+                        ]
+                    )
             except (OSError, TypeError, ValidationError, ValueError):
                 recovery_count = -1
             checks["worker_recovery_tasks"] = recovery_count
+            checks["worker_recovery_verification"] = recovery_verification
             if recovery_count != 0:
                 blockers.append(
                     _blocker(

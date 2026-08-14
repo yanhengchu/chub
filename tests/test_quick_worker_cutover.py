@@ -228,6 +228,116 @@ async def test_prepare_preflight_counts_old_worker_recovery_records(
 
 
 @pytest.mark.anyio
+async def test_prepare_preflight_accepts_empty_legacy_worker_without_recovery_query(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _prepare_paths(settings, tmp_path)
+    settings.codex_pty.data_file.parent.mkdir(parents=True, exist_ok=True)
+    _write_private_state(settings.codex_pty.data_file, "[]")
+    legacy_health = _health()
+    legacy_health["data"].update(
+        {
+            "protocol_version": 1,
+            "code_version": "quick-worker-1",
+            "codex_tasks_enabled": False,
+            "codex_workspace_ids": [],
+        }
+    )
+    monkeypatch.setattr(
+        "app.quick_worker.worker_runtime_dir",
+        lambda _settings: tmp_path / "worker-runtime",
+    )
+    monkeypatch.setattr(
+        "app.quick_worker.worker_socket_path",
+        lambda _settings: tmp_path / "worker-runtime" / "worker.sock",
+    )
+    monkeypatch.setattr(
+        "app.quick_worker.read_health",
+        AsyncMock(return_value=legacy_health),
+    )
+    monkeypatch.setattr(
+        "app.quick_worker.worker_request",
+        AsyncMock(
+            return_value={
+                "success": False,
+                "error": {"code": "worker_request_invalid"},
+            }
+        ),
+    )
+
+    result = await run_cutover_preflight(
+        settings,
+        require_production_worker=False,
+    )
+
+    assert result["success"] is True
+    assert result["data"]["checks"]["worker_task_records"] == 0
+    assert result["data"]["checks"]["worker_recovery_tasks"] == 0
+    assert (
+        result["data"]["checks"]["worker_recovery_verification"]
+        == "empty_legacy_store"
+    )
+
+
+@pytest.mark.anyio
+async def test_prepare_preflight_rejects_unqueryable_nonempty_legacy_store(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _prepare_paths(settings, tmp_path)
+    settings.codex_pty.data_file.parent.mkdir(parents=True, exist_ok=True)
+    _write_private_state(settings.codex_pty.data_file, "[]")
+    task_dir = settings.codex_pty.data_file.parent / "quick-worker" / "tasks" / "old-task"
+    task_dir.mkdir(parents=True)
+    task_dir.parent.chmod(0o700)
+    legacy_health = _health()
+    legacy_health["data"].update(
+        {
+            "protocol_version": 1,
+            "code_version": "quick-worker-1",
+            "codex_tasks_enabled": False,
+            "codex_workspace_ids": [],
+        }
+    )
+    monkeypatch.setattr(
+        "app.quick_worker.worker_runtime_dir",
+        lambda _settings: tmp_path / "worker-runtime",
+    )
+    monkeypatch.setattr(
+        "app.quick_worker.worker_socket_path",
+        lambda _settings: tmp_path / "worker-runtime" / "worker.sock",
+    )
+    monkeypatch.setattr(
+        "app.quick_worker.read_health",
+        AsyncMock(return_value=legacy_health),
+    )
+    monkeypatch.setattr(
+        "app.quick_worker.worker_request",
+        AsyncMock(
+            return_value={
+                "success": False,
+                "error": {"code": "worker_request_invalid"},
+            }
+        ),
+    )
+
+    result = await run_cutover_preflight(
+        settings,
+        require_production_worker=False,
+    )
+
+    assert result["success"] is False
+    assert result["data"]["checks"]["worker_task_records"] == 1
+    assert result["data"]["checks"]["worker_recovery_tasks"] == -1
+    assert "worker_recovery_not_empty" in {
+        item["code"] for item in result["data"]["blockers"]
+    }
+
+
+@pytest.mark.anyio
 async def test_prepare_preflight_allows_missing_managed_translation_workspace(
     settings,
     tmp_path: Path,
