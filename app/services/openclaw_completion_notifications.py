@@ -54,7 +54,17 @@ class OpenClawCompletionNotifier:
     ) -> CompletionNotificationResult:
         messages = {
             "succeeded": "Chub 已完成自动重启，服务已恢复。",
-            "start_failed": "Chub 自动重启未能启动，当前服务仍在运行。",
+            "start_failed": (
+                "Chub 自动重启未完成："
+                + (
+                    task.deferred_restart_error
+                    or "旧记录没有保存具体原因，请查看 Chub 运行日志。"
+                )
+            ),
+            "sensitive_task_failed": (
+                "Chub 已取消自动重启：等待期间有运行资源修改任务异常结束，"
+                "请检查任务结果后再决定是否重启。"
+            ),
         }
         message = messages.get(outcome)
         if message is None:
@@ -74,12 +84,12 @@ class OpenClawCompletionNotifier:
 
     def _restart_codex_status(self) -> str:
         if self.codex_status_reader is None:
-            return "Active sessions: 暂不可用\n\nWeekly 暂不可用 · Tokens 暂不可用"
+            return "Sessions\n\n暂不可用\n\nWeekly 暂不可用 · Tokens 暂不可用"
         try:
             message = self.codex_status_reader()
         except Exception:
-            return "Active sessions: 暂不可用\n\nWeekly 暂不可用 · Tokens 暂不可用"
-        return message or "Active sessions: 暂不可用\n\nWeekly 暂不可用 · Tokens 暂不可用"
+            return "Sessions\n\n暂不可用\n\nWeekly 暂不可用 · Tokens 暂不可用"
+        return message or "Sessions\n\n暂不可用\n\nWeekly 暂不可用 · Tokens 暂不可用"
 
     def _send(
         self,

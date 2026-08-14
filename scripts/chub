@@ -60,6 +60,10 @@ Commands:
   status     Show Web and Quick Worker service status
   worker-health
              Query Quick Worker health over private local IPC
+  worker-cutover-preflight
+             Run the read-only Quick Worker cutover preflight
+  worker-cutover
+             Restart Web once after preflight, then upgrade Worker
   logs       Follow Hub application logs
   notification
              Validate, list, test, or send configured notifications
@@ -128,6 +132,26 @@ values = {
 print(values[sys.argv[1]])
 PY
     )
+}
+
+worker_identity() {
+    (
+        cd "$PROJECT_ROOT"
+        "$PYTHON_BIN" -m app.quick_worker health
+    ) | "$PYTHON_BIN" -c '
+import json
+import sys
+
+payload = json.load(sys.stdin)
+data = payload.get("data") if payload.get("success") is True else None
+if not isinstance(data, dict):
+    raise SystemExit(1)
+generation = data.get("generation")
+pid = data.get("pid")
+if not isinstance(generation, str) or not generation or not isinstance(pid, int):
+    raise SystemExit(1)
+print(f"{generation} {pid}")
+'
 }
 
 check_codex_pty_requirements() {
@@ -556,6 +580,48 @@ PY
     fail "service did not become healthy; run chub logs"
 }
 
+worker_cutover_web_health_check() {
+    local health_url expected_instance expected_worker_identity
+    health_url="$(configured_value health_url 2>/dev/null)" \
+        || fail "service restarted, but configuration could not be read"
+    expected_instance="$1"
+    expected_worker_identity="$2"
+    local attempt
+    for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+        if "$PYTHON_BIN" - "$health_url" "$expected_instance" <<'PY' >/dev/null 2>&1
+import json
+import sys
+import urllib.request
+
+with urllib.request.urlopen(sys.argv[1], timeout=1) as response:
+    payload = json.load(response)
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if (
+        response.status != 200
+        or not isinstance(data, dict)
+        or data.get("status") != "ok"
+        or data.get("instance_id") != sys.argv[2]
+        or data.get("quick_worker_ready") is not True
+    ):
+        raise SystemExit(1)
+PY
+        then
+            local current_worker_identity
+            current_worker_identity="$(worker_identity 2>/dev/null || true)"
+            if [[ -z "$current_worker_identity" ]]; then
+                sleep 0.5
+                continue
+            elif [[ "$current_worker_identity" == "$expected_worker_identity" ]]; then
+                echo "Chub is healthy with Quick Worker recovery ready on $health_url"
+                return
+            fi
+            fail "Quick Worker identity changed while Web restarted"
+        fi
+        sleep 0.5
+    done
+    fail "new Web instance did not complete Quick Worker recovery"
+}
+
 restart_service() {
     if [[ "${CHUB_ACTIVITY_SOURCE:-}" == "quick" ]]; then
         "$PROJECT_ROOT/scripts/chub-web-restart"
@@ -596,6 +662,111 @@ quick_worker_health() {
         cd "$PROJECT_ROOT"
         "$PYTHON_BIN" -m app.quick_worker health
     )
+}
+
+worker_cutover() {
+    [[ "${CHUB_ACTIVITY_SOURCE:-}" != "quick" ]] \
+        || fail "worker cutover cannot run inside a quick interaction"
+    check_project
+    check_codex_pty_requirements
+    (
+        cd "$PROJECT_ROOT"
+        "$PYTHON_BIN" -m app.quick_worker cutover-preflight --prepare
+    ) || fail "Worker cutover prepare preflight failed"
+    local previous_web_instance
+    previous_web_instance="$("$PYTHON_BIN" - "$(configured_value health_url)" <<'PY'
+import json
+import sys
+import urllib.request
+
+with urllib.request.urlopen(sys.argv[1], timeout=2) as response:
+    payload = json.load(response)
+data = payload.get("data") if isinstance(payload, dict) else None
+instance_id = data.get("instance_id") if isinstance(data, dict) else None
+if not isinstance(instance_id, str) or not instance_id:
+    raise SystemExit(1)
+print(instance_id)
+PY
+    )" || fail "current Web instance health is unavailable"
+    "$PROJECT_ROOT/scripts/chub-web-restart"
+    local cutover_web_instance
+    cutover_web_instance=""
+    local attempt
+    for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+        cutover_web_instance="$("$PYTHON_BIN" - "$(configured_value health_url)" "$previous_web_instance" <<'PY' 2>/dev/null || true
+import json
+import sys
+import urllib.request
+
+with urllib.request.urlopen(sys.argv[1], timeout=1) as response:
+    payload = json.load(response)
+data = payload.get("data") if isinstance(payload, dict) else None
+instance_id = data.get("instance_id") if isinstance(data, dict) else None
+worker_ready = data.get("quick_worker_ready") if isinstance(data, dict) else None
+if (
+    not isinstance(instance_id, str)
+    or not instance_id
+    or instance_id == sys.argv[2]
+    or worker_ready is not False
+):
+    raise SystemExit(1)
+print(instance_id)
+PY
+        )"
+        if [[ -n "$cutover_web_instance" ]]; then
+            break
+        fi
+        sleep 0.5
+    done
+    [[ -n "$cutover_web_instance" ]] \
+        || fail "new Web instance did not enter the expected fail-closed cutover state"
+    (
+        cd "$PROJECT_ROOT"
+        "$PYTHON_BIN" -m app.quick_worker cutover-preflight --prepare
+    ) || fail "Worker cutover prepare preflight changed after Web restart"
+    case "$(platform_name)" in
+        macos)
+            local worker_plist_path
+            worker_plist_path="$(worker_macos_plist_path)"
+            if [[ -f "$worker_plist_path" ]]; then
+                stop_macos_worker
+            fi
+            (
+                cd "$PROJECT_ROOT"
+                "$PYTHON_BIN" -m app.quick_worker cutover-retire-store
+            ) || fail "old Worker task store could not be retired"
+            write_macos_worker_service
+            start_macos_worker
+            ;;
+        ubuntu)
+            systemctl --user stop "$WORKER_SERVICE_NAME.service"
+            (
+                cd "$PROJECT_ROOT"
+                "$PYTHON_BIN" -m app.quick_worker cutover-retire-store
+            ) || fail "old Worker task store could not be retired"
+            write_systemd_worker_service
+            systemctl --user daemon-reload
+            systemctl --user enable "$WORKER_SERVICE_NAME.service"
+            systemctl --user start "$WORKER_SERVICE_NAME.service"
+            ;;
+    esac
+    for attempt in 1 2 3 4 5 6 7 8 9 10; do
+        if (
+            cd "$PROJECT_ROOT"
+            "$PYTHON_BIN" -m app.quick_worker cutover-preflight
+        ); then
+            local expected_worker_identity
+            expected_worker_identity="$(worker_identity)" \
+                || fail "new Worker identity could not be read"
+            worker_cutover_web_health_check \
+                "$cutover_web_instance" \
+                "$expected_worker_identity"
+            echo "Quick Worker cutover completed"
+            return
+        fi
+        sleep 0.5
+    done
+    fail "new Worker did not pass final preflight; Web remains fail-closed"
 }
 
 show_logs() {
@@ -642,6 +813,14 @@ case "$command" in
     restart) restart_service ;;
     status) status_service ;;
     worker-health) quick_worker_health ;;
+    worker-cutover-preflight)
+        check_project
+        (
+            cd "$PROJECT_ROOT"
+            "$PYTHON_BIN" -m app.quick_worker cutover-preflight
+        )
+        ;;
+    worker-cutover) worker_cutover ;;
     logs) show_logs ;;
     notification)
         shift

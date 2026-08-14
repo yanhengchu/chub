@@ -204,13 +204,13 @@
       </div>
     </main>
 
-    <dialog id="preview-dialog" class="restart-dialog">
-      <div class="restart-dialog-surface">
-        <div class="restart-dialog-header">
-          <h2>确认操作</h2>
+    <dialog id="preview-dialog" class="codex-workspace-dialog confirmation-dialog" aria-labelledby="preview-dialog-title" aria-describedby="preview-dialog-description">
+      <div class="codex-workspace-dialog-surface confirmation-dialog-surface">
+        <div class="codex-workspace-dialog-header">
+          <h3 id="preview-dialog-title">确认操作</h3>
         </div>
-        <p id="preview-dialog-description">Standard 使用清晰的说明和明确的主次按钮表达操作影响。</p>
-        <div class="restart-dialog-footer">
+        <p id="preview-dialog-description" class="confirmation-dialog-description">Standard 使用清晰的说明和明确的主次按钮表达操作影响。</p>
+        <div class="confirmation-dialog-actions">
           <button id="preview-dialog-close" class="button-secondary" type="button">取消</button>
           <button id="preview-dialog-confirm" type="button">确认</button>
         </div>

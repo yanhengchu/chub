@@ -12,7 +12,7 @@ import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Callable, Iterable, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -23,6 +23,7 @@ from app.codex.models import (
     PermissionMode,
     QuickInteractionTask,
     QuickInteractionWeixinRoute,
+    sessions_newest_first,
     utc_now,
 )
 from app.codex.quick_interactions import build_task_summary
@@ -150,7 +151,7 @@ class WeixinChubModeSubmissionResult(_StrictModel):
     new_session: bool
     code: Literal["submitted"] = "submitted"
     message: str
-    task_summary: str | None = Field(default=None, max_length=13)
+    task_summary: str | None = Field(default=None, max_length=20)
     session_slot: int | None = Field(default=None, ge=1, le=MAX_WEIXIN_SESSION_SLOTS)
     session_title: str | None = Field(default=None, max_length=48)
 
@@ -1775,19 +1776,20 @@ class WeixinChubModeManager:
             for session in self.codex_manager.list_sessions()
             if self._session_matches_configuration(session, configuration)
         }
+        slots_by_session_id = {entry.session_id: entry.slot for entry in slots}
         return tuple(
             _ChubSessionSnapshot(
-                slot=entry.slot,
-                session_id=entry.session_id,
+                slot=slots_by_session_id[session.id],
+                session_id=session.id,
                 title=build_task_summary(
-                    getattr(sessions[entry.session_id], "title", None)
+                    getattr(session, "title", None)
                     or "未命名 Session"
                 ),
-                state=self._codex_session_dispatch_state(sessions[entry.session_id]),
-                current=entry.session_id == current_session_id,
+                state=self._codex_session_dispatch_state(session),
+                current=session.id == current_session_id,
             )
-            for entry in sorted(slots, key=lambda item: item.slot)
-            if entry.session_id in sessions
+            for session in sessions_newest_first(sessions.values())
+            if session.id in slots_by_session_id
         )
 
     def _schedule_session_snapshot_refresh(self) -> None:
@@ -1886,17 +1888,21 @@ class WeixinChubModeManager:
                 for index, message in enumerate(dict.fromkeys(anomalies), start=1)
             )
 
-        lines.extend(["", "Sessions"])
+        session_lines = ["Sessions"]
         if sessions:
             for item in sessions:
                 state = display_states[item.session_id]
-                current = "[Current] " if item.current else ""
-                lines.append(f"{item.slot}. {current}{item.title} · {state}")
+                session_lines.append(f"S{item.slot} · {item.title}")
                 task_summary = running_tasks.get(item.session_id)
                 if state == "Busy" and task_summary:
-                    lines.append(f"   Task: {task_summary}")
+                    session_lines.append(f"T{item.slot} · {task_summary}")
+                status = f"{state} · Current" if item.current else state
+                session_lines.append(status)
         else:
-            lines.append("暂无已分配 Session" if session_cached else "暂不可用")
+            session_lines.append(
+                "暂无已分配 Session" if session_cached else "暂不可用"
+            )
+        lines.extend(["", "\n\n".join(session_lines)])
 
         lines.extend(["", "Codex", "", usage_message])
         return "\n".join(lines)
@@ -2072,15 +2078,12 @@ class WeixinChubModeManager:
                     if not removed and not added
                     else f"槽位同步完成：清理 {removed} · 补充 {added} · 当前 {len(synced)}。"
                 )
-                if visible:
-                    session_lines = ["Active sessions:"]
-                    session_lines.extend(
-                        f"{item.slot}. {'[Current] ' if item.current else ''}{item.title} · {item.state}"
+                sessions_message = self._format_session_blocks(
+                    (
+                        (item.slot, item.title, item.state, item.current)
                         for item in visible
                     )
-                    sessions_message = "\n".join(session_lines)
-                else:
-                    sessions_message = "Active sessions: None"
+                )
                 message = f"{status}\n\n{sessions_message}\n\n{usage_message}"
                 now = utc_now()
                 record = reservation.model_copy(
@@ -2174,19 +2177,20 @@ class WeixinChubModeManager:
             for session in sessions
             if self._session_matches_configuration(session, configuration)
         }
+        slots_by_session_id = {entry.session_id: entry.slot for entry in slots}
         return tuple(
             _ChubSessionSnapshot(
-                slot=entry.slot,
-                session_id=entry.session_id,
+                slot=slots_by_session_id[session.id],
+                session_id=session.id,
                 title=build_task_summary(
-                    getattr(eligible[entry.session_id], "title", None)
+                    getattr(session, "title", None)
                     or "未命名 Session"
                 ),
-                state=self._codex_session_dispatch_state(eligible[entry.session_id]),
-                current=entry.session_id == current_session_id,
+                state=self._codex_session_dispatch_state(session),
+                current=session.id == current_session_id,
             )
-            for entry in slots
-            if entry.session_id in eligible
+            for session in sessions_newest_first(eligible.values())
+            if session.id in slots_by_session_id
         )
 
     def _codex_operation_message(
@@ -2314,10 +2318,10 @@ class WeixinChubModeManager:
             )
             sessions_message, sessions_failed = session_results.get(timeout=remaining)
             if sessions_message is None:
-                sessions_message = "Active sessions: 暂不可用"
+                sessions_message = "Sessions\n\n暂不可用"
         except queue.Empty:
             LOGGER.warning("Codex session status check timed out")
-            sessions_message = "Active sessions: 暂不可用"
+            sessions_message = "Sessions\n\n暂不可用"
             sessions_failed = True
         message = f"{sessions_message}\n\n{message}"
         return message, account_failed or sessions_failed
@@ -2334,7 +2338,7 @@ class WeixinChubModeManager:
             fill_candidates=fill_candidates,
         )
         if not visible:
-            return "Active sessions: None"
+            return "Sessions\n\n暂无已分配 Session"
         return self._format_codex_sessions(visible, current_session_id, remaining)
 
     def _dispatch_codex_archive(
@@ -2969,14 +2973,32 @@ class WeixinChubModeManager:
         current_session_id: str | None,
         remaining: int,
     ) -> str:
-        lines = ["Active sessions:"]
-        for slot, session, state in visible:
-            title = build_task_summary(session.title or "未命名 Session")
-            current = "[Current] " if session.id == current_session_id else ""
-            lines.append(f"{slot}. {current}{title} · {state}")
+        message = WeixinChubModeManager._format_session_blocks(
+            (
+                (
+                    slot,
+                    build_task_summary(session.title or "未命名 Session"),
+                    state,
+                    session.id == current_session_id,
+                )
+                for slot, session, state in visible
+            )
+        )
         if remaining:
-            lines.append(f"另有 {remaining} 个")
-        return "\n".join(lines)
+            message = f"{message}\n\n另有 {remaining} 个"
+        return message
+
+    @staticmethod
+    def _format_session_blocks(
+        entries: Iterable[tuple[int, str, str, bool]],
+    ) -> str:
+        paragraphs = ["Sessions"]
+        for slot, title, state, current in entries:
+            paragraphs.append(f"S{slot} · {title}")
+            paragraphs.append(f"{state} · Current" if current else state)
+        if len(paragraphs) == 1:
+            paragraphs.append("暂无已分配 Session")
+        return "\n\n".join(paragraphs)
 
     def _visible_codex_sessions(
         self,
@@ -2995,14 +3017,17 @@ class WeixinChubModeManager:
             for session in sessions
             if self._session_matches_configuration(session, configuration)
         }
+        slots_by_session_id = {
+            entry.session_id: entry.slot for entry in self._state.session_slots
+        }
         visible = [
             (
-                entry.slot,
-                eligible[entry.session_id],
-                self._codex_session_dispatch_state(eligible[entry.session_id]),
+                slots_by_session_id[session.id],
+                session,
+                self._codex_session_dispatch_state(session),
             )
-            for entry in sorted(self._state.session_slots, key=lambda item: item.slot)
-            if entry.session_id in eligible
+            for session in sessions_newest_first(eligible.values())
+            if session.id in slots_by_session_id
         ]
         assigned = {entry.session_id for entry in self._state.session_slots}
         remaining = sum(
@@ -3106,6 +3131,14 @@ class WeixinChubModeManager:
         with self._lock:
             return self._slot_for_session(session_id)
 
+    def session_slots_snapshot(self) -> dict[str, int]:
+        """Return one consistent copy of the current Weixin slot mapping."""
+        with self._lock:
+            return {
+                entry.session_id: entry.slot
+                for entry in self._state.session_slots
+            }
+
     def codex_status_message(self) -> str:
         with self._status_condition:
             account_cached = self._status_cache.get("account")
@@ -3116,16 +3149,22 @@ class WeixinChubModeManager:
             quota, usage = account_cached[0]
             usage_message = self._codex_usage_message(quota, usage)
         if sessions_cached is None:
-            sessions_message = "Active sessions: 暂不可用"
+            sessions_message = "Sessions\n\n暂不可用"
         else:
             sessions = sessions_cached[0]
-            lines = ["Active sessions:"]
-            lines.extend(
-                f"{item.slot}. {'[Current] ' if item.current else ''}{item.title} · "
-                f"{'Busy' if self.quick_interactions.is_running(item.session_id) else item.state}"
-                for item in sessions
+            sessions_message = self._format_session_blocks(
+                (
+                    (
+                        item.slot,
+                        item.title,
+                        "Busy"
+                        if self.quick_interactions.is_running(item.session_id)
+                        else item.state,
+                        item.current,
+                    )
+                    for item in sessions
+                )
             )
-            sessions_message = "\n".join(lines) if sessions else "Active sessions: None"
         return f"{sessions_message}\n\n{usage_message}"
 
     def release_session_slot(self, session_id: str) -> bool:
@@ -3168,9 +3207,6 @@ class WeixinChubModeManager:
         )
 
     def _codex_session_dispatch_state(self, session: object) -> str:
-        deferred_restart = getattr(self.quick_interactions, "deferred_restart", None)
-        if deferred_restart is not None and deferred_restart.pending():
-            return "Unavailable"
         if getattr(session, "status", None) == "error":
             return "Unavailable"
         session_id = getattr(session, "id", "")
@@ -3381,12 +3417,13 @@ class WeixinChubModeManager:
                 "weixin_chub_mode_session_slots_full",
                 "9 个微信 Session 槽位已满，请先归档或删除一个 Session。",
             )
-        created = self.codex_manager.create_session(
-            configuration.workspace_id,
-            configuration.permission_mode,
-            configuration.model,
-            configuration.reasoning_effort,
-        )
+        with self.quick_interactions.session_creation_guard():
+            created = self.codex_manager.create_session(
+                configuration.workspace_id,
+                configuration.permission_mode,
+                configuration.model,
+                configuration.reasoning_effort,
+            )
         next_state = self._state.model_copy(deep=True)
         next_state.session_id = created.id
         next_state.session_slots.append(

@@ -18,7 +18,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from app.core.config import Settings, get_settings
+from app.core.config import PROJECT_ROOT, Settings, get_settings
 from app.quick_worker_tasks import (
     CodexTaskSubmission,
     TestTaskSubmission,
@@ -28,12 +28,16 @@ from app.quick_worker_tasks import (
 
 
 HEALTH_PROTOCOL_VERSION = 1
-PROTOCOL_VERSION = 2
-WORKER_CODE_VERSION = "quick-worker-3-isolated"
+PROTOCOL_VERSION = 6
+WORKER_CODE_VERSION = "quick-worker-7-production"
 MAX_REQUEST_BYTES = 64 * 1024
 MAX_RESPONSE_BYTES = 256 * 1024
 CLIENT_TIMEOUT_SECONDS = 2.0
 MAX_CONCURRENT_CONNECTIONS = 16
+
+
+class WorkerRequestNotSent(OSError):
+    """The IPC request failed before any request bytes could be sent."""
 
 
 class _StrictModel(BaseModel):
@@ -76,6 +80,15 @@ class WorkerTaskListRequest(_StrictModel):
     request_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
     action: Literal["task_list"]
     limit: int = Field(default=50, ge=1, le=100)
+    active_only: bool = False
+    recovery_only: bool = False
+
+
+class WorkerTaskAcknowledgeRequest(_StrictModel):
+    protocol_version: int
+    request_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+    action: Literal["task_acknowledge"]
+    task_id: str
 
 
 class WorkerTaskCancelRequest(_StrictModel):
@@ -95,6 +108,7 @@ class WorkerHealth(_StrictModel):
     corrupt_tasks: int = 0
     test_tasks_enabled: bool = False
     codex_tasks_enabled: bool = False
+    codex_workspace_ids: list[str] = Field(default_factory=list, max_length=8)
 
 
 def worker_runtime_dir(settings: Settings) -> Path:
@@ -106,6 +120,17 @@ def worker_runtime_dir(settings: Settings) -> Path:
 
 def worker_socket_path(settings: Settings) -> Path:
     return worker_runtime_dir(settings) / "worker.sock"
+
+
+def production_codex_workspaces(settings: Settings) -> dict[str, Path]:
+    return {
+        "home": Path.home(),
+        "workspace": settings.codex_pty.workspace,
+        "chub": PROJECT_ROOT,
+        "weixin-translation": (
+            settings.codex_pty.runtime_dir / "translation-workspace"
+        ),
+    }
 
 
 def _private_directory(path: Path) -> None:
@@ -198,7 +223,7 @@ class QuickWorkerServer:
         *,
         allow_test_tasks: bool = False,
         request_timeout_seconds: float = CLIENT_TIMEOUT_SECONDS,
-        isolated_workspaces: dict[str, Path] | None = None,
+        codex_workspaces: dict[str, Path] | None = None,
         codex_executable: str | Path | None = None,
         codex_home: Path | None = None,
     ) -> None:
@@ -211,7 +236,7 @@ class QuickWorkerServer:
             self.generation,
             protocol_version=PROTOCOL_VERSION,
             allow_test_tasks=allow_test_tasks,
-            isolated_workspaces=isolated_workspaces,
+            codex_workspaces=codex_workspaces,
             codex_executable=codex_executable,
             codex_home=codex_home,
         )
@@ -221,6 +246,13 @@ class QuickWorkerServer:
         self._socket_identity: tuple[int, int] | None = None
         self._stopped = asyncio.Event()
         self._active_connections = 0
+
+    @property
+    def codex_tasks_enabled(self) -> bool:
+        return bool(
+            self.task_manager.codex_workspaces
+            and self.task_manager.codex_executable
+        )
 
     def _acquire_lock(self) -> None:
         _private_directory(self.runtime_dir)
@@ -449,6 +481,7 @@ class QuickWorkerServer:
             "task_get": WorkerTaskGetRequest,
             "task_list": WorkerTaskListRequest,
             "task_cancel": WorkerTaskCancelRequest,
+            "task_acknowledge": WorkerTaskAcknowledgeRequest,
         }.get(action)
         if model is None:
             raise ValueError("Worker action is unsupported")
@@ -464,28 +497,48 @@ class QuickWorkerServer:
                 active_tasks=self.task_manager.active_count,
                 corrupt_tasks=self.task_manager.corrupt_count,
                 test_tasks_enabled=self.task_manager.allow_test_tasks,
-                codex_tasks_enabled=bool(self.task_manager.isolated_workspaces),
+                codex_tasks_enabled=self.codex_tasks_enabled,
+                codex_workspace_ids=sorted(self.task_manager.codex_workspaces),
             )
             return health.model_dump(mode="json")
-        if not self.task_manager.allow_test_tasks:
+        if not (
+            self.task_manager.allow_test_tasks
+            or self.task_manager.codex_workspaces
+        ):
             raise WorkerTaskError(
                 "worker_action_unavailable",
                 "Task operations are disabled for this Worker instance",
             )
-        if self.status != "ready":
-            raise WorkerTaskError("worker_draining", "Worker is not accepting task operations")
         if isinstance(request, WorkerTaskSubmitRequest):
+            if self.status != "ready":
+                raise WorkerTaskError(
+                    "worker_draining", "Worker is not accepting new tasks"
+                )
             task = await self.task_manager.submit_test(request.task)
             return {"task": task.model_dump(mode="json")}
         if isinstance(request, WorkerCodexTaskSubmitRequest):
+            if self.status != "ready":
+                raise WorkerTaskError(
+                    "worker_draining", "Worker is not accepting new tasks"
+                )
             task = await self.task_manager.submit_codex(request.task)
             return {"task": task.model_dump(mode="json")}
         if isinstance(request, WorkerTaskGetRequest):
-            task = self.task_manager.get(request.task_id)
+            async with self.task_manager._lock:
+                task = self.task_manager.get(request.task_id)
             return {"task": task.model_dump(mode="json")}
         if isinstance(request, WorkerTaskListRequest):
-            tasks = self.task_manager.list(limit=request.limit)
+            async with self.task_manager._lock:
+                tasks = self.task_manager.list(
+                    limit=request.limit,
+                    active_only=request.active_only,
+                    recovery_only=request.recovery_only,
+                )
             return {"tasks": [task.model_dump(mode="json") for task in tasks]}
+        if isinstance(request, WorkerTaskAcknowledgeRequest):
+            async with self.task_manager._lock:
+                delivery = self.task_manager.acknowledge_delivery(request.task_id)
+            return {"delivery": delivery.model_dump(mode="json")}
         if isinstance(request, WorkerTaskCancelRequest):
             task = await self.task_manager.cancel(request.task_id)
             return {"task": task.model_dump(mode="json")}
@@ -503,20 +556,25 @@ async def worker_request(
         if request.get("action") == "task_cancel"
         else timeout_seconds
     )
-    reader, writer = await asyncio.wait_for(
-        asyncio.open_unix_connection(
-            worker_socket_path(settings),
-            limit=MAX_RESPONSE_BYTES + 1,
-        ),
-        timeout=effective_timeout,
-    )
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_unix_connection(
+                worker_socket_path(settings),
+                limit=MAX_RESPONSE_BYTES + 1,
+            ),
+            timeout=effective_timeout,
+        )
+    except (OSError, asyncio.TimeoutError) as exc:
+        raise WorkerRequestNotSent("Quick Worker connection is unavailable") from exc
     try:
         request_id = request.get("request_id")
         encoded = (
             json.dumps(request, ensure_ascii=False, separators=(",", ":")) + "\n"
         ).encode("utf-8")
         if len(encoded) > MAX_REQUEST_BYTES:
-            raise OSError("Quick Worker request exceeds its fixed limit")
+            raise WorkerRequestNotSent(
+                "Quick Worker request exceeds its fixed limit"
+            )
         writer.write(encoded)
         await asyncio.wait_for(writer.drain(), timeout=effective_timeout)
         try:
@@ -528,7 +586,10 @@ async def worker_request(
             raise OSError("Quick Worker returned an oversized response") from exc
         if not raw or len(raw) > MAX_RESPONSE_BYTES:
             raise OSError("Quick Worker returned an invalid response")
-        payload = json.loads(raw)
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise OSError("Quick Worker returned invalid JSON") from exc
         if not isinstance(payload, dict) or payload.get("request_id") != request_id:
             raise OSError("Quick Worker response did not match the request")
         if payload.get("success") not in {True, False}:
@@ -538,8 +599,20 @@ async def worker_request(
         writer.close()
         try:
             await writer.wait_closed()
-        except (BrokenPipeError, ConnectionError):
+        except OSError:
             pass
+
+
+def worker_request_sync(
+    settings: Settings,
+    request: dict[str, object],
+    *,
+    timeout_seconds: float = CLIENT_TIMEOUT_SECONDS,
+) -> dict[str, object]:
+    """Call the private Worker IPC from the existing synchronous service layer."""
+    return asyncio.run(
+        worker_request(settings, request, timeout_seconds=timeout_seconds)
+    )
 
 
 async def read_health(settings: Settings) -> dict[str, object]:
@@ -563,7 +636,15 @@ async def read_health(settings: Settings) -> dict[str, object]:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m app.quick_worker")
-    parser.add_argument("command", choices=("serve", "health"))
+    parser.add_argument(
+        "command",
+        choices=("serve", "health", "cutover-preflight", "cutover-retire-store"),
+    )
+    parser.add_argument(
+        "--prepare",
+        action="store_true",
+        help="allow the currently installed Worker version before its one-time upgrade",
+    )
     return parser
 
 
@@ -576,10 +657,49 @@ def main() -> int:
         return 1
     if args.command == "serve":
         try:
-            asyncio.run(QuickWorkerServer(settings).serve())
+            workspaces = production_codex_workspaces(settings)
+            _private_directory(workspaces["weixin-translation"])
+            asyncio.run(
+                QuickWorkerServer(
+                    settings,
+                    codex_workspaces=workspaces,
+                ).serve()
+            )
         except (OSError, RuntimeError) as exc:
             print(f"quick-worker: {exc}", file=sys.stderr)
             return 1
+        return 0
+    if args.command == "cutover-preflight":
+        from app.quick_worker_cutover import run_cutover_preflight
+
+        try:
+            payload = asyncio.run(
+                run_cutover_preflight(
+                    settings,
+                    require_production_worker=not args.prepare,
+                )
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            print(f"quick-worker: cutover preflight unavailable: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(payload, ensure_ascii=False))
+        return 0 if payload.get("success") is True else 1
+    if args.command == "cutover-retire-store":
+        from app.quick_worker_cutover import retire_worker_store
+
+        try:
+            archive = retire_worker_store(settings)
+        except OSError as exc:
+            print(f"quick-worker: task store retirement failed: {exc}", file=sys.stderr)
+            return 1
+        payload = {
+            "success": True,
+            "data": {
+                "retired": archive is not None,
+                "archive": str(archive) if archive is not None else None,
+            },
+        }
+        print(json.dumps(payload, ensure_ascii=False))
         return 0
     try:
         payload = asyncio.run(read_health(settings))

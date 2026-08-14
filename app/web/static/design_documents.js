@@ -33,41 +33,52 @@ async function updateArchiveState(button) {
   const documentId = button.dataset.documentId;
   const archived = button.dataset.archived === "true";
   const action = archived ? "恢复" : "归档";
-  if (!window.confirm(`确定${action}这份文档吗？`)) {
+  const card = button.closest(".design-document-item");
+  const title = card?.querySelector(".design-document-copy strong")?.textContent.trim()
+    || "这份文档";
+  if (!documentId) {
     return;
   }
-
-  button.disabled = true;
-  try {
-    const response = await fetch(
-      `/api/project-docs/${encodeURIComponent(documentId)}/archive`,
-      {
-        method: "PUT",
-        headers: {
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ archived: !archived }),
-      },
-    );
-    const payload = await response.json();
-    if (!response.ok || payload.success !== true) {
-      throw new Error(payload?.error?.message || `${action}失败。`);
-    }
-    const card = button.closest(".design-document-item");
-    const badge = card.querySelector(".design-document-meta .badge");
-    card.dataset.archived = String(payload.data.archived);
-    button.dataset.archived = String(payload.data.archived);
-    button.textContent = payload.data.archived ? "恢复" : "归档";
-    badge.textContent = payload.data.archived ? "已归档" : payload.data.status;
-    badge.className = `badge badge-${payload.data.archived ? "muted" : "success"}`;
-    showMessage(`${action}成功。`, "success");
-    applyFilter(activeFilter);
-    button.disabled = false;
-  } catch (error) {
-    showMessage(error.message || `${action}失败。`, "error");
-    button.disabled = false;
-  }
+  await showConfirmationDialog({
+    title: `${action}文档`,
+    description: archived
+      ? `恢复“${title}”后，该文档会重新进入当前文档列表并显示在首页。`
+      : `归档“${title}”后，该文档会移入已归档列表，不再显示在首页；需要时可以恢复。`,
+    confirmLabel: `确认${action}`,
+    pendingLabel: `${action}中…`,
+    tone: archived ? "secondary" : "danger",
+    errorMessage: `${action}失败。`,
+    onConfirm: async () => {
+      button.disabled = true;
+      try {
+        const response = await fetch(
+          `/api/project-docs/${encodeURIComponent(documentId)}/archive`,
+          {
+            method: "PUT",
+            headers: {
+              ...(token ? { Authorization: `Bearer ${token}` } : {}),
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ archived: !archived }),
+          },
+        );
+        const payload = await response.json();
+        if (!response.ok || payload.success !== true) {
+          throw new Error(payload?.error?.message || `${action}失败。`);
+        }
+        const badge = card.querySelector(".design-document-meta .badge");
+        card.dataset.archived = String(payload.data.archived);
+        button.dataset.archived = String(payload.data.archived);
+        button.textContent = payload.data.archived ? "恢复" : "归档";
+        badge.textContent = payload.data.archived ? "已归档" : payload.data.status;
+        badge.className = `badge badge-${payload.data.archived ? "muted" : "success"}`;
+        showMessage(`${action}成功。`, "success");
+        applyFilter(activeFilter);
+      } finally {
+        button.disabled = false;
+      }
+    },
+  });
 }
 
 filters.forEach((button) => {

@@ -332,6 +332,7 @@ def test_extract_linked_documents_uses_section_and_tenant_only(tmp_path: Path) -
 - [重复文档](https://tenant.feishu.cn/wiki/product)
 - [其他租户](https://other.feishu.cn/wiki/other)
 - [其他系统](https://example.com/wiki/external)
+- [同租户错误类型](https://tenant.feishu.cn/sheets/unsafe)
 - https://tenant.feishu.cn/wiki/bare-url
 
 ## 后续事项
@@ -405,7 +406,7 @@ def test_extract_linked_documents_requires_all_configured_current_documents(
         )
 
 
-def test_extract_linked_documents_requires_each_configured_business_role(
+def test_extract_linked_documents_accepts_changing_current_document_addresses(
     tmp_path: Path,
 ) -> None:
     source = tmp_path / "weekly.md"
@@ -413,22 +414,23 @@ def test_extract_linked_documents_requires_each_configured_business_role(
         """\
 # 各端周报
 [2026/07/27\\-2026/07/31（第一百三十四周）](https://tenant.feishu.cn/wiki/previous)
-[vivo产品周报](https://tenant.feishu.cn/docx/WOscdHEyCot8dSxinyNcMBRjnCc)
-[vivo音乐产品周报](https://tenant.feishu.cn/wiki/EtQFwaBJOiT0TpkciaYcm0t8nPb)
-[vivo运营周报](https://tenant.feishu.cn/wiki/Xr9wwhkWMiYLdFkHSHXcBaOznXP)
-[服务端开发部周报](https://tenant.feishu.cn/docx/Cy14d37JVoGe0nxCbJicvfQ7nke)
-[重复 vivo产品周报](https://tenant.feishu.cn/docx/different-product)
+[vivo产品周报](https://tenant.feishu.cn/docx/product-2026-08-14)
+[vivo音乐产品周报](https://tenant.feishu.cn/wiki/os-2026-08-14)
+[vivo运营周报](https://tenant.feishu.cn/wiki/operations-2026-08-14)
+[移动端周会 2026\\-08\\-14](https://tenant.feishu.cn/wiki/client-2026-08-14)
+[服务端开发部周报（2026\\-8\\-10 至 2026\\-8\\-14）](https://tenant.feishu.cn/docx/server-2026-08-14)
 """,
         encoding="utf-8",
     )
     template = load_linked_documents_extension("v-weekly-report-linked-documents")
 
-    with pytest.raises(ExtensionFailed, match="缺少必需业务端：客户端"):
-        extract_linked_documents(
-            source,
-            "https://tenant.feishu.cn/wiki/source",
-            template,
-        )
+    documents = extract_linked_documents(
+        source,
+        "https://tenant.feishu.cn/wiki/source",
+        template,
+    )
+
+    assert len([document for document in documents if not document.is_background]) == 5
 
 
 def test_extract_linked_documents_requires_background_reference(tmp_path: Path) -> None:
@@ -447,30 +449,6 @@ def test_extract_linked_documents_requires_background_reference(tmp_path: Path) 
     template = load_linked_documents_extension("v-weekly-report-linked-documents")
 
     with pytest.raises(ExtensionFailed, match="上周参考不足：需要 1 份，实际 0 份"):
-        extract_linked_documents(
-            source,
-            "https://tenant.feishu.cn/wiki/source",
-            template,
-        )
-
-
-def test_extract_linked_documents_requires_configured_document_path(tmp_path: Path) -> None:
-    source = tmp_path / "weekly.md"
-    source.write_text(
-        """\
-# 各端周报
-[2026/07/27\\-2026/07/31（第一百三十四周）](https://tenant.feishu.cn/wiki/previous)
-[vivo产品周报](https://tenant.feishu.cn/docx/WOscdHEyCot8dSxinyNcMBRjnCc)
-[vivo音乐产品周报](https://tenant.feishu.cn/wiki/EtQFwaBJOiT0TpkciaYcm0t8nPb)
-[vivo运营周报](https://tenant.feishu.cn/wiki/Xr9wwhkWMiYLdFkHSHXcBaOznXP)
-[移动端周会](https://tenant.feishu.cn/wiki/not-the-client-document)
-[服务端开发部周报](https://tenant.feishu.cn/docx/Cy14d37JVoGe0nxCbJicvfQ7nke)
-""",
-        encoding="utf-8",
-    )
-    template = load_linked_documents_extension("v-weekly-report-linked-documents")
-
-    with pytest.raises(ExtensionFailed, match="缺少必需业务端：客户端"):
         extract_linked_documents(
             source,
             "https://tenant.feishu.cn/wiki/source",
@@ -848,7 +826,7 @@ tasks:
         target.parent.mkdir(parents=True, exist_ok=True)
         if task.name == "国内业务周报":
             target.write_text(
-                "# 2026/07/27-2026/07/31（第一百三十四周）\n\n# 各端周报\n[2026/07/27\\-2026/07/31（第一百三十四周）](https://tenant.feishu.cn/wiki/previous)\n[vivo产品周报](https://tenant.feishu.cn/docx/WOscdHEyCot8dSxinyNcMBRjnCc)\n[vivo音乐产品周报](https://tenant.feishu.cn/wiki/EtQFwaBJOiT0TpkciaYcm0t8nPb)\n[vivo运营周报](https://tenant.feishu.cn/wiki/Xr9wwhkWMiYLdFkHSHXcBaOznXP)\n[移动端周会](https://tenant.feishu.cn/wiki/HThowHH2GiQmTuk5bwIcvGRTnVp)\n[服务端开发部周报](https://tenant.feishu.cn/docx/Cy14d37JVoGe0nxCbJicvfQ7nke)\n",
+                "# 2026/07/27-2026/07/31（第一百三十四周）\n\n# 各端周报\n[2026/07/27\\-2026/07/31（第一百三十四周）](https://tenant.feishu.cn/wiki/previous)\n[本期资料一](https://tenant.feishu.cn/docx/current-1)\n[本期资料二](https://tenant.feishu.cn/wiki/current-2)\n[本期资料三](https://tenant.feishu.cn/wiki/current-3)\n[本期资料四](https://tenant.feishu.cn/wiki/current-4)\n[本期资料五](https://tenant.feishu.cn/docx/current-5)\n",
                 encoding="utf-8",
             )
         else:
@@ -865,7 +843,7 @@ tasks:
     assert result.status == "success"
     assert result.validation_status == "passed"
     assert (input_root / "国内业务周报.md").is_file()
-    assert (input_root / "linked" / "vivo产品周报.md").is_file()
+    assert (input_root / "linked" / "本期资料一.md").is_file()
     assert (input_root.parent / ".inputs-updated").is_file()
     assert not list(input_root.parent.glob(".inputs-run-1.*"))
 

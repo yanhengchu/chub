@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Iterable, Literal, Protocol, TypeVar
+from unicodedata import category
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -16,6 +17,27 @@ QuickInteractionOrder = Literal["task", "timeline"]
 
 def utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+class SessionCreationRecord(Protocol):
+    id: str
+    created_at: datetime
+
+
+SessionCreationRecordT = TypeVar(
+    "SessionCreationRecordT",
+    bound=SessionCreationRecord,
+)
+
+
+def sessions_newest_first(
+    sessions: Iterable[SessionCreationRecordT],
+) -> list[SessionCreationRecordT]:
+    return sorted(
+        sessions,
+        key=lambda session: (session.created_at, session.id),
+        reverse=True,
+    )
 
 
 class CodexSession(BaseModel):
@@ -91,6 +113,8 @@ class SessionInfo(BaseModel):
     updated_at: datetime
     quick_interaction_running: bool = False
     quick_interaction_updated_at: datetime | None = None
+    terminal_access_allowed: bool = True
+    weixin_session_slot: int | None = Field(default=None, ge=1, le=9)
 
 
 class SessionListData(BaseModel):
@@ -138,6 +162,24 @@ class SessionCreateRequest(BaseModel):
     reasoning_effort: str | None = Field(default=None, max_length=32)
 
 
+class SessionRenameRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    title: str = Field(min_length=1, max_length=48)
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def normalize_title(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        if any(
+            category(character) == "Cc" and not character.isspace()
+            for character in value
+        ):
+            raise ValueError("Title must not contain control characters")
+        return " ".join(value.split())
+
+
 class CodexReasoningLevel(BaseModel):
     id: str
     description: str
@@ -183,6 +225,7 @@ QuickInteractionDeferredRestartStatus = Literal[
     "started",
     "succeeded",
     "start_failed",
+    "sensitive_task_failed",
     "cleared",
 ]
 QuickInteractionNotificationRoute = Literal["default", "weixin-task"]
@@ -219,6 +262,16 @@ class QuickInteractionDeferredRestartContext(BaseModel):
     source_ip: str = Field(min_length=1, max_length=128)
 
 
+class QuickInteractionOperationContext(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    operation_id: str = Field(min_length=1, max_length=160)
+    source_ip: str = Field(min_length=1, max_length=128)
+    logged_statuses: tuple[
+        Literal["requested", "started", "succeeded", "failed"], ...
+    ] = Field(default=(), max_length=4)
+
+
 class QuickInteractionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -243,6 +296,10 @@ class QuickInteractionTask(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
+    worker_task_id: str | None = Field(
+        default=None,
+        pattern=r"^qw-[0-9]{13}-[a-f0-9]{32}$",
+    )
     session_id: str
     # Internal translation tasks add a fixed bounded instruction around an
     # otherwise API-limited 8000-character source.
@@ -254,6 +311,7 @@ class QuickInteractionTask(BaseModel):
     weixin_session_title: str | None = Field(default=None, max_length=48)
     kind: QuickInteractionKind = "standard"
     translation_original: str | None = Field(default=None, max_length=8000)
+    restart_sensitive: bool = False
     status: QuickInteractionStatus
     result: str | None = Field(default=None, max_length=100_000)
     error: str | None = Field(default=None, max_length=2000)
@@ -262,6 +320,7 @@ class QuickInteractionTask(BaseModel):
     notification_error: str | None = Field(default=None, max_length=1000)
     notification_updated_at: datetime | None = None
     deferred_restart_status: QuickInteractionDeferredRestartStatus | None = None
+    deferred_restart_error: str | None = Field(default=None, max_length=500)
     deferred_restart_updated_at: datetime | None = None
     deferred_restart_notification_status: QuickInteractionNotificationStatus | None = None
     deferred_restart_notification_error: str | None = Field(

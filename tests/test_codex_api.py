@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, call
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 from app.application import create_app
 from app.codex.models import (
@@ -16,6 +17,7 @@ from app.codex.models import (
     QuickInteractionTask,
     SessionInfo,
     SessionListData,
+    SessionRenameRequest,
     WorkspaceInfo,
     utc_now,
 )
@@ -27,6 +29,19 @@ def authorization(settings: Settings) -> dict[str, str]:
     token = settings.security.token
     assert token is not None
     return {"Authorization": f"Bearer {token.get_secret_value()}"}
+
+
+def allow_session_writes(app) -> None:
+    app.state.quick_interactions._recovery_ready = True
+
+
+def test_session_rename_request_normalizes_title_and_rejects_controls() -> None:
+    assert SessionRenameRequest(title="  第一行\n 第二行\t ").title == "第一行 第二行"
+
+    with pytest.raises(ValidationError):
+        SessionRenameRequest(title="标题\x00内容")
+    with pytest.raises(ValidationError):
+        SessionRenameRequest(title="标" * 49)
 
 
 @pytest.mark.anyio
@@ -67,8 +82,83 @@ async def test_codex_session_list_reports_workspaces(settings: Settings) -> None
 
 
 @pytest.mark.anyio
+async def test_codex_session_list_controls_translation_visibility(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    manager = MagicMock()
+    manager.available.return_value = True
+    manager.unavailable_reason.return_value = None
+    manager.dependencies.return_value = {}
+    manager.workspaces.return_value = []
+    manager.list_sessions.return_value = [
+        SessionInfo(
+            id="ordinary-session",
+            workspace_id="chub",
+            workspace_name="Chub",
+            cwd="/workspace/chub",
+            title=None,
+            codex_session_id="codex-ordinary",
+            status="stopped",
+            activity="idle",
+            permission_mode="full-access",
+            active_permission_mode=None,
+            permission_pending=False,
+            error=None,
+            created_at="2026-08-14T10:00:00Z",
+            updated_at="2026-08-14T10:00:00Z",
+        ),
+        SessionInfo(
+            id="translation-session",
+            workspace_id="weixin-translation",
+            workspace_name="微信文本优化与翻译",
+            cwd="/runtime/translation",
+            title="文本优化与翻译",
+            codex_session_id="codex-translation",
+            status="stopped",
+            activity="idle",
+            permission_mode="read-only",
+            active_permission_mode=None,
+            permission_pending=False,
+            error=None,
+            created_at="2026-08-14T11:00:00Z",
+            updated_at="2026-08-14T11:00:00Z",
+        ),
+    ]
+    manager.read_session.return_value = manager.list_sessions.return_value[1]
+    app.state.codex_pty_manager = manager
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        hidden = await client.get(
+            "/api/codex/sessions",
+            headers=authorization(settings),
+        )
+        visible = await client.get(
+            "/api/codex/sessions?include_translation=true",
+            headers=authorization(settings),
+        )
+        detail = await client.get(
+            "/api/codex/sessions/translation-session",
+            headers=authorization(settings),
+        )
+
+    assert hidden.status_code == 200
+    assert [item["id"] for item in hidden.json()["data"]["sessions"]] == [
+        "ordinary-session"
+    ]
+    assert [item["id"] for item in visible.json()["data"]["sessions"]] == [
+        "ordinary-session",
+        "translation-session",
+    ]
+    assert detail.status_code == 200
+    assert detail.json()["data"]["id"] == "translation-session"
+
+
+@pytest.mark.anyio
 async def test_create_session_uses_requested_permission_mode(settings: Settings) -> None:
     app = create_app(settings)
+    allow_session_writes(app)
     manager = MagicMock()
     manager.create_session.return_value = SessionInfo(
         id="session-1",
@@ -108,6 +198,7 @@ async def test_create_session_uses_requested_permission_mode(settings: Settings)
 @pytest.mark.anyio
 async def test_create_session_defaults_to_full_access(settings: Settings) -> None:
     app = create_app(settings)
+    allow_session_writes(app)
     manager = MagicMock()
     manager.create_session.return_value = SessionInfo(
         id="session-1",
@@ -185,6 +276,7 @@ async def test_create_session_uses_requested_model_and_reasoning_level(
     settings: Settings,
 ) -> None:
     app = create_app(settings)
+    allow_session_writes(app)
     manager = MagicMock()
     manager.create_session.return_value = SessionInfo(
         id="session-1",
@@ -292,6 +384,9 @@ async def test_codex_session_list_includes_active_quick_interaction(
     }
     app.state.codex_pty_manager = manager
     app.state.quick_interactions = quick_interactions
+    weixin_chub_mode = MagicMock()
+    weixin_chub_mode.session_slots_snapshot.return_value = {"session-1": 3}
+    app.state.weixin_chub_mode = weixin_chub_mode
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -303,6 +398,8 @@ async def test_codex_session_list_includes_active_quick_interaction(
     session = response.json()["data"]["sessions"][0]
     assert session["quick_interaction_running"] is True
     assert session["quick_interaction_updated_at"] == "2026-07-24T10:02:00Z"
+    assert session["weixin_session_slot"] == 3
+    weixin_chub_mode.session_slots_snapshot.assert_called_once_with()
 
 
 def quick_task() -> QuickInteractionTask:
@@ -789,6 +886,7 @@ async def test_quick_interaction_can_be_pinned(settings: Settings) -> None:
 @pytest.mark.anyio
 async def test_access_issues_scoped_http_only_cookie(settings: Settings) -> None:
     app = create_app(settings)
+    allow_session_writes(app)
     manager = MagicMock()
     manager.ensure_terminal.return_value = CodexSession(
         id="session-1",
@@ -818,6 +916,7 @@ async def test_access_revokes_old_session_tickets_before_issuing_new_one(
     settings: Settings,
 ) -> None:
     app = create_app(settings)
+    allow_session_writes(app)
     manager = MagicMock()
     tickets = MagicMock()
     tickets.ttl_seconds = 600
@@ -896,6 +995,9 @@ async def test_stop_cancels_running_quick_interaction_before_session(
     app.state.quick_interactions = quick_interactions
     app.state.terminal_tickets = MagicMock()
     app.state.terminal_connections = MagicMock()
+    weixin_chub_mode = MagicMock()
+    weixin_chub_mode.session_slot.return_value = 4
+    app.state.weixin_chub_mode = weixin_chub_mode
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -906,6 +1008,96 @@ async def test_stop_cancels_running_quick_interaction_before_session(
 
     assert response.status_code == 200
     assert events == ["cancel", "stop"]
+    assert response.json()["data"]["weixin_session_slot"] == 4
+    weixin_chub_mode.session_slot.assert_called_once_with("session-1")
+
+
+@pytest.mark.anyio
+async def test_rename_session_allows_running_task_and_logs_lifecycle(
+    settings: Settings,
+    monkeypatch,
+) -> None:
+    app = create_app(settings)
+    manager = MagicMock()
+    manager.rename_session.return_value = SessionInfo(
+        id="session-1",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd="/workspace/chub",
+        title="新标题",
+        codex_session_id="codex-session-1",
+        status="stopped",
+        activity="working",
+        activity_source="quick",
+        permission_mode="auto-review",
+        active_permission_mode=None,
+        permission_pending=False,
+        error=None,
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    quick_interactions = MagicMock()
+    weixin_chub_mode = MagicMock()
+    weixin_chub_mode.session_slot.return_value = 2
+    app.state.codex_pty_manager = manager
+    app.state.quick_interactions = quick_interactions
+    app.state.weixin_chub_mode = weixin_chub_mode
+    statuses = []
+
+    def record_operation(_request, **kwargs):
+        statuses.append(kwargs["status"])
+        return kwargs.get("operation_id") or "rename-operation"
+
+    monkeypatch.setattr("app.codex.routes.log_operation", record_operation)
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.patch(
+            "/api/codex/sessions/session-1/title",
+            headers=authorization(settings),
+            json={"title": "  新标题  "},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["title"] == "新标题"
+    assert response.json()["data"]["weixin_session_slot"] == 2
+    quick_interactions.session_operation_guard.assert_not_called()
+    manager.rename_session.assert_called_once_with("session-1", "新标题")
+    assert statuses == ["requested", "started", "succeeded"]
+
+
+@pytest.mark.anyio
+async def test_rename_session_logs_manager_failure(
+    settings: Settings,
+    monkeypatch,
+) -> None:
+    app = create_app(settings)
+    manager = MagicMock()
+    manager.rename_session.side_effect = ApiError(
+        404,
+        "codex_session_not_found",
+        "Codex session not found",
+    )
+    app.state.codex_pty_manager = manager
+    statuses = []
+
+    def record_operation(_request, **kwargs):
+        statuses.append(kwargs["status"])
+        return kwargs.get("operation_id") or "rename-operation"
+
+    monkeypatch.setattr("app.codex.routes.log_operation", record_operation)
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.patch(
+            "/api/codex/sessions/session-1/title",
+            headers=authorization(settings),
+            json={"title": "新标题"},
+        )
+
+    assert response.status_code == 404
+    manager.rename_session.assert_called_once_with("session-1", "新标题")
+    assert statuses == ["requested", "started", "failed"]
 
 
 @pytest.mark.anyio
@@ -950,6 +1142,7 @@ async def test_archive_session_logs_slot_release_failure_without_failing_archive
     write_operation = MagicMock()
     monkeypatch.setattr("app.codex.routes.write_operation", write_operation)
     app = create_app(settings)
+    allow_session_writes(app)
     app.state.codex_pty_manager = MagicMock()
     app.state.weixin_chub_mode = MagicMock()
     app.state.weixin_chub_mode.release_session_slot.side_effect = OSError(

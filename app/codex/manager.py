@@ -111,11 +111,7 @@ class CodexPtyManager:
         for session in sessions:
             self._refresh_status(session)
             self._reconcile_quick_activity(session)
-        return [
-            self._public(session)
-            for session in self.store.list()
-            if session.workspace_id != "weixin-translation"
-        ]
+        return [self._public(session) for session in self.store.list()]
 
     def get_session(self, session_id: str) -> CodexSession:
         self._consume_hook_result(session_id)
@@ -126,6 +122,9 @@ class CodexPtyManager:
         self._refresh_status(session)
         self._reconcile_quick_activity(session)
         return session
+
+    def read_session(self, session_id: str) -> SessionInfo:
+        return self._public(self.get_session(session_id))
 
     def _reconcile_quick_activity(self, session: CodexSession) -> None:
         if (
@@ -194,7 +193,7 @@ class CodexPtyManager:
                 return True
             if (
                 session.codex_session_id
-                or session.status != "stopped"
+                or session.status not in {"new", "stopped"}
                 or session_id in self._processes
             ):
                 return False
@@ -283,6 +282,7 @@ class CodexPtyManager:
         self._require_available()
         with self._lock:
             session = self.get_session(session_id)
+            self._require_terminal_access(session)
             tmux_was_running = session.status == "running"
             process = self._processes.get(session.id)
             if process is not None and process.poll() is None and session.ttyd_port:
@@ -330,6 +330,20 @@ class CodexPtyManager:
             session.updated_at = utc_now()
             self.store.save(session)
             return session
+
+    def require_terminal_access(self, session_id: str) -> CodexSession:
+        session = self.get_session(session_id)
+        self._require_terminal_access(session)
+        return session
+
+    @staticmethod
+    def _require_terminal_access(session: CodexSession) -> None:
+        if session.workspace_id == "weixin-translation":
+            raise ApiError(
+                409,
+                "codex_terminal_access_disabled",
+                "文本优化与翻译 Session 仅支持快速交互。",
+            )
 
     def restart_terminal_backend(self, session_id: str) -> CodexSession:
         """Recycle ttyd while preserving the tmux session and Codex process."""
@@ -411,6 +425,44 @@ class CodexPtyManager:
             session.title = title
             session.updated_at = utc_now()
             self.store.save(session)
+
+    def rename_session(self, session_id: str, title: str) -> SessionInfo:
+        with self._lock:
+            session = self.get_session(session_id)
+            if session.workspace_id == "weixin-translation":
+                raise ApiError(
+                    409,
+                    "codex_session_rename_not_allowed",
+                    "内部翻译 Session 标题固定，不支持重命名。",
+                )
+            session.title = title
+            session.updated_at = utc_now()
+            self.store.save(session)
+            return self._public(session)
+
+    def bind_quick_interaction_native_session(
+        self,
+        session_id: str,
+        native_session_id: str,
+    ) -> None:
+        """Persist the Worker-confirmed native ID without trusting a Web hook."""
+        with self._lock:
+            session = self.store.get(session_id)
+            if session is None:
+                raise ApiError(404, "codex_session_not_found", "Codex session not found")
+            if (
+                session.codex_session_id is not None
+                and session.codex_session_id != native_session_id
+            ):
+                raise ApiError(
+                    409,
+                    "quick_interaction_native_session_conflict",
+                    "Codex session identity does not match the Worker result",
+                )
+            if session.codex_session_id is None:
+                session.codex_session_id = native_session_id
+                session.updated_at = utc_now()
+                self.store.save(session)
 
     def recover_interrupted_quick_interaction(self, session_id: str) -> None:
         with self._lock:
@@ -525,6 +577,7 @@ class CodexPtyManager:
             error=session.error,
             created_at=session.created_at,
             updated_at=session.updated_at,
+            terminal_access_allowed=session.workspace_id != "weixin-translation",
         )
 
     def _consume_hook_results(self) -> None:

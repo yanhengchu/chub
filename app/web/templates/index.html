@@ -20,35 +20,23 @@
   </head>
   <body>
     <header class="site-header">
-      <button id="restart-hub" class="site-header-title" type="button" aria-haspopup="dialog" aria-controls="restart-dialog">
+      <button id="restart-hub" class="site-header-title" type="button" aria-haspopup="dialog" aria-controls="confirmation-dialog">
         <p class="eyebrow">PERSONAL DEVICE HUB</p>
         <h1>{{ site_title }}</h1>
       </button>
       <a id="site-settings" class="button-link site-settings-link" href="/settings" hidden>设置</a>
     </header>
 
-    <dialog id="restart-dialog" class="codex-workspace-dialog restart-dialog" aria-labelledby="restart-dialog-title">
-      <div class="codex-workspace-dialog-surface restart-dialog-surface">
-        <div class="codex-workspace-dialog-header restart-dialog-header">
-          <h2 id="restart-dialog-title">重启服务</h2>
-          <button id="restart-dialog-close" class="button-link restart-dialog-close" type="button" aria-label="关闭重启确认">关闭</button>
-        </div>
-        <p>重启会重新加载当前代码和配置，页面连接会短暂中断。确定要重启当前节点吗？</p>
-        <div class="restart-dialog-footer">
-          <button id="restart-dialog-cancel" class="button-link" type="button">取消</button>
-          <button id="restart-dialog-confirm" class="button-secondary" type="button">确认重启</button>
-        </div>
-      </div>
-    </dialog>
+    {% include "partials/confirmation_dialog.html" %}
 
-    <dialog id="openclaw-dialog" class="codex-workspace-dialog" aria-labelledby="openclaw-dialog-title">
-      <div class="codex-workspace-dialog-surface">
+    <dialog id="openclaw-dialog" class="codex-workspace-dialog confirmation-dialog" aria-labelledby="openclaw-dialog-title" aria-describedby="openclaw-dialog-message">
+      <div class="codex-workspace-dialog-surface confirmation-dialog-surface">
         <div class="codex-workspace-dialog-header">
           <h2 id="openclaw-dialog-title">确认操作</h2>
           <button id="openclaw-dialog-close" class="button-link codex-workspace-dialog-close" type="button" aria-label="关闭 OpenClaw 操作确认">关闭</button>
         </div>
-        <p id="openclaw-dialog-message"></p>
-        <div class="restart-dialog-footer">
+        <p id="openclaw-dialog-message" class="confirmation-dialog-description"></p>
+        <div class="confirmation-dialog-actions">
           <button id="openclaw-dialog-cancel" class="button-link" type="button">取消</button>
           <button id="openclaw-dialog-confirm" class="button-secondary" type="button">确认</button>
         </div>
@@ -74,18 +62,18 @@
           </div>
         </form>
         <p id="openclaw-weixin-message" class="message" role="status" aria-live="polite">点击“生成二维码”开始绑定。</p>
-        <div class="restart-dialog-footer">
+        <div class="dialog-actions">
           <button id="openclaw-weixin-cancel" class="button-danger" type="button" hidden>取消绑定</button>
           <button id="openclaw-weixin-start" class="button-secondary" type="button">生成二维码</button>
         </div>
       </div>
     </dialog>
 
-    <dialog id="automation-browser-dialog" class="codex-workspace-dialog restart-dialog" aria-labelledby="automation-browser-dialog-title">
-      <form id="automation-browser-form" class="codex-workspace-dialog-surface restart-dialog-surface automation-browser-form">
-        <div class="codex-workspace-dialog-header restart-dialog-header">
+    <dialog id="automation-browser-dialog" class="codex-workspace-dialog" aria-labelledby="automation-browser-dialog-title">
+      <form id="automation-browser-form" class="codex-workspace-dialog-surface automation-browser-form">
+        <div class="codex-workspace-dialog-header">
           <h2 id="automation-browser-dialog-title">启动浏览器</h2>
-          <button id="automation-browser-dialog-close" class="button-link restart-dialog-close" type="button" aria-label="关闭浏览器启动窗口">关闭</button>
+          <button id="automation-browser-dialog-close" class="button-link codex-workspace-dialog-close" type="button" aria-label="关闭浏览器启动窗口">关闭</button>
         </div>
         <label class="automation-browser-field" for="automation-browser-profile">浏览器账户</label>
         <select id="automation-browser-profile" aria-label="浏览器账户"></select>
@@ -102,7 +90,8 @@
             </label>
           </div>
         </fieldset>
-        <div class="restart-dialog-footer">
+        <p id="automation-browser-notice" class="confirmation-dialog-description" hidden></p>
+        <div class="dialog-actions">
           <button id="automation-browser-dialog-cancel" class="button-link" type="button">取消</button>
           <button id="automation-browser-dialog-confirm" class="button-secondary" type="submit">启动</button>
         </div>
@@ -110,6 +99,8 @@
     </dialog>
 
     <main>
+      <p id="global-message" class="message" role="status" aria-live="polite"></p>
+
       <section id="connected-bar" class="card connected-bar" hidden aria-label="当前连接">
         <div class="connected-top">
           <div class="card-heading-copy">
@@ -123,7 +114,7 @@
           </div>
           <div class="connected-actions">
             <button id="refresh-status" class="button-secondary" type="button">刷新</button>
-            <button id="clear-token" class="button-danger" type="button">退出</button>
+            <button id="clear-token" class="button-danger" type="button" aria-haspopup="dialog" aria-controls="confirmation-dialog">退出</button>
           </div>
         </div>
       </section>
@@ -158,9 +149,6 @@
           </div>
         </form>
         <p class="hint">默认仅保存在当前浏览器会话。请只在可信设备上选择记住。</p>
-        <p id="global-message" class="message" role="status" aria-live="polite">
-          输入启动 Hub 时配置的 Token。
-        </p>
       </section>
 
       <div id="dashboard" class="dashboard" hidden>
@@ -225,7 +213,7 @@
                   <span class="badge badge-success">{{ document.status }}</span>
                   <time datetime="{{ document.updated_at.isoformat() }}">{{ document.updated_at.strftime('%Y-%m-%d') }}</time>
                 </span>
-                <button class="button-secondary document-archive-action" type="button" data-document-id="{{ document.id }}">归档</button>
+                <button class="button-secondary document-archive-action" type="button" data-document-id="{{ document.id }}" aria-haspopup="dialog" aria-controls="confirmation-dialog">归档</button>
               </div>
             </article>
             {% else %}

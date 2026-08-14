@@ -22,6 +22,8 @@ const VERBATIM_MESSAGE_TTL_MS = 5 * 60 * 1000;
 const VERBATIM_MESSAGE_MAX_RUNS = 100;
 const WEIXIN_VOICE_TRANSCRIPT_MARKER = "[[chub-weixin-voice-transcript]]";
 const WEIXIN_CHANNEL_FAILURE = "Chub 消息通道暂时不可用，请稍后重试。";
+const WEIXIN_CONTENT_FAILURE =
+  "未识别到可处理的文字或语音转写，请重新发送文字，或稍后重试语音。";
 
 const configSchema = Type.Object({
   baseUrl: Type.Optional(Type.String({
@@ -125,6 +127,12 @@ const plugin: ReturnType<typeof definePluginEntry> = definePluginEntry({
       }
 
       const message = weixinMessage(event);
+      if (!message.content.trim()) {
+        return {
+          handled: true,
+          text: WEIXIN_CONTENT_FAILURE,
+        };
+      }
       const identity = await submissionIdentity({ ...event, ...message }, context);
       if (identity === null) {
         return {

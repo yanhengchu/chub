@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import subprocess
 from contextlib import asynccontextmanager
 from contextlib import suppress
 from uuid import uuid4
@@ -50,6 +49,7 @@ from app.services.openclaw import OpenClawManager
 from app.services.openclaw_completion_notifications import OpenClawCompletionNotifier
 from app.services.deferred_restart import DeferredRestartCoordinator
 from app.services.openclaw_weixin_chub_mode import WeixinChubModeManager
+from app.services.restart_command import RestartProcess, launch_restart_process
 from app.services.system_status import collect_system_status
 from app.services.weixin_translation import WeixinTranslationManager
 from app.notifications import NotificationService
@@ -182,16 +182,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         resolved_settings.openclaw.quick_interaction_completion
     )
 
-    def start_deferred_restart() -> None:
+    def start_deferred_restart() -> RestartProcess:
         command = PROJECT_ROOT / "scripts" / "chub-web-restart"
         if not command.is_file():
             raise OSError("Chub restart command is unavailable")
-        subprocess.Popen(
-            [str(command)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
+        return launch_restart_process(command)
 
     deferred_restart = DeferredRestartCoordinator(
         resolved_settings.codex_pty.data_file.with_name("deferred-restart.json"),
@@ -206,6 +201,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         deferred_restart,
         restart_notifier=completion_notifier.notify_restart,
         timeout_seconds=resolved_settings.codex_pty.quick_interaction_timeout_seconds,
+        worker_settings=resolved_settings,
+    )
+    quick_interactions.configure_translation_worker_queue(
+        limit=resolved_settings.openclaw.weixin_chub_mode.translation_queue_limit,
+        wait_seconds=(
+            resolved_settings.openclaw.weixin_chub_mode.translation_max_wait_seconds
+        ),
     )
     deferred_restart.set_started_handler(
         quick_interactions.record_deferred_restart_started
@@ -221,6 +223,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         resolved_settings.openclaw.weixin_chub_mode,
         codex_pty_manager,
         quick_interactions,
+    )
+    quick_interactions.set_recovery_ready_handler(
+        weixin_translation.start_worker_recovery
     )
     deferred_restart.set_ready_check(quick_interactions.deferred_restart_ready)
 
@@ -276,6 +281,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_application: FastAPI):
         restart_recovery_task = None
+        await asyncio.to_thread(quick_interactions.start_worker_reconciliation)
         weixin_chub_mode.start_status_cache()
         if (
             deferred_restart.requires_service_confirmation()

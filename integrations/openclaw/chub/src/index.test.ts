@@ -383,6 +383,25 @@ describe("Weixin Chub mode", () => {
     vi.unstubAllGlobals();
   });
 
+  it("explains empty text or missing voice transcripts without calling Chub", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const { hooks } = createPluginApi({
+      baseUrl: "http://100.64.0.1:8080",
+      weixinChubMode: true,
+    });
+
+    await expect(hooks.get("before_dispatch")?.({
+      ...directEvent,
+      content: "",
+    }, directContext)).resolves.toEqual({
+      handled: true,
+      text: "未识别到可处理的文字或语音转写，请重新发送文字，或稍后重试语音。",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
   it("does not intercept groups, other channels, or disabled plugin routing", async () => {
     const enabled = createPluginApi({ weixinChubMode: true });
     await expect(enabled.hooks.get("before_dispatch")?.({

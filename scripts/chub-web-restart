@@ -36,7 +36,7 @@ if [[ "${CHUB_ACTIVITY_SOURCE:-}" == "quick" ]]; then
         exit 1
     fi
     chmod 600 "$REQUEST_FILE"
-    echo "Chub restart registered after this quick interaction and all other active quick interactions finish."
+    echo "Chub restart registered after this quick interaction finishes."
     echo "Finish the task normally; Chub will append the accurate restart status to the final response."
     exit 0
 fi
@@ -46,7 +46,7 @@ case "$PLATFORM" in
         exec launchctl kickstart -k "gui/$(id -u)/$MACOS_LABEL"
         ;;
     Linux)
-        exec systemctl --user restart "$SERVICE_NAME.service"
+        exec systemctl --user --no-block restart "$SERVICE_NAME.service"
         ;;
     *)
         echo "chub-web-restart: unsupported platform: $PLATFORM" >&2

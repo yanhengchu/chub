@@ -35,7 +35,7 @@
                 <span class="badge badge-{{ 'muted' if document.archived else 'success' }}">{{ '已归档' if document.archived else document.status }}</span>
                 <time datetime="{{ document.updated_at.isoformat() }}">{{ document.updated_at.strftime('%Y-%m-%d') }}</time>
               </span>
-              <button class="button-secondary document-archive-action" type="button" data-document-id="{{ document.id }}" data-archived="{{ 'true' if document.archived else 'false' }}">{{ '恢复' if document.archived else '归档' }}</button>
+              <button class="button-secondary document-archive-action" type="button" data-document-id="{{ document.id }}" data-archived="{{ 'true' if document.archived else 'false' }}" aria-haspopup="dialog" aria-controls="confirmation-dialog">{{ '恢复' if document.archived else '归档' }}</button>
             </div>
           </article>
           {% else %}
@@ -45,9 +45,11 @@
           {% endfor %}
         </div>
       </section>
+      {% include "partials/confirmation_dialog.html" %}
     </main>
 
     <footer>Hub 项目资料展示，归档管理需连接节点。</footer>
+    <script src="/static/js/components/ui.js" defer></script>
     <script src="/static/design_documents.js" defer></script>
   </body>
 </html>

@@ -43,7 +43,7 @@
           <label class="settings-field" for="weixin-translation-enabled">
             <span>
               <strong>文本优化与翻译</strong>
-              <small>开启后，后续普通任务会额外收到原文、中文润色和 English；关闭只阻止新翻译，已有任务继续完成。此功能会增加 Codex 用量，并将微信正文交给模型处理。</small>
+              <small>开启后，后续普通任务会额外收到原文、中文润色和 English；关闭只阻止新翻译，已有任务继续完成，全部结束后会自动归档内部翻译 Session。此功能会增加 Codex 用量，并将微信正文交给模型处理。</small>
             </span>
             <input
               id="weixin-translation-enabled"
@@ -58,8 +58,20 @@
         <section class="settings-section" aria-labelledby="codex-session-settings-title">
           <div class="settings-section-heading">
             <h3 id="codex-session-settings-title">Codex 会话</h3>
-            <p>设置之后新建会话的默认配置。</p>
+            <p>设置页面展示与之后新建会话的默认配置。</p>
           </div>
+          <label class="settings-field" for="codex-show-translation-session">
+            <span>
+              <strong>显示翻译 Session</strong>
+              <small>控制当前浏览器所有 Session 列表是否展示内部翻译 Session。此设置不影响微信翻译、任务执行及自动归档。</small>
+            </span>
+            <input
+              id="codex-show-translation-session"
+              name="codex-show-translation-session"
+              type="checkbox"
+            >
+          </label>
+          <p id="codex-translation-session-visibility-message" class="message" aria-live="polite"></p>
           <label class="settings-field" for="codex-default-permission">
             <span>
               <strong>默认权限</strong>

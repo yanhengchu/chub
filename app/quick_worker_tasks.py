@@ -25,13 +25,15 @@ from pydantic import (
     model_validator,
 )
 
+from app.codex.discovery import CodexSessionDiscovery
 from app.core.config import Settings
 
 
-MAX_PROMPT_CHARS = 8_000
-MAX_PROMPT_BYTES = 32 * 1024
+MAX_PROMPT_CHARS = 50_000
+MAX_PROMPT_BYTES = 56 * 1024
 MAX_SPEC_BYTES = 64 * 1024
 MAX_STATE_BYTES = 16 * 1024
+MAX_DELIVERY_BYTES = 4 * 1024
 MAX_COMPLETION_BYTES = 128 * 1024
 MAX_RESULT_BYTES = 100_000
 MAX_ERROR_BYTES = 4_000
@@ -44,6 +46,7 @@ TERMINATE_GRACE_SECONDS = 0.5
 TERMINATE_KILL_SECONDS = 2.0
 
 TaskStatus = Literal[
+    "queued",
     "accepted",
     "starting",
     "running",
@@ -56,6 +59,7 @@ FinalTaskStatus = Literal["succeeded", "failed", "timed_out", "cancelled"]
 TestBehavior = Literal["succeed", "fail", "ignore_term", "orphan_child"]
 RunnerKind = Literal["fixed_test", "codex"]
 CodexPermissionMode = Literal["auto-review", "read-only", "full-access"]
+CodexTaskKind = Literal["standard", "weixin", "translation"]
 FINAL_STATUSES = {"succeeded", "failed", "timed_out", "cancelled"}
 TASK_ID_PATTERN = r"^qw-[0-9]{13}-[a-f0-9]{32}$"
 SESSION_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
@@ -111,7 +115,12 @@ class CodexTaskSubmission(_StrictModel):
     )
     model: str | None = Field(default=None, min_length=1, max_length=128)
     reasoning_effort: str | None = Field(default=None, min_length=1, max_length=32)
-    timeout_seconds: float = Field(gt=0.0, le=120.0)
+    timeout_seconds: float = Field(gt=0.0, le=24 * 60 * 60)
+    task_kind: CodexTaskKind = "standard"
+    restart_sensitive: bool | None = None
+    queue_key: str | None = Field(default=None, pattern=SESSION_ID_PATTERN)
+    queue_limit: int | None = Field(default=None, ge=1, le=50)
+    queue_wait_seconds: float | None = Field(default=None, gt=0.0, le=7200.0)
 
     @field_validator("prompt")
     @classmethod
@@ -119,6 +128,23 @@ class CodexTaskSubmission(_StrictModel):
         if len(value.encode("utf-8")) > MAX_PROMPT_BYTES:
             raise ValueError("prompt exceeds the fixed byte limit")
         return value
+
+    @model_validator(mode="after")
+    def validate_queue_fields(self) -> CodexTaskSubmission:
+        queue_fields = (self.queue_key, self.queue_limit, self.queue_wait_seconds)
+        if self.task_kind == "translation":
+            if any(item is None for item in queue_fields):
+                raise ValueError("translation queue fields are required")
+        elif any(item is not None for item in queue_fields):
+            raise ValueError("queue fields are only valid for translation tasks")
+        expected_restart_sensitive = (
+            self.workspace_id == "chub" and self.permission_mode != "read-only"
+        )
+        if self.restart_sensitive is None:
+            self.restart_sensitive = expected_restart_sensitive
+        elif self.restart_sensitive != expected_restart_sensitive:
+            raise ValueError("restart_sensitive does not match the fixed workspace rule")
+        return self
 
 
 class StoredTaskSpec(_StrictModel):
@@ -140,13 +166,24 @@ class StoredTaskSpec(_StrictModel):
     model: str | None = Field(default=None, min_length=1, max_length=128)
     reasoning_effort: str | None = Field(default=None, min_length=1, max_length=32)
     timeout_seconds: float
+    task_kind: CodexTaskKind | None = None
+    restart_sensitive: bool = False
+    queue_key: str | None = Field(default=None, pattern=SESSION_ID_PATTERN)
+    queue_limit: int | None = Field(default=None, ge=1, le=50)
+    queue_wait_seconds: float | None = Field(default=None, gt=0.0, le=7200.0)
     created_at: datetime
     deadline_at: datetime
+    queue_deadline_at: datetime | None = None
 
     @model_validator(mode="after")
     def validate_runner_fields(self) -> StoredTaskSpec:
         fixed_fields = (self.behavior, self.run_seconds)
-        codex_fields = (self.session_id, self.workspace_id, self.permission_mode)
+        codex_fields = (
+            self.session_id,
+            self.workspace_id,
+            self.permission_mode,
+            self.task_kind,
+        )
         if self.runner_kind == "fixed_test":
             if any(item is None for item in fixed_fields) or any(
                 item is not None
@@ -162,6 +199,21 @@ class StoredTaskSpec(_StrictModel):
             item is None for item in codex_fields
         ):
             raise ValueError("Codex task fields are inconsistent")
+        if self.runner_kind == "fixed_test" and self.restart_sensitive:
+            raise ValueError("fixed test tasks cannot be restart sensitive")
+        if (
+            self.protocol_version >= 6
+            and self.runner_kind == "codex"
+            and self.restart_sensitive
+            != (self.workspace_id == "chub" and self.permission_mode != "read-only")
+        ):
+            raise ValueError("restart_sensitive does not match the fixed workspace rule")
+        queue_fields = (self.queue_key, self.queue_limit, self.queue_wait_seconds)
+        if self.runner_kind == "codex" and self.task_kind == "translation":
+            if any(item is None for item in queue_fields) or self.queue_deadline_at is None:
+                raise ValueError("translation queue fields are inconsistent")
+        elif any(item is not None for item in (*queue_fields, self.queue_deadline_at)):
+            raise ValueError("non-translation task has queue fields")
         return self
 
 
@@ -176,6 +228,11 @@ class StoredTaskState(_StrictModel):
         default=None,
         pattern=NATIVE_SESSION_ID_PATTERN,
     )
+    expected_native_session_id: str | None = Field(
+        default=None,
+        pattern=NATIVE_SESSION_ID_PATTERN,
+    )
+    execution_deadline_at: datetime | None = None
     cancellation_requested: bool = False
     updated_at: datetime
 
@@ -210,7 +267,7 @@ class SessionLease(_StrictModel):
 
 
 class WorkerTaskView(_StrictModel):
-    task_id: str
+    task_id: str = Field(pattern=TASK_ID_PATTERN)
     status: TaskStatus
     prompt_sha256: str
     created_at: datetime
@@ -224,14 +281,26 @@ class WorkerTaskView(_StrictModel):
     error_code: str | None = None
     exit_code: int | None = None
     native_session_id: str | None = None
+    restart_sensitive: bool = False
 
 
 class WorkerTaskSummary(_StrictModel):
-    task_id: str
+    task_id: str = Field(pattern=TASK_ID_PATTERN)
     status: TaskStatus
     prompt_sha256: str
+    session_id: str | None = None
+    task_kind: CodexTaskKind | None = None
+    restart_sensitive: bool = False
+    native_session_id: str | None = None
+    delivery_acknowledged: bool = False
     created_at: datetime
     updated_at: datetime
+
+
+class WorkerTaskDelivery(_StrictModel):
+    task_id: str = Field(pattern=TASK_ID_PATTERN)
+    spec_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    delivered_at: datetime
 
 
 class WorkerTaskError(Exception):
@@ -283,7 +352,13 @@ def _digest_stored_spec(spec: StoredTaskSpec) -> str:
             "model": spec.model,
             "reasoning_effort": spec.reasoning_effort,
             "timeout_seconds": spec.timeout_seconds,
+            "task_kind": spec.task_kind,
+            "queue_key": spec.queue_key,
+            "queue_limit": spec.queue_limit,
+            "queue_wait_seconds": spec.queue_wait_seconds,
         }
+        if spec.protocol_version >= 6:
+            payload["restart_sensitive"] = spec.restart_sensitive
     return hashlib.sha256(_canonical_json(payload)).hexdigest()
 
 
@@ -351,7 +426,7 @@ class WorkerTaskManager:
         *,
         protocol_version: int,
         allow_test_tasks: bool = False,
-        isolated_workspaces: dict[str, Path] | None = None,
+        codex_workspaces: dict[str, Path] | None = None,
         codex_executable: str | Path | None = None,
         codex_home: Path | None = None,
     ) -> None:
@@ -359,12 +434,14 @@ class WorkerTaskManager:
         self.tasks_dir = self.root / "tasks"
         self.tombstones_dir = self.root / "tombstones"
         self.leases_dir = self.root / "session-leases"
+        self.hook_dir = settings.codex_pty.runtime_dir / "hooks"
+        self.restart_request_dir = settings.codex_pty.runtime_dir / "restart-requests"
         self.generation = generation
         self.protocol_version = protocol_version
         self.allow_test_tasks = allow_test_tasks
-        self.isolated_workspaces = {
+        self.codex_workspaces = {
             workspace_id: workspace.resolve()
-            for workspace_id, workspace in (isolated_workspaces or {}).items()
+            for workspace_id, workspace in (codex_workspaces or {}).items()
         }
         resolved_executable = (
             str(codex_executable)
@@ -377,10 +454,12 @@ class WorkerTaskManager:
             if codex_home is not None
             else Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
         )
+        self.codex_discovery = CodexSessionDiscovery(self.codex_home)
         self._lock = asyncio.Lock()
         self._supervisors: dict[str, asyncio.Task[None]] = {}
         self._processes: dict[str, asyncio.subprocess.Process] = {}
         self._corrupt_task_ids: set[str] = set()
+        self._recovery_task_ids: set[str] = set()
         self._abandoning = False
 
     @property
@@ -396,7 +475,9 @@ class WorkerTaskManager:
         _private_directory(self.tasks_dir)
         _private_directory(self.tombstones_dir)
         _private_directory(self.leases_dir)
-        self._validate_isolated_workspaces()
+        _private_directory(self.hook_dir)
+        _private_directory(self.restart_request_dir)
+        self._validate_codex_workspaces()
         await self._recover_tasks()
 
     async def close(self, *, interrupt_tasks: bool = True) -> None:
@@ -429,21 +510,21 @@ class WorkerTaskManager:
         return await self._submit(submission, runner_kind="fixed_test")
 
     async def submit_codex(self, submission: CodexTaskSubmission) -> WorkerTaskView:
-        if not self.allow_test_tasks or not self.isolated_workspaces:
+        if not self.codex_workspaces:
             raise WorkerTaskError(
                 "worker_action_unavailable",
-                "Isolated Codex tasks are disabled for this Worker instance",
+                "Codex tasks are disabled for this Worker instance",
             )
         if self.codex_executable is None:
             raise WorkerTaskError(
                 "codex_unavailable",
                 "Codex executable is unavailable to the Worker",
             )
-        workspace = self.isolated_workspaces.get(submission.workspace_id)
+        workspace = self.codex_workspaces.get(submission.workspace_id)
         if workspace is None:
             raise WorkerTaskError(
                 "worker_workspace_unavailable",
-                "The fixed isolated workspace is unavailable",
+                "The fixed workspace is unavailable",
             )
         return await self._submit(submission, runner_kind="codex")
 
@@ -501,7 +582,11 @@ class WorkerTaskManager:
                     "Task result has been retired and cannot be submitted again",
                 )
 
-            if len(self._supervisors) >= MAX_ACTIVE_TASKS:
+            queued_translation = (
+                isinstance(submission, CodexTaskSubmission)
+                and submission.task_kind == "translation"
+            )
+            if not queued_translation and len(self._running_task_ids()) >= MAX_ACTIVE_TASKS:
                 raise WorkerTaskError(
                     "worker_capacity_reached",
                     "Worker has reached its fixed active task limit",
@@ -512,7 +597,9 @@ class WorkerTaskManager:
                     "Worker task store has reached its fixed limit",
                 )
 
-            if isinstance(submission, CodexTaskSubmission):
+            if queued_translation:
+                self._ensure_queue_capacity(submission)
+            elif isinstance(submission, CodexTaskSubmission):
                 self._ensure_session_available(submission.session_id)
 
             task_dir = self.tasks_dir / submission.task_id
@@ -563,19 +650,58 @@ class WorkerTaskManager:
                     else None
                 ),
                 timeout_seconds=submission.timeout_seconds,
+                task_kind=(
+                    submission.task_kind
+                    if isinstance(submission, CodexTaskSubmission)
+                    else None
+                ),
+                restart_sensitive=(
+                    bool(submission.restart_sensitive)
+                    if isinstance(submission, CodexTaskSubmission)
+                    else False
+                ),
+                queue_key=(
+                    submission.queue_key
+                    if isinstance(submission, CodexTaskSubmission)
+                    else None
+                ),
+                queue_limit=(
+                    submission.queue_limit
+                    if isinstance(submission, CodexTaskSubmission)
+                    else None
+                ),
+                queue_wait_seconds=(
+                    submission.queue_wait_seconds
+                    if isinstance(submission, CodexTaskSubmission)
+                    else None
+                ),
                 created_at=now,
-                deadline_at=now + timedelta(seconds=submission.timeout_seconds),
+                deadline_at=now + timedelta(
+                    seconds=(
+                        submission.timeout_seconds
+                        + (
+                            (submission.queue_wait_seconds or 0)
+                            if isinstance(submission, CodexTaskSubmission)
+                            else 0
+                        )
+                    )
+                ),
+                queue_deadline_at=(
+                    now + timedelta(seconds=submission.queue_wait_seconds)
+                    if queued_translation and submission.queue_wait_seconds is not None
+                    else None
+                ),
             )
             state = StoredTaskState(
                 task_id=submission.task_id,
                 spec_sha256=spec_digest,
-                status="accepted",
+                status="queued" if queued_translation else "accepted",
                 worker_generation=self.generation,
                 updated_at=now,
             )
             try:
                 _write_model(task_dir / "spec.json", spec, max_bytes=MAX_SPEC_BYTES)
-                if spec.session_id is not None:
+                if spec.session_id is not None and spec.task_kind != "translation":
                     self._write_lease(
                         SessionLease(
                             session_id=spec.session_id,
@@ -610,6 +736,7 @@ class WorkerTaskManager:
                 if cleanup_failed:
                     self._corrupt_task_ids.add(submission.task_id)
                 raise
+            self._recovery_task_ids.add(submission.task_id)
             supervisor = asyncio.create_task(
                 self._launch_and_monitor(submission.task_id),
                 name=f"quick-worker-{submission.task_id}",
@@ -668,36 +795,282 @@ class WorkerTaskManager:
                 "Worker task record is invalid and cannot be treated as completed",
             ) from None
 
-    def list(self, *, limit: int) -> list[WorkerTaskSummary]:
+    def list(
+        self,
+        *,
+        limit: int,
+        active_only: bool = False,
+        recovery_only: bool = False,
+    ) -> list[WorkerTaskSummary]:
         summaries: list[WorkerTaskSummary] = []
-        try:
-            entries = list(self.tasks_dir.iterdir())
-        except OSError as exc:
-            raise WorkerTaskError(
-                "worker_store_unavailable", "Worker task store could not be read"
-            ) from exc
-        if len(entries) > MAX_TASK_DIRECTORIES:
-            raise WorkerTaskError(
-                "worker_store_oversized", "Worker task store exceeds its fixed limit"
-            )
+        if recovery_only:
+            if self._corrupt_task_ids:
+                raise WorkerTaskError(
+                    "worker_task_store_corrupt",
+                    "Worker task store contains an invalid record",
+                )
+            if len(self._recovery_task_ids) > limit:
+                raise WorkerTaskError(
+                    "worker_recovery_set_oversized",
+                    "Worker recovery task set exceeds the fixed response limit",
+                )
+            entries = [self.tasks_dir / task_id for task_id in self._recovery_task_ids]
+        else:
+            try:
+                entries = list(self.tasks_dir.iterdir())
+            except OSError as exc:
+                raise WorkerTaskError(
+                    "worker_store_unavailable", "Worker task store could not be read"
+                ) from exc
+            if len(entries) > MAX_TASK_DIRECTORIES:
+                raise WorkerTaskError(
+                    "worker_store_oversized", "Worker task store exceeds its fixed limit"
+                )
+        corrupt_found = False
         for entry in entries:
             if not entry.is_dir() or entry.is_symlink():
                 continue
             try:
-                view = self.get(entry.name)
+                spec, state, completion = self._records(entry.name)
+                view = self._view_from(spec, state, completion)
+                delivery_acknowledged = self._delivery_acknowledged(spec, completion)
             except WorkerTaskError:
+                corrupt_found = True
+                continue
+            except (FileNotFoundError, OSError, ValidationError, ValueError):
+                self._corrupt_task_ids.add(entry.name)
+                corrupt_found = True
+                continue
+            if active_only and view.status in FINAL_STATUSES:
+                continue
+            if recovery_only and view.status in FINAL_STATUSES and delivery_acknowledged:
                 continue
             summaries.append(
                 WorkerTaskSummary(
                     task_id=view.task_id,
                     status=view.status,
                     prompt_sha256=view.prompt_sha256,
+                    session_id=spec.session_id,
+                    task_kind=spec.task_kind,
+                    restart_sensitive=spec.restart_sensitive,
+                    native_session_id=view.native_session_id,
+                    delivery_acknowledged=delivery_acknowledged,
                     created_at=view.created_at,
                     updated_at=view.updated_at,
                 )
             )
+        if corrupt_found:
+            raise WorkerTaskError(
+                "worker_task_store_corrupt",
+                "Worker task store contains an invalid record",
+            )
         summaries.sort(key=lambda item: (item.created_at, item.task_id), reverse=True)
         return summaries[:limit]
+
+    def _delivery_acknowledged(
+        self,
+        spec: TaskSpec,
+        completion: TaskCompletion | None,
+    ) -> bool:
+        if completion is None:
+            return False
+        try:
+            delivery = _read_model(
+                self.tasks_dir / spec.task_id / "delivery.json",
+                WorkerTaskDelivery,
+                max_bytes=MAX_DELIVERY_BYTES,
+            )
+        except FileNotFoundError:
+            return False
+        except (OSError, ValidationError, ValueError):
+            self._corrupt_task_ids.add(spec.task_id)
+            raise WorkerTaskError(
+                "worker_delivery_corrupt",
+                "Worker delivery acknowledgement is invalid",
+            ) from None
+        if delivery.task_id != spec.task_id or delivery.spec_sha256 != spec.spec_sha256:
+            self._corrupt_task_ids.add(spec.task_id)
+            raise WorkerTaskError(
+                "worker_delivery_corrupt",
+                "Worker delivery acknowledgement does not match the task",
+            )
+        return True
+
+    def acknowledge_delivery(self, task_id: str) -> WorkerTaskDelivery:
+        self._validate_task_id(task_id)
+        try:
+            spec, state, completion = self._records(task_id)
+        except FileNotFoundError:
+            raise WorkerTaskError(
+                "worker_task_not_found",
+                "Worker task was not found",
+            ) from None
+        except (OSError, ValidationError, ValueError):
+            self._corrupt_task_ids.add(task_id)
+            raise WorkerTaskError(
+                "worker_task_corrupt",
+                "Worker task record is invalid and cannot be acknowledged",
+            ) from None
+        if completion is None or state.status not in FINAL_STATUSES:
+            raise WorkerTaskError(
+                "worker_task_not_final",
+                "Worker task is not ready for delivery acknowledgement",
+            )
+        path = self.tasks_dir / task_id / "delivery.json"
+        try:
+            delivery = _read_model(
+                path,
+                WorkerTaskDelivery,
+                max_bytes=MAX_DELIVERY_BYTES,
+            )
+        except FileNotFoundError:
+            delivery = WorkerTaskDelivery(
+                task_id=task_id,
+                spec_sha256=spec.spec_sha256,
+                delivered_at=utc_now(),
+            )
+            _write_model(path, delivery, max_bytes=MAX_DELIVERY_BYTES)
+        except (OSError, ValidationError, ValueError):
+            raise WorkerTaskError(
+                "worker_delivery_corrupt",
+                "Worker delivery acknowledgement is invalid",
+            ) from None
+        if delivery.task_id != task_id or delivery.spec_sha256 != spec.spec_sha256:
+            raise WorkerTaskError(
+                "worker_delivery_corrupt",
+                "Worker delivery acknowledgement does not match the task",
+            )
+        self._recovery_task_ids.discard(task_id)
+        return delivery
+
+    def _running_task_ids(self) -> set[str]:
+        running: set[str] = set()
+        for task_id in self._supervisors:
+            try:
+                _spec, state, completion = self._records(task_id)
+            except (FileNotFoundError, OSError, ValidationError, ValueError):
+                continue
+            if completion is None and state.status in {"accepted", "starting", "running"}:
+                running.add(task_id)
+        return running
+
+    def _ensure_queue_capacity(self, submission: CodexTaskSubmission) -> None:
+        if submission.queue_key is None or submission.queue_limit is None:
+            raise WorkerTaskError(
+                "worker_queue_invalid", "Translation queue configuration is incomplete"
+            )
+        active = 0
+        for entry in self.tasks_dir.iterdir():
+            if entry.is_symlink() or not entry.is_dir():
+                continue
+            try:
+                spec, state, completion = self._records(entry.name)
+            except (FileNotFoundError, OSError, ValidationError, ValueError):
+                continue
+            if (
+                completion is None
+                and spec.task_kind == "translation"
+                and spec.queue_key == submission.queue_key
+                and state.status in {"queued", "accepted", "starting", "running"}
+            ):
+                active += 1
+        if active >= submission.queue_limit:
+            raise WorkerTaskError(
+                "worker_queue_capacity_reached",
+                "Translation queue has reached its fixed capacity",
+            )
+
+    async def _wait_for_queue_turn(self, task_id: str) -> bool:
+        while True:
+            should_wait = False
+            async with self._lock:
+                spec, state, completion = self._records(task_id)
+                if completion is not None:
+                    return False
+                if spec.task_kind != "translation":
+                    return True
+                if state.cancellation_requested:
+                    self._finalize(
+                        spec,
+                        state,
+                        status="cancelled",
+                        error_code="cancelled",
+                        error="Task was cancelled before execution started.",
+                    )
+                    return False
+                if spec.queue_deadline_at is None or utc_now() >= spec.queue_deadline_at:
+                    self._finalize(
+                        spec,
+                        state,
+                        status="timed_out",
+                        error_code="queue_deadline_exceeded",
+                        error="Translation task reached its absolute queue deadline.",
+                    )
+                    return False
+                earlier_active = False
+                latest_native: tuple[datetime, str] | None = None
+                for entry in self.tasks_dir.iterdir():
+                    if entry.name == task_id or entry.is_symlink() or not entry.is_dir():
+                        continue
+                    try:
+                        other_spec, other_state, other_completion = self._records(entry.name)
+                    except (FileNotFoundError, OSError, ValidationError, ValueError):
+                        continue
+                    if (
+                        other_spec.task_kind != "translation"
+                        or other_spec.queue_key != spec.queue_key
+                    ):
+                        continue
+                    if (other_spec.created_at, other_spec.task_id) < (
+                        spec.created_at,
+                        spec.task_id,
+                    ):
+                        if other_completion is None:
+                            earlier_active = True
+                        if other_spec.session_id != spec.session_id:
+                            continue
+                        native_id = (
+                            other_completion.native_session_id
+                            if other_completion is not None
+                            else other_state.native_session_id
+                        )
+                        if native_id is not None and (
+                            latest_native is None
+                            or other_spec.created_at > latest_native[0]
+                        ):
+                            latest_native = (other_spec.created_at, native_id)
+                if earlier_active or len(self._running_task_ids()) >= MAX_ACTIVE_TASKS:
+                    should_wait = True
+                else:
+                    candidate_native_session_id = (
+                        latest_native[1] if latest_native is not None else spec.codex_session_id
+                    )
+                    state.expected_native_session_id = (
+                        candidate_native_session_id
+                        if candidate_native_session_id is not None
+                        and self._native_session_available(candidate_native_session_id)
+                        else None
+                    )
+                    try:
+                        self._write_lease(
+                            SessionLease(
+                                session_id=spec.session_id or "",
+                                task_id=spec.task_id,
+                                spec_sha256=spec.spec_sha256,
+                                created_at=utc_now(),
+                            )
+                        )
+                    except WorkerTaskError as exc:
+                        if exc.code != "worker_session_busy":
+                            raise
+                        should_wait = True
+                    else:
+                        state.status = "accepted"
+                        state.updated_at = utc_now()
+                        self._write_state(state)
+                        return True
+            if should_wait:
+                await asyncio.sleep(0.05)
 
     async def _recover_tasks(self) -> None:
         entries = list(self.tasks_dir.iterdir())
@@ -714,6 +1087,13 @@ class WorkerTaskManager:
                 self._corrupt_task_ids.add(task_id)
                 continue
             if completion is not None:
+                try:
+                    delivered = self._delivery_acknowledged(spec, completion)
+                except WorkerTaskError:
+                    self._corrupt_task_ids.add(task_id)
+                    continue
+                if not delivered:
+                    self._recovery_task_ids.add(task_id)
                 if spec.session_id is not None:
                     try:
                         self._release_lease(spec)
@@ -730,9 +1110,10 @@ class WorkerTaskManager:
                     self.tasks_dir / task_id / "stdout.txt",
                     missing_ok=True,
                 )
+                expected_native_id = self._expected_native_session_id(spec, state)
                 if native_session_id is not None and (
-                    spec.codex_session_id is None
-                    or native_session_id == spec.codex_session_id
+                    expected_native_id is None
+                    or native_session_id == expected_native_id
                 ):
                     state.native_session_id = native_session_id
                     state.updated_at = utc_now()
@@ -753,6 +1134,8 @@ class WorkerTaskManager:
         stderr_file = None
         native_observer: asyncio.Task[None] | None = None
         try:
+            if not await self._wait_for_queue_turn(task_id):
+                return
             async with self._lock:
                 spec, state, completion = self._records(task_id)
                 if completion is not None:
@@ -766,8 +1149,12 @@ class WorkerTaskManager:
                         error="Task was cancelled before execution started.",
                     )
                     return
-                if spec.runner_kind == "codex" and spec.codex_session_id is not None:
-                    if self._has_active_codex_writer(spec.codex_session_id):
+                if spec.runner_kind == "codex":
+                    expected_native_id = self._expected_native_session_id(spec, state)
+                else:
+                    expected_native_id = None
+                if expected_native_id is not None:
+                    if self._has_active_codex_writer(expected_native_id):
                         self._finalize(
                             spec,
                             state,
@@ -803,9 +1190,34 @@ class WorkerTaskManager:
                             str(self._runner_cwd(spec)),
                         ]
                     )
+                    if state.expected_native_session_id is not None:
+                        runner_args.extend(
+                            ["--codex-session-id", state.expected_native_session_id]
+                        )
+                    elif spec.task_kind == "translation":
+                        runner_args.append("--start-new-session")
+                runner_env = os.environ.copy()
+                for name in (
+                    "CHUB_PTY_SESSION_ID",
+                    "CHUB_PTY_HOOK_DIR",
+                    "CHUB_ACTIVITY_SOURCE",
+                    "CHUB_QUICK_TASK_ID",
+                    "CHUB_QUICK_RESTART_DIR",
+                ):
+                    runner_env.pop(name, None)
+                if spec.runner_kind == "codex" and spec.session_id is not None:
+                    runner_env["CHUB_PTY_SESSION_ID"] = spec.session_id
+                    runner_env["CHUB_PTY_HOOK_DIR"] = str(self.hook_dir)
+                    runner_env["CHUB_ACTIVITY_SOURCE"] = "quick"
+                    if spec.task_kind != "translation":
+                        runner_env["CHUB_QUICK_TASK_ID"] = spec.task_id
+                        runner_env["CHUB_QUICK_RESTART_DIR"] = str(
+                            self.restart_request_dir
+                        )
                 process = await asyncio.create_subprocess_exec(
                     *runner_args,
                     cwd=Path(__file__).resolve().parents[1],
+                    env=runner_env,
                     stdin=(
                         asyncio.subprocess.PIPE
                         if spec.runner_kind == "codex"
@@ -820,6 +1232,11 @@ class WorkerTaskManager:
                 release_read = None
                 runner_created_at = psutil.Process(process.pid).create_time()
                 state.status = "starting"
+                state.execution_deadline_at = (
+                    utc_now() + timedelta(seconds=spec.timeout_seconds)
+                    if spec.task_kind == "translation"
+                    else spec.deadline_at
+                )
                 state.worker_generation = self.generation
                 state.runner_pid = process.pid
                 state.runner_created_at = runner_created_at
@@ -844,7 +1261,8 @@ class WorkerTaskManager:
                     self._observe_native_session(task_id),
                     name=f"quick-worker-native-session-{task_id}",
                 )
-            remaining = max(0.0, (spec.deadline_at - utc_now()).total_seconds())
+            execution_deadline = state.execution_deadline_at or spec.deadline_at
+            remaining = max(0.0, (execution_deadline - utc_now()).total_seconds())
             try:
                 exit_code = await asyncio.wait_for(process.wait(), timeout=remaining)
             except asyncio.TimeoutError:
@@ -868,9 +1286,10 @@ class WorkerTaskManager:
                 native_session_id = self._extract_native_session_id(
                     self.tasks_dir / task_id / "stdout.txt"
                 ) if spec.runner_kind == "codex" else None
+                expected_native_id = self._expected_native_session_id(spec, state)
                 native_session_confirmed = native_session_id is not None and (
-                    spec.codex_session_id is None
-                    or native_session_id == spec.codex_session_id
+                    expected_native_id is None
+                    or native_session_id == expected_native_id
                 )
                 if native_session_confirmed:
                     state.native_session_id = native_session_id
@@ -975,9 +1394,10 @@ class WorkerTaskManager:
                         spec, state, completion = self._records(task_id)
                         if completion is not None:
                             return
+                        expected_native_id = self._expected_native_session_id(spec, state)
                         if (
-                            spec.codex_session_id is not None
-                            and native_session_id != spec.codex_session_id
+                            expected_native_id is not None
+                            and native_session_id != expected_native_id
                         ):
                             return
                         state.native_session_id = native_session_id
@@ -1155,8 +1575,49 @@ class WorkerTaskManager:
             raise ValueError("task timestamps must include a timezone")
         if spec.deadline_at <= spec.created_at:
             raise ValueError("task deadline is inconsistent")
+        expected_deadline = spec.created_at + timedelta(
+            seconds=spec.timeout_seconds + (spec.queue_wait_seconds or 0)
+        )
+        if spec.deadline_at != expected_deadline:
+            raise ValueError("task deadline does not match its specification")
+        if spec.queue_deadline_at is not None:
+            if spec.queue_deadline_at.tzinfo is None:
+                raise ValueError("task queue deadline must include a timezone")
+            expected_queue_deadline = spec.created_at + timedelta(
+                seconds=spec.queue_wait_seconds or 0
+            )
+            if spec.queue_deadline_at != expected_queue_deadline:
+                raise ValueError("task queue deadline does not match its specification")
         if state.updated_at.tzinfo is None or state.updated_at < spec.created_at:
             raise ValueError("task state timestamp is inconsistent")
+        if state.execution_deadline_at is not None:
+            if (
+                state.execution_deadline_at.tzinfo is None
+                or state.execution_deadline_at < spec.created_at
+                or state.execution_deadline_at > spec.deadline_at
+            ):
+                raise ValueError("task execution deadline is inconsistent")
+        if state.status in {"starting", "running"} and (
+            state.runner_pid is None or state.execution_deadline_at is None
+        ):
+            raise ValueError("running task state is incomplete")
+        if state.status == "queued" and any(
+            item is not None
+            for item in (
+                state.runner_pid,
+                state.expected_native_session_id,
+                state.execution_deadline_at,
+                state.native_session_id,
+            )
+        ):
+            raise ValueError("queued task state contains execution identity")
+        expected_native_id = self._expected_native_session_id(spec, state)
+        if (
+            state.native_session_id is not None
+            and expected_native_id is not None
+            and state.native_session_id != expected_native_id
+        ):
+            raise ValueError("task native Session identity is inconsistent")
         if state.status in FINAL_STATUSES and state.runner_pid is not None:
             raise ValueError("final task state still has a runner identity")
         if completion is not None:
@@ -1197,7 +1658,10 @@ class WorkerTaskManager:
             StoredTaskSpec,
             max_bytes=MAX_SPEC_BYTES,
         )
-        if spec.task_id != task_id or spec.protocol_version != self.protocol_version:
+        if spec.task_id != task_id or spec.protocol_version not in {
+            5,
+            self.protocol_version,
+        }:
             raise ValueError("task specification is incompatible")
         if hashlib.sha256(spec.prompt.encode("utf-8")).hexdigest() != spec.prompt_sha256:
             raise ValueError("task prompt digest does not match")
@@ -1230,6 +1694,7 @@ class WorkerTaskManager:
             error_code=completion.error_code if completion else None,
             exit_code=completion.exit_code if completion else None,
             native_session_id=state.native_session_id,
+            restart_sensitive=spec.restart_sensitive,
         )
 
     def _write_state(self, state: StoredTaskState) -> None:
@@ -1253,6 +1718,7 @@ class WorkerTaskManager:
         if state.status in FINAL_STATUSES:
             return
         completed_at = utc_now()
+        lease_expected = state.status != "queued"
         completion = StoredTaskCompletion(
             task_id=spec.task_id,
             spec_sha256=spec.spec_sha256,
@@ -1274,6 +1740,7 @@ class WorkerTaskManager:
         state.runner_created_at = None
         state.updated_at = completed_at
         self._write_state(state)
+        self._recovery_task_ids.add(spec.task_id)
         tombstone = TaskTombstone(
             task_id=spec.task_id,
             spec_sha256=spec.spec_sha256,
@@ -1286,7 +1753,11 @@ class WorkerTaskManager:
             max_bytes=MAX_STATE_BYTES,
         )
         if spec.session_id is not None:
-            self._release_lease(spec)
+            try:
+                self._release_lease(spec)
+            except FileNotFoundError:
+                if lease_expected:
+                    raise
 
     def _task_directory_count(self) -> int:
         try:
@@ -1303,21 +1774,19 @@ class WorkerTaskManager:
             )
         return len(entries)
 
-    def _validate_isolated_workspaces(self) -> None:
-        if self.isolated_workspaces and not self.allow_test_tasks:
-            raise OSError("Isolated Worker workspaces require test task mode")
-        for workspace_id, path in self.isolated_workspaces.items():
+    def _validate_codex_workspaces(self) -> None:
+        for workspace_id, path in self.codex_workspaces.items():
             if re.fullmatch(WORKSPACE_ID_PATTERN, workspace_id) is None:
-                raise OSError("Isolated Worker workspace ID is invalid")
+                raise OSError("Worker workspace ID is invalid")
             if not path.is_dir() or path.is_symlink():
-                raise OSError("Isolated Worker workspace is unavailable")
+                raise OSError("Worker workspace is unavailable")
 
     def _runner_cwd(self, spec: StoredTaskSpec) -> Path:
         if spec.runner_kind == "fixed_test":
             return Path(__file__).resolve().parents[1]
         if spec.workspace_id is None:
             raise OSError("Codex task workspace ID is missing")
-        workspace = self.isolated_workspaces.get(spec.workspace_id)
+        workspace = self.codex_workspaces.get(spec.workspace_id)
         if workspace is None or not workspace.is_dir() or workspace.is_symlink():
             raise OSError("Codex task workspace is unavailable")
         return workspace
@@ -1343,6 +1812,24 @@ class WorkerTaskManager:
                 "worker_session_lease_corrupt",
                 "Session lease identity does not match its file",
             )
+        try:
+            leased_spec, _leased_state, leased_completion = self._records(lease.task_id)
+        except (FileNotFoundError, OSError, ValidationError, ValueError) as exc:
+            raise WorkerTaskError(
+                "worker_session_lease_corrupt",
+                "Session lease task is invalid and cannot be replaced safely",
+            ) from exc
+        if leased_completion is not None:
+            if (
+                leased_spec.session_id != lease.session_id
+                or leased_spec.spec_sha256 != lease.spec_sha256
+            ):
+                raise WorkerTaskError(
+                    "worker_session_lease_corrupt",
+                    "Session lease does not match its completed task",
+                )
+            self._release_lease(leased_spec)
+            return
         raise WorkerTaskError(
             "worker_session_busy",
             "Session already has an active Worker task",
@@ -1419,6 +1906,24 @@ class WorkerTaskManager:
             return False
         finally:
             os.close(descriptor)
+
+    def _native_session_available(self, native_session_id: str) -> bool:
+        if re.fullmatch(NATIVE_SESSION_ID_PATTERN, native_session_id) is None:
+            raise OSError("Codex Session ID is invalid")
+        archive_states = self.codex_discovery.session_archive_states()
+        return (
+            archive_states is not None
+            and archive_states.get(native_session_id) is False
+        )
+
+    @staticmethod
+    def _expected_native_session_id(
+        spec: StoredTaskSpec,
+        state: StoredTaskState,
+    ) -> str | None:
+        if spec.task_kind == "translation":
+            return state.expected_native_session_id
+        return state.expected_native_session_id or spec.codex_session_id
 
     @staticmethod
     def _extract_native_session_id(

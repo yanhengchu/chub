@@ -4,6 +4,7 @@ const QUICK_INTERACTION_PAGE_SIZE_KEY = "hub.quickInteractionPageSize.v1";
 const CODEX_DEFAULT_PERMISSION_KEY = "hub.codexDefaultPermission.v1";
 const CODEX_DEFAULT_MODEL_KEY = "hub.codexDefaultModel.v1";
 const CODEX_DEFAULT_REASONING_EFFORT_KEY = "hub.codexDefaultReasoningEffort.v1";
+const CODEX_SHOW_TRANSLATION_SESSION_KEY = "hub.codexShowTranslationSession.v1";
 const CYBER_RAIN_SPEED_KEY = "hub.cyberRainSpeed.v1";
 const CYBER_RAIN_BRIGHTNESS_KEY = "hub.cyberRainBrightness.v1";
 const CYBER_RAIN_DENSITY_KEY = "hub.cyberRainDensity.v1";
@@ -18,6 +19,12 @@ const codexDefaultReasoningEffort = document.querySelector(
 );
 const codexSessionSettingsMessage = document.querySelector(
   "#codex-session-settings-message",
+);
+const codexShowTranslationSession = document.querySelector(
+  "#codex-show-translation-session",
+);
+const codexTranslationSessionVisibilityMessage = document.querySelector(
+  "#codex-translation-session-visibility-message",
 );
 const weixinTranslationEnabled = document.querySelector(
   "#weixin-translation-enabled",
@@ -118,6 +125,31 @@ function readCodexDefaultPermission() {
       : "full-access";
   } catch (_error) {
     return "full-access";
+  }
+}
+
+function readCodexShowTranslationSession() {
+  try {
+    return localStorage.getItem(CODEX_SHOW_TRANSLATION_SESSION_KEY) === "true";
+  } catch (_error) {
+    return false;
+  }
+}
+
+function saveCodexShowTranslationSession(visible) {
+  try {
+    localStorage.setItem(
+      CODEX_SHOW_TRANSLATION_SESSION_KEY,
+      visible ? "true" : "false",
+    );
+    codexShowTranslationSession.checked = visible;
+    codexTranslationSessionVisibilityMessage.textContent = "";
+    codexTranslationSessionVisibilityMessage.className = "message";
+  } catch (_error) {
+    codexShowTranslationSession.checked = readCodexShowTranslationSession();
+    codexTranslationSessionVisibilityMessage.textContent =
+      "当前浏览器无法保存 Session 展示偏好。";
+    codexTranslationSessionVisibilityMessage.className = "message message-error";
   }
 }
 
@@ -375,6 +407,11 @@ quickInteractionPageSize.addEventListener("change", () => {
 
 quickInteractionPageSize.value = readQuickInteractionPageSize();
 codexDefaultPermission.value = readCodexDefaultPermission();
+codexShowTranslationSession.checked = readCodexShowTranslationSession();
+
+codexShowTranslationSession.addEventListener("change", () => {
+  saveCodexShowTranslationSession(codexShowTranslationSession.checked);
+});
 
 codexDefaultPermission.addEventListener("change", () => {
   saveCodexDefaultPermission(codexDefaultPermission.value);

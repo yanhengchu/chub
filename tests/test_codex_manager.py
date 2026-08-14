@@ -48,6 +48,41 @@ def test_create_session_persists_validated_model_defaults(settings: Settings) ->
     assert stored.reasoning_effort == "high"
 
 
+def test_rename_session_updates_only_local_title_while_working(
+    settings: Settings,
+) -> None:
+    manager = CodexPtyManager(settings)
+    session = native_session("session-1").model_copy(
+        update={"activity": "working", "activity_source": "quick"}
+    )
+    session.title = "旧标题"
+    manager.store.save(session)
+    manager.get_session = MagicMock(return_value=session)
+
+    renamed = manager.rename_session(session.id, "新标题")
+
+    assert renamed.title == "新标题"
+    assert renamed.activity == "working"
+    assert renamed.activity_source == "quick"
+    assert manager.store.get(session.id).title == "新标题"
+    assert session.codex_session_id == "session-1"
+
+
+def test_rename_session_rejects_internal_translation_session(
+    settings: Settings,
+) -> None:
+    manager = CodexPtyManager(settings)
+    session = native_session("session-1").model_copy(
+        update={"workspace_id": "weixin-translation"}
+    )
+    manager.get_session = MagicMock(return_value=session)
+
+    with pytest.raises(ApiError) as error:
+        manager.rename_session(session.id, "新标题")
+
+    assert error.value.code == "codex_session_rename_not_allowed"
+
+
 def test_discard_unstarted_session_only_removes_local_session(
     settings: Settings,
 ) -> None:
@@ -57,7 +92,6 @@ def test_discard_unstarted_session_only_removes_local_session(
         workspace_id="chub",
         workspace_name="Chub",
         cwd=Path("/workspace/chub"),
-        status="stopped",
     )
     native = native_session("native-session")
     manager.store.save(local)
@@ -69,7 +103,7 @@ def test_discard_unstarted_session_only_removes_local_session(
     assert manager.store.get(native.id) is not None
 
 
-def test_list_sessions_hides_internal_translation_session(
+def test_list_sessions_includes_all_unarchived_sessions_regardless_of_origin(
     settings: Settings,
 ) -> None:
     manager = CodexPtyManager(settings)
@@ -92,7 +126,31 @@ def test_list_sessions_hides_internal_translation_session(
     manager._sync_native_sessions = MagicMock()
     manager._refresh_status = MagicMock()
 
-    assert [session.id for session in manager.list_sessions()] == [visible.id]
+    sessions = manager.list_sessions()
+    assert [session.id for session in sessions] == [visible.id, internal.id]
+    assert sessions[0].terminal_access_allowed is True
+    assert sessions[1].terminal_access_allowed is False
+    assert manager.read_session(internal.id).id == internal.id
+
+
+def test_translation_session_rejects_realtime_terminal(settings: Settings) -> None:
+    manager = CodexPtyManager(settings)
+    session = CodexSession(
+        id="translation-session",
+        workspace_id="weixin-translation",
+        workspace_name="微信文本优化与翻译",
+        cwd=Path("/translation"),
+        permission_mode="read-only",
+    )
+    manager._require_available = MagicMock()
+    manager.get_session = MagicMock(return_value=session)
+    manager._ensure_profile = MagicMock()
+
+    with pytest.raises(ApiError) as error:
+        manager.ensure_terminal(session.id)
+
+    assert error.value.code == "codex_terminal_access_disabled"
+    manager._ensure_profile.assert_not_called()
 
 
 def test_writer_probe_detects_active_and_released_lock(

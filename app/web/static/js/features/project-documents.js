@@ -84,6 +84,8 @@ function renderProjectDocuments(data) {
     archive.type = "button";
     archive.dataset.documentId = item.id;
     archive.textContent = "归档";
+    archive.setAttribute("aria-haspopup", "dialog");
+    archive.setAttribute("aria-controls", "confirmation-dialog");
     copy.append(title, summary);
     meta.append(badge, time);
     link.append(copy);
@@ -102,23 +104,37 @@ function renderProjectDocuments(data) {
 
 async function archiveProjectDocument(button) {
   const documentId = button.dataset.documentId;
-  if (!documentId || !window.confirm("归档后，该文档将从首页移除。确定继续吗？")) {
+  if (!documentId) {
     return;
   }
-  button.disabled = true;
-  try {
-    await apiFetch(`/api/project-docs/${encodeURIComponent(documentId)}/archive`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ archived: true }),
-    });
-    await loadProjectDocuments();
-  } catch (error) {
-    if (!handleAccessError(error)) {
-      setMessage(elements.projectDocsMessage, error.message || "文档归档失败。", "error");
-    }
-    button.disabled = false;
-  }
+  const card = button.closest(".design-document-item");
+  const title = card?.querySelector(".design-document-copy strong")?.textContent.trim()
+    || "这份文档";
+  await showConfirmationDialog({
+    title: "归档文档",
+    description: `归档“${title}”后，该文档将从首页移除，但仍可在“全部文档”的已归档列表中恢复。`,
+    confirmLabel: "确认归档",
+    pendingLabel: "归档中…",
+    errorMessage: "文档归档失败。",
+    onConfirm: async () => {
+      button.disabled = true;
+      try {
+        await apiFetch(`/api/project-docs/${encodeURIComponent(documentId)}/archive`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ archived: true }),
+        });
+        await loadProjectDocuments();
+      } catch (error) {
+        if (handleAccessError(error)) {
+          return;
+        }
+        throw error;
+      } finally {
+        button.disabled = false;
+      }
+    },
+  });
 }
 
 async function loadProjectDocuments({ clearMessage = true } = {}) {

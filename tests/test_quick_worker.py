@@ -5,6 +5,7 @@ import fcntl
 import json
 import os
 import shutil
+import sqlite3
 import stat
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -12,6 +13,7 @@ from pathlib import Path
 
 import psutil
 import pytest
+from pydantic import ValidationError
 
 import app.quick_worker as quick_worker
 from app.quick_worker import (
@@ -24,7 +26,11 @@ from app.quick_worker import (
     worker_runtime_dir,
     worker_socket_path,
 )
-from app.quick_worker_tasks import new_worker_task_id, worker_state_dir
+from app.quick_worker_tasks import (
+    CodexTaskSubmission,
+    new_worker_task_id,
+    worker_state_dir,
+)
 
 
 async def _request(settings, action: str, **fields: object) -> dict[str, object]:
@@ -87,6 +93,10 @@ async def _submit_codex(
     codex_session_id: str | None = None,
     prompt: str = "isolated Codex task",
     timeout_seconds: float = 5.0,
+    task_kind: str = "standard",
+    queue_key: str | None = None,
+    queue_limit: int | None = None,
+    queue_wait_seconds: float | None = None,
 ) -> dict[str, object]:
     return await _request(
         settings,
@@ -101,8 +111,45 @@ async def _submit_codex(
             "model": None,
             "reasoning_effort": None,
             "timeout_seconds": timeout_seconds,
+            "task_kind": task_kind,
+            "queue_key": queue_key,
+            "queue_limit": queue_limit,
+            "queue_wait_seconds": queue_wait_seconds,
         },
     )
+
+
+def test_restart_sensitive_is_derived_and_cannot_be_spoofed() -> None:
+    fields = {
+        "task_id": new_worker_task_id(),
+        "session_id": "session-1",
+        "workspace_id": "chub",
+        "prompt": "modify Chub",
+        "permission_mode": "auto-review",
+        "timeout_seconds": 60,
+    }
+
+    derived = CodexTaskSubmission.model_validate(fields)
+
+    assert derived.restart_sensitive is True
+    with pytest.raises(ValidationError, match="fixed workspace rule"):
+        CodexTaskSubmission.model_validate(
+            {
+                **fields,
+                "task_id": new_worker_task_id(),
+                "restart_sensitive": False,
+            }
+        )
+    with pytest.raises(ValidationError, match="fixed workspace rule"):
+        CodexTaskSubmission.model_validate(
+            {
+                **fields,
+                "task_id": new_worker_task_id(),
+                "workspace_id": "isolated",
+                "permission_mode": "read-only",
+                "restart_sensitive": True,
+            }
+        )
 
 
 def _fake_codex(tmp_path: Path) -> Path:
@@ -134,6 +181,26 @@ result_path.write_text(f"{prefix}:{native_id}:{prompt}", encoding="utf-8")
     return executable
 
 
+def _set_native_archive_state(
+    codex_home: Path,
+    native_session_id: str,
+    *,
+    archived: bool,
+) -> None:
+    codex_home.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(codex_home / "state_5.sqlite")
+    try:
+        connection.execute("CREATE TABLE IF NOT EXISTS threads (id TEXT, archived INTEGER)")
+        connection.execute("DELETE FROM threads WHERE id = ?", (native_session_id,))
+        connection.execute(
+            "INSERT INTO threads (id, archived) VALUES (?, ?)",
+            (native_session_id, int(archived)),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
 @pytest.mark.anyio
 async def test_worker_reports_stable_health_over_private_socket(settings) -> None:
     server = QuickWorkerServer(settings)
@@ -151,6 +218,8 @@ async def test_worker_reports_stable_health_over_private_socket(settings) -> Non
         assert first["data"]["pid"] > 0
         assert first["data"]["active_tasks"] == 0
         assert first["data"]["test_tasks_enabled"] is False
+        assert first["data"]["codex_tasks_enabled"] is False
+        assert first["data"]["codex_workspace_ids"] == []
         assert stat.S_IMODE(worker_runtime_dir(settings).stat().st_mode) == 0o700
         assert stat.S_IMODE(worker_socket_path(settings).stat().st_mode) == 0o600
 
@@ -265,6 +334,323 @@ async def test_fixed_test_tasks_are_disabled_by_default(settings) -> None:
 
 
 @pytest.mark.anyio
+async def test_codex_capability_does_not_enable_fixed_test_tasks(
+    settings,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server = QuickWorkerServer(
+        settings,
+        codex_workspaces={"isolated": workspace},
+        codex_executable=_fake_codex(tmp_path),
+        codex_home=tmp_path / "codex-home",
+    )
+    await server.start()
+    try:
+        health = await read_health(settings)
+        assert health["data"]["test_tasks_enabled"] is False
+        assert health["data"]["codex_tasks_enabled"] is True
+        assert health["data"]["codex_workspace_ids"] == ["isolated"]
+        rejected = await _submit(settings, task_id=new_worker_task_id())
+        assert rejected["success"] is False
+        assert rejected["error"]["code"] == "worker_action_unavailable"
+        accepted = await _submit_codex(
+            settings,
+            task_id=new_worker_task_id(),
+            session_id="production-session",
+        )
+        assert accepted["success"] is True
+    finally:
+        await server.close()
+
+
+@pytest.mark.anyio
+async def test_worker_persists_restart_sensitive_through_final_state(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "FAKE_CODEX_SESSION_ID",
+        "11111111-1111-4111-8111-111111111111",
+    )
+    workspace = tmp_path / "chub-workspace"
+    workspace.mkdir()
+    server = QuickWorkerServer(
+        settings,
+        codex_workspaces={"chub": workspace},
+        codex_executable=_fake_codex(tmp_path),
+        codex_home=tmp_path / "codex-home",
+    )
+    await server.start()
+    task_id = new_worker_task_id()
+    try:
+        submitted = await _request(
+            settings,
+            "isolated_codex_submit",
+            task={
+                "task_id": task_id,
+                "session_id": "sensitive-session",
+                "workspace_id": "chub",
+                "prompt": "modify Chub",
+                "permission_mode": "auto-review",
+                "codex_session_id": None,
+                "model": None,
+                "reasoning_effort": None,
+                "timeout_seconds": 5,
+                "task_kind": "standard",
+                "restart_sensitive": True,
+                "queue_key": None,
+                "queue_limit": None,
+                "queue_wait_seconds": None,
+            },
+        )
+        assert submitted["success"] is True
+        assert submitted["data"]["task"]["restart_sensitive"] is True
+
+        completed = await _wait_for_status(settings, task_id, {"succeeded"})
+        assert completed["restart_sensitive"] is True
+        listed = await _request(settings, "task_list", limit=100)
+        summary = next(
+            item for item in listed["data"]["tasks"] if item["task_id"] == task_id
+        )
+        assert summary["restart_sensitive"] is True
+        spec = json.loads(
+            (
+                worker_state_dir(settings)
+                / "tasks"
+                / task_id
+                / "spec.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert spec["restart_sensitive"] is True
+    finally:
+        await server.close()
+
+
+@pytest.mark.anyio
+async def test_worker_reads_legacy_v5_persisted_history(settings) -> None:
+    first = QuickWorkerServer(settings, allow_test_tasks=True)
+    await first.start()
+    task_id = new_worker_task_id()
+    try:
+        submitted = await _submit(settings, task_id=task_id)
+        assert submitted["success"] is True
+        await _wait_for_status(settings, task_id, {"succeeded"})
+    finally:
+        await first.close()
+
+    spec_path = worker_state_dir(settings) / "tasks" / task_id / "spec.json"
+    spec = json.loads(spec_path.read_text(encoding="utf-8"))
+    spec["protocol_version"] = 5
+    spec.pop("restart_sensitive")
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+    os.chmod(spec_path, 0o600)
+
+    second = QuickWorkerServer(settings, allow_test_tasks=True)
+    await second.start()
+    try:
+        recovered = await _request(settings, "task_get", task_id=task_id)
+        health = await read_health(settings)
+
+        assert recovered["success"] is True
+        assert recovered["data"]["task"]["restart_sensitive"] is False
+        assert health["data"]["corrupt_tasks"] == 0
+    finally:
+        await second.close()
+
+
+@pytest.mark.anyio
+async def test_codex_recovery_operations_remain_available_without_executable(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr("app.quick_worker_tasks.shutil.which", lambda _name: None)
+    server = QuickWorkerServer(
+        settings,
+        codex_workspaces={"isolated": workspace},
+        codex_home=tmp_path / "codex-home",
+    )
+    await server.start()
+    try:
+        health = await read_health(settings)
+        listed = await _request(
+            settings,
+            "task_list",
+            limit=100,
+            recovery_only=True,
+        )
+        submitted = await _submit_codex(
+            settings,
+            task_id=new_worker_task_id(),
+            session_id="production-session",
+        )
+
+        assert health["data"]["codex_tasks_enabled"] is False
+        assert listed == {
+            "success": True,
+            "request_id": listed["request_id"],
+            "data": {"tasks": []},
+        }
+        assert submitted["success"] is False
+        assert submitted["error"]["code"] == "codex_unavailable"
+    finally:
+        await server.close()
+
+
+@pytest.mark.anyio
+async def test_worker_lists_active_recovery_metadata_and_acknowledges_final_delivery(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    native_id = "11111111-1111-4111-8111-111111111111"
+    monkeypatch.setenv("FAKE_CODEX_SESSION_ID", native_id)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server = QuickWorkerServer(
+        settings,
+        allow_test_tasks=True,
+        codex_workspaces={"isolated": workspace},
+        codex_executable=_fake_codex(tmp_path),
+        codex_home=tmp_path / "codex-home",
+    )
+    await server.start()
+    task_id = new_worker_task_id()
+    try:
+        submitted = await _submit_codex(
+            settings,
+            task_id=task_id,
+            session_id="recovery-session",
+            prompt="sleep:0.2",
+        )
+        assert submitted["success"] is True
+
+        listed = await _request(
+            settings,
+            "task_list",
+            limit=100,
+            active_only=True,
+        )
+        summary = next(
+            item for item in listed["data"]["tasks"] if item["task_id"] == task_id
+        )
+        assert summary["session_id"] == "recovery-session"
+        assert summary["task_kind"] == "standard"
+        assert summary["delivery_acknowledged"] is False
+
+        await _wait_for_status(settings, task_id, {"succeeded"})
+        pending_delivery = await _request(
+            settings,
+            "task_list",
+            limit=100,
+            recovery_only=True,
+        )
+        assert task_id in {
+            item["task_id"] for item in pending_delivery["data"]["tasks"]
+        }
+        acknowledged = await _request(
+            settings,
+            "task_acknowledge",
+            task_id=task_id,
+        )
+        repeated = await _request(
+            settings,
+            "task_acknowledge",
+            task_id=task_id,
+        )
+        assert acknowledged["success"] is True
+        assert repeated["data"]["delivery"] == acknowledged["data"]["delivery"]
+        delivered = await _request(
+            settings,
+            "task_list",
+            limit=100,
+            recovery_only=True,
+        )
+        assert task_id not in {item["task_id"] for item in delivered["data"]["tasks"]}
+        delivery_path = worker_state_dir(settings) / "tasks" / task_id / "delivery.json"
+        assert stat.S_IMODE(delivery_path.stat().st_mode) == 0o600
+    finally:
+        await server.close()
+
+
+@pytest.mark.anyio
+async def test_worker_task_list_fails_closed_on_corrupt_record(settings) -> None:
+    server = QuickWorkerServer(settings, allow_test_tasks=True)
+    await server.start()
+    try:
+        task_id = new_worker_task_id()
+        submitted = await _submit(settings, task_id=task_id)
+        assert submitted["success"] is True
+        await _wait_for_status(settings, task_id, {"succeeded"})
+        state_path = worker_state_dir(settings) / "tasks" / task_id / "state.json"
+        state_path.write_text("{}", encoding="utf-8")
+
+        listed = await _request(
+            settings,
+            "task_list",
+            limit=100,
+            active_only=True,
+        )
+
+        assert listed["success"] is False
+        assert listed["error"]["code"] == "worker_task_store_corrupt"
+    finally:
+        await server.close()
+
+
+@pytest.mark.anyio
+async def test_worker_recovery_list_fails_closed_on_corrupt_delivery(settings) -> None:
+    server = QuickWorkerServer(settings, allow_test_tasks=True)
+    await server.start()
+    try:
+        task_id = new_worker_task_id()
+        submitted = await _submit(settings, task_id=task_id)
+        assert submitted["success"] is True
+        await _wait_for_status(settings, task_id, {"succeeded"})
+        delivery_path = worker_state_dir(settings) / "tasks" / task_id / "delivery.json"
+        delivery_path.write_text("{}", encoding="utf-8")
+
+        listed = await _request(
+            settings,
+            "task_list",
+            limit=100,
+            recovery_only=True,
+        )
+
+        assert listed["success"] is False
+        assert listed["error"]["code"] == "worker_task_store_corrupt"
+    finally:
+        await server.close()
+
+
+@pytest.mark.anyio
+async def test_worker_recovery_list_rejects_truncation(settings) -> None:
+    server = QuickWorkerServer(settings, allow_test_tasks=True)
+    await server.start()
+    try:
+        server.task_manager._recovery_task_ids = {
+            f"qw-1750000000000-{index:032x}" for index in range(101)
+        }
+
+        listed = await _request(
+            settings,
+            "task_list",
+            limit=100,
+            recovery_only=True,
+        )
+
+        assert listed["success"] is False
+        assert listed["error"]["code"] == "worker_recovery_set_oversized"
+    finally:
+        await server.close()
+
+
+@pytest.mark.anyio
 async def test_task_succeeds_persists_private_input_and_survives_restart(settings) -> None:
     task_id = new_worker_task_id()
     prompt = "阶段二隔离任务"
@@ -364,7 +750,7 @@ async def test_failed_acceptance_rolls_back_owned_session_lease(
     server = QuickWorkerServer(
         settings,
         allow_test_tasks=True,
-        isolated_workspaces={"isolated": workspace},
+        codex_workspaces={"isolated": workspace},
         codex_executable=_fake_codex(tmp_path),
         codex_home=tmp_path / "codex-home",
     )
@@ -616,7 +1002,7 @@ async def test_full_8000_character_multibyte_prompt_fits_task_protocol(settings)
     server = QuickWorkerServer(settings, allow_test_tasks=True)
     await server.start()
     task_id = new_worker_task_id()
-    prompt = "中" * 8_000
+    prompt = "𠮷" * 8_000
     try:
         submitted = await _submit(settings, task_id=task_id, prompt=prompt)
         assert submitted["success"] is True
@@ -738,6 +1124,28 @@ async def test_mismatched_state_identity_fails_closed(settings) -> None:
 
 
 @pytest.mark.anyio
+async def test_inconsistent_execution_deadline_fails_closed(settings) -> None:
+    server = QuickWorkerServer(settings, allow_test_tasks=True)
+    await server.start()
+    task_id = new_worker_task_id()
+    try:
+        await _submit(settings, task_id=task_id)
+        await _wait_for_status(settings, task_id, {"succeeded"})
+        state_path = worker_state_dir(settings) / "tasks" / task_id / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["execution_deadline_at"] = "2999-01-01T00:00:00Z"
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        state_path.chmod(0o600)
+
+        response = await _request(settings, "task_get", task_id=task_id)
+
+        assert response["success"] is False
+        assert response["error"]["code"] == "worker_task_corrupt"
+    finally:
+        await server.close()
+
+
+@pytest.mark.anyio
 async def test_codex_first_turn_persists_native_id_and_resume_uses_it(
     settings,
     tmp_path: Path,
@@ -750,7 +1158,7 @@ async def test_codex_first_turn_persists_native_id_and_resume_uses_it(
     server = QuickWorkerServer(
         settings,
         allow_test_tasks=True,
-        isolated_workspaces={"isolated": workspace},
+        codex_workspaces={"isolated": workspace},
         codex_executable=_fake_codex(tmp_path),
         codex_home=tmp_path / "codex-home",
     )
@@ -795,6 +1203,231 @@ async def test_codex_first_turn_persists_native_id_and_resume_uses_it(
 
 
 @pytest.mark.anyio
+async def test_translation_queue_is_fifo_and_uses_latest_native_session(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    native_id = "019ffb1c-b704-72e1-9a12-ae38aa6e572a"
+    monkeypatch.setenv("FAKE_CODEX_SESSION_ID", native_id)
+    monkeypatch.setenv("FAKE_CODEX_DELAY", "0.15")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    codex_home = tmp_path / "codex-home"
+    _set_native_archive_state(codex_home, native_id, archived=False)
+    server = QuickWorkerServer(
+        settings,
+        allow_test_tasks=True,
+        codex_workspaces={"isolated": workspace},
+        codex_executable=_fake_codex(tmp_path),
+        codex_home=codex_home,
+    )
+    await server.start()
+    first_id = new_worker_task_id()
+    second_id = new_worker_task_id()
+    try:
+        first = await _submit_codex(
+            settings,
+            task_id=first_id,
+            session_id="translation-session",
+            prompt="first",
+            task_kind="translation",
+            queue_key="translation-queue",
+            queue_limit=2,
+            queue_wait_seconds=5,
+        )
+        second = await _submit_codex(
+            settings,
+            task_id=second_id,
+            session_id="translation-session",
+            prompt="second",
+            task_kind="translation",
+            queue_key="translation-queue",
+            queue_limit=2,
+            queue_wait_seconds=5,
+        )
+        assert first["success"] is True
+        assert second["success"] is True
+        queued = await _request(settings, "task_get", task_id=second_id)
+        assert queued["data"]["task"]["status"] == "queued"
+
+        created = await _wait_for_status(settings, first_id, {"succeeded"})
+        resumed = await _wait_for_status(settings, second_id, {"succeeded"})
+
+        assert created["result"] == f"created:{native_id}:first"
+        assert resumed["result"] == f"resumed:{native_id}:second"
+        assert resumed["native_session_id"] == native_id
+    finally:
+        await server.close()
+
+
+@pytest.mark.anyio
+async def test_translation_queue_replaces_archived_native_session(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archived_id = "019ffb1c-b704-72e1-9a12-ae38aa6e572a"
+    replacement_id = "019ffb1c-b704-72e1-9a12-ae38aa6e572b"
+    monkeypatch.setenv("FAKE_CODEX_SESSION_ID", replacement_id)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    codex_home = tmp_path / "codex-home"
+    _set_native_archive_state(codex_home, archived_id, archived=True)
+    server = QuickWorkerServer(
+        settings,
+        allow_test_tasks=True,
+        codex_workspaces={"isolated": workspace},
+        codex_executable=_fake_codex(tmp_path),
+        codex_home=codex_home,
+    )
+    await server.start()
+    task_id = new_worker_task_id()
+    try:
+        submitted = await _submit_codex(
+            settings,
+            task_id=task_id,
+            session_id="translation-session",
+            codex_session_id=archived_id,
+            prompt="replace archived",
+            task_kind="translation",
+            queue_key="translation-queue",
+            queue_limit=2,
+            queue_wait_seconds=5,
+        )
+        assert submitted["success"] is True
+
+        completed = await _wait_for_status(settings, task_id, {"succeeded"})
+
+        assert completed["native_session_id"] == replacement_id
+        assert completed["result"] == f"created:{replacement_id}:replace archived"
+        state = json.loads(
+            (worker_state_dir(settings) / "tasks" / task_id / "state.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert state["expected_native_session_id"] is None
+    finally:
+        await server.close()
+
+
+@pytest.mark.anyio
+async def test_translation_queue_new_session_starts_new_native_session(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    native_id = "019ffb1c-b704-72e1-9a12-ae38aa6e572a"
+    monkeypatch.setenv("FAKE_CODEX_SESSION_ID", native_id)
+    monkeypatch.setenv("FAKE_CODEX_DELAY", "0.15")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server = QuickWorkerServer(
+        settings,
+        allow_test_tasks=True,
+        codex_workspaces={"isolated": workspace},
+        codex_executable=_fake_codex(tmp_path),
+        codex_home=tmp_path / "codex-home",
+    )
+    await server.start()
+    old_id = new_worker_task_id()
+    new_id = new_worker_task_id()
+    try:
+        old_submission = await _submit_codex(
+            settings,
+            task_id=old_id,
+            session_id="old-translation-session",
+            prompt="old generation",
+            task_kind="translation",
+            queue_key="translation-queue",
+            queue_limit=2,
+            queue_wait_seconds=5,
+        )
+        assert old_submission["success"] is True
+        new_submission = await _submit_codex(
+            settings,
+            task_id=new_id,
+            session_id="new-translation-session",
+            prompt="new generation",
+            task_kind="translation",
+            queue_key="translation-queue",
+            queue_limit=2,
+            queue_wait_seconds=5,
+        )
+        assert new_submission["success"] is True
+        queued = await _request(settings, "task_get", task_id=new_id)
+        assert queued["data"]["task"]["status"] == "queued"
+
+        old_task = await _wait_for_status(settings, old_id, {"succeeded"})
+        new_task = await _wait_for_status(settings, new_id, {"succeeded"})
+
+        assert old_task["result"] == f"created:{native_id}:old generation"
+        assert new_task["result"] == f"created:{native_id}:new generation"
+        state = json.loads(
+            (
+                worker_state_dir(settings) / "tasks" / new_id / "state.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert state["expected_native_session_id"] is None
+    finally:
+        await server.close()
+
+
+@pytest.mark.anyio
+async def test_translation_queue_capacity_and_wait_deadline_fail_closed(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "FAKE_CODEX_SESSION_ID", "019ffb1c-b704-72e1-9a12-ae38aa6e572a"
+    )
+    monkeypatch.setenv("FAKE_CODEX_DELAY", "0.3")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server = QuickWorkerServer(
+        settings,
+        allow_test_tasks=True,
+        codex_workspaces={"isolated": workspace},
+        codex_executable=_fake_codex(tmp_path),
+        codex_home=tmp_path / "codex-home",
+    )
+    await server.start()
+    first_id = new_worker_task_id()
+    timed_id = new_worker_task_id()
+    rejected_id = new_worker_task_id()
+    try:
+        for task_id, wait_seconds in ((first_id, 5), (timed_id, 0.1)):
+            response = await _submit_codex(
+                settings,
+                task_id=task_id,
+                session_id="translation-session",
+                task_kind="translation",
+                queue_key="translation-queue",
+                queue_limit=2,
+                queue_wait_seconds=wait_seconds,
+            )
+            assert response["success"] is True
+        rejected = await _submit_codex(
+            settings,
+            task_id=rejected_id,
+            session_id="translation-session",
+            task_kind="translation",
+            queue_key="translation-queue",
+            queue_limit=2,
+            queue_wait_seconds=5,
+        )
+        assert rejected["success"] is False
+        assert rejected["error"]["code"] == "worker_queue_capacity_reached"
+
+        timed = await _wait_for_status(settings, timed_id, {"timed_out"})
+        assert timed["error_code"] == "queue_deadline_exceeded"
+        await _wait_for_status(settings, first_id, {"succeeded"})
+    finally:
+        await server.close()
+
+
+@pytest.mark.anyio
 async def test_codex_result_is_retained_when_native_id_cannot_be_confirmed(
     settings,
     tmp_path: Path,
@@ -808,7 +1441,7 @@ async def test_codex_result_is_retained_when_native_id_cannot_be_confirmed(
     server = QuickWorkerServer(
         settings,
         allow_test_tasks=True,
-        isolated_workspaces={"isolated": workspace},
+        codex_workspaces={"isolated": workspace},
         codex_executable=_fake_codex(tmp_path),
         codex_home=tmp_path / "codex-home",
     )
@@ -844,7 +1477,7 @@ async def test_codex_resume_rejects_unexpected_native_session_id(
     server = QuickWorkerServer(
         settings,
         allow_test_tasks=True,
-        isolated_workspaces={"isolated": workspace},
+        codex_workspaces={"isolated": workspace},
         codex_executable=_fake_codex(tmp_path),
         codex_home=tmp_path / "codex-home",
     )
@@ -879,7 +1512,7 @@ async def test_codex_session_lease_blocks_same_session_but_not_other_sessions(
     server = QuickWorkerServer(
         settings,
         allow_test_tasks=True,
-        isolated_workspaces={"isolated": workspace},
+        codex_workspaces={"isolated": workspace},
         codex_executable=_fake_codex(tmp_path),
         codex_home=tmp_path / "codex-home",
     )
@@ -921,6 +1554,110 @@ async def test_codex_session_lease_blocks_same_session_but_not_other_sessions(
 
 
 @pytest.mark.anyio
+async def test_codex_runner_process_is_owned_by_worker_process(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    native_id = "22222222-2222-4222-8222-222222222222"
+    monkeypatch.setenv("FAKE_CODEX_SESSION_ID", native_id)
+    monkeypatch.setenv("FAKE_CODEX_DELAY", "0.3")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server = QuickWorkerServer(
+        settings,
+        allow_test_tasks=True,
+        codex_workspaces={"isolated": workspace},
+        codex_executable=_fake_codex(tmp_path),
+        codex_home=tmp_path / "codex-home",
+    )
+    await server.start()
+    task_id = new_worker_task_id()
+    try:
+        submitted = await _submit_codex(
+            settings,
+            task_id=task_id,
+            session_id="owned-runner-session",
+            codex_session_id=native_id,
+        )
+        assert submitted["success"] is True
+        running = await _wait_for_status(settings, task_id, {"running"})
+        runner_pid = running["runner_pid"]
+        assert isinstance(runner_pid, int)
+        assert psutil.Process(runner_pid).ppid() == os.getpid()
+        assert server.task_manager._processes[task_id].pid == runner_pid
+        await _wait_for_status(settings, task_id, {"succeeded"})
+    finally:
+        await server.close()
+
+
+@pytest.mark.anyio
+async def test_codex_runner_restart_script_only_registers_deferred_request(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    native_id = "33333333-3333-4333-8333-333333333333"
+    monkeypatch.setenv("FAKE_CODEX_SESSION_ID", native_id)
+    monkeypatch.setenv("CHUB_TEST_PLATFORM", "Unsupported")
+    restart_script = Path(__file__).resolve().parents[1] / "scripts/chub-web-restart"
+    monkeypatch.setenv("FAKE_CODEX_RESTART_SCRIPT", str(restart_script))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    executable = tmp_path / "fake-codex-restart"
+    executable.write_text(
+        """#!/usr/bin/env python3
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+args = sys.argv[1:]
+result_path = Path(args[args.index("--output-last-message") + 1])
+native_id = os.environ["FAKE_CODEX_SESSION_ID"]
+print(json.dumps({"type": "thread.started", "thread_id": native_id}), flush=True)
+completed = subprocess.run(
+    [os.environ["FAKE_CODEX_RESTART_SCRIPT"]],
+    check=False,
+    capture_output=True,
+    text=True,
+)
+if completed.returncode != 0:
+    print(completed.stderr, file=sys.stderr)
+    raise SystemExit(completed.returncode)
+result_path.write_text(completed.stdout.strip(), encoding="utf-8")
+""",
+        encoding="utf-8",
+    )
+    executable.chmod(0o700)
+    server = QuickWorkerServer(
+        settings,
+        allow_test_tasks=True,
+        codex_workspaces={"isolated": workspace},
+        codex_executable=executable,
+        codex_home=tmp_path / "codex-home",
+    )
+    await server.start()
+    task_id = new_worker_task_id()
+    try:
+        submitted = await _submit_codex(
+            settings,
+            task_id=task_id,
+            session_id="restart-registration-session",
+        )
+        assert submitted["success"] is True
+        finished = await _wait_for_status(settings, task_id, {"succeeded"})
+        assert "restart registered" in finished["result"]
+        request_path = (
+            settings.codex_pty.runtime_dir / "restart-requests" / f"{task_id}.request"
+        )
+        assert request_path.is_file()
+        assert stat.S_IMODE(request_path.stat().st_mode) == 0o600
+    finally:
+        await server.close()
+
+
+@pytest.mark.anyio
 async def test_codex_native_writer_is_final_start_arbitrator(
     settings,
     tmp_path: Path,
@@ -939,7 +1676,7 @@ async def test_codex_native_writer_is_final_start_arbitrator(
     server = QuickWorkerServer(
         settings,
         allow_test_tasks=True,
-        isolated_workspaces={"isolated": workspace},
+        codex_workspaces={"isolated": workspace},
         codex_executable=_fake_codex(tmp_path),
         codex_home=codex_home,
     )
@@ -977,7 +1714,7 @@ async def test_codex_recovery_preserves_observed_native_id_without_replay(
     first = QuickWorkerServer(
         settings,
         allow_test_tasks=True,
-        isolated_workspaces={"isolated": workspace},
+        codex_workspaces={"isolated": workspace},
         codex_executable=executable,
         codex_home=tmp_path / "codex-home",
     )
@@ -1006,7 +1743,7 @@ async def test_codex_recovery_preserves_observed_native_id_without_replay(
     second = QuickWorkerServer(
         settings,
         allow_test_tasks=True,
-        isolated_workspaces={"isolated": workspace},
+        codex_workspaces={"isolated": workspace},
         codex_executable=executable,
         codex_home=tmp_path / "codex-home",
     )
@@ -1040,7 +1777,7 @@ async def test_codex_recovery_does_not_adopt_mismatched_resume_id(
     first = QuickWorkerServer(
         settings,
         allow_test_tasks=True,
-        isolated_workspaces={"isolated": workspace},
+        codex_workspaces={"isolated": workspace},
         codex_executable=executable,
         codex_home=tmp_path / "codex-home",
     )
@@ -1062,7 +1799,7 @@ async def test_codex_recovery_does_not_adopt_mismatched_resume_id(
     second = QuickWorkerServer(
         settings,
         allow_test_tasks=True,
-        isolated_workspaces={"isolated": workspace},
+        codex_workspaces={"isolated": workspace},
         codex_executable=executable,
         codex_home=tmp_path / "codex-home",
     )

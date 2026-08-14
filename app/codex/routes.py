@@ -25,6 +25,7 @@ from app.codex.models import (
     SessionCreateRequest,
     SessionInfo,
     SessionListData,
+    SessionRenameRequest,
 )
 from app.codex.quick_interactions import build_task_summary
 from app.core.response import ApiError, ApiResponse, error_response
@@ -45,8 +46,13 @@ templates = Jinja2Templates(directory=WEB_DIR / "templates")
 
 
 @api_router.get("/sessions", response_model=ApiResponse[SessionListData])
-def list_sessions(request: Request) -> ApiResponse[SessionListData]:
+def list_sessions(
+    request: Request,
+    include_translation: bool = Query(default=False),
+) -> ApiResponse[SessionListData]:
     manager = request.app.state.codex_pty_manager
+    weixin_chub_mode = request.app.state.weixin_chub_mode
+    session_slots = weixin_chub_mode.session_slots_snapshot()
     quick_sessions: dict[str, datetime] = (
         request.app.state.quick_interactions.active_sessions()
     )
@@ -55,9 +61,11 @@ def list_sessions(request: Request) -> ApiResponse[SessionListData]:
             update={
                 "quick_interaction_running": session.id in quick_sessions,
                 "quick_interaction_updated_at": quick_sessions.get(session.id),
+                "weixin_session_slot": session_slots.get(session.id),
             }
         )
         for session in manager.list_sessions()
+        if include_translation or session.workspace_id != "weixin-translation"
     ]
     return ApiResponse(
         data=SessionListData(
@@ -66,6 +74,25 @@ def list_sessions(request: Request) -> ApiResponse[SessionListData]:
             dependencies=manager.dependencies(),
             workspaces=manager.workspaces(),
             sessions=sessions,
+        )
+    )
+
+
+@api_router.get("/sessions/{session_id}", response_model=ApiResponse[SessionInfo])
+def read_session(session_id: str, request: Request) -> ApiResponse[SessionInfo]:
+    session = request.app.state.codex_pty_manager.read_session(session_id)
+    quick_sessions: dict[str, datetime] = (
+        request.app.state.quick_interactions.active_sessions()
+    )
+    return ApiResponse(
+        data=_with_weixin_session_slot(
+            request,
+            session.model_copy(
+                update={
+                    "quick_interaction_running": session.id in quick_sessions,
+                    "quick_interaction_updated_at": quick_sessions.get(session.id),
+                }
+            ),
         )
     )
 
@@ -89,12 +116,13 @@ def create_session(
     request: Request,
 ) -> ApiResponse[SessionInfo]:
     try:
-        session = request.app.state.codex_pty_manager.create_session(
-            payload.workspace_id,
-            payload.permission_mode,
-            payload.model,
-            payload.reasoning_effort,
-        )
+        with request.app.state.quick_interactions.session_creation_guard():
+            session = request.app.state.codex_pty_manager.create_session(
+                payload.workspace_id,
+                payload.permission_mode,
+                payload.model,
+                payload.reasoning_effort,
+            )
     except Exception:
         log_operation(
             request,
@@ -109,7 +137,7 @@ def create_session(
         status="succeeded",
         target=session.id,
     )
-    return ApiResponse(data=session)
+    return ApiResponse(data=_with_weixin_session_slot(request, session))
 
 
 @api_router.post(
@@ -185,7 +213,50 @@ async def stop_session(session_id: str, request: Request) -> ApiResponse[Session
         status="succeeded",
         target=session_id,
     )
-    return ApiResponse(data=data)
+    return ApiResponse(data=_with_weixin_session_slot(request, data))
+
+
+@api_router.patch(
+    "/sessions/{session_id}/title",
+    response_model=ApiResponse[SessionInfo],
+)
+async def rename_session(
+    session_id: str,
+    payload: SessionRenameRequest,
+    request: Request,
+) -> ApiResponse[SessionInfo]:
+    operation_id = uuid4().hex
+    for status in ("requested", "started"):
+        log_operation(
+            request,
+            action="rename_codex_session",
+            status=status,
+            target=session_id,
+            operation_id=operation_id,
+        )
+    try:
+        data = await asyncio.to_thread(
+            request.app.state.codex_pty_manager.rename_session,
+            session_id,
+            payload.title,
+        )
+    except Exception:
+        log_operation(
+            request,
+            action="rename_codex_session",
+            status="failed",
+            target=session_id,
+            operation_id=operation_id,
+        )
+        raise
+    log_operation(
+        request,
+        action="rename_codex_session",
+        status="succeeded",
+        target=session_id,
+        operation_id=operation_id,
+    )
+    return ApiResponse(data=_with_weixin_session_slot(request, data))
 
 
 @api_router.post(
@@ -469,6 +540,19 @@ def _release_weixin_session_slot(request: Request, session_id: str) -> None:
     )
 
 
+def _with_weixin_session_slot(
+    request: Request,
+    session: SessionInfo,
+) -> SessionInfo:
+    return session.model_copy(
+        update={
+            "weixin_session_slot": request.app.state.weixin_chub_mode.session_slot(
+                session.id
+            )
+        }
+    )
+
+
 def _terminal_authorized(connection: Request | WebSocket, session_id: str) -> bool:
     return connection.app.state.terminal_tickets.valid(
         connection.cookies.get(COOKIE_NAME),
@@ -500,7 +584,7 @@ async def quick_interaction_conversation_page(
 async def terminal_page(request: Request, session_id: str) -> HTMLResponse:
     if not _terminal_authorized(request, session_id):
         raise ApiError(401, "terminal_access_required", "Terminal access expired")
-    session = request.app.state.codex_pty_manager.get_session(session_id)
+    session = request.app.state.codex_pty_manager.require_terminal_access(session_id)
     page = request.app.state.terminal_connections.open_page(
         session_id,
         request.cookies[COOKIE_NAME],

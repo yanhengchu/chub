@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-import subprocess
-
 from fastapi import APIRouter, Depends, Request
 
 from app.core.config import PROJECT_ROOT
 from app.core.response import ApiResponse, error_response
 from app.core.security import require_token
-from app.services.operation_log import log_operation
+from app.services.operation_log import log_operation, write_operation
+from app.services.restart_command import (
+    describe_restart_launch_error,
+    launch_restart_process,
+    monitor_restart_process,
+)
 
 
 router = APIRouter(
@@ -25,32 +28,6 @@ def restart_hub(request: Request) -> ApiResponse[dict[str, str]]:
         status="requested",
         target="chub",
     )
-    if request.app.state.quick_interactions.has_restart_blocking_tasks():
-        log_operation(
-            request,
-            action="restart_hub",
-            status="failed",
-            target="chub",
-            operation_id=operation_id,
-        )
-        return error_response(
-            409,
-            "quick_interaction_in_progress",
-            "当前有快速交互正在执行，请等待任务结束后重试。",
-        )
-    if request.app.state.deferred_restart.pending():
-        log_operation(
-            request,
-            action="restart_hub",
-            status="failed",
-            target="chub",
-            operation_id=operation_id,
-        )
-        return error_response(
-            409,
-            "restart_already_pending",
-            "Chub 已安排自动重启，无需重复操作。",
-        )
     command = PROJECT_ROOT / "scripts" / "chub-web-restart"
     if not command.is_file():
         log_operation(
@@ -62,14 +39,23 @@ def restart_hub(request: Request) -> ApiResponse[dict[str, str]]:
         )
         return error_response(503, "command_not_found", "找不到 Chub 重启脚本")
 
-    try:
-        subprocess.Popen(
-            [str(command)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
+    coordinator = request.app.state.deferred_restart
+    restart_decision = coordinator.begin_immediate_restart()
+    if restart_decision == "in_progress":
+        log_operation(
+            request,
+            action="restart_hub",
+            status="started",
+            target="chub",
+            operation_id=operation_id,
         )
-    except OSError:
+        return ApiResponse(data={"status": "restarting"})
+
+    try:
+        process = launch_restart_process(command)
+    except OSError as error:
+        failure_reason = describe_restart_launch_error(error)
+        coordinator.fail_immediate_restart(failure_reason)
         log_operation(
             request,
             action="restart_hub",
@@ -77,7 +63,10 @@ def restart_hub(request: Request) -> ApiResponse[dict[str, str]]:
             target="chub",
             operation_id=operation_id,
         )
-        return error_response(500, "restart_failed", "启动重启命令失败")
+        return error_response(500, "restart_failed", failure_reason)
+
+    if restart_decision == "claimed":
+        coordinator.confirm_immediate_restart()
 
     log_operation(
         request,
@@ -86,5 +75,19 @@ def restart_hub(request: Request) -> ApiResponse[dict[str, str]]:
         target="chub",
         operation_id=operation_id,
     )
+
+    source_ip = request.client.host if request.client else "unknown"
+
+    def record_restart_failure(reason: str) -> None:
+        coordinator.fail_immediate_restart(reason)
+        write_operation(
+            operation_id=operation_id,
+            action="restart_hub",
+            status="failed",
+            target="chub",
+            source_ip=source_ip,
+        )
+
+    monitor_restart_process(process, record_restart_failure)
 
     return ApiResponse(data={"status": "restarting"})

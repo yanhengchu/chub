@@ -27,14 +27,18 @@ def manager_without_worker(settings):
     config.translation_enabled = True
     codex_manager = MagicMock()
     codex_manager.discard_unstarted_session.return_value = False
+    codex_manager.create_translation_session.return_value = SimpleNamespace(
+        id="translation-session"
+    )
     quick_interactions = MagicMock()
     quick_interactions.deferred_restart = None
+    quick_interactions.submit.return_value = SimpleNamespace(id="quick-task-1")
     manager = WeixinTranslationManager(
         config,
         codex_manager,
         quick_interactions,
     )
-    manager._start_worker = MagicMock()
+    manager._start_worker_watcher = MagicMock()
     return manager, codex_manager, quick_interactions
 
 
@@ -87,24 +91,24 @@ def test_queue_limit_rejects_translation_without_raising(settings) -> None:
     assert len(payload["entries"]) == 1
 
 
-def test_restart_pending_rejects_translation_silently(settings) -> None:
+def test_restart_pending_allows_translation(settings) -> None:
     manager, _codex_manager, quick_interactions = manager_without_worker(settings)
     quick_interactions.deferred_restart = MagicMock()
     quick_interactions.deferred_restart.pending.return_value = True
 
-    assert not manager.enqueue(
+    assert manager.enqueue(
         message_id="message-1",
-        original="不应在重启期间执行",
+        original="重启期间继续翻译",
         route=route(),
         operation_id="operation-1",
         source_ip="100.64.0.21",
     )
-    assert not manager.path.exists()
+    assert manager.path.exists()
 
 
 def test_worker_start_failure_marks_entry_failed(settings) -> None:
     manager, _codex_manager, _quick_interactions = manager_without_worker(settings)
-    manager._start_worker.side_effect = OSError("thread unavailable")
+    manager.quick_interactions.submit.side_effect = OSError("worker unavailable")
 
     assert not manager.enqueue(
         message_id="worker-failure",
@@ -114,91 +118,129 @@ def test_worker_start_failure_marks_entry_failed(settings) -> None:
         source_ip="100.64.0.21",
     )
     assert manager._state.entries[0].status == "failed"
-    assert "后台线程" in (manager._state.entries[0].error or "")
+    assert manager._state.entries[0].status == "failed"
 
 
-def test_next_entry_write_failure_does_not_change_memory_state(settings) -> None:
-    manager, _codex_manager, _quick_interactions = manager_without_worker(settings)
+def test_isolated_worker_translation_submits_without_web_scheduler(settings) -> None:
+    manager, _codex_manager, quick_interactions = manager_without_worker(settings)
+    manager._ensure_session = MagicMock(return_value="translation-session")
+    quick_interactions.submit.return_value = SimpleNamespace(id="quick-task-1")
+    accepted = manager.enqueue(
+        message_id="worker-translation",
+        original="待翻译文本",
+        route=route(),
+        operation_id="operation-worker-translation",
+        source_ip="100.64.0.21",
+    )
+
+    assert accepted is True
+    quick_interactions.submit.assert_called_once()
+    assert quick_interactions.submit.call_args.kwargs["kind"] == "translation"
+    assert manager._state.entries[0].quick_task_id == "quick-task-1"
+    assert manager._state.entries[0].status == "queued"
+    manager._start_worker_watcher.assert_called_once_with(
+        manager._state.entries[0].id,
+        "translation-session",
+        "quick-task-1",
+    )
+
+
+def test_isolated_worker_reference_write_failure_cancels_exact_task(settings) -> None:
+    manager, _codex_manager, quick_interactions = manager_without_worker(settings)
+    manager._ensure_session = MagicMock(return_value="translation-session")
+    quick_interactions.submit.return_value = SimpleNamespace(id="quick-task-2")
+    manager._write = MagicMock(side_effect=[None, OSError("write failed"), None])
+
+    accepted = manager.enqueue(
+        message_id="worker-translation-write-failure",
+        original="待翻译文本",
+        route=route(),
+        operation_id="operation-worker-write-failure",
+        source_ip="100.64.0.21",
+    )
+
+    assert accepted is False
+    quick_interactions.cancel_unobserved_task.assert_called_once_with("quick-task-2")
+    assert manager._state.entries[0].status == "failed"
+
+
+def test_isolated_worker_local_capacity_preserves_active_entry(settings) -> None:
+    settings.openclaw.weixin_chub_mode.translation_queue_limit = 1
+    manager, _codex_manager, quick_interactions = manager_without_worker(settings)
     now = utc_now()
     manager._state.entries.append(
         TranslationEntry(
-            id="queued-entry",
-            message_id="queued-message",
-            original="待翻译文本",
+            id="active-entry",
+            message_id="active-message",
+            original="正在处理的文本",
             route=route(),
-            operation_id="queued-operation",
+            operation_id="active-operation:translation",
             source_ip="100.64.0.21",
+            status="running",
             created_at=now,
             updated_at=now,
         )
     )
-    manager._write = MagicMock(side_effect=OSError("write failed"))
 
-    try:
-        manager._next_entry()
-    except OSError:
-        pass
+    accepted = manager.enqueue(
+        message_id="overflow-message",
+        original="超出容量的文本",
+        route=route(),
+        operation_id="overflow-operation",
+        source_ip="100.64.0.21",
+    )
 
-    assert manager._state.entries[0].status == "queued"
+    assert accepted is False
+    assert [item.id for item in manager._state.entries] == ["active-entry"]
+    quick_interactions.submit.assert_not_called()
 
 
-def test_restart_pending_cancels_running_translation(settings) -> None:
+def test_isolated_worker_logs_started_only_after_queue_runs(settings) -> None:
     manager, _codex_manager, quick_interactions = manager_without_worker(settings)
     now = utc_now()
     entry = TranslationEntry(
-        id="translation-1",
-        message_id="message-1",
-        original="正在处理的文本",
+        id="worker-entry",
+        message_id="worker-message",
+        original="待翻译文本",
         route=route(),
-        operation_id="operation-1:translation",
+        operation_id="worker-operation:translation",
         source_ip="100.64.0.21",
-        status="running",
         created_at=now,
         updated_at=now,
     )
     manager._state.entries.append(entry)
-    manager._ensure_session = MagicMock(return_value="translation-session")
-    quick_interactions.submit.return_value = SimpleNamespace(id="quick-task-1")
-    quick_interactions.deferred_restart = MagicMock()
-    quick_interactions.deferred_restart.pending.side_effect = [False, True]
+    manager._log = MagicMock()
+    quick_interactions.get.side_effect = [
+        SimpleNamespace(
+            status="requested",
+            notification_status="pending",
+            error=None,
+        ),
+        SimpleNamespace(
+            status="running",
+            notification_status="pending",
+            error=None,
+        ),
+        SimpleNamespace(
+            status="succeeded",
+            notification_status="sent",
+            error=None,
+        ),
+    ]
 
-    manager._execute(entry)
+    with patch("app.services.weixin_translation.time.sleep"):
+        manager._watch_worker_entry(
+            entry.id,
+            "translation-session",
+            "quick-task",
+        )
 
-    quick_interactions.cancel_codex_session.assert_called_once_with(
-        "translation-session"
-    )
-    assert manager._state.entries[0].status == "failed"
-    assert "重启" in (manager._state.entries[0].error or "")
-
-
-def test_service_close_records_running_translation_failed(settings) -> None:
-    manager, _codex_manager, quick_interactions = manager_without_worker(settings)
-    now = utc_now()
-    entry = TranslationEntry(
-        id="translation-1",
-        message_id="message-1",
-        original="正在处理的文本",
-        route=route(),
-        operation_id="operation-1:translation",
-        source_ip="100.64.0.21",
-        status="running",
-        created_at=now,
-        updated_at=now,
-    )
-    manager._state.entries.append(entry)
-    manager._closed = True
-    manager._ensure_session = MagicMock(return_value="translation-session")
-    quick_interactions.submit.return_value = SimpleNamespace(id="quick-task-1")
-
-    with patch("app.services.weixin_translation.write_operation") as write_operation:
-        manager._execute(entry)
-
-    assert manager._state.entries[0].status == "failed"
-    assert "服务关闭" in (manager._state.entries[0].error or "")
-    assert write_operation.call_args_list[-1].kwargs["status"] == "failed"
+    assert manager._log.call_args_list[0].args[1] == "started"
+    assert manager._log.call_args_list[-1].args[1] == "succeeded"
+    assert manager._state.entries[0].status == "succeeded"
 
 
-def test_restart_marks_unfinished_translation_failed(settings) -> None:
+def test_restart_preserves_unfinished_translation_for_worker_recovery(settings) -> None:
     state_file = settings.openclaw.weixin_chub_mode.state_file.with_name(
         "weixin-translation.json"
     )
@@ -229,8 +271,175 @@ def test_restart_marks_unfinished_translation_failed(settings) -> None:
         MagicMock(),
     )
 
-    assert manager._state.entries[0].status == "failed"
-    assert "未自动重试" in (manager._state.entries[0].error or "")
+    assert manager._state.entries[0].status == "running"
+
+
+def test_worker_restart_preserves_and_resumes_translation_observation(settings) -> None:
+    state_file = settings.openclaw.weixin_chub_mode.state_file.with_name(
+        "weixin-translation.json"
+    )
+    now = utc_now()
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    state_file.write_text(
+        TranslationState(
+            session_id="translation-session",
+            entries=[
+                TranslationEntry(
+                    id="translation-1",
+                    message_id="message-1",
+                    original="待处理文本",
+                    route=route(),
+                    operation_id="operation-1",
+                    source_ip="100.64.0.21",
+                    status="running",
+                    quick_task_id="quick-task-1",
+                    created_at=now,
+                    updated_at=now,
+                )
+            ],
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+    quick_interactions = MagicMock()
+    quick_interactions.get.return_value = SimpleNamespace(
+        id="quick-task-1",
+        session_id="translation-session",
+        kind="translation",
+    )
+    codex_manager = MagicMock()
+    codex_manager.get_session.return_value = CodexSession(
+        id="translation-session",
+        workspace_id="weixin-translation",
+        workspace_name="Translation",
+        cwd=settings.codex_pty.workspace,
+        permission_mode="read-only",
+    )
+    manager = WeixinTranslationManager(
+        settings.openclaw.weixin_chub_mode,
+        codex_manager,
+        quick_interactions,
+    )
+    watcher = MagicMock()
+
+    with patch(
+        "app.services.weixin_translation.threading.Thread",
+        return_value=watcher,
+    ) as thread_factory:
+        manager.start_worker_recovery()
+
+    assert manager._state.entries[0].status == "running"
+    watcher.start.assert_called_once_with()
+    assert thread_factory.call_args.kwargs["args"] == (
+        "translation-1",
+        "translation-session",
+        "quick-task-1",
+    )
+
+
+def test_worker_restart_recovers_translation_reference_by_operation(settings) -> None:
+    state_file = settings.openclaw.weixin_chub_mode.state_file.with_name(
+        "weixin-translation.json"
+    )
+    now = utc_now()
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    state_file.write_text(
+        TranslationState(
+            entries=[
+                TranslationEntry(
+                    id="translation-gap",
+                    message_id="message-gap",
+                    original="待处理文本",
+                    route=route(),
+                    operation_id="operation-gap:translation",
+                    source_ip="100.64.0.21",
+                    status="queued",
+                    created_at=now,
+                    updated_at=now,
+                )
+            ],
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+    quick_interactions = MagicMock()
+    quick_interactions.find_task_by_operation.return_value = SimpleNamespace(
+        id="quick-task-gap",
+        session_id="translation-session",
+        kind="translation",
+    )
+    manager = WeixinTranslationManager(
+        settings.openclaw.weixin_chub_mode,
+        MagicMock(),
+        quick_interactions,
+    )
+    manager._start_worker_watcher = MagicMock()
+
+    manager.start_worker_recovery()
+
+    quick_interactions.find_task_by_operation.assert_called_once_with(
+        "operation-gap:translation",
+        kind="translation",
+    )
+    assert manager._state.entries[0].quick_task_id == "quick-task-gap"
+    manager._start_worker_watcher.assert_called_once_with(
+        "translation-gap",
+        "translation-session",
+        "quick-task-gap",
+    )
+
+
+def test_worker_restart_repairs_stale_translation_reference_by_operation(
+    settings,
+) -> None:
+    state_file = settings.openclaw.weixin_chub_mode.state_file.with_name(
+        "weixin-translation.json"
+    )
+    now = utc_now()
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    state_file.write_text(
+        TranslationState(
+            entries=[
+                TranslationEntry(
+                    id="translation-stale",
+                    message_id="message-stale",
+                    original="待处理文本",
+                    route=route(),
+                    operation_id="operation-stale:translation",
+                    source_ip="100.64.0.21",
+                    status="running",
+                    quick_task_id="stale-task",
+                    created_at=now,
+                    updated_at=now,
+                )
+            ],
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+    quick_interactions = MagicMock()
+    quick_interactions.get.side_effect = KeyError("stale-task")
+    quick_interactions.find_task_by_operation.return_value = SimpleNamespace(
+        id="recovered-task",
+        session_id="translation-session",
+        kind="translation",
+    )
+    manager = WeixinTranslationManager(
+        settings.openclaw.weixin_chub_mode,
+        MagicMock(),
+        quick_interactions,
+    )
+    manager._start_worker_watcher = MagicMock()
+
+    manager.start_worker_recovery()
+
+    quick_interactions.find_task_by_operation.assert_called_once_with(
+        "operation-stale:translation",
+        kind="translation",
+    )
+    manager._start_worker_watcher.assert_called_once_with(
+        "translation-stale",
+        "translation-session",
+        "recovered-task",
+    )
+    assert manager._state.entries[0].quick_task_id == "recovered-task"
 
 
 def test_invalid_translation_state_fails_status_and_updates_closed(settings) -> None:

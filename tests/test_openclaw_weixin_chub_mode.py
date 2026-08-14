@@ -480,8 +480,59 @@ def test_chub_overview_shows_running_task_on_refreshed_session(
         delivery_route=delivery_route(),
     )
 
-    assert "1. [Current] 运行任务 · Busy" in (result.message or "")
-    assert "   Task: 优化状态展示" in (result.message or "")
+    assert (
+        "S1 · 运行任务\n\nT1 · 优化状态展示\n\nBusy · Current"
+        in (result.message or "")
+    )
+
+
+def test_chub_overview_separates_each_busy_session_block(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    manager._status_cache["sessions"] = (
+        (
+            SimpleNamespace(
+                slot=1,
+                session_id="session-1",
+                title="Chub 快速交互独立…",
+                state="Busy",
+                current=False,
+            ),
+            SimpleNamespace(
+                slot=2,
+                session_id="session-2",
+                title="项目文档优化",
+                state="Busy",
+                current=True,
+            ),
+        ),
+        utc_now(),
+    )
+    manager._task_status_cache["route"] = (
+        SimpleNamespace(
+            failed_notification_count=0,
+            running_tasks=(
+                ("session-1", "开始执行第四个阶段"),
+                ("session-2", "项目文档优化"),
+            ),
+        ),
+        utc_now(),
+    )
+    quick_interactions.is_running.return_value = True
+
+    message = manager._format_chub_overview("route", elapsed_ms=129)
+
+    assert (
+        "Sessions\n\n"
+        "S1 · Chub 快速交互独立…\n\n"
+        "T1 · 开始执行第四个阶段\n\n"
+        "Busy\n\n"
+        "S2 · 项目文档优化\n\n"
+        "T2 · 项目文档优化\n\n"
+        "Busy · Current\n\n"
+        "Codex"
+    ) in message
 
 
 def test_chub_overview_does_not_guess_task_for_non_weixin_busy_session(
@@ -520,8 +571,8 @@ def test_chub_overview_does_not_guess_task_for_non_weixin_busy_session(
         delivery_route=delivery_route(),
     )
 
-    assert "1. [Current] 终端任务 · Busy" in (result.message or "")
-    assert "Task:" not in (result.message or "")
+    assert "S1 · 终端任务\n\nBusy · Current" in (result.message or "")
+    assert "T1 ·" not in (result.message or "")
 
 
 def test_chub_overview_does_not_repeat_unavailable_session_as_anomaly(
@@ -543,7 +594,7 @@ def test_chub_overview_does_not_repeat_unavailable_session_as_anomaly(
 
     message = manager._format_chub_overview("route", elapsed_ms=10)
 
-    assert "1. [Current] 语音通知处理 · Unavailable" in message
+    assert "S1 · 语音通知处理\n\nUnavailable · Current" in message
     assert "Session 1 不可用" not in message
 
 
@@ -588,6 +639,20 @@ def test_chub_sync_failure_does_not_commit_partial_slots(
     assert result.message == "任务提交失败：Chub 当前状态不可用，请稍后重试。"
     assert manager.session_slot_matches(1, "missing")
     manager._write_state = original_write
+
+
+def test_session_slots_snapshot_is_consistent_copy(settings: Settings) -> None:
+    manager, _codex_manager, _quick_interactions = configured_manager(settings)
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=1, session_id="session-1"),
+        WeixinChubModeSessionSlot(slot=3, session_id="session-3"),
+    ]
+
+    snapshot = manager.session_slots_snapshot()
+    snapshot["session-1"] = 9
+
+    assert snapshot == {"session-1": 9, "session-3": 3}
+    assert manager.session_slots_snapshot() == {"session-1": 1, "session-3": 3}
 
 
 def test_codex_status_does_not_report_missing_daily_bucket_as_zero() -> None:
@@ -916,11 +981,14 @@ def test_chub_sync_lists_compatible_sessions_and_marks_current(
     assert result.message is not None
     assert result.message.startswith(
         "槽位同步完成：清理 0 · 补充 3 · 当前 3。\n\n"
-        "Active sessions:\n"
+        "Sessions\n\n"
     )
-    assert "1. [Current] 微信 Chub · Available" in result.message
-    assert "2. 项目维护 · Available" in result.message
-    assert "3. 正在排障 · Busy" in result.message
+    assert "S1 · 微信 Chub\n\nAvailable · Current" in result.message
+    assert "S2 · 项目维护\n\nAvailable" in result.message
+    assert "S3 · 正在排障\n\nBusy" in result.message
+    assert result.message.index("S3 · 正在排障") < result.message.index(
+        "S1 · 微信 Chub"
+    ) < result.message.index("S2 · 项目维护")
     assert result.message.endswith("Weekly 暂不可用 · Tokens 暂不可用")
     assert "不应显示" not in result.message
     persisted = json.loads(
@@ -982,7 +1050,7 @@ def test_chub_sync_limits_id_sorted_sessions_without_reordering_current(
 
     assert result.message is not None
     assert "private-value" not in result.message
-    assert "[Current]" in result.message
+    assert "Available · Current" in result.message
     assert "候选 7" in result.message
     assert "候选 8" not in result.message
     assert "候选 8" not in result.message
@@ -1019,7 +1087,7 @@ def test_chub_sync_hides_unavailable_sessions(settings: Settings) -> None:
     )
 
     assert result.message is not None
-    assert "\n\nActive sessions: None\n\n" in result.message
+    assert "\n\nSessions\n\n暂无已分配 Session\n\n" in result.message
     assert result.message.endswith("Weekly 暂不可用 · Tokens 暂不可用")
     assert "不可用会话" not in result.message
 
@@ -1057,8 +1125,8 @@ def test_chub_sync_keeps_success_when_usage_lookup_fails(
     assert result.message is not None
     assert result.message.startswith(
         "槽位同步完成：清理 0 · 补充 1 · 当前 1。\n\n"
-        "Active sessions:\n"
-        "1. 项目维护 · Available"
+        "Sessions\n\n"
+        "S1 · 项目维护\n\nAvailable"
     )
     assert result.message.endswith("Codex 用量查询失败，请稍后重试。")
     assert manager.session_slot_matches(1, "available-session")
@@ -1100,7 +1168,7 @@ def test_chub_sync_retains_configured_unavailable_slot(
         delivery_route=delivery_route(),
     )
 
-    assert "3. 故障上下文 · Unavailable" in (result.message or "")
+    assert "S3 · 故障上下文\n\nUnavailable" in (result.message or "")
     assert manager.session_slot_matches(3, "broken")
 
 
@@ -1160,7 +1228,7 @@ def test_chub_refresh_keeps_cached_overview_when_session_lookup_fails(
     )
 
     assert result.message is not None
-    assert "Sessions\n暂不可用" in result.message
+    assert "Sessions\n\n暂不可用" in result.message
     assert "异常" not in result.message
 
 
@@ -1233,7 +1301,7 @@ def test_codex_status_distinguishes_writer_error_and_unknown_running_session(
     quick_interactions.submit.assert_not_called()
 
 
-def test_codex_status_marks_sessions_unavailable_while_restart_is_pending(
+def test_codex_status_keeps_sessions_available_while_restart_is_pending(
     settings: Settings,
 ) -> None:
     manager, _codex_manager, quick_interactions = configured_manager(settings)
@@ -1249,7 +1317,7 @@ def test_codex_status_marks_sessions_unavailable_while_restart_is_pending(
         activity="idle",
     )
 
-    assert manager._codex_session_dispatch_state(session) == "Unavailable"
+    assert manager._codex_session_dispatch_state(session) == "Available"
 
 
 def test_chub_refresh_bounds_slow_session_lookup(
@@ -1286,11 +1354,11 @@ def test_chub_refresh_bounds_slow_session_lookup(
         blocker.set()
 
     assert result.message is not None
-    assert "Sessions\n暂不可用" in result.message
+    assert "Sessions\n\n暂不可用" in result.message
     assert "异常" not in result.message
 
 
-def test_codex_switch_uses_id_order_and_allows_busy_target(
+def test_codex_switch_uses_creation_order_and_allows_busy_target(
     settings: Settings,
 ) -> None:
     manager, codex_manager, quick_interactions = configured_manager(settings)
@@ -1356,12 +1424,12 @@ def test_codex_switch_uses_id_order_and_allows_busy_target(
 
     assert result.message is not None
     assert result.message.startswith(
-        "切换状态：已切换到 Session 2。\n\n"
-        "Active sessions:\n"
+        "切换状态：已切换到 Session 3。\n\n"
+        "Sessions\n\n"
     )
-    assert "2. [Current] 第二项 · Busy" in result.message
+    assert "S3 · 第三项\n\nAvailable · Current" in result.message
     assert result.message.endswith("Weekly 暂不可用 · Tokens 暂不可用")
-    assert manager.session_id() == "b-busy"
+    assert manager.session_id() == "c-available"
     quick_interactions.submit.assert_not_called()
 
 
@@ -1410,7 +1478,7 @@ def test_chinese_switch_routes_to_numbered_session(
     )
 
     assert result.message is not None
-    assert "2. [Current] 第 2 项 · Available" in result.message
+    assert "S2 · 第 2 项\n\nAvailable · Current" in result.message
     assert "Task status:" not in result.message
     assert manager.session_id() == "session-2"
     quick_interactions.submit.assert_not_called()
@@ -1534,7 +1602,7 @@ def test_codex_switch_without_current_uses_first_visible_session(
     )
 
     assert result.message is not None
-    assert "1. [Current] 可用会话 · Available" in result.message
+    assert "S1 · 可用会话\n\nAvailable · Current" in result.message
     assert manager.session_id() == "b-available"
 
 
@@ -1602,12 +1670,12 @@ def test_codex_archive_removes_target_and_clears_current_binding(
     assert result.message is not None
     assert result.message.startswith(
         "归档状态：Session 2 已归档，当前绑定已清除。\n\n"
-        "Active sessions:\n"
+        "Sessions\n\n"
     )
     assert result.message.endswith("Weekly 暂不可用 · Tokens 暂不可用")
-    assert "1. 候选 1 · Available" in result.message
+    assert "S1 · 候选 1\n\nAvailable" in result.message
     assert "候选 2" not in result.message
-    assert "[Current]" not in result.message
+    assert " · Current" not in result.message
     manager.session_archiver.assert_called_once_with("session-2")
     assert manager.session_id() is None
     assert manager.session_slot_matches(2, "session-2") is False
@@ -1724,7 +1792,7 @@ def test_codex_archive_status_preserves_freed_slot_for_codex_new(
     )
 
     assert refreshed.message is not None
-    assert "2. 候选 10 · Available" in refreshed.message
+    assert "S2 · 候选 10\n\nAvailable" in refreshed.message
     assert manager.session_slot_matches(2, "session-10") is True
 
 
@@ -1966,7 +2034,7 @@ def test_codex_archive_rejects_session_with_pending_retry(
     assert result.message.startswith(
         "归档状态：未归档，该 Session 关联一条待继续执行的任务。\n\n"
     )
-    assert "Active sessions:\n1. 待续提 · Available" in result.message
+    assert "Sessions\n\nS1 · 待续提\n\nAvailable" in result.message
     manager.session_archiver.assert_not_called()
 
 
@@ -2056,7 +2124,7 @@ def test_codex_switch_number_uses_fresh_visible_list(settings: Settings) -> None
     )
 
     assert result.message is not None
-    assert "2. [Current] 候选 2 · Available" in result.message
+    assert "S2 · 候选 2\n\nAvailable · Current" in result.message
     assert manager.session_id() == "session-2"
 
 
@@ -2116,10 +2184,10 @@ def test_codex_switch_uses_one_deadline_and_reuses_session_scan(
     assert result.message is not None
     assert result.message.startswith(
         "切换状态：已切换到 Session 2。\n\n"
-        "Active sessions:\n"
+        "Sessions\n\n"
     )
     assert result.message.endswith("Codex 用量查询失败，请稍后重试。")
-    assert "2. [Current] 候选 2 · Available" in result.message
+    assert "S2 · 候选 2\n\nAvailable · Current" in result.message
     assert manager.session_id() == "session-2"
     codex_manager.list_sessions.assert_called_once()
 
@@ -2152,8 +2220,8 @@ def test_codex_switch_out_of_range_returns_fresh_list_without_changing_binding(
 
     assert result.message is not None
     assert result.message.startswith("切换状态：未切换，编号无效。\n\n")
-    assert "Active sessions:" in result.message
-    assert "1. [Current] 当前会话 · Available" in result.message
+    assert "Sessions" in result.message
+    assert "S1 · 当前会话\n\nAvailable · Current" in result.message
     assert manager.session_id() == "session-1"
     codex_manager.get_session.assert_not_called()
 
@@ -2397,7 +2465,7 @@ def test_duplicate_codex_switch_does_not_switch_twice(settings: Settings) -> Non
     )
 
     assert duplicate == first
-    assert manager.session_id() == "session-2"
+    assert manager.session_id() == "session-3"
     codex_manager.list_sessions.assert_called_once()
     manager.codex_account_reader.read_account_status.assert_called_once_with(force=True)
 
@@ -2563,9 +2631,9 @@ def test_codex_new_creates_and_switches_without_submitting(
     assert result.message is not None
     assert result.message.startswith(
         "创建状态：Session 1 已创建并切换。\n\n"
-        "Active sessions:\n"
+        "Sessions\n\n"
     )
-    assert "1. [Current] 未命名 Session · Available" in result.message
+    assert "S1 · 未命名 Session\n\nAvailable · Current" in result.message
     assert result.message.endswith("Weekly 暂不可用 · Tokens 暂不可用")
     assert manager.session_id() == "session-new"
     codex_manager.set_initial_quick_interaction_title.assert_not_called()
@@ -2673,7 +2741,7 @@ def test_codex_new_status_does_not_fill_unassigned_candidate(
     )
 
     assert result.message is not None
-    assert "2. [Current] 新建会话 · Available" in result.message
+    assert "S2 · 新建会话\n\nAvailable · Current" in result.message
     assert "等待候选" not in result.message
     assert "另有 1 个" in result.message
     assert manager.session_slot_matches(2, "session-new") is True
@@ -2712,7 +2780,7 @@ def test_internal_codex_status_does_not_fill_unassigned_candidate(
 
     internal_status = manager.codex_status_message()
 
-    assert "1. [Current] 候选 1 · Available" in internal_status
+    assert "S1 · 候选 1\n\nAvailable · Current" in internal_status
     assert "候选 2" not in internal_status
     codex_manager.list_sessions.assert_not_called()
     assert manager.session_slot_matches(2, "session-2") is False
@@ -2879,7 +2947,7 @@ def test_chub_sync_uses_placeholder_for_untitled_session(
         delivery_route=delivery_route(),
     )
 
-    assert "1. 未命名 Session · Available" in (result.message or "")
+    assert "S1 · 未命名 Session\n\nAvailable" in (result.message or "")
     quick_interactions.submit.assert_not_called()
 
 
@@ -3641,8 +3709,8 @@ def test_quick_interaction_failure_replays_same_bounded_error(
 ) -> None:
     manager, _codex_manager, quick_interactions = configured_manager(settings)
     quick_interactions.submit.side_effect = ApiError(
-        409,
-        "chub_restart_pending",
+        503,
+        "quick_worker_unavailable",
         "底层实现细节不应透传。",
     )
 
@@ -3657,7 +3725,7 @@ def test_quick_interaction_failure_replays_same_bounded_error(
             )
         errors.append(error.value)
 
-    assert [error.status_code for error in errors] == [409, 409]
+    assert [error.status_code for error in errors] == [503, 503]
     assert [error.code for error in errors] == [
         "weixin_chub_mode_submission_failed",
         "weixin_chub_mode_submission_failed",

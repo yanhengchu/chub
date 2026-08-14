@@ -21,10 +21,6 @@ const elements = {
   refreshStatus: document.querySelector("#refresh-status"),
   siteSettings: document.querySelector("#site-settings"),
   restartHub: document.querySelector("#restart-hub"),
-  restartDialog: document.querySelector("#restart-dialog"),
-  restartDialogClose: document.querySelector("#restart-dialog-close"),
-  restartDialogCancel: document.querySelector("#restart-dialog-cancel"),
-  restartDialogConfirm: document.querySelector("#restart-dialog-confirm"),
   codexCardHost: document.querySelector("#codex-card-host"),
   openclawBadge: document.querySelector("#openclaw-badge"),
   openclawChannels: document.querySelector("#openclaw-channels"),
@@ -57,6 +53,7 @@ const elements = {
   automationBrowserDialogClose: document.querySelector("#automation-browser-dialog-close"),
   automationBrowserDialogCancel: document.querySelector("#automation-browser-dialog-cancel"),
   automationBrowserDialogConfirm: document.querySelector("#automation-browser-dialog-confirm"),
+  automationBrowserNotice: document.querySelector("#automation-browser-notice"),
   automationBrowserProfile: document.querySelector("#automation-browser-profile"),
   automationBrowserModeInputs: document.querySelectorAll('input[name="automation-browser-mode"]'),
   automationFeishuBadge: document.querySelector("#automation-feishu-badge"),
@@ -94,6 +91,7 @@ let tailscaleAccess = false;
 let accessVersion = 0;
 let connectionAttempt = 0;
 let cardsRefreshAt = 0;
+let hubRestartInProgress = false;
 const dashboardNavigationEntry = performance.getEntriesByType("navigation")[0];
 const dashboardIsHistoryReturn = dashboardNavigationEntry?.type === "back_forward";
 
@@ -204,11 +202,12 @@ function showDisconnectedView(message = "输入启动 Hub 时配置的 Token。"
 }
 
 function showConnectedView(status) {
+  setMessage(elements.globalMessage, "");
   elements.accessCard.hidden = true;
   elements.connectedBar.hidden = false;
   elements.dashboard.hidden = false;
   elements.siteSettings.hidden = false;
-  elements.restartHub.disabled = false;
+  elements.restartHub.disabled = hubRestartInProgress;
   elements.connectedNode.textContent = status.node.name;
   elements.connectedMeta.textContent =
     `${platformText(status.node.detected_platform)} · ${status.system.hostname || "未知主机"}`;
@@ -311,10 +310,7 @@ async function connectWithToken(token, remember, savedCredential = false) {
   const attempt = ++connectionAttempt;
   elements.connectSubmit.disabled = true;
   setBadge(elements.accessBadge, "验证中");
-  setMessage(
-    elements.globalMessage,
-    savedCredential ? "正在验证已保存凭证…" : "正在验证 Token…",
-  );
+  setMessage(elements.globalMessage, "");
 
   try {
     const status = await apiFetch("/api/status", {}, token);
@@ -356,7 +352,7 @@ async function connectWithTailscale(fallbackToken = "", rememberFallback = false
   const attempt = ++connectionAttempt;
   elements.connectSubmit.disabled = true;
   setBadge(elements.accessBadge, "检查 Tailnet");
-  setMessage(elements.globalMessage, "正在检查 Tailnet 可信访问…");
+  setMessage(elements.globalMessage, "");
 
   try {
     const status = await apiFetch("/api/status", {}, "");

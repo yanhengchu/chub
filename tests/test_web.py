@@ -156,11 +156,10 @@ async def test_home_page_is_public_and_contains_no_token(
     )[0]
     assert 'data-card-return-refresh="true"' not in openclaw_card
     assert "OpenClaw 方案调研" not in response.text
-    assert "Chub–OpenClaw 接入设计" in response.text
     assert "持续维护" in response.text
+    assert response.text.count("document-archive-action") == 5
     assert "份设计资料 · 1 份周报可查看" not in response.text
     assert 'href="/project-docs/openclaw-research"' not in response.text
-    assert 'href="/project-docs/openclaw-integration"' in response.text
     assert 'target="_blank"' not in response.text
     assert 'href="/project-docs"' in response.text
     assert '>全部文档</a>' in response.text
@@ -169,11 +168,16 @@ async def test_home_page_is_public_and_contains_no_token(
     assert "节点维护" not in response.text
     assert "维护检查" not in response.text
     assert 'id="restart-hub"' in response.text
-    assert 'id="restart-dialog"' in response.text
+    assert 'aria-controls="confirmation-dialog"' in response.text
+    assert 'id="confirmation-dialog"' in response.text
+    assert 'id="confirmation-dialog-message"' in response.text
+    assert response.text.index('id="global-message"') < response.text.index(
+        'id="connected-bar"'
+    )
     assert 'id="site-settings"' in response.text
     assert 'href="/settings" hidden' in response.text
     assert f"v{settings.app.version}" not in response.text
-    assert "确认重启" in response.text
+    assert "确认操作" in response.text
     assert 'data-card-heading' in response.text
     assert 'data-card-content' in response.text
     assert 'data-collapsible-card' in response.text
@@ -237,6 +241,7 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
     assert 'id="weixin-translation-enabled"' in response.text
     assert "会增加 Codex 用量，并将微信正文交给模型处理" in response.text
     assert "关闭只阻止新翻译，已有任务继续完成" in response.text
+    assert "全部结束后会自动归档内部翻译 Session" in response.text
     assert "Standard" in response.text
     assert "Cyber" in response.text
     assert "当前风格" in response.text
@@ -254,7 +259,11 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
     assert '<option value="5" selected>5 条</option>' in response.text
     assert '<option value="10">10 条</option>' in response.text
     assert 'id="codex-default-permission"' in response.text
-    assert "设置之后新建会话的默认配置。" in response.text
+    assert "设置页面展示与之后新建会话的默认配置。" in response.text
+    assert 'id="codex-show-translation-session"' in response.text
+    assert "显示翻译 Session" in response.text
+    assert "控制当前浏览器所有 Session 列表" in response.text
+    assert "不影响微信翻译、任务执行及自动归档" in response.text
     assert 'id="codex-default-model"' in response.text
     assert 'id="codex-default-reasoning-effort"' in response.text
     assert "模型列表与默认值由当前节点的 Codex 提供。" in response.text
@@ -270,6 +279,8 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
     assert "hub.codexDefaultPermission.v1" in script.text
     assert "hub.codexDefaultModel.v1" in script.text
     assert "hub.codexDefaultReasoningEffort.v1" in script.text
+    assert "hub.codexShowTranslationSession.v1" in script.text
+    assert "当前浏览器无法保存 Session 展示偏好" in script.text
     assert "/api/codex/models" in script.text
     assert "/api/settings/weixin-translation" in script.text
     assert "项翻译仍在处理中" in script.text
@@ -470,6 +481,9 @@ async def test_web_assets_are_available(settings: Settings) -> None:
         text="\n".join(asset.text for asset in stylesheets),
     )
     assert "innerHTML" not in dashboard_script
+    assert "window.confirm" not in dashboard_script
+    assert "showConfirmationDialog" in dashboard_script
+    assert "confirmationDialogBusy" in dashboard_script
     assert 'siteSettings: document.querySelector("#site-settings")' in dashboard_script
     assert "elements.siteSettings.hidden = true" in dashboard_script
     assert "elements.siteSettings.hidden = false" in dashboard_script
@@ -525,7 +539,7 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "Authorization" in dashboard_script
     assert "accessVersion" in dashboard_script
     assert "connectWithToken" in dashboard_script
-    assert "确定退出当前节点吗" in dashboard_script
+    assert "退出会清除此浏览器保存的 Hub Token" in dashboard_script
     assert "createTaskCard" not in script.text
     assert "createCodexCard" in script.text
     assert 'createButton.textContent = "新建会话"' in script.text
@@ -560,6 +574,8 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "toggleCodexEntryMode" in script.text
     assert "updateCodexEntryButton" in script.text
     assert "点击切换为" in script.text
+    assert "session.terminal_access_allowed === false" in script.text
+    assert "文本优化与翻译 Session 仅支持快速交互" in script.text
     assert "actions.append(entry, stop, archive);" in script.text
     assert "permissionPanel" not in script.text
     assert "快速交互已提交" not in script.text
@@ -569,6 +585,10 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "removeCodexSession" not in script.text
     assert "renderCodexWorkspaces" in script.text
     assert "renderCodexSessions" in script.text
+    assert "codexSessionsNewestFirst" in script.text
+    assert "visibleCodexSessions" in script.text
+    assert 'session.workspace_id !== "weixin-translation"' in script.text
+    assert "visibleSessions.length" in script.text
     assert "会话 · 等待输入" in script.text
     assert "实时终端 · 执行中" in script.text
     assert "快速交互 · 执行中" in script.text
@@ -638,16 +658,25 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "if (shouldPersist)" in script.text
     assert "transition: gap 180ms ease 140ms" in stylesheet.text
     assert 'matchMedia("(prefers-reduced-motion: reduce)")' in script.text
-    assert "restartHub" in script.text
+    assert "requestHubRestart" in script.text
+    assert "monitorHubRestart" in script.text
+    assert "hubRestartInProgress" in script.text
+    assert "elements.restartHub.disabled = true" in script.text
     assert "scrollCodexPanelIntoView" not in script.text
     assert "任务状态已更新。" not in script.text
     assert "/api/maintenance/restart" in script.text
     assert "/api/health" in script.text
     assert "waitForHubRestart" in script.text
+    assert "elements.globalMessage" in script.text
     assert "refreshCardsAfterRestart" in script.text
-    assert "Chub 已恢复，正在同步卡片状态" in script.text
     assert "previousInstanceId" in script.text
-    assert "Chub 已重启并恢复连接" in script.text
+    assert "正在检查 Tailnet 可信访问" not in script.text
+    assert "正在验证已保存凭证" not in script.text
+    assert "重启命令已下发，正在等待 Hub 恢复" not in script.text
+    assert "Chub 已恢复，正在同步卡片状态" not in script.text
+    assert "Chub 已重启并恢复连接" not in script.text
+    assert 'setMessage(elements.globalMessage, "")' in script.text
+    assert 'errorMessage: "重启失败。"' in script.text
     assert "/api/codex/restart" not in script.text
     assert "/api/codex/sessions" in script.text
     assert "connection" in terminal_script.text
@@ -660,7 +689,8 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert ".dashboard > .card" in stylesheet.text
     assert "#codex-card-host" in stylesheet.text
     assert "align-self: start" in stylesheet.text
-    assert ".restart-dialog" in stylesheet.text
+    assert ".confirmation-dialog-surface" in stylesheet.text
+    assert ".confirmation-dialog-actions" in stylesheet.text
     assert "-webkit-tap-highlight-color: transparent" in stylesheet.text
     assert ".logs-card" in stylesheet.text
     assert ".session-path" in stylesheet.text
@@ -703,7 +733,29 @@ async def test_quick_interaction_conversation_page_is_available(
     assert 'id="conversation-load-earlier"' in page.text
     assert 'id="conversation-jump-latest"' in page.text
     assert 'id="conversation-form"' in page.text
+    assert 'id="conversation-session-navigation"' in page.text
+    assert 'id="conversation-session-create"' in page.text
     assert 'id="conversation-session-switcher"' in page.text
+    assert 'id="conversation-session-title"' in page.text
+    assert 'id="conversation-session-rename"' in page.text
+    assert 'id="conversation-session-archive"' in page.text
+    assert 'id="conversation-rename-dialog"' in page.text
+    assert 'id="conversation-rename-input"' in page.text
+    assert 'id="conversation-archive-dialog"' in page.text
+    assert 'id="conversation-archive-confirm"' in page.text
+    assert 'class="codex-workspace-dialog confirmation-dialog conversation-archive-dialog"' in page.text
+    assert 'class="confirmation-dialog-description"' in page.text
+    assert 'id="conversation-create-dialog"' in page.text
+    assert 'id="conversation-create-workspaces"' in page.text
+    assert page.text.index('id="conversation-session-create"') < page.text.index(
+        'id="conversation-session-switcher"'
+    )
+    assert page.text.index('id="conversation-session-switcher"') < page.text.index(
+        'id="conversation-session-title"'
+    ) < page.text.index('id="conversation-prompt"')
+    assert page.text.index('id="conversation-session-title"') < page.text.index(
+        'id="conversation-session-rename"'
+    ) < page.text.index('id="conversation-session-archive"')
     assert 'id="conversation-engine"' not in page.text
     assert 'id="conversation-more"' not in page.text
     assert 'id="conversation-submit" class="button-secondary" type="submit" disabled' in page.text
@@ -714,7 +766,7 @@ async def test_quick_interaction_conversation_page_is_available(
     assert 'order: "timeline"' in script.text
     assert "CONVERSATION_PAGE_SIZE = readConversationPageSize()" in script.text
     assert "before: { createdAt: oldest.created_at, id: oldest.id }" in script.text
-    assert "conversationLoadQueue.then(performLoadEarlierConversation)" in script.text
+    assert "performLoadEarlierConversation(generation, client)" in script.text
     assert "conversationPollDelay(conversationPollFailureCount)" in script.text
     assert "resizeConversationPrompt" in script.text
     assert "updateConversationComposerActions" in script.text
@@ -726,17 +778,64 @@ async def test_quick_interaction_conversation_page_is_available(
     assert "canSubmitConversation" in script.text
     assert "conversationEngine" not in script.text
     assert "conversationScroll.scrollTop" in script.text
-    assert "conversationClient.submitTask" in script.text
-    assert "conversationClient.loadSessionContext" in script.text
-    assert 'label.textContent = `${number} · ${status}`' in script.text
+    assert "client.submitTask" in script.text
+    assert "client.loadSessionContext" in script.text
+    assert "conversationClient.createSession" in script.text
+    assert "readConversationSessionCreationPreferences" in script.text
+    assert "shouldRetryConversationCreationWithDefaults" in script.text
+    assert "clearConversationSessionModelPreferences" in script.text
+    assert "conversationCreateDialog.showModal()" in script.text
+    assert "workspace.available !== true" in script.text
+    assert "conversationCreationPending" in script.text
+    assert "renderConversationSessionCreation(sessionContextResult.value)" in script.text
+    assert "switchConversationSession(" in script.text
+    assert 'label.textContent = `${sessionLabel} · ${status}`' in script.text
     assert "conversationSessionStatus" in script.text
+    assert "conversationSessionLabels" in script.text
+    assert 'const displayTitle = title || "未命名 Session"' in script.text
+    assert 'document.title = `${displayTitle} · 快速交互`' in script.text
+    assert "client.renameSession(title)" in script.text
+    assert "conversationRenameDialog.showModal()" in script.text
+    assert "conversationRenamePending" in script.text
+    assert 'conversationRenameForm.setAttribute("aria-busy", "true")' in script.text
+    assert "conversationRenameClose.disabled = true" in script.text
+    assert "conversationRenameCancel.disabled = true" in script.text
+    assert "client.archiveSession()" in script.text
+    assert "conversationArchiveDialog.showModal()" in script.text
+    assert "firstConversationSessionAfterArchive" in script.text
+    assert "conversationSessions = sessions" in script.text
+    assert "window.location.replace(nextSessionUrl)" in script.text
+    assert "`/codex/${encodeURIComponent(nextSession.id)}/quick-interactions/conversation`" in script.text
+    assert ': "/";' in script.text
+    assert "const archiveReady = Boolean(session.codex_session_id)" in script.text
+    assert "conversationSessionArchive.disabled = !archiveReady || archiveBusy" in script.text
+    assert 'session.workspace_id !== "weixin-translation"' in script.text
+    assert "conversationSessionRename.disabled = !renameAllowed" in script.text
     assert "conversationSessionNavigationMode" in script.text
-    assert 'link.setAttribute("aria-current", "page")' in script.text
+    assert 'button.setAttribute("aria-current", "page")' in script.text
     assert "handleConversationSessionSwitch" in script.text
-    assert "window.location.replace(link.href)" in script.text
+    assert "button.dataset.sessionId" in script.text
+    assert "button.dataset.sessionUrl" in script.text
+    assert 'window.history.replaceState(window.history.state, "", url)' in script.text
+    assert "window.location.reload()" not in script.text
+    assert "resetConversationSessionView" in script.text
+    assert "renderConversationSessionPreview" in script.text
+    assert 'conversationSessionTitleRow.setAttribute("aria-busy", "true")' in script.text
+    assert 'conversationSessionTitleRow.removeAttribute("aria-busy")' in script.text
+    assert "conversationSessionTitleRow.hidden = true" not in script.text
+    assert "conversationGeneration += 1" in script.text
+    assert "generation !== conversationGeneration" in script.text
+    assert "document.body.dataset.sessionId = sessionId" in script.text
+    assert 'window.open(url, "_blank", "noopener")' in script.text
+    assert 'addEventListener("auxclick", handleConversationSessionSwitch)' in script.text
+    assert 'document.createElement("a")' not in script.text
+    assert 'document.createElement("button")' in script.text
+    assert "mode === \"new-tab\"" in script.text
     assert "mode === \"default\"" in script.text
     assert "mode === \"ignore\"" in script.text
-    assert "hub.quickInteractionSessionNumbers.v1" in script.text
+    assert "hub.quickInteractionSessionNumbers.v1" not in script.text
+    assert "const sessionLabel = labels.get(session.id)" in script.text
+    assert "conversationSessionSwitcher.hidden = ordered.length === 0" in script.text
     assert "hub.quickInteractionDraft.v1" in script.text
     assert "sessionStorage.setItem(conversationDraftKey" in script.text
     assert 'conversationSubmit.textContent = "发送"' in script.text
@@ -749,9 +848,11 @@ async def test_quick_interaction_conversation_page_is_available(
     assert "Chub 已完成自动重启，服务已恢复。" in script.text
     assert 'task.deferred_restart_status === "pending"' in script.text
     assert 'failed: "重启结果通知失败"' in script.text
-    assert "Chub 自动重启未能启动，当前服务仍在运行。" in script.text
+    assert "Chub 自动重启未完成" in script.text
+    assert "task.deferred_restart_error" in script.text
+    assert "旧记录没有保存具体原因，请查看 Chub 运行日志" in script.text
     assert ".conversation-assistant-info" in stylesheet.text
-    assert "conversationClient.setPinned" in script.text
+    assert "client.setPinned" in script.text
     assert "textContent" in script.text
     assert "innerHTML" not in script.text
     assert ".conversation-page" in stylesheet.text
@@ -763,7 +864,25 @@ async def test_quick_interaction_conversation_page_is_available(
     assert ".conversation-message-user" in stylesheet.text
     assert ".conversation-composer" in stylesheet.text
     assert ".conversation-session-switcher" in stylesheet.text
+    assert ".conversation-session-navigation" in stylesheet.text
+    assert "grid-template-columns: 36px minmax(0, 1fr);" in stylesheet.text
+    assert ".conversation-session-create" in stylesheet.text
+    assert ".conversation-create-surface" in stylesheet.text
+    assert ":not(.conversation-session-create)" in stylesheet.text
+    assert ":not(.conversation-session-switch)" in stylesheet.text
+    assert "overflow-x: auto;" in stylesheet.text
+    assert "overscroll-behavior-x: contain;" in stylesheet.text
     assert ".conversation-session-switch.is-current" in stylesheet.text
+    assert ".conversation-session-title" in stylesheet.text
+    assert ".conversation-session-title {\n  display: inline;" in stylesheet.text
+    assert ".conversation-session-title-row {\n  display: block;\n  min-height: 2rem;" in stylesheet.text
+    assert ".conversation-session-rename" in stylesheet.text
+    assert ".conversation-session-archive" in stylesheet.text
+    assert "margin-left: 0.35rem;" in stylesheet.text
+    assert ".conversation-rename-form" in stylesheet.text
+    assert "conversation-session-archive:not(:disabled):hover" in stylesheet.text
+    assert ":not(.conversation-session-rename)" in stylesheet.text
+    assert ":not(.conversation-session-archive)" in stylesheet.text
     assert ":not(.site-header-title):not(.session-enter)::before" in stylesheet.text
     assert 'a.button-link::before' in stylesheet.text
     assert ':root[data-ui-style="cyber"] .openclaw-status-row .badge' in stylesheet.text
@@ -834,6 +953,10 @@ async def test_design_document_pages_render_markdown(settings: Settings) -> None
     assert "项目说明、设计方案与维护文档" in listing.text
     assert "份项目资料" in listing.text
     assert "Hub 项目资料展示" in listing.text
+    assert 'id="confirmation-dialog"' in listing.text
+    assert listing.text.index('/static/js/components/ui.js') < listing.text.index(
+        '/static/design_documents.js'
+    )
     assert "Chub 项目说明" in listing.text
     assert 'href="/project-docs/project-readme"' in listing.text
     assert '<span class="badge badge-success">持续维护</span>' in listing.text
@@ -892,9 +1015,6 @@ async def test_project_document_card_api_is_protected(
     assert data["weekly_reports"][1]["available"] is False
     assert len(data["documents"]) == 5
     assert any(document["status"] == "持续维护" for document in data["documents"])
-    assert "openclaw-integration" in {
-        document["id"] for document in data["documents"]
-    }
     assert "openclaw-research" not in {
         document["id"] for document in data["documents"]
     }
@@ -926,7 +1046,7 @@ async def test_weekly_report_detail_is_public_and_missing_report_is_404(
 async def test_terminal_page_uses_session_title(settings: Settings) -> None:
     app = create_app(settings)
     manager = MagicMock()
-    manager.get_session.return_value = CodexSession(
+    manager.require_terminal_access.return_value = CodexSession(
         id="session-1",
         workspace_id="codex",
         workspace_name="chub",

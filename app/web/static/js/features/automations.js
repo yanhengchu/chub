@@ -185,6 +185,10 @@ function updateAutomationBrowserDialog() {
   elements.automationBrowserDialogConfirm.textContent = requiresInitialization
     ? "初始化并启动"
     : "启动";
+  elements.automationBrowserNotice.hidden = !requiresInitialization;
+  elements.automationBrowserNotice.textContent = requiresInitialization
+    ? "首次使用会复制所选浏览器账户。继续前请完全退出默认 Chrome；复制完成后将自动启动 Debug Chrome。"
+    : "";
 }
 
 function closeAutomationBrowserDialog() {
@@ -212,14 +216,6 @@ async function startAutomationBrowser(event) {
     return;
   }
   const requiresInitialization = !selectedProfile.initialized;
-  if (
-    requiresInitialization
-    && !window.confirm(
-      "首次使用需要复制该浏览器账户。请先完全退出默认 Chrome；复制完成后将自动启动 Debug Chrome。确定继续吗？",
-    )
-  ) {
-    return;
-  }
   elements.automationBrowserControl.disabled = true;
   elements.automationBrowserProfile.disabled = true;
   elements.automationBrowserModeInputs.forEach((input) => {
@@ -264,25 +260,28 @@ async function startAutomationBrowser(event) {
 }
 
 async function stopAutomationBrowser() {
-  if (!window.confirm("确定停止 Debug Chrome 吗？已打开的调试浏览器页面会关闭。")) {
-    return;
-  }
-  elements.automationBrowserControl.disabled = true;
-  elements.automationBrowserControl.textContent = "停止中…";
-  try {
-    await apiFetch("/api/automations/browser/stop", { method: "POST" });
-    setMessage(elements.automationEnvironmentMessage, "");
-    await Promise.all([loadAutomationEnvironment(), loadAutomations()]);
-  } catch (error) {
-    if (!handleAccessError(error)) {
-      await Promise.all([loadAutomationEnvironment(), loadAutomations()]);
-      setMessage(
-        elements.automationEnvironmentMessage,
-        error.message || "Debug Chrome 操作失败。",
-        "error",
-      );
-    }
-  }
+  await showConfirmationDialog({
+    title: "停止 Debug Chrome",
+    description: "停止后，当前打开的调试浏览器页面会关闭，正在使用该环境的自动化任务可能失败。",
+    confirmLabel: "确认停止",
+    pendingLabel: "停止中…",
+    errorMessage: "Debug Chrome 操作失败。",
+    onConfirm: async () => {
+      elements.automationBrowserControl.disabled = true;
+      elements.automationBrowserControl.textContent = "停止中…";
+      try {
+        await apiFetch("/api/automations/browser/stop", { method: "POST" });
+        setMessage(elements.automationEnvironmentMessage, "");
+        await Promise.all([loadAutomationEnvironment(), loadAutomations()]);
+      } catch (error) {
+        if (handleAccessError(error)) {
+          return;
+        }
+        await Promise.all([loadAutomationEnvironment(), loadAutomations()]);
+        throw error;
+      }
+    },
+  });
 }
 
 function controlAutomationBrowser() {
@@ -417,6 +416,10 @@ function renderAutomationEnvironment(data) {
     : initializing
       ? "初始化中…"
       : "启动";
+  elements.automationBrowserControl.setAttribute(
+    "aria-controls",
+    browserRunning ? "confirmation-dialog" : "automation-browser-dialog",
+  );
   if (elements.automationBrowserDialog.open) {
     updateAutomationBrowserDialog();
     elements.automationBrowserDialogConfirm.disabled =

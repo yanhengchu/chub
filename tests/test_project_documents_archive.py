@@ -51,7 +51,6 @@ async def test_archived_document_is_hidden_from_home_api_and_kept_in_full_list(
         document["id"] for document in home_api.json()["data"]["documents"]
     }
     assert "automation-download" not in visible_document_ids
-    assert "openclaw-integration" in visible_document_ids
     assert len(visible_document_ids) == 5
     assert 'href="/project-docs/automation-download"' not in home_page.text
     assert 'data-archived="true"' in full_list.text
@@ -143,6 +142,9 @@ async def test_document_list_updates_archive_state_without_page_reload(
 
     assert script.status_code == 200
     assert "window.location.reload()" not in script.text
+    assert "window.confirm" not in script.text
+    assert "showConfirmationDialog" in script.text
+    assert 'tone: archived ? "secondary" : "danger"' in script.text
     assert 'card.dataset.archived = String(payload.data.archived)' in script.text
     assert "button.disabled = false" in script.text
     assert "applyFilter(activeFilter)" in script.text

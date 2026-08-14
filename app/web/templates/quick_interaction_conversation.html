@@ -20,13 +20,72 @@
         </div>
 
         <form id="conversation-form" class="conversation-composer">
-          <nav id="conversation-session-switcher" class="conversation-session-switcher" aria-label="切换 Session" hidden></nav>
+          <div id="conversation-session-navigation" class="conversation-session-navigation" hidden>
+            <button id="conversation-session-create" class="conversation-session-create" type="button" aria-label="新建 Session" aria-haspopup="dialog" aria-controls="conversation-create-dialog" title="新建 Session" disabled><span aria-hidden="true">+</span></button>
+            <nav id="conversation-session-switcher" class="conversation-session-switcher" aria-label="切换 Session"></nav>
+          </div>
+          <div id="conversation-session-title-row" class="conversation-session-title-row" hidden>
+            <p id="conversation-session-title" class="conversation-session-title"></p>
+            <button id="conversation-session-rename" class="conversation-session-rename" type="button" aria-label="重命名 Session" aria-haspopup="dialog" aria-controls="conversation-rename-dialog" title="重命名 Session"><span aria-hidden="true">&#9998;</span></button>
+            <button id="conversation-session-archive" class="conversation-session-archive" type="button" aria-label="归档 Session" aria-haspopup="dialog" aria-controls="conversation-archive-dialog" title="归档 Session" disabled>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                <rect width="20" height="5" x="2" y="3" rx="1"></rect>
+                <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"></path>
+                <path d="M10 12h4"></path>
+              </svg>
+            </button>
+          </div>
           <p id="conversation-submit-message" class="message" aria-live="polite"></p>
           <div class="conversation-input-row">
             <textarea id="conversation-prompt" rows="1" maxlength="8000" required placeholder="输入消息…" aria-label="快速交互需求" disabled></textarea>
             <button id="conversation-submit" class="button-secondary" type="submit" disabled>发送</button>
           </div>
         </form>
+
+        <dialog id="conversation-create-dialog" class="codex-workspace-dialog conversation-create-dialog" aria-labelledby="conversation-create-title">
+          <div id="conversation-create-surface" class="codex-workspace-dialog-surface conversation-create-surface">
+            <div class="codex-workspace-dialog-header">
+              <h3 id="conversation-create-title">新建 Session</h3>
+              <button id="conversation-create-close" class="button-link codex-workspace-dialog-close" type="button" aria-label="关闭新建 Session 窗口">关闭</button>
+            </div>
+            <p class="conversation-create-description">选择工作目录，将使用设置页中的默认权限、模型和推理等级。</p>
+            <div id="conversation-create-workspaces" class="workspace-list conversation-create-workspaces"></div>
+            <p id="conversation-create-message" class="message" aria-live="polite"></p>
+          </div>
+        </dialog>
+
+        <dialog id="conversation-rename-dialog" class="codex-workspace-dialog conversation-rename-dialog" aria-labelledby="conversation-rename-title">
+          <form id="conversation-rename-form" class="codex-workspace-dialog-surface conversation-rename-form">
+            <div class="codex-workspace-dialog-header">
+              <h3 id="conversation-rename-title">重命名 Session</h3>
+              <button id="conversation-rename-close" class="button-link codex-workspace-dialog-close" type="button" aria-label="关闭重命名窗口">关闭</button>
+            </div>
+            <label class="conversation-rename-field" for="conversation-rename-input">
+              <span>Session 标题</span>
+              <input id="conversation-rename-input" type="text" maxlength="48" required autocomplete="off">
+            </label>
+            <p id="conversation-rename-message" class="message" aria-live="polite"></p>
+            <div class="dialog-actions">
+              <button id="conversation-rename-cancel" class="button-link" type="button">取消</button>
+              <button id="conversation-rename-confirm" class="button-secondary" type="submit">保存</button>
+            </div>
+          </form>
+        </dialog>
+
+        <dialog id="conversation-archive-dialog" class="codex-workspace-dialog confirmation-dialog conversation-archive-dialog" aria-labelledby="conversation-archive-title" aria-describedby="conversation-archive-description">
+          <form id="conversation-archive-form" class="codex-workspace-dialog-surface confirmation-dialog-surface conversation-archive-form">
+            <div class="codex-workspace-dialog-header">
+              <h3 id="conversation-archive-title">归档 Session</h3>
+              <button id="conversation-archive-close" class="button-link codex-workspace-dialog-close" type="button" aria-label="关闭归档确认">关闭</button>
+            </div>
+            <p id="conversation-archive-description" class="confirmation-dialog-description"></p>
+            <p id="conversation-archive-message" class="message" aria-live="polite"></p>
+            <div class="confirmation-dialog-actions">
+              <button id="conversation-archive-cancel" class="button-link" type="button">取消</button>
+              <button id="conversation-archive-confirm" class="button-danger" type="submit">确认归档</button>
+            </div>
+          </form>
+        </dialog>
       </section>
     </main>
   </body>

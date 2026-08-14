@@ -20,6 +20,7 @@ async def test_health_is_public(settings: Settings) -> None:
             "status": "ok",
             "version": "0.1.0",
             "instance_id": app.state.instance_id,
+            "quick_worker_ready": False,
         },
     }
 

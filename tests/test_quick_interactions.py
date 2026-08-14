@@ -1,6 +1,7 @@
 import json
+import asyncio
+import hashlib
 import threading
-import stat
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,16 +12,22 @@ import pytest
 from app.codex.models import (
     CodexSession,
     QuickInteractionDeferredRestartContext,
+    QuickInteractionOperationContext,
     QuickInteractionTask,
     QuickInteractionWeixinRoute,
     utc_now,
 )
 from app.codex.quick_interactions import (
     CODEX_QUICK_INTERACTION_INSTRUCTIONS,
+    MAX_QUICK_INTERACTION_STATE_BYTES,
     QuickInteractionManager,
     build_task_summary,
 )
 from app.core.response import ApiError
+from app.quick_worker import QuickWorkerServer
+from app.quick_worker import WorkerRequestNotSent
+from app.services.deferred_restart import DeferredRestartRequest
+from app.services.weixin_translation import TRANSLATION_PROMPT
 
 
 def manager(
@@ -35,13 +42,13 @@ def manager(
         workspace_id="chub",
         workspace_name="Chub",
         cwd=tmp_path,
-        codex_session_id="codex-session-1",
+        codex_session_id="11111111-1111-4111-8111-111111111111",
         status="stopped",
         permission_mode="auto-review",
     )
     codex_manager.has_active_writer.return_value = False
     codex_manager.hook_dir = tmp_path / "hooks"
-    return QuickInteractionManager(
+    quick_interactions = QuickInteractionManager(
         tmp_path / "codex-sessions.json",
         tmp_path / "runtime",
         codex_manager,
@@ -49,6 +56,53 @@ def manager(
         deferred_restart,
         restart_notifier=restart_notifier,
     )
+    quick_interactions.worker_settings = SimpleNamespace()
+    quick_interactions._recovery_ready = True
+    quick_interactions._worker_call = MagicMock(
+        side_effect=lambda action, **payload: (
+            accepted_worker_task(payload["task"])
+            if action == "isolated_codex_submit"
+            else {"success": True, "data": {}}
+        )
+    )
+    return quick_interactions
+
+
+def worker_manager(
+    tmp_path: Path,
+    settings,
+    completion_notifier=None,
+) -> QuickInteractionManager:
+    quick_interactions = manager(
+        tmp_path,
+        completion_notifier=completion_notifier,
+    )
+    quick_interactions.worker_settings = settings
+    quick_interactions._recovery_ready = False
+    return quick_interactions
+
+
+def accepted_worker_task(submission: dict[str, object]) -> dict[str, object]:
+    now = utc_now()
+    prompt = submission["prompt"]
+    assert isinstance(prompt, str)
+    return {
+        "success": True,
+        "data": {
+            "task": {
+                "task_id": submission["task_id"],
+                "status": "accepted",
+                "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+                "created_at": now.isoformat(),
+                "updated_at": now.isoformat(),
+                "deadline_at": (now + timedelta(minutes=5)).isoformat(),
+                "worker_generation": "generation-1",
+                "runner_pid": None,
+                "cancellation_requested": False,
+                "restart_sensitive": submission.get("restart_sensitive", False),
+            }
+        },
+    }
 
 
 def test_quick_interaction_timeout_is_configurable(tmp_path: Path) -> None:
@@ -62,50 +116,6 @@ def test_quick_interaction_timeout_is_configurable(tmp_path: Path) -> None:
 
     assert quick_interactions.timeout_seconds == 21_600
     assert configured.timeout_seconds == 7_200
-
-
-def test_runtime_attachments_are_private(tmp_path: Path) -> None:
-    attachments = [tmp_path / "task.err", tmp_path / "task.jsonl"]
-    for path in attachments:
-        path.write_text("runtime output", encoding="utf-8")
-        path.chmod(0o664)
-
-    QuickInteractionManager._set_private_permissions(*attachments)
-
-    assert all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in attachments)
-
-
-def test_command_creates_or_resumes_codex_session(tmp_path: Path) -> None:
-    quick_interactions = manager(tmp_path)
-    session = quick_interactions.codex_manager.get_session.return_value
-
-    new_command = quick_interactions._command(
-        session.model_copy(update={"codex_session_id": None}),
-        tmp_path / "new-result.txt",
-    )
-    resume_command = quick_interactions._command(
-        session,
-        tmp_path / "resume-result.txt",
-    )
-
-    assert new_command[-1] == "-"
-    assert "resume" not in new_command
-    assert resume_command[-3:] == ["resume", "codex-session-1", "-"]
-
-
-def test_command_adds_session_model_and_reasoning_level(tmp_path: Path) -> None:
-    quick_interactions = manager(tmp_path)
-    session = quick_interactions.codex_manager.get_session.return_value.model_copy(
-        update={"model": "gpt-test", "reasoning_effort": "high"}
-    )
-
-    command = quick_interactions._command(session, tmp_path / "result.txt")
-
-    assert ["--model", "gpt-test"] == command[
-        command.index("--model") : command.index("--model") + 2
-    ]
-    assert 'model_reasoning_effort="high"' in command
-    assert command[-3:] == ["resume", "codex-session-1", "-"]
 
 
 def test_codex_execution_prompt_adds_delivery_guidance_without_changing_request(
@@ -133,18 +143,6 @@ def test_result_suffix_stays_within_persisted_limit(tmp_path: Path) -> None:
     assert result.endswith("本次处理已完成，即将重启 Chub 服务。")
 
 
-def test_restart_result_explains_waiting_for_other_quick_tasks(tmp_path: Path) -> None:
-    quick_interactions = manager(tmp_path)
-
-    assert quick_interactions._deferred_restart_suffix(0) == (
-        "本次处理已完成，即将重启 Chub 服务。"
-    )
-    assert quick_interactions._deferred_restart_suffix(2) == (
-        "本次处理已完成，已安排重启；正在等待其他 2 个快速交互结束，"
-        "全部完成后将自动重启 Chub。"
-    )
-
-
 def test_session_title_uses_first_user_request_line(tmp_path: Path) -> None:
     quick_interactions = manager(tmp_path)
 
@@ -162,12 +160,12 @@ def test_task_summary_is_stable_bounded_and_redacted() -> None:
     )
     for prompt in sensitive_prompts:
         summary = build_task_summary(prompt)
-        assert len(summary) <= 13
+        assert len(summary) <= 20
         assert "secret-token" not in summary
         assert "private" not in summary
         assert "session=" not in summary
-    assert build_task_summary("任务" * 100) == "任务" * 6 + "…"
-    assert build_task_summary("检查 Ubuntu 服务状态") == "检查 Ubuntu 服务…"
+    assert build_task_summary("任务" * 100) == "任务" * 9 + "任…"
+    assert build_task_summary("检查 Ubuntu 服务状态") == "检查 Ubuntu 服务状态"
 
 
 def test_submit_allows_new_session_and_prepares_managed_profile(
@@ -246,6 +244,525 @@ def test_submit_persistence_failure_rolls_back_registration(
     assert quick_interactions._tasks == {}
 
 
+def test_isolated_worker_maps_page_weixin_and_translation_to_one_protocol(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    quick_interactions = manager(tmp_path)
+    quick_interactions.worker_settings = SimpleNamespace()
+    quick_interactions.codex_manager.get_session.return_value.codex_session_id = (
+        "11111111-1111-4111-8111-111111111111"
+    )
+    submissions: list[dict[str, object]] = []
+
+    def worker_call(action: str, **payload: object) -> dict[str, object]:
+        assert action == "isolated_codex_submit"
+        task = payload["task"]
+        assert isinstance(task, dict)
+        submissions.append(task)
+        return accepted_worker_task(task)
+
+    quick_interactions._worker_call = MagicMock(side_effect=worker_call)
+    thread = MagicMock()
+    monkeypatch.setattr(
+        "app.codex.quick_interactions.threading.Thread",
+        MagicMock(return_value=thread),
+    )
+    session = quick_interactions.codex_manager.get_session.return_value
+    session.codex_session_id = "11111111-1111-4111-8111-111111111111"
+
+    page = quick_interactions.submit(
+        session.id,
+        "page",
+        operation_id="page-operation",
+        source_ip="127.0.0.1",
+    )
+    quick_interactions._active_task_ids.clear()
+    quick_interactions._running_sessions.clear()
+    route = QuickInteractionWeixinRoute(
+        account_id="weixin-account",
+        recipient="owner@im.wechat",
+    )
+    weixin = quick_interactions.submit(
+        session.id,
+        "weixin",
+        operation_id="weixin-operation",
+        source_ip="127.0.0.1",
+        notification_route=route,
+    )
+    quick_interactions._active_task_ids.clear()
+    quick_interactions._running_sessions.clear()
+    session.permission_mode = "read-only"
+    translation = quick_interactions.submit(
+        session.id,
+        "translation",
+        operation_id="translation-operation",
+        source_ip="127.0.0.1",
+        notification_route=route,
+        kind="translation",
+    )
+
+    assert [item["task_kind"] for item in submissions] == [
+        "standard",
+        "weixin",
+        "translation",
+    ]
+    assert all(task.worker_task_id for task in (page, weixin, translation))
+    assert submissions[2]["queue_key"] == "weixin-translation"
+    assert submissions[2]["permission_mode"] == "read-only"
+    assert thread.start.call_count == 3
+
+
+def test_isolated_worker_unavailable_fails_without_web_runner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    quick_interactions = manager(tmp_path)
+    quick_interactions.worker_settings = SimpleNamespace()
+    quick_interactions.codex_manager.get_session.return_value.codex_session_id = (
+        "11111111-1111-4111-8111-111111111111"
+    )
+    quick_interactions._worker_call = MagicMock(
+        side_effect=WorkerRequestNotSent("worker down")
+    )
+    with pytest.raises(ApiError) as error:
+        quick_interactions.submit(
+            "session-1",
+            "do not fall back",
+            operation_id="operation-1",
+            source_ip="127.0.0.1",
+        )
+
+    assert error.value.code == "quick_worker_unavailable"
+    assert not hasattr(quick_interactions, "_processes")
+    assert quick_interactions._tasks == {}
+
+
+def test_failed_sensitive_submission_rechecks_deferred_restart(
+    tmp_path: Path,
+) -> None:
+    deferred_restart = MagicMock()
+    quick_interactions = manager(tmp_path, deferred_restart=deferred_restart)
+    quick_interactions._worker_call = MagicMock(
+        side_effect=WorkerRequestNotSent("worker down")
+    )
+
+    with pytest.raises(ApiError):
+        quick_interactions.submit(
+            "session-1",
+            "do not fall back",
+            operation_id="operation-1",
+            source_ip="127.0.0.1",
+        )
+
+    deferred_restart.maybe_schedule.assert_called_once_with()
+
+
+def test_isolated_worker_submit_response_loss_reconciles_without_releasing_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    quick_interactions = manager(tmp_path)
+    quick_interactions.worker_settings = SimpleNamespace()
+    quick_interactions.codex_manager.get_session.return_value.codex_session_id = (
+        "11111111-1111-4111-8111-111111111111"
+    )
+    calls = iter(
+        [
+            OSError("submit response lost"),
+            OSError("retry response lost"),
+            {
+                "success": True,
+                "data": {"task": {}},
+            },
+            {"success": True, "data": {"task": {"status": "cancelled"}}},
+        ]
+    )
+
+    def worker_call(_action: str, **_payload: object) -> dict[str, object]:
+        result = next(calls)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    quick_interactions._worker_call = MagicMock(side_effect=worker_call)
+    reconciler_started = threading.Event()
+    reconciler_release = threading.Event()
+
+    def start_reconciler(task, session, submission) -> None:
+        reconciler_started.set()
+        assert quick_interactions.is_running(session.id) is True
+        reconciler_release.wait(1)
+        quick_interactions._reconcile_uncertain_submission(
+            task.id,
+            session,
+            submission,
+        )
+
+    monkeypatch.setattr(
+        quick_interactions,
+        "_start_uncertain_submission_reconciler",
+        start_reconciler,
+    )
+    reconciler_release.set()
+
+    with pytest.raises(ApiError) as error:
+        quick_interactions.submit(
+            "session-1",
+            "uncertain submission",
+            operation_id="operation-1",
+            source_ip="127.0.0.1",
+        )
+
+    assert reconciler_started.is_set()
+    assert error.value.code == "quick_worker_submission_uncertain"
+    task = next(iter(quick_interactions._tasks.values()))
+    assert task.status == "failed"
+    assert quick_interactions.is_running("session-1") is False
+
+
+def test_isolated_worker_accepts_wrapped_8000_character_prompt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    quick_interactions = manager(tmp_path)
+    quick_interactions.worker_settings = SimpleNamespace()
+    quick_interactions.codex_manager.get_session.return_value.codex_session_id = (
+        "11111111-1111-4111-8111-111111111111"
+    )
+    quick_interactions._worker_call = MagicMock(
+        side_effect=lambda _action, **payload: accepted_worker_task(payload["task"])
+    )
+    thread = MagicMock()
+    monkeypatch.setattr(
+        "app.codex.quick_interactions.threading.Thread",
+        MagicMock(return_value=thread),
+    )
+
+    task = quick_interactions.submit(
+        "session-1",
+        "𠮷" * 8_000,
+        operation_id="operation-long-prompt",
+        source_ip="127.0.0.1",
+    )
+
+    submission = quick_interactions._worker_call.call_args.kwargs["task"]
+    assert task.worker_task_id is not None
+    assert len(submission["prompt"]) > 8_000
+    assert len(submission["prompt"].encode("utf-8")) < 48 * 1024
+
+
+def test_isolated_worker_accepts_json_escaped_8000_character_translation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    quick_interactions = manager(tmp_path)
+    quick_interactions.worker_settings = SimpleNamespace()
+    quick_interactions.codex_manager.get_session.return_value.codex_session_id = (
+        "11111111-1111-4111-8111-111111111111"
+    )
+    quick_interactions.codex_manager.get_session.return_value.permission_mode = "read-only"
+    quick_interactions._worker_call = MagicMock(
+        side_effect=lambda _action, **payload: accepted_worker_task(payload["task"])
+    )
+    thread = MagicMock()
+    monkeypatch.setattr(
+        "app.codex.quick_interactions.threading.Thread",
+        MagicMock(return_value=thread),
+    )
+    original = "\x00" * 8_000
+    prompt = TRANSLATION_PROMPT.format(
+        source_json=json.dumps(original, ensure_ascii=False)
+    )
+
+    task = quick_interactions.submit(
+        "session-1",
+        prompt,
+        operation_id="operation-escaped-translation",
+        source_ip="127.0.0.1",
+        kind="translation",
+        translation_original=original,
+    )
+
+    submission = quick_interactions._worker_call.call_args.kwargs["task"]
+    assert task.worker_task_id is not None
+    assert task.prompt == original
+    assert len(submission["prompt"]) > 48_000
+    assert len(submission["prompt"].encode("utf-8")) < 56 * 1024
+
+
+def test_isolated_worker_success_merges_deferred_restart_request(
+    tmp_path: Path,
+) -> None:
+    deferred_restart = MagicMock()
+    deferred_restart.request.return_value = SimpleNamespace(
+        operation_id="operation-1:restart",
+        created=True,
+    )
+    quick_interactions = manager(tmp_path, deferred_restart=deferred_restart)
+    task = QuickInteractionTask(
+        id="task-1",
+        worker_task_id="qw-1750000000000-00000000000000000000000000000001",
+        session_id="session-1",
+        prompt="修改配置并重启",
+        status="running",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    quick_interactions._tasks[task.id] = task
+    quick_interactions._active_task_ids.add(task.id)
+    other = QuickInteractionTask(
+        id="task-2",
+        session_id="session-2",
+        prompt="仍在修改 Chub",
+        status="running",
+        restart_sensitive=True,
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    quick_interactions._tasks[other.id] = other
+    quick_interactions._active_task_ids.add(other.id)
+    quick_interactions._operations[task.id] = ("operation-1", "127.0.0.1")
+    request_path = (
+        quick_interactions.restart_request_dir / f"{task.worker_task_id}.request"
+    )
+    request_path.touch(mode=0o600)
+    snapshot = SimpleNamespace(
+        status="succeeded",
+        result="功能已完成。",
+        error=None,
+        error_code=None,
+    )
+
+    quick_interactions._finish_from_worker_snapshot(task.id, task, snapshot)
+
+    finished = quick_interactions.get(task.id)
+    assert finished.result == (
+        "功能已完成。\n\n本次处理已完成，即将重启 Chub 服务。"
+    )
+    assert finished.deferred_restart_status == "pending"
+    deferred_restart.request.assert_called_once_with(
+        operation_id="operation-1:restart",
+        task_id="task-1",
+        source_ip="127.0.0.1",
+    )
+    assert not request_path.exists()
+
+
+@pytest.mark.anyio
+async def test_isolated_business_adapter_runs_page_weixin_and_translation_via_worker(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    native_id = "11111111-1111-4111-8111-111111111111"
+    monkeypatch.setenv("FAKE_CODEX_SESSION_ID", native_id)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    executable = tmp_path / "fake-codex"
+    executable.write_text(
+        """#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+args = sys.argv[1:]
+result_path = Path(args[args.index("--output-last-message") + 1])
+native_id = args[args.index("resume") + 1] if "resume" in args else os.environ["FAKE_CODEX_SESSION_ID"]
+prompt = sys.stdin.read()
+print(json.dumps({"type": "thread.started", "thread_id": native_id}), flush=True)
+if "SOURCE_JSON:" in prompt:
+    result = "润色：\\n清晰中文\\n\\nEnglish：\\nClear English"
+else:
+    result = f"result:{prompt}"
+result_path.write_text(result, encoding="utf-8")
+""",
+        encoding="utf-8",
+    )
+    executable.chmod(0o700)
+    server = QuickWorkerServer(
+        settings,
+        allow_test_tasks=True,
+        codex_workspaces={"isolated": workspace},
+        codex_executable=executable,
+        codex_home=tmp_path / "codex-home",
+    )
+    await server.start()
+    try:
+        quick_interactions = manager(tmp_path)
+        quick_interactions.worker_settings = settings
+        del quick_interactions._worker_call
+        session = quick_interactions.codex_manager.get_session.return_value
+        session.workspace_id = "isolated"
+        session.cwd = workspace
+        session.codex_session_id = native_id
+        quick_interactions.codex_manager.bind_quick_interaction_native_session = MagicMock()
+        route = QuickInteractionWeixinRoute(
+            account_id="weixin-account",
+            recipient="owner@im.wechat",
+        )
+        submissions = (
+            ("page-session", "page", None, "standard"),
+            ("weixin-session", "weixin", route, "standard"),
+            (
+                "translation-session",
+                TRANSLATION_PROMPT.format(source_json='"translation"'),
+                route,
+                "translation",
+            ),
+        )
+        completed = []
+        for session_id, prompt, notification_route, kind in submissions:
+            session.id = session_id
+            session.permission_mode = "read-only" if kind == "translation" else "auto-review"
+            task = await asyncio.to_thread(
+                quick_interactions.submit,
+                session_id,
+                prompt,
+                operation_id=f"operation-{kind}-{session_id}",
+                source_ip="127.0.0.1",
+                notification_route=notification_route,
+                kind=kind,
+            )
+            deadline = asyncio.get_running_loop().time() + 5
+            while asyncio.get_running_loop().time() < deadline:
+                snapshot = quick_interactions.get(task.id)
+                if snapshot.status not in {"requested", "running"}:
+                    completed.append(snapshot)
+                    break
+                await asyncio.sleep(0.02)
+            else:
+                raise AssertionError("Worker-backed business task did not finish")
+
+        assert [task.status for task in completed] == ["succeeded"] * 3
+        assert [
+            server.task_manager.get(task.worker_task_id or "").status
+            for task in completed
+        ] == ["succeeded"] * 3
+        translation_spec = server.task_manager._read_spec(
+            completed[2].worker_task_id or ""
+        )
+        assert translation_spec.permission_mode == "read-only"
+        assert completed[2].result == "润色：\n清晰中文\n\nEnglish：\nClear English"
+        quick_interactions.close()
+    finally:
+        await server.close()
+
+
+@pytest.mark.anyio
+async def test_isolated_web_manager_restart_recovers_running_worker_task(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    native_id = "11111111-1111-4111-8111-111111111111"
+    monkeypatch.setenv("FAKE_CODEX_SESSION_ID", native_id)
+    monkeypatch.setenv("FAKE_CODEX_DELAY", "0.5")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    executable = tmp_path / "fake-codex-recovery"
+    executable.write_text(
+        """#!/usr/bin/env python3
+import json
+import os
+import sys
+import time
+from pathlib import Path
+args = sys.argv[1:]
+result_path = Path(args[args.index("--output-last-message") + 1])
+native_id = os.environ["FAKE_CODEX_SESSION_ID"]
+prompt = sys.stdin.read()
+print(json.dumps({"type": "thread.started", "thread_id": native_id}), flush=True)
+time.sleep(float(os.environ["FAKE_CODEX_DELAY"]))
+result_path.write_text(f"recovered:{prompt}", encoding="utf-8")
+""",
+        encoding="utf-8",
+    )
+    executable.chmod(0o700)
+    server = QuickWorkerServer(
+        settings,
+        allow_test_tasks=True,
+        codex_workspaces={"isolated": workspace},
+        codex_executable=executable,
+        codex_home=tmp_path / "codex-home",
+    )
+    await server.start()
+
+    def codex_manager() -> MagicMock:
+        value = MagicMock()
+        value.get_session.return_value = CodexSession(
+            id="session-1",
+            workspace_id="isolated",
+            workspace_name="Isolated",
+            cwd=workspace,
+            codex_session_id=native_id,
+            status="stopped",
+            permission_mode="read-only",
+        )
+        value.has_active_writer.return_value = False
+        value.hook_dir = tmp_path / "hooks"
+        return value
+
+    def new_manager() -> QuickInteractionManager:
+        return QuickInteractionManager(
+            tmp_path / "codex-sessions.json",
+            tmp_path / "runtime",
+            codex_manager(),
+            worker_settings=settings,
+        )
+
+    first = new_manager()
+    second = None
+    try:
+        await asyncio.to_thread(first.start_worker_reconciliation)
+        task = await asyncio.to_thread(
+            first.submit,
+            "session-1",
+            "跨 Web 恢复",
+            operation_id="operation-recovery",
+            source_ip="127.0.0.1",
+        )
+        deadline = asyncio.get_running_loop().time() + 2
+        while asyncio.get_running_loop().time() < deadline:
+            if first.get(task.id).status == "running":
+                break
+            await asyncio.sleep(0.02)
+        assert first.is_running("session-1") is True
+        generation = server.generation
+        first.close()
+
+        second = new_manager()
+        assert second.get(task.id).status in {"requested", "running"}
+        assert second.is_running("session-1") is True
+        await asyncio.to_thread(second.start_worker_reconciliation)
+        with second.session_operation_guard("other-session"):
+            pass
+        deadline = asyncio.get_running_loop().time() + 3
+        while asyncio.get_running_loop().time() < deadline:
+            recovered = second.get(task.id)
+            delivery_path = (
+                server.task_manager.tasks_dir
+                / (task.worker_task_id or "")
+                / "delivery.json"
+            )
+            if recovered.status == "succeeded" and delivery_path.is_file():
+                break
+            await asyncio.sleep(0.02)
+        else:
+            raise AssertionError("Recovered Web manager did not merge the Worker result")
+
+        assert recovered.result is not None
+        assert recovered.result.count("recovered:") == 1
+        assert second.is_running("session-1") is False
+        assert server.generation == generation
+        assert delivery_path.is_file()
+    finally:
+        first.close()
+        if second is not None:
+            second.close()
+        await server.close()
+
+
 @pytest.mark.parametrize(
     "result",
     [
@@ -261,30 +778,6 @@ def test_translation_result_validation_rejects_invalid_shapes(result: str) -> No
 def test_translation_result_validation_accepts_exact_nonempty_sections() -> None:
     assert QuickInteractionManager._valid_translation_result(
         "润色：\n清晰中文\n\nEnglish：\nClear English"
-    )
-
-
-def test_json_error_extracts_turn_failure_and_redacts_bearer(tmp_path: Path) -> None:
-    path = tmp_path / "events.jsonl"
-    path.write_text(
-        "\n".join(
-            [
-                json.dumps({"type": "turn.started"}),
-                json.dumps(
-                    {
-                        "type": "turn.failed",
-                        "error": {
-                            "message": "Usage limit reached Bearer secret-token"
-                        },
-                    }
-                ),
-            ]
-        ),
-        encoding="utf-8",
-    )
-
-    assert QuickInteractionManager._json_error(path) == (
-        "Usage limit reached Bearer [REDACTED]"
     )
 
 
@@ -457,7 +950,7 @@ def test_weixin_notification_route_is_private_and_survives_restart(
     assert reloaded.get(task.id).notification_route == "weixin-task"
     assert reloaded._notification_routes[task.id] == route
 
-def test_restart_marks_running_task_failed_and_persists_state(tmp_path: Path) -> None:
+def test_restart_rejects_active_task_without_worker_identity(tmp_path: Path) -> None:
     state = tmp_path / "quick-interactions.json"
     task = QuickInteractionTask(
         id="task-1",
@@ -474,13 +967,11 @@ def test_restart_marks_running_task_failed_and_persists_state(tmp_path: Path) ->
 
     quick_interactions = manager(tmp_path)
 
-    assert quick_interactions.get("task-1").status == "failed"
-    persisted = json.loads(state.read_text(encoding="utf-8"))
-    assert persisted[0]["status"] == "failed"
-    assert persisted[0]["error"] == "服务重启导致正在执行的任务中断，请重新提交任务。"
-    quick_interactions.codex_manager.recover_interrupted_quick_interaction.assert_called_once_with(
-        "session-1"
-    )
+    assert quick_interactions.get("task-1").status == "running"
+    assert quick_interactions.recovery_error is None
+    quick_interactions.start_worker_reconciliation()
+    assert quick_interactions.recovery_ready is False
+    assert quick_interactions.recovery_error is not None
 
 
 def test_restart_marks_incomplete_notification_failed(tmp_path: Path) -> None:
@@ -503,6 +994,533 @@ def test_restart_marks_incomplete_notification_failed(tmp_path: Path) -> None:
     assert recovered.status == "succeeded"
     assert recovered.notification_status == "failed"
     assert recovered.notification_error == "服务重启时微信通知未完成。"
+
+
+def test_worker_restart_preserves_active_task_and_pending_notification(
+    settings,
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "quick-interactions.json"
+    task = QuickInteractionTask(
+        id="task-1",
+        worker_task_id="qw-1750000000000-11111111111111111111111111111111",
+        session_id="session-1",
+        prompt="检查状态",
+        status="running",
+        notification_status="pending",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    state.write_text(json.dumps([task.model_dump(mode="json")]), encoding="utf-8")
+
+    codex_manager = MagicMock()
+    recovered = QuickInteractionManager(
+        tmp_path / "codex-sessions.json",
+        tmp_path / "runtime",
+        codex_manager,
+        MagicMock(),
+        worker_settings=settings,
+    )
+
+    assert recovered.get(task.id).status == "running"
+    assert recovered.get(task.id).notification_status == "pending"
+    assert recovered.is_running(task.session_id) is True
+    codex_manager.recover_interrupted_quick_interaction.assert_not_called()
+
+
+def test_worker_recovery_barrier_fails_session_writes_closed(
+    settings,
+    tmp_path: Path,
+) -> None:
+    quick_interactions = worker_manager(tmp_path, settings)
+
+    with pytest.raises(ApiError) as error:
+        with quick_interactions.session_operation_guard("session-1"):
+            pass
+    assert error.value.status_code == 503
+    assert error.value.code == "quick_worker_recovery_unavailable"
+    with quick_interactions.terminal_input_guard("session-1") as allowed:
+        assert allowed is False
+
+
+def test_worker_reconciliation_merges_once_and_acknowledges_after_persistence(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    quick_interactions = worker_manager(tmp_path, settings)
+    task = QuickInteractionTask(
+        id="task-1",
+        worker_task_id="qw-1750000000000-22222222222222222222222222222222",
+        session_id="session-1",
+        prompt="检查状态",
+        status="running",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    quick_interactions._tasks[task.id] = task
+    quick_interactions._active_task_ids.add(task.id)
+    quick_interactions._running_sessions.add(task.session_id)
+    quick_interactions._task_done_events[task.id] = threading.Event()
+    quick_interactions._operations[task.id] = ("operation-1", "127.0.0.1")
+    quick_interactions._write()
+    now = utc_now()
+    summary = {
+        "task_id": task.worker_task_id,
+        "status": "succeeded",
+        "prompt_sha256": "a" * 64,
+        "session_id": task.session_id,
+        "task_kind": "standard",
+        "native_session_id": "11111111-1111-4111-8111-111111111111",
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat(),
+    }
+    view = {
+        "task_id": task.worker_task_id,
+        "status": "succeeded",
+        "prompt_sha256": "a" * 64,
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat(),
+        "deadline_at": (now + timedelta(minutes=5)).isoformat(),
+        "worker_generation": "generation-1",
+        "runner_pid": None,
+        "cancellation_requested": False,
+        "result": "恢复后的唯一结果",
+        "error": None,
+        "error_code": None,
+        "exit_code": 0,
+    }
+    calls = []
+
+    def worker_call(action: str, **_payload):
+        calls.append(action)
+        if action == "task_list":
+            return {"success": True, "data": {"tasks": []}}
+        if action == "task_get":
+            return {"success": True, "data": {"task": view}}
+        if action == "task_acknowledge":
+            persisted = json.loads(quick_interactions.path.read_text(encoding="utf-8"))
+            assert persisted[0]["result"] == "恢复后的唯一结果"
+            return {"success": True, "data": {"delivery": {}}}
+        raise AssertionError(action)
+
+    monkeypatch.setattr(quick_interactions, "_worker_call", worker_call)
+    quick_interactions.codex_manager.get_session.return_value = (
+        quick_interactions.codex_manager.get_session.return_value
+    )
+
+    quick_interactions._reconcile_worker_once(initial=True)
+    quick_interactions._reconcile_worker_once(initial=False)
+
+    finished = quick_interactions.get(task.id)
+    assert finished.status == "succeeded"
+    assert finished.result == "恢复后的唯一结果"
+    assert calls.count("task_acknowledge") == 1
+    assert quick_interactions.is_running(task.session_id) is False
+    assert quick_interactions.recovery_ready is True
+
+
+def test_worker_reconciliation_not_found_delivers_failure_notification(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    notifier = MagicMock(return_value=SimpleNamespace(status="sent", error=None))
+    quick_interactions = worker_manager(
+        tmp_path,
+        settings,
+        completion_notifier=notifier,
+    )
+    task = QuickInteractionTask(
+        id="task-1",
+        worker_task_id="qw-1750000000000-22222222222222222222222222222222",
+        session_id="session-1",
+        prompt="检查状态",
+        status="running",
+        notification_route="weixin-task",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    route = QuickInteractionWeixinRoute(
+        account_id="weixin-account",
+        recipient="owner@im.wechat",
+    )
+    quick_interactions._tasks[task.id] = task
+    quick_interactions._notification_routes[task.id] = route
+    quick_interactions._active_task_ids.add(task.id)
+    quick_interactions._running_sessions.add(task.session_id)
+    quick_interactions._task_done_events[task.id] = threading.Event()
+    quick_interactions._operations[task.id] = ("operation-1", "127.0.0.1")
+    quick_interactions._operation_contexts[task.id] = QuickInteractionOperationContext(
+        operation_id="operation-1",
+        source_ip="127.0.0.1",
+    )
+
+    class ImmediateThread:
+        def __init__(self, *, target, args, daemon, name=None):
+            self.target = target
+            self.args = args
+
+        def start(self) -> None:
+            self.target(*self.args)
+
+    monkeypatch.setattr(
+        "app.codex.quick_interactions.threading.Thread",
+        ImmediateThread,
+    )
+    monkeypatch.setattr(
+        quick_interactions,
+        "_worker_call",
+        MagicMock(
+            return_value={
+                "success": False,
+                "error": {"code": "worker_task_not_found"},
+            }
+        ),
+    )
+
+    quick_interactions._reconcile_worker_task(task.id)
+
+    failed = quick_interactions.get(task.id)
+    assert failed.status == "failed"
+    assert failed.notification_status == "sent"
+    assert quick_interactions.is_running(task.session_id) is False
+    notifier.assert_called_once()
+
+
+def test_worker_recovery_ready_waits_for_recovery_handler(
+    settings,
+    tmp_path: Path,
+) -> None:
+    quick_interactions = worker_manager(tmp_path, settings)
+    quick_interactions._worker_call = MagicMock(
+        return_value={"success": True, "data": {"tasks": []}}
+    )
+
+    def fail_recovery_handler() -> None:
+        assert quick_interactions.recovery_ready is False
+        raise OSError("translation recovery failed")
+
+    quick_interactions.set_recovery_ready_handler(fail_recovery_handler)
+
+    with pytest.raises(OSError, match="translation recovery failed"):
+        quick_interactions._reconcile_worker_once(initial=True)
+
+    assert quick_interactions.recovery_ready is False
+
+
+def test_worker_recovery_retries_deferred_restart_after_barrier_opens(
+    settings,
+    tmp_path: Path,
+) -> None:
+    quick_interactions = worker_manager(tmp_path, settings)
+    quick_interactions._worker_call = MagicMock(
+        return_value={"success": True, "data": {"tasks": []}}
+    )
+    deferred_restart = MagicMock()
+    deferred_restart.maybe_schedule.side_effect = (
+        lambda: quick_interactions.recovery_ready
+    )
+    quick_interactions.deferred_restart = deferred_restart
+
+    quick_interactions._reconcile_worker_once(initial=True)
+
+    assert quick_interactions.recovery_ready is True
+    deferred_restart.maybe_schedule.assert_called_once_with()
+
+
+def test_resident_reconciliation_does_not_race_worker_submission(
+    settings,
+    tmp_path: Path,
+) -> None:
+    quick_interactions = worker_manager(tmp_path, settings)
+    quick_interactions._recovery_ready = True
+    quick_interactions._resident_reconciler_started = True
+    quick_interactions.codex_manager.get_session.return_value.codex_session_id = (
+        "11111111-1111-4111-8111-111111111111"
+    )
+    submit_entered = threading.Event()
+    submit_release = threading.Event()
+    submitted: list[QuickInteractionTask] = []
+    errors: list[BaseException] = []
+
+    def worker_call(action: str, **payload):
+        if action == "isolated_codex_submit":
+            submit_entered.set()
+            assert submit_release.wait(1)
+            return accepted_worker_task(payload["task"])
+        if action == "task_list":
+            return {"success": True, "data": {"tasks": []}}
+        raise AssertionError(action)
+
+    quick_interactions._worker_call = worker_call
+
+    def submit() -> None:
+        try:
+            submitted.append(
+                quick_interactions.submit(
+                    "session-1",
+                    "提交竞态",
+                    operation_id="operation-race",
+                    source_ip="127.0.0.1",
+                )
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    thread = threading.Thread(target=submit)
+    thread.start()
+    assert submit_entered.wait(1), errors
+
+    quick_interactions._reconcile_worker_once(initial=False)
+    task = next(iter(quick_interactions._tasks.values()))
+    assert task.status == "requested"
+    assert task.id in quick_interactions._submitting_task_ids
+    assert task.id not in quick_interactions._worker_delivery_confirmed
+
+    submit_release.set()
+    thread.join(timeout=1)
+    assert thread.is_alive() is False
+    assert errors == []
+    assert submitted == [task]
+    assert task.id not in quick_interactions._submitting_task_ids
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "not-json",
+        json.dumps({"tasks": []}),
+        json.dumps([{"id": "broken"}]),
+    ],
+)
+def test_worker_recovery_fails_closed_on_invalid_web_state(
+    settings,
+    tmp_path: Path,
+    payload: str,
+) -> None:
+    state = tmp_path / "quick-interactions.json"
+    state.write_text(payload, encoding="utf-8")
+    original = state.read_text(encoding="utf-8")
+    recovered = QuickInteractionManager(
+        tmp_path / "codex-sessions.json",
+        tmp_path / "runtime",
+        MagicMock(),
+        worker_settings=settings,
+    )
+    recovered._worker_call = MagicMock(
+        return_value={"success": True, "data": {"tasks": []}}
+    )
+
+    with pytest.raises(OSError):
+        recovered._reconcile_worker_once(initial=True)
+
+    assert recovered.recovery_ready is False
+    assert state.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.parametrize("invalid_kind", ["non_utf8", "oversized", "symlink"])
+def test_worker_recovery_fails_closed_on_unsafe_web_state_file(
+    settings,
+    tmp_path: Path,
+    invalid_kind: str,
+) -> None:
+    state = tmp_path / "quick-interactions.json"
+    if invalid_kind == "non_utf8":
+        state.write_bytes(b"\xff")
+    elif invalid_kind == "oversized":
+        with state.open("wb") as state_file:
+            state_file.seek(MAX_QUICK_INTERACTION_STATE_BYTES)
+            state_file.write(b"x")
+    else:
+        target = tmp_path / "state-target.json"
+        target.write_text("[]", encoding="utf-8")
+        state.symlink_to(target)
+
+    recovered = QuickInteractionManager(
+        tmp_path / "codex-sessions.json",
+        tmp_path / "runtime",
+        MagicMock(),
+        worker_settings=settings,
+    )
+
+    with pytest.raises(OSError):
+        recovered._reconcile_worker_once(initial=True)
+
+
+def test_worker_recovery_rejects_mismatched_task_identity(
+    settings,
+    tmp_path: Path,
+) -> None:
+    quick_interactions = worker_manager(tmp_path, settings)
+    task = QuickInteractionTask(
+        id="task-1",
+        worker_task_id="qw-1750000000000-33333333333333333333333333333333",
+        session_id="session-1",
+        prompt="身份校验",
+        status="running",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    now = utc_now()
+    quick_interactions._tasks[task.id] = task
+    quick_interactions._worker_call = MagicMock(
+        return_value={
+            "success": True,
+            "data": {
+                "task": {
+                    "task_id": "qw-1750000000000-44444444444444444444444444444444",
+                    "status": "running",
+                    "prompt_sha256": "a" * 64,
+                    "created_at": now.isoformat(),
+                    "updated_at": now.isoformat(),
+                    "deadline_at": (now + timedelta(minutes=5)).isoformat(),
+                    "worker_generation": "generation-1",
+                    "runner_pid": 123,
+                    "cancellation_requested": False,
+                }
+            },
+        }
+    )
+
+    with pytest.raises(OSError, match="mismatched task metadata"):
+        quick_interactions._reconcile_worker_task(task.id)
+
+
+def test_worker_operation_log_projection_is_persisted_and_idempotent(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    quick_interactions = worker_manager(tmp_path, settings)
+    task = QuickInteractionTask(
+        id="task-1",
+        worker_task_id="qw-1750000000000-55555555555555555555555555555555",
+        session_id="session-1",
+        prompt="日志恢复",
+        status="timed_out",
+        error="已超时",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    quick_interactions._tasks[task.id] = task
+    quick_interactions._operation_contexts[task.id] = (
+        QuickInteractionOperationContext(
+            operation_id="operation-log",
+            source_ip="127.0.0.1",
+        )
+    )
+    quick_interactions._operations[task.id] = ("operation-log", "127.0.0.1")
+    logged: list[str] = []
+    monkeypatch.setattr(
+        "app.codex.quick_interactions.write_operation",
+        lambda **payload: logged.append(payload["status"]),
+    )
+
+    quick_interactions._log_status(task.id, task.status, task.session_id)
+    quick_interactions._log_status(task.id, task.status, task.session_id)
+
+    assert logged == ["failed"]
+    persisted = json.loads(quick_interactions.path.read_text(encoding="utf-8"))
+    assert persisted[0]["_operation_context"]["logged_statuses"] == ["failed"]
+
+
+def test_worker_reconciliation_recovers_missing_started_operation_log(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    quick_interactions = worker_manager(tmp_path, settings)
+    task = QuickInteractionTask(
+        id="task-1",
+        worker_task_id="qw-1750000000000-77777777777777777777777777777777",
+        session_id="session-1",
+        prompt="启动日志恢复",
+        status="running",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    quick_interactions._tasks[task.id] = task
+    quick_interactions._operation_contexts[task.id] = (
+        QuickInteractionOperationContext(
+            operation_id="operation-started",
+            source_ip="127.0.0.1",
+            logged_statuses=("requested",),
+        )
+    )
+    quick_interactions._operations[task.id] = ("operation-started", "127.0.0.1")
+    now = utc_now()
+    quick_interactions._worker_call = MagicMock(
+        return_value={
+            "success": True,
+            "data": {
+                "task": {
+                    "task_id": task.worker_task_id,
+                    "status": "running",
+                    "prompt_sha256": "a" * 64,
+                    "created_at": now.isoformat(),
+                    "updated_at": now.isoformat(),
+                    "deadline_at": (now + timedelta(minutes=5)).isoformat(),
+                    "worker_generation": "generation-1",
+                    "runner_pid": 123,
+                    "cancellation_requested": False,
+                }
+            },
+        }
+    )
+    logged: list[str] = []
+    monkeypatch.setattr(
+        "app.codex.quick_interactions.write_operation",
+        lambda **payload: logged.append(payload["status"]),
+    )
+
+    quick_interactions._reconcile_worker_task(task.id)
+    quick_interactions._reconcile_worker_task(task.id)
+
+    assert logged == ["started"]
+
+
+@pytest.mark.parametrize("missing_metadata", ["route", "operation"])
+def test_worker_recovery_fails_closed_on_missing_private_delivery_metadata(
+    settings,
+    tmp_path: Path,
+    missing_metadata: str,
+) -> None:
+    task = QuickInteractionTask(
+        id="task-1",
+        worker_task_id="qw-1750000000000-66666666666666666666666666666666",
+        session_id="session-1",
+        prompt="私有交付元数据",
+        status="running",
+        notification_route="weixin-task",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    payload = task.model_dump(mode="json")
+    if missing_metadata != "route":
+        payload["_notification_route"] = {
+            "account_id": "account",
+            "recipient": "owner@im.wechat",
+        }
+    if missing_metadata != "operation":
+        payload["_operation_context"] = {
+            "operation_id": "operation-private",
+            "source_ip": "127.0.0.1",
+        }
+    (tmp_path / "quick-interactions.json").write_text(
+        json.dumps([payload]),
+        encoding="utf-8",
+    )
+
+    recovered = QuickInteractionManager(
+        tmp_path / "codex-sessions.json",
+        tmp_path / "runtime",
+        MagicMock(),
+        worker_settings=settings,
+    )
+
+    with pytest.raises(OSError):
+        recovered._reconcile_worker_once(initial=True)
 
 
 def test_list_for_session_returns_latest_first(tmp_path: Path) -> None:
@@ -983,36 +2001,30 @@ def test_submit_rejects_active_native_writer(tmp_path: Path) -> None:
     assert error.value.code == "quick_interaction_writer_active"
 
 
-def test_active_writer_runtime_error_is_recognized() -> None:
-    assert QuickInteractionManager._is_active_writer_error(
-        "thread-store conflict: thread abc already has an active writer"
-    ) is True
-    assert QuickInteractionManager._is_active_writer_error(
-        "unrelated Codex failure"
-    ) is False
-
-
-def test_submit_rejects_new_task_while_restart_is_pending(tmp_path: Path) -> None:
+def test_submit_allows_new_task_while_restart_is_pending(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     deferred_restart = MagicMock()
     deferred_restart.pending.return_value = True
     quick_interactions = manager(
         tmp_path,
         deferred_restart=deferred_restart,
     )
+    monkeypatch.setattr(quick_interactions, "_start_worker_observer", MagicMock())
 
-    with pytest.raises(ApiError) as error:
-        quick_interactions.submit(
-            "session-1",
-            "检查状态",
-            operation_id="operation-1",
-            source_ip="127.0.0.1",
-        )
+    task = quick_interactions.submit(
+        "session-1",
+        "检查状态",
+        operation_id="operation-1",
+        source_ip="127.0.0.1",
+    )
 
-    assert error.value.code == "chub_restart_pending"
-    quick_interactions.codex_manager.prepare_quick_interaction.assert_not_called()
+    assert task.status == "requested"
+    quick_interactions.codex_manager.prepare_quick_interaction.assert_called_once()
 
 
-def test_deferred_restart_ready_waits_for_tasks_and_notifications(
+def test_deferred_restart_ready_waits_only_for_requesting_task_notifications(
     tmp_path: Path,
 ) -> None:
     quick_interactions = manager(tmp_path)
@@ -1023,21 +2035,56 @@ def test_deferred_restart_ready_waits_for_tasks_and_notifications(
         status="succeeded",
         result="完成",
         notification_status="sending",
+        restart_sensitive=False,
         created_at=utc_now(),
         updated_at=utc_now(),
     )
     quick_interactions._tasks[task.id] = task
+    request = DeferredRestartRequest(
+        operation_id="operation-1:restart",
+        requested_instance_id="instance-1",
+        requested_task_id=task.id,
+        source_ip="127.0.0.1",
+        requested_at=task.updated_at,
+        updated_at=task.updated_at,
+    )
 
-    assert quick_interactions.deferred_restart_ready() is False
+    assert quick_interactions.deferred_restart_ready(request) == "waiting"
+    coalesced = QuickInteractionTask(
+        id="task-2",
+        session_id="session-2",
+        prompt="also restart",
+        status="succeeded",
+        result="done",
+        notification_status="sending",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    quick_interactions._tasks[coalesced.id] = coalesced
+    quick_interactions._deferred_restart_contexts[coalesced.id] = (
+        QuickInteractionDeferredRestartContext(
+            operation_id="operation-2:restart",
+            coordinator_operation_id=request.operation_id,
+            source_ip="127.0.0.2",
+        )
+    )
     task.notification_status = "sent"
-    quick_interactions._active_task_ids.add(task.id)
-    assert quick_interactions.deferred_restart_ready() is False
-    quick_interactions._active_task_ids.clear()
-    assert quick_interactions.deferred_restart_ready() is True
+    assert quick_interactions.deferred_restart_ready(request) == "waiting"
+    coalesced.notification_status = "sent"
+    assert quick_interactions.deferred_restart_ready(request) == "ready"
 
 
 def test_deferred_restart_ready_ignores_translation_work(tmp_path: Path) -> None:
     quick_interactions = manager(tmp_path)
+    requester = QuickInteractionTask(
+        id="requester-1",
+        session_id="session-1",
+        prompt="restart",
+        status="succeeded",
+        result="done",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
     task = QuickInteractionTask(
         id="translation-1",
         session_id="translation-session",
@@ -1048,10 +2095,141 @@ def test_deferred_restart_ready_ignores_translation_work(tmp_path: Path) -> None
         created_at=utc_now(),
         updated_at=utc_now(),
     )
+    quick_interactions._tasks[requester.id] = requester
     quick_interactions._tasks[task.id] = task
     quick_interactions._active_task_ids.add(task.id)
+    request = DeferredRestartRequest(
+        operation_id="operation-1:restart",
+        requested_instance_id="instance-1",
+        requested_task_id=requester.id,
+        source_ip="127.0.0.1",
+        requested_at=requester.updated_at,
+        updated_at=requester.updated_at,
+    )
 
-    assert quick_interactions.deferred_restart_ready() is True
+    assert quick_interactions.deferred_restart_ready(request) == "ready"
+
+
+def test_deferred_restart_ignores_active_tasks_in_other_sessions(
+    tmp_path: Path,
+) -> None:
+    quick_interactions = manager(tmp_path)
+    requested_at = utc_now()
+    requester = QuickInteractionTask(
+        id="requester-1",
+        session_id="session-1",
+        prompt="restart",
+        status="succeeded",
+        result="done",
+        created_at=requested_at,
+        updated_at=requested_at,
+    )
+    ordinary = QuickInteractionTask(
+        id="ordinary-1",
+        session_id="session-2",
+        prompt="ordinary",
+        status="running",
+        restart_sensitive=False,
+        created_at=requested_at,
+        updated_at=requested_at,
+    )
+    sensitive = QuickInteractionTask(
+        id="sensitive-1",
+        session_id="session-3",
+        prompt="modify Chub",
+        status="running",
+        restart_sensitive=True,
+        created_at=requested_at,
+        updated_at=requested_at,
+    )
+    quick_interactions._tasks = {
+        item.id: item for item in (requester, ordinary, sensitive)
+    }
+    quick_interactions._active_task_ids = {ordinary.id, sensitive.id}
+    request = DeferredRestartRequest(
+        operation_id="operation-1:restart",
+        requested_instance_id="instance-1",
+        requested_task_id=requester.id,
+        source_ip="127.0.0.1",
+        requested_at=requested_at,
+        updated_at=requested_at,
+    )
+
+    assert quick_interactions.deferred_restart_ready(request) == "ready"
+
+
+def test_deferred_restart_ignores_failed_sensitive_task_in_other_session(
+    tmp_path: Path,
+) -> None:
+    quick_interactions = manager(tmp_path)
+    requested_at = utc_now()
+    requester = QuickInteractionTask(
+        id="requester-1",
+        session_id="session-1",
+        prompt="restart",
+        status="succeeded",
+        result="done",
+        created_at=requested_at,
+        updated_at=requested_at,
+    )
+    failed = QuickInteractionTask(
+        id="sensitive-1",
+        session_id="session-2",
+        prompt="modify Chub",
+        status="failed",
+        error="failed",
+        restart_sensitive=True,
+        created_at=requested_at,
+        updated_at=utc_now(),
+    )
+    quick_interactions._tasks = {
+        requester.id: requester,
+        failed.id: failed,
+    }
+    request = DeferredRestartRequest(
+        operation_id="operation-1:restart",
+        requested_instance_id="instance-1",
+        requested_task_id=requester.id,
+        source_ip="127.0.0.1",
+        requested_at=requested_at,
+        updated_at=requested_at,
+    )
+
+    assert quick_interactions.deferred_restart_ready(request) == "ready"
+
+
+@pytest.mark.parametrize(
+    ("workspace_id", "permission_mode", "expected"),
+    (
+        ("chub", "auto-review", True),
+        ("chub", "full-access", True),
+        ("chub", "read-only", False),
+        ("isolated", "full-access", False),
+    ),
+)
+def test_submission_uses_fixed_restart_sensitive_rule(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    workspace_id: str,
+    permission_mode: str,
+    expected: bool,
+) -> None:
+    quick_interactions = manager(tmp_path)
+    session = quick_interactions.codex_manager.get_session.return_value
+    session.workspace_id = workspace_id
+    session.permission_mode = permission_mode
+    monkeypatch.setattr(quick_interactions, "_start_worker_observer", MagicMock())
+
+    task = quick_interactions.submit(
+        session.id,
+        "check",
+        operation_id="operation-1",
+        source_ip="127.0.0.1",
+    )
+
+    submission = quick_interactions._worker_call.call_args.kwargs["task"]
+    assert task.restart_sensitive is expected
+    assert submission["restart_sensitive"] is expected
 
 
 def test_failed_translation_does_not_queue_notification(tmp_path: Path) -> None:
@@ -1128,6 +2306,39 @@ def test_deferred_restart_completion_distinguishes_automatic_and_manual(
         utc_now(),
     )
     assert quick_interactions.get(manual_task.id).deferred_restart_status == "cleared"
+
+
+def test_deferred_restart_start_failure_preserves_specific_reason(
+    tmp_path: Path,
+) -> None:
+    quick_interactions = manager(tmp_path)
+    task = QuickInteractionTask(
+        id="task-1",
+        session_id="session-1",
+        prompt="重启服务",
+        status="succeeded",
+        result="已安排重启。",
+        deferred_restart_status="started",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    quick_interactions._tasks[task.id] = task
+
+    quick_interactions.record_deferred_restart_completion(
+        "operation-1:restart",
+        task.id,
+        "start_failed",
+        utc_now(),
+        "重启脚本返回退出码 1，旧 Chub 实例继续运行。",
+    )
+
+    completed = quick_interactions.get(task.id)
+    assert completed.deferred_restart_status == "start_failed"
+    assert completed.deferred_restart_error == (
+        "重启脚本返回退出码 1，旧 Chub 实例继续运行。"
+    )
+    persisted = json.loads(quick_interactions.path.read_text(encoding="utf-8"))
+    assert persisted[0]["deferred_restart_error"] == completed.deferred_restart_error
 
 
 def test_deferred_restart_completion_notifies_only_coalesced_weixin_task(
@@ -1224,6 +2435,174 @@ def test_deferred_restart_completion_notifies_only_coalesced_weixin_task(
     ] == "page-operation:restart"
 
 
+def test_sensitive_task_failure_updates_timeline_and_notifies_weixin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    notifier = MagicMock(return_value=SimpleNamespace(status="sent", error=None))
+    quick_interactions = manager(tmp_path, restart_notifier=notifier)
+    now = utc_now()
+    task = QuickInteractionTask(
+        id="weixin-task",
+        session_id="weixin-session",
+        prompt="修改并重启",
+        status="succeeded",
+        result="已安排重启。",
+        notification_route="weixin-task",
+        deferred_restart_status="pending",
+        created_at=now,
+        updated_at=now,
+    )
+    quick_interactions._tasks[task.id] = task
+    quick_interactions._deferred_restart_contexts[task.id] = (
+        QuickInteractionDeferredRestartContext(
+            operation_id="operation-1:restart",
+            coordinator_operation_id="operation-1:restart",
+            source_ip="100.64.0.2",
+        )
+    )
+    route = QuickInteractionWeixinRoute(
+        account_id="weixin-account",
+        recipient="owner@im.wechat",
+    )
+    quick_interactions._notification_routes[task.id] = route
+
+    class ImmediateThread:
+        def __init__(self, *, target, args, daemon, name=None):
+            self.target = target
+            self.args = args
+
+        def start(self) -> None:
+            self.target(*self.args)
+
+    monkeypatch.setattr(
+        "app.codex.quick_interactions.threading.Thread",
+        ImmediateThread,
+    )
+
+    quick_interactions.record_deferred_restart_completion(
+        "operation-1:restart",
+        task.id,
+        "sensitive_task_failed",
+        now,
+    )
+
+    completed = quick_interactions.get(task.id)
+    assert completed.deferred_restart_status == "sensitive_task_failed"
+    assert completed.deferred_restart_notification_status == "sent"
+    notified_task, notified_route, outcome = notifier.call_args.args
+    assert notified_task.deferred_restart_status == "sensitive_task_failed"
+    assert notified_route == route
+    assert outcome == "sensitive_task_failed"
+
+
+def test_restart_completion_waits_for_local_success_projection(
+    tmp_path: Path,
+) -> None:
+    completion_started = threading.Event()
+    completion_finished = threading.Event()
+    completion_threads: list[threading.Thread] = []
+
+    class RacingDeferredRestart:
+        def request(self, *, operation_id, task_id, source_ip):
+            def complete() -> None:
+                completion_started.set()
+                quick_interactions.record_deferred_restart_completion(
+                    operation_id,
+                    task_id,
+                    "sensitive_task_failed",
+                    utc_now(),
+                )
+                completion_finished.set()
+
+            thread = threading.Thread(target=complete)
+            completion_threads.append(thread)
+            thread.start()
+            assert completion_started.wait(1)
+            return SimpleNamespace(operation_id=operation_id, created=True)
+
+    deferred_restart = RacingDeferredRestart()
+    quick_interactions = manager(tmp_path, deferred_restart=deferred_restart)
+    now = utc_now()
+    task = QuickInteractionTask(
+        id="task-1",
+        worker_task_id="qw-1750000000000-00000000000000000000000000000001",
+        session_id="session-1",
+        prompt="修改并重启",
+        status="running",
+        created_at=now,
+        updated_at=now,
+    )
+    quick_interactions._tasks[task.id] = task
+    quick_interactions._operations[task.id] = ("operation-1", "127.0.0.1")
+    request_path = (
+        quick_interactions.restart_request_dir / f"{task.worker_task_id}.request"
+    )
+    request_path.touch(mode=0o600)
+    snapshot = SimpleNamespace(
+        status="succeeded",
+        result="任务已完成。",
+        error=None,
+        error_code=None,
+    )
+
+    quick_interactions._finish_from_worker_snapshot(task.id, task, snapshot)
+    assert completion_finished.wait(1)
+    for thread in completion_threads:
+        thread.join(1)
+
+    completed = quick_interactions.get(task.id)
+    assert completed.status == "succeeded"
+    assert completed.deferred_restart_status == "sensitive_task_failed"
+
+
+def test_restart_notification_thread_start_failure_is_terminal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    quick_interactions = manager(tmp_path, restart_notifier=MagicMock())
+    now = utc_now()
+    task = QuickInteractionTask(
+        id="weixin-task",
+        session_id="weixin-session",
+        prompt="重启",
+        status="succeeded",
+        result="已完成。",
+        notification_route="weixin-task",
+        deferred_restart_status="pending",
+        created_at=now,
+        updated_at=now,
+    )
+    quick_interactions._tasks[task.id] = task
+
+    class FailingThread:
+        def __init__(self, **_kwargs):
+            pass
+
+        def start(self) -> None:
+            raise RuntimeError("thread unavailable")
+
+    monkeypatch.setattr(
+        "app.codex.quick_interactions.threading.Thread",
+        FailingThread,
+    )
+
+    quick_interactions.record_deferred_restart_completion(
+        "operation-1:restart",
+        task.id,
+        "succeeded",
+        now,
+    )
+
+    completed = quick_interactions.get(task.id)
+    assert completed.deferred_restart_status == "succeeded"
+    assert completed.deferred_restart_notification_status == "failed"
+    assert completed.deferred_restart_notification_error == (
+        "微信重启通知线程未能启动。"
+    )
+    assert quick_interactions.has_pending_deferred_restart_notifications() is False
+
+
 def test_restart_notification_interrupted_while_sending_is_not_retried(
     tmp_path: Path,
 ) -> None:
@@ -1303,156 +2682,3 @@ def test_session_operation_rejects_running_quick_interaction(tmp_path: Path) -> 
             pass
 
     assert error.value.code == "quick_interaction_in_progress"
-
-
-def test_cancel_before_process_start_finishes_task_as_cancelled(tmp_path: Path) -> None:
-    quick_interactions = manager(tmp_path)
-    session = quick_interactions.codex_manager.get_session.return_value
-    task = QuickInteractionTask(
-        id="task-1",
-        session_id=session.id,
-        prompt="检查状态",
-        status="requested",
-        created_at=utc_now(),
-        updated_at=utc_now(),
-    )
-    quick_interactions._tasks[task.id] = task
-    quick_interactions._running_sessions.add(session.id)
-    quick_interactions._active_task_ids.add(task.id)
-    quick_interactions._cancelled_task_ids.add(task.id)
-    done = threading.Event()
-    quick_interactions._task_done_events[task.id] = done
-
-    quick_interactions._run(task.id, session, task.prompt or "")
-
-    finished = quick_interactions.get(task.id)
-    assert finished.status == "cancelled"
-    assert finished.error == "已由用户停止。"
-    assert done.is_set()
-    assert quick_interactions.is_running(session.id) is False
-
-
-def test_successful_task_registers_script_restart_and_appends_result(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    deferred_restart = MagicMock()
-    deferred_restart.pending.return_value = False
-    deferred_restart.request.return_value = SimpleNamespace(
-        operation_id="operation-1:restart",
-        created=True,
-    )
-    quick_interactions = manager(
-        tmp_path,
-        deferred_restart=deferred_restart,
-    )
-    session = quick_interactions.codex_manager.get_session.return_value
-    task = QuickInteractionTask(
-        id="task-1",
-        session_id=session.id,
-        prompt="修改配置并重启",
-        status="requested",
-        created_at=utc_now(),
-        updated_at=utc_now(),
-    )
-    quick_interactions._tasks[task.id] = task
-    quick_interactions._running_sessions.add(session.id)
-    quick_interactions._active_task_ids.add(task.id)
-    quick_interactions._task_done_events[task.id] = threading.Event()
-    quick_interactions._operations[task.id] = ("operation-1", "127.0.0.1")
-
-    class Process:
-        returncode = 0
-        pid = 12345
-
-        def __init__(self, command, env) -> None:
-            self.result_path = Path(command[command.index("--output-last-message") + 1])
-            self.request_path = (
-                Path(env["CHUB_QUICK_RESTART_DIR"])
-                / f"{env['CHUB_QUICK_TASK_ID']}.request"
-            )
-
-        def communicate(self, **_kwargs) -> None:
-            self.result_path.write_text("功能已完成。", encoding="utf-8")
-            self.request_path.touch()
-
-    monkeypatch.setattr(
-        "app.codex.quick_interactions.subprocess.Popen",
-        lambda command, **kwargs: Process(command, kwargs["env"]),
-    )
-
-    quick_interactions._run(task.id, session, task.prompt or "")
-
-    finished = quick_interactions.get(task.id)
-    assert finished.status == "succeeded"
-    assert finished.result == (
-        "功能已完成。\n\n本次处理已完成，即将重启 Chub 服务。"
-    )
-    assert finished.deferred_restart_status == "pending"
-    assert finished.deferred_restart_updated_at is not None
-    deferred_restart.request.assert_called_once_with(
-        operation_id="operation-1:restart",
-        task_id="task-1",
-        source_ip="127.0.0.1",
-    )
-    deferred_restart.maybe_schedule.assert_called()
-
-
-def test_cancel_codex_session_kills_process_and_waits_for_cleanup(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    quick_interactions = manager(tmp_path)
-    task = QuickInteractionTask(
-        id="task-1",
-        session_id="session-1",
-        prompt="检查状态",
-        status="running",
-        created_at=utc_now(),
-        updated_at=utc_now(),
-    )
-    process = MagicMock()
-    done = threading.Event()
-    quick_interactions._tasks[task.id] = task
-    quick_interactions._running_sessions.add(task.session_id)
-    quick_interactions._active_task_ids.add(task.id)
-    quick_interactions._processes[task.id] = process
-    quick_interactions._task_done_events[task.id] = done
-    kill = MagicMock(side_effect=lambda _process: done.set())
-    monkeypatch.setattr(quick_interactions, "_kill_process", kill)
-
-    assert quick_interactions.cancel_codex_session(task.session_id) is True
-
-    kill.assert_called_once_with(process)
-    assert task.id in quick_interactions._cancelled_task_ids
-
-
-def test_close_marks_active_task_as_interrupted_before_killing_process(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    quick_interactions = manager(tmp_path)
-    task = QuickInteractionTask(
-        id="task-1",
-        session_id="session-1",
-        prompt="检查状态",
-        status="running",
-        created_at=utc_now(),
-        updated_at=utc_now(),
-    )
-    process = MagicMock()
-    quick_interactions._tasks[task.id] = task
-    quick_interactions._active_task_ids.add(task.id)
-    quick_interactions._processes[task.id] = process
-    kill = MagicMock()
-    monkeypatch.setattr(quick_interactions, "_kill_process", kill)
-
-    quick_interactions.close()
-
-    assert quick_interactions.get(task.id).status == "failed"
-    assert quick_interactions.get(task.id).error == (
-        "服务重启导致正在执行的任务中断，请重新提交任务。"
-    )
-    persisted = json.loads(quick_interactions.path.read_text(encoding="utf-8"))
-    assert persisted[0]["error"] == task.error
-    kill.assert_called_once_with(process)

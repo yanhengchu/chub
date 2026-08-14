@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
-from app.codex.models import CodexSession, PermissionMode
+from app.codex.models import CodexSession, PermissionMode, sessions_newest_first
 
 
 PERMISSION_TAIL_BYTES = 512 * 1024
@@ -25,7 +25,7 @@ class CodexSessionDiscovery:
             session = self._read_session(path, titles)
             if session is not None:
                 sessions.append(session)
-        return sorted(sessions, key=lambda item: item.updated_at, reverse=True)
+        return sessions_newest_first(sessions)
 
     def session_archive_states(self) -> dict[str, bool] | None:
         database = self._state_database()

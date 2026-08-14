@@ -26,6 +26,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--release-fd", required=True, type=int)
     parser.add_argument("--codex-executable")
     parser.add_argument("--working-directory")
+    session = parser.add_mutually_exclusive_group()
+    session.add_argument("--codex-session-id")
+    session.add_argument("--start-new-session", action="store_true")
     return parser
 
 
@@ -106,8 +109,13 @@ def main() -> int:
             command.extend(
                 ["-c", f"model_reasoning_effort={json.dumps(spec.reasoning_effort)}"]
             )
-        if spec.codex_session_id:
-            command.extend(["resume", spec.codex_session_id])
+        codex_session_id = (
+            None
+            if args.start_new_session
+            else args.codex_session_id or spec.codex_session_id
+        )
+        if codex_session_id:
+            command.extend(["resume", codex_session_id])
         command.append("-")
         os.chdir(workspace)
         try:

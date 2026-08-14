@@ -13,3 +13,115 @@ function setBadge(target, label, kind = "muted") {
   target.className = `badge badge-${kind}`;
 }
 
+const confirmationDialog = document.querySelector("#confirmation-dialog");
+const confirmationDialogForm = document.querySelector("#confirmation-dialog-form");
+const confirmationDialogTitle = document.querySelector("#confirmation-dialog-title");
+const confirmationDialogDescription = document.querySelector("#confirmation-dialog-description");
+const confirmationDialogMessage = document.querySelector("#confirmation-dialog-message");
+const confirmationDialogClose = document.querySelector("#confirmation-dialog-close");
+const confirmationDialogCancel = document.querySelector("#confirmation-dialog-cancel");
+const confirmationDialogConfirm = document.querySelector("#confirmation-dialog-confirm");
+let confirmationDialogRequest = null;
+let confirmationDialogBusy = false;
+
+function setConfirmationDialogBusy(busy) {
+  confirmationDialogBusy = busy;
+  confirmationDialogForm.setAttribute("aria-busy", String(busy));
+  confirmationDialogClose.disabled = busy;
+  confirmationDialogCancel.disabled = busy;
+  confirmationDialogConfirm.disabled = busy;
+  confirmationDialogConfirm.textContent = busy
+    ? confirmationDialogRequest.pendingLabel
+    : confirmationDialogRequest.confirmLabel;
+}
+
+function finishConfirmationDialog(confirmed) {
+  const current = confirmationDialogRequest;
+  if (!current) {
+    return;
+  }
+  confirmationDialogRequest = null;
+  confirmationDialogBusy = false;
+  confirmationDialogForm.removeAttribute("aria-busy");
+  confirmationDialogClose.disabled = false;
+  confirmationDialogCancel.disabled = false;
+  confirmationDialogConfirm.disabled = false;
+  if (confirmationDialog.open) {
+    confirmationDialog.close();
+  }
+  current.resolve(confirmed);
+}
+
+function dismissConfirmationDialog() {
+  if (!confirmationDialogBusy) {
+    finishConfirmationDialog(false);
+  }
+}
+
+function showConfirmationDialog({
+  title,
+  description,
+  confirmLabel = "确认",
+  pendingLabel = "处理中…",
+  tone = "danger",
+  errorMessage = "操作失败。",
+  onConfirm,
+}) {
+  if (!confirmationDialog || confirmationDialogRequest || typeof onConfirm !== "function") {
+    return Promise.resolve(false);
+  }
+  confirmationDialogTitle.textContent = title;
+  confirmationDialogDescription.textContent = description;
+  confirmationDialogConfirm.textContent = confirmLabel;
+  confirmationDialogConfirm.className = tone === "danger"
+    ? "button-danger"
+    : "button-secondary";
+  setMessage(confirmationDialogMessage, "");
+  return new Promise((resolve) => {
+    confirmationDialogRequest = {
+      confirmLabel,
+      errorMessage,
+      onConfirm,
+      pendingLabel,
+      resolve,
+    };
+    confirmationDialog.showModal();
+    confirmationDialogConfirm.focus();
+  });
+}
+
+if (confirmationDialog) {
+  confirmationDialogForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const current = confirmationDialogRequest;
+    if (!current || confirmationDialogBusy) {
+      return;
+    }
+    setConfirmationDialogBusy(true);
+    setMessage(confirmationDialogMessage, "");
+    try {
+      await current.onConfirm();
+      finishConfirmationDialog(true);
+    } catch (error) {
+      setConfirmationDialogBusy(false);
+      setMessage(
+        confirmationDialogMessage,
+        error instanceof Error && error.message
+          ? error.message
+          : current.errorMessage,
+        "error",
+      );
+    }
+  });
+  confirmationDialogClose.addEventListener("click", dismissConfirmationDialog);
+  confirmationDialogCancel.addEventListener("click", dismissConfirmationDialog);
+  confirmationDialog.addEventListener("click", (event) => {
+    if (event.target === confirmationDialog) {
+      dismissConfirmationDialog();
+    }
+  });
+  confirmationDialog.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    dismissConfirmationDialog();
+  });
+}

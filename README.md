@@ -4,16 +4,26 @@ Chub 是面向个人设备的轻量管理服务，提供统一的 Web 管理入�
 
 项目支持 macOS LaunchAgent 与 Ubuntu systemd user service，并以手机端可用、可信网络访问、明确的操作结果和简单维护为主要原则。基础节点能力、Codex 交互和 OpenClaw 核心链路均已完成双平台验收；后续能力由真实需求驱动。
 
-## 核心能力
+## 当前功能
 
-- **设备管理**：查看节点状态、运行白名单维护任务，并读取经过限制和脱敏的操作日志与运行日志。
-- **Codex 会话**：通过实时终端或快速交互使用同一原生 Codex Session，支持权限、模型、推理等级和会话生命周期管理。
-- **微信 Chub 模式**：OpenClaw 在模型调度前把可信微信私聊交给 Chub；固定路由直接回复，普通任务完成后向原发送者回送结果。可在设置页启用独立只读 Session，额外生成原文、中文润色和英文翻译。
-- **自动化任务**：复用独立 Debug Chrome 的登录状态执行配置驱动任务，目前包括飞书 Wiki Markdown 下载和周报资料准备。
-- **通知与资料**：向预配置的飞书目标发送受控通知，并在 Web 页面查看当前项目文档和本期周报。
-- **界面风格**：默认使用简约的 Standard，也可在设置页切换到 Cyber；两种风格共用业务功能和交互结构。
+| 功能域 | 当前可用能力 | 主要入口 |
+| --- | --- | --- |
+| 设备管理 | 查看节点与系统状态，执行后端白名单维护任务，查看受限、脱敏的操作日志和运行日志 | 首页、日志页 |
+| Codex 会话 | 新建、进入、停止和归档 Session；选择权限、模型和推理等级；通过实时终端或快速交互复用同一原生 Session | 首页、Session 页 |
+| OpenClaw 与微信 | 查看并维护 Gateway 和微信通道；将可信微信私聊交给 Chub 固定路由或 Codex 任务；任务结束后按原路返回结果 | 首页、设置页、微信 ClawBot |
+| 自动化任务 | 管理独立 Debug Chrome，复用登录状态运行配置驱动任务；当前支持飞书 Wiki Markdown 下载和周报资料准备 | 首页、自动化页、命令行 |
+| 周报 | 校验当期资料和周期，确认重点后生成、复核并展示正式周报 | 自动化页、周报页 |
+| 通知 | 向预配置的飞书目标发送有界纯文本通知，不接受任意目标或 Webhook | 命令行、Chub API、OpenClaw Tool |
+| 项目资料 | 在可信网络内查看已登记的项目说明、设计方案与维护文档，并由维护入口管理归档状态 | 首页、项目资料页 |
+| 设置与界面 | 切换 Standard/Cyber 风格；即时启停微信任务的文本优化与中英文翻译 | 设置页 |
 
-具体插件、API 和微信路由以 [Chub 集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md)为准。
+快速交互独立 Worker 与跨 Web 重启恢复已完成验收：页面、微信和翻译任务统一由独立 Worker 承载，Web
+重启期间任务继续运行并由新实例恢复状态、结果和通知。任务请求重启只等待自身结果与完成通知，不等待或阻止
+其他 Session、快速任务或翻译；跨重启边界的请求按当前轮和下一轮合并。首页手动重启可直接接管待执行重启，提交、启动和恢复
+失败都会向用户展示原因。
+当前边界见 [快速交互独立 Worker 设计](docs/QUICK_INTERACTION_WORKER_DESIGN.md)。
+
+插件、固定 API 和微信指令的准确查询入口是 [Chub 集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md)。
 
 ## 快速开始
 
@@ -71,14 +81,17 @@ chub uninstall
 
 macOS 使用两个独立 LaunchAgent，Ubuntu 使用两个独立 systemd user service，分别承载 Web 和
 Quick Worker。`chub restart` 只重启 Web，不停止 Worker；`chub status` 同时显示两个服务，
-`chub worker-health` 通过本机私有 IPC 读取 Worker 健康信息。当前 Worker 已完成前三阶段的服务骨架、
-隔离任务底座、Session 租约和真实 Codex `exec/resume` 验证，任务协议默认关闭，尚未接管快速交互；页面、
-微信和翻译任务行为不变。前三阶段代码已在 macOS 完成隔离验证；Ubuntu 在同步部署时按设计文档记录的
-固定顺序验收，通过后再进入步骤四。
+`chub worker-health` 通过本机私有 IPC 读取 Worker 健康信息。`chub worker-cutover-preflight` 只读检查活动任务、
+未交付结果、待发送通知、待协调重启、旧 Worker 任务记录、翻译队列、未归档 Session、Worker 版本、私有 IPC 和
+固定工作区；失败时只列出阻塞项，不修改配置、任务、Session 或服务。当前正式部署已经由 Worker
+已经接管页面、微信和翻译快速任务；macOS 与 Ubuntu 均已确认单独重启 Web 不会停止 Worker、Runner 或现有
+任务，恢复后的结果和通知不会重复。`chub worker-cutover` 只用于尚未完成一次性切换的旧部署：它在两次只读
+预检之间按规定脚本只重启一次 Web，随后原子保留旧 Worker 历史并启动正式 Worker。已经完成切换的节点不应
+重复执行该命令；Worker 不健康时，Session 写操作保持失败关闭，不回退到旧 Runner。
 
 服务直接依赖当前工作区和 `.venv`；移动目录或变更服务定义后需要重新安装。Web 配置变更使用
-`chub restart` 生效；正式启用 Worker 任务执行前，Worker 升级和配置变更仍通过重新安装生效，后续
-阶段会加入 draining 保护。
+`chub restart` 生效；Worker 升级和服务定义变更需要重新安装生效。尚未完成一次性切换的旧部署必须先通过
+只读预检，不能迁移活动任务或未归档 Session。
 
 ## 日常使用
 
@@ -86,19 +99,32 @@ Quick Worker。`chub restart` 只重启 Web，不停止 Worker；`chub status` �
 
 Codex PTY 依赖 `codex`、`ttyd` 和 `tmux`。安装服务时，Chub 会从当前终端 `PATH` 记录所需程序路径。
 
-节点页面支持新建、进入、停止和归档会话，并可为新 Session 选择默认权限、模型和推理等级。同一 Session 提供两种入口：
+节点页面支持新建、进入、停止和归档会话，并可为新 Session 选择默认权限、模型和推理等级。所有 Session
+列表按创建时间倒序排列，不会因最近执行而改变位置；`S1`–`S9` 只来自实际微信槽位，不按展示位置生成。
+首页 Session 主标题使用 `S<槽位> · 标题`；没有微信槽位时固定使用 `S · 标题`，状态和时间继续独立显示。
+标题为空时统一显示“未命名 Session”。同一 Session 提供两种入口：
 
 - **实时终端**：使用原生 Codex TUI，适合审批、持续操作和实时输出。
 - **快速交互**：提交后台任务并在时间线查看状态和结果，适合手机或普通网络。
 
-快速交互页可通过输入区上方的“编号 · 状态”按钮直接切换 Session；页内切换不累积浏览器返回记录，
-未发送内容按 Session 保留在当前标签页。
+新建或尚未选择过入口的 Session 默认进入快速交互；手动切换为实时终端后，当前浏览器会按 Session 保留该选择。
 
-两种入口共享原生 Session，并保持单 writer 互斥。快速交互默认最长运行 6 小时；长时间运行会提示仍在执行，不会在 10 分钟时误判超时。需要重启 Chub 的快速交互会先保存并通知任务结果，再登记延迟重启。
+快速交互页在输入区上方展示当前浏览器可见的 Session 列表：已分配微信槽位的项目使用 `S<槽位> · 状态`，未分配项目
+固定使用 `S · 状态`；不带编号的 `S` 明确表示当前没有微信槽位。按钮按创建时间倒序排列，超出输入区宽度后
+横向滚动，列表左侧固定的加号可选择白名单工作目录新建 Session，并使用设置页的默认权限、模型和推理等级；
+创建成功后直接进入新 Session 的快速交互页。当前完整标题显示在列表下方和浏览器标签中，标题后的编辑按钮可在独立弹窗中修改 Chub 本地展示
+标题，紧邻的归档按钮会先确认影响再归档当前 Session，成功后停留在快速交互页并切换到剩余列表第一项；
+仅当已无其他 Session 时返回首页。两项操作都不占用任务输入框；重命名不改变微信槽位、原生 Session 或执行
+状态。页内切换不刷新页面、不累积浏览器返回记录，旧 Session 的延迟响应不会覆盖当前页面，
+切换时立即保留标题行并展示目标 Session 的已有标题，完整状态读取完成前暂时禁用相关操作，避免页面闪动；
+未发送内容按 Session 保留在当前标签页。设置页的翻译 Session 开关统一控制当前浏览器首页、快速交互导航及其他 Session 可见列表；
+关闭后只隐藏列表入口，不中断任务，也不影响已经直接打开的当前 Session 页面。
+
+两种入口共享原生 Session，并保持单 writer 互斥。快速交互默认最长运行 6 小时；长时间运行会提示仍在执行，不会在 10 分钟时误判超时。需要重启 Chub 的快速交互只登记一次任务级 Web 重启请求；Chub 在该任务结果和完成通知结束后直接执行，不等待其他任务。
 
 实时终端依赖稳定的 WebSocket 链路。普通页面可以打开但终端无响应时，应优先检查 Tailscale 是否直连、DERP 中继质量，以及 `/codex/.../terminal/ws` 是否成功升级为 `101 Switching Protocols`。
 
-完整 Session 状态、互斥、通知和延迟重启规则见 [Chub AI Session 状态模型设计](docs/AI_SESSION_STATE_DESIGN.md)。
+完整 Session 状态、互斥、通知和任务级重启规则见 [Chub AI Session 状态模型设计](docs/AI_SESSION_STATE_DESIGN.md)。
 
 ### OpenClaw 与微信 ClawBot
 
@@ -189,17 +215,21 @@ README 是项目入口和文档管理规则的维护入口；详细需求、设�
 .venv/bin/python -m pytest
 ```
 
-## 相关文档
+## 核心项目文档
 
-当前设计与维护文档：
+| 文档 | 用途 | 状态 |
+| --- | --- | --- |
+| [Chub 项目说明](README.md) | 项目定位、当前功能、安装、日常使用、安全和文档维护总入口 | 持续维护 |
+| [Chub 集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md) | 当前可调用插件、固定 API、微信指令和状态总览规则的统一查询入口 | 持续维护 |
+| [Chub AI Session 状态模型设计](docs/AI_SESSION_STATE_DESIGN.md) | Codex Session、Activity、两种交互入口、互斥和生命周期的当前契约 | 已验收 |
+| [Chub–OpenClaw 接入设计](docs/CHUB_OPENCLAW_INTEGRATION_DESIGN.md) | OpenClaw、微信 ClawBot、权限、调度、状态和通知边界 | 持续维护 |
+| [Chub OpenClaw 插件说明](integrations/openclaw/chub/README.md) | 插件协议、配置、构建、部署和真实链路验收 | 随插件维护 |
+| [本期工作周报自动化与生成设计](docs/WEEKLY_REPORT_AUTOMATION_DESIGN.md) | 飞书资料准备、周期校验、重点确认、正式生成和复核流程 | 持续维护 |
+| [Chub 前端 UI 模块化设计](docs/ARCHITECTURE_EVOLUTION_DESIGN.md) | 前端加载边界、Feature/组件职责和 Standard/Cyber 视觉契约 | 已验收 |
+| [快速交互独立 Worker 设计](docs/QUICK_INTERACTION_WORKER_DESIGN.md) | 非实时 Codex 任务脱离 Web 生命周期及跨 Web 重启恢复的现行契约 | 已验收 |
+| [微信 ClawBot Context Token 持久化 AI 补丁规范](docs/WEIXIN_CLAWBOT_CONTEXT_TOKEN_AI_PATCH.md) | 微信插件升级或重装后的兼容复检和安全恢复步骤 | 已验收 |
 
-- [Chub AI Session 状态模型设计](docs/AI_SESSION_STATE_DESIGN.md)
-- [Chub–OpenClaw 接入设计](docs/CHUB_OPENCLAW_INTEGRATION_DESIGN.md)
-- [Chub 集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md)
-- [Chub OpenClaw 插件说明](integrations/openclaw/chub/README.md)
-- [微信 ClawBot Context Token 持久化 AI 补丁规范](docs/WEIXIN_CLAWBOT_CONTEXT_TOKEN_AI_PATCH.md)
-- [本期工作周报自动化与生成设计](docs/WEEKLY_REPORT_AUTOMATION_DESIGN.md)
-- [Chub 前端 UI 模块化设计](docs/ARCHITECTURE_EVOLUTION_DESIGN.md)
+日常了解项目先看本文；确认“现在能调用什么”看能力清单；开发或排障时再进入对应专项设计。页面展示的文档列表与状态以 `docs/design_documents.json` 为准。
 
 阶段归档：
 

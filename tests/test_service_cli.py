@@ -78,7 +78,7 @@ def run_chub(
     ("platform", "manager_call"),
     [
         ("Darwin", "launchctl kickstart -k gui/"),
-        ("Linux", "systemctl --user restart chub.service"),
+        ("Linux", "systemctl --user --no-block restart chub.service"),
     ],
 )
 def test_web_restart_uses_atomic_service_manager_restart(
@@ -132,6 +132,19 @@ def test_web_restart_is_deferred_inside_quick_interaction(
     assert request_file.is_file()
     assert stat.S_IMODE(request_file.stat().st_mode) == 0o600
     assert "restart registered" in result.stdout
+    assert not calls.exists()
+
+
+def test_worker_cutover_refuses_to_run_inside_quick_interaction(
+    service_env: tuple[dict[str, str], Path],
+) -> None:
+    env, calls = service_env
+    env["CHUB_ACTIVITY_SOURCE"] = "quick"
+
+    result = run_chub("worker-cutover", env)
+
+    assert result.returncode == 1
+    assert "cannot run inside a quick interaction" in result.stderr
     assert not calls.exists()
 
 

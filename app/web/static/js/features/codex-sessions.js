@@ -6,6 +6,7 @@ const CODEX_ENTRY_MODE_KEY = "hub.codexEntryMode.v1";
 const CODEX_DEFAULT_PERMISSION_KEY = "hub.codexDefaultPermission.v1";
 const CODEX_DEFAULT_MODEL_KEY = "hub.codexDefaultModel.v1";
 const CODEX_DEFAULT_REASONING_EFFORT_KEY = "hub.codexDefaultReasoningEffort.v1";
+const CODEX_SHOW_TRANSLATION_SESSION_KEY = "hub.codexShowTranslationSession.v1";
 const CODEX_QUOTA_REFRESH_MS = 5 * 60 * 1000;
 const CODEX_REASONING_LABELS = {
   low: "Low",
@@ -214,11 +215,14 @@ function renderCodexWorkspaces(workspaces, available) {
 }
 
 function codexEntryMode(session) {
+  if (session.terminal_access_allowed === false) {
+    return "quick";
+  }
   try {
     const stored = JSON.parse(localStorage.getItem(CODEX_ENTRY_MODE_KEY) || "{}");
-    return stored?.[session.id] === "quick" ? "quick" : "terminal";
+    return stored?.[session.id] === "terminal" ? "terminal" : "quick";
   } catch (_error) {
-    return "terminal";
+    return "quick";
   }
 }
 
@@ -278,6 +282,19 @@ function quickInteractionUrl(sessionId) {
 }
 
 function updateCodexEntryButton(session, trigger, mode) {
+  if (session.terminal_access_allowed === false) {
+    trigger.textContent = codexEntryLabel("quick");
+    trigger.dataset.entryMode = "quick";
+    trigger.disabled = true;
+    trigger.title = "文本优化与翻译 Session 仅支持快速交互";
+    trigger.setAttribute("aria-label", trigger.title);
+    const main = trigger.closest(".session-item")?.querySelector(".session-enter");
+    if (main) {
+      main.disabled = false;
+      main.title = "";
+    }
+    return;
+  }
   const nextMode = mode === "quick" ? "terminal" : "quick";
   trigger.textContent = codexEntryLabel(mode);
   trigger.dataset.entryMode = mode;
@@ -295,12 +312,23 @@ function updateCodexEntryButton(session, trigger, mode) {
 }
 
 function toggleCodexEntryMode(session, trigger) {
+  if (session.terminal_access_allowed === false) {
+    return;
+  }
   const currentMode = trigger.dataset.entryMode === "quick"
     ? "quick"
     : "terminal";
   const nextMode = currentMode === "quick" ? "terminal" : "quick";
   saveCodexEntryMode(session.id, nextMode);
   updateCodexEntryButton(session, trigger, nextMode);
+}
+
+function codexSessionDisplayTitle(session) {
+  const slot = session.weixin_session_slot;
+  const slotLabel = Number.isInteger(slot) && slot >= 1 && slot <= 9
+    ? `S${slot}`
+    : "S";
+  return `${slotLabel} · ${session.title || "未命名 Session"}`;
 }
 
 function renderCodexSessions(sessions) {
@@ -337,7 +365,7 @@ function renderCodexSessions(sessions) {
     item.className = "session-item";
     main.className = "session-enter";
     main.type = "button";
-    title.textContent = session.title || "未命名 Session";
+    title.textContent = codexSessionDisplayTitle(session);
     title.title = title.textContent;
     const state = quickInteractionRunning
       ? "快速交互 · 执行中"
@@ -397,19 +425,59 @@ function renderCodexSessions(sessions) {
     archive.type = "button";
     archive.className = "button-secondary session-action";
     archive.textContent = "归档";
+    archive.setAttribute("aria-haspopup", "dialog");
+    archive.setAttribute("aria-controls", "confirmation-dialog");
     archive.disabled = !session.codex_session_id
       || quickInteractionRunning;
     if (quickInteractionRunning) {
       archive.title = "快速交互正在执行";
     }
     archive.addEventListener("click", () =>
-      archiveCodexSession(session.id, archive),
+      archiveCodexSession(session, archive),
     );
     actions.className = "session-actions";
     actions.append(entry, stop, archive);
     item.append(main, actions);
     elements.codexSessions.append(item);
   });
+}
+
+function codexSessionsNewestFirst(sessions) {
+  return [...sessions].sort((left, right) => {
+    const createdDifference = Date.parse(right.created_at) - Date.parse(left.created_at);
+    if (Number.isFinite(createdDifference) && createdDifference !== 0) {
+      return createdDifference;
+    }
+    const leftId = String(left.id);
+    const rightId = String(right.id);
+    return leftId < rightId ? 1 : leftId > rightId ? -1 : 0;
+  });
+}
+
+function visibleCodexSessions(sessions) {
+  let visible = sessions;
+  try {
+    if (localStorage.getItem(CODEX_SHOW_TRANSLATION_SESSION_KEY) === "true") {
+      return codexSessionsNewestFirst(visible);
+    }
+  } catch (_error) {
+    // A blocked browser preference falls back to hiding the internal Session.
+  }
+  visible = visible.filter(
+    (session) => session.workspace_id !== "weixin-translation",
+  );
+  return codexSessionsNewestFirst(visible);
+}
+
+function codexSessionListUrl() {
+  try {
+    if (localStorage.getItem(CODEX_SHOW_TRANSLATION_SESSION_KEY) === "true") {
+      return "/api/codex/sessions?include_translation=true";
+    }
+  } catch (_error) {
+    // A blocked browser preference uses the API's hidden-by-default list.
+  }
+  return "/api/codex/sessions";
 }
 
 function codexSessionsSignature(sessions) {
@@ -423,6 +491,7 @@ function codexSessionsSignature(sessions) {
       session.quick_interaction_updated_at,
       session.updated_at,
       session.title,
+      session.weixin_session_slot,
       session.cwd,
       session.codex_session_id,
       session.permission_mode,
@@ -445,9 +514,10 @@ function renderCodexData(data, { sessionsOnly = false } = {}) {
   if (!sessionsOnly) {
     renderCodexWorkspaces(data.workspaces, data.available);
   }
-  renderCodexSessions(data.sessions);
+  const visibleSessions = visibleCodexSessions(data.sessions);
+  renderCodexSessions(visibleSessions);
   codexSessionSignature = codexSessionsSignature(data.sessions);
-  elements.codexSessionCount.textContent = `共 ${data.sessions.length} 个会话`;
+  elements.codexSessionCount.textContent = `共 ${visibleSessions.length} 个会话`;
   if (!sessionsOnly) {
     const missing = dependencyMessage(data.dependencies);
     if (data.available) {
@@ -795,27 +865,37 @@ async function stopCodexSession(sessionId, button) {
   }
 }
 
-async function archiveCodexSession(sessionId, button) {
+async function archiveCodexSession(session, button) {
   if (!elements.codexMessage) {
     return;
   }
-
-  setMessage(elements.codexMessage, "");
-  setCodexButtonBusy(button, true);
-  beginCodexMutation();
-  try {
-    await apiFetch(`/api/codex/sessions/${sessionId}/archive`, {
-      method: "POST",
-    });
-    await loadCodexSessions({ force: true });
-  } catch (error) {
-    if (!handleAccessError(error)) {
-      setMessage(elements.codexMessage, error.message || "归档失败。", "error");
-    }
-  } finally {
-    setCodexButtonBusy(button, false);
-    endCodexMutation();
-  }
+  const title = session.title?.trim() || "未命名 Session";
+  await showConfirmationDialog({
+    title: "归档 Session",
+    description: `归档“${title}”后，该 Session 将从活动列表移除，正在运行的实时终端会停止；如已分配微信槽位，槽位也会释放。Chub 页面暂不提供恢复入口。`,
+    confirmLabel: "确认归档",
+    pendingLabel: "归档中…",
+    errorMessage: "Session 归档失败。",
+    onConfirm: async () => {
+      setMessage(elements.codexMessage, "");
+      setCodexButtonBusy(button, true);
+      beginCodexMutation();
+      try {
+        await apiFetch(`/api/codex/sessions/${session.id}/archive`, {
+          method: "POST",
+        });
+        await loadCodexSessions({ force: true });
+      } catch (error) {
+        if (handleAccessError(error)) {
+          return;
+        }
+        throw error;
+      } finally {
+        setCodexButtonBusy(button, false);
+        endCodexMutation();
+      }
+    },
+  });
 }
 
 function clearCodexPollTimer() {
@@ -932,7 +1012,7 @@ async function loadCodexSessions(options = {}) {
         }
         void loadCodexQuota({ force: refreshQuota });
       }
-      const data = await apiFetch("/api/codex/sessions");
+      const data = await apiFetch(codexSessionListUrl());
       if (requestVersion !== accessVersion) {
         return;
       }

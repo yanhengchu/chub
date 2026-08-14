@@ -99,12 +99,54 @@ class WeixinTranslationManager:
         self.path = config.state_file.with_name("weixin-translation.json")
         self._lock = threading.RLock()
         self._retire_lock = threading.Lock()
-        self._wake = threading.Event()
         self._closed = False
         self._state_error = False
+        self._worker_watchers: set[str] = set()
         self._state = self._load()
-        self._worker: threading.Thread | None = None
         self._retire_completed_sessions()
+
+    def start_worker_recovery(self) -> None:
+        with self._lock:
+            entries = [
+                item.model_copy(deep=True)
+                for item in self._state.entries
+                if item.status in {"queued", "running"}
+            ]
+        for entry in entries:
+            task = None
+            if entry.quick_task_id is not None:
+                try:
+                    task = self.quick_interactions.get(entry.quick_task_id)
+                except Exception:
+                    task = None
+            if task is None:
+                task = self.quick_interactions.find_task_by_operation(
+                    entry.operation_id,
+                    kind="translation",
+                )
+            if task is None or task.kind != "translation":
+                self._finish(
+                    entry.id,
+                    "failed",
+                    "服务重启前翻译任务未完成提交，未自动重试。",
+                )
+                self._log(entry.operation_id, "failed", entry.source_ip)
+                continue
+            if entry.quick_task_id != task.id:
+                with self._lock:
+                    next_state = self._state.model_copy(deep=True)
+                    current = next(
+                        item for item in next_state.entries if item.id == entry.id
+                    )
+                    current.quick_task_id = task.id
+                    current.updated_at = utc_now()
+                    self._write(next_state)
+                    self._state = next_state
+            self._start_worker_watcher(
+                entry.id,
+                task.session_id,
+                task.id,
+            )
 
     def enqueue(
         self,
@@ -132,9 +174,6 @@ class WeixinTranslationManager:
             return False
         with self._lock:
             if not self._enabled_locked():
-                return False
-            if self._restart_pending():
-                self._reject(operation_id, source_ip)
                 return False
             if any(item.message_id == message_id for item in self._state.entries):
                 return True
@@ -186,14 +225,121 @@ class WeixinTranslationManager:
                 return False
             self._state = next_state
         self._log(entry.operation_id, "requested", source_ip)
+        return self._submit_to_worker_queue(entry)
+
+    def _submit_to_worker_queue(self, entry: TranslationEntry) -> bool:
+        task = None
         try:
-            self._start_worker()
-        except OSError:
-            self._finish(entry.id, "failed", "翻译后台线程未能启动。")
-            self._log(entry.operation_id, "failed", source_ip)
+            session_id = self._ensure_session(entry.generation)
+            task = self.quick_interactions.submit(
+                session_id,
+                TRANSLATION_PROMPT.format(
+                    source_json=json.dumps(entry.original, ensure_ascii=False)
+                ),
+                operation_id=entry.operation_id,
+                source_ip=entry.source_ip,
+                notification_route=entry.route,
+                kind="translation",
+                translation_original=entry.original,
+            )
+            with self._lock:
+                next_state = self._state.model_copy(deep=True)
+                current = next(item for item in next_state.entries if item.id == entry.id)
+                current.quick_task_id = task.id
+                current.updated_at = utc_now()
+                self._write(next_state)
+                self._state = next_state
+            self._start_worker_watcher(entry.id, session_id, task.id)
+            return True
+        except Exception:
+            LOGGER.warning("Unable to submit translation to Quick Worker", exc_info=True)
+            if task is not None:
+                try:
+                    self.quick_interactions.cancel_unobserved_task(task.id)
+                except Exception:
+                    LOGGER.warning(
+                        "Unable to cancel untracked Worker translation",
+                        exc_info=True,
+                    )
+            self._finish(entry.id, "failed", "翻译任务未能提交到 Quick Worker。")
+            self._log(entry.operation_id, "failed", entry.source_ip)
             return False
-        self._wake.set()
-        return True
+
+    def _start_worker_watcher(
+        self,
+        entry_id: str,
+        session_id: str,
+        quick_task_id: str,
+    ) -> None:
+        with self._lock:
+            if entry_id in self._worker_watchers:
+                return
+            self._worker_watchers.add(entry_id)
+        try:
+            threading.Thread(
+                target=self._watch_recovered_worker_entry,
+                args=(entry_id, session_id, quick_task_id),
+                daemon=True,
+                name=f"chub-translation-worker-{entry_id[:8]}",
+            ).start()
+        except RuntimeError:
+            with self._lock:
+                self._worker_watchers.discard(entry_id)
+            raise
+
+    def _watch_recovered_worker_entry(
+        self,
+        entry_id: str,
+        session_id: str,
+        quick_task_id: str,
+    ) -> None:
+        try:
+            self._watch_worker_entry(entry_id, session_id, quick_task_id)
+        finally:
+            with self._lock:
+                self._worker_watchers.discard(entry_id)
+
+    def _watch_worker_entry(
+        self,
+        entry_id: str,
+        session_id: str,
+        quick_task_id: str,
+    ) -> None:
+        entry = self._entry(entry_id).model_copy(deep=True)
+        started_logged = False
+        while not self._closed:
+            try:
+                snapshot = self.quick_interactions.get(quick_task_id)
+            except Exception:
+                LOGGER.warning("Unable to observe Worker translation", exc_info=True)
+                time.sleep(0.25)
+                continue
+            notification_done = snapshot.notification_status not in {"pending", "sending"}
+            if snapshot.status == "running":
+                transitioned = False
+                with self._lock:
+                    next_state = self._state.model_copy(deep=True)
+                    current = next(item for item in next_state.entries if item.id == entry_id)
+                    if current.status == "queued":
+                        current.status = "running"
+                        current.updated_at = utc_now()
+                        self._write(next_state)
+                        self._state = next_state
+                        transitioned = True
+                if transitioned and not started_logged:
+                    self._log(entry.operation_id, "started", entry.source_ip)
+                    started_logged = True
+            if snapshot.status not in {"requested", "running"} and notification_done:
+                outcome = "succeeded" if snapshot.status == "succeeded" else "failed"
+                persisted = self._finish(entry_id, outcome, snapshot.error)
+                self._log(
+                    entry.operation_id,
+                    outcome if persisted else "failed",
+                    entry.source_ip,
+                )
+                self._retire_completed_sessions()
+                return
+            time.sleep(0.25)
 
     def status(self) -> TranslationSettingsStatus:
         if self._state_error:
@@ -253,20 +399,6 @@ class WeixinTranslationManager:
     def close(self) -> None:
         with self._lock:
             self._closed = True
-        self._wake.set()
-        if self._worker is not None:
-            self._worker.join(timeout=5)
-
-    def _start_worker(self) -> None:
-        with self._lock:
-            if self._worker is not None and self._worker.is_alive():
-                return
-            worker = threading.Thread(target=self._run, daemon=True)
-            try:
-                worker.start()
-            except RuntimeError:
-                raise OSError("Unable to start Weixin translation worker") from None
-            self._worker = worker
 
     def _load(self) -> TranslationState:
         try:
@@ -299,12 +431,6 @@ class WeixinTranslationManager:
         if not enabled and next_state.session_id is not None:
             self._retire_current_session(next_state)
             changed = True
-        for entry in next_state.entries:
-            if entry.status in {"queued", "running"}:
-                entry.status = "failed"
-                entry.error = "服务重启时翻译任务未完成，未自动重试。"
-                entry.updated_at = utc_now()
-                changed = True
         if changed:
             try:
                 self._write(next_state)
@@ -314,158 +440,6 @@ class WeixinTranslationManager:
                 return TranslationState()
             state = next_state
         return state
-
-    def _run(self) -> None:
-        while not self._closed:
-            try:
-                entry = self._next_entry()
-            except Exception:
-                LOGGER.warning("Unable to schedule Weixin translation", exc_info=True)
-                self._wake.wait(1)
-                self._wake.clear()
-                continue
-            if entry is None:
-                self._wake.wait(1)
-                self._wake.clear()
-                continue
-            self._execute(entry)
-
-    def _next_entry(self) -> TranslationEntry | None:
-        with self._lock:
-            now = utc_now()
-            next_state = self._state.model_copy(deep=True)
-            changed = False
-            if self._restart_pending():
-                failed_operations: list[tuple[str, str]] = []
-                for item in next_state.entries:
-                    if item.status != "queued":
-                        continue
-                    item.status = "failed"
-                    item.error = "Chub 重启，翻译任务已取消。"
-                    item.updated_at = now
-                    failed_operations.append((item.operation_id, item.source_ip))
-                    changed = True
-                if changed:
-                    self._write(next_state)
-                    self._state = next_state
-                    for operation_id, source_ip in failed_operations:
-                        self._log(operation_id, "failed", source_ip)
-                return None
-            failed_operations = []
-            selected_id: str | None = None
-            for item in next_state.entries:
-                if item.status != "queued":
-                    continue
-                waited = (now - item.created_at).total_seconds()
-                if waited > self.config.translation_max_wait_seconds:
-                    item.status = "failed"
-                    item.error = "翻译任务排队超时。"
-                    item.updated_at = now
-                    failed_operations.append((item.operation_id, item.source_ip))
-                    changed = True
-                    continue
-                item.status = "running"
-                item.updated_at = now
-                selected_id = item.id
-                changed = True
-                break
-            if changed:
-                self._write(next_state)
-                self._state = next_state
-                for operation_id, source_ip in failed_operations:
-                    self._log(operation_id, "failed", source_ip)
-            if selected_id is None:
-                return None
-            return self._entry(selected_id).model_copy(deep=True)
-
-    def _execute(self, entry: TranslationEntry) -> None:
-        self._log(entry.operation_id, "started", entry.source_ip)
-        try:
-            if self._restart_pending():
-                self._finish(entry.id, "failed", "Chub 重启，翻译任务已取消。")
-                self._log(entry.operation_id, "failed", entry.source_ip)
-                self._retire_completed_sessions()
-                return
-            session_id = self._ensure_session(entry.generation)
-            task = self.quick_interactions.submit(
-                session_id,
-                TRANSLATION_PROMPT.format(
-                    source_json=json.dumps(entry.original, ensure_ascii=False)
-                ),
-                operation_id=entry.operation_id,
-                source_ip=entry.source_ip,
-                notification_route=entry.route,
-                kind="translation",
-                translation_original=entry.original,
-            )
-            with self._lock:
-                next_state = self._state.model_copy(deep=True)
-                current = next(
-                    item for item in next_state.entries if item.id == entry.id
-                )
-                current.quick_task_id = task.id
-                current.updated_at = utc_now()
-                try:
-                    self._write(next_state)
-                except OSError:
-                    LOGGER.warning(
-                        "Unable to persist running translation task reference",
-                        exc_info=True,
-                    )
-                    try:
-                        self.quick_interactions.cancel_codex_session(session_id)
-                    except Exception:
-                        LOGGER.warning(
-                            "Unable to cancel untracked translation task",
-                            exc_info=True,
-                        )
-                    raise
-                self._state = next_state
-            while not self._closed:
-                if self._restart_pending():
-                    try:
-                        self.quick_interactions.cancel_codex_session(session_id)
-                    except Exception:
-                        LOGGER.warning(
-                            "Unable to stop translation before restart",
-                            exc_info=True,
-                        )
-                    self._finish(
-                        entry.id,
-                        "failed",
-                        "Chub 重启，翻译任务已取消。",
-                    )
-                    self._log(entry.operation_id, "failed", entry.source_ip)
-                    self._retire_completed_sessions()
-                    return
-                snapshot = self.quick_interactions.get(task.id)
-                notification_done = snapshot.notification_status not in {
-                    "pending",
-                    "sending",
-                }
-                if (
-                    snapshot.status not in {"requested", "running"}
-                    and not self.quick_interactions.is_running(session_id)
-                    and notification_done
-                ):
-                    outcome = "succeeded" if snapshot.status == "succeeded" else "failed"
-                    persisted = self._finish(entry.id, outcome, snapshot.error)
-                    self._log(
-                        entry.operation_id,
-                        outcome if persisted else "failed",
-                        entry.source_ip,
-                    )
-                    self._retire_completed_sessions()
-                    return
-                time.sleep(0.25)
-            self._finish(entry.id, "failed", "服务关闭时翻译任务未完成。")
-            self._retire_completed_sessions()
-            self._log(entry.operation_id, "failed", entry.source_ip)
-        except Exception:
-            LOGGER.warning("Weixin translation task failed", exc_info=True)
-            self._finish(entry.id, "failed", "翻译任务未能启动。")
-            self._retire_completed_sessions()
-            self._log(entry.operation_id, "failed", entry.source_ip)
 
     def _ensure_session(self, generation: int | None = None) -> str:
         with self._lock:
@@ -496,7 +470,8 @@ class WeixinTranslationManager:
                     return session_id
             except Exception:
                 pass
-        created = self.codex_manager.create_translation_session()
+        with self.quick_interactions.session_creation_guard():
+            created = self.codex_manager.create_translation_session()
         with self._lock:
             next_state = self._state.model_copy(deep=True)
             if (
@@ -618,10 +593,6 @@ class WeixinTranslationManager:
     ) -> None:
         rejection_operation_id = f"{operation_id}:translation"
         self._log(rejection_operation_id, "failed", source_ip)
-
-    def _restart_pending(self) -> bool:
-        deferred_restart = getattr(self.quick_interactions, "deferred_restart", None)
-        return deferred_restart is not None and deferred_restart.pending()
 
     @staticmethod
     def _log(operation_id: str, status: str, source_ip: str) -> None:

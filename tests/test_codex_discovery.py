@@ -10,13 +10,13 @@ def write_jsonl(path: Path, payload: dict[str, object]) -> None:
     path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
 
 
-def test_discovers_all_active_sessions_regardless_of_origin(tmp_path: Path) -> None:
+def test_discovers_all_active_sessions_in_creation_order(tmp_path: Path) -> None:
     codex_home = tmp_path / ".codex"
     first_id = "11111111-1111-4111-8111-111111111111"
     second_id = "22222222-2222-4222-8222-222222222222"
-    for session_id, cwd in (
-        (first_id, "/workspace/one"),
-        (second_id, "/workspace/two"),
+    for session_id, cwd, timestamp in (
+        (first_id, "/workspace/one", "2026-07-20T08:00:00Z"),
+        (second_id, "/workspace/two", "2026-07-21T08:00:00Z"),
     ):
         write_jsonl(
             codex_home / "sessions" / f"{session_id}.jsonl",
@@ -25,7 +25,7 @@ def test_discovers_all_active_sessions_regardless_of_origin(tmp_path: Path) -> N
                 "payload": {
                     "id": session_id,
                     "cwd": cwd,
-                    "timestamp": "2026-07-20T08:00:00Z",
+                    "timestamp": timestamp,
                 },
             },
         )
@@ -36,7 +36,7 @@ def test_discovers_all_active_sessions_regardless_of_origin(tmp_path: Path) -> N
 
     sessions = CodexSessionDiscovery(codex_home).discover()
 
-    assert {session.id for session in sessions} == {first_id, second_id}
+    assert [session.id for session in sessions] == [second_id, first_id]
     assert next(session for session in sessions if session.id == first_id).title == "已有会话"
     assert all(session.codex_session_id == session.id for session in sessions)
 

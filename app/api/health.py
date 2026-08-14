@@ -12,6 +12,7 @@ class HealthData(BaseModel):
     status: str
     version: str
     instance_id: str
+    quick_worker_ready: bool
 
 
 @router.get("/health", response_model=ApiResponse[HealthData])
@@ -23,5 +24,6 @@ def health(request: Request) -> ApiResponse[HealthData]:
             status="ok",
             version=settings.app.version,
             instance_id=request.app.state.instance_id,
+            quick_worker_ready=request.app.state.quick_interactions.recovery_ready,
         )
     )

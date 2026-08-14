@@ -5,7 +5,7 @@ import os
 import threading
 from pathlib import Path
 
-from app.codex.models import CodexSession
+from app.codex.models import CodexSession, sessions_newest_first
 
 
 class CodexSessionStore:
@@ -35,11 +35,7 @@ class CodexSessionStore:
         with self._lock:
             return [
                 session.model_copy(deep=True)
-                for session in sorted(
-                    self._sessions.values(),
-                    key=lambda item: item.updated_at,
-                    reverse=True,
-                )
+                for session in sessions_newest_first(self._sessions.values())
             ]
 
     def get(self, session_id: str) -> CodexSession | None:

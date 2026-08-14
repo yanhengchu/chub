@@ -18,15 +18,15 @@
     {
       "id": "ai-session-state",
       "title": "Chub AI Session 状态模型设计",
-      "summary": "定义 Chub 当前 Codex Session 与 Activity 状态、交互互斥和快速交互延迟重启边界。",
+      "summary": "定义 Chub 当前 Codex Session 与 Activity 状态、交互互斥和任务级跨 Web 重启边界。",
       "status": "已验收",
       "path": "AI_SESSION_STATE_DESIGN.md"
     },
     {
       "id": "quick-interaction-worker",
-      "title": "Chub 快速交互独立 Worker 与跨重启恢复设计",
-      "summary": "设计快速任务脱离 Web 生命周期及跨 Web 重启恢复；步骤一至步骤三已完成，正式任务入口尚未切换。",
-      "status": "进行中",
+      "title": "Chub 快速交互独立 Worker 与跨 Web 重启恢复设计",
+      "summary": "页面、微信和翻译任务由独立 Worker 承载；Web 重启可恢复任务、Session 状态、结果和通知，任务级协调与手动接管已完成验收。",
+      "status": "已验收",
       "path": "QUICK_INTERACTION_WORKER_DESIGN.md"
     },
     {
