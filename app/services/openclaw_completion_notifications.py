@@ -82,14 +82,45 @@ class OpenClawCompletionNotifier:
             disabled_message="微信重启通知未启用。",
         )
 
+    def notify_weixin_restart_command(
+        self,
+        route: QuickInteractionWeixinRoute,
+        outcome: DeferredRestartOutcome,
+        error: str | None = None,
+    ) -> CompletionNotificationResult:
+        messages = {
+            "succeeded": "Chub 已完成重启，服务已恢复。",
+            "cleared": "Chub 已完成重启，服务已恢复。",
+            "start_failed": (
+                "Chub 重启未完成："
+                + (error or "旧记录没有保存具体原因，请查看 Chub 运行日志。")
+            ),
+            "sensitive_task_failed": (
+                "Chub 已取消重启：等待中的关联任务异常结束，"
+                "请检查任务结果后再决定是否重启。"
+            ),
+        }
+        message = messages.get(outcome)
+        if message is None:
+            return CompletionNotificationResult("skipped", "本次无需发送微信重启结果。")
+        if not self.config.enabled:
+            return CompletionNotificationResult("skipped", "微信完成通知未启用。")
+        return self._send_messages(
+            required_account_id=route.account_id,
+            recipient=route.recipient,
+            messages=[message],
+            require_unique=True,
+            unavailable_status="failed",
+        )
+
     def _restart_codex_status(self) -> str:
         if self.codex_status_reader is None:
-            return "Sessions\n\n暂不可用\n\nWeekly 暂不可用 · Tokens 暂不可用"
+            return "Sessions\n\n暂不可用\n\nWeekly 暂不可用"
         try:
             message = self.codex_status_reader()
         except Exception:
-            return "Sessions\n\n暂不可用\n\nWeekly 暂不可用 · Tokens 暂不可用"
-        return message or "Sessions\n\n暂不可用\n\nWeekly 暂不可用 · Tokens 暂不可用"
+            return "Sessions\n\n暂不可用\n\nWeekly 暂不可用"
+        return message or "Sessions\n\n暂不可用\n\nWeekly 暂不可用"
 
     def _send(
         self,
@@ -117,6 +148,24 @@ class OpenClawCompletionNotifier:
                     "尚未配置微信通知收件人。",
                 )
             account_id = None
+        route_specific = task.notification_route == "weixin-task"
+        return self._send_messages(
+            required_account_id=account_id,
+            recipient=recipient,
+            messages=messages,
+            require_unique=route_specific,
+            unavailable_status="failed" if route_specific else "skipped",
+        )
+
+    def _send_messages(
+        self,
+        *,
+        required_account_id: str | None,
+        recipient: str,
+        messages: list[str],
+        require_unique: bool,
+        unavailable_status: str,
+    ) -> CompletionNotificationResult:
         executable = shutil.which("openclaw")
         if executable is None:
             return CompletionNotificationResult("failed", "OpenClaw 命令不可用。")
@@ -124,13 +173,13 @@ class OpenClawCompletionNotifier:
         try:
             account_id = self._running_weixin_account(
                 executable,
-                required_account_id=account_id,
-                require_unique=task.notification_route == "weixin-task",
+                required_account_id=required_account_id,
+                require_unique=require_unique,
                 timeout_seconds=self._remaining_timeout(deadline),
             )
         except (OSError, subprocess.TimeoutExpired, UnicodeError, ValueError) as exc:
             return CompletionNotificationResult(
-                "failed" if task.notification_route == "weixin-task" else "skipped",
+                unavailable_status,
                 str(exc) if isinstance(exc, ValueError) else "无法确认 ClawBot 状态。",
             )
         sent = 0

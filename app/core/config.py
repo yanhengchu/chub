@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from functools import lru_cache
+from ipaddress import ip_address, ip_network
 from pathlib import Path
 from typing import Any, Literal
 
@@ -96,6 +97,84 @@ class AutomationsConfig(StrictModel):
         )
 
 
+class AiUsageProviderApiConfig(StrictModel):
+    subscription_page_url: str | None = Field(default=None, max_length=2048)
+    subscription_id: int | None = Field(default=None, ge=1)
+    allow_private_http: bool = False
+
+    @field_validator("subscription_page_url", mode="before")
+    @classmethod
+    def normalize_subscription_page_url(cls, value: object) -> object:
+        if isinstance(value, str):
+            value = value.strip()
+            return value or None
+        return value
+
+    @model_validator(mode="after")
+    def validate_subscription_target(self) -> "AiUsageProviderApiConfig":
+        if (self.subscription_page_url is None) != (self.subscription_id is None):
+            raise ValueError(
+                "subscription_page_url and subscription_id must be configured together"
+            )
+        if self.subscription_page_url is None:
+            return self
+        from urllib.parse import urlsplit
+
+        target = urlsplit(self.subscription_page_url)
+        if (
+            target.scheme not in {"http", "https"}
+            or not target.hostname
+            or target.username is not None
+            or target.password is not None
+            or target.query
+            or target.fragment
+            or target.path.rstrip("/") != "/subscriptions"
+        ):
+            raise ValueError("subscription_page_url must be a fixed subscriptions page")
+        if target.scheme == "http" and not self.allow_private_http:
+            raise ValueError("HTTP subscription pages require allow_private_http")
+        if target.scheme == "http":
+            hostname = target.hostname.lower()
+            if hostname != "localhost":
+                try:
+                    address = ip_address(hostname)
+                except ValueError as exc:
+                    raise ValueError(
+                        "HTTP subscription pages must use a literal private address"
+                    ) from exc
+                private_ranges = (
+                    ip_network("10.0.0.0/8"),
+                    ip_network("172.16.0.0/12"),
+                    ip_network("192.168.0.0/16"),
+                    ip_network("127.0.0.0/8"),
+                    ip_network("fc00::/7"),
+                    ip_network("fe80::/10"),
+                    ip_network("::1/128"),
+                )
+                if not any(address in network for network in private_ranges):
+                    raise ValueError(
+                        "HTTP subscription pages must use a literal private address"
+                    )
+        return self
+
+
+class AiUsageConfig(StrictModel):
+    provider: Literal["openai"] = "openai"
+    timezone: str = Field(default="Asia/Shanghai", min_length=1, max_length=64)
+    provider_api: AiUsageProviderApiConfig = AiUsageProviderApiConfig()
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, value: str) -> str:
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError("timezone must be a valid IANA timezone") from exc
+        return value
+
+
 class ProjectDocumentsConfig(StrictModel):
     state_file: Path = Path("data/state/project-documents.json")
 
@@ -178,6 +257,7 @@ class Settings(StrictModel):
     logs: LogsConfig = LogsConfig()
     codex_pty: CodexPtyConfig = CodexPtyConfig()
     automations: AutomationsConfig = AutomationsConfig()
+    ai_usage: AiUsageConfig = AiUsageConfig()
     project_documents: ProjectDocumentsConfig = ProjectDocumentsConfig()
     notifications: NotificationsConfig = NotificationsConfig()
     openclaw: OpenClawConfig = OpenClawConfig()

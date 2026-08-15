@@ -1,7 +1,7 @@
 "use strict";
 
 const CODEX_CARD_CACHE_KEY = "hub.codexCardCache";
-const CODEX_QUOTA_CACHE_KEY = "hub.codexQuotaCache";
+const AI_USAGE_CACHE_KEY = "hub.aiUsageCache";
 const CODEX_ENTRY_MODE_KEY = "hub.codexEntryMode.v1";
 const CODEX_DEFAULT_PERMISSION_KEY = "hub.codexDefaultPermission.v1";
 const CODEX_DEFAULT_MODEL_KEY = "hub.codexDefaultModel.v1";
@@ -551,33 +551,13 @@ function renderCodexQuota(data) {
   if (!data || typeof data !== "object") {
     return false;
   }
-  if (data.status === "available" && Array.isArray(data.windows)) {
-    const windows = data.windows
-      .filter((window) =>
-        Number.isInteger(window?.remaining_percent)
-        && Number.isInteger(window?.window_duration_minutes)
-        && typeof window?.resets_at === "string",
-      )
-      .map((window) => {
-        const reset = new Date(window.resets_at);
-        const resetLabel = Number.isNaN(reset.getTime())
-          ? "重置时间未知"
-          : `将于 ${reset.toLocaleString("zh-CN", {
-            month: "numeric",
-            day: "numeric",
-            hour: "2-digit",
-            minute: "2-digit",
-            hour12: false,
-          })} 重置`;
-        return `${codexQuotaWindowLabel(window.window_duration_minutes)}剩余 ${window.remaining_percent}%（${resetLabel}）`;
-      });
-    if (windows.length) {
-      const staleMessage = typeof data.message === "string" && data.message
-        ? `；${data.message}`
-        : "";
-      elements.codexQuota.textContent = `额度：${windows.join("；")}${staleMessage}`;
-      return true;
-    }
+  const longText = data?.display?.long;
+  if (data.status === "available" && typeof longText === "string" && longText) {
+    const staleMessage = data.stale && typeof data.message === "string" && data.message
+      ? `；${data.message}`
+      : "";
+    elements.codexQuota.textContent = `${longText}${staleMessage}`;
+    return true;
   }
   if (typeof data.message === "string" && data.message) {
     elements.codexQuota.textContent = `额度：${data.message}`;
@@ -587,31 +567,25 @@ function renderCodexQuota(data) {
   return true;
 }
 
-function codexQuotaWindowLabel(durationMinutes) {
-  return durationMinutes === 7 * 24 * 60
-    ? "Weekly "
-    : `${durationMinutes} 分钟额度 `;
-}
-
 function restoreCodexQuotaCache() {
   try {
-    const cached = JSON.parse(sessionStorage.getItem(CODEX_QUOTA_CACHE_KEY) || "null");
+    const cached = JSON.parse(sessionStorage.getItem(AI_USAGE_CACHE_KEY) || "null");
     if (renderCodexQuota(cached)) {
       const checkedAt = new Date(cached?.checked_at).getTime();
       codexQuotaLoadedAt = Number.isNaN(checkedAt) || checkedAt > Date.now()
         ? 0
         : checkedAt;
     } else {
-      sessionStorage.removeItem(CODEX_QUOTA_CACHE_KEY);
+      sessionStorage.removeItem(AI_USAGE_CACHE_KEY);
     }
   } catch {
-    sessionStorage.removeItem(CODEX_QUOTA_CACHE_KEY);
+    sessionStorage.removeItem(AI_USAGE_CACHE_KEY);
   }
 }
 
 function storeCodexQuotaCache(data) {
   try {
-    sessionStorage.setItem(CODEX_QUOTA_CACHE_KEY, JSON.stringify(data));
+    sessionStorage.setItem(AI_USAGE_CACHE_KEY, JSON.stringify(data));
   } catch {
     // A storage quota failure must not break the live Codex card.
   }
@@ -693,7 +667,7 @@ async function loadCodexQuota({ force = false } = {}) {
   const requestVersion = accessVersion;
   const loadPromise = (async () => {
     try {
-      const data = await apiFetch(`/api/codex/quota${force ? "?refresh=true" : ""}`);
+      const data = await apiFetch(`/api/ai/usage${force ? "?refresh=true" : ""}`);
       if (requestVersion !== accessVersion || !elements.codexQuota) {
         return;
       }

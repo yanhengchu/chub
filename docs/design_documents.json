@@ -23,6 +23,13 @@
       "path": "AI_SESSION_STATE_DESIGN.md"
     },
     {
+      "id": "ai-quota-usage",
+      "title": "Chub AI 额度与用量采集设计",
+      "summary": "定义供应商无关的统一 AI 用量接口、账号登录与 API 两种获取方式、共享缓存及长短展示格式。",
+      "status": "待验收",
+      "path": "AI_QUOTA_USAGE_DESIGN.md"
+    },
+    {
       "id": "quick-interaction-worker",
       "title": "Chub 快速交互独立 Worker 与跨 Web 重启恢复设计",
       "summary": "页面、微信和翻译任务由独立 Worker 承载；Web 重启可恢复任务、Session 状态、结果和通知，任务级协调与手动接管已完成验收。",

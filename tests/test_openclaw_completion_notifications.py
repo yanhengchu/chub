@@ -561,9 +561,9 @@ def test_restart_notification_uses_weixin_task_route(
     notifier = OpenClawCompletionNotifier(OpenClawCompletionNotificationConfig())
     notifier.codex_status_reader = lambda: (
         "Sessions\n\n"
-        "S1 · codex new，我…\n\nAvailable\n\n"
+        "S1 · session new，我…\n\nAvailable\n\n"
         "S3 · 服务检查\n\nAvailable · Current\n\n"
-        "Weekly 暂不可用 · Tokens 暂不可用"
+        "Weekly 暂不可用"
     )
     route = QuickInteractionWeixinRoute(
         account_id="route-account",
@@ -590,10 +590,53 @@ def test_restart_notification_uses_weixin_task_route(
         "关联 Session：3 · 服务检查\n\n"
         "关联任务：检查 Ubuntu 服务状态\n\n"
         "Sessions\n\n"
-        "S1 · codex new，我…\n\nAvailable\n\n"
+        "S1 · session new，我…\n\nAvailable\n\n"
         "S3 · 服务检查\n\nAvailable · Current\n\n"
-        "Weekly 暂不可用 · Tokens 暂不可用"
+        "Weekly 暂不可用"
     )
+
+
+def test_weixin_restart_command_notification_uses_saved_route() -> None:
+    notifier = OpenClawCompletionNotifier(OpenClawCompletionNotificationConfig())
+    notifier._send_messages = MagicMock(
+        return_value=CompletionNotificationResult("sent")
+    )
+    route = QuickInteractionWeixinRoute(
+        account_id="route-account",
+        recipient="origin@im.wechat",
+    )
+
+    result = notifier.notify_weixin_restart_command(route, "succeeded")
+
+    assert result.status == "sent"
+    notifier._send_messages.assert_called_once_with(
+        required_account_id="route-account",
+        recipient="origin@im.wechat",
+        messages=["Chub 已完成重启，服务已恢复。"],
+        require_unique=True,
+        unavailable_status="failed",
+    )
+
+
+def test_weixin_restart_command_failure_uses_recorded_reason() -> None:
+    notifier = OpenClawCompletionNotifier(OpenClawCompletionNotificationConfig())
+    notifier._send_messages = MagicMock(
+        return_value=CompletionNotificationResult("sent")
+    )
+    route = QuickInteractionWeixinRoute(
+        account_id="route-account",
+        recipient="origin@im.wechat",
+    )
+
+    notifier.notify_weixin_restart_command(
+        route,
+        "start_failed",
+        "重启脚本返回退出码 1，旧 Chub 实例继续运行。",
+    )
+
+    assert notifier._send_messages.call_args.kwargs["messages"] == [
+        "Chub 重启未完成：重启脚本返回退出码 1，旧 Chub 实例继续运行。"
+    ]
 
 
 def test_restart_notification_skips_page_task_without_inspecting_openclaw(
@@ -682,7 +725,7 @@ def test_restart_notification_uses_unavailable_for_legacy_session_context(
     message = calls[1][calls[1].index("--message") + 1]
     assert "关联 Session：Unavailable" in message
     assert "关联任务：Unavailable" in message
-    assert "Sessions\n\n暂不可用\n\nWeekly 暂不可用 · Tokens 暂不可用" in message
+    assert "Sessions\n\n暂不可用\n\nWeekly 暂不可用" in message
 
 
 def test_weixin_route_validation_requires_one_healthy_clawbot(

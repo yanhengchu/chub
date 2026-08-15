@@ -15,6 +15,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
+from app.ai_usage.service import AiUsageService
+from app.api.ai_usage import router as ai_usage_router
 from app.api.health import router as health_router
 from app.api.automations import router as automations_router
 from app.api.logs import router as logs_router
@@ -178,6 +180,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     codex_pty_manager = CodexPtyManager(resolved_settings)
     codex_rate_limits = CodexRateLimitService()
+    ai_usage = AiUsageService(resolved_settings, codex_rate_limits)
     completion_notifier = OpenClawCompletionNotifier(
         resolved_settings.openclaw.quick_interaction_completion
     )
@@ -209,12 +212,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             resolved_settings.openclaw.weixin_chub_mode.translation_max_wait_seconds
         ),
     )
-    deferred_restart.set_started_handler(
-        quick_interactions.record_deferred_restart_started
-    )
-    deferred_restart.set_completion_handler(
-        quick_interactions.record_deferred_restart_completion
-    )
     terminal_tickets = TerminalTicketStore(
         resolved_settings.codex_pty.ticket_ttl_seconds
     )
@@ -227,8 +224,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     quick_interactions.set_recovery_ready_handler(
         weixin_translation.start_worker_recovery
     )
-    deferred_restart.set_ready_check(quick_interactions.deferred_restart_ready)
-
     def reclaim_weixin_terminal(session_id: str):
         terminal_tickets.revoke_session(session_id)
         terminal_connections.close_session(session_id)
@@ -269,7 +264,71 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             resolved_settings,
             detected_platform,
         ),
+        restart_coordinator=deferred_restart,
+        restart_notifier=completion_notifier.notify_weixin_restart_command,
+        ai_usage_reader=ai_usage,
     )
+
+    def deferred_restart_ready(request):
+        fixed_readiness = weixin_chub_mode.deferred_restart_readiness(request)
+        has_quick_context = quick_interactions.has_deferred_restart_context(
+            request.operation_id,
+            request.requested_task_id,
+        )
+        if fixed_readiness is not None and has_quick_context:
+            quick_readiness = quick_interactions.deferred_restart_ready(request)
+            if "sensitive_task_failed" in {fixed_readiness, quick_readiness}:
+                return "sensitive_task_failed"
+            if "waiting" in {fixed_readiness, quick_readiness}:
+                return "waiting"
+            return "ready"
+        if fixed_readiness is not None:
+            return fixed_readiness
+        return quick_interactions.deferred_restart_ready(request)
+
+    def record_deferred_restart_started(
+        operation_id,
+        task_id,
+        started_at,
+    ) -> None:
+        if quick_interactions.has_deferred_restart_context(operation_id, task_id):
+            quick_interactions.record_deferred_restart_started(
+                operation_id,
+                task_id,
+                started_at,
+            )
+        weixin_chub_mode.record_deferred_restart_started(
+            operation_id,
+            task_id,
+            started_at,
+        )
+
+    def record_deferred_restart_completion(
+        operation_id,
+        task_id,
+        outcome,
+        completed_at,
+        failure_reason=None,
+    ) -> None:
+        if quick_interactions.has_deferred_restart_context(operation_id, task_id):
+            quick_interactions.record_deferred_restart_completion(
+                operation_id,
+                task_id,
+                outcome,
+                completed_at,
+                failure_reason,
+            )
+        weixin_chub_mode.record_deferred_restart_completion(
+            operation_id,
+            task_id,
+            outcome,
+            completed_at,
+            failure_reason,
+        )
+
+    deferred_restart.set_ready_check(deferred_restart_ready)
+    deferred_restart.set_started_handler(record_deferred_restart_started)
+    deferred_restart.set_completion_handler(record_deferred_restart_completion)
     completion_notifier.session_slot_validator = (
         weixin_chub_mode.session_slot_matches
     )
@@ -326,6 +385,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.codex_pty_available = codex_pty_available
     application.state.codex_pty_manager = codex_pty_manager
     application.state.codex_rate_limits = codex_rate_limits
+    application.state.ai_usage = ai_usage
     application.state.quick_interactions = quick_interactions
     application.state.deferred_restart = deferred_restart
     application.state.weixin_chub_mode = weixin_chub_mode
@@ -344,6 +404,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.add_exception_handler(StarletteHTTPException, http_error_handler)
     application.add_exception_handler(Exception, internal_error_handler)
     application.include_router(health_router)
+    application.include_router(ai_usage_router)
     application.include_router(automations_router)
     application.include_router(logs_router)
     application.include_router(maintenance_router)

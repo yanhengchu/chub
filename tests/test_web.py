@@ -613,7 +613,7 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "|| quickInteractionRunning" in script.text
     assert "llmInteractionRunning" not in script.text
     assert "codexLoadPromise" in script.text
-    assert "CODEX_QUOTA_CACHE_KEY" in script.text
+    assert "AI_USAGE_CACHE_KEY" in script.text
     assert "CODEX_QUOTA_REFRESH_MS = 5 * 60 * 1000" in script.text
     assert '"/api/codex/models"' in script.text
     assert "新建默认：正在读取…" in script.text
@@ -621,11 +621,11 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "新建默认：暂时无法确认模型与等级" in script.text
     assert "|| data?.default_reasoning_effort" in script.text
     assert "跟随 Codex 默认（${modelAndEffort}）" not in script.text
-    assert "/api/codex/quota" in script.text
+    assert "/api/ai/usage" in script.text
     assert "额度：正在读取…" in script.text
     assert "renderCodexQuota" in script.text
     assert "Weekly" in script.text
-    assert "codexQuotaWindowLabel" in script.text
+    assert "codexQuotaWindowLabel" not in script.text
     assert "refreshQuota: true" in script.text
     assert "codexMutationCount" in script.text
     assert "codexSessionsSignature" in script.text

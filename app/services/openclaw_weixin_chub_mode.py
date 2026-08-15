@@ -17,6 +17,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.ai_usage.models import AiUsageData
+from app.ai_usage.service import AiUsageService
 from app.codex.models import (
     CodexQuotaData,
     CodexTokenUsageData,
@@ -30,6 +32,12 @@ from app.codex.quick_interactions import build_task_summary
 from app.codex.rate_limits import CodexRateLimitService
 from app.core.config import OpenClawWeixinChubModeConfig, Settings
 from app.core.response import ApiError
+from app.services.deferred_restart import (
+    DeferredRestartCoordinator,
+    DeferredRestartOutcome,
+    DeferredRestartReadiness,
+    DeferredRestartRequest,
+)
 from app.services.operation_log import write_operation
 
 
@@ -52,6 +60,7 @@ WeixinChubModeSubmissionCode = Literal[
     "task_status_checked",
     # Kept for state-file compatibility with the original route name.
     "codex_usage_checked",
+    # Kept for state-file compatibility with the retired help route.
     "codex_help_checked",
     # Kept for state-file compatibility with the retired status route.
     "codex_status_checked",
@@ -60,6 +69,7 @@ WeixinChubModeSubmissionCode = Literal[
     "codex_session_created",
     "codex_retry_checked",
     "chub_slots_synced",
+    "chub_restart_requested",
 ]
 WeixinChubModeDispatchCode = Literal[
     "mode_disabled",
@@ -77,8 +87,10 @@ WeixinChubModeDispatchCode = Literal[
 MAX_STORED_SUBMISSIONS = 5_000
 MAX_STATE_BYTES = 8 * 1024 * 1024
 MAX_PENDING_RETRY_PROMPT_CHARS = 8_000
+MAX_STORED_RESTART_OPERATIONS = 256
 PENDING_RETRY_TTL_MINUTES = 10
 MAX_WEIXIN_SESSION_SLOTS = 9
+WEIXIN_RESTART_TASK_PREFIX = "weixin-restart-"
 LOGGER = logging.getLogger("hub.openclaw.weixin_chub_mode")
 
 
@@ -129,6 +141,34 @@ class WeixinChubModeSessionSlot(_StrictModel):
     session_id: str = Field(min_length=1, max_length=128)
 
 
+class WeixinChubModeRestartOperation(_StrictModel):
+    message_id: str = Field(min_length=1, max_length=500)
+    operation_id: str = Field(min_length=1, max_length=128)
+    coordinator_operation_id: str = Field(min_length=1, max_length=128)
+    source_ip: str = Field(min_length=1, max_length=128)
+    delivery_route_fingerprint: str = Field(min_length=64, max_length=64)
+    delivery_route: QuickInteractionWeixinRoute
+    status: Literal[
+        "pending",
+        "started",
+        "succeeded",
+        "start_failed",
+        "sensitive_task_failed",
+        "cleared",
+    ] = "pending"
+    error: str | None = Field(default=None, max_length=500)
+    notification_status: Literal[
+        "pending",
+        "sending",
+        "sent",
+        "failed",
+        "skipped",
+    ] | None = None
+    notification_error: str | None = Field(default=None, max_length=1_000)
+    created_at: datetime
+    updated_at: datetime
+
+
 class WeixinChubModeState(_StrictModel):
     version: Literal[1] = 1
     configuration: WeixinChubModeRuntimeConfig
@@ -136,6 +176,9 @@ class WeixinChubModeState(_StrictModel):
     pending_retry: WeixinChubModePendingRetry | None = None
     session_slots: list[WeixinChubModeSessionSlot] = Field(default_factory=list)
     submissions: list[WeixinChubModeSubmission] = Field(default_factory=list)
+    restart_operations: list[WeixinChubModeRestartOperation] = Field(
+        default_factory=list
+    )
 
 
 class WeixinChubModeStatus(_StrictModel):
@@ -166,24 +209,30 @@ TASK_STATUS_CHECK_PROMPTS = frozenset(
     {"查询状态", "状态查询", "检查状态", "状态检查"}
 )
 CHUB_STATUS_PROMPT = "chub"
-CHUB_SYNC_PROMPTS = frozenset({"chub sync", "chub -s"})
-CHUB_SYNC_ALIASES = frozenset({"补充槽位"})
-CODEX_HELP_PROMPT = "codex help"
-CODEX_NEW_PROMPT = "codex new"
-CODEX_RETRY_PROMPT = "codex retry"
-CODEX_NEW_RETRY_PROMPT = "codex new retry"
-CODEX_SWITCH_PROMPT = "codex switch"
-CODEX_SWITCH_PATTERN = re.compile(r"codex switch ([1-9]\d*)")
-CODEX_SWITCH_TASK_PATTERN = re.compile(r"codex\s+switch\s+([1-9])", re.IGNORECASE)
+CHUB_SYNC_PROMPTS = frozenset({"sync"})
+CHUB_SYNC_ALIASES = frozenset({"同步状态", "状态同步"})
+CHUB_RESTART_PROMPTS = frozenset({"restart"})
+CHUB_RESTART_ALIASES = frozenset({"重启"})
+SESSION_NEW_PROMPT = "session new"
+SESSION_RETRY_PROMPT = "session retry"
+SESSION_NEW_RETRY_PROMPT = "session new retry"
+SESSION_SWITCH_PROMPT = "session switch"
+SESSION_SWITCH_PATTERN = re.compile(r"session switch ([1-9])")
+SESSION_SWITCH_TASK_PATTERN = re.compile(
+    r"session\s+switch\s+([1-9])", re.IGNORECASE
+)
 CHINESE_SWITCH_PATTERN = re.compile(
-    r"切换(?:会话)?\s*([1-9一二三四五六七八九])"
+    r"(?:切换(?:会话)?|会话)\s*([1-9一二三四五六七八九])"
 )
 CHINESE_SWITCH_COMMAND_PATTERN = re.compile(
-    r"切换(?:会话)?(?:\s*[+\-＋－]?[0-9０-９零〇一二三四五六七八九十百千万两]+)?"
+    r"(?:切换(?:会话)?|会话)"
+    r"(?:\s*[+\-＋－]?[0-9０-９零〇一二三四五六七八九十百千万两]+)?"
 )
-CODEX_ARCHIVE_PROMPT = "codex archive"
-CODEX_ARCHIVE_PATTERN = re.compile(r"codex archive ([1-9]\d*)")
-CODEX_ARCHIVE_TASK_PATTERN = re.compile(r"codex\s+archive\s+([1-9])", re.IGNORECASE)
+SESSION_ARCHIVE_PROMPT = "session archive"
+SESSION_ARCHIVE_PATTERN = re.compile(r"session archive ([1-9])")
+SESSION_ARCHIVE_TASK_PATTERN = re.compile(
+    r"session\s+archive\s+([1-9])", re.IGNORECASE
+)
 CHINESE_ARCHIVE_PATTERN = re.compile(
     r"归档(?:会话)?\s*([1-9一二三四五六七八九])"
 )
@@ -207,24 +256,6 @@ CODEX_STATUS_TIMEOUT_SECONDS = 9
 MAX_EPHEMERAL_STATUS_REPLIES = 256
 MAX_EPHEMERAL_STATUS_INFLIGHT = 64
 COMMAND_TASK_SEPARATORS = frozenset(":：,，.。;；!?！？")
-CODEX_HELP_MESSAGE = """Codex 命令
-
-1. codex new / 新建会话
-   新建并切换 Session；后接正文时直接执行
-
-2. codex switch N / 切换N / 切换会话N
-   切换到 Session N；后接正文时直接执行
-
-3. codex archive N / 归档N / 归档会话N
-   归档 Session N
-
-4. codex retry
-   在当前 Session 继续未提交任务
-
-5. codex new retry / 新建会话执行
-   新建 Session 并继续未提交任务
-
-N 为 1–9，其他消息按普通任务处理"""
 
 
 @dataclass(frozen=True)
@@ -258,6 +289,13 @@ class WeixinChubModeManager:
         translation_manager=None,
         session_archiver: Callable[[str], object] | None = None,
         system_status_reader: Callable[[], object] | None = None,
+        restart_coordinator: DeferredRestartCoordinator | None = None,
+        restart_notifier: Callable[
+            [QuickInteractionWeixinRoute, DeferredRestartOutcome, str | None],
+            object,
+        ]
+        | None = None,
+        ai_usage_reader: AiUsageService | None = None,
     ) -> None:
         self.settings = settings
         self.codex_manager = codex_manager
@@ -265,11 +303,15 @@ class WeixinChubModeManager:
         self.route_validator = route_validator
         self.terminal_reclaimer = terminal_reclaimer
         self.codex_account_reader = codex_account_reader
+        self.ai_usage_reader = ai_usage_reader
         self.translation_manager = translation_manager
         self.session_archiver = session_archiver
         self.system_status_reader = system_status_reader
+        self.restart_coordinator = restart_coordinator
+        self.restart_notifier = restart_notifier
         self.path = settings.openclaw.weixin_chub_mode.state_file
         self._lock = threading.RLock()
+        self._restart_lock = threading.Lock()
         self._slot_lock = threading.RLock()
         self._status_condition = threading.Condition()
         self._status_refreshing = False
@@ -352,6 +394,12 @@ class WeixinChubModeManager:
                 submission.http_status != 200
             ):
                 submission.http_status = 200
+                changed = True
+        for operation in state.restart_operations:
+            if operation.notification_status == "sending":
+                operation.notification_status = "failed"
+                operation.notification_error = "微信重启结果发送被服务中断，未自动重试。"
+                operation.updated_at = utc_now()
                 changed = True
         if state.pending_retry is not None and (
             state.pending_retry.expires_at <= utc_now()
@@ -822,6 +870,17 @@ class WeixinChubModeManager:
         )
         if ephemeral is not None:
             return ephemeral
+        if mode_enabled and (
+            normalized_codex_prompt in CHUB_RESTART_PROMPTS
+            or normalized_prompt in CHUB_RESTART_ALIASES
+        ):
+            return self._dispatch_chub_restart(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                route_fingerprint=route_fingerprint,
+                source_ip=source_ip,
+                delivery_route=delivery_route,
+            )
         with self._slot_lock, self._lock:
             if self._state_error:
                 self._log_standalone_dispatch("failed", source_ip)
@@ -882,15 +941,7 @@ class WeixinChubModeManager:
                     disposition="pass",
                 )
 
-            if normalized_codex_prompt == CODEX_HELP_PROMPT:
-                return self._dispatch_codex_help(
-                    message_id=message_id,
-                    correlation_id=correlation_id,
-                    route_fingerprint=route_fingerprint,
-                    source_ip=source_ip,
-                )
-
-            if normalized_codex_prompt == CODEX_RETRY_PROMPT:
+            if normalized_codex_prompt == SESSION_RETRY_PROMPT:
                 return self._dispatch_codex_retry(
                     message_id=message_id,
                     correlation_id=correlation_id,
@@ -902,7 +953,7 @@ class WeixinChubModeManager:
 
             retry_command, retry_task = self._split_command_task(
                 prompt,
-                (CODEX_NEW_RETRY_PROMPT, *CONTINUE_RETRY_PROMPTS),
+                (SESSION_NEW_RETRY_PROMPT, *CONTINUE_RETRY_PROMPTS),
             )
             if retry_command and retry_task is not None:
                 operation_id = uuid4().hex
@@ -933,11 +984,11 @@ class WeixinChubModeManager:
 
             new_command, new_task = self._split_command_task(
                 prompt,
-                (CODEX_NEW_PROMPT, "新建会话"),
+                (SESSION_NEW_PROMPT, "新建会话"),
             )
             if (
                 new_command
-                and not normalized_codex_prompt.startswith(CODEX_NEW_RETRY_PROMPT)
+                and not normalized_codex_prompt.startswith(SESSION_NEW_RETRY_PROMPT)
             ):
                 return self._dispatch_codex_new(
                     message_id=message_id,
@@ -950,7 +1001,7 @@ class WeixinChubModeManager:
 
             archive_command = self._split_numbered_command_task(
                 prompt,
-                CODEX_ARCHIVE_TASK_PATTERN,
+                SESSION_ARCHIVE_TASK_PATTERN,
             ) or self._split_numbered_command_task(
                 prompt,
                 CHINESE_ARCHIVE_PATTERN,
@@ -978,8 +1029,8 @@ class WeixinChubModeManager:
                     invalid_usage=True,
                 )
 
-            if normalized_codex_prompt.startswith(CODEX_ARCHIVE_PROMPT):
-                match = CODEX_ARCHIVE_PATTERN.fullmatch(normalized_codex_prompt)
+            if normalized_codex_prompt.startswith(SESSION_ARCHIVE_PROMPT):
+                match = SESSION_ARCHIVE_PATTERN.fullmatch(normalized_codex_prompt)
                 requested_index = None
                 invalid_usage = match is None
                 if match is not None:
@@ -999,7 +1050,7 @@ class WeixinChubModeManager:
 
             switch_command = self._split_numbered_command_task(
                 prompt,
-                CODEX_SWITCH_TASK_PATTERN,
+                SESSION_SWITCH_TASK_PATTERN,
             ) or self._split_numbered_command_task(
                 prompt,
                 CHINESE_SWITCH_PATTERN,
@@ -1028,19 +1079,8 @@ class WeixinChubModeManager:
                     delivery_route=delivery_route,
                 )
 
-            if normalized_codex_prompt == CODEX_SWITCH_PROMPT:
-                return self._dispatch_codex_switch(
-                    message_id=message_id,
-                    correlation_id=correlation_id,
-                    route_fingerprint=route_fingerprint,
-                    source_ip=source_ip,
-                    requested_index=None,
-                    invalid_usage=False,
-                    delivery_route=delivery_route,
-                )
-
-            if normalized_codex_prompt.startswith(CODEX_SWITCH_PROMPT):
-                match = CODEX_SWITCH_PATTERN.fullmatch(normalized_codex_prompt)
+            if normalized_codex_prompt.startswith(f"{SESSION_SWITCH_PROMPT} "):
+                match = SESSION_SWITCH_PATTERN.fullmatch(normalized_codex_prompt)
                 requested_index = None
                 invalid_usage = match is None
                 if match is not None:
@@ -1070,27 +1110,6 @@ class WeixinChubModeManager:
                 return self._dispatch_failure_from_error(exc)
 
             return WeixinChubModeDispatchResult(disposition="handled")
-
-    def _dispatch_codex_help(
-        self,
-        *,
-        message_id: str,
-        correlation_id: str | None,
-        route_fingerprint: str,
-        source_ip: str,
-    ) -> WeixinChubModeDispatchResult:
-        operation_id = uuid4().hex
-        self._log_dispatch(operation_id, "requested", source_ip)
-        self._log_dispatch(operation_id, "started", source_ip)
-        return self._remember_fixed_reply(
-            message_id=message_id,
-            correlation_id=correlation_id,
-            operation_id=operation_id,
-            route_fingerprint=route_fingerprint,
-            source_ip=source_ip,
-            message=CODEX_HELP_MESSAGE,
-            code="codex_help_checked",
-        )
 
     def _dispatch_codex_new(
         self,
@@ -1302,7 +1321,7 @@ class WeixinChubModeManager:
             if create_new_session:
                 result.message = (
                     "已创建并切换到新的 Session，但刚才的任务提交失败；"
-                    "待继续任务已保留，请回复：codex retry。"
+                    "待继续任务已保留，请回复：session retry。"
                 )
             return self._finish_retry_command(
                 command_reservation,
@@ -1482,6 +1501,336 @@ class WeixinChubModeManager:
             self._schedule_session_snapshot_refresh()
         return WeixinChubModeDispatchResult(disposition="reply", message=message)
 
+    def _dispatch_chub_restart(
+        self,
+        *,
+        message_id: str,
+        correlation_id: str | None,
+        route_fingerprint: str,
+        source_ip: str,
+        delivery_route: QuickInteractionWeixinRoute,
+    ) -> WeixinChubModeDispatchResult:
+        with self._restart_lock:
+            return self._dispatch_chub_restart_serialized(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                route_fingerprint=route_fingerprint,
+                source_ip=source_ip,
+                delivery_route=delivery_route,
+            )
+
+    def _dispatch_chub_restart_serialized(
+        self,
+        *,
+        message_id: str,
+        correlation_id: str | None,
+        route_fingerprint: str,
+        source_ip: str,
+        delivery_route: QuickInteractionWeixinRoute,
+    ) -> WeixinChubModeDispatchResult:
+        with self._lock:
+            if self._state_error:
+                self._log_standalone_dispatch("failed", source_ip)
+                return self._dispatch_failure("state_unavailable")
+            duplicate = self._find_submission(message_id)
+            if duplicate is not None:
+                if duplicate.delivery_route_fingerprint != route_fingerprint:
+                    self._log_standalone_dispatch("failed", source_ip)
+                    return self._dispatch_failure("message_conflict")
+                self._log_standalone_dispatch("succeeded", source_ip)
+                return WeixinChubModeDispatchResult(
+                    disposition=duplicate.dispatch_disposition or "reply",
+                    message=duplicate.message or None,
+                )
+
+        operation_id = uuid4().hex
+        self._log_dispatch(operation_id, "requested", source_ip)
+        self._log_dispatch(operation_id, "started", source_ip)
+
+        def remember(
+            message: str,
+            *,
+            failed: bool = False,
+        ) -> WeixinChubModeDispatchResult:
+            with self._lock:
+                return self._remember_fixed_reply(
+                    message_id=message_id,
+                    correlation_id=correlation_id,
+                    operation_id=operation_id,
+                    route_fingerprint=route_fingerprint,
+                    source_ip=source_ip,
+                    message=message,
+                    code="chub_restart_requested",
+                    failed=failed,
+                )
+
+        if self.restart_coordinator is None or self.restart_notifier is None:
+            return remember(
+                "Chub 重启未登记：重启协调能力不可用。",
+                failed=True,
+            )
+        try:
+            route_error = (
+                self.route_validator(delivery_route)
+                if self.route_validator is not None
+                else "无法确认本次消息的微信回送通道。"
+            )
+        except Exception:
+            LOGGER.warning("Unable to validate Weixin restart route", exc_info=True)
+            route_error = "无法确认本次消息的微信回送通道。"
+        if route_error:
+            return remember(
+                f"Chub 重启未登记：{route_error}",
+                failed=True,
+            )
+
+        with self._lock:
+            active = next(
+                (
+                    item
+                    for item in self._state.restart_operations
+                    if item.delivery_route_fingerprint == route_fingerprint
+                    and item.status in {"pending", "started"}
+                ),
+                None,
+            )
+        if active is not None:
+            return remember(
+                "Chub 重启已在处理中，完成后将原路发送结果。"
+            )
+
+        restart_operation_id = f"{operation_id}:restart"
+        try:
+            registration = self.restart_coordinator.request(
+                operation_id=restart_operation_id,
+                task_id=f"{WEIXIN_RESTART_TASK_PREFIX}{operation_id}",
+                source_ip=source_ip,
+            )
+        except (ApiError, OSError):
+            LOGGER.warning("Unable to register Weixin Chub restart", exc_info=True)
+            return remember(
+                "Chub 重启未登记，请稍后重试。",
+                failed=True,
+            )
+
+        now = utc_now()
+        restart_operation = WeixinChubModeRestartOperation(
+            message_id=message_id,
+            operation_id=restart_operation_id,
+            coordinator_operation_id=registration.operation_id,
+            source_ip=source_ip,
+            delivery_route_fingerprint=route_fingerprint,
+            delivery_route=delivery_route.model_copy(deep=True),
+            created_at=now,
+            updated_at=now,
+        )
+        with self._lock:
+            next_state = self._state.model_copy(deep=True)
+            next_state.restart_operations.append(restart_operation)
+            try:
+                self._write_state(next_state)
+            except OSError:
+                self._state_error = True
+                self._log_dispatch(operation_id, "failed", source_ip)
+                return self._dispatch_failure("state_unavailable")
+            self._state = next_state
+        if not registration.created:
+            write_operation(
+                operation_id=restart_operation_id,
+                action="restart_hub",
+                status="requested",
+                target="chub",
+                source_ip=source_ip,
+            )
+
+        reply_message = "Chub 重启已登记，完成后将原路发送结果。"
+        result = remember(reply_message)
+        if result.message == reply_message:
+            self.restart_coordinator.maybe_schedule()
+        return result
+
+    def deferred_restart_readiness(
+        self,
+        request: DeferredRestartRequest,
+    ) -> DeferredRestartReadiness | None:
+        if not request.requested_task_id.startswith(WEIXIN_RESTART_TASK_PREFIX):
+            return None
+        with self._lock:
+            registered = any(
+                item.coordinator_operation_id == request.operation_id
+                and item.status in {"pending", "started"}
+                for item in self._state.restart_operations
+            )
+        return "ready" if registered else "sensitive_task_failed"
+
+    def record_deferred_restart_started(
+        self,
+        coordinator_operation_id: str,
+        _requested_task_id: str,
+        started_at: datetime,
+    ) -> bool:
+        with self._lock:
+            next_state = self._state.model_copy(deep=True)
+            matched = [
+                item
+                for item in next_state.restart_operations
+                if item.coordinator_operation_id == coordinator_operation_id
+                and item.status == "pending"
+            ]
+            if not matched:
+                return False
+            for item in matched:
+                item.status = "started"
+                item.updated_at = started_at
+            self._write_state(next_state)
+            self._state = next_state
+        for item in matched:
+            if item.operation_id != coordinator_operation_id:
+                write_operation(
+                    operation_id=item.operation_id,
+                    action="restart_hub",
+                    status="started",
+                    target="chub",
+                    source_ip=item.source_ip,
+                )
+        return True
+
+    def record_deferred_restart_completion(
+        self,
+        coordinator_operation_id: str,
+        _requested_task_id: str,
+        outcome: DeferredRestartOutcome,
+        completed_at: datetime,
+        failure_reason: str | None = None,
+    ) -> bool:
+        with self._lock:
+            next_state = self._state.model_copy(deep=True)
+            matched = [
+                item
+                for item in next_state.restart_operations
+                if item.coordinator_operation_id == coordinator_operation_id
+            ]
+            if not matched:
+                return False
+            changed = False
+            for item in matched:
+                if item.status in {"pending", "started"}:
+                    item.status = outcome
+                    item.error = (
+                        failure_reason[:500]
+                        if outcome == "start_failed" and failure_reason
+                        else None
+                    )
+                    item.notification_status = "pending"
+                    item.notification_error = None
+                    item.updated_at = completed_at
+                    changed = True
+            if changed:
+                self._write_state(next_state)
+                self._state = next_state
+            pending_operation_ids = [
+                item.operation_id
+                for item in next_state.restart_operations
+                if item.coordinator_operation_id == coordinator_operation_id
+                and item.notification_status == "pending"
+            ]
+        final_status = "succeeded" if outcome in {"succeeded", "cleared"} else "failed"
+        for item in matched:
+            if item.operation_id != coordinator_operation_id and changed:
+                write_operation(
+                    operation_id=item.operation_id,
+                    action="restart_hub",
+                    status=final_status,
+                    target="chub",
+                    source_ip=item.source_ip,
+                )
+        for operation_id in pending_operation_ids:
+            self._deliver_restart_notification(operation_id)
+        return True
+
+    def _deliver_restart_notification(self, operation_id: str) -> None:
+        with self._lock:
+            current = next(
+                (
+                    item
+                    for item in self._state.restart_operations
+                    if item.operation_id == operation_id
+                ),
+                None,
+            )
+            if current is None or current.notification_status != "pending":
+                return
+            next_state = self._state.model_copy(deep=True)
+            operation = next(
+                item
+                for item in next_state.restart_operations
+                if item.operation_id == operation_id
+            )
+            operation.notification_status = "sending"
+            operation.updated_at = utc_now()
+            self._write_state(next_state)
+            self._state = next_state
+            snapshot = operation.model_copy(deep=True)
+
+        notification_operation_id = f"{operation_id}:weixin"
+        for status in ("requested", "started"):
+            write_operation(
+                operation_id=notification_operation_id,
+                action="weixin_chub_restart_notification",
+                status=status,
+                target=self.settings.node.id,
+                source_ip=snapshot.source_ip,
+            )
+        try:
+            result = self.restart_notifier(
+                snapshot.delivery_route,
+                snapshot.status,
+                snapshot.error,
+            )
+            notification_status = getattr(result, "status", "failed")
+            notification_error = getattr(result, "error", None)
+            if notification_status not in {"sent", "failed", "skipped"}:
+                notification_status = "failed"
+                notification_error = "微信重启结果返回了无效状态。"
+        except Exception:
+            LOGGER.warning("Weixin Chub restart notification failed", exc_info=True)
+            notification_status = "failed"
+            notification_error = "微信重启结果未送达。"
+
+        with self._lock:
+            next_state = self._state.model_copy(deep=True)
+            operation = next(
+                (
+                    item
+                    for item in next_state.restart_operations
+                    if item.operation_id == operation_id
+                ),
+                None,
+            )
+            if operation is not None:
+                operation.notification_status = notification_status
+                operation.notification_error = (
+                    notification_error[:1_000] if notification_error else None
+                )
+                operation.updated_at = utc_now()
+                try:
+                    self._write_state(next_state)
+                except OSError:
+                    self._state_error = True
+                    LOGGER.warning(
+                        "Unable to persist Weixin restart notification result",
+                        exc_info=True,
+                    )
+                else:
+                    self._state = next_state
+        write_operation(
+            operation_id=notification_operation_id,
+            action="weixin_chub_restart_notification",
+            status="succeeded" if notification_status == "sent" else "failed",
+            target=self.settings.node.id,
+            source_ip=snapshot.source_ip,
+        )
+
     def start_status_cache(self) -> None:
         """Initialize the Chub overview after application startup."""
         with self._status_condition:
@@ -1491,6 +1840,7 @@ class WeixinChubModeManager:
         try:
             threading.Thread(
                 target=self._refresh_chub_cache,
+                kwargs={"include_ai_usage": False},
                 daemon=True,
                 name="chub-status-cache-init",
             ).start()
@@ -1654,7 +2004,11 @@ class WeixinChubModeManager:
         ]:
             self._ephemeral_status_replies.pop(key, None)
 
-    def _refresh_chub_cache(self) -> tuple[bool, str | None]:
+    def _refresh_chub_cache(
+        self,
+        *,
+        include_ai_usage: bool = True,
+    ) -> tuple[bool, str | None]:
         with self._status_condition:
             if self._status_refreshing:
                 completed = self._status_condition.wait_for(
@@ -1674,14 +2028,18 @@ class WeixinChubModeManager:
             try:
                 value = reader()
                 if name == "account":
-                    quota, usage = value
-                    checked_at = min(quota.checked_at, usage.checked_at)
-                    successful = (
-                        quota.status == "available"
-                        and usage.status == "available"
-                        and quota.message is None
-                        and usage.message is None
-                    )
+                    if isinstance(value, AiUsageData):
+                        checked_at = value.checked_at or utc_now()
+                        successful = value.status == "available" and not value.stale
+                    else:
+                        quota, usage = value
+                        checked_at = min(quota.checked_at, usage.checked_at)
+                        successful = (
+                            quota.status == "available"
+                            and usage.status == "available"
+                            and quota.message is None
+                            and usage.message is None
+                        )
                     snapshot = _ChubCollectedSnapshot(
                         value=value,
                         checked_at=checked_at,
@@ -1711,10 +2069,10 @@ class WeixinChubModeManager:
         }
         if self.system_status_reader is not None:
             readers["system"] = self.system_status_reader
-        if self.codex_account_reader is not None:
-            readers["account"] = lambda: self.codex_account_reader.read_account_status(
-                force=True
-            )
+        if include_ai_usage and (
+            self.ai_usage_reader is not None or self.codex_account_reader is not None
+        ):
+            readers["account"] = lambda: self._read_ai_usage(force=False)
         for name, reader in readers.items():
             try:
                 threading.Thread(
@@ -1830,6 +2188,12 @@ class WeixinChubModeManager:
         with self._status_condition:
             cache = dict(self._status_cache)
             task_cached = self._task_status_cache.get(route_fingerprint)
+        with self._lock:
+            failed_restart_notifications = sum(
+                item.delivery_route_fingerprint == route_fingerprint
+                and item.notification_status in {"failed", "skipped"}
+                for item in self._state.restart_operations
+            )
         anomalies: list[str] = []
         readiness_cached = cache.get("readiness")
         readiness = readiness_cached[0] if readiness_cached is not None else None
@@ -1856,6 +2220,10 @@ class WeixinChubModeManager:
             )
             if failed_notifications:
                 anomalies.append(f"{failed_notifications} 个任务结果通知失败")
+        if failed_restart_notifications:
+            anomalies.append(
+                f"{failed_restart_notifications} 个重启结果通知失败"
+            )
         session_cached = cache.get("sessions")
         if session_cached is None:
             sessions = ()
@@ -1875,11 +2243,10 @@ class WeixinChubModeManager:
         }
         account_cached = cache.get("account")
         if account_cached is None:
-            usage_message = "Weekly 暂不可用 · Tokens 暂不可用"
+            usage_message = "Weekly 暂不可用"
         else:
             account = account_cached[0]
-            quota, usage = account
-            usage_message = self._codex_usage_message(quota, usage)
+            usage_message = self._usage_message(account)
 
         if anomalies:
             lines.extend(["", "异常"])
@@ -1981,12 +2348,9 @@ class WeixinChubModeManager:
 
                 def read_account() -> None:
                     try:
-                        if self.codex_account_reader is None:
-                            raise RuntimeError("Codex account reader is unavailable")
-                        quota, usage = self.codex_account_reader.read_account_status(
-                            force=True
+                        account_results.put(
+                            self._usage_message(self._read_ai_usage(force=False))
                         )
-                        account_results.put(self._codex_usage_message(quota, usage))
                     except Exception:
                         LOGGER.warning("Codex usage check failed", exc_info=True)
                         account_results.put("Codex 用量查询失败，请稍后重试。")
@@ -2049,7 +2413,7 @@ class WeixinChubModeManager:
                         operation_id=operation_id,
                         route_fingerprint=route_fingerprint,
                         source_ip=source_ip,
-                        message="槽位状态已变化，本次未写入，请重新发送 chub -s。",
+                        message="槽位状态已变化，本次未写入，请重新发送 sync。",
                         code="chub_slots_synced",
                         failed=True,
                     )
@@ -2302,10 +2666,7 @@ class WeixinChubModeManager:
 
         account_failed = False
         try:
-            if self.codex_account_reader is None:
-                raise RuntimeError("Codex account reader is unavailable")
-            quota, usage = self.codex_account_reader.read_account_status(force=True)
-            message = self._codex_usage_message(quota, usage)
+            message = self._usage_message(self._read_ai_usage(force=False))
         except Exception:
             LOGGER.warning("Codex usage check failed", exc_info=True)
             message = "Codex 用量查询失败，请稍后重试。"
@@ -2378,7 +2739,7 @@ class WeixinChubModeManager:
         self._state = next_state
 
         usage = (
-            "用法：发送 codex archive n、归档N 或归档会话N"
+            "用法：发送 session archive n、归档N 或归档会话N"
             "（1–9/一至九）。"
         )
         if invalid_usage or requested_index is None:
@@ -2660,11 +3021,10 @@ class WeixinChubModeManager:
         self._state = next_state
 
         usage = (
-            "用法：发送 codex switch 切换到下一个 Session，"
-            "发送 codex switch n 切换到指定编号，"
-            "或发送切换N、切换会话N（1–9/一至九）。"
+            "用法：发送 session switch n 切换到指定编号，"
+            "或发送切换N、切换会话N、会话N（1–9/一至九）。"
         )
-        if invalid_usage:
+        if invalid_usage or requested_index is None:
             return self._finish_codex_switch(
                 record,
                 usage,
@@ -2677,13 +3037,11 @@ class WeixinChubModeManager:
 
         def read_account() -> None:
             try:
-                if self.codex_account_reader is None:
-                    raise RuntimeError("Codex account reader is unavailable")
-                quota, account_usage = self.codex_account_reader.read_account_status(
-                    force=True
-                )
                 account_results.put(
-                    (self._codex_usage_message(quota, account_usage), False)
+                    (
+                        self._usage_message(self._read_ai_usage(force=False)),
+                        False,
+                    )
                 )
             except Exception:
                 LOGGER.warning("Codex usage check failed", exc_info=True)
@@ -2723,55 +3081,20 @@ class WeixinChubModeManager:
                 failed=True,
             )
 
-        if requested_index is not None:
-            slot_indexes = [slot for slot, _session, _state in visible]
-            if requested_index not in slot_indexes:
-                candidate_hint = self._switch_candidate_hint(remaining)
-                message, _status_failed = self._codex_operation_message(
-                    f"切换状态：未切换，编号无效。{candidate_hint}",
-                    fill_session_candidates=False,
-                )
-                return self._finish_codex_switch(
-                    record,
-                    message,
-                    source_ip=source_ip,
-                    failed=True,
-                )
-            target_index = slot_indexes.index(requested_index)
-        else:
-            current_index = next(
-                (
-                    index
-                    for index, (_slot, session, state) in enumerate(visible)
-                    if session.id == self._state.session_id
-                    and state != "Unavailable"
-                ),
-                None,
+        slot_indexes = [slot for slot, _session, _state in visible]
+        if requested_index not in slot_indexes:
+            candidate_hint = self._switch_candidate_hint(remaining)
+            message, _status_failed = self._codex_operation_message(
+                f"切换状态：未切换，编号无效。{candidate_hint}",
+                fill_session_candidates=False,
             )
-            if current_index is None:
-                target_index = next(
-                    (index for index, (_slot, _session, state) in enumerate(visible) if state != "Unavailable"),
-                    0,
-                )
-            elif sum(state != "Unavailable" for _slot, _session, state in visible) == 1:
-                candidate_hint = self._switch_candidate_hint(remaining)
-                message, _status_failed = self._codex_operation_message(
-                    "切换状态：未切换，当前没有其他可切换的 Session。"
-                    f"{candidate_hint}",
-                    fill_session_candidates=False,
-                )
-                return self._finish_codex_switch(
-                    record,
-                    message,
-                    source_ip=source_ip,
-                    failed=True,
-                )
-            else:
-                target_index = current_index
-                for _offset in range(len(visible)):
-                    target_index = (target_index + 1) % len(visible)
-                    if visible[target_index][2] != "Unavailable":
-                        break
+            return self._finish_codex_switch(
+                record,
+                message,
+                source_ip=source_ip,
+                failed=True,
+            )
+        target_index = slot_indexes.index(requested_index)
 
         target_slot, target, listed_state = visible[target_index]
         if listed_state == "Unavailable":
@@ -2905,7 +3228,7 @@ class WeixinChubModeManager:
     def _switch_candidate_hint(remaining: int) -> str:
         if remaining <= 0:
             return ""
-        return "另有未登记的可用 Session，请先发送 chub -s 补充槽位后再切换。"
+        return "另有未登记的可用 Session，请先发送 sync、同步状态或状态同步后再切换。"
 
     def _read_visible_codex_sessions(
         self,
@@ -3144,10 +3467,15 @@ class WeixinChubModeManager:
             account_cached = self._status_cache.get("account")
             sessions_cached = self._status_cache.get("sessions")
         if account_cached is None:
-            usage_message = "Weekly 暂不可用 · Tokens 暂不可用"
+            try:
+                usage_message = self._usage_message(
+                    self._read_ai_usage(force=False)
+                )
+            except Exception:
+                LOGGER.warning("AI usage snapshot is unavailable", exc_info=True)
+                usage_message = "Weekly 暂不可用"
         else:
-            quota, usage = account_cached[0]
-            usage_message = self._codex_usage_message(quota, usage)
+            usage_message = self._usage_message(account_cached[0])
         if sessions_cached is None:
             sessions_message = "Sessions\n\n暂不可用"
         else:
@@ -3236,26 +3564,36 @@ class WeixinChubModeManager:
             None,
         )
         weekly_text = (
-            f"{weekly.remaining_percent}% left"
+            f"Weekly {weekly.remaining_percent}%"
             if weekly is not None
-            else "暂不可用"
+            else "Weekly 暂不可用"
         )
         today = datetime.now().astimezone().date()
         today_bucket = next(
             (bucket for bucket in usage.daily_usage if bucket.start_date == today),
             None,
         )
-        if today_bucket is None and usage.daily_usage:
-            latest_bucket = max(usage.daily_usage, key=lambda item: item.start_date)
-            if 0 <= (today - latest_bucket.start_date).days <= 1:
-                today_bucket = latest_bucket
         if usage.status == "available" and today_bucket is not None:
-            token_text = WeixinChubModeManager._compact_token_count(
-                today_bucket.tokens
+            return (
+                f"{weekly_text} · Today "
+                f"{AiUsageService.compact_tokens(today_bucket.tokens)}"
             )
-        else:
-            token_text = "暂不可用"
-        return f"Weekly {weekly_text} · Tokens {token_text}"
+        return weekly_text
+
+    def _read_ai_usage(self, *, force: bool) -> object:
+        if self.ai_usage_reader is not None:
+            return self.ai_usage_reader.read(force=force)
+        if self.codex_account_reader is not None:
+            return self.codex_account_reader.read_account_status(force=True)
+        raise RuntimeError("AI usage reader is unavailable")
+
+    def _usage_message(self, value: object) -> str:
+        if isinstance(value, AiUsageData):
+            if value.status == "available" and value.display.short:
+                return value.display.short
+            return "Weekly 暂不可用"
+        quota, usage = value
+        return self._codex_usage_message(quota, usage)
 
     @staticmethod
     def _compact_token_count(tokens: int) -> str:
@@ -3327,7 +3665,7 @@ class WeixinChubModeManager:
             "in_progress": (
                 "任务提交失败：当前 Session 正在执行，本任务未提交。\n\n"
                 "如需新建 Session 并继续执行本任务，请回复："
-                "codex new retry 或“新建会话执行”。"
+                "session new retry 或“新建会话执行”。"
             ),
             "configuration_invalid": (
                 "任务提交失败：微信 Chub 模式配置无效，请检查工作区、权限、模型和微信通知配置。"
@@ -3705,6 +4043,24 @@ class WeixinChubModeManager:
             state.submissions,
             key=lambda item: (item.created_at, item.message_id),
         )[-MAX_STORED_SUBMISSIONS:]
+        active_restart_operations = [
+            item
+            for item in state.restart_operations
+            if item.status in {"pending", "started"}
+            or item.notification_status in {"pending", "sending"}
+        ]
+        completed_restart_operations = sorted(
+            (
+                item
+                for item in state.restart_operations
+                if item.status not in {"pending", "started"}
+                and item.notification_status not in {"pending", "sending"}
+            ),
+            key=lambda item: (item.created_at, item.operation_id),
+        )[-MAX_STORED_RESTART_OPERATIONS:]
+        state.restart_operations = (
+            active_restart_operations + completed_restart_operations
+        )
         self.path.parent.mkdir(parents=True, exist_ok=True)
         os.chmod(self.path.parent, 0o700)
         if self.path.is_symlink():

@@ -23,7 +23,7 @@ Chub 是面向个人设备的轻量管理服务，提供统一的 Web 管理入�
 失败都会向用户展示原因。
 当前边界见 [快速交互独立 Worker 设计](docs/QUICK_INTERACTION_WORKER_DESIGN.md)。
 
-插件、固定 API 和微信指令的准确查询入口是 [Chub 集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md)。
+电脑端命令、插件、固定 API 和微信指令的简要查询入口是 [Chub 集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md)，具体规则由对应设计文档维护。
 
 ## 快速开始
 
@@ -56,6 +56,7 @@ cp config/settings.ubuntu.example.yaml config/settings.local.yaml
 - `HUB_CONFIG_FILE`：配置文件路径，默认 `config/settings.local.yaml`。
 - `app.page_title`：浏览器标签和首页标题；省略时使用应用名称。
 - `security.allow_tailscale`：默认开启，允许真实 Tailnet socket 来源访问受保护接口；不信任客户端转发 Header，也不识别具体用户。
+- `ai_usage`：AI 额度供应商、地区和 API 方式的固定订阅页配置；不保存 Cookie、Authorization 或其他上游凭据。
 
 平台模板默认监听 `127.0.0.1`。需要通过手机远程访问时，将 `server.host` 改为节点自己的 Tailscale IP，不要使用 `0.0.0.0` 或普通局域网地址。如果 Tailnet 将来加入其他人的设备，应重新评估设备级授权和高风险操作边界。
 
@@ -81,17 +82,12 @@ chub uninstall
 
 macOS 使用两个独立 LaunchAgent，Ubuntu 使用两个独立 systemd user service，分别承载 Web 和
 Quick Worker。`chub restart` 只重启 Web，不停止 Worker；`chub status` 同时显示两个服务，
-`chub worker-health` 通过本机私有 IPC 读取 Worker 健康信息。`chub worker-cutover-preflight` 只读检查活动任务、
-未交付结果、待发送通知、待协调重启、旧 Worker 任务记录、翻译队列、未归档 Session、Worker 版本、私有 IPC 和
-固定工作区；失败时只列出阻塞项，不修改配置、任务、Session 或服务。当前正式部署已经由 Worker
-已经接管页面、微信和翻译快速任务；macOS 与 Ubuntu 均已确认单独重启 Web 不会停止 Worker、Runner 或现有
-任务，恢复后的结果和通知不会重复。`chub worker-cutover` 只用于尚未完成一次性切换的旧部署：它在两次只读
-预检之间按规定脚本只重启一次 Web，随后原子保留旧 Worker 历史并启动正式 Worker。已经完成切换的节点不应
-重复执行该命令；Worker 不健康时，Session 写操作保持失败关闭，不回退到旧 Runner。
+`chub worker-health` 通过本机私有 IPC 读取 Worker 健康信息。当前 Worker 已经接管页面、微信和翻译快速任务；
+macOS 与 Ubuntu 均已确认单独重启 Web 不会停止 Worker、Runner 或现有任务，恢复后的结果和通知不会重复。
+Worker 不健康时，Session 写操作保持失败关闭，不回退到 Web Runner。
 
 服务直接依赖当前工作区和 `.venv`；移动目录或变更服务定义后需要重新安装。Web 配置变更使用
-`chub restart` 生效；Worker 升级和服务定义变更需要重新安装生效。尚未完成一次性切换的旧部署必须先通过
-只读预检，不能迁移活动任务或未归档 Session。
+`chub restart` 生效；Worker 升级和服务定义变更需要重新安装生效。
 
 ## 日常使用
 
@@ -123,6 +119,12 @@ Codex PTY 依赖 `codex`、`ttyd` 和 `tmux`。安装服务时，Chub 会从当�
 两种入口共享原生 Session，并保持单 writer 互斥。快速交互默认最长运行 6 小时；长时间运行会提示仍在执行，不会在 10 分钟时误判超时。需要重启 Chub 的快速交互只登记一次任务级 Web 重启请求；Chub 在该任务结果和完成通知结束后直接执行，不等待其他任务。
 
 实时终端依赖稳定的 WebSocket 链路。普通页面可以打开但终端无响应时，应优先检查 Tailscale 是否直连、DERP 中继质量，以及 `/codex/.../terminal/ws` 是否成功升级为 `101 Switching Protocols`。
+
+### AI 额度
+
+首页 Codex 卡片通过统一的 `/api/ai/usage` 展示周额度、今日用量和重置时间。Chub 根据 Codex 的结构化认证状态选择唯一来源：ChatGPT 账号登录读取客户端账户接口；API Key 方式复用已启动、已登录的受管 Debug Chrome，由订阅页面自身发起固定用量请求。任一来源失败都不会切换到另一种方式。
+
+API Key 方式需在 `config/settings.local.yaml` 配置固定订阅页和订阅 ID，并通过自动化页面准备、启动受管浏览器及完成登录。额度查询在同一登录环境中并行读取订阅页的周额度与仪表盘页的今日 Token，不自动启动浏览器或弹出登录；Chub 不读取浏览器 Cookie、请求头或存储。今日 Token 获取失败时不影响周额度，只省略 Token。
 
 完整 Session 状态、互斥、通知和任务级重启规则见 [Chub AI Session 状态模型设计](docs/AI_SESSION_STATE_DESIGN.md)。
 
@@ -194,6 +196,7 @@ Runner 不会自行启动或停止 Debug Chrome。浏览器 Profile 未初始化
 
 - `/api/health`、`/api/status`：健康和节点状态。
 - `/api/codex/*`：Codex 会话与快速交互。
+- `/api/ai/usage`：统一 AI 额度、今日用量和重置时间。
 - `/api/automations/*`：自动化环境、任务和结果。
 - `/api/openclaw/*`：OpenClaw 状态与受控操作。
 - `/api/logs`、`/api/maintenance/*`：日志和节点维护。
@@ -220,8 +223,9 @@ README 是项目入口和文档管理规则的维护入口；详细需求、设�
 | 文档 | 用途 | 状态 |
 | --- | --- | --- |
 | [Chub 项目说明](README.md) | 项目定位、当前功能、安装、日常使用、安全和文档维护总入口 | 持续维护 |
-| [Chub 集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md) | 当前可调用插件、固定 API、微信指令和状态总览规则的统一查询入口 | 持续维护 |
+| [Chub 集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md) | 电脑端命令、插件、固定 API 和微信指令的核心功能索引 | 持续维护 |
 | [Chub AI Session 状态模型设计](docs/AI_SESSION_STATE_DESIGN.md) | Codex Session、Activity、两种交互入口、互斥和生命周期的当前契约 | 已验收 |
+| [Chub AI 额度与用量采集设计](docs/AI_QUOTA_USAGE_DESIGN.md) | 供应商无关的统一接口、账号登录与 API 获取、共享缓存和展示格式 | 待验收 |
 | [Chub–OpenClaw 接入设计](docs/CHUB_OPENCLAW_INTEGRATION_DESIGN.md) | OpenClaw、微信 ClawBot、权限、调度、状态和通知边界 | 持续维护 |
 | [Chub OpenClaw 插件说明](integrations/openclaw/chub/README.md) | 插件协议、配置、构建、部署和真实链路验收 | 随插件维护 |
 | [本期工作周报自动化与生成设计](docs/WEEKLY_REPORT_AUTOMATION_DESIGN.md) | 飞书资料准备、周期校验、重点确认、正式生成和复核流程 | 持续维护 |

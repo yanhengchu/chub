@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import queue
@@ -7,8 +8,9 @@ import shutil
 import subprocess
 import threading
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from app.codex.models import (
     CodexDailyTokenUsage,
@@ -20,6 +22,15 @@ from app.codex.models import (
 
 
 LOGGER = logging.getLogger("hub.codex.rate_limits")
+
+
+@dataclass(frozen=True)
+class CodexAccountCollection:
+    auth_type: Literal["chatgpt", "apiKey"] | None
+    quota: CodexQuotaData | None = None
+    usage: CodexTokenUsageData | None = None
+    message: str | None = None
+    identity_key: str | None = None
 
 
 class CodexRateLimitService:
@@ -131,6 +142,81 @@ class CodexRateLimitService:
                 usage = self._usage_cached.model_copy(update={"message": usage.message})
             return quota, usage
 
+    def collect_ai_account_status(
+        self,
+        *,
+        timeout_seconds: float,
+    ) -> CodexAccountCollection:
+        """Detect auth and only read account usage for ChatGPT login."""
+        if shutil.which("codex") is None:
+            return CodexAccountCollection(None, message="未检测到 Codex CLI。")
+
+        process: subprocess.Popen[str] | None = None
+        try:
+            process = self._start_process()
+            assert process.stdin is not None
+            lines = self._response_queue(process)
+            deadline = time.monotonic() + max(0.1, timeout_seconds)
+            self._write_messages(
+                process,
+                [
+                    *self._initialization_messages(),
+                    {"method": "account/read", "id": 2, "params": {}},
+                ],
+            )
+            account_response = self._read_response_queue(
+                lines,
+                response_ids={2},
+                deadline=deadline,
+            ).get(2)
+            auth_type = self._parse_auth_type(account_response)
+            identity_key = self._parse_account_identity(account_response)
+            if auth_type != "chatgpt":
+                return CodexAccountCollection(
+                    auth_type,
+                    message=(
+                        None
+                        if auth_type == "apiKey"
+                        else "无法确认 Codex 认证类型。"
+                    ),
+                    identity_key=identity_key,
+                )
+
+            self._write_messages(
+                process,
+                [
+                    {"method": "account/rateLimits/read", "id": 3, "params": {}},
+                    {"method": "account/usage/read", "id": 4, "params": {}},
+                ],
+            )
+            responses = self._read_response_queue(
+                lines,
+                response_ids={3, 4},
+                deadline=deadline,
+            )
+            quota = (
+                self._parse_response(responses[3])
+                if 3 in responses
+                else self._unavailable("额度信息暂时不可用。")
+            )
+            usage = (
+                self._parse_usage_response(responses[4])
+                if 4 in responses
+                else self._usage_unavailable("Token 用量暂时不可用。")
+            )
+            return CodexAccountCollection(
+                "chatgpt",
+                quota=quota,
+                usage=usage,
+                identity_key=identity_key,
+            )
+        except (OSError, TimeoutError, ValueError, json.JSONDecodeError):
+            LOGGER.info("Codex authentication request was unavailable", exc_info=True)
+            return CodexAccountCollection(None, message="Codex 认证状态暂时不可用。")
+        finally:
+            if process is not None:
+                self._stop_process(process)
+
     def _read_from_codex(self) -> CodexQuotaData:
         if shutil.which("codex") is None:
             return self._unavailable("未检测到 Codex CLI。")
@@ -159,38 +245,13 @@ class CodexRateLimitService:
 
         process: subprocess.Popen[str] | None = None
         try:
-            process = subprocess.Popen(
-                ["codex", "app-server", "--stdio"],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                start_new_session=True,
-            )
-            assert process.stdin is not None
-            messages = [
-                {
-                    "method": "initialize",
-                    "id": 1,
-                    "params": {
-                        "clientInfo": {
-                            "name": "chub",
-                            "title": "Chub",
-                            "version": "1",
-                        }
-                    },
-                },
-                {"method": "initialized", "params": {}},
-            ]
+            process = self._start_process()
+            messages = self._initialization_messages()
             messages.extend(
-                {"method": method, "id": response_id}
+                {"method": method, "id": response_id, "params": {}}
                 for response_id, method in methods.items()
             )
-            for message in messages:
-                process.stdin.write(f"{json.dumps(message)}\n")
-            process.stdin.flush()
+            self._write_messages(process, messages)
             return self._read_responses(process, response_ids=set(methods))
         except (OSError, TimeoutError, ValueError, json.JSONDecodeError):
             LOGGER.info("Codex account request was unavailable", exc_info=True)
@@ -205,16 +266,19 @@ class CodexRateLimitService:
         *,
         response_ids: set[int],
     ) -> dict[int, dict[str, Any]]:
-        assert process.stdout is not None
-        lines: queue.Queue[str | None] = queue.Queue()
+        return self._read_response_queue(
+            self._response_queue(process),
+            response_ids=response_ids,
+            deadline=time.monotonic() + self.REQUEST_TIMEOUT_SECONDS,
+        )
 
-        def consume_output() -> None:
-            for line in process.stdout:
-                lines.put(line)
-            lines.put(None)
-
-        threading.Thread(target=consume_output, daemon=True).start()
-        deadline = time.monotonic() + self.REQUEST_TIMEOUT_SECONDS
+    def _read_response_queue(
+        self,
+        lines: queue.Queue[str | None],
+        *,
+        response_ids: set[int],
+        deadline: float,
+    ) -> dict[int, dict[str, Any]]:
         responses: dict[int, dict[str, Any]] = {}
         for _ in range(self.MAX_RESPONSE_LINES):
             remaining = deadline - time.monotonic()
@@ -243,6 +307,99 @@ class CodexRateLimitService:
         if responses:
             return responses
         raise ValueError("Codex app-server did not return account data")
+
+    @staticmethod
+    def _start_process() -> subprocess.Popen[str]:
+        return subprocess.Popen(
+            ["codex", "app-server", "--stdio"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            start_new_session=True,
+        )
+
+    @staticmethod
+    def _initialization_messages() -> list[dict[str, Any]]:
+        return [
+            {
+                "method": "initialize",
+                "id": 1,
+                "params": {
+                    "clientInfo": {
+                        "name": "chub",
+                        "title": "Chub",
+                        "version": "1",
+                    }
+                },
+            },
+            {"method": "initialized", "params": {}},
+        ]
+
+    @staticmethod
+    def _write_messages(
+        process: subprocess.Popen[str],
+        messages: list[dict[str, Any]],
+    ) -> None:
+        assert process.stdin is not None
+        for message in messages:
+            process.stdin.write(f"{json.dumps(message)}\n")
+        process.stdin.flush()
+
+    @staticmethod
+    def _response_queue(
+        process: subprocess.Popen[str],
+    ) -> queue.Queue[str | None]:
+        assert process.stdout is not None
+        lines: queue.Queue[str | None] = queue.Queue()
+
+        def consume_output() -> None:
+            assert process.stdout is not None
+            for line in process.stdout:
+                lines.put(line)
+            lines.put(None)
+
+        threading.Thread(target=consume_output, daemon=True).start()
+        return lines
+
+    @staticmethod
+    def _parse_auth_type(
+        response: dict[str, Any] | None,
+    ) -> Literal["chatgpt", "apiKey"] | None:
+        if not isinstance(response, dict):
+            return None
+        result = response.get("result")
+        account = result.get("account") if isinstance(result, dict) else None
+        auth_type = account.get("type") if isinstance(account, dict) else None
+        if auth_type in {"chatgpt", "apiKey"}:
+            return auth_type
+        if (
+            isinstance(result, dict)
+            and account is None
+            and result.get("requiresOpenaiAuth") is False
+        ):
+            return "apiKey"
+        return None
+
+    @staticmethod
+    def _parse_account_identity(response: dict[str, Any] | None) -> str | None:
+        if not isinstance(response, dict):
+            return None
+        result = response.get("result")
+        account = result.get("account") if isinstance(result, dict) else None
+        if not isinstance(account, dict):
+            return None
+        identifiers = [account.get("id"), account.get("email")]
+        normalized = [
+            value.strip().lower()
+            for value in identifiers
+            if isinstance(value, str) and value.strip()
+        ]
+        if not normalized:
+            return None
+        return hashlib.sha256("\0".join(normalized).encode("utf-8")).hexdigest()
 
     def _parse_response(self, response: dict[str, Any]) -> CodexQuotaData:
         result = response.get("result")

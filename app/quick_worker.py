@@ -638,12 +638,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m app.quick_worker")
     parser.add_argument(
         "command",
-        choices=("serve", "health", "cutover-preflight", "cutover-retire-store"),
-    )
-    parser.add_argument(
-        "--prepare",
-        action="store_true",
-        help="allow the currently installed Worker version before its one-time upgrade",
+        choices=("serve", "health"),
     )
     return parser
 
@@ -668,38 +663,6 @@ def main() -> int:
         except (OSError, RuntimeError) as exc:
             print(f"quick-worker: {exc}", file=sys.stderr)
             return 1
-        return 0
-    if args.command == "cutover-preflight":
-        from app.quick_worker_cutover import run_cutover_preflight
-
-        try:
-            payload = asyncio.run(
-                run_cutover_preflight(
-                    settings,
-                    require_production_worker=not args.prepare,
-                )
-            )
-        except (OSError, RuntimeError, ValueError) as exc:
-            print(f"quick-worker: cutover preflight unavailable: {exc}", file=sys.stderr)
-            return 1
-        print(json.dumps(payload, ensure_ascii=False))
-        return 0 if payload.get("success") is True else 1
-    if args.command == "cutover-retire-store":
-        from app.quick_worker_cutover import retire_worker_store
-
-        try:
-            archive = retire_worker_store(settings)
-        except OSError as exc:
-            print(f"quick-worker: task store retirement failed: {exc}", file=sys.stderr)
-            return 1
-        payload = {
-            "success": True,
-            "data": {
-                "retired": archive is not None,
-                "archive": str(archive) if archive is not None else None,
-            },
-        }
-        print(json.dumps(payload, ensure_ascii=False))
         return 0
     try:
         payload = asyncio.run(read_health(settings))

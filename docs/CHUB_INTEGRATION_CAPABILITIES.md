@@ -1,153 +1,96 @@
 # Chub 集成能力清单
 
-> 状态：持续维护。本文是 Chub 当前外部集成能力、固定 API 和微信指令的简明查询入口。
+> 状态：持续维护。本文只登记 Chub 当前可用的入口、完整指令、插件和固定 API。
 
-项目整体功能与使用入口见 [README](../README.md)；架构、安全和并发边界见 [Chub–OpenClaw 接入设计](CHUB_OPENCLAW_INTEGRATION_DESIGN.md)。
+具体行为、安全、并发、状态和消息格式规则见对应设计文档；项目整体功能与使用方式见 [README](../README.md)。
 
-## 1. 插件与 API
+## 1. 使用入口
 
-### 1.1 插件列表
+| 入口 | 使用场景 | 主要能力 |
+| --- | --- | --- |
+| 电脑端 `chub` CLI | 在 Chub 所在电脑安装、维护和排查服务 | 管理 Web 与 Quick Worker、查看日志、发送预配置通知 |
+| OpenClaw Agent Tool | OpenClaw TUI 或未进入微信 Chub 模式的 Agent 调用 | 查询 Chub 基础状态、发送预配置飞书通知 |
+| 微信 ClawBot | 已授权 Owner 通过私聊远程使用 Chub | 查询摘要、管理 Codex Session、提交文字或语音任务并接收结果 |
+
+电脑端 CLI 与微信 ClawBot 是两套独立指令：前者用于本机服务运维，后者经 OpenClaw 转发到 Chub。
+
+## 2. 电脑端命令
+
+### 2.1 Chub CLI
+
+- `chub`
+- `chub help`、`chub -h`、`chub --help`
+- `chub install`
+- `chub uninstall`
+- `chub start`
+- `chub stop`
+- `chub restart`
+- `chub status`
+- `chub worker-health`
+- `chub logs`
+
+### 2.2 通知指令
+
+- `chub notification validate`
+- `chub notification list`
+- `chub notification test --target <target>`
+- `chub notification send --target <target> --message <message>`
+- `chub notification send --target <target> --message <message> --mention-all`
+- `chub notification send --target <target> --message <message> --mention-recipient <recipient> [--mention-recipient <recipient> ...]`
+
+完整安装条件、平台差异和命令说明见 [README](../README.md#后台服务)。
+
+## 3. 插件与固定 API
+
+### 3.1 插件
 
 | 插件 | 状态 | 功能 |
 | --- | --- | --- |
 | Chub OpenClaw 插件 | 已实现 | 提供受限 Chub Tool、微信消息转发和飞书通知原文保护 |
-| 腾讯微信插件 | 已接入 | 提供 ClawBot 账号绑定、微信消息收发和语音转写 |
+| 腾讯微信插件 | 已接入 | 提供 ClawBot 账号绑定、微信消息收发和可信语音转写 |
 
-### 1.2 Chub OpenClaw 插件能力
+### 3.2 Chub OpenClaw 插件能力
 
-| 能力 | 类型 | 状态 | 功能 |
+| 能力 | 类型 | 状态 | 场景与功能 |
 | --- | --- | --- | --- |
-| `chub_get_status` | Agent Tool | 已实现 | 查询 OpenClaw Gateway 所在节点的 Chub 基础状态 |
-| `chub_send_notification` | Agent Tool | 已实现 | 向 Chub 预配置的飞书目标发送消息 |
+| `chub_get_status` | Agent Tool | 已实现 | OpenClaw Agent 查询 Gateway 所在节点的 Chub 基础状态 |
+| `chub_send_notification` | Agent Tool | 已实现 | OpenClaw Agent 向 Chub 预配置的飞书目标发送消息 |
 | 微信 `before_dispatch` | Hook | 已实现 | 将可信微信私聊转发到 Chub 统一调度接口 |
-| 飞书原文保护 | Hook | 已实现 | 通过消息与调用阶段 Hook 按 `runId` 关联可信原文，约束通知内容来源 |
+| 飞书原文保护 | Hook | 已实现 | 按 `runId` 关联可信原文，约束通知内容来源 |
 
-### 1.3 固定 API
+### 3.3 固定 API
 
-Chub OpenClaw 插件只调用以下固定 API：
+| 请求 | 调用场景 | 功能 |
+| --- | --- | --- |
+| `GET /api/status` | `chub_get_status` | 查询节点健康和基础状态 |
+| `GET /api/ai/usage` | Chub 首页、受控调用方 | 查询统一 AI 周额度、今日用量和重置时间 |
+| `POST /api/notifications/send` | `chub_send_notification` | 向预配置目标发送通知 |
+| `POST /api/openclaw/wechat-chub-mode/dispatch` | 微信 `before_dispatch` | 调度可信微信私聊 |
 
-| 请求 | 用途 |
+## 4. 微信 ClawBot 指令
+
+英文指令与中文别名按行一一对应。
+
+| 英文指令 | 中文别名 |
 | --- | --- |
-| `GET /api/status` | 查询节点健康和基础状态 |
-| `POST /api/notifications/send` | 发送飞书通知 |
-| `POST /api/openclaw/wechat-chub-mode/dispatch` | 调度微信 Chub 消息 |
+| `chub` | `查询状态`、`状态查询`、`检查状态`、`状态检查` |
+| `restart` | `重启` |
+| `sync` | `同步状态`、`状态同步` |
+| `session new [<task>]` | `新建会话 [正文]` |
+| `session switch N [<task>]` | `切换N [正文]`、`切换会话N [正文]`、`会话N [正文]` |
+| `session archive N` | `归档N`、`归档会话N` |
+| `session retry` | — |
+| `session new retry` | `新建会话执行` |
 
-## 2. 当前微信指令
+方括号表示可选正文；`N` 支持 `1`–`9`，中文别名同时支持一至九。带正文的新建或切换指令会先完成对应 Session 操作，再提交同条消息中的正文。其他非空文字或可信语音转写直接作为普通任务提交，默认复用当前 Session。详细的匹配、槽位、状态、幂等、通知和安全规则见 [Chub–OpenClaw 接入设计](CHUB_OPENCLAW_INTEGRATION_DESIGN.md)。
 
-以下能力均由 Chub 直接处理，不经过 OpenClaw Agent 或 LLM。未匹配固定指令的非空正文作为普通任务提交给 Codex CLI。
+## 5. 相关文档
 
-| 英文指令 | 中文别名 | 状态 | 功能 |
-| --- | --- | --- | --- |
-| `chub` | `查询状态`、`状态查询`、`检查状态`、`状态检查` | 已实现 | 现场刷新并返回 Chub 状态总览 |
-| `chub sync`、`chub -s` | `补充槽位` | 已实现 | 清理失效槽位并补充等待候选 |
-| `codex help` | 无 | 已实现 | 返回当前 Codex 指令帮助 |
-| `codex new` | `新建会话` | 已实现 | 新建、占用槽位并切换 Session；可附带正文并立即执行 |
-| `codex switch`、`codex switch N` | `切换N`、`切换会话N` | 已实现 | 循环切换或切换到指定槽位；指定槽位时可附带正文并立即执行 |
-| `codex archive N` | `归档N`、`归档会话N` | 已实现 | 归档指定槽位并在成功后释放槽位 |
-| `codex retry` | 无 | 已实现 | 在当前 Session 续提最近一次忙碌拒绝任务 |
-| `codex new retry` | `新建会话执行` | 已实现 | 新建 Session 后续提最近一次忙碌拒绝任务 |
-
-当前指令规则：
-
-- 固定指令默认要求整条消息匹配；`codex new`、`新建会话`、指定槽位的切换指令可在指令后通过空格或常见中英文标点附带非空任务正文。只移除指令边界的一层分隔符，正文开头的路径 `/`、隐藏文件 `.`、Markdown `#` 等符号保持不变，正文末尾标点保留，英文指令不区分大小写。
-- `N` 仅使用 Chub 分配的 `1`–`9` 槽位；中文切换和归档支持一至九。消息不能提供内部 Session ID、路径、权限、模型或任意命令。
-- `Available` 可立即接收任务；`Busy` 可切换但不能接收新任务；`Unavailable` 保留已占编号但禁止切换。
-- 新建、切换和归档在执行前复检目标状态；重复微信消息复用首次结果，不重复执行操作。
-- 普通任务在当前绑定不存在时按固定配置创建 Session；Session 忙时不自动新建，只保存最近一条待续提任务 10 分钟。用户可发送带正文的新建或切换指令显式并行执行。
-- `codex new retry`、`新建会话执行`只续提最近一条未提交任务；附带新正文时固定拒绝，且不覆盖已有待续提任务。
-- 普通任务成功后由 Chub 按任务保存的微信路由原路通知。文本优化与翻译镜像默认关闭，可在 Chub 设置页即时启停；启用后使用独立只读 Session，不占用槽位，也不改变业务任务结果。关闭只阻止新翻译，已有队列继续完成；再次开启使用新的翻译 Session。
-- 普通任务和翻译任务均由独立 Quick Worker 承载；Web 重启不会中断或重放已受理任务，新实例恢复任务、Session 占用、结果和通知投影。任务请求 Web 重启只等待自身结果与完成通知，不等待其他 Session、快速任务或翻译；微信来源在新实例健康确认后原路接收独立重启结果，页面来源只更新时间线。
-- 裸 `codex` 不是固定指令，与其他未匹配正文一样进入普通任务流程。
-- `chub` 只展示状态，不附带指令列表，也不触发通知补发；`chub sync`、`chub -s` 是等价的显式槽位维护入口。
-- 状态总览、Session 新建/切换/归档/同步回执及任务级重启状态统一使用 `Weekly … · Tokens …` 展示 Codex 用量，不再增加 `Codex Usage:`、`Daily tokens` 或日期后缀；这些消息的 Session 列表统一使用 `Sessions`、`S<槽位> · <标题>` 和独立状态行，当前槽位在状态后追加 `Current`，用量固定放在列表之后。
-- 所有 Session 列表统一按创建时间倒序展示，内部 Session ID 只用于创建时间相同时的稳定兜底。微信仅展示已分配槽位的受控子集，`S1`–`S9` 是持久目标编号，不随展示顺序重编号；无参数 `codex switch` 按当前展示顺序循环。Web 的“显示翻译 Session”浏览器偏好统一控制首页、快速交互导航及其他 Session 可见列表，列表接口默认隐藏内部翻译 Session；普通无槽位 Session 可以用不带编号的 `S` 展示，但该前缀不表示微信可切换槽位。跨入口标题和状态格式以 [AI Session 状态模型设计](AI_SESSION_STATE_DESIGN.md#56) 为准。
-
-真实微信文字及语音链路的具体验收状态见 [Chub OpenClaw 插件说明](../integrations/openclaw/chub/README.md)。
-
-## 3. Chub 状态总览规则
-
-### 3.1 状态总览
-
-`chub` 每次现场刷新后展示状态总览，内容包括：
-
-- Chub 服务和微信 Chub 模式是否就绪。
-- 执行中、待通知和通知失败的任务数量。
-- Codex 周期额度、Token 用量、槽位占用、当前绑定及各 Session 的 `Available`、`Busy` 或 `Unavailable` 状态。
-- 各分区最近一次成功快照；更新时间和刷新细节只用于内部状态管理，不在微信总览展示。
-- 内存或磁盘仅在达到后端固定告警阈值时展示；CPU 瞬时值首版不展示告警。消息不能修改阈值。
-
-系统、任务、Session 和用量分别维护快照与更新时间；单项失败保留其最后成功值，不清空或阻塞其他状态。Chub 启动后异步执行一次有界初始化采集，不阻塞服务就绪；初始化尚未完成时返回已有分区。Sessions 或 Codex 没有可用内容时，由对应主体显示“暂不可用”，不进入异常区。
-
-每次 `chub` 查询都会现场采集系统、当前已分配 Session 和 Codex 用量，并读取本地任务状态。并发查询共享正在执行的同一次采集；单项失败保留最近成功内容或在对应主体显示“暂不可用”。启动初始化缓存只作为服务刚启动和采集失败时的兜底，不再作为普通查询的主要数据源。内存或磁盘使用率达到 85% 时展示警告；CPU 瞬时值不作为首版告警，避免短时波动造成噪声。这些规则由后端固定维护，不能通过微信消息传入。
-
-首行使用 `Chub · <耗时>` 展示本次现场状态采集耗时：小于 1 秒显示整数 `ms`，达到 1 秒后显示一位小数的 `s` 并去掉多余 `.0`，例如 `10ms`、`1.3s`、`10s`；不再展示 `Active/Limited`。功能受限仍由异常区说明。正常状态只保留该耗时、Session 列表和 Codex 用量；系统资源、零任务计数、正常更新时间和微信模式就绪说明不占用消息空间。每个槽位使用 `S<槽位>` 展示标题，最后一行单独展示状态，当前槽位在状态后追加 `Current`，避免标签挤占标题宽度。标题和任务摘要统一限制为 20 个 Unicode 字符，超限时以省略号收尾，并继续执行单行化和敏感信息脱敏。Busy 由当前微信发送者的快速交互任务造成时，在标题和状态之间以 `T<槽位>` 展示该摘要；没有对应任务摘要时不显示 `T` 行。由实时终端或其他入口造成的 Busy 不猜测摘要。`S`、`T` 前缀不使用点号，避免微信将多行内容重新解释为有序列表。
-
-正常示例：
-
-```text
-Chub · 10ms
-
-Sessions
-S1 · 项目维护
-T1 · 检查设备状态
-Busy · Current
-
-S2 · 日志检查
-Available
-
-Codex
-
-Weekly 35% left · Tokens 81.8M
-```
-
-异常集中在主信息之前编号展示，只包括主体无法表达的高价值问题：Chub 功能受限、内存或磁盘达到告警阈值，以及任务结果通知失败。Session 状态由 Sessions 列表表达，Codex 可用性由 Codex 主体表达；缓存不可用、过期、刷新失败或超时等内部数据状态不进入异常区。Busy、执行中任务、短暂待通知、正常缓存时间和刷新冷却也不属于异常。降级时保留仍可用的主要内容：
-
-```text
-Chub · 10ms
-
-异常
-1. 内存使用率较高：87%
-2. 1 个任务结果通知失败
-
-Sessions
-S1 · 项目维护
-Available · Current
-
-S2 · 日志检查
-Unavailable
-
-Codex
-
-Weekly 35% left · Tokens 81.8M
-```
-
-### 3.2 刷新与槽位同步
-
-- `chub` 每次现场刷新系统状态、任务快照、当前已分配 Session 状态和 Codex 用量，但不补发通知、不改变当前绑定或槽位，也不扫描等待候选。
-- 已有刷新正在执行时，并发查询共享该次采集；不设置刷新冷却，该次结束后的下一条查询重新采集。
-- 刷新超过微信同步请求预算时返回已取得内容和已有快照，不让单个数据源失败扩大为整条状态查询失败。
-- `chub refresh`、`chub -f` 和 `刷新状态` 已移除，不再属于固定指令；等待候选仍只由 `chub sync`、`chub -s` 或 `补充槽位` 显式处理。
-- `chub sync` 与 `chub -s` 完全等价，都是显式写操作：保留有效槽位编号、清理已不存在或配置失配的槽位，并按既定稳定顺序补充等待候选。
-- 槽位同步不创建、归档或切换 Session；当前绑定失效时只清除绑定，不自动选择新目标。
-- 槽位同步成功后回复清理、补充和当前槽位数量，并附带操作后的已分配 Session 列表；没有变化时明确回复“槽位无需调整”。扫描或写入无法完整确认时不提交部分结果，也不附带可能失真的列表。重复消息重放首次完整结果，不再次同步。
-- 槽位同步已确认完成但附带状态格式化失败时仍报告同步结果，并提示重新发送 `chub` 查看总览；附带总览失败不能把已完成操作记为失败。
-- 每次状态查询从本地持久任务状态汇总执行与通知计数；Session 创建、切换、归档和槽位同步更新 Session 快照，展示时以当前快速交互运行态覆盖 `Busy`。只能重新访问外部数据源确认的系统状态与 Codex 用量可标记失效。
-- `chub` 现场采集失败时仍展示该分区最后成功值；没有成功值时由 Sessions 或 Codex 主体显示“暂不可用”，不额外展示缓存年龄或刷新异常。
-- 状态查询不承担通知补发。失败通知保留失败状态，当前不提供微信补发指令或后台自动重试。
-
-缓存、并发、幂等、锁和通知复用的实现边界统一维护在 [Chub–OpenClaw 接入设计](CHUB_OPENCLAW_INTEGRATION_DESIGN.md#52-状态快照与维护操作)。
-
-### 3.3 验收
-
-- 连续发送 `chub` 每次重新采集状态，但不改变槽位或通知状态。
-- 多个 Session 并发工作时，状态查询不长期占用调度锁，不阻塞普通任务提交和固定维护操作。
-- 并发查询只产生一次数据源采集；该次结束后的下一条查询重新采集，超时和单分区失败均保留可用快照。
-- `chub sync`、`chub -s` 使用稳定顺序原子更新槽位，失败不提交部分结果，重复消息不再次执行。
-- 裸 `codex` 进入普通任务；表格登记的英文指令和中文别名仍按完整匹配进入固定路由。
-- 状态查询不重新登记失败通知；完成和任务级重启通知仍使用独立精简状态，不受总览失败影响。
-
-## 4. 相关文档
-
-- 项目整体功能与使用入口：[README](../README.md)
-- 集成架构与安全边界：[Chub–OpenClaw 接入设计](CHUB_OPENCLAW_INTEGRATION_DESIGN.md)
-- 插件协议、构建与部署：[Chub OpenClaw 插件说明](../integrations/openclaw/chub/README.md)
+| 文档 | 负责内容 |
+| --- | --- |
+| [README](../README.md) | 项目功能、安装、电脑端命令和日常使用 |
+| [Chub–OpenClaw 接入设计](CHUB_OPENCLAW_INTEGRATION_DESIGN.md) | 微信调度、指令规则、状态、权限、并发和通知边界 |
+| [Chub AI Session 状态模型设计](AI_SESSION_STATE_DESIGN.md) | Session 生命周期、状态、互斥和跨入口展示 |
+| [Chub AI 额度与用量采集设计](AI_QUOTA_USAGE_DESIGN.md) | 账号与 API 两种额度来源、统一接口、缓存及展示契约 |
+| [快速交互独立 Worker 设计](QUICK_INTERACTION_WORKER_DESIGN.md) | 后台任务、恢复、通知终态和任务级 Web 重启 |
+| [Chub OpenClaw 插件说明](../integrations/openclaw/chub/README.md) | 插件协议、构建、部署和真实微信验收 |

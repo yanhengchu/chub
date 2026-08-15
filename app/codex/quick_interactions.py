@@ -1298,6 +1298,19 @@ class QuickInteractionManager:
             task_ids.append(requested_task_id)
         return task_ids
 
+    def has_deferred_restart_context(
+        self,
+        coordinator_operation_id: str,
+        requested_task_id: str,
+    ) -> bool:
+        with self._lock:
+            return bool(
+                self._deferred_restart_task_ids(
+                    coordinator_operation_id,
+                    requested_task_id,
+                )
+            )
+
     def _start_deferred_restart_notification(self, task_id: str) -> None:
         try:
             threading.Thread(

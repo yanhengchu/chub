@@ -187,7 +187,7 @@ function clearProtectedView() {
   elements.logsOutput.textContent = "";
   releaseFeishuQr();
   sessionStorage.removeItem(CODEX_CARD_CACHE_KEY);
-  sessionStorage.removeItem(CODEX_QUOTA_CACHE_KEY);
+  sessionStorage.removeItem(AI_USAGE_CACHE_KEY);
 }
 
 function showDisconnectedView(message = "输入启动 Hub 时配置的 Token。", kind = "") {

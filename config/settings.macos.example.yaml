@@ -41,6 +41,15 @@ automations:
   artifacts_dir: "data/artifacts/automations/downloads"
   max_home_tasks: 3
 
+ai_usage:
+  provider: "openai"
+  timezone: "Asia/Shanghai"
+  provider_api:
+    # Configure only in settings.local.yaml after the managed browser is ready.
+    subscription_page_url: null
+    subscription_id: null
+    allow_private_http: false
+
 project_documents:
   state_file: "data/state/project-documents.json"
 

@@ -135,16 +135,20 @@ def test_web_restart_is_deferred_inside_quick_interaction(
     assert not calls.exists()
 
 
-def test_worker_cutover_refuses_to_run_inside_quick_interaction(
+@pytest.mark.parametrize(
+    "command",
+    ["worker-cutover-preflight", "worker-cutover"],
+)
+def test_removed_worker_cutover_commands_are_unknown(
     service_env: tuple[dict[str, str], Path],
+    command: str,
 ) -> None:
     env, calls = service_env
-    env["CHUB_ACTIVITY_SOURCE"] = "quick"
 
-    result = run_chub("worker-cutover", env)
+    result = run_chub(command, env)
 
     assert result.returncode == 1
-    assert "cannot run inside a quick interaction" in result.stderr
+    assert "unknown command" in result.stderr
     assert not calls.exists()
 
 

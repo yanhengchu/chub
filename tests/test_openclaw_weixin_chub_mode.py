@@ -105,6 +105,22 @@ def configured_manager(
     )
 
 
+def enable_restart_command(
+    manager: WeixinChubModeManager,
+) -> tuple[MagicMock, MagicMock]:
+    coordinator = MagicMock()
+    coordinator.request.side_effect = lambda **kwargs: SimpleNamespace(
+        operation_id=kwargs["operation_id"],
+        created=True,
+    )
+    notifier = MagicMock(
+        return_value=SimpleNamespace(status="sent", error=None)
+    )
+    manager.restart_coordinator = coordinator
+    manager.restart_notifier = notifier
+    return coordinator, notifier
+
+
 def test_dispatch_silently_submits_text_task(
     settings: Settings,
 ) -> None:
@@ -170,7 +186,7 @@ def test_dispatch_routes_chub_status_aliases_to_live_overview(
     assert result.message is not None
     assert re.match(r"Chub · [1-9][0-9]*ms(?:\n|$)", result.message)
     assert "1 个任务结果通知失败" in result.message
-    assert "Codex\n\nWeekly 暂不可用 · Tokens 暂不可用" in result.message
+    assert "Codex\n\nWeekly 暂不可用" in result.message
     assert "执行中 2" not in result.message
     codex_manager.list_sessions.assert_called_once()
     quick_interactions.submit.assert_not_called()
@@ -308,8 +324,8 @@ def test_chub_refreshes_status_on_every_query(
     )
 
     assert "磁盘使用率较高：86%" in (first.message or "")
-    assert "Weekly 暂不可用 · Tokens 暂不可用" in (first.message or "")
-    assert "Weekly 暂不可用 · Tokens 暂不可用" in (second.message or "")
+    assert "Weekly 暂不可用" in (first.message or "")
+    assert "Weekly 暂不可用" in (second.message or "")
     assert manager.system_status_reader.call_count == 2
     assert manager.codex_account_reader.read_account_status.call_count == 2
     manager.codex_account_reader.read_account_status.assert_called_with(force=True)
@@ -438,7 +454,7 @@ def test_failed_account_refresh_preserves_last_success_timestamp(
     )
 
     assert manager._status_cache["account"][1] == checked_at
-    assert "Weekly 50% left · Tokens 暂不可用" in (result.message or "")
+    assert "Weekly 50%" in (result.message or "")
     assert "异常" not in (result.message or "")
     assert "600 秒前" not in (result.message or "")
 
@@ -629,7 +645,7 @@ def test_chub_sync_failure_does_not_commit_partial_slots(
 
     result = manager.dispatch(
         message_id="chub-sync-write-failure",
-        prompt="补充槽位",
+        prompt="同步状态",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -661,7 +677,7 @@ def test_codex_status_does_not_report_missing_daily_bucket_as_zero() -> None:
         CodexTokenUsageData(status="available", daily_usage=[]),
     )
 
-    assert message == "Weekly 暂不可用 · Tokens 暂不可用"
+    assert message == "Weekly 暂不可用"
 
 
 def test_codex_status_compacts_large_token_count() -> None:
@@ -694,7 +710,7 @@ def test_codex_status_uses_shared_compact_format_without_date() -> None:
         ),
     )
 
-    assert message == "Weekly 54% left · Tokens 67.4M"
+    assert message == "Weekly 54% · Today 67.4M"
 
 
 def test_chub_overview_separates_codex_heading_and_shortens_token_label(
@@ -731,8 +747,8 @@ def test_chub_overview_separates_codex_heading_and_shortens_token_label(
 
     message = manager._format_chub_overview("route", elapsed_ms=10)
 
-    assert "\n\nCodex\n\nWeekly 71% left · Tokens 67.4M" in message
-    assert "Tokens 67.4M (" not in message
+    assert "\n\nCodex\n\nWeekly 71% · Today 67.4M" in message
+    assert "Today 67.4M (" not in message
     assert "Daily tokens" not in message
 
 
@@ -753,72 +769,19 @@ def test_codex_status_route_requires_exact_prompt(settings: Settings) -> None:
     quick_interactions.submit.assert_called_once()
 
 
-@pytest.mark.parametrize("prompt", ["codex help", "Codex Help。", "《CODEX HELP》"])
-def test_codex_help_returns_command_list_without_codex_side_effects(
+@pytest.mark.parametrize(
+    "prompt",
+    ["codex help", "Codex Help。", "《CODEX HELP》", "codex help me review this"],
+)
+def test_removed_codex_help_is_submitted_as_normal_task(
     settings: Settings,
     prompt: str,
 ) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
-
-    result = manager.dispatch(
-        message_id=f"codex-help-{prompt}",
-        prompt=prompt,
-        message_type="text",
-        correlation_id=None,
-        source_ip="100.64.0.21",
-        delivery_route=delivery_route(),
-    )
-
-    assert result.disposition == "reply"
-    assert result.message == (
-        "Codex 命令\n\n"
-        "1. codex new / 新建会话\n"
-        "   新建并切换 Session；后接正文时直接执行\n\n"
-        "2. codex switch N / 切换N / 切换会话N\n"
-        "   切换到 Session N；后接正文时直接执行\n\n"
-        "3. codex archive N / 归档N / 归档会话N\n"
-        "   归档 Session N\n\n"
-        "4. codex retry\n   在当前 Session 继续未提交任务\n\n"
-        "5. codex new retry / 新建会话执行\n"
-        "   新建 Session 并继续未提交任务\n\n"
-        "N 为 1–9，其他消息按普通任务处理"
-    )
-    codex_manager.list_sessions.assert_not_called()
-    codex_manager.create_session.assert_not_called()
-    quick_interactions.submit.assert_not_called()
-
-
-def test_duplicate_codex_help_replays_without_side_effects(settings: Settings) -> None:
-    manager, codex_manager, quick_interactions = configured_manager(settings)
-
-    first = manager.dispatch(
-        message_id="codex-help-duplicate",
-        prompt="codex help",
-        message_type="text",
-        correlation_id=None,
-        source_ip="100.64.0.21",
-        delivery_route=delivery_route(),
-    )
-    duplicate = manager.dispatch(
-        message_id="codex-help-duplicate",
-        prompt="codex help",
-        message_type="text",
-        correlation_id=None,
-        source_ip="100.64.0.21",
-        delivery_route=delivery_route(),
-    )
-
-    assert duplicate == first
-    codex_manager.list_sessions.assert_not_called()
-    quick_interactions.submit.assert_not_called()
-
-
-def test_codex_help_with_business_text_remains_normal_task(settings: Settings) -> None:
     manager, _codex_manager, quick_interactions = configured_manager(settings)
 
     result = manager.dispatch(
-        message_id="codex-help-business-text",
-        prompt="codex help me review this",
+        message_id=f"removed-codex-help-{prompt}",
+        prompt=prompt,
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -828,6 +791,276 @@ def test_codex_help_with_business_text_remains_normal_task(settings: Settings) -
     assert result.disposition == "handled"
     assert result.message is None
     quick_interactions.submit.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "session switch",
+        "Session Switch。",
+        "codex switch",
+        "codex switch 2",
+        "codex archive 2",
+        "codex new",
+        "codex retry",
+        "codex new retry",
+    ],
+)
+def test_removed_or_unparameterized_session_commands_are_normal_tasks(
+    settings: Settings,
+    prompt: str,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+
+    result = manager.dispatch(
+        message_id=f"removed-session-command-{prompt}",
+        prompt=prompt,
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.disposition == "handled"
+    assert result.message is None
+    quick_interactions.submit.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("prompt", "message_type"),
+    [
+        ("restart", "text"),
+        ("RESTART。", "text"),
+        ("重启", "text"),
+        (" 重启。 ", "voice"),
+    ],
+)
+def test_chub_restart_registers_fixed_restart_and_replies(
+    settings: Settings,
+    prompt: str,
+    message_type: str,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    coordinator, _notifier = enable_restart_command(manager)
+
+    result = manager.dispatch(
+        message_id=f"restart-{prompt}-{message_type}",
+        prompt=prompt,
+        message_type=message_type,
+        correlation_id="correlation-1",
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.disposition == "reply"
+    assert result.message == "Chub 重启已登记，完成后将原路发送结果。"
+    request = coordinator.request.call_args.kwargs
+    assert request["operation_id"].endswith(":restart")
+    assert request["task_id"].startswith("weixin-restart-")
+    assert request["source_ip"] == "100.64.0.21"
+    coordinator.maybe_schedule.assert_called_once_with()
+    assert len(manager._state.restart_operations) == 1
+    operation = manager._state.restart_operations[0]
+    assert operation.delivery_route == delivery_route()
+    assert operation.status == "pending"
+    quick_interactions.submit.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "chub restart",
+        "CHUB RESTART。",
+        "restart now",
+        "重启 Chub",
+        "重启后检查状态",
+    ],
+)
+def test_removed_or_near_restart_matches_remain_normal_tasks(
+    settings: Settings,
+    prompt: str,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    coordinator, _notifier = enable_restart_command(manager)
+
+    result = manager.dispatch(
+        message_id=f"restart-near-match-{prompt}",
+        prompt=prompt,
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.disposition == "handled"
+    assert result.message is None
+    coordinator.request.assert_not_called()
+    quick_interactions.submit.assert_called_once()
+
+
+def test_duplicate_chub_restart_does_not_register_twice(settings: Settings) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    coordinator, _notifier = enable_restart_command(manager)
+
+    first = manager.dispatch(
+        message_id="duplicate-chub-restart",
+        prompt="restart",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+    duplicate = manager.dispatch(
+        message_id="duplicate-chub-restart",
+        prompt="restart",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert duplicate == first
+    coordinator.request.assert_called_once()
+    coordinator.maybe_schedule.assert_called_once()
+    assert len(manager._state.restart_operations) == 1
+    quick_interactions.submit.assert_not_called()
+
+
+def test_second_chub_restart_reuses_active_route_operation(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, _quick_interactions = configured_manager(settings)
+    coordinator, _notifier = enable_restart_command(manager)
+
+    manager.dispatch(
+        message_id="first-chub-restart",
+        prompt="restart",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+    second = manager.dispatch(
+        message_id="second-chub-restart",
+        prompt="重启",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert second.message == "Chub 重启已在处理中，完成后将原路发送结果。"
+    coordinator.request.assert_called_once()
+    assert len(manager._state.restart_operations) == 1
+
+
+def test_chub_restart_rejects_unavailable_delivery_route(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    coordinator, _notifier = enable_restart_command(manager)
+    manager.route_validator = MagicMock(return_value="原消息的 ClawBot 当前不可用。")
+
+    result = manager.dispatch(
+        message_id="invalid-route-chub-restart",
+        prompt="restart",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == "Chub 重启未登记：原消息的 ClawBot 当前不可用。"
+    coordinator.request.assert_not_called()
+    quick_interactions.submit.assert_not_called()
+
+
+def test_chub_restart_completion_sends_persisted_route_once(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, _quick_interactions = configured_manager(settings)
+    coordinator, notifier = enable_restart_command(manager)
+    manager.dispatch(
+        message_id="completed-chub-restart",
+        prompt="restart",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+    operation = manager._state.restart_operations[0].model_copy(deep=True)
+    request = SimpleNamespace(
+        operation_id=operation.coordinator_operation_id,
+        requested_task_id=coordinator.request.call_args.kwargs["task_id"],
+    )
+
+    assert manager.deferred_restart_readiness(request) == "ready"
+    assert manager.record_deferred_restart_started(
+        operation.coordinator_operation_id,
+        request.requested_task_id,
+        utc_now(),
+    )
+    assert manager.record_deferred_restart_completion(
+        operation.coordinator_operation_id,
+        request.requested_task_id,
+        "succeeded",
+        utc_now(),
+    )
+    assert manager.record_deferred_restart_completion(
+        operation.coordinator_operation_id,
+        request.requested_task_id,
+        "succeeded",
+        utc_now(),
+    )
+
+    completed = manager._state.restart_operations[0]
+    assert completed.status == "succeeded"
+    assert completed.notification_status == "sent"
+    notifier.assert_called_once_with(delivery_route(), "succeeded", None)
+
+
+def test_chub_restart_interrupted_notification_is_not_retried(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, _quick_interactions = configured_manager(settings)
+    coordinator, notifier = enable_restart_command(manager)
+    manager.dispatch(
+        message_id="interrupted-chub-restart-notification",
+        prompt="重启",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+    operation = manager._state.restart_operations[0]
+    operation.status = "succeeded"
+    operation.notification_status = "sending"
+    manager._write_state(manager._state)
+
+    recovered = WeixinChubModeManager(
+        settings,
+        manager.codex_manager,
+        manager.quick_interactions,
+        manager.route_validator,
+        restart_coordinator=coordinator,
+        restart_notifier=notifier,
+    )
+    current = recovered._state.restart_operations[0]
+
+    assert current.notification_status == "failed"
+    assert "未自动重试" in (current.notification_error or "")
+    overview = recovered._format_chub_overview(
+        recovered._route_fingerprint(delivery_route()),
+        elapsed_ms=10,
+    )
+    assert "1 个重启结果通知失败" in overview
+    assert recovered.record_deferred_restart_completion(
+        current.coordinator_operation_id,
+        coordinator.request.call_args.kwargs["task_id"],
+        "succeeded",
+        utc_now(),
+    )
+    notifier.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -879,14 +1112,19 @@ def test_codex_status_near_match_remains_a_normal_task_case_insensitively(
     quick_interactions.submit.assert_called_once()
 
 
-def test_chub_short_sync_with_business_text_remains_normal_task(
+@pytest.mark.parametrize(
+    "prompt",
+    ["sync review the slot design", "chub -s review the slot design"],
+)
+def test_sync_command_with_business_text_remains_normal_task(
     settings: Settings,
+    prompt: str,
 ) -> None:
     manager, _codex_manager, quick_interactions = configured_manager(settings)
 
     result = manager.dispatch(
         message_id="chub-short-sync-business-text",
-        prompt="chub -s review the slot design",
+        prompt=prompt,
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -898,7 +1136,43 @@ def test_chub_short_sync_with_business_text_remains_normal_task(
     quick_interactions.submit.assert_called_once()
 
 
-@pytest.mark.parametrize("sync_prompt", ["chub sync", "CHUB -S"])
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "chub sync",
+        "CHUB SYNC。",
+        "chub -s",
+        "CHUB -S。",
+        "补充槽位",
+        " 补充槽位。 ",
+    ],
+)
+def test_removed_sync_aliases_are_normal_tasks(
+    settings: Settings,
+    prompt: str,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+
+    result = manager.dispatch(
+        message_id=f"removed-chub-sync-alias-{prompt}",
+        prompt=prompt,
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.disposition == "handled"
+    assert result.message is None
+    quick_interactions.submit.assert_called_once()
+    assert quick_interactions.submit.call_args.args[1] == prompt
+    assert manager._state.submissions[-1].code == "submitted"
+
+
+@pytest.mark.parametrize(
+    "sync_prompt",
+    ["sync", "SYNC。", "同步状态", " 状态同步。 "],
+)
 def test_chub_sync_lists_compatible_sessions_and_marks_current(
     settings: Settings,
     sync_prompt: str,
@@ -989,7 +1263,7 @@ def test_chub_sync_lists_compatible_sessions_and_marks_current(
     assert result.message.index("S3 · 正在排障") < result.message.index(
         "S1 · 微信 Chub"
     ) < result.message.index("S2 · 项目维护")
-    assert result.message.endswith("Weekly 暂不可用 · Tokens 暂不可用")
+    assert result.message.endswith("Weekly 暂不可用")
     assert "不应显示" not in result.message
     persisted = json.loads(
         settings.openclaw.weixin_chub_mode.state_file.read_text(encoding="utf-8")
@@ -1041,7 +1315,7 @@ def test_chub_sync_limits_id_sorted_sessions_without_reordering_current(
 
     result = manager.dispatch(
         message_id="codex-status-limit",
-        prompt="chub sync",
+        prompt="sync",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -1079,7 +1353,7 @@ def test_chub_sync_hides_unavailable_sessions(settings: Settings) -> None:
 
     result = manager.dispatch(
         message_id="codex-status-unavailable",
-        prompt="chub sync",
+        prompt="sync",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -1088,7 +1362,7 @@ def test_chub_sync_hides_unavailable_sessions(settings: Settings) -> None:
 
     assert result.message is not None
     assert "\n\nSessions\n\n暂无已分配 Session\n\n" in result.message
-    assert result.message.endswith("Weekly 暂不可用 · Tokens 暂不可用")
+    assert result.message.endswith("Weekly 暂不可用")
     assert "不可用会话" not in result.message
 
 
@@ -1115,7 +1389,7 @@ def test_chub_sync_keeps_success_when_usage_lookup_fails(
 
     result = manager.dispatch(
         message_id="chub-sync-usage-failure",
-        prompt="chub -s",
+        prompt="sync",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -1161,7 +1435,7 @@ def test_chub_sync_retains_configured_unavailable_slot(
 
     result = manager.dispatch(
         message_id="codex-status-retain-unavailable",
-        prompt="chub sync",
+        prompt="sync",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -1195,7 +1469,7 @@ def test_codex_new_rejects_before_creation_when_nine_slots_are_full(
 
     result = manager.dispatch(
         message_id="codex-new-full",
-        prompt="Codex New",
+        prompt="Session New",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -1415,7 +1689,7 @@ def test_codex_switch_uses_creation_order_and_allows_busy_target(
 
     result = manager.dispatch(
         message_id="codex-switch-next",
-        prompt="Codex Switch",
+        prompt="Session Switch 3",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -1428,14 +1702,22 @@ def test_codex_switch_uses_creation_order_and_allows_busy_target(
         "Sessions\n\n"
     )
     assert "S3 · 第三项\n\nAvailable · Current" in result.message
-    assert result.message.endswith("Weekly 暂不可用 · Tokens 暂不可用")
+    assert result.message.endswith("Weekly 暂不可用")
     assert manager.session_id() == "c-available"
     quick_interactions.submit.assert_not_called()
 
 
 @pytest.mark.parametrize(
     "prompt",
-    ["切换2", "切换二", " 切换 二。 ", "切换会话2", "切换会话 二"],
+    [
+        "切换2",
+        "切换二",
+        " 切换 二。 ",
+        "切换会话2",
+        "切换会话 二",
+        "会话2",
+        " 会话 二。 ",
+    ],
 )
 def test_chinese_switch_routes_to_numbered_session(
     settings: Settings,
@@ -1487,11 +1769,14 @@ def test_chinese_switch_routes_to_numbered_session(
 @pytest.mark.parametrize(
     ("prompt", "task_prompt"),
     [
-        ("codex switch 2, continue checking logs", "continue checking logs"),
+        ("session switch 2, continue checking logs", "continue checking logs"),
         ("切换2，继续检查日志。", "继续检查日志。"),
+        ("切换 2，继续检查正文", "继续检查正文"),
         ("切换会话二 继续处理部署问题", "继续处理部署问题"),
         ("切换会话2：/api/devices", "/api/devices"),
         ("切换2，# 检查标题", "# 检查标题"),
+        ("会话二，继续检查告警", "继续检查告警"),
+        ("会话 2 继续检查正文", "继续检查正文"),
     ],
 )
 def test_codex_switch_with_task_switches_and_submits_once(
@@ -1594,7 +1879,7 @@ def test_codex_switch_without_current_uses_first_visible_session(
 
     result = manager.dispatch(
         message_id="codex-switch-first",
-        prompt="codex switch",
+        prompt="session switch 1",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -1609,7 +1894,7 @@ def test_codex_switch_without_current_uses_first_visible_session(
 @pytest.mark.parametrize(
     "prompt",
     [
-        "Codex Archive 2。",
+        "Session Archive 2。",
         "归档2",
         "归档二",
         "归档 二",
@@ -1672,7 +1957,7 @@ def test_codex_archive_removes_target_and_clears_current_binding(
         "归档状态：Session 2 已归档，当前绑定已清除。\n\n"
         "Sessions\n\n"
     )
-    assert result.message.endswith("Weekly 暂不可用 · Tokens 暂不可用")
+    assert result.message.endswith("Weekly 暂不可用")
     assert "S1 · 候选 1\n\nAvailable" in result.message
     assert "候选 2" not in result.message
     assert " · Current" not in result.message
@@ -1784,7 +2069,7 @@ def test_codex_archive_status_preserves_freed_slot_for_codex_new(
 
     refreshed = manager.dispatch(
         message_id="status-fills-freed-slot",
-        prompt="chub sync",
+        prompt="sync",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -1841,7 +2126,7 @@ def test_codex_archive_does_not_fill_unassigned_candidate(
 
     manager.dispatch(
         message_id="status-fills-archive-candidate",
-        prompt="chub sync",
+        prompt="sync",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -1883,7 +2168,7 @@ def test_codex_archive_rejects_session_that_is_not_safely_idle(
 
     result = manager.dispatch(
         message_id=f"unsafe-archive-{activity}-{quick_running}-{writer_active}",
-        prompt="codex archive 1",
+        prompt="session archive 1",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -1898,11 +2183,11 @@ def test_codex_archive_rejects_session_that_is_not_safely_idle(
 @pytest.mark.parametrize(
     "prompt",
     [
-        "codex archive",
-        "codex archive 0",
-        "codex archive -1",
-        "codex archive abc",
-        "codex archive 1 extra",
+        "session archive",
+        "session archive 0",
+        "session archive -1",
+        "session archive abc",
+        "session archive 1 extra",
         "归档",
         "归档10",
         "归档零",
@@ -1926,7 +2211,7 @@ def test_codex_archive_invalid_usage_is_not_submitted(
     )
 
     assert result.message is not None
-    assert result.message.startswith("用法：发送 codex archive n")
+    assert result.message.startswith("用法：发送 session archive n")
     codex_manager.list_sessions.assert_not_called()
     quick_interactions.submit.assert_not_called()
 
@@ -2116,7 +2401,7 @@ def test_codex_switch_number_uses_fresh_visible_list(settings: Settings) -> None
 
     result = manager.dispatch(
         message_id="codex-switch-number",
-        prompt=" codex   switch   2 ",
+        prompt=" session   switch   2 ",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -2172,7 +2457,7 @@ def test_codex_switch_uses_one_deadline_and_reuses_session_scan(
         ):
             result = manager.dispatch(
                 message_id="codex-switch-bounded",
-                prompt="codex switch",
+                prompt="session switch 2",
                 message_type="text",
                 correlation_id=None,
                 source_ip="100.64.0.21",
@@ -2211,7 +2496,7 @@ def test_codex_switch_out_of_range_returns_fresh_list_without_changing_binding(
 
     result = manager.dispatch(
         message_id="codex-switch-out-of-range",
-        prompt="codex switch 2",
+        prompt="session switch 2",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -2266,7 +2551,7 @@ def test_codex_switch_does_not_fill_unassigned_candidate(
     assert switched.message is not None
     assert switched.message.startswith(
         "切换状态：未切换，编号无效。"
-        "另有未登记的可用 Session，请先发送 chub -s 补充槽位后再切换。\n\n"
+        "另有未登记的可用 Session，请先发送 sync、同步状态或状态同步后再切换。\n\n"
     )
     assert "另有 1 个" in switched.message
     assert manager.session_id() == "session-1"
@@ -2274,7 +2559,7 @@ def test_codex_switch_does_not_fill_unassigned_candidate(
 
     manager.dispatch(
         message_id="status-fills-switch-candidate",
-        prompt="chub sync",
+        prompt="sync",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -2287,9 +2572,9 @@ def test_codex_switch_does_not_fill_unassigned_candidate(
 @pytest.mark.parametrize(
     "prompt",
     [
-        "codex switch 0",
-        "codex switch -1",
-        "codex switch abc",
+        "session switch 0",
+        "session switch -1",
+        "session switch abc",
         "切换10",
         "切换-1",
         "切换＋2",
@@ -2297,6 +2582,9 @@ def test_codex_switch_does_not_fill_unassigned_candidate(
         "切换零",
         "切换十",
         "切换",
+        "会话10",
+        "会话零",
+        "会话",
     ],
 )
 def test_codex_switch_invalid_usage_is_not_submitted(
@@ -2315,14 +2603,20 @@ def test_codex_switch_invalid_usage_is_not_submitted(
     )
 
     assert result.message is not None
-    assert result.message.startswith("用法：发送 codex switch")
+    assert result.message.startswith("用法：发送 session switch n")
     codex_manager.list_sessions.assert_not_called()
     quick_interactions.submit.assert_not_called()
 
 
 @pytest.mark.parametrize(
     "prompt",
-    ["切换网络后再检查", "切换二再执行", "切换到备用节点"],
+    [
+        "切换网络后再检查",
+        "切换二再执行",
+        "切换到备用节点",
+        "会话设置需要检查",
+        "会话二再执行",
+    ],
 )
 def test_chinese_switch_business_text_is_submitted_as_normal_task(
     settings: Settings,
@@ -2351,7 +2645,7 @@ def test_codex_switch_rejects_oversized_numeric_index(settings: Settings) -> Non
 
     result = manager.dispatch(
         message_id="invalid-large-switch-index",
-        prompt="codex switch " + ("9" * 5_000),
+        prompt="session switch " + ("9" * 5_000),
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -2359,7 +2653,7 @@ def test_codex_switch_rejects_oversized_numeric_index(settings: Settings) -> Non
     )
 
     assert result.message is not None
-    assert result.message.startswith("用法：发送 codex switch")
+    assert result.message.startswith("用法：发送 session switch n")
     codex_manager.list_sessions.assert_not_called()
     quick_interactions.submit.assert_not_called()
 
@@ -2403,7 +2697,7 @@ def test_codex_switch_write_failure_keeps_previous_binding(
 
     result = manager.dispatch(
         message_id="codex-switch-write-failure",
-        prompt="codex switch",
+        prompt="session switch 2",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -2449,7 +2743,7 @@ def test_duplicate_codex_switch_does_not_switch_twice(settings: Settings) -> Non
 
     first = manager.dispatch(
         message_id="duplicate-switch",
-        prompt="codex switch",
+        prompt="session switch 3",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -2457,7 +2751,7 @@ def test_duplicate_codex_switch_does_not_switch_twice(settings: Settings) -> Non
     )
     duplicate = manager.dispatch(
         message_id="duplicate-switch",
-        prompt="codex switch",
+        prompt="session switch 3",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -2486,6 +2780,24 @@ def test_legacy_codex_usage_route_record_remains_loadable() -> None:
     )
 
     assert record.code == "codex_usage_checked"
+
+
+def test_legacy_codex_help_route_record_remains_loadable() -> None:
+    record = WeixinChubModeSubmission.model_validate(
+        {
+            "message_id": "legacy-codex-help",
+            "operation_id": "operation-1",
+            "status": "routed",
+            "code": "codex_help_checked",
+            "message": "Codex 命令",
+            "http_status": 200,
+            "dispatch_disposition": "reply",
+            "created_at": "2026-08-12T00:00:00Z",
+            "updated_at": "2026-08-12T00:00:00Z",
+        }
+    )
+
+    assert record.code == "codex_help_checked"
 
 
 def test_duplicate_status_check_replays_without_rechecking(
@@ -2590,12 +2902,12 @@ def test_dispatch_returns_bounded_failure_instead_of_api_error(
     assert result.message == (
         "任务提交失败：当前 Session 正在执行，本任务未提交。\n\n"
         "如需新建 Session 并继续执行本任务，请回复："
-        "codex new retry 或“新建会话执行”。"
+        "session new retry 或“新建会话执行”。"
     )
     quick_interactions.submit.assert_not_called()
 
 
-@pytest.mark.parametrize("prompt", ["codex new", "新建会话", " 新建会话。 "])
+@pytest.mark.parametrize("prompt", ["session new", "新建会话", " 新建会话。 "])
 def test_codex_new_creates_and_switches_without_submitting(
     settings: Settings,
     prompt: str,
@@ -2634,7 +2946,7 @@ def test_codex_new_creates_and_switches_without_submitting(
         "Sessions\n\n"
     )
     assert "S1 · 未命名 Session\n\nAvailable · Current" in result.message
-    assert result.message.endswith("Weekly 暂不可用 · Tokens 暂不可用")
+    assert result.message.endswith("Weekly 暂不可用")
     assert manager.session_id() == "session-new"
     codex_manager.set_initial_quick_interaction_title.assert_not_called()
     quick_interactions.submit.assert_not_called()
@@ -2643,11 +2955,11 @@ def test_codex_new_creates_and_switches_without_submitting(
 @pytest.mark.parametrize(
     ("prompt", "task_prompt"),
     [
-        ("codex new, check device status", "check device status"),
+        ("session new, check device status", "check device status"),
         ("新建会话，检查设备状态。", "检查设备状态。"),
         ("新建会话 检查另一项任务", "检查另一项任务"),
         ("新建会话：/api/devices 修复接口", "/api/devices 修复接口"),
-        ("codex new: .env 配置问题", ".env 配置问题"),
+        ("session new: .env 配置问题", ".env 配置问题"),
         ("新建会话，# 检查标题", "# 检查标题"),
     ],
 )
@@ -2733,7 +3045,7 @@ def test_codex_new_status_does_not_fill_unassigned_candidate(
 
     result = manager.dispatch(
         message_id="new-does-not-fill-candidate",
-        prompt="codex new",
+        prompt="session new",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -2787,7 +3099,7 @@ def test_internal_codex_status_does_not_fill_unassigned_candidate(
 
     manager.dispatch(
         message_id="active-status-fills-internal-candidate",
-        prompt="chub sync",
+        prompt="sync",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -2819,7 +3131,7 @@ def test_codex_operation_log_uses_operation_result_not_status_refresh(
     ) as write_operation:
         created = manager.dispatch(
             message_id="new-with-status-failure",
-            prompt="codex new",
+            prompt="session new",
             message_type="text",
             correlation_id=None,
             source_ip="100.64.0.21",
@@ -2844,7 +3156,7 @@ def test_codex_operation_log_uses_operation_result_not_status_refresh(
     ) as write_operation:
         manager.dispatch(
             message_id="invalid-switch-log",
-            prompt="codex switch 0",
+            prompt="session switch 0",
             message_type="text",
             correlation_id=None,
             source_ip="100.64.0.21",
@@ -2882,7 +3194,7 @@ def test_duplicate_codex_new_replays_status_without_creating_twice(
 
     first = manager.dispatch(
         message_id="codex-new-duplicate",
-        prompt="codex new",
+        prompt="session new",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -2890,7 +3202,7 @@ def test_duplicate_codex_new_replays_status_without_creating_twice(
     )
     duplicate = manager.dispatch(
         message_id="codex-new-duplicate",
-        prompt="codex new",
+        prompt="session new",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -2940,7 +3252,7 @@ def test_chub_sync_uses_placeholder_for_untitled_session(
 
     result = manager.dispatch(
         message_id="codex-status-untitled",
-        prompt="chub sync",
+        prompt="sync",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -2969,7 +3281,7 @@ def test_codex_retry_submits_latest_busy_task_to_current_session(
 
     result = manager.dispatch(
         message_id="retry-command-1",
-        prompt="Codex Retry",
+        prompt="Session Retry",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -2988,7 +3300,7 @@ def test_codex_retry_submits_latest_busy_task_to_current_session(
 @pytest.mark.parametrize(
     "command",
     [
-        "Codex New Retry。",
+        "Session New Retry。",
         "新建会话执行",
         " 新建会话执行。 ",
         "新建会话执行？！",
@@ -3129,7 +3441,7 @@ def test_codex_new_retry_cannot_claim_task_from_different_route(
     "prompt",
     [
         "新建会话执行，检查日志",
-        "codex new retry: check logs",
+        "session new retry: check logs",
     ],
 )
 def test_codex_new_retry_rejects_attached_task_without_replacing_pending(
@@ -3203,7 +3515,7 @@ def test_duplicate_codex_new_retry_does_not_create_or_submit_twice(
 
     first = manager.dispatch(
         message_id="combined-duplicate",
-        prompt="codex new retry",
+        prompt="session new retry",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -3211,7 +3523,7 @@ def test_duplicate_codex_new_retry_does_not_create_or_submit_twice(
     )
     duplicate = manager.dispatch(
         message_id="combined-duplicate",
-        prompt="codex new retry",
+        prompt="session new retry",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -3241,7 +3553,7 @@ def test_retry_keeps_pending_task_when_current_session_is_still_busy(
 
     result = manager.dispatch(
         message_id="retry-still-running",
-        prompt="codex retry",
+        prompt="session retry",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
