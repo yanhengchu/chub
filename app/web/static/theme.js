@@ -6,8 +6,6 @@
   const CYBER_RAIN_SPEED_KEY = "hub.cyberRainSpeed.v1";
   const CYBER_RAIN_BRIGHTNESS_KEY = "hub.cyberRainBrightness.v1";
   const CYBER_RAIN_DENSITY_KEY = "hub.cyberRainDensity.v1";
-  const AI_USAGE_CACHE_KEY = "hub.aiUsageCache";
-  const AI_USAGE_REFRESH_MS = 5 * 60 * 1000;
   const RAIN_STREAM_LENGTH = 16;
   const RAIN_PHRASES = [
     "good morning",
@@ -90,10 +88,6 @@
   const root = document.documentElement;
   let cyberRainQuotaParts = [];
   let cyberRainDynamicStreams = [];
-  let aiUsageSnapshot = null;
-  let aiUsageLoadedAt = 0;
-  let aiUsageLoadPromise = null;
-  let aiUsageVersion = 0;
 
   function readStyle() {
     const forcedStyle = root.dataset.stylePreview;
@@ -271,93 +265,18 @@
     });
   }
 
-  function readAiUsageToken() {
-    try {
-      return sessionStorage.getItem("hub.sessionToken")
-        || localStorage.getItem("hub.savedToken")
-        || "";
-    } catch (_error) {
-      return "";
-    }
-  }
-
   function applyAiUsageRain(data) {
-    aiUsageSnapshot = data && typeof data === "object" ? data : null;
-    const longText = aiUsageSnapshot?.status === "available"
-      && typeof aiUsageSnapshot?.display?.long === "string"
-      ? aiUsageSnapshot.display.long
+    const usage = root.dataset.stylePreview ? null : data;
+    const longText = usage?.status === "available"
+      && typeof usage?.display?.long === "string"
+      ? usage.display.long
       : "";
     setCyberRainQuota(longText);
   }
 
-  async function loadAiUsage({ force = false } = {}) {
-    if (root.dataset.stylePreview) {
-      return null;
-    }
-    if (
-      !force
-      && aiUsageSnapshot
-      && Date.now() - aiUsageLoadedAt < AI_USAGE_REFRESH_MS
-    ) {
-      return aiUsageSnapshot;
-    }
-    if (aiUsageLoadPromise) {
-      return aiUsageLoadPromise;
-    }
-    const token = readAiUsageToken();
-    const requestVersion = aiUsageVersion;
-    const loadPromise = (async () => {
-      try {
-        const response = await fetch(
-          `/api/ai/usage${force ? "?refresh=true" : ""}`,
-          {
-            cache: "no-store",
-            headers: token ? { Authorization: `Bearer ${token}` } : {},
-          },
-        );
-        const payload = await response.json();
-        if (!response.ok || payload.success !== true) {
-          throw new Error("AI usage unavailable");
-        }
-        if (requestVersion !== aiUsageVersion) {
-          return null;
-        }
-        applyAiUsageRain(payload.data);
-        try {
-          sessionStorage.setItem(AI_USAGE_CACHE_KEY, JSON.stringify(payload.data));
-        } catch (_error) {
-          // A storage quota failure must not affect the current page.
-        }
-        aiUsageLoadedAt = Date.now();
-        return payload.data;
-      } catch (error) {
-        if (requestVersion === aiUsageVersion) {
-          applyAiUsageRain(null);
-        }
-        throw error;
-      }
-    })();
-    aiUsageLoadPromise = loadPromise;
-    try {
-      return await loadPromise;
-    } finally {
-      if (aiUsageLoadPromise === loadPromise) {
-        aiUsageLoadPromise = null;
-      }
-    }
-  }
-
-  function clearAiUsage() {
-    aiUsageVersion += 1;
-    aiUsageLoadPromise = null;
-    aiUsageSnapshot = null;
-    aiUsageLoadedAt = 0;
-    applyAiUsageRain(null);
-  }
-
   function refreshAiUsageRain() {
     if (root.dataset.uiStyle === "cyber" && !root.dataset.stylePreview) {
-      void loadAiUsage().catch(() => {});
+      void window.ChubAiUsage?.load().catch(() => {});
     }
   }
 
@@ -463,6 +382,7 @@
   }
 
   const initialStyle = readStyle();
+  window.ChubAiUsage?.subscribe(applyAiUsageRain);
   root.dataset.uiStyle = initialStyle;
   storeStyleCookie(initialStyle);
   updateColorScheme(initialStyle);
@@ -471,8 +391,6 @@
     currentStyle: () => root.dataset.uiStyle,
     refreshCyberRain: createCyberRain,
     setCyberRainQuota,
-    loadAiUsage,
-    clearAiUsage,
   };
   document.addEventListener("DOMContentLoaded", () => applyStyle(initialStyle));
   window.matchMedia("(max-width: 420px)").addEventListener("change", () => {

@@ -14,9 +14,20 @@ from app.application import create_app
 from app.core.config import NotificationsConfig, Settings
 from app.core.logger import configure_logging
 from app.notifications import NotificationRequest, NotificationService
+from app.notifications.models import NotificationRegistry
 
 
 WEBHOOK = "https://open.feishu.cn/open-apis/bot/v2/hook/test-webhook-token"
+
+
+def test_notification_registry_example_is_valid() -> None:
+    path = Path(__file__).resolve().parents[1] / "config" / "notifications.example.yaml"
+    registry = NotificationRegistry.model_validate(
+        yaml.safe_load(path.read_text(encoding="utf-8"))
+    )
+
+    assert list(registry.targets) == ["test"]
+    assert registry.targets["test"].webhook_file == "test.webhook"
 
 
 def authorization(settings: Settings) -> dict[str, str]:

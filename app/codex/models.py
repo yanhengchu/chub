@@ -13,6 +13,7 @@ TurnActivity = Literal["unknown", "working", "idle"]
 ActivitySource = Literal["none", "terminal", "quick"]
 PermissionMode = Literal["ask", "auto-review", "read-only", "full-access"]
 QuickInteractionOrder = Literal["task", "timeline"]
+TASK_SUMMARY_MAX_LENGTH = 27
 
 
 def utc_now() -> datetime:

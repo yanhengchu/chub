@@ -45,6 +45,7 @@ async def test_home_page_is_public_and_contains_no_token(
     assert response.status_code == 200
     assert 'type="password"' in response.text
     assert 'src="/static/app.js"' in response.text
+    assert 'src="/static/js/core/ai-usage.js"' in response.text
     assert 'src="/static/theme.js"' in response.text
     assert '<html lang="zh-CN" data-ui-style="standard">' in response.text
     assert '<meta name="color-scheme" content="light">' in response.text
@@ -355,6 +356,7 @@ async def test_cyber_style_preview_is_available(settings: Settings) -> None:
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/settings/styles/cyber")
         script = await client.get("/static/style-preview.js")
+        ai_usage_script = await client.get("/static/js/core/ai-usage.js")
         theme_script = await client.get("/static/theme.js")
         stylesheet = await client.get("/static/css/components.css")
 
@@ -372,6 +374,7 @@ async def test_cyber_style_preview_is_available(settings: Settings) -> None:
     assert "快速交互" in response.text
     assert 'data-collapsible-persist="false"' in response.text
     assert script.status_code == 200
+    assert ai_usage_script.status_code == 200
     assert theme_script.status_code == 200
     assert stylesheet.status_code == 200
     assert "hub.cyberRainSpeed.v1" in theme_script.text
@@ -385,10 +388,15 @@ async def test_cyber_style_preview_is_available(settings: Settings) -> None:
     assert '"thanks again"' in theme_script.text
     assert "randomPhraseRain" in theme_script.text
     assert "setCyberRainQuota" in theme_script.text
-    assert "loadAiUsage" in theme_script.text
-    assert "clearAiUsage" in theme_script.text
-    assert 'AI_USAGE_CACHE_KEY = "hub.aiUsageCache"' in theme_script.text
-    assert "/api/ai/usage" in theme_script.text
+    assert "ChubAiUsage?.subscribe" in theme_script.text
+    assert "ChubAiUsage?.load" in theme_script.text
+    assert "root.dataset.stylePreview ? null : data" in theme_script.text
+    assert "loadAiUsage" not in theme_script.text
+    assert "clearAiUsage" not in theme_script.text
+    assert "/api/ai/usage" not in theme_script.text
+    assert 'CACHE_KEY = "hub.aiUsageCache"' in ai_usage_script.text
+    assert "/api/ai/usage" in ai_usage_script.text
+    assert "window.ChubAiUsage" in ai_usage_script.text
     assert "quotaRainParts" in theme_script.text
     assert 'stream.dataset.rainDynamic = "true"' in theme_script.text
     assert 'stream.dataset.rainKind = "quota"' in theme_script.text
@@ -463,6 +471,7 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         scripts = [
+            await client.get("/static/js/core/ai-usage.js"),
             await client.get("/static/theme.js"),
             await client.get("/static/js/core/dashboard-core.js"),
             await client.get("/static/js/components/ui.js"),
@@ -631,9 +640,9 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "|| quickInteractionRunning" in script.text
     assert "llmInteractionRunning" not in script.text
     assert "codexLoadPromise" in script.text
-    assert "AI_USAGE_CACHE_KEY" in script.text
+    assert 'CACHE_KEY = "hub.aiUsageCache"' in script.text
     assert "CODEX_MODEL_PREFERENCE_CACHE_KEY" in script.text
-    assert "CODEX_QUOTA_REFRESH_MS = 5 * 60 * 1000" in script.text
+    assert "REFRESH_MS = 5 * 60 * 1000" in script.text
     assert '"/api/codex/models"' in script.text
     assert "新建默认：正在读取…" in script.text
     assert "renderCodexModelPreference" in script.text
@@ -647,6 +656,10 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "/api/ai/usage" in script.text
     assert "额度：正在读取…" in script.text
     assert "renderCodexQuota" in script.text
+    assert '"codex-quota-compact"' in script.text
+    assert '"codex-quota-today-complete"' in script.text
+    assert "codex-quota-${kind}-break" in script.text
+    assert "codex-quota-${kind}-separator" in script.text
     assert "Weekly" in script.text
     assert "codexQuotaWindowLabel" not in script.text
     assert "refreshQuota: true" in script.text
@@ -713,6 +726,10 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert ".dashboard > .card" in stylesheet.text
     assert "#codex-card-host" in stylesheet.text
     assert "align-self: start" in stylesheet.text
+    assert "container: codex-card / inline-size" in stylesheet.text
+    assert "@container codex-card (min-width: 40rem)" in stylesheet.text
+    assert ".codex-quota-compact .codex-quota-reset-break" in stylesheet.text
+    assert ".codex-quota-today-complete .codex-quota-reset-break" in stylesheet.text
     assert ".confirmation-dialog-surface" in stylesheet.text
     assert ".confirmation-dialog-actions" in stylesheet.text
     assert "-webkit-tap-highlight-color: transparent" in stylesheet.text
@@ -744,6 +761,8 @@ async def test_quick_interaction_conversation_page_is_available(
         page = await client.get(
             "/codex/session-1/quick-interactions/conversation"
         )
+        session_script = await client.get("/static/quick_interaction_session.js")
+        timeline_script = await client.get("/static/quick_interaction_timeline.js")
         script = await client.get("/static/quick_interaction_conversation.js")
         stylesheet = await client.get("/static/css/components.css")
 
@@ -783,9 +802,14 @@ async def test_quick_interaction_conversation_page_is_available(
     assert 'id="conversation-engine"' not in page.text
     assert 'id="conversation-more"' not in page.text
     assert 'id="conversation-submit" class="button-secondary" type="submit" disabled' in page.text
-    assert page.text.index("/static/quick_interactions_core.js") < page.text.index(
-        "/static/quick_interaction_conversation.js"
+    assert (
+        page.text.index("/static/quick_interactions_core.js")
+        < page.text.index("/static/quick_interaction_session.js")
+        < page.text.index("/static/quick_interaction_timeline.js")
+        < page.text.index("/static/quick_interaction_conversation.js")
     )
+    assert session_script.status_code == 200
+    assert timeline_script.status_code == 200
     assert script.status_code == 200
     assert 'order: "timeline"' in script.text
     assert "CONVERSATION_PAGE_SIZE = readConversationPageSize()" in script.text
@@ -793,7 +817,7 @@ async def test_quick_interaction_conversation_page_is_available(
     assert "performLoadEarlierConversation(generation, client)" in script.text
     assert "conversationPollDelay(conversationPollFailureCount)" in script.text
     assert "resizeConversationPrompt" in script.text
-    assert "updateConversationComposerActions" in script.text
+    assert "updateConversationComposerActions" not in script.text
     assert "setConversationMoreExpanded" not in script.text
     assert "conversationSelectedEngine" not in script.text
     assert "isConversationNearBottom" in script.text
@@ -801,86 +825,91 @@ async def test_quick_interaction_conversation_page_is_available(
     assert "if (!conversationSubmit.disabled)" in script.text
     assert "canSubmitConversation" in script.text
     assert "conversationEngine" not in script.text
-    assert "conversationScroll.scrollTop" in script.text
+    assert "conversationTimelineView.restoreTopAnchor(anchor)" in script.text
     assert "client.submitTask" in script.text
     assert "client.loadSessionContext" in script.text
     assert "conversationClient.createSession" in script.text
     assert "readConversationSessionCreationPreferences" in script.text
     assert "shouldRetryConversationCreationWithDefaults" in script.text
     assert "clearConversationSessionModelPreferences" in script.text
-    assert "conversationCreateDialog.showModal()" in script.text
-    assert "workspace.available !== true" in script.text
+    assert "conversationSessionView.openCreate" in script.text
+    assert "workspace.available !== true" in session_script.text
     assert "conversationCreationPending" in script.text
     assert "renderConversationSessionCreation(sessionContextResult.value)" in script.text
     assert "switchConversationSession(" in script.text
-    assert 'label.textContent = `${sessionLabel} · ${status}`' in script.text
-    assert "conversationSessionStatus" in script.text
-    assert "conversationSessionLabels" in script.text
-    assert 'const displayTitle = title || "未命名 Session"' in script.text
-    assert 'document.title = `${displayTitle} · 快速交互`' in script.text
+    assert "buildSwitcher" in session_script.text
+    assert 'text: `${label} · ${status}`' in session_script.text
+    assert "core.sessionSwitcherStatus" in session_script.text
+    assert "core.sessionSwitcherLabels" in session_script.text
+    assert 'const displayTitle = title || "未命名 Session"' in session_script.text
+    assert 'documentTitle: `${displayTitle} · 快速交互`' in session_script.text
     assert "client.renameSession(title)" in script.text
-    assert "conversationRenameDialog.showModal()" in script.text
+    assert "conversationSessionView.openRename" in script.text
     assert "conversationRenamePending" in script.text
-    assert 'conversationRenameForm.setAttribute("aria-busy", "true")' in script.text
-    assert "conversationRenameClose.disabled = true" in script.text
-    assert "conversationRenameCancel.disabled = true" in script.text
+    assert "conversationSessionView.setRenamePending(true)" in script.text
     assert "client.archiveSession()" in script.text
-    assert "conversationArchiveDialog.showModal()" in script.text
+    assert "conversationSessionView.openArchive" in script.text
     assert "firstConversationSessionAfterArchive" in script.text
     assert "conversationSessions = sessions" in script.text
     assert "window.location.replace(nextSessionUrl)" in script.text
     assert '"/api/ai/usage"' not in script.text
     assert "loadConversationQuotaRain" not in script.text
-    assert "`/codex/${encodeURIComponent(nextSession.id)}/quick-interactions/conversation`" in script.text
+    assert "conversationSessionUrl(nextSession.id)" in script.text
     assert ': "/";' in script.text
-    assert "const archiveReady = Boolean(session.codex_session_id)" in script.text
-    assert "conversationSessionArchive.disabled = !archiveReady || archiveBusy" in script.text
-    assert 'session.workspace_id !== "weixin-translation"' in script.text
-    assert "conversationSessionRename.disabled = !renameAllowed" in script.text
-    assert "conversationSessionNavigationMode" in script.text
-    assert 'button.setAttribute("aria-current", "page")' in script.text
+    assert "const archiveReady = Boolean(session.codex_session_id)" in session_script.text
+    assert "elements.archive.disabled = !state.archiveReady || state.archiveBusy" in session_script.text
+    assert 'session?.workspace_id !== "weixin-translation"' in session_script.text
+    assert "elements.rename.disabled = !state.renameAllowed" in session_script.text
+    assert "core.sessionNavigationMode" in session_script.text
+    assert 'button.setAttribute("aria-current", "page")' in session_script.text
     assert "handleConversationSessionSwitch" in script.text
-    assert "button.dataset.sessionId" in script.text
-    assert "button.dataset.sessionUrl" in script.text
+    assert "button.dataset.sessionId" in session_script.text
+    assert "button.dataset.sessionUrl" in session_script.text
     assert 'window.history.replaceState(window.history.state, "", url)' in script.text
     assert "window.location.reload()" not in script.text
     assert "resetConversationSessionView" in script.text
     assert "renderConversationSessionPreview" in script.text
-    assert 'conversationSessionTitleRow.setAttribute("aria-busy", "true")' in script.text
-    assert 'conversationSessionTitleRow.removeAttribute("aria-busy")' in script.text
-    assert "conversationSessionTitleRow.hidden = true" not in script.text
+    assert 'elements.titleRow.setAttribute("aria-busy", "true")' in session_script.text
+    assert 'elements.titleRow.removeAttribute("aria-busy")' in session_script.text
+    assert "elements.titleRow.hidden = true" not in session_script.text
     assert "conversationGeneration += 1" in script.text
     assert "generation !== conversationGeneration" in script.text
     assert "document.body.dataset.sessionId = sessionId" in script.text
-    assert 'window.open(url, "_blank", "noopener")' in script.text
+    assert 'window.open(request.url, "_blank", "noopener")' in script.text
     assert 'addEventListener("auxclick", handleConversationSessionSwitch)' in script.text
     assert 'document.createElement("a")' not in script.text
-    assert 'document.createElement("button")' in script.text
-    assert "mode === \"new-tab\"" in script.text
-    assert "mode === \"default\"" in script.text
-    assert "mode === \"ignore\"" in script.text
-    assert "hub.quickInteractionSessionNumbers.v1" not in script.text
-    assert "const sessionLabel = labels.get(session.id)" in script.text
-    assert "conversationSessionSwitcher.hidden = ordered.length === 0" in script.text
+    assert 'documentRef.createElement("button")' in session_script.text
+    assert 'request.mode === "new-tab"' in script.text
+    assert 'request.mode === "default"' in script.text
+    assert 'request.mode === "ignore"' in script.text
+    assert "hub.quickInteractionSessionNumbers.v1" not in session_script.text
+    assert "elements.switcher.hidden = state.items.length === 0" in session_script.text
     assert "hub.quickInteractionDraft.v1" in script.text
     assert "sessionStorage.setItem(conversationDraftKey" in script.text
-    assert 'conversationSubmit.textContent = "发送"' in script.text
+    assert 'elements.submit.textContent = "发送"' in session_script.text
     assert '"确认发送"' not in script.text
-    assert 'pending: "待通知"' in script.text
-    assert 'sent: "已通知"' in script.text
-    assert 'failed: "通知失败"' in script.text
-    assert 'skipped: "未通知"' in script.text
-    assert 'succeeded: "Chub 已完成自动重启，服务已恢复。"' in script.text
-    assert "Chub 已完成自动重启，服务已恢复。" in script.text
+    assert 'pending: "待通知"' in timeline_script.text
+    assert 'sent: "已通知"' in timeline_script.text
+    assert 'failed: "通知失败"' in timeline_script.text
+    assert 'skipped: "未通知"' in timeline_script.text
+    assert 'succeeded: "Chub 已完成自动重启，服务已恢复。"' in timeline_script.text
+    assert "Chub 已完成自动重启，服务已恢复。" in timeline_script.text
     assert 'task.deferred_restart_status === "pending"' in script.text
-    assert 'failed: "重启结果通知失败"' in script.text
-    assert "Chub 自动重启未完成" in script.text
-    assert "task.deferred_restart_error" in script.text
-    assert "旧记录没有保存具体原因，请查看 Chub 运行日志" in script.text
+    assert 'failed: "重启结果通知失败"' in timeline_script.text
+    assert "Chub 自动重启未完成" in timeline_script.text
+    assert "task.deferred_restart_error" in timeline_script.text
+    assert "旧记录没有保存具体原因，请查看 Chub 运行日志" in timeline_script.text
     assert ".conversation-assistant-info" in stylesheet.text
     assert "client.setPinned" in script.text
-    assert "textContent" in script.text
-    assert "innerHTML" not in script.text
+    assert "onTogglePinned(task, pin)" in timeline_script.text
+    assert "textContent" in session_script.text
+    assert "textContent" in timeline_script.text
+    assert "innerHTML" not in session_script.text
+    assert "innerHTML" not in timeline_script.text
+    assert "fetch(" not in session_script.text
+    assert "fetch(" not in timeline_script.text
+    assert "conversationTasks =" not in timeline_script.text
+    assert "conversationSession =" not in session_script.text
     assert ".conversation-page" in stylesheet.text
     assert "width: min(100%, 1080px);" in stylesheet.text
     assert "width: min(90%, 46rem);" not in stylesheet.text
@@ -1201,9 +1230,13 @@ async def test_page_uses_external_script_only(settings: Settings) -> None:
         "/static/js/features/logs.js",
         "/static/app.js",
     ]
-    assert response.text.count("<script") == len(expected_scripts) + 1
+    assert response.text.count("<script") == len(expected_scripts) + 2
+    assert '<script src="/static/js/core/ai-usage.js"></script>' in response.text
     assert '<script src="/static/theme.js"></script>' in response.text
-    positions = [response.text.index('<script src="/static/theme.js"></script>')] + [
+    positions = [
+        response.text.index('<script src="/static/js/core/ai-usage.js"></script>'),
+        response.text.index('<script src="/static/theme.js"></script>'),
+    ] + [
         response.text.index(f'<script src="{source}" defer></script>')
         for source in expected_scripts
     ]

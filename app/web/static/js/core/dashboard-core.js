@@ -155,10 +155,8 @@ function clearProtectedView() {
   }
   stopCodexPolling({ reset: true });
   codexLoadPromise = null;
-  codexQuotaLoadPromise = null;
-  codexQuotaLoadedAt = 0;
   codexMutationCount = 0;
-  window.ChubTheme?.clearAiUsage();
+  window.ChubAiUsage?.clear();
   elements.dashboard.hidden = true;
   elements.connectedBar.hidden = true;
   elements.siteSettings.hidden = true;
@@ -189,7 +187,6 @@ function clearProtectedView() {
   releaseFeishuQr();
   sessionStorage.removeItem(CODEX_CARD_CACHE_KEY);
   sessionStorage.removeItem(CODEX_MODEL_PREFERENCE_CACHE_KEY);
-  sessionStorage.removeItem(AI_USAGE_CACHE_KEY);
 }
 
 function showDisconnectedView(message = "输入启动 Hub 时配置的 Token。", kind = "") {

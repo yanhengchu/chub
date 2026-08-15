@@ -5,22 +5,24 @@ const {
   canSubmit: canSubmitConversation,
   clearSessionModelPreferences: clearConversationSessionModelPreferences,
   createClient: createConversationClient,
-  firstSessionAfterArchive: firstConversationSessionAfterArchive,
-  formatTime: formatConversationTime,
   isRetryableRequestError: isRetryableConversationError,
   pollDelay: conversationPollDelay,
   readPageSize: readConversationPageSize,
   readSessionCreationPreferences: readConversationSessionCreationPreferences,
   readToken: readConversationToken,
-  sessionNavigationMode: conversationSessionNavigationMode,
-  sessionSwitcherEntries: conversationSessionEntries,
-  sessionSwitcherLabels: conversationSessionLabels,
-  sessionSwitcherStatus: conversationSessionStatus,
   shouldPoll: shouldPollConversation,
   shouldRetrySessionCreationWithDefaults: shouldRetryConversationCreationWithDefaults,
-  statusText: conversationStatusText,
   submissionBlockReason: conversationSubmissionBlockReason,
 } = window.QuickInteractionCore;
+const {
+  createView: createConversationSessionView,
+  firstSessionAfterArchive: firstConversationSessionAfterArchive,
+  sessionUrl: conversationSessionUrl,
+} = window.QuickInteractionSession;
+const {
+  createView: createConversationTimelineView,
+  mergeTasks: mergeConversationTaskSnapshots,
+} = window.QuickInteractionTimeline;
 const conversationToken = readConversationToken();
 let conversationClient = createConversationClient({
   token: conversationToken,
@@ -62,6 +64,53 @@ const conversationArchiveClose = document.querySelector("#conversation-archive-c
 const conversationArchiveCancel = document.querySelector("#conversation-archive-cancel");
 const conversationArchiveConfirm = document.querySelector("#conversation-archive-confirm");
 const CONVERSATION_PAGE_SIZE = readConversationPageSize();
+const conversationSessionView = createConversationSessionView({
+  documentRef: document,
+  windowRef: window,
+  showMessage: showConversationMessage,
+  elements: {
+    navigation: conversationSessionNavigation,
+    switcher: conversationSessionSwitcher,
+    titleRow: conversationSessionTitleRow,
+    title: conversationSessionTitle,
+    rename: conversationSessionRename,
+    archive: conversationSessionArchive,
+    create: conversationSessionCreate,
+    createDialog: conversationCreateDialog,
+    createSurface: conversationCreateSurface,
+    createWorkspaces: conversationCreateWorkspaces,
+    createMessage: conversationCreateMessage,
+    createClose: conversationCreateClose,
+    renameDialog: conversationRenameDialog,
+    renameForm: conversationRenameForm,
+    renameInput: conversationRenameInput,
+    renameMessage: conversationRenameMessage,
+    renameClose: conversationRenameClose,
+    renameCancel: conversationRenameCancel,
+    renameConfirm: conversationRenameConfirm,
+    archiveDialog: conversationArchiveDialog,
+    archiveForm: conversationArchiveForm,
+    archiveDescription: conversationArchiveDescription,
+    archiveMessage: conversationArchiveMessage,
+    archiveClose: conversationArchiveClose,
+    archiveCancel: conversationArchiveCancel,
+    archiveConfirm: conversationArchiveConfirm,
+    form: conversationForm,
+    prompt: conversationPrompt,
+    submit: conversationSubmit,
+    submitMessage: conversationSubmitMessage,
+  },
+});
+const conversationTimelineView = createConversationTimelineView({
+  documentRef: document,
+  windowRef: window,
+  elements: {
+    scroll: conversationScroll,
+    feed: conversationFeed,
+    jumpLatest: conversationJumpLatest,
+  },
+  onTogglePinned: setConversationPinned,
+});
 let conversationPollTimer = null;
 let conversationPollFailureCount = 0;
 let conversationLoadQueue = Promise.resolve();
@@ -84,32 +133,26 @@ let conversationRenamePending = false;
 let conversationArchivePending = false;
 
 function handleConversationSessionSwitch(event) {
-  const button = event.target.closest?.(".conversation-session-switch");
-  if (!button || !conversationSessionSwitcher.contains(button)) {
+  const request = conversationSessionView.navigationRequest(
+    event,
+    conversationSessionId,
+  );
+  if (!request) {
     return;
   }
-  const mode = conversationSessionNavigationMode({
-    button: event.button,
-    current: button.getAttribute("aria-current") === "page",
-    altKey: event.altKey,
-    ctrlKey: event.ctrlKey,
-    metaKey: event.metaKey,
-    shiftKey: event.shiftKey,
-  });
-  if (mode === "ignore") {
+  if (request.mode === "ignore") {
     event.preventDefault();
     return;
   }
-  if (mode === "default") {
+  if (request.mode === "default") {
     return;
   }
   event.preventDefault();
-  const url = button.dataset.sessionUrl;
-  if (mode === "new-tab") {
-    window.open(url, "_blank", "noopener");
+  if (request.mode === "new-tab") {
+    window.open(request.url, "_blank", "noopener");
     return;
   }
-  switchConversationSession(button.dataset.sessionId, url);
+  switchConversationSession(request.sessionId, request.url);
 }
 
 function conversationDraftKey() {
@@ -117,22 +160,7 @@ function conversationDraftKey() {
 }
 
 function renderConversationSessionPreview(session) {
-  const title = typeof session?.title === "string" ? session.title.trim() : "";
-  const displayTitle = title || "未命名 Session";
-  const renameAllowed = session?.workspace_id !== "weixin-translation";
-  const loadingLabel = "正在读取 Session 状态";
-  conversationSessionTitle.textContent = displayTitle;
-  conversationSessionTitle.title = displayTitle;
-  document.title = `${displayTitle} · 快速交互`;
-  conversationSessionTitleRow.hidden = false;
-  conversationSessionTitleRow.setAttribute("aria-busy", "true");
-  conversationSessionRename.hidden = !renameAllowed;
-  conversationSessionRename.disabled = true;
-  conversationSessionRename.title = loadingLabel;
-  conversationSessionRename.setAttribute("aria-label", loadingLabel);
-  conversationSessionArchive.disabled = true;
-  conversationSessionArchive.title = loadingLabel;
-  conversationSessionArchive.setAttribute("aria-label", loadingLabel);
+  conversationSessionView.renderPreview(session);
 }
 
 function resetConversationSessionView(sessionPreview) {
@@ -159,7 +187,6 @@ function resetConversationSessionView(sessionPreview) {
   showConversationMessage(conversationHistoryMessage, "");
   showConversationMessage(conversationSubmitMessage, "");
   resizeConversationPrompt();
-  updateConversationComposerActions();
 }
 
 function switchConversationSession(sessionId, url, sessionPreview = null) {
@@ -191,87 +218,16 @@ function switchConversationSession(sessionId, url, sessionPreview = null) {
 
 function renderConversationSessionSwitcher(sessions) {
   conversationSessions = sessions;
-  const ordered = conversationSessionEntries(sessions);
-  const labels = conversationSessionLabels(ordered);
-  const signature = JSON.stringify([
-    conversationSessionId,
-    ordered.map((session) => [
-      session.id,
-      labels.get(session.id),
-      session.title,
-      conversationSessionStatus(session),
-    ]),
-  ]);
-  if (signature === conversationSessionSwitcherSignature) {
-    return;
-  }
-  conversationSessionSwitcherSignature = signature;
-  const previousScrollLeft = conversationSessionSwitcher.scrollLeft;
-  conversationSessionSwitcher.replaceChildren();
-  conversationSessionNavigation.hidden = false;
-  conversationSessionSwitcher.hidden = ordered.length === 0;
-  if (ordered.length === 0) {
-    return;
-  }
-  ordered.forEach((session) => {
-    const status = conversationSessionStatus(session);
-    const current = session.id === conversationSessionId;
-    const working = status === "执行中";
-    const title = typeof session.title === "string" ? session.title.trim() : "";
-    const sessionLabel = labels.get(session.id);
-    const button = document.createElement("button");
-    const dot = document.createElement("span");
-    const label = document.createElement("span");
-    button.type = "button";
-    button.className = "conversation-session-switch";
-    button.dataset.sessionId = session.id;
-    button.dataset.sessionUrl = `/codex/${encodeURIComponent(session.id)}/quick-interactions/conversation`;
-    button.title = `${current ? "当前" : "切换到"} ${sessionLabel}${title && sessionLabel !== title ? `，${title}` : ""}，${status}`;
-    button.setAttribute(
-      "aria-label",
-      `${sessionLabel}${title && sessionLabel !== title ? `，${title}` : ""}，${status}${current ? "，当前 Session" : ""}`,
-    );
-    if (current) {
-      button.classList.add("is-current");
-      button.setAttribute("aria-current", "page");
-    }
-    if (working) {
-      button.classList.add("is-working");
-    }
-    dot.className = "conversation-session-dot";
-    dot.setAttribute("aria-hidden", "true");
-    label.textContent = `${sessionLabel} · ${status}`;
-    button.append(dot, label);
-    conversationSessionSwitcher.append(button);
-  });
-  if (previousScrollLeft > 0) {
-    conversationSessionSwitcher.scrollLeft = previousScrollLeft;
-    return;
-  }
-  const current = conversationSessionSwitcher.querySelector("[aria-current='page']");
-  window.requestAnimationFrame(() => {
-    current?.scrollIntoView({ block: "nearest", inline: "center" });
-  });
+  conversationSessionSwitcherSignature = conversationSessionView.renderSwitcher(
+    { sessions, currentSessionId: conversationSessionId },
+    conversationSessionSwitcherSignature,
+  );
 }
 
 function renderConversationSessionCreation(context) {
   conversationCreationAvailable = context.available === true;
   conversationWorkspaces = Array.isArray(context.workspaces) ? context.workspaces : [];
-  const hasAvailableWorkspace = conversationWorkspaces.some(
-    (workspace) => workspace.available === true,
-  );
-  conversationSessionCreate.disabled = conversationCreationPending
-    || !conversationCreationAvailable
-    || !hasAvailableWorkspace;
-  const label = !conversationCreationAvailable
-    ? context.unavailableReason || "Codex 当前不可用"
-    : !hasAvailableWorkspace
-      ? "当前没有可用工作目录"
-      : conversationCreationPending
-        ? "正在新建 Session"
-        : "新建 Session";
-  conversationSessionCreate.title = label;
-  conversationSessionCreate.setAttribute("aria-label", label);
+  conversationSessionView.renderCreation(context, conversationCreationPending);
 }
 
 function closeConversationCreateDialog() {
@@ -284,26 +240,10 @@ function openConversationCreateDialog() {
   if (conversationSessionCreate.disabled) {
     return;
   }
-  conversationCreateWorkspaces.replaceChildren();
-  conversationWorkspaces.forEach((workspace) => {
-    const button = document.createElement("button");
-    const name = document.createElement("strong");
-    const path = document.createElement("span");
-    button.type = "button";
-    button.className = "workspace-button";
-    button.disabled = workspace.available !== true;
-    button.dataset.workspaceAvailable = String(workspace.available === true);
-    name.textContent = workspace.name;
-    path.textContent = workspace.path;
-    button.append(name, path);
-    button.addEventListener("click", () => {
-      void createConversationSession(workspace.id);
-    });
-    conversationCreateWorkspaces.append(button);
-  });
-  showConversationMessage(conversationCreateMessage, "");
-  conversationCreateDialog.showModal();
-  conversationCreateWorkspaces.querySelector("button:not(:disabled)")?.focus();
+  conversationSessionView.openCreate(
+    conversationWorkspaces,
+    (workspaceId) => void createConversationSession(workspaceId),
+  );
 }
 
 async function createConversationSession(workspaceId) {
@@ -311,11 +251,7 @@ async function createConversationSession(workspaceId) {
     return;
   }
   conversationCreationPending = true;
-  conversationCreateSurface.setAttribute("aria-busy", "true");
-  conversationCreateClose.disabled = true;
-  conversationCreateWorkspaces.querySelectorAll("button").forEach((button) => {
-    button.disabled = true;
-  });
+  conversationSessionView.setCreatePending(true);
   renderConversationSessionCreation({
     available: conversationCreationAvailable,
     workspaces: conversationWorkspaces,
@@ -348,19 +284,15 @@ async function createConversationSession(workspaceId) {
     conversationCreateDialog.close();
     switchConversationSession(
       session.id,
-      `/codex/${encodeURIComponent(session.id)}/quick-interactions/conversation`,
+      conversationSessionUrl(session.id),
       session,
     );
   } catch (error) {
     conversationCreationPending = false;
-    conversationCreateSurface.removeAttribute("aria-busy");
-    conversationCreateClose.disabled = false;
+    conversationSessionView.setCreatePending(false);
     renderConversationSessionCreation({
       available: conversationCreationAvailable,
       workspaces: conversationWorkspaces,
-    });
-    conversationCreateWorkspaces.querySelectorAll("button").forEach((button) => {
-      button.disabled = button.dataset.workspaceAvailable !== "true";
     });
     showConversationMessage(
       conversationCreateMessage,
@@ -398,274 +330,31 @@ function showConversationMessage(element, text, kind = "") {
   }
 }
 
-function conversationTaskSignature(task) {
-  return JSON.stringify([
-    task.status,
-    task.updated_at,
-    task.prompt,
-    task.result,
-    task.error,
-    task.pinned_at,
-    task.notification_status,
-    task.notification_error,
-    task.deferred_restart_status,
-    task.deferred_restart_updated_at,
-    task.deferred_restart_notification_status,
-    task.deferred_restart_notification_error,
-    task.deferred_restart_notification_updated_at,
-    conversationStatusText(task),
-  ]);
-}
-
-function createConversationMeta(text) {
-  const meta = document.createElement("span");
-  meta.className = "conversation-message-meta";
-  meta.textContent = text;
-  return meta;
-}
-
-function createConversationNotification(task) {
-  const labels = {
-    pending: "待通知",
-    sending: "通知中",
-    sent: "已通知",
-    failed: "通知失败",
-    skipped: "未通知",
-  };
-  const label = labels[task.notification_status];
-  if (!label) {
-    return null;
-  }
-  const notification = createConversationMeta(label);
-  notification.classList.add(
-    "conversation-notification",
-    `conversation-notification-${task.notification_status}`,
-  );
-  if (task.notification_error) {
-    notification.title = task.notification_error;
-    notification.setAttribute("aria-label", `${label}：${task.notification_error}`);
-  }
-  return notification;
-}
-
-function createRestartNotification(task) {
-  const labels = {
-    pending: "重启结果待通知",
-    sending: "重启结果通知中",
-    sent: "重启结果已通知",
-    failed: "重启结果通知失败",
-    skipped: "重启结果未通知",
-  };
-  const label = labels[task.deferred_restart_notification_status];
-  if (!label) {
-    return null;
-  }
-  const notification = createConversationMeta(label);
-  notification.classList.add(
-    "conversation-notification",
-    `conversation-notification-${task.deferred_restart_notification_status}`,
-  );
-  if (task.deferred_restart_notification_error) {
-    notification.title = task.deferred_restart_notification_error;
-    notification.setAttribute(
-      "aria-label",
-      `${label}：${task.deferred_restart_notification_error}`,
-    );
-  }
-  return notification;
-}
-
-function updateConversationTurn(turn, task) {
-  const signature = conversationTaskSignature(task);
-  if (turn.dataset.taskSignature === signature) {
-    return;
-  }
-  turn.dataset.taskSignature = signature;
-  turn.className = `conversation-turn conversation-turn-${task.status}`;
-  turn.replaceChildren();
-
-  const userMessage = document.createElement("div");
-  const userBubble = document.createElement("div");
-  const userContent = document.createElement("p");
-  userMessage.className = "conversation-message conversation-message-user";
-  userBubble.className = "conversation-bubble";
-  userContent.textContent = task.prompt || "历史任务未保存提交内容。";
-  userBubble.append(userContent);
-  userMessage.append(
-    userBubble,
-    createConversationMeta(formatConversationTime(task.created_at)),
-  );
-
-  const assistantMessage = document.createElement("div");
-  const assistantBubble = document.createElement("div");
-  const assistantContent = document.createElement("p");
-  const assistantMeta = document.createElement("div");
-  const assistantInfo = document.createElement("div");
-  const assistantTime = createConversationMeta(formatConversationTime(task.updated_at));
-  const notification = createConversationNotification(task);
-  const pin = document.createElement("button");
-  assistantMessage.className = "conversation-message conversation-message-assistant";
-  assistantBubble.className = "conversation-bubble";
-  assistantMeta.className = "conversation-assistant-meta";
-  assistantInfo.className = "conversation-assistant-info";
-  assistantInfo.append(assistantTime);
-  if (task.result || task.error) {
-    assistantContent.textContent = task.result || task.error;
-  } else {
-    assistantContent.textContent = conversationStatusText(task);
-    assistantBubble.classList.add("is-status");
-  }
-  if (["failed", "timed_out", "cancelled", "needs_terminal"].includes(task.status)) {
-    assistantBubble.classList.add("is-error");
-  }
-  pin.type = "button";
-  pin.className = "button-link conversation-pin";
-  pin.textContent = task.pinned_at ? "取消置顶" : "置顶";
-  pin.setAttribute("aria-pressed", String(Boolean(task.pinned_at)));
-  pin.addEventListener("click", () => setConversationPinned(task, pin));
-  assistantBubble.append(assistantContent);
-  assistantMeta.append(assistantInfo);
-  if (notification) {
-    assistantMeta.append(notification);
-  }
-  assistantMeta.append(pin);
-  assistantMessage.append(assistantBubble, assistantMeta);
-  turn.append(userMessage, assistantMessage);
-  const restartMessages = {
-    succeeded: "Chub 已完成自动重启，服务已恢复。",
-    start_failed: (
-      `Chub 自动重启未完成：${task.deferred_restart_error
-        || "旧记录没有保存具体原因，请查看 Chub 运行日志。"}`
-    ),
-    sensitive_task_failed: (
-      "Chub 已取消自动重启：等待期间有运行资源修改任务异常结束，请检查任务结果。"
-    ),
-    cleared: "Chub 自动重启计划已由其他服务重启清除。",
-  };
-  const restartText = restartMessages[task.deferred_restart_status];
-  if (restartText) {
-    const restartMessage = document.createElement("div");
-    const restartBubble = document.createElement("div");
-    const restartContent = document.createElement("p");
-    const restartMeta = document.createElement("div");
-    const restartNotification = createRestartNotification(task);
-    restartMessage.className = (
-      "conversation-message conversation-message-assistant conversation-message-system"
-    );
-    restartBubble.className = "conversation-bubble is-status";
-    if (
-      task.deferred_restart_status === "start_failed"
-      || task.deferred_restart_status === "sensitive_task_failed"
-    ) {
-      restartBubble.classList.add("is-error");
-    }
-    restartContent.textContent = restartText;
-    restartBubble.append(restartContent);
-    restartMeta.className = "conversation-assistant-info";
-    restartMeta.append(
-      createConversationMeta(
-        `Chub 系统 · ${formatConversationTime(task.deferred_restart_updated_at)}`,
-      ),
-    );
-    if (restartNotification) {
-      restartMeta.append(restartNotification);
-    }
-    restartMessage.append(restartBubble, restartMeta);
-    turn.append(restartMessage);
-  }
-}
-
-function createConversationTurn(task) {
-  const turn = document.createElement("article");
-  turn.dataset.taskId = task.id;
-  updateConversationTurn(turn, task);
-  return turn;
-}
-
 function renderConversationTasks({ forceBottom = false, preservePosition = false } = {}) {
-  const wasNearBottom = !preservePosition && (
-    forceBottom
-    || isConversationNearBottom()
+  conversationTimelineView.render(
+    conversationTasks,
+    { forceBottom, preservePosition },
   );
-  const empty = conversationFeed.querySelector(".empty-state");
-  if (!conversationTasks.length) {
-    if (!empty) {
-      const nextEmpty = document.createElement("p");
-      nextEmpty.className = "empty-state conversation-empty";
-      nextEmpty.textContent = "暂无快速交互记录，可以从下方发送第一条消息。";
-      conversationFeed.replaceChildren(nextEmpty);
-    }
-    return;
-  }
-  empty?.remove();
-  const existing = new Map(
-    Array.from(conversationFeed.querySelectorAll("[data-task-id]"))
-      .map((turn) => [turn.dataset.taskId, turn]),
-  );
-  const retained = new Set();
-  conversationTasks.forEach((task, index) => {
-    const turn = existing.get(task.id) || createConversationTurn(task);
-    retained.add(task.id);
-    updateConversationTurn(turn, task);
-    const current = conversationFeed.children[index];
-    if (current !== turn) {
-      conversationFeed.insertBefore(turn, current || null);
-    }
-  });
-  existing.forEach((turn, taskId) => {
-    if (!retained.has(taskId)) {
-      turn.remove();
-    }
-  });
-  if (wasNearBottom) {
-    window.requestAnimationFrame(() => {
-      conversationScroll.scrollTop = conversationScroll.scrollHeight;
-      updateConversationJumpLatest();
-    });
-  } else {
-    updateConversationJumpLatest();
-  }
 }
 
 function updateConversationJumpLatest() {
-  conversationJumpLatest.hidden = isConversationNearBottom()
-    || conversationTasks.length === 0;
+  conversationTimelineView.updateJumpLatest(conversationTasks.length);
 }
 
 function isConversationNearBottom() {
-  return conversationScroll.scrollTop + conversationScroll.clientHeight
-    >= conversationScroll.scrollHeight - 140;
+  return conversationTimelineView.isNearBottom();
 }
 
 function resizeConversationPrompt() {
-  const keepAtBottom = isConversationNearBottom();
-  conversationPrompt.style.height = "auto";
-  const nextHeight = Math.min(conversationPrompt.scrollHeight, 120);
-  conversationPrompt.style.height = `${nextHeight}px`;
-  conversationPrompt.style.overflowY = conversationPrompt.scrollHeight > 120
-    ? "auto"
-    : "hidden";
-  if (keepAtBottom) {
-    window.requestAnimationFrame(() => {
-      conversationScroll.scrollTop = conversationScroll.scrollHeight;
-      updateConversationJumpLatest();
-    });
-  }
-}
-
-function updateConversationComposerActions() {
+  conversationTimelineView.resizePrompt(conversationPrompt, conversationTasks.length);
 }
 
 function mergeConversationTasks(tasks) {
-  const merged = new Map(conversationTasks.map((task) => [task.id, task]));
-  tasks.forEach((task) => merged.set(task.id, task));
-  conversationTasks = Array.from(merged.values()).sort((left, right) => {
-    const timeDifference = new Date(left.created_at) - new Date(right.created_at);
-    return timeDifference || left.id.localeCompare(right.id);
-  });
-  if (conversationTotal > 0 && conversationTasks.length > conversationTotal) {
-    conversationTasks = conversationTasks.slice(-conversationTotal);
-  }
+  conversationTasks = mergeConversationTaskSnapshots(
+    conversationTasks,
+    tasks,
+    conversationTotal,
+  );
 }
 
 async function setConversationPinned(task, button) {
@@ -695,49 +384,13 @@ async function setConversationPinned(task, button) {
 
 function renderConversationSession(session) {
   conversationSession = session;
-  const title = typeof session.title === "string" ? session.title.trim() : "";
-  const displayTitle = title || "未命名 Session";
-  const busy = conversationActive || session.quick_interaction_running === true;
-  const renameAllowed = session.workspace_id !== "weixin-translation";
-  conversationSessionTitle.textContent = displayTitle;
-  conversationSessionTitle.title = displayTitle;
-  document.title = `${displayTitle} · 快速交互`;
-  conversationSessionTitleRow.hidden = false;
-  conversationSessionTitleRow.removeAttribute("aria-busy");
-  conversationSessionRename.hidden = !renameAllowed;
-  conversationSessionRename.disabled = !renameAllowed;
-  conversationSessionRename.title = "重命名 Session";
-  conversationSessionRename.setAttribute("aria-label", "重命名 Session");
-  const archiveReady = Boolean(session.codex_session_id);
-  const archiveBusy = busy || conversationArchivePending;
-  conversationSessionArchive.disabled = !archiveReady || archiveBusy;
-  const archiveLabel = !archiveReady
-    ? "尚未启动的 Session 无法归档"
-    : archiveBusy
-      ? "Session 正在执行，暂不能归档"
-      : "归档 Session";
-  conversationSessionArchive.title = archiveLabel;
-  conversationSessionArchive.setAttribute("aria-label", archiveLabel);
-  if (conversationSubmitMessage.dataset.sessionLoadError === "true") {
-    delete conversationSubmitMessage.dataset.sessionLoadError;
-    showConversationMessage(conversationSubmitMessage, "");
-  }
-  conversationConfirmStopUnknownTerminal =
-    session.status === "running" && session.activity === "unknown";
-  const reason = conversationSubmissionBlockReason({
+  const state = conversationSessionView.renderSession({
     session,
     activeInteraction: conversationActive,
+    archivePending: conversationArchivePending,
     promptLength: conversationPrompt.value.length,
   });
-  conversationForm.setAttribute("aria-busy", String(busy));
-  conversationSubmit.disabled = Boolean(reason);
-  conversationSubmit.textContent = "发送";
-  conversationPrompt.disabled = busy;
-  if (reason && !busy) {
-    showConversationMessage(conversationSubmitMessage, reason);
-  } else if (busy || !conversationSubmitMessage.classList.contains("message-error")) {
-    showConversationMessage(conversationSubmitMessage, "");
-  }
+  conversationConfirmStopUnknownTerminal = state.confirmStopUnknownTerminal;
 }
 
 function closeConversationRenameDialog() {
@@ -754,13 +407,7 @@ function openConversationRenameDialog() {
   ) {
     return;
   }
-  conversationRenameInput.value = conversationSession.title?.trim() || "";
-  showConversationMessage(conversationRenameMessage, "");
-  conversationRenameDialog.showModal();
-  window.requestAnimationFrame(() => {
-    conversationRenameInput.focus();
-    conversationRenameInput.select();
-  });
+  conversationSessionView.openRename(conversationSession);
 }
 
 async function renameConversationSession(event) {
@@ -779,11 +426,7 @@ async function renameConversationSession(event) {
     return;
   }
   conversationRenamePending = true;
-  conversationRenameForm.setAttribute("aria-busy", "true");
-  conversationRenameInput.disabled = true;
-  conversationRenameClose.disabled = true;
-  conversationRenameCancel.disabled = true;
-  conversationRenameConfirm.disabled = true;
+  conversationSessionView.setRenamePending(true);
   const generation = conversationGeneration;
   const client = conversationClient;
   try {
@@ -805,11 +448,7 @@ async function renameConversationSession(event) {
     );
   } finally {
     conversationRenamePending = false;
-    conversationRenameForm.removeAttribute("aria-busy");
-    conversationRenameInput.disabled = false;
-    conversationRenameClose.disabled = false;
-    conversationRenameCancel.disabled = false;
-    conversationRenameConfirm.disabled = false;
+    conversationSessionView.setRenamePending(false);
   }
 }
 
@@ -823,13 +462,7 @@ function openConversationArchiveDialog() {
   if (!conversationSession || conversationSessionArchive.disabled) {
     return;
   }
-  const title = conversationSession.title?.trim() || "未命名 Session";
-  conversationArchiveDescription.textContent =
-    `归档“${title}”后，该 Session 将从活动列表移除，正在运行的实时终端会停止；`
-    + "如已分配微信槽位，槽位也会释放。Chub 页面暂不提供恢复入口。";
-  showConversationMessage(conversationArchiveMessage, "");
-  conversationArchiveDialog.showModal();
-  conversationArchiveConfirm.focus();
+  conversationSessionView.openArchive(conversationSession);
 }
 
 async function archiveConversationSession(event) {
@@ -838,11 +471,7 @@ async function archiveConversationSession(event) {
     return;
   }
   conversationArchivePending = true;
-  conversationArchiveForm.setAttribute("aria-busy", "true");
-  conversationArchiveClose.disabled = true;
-  conversationArchiveCancel.disabled = true;
-  conversationArchiveConfirm.disabled = true;
-  conversationSessionArchive.disabled = true;
+  conversationSessionView.setArchivePending(true);
   showConversationMessage(conversationArchiveMessage, "");
   window.clearTimeout(conversationPollTimer);
   const generation = conversationGeneration;
@@ -858,14 +487,14 @@ async function archiveConversationSession(event) {
       archivedSessionId,
     );
     const nextSessionUrl = nextSession
-      ? `/codex/${encodeURIComponent(nextSession.id)}/quick-interactions/conversation`
+      ? conversationSessionUrl(nextSession.id)
       : "/";
     if (!nextSession) {
       window.location.replace(nextSessionUrl);
       return;
     }
     conversationArchivePending = false;
-    conversationArchiveForm.removeAttribute("aria-busy");
+    conversationSessionView.setArchivePending(false);
     conversationArchiveDialog.close();
     conversationSessions = conversationSessions.filter(
       (session) => session.id !== archivedSessionId,
@@ -876,10 +505,7 @@ async function archiveConversationSession(event) {
       return;
     }
     conversationArchivePending = false;
-    conversationArchiveForm.removeAttribute("aria-busy");
-    conversationArchiveClose.disabled = false;
-    conversationArchiveCancel.disabled = false;
-    conversationArchiveConfirm.disabled = false;
+    conversationSessionView.setArchivePending(false);
     showConversationMessage(
       conversationArchiveMessage,
       error.message || "Session 归档失败。",
@@ -891,24 +517,7 @@ async function archiveConversationSession(event) {
 }
 
 function renderConversationSessionError(error) {
-  conversationSessionTitleRow.removeAttribute("aria-busy");
-  conversationSessionRename.disabled = true;
-  conversationSessionArchive.disabled = true;
-  conversationSessionCreate.disabled = true;
-  conversationSessionCreate.title = "Session 状态读取失败，暂不能新建";
-  conversationSessionCreate.setAttribute(
-    "aria-label",
-    "Session 状态读取失败，暂不能新建",
-  );
-  conversationSubmit.disabled = true;
-  conversationPrompt.disabled = false;
-  conversationForm.setAttribute("aria-busy", "false");
-  conversationSubmitMessage.dataset.sessionLoadError = "true";
-  showConversationMessage(
-    conversationSubmitMessage,
-    error.message || "会话状态读取失败。",
-    "error",
-  );
+  conversationSessionView.renderError(error);
 }
 
 async function performConversationLoad(generation, client) {
@@ -998,8 +607,7 @@ function loadConversation() {
 }
 
 async function performLoadEarlierConversation(generation, client) {
-  const anchor = conversationFeed.querySelector("[data-task-id]");
-  const anchorTop = anchor?.getBoundingClientRect().top;
+  const anchor = conversationTimelineView.captureTopAnchor();
   try {
     const oldest = conversationTasks[0];
     const data = await client.listTasks({
@@ -1016,9 +624,7 @@ async function performLoadEarlierConversation(generation, client) {
     mergeConversationTasks(data.tasks);
     renderConversationTasks({ preservePosition: true });
     conversationLoadEarlier.hidden = !conversationHasEarlier;
-    if (anchor && anchorTop !== undefined) {
-      conversationScroll.scrollTop += anchor.getBoundingClientRect().top - anchorTop;
-    }
+    conversationTimelineView.restoreTopAnchor(anchor);
     showConversationMessage(conversationHistoryMessage, "");
   } catch (error) {
     if (generation !== conversationGeneration) {
@@ -1063,7 +669,6 @@ function loadEarlierConversation() {
 conversationPrompt.addEventListener("input", () => {
   saveConversationDraft();
   resizeConversationPrompt();
-  updateConversationComposerActions();
   if (conversationSession) {
     renderConversationSession(conversationSession);
   }
@@ -1108,7 +713,6 @@ conversationForm.addEventListener("submit", async (event) => {
     conversationPrompt.value = "";
     saveConversationDraft();
     resizeConversationPrompt();
-    updateConversationComposerActions();
     conversationConfirmStopUnknownTerminal = false;
     conversationActive = true;
     conversationTotal += conversationTasks.some((task) => task.id === data.task.id) ? 0 : 1;
@@ -1143,6 +747,9 @@ conversationForm.addEventListener("submit", async (event) => {
       }
       renderConversationSession(session);
     } catch (sessionError) {
+      if (generation !== conversationGeneration) {
+        return;
+      }
       renderConversationSessionError(sessionError);
     }
   }
@@ -1150,7 +757,7 @@ conversationForm.addEventListener("submit", async (event) => {
 
 conversationLoadEarlier.addEventListener("click", loadEarlierConversation);
 conversationJumpLatest.addEventListener("click", () => {
-  conversationScroll.scrollTo({ top: conversationScroll.scrollHeight, behavior: "smooth" });
+  conversationTimelineView.scrollToLatest();
 });
 conversationSessionSwitcher.addEventListener("click", handleConversationSessionSwitch);
 conversationSessionSwitcher.addEventListener("auxclick", handleConversationSessionSwitch);
@@ -1206,5 +813,4 @@ document.addEventListener("visibilitychange", () => {
 
 conversationPrompt.value = readConversationDraft();
 resizeConversationPrompt();
-updateConversationComposerActions();
 loadConversation();

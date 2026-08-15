@@ -133,7 +133,44 @@ openclaw channels status --probe --json
 
 验收时确认插件状态为 `loaded`、运行时来源位于 OpenClaw 扩展目录、部署产物与仓库构建版本一致，并确认微信账号恢复 `running`；存在仓库来源记录时还需确认其指向本目录。不兼容协议变更必须与 Chub 配套切换；版本不一致期间只允许统一失败关闭，不能回退 Agent。
 
-### 8.1 协议升级同步清单
+### 8.1 首次部署配置
+
+安装插件后，先把 `baseUrl` 配置为运行 Chub 的同节点 Tailnet 地址。示例中的地址和端口必须替换为本机实际值，不能写入 Hub Token：
+
+```bash
+openclaw config set plugins.entries.chub.enabled true --strict-json
+openclaw config set \
+  plugins.entries.chub.config.baseUrl \
+  '"http://<CHUB_TAILSCALE_IP>:<PORT>"' \
+  --strict-json
+openclaw config set \
+  plugins.entries.chub.config.weixinChubMode true \
+  --strict-json
+```
+
+`baseUrl` 同时供两个 Agent Tool 和微信调度使用。`weixinChubMode` 只是插件侧转发开关；
+微信 Chub 模式还要求 `config/settings.local.yaml` 中的
+`openclaw.weixin_chub_mode.enabled` 为 `true`。修改 Chub 配置后使用 `chub restart`
+使 Web 配置生效；修改插件配置后使用 `openclaw gateway restart`。
+
+首次接入还必须确认唯一 Owner：首次获批准的私聊配对在 Owner 为空时可以自动建立 Owner；
+已有部署运行 `openclaw doctor`，若报告 Owner 缺失，应使用它根据当前通道生成的现场命令修复，
+不要把真实发送者标识写入本文、示例、日志或测试。绑定成功、Channel 正常和 Owner 已配置是
+相互独立的状态。
+
+配置完成后执行：
+
+```bash
+openclaw config validate
+openclaw plugins inspect chub --runtime --json
+openclaw gateway probe
+openclaw channels status --probe --json
+```
+
+确认插件为 `loaded`、Chub 固定地址可达、目标微信账号为 `running`，并在 Chub 首页确认
+Owner 和微信 Chub 模式就绪。只启用 Agent Tool 时可保持 `weixinChubMode` 和 Chub 业务开关关闭。
+
+### 8.2 协议升级同步清单
 
 本文第 4 节是微信统一调度协议版本、请求字段和交付决定的主要说明。以后升级协议时，按以下范围一次性同步：
 

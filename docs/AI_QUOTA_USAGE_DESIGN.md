@@ -126,10 +126,27 @@ Weekly 78% · Today 100M
 - 周额度不可用时不生成看似有效的百分比。
 - Token 使用 `K`、`M`、`B` 紧凑格式，最多保留一位小数。
 - 页面和通知直接使用后端 `display`，不各自维护另一套文案。
-- Cyber 主题在首页和所有次级页面统一通过受保护接口读取同一服务端全局缓存，并将 `display.long` 拆分为仅作背景的 `weekly`、`today` 小写垂直雨列；各业务页面不自行请求或计算额度，公开页面未通过认证时不使用浏览器旧值。
+- 浏览器端由统一的 AI Usage Core 管理受保护请求、五分钟会话缓存、并发合并、强制刷新和清理；Codex 卡片与 Cyber 主题共享同一快照，不分别请求或缓存额度。
+- Codex 卡片只按 `display.long` 渲染额度文本和响应式结构；Cyber 主题只将同一文本拆分为背景中的 `weekly`、`today` 小写垂直雨列。公开页面未通过认证时不使用浏览器旧值。
+
+首页响应式展示保持完整 `display.long` 文本，只调整分行位置：
+
+- 完整额度包含 `Limit`、Today 美元用量和 Token。桌面双列等窄卡片显示为 `Weekly + Limit / Today + Resets` 两行；平板宽屏单列且卡片宽度至少 `40rem` 时合并为一行。
+- 手机视口不超过 `420px` 且 Today 同时包含美元用量和 Token 时，完整额度显示为 `Weekly + Limit / Today / Resets` 三行。
+- 账号简版没有 `Limit` 和 Today 美元用量，默认保持 `Weekly · Today tokens · Resets` 一行；手机视口不超过 `420px` 时仅将 `Resets` 放到第二行。
+- `420px` 应用手机专用 `Resets` 换行，`421px` 不应用；任何视口都不得截断、遮挡或产生横向溢出。
+
+真实浏览器回归加载正式首页、JavaScript 和 CSS，只模拟受保护 API。运行前启动受管 Debug Chrome，然后执行：
+
+```bash
+python3 .agents/skills/chrome-cdp/scripts/chrome_debug.py start --headless
+CHUB_BROWSER_TESTS=1 .venv/bin/python -m pytest tests/test_web_quota_browser.py
+```
 
 ## 4. 缓存与失败处理
 
+- 浏览器会话缓存沿用 `hub.aiUsageCache`，升级后无需迁移；解析失败、认证失效和退出时由统一 Core 清除，并同时通知所有页面消费者移除旧展示。
+- 同一页面的普通加载并发合并；普通加载期间收到强制刷新时，在普通请求结束后只补发一次强制请求，避免旧结果覆盖刷新结果。
 - 所有消费者共享 5 分钟缓存，整次刷新总预算为 8 秒。
 - 同一时刻只执行一次刷新，并发请求共享结果。
 - 自然日变化或周额度到达重置时间时，旧缓存立即失效，不继续等待 5 分钟。

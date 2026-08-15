@@ -1,0 +1,14 @@
+version: 1
+
+targets:
+  test:
+    provider: feishu
+    webhook_file: test.webhook
+    enabled: true
+    allow_mention_all: false
+    # To enable named mentions, replace the example with a real Open ID only in
+    # the local registry. Never commit the resulting local file.
+    # recipients:
+    #   maintainer:
+    #     open_id: "ou_example00000000"
+    recipients: {}

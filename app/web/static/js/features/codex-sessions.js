@@ -2,13 +2,11 @@
 
 const CODEX_CARD_CACHE_KEY = "hub.codexCardCache";
 const CODEX_MODEL_PREFERENCE_CACHE_KEY = "hub.codexModelPreferenceCache";
-const AI_USAGE_CACHE_KEY = "hub.aiUsageCache";
 const CODEX_ENTRY_MODE_KEY = "hub.codexEntryMode.v1";
 const CODEX_DEFAULT_PERMISSION_KEY = "hub.codexDefaultPermission.v1";
 const CODEX_DEFAULT_MODEL_KEY = "hub.codexDefaultModel.v1";
 const CODEX_DEFAULT_REASONING_EFFORT_KEY = "hub.codexDefaultReasoningEffort.v1";
 const CODEX_SHOW_TRANSLATION_SESSION_KEY = "hub.codexShowTranslationSession.v1";
-const CODEX_QUOTA_REFRESH_MS = 5 * 60 * 1000;
 const CODEX_REASONING_LABELS = {
   low: "Low",
   medium: "Medium",
@@ -31,8 +29,6 @@ let codexPollUnchangedSince = 0;
 let codexShouldPoll = false;
 let codexSessionSignature = "";
 let codexLoadPromise = null;
-let codexQuotaLoadPromise = null;
-let codexQuotaLoadedAt = 0;
 let codexMutationCount = 0;
 
 function createCodexCard() {
@@ -552,12 +548,72 @@ function renderCodexQuota(data) {
   if (!data || typeof data !== "object") {
     return false;
   }
+  elements.codexQuota.classList.remove(
+    "codex-quota-compact",
+    "codex-quota-today-complete",
+  );
   const longText = data?.display?.long;
   if (data.status === "available" && typeof longText === "string" && longText) {
     const staleMessage = data.stale && typeof data.message === "string" && data.message
       ? `；${data.message}`
       : "";
-    elements.codexQuota.textContent = `${longText}${staleMessage}`;
+    const separatorText = " · ";
+    const todayIndex = longText.indexOf(`${separatorText}Today `);
+    const resetIndex = longText.indexOf(`${separatorText}Resets `);
+    if (todayIndex < 0 && resetIndex < 0) {
+      elements.codexQuota.textContent = `${longText}${staleMessage}`;
+      return true;
+    }
+
+    const hasLimit = (data.weekly?.limit_usd ?? null) !== null;
+    const hasUsed = (data.today?.used_usd ?? null) !== null;
+    const hasTokens = (data.today?.tokens ?? null) !== null;
+    elements.codexQuota.classList.toggle(
+      "codex-quota-compact",
+      !hasLimit && !hasUsed,
+    );
+    elements.codexQuota.classList.toggle(
+      "codex-quota-today-complete",
+      hasUsed && hasTokens,
+    );
+
+    const firstSeparatorIndex = todayIndex >= 0 ? todayIndex : resetIndex;
+    const weekly = document.createElement("span");
+    const content = [weekly];
+    weekly.className = "codex-quota-part codex-quota-weekly-part";
+    weekly.textContent = longText.slice(0, firstSeparatorIndex);
+
+    const appendPart = (kind, text) => {
+      const group = document.createElement("span");
+      const separator = document.createElement("span");
+      const lineBreak = document.createElement("br");
+      const part = document.createElement("span");
+      group.className = `codex-quota-group codex-quota-${kind}-group`;
+      separator.className = `codex-quota-separator codex-quota-${kind}-separator`;
+      separator.textContent = separatorText;
+      lineBreak.className = `codex-quota-break codex-quota-${kind}-break`;
+      part.className = `codex-quota-part codex-quota-${kind}-part`;
+      part.textContent = text;
+      group.append(separator, part);
+      content.push(lineBreak, group);
+    };
+
+    if (todayIndex >= 0) {
+      const todayEnd = resetIndex > todayIndex ? resetIndex : longText.length;
+      appendPart(
+        "today",
+        longText.slice(todayIndex + separatorText.length, todayEnd),
+      );
+    }
+    if (resetIndex >= 0) {
+      appendPart(
+        "reset",
+        `${longText.slice(resetIndex + separatorText.length)}${staleMessage}`,
+      );
+    } else if (staleMessage) {
+      content.push(document.createTextNode(staleMessage));
+    }
+    elements.codexQuota.replaceChildren(...content);
     return true;
   }
   if (typeof data.message === "string" && data.message) {
@@ -569,27 +625,7 @@ function renderCodexQuota(data) {
 }
 
 function restoreCodexQuotaCache() {
-  try {
-    const cached = JSON.parse(sessionStorage.getItem(AI_USAGE_CACHE_KEY) || "null");
-    if (renderCodexQuota(cached)) {
-      const checkedAt = new Date(cached?.checked_at).getTime();
-      codexQuotaLoadedAt = Number.isNaN(checkedAt) || checkedAt > Date.now()
-        ? 0
-        : checkedAt;
-    } else {
-      sessionStorage.removeItem(AI_USAGE_CACHE_KEY);
-    }
-  } catch {
-    sessionStorage.removeItem(AI_USAGE_CACHE_KEY);
-  }
-}
-
-function storeCodexQuotaCache(data) {
-  try {
-    sessionStorage.setItem(AI_USAGE_CACHE_KEY, JSON.stringify(data));
-  } catch {
-    // A storage quota failure must not break the live Codex card.
-  }
+  renderCodexQuota(window.ChubAiUsage?.current());
 }
 
 function storeCodexCardCache(data) {
@@ -686,35 +722,16 @@ async function loadCodexQuota({ force = false } = {}) {
   if (!elements.codexQuota || !hasProtectedAccess()) {
     return;
   }
-  if (!force && Date.now() - codexQuotaLoadedAt < CODEX_QUOTA_REFRESH_MS) {
-    return;
-  }
-  if (codexQuotaLoadPromise) {
-    return codexQuotaLoadPromise;
-  }
   const requestVersion = accessVersion;
-  const loadPromise = (async () => {
-    try {
-      const data = await window.ChubTheme.loadAiUsage({ force });
-      if (requestVersion !== accessVersion || !elements.codexQuota) {
-        return;
-      }
-      if (renderCodexQuota(data)) {
-        storeCodexQuotaCache(data);
-        codexQuotaLoadedAt = Date.now();
-      }
-    } catch (error) {
-      if (requestVersion === accessVersion) {
-        handleAccessError(error);
-      }
-    }
-  })();
-  codexQuotaLoadPromise = loadPromise;
   try {
-    return await loadPromise;
-  } finally {
-    if (codexQuotaLoadPromise === loadPromise) {
-      codexQuotaLoadPromise = null;
+    const data = await window.ChubAiUsage.load({ force });
+    if (requestVersion !== accessVersion || !elements.codexQuota) {
+      return;
+    }
+    renderCodexQuota(data);
+  } catch (error) {
+    if (requestVersion === accessVersion) {
+      handleAccessError(error);
     }
   }
 }

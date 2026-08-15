@@ -160,11 +160,11 @@ def test_task_summary_is_stable_bounded_and_redacted() -> None:
     )
     for prompt in sensitive_prompts:
         summary = build_task_summary(prompt)
-        assert len(summary) <= 20
+        assert len(summary) <= 27
         assert "secret-token" not in summary
         assert "private" not in summary
         assert "session=" not in summary
-    assert build_task_summary("任务" * 100) == "任务" * 9 + "任…"
+    assert build_task_summary("任务" * 100) == "任务" * 13 + "…"
     assert build_task_summary("检查 Ubuntu 服务状态") == "检查 Ubuntu 服务状态"
 
 

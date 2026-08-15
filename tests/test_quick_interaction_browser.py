@@ -1,0 +1,514 @@
+from __future__ import annotations
+
+import asyncio
+from copy import deepcopy
+import json
+import os
+from pathlib import Path
+from socket import AF_INET, SOCK_STREAM, SOL_SOCKET, SO_REUSEADDR, socket
+from threading import Thread
+import time
+from urllib.parse import parse_qs, unquote, urlsplit
+
+import pytest
+import uvicorn
+from playwright.async_api import expect
+
+from app.application import create_app
+from app.automations.browser import session_factory
+from app.core.config import Settings
+
+
+RUN_BROWSER_TESTS = os.getenv("CHUB_BROWSER_TESTS") == "1"
+
+pytestmark = [
+    pytest.mark.anyio,
+    pytest.mark.browser,
+    pytest.mark.skipif(
+        not RUN_BROWSER_TESTS,
+        reason="set CHUB_BROWSER_TESTS=1 to run managed Chrome regression tests",
+    ),
+]
+
+
+def _browser_settings(root: Path) -> Settings:
+    return Settings.model_validate(
+        {
+            "app": {"name": "Chub", "version": "0.1.0"},
+            "node": {
+                "id": "conversation-browser-test",
+                "name": "Conversation Browser Test",
+                "type": "ubuntu",
+            },
+            "server": {"host": "127.0.0.1", "port": 8080},
+            "security": {"token": "browser-test-token-that-is-long-enough"},
+            "logs": {
+                "file": root / "hub.log",
+                "operations_file": root / "operations.log",
+                "level": "ERROR",
+                "max_lines": 100,
+            },
+            "codex_pty": {
+                "enabled": True,
+                "workspace": root / "workspace",
+                "data_file": root / "codex-sessions.json",
+                "runtime_dir": root / "codex-runtime",
+            },
+            "automations": {
+                "shared_config_file": root / "automations.yaml",
+                "local_config_file": root / "automations.local.yaml",
+                "state_dir": root / "automation-state",
+                "runtime_dir": root / "automation-runtime",
+                "artifacts_dir": root / "automation-artifacts",
+            },
+            "project_documents": {"state_file": root / "project-documents.json"},
+            "notifications": {
+                "enabled": False,
+                "registry_file": root / "notifications.yaml",
+                "secrets_dir": root / "notification-secrets",
+            },
+            "openclaw": {
+                "quick_interaction_completion": {"enabled": False},
+                "weixin_chub_mode": {"state_file": root / "weixin-chub-mode.json"},
+            },
+        }
+    )
+
+
+@pytest.fixture(scope="module")
+def conversation_browser_server(tmp_path_factory: pytest.TempPathFactory) -> str:
+    root = tmp_path_factory.mktemp("conversation-browser")
+    application = create_app(_browser_settings(root))
+    listener = socket(AF_INET, SOCK_STREAM)
+    listener.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(128)
+    port = listener.getsockname()[1]
+    server = uvicorn.Server(
+        uvicorn.Config(application, log_level="critical", lifespan="off")
+    )
+    thread = Thread(
+        target=server.run,
+        kwargs={"sockets": [listener]},
+        name="conversation-browser-test-server",
+        daemon=True,
+    )
+    thread.start()
+    deadline = time.monotonic() + 10
+    while not server.started and thread.is_alive() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    if not server.started:
+        server.should_exit = True
+        thread.join(timeout=5)
+        listener.close()
+        pytest.fail("isolated Chub conversation browser test server did not start")
+    try:
+        yield f"http://127.0.0.1:{port}"
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
+        listener.close()
+        if thread.is_alive():
+            pytest.fail("isolated Chub conversation browser test server did not stop")
+
+
+def _session(session_id: str, title: str, created_at: str, slot: int | None) -> dict:
+    return {
+        "id": session_id,
+        "title": title,
+        "created_at": created_at,
+        "codex_session_id": f"native-{session_id}",
+        "workspace_id": "chub",
+        "status": "stopped",
+        "activity": "idle",
+        "activity_source": None,
+        "permission_mode": "full-access",
+        "quick_interaction_running": False,
+        "weixin_session_slot": slot,
+    }
+
+
+def _task(
+    task_id: str,
+    prompt: str,
+    result: str,
+    created_at: str,
+    *,
+    notification_status: str = "sent",
+) -> dict:
+    return {
+        "id": task_id,
+        "status": "succeeded",
+        "prompt": prompt,
+        "result": result,
+        "error": None,
+        "created_at": created_at,
+        "updated_at": created_at,
+        "pinned_at": None,
+        "notification_status": notification_status,
+        "notification_error": None,
+        "deferred_restart_status": None,
+        "deferred_restart_error": None,
+        "deferred_restart_updated_at": None,
+        "deferred_restart_notification_status": None,
+        "deferred_restart_notification_error": None,
+        "deferred_restart_notification_updated_at": None,
+    }
+
+
+class ConversationApi:
+    def __init__(self) -> None:
+        self.sessions = [
+            _session("session-2", "Second Session", "2026-08-15T09:00:00Z", 2),
+            _session("session-1", "Main Session", "2026-08-15T08:00:00Z", 1),
+        ]
+        self.tasks = {
+            "session-1": [
+                _task("task-1", "Earlier question", "Earlier answer", "2026-08-15T08:00:00Z"),
+                _task("task-2", "Recent question", "Recent answer", "2026-08-15T08:10:00Z"),
+                _task(
+                    "task-3",
+                    "Latest question",
+                    "Latest answer",
+                    "2026-08-15T08:20:00Z",
+                    notification_status="failed",
+                ),
+            ],
+            "session-2": [
+                _task("task-4", "Second question", "Second answer", "2026-08-15T09:00:00Z")
+            ],
+        }
+        self.requested_paths: list[str] = []
+        self.fail_submission_recovery = False
+        self.recovery_started = asyncio.Event()
+        self.recovery_release = asyncio.Event()
+        self._recovery_failure_pending = False
+
+    def _find_session(self, session_id: str) -> dict | None:
+        return next(
+            (session for session in self.sessions if session["id"] == session_id),
+            None,
+        )
+
+    async def handle(self, route) -> None:
+        request = route.request
+        parsed = urlsplit(request.url)
+        path = parsed.path
+        self.requested_paths.append(f"{request.method} {path}")
+        status = 200
+        data: dict | None = None
+
+        if (
+            path == "/api/codex/sessions"
+            and request.method == "GET"
+            and self._recovery_failure_pending
+        ):
+            self._recovery_failure_pending = False
+            self.recovery_started.set()
+            await self.recovery_release.wait()
+            await route.fulfill(
+                status=503,
+                content_type="application/json",
+                body=json.dumps(
+                    {
+                        "success": False,
+                        "error": {
+                            "code": "browser_test_recovery_failed",
+                            "message": "Old Session recovery failed",
+                        },
+                    }
+                ),
+            )
+            return
+        if path == "/api/codex/sessions" and request.method == "GET":
+            data = {
+                "available": True,
+                "unavailable_reason": None,
+                "workspaces": [
+                    {
+                        "id": "chub",
+                        "name": "Chub",
+                        "path": "/workspace/chub",
+                        "available": True,
+                    }
+                ],
+                "sessions": deepcopy(self.sessions),
+            }
+        elif path == "/api/codex/sessions" and request.method == "POST":
+            session = _session(
+                "session-3",
+                "New Session",
+                "2026-08-15T10:00:00Z",
+                None,
+            )
+            session["codex_session_id"] = None
+            self.sessions.insert(0, session)
+            self.tasks[session["id"]] = []
+            data = deepcopy(session)
+        elif path.startswith("/api/codex/sessions/"):
+            remainder = path.removeprefix("/api/codex/sessions/")
+            encoded_session_id, _, action = remainder.partition("/")
+            session_id = unquote(encoded_session_id)
+            session = self._find_session(session_id)
+            if action == "title" and request.method == "PATCH" and session:
+                session["title"] = request.post_data_json["title"]
+                data = deepcopy(session)
+            elif action == "archive" and request.method == "POST" and session:
+                self.sessions = [item for item in self.sessions if item["id"] != session_id]
+                data = {"session_id": session_id}
+            elif action == "quick-interactions" and request.method == "GET":
+                tasks = self.tasks.get(session_id, [])
+                query = parse_qs(parsed.query)
+                selected = tasks[:-2] if "before_created_at" in query else tasks[-2:]
+                data = {
+                    "tasks": deepcopy(selected),
+                    "total": len(tasks),
+                    "has_more": "before_created_at" not in query and len(tasks) > 2,
+                }
+            elif action == "quick-interactions" and request.method == "POST":
+                if self.fail_submission_recovery:
+                    self._recovery_failure_pending = True
+                    await route.fulfill(
+                        status=503,
+                        content_type="application/json",
+                        body=json.dumps(
+                            {
+                                "success": False,
+                                "error": {
+                                    "code": "browser_test_submission_failed",
+                                    "message": "Submission failed",
+                                },
+                            }
+                        ),
+                    )
+                    return
+                prompt = request.post_data_json["prompt"]
+                tasks = self.tasks.setdefault(session_id, [])
+                task = _task(
+                    f"task-{len(tasks) + 10}",
+                    prompt,
+                    "Submitted answer",
+                    "2026-08-15T10:10:00Z",
+                )
+                tasks.append(task)
+                data = {"task": deepcopy(task)}
+            elif action.startswith("quick-interactions/") and action.endswith("/pin"):
+                task_id = unquote(action.split("/")[1])
+                task = next(item for item in self.tasks[session_id] if item["id"] == task_id)
+                task["pinned_at"] = (
+                    "2026-08-15T10:05:00Z" if request.post_data_json["pinned"] else None
+                )
+                data = {"task": deepcopy(task)}
+            elif not action and request.method == "GET" and session:
+                data = deepcopy(session)
+
+        if data is None:
+            status = 404
+            payload = {
+                "success": False,
+                "error": {"code": "browser_test_missing", "message": "Not mocked"},
+            }
+        else:
+            payload = {"success": True, "data": data}
+        await route.fulfill(
+            status=status,
+            content_type="application/json",
+            body=json.dumps(payload),
+        )
+
+
+async def _open_conversation(
+    browser,
+    server: str,
+    api: ConversationApi,
+    *,
+    theme: str,
+    viewport: tuple[int, int],
+):
+    context = await browser.new_context(
+        viewport={"width": viewport[0], "height": viewport[1]},
+        reduced_motion="reduce",
+    )
+    await context.route(f"{server}/api/**", api.handle)
+    page = await context.new_page()
+    page_errors: list[str] = []
+    page.on("pageerror", lambda error: page_errors.append(str(error)))
+    await page.add_init_script(
+        script=(
+            "localStorage.clear();"
+            "sessionStorage.clear();"
+            f"localStorage.setItem('hub.uiStyle.v1', {json.dumps(theme)});"
+        )
+    )
+    response = await page.goto(
+        f"{server}/codex/session-1/quick-interactions/conversation",
+        wait_until="domcontentloaded",
+    )
+    assert response is not None and response.status == 200
+    await expect(page.locator("#conversation-session-title")).to_have_text("Main Session")
+    await expect(page.locator("[data-task-id]")).to_have_count(2)
+    return context, page, page_errors
+
+
+@pytest.mark.parametrize("theme", ["standard", "cyber"])
+@pytest.mark.parametrize("viewport", [(390, 844), (1280, 900)], ids=["mobile", "desktop"])
+async def test_conversation_layout_in_managed_chrome(
+    conversation_browser_server: str,
+    theme: str,
+    viewport: tuple[int, int],
+) -> None:
+    api = ConversationApi()
+    browser_session = session_factory()
+    async with browser_session(ensure_page=False) as chrome:
+        context, page, page_errors = await _open_conversation(
+            chrome.browser,
+            conversation_browser_server,
+            api,
+            theme=theme,
+            viewport=viewport,
+        )
+        try:
+            layout = await page.evaluate(
+                """() => {
+                    const composer = document.querySelector("#conversation-form");
+                    const navigation = document.querySelector("#conversation-session-navigation");
+                    const input = document.querySelector("#conversation-prompt");
+                    const submit = document.querySelector("#conversation-submit");
+                    const inputRect = input.getBoundingClientRect();
+                    const submitRect = submit.getBoundingClientRect();
+                    return {
+                        theme: document.documentElement.dataset.uiStyle,
+                        overflow: document.documentElement.scrollWidth - innerWidth,
+                        composerWidth: composer.getBoundingClientRect().width,
+                        navigationWidth: navigation.getBoundingClientRect().width,
+                        inputSubmitOverlap: Math.max(
+                            0,
+                            Math.min(inputRect.right, submitRect.right)
+                                - Math.max(inputRect.left, submitRect.left),
+                        ),
+                        titleVisible: !document.querySelector(
+                            "#conversation-session-title-row"
+                        ).hidden,
+                    };
+                }"""
+            )
+        finally:
+            await context.close()
+
+    assert layout["theme"] == theme
+    assert layout["overflow"] <= 1
+    assert layout["composerWidth"] > 0
+    assert layout["navigationWidth"] <= layout["composerWidth"] + 1
+    assert layout["inputSubmitOverlap"] == 0
+    assert layout["titleVisible"] is True
+    assert page_errors == []
+
+
+async def test_conversation_workflows_in_managed_chrome(
+    conversation_browser_server: str,
+) -> None:
+    api = ConversationApi()
+    browser_session = session_factory()
+    async with browser_session(ensure_page=False) as chrome:
+        context, page, page_errors = await _open_conversation(
+            chrome.browser,
+            conversation_browser_server,
+            api,
+            theme="standard",
+            viewport=(1280, 900),
+        )
+        try:
+            await page.locator("#conversation-load-earlier").click()
+            await expect(page.locator("[data-task-id]")).to_have_count(3)
+            assert await page.locator("[data-task-id]").evaluate_all(
+                "nodes => nodes.map(node => node.dataset.taskId)"
+            ) == ["task-1", "task-2", "task-3"]
+
+            task_two = page.locator("[data-task-id='task-2']")
+            await task_two.locator(".conversation-pin").click()
+            await expect(task_two.locator(".conversation-pin")).to_have_text("取消置顶")
+
+            await page.locator("[data-session-id='session-2']").click()
+            await expect(page).to_have_url(
+                f"{conversation_browser_server}/codex/session-2/quick-interactions/conversation"
+            )
+            await expect(page.locator("#conversation-session-title")).to_have_text(
+                "Second Session"
+            )
+            await expect(page.locator("#conversation-feed")).to_contain_text("Second answer")
+
+            await page.locator("#conversation-session-rename").click()
+            await page.locator("#conversation-rename-input").fill("Renamed Session")
+            await page.locator("#conversation-rename-confirm").click()
+            await expect(page.locator("#conversation-session-title")).to_have_text(
+                "Renamed Session"
+            )
+
+            await page.locator("#conversation-session-archive").click()
+            await page.locator("#conversation-archive-confirm").click()
+            await expect(page).to_have_url(
+                f"{conversation_browser_server}/codex/session-1/quick-interactions/conversation"
+            )
+            await expect(page.locator("#conversation-session-title")).to_have_text("Main Session")
+
+            await page.locator("#conversation-session-create").click()
+            await page.locator("#conversation-create-workspaces .workspace-button").click()
+            await expect(page).to_have_url(
+                f"{conversation_browser_server}/codex/session-3/quick-interactions/conversation"
+            )
+            await expect(page.locator("#conversation-session-title")).to_have_text("New Session")
+
+            await page.locator("#conversation-prompt").fill("New browser task")
+            await page.locator("#conversation-submit").click()
+            await expect(page.locator("#conversation-feed")).to_contain_text("New browser task")
+            await expect(page.locator("#conversation-feed")).to_contain_text("Submitted answer")
+        finally:
+            await context.close()
+
+    assert page_errors == []
+    assert any(path.endswith("/pin") for path in api.requested_paths)
+    assert "PATCH /api/codex/sessions/session-2/title" in api.requested_paths
+    assert "POST /api/codex/sessions/session-2/archive" in api.requested_paths
+    assert "POST /api/codex/sessions" in api.requested_paths
+    assert "POST /api/codex/sessions/session-3/quick-interactions" in api.requested_paths
+
+
+async def test_old_session_recovery_failure_does_not_override_switched_session(
+    conversation_browser_server: str,
+) -> None:
+    api = ConversationApi()
+    api.fail_submission_recovery = True
+    browser_session = session_factory()
+    async with browser_session(ensure_page=False) as chrome:
+        context, page, page_errors = await _open_conversation(
+            chrome.browser,
+            conversation_browser_server,
+            api,
+            theme="standard",
+            viewport=(1280, 900),
+        )
+        try:
+            await page.locator("#conversation-prompt").fill("Fail this task")
+            await page.locator("#conversation-submit").click()
+            await asyncio.wait_for(api.recovery_started.wait(), timeout=5)
+
+            await page.locator("[data-session-id='session-2']").click()
+            await expect(page.locator("#conversation-session-title")).to_have_text(
+                "Second Session"
+            )
+            await expect(page.locator("#conversation-submit")).to_be_enabled()
+
+            api.recovery_release.set()
+            await page.wait_for_timeout(100)
+            await expect(page.locator("#conversation-session-title")).to_have_text(
+                "Second Session"
+            )
+            await expect(page.locator("#conversation-submit")).to_be_enabled()
+            await expect(page.locator("#conversation-submit-message")).not_to_contain_text(
+                "Old Session recovery failed"
+            )
+        finally:
+            api.recovery_release.set()
+            await context.close()
+
+    assert page_errors == []

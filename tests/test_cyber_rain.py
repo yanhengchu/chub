@@ -7,6 +7,15 @@ import pytest
 
 
 NODE = shutil.which("node")
+AI_USAGE_CORE_SCRIPT = (
+    Path(__file__).parents[1]
+    / "app"
+    / "web"
+    / "static"
+    / "js"
+    / "core"
+    / "ai-usage.js"
+)
 THEME_SCRIPT = (
     Path(__file__).parents[1] / "app" / "web" / "static" / "theme.js"
 )
@@ -16,7 +25,8 @@ THEME_SCRIPT = (
 def test_cyber_rain_uses_lowercase_quota_parts_and_clears_them() -> None:
     program = r"""
 const fs = require("fs");
-const source = fs.readFileSync(process.argv[1], "utf8");
+const coreSource = fs.readFileSync(process.argv[1], "utf8");
+const themeSource = fs.readFileSync(process.argv[2], "utf8");
 
 class FakeElement {
   constructor(tagName) {
@@ -70,6 +80,7 @@ const localStorage = {
 const sessionStorage = {
   getItem: (key) => storageValues.get(key) || null,
   setItem: (key, value) => storageValues.set(key, value),
+  removeItem: (key) => storageValues.delete(key),
 };
 const compactMedia = {
   matches: false,
@@ -98,11 +109,12 @@ globalThis.fetch = async (path, options) => {
   };
 };
 
-eval(source);
+eval(coreSource);
+eval(themeSource);
 documentListeners.DOMContentLoaded();
 
 (async () => {
-await window.ChubTheme.loadAiUsage();
+await window.ChubAiUsage.load();
 
 const matrix = document.querySelector(".cyber-matrix");
 const dynamics = matrix.children.filter((stream) => stream.dataset.rainDynamic === "true");
@@ -126,10 +138,15 @@ dynamics[1].listeners.animationiteration();
 const nextToday = visibleText(dynamics[1]);
 const todayLength = dynamics[1].children.length;
 const hasFixedSpaces = dynamics[1].children.some((character) => character.dataset.rainSpace === "true");
+const cachedUsage = JSON.parse(storageValues.get("hub.aiUsageCache"));
 
 Math.random = () => 0;
-window.ChubTheme.setCyberRainQuota("");
+window.ChubAiUsage.clear();
 const cleared = visibleText(dynamics[0]);
+const cacheRemoved = !storageValues.has("hub.aiUsageCache");
+document.documentElement.dataset.stylePreview = "cyber";
+await window.ChubAiUsage.load({ force: true });
+const previewKinds = dynamics.map((stream) => stream.dataset.rainKind);
 
 process.stdout.write(JSON.stringify({
   streamCount: matrix.children.length,
@@ -151,7 +168,10 @@ process.stdout.write(JSON.stringify({
   clearedKind: dynamics[0].dataset.rainKind,
   usagePath: fetchCalls[0].path,
   authorization: fetchCalls[0].options.headers.Authorization,
-  cachedUsage: JSON.parse(storageValues.get("hub.aiUsageCache")),
+  usageRequestCount: fetchCalls.length,
+  cachedUsage,
+  cacheRemoved,
+  previewKinds,
 }));
 })().catch((error) => {
   process.stderr.write(String(error));
@@ -159,7 +179,7 @@ process.stdout.write(JSON.stringify({
 });
 """
     result = subprocess.run(
-        [NODE, "-e", program, str(THEME_SCRIPT)],
+        [NODE, "-e", program, str(AI_USAGE_CORE_SCRIPT), str(THEME_SCRIPT)],
         check=True,
         capture_output=True,
         text=True,
@@ -184,6 +204,9 @@ process.stdout.write(JSON.stringify({
     assert data["clearedKind"] == "phrase"
     assert data["usagePath"] == "/api/ai/usage"
     assert data["authorization"] == "Bearer saved-token"
+    assert data["usageRequestCount"] == 2
+    assert data["cacheRemoved"] is True
+    assert "quota" not in data["previewKinds"]
     assert data["cachedUsage"] == {
         "status": "available",
         "display": {

@@ -38,7 +38,7 @@
 - `chub notification send --target <target> --message <message> --mention-all`
 - `chub notification send --target <target> --message <message> --mention-recipient <recipient> [--mention-recipient <recipient> ...]`
 
-完整安装条件、平台差异和命令说明见 [README](../README.md#后台服务)。
+完整安装条件、平台差异和命令说明见 [README](../README.md)。
 
 ## 3. 插件与固定 API
 

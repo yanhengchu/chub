@@ -21,6 +21,7 @@ from app.codex.models import (
     QuickInteractionOrder,
     QuickInteractionTask,
     QuickInteractionWeixinRoute,
+    TASK_SUMMARY_MAX_LENGTH,
     utc_now,
 )
 from app.core.response import ApiError
@@ -50,7 +51,6 @@ MAX_RESULT_BYTES = 100_000
 MAX_QUICK_INTERACTION_STATE_BYTES = 8 * 1024 * 1024
 MAX_STORED_TASKS = 30
 MAX_SESSION_TITLE_LENGTH = 48
-MAX_TASK_SUMMARY_LENGTH = 20
 WORKER_RECONCILE_INTERVAL_SECONDS = 0.25
 LOGGER = logging.getLogger("hub.codex.quick_interactions")
 CODEX_QUICK_INTERACTION_INSTRUCTIONS = (
@@ -117,9 +117,9 @@ def build_task_summary(prompt: str) -> str:
     )
     value = " ".join(value.split()) or "本次微信任务"
     characters = list(value)
-    if len(characters) <= MAX_TASK_SUMMARY_LENGTH:
+    if len(characters) <= TASK_SUMMARY_MAX_LENGTH:
         return value
-    return "".join(characters[: MAX_TASK_SUMMARY_LENGTH - 1]).rstrip() + "…"
+    return "".join(characters[: TASK_SUMMARY_MAX_LENGTH - 1]).rstrip() + "…"
 
 
 class QuickInteractionManager:

@@ -23,6 +23,9 @@ Chub 是面向个人设备的轻量管理服务，提供统一的 Web 管理入�
 
 ## 快速开始
 
+前置条件：Python 3.12 或更高版本。先使用 `python3 --version` 确认当前命令满足要求，
+再创建项目虚拟环境。
+
 创建环境并安装依赖：
 
 ```bash
@@ -122,7 +125,24 @@ OpenClaw 提供可信入口和通道上下文，Chub 负责业务路由、安全
 
 ### 飞书通知
 
-飞书目标登记在 `~/.config/chub/notifications/registry.yaml`，Webhook 保存在同目录权限为 `600` 的独立文件中。通知只允许预配置目标、有界纯文本和已登记人员；调用方不能指定任意 URL、Open ID 或 Secret 路径。
+飞书目标登记在 `~/.config/chub/notifications/registry.yaml`，Webhook 保存在
+`~/.config/chub/notifications/secrets/` 下权限为 `600` 的独立文件中。通知只允许预配置目标、有界纯文本和已登记人员；调用方不能指定任意 URL、Open ID 或 Secret 路径。
+
+首次配置可从不含真实凭据的示例开始：
+
+```bash
+mkdir -p ~/.config/chub/notifications/secrets
+chmod 700 ~/.config/chub/notifications ~/.config/chub/notifications/secrets
+cp -n config/notifications.example.yaml ~/.config/chub/notifications/registry.yaml
+touch ~/.config/chub/notifications/secrets/test.webhook
+chmod 600 \
+  ~/.config/chub/notifications/registry.yaml \
+  ~/.config/chub/notifications/secrets/test.webhook
+```
+
+随后将完整飞书机器人 Webhook URL 作为唯一一行写入 `test.webhook`。需要指定人员时，
+在 registry 的 `recipients` 中使用本机别名登记对应 Open ID；真实 Webhook、Open ID 和
+registry 均不得提交到仓库。
 
 本机可使用以下命令校验配置：
 
@@ -195,13 +215,24 @@ README 是项目入口和文档管理规则的维护入口；详细契约放在�
 - **阶段记录**：阶段已经闭环，但仍被当前工作引用或尚未被新文档替代。
 - **归档文档**：只用于历史追溯，移动到 `docs/archive/phase-N/` 并原则上冻结。
 
-当前项目资料统一登记在 `docs/design_documents.json`。普通文档使用相对于 `docs/` 的 Markdown 路径；项目根 README 使用唯一保留别名 `@project/README.md`，不能借此读取其他根目录文件。索引状态只使用“调研中”“待实现”“进行中”“待验收”“已验收”或“持续维护”。归档或移动文档时，应同步索引和相关引用。
+项目资料页面展示的当前文档统一登记在 `docs/design_documents.json`。普通文档使用相对于 `docs/` 的 Markdown 路径；项目根 README 使用唯一保留别名 `@project/README.md`，不能借此读取其他根目录文件。索引状态只使用“调研中”“待实现”“进行中”“待验收”“已验收”或“持续维护”。归档或移动文档时，应同步索引和相关引用。
+
+插件 README 和 `.agents/skills/` 下的技能文档属于仓库内维护资料，不进入可信网络只读的项目资料页面，也不扩展 `@project/` 文件读取范围；它们仍通过下方核心文档导航或对应功能设计引用。
 
 ## 测试
 
 ```bash
 .venv/bin/python -m pip install -e ".[test]"
 .venv/bin/python -m pytest
+```
+
+全量测试默认跳过需要受管 Chrome 的真实浏览器回归。调整首页额度、主题或快速交互页面时，启动隔离 Debug Chrome 后显式执行：
+
+```bash
+python3 .agents/skills/chrome-cdp/scripts/chrome_debug.py start --headless
+CHUB_BROWSER_TESTS=1 .venv/bin/python -m pytest \
+  tests/test_web_quota_browser.py \
+  tests/test_quick_interaction_browser.py
 ```
 
 ## 核心项目文档
@@ -226,3 +257,4 @@ README 是项目入口和文档管理规则的维护入口；详细契约放在�
 - [第一阶段](docs/archive/phase-1/README.md)
 - [第二阶段](docs/archive/phase-2/README.md)
 - [第三阶段](docs/archive/phase-3/README.md)
+- [第四阶段](docs/archive/phase-4/README.md)

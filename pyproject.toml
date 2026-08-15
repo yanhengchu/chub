@@ -30,6 +30,9 @@ test = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+    "browser: requires the managed Debug Chrome instance and runs real browser regression checks",
+]
 
 [tool.setuptools.packages.find]
 include = ["app*"]

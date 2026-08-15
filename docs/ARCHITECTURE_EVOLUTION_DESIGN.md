@@ -16,7 +16,14 @@ app/web/
     index.html
     partials/app_styles.html
   static/
+    app.js
+    theme.js
+    quick_interactions_core.js
+    quick_interaction_session.js
+    quick_interaction_timeline.js
+    quick_interaction_conversation.js
     js/
+      core/ai-usage.js
       core/dashboard-core.js
       components/collapsible-card.js
       components/ui.js
@@ -26,7 +33,6 @@ app/web/
       features/automations.js
       features/project-documents.js
       features/logs.js
-      app.js
     css/
       tokens.css
       base.css
@@ -37,14 +43,17 @@ app/web/
 首页脚本仍使用全局函数和固定 `defer` 顺序，不是 ES Modules。加载顺序属于兼容契约：
 
 ```text
-Core -> Components -> Features -> app.js
+AI Usage Core -> Theme -> Dashboard Core -> Components -> Features -> app.js
 ```
 
-- `dashboard-core.js` 提供共享请求、认证、页面恢复和受控存储等基础能力。
+- `ai-usage.js` 在 Theme 和首页脚本之前加载，统一管理跨页面额度请求、浏览器缓存、并发刷新和清理，并向消费者发布只读快照。
+- `dashboard-core.js` 提供首页共享请求、认证、页面恢复和受控存储等基础能力。
 - `components/` 只处理可复用 DOM 行为和无障碍状态，不包含业务请求。
 - `features/` 分别拥有本功能的请求、缓存、轮询、状态和渲染。
+- `theme.js` 只管理风格和 Cyber 代码雨；需要额度时订阅 Core 快照，不拥有额度请求或缓存。
 - `app.js` 负责页面组合、启动、认证失效清理及确有必要的跨功能协调。
-- 次级页面可继续使用独立脚本；只有形成稳定共享边界时才迁移公共能力。
+- 快速交互页按 `Quick Interaction Core -> Session View -> Timeline View -> Page Controller` 固定顺序加载。Core 管理请求与无状态业务规则；Session View 和 Timeline View 只消费只读快照、渲染 DOM 并通过回调上报操作；Page Controller 是 Session、任务列表、分页、轮询、提交和草稿状态的唯一所有者。
+- 其他次级页面可继续使用独立脚本；只有形成稳定共享边界时才迁移公共能力。
 
 调整文件或脚本顺序时，必须同步顺序测试并完成真实浏览器回归。
 
@@ -106,7 +115,7 @@ tokens.css -> base.css -> components.css -> responsive.css
 - 风格选择和 Cyber 代码雨参数保存在当前浏览器，读取失败时回退 Standard；
 - 非敏感主题 Cookie 用于服务端首屏设置风格和 `color-scheme`，不得因此放宽 CSP；
 - Cyber 代码雨仅作背景，不拦截交互；减少动态效果时停止流动；
-- Cyber 代码雨随机使用 `0–1` 和由点或空格连接的本地小写短语库；短语覆盖日常、开发和沟通语境，运行时不依赖外部网络。主题层在首页及所有次级页面统一调用受保护额度接口并复用服务端全局缓存，将额度长格式拆成小写 `weekly`、`today` 单字符垂直雨列，最左轨道持续展示 `weekly`，最右轨道持续展示 `today`；公开页面未通过 Hub Token 或真实 Tailnet 访问时接口失败关闭，不展示浏览器旧缓存，未认证、退出及减少动态效果时也不展示额度雨列；
+- Cyber 代码雨随机使用 `0–1` 和由点或空格连接的本地小写短语库；短语覆盖日常、开发和沟通语境，运行时不依赖外部网络。共享额度 Core 在首页及所有次级页面统一调用受保护额度接口，主题层只消费额度快照并将长格式拆成小写 `weekly`、`today` 单字符垂直雨列，最左轨道持续展示 `weekly`，最右轨道持续展示 `today`；公开页面未通过 Hub Token 或真实 Tailnet 访问时接口失败关闭，不展示浏览器旧缓存，未认证、退出及减少动态效果时也不展示额度雨列；
 - 状态不能只依赖颜色表达，危险操作仍需明确文案和确认；
 - 终端 PTY 保持独立的原生终端样式，不参与公共页面主题切换。
 

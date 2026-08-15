@@ -1788,6 +1788,10 @@ pre {
   scroll-margin-top: 1rem;
 }
 
+#codex-card-host {
+  container: codex-card / inline-size;
+}
+
 #codex-message {
   margin-top: 0;
 }
@@ -1809,6 +1813,48 @@ pre {
 
 .codex-quota {
   margin: 0 0 0.65rem;
+}
+
+.codex-quota-today-separator {
+  display: none;
+}
+
+.codex-quota-reset-break {
+  display: none;
+}
+
+.codex-quota-reset-group {
+  white-space: nowrap;
+}
+
+.codex-quota-compact .codex-quota-today-separator {
+  display: inline;
+}
+
+.codex-quota-compact .codex-quota-today-break {
+  display: none;
+}
+
+@container codex-card (min-width: 40rem) {
+  .codex-quota-today-separator {
+    display: inline;
+  }
+
+  .codex-quota-today-break {
+    display: none;
+  }
+}
+
+@media (max-width: 420px) {
+  .codex-quota-compact .codex-quota-reset-separator,
+  .codex-quota-today-complete .codex-quota-reset-separator {
+    display: none;
+  }
+
+  .codex-quota-compact .codex-quota-reset-break,
+  .codex-quota-today-complete .codex-quota-reset-break {
+    display: inline;
+  }
 }
 
 .codex-divider {

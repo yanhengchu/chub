@@ -55,6 +55,8 @@ openclaw gateway restart
 openclaw channels login --channel openclaw-weixin
 ```
 
+官方组件完成后，还需按 [Chub OpenClaw 插件说明](../integrations/openclaw/chub/README.md)的“首次部署配置”安装并配置 Chub 插件，设置固定 Tailnet `baseUrl`，并分别确认插件侧 `weixinChubMode` 和 Chub 侧 `openclaw.weixin_chub_mode.enabled`。首次获批准的私聊配对可能在 Owner 为空时建立唯一 Owner；已有部署应运行 `openclaw doctor` 检查，并按其现场提示修复缺失配置。首页只展示 Owner 状态，不代替 OpenClaw 的身份配置。
+
 常用只读检查：
 
 ```bash
@@ -80,6 +82,8 @@ openclaw config validate
 
 Chub 插件只负责取得可信通道上下文、调用一次固定接口并执行 Chub 返回的交付决定。协议版本、请求字段和 `pass` / `reply` / `handled` 语义由[插件说明](../integrations/openclaw/chub/README.md)维护。
 
+Chub 内部实现按状态模型、固定指令解析、消息格式化和有状态调度分层。模型层只定义兼容的持久化与公开结果字段；解析和格式化层只处理输入值并返回结果，不读取状态文件、不持有锁也不调用外部服务；Manager 仍是状态写入、并发协调、幂等、重启、通知和 Quick Worker 协作的唯一所有者。该维护边界不改变插件协议或本节业务顺序。
+
 Chub 按以下顺序处理消息：
 
 1. 校验模式、同节点来源、Owner、私聊、消息幂等标识和回送路由。
@@ -97,7 +101,7 @@ Chub 按以下顺序处理消息：
 - `S1`–`S9` 是 Chub 持久槽位，不等于列表位置；所有列表按创建时间倒序，排序不改变槽位编号。
 - 当前绑定使用 `Current` 标识；任务摘要使用有界、单行、脱敏文本，不调用模型生成。
 
-具体指令和中文别名只在[集成能力清单](CHUB_INTEGRATION_CAPABILITIES.md#4-微信-clawbot-指令)维护。
+具体指令和中文别名只在[集成能力清单](CHUB_INTEGRATION_CAPABILITIES.md)的“微信 ClawBot 指令”章节维护。
 
 ### 4.2 普通任务与 Session
 
