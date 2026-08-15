@@ -17,11 +17,7 @@ Chub 是面向个人设备的轻量管理服务，提供统一的 Web 管理入�
 | 项目资料 | 在可信网络内查看已登记的项目说明、设计方案与维护文档，并由维护入口管理归档状态 | 首页、项目资料页 |
 | 设置与界面 | 切换 Standard/Cyber 风格；即时启停微信任务的文本优化与中英文翻译 | 设置页 |
 
-快速交互独立 Worker 与跨 Web 重启恢复已完成验收：页面、微信和翻译任务统一由独立 Worker 承载，Web
-重启期间任务继续运行并由新实例恢复状态、结果和通知。任务请求重启只等待自身结果与完成通知，不等待或阻止
-其他 Session、快速任务或翻译；跨重启边界的请求按当前轮和下一轮合并。首页手动重启可直接接管待执行重启，提交、启动和恢复
-失败都会向用户展示原因。
-当前边界见 [快速交互独立 Worker 设计](docs/QUICK_INTERACTION_WORKER_DESIGN.md)。
+页面、微信和翻译快速任务统一由独立 Worker 承载，Web 重启不会中断已接受的任务。恢复、通知和协调重启的完整边界见[快速交互独立 Worker 设计](docs/QUICK_INTERACTION_WORKER_DESIGN.md)。
 
 电脑端命令、插件、固定 API 和微信指令的简要查询入口是 [Chub 集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md)，具体规则由对应设计文档维护。
 
@@ -95,38 +91,20 @@ Worker 不健康时，Session 写操作保持失败关闭，不回退到 Web Run
 
 Codex PTY 依赖 `codex`、`ttyd` 和 `tmux`。安装服务时，Chub 会从当前终端 `PATH` 记录所需程序路径。
 
-节点页面支持新建、进入、停止和归档会话，并可为新 Session 选择默认权限、模型和推理等级。所有 Session
-列表按创建时间倒序排列，不会因最近执行而改变位置；`S1`–`S9` 只来自实际微信槽位，不按展示位置生成。
-首页 Session 主标题使用 `S<槽位> · 标题`；没有微信槽位时固定使用 `S · 标题`，状态和时间继续独立显示。
-标题为空时统一显示“未命名 Session”。同一 Session 提供两种入口：
+节点页面支持新建、进入、停止和归档 Session，并可为新 Session 选择默认权限、模型和推理等级。同一 Session 提供两种入口：
 
 - **实时终端**：使用原生 Codex TUI，适合审批、持续操作和实时输出。
 - **快速交互**：提交后台任务并在时间线查看状态和结果，适合手机或普通网络。
 
-新建或尚未选择过入口的 Session 默认进入快速交互；手动切换为实时终端后，当前浏览器会按 Session 保留该选择。
+新建 Session 默认进入快速交互；入口偏好、Session 导航和未发送草稿只保存在当前浏览器。两种入口共享原生 Session，并保持单 writer 互斥；快速交互任务由独立 Worker 执行和恢复。
 
-快速交互页在输入区上方展示当前浏览器可见的 Session 列表：已分配微信槽位的项目使用 `S<槽位> · 状态`，未分配项目
-固定使用 `S · 状态`；不带编号的 `S` 明确表示当前没有微信槽位。按钮按创建时间倒序排列，超出输入区宽度后
-横向滚动，列表左侧固定的加号可选择白名单工作目录新建 Session，并使用设置页的默认权限、模型和推理等级；
-创建成功后直接进入新 Session 的快速交互页。当前完整标题显示在列表下方和浏览器标签中，标题后的编辑按钮可在独立弹窗中修改 Chub 本地展示
-标题，紧邻的归档按钮会先确认影响再归档当前 Session，成功后停留在快速交互页并切换到剩余列表第一项；
-仅当已无其他 Session 时返回首页。两项操作都不占用任务输入框；重命名不改变微信槽位、原生 Session 或执行
-状态。页内切换不刷新页面、不累积浏览器返回记录，旧 Session 的延迟响应不会覆盖当前页面，
-切换时立即保留标题行并展示目标 Session 的已有标题，完整状态读取完成前暂时禁用相关操作，避免页面闪动；
-未发送内容按 Session 保留在当前标签页。设置页的翻译 Session 开关统一控制当前浏览器首页、快速交互导航及其他 Session 可见列表；
-关闭后只隐藏列表入口，不中断任务，也不影响已经直接打开的当前 Session 页面。
-
-两种入口共享原生 Session，并保持单 writer 互斥。快速交互默认最长运行 6 小时；长时间运行会提示仍在执行，不会在 10 分钟时误判超时。需要重启 Chub 的快速交互只登记一次任务级 Web 重启请求；Chub 在该任务结果和完成通知结束后直接执行，不等待其他任务。
+Session、Activity、槽位、标题和入口语义见[Chub AI Session 状态模型设计](docs/AI_SESSION_STATE_DESIGN.md)；后台任务、通知终态和跨 Web 重启见[快速交互独立 Worker 设计](docs/QUICK_INTERACTION_WORKER_DESIGN.md)。
 
 实时终端依赖稳定的 WebSocket 链路。普通页面可以打开但终端无响应时，应优先检查 Tailscale 是否直连、DERP 中继质量，以及 `/codex/.../terminal/ws` 是否成功升级为 `101 Switching Protocols`。
 
 ### AI 额度
 
-首页 Codex 卡片通过统一的 `/api/ai/usage` 展示周额度、今日用量和重置时间。Chub 根据 Codex 的结构化认证状态选择唯一来源：ChatGPT 账号登录读取客户端账户接口；API Key 方式复用已启动、已登录的受管 Debug Chrome，由订阅页面自身发起固定用量请求。任一来源失败都不会切换到另一种方式。
-
-API Key 方式需在 `config/settings.local.yaml` 配置固定订阅页和订阅 ID，并通过自动化页面准备、启动受管浏览器及完成登录。额度查询在同一登录环境中并行读取订阅页的周额度与仪表盘页的今日 Token，不自动启动浏览器或弹出登录；Chub 不读取浏览器 Cookie、请求头或存储。今日 Token 获取失败时不影响周额度，只省略 Token。
-
-完整 Session 状态、互斥、通知和任务级重启规则见 [Chub AI Session 状态模型设计](docs/AI_SESSION_STATE_DESIGN.md)。
+首页 Codex 卡片通过统一的 `/api/ai/usage` 展示周额度、今日用量和重置时间。ChatGPT 账号登录优先使用账户日桶，当天桶缺失时显示明确标记的本机 Token；API Key 方式复用已登录的受管 Debug Chrome。两种来源不会互相降级，完整数据口径、接口和缓存规则见[Chub AI 额度与用量采集设计](docs/AI_QUOTA_USAGE_DESIGN.md)。
 
 ### OpenClaw 与微信 ClawBot
 
@@ -136,7 +114,7 @@ API Key 方式需在 `config/settings.local.yaml` 配置固定订阅页和订阅
 微信 ClawBot → OpenClaw → Chub → OpenClaw → 微信 ClawBot
 ```
 
-OpenClaw 只提供可信入口和通道上下文，Chub 负责路由、安全校验和最终状态。固定路由直接返回结果且不创建 Codex 任务；其他非空消息进入普通任务，文字和语音均静默受理，任务成功、失败或超时后再原路发送最终结果。整条链路不调用 OpenClaw Agent，也不把拦截、提交或通知发送等同于任务成功。
+OpenClaw 提供可信入口和通道上下文，Chub 负责业务路由、安全校验和最终状态；整条链路不调用 OpenClaw Agent，也不把消息拦截或任务提交等同于最终成功。
 
 首页“OpenClaw 环境”卡片用于查看 Gateway、微信通道和 Tailscale 入口，并提供受控的启停、重启及微信绑定操作。绑定成功只表示通道登录完成，不代表发送者配对或 Owner 权限已经配置。
 
@@ -203,7 +181,15 @@ Runner 不会自行启动或停止 Debug Chrome。浏览器 Profile 未初始化
 
 ## 项目资料维护
 
-README 是项目入口和文档管理规则的维护入口；详细需求、设计与操作边界放在对应专项文档中，避免重复维护。
+README 是项目入口和文档管理规则的维护入口；详细契约放在对应专项文档中。文档按以下职责维护：
+
+- README 只维护项目概览、安装、主要使用入口、数据安全和文档导航。
+- 集成能力清单只登记当前可调用的命令、插件、固定 API 和微信指令，不解释内部实现。
+- 专项设计只维护本领域的现行行为和边界；跨领域规则引用其权威文档，不复制完整正文。
+- 插件 README 维护插件协议、源码、构建和部署；第三方补丁文档只维护异常恢复，不承担日常使用说明。
+- 功能状态和页面项目资料列表以 `docs/design_documents.json` 为准，README 不重复维护状态。
+
+文档生命周期：
 
 - **当前文档**：仍描述当前有效的需求、架构、功能或流程，已实现或已验收不代表需要归档。
 - **阶段记录**：阶段已经闭环，但仍被当前工作引用或尚未被新文档替代。
@@ -220,20 +206,20 @@ README 是项目入口和文档管理规则的维护入口；详细需求、设�
 
 ## 核心项目文档
 
-| 文档 | 用途 | 状态 |
-| --- | --- | --- |
-| [Chub 项目说明](README.md) | 项目定位、当前功能、安装、日常使用、安全和文档维护总入口 | 持续维护 |
-| [Chub 集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md) | 电脑端命令、插件、固定 API 和微信指令的核心功能索引 | 持续维护 |
-| [Chub AI Session 状态模型设计](docs/AI_SESSION_STATE_DESIGN.md) | Codex Session、Activity、两种交互入口、互斥和生命周期的当前契约 | 已验收 |
-| [Chub AI 额度与用量采集设计](docs/AI_QUOTA_USAGE_DESIGN.md) | 供应商无关的统一接口、账号登录与 API 获取、共享缓存和展示格式 | 待验收 |
-| [Chub–OpenClaw 接入设计](docs/CHUB_OPENCLAW_INTEGRATION_DESIGN.md) | OpenClaw、微信 ClawBot、权限、调度、状态和通知边界 | 持续维护 |
-| [Chub OpenClaw 插件说明](integrations/openclaw/chub/README.md) | 插件协议、配置、构建、部署和真实链路验收 | 随插件维护 |
-| [本期工作周报自动化与生成设计](docs/WEEKLY_REPORT_AUTOMATION_DESIGN.md) | 飞书资料准备、周期校验、重点确认、正式生成和复核流程 | 持续维护 |
-| [Chub 前端 UI 模块化设计](docs/ARCHITECTURE_EVOLUTION_DESIGN.md) | 前端加载边界、Feature/组件职责和 Standard/Cyber 视觉契约 | 已验收 |
-| [快速交互独立 Worker 设计](docs/QUICK_INTERACTION_WORKER_DESIGN.md) | 非实时 Codex 任务脱离 Web 生命周期及跨 Web 重启恢复的现行契约 | 已验收 |
-| [微信 ClawBot Context Token 持久化 AI 补丁规范](docs/WEIXIN_CLAWBOT_CONTEXT_TOKEN_AI_PATCH.md) | 微信插件升级或重装后的兼容复检和安全恢复步骤 | 已验收 |
+| 文档 | 唯一职责 |
+| --- | --- |
+| [Chub 项目说明](README.md) | 项目概览、安装、日常入口、安全和文档导航 |
+| [Chub 集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md) | 当前可用命令、插件、固定 API 和微信指令索引 |
+| [Chub AI Session 状态模型设计](docs/AI_SESSION_STATE_DESIGN.md) | Session、Activity、入口、槽位和单 writer 语义 |
+| [快速交互独立 Worker 设计](docs/QUICK_INTERACTION_WORKER_DESIGN.md) | 非实时任务、恢复、通知终态和协调重启 |
+| [Chub AI 额度与用量采集设计](docs/AI_QUOTA_USAGE_DESIGN.md) | AI 用量来源、统一接口、缓存和展示口径 |
+| [Chub–OpenClaw 接入设计](docs/CHUB_OPENCLAW_INTEGRATION_DESIGN.md) | OpenClaw/微信端到端业务、身份、权限和通知边界 |
+| [Chub OpenClaw 插件说明](integrations/openclaw/chub/README.md) | Chub 插件协议、源码、构建、部署和协议验收 |
+| [微信 Context Token 补丁规范](docs/WEIXIN_CLAWBOT_CONTEXT_TOKEN_AI_PATCH.md) | 第三方微信插件升级后的兼容复检和恢复 |
+| [本期工作周报自动化与生成设计](docs/WEEKLY_REPORT_AUTOMATION_DESIGN.md) | 飞书资料准备、确认门禁、周报生成和复核 |
+| [Chub 前端 UI 模块化设计](docs/ARCHITECTURE_EVOLUTION_DESIGN.md) | 前端分层、公共交互和 Standard/Cyber 视觉契约 |
 
-日常了解项目先看本文；确认“现在能调用什么”看能力清单；开发或排障时再进入对应专项设计。页面展示的文档列表与状态以 `docs/design_documents.json` 为准。
+日常了解项目先看本文；确认“现在能调用什么”看能力清单；开发或排障时再进入对应专项设计。文档状态和项目资料页面顺序统一由 `docs/design_documents.json` 维护。
 
 阶段归档：
 

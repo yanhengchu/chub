@@ -1,378 +1,149 @@
 # Chub AI Session 状态模型设计
 
-> 状态：已实现并验收。当前模型已在 Codex CLI 会话逻辑中落地，本文只记录现行状态、交互和维护边界。
+> 状态：已验收。
+>
+> 本文只维护 Session、Activity、交互入口、槽位和单 writer 语义。非实时任务的执行、恢复、通知终态和 Web 重启由[快速交互独立 Worker 设计](QUICK_INTERACTION_WORKER_DESIGN.md)维护；微信业务路由由[Chub–OpenClaw 接入设计](CHUB_OPENCLAW_INTEGRATION_DESIGN.md)维护。
 
-## 1. 背景与目标
+## 1. 模型概览
 
-Chub 当前直接管理 Codex CLI 会话，产品层将其表达为“可被远程进入、停止、恢复和提交任务的
-AI Session”。当前唯一已接入的 AI CLI 是 Codex。
+Chub 当前管理 Codex CLI Session，并用两个正交状态描述产品状态：
 
-当前实现使用 Session 状态和 Activity 状态两个正交状态轴描述 Chub 中的 AI Session；
-当 Activity 为执行中时，再使用 Activity Source 标记本次 Turn 由哪个交互入口触发：
+- `session_status`：Chub 受管交互运行时的生命周期。
+- `activity_status`：该 Session 当前是否正在处理 Turn。
+- `activity_source`：执行中的 Turn 来自实时终端还是快速交互；它是来源，不是第三个状态轴。
 
-- `session_status`：Chub 受管交互运行时的生命周期状态。
-- `activity_status`：该 AI Session 通过任意受管入口当前是否正在处理任务。
-- `activity_source`：当前正在执行的 Turn 来自实时终端还是快速交互。
+连接、任务、权限、标题、槽位和归档均为独立维度，不扩张核心状态枚举。
 
-两个状态轴共同组成 Session 的核心状态，来源字段不是第三个状态轴，只对执行中的 Activity
-补充归属。连接、权限、
-后台任务、归档和错误详情作为独立维度，
-不扩张核心枚举。
+同一 Session 提供两个入口：
 
-### 1.1 交互入口术语
-
-Chub 为同一 AI Session 提供两种交互入口：
-
-| 名称 | 定义 |
+| 入口 | 用途 |
 | --- | --- |
-| 实时终端 | 进入 AI CLI 原生 TUI，通过持续连接查看实时输出、连续输入并处理审批 |
-| 快速交互 | 不进入 TUI，从普通页面提交单次需求，由后台执行并在交互记录中查看结果 |
+| 实时终端 | 进入 Codex 原生 TUI，查看实时输出、连续输入和处理审批 |
+| 快速交互 | 从普通页面提交单次需求，在时间线查看状态和结果 |
 
-两者统称“交互入口”，共享同一 AI Session，不是两个独立 Session。产品页面和文档不再使用
-“实时交互”作为入口名称，统一使用“实时终端”，避免与 Activity 或快速交互混淆。
+两种入口共享同一个原生 Session，不是两类 Session。入口偏好只决定当前浏览器的默认导航，不代表运行状态。
 
-首页允许用户为每个 Session 切换默认交互入口。由于当前只有“实时终端”和“快速交互”两个选项，
-入口按钮采用两态直接切换，不打开选择弹窗，也不需要单独保存确认。该选择只决定点击 Session 后
-进入实时终端页面还是快速交互页面，属于当前浏览器的导航偏好，不是 Session 状态，也不能写入
-`activity_source`。
-`activity_source` 始终由实际开始执行的 Turn 决定。
+## 2. 核心状态
 
-## 2. 设计结论
+### 2.1 Session 状态
 
-“Session 状态 + Activity 状态”适合作为 Chub 的通用核心模型，原因如下：
-
-- 生命周期与任务活动相互独立：交互运行时存在，不代表正在执行任务；
-  交互运行时停止时，后台入口仍可能执行任务。
-- 页面可以稳定区分“等待输入”“正在执行”和“无法确认”；实时终端是否已停止由
-  `session_status` 和对应操作入口表达，不占用页面主活动状态。
-- 实时终端和快速交互只归属执行过程；Turn 结束后统一回到 Session 自身的等待状态。
-- Codex 进程、Hook、快速交互和恢复逻辑统一映射到 Chub 状态，页面不直接解释原生事件。
-- 活动状态失真时可以降级为 `unknown`，不会误报为空闲或执行中。
-
-该模型不能单独承载所有产品状态。快速交互、浏览器连接、权限模式和归档状态必须独立保存，
-再由页面组合展示。
-
-## 3. 核心状态
-
-### 3.1 Session 状态
-
-当前保持最小集合：
-
-| 状态 | 含义 | 允许的核心操作 |
-| --- | --- | --- |
-| `new` | Chub 已创建记录，但 AI CLI 尚未建立可恢复的原生 Session | 进入、启动 |
-| `running` | Chub 管理的 AI CLI 交互运行时存在 | 进入、停止；是否可提交任务取决于 Activity |
-| `stopped` | 交互运行时不存在，但原生 Session 可恢复 | 恢复、归档 |
-| `error` | 原生 Session 建立、恢复或管理失败，导致所有交互入口均不可用 | 查看错误、重试、停止清理 |
-
-`session_status` 只描述 Chub 管理的交互运行时，不表示 Codex 原生会话是否存在，也不表示是否
-有后台任务正在执行。一个 `stopped` Session 仍可拥有完整的原生会话记录，并可以通过
-快速交互等受管入口处理任务。
-
-### 3.2 Activity 状态
-
-| 状态 | 含义 | 安全含义 |
-| --- | --- | --- |
-| `unknown` | Chub 无法可靠确认当前活动 | 不得自动推断为空闲；风险操作需要拒绝或确认 |
-| `idle` | 当前没有已确认的 Turn 正在处理，等待新输入 | 原生 writer 同时空闲时才可以提交新的后台交互 |
-| `working` | 当前唯一的 Turn 正在处理 | 不允许为同一 Session 再启动新 Turn |
-
-`activity_status` 是 AI Session 级状态，不依赖交互运行时是否存在。实时终端和快速交互都会贡献
-Activity；页面可以另外展示具体执行入口，但不得因交互运行时处于 `stopped` 就忽略正在执行的
-后台任务。
-
-### 3.3 Activity 来源
-
-| 值 | 含义 |
+| 状态 | 含义 |
 | --- | --- |
-| `terminal` | 当前 Turn 由实时终端触发 |
-| `quick` | 当前 Turn 由快速交互触发 |
-| `none` | 当前没有可归属的执行中 Turn |
+| `new` | Chub 已创建记录，尚未建立可恢复的原生 Session |
+| `running` | Chub 管理的 Codex 交互运行时存在 |
+| `stopped` | 交互运行时不存在，但原生 Session 可以恢复 |
+| `error` | 原生 Session 建立、恢复或管理失败，所有入口均不可用 |
+
+`session_status` 不表示是否正在执行任务。`stopped` Session 仍可通过快速交互继续使用原生上下文。
+
+### 2.2 Activity 状态与来源
+
+| Activity | Source | 含义 |
+| --- | --- | --- |
+| `unknown` | `none` | 无法可靠确认活动状态；不得推断为空闲 |
+| `idle` | `none` | 当前没有已确认的 Turn，等待输入 |
+| `working` | `terminal` | 实时终端正在处理唯一 Turn |
+| `working` | `quick` | 快速交互正在处理唯一 Turn |
 
 约束：
 
-- `activity_status=working` 时，`activity_source` 必须是 `terminal` 或 `quick`。
-- `activity_status=idle` 时，`activity_source` 必须是 `none`。
-- `activity_status=unknown` 时，不猜测执行入口，`activity_source` 使用 `none`。
-- `activity_source` 不记录上一次 Turn 来源，Turn 结束时必须立即清空。
-- 同一 Session 同一时刻最多允许一个执行中 Turn，因此 `terminal` 和 `quick` 不能同时存在。
-- Activity 只描述 Chub 已确认的 Turn 状态，不能替代原生 Codex writer 互斥判断；快速交互提交前还要检查 writer，实际 `resume` 仍需处理检查与启动之间的竞态冲突。
-- 微信通道当前绑定 Session 是 `unknown` 的受控处理例外：入口自动停止该 Session 的残留终端并确认 writer 释放，再提交快速交互；普通页面仍保留人工确认语义。
-- `activity_source=terminal` 时，`session_status` 必须为 `running`。
+- 同一 Session 同一时刻最多一个执行中 Turn。
+- `activity_source` 只记录当前 Turn，结束后立即恢复为 `none`。
+- `working + terminal` 必须同时满足 `session_status=running`。
+- `stopped + working + quick` 合法，表示终端运行时已停止，但后台任务仍在执行。
+- Activity 只描述 Chub 已确认的 Turn，提交前仍必须检查 Worker 租约和 Codex 原生 writer。
+- 状态来源不完整、事件乱序或恢复无法确认时使用 `unknown`，不沿用可能过期的 `idle`。
 
-## 4. 合法组合与页面语义
+## 3. 页面语义
 
-| Session | Activity | Source | 页面主状态 | 合法性 |
-| --- | --- | --- | --- | --- |
-| `new` | `unknown` | `none` | 尚未启动 · 可进入 | 合法 |
-| `running` | `working` | `terminal` | 实时终端 · 执行中 | 合法 |
-| `running` | `working` | `quick` | 快速交互 · 执行中 | 合法 |
-| `stopped` | `working` | `quick` | 快速交互 · 执行中 | 合法 |
-| `stopped` | `working` | `terminal` | 不展示 | 非法 |
-| `running/stopped` | `idle` | `none` | 会话 · 等待输入 | 合法 |
-| `running/stopped` | `unknown` | `none` | 会话 · 状态未知 | 合法 |
-| `error` | `unknown` | `none` | 会话异常 · 可重试 | 合法 |
+| Session | Activity | 页面主状态 |
+| --- | --- | --- |
+| `new + unknown` | 尚未启动 | 尚未启动 · 可进入 |
+| `running + working + terminal` | 实时执行 | 实时终端 · 执行中 |
+| `running/stopped + working + quick` | 后台执行 | 快速交互 · 执行中 |
+| `running/stopped + idle` | 可接受输入 | 会话 · 等待输入 |
+| `running/stopped + unknown` | 状态不确定 | 会话 · 状态未知 |
+| `error + unknown` | Session 不可用 | 会话异常 · 可重试 |
 
-`stopped + working + quick` 是合法组合，表示交互运行时已停止，但快速交互 Turn 正在执行。
-此时页面优先展示“快速交互 · 执行中”。Turn 结束后不保留“快速交互”归属，统一展示
-“会话 · 等待输入”；实时终端是否需要恢复，由操作入口根据 `session_status` 决定。
+页面主状态优先级为：Session 错误、执行中的入口、空闲或未知状态。终端连接或 WebSocket 错误属于通道错误；只要快速交互仍可用，就不能把整个 Session 写成 `error`。
 
-`stopped + idle + none` 的页面主状态仍为“会话 · 等待输入”。此时 `session_status` 只负责让
-操作入口执行“恢复实时终端”，而不把主状态改回“会话已停止”。因此页面主状态描述 Session
-是否可以接受下一次输入，操作入口描述实时终端是否需要恢复。
+操作入口根据 `session_status` 决定直接进入还是恢复终端，但不能反向修改 Activity。
 
-页面展示是核心状态与独立维度合成后的产品状态，不反向修改核心状态。当前展示优先级：
+## 4. 单 writer 与任务边界
 
-1. Session 级错误。
-2. `working` 下由 `activity_source` 确定的执行入口。
-3. `idle/unknown` 下的 Session Activity。
-4. 操作入口根据 `session_status` 决定是直接进入还是恢复实时终端。
+- 实时终端和快速交互必须通过同一 Session 互斥门禁。
+- 快速交互执行时可以保留已有终端连接用于查看输出，但禁止新的终端输入。
+- 已有快速任务、实时 Turn 或原生 writer 被占用时，拒绝第二个 Turn，不中断现有任务。
+- 停止、权限切换、归档等操作也必须通过 Session 互斥检查；页面按钮状态不能代替后端最终校验。
+- 微信当前绑定 Session 为 `unknown` 时，允许受控停止残留终端并确认 writer 已释放后再提交；无法确认时失败关闭。
+- 子进程创建、停止请求返回或 Hook 到达都不是最终状态，必须确认运行时、Turn 或任务终态。
 
-终端页面、代理或 WebSocket 的访问错误属于独立通道错误。只要 AI Session 本身仍可通过快速交互
-处理任务，就不能把 `session_status` 写成 `error`；页面可以单独提示终端访问异常。
+快速交互 Execution、Worker 租约、恢复屏障、翻译队列、通知和协调重启的权威状态由独立 Worker 体系维护，本文只消费其结果生成 Session Activity。
 
-## 5. 独立状态维度
+## 5. 独立维度
 
-以下信息不属于 Session 或 Activity 枚举：
+### 5.1 标识、标题和槽位
 
-### 5.1 Codex 原生 Session 标识
+- `id` 是 Chub 内部稳定标识；`codex_session_id` 是原生 Codex 标识，二者不混用。
+- `title` 是 Chub 本地展示元数据；空标题统一显示“未命名 Session”，修改标题不改变原生上下文、Activity 或权限。
+- `weixin_session_slot` 是 `S1`–`S9` 的唯一来源。列表位置、标题或当前浏览器不能生成虚拟槽位。
+- Web 无槽位 Session 显示 `S · 标题`；微信只展示已分配槽位的 Session。
+- Session 列表按创建时间倒序排列，排序不改变槽位编号。
 
-- `id`：Chub 内部 Session 标识，用于页面、API 和本地状态关联。
-- `codex_session_id`：Codex 原生会话标识，只在原生会话已建立时存在。
+### 5.2 权限、归档和入口偏好
 
-Chub 的 `id` 保持稳定，不与 Codex 原生 Session ID 混用。
+- 权限模式在创建时写入 Session 配置；设置页只保存后续新建 Session 的默认值。
+- 归档表示从活动列表移除并释放微信槽位，不是新的 Session 状态；当前页面不提供恢复入口。
+- 入口偏好默认为快速交互，按 Session 保存在当前浏览器，不跨设备同步，也不写入后端状态。
+- 快速交互执行中仍可进入快速交互页查看进度，但不能进入实时终端。
+- 翻译 Session 是内部只读 Session，不进入微信槽位；Web 是否展示只影响列表入口，不中断任务。
 
-### 5.2 连接状态
+## 6. 状态来源与转换
 
-浏览器页面、WebSocket、PTY 和终端代理连接只描述访问通道，不代表 AI 是否执行任务：
-
-- 无浏览器连接时，运行时仍可保持 `running + idle`。
-- 浏览器已连接时，也可能是 `running + working`。
-- 连接状态不得覆盖 `activity_status`。
-
-### 5.3 执行任务
-
-快速交互属于独立的 Execution：
-
-- 包含任务 ID、入口类型、状态、开始/更新时间和最终结果。
-- 同一 Session 可以保留多个历史 Execution，但同一时刻最多允许一个 Execution 处于执行中；
-  Chub 使用 Session 级协调锁和原生 writer 探测共同保证该约束。
-- 快速交互执行期间可以保留已经建立的实时终端连接，但必须阻止该终端发起新的 Turn；
-  仅禁止再次进入页面不足以保证互斥。
-- 页面可以用“快速交互 · 执行中”覆盖基础展示，但不把快速交互写成新的
-  `session_status`。
-- Execution 开始和结束必须更新 `activity_status`，不能只依赖可能乱序或过期的 Hook 事件。
-- Execution 开始时设置对应 `activity_source`，当前 Turn 结束时将其清空为 `none`。
-- Chub Web 重启时，未完成的快速交互继续由独立 Worker 执行；新 Web 在恢复屏障完成后重建 Execution、
-  Session 占用和 `working + quick` 投影。Worker 不可用或身份无法确认时保持 `unknown` 并失败关闭写入口，
-  不把任务猜测为空闲或自动重放；实时终端继续由 tmux 保持现有 Turn。
-
-#### 5.3.1 快速交互触发的任务级 Web 重启
-
-快速交互如果需要重启 Chub，不能在任务执行中直接调用服务管理器。任务只能调用一次项目固定的
-`scripts/chub-web-restart`；该脚本在快速交互环境中只登记当前任务的重启请求，不立即停止服务。
-Chub 仅在本次任务成功结束后将其提升为待重启状态，并遵循以下规则：
-
-- 先保存并展示本次最终结果；配置了微信完成通知时，还要等待通知进入已发送、失败或跳过的终态。
-- 任何其他 Session、快速任务、实时终端或 tmux Session 都不阻塞自动 Web 重启；待重启期间仍可提交任务。
-- 任务提交时，只要 workspace 是 Chub 且权限不是 `read-only`，Web 与 Worker 即固定保存
-  `restart_sensitive=true`。该字段保留用于协议 v6 和历史任务兼容，不参与自动或手动重启判断。
-- 多个尚未开始的登记合并为一次重启，但每个成功登记的任务保留自身操作 ID、来源和共享的重启操作 ID，
-  最终状态分别回写。登记任务失败、超时或取消时不提升为待重启，也不会自动重启。
-- 重启已经开始后才完成的登记进入“下一次待重启”，不会被前一次新实例恢复提前满足；实现持久化当前请求和
-  最多一个合并后的下一次请求。
-- 任务最终结果由 Chub 追加准确状态：请求任务自身结果和通知完成后统一提示“即将重启”；登记失败时明确
-  提示本次不会自动重启。
-- 当前请求持久化为 `waiting` 或 `started`，并保存发起实例 ID；下一次请求独立保存为 `waiting`。多任务关联和
-  通知状态保存在各自的快速交互私有状态中。旧实例只记录当前重启已开始；新实例必须等本机健康接口返回新的
-  实例 ID 后，才完成当前请求并提升下一次请求，不能把子进程创建成功或应用对象构造完成当作服务恢复。
-  仅当旧实例已将状态推进为 `started` 时，新实例才在每个关联任务后发送“Chub 已完成自动重启，服务已恢复。”，并附加关联 Session、关联任务摘要，以及独立精简的状态区块；该区块先展示 `Sessions`，最后展示统一 AI 用量服务生成的 `Weekly … · Today …` 短格式，今日 Token 缺失时省略 `Today`，且不依赖用户状态指令。
-  系统回复；该回复不调用 Codex 或 LLM。
-- 微信 Chub 来源任务在健康确认后使用任务保存的账号和发送者原路发送独立重启结果；页面来源只更新页面时间线。
-  重启通知与任务完成通知分开记录，采用至多一次语义：`pending` 可以在健康实例继续处理，调用前先写为
-  `sending`，若此时再次中断则标记失败而不自动重试。失败不改变任务或重启结果，也不回退全局收件人。
-- 重启命令未能创建、返回明确的正退出码，或被信号终止且宽限期后旧实例仍然存活时，旧实例将关联任务记为
-  `start_failed`，保存并向页面或微信来源展示具体原因。服务管理器停止旧实例时可能同时终止其重启命令，
-  因此负信号退出必须先等待旧实例退出，不能直接误报失败。手动接管失败时本次请求直接结束，不回滚为等待状态，
-  也不在接口返回失败后后台重试。服务退出后始终未恢复
-  无法由 Chub 自身通知，需依赖 systemd、LaunchAgent 或外部监控。
-- 待重启尚未自动触发时，如果维护者通过页面以外的服务管理方式手动重启，新实例同样消费并清除该状态，
-  不再执行第二次重启，也不展示自动重启成功回复。清理失败时服务仍可启动，但保持受控阻断并记录运行日志，
-  避免循环重启。
-- 页面维护接口始终允许维护者立即重启 Web：活动 Worker 任务继续执行；已有待重启尚未启动时由页面操作接管
-  并保留任务级重启关联，已经启动时复用当前重启而不重复调用服务管理器。通过页面以外的项目固定脚本单独
-  重启 Web 不建立新的任务级关联；接口下发失败在确认弹窗展示，下发后未恢复则在首页全局状态展示。重启
-  Worker 或整机仍可能中断任务，只用于明确的人工处置。
-
-这里的“返回结果”指结果已经持久化并可由页面读取，且请求任务自身已配置的完成通知已结束；服务端无法判断
-维护者是否已经实际阅读页面内容，因此使用短暂宽限而不是等待浏览器确认。快速交互页面在待重启期间继续轮询，
-跨过短暂的服务不可用窗口后原位显示系统回复。首页手动重启接管待重启时按正常重启完成关联结果；页面以外的
-服务重启则将关联任务的内部待处理状态结束为 `cleared`，不发送微信自动重启成功消息。
-
-### 5.4 权限与归档
-
-- 权限模式在创建时写入 Session 配置，不是运行状态；设置页只保存后续新建会话的默认值。
-- 归档描述原生会话是否出现在活动清单，不是运行时状态。
-- 删除是操作结果，不保留 `deleted` Session 状态。
-
-### 5.5 交互入口偏好
-
-- 默认值为 `quick`，表示点击新建或尚未保存入口偏好的 Session 时进入快速交互页面。
-- 用户也可以选择 `terminal`，表示点击 Session 进入实时终端；已经保存的明确选择继续沿用。
-- 入口按钮显示当前模式；点击后立即切换为另一模式，并通过按钮提示说明将要切换到的目标。
-- 两个固定选项不使用下拉箭头或选择弹窗，避免增加无意义的选择和保存步骤。
-- 偏好按 Session 保存在浏览器本地，不跨设备同步，不进入后端 Session 模型。
-- 尚未建立原生 Session 时可以进入实时终端，也可以由快速交互的首次任务创建原生 Codex Session；`Ask for approval` 权限仍需先进入实时终端。快速交互页面同时承载任务提交和交互记录。
-- 快速交互执行中仍允许进入快速交互页面查看进度，但继续禁止进入实时终端。
-
-### 5.6 标题、槽位与跨入口展示
-
-- `title` 是 Chub 本地展示元数据，不是 Codex 原生 Session 标识。空标题统一显示“未命名 Session”；
-  快速交互首次提交只在尚无标题时生成初始标题。
-- 普通 Session 可在快速交互页重命名。输入先合并为 1–48 个字符的单行标题并拒绝不可见控制字符；重命名
-  不改变内部或原生 Session ID、微信槽位、Activity、权限和正在执行任务保存的标题快照。内部翻译 Session
-  标题固定，不提供重命名入口。
-- 已启动的 Session 可从快速交互页标题后的归档按钮进入确认弹窗。归档沿用现有破坏性操作互斥：快速交互
-  任务执行中禁止归档，实时终端运行中允许归档并关闭连接；成功后从活动列表移除、释放微信槽位，并在当前
-  快速交互页切换到剩余列表第一项。仅当已无其他 Session 时返回首页。Chub 页面当前不提供恢复入口。
-- `weixin_session_slot` 是 `S1`–`S9` 的唯一来源。列表位置、当前浏览器、Session 类型或标题都不得生成虚拟
-  槽位；字段缺失、为空或不合法时按无槽位处理并显示不带编号的 `S`。
-- 首页主标题使用 `S<槽位> · 标题`，无槽位使用 `S · 标题`；Activity、时间和路径保持独立信息行。
-- 快速交互页的 Session 导航使用 `S<槽位> · 状态`，无槽位使用 `S · 状态`；完整标题在导航下方、提示信息
-  和浏览器标签中展示，不挤入紧凑导航按钮。
-- 快速交互页在可滚动 Session 导航左侧固定新建按钮。按钮复用受保护的新建接口和服务端白名单工作目录，
-  使用当前浏览器设置的默认权限、模型和推理等级；创建成功后替换当前历史项进入新 Session 的快速交互页。
-  当前 Session 的运行状态不阻止创建独立 Session；Codex 或工作目录不可用、创建进行中时按钮禁用。
-- 微信只展示已分配槽位的受控 Session 子集，使用 `S<槽位> · 标题` 和独立状态行，不展示无槽位的 `S` 项。
-  因此 Web 的 `S` 回退不能被解释为微信可切换槽位。
-- 各入口的 Session 列表统一按创建时间倒序排列，内部 Session ID 只在创建时间相同时稳定兜底；排序不改变
-  槽位编号。翻译 Session 始终无槽位，是否在 Web 首页、快速交互导航及其他 Session 可见列表中显示由当前
-  浏览器偏好统一决定，列表接口默认隐藏；微信列表始终排除。该偏好只裁剪列表入口，不中断任务，也不使
-  已经直接打开的当前 Session 页面失效。
-
-## 6. 状态来源与可信度
-
-Codex 管理器从进程、Hook、快速交互和持久化记录生成 Chub 状态。Session 当前保存统一的
-`updated_at`；快速交互另行保存自身的任务时间和结果。
-
-状态可信规则：
-
-- 进程存在只能证明 `running`，不能证明 `idle`。
-- 明确存在执行中的 Turn 时设置为 `working`。
-- 明确当前 Turn 已结束，且状态来源完整时，才设置为 `idle`。
-- 服务重启后只恢复出运行时、但没有新的活动事件时，映射为 `unknown`。
-- 事件乱序、读取失败或无法确认活动时，降级为 `unknown`，不沿用可能过期的 `idle`。
-
-## 7. 通用状态转换
+Chub 从 tmux/Codex 运行时、Codex Hook、Worker 任务和持久化记录组合状态：
 
 ```text
-new ──启动成功──> running + unknown
-unknown ──可信活动事件──> idle/working
-idle + none ──实时终端 Turn 开始──> working + terminal
-idle + none ──快速交互 Turn 开始──> working + quick
-working + terminal/quick ──当前 Turn 完成──> idle + none
-running ──停止确认──> stopped
-stopped ──恢复成功──> running + unknown
-new/running/stopped ──运行时失败──> error
-error ──重试成功──> running + unknown
-error ──确认已停止──> stopped/new
+new --启动确认--> running + unknown
+unknown --可信事件--> idle / working
+idle --终端 Turn--> working + terminal
+idle --快速任务--> working + quick
+working --Turn 终态--> idle + none
+running --停止确认--> stopped
+stopped --恢复确认--> running + unknown
+new/running/stopped --运行时失败--> error + unknown
 ```
 
-约束：
+可信规则：
 
-- 不能仅凭子进程成功创建就写入 `running`，必须确认运行时存在或已就绪。
-- 不能仅凭停止请求成功返回就写入 `stopped`，必须确认原运行时已结束。
-- Activity 变化不能改变 Session 运行时生命周期。
-- 是否放行新任务同时取决于 Activity、Execution 互斥策略和 Codex writer 状态，不能只检查
-  `session_status`。
-- `session_status=error` 时禁止启动新 Turn；仅终端访问失败时不得使用该状态。
+- tmux 或进程存在只能证明 `running`，不能证明 `idle`。
+- 明确 Turn 开始时才写入 `working`；明确终态且来源完整时才恢复 `idle`。
+- Web 重启后由 Worker 恢复快速任务和租约投影；无法确认时保持 `unknown` 并关闭写入。
+- Activity 变化不改变 Session 运行时生命周期。
 
-## 8. 当前 Codex 映射
+当前 Codex 映射：
 
-| Codex 信号 | Chub Session | Chub Activity | Activity Source |
-| --- | --- | --- | --- |
-| Chub 记录已创建、没有 Codex session ID | `new` | `unknown` | `none` |
-| tmux/Codex TUI 存活 | `running` | 保留或按 Hook 更新 | 按 Activity 更新 |
-| 原生 Session 存在、tmux 不存在 | `stopped` | 根据后台 Execution 聚合 | 根据 Execution 更新 |
-| 原生 Session 无法建立、恢复或继续管理 | `error` | `unknown` | `none` |
-| 实时终端 `UserPromptSubmit` Hook | 不变 | `working` | `terminal` |
-| 快速交互开始 | 不变 | `working` | `quick` |
-| 当前 Turn 结束 | 不变 | `idle` | `none` |
-| 服务重启后仅确认 tmux 存活 | `running` | `unknown` | `none` |
+| Codex 信号 | Session | Activity |
+| --- | --- | --- |
+| 记录已创建、无原生 ID | `new` | `unknown` |
+| tmux/Codex TUI 存活 | `running` | 由 Hook 或 Worker 决定 |
+| 原生 Session 存在、tmux 不存在 | `stopped` | 由 Worker 任务决定 |
+| 终端 Hook 开始 | 不变 | `working + terminal` |
+| 快速任务开始 | 不变 | `working + quick` |
+| 当前 Turn 结束 | 不变 | `idle + none` |
 
-`CodexSession` 是当前唯一 Session 模型；原生发现、命令、Hook、存储和 API 均使用 Codex 语义。
+## 7. 当前维护边界
 
-## 9. 当前 Codex 管理边界
+本文是以下内容的唯一说明：
 
-Codex 管理链路当前负责：
+- Session 与 Activity 枚举、合法组合和页面主状态。
+- 实时终端与快速交互的共享 Session、入口语义和单 writer 约束。
+- Chub/原生标识、标题、微信槽位、归档和浏览器入口偏好。
+- Codex 运行时、Hook 和 Worker 投影到 Session 状态的规则。
 
-- 发现可管理的 Codex 原生 Session，并返回受控的运行时健康状态。
-- 将进程、Hook 和快速交互事件映射为 `unknown/idle/working`，并为执行中 Turn 标记交互入口。
-- 使用固定的 Codex、tmux 和 ttyd 命令边界，不接受客户端传入任意命令或路径。
-- 保存统一状态，执行合法状态转换和最终状态确认。
-- 管理同一 Session 的操作锁，并保证同一时刻最多有一个执行中 Turn。
-- 在快速交互执行期间阻止实时终端提交新的 Turn，同时不把浏览器连接状态误作 Activity。
-- 实时终端输入放行与快速交互启动必须通过同一 Session 锁串行化，
-  不能采用先检查、后转发的非原子逻辑。
-- 合成 API 和页面展示状态。
-- 记录不含凭证和正文的操作日志。
+以下内容由其他文档维护：
 
-## 10. 当前落地范围
+- Worker 任务、恢复、通知和 Web 重启：[快速交互独立 Worker 设计](QUICK_INTERACTION_WORKER_DESIGN.md)。
+- 微信指令、绑定、权限和原路通知：[Chub–OpenClaw 接入设计](CHUB_OPENCLAW_INTEGRATION_DESIGN.md)。
+- 前端分层、公共交互和视觉规范：[Chub 前端 UI 模块化设计](ARCHITECTURE_EVOLUTION_DESIGN.md)。
 
-当前已在 Codex 业务链路中完成以下映射：
-
-- Session 数据和 API 增加 `activity_source`，旧数据读取时使用兼容默认值。
-- Codex Hook 将实时终端 Turn 映射为 `working + terminal`。
-- 快速交互开始和结束显式写入 `working + quick`、`idle + none`。
-- 首页按统一 Activity 和来源展示执行入口，主标题使用实际微信槽位前缀 `S<槽位> · 标题`，无槽位时使用
-  `S · 标题`；Turn 结束后统一显示“会话 · 等待输入”。
-- 快速交互执行期间拒绝新的实时终端入口和会话变更操作；已经建立的终端连接保留输出，但禁止输入。
-- 停止、权限切换、归档和删除统一先通过 Session 互斥检查，被拒绝的操作不会关闭已有连接。
-- 独立 Worker 持有所有非实时 Codex Runner；Web 重启后通过恢复屏障重建未完成任务及一致的 Session
-  Activity，不结束或重放原任务，也不保留无法确认的 `working + quick`。
-- 快速交互主动登记 Chub 重启时，只等待合并到本次重启的请求任务自身结果和通知交付，不等待其他 Session；
-  首页手动重启不受活动任务或待重启状态阻挡，可接管尚未开始的自动重启，已启动时避免重复调用。
-- 首页使用紧凑的两态交互入口切换按钮，不再单独放置“快速交互”和“交互记录”按钮；进入快速交互后固定使用
-  消息时间线。首页入口偏好和每次加载 5/10 条记录的偏好属于浏览器 UI 状态，不写入 Session、Activity、
-  Execution 或任务。
-- 快速交互按时间线将任务映射为问答消息，统一承载提交入口、任务状态、结果和历史记录，不创建新的后端
-  “会话”类型。
-- 快速交互页面避免在输入区和交互记录中重复展示同一个执行状态；输入区保留提交和必要的阻断、确认
-  信息，任务执行状态由交互记录统一呈现。
-- 快速交互输入区上方展示按创建时间倒序排列的当前可见 Session 导航。已分配微信槽位的项目使用
-  `S<槽位> · 状态`，未分配项目固定使用 `S · 状态`；不带编号的 `S` 只表示没有微信槽位，不创建页面虚拟
-  槽位。当前 Session 与执行中 Session 分别提供明确的选中态和非纯颜色状态提示，多个按钮超出输入区宽度后
-  横向滚动。翻译 Session 展示偏好统一裁剪所有 Web Session 列表，但不影响已经直接打开的当前 Session
-  页面。页面切换不停止原 Session 的后台任务，并在当前标签页按 Session 暂存未发送内容。
-  快速交互页内的 Session 项使用无默认导航副作用的按钮；普通点击和手机轻触只替换当前浏览器地址，并在
-  同一页面文档内切换 API 客户端、任务历史、轮询、草稿和当前状态，不刷新页面、不叠加返回记录。切换时使用
-  目标 Session 的列表缓存立即更新标题并保持标题行高度，完整状态返回前暂时禁用依赖该状态的操作；同时使用
-  代次标识丢弃旧 Session 的延迟响应，避免快速连续操作后旧数据覆盖当前页面；从首页首次进入仍使用普通导航。
-  桌面端的 `Ctrl` / `Command` / `Shift` 点击和中键点击由页面显式打开新标签，不改变当前页历史。
-- 当前 Session 标题显示在导航下方和浏览器标签中，右侧弱化编辑按钮通过独立弹窗修改 Chub 本地展示标题，
-  不改变 Codex 原生会话数据，也不复用或清空任务输入框。标题保存前将换行、制表符等空白合并为空格分隔的
-  单行，拒绝其他不可见控制字符，并限制为 1–48 个字符；标题属于本地展示元数据，Session
-  执行期间仍可重命名，不解除新任务提交、终端写入及破坏性操作的原有互斥；内部微信翻译 Session 不提供
-  该入口。运行中任务继续使用提交时保存的标题快照，后续任务、标题行、按钮提示和浏览器标签使用新标题。
-- Session 导航左侧的新建按钮不随横向列表滚动。点击后以弹窗展示服务端固定工作目录，创建过程只锁定新建
-  入口和目录选择，不停止或占用当前 Session；创建成功后直接切换到新 Session，失败时保留弹窗和当前输入
-  草稿。已保存的模型或推理等级不再可用时，按首页相同规则清除旧偏好并使用 Codex 默认值重试一次。
-- 归档按钮紧跟编辑按钮，只在 Session 已创建原生会话且没有快速交互任务执行时可用。确认弹窗明确说明活动
-  列表移除、实时终端停止、微信槽位释放和页面暂无恢复入口；归档成功后替换当前历史项，切换到按统一顺序
-  排列的剩余 Session 第一项，无剩余项时才返回首页。失败时保留当前页面和弹窗错误信息。接口继续使用后端
-  破坏性操作锁进行最终校验。
-- 快速交互轮询按任务 ID 原位更新变化记录，不重建稳定历史；输入卡片与记录列表分别处理刷新失败，
-  避免一个区域的临时错误清空或阻断另一区域。
-- 快速交互记录的置顶属于任务展示元数据，不改变 Session、Activity、任务时间或执行结果；页面保持按创建时间
-  的时间线顺序。
-
-当前使用现有 `CodexSession`、Codex API 路径和本地状态文件结构。
-
-## 11. 当前维护结论
-
-Session、Activity、交互来源、原生 writer 和执行任务已按本文模型落地。实时终端与快速交互共享单写入者约束；服务重启和事件缺失不会把未知状态误报为空闲；异步启动、停止、通知和任务级协调重启均以最终状态确认结果。
-
-快速交互独立 Worker 与跨 Web 重启恢复已经验收：页面、微信和翻译任务统一由 Worker 持有，Web 重启前后
-任务、Session 占用、结果和通知保持可恢复。任务自动重启只等待自身结果与通知，其他任务不延后重启；跨重启
-边界的请求按当前轮和下一轮收敛，首页手动重启可直接接管等待状态，失败原因对用户可见。完整维护契约见
-[快速交互独立 Worker 设计](QUICK_INTERACTION_WORKER_DESIGN.md)。
+当前模型已在 Codex 会话、首页、快速交互和微信 Session 展示中落地，并完成 macOS、Ubuntu 验收。

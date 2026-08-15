@@ -19,6 +19,10 @@ from app.ai_usage.provider_browser import (
     ProviderBrowserAdapter,
     ProviderBrowserUnavailable,
 )
+from app.codex.local_usage import (
+    CodexLocalUsageReader,
+    CodexLocalUsageUnavailable,
+)
 from app.codex.rate_limits import CodexAccountCollection, CodexRateLimitService
 from app.core.config import Settings
 
@@ -44,6 +48,7 @@ class AiUsageService:
         settings: Settings,
         codex_reader: CodexRateLimitService,
         provider_browser: ProviderBrowserAdapter | None = None,
+        local_usage_reader: CodexLocalUsageReader | None = None,
     ) -> None:
         self._settings = settings
         self._codex_reader = codex_reader
@@ -51,6 +56,7 @@ class AiUsageService:
             settings.ai_usage,
             settings.automations,
         )
+        self._local_usage_reader = local_usage_reader or CodexLocalUsageReader()
         self._lock = threading.Lock()
         self._cached: AiUsageData | None = None
         self._cached_at = 0.0
@@ -84,10 +90,23 @@ class AiUsageService:
             return result
 
     def _cache_fresh(self) -> bool:
-        return bool(
-            self._cached is not None
-            and time.monotonic() - self._cached_at < self.CACHE_SECONDS
-        )
+        cached = self._cached
+        if (
+            cached is None
+            or time.monotonic() - self._cached_at >= self.CACHE_SECONDS
+        ):
+            return False
+
+        timezone = ZoneInfo(cached.timezone)
+        now = datetime.now(timezone)
+        if cached.weekly is None or cached.weekly.resets_at.astimezone(timezone) <= now:
+            return False
+        if cached.today is not None and cached.today.date != now.date():
+            return False
+        if cached.checked_at is None:
+            return False
+        checked_at = cached.checked_at.astimezone(timezone)
+        return checked_at <= now and checked_at.date() == now.date()
 
     def _collect(self, deadline: float) -> _CollectionOutcome:
         remaining = max(0.1, deadline - time.monotonic())
@@ -95,7 +114,7 @@ class AiUsageService:
             timeout_seconds=remaining
         )
         if account.auth_type == "chatgpt":
-            data = self._from_account(account)
+            data = self._from_account(account, deadline=deadline)
             return _CollectionOutcome(
                 "account_login",
                 data,
@@ -129,7 +148,12 @@ class AiUsageService:
         LOGGER.info("AI authentication type is unavailable: %s", account.message)
         return _CollectionOutcome(None, None, "AI 认证状态暂不可用。")
 
-    def _from_account(self, account: CodexAccountCollection) -> AiUsageData | None:
+    def _from_account(
+        self,
+        account: CodexAccountCollection,
+        *,
+        deadline: float,
+    ) -> AiUsageData | None:
         quota = account.quota
         if quota is None or quota.status != "available":
             return None
@@ -147,6 +171,7 @@ class AiUsageService:
         timezone = ZoneInfo(self._settings.ai_usage.timezone)
         today_date = datetime.now(timezone).date()
         tokens = None
+        tokens_scope = None
         usage = account.usage
         if usage is not None and usage.status == "available":
             bucket = next(
@@ -155,13 +180,28 @@ class AiUsageService:
             )
             if bucket is not None:
                 tokens = bucket.tokens
+                tokens_scope = "account"
+        if tokens is None:
+            try:
+                tokens = self._local_usage_reader.read_today(
+                    today=today_date,
+                    timezone=timezone,
+                    timeout_seconds=max(0.0, deadline - time.monotonic()),
+                )
+                tokens_scope = "local_device"
+            except CodexLocalUsageUnavailable as exc:
+                LOGGER.info("Local Codex token usage unavailable: %s", exc)
         return self._available(
             source="account_login",
             weekly=AiWeeklyUsage(
                 remaining_percent=weekly_window.remaining_percent,
                 resets_at=weekly_window.resets_at,
             ),
-            today=AiTodayUsage(date=today_date, tokens=tokens),
+            today=AiTodayUsage(
+                date=today_date,
+                tokens=tokens,
+                tokens_scope=tokens_scope,
+            ),
         )
 
     def _available(
@@ -241,7 +281,10 @@ class AiUsageService:
             if data.today.used_usd is not None:
                 today_parts.append(f"${cls._money(data.today.used_usd, fixed=True)} used")
             if data.today.tokens is not None:
-                today_parts.append(f"{cls.compact_tokens(data.today.tokens)} tokens")
+                token_text = f"{cls.compact_tokens(data.today.tokens)} tokens"
+                if data.today.tokens_scope == "local_device":
+                    token_text += " (local)"
+                today_parts.append(token_text)
         timezone = ZoneInfo(data.timezone)
         reset = weekly.resets_at.astimezone(timezone)
         long_parts = [weekly_text]
@@ -253,7 +296,10 @@ class AiUsageService:
 
         short_parts = [f"Weekly {weekly.remaining_percent}%"]
         if data.today is not None and data.today.tokens is not None:
-            short_parts.append(f"Today {cls.compact_tokens(data.today.tokens)}")
+            token_text = f"Today {cls.compact_tokens(data.today.tokens)}"
+            if data.today.tokens_scope == "local_device":
+                token_text += " (local)"
+            short_parts.append(token_text)
         return AiUsageDisplay(
             long=" · ".join(long_parts),
             short=" · ".join(short_parts),

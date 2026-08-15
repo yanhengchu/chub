@@ -2,7 +2,7 @@
 
 > 状态：已验收。
 >
-> 本文只维护当前已落地的业务架构、状态边界、重启语义和验收基线。历史实施阶段与过程记录不再作为长期设计内容保留。
+> 本文只维护非实时任务、Worker 权威状态、恢复、通知终态和 Web 重启语义。Session/Activity 枚举与页面语义见[AI Session 状态模型](AI_SESSION_STATE_DESIGN.md)，微信路由与收件人身份见[Chub–OpenClaw 接入设计](CHUB_OPENCLAW_INTEGRATION_DESIGN.md)。
 
 ## 1. 落地结论
 

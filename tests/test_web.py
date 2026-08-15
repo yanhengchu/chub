@@ -356,6 +356,7 @@ async def test_cyber_style_preview_is_available(settings: Settings) -> None:
         response = await client.get("/settings/styles/cyber")
         script = await client.get("/static/style-preview.js")
         theme_script = await client.get("/static/theme.js")
+        stylesheet = await client.get("/static/css/components.css")
 
     assert response.status_code == 200
     assert "Cyber 风格预览 · Hub" in response.text
@@ -372,11 +373,28 @@ async def test_cyber_style_preview_is_available(settings: Settings) -> None:
     assert 'data-collapsible-persist="false"' in response.text
     assert script.status_code == 200
     assert theme_script.status_code == 200
+    assert stylesheet.status_code == 200
     assert "hub.cyberRainSpeed.v1" in theme_script.text
     assert "hub.cyberRainBrightness.v1" in theme_script.text
     assert "hub.cyberRainDensity.v1" in theme_script.text
     assert "Math.random" in theme_script.text
     assert "rainSequence" in theme_script.text
+    assert "RAIN_PHRASES" in theme_script.text
+    assert '"good morning"' in theme_script.text
+    assert '"build passing"' in theme_script.text
+    assert '"thanks again"' in theme_script.text
+    assert "randomPhraseRain" in theme_script.text
+    assert "setCyberRainQuota" in theme_script.text
+    assert "loadAiUsage" in theme_script.text
+    assert "clearAiUsage" in theme_script.text
+    assert 'AI_USAGE_CACHE_KEY = "hub.aiUsageCache"' in theme_script.text
+    assert "/api/ai/usage" in theme_script.text
+    assert "quotaRainParts" in theme_script.text
+    assert 'stream.dataset.rainDynamic = "true"' in theme_script.text
+    assert 'stream.dataset.rainKind = "quota"' in theme_script.text
+    assert "scaledRainDuration" in theme_script.text
+    assert 'character.textContent = "\\u00a0"' in theme_script.text
+    assert 'data-rain-dynamic="true"' in stylesheet.text
     assert "Cyber 使用命令式说明和终端化主次按钮表达操作影响" in script.text
 
 
@@ -614,10 +632,15 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "llmInteractionRunning" not in script.text
     assert "codexLoadPromise" in script.text
     assert "AI_USAGE_CACHE_KEY" in script.text
+    assert "CODEX_MODEL_PREFERENCE_CACHE_KEY" in script.text
     assert "CODEX_QUOTA_REFRESH_MS = 5 * 60 * 1000" in script.text
     assert '"/api/codex/models"' in script.text
     assert "新建默认：正在读取…" in script.text
     assert "renderCodexModelPreference" in script.text
+    assert "restoreCodexModelPreferenceCache" in script.text
+    assert "storeCodexModelPreferenceCache" in script.text
+    assert 'elements.codexModelPreference.dataset.hasValue = "true"' in script.text
+    assert 'elements.codexModelPreference?.dataset.hasValue !== "true"' in script.text
     assert "新建默认：暂时无法确认模型与等级" in script.text
     assert "|| data?.default_reasoning_effort" in script.text
     assert "跟随 Codex 默认（${modelAndEffort}）" not in script.text
@@ -627,6 +650,7 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "Weekly" in script.text
     assert "codexQuotaWindowLabel" not in script.text
     assert "refreshQuota: true" in script.text
+    assert "loadCodexSessions({ refreshModelPreference: true })" in script.text
     assert "codexMutationCount" in script.text
     assert "codexSessionsSignature" in script.text
     assert "codexLoadPromise = null" in script.text
@@ -805,6 +829,8 @@ async def test_quick_interaction_conversation_page_is_available(
     assert "firstConversationSessionAfterArchive" in script.text
     assert "conversationSessions = sessions" in script.text
     assert "window.location.replace(nextSessionUrl)" in script.text
+    assert '"/api/ai/usage"' not in script.text
+    assert "loadConversationQuotaRain" not in script.text
     assert "`/codex/${encodeURIComponent(nextSession.id)}/quick-interactions/conversation`" in script.text
     assert ': "/";' in script.text
     assert "const archiveReady = Boolean(session.codex_session_id)" in script.text

@@ -1,6 +1,6 @@
 # Chub OpenClaw 插件
 
-> 状态：统一消息调度 v3 及本次 Chub 侧 Session 指令路由调整均已在 macOS、Ubuntu 完成部署和验收。Chub 状态总览、槽位维护和 Codex 明确操作均由 Chub 在现有统一接口内处理，不改变插件协议或业务逻辑。
+> 状态：统一消息调度 v3 已在 macOS、Ubuntu 完成部署和验收。
 
 Chub 仓库内的插件、API 和消息路由索引统一见[Chub 集成能力清单](../../../docs/CHUB_INTEGRATION_CAPABILITIES.md)；本文只维护 `chub` 插件自身的协议、源码、部署和验收规则。
 
@@ -84,11 +84,11 @@ POST /api/openclaw/wechat-chub-mode/dispatch
 
 插件只依赖 `pass`、`reply`、`handled` 三种协议决定，因此 Chub 在不改变请求、响应和交付语义时可以独立增删内部路由，无需修改或重新部署插件。消息正文不能提供任意动作、接口、Session ID、任务、权限、模型、路径或命令；固定绑定切换指令中的列表编号只由 Chub 解释。
 
-## 6. Context Token 与长任务结果
+## 6. 业务依赖边界
 
-Context Token 由微信插件在真实入站消息中取得并持久化。当前按约 10 分钟有效的实测口径维护；出站消息不会刷新或延长有效期。
+Context Token 由腾讯微信插件维护，升级后的持久化与恢复要求见[Context Token 补丁规范](../../../docs/WEIXIN_CLAWBOT_CONTEXT_TOKEN_AI_PATCH.md)。Chub 任务、Session、最终通知和重启结果属于 Chub 业务，见[接入设计](../../../docs/CHUB_OPENCLAW_INTEGRATION_DESIGN.md)。
 
-不得使用出站心跳、Gateway 重启、旧 Token 重载或伪造入站事件尝试续期。最终通知失败仍不改变 Codex 任务终态，也不切换到全局收件人。
+Chub 插件只传递可信入站路由和交付同步决定，不保存 Token 正文，不跟踪异步任务终态，也不把通知失败改写为任务失败。
 
 ## 7. 模式与失败语义
 
@@ -141,7 +141,7 @@ openclaw channels status --probe --json
 2. 插件对新增交付决定的执行逻辑；如插件配置或 Tool 契约变化，同时更新静态清单。
 3. Chub API、路由服务和插件测试，至少覆盖新版本成功、旧版本拒绝、无效响应失败关闭和重复消息。
 4. 重新构建 `dist/`，完成插件校验、安装、Gateway 重载，并确认插件 `loaded`、ClawBot `running`。
-5. 更新本文第 4、9 节和顶部状态；同步更新[接入设计](../../../docs/CHUB_OPENCLAW_INTEGRATION_DESIGN.md)中的当前架构、协议摘要和验收基线，以及项目 README 的产品概述。
+5. 更新本文第 4、9 节和顶部状态；仅在端到端业务边界或用户可见产品能力同时变化时，才同步更新[接入设计](../../../docs/CHUB_OPENCLAW_INTEGRATION_DESIGN.md)或项目 README。
 6. 只有插件、API 或路由能力发生增删时，才更新[能力清单](../../../docs/CHUB_INTEGRATION_CAPABILITIES.md)；能力清单不重复维护协议实现细节。
 
 macOS、Ubuntu 分别记录实际部署与验收结果。某平台尚未部署新版本时，应明确写“待同步部署”，不能把仓库实现、自动化验证或另一平台验收等同于该平台已生效。
@@ -158,22 +158,16 @@ openclaw config set \
 
 ## 9. 最小验收
 
-自动化验证至少覆盖：
+自动化验证只覆盖插件边界：
 
-- 路由开关关闭时，微信私聊保持原 OpenClaw 流程。
-- Chub 业务模式关闭时，统一接口返回放行。
-- Chub 不可达、响应非法或缺少可信路由时失败关闭。
-- 普通文字和可信语音只调用一次统一调度接口并成功提交任务；两者成功提交后均由 Chub 决定静默处理。
-- 空正文或语音转写缺失时不调用 Chub，并返回明确的内容识别失败提示；该提示不得用于 Chub 不可达或协议错误。
-- Chub 返回的静默、固定回复和失败决定均由插件原样执行，插件不再拼装业务回复。
-- 重复消息不重复创建任务。
-- Chub 的固定路由和普通任务均能复用现有 `reply` / `handled` 决定，稳定 Session 槽位、切换和回送标识完全由 Chub 处理，插件不解释具体业务语义。
-- Chub 返回的 Session 子列表按创建时间倒序排列；`S1`–`S9` 仍是稳定槽位编号，不按展示位置重新编号。
-- 普通任务的文本优化与翻译镜像、独立只读 Session、队列和结果回送也完全由 Chub 处理；插件仍只转发一次入站正文，不新增协议字段或额外调用。
-- 最终结果、超长结果、部分送达、Context Token 失效和重新入站刷新均保持受控。
+- 路由开关关闭时保持原 OpenClaw 流程，Chub 业务模式关闭时执行 `pass`。
+- 普通文字和可信语音各只调用一次统一接口；空正文且无可信转写时不调用 Chub。
+- `pass`、`reply`、`handled` 原样执行，插件不解释业务指令或改写 Chub 文案。
+- Chub 不可达、协议不匹配、响应非法或可信路由缺失时失败关闭，不回退 Agent。
+- 重复投递不产生第二次业务副作用。
 - `chub_get_status`、`chub_send_notification` 与飞书原文保护没有退化。
 
-验收基线：普通文本、可信语音和 v3 插件已在 macOS、Ubuntu 完成真实验收。`chub` 现场刷新总览、`sync` / `同步状态` / `状态同步`，以及 `session new`、`session switch N`、带正文新建/切换、`session archive N`、`session retry`、`session new retry` 和固定 `restart` / `重启` 路由均已完成自动化验证；同步与重启指令改名、新增 `会话N` 切换别名、移除 `codex help`、Session 英文指令统一改名和取消无编号切换仍需真实微信回归。快速交互独立 Worker、跨 Web 重启恢复、固定重启指令和任务级重启协调属于 Chub 内部实现，不改变插件协议，因此不需要重新构建或部署插件；当前验收已确认任务结果原路送达，以及任务级重启回送中先展示 `Sessions`、最后展示 `Weekly … · Today …`。后续若修改微信路由、通知格式或插件协议，仍需分别用微信文字和语音按能力清单回归；协议版本不一致期间按失败关闭处理。
+普通文字、可信语音和 v3 插件已在 macOS、Ubuntu 完成真实验收。Session 指令、状态格式、Quick Worker、翻译和任务级重启是 Chub 内部业务；它们不改变插件协议时无需重建插件，具体回归状态由能力清单和接入设计维护。
 
 真实验收以微信收到的提交状态和最终结果为准，不能只看 HTTP 200、命令退出码、插件 Hook 已触发或通道状态中的 `lastOutboundAt`。Hook 同步回执可结合微信通道 `text sent OK` 判断，异步结果需结合 Chub 任务和通知终态。
 

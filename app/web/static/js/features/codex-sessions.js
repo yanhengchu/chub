@@ -1,6 +1,7 @@
 "use strict";
 
 const CODEX_CARD_CACHE_KEY = "hub.codexCardCache";
+const CODEX_MODEL_PREFERENCE_CACHE_KEY = "hub.codexModelPreferenceCache";
 const AI_USAGE_CACHE_KEY = "hub.aiUsageCache";
 const CODEX_ENTRY_MODE_KEY = "hub.codexEntryMode.v1";
 const CODEX_DEFAULT_PERMISSION_KEY = "hub.codexDefaultPermission.v1";
@@ -633,7 +634,29 @@ function renderCodexModelPreference(data) {
     : model.default_level;
   const modelAndEffort = `${model.name} · ${codexReasoningLabel(effort)}`;
   elements.codexModelPreference.textContent = `新建默认：${modelAndEffort}`;
+  elements.codexModelPreference.dataset.hasValue = "true";
   return true;
+}
+
+function restoreCodexModelPreferenceCache() {
+  try {
+    const cached = JSON.parse(
+      sessionStorage.getItem(CODEX_MODEL_PREFERENCE_CACHE_KEY) || "null",
+    );
+    if (!renderCodexModelPreference(cached)) {
+      sessionStorage.removeItem(CODEX_MODEL_PREFERENCE_CACHE_KEY);
+    }
+  } catch {
+    sessionStorage.removeItem(CODEX_MODEL_PREFERENCE_CACHE_KEY);
+  }
+}
+
+function storeCodexModelPreferenceCache(data) {
+  try {
+    sessionStorage.setItem(CODEX_MODEL_PREFERENCE_CACHE_KEY, JSON.stringify(data));
+  } catch {
+    // A storage quota failure must not break the live Codex card.
+  }
 }
 
 async function loadCodexModelPreference() {
@@ -644,13 +667,18 @@ async function loadCodexModelPreference() {
   try {
     const data = await apiFetch("/api/codex/models");
     if (requestVersion === accessVersion) {
-      renderCodexModelPreference(data);
+      if (renderCodexModelPreference(data)) {
+        storeCodexModelPreferenceCache(data);
+      }
     }
   } catch (error) {
-    if (requestVersion === accessVersion && elements.codexModelPreference) {
-      elements.codexModelPreference.textContent = "新建默认：暂时无法确认模型与等级";
-      handleAccessError(error);
+    if (requestVersion !== accessVersion) {
+      return;
     }
+    if (elements.codexModelPreference?.dataset.hasValue !== "true") {
+      elements.codexModelPreference.textContent = "新建默认：暂时无法确认模型与等级";
+    }
+    handleAccessError(error);
   }
 }
 
@@ -667,7 +695,7 @@ async function loadCodexQuota({ force = false } = {}) {
   const requestVersion = accessVersion;
   const loadPromise = (async () => {
     try {
-      const data = await apiFetch(`/api/ai/usage${force ? "?refresh=true" : ""}`);
+      const data = await window.ChubTheme.loadAiUsage({ force });
       if (requestVersion !== accessVersion || !elements.codexQuota) {
         return;
       }

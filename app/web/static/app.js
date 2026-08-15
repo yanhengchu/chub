@@ -1,7 +1,7 @@
 "use strict";
 
 const CARD_RETURN_REFRESHERS = {
-  codex: () => loadCodexSessions(),
+  codex: () => loadCodexSessions({ refreshModelPreference: true }),
   "project-docs": () => loadProjectDocuments(),
 };
 
@@ -103,6 +103,7 @@ const savedToken = savedSessionToken || savedLocalToken || "";
 ensureCodexCard();
 setupCollapsibleCards();
 restoreCodexCardCache();
+restoreCodexModelPreferenceCache();
 restoreCodexQuotaCache();
 if (savedLocalToken) {
   elements.rememberToken.checked = Boolean(savedLocalToken);

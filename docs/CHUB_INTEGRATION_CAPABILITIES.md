@@ -1,6 +1,6 @@
 # Chub 集成能力清单
 
-> 状态：持续维护。本文只登记 Chub 当前可用的入口、完整指令、插件和固定 API。
+> 状态：持续维护。本文是“当前能调用什么”的唯一清单，只登记入口、完整指令、插件和固定 API，不维护实现与协议细节。
 
 具体行为、安全、并发、状态和消息格式规则见对应设计文档；项目整体功能与使用方式见 [README](../README.md)。
 
@@ -63,7 +63,7 @@
 | 请求 | 调用场景 | 功能 |
 | --- | --- | --- |
 | `GET /api/status` | `chub_get_status` | 查询节点健康和基础状态 |
-| `GET /api/ai/usage` | Chub 首页、受控调用方 | 查询统一 AI 周额度、今日用量和重置时间 |
+| `GET /api/ai/usage` | Chub 首页、受控调用方 | 查询统一 AI 周额度、今日用量和重置时间；账号当天桶延迟时返回明确标记的本机 Token |
 | `POST /api/notifications/send` | `chub_send_notification` | 向预配置目标发送通知 |
 | `POST /api/openclaw/wechat-chub-mode/dispatch` | 微信 `before_dispatch` | 调度可信微信私聊 |
 
@@ -88,9 +88,9 @@
 
 | 文档 | 负责内容 |
 | --- | --- |
-| [README](../README.md) | 项目功能、安装、电脑端命令和日常使用 |
-| [Chub–OpenClaw 接入设计](CHUB_OPENCLAW_INTEGRATION_DESIGN.md) | 微信调度、指令规则、状态、权限、并发和通知边界 |
-| [Chub AI Session 状态模型设计](AI_SESSION_STATE_DESIGN.md) | Session 生命周期、状态、互斥和跨入口展示 |
-| [Chub AI 额度与用量采集设计](AI_QUOTA_USAGE_DESIGN.md) | 账号与 API 两种额度来源、统一接口、缓存及展示契约 |
-| [快速交互独立 Worker 设计](QUICK_INTERACTION_WORKER_DESIGN.md) | 后台任务、恢复、通知终态和任务级 Web 重启 |
-| [Chub OpenClaw 插件说明](../integrations/openclaw/chub/README.md) | 插件协议、构建、部署和真实微信验收 |
+| [README](../README.md) | 项目概览、安装、主要入口和文档导航 |
+| [Chub–OpenClaw 接入设计](CHUB_OPENCLAW_INTEGRATION_DESIGN.md) | 微信端到端业务、身份、权限、Session 路由和通知 |
+| [Chub AI Session 状态模型设计](AI_SESSION_STATE_DESIGN.md) | Session、Activity、入口、槽位和单 writer 语义 |
+| [Chub AI 额度与用量采集设计](AI_QUOTA_USAGE_DESIGN.md) | AI 用量来源、统一接口、缓存和展示口径 |
+| [快速交互独立 Worker 设计](QUICK_INTERACTION_WORKER_DESIGN.md) | 非实时任务、恢复、通知终态和协调重启 |
+| [Chub OpenClaw 插件说明](../integrations/openclaw/chub/README.md) | 插件协议、源码、构建、部署和协议验收 |

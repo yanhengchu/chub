@@ -4,11 +4,12 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 AiUsageStatus = Literal["available", "unavailable"]
 AiUsageSource = Literal["account_login", "provider_api"]
+AiTokenScope = Literal["account", "local_device"]
 
 
 class _StrictModel(BaseModel):
@@ -28,6 +29,13 @@ class AiTodayUsage(_StrictModel):
     date: date
     used_usd: Decimal | None = Field(default=None, ge=0)
     tokens: int | None = Field(default=None, ge=0)
+    tokens_scope: AiTokenScope | None = None
+
+    @model_validator(mode="after")
+    def validate_token_scope(self) -> "AiTodayUsage":
+        if (self.tokens is None) != (self.tokens_scope is None):
+            raise ValueError("tokens and tokens_scope must be provided together")
+        return self
 
 
 class AiUsageDisplay(_StrictModel):

@@ -295,6 +295,7 @@ class ProviderBrowserAdapter:
                 date=datetime.now(timezone).date(),
                 used_usd=daily,
                 tokens=today_tokens,
+                tokens_scope="account" if today_tokens is not None else None,
             ),
         )
 

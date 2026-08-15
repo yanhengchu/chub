@@ -158,6 +158,7 @@ function clearProtectedView() {
   codexQuotaLoadPromise = null;
   codexQuotaLoadedAt = 0;
   codexMutationCount = 0;
+  window.ChubTheme?.clearAiUsage();
   elements.dashboard.hidden = true;
   elements.connectedBar.hidden = true;
   elements.siteSettings.hidden = true;
@@ -187,6 +188,7 @@ function clearProtectedView() {
   elements.logsOutput.textContent = "";
   releaseFeishuQr();
   sessionStorage.removeItem(CODEX_CARD_CACHE_KEY);
+  sessionStorage.removeItem(CODEX_MODEL_PREFERENCE_CACHE_KEY);
   sessionStorage.removeItem(AI_USAGE_CACHE_KEY);
 }
 

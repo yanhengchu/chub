@@ -18,7 +18,7 @@
     {
       "id": "ai-session-state",
       "title": "Chub AI Session 状态模型设计",
-      "summary": "定义 Chub 当前 Codex Session 与 Activity 状态、交互互斥和任务级跨 Web 重启边界。",
+      "summary": "定义 Codex Session、Activity、交互入口、微信槽位和单 writer 状态语义。",
       "status": "已验收",
       "path": "AI_SESSION_STATE_DESIGN.md"
     },
@@ -26,27 +26,27 @@
       "id": "ai-quota-usage",
       "title": "Chub AI 额度与用量采集设计",
       "summary": "定义供应商无关的统一 AI 用量接口、账号登录与 API 两种获取方式、共享缓存及长短展示格式。",
-      "status": "待验收",
+      "status": "已验收",
       "path": "AI_QUOTA_USAGE_DESIGN.md"
     },
     {
       "id": "quick-interaction-worker",
       "title": "Chub 快速交互独立 Worker 与跨 Web 重启恢复设计",
-      "summary": "页面、微信和翻译任务由独立 Worker 承载；Web 重启可恢复任务、Session 状态、结果和通知，任务级协调与手动接管已完成验收。",
+      "summary": "定义非实时任务的 Worker 权威状态、恢复、通知终态和协调 Web 重启。",
       "status": "已验收",
       "path": "QUICK_INTERACTION_WORKER_DESIGN.md"
     },
     {
       "id": "openclaw-integration",
       "title": "Chub–OpenClaw 接入设计",
-      "summary": "定义 OpenClaw Gateway、Chub 插件及微信 ClawBot 单入口统一调度的当前边界。",
+      "summary": "定义 OpenClaw 与微信 ClawBot 的端到端业务、身份、权限、Session 路由和通知边界。",
       "status": "持续维护",
       "path": "CHUB_OPENCLAW_INTEGRATION_DESIGN.md"
     },
     {
       "id": "chub-integration-capabilities",
       "title": "Chub 集成能力清单",
-      "summary": "统一维护 Chub 当前插件、插件能力、固定 API 和消息路由。",
+      "summary": "统一登记 Chub 当前可用的电脑端命令、插件能力、固定 API 和微信指令。",
       "status": "持续维护",
       "path": "CHUB_INTEGRATION_CAPABILITIES.md"
     },

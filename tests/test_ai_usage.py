@@ -20,6 +20,7 @@ from app.ai_usage.provider_browser import (
 )
 from app.ai_usage.service import AiUsageService
 from app.application import create_app
+from app.codex.local_usage import CodexLocalUsageUnavailable
 from app.codex.models import CodexQuotaData, CodexQuotaWindow, CodexTokenUsageData
 from app.codex.rate_limits import CodexAccountCollection, CodexRateLimitService
 from app.core.config import AiUsageConfig, AiUsageProviderApiConfig, Settings
@@ -54,6 +55,7 @@ def _provider_collection(*, tokens: int | None = 100_000_000) -> ProviderBrowser
             date="2026-08-15",
             used_usd=Decimal("181.0185952"),
             tokens=tokens,
+            tokens_scope="account" if tokens is not None else None,
         ),
     )
 
@@ -95,6 +97,13 @@ def test_provider_configuration_requires_complete_safe_target() -> None:
             subscription_id=179,
             allow_private_http=True,
         )
+
+
+def test_today_usage_requires_token_scope_with_tokens() -> None:
+    with pytest.raises(ValueError, match="tokens and tokens_scope"):
+        AiTodayUsage(date="2026-08-15", tokens=1)
+    with pytest.raises(ValueError, match="tokens and tokens_scope"):
+        AiTodayUsage(date="2026-08-15", tokens_scope="local_device")
 
 
 def test_codex_auth_collection_does_not_request_account_usage_for_api_key() -> None:
@@ -143,7 +152,7 @@ def test_account_identity_is_an_internal_irreversible_key() -> None:
     assert identity == CodexRateLimitService._parse_account_identity(response)
 
 
-def test_account_mode_uses_exact_today_without_neighbor_fallback(
+def test_account_mode_uses_local_today_without_neighbor_fallback(
     settings: Settings,
 ) -> None:
     codex = MagicMock()
@@ -165,17 +174,103 @@ def test_account_mode_uses_exact_today_without_neighbor_fallback(
         ),
     )
     browser = MagicMock()
-    service = AiUsageService(settings, codex, browser)
+    local_usage = MagicMock()
+    local_usage.read_today.return_value = 2_500_000
+    service = AiUsageService(
+        settings,
+        codex,
+        browser,
+        local_usage_reader=local_usage,
+    )
 
     with patch("app.ai_usage.service.datetime") as current:
         current.now.return_value = datetime.fromisoformat("2026-08-15T09:00:00+08:00")
         result = service.read(force=True)
 
     assert result.source == "account_login"
-    assert result.today is not None and result.today.tokens is None
-    assert result.display.short == "Weekly 78%"
-    assert "Today" not in (result.display.long or "")
+    assert result.today is not None and result.today.tokens == 2_500_000
+    assert result.today.tokens_scope == "local_device"
+    assert result.display.short == "Weekly 78% · Today 2.5M (local)"
+    assert "Today 2.5M tokens (local)" in (result.display.long or "")
+    local_usage.read_today.assert_called_once()
     browser.collect.assert_not_called()
+
+
+def test_account_mode_prefers_exact_account_today(settings: Settings) -> None:
+    codex = MagicMock()
+    codex.collect_ai_account_status.return_value = CodexAccountCollection(
+        "chatgpt",
+        quota=CodexQuotaData(
+            status="available",
+            windows=[
+                CodexQuotaWindow(
+                    remaining_percent=78,
+                    window_duration_minutes=10080,
+                    resets_at="2026-08-20T15:45:56+08:00",
+                )
+            ],
+        ),
+        usage=CodexTokenUsageData(
+            status="available",
+            daily_usage=[{"start_date": "2026-08-15", "tokens": 3_000_000}],
+        ),
+    )
+    local_usage = MagicMock()
+    service = AiUsageService(
+        settings,
+        codex,
+        MagicMock(),
+        local_usage_reader=local_usage,
+    )
+
+    with patch("app.ai_usage.service.datetime") as current:
+        current.now.return_value = datetime.fromisoformat("2026-08-15T09:00:00+08:00")
+        result = service.read(force=True)
+
+    assert result.today is not None
+    assert result.today.tokens == 3_000_000
+    assert result.today.tokens_scope == "account"
+    assert result.display.short == "Weekly 78% · Today 3M"
+    local_usage.read_today.assert_not_called()
+
+
+def test_account_mode_omits_today_when_local_usage_is_unavailable(
+    settings: Settings,
+) -> None:
+    codex = MagicMock()
+    codex.collect_ai_account_status.return_value = CodexAccountCollection(
+        "chatgpt",
+        quota=CodexQuotaData(
+            status="available",
+            windows=[
+                CodexQuotaWindow(
+                    remaining_percent=78,
+                    window_duration_minutes=10080,
+                    resets_at="2026-08-20T15:45:56+08:00",
+                )
+            ],
+        ),
+        usage=CodexTokenUsageData(
+            status="available",
+            daily_usage=[{"start_date": "2026-08-14", "tokens": 100_000_000}],
+        ),
+    )
+    local_usage = MagicMock()
+    local_usage.read_today.side_effect = CodexLocalUsageUnavailable("unavailable")
+    service = AiUsageService(
+        settings,
+        codex,
+        MagicMock(),
+        local_usage_reader=local_usage,
+    )
+
+    with patch("app.ai_usage.service.datetime") as current:
+        current.now.return_value = datetime.fromisoformat("2026-08-15T09:00:00+08:00")
+        result = service.read(force=True)
+
+    assert result.today is not None and result.today.tokens is None
+    assert result.today.tokens_scope is None
+    assert result.display.short == "Weekly 78%"
 
 
 def test_api_key_mode_formats_provider_usage_and_does_not_fallback(
@@ -224,6 +319,90 @@ def test_refresh_failure_only_retains_same_source_snapshot(settings: Settings) -
     assert third.source is None
 
 
+def test_fresh_cache_refreshes_after_today_date_changes(settings: Settings) -> None:
+    codex = MagicMock()
+    codex.collect_ai_account_status.return_value = CodexAccountCollection(
+        "chatgpt",
+        quota=CodexQuotaData(
+            status="available",
+            windows=[
+                CodexQuotaWindow(
+                    remaining_percent=78,
+                    window_duration_minutes=10080,
+                    resets_at="2026-08-20T15:45:56+08:00",
+                )
+            ],
+        ),
+    )
+    local_usage = MagicMock()
+    local_usage.read_today.side_effect = [2_500_000, 120_000]
+    service = AiUsageService(
+        settings,
+        codex,
+        MagicMock(),
+        local_usage_reader=local_usage,
+    )
+
+    with patch("app.ai_usage.service.datetime") as current:
+        current.now.return_value = datetime.fromisoformat("2026-08-15T23:59:59+08:00")
+        first = service.read(force=True)
+        current.now.return_value = datetime.fromisoformat("2026-08-16T00:00:01+08:00")
+        second = service.read()
+
+    assert first.today is not None and first.today.date.isoformat() == "2026-08-15"
+    assert second.today is not None and second.today.date.isoformat() == "2026-08-16"
+    assert second.today.tokens == 120_000
+    assert codex.collect_ai_account_status.call_count == 2
+
+
+def test_fresh_cache_refreshes_when_weekly_window_resets(settings: Settings) -> None:
+    codex = MagicMock()
+    codex.collect_ai_account_status.side_effect = [
+        CodexAccountCollection(
+            "chatgpt",
+            quota=CodexQuotaData(
+                status="available",
+                windows=[
+                    CodexQuotaWindow(
+                        remaining_percent=5,
+                        window_duration_minutes=10080,
+                        resets_at="2026-08-15T10:00:00+08:00",
+                    )
+                ],
+            ),
+        ),
+        CodexAccountCollection(
+            "chatgpt",
+            quota=CodexQuotaData(
+                status="available",
+                windows=[
+                    CodexQuotaWindow(
+                        remaining_percent=100,
+                        window_duration_minutes=10080,
+                        resets_at="2026-08-22T10:00:00+08:00",
+                    )
+                ],
+            ),
+        ),
+    ]
+    service = AiUsageService(
+        settings,
+        codex,
+        MagicMock(),
+        local_usage_reader=MagicMock(read_today=MagicMock(return_value=0)),
+    )
+
+    with patch("app.ai_usage.service.datetime") as current:
+        current.now.return_value = datetime.fromisoformat("2026-08-15T09:59:59+08:00")
+        first = service.read(force=True)
+        current.now.return_value = datetime.fromisoformat("2026-08-15T10:00:01+08:00")
+        second = service.read()
+
+    assert first.weekly is not None and first.weekly.remaining_percent == 5
+    assert second.weekly is not None and second.weekly.remaining_percent == 100
+    assert codex.collect_ai_account_status.call_count == 2
+
+
 def test_refresh_failure_does_not_retain_another_account_snapshot(
     settings: Settings,
 ) -> None:
@@ -248,7 +427,12 @@ def test_refresh_failure_does_not_retain_another_account_snapshot(
     )
     codex = MagicMock()
     codex.collect_ai_account_status.side_effect = [available, unavailable]
-    service = AiUsageService(settings, codex, MagicMock())
+    service = AiUsageService(
+        settings,
+        codex,
+        MagicMock(),
+        local_usage_reader=MagicMock(read_today=MagicMock(return_value=0)),
+    )
 
     assert service.read(force=True).status == "available"
     result = service.read(force=True)
@@ -333,6 +517,7 @@ def test_provider_browser_filters_fixed_request_and_subscription(
     assert result.weekly.remaining_percent == 78
     assert result.weekly.resets_at.isoformat() == "2026-08-20T15:45:56+08:00"
     assert result.today.tokens == 35_023_210
+    assert result.today.tokens_scope == "account"
 
 
 def test_provider_browser_rejects_invalid_or_other_platform_token_stats(
@@ -468,4 +653,5 @@ async def test_ai_usage_api_is_protected_and_supports_refresh(
     assert denied.status_code == 401
     assert response.status_code == 200
     assert response.json()["data"]["weekly"]["remaining_usd"] == "781.9248298"
+    assert response.json()["data"]["today"]["tokens_scope"] == "account"
     usage.read.assert_called_once_with(force=True)
