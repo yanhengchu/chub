@@ -36,6 +36,7 @@ from tests.openclaw_weixin_chub_mode_helpers import (
     delivery_route,
     enable_restart_command,
     inject_default_delivery_route,
+    submitted_task_message,
 )
 
 
@@ -64,8 +65,8 @@ def test_duplicate_dispatch_is_logged_without_resubmitting(
             delivery_route=delivery_route(),
         )
 
-    assert result.disposition == "handled"
-    assert result.message is None
+    assert result.disposition == "reply"
+    assert result.message == submitted_task_message(settings, "检查设备状态")
     assert quick_interactions.submit.call_count == 1
     dispatch_entries = [
         call.kwargs
@@ -79,7 +80,7 @@ def test_duplicate_dispatch_is_logged_without_resubmitting(
     ]
 
 
-def test_dispatch_silently_accepts_voice_task(
+def test_dispatch_immediately_acknowledges_voice_task(
     settings: Settings,
 ) -> None:
     manager, _codex_manager, _quick_interactions = configured_manager(settings)
@@ -94,8 +95,8 @@ def test_dispatch_silently_accepts_voice_task(
     )
 
     assert result.protocol_version == 3
-    assert result.disposition == "handled"
-    assert result.message is None
+    assert result.disposition == "reply"
+    assert result.message == submitted_task_message(settings, "检查语音任务")
 
 
 def test_submit_creates_one_private_session_and_replays_duplicate(
@@ -133,6 +134,8 @@ def test_submit_creates_one_private_session_and_replays_duplicate(
     quick_interactions.submit.assert_called_once_with(
         "session-1",
         "检查设备状态",
+        summary_max_chars=48,
+        summary_max_width=64,
         operation_id=quick_interactions.submit.call_args.kwargs["operation_id"],
         source_ip="100.64.0.21",
         notification_route=delivery_route(),
@@ -148,6 +151,47 @@ def test_submit_creates_one_private_session_and_replays_duplicate(
     persisted = json.loads(state_text)
     assert persisted["session_id"] == "session-1"
     assert persisted["submissions"][0]["task_id"] == "task-1"
+
+
+def test_duplicate_submission_refreshes_current_session_marker(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, _quick_interactions = configured_manager(settings)
+    first = manager.submit(
+        message_id="message-current-marker",
+        prompt="检查设备状态",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+    )
+    manager._state.session_slots.append(
+        WeixinChubModeSessionSlot(slot=2, session_id="session-2")
+    )
+    manager._state.session_id = "session-2"
+
+    duplicate = manager.submit(
+        message_id="message-current-marker",
+        prompt="不会再次执行",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+    )
+
+    assert "\n▶ S1 ·" in first.message
+    assert "\nS1 · 检查设备状态\n" in duplicate.message
+    assert "▶ S1" not in duplicate.message
+
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=1, session_id="session-reused")
+    ]
+    manager._state.session_id = "session-reused"
+    reused_slot = manager.submit(
+        message_id="message-current-marker",
+        prompt="仍然不会再次执行",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+    )
+
+    assert "S1 ·" not in reused_slot.message
+    assert reused_slot.message == "Submitted\nTask · 检查设备状态"
 
 
 def test_translation_is_enqueued_after_main_submission_is_persisted(
@@ -304,6 +348,8 @@ def test_submit_replaces_session_when_explicit_model_no_longer_matches(
     quick_interactions.submit.assert_called_once_with(
         "new-session",
         "检查模型配置",
+        summary_max_chars=48,
+        summary_max_width=64,
         operation_id=quick_interactions.submit.call_args.kwargs["operation_id"],
         source_ip="100.64.0.21",
         notification_route=delivery_route(),
@@ -373,7 +419,7 @@ def test_submit_reclaims_unknown_session_before_quick_interaction(
             source_ip="100.64.0.21",
         )
 
-    assert result.message == "任务已提交，完成后将通过微信发送结果。"
+    assert result.message == "Submitted\nTask · 检查设备"
     assert result.task_summary == "检查设备"
     reclaimer.assert_called_once_with("session-1")
     codex_manager.wait_for_writer_release.assert_called_once_with(

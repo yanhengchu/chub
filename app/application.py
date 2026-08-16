@@ -49,6 +49,7 @@ from app.core.response import (
 )
 from app.services.openclaw import OpenClawManager
 from app.services.openclaw_completion_notifications import OpenClawCompletionNotifier
+from app.services.openclaw_weixin_chub_messages import usage_message
 from app.services.deferred_restart import DeferredRestartCoordinator
 from app.services.openclaw_weixin_chub_mode import WeixinChubModeManager
 from app.services.restart_command import RestartProcess, launch_restart_process
@@ -251,6 +252,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             terminal_connections.close_session(session_id)
             codex_pty_manager.archive_session(session_id)
 
+    def stop_weixin_session(session_id: str):
+        with quick_interactions.stop_operation_guard(session_id):
+            quick_interactions.cancel_codex_session(session_id)
+            terminal_tickets.revoke_session(session_id)
+            terminal_connections.close_session(session_id)
+            return codex_pty_manager.stop_session(session_id)
+
     weixin_chub_mode = WeixinChubModeManager(
         resolved_settings,
         codex_pty_manager,
@@ -267,6 +275,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         restart_coordinator=deferred_restart,
         restart_notifier=completion_notifier.notify_weixin_restart_command,
         ai_usage_reader=ai_usage,
+        session_stopper=stop_weixin_session,
+        session_stop_notifier=completion_notifier.notify_weixin_command_result,
     )
 
     def deferred_restart_ready(request):
@@ -332,7 +342,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     completion_notifier.session_slot_validator = (
         weixin_chub_mode.session_slot_matches
     )
+    completion_notifier.session_current_validator = (
+        weixin_chub_mode.session_slot_is_current
+    )
     completion_notifier.codex_status_reader = weixin_chub_mode.codex_status_message
+    completion_notifier.completion_usage_reader = lambda: usage_message(
+        ai_usage.read(force=False)
+    )
     codex_pty_manager.set_quick_interaction_checker(quick_interactions.is_running)
     openclaw_manager = OpenClawManager()
     notification_service = NotificationService(resolved_settings.notifications)

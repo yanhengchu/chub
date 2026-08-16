@@ -340,7 +340,9 @@ function weixinDispatchFailure(
   return {
     available: false,
     error,
-    message: "Chub 消息通道暂时不可用，请稍后重试。",
+    message: error === "chub_timeout"
+      ? "Chub 响应超时，当前提交状态未知，请勿重复发送。"
+      : "Chub 消息通道暂时不可用，请稍后重试。",
   };
 }
 

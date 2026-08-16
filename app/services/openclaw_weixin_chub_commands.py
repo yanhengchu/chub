@@ -11,35 +11,53 @@ TASK_STATUS_CHECK_PROMPTS = frozenset(
     {"查询状态", "状态查询", "检查状态", "状态检查"}
 )
 CHUB_STATUS_PROMPT = "chub"
+CHUB_HELP_PROMPTS = frozenset({"help"})
+CHUB_HELP_ALIASES = frozenset({"帮助"})
 CHUB_SYNC_PROMPTS = frozenset({"sync"})
 CHUB_SYNC_ALIASES = frozenset({"同步状态", "状态同步"})
 CHUB_RESTART_PROMPTS = frozenset({"restart"})
-CHUB_RESTART_ALIASES = frozenset({"重启"})
+CHUB_RESTART_ALIASES = frozenset({"重启", "重新启动"})
+SESSION_RENAME_PROMPT = "rename"
+SESSION_RENAME_ALIASES = frozenset({"重命名"})
 SESSION_NEW_PROMPT = "session new"
 SESSION_RETRY_PROMPT = "session retry"
 SESSION_NEW_RETRY_PROMPT = "session new retry"
 SESSION_SWITCH_PROMPT = "session switch"
-SESSION_SWITCH_PATTERN = re.compile(r"session switch ([1-9])")
+SESSION_SWITCH_PATTERN = re.compile(r"session switch s?\s*([1-9])")
 SESSION_SWITCH_TASK_PATTERN = re.compile(
-    r"session\s+switch\s+([1-9])", re.IGNORECASE
+    r"session\s+switch\s+s?\s*([1-9])", re.IGNORECASE
 )
 CHINESE_SWITCH_PATTERN = re.compile(
-    r"(?:切换(?:会话)?|会话)\s*([1-9一二三四五六七八九])"
+    r"(?:切换(?:会话)?|会话)\s*[sS]?\s*([1-9一二三四五六七八九])"
 )
 CHINESE_SWITCH_COMMAND_PATTERN = re.compile(
     r"(?:切换(?:会话)?|会话)"
+    r"(?:\s*[sS])?"
     r"(?:\s*[+\-＋－]?[0-9０-９零〇一二三四五六七八九十百千万两]+)?"
 )
 SESSION_ARCHIVE_PROMPT = "session archive"
-SESSION_ARCHIVE_PATTERN = re.compile(r"session archive ([1-9])")
+SESSION_ARCHIVE_PATTERN = re.compile(r"session archive s?\s*([1-9])")
 SESSION_ARCHIVE_TASK_PATTERN = re.compile(
-    r"session\s+archive\s+([1-9])", re.IGNORECASE
+    r"session\s+archive\s+s?\s*([1-9])", re.IGNORECASE
 )
 CHINESE_ARCHIVE_PATTERN = re.compile(
-    r"归档(?:会话)?\s*([1-9一二三四五六七八九])"
+    r"归档(?:会话)?\s*[sS]?\s*([1-9一二三四五六七八九])"
 )
 CHINESE_ARCHIVE_COMMAND_PATTERN = re.compile(
-    r"归档(?:会话)?(?:\s*[+\-＋－]?[0-9０-９零〇一二三四五六七八九十百千万两]+)?"
+    r"归档(?:会话)?(?:\s*[sS])?"
+    r"(?:\s*[+\-＋－]?[0-9０-９零〇一二三四五六七八九十百千万两]+)?"
+)
+SESSION_STOP_PROMPT = "session stop"
+SESSION_STOP_PATTERN = re.compile(r"session stop s?\s*([1-9])")
+SESSION_STOP_TASK_PATTERN = re.compile(
+    r"session\s+stop\s+s?\s*([1-9])", re.IGNORECASE
+)
+CHINESE_STOP_PATTERN = re.compile(
+    r"停止(?:会话)?\s*[sS]?\s*([1-9一二三四五六七八九])"
+)
+CHINESE_STOP_COMMAND_PATTERN = re.compile(
+    r"停止(?:会话)?(?:\s*[sS])?"
+    r"(?:\s*[+\-＋－]?[0-9０-９零〇一二三四五六七八九十百千万两]+)?"
 )
 CHINESE_SLOT_NUMBERS = {
     "一": 1,
@@ -57,15 +75,33 @@ COMMAND_TASK_SEPARATORS = frozenset(":：,，.。;；!?！？")
 
 WeixinChubCommandKind = Literal[
     "status",
+    "help",
     "sync",
     "restart",
     "retry",
     "new_retry",
     "new",
+    "rename",
+    "stop",
     "archive",
     "switch",
     "normal",
 ]
+FIXED_COMMAND_KINDS = frozenset(
+    {
+        "status",
+        "help",
+        "sync",
+        "restart",
+        "retry",
+        "new_retry",
+        "new",
+        "rename",
+        "stop",
+        "archive",
+        "switch",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -144,12 +180,21 @@ def parse_weixin_chub_command(prompt: str) -> WeixinChubCommand:
     folded = normalized.casefold()
     if normalized in TASK_STATUS_CHECK_PROMPTS or folded == CHUB_STATUS_PROMPT:
         return WeixinChubCommand("status", normalized)
+    if folded in CHUB_HELP_PROMPTS or normalized in CHUB_HELP_ALIASES:
+        return WeixinChubCommand("help", normalized)
     if folded in CHUB_SYNC_PROMPTS or normalized in CHUB_SYNC_ALIASES:
         return WeixinChubCommand("sync", normalized)
     if folded in CHUB_RESTART_PROMPTS or normalized in CHUB_RESTART_ALIASES:
         return WeixinChubCommand("restart", normalized)
     if folded == SESSION_RETRY_PROMPT:
         return WeixinChubCommand("retry", normalized)
+
+    matched, title = split_command_task(
+        prompt,
+        (SESSION_RENAME_PROMPT, *SESSION_RENAME_ALIASES),
+    )
+    if matched:
+        return WeixinChubCommand("rename", normalized, task_prompt=title)
 
     matched, task = split_command_task(
         prompt,
@@ -183,6 +228,30 @@ def parse_weixin_chub_command(prompt: str) -> WeixinChubCommand:
         match = SESSION_ARCHIVE_PATTERN.fullmatch(folded)
         return WeixinChubCommand(
             "archive",
+            normalized,
+            requested_index=int(match.group(1)) if match is not None else None,
+            invalid_usage=match is None,
+        )
+
+    numbered = split_numbered_command_task(
+        prompt,
+        SESSION_STOP_TASK_PATTERN,
+    ) or split_numbered_command_task(prompt, CHINESE_STOP_PATTERN)
+    if numbered is not None:
+        requested_index, task = numbered
+        return WeixinChubCommand(
+            "stop",
+            normalized,
+            task_prompt=task,
+            requested_index=requested_index,
+            invalid_usage=task is not None,
+        )
+    if CHINESE_STOP_COMMAND_PATTERN.fullmatch(normalized):
+        return WeixinChubCommand("stop", normalized, invalid_usage=True)
+    if folded.startswith(SESSION_STOP_PROMPT):
+        match = SESSION_STOP_PATTERN.fullmatch(folded)
+        return WeixinChubCommand(
+            "stop",
             normalized,
             requested_index=int(match.group(1)) if match is not None else None,
             invalid_usage=match is None,

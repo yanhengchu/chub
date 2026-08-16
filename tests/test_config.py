@@ -6,7 +6,7 @@ import pytest
 from pydantic import SecretStr
 
 from app.core import config
-from app.core.config import load_settings
+from app.core.config import OpenClawWeixinChubModeConfig, load_settings
 
 
 VALID_CONFIG = """
@@ -93,6 +93,42 @@ def test_quick_interaction_timeout_defaults_to_six_hours(
         settings = load_settings(config_file)
 
     assert settings.codex_pty.quick_interaction_timeout_seconds == 21_600
+
+
+def test_weixin_chub_display_name_limits_are_configurable() -> None:
+    defaults = OpenClawWeixinChubModeConfig()
+    configured = OpenClawWeixinChubModeConfig(
+        session_name_max_width=42,
+        task_name_max_width=72,
+    )
+
+    assert defaults.session_name_max_width == 30
+    assert defaults.task_name_max_width == 64
+    assert configured.session_name_max_width == 42
+    assert configured.task_name_max_width == 72
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("session_name_max_width", 3),
+        ("session_name_max_width", 97),
+        ("task_name_max_width", 3),
+        ("task_name_max_width", 97),
+    ],
+)
+def test_weixin_chub_display_name_limits_reject_unsupported_values(
+    field: str,
+    value: int,
+) -> None:
+    with pytest.raises(ValueError):
+        OpenClawWeixinChubModeConfig.model_validate({field: value})
+
+
+@pytest.mark.parametrize("field", ["session_name_max_chars", "task_name_max_chars"])
+def test_weixin_chub_rejects_removed_character_limit_fields(field: str) -> None:
+    with pytest.raises(ValueError):
+        OpenClawWeixinChubModeConfig.model_validate({field: 15})
 
 
 def test_runtime_data_defaults_are_separated(

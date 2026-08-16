@@ -199,6 +199,29 @@ def test_submit_allows_new_session_and_prepares_managed_profile(
     thread.start.assert_called_once_with()
 
 
+def test_submit_accepts_configured_weixin_summary_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    quick_interactions = manager(tmp_path)
+    session = quick_interactions.codex_manager.get_session.return_value
+    thread = MagicMock()
+    monkeypatch.setattr(
+        "app.codex.quick_interactions.threading.Thread",
+        MagicMock(return_value=thread),
+    )
+
+    task = quick_interactions.submit(
+        session.id,
+        "任" * 60,
+        operation_id="operation-summary-limit",
+        source_ip="127.0.0.1",
+        summary_max_chars=40,
+    )
+
+    assert task.summary == "任" * 39 + "…"
+
+
 def test_submit_thread_start_failure_rolls_back_registration(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -875,8 +898,8 @@ def test_weixin_task_status_snapshot_is_read_only_and_route_scoped(
     running = QuickInteractionTask(
         id="running-task",
         session_id="session-1",
-        prompt="检查设备",
-        summary="检查设备",
+        prompt="检查设备状态并核对当前运行任务列表中的完整标题是否正确展示",
+        summary="检查设备状态并核对当前运行任务列表…",
         status="running",
         notification_route="weixin-task",
         created_at=utc_now(),
@@ -913,7 +936,9 @@ def test_weixin_task_status_snapshot_is_read_only_and_route_scoped(
     assert snapshot.running_count == 1
     assert snapshot.pending_notification_count == 0
     assert snapshot.failed_notification_count == 1
-    assert snapshot.running_tasks == (("session-1", "检查设备"),)
+    assert snapshot.running_tasks == (
+        ("session-1", "检查设备状态并核对当前运行任务列表中的完整标题是否正确展示"),
+    )
     assert quick_interactions.get(ended.id) == before
 
 

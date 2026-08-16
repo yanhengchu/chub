@@ -36,6 +36,7 @@ from tests.openclaw_weixin_chub_mode_helpers import (
     delivery_route,
     enable_restart_command,
     inject_default_delivery_route,
+    submitted_task_message,
 )
 
 
@@ -83,8 +84,8 @@ def test_codex_status_near_match_remains_a_normal_task_case_insensitively(
         delivery_route=delivery_route(),
     )
 
-    assert result.disposition == "handled"
-    assert result.message is None
+    assert result.disposition == "reply"
+    assert result.message == submitted_task_message(settings, prompt)
     quick_interactions.submit.assert_called_once()
 
 
@@ -107,8 +108,8 @@ def test_sync_command_with_business_text_remains_normal_task(
         delivery_route=delivery_route(),
     )
 
-    assert result.disposition == "handled"
-    assert result.message is None
+    assert result.disposition == "reply"
+    assert result.message == submitted_task_message(settings, prompt)
     quick_interactions.submit.assert_called_once()
 
 
@@ -138,8 +139,8 @@ def test_removed_sync_aliases_are_normal_tasks(
         delivery_route=delivery_route(),
     )
 
-    assert result.disposition == "handled"
-    assert result.message is None
+    assert result.disposition == "reply"
+    assert result.message == submitted_task_message(settings, prompt)
     quick_interactions.submit.assert_called_once()
     assert quick_interactions.submit.call_args.args[1] == prompt
     assert manager._state.submissions[-1].code == "submitted"
@@ -230,16 +231,16 @@ def test_chub_sync_lists_compatible_sessions_and_marks_current(
 
     assert result.message is not None
     assert result.message.startswith(
-        "槽位同步完成：清理 0 · 补充 3 · 当前 3。\n\n"
+        "Sync: Completed · Removed 0 · Added 3 · Current 3\n\n"
         "Sessions\n\n"
     )
-    assert "S1 · 微信 Chub\n\nAvailable · Current" in result.message
-    assert "S2 · 项目维护\n\nAvailable" in result.message
-    assert "S3 · 正在排障\n\nBusy" in result.message
+    assert "▶ S1 · 微信 Chub" in result.message
+    assert "S2 · 项目维护" in result.message
+    assert "S3 · 正在排障\nTask · Running" in result.message
     assert result.message.index("S3 · 正在排障") < result.message.index(
-        "S1 · 微信 Chub"
+        "▶ S1 · 微信 Chub"
     ) < result.message.index("S2 · 项目维护")
-    assert result.message.endswith("Weekly 暂不可用")
+    assert result.message.endswith("Weekly Unavailable")
     assert "不应显示" not in result.message
     persisted = json.loads(
         settings.openclaw.weixin_chub_mode.state_file.read_text(encoding="utf-8")
@@ -300,7 +301,7 @@ def test_chub_sync_limits_id_sorted_sessions_without_reordering_current(
 
     assert result.message is not None
     assert "private-value" not in result.message
-    assert "Available · Current" in result.message
+    assert "▶ S1 · token=[REDACTED] 当前" in result.message
     assert "候选 7" in result.message
     assert "候选 8" not in result.message
     assert "候选 8" not in result.message
@@ -337,8 +338,9 @@ def test_chub_sync_hides_unavailable_sessions(settings: Settings) -> None:
     )
 
     assert result.message is not None
-    assert "\n\nSessions\n\n暂无已分配 Session\n\n" in result.message
-    assert result.message.endswith("Weekly 暂不可用")
+    assert "\n\nNo sessions\n\n" in result.message
+    assert "Sessions\n\nNo sessions" not in result.message
+    assert result.message.endswith("Weekly Unavailable")
     assert "不可用会话" not in result.message
 
 
@@ -374,11 +376,11 @@ def test_chub_sync_keeps_success_when_usage_lookup_fails(
 
     assert result.message is not None
     assert result.message.startswith(
-        "槽位同步完成：清理 0 · 补充 1 · 当前 1。\n\n"
+        "Sync: Completed · Removed 0 · Added 1 · Current 1\n\n"
         "Sessions\n\n"
-        "S1 · 项目维护\n\nAvailable"
+        "S1 · 项目维护"
     )
-    assert result.message.endswith("Codex 用量查询失败，请稍后重试。")
+    assert result.message.endswith("Weekly Unavailable")
     assert manager.session_slot_matches(1, "available-session")
 
 
@@ -418,7 +420,7 @@ def test_chub_sync_retains_configured_unavailable_slot(
         delivery_route=delivery_route(),
     )
 
-    assert "S3 · 故障上下文\n\nUnavailable" in (result.message or "")
+    assert "S3 ! · 故障上下文" in (result.message or "")
     assert manager.session_slot_matches(3, "broken")
 
 
@@ -453,7 +455,7 @@ def test_codex_new_rejects_before_creation_when_nine_slots_are_full(
     )
 
     assert result.message is not None
-    assert "9 个微信 Session 槽位已满" in result.message
+    assert "Create: Failed. Codex could not create a Session." in result.message
     codex_manager.create_session.assert_not_called()
 
 
@@ -478,7 +480,7 @@ def test_chub_refresh_keeps_cached_overview_when_session_lookup_fails(
     )
 
     assert result.message is not None
-    assert "Sessions\n\n暂不可用" in result.message
+    assert "Sessions\n\nUnavailable" in result.message
     assert "异常" not in result.message
 
 def test_codex_status_session_matching_respects_explicit_model_and_effort() -> None:
@@ -550,6 +552,96 @@ def test_codex_status_distinguishes_writer_error_and_unknown_running_session(
     quick_interactions.submit.assert_not_called()
 
 
+def test_restart_codex_status_uses_route_scoped_running_task_summary(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    manager._status_cache["sessions"] = (
+        (
+            SimpleNamespace(
+                slot=1,
+                session_id="session-1",
+                title="指令交互优化",
+                state="Busy",
+                current=False,
+            ),
+        ),
+        utc_now(),
+    )
+    quick_interactions.is_running.return_value = True
+    quick_interactions.weixin_task_status_snapshot.return_value = SimpleNamespace(
+        running_tasks=(("session-1", "优化微信指令回复"),),
+    )
+    route = delivery_route()
+
+    message = manager.codex_status_message(route)
+
+    assert "Task · 优化微信指令回复" in message
+    assert "Task · Running" not in message
+    quick_interactions.weixin_task_status_snapshot.assert_called_once_with(route)
+
+
+def test_restart_codex_status_falls_back_when_task_snapshot_fails(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    manager._status_cache["sessions"] = (
+        (
+            SimpleNamespace(
+                slot=1,
+                session_id="session-1",
+                title="指令交互优化",
+                state="Busy",
+                current=False,
+            ),
+        ),
+        utc_now(),
+    )
+    quick_interactions.is_running.return_value = True
+    quick_interactions.weixin_task_status_snapshot.side_effect = OSError(
+        "snapshot unavailable"
+    )
+
+    message = manager.codex_status_message(delivery_route())
+
+    assert "Task · Running" in message
+
+
+def test_restart_codex_status_overrides_stale_cached_current_session(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    manager._state.session_id = "session-2"
+    manager._status_cache["sessions"] = (
+        (
+            SimpleNamespace(
+                slot=1,
+                session_id="session-1",
+                title="绘画一",
+                state="Available",
+                current=True,
+            ),
+            SimpleNamespace(
+                slot=2,
+                session_id="session-2",
+                title="绘画二",
+                state="Available",
+                current=False,
+            ),
+        ),
+        utc_now(),
+    )
+    quick_interactions.weixin_task_status_snapshot.return_value = SimpleNamespace(
+        running_tasks=(),
+    )
+
+    message = manager.codex_status_message(delivery_route())
+
+    assert "S1 · 绘画一" in message
+    assert "▶ S1 · 绘画一" not in message
+    assert "▶ S2 · 绘画二" in message
+
+
 def test_codex_status_keeps_sessions_available_while_restart_is_pending(
     settings: Settings,
 ) -> None:
@@ -603,5 +695,5 @@ def test_chub_refresh_bounds_slow_session_lookup(
         blocker.set()
 
     assert result.message is not None
-    assert "Sessions\n\n暂不可用" in result.message
+    assert "Sessions\n\nUnavailable" in result.message
     assert "异常" not in result.message

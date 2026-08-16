@@ -8,7 +8,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.codex.models import (
     PermissionMode,
     QuickInteractionWeixinRoute,
-    TASK_SUMMARY_MAX_LENGTH,
 )
 
 
@@ -31,11 +30,13 @@ WeixinChubModeSubmissionCode = Literal[
     "task_status_checked",
     # Kept for state-file compatibility with the original route name.
     "codex_usage_checked",
-    # Kept for state-file compatibility with the retired help route.
+    # Reused by the current help route and compatible with legacy state files.
     "codex_help_checked",
     # Kept for state-file compatibility with the retired status route.
     "codex_status_checked",
     "codex_switch_checked",
+    "codex_session_renamed",
+    "codex_session_stopped",
     "codex_session_archived",
     "codex_session_created",
     "codex_retry_checked",
@@ -59,8 +60,10 @@ MAX_STORED_SUBMISSIONS = 5_000
 MAX_STATE_BYTES = 8 * 1024 * 1024
 MAX_PENDING_RETRY_PROMPT_CHARS = 8_000
 MAX_STORED_RESTART_OPERATIONS = 256
+MAX_STORED_STOP_OPERATIONS = 256
 PENDING_RETRY_TTL_MINUTES = 10
 MAX_WEIXIN_SESSION_SLOTS = 9
+MAX_WEIXIN_TASK_SUMMARY_CHARS = 48
 WEIXIN_RESTART_TASK_PREFIX = "weixin-restart-"
 
 
@@ -139,6 +142,28 @@ class WeixinChubModeRestartOperation(_StrictModel):
     updated_at: datetime
 
 
+class WeixinChubModeStopOperation(_StrictModel):
+    message_id: str = Field(min_length=1, max_length=500)
+    operation_id: str = Field(min_length=1, max_length=128)
+    source_ip: str = Field(min_length=1, max_length=128)
+    delivery_route_fingerprint: str = Field(min_length=64, max_length=64)
+    delivery_route: QuickInteractionWeixinRoute
+    session_id: str = Field(min_length=1, max_length=128)
+    session_slot: int = Field(ge=1, le=MAX_WEIXIN_SESSION_SLOTS)
+    status: Literal["pending", "started", "succeeded", "failed"] = "pending"
+    error: str | None = Field(default=None, max_length=500)
+    notification_status: Literal[
+        "pending",
+        "sending",
+        "sent",
+        "failed",
+        "skipped",
+    ] | None = None
+    notification_error: str | None = Field(default=None, max_length=1_000)
+    created_at: datetime
+    updated_at: datetime
+
+
 class WeixinChubModeState(_StrictModel):
     version: Literal[1] = 1
     configuration: WeixinChubModeRuntimeConfig
@@ -149,6 +174,7 @@ class WeixinChubModeState(_StrictModel):
     restart_operations: list[WeixinChubModeRestartOperation] = Field(
         default_factory=list
     )
+    stop_operations: list[WeixinChubModeStopOperation] = Field(default_factory=list)
 
 
 class WeixinChubModeStatus(_StrictModel):
@@ -166,7 +192,7 @@ class WeixinChubModeSubmissionResult(_StrictModel):
     message: str
     task_summary: str | None = Field(
         default=None,
-        max_length=TASK_SUMMARY_MAX_LENGTH,
+        max_length=MAX_WEIXIN_TASK_SUMMARY_CHARS,
     )
     session_slot: int | None = Field(default=None, ge=1, le=MAX_WEIXIN_SESSION_SLOTS)
     session_title: str | None = Field(default=None, max_length=48)

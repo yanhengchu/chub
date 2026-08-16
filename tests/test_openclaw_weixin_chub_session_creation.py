@@ -36,6 +36,7 @@ from tests.openclaw_weixin_chub_mode_helpers import (
     delivery_route,
     enable_restart_command,
     inject_default_delivery_route,
+    submitted_task_message,
 )
 
 
@@ -120,8 +121,8 @@ def test_retired_or_non_exact_status_prompt_is_submitted_as_normal_task(
         delivery_route=delivery_route(),
     )
 
-    assert result.disposition == "handled"
-    assert result.message is None
+    assert result.disposition == "reply"
+    assert result.message == submitted_task_message(settings, prompt)
     quick_interactions.submit.assert_called_once()
 
 
@@ -175,9 +176,9 @@ def test_dispatch_returns_bounded_failure_instead_of_api_error(
 
     assert result.disposition == "reply"
     assert result.message == (
-        "任务提交失败：当前 Session 正在执行，本任务未提交。\n\n"
-        "如需新建 Session 并继续执行本任务，请回复："
-        "session new retry 或“新建会话执行”。"
+        "Not submitted · The current Session is running.\n"
+        "Task · 第二个任务\n\n"
+        "Retry: Send session new retry to continue in a new Session."
     )
     quick_interactions.submit.assert_not_called()
 
@@ -217,11 +218,11 @@ def test_codex_new_creates_and_switches_without_submitting(
 
     assert result.message is not None
     assert result.message.startswith(
-        "创建状态：Session 1 已创建并切换。\n\n"
+        "Create: Session 1 was created and selected.\n\n"
         "Sessions\n\n"
     )
-    assert "S1 · 未命名 Session\n\nAvailable · Current" in result.message
-    assert result.message.endswith("Weekly 暂不可用")
+    assert "▶ S1 · Unnamed Session" in result.message
+    assert result.message.endswith("Weekly Unavailable")
     assert manager.session_id() == "session-new"
     codex_manager.set_initial_quick_interaction_title.assert_not_called()
     quick_interactions.submit.assert_not_called()
@@ -275,8 +276,11 @@ def test_codex_new_with_task_creates_switches_and_submits_once(
     )
 
     assert first.disposition == "reply"
-    assert "创建状态：Session 1 已创建并切换。" in (first.message or "")
-    assert "任务状态：已提交。" in (first.message or "")
+    assert first.message == (
+        "Create: Session 1 was created and selected. Task submitted.\n"
+        f"▶ S1 · {task_prompt}\n"
+        f"Task · {task_prompt}"
+    )
     assert duplicate.message == first.message
     codex_manager.create_session.assert_called_once()
     quick_interactions.submit.assert_called_once()
@@ -284,6 +288,83 @@ def test_codex_new_with_task_creates_switches_and_submits_once(
         "session-new",
         task_prompt,
     )
+
+
+def test_codex_new_with_task_failure_shows_task_summary(settings: Settings) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    session = CodexSession(
+        id="session-new",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd="/project",
+        permission_mode="full-access",
+        status="stopped",
+        activity="idle",
+    )
+    codex_manager.create_session.return_value = SimpleNamespace(id=session.id)
+    codex_manager.get_session.return_value = session
+    codex_manager.list_sessions.return_value = [session]
+    quick_interactions.submit.side_effect = ApiError(
+        503,
+        "quick_worker_unavailable",
+        "private detail",
+    )
+
+    result = manager.dispatch(
+        message_id="new-with-failed-task",
+        prompt="新建会话 检查设备状态",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+    duplicate = manager.dispatch(
+        message_id="new-with-failed-task",
+        prompt="新建会话 检查设备状态",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message is not None
+    assert "the task was not submitted" in result.message
+    assert result.message.splitlines()[1] == "▶ S1 · Unnamed Session"
+    assert result.message.splitlines()[2] == "Task · 检查设备状态"
+    assert "Sessions" not in result.message
+    assert "Weekly" not in result.message
+    assert duplicate == result
+    quick_interactions.submit.assert_called_once()
+
+
+def test_codex_new_with_task_creation_failure_does_not_link_current_session(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager._state.session_id = "session-1"
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=1, session_id="session-1")
+    ]
+    codex_manager.create_session.side_effect = ApiError(
+        503,
+        "codex_unavailable",
+        "private detail",
+    )
+
+    result = manager.dispatch(
+        message_id="new-with-task-create-failure",
+        prompt="新建会话 检查设备状态",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == (
+        "Create: Failed. Codex could not create a Session.\n"
+        "Task · 检查设备状态"
+    )
+    quick_interactions.submit.assert_not_called()
 
 
 def test_codex_new_status_does_not_fill_unassigned_candidate(
@@ -328,9 +409,9 @@ def test_codex_new_status_does_not_fill_unassigned_candidate(
     )
 
     assert result.message is not None
-    assert "S2 · 新建会话\n\nAvailable · Current" in result.message
+    assert "▶ S2 · 新建会话" in result.message
     assert "等待候选" not in result.message
-    assert "另有 1 个" in result.message
+    assert "1 more Sessions" in result.message
     assert manager.session_slot_matches(2, "session-new") is True
     assert manager.session_slot_matches(3, "candidate") is False
 
@@ -367,7 +448,7 @@ def test_internal_codex_status_does_not_fill_unassigned_candidate(
 
     internal_status = manager.codex_status_message()
 
-    assert "S1 · 候选 1\n\nAvailable · Current" in internal_status
+    assert "▶ S1 · 候选 1" in internal_status
     assert "候选 2" not in internal_status
     codex_manager.list_sessions.assert_not_called()
     assert manager.session_slot_matches(2, "session-2") is False
@@ -414,7 +495,7 @@ def test_codex_operation_log_uses_operation_result_not_status_refresh(
         )
 
     assert created.message is not None
-    assert "Codex 用量查询失败" in created.message
+    assert "Weekly Unavailable" in created.message
     dispatch_entries = [
         call.kwargs
         for call in write_operation.call_args_list
@@ -534,5 +615,5 @@ def test_chub_sync_uses_placeholder_for_untitled_session(
         delivery_route=delivery_route(),
     )
 
-    assert "S1 · 未命名 Session\n\nAvailable" in (result.message or "")
+    assert "S1 · Unnamed Session" in (result.message or "")
     quick_interactions.submit.assert_not_called()

@@ -225,6 +225,8 @@ class OpenClawWeixinChubModeConfig(StrictModel):
     model: str | None = Field(default=None, min_length=1, max_length=128)
     reasoning_effort: str | None = Field(default=None, min_length=1, max_length=32)
     state_file: Path = Path("data/state/openclaw/weixin-chub-mode.json")
+    session_name_max_width: int = Field(default=30, ge=4, le=96)
+    task_name_max_width: int = Field(default=64, ge=4, le=96)
     # Translation runs an LLM over untrusted message text and must be opted in.
     translation_enabled: bool = False
     translation_queue_limit: int = Field(default=10, ge=1, le=50)

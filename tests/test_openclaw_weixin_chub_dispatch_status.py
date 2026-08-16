@@ -36,10 +36,11 @@ from tests.openclaw_weixin_chub_mode_helpers import (
     delivery_route,
     enable_restart_command,
     inject_default_delivery_route,
+    submitted_task_message,
 )
 
 
-def test_dispatch_silently_submits_text_task(
+def test_dispatch_immediately_acknowledges_text_task(
     settings: Settings,
 ) -> None:
     manager, _codex_manager, quick_interactions = configured_manager(settings)
@@ -57,8 +58,8 @@ def test_dispatch_silently_submits_text_task(
         )
 
     assert result.protocol_version == 3
-    assert result.disposition == "handled"
-    assert result.message is None
+    assert result.disposition == "reply"
+    assert result.message == submitted_task_message(settings, "检查设备状态")
     quick_interactions.submit.assert_called_once()
     dispatch_entries = [
         call.kwargs
@@ -74,6 +75,48 @@ def test_dispatch_silently_submits_text_task(
         settings.openclaw.weixin_chub_mode.state_file.read_text(encoding="utf-8")
     )
     assert persisted["submissions"][0]["http_status"] == 200
+
+
+def test_submission_and_session_list_use_the_same_task_summary(
+    settings: Settings,
+) -> None:
+    settings.openclaw.weixin_chub_mode.task_name_max_width = 16
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    prompt = "任" * 20
+
+    submission = manager.dispatch(
+        message_id="shared-task-summary",
+        prompt=prompt,
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+    manager._status_cache["sessions"] = (
+        (
+            SimpleNamespace(
+                slot=1,
+                session_id="session-1",
+                title="项目维护",
+                state="Busy",
+                current=True,
+            ),
+        ),
+        utc_now(),
+    )
+    manager._task_status_cache["route"] = (
+        SimpleNamespace(
+            failed_notification_count=0,
+            running_tasks=(("session-1", prompt),),
+        ),
+        utc_now(),
+    )
+    quick_interactions.is_running.return_value = True
+
+    overview = manager._format_chub_overview("route", elapsed_ms=10)
+
+    assert submission.message == submitted_task_message(settings, prompt)
+    assert "Task · 任任任任任任任…" in overview
 
 
 @pytest.mark.parametrize(
@@ -103,10 +146,44 @@ def test_dispatch_routes_chub_status_aliases_to_live_overview(
     assert result.disposition == "reply"
     assert result.message is not None
     assert re.match(r"Chub · [1-9][0-9]*ms(?:\n|$)", result.message)
-    assert "1 个任务结果通知失败" in result.message
-    assert "Codex\n\nWeekly 暂不可用" in result.message
+    assert "Task result notifications failed: 1" in result.message
+    assert result.message.endswith("No sessions\n\nWeekly Unavailable")
+    assert "Sessions\n\nNo sessions" not in result.message
     assert "执行中 2" not in result.message
     codex_manager.list_sessions.assert_called_once()
+    quick_interactions.submit.assert_not_called()
+
+
+@pytest.mark.parametrize("prompt", ["help", "HELP。", "帮助", " 帮助。 "])
+def test_dispatch_returns_concise_chub_help(
+    settings: Settings,
+    prompt: str,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+
+    result = manager.dispatch(
+        message_id=f"help-{prompt}",
+        prompt=prompt,
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == (
+        "Commands\n\n"
+        "chub\n"
+        "sync\n"
+        "session new [task]\n"
+        "rename <title>\n"
+        "session switch <S1-S9|1-9> [task]\n"
+        "session stop <S1-S9|1-9>\n"
+        "session archive <S1-S9|1-9>\n"
+        "session retry\n"
+        "session new retry\n"
+        "restart"
+    )
+    codex_manager.list_sessions.assert_not_called()
     quick_interactions.submit.assert_not_called()
 
 
@@ -187,7 +264,11 @@ def test_chub_overview_failure_completes_ephemeral_dedup(
         delivery_route=delivery_route(),
     )
 
-    assert first.message == "Chub 状态总览生成失败，请稍后重试。"
+    assert first.message is not None
+    assert first.message.startswith(
+        "Status: Failed to build the Chub overview. Try again later."
+    )
+    assert first.message.endswith("Weekly Unavailable")
     assert duplicate == first
 
 
@@ -203,8 +284,8 @@ def test_bare_codex_is_submitted_as_normal_task(settings: Settings) -> None:
         delivery_route=delivery_route(),
     )
 
-    assert result.disposition == "handled"
-    assert result.message is None
+    assert result.disposition == "reply"
+    assert result.message == submitted_task_message(settings, "codex")
     quick_interactions.submit.assert_called_once()
 
 def test_chub_refreshes_status_on_every_query(
@@ -240,9 +321,9 @@ def test_chub_refreshes_status_on_every_query(
         delivery_route=delivery_route(),
     )
 
-    assert "磁盘使用率较高：86%" in (first.message or "")
-    assert "Weekly 暂不可用" in (first.message or "")
-    assert "Weekly 暂不可用" in (second.message or "")
+    assert "Disk usage is high: 86%" in (first.message or "")
+    assert "Weekly Unavailable" in (first.message or "")
+    assert "Weekly Unavailable" in (second.message or "")
     assert manager.system_status_reader.call_count == 2
     assert manager.codex_account_reader.read_account_status.call_count == 2
     manager.codex_account_reader.read_account_status.assert_called_with(force=True)
@@ -319,8 +400,8 @@ def test_removed_chub_refresh_commands_are_normal_tasks(
         delivery_route=delivery_route(),
     )
 
-    assert result.disposition == "handled"
-    assert result.message is None
+    assert result.disposition == "reply"
+    assert result.message == submitted_task_message(settings, prompt)
     quick_interactions.submit.assert_called_once()
 
 
@@ -414,7 +495,7 @@ def test_chub_overview_shows_running_task_on_refreshed_session(
     )
 
     assert (
-        "S1 · 运行任务\n\nT1 · 优化状态展示\n\nBusy · Current"
+        "▶ S1 · 运行任务\nTask · 优化状态展示"
         in (result.message or "")
     )
 
@@ -458,17 +539,45 @@ def test_chub_overview_separates_each_busy_session_block(
 
     assert (
         "Sessions\n\n"
-        "S1 · Chub 快速交互独立…\n\n"
-        "T1 · 开始执行第四个阶段\n\n"
-        "Busy\n\n"
-        "S2 · 项目文档优化\n\n"
-        "T2 · 项目文档优化\n\n"
-        "Busy · Current\n\n"
-        "Codex"
+        "S1 · Chub 快速交互独立…\n"
+        "Task · 开始执行第四个阶段\n\n"
+        "▶ S2 · 项目文档优化\n"
+        "Task · 项目文档优化\n\n"
+        "Weekly"
     ) in message
 
 
-def test_chub_overview_does_not_guess_task_for_non_weixin_busy_session(
+def test_chub_overview_uses_configured_task_name_limit(settings: Settings) -> None:
+    settings.openclaw.weixin_chub_mode.task_name_max_width = 16
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    manager._status_cache["sessions"] = (
+        (
+            SimpleNamespace(
+                slot=1,
+                session_id="session-1",
+                title="项目维护",
+                state="Busy",
+                current=True,
+            ),
+        ),
+        utc_now(),
+    )
+    manager._task_status_cache["route"] = (
+        SimpleNamespace(
+            failed_notification_count=0,
+            running_tasks=(("session-1", "任" * 20),),
+        ),
+        utc_now(),
+    )
+    quick_interactions.is_running.return_value = True
+
+    message = manager._format_chub_overview("route", elapsed_ms=10)
+
+    assert "Task · 任任任任任任任…" in message
+    assert "任" * 8 not in message
+
+
+def test_chub_overview_uses_generic_task_line_without_trusted_summary(
     settings: Settings,
 ) -> None:
     manager, codex_manager, quick_interactions = configured_manager(settings)
@@ -504,8 +613,8 @@ def test_chub_overview_does_not_guess_task_for_non_weixin_busy_session(
         delivery_route=delivery_route(),
     )
 
-    assert "S1 · 终端任务\n\nBusy · Current" in (result.message or "")
-    assert "T1 ·" not in (result.message or "")
+    assert "▶ S1 · 终端任务" in (result.message or "")
+    assert "Task · Running" in (result.message or "")
 
 
 def test_chub_overview_does_not_repeat_unavailable_session_as_anomaly(
@@ -527,7 +636,7 @@ def test_chub_overview_does_not_repeat_unavailable_session_as_anomaly(
 
     message = manager._format_chub_overview("route", elapsed_ms=10)
 
-    assert "S1 · 语音通知处理\n\nUnavailable · Current" in message
+    assert "▶ S1 ! · 语音通知处理" in message
     assert "Session 1 不可用" not in message
 
 
@@ -569,7 +678,10 @@ def test_chub_sync_failure_does_not_commit_partial_slots(
         delivery_route=delivery_route(),
     )
 
-    assert result.message == "任务提交失败：Chub 当前状态不可用，请稍后重试。"
+    assert result.message == (
+        "Request: Failed because Chub state is unavailable. Try again later.\n\n"
+        "Sessions\n\nUnavailable\n\nWeekly Unavailable"
+    )
     assert manager.session_slot_matches(1, "missing")
     manager._write_state = original_write
 
@@ -594,7 +706,7 @@ def test_codex_status_does_not_report_missing_daily_bucket_as_zero() -> None:
         CodexTokenUsageData(status="available", daily_usage=[]),
     )
 
-    assert message == "Weekly 暂不可用"
+    assert message == "Weekly Unavailable"
 
 
 def test_codex_status_compacts_large_token_count() -> None:
@@ -664,7 +776,7 @@ def test_chub_overview_separates_codex_heading_and_shortens_token_label(
 
     message = manager._format_chub_overview("route", elapsed_ms=10)
 
-    assert "\n\nCodex\n\nWeekly 71% · Today 67.4M" in message
+    assert "\n\nWeekly 71% · Today 67.4M" in message
     assert "Today 67.4M (" not in message
     assert "Daily tokens" not in message
 
@@ -681,8 +793,8 @@ def test_codex_status_route_requires_exact_prompt(settings: Settings) -> None:
         delivery_route=delivery_route(),
     )
 
-    assert result.disposition == "handled"
-    assert result.message is None
+    assert result.disposition == "reply"
+    assert result.message == submitted_task_message(settings, "codex status")
     quick_interactions.submit.assert_called_once()
 
 
@@ -705,8 +817,8 @@ def test_removed_codex_help_is_submitted_as_normal_task(
         delivery_route=delivery_route(),
     )
 
-    assert result.disposition == "handled"
-    assert result.message is None
+    assert result.disposition == "reply"
+    assert result.message == submitted_task_message(settings, prompt)
     quick_interactions.submit.assert_called_once()
 
 
@@ -738,6 +850,6 @@ def test_removed_or_unparameterized_session_commands_are_normal_tasks(
         delivery_route=delivery_route(),
     )
 
-    assert result.disposition == "handled"
-    assert result.message is None
+    assert result.disposition == "reply"
+    assert result.message == submitted_task_message(settings, prompt)
     quick_interactions.submit.assert_called_once()

@@ -64,9 +64,10 @@ def test_codex_retry_submits_latest_busy_task_to_current_session(
         delivery_route=delivery_route(),
     )
 
+    assert result.message is not None
     assert result.message == (
-        "刚才的任务已重新提交。\n\n"
-        "任务摘要：继续检查设备\n\n完成后将原路发送结果。"
+        "Retry: The task was resubmitted.\n"
+        "Task · 继续检查设备"
     )
     quick_interactions.submit.assert_called_once()
     assert quick_interactions.submit.call_args.args[1] == "继续检查设备"
@@ -118,9 +119,10 @@ def test_codex_new_retry_creates_session_and_submits_latest_busy_task(
         delivery_route=delivery_route(),
     )
 
+    assert result.message is not None
     assert result.message == (
-        "已创建并切换到新的 Session，刚才的任务已重新提交。\n\n"
-        "任务摘要：探索另一个问题\n\n完成后将原路发送结果。"
+        "Retry: A new Session was created and selected. The task was resubmitted.\n"
+        "Task · 探索另一个问题"
     )
     assert manager.session_id() == "session-2"
     assert quick_interactions.submit.call_args.args[:2] == (
@@ -177,7 +179,12 @@ def test_codex_retry_rejects_expired_or_different_route_without_side_effects(
         delivery_route=delivery_route(),
     )
 
-    assert result.message == "没有可继续执行的任务，请重新发送任务内容。"
+    assert result.message is not None
+    assert result.message.startswith(
+        "Retry: No task is waiting to be continued. Send the task again."
+        "\n\nNo sessions\n\n"
+    )
+    assert result.message.endswith("Weekly Unavailable")
     codex_manager.create_session.assert_not_called()
     quick_interactions.submit.assert_not_called()
 
@@ -206,7 +213,12 @@ def test_codex_new_retry_cannot_claim_task_from_different_route(
         delivery_route=delivery_route(recipient="another-owner@im.wechat"),
     )
 
-    assert result.message == "没有可继续执行的任务，请重新发送任务内容。"
+    assert result.message is not None
+    assert result.message.startswith(
+        "Retry: No task is waiting to be continued. Send the task again."
+        "\n\nNo sessions\n\n"
+    )
+    assert result.message.endswith("Weekly Unavailable")
     codex_manager.create_session.assert_not_called()
     quick_interactions.submit.assert_not_called()
     assert manager._state.pending_retry is not None
@@ -253,14 +265,38 @@ def test_codex_new_retry_rejects_attached_task_without_replacing_pending(
         delivery_route=delivery_route(),
     )
 
-    assert first.message == duplicate.message == (
-        "“新建会话执行”只用于继续最近一条未提交任务，"
-        "请不要附带新正文。"
+    assert first.message == duplicate.message
+    assert first.message is not None
+    assert first.message.startswith(
+        "Retry: Not started. This command only continues the most recent "
+        "unsubmitted task. Do not include a new task.\n\nNo sessions\n\n"
     )
+    assert first.message.endswith("Weekly Unavailable")
     assert manager._state.pending_retry is not None
     assert manager._state.pending_retry.prompt == "需要保留的任务"
     codex_manager.create_session.assert_not_called()
     quick_interactions.submit.assert_not_called()
+
+
+def test_codex_new_retry_state_write_failure_uses_degraded_suffix(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, _quick_interactions = configured_manager(settings)
+    manager._write_state = MagicMock(side_effect=OSError("write failed"))
+
+    result = manager.dispatch(
+        message_id="invalid-new-retry-write-failure",
+        prompt="新建会话执行 新正文",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == (
+        "Request: Failed because Chub state is unavailable. Try again later.\n\n"
+        "Sessions\n\nUnavailable\n\nWeekly Unavailable"
+    )
 
 
 def test_duplicate_codex_new_retry_does_not_create_or_submit_twice(
@@ -306,7 +342,7 @@ def test_duplicate_codex_new_retry_does_not_create_or_submit_twice(
         delivery_route=delivery_route(),
     )
 
-    assert "已重新提交" in (first.message or "")
+    assert "The task was resubmitted." in (first.message or "")
     assert duplicate.message == first.message
     codex_manager.create_session.assert_called_once()
     quick_interactions.submit.assert_called_once()
@@ -337,7 +373,12 @@ def test_retry_keeps_pending_task_when_current_session_is_still_busy(
     )
 
     assert result.message is not None
-    assert result.message.startswith("任务提交失败：当前 Session 正在执行")
+    assert result.message.startswith("Retry: The task was not resubmitted.")
+    assert result.message.splitlines()[1] == "Task · 稍后继续的任务"
+    assert "Not submitted · The current Session is running." in result.message
+    assert result.message.endswith(
+        "Retry: Send session new retry to continue in a new Session."
+    )
     assert manager._state.pending_retry is not None
     assert manager._state.pending_retry.prompt == "稍后继续的任务"
     assert manager._state.pending_retry.claimed_by_message_id is None

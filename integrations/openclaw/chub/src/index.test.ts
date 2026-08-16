@@ -114,7 +114,7 @@ describe("notification verbatim hooks", () => {
 
 function dispatchResponse({
   disposition = "reply",
-  message = "任务已提交\n\n任务摘要：检查状态\n\n完成后将原路发送结果。",
+  message = "Submitted\n▶ S1 · 检查状态\nTask · 检查状态",
 }: {
   disposition?: "pass" | "reply" | "handled";
   message?: string | null;
@@ -158,7 +158,7 @@ describe("Weixin Chub mode", () => {
 
     expect(result).toEqual({
       handled: true,
-      text: "任务已提交\n\n任务摘要：检查状态\n\n完成后将原路发送结果。",
+      text: "Submitted\n▶ S1 · 检查状态\nTask · 检查状态",
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(new URL(fetchMock.mock.calls[0][0]).pathname).toBe(
@@ -271,6 +271,25 @@ describe("Weixin Chub mode", () => {
     )).resolves.toEqual({
       handled: true,
       text: "Chub 消息通道暂时不可用，请稍后重试。",
+    });
+    vi.unstubAllGlobals();
+  });
+
+  it("reports an unknown submission state when Chub times out", async () => {
+    const timeout = new Error("timed out");
+    timeout.name = "TimeoutError";
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(timeout));
+    const { hooks } = createPluginApi({
+      baseUrl: "http://100.64.0.1:8080",
+      weixinChubMode: true,
+    });
+
+    await expect(hooks.get("before_dispatch")?.(
+      directEvent,
+      directContext,
+    )).resolves.toEqual({
+      handled: true,
+      text: "Chub 响应超时，当前提交状态未知，请勿重复发送。",
     });
     vi.unstubAllGlobals();
   });

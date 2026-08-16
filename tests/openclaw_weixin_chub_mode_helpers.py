@@ -12,6 +12,10 @@ from app.codex.models import (
     utc_now,
 )
 from app.core.config import Settings
+from app.services.openclaw_weixin_chub_messages import (
+    build_session_title,
+    build_task_name,
+)
 from app.services.openclaw_weixin_chub_mode import WeixinChubModeManager
 
 
@@ -22,6 +26,16 @@ def delivery_route(
     return QuickInteractionWeixinRoute(
         account_id=account_id,
         recipient=recipient,
+    )
+
+
+def submitted_task_message(settings: Settings, prompt: str) -> str:
+    prompt = prompt.strip()
+    mode = settings.openclaw.weixin_chub_mode
+    return (
+        "Submitted\n"
+        f"▶ S1 · {build_session_title(prompt, mode.session_name_max_width)}\n"
+        f"Task · {build_task_name(prompt, mode.task_name_max_width)}"
     )
 
 

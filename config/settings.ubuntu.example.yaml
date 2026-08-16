@@ -66,6 +66,9 @@ openclaw:
     # Explicitly enable only after the single-Owner WeChat private-message route is ready.
     enabled: false
     workspace_id: "chub"
+    # Display limits used by WeChat Chub Session lists and the `chub` task list.
+    session_name_max_width: 30
+    task_name_max_width: 64
     # Initial default for the Settings-page translation switch. Later page changes
     # are persisted in private Chub state without rewriting this file.
     # Opt in only after accepting the model/prompt-injection trust boundary.

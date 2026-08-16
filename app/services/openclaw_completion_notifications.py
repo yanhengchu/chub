@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from typing import Callable
@@ -17,6 +19,8 @@ from app.services.deferred_restart import DeferredRestartOutcome
 MAX_COMMAND_OUTPUT_BYTES = 64 * 1024
 MAX_COMPLETION_MESSAGE_PARTS = 5
 OVERFLOW_MESSAGE = "结果超过微信发送上限，剩余内容请在 Chub 快速交互页面查看。"
+COMPLETION_OVERFLOW_MESSAGE = "More in Chub."
+COMPLETION_USAGE_TIMEOUT_SECONDS = 2.0
 
 
 @dataclass(frozen=True)
@@ -31,19 +35,33 @@ class OpenClawCompletionNotifier:
     def __init__(self, config: OpenClawCompletionNotificationConfig) -> None:
         self.config = config
         self.session_slot_validator: Callable[[int, str], bool] | None = None
-        self.codex_status_reader: Callable[[], str] | None = None
+        self.session_current_validator: Callable[[int, str], bool] | None = None
+        self.codex_status_reader: Callable[[QuickInteractionWeixinRoute], str] | None = (
+            None
+        )
+        self.completion_usage_reader: Callable[[], str] | None = None
 
     def notify(
         self,
         task: QuickInteractionTask,
         route: QuickInteractionWeixinRoute | None = None,
     ) -> CompletionNotificationResult:
-        messages = self._messages_for(task)
+        route_specific = task.notification_route == "weixin-task"
         return self._send(
             task,
             route,
-            messages,
+            [] if route_specific else self._messages_for(task),
             disabled_message="微信完成通知未启用。",
+            message_factory=(
+                (
+                    lambda: self._messages_for(
+                        task,
+                        footer=self._completion_usage_footer(task),
+                    )
+                )
+                if route_specific
+                else None
+            ),
         )
 
     def notify_restart(
@@ -53,17 +71,10 @@ class OpenClawCompletionNotifier:
         outcome: DeferredRestartOutcome,
     ) -> CompletionNotificationResult:
         messages = {
-            "succeeded": "Chub 已完成自动重启，服务已恢复。",
-            "start_failed": (
-                "Chub 自动重启未完成："
-                + (
-                    task.deferred_restart_error
-                    or "旧记录没有保存具体原因，请查看 Chub 运行日志。"
-                )
-            ),
+            "succeeded": "Restart: Completed. Chub is available.",
+            "start_failed": "Restart: Failed. Check the Chub runtime logs.",
             "sensitive_task_failed": (
-                "Chub 已取消自动重启：等待期间有运行资源修改任务异常结束，"
-                "请检查任务结果后再决定是否重启。"
+                "Restart: Canceled because the related task failed."
             ),
         }
         message = messages.get(outcome)
@@ -71,15 +82,14 @@ class OpenClawCompletionNotifier:
             return CompletionNotificationResult("skipped", "本次无需发送微信重启通知。")
         if task.notification_route != "weixin-task":
             return CompletionNotificationResult("skipped", "页面任务不发送微信重启通知。")
-        session_line = self._session_line(task)
-        message = f"{message}\n\n关联 {session_line or 'Session：Unavailable'}"
-        message = f"{message}\n\n关联任务：{task.summary or 'Unavailable'}"
-        message = f"{message}\n\n{self._restart_codex_status()}"
         return self._send(
             task,
             route,
-            [message],
+            [],
             disabled_message="微信重启通知未启用。",
+            message_factory=lambda: [
+                f"{message}\n\n{self._restart_codex_status(route)}"
+            ],
         )
 
     def notify_weixin_restart_command(
@@ -89,15 +99,11 @@ class OpenClawCompletionNotifier:
         error: str | None = None,
     ) -> CompletionNotificationResult:
         messages = {
-            "succeeded": "Chub 已完成重启，服务已恢复。",
-            "cleared": "Chub 已完成重启，服务已恢复。",
-            "start_failed": (
-                "Chub 重启未完成："
-                + (error or "旧记录没有保存具体原因，请查看 Chub 运行日志。")
-            ),
+            "succeeded": "Restart: Completed. Chub is available.",
+            "cleared": "Restart: Completed. Chub is available.",
+            "start_failed": "Restart: Failed. Check the Chub runtime logs.",
             "sensitive_task_failed": (
-                "Chub 已取消重启：等待中的关联任务异常结束，"
-                "请检查任务结果后再决定是否重启。"
+                "Restart: Canceled because the related task failed."
             ),
         }
         message = messages.get(outcome)
@@ -108,19 +114,38 @@ class OpenClawCompletionNotifier:
         return self._send_messages(
             required_account_id=route.account_id,
             recipient=route.recipient,
-            messages=[message],
+            messages=[],
             require_unique=True,
             unavailable_status="failed",
+            message_factory=lambda: [
+                f"{message}\n\n{self._restart_codex_status(route)}"
+            ],
         )
 
-    def _restart_codex_status(self) -> str:
+    def _restart_codex_status(self, route: QuickInteractionWeixinRoute) -> str:
         if self.codex_status_reader is None:
-            return "Sessions\n\n暂不可用\n\nWeekly 暂不可用"
+            return "Sessions\n\nUnavailable\n\nWeekly Unavailable"
         try:
-            message = self.codex_status_reader()
+            message = self.codex_status_reader(route)
         except Exception:
-            return "Sessions\n\n暂不可用\n\nWeekly 暂不可用"
-        return message or "Sessions\n\n暂不可用\n\nWeekly 暂不可用"
+            return "Sessions\n\nUnavailable\n\nWeekly Unavailable"
+        return message or "Sessions\n\nUnavailable\n\nWeekly Unavailable"
+
+    def notify_weixin_command_result(
+        self,
+        route: QuickInteractionWeixinRoute,
+        message_factory: Callable[[], str],
+    ) -> CompletionNotificationResult:
+        if not self.config.enabled:
+            return CompletionNotificationResult("skipped", "微信完成通知未启用。")
+        return self._send_messages(
+            required_account_id=route.account_id,
+            recipient=route.recipient,
+            messages=[],
+            require_unique=True,
+            unavailable_status="failed",
+            message_factory=lambda: [message_factory()],
+        )
 
     def _send(
         self,
@@ -129,6 +154,7 @@ class OpenClawCompletionNotifier:
         messages: list[str],
         *,
         disabled_message: str,
+        message_factory: Callable[[], list[str]] | None = None,
     ) -> CompletionNotificationResult:
         if not self.config.enabled:
             return CompletionNotificationResult("skipped", disabled_message)
@@ -155,6 +181,7 @@ class OpenClawCompletionNotifier:
             messages=messages,
             require_unique=route_specific,
             unavailable_status="failed" if route_specific else "skipped",
+            message_factory=message_factory,
         )
 
     def _send_messages(
@@ -165,6 +192,7 @@ class OpenClawCompletionNotifier:
         messages: list[str],
         require_unique: bool,
         unavailable_status: str,
+        message_factory: Callable[[], list[str]] | None = None,
     ) -> CompletionNotificationResult:
         executable = shutil.which("openclaw")
         if executable is None:
@@ -182,6 +210,8 @@ class OpenClawCompletionNotifier:
                 unavailable_status,
                 str(exc) if isinstance(exc, ValueError) else "无法确认 ClawBot 状态。",
             )
+        if message_factory is not None:
+            messages = message_factory()
         sent = 0
         for message in messages:
             try:
@@ -277,7 +307,12 @@ class OpenClawCompletionNotifier:
             raise ValueError("未检测到唯一运行中的 ClawBot。")
         return running[0]
 
-    def _messages_for(self, task: QuickInteractionTask) -> list[str]:
+    def _messages_for(
+        self,
+        task: QuickInteractionTask,
+        *,
+        footer: str | None = None,
+    ) -> list[str]:
         if task.kind == "translation":
             content = task.result if task.status == "succeeded" else task.error
             result = (content or "未返回结果。").strip()
@@ -290,40 +325,81 @@ class OpenClawCompletionNotifier:
                 result,
             )
         heading = {
-            "succeeded": "任务执行成功",
-            "failed": "任务执行失败",
-            "timed_out": "任务执行超时",
-        }.get(task.status, "任务执行结束")
+            "succeeded": "Done",
+            "failed": "Failed",
+            "timed_out": "Timed out",
+        }.get(task.status, "Finished")
         content = task.result if task.status == "succeeded" else task.error
-        summary = (content or "未返回结果。").strip()
+        summary = (content or "No result.").strip()
+        session_line = self._completion_session_line(task)
         single_prefix = self._completion_prefix(
             heading,
             task.summary,
-            self._session_line(task),
+            session_line,
         )
-        if len(single_prefix) + len(summary) <= self.config.max_message_chars:
-            return [f"{single_prefix}{summary}"]
+        footer_suffix = f"\n\n{footer}" if footer else ""
+        if (
+            len(single_prefix) + len(summary) + len(footer_suffix)
+            <= self.config.max_message_chars
+        ):
+            return [f"{single_prefix}{summary}{footer_suffix}"]
 
         multipart_prefix = self._completion_prefix(
-            f"{heading}（{MAX_COMPLETION_MESSAGE_PARTS}/{MAX_COMPLETION_MESSAGE_PARTS}）",
+            f"{heading} · {MAX_COMPLETION_MESSAGE_PARTS}/{MAX_COMPLETION_MESSAGE_PARTS}",
             task.summary,
-            self._session_line(task),
+            session_line,
         )
         content_limit = self.config.max_message_chars - len(multipart_prefix)
-        parts = self._split_text(summary, content_limit)
+        final_content_limit = content_limit - len(footer_suffix)
+        parts = self._split_text(summary, final_content_limit)
         overflow = len(parts) > MAX_COMPLETION_MESSAGE_PARTS
         if overflow:
             visible = parts[: MAX_COMPLETION_MESSAGE_PARTS - 1]
             remaining = "\n".join(parts[MAX_COMPLETION_MESSAGE_PARTS - 1 :])
-            final_limit = content_limit - len(OVERFLOW_MESSAGE) - 2
+            final_limit = (
+                content_limit
+                - len(COMPLETION_OVERFLOW_MESSAGE)
+                - len(footer_suffix)
+                - 2
+            )
             final, _remainder = self._take_part(remaining, final_limit)
-            parts = [*visible, f"{final.rstrip()}\n\n{OVERFLOW_MESSAGE}"]
+            parts = [
+                *visible,
+                f"{final.rstrip()}\n\n{COMPLETION_OVERFLOW_MESSAGE}",
+            ]
 
         total = len(parts)
-        return [
-            f"{self._completion_prefix(f'{heading}（{index}/{total}）', task.summary, self._session_line(task))}{part}"
+        messages = [
+            f"{self._completion_prefix(f'{heading} · {index}/{total}', task.summary, session_line)}{part}"
             for index, part in enumerate(parts, start=1)
         ]
+        if footer_suffix:
+            messages[-1] = f"{messages[-1]}{footer_suffix}"
+        return messages
+
+    def _completion_usage_footer(self, task: QuickInteractionTask) -> str | None:
+        if task.kind == "translation" or task.status != "succeeded":
+            return None
+        if self.completion_usage_reader is None:
+            return "Weekly Unavailable"
+
+        result: queue.Queue[str] = queue.Queue(maxsize=1)
+
+        def read_usage() -> None:
+            try:
+                message = self.completion_usage_reader()
+            except Exception:
+                message = "Weekly Unavailable"
+            try:
+                result.put_nowait(message or "Weekly Unavailable")
+            except queue.Full:
+                pass
+
+        threading.Thread(target=read_usage, daemon=True).start()
+        try:
+            return result.get(timeout=COMPLETION_USAGE_TIMEOUT_SECONDS)
+        except queue.Empty:
+            return "Weekly Unavailable"
 
     def _bounded_messages(self, heading: str, content: str) -> list[str]:
         prefix = f"{heading}\n\n"
@@ -356,8 +432,26 @@ class OpenClawCompletionNotifier:
         if session_line:
             lines.append(session_line)
         if task_summary:
-            lines.append(f"任务摘要：{task_summary}")
-        return "\n\n".join(lines) + "\n\n"
+            lines.append(f"Task · {task_summary}")
+        return "\n".join(lines) + "\n\n"
+
+    def _completion_session_line(self, task: QuickInteractionTask) -> str | None:
+        session_line = self._session_line(task)
+        if session_line is None:
+            return None
+        session_line = session_line.replace("Session: ", "S", 1)
+        if " (Unavailable)" in session_line:
+            return session_line
+        if (
+            self.session_current_validator is not None
+            and task.weixin_session_slot is not None
+            and self.session_current_validator(
+                task.weixin_session_slot,
+                task.session_id,
+            )
+        ):
+            return f"▶ {session_line}"
+        return session_line
 
     def _session_line(self, task: QuickInteractionTask) -> str | None:
         slot = task.weixin_session_slot
@@ -369,8 +463,8 @@ class OpenClawCompletionNotifier:
             self.session_slot_validator is not None
             and not self.session_slot_validator(slot, task.session_id)
         ):
-            suffix = "（已不可切换）"
-        return f"Session：{slot} · {title}{suffix}"
+            suffix = " (Unavailable)"
+        return f"Session: {slot} · {title}{suffix}"
 
     @classmethod
     def _split_text(cls, text: str, limit: int) -> list[str]:

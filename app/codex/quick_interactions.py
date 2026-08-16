@@ -25,6 +25,7 @@ from app.codex.models import (
     utc_now,
 )
 from app.core.response import ApiError
+from app.core.text_width import truncate_display_width
 from app.services.deferred_restart import (
     DeferredRestartCoordinator,
     DeferredRestartOutcome,
@@ -94,7 +95,11 @@ class _WorkerSubmissionUncertain(Exception):
         self.submission = submission
 
 
-def build_task_summary(prompt: str) -> str:
+def build_task_summary(
+    prompt: str,
+    max_chars: int = TASK_SUMMARY_MAX_LENGTH,
+    max_width: int | None = None,
+) -> str:
     """Build one stable, bounded, non-semantic display summary."""
     lines = []
     for raw_line in prompt.replace(VOICE_TRANSCRIPT_MARKER, "").splitlines():
@@ -117,9 +122,11 @@ def build_task_summary(prompt: str) -> str:
     )
     value = " ".join(value.split()) or "本次微信任务"
     characters = list(value)
-    if len(characters) <= TASK_SUMMARY_MAX_LENGTH:
-        return value
-    return "".join(characters[: TASK_SUMMARY_MAX_LENGTH - 1]).rstrip() + "…"
+    if len(characters) > max_chars:
+        value = "".join(characters[: max_chars - 1]).rstrip() + "…"
+    if max_width is not None:
+        value = truncate_display_width(value, max_width)
+    return value
 
 
 class QuickInteractionManager:
@@ -321,6 +328,8 @@ class QuickInteractionManager:
         weixin_session_title: str | None = None,
         kind: str = "standard",
         translation_original: str | None = None,
+        summary_max_chars: int = TASK_SUMMARY_MAX_LENGTH,
+        summary_max_width: int | None = None,
     ) -> QuickInteractionTask:
         self._require_worker_recovery()
         queued_translation = kind == "translation"
@@ -389,7 +398,11 @@ class QuickInteractionManager:
                     worker_task_id=new_worker_task_id(),
                     session_id=session_id,
                     prompt=persisted_prompt,
-                    summary=build_task_summary(persisted_prompt),
+                    summary=build_task_summary(
+                        persisted_prompt,
+                        max_chars=summary_max_chars,
+                        max_width=summary_max_width,
+                    ),
                     weixin_session_slot=weixin_session_slot,
                     weixin_session_title=weixin_session_title,
                     kind=kind,
@@ -1080,7 +1093,8 @@ class QuickInteractionManager:
                     (
                         task.session_id,
                         build_task_summary(
-                            task.summary or task.prompt or "本次微信任务"
+                            task.prompt or task.summary or "本次微信任务",
+                            max_chars=48,
                         ),
                     )
                     for task in matching

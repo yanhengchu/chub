@@ -155,8 +155,8 @@ def test_notification_uses_only_running_account_and_fixed_recipient(
     messages = [call[call.index("--message") + 1] for call in calls[1:]]
     assert len(messages) == 3
     assert all(len(message) <= 256 for message in messages)
-    assert messages[0].startswith("任务执行成功（1/3）\n\n")
-    assert messages[-1].startswith("任务执行成功（3/3）\n\n")
+    assert messages[0].startswith("Done · 1/3\n\n")
+    assert messages[-1].startswith("Done · 3/3\n\n")
     assert "".join(message.split("\n\n", 1)[1] for message in messages) == (
         "结果" * 300
     )
@@ -170,7 +170,7 @@ def test_short_notification_contains_complete_result_without_page_hint() -> None
 
     messages = notifier._messages_for(task(result="完整结果"))
 
-    assert messages == ["任务执行成功\n\n完整结果"]
+    assert messages == ["Done\n\n完整结果"]
 
 
 def test_notification_reuses_persisted_task_summary() -> None:
@@ -182,9 +182,7 @@ def test_notification_reuses_persisted_task_summary() -> None:
         task(result="完整结果", summary="检查 Ubuntu 服务状态")
     )
 
-    assert messages == [
-        "任务执行成功\n\n任务摘要：检查 Ubuntu 服务状态\n\n完整结果"
-    ]
+    assert messages == ["Done\nTask · 检查 Ubuntu 服务状态\n\n完整结果"]
 
 
 def test_notification_includes_stable_session_and_marks_reused_slot() -> None:
@@ -201,15 +199,23 @@ def test_notification_includes_stable_session_and_marks_reused_slot() -> None:
     notifier.session_slot_validator = lambda slot, session_id: (
         slot == 3 and session_id == "session-1"
     )
+    notifier.session_current_validator = lambda slot, session_id: (
+        slot == 3 and session_id == "session-1"
+    )
     assert notifier._messages_for(completed) == [
-        "任务执行成功\n\nSession：3 · 服务检查\n\n"
-        "任务摘要：检查服务\n\n完整结果"
+        "Done\n▶ S3 · 服务检查\nTask · 检查服务\n\n完整结果"
     ]
 
+    notifier.session_current_validator = lambda _slot, _session_id: False
+    assert "\nS3 · 服务检查\n" in notifier._messages_for(completed)[0]
+    assert "▶ S3" not in notifier._messages_for(completed)[0]
+
+    notifier.session_current_validator = lambda _slot, _session_id: True
     notifier.session_slot_validator = lambda _slot, _session_id: False
-    assert "Session：3 · 服务检查（已不可切换）" in notifier._messages_for(
+    assert "S3 · 服务检查 (Unavailable)" in notifier._messages_for(
         completed
     )[0]
+    assert "▶ S3" not in notifier._messages_for(completed)[0]
 
 
 @pytest.mark.parametrize(
@@ -218,12 +224,12 @@ def test_notification_includes_stable_session_and_marks_reused_slot() -> None:
         (
             "failed",
             "执行失败原因",
-            "任务执行失败\n\n任务摘要：检查设备状态\n\n执行失败原因",
+            "Failed\nTask · 检查设备状态\n\n执行失败原因",
         ),
         (
             "timed_out",
             "执行超时说明",
-            "任务执行超时\n\n任务摘要：检查设备状态\n\n执行超时说明",
+            "Timed out\nTask · 检查设备状态\n\n执行超时说明",
         ),
     ],
 )
@@ -242,6 +248,31 @@ def test_notification_uses_task_status_heading(
     assert notifier._messages_for(failed_task) == [expected]
 
 
+def test_completion_usage_footer_only_applies_to_successful_main_task() -> None:
+    notifier = OpenClawCompletionNotifier(OpenClawCompletionNotificationConfig())
+    notifier.completion_usage_reader = MagicMock(
+        return_value="Weekly 64% · Today 1.2M"
+    )
+
+    assert (
+        notifier._completion_usage_footer(task())
+        == "Weekly 64% · Today 1.2M"
+    )
+    assert notifier._completion_usage_footer(
+        task().model_copy(update={"status": "failed", "result": None})
+    ) is None
+    assert notifier._completion_usage_footer(task(kind="translation")) is None
+
+    assert notifier.completion_usage_reader.call_count == 1
+
+
+def test_completion_usage_footer_degrades_without_affecting_result() -> None:
+    notifier = OpenClawCompletionNotifier(OpenClawCompletionNotificationConfig())
+    notifier.completion_usage_reader = MagicMock(side_effect=OSError("unavailable"))
+
+    assert notifier._completion_usage_footer(task()) == "Weekly Unavailable"
+
+
 def test_notification_caps_long_result_at_five_messages() -> None:
     notifier = OpenClawCompletionNotifier(
         OpenClawCompletionNotificationConfig(max_message_chars=256)
@@ -251,11 +282,26 @@ def test_notification_caps_long_result_at_five_messages() -> None:
 
     assert len(messages) == 5
     assert all(len(message) <= 256 for message in messages)
-    assert messages[0].startswith("任务执行成功（1/5）\n\n")
-    assert messages[-1].startswith("任务执行成功（5/5）\n\n")
-    assert messages[-1].endswith(
-        "结果超过微信发送上限，剩余内容请在 Chub 快速交互页面查看。"
+    assert messages[0].startswith("Done · 1/5\n\n")
+    assert messages[-1].startswith("Done · 5/5\n\n")
+    assert messages[-1].endswith("More in Chub.")
+
+
+def test_multipart_success_appends_usage_only_to_final_part() -> None:
+    notifier = OpenClawCompletionNotifier(
+        OpenClawCompletionNotificationConfig(max_message_chars=256)
     )
+
+    messages = notifier._messages_for(
+        task(result="很长的结果" * 1000),
+        footer="Weekly 64% · Today 1.2M",
+    )
+
+    assert len(messages) == 5
+    assert all(len(message) <= 256 for message in messages)
+    assert all("Weekly" not in message for message in messages[:-1])
+    assert messages[-1].endswith("Weekly 64% · Today 1.2M")
+    assert "More in Chub." in messages[-1]
 
 
 def test_multipart_notification_repeats_summary_within_each_limit() -> None:
@@ -269,7 +315,34 @@ def test_multipart_notification_repeats_summary_within_each_limit() -> None:
 
     assert len(messages) > 1
     assert all(len(message) <= 256 for message in messages)
-    assert all("任务摘要：检查 Ubuntu 服务状态" in message for message in messages)
+    assert all("Task · 检查 Ubuntu 服务状态" in message for message in messages)
+
+
+def test_multipart_notification_uses_one_current_session_snapshot() -> None:
+    notifier = OpenClawCompletionNotifier(
+        OpenClawCompletionNotificationConfig(max_message_chars=256)
+    )
+    current_checks = 0
+
+    def is_current(_slot: int, _session_id: str) -> bool:
+        nonlocal current_checks
+        current_checks += 1
+        return True
+
+    notifier.session_slot_validator = lambda _slot, _session_id: True
+    notifier.session_current_validator = is_current
+    completed = task(
+        result="结果" * 300,
+        summary="检查服务",
+        weixin_session_slot=3,
+        weixin_session_title="服务检查",
+    )
+
+    messages = notifier._messages_for(completed)
+
+    assert len(messages) > 1
+    assert current_checks == 1
+    assert all("\n▶ S3 · 服务检查\n" in message for message in messages)
 
 
 def test_notification_never_exceeds_configured_limit_at_separator_boundary() -> None:
@@ -464,9 +537,12 @@ def test_weixin_task_uses_its_immutable_route_instead_of_global_target(
 ) -> None:
     command = executable(tmp_path)
     calls: list[list[str]] = []
+    current = {"value": False}
 
     def run(arguments, **kwargs):
         calls.append(arguments)
+        if len(calls) == 1:
+            current["value"] = True
         payload = (
             {
                 "channelAccounts": {
@@ -498,15 +574,32 @@ def test_weixin_task_uses_its_immutable_route_instead_of_global_target(
         account_id="route-account",
         recipient="origin@im.wechat",
     )
+    notifier.session_slot_validator = lambda slot, session_id: (
+        slot == 3 and session_id == "session-1"
+    )
+    notifier.session_current_validator = lambda _slot, _session_id: current[
+        "value"
+    ]
+    notifier.completion_usage_reader = lambda: "Weekly 64% · Today 1.2M"
 
     result = notifier.notify(
-        task(notification_route="weixin-task"),
+        task(
+            notification_route="weixin-task",
+            weixin_session_slot=3,
+            weixin_session_title="绘画二",
+        ),
         route,
     )
 
     assert result.status == "sent"
     assert calls[1][calls[1].index("--account") + 1] == "route-account"
     assert calls[1][calls[1].index("--target") + 1] == "origin@im.wechat"
+    assert "\n▶ S3 · 绘画二\n" in calls[1][
+        calls[1].index("--message") + 1
+    ]
+    assert calls[1][calls[1].index("--message") + 1].endswith(
+        "Weekly 64% · Today 1.2M"
+    )
 
 
 def test_weixin_task_fails_without_route_or_global_fallback(
@@ -559,12 +652,19 @@ def test_restart_notification_uses_weixin_task_route(
     monkeypatch.setattr("shutil.which", lambda _name: str(command))
     monkeypatch.setattr("subprocess.run", run)
     notifier = OpenClawCompletionNotifier(OpenClawCompletionNotificationConfig())
-    notifier.codex_status_reader = lambda: (
-        "Sessions\n\n"
-        "S1 · session new，我…\n\nAvailable\n\n"
-        "S3 · 服务检查\n\nAvailable · Current\n\n"
-        "Weekly 暂不可用"
-    )
+    status_read_call_counts: list[int] = []
+
+    def read_status(_route: QuickInteractionWeixinRoute) -> str:
+        status_read_call_counts.append(len(calls))
+        return (
+            "Sessions\n\n"
+            "S1 · session new，我…\n\n"
+            "▶ S3 · 服务检查\n\n"
+            "Weekly Unavailable"
+        )
+
+    status_reader = MagicMock(side_effect=read_status)
+    notifier.codex_status_reader = status_reader
     route = QuickInteractionWeixinRoute(
         account_id="route-account",
         recipient="origin@im.wechat",
@@ -585,14 +685,14 @@ def test_restart_notification_uses_weixin_task_route(
     send = calls[1]
     assert send[send.index("--account") + 1] == "route-account"
     assert send[send.index("--target") + 1] == "origin@im.wechat"
+    status_reader.assert_called_once_with(route)
+    assert status_read_call_counts == [1]
     assert send[send.index("--message") + 1] == (
-        "Chub 已完成自动重启，服务已恢复。\n\n"
-        "关联 Session：3 · 服务检查\n\n"
-        "关联任务：检查 Ubuntu 服务状态\n\n"
+        "Restart: Completed. Chub is available.\n\n"
         "Sessions\n\n"
-        "S1 · session new，我…\n\nAvailable\n\n"
-        "S3 · 服务检查\n\nAvailable · Current\n\n"
-        "Weekly 暂不可用"
+        "S1 · session new，我…\n\n"
+        "▶ S3 · 服务检查\n\n"
+        "Weekly Unavailable"
     )
 
 
@@ -609,13 +709,46 @@ def test_weixin_restart_command_notification_uses_saved_route() -> None:
     result = notifier.notify_weixin_restart_command(route, "succeeded")
 
     assert result.status == "sent"
-    notifier._send_messages.assert_called_once_with(
-        required_account_id="route-account",
-        recipient="origin@im.wechat",
-        messages=["Chub 已完成重启，服务已恢复。"],
-        require_unique=True,
-        unavailable_status="failed",
+    kwargs = notifier._send_messages.call_args.kwargs
+    assert kwargs["required_account_id"] == "route-account"
+    assert kwargs["recipient"] == "origin@im.wechat"
+    assert kwargs["messages"] == []
+    assert kwargs["require_unique"] is True
+    assert kwargs["unavailable_status"] == "failed"
+    assert kwargs["message_factory"]() == [
+        "Restart: Completed. Chub is available.\n\n"
+        "Sessions\n\nUnavailable\n\nWeekly Unavailable"
+    ]
+
+
+def test_weixin_command_result_notification_uses_saved_route() -> None:
+    notifier = OpenClawCompletionNotifier(OpenClawCompletionNotificationConfig())
+    notifier._send_messages = MagicMock(
+        return_value=CompletionNotificationResult("sent")
     )
+    route = QuickInteractionWeixinRoute(
+        account_id="route-account",
+        recipient="origin@im.wechat",
+    )
+
+    result = notifier.notify_weixin_command_result(
+        route,
+        lambda: (
+            "Stop: Session 2 stopped.\n\nSessions\n\n"
+            "S2 · Title\n\nWeekly Unavailable"
+        ),
+    )
+
+    assert result.status == "sent"
+    kwargs = notifier._send_messages.call_args.kwargs
+    assert kwargs["required_account_id"] == "route-account"
+    assert kwargs["recipient"] == "origin@im.wechat"
+    assert kwargs["require_unique"] is True
+    assert kwargs["unavailable_status"] == "failed"
+    assert kwargs["messages"] == []
+    assert kwargs["message_factory"]() == [
+        "Stop: Session 2 stopped.\n\nSessions\n\nS2 · Title\n\nWeekly Unavailable"
+    ]
 
 
 def test_weixin_restart_command_failure_uses_recorded_reason() -> None:
@@ -634,8 +767,9 @@ def test_weixin_restart_command_failure_uses_recorded_reason() -> None:
         "重启脚本返回退出码 1，旧 Chub 实例继续运行。",
     )
 
-    assert notifier._send_messages.call_args.kwargs["messages"] == [
-        "Chub 重启未完成：重启脚本返回退出码 1，旧 Chub 实例继续运行。"
+    assert notifier._send_messages.call_args.kwargs["message_factory"]() == [
+        "Restart: Failed. Check the Chub runtime logs.\n\n"
+        "Sessions\n\nUnavailable\n\nWeekly Unavailable"
     ]
 
 
@@ -673,13 +807,13 @@ def test_restart_failure_notification_uses_recorded_reason() -> None:
         "start_failed",
     )
 
-    messages = notifier._send.call_args.args[2]
+    messages = notifier._send.call_args.kwargs["message_factory"]()
     assert messages[0].startswith(
-        "Chub 自动重启未完成：重启脚本返回退出码 1，旧 Chub 实例继续运行。"
+        "Restart: Failed. Check the Chub runtime logs."
     )
 
 
-def test_restart_notification_uses_unavailable_for_legacy_session_context(
+def test_restart_notification_omits_legacy_related_context(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -723,9 +857,9 @@ def test_restart_notification_uses_unavailable_for_legacy_session_context(
 
     assert result.status == "sent"
     message = calls[1][calls[1].index("--message") + 1]
-    assert "关联 Session：Unavailable" in message
-    assert "关联任务：Unavailable" in message
-    assert "Sessions\n\n暂不可用\n\nWeekly 暂不可用" in message
+    assert "Related Session:" not in message
+    assert "Task:" not in message
+    assert "Sessions\n\nUnavailable\n\nWeekly Unavailable" in message
 
 
 def test_weixin_route_validation_requires_one_healthy_clawbot(

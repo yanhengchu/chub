@@ -36,6 +36,7 @@ from tests.openclaw_weixin_chub_mode_helpers import (
     delivery_route,
     enable_restart_command,
     inject_default_delivery_route,
+    submitted_task_message,
 )
 
 
@@ -66,7 +67,9 @@ def test_chub_restart_registers_fixed_restart_and_replies(
     )
 
     assert result.disposition == "reply"
-    assert result.message == "Chub 重启已登记，完成后将原路发送结果。"
+    assert result.message == (
+        "Restart: Scheduled. The result will be sent when completed."
+    )
     request = coordinator.request.call_args.kwargs
     assert request["operation_id"].endswith(":restart")
     assert request["task_id"].startswith("weixin-restart-")
@@ -105,8 +108,8 @@ def test_removed_or_near_restart_matches_remain_normal_tasks(
         delivery_route=delivery_route(),
     )
 
-    assert result.disposition == "handled"
-    assert result.message is None
+    assert result.disposition == "reply"
+    assert result.message == submitted_task_message(settings, prompt)
     coordinator.request.assert_not_called()
     quick_interactions.submit.assert_called_once()
 
@@ -162,7 +165,9 @@ def test_second_chub_restart_reuses_active_route_operation(
         delivery_route=delivery_route(),
     )
 
-    assert second.message == "Chub 重启已在处理中，完成后将原路发送结果。"
+    assert second.message == (
+        "Restart: Already in progress. The result will be sent when completed."
+    )
     coordinator.request.assert_called_once()
     assert len(manager._state.restart_operations) == 1
 
@@ -183,7 +188,10 @@ def test_chub_restart_rejects_unavailable_delivery_route(
         delivery_route=delivery_route(),
     )
 
-    assert result.message == "Chub 重启未登记：原消息的 ClawBot 当前不可用。"
+    assert result.message == (
+        "Restart: Not scheduled because the reply route is unavailable.\n\n"
+        "No sessions\n\nWeekly Unavailable"
+    )
     coordinator.request.assert_not_called()
     quick_interactions.submit.assert_not_called()
 
@@ -266,7 +274,7 @@ def test_chub_restart_interrupted_notification_is_not_retried(
         recovered._route_fingerprint(delivery_route()),
         elapsed_ms=10,
     )
-    assert "1 个重启结果通知失败" in overview
+    assert "Restart result notifications failed: 1" in overview
     assert recovered.record_deferred_restart_completion(
         current.coordinator_operation_id,
         coordinator.request.call_args.kwargs["task_id"],

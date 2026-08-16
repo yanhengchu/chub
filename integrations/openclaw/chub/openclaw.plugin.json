@@ -2,7 +2,7 @@
   "id": "chub",
   "name": "Chub",
   "description": "Use explicitly allowlisted Chub capabilities through a fixed Tailnet connection.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "configSchema": {
     "type": "object",
     "properties": {

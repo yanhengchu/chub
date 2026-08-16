@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Iterable
+from typing import Iterable, Mapping
 
 from app.ai_usage.models import AiUsageData
 from app.ai_usage.service import AiUsageService
@@ -10,6 +10,7 @@ from app.codex.models import CodexQuotaData, CodexTokenUsageData
 from app.codex.quick_interactions import build_task_summary
 from app.core.response import ApiError
 from app.services.openclaw_weixin_chub_models import (
+    MAX_WEIXIN_TASK_SUMMARY_CHARS,
     WeixinChubModeDispatchCode,
     WeixinChubModeDispatchResult,
     WeixinChubModeRuntimeConfig,
@@ -17,6 +18,18 @@ from app.services.openclaw_weixin_chub_models import (
 
 
 WEEKLY_WINDOW_MINUTES = 7 * 24 * 60
+CHUB_HELP_MESSAGE = """Commands
+
+chub
+sync
+session new [task]
+rename <title>
+session switch <S1-S9|1-9> [task]
+session stop <S1-S9|1-9>
+session archive <S1-S9|1-9>
+session retry
+session new retry
+restart"""
 
 
 @dataclass(frozen=True)
@@ -44,26 +57,36 @@ def format_chub_overview(
     disk_percent: float | None,
     failed_task_notifications: int,
     failed_restart_notifications: int,
+    failed_stop_notifications: int,
     sessions: tuple[ChubOverviewSession, ...] | None,
     usage_message: str,
 ) -> str:
     anomalies: list[str] = []
     lines = [f"Chub · {format_elapsed_time(elapsed_ms)}"]
     if readiness is None:
-        anomalies.append("Chub 状态尚未初始化")
+        anomalies.append("Chub status is not initialized.")
     elif not readiness.ready:
-        anomalies.append(readiness.message)
+        code = getattr(readiness, "code", "unavailable")
+        anomalies.append(f"Chub is not ready ({code}).")
     if memory_percent is not None and memory_percent >= 85:
-        anomalies.append(f"内存使用率较高：{memory_percent:.0f}%")
+        anomalies.append(f"Memory usage is high: {memory_percent:.0f}%")
     if disk_percent is not None and disk_percent >= 85:
-        anomalies.append(f"磁盘使用率较高：{disk_percent:.0f}%")
+        anomalies.append(f"Disk usage is high: {disk_percent:.0f}%")
     if failed_task_notifications:
-        anomalies.append(f"{failed_task_notifications} 个任务结果通知失败")
+        anomalies.append(
+            f"Task result notifications failed: {failed_task_notifications}"
+        )
     if failed_restart_notifications:
-        anomalies.append(f"{failed_restart_notifications} 个重启结果通知失败")
+        anomalies.append(
+            f"Restart result notifications failed: {failed_restart_notifications}"
+        )
+    if failed_stop_notifications:
+        anomalies.append(
+            f"Stop result notifications failed: {failed_stop_notifications}"
+        )
 
     if anomalies:
-        lines.extend(["", "异常"])
+        lines.extend(["", "Issues"])
         lines.extend(
             f"{index}. {message}"
             for index, message in enumerate(dict.fromkeys(anomalies), start=1)
@@ -72,15 +95,23 @@ def format_chub_overview(
     session_lines = ["Sessions"]
     if sessions:
         for item in sessions:
-            session_lines.append(f"S{item.slot} · {item.title}")
-            if item.state == "Busy" and item.task_summary:
-                session_lines.append(f"T{item.slot} · {item.task_summary}")
-            status = f"{item.state} · Current" if item.current else item.state
-            session_lines.append(status)
-    else:
-        session_lines.append("暂无已分配 Session" if sessions == () else "暂不可用")
-    lines.extend(["", "\n\n".join(session_lines)])
-    lines.extend(["", "Codex", "", usage_message])
+            session_block = format_session_name_line(
+                item.slot,
+                item.title,
+                item.state,
+                item.current,
+            )
+            if item.state == "Busy":
+                session_block = (
+                    f"{session_block}\nTask · {item.task_summary or 'Running'}"
+                )
+            session_lines.append(session_block)
+    elif sessions is None:
+        session_lines.append("Unavailable")
+    lines.extend(
+        ["", "No sessions" if sessions == () else "\n\n".join(session_lines)]
+    )
+    lines.extend(["", usage_message])
     return "\n".join(lines)
 
 
@@ -88,34 +119,164 @@ def codex_operation_message(operation_status: str, codex_message: str) -> str:
     return f"{operation_status}\n\n{codex_message}"
 
 
+def format_fixed_reply(message: str) -> str:
+    replacements = {
+        "任务提交失败：当前 Session 正在执行，本任务未提交。": (
+            "Not submitted · The current Session is running."
+        ),
+        (
+            "如需新建 Session 并继续执行本任务，请回复："
+            "session new retry 或“新建会话执行”。"
+        ): "Retry: Send session new retry to continue in a new Session.",
+        (
+            "任务提交失败：微信 Chub 模式配置无效，请检查工作区、权限、模型和"
+            "微信通知配置。"
+        ): "Not submitted · The WeChat Chub configuration is invalid.",
+        "任务提交失败：Codex 当前不可用，请稍后重试。": (
+            "Not submitted · Codex is unavailable. Try again later."
+        ),
+        "任务提交失败：无法确认本次消息的微信回送通道，请稍后重试。": (
+            "Not submitted · The reply route is unavailable."
+        ),
+        "任务提交失败：该消息的回送通道与首次提交不一致。": (
+            "Request: Rejected because the reply route does not match the original request."
+        ),
+        "上次提交被 Chub 重启中断，请重新发送任务。": (
+            "Not submitted · The previous submission was interrupted by a Chub restart. Send it again."
+        ),
+        "Chub 重启中断了本次提交，请发送一条新消息重试。": (
+            "Request: Interrupted by a Chub restart. Send a new message to try again."
+        ),
+        "任务提交失败：Chub 当前状态不可用，请稍后重试。": (
+            "Not submitted · Chub state is unavailable. Try again later."
+        ),
+        "任务提交失败，请稍后重试。": "Not submitted · Submission failed. Try again later.",
+    }
+    paragraphs = message.split("\n\n")
+    for index, paragraph in enumerate(paragraphs):
+        lines = paragraph.splitlines()
+        if not lines:
+            continue
+        if lines[0].startswith("任务摘要："):
+            lines[0] = f"Task · {lines[0].removeprefix('任务摘要：')}"
+        else:
+            lines[0] = replacements.get(lines[0], lines[0])
+        paragraphs[index] = "\n".join(lines)
+    return "\n\n".join(paragraphs)
+
+
 def switch_candidate_hint(remaining: int) -> str:
     if remaining <= 0:
         return ""
-    return "另有未登记的可用 Session，请先发送 sync、同步状态或状态同步后再切换。"
+    return "Unregistered Sessions are available. Send sync before switching."
 
 
 def format_session_blocks(
     entries: Iterable[tuple[int, str, str, bool]],
+    task_summaries: Mapping[int, str] | None = None,
 ) -> str:
     paragraphs = ["Sessions"]
     for slot, title, state, current in entries:
-        paragraphs.append(f"S{slot} · {title}")
-        paragraphs.append(f"{state} · Current" if current else state)
+        session_block = format_session_name_line(slot, title, state, current)
+        if state == "Busy":
+            summary = task_summaries.get(slot) if task_summaries is not None else None
+            session_block = f"{session_block}\nTask · {summary or 'Running'}"
+        paragraphs.append(session_block)
     if len(paragraphs) == 1:
-        paragraphs.append("暂无已分配 Session")
+        return "No sessions"
     return "\n\n".join(paragraphs)
+
+
+def format_session_name_line(
+    slot: int,
+    title: str,
+    state: str,
+    current: bool,
+) -> str:
+    current_marker = "▶ " if current else ""
+    state_marker = " !" if state == "Unavailable" else ""
+    return f"{current_marker}S{slot}{state_marker} · {title}"
+
+
+def build_session_title(title: str, max_width: int) -> str:
+    return build_task_summary(
+        title or "Unnamed Session",
+        max_chars=MAX_WEIXIN_TASK_SUMMARY_CHARS,
+        max_width=max_width,
+    )
+
+
+def build_task_name(summary: str, max_width: int) -> str:
+    return build_task_summary(
+        summary,
+        max_chars=MAX_WEIXIN_TASK_SUMMARY_CHARS,
+        max_width=max_width,
+    )
+
+
+def format_task_context(
+    status: str,
+    task_summary: str,
+    *,
+    session_slot: int | None = None,
+    session_title: str | None = None,
+    current: bool = False,
+) -> str:
+    lines = [status]
+    if session_slot is not None and session_title:
+        lines.append(
+            format_session_name_line(
+                session_slot,
+                session_title,
+                "Available",
+                current,
+            )
+        )
+    lines.append(f"Task · {task_summary}")
+    return "\n".join(lines)
+
+
+def with_task_summary(
+    message: str,
+    prompt: str,
+    max_width: int = 64,
+    *,
+    session_slot: int | None = None,
+    session_title: str | None = None,
+    current: bool = False,
+) -> str:
+    lines = message.splitlines()
+    if any(line.startswith("Task · ") for line in lines[1:3]):
+        return message
+    first_line, separator, remainder = message.partition("\n")
+    if first_line == "Request: Failed because Chub state is unavailable. Try again later.":
+        first_line = "Not submitted · Chub state is unavailable. Try again later."
+    context = format_task_context(
+        first_line,
+        build_task_name(prompt, max_width),
+        session_slot=session_slot,
+        session_title=session_title,
+        current=current,
+    )
+    if not separator:
+        return context
+    return f"{context}\n{remainder}"
 
 
 def format_codex_sessions(
     visible: list[tuple[int, object, str]],
     current_session_id: str | None,
     remaining: int,
+    session_name_max_width: int,
 ) -> str:
     message = format_session_blocks(
         (
             (
                 slot,
-                build_task_summary(session.title or "未命名 Session"),
+                build_session_title(
+                    session.title or "Unnamed Session",
+                    session_name_max_width,
+                ),
                 state,
                 session.id == current_session_id,
             )
@@ -123,7 +284,7 @@ def format_codex_sessions(
         )
     )
     if remaining:
-        message = f"{message}\n\n另有 {remaining} 个"
+        message = f"{message}\n\n{remaining} more Sessions"
     return message
 
 
@@ -162,7 +323,7 @@ def codex_usage_message(
     weekly_text = (
         f"Weekly {weekly.remaining_percent}%"
         if weekly is not None
-        else "Weekly 暂不可用"
+        else "Weekly Unavailable"
     )
     today = datetime.now().astimezone().date()
     today_bucket = next(
@@ -181,7 +342,7 @@ def usage_message(value: object) -> str:
     if isinstance(value, AiUsageData):
         if value.status == "available" and value.display.short:
             return value.display.short
-        return "Weekly 暂不可用"
+        return "Weekly Unavailable"
     quota, usage = value
     return codex_usage_message(quota, usage)
 
@@ -226,23 +387,25 @@ def dispatch_failure(
 ) -> WeixinChubModeDispatchResult:
     messages = {
         "in_progress": (
-            "任务提交失败：当前 Session 正在执行，本任务未提交。\n\n"
-            "如需新建 Session 并继续执行本任务，请回复："
-            "session new retry 或“新建会话执行”。"
+            "Not submitted · The current Session is running.\n\n"
+            "Retry: Send session new retry to continue in a new Session."
         ),
         "configuration_invalid": (
-            "任务提交失败：微信 Chub 模式配置无效，请检查工作区、权限、模型和微信通知配置。"
+            "Not submitted · The WeChat Chub configuration is invalid."
         ),
-        "codex_unavailable": "任务提交失败：Codex 当前不可用，请稍后重试。",
-        "delivery_route_invalid": "任务提交失败：无法确认本次消息的微信回送通道，请稍后重试。",
-        "message_conflict": "任务提交失败：该消息的回送通道与首次提交不一致。",
-        "submission_interrupted": "上次提交被 Chub 重启中断，请重新发送任务。",
-        "state_unavailable": "任务提交失败：Chub 当前状态不可用，请稍后重试。",
-        "submission_failed": "任务提交失败，请稍后重试。",
+        "codex_unavailable": "Not submitted · Codex is unavailable. Try again later.",
+        "delivery_route_invalid": "Not submitted · The reply route is unavailable.",
+        "message_conflict": "Not submitted · The reply route does not match the original request.",
+        "submission_interrupted": "Not submitted · A Chub restart interrupted the previous submission. Send it again.",
+        "state_unavailable": "Request: Failed because Chub state is unavailable. Try again later.",
+        "submission_failed": "Not submitted · Submission failed. Try again later.",
     }
     return WeixinChubModeDispatchResult(
         disposition="reply",
-        message=messages.get(code, "任务提交失败，请稍后重试。"),
+        message=messages.get(
+            code,
+            "Not submitted · Submission failed. Try again later.",
+        ),
     )
 
 

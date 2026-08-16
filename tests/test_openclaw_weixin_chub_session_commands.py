@@ -36,6 +36,7 @@ from tests.openclaw_weixin_chub_mode_helpers import (
     delivery_route,
     enable_restart_command,
     inject_default_delivery_route,
+    submitted_task_message,
 )
 
 
@@ -105,11 +106,11 @@ def test_codex_switch_uses_creation_order_and_allows_busy_target(
 
     assert result.message is not None
     assert result.message.startswith(
-        "切换状态：已切换到 Session 3。\n\n"
+        "Switch: Session 3 selected.\n\n"
         "Sessions\n\n"
     )
-    assert "S3 · 第三项\n\nAvailable · Current" in result.message
-    assert result.message.endswith("Weekly 暂不可用")
+    assert "▶ S3 · 第三项" in result.message
+    assert result.message.endswith("Weekly Unavailable")
     assert manager.session_id() == "c-available"
     quick_interactions.submit.assert_not_called()
 
@@ -122,6 +123,8 @@ def test_codex_switch_uses_creation_order_and_allows_busy_target(
         " 切换 二。 ",
         "切换会话2",
         "切换会话 二",
+        "切换会话 S2",
+        "会话S2",
         "会话2",
         " 会话 二。 ",
     ],
@@ -167,7 +170,7 @@ def test_chinese_switch_routes_to_numbered_session(
     )
 
     assert result.message is not None
-    assert "S2 · 第 2 项\n\nAvailable · Current" in result.message
+    assert "▶ S2 · 第 2 项" in result.message
     assert "Task status:" not in result.message
     assert manager.session_id() == "session-2"
     quick_interactions.submit.assert_not_called()
@@ -237,8 +240,9 @@ def test_codex_switch_with_task_switches_and_submits_once(
 
     assert first.disposition == "reply"
     assert first.message is not None
-    assert first.message.startswith("切换状态：已切换到 Session 2。")
-    assert "任务状态：已提交。" in first.message
+    assert first.message.startswith("Switch: Session 2 selected.")
+    assert first.message.splitlines()[1] == "▶ S2 · 第 2 项"
+    assert first.message.splitlines()[2] == f"Task · {task_prompt}"
     assert duplicate.message == first.message
     assert manager.session_id() == "session-2"
     quick_interactions.submit.assert_called_once()
@@ -246,6 +250,108 @@ def test_codex_switch_with_task_switches_and_submits_once(
         "session-2",
         task_prompt,
     )
+
+
+def test_codex_switch_with_task_failure_shows_task_summary(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager._state.session_id = "session-1"
+    sessions = [
+        CodexSession(
+            id=f"session-{slot}",
+            workspace_id="chub",
+            workspace_name="Chub",
+            cwd="/project",
+            title=f"第 {slot} 项",
+            permission_mode="full-access",
+            status="stopped",
+            activity="idle",
+        )
+        for slot in (1, 2)
+    ]
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=slot, session_id=f"session-{slot}")
+        for slot in (1, 2)
+    ]
+    codex_manager.list_sessions.return_value = sessions
+    codex_manager.get_session.return_value = sessions[1]
+    quick_interactions.submit.side_effect = ApiError(
+        503,
+        "quick_worker_unavailable",
+        "private detail",
+    )
+
+    result = manager.dispatch(
+        message_id="switch-with-failed-task",
+        prompt="切换2 继续检查日志",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+    duplicate = manager.dispatch(
+        message_id="switch-with-failed-task",
+        prompt="切换2 继续检查日志",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message is not None
+    assert "the task was not submitted" in result.message
+    assert result.message.splitlines()[1] == "▶ S2 · 第 2 项"
+    assert result.message.splitlines()[2] == "Task · 继续检查日志"
+    assert "Sessions" not in result.message
+    assert duplicate == result
+    quick_interactions.submit.assert_called_once()
+
+
+def test_codex_switch_with_task_busy_target_uses_target_without_current_marker(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager._state.session_id = "session-1"
+    sessions = [
+        CodexSession(
+            id=f"session-{slot}",
+            workspace_id="chub",
+            workspace_name="Chub",
+            cwd="/project",
+            title=f"第 {slot} 项",
+            permission_mode="full-access",
+            status="stopped",
+            activity="idle",
+        )
+        for slot in (1, 2)
+    ]
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=slot, session_id=f"session-{slot}")
+        for slot in (1, 2)
+    ]
+    codex_manager.list_sessions.return_value = sessions
+    quick_interactions.is_running.side_effect = (
+        lambda session_id: session_id == "session-2"
+    )
+
+    result = manager.dispatch(
+        message_id="switch-with-busy-target-task",
+        prompt="切换2 继续检查日志",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == (
+        "Switch: Not completed because the target Session is running. "
+        "The task was not submitted.\n"
+        "S2 · 第 2 项\n"
+        "Task · 继续检查日志"
+    )
+    assert manager.session_id() == "session-1"
+    quick_interactions.submit.assert_not_called()
 
 
 def test_codex_switch_without_current_uses_first_visible_session(
@@ -294,7 +400,7 @@ def test_codex_switch_without_current_uses_first_visible_session(
     )
 
     assert result.message is not None
-    assert "S1 · 可用会话\n\nAvailable · Current" in result.message
+    assert "▶ S1 · 可用会话" in result.message
     assert manager.session_id() == "b-available"
 
 
@@ -307,6 +413,8 @@ def test_codex_switch_without_current_uses_first_visible_session(
         "归档 二",
         "归档会话2",
         "归档会话 二",
+        "归档 S2",
+        "归档会话S2",
     ],
 )
 def test_codex_archive_removes_target_and_clears_current_binding(
@@ -361,11 +469,11 @@ def test_codex_archive_removes_target_and_clears_current_binding(
 
     assert result.message is not None
     assert result.message.startswith(
-        "归档状态：Session 2 已归档，当前绑定已清除。\n\n"
+        "Archive: Session 2 archived. The current selection was cleared.\n\n"
         "Sessions\n\n"
     )
-    assert result.message.endswith("Weekly 暂不可用")
-    assert "S1 · 候选 1\n\nAvailable" in result.message
+    assert result.message.endswith("Weekly Unavailable")
+    assert "S1 · 候选 1" in result.message
     assert "候选 2" not in result.message
     assert " · Current" not in result.message
     manager.session_archiver.assert_called_once_with("session-2")
@@ -471,7 +579,7 @@ def test_codex_archive_status_preserves_freed_slot_for_codex_new(
 
     assert archived.message is not None
     assert "2. 候选 10" not in archived.message
-    assert "另有 1 个" in archived.message
+    assert "1 more Sessions" in archived.message
     assert manager.session_slot_matches(2, "session-10") is False
 
     refreshed = manager.dispatch(
@@ -484,7 +592,7 @@ def test_codex_archive_status_preserves_freed_slot_for_codex_new(
     )
 
     assert refreshed.message is not None
-    assert "S2 · 候选 10\n\nAvailable" in refreshed.message
+    assert "S2 · 候选 10" in refreshed.message
     assert manager.session_slot_matches(2, "session-10") is True
 
 
@@ -526,8 +634,10 @@ def test_codex_archive_does_not_fill_unassigned_candidate(
     )
 
     assert archived.message is not None
-    assert archived.message.startswith("归档状态：未归档，编号无效。\n\n")
-    assert "另有 1 个" in archived.message
+    assert archived.message.startswith(
+        "Archive: Not completed because the Session number is invalid.\n\n"
+    )
+    assert "1 more Sessions" in archived.message
     manager.session_archiver.assert_not_called()
     assert manager.session_slot_matches(2, "session-2") is False
 
@@ -583,7 +693,7 @@ def test_codex_archive_rejects_session_that_is_not_safely_idle(
     )
 
     assert result.message is not None
-    assert "未归档" in result.message
+    assert "Archive: Not completed" in result.message
     manager.session_archiver.assert_not_called()
 
 
@@ -618,7 +728,7 @@ def test_codex_archive_invalid_usage_is_not_submitted(
     )
 
     assert result.message is not None
-    assert result.message.startswith("用法：发送 session archive n")
+    assert result.message == "Usage: session archive <S1-S9|1-9>"
     codex_manager.list_sessions.assert_not_called()
     quick_interactions.submit.assert_not_called()
 
@@ -637,8 +747,8 @@ def test_chinese_archive_business_text_is_submitted_as_normal_task(
         delivery_route=delivery_route(),
     )
 
-    assert result.disposition == "handled"
-    assert result.message is None
+    assert result.disposition == "reply"
+    assert result.message == submitted_task_message(settings, "归档日志后再检查")
     quick_interactions.submit.assert_called_once()
 
 
@@ -677,10 +787,12 @@ def test_codex_archive_failure_keeps_slot_and_explains_possible_stop(
         delivery_route=delivery_route(),
     )
 
-    assert result.message == (
-        "归档失败；Session 可能已停止，但未从列表移除。"
-        "请发送 chub 查看状态后再重试。"
+    assert result.message is not None
+    assert result.message.startswith(
+        "Archive: Failed. The Session may have stopped but remains listed."
+        " Send chub before trying again.\n\nSessions\n\n"
     )
+    assert result.message.endswith("Weekly Unavailable")
     assert manager.session_slot_matches(1, "session-1") is True
 
 
@@ -724,9 +836,9 @@ def test_codex_archive_rejects_session_with_pending_retry(
     )
 
     assert result.message.startswith(
-        "归档状态：未归档，该 Session 关联一条待继续执行的任务。\n\n"
+        "Archive: Not completed because the Session has a pending retry task.\n\n"
     )
-    assert "Sessions\n\nS1 · 待续提\n\nAvailable" in result.message
+    assert "Sessions\n\nS1 · 待续提" in result.message
     manager.session_archiver.assert_not_called()
 
 
@@ -771,10 +883,12 @@ def test_codex_archive_state_sync_failure_reports_partial_success(
         delivery_route=delivery_route(),
     )
 
-    assert result.message == (
-        "Session 已归档，但 Chub 未能同步列表状态。"
-        "请稍后发送 chub 查看状态。"
+    assert result.message is not None
+    assert result.message.startswith(
+        "Archive: Completed, but Chub could not synchronize the Session list."
+        " Send chub later.\n\nSessions\n\n"
     )
+    assert result.message.endswith("Weekly Unavailable")
     manager.session_archiver.assert_called_once_with("session-1")
 
 
@@ -816,7 +930,7 @@ def test_codex_switch_number_uses_fresh_visible_list(settings: Settings) -> None
     )
 
     assert result.message is not None
-    assert "S2 · 候选 2\n\nAvailable · Current" in result.message
+    assert "▶ S2 · 候选 2" in result.message
     assert manager.session_id() == "session-2"
 
 
@@ -875,11 +989,11 @@ def test_codex_switch_uses_one_deadline_and_reuses_session_scan(
 
     assert result.message is not None
     assert result.message.startswith(
-        "切换状态：已切换到 Session 2。\n\n"
+        "Switch: Session 2 selected.\n\n"
         "Sessions\n\n"
     )
-    assert result.message.endswith("Codex 用量查询失败，请稍后重试。")
-    assert "S2 · 候选 2\n\nAvailable · Current" in result.message
+    assert result.message.endswith("Weekly Unavailable")
+    assert "▶ S2 · 候选 2" in result.message
     assert manager.session_id() == "session-2"
     codex_manager.list_sessions.assert_called_once()
 
@@ -911,9 +1025,11 @@ def test_codex_switch_out_of_range_returns_fresh_list_without_changing_binding(
     )
 
     assert result.message is not None
-    assert result.message.startswith("切换状态：未切换，编号无效。\n\n")
+    assert result.message.startswith(
+        "Switch: Not completed because the Session number is invalid.\n\n"
+    )
     assert "Sessions" in result.message
-    assert "S1 · 当前会话\n\nAvailable · Current" in result.message
+    assert "▶ S1 · 当前会话" in result.message
     assert manager.session_id() == "session-1"
     codex_manager.get_session.assert_not_called()
 
@@ -957,10 +1073,10 @@ def test_codex_switch_does_not_fill_unassigned_candidate(
 
     assert switched.message is not None
     assert switched.message.startswith(
-        "切换状态：未切换，编号无效。"
-        "另有未登记的可用 Session，请先发送 sync、同步状态或状态同步后再切换。\n\n"
+        "Switch: Not completed because the Session number is invalid. "
+        "Unregistered Sessions are available. Send sync before switching.\n\n"
     )
-    assert "另有 1 个" in switched.message
+    assert "1 more Sessions" in switched.message
     assert manager.session_id() == "session-1"
     assert manager.session_slot_matches(2, "session-2") is False
 
@@ -1010,7 +1126,7 @@ def test_codex_switch_invalid_usage_is_not_submitted(
     )
 
     assert result.message is not None
-    assert result.message.startswith("用法：发送 session switch n")
+    assert result.message == "Usage: session switch <S1-S9|1-9>"
     codex_manager.list_sessions.assert_not_called()
     quick_interactions.submit.assert_not_called()
 
@@ -1040,8 +1156,8 @@ def test_chinese_switch_business_text_is_submitted_as_normal_task(
         delivery_route=delivery_route(),
     )
 
-    assert result.disposition == "handled"
-    assert result.message is None
+    assert result.disposition == "reply"
+    assert result.message == submitted_task_message(settings, prompt)
     quick_interactions.submit.assert_called_once()
     assert quick_interactions.submit.call_args.args[1] == prompt
     assert manager.codex_account_reader is None
@@ -1060,7 +1176,7 @@ def test_codex_switch_rejects_oversized_numeric_index(settings: Settings) -> Non
     )
 
     assert result.message is not None
-    assert result.message.startswith("用法：发送 session switch n")
+    assert result.message == "Usage: session switch <S1-S9|1-9>"
     codex_manager.list_sessions.assert_not_called()
     quick_interactions.submit.assert_not_called()
 
@@ -1111,7 +1227,10 @@ def test_codex_switch_write_failure_keeps_previous_binding(
         delivery_route=delivery_route(),
     )
 
-    assert result.message == "任务提交失败：Chub 当前状态不可用，请稍后重试。"
+    assert result.message == (
+        "Request: Failed because Chub state is unavailable. Try again later.\n\n"
+        "Sessions\n\nUnavailable\n\nWeekly Unavailable"
+    )
     assert manager.session_id() == "session-1"
     persisted = json.loads(
         settings.openclaw.weixin_chub_mode.state_file.read_text(encoding="utf-8")
