@@ -38,12 +38,12 @@
         <section class="settings-section" aria-labelledby="weixin-settings-title">
           <div class="settings-section-heading">
             <h3 id="weixin-settings-title">微信处理</h3>
-            <p>控制微信 Chub 普通任务的附加文本处理。</p>
+            <p>控制微信 Chub 普通任务执行前的文本处理。</p>
           </div>
           <label class="settings-field" for="weixin-translation-enabled">
             <span>
-              <strong>文本优化与翻译</strong>
-              <small>开启后，后续普通任务会额外收到原文、中文润色和 English；关闭只阻止新翻译，已有任务继续完成，全部结束后会自动归档内部翻译 Session。此功能会增加 Codex 用量，并将微信正文交给模型处理。</small>
+              <strong>自动润色后执行</strong>
+              <small>开启后，普通任务先在独立只读 Session 生成中文润色和 English，再将润色后的中文自动提交到原目标 Session；固定指令不触发。润色失败或目标变忙时不执行原文，可用“直接执行 &lt;正文&gt;”单次跳过。关闭只阻止新任务，已受理任务继续完成。此功能会增加 Codex 用量。</small>
             </span>
             <input
               id="weixin-translation-enabled"

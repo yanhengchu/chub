@@ -42,26 +42,81 @@ from app.services.openclaw_weixin_chub_models import (
         (" 《Chub》。 ", "status", None, None, False),
         ("help", "help", None, None, False),
         ("帮助。", "help", None, None, False),
-        ("状态同步。", "sync", None, None, False),
+        ("同步。", "sync", None, None, False),
         ("RESTART。", "restart", None, None, False),
         ("重新启动", "restart", None, None, False),
-        ("session retry", "retry", None, None, False),
-        ("新建会话执行", "new_retry", None, None, False),
-        ("新建会话执行 新正文", "new_retry", None, "新正文", False),
-        ("rename: 项目维护", "rename", None, "项目维护", False),
+        ("retry", "retry", None, None, False),
+        ("重试", "retry", None, None, False),
+        ("继续执行", "retry", None, None, False),
+        ("new retry", "new_retry", None, None, False),
+        ("新建 重试", "new_retry", None, None, False),
+        ("新建 继续执行", "new_retry", None, None, False),
+        ("direct 检查设备", "direct", None, "检查设备", False),
+        ("直接执行 检查设备", "direct", None, "检查设备", False),
+        ("direct", "direct", None, None, True),
+        ("直接执行", "direct", None, None, True),
+        ("直接执行检查设备", "normal", None, None, False),
+        ("rename 项目维护", "rename", None, "项目维护", False),
         ("重命名 新标题", "rename", None, "新标题", False),
         ("rename", "rename", None, None, False),
-        ("session new: 检查设备", "new", None, "检查设备", False),
-        ("切换会话三：继续处理", "switch", 3, "继续处理", False),
-        ("切换会话 S3", "switch", 3, None, False),
-        ("session archive 2", "archive", 2, None, False),
-        ("session archive S2", "archive", 2, None, False),
-        ("归档会话二 附带正文", "archive", 2, "附带正文", True),
+        ("new 检查设备", "new", None, "检查设备", False),
+        ("新建 项目维护", "new", None, "项目维护", False),
+        ("switch 3 continue", "switch", 3, "continue", False),
+        ("switch s3 continue", "switch", 3, "continue", False),
+        ("切换 3 继续处理", "switch", 3, "继续处理", False),
+        ("会话 S3", "switch", 3, None, False),
+        ("会话 3", "switch", 3, None, False),
+        ("switch 3 retry", "switch_retry", 3, None, False),
+        ("switch S3 retry", "switch_retry", 3, None, False),
+        ("切换 3 重试", "switch_retry", 3, None, False),
+        ("切换3重试", "switch_retry", 3, None, False),
+        ("切换S3，重试", "switch_retry", 3, None, False),
+        ("切换S3重试服务", "switch", 3, "重试服务", False),
+        ("切换 3 继续执行", "switch", 3, "继续执行", False),
+        ("切换S3，这是正文", "switch", 3, "这是正文", False),
+        ("切换3这是正文", "switch", 3, "这是正文", False),
+        ("会话三这是正文", "switch", 3, "这是正文", False),
+        ("switch S3: continue", "switch", 3, "continue", False),
+        ("archive 2", "archive", 2, None, False),
+        ("archive S2", "archive", 2, None, False),
+        ("归档 2", "archive", 2, None, False),
         ("归档 S2", "archive", 2, None, False),
-        ("session stop S2", "stop", 2, None, False),
-        ("停止会话 S2", "stop", 2, None, False),
+        ("stop 2", "stop", 2, None, False),
+        ("stop S2", "stop", 2, None, False),
+        ("停止 2", "stop", 2, None, False),
+        ("停止 S2", "stop", 2, None, False),
         ("停止服务后检查", "normal", None, None, False),
-        ("session switch 999", "switch", None, None, True),
+        ("switch 999", "switch", None, None, True),
+        ("session switch 2", "normal", None, None, False),
+        ("切换2", "switch", 2, None, False),
+        ("切换S10正文", "switch", None, None, True),
+        ("切换10正文", "switch", None, None, True),
+        ("切换二", "switch", 2, None, False),
+        ("切换两", "switch", None, None, True),
+        ("切换 二", "switch", 2, None, False),
+        ("会话二", "switch", 2, None, False),
+        ("停止二", "stop", 2, None, False),
+        ("归档二", "archive", 2, None, False),
+        ("cat R2", "request_cat", 2, None, False),
+        ("查看需求 2", "request_cat", 2, None, False),
+        ("查看需求二", "request_cat", 2, None, False),
+        ("run R2", "request_run", 2, None, False),
+        ("执行需求 R2", "request_run", 2, None, False),
+        ("执行需求二", "request_run", 2, None, False),
+        ("archive R2", "request_archive", 2, None, False),
+        ("归档需求 2", "request_archive", 2, None, False),
+        ("归档需求二", "request_archive", 2, None, False),
+        ("cat R10", "request_cat", None, None, True),
+        ("cat 2", "request_cat", None, None, True),
+        ("cat R2 extra", "request_cat", None, None, True),
+        ("run R10", "request_run", None, None, True),
+        ("run S2", "request_run", None, None, True),
+        ("执行需求二 再执行", "request_run", None, None, True),
+        ("归档需求十", "request_archive", None, None, True),
+        ("archive R2 extra", "request_archive", None, None, True),
+        ("cat README", "normal", None, None, False),
+        ("run tests", "normal", None, None, False),
+        ("同步状态", "normal", None, None, False),
         ("session new retrying", "normal", None, None, False),
         ("renameable task", "normal", None, None, False),
         ("sync now", "normal", None, None, False),
@@ -140,7 +195,6 @@ def test_format_chub_overview_uses_only_supplied_snapshot() -> None:
         readiness=SimpleNamespace(ready=False, message="配置不可用"),
         memory_percent=91,
         disk_percent=40,
-        failed_task_notifications=1,
         failed_restart_notifications=2,
         failed_stop_notifications=3,
         sessions=(
@@ -160,12 +214,12 @@ def test_format_chub_overview_uses_only_supplied_snapshot() -> None:
         "Issues\n"
         "1. Chub is not ready (unavailable).\n"
         "2. Memory usage is high: 91%\n"
-        "3. Task result notifications failed: 1\n"
-        "4. Restart result notifications failed: 2\n"
-        "5. Stop result notifications failed: 3\n\n"
+        "3. Restart result notifications failed: 2\n"
+        "4. Stop result notifications failed: 3\n\n"
         "Sessions\n\n"
-        "▶ S1 · 检查服务\n"
+        "▶ S1 · 检查服务\n\n"
         "Task · 检查设备状态\n\n"
+        "No requests\n\n"
         "Weekly 75% · Today 2M"
     )
 
@@ -176,7 +230,6 @@ def test_format_chub_overview_omits_sessions_heading_when_empty() -> None:
         readiness=SimpleNamespace(ready=True),
         memory_percent=20,
         disk_percent=30,
-        failed_task_notifications=0,
         failed_restart_notifications=0,
         failed_stop_notifications=0,
         sessions=(),
@@ -186,6 +239,7 @@ def test_format_chub_overview_omits_sessions_heading_when_empty() -> None:
     assert message == (
         "Chub · 25ms\n\n"
         "No sessions\n\n"
+        "No requests\n\n"
         "Weekly 75% · Today 2M"
     )
 
@@ -234,7 +288,7 @@ def test_session_state_format_uses_task_line_for_busy_session() -> None:
         ]
     ) == (
         "Sessions\n\n"
-        "▶ S1 · 当前任务\n"
+        "▶ S1 · 当前任务\n\n"
         "Task · Running\n\n"
         "S2 · 空闲任务\n\n"
         "S3 ! · 异常任务"
@@ -248,7 +302,7 @@ def test_dispatch_failure_message_contract_is_stable() -> None:
     assert result.disposition == "reply"
     assert result.message == (
         "Not submitted · The current Session is running.\n\n"
-        "Retry: Send session new retry to continue in a new Session."
+        "Retry: Send new retry to continue in a new Session."
     )
 
 
@@ -261,7 +315,7 @@ def test_task_summary_is_inserted_before_status_suffix_once() -> None:
     result = with_task_summary(message, "检查设备状态")
 
     assert result == (
-        "任务提交失败，请稍后重试。\n"
+        "任务提交失败，请稍后重试。\n\n"
         "Task · 检查设备状态\n\n"
         "Sessions\n\n▶ S1 · 项目维护\n\nWeekly Unavailable"
     )

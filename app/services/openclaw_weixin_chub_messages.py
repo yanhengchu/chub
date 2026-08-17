@@ -18,18 +18,28 @@ from app.services.openclaw_weixin_chub_models import (
 
 
 WEEKLY_WINDOW_MINUTES = 7 * 24 * 60
-CHUB_HELP_MESSAGE = """Commands
-
-chub
-sync
-session new [task]
-rename <title>
-session switch <S1-S9|1-9> [task]
-session stop <S1-S9|1-9>
-session archive <S1-S9|1-9>
-session retry
-session new retry
-restart"""
+CHUB_HELP_MESSAGE = "\n\n".join(
+    (
+        "Commands",
+        "Slots · N = SN = 一…九（中文数字可紧连中文指令）",
+        "chub · 状态 / 查询状态",
+        "help · 帮助",
+        "restart · 重启 / 重新启动",
+        "sync · 同步",
+        "direct <task> · 直接执行 <正文>",
+        "new <title> · 新建 <标题>",
+        "rename <title> · 重命名 <标题>",
+        "switch <1-9|S1-S9> [task] · 切换/会话 <槽位> [正文]",
+        "stop <1-9|S1-S9> · 停止 <槽位>",
+        "archive <1-9|S1-S9> · 归档 <槽位>",
+        "cat <R1-R9> · 查看需求 <槽位>",
+        "run <R1-R9> · 执行需求 <槽位>",
+        "archive <R1-R9> · 归档需求 <槽位>",
+        "retry · 重试 / 继续执行",
+        "new retry · 新建 重试 / 新建 继续执行",
+        "switch <1-9|S1-S9> retry · 切换/会话 <槽位> 重试",
+    )
+)
 
 
 @dataclass(frozen=True)
@@ -39,6 +49,12 @@ class ChubOverviewSession:
     state: str
     current: bool
     task_summary: str | None = None
+
+
+@dataclass(frozen=True)
+class ChubOverviewRequest:
+    slot: int
+    title: str
 
 
 def format_elapsed_time(elapsed_ms: int) -> str:
@@ -55,11 +71,11 @@ def format_chub_overview(
     readiness: object | None,
     memory_percent: float | None,
     disk_percent: float | None,
-    failed_task_notifications: int,
     failed_restart_notifications: int,
     failed_stop_notifications: int,
     sessions: tuple[ChubOverviewSession, ...] | None,
     usage_message: str,
+    requests: tuple[ChubOverviewRequest, ...] | None = (),
 ) -> str:
     anomalies: list[str] = []
     lines = [f"Chub · {format_elapsed_time(elapsed_ms)}"]
@@ -72,10 +88,6 @@ def format_chub_overview(
         anomalies.append(f"Memory usage is high: {memory_percent:.0f}%")
     if disk_percent is not None and disk_percent >= 85:
         anomalies.append(f"Disk usage is high: {disk_percent:.0f}%")
-    if failed_task_notifications:
-        anomalies.append(
-            f"Task result notifications failed: {failed_task_notifications}"
-        )
     if failed_restart_notifications:
         anomalies.append(
             f"Restart result notifications failed: {failed_restart_notifications}"
@@ -103,13 +115,21 @@ def format_chub_overview(
             )
             if item.state == "Busy":
                 session_block = (
-                    f"{session_block}\nTask · {item.task_summary or 'Running'}"
+                    f"{session_block}\n\nTask · {item.task_summary or 'Running'}"
                 )
             session_lines.append(session_block)
     elif sessions is None:
         session_lines.append("Unavailable")
     lines.extend(
         ["", "No sessions" if sessions == () else "\n\n".join(session_lines)]
+    )
+    request_lines = ["Requests"]
+    if requests:
+        request_lines.extend(f"R{item.slot} · {item.title}" for item in requests)
+    elif requests is None:
+        request_lines.append("Unavailable")
+    lines.extend(
+        ["", "No requests" if requests == () else "\n\n".join(request_lines)]
     )
     lines.extend(["", usage_message])
     return "\n".join(lines)
@@ -126,8 +146,8 @@ def format_fixed_reply(message: str) -> str:
         ),
         (
             "如需新建 Session 并继续执行本任务，请回复："
-            "session new retry 或“新建会话执行”。"
-        ): "Retry: Send session new retry to continue in a new Session.",
+            "new retry、“新建 重试”或“新建 继续执行”。"
+        ): "Retry: Send new retry to continue in a new Session.",
         (
             "任务提交失败：微信 Chub 模式配置无效，请检查工作区、权限、模型和"
             "微信通知配置。"
@@ -180,7 +200,7 @@ def format_session_blocks(
         session_block = format_session_name_line(slot, title, state, current)
         if state == "Busy":
             summary = task_summaries.get(slot) if task_summaries is not None else None
-            session_block = f"{session_block}\nTask · {summary or 'Running'}"
+            session_block = f"{session_block}\n\nTask · {summary or 'Running'}"
         paragraphs.append(session_block)
     if len(paragraphs) == 1:
         return "No sessions"
@@ -222,9 +242,9 @@ def format_task_context(
     session_title: str | None = None,
     current: bool = False,
 ) -> str:
-    lines = [status]
+    paragraphs = [status]
     if session_slot is not None and session_title:
-        lines.append(
+        paragraphs.append(
             format_session_name_line(
                 session_slot,
                 session_title,
@@ -232,8 +252,8 @@ def format_task_context(
                 current,
             )
         )
-    lines.append(f"Task · {task_summary}")
-    return "\n".join(lines)
+    paragraphs.append(f"Task · {task_summary}")
+    return "\n\n".join(paragraphs)
 
 
 def with_task_summary(
@@ -245,6 +265,9 @@ def with_task_summary(
     session_title: str | None = None,
     current: bool = False,
 ) -> str:
+    paragraphs = message.split("\n\n")
+    if any(paragraph.startswith("Task · ") for paragraph in paragraphs[1:3]):
+        return message
     lines = message.splitlines()
     if any(line.startswith("Task · ") for line in lines[1:3]):
         return message
@@ -378,6 +401,15 @@ def safe_submission_error(exc: ApiError) -> str:
         "weixin_chub_mode_session_slots_full": (
             "9 个微信 Session 槽位已满，请先归档或删除一个 Session。"
         ),
+        "weixin_chub_mode_target_unavailable": (
+            "原目标 Session 已不可用，本次任务未执行。"
+        ),
+        "weixin_chub_mode_in_progress": (
+            "目标 Session 正在执行其他任务，本次任务已丢弃。"
+        ),
+        "weixin_translation_unavailable": (
+            "文本优化服务当前不可用，本次任务未执行。"
+        ),
     }
     return allowed.get(exc.code, "微信任务提交失败。")
 
@@ -388,7 +420,7 @@ def dispatch_failure(
     messages = {
         "in_progress": (
             "Not submitted · The current Session is running.\n\n"
-            "Retry: Send session new retry to continue in a new Session."
+            "Retry: Send new retry to continue in a new Session."
         ),
         "configuration_invalid": (
             "Not submitted · The WeChat Chub configuration is invalid."

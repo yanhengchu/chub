@@ -188,6 +188,9 @@ class QuickInteractionManager:
         self._reconciler_thread: threading.Thread | None = None
         self._untracked_worker_sessions: set[str] = set()
         self._recovery_ready_handler: Callable[[], object] | None = None
+        self._task_finished_handler: Callable[[QuickInteractionTask], object] | None = (
+            None
+        )
         self.restart_request_dir = runtime_dir / "restart-requests"
         recovered_tasks = self._load()
         if recovered_tasks and self._local_state_error is None:
@@ -326,8 +329,13 @@ class QuickInteractionManager:
         notification_route: QuickInteractionWeixinRoute | None = None,
         weixin_session_slot: int | None = None,
         weixin_session_title: str | None = None,
+        weixin_request_slot: int | None = None,
+        weixin_request_generation: str | None = None,
+        weixin_request_run_id: str | None = None,
+        weixin_request_title: str | None = None,
         kind: str = "standard",
         translation_original: str | None = None,
+        suppress_completion_notification: bool = False,
         summary_max_chars: int = TASK_SUMMARY_MAX_LENGTH,
         summary_max_width: int | None = None,
     ) -> QuickInteractionTask:
@@ -405,10 +413,25 @@ class QuickInteractionManager:
                     ),
                     weixin_session_slot=weixin_session_slot,
                     weixin_session_title=weixin_session_title,
+                    weixin_request_slot=weixin_request_slot,
+                    weixin_request_generation=weixin_request_generation,
+                    weixin_request_run_id=weixin_request_run_id,
+                    weixin_request_title=weixin_request_title,
                     kind=kind,
                     translation_original=translation_original,
                     restart_sensitive=restart_sensitive,
                     status="requested",
+                    notification_status=(
+                        "skipped" if suppress_completion_notification else None
+                    ),
+                    notification_error=(
+                        "Completion is handled by the translation workflow."
+                        if suppress_completion_notification
+                        else None
+                    ),
+                    notification_updated_at=(
+                        utc_now() if suppress_completion_notification else None
+                    ),
                     notification_route=(
                         "weixin-task" if notification_route is not None else "default"
                     ),
@@ -542,6 +565,12 @@ class QuickInteractionManager:
 
     def set_recovery_ready_handler(self, handler: Callable[[], object]) -> None:
         self._recovery_ready_handler = handler
+
+    def set_task_finished_handler(
+        self,
+        handler: Callable[[QuickInteractionTask], object],
+    ) -> None:
+        self._task_finished_handler = handler
 
     @contextmanager
     def session_creation_guard(self) -> Iterator[None]:
@@ -1019,6 +1048,27 @@ class QuickInteractionManager:
             if task is None:
                 raise ApiError(404, "quick_interaction_not_found", "快速交互任务不存在。")
             return task.model_copy(deep=True)
+
+    def find_request_task(
+        self,
+        slot: int,
+        generation: str,
+        run_id: str,
+    ) -> QuickInteractionTask | None:
+        with self._lock:
+            matches = [
+                task
+                for task in self._tasks.values()
+                if task.weixin_request_slot == slot
+                and task.weixin_request_generation == generation
+                and task.weixin_request_run_id == run_id
+            ]
+            if not matches:
+                return None
+            return max(
+                matches,
+                key=lambda task: (task.created_at, task.id),
+            ).model_copy(deep=True)
 
     def list_for_session(
         self,
@@ -1870,6 +1920,7 @@ class QuickInteractionManager:
         result: str,
     ) -> None:
         notification_operation: tuple[str, str] | None = None
+        finished_snapshot: QuickInteractionTask | None = None
         with self._lock:
             task = self._tasks[task_id]
             task.status = status
@@ -1896,6 +1947,12 @@ class QuickInteractionManager:
                     "unknown",
                 )
             self._write()
+            finished_snapshot = task.model_copy(deep=True)
+        if finished_snapshot is not None and self._task_finished_handler is not None:
+            try:
+                self._task_finished_handler(finished_snapshot)
+            except Exception:
+                LOGGER.warning("Quick interaction completion handler failed", exc_info=True)
         if notification_operation is not None:
             try:
                 threading.Thread(

@@ -122,6 +122,8 @@ def test_sync_command_with_business_text_remains_normal_task(
         "CHUB -S。",
         "补充槽位",
         " 补充槽位。 ",
+        "同步状态",
+        "状态同步",
     ],
 )
 def test_removed_sync_aliases_are_normal_tasks(
@@ -148,7 +150,7 @@ def test_removed_sync_aliases_are_normal_tasks(
 
 @pytest.mark.parametrize(
     "sync_prompt",
-    ["sync", "SYNC。", "同步状态", " 状态同步。 "],
+    ["sync", "SYNC。", " 同步。 "],
 )
 def test_chub_sync_lists_compatible_sessions_and_marks_current(
     settings: Settings,
@@ -236,7 +238,7 @@ def test_chub_sync_lists_compatible_sessions_and_marks_current(
     )
     assert "▶ S1 · 微信 Chub" in result.message
     assert "S2 · 项目维护" in result.message
-    assert "S3 · 正在排障\nTask · Running" in result.message
+    assert "S3 · 正在排障\n\nTask · Running" in result.message
     assert result.message.index("S3 · 正在排障") < result.message.index(
         "▶ S1 · 微信 Chub"
     ) < result.message.index("S2 · 项目维护")
@@ -447,7 +449,7 @@ def test_codex_new_rejects_before_creation_when_nine_slots_are_full(
 
     result = manager.dispatch(
         message_id="codex-new-full",
-        prompt="Session New",
+        prompt="new Capacity check",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",

@@ -24,6 +24,10 @@ def task(
     summary: str | None = None,
     weixin_session_slot: int | None = None,
     weixin_session_title: str | None = None,
+    weixin_request_slot: int | None = None,
+    weixin_request_generation: str | None = None,
+    weixin_request_run_id: str | None = None,
+    weixin_request_title: str | None = None,
     kind: str = "standard",
     translation_original: str | None = None,
 ) -> QuickInteractionTask:
@@ -34,6 +38,10 @@ def task(
         summary=summary,
         weixin_session_slot=weixin_session_slot,
         weixin_session_title=weixin_session_title,
+        weixin_request_slot=weixin_request_slot,
+        weixin_request_generation=weixin_request_generation,
+        weixin_request_run_id=weixin_request_run_id,
+        weixin_request_title=weixin_request_title,
         kind=kind,
         translation_original=translation_original,
         status="succeeded",
@@ -78,6 +86,72 @@ def test_translation_notification_is_bounded_to_five_parts() -> None:
     assert len(messages) == 5
     assert all(len(message) <= 256 for message in messages)
     assert "结果超过微信发送上限" in messages[-1]
+
+
+def test_optimized_task_notification_reports_real_submission_state() -> None:
+    notifier = OpenClawCompletionNotifier(
+        OpenClawCompletionNotificationConfig(enabled=True)
+    )
+    notifier._send_messages = MagicMock(
+        return_value=CompletionNotificationResult("sent")
+    )
+    notifier.session_slot_validator = MagicMock(return_value=True)
+    notifier.session_current_validator = MagicMock(return_value=True)
+    delivery_route = QuickInteractionWeixinRoute(
+        account_id="weixin-account",
+        recipient="owner@im.wechat",
+    )
+
+    result = notifier.notify_weixin_optimized_task(
+        delivery_route,
+        outcome="started",
+        target_session_id="session-2",
+        target_slot=2,
+        target_title="服务检查",
+        task="请检查服务状态。",
+        english="Please check the service status.",
+    )
+
+    assert result.status == "sent"
+    kwargs = notifier._send_messages.call_args.kwargs
+    assert kwargs["required_account_id"] == "weixin-account"
+    message = kwargs["message_factory"]()[0]
+    assert message == (
+        "Started\n\n▶ S2 · 服务检查\n\n"
+        "Submitted:\n请检查服务状态。\n\n"
+        "English:\nPlease check the service status."
+    )
+    notifier.session_slot_validator.assert_called_once_with(2, "session-2")
+    notifier.session_current_validator.assert_called_once_with(2, "session-2")
+
+
+def test_optimized_task_notification_marks_reused_slot_unavailable() -> None:
+    notifier = OpenClawCompletionNotifier(
+        OpenClawCompletionNotificationConfig(enabled=True)
+    )
+    notifier._send_messages = MagicMock(
+        return_value=CompletionNotificationResult("sent")
+    )
+    notifier.session_slot_validator = MagicMock(return_value=False)
+    notifier.session_current_validator = MagicMock(return_value=True)
+
+    notifier.notify_weixin_optimized_task(
+        QuickInteractionWeixinRoute(
+            account_id="weixin-account",
+            recipient="owner@im.wechat",
+        ),
+        outcome="started",
+        target_session_id="old-session",
+        target_slot=2,
+        target_title="服务检查",
+        task="请检查服务状态。",
+        english="Please check the service status.",
+    )
+
+    message = notifier._send_messages.call_args.kwargs["message_factory"]()[0]
+    assert "S2 · 服务检查 (Unavailable)" in message
+    assert "▶ S2" not in message
+    notifier.session_current_validator.assert_not_called()
 
 
 def executable(tmp_path: Path) -> Path:
@@ -182,7 +256,7 @@ def test_notification_reuses_persisted_task_summary() -> None:
         task(result="完整结果", summary="检查 Ubuntu 服务状态")
     )
 
-    assert messages == ["Done\nTask · 检查 Ubuntu 服务状态\n\n完整结果"]
+    assert messages == ["Done\n\nTask · 检查 Ubuntu 服务状态\n\n完整结果"]
 
 
 def test_notification_includes_stable_session_and_marks_reused_slot() -> None:
@@ -203,7 +277,7 @@ def test_notification_includes_stable_session_and_marks_reused_slot() -> None:
         slot == 3 and session_id == "session-1"
     )
     assert notifier._messages_for(completed) == [
-        "Done\n▶ S3 · 服务检查\nTask · 检查服务\n\n完整结果"
+        "Done\n\n▶ S3 · 服务检查\n\nTask · 检查服务\n\n完整结果"
     ]
 
     notifier.session_current_validator = lambda _slot, _session_id: False
@@ -218,18 +292,43 @@ def test_notification_includes_stable_session_and_marks_reused_slot() -> None:
     assert "▶ S3" not in notifier._messages_for(completed)[0]
 
 
+def test_notification_includes_request_and_marks_reused_slot() -> None:
+    notifier = OpenClawCompletionNotifier(
+        OpenClawCompletionNotificationConfig(max_message_chars=256)
+    )
+    completed = task(
+        result="完整结果",
+        summary="实现需求",
+        weixin_request_slot=2,
+        weixin_request_generation="a" * 32,
+        weixin_request_run_id="b" * 32,
+        weixin_request_title="需求储备",
+    )
+
+    notifier.request_slot_validator = lambda slot, generation: (
+        slot == 2 and generation == "a" * 32
+    )
+    assert notifier._messages_for(completed) == [
+        "Done\n\nRequest · R2 · 需求储备\n\nTask · 实现需求\n\n完整结果"
+    ]
+
+    notifier.request_slot_validator = lambda _slot, _generation: False
+    assert "Request · R2 · 需求储备 (Unavailable)" in notifier._messages_for(
+        completed
+    )[0]
+
 @pytest.mark.parametrize(
     ("status", "error", "expected"),
     [
         (
             "failed",
             "执行失败原因",
-            "Failed\nTask · 检查设备状态\n\n执行失败原因",
+            "Failed\n\nTask · 检查设备状态\n\n执行失败原因",
         ),
         (
             "timed_out",
             "执行超时说明",
-            "Timed out\nTask · 检查设备状态\n\n执行超时说明",
+            "Timed out\n\nTask · 检查设备状态\n\n执行超时说明",
         ),
     ],
 )

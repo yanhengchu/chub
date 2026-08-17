@@ -213,7 +213,7 @@
                   <span class="badge badge-success">{{ document.status }}</span>
                   <time datetime="{{ document.updated_at.isoformat() }}">{{ document.updated_at.strftime('%Y-%m-%d') }}</time>
                 </span>
-                <button class="button-secondary document-archive-action" type="button" data-document-id="{{ document.id }}" aria-haspopup="dialog" aria-controls="confirmation-dialog">归档</button>
+                <button class="button-secondary document-archive-action" type="button" data-document-id="{{ document.id }}" aria-haspopup="dialog" aria-controls="confirmation-dialog">隐藏</button>
               </div>
             </article>
             {% else %}

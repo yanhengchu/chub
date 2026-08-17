@@ -33,8 +33,9 @@ def submitted_task_message(settings: Settings, prompt: str) -> str:
     prompt = prompt.strip()
     mode = settings.openclaw.weixin_chub_mode
     return (
-        "Submitted\n"
-        f"▶ S1 · {build_session_title(prompt, mode.session_name_max_width)}\n"
+        "Submitted\n\n"
+        "Sessions\n\n"
+        f"▶ S1 · {build_session_title(prompt, mode.session_name_max_width)}\n\n"
         f"Task · {build_task_name(prompt, mode.task_name_max_width)}"
     )
 
@@ -80,6 +81,7 @@ def configured_manager(
     quick_interactions = MagicMock()
     quick_interactions.deferred_restart = None
     quick_interactions.is_running.return_value = False
+    quick_interactions.find_request_task.return_value = None
     quick_interactions.weixin_session_ids.return_value = set()
     quick_interactions.weixin_task_status_snapshot.return_value = SimpleNamespace(
         running_count=0,

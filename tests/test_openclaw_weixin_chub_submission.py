@@ -30,6 +30,7 @@ from app.services.openclaw_weixin_chub_models import (
     WeixinChubModeState,
     WeixinChubModeSubmission,
 )
+from app.services.weixin_translation import TranslationEntry
 
 from tests.openclaw_weixin_chub_mode_helpers import (
     configured_manager,
@@ -97,6 +98,90 @@ def test_dispatch_immediately_acknowledges_voice_task(
     assert result.protocol_version == 3
     assert result.disposition == "reply"
     assert result.message == submitted_task_message(settings, "检查语音任务")
+
+
+def test_successful_submission_lists_all_sessions_and_running_tasks(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    sessions = [
+        CodexSession(
+            id=f"session-{slot}",
+            workspace_id="chub",
+            workspace_name="Chub",
+            cwd="/project",
+            title=title,
+            permission_mode="full-access",
+            status="stopped",
+            activity="idle",
+        )
+        for slot, title in ((1, "当前工作"), (2, "后台检查"))
+    ]
+    manager._state.session_id = "session-1"
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=slot, session_id=f"session-{slot}")
+        for slot in (1, 2)
+    ]
+    codex_manager.list_sessions.return_value = sessions
+    codex_manager.get_session.return_value = sessions[0]
+    quick_interactions.is_running.side_effect = (
+        lambda session_id: session_id == "session-2"
+    )
+    quick_interactions.weixin_task_status_snapshot.return_value = SimpleNamespace(
+        running_tasks=(("session-2", "检查后台日志"),)
+    )
+
+    result = manager.dispatch(
+        message_id="submission-full-session-list",
+        prompt="继续当前任务",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message is not None
+    assert result.message.startswith("Submitted\n\nSessions\n\n")
+    assert "▶ S1 · 当前工作\n\nTask · 继续当前任务" in result.message
+    assert "S2 · 后台检查\n\nTask · 检查后台日志" in result.message
+    assert "Weekly" not in result.message
+
+
+def test_successful_submission_keeps_task_context_when_session_snapshot_fails(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    session = CodexSession(
+        id="session-1",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd="/project",
+        title="当前工作",
+        permission_mode="full-access",
+        status="stopped",
+        activity="idle",
+    )
+    manager._state.session_id = session.id
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=1, session_id=session.id)
+    ]
+    codex_manager.get_session.return_value = session
+    codex_manager.list_sessions.side_effect = [[session], OSError("unavailable")]
+
+    result = manager.dispatch(
+        message_id="submission-session-list-unavailable",
+        prompt="继续当前任务",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == (
+        "Submitted\n\nSessions\n\n"
+        "▶ S1 · 当前工作\n\nTask · 继续当前任务"
+    )
+    quick_interactions.submit.assert_called_once()
 
 
 def test_submit_creates_one_private_session_and_replays_duplicate(
@@ -167,6 +252,7 @@ def test_duplicate_submission_refreshes_current_session_marker(
         WeixinChubModeSessionSlot(slot=2, session_id="session-2")
     )
     manager._state.session_id = "session-2"
+    manager._state.submissions[0].message = first.message.replace("\n\n", "\n")
 
     duplicate = manager.submit(
         message_id="message-current-marker",
@@ -176,7 +262,7 @@ def test_duplicate_submission_refreshes_current_session_marker(
     )
 
     assert "\n▶ S1 ·" in first.message
-    assert "\nS1 · 检查设备状态\n" in duplicate.message
+    assert "\n\nS1 · 检查设备状态\n\n" in duplicate.message
     assert "▶ S1" not in duplicate.message
 
     manager._state.session_slots = [
@@ -191,36 +277,298 @@ def test_duplicate_submission_refreshes_current_session_marker(
     )
 
     assert "S1 ·" not in reused_slot.message
-    assert reused_slot.message == "Submitted\nTask · 检查设备状态"
+    assert reused_slot.message == "Submitted\n\nTask · 检查设备状态"
 
 
-def test_translation_is_enqueued_after_main_submission_is_persisted(
+def test_enabled_translation_queues_optimization_before_main_submission(
     settings: Settings,
 ) -> None:
-    manager, _codex_manager, _quick_interactions = configured_manager(settings)
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
     manager.translation_manager = MagicMock()
-    original_replace = manager._replace_submission
-    persisted = False
+    manager.translation_manager.has_active_target.return_value = False
+    manager.translation_manager.enqueue.return_value = True
 
-    def replace_and_mark(submission) -> None:
-        nonlocal persisted
-        original_replace(submission)
-        persisted = True
-
-    manager._replace_submission = replace_and_mark
-    manager.translation_manager.enqueue.side_effect = (
-        lambda **_kwargs: persisted or pytest.fail("translation queued too early")
-    )
-
-    manager.submit(
+    result = manager.submit(
         message_id="translation-order",
         prompt="需要翻译的任务",
         correlation_id=None,
         source_ip="100.64.0.21",
         delivery_route=delivery_route(),
+        preprocess=True,
     )
 
     manager.translation_manager.enqueue.assert_called_once()
+    quick_interactions.submit.assert_not_called()
+    assert result.code == "translation_queued"
+    assert "The task has not been submitted" in result.message
+
+
+def test_enabled_translation_is_silently_accepted_and_replayed(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    manager.translation_manager = MagicMock()
+    manager.translation_manager.enabled.return_value = True
+    manager.translation_manager.has_active_target.return_value = False
+    manager.translation_manager.enqueue.return_value = True
+
+    first = manager.dispatch(
+        message_id="translation-silent",
+        prompt="需要翻译的任务",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+    replay = manager.dispatch(
+        message_id="translation-silent",
+        prompt="重复消息不会再次执行",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert first.disposition == "handled"
+    assert first.message is None
+    assert replay.disposition == "handled"
+    assert replay.message is None
+    manager.translation_manager.enqueue.assert_called_once()
+    quick_interactions.submit.assert_not_called()
+
+
+def test_same_session_optimization_is_rejected_without_pending_retry(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    manager.translation_manager = MagicMock()
+    manager.translation_manager.has_active_target.return_value = True
+
+    with pytest.raises(ApiError) as error:
+        manager.submit(
+            message_id="concurrent-optimization",
+            prompt="第二条任务",
+            correlation_id=None,
+            source_ip="100.64.0.21",
+            delivery_route=delivery_route(),
+            preprocess=True,
+        )
+
+    assert error.value.code == "weixin_chub_mode_in_progress"
+    assert manager._state.pending_retry is None
+    quick_interactions.submit.assert_not_called()
+
+
+def test_direct_command_bypasses_enabled_translation(settings: Settings) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    manager.translation_manager = MagicMock()
+    manager.translation_manager.enabled.return_value = True
+    manager.translation_manager.has_active_target.return_value = False
+
+    result = manager.dispatch(
+        message_id="direct-task",
+        prompt="直接执行 检查设备状态",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.disposition == "reply"
+    quick_interactions.submit.assert_called_once()
+    assert quick_interactions.submit.call_args.args[1] == "检查设备状态"
+    manager.translation_manager.enqueue.assert_not_called()
+
+
+def test_optimized_task_submits_to_captured_session(settings: Settings) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager.translation_manager = MagicMock()
+    manager.translation_manager.has_active_target.return_value = False
+    manager.translation_manager.enqueue.return_value = True
+    manager.translation_result_notifier = MagicMock()
+    manager.submit(
+        message_id="optimized-source",
+        prompt="检查下服务咋样",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+        preprocess=True,
+    )
+    source = manager._find_submission("optimized-source")
+    codex_manager.list_sessions.return_value = [codex_manager.get_session.return_value]
+    entry = TranslationEntry(
+        id="translation-entry",
+        message_id="optimized-source",
+        original="检查下服务咋样",
+        route=delivery_route(),
+        operation_id="operation:translation",
+        source_ip="100.64.0.21",
+        target_session_id=source.session_id,
+        target_session_slot=source.session_slot,
+        target_session_title=source.session_title,
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+
+    outcome = manager.complete_optimized_task(
+        entry,
+        "请检查服务状态。",
+        "Please check the service status.",
+        None,
+    )
+
+    assert outcome.status == "submitted", outcome.error
+    assert quick_interactions.submit.call_count == 1
+    assert quick_interactions.submit.call_args.args == (
+        source.session_id,
+        "请检查服务状态。",
+    )
+    recovered_outcome = manager.complete_optimized_task(
+        entry,
+        "请检查服务状态。",
+        "Please check the service status.",
+        None,
+    )
+    assert recovered_outcome.status == "submitted"
+    assert recovered_outcome.main_task_id == outcome.main_task_id
+    assert quick_interactions.submit.call_count == 1
+    manager.translation_result_notifier.assert_not_called()
+    completed_entry = entry.model_copy(
+        update={
+            "status": outcome.status,
+            "polished": "请检查服务状态。",
+            "english": "Please check the service status.",
+            "main_task_id": outcome.main_task_id,
+        }
+    )
+    manager.notify_optimized_task_outcome(completed_entry)
+    manager.translation_result_notifier.assert_called_once_with(
+        completed_entry.route,
+        outcome="started",
+        target_session_id=completed_entry.target_session_id,
+        target_slot=completed_entry.target_session_slot,
+        target_title=completed_entry.target_session_title,
+        task=completed_entry.polished,
+        english=completed_entry.english,
+        error=completed_entry.error,
+    )
+
+    replay = manager.dispatch(
+        message_id="optimized-source",
+        prompt="重复消息不会再次执行",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+    assert replay.disposition == "handled"
+    assert replay.message is None
+    assert quick_interactions.submit.call_count == 1
+
+
+def test_interrupted_optimization_source_is_closed_and_replays_silently(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    now = utc_now()
+    route = delivery_route()
+    manager._state.submissions.append(
+        WeixinChubModeSubmission(
+            message_id="interrupted-optimized-source",
+            correlation_id=None,
+            operation_id="interrupted-optimized-operation",
+            delivery_route_fingerprint=manager._route_fingerprint(route),
+            status="rejected",
+            code="submission_interrupted",
+            message="Chub 重启中断了本次提交。",
+            http_status=409,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    entry = TranslationEntry(
+        id="interrupted-translation-entry",
+        message_id="interrupted-optimized-source",
+        original="检查服务",
+        route=route,
+        operation_id="interrupted-optimized-operation:translation",
+        source_ip="100.64.0.21",
+        target_session_id="session-1",
+        target_session_slot=1,
+        target_session_title="服务检查",
+        created_at=now,
+        updated_at=now,
+    )
+
+    outcome = manager.complete_optimized_task(
+        entry,
+        None,
+        None,
+        "服务重启前翻译任务未完成提交，未自动重试。",
+    )
+    replay = manager.dispatch(
+        message_id="interrupted-optimized-source",
+        prompt="重复消息不应重新执行",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=route,
+    )
+
+    source = manager._find_submission("interrupted-optimized-source")
+    assert outcome.status == "failed"
+    assert source is not None
+    assert source.status == "rejected"
+    assert source.code == "submission_failed"
+    assert source.dispatch_disposition == "handled"
+    assert replay.disposition == "handled"
+    assert replay.message is None
+    quick_interactions.submit.assert_not_called()
+
+
+def test_optimized_task_is_discarded_if_target_becomes_busy(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager.translation_manager = MagicMock()
+    manager.translation_manager.has_active_target.return_value = False
+    manager.translation_manager.enqueue.return_value = True
+    manager.translation_result_notifier = MagicMock()
+    manager.submit(
+        message_id="optimized-busy",
+        prompt="检查服务",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+        preprocess=True,
+    )
+    source = manager._find_submission("optimized-busy")
+    codex_manager.list_sessions.return_value = [codex_manager.get_session.return_value]
+    entry = TranslationEntry(
+        id="translation-busy",
+        message_id="optimized-busy",
+        original="检查服务",
+        route=delivery_route(),
+        operation_id="operation-busy:translation",
+        source_ip="100.64.0.21",
+        target_session_id=source.session_id,
+        target_session_slot=source.session_slot,
+        target_session_title=source.session_title,
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    quick_interactions.is_running.return_value = True
+
+    outcome = manager.complete_optimized_task(
+        entry,
+        "请检查服务。",
+        "Please check the service.",
+        None,
+    )
+
+    assert outcome.status == "discarded"
+    quick_interactions.submit.assert_not_called()
+    assert manager._state.pending_retry is None
 
 
 def test_submit_rejects_invalid_delivery_route_before_codex(
@@ -419,7 +767,7 @@ def test_submit_reclaims_unknown_session_before_quick_interaction(
             source_ip="100.64.0.21",
         )
 
-    assert result.message == "Submitted\nTask · 检查设备"
+    assert result.message == "Submitted\n\nTask · 检查设备"
     assert result.task_summary == "检查设备"
     reclaimer.assert_called_once_with("session-1")
     codex_manager.wait_for_writer_release.assert_called_once_with(

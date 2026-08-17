@@ -310,6 +310,18 @@ class QuickInteractionTask(BaseModel):
     summary: str | None = Field(default=None, max_length=48)
     weixin_session_slot: int | None = Field(default=None, ge=1, le=9)
     weixin_session_title: str | None = Field(default=None, max_length=48)
+    weixin_request_slot: int | None = Field(default=None, ge=1, le=9)
+    weixin_request_generation: str | None = Field(
+        default=None,
+        min_length=32,
+        max_length=32,
+    )
+    weixin_request_run_id: str | None = Field(
+        default=None,
+        min_length=32,
+        max_length=32,
+    )
+    weixin_request_title: str | None = Field(default=None, max_length=48)
     kind: QuickInteractionKind = "standard"
     translation_original: str | None = Field(default=None, max_length=8000)
     restart_sensitive: bool = False

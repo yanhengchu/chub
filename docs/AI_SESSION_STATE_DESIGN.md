@@ -144,6 +144,6 @@ new/running/stopped --运行时失败--> error + unknown
 
 - Worker 任务、恢复、通知和 Web 重启：[快速交互独立 Worker 设计](QUICK_INTERACTION_WORKER_DESIGN.md)。
 - 微信指令、绑定、权限和原路通知：[Chub–OpenClaw 接入设计](CHUB_OPENCLAW_INTEGRATION_DESIGN.md)。
-- 前端分层、公共交互和视觉规范：[Chub 前端 UI 模块化设计](ARCHITECTURE_EVOLUTION_DESIGN.md)。
+- 前端分层、公共交互和视觉规范：[Chub 前端 UI 模块化设计](FRONTEND_UI_DESIGN.md)。
 
 当前模型已在 Codex 会话、首页、快速交互和微信 Session 展示中落地，并完成 macOS、Ubuntu 验收。

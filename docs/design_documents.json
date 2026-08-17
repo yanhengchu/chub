@@ -13,7 +13,7 @@
       "title": "Chub 前端 UI 模块化设计",
       "summary": "定义首页 Core、公共组件、Feature、样式层及 Standard/Cyber 的当前维护边界。",
       "status": "已验收",
-      "path": "ARCHITECTURE_EVOLUTION_DESIGN.md"
+      "path": "FRONTEND_UI_DESIGN.md"
     },
     {
       "id": "ai-session-state",
@@ -39,14 +39,14 @@
     {
       "id": "openclaw-integration",
       "title": "Chub–OpenClaw 接入设计",
-      "summary": "定义 OpenClaw 与微信 ClawBot 的端到端业务、身份、权限、Session 路由和通知边界。",
+      "summary": "定义 OpenClaw 与微信 ClawBot 的端到端业务、身份、权限、Session 路由、Request 状态和通知边界。",
       "status": "持续维护",
       "path": "CHUB_OPENCLAW_INTEGRATION_DESIGN.md"
     },
     {
       "id": "chub-integration-capabilities",
       "title": "Chub 集成能力清单",
-      "summary": "统一登记 Chub 当前可用的电脑端命令、插件能力、固定 API 和微信指令。",
+      "summary": "统一登记 Chub 当前可用的命令、插件、固定 API，并维护微信固定指令产品契约。",
       "status": "持续维护",
       "path": "CHUB_INTEGRATION_CAPABILITIES.md"
     },

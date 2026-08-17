@@ -159,6 +159,7 @@ async def test_home_page_is_public_and_contains_no_token(
     assert "OpenClaw 方案调研" not in response.text
     assert "持续维护" in response.text
     assert response.text.count("document-archive-action") == 5
+    assert response.text.count(">隐藏</button>") == 5
     assert "份设计资料 · 1 份周报可查看" not in response.text
     assert 'href="/project-docs/openclaw-research"' not in response.text
     assert 'target="_blank"' not in response.text
@@ -240,9 +241,9 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
     assert "界面风格" in response.text
     assert "微信处理" in response.text
     assert 'id="weixin-translation-enabled"' in response.text
-    assert "会增加 Codex 用量，并将微信正文交给模型处理" in response.text
-    assert "关闭只阻止新翻译，已有任务继续完成" in response.text
-    assert "全部结束后会自动归档内部翻译 Session" in response.text
+    assert "自动润色后执行" in response.text
+    assert "润色失败或目标变忙时不执行原文" in response.text
+    assert "直接执行 &lt;正文&gt;" in response.text
     assert "Standard" in response.text
     assert "Cyber" in response.text
     assert "当前风格" in response.text
@@ -284,11 +285,11 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
     assert "当前浏览器无法保存 Session 展示偏好" in script.text
     assert "/api/codex/models" in script.text
     assert "/api/settings/weixin-translation" in script.text
-    assert "项翻译仍在处理中" in script.text
+    assert "项文本优化仍在处理中" in script.text
     assert "已开启，将从下一条微信普通任务开始处理" not in script.text
     assert "已关闭，新任务不再翻译" not in script.text
     assert "设置结果未知，请稍后刷新页面重试" in script.text
-    assert "暂时无法刷新翻译任务状态，正在重试" in script.text
+    assert "暂时无法刷新文本优化任务状态，正在重试" in script.text
     assert "window.setTimeout" in script.text
     assert 'id="weixin-translation-status"' not in response.text
     assert "之后新建的 Session 将使用该权限" in script.text
@@ -558,6 +559,8 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "/api/project-docs" in dashboard_script
     assert "loadProjectDocuments" in dashboard_script
     assert 'document.createElement("time")' in dashboard_script
+    assert 'archive.textContent = "隐藏"' in dashboard_script
+    assert "此操作不会移动或冻结仓库文件" in dashboard_script
     assert "正在刷新文档列表" not in dashboard_script
     assert "文档列表已更新" not in dashboard_script
     assert "文档已归档" not in dashboard_script

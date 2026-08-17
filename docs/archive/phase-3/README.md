@@ -18,6 +18,8 @@
 
 ## 当前替代
 
-- 当前整体架构、运维入口、消息通道和微信专用任务规则见[Chub–OpenClaw 接入设计](../../CHUB_OPENCLAW_INTEGRATION_DESIGN.md)。
+- 当前身份、权限、消息路由和通知边界见[Chub–OpenClaw 接入设计](../../CHUB_OPENCLAW_INTEGRATION_DESIGN.md)。
+- 当前可用能力、微信固定指令和用户可见格式见[Chub 集成能力清单](../../CHUB_INTEGRATION_CAPABILITIES.md)。
+- 当前插件协议、构建和部署见仓库内的 [Chub OpenClaw 插件说明](../../../integrations/openclaw/chub/README.md)。
 - 当前微信出站兼容维护见[微信 ClawBot Context Token 持久化 AI 补丁规范](../../WEIXIN_CLAWBOT_CONTEXT_TOKEN_AI_PATCH.md)。
 - 当前产品入口和运行说明见[项目 README](../../../README.md)。

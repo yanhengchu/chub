@@ -32,7 +32,7 @@ function applyFilter(filter) {
 async function updateArchiveState(button) {
   const documentId = button.dataset.documentId;
   const archived = button.dataset.archived === "true";
-  const action = archived ? "恢复" : "归档";
+  const action = archived ? "恢复显示" : "隐藏";
   const card = button.closest(".design-document-item");
   const title = card?.querySelector(".design-document-copy strong")?.textContent.trim()
     || "这份文档";
@@ -40,10 +40,10 @@ async function updateArchiveState(button) {
     return;
   }
   await showConfirmationDialog({
-    title: `${action}文档`,
+    title: `${action}项目资料`,
     description: archived
-      ? `恢复“${title}”后，该文档会重新进入当前文档列表并显示在首页。`
-      : `归档“${title}”后，该文档会移入已归档列表，不再显示在首页；需要时可以恢复。`,
+      ? `恢复显示“${title}”后，该资料会重新显示在首页。`
+      : `隐藏“${title}”后，该资料不再显示在首页，但仍保留在“已隐藏”列表中。此操作不会移动或冻结仓库文件。`,
     confirmLabel: `确认${action}`,
     pendingLabel: `${action}中…`,
     tone: archived ? "secondary" : "danger",
@@ -69,8 +69,8 @@ async function updateArchiveState(button) {
         const badge = card.querySelector(".design-document-meta .badge");
         card.dataset.archived = String(payload.data.archived);
         button.dataset.archived = String(payload.data.archived);
-        button.textContent = payload.data.archived ? "恢复" : "归档";
-        badge.textContent = payload.data.archived ? "已归档" : payload.data.status;
+        button.textContent = payload.data.archived ? "恢复显示" : "隐藏";
+        badge.textContent = payload.data.archived ? "已隐藏" : payload.data.status;
         badge.className = `badge badge-${payload.data.archived ? "muted" : "success"}`;
         showMessage(`${action}成功。`, "success");
         applyFilter(activeFilter);

@@ -68,7 +68,8 @@ def test_chub_restart_registers_fixed_restart_and_replies(
 
     assert result.disposition == "reply"
     assert result.message == (
-        "Restart: Scheduled. The result will be sent when completed."
+        "Restart: Scheduled. The result will be sent when completed.\n\n"
+        "No sessions\n\nWeekly Unavailable"
     )
     request = coordinator.request.call_args.kwargs
     assert request["operation_id"].endswith(":restart")
@@ -80,6 +81,55 @@ def test_chub_restart_registers_fixed_restart_and_replies(
     assert operation.delivery_route == delivery_route()
     assert operation.status == "pending"
     quick_interactions.submit.assert_not_called()
+
+
+def test_chub_restart_initial_reply_lists_sessions_and_running_tasks(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    enable_restart_command(manager)
+    sessions = [
+        CodexSession(
+            id=f"session-{slot}",
+            workspace_id="chub",
+            workspace_name="Chub",
+            cwd="/project",
+            title=title,
+            permission_mode="full-access",
+            status="stopped",
+            activity="idle",
+        )
+        for slot, title in ((1, "当前工作"), (2, "后台检查"))
+    ]
+    manager._state.session_id = "session-1"
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=slot, session_id=f"session-{slot}")
+        for slot in (1, 2)
+    ]
+    codex_manager.list_sessions.return_value = sessions
+    quick_interactions.is_running.side_effect = (
+        lambda session_id: session_id == "session-2"
+    )
+    quick_interactions.weixin_task_status_snapshot.return_value = SimpleNamespace(
+        running_tasks=(("session-2", "检查后台日志"),)
+    )
+
+    result = manager.dispatch(
+        message_id="restart-with-session-list",
+        prompt="restart",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message is not None
+    assert result.message.startswith(
+        "Restart: Scheduled. The result will be sent when completed.\n\nSessions\n\n"
+    )
+    assert "▶ S1 · 当前工作" in result.message
+    assert "S2 · 后台检查\n\nTask · 检查后台日志" in result.message
+    assert result.message.endswith("Weekly Unavailable")
 
 
 @pytest.mark.parametrize(
@@ -166,7 +216,8 @@ def test_second_chub_restart_reuses_active_route_operation(
     )
 
     assert second.message == (
-        "Restart: Already in progress. The result will be sent when completed."
+        "Restart: Already in progress. The result will be sent when completed.\n\n"
+        "No sessions\n\nWeekly Unavailable"
     )
     coordinator.request.assert_called_once()
     assert len(manager._state.restart_operations) == 1

@@ -18,7 +18,7 @@
 
 ## 当前替代
 
-- 当前前端分层、快速交互页面边界和 UI 规则见 [Chub 前端 UI 模块化设计](../../ARCHITECTURE_EVOLUTION_DESIGN.md)。
+- 当前前端分层、快速交互页面边界和 UI 规则见 [Chub 前端 UI 模块化设计](../../FRONTEND_UI_DESIGN.md)。
 - 当前额度来源、缓存和响应式展示规则见 [Chub AI 额度与用量采集设计](../../AI_QUOTA_USAGE_DESIGN.md)。
 - 当前微信 Chub 调度、身份、状态和通知边界见 [Chub–OpenClaw 接入设计](../../CHUB_OPENCLAW_INTEGRATION_DESIGN.md)。
 - 当前产品入口、测试方式和文档管理规则见[项目 README](../../../README.md)。

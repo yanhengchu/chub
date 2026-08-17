@@ -133,7 +133,7 @@ def update_project_document_archive(
         raise ApiError(
             503,
             "project_document_state_unavailable",
-            "文档归档状态暂时无法保存。",
+            "项目资料显示状态暂时无法保存。",
         ) from None
     if document is None:
         log_operation(

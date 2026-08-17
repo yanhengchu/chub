@@ -320,7 +320,7 @@ function renderWeixinTranslationStatus(status) {
   const active = Number(status.queued || 0) + Number(status.running || 0);
   const parts = [];
   if (active > 0) {
-    parts.push(`${active} 项翻译仍在处理中`);
+    parts.push(`${active} 项文本优化仍在处理中`);
   }
   if (!status.weixin_chub_mode_enabled) {
     parts.push("微信 Chub 模式当前未启用");
@@ -334,7 +334,7 @@ function renderWeixinTranslationStatus(status) {
   if (active > 0) {
     weixinTranslationPollTimer = window.setTimeout(() => {
       loadWeixinTranslationStatus(
-        "暂时无法刷新翻译任务状态，正在重试。",
+        "暂时无法刷新文本优化任务状态，正在重试。",
         true,
       );
     }, 2000);

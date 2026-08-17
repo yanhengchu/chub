@@ -70,7 +70,7 @@ def test_rename_current_session_normalizes_title_and_is_idempotent(
     assert first.message is not None
     assert first.message.startswith(
         'Rename: Session 1 renamed to "新 标题".\n\n'
-        "Sessions\n\n▶ S1 · 新 标题\nTask · 优化微信指令交互流程\n\n"
+        "Sessions\n\n▶ S1 · 新 标题\n\nTask · 优化微信指令交互流程\n\n"
     )
     assert first.message.endswith("Weekly Unavailable")
     assert duplicate == first
@@ -93,7 +93,7 @@ def test_rename_supports_chinese_alias(settings: Settings) -> None:
 
     result = manager.dispatch(
         message_id="rename-chinese-alias",
-        prompt="重命名：项目维护",
+        prompt="重命名 项目维护",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",

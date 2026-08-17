@@ -9,6 +9,7 @@ from app.codex.models import CodexSession, QuickInteractionWeixinRoute
 from app.services.weixin_translation import (
     TRANSLATION_PROMPT,
     TranslationEntry,
+    TranslationExecutionOutcome,
     TranslationState,
     WeixinTranslationManager,
 )
@@ -145,6 +146,144 @@ def test_isolated_worker_translation_submits_without_web_scheduler(settings) -> 
     )
 
 
+def test_targeted_translation_suppresses_legacy_notification(settings) -> None:
+    manager, _codex_manager, quick_interactions = manager_without_worker(settings)
+    manager._ensure_session = MagicMock(return_value="translation-session")
+
+    assert manager.enqueue(
+        message_id="targeted-translation",
+        original="检查服务",
+        route=route(),
+        operation_id="operation-targeted",
+        source_ip="100.64.0.21",
+        target_session_id="session-1",
+        target_session_slot=1,
+        target_session_title="服务检查",
+    )
+
+    kwargs = quick_interactions.submit.call_args.kwargs
+    assert kwargs["suppress_completion_notification"] is True
+
+
+def test_targeted_translation_completion_submits_parsed_result(settings) -> None:
+    manager, _codex_manager, quick_interactions = manager_without_worker(settings)
+    now = utc_now()
+    entry = TranslationEntry(
+        id="targeted-entry",
+        message_id="targeted-message",
+        original="检查服务",
+        route=route(),
+        operation_id="targeted-operation:translation",
+        source_ip="100.64.0.21",
+        status="running",
+        quick_task_id="quick-task",
+        target_session_id="session-1",
+        target_session_slot=1,
+        target_session_title="服务检查",
+        created_at=now,
+        updated_at=now,
+    )
+    manager._state.entries.append(entry)
+    handler = MagicMock(
+        return_value=TranslationExecutionOutcome(
+            status="submitted",
+            main_task_id="main-task",
+        )
+    )
+    manager.set_completion_handler(handler)
+    notification_handler = MagicMock(
+        return_value=SimpleNamespace(status="sent", error=None)
+    )
+    manager.set_notification_handler(notification_handler)
+    quick_interactions.get.return_value = SimpleNamespace(
+        status="succeeded",
+        result=(
+            "润色：\n请检查服务状态。\n\n"
+            "English：\nPlease check the service status."
+        ),
+        error=None,
+        notification_status="skipped",
+    )
+
+    manager._watch_worker_entry(entry.id, "translation-session", "quick-task")
+
+    handler.assert_called_once()
+    assert handler.call_args.args[1:3] == (
+        "请检查服务状态。",
+        "Please check the service status.",
+    )
+    assert manager._state.entries[0].status == "submitted"
+    assert manager._state.entries[0].main_task_id == "main-task"
+    assert manager._state.entries[0].notification_status == "sent"
+    notification_handler.assert_called_once()
+
+
+def test_targeted_translation_missing_during_recovery_notifies_failure(
+    settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = manager_without_worker(settings)
+    now = utc_now()
+    entry = TranslationEntry(
+        id="missing-targeted-translation",
+        message_id="missing-targeted-message",
+        original="检查服务",
+        route=route(),
+        operation_id="missing-targeted-operation:translation",
+        source_ip="100.64.0.21",
+        status="queued",
+        target_session_id="session-1",
+        target_session_slot=1,
+        target_session_title="服务检查",
+        created_at=now,
+        updated_at=now,
+    )
+    manager._state.entries.append(entry)
+    completion_handler = MagicMock(
+        return_value=TranslationExecutionOutcome(
+            status="failed",
+            error="服务重启前翻译任务未完成提交，未自动重试。",
+        )
+    )
+    notification_handler = MagicMock(
+        return_value=SimpleNamespace(status="sent", error=None)
+    )
+    manager.set_completion_handler(completion_handler)
+    manager.set_notification_handler(notification_handler)
+    quick_interactions.find_task_by_operation.return_value = None
+
+    manager.start_worker_recovery()
+
+    completion_handler.assert_called_once()
+    assert completion_handler.call_args.args[3] == (
+        "服务重启前翻译任务未完成提交，未自动重试。"
+    )
+    recovered = manager._state.entries[0]
+    assert recovered.status == "failed"
+    assert recovered.notification_status == "sent"
+    notification_handler.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        "润色：\n" + "中" * 8_001 + "\n\nEnglish：\nValid",
+        "润色：\n有效内容\n\nEnglish：\n" + "x" * 8_001,
+    ],
+)
+def test_translation_result_rejects_oversized_sections(result: str) -> None:
+    assert WeixinTranslationManager._parse_translation_result(result) is None
+
+
+def test_translation_result_accepts_sections_at_length_limit() -> None:
+    parsed = WeixinTranslationManager._parse_translation_result(
+        "润色：\n" + "中" * 8_000 + "\n\nEnglish：\n" + "x" * 8_000
+    )
+
+    assert parsed is not None
+    assert len(parsed[0]) == 8_000
+    assert len(parsed[1]) == 8_000
+
+
 def test_isolated_worker_reference_write_failure_cancels_exact_task(settings) -> None:
     manager, _codex_manager, quick_interactions = manager_without_worker(settings)
     manager._ensure_session = MagicMock(return_value="translation-session")
@@ -272,6 +411,44 @@ def test_restart_preserves_unfinished_translation_for_worker_recovery(settings) 
     )
 
     assert manager._state.entries[0].status == "running"
+
+
+def test_restart_marks_unknown_optimization_notification_failed(settings) -> None:
+    state_file = settings.openclaw.weixin_chub_mode.state_file.with_name(
+        "weixin-translation.json"
+    )
+    now = utc_now()
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    state_file.write_text(
+        TranslationState(
+            entries=[
+                TranslationEntry(
+                    id="notification-unknown",
+                    message_id="message-notification-unknown",
+                    original="检查服务",
+                    route=route(),
+                    operation_id="operation-notification-unknown:translation",
+                    source_ip="100.64.0.21",
+                    status="submitted",
+                    target_session_id="session-1",
+                    notification_status="sending",
+                    created_at=now,
+                    updated_at=now,
+                )
+            ]
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+
+    manager = WeixinTranslationManager(
+        settings.openclaw.weixin_chub_mode,
+        MagicMock(),
+        MagicMock(),
+    )
+
+    entry = manager._state.entries[0]
+    assert entry.notification_status == "failed"
+    assert "状态未知" in entry.notification_error
 
 
 def test_worker_restart_preserves_and_resumes_translation_observation(settings) -> None:

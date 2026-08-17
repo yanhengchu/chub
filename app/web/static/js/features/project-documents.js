@@ -83,7 +83,7 @@ function renderProjectDocuments(data) {
     archive.className = "button-secondary document-archive-action";
     archive.type = "button";
     archive.dataset.documentId = item.id;
-    archive.textContent = "归档";
+    archive.textContent = "隐藏";
     archive.setAttribute("aria-haspopup", "dialog");
     archive.setAttribute("aria-controls", "confirmation-dialog");
     copy.append(title, summary);
@@ -102,7 +102,7 @@ function renderProjectDocuments(data) {
   }
 }
 
-async function archiveProjectDocument(button) {
+async function hideProjectDocument(button) {
   const documentId = button.dataset.documentId;
   if (!documentId) {
     return;
@@ -111,11 +111,11 @@ async function archiveProjectDocument(button) {
   const title = card?.querySelector(".design-document-copy strong")?.textContent.trim()
     || "这份文档";
   await showConfirmationDialog({
-    title: "归档文档",
-    description: `归档“${title}”后，该文档将从首页移除，但仍可在“全部文档”的已归档列表中恢复。`,
-    confirmLabel: "确认归档",
-    pendingLabel: "归档中…",
-    errorMessage: "文档归档失败。",
+    title: "隐藏项目资料",
+    description: `隐藏“${title}”后，该资料不再显示在首页，但仍保留在“全部文档”的“已隐藏”列表中。此操作不会移动或冻结仓库文件。`,
+    confirmLabel: "确认隐藏",
+    pendingLabel: "隐藏中…",
+    errorMessage: "项目资料隐藏失败。",
     onConfirm: async () => {
       button.disabled = true;
       try {
@@ -164,6 +164,6 @@ async function loadProjectDocuments({ clearMessage = true } = {}) {
 elements.projectDocsList.addEventListener("click", (event) => {
   const button = event.target.closest(".document-archive-action");
   if (button) {
-    archiveProjectDocument(button);
+    hideProjectDocument(button);
   }
 });

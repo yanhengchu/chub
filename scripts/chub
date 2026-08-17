@@ -63,6 +63,7 @@ Commands:
   logs       Follow Hub application logs
   notification
              Validate, list, test, or send configured notifications
+  request    Save, update, or inspect the local request backlog
   uninstall  Remove the user service and chub command
   help       Show this help
 EOF
@@ -648,6 +649,13 @@ case "$command" in
         (
             cd "$PROJECT_ROOT"
             "$PYTHON_BIN" -m app.notifications.command "$@"
+        )
+        ;;
+    request)
+        shift
+        (
+            cd "$PROJECT_ROOT"
+            "$PYTHON_BIN" -m app.requests.command "$@"
         )
         ;;
     uninstall) uninstall_service ;;

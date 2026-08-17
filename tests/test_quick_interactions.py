@@ -810,6 +810,8 @@ def test_quick_interaction_completion_notification_is_independent(
 ) -> None:
     notifier = MagicMock(return_value=SimpleNamespace(status="sent", error=None))
     quick_interactions = manager(tmp_path, completion_notifier=notifier)
+    finished_handler = MagicMock()
+    quick_interactions.set_task_finished_handler(finished_handler)
     task = QuickInteractionTask(
         id="task-1",
         session_id="session-1",
@@ -840,6 +842,8 @@ def test_quick_interaction_completion_notification_is_independent(
     assert finished.status == "succeeded"
     assert finished.result == "完成"
     assert finished.notification_status == "sent"
+    finished_handler.assert_called_once()
+    assert finished_handler.call_args.args[0].status == "succeeded"
     notification_task, notification_route = notifier.call_args.args
     assert notification_task.id == finished.id
     assert notification_task.notification_status == "sending"

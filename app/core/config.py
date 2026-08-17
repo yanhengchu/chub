@@ -225,6 +225,7 @@ class OpenClawWeixinChubModeConfig(StrictModel):
     model: str | None = Field(default=None, min_length=1, max_length=128)
     reasoning_effort: str | None = Field(default=None, min_length=1, max_length=32)
     state_file: Path = Path("data/state/openclaw/weixin-chub-mode.json")
+    request_state_file: Path = Path("data/state/openclaw/requests.json")
     session_name_max_width: int = Field(default=30, ge=4, le=96)
     task_name_max_width: int = Field(default=64, ge=4, le=96)
     # Translation runs an LLM over untrusted message text and must be opted in.
@@ -310,6 +311,10 @@ class Settings(StrictModel):
         if not self.openclaw.weixin_chub_mode.state_file.is_absolute():
             self.openclaw.weixin_chub_mode.state_file = (
                 PROJECT_ROOT / self.openclaw.weixin_chub_mode.state_file
+            )
+        if not self.openclaw.weixin_chub_mode.request_state_file.is_absolute():
+            self.openclaw.weixin_chub_mode.request_state_file = (
+                PROJECT_ROOT / self.openclaw.weixin_chub_mode.request_state_file
             )
         self.notifications.registry_file = (
             self.notifications.registry_file.expanduser().resolve()

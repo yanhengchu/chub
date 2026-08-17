@@ -121,7 +121,7 @@ def test_submission_and_session_list_use_the_same_task_summary(
 
 @pytest.mark.parametrize(
     "prompt",
-    ["chub", "查询状态", "状态查询", "检查状态", "状态检查"],
+    ["chub", "状态", "查询状态"],
 )
 def test_dispatch_routes_chub_status_aliases_to_live_overview(
     settings: Settings,
@@ -146,12 +146,35 @@ def test_dispatch_routes_chub_status_aliases_to_live_overview(
     assert result.disposition == "reply"
     assert result.message is not None
     assert re.match(r"Chub · [1-9][0-9]*ms(?:\n|$)", result.message)
-    assert "Task result notifications failed: 1" in result.message
-    assert result.message.endswith("No sessions\n\nWeekly Unavailable")
+    assert "Task result notifications failed" not in result.message
+    assert "Issues" not in result.message
+    assert result.message.endswith(
+        "No sessions\n\nNo requests\n\nWeekly Unavailable"
+    )
     assert "Sessions\n\nNo sessions" not in result.message
     assert "执行中 2" not in result.message
     codex_manager.list_sessions.assert_called_once()
     quick_interactions.submit.assert_not_called()
+
+
+@pytest.mark.parametrize("prompt", ["状态查询", "检查状态", "状态检查"])
+def test_removed_status_aliases_are_submitted_as_normal_tasks(
+    settings: Settings,
+    prompt: str,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+
+    result = manager.dispatch(
+        message_id=f"removed-status-alias-{prompt}",
+        prompt=prompt,
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == submitted_task_message(settings, prompt)
+    quick_interactions.submit.assert_called_once()
 
 
 @pytest.mark.parametrize("prompt", ["help", "HELP。", "帮助", " 帮助。 "])
@@ -172,16 +195,23 @@ def test_dispatch_returns_concise_chub_help(
 
     assert result.message == (
         "Commands\n\n"
-        "chub\n"
-        "sync\n"
-        "session new [task]\n"
-        "rename <title>\n"
-        "session switch <S1-S9|1-9> [task]\n"
-        "session stop <S1-S9|1-9>\n"
-        "session archive <S1-S9|1-9>\n"
-        "session retry\n"
-        "session new retry\n"
-        "restart"
+        "Slots · N = SN = 一…九（中文数字可紧连中文指令）\n\n"
+        "chub · 状态 / 查询状态\n\n"
+        "help · 帮助\n\n"
+        "restart · 重启 / 重新启动\n\n"
+        "sync · 同步\n\n"
+        "direct <task> · 直接执行 <正文>\n\n"
+        "new <title> · 新建 <标题>\n\n"
+        "rename <title> · 重命名 <标题>\n\n"
+        "switch <1-9|S1-S9> [task] · 切换/会话 <槽位> [正文]\n\n"
+        "stop <1-9|S1-S9> · 停止 <槽位>\n\n"
+            "archive <1-9|S1-S9> · 归档 <槽位>\n\n"
+            "cat <R1-R9> · 查看需求 <槽位>\n\n"
+            "run <R1-R9> · 执行需求 <槽位>\n\n"
+            "archive <R1-R9> · 归档需求 <槽位>\n\n"
+            "retry · 重试 / 继续执行\n\n"
+        "new retry · 新建 重试 / 新建 继续执行\n\n"
+        "switch <1-9|S1-S9> retry · 切换/会话 <槽位> 重试"
     )
     codex_manager.list_sessions.assert_not_called()
     quick_interactions.submit.assert_not_called()
@@ -495,7 +525,7 @@ def test_chub_overview_shows_running_task_on_refreshed_session(
     )
 
     assert (
-        "▶ S1 · 运行任务\nTask · 优化状态展示"
+        "▶ S1 · 运行任务\n\nTask · 优化状态展示"
         in (result.message or "")
     )
 
@@ -539,11 +569,12 @@ def test_chub_overview_separates_each_busy_session_block(
 
     assert (
         "Sessions\n\n"
-        "S1 · Chub 快速交互独立…\n"
+        "S1 · Chub 快速交互独立…\n\n"
         "Task · 开始执行第四个阶段\n\n"
-        "▶ S2 · 项目文档优化\n"
-        "Task · 项目文档优化\n\n"
-        "Weekly"
+        "▶ S2 · 项目文档优化\n\n"
+            "Task · 项目文档优化\n\n"
+            "No requests\n\n"
+            "Weekly"
     ) in message
 
 
@@ -671,7 +702,7 @@ def test_chub_sync_failure_does_not_commit_partial_slots(
 
     result = manager.dispatch(
         message_id="chub-sync-write-failure",
-        prompt="同步状态",
+        prompt="同步",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -827,6 +858,12 @@ def test_removed_codex_help_is_submitted_as_normal_task(
     [
         "session switch",
         "Session Switch。",
+        "session new legacy",
+        "session switch 2",
+        "session stop 2",
+        "session archive 2",
+        "session retry",
+        "session new retry",
         "codex switch",
         "codex switch 2",
         "codex archive 2",
@@ -835,7 +872,7 @@ def test_removed_codex_help_is_submitted_as_normal_task(
         "codex new retry",
     ],
 )
-def test_removed_or_unparameterized_session_commands_are_normal_tasks(
+def test_removed_or_unregistered_commands_are_normal_tasks(
     settings: Settings,
     prompt: str,
 ) -> None:
@@ -853,3 +890,32 @@ def test_removed_or_unparameterized_session_commands_are_normal_tasks(
     assert result.disposition == "reply"
     assert result.message == submitted_task_message(settings, prompt)
     quick_interactions.submit.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("prompt", "usage"),
+    [
+        ("停止2", "Usage: stop <1-9|S1-S9|一-九>"),
+        ("归档2", "Usage: archive <1-9|S1-S9|一-九>"),
+    ],
+)
+def test_malformed_numbered_commands_are_not_submitted_as_normal_tasks(
+    settings: Settings,
+    prompt: str,
+    usage: str,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+
+    result = manager.dispatch(
+        message_id=f"malformed-numbered-command-{prompt}",
+        prompt=prompt,
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.disposition == "reply"
+    assert result.message == usage
+    codex_manager.list_sessions.assert_not_called()
+    quick_interactions.submit.assert_not_called()

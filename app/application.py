@@ -277,6 +277,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ai_usage_reader=ai_usage,
         session_stopper=stop_weixin_session,
         session_stop_notifier=completion_notifier.notify_weixin_command_result,
+        translation_result_notifier=(
+            completion_notifier.notify_weixin_optimized_task
+        ),
+    )
+    weixin_translation.set_completion_handler(
+        weixin_chub_mode.complete_optimized_task
+    )
+    weixin_translation.set_notification_handler(
+        weixin_chub_mode.notify_optimized_task_outcome
+    )
+    quick_interactions.set_task_finished_handler(
+        weixin_chub_mode.record_request_task_completion
     )
 
     def deferred_restart_ready(request):
@@ -349,6 +361,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     completion_notifier.completion_usage_reader = lambda: usage_message(
         ai_usage.read(force=False)
     )
+    completion_notifier.request_slot_validator = (
+        weixin_chub_mode.request_backlog.slot_matches
+    )
     codex_pty_manager.set_quick_interaction_checker(quick_interactions.is_running)
     openclaw_manager = OpenClawManager()
     notification_service = NotificationService(resolved_settings.notifications)
@@ -357,6 +372,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(_application: FastAPI):
         restart_recovery_task = None
         await asyncio.to_thread(quick_interactions.start_worker_reconciliation)
+        await asyncio.to_thread(weixin_chub_mode.reconcile_request_runs)
         weixin_chub_mode.start_status_cache()
         if (
             deferred_restart.requires_service_confirmation()
@@ -381,6 +397,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 restart_recovery_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await restart_recovery_task
+            weixin_chub_mode.close()
             await asyncio.to_thread(weixin_translation.close)
             await quick_interactions.aclose()
             await notification_service.close()

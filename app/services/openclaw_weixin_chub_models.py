@@ -19,6 +19,7 @@ WeixinChubModeCode = Literal[
 ]
 WeixinChubModeSubmissionCode = Literal[
     "submitted",
+    "translation_queued",
     "in_progress",
     "mode_disabled",
     "configuration_invalid",
@@ -94,6 +95,15 @@ class WeixinChubModeSubmission(_StrictModel):
     session_slot: int | None = Field(default=None, ge=1, le=MAX_WEIXIN_SESSION_SLOTS)
     session_title: str | None = Field(default=None, max_length=48)
     dispatch_disposition: Literal["pass", "reply", "handled"] | None = None
+    continuation_kind: Literal["task", "retry"] | None = None
+    continuation_prompt: str | None = Field(
+        default=None,
+        max_length=MAX_PENDING_RETRY_PROMPT_CHARS,
+    )
+    continuation_original_message_id: str | None = Field(
+        default=None,
+        max_length=500,
+    )
     created_at: datetime
     updated_at: datetime
 
@@ -188,7 +198,7 @@ class WeixinChubModeSubmissionResult(_StrictModel):
     accepted: Literal[True] = True
     duplicate: bool
     new_session: bool
-    code: Literal["submitted"] = "submitted"
+    code: Literal["submitted", "translation_queued"] = "submitted"
     message: str
     task_summary: str | None = Field(
         default=None,

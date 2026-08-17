@@ -176,15 +176,15 @@ def test_dispatch_returns_bounded_failure_instead_of_api_error(
 
     assert result.disposition == "reply"
     assert result.message == (
-        "Not submitted · The current Session is running.\n"
+        "Not submitted · The current Session is running.\n\n"
         "Task · 第二个任务\n\n"
-        "Retry: Send session new retry to continue in a new Session."
+        "Retry: Send new retry to continue in a new Session."
     )
     quick_interactions.submit.assert_not_called()
 
 
-@pytest.mark.parametrize("prompt", ["session new", "新建会话", " 新建会话。 "])
-def test_codex_new_creates_and_switches_without_submitting(
+@pytest.mark.parametrize("prompt", ["new", "新建", " new。 "])
+def test_codex_new_requires_a_title(
     settings: Settings,
     prompt: str,
 ) -> None:
@@ -216,30 +216,22 @@ def test_codex_new_creates_and_switches_without_submitting(
         delivery_route=delivery_route(),
     )
 
-    assert result.message is not None
-    assert result.message.startswith(
-        "Create: Session 1 was created and selected.\n\n"
-        "Sessions\n\n"
-    )
-    assert "▶ S1 · Unnamed Session" in result.message
-    assert result.message.endswith("Weekly Unavailable")
-    assert manager.session_id() == "session-new"
-    codex_manager.set_initial_quick_interaction_title.assert_not_called()
+    assert result.message == "Usage: new <title> (maximum 48 characters)."
+    assert manager.session_id() is None
+    codex_manager.create_session.assert_not_called()
+    codex_manager.rename_session.assert_not_called()
     quick_interactions.submit.assert_not_called()
 
 
 @pytest.mark.parametrize(
     ("prompt", "task_prompt"),
     [
-        ("session new, check device status", "check device status"),
-        ("新建会话，检查设备状态。", "检查设备状态。"),
-        ("新建会话 检查另一项任务", "检查另一项任务"),
-        ("新建会话：/api/devices 修复接口", "/api/devices 修复接口"),
-        ("session new: .env 配置问题", ".env 配置问题"),
-        ("新建会话，# 检查标题", "# 检查标题"),
+        ("new Device status", "Device status"),
+        ("新建 设备状态", "设备状态"),
+        ("NEW .env 配置问题", ".env 配置问题"),
     ],
 )
-def test_codex_new_with_task_creates_switches_and_submits_once(
+def test_codex_new_creates_names_and_selects_without_submitting(
     settings: Settings,
     prompt: str,
     task_prompt: str,
@@ -257,6 +249,11 @@ def test_codex_new_with_task_creates_switches_and_submits_once(
     codex_manager.create_session.return_value = SimpleNamespace(id=session.id)
     codex_manager.get_session.return_value = session
     codex_manager.list_sessions.return_value = [session]
+    def rename_session(_session_id: str, title: str) -> SimpleNamespace:
+        session.title = title
+        return SimpleNamespace(title=title)
+
+    codex_manager.rename_session.side_effect = rename_session
 
     first = manager.dispatch(
         message_id=f"new-with-task-{prompt}",
@@ -276,21 +273,18 @@ def test_codex_new_with_task_creates_switches_and_submits_once(
     )
 
     assert first.disposition == "reply"
-    assert first.message == (
-        "Create: Session 1 was created and selected. Task submitted.\n"
-        f"▶ S1 · {task_prompt}\n"
-        f"Task · {task_prompt}"
+    assert first.message is not None
+    assert first.message.startswith(
+        f'Create: Session 1 "{task_prompt}" was created and selected.\n\n'
     )
+    assert f"▶ S1 · {task_prompt}" in first.message
     assert duplicate.message == first.message
     codex_manager.create_session.assert_called_once()
-    quick_interactions.submit.assert_called_once()
-    assert quick_interactions.submit.call_args.args[:2] == (
-        "session-new",
-        task_prompt,
-    )
+    codex_manager.rename_session.assert_called_once_with("session-new", task_prompt)
+    quick_interactions.submit.assert_not_called()
 
 
-def test_codex_new_with_task_failure_shows_task_summary(settings: Settings) -> None:
+def test_codex_new_naming_failure_keeps_created_session(settings: Settings) -> None:
     manager, codex_manager, quick_interactions = configured_manager(settings)
     session = CodexSession(
         id="session-new",
@@ -304,7 +298,7 @@ def test_codex_new_with_task_failure_shows_task_summary(settings: Settings) -> N
     codex_manager.create_session.return_value = SimpleNamespace(id=session.id)
     codex_manager.get_session.return_value = session
     codex_manager.list_sessions.return_value = [session]
-    quick_interactions.submit.side_effect = ApiError(
+    codex_manager.rename_session.side_effect = ApiError(
         503,
         "quick_worker_unavailable",
         "private detail",
@@ -312,7 +306,7 @@ def test_codex_new_with_task_failure_shows_task_summary(settings: Settings) -> N
 
     result = manager.dispatch(
         message_id="new-with-failed-task",
-        prompt="新建会话 检查设备状态",
+        prompt="新建 检查设备状态",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -320,7 +314,7 @@ def test_codex_new_with_task_failure_shows_task_summary(settings: Settings) -> N
     )
     duplicate = manager.dispatch(
         message_id="new-with-failed-task",
-        prompt="新建会话 检查设备状态",
+        prompt="新建 检查设备状态",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -328,16 +322,15 @@ def test_codex_new_with_task_failure_shows_task_summary(settings: Settings) -> N
     )
 
     assert result.message is not None
-    assert "the task was not submitted" in result.message
-    assert result.message.splitlines()[1] == "▶ S1 · Unnamed Session"
-    assert result.message.splitlines()[2] == "Task · 检查设备状态"
-    assert "Sessions" not in result.message
-    assert "Weekly" not in result.message
+    assert "was created and selected, but its title could not be set" in result.message
+    assert "Send rename <title> to try again." in result.message
+    assert manager.session_id() == "session-new"
     assert duplicate == result
-    quick_interactions.submit.assert_called_once()
+    codex_manager.rename_session.assert_called_once()
+    quick_interactions.submit.assert_not_called()
 
 
-def test_codex_new_with_task_creation_failure_does_not_link_current_session(
+def test_codex_new_creation_failure_does_not_link_current_session(
     settings: Settings,
 ) -> None:
     manager, codex_manager, quick_interactions = configured_manager(settings)
@@ -353,17 +346,16 @@ def test_codex_new_with_task_creation_failure_does_not_link_current_session(
 
     result = manager.dispatch(
         message_id="new-with-task-create-failure",
-        prompt="新建会话 检查设备状态",
+        prompt="新建 检查设备状态",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
         delivery_route=delivery_route(),
     )
 
-    assert result.message == (
-        "Create: Failed. Codex could not create a Session.\n"
-        "Task · 检查设备状态"
-    )
+    assert result.message is not None
+    assert result.message.startswith("Create: Failed. Codex could not create a Session.")
+    assert manager.session_id() == "session-1"
     quick_interactions.submit.assert_not_called()
 
 
@@ -393,6 +385,11 @@ def test_codex_new_status_does_not_fill_unassigned_candidate(
     ]
     codex_manager.create_session.return_value = SimpleNamespace(id="session-new")
     codex_manager.list_sessions.return_value = sessions
+    def rename_new_session(_session_id: str, title: str) -> SimpleNamespace:
+        sessions[2].title = title
+        return SimpleNamespace(title=title)
+
+    codex_manager.rename_session.side_effect = rename_new_session
     manager.codex_account_reader = MagicMock()
     manager.codex_account_reader.read_account_status.return_value = (
         CodexQuotaData(status="unavailable"),
@@ -401,7 +398,7 @@ def test_codex_new_status_does_not_fill_unassigned_candidate(
 
     result = manager.dispatch(
         message_id="new-does-not-fill-candidate",
-        prompt="session new",
+        prompt="new 新建会话",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -487,7 +484,7 @@ def test_codex_operation_log_uses_operation_result_not_status_refresh(
     ) as write_operation:
         created = manager.dispatch(
             message_id="new-with-status-failure",
-            prompt="session new",
+            prompt="new 新建会话",
             message_type="text",
             correlation_id=None,
             source_ip="100.64.0.21",
@@ -512,7 +509,7 @@ def test_codex_operation_log_uses_operation_result_not_status_refresh(
     ) as write_operation:
         manager.dispatch(
             message_id="invalid-switch-log",
-            prompt="session switch 0",
+            prompt="switch 0",
             message_type="text",
             correlation_id=None,
             source_ip="100.64.0.21",
@@ -548,9 +545,10 @@ def test_duplicate_codex_new_replays_status_without_creating_twice(
         )
     ]
 
+    codex_manager.rename_session.return_value = SimpleNamespace(title="新建会话")
     first = manager.dispatch(
         message_id="codex-new-duplicate",
-        prompt="session new",
+        prompt="new 新建会话",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -558,7 +556,7 @@ def test_duplicate_codex_new_replays_status_without_creating_twice(
     )
     duplicate = manager.dispatch(
         message_id="codex-new-duplicate",
-        prompt="session new",
+        prompt="new 新建会话",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
