@@ -44,15 +44,16 @@ async function monitorHubRestart(previousInstanceId) {
     setMessage(elements.globalMessage, "");
   } catch (error) {
     if (!handleAccessError(error)) {
+      setBadge(elements.chubServiceBadge, "恢复失败", "failed");
       setMessage(
-        elements.globalMessage,
+        elements.chubServiceMessage,
         error.message || "重启后未能恢复连接。",
         "error",
       );
     }
   } finally {
     hubRestartInProgress = false;
-    elements.restartHub.disabled = !hasProtectedAccess();
+    syncCoreMaintenanceControls();
   }
 }
 
@@ -60,7 +61,10 @@ async function requestHubRestart() {
   const previousInstanceId = await hubInstanceId();
   await apiFetch("/api/maintenance/restart", { method: "POST" });
   hubRestartInProgress = true;
-  elements.restartHub.disabled = true;
+  setBadge(elements.chubServiceBadge, "正在重启", "muted");
+  elements.chubServiceDetail.textContent = "正在等待新实例恢复";
+  setMessage(elements.chubServiceMessage, "");
+  syncCoreMaintenanceControls();
   setMessage(elements.globalMessage, "");
   void monitorHubRestart(previousInstanceId);
 }
@@ -75,6 +79,20 @@ elements.restartHub.addEventListener("click", () => {
     onConfirm: requestHubRestart,
   });
 });
+
+elements.tokenForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const token = elements.tokenInput.value.trim();
+  if (!token) {
+    setMessage(elements.globalMessage, "请输入 Hub Token。", "error");
+    elements.tokenInput.focus();
+    return;
+  }
+  elements.tokenInput.value = "";
+  connectWithToken(token, elements.rememberToken.checked);
+});
+elements.refreshStatus.addEventListener("click", loadStatus);
+elements.refreshAutomations.addEventListener("click", () => loadAutomations());
 
 elements.clearToken.addEventListener("click", () => {
   void showConfirmationDialog({
@@ -97,6 +115,19 @@ elements.clearToken.addEventListener("click", () => {
 });
 
 cardCollapsedState = loadCardCollapsedState();
+if (typeof cardCollapsedState.workstation !== "boolean") {
+  const hadEnvironmentPreference = typeof cardCollapsedState["automation-environment"] === "boolean";
+  const hadOpenClawPreference = typeof cardCollapsedState.openclaw === "boolean";
+  if (hadEnvironmentPreference || hadOpenClawPreference) {
+    cardCollapsedState.workstation = (
+      cardCollapsedState["automation-environment"] === true
+      && cardCollapsedState.openclaw === true
+    );
+    delete cardCollapsedState["automation-environment"];
+    delete cardCollapsedState.openclaw;
+    saveCardCollapsedState();
+  }
+}
 const savedSessionToken = sessionStorage.getItem(SESSION_TOKEN_KEY);
 const savedLocalToken = localStorage.getItem(LOCAL_TOKEN_KEY);
 const savedToken = savedSessionToken || savedLocalToken || "";

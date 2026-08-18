@@ -8,6 +8,7 @@ from app.services.design_documents import (
     DesignDocumentIndexError,
     get_design_document,
     list_design_documents,
+    select_home_design_documents,
 )
 from app.services.weekly_reports import get_weekly_report, list_latest_weekly_reports
 
@@ -41,7 +42,7 @@ def index(request: Request) -> HTMLResponse:
             or f"{settings.app.name} 管理面板",
             "site_title": settings.app.page_title or settings.app.name,
             "app_version": settings.app.version,
-            "design_documents": design_documents[:5],
+            "design_documents": select_home_design_documents(design_documents),
             "design_document_count": len(design_documents),
             "design_documents_error": design_documents_error,
             "weekly_reports": weekly_reports,

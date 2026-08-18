@@ -29,6 +29,8 @@ _DOCUMENT_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 _PROJECT_DOCUMENT_PATHS = {
     "@project/README.md": PROJECT_ROOT / "README.md",
 }
+_CORE_DOCUMENT_IDS = ("project-readme", "chub-architecture")
+_HOME_DOCUMENT_LIMIT = 5
 
 
 @dataclass(frozen=True)
@@ -323,7 +325,32 @@ def list_design_documents(
                 document.id,
                 document.relative_path,
             )
-    return sorted(documents, key=lambda item: item.updated_at, reverse=True)
+    return documents
+
+
+def select_home_design_documents(
+    documents: list[DesignDocumentView],
+    *,
+    limit: int = _HOME_DOCUMENT_LIMIT,
+) -> list[DesignDocumentView]:
+    if limit <= 0:
+        return []
+    by_id = {document.id: document for document in documents}
+    core_documents = [
+        by_id[document_id]
+        for document_id in _CORE_DOCUMENT_IDS
+        if document_id in by_id
+    ]
+    recent_documents = sorted(
+        (
+            document
+            for document in documents
+            if document.id not in _CORE_DOCUMENT_IDS
+        ),
+        key=lambda item: item.updated_at,
+        reverse=True,
+    )
+    return (core_documents + recent_documents)[:limit]
 
 
 def set_design_document_archived(

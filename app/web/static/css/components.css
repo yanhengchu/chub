@@ -953,13 +953,11 @@ input[type="password"] {
 :root[data-ui-style="cyber"] .settings-meta > div,
 :root[data-ui-style="cyber"] .style-option,
 :root[data-ui-style="cyber"] .cyber-style-controls,
-:root[data-ui-style="cyber"] .automation-browser-row,
 :root[data-ui-style="cyber"] .automation-feishu-login,
 :root[data-ui-style="cyber"] .automation-item,
 :root[data-ui-style="cyber"] .design-document-item,
 :root[data-ui-style="cyber"] .log-toolbar,
 :root[data-ui-style="cyber"] .result-fields,
-:root[data-ui-style="cyber"] .openclaw-status-panel,
 :root[data-ui-style="cyber"] .openclaw-weixin-qr-panel,
 :root[data-ui-style="cyber"] .workspace-button,
 :root[data-ui-style="cyber"] .codex-workspace-dialog-surface,
@@ -1087,14 +1085,9 @@ input[type="password"] {
   white-space: nowrap;
 }
 
-.logs-card {
-  display: grid;
-  gap: 1rem;
-}
-
 .design-documents-card,
 .automation-card,
-.automation-environment-card,
+.workstation-card,
 .automation-detail-card,
 .document-list-card {
   display: grid;
@@ -1120,8 +1113,7 @@ input[type="password"] {
 
 .design-documents-card,
 .automation-card,
-.automation-environment-card,
-.logs-card {
+.workstation-card {
   align-content: start;
 }
 
@@ -1135,31 +1127,10 @@ input[type="password"] {
   font-size: 0.78rem;
 }
 
-.automation-browser-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 0.75rem;
-  background: white;
-}
-
-.automation-browser-copy,
-.automation-browser-copy strong {
-  display: block;
-}
-
-.automation-browser-copy .badge {
-  display: inline-block;
-  margin-top: 0.35rem;
-}
-
 .automation-browser-actions {
   display: flex;
-  flex: none;
   align-items: center;
+  justify-content: flex-end;
   gap: 0.55rem;
 }
 
@@ -2420,19 +2391,92 @@ pre {
   overflow-y: hidden;
 }
 
-.openclaw-card {
+.workstation-card {
   display: grid;
   align-content: start;
   gap: 1rem;
 }
 
-.openclaw-status-panel {
+.workstation-group {
   display: grid;
-  gap: 1rem;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 0.9rem;
-  background: white;
+  gap: 0.7rem;
+  min-width: 0;
+}
+
+.workstation-group + .workstation-group {
+  border-top: 1px solid var(--line);
+  padding-top: 1rem;
+}
+
+.workstation-group-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.workstation-group-heading h3 {
+  margin: 0;
+  font-size: 0.92rem;
+}
+
+.workstation-status-list {
+  display: grid;
+  min-width: 0;
+}
+
+.workstation-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  min-width: 0;
+  min-height: 58px;
+  padding-block: 0.55rem;
+}
+
+.workstation-status-row + .workstation-status-row {
+  border-top: 1px solid var(--line);
+}
+
+.workstation-status-copy {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.workstation-status-copy > strong {
+  font-size: 0.86rem;
+}
+
+.workstation-status-copy > span {
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.45;
+}
+
+.workstation-status-copy .message {
+  margin: 0;
+}
+
+.workstation-status-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+.workstation-status-actions > .badge {
+  max-width: 15rem;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.workstation-status-actions > button {
+  min-width: 4.5rem;
+  white-space: nowrap;
 }
 
 .openclaw-status-list {
@@ -2559,7 +2603,7 @@ a.openclaw-access:focus-visible {
   gap: 0.55rem;
 }
 
-.openclaw-status-panel .message {
+.workstation-group > .message {
   margin: 0;
 }
 

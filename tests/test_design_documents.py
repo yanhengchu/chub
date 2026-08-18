@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import app.services.design_documents as service
@@ -276,6 +277,10 @@ def test_registered_project_documents_exist() -> None:
     documents = service._load_documents()
 
     assert documents
+    assert [document.id for document in documents[:2]] == [
+        "project-readme",
+        "chub-architecture",
+    ]
     assert all(service._document_path(document).is_file() for document in documents)
     assert all(
         document.status in service.ALLOWED_DOCUMENT_STATUSES
@@ -288,3 +293,76 @@ def test_registered_project_documents_exist() -> None:
         and service._document_path(document) == service.PROJECT_ROOT / "README.md"
         for document in documents
     )
+
+
+def test_home_documents_pin_visible_core_then_use_recent_updates() -> None:
+    now = datetime(2026, 8, 18, 12, 0)
+    documents = [
+        service.DesignDocumentView(
+            id="project-readme",
+            title="项目说明",
+            summary="入口",
+            status="持续维护",
+            updated_at=now - timedelta(days=10),
+        ),
+        service.DesignDocumentView(
+            id="chub-architecture",
+            title="总体架构",
+            summary="架构",
+            status="持续维护",
+            updated_at=now - timedelta(days=5),
+        ),
+        *[
+            service.DesignDocumentView(
+                id=f"design-{index}",
+                title=f"设计 {index}",
+                summary="专项",
+                status="已验收",
+                updated_at=now - timedelta(hours=index),
+            )
+            for index in range(1, 5)
+        ],
+    ]
+
+    selected = service.select_home_design_documents(documents)
+
+    assert [document.id for document in selected] == [
+        "project-readme",
+        "chub-architecture",
+        "design-1",
+        "design-2",
+        "design-3",
+    ]
+
+
+def test_home_documents_do_not_restore_hidden_core_document() -> None:
+    now = datetime(2026, 8, 18, 12, 0)
+    documents = [
+        service.DesignDocumentView(
+            id="chub-architecture",
+            title="总体架构",
+            summary="架构",
+            status="持续维护",
+            updated_at=now - timedelta(days=5),
+        ),
+        *[
+            service.DesignDocumentView(
+                id=f"design-{index}",
+                title=f"设计 {index}",
+                summary="专项",
+                status="已验收",
+                updated_at=now - timedelta(hours=index),
+            )
+            for index in range(1, 6)
+        ],
+    ]
+
+    selected = service.select_home_design_documents(documents)
+
+    assert [document.id for document in selected] == [
+        "chub-architecture",
+        "design-1",
+        "design-2",
+        "design-3",
+        "design-4",
+    ]

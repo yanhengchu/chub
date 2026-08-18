@@ -167,3 +167,4 @@ elements.projectDocsList.addEventListener("click", (event) => {
     hideProjectDocument(button);
   }
 });
+elements.refreshProjectDocs.addEventListener("click", loadProjectDocuments);

@@ -69,7 +69,8 @@ async def test_home_page_is_public_and_contains_no_token(
     assert 'id="codex-card-host"' in response.text
     assert 'id="openclaw-title"' in response.text
     assert "OpenClaw 环境" in response.text
-    assert 'id="refresh-openclaw"' in response.text
+    assert 'id="openclaw-badge"' not in response.text
+    assert 'id="refresh-openclaw"' not in response.text
     assert 'id="openclaw-start"' in response.text
     assert 'id="openclaw-restart"' in response.text
     assert 'id="openclaw-stop"' in response.text
@@ -81,8 +82,8 @@ async def test_home_page_is_public_and_contains_no_token(
     assert 'id="openclaw-access-url"' not in response.text
     assert 'id="openclaw-access-unavailable"' not in response.text
     assert "远程访问未启用" not in response.text
-    assert 'data-card-key="openclaw"' in response.text
-    assert 'class="openclaw-status-panel"' in response.text
+    assert 'data-card-key="openclaw"' not in response.text
+    assert 'id="openclaw-gateway-badge"' in response.text
     assert "网关状态" in response.text
     assert "消息通道" in response.text
     assert "访问入口" in response.text
@@ -98,16 +99,18 @@ async def test_home_page_is_public_and_contains_no_token(
     assert 'id="automation-list"' in response.text
     assert 'id="automation-environment-title"' in response.text
     assert "自动化环境" in response.text
-    assert 'id="refresh-automation-environment"' in response.text
+    assert 'id="automation-environment-badge"' not in response.text
+    assert 'id="refresh-automation-environment"' not in response.text
     assert 'id="automation-environment-message"' in response.text
-    assert 'data-card-key="automation-environment"' in response.text
-    assert 'data-card-key="automation-environment" data-collapsible-card data-collapsed="true"' in response.text
+    assert 'data-card-key="automation-environment"' not in response.text
+    assert 'data-card-key="workstation" data-collapsible-card' in response.text
+    assert 'data-card-key="workstation" data-collapsible-card data-collapsed="true"' not in response.text
+    assert '<h2 id="workstation-title">工作站环境</h2>' in response.text
+    assert 'id="refresh-workstation-environment"' in response.text
     assert response.text.index('id="codex-card-host"') < response.text.index(
         'data-card-key="project-docs"'
     ) < response.text.index('data-card-key="automations"') < response.text.index(
-        'data-card-key="automation-environment"'
-    ) < response.text.index('data-card-key="openclaw"') < response.text.index(
-        'data-card-key="logs"'
+        'data-card-key="workstation"'
     )
     assert 'id="automation-browser-control"' in response.text
     assert 'aria-controls="automation-browser-dialog"' in response.text
@@ -149,13 +152,10 @@ async def test_home_page_is_public_and_contains_no_token(
     assert "待生成" in response.text
     assert 'data-card-key="project-docs"' in response.text
     assert 'data-card-key="automations"' in response.text
-    assert 'data-card-key="logs"' in response.text
+    assert 'data-card-key="logs"' not in response.text
     assert 'data-card-return-refresh="true"' in response.text
-    openclaw_card = response.text.split('data-card-key="openclaw"', 1)[1].split(
-        "</section>",
-        1,
-    )[0]
-    assert 'data-card-return-refresh="true"' not in openclaw_card
+    workstation_card = response.text.split('data-card-key="workstation"', 1)[1]
+    assert 'data-card-return-refresh="true"' not in workstation_card
     assert "OpenClaw 方案调研" not in response.text
     assert "持续维护" in response.text
     assert response.text.count("document-archive-action") == 5
@@ -170,6 +170,12 @@ async def test_home_page_is_public_and_contains_no_token(
     assert "节点维护" not in response.text
     assert "维护检查" not in response.text
     assert 'id="restart-hub"' in response.text
+    assert '<button id="restart-hub"' in response.text
+    assert '<button id="restart-hub" class="site-header-title"' not in response.text
+    assert '<div class="site-header-title">' in response.text
+    assert 'id="chub-service-badge"' in response.text
+    assert 'id="quick-worker-badge"' in response.text
+    assert 'id="quick-worker-restart"' in response.text
     assert 'aria-controls="confirmation-dialog"' in response.text
     assert 'id="confirmation-dialog"' in response.text
     assert 'id="confirmation-dialog-message"' in response.text
@@ -183,21 +189,13 @@ async def test_home_page_is_public_and_contains_no_token(
     assert 'data-card-heading' in response.text
     assert 'data-card-content' in response.text
     assert 'data-collapsible-card' in response.text
-    assert response.text.count('class="card-content-inner"') == 5
+    assert response.text.count('class="card-content-inner"') == 3
     assert "退出" in response.text
     assert 'id="task-list"' not in response.text
-    assert "data-log-source" in response.text
-    assert 'href="/logs"' in response.text
-    assert 'class="card logs-card"' in response.text
-    assert '<h2 id="logs-title">日志</h2>' in response.text
-    assert 'class="log-toolbar" role="group" aria-label="日志显示设置"' in response.text
-    assert 'class="log-toolbar-controls"' in response.text
-    logs_heading = response.text.split(
-        '<section class="card logs-card"', 1
-    )[1].split('<div class="log-toolbar"', 1)[0]
-    assert logs_heading.count("button-link") == 0
-    assert 'id="log-lines"' not in logs_heading
-    assert 'id="load-logs"' in logs_heading
+    assert "data-log-source" not in response.text
+    assert 'href="/logs"' not in response.text
+    assert 'class="card logs-card"' not in response.text
+    assert '<h2 id="logs-title">日志</h2>' not in response.text
     assert 'id="status-details"' not in response.text
     assert "展开详情" not in response.text
     assert settings.security.token.get_secret_value() not in response.text
@@ -253,6 +251,8 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
     assert 'id="cyber-rain-brightness"' in response.text
     assert 'id="cyber-rain-density"' in response.text
     assert "风格选择保存在当前浏览器" in response.text
+    assert '<h3 id="diagnostics-title">诊断</h3>' in response.text
+    assert 'href="/logs">打开日志详情</a>' in response.text
     assert 'data-style-apply="standard"' in response.text
     assert 'data-style-apply="cyber"' in response.text
     assert 'name="quick-interaction-view"' not in response.text
@@ -481,8 +481,8 @@ async def test_web_assets_are_available(settings: Settings) -> None:
             await client.get("/static/js/features/codex-sessions.js"),
             await client.get("/static/js/features/openclaw.js"),
             await client.get("/static/js/features/automations.js"),
+            await client.get("/static/js/features/workstation.js"),
             await client.get("/static/js/features/project-documents.js"),
-            await client.get("/static/js/features/logs.js"),
             await client.get("/static/app.js"),
         ]
         polling_script = await client.get("/static/codex_polling.js")
@@ -518,6 +518,9 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "/api/automations/browser/" in dashboard_script
     assert "/api/openclaw/status" in dashboard_script
     assert "/api/openclaw/weixin/login" in dashboard_script
+    assert "/api/maintenance/quick-worker" in dashboard_script
+    assert "syncCoreMaintenanceControls" in dashboard_script
+    assert "Promise.allSettled" in dashboard_script
     assert "/api/openclaw/${action}" in dashboard_script
     assert "OPENCLAW_STATUS_CACHE_KEY" in dashboard_script
     assert "restoreOpenClawCache" in dashboard_script
@@ -701,7 +704,7 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "requestHubRestart" in script.text
     assert "monitorHubRestart" in script.text
     assert "hubRestartInProgress" in script.text
-    assert "elements.restartHub.disabled = true" in script.text
+    assert "syncCoreMaintenanceControls()" in script.text
     assert "scrollCodexPanelIntoView" not in script.text
     assert "任务状态已更新。" not in script.text
     assert "/api/maintenance/restart" in script.text
@@ -736,7 +739,8 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert ".confirmation-dialog-surface" in stylesheet.text
     assert ".confirmation-dialog-actions" in stylesheet.text
     assert "-webkit-tap-highlight-color: transparent" in stylesheet.text
-    assert ".logs-card" in stylesheet.text
+    assert ".workstation-card" in stylesheet.text
+    assert ".workstation-status-row" in stylesheet.text
     assert ".session-path" in stylesheet.text
     assert ".session-actions" in stylesheet.text
     assert "grid-column: 1 / -1;" in stylesheet.text
@@ -959,6 +963,7 @@ async def test_log_details_page_and_script_are_available(settings: Settings) -> 
 
     assert page.status_code == 200
     assert 'id="detail-log-source"' in page.text
+    assert 'value="worker-operations"' in page.text
     assert "返回首页" not in page.text
     assert "加载更早" in page.text
     assert script.status_code == 200
@@ -1002,6 +1007,7 @@ async def test_automation_details_page_and_script_are_available(
 async def test_design_document_pages_render_markdown(settings: Settings) -> None:
     transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        home = await client.get("/")
         listing = await client.get("/project-docs")
         detail = await client.get("/project-docs/automation-download")
         project_readme = await client.get("/project-docs/project-readme")
@@ -1017,9 +1023,16 @@ async def test_design_document_pages_render_markdown(settings: Settings) -> None
     )
     assert "Chub 项目说明" in listing.text
     assert 'href="/project-docs/project-readme"' in listing.text
+    assert home.text.index('href="/project-docs/project-readme"') < home.text.index(
+        'href="/project-docs/chub-architecture"'
+    )
+    assert listing.text.index('href="/project-docs/project-readme"') < listing.text.index(
+        'href="/project-docs/chub-architecture"'
+    )
     assert '<span class="badge badge-success">持续维护</span>' in listing.text
     assert project_readme.status_code == 200
-    assert "面向个人设备的轻量管理服务" in project_readme.text
+    assert "面向个人设备、本地优先的轻量 AI 工作站控制面" in project_readme.text
+    assert 'href="/project-docs/chub-architecture"' in project_readme.text
     assert 'href="/project-docs/chub-integration-capabilities"' in project_readme.text
     assert 'href="/project-docs/ai-session-state"' in project_readme.text
     assert 'href="docs/CHUB_INTEGRATION_CAPABILITIES.md"' not in project_readme.text
@@ -1229,8 +1242,8 @@ async def test_page_uses_external_script_only(settings: Settings) -> None:
         "/static/js/features/codex-sessions.js",
         "/static/js/features/openclaw.js",
         "/static/js/features/automations.js",
+        "/static/js/features/workstation.js",
         "/static/js/features/project-documents.js",
-        "/static/js/features/logs.js",
         "/static/app.js",
     ]
     assert response.text.count("<script") == len(expected_scripts) + 2

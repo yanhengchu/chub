@@ -1,14 +1,22 @@
 # Chub
 
-Chub 是面向个人设备的轻量管理服务，提供统一的 Web 管理入口，用于查看节点状态、运行受控维护任务、管理 Codex 会话、执行浏览器自动化，以及连接 OpenClaw 和微信 ClawBot。
+## 项目介绍
 
-项目支持 macOS LaunchAgent 与 Ubuntu systemd user service，并以手机端可用、可信网络访问、明确的操作结果和简单维护为主要原则。基础节点能力、Codex 交互和 OpenClaw 核心链路均已完成双平台验收；后续能力由真实需求驱动。
+Chub 是面向个人设备、本地优先的轻量 AI 工作站控制面。它在统一的安全与状态边界内组织设备能力、AI Session 和任务入口，负责接收请求、选择执行目标、协调运行、恢复任务、确认最终状态并交付结果；Chub 本身不是模型，也不作为通用对话 Agent 执行任务。
+
+当前 Codex 是唯一完整接入的 Agent Runtime，负责实际的分析、编码和工具调用；Quick Worker 承载需要跨 Web 重启继续运行的后台 AI 任务；OpenClaw 在微信链路中只承担可信消息网关和通道适配。具体业务能力和使用入口见“当前功能”，不在项目定位中重复列举。
+
+长期目标是让 Chub 成为不依赖单一 Agent 产品的个人 AI 工作站：在保持统一安全、逻辑 Session、任务和最终状态语义的前提下，通过稳定契约接入经过验证的 Agent Runtime。项目继续坚持本地优先、可靠终态和适合个人维护的复杂度，支持 macOS LaunchAgent 与 Ubuntu systemd user service；新 Runtime 只由真实需求驱动，并在能力、权限和恢复机制通过验证后接入。
+
+## 架构与文档入口
+
+本文用于说明 Chub 是什么、当前提供什么能力以及如何使用；[Chub 总体架构与演进设计](docs/CHUB_ARCHITECTURE_DESIGN.md)是项目的核心架构依据，定义系统边界、职责分层、状态所有权和演进原则。新增功能和专项设计必须先遵循总体架构，再进入对应领域文档；确认当前已经实现并可调用的功能时，以[Chub 集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md)为准。
 
 ## 当前功能
 
 | 功能域 | 当前可用能力 | 主要入口 |
 | --- | --- | --- |
-| 设备管理 | 查看节点与系统状态，执行后端白名单维护任务，查看受限、脱敏的操作日志和运行日志 | 首页、日志页 |
+| 设备管理 | 查看节点与系统状态，执行后端白名单维护任务，查看受限、脱敏的操作日志和运行日志 | 首页、设置页、日志页 |
 | Codex 会话 | 新建、进入、停止和归档 Session；选择权限、模型和推理等级；通过实时终端或快速交互复用同一原生 Session | 首页、Session 页 |
 | 需求储备 | 使用 R1–R9 保存、更新和查看轻量需求，并从微信提交到当前 Session 执行 | 命令行、微信 ClawBot |
 | OpenClaw 与微信 | 查看并维护 Gateway 和微信通道；将可信微信私聊交给 Chub 固定路由或 Codex 任务；任务结束后按原路返回结果 | 首页、设置页、微信 ClawBot |
@@ -77,18 +85,22 @@ chub stop
 chub restart
 chub status
 chub worker-health
+chub worker-drain
+chub worker-reload
 chub logs
 chub uninstall
 ```
 
 macOS 使用两个独立 LaunchAgent，Ubuntu 使用两个独立 systemd user service，分别承载 Web 和
 Quick Worker。`chub restart` 只重启 Web，不停止 Worker；`chub status` 同时显示两个服务，
-`chub worker-health` 通过本机私有 IPC 读取 Worker 健康信息。当前 Worker 已经接管页面、微信和翻译快速任务；
+`chub worker-health` 通过本机私有 IPC 读取 Worker 健康信息；`chub worker-drain` 停止接收新任务并等待已受理任务收敛；`chub worker-reload` 完成排空、独立重载和新 generation 健康确认。`worker-drain` 及命令行直接调用的 `worker-reload` 只在本机终端执行，不能从正在运行的快速任务内部调用；首页“工作站环境”在 Worker 空闲、协议兼容且 Web 已恢复时也提供固定的受控重启入口。当前 Worker 已经接管页面、微信和翻译快速任务；
 macOS 与 Ubuntu 均已确认单独重启 Web 不会停止 Worker、Runner 或现有任务，恢复后的结果和通知不会重复。
 Worker 不健康时，Session 写操作保持失败关闭，不回退到 Web Runner。
 
+`chub install`、`chub stop` 和 `chub uninstall` 默认拒绝中断活动或排队任务，并在空闲时先关闭 Worker 提交门禁；只有维护者确认任务可以中断时才使用对应命令的 `--force`。跨协议升级使用 `chub install --force` 统一安装当前版本并直接清理旧 Worker 数据；旧任务会被中断且不可恢复，不保留读取或迁移逻辑。
+
 服务直接依赖当前工作区和 `.venv`；移动目录或变更服务定义后需要重新安装。Web 配置变更使用
-`chub restart` 生效；Worker 升级和服务定义变更需要重新安装生效。
+`chub restart` 生效；Worker 代码升级使用 `chub worker-reload`，只有服务定义变化时才需要重新执行安装。
 
 ## 日常使用
 
@@ -127,7 +139,7 @@ Session、Activity、槽位、标题和入口语义见[Chub AI Session 状态模
 
 OpenClaw 提供可信入口和通道上下文，Chub 负责业务路由、安全校验和最终状态；整条链路不调用 OpenClaw Agent，也不把消息拦截或任务提交等同于最终成功。
 
-首页“OpenClaw 环境”卡片用于查看 Gateway、微信通道和 Tailscale 入口，并提供受控的启停、重启及微信绑定操作。绑定成功只表示通道登录完成，不代表发送者配对或 Owner 权限已经配置。
+首页“工作站环境”卡片中的 OpenClaw 分区用于查看 Gateway、微信通道和 Tailscale 入口，并提供受控的启停、重启及微信绑定操作。绑定成功只表示通道登录完成，不代表发送者配对或 Owner 权限已经配置。
 
 端到端状态和安全边界见 [Chub–OpenClaw 接入设计](docs/CHUB_OPENCLAW_INTEGRATION_DESIGN.md)；插件协议、构建和部署见仓库内维护资料 [Chub OpenClaw 插件说明](integrations/openclaw/chub/README.md)。
 
@@ -170,7 +182,7 @@ Chub 使用独立 Debug Chrome 执行配置驱动的浏览器任务。公共任�
 cp config/automations.example.yaml config/automations.local.yaml
 ```
 
-首页可管理浏览器环境、检查站点登录状态并运行任务；命令行也可调用统一 Runner：
+首页“工作站环境”可管理浏览器环境和检查站点登录状态，“自动化任务”卡片用于运行任务；命令行也可调用统一 Runner：
 
 ```bash
 .venv/bin/python -m app.automations.command run <task-id>
@@ -211,12 +223,13 @@ Runner 不会自行启动或停止 Debug Chrome。浏览器 Profile 未初始化
 
 ## 项目资料维护
 
-README 是项目入口和文档管理规则的维护入口；详细契约放在对应专项文档中。文档按以下职责维护：
+README 是项目入口和文档管理规则的维护入口；总体架构是所有专项设计的上层约束。文档按以下权威层级维护：
 
-- README 只维护项目概览、安装、主要使用入口、数据安全和文档导航。
-- 集成能力清单登记当前可调用的命令、插件和固定 API，并维护微信固定指令的唯一产品契约；不解释内部实现、身份安全或调度协议字段。
-- 专项设计只维护本领域的现行行为和边界；跨领域规则引用其权威文档，不复制完整正文。
-- 插件 README 维护插件协议、源码、构建和部署；第三方补丁文档只维护异常恢复，不承担日常使用说明。
+- **项目说明**：README 维护项目定位、能力概览、安装、使用入口、数据安全和文档导航。
+- **总体架构**：定义系统边界、进程、领域、状态所有权、依赖方向和整体演进原则；所有专项设计必须遵循。
+- **专项设计**：只维护本领域的现行行为、目标边界和演进方案；跨领域规则引用总体架构及对应权威文档，不复制完整正文。
+- **当前能力契约**：集成能力清单登记当前可调用的命令、插件和固定 API，并维护微信固定指令的唯一产品契约；目标架构不能覆盖当前事实。
+- **维护与归档资料**：插件 README 维护插件协议、源码、构建和部署；第三方补丁文档只维护异常恢复；阶段归档只用于历史追溯。
 - 文档的页面登记、摘要和展示状态以 `docs/design_documents.json` 为准；各文档顶部可以补充维护与验收说明，但不得与索引状态冲突。
 
 文档生命周期：
@@ -225,7 +238,7 @@ README 是项目入口和文档管理规则的维护入口；详细契约放在�
 - **阶段记录**：阶段已经闭环，但仍被当前工作引用或尚未被新文档替代。
 - **归档文档**：只用于历史追溯，移动到 `docs/archive/phase-N/` 并原则上冻结。
 
-项目资料页面展示的当前文档统一登记在 `docs/design_documents.json`，列表按文件最后更新时间倒序显示，首页展示最近更新且未隐藏的五份。普通文档使用相对于 `docs/` 的 Markdown 路径；项目根 README 使用唯一保留别名 `@project/README.md`，不能借此读取其他根目录文件。索引状态只使用“调研中”“待实现”“进行中”“待验收”“已验收”或“持续维护”。
+项目资料页面展示的当前文档统一登记在 `docs/design_documents.json`，完整列表按索引顺序遵循“项目说明、总体架构、专项设计、当前能力契约、维护资料”的权威层级。首页未隐藏文档中固定优先展示项目说明和总体架构，其余位置按文件最后更新时间倒序补足五份。普通文档使用相对于 `docs/` 的 Markdown 路径；项目根 README 使用唯一保留别名 `@project/README.md`，不能借此读取其他根目录文件。索引状态只使用“调研中”“待实现”“进行中”“待验收”“已验收”或“持续维护”。
 
 项目资料页的“隐藏/恢复显示”只控制首页展示，状态保存在本机私有运行数据中，不移动、冻结或改写仓库文档。生命周期归档仍需把历史文档移动到 `docs/archive/phase-N/`，并同步索引和相关引用。
 
@@ -252,17 +265,19 @@ CHUB_BROWSER_TESTS=1 .venv/bin/python -m pytest \
 | 文档 | 唯一职责 |
 | --- | --- |
 | [Chub 项目说明](README.md) | 项目概览、安装、日常入口、安全和文档导航 |
-| [Chub 集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md) | 当前可用命令、插件、固定 API，以及微信固定指令唯一产品契约 |
+| [Chub 总体架构与演进设计](docs/CHUB_ARCHITECTURE_DESIGN.md) | 当前进程、领域与状态所有权，以及整体分层和演进原则 |
+| [AI Runtime 架构演进设计](docs/AI_RUNTIME_ARCHITECTURE_DESIGN.md) | 长期 Agent Runtime 边界、Session Manager、Worker 职责和渐进演进路线 |
 | [Chub AI Session 状态模型设计](docs/AI_SESSION_STATE_DESIGN.md) | Session、Activity、入口、槽位和单 writer 语义 |
 | [快速交互独立 Worker 设计](docs/QUICK_INTERACTION_WORKER_DESIGN.md) | 非实时任务、恢复、通知终态和协调重启 |
 | [Chub AI 额度与用量采集设计](docs/AI_QUOTA_USAGE_DESIGN.md) | AI 用量来源、统一接口、缓存和展示口径 |
 | [Chub–OpenClaw 接入设计](docs/CHUB_OPENCLAW_INTEGRATION_DESIGN.md) | OpenClaw/微信端到端业务、身份、权限、Session/Request 状态和通知边界 |
-| [Chub OpenClaw 插件说明](integrations/openclaw/chub/README.md) | 仓库内维护的 Chub 插件协议、源码、构建、部署和协议验收 |
-| [微信 Context Token 补丁规范](docs/WEIXIN_CLAWBOT_CONTEXT_TOKEN_AI_PATCH.md) | 第三方微信插件升级后的兼容复检和恢复 |
 | [本期工作周报自动化与生成设计](docs/WEEKLY_REPORT_AUTOMATION_DESIGN.md) | 飞书资料准备、确认门禁、周报生成和复核 |
 | [Chub 前端 UI 模块化设计](docs/FRONTEND_UI_DESIGN.md) | 前端分层、公共交互和 Standard/Cyber 视觉契约 |
+| [Chub 集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md) | 当前可用命令、插件、固定 API，以及微信固定指令唯一产品契约 |
+| [Chub OpenClaw 插件说明](integrations/openclaw/chub/README.md) | 仓库内维护的 Chub 插件协议、源码、构建、部署和协议验收 |
+| [微信 Context Token 补丁规范](docs/WEIXIN_CLAWBOT_CONTEXT_TOKEN_AI_PATCH.md) | 第三方微信插件升级后的兼容复检和恢复 |
 
-日常了解项目先看本文；确认“现在能调用什么”看能力清单；开发或排障时再进入对应专项设计。`docs/design_documents.json` 维护页面登记和展示状态，页面顺序由文件最后更新时间决定。
+日常了解项目先看本文和总体架构；开发或排障时进入对应专项设计；确认“现在能调用什么”看能力清单。`docs/design_documents.json` 的登记顺序同时维护权威层级和完整列表顺序，首页在固定核心文档后提供最近更新视图。
 
 仓库内阶段归档：
 

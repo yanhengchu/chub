@@ -9,11 +9,18 @@
       "path": "@project/README.md"
     },
     {
-      "id": "architecture-evolution",
-      "title": "Chub 前端 UI 模块化设计",
-      "summary": "定义首页 Core、公共组件、Feature、样式层及 Standard/Cyber 的当前维护边界。",
+      "id": "chub-architecture",
+      "title": "Chub 总体架构与演进设计",
+      "summary": "定义 Chub 当前进程、领域和状态所有权，以及模块化单体的长期分层与演进原则。",
+      "status": "持续维护",
+      "path": "CHUB_ARCHITECTURE_DESIGN.md"
+    },
+    {
+      "id": "ai-runtime-architecture",
+      "title": "AI Runtime 架构演进设计",
+      "summary": "记录已验收的 Codex Runtime 适配边界与通用 Worker，以及后续 Session Manager 演进路线。",
       "status": "已验收",
-      "path": "FRONTEND_UI_DESIGN.md"
+      "path": "AI_RUNTIME_ARCHITECTURE_DESIGN.md"
     },
     {
       "id": "ai-session-state",
@@ -23,13 +30,6 @@
       "path": "AI_SESSION_STATE_DESIGN.md"
     },
     {
-      "id": "ai-quota-usage",
-      "title": "Chub AI 额度与用量采集设计",
-      "summary": "定义供应商无关的统一 AI 用量接口、账号登录与 API 两种获取方式、共享缓存及长短展示格式。",
-      "status": "已验收",
-      "path": "AI_QUOTA_USAGE_DESIGN.md"
-    },
-    {
       "id": "quick-interaction-worker",
       "title": "Chub 快速交互独立 Worker 与跨 Web 重启恢复设计",
       "summary": "定义非实时任务的 Worker 权威状态、恢复、通知终态和协调 Web 重启。",
@@ -37,11 +37,32 @@
       "path": "QUICK_INTERACTION_WORKER_DESIGN.md"
     },
     {
+      "id": "ai-quota-usage",
+      "title": "Chub AI 额度与用量采集设计",
+      "summary": "定义供应商无关的统一 AI 用量接口、账号登录与 API 两种获取方式、共享缓存及长短展示格式。",
+      "status": "已验收",
+      "path": "AI_QUOTA_USAGE_DESIGN.md"
+    },
+    {
       "id": "openclaw-integration",
       "title": "Chub–OpenClaw 接入设计",
       "summary": "定义 OpenClaw 与微信 ClawBot 的端到端业务、身份、权限、Session 路由、Request 状态和通知边界。",
       "status": "持续维护",
       "path": "CHUB_OPENCLAW_INTEGRATION_DESIGN.md"
+    },
+    {
+      "id": "automation-download",
+      "title": "本期工作周报自动化与生成设计",
+      "summary": "定义本期周报从飞书资料准备、输入发布、重点确认到正式生成与复核的端到端流程。",
+      "status": "持续维护",
+      "path": "WEEKLY_REPORT_AUTOMATION_DESIGN.md"
+    },
+    {
+      "id": "architecture-evolution",
+      "title": "Chub 前端 UI 模块化设计",
+      "summary": "定义首页 Core、公共组件、Feature、样式层及 Standard/Cyber 的当前维护边界。",
+      "status": "已验收",
+      "path": "FRONTEND_UI_DESIGN.md"
     },
     {
       "id": "chub-integration-capabilities",
@@ -56,13 +77,6 @@
       "summary": "定义微信插件升级、重装或兼容异常后的 Context Token 能力复检与安全恢复规范。",
       "status": "已验收",
       "path": "WEIXIN_CLAWBOT_CONTEXT_TOKEN_AI_PATCH.md"
-    },
-    {
-      "id": "automation-download",
-      "title": "本期工作周报自动化与生成设计",
-      "summary": "定义本期周报从飞书资料准备、输入发布、重点确认到正式生成与复核的端到端流程。",
-      "status": "持续维护",
-      "path": "WEEKLY_REPORT_AUTOMATION_DESIGN.md"
     }
   ]
 }

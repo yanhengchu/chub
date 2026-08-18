@@ -61,7 +61,7 @@ def manager(
     quick_interactions._worker_call = MagicMock(
         side_effect=lambda action, **payload: (
             accepted_worker_task(payload["task"])
-            if action == "isolated_codex_submit"
+            if action == "runtime_task_submit"
             else {"success": True, "data": {}}
         )
     )
@@ -91,6 +91,7 @@ def accepted_worker_task(submission: dict[str, object]) -> dict[str, object]:
         "data": {
             "task": {
                 "task_id": submission["task_id"],
+                "runtime_id": submission["runtime_id"],
                 "status": "accepted",
                 "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
                 "created_at": now.isoformat(),
@@ -279,7 +280,7 @@ def test_isolated_worker_maps_page_weixin_and_translation_to_one_protocol(
     submissions: list[dict[str, object]] = []
 
     def worker_call(action: str, **payload: object) -> dict[str, object]:
-        assert action == "isolated_codex_submit"
+        assert action == "runtime_task_submit"
         task = payload["task"]
         assert isinstance(task, dict)
         submissions.append(task)
@@ -332,7 +333,8 @@ def test_isolated_worker_maps_page_weixin_and_translation_to_one_protocol(
     ]
     assert all(task.worker_task_id for task in (page, weixin, translation))
     assert submissions[2]["queue_key"] == "weixin-translation"
-    assert submissions[2]["permission_mode"] == "read-only"
+    assert all(item["runtime_id"] == "codex" for item in submissions)
+    assert submissions[2]["permission_profile"] == "read-only"
     assert thread.start.call_count == 3
 
 
@@ -665,7 +667,7 @@ result_path.write_text(result, encoding="utf-8")
         translation_spec = server.task_manager._read_spec(
             completed[2].worker_task_id or ""
         )
-        assert translation_spec.permission_mode == "read-only"
+        assert translation_spec.permission_profile == "read-only"
         assert completed[2].result == "润色：\n清晰中文\n\nEnglish：\nClear English"
         quick_interactions.close()
     finally:
@@ -1096,6 +1098,7 @@ def test_worker_reconciliation_merges_once_and_acknowledges_after_persistence(
     now = utc_now()
     summary = {
         "task_id": task.worker_task_id,
+        "runtime_id": "codex",
         "status": "succeeded",
         "prompt_sha256": "a" * 64,
         "session_id": task.session_id,
@@ -1106,6 +1109,7 @@ def test_worker_reconciliation_merges_once_and_acknowledges_after_persistence(
     }
     view = {
         "task_id": task.worker_task_id,
+        "runtime_id": "codex",
         "status": "succeeded",
         "prompt_sha256": "a" * 64,
         "created_at": now.isoformat(),
@@ -1274,7 +1278,7 @@ def test_resident_reconciliation_does_not_race_worker_submission(
     errors: list[BaseException] = []
 
     def worker_call(action: str, **payload):
-        if action == "isolated_codex_submit":
+        if action == "runtime_task_submit":
             submit_entered.set()
             assert submit_release.wait(1)
             return accepted_worker_task(payload["task"])
@@ -1399,6 +1403,7 @@ def test_worker_recovery_rejects_mismatched_task_identity(
             "data": {
                 "task": {
                     "task_id": "qw-1750000000000-44444444444444444444444444444444",
+                    "runtime_id": "codex",
                     "status": "running",
                     "prompt_sha256": "a" * 64,
                     "created_at": now.isoformat(),
@@ -1485,6 +1490,7 @@ def test_worker_reconciliation_recovers_missing_started_operation_log(
             "data": {
                 "task": {
                     "task_id": task.worker_task_id,
+                    "runtime_id": "codex",
                     "status": "running",
                     "prompt_sha256": "a" * 64,
                     "created_at": now.isoformat(),

@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from app.ai_runtime import RuntimeOperationError
 from app.codex.manager import CodexPtyManager
 from app.codex.models import CodexSession, SessionInfo, WorkspaceInfo, utc_now
 from app.codex.store import CodexSessionStore
@@ -28,7 +29,7 @@ def native_session(session_id: str) -> CodexSession:
 def test_create_session_persists_validated_model_defaults(settings: Settings) -> None:
     manager = CodexPtyManager(settings)
     manager._require_available = MagicMock()
-    manager.model_catalog = MagicMock()
+    manager.runtime_adapter.model_catalog = MagicMock()
     manager.workspaces = MagicMock(
         return_value=[
             WorkspaceInfo(
@@ -42,10 +43,26 @@ def test_create_session_persists_validated_model_defaults(settings: Settings) ->
 
     created = manager.create_session("chub", "full-access", "gpt-test", "high")
 
-    manager.model_catalog.validate.assert_called_once_with("gpt-test", "high")
+    manager.runtime_adapter.model_catalog.validate.assert_called_once_with("gpt-test", "high")
     stored = manager.store.get(created.id)
     assert stored.model == "gpt-test"
     assert stored.reasoning_effort == "high"
+
+
+def test_model_validation_preserves_public_api_error(settings: Settings) -> None:
+    manager = CodexPtyManager(settings)
+    manager.runtime_adapter.model_catalog = MagicMock()
+    manager.runtime_adapter.model_catalog.validate.side_effect = RuntimeOperationError(
+        "codex_model_unavailable",
+        "Selected Codex model is unavailable",
+        kind="invalid_request",
+    )
+
+    with pytest.raises(ApiError) as error:
+        manager.validate_model("missing", None)
+
+    assert error.value.status_code == 400
+    assert error.value.code == "codex_model_unavailable"
 
 
 def test_rename_session_updates_only_local_title_while_working(
@@ -223,9 +240,9 @@ def test_sync_removes_session_archived_or_deleted_outside_chub(
     manager = CodexPtyManager(settings)
     session = native_session("11111111-1111-4111-8111-111111111111")
     manager.store.save(session)
-    manager.discovery = MagicMock()
-    manager.discovery.discover.return_value = []
-    manager.discovery.session_archive_states.return_value = archive_states
+    manager.runtime_adapter.discovery = MagicMock()
+    manager.runtime_adapter.discovery.discover.return_value = []
+    manager.runtime_adapter.discovery.session_archive_states.return_value = archive_states
     monkeypatch.setattr("app.codex.manager.shutil.which", lambda _name: None)
 
     manager._sync_native_sessions()
@@ -240,9 +257,9 @@ def test_sync_keeps_unindexed_active_native_session(
     manager = CodexPtyManager(settings)
     session = native_session("22222222-2222-4222-8222-222222222222")
     manager.store.save(session)
-    manager.discovery = MagicMock()
-    manager.discovery.discover.return_value = []
-    manager.discovery.session_archive_states.return_value = {
+    manager.runtime_adapter.discovery = MagicMock()
+    manager.runtime_adapter.discovery.discover.return_value = []
+    manager.runtime_adapter.discovery.session_archive_states.return_value = {
         session.codex_session_id: False
     }
     monkeypatch.setattr("app.codex.manager.shutil.which", lambda _name: None)
@@ -262,9 +279,9 @@ def test_sync_keeps_missing_native_session_while_quick_interaction_runs(
     manager.set_quick_interaction_checker(
         lambda session_id: session_id == session.id
     )
-    manager.discovery = MagicMock()
-    manager.discovery.discover.return_value = []
-    manager.discovery.session_archive_states.return_value = {}
+    manager.runtime_adapter.discovery = MagicMock()
+    manager.runtime_adapter.discovery.discover.return_value = []
+    manager.runtime_adapter.discovery.session_archive_states.return_value = {}
     monkeypatch.setattr("app.codex.manager.shutil.which", lambda _name: None)
 
     manager._sync_native_sessions()
@@ -281,9 +298,9 @@ def test_sync_removes_missing_native_session_after_quick_interaction_finishes(
     manager.store.save(session)
     running = True
     manager.set_quick_interaction_checker(lambda _session_id: running)
-    manager.discovery = MagicMock()
-    manager.discovery.discover.return_value = []
-    manager.discovery.session_archive_states.return_value = {}
+    manager.runtime_adapter.discovery = MagicMock()
+    manager.runtime_adapter.discovery.discover.return_value = []
+    manager.runtime_adapter.discovery.session_archive_states.return_value = {}
     monkeypatch.setattr("app.codex.manager.shutil.which", lambda _name: None)
 
     manager._sync_native_sessions()
@@ -319,9 +336,9 @@ def test_sync_merges_discovered_session_bound_to_new_chub_session(
     discovered.active_reasoning_effort = "high"
     manager.store.save(chub_session)
     manager.store.save(discovered)
-    manager.discovery = MagicMock()
-    manager.discovery.discover.return_value = [discovered]
-    manager.discovery.session_archive_states.return_value = None
+    manager.runtime_adapter.discovery = MagicMock()
+    manager.runtime_adapter.discovery.discover.return_value = [discovered]
+    manager.runtime_adapter.discovery.session_archive_states.return_value = None
 
     manager._sync_native_sessions()
     assert len(manager.store.list()) == 2
@@ -362,9 +379,9 @@ def test_sync_defers_native_session_while_new_quick_session_is_binding(
     discovered = native_session("24242424-2424-4242-8242-242424242424")
     manager.store.save(chub_session)
     manager.set_quick_interaction_checker(lambda session_id: session_id == chub_session.id)
-    manager.discovery = MagicMock()
-    manager.discovery.discover.return_value = [discovered]
-    manager.discovery.session_archive_states.return_value = None
+    manager.runtime_adapter.discovery = MagicMock()
+    manager.runtime_adapter.discovery.discover.return_value = [discovered]
+    manager.runtime_adapter.discovery.session_archive_states.return_value = None
 
     manager._sync_native_sessions()
 
@@ -401,9 +418,9 @@ def test_list_clears_stale_quick_activity_without_active_task(
     session.activity_source = "quick"
     manager.store.save(session)
     manager.set_quick_interaction_checker(lambda _session_id: False)
-    manager.discovery = MagicMock()
-    manager.discovery.discover.return_value = [session]
-    manager.discovery.session_archive_states.return_value = None
+    manager.runtime_adapter.discovery = MagicMock()
+    manager.runtime_adapter.discovery.discover.return_value = [session]
+    manager.runtime_adapter.discovery.session_archive_states.return_value = None
     monkeypatch.setattr("app.codex.manager.shutil.which", lambda _name: None)
 
     listed = manager.list_sessions()
@@ -598,6 +615,23 @@ def test_archive_failure_preserves_mapping(
     assert manager.store.get(session.id) is not None
 
 
+def test_archive_rejects_invalid_native_id_before_stopping(
+    settings: Settings,
+) -> None:
+    manager = CodexPtyManager(settings)
+    session = native_session("33333333-3333-4333-8333-333333333333")
+    session.codex_session_id = "--help"
+    manager.get_session = MagicMock(return_value=session)
+    manager.stop_session = MagicMock()
+
+    with pytest.raises(ApiError) as error:
+        manager.archive_session(session.id)
+
+    assert error.value.status_code == 400
+    assert error.value.code == "codex_session_invalid"
+    manager.stop_session.assert_not_called()
+
+
 def test_empty_session_cannot_be_archived(settings: Settings) -> None:
     manager = CodexPtyManager(settings)
     session = CodexSession(
@@ -634,6 +668,27 @@ def test_hook_result_updates_turn_activity(settings: Settings) -> None:
 
     assert manager.store.get(session.id).activity == "working"
     assert manager.store.get(session.id).activity_source == "terminal"
+
+
+def test_hook_result_rejects_invalid_native_id_but_keeps_activity(
+    settings: Settings,
+) -> None:
+    manager = CodexPtyManager(settings)
+    session = native_session("69696969-6969-4969-8969-696969696969")
+    session.activity = "idle"
+    manager.store.save(session)
+    manager.hook_dir.mkdir(parents=True)
+    (manager.hook_dir / f"{session.id}.json").write_text(
+        '{"codex_session_id":"--help","activity":"working"}',
+        encoding="utf-8",
+    )
+
+    manager._consume_hook_result(session.id)
+
+    stored = manager.store.get(session.id)
+    assert stored.codex_session_id == session.codex_session_id
+    assert stored.activity == "working"
+    assert stored.activity_source == "terminal"
 
 
 @pytest.mark.parametrize(
@@ -719,9 +774,9 @@ def test_sync_adopts_permission_changed_inside_codex(settings: Settings) -> None
             "active_permission_mode": "auto-review",
         }
     )
-    manager.discovery = MagicMock()
-    manager.discovery.discover.return_value = [discovered]
-    manager.discovery.session_archive_states.return_value = None
+    manager.runtime_adapter.discovery = MagicMock()
+    manager.runtime_adapter.discovery.discover.return_value = [discovered]
+    manager.runtime_adapter.discovery.session_archive_states.return_value = None
 
     manager._sync_native_sessions()
 
@@ -746,9 +801,9 @@ def test_sync_adopts_model_changed_inside_codex(settings: Settings) -> None:
             "active_reasoning_effort": "high",
         }
     )
-    manager.discovery = MagicMock()
-    manager.discovery.discover.return_value = [discovered]
-    manager.discovery.session_archive_states.return_value = None
+    manager.runtime_adapter.discovery = MagicMock()
+    manager.runtime_adapter.discovery.discover.return_value = [discovered]
+    manager.runtime_adapter.discovery.session_archive_states.return_value = None
 
     manager._sync_native_sessions()
 
@@ -773,9 +828,9 @@ def test_sync_does_not_overwrite_stopped_session_permission(
             "active_permission_mode": "full-access",
         }
     )
-    manager.discovery = MagicMock()
-    manager.discovery.discover.return_value = [discovered]
-    manager.discovery.session_archive_states.return_value = None
+    manager.runtime_adapter.discovery = MagicMock()
+    manager.runtime_adapter.discovery.discover.return_value = [discovered]
+    manager.runtime_adapter.discovery.session_archive_states.return_value = None
 
     manager._sync_native_sessions()
 

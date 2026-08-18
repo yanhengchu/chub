@@ -1,6 +1,6 @@
 # Chub 前端 UI 模块化设计
 
-> 状态：已实现并验收。本文只维护前端分层、公共交互和 Standard/Cyber 视觉契约；当前首页采用固定加载顺序的原生 JavaScript/CSS。
+> 状态：已实现并验收。本文遵循[Chub 总体架构](CHUB_ARCHITECTURE_DESIGN.md)，只维护前端分层、公共交互和 Standard/Cyber 视觉契约；当前首页采用固定加载顺序的原生 JavaScript/CSS。
 
 ## 1. 当前定位
 
@@ -31,8 +31,8 @@ app/web/
       features/codex-sessions.js
       features/openclaw.js
       features/automations.js
+      features/workstation.js
       features/project-documents.js
-      features/logs.js
     css/
       tokens.css
       base.css
@@ -59,13 +59,17 @@ AI Usage Core -> Theme -> Dashboard Core -> Components -> Features -> app.js
 
 ## 3. Feature 与卡片边界
 
-首页当前包含节点状态、Codex 会话、OpenClaw、自动化任务、项目资料和日志等 Feature。每个动态卡片遵循相同边界：
+首页当前包含节点状态、Codex 会话、自动化任务、项目资料和工作站环境等 Feature。工作站环境只合并展示卡片和总刷新入口，其中 Chub Web、Quick Worker、自动化环境和 OpenClaw 仍分别拥有状态、操作、轮询和错误反馈；总刷新并行触发各分区，不把单项失败扩散为整卡失败。首页不再展示低频日志卡片，完整日志页保留并由设置页“诊断”入口访问。
+
+每个动态能力遵循相同边界：
 
 - 独立请求、缓存、刷新、轮询、渲染和报错；
 - 刷新时保留最近一次成功内容，失败只提示本卡片；
 - 页面历史返回时优先恢复安全的会话级缓存；
 - 卡内操作只刷新真实受影响的卡片；
 - Feature 不直接读取其他 Feature 的内部状态；共享资源操作由应用入口显式协调。
+
+Chub Web 与 Quick Worker 重启是同一宿主机上的互斥维护操作。Worker 只有在协议兼容、Web 恢复完成且执行中与排队任务均为零时开放重启；卡片只调用后端固定维护入口，不接收任意命令。旧“自动化环境”和“OpenClaw 环境”的折叠偏好迁移为工作站卡片偏好，只有两张旧卡片原本都折叠时才默认折叠新卡片。
 
 不建立全局业务状态仓库，也不通过提示文案反推业务状态。API 路径、统一响应、认证和安全边界由后端契约决定，前端分层不能改变这些语义。
 

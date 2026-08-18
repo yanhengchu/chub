@@ -24,7 +24,13 @@ class LogData(BaseModel):
     count: int
 
 
-LogSource = Literal["operations", "application", "service-out", "service-error"]
+LogSource = Literal[
+    "operations",
+    "worker-operations",
+    "application",
+    "service-out",
+    "service-error",
+]
 
 
 class LogPageData(LogData):
@@ -65,6 +71,7 @@ def _log_paths(request: Request) -> dict[LogSource, Path]:
     settings = request.app.state.settings
     return {
         "operations": settings.logs.operations_file,
+        "worker-operations": settings.logs.worker_operations_file,
         "application": settings.logs.file,
         "service-out": PROJECT_ROOT / "logs" / "service.out.log",
         "service-error": PROJECT_ROOT / "logs" / "service.err.log",

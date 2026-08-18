@@ -1,6 +1,6 @@
 # Chub 集成能力清单
 
-> 状态：持续维护。本文统一登记“当前能调用什么”；第 4 节同时是微信 Chub 固定指令的唯一产品契约。本文不维护实现、身份安全或调度协议字段。
+> 状态：持续维护。本文在[Chub 总体架构](CHUB_ARCHITECTURE_DESIGN.md)之后统一登记“当前能调用什么”；第 4 节同时是微信 Chub 固定指令的唯一产品契约。本文不维护实现、身份安全或调度协议字段，且当前产品事实不被尚未实现的目标架构覆盖。
 
 微信固定指令的完整语法、用户可见行为和回复格式以第 4 节为准；身份、安全、并发、持久化和通知路由见对应设计文档；项目整体功能与使用方式见 [README](../README.md)。
 
@@ -20,13 +20,15 @@
 
 - `chub`
 - `chub help`、`chub -h`、`chub --help`
-- `chub install`
-- `chub uninstall`
+- `chub install [--force]`
+- `chub uninstall [--force]`
 - `chub start`
-- `chub stop`
+- `chub stop [--force]`
 - `chub restart`
 - `chub status`
 - `chub worker-health`
+- `chub worker-drain`
+- `chub worker-reload`
 - `chub logs`
 
 ### 2.2 通知指令

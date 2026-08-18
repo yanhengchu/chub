@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import fcntl
+import hashlib
 import json
 import os
 import shutil
@@ -27,9 +28,12 @@ from app.quick_worker import (
     worker_socket_path,
 )
 from app.quick_worker_tasks import (
-    CodexTaskSubmission,
+    RuntimeTaskSubmission,
     new_worker_task_id,
+    worker_leases_dir,
     worker_state_dir,
+    worker_tasks_dir,
+    worker_tombstones_dir,
 )
 
 
@@ -100,14 +104,15 @@ async def _submit_codex(
 ) -> dict[str, object]:
     return await _request(
         settings,
-        "isolated_codex_submit",
+        "runtime_task_submit",
         task={
             "task_id": task_id,
+            "runtime_id": "codex",
             "session_id": session_id,
             "workspace_id": "isolated",
             "prompt": prompt,
-            "permission_mode": "read-only",
-            "codex_session_id": codex_session_id,
+            "permission_profile": "read-only",
+            "native_session_id": codex_session_id,
             "model": None,
             "reasoning_effort": None,
             "timeout_seconds": timeout_seconds,
@@ -122,18 +127,19 @@ async def _submit_codex(
 def test_restart_sensitive_is_derived_and_cannot_be_spoofed() -> None:
     fields = {
         "task_id": new_worker_task_id(),
+        "runtime_id": "codex",
         "session_id": "session-1",
         "workspace_id": "chub",
         "prompt": "modify Chub",
-        "permission_mode": "auto-review",
+        "permission_profile": "auto-review",
         "timeout_seconds": 60,
     }
 
-    derived = CodexTaskSubmission.model_validate(fields)
+    derived = RuntimeTaskSubmission.model_validate(fields)
 
     assert derived.restart_sensitive is True
     with pytest.raises(ValidationError, match="fixed workspace rule"):
-        CodexTaskSubmission.model_validate(
+        RuntimeTaskSubmission.model_validate(
             {
                 **fields,
                 "task_id": new_worker_task_id(),
@@ -141,12 +147,12 @@ def test_restart_sensitive_is_derived_and_cannot_be_spoofed() -> None:
             }
         )
     with pytest.raises(ValidationError, match="fixed workspace rule"):
-        CodexTaskSubmission.model_validate(
+        RuntimeTaskSubmission.model_validate(
             {
                 **fields,
                 "task_id": new_worker_task_id(),
                 "workspace_id": "isolated",
-                "permission_mode": "read-only",
+                "permission_profile": "read-only",
                 "restart_sensitive": True,
             }
         )
@@ -218,8 +224,9 @@ async def test_worker_reports_stable_health_over_private_socket(settings) -> Non
         assert first["data"]["pid"] > 0
         assert first["data"]["active_tasks"] == 0
         assert first["data"]["test_tasks_enabled"] is False
-        assert first["data"]["codex_tasks_enabled"] is False
-        assert first["data"]["codex_workspace_ids"] == []
+        assert first["data"]["runtime_ids"] == []
+        assert first["data"]["available_runtime_ids"] == []
+        assert first["data"]["runtime_workspace_ids"] == {}
         assert stat.S_IMODE(worker_runtime_dir(settings).stat().st_mode) == 0o700
         assert stat.S_IMODE(worker_socket_path(settings).stat().st_mode) == 0o600
 
@@ -230,6 +237,174 @@ async def test_worker_reports_stable_health_over_private_socket(settings) -> Non
         await server.close()
 
     assert not worker_socket_path(settings).exists()
+
+
+@pytest.mark.anyio
+async def test_health_client_rejects_previous_worker_protocol(
+    settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    generation = uuid.uuid4().hex
+
+    async def previous_protocol_response(*_args, **_kwargs):
+        return {
+            "success": True,
+            "request_id": "previous-health",
+            "data": {
+                "protocol_version": 6,
+                "status": "ready",
+                "generation": generation,
+                "code_version": "quick-worker-7-production",
+                "pid": 123,
+                "active_tasks": 0,
+                "corrupt_tasks": 0,
+                "test_tasks_enabled": False,
+                "codex_tasks_enabled": True,
+                "codex_workspace_ids": ["chub"],
+            },
+        }
+
+    monkeypatch.setattr(quick_worker, "worker_request", previous_protocol_response)
+
+    with pytest.raises(OSError, match="invalid health data"):
+        await read_health(settings)
+
+
+@pytest.mark.anyio
+async def test_worker_drain_rejects_new_work_but_keeps_control_actions(
+    settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operations: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        quick_worker,
+        "write_operation",
+        lambda **fields: operations.append(fields),
+    )
+    server = QuickWorkerServer(settings, allow_test_tasks=True)
+    await server.start()
+    task_id = new_worker_task_id()
+    operation_id = f"worker-drain:{uuid.uuid4().hex}"
+    try:
+        submitted = await _submit(
+            settings,
+            task_id=task_id,
+            run_seconds=10.0,
+            timeout_seconds=20.0,
+        )
+        assert submitted["success"] is True
+        running = await _wait_for_status(settings, task_id, {"running"})
+        assert running["execution_id"] is not None
+
+        drain = await _request(
+            settings,
+            "drain",
+            operation_id=operation_id,
+        )
+        health = await read_health(settings)
+        rejected = await _submit(settings, task_id=new_worker_task_id())
+        queried = await _request(settings, "task_get", task_id=task_id)
+        conflicting = await _request(
+            settings,
+            "drain",
+            operation_id=f"worker-drain:{uuid.uuid4().hex}",
+        )
+
+        assert drain["success"] is True
+        assert health["data"]["status"] == "draining"
+        assert health["data"]["active_tasks"] == 1
+        assert health["data"]["drain_complete"] is False
+        assert rejected["success"] is False
+        assert rejected["error"]["code"] == "worker_draining"
+        assert queried["success"] is True
+        assert conflicting["success"] is False
+        assert conflicting["error"]["code"] == "worker_drain_conflict"
+
+        cancelled = await _request(settings, "task_cancel", task_id=task_id)
+        assert cancelled["success"] is True
+        assert cancelled["data"]["task"]["status"] == "cancelled"
+
+        deadline = asyncio.get_running_loop().time() + 2.0
+        while asyncio.get_running_loop().time() < deadline:
+            health = await read_health(settings)
+            if health["data"]["drain_complete"] is True:
+                break
+            await asyncio.sleep(0.02)
+        else:
+            raise AssertionError("Worker drain did not reach its final state")
+
+        repeated = await _request(
+            settings,
+            "drain",
+            operation_id=operation_id,
+        )
+        assert repeated["success"] is True
+        assert repeated["data"]["complete"] is True
+        assert [item["status"] for item in operations] == [
+            "requested",
+            "started",
+            "succeeded",
+        ]
+        assert {item["operation_id"] for item in operations} == {operation_id}
+        assert {item["target"] for item in operations} == {
+            f"quick-worker:{server.generation}"
+        }
+    finally:
+        await server.close()
+
+
+@pytest.mark.anyio
+async def test_worker_drain_serializes_with_submission_registration(
+    settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = QuickWorkerServer(settings, allow_test_tasks=True)
+    await server.start()
+    entered_submit = asyncio.Event()
+    original_submit = server.task_manager.submit_test
+
+    async def delayed_submit(submission):
+        entered_submit.set()
+        return await original_submit(submission)
+
+    monkeypatch.setattr(server.task_manager, "submit_test", delayed_submit)
+    task_id = new_worker_task_id()
+    submit_request = server._parse_request(
+        {
+            "protocol_version": PROTOCOL_VERSION,
+            "request_id": "submit-race",
+            "action": "test_task_submit",
+            "task": {
+                "task_id": task_id,
+                "prompt": "submission already passed the ready gate",
+                "behavior": "succeed",
+                "run_seconds": 0.1,
+                "timeout_seconds": 5.0,
+            },
+        }
+    )
+    operation_id = f"worker-drain:{uuid.uuid4().hex}"
+    await server.task_manager._lock.acquire()
+    try:
+        submission = asyncio.create_task(server._dispatch(submit_request))
+        await asyncio.wait_for(entered_submit.wait(), timeout=1.0)
+        drain = asyncio.create_task(server.begin_drain(operation_id))
+        await asyncio.sleep(0)
+        assert drain.done() is False
+    finally:
+        server.task_manager._lock.release()
+
+    try:
+        submitted = await submission
+        await drain
+        assert submitted["task"]["task_id"] == task_id
+        assert server.status == "draining"
+        assert server._drain_complete is False
+        assert server._drain_task is not None
+        await asyncio.wait_for(server._drain_task, timeout=2.0)
+        assert server._drain_complete is True
+    finally:
+        await server.close()
 
 
 @pytest.mark.anyio
@@ -350,8 +525,11 @@ async def test_codex_capability_does_not_enable_fixed_test_tasks(
     try:
         health = await read_health(settings)
         assert health["data"]["test_tasks_enabled"] is False
-        assert health["data"]["codex_tasks_enabled"] is True
-        assert health["data"]["codex_workspace_ids"] == ["isolated"]
+        assert health["data"]["runtime_ids"] == ["codex"]
+        assert health["data"]["available_runtime_ids"] == ["codex"]
+        assert health["data"]["runtime_workspace_ids"] == {
+            "codex": ["isolated"]
+        }
         rejected = await _submit(settings, task_id=new_worker_task_id())
         assert rejected["success"] is False
         assert rejected["error"]["code"] == "worker_action_unavailable"
@@ -361,6 +539,67 @@ async def test_codex_capability_does_not_enable_fixed_test_tasks(
             session_id="production-session",
         )
         assert accepted["success"] is True
+    finally:
+        await server.close()
+
+
+@pytest.mark.anyio
+async def test_worker_generates_one_execution_id_for_runtime_state_and_completion(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    native_id = "12121212-1212-4212-8212-121212121212"
+    monkeypatch.setenv("FAKE_CODEX_SESSION_ID", native_id)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server = QuickWorkerServer(
+        settings,
+        codex_workspaces={"isolated": workspace},
+        codex_executable=_fake_codex(tmp_path),
+        codex_home=tmp_path / "codex-home",
+    )
+    await server.start()
+    task_id = new_worker_task_id()
+    try:
+        submitted = await _submit_codex(
+            settings,
+            task_id=task_id,
+            session_id="weixin-runtime-session",
+            task_kind="weixin",
+        )
+        assert submitted["success"] is True
+        assert submitted["data"]["task"]["runtime_id"] == "codex"
+
+        completed = await _wait_for_status(settings, task_id, {"succeeded"})
+        execution_id = completed["execution_id"]
+        assert isinstance(execution_id, str)
+        assert len(execution_id) == 32
+        int(execution_id, 16)
+
+        task_dir = worker_tasks_dir(settings, PROTOCOL_VERSION) / task_id
+        state = json.loads((task_dir / "state.json").read_text(encoding="utf-8"))
+        completion = json.loads(
+            (task_dir / "completion.json").read_text(encoding="utf-8")
+        )
+        runtime_event = json.loads(
+            (task_dir / "runtime-event.json").read_text(encoding="utf-8")
+        )
+        listed = await _request(settings, "task_list", limit=100)
+        summary = next(
+            item for item in listed["data"]["tasks"] if item["task_id"] == task_id
+        )
+
+        assert state["runtime_id"] == "codex"
+        assert completion["runtime_id"] == "codex"
+        assert state["execution_id"] == execution_id
+        assert completion["execution_id"] == execution_id
+        assert runtime_event["execution_id"] == execution_id
+        assert runtime_event["runtime_id"] == "codex"
+        assert runtime_event["native_session_id"] == native_id
+        assert summary["execution_id"] == execution_id
+        assert summary["task_kind"] == "weixin"
+        assert completed["native_session_id"] == native_id
     finally:
         await server.close()
 
@@ -388,14 +627,15 @@ async def test_worker_persists_restart_sensitive_through_final_state(
     try:
         submitted = await _request(
             settings,
-            "isolated_codex_submit",
+            "runtime_task_submit",
             task={
                 "task_id": task_id,
+                "runtime_id": "codex",
                 "session_id": "sensitive-session",
                 "workspace_id": "chub",
                 "prompt": "modify Chub",
-                "permission_mode": "auto-review",
-                "codex_session_id": None,
+                "permission_profile": "auto-review",
+                "native_session_id": None,
                 "model": None,
                 "reasoning_effort": None,
                 "timeout_seconds": 5,
@@ -418,8 +658,7 @@ async def test_worker_persists_restart_sensitive_through_final_state(
         assert summary["restart_sensitive"] is True
         spec = json.loads(
             (
-                worker_state_dir(settings)
-                / "tasks"
+                worker_tasks_dir(settings, PROTOCOL_VERSION)
                 / task_id
                 / "spec.json"
             ).read_text(encoding="utf-8")
@@ -430,7 +669,7 @@ async def test_worker_persists_restart_sensitive_through_final_state(
 
 
 @pytest.mark.anyio
-async def test_worker_reads_legacy_v5_persisted_history(settings) -> None:
+async def test_worker_rejects_noncurrent_records_in_current_store(settings) -> None:
     first = QuickWorkerServer(settings, allow_test_tasks=True)
     await first.start()
     task_id = new_worker_task_id()
@@ -441,7 +680,7 @@ async def test_worker_reads_legacy_v5_persisted_history(settings) -> None:
     finally:
         await first.close()
 
-    spec_path = worker_state_dir(settings) / "tasks" / task_id / "spec.json"
+    spec_path = worker_tasks_dir(settings, PROTOCOL_VERSION) / task_id / "spec.json"
     spec = json.loads(spec_path.read_text(encoding="utf-8"))
     spec["protocol_version"] = 5
     spec.pop("restart_sensitive")
@@ -454,9 +693,9 @@ async def test_worker_reads_legacy_v5_persisted_history(settings) -> None:
         recovered = await _request(settings, "task_get", task_id=task_id)
         health = await read_health(settings)
 
-        assert recovered["success"] is True
-        assert recovered["data"]["task"]["restart_sensitive"] is False
-        assert health["data"]["corrupt_tasks"] == 0
+        assert recovered["success"] is False
+        assert recovered["error"]["code"] == "worker_task_corrupt"
+        assert health["data"]["corrupt_tasks"] == 1
     finally:
         await second.close()
 
@@ -469,7 +708,7 @@ async def test_codex_recovery_operations_remain_available_without_executable(
 ) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    monkeypatch.setattr("app.quick_worker_tasks.shutil.which", lambda _name: None)
+    monkeypatch.setattr("app.quick_worker.shutil.which", lambda _name: None)
     server = QuickWorkerServer(
         settings,
         codex_workspaces={"isolated": workspace},
@@ -490,14 +729,14 @@ async def test_codex_recovery_operations_remain_available_without_executable(
             session_id="production-session",
         )
 
-        assert health["data"]["codex_tasks_enabled"] is False
+        assert health["data"]["available_runtime_ids"] == []
         assert listed == {
             "success": True,
             "request_id": listed["request_id"],
             "data": {"tasks": []},
         }
         assert submitted["success"] is False
-        assert submitted["error"]["code"] == "codex_unavailable"
+        assert submitted["error"]["code"] == "runtime_unavailable"
     finally:
         await server.close()
 
@@ -572,7 +811,7 @@ async def test_worker_lists_active_recovery_metadata_and_acknowledges_final_deli
             recovery_only=True,
         )
         assert task_id not in {item["task_id"] for item in delivered["data"]["tasks"]}
-        delivery_path = worker_state_dir(settings) / "tasks" / task_id / "delivery.json"
+        delivery_path = worker_tasks_dir(settings, PROTOCOL_VERSION) / task_id / "delivery.json"
         assert stat.S_IMODE(delivery_path.stat().st_mode) == 0o600
     finally:
         await server.close()
@@ -587,7 +826,7 @@ async def test_worker_task_list_fails_closed_on_corrupt_record(settings) -> None
         submitted = await _submit(settings, task_id=task_id)
         assert submitted["success"] is True
         await _wait_for_status(settings, task_id, {"succeeded"})
-        state_path = worker_state_dir(settings) / "tasks" / task_id / "state.json"
+        state_path = worker_tasks_dir(settings, PROTOCOL_VERSION) / task_id / "state.json"
         state_path.write_text("{}", encoding="utf-8")
 
         listed = await _request(
@@ -612,7 +851,7 @@ async def test_worker_recovery_list_fails_closed_on_corrupt_delivery(settings) -
         submitted = await _submit(settings, task_id=task_id)
         assert submitted["success"] is True
         await _wait_for_status(settings, task_id, {"succeeded"})
-        delivery_path = worker_state_dir(settings) / "tasks" / task_id / "delivery.json"
+        delivery_path = worker_tasks_dir(settings, PROTOCOL_VERSION) / task_id / "delivery.json"
         delivery_path.write_text("{}", encoding="utf-8")
 
         listed = await _request(
@@ -665,11 +904,11 @@ async def test_task_succeeds_persists_private_input_and_survives_restart(setting
         assert task["exit_code"] == 0
         assert task["runner_pid"] is None
 
-        task_dir = worker_state_dir(settings) / "tasks" / task_id
+        task_dir = worker_tasks_dir(settings, PROTOCOL_VERSION) / task_id
         assert stat.S_IMODE(worker_state_dir(settings).stat().st_mode) == 0o700
-        assert stat.S_IMODE((worker_state_dir(settings) / "tasks").stat().st_mode) == 0o700
+        assert stat.S_IMODE((worker_tasks_dir(settings, PROTOCOL_VERSION)).stat().st_mode) == 0o700
         assert stat.S_IMODE(
-            (worker_state_dir(settings) / "tombstones").stat().st_mode
+            (worker_tombstones_dir(settings, PROTOCOL_VERSION)).stat().st_mode
         ) == 0o700
         assert stat.S_IMODE(task_dir.stat().st_mode) == 0o700
         assert json.loads((task_dir / "spec.json").read_text(encoding="utf-8"))[
@@ -683,7 +922,7 @@ async def test_task_succeeds_persists_private_input_and_survives_restart(setting
             "stderr.txt",
         ):
             assert stat.S_IMODE((task_dir / name).stat().st_mode) == 0o600
-        tombstone = worker_state_dir(settings) / "tombstones" / f"{task_id}.json"
+        tombstone = worker_tombstones_dir(settings, PROTOCOL_VERSION) / f"{task_id}.json"
         assert tombstone.is_file()
         assert stat.S_IMODE(tombstone.stat().st_mode) == 0o600
     finally:
@@ -787,7 +1026,7 @@ async def test_failed_acceptance_rolls_back_owned_session_lease(
         assert accepted["success"] is True
         await _wait_for_status(settings, replacement_task, {"succeeded"})
         assert not (
-            worker_state_dir(settings) / "tasks" / failed_task
+            worker_tasks_dir(settings, PROTOCOL_VERSION) / failed_task
         ).exists()
     finally:
         await server.close()
@@ -828,7 +1067,7 @@ async def test_tombstone_prevents_replay_after_completed_payload_is_retired(sett
     try:
         await _submit(settings, task_id=task_id, prompt="retired result")
         await _wait_for_status(settings, task_id, {"succeeded"})
-        shutil.rmtree(worker_state_dir(settings) / "tasks" / task_id)
+        shutil.rmtree(worker_tasks_dir(settings, PROTOCOL_VERSION) / task_id)
 
         duplicate = await _submit(settings, task_id=task_id, prompt="retired result")
         conflict = await _submit(settings, task_id=task_id, prompt="different result")
@@ -850,7 +1089,7 @@ async def test_task_id_outside_retry_window_is_rejected_before_persistence(setti
         response = await _submit(settings, task_id=old_id)
         assert response["success"] is False
         assert response["error"]["code"] == "worker_task_id_expired"
-        assert not (worker_state_dir(settings) / "tasks" / old_id).exists()
+        assert not (worker_tasks_dir(settings, PROTOCOL_VERSION) / old_id).exists()
     finally:
         await server.close()
 
@@ -978,7 +1217,7 @@ async def test_corrupt_record_fails_closed_and_is_not_replayed(settings) -> None
     finally:
         await first.close()
 
-    spec_path = worker_state_dir(settings) / "tasks" / task_id / "spec.json"
+    spec_path = worker_tasks_dir(settings, PROTOCOL_VERSION) / task_id / "spec.json"
     spec_path.write_text("{not-json", encoding="utf-8")
     os.chmod(spec_path, 0o600)
 
@@ -1032,7 +1271,7 @@ async def test_incomplete_connection_is_closed_after_fixed_read_timeout(settings
 
 
 @pytest.mark.anyio
-async def test_legacy_health_probe_remains_diagnostic_but_tasks_require_v2(settings) -> None:
+async def test_health_probe_version_is_diagnostic_only(settings) -> None:
     server = QuickWorkerServer(settings, allow_test_tasks=True)
     await server.start()
     try:
@@ -1044,7 +1283,7 @@ async def test_legacy_health_probe_remains_diagnostic_but_tasks_require_v2(setti
                 "action": "health",
             },
         )
-        legacy_task = await worker_request(
+        wrong_protocol_task = await worker_request(
             settings,
             {
                 "protocol_version": HEALTH_PROTOCOL_VERSION,
@@ -1062,8 +1301,8 @@ async def test_legacy_health_probe_remains_diagnostic_but_tasks_require_v2(setti
 
         assert health["success"] is True
         assert health["data"]["protocol_version"] == PROTOCOL_VERSION
-        assert legacy_task["success"] is False
-        assert legacy_task["error"]["code"] == "worker_protocol_incompatible"
+        assert wrong_protocol_task["success"] is False
+        assert wrong_protocol_task["error"]["code"] == "worker_protocol_incompatible"
     finally:
         await server.close()
 
@@ -1109,7 +1348,7 @@ async def test_mismatched_state_identity_fails_closed(settings) -> None:
     try:
         await _submit(settings, task_id=task_id)
         await _wait_for_status(settings, task_id, {"succeeded"})
-        state_path = worker_state_dir(settings) / "tasks" / task_id / "state.json"
+        state_path = worker_tasks_dir(settings, PROTOCOL_VERSION) / task_id / "state.json"
         state = json.loads(state_path.read_text(encoding="utf-8"))
         state["task_id"] = new_worker_task_id()
         state_path.write_text(json.dumps(state), encoding="utf-8")
@@ -1131,7 +1370,7 @@ async def test_inconsistent_execution_deadline_fails_closed(settings) -> None:
     try:
         await _submit(settings, task_id=task_id)
         await _wait_for_status(settings, task_id, {"succeeded"})
-        state_path = worker_state_dir(settings) / "tasks" / task_id / "state.json"
+        state_path = worker_tasks_dir(settings, PROTOCOL_VERSION) / task_id / "state.json"
         state = json.loads(state_path.read_text(encoding="utf-8"))
         state["execution_deadline_at"] = "2999-01-01T00:00:00Z"
         state_path.write_text(json.dumps(state), encoding="utf-8")
@@ -1190,14 +1429,14 @@ async def test_codex_first_turn_persists_native_id_and_resume_uses_it(
         assert resumed["result"] == f"resumed:{native_id}:second turn"
 
         for task_id in (first_task_id, second_task_id):
-            task_dir = worker_state_dir(settings) / "tasks" / task_id
+            task_dir = worker_tasks_dir(settings, PROTOCOL_VERSION) / task_id
             state = json.loads((task_dir / "state.json").read_text(encoding="utf-8"))
             completion = json.loads(
                 (task_dir / "completion.json").read_text(encoding="utf-8")
             )
             assert state["native_session_id"] == native_id
             assert completion["native_session_id"] == native_id
-        assert list((worker_state_dir(settings) / "session-leases").iterdir()) == []
+        assert list((worker_leases_dir(settings, PROTOCOL_VERSION)).iterdir()) == []
     finally:
         await server.close()
 
@@ -1262,6 +1501,75 @@ async def test_translation_queue_is_fifo_and_uses_latest_native_session(
 
 
 @pytest.mark.anyio
+async def test_worker_drain_waits_for_accepted_translation_queue(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    native_id = "13131313-1313-4313-8313-131313131313"
+    monkeypatch.setenv("FAKE_CODEX_SESSION_ID", native_id)
+    monkeypatch.setenv("FAKE_CODEX_DELAY", "0.15")
+    monkeypatch.setattr(quick_worker, "write_operation", lambda **_fields: None)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    codex_home = tmp_path / "codex-home"
+    _set_native_archive_state(codex_home, native_id, archived=False)
+    server = QuickWorkerServer(
+        settings,
+        codex_workspaces={"isolated": workspace},
+        codex_executable=_fake_codex(tmp_path),
+        codex_home=codex_home,
+    )
+    await server.start()
+    first_id = new_worker_task_id()
+    second_id = new_worker_task_id()
+    operation_id = f"worker-drain:{uuid.uuid4().hex}"
+    try:
+        for task_id, prompt in ((first_id, "first"), (second_id, "second")):
+            submitted = await _submit_codex(
+                settings,
+                task_id=task_id,
+                session_id="drain-translation-session",
+                prompt=prompt,
+                task_kind="translation",
+                queue_key="drain-translation-queue",
+                queue_limit=2,
+                queue_wait_seconds=5,
+            )
+            assert submitted["success"] is True
+        queued = await _request(settings, "task_get", task_id=second_id)
+        assert queued["data"]["task"]["status"] == "queued"
+        assert queued["data"]["task"]["execution_id"] is None
+
+        drain = await _request(
+            settings,
+            "drain",
+            operation_id=operation_id,
+        )
+        health = await read_health(settings)
+        assert drain["success"] is True
+        assert health["data"]["queued_tasks"] == 1
+        assert health["data"]["drain_complete"] is False
+
+        await _wait_for_status(settings, first_id, {"succeeded"})
+        second = await _wait_for_status(settings, second_id, {"succeeded"})
+        assert second["execution_id"] is not None
+
+        deadline = asyncio.get_running_loop().time() + 2.0
+        while asyncio.get_running_loop().time() < deadline:
+            health = await read_health(settings)
+            if health["data"]["drain_complete"] is True:
+                break
+            await asyncio.sleep(0.02)
+        else:
+            raise AssertionError("Worker did not drain its translation queue")
+        assert health["data"]["active_tasks"] == 0
+        assert health["data"]["queued_tasks"] == 0
+    finally:
+        await server.close()
+
+
+@pytest.mark.anyio
 async def test_translation_queue_replaces_archived_native_session(
     settings,
     tmp_path: Path,
@@ -1302,7 +1610,7 @@ async def test_translation_queue_replaces_archived_native_session(
         assert completed["native_session_id"] == replacement_id
         assert completed["result"] == f"created:{replacement_id}:replace archived"
         state = json.loads(
-            (worker_state_dir(settings) / "tasks" / task_id / "state.json").read_text(
+            (worker_tasks_dir(settings, PROTOCOL_VERSION) / task_id / "state.json").read_text(
                 encoding="utf-8"
             )
         )
@@ -1365,7 +1673,7 @@ async def test_translation_queue_new_session_starts_new_native_session(
         assert new_task["result"] == f"created:{native_id}:new generation"
         state = json.loads(
             (
-                worker_state_dir(settings) / "tasks" / new_id / "state.json"
+                worker_tasks_dir(settings, PROTOCOL_VERSION) / new_id / "state.json"
             ).read_text(encoding="utf-8")
         )
         assert state["expected_native_session_id"] is None
@@ -1691,7 +1999,7 @@ async def test_codex_native_writer_is_final_start_arbitrator(
         )
         assert submitted["success"] is True
         failed = await _wait_for_status(settings, task_id, {"failed"})
-        assert failed["error_code"] == "codex_session_busy"
+        assert failed["error_code"] == "runtime_session_busy"
         assert failed["runner_pid"] is None
     finally:
         await server.close()
@@ -1755,7 +2063,7 @@ async def test_codex_recovery_preserves_observed_native_id_without_replay(
         assert recovered["data"]["task"]["error_code"] == "worker_restarted"
         assert recovered["data"]["task"]["native_session_id"] == native_id
         assert not psutil.pid_exists(runner_pid)
-        assert list((worker_state_dir(settings) / "session-leases").iterdir()) == []
+        assert list((worker_leases_dir(settings, PROTOCOL_VERSION)).iterdir()) == []
     finally:
         await second.close()
 

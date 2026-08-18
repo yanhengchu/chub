@@ -20,13 +20,20 @@ const elements = {
   dashboard: document.querySelector("#dashboard"),
   refreshStatus: document.querySelector("#refresh-status"),
   siteSettings: document.querySelector("#site-settings"),
+  refreshWorkstationEnvironment: document.querySelector("#refresh-workstation-environment"),
   restartHub: document.querySelector("#restart-hub"),
+  chubServiceBadge: document.querySelector("#chub-service-badge"),
+  chubServiceDetail: document.querySelector("#chub-service-detail"),
+  chubServiceMessage: document.querySelector("#chub-service-message"),
+  quickWorkerBadge: document.querySelector("#quick-worker-badge"),
+  quickWorkerDetail: document.querySelector("#quick-worker-detail"),
+  quickWorkerRestart: document.querySelector("#quick-worker-restart"),
+  quickWorkerMessage: document.querySelector("#quick-worker-message"),
   codexCardHost: document.querySelector("#codex-card-host"),
-  openclawBadge: document.querySelector("#openclaw-badge"),
+  openclawGatewayBadge: document.querySelector("#openclaw-gateway-badge"),
   openclawChannels: document.querySelector("#openclaw-channels"),
   openclawAccessOpen: document.querySelector("#openclaw-access-open"),
   openclawMessage: document.querySelector("#openclaw-message"),
-  refreshOpenclaw: document.querySelector("#refresh-openclaw"),
   openclawBindWeixin: document.querySelector("#openclaw-bind-weixin"),
   openclawStart: document.querySelector("#openclaw-start"),
   openclawRestart: document.querySelector("#openclaw-restart"),
@@ -65,7 +72,6 @@ const elements = {
   automationMessage: document.querySelector("#automation-message"),
   refreshAutomations: document.querySelector("#refresh-automations"),
   automationEnvironmentMessage: document.querySelector("#automation-environment-message"),
-  refreshAutomationEnvironment: document.querySelector("#refresh-automation-environment"),
   projectDocsList: document.querySelector("#design-document-list"),
   weeklyReportsTitle: document.querySelector("#weekly-reports-title"),
   weeklyReportsList: document.querySelector("#weekly-report-list"),
@@ -79,11 +85,6 @@ const elements = {
   refreshCodex: null,
   createCodex: null,
   codexWorkspaceDialog: null,
-  loadLogs: document.querySelector("#load-logs"),
-  logLines: document.querySelector("#log-lines"),
-  logTabs: document.querySelectorAll("[data-log-source]"),
-  logsMessage: document.querySelector("#logs-message"),
-  logsOutput: document.querySelector("#logs-output"),
 };
 
 let activeToken = "";
@@ -140,12 +141,9 @@ async function waitForHubRestart(previousInstanceId) {
 
 async function refreshCardsAfterRestart() {
   await Promise.all([
-    loadStatus(),
+    refreshWorkstationEnvironment(),
     loadCodexSessions(),
-    loadOpenClaw(),
     loadAutomations(),
-    loadAutomationEnvironment(),
-    loadLogs(),
   ]);
 }
 
@@ -164,6 +162,7 @@ function clearProtectedView() {
   elements.codexCardHost.replaceChildren();
   clearOpenClawCache();
   resetOpenClawView();
+  resetQuickWorkerView();
   if (automationPollTimer) {
     window.clearTimeout(automationPollTimer);
     automationPollTimer = null;
@@ -182,8 +181,6 @@ function clearProtectedView() {
   elements.refreshCodex = null;
   elements.createCodex = null;
   elements.codexWorkspaceDialog = null;
-  elements.logsOutput.hidden = true;
-  elements.logsOutput.textContent = "";
   releaseFeishuQr();
   sessionStorage.removeItem(CODEX_CARD_CACHE_KEY);
   sessionStorage.removeItem(CODEX_MODEL_PREFERENCE_CACHE_KEY);
@@ -191,7 +188,7 @@ function clearProtectedView() {
 
 function showDisconnectedView(message = "输入启动 Hub 时配置的 Token。", kind = "") {
   elements.accessCard.hidden = false;
-  elements.restartHub.disabled = true;
+  syncCoreMaintenanceControls();
   elements.accessTitle.textContent = "连接此节点";
   elements.connectSubmit.textContent = "连接节点";
   elements.connectSubmit.disabled = false;
@@ -206,7 +203,7 @@ function showConnectedView(status) {
   elements.connectedBar.hidden = false;
   elements.dashboard.hidden = false;
   elements.siteSettings.hidden = false;
-  elements.restartHub.disabled = hubRestartInProgress;
+  syncCoreMaintenanceControls();
   elements.connectedNode.textContent = status.node.name;
   elements.connectedMeta.textContent =
     `${platformText(status.node.detected_platform)} · ${status.system.hostname || "未知主机"}`;
@@ -324,7 +321,12 @@ async function connectWithToken(token, remember, savedCredential = false) {
     renderStatus(status);
     const openclawCacheRestored = restoreOpenClawCache(status.node.id);
     showConnectedView(status);
-    const cardLoads = [loadCodexSessions(), loadAutomations(), loadAutomationEnvironment()];
+    const cardLoads = [
+      loadCodexSessions(),
+      loadAutomations(),
+      loadAutomationEnvironment(),
+      loadQuickWorkerStatus(),
+    ];
     if (dashboardIsHistoryReturn && openclawCacheRestored) {
       cardLoads.push(loadOpenClawWeixinStatus());
     } else {
@@ -365,7 +367,12 @@ async function connectWithTailscale(fallbackToken = "", rememberFallback = false
     renderStatus(status);
     const openclawCacheRestored = restoreOpenClawCache(status.node.id);
     showConnectedView(status);
-    const cardLoads = [loadCodexSessions(), loadAutomations(), loadAutomationEnvironment()];
+    const cardLoads = [
+      loadCodexSessions(),
+      loadAutomations(),
+      loadAutomationEnvironment(),
+      loadQuickWorkerStatus(),
+    ];
     if (dashboardIsHistoryReturn && openclawCacheRestored) {
       cardLoads.push(loadOpenClawWeixinStatus());
     } else {

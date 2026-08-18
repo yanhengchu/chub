@@ -5,11 +5,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from app.ai_runtime import RuntimeOperationError
 from app.codex.model_catalog import (
     CodexModelCatalog,
     _ModelCatalogOutputTooLarge,
 )
-from app.core.response import ApiError
 
 
 def catalog_payload() -> bytes:
@@ -72,15 +72,15 @@ def test_catalog_validates_model_and_reasoning_level(
     catalog.validate("gpt-test", None)
     catalog.validate("gpt-test", "medium")
 
-    with pytest.raises(ApiError) as missing_model:
+    with pytest.raises(RuntimeOperationError) as missing_model:
         catalog.validate(None, "medium")
     assert missing_model.value.code == "codex_reasoning_effort_requires_model"
 
-    with pytest.raises(ApiError) as unavailable:
+    with pytest.raises(RuntimeOperationError) as unavailable:
         catalog.validate("internal-review", "medium")
     assert unavailable.value.code == "codex_model_unavailable"
 
-    with pytest.raises(ApiError) as unsupported:
+    with pytest.raises(RuntimeOperationError) as unsupported:
         catalog.validate("gpt-test", "high")
     assert unsupported.value.code == "codex_reasoning_effort_unsupported"
 
@@ -96,7 +96,7 @@ def test_catalog_rejects_oversized_output(
         MagicMock(return_value=CompletedProcess([], 0, b"x" * (2 * 1024 * 1024 + 1), b"")),
     )
 
-    with pytest.raises(ApiError) as error:
+    with pytest.raises(RuntimeOperationError) as error:
         CodexModelCatalog(tmp_path).read()
 
     assert error.value.code == "codex_model_catalog_unavailable"

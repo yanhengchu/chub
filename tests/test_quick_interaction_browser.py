@@ -45,6 +45,7 @@ def _browser_settings(root: Path) -> Settings:
             "logs": {
                 "file": root / "hub.log",
                 "operations_file": root / "operations.log",
+                "worker_operations_file": root / "worker-operations.log",
                 "level": "ERROR",
                 "max_lines": 100,
             },

@@ -120,18 +120,6 @@ function openclawChannelPresentation(data) {
   return ["检查失败", "failed"];
 }
 
-function openclawOverallPresentation(data) {
-  const gatewayPresentation = openclawStatePresentation(data.state);
-  if (data.state !== "running") {
-    return gatewayPresentation;
-  }
-  const channelLimited = Boolean(data.channel_state) && data.channel_state !== "running";
-  const ownerLimited = data.channel_count > 0 && data.owner_state !== "configured";
-  return channelLimited || ownerLimited
-    ? ["功能受限", "timeout"]
-    : gatewayPresentation;
-}
-
 function openclawOverallMessage(data) {
   if (data.state !== "running") {
     return "";
@@ -147,8 +135,8 @@ function openclawOverallMessage(data) {
 
 function renderOpenClaw(data, { cache = true } = {}) {
   openclawState = data;
-  const [badgeText, badgeKind] = openclawOverallPresentation(data);
-  setBadge(elements.openclawBadge, badgeText, badgeKind);
+  const [gatewayText, gatewayKind] = openclawStatePresentation(data.state);
+  setBadge(elements.openclawGatewayBadge, gatewayText, gatewayKind);
   const [channelText, channelKind] = openclawChannelPresentation(data);
   setBadge(elements.openclawChannels, channelText, channelKind);
   elements.openclawChannels.title = [data.channel_message, data.owner_message]
@@ -187,7 +175,7 @@ function resetOpenClawView() {
   openclawWeixinState = null;
   openclawWeixinStatusAvailable = false;
   openclawWeixinPollFailures = 0;
-  setBadge(elements.openclawBadge, "正在检查");
+  setBadge(elements.openclawGatewayBadge, "正在检查");
   setBadge(elements.openclawChannels, "正在检查");
   elements.openclawChannels.removeAttribute("title");
   elements.openclawAccessOpen.hidden = true;
@@ -206,7 +194,6 @@ async function loadOpenClaw() {
   }
   const requestVersion = accessVersion;
   const operationVersion = openclawOperationVersion;
-  elements.refreshOpenclaw.disabled = true;
   try {
     const data = await apiFetch("/api/openclaw/status");
     if (
@@ -227,9 +214,6 @@ async function loadOpenClaw() {
     ) {
       return;
     }
-    if (!openclawState) {
-      setBadge(elements.openclawBadge, "刷新失败", "failed");
-    }
     setMessage(
       elements.openclawMessage,
       openclawState
@@ -242,9 +226,7 @@ async function loadOpenClaw() {
     elements.openclawStop.disabled = true;
     elements.openclawBindWeixin.disabled = true;
   } finally {
-    if (!openclawBusy) {
-      elements.refreshOpenclaw.disabled = false;
-    }
+    // The workstation-level refresh button owns only its fan-out busy state.
   }
 }
 
@@ -292,11 +274,10 @@ function setOpenClawBusy(action) {
     restart: ["正在重启", "muted"],
   }[action];
   setBadge(
-    elements.openclawBadge,
+    elements.openclawGatewayBadge,
     busyPresentation[0],
     busyPresentation[1],
   );
-  elements.refreshOpenclaw.disabled = true;
   elements.openclawBindWeixin.disabled = true;
   elements.openclawStart.disabled = true;
   elements.openclawRestart.disabled = true;
@@ -324,7 +305,6 @@ async function controlOpenClaw(action) {
     }
   } finally {
     openclawBusy = false;
-    elements.refreshOpenclaw.disabled = false;
   }
 }
 
@@ -534,7 +514,6 @@ async function cancelOpenClawWeixinLogin() {
   }
 }
 
-elements.refreshOpenclaw.addEventListener("click", loadOpenClaw);
 elements.openclawBindWeixin.addEventListener("click", openOpenClawWeixinDialog);
 elements.openclawStart.addEventListener("click", () => requestOpenClawAction("start"));
 elements.openclawRestart.addEventListener("click", () => requestOpenClawAction("restart"));

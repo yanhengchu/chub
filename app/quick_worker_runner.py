@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import signal
 import subprocess
@@ -11,6 +10,8 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from app.ai_runtime import RuntimeOperationError, RuntimeTurnRequest
+from app.codex.runtime_runner import CodexRuntimeRunner
 from app.quick_worker_tasks import (
     MAX_SPEC_BYTES,
     StoredTaskSpec,
@@ -19,16 +20,21 @@ from app.quick_worker_tasks import (
 )
 
 
-
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m app.quick_worker_runner")
     parser.add_argument("--task-dir", required=True)
     parser.add_argument("--release-fd", required=True, type=int)
-    parser.add_argument("--codex-executable")
+    parser.add_argument("--runtime-id", required=True, choices=("codex", "fixed-test"))
+    parser.add_argument("--runtime-executable")
     parser.add_argument("--working-directory")
     session = parser.add_mutually_exclusive_group()
-    session.add_argument("--codex-session-id")
+    session.add_argument("--native-session-id")
     session.add_argument("--start-new-session", action="store_true")
+    parser.add_argument(
+        "--test-behavior",
+        choices=("succeed", "fail", "ignore_term", "orphan_child"),
+    )
+    parser.add_argument("--test-run-seconds", type=float)
     return parser
 
 
@@ -52,79 +58,64 @@ def main() -> int:
 
     try:
         spec = _load_spec(Path(args.task_dir))
-        behavior = spec.behavior
+        behavior = spec.test_behavior
         prompt = spec.prompt
-        run_seconds = spec.run_seconds
+        run_seconds = spec.test_run_seconds
     except (OSError, UnicodeError, ValidationError, ValueError):
         print("task runner could not read its task specification", file=sys.stderr)
         return 70
 
-    if spec.runner_kind == "codex":
-        if not args.codex_executable or not args.working_directory:
-            print("Codex runner configuration is incomplete", file=sys.stderr)
+    if spec.runtime_id != args.runtime_id:
+        print("task runner Runtime identity does not match", file=sys.stderr)
+        return 70
+
+    if spec.runtime_id == "codex":
+        if not args.runtime_executable or not args.working_directory:
+            print("Runtime Runner configuration is incomplete", file=sys.stderr)
             return 70
         workspace = Path(args.working_directory)
-        if not workspace.is_dir() or workspace.is_symlink():
-            print("Codex runner workspace is unavailable", file=sys.stderr)
-            return 70
         result_path = Path(args.task_dir) / "result.txt"
-        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
-        if hasattr(os, "O_NOFOLLOW"):
-            flags |= os.O_NOFOLLOW
         try:
-            descriptor = os.open(result_path, flags, 0o600)
-        except OSError:
-            print("Codex result path is unavailable", file=sys.stderr)
+            CodexRuntimeRunner.validate_workspace(workspace)
+            CodexRuntimeRunner.create_result_file(result_path)
+        except RuntimeOperationError as exc:
+            print(exc.message, file=sys.stderr)
             return 70
-        os.close(descriptor)
-        permission_args = {
-            "auto-review": [
-                "-c", 'default_permissions=":workspace"',
-                "-c", 'approval_policy="on-request"',
-                "-c", 'approvals_reviewer="auto_review"',
-            ],
-            "read-only": [
-                "-c", 'default_permissions=":read-only"',
-                "-c", 'approval_policy="on-request"',
-                "-c", 'approvals_reviewer="user"',
-            ],
-            "full-access": [
-                "-c", 'default_permissions=":danger-full-access"',
-                "-c", 'approval_policy="never"',
-            ],
-        }[spec.permission_mode]
-        command = [
-            args.codex_executable,
-            "exec",
-            "--profile",
-            "chub",
-            "--json",
-            *permission_args,
-            "--output-last-message",
-            str(result_path),
-        ]
-        if spec.model:
-            command.extend(["--model", spec.model])
-        if spec.reasoning_effort:
-            command.extend(
-                ["-c", f"model_reasoning_effort={json.dumps(spec.reasoning_effort)}"]
-            )
-        codex_session_id = (
+        native_session_id = (
             None
             if args.start_new_session
-            else args.codex_session_id or spec.codex_session_id
+            else args.native_session_id or spec.native_session_id
         )
-        if codex_session_id:
-            command.extend(["resume", codex_session_id])
-        command.append("-")
+        request = RuntimeTurnRequest(
+            permission_profile=spec.permission_profile,
+            native_session_id=native_session_id,
+            model=spec.model,
+            reasoning_effort=spec.reasoning_effort,
+        )
+        process_spec = CodexRuntimeRunner.command(
+            args.runtime_executable,
+            result_path,
+            request,
+            start_new_session=args.start_new_session,
+        )
         os.chdir(workspace)
         try:
-            os.execvpe(args.codex_executable, command, os.environ.copy())
+            os.execvpe(
+                args.runtime_executable,
+                list(process_spec.argv),
+                os.environ.copy(),
+            )
         except OSError:
-            print("Codex runner could not execute Codex", file=sys.stderr)
+            print("Runtime Runner could not execute its fixed executable", file=sys.stderr)
             return 70
 
-    if behavior is None or run_seconds is None:
+    if (
+        spec.runtime_id != "fixed-test"
+        or behavior is None
+        or run_seconds is None
+        or args.test_behavior != behavior
+        or args.test_run_seconds != run_seconds
+    ):
         return 70
     if behavior == "orphan_child":
         subprocess.Popen(

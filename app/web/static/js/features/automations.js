@@ -611,7 +611,6 @@ async function loadAutomations() {
 
 async function loadAutomationEnvironment() {
   const requestVersion = accessVersion;
-  elements.refreshAutomationEnvironment.disabled = true;
   try {
     const data = await apiFetch("/api/automations");
     if (requestVersion !== accessVersion) {
@@ -648,6 +647,18 @@ async function loadAutomationEnvironment() {
       );
     }
   } finally {
-    elements.refreshAutomationEnvironment.disabled = false;
+    // The workstation-level refresh button owns only its fan-out busy state.
   }
 }
+
+elements.automationBrowserControl.addEventListener("click", controlAutomationBrowser);
+elements.automationBrowserProfile.addEventListener("change", updateAutomationBrowserDialog);
+elements.automationBrowserForm.addEventListener("submit", startAutomationBrowser);
+elements.automationBrowserDialogClose.addEventListener("click", closeAutomationBrowserDialog);
+elements.automationBrowserDialogCancel.addEventListener("click", closeAutomationBrowserDialog);
+elements.automationBrowserDialog.addEventListener("click", (event) => {
+  if (event.target === elements.automationBrowserDialog) {
+    closeAutomationBrowserDialog();
+  }
+});
+elements.automationFeishuCheck.addEventListener("click", checkFeishuEnvironment);

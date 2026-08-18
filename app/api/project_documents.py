@@ -10,6 +10,7 @@ from app.core.security import require_token
 from app.services.design_documents import (
     DesignDocumentIndexError,
     list_design_documents,
+    select_home_design_documents,
     set_design_document_archived,
 )
 from app.services.operation_log import log_operation
@@ -70,7 +71,7 @@ def list_project_documents(request: Request) -> ApiResponse[ProjectDocumentListD
             count=len(documents),
             documents=[
                 ProjectDocumentSummary.model_validate(item, from_attributes=True)
-                for item in documents[:5]
+                for item in select_home_design_documents(documents)
             ],
             weekly_reports=[
                 WeeklyReportSummary.model_validate(item, from_attributes=True)

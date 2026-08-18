@@ -1,17 +1,13 @@
 from __future__ import annotations
 
-import fcntl
 import json
 import logging
 import os
-import re
 import shutil
 import socket
-import stat
 import subprocess
 import threading
 import time
-import tomllib
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -19,11 +15,17 @@ from typing import Callable
 
 import psutil
 
-from app.codex.discovery import CodexSessionDiscovery
-from app.codex.model_catalog import CodexModelCatalog
+from app.ai_runtime import (
+    RuntimeNativeSession,
+    RuntimeOperationError,
+    RuntimeRegistry,
+    RuntimeTerminalRequest,
+)
 from app.codex.models import (
     ActivitySource,
     CodexModelCatalogData,
+    CodexModelInfo,
+    CodexReasoningLevel,
     CodexSession,
     PermissionMode,
     SessionInfo,
@@ -32,24 +34,42 @@ from app.codex.models import (
     utc_now,
 )
 from app.codex.store import CodexSessionStore
+from app.codex.runtime_adapter import (
+    PROFILE_MARKER,
+    CodexRuntimeAdapter,
+)
 from app.core.config import PROJECT_ROOT, Settings
-from app.core.network import is_tailscale_ip
 from app.core.response import ApiError
 
 
 LOGGER = logging.getLogger("hub.codex")
-PROFILE_MARKER = "# Managed by Chub Codex PTY"
-CODEX_SESSION_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
 
 
 class CodexPtyManager:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.store = CodexSessionStore(settings.codex_pty.data_file)
-        self.codex_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
-        self.discovery = CodexSessionDiscovery(self.codex_home)
-        self.model_catalog = CodexModelCatalog(self.codex_home)
-        self.hook_dir = settings.codex_pty.runtime_dir / "hooks"
+        adapter = CodexRuntimeAdapter(
+            settings,
+            which=lambda name: shutil.which(name),
+            run=lambda *args, **kwargs: subprocess.run(*args, **kwargs),
+        )
+        self.runtime_registry = RuntimeRegistry([adapter])
+        self.runtime_adapter = self.runtime_registry.require(
+            "codex",
+            {
+                "runtime_status",
+                "native_session_mapping",
+                "interactive_terminal",
+                "session_resume",
+                "session_archive",
+                "writer_probe",
+                "model_catalog",
+                "permission_profiles",
+            },
+        )
+        self.codex_home = adapter.codex_home
+        self.hook_dir = adapter.hook_dir
         self._processes: dict[str, subprocess.Popen[bytes]] = {}
         self._lock = threading.RLock()
         self._quick_interaction_is_running: Callable[[str], bool] = lambda _id: False
@@ -63,30 +83,16 @@ class CodexPtyManager:
 
     @property
     def network_available(self) -> bool:
-        return is_tailscale_ip(self.settings.server.host)
+        return self.runtime_adapter.network_available
 
     def dependencies(self) -> dict[str, bool]:
-        return {
-            name: shutil.which(name) is not None
-            for name in ("codex", "ttyd", "tmux")
-        }
+        return self.runtime_adapter.dependencies()
 
     def available(self) -> bool:
-        return (
-            self.settings.codex_pty.enabled
-            and self.network_available
-            and all(self.dependencies().values())
-        )
+        return self.runtime_adapter.status().available
 
     def unavailable_reason(self) -> str | None:
-        if not self.settings.codex_pty.enabled:
-            return "Codex PTY is disabled"
-        if not self.network_available:
-            return "Codex PTY requires a Tailscale listen address"
-        missing = [name for name, found in self.dependencies().items() if not found]
-        if missing:
-            return f"Missing dependencies: {', '.join(missing)}"
-        return None
+        return self.runtime_adapter.status().reason
 
     def workspaces(self) -> list[WorkspaceInfo]:
         entries = [
@@ -145,7 +151,7 @@ class CodexPtyManager:
         reasoning_effort: str | None = None,
     ) -> SessionInfo:
         self._require_available()
-        self.model_catalog.validate(model, reasoning_effort)
+        self.validate_model(model, reasoning_effort)
         workspace = next(
             (item for item in self.workspaces() if item.id == workspace_id),
             None,
@@ -205,8 +211,47 @@ class CodexPtyManager:
                 pass
             return True
 
+    def validate_model(
+        self,
+        model: str | None,
+        reasoning_effort: str | None,
+    ) -> None:
+        try:
+            self.runtime_adapter.validate_model(model, reasoning_effort)
+        except RuntimeOperationError as exc:
+            raise self._runtime_api_error(exc) from exc
+
+    def validate_native_session_id(self, native_session_id: str) -> None:
+        try:
+            self.runtime_adapter.validate_native_session_id(native_session_id)
+        except RuntimeOperationError as exc:
+            raise self._runtime_api_error(exc) from exc
+
     def read_model_catalog(self) -> CodexModelCatalogData:
-        return self.model_catalog.data()
+        try:
+            catalog = self.runtime_adapter.read_model_catalog()
+        except RuntimeOperationError as exc:
+            raise self._runtime_api_error(exc) from exc
+        return CodexModelCatalogData(
+            models=[
+                CodexModelInfo(
+                    id=model.id,
+                    name=model.name,
+                    description=model.description,
+                    default_level=model.default_level,
+                    levels=[
+                        CodexReasoningLevel(
+                            id=level.id,
+                            description=level.description,
+                        )
+                        for level in model.levels
+                    ],
+                )
+                for model in catalog.models
+            ],
+            default_model=catalog.default_model,
+            default_reasoning_effort=catalog.default_reasoning_effort,
+        )
 
     def prepare_quick_interaction(self) -> None:
         """Ensure headless Codex runs use the managed profile and session hook."""
@@ -216,53 +261,12 @@ class CodexPtyManager:
 
     def has_active_writer(self, codex_session_id: str | None) -> bool:
         """Probe Codex's local writer lock without creating or modifying it."""
-        if not codex_session_id:
-            return False
-        if CODEX_SESSION_ID_PATTERN.fullmatch(codex_session_id) is None:
-            raise ApiError(
-                503,
-                "codex_writer_status_unavailable",
-                "Unable to verify Codex session writer state",
-            )
-        lock_path = (
-            self.codex_home
-            / "thread-writer-locks"
-            / f"{codex_session_id}.lock"
-        )
-        flags = (
-            os.O_RDWR
-            | getattr(os, "O_CLOEXEC", 0)
-            | getattr(os, "O_NOFOLLOW", 0)
-        )
         try:
-            descriptor = os.open(lock_path, flags)
-        except FileNotFoundError:
-            return False
-        except OSError as exc:
-            LOGGER.warning("Unable to open Codex writer lock", exc_info=True)
-            raise ApiError(
-                503,
-                "codex_writer_status_unavailable",
-                "Unable to verify Codex session writer state",
-            ) from exc
-        try:
-            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-                raise OSError("Codex writer lock is not a regular file")
-            try:
-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                return True
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
-            return False
-        except OSError as exc:
+            self.runtime_adapter.codex_home = self.codex_home
+            return self.runtime_adapter.has_active_writer(codex_session_id)
+        except RuntimeOperationError as exc:
             LOGGER.warning("Unable to inspect Codex writer lock", exc_info=True)
-            raise ApiError(
-                503,
-                "codex_writer_status_unavailable",
-                "Unable to verify Codex session writer state",
-            ) from exc
-        finally:
-            os.close(descriptor)
+            raise self._runtime_api_error(exc) from exc
 
     def wait_for_writer_release(
         self,
@@ -270,13 +274,14 @@ class CodexPtyManager:
         *,
         timeout: float = 3.0,
     ) -> bool:
-        deadline = time.monotonic() + max(0.0, timeout)
-        while self.has_active_writer(codex_session_id):
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return False
-            time.sleep(min(0.05, remaining))
-        return True
+        try:
+            self.runtime_adapter.codex_home = self.codex_home
+            return self.runtime_adapter.wait_for_writer_release(
+                codex_session_id,
+                timeout=timeout,
+            )
+        except RuntimeOperationError as exc:
+            raise self._runtime_api_error(exc) from exc
 
     def ensure_terminal(self, session_id: str) -> CodexSession:
         self._require_available()
@@ -450,6 +455,7 @@ class CodexPtyManager:
             session = self.store.get(session_id)
             if session is None:
                 raise ApiError(404, "codex_session_not_found", "Codex session not found")
+            self.validate_native_session_id(native_session_id)
             if (
                 session.codex_session_id is not None
                 and session.codex_session_id != native_session_id
@@ -476,21 +482,17 @@ class CodexPtyManager:
 
     def delete_session(self, session_id: str) -> None:
         session = self.get_session(session_id)
+        if session.codex_session_id:
+            self.validate_native_session_id(session.codex_session_id)
         self.stop_session(session_id)
         if session.codex_session_id:
-            result = subprocess.run(
-                ["codex", "delete", "--force", session.codex_session_id],
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            if result.returncode != 0:
-                raise ApiError(
-                    503,
-                    "codex_session_delete_failed",
-                    "Unable to delete Codex session",
+            try:
+                self.runtime_adapter.run_native_action(
+                    "delete",
+                    session.codex_session_id,
                 )
+            except RuntimeOperationError as exc:
+                raise self._runtime_api_error(exc) from exc
         self.store.delete(session_id)
         hook_file = self.hook_dir / f"{session_id}.json"
         try:
@@ -506,20 +508,15 @@ class CodexPtyManager:
                 "codex_session_not_started",
                 "Codex session has not started yet",
             )
+        self.validate_native_session_id(session.codex_session_id)
         self.stop_session(session_id)
-        result = subprocess.run(
-            ["codex", "archive", session.codex_session_id],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        if result.returncode != 0:
-            raise ApiError(
-                503,
-                "codex_session_archive_failed",
-                "Unable to archive Codex session",
+        try:
+            self.runtime_adapter.run_native_action(
+                "archive",
+                session.codex_session_id,
             )
+        except RuntimeOperationError as exc:
+            raise self._runtime_api_error(exc) from exc
         self.store.delete(session_id)
         hook_file = self.hook_dir / f"{session_id}.json"
         try:
@@ -596,7 +593,11 @@ class CodexPtyManager:
         activity_source = payload.get("activity_source", "terminal")
         changed = False
         if session and isinstance(codex_session_id, str) and codex_session_id:
-            if session.codex_session_id != codex_session_id:
+            try:
+                self.runtime_adapter.validate_native_session_id(codex_session_id)
+            except RuntimeOperationError:
+                codex_session_id = None
+            if codex_session_id and session.codex_session_id != codex_session_id:
                 session.codex_session_id = codex_session_id
                 changed = True
         if session and activity in {"working", "idle"}:
@@ -652,95 +653,27 @@ class CodexPtyManager:
             self.store.save(session)
 
     def _ensure_profile(self) -> None:
-        profile = self.codex_home / "chub.config.toml"
-        hook = PROJECT_ROOT / "scripts" / "chub-codex-hook"
-        content = (
-            f"{PROFILE_MARKER}\n"
-            "[[hooks.SessionStart]]\n"
-            'matcher = "startup|resume"\n\n'
-            "[[hooks.SessionStart.hooks]]\n"
-            'type = "command"\n'
-            f"command = {json.dumps(str(hook))}\n"
-            "timeout = 5\n"
-            f"{self._activity_hook_content(hook)}"
-        )
-        if profile.exists():
-            existing = profile.read_text(encoding="utf-8")
-            if existing == content or (
-                self._profile_has_managed_hook(existing, hook)
-                and self._profile_has_activity_hooks(existing, hook)
-            ):
-                return
-            if PROFILE_MARKER not in existing.splitlines():
-                raise ApiError(
-                    409,
-                    "codex_profile_conflict",
-                    f"Existing Codex profile is not managed by Chub: {profile}",
-                )
-            if not self._profile_has_managed_hook(existing, hook):
-                raise ApiError(
-                    409,
-                    "codex_profile_conflict",
-                    f"Existing Codex profile is not managed by Chub: {profile}",
-                )
-            missing_hooks = "".join(
-                self._event_hook_content(event, hook)
-                for event in ("UserPromptSubmit", "Stop")
-                if not self._profile_has_event_hook(existing, hook, event)
-            )
-            content = f"{existing.rstrip()}\n{missing_hooks}"
-        self.codex_home.mkdir(parents=True, exist_ok=True)
-        temporary = profile.with_suffix(".tmp")
-        temporary.write_text(content, encoding="utf-8")
-        temporary.chmod(0o600)
-        temporary.replace(profile)
+        self.runtime_adapter.codex_home = self.codex_home
+        try:
+            self.runtime_adapter.ensure_profile()
+        except RuntimeOperationError as exc:
+            raise self._runtime_api_error(exc) from exc
 
     @staticmethod
     def _profile_has_managed_hook(existing: str, hook: Path) -> bool:
-        if PROFILE_MARKER not in existing.splitlines():
-            return False
-        try:
-            profile = tomllib.loads(existing)
-            session_start = profile["hooks"]["SessionStart"]
-        except (KeyError, TypeError, tomllib.TOMLDecodeError):
-            return False
-        if not isinstance(session_start, list):
-            return False
-        return any(
-            entry.get("matcher") == "startup|resume"
-            and any(
-                hook_entry.get("type") == "command"
-                and hook_entry.get("command") == str(hook)
-                for hook_entry in entry.get("hooks", [])
-                if isinstance(hook_entry, dict)
-            )
-            for entry in session_start
-            if isinstance(entry, dict)
-        )
+        return CodexRuntimeAdapter.profile_has_managed_hook(existing, hook)
 
     @staticmethod
     def _activity_hook_content(hook: Path) -> str:
-        return "".join(
-            CodexPtyManager._event_hook_content(event, hook)
-            for event in ("UserPromptSubmit", "Stop")
-        )
+        return CodexRuntimeAdapter.activity_hook_content(hook)
 
     @staticmethod
     def _event_hook_content(event: str, hook: Path) -> str:
-        return (
-            f"\n[[hooks.{event}]]\n"
-            f"\n[[hooks.{event}.hooks]]\n"
-            'type = "command"\n'
-            f"command = {json.dumps(str(hook))}\n"
-            "timeout = 5\n"
-        )
+        return CodexRuntimeAdapter.event_hook_content(event, hook)
 
     @staticmethod
     def _profile_has_activity_hooks(existing: str, hook: Path) -> bool:
-        return all(
-            CodexPtyManager._profile_has_event_hook(existing, hook, event)
-            for event in ("UserPromptSubmit", "Stop")
-        )
+        return CodexRuntimeAdapter.profile_has_activity_hooks(existing, hook)
 
     @staticmethod
     def _profile_has_event_hook(
@@ -748,56 +681,22 @@ class CodexPtyManager:
         hook: Path,
         event: str,
     ) -> bool:
-        try:
-            profile = tomllib.loads(existing)
-            hooks = profile["hooks"]
-        except (KeyError, TypeError, tomllib.TOMLDecodeError):
-            return False
-        entries = hooks.get(event)
-        return isinstance(entries, list) and any(
-            any(
-                hook_entry.get("type") == "command"
-                and hook_entry.get("command") == str(hook)
-                for hook_entry in entry.get("hooks", [])
-                if isinstance(hook_entry, dict)
-            )
-            for entry in entries
-            if isinstance(entry, dict)
-        )
+        return CodexRuntimeAdapter.profile_has_event_hook(existing, hook, event)
 
     def _ttyd_command(self, session: CodexSession, port: int) -> list[str]:
-        launcher = PROJECT_ROOT / "scripts" / "chub-codex-launcher"
-        command = [
-            "ttyd",
-            "-W",
-            "-O",
-            "-m",
-            "1",
-            "-i",
-            "127.0.0.1",
-            "-p",
-            str(port),
-            "-b",
-            f"/codex/{session.id}/terminal",
-            str(launcher),
-            "--name",
-            self._tmux_name(session.id),
-            "--cwd",
-            str(session.cwd),
-            "--chub-session",
-            session.id,
-            "--hook-dir",
-            str(self.hook_dir),
-            "--permission-mode",
-            session.permission_mode,
-        ]
-        if session.codex_session_id:
-            command.extend(["--codex-session", session.codex_session_id])
-        if session.model:
-            command.extend(["--model", session.model])
-        if session.reasoning_effort:
-            command.extend(["--reasoning-effort", session.reasoning_effort])
-        return command
+        self.runtime_adapter.hook_dir = self.hook_dir
+        process_spec = self.runtime_adapter.terminal_command(
+            RuntimeTerminalRequest(
+                session_id=session.id,
+                cwd=session.cwd,
+                permission_mode=session.permission_mode,
+                native_session_id=session.codex_session_id,
+                model=session.model,
+                reasoning_effort=session.reasoning_effort,
+            ),
+            port,
+        )
+        return list(process_spec.argv)
 
     @staticmethod
     def _tmux_name(session_id: str) -> str:
@@ -880,7 +779,14 @@ class CodexPtyManager:
                 for session in stored
                 if session.codex_session_id
             }
-            discovered_sessions = self.discovery.discover()
+            try:
+                discovery_result = self.runtime_adapter.discover_sessions()
+            except RuntimeOperationError as exc:
+                raise self._runtime_api_error(exc) from exc
+            discovered_sessions = [
+                self._codex_session_from_runtime(session)
+                for session in discovery_result.sessions
+            ]
             active_ids = {
                 session.codex_session_id
                 for session in discovered_sessions
@@ -946,7 +852,7 @@ class CodexPtyManager:
                 if changed:
                     self.store.save(existing)
 
-            archive_states = self.discovery.session_archive_states()
+            archive_states = discovery_result.archive_states
             if archive_states is None:
                 return
             for session in stored:
@@ -962,6 +868,34 @@ class CodexPtyManager:
                 if native_id in archive_states and not archive_states[native_id]:
                     continue
                 self._remove_stale_session(session)
+
+    @staticmethod
+    def _codex_session_from_runtime(session: RuntimeNativeSession) -> CodexSession:
+        return CodexSession(
+            id=session.native_session_id,
+            workspace_id="codex",
+            workspace_name=session.cwd.name or str(session.cwd),
+            cwd=session.cwd,
+            title=session.title,
+            codex_session_id=session.native_session_id,
+            status="stopped",
+            active_permission_mode=session.active_permission_mode,
+            model=session.active_model,
+            reasoning_effort=session.active_reasoning_effort,
+            active_model=session.active_model,
+            active_reasoning_effort=session.active_reasoning_effort,
+            created_at=session.created_at,
+            updated_at=session.updated_at,
+        )
+
+    @staticmethod
+    def _runtime_api_error(error: RuntimeOperationError) -> ApiError:
+        status_code = {
+            "invalid_request": 400,
+            "conflict": 409,
+            "unavailable": 503,
+        }[error.kind]
+        return ApiError(status_code, error.code, error.message)
 
     def _deduplicate_native_sessions(
         self,

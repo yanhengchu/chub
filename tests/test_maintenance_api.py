@@ -19,6 +19,27 @@ async def test_restart_requires_authentication(settings: Settings) -> None:
 
 
 @pytest.mark.anyio
+async def test_restart_rejects_active_quick_worker_reload(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    app.state.quick_worker_maintenance.in_progress = lambda: True
+    transport = httpx.ASGITransport(app=app)
+
+    with patch("app.api.maintenance.launch_restart_process") as launch_restart:
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            headers={"Authorization": "Bearer test-token-that-is-long-enough-for-tests"},
+        ) as client:
+            response = await client.post("/api/maintenance/restart")
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "quick_worker_reload_in_progress"
+    launch_restart.assert_not_called()
+
+
+@pytest.mark.anyio
 async def test_restart_uses_chub_service_command(settings: Settings) -> None:
     transport = httpx.ASGITransport(app=create_app(settings))
     with (

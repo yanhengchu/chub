@@ -105,17 +105,24 @@
     width: 100%;
   }
 
-  .automation-browser-row {
+  .workstation-status-row {
     align-items: stretch;
     flex-direction: column;
   }
 
+  .workstation-status-actions,
   .automation-browser-actions {
     align-items: stretch;
     flex-direction: column;
     width: 100%;
   }
 
+  .workstation-status-actions > .badge {
+    max-width: none;
+    text-align: left;
+  }
+
+  .workstation-status-actions > button,
   .automation-browser-actions > button {
     width: 100%;
   }

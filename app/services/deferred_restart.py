@@ -144,6 +144,12 @@ class DeferredRestartCoordinator:
         with self._lock:
             return self._state is not None
 
+    def immediate_restart_in_progress(self) -> bool:
+        with self._lock:
+            return self._immediate_restart_claimed or bool(
+                self._state is not None and self._state.current.status == "started"
+            )
+
     def state(self) -> DeferredRestartRequest | None:
         with self._lock:
             return self._state.current.model_copy(deep=True) if self._state else None

@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import hashlib
 import json
 import os
 import re
-import shutil
 import signal
 import stat
-import sys
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -25,7 +22,13 @@ from pydantic import (
     model_validator,
 )
 
-from app.codex.discovery import CodexSessionDiscovery
+from app.ai_runtime import (
+    PermissionProfile,
+    RuntimeOperationError,
+    RuntimeTurnRequest,
+    RuntimeWorkerLaunchRequest,
+    WorkerRuntimeRegistry,
+)
 from app.core.config import Settings
 
 
@@ -57,19 +60,17 @@ TaskStatus = Literal[
 ]
 FinalTaskStatus = Literal["succeeded", "failed", "timed_out", "cancelled"]
 TestBehavior = Literal["succeed", "fail", "ignore_term", "orphan_child"]
-RunnerKind = Literal["fixed_test", "codex"]
-CodexPermissionMode = Literal["auto-review", "read-only", "full-access"]
-CodexTaskKind = Literal["standard", "weixin", "translation"]
+WorkerTaskKind = Literal["standard", "weixin", "translation", "test"]
 FINAL_STATUSES = {"succeeded", "failed", "timed_out", "cancelled"}
 TASK_ID_PATTERN = r"^qw-[0-9]{13}-[a-f0-9]{32}$"
 SESSION_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
 WORKSPACE_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+RUNTIME_ID_PATTERN = r"^[a-z][a-z0-9-]{0,31}$"
+EXECUTION_ID_PATTERN = r"^[a-f0-9]{32}$"
 NATIVE_SESSION_ID_PATTERN = (
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
     r"[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
 )
-
-
 def utc_now() -> datetime:
     return datetime.now(UTC)
 
@@ -82,6 +83,18 @@ def new_worker_task_id(now: datetime | None = None) -> str:
 
 def worker_state_dir(settings: Settings) -> Path:
     return settings.codex_pty.data_file.parent / "quick-worker"
+
+
+def worker_tasks_dir(settings: Settings, protocol_version: int) -> Path:
+    return worker_state_dir(settings) / f"tasks-v{protocol_version}"
+
+
+def worker_tombstones_dir(settings: Settings, protocol_version: int) -> Path:
+    return worker_state_dir(settings) / f"tombstones-v{protocol_version}"
+
+
+def worker_leases_dir(settings: Settings, protocol_version: int) -> Path:
+    return worker_state_dir(settings) / f"session-leases-v{protocol_version}"
 
 
 class _StrictModel(BaseModel):
@@ -103,20 +116,18 @@ class TestTaskSubmission(_StrictModel):
         return value
 
 
-class CodexTaskSubmission(_StrictModel):
+class RuntimeTaskSubmission(_StrictModel):
     task_id: str = Field(pattern=TASK_ID_PATTERN)
+    runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
     session_id: str = Field(pattern=SESSION_ID_PATTERN)
     workspace_id: str = Field(pattern=WORKSPACE_ID_PATTERN)
     prompt: str = Field(min_length=1, max_length=MAX_PROMPT_CHARS)
-    permission_mode: CodexPermissionMode
-    codex_session_id: str | None = Field(
-        default=None,
-        pattern=NATIVE_SESSION_ID_PATTERN,
-    )
+    permission_profile: PermissionProfile
+    native_session_id: str | None = Field(default=None, min_length=1, max_length=128)
     model: str | None = Field(default=None, min_length=1, max_length=128)
     reasoning_effort: str | None = Field(default=None, min_length=1, max_length=32)
     timeout_seconds: float = Field(gt=0.0, le=24 * 60 * 60)
-    task_kind: CodexTaskKind = "standard"
+    task_kind: Literal["standard", "weixin", "translation"] = "standard"
     restart_sensitive: bool | None = None
     queue_key: str | None = Field(default=None, pattern=SESSION_ID_PATTERN)
     queue_limit: int | None = Field(default=None, ge=1, le=50)
@@ -130,7 +141,7 @@ class CodexTaskSubmission(_StrictModel):
         return value
 
     @model_validator(mode="after")
-    def validate_queue_fields(self) -> CodexTaskSubmission:
+    def validate_queue_fields(self) -> RuntimeTaskSubmission:
         queue_fields = (self.queue_key, self.queue_limit, self.queue_wait_seconds)
         if self.task_kind == "translation":
             if any(item is None for item in queue_fields):
@@ -138,7 +149,7 @@ class CodexTaskSubmission(_StrictModel):
         elif any(item is not None for item in queue_fields):
             raise ValueError("queue fields are only valid for translation tasks")
         expected_restart_sensitive = (
-            self.workspace_id == "chub" and self.permission_mode != "read-only"
+            self.workspace_id == "chub" and self.permission_profile != "read-only"
         )
         if self.restart_sensitive is None:
             self.restart_sensitive = expected_restart_sensitive
@@ -150,23 +161,20 @@ class CodexTaskSubmission(_StrictModel):
 class StoredTaskSpec(_StrictModel):
     protocol_version: int
     task_id: str = Field(pattern=TASK_ID_PATTERN)
-    runner_kind: RunnerKind
+    runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
     prompt: str = Field(min_length=1, max_length=MAX_PROMPT_CHARS)
     prompt_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     spec_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
-    behavior: TestBehavior | None = None
-    run_seconds: float | None = None
+    test_behavior: TestBehavior | None = None
+    test_run_seconds: float | None = None
     session_id: str | None = Field(default=None, pattern=SESSION_ID_PATTERN)
     workspace_id: str | None = Field(default=None, pattern=WORKSPACE_ID_PATTERN)
-    permission_mode: CodexPermissionMode | None = None
-    codex_session_id: str | None = Field(
-        default=None,
-        pattern=NATIVE_SESSION_ID_PATTERN,
-    )
+    permission_profile: PermissionProfile | None = None
+    native_session_id: str | None = Field(default=None, min_length=1, max_length=128)
     model: str | None = Field(default=None, min_length=1, max_length=128)
     reasoning_effort: str | None = Field(default=None, min_length=1, max_length=32)
     timeout_seconds: float
-    task_kind: CodexTaskKind | None = None
+    task_kind: WorkerTaskKind
     restart_sensitive: bool = False
     queue_key: str | None = Field(default=None, pattern=SESSION_ID_PATTERN)
     queue_limit: int | None = Field(default=None, ge=1, le=50)
@@ -176,40 +184,38 @@ class StoredTaskSpec(_StrictModel):
     queue_deadline_at: datetime | None = None
 
     @model_validator(mode="after")
-    def validate_runner_fields(self) -> StoredTaskSpec:
-        fixed_fields = (self.behavior, self.run_seconds)
-        codex_fields = (
+    def validate_runtime_fields(self) -> StoredTaskSpec:
+        fixed_fields = (self.test_behavior, self.test_run_seconds)
+        runtime_fields = (
             self.session_id,
             self.workspace_id,
-            self.permission_mode,
-            self.task_kind,
+            self.permission_profile,
         )
-        if self.runner_kind == "fixed_test":
+        if self.runtime_id == "fixed-test":
             if any(item is None for item in fixed_fields) or any(
                 item is not None
                 for item in (
-                    *codex_fields,
-                    self.codex_session_id,
+                    *runtime_fields,
+                    self.native_session_id,
                     self.model,
                     self.reasoning_effort,
                 )
-            ):
+            ) or self.task_kind != "test":
                 raise ValueError("fixed test task fields are inconsistent")
         elif any(item is not None for item in fixed_fields) or any(
-            item is None for item in codex_fields
-        ):
-            raise ValueError("Codex task fields are inconsistent")
-        if self.runner_kind == "fixed_test" and self.restart_sensitive:
+            item is None for item in runtime_fields
+        ) or self.task_kind == "test":
+            raise ValueError("Runtime task fields are inconsistent")
+        if self.runtime_id == "fixed-test" and self.restart_sensitive:
             raise ValueError("fixed test tasks cannot be restart sensitive")
         if (
-            self.protocol_version >= 6
-            and self.runner_kind == "codex"
+            self.runtime_id != "fixed-test"
             and self.restart_sensitive
-            != (self.workspace_id == "chub" and self.permission_mode != "read-only")
+            != (self.workspace_id == "chub" and self.permission_profile != "read-only")
         ):
             raise ValueError("restart_sensitive does not match the fixed workspace rule")
         queue_fields = (self.queue_key, self.queue_limit, self.queue_wait_seconds)
-        if self.runner_kind == "codex" and self.task_kind == "translation":
+        if self.task_kind == "translation":
             if any(item is None for item in queue_fields) or self.queue_deadline_at is None:
                 raise ValueError("translation queue fields are inconsistent")
         elif any(item is not None for item in (*queue_fields, self.queue_deadline_at)):
@@ -219,41 +225,47 @@ class StoredTaskSpec(_StrictModel):
 
 class StoredTaskState(_StrictModel):
     task_id: str = Field(pattern=TASK_ID_PATTERN)
+    runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
     spec_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     status: TaskStatus
     worker_generation: str
+    execution_id: str | None = Field(default=None, pattern=EXECUTION_ID_PATTERN)
     runner_pid: int | None = Field(default=None, ge=1)
     runner_created_at: float | None = Field(default=None, gt=0)
-    native_session_id: str | None = Field(
-        default=None,
-        pattern=NATIVE_SESSION_ID_PATTERN,
-    )
-    expected_native_session_id: str | None = Field(
-        default=None,
-        pattern=NATIVE_SESSION_ID_PATTERN,
-    )
+    native_session_id: str | None = Field(default=None, min_length=1, max_length=128)
+    expected_native_session_id: str | None = Field(default=None, min_length=1, max_length=128)
     execution_deadline_at: datetime | None = None
     cancellation_requested: bool = False
     updated_at: datetime
 
 
+class StoredRuntimeEvent(_StrictModel):
+    task_id: str = Field(pattern=TASK_ID_PATTERN)
+    runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
+    spec_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    execution_id: str = Field(pattern=EXECUTION_ID_PATTERN)
+    native_session_id: str = Field(min_length=1, max_length=128)
+    observed_at: datetime
+
+
 class StoredTaskCompletion(_StrictModel):
     task_id: str = Field(pattern=TASK_ID_PATTERN)
+    runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
     spec_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    execution_id: str | None = Field(default=None, pattern=EXECUTION_ID_PATTERN)
     status: FinalTaskStatus
     result: str | None = None
     error: str | None = None
     error_code: str | None = Field(default=None, max_length=64)
     exit_code: int | None = None
-    native_session_id: str | None = Field(
-        default=None,
-        pattern=NATIVE_SESSION_ID_PATTERN,
-    )
+    native_session_id: str | None = Field(default=None, min_length=1, max_length=128)
     completed_at: datetime
 
 
 class TaskTombstone(_StrictModel):
+    protocol_version: int
     task_id: str = Field(pattern=TASK_ID_PATTERN)
+    runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
     spec_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     completed_at: datetime
     expires_at: datetime
@@ -262,18 +274,21 @@ class TaskTombstone(_StrictModel):
 class SessionLease(_StrictModel):
     session_id: str = Field(pattern=SESSION_ID_PATTERN)
     task_id: str = Field(pattern=TASK_ID_PATTERN)
+    runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
     spec_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     created_at: datetime
 
 
 class WorkerTaskView(_StrictModel):
     task_id: str = Field(pattern=TASK_ID_PATTERN)
+    runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
     status: TaskStatus
     prompt_sha256: str
     created_at: datetime
     deadline_at: datetime
     updated_at: datetime
     worker_generation: str
+    execution_id: str | None = Field(default=None, pattern=EXECUTION_ID_PATTERN)
     runner_pid: int | None = None
     cancellation_requested: bool
     result: str | None = None
@@ -286,10 +301,12 @@ class WorkerTaskView(_StrictModel):
 
 class WorkerTaskSummary(_StrictModel):
     task_id: str = Field(pattern=TASK_ID_PATTERN)
+    runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
     status: TaskStatus
     prompt_sha256: str
     session_id: str | None = None
-    task_kind: CodexTaskKind | None = None
+    task_kind: WorkerTaskKind | None = None
+    execution_id: str | None = Field(default=None, pattern=EXECUTION_ID_PATTERN)
     restart_sensitive: bool = False
     native_session_id: str | None = None
     delivery_acknowledged: bool = False
@@ -329,26 +346,37 @@ def _canonical_json(payload: dict[str, object]) -> bytes:
     ).encode("utf-8")
 
 
-def _digest_submission(submission: TestTaskSubmission | CodexTaskSubmission) -> str:
-    payload = submission.model_dump(mode="json", exclude={"task_id"})
+def _digest_submission(submission: TestTaskSubmission | RuntimeTaskSubmission) -> str:
+    if isinstance(submission, TestTaskSubmission):
+        payload: dict[str, object] = {
+            "runtime_id": "fixed-test",
+            "prompt": submission.prompt,
+            "test_behavior": submission.behavior,
+            "test_run_seconds": submission.run_seconds,
+            "timeout_seconds": submission.timeout_seconds,
+        }
+    else:
+        payload = submission.model_dump(mode="json", exclude={"task_id"})
     return hashlib.sha256(_canonical_json(payload)).hexdigest()
 
 
 def _digest_stored_spec(spec: StoredTaskSpec) -> str:
-    if spec.runner_kind == "fixed_test":
+    if spec.runtime_id == "fixed-test":
         payload = {
+            "runtime_id": spec.runtime_id,
             "prompt": spec.prompt,
-            "behavior": spec.behavior,
-            "run_seconds": spec.run_seconds,
+            "test_behavior": spec.test_behavior,
+            "test_run_seconds": spec.test_run_seconds,
             "timeout_seconds": spec.timeout_seconds,
         }
     else:
         payload = {
+            "runtime_id": spec.runtime_id,
             "session_id": spec.session_id,
             "workspace_id": spec.workspace_id,
             "prompt": spec.prompt,
-            "permission_mode": spec.permission_mode,
-            "codex_session_id": spec.codex_session_id,
+            "permission_profile": spec.permission_profile,
+            "native_session_id": spec.native_session_id,
             "model": spec.model,
             "reasoning_effort": spec.reasoning_effort,
             "timeout_seconds": spec.timeout_seconds,
@@ -356,9 +384,8 @@ def _digest_stored_spec(spec: StoredTaskSpec) -> str:
             "queue_key": spec.queue_key,
             "queue_limit": spec.queue_limit,
             "queue_wait_seconds": spec.queue_wait_seconds,
+            "restart_sensitive": spec.restart_sensitive,
         }
-        if spec.protocol_version >= 6:
-            payload["restart_sensitive"] = spec.restart_sensitive
     return hashlib.sha256(_canonical_json(payload)).hexdigest()
 
 
@@ -425,36 +452,19 @@ class WorkerTaskManager:
         generation: str,
         *,
         protocol_version: int,
+        runtime_registry: WorkerRuntimeRegistry,
         allow_test_tasks: bool = False,
-        codex_workspaces: dict[str, Path] | None = None,
-        codex_executable: str | Path | None = None,
-        codex_home: Path | None = None,
     ) -> None:
         self.root = worker_state_dir(settings)
-        self.tasks_dir = self.root / "tasks"
-        self.tombstones_dir = self.root / "tombstones"
-        self.leases_dir = self.root / "session-leases"
+        self.tasks_dir = worker_tasks_dir(settings, protocol_version)
+        self.tombstones_dir = worker_tombstones_dir(settings, protocol_version)
+        self.leases_dir = worker_leases_dir(settings, protocol_version)
         self.hook_dir = settings.codex_pty.runtime_dir / "hooks"
         self.restart_request_dir = settings.codex_pty.runtime_dir / "restart-requests"
         self.generation = generation
         self.protocol_version = protocol_version
         self.allow_test_tasks = allow_test_tasks
-        self.codex_workspaces = {
-            workspace_id: workspace.resolve()
-            for workspace_id, workspace in (codex_workspaces or {}).items()
-        }
-        resolved_executable = (
-            str(codex_executable)
-            if codex_executable is not None
-            else shutil.which("codex")
-        )
-        self.codex_executable = resolved_executable
-        self.codex_home = (
-            codex_home
-            if codex_home is not None
-            else Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
-        )
-        self.codex_discovery = CodexSessionDiscovery(self.codex_home)
+        self.runtime_registry = runtime_registry
         self._lock = asyncio.Lock()
         self._supervisors: dict[str, asyncio.Task[None]] = {}
         self._processes: dict[str, asyncio.subprocess.Process] = {}
@@ -470,6 +480,26 @@ class WorkerTaskManager:
     def corrupt_count(self) -> int:
         return len(self._corrupt_task_ids)
 
+    @property
+    def queued_count(self) -> int:
+        count = 0
+        for task_id in self._supervisors:
+            try:
+                _spec, state, completion = self._records(task_id)
+            except (FileNotFoundError, OSError, ValidationError, ValueError):
+                continue
+            if completion is None and state.status == "queued":
+                count += 1
+        return count
+
+    @property
+    def running_count(self) -> int:
+        return max(0, self.active_count - self.queued_count)
+
+    async def wait_until_idle(self) -> None:
+        while self._supervisors:
+            await asyncio.sleep(0.02)
+
     async def start(self) -> None:
         _private_directory(self.root)
         _private_directory(self.tasks_dir)
@@ -477,7 +507,7 @@ class WorkerTaskManager:
         _private_directory(self.leases_dir)
         _private_directory(self.hook_dir)
         _private_directory(self.restart_request_dir)
-        self._validate_codex_workspaces()
+        self._validate_runtime_registry()
         await self._recover_tasks()
 
     async def close(self, *, interrupt_tasks: bool = True) -> None:
@@ -507,32 +537,30 @@ class WorkerTaskManager:
                 "worker_action_unavailable",
                 "Fixed test tasks are disabled for this Worker instance",
             )
-        return await self._submit(submission, runner_kind="fixed_test")
+        self.runtime_registry.require("fixed-test")
+        return await self._submit(submission, runtime_id="fixed-test")
 
-    async def submit_codex(self, submission: CodexTaskSubmission) -> WorkerTaskView:
-        if not self.codex_workspaces:
-            raise WorkerTaskError(
-                "worker_action_unavailable",
-                "Codex tasks are disabled for this Worker instance",
+    async def submit_runtime(self, submission: RuntimeTaskSubmission) -> WorkerTaskView:
+        try:
+            runner = self.runtime_registry.require(submission.runtime_id)
+            runner.validate_turn(
+                submission.workspace_id,
+                RuntimeTurnRequest(
+                    permission_profile=submission.permission_profile,
+                    native_session_id=submission.native_session_id,
+                    model=submission.model,
+                    reasoning_effort=submission.reasoning_effort,
+                ),
             )
-        if self.codex_executable is None:
-            raise WorkerTaskError(
-                "codex_unavailable",
-                "Codex executable is unavailable to the Worker",
-            )
-        workspace = self.codex_workspaces.get(submission.workspace_id)
-        if workspace is None:
-            raise WorkerTaskError(
-                "worker_workspace_unavailable",
-                "The fixed workspace is unavailable",
-            )
-        return await self._submit(submission, runner_kind="codex")
+        except RuntimeOperationError as exc:
+            raise WorkerTaskError(exc.code, exc.message) from exc
+        return await self._submit(submission, runtime_id=submission.runtime_id)
 
     async def _submit(
         self,
-        submission: TestTaskSubmission | CodexTaskSubmission,
+        submission: TestTaskSubmission | RuntimeTaskSubmission,
         *,
-        runner_kind: RunnerKind,
+        runtime_id: str,
     ) -> WorkerTaskView:
         now = utc_now()
         self._validate_task_id_time(submission.task_id, now)
@@ -549,7 +577,7 @@ class WorkerTaskManager:
                         "worker_task_corrupt",
                         "Existing task record is invalid; the task was not replayed",
                     ) from None
-                if spec.spec_sha256 != spec_digest or spec.runner_kind != runner_kind:
+                if spec.spec_sha256 != spec_digest or spec.runtime_id != runtime_id:
                     raise WorkerTaskError(
                         "worker_task_conflict",
                         "Task ID is already reserved for a different specification",
@@ -567,7 +595,11 @@ class WorkerTaskManager:
                         "worker_task_corrupt",
                         "Task tombstone is invalid; the task was not replayed",
                     ) from None
-                if tombstone.task_id != submission.task_id:
+                if (
+                    tombstone.task_id != submission.task_id
+                    or tombstone.protocol_version != self.protocol_version
+                    or tombstone.runtime_id != runtime_id
+                ):
                     raise WorkerTaskError(
                         "worker_task_corrupt",
                         "Task tombstone identity does not match its file",
@@ -583,7 +615,7 @@ class WorkerTaskManager:
                 )
 
             queued_translation = (
-                isinstance(submission, CodexTaskSubmission)
+                isinstance(submission, RuntimeTaskSubmission)
                 and submission.task_kind == "translation"
             )
             if not queued_translation and len(self._running_task_ids()) >= MAX_ACTIVE_TASKS:
@@ -599,7 +631,7 @@ class WorkerTaskManager:
 
             if queued_translation:
                 self._ensure_queue_capacity(submission)
-            elif isinstance(submission, CodexTaskSubmission):
+            elif isinstance(submission, RuntimeTaskSubmission):
                 self._ensure_session_available(submission.session_id)
 
             task_dir = self.tasks_dir / submission.task_id
@@ -609,70 +641,70 @@ class WorkerTaskManager:
             spec = StoredTaskSpec(
                 protocol_version=self.protocol_version,
                 task_id=submission.task_id,
-                runner_kind=runner_kind,
+                runtime_id=runtime_id,
                 prompt=submission.prompt,
                 prompt_sha256=prompt_sha256,
                 spec_sha256=spec_digest,
-                behavior=(
+                test_behavior=(
                     submission.behavior
                     if isinstance(submission, TestTaskSubmission)
                     else None
                 ),
-                run_seconds=(
+                test_run_seconds=(
                     submission.run_seconds
                     if isinstance(submission, TestTaskSubmission)
                     else None
                 ),
                 session_id=(
                     submission.session_id
-                    if isinstance(submission, CodexTaskSubmission)
+                    if isinstance(submission, RuntimeTaskSubmission)
                     else None
                 ),
                 workspace_id=(
                     submission.workspace_id
-                    if isinstance(submission, CodexTaskSubmission)
+                    if isinstance(submission, RuntimeTaskSubmission)
                     else None
                 ),
-                permission_mode=(
-                    submission.permission_mode
-                    if isinstance(submission, CodexTaskSubmission)
+                permission_profile=(
+                    submission.permission_profile
+                    if isinstance(submission, RuntimeTaskSubmission)
                     else None
                 ),
-                codex_session_id=(
-                    submission.codex_session_id
-                    if isinstance(submission, CodexTaskSubmission)
+                native_session_id=(
+                    submission.native_session_id
+                    if isinstance(submission, RuntimeTaskSubmission)
                     else None
                 ),
-                model=(submission.model if isinstance(submission, CodexTaskSubmission) else None),
+                model=(submission.model if isinstance(submission, RuntimeTaskSubmission) else None),
                 reasoning_effort=(
                     submission.reasoning_effort
-                    if isinstance(submission, CodexTaskSubmission)
+                    if isinstance(submission, RuntimeTaskSubmission)
                     else None
                 ),
                 timeout_seconds=submission.timeout_seconds,
                 task_kind=(
                     submission.task_kind
-                    if isinstance(submission, CodexTaskSubmission)
-                    else None
+                    if isinstance(submission, RuntimeTaskSubmission)
+                    else "test"
                 ),
                 restart_sensitive=(
                     bool(submission.restart_sensitive)
-                    if isinstance(submission, CodexTaskSubmission)
+                    if isinstance(submission, RuntimeTaskSubmission)
                     else False
                 ),
                 queue_key=(
                     submission.queue_key
-                    if isinstance(submission, CodexTaskSubmission)
+                    if isinstance(submission, RuntimeTaskSubmission)
                     else None
                 ),
                 queue_limit=(
                     submission.queue_limit
-                    if isinstance(submission, CodexTaskSubmission)
+                    if isinstance(submission, RuntimeTaskSubmission)
                     else None
                 ),
                 queue_wait_seconds=(
                     submission.queue_wait_seconds
-                    if isinstance(submission, CodexTaskSubmission)
+                    if isinstance(submission, RuntimeTaskSubmission)
                     else None
                 ),
                 created_at=now,
@@ -681,7 +713,7 @@ class WorkerTaskManager:
                         submission.timeout_seconds
                         + (
                             (submission.queue_wait_seconds or 0)
-                            if isinstance(submission, CodexTaskSubmission)
+                            if isinstance(submission, RuntimeTaskSubmission)
                             else 0
                         )
                     )
@@ -694,6 +726,7 @@ class WorkerTaskManager:
             )
             state = StoredTaskState(
                 task_id=submission.task_id,
+                runtime_id=runtime_id,
                 spec_sha256=spec_digest,
                 status="queued" if queued_translation else "accepted",
                 worker_generation=self.generation,
@@ -706,6 +739,7 @@ class WorkerTaskManager:
                         SessionLease(
                             session_id=spec.session_id,
                             task_id=spec.task_id,
+                            runtime_id=spec.runtime_id,
                             spec_sha256=spec.spec_sha256,
                             created_at=now,
                         )
@@ -848,10 +882,12 @@ class WorkerTaskManager:
             summaries.append(
                 WorkerTaskSummary(
                     task_id=view.task_id,
+                    runtime_id=view.runtime_id,
                     status=view.status,
                     prompt_sha256=view.prompt_sha256,
                     session_id=spec.session_id,
                     task_kind=spec.task_kind,
+                    execution_id=view.execution_id,
                     restart_sensitive=spec.restart_sensitive,
                     native_session_id=view.native_session_id,
                     delivery_acknowledged=delivery_acknowledged,
@@ -869,8 +905,8 @@ class WorkerTaskManager:
 
     def _delivery_acknowledged(
         self,
-        spec: TaskSpec,
-        completion: TaskCompletion | None,
+        spec: StoredTaskSpec,
+        completion: StoredTaskCompletion | None,
     ) -> bool:
         if completion is None:
             return False
@@ -954,7 +990,7 @@ class WorkerTaskManager:
                 running.add(task_id)
         return running
 
-    def _ensure_queue_capacity(self, submission: CodexTaskSubmission) -> None:
+    def _ensure_queue_capacity(self, submission: RuntimeTaskSubmission) -> None:
         if submission.queue_key is None or submission.queue_limit is None:
             raise WorkerTaskError(
                 "worker_queue_invalid", "Translation queue configuration is incomplete"
@@ -1043,12 +1079,15 @@ class WorkerTaskManager:
                     should_wait = True
                 else:
                     candidate_native_session_id = (
-                        latest_native[1] if latest_native is not None else spec.codex_session_id
+                        latest_native[1] if latest_native is not None else spec.native_session_id
                     )
                     state.expected_native_session_id = (
                         candidate_native_session_id
                         if candidate_native_session_id is not None
-                        and self._native_session_available(candidate_native_session_id)
+                        and self._native_session_available(
+                            spec.runtime_id,
+                            candidate_native_session_id,
+                        )
                         else None
                     )
                     try:
@@ -1056,6 +1095,7 @@ class WorkerTaskManager:
                             SessionLease(
                                 session_id=spec.session_id or "",
                                 task_id=spec.task_id,
+                                runtime_id=spec.runtime_id,
                                 spec_sha256=spec.spec_sha256,
                                 created_at=utc_now(),
                             )
@@ -1105,8 +1145,10 @@ class WorkerTaskManager:
                     state.runner_pid,
                     state.runner_created_at,
                 )
-            if spec.runner_kind == "codex":
+            if spec.task_kind != "test":
+                runner = self.runtime_registry.require(spec.runtime_id)
                 native_session_id = self._extract_native_session_id(
+                    runner,
                     self.tasks_dir / task_id / "stdout.txt",
                     missing_ok=True,
                 )
@@ -1118,6 +1160,7 @@ class WorkerTaskManager:
                     state.native_session_id = native_session_id
                     state.updated_at = utc_now()
                     self._write_state(state)
+                    self._write_runtime_event(spec, state, native_session_id)
             self._finalize(
                 spec,
                 state,
@@ -1133,6 +1176,7 @@ class WorkerTaskManager:
         stdout_file = None
         stderr_file = None
         native_observer: asyncio.Task[None] | None = None
+        runner = None
         try:
             if not await self._wait_for_queue_turn(task_id):
                 return
@@ -1149,19 +1193,24 @@ class WorkerTaskManager:
                         error="Task was cancelled before execution started.",
                     )
                     return
-                if spec.runner_kind == "codex":
-                    expected_native_id = self._expected_native_session_id(spec, state)
-                else:
-                    expected_native_id = None
+                try:
+                    runner = self.runtime_registry.require(spec.runtime_id)
+                except RuntimeOperationError as exc:
+                    raise OSError(exc.message) from exc
+                expected_native_id = self._expected_native_session_id(spec, state)
                 if expected_native_id is not None:
-                    if self._has_active_codex_writer(expected_native_id):
+                    try:
+                        active_writer = runner.has_active_writer(expected_native_id)
+                    except RuntimeOperationError as exc:
+                        raise OSError(exc.message) from exc
+                    if active_writer:
                         self._finalize(
                             spec,
                             state,
                             status="failed",
-                            error_code="codex_session_busy",
+                            error_code="runtime_session_busy",
                             error=(
-                                "Codex session already has an active writer; "
+                                "Runtime Session already has an active writer; "
                                 "the task was not started."
                             ),
                         )
@@ -1172,30 +1221,41 @@ class WorkerTaskManager:
                 stdout_file = self._open_private_output(stdout_path)
                 stderr_file = self._open_private_output(stderr_path)
                 release_read, release_write = os.pipe()
-                runner_args = [
-                    sys.executable,
-                    "-m",
-                    "app.quick_worker_runner",
-                    "--task-dir",
-                    str(task_dir),
-                    "--release-fd",
-                    str(release_read),
-                ]
-                if spec.runner_kind == "codex":
-                    runner_args.extend(
-                        [
-                            "--codex-executable",
-                            str(self.codex_executable),
-                            "--working-directory",
-                            str(self._runner_cwd(spec)),
-                        ]
+                turn = (
+                    RuntimeTurnRequest(
+                        permission_profile=spec.permission_profile,
+                        native_session_id=expected_native_id,
+                        model=spec.model,
+                        reasoning_effort=spec.reasoning_effort,
                     )
-                    if state.expected_native_session_id is not None:
-                        runner_args.extend(
-                            ["--codex-session-id", state.expected_native_session_id]
+                    if spec.permission_profile is not None
+                    else None
+                )
+                state.execution_id = uuid.uuid4().hex
+                state.updated_at = utc_now()
+                self._write_state(state)
+                try:
+                    launch = runner.build_launch(
+                        RuntimeWorkerLaunchRequest(
+                            task_id=spec.task_id,
+                            task_dir=task_dir,
+                            release_fd=release_read,
+                            session_id=spec.session_id,
+                            task_kind=spec.task_kind,
+                            workspace_id=spec.workspace_id,
+                            turn=turn,
+                            start_new_session=(
+                                spec.task_kind == "translation"
+                                and expected_native_id is None
+                            ),
+                            hook_dir=self.hook_dir,
+                            restart_request_dir=self.restart_request_dir,
+                            test_behavior=spec.test_behavior,
+                            test_run_seconds=spec.test_run_seconds,
                         )
-                    elif spec.task_kind == "translation":
-                        runner_args.append("--start-new-session")
+                    )
+                except RuntimeOperationError as exc:
+                    raise OSError(exc.message) from exc
                 runner_env = os.environ.copy()
                 for name in (
                     "CHUB_PTY_SESSION_ID",
@@ -1205,22 +1265,14 @@ class WorkerTaskManager:
                     "CHUB_QUICK_RESTART_DIR",
                 ):
                     runner_env.pop(name, None)
-                if spec.runner_kind == "codex" and spec.session_id is not None:
-                    runner_env["CHUB_PTY_SESSION_ID"] = spec.session_id
-                    runner_env["CHUB_PTY_HOOK_DIR"] = str(self.hook_dir)
-                    runner_env["CHUB_ACTIVITY_SOURCE"] = "quick"
-                    if spec.task_kind != "translation":
-                        runner_env["CHUB_QUICK_TASK_ID"] = spec.task_id
-                        runner_env["CHUB_QUICK_RESTART_DIR"] = str(
-                            self.restart_request_dir
-                        )
+                runner_env.update(launch.environment)
                 process = await asyncio.create_subprocess_exec(
-                    *runner_args,
+                    *launch.argv,
                     cwd=Path(__file__).resolve().parents[1],
                     env=runner_env,
                     stdin=(
                         asyncio.subprocess.PIPE
-                        if spec.runner_kind == "codex"
+                        if launch.stdin_prompt
                         else asyncio.subprocess.DEVNULL
                     ),
                     stdout=stdout_file,
@@ -1246,9 +1298,9 @@ class WorkerTaskManager:
                 os.write(release_write, b"1")
                 os.close(release_write)
                 release_write = None
-                if spec.runner_kind == "codex":
+                if launch.stdin_prompt:
                     if process.stdin is None:
-                        raise OSError("Codex runner input pipe is unavailable")
+                        raise OSError("Runtime Runner input pipe is unavailable")
                     process.stdin.write(spec.prompt.encode("utf-8"))
                     await process.stdin.drain()
                     process.stdin.close()
@@ -1256,7 +1308,7 @@ class WorkerTaskManager:
                 state.updated_at = utc_now()
                 self._write_state(state)
 
-            if spec.runner_kind == "codex":
+            if spec.task_kind != "test":
                 native_observer = asyncio.create_task(
                     self._observe_native_session(task_id),
                     name=f"quick-worker-native-session-{task_id}",
@@ -1283,9 +1335,16 @@ class WorkerTaskManager:
                 spec, state, completion = self._records(task_id)
                 if completion is not None:
                     return
-                native_session_id = self._extract_native_session_id(
-                    self.tasks_dir / task_id / "stdout.txt"
-                ) if spec.runner_kind == "codex" else None
+                if runner is None:
+                    raise OSError("Runtime Runner is unavailable")
+                native_session_id = (
+                    self._extract_native_session_id(
+                        runner,
+                        self.tasks_dir / task_id / "stdout.txt",
+                    )
+                    if spec.task_kind != "test"
+                    else None
+                )
                 expected_native_id = self._expected_native_session_id(spec, state)
                 native_session_confirmed = native_session_id is not None and (
                     expected_native_id is None
@@ -1295,6 +1354,7 @@ class WorkerTaskManager:
                     state.native_session_id = native_session_id
                     state.updated_at = utc_now()
                     self._write_state(state)
+                    self._write_runtime_event(spec, state, native_session_id)
                 if state.cancellation_requested:
                     self._finalize(
                         spec,
@@ -1305,13 +1365,14 @@ class WorkerTaskManager:
                         exit_code=exit_code,
                     )
                 elif exit_code == 0:
-                    result_path = (
-                        self.tasks_dir / task_id / "result.txt"
-                        if spec.runner_kind == "codex"
-                        else self.tasks_dir / task_id / "stdout.txt"
-                    )
-                    result = self._read_limited_file(result_path, MAX_RESULT_BYTES)
-                    if spec.runner_kind == "codex" and not native_session_confirmed:
+                    try:
+                        result = runner.read_result(
+                            self.tasks_dir / task_id,
+                            max_bytes=MAX_RESULT_BYTES,
+                        ).text
+                    except RuntimeOperationError as exc:
+                        raise OSError(exc.message) from exc
+                    if spec.task_kind != "test" and not native_session_confirmed:
                         self._finalize(
                             spec,
                             state,
@@ -1319,7 +1380,7 @@ class WorkerTaskManager:
                             result=result,
                             error_code="native_session_unconfirmed",
                             error=(
-                                "Codex completed, but its native Session ID could "
+                                "Runtime completed, but its native Session ID could "
                                 "not be confirmed safely."
                             ),
                             exit_code=exit_code,
@@ -1385,7 +1446,10 @@ class WorkerTaskManager:
         path = self.tasks_dir / task_id / "stdout.txt"
         while True:
             try:
+                spec = self._read_spec(task_id)
+                runner = self.runtime_registry.require(spec.runtime_id)
                 native_session_id = self._extract_native_session_id(
+                    runner,
                     path,
                     missing_ok=True,
                 )
@@ -1403,6 +1467,7 @@ class WorkerTaskManager:
                         state.native_session_id = native_session_id
                         state.updated_at = utc_now()
                         self._write_state(state)
+                        self._write_runtime_event(spec, state, native_session_id)
                     return
             except (FileNotFoundError, OSError, ValidationError, ValueError):
                 return
@@ -1565,8 +1630,18 @@ class WorkerTaskManager:
             )
         except FileNotFoundError:
             completion = None
+        try:
+            runtime_event = _read_model(
+                self.tasks_dir / task_id / "runtime-event.json",
+                StoredRuntimeEvent,
+                max_bytes=MAX_STATE_BYTES,
+            )
+        except FileNotFoundError:
+            runtime_event = None
         if spec.task_id != task_id or state.task_id != task_id:
             raise ValueError("task record identity does not match its directory")
+        if spec.runtime_id != state.runtime_id:
+            raise ValueError("task Runtime identity does not match")
         if spec.spec_sha256 != state.spec_sha256:
             raise ValueError("task specification and state do not match")
         if (state.runner_pid is None) != (state.runner_created_at is None):
@@ -1598,13 +1673,16 @@ class WorkerTaskManager:
             ):
                 raise ValueError("task execution deadline is inconsistent")
         if state.status in {"starting", "running"} and (
-            state.runner_pid is None or state.execution_deadline_at is None
+            state.runner_pid is None
+            or state.execution_deadline_at is None
+            or state.execution_id is None
         ):
             raise ValueError("running task state is incomplete")
         if state.status == "queued" and any(
             item is not None
             for item in (
                 state.runner_pid,
+                state.execution_id,
                 state.expected_native_session_id,
                 state.execution_deadline_at,
                 state.native_session_id,
@@ -1620,11 +1698,26 @@ class WorkerTaskManager:
             raise ValueError("task native Session identity is inconsistent")
         if state.status in FINAL_STATUSES and state.runner_pid is not None:
             raise ValueError("final task state still has a runner identity")
+        if runtime_event is not None and (
+            runtime_event.task_id != task_id
+            or runtime_event.runtime_id != spec.runtime_id
+            or runtime_event.spec_sha256 != spec.spec_sha256
+            or runtime_event.execution_id != state.execution_id
+            or runtime_event.native_session_id != state.native_session_id
+            or runtime_event.observed_at.tzinfo is None
+            or runtime_event.observed_at < spec.created_at
+            or runtime_event.observed_at > state.updated_at
+        ):
+            raise ValueError("task Runtime event identity is inconsistent")
         if completion is not None:
             if completion.task_id != task_id:
                 raise ValueError("task completion identity does not match its directory")
+            if completion.runtime_id != spec.runtime_id:
+                raise ValueError("task completion Runtime identity does not match")
             if completion.spec_sha256 != spec.spec_sha256:
                 raise ValueError("task completion does not match its specification")
+            if completion.execution_id != state.execution_id:
+                raise ValueError("task execution identity does not match")
             if (
                 completion.completed_at.tzinfo is None
                 or completion.completed_at < spec.created_at
@@ -1658,10 +1751,7 @@ class WorkerTaskManager:
             StoredTaskSpec,
             max_bytes=MAX_SPEC_BYTES,
         )
-        if spec.task_id != task_id or spec.protocol_version not in {
-            5,
-            self.protocol_version,
-        }:
+        if spec.task_id != task_id or spec.protocol_version != self.protocol_version:
             raise ValueError("task specification is incompatible")
         if hashlib.sha256(spec.prompt.encode("utf-8")).hexdigest() != spec.prompt_sha256:
             raise ValueError("task prompt digest does not match")
@@ -1681,12 +1771,14 @@ class WorkerTaskManager:
     ) -> WorkerTaskView:
         return WorkerTaskView(
             task_id=spec.task_id,
+            runtime_id=spec.runtime_id,
             status=state.status,
             prompt_sha256=spec.prompt_sha256,
             created_at=spec.created_at,
             deadline_at=spec.deadline_at,
             updated_at=state.updated_at,
             worker_generation=state.worker_generation,
+            execution_id=state.execution_id,
             runner_pid=state.runner_pid,
             cancellation_requested=state.cancellation_requested,
             result=completion.result if completion else None,
@@ -1701,6 +1793,27 @@ class WorkerTaskManager:
         _write_model(
             self.tasks_dir / state.task_id / "state.json",
             state,
+            max_bytes=MAX_STATE_BYTES,
+        )
+
+    def _write_runtime_event(
+        self,
+        spec: StoredTaskSpec,
+        state: StoredTaskState,
+        native_session_id: str,
+    ) -> None:
+        if state.execution_id is None:
+            raise OSError("Runtime event is missing its execution identity")
+        _write_model(
+            self.tasks_dir / spec.task_id / "runtime-event.json",
+            StoredRuntimeEvent(
+                task_id=spec.task_id,
+                runtime_id=spec.runtime_id,
+                spec_sha256=spec.spec_sha256,
+                execution_id=state.execution_id,
+                native_session_id=native_session_id,
+                observed_at=state.updated_at,
+            ),
             max_bytes=MAX_STATE_BYTES,
         )
 
@@ -1721,7 +1834,9 @@ class WorkerTaskManager:
         lease_expected = state.status != "queued"
         completion = StoredTaskCompletion(
             task_id=spec.task_id,
+            runtime_id=spec.runtime_id,
             spec_sha256=spec.spec_sha256,
+            execution_id=state.execution_id,
             status=status,
             result=_limited_text(result, MAX_RESULT_BYTES) if result is not None else None,
             error=_limited_text(error, MAX_ERROR_BYTES) if error is not None else None,
@@ -1742,7 +1857,9 @@ class WorkerTaskManager:
         self._write_state(state)
         self._recovery_task_ids.add(spec.task_id)
         tombstone = TaskTombstone(
+            protocol_version=self.protocol_version,
             task_id=spec.task_id,
+            runtime_id=spec.runtime_id,
             spec_sha256=spec.spec_sha256,
             completed_at=completed_at,
             expires_at=spec.created_at + TASK_RETRY_WINDOW,
@@ -1767,29 +1884,21 @@ class WorkerTaskManager:
                 "worker_store_unavailable",
                 "Worker task store could not be read",
             ) from exc
-        if len(entries) > MAX_TASK_DIRECTORIES:
+        total = len(entries)
+        if total > MAX_TASK_DIRECTORIES:
             raise WorkerTaskError(
                 "worker_store_oversized",
                 "Worker task store exceeds its fixed limit",
             )
-        return len(entries)
+        return total
 
-    def _validate_codex_workspaces(self) -> None:
-        for workspace_id, path in self.codex_workspaces.items():
-            if re.fullmatch(WORKSPACE_ID_PATTERN, workspace_id) is None:
-                raise OSError("Worker workspace ID is invalid")
-            if not path.is_dir() or path.is_symlink():
-                raise OSError("Worker workspace is unavailable")
-
-    def _runner_cwd(self, spec: StoredTaskSpec) -> Path:
-        if spec.runner_kind == "fixed_test":
-            return Path(__file__).resolve().parents[1]
-        if spec.workspace_id is None:
-            raise OSError("Codex task workspace ID is missing")
-        workspace = self.codex_workspaces.get(spec.workspace_id)
-        if workspace is None or not workspace.is_dir() or workspace.is_symlink():
-            raise OSError("Codex task workspace is unavailable")
-        return workspace
+    def _validate_runtime_registry(self) -> None:
+        for runtime_id, workspace_ids in self.runtime_registry.workspace_ids().items():
+            if re.fullmatch(RUNTIME_ID_PATTERN, runtime_id) is None:
+                raise OSError("Worker Runtime ID is invalid")
+            for workspace_id in workspace_ids:
+                if re.fullmatch(WORKSPACE_ID_PATTERN, workspace_id) is None:
+                    raise OSError("Worker workspace ID is invalid")
 
     def _lease_path(self, session_id: str) -> Path:
         if re.fullmatch(SESSION_ID_PATTERN, session_id) is None:
@@ -1819,6 +1928,11 @@ class WorkerTaskManager:
                 "worker_session_lease_corrupt",
                 "Session lease task is invalid and cannot be replaced safely",
             ) from exc
+        if leased_spec.runtime_id != lease.runtime_id:
+            raise WorkerTaskError(
+                "worker_session_lease_corrupt",
+                "Session lease Runtime does not match its task",
+            )
         if leased_completion is not None:
             if (
                 leased_spec.session_id != lease.session_id
@@ -1876,6 +1990,7 @@ class WorkerTaskManager:
         if (
             lease.session_id != spec.session_id
             or lease.task_id != spec.task_id
+            or lease.runtime_id != spec.runtime_id
             or lease.spec_sha256 != spec.spec_sha256
         ):
             raise ValueError("Session lease does not match its task")
@@ -1886,35 +2001,17 @@ class WorkerTaskManager:
         finally:
             os.close(directory_descriptor)
 
-    def _has_active_codex_writer(self, native_session_id: str) -> bool:
-        if re.fullmatch(NATIVE_SESSION_ID_PATTERN, native_session_id) is None:
-            raise OSError("Codex Session ID is invalid")
-        path = self.codex_home / "thread-writer-locks" / f"{native_session_id}.lock"
-        flags = os.O_RDWR | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    def _native_session_available(
+        self,
+        runtime_id: str,
+        native_session_id: str,
+    ) -> bool:
         try:
-            descriptor = os.open(path, flags)
-        except FileNotFoundError:
-            return False
-        try:
-            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-                raise OSError("Codex writer lock is not a regular file")
-            try:
-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                return True
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
-            return False
-        finally:
-            os.close(descriptor)
-
-    def _native_session_available(self, native_session_id: str) -> bool:
-        if re.fullmatch(NATIVE_SESSION_ID_PATTERN, native_session_id) is None:
-            raise OSError("Codex Session ID is invalid")
-        archive_states = self.codex_discovery.session_archive_states()
-        return (
-            archive_states is not None
-            and archive_states.get(native_session_id) is False
-        )
+            return self.runtime_registry.require(runtime_id).native_session_available(
+                native_session_id
+            )
+        except RuntimeOperationError as exc:
+            raise OSError(exc.message) from exc
 
     @staticmethod
     def _expected_native_session_id(
@@ -1923,50 +2020,23 @@ class WorkerTaskManager:
     ) -> str | None:
         if spec.task_kind == "translation":
             return state.expected_native_session_id
-        return state.expected_native_session_id or spec.codex_session_id
+        return state.expected_native_session_id or spec.native_session_id
 
     @staticmethod
     def _extract_native_session_id(
+        runner,
         path: Path,
         *,
         missing_ok: bool = False,
     ) -> str | None:
         try:
-            metadata = path.lstat()
-        except FileNotFoundError:
-            if missing_ok:
-                return None
-            raise
-        if (
-            not stat.S_ISREG(metadata.st_mode)
-            or metadata.st_uid != os.getuid()
-            or metadata.st_size > MAX_EVENT_BYTES
-            or stat.S_IMODE(metadata.st_mode) & 0o077
-        ):
-            raise OSError("Codex event stream is unsafe or too large")
-        found: set[str] = set()
-        with path.open("rb") as file:
-            for raw_line in file:
-                if len(raw_line) > MAX_EVENT_BYTES:
-                    raise OSError("Codex event line exceeds its fixed limit")
-                try:
-                    event = json.loads(raw_line)
-                except (UnicodeDecodeError, json.JSONDecodeError):
-                    continue
-                native_id = (
-                    event.get("thread_id")
-                    if isinstance(event, dict)
-                    and event.get("type") == "thread.started"
-                    else None
-                )
-                if isinstance(native_id, str) and re.fullmatch(
-                    NATIVE_SESSION_ID_PATTERN,
-                    native_id,
-                ):
-                    found.add(native_id)
-        if len(found) > 1:
-            raise ValueError("Codex event stream contains conflicting Session IDs")
-        return next(iter(found), None)
+            return runner.parse_event_stream(
+                path,
+                max_event_bytes=MAX_EVENT_BYTES,
+                missing_ok=missing_ok,
+            ).native_session_id
+        except RuntimeOperationError as exc:
+            raise OSError(exc.message) from exc
 
     def _open_private_output(self, path: Path):
         flags = os.O_CREAT | os.O_TRUNC | os.O_WRONLY

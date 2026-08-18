@@ -2,7 +2,7 @@
 
 > 状态：统一消息调度 v3 已部署，普通文字和可信语音已完成 macOS、Ubuntu 真实验收；插件协议边界已完成自动化验证。Chub 内部固定指令和 Requests 的业务验收状态由接入设计维护，未改变 v3 协议时不要求重建插件。
 
-Chub 仓库内的插件、API 和消息路由索引统一见[Chub 集成能力清单](../../../docs/CHUB_INTEGRATION_CAPABILITIES.md)；本文只维护 `chub` 插件自身的协议、源码、部署和验收规则。
+Chub 仓库内的插件、API 和消息路由索引统一见[Chub 集成能力清单](../../../docs/CHUB_INTEGRATION_CAPABILITIES.md)；整体边界遵循[Chub 总体架构](../../../docs/CHUB_ARCHITECTURE_DESIGN.md)和[Chub–OpenClaw 接入设计](../../../docs/CHUB_OPENCLAW_INTEGRATION_DESIGN.md)。本文只维护 `chub` 插件自身的协议、源码、部署和验收规则。
 
 ## 1. 插件定位
 

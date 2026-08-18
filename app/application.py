@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from contextlib import asynccontextmanager
 from contextlib import suppress
 from uuid import uuid4
@@ -53,6 +54,10 @@ from app.services.openclaw_weixin_chub_messages import usage_message
 from app.services.deferred_restart import DeferredRestartCoordinator
 from app.services.openclaw_weixin_chub_mode import WeixinChubModeManager
 from app.services.restart_command import RestartProcess, launch_restart_process
+from app.services.quick_worker_maintenance import (
+    QuickWorkerReloadCoordinator,
+    inspect_quick_worker,
+)
 from app.services.system_status import collect_system_status
 from app.services.weixin_translation import WeixinTranslationManager
 from app.notifications import NotificationService
@@ -213,6 +218,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             resolved_settings.openclaw.weixin_chub_mode.translation_max_wait_seconds
         ),
     )
+    quick_worker_maintenance = QuickWorkerReloadCoordinator(
+        resolved_settings.codex_pty.data_file.with_name(
+            "quick-worker-maintenance.json"
+        ),
+        PROJECT_ROOT / "scripts" / "chub",
+    )
     terminal_tickets = TerminalTicketStore(
         resolved_settings.codex_pty.ticket_ttl_seconds
     )
@@ -292,6 +303,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
 
     def deferred_restart_ready(request):
+        if quick_worker_maintenance.in_progress():
+            return "waiting"
         fixed_readiness = weixin_chub_mode.deferred_restart_readiness(request)
         has_quick_context = quick_interactions.has_deferred_restart_context(
             request.operation_id,
@@ -351,6 +364,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     deferred_restart.set_ready_check(deferred_restart_ready)
     deferred_restart.set_started_handler(record_deferred_restart_started)
     deferred_restart.set_completion_handler(record_deferred_restart_completion)
+    quick_worker_maintenance.set_completion_handler(deferred_restart.maybe_schedule)
     completion_notifier.session_slot_validator = (
         weixin_chub_mode.session_slot_matches
     )
@@ -371,9 +385,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_application: FastAPI):
         restart_recovery_task = None
+        worker_maintenance_recovery_task = None
         await asyncio.to_thread(quick_interactions.start_worker_reconciliation)
         await asyncio.to_thread(weixin_chub_mode.reconcile_request_runs)
         weixin_chub_mode.start_status_cache()
+        if quick_worker_maintenance.in_progress():
+            async def finish_worker_maintenance_recovery() -> None:
+                while quick_worker_maintenance.in_progress():
+                    await inspect_quick_worker(
+                        resolved_settings,
+                        quick_interactions.recovery_ready,
+                        quick_worker_maintenance,
+                    )
+                    if quick_worker_maintenance.in_progress():
+                        await asyncio.sleep(1)
+
+            worker_maintenance_recovery_task = asyncio.create_task(
+                finish_worker_maintenance_recovery()
+            )
         if (
             deferred_restart.requires_service_confirmation()
             or quick_interactions.has_pending_deferred_restart_notifications()
@@ -393,6 +422,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             yield
         finally:
+            if worker_maintenance_recovery_task is not None:
+                worker_maintenance_recovery_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await worker_maintenance_recovery_task
             if restart_recovery_task is not None:
                 restart_recovery_task.cancel()
                 with suppress(asyncio.CancelledError):
@@ -420,7 +453,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.codex_rate_limits = codex_rate_limits
     application.state.ai_usage = ai_usage
     application.state.quick_interactions = quick_interactions
+    application.state.quick_worker_maintenance = quick_worker_maintenance
     application.state.deferred_restart = deferred_restart
+    application.state.maintenance_lock = threading.RLock()
     application.state.weixin_chub_mode = weixin_chub_mode
     application.state.weixin_translation = weixin_translation
     application.state.terminal_tickets = terminal_tickets

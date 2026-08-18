@@ -10,12 +10,12 @@ import time
 import tomllib
 from pathlib import Path
 
+from app.ai_runtime import RuntimeOperationError
 from app.codex.models import (
     CodexModelCatalogData,
     CodexModelInfo,
     CodexReasoningLevel,
 )
-from app.core.response import ApiError
 
 
 MODEL_CATALOG_TIMEOUT_SECONDS = 10
@@ -41,7 +41,7 @@ class CodexModelCatalog:
                 return [model.model_copy(deep=True) for model in self._models]
             try:
                 models = self._load()
-            except ApiError:
+            except RuntimeOperationError:
                 if self._models:
                     return [model.model_copy(deep=True) for model in self._models]
                 raise
@@ -52,27 +52,27 @@ class CodexModelCatalog:
     def validate(self, model: str | None, reasoning_effort: str | None) -> None:
         if model is None:
             if reasoning_effort is not None:
-                raise ApiError(
-                    400,
+                raise RuntimeOperationError(
                     "codex_reasoning_effort_requires_model",
                     "A reasoning level requires an explicit Codex model",
+                    kind="invalid_request",
                 )
             return
         selected = next((item for item in self.read() if item.id == model), None)
         if selected is None:
-            raise ApiError(
-                400,
+            raise RuntimeOperationError(
                 "codex_model_unavailable",
                 "Selected Codex model is unavailable",
+                kind="invalid_request",
             )
         if (
             reasoning_effort is not None
             and reasoning_effort not in {level.id for level in selected.levels}
         ):
-            raise ApiError(
-                400,
+            raise RuntimeOperationError(
                 "codex_reasoning_effort_unsupported",
                 "Selected reasoning level is unsupported by this Codex model",
+                kind="invalid_request",
             )
 
     def data(self) -> CodexModelCatalogData:
@@ -125,8 +125,7 @@ class CodexModelCatalog:
     @staticmethod
     def _load() -> list[CodexModelInfo]:
         if shutil.which("codex") is None:
-            raise ApiError(
-                503,
+            raise RuntimeOperationError(
                 "codex_model_catalog_unavailable",
                 "Codex model catalog is unavailable",
             )
@@ -135,8 +134,7 @@ class CodexModelCatalog:
                 ["codex", "debug", "models"]
             )
         except (OSError, subprocess.TimeoutExpired, _ModelCatalogOutputTooLarge):
-            raise ApiError(
-                503,
+            raise RuntimeOperationError(
                 "codex_model_catalog_unavailable",
                 "Codex model catalog is unavailable",
             ) from None
@@ -145,23 +143,20 @@ class CodexModelCatalog:
             or len(result.stdout) > MODEL_CATALOG_MAX_BYTES
             or len(result.stderr) > MODEL_CATALOG_MAX_BYTES
         ):
-            raise ApiError(
-                503,
+            raise RuntimeOperationError(
                 "codex_model_catalog_unavailable",
                 "Codex model catalog is unavailable",
             )
         try:
             payload = json.loads(result.stdout)
         except (UnicodeDecodeError, json.JSONDecodeError):
-            raise ApiError(
-                503,
+            raise RuntimeOperationError(
                 "codex_model_catalog_unavailable",
                 "Codex model catalog is unavailable",
             ) from None
         raw_models = payload.get("models") if isinstance(payload, dict) else None
         if not isinstance(raw_models, list):
-            raise ApiError(
-                503,
+            raise RuntimeOperationError(
                 "codex_model_catalog_unavailable",
                 "Codex model catalog is unavailable",
             )
@@ -171,8 +166,7 @@ class CodexModelCatalog:
             if model is not None:
                 models.append(model)
         if not models:
-            raise ApiError(
-                503,
+            raise RuntimeOperationError(
                 "codex_model_catalog_unavailable",
                 "Codex model catalog is unavailable",
             )

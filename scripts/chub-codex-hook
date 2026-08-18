@@ -9,6 +9,7 @@ from pathlib import Path
 
 
 SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+CODEX_SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
 
 def main() -> int:
@@ -22,7 +23,10 @@ def main() -> int:
     except (json.JSONDecodeError, OSError):
         return 0
     codex_session_id = payload.get("session_id")
-    if not isinstance(codex_session_id, str) or not codex_session_id:
+    if (
+        not isinstance(codex_session_id, str)
+        or not CODEX_SESSION_ID_PATTERN.fullmatch(codex_session_id)
+    ):
         return 0
     event = payload.get("hook_event_name", "SessionStart")
     activity = {

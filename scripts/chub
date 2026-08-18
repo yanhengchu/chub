@@ -53,18 +53,25 @@ usage() {
 Usage: chub <command>
 
 Commands:
-  install    Install and start the user service
+  install [--force]
+             Install and start the user service
   start      Start the service
-  stop       Stop the service
+  stop [--force]
+             Stop the service
   restart    Restart the service and check its health
   status     Show Web and Quick Worker service status
   worker-health
              Query Quick Worker health over private local IPC
+  worker-drain
+             Stop accepting new Worker tasks and wait until accepted tasks finish
+  worker-reload
+             Drain and independently reload Quick Worker, then verify takeover
   logs       Follow Hub application logs
   notification
              Validate, list, test, or send configured notifications
   request    Save, update, or inspect the local request backlog
-  uninstall  Remove the user service and chub command
+  uninstall [--force]
+             Remove the user service and chub command
   help       Show this help
 EOF
 }
@@ -470,9 +477,140 @@ install_command() {
     esac
 }
 
+maintenance_force_requested() {
+    local command="$1"
+    shift
+    if [[ "$#" -eq 0 ]]; then
+        return 1
+    fi
+    if [[ "$#" -eq 1 && "$1" == "--force" ]]; then
+        return 0
+    fi
+    fail "usage: chub $command [--force]"
+}
+
+worker_service_definition_exists() {
+    case "$(platform_name)" in
+        macos) [[ -f "$(worker_macos_plist_path)" ]] ;;
+        ubuntu) [[ -f "$(worker_systemd_unit_path)" ]] ;;
+    esac
+}
+
+worker_maintenance_task_count() {
+    local payload="$1"
+    "$PYTHON_BIN" -c '
+import json
+import sys
+
+payload = json.loads(sys.stdin.read())
+data = payload.get("data") if payload.get("success") is True else None
+if (
+    not isinstance(data, dict)
+    or data.get("protocol_version") != 7
+    or data.get("status") not in {"ready", "draining"}
+):
+    raise SystemExit(1)
+status = data.get("status")
+fields = (
+    data.get("active_tasks"),
+    data.get("queued_tasks"),
+    data.get("uncertain_tasks"),
+    data.get("corrupt_tasks"),
+)
+if status == "draining" and data.get("drain_complete") is not True:
+    raise SystemExit(1)
+if any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in fields):
+    raise SystemExit(1)
+if fields[-1] != 0:
+    raise SystemExit(1)
+print(status, sum(fields[:-1]))
+' <<<"$payload"
+}
+
+new_worker_maintenance_operation_id() {
+    local action="$1"
+    "$PYTHON_BIN" - "$action" <<'PY'
+import sys
+import uuid
+
+print(f"worker-maintenance:{sys.argv[1]}:{uuid.uuid4().hex}")
+PY
+}
+
+require_worker_idle_for_maintenance() {
+    local action="$1"
+    local force="$2"
+    if [[ "${CHUB_ACTIVITY_SOURCE:-}" == "quick" ]]; then
+        fail "$action must be run from a local terminal, not from a Quick Worker task"
+    fi
+    worker_service_definition_exists || return 0
+    if [[ "$force" == "true" ]]; then
+        echo "chub: warning: forcing $action may interrupt accepted Quick Worker tasks" >&2
+        return 0
+    fi
+    local payload worker_status task_count operation_id
+    payload="$(quick_worker_health 2>/dev/null)" \
+        || fail "Quick Worker health is unavailable; retry when it is healthy or use --force"
+    read -r worker_status task_count \
+        <<<"$(worker_maintenance_task_count "$payload")" \
+        || fail "Quick Worker state is not safe for $action; use worker-reload or --force"
+    if [[ "$task_count" != "0" ]]; then
+        fail "Quick Worker has $task_count active or queued tasks; $action was not started"
+    fi
+    if [[ "$worker_status" == "ready" ]]; then
+        operation_id="$(new_worker_maintenance_operation_id "$action")"
+        quick_worker_drain "$operation_id" >/dev/null \
+            || fail "Quick Worker drain failed; $action was not started"
+    fi
+}
+
+clear_retired_worker_state() {
+    (
+        cd "$PROJECT_ROOT"
+        "$PYTHON_BIN" - <<'PY'
+import os
+import shutil
+import stat
+
+from app.core.config import load_settings
+from app.quick_worker_tasks import worker_state_dir
+
+root = worker_state_dir(load_settings())
+try:
+    root_metadata = root.lstat()
+except FileNotFoundError:
+    raise SystemExit(0)
+if (
+    not stat.S_ISDIR(root_metadata.st_mode)
+    or root_metadata.st_uid != os.getuid()
+    or stat.S_IMODE(root_metadata.st_mode) & 0o077
+):
+    raise SystemExit("Quick Worker state directory is unsafe")
+for name in ("tasks", "tombstones", "session-leases", "legacy-deliveries-v7"):
+    path = root / name
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        continue
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != os.getuid()
+        or stat.S_IMODE(metadata.st_mode) & 0o077
+    ):
+        raise SystemExit(f"Retired Quick Worker path is unsafe: {name}")
+    shutil.rmtree(path)
+PY
+    )
+}
+
 install_service() {
+    local force=false
+    if maintenance_force_requested install "$@"; then
+        force=true
+    fi
     check_project
     check_codex_pty_requirements
+    require_worker_idle_for_maintenance install "$force"
     install_command
     case "$(platform_name)" in
         macos)
@@ -485,12 +623,16 @@ install_service() {
             if [[ -f "$worker_plist_path" ]]; then
                 stop_macos_worker
             fi
+            clear_retired_worker_state
             write_macos_service
             write_macos_worker_service
             start_macos_worker
             start_macos_service
             ;;
         ubuntu)
+            systemctl --user stop "$SERVICE_NAME.service" >/dev/null 2>&1 || true
+            systemctl --user stop "$WORKER_SERVICE_NAME.service" >/dev/null 2>&1 || true
+            clear_retired_worker_state
             write_systemd_service
             write_systemd_worker_service
             systemctl --user daemon-reload
@@ -518,6 +660,11 @@ start_service() {
 }
 
 stop_service() {
+    local force=false
+    if maintenance_force_requested stop "$@"; then
+        force=true
+    fi
+    require_worker_idle_for_maintenance stop "$force"
     case "$(platform_name)" in
         macos)
             stop_macos_service
@@ -531,12 +678,13 @@ stop_service() {
 }
 
 health_check() {
+    local require_quick_worker="${1:-false}"
     local health_url
     health_url="$(configured_value health_url 2>/dev/null)" \
         || fail "service restarted, but configuration could not be read"
     local attempt
     for attempt in 1 2 3 4 5 6 7 8 9 10; do
-        if "$PYTHON_BIN" - "$health_url" <<'PY' >/dev/null 2>&1
+        if "$PYTHON_BIN" - "$health_url" "$require_quick_worker" <<'PY' >/dev/null 2>&1
 import json
 import sys
 import urllib.request
@@ -547,6 +695,10 @@ with urllib.request.urlopen(
     payload = json.load(response)
     if response.status != 200 or payload.get("success") is not True:
         raise SystemExit(1)
+    if sys.argv[2] == "true":
+        data = payload.get("data")
+        if not isinstance(data, dict) or data.get("quick_worker_ready") is not True:
+            raise SystemExit(1)
 PY
         then
             echo "Chub is healthy on $health_url"
@@ -554,7 +706,8 @@ PY
         fi
         sleep 0.5
     done
-    fail "service did not become healthy; run chub logs"
+    echo "chub: service did not become healthy; run chub logs" >&2
+    return 1
 }
 
 restart_service() {
@@ -570,7 +723,7 @@ restart_service() {
             ;;
         ubuntu) systemctl --user restart "$SERVICE_NAME.service" ;;
     esac
-    health_check
+    health_check || fail "service restart health verification failed"
 }
 
 status_service() {
@@ -599,6 +752,148 @@ quick_worker_health() {
     )
 }
 
+quick_worker_drain() {
+    if [[ "${CHUB_ACTIVITY_SOURCE:-}" == "quick" ]]; then
+        fail "worker drain must be run from a local terminal, not from a Quick Worker task"
+    fi
+    local operation_id="${1:-}"
+    local arguments=(drain)
+    if [[ -n "$operation_id" ]]; then
+        arguments+=(--operation-id "$operation_id")
+    fi
+    (
+        cd "$PROJECT_ROOT"
+        "$PYTHON_BIN" -m app.quick_worker "${arguments[@]}"
+    )
+}
+
+new_worker_reload_operation_id() {
+    "$PYTHON_BIN" -c 'import uuid; print(f"worker-reload:{uuid.uuid4().hex}")'
+}
+
+record_worker_reload_operation() {
+    local operation_id="$1"
+    local operation_status="$2"
+    local generation="$3"
+    if [[ "${CHUB_WORKER_RELOAD_EXTERNAL_LOGGING:-}" == "1" ]]; then
+        return 0
+    fi
+    (
+        cd "$PROJECT_ROOT"
+        "$PYTHON_BIN" - "$operation_id" "$operation_status" "$generation" <<'PY'
+import re
+import sys
+
+from app.core.config import load_settings
+from app.core.logger import configure_worker_operation_logging
+from app.services.operation_log import write_operation
+
+operation_id, status, generation = sys.argv[1:]
+if re.fullmatch(r"worker-reload:[a-f0-9]{32}", operation_id) is None:
+    raise SystemExit(2)
+if status not in {"requested", "started", "succeeded", "failed"}:
+    raise SystemExit(2)
+if re.fullmatch(r"[a-f0-9]{32}", generation) is None:
+    raise SystemExit(2)
+settings = load_settings()
+configure_worker_operation_logging(settings.logs)
+write_operation(
+    operation_id=operation_id,
+    action="quick_worker_reload",
+    status=status,
+    target=f"quick-worker:{generation}",
+    source_ip="127.0.0.1",
+)
+PY
+    )
+}
+
+worker_health_generation() {
+    local payload="$1"
+    local expected_status="$2"
+    local previous_generation="${3:-}"
+    "$PYTHON_BIN" -c '
+import json
+import re
+import sys
+
+payload = json.loads(sys.stdin.read())
+data = payload.get("data") if payload.get("success") is True else None
+if not isinstance(data, dict):
+    raise SystemExit(1)
+generation = data.get("generation")
+if (
+    data.get("protocol_version") != 7
+    or data.get("status") != sys.argv[1]
+    or data.get("corrupt_tasks") != 0
+    or "codex" not in data.get("available_runtime_ids", [])
+    or not isinstance(generation, str)
+    or re.fullmatch(r"[a-f0-9]{32}", generation) is None
+    or (sys.argv[2] and generation == sys.argv[2])
+):
+    raise SystemExit(1)
+print(generation)
+' "$expected_status" "$previous_generation" <<<"$payload"
+}
+
+reload_worker_service() {
+    case "$(platform_name)" in
+        macos)
+            stop_macos_worker
+            clear_retired_worker_state
+            start_macos_worker
+            ;;
+        ubuntu)
+            systemctl --user stop "$WORKER_SERVICE_NAME.service"
+            clear_retired_worker_state
+            systemctl --user start "$WORKER_SERVICE_NAME.service"
+            ;;
+    esac
+}
+
+quick_worker_reload() {
+    if [[ "${CHUB_ACTIVITY_SOURCE:-}" == "quick" ]]; then
+        fail "worker reload must be run from a local terminal, not from a Quick Worker task"
+    fi
+    check_project
+    local old_payload old_generation
+    local new_payload new_generation operation_id attempt
+    old_payload="$(quick_worker_health)" \
+        || fail "Quick Worker health is unavailable; reload was not started"
+    old_generation="$(worker_health_generation "$old_payload" ready)" \
+        || fail "Quick Worker is not ready for a controlled reload"
+    operation_id="$(new_worker_reload_operation_id)"
+    record_worker_reload_operation "$operation_id" requested "$old_generation" || true
+    if ! quick_worker_drain "$operation_id"; then
+        record_worker_reload_operation "$operation_id" failed "$old_generation" || true
+        fail "Quick Worker drain failed; reload was not started"
+    fi
+    record_worker_reload_operation "$operation_id" started "$old_generation" || true
+    if ! (reload_worker_service); then
+        record_worker_reload_operation "$operation_id" failed "$old_generation" || true
+        fail "Quick Worker service reload failed"
+    fi
+    for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+        if new_payload="$(quick_worker_health 2>/dev/null)" \
+            && new_generation="$(
+                worker_health_generation "$new_payload" ready "$old_generation"
+            )"; then
+            if ! health_check true; then
+                record_worker_reload_operation \
+                    "$operation_id" failed "$new_generation" || true
+                fail "Worker reloaded, but Web did not accept the new Worker"
+            fi
+            record_worker_reload_operation \
+                "$operation_id" succeeded "$new_generation" || true
+            echo "Quick Worker reloaded: $old_generation -> $new_generation"
+            return
+        fi
+        sleep 0.5
+    done
+    record_worker_reload_operation "$operation_id" failed "$old_generation" || true
+    fail "Quick Worker did not complete healthy takeover"
+}
+
 show_logs() {
     local log_file
     log_file="$(configured_value log_file 2>/dev/null)" \
@@ -608,6 +903,11 @@ show_logs() {
 }
 
 uninstall_service() {
+    local force=false
+    if maintenance_force_requested uninstall "$@"; then
+        force=true
+    fi
+    require_worker_idle_for_maintenance uninstall "$force"
     case "$(platform_name)" in
         macos)
             local plist_path worker_plist_path
@@ -637,12 +937,23 @@ uninstall_service() {
 
 command="${1:-help}"
 case "$command" in
-    install) install_service ;;
+    install)
+        shift
+        install_service "$@"
+        ;;
     start) start_service ;;
-    stop) stop_service ;;
+    stop)
+        shift
+        stop_service "$@"
+        ;;
     restart) restart_service ;;
     status) status_service ;;
     worker-health) quick_worker_health ;;
+    worker-drain)
+        shift
+        quick_worker_drain "$@"
+        ;;
+    worker-reload) quick_worker_reload ;;
     logs) show_logs ;;
     notification)
         shift
@@ -658,7 +969,10 @@ case "$command" in
             "$PYTHON_BIN" -m app.requests.command "$@"
         )
         ;;
-    uninstall) uninstall_service ;;
+    uninstall)
+        shift
+        uninstall_service "$@"
+        ;;
     help|-h|--help) usage ;;
     *) usage >&2; fail "unknown command: $command" ;;
 esac

@@ -106,6 +106,10 @@ async def test_logs_requires_authentication(settings: Settings) -> None:
 @pytest.mark.anyio
 async def test_log_page_reads_only_allowlisted_source(settings: Settings) -> None:
     settings.logs.operations_file.write_text("one\ntwo\nthree\n", encoding="utf-8")
+    settings.logs.worker_operations_file.write_text(
+        "worker-one\nworker-two\n",
+        encoding="utf-8",
+    )
     transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get(
@@ -116,10 +120,16 @@ async def test_log_page_reads_only_allowlisted_source(settings: Settings) -> Non
             "/api/logs/page?source=../../etc/passwd",
             headers=authorization(settings),
         )
+        worker = await client.get(
+            "/api/logs/page?source=worker-operations&lines=2",
+            headers=authorization(settings),
+        )
 
     assert response.status_code == 200
     assert response.json()["data"]["lines"] == ["two", "three"]
     assert response.json()["data"]["next_cursor"] is not None
+    assert worker.status_code == 200
+    assert worker.json()["data"]["lines"] == ["worker-one", "worker-two"]
     assert invalid.status_code == 422
 
 

@@ -41,7 +41,7 @@ from app.quick_worker import (
 )
 from app.quick_worker_tasks import (
     FINAL_STATUSES,
-    CodexTaskSubmission,
+    RuntimeTaskSubmission,
     WorkerTaskSummary,
     WorkerTaskView,
     new_worker_task_id,
@@ -90,7 +90,7 @@ class WeixinTaskStatusSnapshot:
 
 
 class _WorkerSubmissionUncertain(Exception):
-    def __init__(self, submission: CodexTaskSubmission) -> None:
+    def __init__(self, submission: RuntimeTaskSubmission) -> None:
         super().__init__("Worker submission result is uncertain")
         self.submission = submission
 
@@ -864,7 +864,7 @@ class QuickInteractionManager:
         self,
         task: QuickInteractionTask,
         session: CodexSession,
-        submission: CodexTaskSubmission,
+        submission: RuntimeTaskSubmission,
     ) -> None:
         try:
             threading.Thread(
@@ -882,7 +882,7 @@ class QuickInteractionManager:
         self,
         task_id: str,
         session: CodexSession,
-        submission: CodexTaskSubmission,
+        submission: RuntimeTaskSubmission,
     ) -> None:
         with self._lock:
             task = self._tasks.get(task_id)
@@ -894,7 +894,7 @@ class QuickInteractionManager:
         while True:
             try:
                 submitted = self._worker_call(
-                    "isolated_codex_submit",
+                    "runtime_task_submit",
                     task=submission.model_dump(mode="json"),
                 )
             except OSError:
@@ -909,7 +909,7 @@ class QuickInteractionManager:
                     "worker_capacity_reached",
                     "worker_queue_capacity_reached",
                     "worker_workspace_unavailable",
-                    "codex_unavailable",
+                    "runtime_unavailable",
                 }:
                     message = "Quick Worker 未接受任务，且未在 Web 内回退执行。"
                     break
@@ -1673,15 +1673,16 @@ class QuickInteractionManager:
         task: QuickInteractionTask,
         session: CodexSession,
         prompt: str,
-    ) -> CodexTaskSubmission:
+    ) -> RuntimeTaskSubmission:
         task_kind = "translation" if task.kind == "translation" else (
             "weixin" if task.notification_route == "weixin-task" else "standard"
         )
         worker_task_id = task.worker_task_id
         if worker_task_id is None:
             raise OSError("Worker task identity is unavailable")
-        return CodexTaskSubmission(
+        return RuntimeTaskSubmission(
             task_id=worker_task_id,
+            runtime_id="codex",
             session_id=session.id,
             workspace_id=session.workspace_id,
             prompt=(
@@ -1689,8 +1690,8 @@ class QuickInteractionManager:
                 if task.kind == "translation"
                 else self._codex_execution_prompt(prompt)
             ),
-            permission_mode=session.permission_mode,
-            codex_session_id=session.codex_session_id,
+            permission_profile=session.permission_mode,
+            native_session_id=session.codex_session_id,
             model=session.model,
             reasoning_effort=session.reasoning_effort,
             timeout_seconds=self.timeout_seconds,
@@ -1714,7 +1715,7 @@ class QuickInteractionManager:
         submission = self._worker_submission(task, session, prompt)
         try:
             accepted = self._worker_call(
-                "isolated_codex_submit",
+                "runtime_task_submit",
                 task=submission.model_dump(mode="json"),
             )
         except WorkerRequestNotSent:
@@ -1722,7 +1723,7 @@ class QuickInteractionManager:
         except OSError as submit_error:
             try:
                 accepted = self._worker_call(
-                    "isolated_codex_submit",
+                    "runtime_task_submit",
                     task=submission.model_dump(mode="json"),
                 )
             except OSError as retry_error:
@@ -1737,7 +1738,7 @@ class QuickInteractionManager:
     @staticmethod
     def _validate_worker_submission_response(
         payload: dict[str, object],
-        submission: CodexTaskSubmission,
+        submission: RuntimeTaskSubmission,
     ) -> None:
         data = payload.get("data")
         if not isinstance(data, dict):
@@ -1750,6 +1751,7 @@ class QuickInteractionManager:
         ).hexdigest()
         if (
             snapshot.task_id != submission.task_id
+            or snapshot.runtime_id != submission.runtime_id
             or snapshot.prompt_sha256 != expected_prompt_sha256
             or snapshot.restart_sensitive != bool(submission.restart_sensitive)
         ):

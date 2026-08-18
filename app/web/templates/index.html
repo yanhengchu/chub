@@ -14,16 +14,16 @@
     <script src="/static/js/features/codex-sessions.js" defer></script>
     <script src="/static/js/features/openclaw.js" defer></script>
     <script src="/static/js/features/automations.js" defer></script>
+    <script src="/static/js/features/workstation.js" defer></script>
     <script src="/static/js/features/project-documents.js" defer></script>
-    <script src="/static/js/features/logs.js" defer></script>
     <script src="/static/app.js" defer></script>
   </head>
   <body>
     <header class="site-header">
-      <button id="restart-hub" class="site-header-title" type="button" aria-haspopup="dialog" aria-controls="confirmation-dialog">
+      <div class="site-header-title">
         <p class="eyebrow">PERSONAL DEVICE HUB</p>
         <h1>{{ site_title }}</h1>
-      </button>
+      </div>
       <a id="site-settings" class="button-link site-settings-link" href="/settings" hidden>设置</a>
     </header>
 
@@ -255,60 +255,86 @@
           </div>
         </section>
 
-        <section class="card automation-environment-card" data-card-key="automation-environment" data-collapsible-card data-collapsed="true" aria-labelledby="automation-environment-title">
+        <section class="card workstation-card" data-card-key="workstation" data-collapsible-card aria-labelledby="workstation-title">
           <div class="section-heading">
             <div class="card-heading-copy" data-card-heading>
-              <p class="section-kicker">自动化</p>
-              <h2 id="automation-environment-title">自动化环境</h2>
-              <p class="section-description">管理浏览器与站点登录状态。</p>
+              <p class="section-kicker">环境与服务</p>
+              <h2 id="workstation-title">工作站环境</h2>
+              <p class="section-description">管理 Chub 服务、自动化依赖与 OpenClaw。</p>
             </div>
-            <button id="refresh-automation-environment" class="button-secondary" type="button">刷新</button>
-          </div>
-          <div class="card-content" data-card-content>
-          <div class="card-content-inner">
-          <div class="automation-browser-row">
-            <div class="automation-browser-copy">
-              <strong>浏览器环境</strong>
-              <span id="automation-browser-badge" class="badge badge-muted">正在检查</span>
-            </div>
-            <div class="automation-browser-actions">
-              <button id="automation-browser-control" class="button-secondary" type="button" aria-haspopup="dialog" aria-controls="automation-browser-dialog" disabled>检查中…</button>
-            </div>
-          </div>
-          <div class="automation-browser-row">
-            <div class="automation-browser-copy">
-              <strong>飞书环境</strong>
-              <span id="automation-feishu-badge" class="badge badge-muted">未检查</span>
-            </div>
-            <div class="automation-browser-actions">
-              <button id="automation-feishu-check" class="button-secondary" type="button" disabled>检查</button>
-            </div>
-          </div>
-          <div id="automation-feishu-login" class="automation-feishu-login" hidden>
-            <img id="automation-feishu-qr" alt="飞书登录二维码">
-            <p>请使用飞书移动端扫码登录</p>
-          </div>
-          <p id="automation-environment-message" class="message" aria-live="polite"></p>
-          </div>
-          </div>
-        </section>
-
-        <section class="card openclaw-card" data-card-key="openclaw" data-collapsible-card aria-labelledby="openclaw-title">
-          <div class="section-heading">
-            <div class="card-heading-copy" data-card-heading>
-              <p class="section-kicker">Agent 网关</p>
-              <h2 id="openclaw-title">OpenClaw 环境</h2>
-              <p class="section-description">管理 Gateway 与消息通道状态。</p>
-            </div>
-            <button id="refresh-openclaw" class="button-secondary" type="button">刷新</button>
+            <button id="refresh-workstation-environment" class="button-secondary" type="button">刷新</button>
           </div>
           <div class="card-content" data-card-content>
             <div class="card-content-inner">
-              <div class="openclaw-status-panel">
+              <section class="workstation-group" aria-labelledby="workstation-core-title">
+                <div class="workstation-group-heading">
+                  <h3 id="workstation-core-title">核心服务</h3>
+                </div>
+                <div class="workstation-status-list">
+                  <div class="workstation-status-row">
+                    <div class="workstation-status-copy">
+                      <strong>Chub Web</strong>
+                      <span id="chub-service-detail">正在检查服务状态</span>
+                      <p id="chub-service-message" class="message" aria-live="polite"></p>
+                    </div>
+                    <div class="workstation-status-actions">
+                      <span id="chub-service-badge" class="badge badge-muted">正在检查</span>
+                      <button id="restart-hub" class="button-secondary" type="button" aria-haspopup="dialog" aria-controls="confirmation-dialog" disabled>重启</button>
+                    </div>
+                  </div>
+                  <div class="workstation-status-row">
+                    <div class="workstation-status-copy">
+                      <strong>Quick Worker</strong>
+                      <span id="quick-worker-detail">正在检查任务执行服务</span>
+                      <p id="quick-worker-message" class="message" aria-live="polite"></p>
+                    </div>
+                    <div class="workstation-status-actions">
+                      <span id="quick-worker-badge" class="badge badge-muted">正在检查</span>
+                      <button id="quick-worker-restart" class="button-secondary" type="button" aria-haspopup="dialog" aria-controls="confirmation-dialog" disabled>重启</button>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section class="workstation-group" aria-labelledby="automation-environment-title">
+                <div class="workstation-group-heading">
+                  <h3 id="automation-environment-title">自动化环境</h3>
+                </div>
+                <div class="workstation-status-list">
+                  <div class="workstation-status-row">
+                    <div class="workstation-status-copy">
+                      <strong>浏览器环境</strong>
+                    </div>
+                    <div class="workstation-status-actions automation-browser-actions">
+                      <span id="automation-browser-badge" class="badge badge-muted">正在检查</span>
+                      <button id="automation-browser-control" class="button-secondary" type="button" aria-haspopup="dialog" aria-controls="automation-browser-dialog" disabled>检查中…</button>
+                    </div>
+                  </div>
+                  <div class="workstation-status-row">
+                    <div class="workstation-status-copy">
+                      <strong>飞书环境</strong>
+                    </div>
+                    <div class="workstation-status-actions automation-browser-actions">
+                      <span id="automation-feishu-badge" class="badge badge-muted">未检查</span>
+                      <button id="automation-feishu-check" class="button-secondary" type="button" disabled>检查</button>
+                    </div>
+                  </div>
+                </div>
+                <div id="automation-feishu-login" class="automation-feishu-login" hidden>
+                  <img id="automation-feishu-qr" alt="飞书登录二维码">
+                  <p>请使用飞书移动端扫码登录</p>
+                </div>
+                <p id="automation-environment-message" class="message" aria-live="polite"></p>
+              </section>
+
+              <section class="workstation-group" aria-labelledby="openclaw-title">
+                <div class="workstation-group-heading">
+                  <h3 id="openclaw-title">OpenClaw 环境</h3>
+                </div>
                 <div class="openclaw-status-list">
                   <div class="openclaw-status-row">
                     <span class="openclaw-status-label">网关状态</span>
-                    <span id="openclaw-badge" class="badge badge-muted">正在检查</span>
+                    <span id="openclaw-gateway-badge" class="badge badge-muted">正在检查</span>
                   </div>
                   <div class="openclaw-status-row">
                     <span class="openclaw-status-label">消息通道</span>
@@ -320,48 +346,14 @@
                   </a>
                 </div>
                 <p id="openclaw-message" class="message" aria-live="polite"></p>
-              </div>
-              <div class="openclaw-actions">
-                <button id="openclaw-bind-weixin" class="button-secondary" type="button" hidden>绑定微信</button>
-                <button id="openclaw-start" class="button-secondary" type="button" hidden>启动</button>
-                <button id="openclaw-restart" class="button-secondary" type="button" hidden>重启</button>
-                <button id="openclaw-stop" class="button-danger" type="button" hidden>停止</button>
-              </div>
+                <div class="openclaw-actions">
+                  <button id="openclaw-bind-weixin" class="button-secondary" type="button" hidden>绑定微信</button>
+                  <button id="openclaw-start" class="button-secondary" type="button" hidden>启动</button>
+                  <button id="openclaw-restart" class="button-secondary" type="button" hidden>重启</button>
+                  <button id="openclaw-stop" class="button-danger" type="button" hidden>停止</button>
+                </div>
+              </section>
             </div>
-          </div>
-        </section>
-
-        <section class="card logs-card" data-card-key="logs" data-collapsible-card data-collapsed="true" aria-labelledby="logs-title">
-          <div class="section-heading">
-            <div class="card-heading-copy" data-card-heading>
-              <p class="section-kicker">诊断信息</p>
-              <h2 id="logs-title">日志</h2>
-              <p class="section-description">查看节点最近的操作和运行记录。</p>
-            </div>
-            <button id="load-logs" class="button-secondary" type="button">刷新</button>
-          </div>
-          <div class="card-content" data-card-content>
-          <div class="card-content-inner">
-          <div class="log-toolbar" role="group" aria-label="日志显示设置">
-            <div class="log-tabs" role="tablist" aria-label="日志类型">
-              <button class="log-tab is-active" data-log-source="operations" type="button" role="tab" aria-label="操作日志" aria-selected="true">操作</button>
-              <button class="log-tab" data-log-source="application" type="button" role="tab" aria-label="运行日志" aria-selected="false">运行</button>
-            </div>
-            <div class="log-toolbar-controls">
-              <select id="log-lines" aria-label="日志行数">
-                <option value="50">50 行</option>
-                <option value="100">100 行</option>
-              </select>
-            </div>
-          </div>
-          <p id="logs-message" class="message">默认读取最近 50 行操作日志。</p>
-          <pre id="logs-output" class="logs-output" hidden></pre>
-          <div class="card-footer">
-            <div class="card-footer-actions">
-              <a class="button-link" href="/logs">日志详情</a>
-            </div>
-          </div>
-          </div>
           </div>
         </section>
       </div>

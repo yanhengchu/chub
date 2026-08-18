@@ -2,7 +2,7 @@
 
 > 主要读者：负责维护 Chub 与本机 OpenClaw 的 AI Agent。
 >
-> 当前状态：macOS、Ubuntu 均已应用并完成真实出站验收。本文是插件升级、重装或兼容性异常时的复检与恢复规范，不是日常重启或重新绑定 ClawBot 的固定步骤。
+> 当前状态：macOS、Ubuntu 均已应用并完成真实出站验收。本文遵循[Chub 总体架构](CHUB_ARCHITECTURE_DESIGN.md)及[Chub–OpenClaw 接入设计](CHUB_OPENCLAW_INTEGRATION_DESIGN.md)，是插件升级、重装或兼容性异常时的复检与恢复规范，不是日常重启或重新绑定 ClawBot 的固定步骤。
 
 `@tencent-weixin/openclaw-weixin` 升级、重装或安装目录重建后，必须按本文重新检测；不得仅因旧缓存目录仍保留补丁而判断当前加载插件兼容。若上游已经原生满足本文不变量，应保留上游实现，不重复应用本地补丁。
 

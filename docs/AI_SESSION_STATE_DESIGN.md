@@ -2,7 +2,7 @@
 
 > 状态：已验收。
 >
-> 本文只维护 Session、Activity、交互入口、槽位和单 writer 语义。非实时任务的执行、恢复、通知终态和 Web 重启由[快速交互独立 Worker 设计](QUICK_INTERACTION_WORKER_DESIGN.md)维护；微信业务路由由[Chub–OpenClaw 接入设计](CHUB_OPENCLAW_INTEGRATION_DESIGN.md)维护。
+> 本文遵循[Chub 总体架构](CHUB_ARCHITECTURE_DESIGN.md)，只维护 Session、Activity、交互入口、槽位和单 writer 语义。长期 Runtime 架构与演进路线由[AI Runtime 架构演进设计](AI_RUNTIME_ARCHITECTURE_DESIGN.md)维护；非实时任务的执行、恢复、通知终态和 Web 重启由[快速交互独立 Worker 设计](QUICK_INTERACTION_WORKER_DESIGN.md)维护；微信业务路由由[Chub–OpenClaw 接入设计](CHUB_OPENCLAW_INTEGRATION_DESIGN.md)维护。
 
 ## 1. 模型概览
 

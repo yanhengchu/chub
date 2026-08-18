@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import plistlib
+import socket
 import stat
 import subprocess
 import threading
@@ -21,6 +24,34 @@ def service_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir()
     calls = tmp_path / "manager-calls.log"
+    settings_file = tmp_path / "settings.yaml"
+    settings_file.write_text(
+        "\n".join(
+            [
+                "app:",
+                "  name: Hub",
+                "  version: 0.1.0",
+                "node:",
+                "  id: test-node",
+                "  name: Test Node",
+                "  type: unknown",
+                "server:",
+                "  host: 127.0.0.1",
+                "  port: 8080",
+                "security: {}",
+                "logs:",
+                f"  file: {tmp_path / 'hub.log'}",
+                f"  operations_file: {tmp_path / 'operations.log'}",
+                f"  worker_operations_file: {tmp_path / 'worker-operations.log'}",
+                "codex_pty:",
+                f"  workspace: {tmp_path / 'workspace'}",
+                f"  data_file: {tmp_path / 'state' / 'sessions.json'}",
+                f"  runtime_dir: {tmp_path / 'runtime'}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
 
     for command in ("launchctl", "systemctl"):
         executable = fake_bin / command
@@ -51,6 +82,7 @@ def service_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
             "CHUB_SYSTEMD_USER_DIR": str(tmp_path / "systemd"),
             "CHUB_SERVICE_LOG_DIR": str(tmp_path / "logs"),
             "CHUB_TEST_CALLS": str(calls),
+            "HUB_CONFIG_FILE": str(settings_file),
         }
     )
     return env, calls
@@ -59,13 +91,13 @@ def service_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
 def run_chub(
     command: str,
     env: dict[str, str],
-    *,
+    *arguments: str,
     relative: bool = False,
     cwd: Path = PROJECT_ROOT,
 ) -> subprocess.CompletedProcess[str]:
     executable = str(CHUB.relative_to(PROJECT_ROOT)) if relative else str(CHUB)
     return subprocess.run(
-        ["bash", executable, command],
+        ["bash", executable, command, *arguments],
         cwd=cwd,
         env=env,
         text=True,
@@ -312,6 +344,36 @@ def test_install_writes_independent_quick_worker_service(
     assert "quick-worker" in manager_calls
 
 
+def test_install_clears_only_retired_worker_state(
+    service_env: tuple[dict[str, str], Path],
+    tmp_path: Path,
+) -> None:
+    env, _ = service_env
+    env["CHUB_TEST_PLATFORM"] = "Linux"
+    root = tmp_path / "state" / "quick-worker"
+    current = root / "tasks-v7"
+    current.mkdir(parents=True, mode=0o700)
+    os.chmod(root, 0o700)
+    os.chmod(current, 0o700)
+    (current / "keep").write_text("current", encoding="utf-8")
+    for name in ("tasks", "tombstones", "session-leases", "legacy-deliveries-v7"):
+        path = root / name
+        path.mkdir(mode=0o700)
+        os.chmod(path, 0o700)
+        (path / "retired").write_text("old", encoding="utf-8")
+
+    result = run_chub("install", env)
+
+    assert result.returncode == 0, result.stderr
+    assert (current / "keep").read_text(encoding="utf-8") == "current"
+    assert all(not (root / name).exists() for name in (
+        "tasks",
+        "tombstones",
+        "session-leases",
+        "legacy-deliveries-v7",
+    ))
+
+
 @pytest.mark.parametrize("platform", ["Darwin", "Linux"])
 def test_install_is_repeatable(
     service_env: tuple[dict[str, str], Path],
@@ -321,7 +383,7 @@ def test_install_is_repeatable(
     env["CHUB_TEST_PLATFORM"] = platform
 
     assert run_chub("install", env).returncode == 0
-    result = run_chub("install", env)
+    result = run_chub("install", env, "--force")
 
     assert result.returncode == 0, result.stderr
 
@@ -587,7 +649,7 @@ def test_uninstall_removes_only_service_and_owned_command(
     env["CHUB_TEST_PLATFORM"] = platform
     assert run_chub("install", env).returncode == 0
 
-    result = run_chub("uninstall", env)
+    result = run_chub("uninstall", env, "--force")
 
     assert result.returncode == 0, result.stderr
     assert not (Path(env["CHUB_COMMAND_DIR"]) / "chub").exists()
@@ -613,8 +675,138 @@ def test_help_and_unknown_command(service_env: tuple[dict[str, str], Path]) -> N
     assert help_result.returncode == 0
     assert "chub restart" not in help_result.stdout
     assert "restart" in help_result.stdout
+    assert "worker-drain" in help_result.stdout
+    assert "worker-reload" in help_result.stdout
     assert invalid_result.returncode != 0
     assert "unknown command" in invalid_result.stderr
+
+
+def test_worker_reload_command_keeps_drain_and_final_health_gates() -> None:
+    content = CHUB.read_text(encoding="utf-8")
+    reload_body = content[content.index("quick_worker_reload() {") :]
+
+    assert "quick_worker_drain" in reload_body
+    reload_service_body = content[
+        content.index("reload_worker_service() {") :
+        content.index("quick_worker_reload() {")
+    ]
+    assert "clear_retired_worker_state" in reload_service_body
+    assert "worker_health_generation" in reload_body
+    assert "old_generation" in reload_body
+    assert "new_generation" in reload_body
+    assert "health_check true" in reload_body
+    assert reload_body.index("reload_worker_service") < reload_body.index(
+        'succeeded "$new_generation"'
+    )
+
+    maintenance_body = content[
+        content.index("require_worker_idle_for_maintenance() {") :
+        content.index("install_service() {")
+    ]
+    assert "quick_worker_drain" in maintenance_body
+    assert "protocol == 6" not in maintenance_body
+    record_body = content[
+        content.index("record_worker_reload_operation() {") :
+        content.index("worker_health_generation() {")
+    ]
+    assert 'CHUB_WORKER_RELOAD_EXTERNAL_LOGGING:-' in record_body
+    assert record_body.index("CHUB_WORKER_RELOAD_EXTERNAL_LOGGING") < record_body.index(
+        "write_operation"
+    )
+
+
+def test_stop_refuses_active_worker_without_explicit_force(
+    service_env: tuple[dict[str, str], Path],
+    tmp_path: Path,
+) -> None:
+    env, calls = service_env
+    env["CHUB_TEST_PLATFORM"] = "Linux"
+    worker_runtime = tmp_path / "worker-runtime"
+    config_file = tmp_path / "settings.yaml"
+    config_file.write_text(
+        "\n".join(
+            [
+                "app:",
+                "  name: Hub",
+                "  version: 0.1.0",
+                "node:",
+                "  id: test",
+                "  name: Test",
+                "  type: unknown",
+                "server:",
+                "  host: 127.0.0.1",
+                "  port: 8080",
+                "security: {}",
+                "codex_pty:",
+                f"  runtime_dir: {worker_runtime}",
+                f"  data_file: {tmp_path / 'sessions.json'}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    env["HUB_CONFIG_FILE"] = str(config_file)
+    assert run_chub("install", env).returncode == 0
+    calls.write_text("", encoding="utf-8")
+
+    identity = hashlib.sha256(str(worker_runtime).encode("utf-8")).hexdigest()[:12]
+    socket_dir = Path("/tmp") / f"chub-qw-{os.getuid()}-{identity}"
+    socket_dir.mkdir(mode=0o700)
+    socket_path = socket_dir / "worker.sock"
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(socket_path))
+    listener.listen(1)
+
+    def serve_health() -> None:
+        connection, _ = listener.accept()
+        with connection:
+            request = json.loads(connection.makefile("rb").readline())
+            response = {
+                "success": True,
+                "request_id": request["request_id"],
+                "data": {
+                    "protocol_version": 7,
+                    "status": "ready",
+                    "generation": "a" * 32,
+                    "code_version": "test-worker",
+                    "pid": os.getpid(),
+                    "active_tasks": 1,
+                },
+            }
+            connection.sendall((json.dumps(response) + "\n").encode("utf-8"))
+
+    thread = threading.Thread(target=serve_health, daemon=True)
+    thread.start()
+    try:
+        blocked = run_chub("stop", env)
+    finally:
+        thread.join(timeout=3)
+        listener.close()
+        socket_path.unlink(missing_ok=True)
+        socket_dir.rmdir()
+
+    assert blocked.returncode != 0
+    assert "active or queued tasks" in blocked.stderr
+    assert calls.read_text(encoding="utf-8") == ""
+
+    forced = run_chub("stop", env, "--force")
+    assert forced.returncode == 0, forced.stderr
+    assert "systemctl --user stop" in calls.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("command", ["worker-drain", "worker-reload"])
+def test_worker_maintenance_refuses_to_wait_on_its_own_quick_task(
+    service_env: tuple[dict[str, str], Path],
+    command: str,
+) -> None:
+    env, calls = service_env
+    env["CHUB_ACTIVITY_SOURCE"] = "quick"
+
+    result = run_chub(command, env)
+
+    assert result.returncode != 0
+    assert "local terminal" in result.stderr
+    assert not calls.exists()
 
 
 @pytest.mark.parametrize(
@@ -638,9 +830,13 @@ def test_service_commands_use_platform_manager(
     assert run_chub("install", env).returncode == 0
     calls.write_text("", encoding="utf-8")
 
-    result = run_chub(command, env)
+    result = run_chub(command, env, *(("--force",) if command == "stop" else ()))
 
-    assert result.returncode == 0, result.stderr
+    if command == "status":
+        assert result.returncode != 0
+        assert "Quick Worker health is unavailable" in result.stderr
+    else:
+        assert result.returncode == 0, result.stderr
     assert manager_call in calls.read_text(encoding="utf-8")
 
 
@@ -691,9 +887,13 @@ def test_node_commands_manage_web_and_worker_as_separate_services(
     assert run_chub("install", env).returncode == 0
     calls.write_text("", encoding="utf-8")
 
-    result = run_chub(command, env)
+    result = run_chub(command, env, *(("--force",) if command == "stop" else ()))
 
-    assert result.returncode == 0, result.stderr
+    if command == "status":
+        assert result.returncode != 0
+        assert "Quick Worker health is unavailable" in result.stderr
+    else:
+        assert result.returncode == 0, result.stderr
     manager_calls = calls.read_text(encoding="utf-8")
     assert web_call in manager_calls
     assert worker_call in manager_calls

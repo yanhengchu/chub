@@ -1,6 +1,6 @@
 # 本期工作周报自动化与生成设计
 
-> 状态：已实现并验收，持续维护。当前采用人工触发、分阶段执行和重点确认门禁；受管 Chrome 的跨平台实机范围以 `.agents/skills/chrome-cdp/SKILL.md` 的当前状态为准。
+> 状态：已实现并验收，持续维护。本文遵循[Chub 总体架构](CHUB_ARCHITECTURE_DESIGN.md)，当前采用人工触发、分阶段执行和重点确认门禁；受管 Chrome 的跨平台实机范围以 `.agents/skills/chrome-cdp/SKILL.md` 的当前状态为准。
 
 ## 1. 当前定位
 

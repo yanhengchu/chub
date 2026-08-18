@@ -37,6 +37,24 @@ def test_codex_hook_correlates_codex_and_chub_sessions(tmp_path: Path) -> None:
     }
 
 
+def test_codex_hook_rejects_invalid_native_session_id(tmp_path: Path) -> None:
+    script = Path(__file__).parents[1] / "scripts" / "chub-codex-hook"
+
+    subprocess.run(
+        [str(script)],
+        input=json.dumps({"session_id": "--help", "source": "startup"}),
+        text=True,
+        check=True,
+        env={
+            **os.environ,
+            "CHUB_PTY_SESSION_ID": "chub-session-id",
+            "CHUB_PTY_HOOK_DIR": str(tmp_path),
+        },
+    )
+
+    assert not (tmp_path / "chub-session-id.json").exists()
+
+
 def test_codex_hook_records_turn_activity(tmp_path: Path) -> None:
     script = Path(__file__).parents[1] / "scripts" / "chub-codex-hook"
     env = {

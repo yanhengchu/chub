@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import signal
+import shutil
 import socket
 import stat
 import struct
@@ -19,17 +20,23 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.core.config import PROJECT_ROOT, Settings, get_settings
+from app.core.logger import configure_worker_operation_logging
+from app.ai_runtime import WorkerRuntimeRegistry
+from app.codex.runtime_adapter import CodexRuntimeAdapter
+from app.codex.worker_runtime import CodexWorkerRuntime
 from app.quick_worker_tasks import (
-    CodexTaskSubmission,
+    RuntimeTaskSubmission,
     TestTaskSubmission,
     WorkerTaskError,
     WorkerTaskManager,
 )
+from app.quick_worker_test_runtime import FixedTestWorkerRuntime
+from app.services.operation_log import write_operation
 
 
 HEALTH_PROTOCOL_VERSION = 1
-PROTOCOL_VERSION = 6
-WORKER_CODE_VERSION = "quick-worker-7-production"
+PROTOCOL_VERSION = 7
+WORKER_CODE_VERSION = "quick-worker-8-runtime-registry"
 MAX_REQUEST_BYTES = 64 * 1024
 MAX_RESPONSE_BYTES = 256 * 1024
 CLIENT_TIMEOUT_SECONDS = 2.0
@@ -61,11 +68,22 @@ class WorkerTaskSubmitRequest(_StrictModel):
     task: TestTaskSubmission
 
 
-class WorkerCodexTaskSubmitRequest(_StrictModel):
+class WorkerRuntimeTaskSubmitRequest(_StrictModel):
     protocol_version: int
     request_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
-    action: Literal["isolated_codex_submit"]
-    task: CodexTaskSubmission
+    action: Literal["runtime_task_submit"]
+    task: RuntimeTaskSubmission
+
+
+class WorkerDrainRequest(_StrictModel):
+    protocol_version: int
+    request_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+    action: Literal["drain"]
+    operation_id: str = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9:_-]+$",
+    )
 
 
 class WorkerTaskGetRequest(_StrictModel):
@@ -105,10 +123,16 @@ class WorkerHealth(_StrictModel):
     code_version: str
     pid: int
     active_tasks: int = 0
+    queued_tasks: int = 0
+    uncertain_tasks: int = 0
     corrupt_tasks: int = 0
     test_tasks_enabled: bool = False
-    codex_tasks_enabled: bool = False
-    codex_workspace_ids: list[str] = Field(default_factory=list, max_length=8)
+    runtime_ids: list[str] = Field(default_factory=list, max_length=16)
+    available_runtime_ids: list[str] = Field(default_factory=list, max_length=16)
+    runtime_workspace_ids: dict[str, list[str]] = Field(default_factory=dict)
+    drain_operation_id: str | None = Field(default=None, max_length=128)
+    drain_complete: bool = False
+    drain_error: str | None = Field(default=None, max_length=300)
 
 
 def worker_runtime_dir(settings: Settings) -> Path:
@@ -226,19 +250,47 @@ class QuickWorkerServer:
         codex_workspaces: dict[str, Path] | None = None,
         codex_executable: str | Path | None = None,
         codex_home: Path | None = None,
+        runtime_registry: WorkerRuntimeRegistry | None = None,
     ) -> None:
         self.runtime_dir = worker_runtime_dir(settings)
         self.socket_path = worker_socket_path(settings)
         self.generation = uuid.uuid4().hex
         self.status: Literal["ready", "draining"] = "ready"
+        if runtime_registry is None:
+            runners = []
+            if codex_workspaces:
+                resolved_executable = (
+                    str(codex_executable)
+                    if codex_executable is not None
+                    else shutil.which("codex")
+                )
+                resolved_codex_home = (
+                    codex_home
+                    if codex_home is not None
+                    else Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
+                )
+                adapter = CodexRuntimeAdapter(
+                    settings,
+                    codex_home=resolved_codex_home,
+                    executable=resolved_executable,
+                )
+                runners.append(
+                    CodexWorkerRuntime(
+                        adapter,
+                        executable=resolved_executable,
+                        workspaces=codex_workspaces,
+                    )
+                )
+            if allow_test_tasks:
+                runners.append(FixedTestWorkerRuntime())
+            runtime_registry = WorkerRuntimeRegistry(runners)
+        self.runtime_registry = runtime_registry
         self.task_manager = WorkerTaskManager(
             settings,
             self.generation,
             protocol_version=PROTOCOL_VERSION,
+            runtime_registry=self.runtime_registry,
             allow_test_tasks=allow_test_tasks,
-            codex_workspaces=codex_workspaces,
-            codex_executable=codex_executable,
-            codex_home=codex_home,
         )
         self.request_timeout_seconds = request_timeout_seconds
         self._server: asyncio.AbstractServer | None = None
@@ -246,13 +298,15 @@ class QuickWorkerServer:
         self._socket_identity: tuple[int, int] | None = None
         self._stopped = asyncio.Event()
         self._active_connections = 0
+        self._submission_gate = asyncio.Lock()
+        self._drain_operation_id: str | None = None
+        self._drain_task: asyncio.Task[None] | None = None
+        self._drain_complete = False
+        self._drain_error: str | None = None
 
     @property
-    def codex_tasks_enabled(self) -> bool:
-        return bool(
-            self.task_manager.codex_workspaces
-            and self.task_manager.codex_executable
-        )
+    def runtime_ids(self) -> tuple[str, ...]:
+        return self.runtime_registry.runtime_ids()
 
     def _acquire_lock(self) -> None:
         _private_directory(self.runtime_dir)
@@ -310,12 +364,58 @@ class QuickWorkerServer:
         self.status = "draining"
         self._stopped.set()
 
+    def _record_drain_operation(self, status: str) -> None:
+        if self._drain_operation_id is None:
+            return
+        try:
+            write_operation(
+                operation_id=self._drain_operation_id,
+                action="quick_worker_drain",
+                status=status,
+                target=f"quick-worker:{self.generation}",
+                source_ip="127.0.0.1",
+            )
+        except Exception:
+            pass
+
+    async def begin_drain(self, operation_id: str) -> None:
+        async with self._submission_gate:
+            if self._drain_operation_id is not None:
+                if self._drain_operation_id != operation_id:
+                    raise WorkerTaskError(
+                        "worker_drain_conflict",
+                        "Worker is already draining for another operation",
+                    )
+                return
+            self._drain_operation_id = operation_id
+            self.status = "draining"
+            for operation_status in ("requested", "started"):
+                self._record_drain_operation(operation_status)
+            self._drain_task = asyncio.create_task(
+                self._finish_drain(),
+                name=f"quick-worker-drain-{operation_id[:16]}",
+            )
+
+    async def _finish_drain(self) -> None:
+        await self.task_manager.wait_until_idle()
+        if self.task_manager.corrupt_count:
+            self._drain_error = "Worker task store contains invalid records"
+            self._record_drain_operation("failed")
+            return
+        self._drain_complete = True
+        self._record_drain_operation("succeeded")
+
     async def close(self, *, interrupt_tasks: bool = True) -> None:
         self.status = "draining"
         if self._server is not None:
             self._server.close()
             await self._server.wait_closed()
             self._server = None
+        if self._drain_task is not None and not self._drain_task.done():
+            self._drain_error = "Worker stopped before drain completed"
+            self._record_drain_operation("failed")
+            self._drain_task.cancel()
+            await asyncio.gather(self._drain_task, return_exceptions=True)
         await self.task_manager.close(interrupt_tasks=interrupt_tasks)
         self._release_resources()
 
@@ -477,7 +577,8 @@ class QuickWorkerServer:
         model = {
             "health": WorkerRequest,
             "test_task_submit": WorkerTaskSubmitRequest,
-            "isolated_codex_submit": WorkerCodexTaskSubmitRequest,
+            "runtime_task_submit": WorkerRuntimeTaskSubmitRequest,
+            "drain": WorkerDrainRequest,
             "task_get": WorkerTaskGetRequest,
             "task_list": WorkerTaskListRequest,
             "task_cancel": WorkerTaskCancelRequest,
@@ -494,34 +595,49 @@ class QuickWorkerServer:
                 generation=self.generation,
                 code_version=WORKER_CODE_VERSION,
                 pid=os.getpid(),
-                active_tasks=self.task_manager.active_count,
+                active_tasks=self.task_manager.running_count,
+                queued_tasks=self.task_manager.queued_count,
+                uncertain_tasks=0,
                 corrupt_tasks=self.task_manager.corrupt_count,
                 test_tasks_enabled=self.task_manager.allow_test_tasks,
-                codex_tasks_enabled=self.codex_tasks_enabled,
-                codex_workspace_ids=sorted(self.task_manager.codex_workspaces),
+                runtime_ids=list(self.runtime_registry.runtime_ids()),
+                available_runtime_ids=list(
+                    self.runtime_registry.available_runtime_ids()
+                ),
+                runtime_workspace_ids={
+                    runtime_id: list(workspace_ids)
+                    for runtime_id, workspace_ids in (
+                        self.runtime_registry.workspace_ids().items()
+                    )
+                },
+                drain_operation_id=self._drain_operation_id,
+                drain_complete=self._drain_complete,
+                drain_error=self._drain_error,
             )
             return health.model_dump(mode="json")
-        if not (
-            self.task_manager.allow_test_tasks
-            or self.task_manager.codex_workspaces
-        ):
-            raise WorkerTaskError(
-                "worker_action_unavailable",
-                "Task operations are disabled for this Worker instance",
-            )
+        if isinstance(request, WorkerDrainRequest):
+            await self.begin_drain(request.operation_id)
+            return {
+                "operation_id": request.operation_id,
+                "status": self.status,
+                "complete": self._drain_complete,
+                "error": self._drain_error,
+            }
         if isinstance(request, WorkerTaskSubmitRequest):
-            if self.status != "ready":
-                raise WorkerTaskError(
-                    "worker_draining", "Worker is not accepting new tasks"
-                )
-            task = await self.task_manager.submit_test(request.task)
+            async with self._submission_gate:
+                if self.status != "ready":
+                    raise WorkerTaskError(
+                        "worker_draining", "Worker is not accepting new tasks"
+                    )
+                task = await self.task_manager.submit_test(request.task)
             return {"task": task.model_dump(mode="json")}
-        if isinstance(request, WorkerCodexTaskSubmitRequest):
-            if self.status != "ready":
-                raise WorkerTaskError(
-                    "worker_draining", "Worker is not accepting new tasks"
-                )
-            task = await self.task_manager.submit_codex(request.task)
+        if isinstance(request, WorkerRuntimeTaskSubmitRequest):
+            async with self._submission_gate:
+                if self.status != "ready":
+                    raise WorkerTaskError(
+                        "worker_draining", "Worker is not accepting new tasks"
+                    )
+                task = await self.task_manager.submit_runtime(request.task)
             return {"task": task.model_dump(mode="json")}
         if isinstance(request, WorkerTaskGetRequest):
             async with self.task_manager._lock:
@@ -627,19 +743,73 @@ async def read_health(settings: Settings) -> dict[str, object]:
     )
     if payload.get("success") is True:
         try:
-            health = WorkerHealth.model_validate(payload.get("data"))
+            data = payload.get("data")
+            health = WorkerHealth.model_validate(data)
         except ValidationError as exc:
             raise OSError("Quick Worker returned invalid health data") from exc
         payload["data"] = health.model_dump(mode="json")
     return payload
 
 
+async def request_drain(
+    settings: Settings,
+    *,
+    operation_id: str | None = None,
+    wait_seconds: float = 7200.0,
+) -> dict[str, object]:
+    resolved_operation_id = operation_id or f"worker-drain:{uuid.uuid4().hex}"
+    payload = await worker_request(
+        settings,
+        {
+            "protocol_version": PROTOCOL_VERSION,
+            "request_id": uuid.uuid4().hex,
+            "action": "drain",
+            "operation_id": resolved_operation_id,
+        },
+    )
+    if payload.get("success") is not True:
+        return payload
+    deadline = asyncio.get_running_loop().time() + wait_seconds
+    while True:
+        health = await read_health(settings)
+        data = health.get("data") if health.get("success") is True else None
+        if not isinstance(data, dict):
+            raise OSError("Quick Worker returned invalid drain health")
+        if data.get("drain_operation_id") != resolved_operation_id:
+            raise OSError("Quick Worker drain operation identity changed")
+        if data.get("drain_error"):
+            return {
+                "success": False,
+                "request_id": payload.get("request_id"),
+                "error": {
+                    "code": "worker_drain_failed",
+                    "message": str(data["drain_error"]),
+                },
+            }
+        if data.get("drain_complete") is True:
+            return {
+                "success": True,
+                "request_id": payload.get("request_id"),
+                "data": {
+                    "operation_id": resolved_operation_id,
+                    "status": "draining",
+                    "complete": True,
+                    "generation": data.get("generation"),
+                },
+            }
+        if asyncio.get_running_loop().time() >= deadline:
+            raise TimeoutError("Quick Worker drain did not complete before its deadline")
+        await asyncio.sleep(0.1)
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m app.quick_worker")
     parser.add_argument(
         "command",
-        choices=("serve", "health"),
+        choices=("serve", "health", "drain"),
     )
+    parser.add_argument("--wait-seconds", type=float, default=7200.0)
+    parser.add_argument("--operation-id")
     return parser
 
 
@@ -649,6 +819,11 @@ def main() -> int:
         settings = get_settings()
     except RuntimeError:
         print("quick-worker: configuration is unavailable", file=sys.stderr)
+        return 1
+    try:
+        configure_worker_operation_logging(settings.logs)
+    except OSError:
+        print("quick-worker: operation log is unavailable", file=sys.stderr)
         return 1
     if args.command == "serve":
         try:
@@ -665,7 +840,15 @@ def main() -> int:
             return 1
         return 0
     try:
-        payload = asyncio.run(read_health(settings))
+        payload = asyncio.run(
+            request_drain(
+                settings,
+                operation_id=args.operation_id,
+                wait_seconds=args.wait_seconds,
+            )
+            if args.command == "drain"
+            else read_health(settings)
+        )
     except (OSError, asyncio.TimeoutError, json.JSONDecodeError) as exc:
         print(f"quick-worker: health unavailable: {exc}", file=sys.stderr)
         return 1

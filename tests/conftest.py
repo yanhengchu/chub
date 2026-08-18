@@ -16,6 +16,7 @@ def settings(tmp_path: Path) -> Settings:
             "logs": {
                 "file": tmp_path / "hub.log",
                 "operations_file": tmp_path / "operations.log",
+                "worker_operations_file": tmp_path / "worker-operations.log",
                 "level": "INFO",
                 "max_lines": 100,
             },

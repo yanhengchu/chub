@@ -61,6 +61,7 @@ class SecurityConfig(StrictModel):
 class LogsConfig(StrictModel):
     file: Path = Path("logs/hub.log")
     operations_file: Path = Path("logs/operations.log")
+    worker_operations_file: Path = Path("logs/worker-operations.log")
     level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     max_lines: int = Field(default=100, ge=1, le=500)
 
@@ -278,6 +279,10 @@ class Settings(StrictModel):
             self.logs.file = PROJECT_ROOT / self.logs.file
         if not self.logs.operations_file.is_absolute():
             self.logs.operations_file = PROJECT_ROOT / self.logs.operations_file
+        if not self.logs.worker_operations_file.is_absolute():
+            self.logs.worker_operations_file = (
+                PROJECT_ROOT / self.logs.worker_operations_file
+            )
         self.codex_pty.workspace = self.codex_pty.workspace.expanduser().resolve()
         if not self.codex_pty.data_file.is_absolute():
             self.codex_pty.data_file = PROJECT_ROOT / self.codex_pty.data_file

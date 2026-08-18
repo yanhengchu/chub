@@ -382,7 +382,7 @@ class WeixinChubModeManager:
                 message="Codex 运行依赖当前不可用。",
             )
         try:
-            self.codex_manager.model_catalog.validate(
+            self.codex_manager.validate_model(
                 configuration.model,
                 configuration.reasoning_effort,
             )
