@@ -1,6 +1,8 @@
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from app.codex.models import CodexSession
 from app.codex.store import CodexSessionStore
 
@@ -31,6 +33,55 @@ def test_session_store_ignores_invalid_file(tmp_path: Path) -> None:
     path.write_text("not-json", encoding="utf-8")
 
     assert CodexSessionStore(path).list() == []
+
+
+def test_session_store_upgrade_validation_rejects_invalid_file(tmp_path: Path) -> None:
+    path = tmp_path / "sessions.json"
+    path.write_text("not-json", encoding="utf-8")
+    path.chmod(0o600)
+    store = CodexSessionStore(path)
+
+    with pytest.raises(OSError, match="格式无效"):
+        store.validate_for_system_upgrade()
+
+
+def test_session_store_discards_only_an_empty_valid_legacy_store(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "sessions.json"
+    store = CodexSessionStore(path)
+    store.save(
+        CodexSession(
+            id="session-1",
+            workspace_id="chub",
+            workspace_name="Chub",
+            cwd=tmp_path,
+        )
+    )
+
+    with pytest.raises(OSError, match="仍包含"):
+        store.discard_after_system_upgrade()
+
+    store.delete("session-1")
+    store.discard_after_system_upgrade()
+
+    assert not path.exists()
+
+
+def test_session_store_upgrade_validation_rejects_partially_invalid_records(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "sessions.json"
+    path.write_text(
+        '[{"id":"valid","workspace_id":"chub","workspace_name":"Chub",'
+        f'"cwd":"{tmp_path}"}},{{"id":"broken"}}]',
+        encoding="utf-8",
+    )
+    path.chmod(0o600)
+    store = CodexSessionStore(path)
+
+    with pytest.raises(OSError, match="无效记录"):
+        store.validate_for_system_upgrade()
 
 
 def test_session_store_migrates_legacy_permission_modes(tmp_path: Path) -> None:

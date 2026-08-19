@@ -30,7 +30,7 @@
   }) {
     const preview = buildSessionPreview(session);
     const busy = activeInteraction || session.quick_interaction_running === true;
-    const archiveReady = Boolean(session.codex_session_id);
+    const archiveReady = Boolean(session.can_archive);
     const archiveBusy = busy || archivePending;
     const archiveLabel = !archiveReady
       ? "尚未启动的 Session 无法归档"

@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from app.ai_runtime import RuntimeOperationError
+from app.codex.worker_runtime import DISCOVERED_RUNTIME_WORKSPACE_ID
 from app.codex.manager import CodexPtyManager
 from app.codex.models import CodexSession, SessionInfo, WorkspaceInfo, utc_now
 from app.codex.store import CodexSessionStore
@@ -148,6 +149,25 @@ def test_list_sessions_includes_all_unarchived_sessions_regardless_of_origin(
     assert sessions[0].terminal_access_allowed is True
     assert sessions[1].terminal_access_allowed is False
     assert manager.read_session(internal.id).id == internal.id
+
+
+def test_list_sessions_uses_pure_snapshot_during_system_upgrade(
+    settings: Settings,
+) -> None:
+    manager = CodexPtyManager(settings)
+    session = native_session("snapshot-session")
+    manager.store.save(session)
+    manager._consume_hook_results = MagicMock()
+    manager._sync_native_sessions = MagicMock()
+    manager._refresh_status = MagicMock()
+    manager.set_system_upgrade_checker(lambda: True)
+
+    sessions = manager.list_sessions()
+
+    assert [item.id for item in sessions] == [session.id]
+    manager._consume_hook_results.assert_not_called()
+    manager._sync_native_sessions.assert_not_called()
+    manager._refresh_status.assert_not_called()
 
 
 def test_translation_session_rejects_realtime_terminal(settings: Settings) -> None:
@@ -362,6 +382,22 @@ def test_sync_merges_discovered_session_bound_to_new_chub_session(
     assert sessions[0].reasoning_effort == "high"
     assert sessions[0].active_model == "gpt-test"
     assert sessions[0].active_reasoning_effort == "high"
+
+
+def test_sync_upgrades_legacy_discovered_workspace_id(
+    settings: Settings,
+) -> None:
+    manager = CodexPtyManager(settings)
+    session = native_session("25252525-2525-4252-8252-252525252525")
+    manager.store.save(session)
+    manager.runtime_adapter.discovery = MagicMock()
+    manager.runtime_adapter.discovery.discover.return_value = [session]
+    manager.runtime_adapter.discovery.session_archive_states.return_value = None
+
+    manager._sync_native_sessions()
+
+    synced = manager.store.get(session.id)
+    assert synced.workspace_id == DISCOVERED_RUNTIME_WORKSPACE_ID
 
 
 def test_sync_defers_native_session_while_new_quick_session_is_binding(
@@ -613,6 +649,22 @@ def test_archive_failure_preserves_mapping(
 
     assert error.value.code == "codex_session_archive_failed"
     assert manager.store.get(session.id) is not None
+
+
+def test_system_upgrade_discard_preserves_native_codex_session(
+    settings: Settings,
+) -> None:
+    manager = CodexPtyManager(settings)
+    session = native_session("56565656-5656-4565-8565-565656565656")
+    manager.store.save(session)
+    manager.stop_session = MagicMock()
+    manager.runtime_adapter.run_native_action = MagicMock()
+
+    manager.discard_session_for_system_upgrade(session.id)
+
+    assert manager.store.get(session.id) is None
+    manager.stop_session.assert_called_once_with(session.id)
+    manager.runtime_adapter.run_native_action.assert_not_called()
 
 
 def test_archive_rejects_invalid_native_id_before_stopping(

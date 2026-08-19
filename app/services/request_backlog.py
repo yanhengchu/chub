@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import stat
@@ -241,6 +242,38 @@ class RequestBacklogStore:
         except (RequestBacklogError, OSError):
             return False
         return item.generation == generation
+
+    def reset_runs_for_system_upgrade(self, operation_id: str, *, force: bool = False) -> None:
+        if len(operation_id) != 32 or any(
+            char not in "0123456789abcdef" for char in operation_id
+        ):
+            raise ValueError("System upgrade operation ID is invalid")
+        with self._locked():
+            state = self._read_unlocked()
+            if not force and any(item.status == "running" for item in state.active):
+                raise RequestBacklogBusy("A request is still running")
+            now = utc_now()
+            for item in state.active:
+                item.generation = hashlib.sha256(
+                    f"{operation_id}:R{item.slot}".encode("ascii")
+                ).hexdigest()[:32]
+                item.status = "ready"
+                item.active_run_id = None
+                item.active_message_id = None
+                item.active_task_id = None
+                item.last_task_id = None
+                item.last_error = None
+                item.finished_at = None
+                item.updated_at = now
+            for item in state.archived:
+                item.active_run_id = None
+                item.active_message_id = None
+                item.active_task_id = None
+                item.last_task_id = None
+                item.last_error = None
+                item.finished_at = None
+                item.updated_at = now
+            self._write_unlocked(state)
 
     @contextmanager
     def _locked(self) -> Iterator[None]:

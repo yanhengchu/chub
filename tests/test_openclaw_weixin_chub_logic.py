@@ -45,6 +45,8 @@ from app.services.openclaw_weixin_chub_models import (
         ("同步。", "sync", None, None, False),
         ("RESTART。", "restart", None, None, False),
         ("重新启动", "restart", None, None, False),
+        ("SYSTEM UPGRADE STATUS。", "system_upgrade_status", None, None, False),
+        ("system upgrade", "system_upgrade", None, None, False),
         ("retry", "retry", None, None, False),
         ("重试", "retry", None, None, False),
         ("继续执行", "retry", None, None, False),
@@ -120,6 +122,9 @@ from app.services.openclaw_weixin_chub_models import (
         ("session new retrying", "normal", None, None, False),
         ("renameable task", "normal", None, None, False),
         ("sync now", "normal", None, None, False),
+        ("system upgrade status now", "normal", None, None, False),
+        ("system upgrade now", "normal", None, None, False),
+        ("systemupgrade", "normal", None, None, False),
         ("codex", "normal", None, None, False),
     ],
 )

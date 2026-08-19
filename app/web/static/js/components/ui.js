@@ -17,6 +17,7 @@ const confirmationDialog = document.querySelector("#confirmation-dialog");
 const confirmationDialogForm = document.querySelector("#confirmation-dialog-form");
 const confirmationDialogTitle = document.querySelector("#confirmation-dialog-title");
 const confirmationDialogDescription = document.querySelector("#confirmation-dialog-description");
+let confirmationDialogDetails = document.querySelector("#confirmation-dialog-details");
 const confirmationDialogMessage = document.querySelector("#confirmation-dialog-message");
 const confirmationDialogClose = document.querySelector("#confirmation-dialog-close");
 const confirmationDialogCancel = document.querySelector("#confirmation-dialog-cancel");
@@ -58,9 +59,23 @@ function dismissConfirmationDialog() {
   }
 }
 
+function confirmationDialogDetailsTarget() {
+  if (confirmationDialogDetails || !confirmationDialogDescription) {
+    return confirmationDialogDetails;
+  }
+  const details = document.createElement("ul");
+  details.id = "confirmation-dialog-details";
+  details.className = "confirmation-dialog-details";
+  details.hidden = true;
+  confirmationDialogDescription.after(details);
+  confirmationDialogDetails = details;
+  return details;
+}
+
 function showConfirmationDialog({
   title,
   description,
+  details = [],
   confirmLabel = "确认",
   pendingLabel = "处理中…",
   tone = "danger",
@@ -72,6 +87,22 @@ function showConfirmationDialog({
   }
   confirmationDialogTitle.textContent = title;
   confirmationDialogDescription.textContent = description;
+  const detailsTarget = confirmationDialogDetailsTarget();
+  if (detailsTarget) {
+    detailsTarget.replaceChildren();
+  }
+  for (const { label, value } of details) {
+    const item = document.createElement("li");
+    const itemLabel = document.createElement("strong");
+    const itemValue = document.createElement("span");
+    itemLabel.textContent = label;
+    itemValue.textContent = value;
+    item.append(itemLabel, itemValue);
+    detailsTarget?.append(item);
+  }
+  if (detailsTarget) {
+    detailsTarget.hidden = details.length === 0;
+  }
   confirmationDialogConfirm.textContent = confirmLabel;
   confirmationDialogConfirm.className = tone === "danger"
     ? "button-danger"
@@ -106,7 +137,7 @@ if (confirmationDialog) {
       setConfirmationDialogBusy(false);
       setMessage(
         confirmationDialogMessage,
-        error instanceof Error && error.message
+        typeof error?.message === "string" && error.message
           ? error.message
           : current.errorMessage,
         "error",

@@ -22,7 +22,7 @@ Generate local Markdown reports in two gated stages. Treat every automation down
 
 3. Map roles by known document identity, never by linked-file order alone. Require `previous-report` plus every role listed in `required_roles`.
 4. Run `python3 scripts/validate_weekly_report.py inputs --manifest <manifest.json>`.
-5. Stop on an invalid Monday-to-Sunday report period, a non-reference source without an explicit `usage_period`, a range whose end falls outside the current period, missing required sources, unsafe paths, unreadable content, unresolved heading boundaries, changed hashes, or a blocking `content_status`. Continue with a gap only after the maintainer explicitly approves its exact scope.
+5. Stop on an invalid Monday-to-Sunday report period, a non-reference source without an explicit `usage_period`, a range whose end falls outside the current period, missing required sources, unsafe paths, unreadable content, unresolved heading boundaries, changed hashes, or a blocking `content_status`. Record any maintainer-approved gap in the confirmation for traceability, but do not treat it as a validator bypass; continue only after the actual usable inputs are `ready` or explicitly `manually-approved`.
 
 The adapter does not copy, move, or modify downloads. It records a constrained `source_root` inside the same period workspace and paths relative to it. Read [references/manifest-contract.md](references/manifest-contract.md) when creating or diagnosing a mapping.
 

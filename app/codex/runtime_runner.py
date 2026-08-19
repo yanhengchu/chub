@@ -14,9 +14,12 @@ from app.ai_runtime import (
     RuntimeTurnResult,
 )
 from app.codex.runtime_adapter import is_valid_codex_session_id
+from app.services.log_reader import redact_log_line
 
 
 class CodexRuntimeRunner:
+    _MAX_EVENT_STREAM_BYTES = 2 * 1024 * 1024
+    _ERROR_EVENT_TYPES = frozenset({"error", "turn.failed"})
     _PERMISSION_ARGS = {
         "auto-review": [
             "-c", 'default_permissions=":workspace"',
@@ -161,6 +164,97 @@ class CodexRuntimeRunner:
                 kind="conflict",
             )
         return RuntimeEventSummary(native_session_id=next(iter(found), None))
+
+    @classmethod
+    def read_error(cls, path: Path, *, max_bytes: int) -> str | None:
+        """Return the latest upstream error text from Codex's JSON event stream.
+
+        The Worker owns the task error record, while this Runtime-specific
+        parser owns the provider event format.  Unknown error event shapes are
+        retained when they expose an error field, otherwise the Worker falls
+        back to stderr or its generic failure.
+        """
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            return None
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or metadata.st_size > cls._MAX_EVENT_STREAM_BYTES
+            or stat.S_IMODE(metadata.st_mode) & 0o077
+        ):
+            raise RuntimeOperationError(
+                "codex_event_stream_unsafe",
+                "Codex event stream is unsafe or too large",
+            )
+
+        structured: list[str] = []
+        plain: list[str] = []
+        try:
+            with path.open("rb") as file:
+                for raw_line in file:
+                    if len(raw_line) > cls._MAX_EVENT_STREAM_BYTES:
+                        raise RuntimeOperationError(
+                            "codex_event_line_too_large",
+                            "Codex event line exceeds its fixed limit",
+                        )
+                    try:
+                        event = json.loads(raw_line)
+                    except (UnicodeDecodeError, json.JSONDecodeError):
+                        text = raw_line.decode("utf-8", errors="replace").strip()
+                        if text:
+                            plain.append(text)
+                        continue
+                    message = cls._event_error_message(event)
+                    if message is not None:
+                        if (
+                            isinstance(event, dict)
+                            and cls._is_error_event(event.get("type"))
+                        ):
+                            structured.append(message)
+                        else:
+                            plain.append(message)
+        except OSError as exc:
+            raise RuntimeOperationError(
+                "codex_event_stream_unavailable",
+                "Codex event stream is unavailable",
+            ) from exc
+
+        message = structured[-1] if structured else (plain[-1] if plain else None)
+        if message is None:
+            return None
+        return redact_log_line(message, (), max_line_bytes=max_bytes)
+
+    @staticmethod
+    def _event_error_message(event: object) -> str | None:
+        if not isinstance(event, dict):
+            return None
+        event_type = event.get("type")
+        error = event.get("error")
+        if isinstance(error, str) and error.strip():
+            return error.strip()
+        if isinstance(error, dict):
+            for key in ("message", "detail", "reason"):
+                value = error.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        if not CodexRuntimeRunner._is_error_event(event_type):
+            return None
+        for key in ("message", "detail", "reason"):
+            value = event.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+
+    @staticmethod
+    def _is_error_event(event_type: object) -> bool:
+        if event_type in CodexRuntimeRunner._ERROR_EVENT_TYPES:
+            return True
+        if not isinstance(event_type, str):
+            return False
+        lowered = event_type.lower()
+        return "error" in lowered or "fail" in lowered
 
     @staticmethod
     def read_result(path: Path, *, max_bytes: int) -> RuntimeTurnResult:

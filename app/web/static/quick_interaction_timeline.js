@@ -28,7 +28,6 @@
       task.prompt,
       task.result,
       task.error,
-      task.pinned_at,
       task.notification_status,
       task.notification_error,
       task.deferred_restart_status,
@@ -91,7 +90,6 @@
       error: ["failed", "timed_out", "cancelled", "needs_terminal"].includes(
         task.status,
       ),
-      pinned: Boolean(task.pinned_at),
       notification: notificationState(
         task.notification_status,
         task.notification_error,
@@ -114,7 +112,7 @@
     return result;
   }
 
-  function createView({ documentRef, windowRef, elements, onTogglePinned }) {
+  function createView({ documentRef, windowRef, elements }) {
     function createMeta(text) {
       const meta = documentRef.createElement("span");
       meta.className = "conversation-message-meta";
@@ -162,7 +160,6 @@
       const assistantMeta = documentRef.createElement("div");
       const assistantInfo = documentRef.createElement("div");
       const notification = createNotification(state.notification);
-      const pin = documentRef.createElement("button");
       assistantMessage.className = "conversation-message conversation-message-assistant";
       assistantBubble.className = "conversation-bubble";
       assistantMeta.className = "conversation-assistant-meta";
@@ -175,17 +172,11 @@
       if (state.error) {
         assistantBubble.classList.add("is-error");
       }
-      pin.type = "button";
-      pin.className = "button-link conversation-pin";
-      pin.textContent = state.pinned ? "取消置顶" : "置顶";
-      pin.setAttribute("aria-pressed", String(state.pinned));
-      pin.addEventListener("click", () => onTogglePinned(task, pin));
       assistantBubble.append(assistantContent);
       assistantMeta.append(assistantInfo);
       if (notification) {
         assistantMeta.append(notification);
       }
-      assistantMeta.append(pin);
       assistantMessage.append(assistantBubble, assistantMeta);
       turn.append(userMessage, assistantMessage);
 

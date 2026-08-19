@@ -199,6 +199,8 @@ def test_dispatch_returns_concise_chub_help(
         "chub · 状态 / 查询状态\n\n"
         "help · 帮助\n\n"
         "restart · 重启 / 重新启动\n\n"
+        "system upgrade status\n\n"
+        "system upgrade\n\n"
         "sync · 同步\n\n"
         "direct <task> · 直接执行 <正文>\n\n"
         "new <title> · 新建 <标题>\n\n"

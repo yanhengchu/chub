@@ -19,14 +19,59 @@ function automationStatusText(state) {
   }[state] || state;
 }
 
-function automationTime(value) {
+function automationMonthDay(value) {
   if (!value) {
     return "";
   }
   const date = new Date(value);
   return Number.isNaN(date.getTime())
     ? ""
-    : date.toLocaleString("zh-CN", { hour12: false });
+    : date.toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" });
+}
+
+function automationBrowserPresentation(data) {
+  if (data.browser_state === "running") {
+    return ["已运行", "success"];
+  }
+  if (data.browser_state === "stopped") {
+    return ["未运行", "timeout"];
+  }
+  return [data.browser_message || "不可用", "failed"];
+}
+
+function automationBrowserDetail(data) {
+  if (data.browser_state === "stopped") {
+    return "用于执行浏览器自动化";
+  }
+  if (data.browser_state !== "running") {
+    return data.browser_message || "";
+  }
+  const mode = {
+    headless: "无界面",
+    headed: "有界面",
+  }[data.browser_mode] || data.browser_mode;
+  return ["本地 Debug Chrome", mode].filter(Boolean).join(" · ");
+}
+
+function feishuPresentation(data) {
+  return {
+    available: ["登录有效", "success"],
+    login_required: ["需登录", "timeout"],
+    failed: ["失败", "failed"],
+    browser_stopped: ["未运行", "muted"],
+    checking: ["检查中", "muted"],
+    unchecked: ["未检查", "muted"],
+  }[data.state] || ["状态未知", "muted"];
+}
+
+function feishuDetail(data) {
+  if (data.state === "available") {
+    return `登录验证于 ${automationMonthDay(data.checked_at)}`;
+  }
+  if (data.state === "browser_stopped") {
+    return "用于飞书登录与任务执行";
+  }
+  return data.message || "";
 }
 
 function automationStatusKind(state) {
@@ -396,11 +441,9 @@ function renderAutomationEnvironment(data) {
   const feishuChecking = data.feishu_environment.state === "checking";
   const automationBusy = initializing || feishuChecking || data.tasks.some((task) => ["queued", "running"].includes(task.state.status));
   automationBrowserState = data.browser_state;
-  setBadge(
-    elements.automationBrowserBadge,
-    `${data.browser_message}${data.browser_profile_name ? ` · ${data.browser_profile_name}` : ""}${data.browser_mode ? ` · ${data.browser_mode}` : ""}`,
-    browserRunning ? "success" : data.browser_state === "stopped" ? "timeout" : "failed",
-  );
+  const [browserBadgeText, browserBadgeKind] = automationBrowserPresentation(data);
+  setBadge(elements.automationBrowserBadge, browserBadgeText, browserBadgeKind);
+  elements.automationBrowserDetail.textContent = automationBrowserDetail(data);
   elements.automationBrowserControl.disabled = (
     !["running", "stopped"].includes(data.browser_state)
     || (browserRunning && automationBusy)
@@ -433,20 +476,9 @@ function renderAutomationEnvironment(data) {
   } else if (data.browser_profiles_error && !automationBrowserProfiles.length) {
     setMessage(elements.automationEnvironmentMessage, data.browser_profiles_error, "error");
   }
-  const feishuTime = automationTime(data.feishu_environment.checked_at);
-  const feishuBadgeKind = {
-    available: "success",
-    login_required: "timeout",
-    failed: "failed",
-    browser_stopped: "muted",
-    checking: "muted",
-    unchecked: "muted",
-  }[data.feishu_environment.state] || "muted";
-  setBadge(
-    elements.automationFeishuBadge,
-    `${data.feishu_environment.message}${feishuTime ? ` · ${feishuTime}` : ""}`,
-    feishuBadgeKind,
-  );
+  const [feishuBadgeText, feishuBadgeKind] = feishuPresentation(data.feishu_environment);
+  setBadge(elements.automationFeishuBadge, feishuBadgeText, feishuBadgeKind);
+  elements.automationFeishuDetail.textContent = feishuDetail(data.feishu_environment);
   elements.automationFeishuCheck.disabled = !browserRunning || automationBusy;
   elements.automationFeishuCheck.textContent = feishuChecking
     ? "检查中…"

@@ -1,8 +1,10 @@
 # Chub OpenClaw 插件
 
+> 本 README 是插件源码、构建、部署和协议升级操作手册。业务身份、路由、幂等、安全边界及微信 Context Token 规则统一见 [OpenClaw 定制集成设计](../../../docs/OPENCLAW_CUSTOMIZATION_DESIGN.md)。
+
 > 状态：统一消息调度 v3 已部署，普通文字和可信语音已完成 macOS、Ubuntu 真实验收；插件协议边界已完成自动化验证。Chub 内部固定指令和 Requests 的业务验收状态由接入设计维护，未改变 v3 协议时不要求重建插件。
 
-Chub 仓库内的插件、API 和消息路由索引统一见[Chub 集成能力清单](../../../docs/CHUB_INTEGRATION_CAPABILITIES.md)；整体边界遵循[Chub 总体架构](../../../docs/CHUB_ARCHITECTURE_DESIGN.md)和[Chub–OpenClaw 接入设计](../../../docs/CHUB_OPENCLAW_INTEGRATION_DESIGN.md)。本文只维护 `chub` 插件自身的协议、源码、部署和验收规则。
+Chub 仓库内的插件、API 和消息路由索引统一见[Chub 集成能力清单](../../../docs/CHUB_INTEGRATION_CAPABILITIES.md)；整体边界遵循[Chub 总体架构](../../../docs/CHUB_ARCHITECTURE_DESIGN.md)和[OpenClaw 定制集成设计](../../../docs/OPENCLAW_CUSTOMIZATION_DESIGN.md)。本文只维护 `chub` 插件自身的协议、源码、部署和验收规则。
 
 ## 1. 插件定位
 
@@ -80,13 +82,13 @@ POST /api/openclaw/wechat-chub-mode/dispatch
 
 ## 5. Chub 业务边界
 
-插件只把一条可信消息交给统一接口，不感知 Chub 最终选择固定路由还是普通任务，也不维护任何业务指令表。当前路由能力、指令语法、用户可见行为和回复格式见[集成能力清单第 4 节](../../../docs/CHUB_INTEGRATION_CAPABILITIES.md#4-微信-clawbot-指令)；端到端任务、幂等、安全和完成通知边界见[接入设计](../../../docs/CHUB_OPENCLAW_INTEGRATION_DESIGN.md)。
+插件只把一条可信消息交给统一接口，不感知 Chub 最终选择固定路由还是普通任务，也不维护任何业务指令表。当前路由能力、指令语法、用户可见行为和回复格式见[集成能力清单第 4 节](../../../docs/CHUB_INTEGRATION_CAPABILITIES.md#4-微信-clawbot-指令)；端到端任务、幂等、安全和完成通知边界见[OpenClaw 定制集成设计](../../../docs/OPENCLAW_CUSTOMIZATION_DESIGN.md)。
 
 插件只依赖 `pass`、`reply`、`handled` 三种协议决定，因此 Chub 在不改变请求、响应和交付语义时可以独立增删内部路由，无需修改或重新部署插件。消息正文不能提供任意动作、接口、Session ID、任务、权限、模型、路径或命令；固定指令中的持久槽位参数只由 Chub 解释，不等同于 Session 列表位置。
 
 ## 6. 业务依赖边界
 
-Context Token 由腾讯微信插件维护，升级后的持久化与恢复要求见[Context Token 补丁规范](../../../docs/WEIXIN_CLAWBOT_CONTEXT_TOKEN_AI_PATCH.md)。Chub 任务、Session、最终通知和重启结果属于 Chub 业务，见[接入设计](../../../docs/CHUB_OPENCLAW_INTEGRATION_DESIGN.md)。
+Context Token 由腾讯微信插件维护，升级后的持久化与恢复要求见[OpenClaw 定制集成设计第 7 节](../../../docs/OPENCLAW_CUSTOMIZATION_DESIGN.md#7-context-token-持久化与兼容恢复)。Chub 任务、Session、最终通知和重启结果属于 Chub 业务，见[OpenClaw 定制集成设计](../../../docs/OPENCLAW_CUSTOMIZATION_DESIGN.md)。
 
 Chub 插件只传递可信入站路由和交付同步决定，不保存 Token 正文，不跟踪异步任务终态，也不把通知失败改写为任务失败。
 
@@ -178,7 +180,7 @@ Owner 和微信 Chub 模式就绪。只启用 Agent Tool 时可保持 `weixinChu
 2. 插件对新增交付决定的执行逻辑；如插件配置或 Tool 契约变化，同时更新静态清单。
 3. Chub API、路由服务和插件测试，至少覆盖新版本成功、旧版本拒绝、无效响应失败关闭和重复消息。
 4. 重新构建 `dist/`，完成插件校验、安装、Gateway 重载，并确认插件 `loaded`、ClawBot `running`。
-5. 更新本文第 4、9 节和顶部状态；仅在端到端业务边界或用户可见产品能力同时变化时，才同步更新[接入设计](../../../docs/CHUB_OPENCLAW_INTEGRATION_DESIGN.md)或项目 README。
+5. 更新本文第 4、9 节和顶部状态；仅在端到端业务边界或用户可见产品能力同时变化时，才同步更新[OpenClaw 定制集成设计](../../../docs/OPENCLAW_CUSTOMIZATION_DESIGN.md)或项目 README。
 6. 只有插件、API 或路由能力发生增删时，才更新[能力清单](../../../docs/CHUB_INTEGRATION_CAPABILITIES.md)；能力清单不重复维护协议实现细节。
 
 macOS、Ubuntu 分别记录实际部署与验收结果。某平台尚未部署新版本时，应明确写“待同步部署”，不能把仓库实现、自动化验证或另一平台验收等同于该平台已生效。

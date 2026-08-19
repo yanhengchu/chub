@@ -43,6 +43,8 @@ WeixinChubModeSubmissionCode = Literal[
     "codex_retry_checked",
     "chub_slots_synced",
     "chub_restart_requested",
+    "system_upgrade_checked",
+    "system_upgrade_requested",
 ]
 WeixinChubModeDispatchCode = Literal[
     "mode_disabled",

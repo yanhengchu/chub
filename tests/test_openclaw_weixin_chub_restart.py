@@ -83,6 +83,86 @@ def test_chub_restart_registers_fixed_restart_and_replies(
     quick_interactions.submit.assert_not_called()
 
 
+def test_system_upgrade_status_is_fixed_read_only_command(settings: Settings) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    reader = MagicMock(
+        return_value=SimpleNamespace(
+            state="available",
+            message="升级方案已就绪。",
+        )
+    )
+    manager.system_upgrade_status_reader = reader
+
+    result = manager.dispatch(
+        message_id="system-upgrade-status",
+        prompt="system upgrade status",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == "System upgrade: Ready · 升级方案已就绪。"
+    reader.assert_called_once_with()
+    quick_interactions.submit.assert_not_called()
+
+
+def test_system_upgrade_starts_once_without_creating_a_task(settings: Settings) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    starter = MagicMock(
+        return_value=SimpleNamespace(
+            state="preparing",
+            message="正在关闭新的写入。",
+        )
+    )
+    manager.system_upgrade_starter = starter
+
+    first = manager.dispatch(
+        message_id="system-upgrade-start",
+        prompt="system upgrade",
+        message_type="text",
+        correlation_id="upgrade-1",
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+    duplicate = manager.dispatch(
+        message_id="system-upgrade-start",
+        prompt="system upgrade",
+        message_type="text",
+        correlation_id="upgrade-1",
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert first.message == "System upgrade: Started. Check with system upgrade status."
+    assert duplicate == first
+    starter.assert_called_once_with("100.64.0.21")
+    quick_interactions.submit.assert_not_called()
+
+
+def test_system_upgrade_rejected_by_shared_preconditions(settings: Settings) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    manager.system_upgrade_starter = MagicMock(
+        side_effect=ApiError(
+            409,
+            "system_upgrade_precondition_failed",
+            "Quick Worker 尚未就绪。",
+        )
+    )
+
+    result = manager.dispatch(
+        message_id="system-upgrade-blocked",
+        prompt="system upgrade",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == "System upgrade: Not started · Quick Worker 尚未就绪。"
+    quick_interactions.submit.assert_not_called()
+
+
 def test_chub_restart_initial_reply_lists_sessions_and_running_tasks(
     settings: Settings,
 ) -> None:

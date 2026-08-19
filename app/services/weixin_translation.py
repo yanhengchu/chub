@@ -129,6 +129,7 @@ class WeixinTranslationManager:
         self._lock = threading.RLock()
         self._retire_lock = threading.Lock()
         self._closed = False
+        self._system_upgrade_reset = False
         self._state_error = False
         self._worker_watchers: set[str] = set()
         self._completion_handler: Callable[
@@ -644,6 +645,54 @@ class WeixinTranslationManager:
         with self._lock:
             self._closed = True
 
+    def system_upgrade_readiness(self) -> str | None:
+        with self._lock:
+            if self._state_error:
+                return "微信文本优化状态不可用。"
+            if any(
+                item.status in {"queued", "running", "translated"}
+                or item.notification_status in {"pending", "sending"}
+                for item in self._state.entries
+            ):
+                return "仍有微信文本优化任务或通知尚未结束。"
+            return None
+
+    def acquire_system_upgrade_guard(
+        self,
+        timeout: float = 5.0,
+        *,
+        force: bool = False,
+    ) -> None:
+        if not self._retire_lock.acquire(timeout=timeout):
+            raise OSError("微信文本优化 Session 清理尚未结束。")
+        readiness = self.system_upgrade_readiness()
+        if readiness is not None and not force:
+            self._retire_lock.release()
+            raise OSError(readiness)
+
+    def release_system_upgrade_guard(self) -> None:
+        self._retire_lock.release()
+
+    def reset_for_system_upgrade(self, *, force: bool = False) -> None:
+        with self._lock:
+            readiness = self.system_upgrade_readiness()
+            if readiness is not None and not force:
+                raise OSError(readiness)
+            already_reset = (
+                self._state.session_id is None
+                and not self._state.retired_sessions
+                and not self._state.entries
+            )
+            generation = self._state.generation + (0 if already_reset else 1)
+            next_state = TranslationState(
+                enabled_override=self._state.enabled_override,
+                generation=generation,
+                session_generation=generation,
+            )
+            self._write(next_state)
+            self._state = next_state
+            self._system_upgrade_reset = True
+
     def _load(self) -> TranslationState:
         try:
             if self.path.is_symlink():
@@ -820,6 +869,8 @@ class WeixinTranslationManager:
         return next(item for item in self._state.entries if item.id == entry_id)
 
     def _write(self, state: TranslationState) -> None:
+        if self._system_upgrade_reset:
+            return
         if self.path.is_symlink():
             raise OSError("Weixin translation state must not be a symlink")
         self.path.parent.mkdir(parents=True, exist_ok=True)

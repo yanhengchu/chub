@@ -46,9 +46,20 @@
     <dialog id="openclaw-weixin-dialog" class="codex-workspace-dialog" aria-labelledby="openclaw-weixin-dialog-title">
       <div class="codex-workspace-dialog-surface openclaw-weixin-dialog-surface">
         <div class="codex-workspace-dialog-header">
-          <h2 id="openclaw-weixin-dialog-title">绑定微信 ClawBot</h2>
+          <h2 id="openclaw-weixin-dialog-title">微信绑定</h2>
           <button id="openclaw-weixin-close" class="button-link codex-workspace-dialog-close" type="button" aria-label="关闭微信绑定">关闭</button>
         </div>
+        <p class="openclaw-weixin-lead">查看当前绑定状态后，可为此 ClawBot 生成新的微信连接二维码。</p>
+        <section class="openclaw-weixin-context" aria-label="当前微信绑定配置">
+          <div class="openclaw-weixin-context-row">
+            <span class="openclaw-weixin-context-label">消息通道</span>
+            <strong id="openclaw-weixin-account-summary" class="openclaw-weixin-context-value">正在读取当前账户状态</strong>
+          </div>
+          <div class="openclaw-weixin-context-row">
+            <span class="openclaw-weixin-context-label">Owner 授权</span>
+            <strong id="openclaw-weixin-owner-summary" class="openclaw-weixin-context-value">正在读取当前 Owner 配置</strong>
+          </div>
+        </section>
         <p class="openclaw-weixin-notice">重新扫码可能使该 ClawBot 在其他设备上的服务端绑定失效。绑定只建立消息通道，不会自动完成发送者配对或 Owner 授权。</p>
         <div id="openclaw-weixin-qr-panel" class="openclaw-weixin-qr-panel" hidden>
           <img id="openclaw-weixin-qr" alt="微信 ClawBot 绑定二维码">
@@ -166,7 +177,7 @@
           <div class="card-content" data-card-content>
           <div class="card-content-inner">
           <section class="project-document-group" aria-labelledby="weekly-reports-title">
-            <h3 id="weekly-reports-title" class="document-group-title">本期周报{% if weekly_reports %} · {{ weekly_reports[0].period }}{% endif %}</h3>
+            <h3 id="weekly-reports-title" class="card-group-title">本期周报{% if weekly_reports %} · {{ weekly_reports[0].period }}{% endif %}</h3>
             <div id="weekly-report-list" class="design-document-list design-document-list-compact">
               {% for report in weekly_reports %}
               <article class="design-document-item{% if not report.available %} design-document-item-unavailable{% endif %}">
@@ -198,7 +209,7 @@
             </div>
           </section>
           <section class="project-document-group" aria-labelledby="design-list-title">
-          <h3 id="design-list-title" class="document-group-title">设计与调研</h3>
+          <h3 id="design-list-title" class="card-group-title">设计与调研</h3>
           <div id="design-document-list" class="design-document-list design-document-list-compact">
             {% for document in design_documents %}
             <article class="design-document-item">
@@ -242,11 +253,40 @@
           </div>
           <div class="card-content" data-card-content>
           <div class="card-content-inner">
-          <div class="automation-summary">
-            <span>配置任务</span>
-            <span id="automation-count">0 个任务</span>
-          </div>
-          <div id="automation-list" class="automation-list"></div>
+          <section class="automation-task-group" aria-labelledby="automation-task-title">
+            <h3 id="automation-task-title" class="card-group-title">配置任务 · <span id="automation-count">0 个任务</span></h3>
+            <div id="automation-list" class="automation-list"></div>
+          </section>
+          <section class="automation-environment" aria-labelledby="automation-environment-title">
+            <h3 id="automation-environment-title" class="card-group-title">自动化环境</h3>
+            <div class="workstation-status-list">
+              <div class="workstation-status-row">
+                <div class="workstation-status-copy">
+                  <strong>浏览器环境</strong>
+                  <span id="automation-browser-detail">用于执行浏览器自动化</span>
+                </div>
+                <div class="workstation-status-actions automation-browser-actions">
+                  <span id="automation-browser-badge" class="badge badge-muted">正在检查</span>
+                  <button id="automation-browser-control" class="button-secondary" type="button" aria-haspopup="dialog" aria-controls="automation-browser-dialog" disabled>检查中…</button>
+                </div>
+              </div>
+              <div class="workstation-status-row">
+                <div class="workstation-status-copy">
+                  <strong>飞书环境</strong>
+                  <span id="automation-feishu-detail">用于飞书登录与任务执行</span>
+                </div>
+                <div class="workstation-status-actions automation-browser-actions">
+                  <span id="automation-feishu-badge" class="badge badge-muted">未检查</span>
+                  <button id="automation-feishu-check" class="button-secondary" type="button" disabled>检查</button>
+                </div>
+              </div>
+            </div>
+            <div id="automation-feishu-login" class="automation-feishu-login" hidden>
+              <img id="automation-feishu-qr" alt="飞书登录二维码">
+              <p>请使用飞书移动端扫码登录</p>
+            </div>
+            <p id="automation-environment-message" class="message" aria-live="polite"></p>
+          </section>
           <p id="automation-message" class="message" aria-live="polite"></p>
           <div class="card-footer-actions">
             <a class="button-link" href="/automations">全部任务</a>
@@ -260,99 +300,62 @@
             <div class="card-heading-copy" data-card-heading>
               <p class="section-kicker">环境与服务</p>
               <h2 id="workstation-title">工作站环境</h2>
-              <p class="section-description">管理 Chub 服务、自动化依赖与 OpenClaw。</p>
+              <p class="section-description">管理控制、执行与微信交互链路。</p>
             </div>
             <button id="refresh-workstation-environment" class="button-secondary" type="button">刷新</button>
           </div>
           <div class="card-content" data-card-content>
             <div class="card-content-inner">
-              <section class="workstation-group" aria-labelledby="workstation-core-title">
-                <div class="workstation-group-heading">
-                  <h3 id="workstation-core-title">核心服务</h3>
-                </div>
+              <section class="workstation-service-group" aria-labelledby="workstation-service-title">
+                <h3 id="workstation-service-title" class="card-group-title">运行与维护</h3>
                 <div class="workstation-status-list">
-                  <div class="workstation-status-row">
-                    <div class="workstation-status-copy">
-                      <strong>Chub Web</strong>
-                      <span id="chub-service-detail">正在检查服务状态</span>
-                      <p id="chub-service-message" class="message" aria-live="polite"></p>
-                    </div>
-                    <div class="workstation-status-actions">
-                      <span id="chub-service-badge" class="badge badge-muted">正在检查</span>
-                      <button id="restart-hub" class="button-secondary" type="button" aria-haspopup="dialog" aria-controls="confirmation-dialog" disabled>重启</button>
-                    </div>
+                <div class="workstation-status-row">
+                  <div class="workstation-status-copy">
+                    <strong>Chub Web</strong>
+                    <span id="chub-service-detail">控制面：页面、API、权限与任务协调</span>
+                    <p id="chub-service-message" class="message" aria-live="polite"></p>
                   </div>
-                  <div class="workstation-status-row">
-                    <div class="workstation-status-copy">
-                      <strong>Quick Worker</strong>
-                      <span id="quick-worker-detail">正在检查任务执行服务</span>
-                      <p id="quick-worker-message" class="message" aria-live="polite"></p>
-                    </div>
-                    <div class="workstation-status-actions">
-                      <span id="quick-worker-badge" class="badge badge-muted">正在检查</span>
-                      <button id="quick-worker-restart" class="button-secondary" type="button" aria-haspopup="dialog" aria-controls="confirmation-dialog" disabled>重启</button>
-                    </div>
+                  <div class="workstation-status-actions">
+                    <span id="chub-service-badge" class="badge badge-muted">正在检查</span>
+                    <button id="restart-hub" class="button-secondary" type="button" aria-haspopup="dialog" aria-controls="confirmation-dialog" disabled>重启</button>
                   </div>
+                </div>
+                <div class="workstation-status-row">
+                  <div class="workstation-status-copy">
+                    <strong>Quick Worker</strong>
+                    <span id="quick-worker-detail">执行面：后台 AI 任务与可靠终态</span>
+                    <p id="quick-worker-message" class="message" aria-live="polite"></p>
+                  </div>
+                  <div class="workstation-status-actions">
+                    <span id="quick-worker-badge" class="badge badge-muted">正在检查</span>
+                    <button id="quick-worker-restart" class="button-secondary" type="button" aria-haspopup="dialog" aria-controls="confirmation-dialog" disabled>重启</button>
+                  </div>
+                </div>
+                <div class="workstation-status-row">
+                  <div class="workstation-status-copy">
+                    <strong>ClawBot</strong>
+                    <span id="clawbot-detail">交互面：正在检查微信消息通道</span>
+                    <p id="openclaw-message" class="message" aria-live="polite"></p>
+                  </div>
+                  <div class="workstation-status-actions openclaw-actions">
+                    <span id="clawbot-badge" class="badge badge-muted">正在检查</span>
+                    <button id="openclaw-bind-weixin" class="button-secondary" type="button" hidden>微信</button>
+                    <button id="openclaw-start" class="button-secondary" type="button" hidden>启动</button>
+                    <button id="openclaw-restart" class="button-secondary" type="button" hidden>重启</button>
+                  </div>
+                </div>
+                <div class="workstation-status-row">
+                  <div class="workstation-status-copy">
+                    <strong>系统升级与恢复</strong>
+                    <span id="system-upgrade-detail">状态：正在检查运行态恢复条件</span>
+                  </div>
+                  <div class="workstation-status-actions">
+                    <button id="system-upgrade-start" class="button-danger" type="button" aria-haspopup="dialog" aria-controls="confirmation-dialog" disabled>升级与恢复</button>
+                  </div>
+                </div>
                 </div>
               </section>
-
-              <section class="workstation-group" aria-labelledby="automation-environment-title">
-                <div class="workstation-group-heading">
-                  <h3 id="automation-environment-title">自动化环境</h3>
-                </div>
-                <div class="workstation-status-list">
-                  <div class="workstation-status-row">
-                    <div class="workstation-status-copy">
-                      <strong>浏览器环境</strong>
-                    </div>
-                    <div class="workstation-status-actions automation-browser-actions">
-                      <span id="automation-browser-badge" class="badge badge-muted">正在检查</span>
-                      <button id="automation-browser-control" class="button-secondary" type="button" aria-haspopup="dialog" aria-controls="automation-browser-dialog" disabled>检查中…</button>
-                    </div>
-                  </div>
-                  <div class="workstation-status-row">
-                    <div class="workstation-status-copy">
-                      <strong>飞书环境</strong>
-                    </div>
-                    <div class="workstation-status-actions automation-browser-actions">
-                      <span id="automation-feishu-badge" class="badge badge-muted">未检查</span>
-                      <button id="automation-feishu-check" class="button-secondary" type="button" disabled>检查</button>
-                    </div>
-                  </div>
-                </div>
-                <div id="automation-feishu-login" class="automation-feishu-login" hidden>
-                  <img id="automation-feishu-qr" alt="飞书登录二维码">
-                  <p>请使用飞书移动端扫码登录</p>
-                </div>
-                <p id="automation-environment-message" class="message" aria-live="polite"></p>
-              </section>
-
-              <section class="workstation-group" aria-labelledby="openclaw-title">
-                <div class="workstation-group-heading">
-                  <h3 id="openclaw-title">OpenClaw 环境</h3>
-                </div>
-                <div class="openclaw-status-list">
-                  <div class="openclaw-status-row">
-                    <span class="openclaw-status-label">网关状态</span>
-                    <span id="openclaw-gateway-badge" class="badge badge-muted">正在检查</span>
-                  </div>
-                  <div class="openclaw-status-row">
-                    <span class="openclaw-status-label">消息通道</span>
-                    <span id="openclaw-channels" class="badge badge-muted">正在检查</span>
-                  </div>
-                  <a id="openclaw-access-open" class="openclaw-status-row openclaw-access" href="#" aria-label="打开 OpenClaw" hidden>
-                    <span class="openclaw-status-label">访问入口</span>
-                    <span class="openclaw-access-action">打开 ›</span>
-                  </a>
-                </div>
-                <p id="openclaw-message" class="message" aria-live="polite"></p>
-                <div class="openclaw-actions">
-                  <button id="openclaw-bind-weixin" class="button-secondary" type="button" hidden>绑定微信</button>
-                  <button id="openclaw-start" class="button-secondary" type="button" hidden>启动</button>
-                  <button id="openclaw-restart" class="button-secondary" type="button" hidden>重启</button>
-                  <button id="openclaw-stop" class="button-danger" type="button" hidden>停止</button>
-                </div>
-              </section>
+            </div>
             </div>
           </div>
         </section>

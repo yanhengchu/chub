@@ -1,0 +1,945 @@
+import json
+import os
+import subprocess
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import httpx
+import pytest
+import yaml
+
+from app.ai_session import AiSessionManager
+from app.application import create_app
+from app.codex.models import QuickInteractionWeixinRoute
+from app.core.build_info import SESSION_SCHEMA_VERSION, WEB_CODE_VERSION
+from app.core.config import Settings
+from app.quick_worker import PROTOCOL_VERSION
+from app.services.openclaw import OpenClawManager
+from app.services.system_upgrade import (
+    SystemUpgradeCoordinator,
+    SystemUpgradeSession,
+    load_system_upgrade_plan,
+    runtime_recovery_plan,
+    system_upgrade_restart_readiness,
+)
+from app.system_upgrade_cli import prepare_restart
+from app.quick_worker_tasks import (
+    worker_leases_dir,
+    worker_tasks_dir,
+    worker_tombstones_dir,
+)
+
+
+TOKEN = "test-token-that-is-long-enough-for-tests"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def write_plan(path: Path) -> None:
+    path.write_text(
+        """{
+  "version": 1,
+  "contract_version": 1,
+  "plan_id": "ai-session-manager-v1",
+  "action": "runtime-data-reset",
+  "title": "切换 AI Session 数据协议",
+  "summary": "清理 Chub Session 关联并切换到新数据协议。",
+  "source_code_version": "%s",
+  "target_code_version": "phase3b-ai-session-manager-v1",
+  "source_session_schema": %d,
+  "target_session_schema": %d,
+  "source_worker_protocol": %d,
+  "target_worker_protocol": %d,
+  "effects": ["旧 Session 与运行记录将被清理"],
+  "preserves": ["配置、日志、资料和 Codex 原生 Session 继续保留"]
+}
+"""
+        % (
+            WEB_CODE_VERSION,
+            SESSION_SCHEMA_VERSION,
+            SESSION_SCHEMA_VERSION + 1,
+            PROTOCOL_VERSION - 1,
+            PROTOCOL_VERSION,
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_plan_loader_accepts_only_current_fixed_source(tmp_path: Path) -> None:
+    path = tmp_path / "system-upgrade.json"
+    write_plan(path)
+
+    loaded = load_system_upgrade_plan(path)
+
+    assert loaded is not None
+    assert loaded.plan.plan_id == "ai-session-manager-v1"
+    assert len(loaded.fingerprint) == 64
+
+
+def test_plan_loader_rejects_writable_plan(tmp_path: Path) -> None:
+    path = tmp_path / "system-upgrade.json"
+    write_plan(path)
+    os.chmod(path, 0o666)
+
+    with pytest.raises(OSError, match="权限"):
+        load_system_upgrade_plan(path)
+
+
+def test_plan_loader_allows_worker_only_target_change(tmp_path: Path) -> None:
+    path = tmp_path / "system-upgrade.json"
+    write_plan(path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["target_code_version"] = payload["source_code_version"]
+    payload["target_session_schema"] = payload["source_session_schema"]
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    loaded = load_system_upgrade_plan(path)
+
+    assert loaded is not None
+    assert loaded.plan.target_worker_protocol == PROTOCOL_VERSION
+
+
+def test_plan_loader_allows_fixed_runtime_data_reset(tmp_path: Path) -> None:
+    path = tmp_path / "system-upgrade.json"
+    write_plan(path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["target_code_version"] = payload["source_code_version"]
+    payload["target_session_schema"] = payload["source_session_schema"]
+    payload["target_worker_protocol"] = payload["source_worker_protocol"]
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert load_system_upgrade_plan(path) is not None
+
+
+def test_app_uses_ai_session_manager_without_reading_legacy_store(
+    settings: Settings,
+) -> None:
+    settings.codex_pty.data_file.write_text("[]", encoding="utf-8")
+    settings.codex_pty.data_file.chmod(0o600)
+
+    application = create_app(settings)
+    try:
+        assert isinstance(application.state.codex_pty_manager, AiSessionManager)
+        assert application.state.ai_session_manager is application.state.codex_pty_manager
+        assert not application.state.codex_pty_manager.store.list()
+    finally:
+        application.state.codex_pty_manager.close()
+
+
+def test_restart_environment_requires_fixed_service_definitions(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    script = project_root / "scripts" / "chub-system-upgrade-restart"
+    python = project_root / ".venv" / "bin" / "python"
+    systemd_root = tmp_path / "systemd"
+    for path in (script, python):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+        path.chmod(0o700)
+    systemd_root.mkdir()
+    for name in ("chub.service", "chub-quick-worker.service"):
+        target = systemd_root / name
+        target.write_text("[Service]\n", encoding="utf-8")
+        target.chmod(0o600)
+    environment = {"CHUB_SYSTEMD_USER_DIR": str(systemd_root)}
+
+    with patch("app.services.system_upgrade.shutil.which", return_value="/bin/systemctl"):
+        assert (
+            system_upgrade_restart_readiness(
+                project_root,
+                "ubuntu",
+                environment=environment,
+            )
+            is None
+        )
+        (systemd_root / "chub-quick-worker.service").unlink()
+        assert "尚未安装" in system_upgrade_restart_readiness(
+            project_root,
+            "ubuntu",
+            environment=environment,
+        )
+
+
+def test_coordinator_blocks_writes_and_releases_before_destructive_failure(
+    tmp_path: Path,
+) -> None:
+    plan_path = tmp_path / "plan.json"
+    write_plan(plan_path)
+    loaded = load_system_upgrade_plan(plan_path)
+    assert loaded is not None
+    coordinator = SystemUpgradeCoordinator(
+        tmp_path / "state" / "system-upgrade.json",
+        plan_path,
+        "old-instance",
+    )
+    calls = []
+
+    operation = coordinator.begin(
+        loaded,
+        source_ip="127.0.0.1",
+        old_worker_generation="a" * 32,
+        runner=lambda operation_id: calls.append(operation_id),
+    )
+
+    assert coordinator.writes_blocked() is True
+    coordinator.fail(operation.operation_id, "preflight failed")
+    assert coordinator.writes_blocked() is False
+    assert calls == [operation.operation_id]
+
+
+def test_coordinator_keeps_gate_closed_after_runtime_state_cleanup_failure(
+    tmp_path: Path,
+) -> None:
+    plan_path = tmp_path / "plan.json"
+    write_plan(plan_path)
+    loaded = load_system_upgrade_plan(plan_path)
+    assert loaded is not None
+    state_path = tmp_path / "state" / "system-upgrade.json"
+    coordinator = SystemUpgradeCoordinator(state_path, plan_path, "old-instance")
+    operation = coordinator.begin(
+        loaded,
+        source_ip="127.0.0.1",
+        old_worker_generation="b" * 32,
+        runner=lambda _operation_id: None,
+    )
+    coordinator.update(
+        operation.operation_id,
+        stage="cleaning_state",
+        destructive_started=True,
+    )
+    coordinator.fail(operation.operation_id, "cleanup failed")
+
+    recovered = SystemUpgradeCoordinator(state_path, plan_path, "new-instance")
+
+    assert recovered.writes_blocked() is True
+    assert recovered.operation().status == "failed"
+    with pytest.raises(Exception, match="最终验证"):
+        recovered.begin(
+            loaded,
+            source_ip="127.0.0.1",
+            old_worker_generation="c" * 32,
+            runner=lambda _operation_id: None,
+        )
+
+
+@pytest.mark.parametrize(
+    ("failed_stage", "expected_stage"),
+    [
+        ("cleaning_state", "draining_worker"),
+        ("launching_services", "launching_services"),
+        ("restarting_services", "launching_services"),
+        ("verifying_new_instance", "verifying_new_instance"),
+    ],
+)
+def test_coordinator_resumes_destructive_failure_from_durable_checkpoint(
+    tmp_path: Path,
+    failed_stage: str,
+    expected_stage: str,
+) -> None:
+    plan_path = tmp_path / "plan.json"
+    write_plan(plan_path)
+    loaded = load_system_upgrade_plan(plan_path)
+    assert loaded is not None
+    coordinator = SystemUpgradeCoordinator(
+        tmp_path / "state" / "system-upgrade.json",
+        plan_path,
+        "old-instance",
+    )
+    operation = coordinator.begin(
+        loaded,
+        source_ip="127.0.0.1",
+        old_worker_generation="d" * 32,
+        runner=lambda _operation_id: None,
+    )
+    coordinator.mark_started(operation.operation_id)
+    coordinator.update(
+        operation.operation_id,
+        stage=failed_stage,
+        destructive_started=True,
+    )
+    coordinator.fail(operation.operation_id, "interrupted")
+
+    resumed = coordinator.resume_failed(lambda _operation_id: None)
+
+    assert resumed is not None
+    assert resumed.operation_id == operation.operation_id
+    assert resumed.status == "started"
+    assert resumed.stage == expected_stage
+    assert coordinator.writes_blocked() is True
+
+
+def test_coordinator_persists_session_cleanup_journal(tmp_path: Path) -> None:
+    plan_path = tmp_path / "plan.json"
+    write_plan(plan_path)
+    loaded = load_system_upgrade_plan(plan_path)
+    assert loaded is not None
+    coordinator = SystemUpgradeCoordinator(
+        tmp_path / "state" / "system-upgrade.json",
+        plan_path,
+        "old-instance",
+    )
+    operation = coordinator.begin(
+        loaded,
+        source_ip="127.0.0.1",
+        old_worker_generation="c" * 32,
+        runner=lambda _operation_id: None,
+    )
+    sessions = [
+        SystemUpgradeSession(session_id="session-1", native_session_id="native-1"),
+        SystemUpgradeSession(session_id="session-2"),
+    ]
+
+    coordinator.update(
+        operation.operation_id,
+        stage="cleaning_state",
+        destructive_started=True,
+        sessions=sessions,
+    )
+    sessions[0].status = "discarded"
+    coordinator.update(operation.operation_id, sessions=sessions)
+
+    recovered = SystemUpgradeCoordinator(
+        coordinator.path,
+        plan_path,
+        "new-instance",
+    )
+    recorded = recovered.operation()
+    assert recorded is not None
+    assert [item.status for item in recorded.sessions] == ["discarded", "pending"]
+    assert recorded.discarded_sessions == 1
+
+
+def test_coordinator_keeps_gate_closed_when_failure_cannot_be_persisted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan_path = tmp_path / "plan.json"
+    write_plan(plan_path)
+    loaded = load_system_upgrade_plan(plan_path)
+    assert loaded is not None
+    coordinator = SystemUpgradeCoordinator(tmp_path / "state.json", plan_path, "old")
+    operation = coordinator.begin(
+        loaded,
+        source_ip="127.0.0.1",
+        old_worker_generation="a" * 32,
+        runner=lambda _operation_id: None,
+    )
+
+    monkeypatch.setattr(
+        coordinator,
+        "_write",
+        lambda _state: (_ for _ in ()).throw(OSError("state write failed")),
+    )
+
+    with pytest.raises(OSError, match="state write failed"):
+        coordinator.fail(operation.operation_id, "cleanup failed")
+
+    assert coordinator.writes_blocked() is True
+    assert coordinator.operation().status == "requested"
+
+
+def test_coordinator_reopens_gate_after_reversible_worker_drain_failure(
+    tmp_path: Path,
+) -> None:
+    plan_path = tmp_path / "plan.json"
+    write_plan(plan_path)
+    loaded = load_system_upgrade_plan(plan_path)
+    assert loaded is not None
+    state_path = tmp_path / "state" / "system-upgrade.json"
+    coordinator = SystemUpgradeCoordinator(state_path, plan_path, "old-instance")
+    operation = coordinator.begin(
+        loaded,
+        source_ip="127.0.0.1",
+        old_worker_generation="1" * 32,
+        runner=lambda _operation_id: None,
+    )
+    coordinator.update(operation.operation_id, worker_drain_started=True)
+    coordinator.fail(operation.operation_id, "freeze failed")
+
+    recovered = SystemUpgradeCoordinator(state_path, plan_path, "new-instance")
+
+    assert recovered.writes_blocked() is False
+    restarted = recovered.begin(
+        loaded,
+        source_ip="127.0.0.1",
+        old_worker_generation="2" * 32,
+        runner=lambda _operation_id: None,
+    )
+    assert restarted.operation_id != operation.operation_id
+
+
+def test_completed_runtime_recovery_can_be_started_again(tmp_path: Path) -> None:
+    coordinator = SystemUpgradeCoordinator(
+        tmp_path / "state" / "system-upgrade.json",
+        tmp_path / "missing-plan.json",
+        "old-instance",
+    )
+    plan = runtime_recovery_plan()
+    completed = coordinator.begin(
+        plan,
+        source_ip="127.0.0.1",
+        old_worker_generation="a" * 32,
+        runner=lambda _operation_id: None,
+    )
+    coordinator.succeed(completed.operation_id)
+
+    status = coordinator.status_data(None, session_count=0)
+    repeated = coordinator.begin(
+        plan,
+        source_ip="127.0.0.1",
+        old_worker_generation="b" * 32,
+        runner=lambda _operation_id: None,
+    )
+
+    assert status.state == "available"
+    assert status.can_start is True
+    assert status.plan is not None
+    assert status.plan.plan_id == "runtime-recovery"
+    assert repeated.operation_id != completed.operation_id
+
+
+def test_prepare_restart_removes_actual_and_declared_worker_protocol_state(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    plan_path = tmp_path / "plan.json"
+    write_plan(plan_path)
+    loaded = load_system_upgrade_plan(plan_path)
+    assert loaded is not None
+    coordinator = SystemUpgradeCoordinator(
+        settings.codex_pty.data_file.with_name("system-upgrade.json"),
+        plan_path,
+        "old",
+    )
+    operation = coordinator.begin(
+        loaded,
+        source_ip="127.0.0.1",
+        old_worker_generation="d" * 32,
+        old_worker_protocol=PROTOCOL_VERSION,
+        runner=lambda _operation_id: None,
+    )
+    coordinator.mark_started(operation.operation_id)
+    coordinator.update(
+        operation.operation_id,
+        stage="restarting_services",
+        destructive_started=True,
+        restart_launch_state="launched",
+        restart_process_id=os.getpid(),
+    )
+    source_paths = (
+        worker_tasks_dir(settings, PROTOCOL_VERSION - 1),
+        worker_tombstones_dir(settings, PROTOCOL_VERSION - 1),
+        worker_leases_dir(settings, PROTOCOL_VERSION - 1),
+    )
+    for path in source_paths:
+        path.mkdir(parents=True)
+        os.chmod(path, 0o700)
+        (path / "record.json").write_text("{}", encoding="utf-8")
+    actual_paths = (
+        worker_tasks_dir(settings, PROTOCOL_VERSION),
+        worker_tombstones_dir(settings, PROTOCOL_VERSION),
+        worker_leases_dir(settings, PROTOCOL_VERSION),
+    )
+    unrelated_paths = (
+        worker_tasks_dir(settings, PROTOCOL_VERSION + 1),
+        worker_tombstones_dir(settings, PROTOCOL_VERSION + 1),
+        worker_leases_dir(settings, PROTOCOL_VERSION + 1),
+    )
+    for path in (*actual_paths, *unrelated_paths):
+        path.mkdir(parents=True)
+        os.chmod(path, 0o700)
+    for path in (
+        settings.codex_pty.data_file,
+        settings.codex_pty.data_file.with_name("ai-sessions.json"),
+    ):
+        path.write_text("[]", encoding="utf-8")
+        path.chmod(0o600)
+    for path in (
+        settings.codex_pty.runtime_dir / "hooks",
+        settings.codex_pty.runtime_dir / "restart-requests",
+    ):
+        path.mkdir(parents=True)
+        path.chmod(0o700)
+        (path / "record.json").write_text("{}", encoding="utf-8")
+
+    with patch("app.system_upgrade_cli.load_settings", return_value=settings):
+        prepare_restart(operation.operation_id)
+
+    assert all(not path.exists() for path in source_paths)
+    assert all(not path.exists() for path in actual_paths)
+    assert all(path.is_dir() for path in unrelated_paths)
+    assert not settings.codex_pty.data_file.exists()
+    assert not settings.codex_pty.data_file.with_name("ai-sessions.json").exists()
+    assert not (settings.codex_pty.runtime_dir / "hooks").exists()
+    assert not (settings.codex_pty.runtime_dir / "restart-requests").exists()
+
+
+def test_system_upgrade_restart_uses_fixed_linux_services(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    plan_path = tmp_path / "plan.json"
+    write_plan(plan_path)
+    loaded = load_system_upgrade_plan(plan_path)
+    assert loaded is not None
+    coordinator = SystemUpgradeCoordinator(
+        settings.codex_pty.data_file.with_name("system-upgrade.json"),
+        plan_path,
+        "old",
+    )
+    operation = coordinator.begin(
+        loaded,
+        source_ip="127.0.0.1",
+        old_worker_generation="f" * 32,
+        runner=lambda _operation_id: None,
+    )
+    coordinator.mark_started(operation.operation_id)
+    coordinator.update(
+        operation.operation_id,
+        stage="launching_services",
+        destructive_started=True,
+        restart_launch_state="launching",
+    )
+    for path in (
+        worker_tasks_dir(settings, PROTOCOL_VERSION),
+        worker_tombstones_dir(settings, PROTOCOL_VERSION),
+        worker_leases_dir(settings, PROTOCOL_VERSION),
+    ):
+        path.mkdir(parents=True)
+        os.chmod(path, 0o700)
+    config_path = tmp_path / "settings.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "app": {"name": "Hub", "version": "0.1.0"},
+                "node": {"id": "test", "name": "Test", "type": "ubuntu"},
+                "server": {"host": "127.0.0.1", "port": 8080},
+                "security": {"allow_tailscale": False},
+                "codex_pty": {
+                    "workspace": str(settings.codex_pty.workspace),
+                    "data_file": str(settings.codex_pty.data_file),
+                    "runtime_dir": str(settings.codex_pty.runtime_dir),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    calls = tmp_path / "systemctl-calls.txt"
+    systemctl = fake_bin / "systemctl"
+    systemctl.write_text(
+        "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$CHUB_TEST_CALLS\"\n",
+        encoding="utf-8",
+    )
+    os.chmod(systemctl, 0o700)
+    environment = os.environ.copy()
+    environment.pop("CHUB_ACTIVITY_SOURCE", None)
+    environment.update(
+        {
+            "PATH": f"{fake_bin}:{environment['PATH']}",
+            "CHUB_TEST_PLATFORM": "Linux",
+            "CHUB_TEST_CALLS": str(calls),
+            "HUB_CONFIG_FILE": str(config_path),
+            "HUB_TOKEN": TOKEN,
+        }
+    )
+
+    process = subprocess.Popen(
+        [
+            str(PROJECT_ROOT / "scripts" / "chub-system-upgrade-restart"),
+            operation.operation_id,
+        ],
+        cwd=PROJECT_ROOT,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    coordinator.update(
+        operation.operation_id,
+        stage="restarting_services",
+        restart_launch_state="launched",
+        restart_process_id=process.pid,
+    )
+    stdout, stderr = process.communicate(timeout=10)
+
+    assert process.returncode == 0, stderr or stdout
+    assert calls.read_text(encoding="utf-8").splitlines() == [
+        "--user stop chub-quick-worker.service",
+        "--user restart chub-quick-worker.service",
+        "--user --no-block restart chub.service",
+    ]
+
+
+@pytest.mark.anyio
+async def test_system_upgrade_status_allows_runtime_recovery_without_plan(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    app = create_app(settings)
+    app.state.system_upgrade.plan_path = tmp_path / "system-upgrade.json"
+    transport = httpx.ASGITransport(app=app)
+
+    app.state.quick_interactions._recovery_ready = True
+    app.state.system_upgrade_restart_readiness = lambda: None
+    worker_health = {
+        "success": True,
+        "data": {
+            "status": "ready",
+            "protocol_version": PROTOCOL_VERSION,
+            "generation": "e" * 32,
+            "active_tasks": 1,
+            "queued_tasks": 1,
+            "uncertain_tasks": 0,
+            "corrupt_tasks": 0,
+            "available_runtime_ids": ["codex"],
+        },
+    }
+    with patch.object(app.state.codex_pty_manager, "available", return_value=True), patch(
+        "app.api.maintenance.read_health", return_value=worker_health
+    ):
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as client:
+            response = await client.get("/api/maintenance/system-upgrade")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["state"] == "available"
+    assert data["can_start"] is True
+    assert data["plan"]["plan_id"] == "runtime-recovery"
+    assert data["plan"]["session_count"] == 0
+
+
+@pytest.mark.anyio
+async def test_upgrade_gate_limits_only_ai_runtime_mutations(settings: Settings) -> None:
+    app = create_app(settings)
+    app.state.system_upgrade._writes_blocked = True
+    openclaw = MagicMock()
+    openclaw.control.return_value = OpenClawManager._parse_status(
+        {
+            "service": {
+                "loaded": True,
+                "command": {"sourcePath": "/tmp/openclaw.plist"},
+                "runtime": {"status": "running"},
+            },
+            "config": {"cli": {"exists": True, "valid": True}},
+            "gateway": {"bindMode": "loopback", "port": 18789},
+            "port": {"status": "listening"},
+            "rpc": {"ok": True},
+        }
+    )
+    app.state.openclaw_manager = openclaw
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    ) as client:
+        blocked = await client.post("/api/maintenance/restart")
+        clawbot = await client.post("/api/openclaw/restart")
+        session_read = await client.get("/api/codex/sessions")
+        health = await client.get("/api/health")
+
+    assert blocked.status_code == 409
+    assert blocked.json()["error"]["code"] == "system_upgrade_in_progress"
+    assert clawbot.status_code == 200
+    openclaw.control.assert_called_once_with("restart")
+    assert session_read.status_code == 200
+    assert health.status_code == 200
+
+
+@pytest.mark.anyio
+async def test_upgrade_gate_does_not_bypass_mutation_authentication(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    app.state.system_upgrade._writes_blocked = True
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/api/maintenance/restart")
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "authentication_required"
+
+
+@pytest.mark.anyio
+async def test_upgrade_rejects_changed_plan_fingerprint(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    app = create_app(settings)
+    plan_path = tmp_path / "system-upgrade.json"
+    write_plan(plan_path)
+    app.state.system_upgrade.plan_path = plan_path
+    transport = httpx.ASGITransport(app=app)
+
+    with patch.object(app.state.codex_pty_manager, "available", return_value=True):
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as client:
+            response = await client.post(
+                "/api/maintenance/system-upgrade",
+                json={"fingerprint": "0" * 64},
+            )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "system_upgrade_plan_changed"
+
+
+@pytest.mark.anyio
+async def test_upgrade_preview_allows_recovery_from_corrupt_session_store(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    app = create_app(settings)
+    plan_path = tmp_path / "system-upgrade.json"
+    write_plan(plan_path)
+    app.state.system_upgrade.plan_path = plan_path
+    app.state.system_upgrade_restart_readiness = lambda: None
+    app.state.quick_interactions._recovery_ready = True
+    ai_session_path = settings.codex_pty.data_file.with_name("ai-sessions.json")
+    ai_session_path.write_text("not-json", encoding="utf-8")
+    ai_session_path.chmod(0o600)
+    transport = httpx.ASGITransport(app=app)
+
+    worker_health = {
+        "success": True,
+        "data": {
+            "status": "ready",
+            "protocol_version": PROTOCOL_VERSION,
+            "generation": "e" * 32,
+            "active_tasks": 0,
+            "queued_tasks": 0,
+            "uncertain_tasks": 0,
+            "corrupt_tasks": 0,
+            "available_runtime_ids": ["codex"],
+        },
+    }
+    with patch("app.api.maintenance.read_health", return_value=worker_health):
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as client:
+            response = await client.get("/api/maintenance/system-upgrade")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["state"] == "available"
+    assert response.json()["data"]["can_start"] is True
+
+
+@pytest.mark.anyio
+async def test_upgrade_preview_rejects_unsafe_session_runtime_path(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    app = create_app(settings)
+    app.state.system_upgrade.plan_path = tmp_path / "system-upgrade.json"
+    app.state.system_upgrade_restart_readiness = lambda: None
+    app.state.quick_interactions._recovery_ready = True
+    ai_session_path = settings.codex_pty.data_file.with_name("ai-sessions.json")
+    ai_session_path.symlink_to(tmp_path / "unexpected-session-state")
+    transport = httpx.ASGITransport(app=app)
+    worker_health = {
+        "success": True,
+        "data": {
+            "status": "ready",
+            "protocol_version": PROTOCOL_VERSION,
+            "generation": "e" * 32,
+            "active_tasks": 0,
+            "queued_tasks": 0,
+            "uncertain_tasks": 0,
+            "corrupt_tasks": 0,
+            "available_runtime_ids": ["codex"],
+        },
+    }
+
+    with patch("app.api.maintenance.read_health", return_value=worker_health):
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as client:
+            response = await client.get("/api/maintenance/system-upgrade")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["state"] == "blocked"
+    assert response.json()["data"]["can_start"] is False
+    assert "类型、所有者或权限不安全" in response.json()["data"]["message"]
+
+
+@pytest.mark.anyio
+async def test_valid_plan_is_previewed_and_started_by_fingerprint(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    app = create_app(settings)
+    plan_path = tmp_path / "system-upgrade.json"
+    write_plan(plan_path)
+    loaded = load_system_upgrade_plan(plan_path)
+    assert loaded is not None
+    app.state.system_upgrade.plan_path = plan_path
+    app.state.quick_interactions._recovery_ready = True
+    app.state.run_system_upgrade = lambda _operation_id: None
+    app.state.system_upgrade_restart_readiness = lambda: None
+    worker_health = {
+        "success": True,
+        "data": {
+            "status": "ready",
+            "protocol_version": PROTOCOL_VERSION,
+            "generation": "e" * 32,
+            "active_tasks": 0,
+            "queued_tasks": 0,
+            "uncertain_tasks": 0,
+            "corrupt_tasks": 0,
+            "available_runtime_ids": ["codex"],
+        },
+    }
+    transport = httpx.ASGITransport(app=app)
+
+    with (
+        patch.object(app.state.codex_pty_manager, "available", return_value=True),
+        patch("app.api.maintenance.read_health", return_value=worker_health),
+    ):
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as client:
+            preview = await client.get("/api/maintenance/system-upgrade")
+            started = await client.post(
+                "/api/maintenance/system-upgrade",
+                json={"fingerprint": loaded.fingerprint},
+            )
+
+    assert preview.status_code == 200
+    assert preview.json()["data"]["state"] == "available"
+    assert preview.json()["data"]["can_start"] is True
+    assert preview.json()["data"]["resume"] is True
+    assert preview.json()["data"]["plan"]["source_worker_protocol"] == PROTOCOL_VERSION - 1
+    assert preview.json()["data"]["plan"]["session_labels"] == []
+    assert started.status_code == 200
+    assert started.json()["data"]["state"] == "preparing"
+    assert app.state.system_upgrade.writes_blocked() is True
+    operation = app.state.system_upgrade.operation()
+    assert operation is not None
+    assert operation.old_worker_protocol == PROTOCOL_VERSION
+
+
+@pytest.mark.anyio
+async def test_destructive_upgrade_failure_can_continue_with_same_operation(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    app = create_app(settings)
+    plan_path = tmp_path / "plan" / "system-upgrade.json"
+    plan_path.parent.mkdir()
+    write_plan(plan_path)
+    loaded = load_system_upgrade_plan(plan_path)
+    assert loaded is not None
+    app.state.system_upgrade.plan_path = plan_path
+    operation = app.state.system_upgrade.begin(
+        loaded,
+        source_ip="127.0.0.1",
+        old_worker_generation="a" * 32,
+        old_worker_protocol=PROTOCOL_VERSION,
+        runner=lambda _operation_id: None,
+    )
+    app.state.system_upgrade.mark_started(operation.operation_id)
+    app.state.system_upgrade.update(
+        operation.operation_id,
+        stage="cleaning_state",
+        destructive_started=True,
+    )
+    app.state.system_upgrade.fail(operation.operation_id, "cleanup interrupted")
+    failed_operation = app.state.system_upgrade.operation()
+    assert failed_operation is not None
+    assert failed_operation.failed_stage == "cleaning_state"
+    assert failed_operation.fingerprint == loaded.fingerprint
+    assert app.state.system_upgrade.status_data(
+        loaded,
+        session_count=0,
+    ).can_start is True
+    app.state.run_system_upgrade = lambda _operation_id: None
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    ) as client:
+        preview = await client.get("/api/maintenance/system-upgrade")
+        resumed = await client.post(
+            "/api/maintenance/system-upgrade",
+            json={"fingerprint": loaded.fingerprint},
+        )
+
+    assert preview.status_code == 200
+    assert preview.json()["data"]["state"] == "failed"
+    assert preview.json()["data"]["can_start"] is True
+    assert preview.json()["data"]["resume"] is True
+    assert preview.json()["data"]["plan"]["fingerprint"] == loaded.fingerprint
+    assert resumed.status_code == 200
+    assert resumed.json()["data"]["state"] == "draining"
+    continued = app.state.system_upgrade.operation()
+    assert continued is not None
+    assert continued.operation_id == operation.operation_id
+    assert continued.status == "started"
+    assert continued.stage == "draining_worker"
+    assert app.state.system_upgrade.writes_blocked() is True
+
+
+def test_weixin_system_upgrade_uses_application_upgrade_coordinator(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    settings.openclaw.weixin_chub_mode.enabled = True
+    app = create_app(settings)
+    plan_path = tmp_path / "system-upgrade.json"
+    write_plan(plan_path)
+    app.state.system_upgrade.plan_path = plan_path
+    app.state.quick_interactions._recovery_ready = True
+    app.state.run_system_upgrade = lambda _operation_id: None
+    app.state.system_upgrade_restart_readiness = lambda: None
+    worker_health = {
+        "success": True,
+        "data": {
+            "status": "ready",
+            "protocol_version": PROTOCOL_VERSION,
+            "generation": "f" * 32,
+            "active_tasks": 0,
+            "queued_tasks": 0,
+            "uncertain_tasks": 0,
+            "corrupt_tasks": 0,
+            "available_runtime_ids": ["codex"],
+        },
+    }
+
+    with (
+        patch.object(app.state.codex_pty_manager, "available", return_value=True),
+        patch("app.api.maintenance.read_health", return_value=worker_health),
+    ):
+        result = app.state.weixin_chub_mode.dispatch(
+            message_id="weixin-system-upgrade",
+            prompt="system upgrade",
+            message_type="text",
+            correlation_id="upgrade-request",
+            source_ip="100.64.0.21",
+            delivery_route=QuickInteractionWeixinRoute(
+                account_id="weixin-account",
+                recipient="owner@im.wechat",
+            ),
+        )
+
+    assert result.message == "System upgrade: Started. Check with system upgrade status."
+    operation = app.state.system_upgrade.operation()
+    assert operation is not None
+    assert operation.source_ip == "100.64.0.21"

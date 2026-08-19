@@ -97,18 +97,24 @@ def main() -> int:
             shlex.join(codex),
         )
     )
-    os.execvp(
-        "tmux",
+    created = subprocess.run(
         [
             "tmux",
             "new-session",
+            "-d",
             "-s",
             args.name,
             "-c",
             args.cwd,
             command,
         ],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
+    if created.returncode != 0:
+        return created.returncode
+    os.execvp("tmux", ["tmux", "attach-session", "-t", args.name])
 
 
 if __name__ == "__main__":

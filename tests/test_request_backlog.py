@@ -77,6 +77,30 @@ def test_request_update_replaces_generation_and_resets_status(tmp_path) -> None:
     assert updated.content == "新内容"
 
 
+def test_system_upgrade_reset_is_idempotent_for_request_generation(tmp_path) -> None:
+    store = RequestBacklogStore(tmp_path / "requests.json")
+    original = store.save(title="升级后保留", content="保留标题和正文")
+    claimed = store.claim_run(original.slot, "message-1")
+    assert store.finish_run(
+        original.slot,
+        original.generation,
+        claimed.active_run_id or "",
+        "task-1",
+        succeeded=True,
+    )
+
+    store.reset_runs_for_system_upgrade("a" * 32)
+    first = store.get(original.slot)
+    store.reset_runs_for_system_upgrade("a" * 32)
+    second = store.get(original.slot)
+
+    assert first.generation == second.generation
+    assert second.status == "ready"
+    assert second.title == original.title
+    assert second.content == original.content
+    assert second.last_task_id is None
+
+
 def test_request_backlog_rejects_invalid_or_oversized_state(tmp_path) -> None:
     path = tmp_path / "requests.json"
     path.write_text("not json", encoding="utf-8")

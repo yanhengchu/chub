@@ -1,10 +1,26 @@
-# Chub 快速交互独立 Worker 与跨 Web 重启恢复设计
+# Chub Quick Worker 独立服务设计
 
-> 状态：独立 Worker、跨 Web 重启基线和阶段 2 Runtime 通用化均已验收。
->
-> 本文遵循[Chub 总体架构](CHUB_ARCHITECTURE_DESIGN.md)，只维护非实时任务、Worker 权威状态、恢复、通知终态和 Web 重启语义。Worker 的长期 Runtime 无关边界见[AI Runtime 架构演进设计](AI_RUNTIME_ARCHITECTURE_DESIGN.md)，Session/Activity 枚举与页面语义见[AI Session 状态模型](AI_SESSION_STATE_DESIGN.md)，微信路由与收件人身份见[Chub–OpenClaw 接入设计](CHUB_OPENCLAW_INTEGRATION_DESIGN.md)。
+> 状态：已验收。
+> 主要读者：AI Agent、实现和排障 Agent；维护人员用于确认运行边界和验收结果。
+> 本文负责：Chub Quick Worker 独立服务的职责、任务权威状态、Session 租约、恢复、通知终态和重启语义，遵循[Chub 总体架构](CHUB_ARCHITECTURE_DESIGN.md)。
+> 本文不负责：长期 Runtime 无关边界（见[Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)）、Session/Activity 枚举与页面语义（见[AI Session 状态模型](AI_SESSION_STATE_DESIGN.md)）以及微信路由与收件人身份（见[OpenClaw 定制集成设计](OPENCLAW_CUSTOMIZATION_DESIGN.md)）。
+> 维护说明：独立服务、跨 Web 重启恢复和 Runtime 通用化基线已完成当前范围验收；协议或状态边界变化时按本文末尾复检规则重新验收。
 
-## 1. 落地结论
+## 0. AI Agent 快速理解
+
+把本文当作 Quick Worker 服务的运行契约，而不是某个页面或某个脚本的说明：
+
+1. Quick Worker 是与 Chub Web 独立运行的本机后台服务。Web 负责认证、业务校验、提交和页面投影；Worker 负责任务、Session 租约、Runner 进程、超时、取消、恢复和最终状态。
+2. 页面快速交互、微信 Chub 非实时任务和翻译任务都进入 Worker；Web 内不得回退执行。当前生产只允许固定的 `codex` Runtime Runner。
+3. 同一逻辑 Session 只能有一个 writer。快速交互提交、实时终端建立连接和恢复流程都必须经过 Worker 租约与实时连接的最终仲裁，不能只依赖页面按钮状态。
+4. Web 重启不会主动停止 Worker 或已接受任务。新 Web 必须完成 Worker 健康、协议、活动任务、租约、通知和重启状态恢复后，才开放 Session 写入。
+5. Worker 或状态不可确认时必须失败关闭：不猜测任务成功、不重复提交、不在 Web 内执行、不切换 Session 或通知收件人。
+6. 任务终态、通知终态、Web 重启终态和 Worker 重启终态分别确认；“进程已创建”“任务已受理”或“HTTP 200”都不是成功。
+7. 普通 Web、Worker、ClawBot 重启彼此独立；系统升级与恢复是单独的 AI Runtime 维护流程，会按其规则停止和清理 Worker，不由本文的普通重启门禁推导。
+
+AI Agent 修改或排障时，先判断问题是否属于 Worker 服务；再读取本文对应章节，不能把实时 Session、OpenClaw 路由或系统升级的规则复制到 Worker 内部。所有命令、路径、Runtime 和服务入口均以固定后端配置为准，客户端输入不能扩大权限。
+
+## 1. 服务定位与落地结论
 
 Chub 的非实时 AI 任务已经从 Web 进程中拆出，由独立 Worker 承载。页面快速交互、微信 Chub 模式任务和翻译任务统一进入 Worker；当前唯一生产 Runtime 仍是 Codex，实时 Session 继续由 tmux 承载。
 
@@ -16,7 +32,7 @@ Chub 的非实时 AI 任务已经从 Web 进程中拆出，由独立 Worker 承�
 - 任务请求重启时，只等待该任务自身结果及完成通知进入终态，不受其他 Session 或后续任务阻塞。
 - 首页手动重启可直接接管待执行重启；同步与异步失败都会向用户展示明确原因。
 
-独立 Worker 和跨 Web 重启方案已完成维护者验收。协议 `7` 的 Runtime 通用化实现按 [AI Runtime 架构演进设计](AI_RUNTIME_ARCHITECTURE_DESIGN.md)第二阶段完成本机服务级验收，不改变本文已有产品行为。
+独立 Worker 和跨 Web 重启方案已完成维护者验收。协议 `7` 是历史通用化验收基线；当前 Worker 使用协议 `8`，按 [Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)当前已落地的受控升级边界运行，不改变本文已有产品行为。
 
 ## 2. 范围与边界
 
@@ -33,9 +49,10 @@ Chub 的非实时 AI 任务已经从 Web 进程中拆出，由独立 Worker 承�
 - 实时 Codex Session 的运行模型，仍由 tmux、实时连接和现有写入门禁负责。
 - Worker 或宿主机崩溃后继续原进程执行。此类不确定任务按失败收敛，不自动重放。
 - 跨设备迁移任务、远程 Worker 调度或分布式队列。
-- 任意命令、任意工作目录或客户端自定义 Runner 参数。
+- 客户端直接提交任意命令、工作目录或自定义 Runner 参数；Codex 原生
+  Session 的实际工作目录仍由 Worker 按可信原生 ID 重新发现，不受首页常用目录限制。
 
-## 3. 当前架构
+## 3. 独立服务架构
 
 ```text
 Browser / WeChat / OpenClaw
@@ -85,10 +102,20 @@ Browser / WeChat / OpenClaw
 
 - Worker 通过最小 Runtime Runner 契约校验能力、准备固定进程规格、解释原生事件和读取规范化结果；Worker 本身继续拥有任务、租约、进程组、超时、取消、恢复和终态。
 - 当前生产只注册 Codex Runner；固定测试 Runner 不进入生产组合，也不提供用户入口。
-- 命令、参数和工作区来自后端固定配置或白名单。
+- 命令和参数来自后端固定配置；首页常用工作区只提供便捷创建入口，原生 Session 的实际工作目录由 Worker 通过可信原生 ID 重新发现，客户端不能提交路径。
 - 任务正文通过受控输入传递，不拼接任意系统命令。
 - 取消和超时作用于完整进程组，不能只结束父进程。
 - 子进程成功创建只代表任务开始，不代表任务成功。
+
+### 3.4 Runtime 错误传播
+
+Quick Worker 不翻译不同 Runtime 的错误，也不要求维护一套通用错误码表。错误传播规则如下：
+
+- 每个 Runtime Runner 必须提供 `read_error(task_dir, max_bytes)`，从自身事件流或错误输出读取上游错误原文；未知错误可以原样保留，不需要先注册 Chub 错误码。
+- Runner 非零退出时，Worker 先读取该 Runtime 的错误原文，再回退到 `stderr`；两者均为空时才记录通用的 `runner_failed` 与默认提示。
+- 读取结果写入现有任务失败终态，沿用任务查询、页面时间线和通知链路返回；文本受任务目录权限、固定字节上限和现有错误字段限制，并按纯文本展示。透传只保留上游诊断文本，不透传配置 Token、`Authorization`/`Bearer` 凭证或终端票据；这些值在 Runner 和任务终态边界统一脱敏。
+- 错误原文不能作为命令、HTML 或新的任务输入执行。错误解析失败不得阻止失败终态、租约释放或恢复对账，也不得自动重放任务。
+- 新 Runtime 只需实现同一 Runner 错误读取契约即可保留自身错误文本；Worker 继续拥有任务终态、超时、取消、租约和恢复。
 
 ## 4. 任务与 Session 业务逻辑
 
@@ -108,7 +135,7 @@ accepted -> starting -> running -> succeeded
 各类状态的权威来源保持分离：
 
 - 快速交互任务、翻译任务和对应 Session 租约：Worker。
-- Codex Session 映射与基础元数据：现有 Session 存储。
+- Codex Session 映射与基础元数据：AI Session Store。
 - 实时连接、tmux 和实时写入者：现有实时连接管理。
 - 页面 `working`、结果提示和时间线：Web 对权威状态的可恢复投影。
 
@@ -165,7 +192,7 @@ Worker 对已交付终态保留有限历史或墓碑，直到 Web 明确确认�
 - `pending` 可由新 Web 实例继续投递；旧实例退出时停留在 `sending` 的未知结果按失败收敛，不自动重发，避免重复通知。
 - Web 只有在通知进入明确终态后，才认为该任务的通知阶段结束。
 
-## 6. Web 重启语义
+## 6. 重启与恢复语义
 
 ### 6.1 普通维护重启
 
@@ -211,7 +238,7 @@ Worker 对已交付终态保留有限历史或墓碑，直到 Web 明确确认�
 - 首页只展示经过裁剪的 Worker 状态，不暴露 PID、generation、运行时明细或本机路径。
 - 只有当前协议兼容、Worker 健康、Web 恢复完成，且执行中与排队任务均为零时开放重启；不提供强制入口。
 - 后端只调用固定的 `worker-reload`，由该命令完成 drain、独立服务重载、新 generation 和 Web 恢复确认；仅创建子进程不算成功。
-- Worker 与 Web 重启互斥。Worker 重启期间新的任务提交保持受控等待或失败关闭，其他首页功能仍可独立使用。
+- Quick Worker 与 Web、ClawBot 服务重启彼此独立；Worker 重启期间只对任务提交、Session 租约和 Worker 结果写入执行直接受影响的局部门禁，其他首页只读能力、Web 服务和 ClawBot 入口继续可用。
 - 操作记录完整保留 `requested`、`started`、`succeeded` 和 `failed`；Web 在操作过程中重启后，依靠持久化状态、新 generation 和进程校验收敛最终结果。
 
 ## 7. 持久化、协议与安全
@@ -223,8 +250,8 @@ Worker 对已交付终态保留有限历史或墓碑，直到 Web 明确确认�
 - 元数据使用临时文件加原子替换，避免半写状态。
 - 所有读取都限制任务数、文件字节数和单行长度。
 - generation 标识 Worker 运行世代，用于 Web 判断是否发生 Worker 重启或状态失效。
-- 协议 `7` 的任务使用通用 `runtime_id`、`native_session_id` 和 Worker 生成的 `execution_id`；同一次执行的状态、规范化 Runtime 事件和终态保持同一执行标识。
-- Worker 只读取和写入协议 `7` 的版本目录。升级维护直接删除固定旧协议任务、墓碑、租约和交付覆盖目录，不迁移、查询、恢复或重派旧数据，也不在 Worker 内保留旧协议模型和兼容开关。
+- 当前协议 `8` 的任务使用通用 `runtime_id`、`native_session_id` 和 Worker 生成的 `execution_id`；同一次执行的状态、规范化 Runtime 事件和终态保持同一执行标识。Runtime 能力矩阵只属于后端 Adapter/Runner Registry 契约，由契约测试验证；Worker 健康响应继续只报告已注册/可用 Runtime ID 和固定工作区，不开放客户端 Runtime 选择，也不为诊断信息扩展协议字段。
+- Worker 只读取和写入当前协议 `8` 的版本目录。升级维护按固定方案删除源协议及操作记录中确认的旧协议任务、墓碑、租约和交付覆盖目录，不迁移、查询、恢复或重派旧数据，也不在 Worker 内保留旧协议模型和兼容开关。
 
 ### 7.2 Web 数据
 
@@ -253,7 +280,7 @@ Worker 对已交付终态保留有限历史或墓碑，直到 Web 明确确认�
 
 - Web 与 Worker 使用不同服务单元，普通 Web 重启不得带停 Worker。
 - Worker 升级先进入 draining，拒绝新任务；活动任务清空后再停止和替换。
-- 日常 Worker 代码升级可在本机终端使用 `chub worker-reload`，也可在首页满足空闲与恢复门禁时使用固定维护入口；两者都由同一命令完成 drain、独立服务重载以及协议、generation、损坏记录和固定 Runner 健康确认。命令行调用与 `worker-drain` 均拒绝从正在执行的快速任务内部调用，避免等待自身终态。
+- 日常 Worker 代码升级可在本机终端使用 `chub worker-reload`，也可在首页满足 Worker 自身空闲与恢复门禁时使用固定维护入口；两者都由同一命令完成 drain、独立服务重载以及协议、generation、损坏记录和固定 Runner 健康确认。该门禁只保护将被重载的 Worker 任务资源，不等同于 Web 或 ClawBot 互斥；命令行调用与 `worker-drain` 均拒绝从正在执行的快速任务内部调用，避免等待自身终态。
 - 协议升级需要 Web、Worker、测试和部署产物同步发布；跨协议升级使用 `chub install --force` 直接清理旧协议数据，旧任务会被中断且不会迁移或自动重放。
 - `chub install`、`chub stop` 和 `chub uninstall` 遇到活动或排队任务时必须明确拒绝；确认空闲后仍需通过原子 drain 关闭提交门禁再执行操作。只有维护者确认任务可以中断时才使用对应命令的 `--force`。
 - Web 与 Worker 分别写入独立操作日志；日志详情页提供两个固定来源，避免两个常驻进程共同轮转同一文件。
@@ -268,6 +295,7 @@ Worker 对已交付终态保留有限历史或墓碑，直到 Web 明确确认�
 | Worker 异常退出 | 不确定的运行任务标记失败，释放租约，不自动重放 |
 | 宿主机重启 | 不承诺原任务继续；恢复后按持久化状态收敛 |
 | Runner 超时或取消 | 结束完整进程组，记录明确终态并释放租约 |
+| Runtime 返回上游错误 | 保存并展示该 Runtime 的错误原文；无法读取时回退通用 Runner 错误 |
 | 通知发送失败 | 记录失败终态；不影响主任务真实结果 |
 | Web 重启启动失败 | 记录 `start_failed` 或健康确认失败，页面显示原因 |
 | 新 Web 未完成恢复 | 健康检查可用，Session 写入继续关闭 |
@@ -285,9 +313,15 @@ Worker 对已交付终态保留有限历史或墓碑，直到 Web 明确确认�
 - 任务请求重启只等待自身结果与通知，不等待其他任务、Session 或翻译。
 - 等待重启期间仍可提交任务；跨重启边界的请求按当前轮和下一轮正确合并。
 - 首页手动重启可接管待执行重启，失败原因对用户可见。
-- 首页可独立查看 Quick Worker 状态，并只在空闲、协议兼容和 Web 恢复完成时执行受控重启；Web 与 Worker 重启互斥。
+- 首页可独立查看 Quick Worker 状态，并只在 Worker 空闲、协议兼容和 Web 恢复完成时执行受控重启；重启仅局部影响 Worker 任务写入，不把 Web 或 ClawBot 服务重启串行化。
 - 重启成功以新实例健康和实例 ID 变化为准，操作日志状态完整。
-- 本机已确认 Web/Worker 服务边界、安装维护和活动任务保护；其他平台继续保持相同实现，但不作为本阶段验收阻断项。
+- 本机已确认 Web/Worker 服务边界、安装维护和活动任务保护；其他平台继续保持相同实现，但不作为当前范围验收阻断项。
 - 权限、固定命令、受限读取、幂等提交和敏感信息保护未退化。
 
-维护者已完成独立 Worker 与跨 Web 重启的实际业务验收。2026-08-18 又完成阶段 2 Runtime 通用化的本机服务级验收：受控 `worker-reload` 后 generation 已变化，协议 `7`、`ready`、零损坏记录和固定 `codex` Runner 可用均确认；固定旧协议目录已清理，Web/Worker 操作日志已分离，新实例上的快速交互和真实翻译任务均成功。阶段 2 据此验收通过。后续若修改任务权威来源、Session 租约、通知终态、重启门禁或服务关系，必须按上述基线重新完成相关回归。
+维护者已完成独立 Worker 与跨 Web 重启的实际业务验收。2026-08-18 完成 Runtime 通用化的本机服务级历史验收：受控 `worker-reload` 后 generation 已变化，协议 `7`、`ready`、零损坏记录和固定 `codex` Runner 可用均确认；固定旧协议目录已清理，Web/Worker 操作日志已分离，新实例上的快速交互和真实翻译任务均成功。当前代码使用协议 `8`，协议 `7` 记录仅用于追溯。后续若修改任务权威来源、Session 租约、通知终态、重启门禁或服务关系，必须按当前协议重新完成相关回归。
+
+### 10.1 验收范围与复检
+
+- 已验收范围：独立 Worker、Web 重启恢复、快速交互/微信/翻译任务、Session 租约、任务和通知终态、协议 `8`、固定 `codex` Runner 以及 macOS/Ubuntu 服务定义边界；具体本机服务级记录以上述验收基线为准。
+- 未验证或不承诺：未在本机服务级记录中实际验证的平台、第二个真实 Runtime，以及本文没有列出的协议兼容或任务迁移能力；其他平台不得仅凭同一实现表述为已实机验收。
+- 复检触发：任务权威来源、租约、恢复屏障、通知终态、协议版本、Runtime 能力矩阵、重启门禁或 Web/Worker 服务关系变化时，必须按当前协议重新验证最终状态、操作日志和失败关闭边界。

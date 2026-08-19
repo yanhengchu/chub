@@ -24,12 +24,14 @@ from pydantic import (
 
 from app.ai_runtime import (
     PermissionProfile,
+    RUNTIME_ID_PATTERN,
     RuntimeOperationError,
     RuntimeTurnRequest,
     RuntimeWorkerLaunchRequest,
     WorkerRuntimeRegistry,
 )
 from app.core.config import Settings
+from app.services.log_reader import redact_log_line
 
 
 MAX_PROMPT_CHARS = 50_000
@@ -65,7 +67,6 @@ FINAL_STATUSES = {"succeeded", "failed", "timed_out", "cancelled"}
 TASK_ID_PATTERN = r"^qw-[0-9]{13}-[a-f0-9]{32}$"
 SESSION_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
 WORKSPACE_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
-RUNTIME_ID_PATTERN = r"^[a-z][a-z0-9-]{0,31}$"
 EXECUTION_ID_PATTERN = r"^[a-f0-9]{32}$"
 NATIVE_SESSION_ID_PATTERN = (
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
@@ -465,6 +466,12 @@ class WorkerTaskManager:
         self.protocol_version = protocol_version
         self.allow_test_tasks = allow_test_tasks
         self.runtime_registry = runtime_registry
+        configured_token = settings.security.token
+        self._sensitive_values = (
+            (configured_token.get_secret_value(),)
+            if configured_token is not None
+            else ()
+        )
         self._lock = asyncio.Lock()
         self._supervisors: dict[str, asyncio.Task[None]] = {}
         self._processes: dict[str, asyncio.subprocess.Process] = {}
@@ -1337,12 +1344,22 @@ class WorkerTaskManager:
                     return
                 if runner is None:
                     raise OSError("Runtime Runner is unavailable")
+                runtime_error = (
+                    self._redact_error(
+                        self._read_runner_error(
+                            runner,
+                            self.tasks_dir / task_id,
+                        )
+                    )
+                    if exit_code != 0
+                    else None
+                )
                 native_session_id = (
                     self._extract_native_session_id(
                         runner,
                         self.tasks_dir / task_id / "stdout.txt",
                     )
-                    if spec.task_kind != "test"
+                    if exit_code == 0 and spec.task_kind != "test"
                     else None
                 )
                 expected_native_id = self._expected_native_session_id(spec, state)
@@ -1394,10 +1411,14 @@ class WorkerTaskManager:
                         exit_code=exit_code,
                     )
                 else:
-                    error = self._read_limited_file(
-                        self.tasks_dir / task_id / "stderr.txt",
-                        MAX_ERROR_BYTES,
-                    )
+                    error = runtime_error
+                    if not error:
+                        error = self._redact_error(
+                            self._read_limited_file(
+                                self.tasks_dir / task_id / "stderr.txt",
+                                MAX_ERROR_BYTES,
+                            )
+                        )
                     self._finalize(
                         spec,
                         state,
@@ -1839,7 +1860,7 @@ class WorkerTaskManager:
             execution_id=state.execution_id,
             status=status,
             result=_limited_text(result, MAX_RESULT_BYTES) if result is not None else None,
-            error=_limited_text(error, MAX_ERROR_BYTES) if error is not None else None,
+            error=self._redact_error(error) if error is not None else None,
             error_code=error_code,
             exit_code=exit_code,
             native_session_id=state.native_session_id,
@@ -2056,6 +2077,26 @@ class WorkerTaskManager:
         if len(content) > byte_limit:
             content = content[:byte_limit]
         return content.decode("utf-8", errors="replace")
+
+    def _redact_error(self, error: str | None) -> str | None:
+        if error is None:
+            return None
+        return redact_log_line(
+            error,
+            self._sensitive_values,
+            max_line_bytes=MAX_ERROR_BYTES,
+        )
+
+    @staticmethod
+    def _read_runner_error(runner, task_dir: Path) -> str | None:
+        if runner is None:
+            return None
+        try:
+            return runner.read_error(task_dir, max_bytes=MAX_ERROR_BYTES)
+        # Diagnostics are optional; a parser failure must not prevent the
+        # Worker from recording the task terminal state.
+        except Exception:
+            return None
 
     @staticmethod
     def _validate_task_id(task_id: str) -> None:

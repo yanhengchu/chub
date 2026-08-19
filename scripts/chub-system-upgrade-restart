@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+SERVICE_NAME="chub"
+WORKER_SERVICE_NAME="chub-quick-worker"
+MACOS_LABEL="com.chub.node"
+WORKER_MACOS_LABEL="com.chub.quick-worker"
+SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PYTHON_BIN="$PROJECT_ROOT/.venv/bin/python"
+PLATFORM="${CHUB_TEST_PLATFORM:-$(uname -s)}"
+OPERATION_ID="${1:-}"
+MODE="${2:-restart}"
+LAUNCH_AGENTS_DIR="${CHUB_LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}"
+
+case "$OPERATION_ID" in
+    ""|*[!a-f0-9]*)
+        echo "chub-system-upgrade-restart: invalid operation id" >&2
+        exit 2
+        ;;
+esac
+if [[ "${#OPERATION_ID}" -ne 32 ]]; then
+    echo "chub-system-upgrade-restart: invalid operation id" >&2
+    exit 2
+fi
+if [[ "$MODE" != "restart" && "$MODE" != "--recover-worker" ]]; then
+    echo "chub-system-upgrade-restart: invalid mode" >&2
+    exit 2
+fi
+if [[ "${CHUB_ACTIVITY_SOURCE:-}" == "quick" ]]; then
+    echo "chub-system-upgrade-restart: cannot run from Quick Worker" >&2
+    exit 1
+fi
+
+prepare_restart() {
+    (
+        cd "$PROJECT_ROOT"
+        "$PYTHON_BIN" -m app.system_upgrade_cli "$OPERATION_ID"
+    )
+}
+
+wait_for_launch_confirmation() {
+    (
+        cd "$PROJECT_ROOT"
+        "$PYTHON_BIN" -m app.system_upgrade_cli \
+            wait-for-launch "$OPERATION_ID" "$$"
+    )
+}
+
+echo "chub-system-upgrade-restart: waiting for launch confirmation operation_id=$OPERATION_ID"
+if [[ "$MODE" == "restart" ]]; then
+    wait_for_launch_confirmation
+    echo "chub-system-upgrade-restart: launch confirmed operation_id=$OPERATION_ID"
+fi
+
+recover_worker() {
+    case "$PLATFORM" in
+        Linux)
+            systemctl --user restart "$WORKER_SERVICE_NAME.service"
+            ;;
+        Darwin)
+            DOMAIN="gui/$(id -u)"
+            launchctl bootout "$DOMAIN/$WORKER_MACOS_LABEL" >/dev/null 2>&1 || true
+            launchctl bootstrap "$DOMAIN" "$LAUNCH_AGENTS_DIR/$WORKER_MACOS_LABEL.plist"
+            ;;
+        *)
+            echo "chub-system-upgrade-restart: unsupported platform: $PLATFORM" >&2
+            return 1
+            ;;
+    esac
+}
+
+wait_for_worker_ready() {
+    local payload
+    for _attempt in $(seq 1 60); do
+        if payload="$(
+            cd "$PROJECT_ROOT"
+            "$PYTHON_BIN" -m app.quick_worker health 2>/dev/null
+        )" && "$PYTHON_BIN" -c '
+import json
+import sys
+
+from app.quick_worker import PROTOCOL_VERSION
+
+payload = json.loads(sys.stdin.read())
+data = payload.get("data") if payload.get("success") is True else None
+if not isinstance(data, dict):
+    raise SystemExit(1)
+if data.get("status") != "ready":
+    raise SystemExit(1)
+if any(data.get(name) != 0 for name in ("active_tasks", "queued_tasks", "uncertain_tasks", "corrupt_tasks")):
+    raise SystemExit(1)
+if data.get("protocol_version") != PROTOCOL_VERSION:
+    raise SystemExit(1)
+if "codex" not in data.get("available_runtime_ids", []):
+    raise SystemExit(1)
+' <<<"$payload"; then
+            return 0
+        fi
+        sleep 0.5
+    done
+    echo "chub-system-upgrade-restart: Quick Worker did not recover ready state" >&2
+    return 1
+}
+
+if [[ "$MODE" == "--recover-worker" ]]; then
+    recover_worker
+    wait_for_worker_ready
+    exit 0
+fi
+
+case "$PLATFORM" in
+    Linux)
+        systemctl --user stop "$WORKER_SERVICE_NAME.service"
+        if ! prepare_restart; then
+            recover_worker >/dev/null 2>&1 || true
+            exit 1
+        fi
+        recover_worker
+        exec systemctl --user --no-block restart "$SERVICE_NAME.service"
+        ;;
+    Darwin)
+        DOMAIN="gui/$(id -u)"
+        launchctl bootout "$DOMAIN/$WORKER_MACOS_LABEL" >/dev/null 2>&1 || true
+        worker_stopped=false
+        for _attempt in 1 2 3 4 5 6 7 8 9 10; do
+            if ! launchctl print "$DOMAIN/$WORKER_MACOS_LABEL" >/dev/null 2>&1; then
+                worker_stopped=true
+                break
+            fi
+            sleep 0.5
+        done
+        if [[ "$worker_stopped" != "true" ]]; then
+            echo "chub-system-upgrade-restart: Quick Worker did not stop" >&2
+            exit 1
+        fi
+        if ! prepare_restart; then
+            recover_worker >/dev/null 2>&1 || true
+            exit 1
+        fi
+        recover_worker
+        exec launchctl kickstart -k "$DOMAIN/$MACOS_LABEL"
+        ;;
+    *)
+        echo "chub-system-upgrade-restart: unsupported platform: $PLATFORM" >&2
+        exit 1
+        ;;
+esac

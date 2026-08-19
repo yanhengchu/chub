@@ -133,19 +133,38 @@ function openclawOverallMessage(data) {
   return "";
 }
 
+function clawbotPresentation(data) {
+  if (data.state !== "running") {
+    return openclawStatePresentation(data.state);
+  }
+  return openclawChannelPresentation(data);
+}
+
+function clawbotDetail(data) {
+  const [gatewayText] = openclawStatePresentation(data.state);
+  const [channelText] = openclawChannelPresentation(data);
+  const conciseGatewayText = gatewayText === "运行正常" ? "正常" : gatewayText;
+  const conciseChannelText = channelText === "运行正常" ? "正常" : channelText;
+  return `网关${conciseGatewayText} · 消息通道${conciseChannelText}`;
+}
+
+function renderOpenClawWeixinContext(data) {
+  elements.openclawWeixinAccountSummary.textContent = data?.channel_message
+    || "当前消息通道状态不可用。";
+  elements.openclawWeixinOwnerSummary.textContent = data?.owner_message
+    || "当前 Owner 授权状态不可用。";
+}
+
 function renderOpenClaw(data, { cache = true } = {}) {
   openclawState = data;
-  const [gatewayText, gatewayKind] = openclawStatePresentation(data.state);
-  setBadge(elements.openclawGatewayBadge, gatewayText, gatewayKind);
-  const [channelText, channelKind] = openclawChannelPresentation(data);
-  setBadge(elements.openclawChannels, channelText, channelKind);
-  elements.openclawChannels.title = [data.channel_message, data.owner_message]
+  const [badgeText, badgeKind] = clawbotPresentation(data);
+  setBadge(elements.clawbotBadge, badgeText, badgeKind);
+  elements.clawbotDetail.textContent = clawbotDetail(data);
+  elements.clawbotDetail.title = [data.channel_message, data.owner_message]
     .filter(Boolean)
     .join("；");
-  const accessUrl = data.access_url || "";
-  elements.openclawAccessOpen.hidden = !accessUrl;
-  elements.openclawAccessOpen.href = accessUrl || "#";
   setMessage(elements.openclawMessage, openclawOverallMessage(data));
+  renderOpenClawWeixinContext(data);
 
   const canStart = data.state === "stopped";
   const canControlRunning = ["running", "degraded"].includes(data.state);
@@ -153,7 +172,6 @@ function renderOpenClaw(data, { cache = true } = {}) {
   elements.openclawBindWeixin.hidden = !data.installed || !data.configured;
   elements.openclawStart.hidden = !canStart;
   elements.openclawRestart.hidden = !canControlRunning;
-  elements.openclawStop.hidden = !canControlRunning;
   elements.openclawBindWeixin.disabled = (
     openclawBusy
     || weixinLoginActive
@@ -161,7 +179,6 @@ function renderOpenClaw(data, { cache = true } = {}) {
   );
   elements.openclawStart.disabled = openclawBusy || weixinLoginActive || !canStart;
   elements.openclawRestart.disabled = openclawBusy || weixinLoginActive || !canControlRunning;
-  elements.openclawStop.disabled = openclawBusy || weixinLoginActive || !canControlRunning;
   if (cache) {
     cacheOpenClawStatus(data);
   }
@@ -175,15 +192,13 @@ function resetOpenClawView() {
   openclawWeixinState = null;
   openclawWeixinStatusAvailable = false;
   openclawWeixinPollFailures = 0;
-  setBadge(elements.openclawGatewayBadge, "正在检查");
-  setBadge(elements.openclawChannels, "正在检查");
-  elements.openclawChannels.removeAttribute("title");
-  elements.openclawAccessOpen.hidden = true;
-  elements.openclawAccessOpen.href = "#";
+  setBadge(elements.clawbotBadge, "正在检查");
+  elements.clawbotDetail.textContent = "交互面：正在检查微信消息通道";
+  elements.clawbotDetail.removeAttribute("title");
+  renderOpenClawWeixinContext(null);
   elements.openclawBindWeixin.hidden = true;
   elements.openclawStart.hidden = true;
   elements.openclawRestart.hidden = true;
-  elements.openclawStop.hidden = true;
   setMessage(elements.openclawMessage, "");
   closeOpenClawWeixinDialog();
 }
@@ -223,7 +238,6 @@ async function loadOpenClaw() {
     );
     elements.openclawStart.disabled = true;
     elements.openclawRestart.disabled = true;
-    elements.openclawStop.disabled = true;
     elements.openclawBindWeixin.disabled = true;
   } finally {
     // The workstation-level refresh button owns only its fan-out busy state.
@@ -274,14 +288,16 @@ function setOpenClawBusy(action) {
     restart: ["正在重启", "muted"],
   }[action];
   setBadge(
-    elements.openclawGatewayBadge,
+    elements.clawbotBadge,
     busyPresentation[0],
     busyPresentation[1],
   );
+  elements.clawbotDetail.textContent = action === "restart"
+    ? "正在恢复微信消息通道"
+    : "正在启动微信消息通道";
   elements.openclawBindWeixin.disabled = true;
   elements.openclawStart.disabled = true;
   elements.openclawRestart.disabled = true;
-  elements.openclawStop.disabled = true;
   setMessage(elements.openclawMessage, "");
 }
 
@@ -517,7 +533,6 @@ async function cancelOpenClawWeixinLogin() {
 elements.openclawBindWeixin.addEventListener("click", openOpenClawWeixinDialog);
 elements.openclawStart.addEventListener("click", () => requestOpenClawAction("start"));
 elements.openclawRestart.addEventListener("click", () => requestOpenClawAction("restart"));
-elements.openclawStop.addEventListener("click", () => requestOpenClawAction("stop"));
 elements.openclawDialogClose.addEventListener("click", closeOpenClawDialog);
 elements.openclawDialogCancel.addEventListener("click", closeOpenClawDialog);
 elements.openclawDialogConfirm.addEventListener("click", () => {

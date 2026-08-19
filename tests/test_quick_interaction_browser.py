@@ -113,12 +113,20 @@ def conversation_browser_server(tmp_path_factory: pytest.TempPathFactory) -> str
             pytest.fail("isolated Chub conversation browser test server did not stop")
 
 
-def _session(session_id: str, title: str, created_at: str, slot: int | None) -> dict:
+def _session(
+    session_id: str,
+    title: str,
+    created_at: str,
+    slot: int | None,
+    *,
+    can_archive: bool = True,
+) -> dict:
     return {
         "id": session_id,
         "title": title,
         "created_at": created_at,
         "codex_session_id": f"native-{session_id}",
+        "can_archive": can_archive,
         "workspace_id": "chub",
         "status": "stopped",
         "activity": "idle",
@@ -145,7 +153,6 @@ def _task(
         "error": None,
         "created_at": created_at,
         "updated_at": created_at,
-        "pinned_at": None,
         "notification_status": notification_status,
         "notification_error": None,
         "deferred_restart_status": None,
@@ -241,6 +248,7 @@ class ConversationApi:
                 "New Session",
                 "2026-08-15T10:00:00Z",
                 None,
+                can_archive=False,
             )
             session["codex_session_id"] = None
             self.sessions.insert(0, session)
@@ -293,13 +301,6 @@ class ConversationApi:
                 )
                 tasks.append(task)
                 data = {"task": deepcopy(task)}
-            elif action.startswith("quick-interactions/") and action.endswith("/pin"):
-                task_id = unquote(action.split("/")[1])
-                task = next(item for item in self.tasks[session_id] if item["id"] == task_id)
-                task["pinned_at"] = (
-                    "2026-08-15T10:05:00Z" if request.post_data_json["pinned"] else None
-                )
-                data = {"task": deepcopy(task)}
             elif not action and request.method == "GET" and session:
                 data = deepcopy(session)
 
@@ -349,6 +350,44 @@ async def _open_conversation(
     await expect(page.locator("#conversation-session-title")).to_have_text("Main Session")
     await expect(page.locator("[data-task-id]")).to_have_count(2)
     return context, page, page_errors
+
+
+async def test_terminal_page_returns_home_after_connection_takeover(
+    conversation_browser_server: str,
+) -> None:
+    browser_session = session_factory()
+    async with browser_session(ensure_page=False) as chrome:
+        context = await chrome.browser.new_context()
+        page = await context.new_page()
+        try:
+            await context.route(
+                f"{conversation_browser_server}/terminal-takeover-fixture",
+                lambda route: route.fulfill(
+                    content_type="text/html",
+                    body=(
+                        '<body data-session-id="session-1" data-page-id="page-1">'
+                        '<script src="/static/terminal.js" defer></script>'
+                    ),
+                ),
+            )
+            await context.route(
+                f"{conversation_browser_server}/codex/session-1/connection/page-1",
+                lambda route: route.fulfill(
+                    content_type="application/json",
+                    body='{"state":"displaced"}',
+                ),
+            )
+            response = await page.goto(
+                f"{conversation_browser_server}/terminal-takeover-fixture",
+                wait_until="domcontentloaded",
+            )
+            assert response is not None and response.status == 200
+            await expect(page).to_have_url(
+                f"{conversation_browser_server}/",
+                timeout=3_000,
+            )
+        finally:
+            await context.close()
 
 
 @pytest.mark.parametrize("theme", ["standard", "cyber"])
@@ -425,10 +464,6 @@ async def test_conversation_workflows_in_managed_chrome(
                 "nodes => nodes.map(node => node.dataset.taskId)"
             ) == ["task-1", "task-2", "task-3"]
 
-            task_two = page.locator("[data-task-id='task-2']")
-            await task_two.locator(".conversation-pin").click()
-            await expect(task_two.locator(".conversation-pin")).to_have_text("取消置顶")
-
             await page.locator("[data-session-id='session-2']").click()
             await expect(page).to_have_url(
                 f"{conversation_browser_server}/codex/session-2/quick-interactions/conversation"
@@ -467,7 +502,7 @@ async def test_conversation_workflows_in_managed_chrome(
             await context.close()
 
     assert page_errors == []
-    assert any(path.endswith("/pin") for path in api.requested_paths)
+    assert not any(path.endswith("/pin") for path in api.requested_paths)
     assert "PATCH /api/codex/sessions/session-2/title" in api.requested_paths
     assert "POST /api/codex/sessions/session-2/archive" in api.requested_paths
     assert "POST /api/codex/sessions" in api.requested_paths

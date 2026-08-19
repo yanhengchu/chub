@@ -9,6 +9,9 @@ const QUICK_WORKER_ACTIVE_STATES = new Set([
 let quickWorkerState = null;
 let quickWorkerPollTimer = 0;
 let quickWorkerRequestInProgress = false;
+let systemUpgradeState = null;
+let systemUpgradePollTimer = 0;
+let systemUpgradeRequestInProgress = false;
 
 function quickWorkerPresentation(state) {
   return {
@@ -22,8 +25,12 @@ function quickWorkerPresentation(state) {
   }[state] || ["状态未知", "failed"];
 }
 
-function quickWorkerReloadInProgress() {
-  return quickWorkerState?.state === "restarting" || quickWorkerRequestInProgress;
+function systemUpgradeLocksAiRuntime() {
+  return (
+    systemUpgradeRequestInProgress
+    || systemUpgradeState?.writes_blocked === true
+    || ["requested", "started"].includes(systemUpgradeState?.operation?.status)
+  );
 }
 
 function syncCoreMaintenanceControls() {
@@ -31,14 +38,89 @@ function syncCoreMaintenanceControls() {
   elements.restartHub.disabled = (
     !connected
     || hubRestartInProgress
-    || quickWorkerReloadInProgress()
+    || systemUpgradeLocksAiRuntime()
   );
   elements.quickWorkerRestart.disabled = (
     !connected
-    || hubRestartInProgress
     || quickWorkerRequestInProgress
+    || systemUpgradeLocksAiRuntime()
     || !quickWorkerState?.can_restart
   );
+  elements.systemUpgradeStart.disabled = (
+    !connected
+    || systemUpgradeRequestInProgress
+    || !systemUpgradeState?.can_start
+  );
+}
+
+function clearSystemUpgradePollTimer() {
+  if (systemUpgradePollTimer) {
+    window.clearTimeout(systemUpgradePollTimer);
+    systemUpgradePollTimer = 0;
+  }
+}
+
+function systemUpgradePresentation(state) {
+  return {
+    available: "可执行",
+    preparing: "正在准备",
+    draining: "正在停止任务",
+    cleaning: "正在清理",
+    restarting: "正在恢复",
+    succeeded: "已完成",
+    failed: "恢复失败",
+    blocked: "暂不可用",
+  }[state] || "状态未知";
+}
+
+function renderSystemUpgrade(data) {
+  systemUpgradeState = data;
+  elements.systemUpgradeDetail.textContent = `状态：${systemUpgradePresentation(data.state)}。${data.message}`;
+  syncCoreMaintenanceControls();
+}
+
+function scheduleSystemUpgradePoll() {
+  clearSystemUpgradePollTimer();
+  if (["preparing", "draining", "cleaning", "restarting"].includes(systemUpgradeState?.state)) {
+    systemUpgradePollTimer = window.setTimeout(
+      () => loadSystemUpgradeStatus({ background: true }),
+      1000,
+    );
+  }
+}
+
+async function loadSystemUpgradeStatus({ background = false } = {}) {
+  if (!hasProtectedAccess()) {
+    return;
+  }
+  try {
+    renderSystemUpgrade(await apiFetch("/api/maintenance/system-upgrade"));
+  } catch (error) {
+    if (!background && !handleAccessError(error)) {
+      elements.systemUpgradeDetail.textContent = `状态：读取失败。${error.message || "无法读取维护状态。"}`;
+    }
+  }
+  scheduleSystemUpgradePoll();
+}
+
+async function startSystemUpgrade() {
+  const fingerprint = systemUpgradeState?.plan?.fingerprint;
+  if (!fingerprint) {
+    throw new Error("恢复方案尚未就绪。");
+  }
+  systemUpgradeRequestInProgress = true;
+  syncCoreMaintenanceControls();
+  try {
+    renderSystemUpgrade(await apiFetch("/api/maintenance/system-upgrade", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fingerprint }),
+    }));
+  } finally {
+    systemUpgradeRequestInProgress = false;
+    syncCoreMaintenanceControls();
+    scheduleSystemUpgradePoll();
+  }
 }
 
 function clearQuickWorkerPollTimer() {
@@ -58,6 +140,10 @@ function resetQuickWorkerView() {
   setBadge(elements.chubServiceBadge, "正在检查");
   elements.chubServiceDetail.textContent = "正在检查服务状态";
   setMessage(elements.chubServiceMessage, "");
+  clearSystemUpgradePollTimer();
+  systemUpgradeState = null;
+  systemUpgradeRequestInProgress = false;
+  elements.systemUpgradeDetail.textContent = "状态：正在检查运行态恢复条件";
   syncCoreMaintenanceControls();
 }
 
@@ -139,6 +225,31 @@ async function requestQuickWorkerRestart() {
   }
 }
 
+function systemUpgradeImpactDetails() {
+  const activeTasks = Number(quickWorkerState?.active_tasks || 0);
+  const queuedTasks = Number(quickWorkerState?.queued_tasks || 0);
+  const taskCount = activeTasks + queuedTasks;
+  const sessionCount = Number(systemUpgradeState?.plan?.session_count || 0);
+  return [
+    {
+      label: "快速任务",
+      value: taskCount
+        ? `${taskCount} 个在途或排队任务将停止。`
+        : "当前没有在途或排队任务。",
+    },
+    {
+      label: "Chub Session",
+      value: sessionCount
+        ? `${sessionCount} 个本地关联将清理；Codex 原生会话保留。`
+        : "当前没有本地关联；Codex 原生会话保留。",
+    },
+    {
+      label: "服务切换",
+      value: "Quick Worker 与 Chub Web 将依次重启。",
+    },
+  ];
+}
+
 async function refreshWorkstationEnvironment() {
   if (!hasProtectedAccess()) {
     return;
@@ -148,6 +259,7 @@ async function refreshWorkstationEnvironment() {
     await Promise.allSettled([
       loadStatus(),
       loadQuickWorkerStatus(),
+      loadSystemUpgradeStatus(),
       loadAutomationEnvironment(),
       loadOpenClaw(),
     ]);
@@ -168,5 +280,17 @@ elements.quickWorkerRestart.addEventListener("click", () => {
     pendingLabel: "正在下发…",
     errorMessage: "Quick Worker 重启失败。",
     onConfirm: requestQuickWorkerRestart,
+  });
+});
+
+elements.systemUpgradeStart.addEventListener("click", () => {
+  void showConfirmationDialog({
+    title: "系统升级与恢复",
+    description: "以下运行态将按当前状态重建。",
+    details: systemUpgradeImpactDetails(),
+    confirmLabel: "确认升级与恢复",
+    pendingLabel: "正在开始…",
+    errorMessage: "系统升级与恢复未能启动。",
+    onConfirm: startSystemUpgrade,
   });
 });

@@ -40,9 +40,16 @@ const cyberRainBrightnessValue = document.querySelector("#cyber-rain-brightness-
 const cyberRainDensityValue = document.querySelector("#cyber-rain-density-value");
 const cyberStyleSettingsMessage = document.querySelector("#cyber-style-settings-message");
 const styleOptionRows = document.querySelectorAll("[data-style-option]");
+const cyberStyleDetails = document.querySelector("[data-cyber-style-details]");
+const settingsNavigationLinks = document.querySelectorAll(
+  ".settings-navigation-links a",
+);
+const settingsSections = document.querySelectorAll(".settings-content > section[id]");
 let codexModels = [];
 let weixinTranslationPollTimer = null;
 let weixinTranslationRequestVersion = 0;
+let settingsScrollFrame = null;
+let settingsNavigationTarget = null;
 
 const CODEX_REASONING_LABELS = {
   low: "Low",
@@ -63,6 +70,58 @@ function renderStyleSelection(style) {
     button.textContent = selected ? "使用中" : "应用";
     button.disabled = selected;
   });
+  cyberStyleDetails.querySelector("summary").textContent = style === "cyber"
+    ? "Cyber 参数 · 当前风格"
+    : "Cyber 参数";
+}
+
+function setActiveSettingsSection(sectionId) {
+  settingsNavigationLinks.forEach((link) => {
+    if (link.getAttribute("href") === `#${sectionId}`) {
+      link.setAttribute("aria-current", "true");
+    } else {
+      link.removeAttribute("aria-current");
+    }
+  });
+}
+
+function scrollToSettingsSection(sectionId) {
+  const section = document.getElementById(sectionId);
+  if (!section) {
+    return;
+  }
+  settingsNavigationTarget = sectionId;
+  setActiveSettingsSection(sectionId);
+  section.scrollIntoView({
+    behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
+      ? "auto"
+      : "smooth",
+    block: "start",
+  });
+}
+
+function updateActiveSettingsSection() {
+  settingsScrollFrame = null;
+  if (settingsNavigationTarget) {
+    setActiveSettingsSection(settingsNavigationTarget);
+    return;
+  }
+  const threshold = 120;
+  let activeSection = settingsSections[0];
+  settingsSections.forEach((section) => {
+    if (section.getBoundingClientRect().top <= threshold) {
+      activeSection = section;
+    }
+  });
+  if (
+    window.innerHeight + window.scrollY
+    >= document.documentElement.scrollHeight - 2
+  ) {
+    activeSection = settingsSections[settingsSections.length - 1];
+  }
+  if (activeSection) {
+    setActiveSettingsSection(activeSection.id);
+  }
 }
 
 function readRangePreference(key, fallback) {
@@ -108,8 +167,8 @@ function saveQuickInteractionPageSize(value) {
   try {
     localStorage.setItem(QUICK_INTERACTION_PAGE_SIZE_KEY, selected);
     quickInteractionPageSize.value = selected;
-    settingsMessage.textContent = `已设置为每页 ${selected} 条，下次进入快速交互时生效。`;
-    settingsMessage.className = "message message-success";
+    settingsMessage.textContent = "";
+    settingsMessage.className = "message";
   } catch (_error) {
     quickInteractionPageSize.value = readQuickInteractionPageSize();
     settingsMessage.textContent = "当前浏览器无法保存界面偏好。";
@@ -160,8 +219,8 @@ function saveCodexDefaultPermission(value) {
   try {
     localStorage.setItem(CODEX_DEFAULT_PERMISSION_KEY, selected);
     codexDefaultPermission.value = selected;
-    codexSessionSettingsMessage.textContent = "已保存，之后新建的 Session 将使用该权限。";
-    codexSessionSettingsMessage.className = "message message-success";
+    codexSessionSettingsMessage.textContent = "";
+    codexSessionSettingsMessage.className = "message";
   } catch (_error) {
     codexDefaultPermission.value = readCodexDefaultPermission();
     codexSessionSettingsMessage.textContent = "当前浏览器无法保存会话偏好。";
@@ -484,6 +543,9 @@ styleOptionRows.forEach((row) => {
     const style = row.dataset.styleOption;
     if (window.ChubTheme.applyStyle(style, { persist: true })) {
       renderStyleSelection(style);
+      cyberStyleDetails.open = style === "cyber";
+      cyberStyleSettingsMessage.textContent = "";
+      cyberStyleSettingsMessage.className = "message";
     } else {
       cyberStyleSettingsMessage.textContent = "当前浏览器无法保存界面偏好。";
       cyberStyleSettingsMessage.className = "message message-error";
@@ -491,4 +553,34 @@ styleOptionRows.forEach((row) => {
   });
 });
 
+settingsNavigationLinks.forEach((link) => {
+  link.addEventListener("click", (event) => {
+    event.preventDefault();
+    scrollToSettingsSection(link.getAttribute("href").slice(1));
+  });
+});
+
+window.addEventListener("scroll", () => {
+  if (settingsScrollFrame === null) {
+    settingsScrollFrame = window.requestAnimationFrame(updateActiveSettingsSection);
+  }
+}, { passive: true });
+
+function releaseSettingsNavigationTarget() {
+  settingsNavigationTarget = null;
+}
+
+window.addEventListener("wheel", releaseSettingsNavigationTarget, { passive: true });
+window.addEventListener("touchstart", releaseSettingsNavigationTarget, { passive: true });
+window.addEventListener("pointerdown", releaseSettingsNavigationTarget, { passive: true });
+window.addEventListener("keydown", (event) => {
+  if (
+    ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "]
+      .includes(event.key)
+  ) {
+    releaseSettingsNavigationTarget();
+  }
+});
+
 renderStyleSelection(window.ChubTheme.currentStyle());
+updateActiveSettingsSection();

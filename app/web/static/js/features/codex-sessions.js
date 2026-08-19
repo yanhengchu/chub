@@ -43,8 +43,7 @@ function createCodexCard() {
   const currentHint = document.createElement("p");
   const modelPreference = document.createElement("p");
   const quota = document.createElement("p");
-  const sessionsDivider = document.createElement("div");
-  const sessionsDividerLabel = document.createElement("span");
+  const sessionsTitle = document.createElement("h3");
   const refreshButton = document.createElement("button");
   const createActions = document.createElement("div");
   const createButton = document.createElement("button");
@@ -91,8 +90,8 @@ function createCodexCard() {
   quota.id = "codex-quota";
   quota.setAttribute("aria-live", "polite");
   quota.textContent = "额度：正在读取…";
-  sessionsDivider.className = "codex-divider codex-sessions-divider";
-  sessionsDividerLabel.textContent = "正在读取会话";
+  sessionsTitle.className = "card-group-title codex-sessions-title";
+  sessionsTitle.textContent = "正在读取会话";
   createActions.className = "codex-create-actions";
   createButton.type = "button";
   createButton.id = "create-codex";
@@ -110,7 +109,7 @@ function createCodexCard() {
   workspaceDialogClose.setAttribute("aria-label", "关闭目录选择");
   workspaceDialogClose.textContent = "关闭";
   workspaceDialogDescription.className = "section-description";
-  workspaceDialogDescription.textContent = "选择一个固定目录新建 Codex 会话。";
+  workspaceDialogDescription.textContent = "首页列出三个常用目录；其他目录启动的 Codex 会话会自动出现在列表中。";
   workspaceList.className = "workspace-list";
   workspaceList.id = "codex-workspaces";
   sessionList.className = "session-list";
@@ -125,7 +124,6 @@ function createCodexCard() {
     })(),
     refreshButton,
   );
-  sessionsDivider.append(sessionsDividerLabel);
   createActions.append(createButton);
   workspaceDialogHeader.append(workspaceDialogTitle, workspaceDialogClose);
   workspaceDialogSurface.append(
@@ -138,7 +136,7 @@ function createCodexCard() {
     currentHint,
     modelPreference,
     quota,
-    sessionsDivider,
+    sessionsTitle,
     sessionList,
     createActions,
   );
@@ -153,7 +151,7 @@ function createCodexCard() {
   elements.codexModelPreference = modelPreference;
   elements.codexQuota = quota;
   elements.codexSessions = sessionList;
-  elements.codexSessionCount = sessionsDividerLabel;
+  elements.codexSessionCount = sessionsTitle;
   elements.refreshCodex = refreshButton;
   elements.createCodex = createButton;
   elements.codexWorkspaceDialog = workspaceDialog;
@@ -424,7 +422,7 @@ function renderCodexSessions(sessions) {
     archive.textContent = "归档";
     archive.setAttribute("aria-haspopup", "dialog");
     archive.setAttribute("aria-controls", "confirmation-dialog");
-    archive.disabled = !session.codex_session_id
+    archive.disabled = !session.can_archive
       || quickInteractionRunning;
     if (quickInteractionRunning) {
       archive.title = "快速交互正在执行";
@@ -490,7 +488,7 @@ function codexSessionsSignature(sessions) {
       session.title,
       session.weixin_session_slot,
       session.cwd,
-      session.codex_session_id,
+      session.can_archive,
       session.permission_mode,
       session.active_permission_mode,
       session.permission_pending,

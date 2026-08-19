@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import stat
 import threading
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -144,8 +145,47 @@ async def test_quick_worker_status_combines_health_and_web_recovery(
     assert recovering.json()["data"]["can_restart"] is False
     assert ready.json()["data"]["state"] == "ready"
     assert ready.json()["data"]["can_restart"] is True
+    assert ready.json()["data"]["upgrade_required"] is False
     assert "generation" not in ready.json()["data"]
     assert "process_id" not in ready.json()["data"]
+
+
+@pytest.mark.anyio
+async def test_quick_worker_status_marks_pending_upgrade_without_calling_it_unhealthy(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    app.state.quick_interactions._recovery_ready = True
+    app.state.system_upgrade.plan = lambda: SimpleNamespace(
+        plan=SimpleNamespace(
+            source_worker_protocol=PROTOCOL_VERSION - 1,
+            target_worker_protocol=PROTOCOL_VERSION,
+        )
+    )
+    transport = httpx.ASGITransport(app=app)
+
+    with (
+        patch(
+            "app.services.quick_worker_maintenance.read_health",
+            new=AsyncMock(return_value=worker_health()),
+        ),
+        patch(
+            "app.api.maintenance.read_health",
+            new=AsyncMock(return_value=worker_health()),
+        ),
+    ):
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            headers=AUTHORIZATION,
+        ) as client:
+            response = await client.get("/api/maintenance/quick-worker")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["state"] == "ready"
+    assert response.json()["data"]["can_restart"] is False
+    assert response.json()["data"]["upgrade_required"] is True
+    assert response.json()["data"]["message"] == "服务正常，待继续系统升级。"
 
 
 @pytest.mark.anyio
@@ -226,7 +266,7 @@ async def test_quick_worker_restart_uses_fixed_controlled_command(
 
 
 @pytest.mark.anyio
-async def test_quick_worker_restart_rejects_pending_chub_restart(
+async def test_quick_worker_restart_allows_pending_chub_restart(
     settings: Settings,
 ) -> None:
     app = create_app(settings)
@@ -238,9 +278,16 @@ async def test_quick_worker_restart_rejects_pending_chub_restart(
     )
     transport = httpx.ASGITransport(app=app)
 
-    with patch(
-        "app.services.quick_worker_maintenance.read_health",
-        new=AsyncMock(return_value=worker_health()),
+    process = WaitingProcess()
+    with (
+        patch(
+            "app.services.quick_worker_maintenance.read_health",
+            new=AsyncMock(return_value=worker_health()),
+        ),
+        patch(
+            "app.services.quick_worker_maintenance.launch_quick_worker_reload_process",
+            return_value=process,
+        ) as launch_worker,
     ):
         async with httpx.AsyncClient(
             transport=transport,
@@ -248,19 +295,21 @@ async def test_quick_worker_restart_rejects_pending_chub_restart(
             headers=AUTHORIZATION,
         ) as client:
             response = await client.post("/api/maintenance/quick-worker/restart")
+        process.release.set()
 
-    assert response.status_code == 409
-    assert response.json()["error"]["code"] == "chub_restart_in_progress"
+    assert response.status_code == 200
+    launch_worker.assert_called_once()
 
 
 @pytest.mark.anyio
-async def test_concurrent_chub_and_worker_restarts_launch_only_chub(
+async def test_concurrent_chub_and_worker_restarts_launch_independently(
     settings: Settings,
 ) -> None:
     app = create_app(settings)
     app.state.quick_interactions._recovery_ready = True
     chub_launched = asyncio.Event()
     event_loop = asyncio.get_running_loop()
+    worker_process = WaitingProcess()
     transport = httpx.ASGITransport(app=app)
 
     async def wait_for_chub_launch(*_args, **_kwargs):
@@ -277,7 +326,8 @@ async def test_concurrent_chub_and_worker_restarts_launch_only_chub(
             new=AsyncMock(side_effect=wait_for_chub_launch),
         ),
         patch(
-            "app.services.quick_worker_maintenance.launch_quick_worker_reload_process"
+            "app.services.quick_worker_maintenance.launch_quick_worker_reload_process",
+            return_value=worker_process,
         ) as launch_worker,
         patch(
             "app.api.maintenance.launch_restart_process",
@@ -294,12 +344,12 @@ async def test_concurrent_chub_and_worker_restarts_launch_only_chub(
                 client.post("/api/maintenance/quick-worker/restart"),
                 client.post("/api/maintenance/restart"),
             )
+        worker_process.release.set()
 
     assert web_response.status_code == 200
-    assert worker_response.status_code == 409
-    assert worker_response.json()["error"]["code"] == "chub_restart_in_progress"
+    assert worker_response.status_code == 200
     launch_web.assert_called_once()
-    launch_worker.assert_not_called()
+    launch_worker.assert_called_once()
 
 
 @pytest.mark.anyio

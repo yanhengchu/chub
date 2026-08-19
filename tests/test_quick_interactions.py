@@ -132,6 +132,16 @@ def test_codex_execution_prompt_adds_delivery_guidance_without_changing_request(
     assert "只能调用 scripts/chub-web-restart 一次" in prompt
 
 
+def test_system_upgrade_reset_prevents_late_task_state_rewrite(tmp_path: Path) -> None:
+    quick_interactions = manager(tmp_path)
+
+    quick_interactions.reset_for_system_upgrade(force=True)
+    reset_state = quick_interactions.path.read_text(encoding="utf-8")
+    quick_interactions._write()
+
+    assert quick_interactions.path.read_text(encoding="utf-8") == reset_state
+
+
 def test_result_suffix_stays_within_persisted_limit(tmp_path: Path) -> None:
     quick_interactions = manager(tmp_path)
 
@@ -350,6 +360,7 @@ def test_isolated_worker_unavailable_fails_without_web_runner(
     quick_interactions._worker_call = MagicMock(
         side_effect=WorkerRequestNotSent("worker down")
     )
+    monkeypatch.setattr("app.codex.quick_interactions.time.sleep", lambda _delay: None)
     with pytest.raises(ApiError) as error:
         quick_interactions.submit(
             "session-1",
@@ -363,14 +374,75 @@ def test_isolated_worker_unavailable_fails_without_web_runner(
     assert quick_interactions._tasks == {}
 
 
+def test_discovered_session_outside_fixed_workspace_is_submitted_to_worker(
+    tmp_path: Path,
+) -> None:
+    quick_interactions = manager(tmp_path)
+    quick_interactions.codex_manager.get_session.return_value.workspace_id = "runtime-session"
+    quick_interactions._start_worker_observer = MagicMock()
+
+    task = quick_interactions.submit(
+        "session-1",
+        "submit restored session",
+        operation_id="operation-1",
+        source_ip="127.0.0.1",
+    )
+
+    assert task.status == "requested"
+    submitted = quick_interactions._worker_call.call_args.kwargs["task"]
+    assert submitted["workspace_id"] == "runtime-session"
+
+
+def test_worker_connection_failure_retries_before_rejecting_submission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    quick_interactions = manager(tmp_path)
+    session = quick_interactions.codex_manager.get_session.return_value
+    thread = MagicMock()
+    monkeypatch.setattr(
+        "app.codex.quick_interactions.threading.Thread",
+        MagicMock(return_value=thread),
+    )
+    sleep = MagicMock()
+    monkeypatch.setattr("app.codex.quick_interactions.time.sleep", sleep)
+    attempts = 0
+
+    def submit_after_worker_starts(action: str, **payload: object) -> dict[str, object]:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise WorkerRequestNotSent("worker starting")
+        assert action == "runtime_task_submit"
+        task_payload = payload["task"]
+        assert isinstance(task_payload, dict)
+        return accepted_worker_task(task_payload)
+
+    quick_interactions._worker_call = MagicMock(side_effect=submit_after_worker_starts)
+
+    task = quick_interactions.submit(
+        session.id,
+        "wait for the worker",
+        operation_id="operation-1",
+        source_ip="127.0.0.1",
+    )
+
+    assert task.status == "requested"
+    assert quick_interactions._worker_call.call_count == 3
+    assert sleep.call_args_list == [((0.2,), {}), ((0.5,), {})]
+    thread.start.assert_called_once_with()
+
+
 def test_failed_sensitive_submission_rechecks_deferred_restart(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     deferred_restart = MagicMock()
     quick_interactions = manager(tmp_path, deferred_restart=deferred_restart)
     quick_interactions._worker_call = MagicMock(
         side_effect=WorkerRequestNotSent("worker down")
     )
+    monkeypatch.setattr("app.codex.quick_interactions.time.sleep", lambda _delay: None)
 
     with pytest.raises(ApiError):
         quick_interactions.submit(
@@ -1352,6 +1424,30 @@ def test_worker_recovery_fails_closed_on_invalid_web_state(
     assert state.read_text(encoding="utf-8") == original
 
 
+def test_load_discards_legacy_pinned_state(tmp_path: Path) -> None:
+    task = QuickInteractionTask(
+        id="legacy-task",
+        session_id="session-1",
+        prompt="旧记录",
+        status="succeeded",
+        result="完成",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    payload = task.model_dump(mode="json")
+    payload["pinned_at"] = utc_now().isoformat()
+    (tmp_path / "quick-interactions.json").write_text(
+        json.dumps([payload]),
+        encoding="utf-8",
+    )
+
+    recovered = manager(tmp_path)
+
+    assert recovered.get(task.id).id == task.id
+    persisted = json.loads(recovered.path.read_text(encoding="utf-8"))
+    assert "pinned_at" not in persisted[0]
+
+
 @pytest.mark.parametrize("invalid_kind", ["non_utf8", "oversized", "symlink"])
 def test_worker_recovery_fails_closed_on_unsafe_web_state_file(
     settings,
@@ -1580,74 +1676,16 @@ def test_list_for_session_returns_latest_first(tmp_path: Path) -> None:
     assert tasks[0].prompt == "较新"
 
 
-def test_list_for_session_keeps_latest_before_pinned_and_ordinary(
-    tmp_path: Path,
-) -> None:
-    quick_interactions = manager(tmp_path)
-    base = utc_now()
-    tasks = [
-        QuickInteractionTask(
-            id="older-pinned",
-            session_id="session-1",
-            prompt="较早置顶",
-            status="succeeded",
-            result="完成",
-            pinned_at=base + timedelta(minutes=4),
-            created_at=base,
-            updated_at=base,
-        ),
-        QuickInteractionTask(
-            id="newer-pinned",
-            session_id="session-1",
-            prompt="较晚置顶",
-            status="succeeded",
-            result="完成",
-            pinned_at=base + timedelta(minutes=5),
-            created_at=base + timedelta(minutes=1),
-            updated_at=base + timedelta(minutes=1),
-        ),
-        QuickInteractionTask(
-            id="ordinary",
-            session_id="session-1",
-            prompt="普通记录",
-            status="succeeded",
-            result="完成",
-            created_at=base + timedelta(minutes=2),
-            updated_at=base + timedelta(minutes=2),
-        ),
-        QuickInteractionTask(
-            id="latest",
-            session_id="session-1",
-            prompt="最新记录",
-            status="succeeded",
-            result="完成",
-            created_at=base + timedelta(minutes=3),
-            updated_at=base + timedelta(minutes=3),
-        ),
-    ]
-    quick_interactions._tasks = {task.id: task for task in tasks}
-
-    listed = quick_interactions.list_for_session("session-1")
-
-    assert [task.id for task in listed] == [
-        "latest",
-        "newer-pinned",
-        "older-pinned",
-        "ordinary",
-    ]
-
-
 def test_list_for_session_can_return_timeline_order(tmp_path: Path) -> None:
     quick_interactions = manager(tmp_path)
     base = utc_now()
     tasks = [
         QuickInteractionTask(
-            id="older-pinned",
+            id="older",
             session_id="session-1",
-            prompt="较早置顶",
+            prompt="较早记录",
             status="succeeded",
             result="完成",
-            pinned_at=base + timedelta(minutes=3),
             created_at=base,
             updated_at=base,
         ),
@@ -1677,52 +1715,7 @@ def test_list_for_session_can_return_timeline_order(tmp_path: Path) -> None:
         order="timeline",
     )
 
-    assert [task.id for task in listed] == ["latest", "middle", "older-pinned"]
-
-
-def test_set_pinned_persists_and_can_be_cancelled(tmp_path: Path) -> None:
-    quick_interactions = manager(tmp_path)
-    task = QuickInteractionTask(
-        id="task-1",
-        session_id="session-1",
-        prompt="检查状态",
-        status="succeeded",
-        result="完成",
-        created_at=utc_now(),
-        updated_at=utc_now(),
-    )
-    quick_interactions._tasks = {task.id: task}
-
-    pinned = quick_interactions.set_pinned("session-1", task.id, True)
-
-    assert pinned.pinned_at is not None
-    persisted = json.loads(quick_interactions.path.read_text(encoding="utf-8"))
-    assert persisted[0]["pinned_at"] is not None
-
-    unpinned = quick_interactions.set_pinned("session-1", task.id, False)
-
-    assert unpinned.pinned_at is None
-    persisted = json.loads(quick_interactions.path.read_text(encoding="utf-8"))
-    assert persisted[0]["pinned_at"] is None
-
-
-def test_set_pinned_rejects_task_from_another_session(tmp_path: Path) -> None:
-    quick_interactions = manager(tmp_path)
-    task = QuickInteractionTask(
-        id="task-1",
-        session_id="another-session",
-        prompt="检查状态",
-        status="succeeded",
-        result="完成",
-        created_at=utc_now(),
-        updated_at=utc_now(),
-    )
-    quick_interactions._tasks = {task.id: task}
-
-    with pytest.raises(ApiError) as error:
-        quick_interactions.set_pinned("session-1", task.id, True)
-
-    assert error.value.code == "quick_interaction_not_found"
+    assert [task.id for task in listed] == ["latest", "middle", "older"]
 
 
 def test_active_sessions_reports_only_running_session_ids(tmp_path: Path) -> None:
@@ -1885,79 +1878,6 @@ def test_local_history_never_prunes_pending_restart_task_or_private_route(
     assert pending.id in quick_interactions._tasks
     assert quick_interactions._notification_routes[pending.id] == route
     assert quick_interactions._deferred_restart_contexts[pending.id] == context
-
-
-def test_local_history_never_prunes_pinned_tasks(tmp_path: Path) -> None:
-    quick_interactions = manager(tmp_path)
-    pinned = QuickInteractionTask(
-        id="pinned",
-        session_id="session-1",
-        prompt="长期保留",
-        status="succeeded",
-        result="完成",
-        pinned_at=utc_now(),
-        created_at=utc_now() - timedelta(days=30),
-        updated_at=utc_now() - timedelta(days=30),
-    )
-    completed = [
-        QuickInteractionTask(
-            id=f"completed-{index}",
-            session_id="session-1",
-            prompt=f"完成任务 {index}",
-            status="succeeded",
-            result="完成",
-            created_at=utc_now() + timedelta(minutes=index),
-            updated_at=utc_now() + timedelta(minutes=index),
-        )
-        for index in range(30)
-    ]
-    quick_interactions._tasks = {
-        task.id: task
-        for task in [pinned, *completed]
-    }
-
-    quick_interactions._write()
-
-    assert len(quick_interactions._tasks) == 30
-    assert pinned.id in quick_interactions._tasks
-
-
-def test_local_history_keeps_latest_when_all_older_tasks_are_pinned(
-    tmp_path: Path,
-) -> None:
-    quick_interactions = manager(tmp_path)
-    base = utc_now()
-    pinned = [
-        QuickInteractionTask(
-            id=f"pinned-{index}",
-            session_id="session-1",
-            prompt=f"置顶任务 {index}",
-            status="succeeded",
-            result="完成",
-            pinned_at=base + timedelta(minutes=index),
-            created_at=base + timedelta(minutes=index),
-            updated_at=base + timedelta(minutes=index),
-        )
-        for index in range(30)
-    ]
-    latest = QuickInteractionTask(
-        id="latest",
-        session_id="session-1",
-        prompt="最新任务",
-        status="succeeded",
-        result="完成",
-        created_at=base + timedelta(minutes=31),
-        updated_at=base + timedelta(minutes=31),
-    )
-    quick_interactions._tasks = {
-        task.id: task
-        for task in [*pinned, latest]
-    }
-
-    quick_interactions._write()
-
-    assert latest.id in quick_interactions._tasks
-    assert all(task.id in quick_interactions._tasks for task in pinned)
 
 
 def test_local_history_keeps_finished_task_until_session_cleanup(

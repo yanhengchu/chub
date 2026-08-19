@@ -6,6 +6,7 @@ from pydantic import ValidationError
 
 from app.ai_runtime import (
     BACKGROUND_RUNTIME_CAPABILITIES,
+    RUNTIME_CAPABILITIES,
     RuntimeDescriptor,
     RuntimeEventSummary,
     RuntimeOperationError,
@@ -16,6 +17,7 @@ from app.ai_runtime import (
     RuntimeTurnResult,
     RuntimeWorkerLaunchSpec,
     WorkerRuntimeRegistry,
+    validate_runtime_wiring,
 )
 from app.codex.runtime_adapter import CodexRuntimeAdapter
 from app.codex.manager import CodexPtyManager
@@ -30,15 +32,23 @@ from app.core.config import Settings
 
 
 class StubRuntime:
+    def __init__(self, runtime_id: str = "test", *, available: bool = True) -> None:
+        self._runtime_id = runtime_id
+        self._available = available
+
     @property
     def descriptor(self) -> RuntimeDescriptor:
         return RuntimeDescriptor(
-            runtime_id="test",
+            runtime_id=self._runtime_id,
             capabilities=frozenset({"runtime_status"}),
         )
 
     def status(self) -> RuntimeStatus:
-        return RuntimeStatus(runtime_id="test", available=True)
+        return RuntimeStatus(
+            runtime_id=self._runtime_id,
+            available=self._available,
+            reason=None if self._available else "test runtime unavailable",
+        )
 
 
 class BrokenWriterRuntime(StubRuntime):
@@ -48,6 +58,11 @@ class BrokenWriterRuntime(StubRuntime):
             runtime_id="broken",
             capabilities=frozenset({"runtime_status", "writer_probe"}),
         )
+
+
+class MismatchedStatusRuntime(StubRuntime):
+    def status(self) -> RuntimeStatus:
+        return RuntimeStatus(runtime_id="other-runtime", available=True)
 
 
 class StubWorkerRuntime:
@@ -105,12 +120,29 @@ class StubWorkerRuntime:
         return RuntimeEventSummary(native_session_id="native-session")
 
     @staticmethod
+    def read_error(_task_dir: Path, *, max_bytes: int) -> str | None:
+        return None
+
+    @staticmethod
     def read_result(_task_dir: Path, *, max_bytes: int) -> RuntimeTurnResult:
         return RuntimeTurnResult(text="completed")
 
 
 class IncompleteWorkerRuntime(StubWorkerRuntime):
     read_result = None
+
+
+class MutableWorkerDescriptorRuntime(StubWorkerRuntime):
+    def __init__(self) -> None:
+        super().__init__("mutable-runtime")
+        self.reported_runtime_id = "mutable-runtime"
+
+    @property
+    def descriptor(self) -> RuntimeDescriptor:
+        return RuntimeDescriptor(
+            runtime_id=self.reported_runtime_id,
+            capabilities=BACKGROUND_RUNTIME_CAPABILITIES,
+        )
 
 
 def test_runtime_registry_is_fixed_and_rejects_unknown_or_duplicate() -> None:
@@ -130,11 +162,78 @@ def test_runtime_registry_is_fixed_and_rejects_unknown_or_duplicate() -> None:
     assert capability.value.code == "runtime_capability_unavailable"
 
 
+def test_runtime_capability_matrix_is_explicit_and_runtime_neutral() -> None:
+    registry = RuntimeRegistry(
+        [
+            StubRuntime(),
+            StubRuntime("second-runtime"),
+            StubRuntime("offline-runtime", available=False),
+        ]
+    )
+
+    matrix = registry.capability_matrix()
+
+    assert [item.runtime_id for item in matrix] == [
+        "test",
+        "second-runtime",
+        "offline-runtime",
+    ]
+    assert matrix[1].available is True
+    assert matrix[1].capabilities["runtime_status"] == "supported"
+    assert matrix[1].capabilities["interactive_terminal"] == "unsupported"
+    assert set(matrix[1].capabilities) == set(RUNTIME_CAPABILITIES)
+    assert all(
+        state == "unsupported"
+        for capability, state in matrix[1].capabilities.items()
+        if capability != "runtime_status"
+    )
+    assert matrix[2].available is False
+    assert matrix[2].capabilities["runtime_status"] == "unavailable"
+    assert matrix[2].reason == "test runtime unavailable"
+
+
+def test_runtime_capability_matrix_rejects_mismatched_status_owner() -> None:
+    registry = RuntimeRegistry([MismatchedStatusRuntime("declared-runtime")])
+
+    with pytest.raises(RuntimeOperationError) as invalid:
+        registry.capability_matrix()
+
+    assert invalid.value.code == "runtime_status_invalid"
+
+
+def test_runtime_registry_rejects_descriptor_identity_drift() -> None:
+    runtime = StubRuntime()
+    registry = RuntimeRegistry([runtime])
+    runtime._runtime_id = "other-runtime"
+
+    with pytest.raises(RuntimeOperationError) as listed:
+        registry.runtime_ids()
+    assert listed.value.code == "runtime_identity_invalid"
+
+    with pytest.raises(RuntimeOperationError) as invalid:
+        registry.capability_matrix()
+
+    assert invalid.value.code == "runtime_identity_invalid"
+
+
 def test_runtime_registry_rejects_declared_capability_without_contract() -> None:
     with pytest.raises(RuntimeOperationError) as invalid:
         RuntimeRegistry([BrokenWriterRuntime()])
 
     assert invalid.value.code == "runtime_capability_invalid"
+
+
+def test_runtime_wiring_rejects_adapter_runner_owner_mismatch() -> None:
+    class DescriptorOnly:
+        descriptor = RuntimeDescriptor(
+            runtime_id="other-runtime",
+            capabilities=frozenset({"runtime_status"}),
+        )
+
+    with pytest.raises(RuntimeOperationError) as invalid:
+        validate_runtime_wiring(StubRuntime("codex"), DescriptorOnly())
+
+    assert invalid.value.code == "runtime_wiring_invalid"
 
 
 def test_worker_runtime_registry_is_fixed_and_fails_before_submission() -> None:
@@ -160,6 +259,22 @@ def test_worker_runtime_registry_is_fixed_and_fails_before_submission() -> None:
     assert offline.value.code == "runtime_unavailable"
 
 
+def test_worker_runtime_capability_matrix_allows_second_runtime_runner() -> None:
+    registry = WorkerRuntimeRegistry(
+        [StubWorkerRuntime("codex"), StubWorkerRuntime("second-runtime")]
+    )
+
+    matrix = registry.capability_matrix()
+
+    assert [item.runtime_id for item in matrix] == ["codex", "second-runtime"]
+    assert all(item.available for item in matrix)
+    assert all(
+        item.capabilities[capability] == "supported"
+        for item in matrix
+        for capability in BACKGROUND_RUNTIME_CAPABILITIES
+    )
+
+
 def test_worker_runtime_registry_rejects_missing_or_false_capability() -> None:
     with pytest.raises(RuntimeOperationError) as missing_capability:
         WorkerRuntimeRegistry(
@@ -175,6 +290,21 @@ def test_worker_runtime_registry_rejects_missing_or_false_capability() -> None:
     with pytest.raises(RuntimeOperationError) as false_capability:
         WorkerRuntimeRegistry([IncompleteWorkerRuntime("incomplete")])
     assert false_capability.value.code == "runtime_runner_invalid"
+
+
+def test_worker_runtime_registry_rejects_descriptor_identity_drift() -> None:
+    runtime = MutableWorkerDescriptorRuntime()
+    registry = WorkerRuntimeRegistry([runtime])
+    runtime.reported_runtime_id = "other-runtime"
+
+    with pytest.raises(RuntimeOperationError) as listed:
+        registry.runtime_ids()
+    assert listed.value.code == "runtime_runner_identity_invalid"
+
+    with pytest.raises(RuntimeOperationError) as invalid:
+        registry.capability_matrix()
+
+    assert invalid.value.code == "runtime_runner_identity_invalid"
 
 
 def test_codex_adapter_declares_current_capabilities(settings: Settings) -> None:
@@ -193,9 +323,10 @@ def test_codex_adapter_declares_current_capabilities(settings: Settings) -> None
             "native_session_mapping",
             "interactive_terminal",
             "session_resume",
-            "session_archive",
-            "structured_events",
-            "writer_probe",
+                "session_archive",
+                "structured_events",
+                "activity_events",
+                "writer_probe",
             "model_catalog",
             "permission_profiles",
         }
@@ -374,6 +505,71 @@ def test_codex_runner_normalizes_malformed_events_and_truncated_results(
     result = CodexRuntimeRunner.read_result(result_path, max_bytes=4)
     assert result.text == "abcd"
     assert result.truncated is True
+
+
+def test_codex_runner_preserves_upstream_error_text(tmp_path: Path) -> None:
+    event_path = tmp_path / "events.jsonl"
+    event_path.write_text(
+        '{"type":"thread.started","thread_id":"native-1"}\n'
+        '{"type":"turn.failed","error":{"message":"unexpected status 503 '
+        'Service Unavailable: Service temporarily unavailable"}}\n',
+        encoding="utf-8",
+    )
+    event_path.chmod(0o600)
+
+    assert CodexRuntimeRunner.read_error(event_path, max_bytes=4096) == (
+        "unexpected status 503 Service Unavailable: Service temporarily unavailable"
+    )
+
+    event_path.write_text(
+        '{"type":"provider.transport_failure","message":"provider raw error"}\n',
+        encoding="utf-8",
+    )
+    assert CodexRuntimeRunner.read_error(event_path, max_bytes=4096) == (
+        "provider raw error"
+    )
+
+    event_path.write_text(
+        '{"type":"provider.error","payload":{"status":503}}\n',
+        encoding="utf-8",
+    )
+    assert CodexRuntimeRunner.read_error(event_path, max_bytes=4096) == (
+        '{"type":"provider.error","payload":{"status":503}}'
+    )
+
+    event_path.write_text(
+        '{"type":"provider.error","message":"Authorization: Bearer '
+        'super-secret"}\n',
+        encoding="utf-8",
+    )
+    assert CodexRuntimeRunner.read_error(event_path, max_bytes=4096) == (
+        "Authorization: Bearer [REDACTED]"
+    )
+
+
+def test_codex_adapter_owns_activity_event_file_boundary(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    settings.codex_pty.runtime_dir = tmp_path / "runtime"
+    adapter = CodexRuntimeAdapter(settings)
+    adapter.hook_dir.mkdir(parents=True)
+    hook = adapter.hook_dir / "123e4567-e89b-12d3-a456-426614174000.json"
+    hook.write_text(
+        '{"codex_session_id":"native-1","activity":"working",'
+        '"activity_source":"terminal"}',
+        encoding="utf-8",
+    )
+    hook.chmod(0o600)
+
+    event = adapter.read_activity_event("123e4567-e89b-12d3-a456-426614174000")
+
+    assert event is not None
+    assert event.native_session_id == "native-1"
+    assert event.activity == "working"
+    assert event.activity_source == "terminal"
+    adapter.clear_activity_event("123e4567-e89b-12d3-a456-426614174000")
+    assert adapter.read_activity_event("123e4567-e89b-12d3-a456-426614174000") is None
 
 
 def test_codex_adapter_terminal_spec_uses_runtime_request(

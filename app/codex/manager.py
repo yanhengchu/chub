@@ -1,3 +1,10 @@
+"""Legacy Codex-only test fixture.
+
+Production startup uses :class:`app.ai_session.manager.AiSessionManager`.
+This module remains for focused regression coverage of the pre-3B Codex
+implementation and must not be imported by production application code.
+"""
+
 from __future__ import annotations
 
 import json
@@ -38,6 +45,7 @@ from app.codex.runtime_adapter import (
     PROFILE_MARKER,
     CodexRuntimeAdapter,
 )
+from app.codex.worker_runtime import DISCOVERED_RUNTIME_WORKSPACE_ID
 from app.core.config import PROJECT_ROOT, Settings
 from app.core.response import ApiError
 
@@ -73,6 +81,7 @@ class CodexPtyManager:
         self._processes: dict[str, subprocess.Popen[bytes]] = {}
         self._lock = threading.RLock()
         self._quick_interaction_is_running: Callable[[str], bool] = lambda _id: False
+        self._system_upgrade_writes_blocked: Callable[[], bool] = lambda: False
         self._reconcile_saved_backends()
 
     def set_quick_interaction_checker(
@@ -80,6 +89,9 @@ class CodexPtyManager:
         checker: Callable[[str], bool],
     ) -> None:
         self._quick_interaction_is_running = checker
+
+    def set_system_upgrade_checker(self, checker: Callable[[], bool]) -> None:
+        self._system_upgrade_writes_blocked = checker
 
     @property
     def network_available(self) -> bool:
@@ -111,23 +123,29 @@ class CodexPtyManager:
         ]
 
     def list_sessions(self) -> list[SessionInfo]:
-        self._consume_hook_results()
-        self._sync_native_sessions()
-        sessions = self.store.list()
-        for session in sessions:
-            self._refresh_status(session)
-            self._reconcile_quick_activity(session)
-        return [self._public(session) for session in self.store.list()]
+        with self._lock:
+            if self._system_upgrade_writes_blocked():
+                return [self._public(session) for session in self.store.list()]
+            self._consume_hook_results()
+            self._sync_native_sessions()
+            sessions = self.store.list()
+            for session in sessions:
+                self._refresh_status(session)
+                self._reconcile_quick_activity(session)
+            return [self._public(session) for session in self.store.list()]
 
     def get_session(self, session_id: str) -> CodexSession:
-        self._consume_hook_result(session_id)
-        self._sync_native_sessions()
-        session = self.store.get(session_id)
-        if session is None:
-            raise ApiError(404, "codex_session_not_found", "Codex session not found")
-        self._refresh_status(session)
-        self._reconcile_quick_activity(session)
-        return session
+        with self._lock:
+            if not self._system_upgrade_writes_blocked():
+                self._consume_hook_result(session_id)
+                self._sync_native_sessions()
+            session = self.store.get(session_id)
+            if session is None:
+                raise ApiError(404, "codex_session_not_found", "Codex session not found")
+            if not self._system_upgrade_writes_blocked():
+                self._refresh_status(session)
+                self._reconcile_quick_activity(session)
+            return session
 
     def read_session(self, session_id: str) -> SessionInfo:
         return self._public(self.get_session(session_id))
@@ -524,6 +542,62 @@ class CodexPtyManager:
         except FileNotFoundError:
             pass
 
+    def system_upgrade_sessions(self) -> list[CodexSession]:
+        """Freeze the local records without discovering or importing native history."""
+        with self._lock:
+            return self.store.validate_for_system_upgrade()
+
+    def discard_session_for_system_upgrade(self, session_id: str) -> None:
+        """Remove only Chub's local Session state, preserving the Codex Session."""
+        with self._lock:
+            current = self.store.get(session_id)
+            if current is None:
+                return
+            self.stop_session(session_id)
+            self.store.delete(session_id)
+            try:
+                (self.hook_dir / f"{session_id}.json").unlink()
+            except FileNotFoundError:
+                pass
+
+    def archive_session_for_system_upgrade(
+        self,
+        session_id: str,
+        native_session_id: str | None,
+    ) -> str:
+        """Archive one frozen record with crash-safe native archive reconciliation."""
+        with self._lock:
+            current = self.store.get(session_id)
+            if current is None:
+                return "archived" if native_session_id else "discarded"
+            if current.codex_session_id != native_session_id:
+                raise OSError("Session native identity changed during system upgrade")
+            self.stop_session(session_id)
+            if native_session_id is not None:
+                self.validate_native_session_id(native_session_id)
+                archive_states = self.runtime_adapter.discovery.session_archive_states()
+                if archive_states is None or native_session_id not in archive_states:
+                    raise OSError("Native Session archive state cannot be confirmed")
+                if archive_states[native_session_id] is False:
+                    try:
+                        self.runtime_adapter.run_native_action(
+                            "archive",
+                            native_session_id,
+                        )
+                    except RuntimeOperationError as exc:
+                        raise self._runtime_api_error(exc) from exc
+                self.store.delete(session_id)
+                outcome = "archived"
+            else:
+                self.store.delete(session_id)
+                outcome = "discarded"
+            hook_file = self.hook_dir / f"{session_id}.json"
+            try:
+                hook_file.unlink()
+            except FileNotFoundError:
+                pass
+            return outcome
+
     def backend_url(self, session_id: str, path: str, query: str = "") -> str:
         session = self.ensure_terminal(session_id)
         suffix = f"?{query}" if query else ""
@@ -552,11 +626,12 @@ class CodexPtyManager:
     def _public(self, session: CodexSession) -> SessionInfo:
         return SessionInfo(
             id=session.id,
+            runtime_id="codex",
             workspace_id=session.workspace_id,
             workspace_name=session.workspace_name,
             cwd=str(session.cwd),
             title=session.title,
-            codex_session_id=session.codex_session_id,
+            can_archive=session.codex_session_id is not None,
             status=session.status,
             activity=session.activity,
             activity_source=session.activity_source,
@@ -814,6 +889,13 @@ class CodexPtyManager:
                     existing.cwd = discovered.cwd
                     existing.workspace_name = discovered.workspace_name
                     changed = True
+                if existing.workspace_id == "codex":
+                    # Older discovery records used a synthetic workspace ID.
+                    # Keep them on the same dynamic-directory path as newly
+                    # discovered native Sessions.
+                    existing.workspace_id = DISCOVERED_RUNTIME_WORKSPACE_ID
+                    existing.workspace_name = discovered.workspace_name
+                    changed = True
                 if (
                     discovered.active_model
                     and existing.active_model != discovered.active_model
@@ -873,7 +955,7 @@ class CodexPtyManager:
     def _codex_session_from_runtime(session: RuntimeNativeSession) -> CodexSession:
         return CodexSession(
             id=session.native_session_id,
-            workspace_id="codex",
+            workspace_id=DISCOVERED_RUNTIME_WORKSPACE_ID,
             workspace_name=session.cwd.name or str(session.cwd),
             cwd=session.cwd,
             title=session.title,

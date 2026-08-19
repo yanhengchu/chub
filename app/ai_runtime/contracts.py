@@ -16,10 +16,29 @@ RuntimeCapability = Literal[
     "session_resume",
     "session_archive",
     "structured_events",
+    "activity_events",
     "writer_probe",
     "model_catalog",
     "permission_profiles",
 ]
+RuntimeCapabilityState = Literal["supported", "unsupported", "unavailable"]
+RUNTIME_ID_PATTERN = r"^[a-z][a-z0-9-]{0,31}$"
+RUNTIME_CAPABILITIES: frozenset[RuntimeCapability] = frozenset(
+    {
+        "runtime_status",
+        "background_turn",
+        "task_cancel",
+        "native_session_mapping",
+        "interactive_terminal",
+        "session_resume",
+        "session_archive",
+        "structured_events",
+        "activity_events",
+        "writer_probe",
+        "model_catalog",
+        "permission_profiles",
+    }
+)
 PermissionProfile = Literal["auto-review", "read-only", "full-access"]
 RuntimePermissionMode = Literal[
     "ask",
@@ -40,12 +59,42 @@ class _StrictModel(BaseModel):
 
 
 class RuntimeDescriptor(_StrictModel):
-    runtime_id: str = Field(pattern=r"^[a-z][a-z0-9-]{0,31}$")
+    runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
     capabilities: frozenset[RuntimeCapability]
 
 
+class RuntimeCapabilityMatrix(_StrictModel):
+    """The fixed, read-only capability view used during Runtime admission."""
+
+    runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
+    available: bool
+    reason: str | None = Field(default=None, max_length=300)
+    capabilities: dict[RuntimeCapability, RuntimeCapabilityState]
+
+    @classmethod
+    def from_descriptor(
+        cls,
+        descriptor: RuntimeDescriptor,
+        *,
+        available: bool,
+        reason: str | None = None,
+    ) -> "RuntimeCapabilityMatrix":
+        state: RuntimeCapabilityState = "supported" if available else "unavailable"
+        return cls(
+            runtime_id=descriptor.runtime_id,
+            available=available,
+            reason=reason,
+            capabilities={
+                capability: state
+                if capability in descriptor.capabilities
+                else "unsupported"
+                for capability in sorted(RUNTIME_CAPABILITIES)
+            },
+        )
+
+
 class RuntimeStatus(_StrictModel):
-    runtime_id: str = Field(pattern=r"^[a-z][a-z0-9-]{0,31}$")
+    runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
     available: bool
     reason: str | None = Field(default=None, max_length=300)
     dependencies: dict[str, bool] = Field(default_factory=dict)
@@ -59,6 +108,7 @@ class RuntimeTurnRequest(_StrictModel):
 
 
 class RuntimeNativeSession(_StrictModel):
+    runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
     native_session_id: str = Field(min_length=1, max_length=128)
     cwd: Path
     title: str | None = Field(default=None, max_length=500)
@@ -118,6 +168,14 @@ class RuntimeEventSummary(_StrictModel):
     native_session_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
+class RuntimeActivityEvent(_StrictModel):
+    """A bounded activity update emitted by a Runtime-owned hook/event source."""
+
+    native_session_id: str | None = Field(default=None, min_length=1, max_length=128)
+    activity: Literal["working", "idle"] | None = None
+    activity_source: Literal["none", "terminal", "quick"] = "none"
+
+
 class RuntimeTurnResult(_StrictModel):
     text: str = Field(max_length=1_000_000)
     truncated: bool = False
@@ -165,6 +223,15 @@ class RuntimeWriterProbeAdapter(Protocol):
         timeout: float = 3.0,
     ) -> bool: ...
 
+    def runtime_process_matches(self, command: tuple[str, ...]) -> bool: ...
+
+
+@runtime_checkable
+class RuntimeActivityEventAdapter(Protocol):
+    def read_activity_event(self, session_id: str) -> RuntimeActivityEvent | None: ...
+
+    def clear_activity_event(self, session_id: str) -> None: ...
+
 
 @runtime_checkable
 class RuntimeModelCatalogAdapter(Protocol):
@@ -184,6 +251,12 @@ class RuntimeInteractiveTerminalAdapter(Protocol):
         request: RuntimeTerminalRequest,
         port: int,
     ) -> RuntimeProcessSpec: ...
+
+    def terminal_backend_matches(
+        self,
+        command: tuple[str, ...],
+        session_id: str,
+    ) -> bool: ...
 
 
 @runtime_checkable

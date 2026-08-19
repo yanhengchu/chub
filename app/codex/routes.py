@@ -19,7 +19,6 @@ from app.codex.models import (
     QuickInteractionData,
     QuickInteractionListData,
     QuickInteractionOrder,
-    QuickInteractionPinRequest,
     QuickInteractionRequest,
     SessionAccessData,
     SessionCreateRequest,
@@ -31,6 +30,7 @@ from app.codex.quick_interactions import build_task_summary
 from app.core.response import ApiError, ApiResponse, error_response
 from app.core.security import require_token
 from app.services.operation_log import log_operation, write_operation
+from app.services.system_upgrade import SystemUpgradeBusy
 from app.web.routes import WEB_DIR
 
 
@@ -294,6 +294,46 @@ async def submit_quick_interaction(
                         weixin_session_title=session_title,
                     )
 
+                def take_over_idle_terminal() -> None:
+                    """Release Chub's idle terminal before Quick Worker becomes writer."""
+                    current = manager.get_session(session_id)
+                    if current.status != "running":
+                        return
+                    if current.activity == "working":
+                        raise ApiError(
+                            409,
+                            "quick_interaction_terminal_working",
+                            "实时终端正在执行，请等待当前任务结束。",
+                        )
+                    if (
+                        current.activity == "unknown"
+                        and not payload.confirm_stop_unknown_terminal
+                    ):
+                        raise ApiError(
+                            409,
+                            "quick_interaction_terminal_confirmation_required",
+                            "当前实时终端状态无法确认，请确认停止后再执行。",
+                        )
+                    if current.activity not in {"idle", "unknown"}:
+                        raise ApiError(
+                            409,
+                            "quick_interaction_terminal_active",
+                            "当前实时终端状态不允许快速交互。",
+                        )
+                    native_session_id = current.native_session_id
+                    request.app.state.terminal_tickets.revoke_session(session_id)
+                    request.app.state.terminal_connections.close_session(session_id)
+                    manager.stop_session(session_id)
+                    if (
+                        native_session_id
+                        and not manager.wait_for_writer_release(native_session_id)
+                    ):
+                        raise ApiError(
+                            409,
+                            "quick_interaction_writer_active",
+                            "Codex Session 正在由其他进程使用，请等待任务结束或停止实时终端。",
+                        )
+
                 if session.status == "running":
                     if session.activity == "working":
                         raise ApiError(
@@ -311,6 +351,7 @@ async def submit_quick_interaction(
                             "当前实时终端状态无法确认，请确认停止后再执行。",
                         )
                     if session.activity == "idle":
+                        take_over_idle_terminal()
                         return submit_with_session_context()
                     session = manager.get_session(session_id)
                     if session.status == "running" and session.activity == "working":
@@ -329,10 +370,7 @@ async def submit_quick_interaction(
                             "quick_interaction_terminal_confirmation_required",
                             "当前实时终端状态无法确认，请确认停止后再执行。",
                         )
-                    request.app.state.terminal_tickets.revoke_session(session_id)
-                    request.app.state.terminal_connections.close_session(session_id)
-                    if session.status == "running":
-                        manager.stop_session(session_id)
+                    take_over_idle_terminal()
                 return submit_with_session_context()
 
         task = await asyncio.to_thread(submit_codex)
@@ -432,24 +470,6 @@ def list_quick_interactions(
             has_more=has_more,
         )
     )
-
-
-@api_router.patch(
-    "/sessions/{session_id}/quick-interactions/{task_id}/pin",
-    response_model=ApiResponse[QuickInteractionData],
-)
-def set_quick_interaction_pinned(
-    session_id: str,
-    task_id: str,
-    payload: QuickInteractionPinRequest,
-    request: Request,
-) -> ApiResponse[QuickInteractionData]:
-    task = request.app.state.quick_interactions.set_pinned(
-        session_id,
-        task_id,
-        payload.pinned,
-    )
-    return ApiResponse(data=QuickInteractionData(task=task))
 
 
 @api_router.post("/sessions/{session_id}/archive", response_model=ApiResponse[None])
@@ -584,11 +604,21 @@ async def quick_interaction_conversation_page(
 async def terminal_page(request: Request, session_id: str) -> HTMLResponse:
     if not _terminal_authorized(request, session_id):
         raise ApiError(401, "terminal_access_required", "Terminal access expired")
-    session = request.app.state.codex_pty_manager.require_terminal_access(session_id)
-    page = request.app.state.terminal_connections.open_page(
-        session_id,
-        request.cookies[COOKIE_NAME],
-    )
+    try:
+        with request.app.state.system_upgrade.mutation_guard():
+            session = request.app.state.codex_pty_manager.require_terminal_access(
+                session_id
+            )
+            page = request.app.state.terminal_connections.open_page(
+                session_id,
+                request.cookies[COOKIE_NAME],
+            )
+    except SystemUpgradeBusy as exc:
+        raise ApiError(
+            409,
+            "system_upgrade_in_progress",
+            "系统升级期间暂不建立新的终端连接。",
+        ) from exc
     return templates.TemplateResponse(
         request=request,
         name="terminal.html",
@@ -627,31 +657,54 @@ async def terminal_websocket(websocket: WebSocket, session_id: str) -> None:
     if not page_id:
         await websocket.close(code=4401)
         return
-    await websocket.accept(subprotocol="tty")
-    LOGGER.info("terminal_websocket_accepted session_id=%s page_id=%s", session_id, page_id)
     manager = websocket.app.state.codex_pty_manager
     ticket = websocket.cookies[COOKIE_NAME]
+    connection = None
     try:
-        connection, released = await websocket.app.state.terminal_connections.claim(
-            session_id,
-            ticket,
-            page_id,
-        )
+        with websocket.app.state.system_upgrade.mutation_guard():
+            await websocket.accept(subprotocol="tty")
+            LOGGER.info(
+                "terminal_websocket_accepted session_id=%s page_id=%s",
+                session_id,
+                page_id,
+            )
+            connection, released = await websocket.app.state.terminal_connections.claim(
+                session_id,
+                ticket,
+                page_id,
+            )
+            if not released:
+                LOGGER.warning(
+                    "session_id=%s old terminal connection did not release; recycling ttyd",
+                    session_id,
+                )
+                await asyncio.to_thread(manager.restart_terminal_backend, session_id)
+            backend_url = manager.backend_ws_url(session_id)
+            session = manager.get_session(session_id)
+    except SystemUpgradeBusy:
+        await websocket.close(code=4412, reason="System upgrade in progress")
+        return
     except ValueError:
         await websocket.close(code=4401, reason="Terminal page access expired")
         return
+    except (ApiError, OSError, RuntimeError) as exc:
+        if connection is not None:
+            websocket.app.state.terminal_connections.release(connection)
+        LOGGER.warning(
+            "terminal_websocket_setup_failed session_id=%s page_id=%s error_type=%s",
+            session_id,
+            page_id,
+            type(exc).__name__,
+        )
+        try:
+            await websocket.close(code=1011, reason="Terminal backend unavailable")
+        except RuntimeError:
+            pass
+        return
     try:
-        if not released:
-            LOGGER.warning(
-                "session_id=%s old terminal connection did not release; recycling ttyd",
-                session_id,
-            )
-            await asyncio.to_thread(manager.restart_terminal_backend, session_id)
-        backend_url = manager.backend_ws_url(session_id)
-        session = manager.get_session(session_id)
         async with websockets.connect(
             backend_url,
-            origin=f"http://127.0.0.1:{session.ttyd_port}",
+            origin=manager.backend_origin(session_id),
             subprotocols=["tty"],
         ) as backend:
             if not websocket.app.state.terminal_connections.activate(connection):
@@ -663,15 +716,23 @@ async def terminal_websocket(websocket: WebSocket, session_id: str) -> None:
                     message = await websocket.receive()
                     if message.get("type") == "websocket.disconnect":
                         return
-                    with websocket.app.state.quick_interactions.terminal_input_guard(
-                        session_id
-                    ) as allowed:
-                        if not allowed:
-                            continue
-                        if message.get("bytes") is not None:
-                            await backend.send(message["bytes"])
-                        elif message.get("text") is not None:
-                            await backend.send(message["text"])
+                    try:
+                        with websocket.app.state.system_upgrade.mutation_guard():
+                            with websocket.app.state.quick_interactions.terminal_input_guard(
+                                session_id
+                            ) as allowed:
+                                if not allowed:
+                                    continue
+                                if message.get("bytes") is not None:
+                                    await backend.send(message["bytes"])
+                                elif message.get("text") is not None:
+                                    await backend.send(message["text"])
+                    except SystemUpgradeBusy:
+                        await websocket.close(
+                            code=4412,
+                            reason="System upgrade in progress",
+                        )
+                        return
 
             async def backend_to_client() -> None:
                 async for message in backend:
@@ -712,8 +773,9 @@ async def terminal_websocket(websocket: WebSocket, session_id: str) -> None:
         )
         return
     finally:
-        websocket.app.state.terminal_connections.release(connection)
-        if connection.takeover.is_set():
+        if connection is not None:
+            websocket.app.state.terminal_connections.release(connection)
+        if connection is not None and connection.takeover.is_set():
             try:
                 await websocket.close(code=4409, reason="Terminal opened elsewhere")
             except RuntimeError:
@@ -744,11 +806,12 @@ async def terminal_http(
         )
     manager = request.app.state.codex_pty_manager
     try:
-        backend_url = manager.backend_url(
-            session_id,
-            path,
-            request.url.query,
-        )
+        with request.app.state.system_upgrade.mutation_guard():
+            backend_url = manager.backend_url(
+                session_id,
+                path,
+                request.url.query,
+            )
         headers = {
             key: value
             for key, value in request.headers.items()
@@ -761,6 +824,12 @@ async def terminal_http(
                 headers=headers,
                 content=await request.body(),
             )
+    except SystemUpgradeBusy:
+        return error_response(
+            409,
+            "system_upgrade_in_progress",
+            "系统升级期间暂不建立新的终端连接。",
+        )
     except httpx.HTTPError as exc:
         LOGGER.warning(
             "terminal_http_proxy_failed session_id=%s error_type=%s",

@@ -397,18 +397,6 @@
         );
       },
 
-      setPinned(taskId, pinned) {
-        return request(
-          token,
-          `/api/codex/sessions/${encodedSessionId}`
-          + `/quick-interactions/${encodeURIComponent(taskId)}/pin`,
-          {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ pinned }),
-          },
-        );
-      },
     });
   }
 

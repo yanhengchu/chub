@@ -25,6 +25,8 @@ CHUB_HELP_MESSAGE = "\n\n".join(
         "chub · 状态 / 查询状态",
         "help · 帮助",
         "restart · 重启 / 重新启动",
+        "system upgrade status",
+        "system upgrade",
         "sync · 同步",
         "direct <task> · 直接执行 <正文>",
         "new <title> · 新建 <标题>",

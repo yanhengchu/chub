@@ -7,6 +7,7 @@ from unicodedata import category
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.ai_runtime import RUNTIME_ID_PATTERN
 
 SessionStatus = Literal["new", "running", "stopped", "error"]
 TurnActivity = Literal["unknown", "working", "idle"]
@@ -65,6 +66,15 @@ class CodexSession(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
+    @property
+    def native_session_id(self) -> str | None:
+        """Compatibility view for test fixtures and one-time upgrade records."""
+        return self.codex_session_id
+
+    @native_session_id.setter
+    def native_session_id(self, value: str | None) -> None:
+        self.codex_session_id = value
+
     @field_validator("permission_mode", "active_permission_mode", mode="before")
     @classmethod
     def migrate_legacy_permission_mode(cls, value: object) -> object:
@@ -94,11 +104,12 @@ class WorkspaceInfo(BaseModel):
 
 class SessionInfo(BaseModel):
     id: str
+    runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
     workspace_id: str
     workspace_name: str
     cwd: str
     title: str | None
-    codex_session_id: str | None
+    can_archive: bool = False
     status: SessionStatus
     activity: TurnActivity
     activity_source: ActivitySource = "none"
@@ -287,12 +298,6 @@ class QuickInteractionRequest(BaseModel):
             raise ValueError("Prompt must not be blank")
         return resolved
 
-class QuickInteractionPinRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    pinned: bool
-
-
 class QuickInteractionTask(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -341,7 +346,6 @@ class QuickInteractionTask(BaseModel):
         max_length=1000,
     )
     deferred_restart_notification_updated_at: datetime | None = None
-    pinned_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 

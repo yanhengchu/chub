@@ -1,8 +1,9 @@
 # Chub 总体架构与演进设计
 
 > 状态：持续维护。
->
-> 本文维护 Chub 的当前系统架构、进程与状态所有权、长期分层和演进原则，是各专项设计的上层约束。当前可用能力以[集成能力清单](CHUB_INTEGRATION_CAPABILITIES.md)为准；AI Runtime 的长期架构与演进阶段由[AI Runtime 架构演进设计](AI_RUNTIME_ARCHITECTURE_DESIGN.md)细化。本文不表示目标分层已经全部实现，也不要求一次性重构现有模块。
+> 主要读者：AI Agent、实现和排障 Agent；维护人员用于确认项目边界、状态所有权和架构验收标准。
+> 本文负责：Chub 当前系统架构、进程与状态所有权、长期分层和演进原则，是各专项设计的上层约束；当前可用能力以[集成能力清单](CHUB_INTEGRATION_CAPABILITIES.md)为准，AI Runtime 演进由[Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)细化。
+> 本文不负责：专项功能的完整实现契约、固定指令语法、插件源码/部署步骤或目标分层的直接落地；各专项文档负责自己的权威边界，本文不表示目标分层已经全部实现，也不要求一次性重构现有模块。
 
 本文与项目 README 共同构成核心项目文档：README 回答“Chub 是什么、如何使用”，本文回答“Chub 如何组织、各状态由谁负责、后续如何演进”。其他专项设计、能力契约和维护资料均位于其后，并不得与这两份核心文档冲突。
 
@@ -108,13 +109,13 @@ Worker 不负责身份认证、页面、微信路由、通知目标、Request �
 
 | 能力 | 当前实现 | 长期目标 | 当前状态 |
 | --- | --- | --- | --- |
-| 逻辑 AI Session 生命周期 | `CodexPtyManager` 兼容外观、Codex Session Store | AI Session Manager、AI Session Store | AI Session Manager 待实现 |
-| 后台 AI 执行 | Quick Worker、固定 Runtime Runner 注册表、Codex Runner | Quick Worker、固定 Runtime Runner 注册表 | 通用注册表与协议 `7` 已实施，待阶段 2 跨平台服务验收 |
-| 实时终端 | `CodexPtyManager` 兼容外观、Codex Adapter、tmux、ttyd | Interactive Supervisor、Runtime Adapter | Adapter 边界已完成并验收通过；Supervisor 待实现 |
-| Runtime 私有协议 | Codex 命令、Hook、发现、模型、Writer 与事件解析已收敛到 Adapter/Runner；上层仍保留 Codex 命名 | 收敛到 Runtime Adapter/Runner | 阶段 1 已完成并验收通过；上层迁移待后续阶段 |
-| 用户入口与兼容 API | Codex 页面、微信固定路由、`/api/codex/*` | 保持现有外观，内部逐步委托通用 Session 服务 | 当前继续使用 |
+| 逻辑 AI Session 生命周期 | AI Session Manager、AI Session Store；旧 Store 不参与启动选择或读取 | AI Session Manager、AI Session Store | 当前已落地并验收 |
+| 后台 AI 执行 | Quick Worker、固定 Runtime Runner 注册表、Codex Runner | Quick Worker、固定 Runtime Runner 注册表 | 当前已落地并验收；生产只注册 Codex |
+| 实时终端 | Interactive Supervisor、运行时无关的 Session 终端票据/连接状态、Codex Adapter、tmux、ttyd；不按旧 Store 回退 | Interactive Supervisor、Runtime Adapter | 当前已落地并验收；当前实现为 Codex |
+| Runtime 私有协议 | Codex 命令、Hook、发现、模型、Writer 与事件解析已收敛到 Adapter/Runner；Runtime ID、能力矩阵和原生映射已统一 | 收敛到 Runtime Adapter/Runner | 当前已落地并验收；第二 Runtime 尚未接入 |
+| 用户入口与正式 API | Codex 页面、微信固定路由、`/api/codex/*` | 保持当前正式 Codex 外观，不把它当作通用 Runtime 兼容别名 | 当前继续使用 |
 
-目标组件只有在对应迁移阶段完成并通过专项验收后，才能在其他文档中写成当前能力。具体迁移顺序以 AI Runtime 专项设计为准。
+目标组件只有在对应专项设计明确落地并通过验收后，才能在其他文档中写成当前能力。未来 Runtime 接入顺序和门槛以 AI Runtime 专项设计的第二部分为准。
 
 ## 5. 领域边界
 
@@ -124,7 +125,7 @@ Worker 不负责身份认证、页面、微信路由、通知目标、Request �
 
 ### 5.2 AI Session 与执行
 
-当前由 Codex Session Store、`CodexPtyManager` 和 Quick Worker 共同承担 Chub 逻辑 Session、Activity、实时终端及后台 AI 任务；模型用量由 AI Usage Service 维护。长期再由 AI Session Manager、Runtime Adapter、Interactive Supervisor 和 Quick Worker 按目标边界分工，详见专项设计。
+当前由 AI Session Manager、AI Session Store、Interactive Supervisor 和 Quick Worker 分别承担逻辑 Session、Activity、实时终端及后台 AI 任务；终端票据、页面接管和连接状态属于 `app.ai_session` 通用边界，Runtime Adapter 只解释 Runtime 私有进程/后端匹配。模型用量由 AI Usage Service 维护。旧 `CodexPtyManager`、Codex Session Store 仅作为历史实现和专项回归代码保留，不参与生产启动或状态读取，详见专项设计。
 
 ### 5.3 Request 需求储备
 
@@ -151,7 +152,7 @@ Worker 不负责身份认证、页面、微信路由、通知目标、Request �
 | 状态 | 权威来源 | 其他模块如何使用 |
 | --- | --- | --- |
 | 节点与服务健康 | 操作系统、进程和健康探测 | Web 聚合展示，不缓存为永久真相 |
-| Chub AI Session 元数据 | 当前 Codex Session Store；长期 AI Session Store | 页面、微信和 Worker 使用 Chub Session ID 关联 |
+| Chub AI Session 元数据 | AI Session Manager、AI Session Store | 页面、微信和 Worker 使用 Chub Session ID 关联 |
 | 原生 Agent Session | 当前 Codex 本地状态；长期 Runtime Adapter | Chub 只保存受校验映射，不解释私有格式 |
 | AI 后台任务与租约 | Quick Worker | Web 恢复后重建投影并确认通知 |
 | 实时终端连接 | tmux/ttyd、Terminal Registry | Session 状态只消费可信探测结果 |
@@ -174,7 +175,7 @@ Worker 不负责身份认证、页面、微信路由、通知目标、Request �
 入口认证与业务校验
   -> 选择 Chub Session
   -> Worker 幂等提交并原子获取租约
-  -> Codex Runner 执行（目标态由固定 Runtime Runner 替代）
+  -> 固定 Runtime Runner 执行（当前为 Codex Runner）
   -> Worker 写入真实终态并释放租约
   -> Web 恢复/投影状态
   -> 页面展示或按保存路由通知
@@ -255,21 +256,21 @@ Adapters & Infrastructure
 
 - `application.py` 的跨模块回调和直接装配较多，应通过明确用例服务减少新增耦合。
 - `app/services/` 职责混杂，后续按领域归属渐进收拢。
-- Codex 私有实现已从 Session、Worker 的共享职责中收敛到 Adapter/Runner，但协议、配置和 API 仍保留 Codex 外观，后续多 Runtime 演进继续按专项阶段解耦。
+- Codex 私有实现已从 Session、Worker 的共享职责中收敛到 Adapter/Runner；Runtime ID、能力矩阵、原生映射、活动事件和终端连接边界已统一。协议、配置和 `/api/codex/*` 仍是当前 Codex 正式入口，后续第二 Runtime 接入按专项设计扩展，不为旧版本增加兼容别名。
 - 自动化、维护和 AI 任务使用不同执行机制；应先统一可靠性原则，不急于统一代码框架。
 - 部分 API 和数据路径以当前实现命名；只有内部边界稳定后才迁移公共命名。
 
 ## 10. 演进原则与顺序
 
 1. **先固化现状。** 总架构和专项文档先明确权威状态、依赖方向和不得退化的用户行为。
-2. **Codex Runtime 边界收敛已完成。** AI Runtime 架构演进第一阶段已经验收通过，范围限制在 AI Session 与 Quick Worker 相关模块。
-3. **保持兼容外观。** 现有 API、页面、微信指令、数据和服务部署在内部迁移期间保持不变。
+2. **Codex Runtime 边界收敛已完成。** 当前生产仍只注册 Codex，并已具备第二 Runtime 的接入准备；只有在明确产品需求出现后，才按专项文档的接入契约直接实施。
+3. **保持当前正式入口。** 现有 API、页面、微信指令和服务部署在内部收敛期间保持当前用户可见语义；不为已改变的旧运行态、旧协议或旧入口增加长期兼容层。
 4. **从真实调用提取接口。** 只有两个以上稳定调用方或明确替换需求出现时才新增共享抽象。
 5. **领域内聚优先。** 新功能放入对应领域，跨领域通过公开服务和稳定 ID 协调。
 6. **执行可靠性一致。** 所有异步操作都区分受理、开始和最终状态，但不要求使用同一个 Worker。
 7. **不扩大基础设施。** 没有容量、隔离或恢复需求时，不引入数据库、消息队列或新常驻服务。
 
-AI Runtime 第一阶段已经完成；后续阶段和其他领域收敛仍由真实维护痛点驱动，总架构文档本身不授权同步重构。
+AI Runtime 架构收敛已经完成；后续第二 Runtime 接入和其他领域收敛仍由真实产品需求驱动，总架构文档本身不授权同步重构。
 
 ## 11. 架构验收标准
 
@@ -280,18 +281,18 @@ AI Runtime 第一阶段已经完成；后续阶段和其他领域收敛仍由真
 - Web 重启、Worker 恢复、通知和操作日志仍以最终状态为准。
 - 领域状态有唯一所有者，跨模块不直接修改其他领域私有文件。
 - 外部系统私有协议被限制在 Adapter/Manager 内。
-- 配置和数据迁移向后兼容、原子、有界且不覆盖本机秘密。
+- 配置不被覆盖；数据切换必须原子、有界且不泄露本机秘密，已改变且不再适用的 Chub 旧运行态按固定边界清理，不新增长期迁移兼容分支。
 - macOS 与 Ubuntu 行为一致；无法实机验证的平台明确说明。
 - 架构复杂度与个人设备规模匹配，没有为假设需求增加常驻基础设施。
 
 ## 12. 专项文档关系
 
-- [AI Runtime 架构演进设计](AI_RUNTIME_ARCHITECTURE_DESIGN.md)：AI Session Manager、Runtime Adapter、Worker 和演进路线。
+- [Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)：AI Session Manager、Runtime Adapter、Worker 和演进路线。
 - [AI Session 状态模型](AI_SESSION_STATE_DESIGN.md)：Session、Activity、入口、槽位和单 writer 产品语义。
-- [快速交互独立 Worker 设计](QUICK_INTERACTION_WORKER_DESIGN.md)：AI 后台任务、恢复、通知和 Web 重启语义。
-- [Chub–OpenClaw 接入设计](CHUB_OPENCLAW_INTEGRATION_DESIGN.md)：OpenClaw/微信身份、路由、权限和通知边界。
+- [Chub Quick Worker 独立服务设计](CHUB_QUICK_WORKER_DESIGN.md)：AI 后台任务、恢复、通知和重启协调语义。
+- [OpenClaw 定制集成设计](OPENCLAW_CUSTOMIZATION_DESIGN.md)：OpenClaw/微信身份、路由、权限、插件定制和通知边界。
 - [前端 UI 模块化设计](FRONTEND_UI_DESIGN.md)：Web 前端加载、组件、交互和视觉契约。
-- [AI 额度与用量采集设计](AI_QUOTA_USAGE_DESIGN.md)：统一 AI 用量接口、来源和缓存。
+- [Codex AI 额度与用量采集设计](CODEX_AI_QUOTA_USAGE_DESIGN.md)：当前 Codex/OpenAI 用量接口、来源和缓存。
 - [周报自动化与生成设计](WEEKLY_REPORT_AUTOMATION_DESIGN.md)：自动化资料、确认门禁和报告产物。
 
 当前能力查询仍以[集成能力清单](CHUB_INTEGRATION_CAPABILITIES.md)为统一入口。专项文档只维护自己的权威边界，不复制总架构全文。

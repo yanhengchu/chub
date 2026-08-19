@@ -67,29 +67,34 @@ async def test_home_page_is_public_and_contains_no_token(
     assert 'id="refresh-status"' in response.text
     assert "节点任务" not in response.text
     assert 'id="codex-card-host"' in response.text
-    assert 'id="openclaw-title"' in response.text
-    assert "OpenClaw 环境" in response.text
+    assert 'id="openclaw-title"' not in response.text
+    assert "OpenClaw 环境" not in response.text
+    assert "<strong>ClawBot</strong>" in response.text
     assert 'id="openclaw-badge"' not in response.text
     assert 'id="refresh-openclaw"' not in response.text
     assert 'id="openclaw-start"' in response.text
     assert 'id="openclaw-restart"' in response.text
-    assert 'id="openclaw-stop"' in response.text
+    assert 'id="openclaw-stop"' not in response.text
     assert 'id="openclaw-bind-weixin"' in response.text
+    assert '>微信</button>' in response.text
     assert 'id="openclaw-weixin-dialog"' in response.text
+    assert 'id="openclaw-weixin-account-summary"' in response.text
+    assert 'id="openclaw-weixin-owner-summary"' in response.text
     assert 'id="openclaw-weixin-qr"' in response.text
     assert 'id="openclaw-weixin-verify-form"' in response.text
-    assert 'id="openclaw-access-open"' in response.text
+    assert 'id="openclaw-access-open"' not in response.text
     assert 'id="openclaw-access-url"' not in response.text
     assert 'id="openclaw-access-unavailable"' not in response.text
     assert "远程访问未启用" not in response.text
     assert 'data-card-key="openclaw"' not in response.text
-    assert 'id="openclaw-gateway-badge"' in response.text
-    assert "网关状态" in response.text
-    assert "消息通道" in response.text
-    assert "访问入口" in response.text
-    assert 'class="openclaw-status-row openclaw-access"' in response.text
+    assert 'id="clawbot-badge"' in response.text
+    assert 'id="clawbot-detail"' in response.text
+    assert 'id="openclaw-gateway-badge"' not in response.text
+    assert 'id="openclaw-channels"' not in response.text
+    assert "访问入口" not in response.text
+    assert 'class="openclaw-status-row openclaw-access"' not in response.text
     assert "微信通道" not in response.text
-    assert 'id="openclaw-channels" class="badge badge-muted"' in response.text
+    assert 'id="openclaw-channels" class="badge badge-muted"' not in response.text
     assert 'id="openclaw-owner"' not in response.text
     assert 'id="openclaw-version"' not in response.text
     assert 'id="openclaw-service"' not in response.text
@@ -97,7 +102,9 @@ async def test_home_page_is_public_and_contains_no_token(
     assert 'id="openclaw-checked-at"' not in response.text
     assert 'id="automation-title"' in response.text
     assert 'id="automation-list"' in response.text
+    assert 'id="automation-task-title" class="card-group-title"' in response.text
     assert 'id="automation-environment-title"' in response.text
+    assert 'id="automation-environment-title" class="card-group-title"' in response.text
     assert "自动化环境" in response.text
     assert 'id="automation-environment-badge"' not in response.text
     assert 'id="refresh-automation-environment"' not in response.text
@@ -107,12 +114,20 @@ async def test_home_page_is_public_and_contains_no_token(
     assert 'data-card-key="workstation" data-collapsible-card data-collapsed="true"' not in response.text
     assert '<h2 id="workstation-title">工作站环境</h2>' in response.text
     assert 'id="refresh-workstation-environment"' in response.text
+    assert 'id="workstation-service-title" class="card-group-title"' in response.text
+    assert response.text.count('class="workstation-status-row') == 6
+    assert 'id="system-upgrade-badge"' not in response.text
+    assert 'id="system-upgrade-start"' in response.text
+    assert response.text.index('id="clawbot-detail"') < response.text.index(
+        'id="system-upgrade-detail"'
+    )
     assert response.text.index('id="codex-card-host"') < response.text.index(
         'data-card-key="project-docs"'
     ) < response.text.index('data-card-key="automations"') < response.text.index(
         'data-card-key="workstation"'
     )
     assert 'id="automation-browser-control"' in response.text
+    assert 'id="automation-browser-detail"' in response.text
     assert 'aria-controls="automation-browser-dialog"' in response.text
     assert 'id="automation-browser-dialog"' in response.text
     assert 'id="automation-browser-form"' in response.text
@@ -121,11 +136,14 @@ async def test_home_page_is_public_and_contains_no_token(
     assert 'name="automation-browser-mode" value="headed"' in response.text
     assert 'id="automation-browser-mode"' not in response.text
     assert 'id="automation-feishu-badge"' in response.text
+    assert 'id="automation-feishu-detail"' in response.text
     assert 'id="automation-feishu-check"' in response.text
     assert 'id="automation-feishu-login"' in response.text
     assert 'id="automation-feishu-qr"' in response.text
     assert 'id="automation-feishu-verify"' not in response.text
     assert "飞书环境" in response.text
+    assert "用于执行浏览器自动化" in response.text
+    assert "用于飞书登录与任务执行" in response.text
     assert "有界面" in response.text
     assert "无界面" in response.text
     assert response.text.index('value="headless" checked') < response.text.index(
@@ -176,9 +194,12 @@ async def test_home_page_is_public_and_contains_no_token(
     assert 'id="chub-service-badge"' in response.text
     assert 'id="quick-worker-badge"' in response.text
     assert 'id="quick-worker-restart"' in response.text
+    assert 'id="system-upgrade-badge"' not in response.text
+    assert 'id="system-upgrade-start"' in response.text
     assert 'aria-controls="confirmation-dialog"' in response.text
     assert 'id="confirmation-dialog"' in response.text
     assert 'id="confirmation-dialog-message"' in response.text
+    assert 'id="confirmation-dialog-details"' in response.text
     assert response.text.index('id="global-message"') < response.text.index(
         'id="connected-bar"'
     )
@@ -238,10 +259,12 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
     assert "调整浏览器偏好和节点功能。" in response.text
     assert "界面风格" in response.text
     assert "微信处理" in response.text
+    assert 'id="settings-category"' not in response.text
+    assert 'href="#quick-interaction-settings" aria-current="true"' in response.text
+    assert 'href="#utility-settings"' in response.text
     assert 'id="weixin-translation-enabled"' in response.text
     assert "自动润色后执行" in response.text
-    assert "润色失败或目标变忙时不执行原文" in response.text
-    assert "直接执行 &lt;正文&gt;" in response.text
+    assert "查看处理规则" not in response.text
     assert "Standard" in response.text
     assert "Cyber" in response.text
     assert "当前风格" in response.text
@@ -251,8 +274,17 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
     assert 'id="cyber-rain-brightness"' in response.text
     assert 'id="cyber-rain-density"' in response.text
     assert "风格选择保存在当前浏览器" in response.text
-    assert '<h3 id="diagnostics-title">诊断</h3>' in response.text
-    assert 'href="/logs">打开日志详情</a>' in response.text
+    assert '<h3 id="utility-settings-title">诊断与关于</h3>' in response.text
+    assert 'class="settings-utility-row" href="/logs"' in response.text
+    assert "Chub 版本" in response.text
+    assert 'data-cyber-style-details' in response.text
+    cyber_details_end = response.text.index(
+        "</details>",
+        response.text.index("data-cyber-style-details"),
+    )
+    assert cyber_details_end < response.text.index(
+        'id="cyber-style-settings-message"'
+    )
     assert 'data-style-apply="standard"' in response.text
     assert 'data-style-apply="cyber"' in response.text
     assert 'name="quick-interaction-view"' not in response.text
@@ -292,7 +324,7 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
     assert "暂时无法刷新文本优化任务状态，正在重试" in script.text
     assert "window.setTimeout" in script.text
     assert 'id="weixin-translation-status"' not in response.text
-    assert "之后新建的 Session 将使用该权限" in script.text
+    assert "之后新建的 Session 将使用该权限" not in script.text
     assert "之后新建的 Session 将使用该模型与等级" not in script.text
     assert "localStorage.setItem" in script.text
     assert "hub.cyberRainSpeed.v1" in script.text
@@ -301,7 +333,9 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
     assert "ChubTheme.applyStyle" in script.text
     assert theme_script.status_code == 200
     assert "hub.uiStyle.v1" in theme_script.text
-    assert "下次进入快速交互时生效" in script.text
+    assert "下次进入快速交互时生效" in response.text
+    assert "scrollToSettingsSection" in script.text
+    assert "requestAnimationFrame(updateActiveSettingsSection)" in script.text
     assert response.headers["content-security-policy"] == (
         "default-src 'self'; "
         "script-src 'self'; "
@@ -344,7 +378,7 @@ async def test_standard_style_preview_is_static_and_available(
     assert "待通知" in response.text
     assert '<span class="conversation-message-meta">Codex CLI</span>' in response.text
     assert "查看会话" not in response.text
-    assert 'class="button-link conversation-pin"' in response.text
+    assert 'class="button-link conversation-pin"' not in response.text
     assert 'id="preview-dialog"' in response.text
     assert script.status_code == 200
     assert "showModal" in script.text
@@ -519,7 +553,11 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "/api/openclaw/status" in dashboard_script
     assert "/api/openclaw/weixin/login" in dashboard_script
     assert "/api/maintenance/quick-worker" in dashboard_script
+    assert "/api/maintenance/system-upgrade" in dashboard_script
+    assert 'headers: { "Content-Type": "application/json" }' in dashboard_script
     assert "syncCoreMaintenanceControls" in dashboard_script
+    assert 'sessionsTitle.className = "card-group-title codex-sessions-title"' in dashboard_script
+    assert "codex-sessions-divider" not in dashboard_script
     assert "Promise.allSettled" in dashboard_script
     assert "/api/openclaw/${action}" in dashboard_script
     assert "OPENCLAW_STATUS_CACHE_KEY" in dashboard_script
@@ -542,6 +580,9 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "loadAutomationEnvironment" in dashboard_script
     assert "automationBrowserDialog.showModal()" in dashboard_script
     assert "automationBrowserDialogConfirm" in dashboard_script
+    assert 'return "用于执行浏览器自动化"' in dashboard_script
+    assert 'return "用于飞书登录与任务执行"' in dashboard_script
+    assert 'return `登录验证于 ${automationMonthDay(data.checked_at)}`' in dashboard_script
     assert "appendWeeklyReportMaterials" in dashboard_script
     assert "weeklyDownloadStatus" in dashboard_script
     assert "weeklyValidationStatus" in dashboard_script
@@ -577,6 +618,7 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "createCodexCard" in script.text
     assert 'createButton.textContent = "新建会话"' in script.text
     assert 'workspaceDialogTitle.textContent = "选择工作目录"' in script.text
+    assert "首页列出三个常用目录；其他目录启动的 Codex 会话会自动出现在列表中。" in script.text
     assert "workspaceDialog.showModal()" in script.text
     assert "workspaceDialog.close()" in script.text
     assert "ensureCodexCard" in script.text
@@ -642,7 +684,7 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "const preferredEffort = readCodexDefaultReasoningEffort()" in script.text
     assert "clearCodexModelPreferences()" in script.text
     assert "await createRequest(null, null)" in script.text
-    assert "archive.disabled = !session.codex_session_id" in script.text
+    assert "archive.disabled = !session.can_archive" in script.text
     assert "|| quickInteractionRunning" in script.text
     assert "llmInteractionRunning" not in script.text
     assert "codexLoadPromise" in script.text
@@ -863,7 +905,7 @@ async def test_quick_interaction_conversation_page_is_available(
     assert "loadConversationQuotaRain" not in script.text
     assert "conversationSessionUrl(nextSession.id)" in script.text
     assert ': "/";' in script.text
-    assert "const archiveReady = Boolean(session.codex_session_id)" in session_script.text
+    assert "const archiveReady = Boolean(session.can_archive)" in session_script.text
     assert "elements.archive.disabled = !state.archiveReady || state.archiveBusy" in session_script.text
     assert 'session?.workspace_id !== "weixin-translation"' in session_script.text
     assert "elements.rename.disabled = !state.renameAllowed" in session_script.text
@@ -907,8 +949,9 @@ async def test_quick_interaction_conversation_page_is_available(
     assert "task.deferred_restart_error" in timeline_script.text
     assert "旧记录没有保存具体原因，请查看 Chub 运行日志" in timeline_script.text
     assert ".conversation-assistant-info" in stylesheet.text
-    assert "client.setPinned" in script.text
-    assert "onTogglePinned(task, pin)" in timeline_script.text
+    assert "client.setPinned" not in script.text
+    assert "conversation-pin" not in timeline_script.text
+    assert "onTogglePinned" not in timeline_script.text
     assert "textContent" in session_script.text
     assert "textContent" in timeline_script.text
     assert "innerHTML" not in session_script.text
@@ -947,7 +990,6 @@ async def test_quick_interaction_conversation_page_is_available(
     assert ":not(.conversation-session-archive)" in stylesheet.text
     assert ":not(.site-header-title):not(.session-enter)::before" in stylesheet.text
     assert 'a.button-link::before' in stylesheet.text
-    assert ':root[data-ui-style="cyber"] .openclaw-status-row .badge' in stylesheet.text
     assert ':root[data-ui-style="cyber"] .workspace-button strong' in stylesheet.text
     assert "font-size: 0.875rem;" in stylesheet.text
     assert 'grid-template-columns: auto minmax(0, 1fr) minmax(4.25rem, max-content);' in stylesheet.text
@@ -1149,6 +1191,35 @@ async def test_terminal_page_uses_session_title(settings: Settings) -> None:
     assert 'data-page-id="page-1"' in response.text
     assert "page_id=page-1" in response.text
     assert "disableLeaveAlert=true" in response.text
+
+
+@pytest.mark.anyio
+async def test_system_upgrade_blocks_new_terminal_page_and_backend(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    manager = MagicMock()
+    tickets = MagicMock()
+    tickets.valid.return_value = True
+    app.state.codex_pty_manager = manager
+    app.state.terminal_tickets = tickets
+    app.state.system_upgrade._writes_blocked = True
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        cookies={"chub_terminal": "ticket"},
+    ) as client:
+        page = await client.get("/codex/session-1")
+        backend = await client.get("/codex/session-1/terminal/index.html")
+
+    assert page.status_code == 409
+    assert page.json()["error"]["code"] == "system_upgrade_in_progress"
+    assert backend.status_code == 409
+    assert backend.json()["error"]["code"] == "system_upgrade_in_progress"
+    manager.require_terminal_access.assert_not_called()
+    manager.backend_url.assert_not_called()
 
 
 @pytest.mark.anyio

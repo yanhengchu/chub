@@ -350,6 +350,7 @@ write_macos_service() {
         echo '</dict>'
         echo '</plist>'
     } > "$plist_path"
+    chmod 0600 "$plist_path"
 }
 
 write_macos_worker_service() {
@@ -395,6 +396,7 @@ write_macos_worker_service() {
         echo '</dict>'
         echo '</plist>'
     } > "$plist_path"
+    chmod 0600 "$plist_path"
 }
 
 write_systemd_service() {
@@ -420,6 +422,7 @@ write_systemd_service() {
         echo '[Install]'
         echo 'WantedBy=default.target'
     } > "$unit_path"
+    chmod 0600 "$unit_path"
 }
 
 write_systemd_worker_service() {
@@ -446,6 +449,7 @@ write_systemd_worker_service() {
         echo '[Install]'
         echo 'WantedBy=default.target'
     } > "$unit_path"
+    chmod 0600 "$unit_path"
 }
 
 install_command() {
@@ -496,8 +500,17 @@ worker_service_definition_exists() {
     esac
 }
 
+worker_protocol_version() {
+    (
+        cd "$PROJECT_ROOT"
+        "$PYTHON_BIN" -c 'from app.quick_worker import PROTOCOL_VERSION; print(PROTOCOL_VERSION)'
+    )
+}
+
 worker_maintenance_task_count() {
     local payload="$1"
+    local expected_protocol
+    expected_protocol="$(worker_protocol_version)" || return 1
     "$PYTHON_BIN" -c '
 import json
 import sys
@@ -506,7 +519,7 @@ payload = json.loads(sys.stdin.read())
 data = payload.get("data") if payload.get("success") is True else None
 if (
     not isinstance(data, dict)
-    or data.get("protocol_version") != 7
+    or data.get("protocol_version") != int(sys.argv[1])
     or data.get("status") not in {"ready", "draining"}
 ):
     raise SystemExit(1)
@@ -524,7 +537,7 @@ if any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for va
 if fields[-1] != 0:
     raise SystemExit(1)
 print(status, sum(fields[:-1]))
-' <<<"$payload"
+' "$expected_protocol" <<<"$payload"
 }
 
 new_worker_maintenance_operation_id() {
@@ -812,6 +825,8 @@ worker_health_generation() {
     local payload="$1"
     local expected_status="$2"
     local previous_generation="${3:-}"
+    local expected_protocol
+    expected_protocol="$(worker_protocol_version)" || return 1
     "$PYTHON_BIN" -c '
 import json
 import re
@@ -823,17 +838,17 @@ if not isinstance(data, dict):
     raise SystemExit(1)
 generation = data.get("generation")
 if (
-    data.get("protocol_version") != 7
-    or data.get("status") != sys.argv[1]
+    data.get("protocol_version") != int(sys.argv[1])
+    or data.get("status") != sys.argv[2]
     or data.get("corrupt_tasks") != 0
     or "codex" not in data.get("available_runtime_ids", [])
     or not isinstance(generation, str)
     or re.fullmatch(r"[a-f0-9]{32}", generation) is None
-    or (sys.argv[2] and generation == sys.argv[2])
+    or (sys.argv[3] and generation == sys.argv[3])
 ):
     raise SystemExit(1)
 print(generation)
-' "$expected_status" "$previous_generation" <<<"$payload"
+' "$expected_protocol" "$expected_status" "$previous_generation" <<<"$payload"
 }
 
 reload_worker_service() {

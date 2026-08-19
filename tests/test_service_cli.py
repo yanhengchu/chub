@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from app.quick_worker import PROTOCOL_VERSION
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CHUB = PROJECT_ROOT / "scripts" / "chub"
@@ -704,7 +706,8 @@ def test_worker_reload_command_keeps_drain_and_final_health_gates() -> None:
         content.index("install_service() {")
     ]
     assert "quick_worker_drain" in maintenance_body
-    assert "protocol == 6" not in maintenance_body
+    assert "worker_protocol_version" in content
+    assert 'data.get("protocol_version") != 7' not in content
     record_body = content[
         content.index("record_worker_reload_operation() {") :
         content.index("worker_health_generation() {")
@@ -765,7 +768,7 @@ def test_stop_refuses_active_worker_without_explicit_force(
                 "success": True,
                 "request_id": request["request_id"],
                 "data": {
-                    "protocol_version": 7,
+                    "protocol_version": PROTOCOL_VERSION,
                     "status": "ready",
                     "generation": "a" * 32,
                     "code_version": "test-worker",

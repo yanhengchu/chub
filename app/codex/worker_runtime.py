@@ -17,6 +17,9 @@ from app.codex.runtime_adapter import CodexRuntimeAdapter
 from app.codex.runtime_runner import CodexRuntimeRunner
 
 
+DISCOVERED_RUNTIME_WORKSPACE_ID = "runtime-session"
+
+
 class CodexWorkerRuntime:
     def __init__(
         self,
@@ -38,28 +41,20 @@ class CodexWorkerRuntime:
 
     @property
     def available(self) -> bool:
-        if not self._executable or not self._workspaces:
+        if not self._executable:
             return False
         executable = Path(self._executable)
-        return (
-            executable.is_file()
-            and os.access(executable, os.X_OK)
-            and all(workspace.is_dir() for workspace in self._workspaces.values())
-        )
+        # Fixed workspace paths are validated when a turn uses them. Native
+        # Sessions resolve their own trusted working directory at submission
+        # time, so one missing shortcut must not disable the Runtime globally.
+        return executable.is_file() and os.access(executable, os.X_OK)
 
     @property
     def workspace_ids(self) -> tuple[str, ...]:
-        return tuple(sorted(self._workspaces))
+        return tuple(sorted((*self._workspaces, DISCOVERED_RUNTIME_WORKSPACE_ID)))
 
     def validate_turn(self, workspace_id: str, request: RuntimeTurnRequest) -> None:
-        workspace = self._workspaces.get(workspace_id)
-        if workspace is None:
-            raise RuntimeOperationError(
-                "worker_workspace_unavailable",
-                "The fixed workspace is unavailable",
-                kind="invalid_request",
-            )
-        CodexRuntimeRunner.validate_workspace(workspace)
+        self._workspace_for_turn(workspace_id, request)
         if request.native_session_id is not None:
             self._adapter.validate_native_session_id(request.native_session_id)
         self._adapter.validate_model(request.model, request.reasoning_effort)
@@ -71,7 +66,7 @@ class CodexWorkerRuntime:
                 "Codex background Runner configuration is incomplete",
             )
         self.validate_turn(request.workspace_id, request.turn)
-        workspace = self._workspaces[request.workspace_id]
+        workspace = self._workspace_for_turn(request.workspace_id, request.turn)
         argv = [
             sys.executable,
             "-m",
@@ -111,6 +106,62 @@ class CodexWorkerRuntime:
             environment=environment,
         )
 
+    def _workspace_for_turn(
+        self,
+        workspace_id: str,
+        request: RuntimeTurnRequest,
+    ) -> Path:
+        if workspace_id == DISCOVERED_RUNTIME_WORKSPACE_ID:
+            return self._discovered_native_workspace(request)
+        workspace = self._workspaces.get(workspace_id)
+        if workspace is None:
+            raise RuntimeOperationError(
+                "worker_workspace_unavailable",
+                "The requested workspace is unavailable",
+                kind="invalid_request",
+            )
+        CodexRuntimeRunner.validate_workspace(workspace)
+        return workspace
+
+    def _discovered_native_workspace(self, request: RuntimeTurnRequest) -> Path:
+        native_session_id = request.native_session_id
+        if native_session_id is None:
+            raise RuntimeOperationError(
+                "worker_workspace_unavailable",
+                "The recovered Session does not have a native Runtime mapping",
+                kind="invalid_request",
+            )
+        discovery = self._adapter.discover_sessions()
+        native = next(
+            (
+                candidate
+                for candidate in discovery.sessions
+                if candidate.native_session_id == native_session_id
+            ),
+            None,
+        )
+        if native is None:
+            raise RuntimeOperationError(
+                "worker_workspace_unavailable",
+                "The recovered Session working directory is unavailable",
+                kind="invalid_request",
+            )
+        try:
+            workspace = native.cwd.expanduser().resolve(strict=True)
+        except OSError as exc:
+            raise RuntimeOperationError(
+                "worker_workspace_unavailable",
+                "The recovered Session working directory is unavailable",
+                kind="invalid_request",
+            ) from exc
+        if not workspace.is_dir():
+            raise RuntimeOperationError(
+                "worker_workspace_unavailable",
+                "The recovered Session working directory is unavailable",
+                kind="invalid_request",
+            )
+        return workspace
+
     def has_active_writer(self, native_session_id: str) -> bool:
         return self._adapter.has_active_writer(native_session_id)
 
@@ -132,6 +183,13 @@ class CodexWorkerRuntime:
             ),
             max_event_bytes=max_event_bytes,
             missing_ok=missing_ok,
+        )
+
+    @staticmethod
+    def read_error(task_dir: Path, *, max_bytes: int) -> str | None:
+        return CodexRuntimeRunner.read_error(
+            task_dir / "stdout.txt",
+            max_bytes=max_bytes,
         )
 
     @staticmethod

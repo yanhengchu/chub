@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.core.config import PROJECT_ROOT, Settings, get_settings
 from app.core.logger import configure_worker_operation_logging
-from app.ai_runtime import WorkerRuntimeRegistry
+from app.ai_runtime import WorkerRuntimeRegistry, validate_runtime_wiring
 from app.codex.runtime_adapter import CodexRuntimeAdapter
 from app.codex.worker_runtime import CodexWorkerRuntime
 from app.quick_worker_tasks import (
@@ -35,7 +35,7 @@ from app.services.operation_log import write_operation
 
 
 HEALTH_PROTOCOL_VERSION = 1
-PROTOCOL_VERSION = 7
+PROTOCOL_VERSION = 8
 WORKER_CODE_VERSION = "quick-worker-8-runtime-registry"
 MAX_REQUEST_BYTES = 64 * 1024
 MAX_RESPONSE_BYTES = 256 * 1024
@@ -79,6 +79,17 @@ class WorkerDrainRequest(_StrictModel):
     protocol_version: int
     request_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
     action: Literal["drain"]
+    operation_id: str = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9:_-]+$",
+    )
+
+
+class WorkerResumeRequest(_StrictModel):
+    protocol_version: int
+    request_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+    action: Literal["resume"]
     operation_id: str = Field(
         min_length=1,
         max_length=128,
@@ -274,13 +285,13 @@ class QuickWorkerServer:
                     codex_home=resolved_codex_home,
                     executable=resolved_executable,
                 )
-                runners.append(
-                    CodexWorkerRuntime(
-                        adapter,
-                        executable=resolved_executable,
-                        workspaces=codex_workspaces,
-                    )
+                runner = CodexWorkerRuntime(
+                    adapter,
+                    executable=resolved_executable,
+                    workspaces=codex_workspaces,
                 )
+                validate_runtime_wiring(adapter, runner)
+                runners.append(runner)
             if allow_test_tasks:
                 runners.append(FixedTestWorkerRuntime())
             runtime_registry = WorkerRuntimeRegistry(runners)
@@ -395,6 +406,29 @@ class QuickWorkerServer:
                 self._finish_drain(),
                 name=f"quick-worker-drain-{operation_id[:16]}",
             )
+
+    async def resume_after_drain(self, operation_id: str) -> None:
+        async with self._submission_gate:
+            if self._drain_operation_id != operation_id:
+                raise WorkerTaskError(
+                    "worker_drain_identity_changed",
+                    "Worker drain operation identity changed",
+                )
+            if not self._drain_complete or self._drain_error is not None:
+                raise WorkerTaskError(
+                    "worker_drain_not_complete",
+                    "Worker drain has not completed cleanly",
+                )
+            if self.task_manager.active_count or self.task_manager.queued_count:
+                raise WorkerTaskError(
+                    "worker_not_idle", "Worker still has active or queued tasks"
+                )
+            self._record_drain_operation("failed")
+            self._drain_operation_id = None
+            self._drain_task = None
+            self._drain_complete = False
+            self._drain_error = None
+            self.status = "ready"
 
     async def _finish_drain(self) -> None:
         await self.task_manager.wait_until_idle()
@@ -579,6 +613,7 @@ class QuickWorkerServer:
             "test_task_submit": WorkerTaskSubmitRequest,
             "runtime_task_submit": WorkerRuntimeTaskSubmitRequest,
             "drain": WorkerDrainRequest,
+            "resume": WorkerResumeRequest,
             "task_get": WorkerTaskGetRequest,
             "task_list": WorkerTaskListRequest,
             "task_cancel": WorkerTaskCancelRequest,
@@ -623,6 +658,9 @@ class QuickWorkerServer:
                 "complete": self._drain_complete,
                 "error": self._drain_error,
             }
+        if isinstance(request, WorkerResumeRequest):
+            await self.resume_after_drain(request.operation_id)
+            return {"operation_id": request.operation_id, "status": self.status}
         if isinstance(request, WorkerTaskSubmitRequest):
             async with self._submission_gate:
                 if self.status != "ready":
@@ -756,12 +794,16 @@ async def request_drain(
     *,
     operation_id: str | None = None,
     wait_seconds: float = 7200.0,
+    protocol_version: int | None = None,
 ) -> dict[str, object]:
     resolved_operation_id = operation_id or f"worker-drain:{uuid.uuid4().hex}"
+    resolved_protocol_version = protocol_version or PROTOCOL_VERSION
+    if resolved_protocol_version < 1:
+        raise ValueError("Quick Worker protocol version must be positive")
     payload = await worker_request(
         settings,
         {
-            "protocol_version": PROTOCOL_VERSION,
+            "protocol_version": resolved_protocol_version,
             "request_id": uuid.uuid4().hex,
             "action": "drain",
             "operation_id": resolved_operation_id,
@@ -800,6 +842,33 @@ async def request_drain(
         if asyncio.get_running_loop().time() >= deadline:
             raise TimeoutError("Quick Worker drain did not complete before its deadline")
         await asyncio.sleep(0.1)
+
+
+async def resume_after_drain(
+    settings: Settings,
+    *,
+    operation_id: str,
+    protocol_version: int | None = None,
+) -> dict[str, object]:
+    resolved_protocol_version = protocol_version or PROTOCOL_VERSION
+    if resolved_protocol_version < 1:
+        raise ValueError("Quick Worker protocol version must be positive")
+    payload = await worker_request(
+        settings,
+        {
+            "protocol_version": resolved_protocol_version,
+            "request_id": uuid.uuid4().hex,
+            "action": "resume",
+            "operation_id": operation_id,
+        },
+    )
+    if payload.get("success") is not True:
+        return payload
+    health = await read_health(settings)
+    data = health.get("data") if health.get("success") is True else None
+    if not isinstance(data, dict) or data.get("status") != "ready":
+        raise OSError("Quick Worker did not resume ready state")
+    return payload
 
 
 def _parser() -> argparse.ArgumentParser:

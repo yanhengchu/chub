@@ -2,6 +2,12 @@ from app.ai_runtime.contracts import (
     AgentRuntimeAdapter,
     PermissionProfile,
     RuntimeCapability,
+    RuntimeCapabilityMatrix,
+    RuntimeCapabilityState,
+    RUNTIME_CAPABILITIES,
+    RUNTIME_ID_PATTERN,
+    RuntimeActivityEvent,
+    RuntimeActivityEventAdapter,
     RuntimeDescriptor,
     RuntimeEventSummary,
     RuntimeInteractiveTerminalAdapter,
@@ -23,7 +29,7 @@ from app.ai_runtime.contracts import (
     RuntimeTurnRequest,
     RuntimeWriterProbeAdapter,
 )
-from app.ai_runtime.registry import RuntimeRegistry
+from app.ai_runtime.registry import RuntimeRegistry, validate_runtime_wiring
 from app.ai_runtime.worker import (
     BACKGROUND_RUNTIME_CAPABILITIES,
     RuntimeWorkerLaunchRequest,
@@ -36,6 +42,12 @@ __all__ = [
     "AgentRuntimeAdapter",
     "PermissionProfile",
     "RuntimeCapability",
+    "RuntimeCapabilityMatrix",
+    "RuntimeCapabilityState",
+    "RUNTIME_CAPABILITIES",
+    "RUNTIME_ID_PATTERN",
+    "RuntimeActivityEvent",
+    "RuntimeActivityEventAdapter",
     "RuntimeDescriptor",
     "RuntimeEventSummary",
     "RuntimeInteractiveTerminalAdapter",
@@ -50,6 +62,7 @@ __all__ = [
     "RuntimeProcessSpec",
     "RuntimeReasoningLevel",
     "RuntimeRegistry",
+    "validate_runtime_wiring",
     "RuntimeSessionDiscoveryResult",
     "RuntimeSessionArchiveAdapter",
     "RuntimeStatus",

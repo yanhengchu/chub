@@ -7,6 +7,7 @@ from typing import Protocol, runtime_checkable
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.ai_runtime.contracts import (
+    RuntimeCapabilityMatrix,
     RuntimeDescriptor,
     RuntimeEventSummary,
     RuntimeOperationError,
@@ -79,12 +80,15 @@ class RuntimeWorkerRunner(Protocol):
         missing_ok: bool = False,
     ) -> RuntimeEventSummary: ...
 
+    def read_error(self, task_dir: Path, *, max_bytes: int) -> str | None: ...
+
     def read_result(self, task_dir: Path, *, max_bytes: int) -> RuntimeTurnResult: ...
 
 
 class WorkerRuntimeRegistry:
     def __init__(self, runners: Iterable[RuntimeWorkerRunner] = ()) -> None:
         self._runners: dict[str, RuntimeWorkerRunner] = {}
+        self._descriptors: dict[str, RuntimeDescriptor] = {}
         for runner in runners:
             self.register(runner)
 
@@ -95,6 +99,7 @@ class WorkerRuntimeRegistry:
             "has_active_writer",
             "native_session_available",
             "parse_event_stream",
+            "read_error",
             "read_result",
         )
         if not isinstance(runner, RuntimeWorkerRunner) or any(
@@ -128,6 +133,21 @@ class WorkerRuntimeRegistry:
                 kind="conflict",
             )
         self._runners[runtime_id] = runner
+        self._descriptors[runtime_id] = descriptor
+
+    def _require_identity(
+        self,
+        runtime_id: str,
+        runner: RuntimeWorkerRunner,
+    ) -> RuntimeDescriptor:
+        descriptor = runner.descriptor
+        if descriptor != self._descriptors[runtime_id]:
+            raise RuntimeOperationError(
+                "runtime_runner_identity_invalid",
+                f"Runtime Runner descriptor does not match registration: {runtime_id}",
+                kind="conflict",
+            )
+        return self._descriptors[runtime_id]
 
     def require(self, runtime_id: str) -> RuntimeWorkerRunner:
         runner = self._runners.get(runtime_id)
@@ -136,6 +156,7 @@ class WorkerRuntimeRegistry:
                 "runtime_unavailable",
                 f"Runtime is not registered for background execution: {runtime_id}",
             )
+        self._require_identity(runtime_id, runner)
         if not runner.available:
             raise RuntimeOperationError(
                 "runtime_unavailable",
@@ -144,17 +165,36 @@ class WorkerRuntimeRegistry:
         return runner
 
     def runtime_ids(self) -> tuple[str, ...]:
+        for runtime_id, runner in self._runners.items():
+            self._require_identity(runtime_id, runner)
         return tuple(self._runners)
 
     def available_runtime_ids(self) -> tuple[str, ...]:
-        return tuple(
-            runtime_id
-            for runtime_id, runner in self._runners.items()
-            if runner.available
-        )
+        available: list[str] = []
+        for runtime_id, runner in self._runners.items():
+            self._require_identity(runtime_id, runner)
+            if runner.available:
+                available.append(runtime_id)
+        return tuple(available)
 
     def workspace_ids(self) -> dict[str, tuple[str, ...]]:
-        return {
-            runtime_id: runner.workspace_ids
-            for runtime_id, runner in self._runners.items()
-        }
+        workspaces: dict[str, tuple[str, ...]] = {}
+        for runtime_id, runner in self._runners.items():
+            self._require_identity(runtime_id, runner)
+            workspaces[runtime_id] = runner.workspace_ids
+        return workspaces
+
+    def capability_matrix(self) -> tuple[RuntimeCapabilityMatrix, ...]:
+        """Return the fixed Worker capability view without a Runtime selector."""
+        matrices: list[RuntimeCapabilityMatrix] = []
+        for runtime_id, runner in self._runners.items():
+            descriptor = self._require_identity(runtime_id, runner)
+            available = runner.available
+            matrices.append(
+                RuntimeCapabilityMatrix.from_descriptor(
+                    descriptor,
+                    available=available,
+                    reason=None if available else "Runtime Runner is unavailable",
+                )
+            )
+        return tuple(matrices)

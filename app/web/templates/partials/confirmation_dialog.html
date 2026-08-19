@@ -1,10 +1,11 @@
-<dialog id="confirmation-dialog" class="codex-workspace-dialog confirmation-dialog" aria-labelledby="confirmation-dialog-title" aria-describedby="confirmation-dialog-description">
+<dialog id="confirmation-dialog" class="codex-workspace-dialog confirmation-dialog" aria-labelledby="confirmation-dialog-title" aria-describedby="confirmation-dialog-description confirmation-dialog-details">
   <form id="confirmation-dialog-form" class="codex-workspace-dialog-surface confirmation-dialog-surface">
     <div class="codex-workspace-dialog-header">
       <h3 id="confirmation-dialog-title">确认操作</h3>
       <button id="confirmation-dialog-close" class="button-link codex-workspace-dialog-close" type="button" aria-label="关闭确认弹窗">关闭</button>
     </div>
     <p id="confirmation-dialog-description" class="confirmation-dialog-description"></p>
+    <ul id="confirmation-dialog-details" class="confirmation-dialog-details" hidden></ul>
     <p id="confirmation-dialog-message" class="message" role="status" aria-live="polite"></p>
     <div class="confirmation-dialog-actions">
       <button id="confirmation-dialog-cancel" class="button-link" type="button">取消</button>

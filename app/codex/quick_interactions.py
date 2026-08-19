@@ -14,8 +14,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterator
 
+from app.ai_session.models import AiSession
 from app.codex.models import (
-    CodexSession,
     QuickInteractionDeferredRestartContext,
     QuickInteractionOperationContext,
     QuickInteractionOrder,
@@ -53,6 +53,7 @@ MAX_QUICK_INTERACTION_STATE_BYTES = 8 * 1024 * 1024
 MAX_STORED_TASKS = 30
 MAX_SESSION_TITLE_LENGTH = 48
 WORKER_RECONCILE_INTERVAL_SECONDS = 0.25
+WORKER_CONNECTION_RETRY_DELAYS = (0.2, 0.5, 1.0, 2.0, 2.0)
 LOGGER = logging.getLogger("hub.codex.quick_interactions")
 CODEX_QUICK_INTERACTION_INSTRUCTIONS = (
     "[Chub 快速交互交付要求]\n"
@@ -180,6 +181,7 @@ class QuickInteractionManager:
         self._operation_contexts: dict[str, QuickInteractionOperationContext] = {}
         self._worker_delivery_confirmed: set[str] = set()
         self._submitting_task_ids: set[str] = set()
+        self._system_upgrade_reset = False
         self._local_state_error: str | None = None
         self._recovery_ready = False
         self._recovery_error: str | None = None
@@ -223,6 +225,9 @@ class QuickInteractionManager:
                 self._local_state_error = "Web quick interaction state contains an invalid entry"
                 continue
             task_payload = dict(item)
+            # Older records may contain the removed pin state.
+            removed_legacy_pin_state = "pinned_at" in task_payload
+            task_payload.pop("pinned_at", None)
             route_payload = task_payload.pop("_notification_route", None)
             restart_context_payload = task_payload.pop(
                 "_deferred_restart_context",
@@ -304,6 +309,8 @@ class QuickInteractionManager:
                     self._local_state_error = (
                         "Active Web quick interaction has no Worker identity"
                     )
+            if removed_legacy_pin_state:
+                recovered_tasks = True
             if task.notification_status == "sending":
                 recovered_tasks = True
                 task.notification_status = "failed"
@@ -376,7 +383,7 @@ class QuickInteractionManager:
                     )
             if (
                 not queued_translation
-                and self.codex_manager.has_active_writer(session.codex_session_id)
+                and self.codex_manager.has_active_writer(session.native_session_id)
             ):
                 raise ApiError(
                     409,
@@ -384,7 +391,7 @@ class QuickInteractionManager:
                     ACTIVE_WRITER_ERROR,
                 )
             self.codex_manager.prepare_quick_interaction()
-            if not session.codex_session_id:
+            if not session.native_session_id:
                 self.codex_manager.set_initial_quick_interaction_title(
                     session.id,
                     self._session_title(prompt),
@@ -696,6 +703,8 @@ class QuickInteractionManager:
 
     def _reconcile_worker_task(self, task_id: str) -> None:
         with self._lock:
+            if self._system_upgrade_reset:
+                return
             task = self._tasks.get(task_id)
             if task is None or task.worker_task_id is None:
                 return
@@ -848,7 +857,7 @@ class QuickInteractionManager:
     def _start_worker_observer(
         self,
         task: QuickInteractionTask,
-        session: CodexSession,
+        session: AiSession,
         prompt: str,
     ) -> None:
         with self._lock:
@@ -863,7 +872,7 @@ class QuickInteractionManager:
     def _start_uncertain_submission_reconciler(
         self,
         task: QuickInteractionTask,
-        session: CodexSession,
+        session: AiSession,
         submission: RuntimeTaskSubmission,
     ) -> None:
         try:
@@ -881,7 +890,7 @@ class QuickInteractionManager:
     def _reconcile_uncertain_submission(
         self,
         task_id: str,
-        session: CodexSession,
+        session: AiSession,
         submission: RuntimeTaskSubmission,
     ) -> None:
         with self._lock:
@@ -1091,26 +1100,11 @@ class QuickInteractionManager:
                 key=lambda item: (item.created_at, item.id),
                 reverse=True,
             )
-        latest = max(tasks, key=lambda item: (item.created_at, item.id))
-        pinned = sorted(
-            (
-                task
-                for task in tasks
-                if task.id != latest.id and task.pinned_at is not None
-            ),
-            key=lambda item: (item.pinned_at, item.created_at, item.id),
-            reverse=True,
-        )
-        ordinary = sorted(
-            (
-                task
-                for task in tasks
-                if task.id != latest.id and task.pinned_at is None
-            ),
+        return sorted(
+            tasks,
             key=lambda item: (item.created_at, item.id),
             reverse=True,
         )
-        return [latest, *pinned, *ordinary]
 
     def weixin_task_status_snapshot(
         self,
@@ -1152,29 +1146,6 @@ class QuickInteractionManager:
                 ),
             )
 
-    def set_pinned(
-        self,
-        session_id: str,
-        task_id: str,
-        pinned: bool,
-    ) -> QuickInteractionTask:
-        self.codex_manager.get_session(session_id)
-        with self._lock:
-            task = self._tasks.get(task_id)
-            if task is None or task.session_id != session_id:
-                raise ApiError(
-                    404,
-                    "quick_interaction_not_found",
-                    "快速交互任务不存在。",
-                )
-            if pinned and task.pinned_at is None:
-                task.pinned_at = utc_now()
-                self._write()
-            elif not pinned and task.pinned_at is not None:
-                task.pinned_at = None
-                self._write()
-            return task.model_copy(deep=True)
-
     def active_sessions(self) -> dict[str, datetime]:
         with self._lock:
             active = set(self._untracked_worker_sessions) | set(self._running_sessions) | {
@@ -1201,6 +1172,43 @@ class QuickInteractionManager:
     def has_active_tasks(self) -> bool:
         with self._lock:
             return bool(self._active_task_ids)
+
+    def system_upgrade_readiness(self) -> str | None:
+        with self._lock:
+            if self._local_state_error is not None or not self._recovery_ready:
+                return "快速交互恢复状态尚未就绪。"
+            if self._active_task_ids or self._submitting_task_ids:
+                return "仍有快速交互任务正在执行。"
+            for task in self._tasks.values():
+                if task.status in {"requested", "running"}:
+                    return "仍有快速交互任务尚未结束。"
+                if task.notification_status in {"pending", "sending"}:
+                    return "仍有任务结果通知尚未确认。"
+                if task.deferred_restart_status in {"pending", "started"}:
+                    return "仍有协调重启请求尚未结束。"
+                if task.deferred_restart_notification_status in {"pending", "sending"}:
+                    return "仍有重启结果通知尚未确认。"
+            return None
+
+    def reset_for_system_upgrade(self, *, force: bool = False) -> None:
+        with self._lock:
+            readiness = self.system_upgrade_readiness()
+            if readiness is not None and not force:
+                raise OSError(readiness)
+            self._tasks.clear()
+            self._running_sessions.clear()
+            self._active_task_ids.clear()
+            self._cancelled_task_ids.clear()
+            self._task_done_events.clear()
+            self._operations.clear()
+            self._notification_routes.clear()
+            self._deferred_restart_contexts.clear()
+            self._operation_contexts.clear()
+            self._worker_delivery_confirmed.clear()
+            self._submitting_task_ids.clear()
+            self._untracked_worker_sessions.clear()
+            self._write()
+            self._system_upgrade_reset = True
 
     def deferred_restart_ready(
         self,
@@ -1586,7 +1594,7 @@ class QuickInteractionManager:
         with self._lock:
             return task_id in self._cancelled_task_ids
 
-    def _run_worker(self, task_id: str, session: CodexSession, prompt: str) -> None:
+    def _run_worker(self, task_id: str, session: AiSession, prompt: str) -> None:
         with self._lock:
             task = self._tasks[task_id]
         started_logged = False
@@ -1595,6 +1603,9 @@ class QuickInteractionManager:
             if worker_task_id is None:
                 raise OSError("Worker task identity is unavailable")
             while True:
+                with self._lock:
+                    if self._system_upgrade_reset:
+                        return
                 snapshot_payload = self._worker_call(
                     "task_get",
                     task_id=worker_task_id,
@@ -1640,6 +1651,9 @@ class QuickInteractionManager:
             else:
                 self._finish(task_id, "failed", "Quick Worker 不可用，任务未在 Web 内回退执行。")
         finally:
+            with self._lock:
+                if self._system_upgrade_reset:
+                    return
             finished = self.get(task_id)
             with self._lock:
                 self._active_task_ids.discard(task_id)
@@ -1671,7 +1685,7 @@ class QuickInteractionManager:
     def _worker_submission(
         self,
         task: QuickInteractionTask,
-        session: CodexSession,
+        session: AiSession,
         prompt: str,
     ) -> RuntimeTaskSubmission:
         task_kind = "translation" if task.kind == "translation" else (
@@ -1680,9 +1694,15 @@ class QuickInteractionManager:
         worker_task_id = task.worker_task_id
         if worker_task_id is None:
             raise OSError("Worker task identity is unavailable")
+        runtime_id = getattr(self.codex_manager, "runtime_id", "codex")
+        if not isinstance(runtime_id, str):
+            runtime_id = "codex"
+        session_runtime_id = getattr(session, "runtime_id", runtime_id)
+        if session_runtime_id != runtime_id:
+            raise OSError("Session Runtime owner does not match the active Runtime")
         return RuntimeTaskSubmission(
             task_id=worker_task_id,
-            runtime_id="codex",
+            runtime_id=runtime_id,
             session_id=session.id,
             workspace_id=session.workspace_id,
             prompt=(
@@ -1691,7 +1711,7 @@ class QuickInteractionManager:
                 else self._codex_execution_prompt(prompt)
             ),
             permission_profile=session.permission_mode,
-            native_session_id=session.codex_session_id,
+            native_session_id=session.native_session_id,
             model=session.model,
             reasoning_effort=session.reasoning_effort,
             timeout_seconds=self.timeout_seconds,
@@ -1709,16 +1729,26 @@ class QuickInteractionManager:
     def _submit_worker_task(
         self,
         task: QuickInteractionTask,
-        session: CodexSession,
+        session: AiSession,
         prompt: str,
     ) -> None:
         submission = self._worker_submission(task, session, prompt)
         try:
-            accepted = self._worker_call(
-                "runtime_task_submit",
-                task=submission.model_dump(mode="json"),
-            )
+            for retry_delay in (*WORKER_CONNECTION_RETRY_DELAYS, None):
+                try:
+                    accepted = self._worker_call(
+                        "runtime_task_submit",
+                        task=submission.model_dump(mode="json"),
+                    )
+                    break
+                except WorkerRequestNotSent:
+                    if retry_delay is None:
+                        raise
+                    # The IPC request was never sent, so retrying cannot duplicate work.
+                    time.sleep(retry_delay)
         except WorkerRequestNotSent:
+            # No bytes reached the Worker, so this is a confirmed unavailable
+            # path rather than an ambiguous accepted-or-lost submission.
             raise
         except OSError as submit_error:
             try:
@@ -1924,6 +1954,8 @@ class QuickInteractionManager:
         notification_operation: tuple[str, str] | None = None
         finished_snapshot: QuickInteractionTask | None = None
         with self._lock:
+            if self._system_upgrade_reset:
+                return
             task = self._tasks[task_id]
             task.status = status
             if status == "succeeded":
@@ -2110,24 +2142,10 @@ class QuickInteractionManager:
         return value.encode("utf-8")[:limit].decode("utf-8", errors="ignore")
 
     def _write(self) -> None:
+        if self._system_upgrade_reset:
+            return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if len(self._tasks) > MAX_STORED_TASKS:
-            sessions_with_pinned = {
-                task.session_id
-                for task in self._tasks.values()
-                if task.pinned_at is not None
-            }
-            latest_by_session: dict[str, QuickInteractionTask] = {}
-            for task in self._tasks.values():
-                if task.session_id not in sessions_with_pinned:
-                    continue
-                latest = latest_by_session.get(task.session_id)
-                if latest is None or (task.created_at, task.id) > (
-                    latest.created_at,
-                    latest.id,
-                ):
-                    latest_by_session[task.session_id] = task
-            latest_task_ids = {task.id for task in latest_by_session.values()}
             protected = [
                 task
                 for task in self._tasks.values()
@@ -2138,8 +2156,6 @@ class QuickInteractionManager:
                     or task.deferred_restart_status in {"pending", "started"}
                     or task.deferred_restart_notification_status
                     in {"pending", "sending"}
-                    or task.pinned_at is not None
-                    or task.id in latest_task_ids
                 )
             ]
             completed = sorted(
@@ -2153,8 +2169,6 @@ class QuickInteractionManager:
                         and task.deferred_restart_status not in {"pending", "started"}
                         and task.deferred_restart_notification_status
                         not in {"pending", "sending"}
-                        and task.pinned_at is None
-                        and task.id not in latest_task_ids
                     )
                 ),
                 key=lambda item: item.updated_at,

@@ -29,15 +29,15 @@ const elements = {
   quickWorkerDetail: document.querySelector("#quick-worker-detail"),
   quickWorkerRestart: document.querySelector("#quick-worker-restart"),
   quickWorkerMessage: document.querySelector("#quick-worker-message"),
+  systemUpgradeDetail: document.querySelector("#system-upgrade-detail"),
+  systemUpgradeStart: document.querySelector("#system-upgrade-start"),
   codexCardHost: document.querySelector("#codex-card-host"),
-  openclawGatewayBadge: document.querySelector("#openclaw-gateway-badge"),
-  openclawChannels: document.querySelector("#openclaw-channels"),
-  openclawAccessOpen: document.querySelector("#openclaw-access-open"),
+  clawbotBadge: document.querySelector("#clawbot-badge"),
+  clawbotDetail: document.querySelector("#clawbot-detail"),
   openclawMessage: document.querySelector("#openclaw-message"),
   openclawBindWeixin: document.querySelector("#openclaw-bind-weixin"),
   openclawStart: document.querySelector("#openclaw-start"),
   openclawRestart: document.querySelector("#openclaw-restart"),
-  openclawStop: document.querySelector("#openclaw-stop"),
   openclawDialog: document.querySelector("#openclaw-dialog"),
   openclawDialogTitle: document.querySelector("#openclaw-dialog-title"),
   openclawDialogMessage: document.querySelector("#openclaw-dialog-message"),
@@ -46,6 +46,8 @@ const elements = {
   openclawDialogConfirm: document.querySelector("#openclaw-dialog-confirm"),
   openclawWeixinDialog: document.querySelector("#openclaw-weixin-dialog"),
   openclawWeixinClose: document.querySelector("#openclaw-weixin-close"),
+  openclawWeixinAccountSummary: document.querySelector("#openclaw-weixin-account-summary"),
+  openclawWeixinOwnerSummary: document.querySelector("#openclaw-weixin-owner-summary"),
   openclawWeixinQrPanel: document.querySelector("#openclaw-weixin-qr-panel"),
   openclawWeixinQr: document.querySelector("#openclaw-weixin-qr"),
   openclawWeixinVerifyForm: document.querySelector("#openclaw-weixin-verify-form"),
@@ -54,6 +56,7 @@ const elements = {
   openclawWeixinCancel: document.querySelector("#openclaw-weixin-cancel"),
   openclawWeixinStart: document.querySelector("#openclaw-weixin-start"),
   automationBrowserBadge: document.querySelector("#automation-browser-badge"),
+  automationBrowserDetail: document.querySelector("#automation-browser-detail"),
   automationBrowserControl: document.querySelector("#automation-browser-control"),
   automationBrowserDialog: document.querySelector("#automation-browser-dialog"),
   automationBrowserForm: document.querySelector("#automation-browser-form"),
@@ -64,6 +67,7 @@ const elements = {
   automationBrowserProfile: document.querySelector("#automation-browser-profile"),
   automationBrowserModeInputs: document.querySelectorAll('input[name="automation-browser-mode"]'),
   automationFeishuBadge: document.querySelector("#automation-feishu-badge"),
+  automationFeishuDetail: document.querySelector("#automation-feishu-detail"),
   automationFeishuCheck: document.querySelector("#automation-feishu-check"),
   automationFeishuLogin: document.querySelector("#automation-feishu-login"),
   automationFeishuQr: document.querySelector("#automation-feishu-qr"),
@@ -326,6 +330,7 @@ async function connectWithToken(token, remember, savedCredential = false) {
       loadAutomations(),
       loadAutomationEnvironment(),
       loadQuickWorkerStatus(),
+      loadSystemUpgradeStatus(),
     ];
     if (dashboardIsHistoryReturn && openclawCacheRestored) {
       cardLoads.push(loadOpenClawWeixinStatus());
@@ -372,6 +377,7 @@ async function connectWithTailscale(fallbackToken = "", rememberFallback = false
       loadAutomations(),
       loadAutomationEnvironment(),
       loadQuickWorkerStatus(),
+      loadSystemUpgradeStatus(),
     ];
     if (dashboardIsHistoryReturn && openclawCacheRestored) {
       cardLoads.push(loadOpenClawWeixinStatus());

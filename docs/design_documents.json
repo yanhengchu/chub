@@ -16,11 +16,11 @@
       "path": "CHUB_ARCHITECTURE_DESIGN.md"
     },
     {
-      "id": "ai-runtime-architecture",
-      "title": "AI Runtime 架构演进设计",
-      "summary": "记录已验收的 Codex Runtime 适配边界与通用 Worker，以及后续 Session Manager 演进路线。",
+      "id": "chub-ai-runtime",
+      "title": "Chub AI Runtime 架构设计",
+      "summary": "面向 AI 说明当前 Codex Runtime 架构、能力矩阵、AI Session/Worker 所有权，以及未来第二 Runtime 接入规则。",
       "status": "已验收",
-      "path": "AI_RUNTIME_ARCHITECTURE_DESIGN.md"
+      "path": "CHUB_AI_RUNTIME_DESIGN.md"
     },
     {
       "id": "ai-session-state",
@@ -30,31 +30,31 @@
       "path": "AI_SESSION_STATE_DESIGN.md"
     },
     {
-      "id": "quick-interaction-worker",
-      "title": "Chub 快速交互独立 Worker 与跨 Web 重启恢复设计",
-      "summary": "定义非实时任务的 Worker 权威状态、恢复、通知终态和协调 Web 重启。",
+      "id": "chub-quick-worker",
+      "title": "Chub Quick Worker 独立服务设计",
+      "summary": "面向 AI Agent 定义 Quick Worker 独立服务、非实时任务、Session 租约、恢复、通知终态和重启协调。",
       "status": "已验收",
-      "path": "QUICK_INTERACTION_WORKER_DESIGN.md"
+      "path": "CHUB_QUICK_WORKER_DESIGN.md"
     },
     {
-      "id": "ai-quota-usage",
-      "title": "Chub AI 额度与用量采集设计",
-      "summary": "定义供应商无关的统一 AI 用量接口、账号登录与 API 两种获取方式、共享缓存及长短展示格式。",
+      "id": "codex-ai-quota-usage",
+      "title": "Codex AI 额度与用量采集设计",
+      "summary": "面向 AI Agent 定义当前 Codex/OpenAI 额度与用量来源、统一接口、共享缓存、失败边界及展示口径。",
       "status": "已验收",
-      "path": "AI_QUOTA_USAGE_DESIGN.md"
+      "path": "CODEX_AI_QUOTA_USAGE_DESIGN.md"
     },
     {
-      "id": "openclaw-integration",
-      "title": "Chub–OpenClaw 接入设计",
-      "summary": "定义 OpenClaw 与微信 ClawBot 的端到端业务、身份、权限、Session 路由、Request 状态和通知边界。",
-      "status": "持续维护",
-      "path": "CHUB_OPENCLAW_INTEGRATION_DESIGN.md"
+      "id": "openclaw-customization",
+      "title": "OpenClaw 定制集成设计",
+      "summary": "面向 AI Agent 统一定义 Chub/OpenClaw/微信 ClawBot 的接入、插件协议边界、Context Token 持久化、幂等和安全验收。",
+      "status": "已验收",
+      "path": "OPENCLAW_CUSTOMIZATION_DESIGN.md"
     },
     {
       "id": "automation-download",
       "title": "本期工作周报自动化与生成设计",
       "summary": "定义本期周报从飞书资料准备、输入发布、重点确认到正式生成与复核的端到端流程。",
-      "status": "持续维护",
+      "status": "已验收",
       "path": "WEEKLY_REPORT_AUTOMATION_DESIGN.md"
     },
     {
@@ -70,13 +70,6 @@
       "summary": "统一登记 Chub 当前可用的命令、插件、固定 API，并维护微信固定指令产品契约。",
       "status": "持续维护",
       "path": "CHUB_INTEGRATION_CAPABILITIES.md"
-    },
-    {
-      "id": "weixin-clawbot-context-token-ai-patch",
-      "title": "微信 ClawBot Context Token 持久化 AI 补丁规范",
-      "summary": "定义微信插件升级、重装或兼容异常后的 Context Token 能力复检与安全恢复规范。",
-      "status": "已验收",
-      "path": "WEIXIN_CLAWBOT_CONTEXT_TOKEN_AI_PATCH.md"
     }
   ]
 }

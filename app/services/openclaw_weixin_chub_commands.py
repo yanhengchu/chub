@@ -15,6 +15,8 @@ CHUB_SYNC_PROMPTS = frozenset({"sync"})
 CHUB_SYNC_ALIASES = frozenset({"同步"})
 CHUB_RESTART_PROMPTS = frozenset({"restart"})
 CHUB_RESTART_ALIASES = frozenset({"重启", "重新启动"})
+SYSTEM_UPGRADE_STATUS_PROMPT = "system upgrade status"
+SYSTEM_UPGRADE_PROMPT = "system upgrade"
 SESSION_RENAME_PROMPT = "rename"
 SESSION_RENAME_ALIASES = frozenset({"重命名"})
 SESSION_NEW_PROMPT = "new"
@@ -111,6 +113,8 @@ WeixinChubCommandKind = Literal[
     "help",
     "sync",
     "restart",
+    "system_upgrade_status",
+    "system_upgrade",
     "retry",
     "new_retry",
     "switch_retry",
@@ -131,6 +135,8 @@ FIXED_COMMAND_KINDS = frozenset(
         "help",
         "sync",
         "restart",
+        "system_upgrade_status",
+        "system_upgrade",
         "retry",
         "new_retry",
         "switch_retry",
@@ -254,6 +260,10 @@ def parse_weixin_chub_command(prompt: str) -> WeixinChubCommand:
         return WeixinChubCommand("sync", normalized)
     if folded in CHUB_RESTART_PROMPTS or normalized in CHUB_RESTART_ALIASES:
         return WeixinChubCommand("restart", normalized)
+    if folded == SYSTEM_UPGRADE_STATUS_PROMPT:
+        return WeixinChubCommand("system_upgrade_status", normalized)
+    if folded == SYSTEM_UPGRADE_PROMPT:
+        return WeixinChubCommand("system_upgrade", normalized)
     if folded in SESSION_RETRY_PROMPTS or normalized in SESSION_RETRY_ALIASES:
         return WeixinChubCommand("retry", normalized)
 

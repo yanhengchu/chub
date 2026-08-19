@@ -166,6 +166,8 @@ class WeixinChubModeManager:
         ]
         | None = None,
         translation_result_notifier: Callable[..., object] | None = None,
+        system_upgrade_status_reader: Callable[[], object] | None = None,
+        system_upgrade_starter: Callable[[str], object] | None = None,
     ) -> None:
         self.settings = settings
         self.codex_manager = codex_manager
@@ -182,6 +184,8 @@ class WeixinChubModeManager:
         self.system_status_reader = system_status_reader
         self.restart_coordinator = restart_coordinator
         self.restart_notifier = restart_notifier
+        self.system_upgrade_status_reader = system_upgrade_status_reader
+        self.system_upgrade_starter = system_upgrade_starter
         self.path = settings.openclaw.weixin_chub_mode.state_file
         request_state_file = settings.openclaw.weixin_chub_mode.request_state_file
         if not request_state_file.is_absolute() and self.path.is_absolute():
@@ -189,6 +193,7 @@ class WeixinChubModeManager:
         self.request_backlog = RequestBacklogStore(request_state_file)
         self._lock = threading.RLock()
         self._restart_lock = threading.Lock()
+        self._system_upgrade_lock = threading.Lock()
         self._stop_lock = threading.Lock()
         self._slot_lock = threading.RLock()
         self._request_reconcile_lock = threading.Lock()
@@ -204,6 +209,7 @@ class WeixinChubModeManager:
         self._ephemeral_status_replies: dict[str, tuple[str, str | None, float]] = {}
         self._status_cache_started = False
         self._state_error = False
+        self._system_upgrade_reset = False
         self._state = self._load(settings.openclaw.weixin_chub_mode)
         self._mode_enabled = self._state.configuration.enabled
         self._submission_index = {
@@ -638,7 +644,7 @@ class WeixinChubModeManager:
                     if not new_session and session.activity == "unknown":
                         self._reclaim_unknown_session(
                             session_id,
-                            session.codex_session_id,
+                            session.native_session_id,
                             operation_id,
                             source_ip,
                         )
@@ -1203,6 +1209,17 @@ class WeixinChubModeManager:
                 ),
                 delivery_route,
             )
+        if mode_enabled and command.kind == "system_upgrade_status":
+            return self._finalize_fixed_command_result(
+                command.kind,
+                self._dispatch_system_upgrade_status(
+                    message_id=message_id,
+                    correlation_id=correlation_id,
+                    route_fingerprint=self._route_fingerprint(delivery_route),
+                    source_ip=source_ip,
+                ),
+                delivery_route,
+            )
         route_fingerprint = self._route_fingerprint(delivery_route)
         ephemeral = self._wait_for_ephemeral_reply(
             message_id,
@@ -1219,6 +1236,17 @@ class WeixinChubModeManager:
                     route_fingerprint=route_fingerprint,
                     source_ip=source_ip,
                     delivery_route=delivery_route,
+                ),
+                delivery_route,
+            )
+        if mode_enabled and command.kind == "system_upgrade":
+            return self._finalize_fixed_command_result(
+                command.kind,
+                self._dispatch_system_upgrade(
+                    message_id=message_id,
+                    correlation_id=correlation_id,
+                    route_fingerprint=route_fingerprint,
+                    source_ip=source_ip,
                 ),
                 delivery_route,
             )
@@ -2117,6 +2145,117 @@ class WeixinChubModeManager:
                 delivery_route=delivery_route,
             )
 
+    @staticmethod
+    def _system_upgrade_message(data: object, *, started: bool = False) -> str:
+        state = getattr(data, "state", "unknown")
+        message = getattr(data, "message", "")
+        if started:
+            if state in {"preparing", "draining", "cleaning", "restarting"}:
+                return "System upgrade: Started. Check with system upgrade status."
+            if state == "succeeded":
+                return "System upgrade: Already completed."
+        labels = {
+            "idle": "No upgrade plan",
+            "available": "Ready",
+            "blocked": "Blocked",
+            "preparing": "In progress",
+            "draining": "In progress",
+            "cleaning": "In progress",
+            "restarting": "In progress",
+            "succeeded": "Completed",
+            "failed": "Failed",
+        }
+        label = labels.get(state, "Unavailable")
+        detail = message.strip() if isinstance(message, str) else ""
+        return f"System upgrade: {label}" + (f" · {detail}" if detail else ".")
+
+    def _dispatch_system_upgrade_status(
+        self,
+        *,
+        message_id: str,
+        correlation_id: str | None,
+        route_fingerprint: str,
+        source_ip: str,
+    ) -> WeixinChubModeDispatchResult:
+        return self._dispatch_system_upgrade_command(
+            message_id=message_id,
+            correlation_id=correlation_id,
+            route_fingerprint=route_fingerprint,
+            source_ip=source_ip,
+            start=False,
+        )
+
+    def _dispatch_system_upgrade(
+        self,
+        *,
+        message_id: str,
+        correlation_id: str | None,
+        route_fingerprint: str,
+        source_ip: str,
+    ) -> WeixinChubModeDispatchResult:
+        return self._dispatch_system_upgrade_command(
+            message_id=message_id,
+            correlation_id=correlation_id,
+            route_fingerprint=route_fingerprint,
+            source_ip=source_ip,
+            start=True,
+        )
+
+    def _dispatch_system_upgrade_command(
+        self,
+        *,
+        message_id: str,
+        correlation_id: str | None,
+        route_fingerprint: str,
+        source_ip: str,
+        start: bool,
+    ) -> WeixinChubModeDispatchResult:
+        """Persist an idempotent fixed reply around the shared upgrade service."""
+        with self._system_upgrade_lock, self._lock:
+            if self._state_error:
+                self._log_standalone_dispatch("failed", source_ip)
+                return self._dispatch_failure("state_unavailable")
+            duplicate = self._find_submission(message_id)
+            if duplicate is not None:
+                if duplicate.delivery_route_fingerprint != route_fingerprint:
+                    self._log_standalone_dispatch("failed", source_ip)
+                    return self._dispatch_failure("message_conflict")
+                self._log_standalone_dispatch("succeeded", source_ip)
+                return WeixinChubModeDispatchResult(
+                    disposition=duplicate.dispatch_disposition or "reply",
+                    message=duplicate.message or None,
+                )
+
+            operation_id = uuid4().hex
+            self._log_dispatch(operation_id, "requested", source_ip)
+            self._log_dispatch(operation_id, "started", source_ip)
+            reader = self.system_upgrade_starter if start else self.system_upgrade_status_reader
+            if reader is None:
+                message = "System upgrade: Unavailable."
+                failed = True
+            else:
+                try:
+                    data = reader(source_ip) if start else reader()
+                    message = self._system_upgrade_message(data, started=start)
+                    failed = False
+                except ApiError as exc:
+                    message = f"System upgrade: Not started · {exc.message}"
+                    failed = True
+                except Exception:
+                    LOGGER.warning("Unable to handle Weixin system upgrade command", exc_info=True)
+                    message = "System upgrade: Unavailable. Try again later."
+                    failed = True
+            return self._remember_fixed_reply(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                operation_id=operation_id,
+                route_fingerprint=route_fingerprint,
+                source_ip=source_ip,
+                message=message,
+                code=("system_upgrade_requested" if start else "system_upgrade_checked"),
+                failed=failed,
+            )
+
     def _dispatch_chub_restart_serialized(
         self,
         *,
@@ -2772,6 +2911,18 @@ class WeixinChubModeManager:
             if session.id in slots_by_session_id
         )
 
+    def verify_system_upgrade_readiness(self) -> None:
+        """Confirm the Session snapshot used by Weixin can read after an upgrade."""
+        with self._lock:
+            configuration = self._state.configuration.model_copy(deep=True)
+            current_session_id = self._state.session_id
+            slots = [entry.model_copy(deep=True) for entry in self._state.session_slots]
+        self._collect_assigned_session_snapshot(
+            configuration,
+            current_session_id,
+            slots,
+        )
+
     def _schedule_session_snapshot_refresh(self) -> None:
         def refresh() -> None:
             with self._lock:
@@ -3425,6 +3576,8 @@ class WeixinChubModeManager:
                 "request_cat",
                 "request_run",
                 "request_archive",
+                "system_upgrade_status",
+                "system_upgrade",
             }
             or result.disposition != "reply"
             or not result.message
@@ -4544,6 +4697,39 @@ class WeixinChubModeManager:
         if timer is not None:
             timer.cancel()
 
+    def system_upgrade_readiness(self) -> str | None:
+        with self._lock:
+            if self._state_error:
+                return "微信 Chub 模式状态不可用。"
+            if any(
+                item.status in {"pending", "started"}
+                or item.notification_status in {"pending", "sending"}
+                for item in self._state.restart_operations
+            ):
+                return "仍有微信重启操作或通知尚未结束。"
+            if any(
+                item.status in {"pending", "started"}
+                or item.notification_status in {"pending", "sending"}
+                for item in self._state.stop_operations
+            ):
+                return "仍有微信 Session 停止操作或通知尚未结束。"
+        if any(item.status == "running" for item in self.request_backlog.list_active()):
+            return "仍有 Request 正在执行。"
+        return None
+
+    def reset_for_system_upgrade(self, operation_id: str, *, force: bool = False) -> None:
+        readiness = self.system_upgrade_readiness()
+        if readiness is not None and not force:
+            raise OSError(readiness)
+        with self._slot_lock, self._lock:
+            next_state = WeixinChubModeState(
+                configuration=self._state.configuration.model_copy(deep=True),
+            )
+            self._write_state(next_state)
+            self._state = next_state
+            self._system_upgrade_reset = True
+        self.request_backlog.reset_runs_for_system_upgrade(operation_id, force=force)
+
     def _dispatch_codex_archive(
         self,
         *,
@@ -4681,7 +4867,7 @@ class WeixinChubModeManager:
                 failed=True,
             )
 
-        if not getattr(refreshed, "codex_session_id", None):
+        if not getattr(refreshed, "native_session_id", None):
             message, _status_failed = self._codex_operation_message(
                 "Archive: Not completed because the target Session has not started.",
                 fill_session_candidates=False,
@@ -5561,8 +5747,8 @@ class WeixinChubModeManager:
             return "Busy"
         if getattr(session, "status", None) == "running" and activity != "idle":
             return "Unavailable"
-        codex_session_id = getattr(session, "codex_session_id", None)
-        if codex_session_id and self.codex_manager.has_active_writer(codex_session_id):
+        native_session_id = getattr(session, "native_session_id", None)
+        if native_session_id and self.codex_manager.has_active_writer(native_session_id):
             return "Busy"
         return "Available"
 
@@ -5724,7 +5910,7 @@ class WeixinChubModeManager:
     def _reclaim_unknown_session(
         self,
         session_id: str,
-        codex_session_id: str | None,
+        native_session_id: str | None,
         operation_id: str,
         source_ip: str,
     ) -> None:
@@ -5747,7 +5933,7 @@ class WeixinChubModeManager:
                 getattr(stopped, "status", None) != "stopped"
                 or getattr(stopped, "activity", None) != "idle"
                 or not self.codex_manager.wait_for_writer_release(
-                    codex_session_id,
+                    native_session_id,
                     timeout=3.0,
                 )
             ):
@@ -5988,6 +6174,8 @@ class WeixinChubModeManager:
         self._log_dispatch(operation_id, outcome, source_ip)
 
     def _write_state(self, state: WeixinChubModeState) -> None:
+        if self._system_upgrade_reset:
+            return
         state.submissions = sorted(
             state.submissions,
             key=lambda item: (item.created_at, item.message_id),

@@ -19,14 +19,17 @@ async def test_restart_requires_authentication(settings: Settings) -> None:
 
 
 @pytest.mark.anyio
-async def test_restart_rejects_active_quick_worker_reload(
+async def test_restart_allows_active_quick_worker_reload(
     settings: Settings,
 ) -> None:
     app = create_app(settings)
     app.state.quick_worker_maintenance.in_progress = lambda: True
     transport = httpx.ASGITransport(app=app)
 
-    with patch("app.api.maintenance.launch_restart_process") as launch_restart:
+    with (
+        patch("app.api.maintenance.launch_restart_process") as launch_restart,
+        patch("app.api.maintenance.monitor_restart_process"),
+    ):
         async with httpx.AsyncClient(
             transport=transport,
             base_url="http://test",
@@ -34,9 +37,9 @@ async def test_restart_rejects_active_quick_worker_reload(
         ) as client:
             response = await client.post("/api/maintenance/restart")
 
-    assert response.status_code == 409
-    assert response.json()["error"]["code"] == "quick_worker_reload_in_progress"
-    launch_restart.assert_not_called()
+    assert response.status_code == 200
+    assert response.json()["data"] == {"status": "restarting"}
+    launch_restart.assert_called_once()
 
 
 @pytest.mark.anyio

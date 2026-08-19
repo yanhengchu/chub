@@ -11,12 +11,20 @@ import stat
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import psutil
 import pytest
 from pydantic import ValidationError
 
 import app.quick_worker as quick_worker
+from app.ai_runtime import (
+    RuntimeNativeSession,
+    RuntimeSessionDiscoveryResult,
+    RuntimeTurnRequest,
+    RuntimeWorkerLaunchRequest,
+)
+from app.codex.worker_runtime import CodexWorkerRuntime
 from app.quick_worker import (
     HEALTH_PROTOCOL_VERSION,
     PROTOCOL_VERSION,
@@ -158,6 +166,17 @@ def test_restart_sensitive_is_derived_and_cannot_be_spoofed() -> None:
         )
 
 
+def test_worker_error_redacts_configured_token(settings) -> None:
+    server = QuickWorkerServer(settings, allow_test_tasks=True)
+
+    redacted = server.task_manager._redact_error(
+        "provider response Authorization: Bearer "
+        f"{settings.security.token.get_secret_value()}"
+    )
+
+    assert redacted == "provider response Authorization: Bearer [REDACTED]"
+
+
 def _fake_codex(tmp_path: Path) -> Path:
     executable = tmp_path / "fake-codex"
     executable.write_text(
@@ -178,6 +197,14 @@ prompt = sys.stdin.read()
 if os.environ.get("FAKE_CODEX_OMIT_EVENT") != "1":
     print(json.dumps({"type": "thread.started", "thread_id": native_id}), flush=True)
 time.sleep(float(os.environ.get("FAKE_CODEX_DELAY", "0")))
+upstream_error = os.environ.get("FAKE_CODEX_ERROR")
+if upstream_error:
+    print(
+        json.dumps({"type": "turn.failed", "error": {"message": upstream_error}}),
+        flush=True,
+    )
+    print("fallback stderr should not replace the upstream error", file=sys.stderr, flush=True)
+    raise SystemExit(23)
 prefix = "resumed" if "resume" in args else "created"
 result_path.write_text(f"{prefix}:{native_id}:{prompt}", encoding="utf-8")
 """,
@@ -185,6 +212,69 @@ result_path.write_text(f"{prefix}:{native_id}:{prompt}", encoding="utf-8")
     )
     executable.chmod(0o700)
     return executable
+
+
+def test_worker_uses_native_discovered_workspace_without_fixed_directory_gate(
+    tmp_path: Path,
+) -> None:
+    native_target = tmp_path / "external-project"
+    native_target.mkdir()
+    native_link = tmp_path / "external-project-link"
+    native_link.symlink_to(native_target, target_is_directory=True)
+    native_session_id = "11111111-1111-4111-8111-111111111111"
+    adapter = MagicMock()
+    adapter.discover_sessions.return_value = RuntimeSessionDiscoveryResult(
+        sessions=(
+            RuntimeNativeSession(
+                runtime_id="codex",
+                native_session_id=native_session_id,
+                cwd=native_link,
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            ),
+        )
+    )
+    runtime = CodexWorkerRuntime(
+        adapter,
+        executable=str(_fake_codex(tmp_path)),
+        workspaces={"isolated": tmp_path},
+    )
+    turn = RuntimeTurnRequest(
+        permission_profile="read-only",
+        native_session_id=native_session_id,
+    )
+
+    launch = runtime.build_launch(
+        RuntimeWorkerLaunchRequest(
+            task_id="task-1",
+            task_dir=tmp_path / "task",
+            release_fd=0,
+            session_id="session-1",
+            task_kind="standard",
+            workspace_id="runtime-session",
+            turn=turn,
+            hook_dir=tmp_path / "hooks",
+            restart_request_dir=tmp_path / "restart",
+        )
+    )
+
+    index = launch.argv.index("--working-directory")
+    assert launch.argv[index + 1] == str(native_target)
+    assert adapter.discover_sessions.call_count == 2
+
+
+def test_worker_remains_available_when_shortcut_directory_is_missing(
+    tmp_path: Path,
+) -> None:
+    executable = _fake_codex(tmp_path)
+    adapter = MagicMock()
+    runtime = CodexWorkerRuntime(
+        adapter,
+        executable=str(executable),
+        workspaces={"workspace": tmp_path / "removed-shortcut"},
+    )
+
+    assert runtime.available is True
 
 
 def _set_native_archive_state(
@@ -351,6 +441,77 @@ async def test_worker_drain_rejects_new_work_but_keeps_control_actions(
         }
     finally:
         await server.close()
+
+
+@pytest.mark.anyio
+async def test_completed_upgrade_drain_can_resume_worker(settings) -> None:
+    server = QuickWorkerServer(settings, allow_test_tasks=True)
+    await server.start()
+    operation_id = f"system-upgrade:{uuid.uuid4().hex}"
+    try:
+        drain = await quick_worker.request_drain(
+            settings,
+            operation_id=operation_id,
+            wait_seconds=1,
+        )
+        resumed = await quick_worker.resume_after_drain(
+            settings,
+            operation_id=operation_id,
+        )
+        health = await read_health(settings)
+
+        assert drain["success"] is True
+        assert resumed["success"] is True
+        assert health["data"]["status"] == "ready"
+        assert health["data"]["drain_operation_id"] is None
+    finally:
+        await server.close()
+
+
+@pytest.mark.anyio
+async def test_worker_drain_can_use_a_declared_source_protocol(
+    settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[dict[str, object]] = []
+
+    async def worker_request_stub(_settings, request, **_kwargs):
+        requests.append(request)
+        if request["action"] == "drain":
+            return {"success": True, "request_id": request["request_id"], "data": {}}
+        return {
+            "success": True,
+            "request_id": request["request_id"],
+            "data": {
+                "protocol_version": PROTOCOL_VERSION - 1,
+                "status": "draining",
+                "generation": "a" * 32,
+                "code_version": "test-worker",
+                "pid": 1,
+                "active_tasks": 0,
+                "queued_tasks": 0,
+                "uncertain_tasks": 0,
+                "corrupt_tasks": 0,
+                "test_tasks_enabled": False,
+                "runtime_ids": ["codex"],
+                "available_runtime_ids": ["codex"],
+                "runtime_workspace_ids": {"codex": ["chub"]},
+                "drain_operation_id": "system-upgrade:test",
+                "drain_complete": True,
+                "drain_error": None,
+            },
+        }
+
+    monkeypatch.setattr(quick_worker, "worker_request", worker_request_stub)
+
+    result = await quick_worker.request_drain(
+        settings,
+        operation_id="system-upgrade:test",
+        protocol_version=PROTOCOL_VERSION - 1,
+    )
+
+    assert result["success"] is True
+    assert requests[0]["protocol_version"] == PROTOCOL_VERSION - 1
 
 
 @pytest.mark.anyio
@@ -528,7 +689,7 @@ async def test_codex_capability_does_not_enable_fixed_test_tasks(
         assert health["data"]["runtime_ids"] == ["codex"]
         assert health["data"]["available_runtime_ids"] == ["codex"]
         assert health["data"]["runtime_workspace_ids"] == {
-            "codex": ["isolated"]
+            "codex": ["isolated", "runtime-session"]
         }
         rejected = await _submit(settings, task_id=new_worker_task_id())
         assert rejected["success"] is False
@@ -1159,6 +1320,45 @@ async def test_runner_failure_is_bounded_and_not_reported_as_success(settings) -
         assert failed["exit_code"] == 23
         assert "failed as requested" in failed["error"]
         assert len(failed["error"].encode("utf-8")) <= 4_000
+    finally:
+        await server.close()
+
+
+@pytest.mark.anyio
+async def test_codex_upstream_error_is_returned_from_runtime_event_stream(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    native_id = "99999999-9999-4999-8999-999999999999"
+    upstream_error = (
+        "unexpected status 503 Service Unavailable: Service temporarily unavailable"
+    )
+    monkeypatch.setenv("FAKE_CODEX_SESSION_ID", native_id)
+    monkeypatch.setenv("FAKE_CODEX_ERROR", upstream_error)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server = QuickWorkerServer(
+        settings,
+        allow_test_tasks=True,
+        codex_workspaces={"isolated": workspace},
+        codex_executable=_fake_codex(tmp_path),
+        codex_home=tmp_path / "codex-home",
+    )
+    await server.start()
+    task_id = new_worker_task_id()
+    try:
+        await _submit_codex(
+            settings,
+            task_id=task_id,
+            session_id="upstream-error-session",
+            codex_session_id=native_id,
+        )
+        failed = await _wait_for_status(settings, task_id, {"failed"})
+        assert failed["error_code"] == "runner_failed"
+        assert failed["error"] == upstream_error
+        assert "fallback stderr" not in failed["error"]
+        assert failed["runner_pid"] is None
     finally:
         await server.close()
 

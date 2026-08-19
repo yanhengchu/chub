@@ -4,13 +4,49 @@
 
 Chub 是面向个人设备、本地优先的轻量 AI 工作站控制面。它在统一的安全与状态边界内组织设备能力、AI Session 和任务入口，负责接收请求、选择执行目标、协调运行、恢复任务、确认最终状态并交付结果；Chub 本身不是模型，也不作为通用对话 Agent 执行任务。
 
-当前 Codex 是唯一完整接入的 Agent Runtime，负责实际的分析、编码和工具调用；Quick Worker 承载需要跨 Web 重启继续运行的后台 AI 任务；OpenClaw 在微信链路中只承担可信消息网关和通道适配。具体业务能力和使用入口见“当前功能”，不在项目定位中重复列举。
+当前 Codex 是唯一完整接入的 Agent Runtime，负责实际的分析、编码和工具调用；Quick Worker 承载需要跨 Web 重启继续运行的后台 AI 任务；OpenClaw 在微信链路中只承担可信消息网关和通道适配。当前 Runtime 边界、能力矩阵和未来第二 Runtime 接入规则见 [Chub AI Runtime 架构设计](docs/CHUB_AI_RUNTIME_DESIGN.md)。具体业务能力和使用入口见“当前功能”，不在项目定位中重复列举。
 
 长期目标是让 Chub 成为不依赖单一 Agent 产品的个人 AI 工作站：在保持统一安全、逻辑 Session、任务和最终状态语义的前提下，通过稳定契约接入经过验证的 Agent Runtime。项目继续坚持本地优先、可靠终态和适合个人维护的复杂度，支持 macOS LaunchAgent 与 Ubuntu systemd user service；新 Runtime 只由真实需求驱动，并在能力、权限和恢复机制通过验证后接入。
 
+## AI Agent 快速理解
+
+本文是 Chub 项目入口，负责项目定位、当前能力、运行入口、核心安全边界、架构概览和专项文档导航。本文不替代 Session、Worker、Runtime、OpenClaw、自动化、前端或用量等子模块设计，也不重复维护微信固定指令和用户可见回复格式；这些细节以对应专项文档和[集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md)为准。
+
+按以下顺序判断项目行为：先用本文确认项目范围和当前能力，再用[Chub 总体架构与演进设计](docs/CHUB_ARCHITECTURE_DESIGN.md)确认进程、领域和状态所有权；需要确认“现在可以调用什么”时读取[集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md)；最后进入对应子模块文档。项目资料页面的登记、摘要和状态以 `docs/design_documents.json` 为准；“已验收”不等于归档。目标架构、阶段记录或历史归档不能覆盖当前能力契约。
+
+当前不可放宽的边界：Chub 是控制面和可靠协调者，不是模型或通用 Agent；Codex 是当前唯一完整接入的 Runtime；每类状态只有一个权威来源，异步操作必须确认最终状态；客户端不能提供任意命令、路径、Runtime、Session 或收件人；认证、白名单和敏感信息保护失败时必须失败关闭，外部通道的身份、路由、协议或结果不确定时不得回退或放宽权限。具体身份、路由、权限、恢复和通知规则由对应专项文档维护。
+
 ## 架构与文档入口
 
-本文用于说明 Chub 是什么、当前提供什么能力以及如何使用；[Chub 总体架构与演进设计](docs/CHUB_ARCHITECTURE_DESIGN.md)是项目的核心架构依据，定义系统边界、职责分层、状态所有权和演进原则。新增功能和专项设计必须先遵循总体架构，再进入对应领域文档；确认当前已经实现并可调用的功能时，以[Chub 集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md)为准。
+本文用于说明 Chub 是什么、当前提供什么能力以及如何使用；[Chub 总体架构与演进设计](docs/CHUB_ARCHITECTURE_DESIGN.md)是项目的核心架构依据，定义系统边界、职责分层、状态所有权和演进原则。下面的架构和子模块索引只描述当前职责，不代表目标目录已经完全落地；新增功能和专项设计必须先遵循总体架构，再进入对应领域文档。
+
+### 当前进程架构
+
+```text
+Browser / Mobile Browser / chub CLI
+  -> Chub Web、API、WebSocket 和固定本机入口
+       |-> Quick Worker -> 固定 Runtime Runner -> Codex Runner
+       |-> tmux / ttyd -> Codex 实时终端
+       |-> OpenClaw Plugin -> 微信固定调度 API
+       |-> Automation Runner -> Debug Chrome / 固定扩展
+       `-> Notification Service -> 预配置飞书目标
+```
+
+Web 是控制面和业务协调入口；Quick Worker 独立负责需要跨 Web 重启继续运行的后台 AI 任务；Codex、OpenClaw、Chrome、飞书和操作系统服务都通过固定 Adapter、Manager 或脚本受控访问。进程生命周期、状态所有权和外部边界详见总体架构，不在此重复展开。
+
+### 仓库子模块索引
+
+| 路径 | 当前职责 | 细节入口 |
+| --- | --- | --- |
+| `app/api/`、`app/web/` | FastAPI 接口、页面、WebSocket 和项目资料展示 | [总体架构](docs/CHUB_ARCHITECTURE_DESIGN.md)、[前端 UI 设计](docs/FRONTEND_UI_DESIGN.md) |
+| `app/ai_session/`、`app/codex/` | 逻辑 AI Session、实时终端和当前 Codex 正式入口 | [Session 状态模型](docs/AI_SESSION_STATE_DESIGN.md)、[AI Runtime 设计](docs/CHUB_AI_RUNTIME_DESIGN.md) |
+| `app/ai_runtime/`、`app/quick_worker*.py` | Runtime 契约、固定 Runner、后台任务、租约、恢复和终态 | [AI Runtime 设计](docs/CHUB_AI_RUNTIME_DESIGN.md)、[Quick Worker 设计](docs/CHUB_QUICK_WORKER_DESIGN.md) |
+| `app/automations/` | Debug Chrome、配置驱动自动化、下载产物和任务状态 | [总体架构](docs/CHUB_ARCHITECTURE_DESIGN.md)、[周报自动化设计](docs/WEEKLY_REPORT_AUTOMATION_DESIGN.md) |
+| `app/notifications/`、`app/requests/`、`app/ai_usage/` | 通知、R1–R9 需求储备、Codex/OpenAI 用量 | [总体架构](docs/CHUB_ARCHITECTURE_DESIGN.md)、[能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md)、[额度设计](docs/CODEX_AI_QUOTA_USAGE_DESIGN.md) |
+| `app/core/`、`app/tasks/` | 配置、安全、日志、平台检测、白名单维护任务 | [总体架构](docs/CHUB_ARCHITECTURE_DESIGN.md) |
+| `app/services/` | 当前跨领域服务和协调逻辑；不是新的统一领域边界 | [总体架构](docs/CHUB_ARCHITECTURE_DESIGN.md#4-当前逻辑分层) |
+| `integrations/openclaw/chub/` | Chub OpenClaw 插件源码、构建、部署和协议验收 | [OpenClaw 定制设计](docs/OPENCLAW_CUSTOMIZATION_DESIGN.md)、[插件说明](integrations/openclaw/chub/README.md) |
+| `scripts/`、`config/`、`tests/`、`docs/` | 服务安装与维护、示例配置、回归测试和项目资料 | [总体架构](docs/CHUB_ARCHITECTURE_DESIGN.md)、本文“项目资料维护” |
 
 ## 当前功能
 
@@ -27,7 +63,7 @@ Chub 是面向个人设备、本地优先的轻量 AI 工作站控制面。它�
 | 执行设置 | 即时启停微信普通任务的执行前润色与翻译 | 设置页 |
 | 界面风格 | 切换 Standard/Cyber 风格 | 设置页 |
 
-页面、微信和翻译快速任务统一由独立 Worker 承载，Web 重启不会中断已接受的任务。恢复、通知和协调重启的完整边界见[快速交互独立 Worker 设计](docs/QUICK_INTERACTION_WORKER_DESIGN.md)。
+页面、微信和翻译快速任务统一由独立 Worker 承载，Web 重启不会中断已接受的任务。Worker 服务、恢复、通知和协调重启的完整边界见[Chub Quick Worker 独立服务设计](docs/CHUB_QUICK_WORKER_DESIGN.md)。
 
 电脑端命令、插件和固定 API 的查询入口是 [Chub 集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md)；其中第 4 节是微信固定指令的唯一产品契约。身份、安全、路由和并发等内部边界由对应设计文档维护。
 
@@ -115,7 +151,7 @@ Codex PTY 依赖 `codex`、`ttyd` 和 `tmux`。安装服务时，Chub 会从当�
 
 新建 Session 默认进入快速交互；入口偏好、Session 导航和未发送草稿只保存在当前浏览器。两种入口共享原生 Session，并保持单 writer 互斥；快速交互任务由独立 Worker 执行和恢复。
 
-Session、Activity、槽位、标题和入口语义见[Chub AI Session 状态模型设计](docs/AI_SESSION_STATE_DESIGN.md)；后台任务、通知终态和跨 Web 重启见[快速交互独立 Worker 设计](docs/QUICK_INTERACTION_WORKER_DESIGN.md)。
+Session、Activity、槽位、标题和入口语义见[Chub AI Session 状态模型设计](docs/AI_SESSION_STATE_DESIGN.md)；后台任务、通知终态和 Worker 服务恢复见[Chub Quick Worker 独立服务设计](docs/CHUB_QUICK_WORKER_DESIGN.md)。
 
 实时终端依赖稳定的 WebSocket 链路。普通页面可以打开但终端无响应时，应优先检查 Tailscale 是否直连、DERP 中继质量，以及 `/codex/.../terminal/ws` 是否成功升级为 `101 Switching Protocols`。
 
@@ -123,11 +159,11 @@ Session、Activity、槽位、标题和入口语义见[Chub AI Session 状态模
 
 轻量需求储备使用 `R1`–`R9` 九个活动槽位，不创建专用 Session。维护者明确要求保存或更新已经讨论成型的小需求后，编码 Agent 通过本机 `chub request save` 或 `chub request update` 受控写入；`chub request list` 和 `chub request show` 用于检查活动需求。保存和更新从标准输入读取完整正文，不直接编辑状态文件。
 
-微信 Chub 模式可在状态摘要中查看活动需求，并将指定需求提交到当前 Session 或归档非运行需求。完整的本机命令、微信语法、长度限制和失败语义见[Chub 集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md)；需求执行的持久化、恢复和通知边界见[Chub–OpenClaw 接入设计](docs/CHUB_OPENCLAW_INTEGRATION_DESIGN.md)。
+微信 Chub 模式可在状态摘要中查看活动需求，并将指定需求提交到当前 Session 或归档非运行需求。完整的本机命令、微信语法、长度限制和失败语义见[Chub 集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md)；OpenClaw 定制、微信路由、持久化和通知边界见[OpenClaw 定制集成设计](docs/OPENCLAW_CUSTOMIZATION_DESIGN.md)。
 
 ### AI 额度
 
-首页 Codex 卡片通过统一的 `/api/ai/usage` 展示周额度、今日用量和重置时间。ChatGPT 账号登录优先使用账户日桶，当天桶缺失时显示明确标记的本机 Token；API Key 方式复用已登录的受管 Debug Chrome。两种来源不会互相降级，完整数据口径、接口和缓存规则见[Chub AI 额度与用量采集设计](docs/AI_QUOTA_USAGE_DESIGN.md)。
+首页 Codex 卡片通过统一的 `/api/ai/usage` 展示周额度、今日用量和重置时间。ChatGPT 账号登录优先使用账户日桶，当天桶缺失时显示明确标记的本机 Token；API Key 方式复用已登录的受管 Debug Chrome。两种来源不会互相降级，完整数据口径、接口和缓存规则见[Codex AI 额度与用量采集设计](docs/CODEX_AI_QUOTA_USAGE_DESIGN.md)。
 
 ### OpenClaw 与微信 ClawBot
 
@@ -141,7 +177,7 @@ OpenClaw 提供可信入口和通道上下文，Chub 负责业务路由、安全
 
 首页“工作站环境”卡片中的 OpenClaw 分区用于查看 Gateway、微信通道和 Tailscale 入口，并提供受控的启停、重启及微信绑定操作。绑定成功只表示通道登录完成，不代表发送者配对或 Owner 权限已经配置。
 
-端到端状态和安全边界见 [Chub–OpenClaw 接入设计](docs/CHUB_OPENCLAW_INTEGRATION_DESIGN.md)；插件协议、构建和部署见仓库内维护资料 [Chub OpenClaw 插件说明](integrations/openclaw/chub/README.md)。
+端到端状态和安全边界见 [OpenClaw 定制集成设计](docs/OPENCLAW_CUSTOMIZATION_DESIGN.md)；插件协议、构建和部署见仓库内维护资料 [Chub OpenClaw 插件说明](integrations/openclaw/chub/README.md)。
 
 ### 飞书通知
 
@@ -208,14 +244,16 @@ Runner 不会自行启动或停止 Debug Chrome。浏览器 Profile 未初始化
 - `data/runtime/`：可重新生成的执行事件、临时附件、锁和任务日志。
 - `data/artifacts/`：自动化下载材料和周报正式产物。
 
-升级旧数据布局时，应先等待任务结束，再执行 `chub stop`、`./scripts/chub-data-migrate` 和 `chub start`。迁移不会覆盖同名业务产物。
+首页“工作站环境”提供受控的“系统升级与恢复”状态行。它统一执行已准备的版本切换或当前版本的运行态恢复；确认后冻结受影响的 Chub AI Runtime 写入、停止 Quick Worker，在途快速任务终止并清理 Chub Session 关联、Hook 与固定 Worker 运行态。Codex 原生 Session、配置、日志、项目资料和业务数据不归档、不删除；新实例会重新发现仍存在的原生 Session。无需等待任务自然排空，但固定切换脚本、已安装服务定义、Web Runtime 和 Worker 健康仍必须通过预检。只有新 Web/Worker、Session 映射读取和微信 Chub Session 快照均完成最终验证，操作才标记完成；清理后的验证失败会保持恢复门禁并允许同一恢复操作继续。该入口不下载代码、不接受客户端路径或命令，也不提供任意数据清理。
+
+`scripts/chub-data-migrate` 只保留给历史安装的数据目录整理，不参与 AI Session 或 Worker 协议升级。新的持久化协议切换统一使用上述受控升级流程，直接清理方案白名单内的旧运行数据，不增加启动迁移、双写或旧格式兼容读取。
 
 受保护接口使用 Hub Token，或在未关闭时接受真实 Tailnet socket 来源。健康检查和项目资料详情是可信网络内的只读页面；公开展示的文档和周报不得包含 Token、Cookie、账号信息、本机秘密或其他不适合直接访问的内容。
 
 主要接口类别：
 
 - `/api/health`、`/api/status`：健康和节点状态。
-- `/api/codex/*`：Codex 会话与快速交互。
+- `/api/codex/*`：当前 Codex 会话与快速交互的正式入口；不是通用 Runtime 选择或旧版本兼容别名。
 - `/api/ai/usage`：统一 AI 额度、今日用量和重置时间。
 - `/api/automations/*`：自动化环境、任务和结果。
 - `/api/openclaw/*`：OpenClaw 状态与受控操作。
@@ -224,6 +262,10 @@ Runner 不会自行启动或停止 Debug Chrome。浏览器 Profile 未初始化
 ## 项目资料维护
 
 README 是项目入口和文档管理规则的维护入口；总体架构是所有专项设计的上层约束。文档按以下权威层级维护：
+
+文档的第一读者是 AI Agent，第二读者是项目维护者。每份当前文档的开头必须先说明“项目/功能是什么、本文负责什么、哪些内容不在本文范围”；关键规则、状态所有权、失败关闭条件和验收标准必须用明确的规范性语言保留，不能只写背景或实现过程。维护者操作步骤、版本记录和历史说明放在核心契约之后，且不得与 AI 可执行规则混在一起。
+
+当前专项文档统一使用最低头部结构：`状态`、`主要读者`、`本文负责`、`本文不负责`；`状态` 必须与 `docs/design_documents.json` 的标准值精确一致，维护触发条件另写为补充说明。已验收的当前专项文档末尾还应写明已验证功能/平台、未验证或不承诺范围和复检触发条件；局部实机验证不能扩大为全平台或全链路承诺。
 
 - **项目说明**：README 维护项目定位、能力概览、安装、使用入口、数据安全和文档导航。
 - **总体架构**：定义系统边界、进程、领域、状态所有权、依赖方向和整体演进原则；所有专项设计必须遵循。
@@ -266,20 +308,19 @@ CHUB_BROWSER_TESTS=1 .venv/bin/python -m pytest \
 | --- | --- |
 | [Chub 项目说明](README.md) | 项目概览、安装、日常入口、安全和文档导航 |
 | [Chub 总体架构与演进设计](docs/CHUB_ARCHITECTURE_DESIGN.md) | 当前进程、领域与状态所有权，以及整体分层和演进原则 |
-| [AI Runtime 架构演进设计](docs/AI_RUNTIME_ARCHITECTURE_DESIGN.md) | 长期 Agent Runtime 边界、Session Manager、Worker 职责和渐进演进路线 |
+| [Chub AI Runtime 架构设计](docs/CHUB_AI_RUNTIME_DESIGN.md) | Chub 的 Agent Runtime 边界、Session Manager、Worker 职责和架构演进路线 |
 | [Chub AI Session 状态模型设计](docs/AI_SESSION_STATE_DESIGN.md) | Session、Activity、入口、槽位和单 writer 语义 |
-| [快速交互独立 Worker 设计](docs/QUICK_INTERACTION_WORKER_DESIGN.md) | 非实时任务、恢复、通知终态和协调重启 |
-| [Chub AI 额度与用量采集设计](docs/AI_QUOTA_USAGE_DESIGN.md) | AI 用量来源、统一接口、缓存和展示口径 |
-| [Chub–OpenClaw 接入设计](docs/CHUB_OPENCLAW_INTEGRATION_DESIGN.md) | OpenClaw/微信端到端业务、身份、权限、Session/Request 状态和通知边界 |
+| [Chub Quick Worker 独立服务设计](docs/CHUB_QUICK_WORKER_DESIGN.md) | Quick Worker 独立服务、非实时任务、恢复、通知终态和重启协调 |
+| [Codex AI 额度与用量采集设计](docs/CODEX_AI_QUOTA_USAGE_DESIGN.md) | Codex/OpenAI 用量来源、统一接口、缓存和展示口径 |
+| [OpenClaw 定制集成设计](docs/OPENCLAW_CUSTOMIZATION_DESIGN.md) | OpenClaw/微信端到端业务、插件定制、Context Token、身份、路由和通知边界 |
 | [本期工作周报自动化与生成设计](docs/WEEKLY_REPORT_AUTOMATION_DESIGN.md) | 飞书资料准备、确认门禁、周报生成和复核 |
 | [Chub 前端 UI 模块化设计](docs/FRONTEND_UI_DESIGN.md) | 前端分层、公共交互和 Standard/Cyber 视觉契约 |
 | [Chub 集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md) | 当前可用命令、插件、固定 API，以及微信固定指令唯一产品契约 |
 | [Chub OpenClaw 插件说明](integrations/openclaw/chub/README.md) | 仓库内维护的 Chub 插件协议、源码、构建、部署和协议验收 |
-| [微信 Context Token 补丁规范](docs/WEIXIN_CLAWBOT_CONTEXT_TOKEN_AI_PATCH.md) | 第三方微信插件升级后的兼容复检和恢复 |
 
 日常了解项目先看本文和总体架构；开发或排障时进入对应专项设计；确认“现在能调用什么”看能力清单。`docs/design_documents.json` 的登记顺序同时维护权威层级和完整列表顺序，首页在固定核心文档后提供最近更新视图。
 
-仓库内阶段归档：
+仓库内阶段归档（仅供历史追溯；当前 Runtime 工作不再按阶段编号规划，也不存在后续第五阶段）：
 
 - [第一阶段](docs/archive/phase-1/README.md)
 - [第二阶段](docs/archive/phase-2/README.md)

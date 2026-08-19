@@ -87,6 +87,10 @@ class FixedTestWorkerRuntime:
         return RuntimeEventSummary()
 
     @staticmethod
+    def read_error(_task_dir: Path, *, max_bytes: int) -> str | None:
+        return None
+
+    @staticmethod
     def read_result(task_dir: Path, *, max_bytes: int) -> RuntimeTurnResult:
         path = task_dir / "stdout.txt"
         metadata = path.lstat()

@@ -12,6 +12,8 @@ from collections.abc import Callable
 from pathlib import Path
 
 from app.ai_runtime import (
+    RUNTIME_CAPABILITIES,
+    RuntimeActivityEvent,
     RuntimeCapability,
     RuntimeDescriptor,
     RuntimeModelCatalog,
@@ -33,21 +35,8 @@ from app.core.network import is_tailscale_ip
 
 PROFILE_MARKER = "# Managed by Chub Codex PTY"
 CODEX_SESSION_ID_PATTERN = r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}"
-CODEX_RUNTIME_CAPABILITIES: frozenset[RuntimeCapability] = frozenset(
-    {
-        "runtime_status",
-        "background_turn",
-        "task_cancel",
-        "native_session_mapping",
-        "interactive_terminal",
-        "session_resume",
-        "session_archive",
-        "structured_events",
-        "writer_probe",
-        "model_catalog",
-        "permission_profiles",
-    }
-)
+CODEX_RUNTIME_CAPABILITIES: frozenset[RuntimeCapability] = RUNTIME_CAPABILITIES
+MAX_ACTIVITY_EVENT_BYTES = 32 * 1024
 
 
 def is_valid_codex_session_id(value: object) -> bool:
@@ -84,6 +73,109 @@ class CodexRuntimeAdapter:
             runtime_id="codex",
             capabilities=CODEX_RUNTIME_CAPABILITIES,
         )
+
+    @property
+    def display_name(self) -> str:
+        return "Codex"
+
+    @staticmethod
+    def runtime_process_matches(command: tuple[str, ...]) -> bool:
+        return any("codex" in Path(part).name.lower() for part in command)
+
+    @staticmethod
+    def terminal_backend_matches(
+        command: tuple[str, ...],
+        session_id: str,
+    ) -> bool:
+        executable = Path(command[0]).name if command else ""
+        return executable == "ttyd" and f"/codex/{session_id}/terminal" in command
+
+    def read_activity_event(self, session_id: str) -> RuntimeActivityEvent | None:
+        path = self._activity_event_path(session_id)
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        try:
+            descriptor = os.open(path, flags)
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise RuntimeOperationError(
+                "codex_activity_event_unavailable",
+                "Codex activity event is unavailable",
+            ) from exc
+        try:
+            metadata = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_uid != os.getuid()
+                or stat.S_IMODE(metadata.st_mode) & 0o077
+                or metadata.st_size > MAX_ACTIVITY_EVENT_BYTES
+            ):
+                raise OSError("Codex activity event is unsafe or too large")
+            with os.fdopen(descriptor, "rb") as event_file:
+                descriptor = -1
+                content = event_file.read(MAX_ACTIVITY_EVENT_BYTES + 1)
+            if len(content) > MAX_ACTIVITY_EVENT_BYTES:
+                raise OSError("Codex activity event is oversized")
+        except OSError as exc:
+            raise RuntimeOperationError(
+                "codex_activity_event_unavailable",
+                "Codex activity event is unavailable",
+            ) from exc
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+        try:
+            payload = json.loads(content)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeOperationError(
+                "codex_activity_event_invalid",
+                "Codex activity event is invalid",
+            ) from exc
+        if not isinstance(payload, dict):
+            raise RuntimeOperationError(
+                "codex_activity_event_invalid",
+                "Codex activity event is invalid",
+            )
+        native_session_id = payload.get("codex_session_id")
+        if not is_valid_codex_session_id(native_session_id):
+            native_session_id = None
+        activity = payload.get("activity")
+        if activity not in {"working", "idle"}:
+            activity = None
+        activity_source = payload.get("activity_source", "terminal")
+        if activity != "working" or activity_source not in {"terminal", "quick"}:
+            activity_source = "none"
+        return RuntimeActivityEvent(
+            native_session_id=native_session_id,
+            activity=activity,
+            activity_source=activity_source,
+        )
+
+    def clear_activity_event(self, session_id: str) -> None:
+        try:
+            self._activity_event_path(session_id).unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise RuntimeOperationError(
+                "codex_activity_event_unavailable",
+                "Codex activity event is unavailable",
+            ) from exc
+
+    def _activity_event_path(self, session_id: str) -> Path:
+        if not re.fullmatch(
+            r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+            r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+            session_id,
+        ):
+            raise RuntimeOperationError(
+                "codex_activity_session_invalid",
+                "Codex activity Session ID is invalid",
+                kind="invalid_request",
+            )
+        return self.hook_dir / f"{session_id}.json"
 
     @property
     def network_available(self) -> bool:
@@ -167,6 +259,7 @@ class CodexRuntimeAdapter:
                 )
             sessions.append(
                 RuntimeNativeSession(
+                    runtime_id="codex",
                     native_session_id=native_session_id,
                     cwd=session.cwd,
                     title=session.title[:500] if session.title is not None else None,

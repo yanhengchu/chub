@@ -61,6 +61,7 @@ class QuickWorkerStatusData(_StrictModel):
     active_tasks: int = Field(default=0, ge=0)
     queued_tasks: int = Field(default=0, ge=0)
     can_restart: bool = False
+    upgrade_required: bool = False
     operation: QuickWorkerOperationView | None = None
 
 

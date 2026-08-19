@@ -94,11 +94,12 @@ async def test_codex_session_list_controls_translation_visibility(
     manager.list_sessions.return_value = [
         SessionInfo(
             id="ordinary-session",
+            runtime_id="codex",
             workspace_id="chub",
             workspace_name="Chub",
             cwd="/workspace/chub",
             title=None,
-            codex_session_id="codex-ordinary",
+            can_archive=True,
             status="stopped",
             activity="idle",
             permission_mode="full-access",
@@ -110,11 +111,12 @@ async def test_codex_session_list_controls_translation_visibility(
         ),
         SessionInfo(
             id="translation-session",
+            runtime_id="codex",
             workspace_id="weixin-translation",
             workspace_name="微信文本优化与翻译",
             cwd="/runtime/translation",
             title="文本优化与翻译",
-            codex_session_id="codex-translation",
+            can_archive=True,
             status="stopped",
             activity="idle",
             permission_mode="read-only",
@@ -162,11 +164,12 @@ async def test_create_session_uses_requested_permission_mode(settings: Settings)
     manager = MagicMock()
     manager.create_session.return_value = SessionInfo(
         id="session-1",
+        runtime_id="codex",
         workspace_id="chub",
         workspace_name="Chub",
         cwd="/workspace/chub",
         title=None,
-        codex_session_id=None,
+        can_archive=False,
         status="new",
         activity="unknown",
         permission_mode="full-access",
@@ -202,11 +205,12 @@ async def test_create_session_defaults_to_full_access(settings: Settings) -> Non
     manager = MagicMock()
     manager.create_session.return_value = SessionInfo(
         id="session-1",
+        runtime_id="codex",
         workspace_id="chub",
         workspace_name="Chub",
         cwd="/workspace/chub",
         title=None,
-        codex_session_id=None,
+        can_archive=False,
         status="new",
         activity="unknown",
         permission_mode="full-access",
@@ -280,11 +284,12 @@ async def test_create_session_uses_requested_model_and_reasoning_level(
     manager = MagicMock()
     manager.create_session.return_value = SessionInfo(
         id="session-1",
+        runtime_id="codex",
         workspace_id="chub",
         workspace_name="Chub",
         cwd="/workspace/chub",
         title=None,
-        codex_session_id=None,
+        can_archive=False,
         status="new",
         activity="unknown",
         permission_mode="full-access",
@@ -363,11 +368,12 @@ async def test_codex_session_list_includes_active_quick_interaction(
     manager.list_sessions.return_value = [
         SessionInfo(
             id="session-1",
+            runtime_id="codex",
             workspace_id="chub",
             workspace_name="Chub",
             cwd="/workspace/chub",
             title=None,
-            codex_session_id="codex-session-1",
+            can_archive=True,
             status="stopped",
             activity="idle",
             permission_mode="auto-review",
@@ -414,7 +420,7 @@ def quick_task() -> QuickInteractionTask:
 
 
 @pytest.mark.anyio
-async def test_quick_interaction_keeps_idle_unconnected_terminal_running(
+async def test_quick_interaction_takes_over_idle_unconnected_terminal(
     settings: Settings,
 ) -> None:
     app = create_app(settings)
@@ -446,8 +452,9 @@ async def test_quick_interaction_keeps_idle_unconnected_terminal_running(
         )
 
     assert response.status_code == 200
-    manager.stop_session.assert_not_called()
-    app.state.terminal_connections.close_session.assert_not_called()
+    manager.stop_session.assert_called_once_with("session-1")
+    app.state.terminal_connections.close_session.assert_called_once_with("session-1")
+    manager.wait_for_writer_release.assert_called_once_with("codex-session-1")
     quick_interactions.submit.assert_called_once()
 
 
@@ -561,7 +568,7 @@ async def test_quick_interaction_rejects_unsafe_terminal_switch(
 
 
 @pytest.mark.anyio
-async def test_quick_interaction_keeps_idle_connected_terminal_running(
+async def test_quick_interaction_takes_over_idle_connected_terminal(
     settings: Settings,
 ) -> None:
     app = create_app(settings)
@@ -592,8 +599,9 @@ async def test_quick_interaction_keeps_idle_connected_terminal_running(
         )
 
     assert response.status_code == 200
-    manager.stop_session.assert_not_called()
-    app.state.terminal_connections.close_session.assert_not_called()
+    manager.stop_session.assert_called_once_with("session-1")
+    app.state.terminal_connections.close_session.assert_called_once_with("session-1")
+    manager.wait_for_writer_release.assert_called_once_with("codex-session-1")
     quick_interactions.submit.assert_called_once()
 
 
@@ -651,13 +659,9 @@ async def test_quick_interaction_rejects_if_idle_terminal_starts_working_on_subm
         activity="idle",
         permission_mode="auto-review",
     )
-    manager.get_session.return_value = base
+    working = base.model_copy(update={"activity": "working"})
+    manager.get_session.side_effect = [base, working]
     quick_interactions = MagicMock()
-    quick_interactions.submit.side_effect = ApiError(
-        409,
-        "quick_interaction_terminal_working",
-        "实时终端正在执行，请等待当前任务结束。",
-    )
     app.state.codex_pty_manager = manager
     app.state.quick_interactions = quick_interactions
     app.state.terminal_connections = MagicMock()
@@ -674,7 +678,7 @@ async def test_quick_interaction_rejects_if_idle_terminal_starts_working_on_subm
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "quick_interaction_terminal_working"
     manager.stop_session.assert_not_called()
-    quick_interactions.submit.assert_called_once()
+    quick_interactions.submit.assert_not_called()
 
 
 @pytest.mark.anyio
@@ -854,33 +858,18 @@ async def test_quick_interaction_timeline_rejects_invalid_cursor(
 
 
 @pytest.mark.anyio
-async def test_quick_interaction_can_be_pinned(settings: Settings) -> None:
+async def test_quick_interaction_pin_endpoint_is_removed(settings: Settings) -> None:
     app = create_app(settings)
-    task = quick_task().model_copy(update={"pinned_at": utc_now()})
-    quick_interactions = MagicMock()
-    quick_interactions.set_pinned.return_value = task
-    app.state.quick_interactions = quick_interactions
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        unauthorized = await client.patch(
-            "/api/codex/sessions/session-1/quick-interactions/task-1/pin",
-            json={"pinned": True},
-        )
         response = await client.patch(
             "/api/codex/sessions/session-1/quick-interactions/task-1/pin",
             headers=authorization(settings),
             json={"pinned": True},
         )
 
-    assert unauthorized.status_code == 401
-    assert response.status_code == 200
-    assert response.json()["data"]["task"]["pinned_at"] is not None
-    quick_interactions.set_pinned.assert_called_once_with(
-        "session-1",
-        "task-1",
-        True,
-    )
+    assert response.status_code == 404
 
 
 @pytest.mark.anyio
@@ -971,11 +960,12 @@ async def test_stop_cancels_running_quick_interaction_before_session(
     manager = MagicMock()
     manager.stop_session.return_value = SessionInfo(
         id="session-1",
+        runtime_id="codex",
         workspace_id="chub",
         workspace_name="Chub",
         cwd="/workspace/chub",
         title=None,
-        codex_session_id="codex-session-1",
+        can_archive=True,
         status="stopped",
         activity="idle",
         permission_mode="auto-review",
@@ -1021,11 +1011,12 @@ async def test_rename_session_allows_running_task_and_logs_lifecycle(
     manager = MagicMock()
     manager.rename_session.return_value = SessionInfo(
         id="session-1",
+        runtime_id="codex",
         workspace_id="chub",
         workspace_name="Chub",
         cwd="/workspace/chub",
         title="新标题",
-        codex_session_id="codex-session-1",
+        can_archive=True,
         status="stopped",
         activity="working",
         activity_source="quick",

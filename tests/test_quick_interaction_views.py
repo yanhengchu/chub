@@ -20,7 +20,7 @@ const session = {
   id: "session/one",
   title: "  Main Session  ",
   created_at: "2026-08-15T08:00:00Z",
-  codex_session_id: "native-1",
+  can_archive: true,
   workspace_id: "chub",
   status: "stopped",
   activity: "idle",
@@ -115,7 +115,7 @@ const oldTask = {
   updated_at: "2026-08-15T08:01:00Z",
   notification_status: "sent",
 };
-const updatedOldTask = { ...oldTask, result: "updated result", pinned_at: "now" };
+const updatedOldTask = { ...oldTask, result: "updated result" };
 const failedTask = {
   id: "failed",
   status: "failed",
@@ -157,7 +157,6 @@ process.stdout.write(JSON.stringify({
     ]
     assert behavior["trimmed"] == ["failed", "newest"]
     assert behavior["old"]["assistantText"] == "updated result"
-    assert behavior["old"]["pinned"] is True
     assert behavior["old"]["notification"]["label"] == "已通知"
     assert behavior["failed"]["error"] is True
     assert behavior["failed"]["notification"] == {

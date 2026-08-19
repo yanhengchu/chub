@@ -1,6 +1,9 @@
 # Chub 集成能力清单
 
-> 状态：持续维护。本文在[Chub 总体架构](CHUB_ARCHITECTURE_DESIGN.md)之后统一登记“当前能调用什么”；第 4 节同时是微信 Chub 固定指令的唯一产品契约。本文不维护实现、身份安全或调度协议字段，且当前产品事实不被尚未实现的目标架构覆盖。
+> 状态：持续维护。
+> 主要读者：AI Agent、实现和排障 Agent；维护人员用于确认当前可调用能力、指令契约和同步清单。
+> 本文负责：在[Chub 总体架构](CHUB_ARCHITECTURE_DESIGN.md)之后统一登记“当前能调用什么”；第 4 节是微信 Chub 固定指令的唯一产品契约。
+> 本文不负责：实现细节、身份安全、并发/持久化/调度协议字段或尚未实现的目标架构；这些内容由对应专项设计和插件 README 维护。
 
 微信固定指令的完整语法、用户可见行为和回复格式以第 4 节为准；身份、安全、并发、持久化和通知路由见对应设计文档；项目整体功能与使用方式见 [README](../README.md)。
 
@@ -89,6 +92,8 @@
 | `chub` | `状态`、`查询状态` | 只读查询 Chub、Session、活动需求和用量摘要 |
 | `help` | `帮助` | 返回不附带状态尾部的双语指令清单 |
 | `restart` | `重启`、`重新启动` | 登记 Chub Web 重启并独立通知最终结果 |
+| `system upgrade status` | 无 | 只读查询当前系统升级与恢复方案、前置条件和执行状态 |
+| `system upgrade` | 无 | 直接启动当前系统升级与恢复；复用页面的全部前置检查和执行器 |
 | `sync` | `同步` | 扫描并原子补齐符合配置的 Session 槽位 |
 | `direct <task>` | `直接执行 <正文>` | 跳过文本优化，将原始正文提交到当前 Session |
 | `new <title>` | `新建 <标题>` | 创建、命名并选中新 Session，不提交任务 |
@@ -111,6 +116,7 @@
 - `R1`–`R9` 是最多九个活动需求的真实槽位，不是更大列表的排序别名。英文 `cat`、`run` 和需求归档必须显式使用 `RN`；中文别名中的 `N`、`RN`与单字中文数字“一”至“九”等价，例如`查看需求 2`、`查看需求 R2`和`查看需求二`。
 - `archive 2`、`archive S2`归档 Session，`archive R2`归档需求；需求形式优先于 Session 形式匹配。`cat README`、`run tests`等非 R 槽位正文仍进入普通任务，不扩展为文件读取或系统命令。
 - 英文 `switch` 与槽位之间必须有空格；中文 `切换`、`会话` 与合法槽位之间允许有空格或无空格。因此 `切换二`、`切换 二`、`切换2`、`切换 S2`、`切换S2`、`会话二` 和 `会话S2` 等价。其他英文指令及槽位指令继续使用登记的空格形式。
+- `system upgrade status` 与 `system upgrade` 均为精确无参数指令；大小写和首尾标点可忽略，附加任何正文时回退为普通任务。`system upgrade` 不创建 Quick Worker 任务或绑定 Session；同一升级已在进行时只返回当前进行中状态，不重复启动。
 - `switch`、`切换`、`会话` 的合法槽位后如果还有内容，开头的空格及 Unicode 标点/符号作为分隔符移除，剩余内容作为正文；也允许正文直接紧连。例如 `切换S2 正文`、`切换S2，正文`、`切换S2正文` 等价。正文内部和结尾不改写。
 - 无参数指令必须整句匹配。切换后的剩余内容在清理分隔符后，只有整句等于 `retry` 或 `重试` 才作为第二条指令按“先切换、后重试”顺序执行；`切换S2重试服务` 仍把“重试服务”作为普通任务正文。`new retry` 继续按最长指令优先。
 - 只有表内指令和别名属于固定指令。旧 `session ...` 前缀和旧别名作为普通任务，不猜测为固定指令。
@@ -170,6 +176,7 @@ Session 标题与任务摘要的显示规则：
 | `run RN` | 成功回执自身包含完整 Session/Task；失败不附加 |
 | `stop N` 的首次受理或进行中回复 | 不附加 |
 | `restart` 的首次受理或进行中回复 | 附加完整 Session/Task 状态和用量 |
+| `system upgrade status`、`system upgrade` | 不附加 Session/用量状态；直接返回升级状态或启动结果 |
 | 切换并提交任务、续提任务或未启用文本优化的普通任务回执 | 不附加 |
 | 其他固定指令结果 | 附加 Session 状态和 `Weekly <quota> · Today <usage>` |
 | 主任务成功通知 | 只在结果底部追加用量，不附加完整 Session 状态 |
@@ -189,19 +196,19 @@ Session 标题与任务摘要的显示规则：
 
 1. 更新本节的指令表、语法边界、业务行为和回复规则。
 2. 同步 Chub 指令解析、双语 `help`、成功/失败业务测试及普通任务回退测试。
-3. 检查 [Chub–OpenClaw 接入设计](CHUB_OPENCLAW_INTEGRATION_DESIGN.md)是否受到影响；只有身份、路由、并发、持久化或通知边界变化时才更新设计正文，不复制本节的指令表和格式规则。
+3. 检查 [OpenClaw 定制集成设计](OPENCLAW_CUSTOMIZATION_DESIGN.md)是否受到影响；只有身份、路由、并发、持久化或通知边界变化时才更新设计正文，不复制本节的指令表和格式规则。
 4. 验证英文与中文别名、`N = SN = 一…九`、中英文空格边界、最长指令优先、幂等重放、段落换行和状态尾部。
 5. 涉及调度协议、插件配置或交付决定时，再按 [Chub OpenClaw 插件说明](../integrations/openclaw/chub/README.md)完成协议升级清单、构建和部署验证。
 
-身份、权限、并发、持久化、路由和通知安全边界以 [Chub–OpenClaw 接入设计](CHUB_OPENCLAW_INTEGRATION_DESIGN.md)为准。
+身份、权限、并发、持久化、路由和通知安全边界以 [OpenClaw 定制集成设计](OPENCLAW_CUSTOMIZATION_DESIGN.md)为准。
 
 ## 5. 相关文档
 
 | 文档 | 负责内容 |
 | --- | --- |
 | [README](../README.md) | 项目概览、安装、主要入口和文档导航 |
-| [Chub–OpenClaw 接入设计](CHUB_OPENCLAW_INTEGRATION_DESIGN.md) | 微信端到端业务、身份、权限、Session/Request 状态和通知 |
+| [OpenClaw 定制集成设计](OPENCLAW_CUSTOMIZATION_DESIGN.md) | 微信端到端业务、身份、权限、插件定制、Context Token 和通知 |
 | [Chub AI Session 状态模型设计](AI_SESSION_STATE_DESIGN.md) | Session、Activity、入口、槽位和单 writer 语义 |
-| [Chub AI 额度与用量采集设计](AI_QUOTA_USAGE_DESIGN.md) | AI 用量来源、统一接口、缓存和展示口径 |
-| [快速交互独立 Worker 设计](QUICK_INTERACTION_WORKER_DESIGN.md) | 非实时任务、恢复、通知终态和协调重启 |
+| [Codex AI 额度与用量采集设计](CODEX_AI_QUOTA_USAGE_DESIGN.md) | Codex/OpenAI 用量来源、统一接口、缓存和展示口径 |
+| [Chub Quick Worker 独立服务设计](CHUB_QUICK_WORKER_DESIGN.md) | Quick Worker 独立服务、非实时任务、恢复、通知终态和重启协调 |
 | [Chub OpenClaw 插件说明](../integrations/openclaw/chub/README.md) | 插件协议、源码、构建、部署和协议验收 |

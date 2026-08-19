@@ -109,7 +109,6 @@ const conversationTimelineView = createConversationTimelineView({
     feed: conversationFeed,
     jumpLatest: conversationJumpLatest,
   },
-  onTogglePinned: setConversationPinned,
 });
 let conversationPollTimer = null;
 let conversationPollFailureCount = 0;
@@ -355,31 +354,6 @@ function mergeConversationTasks(tasks) {
     tasks,
     conversationTotal,
   );
-}
-
-async function setConversationPinned(task, button) {
-  const generation = conversationGeneration;
-  const client = conversationClient;
-  button.disabled = true;
-  try {
-    const data = await client.setPinned(task.id, !task.pinned_at);
-    if (generation !== conversationGeneration) {
-      return;
-    }
-    mergeConversationTasks([data.task]);
-    renderConversationTasks();
-    showConversationMessage(conversationHistoryMessage, "");
-  } catch (error) {
-    if (generation !== conversationGeneration) {
-      return;
-    }
-    button.disabled = false;
-    showConversationMessage(
-      conversationHistoryMessage,
-      error.message || "置顶状态更新失败。",
-      "error",
-    );
-  }
 }
 
 function renderConversationSession(session) {

@@ -2,6 +2,7 @@ import httpx
 import pytest
 
 from app.application import _confirm_healthy_instance, create_app
+from app.core.build_info import SESSION_SCHEMA_VERSION, WEB_CODE_VERSION
 from app.core.config import Settings
 
 
@@ -21,6 +22,8 @@ async def test_health_is_public(settings: Settings) -> None:
             "version": "0.1.0",
             "instance_id": app.state.instance_id,
             "quick_worker_ready": False,
+            "code_version": WEB_CODE_VERSION,
+            "session_schema_version": SESSION_SCHEMA_VERSION,
         },
     }
 

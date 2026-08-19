@@ -1,8 +1,24 @@
 
+@media (max-width: 760px) {
+  .settings-layout {
+    grid-template-columns: 1fr;
+    gap: 1rem;
+  }
+
+  .settings-navigation {
+    display: none;
+  }
+}
+
 @media (max-width: 420px) {
   .settings-field {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .settings-field-toggle {
+    align-items: start;
+    grid-template-columns: minmax(0, 1fr) auto;
   }
 
   .settings-field select {
@@ -118,13 +134,56 @@
   }
 
   .workstation-status-actions > .badge {
+    align-self: flex-start;
     max-width: none;
     text-align: left;
+    width: fit-content;
   }
 
   .workstation-status-actions > button,
   .automation-browser-actions > button {
     width: 100%;
+  }
+
+  .workstation-card .workstation-status-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) max-content;
+    align-items: start;
+  }
+
+  .workstation-card .workstation-status-actions {
+    display: contents;
+  }
+
+  .workstation-card .workstation-status-actions > .badge {
+    grid-column: 2;
+    grid-row: 1;
+    align-self: center;
+  }
+
+  .workstation-card .workstation-status-actions > button {
+    grid-column: 1 / -1;
+  }
+
+  .automation-environment .workstation-status-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) max-content;
+    align-items: start;
+  }
+
+  .automation-environment .automation-browser-actions {
+    display: contents;
+  }
+
+  .automation-environment .automation-browser-actions > .badge {
+    grid-column: 2;
+    grid-row: 1;
+    align-self: center;
+    width: fit-content;
+  }
+
+  .automation-environment .automation-browser-actions > button {
+    grid-column: 1 / -1;
   }
 
   .session-actions {
