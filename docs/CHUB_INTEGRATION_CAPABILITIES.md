@@ -15,7 +15,7 @@
 | OpenClaw Agent Tool | OpenClaw TUI 或未进入微信 Chub 模式的 Agent 调用 | 查询 Chub 基础状态、发送预配置飞书通知 |
 | 微信 ClawBot | 已授权 Owner 通过私聊远程使用 Chub | 查询摘要、管理 Codex Session 和活动需求、提交任务并接收结果 |
 
-电脑端 CLI 与微信 ClawBot 是两套独立指令：前者用于本机服务运维，后者经 OpenClaw 转发到 Chub。
+电脑端 CLI 与微信 ClawBot 是两套独立指令：前者用于本机服务运维，后者经 OpenClaw 转发到 Chub。包管理器（例如 npm 或 PyPI）只负责未来的版本分发，不属于当前 CLI 能力；`chub install` 仍表示本机用户服务安装，不表示包管理器安装。分发目标和职责边界见 [Chub CLI 分发、安装与发布设计](CHUB_CLI_DISTRIBUTION_DESIGN.md)。
 
 ## 2. 电脑端命令
 
@@ -33,6 +33,20 @@
 - `chub worker-drain`
 - `chub worker-reload`
 - `chub logs`
+
+`chub help` 是当前 CLI 的无服务帮助入口；未来版本必须在帮助首部给出新设备的 `npm install -g chub`、`chub help`、`chub start` 流程，并提示 Web/Quick Worker 与可选 ClawBot 的职责差异。
+
+当前三个运行部分的入口边界如下：
+
+| 运行部分 | 当前状态 | 当前入口与职责 |
+| --- | --- | --- |
+| Chub Web | 已实现 | 由 `chub install/start` 管理用户服务；浏览器用于页面和快速交互 |
+| Quick Worker | 已实现 | 与 Web 分离运行但由同一 CLI 安装/启动；通过 `chub worker-health` 检查，不提供普通用户独立启动入口 |
+| ClawBot | 已接入 | 由 OpenClaw Gateway、微信通道和 Chub OpenClaw 插件共同提供；不由 `chub start` 启动，安装/配置以[插件说明](../integrations/openclaw/chub/README.md)为准 |
+
+“已接入”表示 Chub 与相关通道的接口和路由已经具备，不表示本仓库包含 OpenClaw Gateway 或腾讯微信插件的源码、安装包和账号绑定流程。新设备应先按外部项目文档安装这两项，再按[Chub CLI 分发、安装与发布设计](CHUB_CLI_DISTRIBUTION_DESIGN.md)部署 Chub 插件和完成微信验收。
+
+当前 `chub` 命令来自仓库内的 `scripts/chub`，依赖当前工作区、`.venv` 和本机配置。项目尚未发布 npm/PyPI/独立发行包，因此 `npm install -g chub`、`pipx install chub` 和无仓库启动不属于当前可用能力。未来分发层必须继续复用本节命令语义，不得创建第二套 CLI。新设备安装、npm 发布、版本管理和 GitHub Release 目标见 [Chub CLI 分发、安装与发布设计](CHUB_CLI_DISTRIBUTION_DESIGN.md)。
 
 ### 2.2 通知指令
 
@@ -186,6 +200,7 @@ Session 标题与任务摘要的显示规则：
 - 尾部读取失败只降级对应状态，不得覆盖指令本身的成功或失败语义。
 - `Started` 使用 `Started`、发送时校验的 `[▶ ]S<槽位> · <标题>`、`Submitted:` 完整实际提交文本和 `English:`；不再使用“润色后”标签。槽位已释放或复用时标记 `Unavailable`，不得把新 Session 显示成原任务目标。
 - 主任务终态继续使用 `Done`、`Failed` 或 `Timed out`，`Task · <摘要>` 必须来源于实际提交文本。正常成功链路通常产生 `Started` 和 `Done` 两次异步通知；两者不设置到达顺序门禁，极快任务允许偶发轻微乱序。
+- 失败任务页面时间线明确显示错误来源：`Chub` 表示 Chub/Worker/解析边界错误，`Codex CLI（上游 Runtime）` 表示当前 Codex Runtime 子进程提供的原始诊断。微信完成通知只在 `Failed` 或文本优化失败标题中追加 `Chub` 或 `Codex CLI (upstream Runtime)`；`Timed out` 和 `Cancelled` 不追加错误来源。错误正文仍按 Worker 固定上限脱敏并以纯文本发送。`error_source=runtime` 保持 Runtime 通用语义，未来接入其他 Runtime 时必须重新定义对应展示标签并同步本节。
 - 文本优化失败或目标不可提交时只发送对应的一次异步失败通知。所有通知继续执行固定分段和总条数上限，超长内容可能拆成多条物理消息。
 - 普通任务结果通知失败保留在后台任务状态和运行日志中，不在 `chub` 中长期展示。
 - 重启、停止结果通知失败会影响维护操作终态判断，继续在 `chub` 的 Issues 中展示。
@@ -211,4 +226,5 @@ Session 标题与任务摘要的显示规则：
 | [Chub AI Session 状态模型设计](AI_SESSION_STATE_DESIGN.md) | Session、Activity、入口、槽位和单 writer 语义 |
 | [Codex AI 额度与用量采集设计](CODEX_AI_QUOTA_USAGE_DESIGN.md) | Codex/OpenAI 用量来源、统一接口、缓存和展示口径 |
 | [Chub Quick Worker 独立服务设计](CHUB_QUICK_WORKER_DESIGN.md) | Quick Worker 独立服务、非实时任务、恢复、通知终态和重启协调 |
+| [Chub CLI 分发、安装与发布设计](CHUB_CLI_DISTRIBUTION_DESIGN.md) | 新设备安装、核心 Chub 与可选 ClawBot 职责、npm 发布、版本管理和 GitHub Release |
 | [Chub OpenClaw 插件说明](../integrations/openclaw/chub/README.md) | 插件协议、源码、构建、部署和协议验收 |

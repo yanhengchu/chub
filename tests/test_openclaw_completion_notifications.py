@@ -347,6 +347,42 @@ def test_notification_uses_task_status_heading(
     assert notifier._messages_for(failed_task) == [expected]
 
 
+def test_notification_labels_runtime_error_source() -> None:
+    notifier = OpenClawCompletionNotifier(
+        OpenClawCompletionNotificationConfig(max_message_chars=256)
+    )
+    failed_task = task(summary="检查设备状态").model_copy(
+        update={
+            "status": "failed",
+            "result": None,
+            "error": "upstream unavailable",
+            "error_source": "runtime",
+        }
+    )
+
+    assert notifier._messages_for(failed_task) == [
+        "Failed · Codex CLI (upstream Runtime)\n\nTask · 检查设备状态\n\nupstream unavailable"
+    ]
+
+
+def test_notification_does_not_label_timeout_as_an_error_source() -> None:
+    notifier = OpenClawCompletionNotifier(
+        OpenClawCompletionNotificationConfig(max_message_chars=256)
+    )
+    timed_out_translation = task(kind="translation").model_copy(
+        update={
+            "status": "timed_out",
+            "result": None,
+            "error": "翻译任务超时",
+            "error_source": "chub",
+        }
+    )
+
+    assert notifier._messages_for(timed_out_translation) == [
+        "文本优化与翻译失败\n\n翻译任务超时"
+    ]
+
+
 def test_completion_usage_footer_only_applies_to_successful_main_task() -> None:
     notifier = OpenClawCompletionNotifier(OpenClawCompletionNotificationConfig())
     notifier.completion_usage_reader = MagicMock(

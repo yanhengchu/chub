@@ -238,7 +238,7 @@ class InteractiveSupervisor:
             "conflict": 409,
             "unavailable": 503,
         }[error.kind]
-        return ApiError(status_code, error.code, error.message)
+        return ApiError(status_code, error.code, error.message, source="runtime")
 
     @staticmethod
     def _terminate_process(process: psutil.Process) -> None:

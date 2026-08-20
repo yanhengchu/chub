@@ -853,6 +853,7 @@ async def test_quick_interaction_timeline_rejects_invalid_cursor(
     assert response.json()["error"] == {
         "code": "invalid_quick_interaction_cursor",
         "message": message,
+        "source": "chub",
     }
     quick_interactions.list_for_session.assert_not_called()
 

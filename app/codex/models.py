@@ -14,6 +14,7 @@ TurnActivity = Literal["unknown", "working", "idle"]
 ActivitySource = Literal["none", "terminal", "quick"]
 PermissionMode = Literal["ask", "auto-review", "read-only", "full-access"]
 QuickInteractionOrder = Literal["task", "timeline"]
+QuickInteractionErrorSource = Literal["chub", "runtime"]
 TASK_SUMMARY_MAX_LENGTH = 27
 
 
@@ -332,7 +333,8 @@ class QuickInteractionTask(BaseModel):
     restart_sensitive: bool = False
     status: QuickInteractionStatus
     result: str | None = Field(default=None, max_length=100_000)
-    error: str | None = Field(default=None, max_length=2000)
+    error: str | None = Field(default=None, max_length=4000)
+    error_source: QuickInteractionErrorSource | None = None
     notification_status: QuickInteractionNotificationStatus | None = None
     notification_route: QuickInteractionNotificationRoute = "default"
     notification_error: str | None = Field(default=None, max_length=1000)

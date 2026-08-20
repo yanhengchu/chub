@@ -246,7 +246,18 @@ function errorDetails(payload, fallback) {
   return {
     code: payload?.error?.code || "request_failed",
     message: payload?.error?.message || fallback,
+    source: payload?.error?.source || null,
   };
+}
+
+function formatApiErrorMessage(error, fallback) {
+  const message = error?.message || fallback;
+  const label = error?.source === "runtime"
+    ? "Codex CLI（上游 Runtime）"
+    : error?.source === "chub"
+      ? "Chub"
+      : "";
+  return label ? `${label}：${message}` : message;
 }
 
 async function apiFetch(path, options = {}, token = activeToken) {

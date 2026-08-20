@@ -145,7 +145,9 @@ class CodexRuntimeAdapter:
         if activity not in {"working", "idle"}:
             activity = None
         activity_source = payload.get("activity_source", "terminal")
-        if activity != "working" or activity_source not in {"terminal", "quick"}:
+        if activity_source not in {"terminal", "quick"}:
+            activity_source = "none"
+        elif activity != "working" and activity_source == "terminal":
             activity_source = "none"
         return RuntimeActivityEvent(
             native_session_id=native_session_id,

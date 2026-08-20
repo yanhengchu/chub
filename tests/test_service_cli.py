@@ -694,7 +694,10 @@ def test_worker_reload_command_keeps_drain_and_final_health_gates() -> None:
     ]
     assert "clear_retired_worker_state" in reload_service_body
     assert "worker_health_generation" in reload_body
+    assert "worker_health_protocol" in reload_body
+    assert "worker_health_is_idle" in reload_body
     assert "old_generation" in reload_body
+    assert "old_protocol" in reload_body
     assert "new_generation" in reload_body
     assert "health_check true" in reload_body
     assert reload_body.index("reload_worker_service") < reload_body.index(

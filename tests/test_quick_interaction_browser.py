@@ -265,6 +265,15 @@ class ConversationApi:
             elif action == "archive" and request.method == "POST" and session:
                 self.sessions = [item for item in self.sessions if item["id"] != session_id]
                 data = {"session_id": session_id}
+            elif action == "stop" and request.method == "POST" and session:
+                session["status"] = "stopped"
+                session["activity"] = "idle"
+                session["quick_interaction_running"] = False
+                data = deepcopy(session)
+            elif not action and request.method == "DELETE" and session:
+                self.sessions = [item for item in self.sessions if item["id"] != session_id]
+                self.tasks.pop(session_id, None)
+                data = {}
             elif action == "quick-interactions" and request.method == "GET":
                 tasks = self.tasks.get(session_id, [])
                 query = parse_qs(parsed.query)
@@ -498,6 +507,13 @@ async def test_conversation_workflows_in_managed_chrome(
             await page.locator("#conversation-submit").click()
             await expect(page.locator("#conversation-feed")).to_contain_text("New browser task")
             await expect(page.locator("#conversation-feed")).to_contain_text("Submitted answer")
+
+            await page.locator("#conversation-session-delete").click()
+            await page.locator("#conversation-delete-confirm").click()
+            await expect(page).to_have_url(
+                f"{conversation_browser_server}/codex/session-1/quick-interactions/conversation"
+            )
+            await expect(page.locator("#conversation-session-title")).to_have_text("Main Session")
         finally:
             await context.close()
 
@@ -507,6 +523,50 @@ async def test_conversation_workflows_in_managed_chrome(
     assert "POST /api/codex/sessions/session-2/archive" in api.requested_paths
     assert "POST /api/codex/sessions" in api.requested_paths
     assert "POST /api/codex/sessions/session-3/quick-interactions" in api.requested_paths
+    assert "DELETE /api/codex/sessions/session-3" in api.requested_paths
+
+
+async def test_conversation_stop_requires_confirmation_in_managed_chrome(
+    conversation_browser_server: str,
+) -> None:
+    api = ConversationApi()
+    session = api._find_session("session-1")
+    assert session is not None
+    session.update(
+        {
+            "status": "running",
+            "activity": "working",
+            "quick_interaction_running": True,
+        }
+    )
+    browser_session = session_factory()
+    async with browser_session(ensure_page=False) as chrome:
+        context, page, page_errors = await _open_conversation(
+            chrome.browser,
+            conversation_browser_server,
+            api,
+            theme="standard",
+            viewport=(1280, 900),
+        )
+        try:
+            await page.locator("#conversation-session-stop").click()
+            await expect(page.locator("#conversation-stop-dialog")).to_be_visible()
+            await expect(page.locator("#conversation-stop-description")).to_contain_text(
+                "Main Session"
+            )
+            await page.locator("#conversation-stop-cancel").click()
+            await expect(page.locator("#conversation-stop-dialog")).not_to_be_visible()
+            assert "POST /api/codex/sessions/session-1/stop" not in api.requested_paths
+
+            await page.locator("#conversation-session-stop").click()
+            await page.locator("#conversation-stop-confirm").click()
+            await expect(page.locator("#conversation-stop-dialog")).not_to_be_visible()
+            await expect(page.locator("#conversation-session-stop")).to_be_disabled()
+        finally:
+            await context.close()
+
+    assert page_errors == []
+    assert "POST /api/codex/sessions/session-1/stop" in api.requested_paths
 
 
 async def test_old_session_recovery_failure_does_not_override_switched_session(

@@ -18,6 +18,10 @@ from app.services.deferred_restart import DeferredRestartOutcome
 
 MAX_COMMAND_OUTPUT_BYTES = 64 * 1024
 MAX_COMPLETION_MESSAGE_PARTS = 5
+ERROR_SOURCE_LABELS = {
+    "chub": "Chub",
+    "runtime": "Codex CLI (upstream Runtime)",
+}
 OVERFLOW_MESSAGE = "结果超过微信发送上限，剩余内容请在 Chub 快速交互页面查看。"
 COMPLETION_OVERFLOW_MESSAGE = "More in Chub."
 COMPLETION_USAGE_TIMEOUT_SECONDS = 2.0
@@ -393,8 +397,13 @@ class OpenClawCompletionNotifier:
                 original = (task.translation_original or "").strip()
                 content = f"原文：\n{original}\n\n{result}"
                 return self._bounded_messages("文本优化与翻译", content)
+            source = (
+                ERROR_SOURCE_LABELS.get(task.error_source or "")
+                if task.status == "failed"
+                else None
+            )
             return self._bounded_messages(
-                "文本优化与翻译失败",
+                f"文本优化与翻译失败 · {source}" if source else "文本优化与翻译失败",
                 result,
             )
         heading = {
@@ -402,6 +411,9 @@ class OpenClawCompletionNotifier:
             "failed": "Failed",
             "timed_out": "Timed out",
         }.get(task.status, "Finished")
+        source = ERROR_SOURCE_LABELS.get(task.error_source or "")
+        if task.status == "failed" and source:
+            heading = f"{heading} · {source}"
         content = task.result if task.status == "succeeded" else task.error
         summary = (content or "No result.").strip()
         session_line = self._completion_session_line(task)

@@ -428,24 +428,26 @@ async def inspect_quick_worker(
         )
 
     generation = data.get("generation") if isinstance(data.get("generation"), str) else None
-    worker_ready = (
-        data.get("protocol_version") == PROTOCOL_VERSION
-        and data.get("status") == "ready"
+    active_tasks = max(0, int(data.get("active_tasks", 0)))
+    queued_tasks = max(0, int(data.get("queued_tasks", 0)))
+    worker_healthy = (
+        data.get("status") == "ready"
         and data.get("uncertain_tasks") == 0
         and data.get("corrupt_tasks") == 0
         and "codex" in data.get("available_runtime_ids", [])
     )
+    worker_ready = (
+        data.get("protocol_version") == PROTOCOL_VERSION and worker_healthy
+    )
     reload_coordinator.reconcile(generation, worker_ready and recovery_ready)
     operation = reload_coordinator.operation()
-    active_tasks = max(0, int(data.get("active_tasks", 0)))
-    queued_tasks = max(0, int(data.get("queued_tasks", 0)))
 
     if operation and operation.status == "restarting":
         state = "restarting"
         message = "正在重启并等待健康恢复。"
     elif data.get("protocol_version") != PROTOCOL_VERSION:
         state = "incompatible"
-        message = "Worker 协议与当前 Chub 不兼容。"
+        message = "Worker 协议与当前 Chub 不兼容；空闲后可重启到当前版本。"
     elif data.get("uncertain_tasks") != 0:
         state = "unavailable"
         message = "Worker 存在未确认任务，暂不可维护。"
@@ -483,7 +485,15 @@ async def inspect_quick_worker(
             active_tasks=active_tasks,
             queued_tasks=queued_tasks,
             can_restart=(
-                state == "ready" and reload_coordinator.maintenance_available()
+                state in {"ready", "incompatible"}
+                and active_tasks == 0
+                and queued_tasks == 0
+                and worker_healthy
+                and reload_coordinator.maintenance_available()
+                and (
+                    data.get("protocol_version") != PROTOCOL_VERSION
+                    or recovery_ready
+                )
             ),
             operation=operation,
         ),

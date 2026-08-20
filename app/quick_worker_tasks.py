@@ -63,6 +63,7 @@ TaskStatus = Literal[
 FinalTaskStatus = Literal["succeeded", "failed", "timed_out", "cancelled"]
 TestBehavior = Literal["succeed", "fail", "ignore_term", "orphan_child"]
 WorkerTaskKind = Literal["standard", "weixin", "translation", "test"]
+TaskErrorSource = Literal["chub", "runtime"]
 FINAL_STATUSES = {"succeeded", "failed", "timed_out", "cancelled"}
 TASK_ID_PATTERN = r"^qw-[0-9]{13}-[a-f0-9]{32}$"
 SESSION_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
@@ -257,6 +258,7 @@ class StoredTaskCompletion(_StrictModel):
     status: FinalTaskStatus
     result: str | None = None
     error: str | None = None
+    error_source: TaskErrorSource | None = None
     error_code: str | None = Field(default=None, max_length=64)
     exit_code: int | None = None
     native_session_id: str | None = Field(default=None, min_length=1, max_length=128)
@@ -294,6 +296,7 @@ class WorkerTaskView(_StrictModel):
     cancellation_requested: bool
     result: str | None = None
     error: str | None = None
+    error_source: TaskErrorSource | None = None
     error_code: str | None = None
     exit_code: int | None = None
     native_session_id: str | None = None
@@ -326,6 +329,15 @@ class WorkerTaskError(Exception):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+class _RuntimeBoundaryError(OSError):
+    """A Runtime contract error preserved through the Worker supervision boundary."""
+
+    def __init__(self, error: RuntimeOperationError) -> None:
+        super().__init__(error.message)
+        self.code = error.code
+        self.message = error.message
 
 
 def _private_directory(path: Path) -> None:
@@ -1174,6 +1186,7 @@ class WorkerTaskManager:
                 status="failed",
                 error_code="worker_restarted",
                 error="Quick Worker restarted before completion; the task was not replayed.",
+                error_source="chub",
             )
 
     async def _launch_and_monitor(self, task_id: str) -> None:
@@ -1203,13 +1216,13 @@ class WorkerTaskManager:
                 try:
                     runner = self.runtime_registry.require(spec.runtime_id)
                 except RuntimeOperationError as exc:
-                    raise OSError(exc.message) from exc
+                    raise _RuntimeBoundaryError(exc) from exc
                 expected_native_id = self._expected_native_session_id(spec, state)
                 if expected_native_id is not None:
                     try:
                         active_writer = runner.has_active_writer(expected_native_id)
                     except RuntimeOperationError as exc:
-                        raise OSError(exc.message) from exc
+                        raise _RuntimeBoundaryError(exc) from exc
                     if active_writer:
                         self._finalize(
                             spec,
@@ -1220,6 +1233,7 @@ class WorkerTaskManager:
                                 "Runtime Session already has an active writer; "
                                 "the task was not started."
                             ),
+                            error_source="chub",
                         )
                         return
                 task_dir = self.tasks_dir / task_id
@@ -1262,7 +1276,7 @@ class WorkerTaskManager:
                         )
                     )
                 except RuntimeOperationError as exc:
-                    raise OSError(exc.message) from exc
+                    raise _RuntimeBoundaryError(exc) from exc
                 runner_env = os.environ.copy()
                 for name in (
                     "CHUB_PTY_SESSION_ID",
@@ -1388,7 +1402,7 @@ class WorkerTaskManager:
                             max_bytes=MAX_RESULT_BYTES,
                         ).text
                     except RuntimeOperationError as exc:
-                        raise OSError(exc.message) from exc
+                        raise _RuntimeBoundaryError(exc) from exc
                     if spec.task_kind != "test" and not native_session_confirmed:
                         self._finalize(
                             spec,
@@ -1400,6 +1414,7 @@ class WorkerTaskManager:
                                 "Runtime completed, but its native Session ID could "
                                 "not be confirmed safely."
                             ),
+                            error_source="chub",
                             exit_code=exit_code,
                         )
                         return
@@ -1419,19 +1434,21 @@ class WorkerTaskManager:
                                 MAX_ERROR_BYTES,
                             )
                         )
+                    error_source: TaskErrorSource = "runtime" if error else "chub"
                     self._finalize(
                         spec,
                         state,
                         status="failed",
                         error_code="runner_failed",
                         error=error or "Task runner exited unsuccessfully.",
+                        error_source=error_source,
                         exit_code=exit_code,
                     )
         except asyncio.CancelledError:
             if not self._abandoning and process is not None:
                 await self._terminate_process(process)
             raise
-        except Exception:
+        except Exception as exc:
             if process is not None:
                 await self._terminate_process(process)
             if not self._abandoning:
@@ -1439,12 +1456,16 @@ class WorkerTaskManager:
                     async with self._lock:
                         spec, state, completion = self._records(task_id)
                         if completion is None:
+                            error_code, error, error_source = (
+                                self._runner_failure_details(exc)
+                            )
                             self._finalize(
                                 spec,
                                 state,
                                 status="failed",
-                                error_code="runner_start_failed",
-                                error="Worker could not start or supervise the task runner.",
+                                error_code=error_code,
+                                error=error,
+                                error_source=error_source,
                             )
                 except Exception:
                     self._corrupt_task_ids.add(task_id)
@@ -1517,6 +1538,7 @@ class WorkerTaskManager:
                     status="failed",
                     error_code=error_code,
                     error=error,
+                    error_source="chub",
                 )
 
     async def _terminate_process(self, process: asyncio.subprocess.Process) -> None:
@@ -1804,6 +1826,7 @@ class WorkerTaskManager:
             cancellation_requested=state.cancellation_requested,
             result=completion.result if completion else None,
             error=completion.error if completion else None,
+            error_source=completion.error_source if completion else None,
             error_code=completion.error_code if completion else None,
             exit_code=completion.exit_code if completion else None,
             native_session_id=state.native_session_id,
@@ -1846,6 +1869,7 @@ class WorkerTaskManager:
         status: FinalTaskStatus,
         result: str | None = None,
         error: str | None = None,
+        error_source: TaskErrorSource | None = None,
         error_code: str | None = None,
         exit_code: int | None = None,
     ) -> None:
@@ -1861,6 +1885,7 @@ class WorkerTaskManager:
             status=status,
             result=_limited_text(result, MAX_RESULT_BYTES) if result is not None else None,
             error=self._redact_error(error) if error is not None else None,
+            error_source=error_source,
             error_code=error_code,
             exit_code=exit_code,
             native_session_id=state.native_session_id,
@@ -2032,7 +2057,7 @@ class WorkerTaskManager:
                 native_session_id
             )
         except RuntimeOperationError as exc:
-            raise OSError(exc.message) from exc
+            raise _RuntimeBoundaryError(exc) from exc
 
     @staticmethod
     def _expected_native_session_id(
@@ -2057,7 +2082,7 @@ class WorkerTaskManager:
                 missing_ok=missing_ok,
             ).native_session_id
         except RuntimeOperationError as exc:
-            raise OSError(exc.message) from exc
+            raise _RuntimeBoundaryError(exc) from exc
 
     def _open_private_output(self, path: Path):
         flags = os.O_CREAT | os.O_TRUNC | os.O_WRONLY
@@ -2087,16 +2112,41 @@ class WorkerTaskManager:
             max_line_bytes=MAX_ERROR_BYTES,
         )
 
+    def _runner_failure_details(
+        self,
+        error: BaseException,
+    ) -> tuple[str, str, TaskErrorSource]:
+        if isinstance(error, _RuntimeBoundaryError):
+            return (
+                error.code,
+                f"Chub Runtime error ({error.code}): {error.message}",
+                "chub",
+            )
+        if isinstance(error, RuntimeOperationError):
+            return (
+                error.code,
+                f"Chub Runtime error ({error.code}): {error.message}",
+                "chub",
+            )
+        if isinstance(error, OSError) and error.strerror:
+            detail = error.strerror
+        else:
+            detail = str(error).strip()
+        detail = self._redact_error(detail) or type(error).__name__
+        return (
+            "runner_supervision_failed",
+            f"Chub Worker error ({type(error).__name__}): {detail}",
+            "chub",
+        )
+
     @staticmethod
     def _read_runner_error(runner, task_dir: Path) -> str | None:
         if runner is None:
             return None
         try:
             return runner.read_error(task_dir, max_bytes=MAX_ERROR_BYTES)
-        # Diagnostics are optional; a parser failure must not prevent the
-        # Worker from recording the task terminal state.
-        except Exception:
-            return None
+        except RuntimeOperationError as exc:
+            raise _RuntimeBoundaryError(exc) from exc
 
     @staticmethod
     def _validate_task_id(task_id: str) -> None:

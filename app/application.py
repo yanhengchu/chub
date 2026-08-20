@@ -477,7 +477,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     and data.get("status") == "ready"
                     and data.get("protocol_version")
                     == operation.plan.target_worker_protocol
-                    and data.get("generation") != operation.old_worker_generation
+                    and (
+                        operation.old_worker_generation is None
+                        or data.get("generation") != operation.old_worker_generation
+                    )
                     and data.get("active_tasks") == 0
                     and data.get("queued_tasks") == 0
                     and data.get("uncertain_tasks") == 0

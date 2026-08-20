@@ -20,6 +20,10 @@
     failed: "重启结果通知失败",
     skipped: "重启结果未通知",
   });
+  const ERROR_SOURCE_LABELS = Object.freeze({
+    chub: "Chub",
+    runtime: "Codex CLI（上游 Runtime）",
+  });
 
   function taskSignature(task) {
     return JSON.stringify([
@@ -28,6 +32,7 @@
       task.prompt,
       task.result,
       task.error,
+      task.error_source,
       task.notification_status,
       task.notification_error,
       task.deferred_restart_status,
@@ -79,6 +84,10 @@
 
   function buildTaskState(task) {
     const hasResult = Boolean(task.result || task.error);
+    const error = ["failed", "timed_out", "cancelled", "needs_terminal"].includes(
+      task.status,
+    );
+    const sourceVisible = ["failed", "needs_terminal"].includes(task.status);
     return Object.freeze({
       signature: taskSignature(task),
       turnClass: `conversation-turn conversation-turn-${task.status}`,
@@ -86,10 +95,11 @@
       createdTime: core.formatTime(task.created_at),
       assistantText: hasResult ? task.result || task.error : core.statusText(task),
       assistantTime: core.formatTime(task.updated_at),
+      errorSource: sourceVisible
+        ? ERROR_SOURCE_LABELS[task.error_source] || "来源未确认"
+        : "",
       statusOnly: !hasResult,
-      error: ["failed", "timed_out", "cancelled", "needs_terminal"].includes(
-        task.status,
-      ),
+      error,
       notification: notificationState(
         task.notification_status,
         task.notification_error,
@@ -164,6 +174,9 @@
       assistantBubble.className = "conversation-bubble";
       assistantMeta.className = "conversation-assistant-meta";
       assistantInfo.className = "conversation-assistant-info";
+      if (state.errorSource) {
+        assistantInfo.append(createMeta(`错误来源：${state.errorSource}`));
+      }
       assistantInfo.append(createMeta(state.assistantTime));
       assistantContent.textContent = state.assistantText;
       if (state.statusOnly) {

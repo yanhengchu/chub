@@ -74,7 +74,7 @@ AI Usage Core -> Theme -> Dashboard Core -> Components -> Features -> app.js
 - 卡片内存在多个同级业务分区时，统一使用 `card-group-title` 作为分组标题，并以自然间距区分；不使用横线分割标题，也不在上一组最后一个项目后额外添加分割线。
 - 环境类条目的状态标签使用短状态；未运行时，描述说明用途而不重复状态；可用时，描述展示连接方式、运行模式或校验日期；真实异常仍保留具体原因。
 
-Chub Web、Quick Worker 与 ClawBot 的普通重启彼此独立：Web 重启不会停止 Worker 或 ClawBot，Worker 重启不会重启 Web 或 ClawBot，ClawBot 维护也不参与前两者的互斥；页面发起和快速任务登记的 Web 重启都不等待普通 Worker 重载。Worker 只有在协议兼容且执行中与排队任务均为零时开放重启；卡片只调用后端固定维护入口，不接收任意命令。系统升级与恢复是例外：它独占受影响的 Chub AI Runtime 写入，统一停止任务、清理 Chub Session 关联与 Worker 运行态并切换 Web/Worker；确认弹窗按当前状态简要列出受影响的快速任务数、Chub Session 关联数和服务切换范围。Codex 原生 Session、配置和业务资料不因该操作删除。其进行中只禁用 Web 与 Worker 的普通重启；ClawBot 的绑定和 OpenClaw 维护继续可用。重启或绑定后的状态不能代替维护者在微信客户端进行的实际收发确认。
+Chub Web、Quick Worker 与 ClawBot 的普通重启彼此独立：Web 重启不会停止 Worker 或 ClawBot，Worker 重启不会重启 Web 或 ClawBot，ClawBot 维护也不参与前两者的互斥；页面发起和快速任务登记的 Web 重启都不等待普通 Worker 重载。Worker 协议兼容时，必须健康、空闲且 Web 已恢复；协议不兼容时，只要 Worker 健康且所有任务计数为零，也可通过固定入口重启到当前版本。卡片不接收任意命令。系统升级与恢复是例外：它独占受影响的 Chub AI Runtime 写入，统一停止任务、清理 Chub Session 关联与 Worker 运行态并切换 Web/Worker；启动门禁只校验固定脚本、服务定义和运行态路径，不检查当前 Web/Worker 状态。确认弹窗按当前状态简要列出受影响的快速任务数、Chub Session 关联数和服务切换范围。Codex 原生 Session、配置和业务资料不因该操作删除。其进行中只禁用 Web 与 Worker 的普通重启；ClawBot 的绑定和 OpenClaw 维护继续可用。重启或绑定后的状态不能代替维护者在微信客户端进行的实际收发确认。
 
 不建立全局业务状态仓库，也不通过提示文案反推业务状态。API 路径、统一响应、认证和安全边界由后端契约决定，前端分层不能改变这些语义。
 

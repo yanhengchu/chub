@@ -651,13 +651,13 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "点击切换为" in script.text
     assert "session.terminal_access_allowed === false" in script.text
     assert "文本优化与翻译 Session 仅支持快速交互" in script.text
-    assert "actions.append(entry, stop, archive);" in script.text
+    assert "actions.append(entry, stop, archive, remove);" in script.text
     assert "permissionPanel" not in script.text
     assert "快速交互已提交" not in script.text
     assert "quick-interaction-submit" not in script.text
     assert "confirm_stop_unknown_terminal" not in script.text
     assert "unknownConfirmationInput" not in script.text
-    assert "removeCodexSession" not in script.text
+    assert "deleteCodexSession" in script.text
     assert "renderCodexWorkspaces" in script.text
     assert "renderCodexSessions" in script.text
     assert "codexSessionsNewestFirst" in script.text
@@ -830,11 +830,15 @@ async def test_quick_interaction_conversation_page_is_available(
     assert 'id="conversation-session-switcher"' in page.text
     assert 'id="conversation-session-title"' in page.text
     assert 'id="conversation-session-rename"' in page.text
+    assert 'id="conversation-session-stop"' in page.text
     assert 'id="conversation-session-archive"' in page.text
+    assert 'id="conversation-session-delete"' in page.text
     assert 'id="conversation-rename-dialog"' in page.text
     assert 'id="conversation-rename-input"' in page.text
     assert 'id="conversation-archive-dialog"' in page.text
     assert 'id="conversation-archive-confirm"' in page.text
+    assert 'id="conversation-delete-dialog"' in page.text
+    assert 'id="conversation-delete-confirm"' in page.text
     assert 'class="codex-workspace-dialog confirmation-dialog conversation-archive-dialog"' in page.text
     assert 'class="confirmation-dialog-description"' in page.text
     assert 'id="conversation-create-dialog"' in page.text
@@ -847,7 +851,9 @@ async def test_quick_interaction_conversation_page_is_available(
     ) < page.text.index('id="conversation-prompt"')
     assert page.text.index('id="conversation-session-title"') < page.text.index(
         'id="conversation-session-rename"'
-    ) < page.text.index('id="conversation-session-archive"')
+    ) < page.text.index('id="conversation-session-stop"') < page.text.index(
+        'id="conversation-session-archive"'
+    ) < page.text.index('id="conversation-session-delete"')
     assert 'id="conversation-engine"' not in page.text
     assert 'id="conversation-more"' not in page.text
     assert 'id="conversation-submit" class="button-secondary" type="submit" disabled' in page.text
@@ -897,7 +903,10 @@ async def test_quick_interaction_conversation_page_is_available(
     assert "conversationRenamePending" in script.text
     assert "conversationSessionView.setRenamePending(true)" in script.text
     assert "client.archiveSession()" in script.text
+    assert "client.stopSession()" in script.text
+    assert "client.deleteSession()" in script.text
     assert "conversationSessionView.openArchive" in script.text
+    assert "conversationSessionView.openDelete" in script.text
     assert "firstConversationSessionAfterArchive" in script.text
     assert "conversationSessions = sessions" in script.text
     assert "window.location.replace(nextSessionUrl)" in script.text
@@ -983,6 +992,8 @@ async def test_quick_interaction_conversation_page_is_available(
     assert ".conversation-session-title-row {\n  display: block;\n  min-height: 2rem;" in stylesheet.text
     assert ".conversation-session-rename" in stylesheet.text
     assert ".conversation-session-archive" in stylesheet.text
+    assert ".conversation-session-stop" in stylesheet.text
+    assert ".conversation-session-delete" in stylesheet.text
     assert "margin-left: 0.35rem;" in stylesheet.text
     assert ".conversation-rename-form" in stylesheet.text
     assert "conversation-session-archive:not(:disabled):hover" in stylesheet.text

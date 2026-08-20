@@ -825,6 +825,7 @@ worker_health_generation() {
     local payload="$1"
     local expected_status="$2"
     local previous_generation="${3:-}"
+    local allow_incompatible="${4:-false}"
     local expected_protocol
     expected_protocol="$(worker_protocol_version)" || return 1
     "$PYTHON_BIN" -c '
@@ -837,8 +838,12 @@ data = payload.get("data") if payload.get("success") is True else None
 if not isinstance(data, dict):
     raise SystemExit(1)
 generation = data.get("generation")
+protocol_version = data.get("protocol_version")
 if (
-    data.get("protocol_version") != int(sys.argv[1])
+    not isinstance(protocol_version, int)
+    or isinstance(protocol_version, bool)
+    or protocol_version < 1
+    or (sys.argv[4] != "true" and protocol_version != int(sys.argv[1]))
     or data.get("status") != sys.argv[2]
     or data.get("corrupt_tasks") != 0
     or "codex" not in data.get("available_runtime_ids", [])
@@ -848,7 +853,43 @@ if (
 ):
     raise SystemExit(1)
 print(generation)
-' "$expected_protocol" "$expected_status" "$previous_generation" <<<"$payload"
+' "$expected_protocol" "$expected_status" "$previous_generation" "$allow_incompatible" <<<"$payload"
+}
+
+worker_health_protocol() {
+    local payload="$1"
+    "$PYTHON_BIN" -c '
+import json
+import sys
+
+payload = json.loads(sys.stdin.read())
+data = payload.get("data") if payload.get("success") is True else None
+protocol_version = data.get("protocol_version") if isinstance(data, dict) else None
+if (
+    not isinstance(protocol_version, int)
+    or isinstance(protocol_version, bool)
+    or protocol_version < 1
+):
+    raise SystemExit(1)
+print(protocol_version)
+' <<<"$payload"
+}
+
+worker_health_is_idle() {
+    local payload="$1"
+    "$PYTHON_BIN" -c '
+import json
+import sys
+
+payload = json.loads(sys.stdin.read())
+data = payload.get("data") if payload.get("success") is True else None
+if not isinstance(data, dict):
+    raise SystemExit(1)
+for name in ("active_tasks", "queued_tasks", "uncertain_tasks", "corrupt_tasks"):
+    value = data.get(name)
+    if not isinstance(value, int) or isinstance(value, bool) or value != 0:
+        raise SystemExit(1)
+' <<<"$payload"
 }
 
 reload_worker_service() {
@@ -871,17 +912,26 @@ quick_worker_reload() {
         fail "worker reload must be run from a local terminal, not from a Quick Worker task"
     fi
     check_project
-    local old_payload old_generation
+    local old_payload old_generation old_protocol current_protocol
     local new_payload new_generation operation_id attempt
     old_payload="$(quick_worker_health)" \
         || fail "Quick Worker health is unavailable; reload was not started"
-    old_generation="$(worker_health_generation "$old_payload" ready)" \
+    current_protocol="$(worker_protocol_version)" \
+        || fail "Quick Worker protocol could not be read"
+    old_protocol="$(worker_health_protocol "$old_payload")" \
+        || fail "Quick Worker protocol is unavailable; reload was not started"
+    old_generation="$(worker_health_generation "$old_payload" ready "" true)" \
         || fail "Quick Worker is not ready for a controlled reload"
     operation_id="$(new_worker_reload_operation_id)"
     record_worker_reload_operation "$operation_id" requested "$old_generation" || true
-    if ! quick_worker_drain "$operation_id"; then
+    if [[ "$old_protocol" == "$current_protocol" ]]; then
+        if ! quick_worker_drain "$operation_id"; then
+            record_worker_reload_operation "$operation_id" failed "$old_generation" || true
+            fail "Quick Worker drain failed; reload was not started"
+        fi
+    elif ! worker_health_is_idle "$old_payload"; then
         record_worker_reload_operation "$operation_id" failed "$old_generation" || true
-        fail "Quick Worker drain failed; reload was not started"
+        fail "Quick Worker protocol is incompatible and has active or queued tasks; reload was not started"
     fi
     record_worker_reload_operation "$operation_id" started "$old_generation" || true
     if ! (reload_worker_service); then

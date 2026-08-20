@@ -29,6 +29,7 @@ AUTHORIZATION = {
 
 def worker_health(
     *,
+    protocol_version: int = PROTOCOL_VERSION,
     status: str = "ready",
     generation: str = "a" * 32,
     active_tasks: int = 0,
@@ -37,7 +38,7 @@ def worker_health(
     return {
         "success": True,
         "data": {
-            "protocol_version": PROTOCOL_VERSION,
+            "protocol_version": protocol_version,
             "status": status,
             "generation": generation,
             "active_tasks": active_tasks,
@@ -151,7 +152,7 @@ async def test_quick_worker_status_combines_health_and_web_recovery(
 
 
 @pytest.mark.anyio
-async def test_quick_worker_status_marks_pending_upgrade_without_calling_it_unhealthy(
+async def test_quick_worker_status_is_not_blocked_by_pending_system_upgrade(
     settings: Settings,
 ) -> None:
     app = create_app(settings)
@@ -169,10 +170,6 @@ async def test_quick_worker_status_marks_pending_upgrade_without_calling_it_unhe
             "app.services.quick_worker_maintenance.read_health",
             new=AsyncMock(return_value=worker_health()),
         ),
-        patch(
-            "app.api.maintenance.read_health",
-            new=AsyncMock(return_value=worker_health()),
-        ),
     ):
         async with httpx.AsyncClient(
             transport=transport,
@@ -183,9 +180,64 @@ async def test_quick_worker_status_marks_pending_upgrade_without_calling_it_unhe
 
     assert response.status_code == 200
     assert response.json()["data"]["state"] == "ready"
-    assert response.json()["data"]["can_restart"] is False
-    assert response.json()["data"]["upgrade_required"] is True
-    assert response.json()["data"]["message"] == "服务正常，待继续系统升级。"
+    assert response.json()["data"]["can_restart"] is True
+    assert response.json()["data"]["upgrade_required"] is False
+
+
+@pytest.mark.anyio
+async def test_quick_worker_restart_allows_idle_incompatible_protocol(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    app.state.quick_interactions._recovery_ready = False
+    process = WaitingProcess()
+    transport = httpx.ASGITransport(app=app)
+    health = worker_health(protocol_version=PROTOCOL_VERSION - 1)
+
+    with (
+        patch(
+            "app.services.quick_worker_maintenance.read_health",
+            new=AsyncMock(return_value=health),
+        ),
+        patch(
+            "app.services.quick_worker_maintenance.launch_quick_worker_reload_process",
+            return_value=process,
+        ) as launch,
+    ):
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            headers=AUTHORIZATION,
+        ) as client:
+            response = await client.post("/api/maintenance/quick-worker/restart")
+        process.release.set()
+
+    assert response.status_code == 200
+    assert response.json()["data"]["state"] == "restarting"
+    launch.assert_called_once_with(app.state.quick_worker_maintenance.command)
+
+
+@pytest.mark.anyio
+async def test_quick_worker_restart_keeps_busy_incompatible_worker_blocked(
+    settings: Settings,
+) -> None:
+    coordinator = QuickWorkerReloadCoordinator(
+        settings.codex_pty.data_file.with_name("quick-worker-maintenance.json"),
+        settings.codex_pty.data_file.parent / "chub",
+    )
+    health = worker_health(
+        protocol_version=PROTOCOL_VERSION - 1,
+        active_tasks=1,
+    )
+
+    with patch(
+        "app.services.quick_worker_maintenance.read_health",
+        new=AsyncMock(return_value=health),
+    ):
+        inspection = await inspect_quick_worker(settings, False, coordinator)
+
+    assert inspection.data.state == "incompatible"
+    assert inspection.data.can_restart is False
 
 
 @pytest.mark.anyio
@@ -482,7 +534,7 @@ def test_reload_pid_handoff_expires_to_failed(settings: Settings) -> None:
 
 
 @pytest.mark.anyio
-async def test_inspection_rejects_incompatible_protocol(
+async def test_inspection_allows_idle_incompatible_protocol(
     settings: Settings,
 ) -> None:
     coordinator = QuickWorkerReloadCoordinator(
@@ -499,4 +551,4 @@ async def test_inspection_rejects_incompatible_protocol(
         inspection = await inspect_quick_worker(settings, True, coordinator)
 
     assert inspection.data.state == "incompatible"
-    assert inspection.data.can_restart is False
+    assert inspection.data.can_restart is True

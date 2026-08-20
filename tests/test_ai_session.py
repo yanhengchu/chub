@@ -321,8 +321,60 @@ def test_ai_session_manager_binds_native_id_once_and_keeps_it_private(
     public = manager._public(manager.store.get(created.id))
     assert "codex_session_id" not in public.model_dump()
     assert public.can_archive is True
-    with pytest.raises(Exception):
+    with pytest.raises(ApiError) as error:
         manager.bind_quick_interaction_native_session(created.id, "native-2")
+    assert error.value.code == "quick_interaction_native_session_conflict"
+
+
+def test_quick_hook_cannot_replace_worker_native_identity(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    first = "11111111-1111-4111-8111-111111111111"
+    second = "22222222-2222-4222-8222-222222222222"
+    created = session(settings.codex_pty.workspace, native_session_id=first)
+    manager.store.save(created)
+    manager.set_quick_interaction_checker(lambda _session_id: True)
+    manager.runtime_adapter.hook_dir.mkdir(parents=True)
+    hook_path = manager.runtime_adapter.hook_dir / f"{created.id}.json"
+    hook_path.write_text(
+        json.dumps(
+            {
+                "codex_session_id": second,
+                "activity": "idle",
+                "activity_source": "quick",
+            }
+        ),
+        encoding="utf-8",
+    )
+    hook_path.chmod(0o600)
+
+    manager._consume_hook_result(created.id)
+
+    assert manager.store.get(created.id).native_session_id == first
+
+
+def test_hook_identity_conflict_identifies_chub_as_the_owner(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    first = "33333333-3333-4333-8333-333333333333"
+    second = "44444444-4444-4444-8444-444444444444"
+    created = session(settings.codex_pty.workspace, native_session_id=first)
+    manager.store.save(created)
+    manager.runtime_adapter.hook_dir.mkdir(parents=True)
+    hook_path = manager.runtime_adapter.hook_dir / f"{created.id}.json"
+    hook_path.write_text(
+        json.dumps({"codex_session_id": second, "activity": "idle"}),
+        encoding="utf-8",
+    )
+    hook_path.chmod(0o600)
+
+    with pytest.raises(ApiError) as error:
+        manager._consume_hook_result(created.id)
+
+    assert error.value.code == "codex_session_native_conflict"
+    assert error.value.message.startswith("Chub Session identity conflict:")
 
 
 def test_hook_reuses_quick_session_when_discovery_created_duplicate(
@@ -575,6 +627,17 @@ def test_interactive_supervisor_uses_runtime_neutral_terminal_state() -> None:
 
     assert supervisor.connections.__class__.__module__ == "app.ai_session.terminal"
     assert supervisor.tickets.__class__.__module__ == "app.ai_session.terminal"
+
+
+def test_runtime_api_error_marks_upstream_source(settings: Settings) -> None:
+    manager = AiSessionManager(settings)
+
+    error = manager._runtime_api_error(
+        RuntimeOperationError("codex_not_trusted", "Not inside a trusted directory")
+    )
+
+    assert error.source == "runtime"
+    assert error.code == "codex_not_trusted"
 
 
 def test_interactive_supervisor_reuses_backend_and_stops_it(

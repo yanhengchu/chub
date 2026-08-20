@@ -18,9 +18,16 @@
     {
       "id": "chub-ai-runtime",
       "title": "Chub AI Runtime 架构设计",
-      "summary": "面向 AI 说明当前 Codex Runtime 架构、能力矩阵、AI Session/Worker 所有权，以及未来第二 Runtime 接入规则。",
+      "summary": "面向 AI 说明当前 Codex Runtime 架构、能力矩阵、AI Session/Worker 所有权，以及 AI Runtime 的实现规范。",
       "status": "已验收",
       "path": "CHUB_AI_RUNTIME_DESIGN.md"
+    },
+    {
+      "id": "chub-cli-distribution",
+      "title": "Chub CLI 分发、安装与发布设计",
+      "summary": "面向新设备定义核心 Chub（含自动运行的 Quick Worker）和可选 ClawBot 的安装使用边界，以及 npm 分发、版本管理和 GitHub Release 验收规则。",
+      "status": "待实现",
+      "path": "CHUB_CLI_DISTRIBUTION_DESIGN.md"
     },
     {
       "id": "ai-session-state",

@@ -87,6 +87,7 @@ Worker 不负责身份认证、页面、微信路由、通知目标、Request �
 - 凭证和本机秘密只存在于私有配置或受限状态中；跨领域只传稳定非敏感标识，日志、页面和通知不得泄露敏感值。
 - 异步操作必须区分受理、运行和最终状态。页面、通知和操作日志不得把进程创建、模型回复或 Tool Call 已发出解释为业务成功。
 - 跨入口、进程和外部通道使用非敏感稳定标识关联入口请求、Session、任务、维护操作、Runtime 执行和通知终态；模型文本、展示标题和 Tool Call 内容不能作为追踪标识或成功依据。
+- HTTP 错误统一返回 `success: false` 与 `error.code`、`error.message`、`error.source`；`source` 只允许 `chub` 或 `runtime`，由后端固定写入，客户端不能声明或覆盖。Chub 的认证、校验、协议、Worker、解析和内部边界错误标记为 `chub`；只有受控透传 Runtime 子进程诊断时标记为 `runtime`。来源标记不替代错误码，也不允许透传堆栈、凭证、终端票据或无界原文。
 
 ## 4. 当前逻辑分层
 
@@ -94,7 +95,7 @@ Worker 不负责身份认证、页面、微信路由、通知目标、Request �
 
 | 层次 | 当前职责 | 典型模块 |
 | --- | --- | --- |
-| 入口与展示 | Web 页面、API、WebSocket、CLI、OpenClaw Plugin | `app/api/`、`app/web/`、`app/codex/routes.py`、`scripts/chub`、`integrations/openclaw/chub/` |
+| 入口与展示 | Web 页面、API、WebSocket、Chub CLI、OpenClaw Plugin | `app/api/`、`app/web/`、`app/codex/routes.py`、`scripts/chub`、`integrations/openclaw/chub/` |
 | 应用协调 | 组合用例、跨模块门禁、恢复与通知协调 | `app/application.py`、Quick Interaction、微信 Chub Mode、Deferred Restart |
 | 领域服务 | AI Session、Request、自动化、通知、文档、用量和设备状态 | `app/codex/`、`app/automations/`、`app/notifications/`、`app/ai_usage/`、`app/services/` |
 | 可靠执行 | 后台任务、租约、Runner、进程与终态 | Quick Worker、Automation Runner、固定维护脚本 |
@@ -115,7 +116,7 @@ Worker 不负责身份认证、页面、微信路由、通知目标、Request �
 | Runtime 私有协议 | Codex 命令、Hook、发现、模型、Writer 与事件解析已收敛到 Adapter/Runner；Runtime ID、能力矩阵和原生映射已统一 | 收敛到 Runtime Adapter/Runner | 当前已落地并验收；第二 Runtime 尚未接入 |
 | 用户入口与正式 API | Codex 页面、微信固定路由、`/api/codex/*` | 保持当前正式 Codex 外观，不把它当作通用 Runtime 兼容别名 | 当前继续使用 |
 
-目标组件只有在对应专项设计明确落地并通过验收后，才能在其他文档中写成当前能力。未来 Runtime 接入顺序和门槛以 AI Runtime 专项设计的第二部分为准。
+目标组件只有在对应专项设计明确落地并通过验收后，才能在其他文档中写成当前能力。Runtime 的实现规范和能力门槛以 AI Runtime 专项设计的第二部分为准。
 
 ## 5. 领域边界
 
@@ -256,21 +257,21 @@ Adapters & Infrastructure
 
 - `application.py` 的跨模块回调和直接装配较多，应通过明确用例服务减少新增耦合。
 - `app/services/` 职责混杂，后续按领域归属渐进收拢。
-- Codex 私有实现已从 Session、Worker 的共享职责中收敛到 Adapter/Runner；Runtime ID、能力矩阵、原生映射、活动事件和终端连接边界已统一。协议、配置和 `/api/codex/*` 仍是当前 Codex 正式入口，后续第二 Runtime 接入按专项设计扩展，不为旧版本增加兼容别名。
+- Codex 私有实现已从 Session、Worker 的共享职责中收敛到 Adapter/Runner；Runtime ID、能力矩阵、原生映射、活动事件和终端连接边界已统一。协议、配置和 `/api/codex/*` 仍是当前 Codex 正式入口；新增 Runtime 按专项设计实现，不为旧版本增加兼容别名。
 - 自动化、维护和 AI 任务使用不同执行机制；应先统一可靠性原则，不急于统一代码框架。
 - 部分 API 和数据路径以当前实现命名；只有内部边界稳定后才迁移公共命名。
 
 ## 10. 演进原则与顺序
 
 1. **先固化现状。** 总架构和专项文档先明确权威状态、依赖方向和不得退化的用户行为。
-2. **Codex Runtime 边界收敛已完成。** 当前生产仍只注册 Codex，并已具备第二 Runtime 的接入准备；只有在明确产品需求出现后，才按专项文档的接入契约直接实施。
+2. **Codex Runtime 边界收敛已完成。** 当前生产仍只注册 Codex，并已具备实现其他 Runtime 所需的边界；新增 Runtime 按专项文档的实现契约直接实施。
 3. **保持当前正式入口。** 现有 API、页面、微信指令和服务部署在内部收敛期间保持当前用户可见语义；不为已改变的旧运行态、旧协议或旧入口增加长期兼容层。
 4. **从真实调用提取接口。** 只有两个以上稳定调用方或明确替换需求出现时才新增共享抽象。
 5. **领域内聚优先。** 新功能放入对应领域，跨领域通过公开服务和稳定 ID 协调。
 6. **执行可靠性一致。** 所有异步操作都区分受理、开始和最终状态，但不要求使用同一个 Worker。
 7. **不扩大基础设施。** 没有容量、隔离或恢复需求时，不引入数据库、消息队列或新常驻服务。
 
-AI Runtime 架构收敛已经完成；后续第二 Runtime 接入和其他领域收敛仍由真实产品需求驱动，总架构文档本身不授权同步重构。
+AI Runtime 架构收敛已经完成；新增 Runtime 和其他领域收敛仍由真实产品需求驱动，总架构文档本身不授权同步重构。
 
 ## 11. 架构验收标准
 
@@ -287,7 +288,8 @@ AI Runtime 架构收敛已经完成；后续第二 Runtime 接入和其他领域
 
 ## 12. 专项文档关系
 
-- [Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)：AI Session Manager、Runtime Adapter、Worker 和演进路线。
+- [Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)：AI Runtime 架构、AI Session Manager、Runtime Adapter、Worker 和实现规范。
+- [Chub CLI 分发、安装与发布设计](CHUB_CLI_DISTRIBUTION_DESIGN.md)：新设备安装、核心 Chub 与可选 ClawBot 职责、npm 发布、版本管理和 GitHub Release。
 - [AI Session 状态模型](AI_SESSION_STATE_DESIGN.md)：Session、Activity、入口、槽位和单 writer 产品语义。
 - [Chub Quick Worker 独立服务设计](CHUB_QUICK_WORKER_DESIGN.md)：AI 后台任务、恢复、通知和重启协调语义。
 - [OpenClaw 定制集成设计](OPENCLAW_CUSTOMIZATION_DESIGN.md)：OpenClaw/微信身份、路由、权限、插件定制和通知边界。

@@ -197,6 +197,9 @@ prompt = sys.stdin.read()
 if os.environ.get("FAKE_CODEX_OMIT_EVENT") != "1":
     print(json.dumps({"type": "thread.started", "thread_id": native_id}), flush=True)
 time.sleep(float(os.environ.get("FAKE_CODEX_DELAY", "0")))
+if os.environ.get("FAKE_CODEX_HUGE_EVENT") == "1":
+    print("x" * (2 * 1024 * 1024 + 1), flush=True)
+    raise SystemExit(23)
 upstream_error = os.environ.get("FAKE_CODEX_ERROR")
 if upstream_error:
     print(
@@ -413,6 +416,7 @@ async def test_worker_drain_rejects_new_work_but_keeps_control_actions(
         cancelled = await _request(settings, "task_cancel", task_id=task_id)
         assert cancelled["success"] is True
         assert cancelled["data"]["task"]["status"] == "cancelled"
+        assert cancelled["data"]["task"]["error_source"] is None
 
         deadline = asyncio.get_running_loop().time() + 2.0
         while asyncio.get_running_loop().time() < deadline:
@@ -1302,6 +1306,7 @@ async def test_absolute_timeout_stops_runner_and_records_final_state(settings) -
         timed_out = await _wait_for_status(settings, task_id, {"timed_out"})
 
         assert timed_out["error_code"] == "deadline_exceeded"
+        assert timed_out["error_source"] is None
         assert timed_out["runner_pid"] is None
         assert not psutil.pid_exists(runner_pid)
     finally:
@@ -1317,6 +1322,7 @@ async def test_runner_failure_is_bounded_and_not_reported_as_success(settings) -
         await _submit(settings, task_id=task_id, behavior="fail")
         failed = await _wait_for_status(settings, task_id, {"failed"})
         assert failed["error_code"] == "runner_failed"
+        assert failed["error_source"] == "runtime"
         assert failed["exit_code"] == 23
         assert "failed as requested" in failed["error"]
         assert len(failed["error"].encode("utf-8")) <= 4_000
@@ -1356,9 +1362,46 @@ async def test_codex_upstream_error_is_returned_from_runtime_event_stream(
         )
         failed = await _wait_for_status(settings, task_id, {"failed"})
         assert failed["error_code"] == "runner_failed"
+        assert failed["error_source"] == "runtime"
         assert failed["error"] == upstream_error
         assert "fallback stderr" not in failed["error"]
         assert failed["runner_pid"] is None
+    finally:
+        await server.close()
+
+
+@pytest.mark.anyio
+async def test_runtime_parser_error_is_preserved_instead_of_generic_runner_error(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    native_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    monkeypatch.setenv("FAKE_CODEX_SESSION_ID", native_id)
+    monkeypatch.setenv("FAKE_CODEX_HUGE_EVENT", "1")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server = QuickWorkerServer(
+        settings,
+        allow_test_tasks=True,
+        codex_workspaces={"isolated": workspace},
+        codex_executable=_fake_codex(tmp_path),
+        codex_home=tmp_path / "codex-home",
+    )
+    await server.start()
+    task_id = new_worker_task_id()
+    try:
+        await _submit_codex(
+            settings,
+            task_id=task_id,
+            session_id="parser-error-session",
+            codex_session_id=native_id,
+        )
+        failed = await _wait_for_status(settings, task_id, {"failed"})
+        assert failed["error_source"] == "chub"
+        assert failed["error_code"] == "codex_event_stream_unsafe"
+        assert "Chub Runtime error (codex_event_stream_unsafe)" in failed["error"]
+        assert "Worker could not start or supervise" not in failed["error"]
     finally:
         await server.close()
 
@@ -1964,6 +2007,7 @@ async def test_codex_result_is_retained_when_native_id_cannot_be_confirmed(
         )
         failed = await _wait_for_status(settings, task_id, {"failed"})
         assert failed["error_code"] == "native_session_unconfirmed"
+        assert failed["error_source"] == "chub"
         assert failed["result"] == f"created:{native_id}:preserve this result"
         assert failed["native_session_id"] is None
     finally:
@@ -2000,6 +2044,7 @@ async def test_codex_resume_rejects_unexpected_native_session_id(
         )
         failed = await _wait_for_status(settings, task_id, {"failed"})
         assert failed["error_code"] == "native_session_unconfirmed"
+        assert failed["error_source"] == "chub"
         assert failed["native_session_id"] is None
     finally:
         await server.close()

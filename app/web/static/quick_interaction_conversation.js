@@ -5,6 +5,7 @@ const {
   canSubmit: canSubmitConversation,
   clearSessionModelPreferences: clearConversationSessionModelPreferences,
   createClient: createConversationClient,
+  formatErrorMessage: formatConversationErrorMessage,
   isRetryableRequestError: isRetryableConversationError,
   pollDelay: conversationPollDelay,
   readPageSize: readConversationPageSize,
@@ -43,7 +44,9 @@ const conversationSessionSwitcher = document.querySelector("#conversation-sessio
 const conversationSessionTitleRow = document.querySelector("#conversation-session-title-row");
 const conversationSessionTitle = document.querySelector("#conversation-session-title");
 const conversationSessionRename = document.querySelector("#conversation-session-rename");
+const conversationSessionStop = document.querySelector("#conversation-session-stop");
 const conversationSessionArchive = document.querySelector("#conversation-session-archive");
+const conversationSessionDelete = document.querySelector("#conversation-session-delete");
 const conversationCreateDialog = document.querySelector("#conversation-create-dialog");
 const conversationCreateSurface = document.querySelector("#conversation-create-surface");
 const conversationCreateWorkspaces = document.querySelector("#conversation-create-workspaces");
@@ -56,6 +59,13 @@ const conversationRenameMessage = document.querySelector("#conversation-rename-m
 const conversationRenameClose = document.querySelector("#conversation-rename-close");
 const conversationRenameCancel = document.querySelector("#conversation-rename-cancel");
 const conversationRenameConfirm = document.querySelector("#conversation-rename-confirm");
+const conversationStopDialog = document.querySelector("#conversation-stop-dialog");
+const conversationStopForm = document.querySelector("#conversation-stop-form");
+const conversationStopDescription = document.querySelector("#conversation-stop-description");
+const conversationStopMessage = document.querySelector("#conversation-stop-message");
+const conversationStopClose = document.querySelector("#conversation-stop-close");
+const conversationStopCancel = document.querySelector("#conversation-stop-cancel");
+const conversationStopConfirm = document.querySelector("#conversation-stop-confirm");
 const conversationArchiveDialog = document.querySelector("#conversation-archive-dialog");
 const conversationArchiveForm = document.querySelector("#conversation-archive-form");
 const conversationArchiveDescription = document.querySelector("#conversation-archive-description");
@@ -63,6 +73,13 @@ const conversationArchiveMessage = document.querySelector("#conversation-archive
 const conversationArchiveClose = document.querySelector("#conversation-archive-close");
 const conversationArchiveCancel = document.querySelector("#conversation-archive-cancel");
 const conversationArchiveConfirm = document.querySelector("#conversation-archive-confirm");
+const conversationDeleteDialog = document.querySelector("#conversation-delete-dialog");
+const conversationDeleteForm = document.querySelector("#conversation-delete-form");
+const conversationDeleteDescription = document.querySelector("#conversation-delete-description");
+const conversationDeleteMessage = document.querySelector("#conversation-delete-message");
+const conversationDeleteClose = document.querySelector("#conversation-delete-close");
+const conversationDeleteCancel = document.querySelector("#conversation-delete-cancel");
+const conversationDeleteConfirm = document.querySelector("#conversation-delete-confirm");
 const CONVERSATION_PAGE_SIZE = readConversationPageSize();
 const conversationSessionView = createConversationSessionView({
   documentRef: document,
@@ -74,7 +91,9 @@ const conversationSessionView = createConversationSessionView({
     titleRow: conversationSessionTitleRow,
     title: conversationSessionTitle,
     rename: conversationSessionRename,
+    stop: conversationSessionStop,
     archive: conversationSessionArchive,
+    delete: conversationSessionDelete,
     create: conversationSessionCreate,
     createDialog: conversationCreateDialog,
     createSurface: conversationCreateSurface,
@@ -88,6 +107,13 @@ const conversationSessionView = createConversationSessionView({
     renameClose: conversationRenameClose,
     renameCancel: conversationRenameCancel,
     renameConfirm: conversationRenameConfirm,
+    stopDialog: conversationStopDialog,
+    stopForm: conversationStopForm,
+    stopDescription: conversationStopDescription,
+    stopMessage: conversationStopMessage,
+    stopClose: conversationStopClose,
+    stopCancel: conversationStopCancel,
+    stopConfirm: conversationStopConfirm,
     archiveDialog: conversationArchiveDialog,
     archiveForm: conversationArchiveForm,
     archiveDescription: conversationArchiveDescription,
@@ -95,6 +121,13 @@ const conversationSessionView = createConversationSessionView({
     archiveClose: conversationArchiveClose,
     archiveCancel: conversationArchiveCancel,
     archiveConfirm: conversationArchiveConfirm,
+    deleteDialog: conversationDeleteDialog,
+    deleteForm: conversationDeleteForm,
+    deleteDescription: conversationDeleteDescription,
+    deleteMessage: conversationDeleteMessage,
+    deleteClose: conversationDeleteClose,
+    deleteCancel: conversationDeleteCancel,
+    deleteConfirm: conversationDeleteConfirm,
     form: conversationForm,
     prompt: conversationPrompt,
     submit: conversationSubmit,
@@ -129,7 +162,9 @@ let conversationWorkspaces = [];
 let conversationConfirmStopUnknownTerminal = false;
 let conversationSessionSwitcherSignature = "";
 let conversationRenamePending = false;
+let conversationStopPending = false;
 let conversationArchivePending = false;
+let conversationDeletePending = false;
 
 function handleConversationSessionSwitch(event) {
   const request = conversationSessionView.navigationRequest(
@@ -174,6 +209,8 @@ function resetConversationSessionView(sessionPreview) {
   conversationActive = false;
   conversationSession = null;
   conversationConfirmStopUnknownTerminal = false;
+  conversationStopPending = false;
+  conversationDeletePending = false;
   conversationFeed.replaceChildren();
   conversationLoadEarlier.hidden = true;
   conversationLoadEarlier.disabled = false;
@@ -295,7 +332,7 @@ async function createConversationSession(workspaceId) {
     });
     showConversationMessage(
       conversationCreateMessage,
-      error.message || "Session 创建失败。",
+      formatConversationErrorMessage(error, "Session 创建失败。"),
       "error",
     );
   }
@@ -361,7 +398,9 @@ function renderConversationSession(session) {
   const state = conversationSessionView.renderSession({
     session,
     activeInteraction: conversationActive,
+    stopPending: conversationStopPending,
     archivePending: conversationArchivePending,
+    deletePending: conversationDeletePending,
     promptLength: conversationPrompt.value.length,
   });
   conversationConfirmStopUnknownTerminal = state.confirmStopUnknownTerminal;
@@ -382,6 +421,63 @@ function openConversationRenameDialog() {
     return;
   }
   conversationSessionView.openRename(conversationSession);
+}
+
+function closeConversationStopDialog() {
+  if (!conversationStopPending && conversationStopDialog.open) {
+    conversationStopDialog.close();
+  }
+}
+
+function openConversationStopDialog() {
+  if (
+    !conversationSession
+    || conversationSessionStop.disabled
+    || conversationStopPending
+  ) {
+    return;
+  }
+  conversationSessionView.openStop(conversationSession);
+}
+
+async function stopConversationSession(event) {
+  event.preventDefault();
+  if (!conversationSession || conversationStopPending) {
+    return;
+  }
+  conversationStopPending = true;
+  conversationSessionView.setStopPending(true);
+  showConversationMessage(conversationStopMessage, "");
+  window.clearTimeout(conversationPollTimer);
+  const generation = conversationGeneration;
+  const client = conversationClient;
+  try {
+    const session = await client.stopSession();
+    if (generation !== conversationGeneration) {
+      return;
+    }
+    conversationActive = false;
+    renderConversationSession(session);
+    conversationStopDialog.close();
+    await loadConversation();
+  } catch (error) {
+    if (generation !== conversationGeneration) {
+      return;
+    }
+    showConversationMessage(
+      conversationStopMessage,
+      formatConversationErrorMessage(error, "Session 停止失败。"),
+      "error",
+    );
+    void loadConversation();
+  } finally {
+    if (generation === conversationGeneration) {
+      conversationStopPending = false;
+      if (conversationSession) {
+        renderConversationSession(conversationSession);
+      }
+    }
+  }
 }
 
 async function renameConversationSession(event) {
@@ -417,7 +513,7 @@ async function renameConversationSession(event) {
     }
     showConversationMessage(
       conversationRenameMessage,
-      error.message || "Session 重命名失败。",
+      formatConversationErrorMessage(error, "Session 重命名失败。"),
       "error",
     );
   } finally {
@@ -432,11 +528,24 @@ function closeConversationArchiveDialog() {
   }
 }
 
+function closeConversationDeleteDialog() {
+  if (!conversationDeletePending && conversationDeleteDialog.open) {
+    conversationDeleteDialog.close();
+  }
+}
+
 function openConversationArchiveDialog() {
   if (!conversationSession || conversationSessionArchive.disabled) {
     return;
   }
   conversationSessionView.openArchive(conversationSession);
+}
+
+function openConversationDeleteDialog() {
+  if (!conversationSession || conversationSessionDelete.disabled) {
+    return;
+  }
+  conversationSessionView.openDelete(conversationSession);
 }
 
 async function archiveConversationSession(event) {
@@ -482,7 +591,58 @@ async function archiveConversationSession(event) {
     conversationSessionView.setArchivePending(false);
     showConversationMessage(
       conversationArchiveMessage,
-      error.message || "Session 归档失败。",
+      formatConversationErrorMessage(error, "Session 归档失败。"),
+      "error",
+    );
+    renderConversationSession(conversationSession);
+    void loadConversation();
+  }
+}
+
+async function deleteConversationSession(event) {
+  event.preventDefault();
+  if (!conversationSession || conversationDeletePending) {
+    return;
+  }
+  conversationDeletePending = true;
+  conversationSessionView.setDeletePending(true);
+  showConversationMessage(conversationDeleteMessage, "");
+  window.clearTimeout(conversationPollTimer);
+  const generation = conversationGeneration;
+  const deletedSessionId = conversationSessionId;
+  const client = conversationClient;
+  try {
+    await client.deleteSession();
+    if (generation !== conversationGeneration) {
+      return;
+    }
+    const nextSession = firstConversationSessionAfterArchive(
+      conversationSessions,
+      deletedSessionId,
+    );
+    const nextSessionUrl = nextSession
+      ? conversationSessionUrl(nextSession.id)
+      : "/";
+    if (!nextSession) {
+      window.location.replace(nextSessionUrl);
+      return;
+    }
+    conversationDeletePending = false;
+    conversationSessionView.setDeletePending(false);
+    conversationDeleteDialog.close();
+    conversationSessions = conversationSessions.filter(
+      (session) => session.id !== deletedSessionId,
+    );
+    switchConversationSession(nextSession.id, nextSessionUrl, nextSession);
+  } catch (error) {
+    if (generation !== conversationGeneration) {
+      return;
+    }
+    conversationDeletePending = false;
+    conversationSessionView.setDeletePending(false);
+    showConversationMessage(
+      conversationDeleteMessage,
+      formatConversationErrorMessage(error, "Session 删除失败。"),
       "error",
     );
     renderConversationSession(conversationSession);
@@ -606,7 +766,7 @@ async function performLoadEarlierConversation(generation, client) {
     }
     showConversationMessage(
       conversationHistoryMessage,
-      error.message || "更早消息读取失败。",
+      formatConversationErrorMessage(error, "更早消息读取失败。"),
       "error",
     );
   } finally {
@@ -710,7 +870,7 @@ conversationForm.addEventListener("submit", async (event) => {
     } else {
       showConversationMessage(
         conversationSubmitMessage,
-        error.message || "快速交互提交失败。",
+        formatConversationErrorMessage(error, "快速交互提交失败。"),
         "error",
       );
     }
@@ -748,7 +908,9 @@ conversationCreateDialog.addEventListener("cancel", (event) => {
   }
 });
 conversationSessionRename.addEventListener("click", openConversationRenameDialog);
+conversationSessionStop.addEventListener("click", openConversationStopDialog);
 conversationSessionArchive.addEventListener("click", openConversationArchiveDialog);
+conversationSessionDelete.addEventListener("click", openConversationDeleteDialog);
 conversationRenameForm.addEventListener("submit", renameConversationSession);
 conversationRenameClose.addEventListener("click", closeConversationRenameDialog);
 conversationRenameCancel.addEventListener("click", closeConversationRenameDialog);
@@ -762,6 +924,19 @@ conversationRenameDialog.addEventListener("cancel", (event) => {
     event.preventDefault();
   }
 });
+conversationStopForm.addEventListener("submit", stopConversationSession);
+conversationStopClose.addEventListener("click", closeConversationStopDialog);
+conversationStopCancel.addEventListener("click", closeConversationStopDialog);
+conversationStopDialog.addEventListener("click", (event) => {
+  if (event.target === conversationStopDialog) {
+    closeConversationStopDialog();
+  }
+});
+conversationStopDialog.addEventListener("cancel", (event) => {
+  if (conversationStopPending) {
+    event.preventDefault();
+  }
+});
 conversationArchiveForm.addEventListener("submit", archiveConversationSession);
 conversationArchiveClose.addEventListener("click", closeConversationArchiveDialog);
 conversationArchiveCancel.addEventListener("click", closeConversationArchiveDialog);
@@ -772,6 +947,19 @@ conversationArchiveDialog.addEventListener("click", (event) => {
 });
 conversationArchiveDialog.addEventListener("cancel", (event) => {
   if (conversationArchivePending) {
+    event.preventDefault();
+  }
+});
+conversationDeleteForm.addEventListener("submit", deleteConversationSession);
+conversationDeleteClose.addEventListener("click", closeConversationDeleteDialog);
+conversationDeleteCancel.addEventListener("click", closeConversationDeleteDialog);
+conversationDeleteDialog.addEventListener("click", (event) => {
+  if (event.target === conversationDeleteDialog) {
+    closeConversationDeleteDialog();
+  }
+});
+conversationDeleteDialog.addEventListener("cancel", (event) => {
+  if (conversationDeletePending) {
     event.preventDefault();
   }
 });

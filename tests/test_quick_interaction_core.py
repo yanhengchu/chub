@@ -140,6 +140,11 @@ const result = {
     { code: "codex_workspace_unavailable" },
     { model: "gpt-test", reasoningEffort: null },
   ),
+  errorMessages: [
+    core.formatErrorMessage({ message: "CLI failed", source: "runtime" }, "fallback"),
+    core.formatErrorMessage({ message: "Worker failed", source: "chub" }, "fallback"),
+    core.formatErrorMessage({ message: "Unknown failure" }, "fallback"),
+  ],
   currentSlottedEntries: core.sessionSwitcherEntries([
     { id: "current", created_at: "2026-08-14T00:00:00Z", weixin_session_slot: 3 },
     { id: "unassigned", created_at: "2026-08-13T00:00:00Z", weixin_session_slot: null },
@@ -211,6 +216,11 @@ process.stdout.write(JSON.stringify(result));
         },
         "retriesKnownPreferenceError": True,
         "skipsUnrelatedCreationError": False,
+        "errorMessages": [
+            "Codex CLI（上游 Runtime）：CLI failed",
+            "Chub：Worker failed",
+            "Unknown failure",
+        ],
         "currentSlottedEntries": ["current", "unassigned", "slot-one"],
         "navigationModes": {
             "switchSession": "replace",
@@ -247,6 +257,8 @@ const client = core.createClient({ token: "", sessionId: "session/one" });
   });
   await client.renameSession("新标题");
   await client.archiveSession();
+  await client.stopSession();
+  await client.deleteSession();
   process.stdout.write(JSON.stringify(requests));
 })().catch((error) => {
   process.stderr.write(String(error));
@@ -266,6 +278,8 @@ const client = core.createClient({ token: "", sessionId: "session/one" });
         "/api/codex/sessions/session%2Fone/quick-interactions?limit=10&order=timeline&before_created_at=2026-08-02T10%3A00%3A00%2B08%3A00&before_id=task%2Fone",
         "/api/codex/sessions/session%2Fone/title",
         "/api/codex/sessions/session%2Fone/archive",
+        "/api/codex/sessions/session%2Fone/stop",
+        "/api/codex/sessions/session%2Fone",
     ]
 
 

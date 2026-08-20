@@ -4,7 +4,7 @@
 
 Chub 是面向个人设备、本地优先的轻量 AI 工作站控制面。它在统一的安全与状态边界内组织设备能力、AI Session 和任务入口，负责接收请求、选择执行目标、协调运行、恢复任务、确认最终状态并交付结果；Chub 本身不是模型，也不作为通用对话 Agent 执行任务。
 
-当前 Codex 是唯一完整接入的 Agent Runtime，负责实际的分析、编码和工具调用；Quick Worker 承载需要跨 Web 重启继续运行的后台 AI 任务；OpenClaw 在微信链路中只承担可信消息网关和通道适配。当前 Runtime 边界、能力矩阵和未来第二 Runtime 接入规则见 [Chub AI Runtime 架构设计](docs/CHUB_AI_RUNTIME_DESIGN.md)。具体业务能力和使用入口见“当前功能”，不在项目定位中重复列举。
+当前 Codex 是唯一完整接入的 Agent Runtime，负责实际的分析、编码和工具调用；Quick Worker 承载需要跨 Web 重启继续运行的后台 AI 任务；OpenClaw 在微信链路中只承担可信消息网关和通道适配。当前 Runtime 架构、能力矩阵和 AI Runtime 实现规范见 [Chub AI Runtime 架构设计](docs/CHUB_AI_RUNTIME_DESIGN.md)。具体业务能力和使用入口见“当前功能”，不在项目定位中重复列举。
 
 长期目标是让 Chub 成为不依赖单一 Agent 产品的个人 AI 工作站：在保持统一安全、逻辑 Session、任务和最终状态语义的前提下，通过稳定契约接入经过验证的 Agent Runtime。项目继续坚持本地优先、可靠终态和适合个人维护的复杂度，支持 macOS LaunchAgent 与 Ubuntu systemd user service；新 Runtime 只由真实需求驱动，并在能力、权限和恢复机制通过验证后接入。
 
@@ -23,7 +23,7 @@ Chub 是面向个人设备、本地优先的轻量 AI 工作站控制面。它�
 ### 当前进程架构
 
 ```text
-Browser / Mobile Browser / chub CLI
+Browser / Mobile Browser / Chub CLI
   -> Chub Web、API、WebSocket 和固定本机入口
        |-> Quick Worker -> 固定 Runtime Runner -> Codex Runner
        |-> tmux / ttyd -> Codex 实时终端
@@ -53,7 +53,7 @@ Web 是控制面和业务协调入口；Quick Worker 独立负责需要跨 Web �
 | 功能域 | 当前可用能力 | 主要入口 |
 | --- | --- | --- |
 | 设备管理 | 查看节点与系统状态，执行后端白名单维护任务，查看受限、脱敏的操作日志和运行日志 | 首页、设置页、日志页 |
-| Codex 会话 | 新建、进入、停止和归档 Session；选择权限、模型和推理等级；通过实时终端或快速交互复用同一原生 Session | 首页、Session 页 |
+| Codex 会话 | 新建、进入、停止、归档和删除 Session；选择权限、模型和推理等级；通过实时终端或快速交互复用同一原生 Session | 首页、Session 页 |
 | 需求储备 | 使用 R1–R9 保存、更新和查看轻量需求，并从微信提交到当前 Session 执行 | 命令行、微信 ClawBot |
 | OpenClaw 与微信 | 查看并维护 Gateway 和微信通道；将可信微信私聊交给 Chub 固定路由或 Codex 任务；任务结束后按原路返回结果 | 首页、设置页、微信 ClawBot |
 | 自动化任务 | 管理独立 Debug Chrome，复用登录状态运行配置驱动任务；当前支持飞书 Wiki Markdown 下载和周报资料准备 | 首页、自动化页、命令行 |
@@ -129,13 +129,13 @@ chub uninstall
 
 macOS 使用两个独立 LaunchAgent，Ubuntu 使用两个独立 systemd user service，分别承载 Web 和
 Quick Worker。`chub restart` 只重启 Web，不停止 Worker；`chub status` 同时显示两个服务，
-`chub worker-health` 通过本机私有 IPC 读取 Worker 健康信息；`chub worker-drain` 停止接收新任务并等待已受理任务收敛；`chub worker-reload` 完成排空、独立重载和新 generation 健康确认。`worker-drain` 及命令行直接调用的 `worker-reload` 只在本机终端执行，不能从正在运行的快速任务内部调用；首页“工作站环境”在 Worker 空闲、协议兼容且 Web 已恢复时也提供固定的受控重启入口。当前 Worker 已经接管页面、微信和翻译快速任务；
+`chub worker-health` 通过本机私有 IPC 读取 Worker 健康信息；`chub worker-drain` 停止接收新任务并等待已受理任务收敛；`chub worker-reload` 完成排空、独立重载和新 generation 健康确认。`worker-drain` 及命令行直接调用的 `worker-reload` 只在本机终端执行，不能从正在运行的快速任务内部调用；首页“工作站环境”在 Worker 健康且空闲时提供固定的受控重启入口，协议不兼容时同样可重启到当前版本。当前 Worker 已经接管页面、微信和翻译快速任务；
 macOS 与 Ubuntu 均已确认单独重启 Web 不会停止 Worker、Runner 或现有任务，恢复后的结果和通知不会重复。
 Worker 不健康时，Session 写操作保持失败关闭，不回退到 Web Runner。
 
 `chub install`、`chub stop` 和 `chub uninstall` 默认拒绝中断活动或排队任务，并在空闲时先关闭 Worker 提交门禁；只有维护者确认任务可以中断时才使用对应命令的 `--force`。跨协议升级使用 `chub install --force` 统一安装当前版本并直接清理旧 Worker 数据；旧任务会被中断且不可恢复，不保留读取或迁移逻辑。
 
-服务直接依赖当前工作区和 `.venv`；移动目录或变更服务定义后需要重新安装。Web 配置变更使用
+当前 `chub` CLI 是仓库内的本机服务管理入口；项目尚未发布 npm/PyPI 或独立发行包。新设备的目标流程、核心 Chub（含自动运行的 Quick Worker）与可选 ClawBot 的职责、npm 发布、版本管理和 GitHub Release 目标见 [Chub CLI 分发、安装与发布设计](docs/CHUB_CLI_DISTRIBUTION_DESIGN.md)。服务直接依赖当前工作区和 `.venv`；移动目录或变更服务定义后需要重新安装。Web 配置变更使用
 `chub restart` 生效；Worker 代码升级使用 `chub worker-reload`，只有服务定义变化时才需要重新执行安装。
 
 ## 日常使用
@@ -144,7 +144,7 @@ Worker 不健康时，Session 写操作保持失败关闭，不回退到 Web Run
 
 Codex PTY 依赖 `codex`、`ttyd` 和 `tmux`。安装服务时，Chub 会从当前终端 `PATH` 记录所需程序路径。
 
-节点页面支持新建、进入、停止和归档 Session，并可为新 Session 选择默认权限、模型和推理等级。同一 Session 提供两种入口：
+节点页面支持新建、进入、停止、归档和删除 Session，并可为新 Session 选择默认权限、模型和推理等级。同一 Session 提供两种入口：
 
 - **实时终端**：使用原生 Codex TUI，适合审批、持续操作和实时输出。
 - **快速交互**：提交后台任务并在时间线查看状态和结果，适合手机或普通网络。
@@ -244,7 +244,7 @@ Runner 不会自行启动或停止 Debug Chrome。浏览器 Profile 未初始化
 - `data/runtime/`：可重新生成的执行事件、临时附件、锁和任务日志。
 - `data/artifacts/`：自动化下载材料和周报正式产物。
 
-首页“工作站环境”提供受控的“系统升级与恢复”状态行。它统一执行已准备的版本切换或当前版本的运行态恢复；确认后冻结受影响的 Chub AI Runtime 写入、停止 Quick Worker，在途快速任务终止并清理 Chub Session 关联、Hook 与固定 Worker 运行态。Codex 原生 Session、配置、日志、项目资料和业务数据不归档、不删除；新实例会重新发现仍存在的原生 Session。无需等待任务自然排空，但固定切换脚本、已安装服务定义、Web Runtime 和 Worker 健康仍必须通过预检。只有新 Web/Worker、Session 映射读取和微信 Chub Session 快照均完成最终验证，操作才标记完成；清理后的验证失败会保持恢复门禁并允许同一恢复操作继续。该入口不下载代码、不接受客户端路径或命令，也不提供任意数据清理。
+首页“工作站环境”提供受控的“系统升级与恢复”状态行。它统一执行已准备的版本切换或当前版本的运行态恢复；确认后冻结受影响的 Chub AI Runtime 写入、停止 Quick Worker，在途快速任务终止并清理 Chub Session 关联、Hook 与固定 Worker 运行态。Codex 原生 Session、配置、日志、项目资料和业务数据不归档、不删除；新实例会重新发现仍存在的原生 Session。无需等待任务自然排空；启动只校验固定切换脚本、已安装服务定义和运行态清理路径，不以当前 Web 或 Worker 状态作为门禁。只有新 Web/Worker、Session 映射读取和微信 Chub Session 快照均完成最终验证，操作才标记完成；清理后的验证失败会保持恢复门禁并允许同一恢复操作继续。该入口不下载代码、不接受客户端路径或命令，也不提供任意数据清理。
 
 `scripts/chub-data-migrate` 只保留给历史安装的数据目录整理，不参与 AI Session 或 Worker 协议升级。新的持久化协议切换统一使用上述受控升级流程，直接清理方案白名单内的旧运行数据，不增加启动迁移、双写或旧格式兼容读取。
 
@@ -308,7 +308,8 @@ CHUB_BROWSER_TESTS=1 .venv/bin/python -m pytest \
 | --- | --- |
 | [Chub 项目说明](README.md) | 项目概览、安装、日常入口、安全和文档导航 |
 | [Chub 总体架构与演进设计](docs/CHUB_ARCHITECTURE_DESIGN.md) | 当前进程、领域与状态所有权，以及整体分层和演进原则 |
-| [Chub AI Runtime 架构设计](docs/CHUB_AI_RUNTIME_DESIGN.md) | Chub 的 Agent Runtime 边界、Session Manager、Worker 职责和架构演进路线 |
+| [Chub AI Runtime 架构设计](docs/CHUB_AI_RUNTIME_DESIGN.md) | AI Runtime 架构、Session Manager、Worker 职责和 Runtime 实现规范 |
+| [Chub CLI 分发、安装与发布设计](docs/CHUB_CLI_DISTRIBUTION_DESIGN.md) | 新设备安装、核心 Chub 与可选 ClawBot 职责、npm 发布、版本管理和 GitHub Release |
 | [Chub AI Session 状态模型设计](docs/AI_SESSION_STATE_DESIGN.md) | Session、Activity、入口、槽位和单 writer 语义 |
 | [Chub Quick Worker 独立服务设计](docs/CHUB_QUICK_WORKER_DESIGN.md) | Quick Worker 独立服务、非实时任务、恢复、通知终态和重启协调 |
 | [Codex AI 额度与用量采集设计](docs/CODEX_AI_QUOTA_USAGE_DESIGN.md) | Codex/OpenAI 用量来源、统一接口、缓存和展示口径 |

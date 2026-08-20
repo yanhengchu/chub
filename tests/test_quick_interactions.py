@@ -259,6 +259,40 @@ def test_submit_thread_start_failure_rolls_back_registration(
     assert quick_interactions._tasks == {}
 
 
+def test_submit_observer_failure_preserves_observer_and_cancel_errors(
+    tmp_path: Path,
+) -> None:
+    quick_interactions = manager(tmp_path)
+    quick_interactions._start_worker_observer = MagicMock(
+        side_effect=RuntimeError("observer unavailable")
+    )
+
+    def worker_call(action: str, **payload):
+        if action == "runtime_task_submit":
+            return accepted_worker_task(payload["task"])
+        if action == "task_cancel":
+            raise OSError("cancel unavailable")
+        raise AssertionError(action)
+
+    quick_interactions._worker_call = worker_call
+
+    with pytest.raises(ApiError) as error:
+        quick_interactions.submit(
+            "session-1",
+            "执行任务",
+            operation_id="operation-observer-failure",
+            source_ip="127.0.0.1",
+        )
+
+    assert error.value.code == "quick_worker_observer_unavailable"
+    assert "observer unavailable" in error.value.message
+    assert "cancel unavailable" in error.value.message
+    failed = next(iter(quick_interactions._tasks.values()))
+    assert failed.error_source == "chub"
+    assert "observer unavailable" in (failed.error or "")
+    assert "cancel unavailable" in (failed.error or "")
+
+
 def test_submit_persistence_failure_rolls_back_registration(
     tmp_path: Path,
 ) -> None:
@@ -644,6 +678,37 @@ def test_isolated_worker_success_merges_deferred_restart_request(
         source_ip="127.0.0.1",
     )
     assert not request_path.exists()
+
+
+def test_worker_error_within_worker_limit_survives_web_state_reload(
+    tmp_path: Path,
+) -> None:
+    quick_interactions = manager(tmp_path)
+    task = QuickInteractionTask(
+        id="task-long-error",
+        worker_task_id="qw-1750000000000-00000000000000000000000000000001",
+        session_id="session-1",
+        prompt="执行任务",
+        status="running",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    quick_interactions._tasks[task.id] = task
+    error_text = "上游错误 " + "x" * 3_500
+    snapshot = SimpleNamespace(
+        status="failed",
+        result=None,
+        error=error_text,
+        error_source="runtime",
+        error_code="runner_failed",
+    )
+
+    quick_interactions._finish_from_worker_snapshot(task.id, task, snapshot)
+
+    finished = quick_interactions.get(task.id)
+    assert finished.error == error_text
+    reloaded = manager(tmp_path)
+    assert reloaded.get(task.id).error == error_text
 
 
 @pytest.mark.anyio

@@ -65,6 +65,7 @@ const result = {
     currentSessionId: session.id,
   }),
   archiveDescription: sessionView.archiveDescription(session),
+  stopDescription: sessionView.stopDescription(session),
   url: sessionView.sessionUrl(session.id),
 };
 process.stdout.write(JSON.stringify(result));
@@ -84,8 +85,10 @@ process.stdout.write(JSON.stringify(result));
         "loadingLabel": "正在读取 Session 状态",
     }
     assert behavior["ready"]["busy"] is False
+    assert behavior["ready"]["stopReady"] is False
     assert behavior["ready"]["archiveReady"] is True
     assert behavior["ready"]["archiveBusy"] is False
+    assert behavior["ready"]["deleteBusy"] is False
     assert behavior["ready"]["submissionReason"] == ""
     assert behavior["busy"]["busy"] is True
     assert behavior["busy"]["archiveBusy"] is True
@@ -99,6 +102,8 @@ process.stdout.write(JSON.stringify(result));
     assert behavior["switcher"]["items"][0]["current"] is True
     assert behavior["switcher"]["items"][1]["text"] == "S2 · 执行中"
     assert "Chub 页面暂不提供恢复入口" in behavior["archiveDescription"]
+    assert "将终止正在执行的快速任务并关闭实时终端" in behavior["stopDescription"]
+    assert "在途任务不会恢复" in behavior["stopDescription"]
     assert behavior["url"] == "/codex/session%2Fone/quick-interactions/conversation"
 
 
@@ -121,6 +126,7 @@ const failedTask = {
   status: "failed",
   prompt: "run",
   error: "failed result",
+  error_source: "runtime",
   created_at: "2026-08-15T09:00:00Z",
   updated_at: "2026-08-15T09:01:00Z",
   notification_status: "failed",
@@ -129,6 +135,20 @@ const failedTask = {
   deferred_restart_updated_at: "2026-08-15T09:02:00Z",
   deferred_restart_notification_status: "failed",
   deferred_restart_notification_error: "route unavailable",
+};
+const timedOutTask = {
+  id: "timed-out",
+  status: "timed_out",
+  prompt: "slow run",
+  error: "timed out",
+  error_source: "chub",
+  created_at: "2026-08-15T09:10:00Z",
+  updated_at: "2026-08-15T09:11:00Z",
+};
+const unknownFailedTask = {
+  ...failedTask,
+  id: "unknown-failed",
+  error_source: undefined,
 };
 const merged = timeline.mergeTasks([oldTask], [failedTask, updatedOldTask], 2);
 const trimmed = timeline.mergeTasks([oldTask, failedTask], [{
@@ -139,8 +159,10 @@ const trimmed = timeline.mergeTasks([oldTask, failedTask], [{
 process.stdout.write(JSON.stringify({
   merged: merged.map((task) => ({ id: task.id, result: task.result })),
   trimmed: trimmed.map((task) => task.id),
-  old: timeline.buildTaskState(updatedOldTask),
-  failed: timeline.buildTaskState(failedTask),
+      old: timeline.buildTaskState(updatedOldTask),
+      failed: timeline.buildTaskState(failedTask),
+      timedOut: timeline.buildTaskState(timedOutTask),
+      unknownFailed: timeline.buildTaskState(unknownFailedTask),
 }));
 """
     result = subprocess.run(
@@ -159,6 +181,9 @@ process.stdout.write(JSON.stringify({
     assert behavior["old"]["assistantText"] == "updated result"
     assert behavior["old"]["notification"]["label"] == "已通知"
     assert behavior["failed"]["error"] is True
+    assert behavior["failed"]["errorSource"] == "Codex CLI（上游 Runtime）"
+    assert behavior["timedOut"]["errorSource"] == ""
+    assert behavior["unknownFailed"]["errorSource"] == "来源未确认"
     assert behavior["failed"]["notification"] == {
         "status": "failed",
         "label": "通知失败",

@@ -25,18 +25,32 @@
   function buildSessionState({
     session,
     activeInteraction,
-    archivePending,
+    stopPending = false,
+    archivePending = false,
+    deletePending = false,
     promptLength,
   }) {
     const preview = buildSessionPreview(session);
     const busy = activeInteraction || session.quick_interaction_running === true;
+    const stopReady = session.status === "running"
+      || session.activity === "working"
+      || session.quick_interaction_running === true;
+    const mutationPending = stopPending || archivePending || deletePending;
     const archiveReady = Boolean(session.can_archive);
-    const archiveBusy = busy || archivePending;
+    const archiveBusy = busy || mutationPending;
     const archiveLabel = !archiveReady
       ? "尚未启动的 Session 无法归档"
       : archiveBusy
         ? "Session 正在执行，暂不能归档"
         : "归档 Session";
+    const stopLabel = !stopReady
+      ? "Session 当前未运行"
+      : stopPending
+        ? "正在停止 Session"
+        : "停止 Session";
+    const deleteLabel = deletePending
+      ? "正在删除 Session"
+      : "删除 Session";
     const submissionReason = core.submissionBlockReason({
       session,
       activeInteraction,
@@ -45,9 +59,14 @@
     return Object.freeze({
       ...preview,
       busy,
+      stopReady,
+      stopBusy: mutationPending,
+      stopLabel,
       archiveReady,
       archiveBusy,
       archiveLabel,
+      deleteBusy: mutationPending,
+      deleteLabel,
       submissionReason,
       confirmStopUnknownTerminal: (
         session.status === "running" && session.activity === "unknown"
@@ -111,6 +130,12 @@
       + "如已分配微信槽位，槽位也会释放。Chub 页面暂不提供恢复入口。";
   }
 
+  function stopDescription(session) {
+    const title = session?.title?.trim() || "未命名 Session";
+    return `停止“${title}”将终止正在执行的快速任务并关闭实时终端；`
+      + "停止后可以重新进入 Session，但在途任务不会恢复。";
+  }
+
   function createView({ documentRef, windowRef, elements, showMessage }) {
     function renderPreview(session) {
       const state = buildSessionPreview(session);
@@ -123,9 +148,15 @@
       elements.rename.disabled = true;
       elements.rename.title = state.loadingLabel;
       elements.rename.setAttribute("aria-label", state.loadingLabel);
+      elements.stop.disabled = true;
+      elements.stop.title = state.loadingLabel;
+      elements.stop.setAttribute("aria-label", state.loadingLabel);
       elements.archive.disabled = true;
       elements.archive.title = state.loadingLabel;
       elements.archive.setAttribute("aria-label", state.loadingLabel);
+      elements.delete.disabled = true;
+      elements.delete.title = state.loadingLabel;
+      elements.delete.setAttribute("aria-label", state.loadingLabel);
     }
 
     function renderSwitcher(snapshot, previousSignature = "") {
@@ -239,9 +270,15 @@
       elements.rename.disabled = !state.renameAllowed;
       elements.rename.title = "重命名 Session";
       elements.rename.setAttribute("aria-label", "重命名 Session");
+      elements.stop.disabled = !state.stopReady || state.stopBusy;
+      elements.stop.title = state.stopLabel;
+      elements.stop.setAttribute("aria-label", state.stopLabel);
       elements.archive.disabled = !state.archiveReady || state.archiveBusy;
       elements.archive.title = state.archiveLabel;
       elements.archive.setAttribute("aria-label", state.archiveLabel);
+      elements.delete.disabled = state.deleteBusy;
+      elements.delete.title = state.deleteLabel;
+      elements.delete.setAttribute("aria-label", state.deleteLabel);
       if (elements.submitMessage.dataset.sessionLoadError === "true") {
         delete elements.submitMessage.dataset.sessionLoadError;
         showMessage(elements.submitMessage, "");
@@ -292,14 +329,62 @@
       elements.archiveCancel.disabled = pending;
       elements.archiveConfirm.disabled = pending;
       if (pending) {
+        elements.stop.disabled = true;
         elements.archive.disabled = true;
+        elements.delete.disabled = true;
+      }
+    }
+
+    function openStop(session) {
+      elements.stopDescription.textContent = stopDescription(session);
+      showMessage(elements.stopMessage, "");
+      elements.stopDialog.showModal();
+      elements.stopConfirm.focus();
+    }
+
+    function setStopPending(pending) {
+      elements.stopForm.toggleAttribute("aria-busy", pending);
+      elements.stopClose.disabled = pending;
+      elements.stopCancel.disabled = pending;
+      elements.stopConfirm.disabled = pending;
+      if (pending) {
+        elements.stop.disabled = true;
+        elements.archive.disabled = true;
+        elements.delete.disabled = true;
+      }
+    }
+
+    function deleteDescription(session) {
+      const title = session?.title?.trim() || "未命名 Session";
+      return `删除“${title}”后，该 Session 将永久删除，无法恢复；`
+        + "如已分配微信槽位，槽位也会释放。";
+    }
+
+    function openDelete(session) {
+      elements.deleteDescription.textContent = deleteDescription(session);
+      showMessage(elements.deleteMessage, "");
+      elements.deleteDialog.showModal();
+      elements.deleteConfirm.focus();
+    }
+
+    function setDeletePending(pending) {
+      elements.deleteForm.toggleAttribute("aria-busy", pending);
+      elements.deleteClose.disabled = pending;
+      elements.deleteCancel.disabled = pending;
+      elements.deleteConfirm.disabled = pending;
+      if (pending) {
+        elements.stop.disabled = true;
+        elements.archive.disabled = true;
+        elements.delete.disabled = true;
       }
     }
 
     function renderError(error) {
       elements.titleRow.removeAttribute("aria-busy");
       elements.rename.disabled = true;
+      elements.stop.disabled = true;
       elements.archive.disabled = true;
+      elements.delete.disabled = true;
       elements.create.disabled = true;
       elements.create.title = "Session 状态读取失败，暂不能新建";
       elements.create.setAttribute(
@@ -312,7 +397,7 @@
       elements.submitMessage.dataset.sessionLoadError = "true";
       showMessage(
         elements.submitMessage,
-        error.message || "会话状态读取失败。",
+        core.formatErrorMessage(error, "会话状态读取失败。"),
         "error",
       );
     }
@@ -320,6 +405,8 @@
     return Object.freeze({
       navigationRequest,
       openArchive,
+      openDelete,
+      openStop,
       openCreate,
       openRename,
       renderCreation,
@@ -329,12 +416,15 @@
       renderSwitcher,
       setArchivePending,
       setCreatePending,
+      setDeletePending,
       setRenamePending,
+      setStopPending,
     });
   }
 
   const quickInteractionSession = Object.freeze({
     archiveDescription,
+    stopDescription,
     buildCreationState,
     buildSessionPreview,
     buildSessionState,

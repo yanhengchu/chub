@@ -29,11 +29,25 @@
           <div id="conversation-session-title-row" class="conversation-session-title-row" hidden>
             <p id="conversation-session-title" class="conversation-session-title"></p>
             <button id="conversation-session-rename" class="conversation-session-rename" type="button" aria-label="重命名 Session" aria-haspopup="dialog" aria-controls="conversation-rename-dialog" title="重命名 Session"><span aria-hidden="true">&#9998;</span></button>
+            <button id="conversation-session-stop" class="conversation-session-stop" type="button" aria-label="停止 Session" title="停止 Session" disabled>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                <rect width="12" height="12" x="6" y="6" rx="1"></rect>
+              </svg>
+            </button>
             <button id="conversation-session-archive" class="conversation-session-archive" type="button" aria-label="归档 Session" aria-haspopup="dialog" aria-controls="conversation-archive-dialog" title="归档 Session" disabled>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
                 <rect width="20" height="5" x="2" y="3" rx="1"></rect>
                 <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"></path>
                 <path d="M10 12h4"></path>
+              </svg>
+            </button>
+            <button id="conversation-session-delete" class="conversation-session-delete" type="button" aria-label="删除 Session" aria-haspopup="dialog" aria-controls="conversation-delete-dialog" title="删除 Session" disabled>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                <path d="M4 7h16"></path>
+                <path d="M10 11v6"></path>
+                <path d="M14 11v6"></path>
+                <path d="m6 7 1 13h10l1-13"></path>
+                <path d="M9 7V4h6v3"></path>
               </svg>
             </button>
           </div>
@@ -74,6 +88,21 @@
           </form>
         </dialog>
 
+        <dialog id="conversation-stop-dialog" class="codex-workspace-dialog confirmation-dialog conversation-stop-dialog" aria-labelledby="conversation-stop-title" aria-describedby="conversation-stop-description">
+          <form id="conversation-stop-form" class="codex-workspace-dialog-surface confirmation-dialog-surface conversation-stop-form">
+            <div class="codex-workspace-dialog-header">
+              <h3 id="conversation-stop-title">停止 Session</h3>
+              <button id="conversation-stop-close" class="button-link codex-workspace-dialog-close" type="button" aria-label="关闭停止确认">关闭</button>
+            </div>
+            <p id="conversation-stop-description" class="confirmation-dialog-description"></p>
+            <p id="conversation-stop-message" class="message" aria-live="polite"></p>
+            <div class="confirmation-dialog-actions">
+              <button id="conversation-stop-cancel" class="button-link" type="button">取消</button>
+              <button id="conversation-stop-confirm" class="button-danger" type="submit">确认停止</button>
+            </div>
+          </form>
+        </dialog>
+
         <dialog id="conversation-archive-dialog" class="codex-workspace-dialog confirmation-dialog conversation-archive-dialog" aria-labelledby="conversation-archive-title" aria-describedby="conversation-archive-description">
           <form id="conversation-archive-form" class="codex-workspace-dialog-surface confirmation-dialog-surface conversation-archive-form">
             <div class="codex-workspace-dialog-header">
@@ -85,6 +114,21 @@
             <div class="confirmation-dialog-actions">
               <button id="conversation-archive-cancel" class="button-link" type="button">取消</button>
               <button id="conversation-archive-confirm" class="button-danger" type="submit">确认归档</button>
+            </div>
+          </form>
+        </dialog>
+
+        <dialog id="conversation-delete-dialog" class="codex-workspace-dialog confirmation-dialog conversation-delete-dialog" aria-labelledby="conversation-delete-title" aria-describedby="conversation-delete-description">
+          <form id="conversation-delete-form" class="codex-workspace-dialog-surface confirmation-dialog-surface conversation-delete-form">
+            <div class="codex-workspace-dialog-header">
+              <h3 id="conversation-delete-title">删除 Session</h3>
+              <button id="conversation-delete-close" class="button-link codex-workspace-dialog-close" type="button" aria-label="关闭删除确认">关闭</button>
+            </div>
+            <p id="conversation-delete-description" class="confirmation-dialog-description"></p>
+            <p id="conversation-delete-message" class="message" aria-live="polite"></p>
+            <div class="confirmation-dialog-actions">
+              <button id="conversation-delete-cancel" class="button-link" type="button">取消</button>
+              <button id="conversation-delete-confirm" class="button-danger" type="submit">确认删除</button>
             </div>
           </form>
         </dialog>

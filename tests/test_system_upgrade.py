@@ -62,6 +62,7 @@ def write_plan(path: Path) -> None:
         ),
         encoding="utf-8",
     )
+    path.chmod(0o600)
 
 
 def test_plan_loader_accepts_only_current_fixed_source(tmp_path: Path) -> None:
@@ -583,28 +584,12 @@ async def test_system_upgrade_status_allows_runtime_recovery_without_plan(
 
     app.state.quick_interactions._recovery_ready = True
     app.state.system_upgrade_restart_readiness = lambda: None
-    worker_health = {
-        "success": True,
-        "data": {
-            "status": "ready",
-            "protocol_version": PROTOCOL_VERSION,
-            "generation": "e" * 32,
-            "active_tasks": 1,
-            "queued_tasks": 1,
-            "uncertain_tasks": 0,
-            "corrupt_tasks": 0,
-            "available_runtime_ids": ["codex"],
-        },
-    }
-    with patch.object(app.state.codex_pty_manager, "available", return_value=True), patch(
-        "app.api.maintenance.read_health", return_value=worker_health
-    ):
-        async with httpx.AsyncClient(
-            transport=transport,
-            base_url="http://test",
-            headers={"Authorization": f"Bearer {TOKEN}"},
-        ) as client:
-            response = await client.get("/api/maintenance/system-upgrade")
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    ) as client:
+        response = await client.get("/api/maintenance/system-upgrade")
 
     assert response.status_code == 200
     data = response.json()["data"]
@@ -612,6 +597,62 @@ async def test_system_upgrade_status_allows_runtime_recovery_without_plan(
     assert data["can_start"] is True
     assert data["plan"]["plan_id"] == "runtime-recovery"
     assert data["plan"]["session_count"] == 0
+
+
+@pytest.mark.anyio
+async def test_system_upgrade_does_not_gate_on_web_or_worker_status(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    app = create_app(settings)
+    plan_path = tmp_path / "system-upgrade.json"
+    write_plan(plan_path)
+    loaded = load_system_upgrade_plan(plan_path)
+    assert loaded is not None
+    app.state.system_upgrade.plan_path = plan_path
+    app.state.system_upgrade_restart_readiness = lambda: None
+    app.state.run_system_upgrade = lambda _operation_id: None
+    app.state.quick_interactions._recovery_ready = False
+    transport = httpx.ASGITransport(app=app)
+
+    with (
+        patch.object(
+            app.state.codex_pty_manager,
+            "system_upgrade_sessions",
+            side_effect=OSError("unavailable"),
+        ),
+        patch.object(
+            app.state.codex_pty_manager,
+            "available",
+            return_value=False,
+        ) as available,
+        patch(
+            "app.api.maintenance.read_health",
+            create=True,
+            side_effect=AssertionError("upgrade must not inspect Worker health"),
+        ) as read_worker_health,
+    ):
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as client:
+            preview = await client.get("/api/maintenance/system-upgrade")
+            started = await client.post(
+                "/api/maintenance/system-upgrade",
+                json={"fingerprint": loaded.fingerprint},
+            )
+
+    assert preview.status_code == 200
+    assert preview.json()["data"]["state"] == "available"
+    assert preview.json()["data"]["can_start"] is True
+    assert started.status_code == 200
+    assert started.json()["data"]["state"] == "preparing"
+    available.assert_not_called()
+    read_worker_health.assert_not_called()
+    operation = app.state.system_upgrade.operation()
+    assert operation is not None
+    assert operation.old_worker_generation is None
 
 
 @pytest.mark.anyio
@@ -679,16 +720,15 @@ async def test_upgrade_rejects_changed_plan_fingerprint(
     app.state.system_upgrade.plan_path = plan_path
     transport = httpx.ASGITransport(app=app)
 
-    with patch.object(app.state.codex_pty_manager, "available", return_value=True):
-        async with httpx.AsyncClient(
-            transport=transport,
-            base_url="http://test",
-            headers={"Authorization": f"Bearer {TOKEN}"},
-        ) as client:
-            response = await client.post(
-                "/api/maintenance/system-upgrade",
-                json={"fingerprint": "0" * 64},
-            )
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    ) as client:
+        response = await client.post(
+            "/api/maintenance/system-upgrade",
+            json={"fingerprint": "0" * 64},
+        )
 
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "system_upgrade_plan_changed"
@@ -710,26 +750,12 @@ async def test_upgrade_preview_allows_recovery_from_corrupt_session_store(
     ai_session_path.chmod(0o600)
     transport = httpx.ASGITransport(app=app)
 
-    worker_health = {
-        "success": True,
-        "data": {
-            "status": "ready",
-            "protocol_version": PROTOCOL_VERSION,
-            "generation": "e" * 32,
-            "active_tasks": 0,
-            "queued_tasks": 0,
-            "uncertain_tasks": 0,
-            "corrupt_tasks": 0,
-            "available_runtime_ids": ["codex"],
-        },
-    }
-    with patch("app.api.maintenance.read_health", return_value=worker_health):
-        async with httpx.AsyncClient(
-            transport=transport,
-            base_url="http://test",
-            headers={"Authorization": f"Bearer {TOKEN}"},
-        ) as client:
-            response = await client.get("/api/maintenance/system-upgrade")
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    ) as client:
+        response = await client.get("/api/maintenance/system-upgrade")
 
     assert response.status_code == 200
     assert response.json()["data"]["state"] == "available"
@@ -748,27 +774,12 @@ async def test_upgrade_preview_rejects_unsafe_session_runtime_path(
     ai_session_path = settings.codex_pty.data_file.with_name("ai-sessions.json")
     ai_session_path.symlink_to(tmp_path / "unexpected-session-state")
     transport = httpx.ASGITransport(app=app)
-    worker_health = {
-        "success": True,
-        "data": {
-            "status": "ready",
-            "protocol_version": PROTOCOL_VERSION,
-            "generation": "e" * 32,
-            "active_tasks": 0,
-            "queued_tasks": 0,
-            "uncertain_tasks": 0,
-            "corrupt_tasks": 0,
-            "available_runtime_ids": ["codex"],
-        },
-    }
-
-    with patch("app.api.maintenance.read_health", return_value=worker_health):
-        async with httpx.AsyncClient(
-            transport=transport,
-            base_url="http://test",
-            headers={"Authorization": f"Bearer {TOKEN}"},
-        ) as client:
-            response = await client.get("/api/maintenance/system-upgrade")
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    ) as client:
+        response = await client.get("/api/maintenance/system-upgrade")
 
     assert response.status_code == 200
     assert response.json()["data"]["state"] == "blocked"
@@ -790,35 +801,18 @@ async def test_valid_plan_is_previewed_and_started_by_fingerprint(
     app.state.quick_interactions._recovery_ready = True
     app.state.run_system_upgrade = lambda _operation_id: None
     app.state.system_upgrade_restart_readiness = lambda: None
-    worker_health = {
-        "success": True,
-        "data": {
-            "status": "ready",
-            "protocol_version": PROTOCOL_VERSION,
-            "generation": "e" * 32,
-            "active_tasks": 0,
-            "queued_tasks": 0,
-            "uncertain_tasks": 0,
-            "corrupt_tasks": 0,
-            "available_runtime_ids": ["codex"],
-        },
-    }
     transport = httpx.ASGITransport(app=app)
 
-    with (
-        patch.object(app.state.codex_pty_manager, "available", return_value=True),
-        patch("app.api.maintenance.read_health", return_value=worker_health),
-    ):
-        async with httpx.AsyncClient(
-            transport=transport,
-            base_url="http://test",
-            headers={"Authorization": f"Bearer {TOKEN}"},
-        ) as client:
-            preview = await client.get("/api/maintenance/system-upgrade")
-            started = await client.post(
-                "/api/maintenance/system-upgrade",
-                json={"fingerprint": loaded.fingerprint},
-            )
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    ) as client:
+        preview = await client.get("/api/maintenance/system-upgrade")
+        started = await client.post(
+            "/api/maintenance/system-upgrade",
+            json={"fingerprint": loaded.fingerprint},
+        )
 
     assert preview.status_code == 200
     assert preview.json()["data"]["state"] == "available"
@@ -831,7 +825,7 @@ async def test_valid_plan_is_previewed_and_started_by_fingerprint(
     assert app.state.system_upgrade.writes_blocked() is True
     operation = app.state.system_upgrade.operation()
     assert operation is not None
-    assert operation.old_worker_protocol == PROTOCOL_VERSION
+    assert operation.old_worker_protocol is None
 
 
 @pytest.mark.anyio
@@ -909,35 +903,17 @@ def test_weixin_system_upgrade_uses_application_upgrade_coordinator(
     app.state.quick_interactions._recovery_ready = True
     app.state.run_system_upgrade = lambda _operation_id: None
     app.state.system_upgrade_restart_readiness = lambda: None
-    worker_health = {
-        "success": True,
-        "data": {
-            "status": "ready",
-            "protocol_version": PROTOCOL_VERSION,
-            "generation": "f" * 32,
-            "active_tasks": 0,
-            "queued_tasks": 0,
-            "uncertain_tasks": 0,
-            "corrupt_tasks": 0,
-            "available_runtime_ids": ["codex"],
-        },
-    }
-
-    with (
-        patch.object(app.state.codex_pty_manager, "available", return_value=True),
-        patch("app.api.maintenance.read_health", return_value=worker_health),
-    ):
-        result = app.state.weixin_chub_mode.dispatch(
-            message_id="weixin-system-upgrade",
-            prompt="system upgrade",
-            message_type="text",
-            correlation_id="upgrade-request",
-            source_ip="100.64.0.21",
-            delivery_route=QuickInteractionWeixinRoute(
-                account_id="weixin-account",
-                recipient="owner@im.wechat",
-            ),
-        )
+    result = app.state.weixin_chub_mode.dispatch(
+        message_id="weixin-system-upgrade",
+        prompt="system upgrade",
+        message_type="text",
+        correlation_id="upgrade-request",
+        source_ip="100.64.0.21",
+        delivery_route=QuickInteractionWeixinRoute(
+            account_id="weixin-account",
+            recipient="owner@im.wechat",
+        ),
+    )
 
     assert result.message == "System upgrade: Started. Check with system upgrade status."
     operation = app.state.system_upgrade.operation()

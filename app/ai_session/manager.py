@@ -425,7 +425,8 @@ class AiSessionManager:
                 raise ApiError(
                     409,
                     "quick_interaction_native_session_conflict",
-                    "Codex session identity does not match the Worker result",
+                    "Chub Session identity conflict: Codex session identity does not "
+                    "match the Worker result",
                 )
             if session.native_session_id is None:
                 try:
@@ -438,7 +439,8 @@ class AiSessionManager:
                     raise ApiError(
                         409,
                         "quick_interaction_native_session_conflict",
-                        "Codex session identity is already bound to another Session",
+                        "Chub Session identity conflict: Codex session identity is "
+                        "already bound to another Session",
                     ) from exc
                 for duplicate in duplicates:
                     self.supervisor.stop_terminal(duplicate.id)
@@ -621,6 +623,11 @@ class AiSessionManager:
         activity = event.activity
         activity_source = event.activity_source
         changed = False
+        if session and activity_source == "quick":
+            # The Quick Worker result is the sole authority for native Session
+            # identity. A nested Runtime command inherits the hook environment
+            # and must not be allowed to overwrite the active task's mapping.
+            native_session_id = None
         if session and isinstance(native_session_id, str) and native_session_id:
             try:
                 self.runtime_adapter.validate_native_session_id(native_session_id)
@@ -631,7 +638,8 @@ class AiSessionManager:
                     raise ApiError(
                         409,
                         "codex_session_native_conflict",
-                        "Runtime Session identity does not match the managed Session",
+                        "Chub Session identity conflict: Runtime Session identity "
+                        "does not match the managed Session",
                     )
                 # Runtime discovery can win the race with a Worker hook and
                 # create a second Chub record for the same native Session.
@@ -888,4 +896,4 @@ class AiSessionManager:
             "conflict": 409,
             "unavailable": 503,
         }[error.kind]
-        return ApiError(status_code, error.code, error.message)
+        return ApiError(status_code, error.code, error.message, source="runtime")

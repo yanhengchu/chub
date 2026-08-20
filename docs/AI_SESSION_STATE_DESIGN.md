@@ -70,6 +70,12 @@ Chub 当前管理 Codex CLI Session，并用两个正交状态描述产品状态
 
 页面主状态优先级为：Session 错误、执行中的入口、空闲或未知状态。终端连接或 WebSocket 错误属于通道错误；只要快速交互仍可用，就不能把整个 Session 写成 `error`。
 
+错误来源展示边界固定如下：
+
+- Session 的 `error` 是 Chub 对 Session/终端控制面的状态说明，不冒充 Codex CLI 原文；终端内的原生错误仍由终端通道直接展示。
+- API 错误的 `error.source` 必须为 `chub` 或 `runtime`。`runtime` 只表示 Chub 已确认来自 Codex CLI/上游 Runtime 的错误，页面标为“Codex CLI（上游 Runtime）”；其他控制面错误标为“Chub”。
+- 快速交互任务的 `error_source` 只在失败状态用于区分来源。取消和超时不设置该字段，失败但字段为空时显示“来源未确认”，不根据错误正文猜测来源。
+
 操作入口根据 `session_status` 决定直接进入还是恢复终端，但不能反向修改 Activity。
 
 ## 4. 单 writer 与任务边界
@@ -107,6 +113,7 @@ Chub 当前管理 Codex CLI Session，并用两个正交状态描述产品状态
 
 - 权限模式在创建时写入 Session 配置；设置页只保存后续新建 Session 的默认值。
 - 归档表示从活动列表移除并释放微信槽位，不是新的 Session 状态；当前页面不提供恢复入口。
+- 删除从首页或快速交互页移除 Session；已绑定原生 Session 时同时删除对应 Runtime 记录，操作不可恢复。
 - 入口偏好默认为快速交互，按 Session 保存在当前浏览器，不跨设备同步，也不写入后端状态。
 - 快速交互执行中仍可进入快速交互页查看进度，但不能进入实时终端；实时终端可从新页面重新进入并接管旧页面连接。
 - 翻译 Session 是内部只读 Session，不进入微信槽位；Web 是否展示只影响列表入口，不中断任务。
@@ -132,6 +139,7 @@ new/running/stopped --运行时失败--> error + unknown
 - 明确 Turn 开始时才写入 `working`；明确终态且来源完整时才恢复 `idle`。
 - Web 重启后由 Worker 恢复快速任务和租约投影；无法确认时保持 `unknown` 并关闭写入。
 - Activity 变化不改变 Session 运行时生命周期。
+- 快速交互 Hook 只提供 Activity 迹象；原生 Session 身份由 Quick Worker 完成确认和绑定，quick 来源的 Hook（包括空闲事件）不得覆盖该绑定。
 
 当前 Codex 映射：
 
@@ -169,4 +177,4 @@ new/running/stopped --运行时失败--> error + unknown
 
 - 已验收范围：Codex Session 的状态枚举、Activity 投影、实时终端与快速交互入口、S1–S9 槽位、归档和单 writer 规则，以及首页、快速交互和微信 Session 展示；macOS、Ubuntu 当前范围均已验收。
 - 未验证或不承诺：第二个真实 Runtime 的产品行为、Worker 或 OpenClaw 内部实现，以及本文没有列出的新入口或新状态组合。
-- 复检触发：Session/Activity 枚举或合法组合、writer 仲裁、槽位/归档语义、Runtime 原生映射、Worker 状态投影或页面主状态变化时，必须重新执行对应自动化回归和受影响平台的最终状态验收。
+- 复检触发：Session/Activity 枚举或合法组合、writer 仲裁、槽位/归档语义、Runtime 原生映射、Worker 状态投影、错误来源字段或页面错误标签变化时，必须重新执行对应自动化回归和受影响平台的最终状态验收。

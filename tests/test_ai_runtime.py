@@ -572,6 +572,28 @@ def test_codex_adapter_owns_activity_event_file_boundary(
     assert adapter.read_activity_event("123e4567-e89b-12d3-a456-426614174000") is None
 
 
+def test_codex_adapter_preserves_quick_origin_for_idle_hook(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    settings.codex_pty.runtime_dir = tmp_path / "runtime"
+    adapter = CodexRuntimeAdapter(settings)
+    adapter.hook_dir.mkdir(parents=True)
+    hook = adapter.hook_dir / "123e4567-e89b-12d3-a456-426614174000.json"
+    hook.write_text(
+        '{"codex_session_id":"native-1","activity":"idle",'
+        '"activity_source":"quick"}',
+        encoding="utf-8",
+    )
+    hook.chmod(0o600)
+
+    event = adapter.read_activity_event("123e4567-e89b-12d3-a456-426614174000")
+
+    assert event is not None
+    assert event.activity == "idle"
+    assert event.activity_source == "quick"
+
+
 def test_codex_adapter_terminal_spec_uses_runtime_request(
     settings: Settings,
     tmp_path: Path,

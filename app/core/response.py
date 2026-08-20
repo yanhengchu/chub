@@ -21,9 +21,13 @@ class ApiResponse(BaseModel, Generic[DataT]):
     data: DataT
 
 
+ErrorSource = Literal["chub", "runtime"]
+
+
 class ErrorDetail(BaseModel):
     code: str
     message: str
+    source: ErrorSource
 
 
 class ApiErrorResponse(BaseModel):
@@ -38,12 +42,14 @@ class ApiError(Exception):
         code: str,
         message: str,
         *,
+        source: ErrorSource = "chub",
         headers: dict[str, str] | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.code = code
         self.message = message
+        self.source = source
         self.headers = headers
 
 
@@ -52,9 +58,12 @@ def error_response(
     code: str,
     message: str,
     *,
+    source: ErrorSource = "chub",
     headers: dict[str, str] | None = None,
 ) -> JSONResponse:
-    body = ApiErrorResponse(error=ErrorDetail(code=code, message=message))
+    body = ApiErrorResponse(
+        error=ErrorDetail(code=code, message=message, source=source)
+    )
     return JSONResponse(
         status_code=status_code,
         content=body.model_dump(),
@@ -67,6 +76,7 @@ async def api_error_handler(_request: Request, exc: ApiError) -> JSONResponse:
         exc.status_code,
         exc.code,
         exc.message,
+        source=exc.source,
         headers=exc.headers,
     )
 

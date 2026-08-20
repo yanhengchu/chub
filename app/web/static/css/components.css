@@ -904,7 +904,7 @@ a.settings-utility-row > span:last-child {
   box-shadow: 0 0 14px rgb(32 224 160 / 10%);
 }
 
-:root[data-ui-style="cyber"] button:not(.button-link):not(.conversation-more):not(.conversation-session-create):not(.conversation-session-switch):not(.conversation-session-rename):not(.conversation-session-archive):not(.site-header-title):not(.session-enter)::before {
+:root[data-ui-style="cyber"] button:not(.button-link):not(.conversation-more):not(.conversation-session-create):not(.conversation-session-switch):not(.conversation-session-rename):not(.conversation-session-stop):not(.conversation-session-archive):not(.conversation-session-delete):not(.site-header-title):not(.session-enter)::before {
   margin-right: 0.35em;
   color: currentColor;
   content: ">";
@@ -2454,7 +2454,9 @@ pre {
 }
 
 .conversation-session-rename,
-.conversation-session-archive {
+.conversation-session-stop,
+.conversation-session-archive,
+.conversation-session-delete {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2475,18 +2477,34 @@ pre {
 
 .conversation-session-rename:not(:disabled):hover,
 .conversation-session-rename:focus-visible,
+.conversation-session-stop:not(:disabled):hover,
+.conversation-session-stop:focus-visible,
 .conversation-session-archive:not(:disabled):hover,
-.conversation-session-archive:focus-visible {
+.conversation-session-archive:focus-visible,
+.conversation-session-delete:not(:disabled):hover,
+.conversation-session-delete:focus-visible {
   color: var(--accent-dark);
   background: #edf4ef;
   opacity: 1;
 }
 
 .conversation-session-rename:disabled,
-.conversation-session-archive:disabled {
+.conversation-session-stop:disabled,
+.conversation-session-archive:disabled,
+.conversation-session-delete:disabled {
   color: var(--muted);
   background: transparent;
   opacity: 0.3;
+}
+
+.conversation-session-delete:not(:disabled) {
+  color: var(--danger);
+}
+
+.conversation-session-delete:not(:disabled):hover,
+.conversation-session-delete:focus-visible {
+  color: var(--danger);
+  background: #fcefed;
 }
 
 .conversation-session-rename > span {
@@ -2494,14 +2512,18 @@ pre {
   line-height: 1;
 }
 
-.conversation-session-archive > svg {
+.conversation-session-stop > svg,
+.conversation-session-archive > svg,
+.conversation-session-delete > svg {
   width: 1rem;
   height: 1rem;
   stroke-width: 1.8;
 }
 
 :root[data-ui-style="cyber"] .conversation-session-rename,
-:root[data-ui-style="cyber"] .conversation-session-archive {
+:root[data-ui-style="cyber"] .conversation-session-stop,
+:root[data-ui-style="cyber"] .conversation-session-archive,
+:root[data-ui-style="cyber"] .conversation-session-delete {
   color: var(--muted);
   background: transparent;
   box-shadow: none;
@@ -2509,10 +2531,24 @@ pre {
 
 :root[data-ui-style="cyber"] .conversation-session-rename:not(:disabled):hover,
 :root[data-ui-style="cyber"] .conversation-session-rename:focus-visible,
+:root[data-ui-style="cyber"] .conversation-session-stop:not(:disabled):hover,
+:root[data-ui-style="cyber"] .conversation-session-stop:focus-visible,
 :root[data-ui-style="cyber"] .conversation-session-archive:not(:disabled):hover,
-:root[data-ui-style="cyber"] .conversation-session-archive:focus-visible {
+:root[data-ui-style="cyber"] .conversation-session-archive:focus-visible,
+:root[data-ui-style="cyber"] .conversation-session-delete:not(:disabled):hover,
+:root[data-ui-style="cyber"] .conversation-session-delete:focus-visible {
   color: var(--accent);
   background: #0a241d;
+}
+
+:root[data-ui-style="cyber"] .conversation-session-delete:not(:disabled) {
+  color: var(--danger);
+}
+
+:root[data-ui-style="cyber"] .conversation-session-delete:not(:disabled):hover,
+:root[data-ui-style="cyber"] .conversation-session-delete:focus-visible {
+  color: var(--danger);
+  background: #2a1014;
 }
 
 .conversation-rename-form {

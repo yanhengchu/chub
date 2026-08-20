@@ -481,7 +481,8 @@ class CodexPtyManager:
                 raise ApiError(
                     409,
                     "quick_interaction_native_session_conflict",
-                    "Codex session identity does not match the Worker result",
+                    "Chub Session identity conflict: Codex session identity does not "
+                    "match the Worker result",
                 )
             if session.codex_session_id is None:
                 session.codex_session_id = native_session_id
@@ -977,7 +978,7 @@ class CodexPtyManager:
             "conflict": 409,
             "unavailable": 503,
         }[error.kind]
-        return ApiError(status_code, error.code, error.message)
+        return ApiError(status_code, error.code, error.message, source="runtime")
 
     def _deduplicate_native_sessions(
         self,

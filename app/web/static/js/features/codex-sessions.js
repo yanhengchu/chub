@@ -357,6 +357,7 @@ function renderCodexSessions(sessions) {
     const actions = document.createElement("div");
     const stop = document.createElement("button");
     const archive = document.createElement("button");
+    const remove = document.createElement("button");
     item.className = "session-item";
     main.className = "session-enter";
     main.type = "button";
@@ -430,8 +431,18 @@ function renderCodexSessions(sessions) {
     archive.addEventListener("click", () =>
       archiveCodexSession(session, archive),
     );
+    remove.type = "button";
+    remove.className = "button-danger session-action";
+    remove.textContent = "删除";
+    remove.setAttribute("aria-haspopup", "dialog");
+    remove.setAttribute("aria-controls", "confirmation-dialog");
+    remove.title = "删除 Session";
+    remove.setAttribute("aria-label", "删除 Session");
+    remove.addEventListener("click", () =>
+      deleteCodexSession(session, remove),
+    );
     actions.className = "session-actions";
-    actions.append(entry, stop, archive);
+    actions.append(entry, stop, archive, remove);
     item.append(main, actions);
     elements.codexSessions.append(item);
   });
@@ -820,7 +831,11 @@ async function createCodexSession(workspaceId, button) {
     }
   } catch (error) {
     if (!handleAccessError(error)) {
-      setMessage(elements.codexMessage, error.message || "会话创建失败。", "error");
+      setMessage(
+        elements.codexMessage,
+        formatApiErrorMessage(error, "会话创建失败。"),
+        "error",
+      );
     }
   } finally {
     workspaceButtons.forEach((item, index) => {
@@ -851,7 +866,11 @@ async function enterCodexSession(sessionId, button) {
   } catch (error) {
     if (!handleAccessError(error)) {
       await loadCodexSessions({ force: true });
-      setMessage(elements.codexMessage, error.message || "打开失败。", "error");
+      setMessage(
+        elements.codexMessage,
+        formatApiErrorMessage(error, "打开失败。"),
+        "error",
+      );
     }
   } finally {
     button.disabled = false;
@@ -874,7 +893,11 @@ async function stopCodexSession(sessionId, button) {
     await loadCodexSessions({ force: true });
   } catch (error) {
     if (!handleAccessError(error)) {
-      setMessage(elements.codexMessage, error.message || "停止失败。", "error");
+      setMessage(
+        elements.codexMessage,
+        formatApiErrorMessage(error, "停止失败。"),
+        "error",
+      );
     }
   } finally {
     setCodexButtonBusy(button, false);
@@ -900,6 +923,39 @@ async function archiveCodexSession(session, button) {
       try {
         await apiFetch(`/api/codex/sessions/${session.id}/archive`, {
           method: "POST",
+        });
+        await loadCodexSessions({ force: true });
+      } catch (error) {
+        if (handleAccessError(error)) {
+          return;
+        }
+        throw error;
+      } finally {
+        setCodexButtonBusy(button, false);
+        endCodexMutation();
+      }
+    },
+  });
+}
+
+async function deleteCodexSession(session, button) {
+  if (!elements.codexMessage) {
+    return;
+  }
+  const title = session.title?.trim() || "未命名 Session";
+  await showConfirmationDialog({
+    title: "删除 Session",
+    description: `删除“${title}”后，该 Session 将永久删除，无法恢复；如已分配微信槽位，槽位也会释放。`,
+    confirmLabel: "确认删除",
+    pendingLabel: "删除中…",
+    errorMessage: "Session 删除失败。",
+    onConfirm: async () => {
+      setMessage(elements.codexMessage, "");
+      setCodexButtonBusy(button, true);
+      beginCodexMutation();
+      try {
+        await apiFetch(`/api/codex/sessions/${session.id}`, {
+          method: "DELETE",
         });
         await loadCodexSessions({ force: true });
       } catch (error) {
@@ -1062,7 +1118,11 @@ async function loadCodexSessions(options = {}) {
       if (background) {
         scheduleCodexPoll(CODEX_POLL_SLOW_MS);
       } else {
-        setMessage(elements.codexMessage, error.message || "会话读取失败。", "error");
+        setMessage(
+          elements.codexMessage,
+          formatApiErrorMessage(error, "会话读取失败。"),
+          "error",
+        );
       }
     } finally {
       if (!background && codexMutationCount === 0 && elements.refreshCodex) {

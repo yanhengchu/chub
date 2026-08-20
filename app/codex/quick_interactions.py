@@ -17,6 +17,7 @@ from typing import Callable, Iterator
 from app.ai_session.models import AiSession
 from app.codex.models import (
     QuickInteractionDeferredRestartContext,
+    QuickInteractionErrorSource,
     QuickInteractionOperationContext,
     QuickInteractionOrder,
     QuickInteractionTask,
@@ -492,6 +493,7 @@ class QuickInteractionManager:
             ) from exc
         except Exception as exc:
             self._log_status(task.id, "failed", session.id)
+            detail = self._worker_exception_detail(exc)
             with self._lock:
                 self._tasks.pop(task.id, None)
                 self._running_sessions.discard(session_id)
@@ -507,14 +509,15 @@ class QuickInteractionManager:
             raise ApiError(
                 503,
                 "quick_worker_unavailable",
-                "Quick Worker 不可用，任务未在 Web 内回退执行。",
+                f"Chub Quick Worker submission error: {detail}",
             ) from exc
         else:
             with self._lock:
                 self._submitting_task_ids.discard(task.id)
         try:
             self._start_worker_observer(task, session, prompt)
-        except RuntimeError:
+        except RuntimeError as observer_error:
+            observer_detail = self._worker_exception_detail(observer_error)
             if task.worker_task_id:
                 try:
                     cancelled = self._worker_call(
@@ -524,13 +527,15 @@ class QuickInteractionManager:
                     )
                     if cancelled.get("success") is not True:
                         raise OSError(self._worker_error(cancelled))
-                except (OSError, RuntimeError):
+                except (OSError, RuntimeError) as cancel_error:
+                    cancel_detail = self._worker_exception_detail(cancel_error)
                     with self._lock:
                         task.status = "failed"
                         task.error = (
-                            "Quick Worker 已接受任务，但 Web 无法启动状态观察；"
-                            "任务未在 Web 内回退执行。"
+                            "Chub Worker observer error: "
+                            f"{observer_detail}; cancellation error: {cancel_detail}"
                         )
+                        task.error_source = "chub"
                         task.updated_at = utc_now()
                         self._write()
                     if self.deferred_restart is not None:
@@ -538,8 +543,9 @@ class QuickInteractionManager:
                     raise ApiError(
                         503,
                         "quick_worker_observer_unavailable",
-                        "Quick Worker 已接受任务，但状态观察未能启动。",
-                    ) from None
+                        f"Chub Worker observer error: {observer_detail}; "
+                        f"cancellation error: {cancel_detail}",
+                    ) from observer_error
             with self._lock:
                 self._tasks.pop(task.id, None)
                 self._running_sessions.discard(session_id)
@@ -556,8 +562,8 @@ class QuickInteractionManager:
             raise ApiError(
                 503,
                 "quick_interaction_start_failed",
-                "快速交互未能启动。",
-            ) from None
+                f"Chub Worker observer error: {observer_detail}",
+            ) from observer_error
         return task
 
     @property
@@ -724,6 +730,7 @@ class QuickInteractionManager:
                         task_id,
                         "failed",
                         "Quick Worker 未接受该任务，任务没有执行。",
+                        error_source="chub",
                     )
                     with self._lock:
                         current = self._tasks[task_id]
@@ -781,6 +788,7 @@ class QuickInteractionManager:
                 log_started = current.status == "requested" and desired == "running"
                 current.status = desired
                 current.error = None
+                current.error_source = None
                 current.updated_at = max(current.updated_at, snapshot.updated_at)
                 self._active_task_ids.add(task_id)
                 self._running_sessions.add(current.session_id)
@@ -1645,11 +1653,17 @@ class QuickInteractionManager:
                     continue
                 self._finish_from_worker_snapshot(task_id, task, snapshot)
                 break
-        except Exception:
+        except Exception as exc:
             if self._is_cancelled(task_id):
                 self._finish(task_id, "cancelled", "已由用户停止。")
             else:
-                self._finish(task_id, "failed", "Quick Worker 不可用，任务未在 Web 内回退执行。")
+                detail = self._worker_exception_detail(exc)
+                self._finish(
+                    task_id,
+                    "failed",
+                    f"Chub Worker observer error: {detail}",
+                    error_source="chub",
+                )
         finally:
             with self._lock:
                 if self._system_upgrade_reset:
@@ -1796,7 +1810,12 @@ class QuickInteractionManager:
         if snapshot.status == "succeeded":
             result = snapshot.result or "Codex 未返回最终结果。"
             if task.kind == "translation" and not self._valid_translation_result(result):
-                self._finish(task_id, "failed", "Codex 未返回有效的润色与英文翻译。")
+                self._finish(
+                    task_id,
+                    "failed",
+                    "Codex 未返回有效的润色与英文翻译。",
+                    error_source="chub",
+                )
             else:
                 if task.kind != "translation":
                     with self._deferred_restart_transition_lock:
@@ -1818,7 +1837,12 @@ class QuickInteractionManager:
             )
             self._finish(task_id, "timed_out", message)
         else:
-            self._finish(task_id, "failed", snapshot.error or "Codex 执行失败。")
+            self._finish(
+                task_id,
+                "failed",
+                snapshot.error or "Codex 执行失败。",
+                error_source=getattr(snapshot, "error_source", None),
+            )
         if task.worker_task_id is not None:
             try:
                 (self.restart_request_dir / f"{task.worker_task_id}.request").unlink()
@@ -1911,6 +1935,17 @@ class QuickInteractionManager:
         return "Worker request failed"
 
     @staticmethod
+    def _worker_exception_detail(error: BaseException) -> str:
+        if isinstance(error, OSError) and error.strerror:
+            detail = error.strerror
+        else:
+            detail = str(error).strip()
+        return QuickInteractionManager._limit_text(
+            detail or type(error).__name__,
+            1_000,
+        )
+
+    @staticmethod
     def _codex_execution_prompt(prompt: str) -> str:
         return f"[用户需求]\n{prompt}\n\n{CODEX_QUICK_INTERACTION_INSTRUCTIONS}"
 
@@ -1950,6 +1985,8 @@ class QuickInteractionManager:
         task_id: str,
         status: str,
         result: str,
+        *,
+        error_source: QuickInteractionErrorSource | None = None,
     ) -> None:
         notification_operation: tuple[str, str] | None = None
         finished_snapshot: QuickInteractionTask | None = None
@@ -1960,8 +1997,11 @@ class QuickInteractionManager:
             task.status = status
             if status == "succeeded":
                 task.result = result
+                task.error = None
+                task.error_source = None
             else:
                 task.error = result
+                task.error_source = error_source
             task.updated_at = utc_now()
             if (
                 self.completion_notifier is not None

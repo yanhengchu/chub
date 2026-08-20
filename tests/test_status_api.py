@@ -44,6 +44,7 @@ async def test_status_requires_authentication(settings: Settings) -> None:
         "error": {
             "code": "authentication_required",
             "message": "Bearer authentication is required",
+            "source": "chub",
         },
     }
 
@@ -232,6 +233,7 @@ async def test_status_returns_controlled_error_when_collection_fails(
         "error": {
             "code": "status_unavailable",
             "message": "System status is temporarily unavailable",
+            "source": "chub",
         },
     }
     assert "sensitive internal path" not in response.text
@@ -252,5 +254,6 @@ async def test_framework_errors_use_the_common_error_shape(
         "error": {
             "code": "not_found",
             "message": "Resource not found",
+            "source": "chub",
         },
     }

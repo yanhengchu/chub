@@ -35,8 +35,8 @@ from app.services.operation_log import write_operation
 
 
 HEALTH_PROTOCOL_VERSION = 1
-PROTOCOL_VERSION = 8
-WORKER_CODE_VERSION = "quick-worker-8-runtime-registry"
+PROTOCOL_VERSION = 9
+WORKER_CODE_VERSION = "quick-worker-9-error-source"
 MAX_REQUEST_BYTES = 64 * 1024
 MAX_RESPONSE_BYTES = 256 * 1024
 CLIENT_TIMEOUT_SECONDS = 2.0

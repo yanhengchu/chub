@@ -88,7 +88,7 @@ class SystemUpgradeOperation(_StrictModel):
     stage: UpgradeStage
     source_ip: str = Field(min_length=1, max_length=128)
     old_instance_id: str = Field(min_length=1, max_length=128)
-    old_worker_generation: str = Field(min_length=1, max_length=128)
+    old_worker_generation: str | None = Field(default=None, min_length=1, max_length=128)
     old_worker_protocol: int | None = Field(default=None, ge=1, le=1000)
     sessions: list[SystemUpgradeSession] = Field(default_factory=list)
     archived_sessions: int = Field(default=0, ge=0)
@@ -389,7 +389,7 @@ class SystemUpgradeCoordinator:
         loaded: LoadedSystemUpgradePlan,
         *,
         source_ip: str,
-        old_worker_generation: str,
+        old_worker_generation: str | None,
         runner: Callable[[str], None],
         old_worker_protocol: int | None = None,
     ) -> SystemUpgradeOperation:

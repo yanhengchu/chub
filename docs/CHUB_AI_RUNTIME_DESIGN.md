@@ -1,14 +1,14 @@
 # Chub AI Runtime 架构设计
 
 > 状态：已验收。
-> 主要读者：AI Agent、实现和排障 Agent；维护人员用于确认当前能力、接入边界和验收结果。
-> 本文负责：说明 Chub 当前已经落地的 AI Runtime 架构，以及未来接入另一个 Runtime 时必须遵守的契约和验收规则。
+> 主要读者：需要评估、生成或维护 Runtime Adapter/Runner 的 AI Agent；维护人员用于确认当前能力、接入边界和验收结果。
+> 本文负责：说明 Chub 当前已经落地的 AI Runtime 架构，并定义实现任一 AI Runtime 所需的通用契约、边界和验收规则。
 > 本文不负责：Session/Activity 的完整产品枚举（见 [AI Session 状态模型](AI_SESSION_STATE_DESIGN.md)）、Quick Worker 的任务恢复和通知细节（见 [Chub Quick Worker 独立服务设计](CHUB_QUICK_WORKER_DESIGN.md)）、微信路由和用户可见指令（见 [OpenClaw 定制集成设计](OPENCLAW_CUSTOMIZATION_DESIGN.md)）。
-> 维护说明：此前的分阶段实施记录已经收敛为当前契约；除非行为、状态所有权或接入边界变化，不再在本文追加过程性阶段日志，也不再为后续工作增加阶段编号。
+> 维护说明：此前的分阶段实施记录已经收敛为当前契约；本文不记录项目排期或过程性阶段日志，只有行为、状态所有权或 Runtime 实现边界变化时才需要更新。
 
 ## AI 可执行契约
 
-本文只维护两部分设计：第一部分是当前已经落地的架构，第二部分是未来接入另一个 Runtime 的设计。历史阶段的实施过程不覆盖当前规则，其他专项文档的领域契约也不在本文复制。
+本文只维护两部分设计：第一部分说明 AI Runtime 架构和当前 Codex 落地，第二部分说明如何按统一契约实现一个 AI Runtime。第二部分是规范性实现要求，不是项目计划；历史阶段的实施过程不覆盖当前规则，其他专项文档的领域契约也不在本文复制。
 
 AI Agent 处理 Runtime、Session 或 Quick Worker 需求时，先执行以下判断：
 
@@ -22,11 +22,11 @@ AI Agent 处理 Runtime、Session 或 Quick Worker 需求时，先执行以下�
 8. **服务操作局部生效。** Web、Quick Worker、ClawBot 的普通重启彼此独立；系统升级与恢复只锁定直接受影响的 AI Runtime 写入和相关服务，不阻断无关只读能力或独立入口。
 9. **能力不足不能静默模拟。** Runtime 不支持的能力必须返回不支持或不可用；不得通过猜测、自动切换、放宽权限或重复提交制造表面兼容。
 
-## 第一部分：当前已落地设计
+## 第一部分：AI Runtime 架构
 
 ### 1. 当前结论与范围
 
-此前的 Runtime 架构收敛工作已经完成并通过维护者验收，结果已落地到当前代码和服务。本文现在只维护当前契约和后续接入规则，不再保留分阶段实施步骤或重复验收清单。
+此前的 Runtime 架构收敛工作已经完成并通过维护者验收，结果已落地到当前代码和服务。本部分说明架构、职责、状态所有权和当前 Codex 实现，不记录项目排期或分阶段实施日志。
 
 当前结论：
 
@@ -34,7 +34,7 @@ AI Agent 处理 Runtime、Session 或 Quick Worker 需求时，先执行以下�
 - Codex 是当前唯一完整接入且唯一注册到生产注册表的 Runtime。
 - Runtime ID、能力矩阵、原生 Session 映射、活动事件、实时终端边界和上游错误传播已有统一契约。
 - `/api/codex/*`、现有页面、微信固定指令、通知格式和额度展示仍是当前正式产品入口；内部架构收敛没有新增 Runtime 选择器。
-- 当前架构已经具备第二个 Runtime 的接入准备，但没有接入第二个真实 Runtime。没有明确产品需求时不启动接入实现；出现需求后直接按本文第二部分实施，不使用新的阶段编号。
+- 当前架构已经具备实现其他 Runtime 所需的边界，但没有接入第二个真实 Runtime。需要新增 Runtime 时，按本文第二部分的实现规范执行。
 
 ### 2. 当前架构与状态所有权
 
@@ -107,9 +107,11 @@ Browser / CLI / OpenClaw / 微信
 
 - Adapter 必须报告权限配置能否无损映射；无法映射时拒绝创建或执行，不自动提升权限。
 - 原生事件、Hook 文件、路径、权限、格式、限长读取和清理由 Adapter 负责；Session Manager 只消费规范化 Activity。
-- Runner 失败时先读取 Runtime 错误原文，再回退到 `stderr`；两者为空才使用 `Task runner exited unsuccessfully.` 等通用兜底。上游未知错误也必须进入明确失败终态。
+- Runner 失败时先读取 Runtime 错误原文；读取成功但没有文本时再回退到 `stderr`，两者为空才使用 `Task runner exited unsuccessfully.` 等通用兜底。读取或解析过程本身失败时必须保留 Chub Runtime 错误码和诊断，并进入明确失败终态。
 - 错误原文只作为有界纯文本保存、查询和通知，不作为命令、HTML 或新任务输入执行。`Authorization`、`Bearer`、配置 Token、终端票据等敏感值必须在 Runner/Worker 边界脱敏。
-- `error_code` 只表示 Chub/Worker 终态分类，不要求与上游错误一一对应；未知错误不得触发自动重试、自动切换 Runtime 或重复提交。
+- `error_code` 只表示 Chub/Worker 终态分类，不要求与上游错误一一对应；`error_source=runtime` 时保留上游 AI Runtime 子进程原文，`error_source=chub` 时明确标记 Chub/Worker/解析边界错误。任务被取消或超时不是错误来源，`error_source` 必须为空；失败但来源元数据缺失时只能显示“来源未确认”，不得猜测为 Runtime 或 Chub。
+- API 错误响应必须带 `error.source`：`runtime` 仅用于 Chub 已确认该错误来自 Runtime API/CLI 的转换，`chub` 用于认证、参数、Worker、Session、页面通道和其他 Chub 控制面错误。API 层不改写 Runtime 原文；页面和通知将 `runtime` 标为“Codex CLI（上游 Runtime）”，将 `chub` 标为“Chub”。
+- 未知错误不得触发自动重试、自动切换 Runtime 或重复提交。
 
 ### 4. 当前 Session、实时终端与快速交互
 
@@ -156,13 +158,13 @@ Quick Worker 是独立本机服务，页面快速交互、微信 Chub 非实时�
 - 多 Runtime 同时展示、跨 Runtime Session 聚合/迁移或客户端 Runtime 选择。
 - 未在当前维护机器实际验证的平台行为或外部 Runtime 特有的权限、事件和终端语义。
 
-## 第二部分：后续 Runtime 接入设计
+## 第二部分：AI Runtime 实现规范
 
-### 8. 启动条件与目标
+### 8. 适用范围与实现目标
 
-只有出现明确产品需求、目标 Runtime 和用户可见场景后，才直接启动第二 Runtime 接入。不预设候选产品、版本、能力或上线日期，也不把这项工作命名为新的阶段。
+本部分定义实现一个 AI Runtime 的必需边界，适用于当前 Codex 的维护和新增 Runtime 的实现。实现者必须先确定目标 Runtime、版本、运行平台和需要开放的产品场景，再按本部分完成能力确认、Adapter/Runner、固定注册和验收；这是一套实现规范，不是项目排期。
 
-目标是：新增 Runtime 的私有实现集中在 Adapter/Runner 和固定注册 wiring 中，不改变 Chub 逻辑 Session、Quick Worker、通知、权限、单 writer、升级恢复或既有 Codex 入口的基础语义。
+实现目标是：将 Runtime 的私有实现集中在 Adapter/Runner 和固定注册 wiring 中，不改变 Chub 逻辑 Session、Quick Worker、通知、权限、单 writer、升级恢复或既有 Codex 入口的基础语义。
 
 除非需求明确要求，否则不做以下内容：
 
@@ -171,17 +173,169 @@ Quick Worker 是独立本机服务，页面快速交互、微信 Chub 非实时�
 - 不为了新 Runtime 恢复旧 Chub 运行态兼容、双读、双写或启动迁移。
 - 不把模型供应商 API 兼容直接当作 Agent Runtime 兼容。
 
-### 9. 新 Runtime 必须实现的边界
+### 8.1 实现前能力评估
 
-#### 9.1 Adapter
+实现者或评估 Agent 必须先按本节确认目标 Runtime 的能力，再进入 Adapter/Runner 实现。评估对象必须明确 Runtime 名称、版本、运行平台和调用方式；可以使用 CLI、HTTP 或其他受控接口，但按能力语义评估，不按命令名称判断兼容。
 
-新 Runtime Adapter 必须独占该 Runtime 的私有知识：可用性和版本检查、原生 Session 创建/发现/恢复/停止/归档、模型目录、权限映射、实时终端命令、writer 探测、原生事件/Activity 转换、错误原文读取和原生 ID 归属校验。
+评估结果只能使用以下值：
 
-Adapter 输出只能是共享层定义的规范化结果。上层不能因为新 Runtime 的文件、命令、锁、事件字段或进程状态而增加分支。
+- `Supported`：当前版本已实现，并有可复现的调用或测试证据。
+- `Partial`：只能覆盖部分行为，必须列出缺失边界。
+- `Unsupported`：当前版本不支持。
+- `Unknown`：没有可靠证据，不得按支持处理。
 
-#### 9.2 Runner
+#### 能力分级
 
-新 Runtime Runner 只提供固定后台执行规格、受控输入、结构化事件、最终结果和有界错误读取。Quick Worker 继续拥有：
+| 兼容级别 | 必须全部满足的能力 |
+| --- | --- |
+| 后台兼容 | `runtime_status`、`background_turn`、`task_cancel`、`native_session_mapping`、`structured_events`、`permission_profiles` |
+| Session 兼容 | 后台兼容 + `session_resume`、`session_archive` |
+| 完整兼容 | Session 兼容 + `interactive_terminal`、`writer_probe`、`activity_events`、`model_catalog` |
+
+#### 具体评估项
+
+| 能力 | 最低评估要求 |
+| --- | --- |
+| `runtime_status` | 检查 Runtime/CLI、版本、依赖和运行状态，并返回明确结果。 |
+| `background_turn` | 接受受控输入，提供结构化输出和可读取的最终结果。 |
+| `task_cancel` | 支持取消、超时和进程/资源清理，并能确认最终状态。 |
+| `native_session_mapping` | 发现、校验和创建原生 Session，至少提供原生 ID、工作目录和必要元数据。 |
+| `structured_events` | 提供 Session/Turn 开始、结束、失败和错误事件，并能关联原生 Session。 |
+| `permission_profiles` | 能无损表达既定权限和审批模式；无法映射时必须拒绝。 |
+| `session_resume` | 能使用原生 Session ID 恢复执行，并校验 ID 归属。 |
+| `session_archive` | 支持原生 Session 的归档和受控删除。 |
+| `interactive_terminal` | 能启动或恢复交互终端，并绑定指定原生 Session。 |
+| `writer_probe` | 能判断原生 Session 是否被其他 writer 占用，并等待释放。 |
+| `activity_events` | 能提供可校验的 working/idle 等生命周期信号。 |
+| `model_catalog` | 能读取和校验模型、默认值和推理等级。 |
+
+#### 通用判断规则
+
+- Runtime ID、命令、路径、权限和环境由后端固定，候选 Runtime 不能要求客户端传入实现选择。
+- Runtime 私有文件、Hook、锁、事件格式和错误格式必须由 Adapter/Runner 隔离处理。
+- 进程创建、HTTP 200、Tool Call 创建或模型回复不能单独作为成功依据。
+- 错误和结果必须有界、可脱敏；未知状态不得自动重试或切换 Runtime。
+- 不支持的能力只能关闭直接依赖它的入口，不能静默模拟或扩大权限。
+- 评估必须确认不会破坏现有 Codex、Session、Worker、通知和升级恢复语义。
+
+#### 评估报告与准入
+
+评估报告至少包含 Runtime 名称、版本、平台、调用方式、每项能力的结果、证据、缺口、已知限制和建议兼容级别。任何必需能力为 `Partial`、`Unsupported` 或 `Unknown` 时，不得进入对应兼容级别或生产注册表；自评报告不能替代维护者对实际服务、外部依赖和最终状态的验收。
+
+### 8.2 共享代码契约（实现者必读）
+
+当前仓库的共享契约位于 `app/ai_runtime/contracts.py`、`app/ai_runtime/registry.py` 和 `app/ai_runtime/worker.py`。Runtime 实现必须直接复用 `app.ai_runtime` 导出的模型和 Protocol，不复制一套同名模型，不把 Codex 私有模型当作共享接口。下表是生成 Adapter/Runner 时必须遵守的字段和约束；所有共享 Pydantic 模型均为严格、不可变且禁止额外字段。
+
+| 模型 | 必须提供的字段与边界 |
+| --- | --- |
+| `RuntimeDescriptor` | `runtime_id` 匹配 `^[a-z][a-z0-9-]{0,31}$`；`capabilities` 是已登记能力名的 `frozenset`。 |
+| `RuntimeStatus` | `runtime_id`、`available: bool`、可选 `reason`（最多 300 字符）、`dependencies: dict[str, bool]`。 |
+| `RuntimeTurnRequest` | `permission_profile` 只能是 `auto-review`、`read-only`、`full-access`；可选 `native_session_id` 最多 128、`model` 最多 128、`reasoning_effort` 最多 32。 |
+| `RuntimeNativeSession` | `runtime_id`、原生 ID（1–128）、可信 `cwd`、可选标题（最多 500）、当前权限/模型/推理等级和 `created_at`/`updated_at`。 |
+| `RuntimeSessionDiscoveryResult` | `sessions: tuple[RuntimeNativeSession, ...]`；可选 `archive_states: dict[str, bool]` 用于确认归档状态。 |
+| `RuntimeModelCatalog` | 模型列表、可选默认模型和默认推理等级；每个模型包含 ID、名称、说明、可选默认等级和等级列表。 |
+| `RuntimeTerminalRequest` | Chub `session_id`、可信 `cwd`、`permission_mode`（可额外为 `ask`）、可选原生 ID/模型/推理等级。 |
+| `RuntimeProcessSpec` | `argv: tuple[str, ...]`，至少 1 项、最多 64 项；只能是后端固定可执行文件和参数，不接受 shell 字符串。 |
+| `RuntimeEventSummary` | 可选且经过校验的单个 `native_session_id`；发现多个互相冲突的 ID 必须抛出冲突错误。 |
+| `RuntimeActivityEvent` | 可选原生 ID、`activity`（`working`/`idle`/空）和 `activity_source`（`none`/`terminal`/`quick`）。 |
+| `RuntimeTurnResult` | `text` 最多 1,000,000 字符，`truncated` 表示是否达到读取上限。 |
+| `RuntimeWorkerLaunchRequest` | Worker 传入的任务 ID、受信任任务目录、释放 FD、Session/任务类型/工作区、`RuntimeTurnRequest`、Hook/重启目录和受控启动标志；测试字段只供 `fixed-test` 使用。 |
+| `RuntimeWorkerLaunchSpec` | `argv`、`stdin_prompt: bool` 和受控环境字典；Prompt 不得拼入命令行，`stdin_prompt=True` 时由 Worker 写入标准输入。 |
+
+Runtime 错误统一使用 `RuntimeOperationError(code, message, kind)`，其中 `kind` 只能是 `invalid_request`、`conflict` 或 `unavailable`。错误消息必须有界、可脱敏，不得把异常堆栈、任意路径、Token 或终端票据交给用户或通知。
+
+Adapter 的基础 Protocol 只有以下两个成员：
+
+```text
+descriptor: RuntimeDescriptor  # property，不是方法
+status() -> RuntimeStatus
+```
+
+其余能力通过可组合的结构化 Protocol 声明。实现类不需要继承基类，但必须具备下表的精确方法名、参数和返回类型；注册表会进行运行时结构检查。
+
+### 8.3 能力与接口映射
+
+| 能力 | 必须实现的位置 | 精确接口或行为 |
+| --- | --- | --- |
+| `runtime_status` | Adapter | `descriptor` property、`status()`；状态的 `runtime_id` 必须与 descriptor 一致。 |
+| `native_session_mapping` | Adapter `RuntimeNativeSessionAdapter` | `validate_native_session_id(id) -> None`、`discover_sessions() -> RuntimeSessionDiscoveryResult`、`native_session_available(id) -> bool`。原生 Session 的创建由终端或后台 Runner 执行并从规范化事件确认，没有额外的通用 `create_native_session()` 方法。 |
+| `session_resume` | Adapter + Runner | 使用已校验的原生 ID 填入 `RuntimeTurnRequest`；必须依赖 `native_session_mapping`，不能只在字符串层面模拟恢复。 |
+| `session_archive` | Adapter `RuntimeSessionArchiveAdapter` | `run_native_action(action: "archive" | "delete", native_session_id: str) -> None`；动作完成前不得删除 Chub 映射。 |
+| `interactive_terminal` | Adapter `RuntimeInteractiveTerminalAdapter` | `terminal_command(request: RuntimeTerminalRequest, port: int) -> RuntimeProcessSpec`、`terminal_backend_matches(command: tuple[str, ...], session_id: str) -> bool`。 |
+| `writer_probe` | Adapter `RuntimeWriterProbeAdapter`，并由 Runner 转发 | `has_active_writer(native_session_id: str | None) -> bool`、`wait_for_writer_release(native_session_id: str | None, *, timeout: float = 3.0) -> bool`、`runtime_process_matches(command: tuple[str, ...]) -> bool`。无法确认时抛出错误，不得返回“空闲”。 |
+| `activity_events` | Adapter `RuntimeActivityEventAdapter` | `read_activity_event(session_id: str) -> RuntimeActivityEvent | None`、`clear_activity_event(session_id: str) -> None`。 |
+| `model_catalog` | Adapter `RuntimeModelCatalogAdapter` | `validate_model(model: str | None, reasoning_effort: str | None) -> None`、`read_model_catalog() -> RuntimeModelCatalog`。 |
+| `background_turn` | Worker Runner | 由 `RuntimeWorkerRunner.validate_turn()` 和 `build_launch()` 表达；Runner 必须提供固定进程规格、受控输入和最终结果读取。 |
+| `structured_events` | Worker Runner | `parse_event_stream(path, *, max_event_bytes, missing_ok=False) -> RuntimeEventSummary`；只输出规范化事件摘要。 |
+| `task_cancel` | Quick Worker | 没有单独的 Adapter 方法；Runner 进程必须可由 Worker 以进程组方式终止，Worker 决定取消、超时和最终状态。 |
+| `permission_profiles` | Turn/Runner | `RuntimeTurnRequest` 只接受三种可映射权限；`validate_turn()` 和 `build_launch()` 必须无损映射，不能把 `ask` 或未知权限静默提升为 `full-access`。 |
+
+`RuntimeCapabilityMatrix` 的机器状态值是小写的 `supported`、`unsupported`、`unavailable`，与评估报告使用的 `Supported`、`Partial`、`Unsupported`、`Unknown` 不同。声明能力但未实现对应 Protocol 时，`RuntimeRegistry` 必须在注册阶段失败；声明 `session_resume` 却没有原生 Session 映射、或声明完整终端却无法保证 writer 仲裁时，必须在实现自检中失败关闭。生产 Runtime 的 Adapter 与 Runner 应声明完全一致的 `runtime_id` 和能力集合；当前 `validate_runtime_wiring()` 只自动检查 `runtime_id`，能力集合一致性必须由装配测试补齐。
+
+后台 Runner 的完整结构如下，不能只实现其中的启动方法：
+
+```text
+descriptor: RuntimeDescriptor  # property
+available: bool                # property
+workspace_ids: tuple[str, ...] # property
+validate_turn(workspace_id: str, request: RuntimeTurnRequest) -> None
+build_launch(request: RuntimeWorkerLaunchRequest) -> RuntimeWorkerLaunchSpec
+has_active_writer(native_session_id: str) -> bool
+native_session_available(native_session_id: str) -> bool
+parse_event_stream(
+    path: Path,
+    *,
+    max_event_bytes: int,
+    missing_ok: bool = False,
+) -> RuntimeEventSummary
+read_error(task_dir: Path, *, max_bytes: int) -> str | None
+read_result(task_dir: Path, *, max_bytes: int) -> RuntimeTurnResult
+```
+
+`RuntimeRegistry.require(runtime_id, capabilities=...)` 只返回已注册且能力满足的 Adapter；`WorkerRuntimeRegistry.require(runtime_id)` 还会拒绝 `available=False` 的 Runner。两个 registry 都会检查 descriptor 是否发生漂移，`capability_matrix()` 只用于后端状态投影，不接受客户端选择。
+
+### 8.4 AI 生成的最小交付物
+
+AI 根据本文生成 Runtime 时，交付物必须同时包含以下内容；只生成一个能返回 `status()` 的类不算可用 Runtime：
+
+1. **能力报告。** 按 8.1 的固定结果和证据格式列出全部 12 项能力，给出建议兼容级别和明确不支持范围。
+2. **Runtime Adapter。** 提供 `RuntimeDescriptor`、`status()`，以及能力报告中标记为 `Supported` 的全部 Adapter Protocol；所有原生 ID、路径、命令、文件、Hook、锁和错误解析只存在于该 Runtime 私有包。
+3. **Worker Runner。** 只要声明后台兼容，就必须实现 `RuntimeWorkerRunner` 的完整方法集，返回 `RuntimeWorkerLaunchSpec`，并通过事件、结果、错误和资源清理测试。Runner 与 Adapter 的 descriptor 必须使用同一个 `runtime_id`。
+4. **固定装配。** 在后端 factory/registry 中构造 Adapter 和 Runner，调用 `validate_runtime_wiring(adapter, runner)`，再分别注册到 `RuntimeRegistry` 与 `WorkerRuntimeRegistry`；不得把 Runtime、命令、路径或环境选择交给客户端。
+5. **契约测试。** 至少覆盖重复注册、descriptor 漂移、状态 owner 不一致、能力虚假声明、非法原生 ID、权限映射、事件 ID 冲突、结果/错误上限、writer 无法确认、取消/超时/崩溃和租约释放。
+6. **接入变更说明。** 列出需要新增或修改的固定入口、当前不支持的入口、外部依赖、平台验证结果和恢复方式；未完成的能力不得写入生产注册表。
+
+最小组合关系如下，实际类名可以按 Runtime 命名，但调用顺序和固定 owner 不变：
+
+```text
+adapter = <Runtime>Adapter(...)
+runner = <Runtime>WorkerRuntime(adapter, ...)
+validate_runtime_wiring(adapter, runner)
+RuntimeRegistry([adapter])
+WorkerRuntimeRegistry([runner])
+```
+
+### 8.5 当前代码的接入限制
+
+共享契约已经运行时无关，但当前生产装配仍有 Codex 专用表面，生成 Adapter 时必须显式处理，不能伪造 Codex 属性来绕过：
+
+- `app/ai_session/manager.py` 和 `app/codex/manager.py` 仍调用 `network_available`、`dependencies()`、`ensure_profile()` 等 Codex 兼容方法，并在部分路径直接读取 `discovery.session_archive_states()`、`hook_dir` 或 `codex_home`；这些不是共享 Protocol。新增 Runtime 要么提供等价的 Runtime 专用 facade 并修改固定装配，要么先把调用收敛到共享 Protocol，再注册新 Runtime。
+- `app/ai_session/manager.py` 当前还把 Codex 模型 DTO、工作区和单一 `runtime_id` 写在装配层；它不能仅靠注册表自动变成多 Runtime Session 管理器。需要多 Runtime 同时进入同一 Web 实例时，必须单独完成 Session 选择/聚合 wiring。
+- `app/quick_worker.py` 的默认 factory 当前只构造 Codex Runner；`app/quick_worker_runner.py` 的子进程入口也按固定 `runtime-id` 分支执行 `codex` 或 `fixed-test`。新增 Runtime 必须增加后端固定分支或等价的受控 dispatch，不得把可执行文件或任意 Runtime ID 作为客户端参数直接透传。
+
+因此，“生成可用 Adapter”在当前代码中表示：Adapter、Runner、固定装配和必要的 facade/入口改动一起通过契约与业务验收；不能把 Adapter 文件单独通过类型检查视为完成。
+
+### 9. 实现结构与职责边界
+
+#### 9.1 Runtime Adapter
+
+Runtime Adapter 必须独占该 Runtime 的私有知识：可用性和版本检查、原生 Session 创建/发现/恢复/停止/归档、模型目录、权限映射、实时终端命令、writer 探测、原生事件/Activity 转换、错误原文读取和原生 ID 归属校验。
+
+Adapter 输出只能是共享层定义的规范化结果。每个原生 ID 在进入路径、命令或状态查询前都必须校验格式和归属；发现结果中的 `runtime_id` 必须与 Adapter descriptor 一致。上层不能因为 Runtime 的文件、命令、锁、事件字段或进程状态而增加分支。
+
+#### 9.2 Runtime Runner
+
+Runtime Runner 必须实现 `RuntimeWorkerRunner` 的完整方法集，只提供固定后台执行规格、受控输入、结构化事件、最终结果和有界错误读取。`build_launch()` 接收 Worker 提供的受信任目录和文件描述符，返回固定 `argv`、是否通过 stdin 传 Prompt 以及最小环境；不得把 Prompt、Token 或任意客户端路径写入命令行。`parse_event_stream()` 只能读取有界的私有事件文件并提取一个已校验的原生 Session ID；`read_error()` 是诊断读取，失败时 Worker 仍必须写入任务终态；`read_result()` 读取有界最终文本。Quick Worker 继续拥有：
 
 - 幂等任务 ID、Session 租约和单 writer 仲裁；
 - 进程组、超时、取消、输出/结果上限和资源清理；
@@ -192,14 +346,16 @@ Runner 启动或 Tool Call 创建不能宣告任务成功；未知错误不得�
 
 #### 9.3 固定注册与组合 wiring
 
-1. 后端注册表登记新 `runtime_id`、Adapter、Runner 和能力矩阵；客户端和外部任务协议不能携带实现选择。
-2. 注册时校验 Adapter 与 Runner 使用同一个 `runtime_id`，声明能力必须有真实实现；重复注册、能力虚假声明、协议不兼容或依赖缺失在任务受理前失败。
+1. 后端 factory 登记 `runtime_id`、Adapter、Runner 和能力矩阵；客户端和外部任务协议不能携带实现选择。
+2. 注册时调用 `validate_runtime_wiring()`，再分别注册 Adapter 和 Runner；校验 descriptor 一致、声明能力有真实实现，重复注册、能力虚假声明、协议不兼容或依赖缺失在任务受理前失败。
 3. AI Session Manager、Interactive Supervisor 和 Quick Worker 通过固定后端组合选择 Runtime；不把 Runtime 选择器暴露给页面、微信或 OpenClaw。
 4. 如果未来确实需要多个 Runtime 同时出现在同一实例，另行设计 Session 选择/聚合 wiring；这不是当前接入的默认内容。
 
-### 10. 新 Runtime 的能力门槛
+### 10. 按场景开放能力
 
-| 接入场景 | 必须通过的能力和保证 |
+实现者先选择需要支持的产品场景，再只开放满足该场景最低能力的入口。能力不足时关闭直接依赖的入口，不模拟缺失能力，也不把较低兼容级别宣称为完整兼容。
+
+| 实现/开放场景 | 必须通过的能力和保证 |
 | --- | --- |
 | 后台任务 | `runtime_status`、`background_turn`、`task_cancel`、`native_session_mapping`、`structured_events`、`permission_profiles` |
 | 复用已有原生 Session | 后台任务门槛 + `session_resume` |
@@ -209,40 +365,45 @@ Runner 启动或 Tool Call 创建不能宣告任务成功；未知错误不得�
 
 所有场景还必须满足 Worker 的固定保证：幂等、租约、取消、超时、恢复、结果限制、敏感信息保护和最终状态确认。Runtime 不能通过声明额外能力绕过这些保证。
 
-### 11. 接入实施顺序
+### 11. 规范性实现流程
 
-1. **明确产品场景。** 记录目标 Runtime、版本、运行平台、需要开放的入口、权限模式、Session 复用方式、通知方式和不支持范围；没有明确场景不写虚构能力。
-2. **完成 Adapter。** 先通过 Runtime 状态、原生 ID、Session 映射、权限、writer、事件和错误原文契约测试；私有路径和格式不得进入共享层。
-3. **完成 Runner。** 接入固定进程规格和受控输入，验证结构化事件、最终结果、退出、取消、超时、崩溃、结果超限和原文错误传播。
-4. **接入固定注册表。** 校验 Runtime ID 一致性和能力矩阵，默认只在后端固定组合中启用，不增加客户端任意选择。
-5. **接入业务边界。** 只在确有需求的入口补充 Session、终端、页面或微信 wiring；不修改没有直接依赖的 Codex 入口和其他业务。
-6. **执行受控数据/协议切换。** 如数据结构变化，按固定维护窗口清理不再适用的 Chub 自有运行态并初始化新格式；不迁移旧运行态，不删除原生 Runtime 数据。
-7. **完成回归和最终状态验收。** 通过契约、故障、权限、跨平台、页面/API/微信和服务恢复测试后，才把新 Runtime 写入当前能力清单。
+以下流程适用于每一个 Runtime 实现，用于保证实现结果可复核；它不是项目排期，也不要求为每个 Runtime 增加阶段编号。
 
-### 12. 新 Runtime 验收标准
+1. **定义实现范围并完成自评。** 记录目标 Runtime、版本、运行平台、调用方式、需要开放的入口、权限模式、Session 复用方式、通知方式和不支持范围；没有证据的能力标记为 `Unknown`，不写虚构能力。
+2. **实现共享模型组合。** 直接使用 `app.ai_runtime` 的模型和 Protocol，确定 Adapter 与 Runner 的能力集合及依赖关系；不得先复制 Codex 实现再改名。
+3. **完成 Adapter。** 先通过 Runtime 状态、原生 ID、Session 映射、权限、writer、事件和错误原文契约测试；私有路径和格式不得进入共享层。
+4. **完成 Runner。** 接入固定进程规格和受控输入，验证结构化事件、最终结果、退出、取消、超时、崩溃、结果超限和原文错误传播。
+5. **完成固定装配。** 调用 `validate_runtime_wiring()`，注册 Adapter/Runner，补齐当前 Codex 专用 facade 或固定 dispatch 的等价实现；不得开放客户端 Runtime 选择。
+6. **绑定业务边界。** 只为已确认场景补充 Session、终端、页面或微信 wiring；不修改没有直接依赖的 Codex 入口和其他业务。
+7. **执行受控数据/协议切换。** 如数据结构变化，按固定维护窗口清理不再适用的 Chub 自有运行态并初始化新格式；不迁移旧运行态，不删除原生 Runtime 数据。
+8. **完成回归和最终状态验收。** 通过契约、故障、权限、跨平台、页面/API/微信和服务恢复测试后，才把 Runtime 写入当前能力清单。
 
-新 Runtime 必须全部满足以下条件，才允许进入生产：
+### 12. 实现完成判定
+
+一个 Runtime 只有全部满足以下条件，才允许进入生产：
 
 - Runtime ID、Adapter、Runner、原生 Session 映射和能力矩阵完整且固定；不存在客户端实现、命令、路径或环境选择。
+- 能力报告、方法签名、能力依赖和固定装配位置足以让独立 AI 复现 Adapter/Runner；声明的每项能力都有可执行证据。
 - 共享层不读取 Runtime 私有文件、锁、Hook、事件字段或命令；所有私有行为集中在 Adapter/Runner。
 - 权限配置可无损映射；不支持的能力明确拒绝或隐藏，不静默降级。
 - 同一逻辑 Session 的实时终端和后台任务严格单 writer；已确认空闲的受管终端可接管；未知或外部 writer 只在直接风险存在时拒绝，并有清理/对账/恢复路径。
 - 任务、Session、通知、重启和升级都确认最终状态；Runner 成功创建、Tool Call 创建、HTTP 200 或模型回复不作为成功依据。
-- 上游错误原文按有界纯文本透传并脱敏；没有原文时才使用通用兜底；错误解析失败仍释放租约并进入明确失败终态。
+- 上游错误原文按有界纯文本透传并脱敏；没有原文时才使用通用兜底；错误解析失败仍释放租约并进入明确失败终态。页面时间线只在失败终态显示“错误来源”，取消和超时只显示自身状态。
 - Quick Worker 的幂等、租约、进程组、超时、取消、恢复、结果限制和通知语义不退化；未知结果不得自动重放。
 - 旧 Chub 运行态按批准边界清理，不新增长期兼容分支；用户配置、第三方原生数据和明确保留数据不被误删。
 - Codex 既有页面、API、微信固定入口、额度、通知、普通重启和系统升级/恢复语义无回归；无关服务和只读能力不被新 Runtime 门禁阻断。
 - Python 自动化测试、契约测试、真实业务回归、服务最终状态、受影响平台和必要的浏览器/微信验收均完成；未实际验证的平台和外部依赖必须明确列出。
 
-### 13. 维护者操作与复检
+### 13. 实现自检与复检
 
-维护者验收新 Runtime 时按以下顺序确认：
+实现者提交验收时，维护者或独立 Agent 按以下顺序确认：
 
-1. 检查固定注册表、能力矩阵、Runtime ID 和 Adapter/Runner wiring。
-2. 创建并恢复 Session，分别验证实时终端、快速交互、等待输入接管、执行中互斥和第二页面接管。
-3. 验证正常完成、上游错误、空错误、敏感信息脱敏、取消、超时、崩溃、未知结果和租约释放。
-4. 验证 Web、Worker、ClawBot 普通重启独立，以及系统升级与恢复只影响直接受影响的 Runtime 写入。
-5. 验证页面、API、微信固定入口、通知和当前 Codex 回归；再确认未承诺能力确实保持不可用。
+1. 读取能力报告，逐项对照共享模型、Protocol 方法签名和能力依赖；任何 `Partial`/`Unsupported`/`Unknown` 必须与注册表和入口状态一致。
+2. 检查固定注册表、能力矩阵、Runtime ID、`validate_runtime_wiring()` 和 Adapter/Runner wiring。
+3. 创建并恢复 Session，分别验证实时终端、快速交互、等待输入接管、执行中互斥和第二页面接管。
+4. 验证正常完成、上游错误、空错误、敏感信息脱敏、取消、超时、崩溃、未知结果和租约释放。
+5. 验证 Web、Worker、ClawBot 普通重启独立，以及系统升级与恢复只影响直接受影响的 Runtime 写入。
+6. 验证页面、API、微信固定入口、通知和当前 Codex 回归；再确认未承诺能力确实保持不可用。
 
 本专项文档需要重新检查的触发条件：新增 Runtime；改变 Runtime ID、能力矩阵、Adapter/Runner、Session/Worker 状态所有权、单 writer、错误传播、持久化/协议格式、服务关系、升级恢复或用户可见入口。仅代码重排、测试补充或不影响契约的内部实现不需要恢复历史阶段章节。
 
@@ -255,6 +416,6 @@ Runner 启动或 Tool Call 创建不能宣告任务成功；未知错误不得�
 
 ## 验收范围与复检
 
-- 已验收：已落地的 Codex Runtime 边界、AI Session/Quick Worker 所有权、能力矩阵、Adapter/Runner wiring、实时终端与快速交互规则、错误透传及现有 Codex 业务回归。
-- 当前不承诺：第二个真实 Runtime、多 Runtime Session 聚合、客户端 Runtime 选择器，以及未在当前维护机器实际验证的平台或外部 Runtime 特有行为。
-- 本次文档收敛只整理已落地契约和后续接入规则，不改变代码、API、页面、服务、协议或数据。
+- 已验收：已落地的 Codex Runtime 边界、AI Session/Quick Worker 所有权、能力矩阵、Adapter/Runner wiring、实时终端与快速交互规则、错误透传、现有 Codex 业务回归，以及 Runtime 实现规范、共享代码契约、能力评估和 Adapter/Runner 生成清单；本次协议 `9` 的错误来源投影已通过自动化回归。
+- 当前不承诺：协议 `9` 尚未完成 macOS/Ubuntu 服务重载后的真实最终状态复检；第二个真实 Runtime、多 Runtime Session 聚合、客户端 Runtime 选择器，以及未在当前维护机器实际验证的平台或外部 Runtime 特有行为也不承诺。
+- 本次文档调整补齐 AI 生成 Adapter/Runner 所需的接口、字段、装配和自检规则，并同步记录 API `error.source`、任务 `error_source`、Codex CLI/Chub 页面标签及 Worker 协议 9 升级边界；不改变 Runtime 选择、权限或服务管理语义。

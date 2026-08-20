@@ -21,6 +21,20 @@
     "codex_reasoning_effort_requires_model",
     "codex_reasoning_effort_unsupported",
   ]);
+  const ERROR_SOURCE_LABELS = Object.freeze({
+    chub: "Chub",
+    runtime: "Codex CLI（上游 Runtime）",
+  });
+
+  function errorSourceLabel(source) {
+    return ERROR_SOURCE_LABELS[source] || "";
+  }
+
+  function formatErrorMessage(error, fallback) {
+    const message = error?.message || fallback;
+    const label = errorSourceLabel(error?.source || error?.error_source);
+    return label ? `${label}：${message}` : message;
+  }
 
   async function request(token, path, options = {}) {
     const response = await fetch(path, {
@@ -35,6 +49,7 @@
     if (!response.ok || payload.success !== true) {
       const error = new Error(payload?.error?.message || "请求失败。");
       error.code = payload?.error?.code || "request_failed";
+      error.source = payload?.error?.source || null;
       error.status = response.status;
       error.retryable = response.status === 408
         || response.status === 429
@@ -304,6 +319,7 @@
       if (!session) {
         const error = new Error("会话不存在或已经归档。");
         error.code = "codex_session_not_found";
+        error.source = "chub";
         error.retryable = false;
         throw error;
       }
@@ -360,6 +376,22 @@
         );
       },
 
+      stopSession() {
+        return request(
+          token,
+          `/api/codex/sessions/${encodedSessionId}/stop`,
+          { method: "POST" },
+        );
+      },
+
+      deleteSession() {
+        return request(
+          token,
+          `/api/codex/sessions/${encodedSessionId}`,
+          { method: "DELETE" },
+        );
+      },
+
       listTasks({
         offset = 0,
         limit = 5,
@@ -404,7 +436,9 @@
     canSubmit,
     clearSessionModelPreferences,
     createClient,
+    errorSourceLabel,
     formatTime,
+    formatErrorMessage,
     isRetryableRequestError,
     pollDelay,
     readPageSize,
