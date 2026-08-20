@@ -181,7 +181,7 @@ class CodexRuntimeAdapter:
 
     @property
     def network_available(self) -> bool:
-        return is_tailscale_ip(self.settings.server.host)
+        return is_tailscale_ip(self.settings.server.tailnet_host or "")
 
     def dependencies(self) -> dict[str, bool]:
         import shutil

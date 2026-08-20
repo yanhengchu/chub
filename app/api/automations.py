@@ -12,14 +12,14 @@ from app.automations.models import (
     FeishuEnvironmentState,
 )
 from app.core.response import ApiResponse
-from app.core.security import require_token
+from app.core.security import require_trusted_network
 from app.services.operation_log import log_operation
 
 
 router = APIRouter(
     prefix="/api/automations",
     tags=["automations"],
-    dependencies=[Depends(require_token)],
+    dependencies=[Depends(require_trusted_network)],
 )
 
 

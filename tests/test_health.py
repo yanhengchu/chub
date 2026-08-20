@@ -73,20 +73,16 @@ async def test_restart_recovery_waits_for_matching_healthy_instance(
     assert requested_urls[0].endswith("/api/health")
 
 
-def test_missing_token_logs_warning(
-    settings: Settings, capsys: pytest.CaptureFixture[str]
-) -> None:
-    settings.security.token = None
+def test_local_and_tailnet_access_requires_no_credential(settings: Settings) -> None:
+    application = create_app(settings)
 
-    create_app(settings)
-
-    assert "HUB_TOKEN is not set" in capsys.readouterr().err
+    assert application.state.settings.security.allow_tailscale is True
 
 
 def test_codex_pty_requires_tailscale_listener(
     settings: Settings, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    settings.server.host = "0.0.0.0"
+    settings.server.tailnet_host = "0.0.0.0"
 
     application = create_app(settings)
 
@@ -97,7 +93,7 @@ def test_codex_pty_requires_tailscale_listener(
 def test_codex_pty_is_available_on_tailscale_listener(
     settings: Settings,
 ) -> None:
-    settings.server.host = "100.100.100.100"
+    settings.server.tailnet_host = "100.100.100.100"
 
     application = create_app(settings)
 

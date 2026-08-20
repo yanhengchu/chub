@@ -72,7 +72,7 @@ const document = {
   addEventListener(name, callback) { documentListeners[name] = callback; },
   dispatchEvent() {},
 };
-const storageValues = new Map([["hub.savedToken", "saved-token"]]);
+const storageValues = new Map();
 const localStorage = {
   getItem: (key) => storageValues.get(key) || null,
   setItem: (key, value) => storageValues.set(key, value),
@@ -167,7 +167,6 @@ process.stdout.write(JSON.stringify({
   cleared,
   clearedKind: dynamics[0].dataset.rainKind,
   usagePath: fetchCalls[0].path,
-  authorization: fetchCalls[0].options.headers.Authorization,
   usageRequestCount: fetchCalls.length,
   cachedUsage,
   cacheRemoved,
@@ -203,7 +202,6 @@ process.stdout.write(JSON.stringify({
     assert data["cleared"] == "good.morning"
     assert data["clearedKind"] == "phrase"
     assert data["usagePath"] == "/api/ai/usage"
-    assert data["authorization"] == "Bearer saved-token"
     assert data["usageRequestCount"] == 2
     assert data["cacheRemoved"] is True
     assert "quota" not in data["previewKinds"]

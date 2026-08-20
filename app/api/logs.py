@@ -9,7 +9,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 
 from app.core.response import ApiError, ApiResponse
-from app.core.security import require_token
+from app.core.security import require_trusted_network
 from app.core.config import PROJECT_ROOT
 from app.services.log_reader import (
     LogReadError,
@@ -41,7 +41,7 @@ class LogPageData(LogData):
 router = APIRouter(
     prefix="/api",
     tags=["logs"],
-    dependencies=[Depends(require_token)],
+    dependencies=[Depends(require_trusted_network)],
 )
 
 
@@ -79,8 +79,7 @@ def _log_paths(request: Request) -> dict[LogSource, Path]:
 
 
 def _sensitive_values(request: Request) -> tuple[str, ...]:
-    token = request.app.state.settings.security.token
-    return (token.get_secret_value(),) if token is not None else ()
+    return ()
 
 
 @router.get("/logs", response_model=ApiResponse[LogData])

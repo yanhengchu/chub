@@ -43,6 +43,7 @@ class StatusData(BaseModel):
     node: NodeStatus
     system: SystemStatus
     hub: HubStatus
+    authentication_method: str | None = None
 
 
 def collect_system_status(settings: Settings, detected_platform: str) -> StatusData:

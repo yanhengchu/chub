@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 
 from app.core.response import ApiResponse
-from app.core.security import require_token
+from app.core.security import require_trusted_network
 from app.notifications import (
     NotificationError,
     NotificationRequest,
@@ -16,7 +16,7 @@ from app.services.operation_log import log_operation
 router = APIRouter(
     prefix="/api/notifications",
     tags=["notifications"],
-    dependencies=[Depends(require_token)],
+    dependencies=[Depends(require_trusted_network)],
 )
 
 

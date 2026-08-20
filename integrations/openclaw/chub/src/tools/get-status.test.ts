@@ -29,18 +29,17 @@ function response(body: unknown, init: ResponseInit = {}): Response {
 }
 
 describe("statusUrl", () => {
-  it("fixes the API path for a Tailnet address", () => {
-    expect(statusUrl("http://100.64.1.2:8000").toString()).toBe(
-      "http://100.64.1.2:8000/api/status",
+  it("fixes the API path for the local address", () => {
+    expect(statusUrl("http://127.0.0.1:8000").toString()).toBe(
+      "http://127.0.0.1:8000/api/status",
     );
   });
 
   it.each([
-    "http://127.0.0.1:8000",
     "https://example.com",
     "http://100.64.1.2:8000/other",
     "http://user:secret@100.64.1.2:8000",
-  ])("rejects a non-fixed or non-Tailnet target: %s", (url) => {
+  ])("rejects a non-fixed or non-local target: %s", (url) => {
     expect(() => statusUrl(url)).toThrow("invalid_chub_base_url");
   });
 });
@@ -57,7 +56,7 @@ describe("fetchChubStatus", () => {
   it("returns only the normalized status fields", async () => {
     const fetchImpl = vi.fn(async () => response(payload));
     await expect(fetchChubStatus(
-      { baseUrl: "http://100.64.1.2:8000" },
+      { baseUrl: "http://127.0.0.1:8000" },
       undefined,
       fetchImpl,
     )).resolves.toEqual({
@@ -72,7 +71,7 @@ describe("fetchChubStatus", () => {
       checkedAt: "2026-07-30T10:00:00Z",
     });
     expect(fetchImpl).toHaveBeenCalledWith(
-      new URL("http://100.64.1.2:8000/api/status"),
+      new URL("http://127.0.0.1:8000/api/status"),
       expect.objectContaining({ method: "GET", redirect: "error" }),
     );
   });
@@ -83,13 +82,13 @@ describe("fetchChubStatus", () => {
       { status: 401 },
     ));
     await expect(fetchChubStatus(
-      { baseUrl: "http://100.64.1.2:8000" },
+      { baseUrl: "http://127.0.0.1:8000" },
       undefined,
       fetchImpl,
     )).resolves.toEqual({
       available: false,
       error: "chub_authentication_failed",
-      message: "Chub 状态检查未通过 Tailnet 认证",
+      message: "Chub 状态检查未通过本机访问校验",
     });
   });
 
@@ -100,12 +99,12 @@ describe("fetchChubStatus", () => {
       headers: { "Content-Length": "65537" },
     }));
     await expect(fetchChubStatus(
-      { baseUrl: "http://100.64.1.2:8000" },
+      { baseUrl: "http://127.0.0.1:8000" },
       undefined,
       invalid,
     )).resolves.toMatchObject({ error: "chub_response_invalid" });
     await expect(fetchChubStatus(
-      { baseUrl: "http://100.64.1.2:8000" },
+      { baseUrl: "http://127.0.0.1:8000" },
       undefined,
       oversized,
     )).resolves.toMatchObject({ error: "chub_response_too_large" });
@@ -116,7 +115,7 @@ describe("fetchChubStatus", () => {
       status: 200,
     }));
     await expect(fetchChubStatus(
-      { baseUrl: "http://100.64.1.2:8000" },
+      { baseUrl: "http://127.0.0.1:8000" },
       undefined,
       oversized,
     )).resolves.toMatchObject({ error: "chub_response_too_large" });

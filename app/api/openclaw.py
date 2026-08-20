@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Request, Response, status
 from pydantic import BaseModel
 
 from app.core.response import ApiResponse
-from app.core.security import require_token
+from app.core.security import require_trusted_network
 from app.services.openclaw import OpenClawStatus
 from app.services.openclaw_weixin import WeixinLoginStatus
 from app.services.operation_log import log_operation
@@ -15,7 +15,7 @@ from app.services.operation_log import log_operation
 router = APIRouter(
     prefix="/api/openclaw",
     tags=["openclaw"],
-    dependencies=[Depends(require_token)],
+    dependencies=[Depends(require_trusted_network)],
 )
 
 

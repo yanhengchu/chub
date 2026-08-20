@@ -10,7 +10,6 @@ const {
   pollDelay: conversationPollDelay,
   readPageSize: readConversationPageSize,
   readSessionCreationPreferences: readConversationSessionCreationPreferences,
-  readToken: readConversationToken,
   shouldPoll: shouldPollConversation,
   shouldRetrySessionCreationWithDefaults: shouldRetryConversationCreationWithDefaults,
   submissionBlockReason: conversationSubmissionBlockReason,
@@ -24,9 +23,7 @@ const {
   createView: createConversationTimelineView,
   mergeTasks: mergeConversationTaskSnapshots,
 } = window.QuickInteractionTimeline;
-const conversationToken = readConversationToken();
 let conversationClient = createConversationClient({
-  token: conversationToken,
   sessionId: conversationSessionId,
 });
 const conversationForm = document.querySelector("#conversation-form");
@@ -237,7 +234,6 @@ function switchConversationSession(sessionId, url, sessionPreview = null) {
   conversationGeneration += 1;
   conversationSessionId = sessionId;
   conversationClient = createConversationClient({
-    token: conversationToken,
     sessionId,
   });
   document.body.dataset.sessionId = sessionId;

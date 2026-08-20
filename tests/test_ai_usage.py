@@ -27,9 +27,7 @@ from app.core.config import AiUsageConfig, AiUsageProviderApiConfig, Settings
 
 
 def _authorization(settings: Settings) -> dict[str, str]:
-    token = settings.security.token
-    assert token is not None
-    return {"Authorization": f"Bearer {token.get_secret_value()}"}
+    return {}
 
 
 def _provider_config() -> AiUsageConfig:

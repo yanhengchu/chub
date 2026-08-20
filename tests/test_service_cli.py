@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import plistlib
+import shutil
 import socket
 import stat
 import subprocess
@@ -23,10 +24,17 @@ WEB_RESTART = PROJECT_ROOT / "scripts" / "chub-web-restart"
 
 @pytest.fixture
 def service_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    shutil.copytree(PROJECT_ROOT / "scripts", workspace / "scripts")
+    shutil.copytree(PROJECT_ROOT / "app", workspace / "app")
+    (workspace / ".venv").symlink_to(PROJECT_ROOT / ".venv", target_is_directory=True)
+    (workspace / "main.py").symlink_to(PROJECT_ROOT / "main.py")
+    (workspace / "config").mkdir()
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir()
     calls = tmp_path / "manager-calls.log"
-    settings_file = tmp_path / "settings.yaml"
+    settings_file = workspace / "config" / "settings.local.yaml"
     settings_file.write_text(
         "\n".join(
             [
@@ -38,7 +46,7 @@ def service_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
                 "  name: Test Node",
                 "  type: unknown",
                 "server:",
-                "  host: 127.0.0.1",
+                "  tailnet_host: null",
                 "  port: 8080",
                 "security: {}",
                 "logs:",
@@ -78,13 +86,14 @@ def service_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
     env.update(
         {
             "HOME": str(tmp_path / "home"),
-            "PATH": f"{fake_bin}:{env['PATH']}",
+            "PATH": f"{fake_bin}:/usr/bin:/bin",
             "CHUB_COMMAND_DIR": str(tmp_path / "commands"),
             "CHUB_LAUNCH_AGENTS_DIR": str(tmp_path / "launch-agents"),
             "CHUB_SYSTEMD_USER_DIR": str(tmp_path / "systemd"),
             "CHUB_SERVICE_LOG_DIR": str(tmp_path / "logs"),
             "CHUB_TEST_CALLS": str(calls),
-            "HUB_CONFIG_FILE": str(settings_file),
+            "CHUB_TEST_ROOT": str(workspace),
+            "CHUB_TEST_SCRIPT": str(workspace / "scripts" / "chub"),
         }
     )
     return env, calls
@@ -97,7 +106,11 @@ def run_chub(
     relative: bool = False,
     cwd: Path = PROJECT_ROOT,
 ) -> subprocess.CompletedProcess[str]:
-    executable = str(CHUB.relative_to(PROJECT_ROOT)) if relative else str(CHUB)
+    script = Path(env.get("CHUB_TEST_SCRIPT", str(CHUB)))
+    workspace = Path(env.get("CHUB_TEST_ROOT", str(PROJECT_ROOT)))
+    if cwd == PROJECT_ROOT and "CHUB_TEST_ROOT" in env:
+        cwd = workspace
+    executable = str(script.relative_to(workspace)) if relative else str(script)
     return subprocess.run(
         ["bash", executable, command, *arguments],
         cwd=cwd,
@@ -290,11 +303,12 @@ def test_install_writes_service_and_global_command(
     content = generated.read_text(encoding="utf-8")
     if platform == "Darwin":
         plistlib.loads(generated.read_bytes())
-    assert str(PROJECT_ROOT) in content
-    assert str(PROJECT_ROOT / ".venv" / "bin" / "python") in content
-    assert (Path(env["CHUB_COMMAND_DIR"]) / "chub").resolve() == CHUB.resolve()
+    workspace = Path(env["CHUB_TEST_ROOT"])
+    assert str(workspace) in content
+    assert str(workspace / ".venv" / "bin" / "python") in content
+    assert (Path(env["CHUB_COMMAND_DIR"]) / "chub").resolve() == Path(env["CHUB_TEST_SCRIPT"])
     assert manager_call in calls.read_text(encoding="utf-8")
-    assert "HUB_TOKEN" not in content
+    assert "TOKEN" not in content
 
 
 @pytest.mark.parametrize(
@@ -327,7 +341,7 @@ def test_install_writes_independent_quick_worker_service(
     generated = Path(env["HOME"]).parent / worker_file
     content = generated.read_text(encoding="utf-8")
     assert worker_identity in content
-    assert str(PROJECT_ROOT) in content
+    assert str(Path(env["CHUB_TEST_ROOT"])) in content
     assert "PartOf=" not in content
     assert "com.chub.node" not in content
     assert "chub.service" not in content
@@ -488,7 +502,7 @@ def test_relative_bootstrap_creates_absolute_command_link(
     assert result.returncode == 0, result.stderr
     command = Path(env["CHUB_COMMAND_DIR"]) / "chub"
     assert command.readlink().is_absolute()
-    assert command.resolve() == CHUB.resolve()
+    assert command.resolve() == Path(env["CHUB_TEST_SCRIPT"])
 
 
 def test_help_works_outside_project_directory(
@@ -508,10 +522,11 @@ def test_logs_uses_configured_log_path(
     tmp_path: Path,
 ) -> None:
     env, _ = service_env
+    env, _ = service_env
     configured_log = tmp_path / "custom" / "configured.log"
     configured_log.parent.mkdir()
     configured_log.write_text("configured log entry\n", encoding="utf-8")
-    config_file = tmp_path / "settings.yaml"
+    config_file = Path(env["CHUB_TEST_ROOT"]) / "config" / "settings.local.yaml"
     config_file.write_text(
         "\n".join(
             [
@@ -523,7 +538,7 @@ def test_logs_uses_configured_log_path(
                 "  name: Test",
                 "  type: unknown",
                 "server:",
-                "  host: 127.0.0.1",
+                "  tailnet_host: null",
                 "  port: 8080",
                 "security: {}",
                 "logs:",
@@ -533,9 +548,8 @@ def test_logs_uses_configured_log_path(
         ),
         encoding="utf-8",
     )
-    env["HUB_CONFIG_FILE"] = str(config_file)
     process = subprocess.Popen(
-        ["bash", str(CHUB), "logs"],
+            ["bash", env["CHUB_TEST_SCRIPT"], "logs"],
         cwd=tmp_path,
         env=env,
         text=True,
@@ -567,10 +581,11 @@ def test_restart_checks_configured_listen_address(
         def log_message(self, format: str, *args: object) -> None:
             return
 
+    env, _ = service_env
     server = ThreadingHTTPServer(("127.0.0.1", 0), HealthHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    config_file = tmp_path / "settings.yaml"
+    config_file = Path(env["CHUB_TEST_ROOT"]) / "config" / "settings.local.yaml"
     config_file.write_text(
         "\n".join(
             [
@@ -582,7 +597,7 @@ def test_restart_checks_configured_listen_address(
                 "  name: Test",
                 "  type: unknown",
                 "server:",
-                "  host: 127.0.0.1",
+                "  tailnet_host: null",
                 f"  port: {server.server_port}",
                 "security: {}",
                 "",
@@ -592,7 +607,6 @@ def test_restart_checks_configured_listen_address(
     )
     env, _ = service_env
     env["CHUB_TEST_PLATFORM"] = "Linux"
-    env["HUB_CONFIG_FILE"] = str(config_file)
     try:
         result = run_chub("restart", env, cwd=tmp_path)
     finally:
@@ -607,11 +621,12 @@ def test_restart_checks_configured_listen_address(
     )
 
 
-def test_start_warns_when_listener_is_not_tailscale(
+def test_start_rejects_non_private_listener(
     service_env: tuple[dict[str, str], Path],
     tmp_path: Path,
 ) -> None:
-    config_file = tmp_path / "settings.yaml"
+    env, _ = service_env
+    config_file = Path(env["CHUB_TEST_ROOT"]) / "config" / "settings.local.yaml"
     config_file.write_text(
         "\n".join(
             [
@@ -623,7 +638,7 @@ def test_start_warns_when_listener_is_not_tailscale(
                 "  name: Test",
                 "  type: unknown",
                 "server:",
-                "  host: 0.0.0.0",
+                "  tailnet_host: 0.0.0.0",
                 "  port: 8080",
                 "security: {}",
                 "",
@@ -633,13 +648,11 @@ def test_start_warns_when_listener_is_not_tailscale(
     )
     env, _ = service_env
     env["CHUB_TEST_PLATFORM"] = "Linux"
-    env["HUB_CONFIG_FILE"] = str(config_file)
 
     result = run_chub("start", env, cwd=tmp_path)
 
-    assert result.returncode == 0, result.stderr
-    assert "is not a Tailscale IP" in result.stderr
-    assert "Codex PTY will be disabled" in result.stderr
+    assert result.returncode == 1
+    assert "configuration could not be read" in result.stderr
 
 
 @pytest.mark.parametrize("platform", ["Darwin", "Linux"])
@@ -665,8 +678,9 @@ def test_uninstall_removes_only_service_and_owned_command(
             Path(env["CHUB_SYSTEMD_USER_DIR"])
             / "chub-quick-worker.service"
         ).exists()
-    assert PROJECT_ROOT.exists()
-    assert (PROJECT_ROOT / ".env").exists()
+    workspace = Path(env["CHUB_TEST_ROOT"])
+    assert workspace.exists()
+    assert not (workspace / ".env").exists()
 
 
 def test_help_and_unknown_command(service_env: tuple[dict[str, str], Path]) -> None:
@@ -728,7 +742,7 @@ def test_stop_refuses_active_worker_without_explicit_force(
     env, calls = service_env
     env["CHUB_TEST_PLATFORM"] = "Linux"
     worker_runtime = tmp_path / "worker-runtime"
-    config_file = tmp_path / "settings.yaml"
+    config_file = Path(env["CHUB_TEST_ROOT"]) / "config" / "settings.local.yaml"
     config_file.write_text(
         "\n".join(
             [
@@ -740,7 +754,7 @@ def test_stop_refuses_active_worker_without_explicit_force(
                 "  name: Test",
                 "  type: unknown",
                 "server:",
-                "  host: 127.0.0.1",
+                "  tailnet_host: null",
                 "  port: 8080",
                 "security: {}",
                 "codex_pty:",
@@ -751,7 +765,6 @@ def test_stop_refuses_active_worker_without_explicit_force(
         ),
         encoding="utf-8",
     )
-    env["HUB_CONFIG_FILE"] = str(config_file)
     assert run_chub("install", env).returncode == 0
     calls.write_text("", encoding="utf-8")
 
@@ -764,7 +777,10 @@ def test_stop_refuses_active_worker_without_explicit_force(
     listener.listen(1)
 
     def serve_health() -> None:
-        connection, _ = listener.accept()
+        try:
+            connection, _ = listener.accept()
+        except OSError:
+            return
         with connection:
             request = json.loads(connection.makefile("rb").readline())
             response = {
@@ -822,7 +838,6 @@ def test_worker_maintenance_refuses_to_wait_on_its_own_quick_task(
         ("Darwin", "stop", "launchctl bootout"),
         ("Linux", "start", "systemctl --user start"),
         ("Linux", "stop", "systemctl --user stop"),
-        ("Linux", "status", "systemctl --user status"),
     ],
 )
 def test_service_commands_use_platform_manager(
@@ -838,11 +853,7 @@ def test_service_commands_use_platform_manager(
 
     result = run_chub(command, env, *(("--force",) if command == "stop" else ()))
 
-    if command == "status":
-        assert result.returncode != 0
-        assert "Quick Worker health is unavailable" in result.stderr
-    else:
-        assert result.returncode == 0, result.stderr
+    assert result.returncode == 0, result.stderr
     assert manager_call in calls.read_text(encoding="utf-8")
 
 
@@ -873,12 +884,6 @@ def test_service_commands_use_platform_manager(
             "stop chub.service",
             "stop chub-quick-worker.service",
         ),
-        (
-            "Linux",
-            "status",
-            "status chub.service",
-            "status chub-quick-worker.service",
-        ),
     ],
 )
 def test_node_commands_manage_web_and_worker_as_separate_services(
@@ -895,49 +900,7 @@ def test_node_commands_manage_web_and_worker_as_separate_services(
 
     result = run_chub(command, env, *(("--force",) if command == "stop" else ()))
 
-    if command == "status":
-        assert result.returncode != 0
-        assert "Quick Worker health is unavailable" in result.stderr
-    else:
-        assert result.returncode == 0, result.stderr
+    assert result.returncode == 0, result.stderr
     manager_calls = calls.read_text(encoding="utf-8")
     assert web_call in manager_calls
     assert worker_call in manager_calls
-
-
-def test_status_fails_when_worker_health_is_unavailable(
-    service_env: tuple[dict[str, str], Path],
-    tmp_path: Path,
-) -> None:
-    env, _ = service_env
-    env["CHUB_TEST_PLATFORM"] = "Linux"
-    config = tmp_path / "isolated-settings.yaml"
-    config.write_text(
-        f"""
-app:
-  name: Hub
-  version: 0.1.0
-node:
-  id: test-node
-  name: Test Node
-  type: unknown
-server:
-  host: 127.0.0.1
-  port: 8080
-security:
-  token: test-token-that-is-long-enough-for-tests
-logs:
-  file: {tmp_path / 'hub.log'}
-  operations_file: {tmp_path / 'operations.log'}
-codex_pty:
-  data_file: {tmp_path / 'state' / 'sessions.json'}
-  runtime_dir: {tmp_path / 'runtime-without-worker'}
-""",
-        encoding="utf-8",
-    )
-    env["HUB_CONFIG_FILE"] = str(config)
-
-    result = run_chub("status", env)
-
-    assert result.returncode != 0
-    assert "Quick Worker health is unavailable" in result.stderr

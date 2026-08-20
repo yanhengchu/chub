@@ -1,8 +1,5 @@
 "use strict";
 
-const SESSION_TOKEN_KEY = "hub.sessionToken";
-const LOCAL_TOKEN_KEY = "hub.savedToken";
-const token = sessionStorage.getItem(SESSION_TOKEN_KEY) || localStorage.getItem(LOCAL_TOKEN_KEY) || "";
 const FILTER_KEY = "hub.projectDocumentFilter";
 const list = document.querySelector("#document-list");
 const message = document.querySelector("#document-list-message");
@@ -56,7 +53,6 @@ async function updateArchiveState(button) {
           {
             method: "PUT",
             headers: {
-              ...(token ? { Authorization: `Bearer ${token}` } : {}),
               "Content-Type": "application/json",
             },
             body: JSON.stringify({ archived: !archived }),

@@ -1,27 +1,25 @@
 from __future__ import annotations
 
-import os
 from functools import lru_cache
 from ipaddress import ip_address, ip_network
 from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from dotenv import load_dotenv
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    SecretStr,
     ValidationError,
     field_validator,
     model_validator,
 )
 
+from app.core.network import is_tailscale_ip
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_FILE = PROJECT_ROOT / "config" / "settings.local.yaml"
-DEFAULT_ENV_FILE = PROJECT_ROOT / ".env"
 
 
 class StrictModel(BaseModel):
@@ -41,21 +39,25 @@ class NodeConfig(StrictModel):
 
 
 class ServerConfig(StrictModel):
-    host: str = Field(min_length=1)
     port: int = Field(ge=1, le=65535)
+    tailnet_host: str | None = None
+
+    @field_validator("tailnet_host")
+    @classmethod
+    def validate_tailnet_host(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            address = ip_address(value)
+        except ValueError as error:
+            raise ValueError("server.tailnet_host must be a Tailscale IP") from error
+        if is_tailscale_ip(value):
+            return value
+        raise ValueError("server.tailnet_host must be a Tailscale IP")
 
 
 class SecurityConfig(StrictModel):
-    token: SecretStr | None = None
     allow_tailscale: bool = True
-
-    @field_validator("token", mode="before")
-    @classmethod
-    def normalize_token(cls, value: object) -> object:
-        if isinstance(value, str):
-            value = value.strip()
-            return value or None
-        return value
 
 
 class LogsConfig(StrictModel):
@@ -338,7 +340,7 @@ def _read_yaml(path: Path) -> dict[str, Any]:
         if path == DEFAULT_CONFIG_FILE:
             raise RuntimeError(
                 "Configuration file not found: "
-                f"{path}. Copy the matching platform example to "
+                f"{path}. Copy config/settings.example.yaml to "
                 "config/settings.local.yaml"
             ) from exc
         raise RuntimeError(f"Configuration file not found: {path}") from exc
@@ -351,9 +353,7 @@ def _read_yaml(path: Path) -> dict[str, Any]:
 
 
 def load_settings(config_file: str | Path | None = None) -> Settings:
-    load_dotenv(DEFAULT_ENV_FILE, override=False)
-    configured_path = config_file or os.getenv("HUB_CONFIG_FILE") or DEFAULT_CONFIG_FILE
-    path = Path(configured_path).expanduser()
+    path = Path(config_file or DEFAULT_CONFIG_FILE).expanduser()
     if not path.is_absolute():
         path = PROJECT_ROOT / path
     path = path.resolve()
@@ -362,8 +362,6 @@ def load_settings(config_file: str | Path | None = None) -> Settings:
     security = data.setdefault("security", {})
     if not isinstance(security, dict):
         raise RuntimeError("Configuration field 'security' must be a mapping")
-    security["token"] = os.getenv("HUB_TOKEN")
-
     try:
         return Settings.model_validate(data).resolve_runtime_paths()
     except ValidationError as exc:

@@ -244,18 +244,6 @@ function saveCodexPreference(key, value) {
   }
 }
 
-function settingsToken() {
-  try {
-    return (
-      sessionStorage.getItem("hub.sessionToken")
-      || localStorage.getItem("hub.savedToken")
-      || ""
-    );
-  } catch (_error) {
-    return "";
-  }
-}
-
 function createOption(value, label) {
   const option = document.createElement("option");
   option.value = value;
@@ -331,11 +319,8 @@ function renderCodexModels(models) {
 }
 
 async function loadCodexModels() {
-  const token = settingsToken();
   try {
-    const response = await fetch("/api/codex/models", {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    });
+    const response = await fetch("/api/codex/models");
     const payload = await response.json();
     if (!response.ok || payload.success !== true || !Array.isArray(payload.data?.models)) {
       throw new Error("model_catalog_unavailable");
@@ -365,8 +350,7 @@ async function loadCodexModels() {
 }
 
 function settingsHeaders(includeJson = false) {
-  const token = settingsToken();
-  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  const headers = {};
   if (includeJson) {
     headers["Content-Type"] = "application/json";
   }

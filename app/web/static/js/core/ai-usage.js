@@ -2,8 +2,6 @@
 
 (() => {
   const CACHE_KEY = "hub.aiUsageCache";
-  const SESSION_TOKEN_KEY = "hub.sessionToken";
-  const LOCAL_TOKEN_KEY = "hub.savedToken";
   const REFRESH_MS = 5 * 60 * 1000;
   const listeners = new Set();
   let snapshot = null;
@@ -23,10 +21,6 @@
 
   function restoreSnapshot() {
     try {
-      if (!readToken()) {
-        removeStoredSnapshot();
-        return;
-      }
       const cached = JSON.parse(sessionStorage.getItem(CACHE_KEY) || "null");
       if (!cached || typeof cached !== "object") {
         removeStoredSnapshot();
@@ -41,16 +35,6 @@
       snapshot = null;
       loadedAt = 0;
       removeStoredSnapshot();
-    }
-  }
-
-  function readToken() {
-    try {
-      return sessionStorage.getItem(SESSION_TOKEN_KEY)
-        || localStorage.getItem(LOCAL_TOKEN_KEY)
-        || "";
-    } catch (_error) {
-      return "";
     }
   }
 
@@ -92,14 +76,12 @@
 
   function startLoad(force) {
     const requestVersion = version;
-    const token = readToken();
     const currentPromise = (async () => {
       try {
         const response = await fetch(
           `/api/ai/usage${force ? "?refresh=true" : ""}`,
           {
             cache: "no-store",
-            headers: token ? { Authorization: `Bearer ${token}` } : {},
           },
         );
         let payload;

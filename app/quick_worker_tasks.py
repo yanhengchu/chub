@@ -478,12 +478,7 @@ class WorkerTaskManager:
         self.protocol_version = protocol_version
         self.allow_test_tasks = allow_test_tasks
         self.runtime_registry = runtime_registry
-        configured_token = settings.security.token
-        self._sensitive_values = (
-            (configured_token.get_secret_value(),)
-            if configured_token is not None
-            else ()
-        )
+        self._sensitive_values = ()
         self._lock = asyncio.Lock()
         self._supervisors: dict[str, asyncio.Task[None]] = {}
         self._processes: dict[str, asyncio.subprocess.Process] = {}

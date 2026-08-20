@@ -28,7 +28,7 @@
 
 ## 3. 安全边界
 
-- Chub 不直接暴露到公网，受保护接口只接受 Hub Token 或真实可信 Tailnet socket；微信 Chub 提交还要求同节点来源。
+- Chub 不直接暴露到公网；当前仅接受真实 loopback 或可信 Tailnet socket，微信 Chub 提交还要求同节点来源。
 - Tool 和 API 使用固定地址、固定能力和有界参数，不接受任意 URL、文件路径或系统命令字段。
 - 通道绑定、Owner 授权和 Chub 能力授权是独立状态，不能互相推断。
 - 微信 Chub 模式的 `Full access` 是维护者批准的固定 Tailnet、单 Owner、单专用 Session 例外，不适用于其他 Agent、身份、入口或 Session。

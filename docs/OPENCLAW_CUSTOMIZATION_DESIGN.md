@@ -13,7 +13,7 @@
 1. Chub 是业务控制面和可靠协调者；OpenClaw 负责 Gateway、通道、账号、Owner 和可信消息上下文；Codex/Worker 负责执行。
 2. 微信 ClawBot 设备请求只能走一次固定链路：`微信 -> OpenClaw 插件 -> Chub dispatch -> Codex/Worker -> Chub -> OpenClaw -> 微信`。
 3. 插件不得调用 `openclaw agent`、Gateway Agent 或模型来决定路由；Chub 也不得为处理微信设备请求反向调用 Agent。
-4. 微信高权限入口只接受同一 Chub 节点真实 Tailnet socket、当前绑定的单一微信 Owner、私聊消息和可验证的稳定消息 ID。任何条件不满足都失败关闭。
+4. 微信高权限入口只接受同机 OpenClaw 的真实 loopback socket、当前绑定的单一微信 Owner、私聊消息和可验证的稳定消息 ID。任何条件不满足都失败关闭。
 5. 请求正文不得由客户端指定 Session、workspace、权限、模型、路径、命令或收件人。Session、Request、Worker 和通知路由由 Chub 根据固定规则选择。
 6. 同一稳定消息 ID 与同一路由只能产生一个决定和一个派生任务；重复请求返回首次决定，冲突路由拒绝，未知副作用不自动重试。
 7. 任务结果和通知结果是两个状态。任务成功不等于通知成功；原保存的账号、发送者和路由失效时不得回退到全局收件人。
@@ -53,7 +53,7 @@
 
 当前微信 Chub 模式仅支持单节点、单一健康 ClawBot、单一微信 Owner 和当前绑定 Session。高权限提交必须同时满足：
 
-- 来源是同节点真实 Tailnet socket，不信任客户端转发 Header，也不以 Hub Token 替代来源边界；
+- 来源是同机真实 loopback socket，不信任客户端转发 Header；
 - 通道上下文确认是当前 Owner 的私聊，不接受群聊、未知发送者或不稳定消息 ID；
 - 本次请求存在可回送的原始账号、发送者和消息路由。
 
@@ -116,7 +116,7 @@ AI Agent 执行顺序：先读 `AGENTS.md` 和本文；用 `openclaw plugins ins
 
 ## 9. 验收与变更清单
 
-插件自动化至少覆盖：协议版本和字段拒绝、真实 Tailnet 来源边界、Owner/私聊校验、重复消息幂等、路由冲突、失败关闭、通知与任务状态分离。Context Token 持久化属于第三方微信插件运行时兼容能力；仓库补丁提供变更基线，实际验收以实际加载目录代码、Token 文件权限、Gateway 健康和维护者真实微信出站结果为准，不能把 Chub 插件测试当作 Token 补丁的自动化覆盖。插件变更另执行 README 的构建、校验、测试和部署检查。
+插件自动化至少覆盖：协议版本和字段拒绝、真实 loopback 来源边界、Owner/私聊校验、重复消息幂等、路由冲突、失败关闭、通知与任务状态分离。Context Token 持久化属于第三方微信插件运行时兼容能力；仓库补丁提供变更基线，实际验收以实际加载目录代码、Token 文件权限、Gateway 健康和维护者真实微信出站结果为准，不能把 Chub 插件测试当作 Token 补丁的自动化覆盖。插件变更另执行 README 的构建、校验、测试和部署检查。
 
 真实微信文字和语音的发送、点击和收件只能由维护者在微信客户端完成；AI Agent 只检查 Chub/OpenClaw 后台日志、任务状态和通知终态，后台记录不能替代客户端确认。验收还应确认 Gateway/Chub/Worker 的普通重启相互独立，升级或恢复操作按其自身锁定规则最终完成，不把“请求已受理”当作成功。
 

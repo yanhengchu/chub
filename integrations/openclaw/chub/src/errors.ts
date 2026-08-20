@@ -6,7 +6,7 @@ export type ChubToolFailure = {
 
 const MESSAGES = {
   chub_configuration_invalid: "Chub 工具配置无效",
-  chub_authentication_failed: "Chub 状态检查未通过 Tailnet 认证",
+  chub_authentication_failed: "Chub 状态检查未通过本机访问校验",
   chub_status_unavailable: "Chub 暂时无法提供状态",
   chub_timeout: "Chub 状态检查超时",
   chub_cancelled: "Chub 状态检查已取消",

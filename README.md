@@ -77,16 +77,12 @@ Web 是控制面和业务协调入口；Quick Worker 独立负责需要跨 Web �
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
-cp .env.example .env
-chmod 600 .env
 ```
 
 按平台创建本机配置：
 
 ```bash
-cp config/settings.macos.example.yaml config/settings.local.yaml
-# 或
-cp config/settings.ubuntu.example.yaml config/settings.local.yaml
+cp config/settings.example.yaml config/settings.local.yaml
 ```
 
 启动服务：
@@ -95,15 +91,13 @@ cp config/settings.ubuntu.example.yaml config/settings.local.yaml
 .venv/bin/python main.py
 ```
 
-`.env` 和 `config/settings.local.yaml` 只保存本机配置，不应提交。主要配置包括：
+`config/settings.local.yaml` 只保存本机配置，不应提交。主要配置包括：
 
-- `HUB_TOKEN`：节点访问令牌。
-- `HUB_CONFIG_FILE`：配置文件路径，默认 `config/settings.local.yaml`。
 - `app.page_title`：浏览器标签和首页标题；省略时使用应用名称。
 - `security.allow_tailscale`：默认开启，允许真实 Tailnet socket 来源访问受保护接口；不信任客户端转发 Header，也不识别具体用户。
 - `ai_usage`：AI 额度供应商、地区和 API 方式的固定订阅页配置；不保存 Cookie、Authorization 或其他上游凭据。
 
-平台模板默认监听 `127.0.0.1`。需要通过手机远程访问时，将 `server.host` 改为节点自己的 Tailscale IP，不要使用 `0.0.0.0` 或普通局域网地址。如果 Tailnet 将来加入其他人的设备，应重新评估设备级授权和高风险操作边界。
+Chub 始终监听 `127.0.0.1:<port>`，供本机浏览器与同机 OpenClaw 使用。`server.tailnet_host` 是可选的第二监听地址：设为节点自己的 Tailscale IP 后，Chub 才会同时监听该地址以供手机远程访问；留空则仅本机访问。不要配置 `0.0.0.0` 或普通局域网地址。Tailnet 请求只信任真实 socket 来源，不信任客户端转发 Header；如果 Tailnet 将来加入其他人的设备，应重新评估设备级授权和高风险操作边界。
 
 ## 后台服务
 
@@ -228,7 +222,7 @@ Runner 不会自行启动或停止 Debug Chrome。浏览器 Profile 未初始化
 
 ### 微信执行前润色
 
-设置页的“自动润色后执行”是节点级设置，需要 Hub Token 或可信 Tailnet 访问。开启后，微信普通任务先在独立只读 Session 生成中文润色和 English，再把润色后的中文提交到原目标 Session；翻译受理后不发送处理中回执，主任务被接收后发送包含实际提交文本和 English 的 `Started` 通知。固定指令绕过该流程，`direct <task>` / `直接执行 <正文>` 可单次直接执行原文。首次状态由本机配置的 `translation_enabled` 决定，页面修改后由 Chub 私有状态持久化并即时生效，无需改写 YAML 或重启服务。
+设置页的“自动润色后执行”是节点级设置，需要真实 loopback 或可信 Tailnet 访问。开启后，微信普通任务先在独立只读 Session 生成中文润色和 English，再把润色后的中文提交到原目标 Session；翻译受理后不发送处理中回执，主任务被接收后发送包含实际提交文本和 English 的 `Started` 通知。固定指令绕过该流程，`direct <task>` / `直接执行 <正文>` 可单次直接执行原文。首次状态由本机配置的 `translation_enabled` 决定，页面修改后由 Chub 私有状态持久化并即时生效，无需改写 YAML 或重启服务。
 
 ### 界面风格
 
@@ -248,7 +242,7 @@ Runner 不会自行启动或停止 Debug Chrome。浏览器 Profile 未初始化
 
 `scripts/chub-data-migrate` 只保留给历史安装的数据目录整理，不参与 AI Session 或 Worker 协议升级。新的持久化协议切换统一使用上述受控升级流程，直接清理方案白名单内的旧运行数据，不增加启动迁移、双写或旧格式兼容读取。
 
-受保护接口使用 Hub Token，或在未关闭时接受真实 Tailnet socket 来源。健康检查和项目资料详情是可信网络内的只读页面；公开展示的文档和周报不得包含 Token、Cookie、账号信息、本机秘密或其他不适合直接访问的内容。
+受保护接口只接受真实 loopback socket，或在未关闭时接受真实 Tailnet socket 来源；其他来源拒绝。健康检查和项目资料详情是可信网络内的只读页面；公开展示的文档和周报不得包含 Token、Cookie、账号信息、本机秘密或其他不适合直接访问的内容。
 
 主要接口类别：
 

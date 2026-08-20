@@ -1,21 +1,11 @@
 "use strict";
 
-const SESSION_TOKEN_KEY = "hub.sessionToken";
-const LOCAL_TOKEN_KEY = "hub.savedToken";
 const elements = {
-  accessCard: document.querySelector("#access-card"),
-  accessTitle: document.querySelector("#access-title"),
-  accessBadge: document.querySelector("#access-badge"),
-  tokenForm: document.querySelector("#token-form"),
-  tokenInput: document.querySelector("#token-input"),
-  rememberToken: document.querySelector("#remember-token"),
-  connectSubmit: document.querySelector("#connect-submit"),
   connectedBar: document.querySelector("#connected-bar"),
   connectedNode: document.querySelector("#connected-node"),
   connectedMeta: document.querySelector("#connected-meta"),
   connectedSummary: document.querySelector("#connected-summary"),
   connectionBadge: document.querySelector("#connection-badge"),
-  clearToken: document.querySelector("#clear-token"),
   globalMessage: document.querySelector("#global-message"),
   dashboard: document.querySelector("#dashboard"),
   refreshStatus: document.querySelector("#refresh-status"),
@@ -91,8 +81,7 @@ const elements = {
   codexWorkspaceDialog: null,
 };
 
-let activeToken = "";
-let tailscaleAccess = false;
+let connectionMethod = "";
 let accessVersion = 0;
 let connectionAttempt = 0;
 let cardsRefreshAt = 0;
@@ -192,20 +181,13 @@ function clearProtectedView() {
   sessionStorage.removeItem(CODEX_MODEL_PREFERENCE_CACHE_KEY);
 }
 
-function showDisconnectedView(message = "输入启动 Hub 时配置的 Token。", kind = "") {
-  elements.accessCard.hidden = false;
+function showDisconnectedView(message, kind = "") {
   syncCoreMaintenanceControls();
-  elements.accessTitle.textContent = "连接此节点";
-  elements.connectSubmit.textContent = "连接节点";
-  elements.connectSubmit.disabled = false;
-  setBadge(elements.accessBadge, "未连接");
   setMessage(elements.globalMessage, message, kind);
-  elements.tokenInput.focus();
 }
 
 function showConnectedView(status) {
   setMessage(elements.globalMessage, "");
-  elements.accessCard.hidden = true;
   elements.connectedBar.hidden = false;
   elements.dashboard.hidden = false;
   elements.siteSettings.hidden = false;
@@ -215,33 +197,17 @@ function showConnectedView(status) {
     `${platformText(status.node.detected_platform)} · ${status.system.hostname || "未知主机"}`;
   setBadge(
     elements.connectionBadge,
-    tailscaleAccess ? "Tailnet 已连接" : "已连接",
+    status.authentication_method === "tailscale" ? "Tailnet 已连接" : "本机已连接",
     "success",
   );
-  elements.clearToken.hidden = tailscaleAccess && !activeToken;
 }
 
 function hasProtectedAccess() {
-  return Boolean(activeToken) || tailscaleAccess;
+  return Boolean(connectionMethod);
 }
 
-function authorizationHeaders(token = activeToken) {
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
-function storeToken(token, remember) {
-  sessionStorage.removeItem(SESSION_TOKEN_KEY);
-  localStorage.removeItem(LOCAL_TOKEN_KEY);
-  if (remember) {
-    localStorage.setItem(LOCAL_TOKEN_KEY, token);
-  } else {
-    sessionStorage.setItem(SESSION_TOKEN_KEY, token);
-  }
-}
-
-function removeStoredToken() {
-  sessionStorage.removeItem(SESSION_TOKEN_KEY);
-  localStorage.removeItem(LOCAL_TOKEN_KEY);
+function authorizationHeaders() {
+  return {};
 }
 
 function errorDetails(payload, fallback) {
@@ -262,14 +228,14 @@ function formatApiErrorMessage(error, fallback) {
   return label ? `${label}：${message}` : message;
 }
 
-async function apiFetch(path, options = {}, token = activeToken) {
+async function apiFetch(path, options = {}) {
   let response;
   try {
     response = await fetch(path, {
       ...options,
       headers: {
         ...options.headers,
-        ...authorizationHeaders(token),
+        ...authorizationHeaders(),
       },
     });
   } catch {
@@ -294,83 +260,18 @@ async function apiFetch(path, options = {}, token = activeToken) {
 }
 
 function handleAccessError(error) {
-  if (error.code === "invalid_credentials" || error.code === "authentication_required") {
-    removeStoredToken();
-    activeToken = "";
-    tailscaleAccess = false;
+  if (error.code === "trusted_network_required") {
+    connectionMethod = "";
     accessVersion += 1;
     clearProtectedView();
-    showDisconnectedView("Token 无效或已变更，请重新输入。", "error");
-    return true;
-  }
-  if (error.code === "security_not_configured") {
-    removeStoredToken();
-    activeToken = "";
-    tailscaleAccess = false;
-    accessVersion += 1;
-    clearProtectedView();
-    showDisconnectedView(
-      "Hub 尚未配置 HUB_TOKEN，请在服务端配置后重启。",
-      "error",
-    );
-    setBadge(elements.accessBadge, "未配置认证", "timeout");
+    showDisconnectedView("当前来源不在本机或 Tailnet 内。", "error");
     return true;
   }
   return false;
 }
 
-async function connectWithToken(token, remember, savedCredential = false) {
+async function connectToHub() {
   const attempt = ++connectionAttempt;
-  elements.connectSubmit.disabled = true;
-  setBadge(elements.accessBadge, "验证中");
-  setMessage(elements.globalMessage, "");
-
-  try {
-    const status = await apiFetch("/api/status", {}, token);
-    if (attempt !== connectionAttempt) {
-      return;
-    }
-    activeToken = token;
-    tailscaleAccess = false;
-    accessVersion += 1;
-    storeToken(token, remember);
-    ensureCodexCard();
-    renderStatus(status);
-    const openclawCacheRestored = restoreOpenClawCache(status.node.id);
-    showConnectedView(status);
-    const cardLoads = [
-      loadCodexSessions(),
-      loadAutomations(),
-      loadAutomationEnvironment(),
-      loadQuickWorkerStatus(),
-      loadSystemUpgradeStatus(),
-    ];
-    if (dashboardIsHistoryReturn && openclawCacheRestored) {
-      cardLoads.push(loadOpenClawWeixinStatus());
-    } else {
-      cardLoads.push(loadOpenClaw());
-    }
-    await Promise.all(cardLoads);
-  } catch (error) {
-    if (attempt !== connectionAttempt) {
-      return;
-    }
-    handleAccessError(error);
-    if (error.code === "network_error") {
-      showDisconnectedView(error.message, "error");
-      setBadge(elements.accessBadge, "连接失败", "failed");
-    }
-  } finally {
-    if (attempt === connectionAttempt) {
-      elements.connectSubmit.disabled = false;
-    }
-  }
-}
-
-async function connectWithTailscale(fallbackToken = "", rememberFallback = false) {
-  const attempt = ++connectionAttempt;
-  elements.connectSubmit.disabled = true;
-  setBadge(elements.accessBadge, "检查 Tailnet");
   setMessage(elements.globalMessage, "");
 
   try {
@@ -378,8 +279,7 @@ async function connectWithTailscale(fallbackToken = "", rememberFallback = false
     if (attempt !== connectionAttempt) {
       return;
     }
-    activeToken = "";
-    tailscaleAccess = true;
+    connectionMethod = status.authentication_method || "loopback";
     accessVersion += 1;
     ensureCodexCard();
     renderStatus(status);
@@ -402,24 +302,16 @@ async function connectWithTailscale(fallbackToken = "", rememberFallback = false
     if (attempt !== connectionAttempt) {
       return;
     }
-    tailscaleAccess = false;
-    if (
-      fallbackToken
-      && (
-        error.code === "invalid_credentials"
-        || error.code === "authentication_required"
-      )
-    ) {
-      connectWithToken(fallbackToken, rememberFallback, true);
-    } else if (error.code === "network_error") {
+    connectionMethod = "";
+    if (error.code === "network_error") {
       showDisconnectedView(error.message, "error");
-      setBadge(elements.accessBadge, "连接失败", "failed");
-    } else {
-      showDisconnectedView();
+    } else if (!handleAccessError(error)) {
+      showDisconnectedView(
+        formatApiErrorMessage(error, "暂时无法读取节点状态，请稍后重试。"),
+        "error",
+      );
     }
   } finally {
-    if (attempt === connectionAttempt) {
-      elements.connectSubmit.disabled = false;
-    }
+    // No credential form is needed for trusted local or Tailnet access.
   }
 }

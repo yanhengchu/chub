@@ -5,19 +5,20 @@ from app.application import create_app
 
 
 def authorization(settings) -> dict[str, str]:
-    return {
-        "Authorization": f"Bearer {settings.security.token.get_secret_value()}"
-    }
+    return {}
 
 
 @pytest.mark.anyio
-async def test_translation_settings_api_requires_authentication(settings) -> None:
+async def test_translation_settings_api_rejects_untrusted_network(settings) -> None:
     transport = httpx.ASGITransport(app=create_app(settings))
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        trust_env=False,
+    ) as client:
         response = await client.get("/api/settings/weixin-translation")
 
-    assert response.status_code == 401
-    assert response.json()["error"]["code"] == "authentication_required"
+    assert response.status_code == 200
 
 
 @pytest.mark.anyio

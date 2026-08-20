@@ -8,7 +8,7 @@ Chub 仓库内的插件、API 和消息路由索引统一见[Chub 集成能力�
 
 ## 1. 插件定位
 
-Chub 插件通过固定 Tailnet 地址连接 Chub，承担 OpenClaw 与 Chub 之间的通道适配。微信 Chub 模式下，插件只负责拦截符合条件的 ClawBot 私聊、提取可信通道信息、调用一个固定的 Chub 消息调度接口，并把 Chub 的决定原路交付给微信。
+Chub 插件通过固定 loopback 地址连接同机 Chub，承担 OpenClaw 与 Chub 之间的通道适配。微信 Chub 模式下，插件只负责拦截符合条件的 ClawBot 私聊、提取可信通道信息、调用一个固定的 Chub 消息调度接口，并把 Chub 的决定原路交付给微信。
 
 微信消息的业务含义统一由 Chub 判断。插件不识别业务指令，不选择业务接口，不调用 OpenClaw Agent 或 LLM，也不允许消息正文指定 URL、动作、Session、任务编号、命令或文件路径。
 
@@ -137,13 +137,13 @@ openclaw channels status --probe --json
 
 ### 8.1 首次部署配置
 
-安装插件后，先把 `baseUrl` 配置为运行 Chub 的同节点 Tailnet 地址。示例中的地址和端口必须替换为本机实际值，不能写入 Hub Token：
+安装插件后，先把 `baseUrl` 配置为同机 Chub 的 loopback 地址。插件只接受 `127.0.0.1`，无需填写凭证：
 
 ```bash
 openclaw config set plugins.entries.chub.enabled true --strict-json
 openclaw config set \
   plugins.entries.chub.config.baseUrl \
-  '"http://<CHUB_TAILSCALE_IP>:<PORT>"' \
+  '"http://127.0.0.1:<PORT>"' \
   --strict-json
 openclaw config set \
   plugins.entries.chub.config.weixinChubMode true \
@@ -169,7 +169,7 @@ openclaw gateway probe
 openclaw channels status --probe --json
 ```
 
-确认插件为 `loaded`、Chub 固定地址可达、目标微信账号为 `running`，并在 Chub 首页确认
+确认插件为 `loaded`、Chub 本机固定地址可达、目标微信账号为 `running`，并在 Chub 首页确认
 Owner 和微信 Chub 模式就绪。只启用 Agent Tool 时可保持 `weixinChubMode` 和 Chub 业务开关关闭。
 
 ### 8.2 协议升级同步清单
@@ -193,7 +193,7 @@ openclaw config set \
   --strict-json
 ```
 
-插件配置不得包含 Hub Token。
+插件配置不得包含访问凭证。
 
 ## 9. 最小验收
 

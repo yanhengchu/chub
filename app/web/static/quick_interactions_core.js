@@ -36,13 +36,12 @@
     return label ? `${label}：${message}` : message;
   }
 
-  async function request(token, path, options = {}) {
+  async function request(path, options = {}) {
     const response = await fetch(path, {
       cache: "no-store",
       ...options,
       headers: {
         ...(options.headers || {}),
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
     });
     const payload = await response.json();
@@ -111,11 +110,6 @@
     } catch (_error) {
       return 5;
     }
-  }
-
-  function readToken() {
-    return readStoredValue("sessionStorage", "hub.sessionToken")
-      || readStoredValue("localStorage", "hub.savedToken");
   }
 
   function showTranslationSession() {
@@ -307,14 +301,14 @@
     );
   }
 
-  function createClient({ token, sessionId }) {
+  function createClient({ sessionId }) {
     const encodedSessionId = encodeURIComponent(sessionId);
     async function loadSessionContext() {
-      const data = await request(token, sessionListPath());
+      const data = await request(sessionListPath());
       const sessions = Array.isArray(data.sessions) ? data.sessions : [];
       let session = sessions.find((item) => item.id === sessionId);
       if (!session) {
-        session = await request(token, `/api/codex/sessions/${encodedSessionId}`);
+        session = await request(`/api/codex/sessions/${encodedSessionId}`);
       }
       if (!session) {
         const error = new Error("会话不存在或已经归档。");
@@ -341,7 +335,6 @@
 
       createSession({ workspaceId, permissionMode, model, reasoningEffort }) {
         return request(
-          token,
           "/api/codex/sessions",
           {
             method: "POST",
@@ -358,7 +351,6 @@
 
       renameSession(title) {
         return request(
-          token,
           `/api/codex/sessions/${encodedSessionId}/title`,
           {
             method: "PATCH",
@@ -370,7 +362,6 @@
 
       archiveSession() {
         return request(
-          token,
           `/api/codex/sessions/${encodedSessionId}/archive`,
           { method: "POST" },
         );
@@ -378,7 +369,6 @@
 
       stopSession() {
         return request(
-          token,
           `/api/codex/sessions/${encodedSessionId}/stop`,
           { method: "POST" },
         );
@@ -386,7 +376,6 @@
 
       deleteSession() {
         return request(
-          token,
           `/api/codex/sessions/${encodedSessionId}`,
           { method: "DELETE" },
         );
@@ -409,14 +398,12 @@
           query.set("offset", String(offset));
         }
         return request(
-          token,
           `/api/codex/sessions/${encodedSessionId}/quick-interactions?${query}`,
         );
       },
 
       submitTask({ prompt, confirmStopUnknownTerminal = false }) {
         return request(
-          token,
           `/api/codex/sessions/${encodedSessionId}/quick-interactions`,
           {
             method: "POST",
@@ -443,7 +430,6 @@
     pollDelay,
     readPageSize,
     readSessionCreationPreferences,
-    readToken,
     request,
     firstSessionAfterArchive,
     sessionNavigationMode,

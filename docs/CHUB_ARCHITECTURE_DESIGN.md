@@ -27,7 +27,7 @@ Chub 是面向个人设备、本地优先的轻量 AI 工作站控制面。它�
   |-- Browser / Mobile Browser ------> Chub Web 页面与受保护 API
   |-- chub CLI ----------------------> Chub API、固定本机命令或状态文件服务
   `-- WeChat ClawBot
-         `-> OpenClaw + Chub Plugin -> Chub 固定微信调度 API
+         `-> OpenClaw + Chub Plugin --(127.0.0.1)--> Chub 固定微信调度 API
 
 Chub Web
   |-- Unix socket -------------------> Quick Worker -> fixed Runtime Runner registry -> Codex Runner
@@ -47,7 +47,7 @@ Chub 不接管 OpenClaw 的普通 Agent，也不把 Codex、OpenClaw 或模型�
 FastAPI Web 进程当前负责：
 
 - 页面、HTTP API、WebSocket 和统一响应。
-- Hub Token、真实 Tailnet 来源、安全 Header 和入口权限。
+- 真实 loopback/Tailnet 来源、安全 Header 和入口权限。
 - 启动时装配 Codex、Quick Interaction、微信、自动化、通知、重启和用量等 Manager。
 - 业务校验、操作日志、状态投影、通知协调和 Web 重启恢复。
 - 管理实时终端的票据、连接与 ttyd/tmux 外围生命周期。
@@ -79,8 +79,8 @@ Worker 不负责身份认证、页面、微信路由、通知目标、Request �
 
 总体架构只规定所有领域共同遵守的安全底线，具体身份、路由和协议由对应专项文档维护：
 
-- 浏览器和 CLI 发起的 HTTP 请求只信任 Hub Token，或未关闭该能力时由服务端从真实 socket 确认的 Tailnet 来源；不信任客户端转发 Header。本机 CLI 的固定脚本和状态操作另以当前操作系统用户、本机文件权限及后端固定映射为边界，不因此获得任意命令或路径能力。
-- 微信请求先由 OpenClaw 提供可信通道上下文，再由 Chub 校验 Owner、绑定 Session、入口能力和路由。固定 Tailnet 内的只读状态与同节点高权限任务提交分别授权；高权限提交必须来自与 Chub 同节点的真实 Tailnet socket，模型判断不能扩大授权。
+- HTTP 请求以单用户本机工作站为信任边界：真实 loopback socket（`127.0.0.1` 或 `::1`）直接允许，真实 Tailnet socket 在启用时直接允许，其余来源拒绝；不信任客户端转发 Header。本机 CLI 的固定脚本和状态操作另以当前操作系统用户、本机文件权限及后端固定映射为边界，不因此获得任意命令或路径能力。
+- 微信请求先由 OpenClaw 提供可信通道上下文，再由 Chub 校验 Owner、绑定 Session、入口能力和路由。高权限提交必须来自同机 OpenClaw 的真实 loopback socket；模型判断不能扩大授权。
 - Web 与 Quick Worker 只通过私有 Unix socket 和受校验协议通信。Worker 不接受客户端指定的可执行文件、命令、任意路径或环境变量。
 - Agent Runtime、OpenClaw、Chrome、通知供应商和操作系统均位于 Chub 信任边界之外，只能经固定 Adapter、Manager、注册表或脚本访问。
 - 权限映射无法无损完成、身份或路由无法确认、协议不兼容、结果不确定时统一失败关闭，不回退到权限更高或约束更少的路径。

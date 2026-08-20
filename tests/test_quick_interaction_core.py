@@ -31,7 +31,7 @@ Object.defineProperty(globalThis, "sessionStorage", {
 });
 Object.defineProperty(globalThis, "localStorage", {
   configurable: true,
-  value: { getItem: (key) => key === "hub.savedToken" ? "saved-token" : null },
+  value: { getItem: () => null },
 });
 const result = {
   pageSizes: [
@@ -41,7 +41,6 @@ const result = {
     })),
     core.readPageSize({ getItem: () => { throw new Error("blocked"); } }),
   ],
-  tokenWithBlockedSessionStorage: core.readToken(),
   delays: [0, 1, 2, 3, 4, 8].map(core.pollDelay),
   unauthorized: core.shouldPoll({
     loadFailed: true,
@@ -172,7 +171,6 @@ process.stdout.write(JSON.stringify(result));
     behavior = json.loads(result.stdout)
     assert behavior == {
         "pageSizes": [5, 5, 5, 10, 5, 5],
-        "tokenWithBlockedSessionStorage": "saved-token",
         "delays": [1500, 1500, 3000, 6000, 10000, 10000],
         "unauthorized": False,
         "missing": False,

@@ -11,21 +11,16 @@ from app.services.log_reader import LogReadError
 
 
 def authorization(settings: Settings) -> dict[str, str]:
-    token = settings.security.token
-    assert token is not None
-    return {"Authorization": f"Bearer {token.get_secret_value()}"}
+    return {}
 
 
 @pytest.mark.anyio
-async def test_logs_returns_requested_lines_and_redacts_tokens(
+async def test_logs_returns_requested_lines_and_redacts_credentials(
     settings: Settings,
 ) -> None:
     app = create_app(settings)
-    token = settings.security.token
-    assert token is not None
-    secret = token.get_secret_value()
     settings.logs.file.write_text(
-        f"first\nsecret={secret}\nAuthorization: Bearer other-secret\nlast\n",
+        "first\nAuthorization: Bearer other-secret\nlast\n",
         encoding="utf-8",
     )
     transport = httpx.ASGITransport(app=app)
@@ -41,7 +36,7 @@ async def test_logs_returns_requested_lines_and_redacts_tokens(
         "success": True,
         "data": {
             "lines": [
-                "secret=[REDACTED]",
+                "first",
                 "Authorization: Bearer [REDACTED]",
                 "last",
             ],
@@ -93,14 +88,14 @@ async def test_logs_rejects_path_parameters(settings: Settings) -> None:
 
 
 @pytest.mark.anyio
-async def test_logs_requires_authentication(settings: Settings) -> None:
+async def test_logs_allows_loopback(settings: Settings) -> None:
     app = create_app(settings)
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/api/logs")
 
-    assert response.status_code == 401
+    assert response.status_code == 200
 
 
 @pytest.mark.anyio
@@ -134,11 +129,10 @@ async def test_log_page_reads_only_allowlisted_source(settings: Settings) -> Non
 
 
 @pytest.mark.anyio
-async def test_log_download_redacts_token(settings: Settings) -> None:
-    token = settings.security.token
-    assert token is not None
-    secret = token.get_secret_value()
-    settings.logs.operations_file.write_text(f"token={secret}\n", encoding="utf-8")
+async def test_log_download_redacts_authorization_value(settings: Settings) -> None:
+    settings.logs.operations_file.write_text(
+        "Authorization: Bearer sensitive-value\n", encoding="utf-8"
+    )
     transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get(
@@ -147,7 +141,7 @@ async def test_log_download_redacts_token(settings: Settings) -> None:
         )
 
     assert response.status_code == 200
-    assert response.text == "token=[REDACTED]"
+    assert response.text == "Authorization: Bearer [REDACTED]"
     assert "attachment" in response.headers["content-disposition"]
 
 

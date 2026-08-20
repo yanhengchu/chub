@@ -48,7 +48,7 @@ chub start
 ### 1.2 启动后的 Web 验收
 
 1. 打开 `chub start` 输出的 Web 地址。
-2. 使用 Hub Token 或受信任的 Tailnet 访问。
+2. 使用真实 loopback 或受信任的 Tailnet 访问。
 3. 新建 Codex Session，选择快速交互。
 4. 提交一条低风险测试任务。
 5. 确认页面显示任务受理、执行状态和最终结果。

@@ -34,7 +34,7 @@ def weekly_reports_root(
 
 
 @pytest.mark.anyio
-async def test_home_page_is_public_and_contains_no_token(
+async def test_home_page_is_public_and_contains_no_credential_form(
     settings: Settings,
     weekly_reports_root: Path,
 ) -> None:
@@ -43,7 +43,7 @@ async def test_home_page_is_public_and_contains_no_token(
         response = await client.get("/")
 
     assert response.status_code == 200
-    assert 'type="password"' in response.text
+    assert 'type="password"' not in response.text
     assert 'src="/static/app.js"' in response.text
     assert 'src="/static/js/core/ai-usage.js"' in response.text
     assert 'src="/static/theme.js"' in response.text
@@ -211,7 +211,7 @@ async def test_home_page_is_public_and_contains_no_token(
     assert 'data-card-content' in response.text
     assert 'data-collapsible-card' in response.text
     assert response.text.count('class="card-content-inner"') == 3
-    assert "退出" in response.text
+    assert "退出" not in response.text
     assert 'id="task-list"' not in response.text
     assert "data-log-source" not in response.text
     assert 'href="/logs"' not in response.text
@@ -219,7 +219,6 @@ async def test_home_page_is_public_and_contains_no_token(
     assert '<h2 id="logs-title">日志</h2>' not in response.text
     assert 'id="status-details"' not in response.text
     assert "展开详情" not in response.text
-    assert settings.security.token.get_secret_value() not in response.text
 
 
 @pytest.mark.anyio
@@ -464,14 +463,7 @@ async def test_home_page_reports_design_document_index_error(
     transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/")
-        api_response = await client.get(
-            "/api/project-docs",
-            headers={
-                "Authorization": (
-                    f"Bearer {settings.security.token.get_secret_value()}"
-                )
-            },
-        )
+        api_response = await client.get("/api/project-docs")
 
     assert response.status_code == 200
     assert "项目资料暂时无法加载，请检查资料索引。" in response.text
@@ -617,10 +609,11 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "文档已归档" not in dashboard_script
     assert "sessionStorage" in dashboard_script
     assert "localStorage" in dashboard_script
-    assert "Authorization" in dashboard_script
     assert "accessVersion" in dashboard_script
-    assert "connectWithToken" in dashboard_script
-    assert "退出会清除此浏览器保存的 Hub Token" in dashboard_script
+    assert "connectToHub" in dashboard_script
+    assert "connectWithToken" not in dashboard_script
+    assert "暂时无法读取节点状态，请稍后重试。" in dashboard_script
+    assert 'error.code === "trusted_network_required"' in dashboard_script
     assert "createTaskCard" not in script.text
     assert "createCodexCard" in script.text
     assert 'createButton.textContent = "新建会话"' in script.text
@@ -1120,21 +1113,14 @@ async def test_design_document_pages_render_markdown(settings: Settings) -> None
 
 
 @pytest.mark.anyio
-async def test_project_document_card_api_is_protected(
+async def test_project_document_card_api_allows_loopback(
     settings: Settings,
     weekly_reports_root: Path,
 ) -> None:
     transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        unauthorized = await client.get("/api/project-docs")
-        response = await client.get(
-            "/api/project-docs",
-            headers={
-                "Authorization": "Bearer test-token-that-is-long-enough-for-tests"
-            },
-        )
+        response = await client.get("/api/project-docs")
 
-    assert unauthorized.status_code == 401
     assert response.status_code == 200
     data = response.json()["data"]
     assert data["count"] >= 1

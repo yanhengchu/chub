@@ -1,6 +1,5 @@
 "use strict";
 
-const token = sessionStorage.getItem("hub.sessionToken") || localStorage.getItem("hub.savedToken") || "";
 const list = document.querySelector("#detail-automation-list");
 const message = document.querySelector("#detail-automation-message");
 const badge = document.querySelector("#detail-browser-badge");
@@ -19,10 +18,7 @@ function showMessage(text, kind = "") {
 async function request(path, options = {}) {
   const response = await fetch(path, {
     ...options,
-    headers: {
-      ...options.headers,
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
+    headers: options.headers,
   });
   const payload = await response.json();
   if (!response.ok || payload.success !== true) {

@@ -1,7 +1,4 @@
 .venv/
-.env
-.env.*
-!.env.example
 .envrc
 .direnv/
 

@@ -1363,31 +1363,6 @@ def test_manager_home_tasks_are_sorted_by_recent_activity(
     assert [task.id for task in result.tasks] == ["second"]
 
 
-def test_manager_does_not_pass_hub_token_value_to_runner(
-    settings: Settings,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    configure_automations(settings, tmp_path)
-    manager = AutomationManager(settings)
-    monkeypatch.setenv("HUB_TOKEN", "sensitive-token")
-
-    with (
-        patch(
-            "app.automations.manager.debug_chrome_status",
-            return_value=("running", "Debug Chrome 已运行", "有界面"),
-        ),
-        patch("app.automations.manager.subprocess.Popen") as popen,
-    ):
-        manager.start(
-            "monthly-report",
-            operation_id="operation-1",
-            source_ip="100.64.0.1",
-        )
-
-    assert popen.call_args.kwargs["env"]["HUB_TOKEN"] == ""
-
-
 def test_feishu_environment_url_classification() -> None:
     checked_at = datetime.now().astimezone()
 

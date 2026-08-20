@@ -166,12 +166,12 @@ def test_restart_sensitive_is_derived_and_cannot_be_spoofed() -> None:
         )
 
 
-def test_worker_error_redacts_configured_token(settings) -> None:
+def test_worker_error_redacts_bearer_value(settings) -> None:
     server = QuickWorkerServer(settings, allow_test_tasks=True)
 
     redacted = server.task_manager._redact_error(
         "provider response Authorization: Bearer "
-        f"{settings.security.token.get_secret_value()}"
+        "sensitive-value"
     )
 
     assert redacted == "provider response Authorization: Bearer [REDACTED]"

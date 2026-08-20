@@ -1,21 +1,24 @@
 app:
   name: "Hub"
   version: "0.1.0"
-  page_title: "Ubuntu · Hub"
+  page_title: "My Device · Hub"
 
 node:
-  id: "ubuntu"
-  name: "Ubuntu"
-  type: "ubuntu"
+  id: "my-device"
+  name: "My Device"
+  # Set to "macos" or "ubuntu" for this device. The YAML is otherwise shared;
+  # service installation chooses LaunchAgent on macOS and systemd user service on Ubuntu.
+  type: "unknown"
 
 server:
-  # Replace with this node's Tailscale IP to enable remote Codex PTY.
-  host: "127.0.0.1"
+  # Chub always listens on 127.0.0.1 for local browser and OpenClaw access.
+  # Set this node's Tailscale IP to enable remote access and Codex PTY.
+  tailnet_host: null
   port: 8080
 
 security:
-  # Allow direct requests from devices in the same tailnet without a Hub Token.
-  # This only takes effect when server.host is this node's Tailscale IP.
+  # Allow direct requests from devices in the same tailnet.
+  # This only takes effect when server.tailnet_host is configured.
   allow_tailscale: true
 
 logs:
@@ -66,23 +69,18 @@ openclaw:
     # Explicitly enable only after the single-Owner WeChat private-message route is ready.
     enabled: false
     workspace_id: "chub"
-    # Display limits used by WeChat Chub Session lists and the `chub` task list.
     session_name_max_width: 30
     task_name_max_width: 64
     # Initial default for the Settings-page translation switch. Later page changes
     # are persisted in private Chub state without rewriting this file.
-    # Opt in only after accepting the model/prompt-injection trust boundary.
     translation_enabled: false
     translation_queue_limit: 10
     translation_max_wait_seconds: 1800
     translation_max_input_chars: 8000
   quick_interaction_completion:
     # Default recipient for Chub/page-origin quick interactions only.
-    # Keep weixin_account_id null to select the only healthy ClawBot; set it only as a
-    # compatibility override. Weixin inbound tasks use their immutable task route.
     enabled: true
     weixin_account_id: null
     weixin_recipient: null
     timeout_seconds: 20
-    # Per-message limit; long results are numbered and sent in at most five parts.
     max_message_chars: 2000

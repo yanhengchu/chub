@@ -20,9 +20,9 @@ def tailscale_client(app):
     )
 
 
-def same_node_tailscale_client(app):
+def local_openclaw_client(app):
     return httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app, client=("100.64.0.20", 12345)),
+        transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 12345)),
         base_url="http://test",
     )
 
@@ -68,11 +68,11 @@ def test_dispatch_response_rejects_invalid_message_combinations(
 async def test_dispatch_accepts_only_bounded_fixed_fields(
     settings: Settings,
 ) -> None:
-    settings.server.host = "100.64.0.20"
+    settings.server.tailnet_host = "100.64.0.20"
     app = create_app(settings)
     app.state.weixin_chub_mode.dispatch = MagicMock(return_value=dispatch_result())
 
-    async with same_node_tailscale_client(app) as client:
+    async with local_openclaw_client(app) as client:
         response = await client.post(
             "/api/openclaw/wechat-chub-mode/dispatch",
             json={
@@ -100,7 +100,7 @@ async def test_dispatch_accepts_only_bounded_fixed_fields(
         prompt=" 检查设备状态 ",
         message_type="text",
         correlation_id="correlation-1",
-        source_ip="100.64.0.20",
+        source_ip="127.0.0.1",
         delivery_route=QuickInteractionWeixinRoute(
             account_id="weixin-account",
             recipient="owner@im.wechat",
@@ -114,7 +114,7 @@ async def test_dispatch_accepts_only_bounded_fixed_fields(
 async def test_dispatch_returns_pass_without_exposing_internal_state(
     settings: Settings,
 ) -> None:
-    settings.server.host = "100.64.0.20"
+    settings.server.tailnet_host = "100.64.0.20"
     app = create_app(settings)
     app.state.weixin_chub_mode.dispatch = MagicMock(
         return_value=dispatch_result(
@@ -123,7 +123,7 @@ async def test_dispatch_returns_pass_without_exposing_internal_state(
         )
     )
 
-    async with same_node_tailscale_client(app) as client:
+    async with local_openclaw_client(app) as client:
         response = await client.post(
             "/api/openclaw/wechat-chub-mode/dispatch",
             json={
@@ -148,11 +148,11 @@ async def test_dispatch_returns_pass_without_exposing_internal_state(
 async def test_dispatch_rejects_protocol_mismatch_before_routing(
     settings: Settings,
 ) -> None:
-    settings.server.host = "100.64.0.20"
+    settings.server.tailnet_host = "100.64.0.20"
     app = create_app(settings)
     app.state.weixin_chub_mode.dispatch = MagicMock()
 
-    async with same_node_tailscale_client(app) as client:
+    async with local_openclaw_client(app) as client:
         response = await client.post(
             "/api/openclaw/wechat-chub-mode/dispatch",
             json={
@@ -176,11 +176,11 @@ async def test_dispatch_rejects_protocol_mismatch_before_routing(
 async def test_dispatch_rejects_injected_configuration(
     settings: Settings,
 ) -> None:
-    settings.server.host = "100.64.0.20"
+    settings.server.tailnet_host = "100.64.0.20"
     app = create_app(settings)
     app.state.weixin_chub_mode.dispatch = MagicMock()
 
-    async with same_node_tailscale_client(app) as client:
+    async with local_openclaw_client(app) as client:
         response = await client.post(
             "/api/openclaw/wechat-chub-mode/dispatch",
             json={
@@ -201,10 +201,10 @@ async def test_dispatch_rejects_injected_configuration(
 
 
 @pytest.mark.anyio
-async def test_dispatch_requires_same_node_direct_tailscale_source(
+async def test_dispatch_requires_local_openclaw_source(
     settings: Settings,
 ) -> None:
-    settings.server.host = "100.64.0.20"
+    settings.server.tailnet_host = "100.64.0.20"
     app = create_app(settings)
     app.state.weixin_chub_mode.dispatch = MagicMock()
 
@@ -232,10 +232,10 @@ async def test_dispatch_requires_same_node_direct_tailscale_source(
 async def test_old_status_and_submit_endpoints_are_removed(
     settings: Settings,
 ) -> None:
-    settings.server.host = "100.64.0.20"
+    settings.server.tailnet_host = "100.64.0.20"
     app = create_app(settings)
 
-    async with same_node_tailscale_client(app) as client:
+    async with local_openclaw_client(app) as client:
         status = await client.get("/api/openclaw/wechat-chub-mode/status")
         submit = await client.post("/api/openclaw/wechat-chub-mode/submit", json={})
 

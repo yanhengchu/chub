@@ -5,7 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.config import PROJECT_ROOT
 from app.core.response import ApiError, ApiResponse, error_response
-from app.core.security import require_token
+from app.core.security import require_trusted_network
 from app.services.operation_log import log_operation, write_operation
 from app.services.restart_command import (
     describe_restart_launch_error,
@@ -26,7 +26,7 @@ from app.services.system_upgrade import (
 router = APIRouter(
     prefix="/api/maintenance",
     tags=["maintenance"],
-    dependencies=[Depends(require_token)],
+    dependencies=[Depends(require_trusted_network)],
 )
 
 

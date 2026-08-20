@@ -81,39 +81,9 @@ elements.restartHub.addEventListener("click", () => {
   });
 });
 
-elements.tokenForm.addEventListener("submit", (event) => {
-  event.preventDefault();
-  const token = elements.tokenInput.value.trim();
-  if (!token) {
-    setMessage(elements.globalMessage, "请输入 Hub Token。", "error");
-    elements.tokenInput.focus();
-    return;
-  }
-  elements.tokenInput.value = "";
-  connectWithToken(token, elements.rememberToken.checked);
-});
 elements.refreshStatus.addEventListener("click", loadStatus);
 elements.refreshAutomations.addEventListener("click", () => loadAutomations());
 
-elements.clearToken.addEventListener("click", () => {
-  void showConfirmationDialog({
-    title: "退出当前节点",
-    description: "退出会清除此浏览器保存的 Hub Token，并隐藏当前节点的受保护内容。",
-    confirmLabel: "确认退出",
-    pendingLabel: "正在退出…",
-    onConfirm: () => {
-      connectionAttempt += 1;
-      activeToken = "";
-      tailscaleAccess = false;
-      accessVersion += 1;
-      removeStoredToken();
-      elements.tokenInput.value = "";
-      elements.rememberToken.checked = false;
-      clearProtectedView();
-      showDisconnectedView("已退出，凭证已从此浏览器清除。", "success");
-    },
-  });
-});
 
 cardCollapsedState = loadCardCollapsedState();
 if (typeof cardCollapsedState.workstation !== "boolean") {
@@ -129,15 +99,9 @@ if (typeof cardCollapsedState.workstation !== "boolean") {
     saveCardCollapsedState();
   }
 }
-const savedSessionToken = sessionStorage.getItem(SESSION_TOKEN_KEY);
-const savedLocalToken = localStorage.getItem(LOCAL_TOKEN_KEY);
-const savedToken = savedSessionToken || savedLocalToken || "";
 ensureCodexCard();
 setupCollapsibleCards();
 restoreCodexCardCache();
 restoreCodexModelPreferenceCache();
 restoreCodexQuotaCache();
-if (savedLocalToken) {
-  elements.rememberToken.checked = Boolean(savedLocalToken);
-}
-connectWithTailscale(savedToken, Boolean(savedLocalToken));
+connectToHub();

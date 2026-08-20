@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict
 
 from app.core.response import ApiError, ApiResponse
-from app.core.security import require_token
+from app.core.security import require_trusted_network
 from app.services.operation_log import log_operation
 from app.services.weixin_translation import TranslationSettingsStatus
 
@@ -12,7 +12,7 @@ from app.services.weixin_translation import TranslationSettingsStatus
 router = APIRouter(
     prefix="/api/settings",
     tags=["settings"],
-    dependencies=[Depends(require_token)],
+    dependencies=[Depends(require_trusted_network)],
 )
 
 

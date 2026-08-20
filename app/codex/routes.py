@@ -28,7 +28,7 @@ from app.codex.models import (
 )
 from app.codex.quick_interactions import build_task_summary
 from app.core.response import ApiError, ApiResponse, error_response
-from app.core.security import require_token
+from app.core.security import require_trusted_network
 from app.services.operation_log import log_operation, write_operation
 from app.services.system_upgrade import SystemUpgradeBusy
 from app.web.routes import WEB_DIR
@@ -39,7 +39,7 @@ LOGGER = logging.getLogger("hub.codex.terminal")
 api_router = APIRouter(
     prefix="/api/codex",
     tags=["codex"],
-    dependencies=[Depends(require_token)],
+    dependencies=[Depends(require_trusted_network)],
 )
 web_router = APIRouter(tags=["codex-web"])
 templates = Jinja2Templates(directory=WEB_DIR / "templates")

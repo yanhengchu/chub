@@ -23,7 +23,6 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 PYTHON_BIN="$PROJECT_ROOT/.venv/bin/python"
 MAIN_FILE="$PROJECT_ROOT/main.py"
-ENV_FILE="$PROJECT_ROOT/.env"
 CONFIG_FILE="$PROJECT_ROOT/config/settings.local.yaml"
 COMMAND_DIR="${CHUB_COMMAND_DIR:-$HOME/.local/bin}"
 COMMAND_PATH="$COMMAND_DIR/chub"
@@ -92,46 +91,23 @@ platform_name() {
 check_project() {
     [[ -x "$PYTHON_BIN" ]] || fail "Python environment not found: $PYTHON_BIN"
     [[ -f "$MAIN_FILE" ]] || fail "Hub entry point not found: $MAIN_FILE"
-    [[ -f "$ENV_FILE" ]] || fail "configuration not found: $ENV_FILE"
     [[ -f "$CONFIG_FILE" ]] || fail "configuration not found: $CONFIG_FILE"
-
-    local permissions
-    permissions="$("$PYTHON_BIN" - "$ENV_FILE" <<'PY'
-import os
-import stat
-import sys
-
-print(f"{stat.S_IMODE(os.stat(sys.argv[1]).st_mode):o}")
-PY
-)"
-    if [[ "$permissions" != "600" ]]; then
-        echo "chub: warning: $ENV_FILE permissions are $permissions; use chmod 600 .env" >&2
-    fi
 }
 
 configured_value() {
     local name="$1"
     (
         cd "$PROJECT_ROOT"
-        "$PYTHON_BIN" - "$name" <<'PY'
+        "$PYTHON_BIN" - "$name" "$CONFIG_FILE" <<'PY'
 import sys
 
 from app.core.config import load_settings
 
-settings = load_settings()
-host = settings.server.host
-if host == "0.0.0.0":
-    health_host = "127.0.0.1"
-elif host == "::":
-    health_host = "[::1]"
-elif ":" in host and not host.startswith("["):
-    health_host = f"[{host}]"
-else:
-    health_host = host
+settings = load_settings(sys.argv[2])
 values = {
-    "health_url": f"http://{health_host}:{settings.server.port}/api/health",
+    "health_url": f"http://127.0.0.1:{settings.server.port}/api/health",
     "log_file": settings.logs.file,
-    "server_host": settings.server.host,
+    "tailnet_host": settings.server.tailnet_host or "",
 }
 print(values[sys.argv[1]])
 PY
@@ -139,12 +115,12 @@ PY
 }
 
 check_codex_pty_requirements() {
-    local server_host
-    server_host="$(configured_value server_host 2>/dev/null)" \
+    local tailnet_host
+    tailnet_host="$(configured_value tailnet_host 2>/dev/null)" \
         || fail "configuration could not be read"
     if ! (
         cd "$PROJECT_ROOT"
-        "$PYTHON_BIN" - "$server_host" <<'PY'
+        "$PYTHON_BIN" - "$tailnet_host" <<'PY'
 import sys
 
 from app.core.network import is_tailscale_ip
@@ -153,7 +129,7 @@ raise SystemExit(0 if is_tailscale_ip(sys.argv[1]) else 1)
 PY
     )
     then
-        echo "chub: warning: server host $server_host is not a Tailscale IP; Codex PTY will be disabled" >&2
+        echo "chub: warning: server.tailnet_host is not configured or is not a Tailscale IP; Codex PTY will be disabled" >&2
     fi
     local dependency
     for dependency in codex ttyd tmux; do
@@ -580,15 +556,16 @@ require_worker_idle_for_maintenance() {
 clear_retired_worker_state() {
     (
         cd "$PROJECT_ROOT"
-        "$PYTHON_BIN" - <<'PY'
+        "$PYTHON_BIN" - "$CONFIG_FILE" <<'PY'
 import os
 import shutil
 import stat
+import sys
 
 from app.core.config import load_settings
 from app.quick_worker_tasks import worker_state_dir
 
-root = worker_state_dir(load_settings())
+root = worker_state_dir(load_settings(sys.argv[1]))
 try:
     root_metadata = root.lstat()
 except FileNotFoundError:
@@ -793,7 +770,7 @@ record_worker_reload_operation() {
     fi
     (
         cd "$PROJECT_ROOT"
-        "$PYTHON_BIN" - "$operation_id" "$operation_status" "$generation" <<'PY'
+        "$PYTHON_BIN" - "$CONFIG_FILE" "$operation_id" "$operation_status" "$generation" <<'PY'
 import re
 import sys
 
@@ -801,14 +778,14 @@ from app.core.config import load_settings
 from app.core.logger import configure_worker_operation_logging
 from app.services.operation_log import write_operation
 
-operation_id, status, generation = sys.argv[1:]
+config_file, operation_id, status, generation = sys.argv[1:]
 if re.fullmatch(r"worker-reload:[a-f0-9]{32}", operation_id) is None:
     raise SystemExit(2)
 if status not in {"requested", "started", "succeeded", "failed"}:
     raise SystemExit(2)
 if re.fullmatch(r"[a-f0-9]{32}", generation) is None:
     raise SystemExit(2)
-settings = load_settings()
+settings = load_settings(config_file)
 configure_worker_operation_logging(settings.logs)
 write_operation(
     operation_id=operation_id,

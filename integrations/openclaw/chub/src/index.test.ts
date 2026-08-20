@@ -147,7 +147,7 @@ describe("Weixin Chub mode", () => {
     const fetchMock = vi.fn().mockResolvedValue(dispatchResponse());
     vi.stubGlobal("fetch", fetchMock);
     const { hooks } = createPluginApi({
-      baseUrl: "http://100.64.0.1:8080",
+      baseUrl: "http://127.0.0.1:8080",
       weixinChubMode: true,
     });
 
@@ -188,7 +188,7 @@ describe("Weixin Chub mode", () => {
     }));
     vi.stubGlobal("fetch", fetchMock);
     const { hooks } = createPluginApi({
-      baseUrl: "http://100.64.0.1:8080",
+      baseUrl: "http://127.0.0.1:8080",
       weixinChubMode: true,
     });
 
@@ -207,7 +207,7 @@ describe("Weixin Chub mode", () => {
     }));
     vi.stubGlobal("fetch", fetchMock);
     const { hooks } = createPluginApi({
-      baseUrl: "http://100.64.0.1:8080",
+      baseUrl: "http://127.0.0.1:8080",
       weixinChubMode: true,
     });
 
@@ -224,7 +224,7 @@ describe("Weixin Chub mode", () => {
       message: "任务提交失败：已有微信任务正在执行，请等待完成后重试。",
     })));
     const { hooks } = createPluginApi({
-      baseUrl: "http://100.64.0.1:8080",
+      baseUrl: "http://127.0.0.1:8080",
       weixinChubMode: true,
     });
 
@@ -244,7 +244,7 @@ describe("Weixin Chub mode", () => {
       error: { code: "weixin_chub_mode_protocol_mismatch", message: "detail" },
     }), { status: 409 })));
     const { hooks } = createPluginApi({
-      baseUrl: "http://100.64.0.1:8080",
+      baseUrl: "http://127.0.0.1:8080",
       weixinChubMode: true,
     });
 
@@ -261,7 +261,7 @@ describe("Weixin Chub mode", () => {
   it("fails closed when Chub is unavailable", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("unavailable")));
     const { hooks } = createPluginApi({
-      baseUrl: "http://100.64.0.1:8080",
+      baseUrl: "http://127.0.0.1:8080",
       weixinChubMode: true,
     });
 
@@ -280,7 +280,7 @@ describe("Weixin Chub mode", () => {
     timeout.name = "TimeoutError";
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(timeout));
     const { hooks } = createPluginApi({
-      baseUrl: "http://100.64.0.1:8080",
+      baseUrl: "http://127.0.0.1:8080",
       weixinChubMode: true,
     });
 
@@ -301,7 +301,7 @@ describe("Weixin Chub mode", () => {
     }));
     vi.stubGlobal("fetch", fetchMock);
     const { hooks } = createPluginApi({
-      baseUrl: "http://100.64.0.1:8080",
+      baseUrl: "http://127.0.0.1:8080",
       weixinChubMode: true,
     });
 
@@ -325,7 +325,7 @@ describe("Weixin Chub mode", () => {
       message: chubReply,
     })));
     const { hooks } = createPluginApi({
-      baseUrl: "http://100.64.0.1:8080",
+      baseUrl: "http://127.0.0.1:8080",
       weixinChubMode: true,
     });
 
@@ -347,7 +347,7 @@ describe("Weixin Chub mode", () => {
       }));
     vi.stubGlobal("fetch", fetchMock);
     const { hooks } = createPluginApi({
-      baseUrl: "http://100.64.0.1:8080",
+      baseUrl: "http://127.0.0.1:8080",
       weixinChubMode: true,
     });
 
@@ -380,7 +380,7 @@ describe("Weixin Chub mode", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     const { hooks } = createPluginApi({
-      baseUrl: "http://100.64.0.1:8080",
+      baseUrl: "http://127.0.0.1:8080",
       weixinChubMode: true,
     });
 
@@ -406,7 +406,7 @@ describe("Weixin Chub mode", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     const { hooks } = createPluginApi({
-      baseUrl: "http://100.64.0.1:8080",
+      baseUrl: "http://127.0.0.1:8080",
       weixinChubMode: true,
     });
 

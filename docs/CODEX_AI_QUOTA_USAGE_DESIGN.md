@@ -65,7 +65,7 @@ GET /api/ai/usage?refresh=true
 
 - 普通请求优先返回共享缓存。
 - `refresh=true` 请求一次强制刷新，但仍与并发请求共用同一次采集。
-- 接口需要 Hub Token，或在配置允许时接受真实 Tailscale socket 来源。
+- 接口需要真实 loopback socket，或在配置允许时接受真实 Tailscale socket 来源。
 - 旧 `/api/codex/quota` 仅保留兼容，不作为新调用入口。
 
 内部消费者直接调用共享用量服务，不通过 HTTP 回调 Chub。

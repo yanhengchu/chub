@@ -25,7 +25,7 @@ describe("sendChubNotification", () => {
     }));
 
     await expect(sendChubNotification(
-      { baseUrl: "http://100.64.1.2:8000" },
+      { baseUrl: "http://127.0.0.1:8000" },
       {
         target: "operations",
         message: "Service failed",
@@ -43,7 +43,7 @@ describe("sendChubNotification", () => {
     });
 
     const [url, init] = fetchImpl.mock.calls[0];
-    expect(url).toEqual(new URL("http://100.64.1.2:8000/api/notifications/send"));
+    expect(url).toEqual(new URL("http://127.0.0.1:8000/api/notifications/send"));
     expect(init).toMatchObject({ method: "POST", redirect: "error" });
     const body = JSON.parse(String(init?.body));
     expect(body).toMatchObject({
@@ -67,7 +67,7 @@ describe("sendChubNotification", () => {
     }, { status: 422 }));
 
     await expect(sendChubNotification(
-      { baseUrl: "http://100.64.1.2:8000" },
+      { baseUrl: "http://127.0.0.1:8000" },
       {
         target: "operations",
         message: "Alert",
@@ -90,7 +90,7 @@ describe("sendChubNotification", () => {
     }));
 
     await expect(sendChubNotification(
-      { baseUrl: "http://100.64.1.2:8000" },
+      { baseUrl: "http://127.0.0.1:8000" },
       {
         target: "operations",
         message: "Alert",

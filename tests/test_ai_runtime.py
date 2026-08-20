@@ -308,7 +308,7 @@ def test_worker_runtime_registry_rejects_descriptor_identity_drift() -> None:
 
 
 def test_codex_adapter_declares_current_capabilities(settings: Settings) -> None:
-    settings.server.host = "100.64.0.1"
+    settings.server.tailnet_host = "100.64.0.1"
     adapter = CodexRuntimeAdapter(
         settings,
         which=lambda _name: "/available",

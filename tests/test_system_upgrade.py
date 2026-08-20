@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -508,13 +509,19 @@ def test_system_upgrade_restart_uses_fixed_linux_services(
     ):
         path.mkdir(parents=True)
         os.chmod(path, 0o700)
-    config_path = tmp_path / "settings.yaml"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    shutil.copytree(PROJECT_ROOT / "scripts", workspace / "scripts")
+    shutil.copytree(PROJECT_ROOT / "app", workspace / "app")
+    (workspace / ".venv").symlink_to(PROJECT_ROOT / ".venv", target_is_directory=True)
+    (workspace / "config").mkdir()
+    config_path = workspace / "config" / "settings.local.yaml"
     config_path.write_text(
         yaml.safe_dump(
             {
                 "app": {"name": "Hub", "version": "0.1.0"},
                 "node": {"id": "test", "name": "Test", "type": "ubuntu"},
-                "server": {"host": "127.0.0.1", "port": 8080},
+                    "server": {"tailnet_host": None, "port": 8080},
                 "security": {"allow_tailscale": False},
                 "codex_pty": {
                     "workspace": str(settings.codex_pty.workspace),
@@ -541,17 +548,15 @@ def test_system_upgrade_restart_uses_fixed_linux_services(
             "PATH": f"{fake_bin}:{environment['PATH']}",
             "CHUB_TEST_PLATFORM": "Linux",
             "CHUB_TEST_CALLS": str(calls),
-            "HUB_CONFIG_FILE": str(config_path),
-            "HUB_TOKEN": TOKEN,
         }
     )
 
     process = subprocess.Popen(
         [
-            str(PROJECT_ROOT / "scripts" / "chub-system-upgrade-restart"),
-            operation.operation_id,
-        ],
-        cwd=PROJECT_ROOT,
+                str(workspace / "scripts" / "chub-system-upgrade-restart"),
+                operation.operation_id,
+            ],
+            cwd=workspace,
         env=environment,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -705,8 +710,8 @@ async def test_upgrade_gate_does_not_bypass_mutation_authentication(
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post("/api/maintenance/restart")
 
-    assert response.status_code == 401
-    assert response.json()["error"]["code"] == "authentication_required"
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "system_upgrade_in_progress"
 
 
 @pytest.mark.anyio

@@ -34,7 +34,7 @@ from app.api.maintenance import (
 from app.api.notifications import router as notifications_router
 from app.api.openclaw import router as openclaw_router
 from app.api.openclaw_wechat_chub_mode import (
-    require_same_node_tailscale,
+    require_local_openclaw,
     router as openclaw_wechat_chub_mode_router,
 )
 from app.api.project_documents import router as project_documents_router
@@ -49,7 +49,7 @@ from app.automations.manager import AutomationManager
 from app.core.config import PROJECT_ROOT, Settings, load_settings
 from app.core.logger import configure_logging
 from app.core.network import is_tailscale_ip
-from app.core.security import bearer_scheme, require_tailscale, require_token
+from app.core.security import require_trusted_network
 from app.core.platform import detect_platform
 from app.core.response import (
     ApiError,
@@ -91,14 +91,9 @@ async def _confirm_healthy_instance(
     instance_id: str,
 ) -> None:
     logger = logging.getLogger("hub.deferred_restart")
-    host = settings.server.host
-    if host == "0.0.0.0":
-        host = "127.0.0.1"
-    elif host == "::":
-        host = "::1"
     health_url = httpx.URL(
         scheme="http",
-        host=host,
+        host="127.0.0.1",
         port=settings.server.port,
         path="/api/health",
     )
@@ -183,11 +178,9 @@ class SystemUpgradeGateMiddleware(BaseHTTPMiddleware):
                 if request.url.path.startswith(
                     "/api/openclaw/wechat-chub-mode/"
                 ):
-                    require_tailscale(request)
-                    require_same_node_tailscale(request)
+                    require_local_openclaw(request)
                 else:
-                    credentials = await bearer_scheme(request)
-                    require_token(request, credentials)
+                    require_trusted_network(request)
             except ApiError as error:
                 return await api_error_handler(request, error)
             return error_response(
@@ -219,19 +212,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     detected_platform = detect_platform()
     logger = logging.getLogger("hub.startup")
-    tailscale_access_available = (
-        resolved_settings.security.allow_tailscale
-        and is_tailscale_ip(resolved_settings.server.host)
-    )
-    if not resolved_settings.security.token and not tailscale_access_available:
-        logger.warning(
-            "HUB_TOKEN is not set; health check remains available but protected APIs are disabled"
-        )
-    codex_pty_available = is_tailscale_ip(resolved_settings.server.host)
+    codex_pty_available = is_tailscale_ip(resolved_settings.server.tailnet_host or "")
     if not codex_pty_available:
         logger.warning(
-            "server host %s is not a Tailscale IP; Codex PTY is disabled",
-            resolved_settings.server.host,
+            "server.tailnet_host is not configured; Codex PTY is disabled",
         )
     if resolved_settings.node.type != detected_platform:
         logger.warning(

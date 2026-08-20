@@ -50,20 +50,6 @@ export type NotificationResult = {
 
 type FetchLike = typeof fetch;
 
-function isTailnetHost(hostname: string): boolean {
-  if (hostname.includes(":")) {
-    return hostname.toLowerCase().startsWith("fd7a:115c:a1e0:");
-  }
-  const octets = hostname.split(".").map((part) => Number(part));
-  if (
-    octets.length !== 4
-    || octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)
-  ) {
-    return false;
-  }
-  return octets[0] === 100 && octets[1] >= 64 && octets[1] <= 127;
-}
-
 export function apiUrl(baseUrl: string, path: string): URL {
   const url = new URL(baseUrl);
   if (
@@ -73,7 +59,7 @@ export function apiUrl(baseUrl: string, path: string): URL {
     || url.search
     || url.hash
     || (url.pathname !== "/" && url.pathname !== "")
-    || !isTailnetHost(url.hostname)
+    || url.hostname !== "127.0.0.1"
   ) {
     throw new Error("invalid_chub_base_url");
   }

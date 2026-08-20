@@ -596,7 +596,6 @@ class AutomationManager:
                 output = log_path.open("ab")
                 log_path.chmod(0o600)
                 runner_environment = os.environ.copy()
-                runner_environment["HUB_TOKEN"] = ""
                 subprocess.Popen(
                     [
                         sys.executable,

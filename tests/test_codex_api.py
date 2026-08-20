@@ -26,9 +26,7 @@ from app.core.response import ApiError
 
 
 def authorization(settings: Settings) -> dict[str, str]:
-    token = settings.security.token
-    assert token is not None
-    return {"Authorization": f"Bearer {token.get_secret_value()}"}
+    return {}
 
 
 def allow_session_writes(app) -> None:
@@ -45,13 +43,12 @@ def test_session_rename_request_normalizes_title_and_rejects_controls() -> None:
 
 
 @pytest.mark.anyio
-async def test_codex_sessions_require_authentication(settings: Settings) -> None:
+async def test_codex_sessions_allow_loopback(settings: Settings) -> None:
     transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/api/codex/sessions")
 
-    assert response.status_code == 401
-    assert response.json()["error"]["code"] == "authentication_required"
+    assert response.status_code == 200
 
 
 @pytest.mark.anyio
@@ -262,13 +259,11 @@ async def test_codex_model_catalog_is_protected_and_filtered_by_manager(
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        denied = await client.get("/api/codex/models")
         response = await client.get(
             "/api/codex/models",
             headers=authorization(settings),
         )
 
-    assert denied.status_code == 401
     assert response.status_code == 200
     assert response.json()["data"]["models"][0]["id"] == "gpt-test"
     assert response.json()["data"]["default_model"] == "gpt-test"
@@ -343,13 +338,11 @@ async def test_codex_quota_is_protected_and_can_be_refreshed(settings: Settings)
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        denied = await client.get("/api/codex/quota")
         response = await client.get(
             "/api/codex/quota?refresh=true",
             headers=authorization(settings),
         )
 
-    assert denied.status_code == 401
     assert response.status_code == 200
     assert response.json()["data"]["windows"][0]["remaining_percent"] == 75
     rate_limits.read.assert_called_once_with(force=True)

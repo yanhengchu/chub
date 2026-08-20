@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
 from app.core.response import ApiError, ApiResponse
-from app.core.security import require_token
+from app.core.security import require_trusted_network
 from app.services.design_documents import (
     DesignDocumentIndexError,
     list_design_documents,
@@ -20,7 +20,7 @@ from app.services.weekly_reports import list_latest_weekly_reports
 router = APIRouter(
     prefix="/api/project-docs",
     tags=["project-docs"],
-    dependencies=[Depends(require_token)],
+    dependencies=[Depends(require_trusted_network)],
 )
 
 

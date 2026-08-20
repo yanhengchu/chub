@@ -11,8 +11,8 @@ def settings(tmp_path: Path) -> Settings:
         {
             "app": {"name": "Hub", "version": "0.1.0"},
             "node": {"id": "test-node", "name": "Test Node", "type": "unknown"},
-            "server": {"host": "127.0.0.1", "port": 8080},
-            "security": {"token": "test-token-that-is-long-enough-for-tests"},
+            "server": {"tailnet_host": None, "port": 8080},
+            "security": {},
             "logs": {
                 "file": tmp_path / "hub.log",
                 "operations_file": tmp_path / "operations.log",

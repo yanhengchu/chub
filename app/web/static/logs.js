@@ -1,7 +1,5 @@
 "use strict";
 
-const SESSION_TOKEN_KEY = "hub.sessionToken";
-const LOCAL_TOKEN_KEY = "hub.savedToken";
 const source = document.querySelector("#detail-log-source");
 const output = document.querySelector("#detail-logs-output");
 const message = document.querySelector("#detail-logs-message");
@@ -10,20 +8,14 @@ const earlier = document.querySelector("#load-earlier-logs");
 const download = document.querySelector("#download-detail-logs");
 let nextCursor = null;
 
-function token() {
-  return sessionStorage.getItem(SESSION_TOKEN_KEY) || localStorage.getItem(LOCAL_TOKEN_KEY) || "";
-}
-
 function setMessage(value, error = false) {
   message.textContent = value;
   message.className = error ? "message message-error" : "message";
 }
 
 async function request(path) {
-  const savedToken = token();
   const response = await fetch(path, {
     cache: "no-store",
-    headers: savedToken ? { Authorization: `Bearer ${savedToken}` } : {},
   });
   if (!response.ok) {
     throw new Error(response.status === 401 ? "请返回首页连接节点后再查看日志。" : "日志读取失败。");

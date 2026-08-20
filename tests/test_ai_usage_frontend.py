@@ -29,7 +29,6 @@ const cached = {
   display: { long: "Weekly cached" },
 };
 const storageValues = new Map([
-  ["hub.sessionToken", "session-token"],
   ["hub.aiUsageCache", JSON.stringify(cached)],
 ]);
 const storage = {
@@ -158,10 +157,7 @@ function respond(data, { status = 200, success = true, error = null } = {}) {
         "/api/ai/usage?refresh=true",
         "/api/ai/usage?refresh=true",
     ]
-    assert all(
-        call["options"]["headers"]["Authorization"] == "Bearer session-token"
-        for call in behavior["fetchCalls"]
-    )
+    assert all("Authorization" not in call["options"].get("headers", {}) for call in behavior["fetchCalls"])
     assert behavior["firstResult"] == behavior["concurrentResult"]
     assert behavior["firstResult"]["display"]["long"] == "Weekly fresh"
     assert behavior["normalResult"]["display"]["long"] == "Weekly normal"
@@ -232,36 +228,22 @@ eval(source);
 
 @pytest.mark.skipif(NODE is None, reason="Node.js is required for JavaScript behavior tests")
 @pytest.mark.parametrize(
-    ("cached_value", "token"),
+    "cached_value",
     [
-        ("invalid-json", "saved-token"),
-        ("123", "saved-token"),
-        (
-            json.dumps(
-                {
-                    "status": "available",
-                    "checked_at": "2026-08-15T10:00:00+08:00",
-                }
-            ),
-            "",
-        ),
+        "invalid-json",
+        "123",
     ],
 )
-def test_ai_usage_core_removes_invalid_or_unauthenticated_cache(
-    cached_value: str,
-    token: str,
-) -> None:
+def test_ai_usage_core_removes_invalid_cache(cached_value: str) -> None:
     program = r"""
 const fs = require("fs");
 const source = fs.readFileSync(process.argv[1], "utf8");
 const cachedValue = process.argv[2];
-const token = process.argv[3];
 let removed = false;
 globalThis.window = globalThis;
 globalThis.sessionStorage = {
   getItem: (key) => {
     if (key === "hub.aiUsageCache") return cachedValue;
-    if (key === "hub.sessionToken") return token || null;
     return null;
   },
   setItem() {},
@@ -278,7 +260,7 @@ process.stdout.write(JSON.stringify({
 }));
 """
     result = subprocess.run(
-        [NODE, "-e", program, str(AI_USAGE_CORE_SCRIPT), cached_value, token],
+        [NODE, "-e", program, str(AI_USAGE_CORE_SCRIPT), cached_value],
         check=True,
         capture_output=True,
         text=True,

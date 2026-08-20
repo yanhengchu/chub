@@ -27,7 +27,7 @@ const WEIXIN_CONTENT_FAILURE =
 
 const configSchema = Type.Object({
   baseUrl: Type.Optional(Type.String({
-    description: "Fixed Chub base URL on the local Tailnet.",
+    description: "Fixed local Chub base URL; must use 127.0.0.1.",
   })),
   timeoutMs: Type.Optional(Type.Integer({
     minimum: 500,
@@ -106,7 +106,7 @@ function weixinMessage(event: { content: string; body?: string }): {
 const plugin: ReturnType<typeof definePluginEntry> = definePluginEntry({
   id: "chub",
   name: "Chub",
-  description: "Use explicitly allowlisted Chub capabilities through a fixed Tailnet connection.",
+  description: "Use explicitly allowlisted Chub capabilities through a fixed local connection.",
   configSchema: buildJsonPluginConfigSchema(
     configSchema as unknown as Record<string, unknown>,
   ),

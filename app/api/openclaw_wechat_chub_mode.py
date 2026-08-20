@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from ipaddress import ip_address
 from typing import Literal, Self
 
 from fastapi import APIRouter, Depends, Request
@@ -8,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from app.codex.models import QuickInteractionWeixinRoute
 from app.core.response import ApiError, ApiResponse
-from app.core.security import require_tailscale
+from app.core.security import _allows_loopback_request
 
 
 WEIXIN_CHUB_MODE_PROTOCOL_VERSION = 3
@@ -69,32 +68,25 @@ class WeixinChubModeDispatchData(BaseModel):
         return self
 
 
-def require_same_node_tailscale(request: Request) -> None:
-    client_host = request.client.host if request.client else ""
-    server_host = request.app.state.settings.server.host
-    try:
-        same_node = ip_address(client_host) == ip_address(server_host)
-    except ValueError:
-        same_node = False
-    if not same_node:
+def require_local_openclaw(request: Request) -> None:
+    if not _allows_loopback_request(request):
         raise ApiError(
             403,
             "weixin_chub_mode_source_required",
-            "微信 Chub 模式只接受本节点 OpenClaw 调度。",
+            "微信 Chub 模式只接受本机 OpenClaw 调度。",
         )
 
 
 router = APIRouter(
     prefix="/api/openclaw/wechat-chub-mode",
     tags=["openclaw-wechat-chub-mode"],
-    dependencies=[Depends(require_tailscale)],
 )
 
 
 @router.post(
     "/dispatch",
     response_model=ApiResponse[WeixinChubModeDispatchData],
-    dependencies=[Depends(require_same_node_tailscale)],
+    dependencies=[Depends(require_local_openclaw)],
 )
 def dispatch_wechat_chub_mode_message(
     payload: WeixinChubModeDispatchRequest,
