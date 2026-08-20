@@ -554,6 +554,13 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "/api/openclaw/weixin/login" in dashboard_script
     assert "/api/maintenance/quick-worker" in dashboard_script
     assert "/api/maintenance/system-upgrade" in dashboard_script
+    assert "reloadDashboardAfterMaintenance" in dashboard_script
+    assert "maintenanceReloadTimer" in dashboard_script
+    assert "}, 2000);" in dashboard_script
+    assert "页面即将刷新" in dashboard_script
+    assert 'setBadge(elements.quickWorkerBadge, "重启完成", "success")' in dashboard_script
+    assert "systemUpgradeReloadOperationId" in dashboard_script
+    assert 'data.operation?.status === "succeeded"' in dashboard_script
     assert 'headers: { "Content-Type": "application/json" }' in dashboard_script
     assert "syncCoreMaintenanceControls" in dashboard_script
     assert 'sessionsTitle.className = "card-group-title codex-sessions-title"' in dashboard_script
@@ -753,7 +760,7 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "/api/health" in script.text
     assert "waitForHubRestart" in script.text
     assert "elements.globalMessage" in script.text
-    assert "refreshCardsAfterRestart" in script.text
+    assert "reloadDashboardAfterMaintenance" in script.text
     assert "previousInstanceId" in script.text
     assert "正在检查 Tailnet 可信访问" not in script.text
     assert "正在验证已保存凭证" not in script.text

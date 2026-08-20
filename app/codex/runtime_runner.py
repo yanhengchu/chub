@@ -80,6 +80,7 @@ class CodexRuntimeRunner:
         command = [
             executable,
             "exec",
+            "--skip-git-repo-check",
             "--profile",
             "chub",
             "--json",

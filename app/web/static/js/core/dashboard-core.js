@@ -97,6 +97,7 @@ let accessVersion = 0;
 let connectionAttempt = 0;
 let cardsRefreshAt = 0;
 let hubRestartInProgress = false;
+let maintenanceReloadTimer = 0;
 const dashboardNavigationEntry = performance.getEntriesByType("navigation")[0];
 const dashboardIsHistoryReturn = dashboardNavigationEntry?.type === "back_forward";
 
@@ -143,12 +144,13 @@ async function waitForHubRestart(previousInstanceId) {
   throw new Error("重启后未能连接 Hub，请稍后刷新页面检查服务状态。");
 }
 
-async function refreshCardsAfterRestart() {
-  await Promise.all([
-    refreshWorkstationEnvironment(),
-    loadCodexSessions(),
-    loadAutomations(),
-  ]);
+function reloadDashboardAfterMaintenance() {
+  if (maintenanceReloadTimer) {
+    return;
+  }
+  maintenanceReloadTimer = window.setTimeout(() => {
+    window.location.reload();
+  }, 2000);
 }
 
 function clearProtectedView() {

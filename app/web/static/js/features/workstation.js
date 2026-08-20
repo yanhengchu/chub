@@ -9,9 +9,11 @@ const QUICK_WORKER_ACTIVE_STATES = new Set([
 let quickWorkerState = null;
 let quickWorkerPollTimer = 0;
 let quickWorkerRequestInProgress = false;
+let quickWorkerReloadOperationId = null;
 let systemUpgradeState = null;
 let systemUpgradePollTimer = 0;
 let systemUpgradeRequestInProgress = false;
+let systemUpgradeReloadOperationId = null;
 
 function quickWorkerPresentation(state) {
   return {
@@ -77,6 +79,15 @@ function renderSystemUpgrade(data) {
   systemUpgradeState = data;
   elements.systemUpgradeDetail.textContent = `状态：${systemUpgradePresentation(data.state)}。${data.message}`;
   syncCoreMaintenanceControls();
+  if (
+    systemUpgradeReloadOperationId
+    && data.operation?.operation_id === systemUpgradeReloadOperationId
+    && data.operation.status === "succeeded"
+  ) {
+    elements.systemUpgradeDetail.textContent = `状态：已完成。${data.operation.message}`;
+    systemUpgradeReloadOperationId = null;
+    reloadDashboardAfterMaintenance();
+  }
 }
 
 function scheduleSystemUpgradePoll() {
@@ -111,11 +122,13 @@ async function startSystemUpgrade() {
   systemUpgradeRequestInProgress = true;
   syncCoreMaintenanceControls();
   try {
-    renderSystemUpgrade(await apiFetch("/api/maintenance/system-upgrade", {
+    const data = await apiFetch("/api/maintenance/system-upgrade", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ fingerprint }),
-    }));
+    });
+    systemUpgradeReloadOperationId = data.operation?.operation_id || null;
+    renderSystemUpgrade(data);
   } finally {
     systemUpgradeRequestInProgress = false;
     syncCoreMaintenanceControls();
@@ -134,6 +147,7 @@ function resetQuickWorkerView() {
   clearQuickWorkerPollTimer();
   quickWorkerState = null;
   quickWorkerRequestInProgress = false;
+  quickWorkerReloadOperationId = null;
   setBadge(elements.quickWorkerBadge, "正在检查");
   elements.quickWorkerDetail.textContent = "正在检查任务执行服务";
   setMessage(elements.quickWorkerMessage, "");
@@ -143,6 +157,7 @@ function resetQuickWorkerView() {
   clearSystemUpgradePollTimer();
   systemUpgradeState = null;
   systemUpgradeRequestInProgress = false;
+  systemUpgradeReloadOperationId = null;
   elements.systemUpgradeDetail.textContent = "状态：正在检查运行态恢复条件";
   syncCoreMaintenanceControls();
 }
@@ -159,6 +174,19 @@ function renderQuickWorker(data) {
     failedOperation ? "error" : "",
   );
   syncCoreMaintenanceControls();
+  const matchesRequestedReload = (
+    quickWorkerReloadOperationId
+    && data.operation?.operation_id === quickWorkerReloadOperationId
+  );
+  if (matchesRequestedReload && data.operation?.status === "failed") {
+    quickWorkerReloadOperationId = null;
+  }
+  if (matchesRequestedReload && data.operation?.status === "succeeded") {
+    setBadge(elements.quickWorkerBadge, "重启完成", "success");
+    elements.quickWorkerDetail.textContent = data.operation.message;
+    quickWorkerReloadOperationId = null;
+    reloadDashboardAfterMaintenance();
+  }
 }
 
 function scheduleQuickWorkerPoll() {
@@ -209,6 +237,9 @@ async function requestQuickWorkerRestart() {
     const data = await apiFetch("/api/maintenance/quick-worker/restart", {
       method: "POST",
     });
+    quickWorkerReloadOperationId = ["restarting", "succeeded"].includes(
+      data.operation?.status,
+    ) ? data.operation.operation_id : null;
     renderQuickWorker(data);
     scheduleQuickWorkerPoll();
   } catch (error) {

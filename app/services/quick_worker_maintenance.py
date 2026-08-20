@@ -42,6 +42,7 @@ class QuickWorkerReloadState(_StrictModel):
 
 
 class QuickWorkerOperationView(_StrictModel):
+    operation_id: str = Field(min_length=1, max_length=128)
     status: Literal["restarting", "succeeded", "failed"]
     message: str = Field(default="", max_length=300)
     updated_at: datetime
@@ -132,6 +133,7 @@ class QuickWorkerReloadCoordinator:
                 else self._state.status
             )
             return QuickWorkerOperationView(
+                operation_id=self._state.operation_id,
                 status=status,
                 message=self._state.message,
                 updated_at=self._state.updated_at,

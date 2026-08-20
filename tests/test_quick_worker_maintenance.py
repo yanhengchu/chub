@@ -299,6 +299,9 @@ async def test_quick_worker_restart_uses_fixed_controlled_command(
         assert response.status_code == 200
         assert response.json()["data"]["state"] == "restarting"
         assert response.json()["data"]["can_restart"] is False
+        assert response.json()["data"]["operation"]["operation_id"].startswith(
+            "worker-reload:"
+        )
         launch.assert_called_once_with(app.state.quick_worker_maintenance.command)
         assert [call.kwargs["status"] for call in operation_log.call_args_list[:2]] == [
             "requested",

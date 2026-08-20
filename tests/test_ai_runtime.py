@@ -372,7 +372,14 @@ def test_codex_runner_maps_permissions_without_elevation(
     )
     command = list(process_spec.argv)
 
-    assert command[0:4] == ["/fixed/codex", "exec", "--profile", "chub"]
+    assert command[0:5] == [
+        "/fixed/codex",
+        "exec",
+        "--skip-git-repo-check",
+        "--profile",
+        "chub",
+    ]
+    assert command.count("--skip-git-repo-check") == 1
     assert expected in command
     assert command[-3:] == ["resume", "native-session", "-"]
 

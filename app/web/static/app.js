@@ -40,8 +40,9 @@ document.addEventListener("visibilitychange", () => {
 async function monitorHubRestart(previousInstanceId) {
   try {
     await waitForHubRestart(previousInstanceId);
-    await refreshCardsAfterRestart();
-    setMessage(elements.globalMessage, "");
+    setBadge(elements.chubServiceBadge, "运行正常", "success");
+    elements.chubServiceDetail.textContent = "Chub Web 已重启并恢复，页面即将刷新";
+    reloadDashboardAfterMaintenance();
   } catch (error) {
     if (!handleAccessError(error)) {
       setBadge(elements.chubServiceBadge, "恢复失败", "failed");

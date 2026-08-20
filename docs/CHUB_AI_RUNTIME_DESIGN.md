@@ -337,6 +337,8 @@ Adapter 输出只能是共享层定义的规范化结果。每个原生 ID 在�
 
 Runtime Runner 必须实现 `RuntimeWorkerRunner` 的完整方法集，只提供固定后台执行规格、受控输入、结构化事件、最终结果和有界错误读取。`build_launch()` 接收 Worker 提供的受信任目录和文件描述符，返回固定 `argv`、是否通过 stdin 传 Prompt 以及最小环境；不得把 Prompt、Token 或任意客户端路径写入命令行。`parse_event_stream()` 只能读取有界的私有事件文件并提取一个已校验的原生 Session ID；`read_error()` 是诊断读取，失败时 Worker 仍必须写入任务终态；`read_result()` 读取有界最终文本。Quick Worker 继续拥有：
 
+当 Codex Runner 使用非交互式 `codex exec` 时，必须由后端固定加入 `--skip-git-repo-check`，使受信任的普通目录和 Git 仓库使用相同的快速交互路径。该参数只跳过 Codex 的 Git 仓库前置检查，不跳过 Chub 的可信工作目录发现、Session 归属校验、权限映射、审批或沙箱；客户端不能提交、关闭或覆盖该参数。非 Git 目录没有版本控制回滚保障，实际可写范围仍必须以 Session 的权限配置为准。
+
 - 幂等任务 ID、Session 租约和单 writer 仲裁；
 - 进程组、超时、取消、输出/结果上限和资源清理；
 - 崩溃、断链、未知结果、恢复对账和唯一任务终态；
