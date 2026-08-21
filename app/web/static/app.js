@@ -41,7 +41,7 @@ async function monitorHubRestart(previousInstanceId) {
   try {
     await waitForHubRestart(previousInstanceId);
     setBadge(elements.chubServiceBadge, "运行正常", "success");
-    elements.chubServiceDetail.textContent = "Chub Web 已重启并恢复，页面即将刷新";
+    showMaintenanceCompletion(elements.chubServiceDetail, "Chub Web 已重启并恢复。");
     reloadDashboardAfterMaintenance();
   } catch (error) {
     if (!handleAccessError(error)) {

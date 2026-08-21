@@ -65,6 +65,8 @@ Commands:
              Stop accepting new Worker tasks and wait until accepted tasks finish
   worker-reload
              Drain and independently reload Quick Worker, then verify takeover
+  worker-recover
+             Restart an unavailable Quick Worker and verify healthy takeover
   logs       Follow Hub application logs
   notification
              Validate, list, test, or send configured notifications
@@ -936,6 +938,30 @@ quick_worker_reload() {
     fail "Quick Worker did not complete healthy takeover"
 }
 
+quick_worker_recover() {
+    if [[ "${CHUB_ACTIVITY_SOURCE:-}" == "quick" ]]; then
+        fail "worker recovery must be run from a local terminal, not from a Quick Worker task"
+    fi
+    check_project
+    if ! reload_worker_service; then
+        fail "Quick Worker service recovery failed"
+    fi
+    local new_payload new_generation attempt
+    for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+        if new_payload="$(quick_worker_health 2>/dev/null)" \
+            && new_generation="$(
+                worker_health_generation "$new_payload" ready ""
+            )" \
+            && worker_health_is_idle "$new_payload" \
+            && health_check true; then
+            echo "Quick Worker recovered: $new_generation"
+            return
+        fi
+        sleep 0.5
+    done
+    fail "Quick Worker did not recover healthy state"
+}
+
 show_logs() {
     local log_file
     log_file="$(configured_value log_file 2>/dev/null)" \
@@ -996,6 +1022,7 @@ case "$command" in
         quick_worker_drain "$@"
         ;;
     worker-reload) quick_worker_reload ;;
+    worker-recover) quick_worker_recover ;;
     logs) show_logs ;;
     notification)
         shift

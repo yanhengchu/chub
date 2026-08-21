@@ -35,6 +35,7 @@ from app.codex.models import (
     CodexReasoningLevel,
     CodexSession,
     PermissionMode,
+    SessionMode,
     SessionInfo,
     TurnActivity,
     WorkspaceInfo,
@@ -167,6 +168,7 @@ class CodexPtyManager:
         permission_mode: PermissionMode = "full-access",
         model: str | None = None,
         reasoning_effort: str | None = None,
+        session_mode: SessionMode = "terminal",
     ) -> SessionInfo:
         self._require_available()
         self.validate_model(model, reasoning_effort)
@@ -182,6 +184,7 @@ class CodexPtyManager:
             )
         session = CodexSession(
             id=str(uuid.uuid4()),
+            session_mode=session_mode,
             workspace_id=workspace.id,
             workspace_name=workspace.name,
             cwd=Path(workspace.path),
@@ -200,6 +203,7 @@ class CodexPtyManager:
         os.chmod(workspace, 0o700)
         session = CodexSession(
             id=str(uuid.uuid4()),
+            session_mode="quick",
             workspace_id="weixin-translation",
             workspace_name="微信文本优化与翻译",
             cwd=workspace,
@@ -361,11 +365,20 @@ class CodexPtyManager:
 
     @staticmethod
     def _require_terminal_access(session: CodexSession) -> None:
-        if session.workspace_id == "weixin-translation":
+        if session.session_mode != "terminal":
             raise ApiError(
                 409,
                 "codex_terminal_access_disabled",
-                "文本优化与翻译 Session 仅支持快速交互。",
+                "快速交互 Session 仅支持快速交互入口。",
+            )
+
+    @staticmethod
+    def _require_quick_access(session: CodexSession) -> None:
+        if session.session_mode != "quick":
+            raise ApiError(
+                409,
+                "codex_quick_access_disabled",
+                "实时终端 Session 仅支持实时终端入口。",
             )
 
     def restart_terminal_backend(self, session_id: str) -> CodexSession:
@@ -473,6 +486,7 @@ class CodexPtyManager:
             session = self.store.get(session_id)
             if session is None:
                 raise ApiError(404, "codex_session_not_found", "Codex session not found")
+            self._require_quick_access(session)
             self.validate_native_session_id(native_session_id)
             if (
                 session.codex_session_id is not None
@@ -549,12 +563,12 @@ class CodexPtyManager:
             return self.store.validate_for_system_upgrade()
 
     def discard_session_for_system_upgrade(self, session_id: str) -> None:
-        """Remove only Chub's local Session state, preserving the Codex Session."""
+        """Drop Chub management state without inspecting or stopping Codex."""
         with self._lock:
             current = self.store.get(session_id)
             if current is None:
                 return
-            self.stop_session(session_id)
+            self._stop_backend(self.store.get(session_id))
             self.store.delete(session_id)
             try:
                 (self.hook_dir / f"{session_id}.json").unlink()
@@ -650,7 +664,8 @@ class CodexPtyManager:
             error=session.error,
             created_at=session.created_at,
             updated_at=session.updated_at,
-            terminal_access_allowed=session.workspace_id != "weixin-translation",
+            session_mode=session.session_mode,
+            terminal_access_allowed=session.session_mode == "terminal",
         )
 
     def _consume_hook_results(self) -> None:
@@ -962,6 +977,7 @@ class CodexPtyManager:
             title=session.title,
             codex_session_id=session.native_session_id,
             status="stopped",
+            permission_mode=session.active_permission_mode or "ask",
             active_permission_mode=session.active_permission_mode,
             model=session.active_model,
             reasoning_effort=session.active_reasoning_effort,

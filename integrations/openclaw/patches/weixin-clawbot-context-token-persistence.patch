@@ -1,6 +1,62 @@
+--- a/src/messaging/inbound.ts
++++ b/src/messaging/inbound.ts
+@@ -48,7 +48,11 @@
+   try {
+     const dir = path.dirname(filePath);
+     fs.mkdirSync(dir, { recursive: true });
+-    fs.writeFileSync(filePath, JSON.stringify(tokens, null, 0), "utf-8");
++    fs.writeFileSync(filePath, JSON.stringify(tokens, null, 0), {
++      encoding: "utf-8",
++      mode: 0o600,
++    });
++    fs.chmodSync(filePath, 0o600);
+   } catch (err) {
+     logger.warn(`persistContextTokens: failed to write ${filePath}: ${String(err)}`);
+   }
+@@ -105,7 +109,11 @@
+ /** Retrieve the cached context token for a given account+user pair. */
+ export function getContextToken(accountId: string, userId: string): string | undefined {
+   const k = contextTokenKey(accountId, userId);
+-  const val = contextTokenStore.get(k);
++  let val = contextTokenStore.get(k);
++  if (val === undefined) {
++    restoreContextTokens(accountId);
++    val = contextTokenStore.get(k);
++  }
+   logger.debug(
+     `getContextToken: key=${k} found=${val !== undefined} storeSize=${contextTokenStore.size}`,
+   );
+   return val;
+ }
+--- a/src/channel.ts
++++ b/src/channel.ts
+@@ -120,8 +120,13 @@
+     aLog.error(`sendWeixinOutbound: account not configured`);
+     throw new Error("weixin not configured: please run `openclaw channels login --channel openclaw-weixin`");
+   }
++  const contextToken = params.contextToken ?? getContextToken(account.accountId, params.to);
++  if (!contextToken) {
++    aLog.warn("sendWeixinOutbound: contextToken unavailable for configured recipient");
++    throw new Error("weixin_context_missing: ask the recipient to message the bot first");
++  }
+   if (!params.contextToken) {
+-    aLog.warn(`sendWeixinOutbound: contextToken missing for to=${params.to}, sending without context`);
++    aLog.info("sendWeixinOutbound: restored persisted contextToken for configured recipient");
+   }
+   const f = new StreamingMarkdownFilter();
+   const rawText = params.text ?? "";
+@@ -142,7 +147,7 @@
+     const result = await sendMessageWeixin({ to: params.to, text: filteredText, opts: {
+       baseUrl: account.baseUrl,
+       token: account.token,
+-      contextToken: params.contextToken,
++      contextToken,
+     }});
+     emitWeixinMessageSent({ to: params.to, content: filteredText, success: true, accountId: account.accountId });
+     return { channel: "openclaw-weixin", messageId: result.messageId };
 --- a/dist/src/messaging/inbound.js
 +++ b/dist/src/messaging/inbound.js
-@@ -35,7 +35,11 @@ function persistContextTokens(accountId) {
+@@ -35,7 +35,11 @@
      try {
          const dir = path.dirname(filePath);
          fs.mkdirSync(dir, { recursive: true });
@@ -13,8 +69,9 @@
      }
      catch (err) {
          logger.warn(`persistContextTokens: failed to write ${filePath}: ${String(err)}`);
-@@ -93,7 +97,11 @@ export function setContextToken(accountId, userId, token) {
- /** Retrieve the cached context token for an account+user pair. */
+     }
+@@ -93,7 +97,11 @@
+ /** Retrieve the cached context token for a given account+user pair. */
  export function getContextToken(accountId, userId) {
      const k = contextTokenKey(accountId, userId);
 -    const val = contextTokenStore.get(k);
@@ -28,15 +85,7 @@
  }
 --- a/dist/src/channel.js
 +++ b/dist/src/channel.js
-@@ -4,6 +4,6 @@ import { registerWeixinAccountId, loadWeixinAccount, saveWeixinAccount, listWeix
- import { notifyStop, notifyStart } from "./api/api.js";
- import { assertSessionActive } from "./api/session-guard.js";
--import { findAccountIdsByContextToken, restoreContextTokens, clearContextTokensForAccount } from "./messaging/inbound.js";
-+import { getContextToken, findAccountIdsByContextToken, restoreContextTokens, clearContextTokensForAccount } from "./messaging/inbound.js";
- import { logger } from "./util/logger.js";
- import { DEFAULT_ILINK_BOT_TYPE, startWeixinLoginWithQr, waitForWeixinLogin, displayQRCode, } from "./auth/login-qr.js";
- // Lazy-imported inside startAccount to avoid pulling in the monitor -> process-message ->
-@@ -74,6 +74,14 @@ async function sendWeixinOutbound(params) {
+@@ -74,8 +74,13 @@
          aLog.error(`sendWeixinOutbound: account not configured`);
          throw new Error("weixin not configured: please run `openclaw channels login --channel openclaw-weixin`");
      }
@@ -45,13 +94,13 @@
 +        aLog.warn("sendWeixinOutbound: contextToken unavailable for configured recipient");
 +        throw new Error("weixin_context_missing: ask the recipient to message the bot first");
 +    }
-+    if (!params.contextToken) {
+     if (!params.contextToken) {
+-        aLog.warn(`sendWeixinOutbound: contextToken missing for to=${params.to}, sending without context`);
 +        aLog.info("sendWeixinOutbound: restored persisted contextToken for configured recipient");
-+    }
+     }
      const f = new StreamingMarkdownFilter();
      const rawText = params.text ?? "";
-     let filteredText = f.feed(rawText) + f.flush();
-@@ -91,7 +99,7 @@ async function sendWeixinOutbound(params) {
+@@ -94,7 +99,7 @@
          const result = await sendMessageWeixin({ to: params.to, text: filteredText, opts: {
                  baseUrl: account.baseUrl,
                  token: account.token,

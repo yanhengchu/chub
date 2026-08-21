@@ -178,13 +178,13 @@ def test_dispatch_returns_bounded_failure_instead_of_api_error(
     assert result.message == (
         "Not submitted · The current Session is running.\n\n"
         "Task · 第二个任务\n\n"
-        "Retry: Send new retry to continue in a new Session."
+        "Retry: Send retry to continue in the current Session."
     )
     quick_interactions.submit.assert_not_called()
 
 
 @pytest.mark.parametrize("prompt", ["new", "新建", " new。 "])
-def test_codex_new_requires_a_title(
+def test_prefixed_new_without_title_falls_back_to_normal_task(
     settings: Settings,
     prompt: str,
 ) -> None:
@@ -197,6 +197,7 @@ def test_codex_new_requires_a_title(
     )
     codex_manager.list_sessions.return_value = [
         CodexSession(
+            session_mode="quick",
             id="session-new",
             workspace_id="chub",
             workspace_name="Chub",
@@ -209,18 +210,20 @@ def test_codex_new_requires_a_title(
 
     result = manager.dispatch(
         message_id=f"codex-new-{prompt}",
-        prompt=prompt,
+        prompt="/" + prompt,
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
         delivery_route=delivery_route(),
     )
 
-    assert result.message == "Usage: new <title> (maximum 48 characters)."
-    assert manager.session_id() is None
-    codex_manager.create_session.assert_not_called()
+    assert result.message is not None
+    assert result.message.startswith("Submitted")
+    assert "Task · /" in result.message
+    assert manager.session_id() == "session-new"
+    codex_manager.create_session.assert_called_once()
     codex_manager.rename_session.assert_not_called()
-    quick_interactions.submit.assert_not_called()
+    quick_interactions.submit.assert_called_once()
 
 
 @pytest.mark.parametrize(
@@ -238,6 +241,7 @@ def test_codex_new_creates_names_and_selects_without_submitting(
 ) -> None:
     manager, codex_manager, quick_interactions = configured_manager(settings)
     session = CodexSession(
+        session_mode="quick",
         id="session-new",
         workspace_id="chub",
         workspace_name="Chub",
@@ -287,6 +291,7 @@ def test_codex_new_creates_names_and_selects_without_submitting(
 def test_codex_new_naming_failure_keeps_created_session(settings: Settings) -> None:
     manager, codex_manager, quick_interactions = configured_manager(settings)
     session = CodexSession(
+        session_mode="quick",
         id="session-new",
         workspace_id="chub",
         workspace_name="Chub",
@@ -365,6 +370,7 @@ def test_codex_new_status_does_not_fill_unassigned_candidate(
     manager, codex_manager, _quick_interactions = configured_manager(settings)
     sessions = [
         CodexSession(
+            session_mode="quick",
             id=session_id,
             workspace_id="chub",
             workspace_name="Chub",
@@ -419,6 +425,7 @@ def test_internal_codex_status_does_not_fill_unassigned_candidate(
     manager, codex_manager, _quick_interactions = configured_manager(settings)
     sessions = [
         CodexSession(
+            session_mode="quick",
             id=f"session-{index}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -469,6 +476,7 @@ def test_codex_operation_log_uses_operation_result_not_status_refresh(
     codex_manager.create_session.return_value = SimpleNamespace(id="session-new")
     codex_manager.list_sessions.return_value = [
         CodexSession(
+            session_mode="quick",
             id="session-new",
             workspace_id="chub",
             workspace_name="Chub",
@@ -509,7 +517,7 @@ def test_codex_operation_log_uses_operation_result_not_status_refresh(
     ) as write_operation:
         manager.dispatch(
             message_id="invalid-switch-log",
-            prompt="switch 0",
+            prompt="/switch 0",
             message_type="text",
             correlation_id=None,
             source_ip="100.64.0.21",
@@ -524,7 +532,7 @@ def test_codex_operation_log_uses_operation_result_not_status_refresh(
     assert [entry["status"] for entry in dispatch_entries] == [
         "requested",
         "started",
-        "failed",
+        "succeeded",
     ]
 
 
@@ -535,6 +543,7 @@ def test_duplicate_codex_new_replays_status_without_creating_twice(
     codex_manager.create_session.return_value = SimpleNamespace(id="session-new")
     codex_manager.list_sessions.return_value = [
         CodexSession(
+            session_mode="quick",
             id="session-new",
             workspace_id="chub",
             workspace_name="Chub",
@@ -593,6 +602,7 @@ def test_chub_sync_uses_placeholder_for_untitled_session(
     )
     codex_manager.list_sessions.return_value = [
         CodexSession(
+            session_mode="quick",
             id="untitled-session",
             workspace_id="chub",
             workspace_name="Chub",

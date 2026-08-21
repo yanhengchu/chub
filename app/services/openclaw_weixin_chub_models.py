@@ -33,6 +33,7 @@ WeixinChubModeSubmissionCode = Literal[
     "codex_usage_checked",
     # Reused by the current help route and compatible with legacy state files.
     "codex_help_checked",
+    "codex_model_checked",
     # Kept for state-file compatibility with the retired status route.
     "codex_status_checked",
     "codex_switch_checked",

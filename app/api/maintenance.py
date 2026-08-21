@@ -75,12 +75,6 @@ async def system_upgrade_status_data(application) -> SystemUpgradeStatusData:
         plan_error=plan_error,
     )
     operation = coordinator.operation()
-    if (
-        operation is not None
-        and operation.status == "failed"
-        and operation.destructive_started
-    ):
-        return data
     if not data.can_start:
         return data
     restart_error = application.state.system_upgrade_restart_readiness()
@@ -90,6 +84,18 @@ async def system_upgrade_status_data(application) -> SystemUpgradeStatusData:
         data.message = restart_error or cleanup_error or "运行态恢复预检失败。"
         if data.state == "available":
             data.state = "blocked"
+        return data
+    if (
+        data.state == "failed"
+        and (
+            application.state.quick_worker_maintenance.in_progress()
+            or application.state.deferred_restart.pending()
+            or application.state.deferred_restart.immediate_restart_in_progress()
+        )
+    ):
+        data.can_start = False
+        data.resume = False
+        data.message = "已有维护或重启操作正在进行，系统升级暂不可用。"
         return data
     if data.state != "available":
         return data
@@ -114,12 +120,27 @@ async def start_system_upgrade_for_source(
 ) -> SystemUpgradeStatusData:
     """Start the current fixed upgrade plan after the shared readiness checks."""
     coordinator = application.state.system_upgrade
+    operation = coordinator.operation()
     if coordinator.in_progress():
         return await system_upgrade_status_data(application)
     try:
         loaded = coordinator.plan()
     except OSError as exc:
-        raise ApiError(409, "system_upgrade_plan_invalid", str(exc)) from exc
+        if (
+            operation is not None
+            and operation.status == "failed"
+            and operation.destructive_started
+            and operation.failed_stage
+            in {
+                "cleaning_state",
+                "launching_services",
+                "restarting_services",
+                "verifying_new_instance",
+            }
+        ):
+            loaded = runtime_recovery_plan()
+        else:
+            raise ApiError(409, "system_upgrade_plan_invalid", str(exc)) from exc
     loaded = loaded or runtime_recovery_plan()
     if fingerprint is not None and loaded.fingerprint != fingerprint:
         raise ApiError(
@@ -133,13 +154,15 @@ async def start_system_upgrade_for_source(
         and operation.status == "failed"
         and operation.destructive_started
     ):
-        if operation.fingerprint != loaded.fingerprint:
-            raise ApiError(
-                409,
-                "system_upgrade_plan_changed",
-                "升级方案已经变化，不能继续已清理运行状态的升级。",
-            )
         with application.state.maintenance_lock:
+            if operation.fingerprint != loaded.fingerprint:
+                rebound = coordinator.rebase_failed_recovery(loaded)
+                if not rebound:
+                    raise ApiError(
+                        409,
+                        "system_upgrade_plan_changed",
+                        "升级方案已经变化，不能继续已清理运行状态的升级。",
+                    )
             resumed = coordinator.resume_failed(application.state.run_system_upgrade)
         if resumed is None:
             raise ApiError(
@@ -167,11 +190,11 @@ async def start_system_upgrade_for_source(
 
 def _require_runtime_maintenance_available(request: Request) -> None:
     coordinator = request.app.state.system_upgrade
-    if coordinator.in_progress() or coordinator.writes_blocked():
+    if coordinator.in_progress():
         raise ApiError(
             409,
             "system_upgrade_in_progress",
-            "系统升级与恢复正在处理 Chub Web 和 Quick Worker。",
+            "系统升级与恢复正在处理 Chub Web 和 Quick Worker，请等待当前操作结束。",
         )
 
 
@@ -315,14 +338,22 @@ async def restart_quick_worker(
     with request.app.state.maintenance_lock:
         if not coordinator.in_progress():
             _require_runtime_maintenance_available(request)
-            if not inspection.data.can_restart or inspection.generation is None:
+            recover_unavailable_worker = inspection.generation is None
+            if not inspection.data.can_restart or (
+                recover_unavailable_worker
+                and not coordinator.failed_recovery_available()
+            ):
                 raise ApiError(
                     409,
                     "quick_worker_not_restartable",
                     "Quick Worker 当前不可重启，请等待任务结束并确认服务恢复正常。",
                 )
             source_ip = request.client.host if request.client else "unknown"
-            coordinator.begin(inspection.generation, source_ip)
+            coordinator.begin(
+                inspection.generation,
+                source_ip,
+                recover=recover_unavailable_worker,
+            )
     refreshed = await inspect_quick_worker(
         request.app.state.settings,
         request.app.state.quick_interactions.recovery_ready,

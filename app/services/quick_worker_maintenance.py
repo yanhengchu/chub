@@ -33,7 +33,7 @@ class QuickWorkerReloadState(_StrictModel):
     version: Literal[1] = 1
     operation_id: str = Field(min_length=1, max_length=128)
     status: Literal["requested", "started", "succeeded", "failed"]
-    old_generation: str = Field(min_length=1, max_length=128)
+    old_generation: str | None = Field(default=None, min_length=1, max_length=128)
     process_id: int | None = Field(default=None, ge=1)
     source_ip: str = Field(min_length=1, max_length=128)
     message: str = Field(default="", max_length=300)
@@ -78,11 +78,15 @@ class WorkerReloadProcess(Protocol):
     def wait(self) -> int: ...
 
 
-def launch_quick_worker_reload_process(command: Path) -> WorkerReloadProcess:
+def launch_quick_worker_reload_process(
+    command: Path,
+    *,
+    recover: bool = False,
+) -> WorkerReloadProcess:
     environment = os.environ.copy()
     environment["CHUB_WORKER_RELOAD_EXTERNAL_LOGGING"] = "1"
     return subprocess.Popen(
-        [str(command), "worker-reload"],
+        [str(command), "worker-recover" if recover else "worker-reload"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
@@ -123,6 +127,14 @@ class QuickWorkerReloadCoordinator:
         with self._lock:
             return not self._state_error
 
+    def failed_recovery_available(self) -> bool:
+        with self._lock:
+            return bool(
+                not self._state_error
+                and self._state is not None
+                and self._state.status == "failed"
+            )
+
     def operation(self) -> QuickWorkerOperationView | None:
         with self._lock:
             if self._state is None:
@@ -139,7 +151,13 @@ class QuickWorkerReloadCoordinator:
                 updated_at=self._state.updated_at,
             )
 
-    def begin(self, old_generation: str, source_ip: str) -> bool:
+    def begin(
+        self,
+        old_generation: str | None,
+        source_ip: str,
+        *,
+        recover: bool = False,
+    ) -> bool:
         with self._lock:
             if self._state is not None and self._state.status in {
                 "requested",
@@ -189,7 +207,13 @@ class QuickWorkerReloadCoordinator:
                 "找不到 Quick Worker 重启命令",
             )
         try:
-            process = launch_quick_worker_reload_process(self.command)
+            if recover:
+                process = launch_quick_worker_reload_process(
+                    self.command,
+                    recover=True,
+                )
+            else:
+                process = launch_quick_worker_reload_process(self.command)
         except OSError as error:
             LOGGER.warning("Unable to launch Quick Worker reload", exc_info=True)
             self._finish(
@@ -411,7 +435,12 @@ async def inspect_quick_worker(
         return QuickWorkerInspection(
             QuickWorkerStatusData(
                 state="unavailable",
-                message="无法连接 Quick Worker。",
+                message=(
+                    "上次 Quick Worker 重启未完成，可以执行服务恢复。"
+                    if reload_coordinator.failed_recovery_available()
+                    else "无法连接 Quick Worker。"
+                ),
+                can_restart=reload_coordinator.failed_recovery_available(),
                 operation=operation,
             ),
             None,
@@ -424,6 +453,7 @@ async def inspect_quick_worker(
             QuickWorkerStatusData(
                 state="unavailable",
                 message="Quick Worker 健康状态不可用。",
+                can_restart=reload_coordinator.failed_recovery_available(),
                 operation=reload_coordinator.operation(),
             ),
             None,
@@ -487,14 +517,20 @@ async def inspect_quick_worker(
             active_tasks=active_tasks,
             queued_tasks=queued_tasks,
             can_restart=(
-                state in {"ready", "incompatible"}
-                and active_tasks == 0
-                and queued_tasks == 0
-                and worker_healthy
-                and reload_coordinator.maintenance_available()
-                and (
-                    data.get("protocol_version") != PROTOCOL_VERSION
-                    or recovery_ready
+                (
+                    state in {"ready", "incompatible"}
+                    and active_tasks == 0
+                    and queued_tasks == 0
+                    and worker_healthy
+                    and reload_coordinator.maintenance_available()
+                    and (
+                        data.get("protocol_version") != PROTOCOL_VERSION
+                        or recovery_ready
+                    )
+                )
+                or (
+                    state == "unavailable"
+                    and reload_coordinator.failed_recovery_available()
                 )
             ),
             operation=operation,

@@ -22,6 +22,7 @@ from app.codex.models import (
     CodexModelCatalogData,
     CodexModelInfo,
     CodexReasoningLevel,
+    SessionMode,
     SessionInfo,
     WorkspaceInfo,
 )
@@ -148,6 +149,7 @@ class AiSessionManager:
         permission_mode: PermissionMode = "full-access",
         model: str | None = None,
         reasoning_effort: str | None = None,
+        session_mode: SessionMode = "terminal",
     ) -> SessionInfo:
         self._require_available()
         self.validate_model(model, reasoning_effort)
@@ -164,6 +166,7 @@ class AiSessionManager:
         session = AiSession(
             id=str(uuid.uuid4()),
             runtime_id=self.runtime_id,
+            session_mode=session_mode,
             workspace_id=workspace.id,
             workspace_name=workspace.name,
             cwd=Path(workspace.path),
@@ -182,6 +185,7 @@ class AiSessionManager:
         session = AiSession(
             id=str(uuid.uuid4()),
             runtime_id=self.runtime_id,
+            session_mode="quick",
             workspace_id="weixin-translation",
             workspace_name="微信文本优化与翻译",
             cwd=workspace,
@@ -320,13 +324,27 @@ class AiSessionManager:
         self._require_terminal_access(session)
         return session
 
+    def require_quick_access(self, session_id: str) -> AiSession:
+        session = self.get_session(session_id)
+        self._require_quick_access(session)
+        return session
+
     @staticmethod
     def _require_terminal_access(session: AiSession) -> None:
-        if session.workspace_id == "weixin-translation":
+        if session.session_mode != "terminal":
             raise ApiError(
                 409,
                 "codex_terminal_access_disabled",
-                "文本优化与翻译 Session 仅支持快速交互。",
+                "快速交互 Session 仅支持快速交互入口。",
+            )
+
+    @staticmethod
+    def _require_quick_access(session: AiSession) -> None:
+        if session.session_mode != "quick":
+            raise ApiError(
+                409,
+                "codex_quick_access_disabled",
+                "实时终端 Session 仅支持实时终端入口。",
             )
 
     def restart_terminal_backend(self, session_id: str) -> AiSession:
@@ -417,7 +435,35 @@ class AiSessionManager:
             session = self.store.get(session_id)
             if session is None:
                 raise ApiError(404, "codex_session_not_found", "Codex session not found")
+            self._require_quick_access(session)
             self.validate_native_session_id(native_session_id)
+            for candidate in self.store.list():
+                if (
+                    candidate.id != session_id
+                    and candidate.runtime_id == session.runtime_id
+                    and candidate.native_session_id == native_session_id
+                ):
+                    if self._can_repair_discovered_quick_binding(session, candidate):
+                        try:
+                            self.store.adopt_discovered_native_session(
+                                session.id,
+                                candidate.id,
+                                native_session_id,
+                                session.runtime_id,
+                            )
+                        except AiSessionStoreUnavailable as exc:
+                            raise ApiError(
+                                409,
+                                "quick_interaction_native_session_conflict",
+                                "Chub Session identity conflict: Codex session identity is "
+                                "already bound to another Session",
+                            ) from exc
+                        return
+                    raise ApiError(
+                        409,
+                        "quick_interaction_native_session_conflict",
+                        "Codex 原生 Session 已归属于其他 Chub Session。",
+                    )
             if (
                 session.native_session_id is not None
                 and session.native_session_id != native_session_id
@@ -430,7 +476,7 @@ class AiSessionManager:
                 )
             if session.native_session_id is None:
                 try:
-                    duplicates = self.store.bind_native_session(
+                    self.store.bind_native_session(
                         session_id,
                         native_session_id,
                         session.runtime_id,
@@ -442,9 +488,22 @@ class AiSessionManager:
                         "Chub Session identity conflict: Codex session identity is "
                         "already bound to another Session",
                     ) from exc
-                for duplicate in duplicates:
-                    self.supervisor.stop_terminal(duplicate.id)
-                    self._remove_hook_file(duplicate.id)
+
+    def _can_repair_discovered_quick_binding(
+        self,
+        quick_session: AiSession,
+        discovered_session: AiSession,
+    ) -> bool:
+        """Recognize only the discovery race; never take over a real terminal."""
+        return (
+            quick_session.session_mode == "quick"
+            and quick_session.native_session_id is None
+            and discovered_session.session_mode == "terminal"
+            and discovered_session.discovered
+            and discovered_session.cwd == quick_session.cwd
+            and discovered_session.created_at >= quick_session.created_at
+            and not self.supervisor.owns_terminal_writer(discovered_session.id)
+        )
 
     def recover_interrupted_quick_interaction(self, session_id: str) -> None:
         with self._lock:
@@ -500,12 +559,12 @@ class AiSessionManager:
             self.store.list()
 
     def discard_session_for_system_upgrade(self, session_id: str) -> None:
-        """Remove only Chub's local Session state, preserving the Runtime Session."""
+        """Drop Chub management state without inspecting or stopping the Runtime Session."""
         with self._lock:
             current = self.store.get(session_id)
             if current is None:
                 return
-            self.supervisor.stop_terminal(session_id)
+            self.supervisor.stop_backend(session_id)
             self.store.delete(session_id)
             self._remove_hook_file(session_id)
 
@@ -594,7 +653,8 @@ class AiSessionManager:
             error=session.error,
             created_at=session.created_at,
             updated_at=session.updated_at,
-            terminal_access_allowed=session.workspace_id != "weixin-translation",
+            session_mode=session.session_mode,
+            terminal_access_allowed=session.session_mode == "terminal",
         )
 
     def _reconcile_quick_activity(self, session: AiSession) -> None:
@@ -641,12 +701,10 @@ class AiSessionManager:
                         "Chub Session identity conflict: Runtime Session identity "
                         "does not match the managed Session",
                     )
-                # Runtime discovery can win the race with a Worker hook and
-                # create a second Chub record for the same native Session.
-                # Keep the hook's logical Session (the one the user started)
-                # and discard only the duplicate discovery record.
+                # A native Session already represented by another Chub record
+                # is never reclassified across terminal and quick modes.
                 try:
-                    duplicates = self.store.bind_native_session(
+                    self.store.bind_native_session(
                         session.id,
                         native_session_id,
                         session.runtime_id,
@@ -657,9 +715,6 @@ class AiSessionManager:
                         "codex_session_native_conflict",
                         "Runtime Session identity is already bound to another managed Session",
                     ) from exc
-                for duplicate in duplicates:
-                    self.supervisor.stop_terminal(duplicate.id)
-                    self._remove_hook_file(duplicate.id)
                 session = self.store.get(session.id)
         if session and activity in {"working", "idle"}:
             expected_source = (
@@ -702,6 +757,15 @@ class AiSessionManager:
             for item in discovery.sessions
         }
         stored = self.store.list()
+        pending_quick_cwds = {
+            session.cwd
+            for session in stored
+            if (
+                session.session_mode == "quick"
+                and session.native_session_id is None
+                and self._quick_interaction_is_running(session.id)
+            )
+        }
         bound_native_keys = {
             (session.runtime_id, session.native_session_id)
             for session in stored
@@ -710,6 +774,11 @@ class AiSessionManager:
         for native in discovery.sessions:
             native_key = (native.runtime_id, native.native_session_id)
             if native_key in bound_native_keys:
+                continue
+            # A quick Worker creates the native Session before its result can
+            # bind the Chub record. Do not auto-import that short-lived gap as
+            # a second terminal Session.
+            if native.cwd in pending_quick_cwds:
                 continue
             self.store.save(self._session_from_native(native))
             bound_native_keys.add(native_key)
@@ -744,6 +813,7 @@ class AiSessionManager:
         return AiSession(
             id=str(uuid.uuid4()),
             runtime_id=native.runtime_id,
+            session_mode="terminal",
             native_session_id=native.native_session_id,
             workspace_id=workspace[0],
             workspace_name=workspace[1],

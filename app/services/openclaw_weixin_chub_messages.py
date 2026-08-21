@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Iterable, Mapping
+from zoneinfo import ZoneInfo
 
 from app.ai_usage.models import AiUsageData
 from app.ai_usage.service import AiUsageService
@@ -21,14 +23,16 @@ WEEKLY_WINDOW_MINUTES = 7 * 24 * 60
 CHUB_HELP_MESSAGE = "\n\n".join(
     (
         "Commands",
+        "Command prefix · 开头空格、/、中英文标点；匹配失败按普通任务",
         "Slots · N = SN = 一…九（中文数字可紧连中文指令）",
         "chub · 状态 / 查询状态",
+        "usage · 完整额度",
         "help · 帮助",
+        "model · 模型",
         "restart · 重启 / 重新启动",
         "system upgrade status",
         "system upgrade",
         "sync · 同步",
-        "direct <task> · 直接执行 <正文>",
         "new <title> · 新建 <标题>",
         "rename <title> · 重命名 <标题>",
         "switch <1-9|S1-S9> [task] · 切换/会话 <槽位> [正文]",
@@ -38,8 +42,6 @@ CHUB_HELP_MESSAGE = "\n\n".join(
         "run <R1-R9> · 执行需求 <槽位>",
         "archive <R1-R9> · 归档需求 <槽位>",
         "retry · 重试 / 继续执行",
-        "new retry · 新建 重试 / 新建 继续执行",
-        "switch <1-9|S1-S9> retry · 切换/会话 <槽位> 重试",
     )
 )
 
@@ -147,9 +149,8 @@ def format_fixed_reply(message: str) -> str:
             "Not submitted · The current Session is running."
         ),
         (
-            "如需新建 Session 并继续执行本任务，请回复："
-            "new retry、“新建 重试”或“新建 继续执行”。"
-        ): "Retry: Send new retry to continue in a new Session.",
+            "如需继续执行本任务，请回复：retry、重试或继续执行。"
+        ): "Retry: Send retry to continue in the current Session.",
         (
             "任务提交失败：微信 Chub 模式配置无效，请检查工作区、权限、模型和"
             "微信通知配置。"
@@ -318,7 +319,8 @@ def session_matches_configuration(
     configuration: WeixinChubModeRuntimeConfig,
 ) -> bool:
     return bool(
-        getattr(session, "workspace_id", None) == configuration.workspace_id
+        getattr(session, "session_mode", None) == "quick"
+        and getattr(session, "workspace_id", None) == configuration.workspace_id
         and getattr(session, "permission_mode", None) == configuration.permission_mode
         and configuration.permission_mode != "ask"
         and (
@@ -372,6 +374,72 @@ def usage_message(value: object) -> str:
     return codex_usage_message(quota, usage)
 
 
+def detailed_usage_message(value: object) -> str:
+    if isinstance(value, AiUsageData):
+        if value.status != "available" or value.weekly is None:
+            return "Weekly Unavailable"
+        weekly = value.weekly
+        weekly_values = []
+        if weekly.remaining_usd is not None:
+            weekly_values.append(
+                f"{_format_usage_money(weekly.remaining_usd)} Remaining"
+            )
+        weekly_line = "Weekly"
+        if weekly_values:
+            weekly_line += f" · {' · '.join(weekly_values)}"
+        weekly_line += f" · {weekly.remaining_percent}% left"
+        lines = ["Usage", "", weekly_line]
+        today_parts: list[str] = []
+        if value.today is not None:
+            if value.today.used_usd is not None:
+                today_parts.append(
+                    f"{_format_usage_money(value.today.used_usd)} Used"
+                )
+            if value.today.tokens is not None:
+                token_text = f"{AiUsageService.compact_tokens(value.today.tokens)} tokens"
+                if value.today.tokens_scope == "local_device":
+                    token_text += " (local)"
+                today_parts.append(token_text)
+        if today_parts:
+            lines.extend([f"Today · {' · '.join(today_parts)}"])
+        reset = weekly.resets_at.astimezone(ZoneInfo(value.timezone))
+        lines.append(f"Resets · {reset:%Y-%m-%d %H:%M}")
+        return "\n".join(lines)
+
+    quota, usage = value
+    weekly = next(
+        (
+            window
+            for window in quota.windows
+            if window.window_duration_minutes == WEEKLY_WINDOW_MINUTES
+        ),
+        None,
+    )
+    if weekly is None:
+        return "Weekly Unavailable"
+    lines = ["Usage", "", f"Weekly · {weekly.remaining_percent}%"]
+    if usage.status == "available":
+        today = datetime.now().astimezone().date()
+        today_bucket = next(
+            (bucket for bucket in usage.daily_usage if bucket.start_date == today),
+            None,
+        )
+        if today_bucket is not None:
+            lines.append(
+                f"Today · {AiUsageService.compact_tokens(today_bucket.tokens)} tokens"
+            )
+    reset = weekly.resets_at.astimezone()
+    lines.append(f"Resets · {reset:%Y-%m-%d %H:%M}")
+    return "\n".join(lines)
+
+
+def _format_usage_money(value: Decimal, *, fixed: bool = True) -> str:
+    rounded = value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    if not fixed and rounded == rounded.to_integral_value():
+        return f"${int(rounded):,}"
+    return f"${rounded:,.2f}"
+
+
 def compact_token_count(tokens: int) -> str:
     for divisor, suffix in (
         (1_000_000_000, "B"),
@@ -422,7 +490,7 @@ def dispatch_failure(
     messages = {
         "in_progress": (
             "Not submitted · The current Session is running.\n\n"
-            "Retry: Send new retry to continue in a new Session."
+            "Retry: Send retry to continue in the current Session."
         ),
         "configuration_invalid": (
             "Not submitted · The WeChat Chub configuration is invalid."

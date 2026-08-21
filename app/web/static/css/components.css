@@ -2061,6 +2061,60 @@ pre {
   color: var(--muted);
 }
 
+.codex-session-mode-field {
+  min-width: 0;
+  margin: 1rem 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.codex-session-mode-field legend {
+  margin-bottom: 0.4rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.codex-session-mode-control {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.codex-session-mode-option {
+  position: relative;
+  min-width: 0;
+}
+
+.codex-session-mode-option input {
+  position: absolute;
+  opacity: 0;
+}
+
+.codex-session-mode-option span {
+  display: flex;
+  min-height: 40px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  background: var(--paper);
+  font-size: 0.875rem;
+  font-weight: 700;
+}
+
+.codex-session-mode-option input:checked + span {
+  border-color: var(--accent);
+  color: white;
+  background: var(--accent);
+}
+
+.codex-session-mode-option input:focus-visible + span {
+  outline: 2px solid var(--accent-dark);
+  outline-offset: 2px;
+}
+
 .confirmation-dialog-surface {
   display: grid;
   gap: 0.9rem;

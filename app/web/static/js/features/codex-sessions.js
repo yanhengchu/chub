@@ -2,11 +2,9 @@
 
 const CODEX_CARD_CACHE_KEY = "hub.codexCardCache";
 const CODEX_MODEL_PREFERENCE_CACHE_KEY = "hub.codexModelPreferenceCache";
-const CODEX_ENTRY_MODE_KEY = "hub.codexEntryMode.v1";
 const CODEX_DEFAULT_PERMISSION_KEY = "hub.codexDefaultPermission.v1";
 const CODEX_DEFAULT_MODEL_KEY = "hub.codexDefaultModel.v1";
 const CODEX_DEFAULT_REASONING_EFFORT_KEY = "hub.codexDefaultReasoningEffort.v1";
-const CODEX_SHOW_TRANSLATION_SESSION_KEY = "hub.codexShowTranslationSession.v1";
 const CODEX_REASONING_LABELS = {
   low: "Low",
   medium: "Medium",
@@ -52,6 +50,13 @@ function createCodexCard() {
   const workspaceDialogHeader = document.createElement("div");
   const workspaceDialogTitle = document.createElement("h3");
   const workspaceDialogClose = document.createElement("button");
+  const sessionModeField = document.createElement("fieldset");
+  const sessionModeLegend = document.createElement("legend");
+  const sessionModeControl = document.createElement("div");
+  const sessionModeQuickLabel = document.createElement("label");
+  const sessionModeTerminalLabel = document.createElement("label");
+  const sessionModeQuick = document.createElement("input");
+  const sessionModeTerminal = document.createElement("input");
   const workspaceDialogDescription = document.createElement("p");
   const workspaceList = document.createElement("div");
   const sessionList = document.createElement("div");
@@ -108,6 +113,26 @@ function createCodexCard() {
   workspaceDialogClose.className = "button-link codex-workspace-dialog-close";
   workspaceDialogClose.setAttribute("aria-label", "关闭目录选择");
   workspaceDialogClose.textContent = "关闭";
+  sessionModeField.className = "codex-session-mode-field";
+  sessionModeLegend.textContent = "会话类型";
+  sessionModeControl.className = "codex-session-mode-control";
+  sessionModeQuick.type = "radio";
+  sessionModeQuick.name = "codex-session-mode";
+  sessionModeQuick.value = "quick";
+  sessionModeQuick.checked = true;
+  sessionModeTerminal.type = "radio";
+  sessionModeTerminal.name = "codex-session-mode";
+  sessionModeTerminal.value = "terminal";
+  sessionModeQuickLabel.className = "codex-session-mode-option";
+  const sessionModeQuickText = document.createElement("span");
+  sessionModeQuickText.textContent = "快速交互";
+  sessionModeQuickLabel.append(sessionModeQuick, sessionModeQuickText);
+  sessionModeTerminalLabel.className = "codex-session-mode-option";
+  const sessionModeTerminalText = document.createElement("span");
+  sessionModeTerminalText.textContent = "实时终端";
+  sessionModeTerminalLabel.append(sessionModeTerminal, sessionModeTerminalText);
+  sessionModeControl.append(sessionModeQuickLabel, sessionModeTerminalLabel);
+  sessionModeField.append(sessionModeLegend, sessionModeControl);
   workspaceDialogDescription.className = "section-description";
   workspaceDialogDescription.textContent = "首页列出三个常用目录；其他目录启动的 Codex 会话会自动出现在列表中。";
   workspaceList.className = "workspace-list";
@@ -128,6 +153,7 @@ function createCodexCard() {
   workspaceDialogHeader.append(workspaceDialogTitle, workspaceDialogClose);
   workspaceDialogSurface.append(
     workspaceDialogHeader,
+    sessionModeField,
     workspaceDialogDescription,
     workspaceList,
   );
@@ -155,6 +181,7 @@ function createCodexCard() {
   elements.refreshCodex = refreshButton;
   elements.createCodex = createButton;
   elements.codexWorkspaceDialog = workspaceDialog;
+  elements.codexSessionModeControl = sessionModeControl;
 
   refreshButton.addEventListener("click", () =>
     loadCodexSessions({ refreshModelPreference: true, refreshQuota: true }),
@@ -200,7 +227,7 @@ function renderCodexWorkspaces(workspaces, available) {
     button.append(name, path);
     button.addEventListener(
       "click",
-      () => createCodexSession(workspace.id, button),
+      () => createCodexSession(workspace.id, button, readCodexSessionMode()),
     );
     elements.codexWorkspaces.append(button);
   });
@@ -209,16 +236,11 @@ function renderCodexWorkspaces(workspaces, available) {
   }
 }
 
-function codexEntryMode(session) {
-  if (session.terminal_access_allowed === false) {
-    return "quick";
-  }
-  try {
-    const stored = JSON.parse(localStorage.getItem(CODEX_ENTRY_MODE_KEY) || "{}");
-    return stored?.[session.id] === "terminal" ? "terminal" : "quick";
-  } catch (_error) {
-    return "quick";
-  }
+function readCodexSessionMode() {
+  const selected = document.querySelector(
+    'input[name="codex-session-mode"]:checked',
+  );
+  return selected?.value === "terminal" ? "terminal" : "quick";
 }
 
 function readCodexDefaultPermission() {
@@ -257,73 +279,18 @@ function clearCodexModelPreferences() {
   }
 }
 
-function saveCodexEntryMode(sessionId, mode) {
-  try {
-    const stored = JSON.parse(localStorage.getItem(CODEX_ENTRY_MODE_KEY) || "{}");
-    const entries = stored && typeof stored === "object" ? stored : {};
-    entries[sessionId] = mode === "quick" ? "quick" : "terminal";
-    localStorage.setItem(CODEX_ENTRY_MODE_KEY, JSON.stringify(entries));
-  } catch (_error) {
-    // Storage failure only affects persistence; the current page still updates.
-  }
-}
-
-function codexEntryLabel(mode) {
-  return mode === "quick" ? "快速交互" : "实时终端";
-}
-
 function quickInteractionUrl(sessionId) {
   return `/codex/${encodeURIComponent(sessionId)}/quick-interactions/conversation`;
-}
-
-function updateCodexEntryButton(session, trigger, mode) {
-  if (session.terminal_access_allowed === false) {
-    trigger.textContent = codexEntryLabel("quick");
-    trigger.dataset.entryMode = "quick";
-    trigger.disabled = true;
-    trigger.title = "文本优化与翻译 Session 仅支持快速交互";
-    trigger.setAttribute("aria-label", trigger.title);
-    const main = trigger.closest(".session-item")?.querySelector(".session-enter");
-    if (main) {
-      main.disabled = false;
-      main.title = "";
-    }
-    return;
-  }
-  const nextMode = mode === "quick" ? "terminal" : "quick";
-  trigger.textContent = codexEntryLabel(mode);
-  trigger.dataset.entryMode = mode;
-  trigger.title = `点击切换为${codexEntryLabel(nextMode)}`;
-  trigger.setAttribute(
-    "aria-label",
-    `当前交互入口为${codexEntryLabel(mode)}，点击切换为${codexEntryLabel(nextMode)}`,
-  );
-  const main = trigger.closest(".session-item")?.querySelector(".session-enter");
-  if (main) {
-    main.disabled = session.quick_interaction_running === true
-      && mode === "terminal";
-    main.title = main.disabled ? "快速交互正在执行" : "";
-  }
-}
-
-function toggleCodexEntryMode(session, trigger) {
-  if (session.terminal_access_allowed === false) {
-    return;
-  }
-  const currentMode = trigger.dataset.entryMode === "quick"
-    ? "quick"
-    : "terminal";
-  const nextMode = currentMode === "quick" ? "terminal" : "quick";
-  saveCodexEntryMode(session.id, nextMode);
-  updateCodexEntryButton(session, trigger, nextMode);
 }
 
 function codexSessionDisplayTitle(session) {
   const slot = session.weixin_session_slot;
   const slotLabel = Number.isInteger(slot) && slot >= 1 && slot <= 9
     ? `S${slot}`
-    : "S";
-  return `${slotLabel} · ${session.title || "未命名 Session"}`;
+    : "";
+  const modeLabel = session.session_mode === "terminal" ? "终端" : "快速";
+  const slotPrefix = slotLabel ? `${slotLabel} · ` : "";
+  return `${modeLabel} · ${slotPrefix}${session.title || "未命名 Session"}`;
 }
 
 function renderCodexSessions(sessions) {
@@ -346,14 +313,12 @@ function renderCodexSessions(sessions) {
       || quickInteractionRunning
       || session.activity === "working";
     const activitySource = session.activity_source || "none";
-    const entryMode = codexEntryMode(session);
     const item = document.createElement("article");
     const main = document.createElement("button");
     const text = document.createElement("span");
     const title = document.createElement("strong");
     const meta = document.createElement("span");
     const path = document.createElement("span");
-    const entry = document.createElement("button");
     const actions = document.createElement("div");
     const stop = document.createElement("button");
     const archive = document.createElement("button");
@@ -393,23 +358,13 @@ function renderCodexSessions(sessions) {
     path.title = session.cwd;
     text.append(title, meta, path);
     main.append(text);
-    main.disabled = quickInteractionRunning && entryMode === "terminal";
-    if (quickInteractionRunning && entryMode === "terminal") {
-      main.title = "快速交互正在执行";
-    }
     main.addEventListener("click", () => {
-      const selectedMode = entry.dataset.entryMode || entryMode;
-      if (selectedMode === "quick") {
+      if (session.session_mode === "quick") {
         window.location.href = quickInteractionUrl(session.id);
         return;
       }
       enterCodexSession(session.id, main);
     });
-    entry.type = "button";
-    entry.className = "session-permission session-entry-mode";
-    entry.dataset.entryMode = entryMode;
-    updateCodexEntryButton(session, entry, entryMode);
-    entry.addEventListener("click", () => toggleCodexEntryMode(session, entry));
     stop.type = "button";
     stop.className = "button-secondary session-action";
     stop.textContent = "停止";
@@ -442,7 +397,7 @@ function renderCodexSessions(sessions) {
       deleteCodexSession(session, remove),
     );
     actions.className = "session-actions";
-    actions.append(entry, stop, archive, remove);
+    actions.append(stop, archive, remove);
     item.append(main, actions);
     elements.codexSessions.append(item);
   });
@@ -461,28 +416,13 @@ function codexSessionsNewestFirst(sessions) {
 }
 
 function visibleCodexSessions(sessions) {
-  let visible = sessions;
-  try {
-    if (localStorage.getItem(CODEX_SHOW_TRANSLATION_SESSION_KEY) === "true") {
-      return codexSessionsNewestFirst(visible);
-    }
-  } catch (_error) {
-    // A blocked browser preference falls back to hiding the internal Session.
-  }
-  visible = visible.filter(
+  const visible = sessions.filter(
     (session) => session.workspace_id !== "weixin-translation",
   );
   return codexSessionsNewestFirst(visible);
 }
 
 function codexSessionListUrl() {
-  try {
-    if (localStorage.getItem(CODEX_SHOW_TRANSLATION_SESSION_KEY) === "true") {
-      return "/api/codex/sessions?include_translation=true";
-    }
-  } catch (_error) {
-    // A blocked browser preference uses the API's hidden-by-default list.
-  }
   return "/api/codex/sessions";
 }
 
@@ -497,6 +437,7 @@ function codexSessionsSignature(sessions) {
       session.quick_interaction_updated_at,
       session.updated_at,
       session.title,
+      session.session_mode,
       session.weixin_session_slot,
       session.cwd,
       session.can_archive,
@@ -769,7 +710,7 @@ function setCodexButtonBusy(button, busy) {
   button.removeAttribute("aria-busy");
 }
 
-async function createCodexSession(workspaceId, button) {
+async function createCodexSession(workspaceId, button, sessionMode = "quick") {
   if (!elements.codexMessage) {
     return;
   }
@@ -793,6 +734,7 @@ async function createCodexSession(workspaceId, button) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           workspace_id: workspaceId,
+          session_mode: sessionMode === "terminal" ? "terminal" : "quick",
           permission_mode: readCodexDefaultPermission(),
           model,
           reasoning_effort: reasoningEffort,

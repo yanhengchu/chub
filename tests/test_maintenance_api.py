@@ -10,12 +10,15 @@ from app.core.config import Settings
 
 
 @pytest.mark.anyio
-async def test_restart_requires_authentication(settings: Settings) -> None:
-    transport = httpx.ASGITransport(app=create_app(settings))
+async def test_restart_requires_trusted_network(settings: Settings) -> None:
+    transport = httpx.ASGITransport(
+        app=create_app(settings),
+        client=("192.0.2.1", 12345),
+    )
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post("/api/maintenance/restart")
 
-    assert response.status_code == 401
+    assert response.status_code == 403
 
 
 @pytest.mark.anyio

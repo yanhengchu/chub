@@ -1196,7 +1196,7 @@ def test_worker_restart_preserves_active_task_and_pending_notification(
     codex_manager.recover_interrupted_quick_interaction.assert_not_called()
 
 
-def test_worker_recovery_barrier_fails_session_writes_closed(
+def test_worker_recovery_barrier_fails_quick_session_writes_closed(
     settings,
     tmp_path: Path,
 ) -> None:
@@ -1208,7 +1208,21 @@ def test_worker_recovery_barrier_fails_session_writes_closed(
     assert error.value.status_code == 503
     assert error.value.code == "quick_worker_recovery_unavailable"
     with quick_interactions.terminal_input_guard("session-1") as allowed:
-        assert allowed is False
+        assert allowed is True
+
+
+def test_terminal_guards_do_not_require_quick_worker_recovery(
+    settings,
+    tmp_path: Path,
+) -> None:
+    quick_interactions = worker_manager(tmp_path, settings)
+
+    with quick_interactions.session_creation_guard("terminal"):
+        pass
+    with quick_interactions.terminal_access_guard("terminal-session"):
+        pass
+    with quick_interactions.terminal_input_guard("terminal-session") as allowed:
+        assert allowed is True
 
 
 def test_worker_reconciliation_merges_once_and_acknowledges_after_persistence(
@@ -1397,6 +1411,74 @@ def test_worker_recovery_retries_deferred_restart_after_barrier_opens(
 
     assert quick_interactions.recovery_ready is True
     deferred_restart.maybe_schedule.assert_called_once_with()
+
+
+def test_worker_reconciliation_converges_native_session_conflict(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    quick_interactions = worker_manager(tmp_path, settings)
+    task = QuickInteractionTask(
+        id="task-conflict",
+        worker_task_id="qw-1750000000000-22222222222222222222222222222222",
+        session_id="session-1",
+        prompt="检查状态",
+        status="running",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    quick_interactions._tasks[task.id] = task
+    quick_interactions._active_task_ids.add(task.id)
+    quick_interactions._running_sessions.add(task.session_id)
+    now = utc_now()
+    view = {
+        "task_id": task.worker_task_id,
+        "runtime_id": "codex",
+        "status": "succeeded",
+        "prompt_sha256": "a" * 64,
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat(),
+        "deadline_at": (now + timedelta(minutes=5)).isoformat(),
+        "worker_generation": "generation-1",
+        "runner_pid": None,
+        "cancellation_requested": False,
+        "result": "已完成",
+        "error": None,
+        "error_source": None,
+        "error_code": None,
+        "exit_code": 0,
+        "native_session_id": "11111111-1111-4111-8111-111111111111",
+    }
+    calls: list[str] = []
+
+    def worker_call(action: str, **_payload):
+        calls.append(action)
+        if action == "task_list":
+            return {"success": True, "data": {"tasks": []}}
+        if action == "task_get":
+            return {"success": True, "data": {"task": view}}
+        if action == "task_acknowledge":
+            return {"success": True, "data": {"delivery": {}}}
+        raise AssertionError(action)
+
+    monkeypatch.setattr(quick_interactions, "_worker_call", worker_call)
+    quick_interactions.codex_manager.bind_quick_interaction_native_session.side_effect = (
+        ApiError(
+            409,
+            "quick_interaction_native_session_conflict",
+            "Codex 原生 Session 已归属于其他 Chub Session。",
+        )
+    )
+
+    quick_interactions._reconcile_worker_once(initial=True)
+
+    finished = quick_interactions.get(task.id)
+    assert finished.status == "failed"
+    assert finished.error == "Codex 原生 Session 已归属于其他 Chub Session。"
+    assert quick_interactions.is_running(task.session_id) is False
+    assert quick_interactions.recovery_ready is True
+    assert calls == ["task_list", "task_get", "task_acknowledge"]
 
 
 def test_resident_reconciliation_does_not_race_worker_submission(

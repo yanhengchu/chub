@@ -11,6 +11,9 @@ TASK_STATUS_CHECK_PROMPTS = frozenset({"状态", "查询状态"})
 CHUB_STATUS_PROMPT = "chub"
 CHUB_HELP_PROMPTS = frozenset({"help"})
 CHUB_HELP_ALIASES = frozenset({"帮助"})
+CHUB_USAGE_PROMPT = "usage"
+CHUB_MODEL_PROMPT = "model"
+CHUB_MODEL_ALIASES = frozenset({"模型"})
 CHUB_SYNC_PROMPTS = frozenset({"sync"})
 CHUB_SYNC_ALIASES = frozenset({"同步"})
 CHUB_RESTART_PROMPTS = frozenset({"restart"})
@@ -23,13 +26,11 @@ SESSION_NEW_PROMPT = "new"
 SESSION_NEW_ALIASES = frozenset({"新建"})
 SESSION_RETRY_PROMPTS = frozenset({"retry"})
 SESSION_RETRY_ALIASES = frozenset({"重试", "继续执行"})
-SESSION_SWITCH_RETRY_PROMPTS = frozenset({"retry"})
-SESSION_SWITCH_RETRY_ALIASES = frozenset({"重试"})
-SESSION_NEW_RETRY_PROMPTS = frozenset({"new retry"})
-SESSION_NEW_RETRY_ALIASES = frozenset({"新建 重试", "新建 继续执行"})
-DIRECT_PROMPT = "direct"
-DIRECT_ALIASES = frozenset({"直接执行"})
 SESSION_SWITCH_PROMPT = "switch"
+REMOVED_NEW_RETRY_PROMPTS = frozenset({"new retry"})
+REMOVED_NEW_RETRY_ALIASES = frozenset({"新建 重试", "新建 继续执行"})
+REMOVED_SWITCH_RETRY_PROMPTS = frozenset({"retry"})
+REMOVED_SWITCH_RETRY_ALIASES = frozenset({"重试"})
 ENGLISH_SWITCH_PREFIX_PATTERN = re.compile(
     r"switch\s+S?([1-9])", re.IGNORECASE
 )
@@ -110,15 +111,14 @@ CHINESE_NUMBERED_ALIAS_PATTERN = re.compile(
 
 WeixinChubCommandKind = Literal[
     "status",
+    "usage",
     "help",
+    "model",
     "sync",
     "restart",
     "system_upgrade_status",
     "system_upgrade",
     "retry",
-    "new_retry",
-    "switch_retry",
-    "direct",
     "new",
     "rename",
     "stop",
@@ -132,15 +132,14 @@ WeixinChubCommandKind = Literal[
 FIXED_COMMAND_KINDS = frozenset(
     {
         "status",
+        "usage",
         "help",
+        "model",
         "sync",
         "restart",
         "system_upgrade_status",
         "system_upgrade",
         "retry",
-        "new_retry",
-        "switch_retry",
-        "direct",
         "new",
         "rename",
         "stop",
@@ -185,6 +184,23 @@ def normalize_chinese_numbered_alias(prompt: str) -> str:
     command, chinese_slot, task = match.groups()
     suffix = f" {task.strip()}" if task else ""
     return f"{command} {CHINESE_SLOT_NUMBERS[chinese_slot]}{suffix}"
+
+
+def command_prompt(prompt: str) -> str | None:
+    """Return the command body when a whitespace or punctuation prefix opts in."""
+    if not prompt:
+        return None
+    first = prompt[0]
+    if not (
+        first.isspace()
+        or first == "/"
+        or unicodedata.category(first).startswith("P")
+    ):
+        return None
+    value = prompt.lstrip()
+    if value.startswith("/"):
+        value = value[1:].lstrip()
+    return value
 
 
 def match_spaced_argument(
@@ -249,13 +265,21 @@ def match_switch_command(prompt: str) -> tuple[int, str | None] | None:
 
 
 def parse_weixin_chub_command(prompt: str) -> WeixinChubCommand:
-    normalized = normalize_fixed_prompt(prompt)
+    command = command_prompt(prompt)
+    if command is None:
+        return WeixinChubCommand("normal", prompt)
+
+    normalized = normalize_fixed_prompt(command)
     normalized_numbered_alias = normalize_chinese_numbered_alias(normalized)
     folded = normalized.casefold()
     if normalized in TASK_STATUS_CHECK_PROMPTS or folded == CHUB_STATUS_PROMPT:
         return WeixinChubCommand("status", normalized)
+    if folded == CHUB_USAGE_PROMPT:
+        return WeixinChubCommand("usage", normalized)
     if folded in CHUB_HELP_PROMPTS or normalized in CHUB_HELP_ALIASES:
         return WeixinChubCommand("help", normalized)
+    if folded == CHUB_MODEL_PROMPT or normalized in CHUB_MODEL_ALIASES:
+        return WeixinChubCommand("model", normalized)
     if folded in CHUB_SYNC_PROMPTS or normalized in CHUB_SYNC_ALIASES:
         return WeixinChubCommand("sync", normalized)
     if folded in CHUB_RESTART_PROMPTS or normalized in CHUB_RESTART_ALIASES:
@@ -331,40 +355,30 @@ def parse_weixin_chub_command(prompt: str) -> WeixinChubCommand:
             )
             is not None
         ):
-            return WeixinChubCommand(kind, normalized, invalid_usage=True)
+            return WeixinChubCommand("normal", prompt)
 
     if (
-        folded in SESSION_NEW_RETRY_PROMPTS
-        or normalized in SESSION_NEW_RETRY_ALIASES
+        folded in REMOVED_NEW_RETRY_PROMPTS
+        or normalized in REMOVED_NEW_RETRY_ALIASES
     ):
-        return WeixinChubCommand("new_retry", normalized)
+        return WeixinChubCommand("normal", prompt)
 
     title = match_spaced_argument(
-        prompt, (SESSION_RENAME_PROMPT, *SESSION_RENAME_ALIASES)
+        command, (SESSION_RENAME_PROMPT, *SESSION_RENAME_ALIASES)
     )
     if title is not None:
         return WeixinChubCommand("rename", normalized, task_prompt=title)
     if folded == SESSION_RENAME_PROMPT or normalized in SESSION_RENAME_ALIASES:
         return WeixinChubCommand("rename", normalized)
 
-    direct_task = match_spaced_argument(prompt, (DIRECT_PROMPT, *DIRECT_ALIASES))
-    if direct_task is not None:
-        return WeixinChubCommand("direct", normalized, task_prompt=direct_task)
-    if folded == DIRECT_PROMPT or normalized in DIRECT_ALIASES:
-        return WeixinChubCommand("direct", normalized, invalid_usage=True)
-
-    switch_command = match_switch_command(prompt)
+    switch_command = match_switch_command(command)
     if switch_command is not None:
         requested_index, task = switch_command
         if task is not None and (
-            task.casefold() in SESSION_SWITCH_RETRY_PROMPTS
-            or task in SESSION_SWITCH_RETRY_ALIASES
+            task.casefold() in REMOVED_SWITCH_RETRY_PROMPTS
+            or task in REMOVED_SWITCH_RETRY_ALIASES
         ):
-            return WeixinChubCommand(
-                "switch_retry",
-                normalized,
-                requested_index=requested_index,
-            )
+            return WeixinChubCommand("normal", prompt)
         return WeixinChubCommand(
             "switch",
             normalized,
@@ -378,11 +392,7 @@ def parse_weixin_chub_command(prompt: str) -> WeixinChubCommand:
         or normalized.startswith(("切换 ", "会话 ", "切换S", "会话S"))
         or INVALID_SWITCH_SLOT_PATTERN.match(normalized) is not None
     ):
-        return WeixinChubCommand(
-            "switch",
-            normalized,
-            invalid_usage=True,
-        )
+        return WeixinChubCommand("normal", prompt)
 
     for kind, english, english_pattern, chinese, chinese_pattern, invalid_pattern in (
         (
@@ -418,17 +428,15 @@ def parse_weixin_chub_command(prompt: str) -> WeixinChubCommand:
             or normalized.startswith(f"{chinese} ")
             or invalid_pattern.fullmatch(normalized) is not None
         ):
-            return WeixinChubCommand(kind, normalized, invalid_usage=True)
+            return WeixinChubCommand("normal", prompt)
 
-    title = match_spaced_argument(
-        prompt, (SESSION_NEW_PROMPT, *SESSION_NEW_ALIASES)
-    )
+    title = match_spaced_argument(command, (SESSION_NEW_PROMPT, *SESSION_NEW_ALIASES))
     if title is not None:
         return WeixinChubCommand("new", normalized, task_prompt=title)
     if folded == SESSION_NEW_PROMPT or normalized in SESSION_NEW_ALIASES:
-        return WeixinChubCommand("new", normalized, invalid_usage=True)
+        return WeixinChubCommand("normal", prompt)
 
-    return WeixinChubCommand("normal", normalized)
+    return WeixinChubCommand("normal", prompt)
 
 
 def retry_submission_message_id(

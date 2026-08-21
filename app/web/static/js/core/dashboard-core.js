@@ -142,6 +142,10 @@ function reloadDashboardAfterMaintenance() {
   }, 2000);
 }
 
+function showMaintenanceCompletion(element, message) {
+  element.textContent = `${message} 浏览器将在稍后自动刷新页面。`;
+}
+
 function clearProtectedView() {
   if (elements.automationBrowserDialog.open) {
     elements.automationBrowserDialog.close();

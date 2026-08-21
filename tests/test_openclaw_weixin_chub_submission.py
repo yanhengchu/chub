@@ -106,6 +106,7 @@ def test_successful_submission_lists_all_sessions_and_running_tasks(
     manager, codex_manager, quick_interactions = configured_manager(settings)
     sessions = [
         CodexSession(
+            session_mode="quick",
             id=f"session-{slot}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -152,6 +153,7 @@ def test_successful_submission_keeps_task_context_when_session_snapshot_fails(
 ) -> None:
     manager, codex_manager, quick_interactions = configured_manager(settings)
     session = CodexSession(
+        session_mode="quick",
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",
@@ -214,6 +216,7 @@ def test_submit_creates_one_private_session_and_replays_duplicate(
         "full-access",
         None,
         None,
+        "quick",
     )
     codex_manager.set_initial_quick_interaction_title.assert_not_called()
     quick_interactions.submit.assert_called_once_with(
@@ -359,7 +362,7 @@ def test_same_session_optimization_is_rejected_without_pending_retry(
     quick_interactions.submit.assert_not_called()
 
 
-def test_direct_command_bypasses_enabled_translation(settings: Settings) -> None:
+def test_removed_direct_command_is_a_normal_task(settings: Settings) -> None:
     manager, _codex_manager, quick_interactions = configured_manager(settings)
     manager.translation_manager = MagicMock()
     manager.translation_manager.enabled.return_value = True
@@ -367,17 +370,16 @@ def test_direct_command_bypasses_enabled_translation(settings: Settings) -> None
 
     result = manager.dispatch(
         message_id="direct-task",
-        prompt="直接执行 检查设备状态",
+        prompt="/直接执行 检查设备状态",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
         delivery_route=delivery_route(),
     )
 
-    assert result.disposition == "reply"
-    quick_interactions.submit.assert_called_once()
-    assert quick_interactions.submit.call_args.args[1] == "检查设备状态"
-    manager.translation_manager.enqueue.assert_not_called()
+    assert result.disposition == "handled"
+    quick_interactions.submit.assert_not_called()
+    manager.translation_manager.enqueue.assert_called_once()
 
 
 def test_optimized_task_submits_to_captured_session(settings: Settings) -> None:
@@ -630,6 +632,7 @@ def test_submit_reuses_session_when_defaults_resolve_to_effective_model(
 ) -> None:
     manager, codex_manager, quick_interactions = configured_manager(settings)
     codex_manager.get_session.return_value = CodexSession(
+        session_mode="quick",
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",
@@ -668,6 +671,7 @@ def test_submit_replaces_session_when_explicit_model_no_longer_matches(
     manager, codex_manager, quick_interactions = configured_manager(settings)
     manager._state.session_id = "old-session"
     codex_manager.get_session.return_value = CodexSession(
+        session_mode="quick",
         id="old-session",
         workspace_id="chub",
         workspace_name="Chub",
@@ -692,6 +696,7 @@ def test_submit_replaces_session_when_explicit_model_no_longer_matches(
         "full-access",
         "configured-model",
         None,
+        "quick",
     )
     quick_interactions.submit.assert_called_once_with(
         "new-session",
@@ -743,6 +748,7 @@ def test_submit_reclaims_unknown_session_before_quick_interaction(
     manager, codex_manager, quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
     codex_manager.get_session.return_value = CodexSession(
+        session_mode="quick",
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",
@@ -793,6 +799,7 @@ def test_submit_rejects_unknown_session_when_writer_does_not_release(
     manager, codex_manager, quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
     codex_manager.get_session.return_value = CodexSession(
+        session_mode="quick",
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",

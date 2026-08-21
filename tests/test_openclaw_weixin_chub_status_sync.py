@@ -166,6 +166,7 @@ def test_chub_sync_lists_compatible_sessions_and_marks_current(
     manager.codex_account_reader = account_reader
     codex_manager.list_sessions.return_value = [
         CodexSession(
+            session_mode="quick",
             id="available-session",
             workspace_id="chub",
             workspace_name="Chub",
@@ -176,6 +177,7 @@ def test_chub_sync_lists_compatible_sessions_and_marks_current(
             activity="idle",
         ),
         CodexSession(
+            session_mode="quick",
             id="current-session",
             workspace_id="chub",
             workspace_name="Chub",
@@ -187,6 +189,7 @@ def test_chub_sync_lists_compatible_sessions_and_marks_current(
             activity="idle",
         ),
         CodexSession(
+            session_mode="quick",
             id="busy-session",
             workspace_id="chub",
             workspace_name="Chub",
@@ -198,6 +201,7 @@ def test_chub_sync_lists_compatible_sessions_and_marks_current(
             activity_source="quick",
         ),
         CodexSession(
+            session_mode="quick",
             id="wrong-workspace",
             workspace_id="home",
             workspace_name="用户目录",
@@ -208,6 +212,7 @@ def test_chub_sync_lists_compatible_sessions_and_marks_current(
             activity="idle",
         ),
         CodexSession(
+            session_mode="quick",
             id="wrong-permission",
             workspace_id="chub",
             workspace_name="Chub",
@@ -265,6 +270,7 @@ def test_chub_sync_limits_id_sorted_sessions_without_reordering_current(
     )
     sessions = [
         CodexSession(
+            session_mode="quick",
             id=f"session-{index}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -279,6 +285,7 @@ def test_chub_sync_limits_id_sorted_sessions_without_reordering_current(
     ]
     sessions.append(
         CodexSession(
+            session_mode="quick",
             id="z-current-session",
             workspace_id="chub",
             workspace_name="Chub",
@@ -318,6 +325,7 @@ def test_chub_sync_hides_unavailable_sessions(settings: Settings) -> None:
     )
     codex_manager.list_sessions.return_value = [
         CodexSession(
+            session_mode="quick",
             id="broken",
             workspace_id="chub",
             workspace_name="Chub",
@@ -356,6 +364,7 @@ def test_chub_sync_keeps_success_when_usage_lookup_fails(
     )
     codex_manager.list_sessions.return_value = [
         CodexSession(
+            session_mode="quick",
             id="available-session",
             workspace_id="chub",
             workspace_name="Chub",
@@ -399,6 +408,7 @@ def test_chub_sync_retains_configured_unavailable_slot(
         CodexTokenUsageData(status="unavailable"),
     )
     broken = CodexSession(
+        session_mode="quick",
         id="broken",
         workspace_id="chub",
         workspace_name="Chub",
@@ -436,6 +446,7 @@ def test_codex_new_rejects_before_creation_when_nine_slots_are_full(
     ]
     codex_manager.list_sessions.return_value = [
         CodexSession(
+            session_mode="quick",
             id=f"session-{slot}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -494,6 +505,7 @@ def test_codex_status_session_matching_respects_explicit_model_and_effort() -> N
         reasoning_effort="high",
     )
     matching = CodexSession(
+        session_mode="quick",
         id="matching",
         workspace_id="chub",
         workspace_name="Chub",
@@ -522,6 +534,7 @@ def test_codex_status_distinguishes_writer_error_and_unknown_running_session(
 ) -> None:
     manager, codex_manager, quick_interactions = configured_manager(settings)
     writer_session = CodexSession(
+        session_mode="quick",
         id="writer",
         workspace_id="chub",
         workspace_name="Chub",
@@ -651,6 +664,7 @@ def test_codex_status_keeps_sessions_available_while_restart_is_pending(
     quick_interactions.deferred_restart = MagicMock()
     quick_interactions.deferred_restart.pending.return_value = True
     session = CodexSession(
+        session_mode="quick",
         id="available",
         workspace_id="chub",
         workspace_name="Chub",

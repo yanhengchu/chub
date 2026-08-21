@@ -197,11 +197,6 @@ def _is_ai_runtime_mutation(request: Request) -> bool:
     return (
         path.startswith("/api/codex/")
         or path.startswith("/api/openclaw/wechat-chub-mode/")
-        or path
-        in {
-            "/api/maintenance/restart",
-            "/api/maintenance/quick-worker/restart",
-        }
     )
 
 
@@ -760,6 +755,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await asyncio.to_thread(weixin_chub_mode.reconcile_request_runs)
         weixin_chub_mode.start_status_cache()
         upgrade_operation = system_upgrade.operation()
+        if (
+            upgrade_operation is not None
+            and upgrade_operation.status == "failed"
+            and upgrade_operation.destructive_started
+            and upgrade_operation.failed_stage == "verifying_new_instance"
+        ):
+            system_upgrade.rebase_failed_verification(runtime_recovery_plan())
+            upgrade_operation = system_upgrade.operation()
         if (
             upgrade_operation is not None
             and upgrade_operation.status in {"requested", "started"}

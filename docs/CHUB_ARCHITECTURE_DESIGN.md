@@ -62,7 +62,7 @@ Quick Worker 是与 Web 独立部署的本机服务，通过私有 Unix socket �
 - 幂等提交、Session 租约、Runner 进程组、超时、取消和终态。
 - 任务持久化、恢复、Web 离线期间继续执行及近期终态交付。
 
-Worker 不负责身份认证、页面、微信路由、通知目标、Request 或设备维护。Worker 不健康时，涉及 AI Session 的写入失败关闭，不回退到 Web 内执行。
+Worker 不负责身份认证、页面、微信路由、通知目标、Request 或设备维护。Worker 不健康时，涉及快速交互 Session 的写入失败关闭，不回退到 Web 内执行；实时终端使用独立的 Codex PTY/tmux 链路。
 
 ### 3.3 受管子进程与外部系统
 
@@ -88,6 +88,26 @@ Worker 不负责身份认证、页面、微信路由、通知目标、Request �
 - 异步操作必须区分受理、运行和最终状态。页面、通知和操作日志不得把进程创建、模型回复或 Tool Call 已发出解释为业务成功。
 - 跨入口、进程和外部通道使用非敏感稳定标识关联入口请求、Session、任务、维护操作、Runtime 执行和通知终态；模型文本、展示标题和 Tool Call 内容不能作为追踪标识或成功依据。
 - HTTP 错误统一返回 `success: false` 与 `error.code`、`error.message`、`error.source`；`source` 只允许 `chub` 或 `runtime`，由后端固定写入，客户端不能声明或覆盖。Chub 的认证、校验、协议、Worker、解析和内部边界错误标记为 `chub`；只有受控透传 Runtime 子进程诊断时标记为 `runtime`。来源标记不替代错误码，也不允许透传堆栈、凭证、终端票据或无界原文。
+
+### 3.5 版本与协议元数据管理
+
+版本标识分为运行配置、构建元数据和接口协议三类，不把它们合并为一个可编辑配置项：
+
+| 类型 | 权威来源 | 管理规则 |
+| --- | --- | --- |
+| Web 展示版本 | `Settings.app.version` | 只用于页面、健康检查和服务展示；不参与 Web/Worker 兼容判断，也不能覆盖代码契约版本 |
+| Web 代码版本 | `app/core/build_info.py` 的 `WEB_CODE_VERSION` | 随 Web 代码基线发布；受控升级确认新 Web 实例必须匹配目标版本 |
+| Session 数据版本 | `app/core/build_info.py` 的 `SESSION_SCHEMA_VERSION` | Session 持久化结构或语义变化时递增；不为已改变且不再适用的 Chub 旧运行态增加长期兼容分支 |
+| 升级方案契约版本 | `app/core/build_info.py` 的 `SYSTEM_UPGRADE_CONTRACT_VERSION` | 升级方案文件格式变化时递增；只约束升级方案本身 |
+| Quick Worker IPC 协议 | `app/quick_worker.py` 的 `PROTOCOL_VERSION` | 只有 Web 与 Worker 的请求、响应或协议语义变化时递增；协议变化必须同步 Web、Worker、测试和部署产物 |
+| Quick Worker 实现版本 | `app/quick_worker.py` 的 `WORKER_CODE_VERSION` | Worker 实现或排障基线变化时更新；不因 Web-only 改动自动递增协议版本 |
+| 外部集成协议 | 对应 API、插件或专项设计的固定协议常量 | 由实际拥有该接口的领域管理，不迁移到 Settings；协议升级按对应专项同步清单执行 |
+
+`config/settings.local.yaml` 和环境变量只保存本机运行配置，不能声明、覆盖或降低上述兼容边界。版本定义可以在构建元数据模块中集中查找，但 Web、Session、Worker 和外部集成仍保留独立字段与变更责任，避免把代码版本、数据版本和 IPC 协议版本误当成同一个版本。
+
+升级恢复使用当前代码读取的源版本和显式目标版本执行校验；按钮不会在运行时自动把版本号加一。仅清理 Chub 运行态时，目标 Worker 协议可以保持当前值，Worker 仍需按恢复流程排空、重启并确认健康；只有 IPC 契约实际变化时才升级 `PROTOCOL_VERSION`。清理或服务切换失败后，只要失败阶段属于固定恢复边界，且当前代码/Session schema/Worker 协议、服务定义和运行态路径均通过预检，就允许将同一操作重绑定到当前固定 `runtime-recovery` 方案并从持久化检查点继续；不得接受任意目标版本，也不得重新清理已确认完成的阶段。升级或恢复失败后，必须释放 Web/Worker/升级入口的全局维护锁；只有操作处于 `requested` 或 `started` 时才拒绝重复的同类维护请求，Session/Runtime 写入仍可按失败关闭规则保持阻断。升级成功必须确认新 Web 实例、Session 数据版本和 Worker 协议健康状态均达到方案目标，不能以进程启动或 HTTP 成功代替最终确认。
+
+Session 类型由 `AiSession.session_mode` 固定管理：`terminal` 只属于 Web 实时终端，`quick` 只属于快速交互和微信/ClawBot。首页使用统一的创建时间倒序列表和类型标记，不提供已有 Session 的类型切换；内部翻译 Session 为 `quick`，但不进入用户列表或微信槽位。升级恢复清理 Chub 管理数据时不读取旧管理格式、不停止或判断原生 Codex Session 的运行结果；新实例扫描到的原生 Session 统一新建为 `discovered=true, session_mode=terminal`。
 
 ## 4. 当前逻辑分层
 
@@ -126,7 +146,7 @@ Worker 不负责身份认证、页面、微信路由、通知目标、Request �
 
 ### 5.2 AI Session 与执行
 
-当前由 AI Session Manager、AI Session Store、Interactive Supervisor 和 Quick Worker 分别承担逻辑 Session、Activity、实时终端及后台 AI 任务；终端票据、页面接管和连接状态属于 `app.ai_session` 通用边界，Runtime Adapter 只解释 Runtime 私有进程/后端匹配。模型用量由 AI Usage Service 维护。旧 `CodexPtyManager`、Codex Session Store 仅作为历史实现和专项回归代码保留，不参与生产启动或状态读取，详见专项设计。
+当前由 AI Session Manager、AI Session Store、Interactive Supervisor 和 Quick Worker 分别承担逻辑 Session、Activity、实时终端及后台 AI 任务；`session_mode` 由 AI Session Manager 在创建和所有入口校验时拥有，终端与快速交互不互相接管 writer。Runtime Adapter 只解释 Runtime 私有进程/后端匹配。模型用量由 AI Usage Service 维护。旧 `CodexPtyManager`、Codex Session Store 仅作为历史实现和专项回归代码保留，不参与生产启动或状态读取，详见专项设计。
 
 ### 5.3 Request 需求储备
 

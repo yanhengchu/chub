@@ -17,14 +17,14 @@ Chub 当前管理 Codex CLI Session，并用两个正交状态描述产品状态
 
 每条 Chub 逻辑 Session 都必须带有由后端固定写入的 `runtime_id`；当前值为 `codex`，但不能把缺失字段默认猜测为 `codex`。原生 Session 映射由 `(runtime_id, native_session_id)` 共同唯一确定，因此不同 Runtime 可以使用同名原生 ID，同一 Runtime 不得重复绑定。
 
-同一 Session 提供两个入口：
+每条 Session 还必须在创建时固定写入 `session_mode`，只能是 `terminal` 或 `quick`，创建后不可修改。两类 Session 是同一产品列表中的不同类型，不是同一 Session 的两个可切换入口：
 
 | 入口 | 用途 |
 | --- | --- |
-| 实时终端 | 进入 Codex 原生 TUI，查看实时输出、连续输入和处理审批 |
-| 快速交互 | 从普通页面提交单次需求，在时间线查看状态和结果 |
+| `terminal` | 进入 Codex 原生 TUI，查看实时输出、连续输入和处理审批 |
+| `quick` | 从普通页面或微信提交单次需求，在时间线查看状态和结果 |
 
-两种入口共享同一个原生 Session，不是两类 Session。入口偏好只决定当前浏览器的默认导航，不代表运行状态。
+创建时由 Web 弹窗选择类型，默认 `quick`；类型选择只影响新建请求，不保存浏览器入口偏好，也不能用于已有 Session。微信和 ClawBot 只能创建或使用 `quick` Session。
 
 ## 2. 核心状态
 
@@ -37,7 +37,7 @@ Chub 当前管理 Codex CLI Session，并用两个正交状态描述产品状态
 | `stopped` | 交互运行时不存在，但原生 Session 可以恢复 |
 | `error` | 原生 Session 建立、恢复或管理失败，所有入口均不可用 |
 
-`session_status` 不表示是否正在执行任务。`stopped` Session 仍可通过快速交互继续使用原生上下文。
+`session_status` 不表示是否正在执行任务。`stopped` 的含义由 `session_mode` 解释：`terminal` 等待再次进入终端，`quick` 等待下一次快速任务；不能把两者互换。
 
 ### 2.2 Activity 状态与来源
 
@@ -76,24 +76,19 @@ Chub 当前管理 Codex CLI Session，并用两个正交状态描述产品状态
 - API 错误的 `error.source` 必须为 `chub` 或 `runtime`。`runtime` 只表示 Chub 已确认来自 Codex CLI/上游 Runtime 的错误，页面标为“Codex CLI（上游 Runtime）”；其他控制面错误标为“Chub”。
 - 快速交互任务的 `error_source` 只在失败状态用于区分来源。取消和超时不设置该字段，失败但字段为空时显示“来源未确认”，不根据错误正文猜测来源。
 
-操作入口根据 `session_status` 决定直接进入还是恢复终端，但不能反向修改 Activity。
+操作入口根据不可变的 `session_mode` 决定进入实时终端或快速交互页面；`session_status` 只描述该类型 Session 的当前生命周期，不能反向修改类型或 Activity。
 
 ## 4. 单 writer 与任务边界
 
 当前产品的终端与快速交互规则固定为：
 
-1. 同一 Session 可以在两个 Web 页面打开实时终端；后进入的页面接管唯一终端连接，先前页面返回首页，但不得停止或中断 tmux 中正在执行的 Codex Turn。
-2. 实时终端正在执行 Turn 时，快速交互必须拒绝提交；不得抢占、中断或并发写入该 Turn。
-3. 实时终端已确认等待输入时，快速交互可以接管：关闭 Web 终端连接并停止受管终端，确认 writer 已释放后才提交 Worker；终端页面返回首页，Quick Worker 成为唯一 writer。
+1. `terminal` Session 只允许实时终端接口；同一 Session 的终端连接仍由一个 Chub 终端 writer 管理。
+2. `quick` Session 只允许快速交互接口；快速任务由 Quick Worker 租约管理，同一 Session 同时最多一个快速任务 writer。
+3. `terminal` 与 `quick` 之间没有接管、切换或复用关系。快速交互不得停止终端、关闭终端连接或等待终端 writer 释放后再提交。
+4. 原生 Session ID 只能绑定一个 Chub Session。升级扫描得到的原生 Session 记录为 `terminal`；快速交互不能把它重新绑定为 `quick`，也不能反向覆盖已有绑定。
 
-除上述执行中、外部 writer、归属无法确认或 writer 无法释放的边界外，不增加门禁。尤其是 Chub 受管实时终端在等待输入时仍保留原生 writer 进程，不能仅因该进程存在而拒绝快速交互接管。
-
-- 实时终端和快速交互必须通过同一 Session 互斥门禁。快速交互提交到已确认空闲的 Chub 受管终端时，快速交互接管唯一 writer：先关闭终端连接并停止终端，确认原生 writer 已释放后再提交 Worker；原终端页面返回首页。
-- 实时终端是同一个交互入口而非每个页面各自的 writer：同一 Session 可以从新页面重复进入，新页面接管唯一终端连接，旧页面断开并返回首页。
-- 快速交互执行时拒绝进入实时终端；实时终端正在处理 Turn 时拒绝创建快速交互。仅“已确认空闲且归属 Chub”的终端可由快速交互接管；外部或归属无法确认的原生 writer 继续拒绝。原生 writer 探测用于后台任务提交和无法确认归属的新 writer；同一受管实时终端的页面重连可通过 tmux 或 Chub 终端进程标识确认归属，不阻塞重连。
-- 已有快速任务、实时 Turn 或无法确认归属的原生 writer 被占用时，拒绝第二个 Turn，不中断现有任务。
-- 停止、权限切换、归档等操作也必须通过 Session 互斥检查；页面按钮状态不能代替后端最终校验。
-- 微信当前绑定 Session 为 `unknown` 时，允许受控停止残留终端并确认 writer 已释放后再提交；无法确认时失败关闭。
+- 两类 Session 的停止、归档、删除和重命名是通用管理操作；页面按钮状态不能代替后端最终校验。
+- 原生 writer 是否运行不改变 `session_mode`，也不允许另一类接口接管；接口冲突必须返回明确的类型错误。
 - 子进程创建、停止请求返回或 Runtime 活动事件到达都不是最终状态，必须确认运行时、Turn 或任务终态。
 
 快速交互 Execution、Worker 租约、恢复屏障、翻译队列、通知和协调重启的权威状态由独立 Worker 体系维护，本文只消费其结果生成 Session Activity。
@@ -106,17 +101,27 @@ Chub 当前管理 Codex CLI Session，并用两个正交状态描述产品状态
 - `runtime_id` 是后端固定的 Runtime 归属；页面、微信正文和任务请求不能自行指定或覆盖。
 - `title` 是 Chub 本地展示元数据；空标题统一显示“未命名 Session”，修改标题不改变原生上下文、Activity 或权限。
 - `weixin_session_slot` 是 `S1`–`S9` 的唯一来源。列表位置、标题或当前浏览器不能生成虚拟槽位。
-- Web 无槽位 Session 显示 `S · 标题`；微信只展示已分配槽位的 Session。
+- Web 统一列表按 `created_at` 倒序展示所有用户 Session，并在标题前显示“终端”或“快速”类型标记；不拆分两个列表。
+- Web 无槽位 Session 不显示虚拟槽位；微信只展示已分配槽位的 `quick` Session。
 - Session 列表按创建时间倒序排列，排序不改变槽位编号。
 
-### 5.2 权限、归档和入口偏好
+### 5.2 权限、归档和类型
 
 - 权限模式在创建时写入 Session 配置；设置页只保存后续新建 Session 的默认值。
 - 归档表示从活动列表移除并释放微信槽位，不是新的 Session 状态；当前页面不提供恢复入口。
 - 删除从首页或快速交互页移除 Session；已绑定原生 Session 时同时删除对应 Runtime 记录，操作不可恢复。
-- 入口偏好默认为快速交互，按 Session 保存在当前浏览器，不跨设备同步，也不写入后端状态。
-- 快速交互执行中仍可进入快速交互页查看进度，但不能进入实时终端；实时终端可从新页面重新进入并接管旧页面连接。
-- 翻译 Session 是内部只读 Session，不进入微信槽位；Web 是否展示只影响列表入口，不中断任务。
+- 新建弹窗默认选择快速交互；已有 Session 不提供切换入口。
+- 快速交互执行中仍可进入快速交互页查看进度，但不能进入实时终端；终端 Session 只进入实时终端。
+- 翻译 Session 是内部只读 `quick` Session，不进入 Web 用户列表和微信槽位；内部任务仍可按其固定 ID 访问。
+
+### 5.3 升级与原生 Session 扫描
+
+- 升级恢复创建全新的 Chub 管理数据格式，清理旧 Session、槽位、Worker 任务/租约和运行态；不读取、迁移或兼容旧 Chub 管理数据。
+- 清理过程不根据原生 Codex Session 是否运行，也不根据停止、关闭、归档或删除原生 Session 的成功/失败判定升级结果；原生 Session、配置和业务数据不由该清理操作删除。
+- 新实例启动后扫描仍存在且未被新管理数据绑定的原生 Session，并为每条记录创建 `discovered=true, session_mode=terminal` 的 Web Session。扫描记录不进入快速交互列表或微信槽位。
+- 运行中的原生 Session 不被扫描过程抢占；同一 `(runtime_id, native_session_id)` 只能保留一个 Chub 管理记录，任何跨类型重新绑定均失败关闭。
+- Quick Worker 创建原生 Session 到返回 `native_session_id` 存在短暂绑定窗口；活动中的、尚未绑定原生 ID 的 `quick` Session，其可信工作目录内的未绑定发现结果必须暂缓导入，等待 Worker 绑定后再归属给该 Quick Session。
+- 若历史版本已在该窗口内生成 `discovered=true` 的 terminal 记录，只有该记录与 Quick Session 工作目录一致、创建时间不早于 Quick Session 且没有受管 terminal writer 时，Worker 绑定才可原子地将原生归属转回 Quick Session 并删除重复的 Chub 记录；其他冲突继续失败关闭，不得接管实时终端。
 
 ## 6. 状态来源与转换
 
@@ -129,7 +134,7 @@ idle --终端 Turn--> working + terminal
 idle --快速任务--> working + quick
 working --Turn 终态--> idle + none
 running --停止确认--> stopped
-stopped --恢复确认--> running + unknown
+terminal/stopped --终端恢复确认--> running + unknown
 new/running/stopped --运行时失败--> error + unknown
 ```
 
@@ -140,6 +145,7 @@ new/running/stopped --运行时失败--> error + unknown
 - Web 重启后由 Worker 恢复快速任务和租约投影；无法确认时保持 `unknown` 并关闭写入。
 - Activity 变化不改变 Session 运行时生命周期。
 - 快速交互 Hook 只提供 Activity 迹象；原生 Session 身份由 Quick Worker 完成确认和绑定，quick 来源的 Hook（包括空闲事件）不得覆盖该绑定。
+- 首页或其他只读列表触发的 Runtime 发现不得抢先创建 Quick Worker 正在绑定的 terminal 记录；Worker 返回的原生 ID 是这段窗口内的绑定权威。
 
 当前 Codex 映射：
 
@@ -162,7 +168,7 @@ new/running/stopped --运行时失败--> error + unknown
 
 - Session 与 Activity 枚举、合法组合和页面主状态。
 - 实时终端与快速交互的共享 Session、入口语义和单 writer 约束。
-- Chub/原生标识、标题、微信槽位、归档和浏览器入口偏好。
+- Chub/原生标识、标题、微信槽位、归档和不可变 Session 类型。
 - Runtime Adapter 规范化事件、实时运行时和 Worker 投影到 Session 状态的规则；Adapter 内部的 Codex Hook 格式不属于本文共享契约。
 
 以下内容由其他文档维护：
@@ -171,7 +177,7 @@ new/running/stopped --运行时失败--> error + unknown
 - 微信指令、绑定、权限和原路通知：[OpenClaw 定制集成设计](OPENCLAW_CUSTOMIZATION_DESIGN.md)。
 - 前端分层、公共交互和视觉规范：[Chub 前端 UI 模块化设计](FRONTEND_UI_DESIGN.md)。
 
-当前模型已在 Codex 会话、首页、快速交互和微信 Session 展示中落地，并完成 macOS、Ubuntu 验收。
+当前模型已在 Codex 会话、首页、快速交互和微信 Session 展示中落地；升级后的新格式不读取旧 Chub 管理数据，原生 Codex Session 不参与清理成功/失败判定。
 
 ## 8. 验收范围与复检
 

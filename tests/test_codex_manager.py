@@ -137,6 +137,7 @@ def test_list_sessions_includes_all_unarchived_sessions_regardless_of_origin(
             "id": "translation-session",
             "workspace_id": "weixin-translation",
             "workspace_name": "微信文本优化与翻译",
+            "session_mode": "quick",
         }
     )
     manager.store.save(visible)
@@ -177,6 +178,7 @@ def test_translation_session_rejects_realtime_terminal(settings: Settings) -> No
         workspace_id="weixin-translation",
         workspace_name="微信文本优化与翻译",
         cwd=Path("/translation"),
+        session_mode="quick",
         permission_mode="read-only",
     )
     manager._require_available = MagicMock()
@@ -398,6 +400,26 @@ def test_sync_upgrades_legacy_discovered_workspace_id(
 
     synced = manager.store.get(session.id)
     assert synced.workspace_id == DISCOVERED_RUNTIME_WORKSPACE_ID
+
+
+def test_sync_new_discovered_session_uses_native_permission(
+    settings: Settings,
+) -> None:
+    manager = CodexPtyManager(settings)
+    session = native_session("26262626-2626-4262-8262-262626262626")
+    session.active_permission_mode = "full-access"
+    manager.runtime_adapter.discovery = MagicMock()
+    manager.runtime_adapter.discovery.discover.return_value = [session]
+    manager.runtime_adapter.discovery.session_archive_states.return_value = None
+
+    manager._sync_native_sessions()
+
+    synced = manager.store.get(session.id)
+    assert synced.permission_mode == "full-access"
+    assert synced.active_permission_mode == "full-access"
+    command = manager._ttyd_command(synced, 12345)
+    permission_index = command.index("--permission-mode")
+    assert command[permission_index + 1] == "full-access"
 
 
 def test_sync_defers_native_session_while_new_quick_session_is_binding(
@@ -657,13 +679,13 @@ def test_system_upgrade_discard_preserves_native_codex_session(
     manager = CodexPtyManager(settings)
     session = native_session("56565656-5656-4565-8565-565656565656")
     manager.store.save(session)
-    manager.stop_session = MagicMock()
+    manager._stop_backend = MagicMock()
     manager.runtime_adapter.run_native_action = MagicMock()
 
     manager.discard_session_for_system_upgrade(session.id)
 
     assert manager.store.get(session.id) is None
-    manager.stop_session.assert_called_once_with(session.id)
+    manager._stop_backend.assert_called_once_with(session)
     manager.runtime_adapter.run_native_action.assert_not_called()
 
 

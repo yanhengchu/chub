@@ -40,8 +40,12 @@ from app.services.openclaw_weixin_chub_models import (
     ),
     [
         (" 《Chub》。 ", "status", None, None, False),
+        ("USAGE。", "usage", None, None, False),
         ("help", "help", None, None, False),
         ("帮助。", "help", None, None, False),
+        ("model", "model", None, None, False),
+        ("MODEL。", "model", None, None, False),
+        ("模型", "model", None, None, False),
         ("同步。", "sync", None, None, False),
         ("RESTART。", "restart", None, None, False),
         ("重新启动", "restart", None, None, False),
@@ -50,13 +54,13 @@ from app.services.openclaw_weixin_chub_models import (
         ("retry", "retry", None, None, False),
         ("重试", "retry", None, None, False),
         ("继续执行", "retry", None, None, False),
-        ("new retry", "new_retry", None, None, False),
-        ("新建 重试", "new_retry", None, None, False),
-        ("新建 继续执行", "new_retry", None, None, False),
-        ("direct 检查设备", "direct", None, "检查设备", False),
-        ("直接执行 检查设备", "direct", None, "检查设备", False),
-        ("direct", "direct", None, None, True),
-        ("直接执行", "direct", None, None, True),
+        ("new retry", "normal", None, None, False),
+        ("新建 重试", "normal", None, None, False),
+        ("新建 继续执行", "normal", None, None, False),
+        ("direct 检查设备", "normal", None, None, False),
+        ("直接执行 检查设备", "normal", None, None, False),
+        ("direct", "normal", None, None, False),
+        ("直接执行", "normal", None, None, False),
         ("直接执行检查设备", "normal", None, None, False),
         ("rename 项目维护", "rename", None, "项目维护", False),
         ("重命名 新标题", "rename", None, "新标题", False),
@@ -68,11 +72,11 @@ from app.services.openclaw_weixin_chub_models import (
         ("切换 3 继续处理", "switch", 3, "继续处理", False),
         ("会话 S3", "switch", 3, None, False),
         ("会话 3", "switch", 3, None, False),
-        ("switch 3 retry", "switch_retry", 3, None, False),
-        ("switch S3 retry", "switch_retry", 3, None, False),
-        ("切换 3 重试", "switch_retry", 3, None, False),
-        ("切换3重试", "switch_retry", 3, None, False),
-        ("切换S3，重试", "switch_retry", 3, None, False),
+        ("switch 3 retry", "normal", None, None, False),
+        ("switch S3 retry", "normal", None, None, False),
+        ("切换 3 重试", "normal", None, None, False),
+        ("切换3重试", "normal", None, None, False),
+        ("切换S3，重试", "normal", None, None, False),
         ("切换S3重试服务", "switch", 3, "重试服务", False),
         ("切换 3 继续执行", "switch", 3, "继续执行", False),
         ("切换S3，这是正文", "switch", 3, "这是正文", False),
@@ -135,12 +139,81 @@ def test_parse_weixin_chub_command_contract(
     task_prompt: str | None,
     invalid_usage: bool,
 ) -> None:
+    command = parse_weixin_chub_command(
+        prompt if kind == "normal" else "/" + prompt
+    )
+    expected_kind = "normal" if invalid_usage else kind
+    expected_index = None if invalid_usage else requested_index
+    expected_task_prompt = None if invalid_usage else task_prompt
+
+    assert command.kind == expected_kind
+    assert command.requested_index == expected_index
+    assert command.task_prompt == expected_task_prompt
+    assert command.invalid_usage is False
+
+
+@pytest.mark.parametrize("prompt", ["new", "检查状态", "help", "switch 2"])
+def test_unprefixed_command_shaped_text_is_a_normal_task(prompt: str) -> None:
+    command = parse_weixin_chub_command(prompt)
+
+    assert command.kind == "normal"
+    assert command.normalized_prompt == prompt
+
+
+@pytest.mark.parametrize(
+    ("prompt", "kind", "task_prompt"),
+    [
+        (" help", "help", None),
+        ("/help", "help", None),
+        ("。usage", "usage", None),
+        ("、usage", "usage", None),
+        ("\\usage", "usage", None),
+        (",usage", "usage", None),
+        ("，usage", "usage", None),
+        ("!usage", "usage", None),
+        ("！usage", "usage", None),
+        ("?usage", "usage", None),
+        ("？usage", "usage", None),
+        (";usage", "usage", None),
+        ("；usage", "usage", None),
+        (":usage", "usage", None),
+        ("：usage", "usage", None),
+        ("\tnew 新会话", "new", "新会话"),
+        (" /direct 检查设备", "normal", None),
+    ],
+)
+def test_explicit_command_prefixes_are_removed_before_matching(
+    prompt: str,
+    kind: str,
+    task_prompt: str | None,
+) -> None:
     command = parse_weixin_chub_command(prompt)
 
     assert command.kind == kind
-    assert command.requested_index == requested_index
     assert command.task_prompt == task_prompt
-    assert command.invalid_usage is invalid_usage
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "/new",
+        "/switch 10",
+        "/direct 检查设备",
+        "/new retry",
+        "/switch 2 retry",
+        "。unknown command",
+        "、usage extra",
+        "\\restart later",
+        " /unknown",
+    ],
+)
+def test_prefixed_match_failures_keep_the_original_normal_task(
+    prompt: str,
+) -> None:
+    command = parse_weixin_chub_command(prompt)
+
+    assert command.kind == "normal"
+    assert command.normalized_prompt == prompt
 
 
 def test_every_non_task_command_kind_uses_fixed_reply_contract() -> None:
@@ -257,6 +330,7 @@ def test_session_formatting_and_configuration_match_are_stateless() -> None:
         reasoning_effort="high",
     )
     session = SimpleNamespace(
+        session_mode="quick",
         workspace_id="chub",
         permission_mode="full-access",
         model="gpt-5",
@@ -307,7 +381,7 @@ def test_dispatch_failure_message_contract_is_stable() -> None:
     assert result.disposition == "reply"
     assert result.message == (
         "Not submitted · The current Session is running.\n\n"
-        "Retry: Send new retry to continue in a new Session."
+        "Retry: Send retry to continue in the current Session."
     )
 
 

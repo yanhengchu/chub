@@ -82,7 +82,7 @@ def test_codex_retry_submits_latest_busy_task_to_current_session(
         " 新建 继续执行。 ",
     ],
 )
-def test_codex_new_retry_creates_session_and_submits_latest_busy_task(
+def test_removed_new_retry_is_submitted_as_a_normal_task(
     settings: Settings,
     command: str,
 ) -> None:
@@ -100,6 +100,7 @@ def test_codex_new_retry_creates_session_and_submits_latest_busy_task(
 
     codex_manager.create_session.return_value = SimpleNamespace(id="session-2")
     codex_manager.get_session.return_value = CodexSession(
+        session_mode="quick",
         id="session-2",
         workspace_id="chub",
         workspace_name="Chub",
@@ -119,19 +120,13 @@ def test_codex_new_retry_creates_session_and_submits_latest_busy_task(
     )
 
     assert result.message is not None
-    assert result.message == (
-        "Retry: A new Session was created and selected. The task was resubmitted.\n\n"
-        "Task · 探索另一个问题"
-    )
-    assert manager.session_id() == "session-2"
-    assert quick_interactions.submit.call_args.args[:2] == (
-        "session-2",
-        "探索另一个问题",
-    )
-    assert manager._state.pending_retry is None
+    assert result.message.endswith(f"Task · {command.strip()}")
+    assert manager.session_id() == "session-1"
+    assert quick_interactions.submit.call_args.args[1] == command
+    codex_manager.create_session.assert_not_called()
 
 
-def test_codex_switch_retry_selects_target_and_submits_pending_task(
+def test_removed_switch_retry_is_submitted_as_a_normal_task(
     settings: Settings,
 ) -> None:
     manager, codex_manager, quick_interactions = configured_manager(settings)
@@ -142,6 +137,7 @@ def test_codex_switch_retry_selects_target_and_submits_pending_task(
     ]
     sessions = [
         CodexSession(
+            session_mode="quick",
             id=f"session-{slot}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -186,21 +182,17 @@ def test_codex_switch_retry_selects_target_and_submits_pending_task(
     )
 
     assert result.message is not None
-    assert result.message.startswith(
-        "Switch: Session 2 selected. Retry: The task was resubmitted."
-    )
-    assert result.message.count("\n\nSessions\n\n") == 1
-    assert manager.session_id() == "session-2"
-    assert manager._state.pending_retry is None
+    assert "Task · switch S2 retry" in result.message
+    assert manager.session_id() == "session-1"
     assert quick_interactions.submit.call_args.args[:2] == (
-        "session-2",
-        "继续目标任务",
+        "session-1",
+        "switch S2 retry",
     )
     assert duplicate == result
     assert quick_interactions.submit.call_count == submit_calls
 
 
-def test_codex_switch_retry_busy_target_keeps_new_binding_and_pending_task(
+def test_removed_switch_retry_does_not_switch_or_retry(
     settings: Settings,
 ) -> None:
     manager, codex_manager, quick_interactions = configured_manager(settings)
@@ -211,6 +203,7 @@ def test_codex_switch_retry_busy_target_keeps_new_binding_and_pending_task(
     ]
     sessions = [
         CodexSession(
+            session_mode="quick",
             id="session-1",
             workspace_id="chub",
             workspace_name="Chub",
@@ -221,6 +214,7 @@ def test_codex_switch_retry_busy_target_keeps_new_binding_and_pending_task(
             activity="idle",
         ),
         CodexSession(
+            session_mode="quick",
             id="session-2",
             workspace_id="chub",
             workspace_name="Chub",
@@ -257,16 +251,14 @@ def test_codex_switch_retry_busy_target_keeps_new_binding_and_pending_task(
     )
 
     assert result.message is not None
-    assert result.message.startswith(
-        "Switch: Session 2 selected. Retry: The task was not resubmitted."
-    )
-    assert manager.session_id() == "session-2"
+    assert "Task · 会话 S2 重试" in result.message
+    assert manager.session_id() == "session-1"
     assert manager._state.pending_retry is not None
-    assert manager._state.pending_retry.prompt == "必须保留的任务"
+    assert manager._state.pending_retry.prompt == "会话 S2 重试"
     quick_interactions.submit.assert_not_called()
 
 
-def test_codex_switch_retry_continues_when_target_is_already_current(
+def test_removed_switch_retry_does_not_consume_pending_retry(
     settings: Settings,
 ) -> None:
     manager, codex_manager, quick_interactions = configured_manager(settings)
@@ -275,6 +267,7 @@ def test_codex_switch_retry_continues_when_target_is_already_current(
         WeixinChubModeSessionSlot(slot=1, session_id="session-1")
     ]
     session = CodexSession(
+        session_mode="quick",
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",
@@ -307,14 +300,12 @@ def test_codex_switch_retry_continues_when_target_is_already_current(
     )
 
     assert result.message is not None
-    assert result.message.startswith(
-        "Switch: Session 1 selected. Retry: The task was resubmitted."
-    )
+    assert result.message.endswith("Task · 切换1重试")
     assert manager.session_id() == "session-1"
-    assert manager._state.pending_retry is None
+    assert manager._state.pending_retry is not None
     assert quick_interactions.submit.call_args.args[:2] == (
         "session-1",
-        "继续当前任务",
+        "切换1重试",
     )
 
 
@@ -322,7 +313,6 @@ def test_codex_switch_retry_continues_when_target_is_already_current(
     ("prompt", "pending_prompt", "expected_status"),
     [
         ("切换 S2 继续检查日志", None, "Task submitted"),
-        ("切换 S2 重试", "继续被阻塞的任务", "The task was resubmitted"),
     ],
 )
 def test_switch_continuation_resumes_after_final_state_write_is_interrupted(
@@ -335,6 +325,7 @@ def test_switch_continuation_resumes_after_final_state_write_is_interrupted(
     manager._state.session_id = "session-1"
     sessions = [
         CodexSession(
+            session_mode="quick",
             id=f"session-{slot}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -440,7 +431,7 @@ def test_codex_retry_rejects_expired_or_different_route_without_side_effects(
 
     result = manager.dispatch(
         message_id="retry-expired",
-        prompt="新建 继续执行",
+        prompt="retry",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -457,7 +448,7 @@ def test_codex_retry_rejects_expired_or_different_route_without_side_effects(
     quick_interactions.submit.assert_not_called()
 
 
-def test_codex_new_retry_cannot_claim_task_from_different_route(
+def test_codex_retry_cannot_claim_task_from_different_route(
     settings: Settings,
 ) -> None:
     manager, codex_manager, quick_interactions = configured_manager(settings)
@@ -474,7 +465,7 @@ def test_codex_new_retry_cannot_claim_task_from_different_route(
 
     result = manager.dispatch(
         message_id="retry-other-route",
-        prompt="新建 重试",
+        prompt="retry",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -493,7 +484,7 @@ def test_codex_new_retry_cannot_claim_task_from_different_route(
     assert manager._state.pending_retry.prompt == "私有待继续任务"
 
 
-def test_duplicate_codex_new_retry_does_not_create_or_submit_twice(
+def test_duplicate_codex_retry_does_not_create_or_submit_twice(
     settings: Settings,
 ) -> None:
     manager, codex_manager, quick_interactions = configured_manager(settings)
@@ -507,21 +498,11 @@ def test_duplicate_codex_new_retry_does_not_create_or_submit_twice(
         source_ip="100.64.0.21",
         delivery_route=delivery_route(),
     )
-    codex_manager.create_session.return_value = SimpleNamespace(id="session-2")
-    codex_manager.get_session.return_value = CodexSession(
-        id="session-2",
-        workspace_id="chub",
-        workspace_name="Chub",
-        cwd="/project",
-        permission_mode="full-access",
-        status="stopped",
-        activity="idle",
-    )
     quick_interactions.is_running.return_value = False
 
     first = manager.dispatch(
         message_id="combined-duplicate",
-        prompt="new retry",
+        prompt="retry",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -529,7 +510,7 @@ def test_duplicate_codex_new_retry_does_not_create_or_submit_twice(
     )
     duplicate = manager.dispatch(
         message_id="combined-duplicate",
-        prompt="new retry",
+        prompt="retry",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -538,7 +519,7 @@ def test_duplicate_codex_new_retry_does_not_create_or_submit_twice(
 
     assert "The task was resubmitted." in (first.message or "")
     assert duplicate.message == first.message
-    codex_manager.create_session.assert_called_once()
+    codex_manager.create_session.assert_not_called()
     quick_interactions.submit.assert_called_once()
 
 
@@ -571,7 +552,7 @@ def test_retry_keeps_pending_task_when_current_session_is_still_busy(
     assert result.message.splitlines()[2] == "Task · 稍后继续的任务"
     assert "Not submitted · The current Session is running." in result.message
     assert result.message.endswith(
-        "Retry: Send new retry to continue in a new Session."
+        "Retry: Send retry to continue in the current Session."
     )
     assert manager._state.pending_retry is not None
     assert manager._state.pending_retry.prompt == "稍后继续的任务"

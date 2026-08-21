@@ -25,6 +25,7 @@ from tests.openclaw_weixin_chub_mode_helpers import (
 def configured_stop_target(settings: Settings):
     manager, codex_manager, quick_interactions = configured_manager(settings)
     session = CodexSession(
+        session_mode="quick",
         id="session-2",
         codex_session_id="native-2",
         workspace_id="chub",
@@ -111,6 +112,7 @@ def test_session_stop_final_notification_restores_other_running_task_name(
 ) -> None:
     manager, target, quick_interactions = configured_stop_target(settings)
     other = CodexSession(
+        session_mode="quick",
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",
@@ -314,7 +316,7 @@ def test_interrupted_session_stop_is_not_replayed_after_restart(
         "停止 2 继续处理",
     ],
 )
-def test_session_stop_invalid_usage_does_not_stop(
+def test_prefixed_invalid_stop_falls_back_to_normal_task(
     settings: Settings,
     prompt: str,
 ) -> None:
@@ -322,7 +324,7 @@ def test_session_stop_invalid_usage_does_not_stop(
 
     result = manager.dispatch(
         message_id=f"invalid-stop-{prompt}",
-        prompt=prompt,
+        prompt="/" + prompt,
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -330,9 +332,10 @@ def test_session_stop_invalid_usage_does_not_stop(
     )
 
     assert result.message is not None
-    assert result.message == "Usage: stop <1-9|S1-S9|一-九>"
+    assert result.message.startswith("Submitted")
     manager.session_stopper.assert_not_called()
-    quick_interactions.submit.assert_not_called()
+    quick_interactions.submit.assert_called_once()
+    assert quick_interactions.submit.call_args.args[1] == "/" + prompt
 
 
 def test_session_stop_requires_confirmed_final_state_and_logs_failure(

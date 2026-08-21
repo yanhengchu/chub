@@ -45,7 +45,7 @@ def write_plan(path: Path) -> None:
   "title": "切换 AI Session 数据协议",
   "summary": "清理 Chub Session 关联并切换到新数据协议。",
   "source_code_version": "%s",
-  "target_code_version": "phase3b-ai-session-manager-v1",
+  "target_code_version": "%s",
   "source_session_schema": %d,
   "target_session_schema": %d,
   "source_worker_protocol": %d,
@@ -55,6 +55,7 @@ def write_plan(path: Path) -> None:
 }
 """
         % (
+            WEB_CODE_VERSION,
             WEB_CODE_VERSION,
             SESSION_SCHEMA_VERSION,
             SESSION_SCHEMA_VERSION + 1,
@@ -268,6 +269,110 @@ def test_coordinator_resumes_destructive_failure_from_durable_checkpoint(
     assert resumed.status == "started"
     assert resumed.stage == expected_stage
     assert coordinator.writes_blocked() is True
+
+
+def test_coordinator_rebases_stale_final_verification_to_current_recovery_plan(
+    tmp_path: Path,
+) -> None:
+    plan_path = tmp_path / "plan.json"
+    write_plan(plan_path)
+    loaded = load_system_upgrade_plan(plan_path)
+    assert loaded is not None
+    coordinator = SystemUpgradeCoordinator(
+        tmp_path / "state" / "system-upgrade.json",
+        plan_path,
+        "old-instance",
+    )
+    operation = coordinator.begin(
+        loaded,
+        source_ip="127.0.0.1",
+        old_worker_generation="e" * 32,
+        runner=lambda _operation_id: None,
+    )
+    coordinator.mark_started(operation.operation_id)
+    coordinator.update(
+        operation.operation_id,
+        stage="verifying_new_instance",
+        destructive_started=True,
+        restart_launch_state="launched",
+    )
+    coordinator.fail(operation.operation_id, "目标版本已过期")
+
+    current = runtime_recovery_plan()
+    assert coordinator.rebase_failed_verification(current) is True
+    rebound = coordinator.operation()
+    assert rebound is not None
+    assert rebound.plan.plan_id == "runtime-recovery"
+    assert rebound.fingerprint == current.fingerprint
+
+    resumed = coordinator.resume_verification()
+    assert resumed is not None
+    assert resumed.status == "started"
+    assert resumed.stage == "verifying_new_instance"
+    assert coordinator.writes_blocked() is True
+
+
+def test_coordinator_does_not_rebase_before_final_verification(
+    tmp_path: Path,
+) -> None:
+    plan_path = tmp_path / "plan.json"
+    write_plan(plan_path)
+    loaded = load_system_upgrade_plan(plan_path)
+    assert loaded is not None
+    coordinator = SystemUpgradeCoordinator(
+        tmp_path / "state" / "system-upgrade.json",
+        plan_path,
+        "old-instance",
+    )
+    operation = coordinator.begin(
+        loaded,
+        source_ip="127.0.0.1",
+        old_worker_generation="f" * 32,
+        runner=lambda _operation_id: None,
+    )
+    coordinator.update(
+        operation.operation_id,
+        stage="cleaning_state",
+        destructive_started=True,
+    )
+    coordinator.fail(operation.operation_id, "cleanup interrupted")
+
+    assert coordinator.rebase_failed_verification(runtime_recovery_plan()) is False
+
+
+def test_coordinator_rebases_failed_cleanup_to_current_recovery_plan(
+    tmp_path: Path,
+) -> None:
+    plan_path = tmp_path / "plan.json"
+    write_plan(plan_path)
+    loaded = load_system_upgrade_plan(plan_path)
+    assert loaded is not None
+    coordinator = SystemUpgradeCoordinator(
+        tmp_path / "state" / "system-upgrade.json",
+        plan_path,
+        "old-instance",
+    )
+    operation = coordinator.begin(
+        loaded,
+        source_ip="127.0.0.1",
+        old_worker_generation="g" * 32,
+        runner=lambda _operation_id: None,
+    )
+    coordinator.mark_started(operation.operation_id)
+    coordinator.update(
+        operation.operation_id,
+        stage="cleaning_state",
+        destructive_started=True,
+    )
+    coordinator.fail(operation.operation_id, "旧恢复目标已过期")
+
+    current = runtime_recovery_plan()
+    assert coordinator.rebase_failed_recovery(current) is True
+    rebound = coordinator.operation()
+    assert rebound is not None
+    assert rebound.plan.plan_id == "runtime-recovery"
+    assert rebound.fingerprint == current.fingerprint
+    assert coordinator.resume_failed(lambda _operation_id: None) is not None
 
 
 def test_coordinator_persists_session_cleanup_journal(tmp_path: Path) -> None:
@@ -661,7 +766,9 @@ async def test_system_upgrade_does_not_gate_on_web_or_worker_status(
 
 
 @pytest.mark.anyio
-async def test_upgrade_gate_limits_only_ai_runtime_mutations(settings: Settings) -> None:
+async def test_failed_upgrade_does_not_block_maintenance_restarts(
+    settings: Settings,
+) -> None:
     app = create_app(settings)
     app.state.system_upgrade._writes_blocked = True
     openclaw = MagicMock()
@@ -681,18 +788,22 @@ async def test_upgrade_gate_limits_only_ai_runtime_mutations(settings: Settings)
     app.state.openclaw_manager = openclaw
     transport = httpx.ASGITransport(app=app)
 
-    async with httpx.AsyncClient(
-        transport=transport,
-        base_url="http://test",
-        headers={"Authorization": f"Bearer {TOKEN}"},
-    ) as client:
-        blocked = await client.post("/api/maintenance/restart")
-        clawbot = await client.post("/api/openclaw/restart")
-        session_read = await client.get("/api/codex/sessions")
-        health = await client.get("/api/health")
+    with (
+        patch("app.api.maintenance.launch_restart_process") as launch_restart,
+        patch("app.api.maintenance.monitor_restart_process"),
+    ):
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as client:
+            restart = await client.post("/api/maintenance/restart")
+            clawbot = await client.post("/api/openclaw/restart")
+            session_read = await client.get("/api/codex/sessions")
+            health = await client.get("/api/health")
 
-    assert blocked.status_code == 409
-    assert blocked.json()["error"]["code"] == "system_upgrade_in_progress"
+    assert restart.status_code == 200
+    launch_restart.assert_called_once()
     assert clawbot.status_code == 200
     openclaw.control.assert_called_once_with("restart")
     assert session_read.status_code == 200
@@ -700,18 +811,46 @@ async def test_upgrade_gate_limits_only_ai_runtime_mutations(settings: Settings)
 
 
 @pytest.mark.anyio
-async def test_upgrade_gate_does_not_bypass_mutation_authentication(
+async def test_active_upgrade_still_blocks_maintenance_restarts(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    app.state.system_upgrade.in_progress = lambda: True
+    transport = httpx.ASGITransport(app=app)
+
+    with patch("app.api.maintenance.launch_restart_process") as launch_restart:
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as client:
+            response = await client.post("/api/maintenance/restart")
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "system_upgrade_in_progress"
+    launch_restart.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_failed_upgrade_does_not_preempt_maintenance_request(
     settings: Settings,
 ) -> None:
     app = create_app(settings)
     app.state.system_upgrade._writes_blocked = True
     transport = httpx.ASGITransport(app=app)
 
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.post("/api/maintenance/restart")
+    with (
+        patch("app.api.maintenance.launch_restart_process") as launch_restart,
+        patch("app.api.maintenance.monitor_restart_process"),
+    ):
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://test",
+        ) as client:
+            response = await client.post("/api/maintenance/restart")
 
-    assert response.status_code == 409
-    assert response.json()["error"]["code"] == "system_upgrade_in_progress"
+    assert response.status_code == 200
+    launch_restart.assert_called_once()
 
 
 @pytest.mark.anyio
@@ -896,6 +1035,60 @@ async def test_destructive_upgrade_failure_can_continue_with_same_operation(
     assert app.state.system_upgrade.writes_blocked() is True
 
 
+@pytest.mark.anyio
+async def test_changed_recovery_plan_can_continue_failed_cleanup(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    app = create_app(settings)
+    plan_path = tmp_path / "plan" / "system-upgrade.json"
+    plan_path.parent.mkdir()
+    old_plan = runtime_recovery_plan().plan.model_dump(mode="json")
+    old_plan["summary"] = "旧恢复目标"
+    plan_path.write_text(json.dumps(old_plan), encoding="utf-8")
+    plan_path.chmod(0o600)
+    loaded = load_system_upgrade_plan(plan_path)
+    assert loaded is not None
+    app.state.system_upgrade.plan_path = plan_path
+    operation = app.state.system_upgrade.begin(
+        loaded,
+        source_ip="127.0.0.1",
+        old_worker_generation="a" * 32,
+        runner=lambda _operation_id: None,
+    )
+    app.state.system_upgrade.mark_started(operation.operation_id)
+    app.state.system_upgrade.update(
+        operation.operation_id,
+        stage="cleaning_state",
+        destructive_started=True,
+    )
+    app.state.system_upgrade.fail(operation.operation_id, "旧恢复目标已过期")
+    current = runtime_recovery_plan()
+    plan_path.write_text(current.plan.model_dump_json(), encoding="utf-8")
+    plan_path.chmod(0o600)
+    app.state.quick_interactions._recovery_ready = True
+    app.state.system_upgrade_restart_readiness = lambda: None
+    app.state.run_system_upgrade = lambda _operation_id: None
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    ) as client:
+        preview = await client.get("/api/maintenance/system-upgrade")
+        resumed = await client.post(
+            "/api/maintenance/system-upgrade",
+            json={"fingerprint": current.fingerprint},
+        )
+
+    assert preview.status_code == 200
+    assert preview.json()["data"]["can_start"] is True
+    assert preview.json()["data"]["plan"]["fingerprint"] == current.fingerprint
+    assert resumed.status_code == 200
+    assert resumed.json()["data"]["state"] == "draining"
+
+
 def test_weixin_system_upgrade_uses_application_upgrade_coordinator(
     settings: Settings,
     tmp_path: Path,
@@ -910,7 +1103,7 @@ def test_weixin_system_upgrade_uses_application_upgrade_coordinator(
     app.state.system_upgrade_restart_readiness = lambda: None
     result = app.state.weixin_chub_mode.dispatch(
         message_id="weixin-system-upgrade",
-        prompt="system upgrade",
+        prompt="/system upgrade",
         message_type="text",
         correlation_id="upgrade-request",
         source_ip="100.64.0.21",

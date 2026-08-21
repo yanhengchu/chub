@@ -13,7 +13,29 @@ let quickWorkerReloadOperationId = null;
 let systemUpgradeState = null;
 let systemUpgradePollTimer = 0;
 let systemUpgradeRequestInProgress = false;
-let systemUpgradeReloadOperationId = null;
+const SYSTEM_UPGRADE_RELOAD_KEY = "chub.systemUpgradeReload.v1";
+
+function readSystemUpgradeReloadOperationId() {
+  try {
+    return sessionStorage.getItem(SYSTEM_UPGRADE_RELOAD_KEY) || null;
+  } catch {
+    return null;
+  }
+}
+
+function rememberSystemUpgradeReload(operationId) {
+  try {
+    if (operationId) {
+      sessionStorage.setItem(SYSTEM_UPGRADE_RELOAD_KEY, operationId);
+    } else {
+      sessionStorage.removeItem(SYSTEM_UPGRADE_RELOAD_KEY);
+    }
+  } catch {
+    // The current page can still complete the operation if browser storage is unavailable.
+  }
+}
+
+let systemUpgradeReloadOperationId = readSystemUpgradeReloadOperationId();
 
 function quickWorkerPresentation(state) {
   return {
@@ -27,10 +49,9 @@ function quickWorkerPresentation(state) {
   }[state] || ["状态未知", "failed"];
 }
 
-function systemUpgradeLocksAiRuntime() {
+function systemUpgradeIsRunning() {
   return (
     systemUpgradeRequestInProgress
-    || systemUpgradeState?.writes_blocked === true
     || ["requested", "started"].includes(systemUpgradeState?.operation?.status)
   );
 }
@@ -40,17 +61,18 @@ function syncCoreMaintenanceControls() {
   elements.restartHub.disabled = (
     !connected
     || hubRestartInProgress
-    || systemUpgradeLocksAiRuntime()
+    || systemUpgradeIsRunning()
   );
   elements.quickWorkerRestart.disabled = (
     !connected
     || quickWorkerRequestInProgress
-    || systemUpgradeLocksAiRuntime()
+    || systemUpgradeIsRunning()
     || !quickWorkerState?.can_restart
   );
   elements.systemUpgradeStart.disabled = (
     !connected
     || systemUpgradeRequestInProgress
+    || systemUpgradeIsRunning()
     || !systemUpgradeState?.can_start
   );
 }
@@ -84,8 +106,12 @@ function renderSystemUpgrade(data) {
     && data.operation?.operation_id === systemUpgradeReloadOperationId
     && data.operation.status === "succeeded"
   ) {
-    elements.systemUpgradeDetail.textContent = `状态：已完成。${data.operation.message}`;
+    showMaintenanceCompletion(
+      elements.systemUpgradeDetail,
+      `状态：已完成。${data.operation.message || data.message}`,
+    );
     systemUpgradeReloadOperationId = null;
+    rememberSystemUpgradeReload(null);
     reloadDashboardAfterMaintenance();
   }
 }
@@ -128,6 +154,7 @@ async function startSystemUpgrade() {
       body: JSON.stringify({ fingerprint }),
     });
     systemUpgradeReloadOperationId = data.operation?.operation_id || null;
+    rememberSystemUpgradeReload(systemUpgradeReloadOperationId);
     renderSystemUpgrade(data);
   } finally {
     systemUpgradeRequestInProgress = false;
@@ -157,7 +184,7 @@ function resetQuickWorkerView() {
   clearSystemUpgradePollTimer();
   systemUpgradeState = null;
   systemUpgradeRequestInProgress = false;
-  systemUpgradeReloadOperationId = null;
+  systemUpgradeReloadOperationId = readSystemUpgradeReloadOperationId();
   elements.systemUpgradeDetail.textContent = "状态：正在检查运行态恢复条件";
   syncCoreMaintenanceControls();
 }
@@ -183,7 +210,7 @@ function renderQuickWorker(data) {
   }
   if (matchesRequestedReload && data.operation?.status === "succeeded") {
     setBadge(elements.quickWorkerBadge, "重启完成", "success");
-    elements.quickWorkerDetail.textContent = data.operation.message;
+    showMaintenanceCompletion(elements.quickWorkerDetail, data.operation.message);
     quickWorkerReloadOperationId = null;
     reloadDashboardAfterMaintenance();
   }

@@ -113,27 +113,24 @@ Browser / CLI / OpenClaw / 微信
 - API 错误响应必须带 `error.source`：`runtime` 仅用于 Chub 已确认该错误来自 Runtime API/CLI 的转换，`chub` 用于认证、参数、Worker、Session、页面通道和其他 Chub 控制面错误。API 层不改写 Runtime 原文；页面和通知将 `runtime` 标为“Codex CLI（上游 Runtime）”，将 `chub` 标为“Chub”。
 - 未知错误不得触发自动重试、自动切换 Runtime 或重复提交。
 
-### 4. 当前 Session、实时终端与快速交互
+### 4. Runtime 与 AI Session 的边界
 
-完整的 Session/Activity 枚举以 [AI Session 状态模型](AI_SESSION_STATE_DESIGN.md) 为准。这里保留 AI Agent 必须执行的入口规则：
+AI Session 的 Session/Activity 枚举、交互入口、类型、槽位、页面语义和单 writer 产品规则以 [AI Session 状态模型](AI_SESSION_STATE_DESIGN.md) 为唯一依据；本节只定义 Runtime 必须提供的支撑能力：
 
-1. 同一逻辑 Session 可以从多个 Web 页面进入实时终端；后进入的页面接管唯一终端连接，旧页面退出到首页，但不能中断 tmux 中正在执行的 Codex Turn。
-2. 实时终端正在执行 Turn 时，快速交互不得提交；不得抢占、并发写入或中断正在执行的 Turn。
-3. 实时终端已确认等待输入且属于 Chub 时，快速交互可以接管：关闭终端连接、停止受管终端、确认原生 writer 已释放，再提交 Worker；旧终端页面返回首页。
-4. 快速交互执行时，新的实时终端进入必须被拒绝或退出到首页；任务结束并确认租约释放后才恢复可进入。
-5. 外部 writer、归属无法确认、状态未知且存在数据破坏风险时失败关闭；仅因为历史 writer、旧 PID、页面仍打开或受管终端进程存在，不得永久阻塞空闲 Session。
-6. 进程创建、停止请求返回、Hook 到达、任务受理和 WebSocket 建立都不是最终状态；必须确认 Turn、租约或任务终态。
+- AI Session Manager 拥有 Chub 逻辑 Session 和公开元数据；Runtime Adapter 只负责原生 Session 映射、规范化事件、writer 探测和终端/后台执行能力。
+- Runtime 私有进程、Hook、事件格式、原生路径和错误读取只能由 Adapter/Runner 解释，不能进入 Session 公共模型或页面契约。
+- Runtime 接入不得绕过 Session Manager、Interactive Supervisor 或 Quick Worker，也不得向客户端暴露 Runtime、Runner、命令或工作目录选择器。
+- 入口冲突、writer 接管、Session 类型限制和最终状态确认由 Session/Worker 专项文档共同约束；Runtime 只提供后端完成这些判断所需的可信结果。
 
-### 5. 当前 Quick Worker、重启和升级边界
+### 5. Runtime 与 Quick Worker 的边界
 
-Quick Worker 是独立本机服务，页面快速交互、微信 Chub 非实时任务和翻译任务都通过固定 `codex` Runner 执行。Worker 继续拥有任务幂等、Session 租约、翻译 FIFO、进程组、超时、取消、恢复、结果大小限制和任务终态；Web 不回退到内置 Runner。
+Quick Worker 是独立本机服务，当前生产使用固定 `codex` Runner。Worker 拥有任务幂等、租约、进程组、超时、取消、恢复、通知关联和任务终态；Runtime Runner 只负责受控启动、事件/结果/错误读取及资源能力，不拥有任务终态或通知路由。
 
-- Web 重启不会停止 Worker、Runner、翻译队列或实时 tmux；Worker 重启不会重启 Web 或 ClawBot；ClawBot 维护不参与前两者的普通互斥。
-- 新 Web 只能在 Worker 健康、协议版本、任务/租约、通知和重启状态完成有界恢复对账后开放 Session 写入。Worker 不可达或状态无法确认时，写入失败关闭，只读能力可以继续工作。
-- 系统升级与恢复是维护例外，只锁定直接受影响的 AI Runtime 写入、Worker 和 Web 切换；它可以按固定白名单清理 Chub Session 关联、Hook 和 Worker 运行态，不删除 Codex 原生 Session、用户配置、第三方原生数据或业务资料。
-- 升级成功必须由新实例健康、协议匹配、固定 Runner 可用、Session 映射可读和最终操作日志共同确认；不能只看服务管理命令或进程创建结果。
+- Web 负责入口认证、业务校验和任务提交；Worker 负责后台任务执行和 Session 租约，Web 不回退到内置 Runner。
+- Worker 健康、协议、任务/租约和恢复未完成时，快速交互 Session 写入失败关闭；实时终端使用独立的 Codex PTY/tmux 链路，不因 Quick Worker 恢复状态暂停。无关只读能力和独立入口按各自规则继续工作。
+- Web、Worker、ClawBot 的普通重启彼此独立；系统升级与恢复只锁定直接受影响的 Runtime 写入和服务，并以新实例健康、协议匹配、Session 映射和操作终态确认成功。
 
-任务恢复、通知终态、重启合并和维护命令的详细规则以 [Chub Quick Worker 独立服务设计](CHUB_QUICK_WORKER_DESIGN.md) 为准；本节不复制其完整任务状态机。
+任务状态、租约、恢复、通知、重启合并和维护命令的详细规则以 [Chub Quick Worker 独立服务设计](CHUB_QUICK_WORKER_DESIGN.md) 为准；本节不复制其任务状态机或维护步骤。
 
 ### 6. 当前数据、入口与安全边界
 

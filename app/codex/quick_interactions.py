@@ -586,8 +586,9 @@ class QuickInteractionManager:
         self._task_finished_handler = handler
 
     @contextmanager
-    def session_creation_guard(self) -> Iterator[None]:
-        self._require_worker_recovery()
+    def session_creation_guard(self, session_mode: str = "quick") -> Iterator[None]:
+        if session_mode == "quick":
+            self._require_worker_recovery()
         yield
 
     def start_worker_reconciliation(self) -> None:
@@ -769,10 +770,25 @@ class QuickInteractionManager:
         except Exception as exc:
             raise OSError("Worker task Session is unavailable") from exc
         if snapshot.native_session_id:
-            self.codex_manager.bind_quick_interaction_native_session(
-                task.session_id,
-                snapshot.native_session_id,
-            )
+            try:
+                self.codex_manager.bind_quick_interaction_native_session(
+                    task.session_id,
+                    snapshot.native_session_id,
+                )
+            except ApiError as exc:
+                if (
+                    exc.code != "quick_interaction_native_session_conflict"
+                    or snapshot.status not in FINAL_STATUSES
+                ):
+                    raise
+                snapshot = snapshot.model_copy(
+                    update={
+                        "status": "failed",
+                        "result": None,
+                        "error": exc.message,
+                        "error_source": "chub",
+                    }
+                )
         if snapshot.status not in FINAL_STATUSES:
             log_started = False
             with self._lock:
@@ -1040,7 +1056,6 @@ class QuickInteractionManager:
     @contextmanager
     def terminal_access_guard(self, session_id: str) -> Iterator[None]:
         with self._session_lock(session_id):
-            self._require_worker_recovery()
             with self._lock:
                 if self._any_running(session_id):
                     raise ApiError(
@@ -1054,9 +1069,7 @@ class QuickInteractionManager:
     def terminal_input_guard(self, session_id: str) -> Iterator[bool]:
         with self._session_lock(session_id):
             with self._lock:
-                allowed = (
-                    self._recovery_ready and not self._any_running(session_id)
-                )
+                allowed = not self._any_running(session_id)
             yield allowed
 
     def get(self, task_id: str) -> QuickInteractionTask:

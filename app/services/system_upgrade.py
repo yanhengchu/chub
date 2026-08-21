@@ -487,6 +487,72 @@ class SystemUpgradeCoordinator:
         self._record(state, "started")
         return state.model_copy(deep=True)
 
+    def rebase_failed_verification(
+        self,
+        loaded: LoadedSystemUpgradePlan,
+    ) -> bool:
+        """Bind a post-cleanup verification to the running version only."""
+        return self._rebase_failed_recovery(
+            loaded,
+            allowed_stages={"verifying_new_instance"},
+            message="已按当前 Chub 版本更新恢复目标，正在重新确认新服务状态。",
+        )
+
+    def rebase_failed_recovery(
+        self,
+        loaded: LoadedSystemUpgradePlan,
+    ) -> bool:
+        """Bind a failed destructive recovery to the fixed current plan."""
+        return self._rebase_failed_recovery(
+            loaded,
+            allowed_stages={
+                "cleaning_state",
+                "launching_services",
+                "restarting_services",
+                "verifying_new_instance",
+            },
+            message="已按当前 Chub 版本更新恢复目标，正在继续失败的恢复操作。",
+        )
+
+    def _rebase_failed_recovery(
+        self,
+        loaded: LoadedSystemUpgradePlan,
+        *,
+        allowed_stages: set[str],
+        message: str,
+    ) -> bool:
+        if not _is_current_runtime_recovery_plan(loaded):
+            return False
+        with self._lock:
+            state = self._state
+            if (
+                state is None
+                or state.status != "failed"
+                or not state.destructive_started
+                or state.failed_stage not in allowed_stages
+                or (
+                    state.failed_stage == "verifying_new_instance"
+                    and state.restart_launch_state != "launched"
+                )
+            ):
+                return False
+            previous_fingerprint = state.fingerprint
+            state = state.model_copy(deep=True)
+            state.plan = loaded.plan
+            state.fingerprint = loaded.fingerprint
+            state.message = message
+            state.updated_at = utc_now()
+            self._write(state)
+            self._state = state
+        LOGGER.warning(
+            "Rebound failed system upgrade recovery to current runtime "
+            "operation_id=%s previous_fingerprint=%s current_fingerprint=%s",
+            state.operation_id,
+            previous_fingerprint,
+            loaded.fingerprint,
+        )
+        return True
+
     def resume_failed(
         self,
         runner: Callable[[str], None],
@@ -673,7 +739,14 @@ class SystemUpgradeCoordinator:
             if operation.status == "failed":
                 effective_plan = loaded or runtime_recovery_plan()
                 retryable = bool(
-                    effective_plan.fingerprint == operation.fingerprint
+                    (
+                        effective_plan.fingerprint == operation.fingerprint
+                        or not operation.destructive_started
+                        or self._can_rebase_failed_recovery(
+                            operation,
+                            effective_plan,
+                        )
+                    )
                     and (
                         not operation.destructive_started
                         or operation.failed_stage
@@ -713,6 +786,39 @@ class SystemUpgradeCoordinator:
             message=loaded.plan.summary,
             can_start=True,
             plan=self._plan_view(loaded, session_count, session_labels),
+        )
+
+    @staticmethod
+    def _can_rebase_failed_verification(
+        operation: SystemUpgradeOperation,
+        loaded: LoadedSystemUpgradePlan,
+    ) -> bool:
+        return bool(
+            operation.destructive_started
+            and operation.failed_stage == "verifying_new_instance"
+            and operation.restart_launch_state == "launched"
+            and _is_current_runtime_recovery_plan(loaded)
+        )
+
+    @staticmethod
+    def _can_rebase_failed_recovery(
+        operation: SystemUpgradeOperation,
+        loaded: LoadedSystemUpgradePlan,
+    ) -> bool:
+        return bool(
+            operation.destructive_started
+            and operation.failed_stage
+            in {
+                "cleaning_state",
+                "launching_services",
+                "restarting_services",
+                "verifying_new_instance",
+            }
+            and (
+                operation.failed_stage != "verifying_new_instance"
+                or operation.restart_launch_state == "launched"
+            )
+            and _is_current_runtime_recovery_plan(loaded)
         )
 
     @staticmethod
@@ -798,3 +904,14 @@ class SystemUpgradeCoordinator:
             )
         except Exception:
             LOGGER.warning("Unable to record system upgrade operation", exc_info=True)
+
+
+def _is_current_runtime_recovery_plan(loaded: LoadedSystemUpgradePlan) -> bool:
+    plan = loaded.plan
+    return bool(
+        plan.plan_id == "runtime-recovery"
+        and plan.action == "runtime-data-reset"
+        and plan.target_code_version == WEB_CODE_VERSION
+        and plan.target_session_schema == SESSION_SCHEMA_VERSION
+        and plan.target_worker_protocol == PROTOCOL_VERSION
+    )

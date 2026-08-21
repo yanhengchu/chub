@@ -2,7 +2,7 @@
 
 > 本 README 是插件源码、构建、部署和协议升级操作手册。业务身份、路由、幂等、安全边界及微信 Context Token 规则统一见 [OpenClaw 定制集成设计](../../../docs/OPENCLAW_CUSTOMIZATION_DESIGN.md)。
 
-> 状态：统一消息调度 v3 已部署，普通文字和可信语音已完成 macOS、Ubuntu 真实验收；插件协议边界已完成自动化验证。Chub 内部固定指令和 Requests 的业务验收状态由接入设计维护，未改变 v3 协议时不要求重建插件。
+> 状态：统一消息调度 v3 已部署，普通文字和可信语音已完成 macOS、Ubuntu 真实验收；插件协议边界已完成自动化验证。微信适配器的可信语音、Context Token 与日志脱敏补丁不属于本插件，普通文本原文首尾空格不属于兼容承诺；Chub 内部固定指令和 Requests 的业务验收状态由接入设计维护。
 
 Chub 仓库内的插件、API 和消息路由索引统一见[Chub 集成能力清单](../../../docs/CHUB_INTEGRATION_CAPABILITIES.md)；整体边界遵循[Chub 总体架构](../../../docs/CHUB_ARCHITECTURE_DESIGN.md)和[OpenClaw 定制集成设计](../../../docs/OPENCLAW_CUSTOMIZATION_DESIGN.md)。本文只维护 `chub` 插件自身的协议、源码、部署和验收规则。
 
@@ -38,9 +38,10 @@ Chub 插件通过固定 loopback 地址连接同机 Chub，承担 OpenClaw 与 C
 - 只处理路由开关已启用的 `openclaw-weixin` 私聊；群聊、其他通道和开关关闭时不拦截。
 - 从 Hook 上下文取得可信 `accountId` 和发送者；正文不能覆盖账号或回送目标。
 - 使用通道、账号、发送者、时间戳和原始正文生成非敏感幂等消息标识；缺少稳定时间戳时失败关闭。
+- 普通文字直接使用 Hook 的 `content`；插件不承诺上游保留正文首尾空白，不从 `body` 推断、覆盖或替换正文，也不把空白替换为斜杠。
 - 对可信微信语音来源提取干净转写；普通文本不能通过伪造标记声明自己是语音。
 - 入站事件没有可处理文字且未取得可信语音转写时，明确提示重新发送文字或稍后重试语音，不再误报为 Chub 消息通道不可用。
-- 只访问配置中的固定 Chub Tailnet `baseUrl` 和固定调度路径。
+- 只访问配置中的固定 Chub loopback `baseUrl` 和固定调度路径。
 - 对请求字段、响应结构、字节数、单条回复长度、重定向和超时进行严格限制。
 - Chub 不可达、响应非法或协议不匹配时返回统一通道失败，不回退 Agent 或 LLM。
 - 不记录 Token、Authorization、完整收件人、完整 Session Key 或消息正文。
@@ -66,7 +67,7 @@ POST /api/openclaw/wechat-chub-mode/dispatch
 请求只包含：
 
 - 稳定、有界的消息幂等标识。
-- 原始文字正文，或由可信微信语音事件取得的干净转写，并携带对应的 `text` / `voice` 类型。
+- 标准化文字正文，或由可信微信语音事件取得的干净转写，并携带对应的 `text` / `voice` 类型。
 - 非敏感关联标识。
 - Hook 提供的账号和发送者回送路由。
 
@@ -88,7 +89,7 @@ POST /api/openclaw/wechat-chub-mode/dispatch
 
 ## 6. 业务依赖边界
 
-Context Token 由腾讯微信插件维护，升级后的持久化与恢复要求见[OpenClaw 定制集成设计第 7 节](../../../docs/OPENCLAW_CUSTOMIZATION_DESIGN.md#7-context-token-持久化与兼容恢复)。Chub 任务、Session、最终通知和重启结果属于 Chub 业务，见[OpenClaw 定制集成设计](../../../docs/OPENCLAW_CUSTOMIZATION_DESIGN.md)。
+可信语音字段、Context Token 和日志脱敏由腾讯微信插件维护，补丁 ID、独立版本和适用基线以 `../../../integrations/openclaw/patches/manifest.json` 为准，最小补丁与升级后的复检要求见[OpenClaw 定制集成设计第 4、7 节](../../../docs/OPENCLAW_CUSTOMIZATION_DESIGN.md#4-第三方微信适配器兼容边界)。普通文本正文首尾空白不属于 Chub 的兼容承诺。Chub 任务、Session、最终通知和重启结果属于 Chub 业务，见[OpenClaw 定制集成设计](../../../docs/OPENCLAW_CUSTOMIZATION_DESIGN.md)。
 
 Chub 插件只传递可信入站路由和交付同步决定，不保存 Token 正文，不跟踪异步任务终态，也不把通知失败改写为任务失败。
 

@@ -1,24 +1,20 @@
 {
   "version": 1,
   "contract_version": 1,
-  "plan_id": "ai-session-manager-v1-worker-v9",
+  "plan_id": "runtime-recovery",
   "action": "runtime-data-reset",
-  "title": "切换 AI Session 数据协议",
-  "summary": "清除当前 Chub Session 关联和旧 Quick Worker 运行状态，并启用新的 AI Session 数据管理。",
-  "source_code_version": "phase3b-ai-session-manager-v1",
-  "target_code_version": "phase3b-ai-session-manager-v1",
-  "source_session_schema": 2,
-  "target_session_schema": 2,
-  "source_worker_protocol": 8,
+  "title": "系统升级与恢复",
+  "summary": "重建 Chub AI 运行态并确认 Web 与 Quick Worker 健康。",
+  "source_code_version": "phase3b-ai-session-manager-v2",
+  "target_code_version": "phase3b-ai-session-manager-v2",
+  "source_session_schema": 3,
+  "target_session_schema": 3,
+  "source_worker_protocol": 9,
   "target_worker_protocol": 9,
   "effects": [
-    "当前 Chub Session 关联将清除；Codex 原生 Session 保持不变并在新实例中重新发现",
-    "S1-S9、翻译和 Request 的旧运行关联将被清理",
-    "Quick Worker 源协议 8 及受控操作中确认的旧协议任务、租约和墓碑记录将被清理；目标协议 9 重新初始化"
+    "在途快速任务将停止，Chub Session 关联和 Worker 运行态将清理"
   ],
   "preserves": [
-    "Chub 配置、日志、项目资料和自动化产物继续保留",
-    "Codex 原生 Session 与历史继续保留",
-    "微信模式配置、翻译覆盖设置和 Request 业务内容继续保留"
+    "Codex 原生 Session、配置、日志、资料和业务数据继续保留"
   ]
 }

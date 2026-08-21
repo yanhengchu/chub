@@ -12,6 +12,7 @@ from app.ai_runtime import RUNTIME_ID_PATTERN
 SessionStatus = Literal["new", "running", "stopped", "error"]
 TurnActivity = Literal["unknown", "working", "idle"]
 ActivitySource = Literal["none", "terminal", "quick"]
+SessionMode = Literal["terminal", "quick"]
 PermissionMode = Literal["ask", "auto-review", "read-only", "full-access"]
 QuickInteractionOrder = Literal["task", "timeline"]
 QuickInteractionErrorSource = Literal["chub", "runtime"]
@@ -47,6 +48,7 @@ class CodexSession(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
+    session_mode: SessionMode = "terminal"
     workspace_id: str
     workspace_name: str
     cwd: Path
@@ -106,6 +108,7 @@ class WorkspaceInfo(BaseModel):
 class SessionInfo(BaseModel):
     id: str
     runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
+    session_mode: SessionMode = "terminal"
     workspace_id: str
     workspace_name: str
     cwd: str
@@ -170,6 +173,7 @@ class SessionCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     workspace_id: Literal["home", "workspace", "chub"]
+    session_mode: SessionMode
     permission_mode: PermissionMode = "full-access"
     model: str | None = Field(default=None, max_length=128)
     reasoning_effort: str | None = Field(default=None, max_length=32)

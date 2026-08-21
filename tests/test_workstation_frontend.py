@@ -39,6 +39,12 @@ globalThis.window = {
   clearTimeout() {},
   setTimeout() { return 1; },
 };
+const sessionValues = {};
+globalThis.sessionStorage = {
+  getItem(key) { return sessionValues[key] || null; },
+  setItem(key, value) { sessionValues[key] = String(value); },
+  removeItem(key) { delete sessionValues[key]; },
+};
 globalThis.hasProtectedAccess = () => true;
 globalThis.hubRestartInProgress = false;
 globalThis.setBadge = () => {};
@@ -49,6 +55,9 @@ globalThis.loadStatus = async () => {};
 globalThis.loadAutomationEnvironment = async () => {};
 globalThis.loadOpenClaw = async () => {};
 globalThis.showConfirmationDialog = async () => {};
+globalThis.showMaintenanceCompletion = (element, message) => {
+  element.textContent = `${message} 浏览器将在稍后自动刷新页面。`;
+};
 let reloads = 0;
 globalThis.reloadDashboardAfterMaintenance = () => { reloads += 1; };
 
@@ -69,9 +78,32 @@ renderQuickWorker({ state: "ready", message: "ready", can_restart: true,
   operation: { operation_id: "other", status: "succeeded", message: "done" } });
 renderQuickWorker({ state: "ready", message: "ready", can_restart: true,
   operation: { operation_id: "current", status: "succeeded", message: "done" } });
+const workerCompletionDetail = elementCache.quickWorkerDetail.textContent;
 renderQuickWorker({ state: "ready", message: "ready", can_restart: true,
   operation: { operation_id: "current", status: "succeeded", message: "done" } });
 const workerSucceeded = reloads;
+
+systemUpgradeState = {
+  state: "failed",
+  message: "failed",
+  can_start: true,
+  writes_blocked: true,
+  operation: { operation_id: "failed-upgrade", status: "failed" },
+};
+quickWorkerState = { state: "ready", message: "ready", can_restart: true };
+syncCoreMaintenanceControls();
+const failedUpgradeControls = {
+  restartHub: elementCache.restartHub.disabled,
+  quickWorkerRestart: elementCache.quickWorkerRestart.disabled,
+  systemUpgradeStart: elementCache.systemUpgradeStart.disabled,
+};
+systemUpgradeState.operation.status = "started";
+syncCoreMaintenanceControls();
+const activeUpgradeControls = {
+  restartHub: elementCache.restartHub.disabled,
+  quickWorkerRestart: elementCache.quickWorkerRestart.disabled,
+  systemUpgradeStart: elementCache.systemUpgradeStart.disabled,
+};
 
 renderSystemUpgrade({ state: "available", message: "ready",
   operation: { operation_id: "old", status: "succeeded" } });
@@ -83,10 +115,18 @@ renderSystemUpgrade({ state: "failed", message: "failed",
   operation: { operation_id: "current", status: "failed" } });
 const upgradeNonMatching = reloads;
 renderSystemUpgrade({ state: "available", message: "ready",
-  operation: { operation_id: "current", status: "succeeded" } });
+  operation: { operation_id: "current", status: "succeeded", message: "ready" } });
+const upgradeCompletionDetail = elementCache.systemUpgradeDetail.textContent;
 renderSystemUpgrade({ state: "available", message: "ready",
-  operation: { operation_id: "current", status: "succeeded" } });
+  operation: { operation_id: "current", status: "succeeded", message: "ready" } });
 const upgradeSucceeded = reloads;
+
+rememberSystemUpgradeReload("persisted");
+systemUpgradeReloadOperationId = readSystemUpgradeReloadOperationId();
+renderSystemUpgrade({ state: "available", message: "ready",
+  operation: { operation_id: "persisted", status: "succeeded", message: "ready" } });
+const restoredUpgradeReload = reloads;
+const restoredUpgradeMarker = sessionStorage.getItem(SYSTEM_UPGRADE_RELOAD_KEY);
 
 process.stdout.write(JSON.stringify({
   workerHistorical,
@@ -94,9 +134,15 @@ process.stdout.write(JSON.stringify({
   workerFailureCleared,
   workerAfterFailure,
   workerSucceeded,
+  workerCompletionDetail,
+  failedUpgradeControls,
+  activeUpgradeControls,
   upgradeHistorical,
   upgradeNonMatching,
   upgradeSucceeded,
+  upgradeCompletionDetail,
+  restoredUpgradeReload,
+  restoredUpgradeMarker,
 }));`);
 """
     result = subprocess.run(
@@ -112,7 +158,21 @@ process.stdout.write(JSON.stringify({
         "workerFailureCleared": True,
         "workerAfterFailure": 0,
         "workerSucceeded": 1,
+        "workerCompletionDetail": "done 浏览器将在稍后自动刷新页面。",
+        "failedUpgradeControls": {
+            "restartHub": False,
+            "quickWorkerRestart": False,
+            "systemUpgradeStart": False,
+        },
+        "activeUpgradeControls": {
+            "restartHub": True,
+            "quickWorkerRestart": True,
+            "systemUpgradeStart": True,
+        },
         "upgradeHistorical": 1,
         "upgradeNonMatching": 1,
         "upgradeSucceeded": 2,
+        "upgradeCompletionDetail": "状态：已完成。ready 浏览器将在稍后自动刷新页面。",
+        "restoredUpgradeReload": 3,
+        "restoredUpgradeMarker": None,
     }

@@ -192,7 +192,7 @@ class AiSessionStore:
         native_session_id: str,
         runtime_id: str,
     ) -> list[AiSession]:
-        """Atomically bind a logical Session and remove discovery-only duplicates."""
+        """Atomically bind a logical Session without reclassifying another record."""
         with self._lock:
             self._require_available()
             self._assert_on_disk_matches_memory()
@@ -211,10 +211,7 @@ class AiSessionStore:
                 and candidate.runtime_id == runtime_id
                 and candidate.native_session_id == native_session_id
             ]
-            if any(
-                not candidate.discovered
-                for candidate in duplicates
-            ):
+            if duplicates:
                 raise AiSessionStoreUnavailable("AI Session Runtime 映射已被占用。")
 
             before = dict(self._sessions)
@@ -222,14 +219,47 @@ class AiSessionStore:
             updated.native_session_id = native_session_id
             updated.updated_at = utc_now()
             self._sessions[session_id] = updated
-            for duplicate in duplicates:
-                self._sessions.pop(duplicate.id, None)
             try:
                 self._write()
             except Exception:
                 self._sessions = before
                 raise
-            return [item.model_copy(deep=True) for item in duplicates]
+            return []
+
+    def adopt_discovered_native_session(
+        self,
+        session_id: str,
+        duplicate_session_id: str,
+        native_session_id: str,
+        runtime_id: str,
+    ) -> None:
+        """Move an auto-discovered native mapping to its pending owner atomically."""
+        with self._lock:
+            self._require_available()
+            self._assert_on_disk_matches_memory()
+            session = self._sessions.get(session_id)
+            duplicate = self._sessions.get(duplicate_session_id)
+            if session is None or duplicate is None:
+                raise AiSessionStoreUnavailable("AI Session 不存在。")
+            if (
+                session.runtime_id != runtime_id
+                or duplicate.runtime_id != runtime_id
+                or duplicate.native_session_id != native_session_id
+                or session.native_session_id not in {None, native_session_id}
+            ):
+                raise AiSessionStoreUnavailable("AI Session Runtime 映射不一致。")
+
+            before = dict(self._sessions)
+            updated = session.model_copy(deep=True)
+            updated.native_session_id = native_session_id
+            updated.updated_at = utc_now()
+            self._sessions[session_id] = updated
+            self._sessions.pop(duplicate_session_id, None)
+            try:
+                self._write()
+            except Exception:
+                self._sessions = before
+                raise
 
     def delete(self, session_id: str) -> None:
         with self._lock:

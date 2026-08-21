@@ -47,6 +47,7 @@ def test_codex_switch_uses_creation_order_and_allows_busy_target(
     manager._state.session_id = "a-current"
     sessions = [
         CodexSession(
+            session_mode="quick",
             id="c-available",
             workspace_id="chub",
             workspace_name="Chub",
@@ -57,6 +58,7 @@ def test_codex_switch_uses_creation_order_and_allows_busy_target(
             activity="idle",
         ),
         CodexSession(
+            session_mode="quick",
             id="a-current",
             workspace_id="chub",
             workspace_name="Chub",
@@ -67,6 +69,7 @@ def test_codex_switch_uses_creation_order_and_allows_busy_target(
             activity="idle",
         ),
         CodexSession(
+            session_mode="quick",
             id="b-busy",
             workspace_id="chub",
             workspace_name="Chub",
@@ -135,6 +138,7 @@ def test_chinese_switch_routes_to_numbered_session(
     manager._state.session_id = "session-1"
     sessions = [
         CodexSession(
+            session_mode="quick",
             id=f"session-{slot}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -160,7 +164,7 @@ def test_chinese_switch_routes_to_numbered_session(
 
     result = manager.dispatch(
         message_id=f"chinese-switch-{prompt}",
-        prompt=prompt,
+        prompt="/" + prompt,
         message_type="voice",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -194,6 +198,7 @@ def test_codex_switch_with_task_switches_and_submits_once(
     manager._state.session_id = "session-1"
     sessions = [
         CodexSession(
+            session_mode="quick",
             id=f"session-{slot}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -257,6 +262,7 @@ def test_codex_switch_with_task_failure_shows_task_summary(
     manager._state.session_id = "session-1"
     sessions = [
         CodexSession(
+            session_mode="quick",
             id=f"session-{slot}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -313,6 +319,7 @@ def test_codex_switch_with_task_busy_target_uses_target_without_current_marker(
     manager._state.session_id = "session-1"
     sessions = [
         CodexSession(
+            session_mode="quick",
             id=f"session-{slot}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -357,6 +364,7 @@ def test_codex_switch_without_current_uses_first_visible_session(
 ) -> None:
     manager, codex_manager, _quick_interactions = configured_manager(settings)
     unavailable = CodexSession(
+        session_mode="quick",
         id="a-unavailable",
         workspace_id="chub",
         workspace_name="Chub",
@@ -368,6 +376,7 @@ def test_codex_switch_without_current_uses_first_visible_session(
         error="private failure",
     )
     available = CodexSession(
+        session_mode="quick",
         id="b-available",
         workspace_id="chub",
         workspace_name="Chub",
@@ -419,6 +428,7 @@ def test_codex_archive_removes_target_and_clears_current_binding(
     manager, codex_manager, quick_interactions = configured_manager(settings)
     sessions = [
         CodexSession(
+            session_mode="quick",
             id=f"session-{index}",
             codex_session_id=f"native-{index}",
             workspace_id="chub",
@@ -490,6 +500,7 @@ def test_codex_archive_removes_target_and_clears_current_binding(
 def test_duplicate_codex_archive_does_not_archive_twice(settings: Settings) -> None:
     manager, codex_manager, _quick_interactions = configured_manager(settings)
     session = CodexSession(
+        session_mode="quick",
         id="session-1",
         codex_session_id="native-1",
         workspace_id="chub",
@@ -533,6 +544,7 @@ def test_codex_archive_status_preserves_freed_slot_for_codex_new(
     manager, codex_manager, _quick_interactions = configured_manager(settings)
     sessions = [
         CodexSession(
+            session_mode="quick",
             id=f"session-{index}",
             codex_session_id=f"native-{index}",
             workspace_id="chub",
@@ -597,6 +609,7 @@ def test_codex_archive_does_not_fill_unassigned_candidate(
     manager, codex_manager, _quick_interactions = configured_manager(settings)
     sessions = [
         CodexSession(
+            session_mode="quick",
             id=f"session-{index}",
             codex_session_id=f"native-{index}",
             workspace_id="chub",
@@ -660,6 +673,7 @@ def test_codex_archive_rejects_session_that_is_not_safely_idle(
 ) -> None:
     manager, codex_manager, quick_interactions = configured_manager(settings)
     session = CodexSession(
+        session_mode="quick",
         id="session-1",
         codex_session_id="native-1",
         workspace_id="chub",
@@ -713,7 +727,7 @@ def test_codex_archive_invalid_usage_is_not_submitted(
 
     result = manager.dispatch(
         message_id=f"invalid-archive-{prompt}",
-        prompt=prompt,
+        prompt="/" + prompt,
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -721,9 +735,8 @@ def test_codex_archive_invalid_usage_is_not_submitted(
     )
 
     assert result.message is not None
-    assert result.message == "Usage: archive <1-9|S1-S9|一-九>"
-    codex_manager.list_sessions.assert_not_called()
-    quick_interactions.submit.assert_not_called()
+    assert result.message == submitted_task_message(settings, "/" + prompt)
+    quick_interactions.submit.assert_called_once()
 
 
 def test_chinese_archive_business_text_is_submitted_as_normal_task(
@@ -750,6 +763,7 @@ def test_codex_archive_failure_keeps_slot_and_explains_possible_stop(
 ) -> None:
     manager, codex_manager, _quick_interactions = configured_manager(settings)
     session = CodexSession(
+        session_mode="quick",
         id="session-1",
         codex_session_id="native-1",
         workspace_id="chub",
@@ -794,6 +808,7 @@ def test_codex_archive_rejects_session_with_pending_retry(
 ) -> None:
     manager, codex_manager, _quick_interactions = configured_manager(settings)
     session = CodexSession(
+        session_mode="quick",
         id="session-1",
         codex_session_id="native-1",
         workspace_id="chub",
@@ -840,6 +855,7 @@ def test_codex_archive_state_sync_failure_reports_partial_success(
 ) -> None:
     manager, codex_manager, _quick_interactions = configured_manager(settings)
     session = CodexSession(
+        session_mode="quick",
         id="session-1",
         codex_session_id="native-1",
         workspace_id="chub",
@@ -889,6 +905,7 @@ def test_codex_switch_number_uses_fresh_visible_list(settings: Settings) -> None
     manager, codex_manager, _quick_interactions = configured_manager(settings)
     sessions = [
         CodexSession(
+            session_mode="quick",
             id=f"session-{index}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -934,6 +951,7 @@ def test_codex_switch_uses_one_deadline_and_reuses_session_scan(
     manager._state.session_id = "session-1"
     sessions = [
         CodexSession(
+            session_mode="quick",
             id=f"session-{index}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -997,6 +1015,7 @@ def test_codex_switch_out_of_range_returns_fresh_list_without_changing_binding(
     manager, codex_manager, _quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
     session = CodexSession(
+        session_mode="quick",
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",
@@ -1034,6 +1053,7 @@ def test_codex_switch_does_not_fill_unassigned_candidate(
     manager._state.session_id = "session-1"
     sessions = [
         CodexSession(
+            session_mode="quick",
             id=f"session-{index}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -1107,7 +1127,7 @@ def test_codex_switch_invalid_usage_is_not_submitted(
 
     result = manager.dispatch(
         message_id=f"invalid-{prompt}",
-        prompt=prompt,
+        prompt="/" + prompt,
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -1115,9 +1135,8 @@ def test_codex_switch_invalid_usage_is_not_submitted(
     )
 
     assert result.message is not None
-    assert result.message == "Usage: switch <1-9|S1-S9|一-九>"
-    codex_manager.list_sessions.assert_not_called()
-    quick_interactions.submit.assert_not_called()
+    assert result.message == submitted_task_message(settings, "/" + prompt)
+    quick_interactions.submit.assert_called_once()
 
 
 @pytest.mark.parametrize(
@@ -1155,7 +1174,7 @@ def test_codex_switch_rejects_oversized_numeric_index(settings: Settings) -> Non
 
     result = manager.dispatch(
         message_id="invalid-large-switch-index",
-        prompt="switch " + ("9" * 5_000),
+        prompt="/switch " + ("9" * 5_000),
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -1163,9 +1182,11 @@ def test_codex_switch_rejects_oversized_numeric_index(settings: Settings) -> Non
     )
 
     assert result.message is not None
-    assert result.message == "Usage: switch <1-9|S1-S9|一-九>"
-    codex_manager.list_sessions.assert_not_called()
-    quick_interactions.submit.assert_not_called()
+    assert result.message == submitted_task_message(
+        settings,
+        "/switch " + ("9" * 5_000),
+    )
+    quick_interactions.submit.assert_called_once()
 
 
 def test_codex_switch_write_failure_keeps_previous_binding(
@@ -1175,6 +1196,7 @@ def test_codex_switch_write_failure_keeps_previous_binding(
     manager._state.session_id = "session-1"
     sessions = [
         CodexSession(
+            session_mode="quick",
             id=f"session-{index}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -1230,6 +1252,7 @@ def test_duplicate_codex_switch_does_not_switch_twice(settings: Settings) -> Non
     manager._state.session_id = "session-1"
     sessions = [
         CodexSession(
+            session_mode="quick",
             id=f"session-{index}",
             workspace_id="chub",
             workspace_name="Chub",

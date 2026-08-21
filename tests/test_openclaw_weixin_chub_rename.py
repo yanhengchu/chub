@@ -12,6 +12,7 @@ from tests.openclaw_weixin_chub_mode_helpers import configured_manager, delivery
 
 def _current_session(*, title: str = "旧标题", activity: str = "idle") -> CodexSession:
     return CodexSession(
+        session_mode="quick",
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",

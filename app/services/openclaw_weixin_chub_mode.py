@@ -51,12 +51,14 @@ from app.services.openclaw_weixin_chub_messages import (
     codex_operation_message,
     codex_usage_message,
     compact_token_count,
+    detailed_usage_message,
     dispatch_failure,
     dispatch_failure_from_error,
     format_chub_overview,
     format_codex_sessions,
     format_elapsed_time,
     format_fixed_reply,
+    format_session_name_line,
     format_session_blocks,
     format_task_context,
     safe_submission_error,
@@ -207,6 +209,7 @@ class WeixinChubModeManager:
         self._status_cache: dict[str, tuple[object, datetime]] = {}
         self._task_status_cache: dict[str, tuple[object, datetime]] = {}
         self._ephemeral_status_replies: dict[str, tuple[str, str | None, float]] = {}
+        self._ephemeral_usage_replies: dict[str, tuple[str, str | None, float]] = {}
         self._status_cache_started = False
         self._state_error = False
         self._system_upgrade_reset = False
@@ -1173,7 +1176,7 @@ class WeixinChubModeManager:
             prompt
             if command.kind == "normal"
             else command.task_prompt
-            if command.kind in {"switch", "direct"}
+            if command.kind == "switch"
             else None
         )
         mode_enabled = self._mode_enabled
@@ -1187,10 +1190,26 @@ class WeixinChubModeManager:
                 ),
                 delivery_route,
             )
+        if mode_enabled and command.kind == "usage":
+            return self._dispatch_chub_usage(
+                message_id=message_id,
+                route_fingerprint=self._route_fingerprint(delivery_route),
+            )
         if mode_enabled and command.kind == "help":
             return self._finalize_fixed_command_result(
                 command.kind,
                 self._dispatch_chub_help(
+                    message_id=message_id,
+                    correlation_id=correlation_id,
+                    route_fingerprint=self._route_fingerprint(delivery_route),
+                    source_ip=source_ip,
+                ),
+                delivery_route,
+            )
+        if mode_enabled and command.kind == "model":
+            return self._finalize_fixed_command_result(
+                command.kind,
+                self._dispatch_codex_model(
                     message_id=message_id,
                     correlation_id=correlation_id,
                     route_fingerprint=self._route_fingerprint(delivery_route),
@@ -1225,6 +1244,11 @@ class WeixinChubModeManager:
             message_id,
             route_fingerprint,
         )
+        if ephemeral is None:
+            ephemeral = self._wait_for_ephemeral_usage_reply(
+                message_id,
+                route_fingerprint,
+            )
         if ephemeral is not None:
             return ephemeral
         if mode_enabled and command.kind == "restart":
@@ -1371,35 +1395,6 @@ class WeixinChubModeManager:
                     delivery_route,
                 )
 
-            if command.kind == "switch_retry":
-                return self._finalize_fixed_command_result(
-                    command.kind,
-                    self._dispatch_codex_switch(
-                        message_id=message_id,
-                        correlation_id=correlation_id,
-                        route_fingerprint=route_fingerprint,
-                        source_ip=source_ip,
-                        delivery_route=delivery_route,
-                        requested_index=command.requested_index,
-                        invalid_usage=command.invalid_usage,
-                        retry_after_switch=True,
-                    ),
-                    delivery_route,
-                )
-            if command.kind == "new_retry":
-                return self._finalize_fixed_command_result(
-                    command.kind,
-                    self._dispatch_codex_retry(
-                        message_id=message_id,
-                        correlation_id=correlation_id,
-                        route_fingerprint=route_fingerprint,
-                        source_ip=source_ip,
-                        delivery_route=delivery_route,
-                        create_new_session=True,
-                    ),
-                    delivery_route,
-                )
-
             if command.kind == "new":
                 result = self._dispatch_codex_new(
                     message_id=message_id,
@@ -1532,24 +1527,7 @@ class WeixinChubModeManager:
                     delivery_route,
                 )
 
-            if command.kind == "direct" and command.invalid_usage:
-                operation_id = uuid4().hex
-                self._log_dispatch(operation_id, "requested", source_ip)
-                self._log_dispatch(operation_id, "started", source_ip)
-                return self._remember_fixed_reply(
-                    message_id=message_id,
-                    correlation_id=correlation_id,
-                    operation_id=operation_id,
-                    route_fingerprint=route_fingerprint,
-                    source_ip=source_ip,
-                    message="Usage: direct <task> / 直接执行 <正文>",
-                    code="submitted",
-                    failed=True,
-                )
-
-            task_prompt = (
-                command.task_prompt if command.kind == "direct" else prompt
-            )
+            task_prompt = prompt
             preprocess = False
             if command.kind == "normal" and self.translation_manager is not None:
                 try:
@@ -1559,8 +1537,7 @@ class WeixinChubModeManager:
                         WeixinChubModeDispatchResult(
                             disposition="reply",
                             message=(
-                                "Not submitted · Text optimization is unavailable. "
-                                "Use direct <task> to bypass it."
+                                "Not submitted · Text optimization is unavailable."
                             ),
                         ),
                         task_prompt,
@@ -2080,7 +2057,13 @@ class WeixinChubModeManager:
                 current=task_session_current,
             )
         if code in FIXED_COMMAND_STATUS_CODES:
-            if not self._has_inline_task_context(message):
+            if (
+                not self._has_inline_task_context(message)
+                and not (
+                    code == "chub_restart_requested"
+                    and message.startswith("Restart: Scheduled.")
+                )
+            ):
                 message = self._with_command_status_suffix(message)
         now = utc_now()
         record = WeixinChubModeSubmission(
@@ -2409,6 +2392,82 @@ class WeixinChubModeManager:
             code="codex_help_checked",
         )
 
+    def _dispatch_codex_model(
+        self,
+        *,
+        message_id: str,
+        correlation_id: str | None,
+        route_fingerprint: str,
+        source_ip: str,
+    ) -> WeixinChubModeDispatchResult:
+        operation_id = uuid4().hex
+        self._log_dispatch(operation_id, "requested", source_ip)
+        self._log_dispatch(operation_id, "started", source_ip)
+        with self._lock:
+            session_id = self._state.session_id
+        if session_id is None:
+            return self._remember_fixed_reply(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                operation_id=operation_id,
+                route_fingerprint=route_fingerprint,
+                source_ip=source_ip,
+                message="Model: No Session is selected.",
+                code="codex_model_checked",
+                failed=True,
+            )
+        try:
+            session = self.codex_manager.get_session(session_id)
+            if getattr(session, "id", None) != session_id:
+                raise ValueError("Current Session identity could not be confirmed")
+        except Exception:
+            LOGGER.warning(
+                "Unable to read current Weixin Session model",
+                exc_info=True,
+            )
+            return self._remember_fixed_reply(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                operation_id=operation_id,
+                route_fingerprint=route_fingerprint,
+                source_ip=source_ip,
+                message="Model: Unavailable. The current Session could not be read.",
+                code="codex_model_checked",
+                failed=True,
+            )
+        model = getattr(session, "active_model", None) or getattr(
+            session,
+            "model",
+            None,
+        )
+        reasoning_effort = (
+            getattr(session, "active_reasoning_effort", None)
+            or getattr(session, "reasoning_effort", None)
+        )
+        slot = self._slot_for_session(session_id)
+        title = build_session_title(
+            getattr(session, "title", None) or "Unnamed Session",
+            self.settings.openclaw.weixin_chub_mode.session_name_max_width,
+        )
+        session_message = (
+            format_session_name_line(slot, title, "Available", True)
+            if slot is not None
+            else f"Session · {title}"
+        )
+        return self._remember_fixed_reply(
+            message_id=message_id,
+            correlation_id=correlation_id,
+            operation_id=operation_id,
+            route_fingerprint=route_fingerprint,
+            source_ip=source_ip,
+            message=(
+                f"Session\n\n{session_message}\n\n"
+                f"Model · {model or 'Default'}\n\n"
+                f"Level · {reasoning_effort or 'Default'}"
+            ),
+            code="codex_model_checked",
+        )
+
     def deferred_restart_readiness(
         self,
         request: DeferredRestartRequest,
@@ -2696,6 +2755,73 @@ class WeixinChubModeManager:
             self._status_condition.notify_all()
         return WeixinChubModeDispatchResult(disposition="reply", message=message)
 
+    def _dispatch_chub_usage(
+        self,
+        *,
+        message_id: str,
+        route_fingerprint: str,
+    ) -> WeixinChubModeDispatchResult:
+        wait_for_existing = False
+        with self._status_condition:
+            duplicate = self._submission_index.get(message_id)
+            if duplicate is not None:
+                if duplicate.delivery_route_fingerprint != route_fingerprint:
+                    return self._dispatch_failure("message_conflict")
+                return WeixinChubModeDispatchResult(
+                    disposition=duplicate.dispatch_disposition or "handled",
+                    message=duplicate.message or None,
+                )
+            cached = self._ephemeral_usage_replies.get(message_id)
+            if cached is not None:
+                cached_fingerprint, cached_message, _created_at = cached
+                if cached_fingerprint != route_fingerprint:
+                    return self._dispatch_failure("message_conflict")
+                if cached_message is None:
+                    wait_for_existing = True
+                else:
+                    return WeixinChubModeDispatchResult(
+                        disposition="reply",
+                        message=cached_message,
+                    )
+            else:
+                inflight = sum(
+                    value[1] is None
+                    for value in self._ephemeral_usage_replies.values()
+                )
+                if inflight >= MAX_EPHEMERAL_STATUS_INFLIGHT:
+                    return WeixinChubModeDispatchResult(
+                        disposition="reply",
+                        message="Usage: Busy. Try again later.",
+                    )
+                self._ephemeral_usage_replies[message_id] = (
+                    route_fingerprint,
+                    None,
+                    time.monotonic(),
+                )
+        if wait_for_existing:
+            return self._wait_for_ephemeral_usage_reply(
+                message_id,
+                route_fingerprint,
+            ) or WeixinChubModeDispatchResult(
+                disposition="reply",
+                message="Usage: In progress. Try again later.",
+            )
+
+        try:
+            message = detailed_usage_message(self._read_ai_usage(force=False))
+        except Exception:
+            LOGGER.warning("Unable to read complete AI usage", exc_info=True)
+            message = "Weekly Unavailable"
+        with self._status_condition:
+            self._ephemeral_usage_replies[message_id] = (
+                route_fingerprint,
+                message,
+                time.monotonic(),
+            )
+            self._prune_ephemeral_usage_replies(message_id)
+            self._status_condition.notify_all()
+        return WeixinChubModeDispatchResult(disposition="reply", message=message)
+
     def _wait_for_ephemeral_reply(
         self,
         message_id: str,
@@ -2731,6 +2857,56 @@ class WeixinChubModeManager:
                 disposition="reply",
                 message=cached_message,
             )
+
+    def _wait_for_ephemeral_usage_reply(
+        self,
+        message_id: str,
+        route_fingerprint: str,
+    ) -> WeixinChubModeDispatchResult | None:
+        with self._status_condition:
+            cached = self._ephemeral_usage_replies.get(message_id)
+            if cached is None:
+                return None
+            cached_fingerprint, cached_message, _created_at = cached
+            if cached_fingerprint != route_fingerprint:
+                return self._dispatch_failure("message_conflict")
+            if cached_message is None:
+                completed = self._status_condition.wait_for(
+                    lambda: (
+                        self._ephemeral_usage_replies.get(
+                            message_id,
+                            ("", None, 0),
+                        )[1]
+                        is not None
+                    ),
+                    timeout=CODEX_STATUS_TIMEOUT_SECONDS,
+                )
+                cached = self._ephemeral_usage_replies.get(message_id)
+                if not completed or cached is None or cached[1] is None:
+                    return WeixinChubModeDispatchResult(
+                        disposition="reply",
+                        message="Usage: In progress. Try again later.",
+                    )
+                cached_message = cached[1]
+            return WeixinChubModeDispatchResult(
+                disposition="reply",
+                message=cached_message,
+            )
+
+    def _prune_ephemeral_usage_replies(self, protected_id: str) -> None:
+        completed = [
+            (key, value)
+            for key, value in self._ephemeral_usage_replies.items()
+            if value[1] is not None and key != protected_id
+        ]
+        excess = sum(
+            value[1] is not None
+            for value in self._ephemeral_usage_replies.values()
+        ) - MAX_EPHEMERAL_STATUS_REPLIES
+        for key, _value in sorted(completed, key=lambda item: item[1][2])[
+            : max(0, excess)
+        ]:
+            self._ephemeral_usage_replies.pop(key, None)
 
     def _ephemeral_reply_now(
         self,
@@ -3572,6 +3748,8 @@ class WeixinChubModeManager:
         if (
             command_kind not in FIXED_COMMAND_KINDS
             or command_kind == "help"
+            or command_kind == "usage"
+            or command_kind == "model"
             or command_kind in {
                 "request_cat",
                 "request_run",
@@ -3582,6 +3760,10 @@ class WeixinChubModeManager:
             or result.disposition != "reply"
             or not result.message
             or self._has_inline_task_context(result.message)
+            or (
+                command_kind == "restart"
+                and result.message.startswith("Restart: Scheduled.")
+            )
         ):
             return result
         message = self._with_command_status_suffix(
@@ -5880,6 +6062,7 @@ class WeixinChubModeManager:
                 configuration.permission_mode,
                 configuration.model,
                 configuration.reasoning_effort,
+                "quick",
             )
         next_state = self._state.model_copy(deep=True)
         next_state.session_id = created.id

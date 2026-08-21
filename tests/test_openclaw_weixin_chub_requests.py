@@ -7,11 +7,16 @@ from app.codex.models import CodexSession, QuickInteractionTask, utc_now
 from app.services import openclaw_weixin_chub_mode as chub_mode_module
 from app.services.openclaw_weixin_chub_models import WeixinChubModeSessionSlot
 
-from tests.openclaw_weixin_chub_mode_helpers import configured_manager, delivery_route
+from tests.openclaw_weixin_chub_mode_helpers import (
+    configured_manager,
+    delivery_route,
+    inject_default_delivery_route,
+)
 
 
 def _prepare_current_session(manager, codex_manager) -> None:
     session = CodexSession(
+        session_mode="quick",
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",

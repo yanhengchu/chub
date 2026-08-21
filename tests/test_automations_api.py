@@ -21,8 +21,11 @@ AUTH = {"Authorization": "Bearer test-token-that-is-long-enough-for-tests"}
 
 
 @pytest.mark.anyio
-async def test_automations_require_authentication(settings: Settings) -> None:
-    transport = httpx.ASGITransport(app=create_app(settings))
+async def test_automations_require_trusted_network(settings: Settings) -> None:
+    transport = httpx.ASGITransport(
+        app=create_app(settings),
+        client=("192.0.2.1", 12345),
+    )
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         listing = await client.get("/api/automations")
         run = await client.post("/api/automations/task/run")
@@ -33,11 +36,11 @@ async def test_automations_require_authentication(settings: Settings) -> None:
             json={"profile_id": "Profile 2", "mode": "headed"},
         )
 
-    assert listing.status_code == 401
-    assert run.status_code == 401
-    assert check_feishu.status_code == 401
-    assert qr.status_code == 401
-    assert initialize_browser.status_code == 401
+    assert listing.status_code == 403
+    assert run.status_code == 403
+    assert check_feishu.status_code == 403
+    assert qr.status_code == 403
+    assert initialize_browser.status_code == 403
 
 
 @pytest.mark.anyio

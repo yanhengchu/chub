@@ -4,6 +4,7 @@ import asyncio
 import threading
 import time
 from contextlib import nullcontext
+from dataclasses import replace
 from datetime import datetime
 from decimal import Decimal
 from types import SimpleNamespace
@@ -298,8 +299,19 @@ def test_refresh_failure_only_retains_same_source_snapshot(settings: Settings) -
     codex = MagicMock()
     codex.collect_ai_account_status.return_value = CodexAccountCollection("apiKey")
     browser = MagicMock()
+    fresh = _provider_collection()
+    fresh = replace(
+        fresh,
+        weekly=fresh.weekly.model_copy(
+            update={
+                "resets_at": datetime.fromisoformat(
+                    "2026-08-22T15:45:56+08:00"
+                )
+            }
+        ),
+    )
     browser.collect.side_effect = [
-        _provider_collection(),
+        fresh,
         ProviderBrowserUnavailable("provider_response_timeout"),
     ]
     service = AiUsageService(settings, codex, browser)
@@ -640,15 +652,23 @@ async def test_ai_usage_api_is_protected_and_supports_refresh(
     ).read(force=True)
     app.state.ai_usage = usage
     transport = httpx.ASGITransport(app=app)
+    untrusted_transport = httpx.ASGITransport(
+        app=app,
+        client=("192.0.2.1", 12345),
+    )
 
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    async with httpx.AsyncClient(
+        transport=untrusted_transport,
+        base_url="http://test",
+    ) as client:
         denied = await client.get("/api/ai/usage")
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get(
             "/api/ai/usage?refresh=true",
             headers=_authorization(settings),
         )
 
-    assert denied.status_code == 401
+    assert denied.status_code == 403
     assert response.status_code == 200
     assert response.json()["data"]["weekly"]["remaining_usd"] == "781.9248298"
     assert response.json()["data"]["today"]["tokens_scope"] == "account"

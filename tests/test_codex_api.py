@@ -33,6 +33,14 @@ def allow_session_writes(app) -> None:
     app.state.quick_interactions._recovery_ready = True
 
 
+def reject_quick_access(manager: MagicMock) -> None:
+    manager.require_quick_access.side_effect = ApiError(
+        409,
+        "codex_quick_access_disabled",
+        "实时终端 Session 仅支持实时终端入口。",
+    )
+
+
 def test_session_rename_request_normalizes_title_and_rejects_controls() -> None:
     assert SessionRenameRequest(title="  第一行\n 第二行\t ").title == "第一行 第二行"
 
@@ -79,7 +87,7 @@ async def test_codex_session_list_reports_workspaces(settings: Settings) -> None
 
 
 @pytest.mark.anyio
-async def test_codex_session_list_controls_translation_visibility(
+async def test_codex_session_list_hides_internal_translation_session(
     settings: Settings,
 ) -> None:
     app = create_app(settings)
@@ -105,6 +113,7 @@ async def test_codex_session_list_controls_translation_visibility(
             error=None,
             created_at="2026-08-14T10:00:00Z",
             updated_at="2026-08-14T10:00:00Z",
+            session_mode="terminal",
         ),
         SessionInfo(
             id="translation-session",
@@ -122,6 +131,7 @@ async def test_codex_session_list_controls_translation_visibility(
             error=None,
             created_at="2026-08-14T11:00:00Z",
             updated_at="2026-08-14T11:00:00Z",
+            session_mode="quick",
         ),
     ]
     manager.read_session.return_value = manager.list_sessions.return_value[1]
@@ -147,8 +157,7 @@ async def test_codex_session_list_controls_translation_visibility(
         "ordinary-session"
     ]
     assert [item["id"] for item in visible.json()["data"]["sessions"]] == [
-        "ordinary-session",
-        "translation-session",
+        "ordinary-session"
     ]
     assert detail.status_code == 200
     assert detail.json()["data"]["id"] == "translation-session"
@@ -183,7 +192,11 @@ async def test_create_session_uses_requested_permission_mode(settings: Settings)
         response = await client.post(
             "/api/codex/sessions",
             headers=authorization(settings),
-            json={"workspace_id": "chub", "permission_mode": "full-access"},
+            json={
+                "workspace_id": "chub",
+                "session_mode": "terminal",
+                "permission_mode": "full-access",
+            },
         )
 
     assert response.status_code == 200
@@ -192,6 +205,7 @@ async def test_create_session_uses_requested_permission_mode(settings: Settings)
         "full-access",
         None,
         None,
+        "terminal",
     )
 
 
@@ -224,7 +238,7 @@ async def test_create_session_defaults_to_full_access(settings: Settings) -> Non
         response = await client.post(
             "/api/codex/sessions",
             headers=authorization(settings),
-            json={"workspace_id": "chub"},
+            json={"workspace_id": "chub", "session_mode": "terminal"},
         )
 
     assert response.status_code == 200
@@ -233,6 +247,7 @@ async def test_create_session_defaults_to_full_access(settings: Settings) -> Non
         "full-access",
         None,
         None,
+        "terminal",
     )
 
 
@@ -305,6 +320,7 @@ async def test_create_session_uses_requested_model_and_reasoning_level(
             headers=authorization(settings),
             json={
                 "workspace_id": "chub",
+                "session_mode": "terminal",
                 "permission_mode": "full-access",
                 "model": "gpt-test",
                 "reasoning_effort": "high",
@@ -317,6 +333,7 @@ async def test_create_session_uses_requested_model_and_reasoning_level(
         "full-access",
         "gpt-test",
         "high",
+        "terminal",
     )
 
 
@@ -423,12 +440,14 @@ async def test_quick_interaction_takes_over_idle_unconnected_terminal(
         workspace_id="chub",
         workspace_name="Chub",
         cwd=Path("/workspace/chub"),
+        session_mode="terminal",
         codex_session_id="codex-session-1",
         status="running",
         activity="idle",
         permission_mode="auto-review",
     )
     manager.get_session.return_value = session
+    reject_quick_access(manager)
     quick_interactions = MagicMock()
     quick_interactions.submit.return_value = quick_task()
     app.state.codex_pty_manager = manager
@@ -444,11 +463,10 @@ async def test_quick_interaction_takes_over_idle_unconnected_terminal(
             json={"prompt": "检查状态"},
         )
 
-    assert response.status_code == 200
-    manager.stop_session.assert_called_once_with("session-1")
-    app.state.terminal_connections.close_session.assert_called_once_with("session-1")
-    manager.wait_for_writer_release.assert_called_once_with("codex-session-1")
-    quick_interactions.submit.assert_called_once()
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "codex_quick_access_disabled"
+    manager.stop_session.assert_not_called()
+    quick_interactions.submit.assert_not_called()
 
 
 @pytest.mark.anyio
@@ -528,11 +546,13 @@ async def test_quick_interaction_rejects_unsafe_terminal_switch(
         workspace_id="chub",
         workspace_name="Chub",
         cwd=Path("/workspace/chub"),
+        session_mode="terminal",
         codex_session_id="codex-session-1",
         status="running",
         activity=activity,
         permission_mode="auto-review",
     )
+    reject_quick_access(manager)
     quick_interactions = MagicMock()
     app.state.codex_pty_manager = manager
     app.state.quick_interactions = quick_interactions
@@ -551,13 +571,10 @@ async def test_quick_interaction_rejects_unsafe_terminal_switch(
         )
 
     assert response.status_code == 409
-    assert response.json()["error"]["code"] == expected_code
+    assert response.json()["error"]["code"] == "codex_quick_access_disabled"
     manager.stop_session.assert_not_called()
     quick_interactions.submit.assert_not_called()
-    if expected_code == "quick_interaction_terminal_confirmation_required":
-        write_operation.assert_not_called()
-    else:
-        write_operation.assert_called_once()
+    write_operation.assert_called_once()
 
 
 @pytest.mark.anyio
@@ -571,11 +588,13 @@ async def test_quick_interaction_takes_over_idle_connected_terminal(
         workspace_id="chub",
         workspace_name="Chub",
         cwd=Path("/workspace/chub"),
+        session_mode="terminal",
         codex_session_id="codex-session-1",
         status="running",
         activity="idle",
         permission_mode="auto-review",
     )
+    reject_quick_access(manager)
     quick_interactions = MagicMock()
     quick_interactions.submit.return_value = quick_task()
     app.state.codex_pty_manager = manager
@@ -591,11 +610,10 @@ async def test_quick_interaction_takes_over_idle_connected_terminal(
             json={"prompt": "检查状态"},
         )
 
-    assert response.status_code == 200
-    manager.stop_session.assert_called_once_with("session-1")
-    app.state.terminal_connections.close_session.assert_called_once_with("session-1")
-    manager.wait_for_writer_release.assert_called_once_with("codex-session-1")
-    quick_interactions.submit.assert_called_once()
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "codex_quick_access_disabled"
+    manager.stop_session.assert_not_called()
+    quick_interactions.submit.assert_not_called()
 
 
 @pytest.mark.anyio
@@ -609,11 +627,13 @@ async def test_quick_interaction_confirmed_unknown_terminal_is_stopped(
         workspace_id="chub",
         workspace_name="Chub",
         cwd=Path("/workspace/chub"),
+        session_mode="terminal",
         codex_session_id="codex-session-1",
         status="running",
         activity="unknown",
         permission_mode="auto-review",
     )
+    reject_quick_access(manager)
     quick_interactions = MagicMock()
     quick_interactions.submit.return_value = quick_task()
     app.state.codex_pty_manager = manager
@@ -632,8 +652,9 @@ async def test_quick_interaction_confirmed_unknown_terminal_is_stopped(
             },
         )
 
-    assert response.status_code == 200
-    manager.stop_session.assert_called_once_with("session-1")
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "codex_quick_access_disabled"
+    manager.stop_session.assert_not_called()
 
 
 @pytest.mark.anyio
@@ -647,6 +668,7 @@ async def test_quick_interaction_rejects_if_idle_terminal_starts_working_on_subm
         workspace_id="chub",
         workspace_name="Chub",
         cwd=Path("/workspace/chub"),
+        session_mode="terminal",
         codex_session_id="codex-session-1",
         status="running",
         activity="idle",
@@ -654,6 +676,7 @@ async def test_quick_interaction_rejects_if_idle_terminal_starts_working_on_subm
     )
     working = base.model_copy(update={"activity": "working"})
     manager.get_session.side_effect = [base, working]
+    reject_quick_access(manager)
     quick_interactions = MagicMock()
     app.state.codex_pty_manager = manager
     app.state.quick_interactions = quick_interactions
@@ -669,7 +692,7 @@ async def test_quick_interaction_rejects_if_idle_terminal_starts_working_on_subm
         )
 
     assert response.status_code == 409
-    assert response.json()["error"]["code"] == "quick_interaction_terminal_working"
+    assert response.json()["error"]["code"] == "codex_quick_access_disabled"
     manager.stop_session.assert_not_called()
     quick_interactions.submit.assert_not_called()
 
@@ -679,6 +702,8 @@ async def test_quick_interaction_history_is_paginated(
     settings: Settings,
 ) -> None:
     app = create_app(settings)
+    app.state.codex_pty_manager = MagicMock()
+    app.state.codex_pty_manager.require_quick_access.return_value = MagicMock()
     tasks = [
         quick_task().model_copy(update={"id": f"task-{index}"})
         for index in range(7)
@@ -714,6 +739,8 @@ async def test_quick_interaction_history_supports_timeline_order(
     settings: Settings,
 ) -> None:
     app = create_app(settings)
+    app.state.codex_pty_manager = MagicMock()
+    app.state.codex_pty_manager.require_quick_access.return_value = MagicMock()
     quick_interactions = MagicMock()
     quick_interactions.list_for_session.return_value = [quick_task()]
     app.state.quick_interactions = quick_interactions
@@ -737,6 +764,8 @@ async def test_quick_interaction_timeline_cursor_is_stable_when_new_task_arrives
     settings: Settings,
 ) -> None:
     app = create_app(settings)
+    app.state.codex_pty_manager = MagicMock()
+    app.state.codex_pty_manager.require_quick_access.return_value = MagicMock()
     base = utc_now()
 
     def timeline_task(task_id: str, minutes: int) -> QuickInteractionTask:
@@ -831,6 +860,8 @@ async def test_quick_interaction_timeline_rejects_invalid_cursor(
     message: str,
 ) -> None:
     app = create_app(settings)
+    app.state.codex_pty_manager = MagicMock()
+    app.state.codex_pty_manager.require_quick_access.return_value = MagicMock()
     quick_interactions = MagicMock()
     app.state.quick_interactions = quick_interactions
     transport = httpx.ASGITransport(app=app)

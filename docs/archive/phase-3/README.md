@@ -21,5 +21,5 @@
 - 当前身份、权限、消息路由和通知边界见[OpenClaw 定制集成设计](../../OPENCLAW_CUSTOMIZATION_DESIGN.md)。
 - 当前可用能力、微信固定指令和用户可见格式见[Chub 集成能力清单](../../CHUB_INTEGRATION_CAPABILITIES.md)。
 - 当前插件协议、构建和部署见仓库内的 [Chub OpenClaw 插件说明](../../../integrations/openclaw/chub/README.md)。
-- 当前微信出站兼容维护见[OpenClaw 定制集成设计第 7 节](../../OPENCLAW_CUSTOMIZATION_DESIGN.md#7-context-token-持久化与兼容恢复)。
+- 当前微信出站兼容维护见[OpenClaw 定制集成设计第 7 节](../../OPENCLAW_CUSTOMIZATION_DESIGN.md#7-版本部署与复检流程)。
 - 当前产品入口和运行说明见[项目 README](../../../README.md)。

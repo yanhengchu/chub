@@ -1,0 +1,58 @@
+--- a/src/messaging/process-message.ts
++++ b/src/messaging/process-message.ts
+@@ -249,7 +249,7 @@
+   );
+ 
+   logger.info(
+-    `inbound: from=${finalized.From} to=${finalized.To} bodyLen=${(finalized.Body ?? "").length} hasMedia=${Boolean(finalized.MediaPath ?? finalized.MediaUrl)}`,
++    `inbound: from=${redactToken(finalized.From)} to=${redactToken(finalized.To)} bodyLen=${(finalized.Body ?? "").length} hasMedia=${Boolean(finalized.MediaPath ?? finalized.MediaUrl)}`,
+   );
+   logger.debug(`inbound context: ${redactBody(JSON.stringify(finalized))}`);
+ 
+@@ -335,7 +335,7 @@
+         const mediaUrl = payload.mediaUrl ?? payload.mediaUrls?.[0];
+         logger.debug(`outbound payload: ${redactBody(JSON.stringify(payload))}`);
+         logger.info(
+-          `outbound: to=${ctx.To} contextToken=${redactToken(contextToken)} textLen=${text.length} mediaUrl=${mediaUrl ? "present" : "none"}`,
++          `outbound: to=${redactToken(ctx.To)} contextToken=${redactToken(contextToken)} textLen=${text.length} mediaUrl=${mediaUrl ? "present" : "none"}`,
+         );
+ 
+         if (debug) {
+@@ -409,7 +409,7 @@
+               runId,
+             }});
+             emitWeixinMessageSent({ to: ctx.To, content: text, success: true, accountId: deps.accountId, runId });
+-            logger.info(`outbound: text sent OK to=${ctx.To}`);
++            logger.info(`outbound: text sent OK to=${redactToken(ctx.To)}`);
+           }
+         } catch (err) {
+           emitWeixinMessageSent({ to: ctx.To, content: text, success: false, error: String(err), accountId: deps.accountId, runId });
+--- a/dist/src/messaging/process-message.js
++++ b/dist/src/messaging/process-message.js
+@@ -161,7 +161,7 @@
+         agentId: route.agentId,
+     });
+     const finalized = deps.channelRuntime.reply.finalizeInboundContext(ctx);
+-    logger.info(`inbound: from=${finalized.From} to=${finalized.To} bodyLen=${(finalized.Body ?? "").length} hasMedia=${Boolean(finalized.MediaPath ?? finalized.MediaUrl)}`);
++    logger.info(`inbound: from=${redactToken(finalized.From)} to=${redactToken(finalized.To)} bodyLen=${(finalized.Body ?? "").length} hasMedia=${Boolean(finalized.MediaPath ?? finalized.MediaUrl)}`);
+     logger.debug(`inbound context: ${redactBody(JSON.stringify(finalized))}`);
+     await deps.channelRuntime.session.recordInboundSession({
+         storePath,
+@@ -235,7 +235,7 @@
+             })();
+             const mediaUrl = payload.mediaUrl ?? payload.mediaUrls?.[0];
+             logger.debug(`outbound payload: ${redactBody(JSON.stringify(payload))}`);
+-            logger.info(`outbound: to=${ctx.To} contextToken=${redactToken(contextToken)} textLen=${text.length} mediaUrl=${mediaUrl ? "present" : "none"}`);
++            logger.info(`outbound: to=${redactToken(ctx.To)} contextToken=${redactToken(contextToken)} textLen=${text.length} mediaUrl=${mediaUrl ? "present" : "none"}`);
+             if (debug) {
+                 debugDeliveries.push({
+                     textLen: text.length,
+@@ -308,7 +308,7 @@
+                             runId,
+                         } });
+                     emitWeixinMessageSent({ to: ctx.To, content: text, success: true, accountId: deps.accountId, runId });
+-                    logger.info(`outbound: text sent OK to=${ctx.To}`);
++                    logger.info(`outbound: text sent OK to=${redactToken(ctx.To)}`);
+                 }
+             }
+             catch (err) {

@@ -48,7 +48,6 @@ templates = Jinja2Templates(directory=WEB_DIR / "templates")
 @api_router.get("/sessions", response_model=ApiResponse[SessionListData])
 def list_sessions(
     request: Request,
-    include_translation: bool = Query(default=False),
 ) -> ApiResponse[SessionListData]:
     manager = request.app.state.codex_pty_manager
     weixin_chub_mode = request.app.state.weixin_chub_mode
@@ -65,7 +64,7 @@ def list_sessions(
             }
         )
         for session in manager.list_sessions()
-        if include_translation or session.workspace_id != "weixin-translation"
+        if session.workspace_id != "weixin-translation"
     ]
     return ApiResponse(
         data=SessionListData(
@@ -116,12 +115,15 @@ def create_session(
     request: Request,
 ) -> ApiResponse[SessionInfo]:
     try:
-        with request.app.state.quick_interactions.session_creation_guard():
+        with request.app.state.quick_interactions.session_creation_guard(
+            payload.session_mode
+        ):
             session = request.app.state.codex_pty_manager.create_session(
                 payload.workspace_id,
                 payload.permission_mode,
                 payload.model,
                 payload.reasoning_effort,
+                payload.session_mode,
             )
     except Exception:
         log_operation(
@@ -273,6 +275,7 @@ async def submit_quick_interaction(
     try:
         quick_interactions = request.app.state.quick_interactions
         manager = request.app.state.codex_pty_manager
+        manager.require_quick_access(session_id)
         session_slot = request.app.state.weixin_chub_mode.session_slot(session_id)
 
         def submit_codex():
@@ -294,83 +297,6 @@ async def submit_quick_interaction(
                         weixin_session_title=session_title,
                     )
 
-                def take_over_idle_terminal() -> None:
-                    """Release Chub's idle terminal before Quick Worker becomes writer."""
-                    current = manager.get_session(session_id)
-                    if current.status != "running":
-                        return
-                    if current.activity == "working":
-                        raise ApiError(
-                            409,
-                            "quick_interaction_terminal_working",
-                            "实时终端正在执行，请等待当前任务结束。",
-                        )
-                    if (
-                        current.activity == "unknown"
-                        and not payload.confirm_stop_unknown_terminal
-                    ):
-                        raise ApiError(
-                            409,
-                            "quick_interaction_terminal_confirmation_required",
-                            "当前实时终端状态无法确认，请确认停止后再执行。",
-                        )
-                    if current.activity not in {"idle", "unknown"}:
-                        raise ApiError(
-                            409,
-                            "quick_interaction_terminal_active",
-                            "当前实时终端状态不允许快速交互。",
-                        )
-                    native_session_id = current.native_session_id
-                    request.app.state.terminal_tickets.revoke_session(session_id)
-                    request.app.state.terminal_connections.close_session(session_id)
-                    manager.stop_session(session_id)
-                    if (
-                        native_session_id
-                        and not manager.wait_for_writer_release(native_session_id)
-                    ):
-                        raise ApiError(
-                            409,
-                            "quick_interaction_writer_active",
-                            "Codex Session 正在由其他进程使用，请等待任务结束或停止实时终端。",
-                        )
-
-                if session.status == "running":
-                    if session.activity == "working":
-                        raise ApiError(
-                            409,
-                            "quick_interaction_terminal_working",
-                            "实时终端正在执行，请等待当前任务结束。",
-                        )
-                    if (
-                        session.activity == "unknown"
-                        and not payload.confirm_stop_unknown_terminal
-                    ):
-                        raise ApiError(
-                            409,
-                            "quick_interaction_terminal_confirmation_required",
-                            "当前实时终端状态无法确认，请确认停止后再执行。",
-                        )
-                    if session.activity == "idle":
-                        take_over_idle_terminal()
-                        return submit_with_session_context()
-                    session = manager.get_session(session_id)
-                    if session.status == "running" and session.activity == "working":
-                        raise ApiError(
-                            409,
-                            "quick_interaction_terminal_working",
-                            "实时终端正在执行，请等待当前任务结束。",
-                        )
-                    if (
-                        session.status == "running"
-                        and session.activity == "unknown"
-                        and not payload.confirm_stop_unknown_terminal
-                    ):
-                        raise ApiError(
-                            409,
-                            "quick_interaction_terminal_confirmation_required",
-                            "当前实时终端状态无法确认，请确认停止后再执行。",
-                        )
-                    take_over_idle_terminal()
                 return submit_with_session_context()
 
         task = await asyncio.to_thread(submit_codex)
@@ -401,9 +327,9 @@ async def submit_quick_interaction(
     response_model=ApiResponse[QuickInteractionData],
 )
 def get_quick_interaction(task_id: str, request: Request) -> ApiResponse[QuickInteractionData]:
-    return ApiResponse(
-        data=QuickInteractionData(task=request.app.state.quick_interactions.get(task_id))
-    )
+    task = request.app.state.quick_interactions.get(task_id)
+    request.app.state.codex_pty_manager.require_quick_access(task.session_id)
+    return ApiResponse(data=QuickInteractionData(task=task))
 
 
 @api_router.get(
@@ -448,6 +374,7 @@ def list_quick_interactions(
             "invalid_quick_interaction_cursor",
             "时间线游标只能用于 timeline 排序。",
         )
+    request.app.state.codex_pty_manager.require_quick_access(session_id)
     tasks = request.app.state.quick_interactions.list_for_session(
         session_id,
         order=order,
@@ -589,6 +516,7 @@ async def quick_interaction_conversation_page(
     request: Request,
     session_id: str,
 ) -> HTMLResponse:
+    request.app.state.codex_pty_manager.require_quick_access(session_id)
     return templates.TemplateResponse(
         request=request,
         name="quick_interaction_conversation.html",

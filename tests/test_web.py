@@ -229,10 +229,9 @@ async def test_cyber_style_is_rendered_before_assets_load(settings: Settings) ->
         pages = await asyncio.gather(
             client.get("/"),
             client.get("/settings"),
-            client.get("/automations"),
-            client.get("/logs"),
-            client.get("/project-docs"),
-            client.get("/codex/session-1/quick-interactions/conversation"),
+                client.get("/automations"),
+                client.get("/logs"),
+                client.get("/project-docs"),
         )
 
     assert all(page.status_code == 200 for page in pages)
@@ -293,10 +292,7 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
     assert '<option value="10">10 条</option>' in response.text
     assert 'id="codex-default-permission"' in response.text
     assert "设置页面展示与之后新建会话的默认配置。" in response.text
-    assert 'id="codex-show-translation-session"' in response.text
-    assert "显示翻译 Session" in response.text
-    assert "控制当前浏览器所有 Session 列表" in response.text
-    assert "不影响微信翻译、任务执行及自动归档" in response.text
+    assert 'id="codex-show-translation-session"' not in response.text
     assert 'id="codex-default-model"' in response.text
     assert 'id="codex-default-reasoning-effort"' in response.text
     assert "模型列表与默认值由当前节点的 Codex 提供。" in response.text
@@ -312,8 +308,7 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
     assert "hub.codexDefaultPermission.v1" in script.text
     assert "hub.codexDefaultModel.v1" in script.text
     assert "hub.codexDefaultReasoningEffort.v1" in script.text
-    assert "hub.codexShowTranslationSession.v1" in script.text
-    assert "当前浏览器无法保存 Session 展示偏好" in script.text
+    assert "hub.codexShowTranslationSession.v1" not in script.text
     assert "/api/codex/models" in script.text
     assert "/api/settings/weixin-translation" in script.text
     assert "项文本优化仍在处理中" in script.text
@@ -549,7 +544,7 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "reloadDashboardAfterMaintenance" in dashboard_script
     assert "maintenanceReloadTimer" in dashboard_script
     assert "}, 2000);" in dashboard_script
-    assert "页面即将刷新" in dashboard_script
+    assert "浏览器将在稍后自动刷新页面" in dashboard_script
     assert 'setBadge(elements.quickWorkerBadge, "重启完成", "success")' in dashboard_script
     assert "systemUpgradeReloadOperationId" in dashboard_script
     assert 'data.operation?.status === "succeeded"' in dashboard_script
@@ -641,17 +636,14 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "archiveCodexSession" in script.text
     assert 'quickInteraction.textContent = "快速交互"' not in script.text
     assert 'interactionHistory.textContent = "交互记录"' not in script.text
-    assert "CODEX_ENTRY_MODE_KEY" in script.text
+    assert "codex-session-mode" in script.text
     assert "QUICK_INTERACTION_VIEW_KEY" not in script.text
     assert "quickInteractionUrl" in script.text
     assert "quick-interactions/conversation" in script.text
     assert "openCodexEntryDialog" not in script.text
-    assert "toggleCodexEntryMode" in script.text
-    assert "updateCodexEntryButton" in script.text
-    assert "点击切换为" in script.text
-    assert "session.terminal_access_allowed === false" in script.text
-    assert "文本优化与翻译 Session 仅支持快速交互" in script.text
-    assert "actions.append(entry, stop, archive, remove);" in script.text
+    assert "toggleCodexEntryMode" not in script.text
+    assert "session.session_mode === \"quick\"" in script.text
+    assert "actions.append(stop, archive, remove);" in script.text
     assert "permissionPanel" not in script.text
     assert "快速交互已提交" not in script.text
     assert "quick-interaction-submit" not in script.text
@@ -804,7 +796,11 @@ async def test_web_assets_are_available(settings: Settings) -> None:
 async def test_quick_interaction_conversation_page_is_available(
     settings: Settings,
 ) -> None:
-    transport = httpx.ASGITransport(app=create_app(settings))
+    app = create_app(settings)
+    manager = MagicMock()
+    manager.require_quick_access.return_value = MagicMock()
+    app.state.codex_pty_manager = manager
+    transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         removed_page = await client.get("/codex/session-1/quick-interactions")
         page = await client.get(

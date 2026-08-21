@@ -53,7 +53,7 @@ chub start
 4. 提交一条低风险测试任务。
 5. 确认页面显示任务受理、执行状态和最终结果。
 
-正常使用不需要执行 `chub worker-health`。只有页面任务无法推进时，维护者才按[Quick Worker 设计](CHUB_QUICK_WORKER_DESIGN.md)使用 `chub status`、`chub worker-health` 或 `chub worker-reload` 排查。
+正常使用不需要执行 `chub worker-health`。只有页面任务无法推进时，维护者才按[Quick Worker 设计](CHUB_QUICK_WORKER_DESIGN.md)使用 `chub status`、`chub worker-health` 或 `chub worker-reload` 排查；已有失败重启且 Worker 不可达时，才使用固定的 `chub worker-recover` 恢复服务。
 
 ## 2. 安装和使用 ClawBot
 
@@ -65,7 +65,7 @@ ClawBot 不是本仓库中的一个独立程序。完整链路由以下三部分
 | 微信通道/ClawBot 插件 | 第三方腾讯微信插件项目 | 否，必须按该项目自己的版本说明安装 |
 | Chub OpenClaw 插件与 Hook | 本仓库 `integrations/openclaw/chub/` | 是，只提供 Chub 侧适配和固定路由 |
 
-Context Token 持久化定制针对第三方微信插件的实际运行目录，不属于 Chub OpenClaw 插件。安装顺序必须保持为“OpenClaw -> 微信通道/ClawBot -> Chub 插件 -> 持久化复检 -> 微信实测”。
+OpenClaw 侧定制只保留第三方微信适配器的可信语音字段、Context Token 持久化和日志脱敏补丁，针对实际运行目录，不属于 Chub OpenClaw 插件；普通文本原文首尾空格不属于兼容承诺。安装顺序必须保持为“OpenClaw -> 微信通道/ClawBot -> Chub 插件 -> 适配器最小补丁复检 -> 微信实测”。具体边界见[OpenClaw 定制集成设计](OPENCLAW_CUSTOMIZATION_DESIGN.md)第 6、7 节。
 
 ### 2.1 安装 OpenClaw
 
@@ -141,14 +141,14 @@ openclaw channels status --probe --json
 
 Chub 节点自身还必须启用微信 Chub 模式，修改后执行 `chub restart`。检查结果应同时满足：Chub 地址可达、Chub 插件为 `loaded`、微信通道为 `running`。部署副本只能由 `openclaw plugins install npm:...` 从已发布的 npm 包生成，不直接编辑扩展目录。核心 `chub` 与 `@chub/openclaw-plugin` 应使用同一兼容版本；具体版本以 Release notes 为准。
 
-### 2.4 部署 Context Token 持久化定制
+### 2.4 复检 OpenClaw 最小定制
 
-Context Token 由第三方腾讯微信插件保存和恢复；Chub 只提供兼容规则和复检方法。首次安装、微信插件升级、重装、运行目录变化，或已确认出现 Token 持久化/出站异常时，都必须执行下面的复检；普通 Gateway/Chub 重启、重新扫描或重新绑定不自动打补丁。
+可信语音字段和 Context Token 由第三方腾讯微信插件实际运行目录承载；Chub 只提供最小兼容规则和复检方法。首次安装、微信插件升级、重装、运行目录变化，或已确认出现语音/Token/出站异常时，都必须执行下面的复检；普通 Gateway/Chub 重启、重新扫描或重新绑定不自动打补丁。
 
 1. 使用 `openclaw plugins inspect openclaw-weixin --runtime --json` 找到实际加载的微信插件版本和运行目录。
-2. 按[OpenClaw 定制集成设计第 7 节](OPENCLAW_CUSTOMIZATION_DESIGN.md#7-context-token-持久化与兼容恢复)检查 `accountId + userId` 持久化、启动恢复、懒恢复和文件权限 `600`。
-3. 如果功能缺失，使用与该微信插件版本匹配、随 `@chub/openclaw-plugin` 发布的参考补丁；先做适用性检查，再应用最小变更。检查失败、版本不匹配或代码已等价实现时不得强行应用，也不得直接修改 Chub 插件源码来替代微信插件补丁。
-4. 重启 Gateway，重新检查插件加载、Gateway 健康、通道状态和 Token 文件权限。每次微信插件更新后都必须重复复检；具体补丁锚点、命令和恢复方式只维护在[OpenClaw 定制集成设计](OPENCLAW_CUSTOMIZATION_DESIGN.md)中。日志和命令输出不得暴露 Token 或完整收件人信息。
+2. 按[OpenClaw 定制集成设计第 7 节](OPENCLAW_CUSTOMIZATION_DESIGN.md#7-版本部署与复检流程)检查 `accountId + userId` 持久化、启动恢复、懒恢复和文件权限 `600`。
+3. 如果功能缺失，先做版本和适用性检查，再只应用可信语音或 Context Token 对应的最小变更；上游已等价实现、版本不匹配或检查失败时不得强行应用，也不得直接修改 Chub 插件源码来替代适配器补丁。
+4. 重启 Gateway，重新检查插件加载、Gateway 健康、通道状态和 Token 文件权限。每次微信插件更新后都必须重复复检；具体补丁锚点和恢复边界只维护在[OpenClaw 定制集成设计](OPENCLAW_CUSTOMIZATION_DESIGN.md)中。日志和命令输出不得暴露 Token 或完整收件人信息。
 
 ### 2.5 微信验收
 
@@ -221,8 +221,8 @@ openclaw channels status --probe --json
 
 1. 确定产品版本 `X.Y.Z`。
 2. 更新 `chub` 和 `@chub/openclaw-plugin` 两个 npm 包的版本，以及 Python 应用和插件协议版本。
-3. 运行全量 Python 测试、插件构建、校验和测试，并确认 Context Token 补丁随插件包发布。
-4. 运行 `npm pack --dry-run` 检查两个包的内容；核心包必须包含 CLI 入口、Python 应用、配置示例和 Quick Worker，插件包必须包含 `dist/`、`openclaw.plugin.json`、README 和 `patches/`。确认 `@chub/openclaw-plugin` 配置为公开发布（`publishConfig.access=public`）。
+3. 运行全量 Python 测试、插件构建、校验和测试；第三方微信适配器补丁单独按实际加载目录复检，不伪装成插件包内容。
+4. 运行 `npm pack --dry-run` 检查两个包的内容；核心包必须包含 CLI 入口、Python 应用、配置示例和 Quick Worker，插件包必须包含 `dist/`、`openclaw.plugin.json` 和 README。确认 `@chub/openclaw-plugin` 配置为公开发布（`publishConfig.access=public`）。
 5. 在干净环境测试 `npm install -g chub@X.Y.Z`、`openclaw plugins install npm:@chub/openclaw-plugin@X.Y.Z --pin`、`chub help` 和 `chub start`。
 
 ### 5.2 发布动作
@@ -243,7 +243,7 @@ npm Registry 是唯一用户安装渠道；GitHub Release 只负责版本归档�
 - `PATCH`：兼容的修复、文档或安全更新。
 - `-rc.N`/`-beta.N`：预发布版本，不进入 `latest`。
 
-`vX.Y.Z` 是 GitHub Release、`chub` 和 `@chub/openclaw-plugin` 的共同版本标识；两个 npm 包必须同版本发布。OpenClaw 和腾讯微信插件版本写入兼容性矩阵，不强制与 Chub 版本号相同。微信调度协议、Quick Worker 协议、Session/任务 schema 等内部版本独立管理；只有对应协议变化时才更新，具体规则以专项文档为准。
+`vX.Y.Z` 是 GitHub Release、`chub` 和 `@chub/openclaw-plugin` 的共同版本标识；两个 npm 包必须同版本发布。OpenClaw 和腾讯微信插件版本写入兼容性矩阵，不强制与 Chub 版本号相同。微信调度协议、Quick Worker 协议、Session/任务 schema 等内部版本独立管理；只有对应协议变化时才更新。版本类别、权威来源和升级恢复校验以[总体架构的版本管理契约](CHUB_ARCHITECTURE_DESIGN.md#35-版本与协议元数据管理)为准，本文只负责产品版本、包版本和发布物。
 
 ## 7. GitHub Release
 
@@ -277,7 +277,7 @@ Release 不承担安装职责，不上传用于替代 npm 安装的插件压缩�
 | 首次启动 | `chub start` 如何识别首次运行、创建用户服务、初始化配置并确认 Web/Worker 健康；重复执行的幂等和失败恢复。 |
 | 平台与版本矩阵 | Node.js/npm、macOS/Ubuntu、OpenClaw、腾讯微信插件的支持版本和验证责任人。 |
 | 微信通道交付 | 外部微信包的官方来源、安装/登录/配对命令、Owner 规则和 Chub Release 的兼容记录方式。 |
-| Context Token 维护 | 补丁是否随 Chub 插件 npm 包交付；首次安装、外部插件升级、补丁不适用和回滚的责任边界。详细规则只保留在 OpenClaw 定制文档。 |
+| OpenClaw 最小定制维护 | 第三方适配器 Context Token 补丁的首次安装、外部插件升级、补丁不适用和回滚责任边界；详细规则只保留在 OpenClaw 定制文档。 |
 | 发布与回滚 | tag、Draft Release、`release.published`、npm 发布权限、双包原子性、失败重试和回滚方式。 |
 
 只有上述结果全部确认，并且目标包的 `bin`、文件内容、公开权限和版本检查可在干净设备复现后，才进入实现和端到端验收。
@@ -285,11 +285,11 @@ Release 不承担安装职责，不上传用于替代 npm 安装的插件压缩�
 ## 目标交付边界
 
 - 用户安装和升级只使用 npm Registry：核心 CLI 为 `chub`，Chub OpenClaw 插件为 `@chub/openclaw-plugin`。
-- `chub` 必须提供可执行的 `chub` bin 和首次启动引导；`@chub/openclaw-plugin` 必须设置 `publishConfig.access=public`，并包含运行产物、插件清单、README 和 Context Token 参考补丁。
+- `chub` 必须提供可执行的 `chub` bin 和首次启动引导；`@chub/openclaw-plugin` 必须设置 `publishConfig.access=public`，并包含运行产物、插件清单和 README；第三方微信适配器补丁不混入插件包。
 - Quick Worker 随 `chub` 一起安装和启动，不提供独立 npm 包或独立用户安装步骤。
 - OpenClaw Gateway 与第三方微信通道不属于 Chub 发布物，继续按各自官方文档安装。
 - GitHub Release 只归档版本、变更和兼容性信息；不能作为第二个安装渠道。
-- 如果两个 npm 包、`chub start`、Context Token 补丁随包交付或发布工作流尚未完成实现，发布必须暂停，不得对外提供未验证的安装路径。
+- 如果两个 npm 包、`chub start` 或 OpenClaw 最小定制复检流程尚未完成验证，发布必须暂停，不得对外提供未验证的安装路径。
 
 ## 相关文档与复检
 
@@ -304,6 +304,6 @@ Release 不承担安装职责，不上传用于替代 npm 安装的插件压缩�
 
 ## 设计复检与实施准入
 
-- 已核对：当前 CLI、Web/Worker 服务关系、Chub OpenClaw 插件边界、外部 OpenClaw/微信通道安装边界、Context Token 参考补丁和现有能力清单。
-- 待确认：包边界和命名、首次引导契约、版本矩阵、外部微信安装说明、Context Token 补丁交付、npm 发布触发和失败恢复。
+- 已核对：当前 CLI、Web/Worker 服务关系、Chub OpenClaw 插件边界、外部 OpenClaw/微信通道安装边界、OpenClaw 最小定制复检规则和现有能力清单。
+- 待确认：包边界和命名、首次引导契约、版本矩阵、外部微信安装说明、第三方适配器补丁的维护责任、npm 发布触发和失败恢复。
 - 实施后才验收：两个 npm 包的 bin/文件内容、指定版本的 OpenClaw/微信通道组合、Context Token 首次安装与升级复检，以及维护者本人在 macOS/Ubuntu 上完成的 Web 快速交互和真实微信收发结果。

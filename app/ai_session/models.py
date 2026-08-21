@@ -8,6 +8,9 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.ai_runtime import RUNTIME_ID_PATTERN
+from app.codex.models import SessionMode
+
+
 def utc_now() -> datetime:
     return datetime.now(UTC)
 
@@ -50,6 +53,7 @@ class AiSession(_StrictModel):
     # Runtime IDs are opaque to Chub. The current backend writes ``codex``;
     # persisted records must still carry an explicit owner.
     runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
+    session_mode: SessionMode
     native_session_id: str | None = Field(
         default=None,
         min_length=1,
@@ -95,5 +99,5 @@ class AiSession(_StrictModel):
 
 
 class AiSessionState(_StrictModel):
-    version: Literal[1] = 1
+    version: Literal[2] = 2
     sessions: list[AiSession] = Field(default_factory=list)

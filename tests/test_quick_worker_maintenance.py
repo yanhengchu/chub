@@ -110,14 +110,17 @@ def test_reload_state_write_failure_does_not_launch(settings: Settings) -> None:
 
 
 @pytest.mark.anyio
-async def test_quick_worker_status_requires_authentication(
+async def test_quick_worker_status_requires_trusted_network(
     settings: Settings,
 ) -> None:
-    transport = httpx.ASGITransport(app=create_app(settings))
+    transport = httpx.ASGITransport(
+        app=create_app(settings),
+        client=("192.0.2.1", 12345),
+    )
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/api/maintenance/quick-worker")
 
-    assert response.status_code == 401
+    assert response.status_code == 403
 
 
 @pytest.mark.anyio
@@ -318,6 +321,83 @@ async def test_quick_worker_restart_uses_fixed_controlled_command(
         "quick-worker-maintenance.json"
     )
     assert stat.S_IMODE(state_path.stat().st_mode) == 0o600
+
+
+@pytest.mark.anyio
+async def test_quick_worker_restart_remains_available_after_failed_upgrade(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    app.state.quick_interactions._recovery_ready = True
+    app.state.system_upgrade._writes_blocked = True
+    process = WaitingProcess()
+    transport = httpx.ASGITransport(app=app)
+
+    with (
+        patch(
+            "app.services.quick_worker_maintenance.read_health",
+            new=AsyncMock(return_value=worker_health()),
+        ),
+        patch(
+            "app.services.quick_worker_maintenance.launch_quick_worker_reload_process",
+            return_value=process,
+        ) as launch,
+    ):
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            headers=AUTHORIZATION,
+        ) as client:
+            response = await client.post("/api/maintenance/quick-worker/restart")
+        process.release.set()
+
+    assert response.status_code == 200
+    assert response.json()["data"]["state"] == "restarting"
+    launch.assert_called_once_with(app.state.quick_worker_maintenance.command)
+
+
+@pytest.mark.anyio
+async def test_quick_worker_restart_recovers_failed_unavailable_worker(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    app.state.quick_interactions._recovery_ready = True
+    app.state.quick_worker_maintenance._state = QuickWorkerReloadState(
+        operation_id="worker-reload:" + "f" * 32,
+        status="failed",
+        old_generation="a" * 32,
+        source_ip="127.0.0.1",
+        message="Worker did not recover",
+        requested_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    process = WaitingProcess()
+    transport = httpx.ASGITransport(app=app)
+
+    with (
+        patch(
+            "app.services.quick_worker_maintenance.read_health",
+            new=AsyncMock(side_effect=OSError("worker unavailable")),
+        ),
+        patch(
+            "app.services.quick_worker_maintenance.launch_quick_worker_reload_process",
+            return_value=process,
+        ) as launch,
+    ):
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            headers=AUTHORIZATION,
+        ) as client:
+            response = await client.post("/api/maintenance/quick-worker/restart")
+        process.release.set()
+
+    assert response.status_code == 200
+    assert response.json()["data"]["state"] == "restarting"
+    launch.assert_called_once_with(
+        app.state.quick_worker_maintenance.command,
+        recover=True,
+    )
 
 
 @pytest.mark.anyio

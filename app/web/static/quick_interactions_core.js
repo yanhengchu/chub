@@ -8,7 +8,6 @@
   const DEFAULT_PERMISSION_KEY = "hub.codexDefaultPermission.v1";
   const DEFAULT_MODEL_KEY = "hub.codexDefaultModel.v1";
   const DEFAULT_REASONING_EFFORT_KEY = "hub.codexDefaultReasoningEffort.v1";
-  const SHOW_TRANSLATION_SESSION_KEY = "hub.codexShowTranslationSession.v1";
   const PERMISSION_MODES = new Set([
     "ask",
     "auto-review",
@@ -112,14 +111,8 @@
     }
   }
 
-  function showTranslationSession() {
-    return readStoredValue("localStorage", SHOW_TRANSLATION_SESSION_KEY) === "true";
-  }
-
   function sessionListPath() {
-    return showTranslationSession()
-      ? "/api/codex/sessions?include_translation=true"
-      : "/api/codex/sessions";
+    return "/api/codex/sessions";
   }
 
   function readSessionCreationPreferences(storage) {
@@ -212,11 +205,7 @@
   }
 
   function sessionSwitcherEntries(sessions) {
-    const visible = showTranslationSession()
-      ? sessions
-      : sessions.filter(
-        (session) => session.workspace_id !== "weixin-translation",
-      );
+    const visible = sessions.filter(isQuickInteractionSession);
     return [...visible].sort((left, right) => {
       const createdDifference = Date.parse(right.created_at) - Date.parse(left.created_at);
       if (Number.isFinite(createdDifference) && createdDifference !== 0) {
@@ -226,6 +215,11 @@
       const rightId = String(right.id);
       return leftId < rightId ? 1 : leftId > rightId ? -1 : 0;
     });
+  }
+
+  function isQuickInteractionSession(session) {
+    return session.session_mode === "quick"
+      && session.workspace_id !== "weixin-translation";
   }
 
   function sessionSwitcherLabels(sessions) {
@@ -305,7 +299,8 @@
     const encodedSessionId = encodeURIComponent(sessionId);
     async function loadSessionContext() {
       const data = await request(sessionListPath());
-      const sessions = Array.isArray(data.sessions) ? data.sessions : [];
+      const sessions = (Array.isArray(data.sessions) ? data.sessions : [])
+        .filter(isQuickInteractionSession);
       let session = sessions.find((item) => item.id === sessionId);
       if (!session) {
         session = await request(`/api/codex/sessions/${encodedSessionId}`);
@@ -341,6 +336,7 @@
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               workspace_id: workspaceId,
+              session_mode: "quick",
               permission_mode: permissionMode,
               model,
               reasoning_effort: reasoningEffort,

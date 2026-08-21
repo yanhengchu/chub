@@ -693,6 +693,7 @@ def test_help_and_unknown_command(service_env: tuple[dict[str, str], Path]) -> N
     assert "restart" in help_result.stdout
     assert "worker-drain" in help_result.stdout
     assert "worker-reload" in help_result.stdout
+    assert "worker-recover" in help_result.stdout
     assert invalid_result.returncode != 0
     assert "unknown command" in invalid_result.stderr
 
@@ -816,7 +817,7 @@ def test_stop_refuses_active_worker_without_explicit_force(
     assert "systemctl --user stop" in calls.read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("command", ["worker-drain", "worker-reload"])
+@pytest.mark.parametrize("command", ["worker-drain", "worker-reload", "worker-recover"])
 def test_worker_maintenance_refuses_to_wait_on_its_own_quick_task(
     service_env: tuple[dict[str, str], Path],
     command: str,

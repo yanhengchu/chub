@@ -68,8 +68,7 @@ def test_chub_restart_registers_fixed_restart_and_replies(
 
     assert result.disposition == "reply"
     assert result.message == (
-        "Restart: Scheduled. The result will be sent when completed.\n\n"
-        "No sessions\n\nWeekly Unavailable"
+        "Restart: Scheduled. The result will be sent when completed."
     )
     request = coordinator.request.call_args.kwargs
     assert request["operation_id"].endswith(":restart")
@@ -163,13 +162,14 @@ def test_system_upgrade_rejected_by_shared_preconditions(settings: Settings) -> 
     quick_interactions.submit.assert_not_called()
 
 
-def test_chub_restart_initial_reply_lists_sessions_and_running_tasks(
+def test_chub_restart_initial_reply_does_not_list_sessions_or_usage(
     settings: Settings,
 ) -> None:
     manager, codex_manager, quick_interactions = configured_manager(settings)
     enable_restart_command(manager)
     sessions = [
         CodexSession(
+            session_mode="quick",
             id=f"session-{slot}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -203,13 +203,11 @@ def test_chub_restart_initial_reply_lists_sessions_and_running_tasks(
         delivery_route=delivery_route(),
     )
 
-    assert result.message is not None
-    assert result.message.startswith(
-        "Restart: Scheduled. The result will be sent when completed.\n\nSessions\n\n"
+    assert result.message == (
+        "Restart: Scheduled. The result will be sent when completed."
     )
-    assert "▶ S1 · 当前工作" in result.message
-    assert "S2 · 后台检查\n\nTask · 检查后台日志" in result.message
-    assert result.message.endswith("Weekly Unavailable")
+    assert "Sessions" not in result.message
+    assert "Weekly" not in result.message
 
 
 @pytest.mark.parametrize(
