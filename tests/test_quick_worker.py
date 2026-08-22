@@ -1813,6 +1813,66 @@ async def test_worker_drain_waits_for_accepted_translation_queue(
 
 
 @pytest.mark.anyio
+async def test_worker_reload_cancels_queued_and_stops_running_tasks(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    native_id = "14141414-1414-4414-8414-141414141414"
+    monkeypatch.setenv("FAKE_CODEX_SESSION_ID", native_id)
+    monkeypatch.setenv("FAKE_CODEX_DELAY", "0.5")
+    monkeypatch.setattr(quick_worker, "write_operation", lambda **_fields: None)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    codex_home = tmp_path / "codex-home"
+    _set_native_archive_state(codex_home, native_id, archived=False)
+    server = QuickWorkerServer(
+        settings,
+        codex_workspaces={"isolated": workspace},
+        codex_executable=_fake_codex(tmp_path),
+        codex_home=codex_home,
+    )
+    await server.start()
+    first_id = new_worker_task_id()
+    second_id = new_worker_task_id()
+    operation_id = f"worker-reload:{uuid.uuid4().hex}"
+    try:
+        for task_id, prompt in ((first_id, "first"), (second_id, "second")):
+            submitted = await _submit_codex(
+                settings,
+                task_id=task_id,
+                session_id="reload-translation-session",
+                prompt=prompt,
+                task_kind="translation",
+                queue_key="reload-translation-queue",
+                queue_limit=2,
+                queue_wait_seconds=5,
+            )
+            assert submitted["success"] is True
+        queued = await _request(settings, "task_get", task_id=second_id)
+        assert queued["data"]["task"]["status"] == "queued"
+
+        drained = await quick_worker.request_drain(
+            settings,
+            operation_id=operation_id,
+            wait_seconds=2,
+        )
+        assert drained["success"] is True
+        first = await _request(settings, "task_get", task_id=first_id)
+        second = await _request(settings, "task_get", task_id=second_id)
+        health = await read_health(settings)
+
+        assert first["data"]["task"]["status"] == "failed"
+        assert first["data"]["task"]["error_code"] == "worker_restarted"
+        assert second["data"]["task"]["status"] == "cancelled"
+        assert second["data"]["task"]["error_code"] == "worker_restarted"
+        assert health["data"]["active_tasks"] == 0
+        assert health["data"]["queued_tasks"] == 0
+    finally:
+        await server.close()
+
+
+@pytest.mark.anyio
 async def test_translation_queue_replaces_archived_native_session(
     settings,
     tmp_path: Path,

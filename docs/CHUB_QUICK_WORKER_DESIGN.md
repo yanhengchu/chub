@@ -12,9 +12,9 @@
 
 1. Quick Worker 是与 Chub Web 独立运行的本机后台服务。Web 负责认证、业务校验、提交和页面投影；Worker 负责任务、Session 租约、Runner 进程、超时、取消、恢复和最终状态。
 2. 页面快速交互、微信 Chub 非实时任务和翻译任务都进入 Worker；Web 内不得回退执行。当前生产只允许固定的 `codex` Runtime Runner。
-3. 同一逻辑 Session 只能有一个 writer。快速交互提交、实时终端建立连接和恢复流程都必须经过 Worker 租约与实时连接的最终仲裁，不能只依赖页面按钮状态。
+3. 同一逻辑 Session 只能有一个 writer。快速交互提交、实时终端建立连接和恢复流程都必须经过 Worker 租约与实时连接的最终仲裁，不能只依赖页面按钮状态；当前 Quick Worker 在自己的 Session 租约内可以完成自己的原生 ID 绑定，其他 writer 不得被接管。内部翻译 Session 仍复用逻辑 Session，但允许在旧 native Session 空闲且新 ID 未被占用时轮换绑定。
 4. Web 重启不会主动停止 Worker 或已接受任务。新 Web 必须完成 Worker 健康、协议、活动任务、租约、通知和重启状态恢复后，才开放快速交互 Session 写入；实时终端按独立的 Codex PTY/tmux 状态恢复。
-5. Worker 或状态不可确认时必须失败关闭：不猜测任务成功、不重复提交、不在 Web 内执行、不切换 Session 或通知收件人。
+5. 普通任务提交、取消和交付在 Worker 或状态不可确认时必须失败关闭：不猜测任务成功、不重复提交、不在 Web 内执行、不切换 Session 或通知收件人。固定的 Worker 重启是恢复入口，允许在不可用状态下尝试重建，但最终结果仍必须确认。
 6. 任务终态、通知终态、Web 重启终态和 Worker 重启终态分别确认；“进程已创建”“任务已受理”或“HTTP 200”都不是成功。
 7. 普通 Web、Worker、ClawBot 重启彼此独立；系统升级与恢复是单独的 AI Runtime 维护流程，会按其规则停止和清理 Worker，不由本文的普通重启门禁推导。
 
@@ -32,7 +32,7 @@ Chub 的非实时 AI 任务已经从 Web 进程中拆出，由独立 Worker 承�
 - 任务请求重启时，只等待该任务自身结果及完成通知进入终态，不受其他 Session 或后续任务阻塞。
 - 首页手动重启可直接接管待执行重启；同步与异步失败都会向用户展示明确原因。
 
-独立 Worker 和跨 Web 重启方案的当前契约已完成维护者验收；当前 Worker 使用协议 `9`。错误原文透传和来源标记按本文 3.4 规则执行，协议或状态边界变化时按本文末尾复检规则重新验收。协议 `9` 尚未完成本机 macOS/Ubuntu 服务重载后的真实最终状态复检，不能仅凭自动化回归扩大为跨平台服务级验收。
+独立 Worker 和跨 Web 重启方案的当前契约已完成维护者验收；当前 Worker 使用协议 `9`。错误原文透传和来源标记按本文 3.4 规则执行，协议或状态边界变化时按本文末尾复检规则重新验收。协议 `9` 及本次实时终端重连相关变化已完成 macOS/Ubuntu 服务重载后的真实最终状态复检。
 
 ## 2. 范围与边界
 
@@ -198,7 +198,7 @@ Worker 对已交付终态保留有限历史或墓碑，直到 Web 明确确认�
 
 ### 6.1 普通维护重启
 
-电脑端 `chub restart`、微信固定 `restart` / `重启` / `重新启动` 或首页手动重启都只重启 Web 服务。Worker、正在运行的 Runner、翻译队列和实时 tmux Session 保持不变。
+电脑端 `chub restart`、微信固定 `restart web` / `重启 Web` 或首页手动重启都只重启 Web 服务。Worker、正在运行的 Runner、翻译队列和实时 tmux Session 保持不变；实时终端的旧 `ttyd` 桥由旧实例关闭或新实例启动时清理，用户再次进入 Session 时重新创建桥并 attach 原 tmux。微信 `restart worker` / `重启 Worker` 才执行 Quick Worker 的任务清理与恢复，不影响 Web 或实时终端。升级/恢复清理后的旧逻辑映射则按升级操作保存的旧逻辑 ID 与原生 Session ID 重新绑定仍存在的 Chub tmux。实时终端的完整重连规则以[AI Session 状态模型设计](AI_SESSION_STATE_DESIGN.md)和 Runtime 设计为准。
 
 新实例健康后通过启动恢复门禁重建状态，再恢复 Session 写入和页面操作。
 
@@ -238,9 +238,11 @@ Worker 对已交付终态保留有限历史或墓碑，直到 Web 明确确认�
 ### 6.4 首页 Quick Worker 重启
 
 - 首页只展示经过裁剪的 Worker 状态，不暴露 PID、generation、运行时明细或本机路径。
-- 协议兼容时，只有 Worker 健康、Web 恢复完成，且执行中与排队任务均为零才开放重启；协议不兼容时，只要 Worker 健康且所有任务计数为零，也允许固定重启，不提供强制入口。
-- 后端正常重启只调用固定的 `worker-reload`：同协议分支先 drain；跨协议分支不会向旧 Worker 发送当前协议命令，而是直接重载服务。两者都必须确认新 generation、当前协议和 Web 恢复，不能只以子进程创建为成功。若已有一次 Worker 重启进入失败终态且 Worker 当前不可达，页面可调用固定的 `worker-recover` 服务恢复命令；该命令仍需确认 Worker 健康、当前协议、任务计数归零和 Web 恢复，其他未知状态不开放强制重启。
-- Quick Worker 与 Web、ClawBot 服务重启彼此独立；Worker 重启期间只对任务提交、Session 租约和 Worker 结果写入执行直接受影响的局部门禁，其他首页只读能力、Web 服务和 ClawBot 入口继续可用。
+- Worker 重启是恢复入口，不以 Worker 健康、协议状态、排队任务、执行中任务或 Web 恢复状态作为开始门禁；只保留重复维护和系统升级直接冲突等最小保护。
+- 确认重启后立即关闭新任务提交；排队任务进入 `cancelled`，执行中任务停止完整 Runner 进程组并进入 `failed/worker_restarted`，相关 Session 租约释放，任务不自动重放。任务记录保留，不静默删除。
+- 后端只调用固定的 `worker-reload`：能连接当前协议 Worker 时先通过重启标识的 drain 原子关闭提交并终止任务；Worker 不可达或协议不兼容时直接重载服务，不迁移旧协议运行态，新实例只接管当前协议数据。
+- 重启成功必须确认新 generation、当前协议、Worker 健康和任务计数归零；不能只以子进程创建或 HTTP 受理为成功。Web 只负责发起、展示和恢复后对账，不作为 Worker 重启成功的健康门禁。
+- Quick Worker 与 Web、ClawBot 服务重启彼此独立；Worker 重启期间只影响快速任务提交、租约和结果写入，其他首页只读能力、Web 服务、ClawBot 和实时终端继续可用。
 - 操作记录完整保留 `requested`、`started`、`succeeded` 和 `failed`；Web 在操作过程中重启后，依靠持久化状态、新 generation 和进程校验收敛最终结果。
 
 ## 7. 持久化、协议与安全
@@ -275,15 +277,14 @@ Worker 对已交付终态保留有限历史或墓碑，直到 Web 明确确认�
 | Web | LaunchAgent | systemd user service |
 | Worker | 独立 LaunchAgent | 独立 systemd user service |
 | Web 重启 | 重载 Web 服务 | 重启 Web user service |
-| Worker 升级 | drain 后重启 Worker | drain 后重启 Worker |
-| 活动任务保护 | 拒绝停止或重装 | 拒绝停止或重装 |
+| Worker 重启/升级 | 停止任务后重启 Worker | 停止任务后重启 Worker |
+| 任务处理 | 排队任务取消，执行中任务失败收敛 | 排队任务取消，执行中任务失败收敛 |
 
 维护约束如下：
 
 - Web 与 Worker 使用不同服务单元，普通 Web 重启不得带停 Worker。
-- Worker 升级先进入 draining，拒绝新任务；活动任务清空后再停止和替换。
-- 日常 Worker 代码升级可在本机终端使用 `chub worker-reload`，也可在首页满足 Worker 自身空闲与恢复门禁时使用固定维护入口；两者都由同一命令完成 drain、独立服务重载以及协议、generation、损坏记录和固定 Runner 健康确认。该门禁只保护将被重载的 Worker 任务资源，不等同于 Web 或 ClawBot 互斥；命令行调用与 `worker-drain` 均拒绝从正在执行的快速任务内部调用，避免等待自身终态。
-- 协议升级需要 Web、Worker、测试和部署产物同步发布；跨协议升级使用 `chub install --force` 直接清理旧协议数据，旧任务会被中断且不会迁移或自动重放。
+- Worker 重启或代码升级使用固定 `worker-reload`；它先关闭新提交并清理当前任务，再独立重载服务以及确认协议、generation、损坏记录和固定 Runner 健康状态。该操作只影响 Worker 自身任务资源，不等同于 Web 或 ClawBot 互斥。
+- 协议升级需要 Web、Worker、测试和部署产物同步发布；跨协议升级使用 `chub install --force` 直接清理旧协议数据，旧任务会被中断且不会迁移或自动重放。首页重启遇到协议不兼容时只负责重建当前 Worker，不代替协议升级清理流程。
 - `chub install`、`chub stop` 和 `chub uninstall` 遇到活动或排队任务时必须明确拒绝；确认空闲后仍需通过原子 drain 关闭提交门禁再执行操作。只有维护者确认任务可以中断时才使用对应命令的 `--force`。
 - Web 与 Worker 分别写入独立操作日志；日志详情页提供两个固定来源，避免两个常驻进程共同轮转同一文件。
 
@@ -293,9 +294,10 @@ Worker 对已交付终态保留有限历史或墓碑，直到 Web 明确确认�
 | --- | --- |
 | Web 重启或短暂不可用 | Worker 任务继续；新 Web 恢复后重建状态 |
 | Worker 不可达 | 快速交互 Session 写入失败关闭；不回退到 Web Runner，实时终端不受该门禁影响 |
-| Worker 已返回终态但原生 Session 映射冲突 | 当前快速任务失败收敛、释放其占用并确认 Worker 交付；不把单任务冲突扩散为全局恢复失败 |
-| Runtime 发现与 Worker 原生 Session 绑定竞态 | 活动 Quick Session 的同工作目录发现结果暂缓导入；若历史自动发现记录已形成重复，且无 terminal writer，则绑定时原子归属回 Quick Session |
+| Worker 已返回终态但原生 Session 映射冲突 | 普通 Session 或不满足安全轮换条件的翻译 Session 失败收敛、释放其占用并确认 Worker 交付；内部翻译 Session 仅在旧 native Session 无活动 writer 且新 ID 未被其他 Chub Session 占用时更新当前绑定并继续交付；不把单任务冲突扩散为全局恢复失败 |
+| Runtime 发现与 Worker 原生 Session 绑定竞态 | 活动 Quick Session 的同工作目录发现结果暂缓导入；若历史自动发现记录已形成重复，当前 Worker 自己仍持有 writer 时允许完成归属回收，其他 terminal/external writer 则失败关闭 |
 | Worker 协议不兼容 | 拒绝写入并提示同步升级 |
+| Worker 重启 | 排队任务取消，执行中任务以 `worker_restarted` 失败收敛，不自动重放 |
 | Worker 异常退出 | 不确定的运行任务标记失败，释放租约，不自动重放 |
 | 宿主机重启 | 不承诺原任务继续；恢复后按持久化状态收敛 |
 | Runner 超时或取消 | 结束完整进程组，记录明确终态并释放租约 |
@@ -314,12 +316,13 @@ Worker 对已交付终态保留有限历史或墓碑，直到 Web 明确确认�
 - Web 重启期间任务持续运行，新实例恢复结果、Session 占用和通知状态。
 - Quick Worker 只接收 `session_mode=quick` 的 Session；`terminal` Session 在 Web/Worker 边界被拒绝。两类 Session 不互相接管 writer，同一 `quick` Session 仍由租约保证最多一个快速任务写入者。
 - Worker 不可用、协议不兼容或恢复未完成时，快速交互 Session 写入保持失败关闭；实时终端使用独立的 Codex PTY/tmux 链路，不因 Quick Worker 恢复状态暂停。两类入口仍通过 Session 类型和单 writer 规则隔离。
+- 实时终端的 `ttyd` 只是可重建的 Web 桥，固定 tmux carrier 和原生 Codex writer 不由普通 Web 重启终止；升级/恢复按持久化操作关联自动迁移仍存在的 Chub tmux，无法确认归属时仍失败关闭。
 - 任务请求重启只等待自身结果与通知，不等待其他任务、Session 或翻译。
 - 等待重启期间仍可提交任务；跨重启边界的请求按当前轮和下一轮正确合并。
 - 首页手动重启可接管待执行重启，失败原因对用户可见。
-- 首页可独立查看 Quick Worker 状态，并只在 Worker 空闲、协议兼容和 Web 恢复完成时执行受控重启；重启仅局部影响 Worker 任务写入，不把 Web 或 ClawBot 服务重启串行化。
+- 首页可独立查看 Quick Worker 状态；确认后可在 Worker 健康、忙碌、协议不兼容或不可达时执行受控重启，重启只清理 Worker 自身任务并不把 Web 或 ClawBot 服务重启串行化。
 - 重启成功以新实例健康和实例 ID 变化为准，操作日志状态完整。
-- 本机已确认 Web/Worker 服务边界、安装维护和活动任务保护；其他平台继续保持相同实现，但不作为当前范围验收阻断项。
+- macOS 与 Ubuntu 均已确认 Web/Worker 服务边界、安装维护、活动任务保护及本次协议/终端重连后的最终状态；其他未实际复检的平台不自动获得支持承诺。
 - 权限、固定命令、受限读取、幂等提交和敏感信息保护未退化。
 
 维护者已完成独立 Worker 与跨 Web 重启的当前业务契约验收；历史协议基线只用于追溯，不作为当前支持协议。后续若修改任务权威来源、Session 租约、通知终态、重启门禁或服务关系，必须按当前协议重新完成相关回归。
@@ -327,5 +330,5 @@ Worker 对已交付终态保留有限历史或墓碑，直到 Web 明确确认�
 ### 10.1 验收范围与复检
 
 - 已验收范围：独立 Worker、Web 重启恢复、快速交互/微信/翻译任务、Session 租约、任务和通知终态、固定 `codex` Runner，以及当前协议 `9` 的自动化和契约回归。
-- 未验证或不承诺：协议 `9` 尚未完成本机 macOS/Ubuntu 服务重载后的真实最终状态复检；第二个真实 Runtime、其他未列平台以及本文没有列出的协议兼容或任务迁移能力也不承诺。自动化覆盖不得替代未完成的平台实机验收。
+- 未验证或不承诺：第二个真实 Runtime、其他未实际复检的平台，以及本文没有列出的协议兼容或任务迁移能力；自动化覆盖不得替代未完成的平台实机验收。
 - 复检触发：任务权威来源、租约、恢复屏障、通知终态、协议版本、Runtime 能力矩阵、重启门禁或 Web/Worker 服务关系变化时，必须按当前协议重新验证最终状态、操作日志和失败关闭边界。

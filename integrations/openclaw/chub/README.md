@@ -134,6 +134,8 @@ openclaw plugins inspect chub --runtime --json
 openclaw channels status --probe --json
 ```
 
+以上是底层手动命令。Chub 首页的“重启与恢复”使用 `restart` API action；微信端使用 `restart clawbot`。两者都会先按固定版本清单同步 Chub 插件和微信适配器补丁，再执行 Gateway 重启和最终状态检查；不要用任意插件路径或未验证版本替代该流程。
+
 验收时确认插件状态为 `loaded`、运行时来源位于 OpenClaw 扩展目录、部署产物与仓库构建版本一致，并确认微信账号恢复 `running`；存在仓库来源记录时还需确认其指向本目录。不兼容协议变更必须与 Chub 配套切换；版本不一致期间只允许统一失败关闭，不能回退 Agent。
 
 ### 8.1 首次部署配置

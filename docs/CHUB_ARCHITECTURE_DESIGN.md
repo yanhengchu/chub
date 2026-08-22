@@ -2,23 +2,22 @@
 
 > 状态：持续维护。
 > 主要读者：AI Agent、实现和排障 Agent；维护人员用于确认项目边界、状态所有权和架构验收标准。
-> 本文负责：Chub 当前系统架构、进程与状态所有权、长期分层和演进原则，是各专项设计的上层约束；当前可用能力以[集成能力清单](CHUB_INTEGRATION_CAPABILITIES.md)为准，AI Runtime 演进由[Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)细化。
-> 本文不负责：专项功能的完整实现契约、固定指令语法、插件源码/部署步骤或目标分层的直接落地；各专项文档负责自己的权威边界，本文不表示目标分层已经全部实现，也不要求一次性重构现有模块。
+> 本文负责：Chub 当前的进程边界、主要职责、状态所有权和跨模块约束，是各专项设计的上层依据；当前可用能力以[集成能力清单](CHUB_INTEGRATION_CAPABILITIES.md)为准。
+> 本文不负责：专项功能的完整实现契约、固定指令语法、插件源码或部署步骤；这些内容由对应专项文档维护。
 
-本文与项目 README 共同构成核心项目文档：README 回答“Chub 是什么、如何使用”，本文回答“Chub 如何组织、各状态由谁负责、后续如何演进”。其他专项设计、能力契约和维护资料均位于其后，并不得与这两份核心文档冲突。
+本文与项目 README 共同构成核心项目文档：README 回答“Chub 是什么、如何使用”，本文回答“Chub 如何组织、各状态由谁负责、跨模块如何协作”。其他专项设计、能力契约和维护资料均位于其后，并不得与这两份核心文档冲突。
 
 ## 1. 定位与总体结论
 
 Chub 是面向个人设备、本地优先的轻量 AI 工作站控制面。它统一管理可信入口、设备能力、业务规则、AI Session、需求、自动化、状态、通知和用户可见终态；具体任务由受控执行器或外部 Runtime 完成。
 
-当前和长期架构均遵循以下结论：
+当前架构遵循以下结论：
 
-1. Chub 保持本地优先的模块化单体，不拆分为通用微服务平台。
-2. Web 是控制面与业务协调入口，不承载必须跨 Web 重启继续的后台任务进程。
-3. Quick Worker 是独立的可靠 AI 后台执行进程；其他执行机制按真实业务边界独立维护，不为形式统一强行接入 Worker。
-4. OpenClaw、Codex、Debug Chrome、飞书和操作系统服务均属于 Chub 边界外的运行时或集成对象，由固定 Adapter/Manager 受控调用。
-5. 每类状态只有一个权威来源；页面、微信和通知只消费状态，不根据提示文案或子进程创建猜测成功。
-6. 架构调整采用渐进式模块化：先明确所有权和接口，再在真实改动中收拢耦合，不进行目录驱动的大规模搬迁。
+1. Chub 是本地优先的模块化单体，不拆分为通用微服务平台。
+2. Web 是控制面和业务协调入口；Quick Worker 独立执行需要跨 Web 重启继续的后台任务。
+3. 实时终端、后台任务、OpenClaw 和自动化使用各自的运行边界，不为形式统一合并生命周期。
+4. 每类状态只有一个权威来源；页面、微信和通知不以进程创建或同步回执代替最终状态。
+5. 新增功能先明确职责和状态所有权，再按实际需要小步收拢结构。
 
 ## 2. 当前系统上下文
 
@@ -30,15 +29,15 @@ Chub 是面向个人设备、本地优先的轻量 AI 工作站控制面。它�
          `-> OpenClaw + Chub Plugin --(127.0.0.1)--> Chub 固定微信调度 API
 
 Chub Web
-  |-- Unix socket -------------------> Quick Worker -> fixed Runtime Runner registry -> Codex Runner
-  |-- tmux / ttyd -------------------> Codex 实时终端
+  |-- Unix socket -------------------> Quick Worker -> Codex Runner
+  |-- ttyd --------------------------> tmux -> Codex 实时终端
   |-- OpenClaw CLI / message send ---> OpenClaw Gateway 与微信通道
   |-- CDP ---------------------------> 受管 Debug Chrome
   |-- HTTPS -------------------------> 固定飞书通知目标
-  `-- 固定脚本 ----------------------> 本机维护与 Web 重启
+  `-- 固定脚本 ----------------------> 本机维护、升级与 Web 重启
 ```
 
-Chub 不接管 OpenClaw 的普通 Agent，也不把 Codex、OpenClaw 或模型供应商视为自身内部组件。它通过受限接口协调这些系统，并保存完成业务闭环所需的非敏感关联状态。
+Chub 不接管 OpenClaw 的普通 Agent，也不把 Codex、OpenClaw 或模型供应商当作自身内部模块；它只通过受限接口协调这些系统。
 
 ## 3. 当前进程与运行边界
 
@@ -50,64 +49,48 @@ FastAPI Web 进程当前负责：
 - 真实 loopback/Tailnet 来源、安全 Header 和入口权限。
 - 启动时装配 Codex、Quick Interaction、微信、自动化、通知、重启和用量等 Manager。
 - 业务校验、操作日志、状态投影、通知协调和 Web 重启恢复。
-- 管理实时终端的票据、连接与 ttyd/tmux 外围生命周期。
-
-`app/application.py` 是当前 Composition Root，负责构造对象和连接跨模块回调。它可以继续承担装配职责，但长期不应继续吸收领域业务规则；复杂协调应进入有明确所有权的领域服务。
+- 管理实时终端的连接和 `ttyd` Web 桥；不拥有原生 Codex 的执行、历史或 writer 锁。
 
 ### 3.2 Quick Worker
 
-Quick Worker 是与 Web 独立部署的本机服务，通过私有 Unix socket 通信，当前负责：
+Quick Worker 是与 Web 独立部署的本机服务，通过私有 Unix socket 通信，负责：
 
 - 页面、微信和翻译非实时 AI 任务。
 - 幂等提交、Session 租约、Runner 进程组、超时、取消和终态。
 - 任务持久化、恢复、Web 离线期间继续执行及近期终态交付。
 
-Worker 不负责身份认证、页面、微信路由、通知目标、Request 或设备维护。Worker 不健康时，涉及快速交互 Session 的写入失败关闭，不回退到 Web 内执行；实时终端使用独立的 Codex PTY/tmux 链路。
+Worker 不负责身份认证、页面、微信路由、通知目标或设备维护。Worker 重启是独立恢复操作：确认后只关闭快速任务提交、清理 Worker 自身任务并重建 Worker；不重启 Web、OpenClaw 或实时终端。实时终端使用独立的 Codex PTY/tmux 链路。
 
 ### 3.3 受管子进程与外部系统
 
-- **Codex 实时终端**：由 tmux 保存交互进程，ttyd 提供受控 Web 终端。
-- **Codex 后台 Runner**：由 Quick Worker 监督完整进程组。
-- **自动化执行**：由 Automation Manager、固定 Runner 和跨进程锁协调 Debug Chrome。
-- **Web 重启**：只通过固定脚本和 Deferred Restart Coordinator 协调。
-- **OpenClaw**：独立 Gateway/Agent 平台；Chub 只管理固定状态和微信集成边界。
-- **通知供应商**：由 Notification Service 按本机固定注册表调用，不接受任意目标。
+- **Codex 实时终端**：`ttyd` 是可重建的 Web 桥，tmux 保存交互载体，原生 Codex 负责执行、历史和 writer 锁。
+- **自动化执行**：由固定任务、Runner 和跨进程锁协调 Debug Chrome。
+- **Web 重启**：只通过固定脚本和重启协调器执行。
+- **OpenClaw 与通知**：分别由固定集成和固定通知目标受控调用。
 
-这些执行机制具有不同的生命周期和安全语义，当前不需要合并成一个通用任务队列。
+这些执行机制具有不同生命周期，当前不合并成通用任务队列。
 
 ### 3.4 信任边界与横切约束
 
-总体架构只规定所有领域共同遵守的安全底线，具体身份、路由和协议由对应专项文档维护：
+总体架构只规定所有领域共同遵守的边界，具体身份、路由和协议由对应专项文档维护：
 
-- HTTP 请求以单用户本机工作站为信任边界：真实 loopback socket（`127.0.0.1` 或 `::1`）直接允许，真实 Tailnet socket 在启用时直接允许，其余来源拒绝；不信任客户端转发 Header。本机 CLI 的固定脚本和状态操作另以当前操作系统用户、本机文件权限及后端固定映射为边界，不因此获得任意命令或路径能力。
-- 微信请求先由 OpenClaw 提供可信通道上下文，再由 Chub 校验 Owner、绑定 Session、入口能力和路由。高权限提交必须来自同机 OpenClaw 的真实 loopback socket；模型判断不能扩大授权。
-- Web 与 Quick Worker 只通过私有 Unix socket 和受校验协议通信。Worker 不接受客户端指定的可执行文件、命令、任意路径或环境变量。
-- Agent Runtime、OpenClaw、Chrome、通知供应商和操作系统均位于 Chub 信任边界之外，只能经固定 Adapter、Manager、注册表或脚本访问。
-- 权限映射无法无损完成、身份或路由无法确认、协议不兼容、结果不确定时统一失败关闭，不回退到权限更高或约束更少的路径。
-- 凭证和本机秘密只存在于私有配置或受限状态中；跨领域只传稳定非敏感标识，日志、页面和通知不得泄露敏感值。
-- 异步操作必须区分受理、运行和最终状态。页面、通知和操作日志不得把进程创建、模型回复或 Tool Call 已发出解释为业务成功。
-- 跨入口、进程和外部通道使用非敏感稳定标识关联入口请求、Session、任务、维护操作、Runtime 执行和通知终态；模型文本、展示标题和 Tool Call 内容不能作为追踪标识或成功依据。
-- HTTP 错误统一返回 `success: false` 与 `error.code`、`error.message`、`error.source`；`source` 只允许 `chub` 或 `runtime`，由后端固定写入，客户端不能声明或覆盖。Chub 的认证、校验、协议、Worker、解析和内部边界错误标记为 `chub`；只有受控透传 Runtime 子进程诊断时标记为 `runtime`。来源标记不替代错误码，也不允许透传堆栈、凭证、终端票据或无界原文。
+- 受保护接口只接受真实 loopback 或按配置允许的真实 Tailnet 来源；客户端不能扩大权限、命令或路径范围。
+- Web、Worker、OpenClaw 和外部 Runtime 通过固定接口、脚本或适配器访问；未知身份、路由、协议或结果时失败关闭。
+- 凭证和本机秘密只保存在受限配置或状态中；页面、通知和日志只传递必要的非敏感标识。
+- 异步操作区分受理、运行和最终状态；进程创建、HTTP 200 或 Tool Call 已创建都不等于成功。
 
 ### 3.5 版本与协议元数据管理
 
-版本标识分为运行配置、构建元数据和接口协议三类，不把它们合并为一个可编辑配置项：
+升级和恢复只使用后端固定的版本、协议和运行态边界，不接受客户端提供的版本、路径或命令：
 
 | 类型 | 权威来源 | 管理规则 |
 | --- | --- | --- |
-| Web 展示版本 | `Settings.app.version` | 只用于页面、健康检查和服务展示；不参与 Web/Worker 兼容判断，也不能覆盖代码契约版本 |
 | Web 代码版本 | `app/core/build_info.py` 的 `WEB_CODE_VERSION` | 随 Web 代码基线发布；受控升级确认新 Web 实例必须匹配目标版本 |
 | Session 数据版本 | `app/core/build_info.py` 的 `SESSION_SCHEMA_VERSION` | Session 持久化结构或语义变化时递增；不为已改变且不再适用的 Chub 旧运行态增加长期兼容分支 |
-| 升级方案契约版本 | `app/core/build_info.py` 的 `SYSTEM_UPGRADE_CONTRACT_VERSION` | 升级方案文件格式变化时递增；只约束升级方案本身 |
 | Quick Worker IPC 协议 | `app/quick_worker.py` 的 `PROTOCOL_VERSION` | 只有 Web 与 Worker 的请求、响应或协议语义变化时递增；协议变化必须同步 Web、Worker、测试和部署产物 |
-| Quick Worker 实现版本 | `app/quick_worker.py` 的 `WORKER_CODE_VERSION` | Worker 实现或排障基线变化时更新；不因 Web-only 改动自动递增协议版本 |
-| 外部集成协议 | 对应 API、插件或专项设计的固定协议常量 | 由实际拥有该接口的领域管理，不迁移到 Settings；协议升级按对应专项同步清单执行 |
+| 升级方案契约 | `app/core/build_info.py` 的 `SYSTEM_UPGRADE_CONTRACT_VERSION` | 方案格式变化时递增，只约束升级方案本身 |
 
-`config/settings.local.yaml` 和环境变量只保存本机运行配置，不能声明、覆盖或降低上述兼容边界。版本定义可以在构建元数据模块中集中查找，但 Web、Session、Worker 和外部集成仍保留独立字段与变更责任，避免把代码版本、数据版本和 IPC 协议版本误当成同一个版本。
-
-升级恢复使用当前代码读取的源版本和显式目标版本执行校验；按钮不会在运行时自动把版本号加一。仅清理 Chub 运行态时，目标 Worker 协议可以保持当前值，Worker 仍需按恢复流程排空、重启并确认健康；只有 IPC 契约实际变化时才升级 `PROTOCOL_VERSION`。清理或服务切换失败后，只要失败阶段属于固定恢复边界，且当前代码/Session schema/Worker 协议、服务定义和运行态路径均通过预检，就允许将同一操作重绑定到当前固定 `runtime-recovery` 方案并从持久化检查点继续；不得接受任意目标版本，也不得重新清理已确认完成的阶段。升级或恢复失败后，必须释放 Web/Worker/升级入口的全局维护锁；只有操作处于 `requested` 或 `started` 时才拒绝重复的同类维护请求，Session/Runtime 写入仍可按失败关闭规则保持阻断。升级成功必须确认新 Web 实例、Session 数据版本和 Worker 协议健康状态均达到方案目标，不能以进程启动或 HTTP 成功代替最终确认。
-
-Session 类型由 `AiSession.session_mode` 固定管理：`terminal` 只属于 Web 实时终端，`quick` 只属于快速交互和微信/ClawBot。首页使用统一的创建时间倒序列表和类型标记，不提供已有 Session 的类型切换；内部翻译 Session 为 `quick`，但不进入用户列表或微信槽位。升级恢复清理 Chub 管理数据时不读取旧管理格式、不停止或判断原生 Codex Session 的运行结果；新实例扫描到的原生 Session 统一新建为 `discovered=true, session_mode=terminal`。
+版本和协议元数据只用于后端固定的升级方案、运行态清理和最终校验；系统升级/恢复的目标、范围、门禁和失败边界见 7.6。相关流程只影响直接受影响的 AI Runtime 写入和服务，不删除 Codex 原生 Session、用户配置或业务数据；升级方案异常时仍保留当前版本运行态恢复能力，但必须明确不执行代码版本升级。
 
 ## 4. 当前逻辑分层
 
@@ -124,49 +107,35 @@ Session 类型由 `AiSession.session_mode` 固定管理：`terminal` 只属于 W
 
 `app/services/` 当前同时包含领域服务、集成协调和基础工具。后续只在真实功能改动时把稳定职责迁入对应领域包，不为目录整齐批量重排。
 
-### 4.1 当前与目标实现边界
-
-总体架构中的目标组件不代表已经落地。关键边界如下：
-
-| 能力 | 当前实现 | 长期目标 | 当前状态 |
-| --- | --- | --- | --- |
-| 逻辑 AI Session 生命周期 | AI Session Manager、AI Session Store；旧 Store 不参与启动选择或读取 | AI Session Manager、AI Session Store | 当前已落地并验收 |
-| 后台 AI 执行 | Quick Worker、固定 Runtime Runner 注册表、Codex Runner | Quick Worker、固定 Runtime Runner 注册表 | 当前已落地并验收；生产只注册 Codex |
-| 实时终端 | Interactive Supervisor、运行时无关的 Session 终端票据/连接状态、Codex Adapter、tmux、ttyd；不按旧 Store 回退 | Interactive Supervisor、Runtime Adapter | 当前已落地并验收；当前实现为 Codex |
-| Runtime 私有协议 | Codex 命令、Hook、发现、模型、Writer 与事件解析已收敛到 Adapter/Runner；Runtime ID、能力矩阵和原生映射已统一 | 收敛到 Runtime Adapter/Runner | 当前已落地并验收；第二 Runtime 尚未接入 |
-| 用户入口与正式 API | Codex 页面、微信固定路由、`/api/codex/*` | 保持当前正式 Codex 外观，不把它当作通用 Runtime 兼容别名 | 当前继续使用 |
-
-目标组件只有在对应专项设计明确落地并通过验收后，才能在其他文档中写成当前能力。Runtime 的实现规范和能力门槛以 AI Runtime 专项设计的第二部分为准。
-
 ## 5. 领域边界
 
 ### 5.1 设备与维护
 
-拥有节点状态、白名单维护操作、操作日志、运行日志和受控 Web 重启。客户端不能提供任意命令、路径或日志来源。操作成功以最终实例或系统状态为准。
+拥有节点状态、白名单维护操作、操作日志、运行日志和受控服务维护。Web 重启、Quick Worker 重启以及系统升级/运行态恢复分别按目标服务的边界执行；操作成功以最终实例或系统状态为准。
 
 ### 5.2 AI Session 与执行
 
-当前由 AI Session Manager、AI Session Store、Interactive Supervisor 和 Quick Worker 分别承担逻辑 Session、Activity、实时终端及后台 AI 任务；`session_mode` 由 AI Session Manager 在创建和所有入口校验时拥有，终端与快速交互不互相接管 writer。Runtime Adapter 只解释 Runtime 私有进程/后端匹配。模型用量由 AI Usage Service 维护。旧 `CodexPtyManager`、Codex Session Store 仅作为历史实现和专项回归代码保留，不参与生产启动或状态读取，详见专项设计。
+AI Session Manager/Store 管理逻辑 Session 和 Activity，Interactive Supervisor 管理实时终端，Quick Worker 管理后台任务；实时终端和快速交互不互相接管 writer。Runtime Adapter 只解释 Codex 私有进程状态，AI Usage Service 管理用量。
 
 ### 5.3 Request 需求储备
 
-拥有 R1–R9 活动槽位、需求正文、版本、运行关联和归档状态。Request 可以提交到 AI Session，但不拥有 Session 或 Worker 任务终态；通过稳定标识消费其结果。
+拥有 R1–R9 活动槽位、需求正文、运行关联和归档状态。Request 可以提交到 AI Session，但不拥有 Session 或 Worker 任务终态。
 
 ### 5.4 自动化与周报
 
-拥有 Debug Chrome 环境、自动化配置、跨进程锁、任务状态、下载产物和周报流程。自动化只能执行已配置任务和固定扩展，不复用 AI Runtime 的 Session 语义。
+拥有 Debug Chrome 环境、自动化配置、任务状态、下载产物和周报流程；只执行已配置任务和固定扩展。
 
 ### 5.5 通知
 
-拥有固定目标注册表、供应商调用、消息限制和请求幂等。业务领域决定何时通知、使用哪条已批准路由，并拥有 `pending`、`sending`、`sent`、`failed` 或 `skipped` 等业务投递状态；Notification Service 和微信发送适配只负责受控传输并返回结果，不决定主任务成功。
+拥有固定目标注册表、供应商调用和消息限制。业务领域拥有通知业务状态，Notification Service 只负责受控传输，不决定主任务成功。
 
 ### 5.6 OpenClaw 与微信
 
-拥有通道状态读取、可信消息上下文、固定指令入口、微信 Chub 模式路由和原路回送关联。设备任务的权限、Session、Request 和任务终态仍由 Chub 对应领域拥有。
+拥有通道状态读取、固定指令入口、微信路由和原路回送关联；设备任务的权限、Session 和任务终态仍由 Chub 对应领域拥有。ClawBot 的 `restart` API action 以及微信 `restart clawbot` 指令都是重启与恢复入口，负责固定插件/补丁基线同步和 Gateway/通道最终确认。
 
 ### 5.7 项目资料与设置
 
-项目资料拥有只读索引、Markdown 渲染和页面展示状态；设置拥有经过校验的节点级业务开关。两者不得成为任意文件读取或通用配置编辑入口。
+项目资料只读展示；设置只保存经过校验的节点级业务开关，不提供任意文件读取或通用配置编辑。
 
 ## 6. 状态所有权
 
@@ -174,21 +143,23 @@ Session 类型由 `AiSession.session_mode` 固定管理：`terminal` 只属于 W
 | --- | --- | --- |
 | 节点与服务健康 | 操作系统、进程和健康探测 | Web 聚合展示，不缓存为永久真相 |
 | Chub AI Session 元数据 | AI Session Manager、AI Session Store | 页面、微信和 Worker 使用 Chub Session ID 关联 |
-| 原生 Agent Session | 当前 Codex 本地状态；长期 Runtime Adapter | Chub 只保存受校验映射，不解释私有格式 |
+| 原生 Codex Session 与 writer | Codex 本地状态、Runtime Adapter | Chub 只保存受校验映射，不猜测或接管 writer |
 | AI 后台任务与租约 | Quick Worker | Web 恢复后重建投影并确认通知 |
-| 实时终端连接 | tmux/ttyd、Terminal Registry | Session 状态只消费可信探测结果 |
+| 实时终端 Web 桥 | Interactive Supervisor、ttyd | Web 重启时可关闭并按逻辑 Session 重建 |
+| 实时终端载体 | 固定名称的 tmux | 普通 Web 重启保留，重新进入时复用 |
 | Request | Request Backlog Store | 执行时关联 Worker task/run ID，不复制任务终态 |
 | 微信绑定与通道 | OpenClaw；Chub 保存受控路由快照 | 每次提交校验，失败不回退全局目标 |
 | 自动化任务与产物 | Automation Store、锁和 artifacts | 页面读取受限状态与固定产物 |
 | 通知业务状态 | 发起通知的领域状态记录 | 主任务结果与通知终态分开保存，传输结果回写原记录 |
-| 飞书通知调用结果 | Notification Service | 调用方消费受限结果，不把供应商响应解释为主任务终态 |
-| 微信任务通知投递 | 对应 Quick Interaction 或重启通知记录 | OpenClaw `message send` 只负责传输，不拥有业务状态 |
-| 重启协调 | Deferred Restart State + 新实例健康 | 子进程创建不等于重启成功 |
+| 重启协调 | Deferred Restart State + 新实例健康 | 新实例健康且 ID 变化后才算成功 |
+| Quick Worker 重启操作 | Quick Worker maintenance operation state | 记录清理、重建和新 generation 健康结果；不拥有 Web 或实时终端状态 |
+| 系统升级/运行态恢复与 Runtime 写入锁 | System Upgrade Coordinator + 持久化操作状态 | 记录方案、阶段、失败边界和最终验证；只锁定直接受影响的 Runtime 写入 |
+| ClawBot 重启与恢复 | OpenClaw Manager + 固定插件/补丁清单 | 同步固定兼容基线并确认 Gateway、消息通道和运行产物；不修改任意第三方版本 |
 | 配置 | 环境变量、受控 YAML 和私有状态 | 客户端只能修改明确开放的设置 |
 
 所有持久状态必须有大小、权限、格式和恢复边界。跨领域只传递稳定标识和公开模型，不直接读取对方私有状态文件。
 
-## 7. 核心调用链
+## 7. 核心调用链与维护流程
 
 ### 7.1 页面或微信 AI 任务
 
@@ -232,85 +203,88 @@ OpenClaw Agent 不参与设备指令判断，Chub 也不反向调用 OpenClaw Ag
   -> 固定重启脚本
   -> 服务管理器启动新 Web
   -> 新实例 ID 与健康确认
+  -> 清理仍有映射的旧 ttyd
+  -> 用户进入 Session 时新建 ttyd 并 attach 原 tmux
   -> 恢复 Worker 投影、通知和重启终态
 ```
 
-## 8. 长期目标分层
+Web 重启的目标是重新加载 Chub Web 当前代码和配置，恢复控制面、状态投影和页面入口。
 
-```text
-Channels & Presentation
-  Web / API / CLI / OpenClaw Plugin
-                 |
-Application Use Cases & Policies
-  身份、授权、固定业务流程、跨领域协调
-                 |
-Domain Services
-  Device | AI Session | Request | Automation | Notification | Documents
-                 |
-Execution Supervisors
-  Quick Worker | Interactive Supervisor | Automation Runner | Maintenance
-                 |
-Adapters & Infrastructure
-  Agent Runtime | OpenClaw | Chrome | Feishu | OS | Stores | Logs
-```
+- **范围**：只重启 Chub Web。Quick Worker、OpenClaw Gateway、已接受的后台任务和原生 Codex
+  进程保持运行；实时终端的 `ttyd` 只是可重建的 Web 桥，固定 tmux 和原生 writer 不因
+  Web 重启被停止。
+- **门禁**：只处理当前 Web 重启的重复请求和直接维护冲突。不因 Quick Worker 忙、ClawBot
+  状态或实时终端正在使用而拒绝 Web 重启；任务级请求在自身任务和通知进入终态后执行。
+- **结果**：新实例完成启动、实例 ID 已变化且健康检查通过后，才记录 `succeeded`。仅创建
+  重启进程、旧实例退出或 HTTP 受理不能作为成功；启动或健康确认失败时记录 `failed` 并
+  展示原因。
 
-目标分层是依赖方向，不要求每层成为独立进程：
+重启后，实时终端再次进入时按原逻辑 Session 重新创建 `ttyd` 并连接原 tmux；无法确认
+Session 归属或 writer 状态时保持失败关闭，不接管其他 writer。升级与恢复的运行态清理
+不属于普通 Web 重启范围。
 
-- 入口只解析请求和返回统一响应，不拥有业务状态。
-- 应用用例协调多个领域，但不解析外部系统私有协议。
-- 领域服务拥有业务规则和公开状态模型。
-- 执行层拥有进程、租约、超时、取消和真实终态。
-- Adapter 把外部能力映射为领域可理解的结果。
-- 基础设施提供配置、持久化、安全、日志和平台差异，不反向决定业务流程。
+### 7.5 Quick Worker 重启
 
-## 9. 当前结构的优势与需收敛问题
+Quick Worker 重启的目标是清理 Worker 当前运行态并恢复一个可用的新 Worker，不是等待任务自然完成，也不是 Web 或实时终端的重启。
 
-### 9.1 应保留的优势
+- **范围**：关闭新快速任务提交，取消排队任务，停止执行中任务并写入明确的未完成终态；清理 Worker 自有任务、租约和运行映射，启动新 Worker 并确认新的 generation、协议和健康状态。任务不自动重放；Web、ClawBot、实时终端的 tmux 和原生 Codex 不在范围内。
+- **门禁**：只保留认证、重复维护和系统升级直接冲突等必要保护。不因 Worker 当前不健康、协议不兼容、任务排队/执行中或 Web 状态而拒绝恢复；这些状态正是允许执行恢复的原因。
+- **结果**：只有新 Worker 的健康、协议和任务计数状态确认后才记录成功；受理请求、进程创建或旧 Worker 退出不能作为成功。失败时保留失败原因和固定恢复入口，不自动重放已中断任务。
 
-- Web 与 AI Worker 已分离，Web 重启不打断已接受任务。
-- 安全入口、白名单、文件限制和失败关闭规则明确。
-- Session、任务、通知、重启和外部通道终态保持分离。
-- 文件持久化和本机服务足以满足个人设备规模，维护成本低。
-- macOS 与 Ubuntu 使用相同业务语义、不同受控服务实现。
+详细任务状态、租约、通知和维护操作契约以 [Chub Quick Worker 独立服务设计](CHUB_QUICK_WORKER_DESIGN.md) 为准。
 
-### 9.2 渐进收敛的问题
+### 7.6 系统升级与运行态恢复
 
-- `application.py` 的跨模块回调和直接装配较多，应通过明确用例服务减少新增耦合。
-- `app/services/` 职责混杂，后续按领域归属渐进收拢。
-- Codex 私有实现已从 Session、Worker 的共享职责中收敛到 Adapter/Runner；Runtime ID、能力矩阵、原生映射、活动事件和终端连接边界已统一。协议、配置和 `/api/codex/*` 仍是当前 Codex 正式入口；新增 Runtime 按专项设计实现，不为旧版本增加兼容别名。
-- 自动化、维护和 AI 任务使用不同执行机制；应先统一可靠性原则，不急于统一代码框架。
-- 部分 API 和数据路径以当前实现命名；只有内部边界稳定后才迁移公共命名。
+系统升级与运行态恢复是系统兜底的维护流程，目标是在可控范围内切换已准备的版本方案，或在方案不可用时重建当前版本运行态。它不是普通 Web 重启的别名，也不以外围服务“看起来正常”作为开始条件。
 
-## 10. 演进原则与顺序
+- **范围**：确认后锁定直接受影响的 Chub AI Runtime 写入，停止 Quick Worker，终止在途快速任务并清理 Chub 自有 Session 关联、Hook、租约和其他固定运行态；按固定脚本重启 Web/Worker，并重新确认实例、协议、Session 映射及必要通知状态。Codex 原生 Session、用户配置、日志、项目资料和业务数据保留；无关只读能力、ClawBot 和其他独立服务不因该流程整体不可用。
+- **门禁**：只校验可信入口、持久化升级状态可安全读写、固定升级/重启脚本、已安装服务定义、固定运行态清理路径、没有并发维护操作，以及执行过程中的有界写入等待。不检查当前 Web/Worker 健康、任务是否排队或执行中，也不等待任务自然排空。升级方案无法读取或校验时，降级为固定的当前版本运行态恢复，并明确不执行代码版本升级。
+- **结果**：只有新 Web/Worker 实例、目标版本/协议、Session 映射和必要通知状态完成最终确认后才记录成功。破坏性阶段开始前失败可释放写入锁；开始清理或切换后失败则继续保持受影响写入失败关闭，并保留同一固定恢复路径。进程已创建、HTTP 200 或任务已受理不能作为成功。
 
-1. **先固化现状。** 总架构和专项文档先明确权威状态、依赖方向和不得退化的用户行为。
-2. **Codex Runtime 边界收敛已完成。** 当前生产仍只注册 Codex，并已具备实现其他 Runtime 所需的边界；新增 Runtime 按专项文档的实现契约直接实施。
-3. **保持当前正式入口。** 现有 API、页面、微信指令和服务部署在内部收敛期间保持当前用户可见语义；不为已改变的旧运行态、旧协议或旧入口增加长期兼容层。
-4. **从真实调用提取接口。** 只有两个以上稳定调用方或明确替换需求出现时才新增共享抽象。
-5. **领域内聚优先。** 新功能放入对应领域，跨领域通过公开服务和稳定 ID 协调。
-6. **执行可靠性一致。** 所有异步操作都区分受理、开始和最终状态，但不要求使用同一个 Worker。
-7. **不扩大基础设施。** 没有容量、隔离或恢复需求时，不引入数据库、消息队列或新常驻服务。
+该流程的具体阶段、失败恢复和方案字段以当前实现及对应 Runtime/Worker 专项文档为准；总架构只约束范围、状态所有权和门禁方向。
 
-AI Runtime 架构收敛已经完成；新增 Runtime 和其他领域收敛仍由真实产品需求驱动，总架构文档本身不授权同步重构。
+### 7.7 ClawBot 重启与恢复
 
-## 11. 架构验收标准
+ClawBot 的目标是恢复 OpenClaw Gateway 和微信消息通道，不把当前状态正常作为重启前提。页面/API 使用 `restart` action，微信使用 `restart clawbot`；两者在需要时先同步仓库固定的 Chub 插件、微信适配器目标版本和补丁清单，再执行 Gateway 重启。
+
+- **范围**：只影响 OpenClaw Gateway、微信消息通道及其固定插件/补丁运行副本；不重启 Chub Web、Quick Worker 或实时终端。
+- **门禁**：只保留可信入口、OpenClaw 可执行文件、固定服务定义、目标版本可确认和 OpenClaw 维护操作互斥。Gateway 停止、未知、未配置、通道异常和 Agent 任务不构成全局拒绝。
+- **结果**：同步、Gateway 健康、已配置消息通道运行和插件/补丁运行产物均确认后才算完整恢复成功；没有配置消息通道时只报告 Gateway 已恢复及通道未配置，不把 ClawBot 宣称为已就绪；版本、完整性或锚点无法确认时失败关闭，不盲目覆盖。
+
+页面显示“重启与恢复”，API action 继续使用 `restart`，微信指令使用 `restart clawbot`；详细插件、补丁和微信验收边界以 [OpenClaw 定制集成设计](OPENCLAW_CUSTOMIZATION_DESIGN.md) 为准。
+
+## 8. 架构原则
+
+- 入口负责认证、参数校验和展示，不直接拥有其他领域的状态。
+- Web、Quick Worker、实时终端、OpenClaw 和自动化按各自生命周期运行。
+- Quick Worker 重启只清理其排队/执行任务并恢复 Worker；不因 Worker、Web 或任务状态把无关服务纳入同一维护门禁。
+- 系统升级与运行态恢复只锁定直接受影响的 Runtime 写入和服务；升级方案异常时优先保留可确认的当前版本恢复能力，不把“无法升级”扩大为“无法恢复”。
+- ClawBot `restart` API action 与微信 `restart clawbot` 只同步固定兼容基线并恢复 Gateway/消息通道；不因当前异常状态拒绝恢复，也不自动接收任意版本或补丁。
+- 领域状态由唯一模块负责，跨模块通过受控接口和稳定标识关联。
+- 异步操作必须确认最终状态；不以进程创建、HTTP 200 或同步回执宣告成功。
+- 只有真实需求需要时才增加抽象、兼容层或常驻服务。
+
+## 9. 架构验收标准
 
 后续架构调整必须同时满足：
 
 - 页面、CLI、微信和自动化的用户可见行为有明确权威文档。
 - 入口认证、Tailnet 边界、权限和白名单不因分层调整而放宽。
-- Web 重启、Worker 恢复、通知和操作日志仍以最终状态为准。
+- Web 重启、Worker 重启、系统升级/恢复、通知和操作日志仍以最终状态为准；未知状态不能被显示或记录为成功。
+- Web、Worker 和系统升级/恢复的门禁按资源局部生效；Worker 忙碌、Web 不健康或外围服务状态不能无理由扩散为全局拒绝。
+- 升级方案不可用时，必须仍能区分“当前版本运行态恢复”和“代码版本升级”，并在页面、操作记录和结果中保持一致。
+- ClawBot 重启必须区分“Gateway 已重启”和“ClawBot 已恢复”，插件/补丁不一致或消息通道未恢复时不能宣称整体成功。
 - 领域状态有唯一所有者，跨模块不直接修改其他领域私有文件。
 - 外部系统私有协议被限制在 Adapter/Manager 内。
 - 配置不被覆盖；数据切换必须原子、有界且不泄露本机秘密，已改变且不再适用的 Chub 旧运行态按固定边界清理，不新增长期迁移兼容分支。
 - macOS 与 Ubuntu 行为一致；无法实机验证的平台明确说明。
 - 架构复杂度与个人设备规模匹配，没有为假设需求增加常驻基础设施。
 
-## 12. 专项文档关系
+## 10. 专项文档关系
 
 - [Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)：AI Runtime 架构、AI Session Manager、Runtime Adapter、Worker 和实现规范。
 - [Chub CLI 分发、安装与发布设计](CHUB_CLI_DISTRIBUTION_DESIGN.md)：新设备安装、核心 Chub 与可选 ClawBot 职责、npm 发布、版本管理和 GitHub Release。
-- [AI Session 状态模型](AI_SESSION_STATE_DESIGN.md)：Session、Activity、入口、槽位和单 writer 产品语义。
+- [AI Session 状态模型](AI_SESSION_STATE_DESIGN.md)：Session、Activity、usage 投影、入口、槽位和单 writer 产品语义。
 - [Chub Quick Worker 独立服务设计](CHUB_QUICK_WORKER_DESIGN.md)：AI 后台任务、恢复、通知和重启协调语义。
 - [OpenClaw 定制集成设计](OPENCLAW_CUSTOMIZATION_DESIGN.md)：OpenClaw/微信身份、路由、权限、插件定制和通知边界。
 - [前端 UI 模块化设计](FRONTEND_UI_DESIGN.md)：Web 前端加载、组件、交互和视觉契约。

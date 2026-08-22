@@ -22,8 +22,6 @@ def task(
     result: str = "执行完成",
     notification_route: str = "default",
     summary: str | None = None,
-    weixin_session_slot: int | None = None,
-    weixin_session_title: str | None = None,
     weixin_request_slot: int | None = None,
     weixin_request_generation: str | None = None,
     weixin_request_run_id: str | None = None,
@@ -36,8 +34,6 @@ def task(
         session_id="session-1",
         prompt="执行任务",
         summary=summary,
-        weixin_session_slot=weixin_session_slot,
-        weixin_session_title=weixin_session_title,
         weixin_request_slot=weixin_request_slot,
         weixin_request_generation=weixin_request_generation,
         weixin_request_run_id=weixin_request_run_id,
@@ -97,6 +93,7 @@ def test_optimized_task_notification_reports_real_submission_state() -> None:
     )
     notifier.session_slot_validator = MagicMock(return_value=True)
     notifier.session_current_validator = MagicMock(return_value=True)
+    notifier.session_context_reader = lambda _session_id: (2, "服务检查")
     delivery_route = QuickInteractionWeixinRoute(
         account_id="weixin-account",
         recipient="owner@im.wechat",
@@ -106,8 +103,6 @@ def test_optimized_task_notification_reports_real_submission_state() -> None:
         delivery_route,
         outcome="started",
         target_session_id="session-2",
-        target_slot=2,
-        target_title="服务检查",
         task="请检查服务状态。",
         english="Please check the service status.",
     )
@@ -134,6 +129,7 @@ def test_optimized_task_notification_marks_reused_slot_unavailable() -> None:
     )
     notifier.session_slot_validator = MagicMock(return_value=False)
     notifier.session_current_validator = MagicMock(return_value=True)
+    notifier.session_context_reader = lambda _session_id: (2, "服务检查")
 
     notifier.notify_weixin_optimized_task(
         QuickInteractionWeixinRoute(
@@ -142,8 +138,6 @@ def test_optimized_task_notification_marks_reused_slot_unavailable() -> None:
         ),
         outcome="started",
         target_session_id="old-session",
-        target_slot=2,
-        target_title="服务检查",
         task="请检查服务状态。",
         english="Please check the service status.",
     )
@@ -266,9 +260,8 @@ def test_notification_includes_stable_session_and_marks_reused_slot() -> None:
     completed = task(
         result="完整结果",
         summary="检查服务",
-        weixin_session_slot=3,
-        weixin_session_title="服务检查",
     )
+    notifier.session_context_reader = lambda _session_id: (3, "服务检查")
 
     notifier.session_slot_validator = lambda slot, session_id: (
         slot == 3 and session_id == "session-1"
@@ -290,6 +283,22 @@ def test_notification_includes_stable_session_and_marks_reused_slot() -> None:
         completed
     )[0]
     assert "▶ S3" not in notifier._messages_for(completed)[0]
+
+
+def test_notification_reads_latest_session_title_by_session_id() -> None:
+    notifier = OpenClawCompletionNotifier(
+        OpenClawCompletionNotificationConfig(max_message_chars=256)
+    )
+    current_title = {"value": "旧标题"}
+    notifier.session_context_reader = lambda _session_id: (3, current_title["value"])
+    notifier.session_slot_validator = lambda _slot, _session_id: True
+
+    completed = task(result="完整结果", summary="检查服务")
+    assert "S3 · 旧标题" in notifier._messages_for(completed)[0]
+
+    current_title["value"] = "新标题"
+    assert "S3 · 新标题" in notifier._messages_for(completed)[0]
+    assert "旧标题" not in notifier._messages_for(completed)[0]
 
 
 def test_notification_includes_request_and_marks_reused_slot() -> None:
@@ -466,11 +475,10 @@ def test_multipart_notification_uses_one_current_session_snapshot() -> None:
 
     notifier.session_slot_validator = lambda _slot, _session_id: True
     notifier.session_current_validator = is_current
+    notifier.session_context_reader = lambda _session_id: (3, "服务检查")
     completed = task(
         result="结果" * 300,
         summary="检查服务",
-        weixin_session_slot=3,
-        weixin_session_title="服务检查",
     )
 
     messages = notifier._messages_for(completed)
@@ -715,13 +723,12 @@ def test_weixin_task_uses_its_immutable_route_instead_of_global_target(
     notifier.session_current_validator = lambda _slot, _session_id: current[
         "value"
     ]
+    notifier.session_context_reader = lambda _session_id: (3, "绘画二")
     notifier.completion_usage_reader = lambda: "Weekly 64% · Today 1.2M"
 
     result = notifier.notify(
         task(
             notification_route="weixin-task",
-            weixin_session_slot=3,
-            weixin_session_title="绘画二",
         ),
         route,
     )
@@ -809,8 +816,6 @@ def test_restart_notification_uses_weixin_task_route(
         task(
             notification_route="weixin-task",
             summary="检查 Ubuntu 服务状态",
-            weixin_session_slot=3,
-            weixin_session_title="服务检查",
         ),
         route,
         "succeeded",

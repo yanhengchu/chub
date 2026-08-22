@@ -153,6 +153,63 @@
     );
   }
 
+  function sessionUsageBlockReason(session) {
+    const owner = session?.usage?.owner || "none";
+    if (owner === "external") {
+      return "This is open in another app, close it there to continue here.";
+    }
+    if (owner === "unknown") {
+      return "无法确认 Session 占用状态，请刷新后重试。";
+    }
+    return "";
+  }
+
+  function sessionDeleteBlockReason(session) {
+    const owner = session?.usage?.owner || "none";
+    return owner === "external"
+      ? "This is open in another app, close it there to continue here."
+      : "";
+  }
+
+  function sessionArchiveBlockReason(session) {
+    const owner = session?.usage?.owner || "none";
+    if (owner === "external") {
+      return "This is open in another app, close it there to continue here.";
+    }
+    const phase = session?.usage?.phase || "unknown";
+    if (
+      (owner === "terminal" && phase === "running")
+      || (
+        owner === "quick_worker"
+        && ["running", "waiting_result"].includes(phase)
+      )
+    ) {
+      return "Session 当前正在执行，请等待任务结束后再归档。";
+    }
+    return "";
+  }
+
+  function sessionUsageStatus(session) {
+    const owner = session?.usage?.owner || "none";
+    if (owner === "external") {
+      return "其他应用占用";
+    }
+    if (owner === "unknown") {
+      return "状态未知";
+    }
+    return "";
+  }
+
+  function sessionStopReady(session) {
+    const owner = session?.usage?.owner || "none";
+    const phase = session?.usage?.phase || "unknown";
+    return (owner === "terminal" && phase === "running")
+      || (
+        owner === "quick_worker"
+        && ["running", "waiting_result"].includes(phase)
+      );
+  }
+
   function submissionBlockReason({
     session,
     activeInteraction,
@@ -160,6 +217,10 @@
   }) {
     if (!session) {
       return "正在读取会话状态…";
+    }
+    const usageBlock = sessionUsageBlockReason(session);
+    if (usageBlock) {
+      return usageBlock;
     }
     if (activeInteraction) {
       return "当前快速交互正在执行，请等待任务结束。";
@@ -182,6 +243,10 @@
   }
 
   function sessionSwitcherStatus(session) {
+    const usageStatus = sessionUsageStatus(session);
+    if (usageStatus) {
+      return usageStatus;
+    }
     if (
       session.quick_interaction_running === true
       || session.activity === "working"
@@ -278,17 +343,27 @@
     notificationPending = false,
     restartPending = false,
     session,
+    sessions = [],
   }) {
     const retryableLoadFailure = loadFailed
       && (loadErrors.length === 0 || loadErrors.some(isRetryableRequestError));
     if (loadFailed && loadErrors.length > 0 && !retryableLoadFailure) {
       return false;
     }
+    const sessionListActive = sessions.some((item) => (
+      item?.quick_interaction_running === true
+      || item?.activity === "working"
+      || (
+        item?.status === "running"
+        && item?.activity === "unknown"
+      )
+    ));
     return Boolean(
       retryableLoadFailure
       || activeInteraction
       || notificationPending
       || restartPending
+      || sessionListActive
       || session?.quick_interaction_running === true
       || session?.activity === "working"
       || (session?.status === "running" && session.activity === "unknown")
@@ -431,6 +506,11 @@
     sessionNavigationMode,
     sessionSwitcherEntries,
     sessionSwitcherLabels,
+    sessionUsageBlockReason,
+    sessionDeleteBlockReason,
+    sessionArchiveBlockReason,
+    sessionUsageStatus,
+    sessionStopReady,
     sessionSwitcherStatus,
     statusText,
     submissionBlockReason,

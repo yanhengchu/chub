@@ -6,6 +6,7 @@ import pytest
 
 from app.core.response import ApiError
 from app.services.openclaw import OpenClawManager, OpenClawStatus
+from app.services.openclaw_recovery import OpenClawSyncReport
 from app.services.openclaw_weixin import (
     OpenClawWeixinLogin,
     extract_terminal_qr_png,
@@ -375,6 +376,51 @@ def test_openclaw_start_waits_for_ready_state(
         ["gateway", "start", "--json"],
         timeout=45,
     )
+
+
+def test_openclaw_restart_allows_stopped_gateway_and_syncs_before_restart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = OpenClawManager()
+    stopped = openclaw_status("stopped")
+    recovered = openclaw_status("running").model_copy(
+        update={
+            "channel_state": "running",
+            "channel_count": 1,
+            "channel_running_count": 1,
+        }
+    )
+    monkeypatch.setattr(manager, "status", MagicMock(side_effect=[stopped, recovered]))
+    monkeypatch.setattr(
+        manager,
+        "_gateway_status",
+        MagicMock(return_value=(recovered, "/usr/bin/openclaw")),
+    )
+    monkeypatch.setattr(manager, "_resolve_executable", lambda: "/usr/bin/openclaw")
+    monkeypatch.setattr(manager, "_run_json", MagicMock(return_value={}))
+    synchronize = MagicMock(
+        return_value=OpenClawSyncReport(changed=True, message="已同步固定插件和补丁基线。")
+    )
+    monkeypatch.setattr("app.services.openclaw.synchronize_openclaw_runtime", synchronize)
+
+    result = manager.control("restart")
+
+    assert result.state == "running"
+    assert "已同步固定插件和补丁基线" in result.message
+    synchronize.assert_called_once_with("/usr/bin/openclaw", stopped.version)
+
+
+def test_openclaw_restart_allows_unknown_gateway_state() -> None:
+    status = openclaw_status("stopped").model_copy(
+        update={
+            "state": "unknown",
+            "installed": True,
+            "service_installed": False,
+            "configured": False,
+        }
+    )
+
+    OpenClawManager._validate_action("restart", status)
 
 
 def test_openclaw_stop_requires_running_gateway(

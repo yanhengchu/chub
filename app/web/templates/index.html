@@ -29,6 +29,24 @@
 
     {% include "partials/confirmation_dialog.html" %}
 
+    <dialog id="codex-rename-dialog" class="codex-workspace-dialog codex-rename-dialog" aria-labelledby="codex-rename-title">
+      <form id="codex-rename-form" class="codex-workspace-dialog-surface codex-rename-form">
+        <div class="codex-workspace-dialog-header">
+          <h3 id="codex-rename-title">重命名 Session</h3>
+          <button id="codex-rename-close" class="button-link codex-workspace-dialog-close" type="button" aria-label="关闭重命名窗口">关闭</button>
+        </div>
+        <label class="codex-rename-field" for="codex-rename-input">
+          <span>Session 标题</span>
+          <input id="codex-rename-input" type="text" maxlength="48" required autocomplete="off">
+        </label>
+        <p id="codex-rename-message" class="message" aria-live="polite"></p>
+        <div class="dialog-actions">
+          <button id="codex-rename-cancel" class="button-link" type="button">取消</button>
+          <button id="codex-rename-confirm" class="button-secondary" type="submit">保存</button>
+        </div>
+      </form>
+    </dialog>
+
     <dialog id="openclaw-dialog" class="codex-workspace-dialog confirmation-dialog" aria-labelledby="openclaw-dialog-title" aria-describedby="openclaw-dialog-message">
       <div class="codex-workspace-dialog-surface confirmation-dialog-surface">
         <div class="codex-workspace-dialog-header">
@@ -295,7 +313,7 @@
                   </div>
                   <div class="workstation-status-actions">
                     <span id="quick-worker-badge" class="badge badge-muted">正在检查</span>
-                    <button id="quick-worker-restart" class="button-secondary" type="button" aria-haspopup="dialog" aria-controls="confirmation-dialog" disabled>重启</button>
+                    <button id="quick-worker-restart" class="button-secondary" type="button" aria-haspopup="dialog" aria-controls="confirmation-dialog" disabled>重启并清理任务</button>
                   </div>
                 </div>
                 <div class="workstation-status-row">
@@ -308,7 +326,7 @@
                     <span id="clawbot-badge" class="badge badge-muted">正在检查</span>
                     <button id="openclaw-bind-weixin" class="button-secondary" type="button" hidden>微信</button>
                     <button id="openclaw-start" class="button-secondary" type="button" hidden>启动</button>
-                    <button id="openclaw-restart" class="button-secondary" type="button" hidden>重启</button>
+                    <button id="openclaw-restart" class="button-secondary" type="button" hidden>重启与恢复</button>
                   </div>
                 </div>
                 <div class="workstation-status-row">

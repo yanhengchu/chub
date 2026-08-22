@@ -28,7 +28,19 @@ const session = {
   permission_mode: "full-access",
   quick_interaction_running: false,
 };
-const busySession = { ...session, quick_interaction_running: true };
+const busySession = {
+  ...session,
+  quick_interaction_running: true,
+  usage: { owner: "quick_worker", phase: "waiting_result" },
+};
+const externallyUsedSession = {
+  ...session,
+  usage: { owner: "external", phase: "unknown" },
+};
+const uncertainSession = {
+  ...session,
+  usage: { owner: "unknown", phase: "unknown" },
+};
 const result = {
   preview: sessionView.buildSessionPreview(session),
   ready: sessionView.buildSessionState({
@@ -40,6 +52,18 @@ const result = {
   busy: sessionView.buildSessionState({
     session: busySession,
     activeInteraction: true,
+    archivePending: false,
+    promptLength: 4,
+  }),
+  externallyUsed: sessionView.buildSessionState({
+    session: externallyUsedSession,
+    activeInteraction: false,
+    archivePending: false,
+    promptLength: 4,
+  }),
+  uncertain: sessionView.buildSessionState({
+    session: uncertainSession,
+    activeInteraction: false,
     archivePending: false,
     promptLength: 4,
   }),
@@ -93,8 +117,20 @@ process.stdout.write(JSON.stringify(result));
     assert behavior["ready"]["deleteBusy"] is False
     assert behavior["ready"]["submissionReason"] == ""
     assert behavior["busy"]["busy"] is True
+    assert behavior["busy"]["stopReady"] is True
     assert behavior["busy"]["archiveBusy"] is True
+    assert behavior["busy"]["archiveLabel"] == "Session 当前正在执行，请等待任务结束后再归档。"
     assert behavior["busy"]["submissionReason"] == "当前快速交互正在执行，请等待任务结束。"
+    assert behavior["externallyUsed"]["usageBlocked"] is True
+    assert behavior["externallyUsed"]["stopReady"] is False
+    assert behavior["externallyUsed"]["archiveBusy"] is True
+    assert behavior["externallyUsed"]["deleteBusy"] is True
+    assert behavior["externallyUsed"]["archiveLabel"] == "This is open in another app, close it there to continue here."
+    assert behavior["externallyUsed"]["submissionReason"] == "This is open in another app, close it there to continue here."
+    assert behavior["uncertain"]["usageBlocked"] is True
+    assert behavior["uncertain"]["archiveBusy"] is False
+    assert behavior["uncertain"]["archiveLabel"] == "归档 Session"
+    assert behavior["uncertain"]["deleteBusy"] is False
     assert behavior["creation"]["disabled"] is False
     assert behavior["creation"]["label"] == "新建 Session"
     assert [item["id"] for item in behavior["switcher"]["items"]] == [

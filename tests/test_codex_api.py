@@ -508,12 +508,11 @@ async def test_page_quick_interaction_preserves_bound_weixin_session_context(
         )
 
     assert response.status_code == 200
-    assert lock_order == ["slot-snapshot", "session-lock"]
-    app.state.weixin_chub_mode.session_slot.assert_called_once_with("session-1")
+    assert lock_order == ["session-lock"]
     submitted = quick_interactions.submit.call_args
     assert submitted.args == ("session-1", "检查状态")
-    assert submitted.kwargs["weixin_session_slot"] == 3
-    assert submitted.kwargs["weixin_session_title"] == "设备状态检查"
+    assert "weixin_session_slot" not in submitted.kwargs
+    assert "weixin_session_title" not in submitted.kwargs
 
 
 @pytest.mark.anyio
@@ -1023,8 +1022,41 @@ async def test_stop_cancels_running_quick_interaction_before_session(
 
     assert response.status_code == 200
     assert events == ["cancel", "stop"]
+    manager.ensure_stop_allowed.assert_called_once_with("session-1")
     assert response.json()["data"]["weixin_session_slot"] == 4
     weixin_chub_mode.session_slot.assert_called_once_with("session-1")
+
+
+@pytest.mark.anyio
+async def test_stop_rejects_external_writer_before_cancelling_chub_work(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    manager = MagicMock()
+    manager.ensure_stop_allowed.side_effect = ApiError(
+        409,
+        "codex_session_writer_active",
+        "This is open in another app, close it there to continue here.",
+    )
+    quick_interactions = MagicMock()
+    app.state.codex_pty_manager = manager
+    app.state.quick_interactions = quick_interactions
+    app.state.terminal_tickets = MagicMock()
+    app.state.terminal_connections = MagicMock()
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/codex/sessions/session-1/stop",
+            headers=authorization(settings),
+        )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "codex_session_writer_active"
+    manager.ensure_stop_allowed.assert_called_once_with("session-1")
+    quick_interactions.cancel_codex_session.assert_not_called()
+    app.state.terminal_tickets.revoke_session.assert_not_called()
+    app.state.terminal_connections.close_session.assert_not_called()
 
 
 @pytest.mark.anyio
@@ -1128,8 +1160,19 @@ async def test_archive_session_revokes_access_and_calls_manager(
     guard.__enter__.side_effect = lambda: events.append("guard-enter")
     guard.__exit__.side_effect = lambda *_args: events.append("guard-exit") or False
     app.state.quick_interactions = MagicMock()
-    app.state.quick_interactions.destructive_operation_guard.return_value = guard
-    manager.archive_session.side_effect = lambda _id: events.append("archive")
+    app.state.quick_interactions.stop_operation_guard.return_value = guard
+    manager.archive_native_session.side_effect = lambda _id: events.append(
+        "native-archive"
+    )
+    app.state.quick_interactions.cancel_codex_session.side_effect = (
+        lambda _id: events.append("cancel")
+    )
+    app.state.quick_interactions.remove_session_tasks.side_effect = (
+        lambda _id: events.append("remove-tasks")
+    )
+    manager.finalize_archive_session.side_effect = lambda _id: events.append(
+        "finalize"
+    )
     app.state.weixin_chub_mode = MagicMock()
     app.state.weixin_chub_mode.release_session_slot.side_effect = (
         lambda _id: events.append("release") or True
@@ -1146,12 +1189,97 @@ async def test_archive_session_revokes_access_and_calls_manager(
 
     assert response.status_code == 200
     tickets.revoke_session.assert_called_once_with("session-1")
-    manager.archive_session.assert_called_once_with("session-1")
-    assert events == ["guard-enter", "archive", "guard-exit", "release"]
+    manager.archive_native_session.assert_called_once_with("session-1")
+    manager.finalize_archive_session.assert_called_once_with("session-1")
+    app.state.quick_interactions.cancel_codex_session.assert_called_once_with(
+        "session-1"
+    )
+    assert events == [
+        "guard-enter",
+        "native-archive",
+        "cancel",
+        "remove-tasks",
+        "release",
+        "finalize",
+        "guard-exit",
+    ]
 
 
 @pytest.mark.anyio
-async def test_archive_session_logs_slot_release_failure_without_failing_archive(
+async def test_archive_session_is_idempotent_when_stale_mapping_is_gone(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    manager = MagicMock()
+    quick_interactions = MagicMock()
+    quick_interactions.stop_operation_guard.return_value = MagicMock()
+    manager.archive_native_session.side_effect = ApiError(
+        404,
+        "codex_session_not_found",
+        "Codex session not found",
+    )
+    manager.finalize_archive_session = MagicMock()
+    app.state.codex_pty_manager = manager
+    app.state.quick_interactions = quick_interactions
+    app.state.terminal_tickets = MagicMock()
+    app.state.terminal_connections = MagicMock()
+    app.state.weixin_chub_mode = MagicMock()
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/codex/sessions/session-1/archive",
+            headers=authorization(settings),
+        )
+
+    assert response.status_code == 200
+    quick_interactions.cancel_codex_session.assert_called_once_with("session-1")
+    quick_interactions.remove_session_tasks.assert_called_once_with("session-1")
+    manager.finalize_archive_session.assert_called_once_with("session-1")
+
+
+@pytest.mark.anyio
+async def test_delete_session_is_idempotent_when_stale_mapping_is_gone(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    manager = MagicMock()
+    quick_interactions = MagicMock()
+    quick_interactions.destructive_operation_guard.return_value = MagicMock()
+    manager.ensure_delete_allowed.side_effect = ApiError(
+        404,
+        "codex_session_not_found",
+        "Codex session not found",
+    )
+    manager.delete_native_session.side_effect = ApiError(
+        404,
+        "codex_session_not_found",
+        "Codex session not found",
+    )
+    manager.finalize_delete_session = MagicMock()
+    app.state.codex_pty_manager = manager
+    app.state.quick_interactions = quick_interactions
+    app.state.terminal_tickets = MagicMock()
+    app.state.terminal_connections = MagicMock()
+    app.state.weixin_chub_mode = MagicMock()
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.delete(
+            "/api/codex/sessions/session-1",
+            headers=authorization(settings),
+        )
+
+    assert response.status_code == 200
+    quick_interactions.remove_session_tasks.assert_called_once_with("session-1")
+    manager.finalize_delete_session.assert_called_once_with(
+        "session-1",
+        terminal_already_closed=True,
+    )
+
+
+@pytest.mark.anyio
+async def test_archive_session_fails_when_slot_release_cannot_be_confirmed(
     settings: Settings,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1159,7 +1287,8 @@ async def test_archive_session_logs_slot_release_failure_without_failing_archive
     monkeypatch.setattr("app.codex.routes.write_operation", write_operation)
     app = create_app(settings)
     allow_session_writes(app)
-    app.state.codex_pty_manager = MagicMock()
+    manager = MagicMock()
+    app.state.codex_pty_manager = manager
     app.state.weixin_chub_mode = MagicMock()
     app.state.weixin_chub_mode.release_session_slot.side_effect = OSError(
         "disk unavailable"
@@ -1172,7 +1301,9 @@ async def test_archive_session_logs_slot_release_failure_without_failing_archive
             headers=authorization(settings),
         )
 
-    assert response.status_code == 200
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "weixin_chub_mode_slot_release_unknown"
+    manager.finalize_archive_session.assert_not_called()
     assert [item.kwargs["status"] for item in write_operation.call_args_list] == [
         "requested",
         "started",
@@ -1194,10 +1325,21 @@ async def test_delete_session_releases_slot_after_destructive_guard(
     guard.__exit__.side_effect = lambda *_args: events.append("guard-exit") or False
     app.state.quick_interactions = MagicMock()
     app.state.quick_interactions.destructive_operation_guard.return_value = guard
-    app.state.codex_pty_manager = MagicMock()
-    app.state.codex_pty_manager.delete_session.side_effect = (
+    app.state.quick_interactions.cancel_codex_session.side_effect = (
+        lambda _id: events.append("cancel")
+    )
+    manager = MagicMock()
+    manager.delete_native_session.side_effect = (
         lambda _id: events.append("delete")
     )
+    manager.stop_session.side_effect = lambda _id, **_kwargs: events.append("stop")
+    app.state.quick_interactions.remove_session_tasks.side_effect = (
+        lambda _id: events.append("remove-tasks")
+    )
+    manager.finalize_delete_session.side_effect = (
+        lambda _id, **_kwargs: events.append("finalize")
+    )
+    app.state.codex_pty_manager = manager
     app.state.weixin_chub_mode = MagicMock()
     app.state.weixin_chub_mode.release_session_slot.side_effect = (
         lambda _id: events.append("release") or True
@@ -1211,23 +1353,57 @@ async def test_delete_session_releases_slot_after_destructive_guard(
         )
 
     assert response.status_code == 200
-    assert events == ["guard-enter", "delete", "guard-exit", "release"]
+    assert events == [
+        "guard-enter",
+        "cancel",
+        "stop",
+        "delete",
+        "remove-tasks",
+        "release",
+        "finalize",
+        "guard-exit",
+    ]
 
 
 @pytest.mark.anyio
-async def test_archive_session_rejects_running_quick_interaction(
+async def test_delete_session_does_not_gate_native_delete_on_terminal_cleanup_error(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    manager = MagicMock()
+    quick_interactions = MagicMock()
+    quick_interactions.destructive_operation_guard.return_value = MagicMock()
+    manager.stop_session.side_effect = OSError("terminal carrier unavailable")
+    app.state.codex_pty_manager = manager
+    app.state.quick_interactions = quick_interactions
+    app.state.terminal_tickets = MagicMock()
+    app.state.terminal_connections = MagicMock()
+    app.state.weixin_chub_mode = MagicMock()
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.delete(
+            "/api/codex/sessions/session-1",
+            headers=authorization(settings),
+        )
+
+    assert response.status_code == 200
+    manager.delete_native_session.assert_called_once_with("session-1")
+    manager.finalize_delete_session.assert_called_once_with(
+        "session-1",
+        terminal_already_closed=True,
+    )
+
+
+@pytest.mark.anyio
+async def test_archive_session_uses_stop_guard_before_manager_gate(
     settings: Settings,
 ) -> None:
     app = create_app(settings)
     manager = MagicMock()
     quick_interactions = MagicMock()
     guard = MagicMock()
-    guard.__enter__.side_effect = ApiError(
-        409,
-        "quick_interaction_in_progress",
-        "该会话正在执行快速交互，请等待任务结束。",
-    )
-    quick_interactions.destructive_operation_guard.return_value = guard
+    quick_interactions.stop_operation_guard.return_value = guard
     app.state.codex_pty_manager = manager
     app.state.quick_interactions = quick_interactions
     app.state.terminal_tickets = MagicMock()
@@ -1240,27 +1416,61 @@ async def test_archive_session_rejects_running_quick_interaction(
             headers=authorization(settings),
         )
 
-    assert response.status_code == 409
-    assert response.json()["error"]["code"] == "quick_interaction_in_progress"
-    manager.archive_session.assert_not_called()
-    app.state.terminal_tickets.revoke_session.assert_not_called()
-    app.state.terminal_connections.close_session.assert_not_called()
+    assert response.status_code == 200
+    manager.archive_native_session.assert_called_once_with("session-1")
+    quick_interactions.cancel_codex_session.assert_called_once_with("session-1")
+    app.state.terminal_tickets.revoke_session.assert_called_once_with("session-1")
+    app.state.terminal_connections.close_session.assert_called_once_with("session-1")
+    manager.finalize_archive_session.assert_called_once_with("session-1")
 
 
 @pytest.mark.anyio
-async def test_delete_session_rejects_running_quick_without_closing_terminal(
+async def test_archive_session_stops_before_cleaning_when_native_archive_fails(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    manager = MagicMock()
+    manager.archive_native_session.side_effect = ApiError(
+        409,
+        "codex_session_writer_active",
+        "This is open in another app, close it there to continue here.",
+    )
+    app.state.codex_pty_manager = manager
+    app.state.quick_interactions = MagicMock()
+    app.state.quick_interactions.stop_operation_guard.return_value = MagicMock()
+    app.state.terminal_tickets = MagicMock()
+    app.state.terminal_connections = MagicMock()
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/codex/sessions/session-1/archive",
+            headers=authorization(settings),
+        )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "codex_session_writer_active"
+    app.state.quick_interactions.cancel_codex_session.assert_not_called()
+    app.state.terminal_tickets.revoke_session.assert_not_called()
+    app.state.terminal_connections.close_session.assert_not_called()
+    manager.finalize_archive_session.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_delete_session_preserves_state_when_quick_cancellation_fails(
     settings: Settings,
 ) -> None:
     app = create_app(settings)
     guard = MagicMock()
-    guard.__enter__.side_effect = ApiError(
-        409,
-        "quick_interaction_in_progress",
-        "该会话正在执行快速交互，请等待任务结束。",
-    )
     app.state.quick_interactions = MagicMock()
     app.state.quick_interactions.destructive_operation_guard.return_value = guard
-    app.state.codex_pty_manager = MagicMock()
+    app.state.quick_interactions.cancel_codex_session.side_effect = ApiError(
+        409,
+        "quick_interaction_cancel_failed",
+        "快速交互停止状态无法确认，请稍后重试。",
+    )
+    manager = MagicMock()
+    app.state.codex_pty_manager = manager
     app.state.terminal_tickets = MagicMock()
     app.state.terminal_connections = MagicMock()
     transport = httpx.ASGITransport(app=app)
@@ -1272,6 +1482,9 @@ async def test_delete_session_rejects_running_quick_without_closing_terminal(
         )
 
     assert response.status_code == 409
-    app.state.codex_pty_manager.delete_session.assert_not_called()
+    assert response.json()["error"]["code"] == "quick_interaction_cancel_failed"
+    manager.delete_native_session.assert_not_called()
+    manager.finalize_delete_session.assert_not_called()
+    app.state.quick_interactions.remove_session_tasks.assert_not_called()
     app.state.terminal_tickets.revoke_session.assert_not_called()
     app.state.terminal_connections.close_session.assert_not_called()

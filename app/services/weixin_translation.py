@@ -61,8 +61,6 @@ class TranslationEntry(_StrictModel):
     ] = "queued"
     quick_task_id: str | None = None
     target_session_id: str | None = Field(default=None, max_length=128)
-    target_session_slot: int | None = Field(default=None, ge=1, le=9)
-    target_session_title: str | None = Field(default=None, max_length=48)
     polished: str | None = Field(default=None, max_length=8000)
     english: str | None = Field(default=None, max_length=8000)
     main_task_id: str | None = Field(default=None, max_length=128)
@@ -199,8 +197,6 @@ class WeixinTranslationManager:
         operation_id: str,
         source_ip: str,
         target_session_id: str | None = None,
-        target_session_slot: int | None = None,
-        target_session_title: str | None = None,
     ) -> bool:
         if self._state_error:
             self._reject(
@@ -241,8 +237,6 @@ class WeixinTranslationManager:
                 operation_id=f"{operation_id}:translation",
                 source_ip=source_ip,
                 target_session_id=target_session_id,
-                target_session_slot=target_session_slot,
-                target_session_title=target_session_title,
                 generation=self._state.generation,
                 created_at=now,
                 updated_at=now,
@@ -701,6 +695,15 @@ class WeixinTranslationManager:
             if len(content) > MAX_TRANSLATION_STATE_BYTES:
                 raise ValueError("Weixin translation state is too large")
             payload = json.loads(content.decode("utf-8"))
+            legacy_session_display_snapshot = False
+            if isinstance(payload, dict) and isinstance(payload.get("entries"), list):
+                for item in payload["entries"]:
+                    if not isinstance(item, dict):
+                        continue
+                    for field in ("target_session_slot", "target_session_title"):
+                        if field in item:
+                            item.pop(field, None)
+                            legacy_session_display_snapshot = True
             state = TranslationState.model_validate(payload)
         except FileNotFoundError:
             return TranslationState()
@@ -715,7 +718,7 @@ class WeixinTranslationManager:
             LOGGER.warning("Unable to protect Weixin translation state", exc_info=True)
             return TranslationState()
         next_state = state.model_copy(deep=True)
-        changed = False
+        changed = legacy_session_display_snapshot
         enabled = (
             self.config.translation_enabled
             if next_state.enabled_override is None
@@ -761,19 +764,23 @@ class WeixinTranslationManager:
                     ),
                     None,
                 )
-        if session_id:
-            try:
-                session = self.codex_manager.get_session(session_id)
-                if (
-                    session.workspace_id == "weixin-translation"
-                    and session.permission_mode == "read-only"
-                ):
-                    return session_id
-            except Exception:
-                pass
-        with self.quick_interactions.session_creation_guard():
-            created = self.codex_manager.create_translation_session()
-        with self._lock:
+            if session_id:
+                try:
+                    session = self.codex_manager.get_session(session_id)
+                    if (
+                        session.session_mode == "quick"
+                        and session.workspace_id == "weixin-translation"
+                        and session.permission_mode == "read-only"
+                    ):
+                        return session_id
+                except Exception:
+                    pass
+            # Keep the state lock through validation, creation and publication.
+            # Otherwise two inbound Weixin tasks can create two internal logical
+            # Sessions before either one records its ID, leaving later native
+            # binding to race between those records.
+            with self.quick_interactions.session_creation_guard():
+                created = self.codex_manager.create_translation_session()
             next_state = self._state.model_copy(deep=True)
             if (
                 resolved_generation == next_state.generation
@@ -794,7 +801,7 @@ class WeixinTranslationManager:
                 self.codex_manager.discard_unstarted_session(created.id)
                 raise
             self._state = next_state
-        return created.id
+            return created.id
 
     def _retire_completed_sessions(self) -> None:
         if not self._retire_lock.acquire(blocking=False):

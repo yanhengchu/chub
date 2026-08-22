@@ -97,6 +97,8 @@ const failedUpgradeControls = {
   quickWorkerRestart: elementCache.quickWorkerRestart.disabled,
   systemUpgradeStart: elementCache.systemUpgradeStart.disabled,
 };
+quickWorkerState = { state: "unavailable", message: "暂不可用" };
+const unknownTaskDetail = systemUpgradeImpactDetails()[0].value;
 systemUpgradeState.operation.status = "started";
 syncCoreMaintenanceControls();
 const activeUpgradeControls = {
@@ -106,7 +108,9 @@ const activeUpgradeControls = {
 };
 
 renderSystemUpgrade({ state: "available", message: "ready",
+  plan: { plan_id: "runtime-recovery" },
   operation: { operation_id: "old", status: "succeeded" } });
+const recoveryOnlyButton = elementCache.systemUpgradeStart.textContent;
 const upgradeHistorical = reloads;
 systemUpgradeReloadOperationId = "current";
 renderSystemUpgrade({ state: "available", message: "ready",
@@ -137,6 +141,8 @@ process.stdout.write(JSON.stringify({
   workerCompletionDetail,
   failedUpgradeControls,
   activeUpgradeControls,
+  unknownTaskDetail,
+  recoveryOnlyButton,
   upgradeHistorical,
   upgradeNonMatching,
   upgradeSucceeded,
@@ -169,6 +175,8 @@ process.stdout.write(JSON.stringify({
             "quickWorkerRestart": True,
             "systemUpgradeStart": True,
         },
+        "unknownTaskDetail": "任务数量暂无法确认；恢复流程会按固定边界清理。",
+        "recoveryOnlyButton": "运行态恢复",
         "upgradeHistorical": 1,
         "upgradeNonMatching": 1,
         "upgradeSucceeded": 2,

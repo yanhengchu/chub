@@ -431,6 +431,13 @@ class QuickWorkerServer:
             self.status = "ready"
 
     async def _finish_drain(self) -> None:
+        if self._drain_operation_id and self._drain_operation_id.startswith(
+            "worker-reload:"
+        ):
+            await self.task_manager.interrupt_for_restart(
+                error_code="worker_restarted",
+                error="Quick Worker restarted before the task completed.",
+            )
         await self.task_manager.wait_until_idle()
         if self.task_manager.corrupt_count:
             self._drain_error = "Worker task store contains invalid records"

@@ -4,12 +4,62 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 import sys
 from pathlib import Path
 
 
 SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
 CODEX_SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+MAX_REBIND_DEPTH = 8
+MAX_REBIND_BYTES = 256
+
+
+def _read_rebind_target(directory: Path, session_id: str) -> str | None:
+    path = directory / f".{session_id}.rebind"
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except (FileNotFoundError, OSError):
+        return None
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or stat.S_IMODE(metadata.st_mode) & 0o077
+            or metadata.st_size > MAX_REBIND_BYTES
+        ):
+            return None
+        with os.fdopen(descriptor, "rb") as alias_file:
+            descriptor = -1
+            content = alias_file.read(MAX_REBIND_BYTES + 1)
+        if len(content) > MAX_REBIND_BYTES:
+            return None
+    except OSError:
+        return None
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    try:
+        target = content.decode("ascii").strip()
+    except UnicodeDecodeError:
+        return None
+    return target if SESSION_ID_PATTERN.fullmatch(target) else None
+
+
+def _resolve_rebound_session(directory: Path, session_id: str) -> str:
+    current = session_id
+    seen = {current}
+    for _ in range(MAX_REBIND_DEPTH):
+        target = _read_rebind_target(directory, current)
+        if target is None or target in seen:
+            return current
+        seen.add(target)
+        current = target
+    return current
 
 
 def main() -> int:
@@ -17,6 +67,7 @@ def main() -> int:
     hook_dir = os.environ.get("CHUB_PTY_HOOK_DIR", "")
     if not SESSION_ID_PATTERN.fullmatch(chub_session_id) or not hook_dir:
         return 0
+    directory = Path(hook_dir).expanduser()
 
     try:
         payload = json.load(sys.stdin)
@@ -36,6 +87,7 @@ def main() -> int:
     }.get(event)
     if activity is None:
         return 0
+    chub_session_id = _resolve_rebound_session(directory, chub_session_id)
     requested_source = os.environ.get("CHUB_ACTIVITY_SOURCE", "terminal")
     activity_source = (
         "quick"
@@ -45,7 +97,6 @@ def main() -> int:
         else "none"
     )
 
-    directory = Path(hook_dir).expanduser()
     directory.mkdir(parents=True, exist_ok=True)
     target = directory / f"{chub_session_id}.json"
     temporary = directory / f".{chub_session_id}.{os.getpid()}.tmp"

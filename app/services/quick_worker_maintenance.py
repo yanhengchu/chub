@@ -435,12 +435,8 @@ async def inspect_quick_worker(
         return QuickWorkerInspection(
             QuickWorkerStatusData(
                 state="unavailable",
-                message=(
-                    "上次 Quick Worker 重启未完成，可以执行服务恢复。"
-                    if reload_coordinator.failed_recovery_available()
-                    else "无法连接 Quick Worker。"
-                ),
-                can_restart=reload_coordinator.failed_recovery_available(),
+                message="无法连接 Quick Worker，可以执行重启恢复。",
+                can_restart=reload_coordinator.maintenance_available(),
                 operation=operation,
             ),
             None,
@@ -452,8 +448,8 @@ async def inspect_quick_worker(
         return QuickWorkerInspection(
             QuickWorkerStatusData(
                 state="unavailable",
-                message="Quick Worker 健康状态不可用。",
-                can_restart=reload_coordinator.failed_recovery_available(),
+                message="Quick Worker 健康状态不可用，可以执行重启恢复。",
+                can_restart=reload_coordinator.maintenance_available(),
                 operation=reload_coordinator.operation(),
             ),
             None,
@@ -471,7 +467,7 @@ async def inspect_quick_worker(
     worker_ready = (
         data.get("protocol_version") == PROTOCOL_VERSION and worker_healthy
     )
-    reload_coordinator.reconcile(generation, worker_ready and recovery_ready)
+    reload_coordinator.reconcile(generation, worker_ready)
     operation = reload_coordinator.operation()
 
     if operation and operation.status == "restarting":
@@ -479,10 +475,10 @@ async def inspect_quick_worker(
         message = "正在重启并等待健康恢复。"
     elif data.get("protocol_version") != PROTOCOL_VERSION:
         state = "incompatible"
-        message = "Worker 协议与当前 Chub 不兼容；空闲后可重启到当前版本。"
+        message = "Worker 协议与当前 Chub 不兼容，可重启到当前版本。"
     elif data.get("uncertain_tasks") != 0:
         state = "unavailable"
-        message = "Worker 存在未确认任务，暂不可维护。"
+        message = "Worker 存在未确认任务，可通过重启清理并恢复。"
     elif data.get("corrupt_tasks") != 0 or "codex" not in data.get(
         "available_runtime_ids", []
     ):
@@ -517,20 +513,9 @@ async def inspect_quick_worker(
             active_tasks=active_tasks,
             queued_tasks=queued_tasks,
             can_restart=(
-                (
-                    state in {"ready", "incompatible"}
-                    and active_tasks == 0
-                    and queued_tasks == 0
-                    and worker_healthy
-                    and reload_coordinator.maintenance_available()
-                    and (
-                        data.get("protocol_version") != PROTOCOL_VERSION
-                        or recovery_ready
-                    )
-                )
-                or (
-                    state == "unavailable"
-                    and reload_coordinator.failed_recovery_available()
+                reload_coordinator.maintenance_available()
+                and not (
+                    operation is not None and operation.status == "restarting"
                 )
             ),
             operation=operation,

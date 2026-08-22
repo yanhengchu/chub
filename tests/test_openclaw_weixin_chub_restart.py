@@ -43,10 +43,10 @@ from tests.openclaw_weixin_chub_mode_helpers import (
 @pytest.mark.parametrize(
     ("prompt", "message_type"),
     [
-        ("restart", "text"),
-        ("RESTART。", "text"),
-        ("重启", "text"),
-        (" 重启。 ", "voice"),
+        ("restart web", "text"),
+        ("RESTART WEB。", "text"),
+        ("重启 Web", "text"),
+        (" 重启 Web。 ", "voice"),
     ],
 )
 def test_chub_restart_registers_fixed_restart_and_replies(
@@ -82,6 +82,42 @@ def test_chub_restart_registers_fixed_restart_and_replies(
     quick_interactions.submit.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("prompt", "target"),
+    [
+        ("restart worker", "worker"),
+        ("重启 ClawBot", "clawbot"),
+    ],
+)
+def test_weixin_fixed_runtime_restart_commands_use_targeted_starter(
+    settings: Settings,
+    prompt: str,
+    target: str,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    starter = MagicMock(
+        return_value=(
+            f"Restart {'Worker' if target == 'worker' else 'ClawBot'}: Scheduled."
+        )
+    )
+    manager.maintenance_command_starter = starter
+
+    result = manager.dispatch(
+        message_id=f"runtime-restart-{target}",
+        prompt=prompt,
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == starter.return_value
+    starter.assert_called_once()
+    assert starter.call_args.args[0] == target
+    assert starter.call_args.args[2] == delivery_route()
+    quick_interactions.submit.assert_not_called()
+
+
 def test_system_upgrade_status_is_fixed_read_only_command(settings: Settings) -> None:
     manager, _codex_manager, quick_interactions = configured_manager(settings)
     reader = MagicMock(
@@ -94,14 +130,14 @@ def test_system_upgrade_status_is_fixed_read_only_command(settings: Settings) ->
 
     result = manager.dispatch(
         message_id="system-upgrade-status",
-        prompt="system upgrade status",
+        prompt="upgrade status",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
         delivery_route=delivery_route(),
     )
 
-    assert result.message == "System upgrade: Ready · 升级方案已就绪。"
+    assert result.message == "Upgrade: Ready · 升级方案已就绪。"
     reader.assert_called_once_with()
     quick_interactions.submit.assert_not_called()
 
@@ -118,7 +154,7 @@ def test_system_upgrade_starts_once_without_creating_a_task(settings: Settings) 
 
     first = manager.dispatch(
         message_id="system-upgrade-start",
-        prompt="system upgrade",
+        prompt="upgrade",
         message_type="text",
         correlation_id="upgrade-1",
         source_ip="100.64.0.21",
@@ -126,14 +162,14 @@ def test_system_upgrade_starts_once_without_creating_a_task(settings: Settings) 
     )
     duplicate = manager.dispatch(
         message_id="system-upgrade-start",
-        prompt="system upgrade",
+        prompt="upgrade",
         message_type="text",
         correlation_id="upgrade-1",
         source_ip="100.64.0.21",
         delivery_route=delivery_route(),
     )
 
-    assert first.message == "System upgrade: Started. Check with system upgrade status."
+    assert first.message == "Upgrade: Started. Check with upgrade status."
     assert duplicate == first
     starter.assert_called_once_with("100.64.0.21")
     quick_interactions.submit.assert_not_called()
@@ -151,14 +187,14 @@ def test_system_upgrade_rejected_by_shared_preconditions(settings: Settings) -> 
 
     result = manager.dispatch(
         message_id="system-upgrade-blocked",
-        prompt="system upgrade",
+        prompt="upgrade",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
         delivery_route=delivery_route(),
     )
 
-    assert result.message == "System upgrade: Not started · Quick Worker 尚未就绪。"
+    assert result.message == "Upgrade: Not started · Quick Worker 尚未就绪。"
     quick_interactions.submit.assert_not_called()
 
 
@@ -196,7 +232,7 @@ def test_chub_restart_initial_reply_does_not_list_sessions_or_usage(
 
     result = manager.dispatch(
         message_id="restart-with-session-list",
-        prompt="restart",
+        prompt="restart web",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -248,7 +284,7 @@ def test_duplicate_chub_restart_does_not_register_twice(settings: Settings) -> N
 
     first = manager.dispatch(
         message_id="duplicate-chub-restart",
-        prompt="restart",
+        prompt="restart web",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -256,7 +292,7 @@ def test_duplicate_chub_restart_does_not_register_twice(settings: Settings) -> N
     )
     duplicate = manager.dispatch(
         message_id="duplicate-chub-restart",
-        prompt="restart",
+        prompt="restart web",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -278,7 +314,7 @@ def test_second_chub_restart_reuses_active_route_operation(
 
     manager.dispatch(
         message_id="first-chub-restart",
-        prompt="restart",
+        prompt="restart web",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -286,7 +322,7 @@ def test_second_chub_restart_reuses_active_route_operation(
     )
     second = manager.dispatch(
         message_id="second-chub-restart",
-        prompt="重启",
+        prompt="重启 Web",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -310,7 +346,7 @@ def test_chub_restart_rejects_unavailable_delivery_route(
 
     result = manager.dispatch(
         message_id="invalid-route-chub-restart",
-        prompt="restart",
+        prompt="restart web",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -332,7 +368,7 @@ def test_chub_restart_completion_sends_persisted_route_once(
     coordinator, notifier = enable_restart_command(manager)
     manager.dispatch(
         message_id="completed-chub-restart",
-        prompt="restart",
+        prompt="restart web",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -376,7 +412,7 @@ def test_chub_restart_interrupted_notification_is_not_retried(
     coordinator, notifier = enable_restart_command(manager)
     manager.dispatch(
         message_id="interrupted-chub-restart-notification",
-        prompt="重启",
+        prompt="重启 Web",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",

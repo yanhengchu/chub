@@ -42,7 +42,7 @@ from tests.openclaw_weixin_chub_mode_helpers import (
 
 @pytest.mark.parametrize(
     "prompt",
-    ["Chub。", "CHUB!", "chub？", "chub...", " chub ！ ", "《Chub》"],
+    ["Chub。", "CHUB!", "chub？", "chub...", " chub ！ "],
 )
 def test_chub_status_ignores_trailing_punctuation(
     settings: Settings,

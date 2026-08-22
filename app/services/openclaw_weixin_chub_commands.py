@@ -16,10 +16,15 @@ CHUB_MODEL_PROMPT = "model"
 CHUB_MODEL_ALIASES = frozenset({"模型"})
 CHUB_SYNC_PROMPTS = frozenset({"sync"})
 CHUB_SYNC_ALIASES = frozenset({"同步"})
-CHUB_RESTART_PROMPTS = frozenset({"restart"})
-CHUB_RESTART_ALIASES = frozenset({"重启", "重新启动"})
-SYSTEM_UPGRADE_STATUS_PROMPT = "system upgrade status"
-SYSTEM_UPGRADE_PROMPT = "system upgrade"
+CHUB_RESTART_WEB_PROMPTS = frozenset({"restart web"})
+CHUB_RESTART_WEB_ALIASES = frozenset({"重启 web"})
+CHUB_RESTART_WORKER_PROMPT = "restart worker"
+CHUB_RESTART_WORKER_ALIAS = "重启 worker"
+CHUB_RESTART_CLAWBOT_PROMPT = "restart clawbot"
+CHUB_RESTART_CLAWBOT_ALIAS = "重启 clawbot"
+CHUB_UPGRADE_PROMPT = "upgrade"
+CHUB_UPGRADE_ALIAS = "升级系统"
+SYSTEM_UPGRADE_STATUS_PROMPT = "upgrade status"
 SESSION_RENAME_PROMPT = "rename"
 SESSION_RENAME_ALIASES = frozenset({"重命名"})
 SESSION_NEW_PROMPT = "new"
@@ -35,13 +40,27 @@ ENGLISH_SWITCH_PREFIX_PATTERN = re.compile(
     r"switch\s+S?([1-9])", re.IGNORECASE
 )
 CHINESE_SWITCH_PREFIX_PATTERN = re.compile(
-    r"(?:切换|会话)\s*S?([1-9])", re.IGNORECASE
+    r"切换\s*S?([1-9])", re.IGNORECASE
 )
 CHINESE_SWITCH_NUMBER_PREFIX_PATTERN = re.compile(
-    r"(?:切换|会话)\s*([一二三四五六七八九])"
+    r"切换\s*([一二三四五六七八九])"
+)
+DIRECT_SESSION_SLOT_PREFIX_PATTERN = re.compile(
+    r"S([1-9])", re.IGNORECASE
+)
+CHINESE_SESSION_SLOT_PREFIX_PATTERN = re.compile(
+    r"会话\s*S?([1-9])", re.IGNORECASE
+)
+CHINESE_SESSION_SLOT_NUMBER_PREFIX_PATTERN = re.compile(
+    r"会话\s*([一二三四五六七八九])"
 )
 INVALID_SWITCH_SLOT_PATTERN = re.compile(
-    r"(?:switch\s+|切换\s*|会话\s*)"
+    r"(?:switch\s+|切换\s*)"
+    r"(?:S?\d+|[零〇一二两三四五六七八九十百千万]+)",
+    re.IGNORECASE,
+)
+INVALID_SESSION_SLOT_PATTERN = re.compile(
+    r"(?:S\d+|会话\s*(?:S?\d+|[零〇一二两三四五六七八九十百千万]+))"
     r"(?:S?\d+|[零〇一二两三四五六七八九十百千万]+)",
     re.IGNORECASE,
 )
@@ -115,15 +134,18 @@ WeixinChubCommandKind = Literal[
     "help",
     "model",
     "sync",
-    "restart",
+    "restart_web",
+    "restart_worker",
+    "restart_clawbot",
+    "upgrade",
     "system_upgrade_status",
-    "system_upgrade",
     "retry",
     "new",
     "rename",
     "stop",
     "archive",
     "switch",
+    "session_slot",
     "request_cat",
     "request_run",
     "request_archive",
@@ -136,15 +158,18 @@ FIXED_COMMAND_KINDS = frozenset(
         "help",
         "model",
         "sync",
-        "restart",
+        "restart_web",
+        "restart_worker",
+        "restart_clawbot",
+        "upgrade",
         "system_upgrade_status",
-        "system_upgrade",
         "retry",
         "new",
         "rename",
         "stop",
         "archive",
         "switch",
+        "session_slot",
         "request_cat",
         "request_run",
         "request_archive",
@@ -163,18 +188,13 @@ class WeixinChubCommand:
 
 def normalize_fixed_prompt(prompt: str) -> str:
     normalized = " ".join(prompt.strip().split())
-    while normalized and unicodedata.category(normalized[0]).startswith("P"):
-        normalized = normalized[1:].lstrip()
     while normalized and unicodedata.category(normalized[-1]).startswith("P"):
         normalized = normalized[:-1].rstrip()
     return normalized
 
 
-def strip_command_leading_punctuation(prompt: str) -> str:
-    value = prompt.strip()
-    while value and unicodedata.category(value[0]).startswith("P"):
-        value = value[1:].lstrip()
-    return value
+def strip_command_whitespace(prompt: str) -> str:
+    return prompt.strip()
 
 
 def normalize_chinese_numbered_alias(prompt: str) -> str:
@@ -187,27 +207,16 @@ def normalize_chinese_numbered_alias(prompt: str) -> str:
 
 
 def command_prompt(prompt: str) -> str | None:
-    """Return the command body when a whitespace or punctuation prefix opts in."""
-    if not prompt:
-        return None
-    first = prompt[0]
-    if not (
-        first.isspace()
-        or first == "/"
-        or unicodedata.category(first).startswith("P")
-    ):
-        return None
-    value = prompt.lstrip()
-    if value.startswith("/"):
-        value = value[1:].lstrip()
-    return value
+    """Return the message body for one command at the beginning of the text."""
+    value = prompt.strip()
+    return value or None
 
 
 def match_spaced_argument(
     prompt: str,
     commands: tuple[str, ...],
 ) -> str | None:
-    value = strip_command_leading_punctuation(prompt)
+    value = strip_command_whitespace(prompt)
     folded = value.casefold()
     for command in sorted(commands, key=len, reverse=True):
         if not folded.startswith(command.casefold()):
@@ -222,7 +231,7 @@ def match_numbered_command(
     prompt: str,
     patterns: tuple[re.Pattern[str], ...],
 ) -> tuple[int, str | None] | None:
-    value = strip_command_leading_punctuation(prompt)
+    value = strip_command_whitespace(prompt)
     for pattern in patterns:
         match = pattern.fullmatch(value)
         if match is None:
@@ -244,11 +253,32 @@ def strip_switch_task_separator(value: str) -> str | None:
 
 
 def match_switch_command(prompt: str) -> tuple[int, str | None] | None:
-    value = strip_command_leading_punctuation(prompt).strip()
+    value = strip_command_whitespace(prompt)
     for pattern in (
         ENGLISH_SWITCH_PREFIX_PATTERN,
         CHINESE_SWITCH_PREFIX_PATTERN,
         CHINESE_SWITCH_NUMBER_PREFIX_PATTERN,
+    ):
+        match = pattern.match(value)
+        if match is None:
+            continue
+        remainder = value[match.end() :]
+        if remainder and (
+            remainder[0].isdigit()
+            or remainder[0] in "零〇一二两三四五六七八九十百千万"
+        ):
+            return None
+        slot = CHINESE_SLOT_NUMBERS.get(match.group(1), match.group(1))
+        return int(slot), strip_switch_task_separator(remainder)
+    return None
+
+
+def match_session_slot_command(prompt: str) -> tuple[int, str | None] | None:
+    value = strip_command_whitespace(prompt)
+    for pattern in (
+        DIRECT_SESSION_SLOT_PREFIX_PATTERN,
+        CHINESE_SESSION_SLOT_PREFIX_PATTERN,
+        CHINESE_SESSION_SLOT_NUMBER_PREFIX_PATTERN,
     ):
         match = pattern.match(value)
         if match is None:
@@ -282,12 +312,24 @@ def parse_weixin_chub_command(prompt: str) -> WeixinChubCommand:
         return WeixinChubCommand("model", normalized)
     if folded in CHUB_SYNC_PROMPTS or normalized in CHUB_SYNC_ALIASES:
         return WeixinChubCommand("sync", normalized)
-    if folded in CHUB_RESTART_PROMPTS or normalized in CHUB_RESTART_ALIASES:
-        return WeixinChubCommand("restart", normalized)
+    if folded in CHUB_RESTART_WEB_PROMPTS or folded in {
+        alias.casefold() for alias in CHUB_RESTART_WEB_ALIASES
+    }:
+        return WeixinChubCommand("restart_web", normalized)
+    if folded in {
+        CHUB_RESTART_WORKER_PROMPT,
+        CHUB_RESTART_WORKER_ALIAS.casefold(),
+    }:
+        return WeixinChubCommand("restart_worker", normalized)
+    if folded in {
+        CHUB_RESTART_CLAWBOT_PROMPT,
+        CHUB_RESTART_CLAWBOT_ALIAS.casefold(),
+    }:
+        return WeixinChubCommand("restart_clawbot", normalized)
+    if folded == CHUB_UPGRADE_PROMPT or normalized == CHUB_UPGRADE_ALIAS:
+        return WeixinChubCommand("upgrade", normalized)
     if folded == SYSTEM_UPGRADE_STATUS_PROMPT:
         return WeixinChubCommand("system_upgrade_status", normalized)
-    if folded == SYSTEM_UPGRADE_PROMPT:
-        return WeixinChubCommand("system_upgrade", normalized)
     if folded in SESSION_RETRY_PROMPTS or normalized in SESSION_RETRY_ALIASES:
         return WeixinChubCommand("retry", normalized)
 
@@ -385,12 +427,27 @@ def parse_weixin_chub_command(prompt: str) -> WeixinChubCommand:
             task_prompt=task,
             requested_index=requested_index,
         )
+    session_slot_command = match_session_slot_command(command)
+    if session_slot_command is not None:
+        requested_index, task = session_slot_command
+        if task is not None and (
+            task.casefold() in REMOVED_SWITCH_RETRY_PROMPTS
+            or task in REMOVED_SWITCH_RETRY_ALIASES
+        ):
+            return WeixinChubCommand("normal", prompt)
+        return WeixinChubCommand(
+            "session_slot",
+            normalized,
+            task_prompt=task,
+            requested_index=requested_index,
+        )
     if (
         folded == SESSION_SWITCH_PROMPT
         or folded.startswith(f"{SESSION_SWITCH_PROMPT} ")
         or normalized in {"切换", "会话"}
         or normalized.startswith(("切换 ", "会话 ", "切换S", "会话S"))
         or INVALID_SWITCH_SLOT_PATTERN.match(normalized) is not None
+        or INVALID_SESSION_SLOT_PATTERN.match(normalized) is not None
     ):
         return WeixinChubCommand("normal", prompt)
 

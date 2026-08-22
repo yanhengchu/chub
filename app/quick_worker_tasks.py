@@ -482,6 +482,7 @@ class WorkerTaskManager:
         self._lock = asyncio.Lock()
         self._supervisors: dict[str, asyncio.Task[None]] = {}
         self._processes: dict[str, asyncio.subprocess.Process] = {}
+        self._interruptions: dict[str, tuple[str, str]] = {}
         self._corrupt_task_ids: set[str] = set()
         self._recovery_task_ids: set[str] = set()
         self._abandoning = False
@@ -528,15 +529,10 @@ class WorkerTaskManager:
         self._abandoning = not interrupt_tasks
         supervisors = list(self._supervisors.values())
         if interrupt_tasks:
-            for task_id in list(self._supervisors):
-                try:
-                    await self._interrupt_task(
-                        task_id,
-                        error_code="worker_stopped",
-                        error="Quick Worker stopped before the task completed.",
-                    )
-                except (OSError, WorkerTaskError):
-                    pass
+            await self.interrupt_for_restart(
+                error_code="worker_stopped",
+                error="Quick Worker stopped before the task completed.",
+            )
         for supervisor in supervisors:
             if not supervisor.done():
                 supervisor.cancel()
@@ -544,6 +540,30 @@ class WorkerTaskManager:
             await asyncio.gather(*supervisors, return_exceptions=True)
         self._supervisors.clear()
         self._processes.clear()
+        self._interruptions.clear()
+
+    async def interrupt_for_restart(
+        self,
+        *,
+        error_code: str,
+        error: str,
+    ) -> None:
+        for task_id in list(self._supervisors):
+            async with self._lock:
+                try:
+                    _spec, _state, completion = self._records(task_id)
+                except (FileNotFoundError, OSError, ValidationError, ValueError):
+                    completion = None
+                if completion is None:
+                    self._interruptions[task_id] = (error_code, error)
+            try:
+                await self._interrupt_task(
+                    task_id,
+                    error_code=error_code,
+                    error=error,
+                )
+            except (OSError, WorkerTaskError):
+                pass
 
     async def submit_test(self, submission: TestTaskSubmission) -> WorkerTaskView:
         if not self.allow_test_tasks:
@@ -1175,14 +1195,24 @@ class WorkerTaskManager:
                     state.updated_at = utc_now()
                     self._write_state(state)
                     self._write_runtime_event(spec, state, native_session_id)
-            self._finalize(
-                spec,
-                state,
-                status="failed",
-                error_code="worker_restarted",
-                error="Quick Worker restarted before completion; the task was not replayed.",
-                error_source="chub",
-            )
+            if state.status == "queued":
+                self._finalize(
+                    spec,
+                    state,
+                    status="cancelled",
+                    error_code="worker_restarted",
+                    error="Quick Worker restarted before the queued task began.",
+                    error_source="chub",
+                )
+            else:
+                self._finalize(
+                    spec,
+                    state,
+                    status="failed",
+                    error_code="worker_restarted",
+                    error="Quick Worker restarted before completion; the task was not replayed.",
+                    error_source="chub",
+                )
 
     async def _launch_and_monitor(self, task_id: str) -> None:
         process: asyncio.subprocess.Process | None = None
@@ -1351,6 +1381,19 @@ class WorkerTaskManager:
                 spec, state, completion = self._records(task_id)
                 if completion is not None:
                     return
+                interruption = self._interruptions.pop(task_id, None)
+                if interruption is not None:
+                    error_code, error = interruption
+                    self._finalize(
+                        spec,
+                        state,
+                        status="failed",
+                        error_code=error_code,
+                        error=error,
+                        error_source="chub",
+                        exit_code=exit_code,
+                    )
+                    return
                 if runner is None:
                     raise OSError("Runtime Runner is unavailable")
                 runtime_error = (
@@ -1451,9 +1494,14 @@ class WorkerTaskManager:
                     async with self._lock:
                         spec, state, completion = self._records(task_id)
                         if completion is None:
-                            error_code, error, error_source = (
-                                self._runner_failure_details(exc)
-                            )
+                            interruption = self._interruptions.pop(task_id, None)
+                            if interruption is not None:
+                                error_code, error = interruption
+                                error_source: TaskErrorSource = "chub"
+                            else:
+                                error_code, error, error_source = (
+                                    self._runner_failure_details(exc)
+                                )
                             self._finalize(
                                 spec,
                                 state,
@@ -1522,15 +1570,19 @@ class WorkerTaskManager:
             if completion is not None:
                 return
             process = self._processes.get(task_id)
+            final_status: FinalTaskStatus = (
+                "cancelled" if state.status == "queued" else "failed"
+            )
         if process is not None:
             await self._terminate_process(process)
         async with self._lock:
             spec, state, completion = self._records(task_id)
+            self._interruptions.pop(task_id, None)
             if completion is None:
                 self._finalize(
                     spec,
                     state,
-                    status="failed",
+                    status=final_status,
                     error_code=error_code,
                     error=error,
                     error_source="chub",

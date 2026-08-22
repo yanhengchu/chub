@@ -26,7 +26,10 @@ from app.codex.models import (
     SessionListData,
     SessionRenameRequest,
 )
-from app.codex.quick_interactions import build_task_summary
+from app.ai_session.operations import (
+    archive_session as archive_session_operation,
+    delete_session as delete_session_operation,
+)
 from app.core.response import ApiError, ApiResponse, error_response
 from app.core.security import require_trusted_network
 from app.services.operation_log import log_operation, write_operation
@@ -195,6 +198,7 @@ async def stop_session(session_id: str, request: Request) -> ApiResponse[Session
     try:
         def stop_with_guard() -> SessionInfo:
             with request.app.state.quick_interactions.stop_operation_guard(session_id):
+                request.app.state.codex_pty_manager.ensure_stop_allowed(session_id)
                 request.app.state.quick_interactions.cancel_codex_session(session_id)
                 request.app.state.terminal_tickets.revoke_session(session_id)
                 request.app.state.terminal_connections.close_session(session_id)
@@ -276,28 +280,17 @@ async def submit_quick_interaction(
         quick_interactions = request.app.state.quick_interactions
         manager = request.app.state.codex_pty_manager
         manager.require_quick_access(session_id)
-        session_slot = request.app.state.weixin_chub_mode.session_slot(session_id)
 
         def submit_codex():
             with quick_interactions.session_operation_guard(session_id):
                 session = manager.get_session(session_id)
 
-                def submit_with_session_context():
-                    session_title = (
-                        build_task_summary(session.title or payload.prompt)
-                        if session_slot is not None
-                        else None
-                    )
-                    return quick_interactions.submit(
-                        session_id,
-                        payload.prompt,
-                        operation_id=operation_id,
-                        source_ip=source_ip,
-                        weixin_session_slot=session_slot,
-                        weixin_session_title=session_title,
-                    )
-
-                return submit_with_session_context()
+                return quick_interactions.submit(
+                    session_id,
+                    payload.prompt,
+                    operation_id=operation_id,
+                    source_ip=source_ip,
+                )
 
         task = await asyncio.to_thread(submit_codex)
     except ApiError as exc:
@@ -402,13 +395,17 @@ def list_quick_interactions(
 @api_router.post("/sessions/{session_id}/archive", response_model=ApiResponse[None])
 async def archive_session(session_id: str, request: Request) -> ApiResponse[None]:
     try:
-        def archive_with_guard() -> None:
-            with request.app.state.quick_interactions.destructive_operation_guard(session_id):
-                request.app.state.terminal_tickets.revoke_session(session_id)
-                request.app.state.terminal_connections.close_session(session_id)
-                request.app.state.codex_pty_manager.archive_session(session_id)
-
-        await asyncio.to_thread(archive_with_guard)
+        await asyncio.to_thread(
+            archive_session_operation,
+            session_id,
+            manager=request.app.state.codex_pty_manager,
+            quick_interactions=request.app.state.quick_interactions,
+            terminal_tickets=request.app.state.terminal_tickets,
+            terminal_connections=request.app.state.terminal_connections,
+            release_slot=lambda target_id: _release_weixin_session_slot(
+                request, target_id
+            ),
+        )
     except Exception:
         log_operation(
             request,
@@ -417,7 +414,6 @@ async def archive_session(session_id: str, request: Request) -> ApiResponse[None
             target=session_id,
         )
         raise
-    await asyncio.to_thread(_release_weixin_session_slot, request, session_id)
     log_operation(
         request,
         action="archive_codex_session",
@@ -430,13 +426,17 @@ async def archive_session(session_id: str, request: Request) -> ApiResponse[None
 @api_router.delete("/sessions/{session_id}", response_model=ApiResponse[None])
 async def delete_session(session_id: str, request: Request) -> ApiResponse[None]:
     try:
-        def delete_with_guard() -> None:
-            with request.app.state.quick_interactions.destructive_operation_guard(session_id):
-                request.app.state.terminal_tickets.revoke_session(session_id)
-                request.app.state.terminal_connections.close_session(session_id)
-                request.app.state.codex_pty_manager.delete_session(session_id)
-
-        await asyncio.to_thread(delete_with_guard)
+        await asyncio.to_thread(
+            delete_session_operation,
+            session_id,
+            manager=request.app.state.codex_pty_manager,
+            quick_interactions=request.app.state.quick_interactions,
+            terminal_tickets=request.app.state.terminal_tickets,
+            terminal_connections=request.app.state.terminal_connections,
+            release_slot=lambda target_id: _release_weixin_session_slot(
+                request, target_id
+            ),
+        )
     except Exception:
         log_operation(
             request,
@@ -445,7 +445,6 @@ async def delete_session(session_id: str, request: Request) -> ApiResponse[None]
             target=session_id,
         )
         raise
-    await asyncio.to_thread(_release_weixin_session_slot, request, session_id)
     log_operation(
         request,
         action="delete_codex_session",
@@ -455,7 +454,7 @@ async def delete_session(session_id: str, request: Request) -> ApiResponse[None]
     return ApiResponse(data=None)
 
 
-def _release_weixin_session_slot(request: Request, session_id: str) -> None:
+def _release_weixin_session_slot(request: Request, session_id: str) -> bool:
     operation_id = uuid4().hex
     source_ip = request.client.host if request.client else "unknown"
     for status in ("requested", "started"):
@@ -477,7 +476,7 @@ def _release_weixin_session_slot(request: Request, session_id: str) -> None:
             source_ip=source_ip,
         )
         LOGGER.warning("Unable to release Weixin Session slot", exc_info=True)
-        return
+        return False
     write_operation(
         operation_id=operation_id,
         action="weixin_chub_mode_session_slot_release",
@@ -485,6 +484,7 @@ def _release_weixin_session_slot(request: Request, session_id: str) -> None:
         target=session_id,
         source_ip=source_ip,
     )
+    return True
 
 
 def _with_weixin_session_slot(

@@ -41,6 +41,7 @@ from app.api.project_documents import router as project_documents_router
 from app.api.settings import router as settings_router
 from app.api.status import router as status_router
 from app.ai_session import AiSessionManager
+from app.ai_session.operations import archive_session
 from app.codex.quick_interactions import QuickInteractionManager
 from app.codex.rate_limits import CodexRateLimitService
 from app.codex.routes import api_router as codex_api_router
@@ -64,6 +65,7 @@ from app.core.build_info import SESSION_SCHEMA_VERSION, WEB_CODE_VERSION
 from app.services.openclaw import OpenClawManager
 from app.services.openclaw_completion_notifications import OpenClawCompletionNotifier
 from app.services.openclaw_weixin_chub_messages import usage_message
+from app.services.operation_log import write_operation
 from app.services.deferred_restart import DeferredRestartCoordinator
 from app.services.openclaw_weixin_chub_mode import WeixinChubModeManager
 from app.services.restart_command import RestartProcess, launch_restart_process
@@ -290,30 +292,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         terminal_connections.close_session(session_id)
         return codex_pty_manager.stop_session(session_id)
 
+    def release_weixin_session_slot_for_archive(session_id: str) -> bool:
+        try:
+            # A missing slot is already in the desired state; only an
+            # exception means that the release could not be confirmed.
+            weixin_chub_mode.release_session_slot(session_id)
+        except Exception as exc:
+            raise ApiError(
+                503,
+                "weixin_chub_mode_slot_release_unknown",
+                "Session 已完成原生归档，但关联槽位释放状态无法确认，请稍后重试。",
+            ) from exc
+        return True
+
     def archive_weixin_session(session_id: str) -> None:
-        with quick_interactions.destructive_operation_guard(session_id):
-            session = codex_pty_manager.get_session(session_id)
-            if session.activity in {"working", "unknown"}:
-                raise ApiError(
-                    409,
-                    "quick_interaction_terminal_working",
-                    "Codex session is active or its state is unknown",
-                )
-            if (
-                session.native_session_id
-                and codex_pty_manager.has_active_writer(session.native_session_id)
-            ):
-                raise ApiError(
-                    409,
-                    "quick_interaction_writer_active",
-                    "Codex session still has an active writer",
-                )
-            terminal_tickets.revoke_session(session_id)
-            terminal_connections.close_session(session_id)
-            codex_pty_manager.archive_session(session_id)
+        archive_session(
+            session_id,
+            manager=codex_pty_manager,
+            quick_interactions=quick_interactions,
+            terminal_tickets=terminal_tickets,
+            terminal_connections=terminal_connections,
+            release_slot=release_weixin_session_slot_for_archive,
+        )
 
     def stop_weixin_session(session_id: str):
         with quick_interactions.stop_operation_guard(session_id):
+            codex_pty_manager.ensure_stop_allowed(session_id)
             quick_interactions.cancel_codex_session(session_id)
             terminal_tickets.revoke_session(session_id)
             terminal_connections.close_session(session_id)
@@ -467,6 +471,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     and "codex" in data.get("available_runtime_ids", [])
                     and quick_interactions.recovery_ready
                 ):
+                    rebind = getattr(
+                        codex_pty_manager,
+                        "rebind_upgrade_terminal_carriers",
+                        None,
+                    )
+                    if callable(rebind):
+                        await asyncio.to_thread(
+                            rebind,
+                            [
+                                (item.session_id, item.native_session_id)
+                                for item in operation.sessions
+                            ],
+                        )
                     verifier = getattr(
                         codex_pty_manager,
                         "verify_system_upgrade_readiness",
@@ -732,6 +749,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     completion_notifier.session_slot_validator = (
         weixin_chub_mode.session_slot_matches
     )
+    completion_notifier.session_context_reader = weixin_chub_mode.session_context
     completion_notifier.session_current_validator = (
         weixin_chub_mode.session_slot_is_current
     )
@@ -745,6 +763,104 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     codex_pty_manager.set_quick_interaction_checker(quick_interactions.is_running)
     openclaw_manager = OpenClawManager()
     notification_service = NotificationService(resolved_settings.notifications)
+
+    def start_weixin_maintenance(
+        target: str,
+        operation_id: str,
+        route,
+        source_ip: str,
+    ) -> str:
+        """Start a fixed maintenance target without blocking the OpenClaw hook."""
+        if target == "worker":
+            if system_upgrade.in_progress():
+                raise ApiError(
+                    409,
+                    "system_upgrade_in_progress",
+                    "系统升级期间暂不接受新的 Worker 重启操作。",
+                )
+            if not quick_worker_maintenance.begin(None, source_ip):
+                raise ApiError(
+                    409,
+                    "quick_worker_operation_in_progress",
+                    "Quick Worker 正在执行其他维护操作。",
+                )
+
+            def notify_worker_result() -> None:
+                deadline = time.monotonic() + 180
+                while time.monotonic() < deadline:
+                    operation = quick_worker_maintenance.operation()
+                    if operation is not None and operation.status != "restarting":
+                        status = "Completed" if operation.status == "succeeded" else "Failed"
+                        write_operation(
+                            operation_id=operation_id,
+                            action="weixin_restart_worker",
+                            status=(
+                                "succeeded"
+                                if operation.status == "succeeded"
+                                else "failed"
+                            ),
+                            target="quick-worker",
+                            source_ip=source_ip,
+                        )
+                        completion_notifier.notify_weixin_command_result(
+                            route,
+                            lambda: f"Restart Worker: {status}. {operation.message}",
+                        )
+                        return
+                    time.sleep(0.5)
+                completion_notifier.notify_weixin_command_result(
+                    route,
+                    lambda: "Restart Worker: Failed. The final state could not be confirmed.",
+                )
+
+            threading.Thread(
+                target=notify_worker_result,
+                daemon=True,
+                name=f"weixin-worker-restart-{operation_id[:8]}",
+            ).start()
+            return "Restart Worker: Scheduled. The result will be sent when completed."
+
+        if target == "clawbot":
+            def restart_clawbot() -> None:
+                try:
+                    result = openclaw_manager.control("restart")
+                    message = f"Restart ClawBot: Completed. {result.message}"
+                except Exception:
+                    logging.getLogger("hub.openclaw").warning(
+                        "Unable to complete Weixin ClawBot restart",
+                        exc_info=True,
+                    )
+                    message = "Restart ClawBot: Failed. Check the OpenClaw status and logs."
+                    write_operation(
+                        operation_id=operation_id,
+                        action="weixin_restart_clawbot",
+                        status="failed",
+                        target="openclaw-gateway",
+                        source_ip=source_ip,
+                    )
+                else:
+                    write_operation(
+                        operation_id=operation_id,
+                        action="weixin_restart_clawbot",
+                        status="succeeded",
+                        target="openclaw-gateway",
+                        source_ip=source_ip,
+                    )
+                completion_notifier.notify_weixin_command_result(
+                    route,
+                    lambda: message,
+                )
+
+            # Let the current OpenClaw hook return before restarting its Gateway.
+            timer = threading.Timer(1.0, restart_clawbot)
+            timer.daemon = True
+            timer.name = f"weixin-clawbot-restart-{operation_id[:8]}"
+            timer.start()
+            return "Restart ClawBot: Scheduled. The result will be sent when completed."
+
+        raise ApiError(400, "maintenance_target_invalid", "维护目标无效。")
+
+    weixin_chub_mode.maintenance_command_starter = start_weixin_maintenance
 
     @asynccontextmanager
     async def lifespan(_application: FastAPI):

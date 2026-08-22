@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from app.codex.models import utc_now
 from app.core.response import ApiError
+from app.services.openclaw_recovery import synchronize_openclaw_runtime
 from app.services.openclaw_weixin import OpenClawWeixinLogin, WeixinLoginStatus
 
 
@@ -45,6 +46,7 @@ OpenClawOwnerState = Literal[
 STATUS_TIMEOUT_SECONDS = 15
 ACTION_TIMEOUT_SECONDS = 45
 FINAL_STATE_TIMEOUT_SECONDS = 20
+CLI_VERSION_TIMEOUT_SECONDS = 10
 MAX_COMMAND_OUTPUT_BYTES = 256_000
 TAILSCALE_STATUS_TIMEOUT_SECONDS = 5
 TAILSCALE_HOST_PATTERN = re.compile(
@@ -311,12 +313,19 @@ class OpenClawManager:
             executable = self._resolve_executable()
             if executable is None:
                 raise ApiError(409, "openclaw_not_installed", "当前节点未安装 OpenClaw。")
+            sync_report = None
+            if action == "restart":
+                gateway_version = before.version or self._read_cli_version(executable)
+                sync_report = synchronize_openclaw_runtime(executable, gateway_version)
             self._run_json(
                 executable,
                 ["gateway", action, "--json"],
                 timeout=ACTION_TIMEOUT_SECONDS,
             )
-            return self._wait_for_final_state(action)
+            result = self._wait_for_final_state(action)
+            if sync_report is not None:
+                result.message = f"{result.message}{sync_report.message}"
+            return result
         finally:
             self._operation_lock.release()
 
@@ -351,28 +360,47 @@ class OpenClawManager:
         self.weixin_login.close()
 
     @staticmethod
+    def _read_cli_version(executable: str) -> str | None:
+        try:
+            result = subprocess.run(
+                [executable, "--version"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=CLI_VERSION_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if result.returncode != 0:
+            return None
+        output = result.stdout[:1024].decode("utf-8", errors="replace")
+        match = re.search(r"OpenClaw\s+([^\s(]+)", output)
+        return match.group(1) if match else None
+
+    @staticmethod
     def _validate_action(action: str, status: OpenClawStatus) -> None:
         if not status.installed:
             raise ApiError(409, "openclaw_not_installed", "当前节点未安装 OpenClaw。")
-        if status.state == "unknown":
+        if status.state == "unknown" and action != "restart":
             raise ApiError(
                 503,
                 "openclaw_status_unavailable",
                 "暂时无法确认 OpenClaw Gateway 状态，请刷新后重试。",
             )
-        if not status.configured:
+        if not status.configured and action != "restart":
             raise ApiError(
                 409,
                 "openclaw_not_configured",
                 "OpenClaw 尚未完成初始化配置。",
             )
-        if not status.service_installed:
+        if not status.service_installed and status.state != "unknown":
             raise ApiError(
                 409,
                 "openclaw_service_not_installed",
                 "OpenClaw Gateway 后台服务尚未安装。",
             )
-        if action in {"stop", "restart"} and status.state not in {
+        if action == "stop" and status.state not in {
             "running",
             "degraded",
         }:
@@ -390,10 +418,16 @@ class OpenClawManager:
                 if latest.state == "stopped" and not latest.ready:
                     return self.status()
             elif latest.state == "running" and latest.ready:
-                return self.status()
+                result = self.status()
+                if action != "restart":
+                    return result
+                if result.channel_state in {"running", "not_configured"}:
+                    return result
             time.sleep(0.25)
             latest, _ = self._gateway_status()
         expected = "停止" if action == "stop" else "恢复就绪"
+        if action == "restart":
+            expected = "Gateway 和消息通道恢复就绪"
         raise ApiError(
             504,
             "openclaw_final_state_timeout",

@@ -99,6 +99,9 @@ function systemUpgradePresentation(state) {
 
 function renderSystemUpgrade(data) {
   systemUpgradeState = data;
+  elements.systemUpgradeStart.textContent = (
+    data.plan?.plan_id === "runtime-recovery" ? "运行态恢复" : "升级与恢复"
+  );
   elements.systemUpgradeDetail.textContent = `状态：${systemUpgradePresentation(data.state)}。${data.message}`;
   syncCoreMaintenanceControls();
   if (
@@ -193,6 +196,7 @@ function renderQuickWorker(data) {
   quickWorkerState = data;
   const [badgeText, badgeKind] = quickWorkerPresentation(data.state);
   setBadge(elements.quickWorkerBadge, badgeText, badgeKind);
+  elements.quickWorkerRestart.textContent = "重启并清理任务";
   elements.quickWorkerDetail.textContent = data.message;
   const failedOperation = data.operation?.status === "failed";
   setMessage(
@@ -287,13 +291,18 @@ function systemUpgradeImpactDetails() {
   const activeTasks = Number(quickWorkerState?.active_tasks || 0);
   const queuedTasks = Number(quickWorkerState?.queued_tasks || 0);
   const taskCount = activeTasks + queuedTasks;
+  const taskCountKnown = ["ready", "busy", "draining", "incompatible"].includes(
+    quickWorkerState?.state,
+  );
   const sessionCount = Number(systemUpgradeState?.plan?.session_count || 0);
   return [
     {
       label: "快速任务",
-      value: taskCount
-        ? `${taskCount} 个在途或排队任务将停止。`
-        : "当前没有在途或排队任务。",
+      value: !taskCountKnown
+        ? "任务数量暂无法确认；恢复流程会按固定边界清理。"
+        : taskCount
+          ? `${taskCount} 个在途或排队任务将停止。`
+          : "当前没有在途或排队任务。",
     },
     {
       label: "Chub Session",
@@ -332,9 +341,9 @@ elements.refreshWorkstationEnvironment.addEventListener(
 );
 elements.quickWorkerRestart.addEventListener("click", () => {
   void showConfirmationDialog({
-    title: "重启 Quick Worker",
-    description: "仅在没有执行中或排队中的快速任务时可重启。重启期间 Chub Web 保持可用，但新的快速任务会暂时等待 Worker 恢复。",
-    confirmLabel: "确认重启",
+    title: "重启并清理 Quick Worker",
+    description: "排队任务会被取消，执行中的任务会停止并标记为未完成，任务不会自动重试。Chub Web、ClawBot 和实时终端不受影响。",
+    confirmLabel: "确认重启并清理",
     pendingLabel: "正在下发…",
     errorMessage: "Quick Worker 重启失败。",
     onConfirm: requestQuickWorkerRestart,
@@ -342,13 +351,18 @@ elements.quickWorkerRestart.addEventListener("click", () => {
 });
 
 elements.systemUpgradeStart.addEventListener("click", () => {
+  const recoveryOnly = systemUpgradeState?.plan?.plan_id === "runtime-recovery";
   void showConfirmationDialog({
-    title: "系统升级与恢复",
-    description: "以下运行态将按当前状态重建。",
+    title: recoveryOnly ? "运行态恢复" : "系统升级与恢复",
+    description: recoveryOnly
+      ? "准备中的升级方案不可用，本次只重建当前版本运行态，不升级代码版本。"
+      : "以下运行态将按当前状态重建。",
     details: systemUpgradeImpactDetails(),
-    confirmLabel: "确认升级与恢复",
+    confirmLabel: recoveryOnly ? "确认运行态恢复" : "确认升级与恢复",
     pendingLabel: "正在开始…",
-    errorMessage: "系统升级与恢复未能启动。",
+    errorMessage: recoveryOnly
+      ? "运行态恢复未能启动。"
+      : "系统升级与恢复未能启动。",
     onConfirm: startSystemUpgrade,
   });
 });

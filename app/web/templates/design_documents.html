@@ -32,7 +32,10 @@
             </a>
             <div class="design-document-footer">
               <span class="design-document-meta">
-                <span class="badge badge-{{ 'muted' if document.archived else 'success' }}">{{ '已隐藏' if document.archived else document.status }}</span>
+                <span class="badge badge-success">{{ document.status }}</span>
+                {% if document.archived %}
+                <span class="badge badge-muted document-archived-badge">已隐藏</span>
+                {% endif %}
                 <time datetime="{{ document.updated_at.isoformat() }}">{{ document.updated_at.strftime('%Y-%m-%d') }}</time>
               </span>
               <button class="button-secondary document-archive-action" type="button" data-document-id="{{ document.id }}" data-archived="{{ 'true' if document.archived else 'false' }}" aria-haspopup="dialog" aria-controls="confirmation-dialog">{{ '恢复显示' if document.archived else '隐藏' }}</button>

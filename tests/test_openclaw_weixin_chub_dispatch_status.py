@@ -78,17 +78,14 @@ def test_dispatch_immediately_acknowledges_text_task(
     assert persisted["submissions"][0]["http_status"] == 200
 
 
-def test_unprefixed_command_name_is_submitted_as_normal_task(
+def test_command_name_at_text_start_routes_to_fixed_command(
     settings: Settings,
 ) -> None:
-    manager, _codex_manager, quick_interactions = configured_manager(
-        settings,
-        prefix_legacy_commands=False,
-    )
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
 
     result = manager.dispatch(
-        message_id="unprefixed-command-name",
-        prompt="chub",
+        message_id="command-at-text-start",
+        prompt="help",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -96,8 +93,9 @@ def test_unprefixed_command_name_is_submitted_as_normal_task(
     )
 
     assert result.disposition == "reply"
-    assert result.message == submitted_task_message(settings, "chub")
-    quick_interactions.submit.assert_called_once()
+    assert result.message is not None
+    assert result.message.startswith("Commands\n\n")
+    quick_interactions.submit.assert_not_called()
 
 
 def test_submission_and_session_list_use_the_same_task_summary(
@@ -159,7 +157,7 @@ def test_dispatch_routes_chub_status_aliases_to_live_overview(
 
     result = manager.dispatch(
         message_id=f"status-{prompt}",
-        prompt=f"  《{prompt}》。  ",
+        prompt=f"  {prompt}。  ",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -218,19 +216,22 @@ def test_dispatch_returns_concise_chub_help(
 
     assert result.message == (
         "Commands\n\n"
-        "Command prefix · 开头空格、/、中英文标点；匹配失败按普通任务\n\n"
+        "Commands are recognized at the beginning · 指令从文本开头识别；匹配失败按普通任务\n\n"
         "Slots · N = SN = 一…九（中文数字可紧连中文指令）\n\n"
         "chub · 状态 / 查询状态\n\n"
         "usage · 完整额度\n\n"
         "help · 帮助\n\n"
         "model · 模型\n\n"
-        "restart · 重启 / 重新启动\n\n"
-        "system upgrade status\n\n"
-        "system upgrade\n\n"
+        "restart web · 重启 Web\n\n"
+        "restart worker · 重启 Worker\n\n"
+        "restart clawbot · 重启 ClawBot\n\n"
+        "upgrade · 升级系统\n\n"
+        "upgrade status\n\n"
         "sync · 同步\n\n"
         "new <title> · 新建 <标题>\n\n"
         "rename <title> · 重命名 <标题>\n\n"
-        "switch <1-9|S1-S9> [task] · 切换/会话 <槽位> [正文]\n\n"
+        "switch <1-9|S1-S9> [task] · 切换 <槽位> [正文]\n\n"
+        "S1-S9 [task] · 会话 S1-S9 [正文]\n\n"
         "stop <1-9|S1-S9> · 停止 <槽位>\n\n"
             "archive <1-9|S1-S9> · 归档 <槽位>\n\n"
             "cat <R1-R9> · 查看需求 <槽位>\n\n"
@@ -1053,7 +1054,7 @@ def test_removed_or_unregistered_commands_are_normal_tasks(
 
 
 @pytest.mark.parametrize("prompt", ["停止2", "归档2"])
-def test_prefixed_malformed_numbered_commands_fall_back_to_normal_tasks(
+def test_malformed_numbered_commands_fall_back_to_normal_tasks(
     settings: Settings,
     prompt: str,
 ) -> None:
@@ -1061,7 +1062,7 @@ def test_prefixed_malformed_numbered_commands_fall_back_to_normal_tasks(
 
     result = manager.dispatch(
         message_id=f"malformed-numbered-command-{prompt}",
-        prompt="/" + prompt,
+        prompt=prompt,
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -1069,5 +1070,5 @@ def test_prefixed_malformed_numbered_commands_fall_back_to_normal_tasks(
     )
 
     assert result.disposition == "reply"
-    assert result.message == submitted_task_message(settings, "/" + prompt)
+    assert result.message == submitted_task_message(settings, prompt)
     quick_interactions.submit.assert_called_once()

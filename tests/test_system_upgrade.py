@@ -502,6 +502,9 @@ def test_completed_runtime_recovery_can_be_started_again(tmp_path: Path) -> None
     assert status.can_start is True
     assert status.plan is not None
     assert status.plan.plan_id == "runtime-recovery"
+    assert status.operation is not None
+    assert status.operation.operation_id == completed.operation_id
+    assert status.operation.status == "succeeded"
     assert repeated.operation_id != completed.operation_id
 
 
@@ -707,6 +710,42 @@ async def test_system_upgrade_status_allows_runtime_recovery_without_plan(
     assert data["can_start"] is True
     assert data["plan"]["plan_id"] == "runtime-recovery"
     assert data["plan"]["session_count"] == 0
+
+
+@pytest.mark.anyio
+async def test_invalid_upgrade_plan_falls_back_to_runtime_recovery(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    app = create_app(settings)
+    plan_path = tmp_path / "system-upgrade.json"
+    plan_path.write_text("not-json", encoding="utf-8")
+    plan_path.chmod(0o600)
+    app.state.system_upgrade.plan_path = plan_path
+    app.state.quick_interactions._recovery_ready = True
+    app.state.system_upgrade_restart_readiness = lambda: None
+    app.state.run_system_upgrade = lambda _operation_id: None
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    ) as client:
+        preview = await client.get("/api/maintenance/system-upgrade")
+        preview_data = preview.json()["data"]
+        started = await client.post(
+            "/api/maintenance/system-upgrade",
+            json={"fingerprint": preview_data["plan"]["fingerprint"]},
+        )
+
+    assert preview.status_code == 200
+    assert preview_data["state"] == "available"
+    assert preview_data["can_start"] is True
+    assert preview_data["plan"]["plan_id"] == "runtime-recovery"
+    assert preview_data["message"] == "升级方案不可用，当前仅可执行运行态恢复。"
+    assert started.status_code == 200
+    assert started.json()["data"]["state"] == "preparing"
 
 
 @pytest.mark.anyio
@@ -1103,7 +1142,7 @@ def test_weixin_system_upgrade_uses_application_upgrade_coordinator(
     app.state.system_upgrade_restart_readiness = lambda: None
     result = app.state.weixin_chub_mode.dispatch(
         message_id="weixin-system-upgrade",
-        prompt="/system upgrade",
+        prompt="upgrade",
         message_type="text",
         correlation_id="upgrade-request",
         source_ip="100.64.0.21",
@@ -1113,7 +1152,7 @@ def test_weixin_system_upgrade_uses_application_upgrade_coordinator(
         ),
     )
 
-    assert result.message == "System upgrade: Started. Check with system upgrade status."
+    assert result.message == "Upgrade: Started. Check with upgrade status."
     operation = app.state.system_upgrade.operation()
     assert operation is not None
     assert operation.source_ip == "100.64.0.21"

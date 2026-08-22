@@ -583,6 +583,13 @@ async function archiveConversationSession(event) {
     if (generation !== conversationGeneration) {
       return;
     }
+    if (error?.code === "codex_session_not_found") {
+      // The list can be stale while another reconciliation or client has
+      // already removed this Session. Archive is then already complete from
+      // the user's perspective; leave the retired conversation page.
+      window.location.replace("/");
+      return;
+    }
     conversationArchivePending = false;
     conversationSessionView.setArchivePending(false);
     showConversationMessage(
@@ -632,6 +639,13 @@ async function deleteConversationSession(event) {
     switchConversationSession(nextSession.id, nextSessionUrl, nextSession);
   } catch (error) {
     if (generation !== conversationGeneration) {
+      return;
+    }
+    if (error?.code === "codex_session_not_found") {
+      // The list can be stale while another reconciliation or client has
+      // already removed this Session. Deletion is already complete from the
+      // user's perspective; leave the retired conversation page.
+      window.location.replace("/");
       return;
     }
     conversationDeletePending = false;
@@ -718,6 +732,9 @@ async function performConversationLoad(generation, client) {
         || task.deferred_restart_status === "started",
     ),
     session,
+    sessions: sessionContextResult.status === "fulfilled"
+      ? sessionContextResult.value.sessions
+      : [],
   }) && document.visibilityState !== "hidden") {
     conversationPollTimer = window.setTimeout(
       loadConversation,

@@ -305,7 +305,7 @@ def test_refresh_failure_only_retains_same_source_snapshot(settings: Settings) -
         weekly=fresh.weekly.model_copy(
             update={
                 "resets_at": datetime.fromisoformat(
-                    "2026-08-22T15:45:56+08:00"
+                    "2099-08-22T15:45:56+08:00"
                 )
             }
         ),

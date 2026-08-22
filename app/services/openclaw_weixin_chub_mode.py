@@ -113,6 +113,8 @@ LOGGER = logging.getLogger("hub.openclaw.weixin_chub_mode")
 FIXED_COMMAND_STATUS_CODES = frozenset(
     {
         "chub_restart_requested",
+        "quick_worker_restart_requested",
+        "clawbot_restart_requested",
         "chub_slots_synced",
         "codex_retry_checked",
         "codex_session_archived",
@@ -170,6 +172,10 @@ class WeixinChubModeManager:
         translation_result_notifier: Callable[..., object] | None = None,
         system_upgrade_status_reader: Callable[[], object] | None = None,
         system_upgrade_starter: Callable[[str], object] | None = None,
+        maintenance_command_starter: Callable[
+            [str, str, QuickInteractionWeixinRoute, str], object
+        ]
+        | None = None,
     ) -> None:
         self.settings = settings
         self.codex_manager = codex_manager
@@ -188,6 +194,7 @@ class WeixinChubModeManager:
         self.restart_notifier = restart_notifier
         self.system_upgrade_status_reader = system_upgrade_status_reader
         self.system_upgrade_starter = system_upgrade_starter
+        self.maintenance_command_starter = maintenance_command_starter
         self.path = settings.openclaw.weixin_chub_mode.state_file
         request_state_file = settings.openclaw.weixin_chub_mode.request_state_file
         if not request_state_file.is_absolute() and self.path.is_absolute():
@@ -660,8 +667,6 @@ class WeixinChubModeManager:
                         "operation_id": operation_id,
                         "source_ip": source_ip,
                         "notification_route": delivery_route,
-                        "weixin_session_slot": session_slot,
-                        "weixin_session_title": session_title,
                     }
                     if request_item is not None:
                         submit_kwargs.update(
@@ -686,8 +691,6 @@ class WeixinChubModeManager:
                             operation_id=operation_id,
                             source_ip=source_ip,
                             target_session_id=session_id,
-                            target_session_slot=session_slot,
-                            target_session_title=session_title,
                         )
                         if not accepted:
                             raise ApiError(
@@ -1148,8 +1151,6 @@ class WeixinChubModeManager:
             entry.route,
             outcome=outcome,
             target_session_id=entry.target_session_id,
-            target_slot=entry.target_session_slot,
-            target_title=entry.target_session_title,
             task=entry.polished,
             english=entry.english,
             error=entry.error,
@@ -1176,7 +1177,7 @@ class WeixinChubModeManager:
             prompt
             if command.kind == "normal"
             else command.task_prompt
-            if command.kind == "switch"
+            if command.kind in {"switch", "session_slot"}
             else None
         )
         mode_enabled = self._mode_enabled
@@ -1251,7 +1252,7 @@ class WeixinChubModeManager:
             )
         if ephemeral is not None:
             return ephemeral
-        if mode_enabled and command.kind == "restart":
+        if mode_enabled and command.kind == "restart_web":
             return self._finalize_fixed_command_result(
                 command.kind,
                 self._dispatch_chub_restart(
@@ -1263,7 +1264,20 @@ class WeixinChubModeManager:
                 ),
                 delivery_route,
             )
-        if mode_enabled and command.kind == "system_upgrade":
+        if mode_enabled and command.kind in {"restart_worker", "restart_clawbot"}:
+            return self._finalize_fixed_command_result(
+                command.kind,
+                self._dispatch_maintenance_command(
+                    target=command.kind.removeprefix("restart_"),
+                    message_id=message_id,
+                    correlation_id=correlation_id,
+                    route_fingerprint=route_fingerprint,
+                    source_ip=source_ip,
+                    delivery_route=delivery_route,
+                ),
+                delivery_route,
+            )
+        if mode_enabled and command.kind == "upgrade":
             return self._finalize_fixed_command_result(
                 command.kind,
                 self._dispatch_system_upgrade(
@@ -1496,7 +1510,7 @@ class WeixinChubModeManager:
                     delivery_route,
                 )
 
-            if command.kind == "switch":
+            if command.kind in {"switch", "session_slot"}:
                 result = self._dispatch_codex_switch(
                     message_id=message_id,
                     correlation_id=correlation_id,
@@ -2042,6 +2056,7 @@ class WeixinChubModeManager:
         code: WeixinChubModeSubmissionCode,
         session_id: str | None = None,
         failed: bool = False,
+        pending: bool = False,
         failed_task_prompt: str | None = None,
         task_session_slot: int | None = None,
         task_session_title: str | None = None,
@@ -2060,8 +2075,14 @@ class WeixinChubModeManager:
             if (
                 not self._has_inline_task_context(message)
                 and not (
-                    code == "chub_restart_requested"
-                    and message.startswith("Restart: Scheduled.")
+                    code
+                    in {
+                        "chub_restart_requested",
+                        "quick_worker_restart_requested",
+                        "clawbot_restart_requested",
+                    }
+                    and message.startswith("Restart")
+                    and "Scheduled." in message
                 )
             ):
                 message = self._with_command_status_suffix(message)
@@ -2099,7 +2120,11 @@ class WeixinChubModeManager:
                 result.message = self._with_command_status_suffix(result.message)
             return result
         self._state = next_state
-        self._log_dispatch(operation_id, "failed" if failed else "succeeded", source_ip)
+        self._log_dispatch(
+            operation_id,
+            "failed" if failed else ("started" if pending else "succeeded"),
+            source_ip,
+        )
         if code in {
             "codex_session_created",
             "codex_session_archived",
@@ -2128,15 +2153,106 @@ class WeixinChubModeManager:
                 delivery_route=delivery_route,
             )
 
+    def _dispatch_maintenance_command(
+        self,
+        *,
+        target: str,
+        message_id: str,
+        correlation_id: str | None,
+        route_fingerprint: str,
+        source_ip: str,
+        delivery_route: QuickInteractionWeixinRoute,
+    ) -> WeixinChubModeDispatchResult:
+        """Start a fixed Worker/ClawBot maintenance operation after dispatch returns."""
+        operation_id = uuid4().hex
+        code = (
+            "quick_worker_restart_requested"
+            if target == "worker"
+            else "clawbot_restart_requested"
+        )
+        labels = {"worker": "Worker", "clawbot": "ClawBot"}
+        label = labels.get(target, target)
+        with self._lock:
+            if self._state_error:
+                self._log_standalone_dispatch("failed", source_ip)
+                return self._dispatch_failure("state_unavailable")
+            duplicate = self._find_submission(message_id)
+            if duplicate is not None:
+                if duplicate.delivery_route_fingerprint != route_fingerprint:
+                    self._log_standalone_dispatch("failed", source_ip)
+                    return self._dispatch_failure("message_conflict")
+                self._log_standalone_dispatch("succeeded", source_ip)
+                return WeixinChubModeDispatchResult(
+                    disposition=duplicate.dispatch_disposition or "reply",
+                    message=duplicate.message or None,
+                )
+        self._log_dispatch(operation_id, "requested", source_ip)
+        if self.maintenance_command_starter is None:
+            return self._remember_fixed_reply(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                operation_id=operation_id,
+                route_fingerprint=route_fingerprint,
+                source_ip=source_ip,
+                message=f"Restart {label}: Unavailable. Try again later.",
+                code=code,
+                failed=True,
+            )
+        try:
+            result = self.maintenance_command_starter(
+                target,
+                operation_id,
+                delivery_route,
+                source_ip,
+            )
+            message = getattr(result, "message", None) or str(result or "")
+            if not message:
+                message = (
+                    f"Restart {label}: Scheduled. The result will be sent when completed."
+                )
+            return self._remember_fixed_reply(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                operation_id=operation_id,
+                route_fingerprint=route_fingerprint,
+                source_ip=source_ip,
+                message=message,
+                code=code,
+                pending=True,
+            )
+        except ApiError as exc:
+            return self._remember_fixed_reply(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                operation_id=operation_id,
+                route_fingerprint=route_fingerprint,
+                source_ip=source_ip,
+                message=f"Restart {label}: Not started · {exc.message}",
+                code=code,
+                failed=True,
+            )
+        except Exception:
+            LOGGER.warning("Unable to start Weixin maintenance command", exc_info=True)
+            return self._remember_fixed_reply(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                operation_id=operation_id,
+                route_fingerprint=route_fingerprint,
+                source_ip=source_ip,
+                message=f"Restart {label}: Unavailable. Try again later.",
+                code=code,
+                failed=True,
+            )
+
     @staticmethod
     def _system_upgrade_message(data: object, *, started: bool = False) -> str:
         state = getattr(data, "state", "unknown")
         message = getattr(data, "message", "")
         if started:
             if state in {"preparing", "draining", "cleaning", "restarting"}:
-                return "System upgrade: Started. Check with system upgrade status."
+                return "Upgrade: Started. Check with upgrade status."
             if state == "succeeded":
-                return "System upgrade: Already completed."
+                return "Upgrade: Already completed."
         labels = {
             "idle": "No upgrade plan",
             "available": "Ready",
@@ -2150,7 +2266,7 @@ class WeixinChubModeManager:
         }
         label = labels.get(state, "Unavailable")
         detail = message.strip() if isinstance(message, str) else ""
-        return f"System upgrade: {label}" + (f" · {detail}" if detail else ".")
+        return f"Upgrade: {label}" + (f" · {detail}" if detail else ".")
 
     def _dispatch_system_upgrade_status(
         self,
@@ -2214,7 +2330,7 @@ class WeixinChubModeManager:
             self._log_dispatch(operation_id, "started", source_ip)
             reader = self.system_upgrade_starter if start else self.system_upgrade_status_reader
             if reader is None:
-                message = "System upgrade: Unavailable."
+                message = "Upgrade: Unavailable."
                 failed = True
             else:
                 try:
@@ -2222,11 +2338,11 @@ class WeixinChubModeManager:
                     message = self._system_upgrade_message(data, started=start)
                     failed = False
                 except ApiError as exc:
-                    message = f"System upgrade: Not started · {exc.message}"
+                    message = f"Upgrade: Not started · {exc.message}"
                     failed = True
                 except Exception:
                     LOGGER.warning("Unable to handle Weixin system upgrade command", exc_info=True)
-                    message = "System upgrade: Unavailable. Try again later."
+                    message = "Upgrade: Unavailable. Try again later."
                     failed = True
             return self._remember_fixed_reply(
                 message_id=message_id,
@@ -3755,14 +3871,15 @@ class WeixinChubModeManager:
                 "request_run",
                 "request_archive",
                 "system_upgrade_status",
-                "system_upgrade",
+                "upgrade",
             }
             or result.disposition != "reply"
             or not result.message
             or self._has_inline_task_context(result.message)
             or (
-                command_kind == "restart"
-                and result.message.startswith("Restart: Scheduled.")
+                command_kind in {"restart_web", "restart_worker", "restart_clawbot"}
+                and result.message.startswith("Restart")
+                and "Scheduled." in result.message
             )
         ):
             return result
@@ -4994,19 +5111,7 @@ class WeixinChubModeManager:
                 failed=True,
             )
 
-        target_slot, target, listed_state = target_entry
-        if listed_state != "Available":
-            state_text = "running" if listed_state == "Busy" else "unavailable"
-            message, _status_failed = self._codex_operation_message(
-                f"Archive: Not completed because the target Session is {state_text}.",
-                fill_session_candidates=False,
-            )
-            return self._finish_codex_archive(
-                record,
-                message,
-                source_ip=source_ip,
-                failed=True,
-            )
+        target_slot, target, _listed_state = target_entry
 
         try:
             refreshed = self.codex_manager.get_session(target.id)
@@ -5014,8 +5119,6 @@ class WeixinChubModeManager:
                 refreshed.id != target.id
                 or self._slot_for_session(refreshed.id) != target_slot
                 or not self._session_matches_configuration(refreshed, configuration)
-                or getattr(refreshed, "activity", "unknown") == "unknown"
-                or self._codex_session_dispatch_state(refreshed) != "Available"
             ):
                 raise ValueError("Session is no longer safe to archive")
         except Exception:
@@ -5049,17 +5152,6 @@ class WeixinChubModeManager:
                 failed=True,
             )
 
-        if not getattr(refreshed, "native_session_id", None):
-            message, _status_failed = self._codex_operation_message(
-                "Archive: Not completed because the target Session has not started.",
-                fill_session_candidates=False,
-            )
-            return self._finish_codex_archive(
-                record,
-                message,
-                source_ip=source_ip,
-                failed=True,
-            )
         if self.session_archiver is None:
             return self._finish_codex_archive(
                 record,
@@ -5076,13 +5168,21 @@ class WeixinChubModeManager:
             LOGGER.warning("Codex archive command failed", exc_info=True)
             self._log_archive(operation_id, "failed", refreshed.id, source_ip)
             if isinstance(exc, ApiError) and exc.code in {
-                "quick_interaction_in_progress",
-                "quick_interaction_terminal_working",
+                "codex_session_writer_active",
                 "quick_interaction_writer_active",
             }:
                 message = (
-                    "Archive: Not completed because the target Session changed "
-                    "state or is in use."
+                    "Archive: Not completed. This is open in another app, "
+                    "close it there to continue here."
+                )
+            elif isinstance(exc, ApiError) and exc.code in {
+                "codex_session_in_progress",
+                "quick_interaction_in_progress",
+                "quick_interaction_terminal_working",
+            }:
+                message = (
+                    "Archive: Not completed because the target Session is still "
+                    "running or its state is unknown."
                 )
             else:
                 message = (
@@ -5827,6 +5927,11 @@ class WeixinChubModeManager:
         """Return the current stable Weixin slot without changing slot state."""
         with self._lock:
             return self._slot_for_session(session_id)
+
+    def session_context(self, session_id: str) -> tuple[int | None, str | None]:
+        """Resolve current display data from the authoritative Session ID."""
+        with self._lock:
+            return self._session_context(session_id)
 
     def session_slots_snapshot(self) -> dict[str, int]:
         """Return one consistent copy of the current Weixin slot mapping."""

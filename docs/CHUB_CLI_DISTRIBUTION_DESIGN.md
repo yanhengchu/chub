@@ -53,7 +53,7 @@ chub start
 4. 提交一条低风险测试任务。
 5. 确认页面显示任务受理、执行状态和最终结果。
 
-正常使用不需要执行 `chub worker-health`。只有页面任务无法推进时，维护者才按[Quick Worker 设计](CHUB_QUICK_WORKER_DESIGN.md)使用 `chub status`、`chub worker-health` 或 `chub worker-reload` 排查；已有失败重启且 Worker 不可达时，才使用固定的 `chub worker-recover` 恢复服务。
+正常使用不需要执行 `chub worker-health`。只有页面任务无法推进时，维护者才按[Quick Worker 设计](CHUB_QUICK_WORKER_DESIGN.md)使用 `chub status`、`chub worker-health` 或 `chub worker-reload` 排查和恢复；`chub worker-reload` 本身允许在 Worker 忙碌、协议不兼容或不可达时重建服务并清理 Worker 任务。`chub worker-recover` 仍保留为本机终端的直接服务恢复入口。
 
 ## 2. 安装和使用 ClawBot
 
@@ -143,11 +143,11 @@ Chub 节点自身还必须启用微信 Chub 模式，修改后执行 `chub resta
 
 ### 2.4 复检 OpenClaw 最小定制
 
-可信语音字段和 Context Token 由第三方腾讯微信插件实际运行目录承载；Chub 只提供最小兼容规则和复检方法。首次安装、微信插件升级、重装、运行目录变化，或已确认出现语音/Token/出站异常时，都必须执行下面的复检；普通 Gateway/Chub 重启、重新扫描或重新绑定不自动打补丁。
+可信语音字段和 Context Token 由第三方腾讯微信插件实际运行目录承载；Chub 只提供最小兼容规则和复检方法。首次安装、微信插件升级、重装、运行目录变化，或已确认出现语音/Token/出站异常时，都必须执行下面的复检；底层 Gateway 重启本身不自动打补丁，首页“重启与恢复”会在固定目标版本可确认时执行受控同步。
 
 1. 使用 `openclaw plugins inspect openclaw-weixin --runtime --json` 找到实际加载的微信插件版本和运行目录。
 2. 按[OpenClaw 定制集成设计第 7 节](OPENCLAW_CUSTOMIZATION_DESIGN.md#7-版本部署与复检流程)检查 `accountId + userId` 持久化、启动恢复、懒恢复和文件权限 `600`。
-3. 如果功能缺失，先做版本和适用性检查，再只应用可信语音或 Context Token 对应的最小变更；上游已等价实现、版本不匹配或检查失败时不得强行应用，也不得直接修改 Chub 插件源码来替代适配器补丁。
+3. 如果功能缺失，先做版本和适用性检查，再只应用可信语音或 Context Token 对应的最小变更；上游已等价实现、版本不匹配或检查失败时不得强行应用，也不得直接修改 Chub 插件源码来替代适配器补丁。首页“重启与恢复”会对已锁定的目标版本执行同样的固定同步；底层 `openclaw gateway restart` 仍只是低层重启命令。
 4. 重启 Gateway，重新检查插件加载、Gateway 健康、通道状态和 Token 文件权限。每次微信插件更新后都必须重复复检；具体补丁锚点和恢复边界只维护在[OpenClaw 定制集成设计](OPENCLAW_CUSTOMIZATION_DESIGN.md)中。日志和命令输出不得暴露 Token 或完整收件人信息。
 
 ### 2.5 微信验收

@@ -785,19 +785,35 @@ if re.fullmatch(r"worker-reload:[a-f0-9]{32}", operation_id) is None:
     raise SystemExit(2)
 if status not in {"requested", "started", "succeeded", "failed"}:
     raise SystemExit(2)
-if re.fullmatch(r"[a-f0-9]{32}", generation) is None:
-    raise SystemExit(2)
+if generation and re.fullmatch(r"[a-f0-9]{32}", generation) is None:
+    generation = "unknown"
 settings = load_settings(config_file)
 configure_worker_operation_logging(settings.logs)
 write_operation(
     operation_id=operation_id,
     action="quick_worker_reload",
     status=status,
-    target=f"quick-worker:{generation}",
+    target=f"quick-worker:{generation or 'unknown'}",
     source_ip="127.0.0.1",
 )
 PY
     )
+}
+
+worker_health_generation_any() {
+    local payload="$1"
+    "$PYTHON_BIN" -c '
+import json
+import re
+import sys
+
+payload = json.loads(sys.stdin.read())
+data = payload.get("data") if payload.get("success") is True else None
+generation = data.get("generation") if isinstance(data, dict) else None
+if not isinstance(generation, str) or re.fullmatch(r"[a-f0-9]{32}", generation) is None:
+    raise SystemExit(1)
+print(generation)
+' <<<"$payload"
 }
 
 worker_health_generation() {
@@ -893,24 +909,18 @@ quick_worker_reload() {
     check_project
     local old_payload old_generation old_protocol current_protocol
     local new_payload new_generation operation_id attempt
-    old_payload="$(quick_worker_health)" \
-        || fail "Quick Worker health is unavailable; reload was not started"
+    old_payload="$(quick_worker_health 2>/dev/null || true)"
+    old_generation=""
+    if [[ -n "$old_payload" ]]; then
+        old_generation="$(worker_health_generation_any "$old_payload" 2>/dev/null || true)"
+        old_protocol="$(worker_health_protocol "$old_payload" 2>/dev/null || true)"
+    fi
     current_protocol="$(worker_protocol_version)" \
         || fail "Quick Worker protocol could not be read"
-    old_protocol="$(worker_health_protocol "$old_payload")" \
-        || fail "Quick Worker protocol is unavailable; reload was not started"
-    old_generation="$(worker_health_generation "$old_payload" ready "" true)" \
-        || fail "Quick Worker is not ready for a controlled reload"
     operation_id="$(new_worker_reload_operation_id)"
     record_worker_reload_operation "$operation_id" requested "$old_generation" || true
-    if [[ "$old_protocol" == "$current_protocol" ]]; then
-        if ! quick_worker_drain "$operation_id"; then
-            record_worker_reload_operation "$operation_id" failed "$old_generation" || true
-            fail "Quick Worker drain failed; reload was not started"
-        fi
-    elif ! worker_health_is_idle "$old_payload"; then
-        record_worker_reload_operation "$operation_id" failed "$old_generation" || true
-        fail "Quick Worker protocol is incompatible and has active or queued tasks; reload was not started"
+    if [[ -n "$old_payload" && "$old_protocol" == "$current_protocol" ]]; then
+        quick_worker_drain "$operation_id" >/dev/null 2>&1 || true
     fi
     record_worker_reload_operation "$operation_id" started "$old_generation" || true
     if ! (reload_worker_service); then
@@ -921,12 +931,8 @@ quick_worker_reload() {
         if new_payload="$(quick_worker_health 2>/dev/null)" \
             && new_generation="$(
                 worker_health_generation "$new_payload" ready "$old_generation"
-            )"; then
-            if ! health_check true; then
-                record_worker_reload_operation \
-                    "$operation_id" failed "$new_generation" || true
-                fail "Worker reloaded, but Web did not accept the new Worker"
-            fi
+            )" \
+            && worker_health_is_idle "$new_payload"; then
             record_worker_reload_operation \
                 "$operation_id" succeeded "$new_generation" || true
             echo "Quick Worker reloaded: $old_generation -> $new_generation"
@@ -952,8 +958,7 @@ quick_worker_recover() {
             && new_generation="$(
                 worker_health_generation "$new_payload" ready ""
             )" \
-            && worker_health_is_idle "$new_payload" \
-            && health_check true; then
+            && worker_health_is_idle "$new_payload"; then
             echo "Quick Worker recovered: $new_generation"
             return
         fi

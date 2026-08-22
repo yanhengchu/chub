@@ -2605,20 +2605,23 @@ pre {
   background: #2a1014;
 }
 
-.conversation-rename-form {
+.conversation-rename-form,
+.codex-rename-form {
   display: grid;
   gap: 0.9rem;
   margin-top: 0;
 }
 
-.conversation-rename-field {
+.conversation-rename-field,
+.codex-rename-field {
   display: grid;
   gap: 0.45rem;
   min-width: 0;
   margin: 0;
 }
 
-.conversation-rename-field input {
+.conversation-rename-field input,
+.codex-rename-field input {
   width: 100%;
   min-height: 44px;
   border: 1px solid #bdc8bf;
@@ -2628,7 +2631,8 @@ pre {
   background: white;
 }
 
-:root[data-ui-style="cyber"] .conversation-rename-field input {
+:root[data-ui-style="cyber"] .conversation-rename-field input,
+:root[data-ui-style="cyber"] .codex-rename-field input {
   border-color: var(--line);
   color: var(--ink);
   background: #04100d;

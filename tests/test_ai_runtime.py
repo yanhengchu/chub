@@ -601,6 +601,22 @@ def test_codex_adapter_preserves_quick_origin_for_idle_hook(
     assert event.activity_source == "quick"
 
 
+def test_codex_adapter_persists_activity_session_rebind(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    settings.codex_pty.runtime_dir = tmp_path / "runtime"
+    adapter = CodexRuntimeAdapter(settings)
+    old_session_id = "123e4567-e89b-12d3-a456-426614174000"
+    new_session_id = "123e4567-e89b-12d3-a456-426614174001"
+
+    adapter.rebind_activity_session(old_session_id, new_session_id)
+
+    alias = adapter.hook_dir / f".{old_session_id}.rebind"
+    assert alias.read_text(encoding="ascii") == f"{new_session_id}\n"
+    assert alias.stat().st_mode & 0o777 == 0o600
+
+
 def test_codex_adapter_terminal_spec_uses_runtime_request(
     settings: Settings,
     tmp_path: Path,

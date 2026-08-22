@@ -15,7 +15,7 @@ AI Agent 处理 Runtime、Session 或 Quick Worker 需求时，先执行以下�
 1. **Chub 是控制面，不是模型或通用 Agent。** Chub 拥有入口认证、权限、逻辑 AI Session、任务状态、通知和用户可见最终结果；Runtime 负责实际分析、编码和工具执行。
 2. **当前生产只有 `codex`。** `runtime_id` 由后端固定注册和写入，客户端、微信正文、任务正文和页面不能选择 Runtime、Runner、命令、工作目录或环境变量。
 3. **状态必须有唯一权威来源。** AI Session 的逻辑状态归 AI Session Manager；后台任务、租约、恢复和终态归 Quick Worker；Runtime 原生状态只由对应 Adapter 解释；实时连接由 Interactive Supervisor 管理。
-4. **同一逻辑 Session 同时只能有一个 writer。** 门禁只阻止当前直接冲突或破坏风险，不因历史 writer、旧 PID、页面状态或未知标记把整个系统锁死。已确认空闲且属于 Chub 的终端可以被快速交互接管。
+4. **同一逻辑 Session 同时只能有一个 writer。** 门禁只阻止当前直接冲突或破坏风险，不因历史 writer、旧 PID、页面状态或未知标记把整个系统锁死。`terminal` 与 `quick` 是创建后不可切换的入口类型，不互相接管 writer；当前 Quick Worker 只能在自己的 Session 租约内完成自己的原生 ID 绑定，其他 writer 必须失败关闭。
 5. **可靠终态优先。** 进程创建、HTTP 200、任务已受理、Tool Call 已创建或模型已返回都不等于成功；必须确认任务、Session、通知或维护操作的最终状态。无法确认时失败关闭并提供恢复路径。
 6. **Runtime 错误保留上游原文。** Chub 不维护一套覆盖所有 Runtime 的错误翻译表；只做有界读取、纯文本展示和敏感信息脱敏。没有可用原文时才使用通用兜底错误。
 7. **旧运行态默认不兼容。** Chub 自有且不再适用的旧 Session、任务、租约和协议数据在受控升级边界内直接清理并初始化新格式；不增加双读、双写或长期迁移分支。用户配置、第三方原生数据和明确要求保留的数据不适用此规则。
@@ -65,7 +65,7 @@ Browser / CLI / OpenClaw / 微信
 | --- | --- | --- |
 | Chub 逻辑 Session、标题、槽位、归档和用户可见状态 | AI Session Manager / AI Session Store | Runtime、页面或 Worker |
 | Runtime 原生 Session、原生 ID、命令、Hook、锁和事件格式 | 对应 Runtime Adapter | Session Manager、页面或通用 Worker |
-| 实时终端票据、连接和受管终端生命周期 | Interactive Supervisor + Adapter | Quick Worker 或页面 |
+| 实时终端票据、连接、ttyd Web 桥和固定 tmux carrier 生命周期 | Interactive Supervisor + Adapter | Quick Worker 或页面 |
 | 后台任务、Session 租约、进程组、超时、取消、恢复和任务终态 | Quick Worker | Runtime Runner、Web 或通知服务 |
 | Runtime 私有后台命令、事件解释和有界结果读取 | Runtime Runner | Quick Worker 核心或业务入口 |
 | 通知路由、投递和用户可见文案 | Chub 通知/业务入口 | Runtime |
@@ -93,7 +93,7 @@ Browser / CLI / OpenClaw / 微信
 | `runtime_status` | 确认 Runtime/CLI 可用性、版本和协议兼容性 |
 | `native_session_mapping` | 创建、发现并校验 Runtime 原生 Session 映射 |
 | `session_resume` / `session_archive` | 恢复或归档原生 Session；缺失时关闭对应入口 |
-| `interactive_terminal` | 启动、恢复和探测受管实时终端 |
+| `interactive_terminal` | 启动、恢复和探测受管实时终端；ttyd 桥可重建，固定 tmux carrier 按逻辑 Session 复用 |
 | `background_turn` | 执行受监督的后台 Turn 并提供规范化结果 |
 | `task_cancel` | 让后台执行纳入 Worker 的取消契约；任务终态仍由 Worker 决定 |
 | `structured_events` / `activity_events` | 提供有界、可校验的执行和 Activity 事件 |
@@ -106,7 +106,10 @@ Browser / CLI / OpenClaw / 微信
 #### 3.3 权限、事件和错误
 
 - Adapter 必须报告权限配置能否无损映射；无法映射时拒绝创建或执行，不自动提升权限。
-- 原生事件、Hook 文件、路径、权限、格式、限长读取和清理由 Adapter 负责；Session Manager 只消费规范化 Activity。
+- 原生事件、Hook 文件、升级期间的 Session 别名、路径、权限、格式、限长读取和清理由
+  Adapter 负责；Session Manager 只消费规范化 Activity。升级改绑不重启原生进程时，Adapter
+  必须让旧进程继续产生的 Hook 事件归属到新的 Chub Session；别名损坏或无法确认时只能
+  忽略事件并保持未知状态，不得放宽 writer 仲裁。
 - Runner 失败时先读取 Runtime 错误原文；读取成功但没有文本时再回退到 `stderr`，两者为空才使用 `Task runner exited unsuccessfully.` 等通用兜底。读取或解析过程本身失败时必须保留 Chub Runtime 错误码和诊断，并进入明确失败终态。
 - 错误原文只作为有界纯文本保存、查询和通知，不作为命令、HTML 或新任务输入执行。`Authorization`、`Bearer`、配置 Token、终端票据等敏感值必须在 Runner/Worker 边界脱敏。
 - `error_code` 只表示 Chub/Worker 终态分类，不要求与上游错误一一对应；`error_source=runtime` 时保留上游 AI Runtime 子进程原文，`error_source=chub` 时明确标记 Chub/Worker/解析边界错误。任务被取消或超时不是错误来源，`error_source` 必须为空；失败但来源元数据缺失时只能显示“来源未确认”，不得猜测为 Runtime 或 Chub。
@@ -120,7 +123,7 @@ AI Session 的 Session/Activity 枚举、交互入口、类型、槽位、页面
 - AI Session Manager 拥有 Chub 逻辑 Session 和公开元数据；Runtime Adapter 只负责原生 Session 映射、规范化事件、writer 探测和终端/后台执行能力。
 - Runtime 私有进程、Hook、事件格式、原生路径和错误读取只能由 Adapter/Runner 解释，不能进入 Session 公共模型或页面契约。
 - Runtime 接入不得绕过 Session Manager、Interactive Supervisor 或 Quick Worker，也不得向客户端暴露 Runtime、Runner、命令或工作目录选择器。
-- 入口冲突、writer 接管、Session 类型限制和最终状态确认由 Session/Worker 专项文档共同约束；Runtime 只提供后端完成这些判断所需的可信结果。
+- 入口冲突、writer 所有权、Session 类型限制和最终状态确认由 Session/Worker 专项文档共同约束；Runtime 只提供后端完成这些判断所需的可信结果。Runtime 不把“tmux 存在”解释为原生 Codex 一定健康，也不把 Web 连接存在解释为 writer 仍由浏览器持有。
 
 ### 5. Runtime 与 Quick Worker 的边界
 
@@ -257,10 +260,10 @@ status() -> RuntimeStatus
 | `runtime_status` | Adapter | `descriptor` property、`status()`；状态的 `runtime_id` 必须与 descriptor 一致。 |
 | `native_session_mapping` | Adapter `RuntimeNativeSessionAdapter` | `validate_native_session_id(id) -> None`、`discover_sessions() -> RuntimeSessionDiscoveryResult`、`native_session_available(id) -> bool`。原生 Session 的创建由终端或后台 Runner 执行并从规范化事件确认，没有额外的通用 `create_native_session()` 方法。 |
 | `session_resume` | Adapter + Runner | 使用已校验的原生 ID 填入 `RuntimeTurnRequest`；必须依赖 `native_session_mapping`，不能只在字符串层面模拟恢复。 |
-| `session_archive` | Adapter `RuntimeSessionArchiveAdapter` | `run_native_action(action: "archive" | "delete", native_session_id: str) -> None`；动作完成前不得删除 Chub 映射。 |
+| `session_archive` | Adapter `RuntimeSessionArchiveAdapter` | `run_native_action(action: "archive" 或 "delete", native_session_id: str) -> None` 执行原生动作；`native_session_archive_state(native_session_id: str)` 和 `native_session_deleted_state(native_session_id: str)` 返回 `bool` 或 `None`，分别用于在动作结果中断后确认原生是否已归档或删除。原生结果未确认成功前不得删除 Chub 映射。 |
 | `interactive_terminal` | Adapter `RuntimeInteractiveTerminalAdapter` | `terminal_command(request: RuntimeTerminalRequest, port: int) -> RuntimeProcessSpec`、`terminal_backend_matches(command: tuple[str, ...], session_id: str) -> bool`。 |
 | `writer_probe` | Adapter `RuntimeWriterProbeAdapter`，并由 Runner 转发 | `has_active_writer(native_session_id: str | None) -> bool`、`wait_for_writer_release(native_session_id: str | None, *, timeout: float = 3.0) -> bool`、`runtime_process_matches(command: tuple[str, ...]) -> bool`。无法确认时抛出错误，不得返回“空闲”。 |
-| `activity_events` | Adapter `RuntimeActivityEventAdapter` | `read_activity_event(session_id: str) -> RuntimeActivityEvent | None`、`clear_activity_event(session_id: str) -> None`。 |
+| `activity_events` | Adapter `RuntimeActivityEventAdapter` | `read_activity_event(session_id: str) -> RuntimeActivityEvent | None`、`clear_activity_event(session_id: str) -> None`、`rebind_activity_session(old_session_id: str, new_session_id: str) -> None`。升级别名必须固定在 Runtime 私有目录、使用当前用户权限并进行有界校验。 |
 | `model_catalog` | Adapter `RuntimeModelCatalogAdapter` | `validate_model(model: str | None, reasoning_effort: str | None) -> None`、`read_model_catalog() -> RuntimeModelCatalog`。 |
 | `background_turn` | Worker Runner | 由 `RuntimeWorkerRunner.validate_turn()` 和 `build_launch()` 表达；Runner 必须提供固定进程规格、受控输入和最终结果读取。 |
 | `structured_events` | Worker Runner | `parse_event_stream(path, *, max_event_bytes, missing_ok=False) -> RuntimeEventSummary`；只输出规范化事件摘要。 |
@@ -385,7 +388,7 @@ Runner 启动或 Tool Call 创建不能宣告任务成功；未知错误不得�
 - 能力报告、方法签名、能力依赖和固定装配位置足以让独立 AI 复现 Adapter/Runner；声明的每项能力都有可执行证据。
 - 共享层不读取 Runtime 私有文件、锁、Hook、事件字段或命令；所有私有行为集中在 Adapter/Runner。
 - 权限配置可无损映射；不支持的能力明确拒绝或隐藏，不静默降级。
-- 同一逻辑 Session 的实时终端和后台任务严格单 writer；已确认空闲的受管终端可接管；未知或外部 writer 只在直接风险存在时拒绝，并有清理/对账/恢复路径。
+- 同一逻辑 Session 的实时终端和后台任务严格单 writer；`quick` 绑定竞态只能由当前 Quick Worker 租约完成，未知或外部 writer 必须拒绝并给出恢复路径；不以历史锁文件、旧 PID 或页面状态长期阻塞。
 - 任务、Session、通知、重启和升级都确认最终状态；Runner 成功创建、Tool Call 创建、HTTP 200 或模型回复不作为成功依据。
 - 上游错误原文按有界纯文本透传并脱敏；没有原文时才使用通用兜底；错误解析失败仍释放租约并进入明确失败终态。页面时间线只在失败终态显示“错误来源”，取消和超时只显示自身状态。
 - Quick Worker 的幂等、租约、进程组、超时、取消、恢复、结果限制和通知语义不退化；未知结果不得自动重放。
@@ -399,7 +402,7 @@ Runner 启动或 Tool Call 创建不能宣告任务成功；未知错误不得�
 
 1. 读取能力报告，逐项对照共享模型、Protocol 方法签名和能力依赖；任何 `Partial`/`Unsupported`/`Unknown` 必须与注册表和入口状态一致。
 2. 检查固定注册表、能力矩阵、Runtime ID、`validate_runtime_wiring()` 和 Adapter/Runner wiring。
-3. 创建并恢复 Session，分别验证实时终端、快速交互、等待输入接管、执行中互斥和第二页面接管。
+3. 创建并恢复 Session，分别验证实时终端、快速交互、当前 Quick Worker 的重复发现绑定、外部 writer 冲突和第二页面接管；不再验收 terminal/quick 跨类型 writer 接管。
 4. 验证正常完成、上游错误、空错误、敏感信息脱敏、取消、超时、崩溃、未知结果和租约释放。
 5. 验证 Web、Worker、ClawBot 普通重启独立，以及系统升级与恢复只影响直接受影响的 Runtime 写入。
 6. 验证页面、API、微信固定入口、通知和当前 Codex 回归；再确认未承诺能力确实保持不可用。
@@ -416,5 +419,5 @@ Runner 启动或 Tool Call 创建不能宣告任务成功；未知错误不得�
 ## 验收范围与复检
 
 - 已验收：已落地的 Codex Runtime 边界、AI Session/Quick Worker 所有权、能力矩阵、Adapter/Runner wiring、实时终端与快速交互规则、错误透传、现有 Codex 业务回归，以及 Runtime 实现规范、共享代码契约、能力评估和 Adapter/Runner 生成清单；本次协议 `9` 的错误来源投影已通过自动化回归。
-- 当前不承诺：协议 `9` 尚未完成 macOS/Ubuntu 服务重载后的真实最终状态复检；第二个真实 Runtime、多 Runtime Session 聚合、客户端 Runtime 选择器，以及未在当前维护机器实际验证的平台或外部 Runtime 特有行为也不承诺。
-- 本次文档调整补齐 AI 生成 Adapter/Runner 所需的接口、字段、装配和自检规则，并同步记录 API `error.source`、任务 `error_source`、Codex CLI/Chub 页面标签及 Worker 协议 9 升级边界；不改变 Runtime 选择、权限或服务管理语义。
+- 当前不承诺：第二个真实 Runtime、多 Runtime Session 聚合、客户端 Runtime 选择器，以及未在当前维护机器实际验证的平台或外部 Runtime 特有行为；本次协议 `9`、ttyd/tmux 与旧进程 Hook 别名重连已完成 macOS/Ubuntu 服务重载后的真实最终状态复检并通过维护者验收。
+- 本次文档调整同步记录 ttyd Web 桥、固定 tmux carrier、原生 Codex writer 的所有权，以及升级改绑后旧进程 Hook Activity 事件的归属规则；不改变 Runtime 选择、权限或服务管理语义。

@@ -698,7 +698,7 @@ def test_help_and_unknown_command(service_env: tuple[dict[str, str], Path]) -> N
     assert "unknown command" in invalid_result.stderr
 
 
-def test_worker_reload_command_keeps_drain_and_final_health_gates() -> None:
+def test_worker_reload_command_drains_tasks_and_checks_worker_final_state() -> None:
     content = CHUB.read_text(encoding="utf-8")
     reload_body = content[content.index("quick_worker_reload() {") :]
 
@@ -714,7 +714,7 @@ def test_worker_reload_command_keeps_drain_and_final_health_gates() -> None:
     assert "old_generation" in reload_body
     assert "old_protocol" in reload_body
     assert "new_generation" in reload_body
-    assert "health_check true" in reload_body
+    assert "health_check true" not in reload_body
     assert reload_body.index("reload_worker_service") < reload_body.index(
         'succeeded "$new_generation"'
     )

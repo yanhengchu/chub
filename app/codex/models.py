@@ -13,6 +13,8 @@ SessionStatus = Literal["new", "running", "stopped", "error"]
 TurnActivity = Literal["unknown", "working", "idle"]
 ActivitySource = Literal["none", "terminal", "quick"]
 SessionMode = Literal["terminal", "quick"]
+SessionUsageOwner = Literal["none", "terminal", "quick_worker", "external", "unknown"]
+SessionUsagePhase = Literal["idle", "running", "waiting_result", "unknown"]
 PermissionMode = Literal["ask", "auto-review", "read-only", "full-access"]
 QuickInteractionOrder = Literal["task", "timeline"]
 QuickInteractionErrorSource = Literal["chub", "runtime"]
@@ -105,6 +107,12 @@ class WorkspaceInfo(BaseModel):
     available: bool
 
 
+class SessionUsage(BaseModel):
+    native_session_present: bool = False
+    owner: SessionUsageOwner = "none"
+    phase: SessionUsagePhase = "idle"
+
+
 class SessionInfo(BaseModel):
     id: str
     runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
@@ -131,6 +139,7 @@ class SessionInfo(BaseModel):
     quick_interaction_updated_at: datetime | None = None
     terminal_access_allowed: bool = True
     weixin_session_slot: int | None = Field(default=None, ge=1, le=9)
+    usage: SessionUsage = Field(default_factory=SessionUsage)
 
 
 class SessionListData(BaseModel):
@@ -318,8 +327,6 @@ class QuickInteractionTask(BaseModel):
     # Keep the legacy bound so persisted tasks created before the 13-character
     # summary limit remain readable after an upgrade.
     summary: str | None = Field(default=None, max_length=48)
-    weixin_session_slot: int | None = Field(default=None, ge=1, le=9)
-    weixin_session_title: str | None = Field(default=None, max_length=48)
     weixin_request_slot: int | None = Field(default=None, ge=1, le=9)
     weixin_request_generation: str | None = Field(
         default=None,

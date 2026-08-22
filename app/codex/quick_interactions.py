@@ -226,6 +226,11 @@ class QuickInteractionManager:
                 self._local_state_error = "Web quick interaction state contains an invalid entry"
                 continue
             task_payload = dict(item)
+            removed_session_display_snapshot = False
+            for field in ("weixin_session_slot", "weixin_session_title"):
+                if field in task_payload:
+                    task_payload.pop(field, None)
+                    removed_session_display_snapshot = True
             # Older records may contain the removed pin state.
             removed_legacy_pin_state = "pinned_at" in task_payload
             task_payload.pop("pinned_at", None)
@@ -310,7 +315,7 @@ class QuickInteractionManager:
                     self._local_state_error = (
                         "Active Web quick interaction has no Worker identity"
                     )
-            if removed_legacy_pin_state:
+            if removed_legacy_pin_state or removed_session_display_snapshot:
                 recovered_tasks = True
             if task.notification_status == "sending":
                 recovered_tasks = True
@@ -335,8 +340,6 @@ class QuickInteractionManager:
         operation_id: str,
         source_ip: str,
         notification_route: QuickInteractionWeixinRoute | None = None,
-        weixin_session_slot: int | None = None,
-        weixin_session_title: str | None = None,
         weixin_request_slot: int | None = None,
         weixin_request_generation: str | None = None,
         weixin_request_run_id: str | None = None,
@@ -419,8 +422,6 @@ class QuickInteractionManager:
                         max_chars=summary_max_chars,
                         max_width=summary_max_width,
                     ),
-                    weixin_session_slot=weixin_session_slot,
-                    weixin_session_title=weixin_session_title,
                     weixin_request_slot=weixin_request_slot,
                     weixin_request_generation=weixin_request_generation,
                     weixin_request_run_id=weixin_request_run_id,
@@ -1044,13 +1045,6 @@ class QuickInteractionManager:
     def destructive_operation_guard(self, session_id: str) -> Iterator[None]:
         with self._session_lock(session_id):
             self._require_worker_recovery()
-            with self._lock:
-                if self._any_running(session_id):
-                    raise ApiError(
-                        409,
-                        "quick_interaction_in_progress",
-                        "该会话正在执行快速交互，请等待任务结束。",
-                    )
             yield
 
     @contextmanager
@@ -1505,12 +1499,50 @@ class QuickInteractionManager:
                     and item.id in self._active_task_ids
                 ]
                 if not task_ids:
+                    if self._any_running(session_id):
+                        raise ApiError(
+                            503,
+                            "quick_interaction_cancel_failed",
+                            "快速交互停止状态无法确认，请稍后重试。",
+                        )
                     return False
             deadline = time.monotonic() + timeout
             for task_id in task_ids:
                 remaining = max(0.0, deadline - time.monotonic())
                 self.cancel_task(task_id, timeout=remaining)
             return True
+
+    def remove_session_tasks(self, session_id: str) -> None:
+        """Remove retained Quick Worker task records after a Session operation."""
+        self._require_worker_recovery()
+        with self._session_lock(session_id):
+            with self._lock:
+                if self._any_running(session_id):
+                    raise ApiError(
+                        409,
+                        "quick_interaction_in_progress",
+                        "该会话正在执行快速交互，请等待任务结束。",
+                    )
+                task_ids = {
+                    task.id
+                    for task in self._tasks.values()
+                    if task.session_id == session_id
+                }
+                if not task_ids:
+                    return
+                for task_id in task_ids:
+                    self._tasks.pop(task_id, None)
+                    self._notification_routes.pop(task_id, None)
+                    self._deferred_restart_contexts.pop(task_id, None)
+                    self._operation_contexts.pop(task_id, None)
+                    self._operations.pop(task_id, None)
+                    self._worker_delivery_confirmed.discard(task_id)
+                    self._submitting_task_ids.discard(task_id)
+                    self._cancelled_task_ids.discard(task_id)
+                    self._task_done_events.pop(task_id, None)
+                self._running_sessions.discard(session_id)
+                self._untracked_worker_sessions.discard(session_id)
+                self._write()
 
     def cancel_task(self, task_id: str, *, timeout: float = 5) -> bool:
         """Cancel one exact task without guessing among a shared Session queue."""

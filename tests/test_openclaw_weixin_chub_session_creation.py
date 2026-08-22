@@ -184,7 +184,7 @@ def test_dispatch_returns_bounded_failure_instead_of_api_error(
 
 
 @pytest.mark.parametrize("prompt", ["new", "新建", " new。 "])
-def test_prefixed_new_without_title_falls_back_to_normal_task(
+def test_new_without_title_falls_back_to_normal_task(
     settings: Settings,
     prompt: str,
 ) -> None:
@@ -210,7 +210,7 @@ def test_prefixed_new_without_title_falls_back_to_normal_task(
 
     result = manager.dispatch(
         message_id=f"codex-new-{prompt}",
-        prompt="/" + prompt,
+        prompt=prompt,
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -219,7 +219,7 @@ def test_prefixed_new_without_title_falls_back_to_normal_task(
 
     assert result.message is not None
     assert result.message.startswith("Submitted")
-    assert "Task · /" in result.message
+    assert "Task · " in result.message
     assert manager.session_id() == "session-new"
     codex_manager.create_session.assert_called_once()
     codex_manager.rename_session.assert_not_called()
@@ -517,7 +517,7 @@ def test_codex_operation_log_uses_operation_result_not_status_refresh(
     ) as write_operation:
         manager.dispatch(
             message_id="invalid-switch-log",
-            prompt="/switch 0",
+            prompt="switch 0",
             message_type="text",
             correlation_id=None,
             source_ip="100.64.0.21",

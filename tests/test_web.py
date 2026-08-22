@@ -49,6 +49,8 @@ async def test_home_page_is_public_and_contains_no_credential_form(
     assert 'src="/static/theme.js"' in response.text
     assert '<html lang="zh-CN" data-ui-style="standard">' in response.text
     assert '<meta name="color-scheme" content="light">' in response.text
+    assert 'id="codex-rename-dialog"' in response.text
+    assert 'id="codex-rename-input"' in response.text
     expected_stylesheets = [
         "/static/css/tokens.css",
         "/static/css/base.css",
@@ -74,6 +76,7 @@ async def test_home_page_is_public_and_contains_no_credential_form(
     assert 'id="refresh-openclaw"' not in response.text
     assert 'id="openclaw-start"' in response.text
     assert 'id="openclaw-restart"' in response.text
+    assert ">重启与恢复</button>" in response.text
     assert 'id="openclaw-stop"' not in response.text
     assert 'id="openclaw-bind-weixin"' in response.text
     assert '>微信</button>' in response.text
@@ -356,7 +359,7 @@ async def test_standard_style_preview_is_static_and_available(
     assert "以下内容均为静态示例" in response.text
     assert "节点状态" in response.text
     assert "自动化任务" in response.text
-    assert "Codex 会话" in response.text
+    assert "会话工作台" in response.text
     assert "控件与反馈" in response.text
     assert "状态与折叠" in response.text
     assert "暂无可展示内容" in response.text
@@ -545,6 +548,8 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "maintenanceReloadTimer" in dashboard_script
     assert "}, 2000);" in dashboard_script
     assert "浏览器将在稍后自动刷新页面" in dashboard_script
+    assert "Quick Worker 和 ClawBot 背后的 OpenClaw Gateway 是独立服务，不会被重启" in dashboard_script
+    assert "tmux 和原生 Codex 会话保留，重新进入时恢复" in dashboard_script
     assert 'setBadge(elements.quickWorkerBadge, "重启完成", "success")' in dashboard_script
     assert "systemUpgradeReloadOperationId" in dashboard_script
     assert 'data.operation?.status === "succeeded"' in dashboard_script
@@ -643,7 +648,9 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "openCodexEntryDialog" not in script.text
     assert "toggleCodexEntryMode" not in script.text
     assert "session.session_mode === \"quick\"" in script.text
-    assert "actions.append(stop, archive, remove);" in script.text
+    assert "actions.append(rename, stop, archive, remove);" in script.text
+    assert "renameCodexSession" in script.text
+    assert "closeCodexRenameDialog(true)" in script.text
     assert "permissionPanel" not in script.text
     assert "快速交互已提交" not in script.text
     assert "quick-interaction-submit" not in script.text
@@ -656,12 +663,14 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "visibleCodexSessions" in script.text
     assert 'session.workspace_id !== "weixin-translation"' in script.text
     assert "visibleSessions.length" in script.text
-    assert "会话 · 等待输入" in script.text
+    assert "实时终端 · 等待输入" in script.text
     assert "实时终端 · 执行中" in script.text
+    assert "快速交互 · 待输入" in script.text
     assert "快速交互 · 执行中" in script.text
-    assert "会话 · 状态未知" in script.text
+    assert "快速交互 · 等待结果" not in script.text
+    assert "活动状态未知 · 请刷新" in script.text
     assert "尚未启动 · 可进入" in script.text
-    assert "终端访问异常 · 可重试" in script.text
+    assert "终端连接异常 · 可重试" in script.text
     assert "会话异常 · 可重试" in script.text
     assert "CODEX_POLL_FAST_MS = 2000" in script.text
     assert "CODEX_POLL_SLOW_MS = 8000" in script.text
@@ -677,7 +686,7 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "clearCodexModelPreferences()" in script.text
     assert "await createRequest(null, null)" in script.text
     assert "archive.disabled = !session.can_archive" in script.text
-    assert "|| quickInteractionRunning" in script.text
+    assert "|| quickInteractionRunning" not in script.text
     assert "llmInteractionRunning" not in script.text
     assert "codexLoadPromise" in script.text
     assert 'CACHE_KEY = "hub.aiUsageCache"' in script.text
@@ -716,9 +725,10 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "hub.codexCardCache" in script.text
     assert "formatSessionTime" in script.text
     assert "dependencyMessage" in script.text
-    assert "远程开发" in script.text
-    assert "Codex PTY" in script.text
-    assert "远程管理本机 Codex 会话。" in script.text
+    assert "AI" in script.text
+    assert "会话工作台" in script.text
+    assert "统一管理实时终端和快速交互会话。" in script.text
+    assert "会话工作台不可用。" in script.text
     assert "showCodexPanel" not in script.text
     assert "setupCollapsibleCard" in script.text
     assert "cardContentInner.append(panel, workspaceDialog)" in script.text
@@ -867,6 +877,7 @@ async def test_quick_interaction_conversation_page_is_available(
     assert "before: { createdAt: oldest.created_at, id: oldest.id }" in script.text
     assert "performLoadEarlierConversation(generation, client)" in script.text
     assert "conversationPollDelay(conversationPollFailureCount)" in script.text
+    assert "sessions: sessionContextResult.status === \"fulfilled\"" in script.text
     assert "resizeConversationPrompt" in script.text
     assert "updateConversationComposerActions" not in script.text
     assert "setConversationMoreExpanded" not in script.text

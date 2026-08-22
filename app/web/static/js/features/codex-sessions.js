@@ -28,6 +28,17 @@ let codexShouldPoll = false;
 let codexSessionSignature = "";
 let codexLoadPromise = null;
 let codexMutationCount = 0;
+const codexDocument = typeof document === "undefined" ? null : document;
+const codexRenameDialog = codexDocument?.querySelector("#codex-rename-dialog");
+const codexRenameForm = codexDocument?.querySelector("#codex-rename-form");
+const codexRenameInput = codexDocument?.querySelector("#codex-rename-input");
+const codexRenameMessage = codexDocument?.querySelector("#codex-rename-message");
+const codexRenameClose = codexDocument?.querySelector("#codex-rename-close");
+const codexRenameCancel = codexDocument?.querySelector("#codex-rename-cancel");
+const codexRenameConfirm = codexDocument?.querySelector("#codex-rename-confirm");
+let codexRenameTarget = null;
+let codexRenameButton = null;
+let codexRenamePending = false;
 
 function createCodexCard() {
   const card = document.createElement("article");
@@ -74,11 +85,11 @@ function createCodexCard() {
   cardContent.dataset.cardContent = "";
   cardContentInner.className = "card-content-inner";
   kicker.className = "section-kicker";
-  kicker.textContent = "远程开发";
+  kicker.textContent = "AI";
   title.id = "codex-title";
-  title.textContent = "Codex PTY";
+  title.textContent = "会话工作台";
   description.className = "section-description";
-  description.textContent = "远程管理本机 Codex 会话。";
+  description.textContent = "统一管理实时终端和快速交互会话。";
   refreshButton.type = "button";
   refreshButton.id = "refresh-codex";
   refreshButton.className = "button-secondary";
@@ -293,6 +304,203 @@ function codexSessionDisplayTitle(session) {
   return `${modeLabel} · ${slotPrefix}${session.title || "未命名 Session"}`;
 }
 
+function sessionUsagePresentation(session) {
+  const usage = session.usage || {};
+  const owner = usage.owner || "none";
+  const phase = usage.phase || "idle";
+  if (owner === "external") {
+    return {
+      label: "其他应用 · 正在使用",
+      blocked: true,
+      title: "This is open in another app, close it there to continue here.",
+    };
+  }
+  if (owner === "unknown") {
+    return {
+      label: "占用状态未知 · 请刷新",
+      blocked: true,
+      title: "无法确认 Session 占用状态，请刷新后重试。",
+    };
+  }
+  if (owner === "quick_worker") {
+    return {
+      label: "快速交互 · 执行中",
+      blocked: false,
+      title: "",
+    };
+  }
+  if (owner === "terminal") {
+    return {
+      label: phase === "running"
+        ? "实时终端 · 执行中"
+        : phase === "idle"
+          ? "实时终端 · 等待输入"
+          : "活动状态未知 · 请刷新",
+      blocked: false,
+      title: "",
+    };
+  }
+  const activitySource = session.activity_source || "none";
+  const label = session.quick_interaction_running === true
+    ? "快速交互 · 执行中"
+    : session.activity === "working"
+      ? activitySource === "quick"
+        ? "快速交互 · 执行中"
+        : activitySource === "terminal"
+          ? "实时终端 · 执行中"
+          : "活动状态未知 · 请刷新"
+    : session.error
+      ? "终端连接异常 · 可重试"
+      : session.status === "error"
+        ? "会话异常 · 可重试"
+        : session.status === "new"
+          ? "尚未启动 · 可进入"
+          : session.activity === "idle"
+            ? sessionModeIdleLabel(session)
+            : "活动状态未知 · 请刷新";
+  return { label, blocked: false, title: "" };
+}
+
+function sessionModeIdleLabel(session) {
+  return session.session_mode === "quick"
+    ? "快速交互 · 待输入"
+    : "实时终端 · 等待输入";
+}
+
+function sessionEntryBlocked(session, usagePresentation) {
+  return session.session_mode === "terminal" && usagePresentation.blocked;
+}
+
+function sessionStopReady(session) {
+  const owner = session.usage?.owner || "none";
+  const phase = session.usage?.phase || "unknown";
+  return (owner === "terminal" && phase === "running")
+    || (
+      owner === "quick_worker"
+      && ["running", "waiting_result"].includes(phase)
+    );
+}
+
+function sessionArchiveBlockReason(session) {
+  const owner = session.usage?.owner || "none";
+  const phase = session.usage?.phase || "unknown";
+  if (owner === "external") {
+    return "This is open in another app, close it there to continue here.";
+  }
+  if (
+    (owner === "terminal" && phase === "running")
+    || (
+      owner === "quick_worker"
+      && ["running", "waiting_result"].includes(phase)
+    )
+  ) {
+    return "Session 当前正在执行，请等待任务结束后再归档。";
+  }
+  return "";
+}
+
+function setCodexRenamePending(pending) {
+  codexRenamePending = pending;
+  codexRenameForm?.toggleAttribute("aria-busy", pending);
+  if (codexRenameInput) {
+    codexRenameInput.disabled = pending;
+  }
+  if (codexRenameClose) {
+    codexRenameClose.disabled = pending;
+  }
+  if (codexRenameCancel) {
+    codexRenameCancel.disabled = pending;
+  }
+  if (codexRenameConfirm) {
+    codexRenameConfirm.disabled = pending;
+  }
+  if (codexRenameButton?.isConnected) {
+    codexRenameButton.disabled = pending;
+    codexRenameButton.toggleAttribute("aria-busy", pending);
+  }
+}
+
+function closeCodexRenameDialog(force = false) {
+  if ((!codexRenamePending || force) && codexRenameDialog?.open) {
+    codexRenameDialog.close();
+    codexRenameTarget = null;
+    codexRenameButton = null;
+  }
+}
+
+function openCodexRenameDialog(session, button) {
+  if (codexRenamePending || !codexRenameDialog || !codexRenameInput) {
+    return;
+  }
+  codexRenameTarget = session;
+  codexRenameButton = button;
+  codexRenameInput.value = session.title?.trim() || "";
+  setMessage(codexRenameMessage, "");
+  codexRenameDialog.showModal();
+  window.requestAnimationFrame(() => {
+    codexRenameInput.focus();
+    codexRenameInput.select();
+  });
+}
+
+async function renameCodexSession(event) {
+  event.preventDefault();
+  if (codexRenamePending || !codexRenameTarget || !codexRenameInput) {
+    return;
+  }
+  const title = codexRenameInput.value.trim();
+  if (!title) {
+    setMessage(codexRenameMessage, "请输入 Session 标题。", "error");
+    codexRenameInput.focus();
+    return;
+  }
+  setCodexRenamePending(true);
+  beginCodexMutation();
+  try {
+    await apiFetch(
+      `/api/codex/sessions/${encodeURIComponent(codexRenameTarget.id)}/title`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title }),
+      },
+    );
+    await loadCodexSessions({ force: true });
+    closeCodexRenameDialog(true);
+  } catch (error) {
+    if (!handleAccessError(error)) {
+      setMessage(
+        codexRenameMessage,
+        formatApiErrorMessage(error, "Session 重命名失败。"),
+        "error",
+      );
+    }
+  } finally {
+    setCodexRenamePending(false);
+    if (codexRenameButton?.isConnected) {
+      codexRenameButton.disabled = false;
+      codexRenameButton.removeAttribute("aria-busy");
+    }
+    endCodexMutation();
+  }
+}
+
+if (codexRenameForm) {
+  codexRenameForm.addEventListener("submit", renameCodexSession);
+}
+codexRenameClose?.addEventListener("click", closeCodexRenameDialog);
+codexRenameCancel?.addEventListener("click", closeCodexRenameDialog);
+codexRenameDialog?.addEventListener("click", (event) => {
+  if (event.target === codexRenameDialog) {
+    closeCodexRenameDialog();
+  }
+});
+codexRenameDialog?.addEventListener("cancel", (event) => {
+  if (codexRenamePending) {
+    event.preventDefault();
+  }
+});
+
 function renderCodexSessions(sessions) {
   if (!elements.codexSessions) {
     return;
@@ -309,10 +517,14 @@ function renderCodexSessions(sessions) {
 
   sessions.forEach((session) => {
     const quickInteractionRunning = session.quick_interaction_running === true;
-    const sessionRunning = session.status === "running"
-      || quickInteractionRunning
-      || session.activity === "working";
-    const activitySource = session.activity_source || "none";
+    const usagePresentation = sessionUsagePresentation(session);
+    const usageBlocked = usagePresentation.blocked;
+    const deleteBlockReason = session.usage?.owner === "external"
+      ? usagePresentation.title
+      : "";
+    const archiveBlockReason = sessionArchiveBlockReason(session);
+    const entryBlocked = sessionEntryBlocked(session, usagePresentation);
+    const stopReady = sessionStopReady(session);
     const item = document.createElement("article");
     const main = document.createElement("button");
     const text = document.createElement("span");
@@ -320,6 +532,7 @@ function renderCodexSessions(sessions) {
     const meta = document.createElement("span");
     const path = document.createElement("span");
     const actions = document.createElement("div");
+    const rename = document.createElement("button");
     const stop = document.createElement("button");
     const archive = document.createElement("button");
     const remove = document.createElement("button");
@@ -328,23 +541,7 @@ function renderCodexSessions(sessions) {
     main.type = "button";
     title.textContent = codexSessionDisplayTitle(session);
     title.title = title.textContent;
-    const state = quickInteractionRunning
-      ? "快速交互 · 执行中"
-      : session.activity === "working"
-        ? activitySource === "quick"
-          ? "快速交互 · 执行中"
-          : activitySource === "terminal"
-            ? "实时终端 · 执行中"
-            : "会话 · 状态未知"
-      : session.error
-        ? "终端访问异常 · 可重试"
-        : session.status === "error"
-          ? "会话异常 · 可重试"
-          : session.status === "new"
-            ? "尚未启动 · 可进入"
-            : session.activity === "idle"
-              ? "会话 · 等待输入"
-              : "会话 · 状态未知";
+    const state = usagePresentation.label;
     meta.textContent =
       `${state} · ` +
       `${formatSessionTime(
@@ -365,24 +562,36 @@ function renderCodexSessions(sessions) {
       }
       enterCodexSession(session.id, main);
     });
+    main.disabled = entryBlocked;
+    main.title = entryBlocked ? usagePresentation.title : "";
     stop.type = "button";
     stop.className = "button-secondary session-action";
     stop.textContent = "停止";
-    stop.disabled = !sessionRunning;
+    stop.disabled = !stopReady || usageBlocked;
     stop.title = quickInteractionRunning
       ? "停止当前快速交互和会话"
-      : "";
+      : stopReady
+        ? "停止当前执行"
+        : "当前没有正在执行的任务";
+    if (usageBlocked) {
+      stop.title = usagePresentation.title;
+    }
     stop.addEventListener("click", () => stopCodexSession(session.id, stop));
+    rename.type = "button";
+    rename.className = "button-secondary session-action";
+    rename.textContent = "重命名";
+    rename.setAttribute("aria-haspopup", "dialog");
+    rename.setAttribute("aria-controls", "codex-rename-dialog");
+    rename.title = "重命名 Session";
+    rename.setAttribute("aria-label", "重命名 Session");
+    rename.disabled = session.workspace_id === "weixin-translation";
+    rename.addEventListener("click", () => openCodexRenameDialog(session, rename));
     archive.type = "button";
     archive.className = "button-secondary session-action";
     archive.textContent = "归档";
     archive.setAttribute("aria-haspopup", "dialog");
     archive.setAttribute("aria-controls", "confirmation-dialog");
-    archive.disabled = !session.can_archive
-      || quickInteractionRunning;
-    if (quickInteractionRunning) {
-      archive.title = "快速交互正在执行";
-    }
+    archive.disabled = !session.can_archive || Boolean(archiveBlockReason);
     archive.addEventListener("click", () =>
       archiveCodexSession(session, archive),
     );
@@ -393,11 +602,18 @@ function renderCodexSessions(sessions) {
     remove.setAttribute("aria-controls", "confirmation-dialog");
     remove.title = "删除 Session";
     remove.setAttribute("aria-label", "删除 Session");
+    remove.disabled = Boolean(deleteBlockReason);
+    if (archiveBlockReason) {
+      archive.title = archiveBlockReason;
+    }
+    if (deleteBlockReason) {
+      remove.title = deleteBlockReason;
+    }
     remove.addEventListener("click", () =>
       deleteCodexSession(session, remove),
     );
     actions.className = "session-actions";
-    actions.append(stop, archive, remove);
+    actions.append(rename, stop, archive, remove);
     item.append(main, actions);
     elements.codexSessions.append(item);
   });
@@ -441,6 +657,9 @@ function codexSessionsSignature(sessions) {
       session.weixin_session_slot,
       session.cwd,
       session.can_archive,
+      session.usage?.native_session_present,
+      session.usage?.owner,
+      session.usage?.phase,
       session.permission_mode,
       session.active_permission_mode,
       session.permission_pending,
@@ -472,7 +691,7 @@ function renderCodexData(data, { sessionsOnly = false } = {}) {
     } else {
       setMessage(
         elements.codexMessage,
-        missing || data.unavailable_reason || "Codex PTY 不可用。",
+        missing || data.unavailable_reason || "会话工作台不可用。",
         "error",
       );
     }
@@ -854,7 +1073,7 @@ async function archiveCodexSession(session, button) {
   const title = session.title?.trim() || "未命名 Session";
   await showConfirmationDialog({
     title: "归档 Session",
-    description: `归档“${title}”后，该 Session 将从活动列表移除，正在运行的实时终端会停止；如已分配微信槽位，槽位也会释放。Chub 页面暂不提供恢复入口。`,
+    description: `归档“${title}”后，该 Session 将从活动列表移除；如已分配微信槽位，槽位也会释放。执行中的 Session 需要先等待任务结束。Chub 页面暂不提供恢复入口。`,
     confirmLabel: "确认归档",
     pendingLabel: "归档中…",
     errorMessage: "Session 归档失败。",
@@ -887,7 +1106,7 @@ async function deleteCodexSession(session, button) {
   const title = session.title?.trim() || "未命名 Session";
   await showConfirmationDialog({
     title: "删除 Session",
-    description: `删除“${title}”后，该 Session 将永久删除，无法恢复；如已分配微信槽位，槽位也会释放。`,
+    description: `删除“${title}”后，该 Session 将永久删除，无法恢复；执行中的 Quick Worker 任务会在删除过程中先停止，实时终端也会关闭；如已分配微信槽位，槽位也会释放。`,
     confirmLabel: "确认删除",
     pendingLabel: "删除中…",
     errorMessage: "Session 删除失败。",

@@ -39,7 +39,7 @@ from app.services.openclaw_weixin_chub_models import (
         "invalid_usage",
     ),
     [
-        (" 《Chub》。 ", "status", None, None, False),
+        (" chub。 ", "status", None, None, False),
         ("USAGE。", "usage", None, None, False),
         ("help", "help", None, None, False),
         ("帮助。", "help", None, None, False),
@@ -47,10 +47,15 @@ from app.services.openclaw_weixin_chub_models import (
         ("MODEL。", "model", None, None, False),
         ("模型", "model", None, None, False),
         ("同步。", "sync", None, None, False),
-        ("RESTART。", "restart", None, None, False),
-        ("重新启动", "restart", None, None, False),
-        ("SYSTEM UPGRADE STATUS。", "system_upgrade_status", None, None, False),
-        ("system upgrade", "system_upgrade", None, None, False),
+        ("RESTART WEB。", "restart_web", None, None, False),
+        ("重启 Web", "restart_web", None, None, False),
+        ("RESTART WORKER", "restart_worker", None, None, False),
+        ("重启 Worker", "restart_worker", None, None, False),
+        ("RESTART CLAWBOT", "restart_clawbot", None, None, False),
+        ("重启 ClawBot", "restart_clawbot", None, None, False),
+        ("升级系统", "upgrade", None, None, False),
+        ("upgrade", "upgrade", None, None, False),
+        ("UPGRADE STATUS。", "system_upgrade_status", None, None, False),
         ("retry", "retry", None, None, False),
         ("重试", "retry", None, None, False),
         ("继续执行", "retry", None, None, False),
@@ -70,8 +75,11 @@ from app.services.openclaw_weixin_chub_models import (
         ("switch 3 continue", "switch", 3, "continue", False),
         ("switch s3 continue", "switch", 3, "continue", False),
         ("切换 3 继续处理", "switch", 3, "继续处理", False),
-        ("会话 S3", "switch", 3, None, False),
-        ("会话 3", "switch", 3, None, False),
+        ("S3", "session_slot", 3, None, False),
+        ("s3", "session_slot", 3, None, False),
+        ("会话 S3", "session_slot", 3, None, False),
+        ("会话 3", "session_slot", 3, None, False),
+        ("sn S3", "normal", None, None, False),
         ("switch 3 retry", "normal", None, None, False),
         ("switch S3 retry", "normal", None, None, False),
         ("切换 3 重试", "normal", None, None, False),
@@ -81,7 +89,8 @@ from app.services.openclaw_weixin_chub_models import (
         ("切换 3 继续执行", "switch", 3, "继续执行", False),
         ("切换S3，这是正文", "switch", 3, "这是正文", False),
         ("切换3这是正文", "switch", 3, "这是正文", False),
-        ("会话三这是正文", "switch", 3, "这是正文", False),
+        ("S3，这是正文", "session_slot", 3, "这是正文", False),
+        ("会话三这是正文", "session_slot", 3, "这是正文", False),
         ("switch S3: continue", "switch", 3, "continue", False),
         ("archive 2", "archive", 2, None, False),
         ("archive S2", "archive", 2, None, False),
@@ -93,14 +102,17 @@ from app.services.openclaw_weixin_chub_models import (
         ("停止 S2", "stop", 2, None, False),
         ("停止服务后检查", "normal", None, None, False),
         ("switch 999", "switch", None, None, True),
+        ("S999", "session_slot", None, None, True),
+        ("sn 999", "normal", None, None, False),
         ("session switch 2", "normal", None, None, False),
+        ("session 2", "normal", None, None, False),
         ("切换2", "switch", 2, None, False),
         ("切换S10正文", "switch", None, None, True),
         ("切换10正文", "switch", None, None, True),
         ("切换二", "switch", 2, None, False),
         ("切换两", "switch", None, None, True),
         ("切换 二", "switch", 2, None, False),
-        ("会话二", "switch", 2, None, False),
+        ("会话二", "session_slot", 2, None, False),
         ("停止二", "stop", 2, None, False),
         ("归档二", "archive", 2, None, False),
         ("cat R2", "request_cat", 2, None, False),
@@ -126,8 +138,9 @@ from app.services.openclaw_weixin_chub_models import (
         ("session new retrying", "normal", None, None, False),
         ("renameable task", "normal", None, None, False),
         ("sync now", "normal", None, None, False),
-        ("system upgrade status now", "normal", None, None, False),
-        ("system upgrade now", "normal", None, None, False),
+        ("upgrade status now", "normal", None, None, False),
+        ("system upgrade", "normal", None, None, False),
+        ("restart", "normal", None, None, False),
         ("systemupgrade", "normal", None, None, False),
         ("codex", "normal", None, None, False),
     ],
@@ -139,9 +152,7 @@ def test_parse_weixin_chub_command_contract(
     task_prompt: str | None,
     invalid_usage: bool,
 ) -> None:
-    command = parse_weixin_chub_command(
-        prompt if kind == "normal" else "/" + prompt
-    )
+    command = parse_weixin_chub_command(prompt)
     expected_kind = "normal" if invalid_usage else kind
     expected_index = None if invalid_usage else requested_index
     expected_task_prompt = None if invalid_usage else task_prompt
@@ -152,37 +163,35 @@ def test_parse_weixin_chub_command_contract(
     assert command.invalid_usage is False
 
 
-@pytest.mark.parametrize("prompt", ["new", "检查状态", "help", "switch 2"])
-def test_unprefixed_command_shaped_text_is_a_normal_task(prompt: str) -> None:
+@pytest.mark.parametrize(
+    ("prompt", "kind"),
+    [
+        ("new 新会话", "new"),
+        ("状态", "status"),
+        ("help", "help"),
+        ("switch 2", "switch"),
+        ("S2", "session_slot"),
+    ],
+)
+def test_command_at_text_start_is_a_fixed_command(
+    prompt: str,
+    kind: str,
+) -> None:
     command = parse_weixin_chub_command(prompt)
 
-    assert command.kind == "normal"
-    assert command.normalized_prompt == prompt
+    assert command.kind == kind
 
 
 @pytest.mark.parametrize(
     ("prompt", "kind", "task_prompt"),
     [
-        (" help", "help", None),
-        ("/help", "help", None),
-        ("。usage", "usage", None),
-        ("、usage", "usage", None),
-        ("\\usage", "usage", None),
-        (",usage", "usage", None),
-        ("，usage", "usage", None),
-        ("!usage", "usage", None),
-        ("！usage", "usage", None),
-        ("?usage", "usage", None),
-        ("？usage", "usage", None),
-        (";usage", "usage", None),
-        ("；usage", "usage", None),
-        (":usage", "usage", None),
-        ("：usage", "usage", None),
+        (" help ", "help", None),
+        ("usage。", "usage", None),
         ("\tnew 新会话", "new", "新会话"),
         (" /direct 检查设备", "normal", None),
     ],
 )
-def test_explicit_command_prefixes_are_removed_before_matching(
+def test_leading_whitespace_and_trailing_punctuation_are_normalized(
     prompt: str,
     kind: str,
     task_prompt: str | None,
@@ -196,18 +205,20 @@ def test_explicit_command_prefixes_are_removed_before_matching(
 @pytest.mark.parametrize(
     "prompt",
     [
+        "/help",
         "/new",
         "/switch 10",
         "/direct 检查设备",
-        "/new retry",
-        "/switch 2 retry",
-        "。unknown command",
-        "、usage extra",
-        "\\restart later",
-        " /unknown",
+        "。usage",
+        "new retry",
+        "switch 2 retry",
+        "unknown command",
+        "usage extra",
+        "restart later",
+        "unknown",
     ],
 )
-def test_prefixed_match_failures_keep_the_original_normal_task(
+def test_non_matching_command_text_is_a_normal_task(
     prompt: str,
 ) -> None:
     command = parse_weixin_chub_command(prompt)

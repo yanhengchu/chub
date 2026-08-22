@@ -316,7 +316,7 @@ def test_interrupted_session_stop_is_not_replayed_after_restart(
         "停止 2 继续处理",
     ],
 )
-def test_prefixed_invalid_stop_falls_back_to_normal_task(
+def test_invalid_stop_falls_back_to_normal_task(
     settings: Settings,
     prompt: str,
 ) -> None:
@@ -324,7 +324,7 @@ def test_prefixed_invalid_stop_falls_back_to_normal_task(
 
     result = manager.dispatch(
         message_id=f"invalid-stop-{prompt}",
-        prompt="/" + prompt,
+        prompt=prompt,
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -335,7 +335,7 @@ def test_prefixed_invalid_stop_falls_back_to_normal_task(
     assert result.message.startswith("Submitted")
     manager.session_stopper.assert_not_called()
     quick_interactions.submit.assert_called_once()
-    assert quick_interactions.submit.call_args.args[1] == "/" + prompt
+    assert quick_interactions.submit.call_args.args[1] == prompt
 
 
 def test_session_stop_requires_confirmed_final_state_and_logs_failure(
@@ -391,7 +391,9 @@ def test_application_stop_callback_cleans_resources_in_order(
     quick_interactions.cancel_codex_session = MagicMock()
     terminal_tickets.revoke_session = MagicMock()
     terminal_connections.close_session = MagicMock()
+    codex_manager.ensure_stop_allowed = MagicMock()
     codex_manager.stop_session = MagicMock()
+    parent.attach_mock(codex_manager.ensure_stop_allowed, "gate")
     parent.attach_mock(quick_interactions.cancel_codex_session, "cancel")
     parent.attach_mock(terminal_tickets.revoke_session, "revoke")
     parent.attach_mock(terminal_connections.close_session, "close")
@@ -405,6 +407,7 @@ def test_application_stop_callback_cleans_resources_in_order(
 
     assert result.status == "stopped"
     assert parent.mock_calls == [
+        call.gate("session-2"),
         call.cancel("session-2"),
         call.revoke("session-2"),
         call.close("session-2"),

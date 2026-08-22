@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 import socket
 import subprocess
 import threading
@@ -52,9 +53,21 @@ class InteractiveSupervisor:
             self._known_session_ids.add(session.id)
             existing = self._processes.get(session.id)
             port = self._ports.get(session.id)
-            if existing is not None and existing.poll() is None and port is not None:
+            tmux_running = self._tmux_running(session.id)
+            if (
+                existing is not None
+                and existing.poll() is None
+                and port is not None
+                and tmux_running
+            ):
                 return port
-            if not self._tmux_running(session.id) and self.running_terminal_count() >= max_running:
+            if existing is not None and existing.poll() is None:
+                # A live ttyd without its fixed tmux carrier is not a usable
+                # terminal. Recycle only the Web-owned bridge; the next
+                # launcher invocation will either attach the carrier or create
+                # a fresh native resume path.
+                self.stop_backend(session.id)
+            if not tmux_running and self.running_terminal_count() >= max_running:
                 raise ApiError(
                     409,
                     "codex_session_limit",
@@ -163,6 +176,114 @@ class InteractiveSupervisor:
                 if self.runtime_adapter.runtime_process_matches(tuple(command)):
                     return True
             return False
+
+    def rebind_terminal_carrier(
+        self,
+        old_session_id: str,
+        new_session_id: str,
+    ) -> bool:
+        """Move a Chub-owned tmux carrier across an upgrade Session reset."""
+        if old_session_id == new_session_id:
+            return False
+        with self._lock:
+            old_name = self._tmux_name(old_session_id)
+            new_name = self._tmux_name(new_session_id)
+            if not self._tmux_running(old_session_id):
+                return self._tmux_running(new_session_id)
+            if self._tmux_running(new_session_id):
+                return True
+            result = subprocess.run(
+                ["tmux", "rename-session", "-t", old_name, new_name],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            if result.returncode != 0 or not self._tmux_running(new_session_id):
+                raise OSError("Chub tmux carrier could not be rebound after upgrade")
+            self._known_session_ids.discard(old_session_id)
+            self._known_session_ids.add(new_session_id)
+            return True
+
+    def rebind_terminal_carrier_by_native_session(
+        self,
+        native_session_id: str,
+        new_session_id: str,
+    ) -> bool:
+        """Find and move one trusted Chub carrier by its native Session ID."""
+        with self._lock:
+            if self._tmux_running(new_session_id):
+                return True
+            candidates = self._tmux_carriers_for_native_session(native_session_id)
+            if not candidates:
+                return False
+            if len(candidates) > 1:
+                raise OSError(
+                    "Multiple Chub tmux carriers match the native Session after upgrade"
+                )
+            old_session_id = candidates[0]
+            old_name = self._tmux_name(old_session_id)
+            new_name = self._tmux_name(new_session_id)
+            result = subprocess.run(
+                ["tmux", "rename-session", "-t", old_name, new_name],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            if result.returncode != 0 or not self._tmux_running(new_session_id):
+                raise OSError("Chub tmux carrier could not be rebound after upgrade")
+            self._known_session_ids.discard(old_session_id)
+            self._known_session_ids.add(new_session_id)
+            return True
+
+    def _tmux_carriers_for_native_session(self, native_session_id: str) -> tuple[str, ...]:
+        result = subprocess.run(
+            [
+                "tmux",
+                "list-panes",
+                "-a",
+                "-F",
+                "#{session_name}\t#{pane_start_command}",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        if result.returncode != 0:
+            return ()
+        matches: list[str] = []
+        for line in result.stdout.splitlines()[:256]:
+            if len(line) > 4096:
+                continue
+            session_name, separator, command = line.partition("\t")
+            if not separator or not session_name.startswith("chub-"):
+                continue
+            command = command.strip()
+            if len(command) >= 2 and command[0] == '"' and command[-1] == '"':
+                command = command[1:-1]
+            try:
+                parts = tuple(shlex.split(command))
+            except ValueError:
+                continue
+            session_marker = next(
+                (
+                    item.split("=", 1)[1]
+                    for item in parts
+                    if item.startswith("CHUB_PTY_SESSION_ID=")
+                ),
+                None,
+            )
+            if session_marker is None or session_name != self._tmux_name(session_marker):
+                continue
+            if not self.runtime_adapter.runtime_process_matches(parts):
+                continue
+            if not any(
+                parts[index - 1] == "resume" and parts[index] == native_session_id
+                for index in range(1, len(parts))
+            ):
+                continue
+            matches.append(session_marker)
+        return tuple(matches)
 
     def running_terminal_count(self) -> int:
         if not self._tmux_available():

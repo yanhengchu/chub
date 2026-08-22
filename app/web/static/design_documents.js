@@ -62,12 +62,19 @@ async function updateArchiveState(button) {
         if (!response.ok || payload.success !== true) {
           throw new Error(payload?.error?.message || `${action}失败。`);
         }
-        const badge = card.querySelector(".design-document-meta .badge");
+        const meta = card.querySelector(".design-document-meta");
+        const archivedBadge = meta.querySelector(".document-archived-badge");
         card.dataset.archived = String(payload.data.archived);
         button.dataset.archived = String(payload.data.archived);
         button.textContent = payload.data.archived ? "恢复显示" : "隐藏";
-        badge.textContent = payload.data.archived ? "已隐藏" : payload.data.status;
-        badge.className = `badge badge-${payload.data.archived ? "muted" : "success"}`;
+        if (payload.data.archived && !archivedBadge) {
+          const badge = document.createElement("span");
+          badge.className = "badge badge-muted document-archived-badge";
+          badge.textContent = "已隐藏";
+          meta.insertBefore(badge, meta.querySelector("time"));
+        } else if (!payload.data.archived && archivedBadge) {
+          archivedBadge.remove();
+        }
         showMessage(`${action}成功。`, "success");
         applyFilter(activeFilter);
       } finally {

@@ -786,6 +786,7 @@ class SystemUpgradeCoordinator:
             message=loaded.plan.summary,
             can_start=True,
             plan=self._plan_view(loaded, session_count, session_labels),
+            operation=operation_view,
         )
 
     @staticmethod

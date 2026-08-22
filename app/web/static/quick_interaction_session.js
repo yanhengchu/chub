@@ -32,23 +32,29 @@
   }) {
     const preview = buildSessionPreview(session);
     const busy = activeInteraction || session.quick_interaction_running === true;
-    const stopReady = session.status === "running"
-      || session.activity === "working"
-      || session.quick_interaction_running === true;
+    const usageBlockReason = core.sessionUsageBlockReason(session);
+    const usageBlocked = Boolean(usageBlockReason);
+    const deleteBlockReason = core.sessionDeleteBlockReason(session);
+    const archiveBlockReason = core.sessionArchiveBlockReason(session);
+    const stopReady = core.sessionStopReady(session);
     const mutationPending = stopPending || archivePending || deletePending;
     const archiveReady = Boolean(session.can_archive);
-    const archiveBusy = busy || mutationPending;
-    const archiveLabel = !archiveReady
-      ? "尚未启动的 Session 无法归档"
-      : archiveBusy
-        ? "Session 正在执行，暂不能归档"
-        : "归档 Session";
-    const stopLabel = !stopReady
-      ? "Session 当前未运行"
+    const archiveBusy = mutationPending || Boolean(archiveBlockReason);
+    const archiveLabel = archiveBlockReason
+      ? archiveBlockReason
+      : !archiveReady
+      ? "当前 Session 暂不可归档"
+      : "归档 Session";
+    const stopLabel = usageBlocked
+      ? usageBlockReason
+      : !stopReady
+        ? "当前没有正在执行的任务"
       : stopPending
         ? "正在停止 Session"
         : "停止 Session";
-    const deleteLabel = deletePending
+    const deleteLabel = deleteBlockReason
+      ? deleteBlockReason
+      : deletePending
       ? "正在删除 Session"
       : "删除 Session";
     const submissionReason = core.submissionBlockReason({
@@ -59,15 +65,16 @@
     return Object.freeze({
       ...preview,
       busy,
-      stopReady,
-      stopBusy: mutationPending,
+      stopReady: stopReady && !usageBlocked,
+      stopBusy: mutationPending || usageBlocked,
       stopLabel,
       archiveReady,
       archiveBusy,
       archiveLabel,
-      deleteBusy: mutationPending,
+      deleteBusy: mutationPending || Boolean(deleteBlockReason),
       deleteLabel,
       submissionReason,
+      usageBlocked,
       confirmStopUnknownTerminal: (
         session.status === "running" && session.activity === "unknown"
       ),
@@ -126,8 +133,8 @@
 
   function archiveDescription(session) {
     const title = session?.title?.trim() || "未命名 Session";
-    return `归档“${title}”后，该 Session 将从活动列表移除，正在运行的实时终端会停止；`
-      + "如已分配微信槽位，槽位也会释放。Chub 页面暂不提供恢复入口。";
+    return `归档“${title}”后，该 Session 将从活动列表移除；`
+      + "执行中的 Session 需要先等待任务结束。如已分配微信槽位，槽位也会释放。Chub 页面暂不提供恢复入口。";
   }
 
   function stopDescription(session) {
@@ -357,6 +364,7 @@
     function deleteDescription(session) {
       const title = session?.title?.trim() || "未命名 Session";
       return `删除“${title}”后，该 Session 将永久删除，无法恢复；`
+        + "执行中的 Quick Worker 任务会在删除过程中先停止，实时终端也会关闭；"
         + "如已分配微信槽位，槽位也会释放。";
     }
 

@@ -11,7 +11,7 @@
     {
       "id": "chub-architecture",
       "title": "Chub 总体架构与演进设计",
-      "summary": "定义 Chub 当前进程、领域和状态所有权，以及模块化单体的长期分层与演进原则。",
+      "summary": "定义 Chub 当前进程、领域、状态所有权和跨模块约束。",
       "status": "持续维护",
       "path": "CHUB_ARCHITECTURE_DESIGN.md"
     },
@@ -32,8 +32,8 @@
     {
       "id": "ai-session-state",
       "title": "Chub AI Session 状态模型设计",
-      "summary": "定义 Codex Session、Activity、交互入口、微信槽位和单 writer 状态语义。",
-      "status": "已验收",
+      "summary": "定义 Codex Session、Activity、交互入口、usage 投影、Session 操作、微信槽位和单 writer 状态语义。",
+      "status": "持续维护",
       "path": "AI_SESSION_STATE_DESIGN.md"
     },
     {

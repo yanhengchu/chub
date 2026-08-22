@@ -40,6 +40,9 @@ class OpenClawCompletionNotifier:
         self.config = config
         self.session_slot_validator: Callable[[int, str], bool] | None = None
         self.session_current_validator: Callable[[int, str], bool] | None = None
+        self.session_context_reader: Callable[
+            [str], tuple[int | None, str | None]
+        ] | None = None
         self.codex_status_reader: Callable[[QuickInteractionWeixinRoute], str] | None = (
             None
         )
@@ -158,8 +161,6 @@ class OpenClawCompletionNotifier:
         *,
         outcome: Literal["started", "not_submitted", "failed"],
         target_session_id: str | None,
-        target_slot: int | None,
-        target_title: str | None,
         task: str | None = None,
         english: str | None = None,
         error: str | None = None,
@@ -167,11 +168,7 @@ class OpenClawCompletionNotifier:
         if not self.config.enabled:
             return CompletionNotificationResult("skipped", "微信完成通知未启用。")
 
-        target = self._weixin_target_session_line(
-            target_session_id,
-            target_slot,
-            target_title,
-        )
+        target = self._weixin_target_session_line(target_session_id)
         if outcome == "started":
             heading = "Started"
             paragraphs = [target]
@@ -206,9 +203,8 @@ class OpenClawCompletionNotifier:
     def _weixin_target_session_line(
         self,
         session_id: str | None,
-        slot: int | None,
-        title: str | None,
     ) -> str:
+        slot, title = self._read_session_context(session_id)
         if session_id is None or slot is None or not title:
             return "Target Session unavailable"
         session_line = f"S{slot} · {title}"
@@ -541,26 +537,7 @@ class OpenClawCompletionNotifier:
         return f"Request · R{slot} · {title}{suffix}"
 
     def _completion_session_line(self, task: QuickInteractionTask) -> str | None:
-        session_line = self._session_line(task)
-        if session_line is None:
-            return None
-        session_line = session_line.replace("Session: ", "S", 1)
-        if " (Unavailable)" in session_line:
-            return session_line
-        if (
-            self.session_current_validator is not None
-            and task.weixin_session_slot is not None
-            and self.session_current_validator(
-                task.weixin_session_slot,
-                task.session_id,
-            )
-        ):
-            return f"▶ {session_line}"
-        return session_line
-
-    def _session_line(self, task: QuickInteractionTask) -> str | None:
-        slot = task.weixin_session_slot
-        title = task.weixin_session_title
+        slot, title = self._read_session_context(task.session_id)
         if slot is None or not title:
             return None
         suffix = ""
@@ -569,7 +546,29 @@ class OpenClawCompletionNotifier:
             and not self.session_slot_validator(slot, task.session_id)
         ):
             suffix = " (Unavailable)"
-        return f"Session: {slot} · {title}{suffix}"
+        session_line = f"S{slot} · {title}{suffix}"
+        if suffix:
+            return session_line
+        if (
+            self.session_current_validator is not None
+            and self.session_current_validator(
+                slot,
+                task.session_id,
+            )
+        ):
+            return f"▶ {session_line}"
+        return session_line
+
+    def _read_session_context(
+        self,
+        session_id: str | None,
+    ) -> tuple[int | None, str | None]:
+        if session_id is None or self.session_context_reader is None:
+            return None, None
+        try:
+            return self.session_context_reader(session_id)
+        except Exception:
+            return None, None
 
     @classmethod
     def _split_text(cls, text: str, limit: int) -> list[str]:

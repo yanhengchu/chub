@@ -157,6 +157,7 @@ function renderOpenClawWeixinContext(data) {
 
 function renderOpenClaw(data, { cache = true } = {}) {
   openclawState = data;
+  elements.openclawRestart.textContent = "重启与恢复";
   const [badgeText, badgeKind] = clawbotPresentation(data);
   setBadge(elements.clawbotBadge, badgeText, badgeKind);
   elements.clawbotDetail.textContent = clawbotDetail(data);
@@ -167,18 +168,18 @@ function renderOpenClaw(data, { cache = true } = {}) {
   renderOpenClawWeixinContext(data);
 
   const canStart = data.state === "stopped";
-  const canControlRunning = ["running", "degraded"].includes(data.state);
+  const canRecover = data.installed && data.state !== "service_missing";
   const weixinLoginActive = OPENCLAW_WEIXIN_ACTIVE_STATES.has(openclawWeixinState?.state);
   elements.openclawBindWeixin.hidden = !data.installed || !data.configured;
   elements.openclawStart.hidden = !canStart;
-  elements.openclawRestart.hidden = !canControlRunning;
+  elements.openclawRestart.hidden = !canRecover;
   elements.openclawBindWeixin.disabled = (
     openclawBusy
     || weixinLoginActive
     || !openclawWeixinStatusAvailable
   );
   elements.openclawStart.disabled = openclawBusy || weixinLoginActive || !canStart;
-  elements.openclawRestart.disabled = openclawBusy || weixinLoginActive || !canControlRunning;
+  elements.openclawRestart.disabled = openclawBusy || weixinLoginActive || !canRecover;
   if (cache) {
     cacheOpenClawStatus(data);
   }
@@ -293,7 +294,7 @@ function setOpenClawBusy(action) {
     busyPresentation[1],
   );
   elements.clawbotDetail.textContent = action === "restart"
-    ? "正在恢复微信消息通道"
+    ? "正在执行重启与恢复"
     : "正在启动微信消息通道";
   elements.openclawBindWeixin.disabled = true;
   elements.openclawStart.disabled = true;
@@ -332,12 +333,12 @@ function requestOpenClawAction(action) {
   openclawAction = action;
   const restarting = action === "restart";
   elements.openclawDialogTitle.textContent = restarting
-    ? "确认重启 OpenClaw"
+    ? "确认重启与恢复 OpenClaw"
     : "确认停止 OpenClaw";
   elements.openclawDialogMessage.textContent = restarting
-    ? "重启会短暂中断当前频道连接和 Agent 任务，确定继续吗？"
+    ? "会短暂中断消息通道和 Agent 任务；发现插件或补丁版本不一致时，将先同步固定版本再重启，确定继续吗？"
     : "停止会中断当前频道连接和 Agent 任务，确定继续吗？";
-  elements.openclawDialogConfirm.textContent = restarting ? "确认重启" : "确认停止";
+  elements.openclawDialogConfirm.textContent = restarting ? "确认重启与恢复" : "确认停止";
   elements.openclawDialogConfirm.className = restarting
     ? "button-secondary"
     : "button-danger";

@@ -52,11 +52,14 @@ async def system_upgrade_status_data(application) -> SystemUpgradeStatusData:
     """Return the single authoritative upgrade readiness view for all entry points."""
     coordinator = application.state.system_upgrade
     loaded = None
-    plan_error = None
+    recovery_fallback = False
     try:
         loaded = coordinator.plan()
-    except OSError as exc:
-        plan_error = str(exc)
+    except OSError:
+        # A broken or stale upgrade plan must not remove the fixed current-version
+        # recovery path. The fallback never claims to perform a code upgrade.
+        loaded = runtime_recovery_plan()
+        recovery_fallback = True
     session_labels = []
     try:
         current_sessions = application.state.codex_pty_manager.system_upgrade_sessions()
@@ -72,7 +75,6 @@ async def system_upgrade_status_data(application) -> SystemUpgradeStatusData:
         loaded,
         session_count=len(session_labels),
         session_labels=session_labels,
-        plan_error=plan_error,
     )
     operation = coordinator.operation()
     if not data.can_start:
@@ -109,6 +111,8 @@ async def system_upgrade_status_data(application) -> SystemUpgradeStatusData:
         data.message = "已有维护或重启操作正在进行，系统升级暂不可用。"
         return data
     data.resume = True
+    if recovery_fallback:
+        data.message = "升级方案不可用，当前仅可执行运行态恢复。"
     return data
 
 
@@ -125,22 +129,10 @@ async def start_system_upgrade_for_source(
         return await system_upgrade_status_data(application)
     try:
         loaded = coordinator.plan()
-    except OSError as exc:
-        if (
-            operation is not None
-            and operation.status == "failed"
-            and operation.destructive_started
-            and operation.failed_stage
-            in {
-                "cleaning_state",
-                "launching_services",
-                "restarting_services",
-                "verifying_new_instance",
-            }
-        ):
-            loaded = runtime_recovery_plan()
-        else:
-            raise ApiError(409, "system_upgrade_plan_invalid", str(exc)) from exc
+    except OSError:
+        # The fixed runtime reset is the recovery fallback when a prepared
+        # upgrade plan cannot be read or validated.
+        loaded = runtime_recovery_plan()
     loaded = loaded or runtime_recovery_plan()
     if fingerprint is not None and loaded.fingerprint != fingerprint:
         raise ApiError(
@@ -338,21 +330,16 @@ async def restart_quick_worker(
     with request.app.state.maintenance_lock:
         if not coordinator.in_progress():
             _require_runtime_maintenance_available(request)
-            recover_unavailable_worker = inspection.generation is None
-            if not inspection.data.can_restart or (
-                recover_unavailable_worker
-                and not coordinator.failed_recovery_available()
-            ):
+            if not inspection.data.can_restart:
                 raise ApiError(
                     409,
                     "quick_worker_not_restartable",
-                    "Quick Worker 当前不可重启，请等待任务结束并确认服务恢复正常。",
+                    "Quick Worker 重启状态不可用，请稍后重试。",
                 )
             source_ip = request.client.host if request.client else "unknown"
             coordinator.begin(
                 inspection.generation,
                 source_ip,
-                recover=recover_unavailable_worker,
             )
     refreshed = await inspect_quick_worker(
         request.app.state.settings,

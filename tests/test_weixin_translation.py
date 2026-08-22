@@ -157,8 +157,6 @@ def test_targeted_translation_suppresses_legacy_notification(settings) -> None:
         operation_id="operation-targeted",
         source_ip="100.64.0.21",
         target_session_id="session-1",
-        target_session_slot=1,
-        target_session_title="服务检查",
     )
 
     kwargs = quick_interactions.submit.call_args.kwargs
@@ -178,8 +176,6 @@ def test_targeted_translation_completion_submits_parsed_result(settings) -> None
         status="running",
         quick_task_id="quick-task",
         target_session_id="session-1",
-        target_session_slot=1,
-        target_session_title="服务检查",
         created_at=now,
         updated_at=now,
     )
@@ -232,8 +228,6 @@ def test_targeted_translation_missing_during_recovery_notifies_failure(
         source_ip="100.64.0.21",
         status="queued",
         target_session_id="session-1",
-        target_session_slot=1,
-        target_session_title="服务检查",
         created_at=now,
         updated_at=now,
     )
@@ -413,6 +407,43 @@ def test_restart_preserves_unfinished_translation_for_worker_recovery(settings) 
     assert manager._state.entries[0].status == "running"
 
 
+def test_restart_removes_legacy_session_display_snapshot(settings) -> None:
+    state_file = settings.openclaw.weixin_chub_mode.state_file.with_name(
+        "weixin-translation.json"
+    )
+    now = utc_now()
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    payload = TranslationState(
+        entries=[
+            TranslationEntry(
+                id="legacy-display-entry",
+                message_id="legacy-display-message",
+                original="检查服务",
+                route=route(),
+                operation_id="legacy-display-operation",
+                source_ip="100.64.0.21",
+                target_session_id="session-1",
+                created_at=now,
+                updated_at=now,
+            )
+        ]
+    ).model_dump(mode="json")
+    payload["entries"][0]["target_session_slot"] = 1
+    payload["entries"][0]["target_session_title"] = "旧标题"
+    state_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    manager = WeixinTranslationManager(
+        settings.openclaw.weixin_chub_mode,
+        MagicMock(),
+        MagicMock(),
+    )
+
+    persisted = json.loads(state_file.read_text(encoding="utf-8"))
+    assert "target_session_slot" not in persisted["entries"][0]
+    assert "target_session_title" not in persisted["entries"][0]
+    assert manager._state.entries[0].target_session_id == "session-1"
+
+
 def test_restart_marks_unknown_optimization_notification_failed(settings) -> None:
     state_file = settings.openclaw.weixin_chub_mode.state_file.with_name(
         "weixin-translation.json"
@@ -486,6 +517,7 @@ def test_worker_restart_preserves_and_resumes_translation_observation(settings) 
     codex_manager = MagicMock()
     codex_manager.get_session.return_value = CodexSession(
         id="translation-session",
+        session_mode="quick",
         workspace_id="weixin-translation",
         workspace_name="Translation",
         cwd=settings.codex_pty.workspace,
@@ -682,6 +714,7 @@ def test_translation_session_is_reused_and_never_uses_numbered_slot(settings) ->
     manager._state.session_id = "translation-session"
     codex_manager.get_session.return_value = CodexSession(
         id="translation-session",
+        session_mode="quick",
         workspace_id="weixin-translation",
         workspace_name="微信文本优化与翻译",
         cwd="/translation",
@@ -722,6 +755,7 @@ def test_disable_drains_existing_generation_and_reenable_uses_new_session(
     manager._state.session_generation = 0
     codex_manager.get_session.return_value = CodexSession(
         id="old-session",
+        session_mode="quick",
         workspace_id="weixin-translation",
         workspace_name="微信文本优化与翻译",
         cwd="/translation",

@@ -91,6 +91,36 @@ def test_codex_hook_records_turn_activity(tmp_path: Path) -> None:
         )
 
 
+def test_codex_hook_resolves_rebound_session_id(tmp_path: Path) -> None:
+    script = Path(__file__).parents[1] / "scripts" / "chub-codex-hook"
+    old_session_id = "old-session-id"
+    new_session_id = "new-session-id"
+    alias = tmp_path / f".{old_session_id}.rebind"
+    alias.write_text(f"{new_session_id}\n", encoding="ascii")
+    alias.chmod(0o600)
+
+    subprocess.run(
+        [str(script)],
+        input=json.dumps(
+            {
+                "session_id": "codex-session-id",
+                "hook_event_name": "UserPromptSubmit",
+            }
+        ),
+        text=True,
+        check=True,
+        env={
+            **os.environ,
+            "CHUB_PTY_SESSION_ID": old_session_id,
+            "CHUB_PTY_HOOK_DIR": str(tmp_path),
+            "CHUB_ACTIVITY_SOURCE": "terminal",
+        },
+    )
+
+    assert (tmp_path / f"{new_session_id}.json").exists()
+    assert not (tmp_path / f"{old_session_id}.json").exists()
+
+
 def test_codex_hook_attributes_quick_interaction_activity(tmp_path: Path) -> None:
     script = Path(__file__).parents[1] / "scripts" / "chub-codex-hook"
     subprocess.run(

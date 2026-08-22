@@ -73,7 +73,7 @@ async function requestHubRestart() {
 elements.restartHub.addEventListener("click", () => {
   void showConfirmationDialog({
     title: "重启 Chub",
-    description: "重启会重新加载当前代码和配置，页面连接会短暂中断。独立 Worker 持有的快速任务会继续运行。",
+    description: "重启会重新加载当前代码和配置，页面连接会短暂中断。Quick Worker 和 ClawBot 背后的 OpenClaw Gateway 是独立服务，不会被重启；已接受的快速任务会继续运行。实时终端连接可能中断，但 tmux 和原生 Codex 会话保留，重新进入时恢复。",
     confirmLabel: "确认重启",
     pendingLabel: "正在下发…",
     errorMessage: "重启失败。",

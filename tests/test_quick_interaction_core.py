@@ -21,6 +21,7 @@ def test_quick_interaction_polling_retries_only_recoverable_failures() -> None:
     program = """
 const core = require(process.argv[1]);
 const session = { status: "stopped", activity: "idle" };
+const otherSessionActive = { status: "running", activity: "working" };
 const unauthorized = { status: 401, retryable: false };
 const missing = { code: "codex_session_not_found", retryable: false };
 const serverError = { status: 503, retryable: true };
@@ -83,6 +84,18 @@ const result = {
     activeInteraction: false,
     restartPending: true,
     session,
+  }),
+  otherSessionActive: core.shouldPoll({
+    loadFailed: false,
+    activeInteraction: false,
+    session,
+    sessions: [session, otherSessionActive],
+  }),
+  allSessionsIdle: core.shouldPoll({
+    loadFailed: false,
+    activeInteraction: false,
+    session,
+    sessions: [session, { status: "stopped", activity: "idle" }],
   }),
   submission: {
     allowed: core.canSubmit({ prompt: "执行任务", session, blocked: false }),
@@ -179,6 +192,8 @@ process.stdout.write(JSON.stringify(result));
         "activeDespitePermanentError": False,
         "notificationPending": True,
         "restartPending": True,
+        "otherSessionActive": True,
+        "allSessionsIdle": False,
         "submission": {
             "allowed": True,
             "blank": False,
@@ -229,6 +244,50 @@ process.stdout.write(JSON.stringify(result));
             "middleClick": "new-tab",
             "rightClick": "default",
         },
+    }
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js is required for JavaScript behavior tests")
+def test_quick_interaction_usage_blocks_external_and_unknown_writers() -> None:
+    program = """
+const core = require(process.argv[1]);
+const external = {
+  status: "stopped",
+  activity: "idle",
+  usage: { owner: "external", phase: "unknown" },
+};
+const unknown = {
+  status: "stopped",
+  activity: "idle",
+  usage: { owner: "unknown", phase: "unknown" },
+};
+process.stdout.write(JSON.stringify({
+  externalStatus: core.sessionSwitcherStatus(external),
+  unknownStatus: core.sessionSwitcherStatus(unknown),
+  externalSubmit: core.submissionBlockReason({
+    session: external,
+    activeInteraction: false,
+    promptLength: 4,
+  }),
+  unknownSubmit: core.submissionBlockReason({
+    session: unknown,
+    activeInteraction: false,
+    promptLength: 4,
+  }),
+}));
+"""
+    result = subprocess.run(
+        [NODE, "-e", program, str(CORE_SCRIPT)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert json.loads(result.stdout) == {
+        "externalStatus": "其他应用占用",
+        "unknownStatus": "状态未知",
+        "externalSubmit": "This is open in another app, close it there to continue here.",
+        "unknownSubmit": "无法确认 Session 占用状态，请刷新后重试。",
     }
 
 

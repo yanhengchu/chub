@@ -6,7 +6,7 @@ import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterable
 
 from app.ai_runtime import RuntimeNativeSession, RuntimeOperationError, RuntimeRegistry
 from app.ai_session.models import (
@@ -24,6 +24,7 @@ from app.codex.models import (
     CodexReasoningLevel,
     SessionMode,
     SessionInfo,
+    SessionUsage,
     WorkspaceInfo,
 )
 from app.codex.runtime_adapter import CodexRuntimeAdapter
@@ -125,16 +126,16 @@ class AiSessionManager:
                 self._reconcile_quick_activity(session)
             return [self._public(session) for session in self.store.list()]
 
-    def get_session(self, session_id: str) -> AiSession:
+    def get_session(self, session_id: str, *, reconcile: bool = True) -> AiSession:
         with self._lock:
             self._require_store()
-            if not self._system_upgrade_writes_blocked():
+            if reconcile and not self._system_upgrade_writes_blocked():
                 self._consume_hook_result(session_id)
                 self._sync_bound_native_sessions()
             session = self.store.get(session_id)
             if session is None:
                 raise ApiError(404, "codex_session_not_found", "Codex session not found")
-            if not self._system_upgrade_writes_blocked():
+            if reconcile and not self._system_upgrade_writes_blocked():
                 self._refresh_status(session)
                 self._reconcile_quick_activity(session)
                 session = self.store.get(session_id) or session
@@ -258,6 +259,95 @@ class AiSessionManager:
             LOGGER.warning("Unable to inspect Runtime writer lock", exc_info=True)
             raise self._runtime_api_error(exc) from exc
 
+    def resolve_session_usage(
+        self,
+        session_id: str,
+        *,
+        reconcile: bool = True,
+    ) -> SessionUsage:
+        """Resolve the current Chub/native ownership for one logical Session."""
+        with self._lock:
+            session = self.get_session(session_id, reconcile=reconcile)
+            return self._resolve_session_usage(session)
+
+    def ensure_stop_allowed(self, session_id: str) -> SessionUsage:
+        """Validate the minimal business gate for a user-requested stop."""
+        usage = self.resolve_session_usage(session_id)
+        if usage.owner == "external":
+            raise ApiError(
+                409,
+                "codex_session_writer_active",
+                "This is open in another app, close it there to continue here.",
+            )
+        if usage.owner == "unknown":
+            raise ApiError(
+                409,
+                "codex_session_usage_unknown",
+                "无法确认 Session 占用状态，请刷新后重试。",
+            )
+        if usage.owner == "terminal" and usage.phase == "running":
+            return usage
+        if usage.owner == "quick_worker" and usage.phase in {
+            "running",
+            "waiting_result",
+        }:
+            return usage
+        raise ApiError(
+            409,
+            "codex_session_not_running",
+            "Session 当前没有正在执行的任务。",
+        )
+
+    def _resolve_session_usage(self, session: AiSession) -> SessionUsage:
+        native_session_present = session.native_session_id is not None
+        try:
+            if self._quick_interaction_is_running(session.id):
+                return SessionUsage(
+                    native_session_present=native_session_present,
+                    owner="quick_worker",
+                    phase="waiting_result",
+                )
+
+            if self.supervisor.owns_terminal_writer(session.id):
+                phase = {
+                    "working": "running",
+                    "idle": "idle",
+                }.get(session.activity, "unknown")
+                return SessionUsage(
+                    native_session_present=native_session_present,
+                    owner="terminal",
+                    phase=phase,
+                )
+
+            if not native_session_present:
+                return SessionUsage()
+
+            writer_active = self.runtime_adapter.has_active_writer(
+                session.native_session_id
+            )
+            if writer_active:
+                return SessionUsage(
+                    native_session_present=True,
+                    owner="external",
+                    phase="unknown",
+                )
+            return SessionUsage(
+                native_session_present=True,
+                owner="none",
+                phase="idle",
+            )
+        except RuntimeOperationError:
+            LOGGER.warning(
+                "Unable to resolve Session usage ownership",
+                extra={"session_id": session.id},
+                exc_info=True,
+            )
+            return SessionUsage(
+                native_session_present=native_session_present,
+                owner="unknown",
+                phase="unknown",
+            )
+
     def wait_for_writer_release(
         self,
         native_session_id: str | None,
@@ -359,9 +449,14 @@ class AiSessionManager:
             )
             return session
 
-    def stop_session(self, session_id: str) -> SessionInfo:
+    def stop_session(
+        self,
+        session_id: str,
+        *,
+        reconcile: bool = True,
+    ) -> SessionInfo:
         with self._lock:
-            session = self.get_session(session_id)
+            session = self.get_session(session_id, reconcile=reconcile)
             self.supervisor.stop_terminal(session.id)
             session.status = "stopped"
             session.activity = "idle"
@@ -444,6 +539,15 @@ class AiSessionManager:
                     and candidate.native_session_id == native_session_id
                 ):
                     if self._can_repair_discovered_quick_binding(session, candidate):
+                        if (
+                            self.has_active_writer(native_session_id)
+                            and not self._quick_interaction_is_running(session.id)
+                        ):
+                            raise ApiError(
+                                409,
+                                "quick_interaction_native_session_conflict",
+                                "Codex Session 正在由其他进程使用，请等待任务结束。",
+                            )
                         try:
                             self.store.adopt_discovered_native_session(
                                 session.id,
@@ -468,6 +572,27 @@ class AiSessionManager:
                 session.native_session_id is not None
                 and session.native_session_id != native_session_id
             ):
+                if session.workspace_id == "weixin-translation":
+                    # Translation keeps one logical Chub Session but may rotate
+                    # its internal native Session when the Worker starts a new
+                    # read-only execution. Never rotate through an active writer.
+                    if self.has_active_writer(session.native_session_id):
+                        raise ApiError(
+                            409,
+                            "quick_interaction_native_session_conflict",
+                            "翻译 Session 仍有原生任务占用，暂不能切换 native Session。",
+                        )
+                    session.native_session_id = native_session_id
+                    session.updated_at = utc_now()
+                    try:
+                        self.store.save(session)
+                    except AiSessionStoreUnavailable as exc:
+                        raise ApiError(
+                            409,
+                            "quick_interaction_native_session_conflict",
+                            "Chub Session identity conflict: the translation native Session is already bound to another Session",
+                        ) from exc
+                    return
                 raise ApiError(
                     409,
                     "quick_interaction_native_session_conflict",
@@ -517,34 +642,137 @@ class AiSessionManager:
             self.store.save(session)
 
     def delete_session(self, session_id: str) -> None:
-        session = self.get_session(session_id)
+        self.delete_native_session(session_id)
+        self.finalize_delete_session(session_id)
+
+    def ensure_delete_allowed(
+        self,
+        session_id: str,
+        *,
+        reconcile: bool = True,
+    ) -> SessionUsage:
+        """Validate native ownership and Chub execution gates for delete."""
+        usage = self.resolve_session_usage(session_id, reconcile=reconcile)
+        if usage.owner == "external":
+            raise ApiError(
+                409,
+                "codex_session_writer_active",
+                "This is open in another app, close it there to continue here.",
+            )
+        if usage.owner == "unknown":
+            return usage
+        if usage.owner in {"terminal", "quick_worker"} and usage.phase == "unknown":
+            return usage
+        return usage
+
+    def delete_native_session(self, session_id: str) -> AiSession:
+        """Delete the Runtime Session before clearing Chub-owned state."""
+        session = self.get_session(session_id, reconcile=False)
+        self.ensure_delete_allowed(session_id, reconcile=False)
         if session.native_session_id:
             self.validate_native_session_id(session.native_session_id)
-        self.stop_session(session_id)
-        if session.native_session_id:
             try:
-                self.runtime_adapter.run_native_action("delete", session.native_session_id)
+                self.runtime_adapter.run_native_action(
+                    "delete",
+                    session.native_session_id,
+                )
             except RuntimeOperationError as exc:
+                if exc.code == "codex_session_delete_failed":
+                    try:
+                        if (
+                            self.runtime_adapter.native_session_deleted_state(
+                                session.native_session_id
+                            )
+                            is True
+                        ):
+                            return session
+                    except RuntimeOperationError:
+                        pass
                 raise self._runtime_api_error(exc) from exc
+        return session
+
+    def finalize_delete_session(
+        self,
+        session_id: str,
+        *,
+        terminal_already_closed: bool = False,
+    ) -> None:
+        """Clear Chub-owned state after native deletion has succeeded."""
+        if not terminal_already_closed:
+            try:
+                self.stop_session(session_id)
+            except ApiError as exc:
+                if exc.code != "codex_session_not_found":
+                    raise
+        self.store.delete(session_id)
+        self._remove_hook_file(session_id)
+
+    def ensure_archive_allowed(
+        self,
+        session_id: str,
+        *,
+        reconcile: bool = True,
+    ) -> SessionUsage:
+        """Validate native ownership and execution gates for archive."""
+        usage = self.resolve_session_usage(session_id, reconcile=reconcile)
+        if usage.owner == "external":
+            raise ApiError(
+                409,
+                "codex_session_writer_active",
+                "This is open in another app, close it there to continue here.",
+            )
+        if (
+            usage.owner == "terminal" and usage.phase == "running"
+        ) or (
+            usage.owner == "quick_worker"
+            and usage.phase in {"running", "waiting_result"}
+        ):
+            raise ApiError(
+                409,
+                "codex_session_in_progress",
+                "Session 当前正在执行，请等待任务结束后再归档。",
+            )
+        return usage
+
+    def archive_native_session(self, session_id: str) -> AiSession:
+        """Archive the Runtime Session before touching Chub-owned state."""
+        session = self.get_session(session_id, reconcile=False)
+        self.ensure_archive_allowed(session_id, reconcile=False)
+        if session.native_session_id:
+            self.validate_native_session_id(session.native_session_id)
+            try:
+                self.runtime_adapter.run_native_action(
+                    "archive",
+                    session.native_session_id,
+                )
+            except RuntimeOperationError as exc:
+                if exc.code == "codex_session_archive_failed":
+                    try:
+                        if (
+                            self.runtime_adapter.native_session_archive_state(
+                                session.native_session_id
+                            )
+                            is True
+                        ):
+                            return session
+                    except RuntimeOperationError:
+                        pass
+                raise self._runtime_api_error(exc) from exc
+        return session
+
+    def finalize_archive_session(self, session_id: str) -> None:
+        """Clear Chub-owned state after native archive has succeeded."""
+        try:
+            self.stop_session(session_id)
+        except ApiError as exc:
+            if exc.code != "codex_session_not_found":
+                raise
         self.store.delete(session_id)
         self._remove_hook_file(session_id)
 
     def archive_session(self, session_id: str) -> None:
-        session = self.get_session(session_id)
-        if not session.native_session_id:
-            raise ApiError(
-                409,
-                "codex_session_not_started",
-                "Codex session has not started yet",
-            )
-        self.validate_native_session_id(session.native_session_id)
-        self.stop_session(session_id)
-        try:
-            self.runtime_adapter.run_native_action("archive", session.native_session_id)
-        except RuntimeOperationError as exc:
-            raise self._runtime_api_error(exc) from exc
-        self.store.delete(session_id)
-        self._remove_hook_file(session_id)
+        self.archive_native_session(session_id)
+        self.finalize_archive_session(session_id)
 
     def system_upgrade_sessions(self) -> list[AiSession]:
         with self._lock:
@@ -557,6 +785,41 @@ class AiSessionManager:
             self._consume_hook_results()
             self._sync_bound_native_sessions()
             self.store.list()
+
+    def rebind_upgrade_terminal_carriers(
+        self,
+        session_mappings: Iterable[tuple[str, str | None]],
+    ) -> None:
+        """Reattach old Chub tmux carriers to freshly discovered Sessions."""
+        with self._lock:
+            self._require_store()
+            self._sync_bound_native_sessions()
+            discovered_by_native = {
+                session.native_session_id: session
+                for session in self.store.list()
+                if session.discovered and session.native_session_id is not None
+            }
+            for old_session_id, native_session_id in session_mappings:
+                if native_session_id is None:
+                    continue
+                session = discovered_by_native.get(native_session_id)
+                if session is None:
+                    continue
+                rebound = self.supervisor.rebind_terminal_carrier(
+                    old_session_id,
+                    session.id,
+                )
+                if not rebound:
+                    rebound = self.supervisor.rebind_terminal_carrier_by_native_session(
+                        native_session_id,
+                        session.id,
+                    )
+                if rebound:
+                    self.runtime_adapter.rebind_activity_session(
+                        old_session_id,
+                        session.id,
+                    )
+                    self._refresh_status(session)
 
     def discard_session_for_system_upgrade(self, session_id: str) -> None:
         """Drop Chub management state without inspecting or stopping the Runtime Session."""
@@ -627,8 +890,7 @@ class AiSessionManager:
                 self.store.unavailable_reason or "AI Session 状态不可用。",
             )
 
-    @staticmethod
-    def _public(session: AiSession) -> SessionInfo:
+    def _public(self, session: AiSession) -> SessionInfo:
         return SessionInfo(
             id=session.id,
             runtime_id=session.runtime_id,
@@ -636,7 +898,10 @@ class AiSessionManager:
             workspace_name=session.workspace_name,
             cwd=str(session.cwd),
             title=session.title,
-            can_archive=session.native_session_id is not None,
+            # Archiving also removes a Chub-only Session that has not bound a
+            # native Session yet; the UI must not treat a missing native ID as
+            # an archive prohibition.
+            can_archive=True,
             status=session.status,
             activity=session.activity,
             activity_source=session.activity_source,
@@ -655,6 +920,7 @@ class AiSessionManager:
             updated_at=session.updated_at,
             session_mode=session.session_mode,
             terminal_access_allowed=session.session_mode == "terminal",
+            usage=self._resolve_session_usage(session),
         )
 
     def _reconcile_quick_activity(self, session: AiSession) -> None:
@@ -683,10 +949,11 @@ class AiSessionManager:
         activity = event.activity
         activity_source = event.activity_source
         changed = False
-        if session and activity_source == "quick":
+        if session and session.session_mode == "quick":
             # The Quick Worker result is the sole authority for native Session
-            # identity. A nested Runtime command inherits the hook environment
-            # and must not be allowed to overwrite the active task's mapping.
+            # identity. A nested Runtime command inherits the hook environment,
+            # and idle hooks are normalized to ``none`` by the adapter, so the
+            # Session mode—not the event source—must decide this boundary.
             native_session_id = None
         if session and isinstance(native_session_id, str) and native_session_id:
             try:
@@ -756,7 +1023,7 @@ class AiSessionManager:
             (item.runtime_id, item.native_session_id): item
             for item in discovery.sessions
         }
-        stored = self.store.list()
+        stored = self._remove_stale_translation_discoveries(self.store.list())
         pending_quick_cwds = {
             session.cwd
             for session in stored
@@ -774,6 +1041,12 @@ class AiSessionManager:
         for native in discovery.sessions:
             native_key = (native.runtime_id, native.native_session_id)
             if native_key in bound_native_keys:
+                continue
+            # The translation Runtime Session is an internal quick Session,
+            # not a user-owned terminal Session. Its native record can outlive
+            # the Worker task briefly, so never import it as a discovered
+            # terminal record during that binding/retirement window.
+            if self._is_translation_workspace(native.cwd):
                 continue
             # A quick Worker creates the native Session before its result can
             # bind the Chub record. Do not auto-import that short-lived gap as
@@ -887,6 +1160,43 @@ class AiSessionManager:
             except OSError:
                 continue
         return None
+
+    def _is_translation_workspace(self, cwd: Path) -> bool:
+        try:
+            return cwd.expanduser().resolve(strict=False) == (
+                self.settings.codex_pty.runtime_dir / "translation-workspace"
+            ).expanduser().resolve(strict=False)
+        except OSError:
+            return False
+
+    def _remove_stale_translation_discoveries(
+        self,
+        sessions: list[AiSession],
+    ) -> list[AiSession]:
+        """Remove only old auto-discovery duplicates from the private translation workspace."""
+        retained: list[AiSession] = []
+        for session in sessions:
+            if not (
+                session.discovered
+                and session.session_mode == "terminal"
+                and session.native_session_id is not None
+                and self._is_translation_workspace(session.cwd)
+            ):
+                retained.append(session)
+                continue
+            # A live writer is never taken over, even in the reserved workspace.
+            # Keep the duplicate so the normal binding path fails closed.
+            try:
+                active_writer = self.has_active_writer(session.native_session_id)
+            except ApiError:
+                retained.append(session)
+                continue
+            if active_writer:
+                retained.append(session)
+                continue
+            self.store.delete(session.id)
+            self._remove_hook_file(session.id)
+        return retained
 
     @staticmethod
     def _project_native_state(session: AiSession, native: RuntimeNativeSession) -> bool:

@@ -16,7 +16,6 @@ from app.services.openclaw_weixin_chub_messages import (
     build_session_title,
     build_task_name,
 )
-from app.services.openclaw_weixin_chub_commands import parse_weixin_chub_command
 from app.services.openclaw_weixin_chub_mode import WeixinChubModeManager
 
 
@@ -58,8 +57,6 @@ def inject_default_delivery_route(monkeypatch) -> None:
 
 def configured_manager(
     settings: Settings,
-    *,
-    prefix_legacy_commands: bool = True,
 ) -> tuple[WeixinChubModeManager, MagicMock, MagicMock]:
     settings.openclaw.weixin_chub_mode.enabled = True
     settings.openclaw.quick_interaction_completion.enabled = True
@@ -99,16 +96,6 @@ def configured_manager(
         quick_interactions,
         MagicMock(return_value=None),
     )
-    if prefix_legacy_commands:
-        original_dispatch = manager.dispatch
-
-        def dispatch_with_explicit_command_prefix(*args, prompt, **kwargs):
-            if prompt and not prompt[0].isspace() and prompt[0] != "/":
-                if parse_weixin_chub_command("/" + prompt).kind != "normal":
-                    prompt = "/" + prompt
-            return original_dispatch(*args, prompt=prompt, **kwargs)
-
-        manager.dispatch = dispatch_with_explicit_command_prefix
     manager.session_archiver = MagicMock()
     manager._status_cache["readiness"] = (manager.status(), utc_now())
     return (

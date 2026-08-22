@@ -227,8 +227,6 @@ def test_submit_creates_one_private_session_and_replays_duplicate(
         operation_id=quick_interactions.submit.call_args.kwargs["operation_id"],
         source_ip="100.64.0.21",
         notification_route=delivery_route(),
-        weixin_session_slot=1,
-        weixin_session_title="检查设备状态",
     )
     state_file = settings.openclaw.weixin_chub_mode.state_file
     assert stat.S_IMODE(state_file.stat().st_mode) == 0o600
@@ -370,7 +368,7 @@ def test_removed_direct_command_is_a_normal_task(settings: Settings) -> None:
 
     result = manager.dispatch(
         message_id="direct-task",
-        prompt="/直接执行 检查设备状态",
+        prompt="直接执行 检查设备状态",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -406,8 +404,6 @@ def test_optimized_task_submits_to_captured_session(settings: Settings) -> None:
         operation_id="operation:translation",
         source_ip="100.64.0.21",
         target_session_id=source.session_id,
-        target_session_slot=source.session_slot,
-        target_session_title=source.session_title,
         created_at=utc_now(),
         updated_at=utc_now(),
     )
@@ -448,8 +444,6 @@ def test_optimized_task_submits_to_captured_session(settings: Settings) -> None:
         completed_entry.route,
         outcome="started",
         target_session_id=completed_entry.target_session_id,
-        target_slot=completed_entry.target_session_slot,
-        target_title=completed_entry.target_session_title,
         task=completed_entry.polished,
         english=completed_entry.english,
         error=completed_entry.error,
@@ -496,8 +490,6 @@ def test_interrupted_optimization_source_is_closed_and_replays_silently(
         operation_id="interrupted-optimized-operation:translation",
         source_ip="100.64.0.21",
         target_session_id="session-1",
-        target_session_slot=1,
-        target_session_title="服务检查",
         created_at=now,
         updated_at=now,
     )
@@ -554,8 +546,6 @@ def test_optimized_task_is_discarded_if_target_becomes_busy(
         operation_id="operation-busy:translation",
         source_ip="100.64.0.21",
         target_session_id=source.session_id,
-        target_session_slot=source.session_slot,
-        target_session_title=source.session_title,
         created_at=utc_now(),
         updated_at=utc_now(),
     )
@@ -706,8 +696,6 @@ def test_submit_replaces_session_when_explicit_model_no_longer_matches(
         operation_id=quick_interactions.submit.call_args.kwargs["operation_id"],
         source_ip="100.64.0.21",
         notification_route=delivery_route(),
-        weixin_session_slot=1,
-        weixin_session_title="检查模型配置",
     )
 
 

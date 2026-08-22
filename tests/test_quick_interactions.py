@@ -1481,6 +1481,82 @@ def test_worker_reconciliation_converges_native_session_conflict(
     assert calls == ["task_list", "task_get", "task_acknowledge"]
 
 
+def test_worker_reconciliation_allows_translation_native_session_rotation(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    quick_interactions = worker_manager(tmp_path, settings)
+    quick_interactions.codex_manager.get_session.return_value = CodexSession(
+        id="session-1",
+        workspace_id="weixin-translation",
+        workspace_name="微信文本优化与翻译",
+        cwd=tmp_path,
+        codex_session_id="old-native-session",
+        status="stopped",
+        permission_mode="read-only",
+    )
+    task = QuickInteractionTask(
+        id="task-translation-rotation",
+        worker_task_id="qw-1750000000000-33333333333333333333333333333333",
+        session_id="session-1",
+        prompt="优化文本",
+        kind="translation",
+        status="running",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    quick_interactions._tasks[task.id] = task
+    quick_interactions._active_task_ids.add(task.id)
+    quick_interactions._running_sessions.add(task.session_id)
+    now = utc_now()
+    new_native_session_id = "22222222-2222-4222-8222-222222222222"
+    view = {
+        "task_id": task.worker_task_id,
+        "runtime_id": "codex",
+        "status": "succeeded",
+        "prompt_sha256": "b" * 64,
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat(),
+        "deadline_at": (now + timedelta(minutes=5)).isoformat(),
+        "worker_generation": "generation-1",
+        "runner_pid": None,
+        "cancellation_requested": False,
+        "result": "润色：\n优化后的文本\n\nEnglish：\nPolished text",
+        "error": None,
+        "error_source": None,
+        "error_code": None,
+        "exit_code": 0,
+        "native_session_id": new_native_session_id,
+    }
+    calls: list[str] = []
+
+    def worker_call(action: str, **_payload):
+        calls.append(action)
+        if action == "task_list":
+            return {"success": True, "data": {"tasks": []}}
+        if action == "task_get":
+            return {"success": True, "data": {"task": view}}
+        if action == "task_acknowledge":
+            return {"success": True, "data": {"delivery": {}}}
+        raise AssertionError(action)
+
+    monkeypatch.setattr(quick_interactions, "_worker_call", worker_call)
+
+    quick_interactions._reconcile_worker_once(initial=True)
+
+    finished = quick_interactions.get(task.id)
+    assert finished.status == "succeeded"
+    assert finished.result == "润色：\n优化后的文本\n\nEnglish：\nPolished text"
+    quick_interactions.codex_manager.bind_quick_interaction_native_session.assert_called_once_with(
+        task.session_id,
+        new_native_session_id,
+    )
+    assert quick_interactions.is_running(task.session_id) is False
+    assert quick_interactions.recovery_ready is True
+    assert calls == ["task_list", "task_get", "task_acknowledge"]
+
+
 def test_resident_reconciliation_does_not_race_worker_submission(
     settings,
     tmp_path: Path,
@@ -1583,6 +1659,8 @@ def test_load_discards_legacy_pinned_state(tmp_path: Path) -> None:
     )
     payload = task.model_dump(mode="json")
     payload["pinned_at"] = utc_now().isoformat()
+    payload["weixin_session_slot"] = 3
+    payload["weixin_session_title"] = "旧名称"
     (tmp_path / "quick-interactions.json").write_text(
         json.dumps([payload]),
         encoding="utf-8",
@@ -1593,6 +1671,8 @@ def test_load_discards_legacy_pinned_state(tmp_path: Path) -> None:
     assert recovered.get(task.id).id == task.id
     persisted = json.loads(recovered.path.read_text(encoding="utf-8"))
     assert "pinned_at" not in persisted[0]
+    assert "weixin_session_slot" not in persisted[0]
+    assert "weixin_session_title" not in persisted[0]
 
 
 @pytest.mark.parametrize("invalid_kind", ["non_utf8", "oversized", "symlink"])
@@ -1821,6 +1901,40 @@ def test_list_for_session_returns_latest_first(tmp_path: Path) -> None:
 
     assert [task.id for task in tasks] == ["newer", "older"]
     assert tasks[0].prompt == "较新"
+
+
+def test_remove_session_tasks_cleans_persisted_task_and_sidecar_state(
+    tmp_path: Path,
+) -> None:
+    quick_interactions = manager(tmp_path)
+    task = QuickInteractionTask(
+        id="task-1",
+        session_id="session-1",
+        prompt="已完成任务",
+        status="succeeded",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    other = task.model_copy(update={"id": "task-2", "session_id": "session-2"})
+    quick_interactions._tasks = {task.id: task, other.id: other}
+    quick_interactions._notification_routes[task.id] = MagicMock()
+    quick_interactions._deferred_restart_contexts[task.id] = MagicMock()
+    quick_interactions._operation_contexts[task.id] = MagicMock()
+    quick_interactions._operations[task.id] = ("operation-1", "127.0.0.1")
+    quick_interactions._worker_delivery_confirmed.add(task.id)
+    quick_interactions._cancelled_task_ids.add(task.id)
+
+    quick_interactions.remove_session_tasks("session-1")
+
+    assert quick_interactions._tasks == {other.id: other}
+    assert task.id not in quick_interactions._notification_routes
+    assert task.id not in quick_interactions._deferred_restart_contexts
+    assert task.id not in quick_interactions._operation_contexts
+    assert task.id not in quick_interactions._operations
+    assert task.id not in quick_interactions._worker_delivery_confirmed
+    assert task.id not in quick_interactions._cancelled_task_ids
+    persisted = json.loads(quick_interactions.path.read_text(encoding="utf-8"))
+    assert [item["id"] for item in persisted] == ["task-2"]
 
 
 def test_list_for_session_can_return_timeline_order(tmp_path: Path) -> None:
@@ -2784,3 +2898,13 @@ def test_session_operation_rejects_running_quick_interaction(tmp_path: Path) -> 
             pass
 
     assert error.value.code == "quick_interaction_in_progress"
+
+
+def test_cancel_codex_session_rejects_untracked_active_session(tmp_path: Path) -> None:
+    quick_interactions = manager(tmp_path)
+    quick_interactions._running_sessions.add("session-1")
+
+    with pytest.raises(ApiError) as error:
+        quick_interactions.cancel_codex_session("session-1")
+
+    assert error.value.code == "quick_interaction_cancel_failed"

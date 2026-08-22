@@ -18,7 +18,7 @@ Chub 是面向个人设备、本地优先的轻量 AI 工作站控制面。它�
 
 ## 架构与文档入口
 
-本文用于说明 Chub 是什么、当前提供什么能力以及如何使用；[Chub 总体架构与演进设计](docs/CHUB_ARCHITECTURE_DESIGN.md)是项目的核心架构依据，定义系统边界、职责分层、状态所有权和演进原则。下面的架构和子模块索引只描述当前职责，不代表目标目录已经完全落地；新增功能和专项设计必须先遵循总体架构，再进入对应领域文档。
+本文用于说明 Chub 是什么、当前提供什么能力以及如何使用；[Chub 总体架构与演进设计](docs/CHUB_ARCHITECTURE_DESIGN.md)是项目的核心架构依据，定义系统边界、职责分层、状态所有权和跨模块约束。下面的架构和子模块索引只描述当前职责；新增功能和专项设计必须先遵循总体架构，再进入对应领域文档。
 
 ### 当前进程架构
 
@@ -26,7 +26,7 @@ Chub 是面向个人设备、本地优先的轻量 AI 工作站控制面。它�
 Browser / Mobile Browser / Chub CLI
   -> Chub Web、API、WebSocket 和固定本机入口
        |-> Quick Worker -> 固定 Runtime Runner -> Codex Runner
-       |-> tmux / ttyd -> Codex 实时终端
+       |-> ttyd -> 固定 tmux carrier -> Codex 实时终端
        |-> OpenClaw Plugin -> 微信固定调度 API
        |-> Automation Runner -> Debug Chrome / 固定扩展
        `-> Notification Service -> 预配置飞书目标
@@ -124,11 +124,11 @@ chub uninstall
 
 macOS 使用两个独立 LaunchAgent，Ubuntu 使用两个独立 systemd user service，分别承载 Web 和
 Quick Worker。`chub restart` 只重启 Web，不停止 Worker；`chub status` 同时显示两个服务，
-`chub worker-health` 通过本机私有 IPC 读取 Worker 健康信息；`chub worker-drain` 停止接收新任务并等待已受理任务收敛；`chub worker-reload` 完成排空、独立重载和新 generation 健康确认；`chub worker-recover` 只用于已有失败重启且 Worker 不可达时的固定服务恢复，并确认恢复后的健康状态。`worker-drain`、`worker-reload` 和 `worker-recover` 只在本机终端执行，不能从正在运行的快速任务内部调用；首页“工作站环境”在 Worker 健康且空闲时提供固定的受控重启入口，协议不兼容时同样可重启到当前版本。当前 Worker 已经接管页面、微信和翻译快速任务；
+`chub worker-health` 通过本机私有 IPC 读取 Worker 健康信息；`chub worker-drain` 停止接收新任务并等待已受理任务收敛；`chub worker-reload` 关闭新提交、清理排队和执行中的任务、独立重载 Worker 并确认新 generation 健康；`chub worker-recover` 保留为本机服务恢复入口。`worker-drain`、`worker-reload` 和 `worker-recover` 只在本机终端执行，不能从正在运行的快速任务内部调用；首页“工作站环境”确认后可在 Worker 健康、忙碌、协议不兼容或不可达时重启并清理 Worker 任务。当前 Worker 已经接管页面、微信和翻译快速任务；
 macOS 与 Ubuntu 均已确认单独重启 Web 不会停止 Worker、Runner 或现有任务，恢复后的结果和通知不会重复。
 Worker 不健康时，快速交互 Session 写操作保持失败关闭，不回退到 Web Runner；实时终端使用独立的 Codex PTY/tmux 链路。
 
-`chub install`、`chub stop` 和 `chub uninstall` 默认拒绝中断活动或排队任务，并在空闲时先关闭 Worker 提交门禁；只有维护者确认任务可以中断时才使用对应命令的 `--force`。跨协议升级使用 `chub install --force` 统一安装当前版本并直接清理旧 Worker 数据；旧任务会被中断且不可恢复，不保留读取或迁移逻辑。
+`chub install`、`chub stop` 和 `chub uninstall` 仍默认拒绝中断活动或排队任务，并在空闲时先关闭 Worker 提交门禁；Quick Worker 专用的 `worker-reload` 是恢复入口，确认后会取消排队任务、停止执行中任务并重建 Worker，不自动重放。跨协议升级使用 `chub install --force` 统一安装当前版本并直接清理旧 Worker 数据；旧任务会被中断且不可恢复，不保留读取或迁移逻辑。
 
 当前 `chub` CLI 是仓库内的本机服务管理入口；项目尚未发布 npm/PyPI 或独立发行包。新设备的目标流程、核心 Chub（含自动运行的 Quick Worker）与可选 ClawBot 的职责、npm 发布、版本管理和 GitHub Release 目标见 [Chub CLI 分发、安装与发布设计](docs/CHUB_CLI_DISTRIBUTION_DESIGN.md)。服务直接依赖当前工作区和 `.venv`；移动目录或变更服务定义后需要重新安装。Web 配置变更使用
 `chub restart` 生效；Worker 代码升级使用 `chub worker-reload`，Worker 失败恢复使用首页入口或 `chub worker-recover`，只有服务定义变化时才需要重新执行安装。
@@ -139,6 +139,11 @@ Worker 不健康时，快速交互 Session 写操作保持失败关闭，不回�
 
 Codex PTY 依赖 `codex`、`ttyd` 和 `tmux`。安装服务时，Chub 会从当前终端 `PATH` 记录所需程序路径。
 
+普通 Web 重启只重启 Chub Web 控制面，不停止独立的 Quick Worker 或 OpenClaw Gateway；已接受的快速任务继续运行。它会关闭并在需要时重建 Chub 自己的 `ttyd` Web 桥，但保留固定 tmux 和原生 Codex；再次进入同一
+实时 Session 时会重新连接原 tmux。升级/恢复清理 Chub 运行态后，新实例按升级操作保存的旧逻辑 ID
+与原生 Session ID 关联，自动重新绑定仍存在的 Chub tmux。
+原生 Codex 不会因此被重启；若进程仍携带旧的 Chub 标识，Hook 会通过受控别名把 Activity 事件写入新的 Session。
+
 节点页面使用一个“新建会话”按钮和弹窗创建 Session，可为新 Session 选择默认权限、模型和推理等级及固定类型。首页统一按创建时间倒序展示 Session，并以简洁标记区分类型：
 
 - **实时终端**：使用原生 Codex TUI，适合审批、持续操作和实时输出；只显示在 Chub Web。
@@ -146,7 +151,7 @@ Codex PTY 依赖 `codex`、`ttyd` 和 `tmux`。安装服务时，Chub 会从当�
 
 新建 Session 默认选择快速交互。Session 类型创建后不可切换；同一 Session 不会在两类入口间共享 writer。微信和 ClawBot 只使用快速交互 Session，实时终端 Session 不进入微信槽位或手机快速交互列表。
 
-Session、Activity、槽位、标题和入口语义见[Chub AI Session 状态模型设计](docs/AI_SESSION_STATE_DESIGN.md)；后台任务、通知终态和 Worker 服务恢复见[Chub Quick Worker 独立服务设计](docs/CHUB_QUICK_WORKER_DESIGN.md)。
+Session、Activity、usage 投影、槽位、标题和入口语义见[Chub AI Session 状态模型设计](docs/AI_SESSION_STATE_DESIGN.md)。后台任务、通知终态和 Worker 服务恢复见[Chub Quick Worker 独立服务设计](docs/CHUB_QUICK_WORKER_DESIGN.md)。
 
 实时终端依赖稳定的 WebSocket 链路。普通页面可以打开但终端无响应时，应优先检查 Tailscale 是否直连、DERP 中继质量，以及 `/codex/.../terminal/ws` 是否成功升级为 `101 Switching Protocols`。
 
@@ -158,7 +163,7 @@ Session、Activity、槽位、标题和入口语义见[Chub AI Session 状态模
 
 ### AI 额度
 
-首页 Codex 卡片通过统一的 `/api/ai/usage` 展示周额度、今日用量和重置时间。ChatGPT 账号登录优先使用账户日桶，当天桶缺失时显示明确标记的本机 Token；API Key 方式复用已登录的受管 Debug Chrome。两种来源不会互相降级，完整数据口径、接口和缓存规则见[Codex AI 额度与用量采集设计](docs/CODEX_AI_QUOTA_USAGE_DESIGN.md)。
+首页会话工作台通过统一的 `/api/ai/usage` 展示周额度、今日用量和重置时间。ChatGPT 账号登录优先使用账户日桶，当天桶缺失时显示明确标记的本机 Token；API Key 方式复用已登录的受管 Debug Chrome。两种来源不会互相降级，完整数据口径、接口和缓存规则见[Codex AI 额度与用量采集设计](docs/CODEX_AI_QUOTA_USAGE_DESIGN.md)。
 
 ### OpenClaw 与微信 ClawBot
 
@@ -170,7 +175,9 @@ Session、Activity、槽位、标题和入口语义见[Chub AI Session 状态模
 
 OpenClaw 提供可信入口和通道上下文，Chub 负责业务路由、安全校验和最终状态；整条链路不调用 OpenClaw Agent，也不把消息拦截或任务提交等同于最终成功。
 
-首页“工作站环境”卡片中的 OpenClaw 分区用于查看 Gateway、微信通道和 Tailscale 入口，并提供受控的启停、重启及微信绑定操作。绑定成功只表示通道登录完成，不代表发送者配对或 Owner 权限已经配置。
+首页“工作站环境”卡片中的 OpenClaw 分区用于查看 Gateway、微信通道和 Tailscale 入口，并提供受控的启停、重启与恢复及微信绑定操作。重启与恢复发现固定插件或补丁基线不一致时会先同步，再重启 Gateway 和消息通道；底层 API action 仍使用 `restart`，微信端使用 `restart clawbot`。绑定成功只表示通道登录完成，不代表发送者配对或 Owner 权限已经配置。
+
+微信 Chub 固定维护指令为 `restart web`（重启 Web）、`restart worker`（重启 Worker）、`restart clawbot`（重启 ClawBot）和 `upgrade`（升级系统）；均按固定目标执行，不接受附加路径或命令。`upgrade status` 只读查询升级状态，四项操作的最终结果分别以新实例、Worker、Gateway/消息通道或升级运行态确认结果为准。
 
 端到端状态和安全边界见 [OpenClaw 定制集成设计](docs/OPENCLAW_CUSTOMIZATION_DESIGN.md)；插件协议、构建和部署见仓库内维护资料 [Chub OpenClaw 插件说明](integrations/openclaw/chub/README.md)。
 
@@ -239,7 +246,7 @@ Runner 不会自行启动或停止 Debug Chrome。浏览器 Profile 未初始化
 - `data/runtime/`：可重新生成的执行事件、临时附件、锁和任务日志。
 - `data/artifacts/`：自动化下载材料和周报正式产物。
 
-首页“工作站环境”提供受控的“系统升级与恢复”状态行。它统一执行已准备的版本切换或当前版本的运行态恢复；确认后冻结受影响的 Chub AI Runtime 写入、停止 Quick Worker，在途快速任务终止并清理 Chub Session 关联、Hook 与固定 Worker 运行态。Codex 原生 Session、配置、日志、项目资料和业务数据不归档、不删除；新实例会重新发现仍存在的原生 Session。无需等待任务自然排空；启动只校验固定切换脚本、已安装服务定义和运行态清理路径，不以当前 Web 或 Worker 状态作为门禁。只有新 Web/Worker、Session 映射读取和微信 Chub Session 快照均完成最终验证，操作才标记完成；清理或服务切换失败会保持 AI Runtime 写入失败关闭，但在当前固定恢复目标和服务预检通过时释放 Web/Worker/升级入口，允许维护者继续重启或恢复。Quick Worker 已有失败重启且当前不可达时，页面提供固定服务恢复路径；任务状态未知且没有失败重启依据时仍失败关闭。该入口不下载代码、不接受客户端路径或命令，也不提供任意数据清理。
+首页“工作站环境”提供受控的“系统升级与恢复”状态行。它统一执行已准备的版本切换或当前版本的运行态恢复；确认后冻结受影响的 Chub AI Runtime 写入、停止 Quick Worker，在途快速任务终止并清理 Chub Session 关联、Hook 与固定 Worker 运行态。Codex 原生 Session、配置、日志、项目资料和业务数据不归档、不删除；新实例会重新发现仍存在的原生 Session。无需等待任务自然排空；启动只校验固定切换脚本、已安装服务定义和运行态清理路径，不以当前 Web 或 Worker 状态作为门禁。准备中的升级方案无法读取或校验时，入口降级为当前版本运行态恢复，并明确不执行代码版本升级。只有新 Web/Worker、Session 映射读取和微信 Chub Session 快照均完成最终验证，操作才标记完成；清理或服务切换失败会保持 AI Runtime 写入失败关闭，但在当前固定恢复目标和服务预检通过时释放 Web/Worker/升级入口，允许维护者继续重启或恢复。该入口不下载代码、不接受客户端路径或命令，也不提供任意数据清理。
 
 `scripts/chub-data-migrate` 只保留给历史安装的数据目录整理，不参与 AI Session 或 Worker 协议升级。新的持久化协议切换统一使用上述受控升级流程，直接清理方案白名单内的旧运行数据，不增加启动迁移、双写或旧格式兼容读取。
 
@@ -263,7 +270,7 @@ README 是项目入口和文档管理规则的维护入口；总体架构是所�
 当前专项文档统一使用最低头部结构：`状态`、`主要读者`、`本文负责`、`本文不负责`；`状态` 必须与 `docs/design_documents.json` 的标准值精确一致，维护触发条件另写为补充说明。已验收的当前专项文档末尾还应写明已验证功能/平台、未验证或不承诺范围和复检触发条件；局部实机验证不能扩大为全平台或全链路承诺。
 
 - **项目说明**：README 维护项目定位、能力概览、安装、使用入口、数据安全和文档导航。
-- **总体架构**：定义系统边界、进程、领域、状态所有权、依赖方向和整体演进原则；所有专项设计必须遵循。
+- **总体架构**：定义系统边界、进程、领域、状态所有权、依赖方向和跨模块约束；所有专项设计必须遵循。
 - **专项设计**：只维护本领域的现行行为、目标边界和演进方案；跨领域规则引用总体架构及对应权威文档，不复制完整正文。
 - **当前能力契约**：集成能力清单登记当前可调用的命令、插件和固定 API，并维护微信固定指令的唯一产品契约；目标架构不能覆盖当前事实。
 - **维护与归档资料**：插件 README 维护插件协议、源码、构建和部署；第三方补丁文档只维护异常恢复；阶段归档只用于历史追溯。
@@ -302,10 +309,10 @@ CHUB_BROWSER_TESTS=1 .venv/bin/python -m pytest \
 | 文档 | 唯一职责 |
 | --- | --- |
 | [Chub 项目说明](README.md) | 项目概览、安装、日常入口、安全和文档导航 |
-| [Chub 总体架构与演进设计](docs/CHUB_ARCHITECTURE_DESIGN.md) | 当前进程、领域与状态所有权，以及整体分层和演进原则 |
+| [Chub 总体架构与演进设计](docs/CHUB_ARCHITECTURE_DESIGN.md) | 当前进程、领域、状态所有权和跨模块约束 |
 | [Chub AI Runtime 架构设计](docs/CHUB_AI_RUNTIME_DESIGN.md) | AI Runtime 架构、Session Manager、Worker 职责和 Runtime 实现规范 |
 | [Chub CLI 分发、安装与发布设计](docs/CHUB_CLI_DISTRIBUTION_DESIGN.md) | 新设备安装、核心 Chub 与可选 ClawBot 职责、npm 发布、版本管理和 GitHub Release |
-| [Chub AI Session 状态模型设计](docs/AI_SESSION_STATE_DESIGN.md) | Session、Activity、入口、槽位和单 writer 语义 |
+| [Chub AI Session 状态模型设计](docs/AI_SESSION_STATE_DESIGN.md) | Session、Activity、usage 投影、入口、操作、槽位和单 writer 语义 |
 | [Chub Quick Worker 独立服务设计](docs/CHUB_QUICK_WORKER_DESIGN.md) | Quick Worker 独立服务、非实时任务、恢复、通知终态和重启协调 |
 | [Codex AI 额度与用量采集设计](docs/CODEX_AI_QUOTA_USAGE_DESIGN.md) | Codex/OpenAI 用量来源、统一接口、缓存和展示口径 |
 | [OpenClaw 定制集成设计](docs/OPENCLAW_CUSTOMIZATION_DESIGN.md) | OpenClaw/微信端到端业务、插件定制、Context Token、身份、路由和通知边界 |

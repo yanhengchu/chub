@@ -166,7 +166,36 @@ class CodexRuntimeAdapter:
                 "Codex activity event is unavailable",
             ) from exc
 
+    def rebind_activity_session(self, old_session_id: str, new_session_id: str) -> None:
+        """Keep hooks from a live pre-upgrade process correlated after Session rebind."""
+        old_path = self._activity_rebind_path(old_session_id)
+        self._activity_rebind_path(new_session_id)
+        self.hook_dir.mkdir(parents=True, exist_ok=True)
+        temporary = self.hook_dir / f".{old_session_id}.{os.getpid()}.rebind.tmp"
+        try:
+            temporary.write_text(f"{new_session_id}\n", encoding="ascii")
+            os.chmod(temporary, 0o600)
+            temporary.replace(old_path)
+        except OSError as exc:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+            raise RuntimeOperationError(
+                "codex_activity_rebind_unavailable",
+                "Codex activity Session rebind is unavailable",
+            ) from exc
+
     def _activity_event_path(self, session_id: str) -> Path:
+        self._validate_activity_session_id(session_id)
+        return self.hook_dir / f"{session_id}.json"
+
+    def _activity_rebind_path(self, session_id: str) -> Path:
+        self._validate_activity_session_id(session_id)
+        return self.hook_dir / f".{session_id}.rebind"
+
+    @staticmethod
+    def _validate_activity_session_id(session_id: str) -> None:
         if not re.fullmatch(
             r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
             r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
@@ -177,7 +206,6 @@ class CodexRuntimeAdapter:
                 "Codex activity Session ID is invalid",
                 kind="invalid_request",
             )
-        return self.hook_dir / f"{session_id}.json"
 
     @property
     def network_available(self) -> bool:
@@ -334,6 +362,26 @@ class CodexRuntimeAdapter:
         self.validate_native_session_id(native_session_id)
         archive_states = self.discovery.session_archive_states()
         return archive_states is not None and archive_states.get(native_session_id) is False
+
+    def native_session_archive_state(self, native_session_id: str) -> bool | None:
+        self.validate_native_session_id(native_session_id)
+        archive_states = self.discovery.session_archive_states()
+        if archive_states is None:
+            return None
+        return archive_states.get(native_session_id)
+
+    def native_session_deleted_state(self, native_session_id: str) -> bool | None:
+        self.validate_native_session_id(native_session_id)
+        archive_states = self.discovery.session_archive_states()
+        if archive_states is None:
+            return None
+        if native_session_id in archive_states:
+            return False
+        sessions = self.discovery.discover()
+        return not any(
+            session.codex_session_id == native_session_id
+            for session in sessions
+        )
 
     def ensure_profile(self) -> None:
         profile = self.codex_home / "chub.config.toml"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
 from uuid import uuid4
@@ -16,7 +17,7 @@ from app.ai_runtime import (
     RuntimeOperationError,
     RuntimeSessionDiscoveryResult,
 )
-from app.codex.models import WorkspaceInfo
+from app.codex.models import SessionUsage, WorkspaceInfo
 from app.core.config import Settings
 from app.core.response import ApiError
 
@@ -70,6 +71,23 @@ def test_ai_session_store_fails_closed_for_legacy_or_unsafe_state(tmp_path: Path
     insecure = AiSessionStore(path)
     with pytest.raises(AiSessionStoreUnavailable, match="权限"):
         insecure.list()
+
+
+def test_ai_session_manager_renames_without_writer_gate(settings: Settings) -> None:
+    manager = AiSessionManager(settings)
+    created = session(
+        settings.codex_pty.workspace,
+        native_session_id="native-1",
+        session_mode="quick",
+    )
+    manager.store.save(created)
+    manager._sync_bound_native_sessions = MagicMock()
+    manager.runtime_adapter.has_active_writer = MagicMock(return_value=True)
+    manager.supervisor.owns_terminal_writer = MagicMock(return_value=False)
+
+    renamed = manager.rename_session(created.id, "新标题")
+
+    assert renamed.title == "新标题"
 
 
 def test_ai_session_store_rejects_missing_runtime_owner(tmp_path: Path) -> None:
@@ -209,6 +227,75 @@ def test_ai_session_manager_defers_discovery_while_quick_session_is_binding(
     assert imported[0].native_session_id == "native-pending"
 
 
+def test_ai_session_manager_does_not_discover_internal_translation_session(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    manager._require_available = MagicMock()
+    translation = manager.create_translation_session()
+    native = RuntimeNativeSession(
+        runtime_id="codex",
+        native_session_id="translation-native",
+        cwd=settings.codex_pty.runtime_dir / "translation-workspace",
+        title="文本优化与翻译",
+        active_permission_mode="read-only",
+        created_at=translation.created_at,
+        updated_at=translation.updated_at,
+    )
+    manager.runtime_adapter.discover_sessions = MagicMock(
+        return_value=RuntimeSessionDiscoveryResult(
+            sessions=(native,), archive_states={"translation-native": False}
+        )
+    )
+
+    sessions = manager.list_sessions()
+
+    assert [item.id for item in sessions] == [translation.id]
+    assert manager.store.get(translation.id).native_session_id is None
+
+
+def test_ai_session_manager_cleans_stale_translation_discovery_before_binding(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    manager._require_available = MagicMock()
+    translation = manager.create_translation_session()
+    quick = manager.store.get(translation.id)
+    assert quick is not None
+    stale = session(quick.cwd, native_session_id="translation-native-stale")
+    stale.discovered = True
+    stale.workspace_id = "weixin-translation"
+    stale.workspace_name = "微信文本优化与翻译"
+    manager.store.save(stale)
+    manager.runtime_adapter.has_active_writer = MagicMock(return_value=False)
+    manager.runtime_adapter.discover_sessions = MagicMock(
+        return_value=RuntimeSessionDiscoveryResult(
+            sessions=(
+                RuntimeNativeSession(
+                    runtime_id="codex",
+                    native_session_id="translation-native-stale",
+                    cwd=quick.cwd,
+                    title="文本优化与翻译",
+                    created_at=stale.created_at,
+                    updated_at=stale.updated_at,
+                ),
+            ),
+            archive_states={"translation-native-stale": False},
+        )
+    )
+
+    manager.list_sessions()
+    assert manager.store.get(stale.id) is None
+
+    manager.bind_quick_interaction_native_session(
+        translation.id,
+        "translation-native-stale",
+    )
+    assert manager.store.get(translation.id).native_session_id == (
+        "translation-native-stale"
+    )
+
+
 def test_ai_session_manager_repairs_discovery_duplicate_for_quick_binding(
     settings: Settings,
 ) -> None:
@@ -227,6 +314,51 @@ def test_ai_session_manager_repairs_discovery_duplicate_for_quick_binding(
     manager.bind_quick_interaction_native_session(quick.id, "native-race")
 
     assert manager.store.get(quick.id).native_session_id == "native-race"
+    assert manager.store.get(discovered.id) is None
+
+
+def test_ai_session_manager_does_not_adopt_discovery_duplicate_with_native_writer(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    quick = session(settings.codex_pty.workspace, session_mode="quick")
+    discovered = session(
+        settings.codex_pty.workspace,
+        native_session_id="native-active",
+    )
+    discovered.discovered = True
+    manager.store.save(quick)
+    manager.store.save(discovered)
+    manager.supervisor.owns_terminal_writer = MagicMock(return_value=False)
+    manager.runtime_adapter.has_active_writer = MagicMock(return_value=True)
+
+    with pytest.raises(ApiError) as error:
+        manager.bind_quick_interaction_native_session(quick.id, "native-active")
+
+    assert error.value.code == "quick_interaction_native_session_conflict"
+    assert manager.store.get(quick.id).native_session_id is None
+    assert manager.store.get(discovered.id) is not None
+
+
+def test_ai_session_manager_adopts_discovery_duplicate_for_current_quick_writer(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    quick = session(settings.codex_pty.workspace, session_mode="quick")
+    discovered = session(
+        settings.codex_pty.workspace,
+        native_session_id="native-active",
+    )
+    discovered.discovered = True
+    manager.store.save(quick)
+    manager.store.save(discovered)
+    manager.supervisor.owns_terminal_writer = MagicMock(return_value=False)
+    manager.runtime_adapter.has_active_writer = MagicMock(return_value=True)
+    manager.set_quick_interaction_checker(lambda session_id: session_id == quick.id)
+
+    manager.bind_quick_interaction_native_session(quick.id, "native-active")
+
+    assert manager.store.get(quick.id).native_session_id == "native-active"
     assert manager.store.get(discovered.id) is None
 
 
@@ -405,13 +537,470 @@ def test_ai_session_manager_binds_native_id_once_and_keeps_it_private(
     assert error.value.code == "quick_interaction_native_session_conflict"
 
 
+def test_ai_session_manager_allows_translation_native_id_rotation(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    manager._require_available = MagicMock()
+    manager.runtime_adapter.validate_native_session_id = MagicMock()
+    manager.runtime_adapter.has_active_writer = MagicMock(return_value=False)
+    translation = manager.create_translation_session()
+    stored = manager.store.get(translation.id)
+    assert stored is not None
+    stored.native_session_id = "native-old"
+    manager.store.save(stored)
+
+    manager.bind_quick_interaction_native_session(translation.id, "native-new")
+
+    assert manager.store.get(translation.id).native_session_id == "native-new"
+
+
+def test_ai_session_manager_does_not_rotate_translation_native_id_while_busy(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    manager._require_available = MagicMock()
+    manager.runtime_adapter.validate_native_session_id = MagicMock()
+    manager.runtime_adapter.has_active_writer = MagicMock(return_value=True)
+    translation = manager.create_translation_session()
+    stored = manager.store.get(translation.id)
+    assert stored is not None
+    stored.native_session_id = "native-old"
+    manager.store.save(stored)
+
+    with pytest.raises(ApiError) as error:
+        manager.bind_quick_interaction_native_session(translation.id, "native-new")
+
+    assert error.value.code == "quick_interaction_native_session_conflict"
+    assert manager.store.get(translation.id).native_session_id == "native-old"
+
+
+def test_ai_session_manager_resolves_external_native_writer_usage(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    created = session(settings.codex_pty.workspace, native_session_id="native-1")
+    manager.store.save(created)
+    manager.get_session = MagicMock(return_value=created)
+    manager.supervisor.owns_terminal_writer = MagicMock(return_value=False)
+    manager.runtime_adapter.has_active_writer = MagicMock(return_value=True)
+
+    usage = manager.resolve_session_usage(created.id)
+
+    assert usage.native_session_present is True
+    assert usage.owner == "external"
+    assert usage.phase == "unknown"
+
+
+def test_ai_session_manager_resolves_chub_terminal_execution(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    created = session(settings.codex_pty.workspace, native_session_id="native-1")
+    created.activity = "working"
+    created.activity_source = "terminal"
+    manager.store.save(created)
+    manager.get_session = MagicMock(return_value=created)
+    manager.supervisor.owns_terminal_writer = MagicMock(return_value=True)
+    manager.runtime_adapter.has_active_writer = MagicMock(
+        side_effect=RuntimeOperationError(
+            "codex_writer_status_unavailable",
+            "writer status is unavailable",
+        )
+    )
+
+    usage = manager.resolve_session_usage(created.id)
+
+    assert usage.owner == "terminal"
+    assert usage.phase == "running"
+    manager.runtime_adapter.has_active_writer.assert_not_called()
+
+
+def test_ai_session_manager_resolves_chub_worker_waiting_result(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    created = session(settings.codex_pty.workspace, native_session_id="native-1")
+    manager.store.save(created)
+    manager.get_session = MagicMock(return_value=created)
+    manager.set_quick_interaction_checker(lambda session_id: session_id == created.id)
+    manager.supervisor.owns_terminal_writer = MagicMock(return_value=False)
+
+    usage = manager.resolve_session_usage(created.id)
+
+    assert usage.owner == "quick_worker"
+    assert usage.phase == "waiting_result"
+
+
+def test_ai_session_manager_resolves_local_only_session_usage(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    created = session(settings.codex_pty.workspace)
+    manager.store.save(created)
+
+    usage = manager.resolve_session_usage(created.id)
+
+    assert usage.native_session_present is False
+    assert usage.owner == "none"
+    assert usage.phase == "idle"
+
+
+@pytest.mark.parametrize(
+    ("owner", "phase"),
+    [
+        ("terminal", "running"),
+        ("quick_worker", "waiting_result"),
+    ],
+)
+def test_ai_session_manager_allows_stop_for_chub_execution(
+    settings: Settings,
+    owner: str,
+    phase: str,
+) -> None:
+    manager = AiSessionManager(settings)
+    created = session(settings.codex_pty.workspace, native_session_id="native-1")
+    manager.store.save(created)
+    manager.resolve_session_usage = MagicMock(
+        return_value=SessionUsage(
+            native_session_present=True,
+            owner=owner,
+            phase=phase,
+        )
+    )
+
+    usage = manager.ensure_stop_allowed(created.id)
+
+    assert usage.owner == owner
+    assert usage.phase == phase
+
+
+@pytest.mark.parametrize(
+    ("owner", "phase", "code"),
+    [
+        ("external", "unknown", "codex_session_writer_active"),
+        ("unknown", "unknown", "codex_session_usage_unknown"),
+        ("terminal", "idle", "codex_session_not_running"),
+        ("none", "idle", "codex_session_not_running"),
+    ],
+)
+def test_ai_session_manager_rejects_stop_outside_chub_execution(
+    settings: Settings,
+    owner: str,
+    phase: str,
+    code: str,
+) -> None:
+    manager = AiSessionManager(settings)
+    created = session(settings.codex_pty.workspace, native_session_id="native-1")
+    manager.store.save(created)
+    manager.resolve_session_usage = MagicMock(
+        return_value=SessionUsage(
+            native_session_present=True,
+            owner=owner,
+            phase=phase,
+        )
+    )
+
+    with pytest.raises(ApiError) as error:
+        manager.ensure_stop_allowed(created.id)
+
+    assert error.value.code == code
+
+
+def test_ai_session_manager_rejects_delete_for_external_writer(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    created = session(settings.codex_pty.workspace, native_session_id="native-1")
+    manager.store.save(created)
+    manager.get_session = MagicMock(return_value=created)
+    manager.resolve_session_usage = MagicMock(
+        return_value=SessionUsage(
+            native_session_present=True,
+            owner="external",
+            phase="unknown",
+        )
+    )
+    manager.runtime_adapter.run_native_action = MagicMock()
+
+    with pytest.raises(ApiError) as error:
+        manager.delete_session(created.id)
+
+    assert error.value.code == "codex_session_writer_active"
+    manager.runtime_adapter.run_native_action.assert_not_called()
+    assert manager.store.get(created.id) is not None
+
+
+@pytest.mark.parametrize("phase", ["running", "waiting_result"])
+def test_ai_session_manager_allows_delete_for_chub_quick_execution(
+    settings: Settings,
+    phase: str,
+) -> None:
+    manager = AiSessionManager(settings)
+    created = session(settings.codex_pty.workspace, native_session_id="native-1")
+    manager.store.save(created)
+    manager.resolve_session_usage = MagicMock(
+        return_value=SessionUsage(
+            native_session_present=True,
+            owner="quick_worker",
+            phase=phase,
+        )
+    )
+
+    usage = manager.ensure_delete_allowed(created.id)
+
+    assert usage.owner == "quick_worker"
+    assert usage.phase == phase
+
+
+@pytest.mark.parametrize(
+    ("owner", "phase"),
+    [("unknown", "unknown"), ("terminal", "unknown"), ("quick_worker", "unknown")],
+)
+def test_ai_session_manager_allows_delete_when_chub_usage_is_unknown(
+    settings: Settings,
+    owner: str,
+    phase: str,
+) -> None:
+    manager = AiSessionManager(settings)
+    created = session(settings.codex_pty.workspace, native_session_id="native-1")
+    manager.store.save(created)
+    manager.resolve_session_usage = MagicMock(
+        return_value=SessionUsage(
+            native_session_present=True,
+            owner=owner,
+            phase=phase,
+        )
+    )
+
+    usage = manager.ensure_delete_allowed(created.id)
+
+    assert usage.owner == owner
+    assert usage.phase == phase
+
+
+def test_ai_session_manager_reconciles_native_delete_before_cleanup(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    created = session(settings.codex_pty.workspace, native_session_id="native-1")
+    manager.store.save(created)
+    manager.get_session = MagicMock(return_value=created)
+    manager.ensure_delete_allowed = MagicMock()
+    manager.validate_native_session_id = MagicMock()
+    manager.runtime_adapter.run_native_action = MagicMock(
+        side_effect=RuntimeOperationError(
+            "codex_session_delete_failed",
+            "native delete result was interrupted",
+            kind="unavailable",
+        )
+    )
+    manager.runtime_adapter.native_session_deleted_state = MagicMock(
+        return_value=True
+    )
+    manager.stop_session = MagicMock()
+
+    manager.delete_session(created.id)
+
+    manager.runtime_adapter.native_session_deleted_state.assert_called_once_with(
+        "native-1"
+    )
+    manager.stop_session.assert_called_once_with(created.id)
+    assert manager.store.get(created.id) is None
+
+
+def test_ai_session_manager_archives_native_before_clearing_chub_state(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    created = session(settings.codex_pty.workspace, native_session_id="native-1")
+    manager.store.save(created)
+    manager.get_session = MagicMock(return_value=created)
+    manager.ensure_archive_allowed = MagicMock()
+    manager.validate_native_session_id = MagicMock()
+    events: list[str] = []
+    manager.runtime_adapter.run_native_action = MagicMock(
+        side_effect=lambda *_args: events.append("native-archive")
+    )
+    manager.stop_session = MagicMock(
+        side_effect=lambda _session_id: events.append("stop")
+    )
+
+    manager.archive_session(created.id)
+
+    assert events == ["native-archive", "stop"]
+    manager.runtime_adapter.run_native_action.assert_called_once_with(
+        "archive", "native-1"
+    )
+    assert manager.store.get(created.id) is None
+
+
+def test_ai_session_manager_archive_does_not_reconcile_mapping_before_action(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    created = session(settings.codex_pty.workspace, native_session_id="native-1")
+    manager.store.save(created)
+    manager._sync_bound_native_sessions = MagicMock()
+    manager.runtime_adapter.has_active_writer = MagicMock(return_value=False)
+    manager.runtime_adapter.run_native_action = MagicMock()
+
+    manager.archive_native_session(created.id)
+
+    manager._sync_bound_native_sessions.assert_not_called()
+    manager.runtime_adapter.run_native_action.assert_called_once_with(
+        "archive",
+        "native-1",
+    )
+
+
+def test_ai_session_manager_keeps_chub_state_when_native_archive_fails(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    created = session(settings.codex_pty.workspace, native_session_id="native-1")
+    manager.store.save(created)
+    manager.get_session = MagicMock(return_value=created)
+    manager.ensure_archive_allowed = MagicMock()
+    manager.validate_native_session_id = MagicMock()
+    manager.stop_session = MagicMock()
+    manager.runtime_adapter.run_native_action = MagicMock(
+        side_effect=RuntimeOperationError(
+            "codex_session_archive_failed",
+            "native archive failed",
+            kind="conflict",
+        )
+    )
+
+    with pytest.raises(ApiError) as error:
+        manager.archive_session(created.id)
+
+    assert error.value.code == "codex_session_archive_failed"
+    manager.stop_session.assert_not_called()
+    assert manager.store.get(created.id) is not None
+
+
+def test_ai_session_manager_reconciles_native_archive_before_retrying_cleanup(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    created = session(settings.codex_pty.workspace, native_session_id="native-1")
+    manager.store.save(created)
+    manager.get_session = MagicMock(return_value=created)
+    manager.ensure_archive_allowed = MagicMock()
+    manager.validate_native_session_id = MagicMock()
+    manager.runtime_adapter.run_native_action = MagicMock(
+        side_effect=RuntimeOperationError(
+            "codex_session_archive_failed",
+            "native archive result was interrupted",
+            kind="unavailable",
+        )
+    )
+    manager.runtime_adapter.native_session_archive_state = MagicMock(
+        return_value=True
+    )
+    manager.stop_session = MagicMock()
+
+    manager.archive_session(created.id)
+
+    manager.runtime_adapter.native_session_archive_state.assert_called_once_with(
+        "native-1"
+    )
+    manager.stop_session.assert_called_once_with(created.id)
+    assert manager.store.get(created.id) is None
+
+
+@pytest.mark.parametrize(
+    ("owner", "phase"),
+    [("terminal", "running"), ("quick_worker", "waiting_result")],
+)
+def test_ai_session_manager_rejects_archive_during_chub_execution(
+    settings: Settings,
+    owner: str,
+    phase: str,
+) -> None:
+    manager = AiSessionManager(settings)
+    created = session(settings.codex_pty.workspace, native_session_id="native-1")
+    manager.store.save(created)
+    manager.resolve_session_usage = MagicMock(
+        return_value=SessionUsage(
+            native_session_present=True,
+            owner=owner,
+            phase=phase,
+        )
+    )
+
+    with pytest.raises(ApiError) as error:
+        manager.ensure_archive_allowed(created.id)
+
+    assert error.value.code == "codex_session_in_progress"
+
+
+@pytest.mark.parametrize(
+    ("owner", "phase"),
+    [("unknown", "unknown"), ("terminal", "unknown"), ("quick_worker", "unknown")],
+)
+def test_ai_session_manager_allows_archive_when_execution_is_unknown(
+    settings: Settings,
+    owner: str,
+    phase: str,
+) -> None:
+    manager = AiSessionManager(settings)
+    created = session(settings.codex_pty.workspace, native_session_id="native-1")
+    manager.store.save(created)
+    manager.resolve_session_usage = MagicMock(
+        return_value=SessionUsage(
+            native_session_present=True,
+            owner=owner,
+            phase=phase,
+        )
+    )
+
+    usage = manager.ensure_archive_allowed(created.id)
+
+    assert usage.owner == owner
+    assert usage.phase == phase
+
+
+def test_ai_session_manager_archives_chub_only_session_without_native_action(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    created = session(settings.codex_pty.workspace)
+    manager.store.save(created)
+    manager.ensure_archive_allowed = MagicMock()
+    manager.stop_session = MagicMock()
+    manager.runtime_adapter.run_native_action = MagicMock()
+
+    manager.archive_session(created.id)
+
+    manager.runtime_adapter.run_native_action.assert_not_called()
+    manager.stop_session.assert_called_once_with(created.id)
+    assert manager.store.get(created.id) is None
+
+
+def test_ai_session_manager_marks_chub_only_session_archivable(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    created = session(settings.codex_pty.workspace)
+
+    public = manager._public(created)
+
+    assert public.can_archive is True
+
+
 def test_quick_hook_cannot_replace_worker_native_identity(
     settings: Settings,
 ) -> None:
     manager = AiSessionManager(settings)
     first = "11111111-1111-4111-8111-111111111111"
     second = "22222222-2222-4222-8222-222222222222"
-    created = session(settings.codex_pty.workspace, native_session_id=first)
+    created = session(
+        settings.codex_pty.workspace,
+        native_session_id=first,
+        session_mode="quick",
+    )
     manager.store.save(created)
     manager.set_quick_interaction_checker(lambda _session_id: True)
     manager.runtime_adapter.hook_dir.mkdir(parents=True)
@@ -456,7 +1045,7 @@ def test_hook_identity_conflict_identifies_chub_as_the_owner(
     assert error.value.message.startswith("Chub Session identity conflict:")
 
 
-def test_hook_reuses_quick_session_when_discovery_created_duplicate(
+def test_quick_hook_does_not_bind_native_identity_when_discovery_created_duplicate(
     settings: Settings,
 ) -> None:
     manager = AiSessionManager(settings)
@@ -476,15 +1065,13 @@ def test_hook_reuses_quick_session_when_discovery_created_duplicate(
     )
     hook_path.chmod(0o600)
 
-    with pytest.raises(ApiError) as error:
-        manager._consume_hook_result(quick.id)
+    manager._consume_hook_result(quick.id)
 
-    assert error.value.code == "codex_session_native_conflict"
     assert manager.store.get(quick.id).native_session_id is None
     assert manager.store.get(discovered.id) is not None
 
 
-def test_upgrade_readiness_merges_hook_and_duplicate_runtime_discovery(
+def test_upgrade_readiness_ignores_quick_hook_identity_and_keeps_duplicate_discovery(
     settings: Settings,
 ) -> None:
     manager = AiSessionManager(settings)
@@ -533,10 +1120,8 @@ def test_upgrade_readiness_merges_hook_and_duplicate_runtime_discovery(
     )
     hook_path.chmod(0o600)
 
-    with pytest.raises(ApiError) as error:
-        manager.verify_system_upgrade_readiness()
+    manager.verify_system_upgrade_readiness()
 
-    assert error.value.code == "codex_session_native_conflict"
     assert manager.store.get(quick.id).native_session_id is None
     assert manager.store.get(discovered.id) is not None
 
@@ -588,6 +1173,49 @@ def test_ai_session_manager_upgrade_discard_preserves_native_session(
     assert manager.store.get(created.id) is None
     manager.supervisor.stop_backend.assert_called_once_with(created.id)
     manager.runtime_adapter.run_native_action.assert_not_called()
+
+
+def test_ai_session_manager_rebinds_upgrade_terminal_carrier(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    native = RuntimeNativeSession(
+        runtime_id="codex",
+        native_session_id="native-1",
+        cwd=settings.codex_pty.workspace,
+        created_at=session(settings.codex_pty.workspace).created_at,
+        updated_at=session(settings.codex_pty.workspace).updated_at,
+    )
+    manager.runtime_adapter.discover_sessions = MagicMock(
+        return_value=RuntimeSessionDiscoveryResult(
+            sessions=(native,),
+            archive_states={"native-1": False},
+        )
+    )
+    manager.supervisor.rebind_terminal_carrier = MagicMock(return_value=False)
+    manager.supervisor.rebind_terminal_carrier_by_native_session = MagicMock(
+        return_value=True
+    )
+    manager.runtime_adapter.rebind_activity_session = MagicMock()
+
+    old_session_id = str(uuid4())
+    manager.rebind_upgrade_terminal_carriers([(old_session_id, "native-1")])
+
+    discovered = manager.store.list()
+    assert len(discovered) == 1
+    assert discovered[0].native_session_id == "native-1"
+    manager.supervisor.rebind_terminal_carrier.assert_called_once_with(
+        old_session_id,
+        discovered[0].id,
+    )
+    manager.supervisor.rebind_terminal_carrier_by_native_session.assert_called_once_with(
+        "native-1",
+        discovered[0].id,
+    )
+    manager.runtime_adapter.rebind_activity_session.assert_called_once_with(
+        old_session_id,
+        discovered[0].id,
+    )
 
 
 def test_ai_session_manager_reenters_owned_terminal_without_runtime_writer_probe(
@@ -738,7 +1366,7 @@ def test_interactive_supervisor_reuses_backend_and_stops_it(
     )
     supervisor._available_port = MagicMock(return_value=12345)
     supervisor._wait_for_port = MagicMock()
-    supervisor._tmux_running = MagicMock(return_value=False)
+    supervisor._tmux_running = MagicMock(return_value=True)
 
     assert supervisor.ensure_terminal(created, max_running=3) == 12345
     assert supervisor.ensure_terminal(created, max_running=3) == 12345
@@ -750,6 +1378,135 @@ def test_interactive_supervisor_reuses_backend_and_stops_it(
     process.terminate.assert_called_once()
     with pytest.raises(ApiError, match="backend is unavailable"):
         supervisor.backend_port(created.id)
+
+
+def test_interactive_supervisor_rebuilds_bridge_when_tmux_disappears(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = MagicMock()
+    adapter.terminal_command.side_effect = [
+        MagicMock(argv=("ttyd", "-p", "12345")),
+        MagicMock(argv=("ttyd", "-p", "12346")),
+    ]
+    supervisor = InteractiveSupervisor(adapter)
+    created = session(tmp_path, native_session_id="native-1")
+    old_process = MagicMock()
+    old_process.poll.return_value = None
+    new_process = MagicMock()
+    new_process.poll.return_value = None
+
+    monkeypatch.setattr(
+        "app.ai_session.supervisor.subprocess.Popen",
+        MagicMock(side_effect=[old_process, new_process]),
+    )
+    supervisor._available_port = MagicMock(side_effect=[12345, 12346])
+    supervisor._wait_for_port = MagicMock()
+    supervisor._tmux_running = MagicMock(return_value=False)
+
+    assert supervisor.ensure_terminal(created, max_running=3) == 12345
+    assert supervisor.ensure_terminal(created, max_running=3) == 12346
+
+    old_process.terminate.assert_called_once()
+    assert adapter.terminal_command.call_count == 2
+    assert supervisor.backend_port(created.id) == 12346
+
+
+def test_interactive_supervisor_rebinds_upgrade_tmux_carrier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    supervisor = InteractiveSupervisor(MagicMock())
+    old_session_id = str(uuid4())
+    new_session_id = str(uuid4())
+    supervisor._tmux_running = MagicMock(side_effect=[True, False, True])
+    rename = MagicMock(returncode=0)
+    subprocess_run = MagicMock(return_value=rename)
+    monkeypatch.setattr(
+        "app.ai_session.supervisor.subprocess.run",
+        subprocess_run,
+    )
+
+    assert supervisor.rebind_terminal_carrier(old_session_id, new_session_id) is True
+
+    subprocess_run.assert_called_once_with(
+        [
+            "tmux",
+            "rename-session",
+            "-t",
+            f"chub-{old_session_id}",
+            f"chub-{new_session_id}",
+        ],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    assert new_session_id in supervisor._known_session_ids
+    assert old_session_id not in supervisor._known_session_ids
+
+
+def test_interactive_supervisor_rebinds_tmux_carrier_by_native_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    supervisor = InteractiveSupervisor(MagicMock())
+    supervisor._tmux_running = MagicMock(side_effect=[False, True])
+    supervisor.runtime_adapter.runtime_process_matches.return_value = True
+    native_session_id = "01a0234c-3529-7ad2-8ae1-3d51717012db"
+    old_session_id = str(uuid4())
+    new_session_id = str(uuid4())
+    rename = MagicMock(returncode=0)
+    subprocess_run = MagicMock(
+        side_effect=[
+            MagicMock(
+                    returncode=0,
+                    stdout=(
+                    f'chub-{old_session_id}\t"'
+                    f'CHUB_PTY_SESSION_ID={old_session_id} '
+                    f'CHUB_PTY_HOOK_DIR=/tmp/hooks codex resume {native_session_id}"\n'
+                    ),
+            ),
+            rename,
+        ]
+    )
+    monkeypatch.setattr(
+        "app.ai_session.supervisor.subprocess.run",
+        subprocess_run,
+    )
+
+    assert (
+        supervisor.rebind_terminal_carrier_by_native_session(
+            native_session_id,
+            new_session_id,
+        )
+        is True
+    )
+    assert new_session_id in supervisor._known_session_ids
+    assert old_session_id not in supervisor._known_session_ids
+
+
+def test_interactive_supervisor_close_keeps_tmux_carrier(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = MagicMock()
+    adapter.terminal_command.return_value = MagicMock(argv=("ttyd", "-p", "12345"))
+    supervisor = InteractiveSupervisor(adapter)
+    created = session(tmp_path, native_session_id="native-1")
+    process = MagicMock()
+    process.poll.return_value = None
+
+    monkeypatch.setattr(
+        "app.ai_session.supervisor.subprocess.Popen",
+        MagicMock(return_value=process),
+    )
+    supervisor._available_port = MagicMock(return_value=12345)
+    supervisor._wait_for_port = MagicMock()
+    supervisor._tmux_running = MagicMock(return_value=True)
+
+    supervisor.ensure_terminal(created, max_running=3)
+    supervisor.close()
+
+    process.terminate.assert_called_once()
+    assert supervisor._tmux_running(created.id) is True
 
 
 def test_interactive_supervisor_enforces_terminal_limit(tmp_path: Path) -> None:

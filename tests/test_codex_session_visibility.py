@@ -156,3 +156,78 @@ process.stdout.write(JSON.stringify(result));
         ],
         "slotChangeDetected": True,
     }
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js is required for JavaScript behavior tests")
+def test_session_usage_presentation_distinguishes_ownership_and_phase() -> None:
+    program = r"""
+const fs = require("fs");
+const source = fs.readFileSync(process.argv[1], "utf8");
+eval(`${source}
+const states = [
+  { usage: { owner: "external", phase: "unknown" } },
+  { usage: { owner: "unknown", phase: "unknown" } },
+  { usage: { owner: "terminal", phase: "running" } },
+  { usage: { owner: "terminal", phase: "idle" } },
+  { usage: { owner: "terminal", phase: "unknown" } },
+  { usage: { owner: "quick_worker", phase: "waiting_result" } },
+  { usage: { owner: "quick_worker", phase: "running" } },
+  { session_mode: "quick", activity: "idle", usage: { owner: "none", phase: "idle" } },
+  { session_mode: "terminal", activity: "idle", usage: { owner: "none", phase: "idle" } },
+  { status: "new", activity: "unknown" },
+  { status: "error", activity: "unknown" },
+  { status: "running", activity: "idle", error: "terminal_failed" },
+  { status: "running", activity: "working", activity_source: "none" },
+].map(sessionUsagePresentation);
+const entryStates = [
+  { session_mode: "quick", usage: { owner: "external", phase: "unknown" } },
+  { session_mode: "quick", usage: { owner: "unknown", phase: "unknown" } },
+  { session_mode: "terminal", usage: { owner: "external", phase: "unknown" } },
+  { session_mode: "terminal", usage: { owner: "unknown", phase: "unknown" } },
+].map((session) => sessionEntryBlocked(
+  session,
+  sessionUsagePresentation(session),
+));
+const stopStates = [
+  { usage: { owner: "terminal", phase: "running" } },
+  { usage: { owner: "terminal", phase: "idle" } },
+  { usage: { owner: "quick_worker", phase: "waiting_result" } },
+  { usage: { owner: "none", phase: "idle" } },
+].map(sessionStopReady);
+process.stdout.write(JSON.stringify({ states, entryStates, stopStates }));
+`);
+"""
+    result = subprocess.run(
+        [NODE, "-e", program, str(SESSIONS_SCRIPT)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert json.loads(result.stdout) == {
+      "states": [
+        {
+            "label": "其他应用 · 正在使用",
+            "blocked": True,
+            "title": "This is open in another app, close it there to continue here.",
+        },
+        {
+            "label": "占用状态未知 · 请刷新",
+            "blocked": True,
+            "title": "无法确认 Session 占用状态，请刷新后重试。",
+        },
+        {"label": "实时终端 · 执行中", "blocked": False, "title": ""},
+        {"label": "实时终端 · 等待输入", "blocked": False, "title": ""},
+        {"label": "活动状态未知 · 请刷新", "blocked": False, "title": ""},
+        {"label": "快速交互 · 执行中", "blocked": False, "title": ""},
+        {"label": "快速交互 · 执行中", "blocked": False, "title": ""},
+        {"label": "快速交互 · 待输入", "blocked": False, "title": ""},
+        {"label": "实时终端 · 等待输入", "blocked": False, "title": ""},
+        {"label": "尚未启动 · 可进入", "blocked": False, "title": ""},
+        {"label": "会话异常 · 可重试", "blocked": False, "title": ""},
+        {"label": "终端连接异常 · 可重试", "blocked": False, "title": ""},
+        {"label": "活动状态未知 · 请刷新", "blocked": False, "title": ""},
+      ],
+      "entryStates": [False, False, True, True],
+      "stopStates": [True, False, True, False],
+    }

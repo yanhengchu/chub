@@ -232,6 +232,8 @@ class RuntimeActivityEventAdapter(Protocol):
 
     def clear_activity_event(self, session_id: str) -> None: ...
 
+    def rebind_activity_session(self, old_session_id: str, new_session_id: str) -> None: ...
+
 
 @runtime_checkable
 class RuntimeModelCatalogAdapter(Protocol):
@@ -261,6 +263,16 @@ class RuntimeInteractiveTerminalAdapter(Protocol):
 
 @runtime_checkable
 class RuntimeSessionArchiveAdapter(Protocol):
+    def native_session_deleted_state(
+        self,
+        native_session_id: str,
+    ) -> bool | None: ...
+
+    def native_session_archive_state(
+        self,
+        native_session_id: str,
+    ) -> bool | None: ...
+
     def run_native_action(
         self,
         action: RuntimeNativeAction,

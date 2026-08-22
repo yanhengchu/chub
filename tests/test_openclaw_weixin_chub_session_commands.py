@@ -125,6 +125,8 @@ def test_codex_switch_uses_creation_order_and_allows_busy_target(
         " 切换 2。 ",
         "切换二",
         "切换 二",
+        "S2",
+        "s2",
         "会话 2",
         "会话二",
         "会话 S2",
@@ -164,7 +166,7 @@ def test_chinese_switch_routes_to_numbered_session(
 
     result = manager.dispatch(
         message_id=f"chinese-switch-{prompt}",
-        prompt="/" + prompt,
+        prompt=prompt,
         message_type="voice",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -182,6 +184,7 @@ def test_chinese_switch_routes_to_numbered_session(
     ("prompt", "task_prompt"),
     [
         ("switch 2 continue checking logs", "continue checking logs"),
+        ("S2 continue checking logs", "continue checking logs"),
         ("切换 2 继续检查正文", "继续检查正文"),
         ("切换S2，继续检查正文", "继续检查正文"),
         ("切换2继续检查正文", "继续检查正文"),
@@ -497,6 +500,44 @@ def test_codex_archive_removes_target_and_clears_current_binding(
     ]
 
 
+def test_codex_archive_allows_chub_only_session_without_native_binding(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    session = CodexSession(
+        session_mode="quick",
+        id="session-1",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd="/project",
+        title="尚未启动",
+        permission_mode="full-access",
+        status="stopped",
+        activity="idle",
+    )
+    remaining_sessions = [session]
+    codex_manager.list_sessions.side_effect = lambda: list(remaining_sessions)
+    codex_manager.get_session.return_value = session
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=1, session_id="session-1")
+    ]
+    manager.session_archiver.side_effect = lambda session_id: remaining_sessions.clear()
+
+    result = manager.dispatch(
+        message_id="archive-chub-only",
+        prompt="归档 1",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message is not None
+    assert result.message.startswith("Archive: Session 1 archived.")
+    manager.session_archiver.assert_called_once_with("session-1")
+    assert manager.session_slot_matches(1, "session-1") is False
+
+
 def test_duplicate_codex_archive_does_not_archive_twice(settings: Settings) -> None:
     manager, codex_manager, _quick_interactions = configured_manager(settings)
     session = CodexSession(
@@ -663,7 +704,7 @@ def test_codex_archive_does_not_fill_unassigned_candidate(
 
 @pytest.mark.parametrize(
     ("activity", "quick_running", "writer_active"),
-    [("working", False, False), ("idle", True, False), ("idle", False, True), ("unknown", False, False)],
+    [("working", False, False), ("idle", True, False), ("idle", False, True)],
 )
 def test_codex_archive_rejects_session_that_is_not_safely_idle(
     settings: Settings,
@@ -691,6 +732,20 @@ def test_codex_archive_rejects_session_that_is_not_safely_idle(
     ]
     quick_interactions.is_running.return_value = quick_running
     codex_manager.has_active_writer.return_value = writer_active
+    if activity == "working" or quick_running:
+        manager.session_archiver.side_effect = ApiError(
+            409,
+            "codex_session_in_progress",
+            "Session 当前正在执行，请等待任务结束后再归档。",
+        )
+    elif writer_active:
+        manager.session_archiver.side_effect = ApiError(
+            409,
+            "codex_session_writer_active",
+            "This is open in another app, close it there to continue here.",
+        )
+    else:
+        raise AssertionError("unexpected archive gate test case")
 
     result = manager.dispatch(
         message_id=f"unsafe-archive-{activity}-{quick_running}-{writer_active}",
@@ -702,8 +757,14 @@ def test_codex_archive_rejects_session_that_is_not_safely_idle(
     )
 
     assert result.message is not None
-    assert "Archive: Not completed" in result.message
-    manager.session_archiver.assert_not_called()
+    if writer_active:
+        assert (
+            "This is open in another app, close it there to continue here."
+            in result.message
+        )
+    else:
+        assert "Archive: Not completed" in result.message
+    manager.session_archiver.assert_called_once_with("session-1")
 
 
 @pytest.mark.parametrize(
@@ -719,7 +780,7 @@ def test_codex_archive_rejects_session_that_is_not_safely_idle(
         "归档 2 继续处理",
     ],
 )
-def test_codex_archive_invalid_usage_is_not_submitted(
+def test_codex_archive_invalid_usage_is_submitted_as_normal_task(
     settings: Settings,
     prompt: str,
 ) -> None:
@@ -727,7 +788,7 @@ def test_codex_archive_invalid_usage_is_not_submitted(
 
     result = manager.dispatch(
         message_id=f"invalid-archive-{prompt}",
-        prompt="/" + prompt,
+        prompt=prompt,
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -735,7 +796,7 @@ def test_codex_archive_invalid_usage_is_not_submitted(
     )
 
     assert result.message is not None
-    assert result.message == submitted_task_message(settings, "/" + prompt)
+    assert result.message == submitted_task_message(settings, prompt)
     quick_interactions.submit.assert_called_once()
 
 
@@ -1111,6 +1172,10 @@ def test_codex_switch_does_not_fill_unassigned_candidate(
         "switch 0",
         "switch -1",
         "switch abc",
+        "S0",
+        "S10",
+        "SABC",
+        "S",
         "切换 10",
         "切换S10正文",
         "切换 -1",
@@ -1119,7 +1184,7 @@ def test_codex_switch_does_not_fill_unassigned_candidate(
         "会话",
     ],
 )
-def test_codex_switch_invalid_usage_is_not_submitted(
+def test_codex_switch_invalid_usage_is_submitted_as_normal_task(
     settings: Settings,
     prompt: str,
 ) -> None:
@@ -1127,7 +1192,7 @@ def test_codex_switch_invalid_usage_is_not_submitted(
 
     result = manager.dispatch(
         message_id=f"invalid-{prompt}",
-        prompt="/" + prompt,
+        prompt=prompt,
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -1135,7 +1200,7 @@ def test_codex_switch_invalid_usage_is_not_submitted(
     )
 
     assert result.message is not None
-    assert result.message == submitted_task_message(settings, "/" + prompt)
+    assert result.message == submitted_task_message(settings, prompt)
     quick_interactions.submit.assert_called_once()
 
 
@@ -1174,7 +1239,7 @@ def test_codex_switch_rejects_oversized_numeric_index(settings: Settings) -> Non
 
     result = manager.dispatch(
         message_id="invalid-large-switch-index",
-        prompt="/switch " + ("9" * 5_000),
+        prompt="switch " + ("9" * 5_000),
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -1184,7 +1249,7 @@ def test_codex_switch_rejects_oversized_numeric_index(settings: Settings) -> Non
     assert result.message is not None
     assert result.message == submitted_task_message(
         settings,
-        "/switch " + ("9" * 5_000),
+        "switch " + ("9" * 5_000),
     )
     quick_interactions.submit.assert_called_once()
 
