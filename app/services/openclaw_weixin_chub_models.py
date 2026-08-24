@@ -31,6 +31,7 @@ WeixinChubModeSubmissionCode = Literal[
     "task_status_checked",
     # Kept for state-file compatibility with the original route name.
     "codex_usage_checked",
+    "weixin_text_mode_checked",
     # Reused by the current help route and compatible with legacy state files.
     "codex_help_checked",
     "chub_check_checked",

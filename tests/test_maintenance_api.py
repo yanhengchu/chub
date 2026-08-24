@@ -294,3 +294,6 @@ async def test_restart_async_failure_records_manual_operation_failure(
 
     assert response.status_code == 200
     assert write_operation.call_args.kwargs["status"] == "failed"
+    assert write_operation.call_args.kwargs["reason"] == (
+        "重启脚本返回退出码 1，旧服务仍在运行。"
+    )

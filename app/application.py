@@ -37,6 +37,7 @@ from app.api.openclaw_wechat_chub_mode import (
     router as openclaw_wechat_chub_mode_router,
 )
 from app.api.project_documents import router as project_documents_router
+from app.api.weekly_reports import router as weekly_reports_router
 from app.api.settings import router as settings_router
 from app.api.status import router as status_router
 from app.ai_session import AiSessionManager
@@ -1045,6 +1046,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(openclaw_router)
     application.include_router(openclaw_wechat_chub_mode_router)
     application.include_router(project_documents_router)
+    application.include_router(weekly_reports_router)
     application.include_router(settings_router)
     application.include_router(status_router)
     application.include_router(codex_api_router)

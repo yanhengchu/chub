@@ -297,6 +297,116 @@ def test_confirmation_text_is_unavailable_until_notification_is_sent(settings) -
     assert manager.active_confirmation(route()) is None
 
 
+def test_confirmation_queue_places_the_actionable_head_first(settings) -> None:
+    manager, _codex_manager, _quick_interactions = manager_without_worker(settings)
+    now = utc_now()
+    manager._state.entries.extend(
+        (
+            TranslationEntry(
+                id="queued-first",
+                message_id="queued-source",
+                original="稍后确认",
+                route=route(),
+                operation_id="queued-operation:translation",
+                source_ip="100.64.0.21",
+                status="ready_confirmation",
+                target_session_id="session-1",
+                polished="稍后确认",
+                english="Confirm later.",
+                confirmation_required=True,
+                confirmation_order=1,
+                confirmation_expires_at=now.replace(year=now.year + 1),
+                notification_status="pending",
+                created_at=now,
+                updated_at=now,
+            ),
+            TranslationEntry(
+                id="actionable-second",
+                message_id="actionable-source",
+                original="现在确认",
+                route=route(),
+                operation_id="actionable-operation:translation",
+                source_ip="100.64.0.21",
+                status="awaiting_confirmation",
+                target_session_id="session-1",
+                polished="现在确认",
+                english="Confirm now.",
+                confirmation_required=True,
+                confirmation_order=2,
+                confirmation_expires_at=now.replace(year=now.year + 1),
+                notification_status="sent",
+                created_at=now,
+                updated_at=now,
+            ),
+        )
+    )
+
+    queue = manager.confirmation_queue(route())
+
+    assert [entry.id for entry in queue] == ["actionable-second", "queued-first"]
+
+
+def test_processing_queue_groups_confirmation_and_optimization_states(settings) -> None:
+    manager, _codex_manager, _quick_interactions = manager_without_worker(settings)
+    now = utc_now()
+    manager._state.entries.extend(
+        (
+            TranslationEntry(
+                id="optimizing",
+                message_id="optimizing-source",
+                original="仍在润色",
+                route=route(),
+                operation_id="optimizing-operation:translation",
+                source_ip="100.64.0.21",
+                status="running",
+                target_session_id="session-1",
+                created_at=now,
+                updated_at=now,
+            ),
+            TranslationEntry(
+                id="waiting-confirmation",
+                message_id="waiting-source",
+                original="等待确认",
+                route=route(),
+                operation_id="waiting-operation:translation",
+                source_ip="100.64.0.21",
+                status="ready_confirmation",
+                target_session_id="session-1",
+                confirmation_required=True,
+                confirmation_order=1,
+                confirmation_expires_at=now.replace(year=now.year + 1),
+                created_at=now,
+                updated_at=now,
+            ),
+            TranslationEntry(
+                id="confirming",
+                message_id="confirming-source",
+                original="当前确认",
+                route=route(),
+                operation_id="confirming-operation:translation",
+                source_ip="100.64.0.21",
+                status="awaiting_confirmation",
+                target_session_id="session-1",
+                confirmation_required=True,
+                confirmation_order=2,
+                confirmation_expires_at=now.replace(year=now.year + 1),
+                notification_status="sent",
+                created_at=now,
+                updated_at=now,
+            ),
+        )
+    )
+
+    groups = manager.processing_queue(route())
+
+    assert [(heading, [entry.id for entry in entries]) for heading, entries in groups] == [
+        ("Confirming", ["confirming"]),
+        ("Waiting confirmation", ["waiting-confirmation"]),
+        ("Waiting target", []),
+        ("Optimizing", ["optimizing"]),
+    ]
+
+
 def test_confirmed_submission_persists_before_scheduling_started_notification(
     settings,
 ) -> None:

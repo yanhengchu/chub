@@ -411,7 +411,7 @@ Runner 启动或 Tool Call 创建不能宣告任务成功；未知错误不得�
 
 其他文档的权威边界：
 
-- [Chub 总体架构与演进设计](CHUB_ARCHITECTURE_DESIGN.md)：系统进程、领域分层和全局状态所有权。
+- [Chub 总体架构设计](CHUB_ARCHITECTURE_DESIGN.md)：系统进程、领域分层和全局状态所有权。
 - [AI Session 状态模型](AI_SESSION_STATE_DESIGN.md)：Session/Activity 枚举、页面状态和单 writer 产品细节。
 - [Chub Quick Worker 独立服务设计](CHUB_QUICK_WORKER_DESIGN.md)：任务状态、租约、通知、恢复和重启细节。
 - [Chub 集成能力清单](CHUB_INTEGRATION_CAPABILITIES.md)：当前可用 API、插件能力、微信指令和用户可见格式。

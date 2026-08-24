@@ -243,7 +243,7 @@ npm Registry 是唯一用户安装渠道；GitHub Release 只负责版本归档�
 - `PATCH`：兼容的修复、文档或安全更新。
 - `-rc.N`/`-beta.N`：预发布版本，不进入 `latest`。
 
-`vX.Y.Z` 是 GitHub Release、`chub` 和 `@chub/openclaw-plugin` 的共同版本标识；两个 npm 包必须同版本发布。OpenClaw 和腾讯微信插件版本写入兼容性矩阵，不强制与 Chub 版本号相同。微信调度协议、Quick Worker 协议、Session/任务 schema 等内部版本独立管理；只有对应协议变化时才更新。版本类别、权威来源和升级恢复校验以[总体架构的版本管理契约](CHUB_ARCHITECTURE_DESIGN.md#35-版本与协议元数据管理)为准，本文只负责产品版本、包版本和发布物。
+`vX.Y.Z` 是 GitHub Release、`chub` 和 `@chub/openclaw-plugin` 的共同版本标识；两个 npm 包必须同版本发布。OpenClaw 和腾讯微信插件版本写入兼容性矩阵，不强制与 Chub 版本号相同。微信调度协议、Quick Worker 协议、Session/任务 schema 等内部版本独立管理；只有对应协议变化时才更新。版本类别、权威来源和升级恢复校验以[总体架构的版本与运行态边界](CHUB_ARCHITECTURE_DESIGN.md#7-版本与运行态边界)为准，本文只负责产品版本、包版本和发布物。
 
 ## 7. GitHub Release
 

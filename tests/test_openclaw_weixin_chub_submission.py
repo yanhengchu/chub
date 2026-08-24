@@ -342,6 +342,33 @@ def test_enabled_translation_is_silently_accepted_and_replayed(
     quick_interactions.submit.assert_not_called()
 
 
+def test_long_body_bypasses_text_processing_and_submits_directly(
+    settings: Settings,
+) -> None:
+    settings.openclaw.weixin_chub_mode.translation_preprocess_max_input_chars = 10
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    manager.translation_manager = MagicMock()
+    manager.translation_manager.processing_mode.return_value = "confirm"
+    manager.translation_manager.has_active_target.return_value = False
+    long_prompt = "这是超过处理阈值的正文"
+
+    result = manager.dispatch(
+        message_id="long-text-direct",
+        prompt=long_prompt,
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.disposition == "reply"
+    assert result.message is not None
+    assert result.message.startswith("Submitted\n\n")
+    quick_interactions.submit.assert_called_once()
+    assert quick_interactions.submit.call_args.args[1] == long_prompt
+    manager.translation_manager.enqueue.assert_not_called()
+
+
 def test_confirmed_translation_uses_started_notification_without_reply(
     settings: Settings,
 ) -> None:
@@ -466,26 +493,30 @@ def test_replayed_confirmed_translation_stays_silent(settings: Settings) -> None
     manager.translation_manager.schedule_confirmed_submission_retry.assert_not_called()
 
 
-def test_same_session_optimization_is_rejected_without_pending_retry(
+def test_same_session_optimization_queues_while_target_is_busy(
     settings: Settings,
 ) -> None:
     manager, _codex_manager, quick_interactions = configured_manager(settings)
     manager.translation_manager = MagicMock()
     manager.translation_manager.has_active_target.return_value = True
+    manager.translation_manager.enqueue.return_value = True
+    quick_interactions.is_running.return_value = True
 
-    with pytest.raises(ApiError) as error:
-        manager.submit(
-            message_id="concurrent-optimization",
-            prompt="第二条任务",
-            correlation_id=None,
-            source_ip="100.64.0.21",
-            delivery_route=delivery_route(),
-            preprocess=True,
-        )
+    result = manager.submit(
+        message_id="concurrent-optimization",
+        prompt="第二条任务",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+        preprocess=True,
+        confirmation_required=True,
+    )
 
-    assert error.value.code == "weixin_chub_mode_in_progress"
+    assert result.code == "translation_queued"
     assert manager._state.pending_retry is None
     quick_interactions.submit.assert_not_called()
+    quick_interactions.session_operation_guard.assert_not_called()
+    manager.translation_manager.enqueue.assert_called_once()
 
 
 def test_removed_direct_command_is_a_normal_task(settings: Settings) -> None:

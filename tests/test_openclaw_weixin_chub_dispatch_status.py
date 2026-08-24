@@ -101,6 +101,238 @@ def test_command_name_at_text_start_routes_to_fixed_command(
     quick_interactions.submit.assert_not_called()
 
 
+def test_text_mode_uses_the_same_translation_manager_setting(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    translation_manager = MagicMock()
+    translation_manager.set_processing_mode.return_value = SimpleNamespace(mode="confirm")
+    manager.translation_manager = translation_manager
+
+    result = manager.dispatch(
+        message_id="text-mode-confirm",
+        prompt="text mode confirm",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == (
+        "Text mode updated · Automatic polish and confirm.\n\n"
+        "Applies to new text tasks."
+    )
+    translation_manager.set_processing_mode.assert_called_once_with("confirm")
+    quick_interactions.submit.assert_not_called()
+
+    replay = manager.dispatch(
+        message_id="text-mode-confirm",
+        prompt="text mode confirm",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert replay.message == result.message
+    translation_manager.set_processing_mode.assert_called_once()
+
+
+def test_text_returns_current_mode_and_actionable_confirmation(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=1, session_id="session-1")
+    ]
+    manager._state.session_id = "session-1"
+    translation_manager = MagicMock()
+    translation_manager.status.return_value = SimpleNamespace(mode="confirm")
+    translation_manager.active_confirmation.return_value = SimpleNamespace(
+        target_session_id="session-1",
+        original="Original text that must not be used as the confirmation body",
+        polished="Polished text in full",
+        english="Please confirm the complete English wording.",
+    )
+    manager.translation_manager = translation_manager
+
+    result = manager.dispatch(
+        message_id="text-current-confirmation",
+        prompt="text",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == (
+        "Text mode · Automatic polish and confirm.\n\n"
+        "Applies to new text tasks.\n\n"
+        "Current confirmation\n\n"
+        "▶ S1 · Unnamed Session\n\n"
+        "Polished:\nPolished text in full\n\n"
+        "English:\nPlease confirm the complete English wording."
+    )
+    quick_interactions.submit.assert_not_called()
+
+
+def test_text_mode_invalid_usage_never_submits_a_task(settings: Settings) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    manager.translation_manager = MagicMock()
+
+    result = manager.dispatch(
+        message_id="text-mode-invalid",
+        prompt="text mode automatic",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == (
+        "Text: Usage · text [mode [direct|auto|confirm]|list|ok|next|cancel]\n\n"
+        "text-check <English>"
+    )
+    quick_interactions.submit.assert_not_called()
+
+
+def test_text_list_shows_session_and_bounded_task_summaries(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=1, session_id="session-1")
+    ]
+    manager._state.session_id = "session-1"
+    manager.translation_manager = MagicMock()
+    manager.translation_manager.processing_queue.return_value = [
+        (
+            "Confirming",
+            [
+                SimpleNamespace(
+                    target_session_id="session-1",
+                    original="Secret body",
+                )
+            ],
+        ),
+        (
+            "Waiting confirmation",
+            [
+                SimpleNamespace(
+                    target_session_id="session-1",
+                    original="Another secret",
+                )
+            ],
+        ),
+        (
+            "Waiting target",
+            [
+                SimpleNamespace(
+                    target_session_id="session-1",
+                    original="Confirmed but target is busy",
+                )
+            ],
+        ),
+        (
+            "Optimizing",
+            [
+                SimpleNamespace(
+                    target_session_id="session-1",
+                    original="Still optimizing",
+                )
+            ],
+        ),
+    ]
+
+    result = manager.dispatch(
+        message_id="text-list",
+        prompt="text list",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == (
+        "Text processing\n\n"
+        "Confirming\n\n▶ S1 · Unnamed Session\n\nTask · Secret body\n\n"
+        "Waiting confirmation\n\n▶ S1 · Unnamed Session\n\nTask · Another secret\n\n"
+        "Waiting target\n\n▶ S1 · Unnamed Session\n\nTask · Confirmed but target is busy\n\n"
+        "Optimizing\n\n▶ S1 · Unnamed Session\n\nTask · Still optimizing"
+    )
+    quick_interactions.submit.assert_not_called()
+
+
+def test_text_check_without_a_pending_translation_never_submits_a_task(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    manager.translation_manager = MagicMock()
+    manager.translation_manager.active_confirmation.return_value = None
+
+    result = manager.dispatch(
+        message_id="text-check-none",
+        prompt="text-check Please check the service status.",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == "Text confirmation: No pending translation."
+    quick_interactions.submit.assert_not_called()
+
+
+def test_text_confirmation_handles_queue_race_without_submitting(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    manager.translation_manager = MagicMock()
+    manager.translation_manager.active_confirmation.return_value = SimpleNamespace()
+    manager.translation_manager.confirm.return_value = SimpleNamespace(handled=False)
+
+    result = manager.dispatch(
+        message_id="text-confirmation-race",
+        prompt="text ok",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == "Text confirmation: No pending translation."
+    quick_interactions.submit.assert_not_called()
+
+
+def test_text_cancel_returns_its_result_and_the_updated_queue(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    manager.translation_manager = MagicMock()
+    manager.translation_manager.active_confirmation.return_value = SimpleNamespace()
+    manager.translation_manager.confirm.return_value = SimpleNamespace(
+        handled=True,
+        action="cancel",
+        entry=None,
+        message="Translation confirmation cancelled.",
+    )
+    manager.translation_manager.processing_queue.return_value = []
+
+    result = manager.dispatch(
+        message_id="text-cancel",
+        prompt="text cancel",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == (
+        "Translation confirmation cancelled.\n\nText processing: None."
+    )
+    quick_interactions.submit.assert_not_called()
+
+
 def test_submission_and_session_list_use_the_same_task_summary(
     settings: Settings,
 ) -> None:
@@ -232,8 +464,12 @@ def test_dispatch_returns_concise_chub_help(
         "model level M# · 模型等级 M#\n\n"
         "model use M# | L# | M# L# · 模型切换 M# | L# | M# L#\n\n"
             "help · 帮助\n\n"
-            "翻译确认（仅收到 Translation ready 后）\n\n"
-            "text ok | next | cancel | <完整英文复述> · 确认润色正文\n\n"
+            "正文处理与翻译确认\n\n"
+            "text · 当前正文处理方式和完整待确认内容\n\n"
+            "text mode direct|auto|confirm · 调整正文处理方式\n\n"
+            "text list · 当前正文处理流水\n\n"
+            "text ok|next|cancel · 处理确认队头\n\n"
+            "text-check <English> · 英文复述确认队头\n\n"
             "会话指令\n\n"
         "sync · 同步\n\n"
         "new [title] · 新建 [标题]\n\n"
@@ -249,7 +485,7 @@ def test_dispatch_returns_concise_chub_help(
         "archive <R1-R9> · 归档 R1-R9\n\n"
         "del <R1-R9> · 删除 R1-R9\n\n"
         "系统维护指令\n\n"
-        "restart web · 重启 Web\n\n"
+        "restart / restart web · 重启 Web\n\n"
         "restart worker · 重启 Worker\n\n"
         "restart clawbot · 重启 ClawBot\n\n"
         "upgrade · 升级系统"

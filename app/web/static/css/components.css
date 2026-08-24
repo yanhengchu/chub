@@ -281,7 +281,7 @@ input[type="password"] {
   gap: 1rem;
   padding: 0.85rem;
   border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
+  border-radius: 12px;
   background: white;
   cursor: pointer;
 }
@@ -1361,10 +1361,23 @@ a.settings-utility-row > span:last-child {
 }
 
 .automation-task-group,
+.automation-weekly-report-group,
 .automation-environment,
 .workstation-service-group {
   display: grid;
   gap: 0.65rem;
+}
+
+.automation-weekly-subgroup {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.automation-subgroup-title {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 600;
 }
 
 .automation-browser-actions {

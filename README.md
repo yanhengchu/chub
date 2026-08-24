@@ -12,13 +12,13 @@ Chub 是面向个人设备、本地优先的轻量 AI 工作站控制面。它�
 
 本文是 Chub 项目入口，负责项目定位、当前能力、运行入口、核心安全边界、架构概览和专项文档导航。本文不替代 Session、Worker、Runtime、OpenClaw、自动化、前端或用量等子模块设计，也不重复维护微信固定指令和用户可见回复格式；这些细节以对应专项文档和[集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md)为准。
 
-按以下顺序判断项目行为：先用本文确认项目范围和当前能力，再用[Chub 总体架构与演进设计](docs/CHUB_ARCHITECTURE_DESIGN.md)确认进程、领域和状态所有权；需要确认“现在可以调用什么”时读取[集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md)；最后进入对应子模块文档。项目资料页面的登记、摘要和状态以 `docs/design_documents.json` 为准；“已验收”不等于归档。目标架构、阶段记录或历史归档不能覆盖当前能力契约。
+按以下顺序判断项目行为：先用本文确认项目范围和当前能力，再用[Chub 总体架构设计](docs/CHUB_ARCHITECTURE_DESIGN.md)确认进程、领域和状态所有权；需要确认“现在可以调用什么”时读取[集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md)；最后进入对应子模块文档。项目资料页面的登记、摘要和状态以 `docs/design_documents.json` 为准；“已验收”不等于归档。历史资料不能覆盖当前能力契约。
 
 当前不可放宽的边界：Chub 是控制面和可靠协调者，不是模型或通用 Agent；Codex 是当前唯一完整接入的 Runtime；每类状态只有一个权威来源，异步操作必须确认最终状态；客户端不能提供任意命令、路径、Runtime、Session 或收件人；认证、白名单和敏感信息保护失败时必须失败关闭，外部通道的身份、路由、协议或结果不确定时不得回退或放宽权限。具体身份、路由、权限、恢复和通知规则由对应专项文档维护。
 
 ## 架构与文档入口
 
-本文用于说明 Chub 是什么、当前提供什么能力以及如何使用；[Chub 总体架构与演进设计](docs/CHUB_ARCHITECTURE_DESIGN.md)是项目的核心架构依据，定义系统边界、职责分层、状态所有权和跨模块约束。下面的架构和子模块索引只描述当前职责；新增功能和专项设计必须先遵循总体架构，再进入对应领域文档。
+本文用于说明 Chub 是什么、当前提供什么能力以及如何使用；[Chub 总体架构设计](docs/CHUB_ARCHITECTURE_DESIGN.md)是项目的核心架构依据，定义系统边界、职责分层、状态所有权和跨模块约束。下面的架构和子模块索引只描述当前职责；新增功能和专项设计必须先遵循总体架构，再进入对应领域文档。
 
 ### 当前进程架构
 
@@ -44,7 +44,7 @@ Web 是控制面和业务协调入口；Quick Worker 独立负责需要跨 Web �
 | `app/automations/` | Debug Chrome、配置驱动自动化、下载产物和任务状态 | [总体架构](docs/CHUB_ARCHITECTURE_DESIGN.md)、[周报自动化设计](docs/WEEKLY_REPORT_AUTOMATION_DESIGN.md) |
 | `app/notifications/`、`app/requests/`、`app/ai_usage/` | 通知、R1–R9 需求储备、Codex/OpenAI 用量 | [总体架构](docs/CHUB_ARCHITECTURE_DESIGN.md)、[能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md)、[额度设计](docs/CODEX_AI_QUOTA_USAGE_DESIGN.md) |
 | `app/core/`、`app/tasks/` | 配置、安全、日志、平台检测、白名单维护任务 | [总体架构](docs/CHUB_ARCHITECTURE_DESIGN.md) |
-| `app/services/` | 当前跨领域服务和协调逻辑；不是新的统一领域边界 | [总体架构](docs/CHUB_ARCHITECTURE_DESIGN.md#4-当前逻辑分层) |
+| `app/services/` | 当前跨领域服务和协调逻辑；不是新的统一领域边界 | [总体架构](docs/CHUB_ARCHITECTURE_DESIGN.md) |
 | `integrations/openclaw/chub/` | Chub OpenClaw 插件源码、构建、部署和协议验收 | [OpenClaw 定制设计](docs/OPENCLAW_CUSTOMIZATION_DESIGN.md)、[插件说明](integrations/openclaw/chub/README.md) |
 | `scripts/`、`config/`、`tests/`、`docs/` | 服务安装与维护、示例配置、回归测试和项目资料 | [总体架构](docs/CHUB_ARCHITECTURE_DESIGN.md)、本文“项目资料维护” |
 
@@ -179,7 +179,7 @@ OpenClaw 提供可信入口和通道上下文，Chub 负责业务路由、安全
 
 首页“工作站环境”卡片中的 OpenClaw 分区用于查看 Gateway、微信通道和 Tailscale 入口，并提供受控的启停、重启与恢复及微信绑定操作。重启与恢复发现固定插件或补丁基线不一致时会先同步，再重启 Gateway 和消息通道；底层 API action 仍使用 `restart`，微信端使用 `restart clawbot`。绑定成功只表示通道登录完成，不代表发送者配对或 Owner 权限已经配置。
 
-微信 Chub 固定维护指令为 `restart web`（重启 Web）、`restart worker`（重启 Worker）、`restart clawbot`（重启 ClawBot）和 `upgrade`（升级系统）；均按固定目标执行，不接受附加路径或命令。四项操作的最终结果分别以新实例、Worker、Gateway/消息通道或升级运行态确认结果为准；升级完成结果通过独立通知返回。
+微信 Chub 固定维护指令为 `restart` / `restart web`（重启 Web）、`restart worker`（重启 Worker）、`restart clawbot`（重启 ClawBot）和 `upgrade`（升级系统）；均按固定目标执行，不接受附加路径或命令。四项操作的最终结果分别以新实例、Worker、Gateway/消息通道或升级运行态确认结果为准；升级完成结果通过独立通知返回。
 
 端到端状态和安全边界见 [OpenClaw 定制集成设计](docs/OPENCLAW_CUSTOMIZATION_DESIGN.md)；插件协议、构建和部署见仓库内维护资料 [Chub OpenClaw 插件说明](integrations/openclaw/chub/README.md)。
 
@@ -222,7 +222,7 @@ Chub 使用独立 Debug Chrome 执行配置驱动的浏览器任务。公共任�
 cp config/automations.example.yaml config/automations.local.yaml
 ```
 
-首页“工作站环境”可管理浏览器环境和检查站点登录状态，“自动化任务”卡片用于运行任务；命令行也可调用统一 Runner：
+首页“自动化任务”卡片管理浏览器环境、检查站点登录状态并运行任务；命令行也可调用统一 Runner：
 
 ```bash
 .venv/bin/python -m app.automations.command run <task-id>
@@ -232,7 +232,7 @@ Runner 不会自行启动或停止 Debug Chrome。浏览器 Profile 未初始化
 
 ### 微信正文处理
 
-设置页的“正文处理方式”是节点级设置，需要真实 loopback 或可信 Tailnet 访问。微信普通任务及携带正文的 `switch` / `S1`–`S9` 支持三档：`直接执行`直接提交原文；`自动润色后执行`先在独立只读 Session 生成中文润色和 English，再自动提交润色中文；`自动润色后确认执行`生成同一份内容后发送 `Translation ready`，由维护者用 `text ok`、`text next`、`text cancel` 或英文复述处理确认队头。主任务实际被接收后才发送包含润色中文和 English 的 `Started`；确认模式在受理后异步投递该通知，不增加单独的“Preparing to submit”回执。固定指令和续提指令绕过该流程，具体指令、队列和失败边界以[集成能力清单第 4 节](docs/CHUB_INTEGRATION_CAPABILITIES.md#4-微信-clawbot-指令)为准。
+设置页的“正文处理方式”是节点级设置，需要真实 loopback 或可信 Tailnet 访问。微信普通任务及携带正文的 `switch` / `S1`–`S9` 支持三档：`直接执行`直接提交原文；`自动润色后执行`先在独立只读 Session 生成中文润色和 English，再自动提交润色中文；`自动润色后确认执行`生成同一份内容后发送 `Translation ready`，由维护者用 `text ok`、`text next`、`text cancel` 或英文复述处理确认队头。正文超过 `translation_preprocess_max_input_chars`（默认 1200 字符）时直接提交，不进入润色、翻译或确认流程。主任务实际被接收后才发送包含润色中文和 English 的 `Started`；确认模式在受理后异步投递该通知，不增加单独的“Preparing to submit”回执。固定指令和续提指令绕过该流程，具体指令、队列和失败边界以[集成能力清单第 4 节](docs/CHUB_INTEGRATION_CAPABILITIES.md#4-微信-clawbot-指令)为准。
 
 首次默认由 `translation_mode`（`direct` / `auto` / `confirm`）决定；未设置时兼容读取旧 `translation_enabled`（`false` 为直接执行，`true` 为自动润色后执行）。页面修改后由 Chub 私有状态持久化并即时生效，无需改写 YAML 或重启服务。
 
@@ -313,7 +313,7 @@ CHUB_BROWSER_TESTS=1 .venv/bin/python -m pytest \
 | 文档 | 唯一职责 |
 | --- | --- |
 | [Chub 项目说明](README.md) | 项目概览、安装、日常入口、安全和文档导航 |
-| [Chub 总体架构与演进设计](docs/CHUB_ARCHITECTURE_DESIGN.md) | 当前进程、领域、状态所有权和跨模块约束 |
+| [Chub 总体架构设计](docs/CHUB_ARCHITECTURE_DESIGN.md) | 当前进程、领域、状态所有权和跨模块约束 |
 | [Chub AI Runtime 架构设计](docs/CHUB_AI_RUNTIME_DESIGN.md) | AI Runtime 架构、Session Manager、Worker 职责和 Runtime 实现规范 |
 | [Chub CLI 分发、安装与发布设计](docs/CHUB_CLI_DISTRIBUTION_DESIGN.md) | 新设备安装、核心 Chub 与可选 ClawBot 职责、npm 发布、版本管理和 GitHub Release |
 | [Chub AI Session 状态模型设计](docs/AI_SESSION_STATE_DESIGN.md) | Session、Activity、usage 投影、入口、操作、槽位和单 writer 语义 |

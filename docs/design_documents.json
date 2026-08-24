@@ -10,7 +10,7 @@
     },
     {
       "id": "chub-architecture",
-      "title": "Chub 总体架构与演进设计",
+      "title": "Chub 总体架构设计",
       "summary": "定义 Chub 当前进程、领域、状态所有权和跨模块约束。",
       "status": "持续维护",
       "path": "CHUB_ARCHITECTURE_DESIGN.md"

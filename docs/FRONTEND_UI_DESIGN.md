@@ -63,7 +63,7 @@ AI Usage Core -> Theme -> Dashboard Core -> Components -> Features -> app.js
 
 ## 3. Feature 与卡片边界
 
-首页当前包含节点状态、会话工作台（当前由 Codex Runtime 提供）、自动化任务、项目资料和工作站环境等 Feature。会话工作台统一管理实时终端和快速交互会话；其中实时终端与快速交互仍按各自的 Session 类型、状态和 writer 边界执行。工作站环境以“运行与维护”分组展示 Chub Web（控制面）、Quick Worker（执行面）、系统升级与恢复及 ClawBot（微信交互面），并提供总刷新入口；自动化环境归入自动化任务卡片。各项分别拥有状态、操作、轮询和错误反馈，总刷新并行触发，不把单项失败扩散为整卡失败。ClawBot 复用 OpenClaw 的 Gateway、消息通道和 Owner 状态，以综合状态和摘要展示；它提供受控重启、停止后启动与微信绑定，不提供停止入口。绑定只建立微信消息通道，不代替 Owner 配置或真实微信收发确认。首页不再展示低频日志卡片，完整日志页保留并由设置页“诊断”入口访问。
+首页当前包含节点状态、会话工作台（当前由 Codex Runtime 提供）、自动化任务、项目资料和工作站环境等 Feature。会话工作台统一管理实时终端和快速交互会话；其中实时终端与快速交互仍按各自的 Session 类型、状态和 writer 边界执行。自动化任务卡片将 `V 国内业务本期周报` 的资料下载与周报文档置于同一业务分区，但分别请求、渲染和报错，并各自标明所属周期：下载成功不代表重点清单或正式稿已生成，跨周在途下载也不覆盖新周期文档的周期标识；其他配置任务和自动化环境归入同一卡片。工作站环境以“运行与维护”分组展示 Chub Web（控制面）、Quick Worker（执行面）、系统升级与恢复及 ClawBot（微信交互面），并提供总刷新入口。各项分别拥有状态、操作、轮询和错误反馈，总刷新并行触发，不把单项失败扩散为整卡失败。ClawBot 复用 OpenClaw 的 Gateway、消息通道和 Owner 状态，以综合状态和摘要展示；它提供受控重启、停止后启动与微信绑定，不提供停止入口。绑定只建立微信消息通道，不代替 Owner 配置或真实微信收发确认。首页不再展示低频日志卡片，完整日志页保留并由设置页“诊断”入口访问。
 
 每个动态能力遵循相同边界：
 
@@ -75,7 +75,7 @@ AI Usage Core -> Theme -> Dashboard Core -> Components -> Features -> app.js
 - 卡片内存在多个同级业务分区时，统一使用 `card-group-title` 作为分组标题，并以自然间距区分；不使用横线分割标题，也不在上一组最后一个项目后额外添加分割线。
 - 环境类条目的状态标签使用短状态；未运行时，描述说明用途而不重复状态；可用时，描述展示连接方式、运行模式或校验日期；真实异常仍保留具体原因。
 
-Chub Web、Quick Worker 与 ClawBot 的普通重启彼此独立：它们分别由独立进程/服务承载，Web 重启不会停止 Worker 或 OpenClaw Gateway，Worker 重启也不会重启 Web 或 OpenClaw Gateway。Worker 重启是确认后的恢复操作，会取消排队任务、停止执行中任务并重建 Worker；它不等待 Worker 健康、任务空闲或 Web 恢复，也不影响实时终端的 tmux 和原生 Codex。ClawBot 的 API action `restart` 与微信 `restart clawbot` 都是“重启与恢复”入口：发现固定插件或补丁版本不一致时先同步，再重启 Gateway 并确认消息通道；当前 Gateway 停止、未知、未配置、通道异常或存在 Agent 任务不阻止恢复，目标版本、完整性或补丁锚点无法确认时失败关闭。页面按钮显示“重启与恢复”，API 和底层命令继续使用 `restart`，微信端使用 `restart clawbot`。微信固定维护指令为 `restart web`、`restart worker`、`restart clawbot` 和 `upgrade`，均只接受精确无参数形式；受理与最终完成分别反馈。当前页面主动发起 Web 重启、Worker 重启、ClawBot 重启与恢复或系统升级与恢复时，只有在新 Web 实例健康、与本页请求 operation ID 匹配的 Worker 重启成功、ClawBot Gateway/通道及兼容基线恢复成功或本次升级 operation 成功后，先保留成功状态约 2 秒，再自动整页刷新一次；历史成功记录和失败终态不触发刷新。确认弹窗必须明确 ClawBot 会短暂中断消息通道和 Agent 任务，Worker 任务会被取消/停止且不自动重试。系统升级与恢复是例外：它独占受影响的 Chub AI Runtime 写入，统一停止任务、清理 Chub Session 关联与 Worker 运行态并切换 Web/Worker；启动门禁只校验固定脚本、服务定义和运行态路径，不检查当前 Web/Worker 状态。升级方案无法读取或校验时，按钮降级为当前版本运行态恢复，并明确不执行代码版本升级；确认信息无法取得任务数量时，不显示为 0，而是提示按固定边界清理。确认弹窗按当前状态简要列出受影响的快速任务数、Chub Session 关联数和服务切换范围。Codex 原生 Session、配置和业务资料不因该操作删除。系统升级进行中禁用 Web、Worker、ClawBot 重启与恢复及升级恢复的重复操作；失败终态释放这些入口，仍保留各自的固定目标和结果预检。重启或绑定后的状态不能代替维护者在微信客户端进行的实际收发确认。
+Chub Web、Quick Worker 与 ClawBot 的普通重启彼此独立：它们分别由独立进程/服务承载，Web 重启不会停止 Worker 或 OpenClaw Gateway，Worker 重启也不会重启 Web 或 OpenClaw Gateway。Worker 重启是确认后的恢复操作，会取消排队任务、停止执行中任务并重建 Worker；它不等待 Worker 健康、任务空闲或 Web 恢复，也不影响实时终端的 tmux 和原生 Codex。ClawBot 的 API action `restart` 与微信 `restart clawbot` 都是“重启与恢复”入口：发现固定插件或补丁版本不一致时先同步，再重启 Gateway 并确认消息通道；当前 Gateway 停止、未知、未配置、通道异常或存在 Agent 任务不阻止恢复，目标版本、完整性或补丁锚点无法确认时失败关闭。页面按钮显示“重启与恢复”，API 和底层命令继续使用 `restart`，微信端使用 `restart clawbot`。微信固定维护指令为 `restart` / `restart web`、`restart worker`、`restart clawbot` 和 `upgrade`，均只接受精确无参数形式；受理与最终完成分别反馈。当前页面主动发起 Web 重启、Worker 重启、ClawBot 重启与恢复或系统升级与恢复时，只有在新 Web 实例健康、与本页请求 operation ID 匹配的 Worker 重启成功、ClawBot Gateway/通道及兼容基线恢复成功或本次升级 operation 成功后，先保留成功状态约 2 秒，再自动整页刷新一次；历史成功记录和失败终态不触发刷新。确认弹窗必须明确 ClawBot 会短暂中断消息通道和 Agent 任务，Worker 任务会被取消/停止且不自动重试。系统升级与恢复是例外：它独占受影响的 Chub AI Runtime 写入，统一停止任务、清理 Chub Session 关联与 Worker 运行态并切换 Web/Worker；启动门禁只校验固定脚本、服务定义和运行态路径，不检查当前 Web/Worker 状态。升级方案无法读取或校验时，按钮降级为当前版本运行态恢复，并明确不执行代码版本升级；确认信息无法取得任务数量时，不显示为 0，而是提示按固定边界清理。确认弹窗按当前状态简要列出受影响的快速任务数、Chub Session 关联数和服务切换范围。Codex 原生 Session、配置和业务资料不因该操作删除。系统升级进行中禁用 Web、Worker、ClawBot 重启与恢复及升级恢复的重复操作；失败终态释放这些入口，仍保留各自的固定目标和结果预检。重启或绑定后的状态不能代替维护者在微信客户端进行的实际收发确认。
 
 不建立全局业务状态仓库，也不通过提示文案反推业务状态。API 路径、统一响应、认证和安全边界由后端契约决定，前端分层不能改变这些语义。
 
@@ -105,7 +105,7 @@ Chub Web、Quick Worker 与 ClawBot 的普通重启彼此独立：它们分别�
 tokens.css -> base.css -> components.css -> responsive.css
 ```
 
-- `tokens.css` 保存颜色、字号、间距、圆角、阴影和动效等设计变量。
+- `tokens.css` 当前只保存共享颜色和页面间距变量；圆角、阴影、动效及大部分组件尺寸仍由所属样式规则直接定义。
 - `base.css` 保存页面基础排版、原生控件和全局交互规则。
 - `components.css` 保存公共组件及尚未在真实改动中进一步归类的页面规则。
 - `responsive.css` 保存桌面和手机端响应式调整。

@@ -239,6 +239,9 @@ class OpenClawWeixinChubModeConfig(StrictModel):
     translation_queue_limit: int = Field(default=10, ge=1, le=50)
     translation_max_wait_seconds: int = Field(default=1800, ge=60, le=7200)
     translation_max_input_chars: int = Field(default=8000, ge=256, le=8000)
+    # Longer task bodies submit directly so a confirmation response can remain
+    # within the fixed Weixin reply boundary.
+    translation_preprocess_max_input_chars: int = Field(default=1200, ge=1, le=8000)
 
     @field_validator("model", "reasoning_effort", mode="before")
     @classmethod

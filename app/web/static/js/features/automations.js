@@ -502,119 +502,234 @@ function renderAutomationEnvironment(data) {
   return initializing || feishuChecking;
 }
 
+function renderAutomationTask(task, data, browserRunning, feishuChecking) {
+  const item = document.createElement("article");
+  const copy = document.createElement("div");
+  const heading = document.createElement("div");
+  const name = document.createElement("strong");
+  const status = document.createElement("span");
+  const validationStatus = document.createElement("span");
+  const button = document.createElement("button");
+  const busy = ["queued", "running"].includes(task.state.status);
+  item.className = "automation-item";
+  copy.className = "automation-item-copy";
+  heading.className = "automation-item-heading";
+  name.textContent = task.title;
+  if (task.reporting_period) {
+    const [downloadText, downloadKind] = weeklyDownloadStatus(task);
+    const validation = weeklyValidationStatus(task);
+    status.className = `badge badge-${downloadKind}`;
+    status.textContent = downloadText;
+    if (validation) {
+      validationStatus.className = `badge badge-${validation[1]}`;
+      validationStatus.textContent = validation[0];
+    }
+  } else {
+    status.className = `badge badge-${automationStatusKind(task.state.status)}`;
+    status.textContent = automationTaskStatusText(task);
+  }
+  button.type = "button";
+  button.className = "button-secondary automation-run";
+  button.textContent = busy
+    ? "执行中…"
+    : browserRunning ? "运行" : "启动并运行";
+  button.disabled = (
+    !["running", "stopped"].includes(data.browser_state)
+    || !task.enabled
+    || busy
+    || feishuChecking
+  );
+  button.addEventListener("click", () => runAutomation(task, button));
+  heading.append(name, status);
+  if (validationStatus.textContent) {
+    heading.append(validationStatus);
+  }
+  copy.append(heading);
+  appendWeeklyReportMaterials(copy, task);
+  const currentDocuments = (task.state.linked_documents || []).filter(
+    (linkedDocument) => !linkedDocument.is_background,
+  );
+  if (currentDocuments.length) {
+    const details = document.createElement("details");
+    const summary = document.createElement("summary");
+    const linkedSuccesses = currentDocuments.filter(
+      (linkedDocument) => linkedDocument.status === "success",
+    ).length;
+    const linkedFailures = currentDocuments.filter(
+      (linkedDocument) => linkedDocument.status === "failed",
+    ).length;
+    const linkedWaiting = currentDocuments.some(
+      (linkedDocument) => linkedDocument.status === "waiting",
+    );
+    summary.textContent = linkedWaiting
+      ? "各端周报 · 等待更新"
+      : `各端周报 · ${linkedSuccesses}/${currentDocuments.length} 通过`;
+    details.className = "automation-linked-details";
+    summary.className = `automation-material-summary is-${linkedFailures ? "failed" : linkedWaiting ? "timeout" : "success"}`;
+    details.open = linkedFailures > 0 || linkedWaiting;
+    details.append(summary);
+    currentDocuments.forEach((linkedDocument) => {
+      const row = document.createElement("div");
+      const documentName = document.createElement("span");
+      const succeeded = linkedDocument.status === "success";
+      const waiting = linkedDocument.status === "waiting";
+      row.className = `automation-linked-document${succeeded ? "" : waiting ? " is-waiting" : " is-failed"}`;
+      documentName.className = `automation-linked-document-name${succeeded ? "" : waiting ? " is-waiting" : " is-failed"}`;
+      documentName.textContent = linkedDocument.name;
+      documentName.setAttribute(
+        "aria-label",
+        `${linkedDocument.name}，${succeeded ? "成功" : waiting ? "等待更新" : "失败"}`,
+      );
+      row.append(documentName);
+      details.append(row);
+    });
+    copy.append(details);
+  }
+  item.append(copy, button);
+  return { item, busy };
+}
+
+function appendAutomationEmpty(container, text) {
+  const empty = document.createElement("p");
+  empty.className = "empty-state";
+  empty.textContent = text;
+  container.append(empty);
+}
+
 function renderAutomations(data) {
+  elements.automationWeeklyDownload.replaceChildren();
   elements.automationList.replaceChildren();
   const browserRunning = data.browser_state === "running";
   const feishuChecking = data.feishu_environment.state === "checking";
+  const weeklyTask = data.tasks.find((task) => task.reporting_period);
+  const otherTasks = data.tasks.filter((task) => !task.reporting_period);
   automationBrowserState = data.browser_state;
-  elements.automationCount.textContent = `已启用 ${data.enabled_count} 个任务`;
+  elements.automationWeeklyReportTitle.textContent = "V 国内业务本期周报";
+  elements.automationWeeklyDownloadTitle.textContent = weeklyTask
+    ? `资料下载 · ${weeklyTask.reporting_period}`
+    : "资料下载";
+  elements.automationCount.textContent = `已启用 ${Math.max(data.enabled_count - (weeklyTask?.enabled ? 1 : 0), 0)} 个任务`;
 
   if (!data.enabled) {
     setMessage(elements.automationMessage, "自动化任务未启用。", "error");
-    return false;
-  }
-  if (!data.tasks.length) {
-    const empty = document.createElement("p");
-    empty.className = "empty-state";
-    empty.textContent = "暂无自动化任务，请先配置 automations.yaml 或 automations.local.yaml。";
-    elements.automationList.append(empty);
+    appendAutomationEmpty(elements.automationWeeklyDownload, "自动化任务未启用。");
+    appendAutomationEmpty(elements.automationList, "自动化任务未启用。");
     return false;
   }
 
   let active = false;
-  data.tasks.forEach((task) => {
-    const item = document.createElement("article");
-    const copy = document.createElement("div");
-    const heading = document.createElement("div");
-    const name = document.createElement("strong");
-    const status = document.createElement("span");
-    const validationStatus = document.createElement("span");
-    const button = document.createElement("button");
-    const busy = ["queued", "running"].includes(task.state.status);
-    active = active || busy;
-    item.className = "automation-item";
-    copy.className = "automation-item-copy";
-    heading.className = "automation-item-heading";
-    name.textContent = task.title;
-    if (task.reporting_period) {
-      const [downloadText, downloadKind] = weeklyDownloadStatus(task);
-      const validation = weeklyValidationStatus(task);
-      status.className = `badge badge-${downloadKind}`;
-      status.textContent = downloadText;
-      if (validation) {
-        validationStatus.className = `badge badge-${validation[1]}`;
-        validationStatus.textContent = validation[0];
-      }
-    } else {
-      status.className = `badge badge-${automationStatusKind(task.state.status)}`;
-      status.textContent = automationTaskStatusText(task);
-    }
-    button.type = "button";
-    button.className = "button-secondary automation-run";
-    button.textContent = busy
-      ? "执行中…"
-      : data.browser_state === "stopped" ? "启动并运行" : "运行";
-    button.disabled = (
-      !["running", "stopped"].includes(data.browser_state)
-      || !task.enabled
-      || busy
-      || feishuChecking
+  if (weeklyTask) {
+    const rendered = renderAutomationTask(
+      weeklyTask,
+      data,
+      browserRunning,
+      feishuChecking,
     );
-    button.addEventListener("click", () => runAutomation(task, button));
-    heading.append(name, status);
-    if (validationStatus.textContent) {
-      heading.append(validationStatus);
-    }
-    copy.append(heading);
-    appendWeeklyReportMaterials(copy, task);
-    const currentDocuments = (task.state.linked_documents || []).filter(
-      (linkedDocument) => !linkedDocument.is_background,
-    );
-    if (currentDocuments.length) {
-      const details = document.createElement("details");
-      const summary = document.createElement("summary");
-      const linkedSuccesses = currentDocuments.filter(
-        (linkedDocument) => linkedDocument.status === "success",
-      ).length;
-      const linkedFailures = currentDocuments.filter(
-        (linkedDocument) => linkedDocument.status === "failed",
-      ).length;
-      const linkedWaiting = currentDocuments.some(
-        (linkedDocument) => linkedDocument.status === "waiting",
-      );
-      summary.textContent = linkedWaiting
-        ? "各端周报 · 等待更新"
-        : `各端周报 · ${linkedSuccesses}/${currentDocuments.length} 通过`;
-      details.className = "automation-linked-details";
-      summary.className = `automation-material-summary is-${linkedFailures ? "failed" : linkedWaiting ? "timeout" : "success"}`;
-      details.open = linkedFailures > 0 || linkedWaiting;
-      details.append(summary);
-      currentDocuments.forEach((linkedDocument) => {
-        const row = document.createElement("div");
-        const documentName = document.createElement("span");
-        const succeeded = linkedDocument.status === "success";
-        const waiting = linkedDocument.status === "waiting";
-        row.className = `automation-linked-document${succeeded ? "" : waiting ? " is-waiting" : " is-failed"}`;
-        documentName.className = `automation-linked-document-name${succeeded ? "" : waiting ? " is-waiting" : " is-failed"}`;
-        documentName.textContent = linkedDocument.name;
-        documentName.setAttribute(
-          "aria-label",
-          `${linkedDocument.name}，${succeeded ? "成功" : waiting ? "等待更新" : "失败"}`,
-        );
-        row.append(documentName);
-        details.append(row);
-      });
-      copy.append(details);
-    }
-    item.append(copy, button);
-    elements.automationList.append(item);
+    active = rendered.busy;
+    elements.automationWeeklyDownload.append(rendered.item);
+  } else {
+    appendAutomationEmpty(elements.automationWeeklyDownload, "尚未配置 V 国内业务周报下载任务。");
+  }
+  if (!otherTasks.length) {
+    appendAutomationEmpty(elements.automationList, "暂无其他自动化任务。");
+  }
+  otherTasks.forEach((task) => {
+    const rendered = renderAutomationTask(task, data, browserRunning, feishuChecking);
+    active = active || rendered.busy;
+    elements.automationList.append(rendered.item);
   });
   return active;
 }
 
-async function loadAutomations() {
+function weeklyReportDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  return date.toLocaleDateString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).replaceAll("/", "-");
+}
+
+function renderWeeklyReports(data) {
+  const reports = data.reports || [];
+  elements.automationWeeklyReportTitle.textContent = "V 国内业务本期周报";
+  elements.automationWeeklyDocumentsTitle.textContent = reports.length
+    ? `周报文档 · ${reports[0].period}`
+    : "周报文档";
+  elements.automationWeeklyReportList.replaceChildren();
+  reports.forEach((report) => {
+    const card = document.createElement("article");
+    const main = document.createElement(report.available ? "a" : "div");
+    const copy = document.createElement("span");
+    const heading = document.createElement("span");
+    const title = document.createElement("strong");
+    const summary = document.createElement("span");
+    const badge = document.createElement("span");
+    card.className = report.available
+      ? "design-document-item"
+      : "design-document-item design-document-item-unavailable";
+    main.className = "design-document-main";
+    if (report.available) {
+      main.href = `/weekly-reports/${encodeURIComponent(report.period)}/${encodeURIComponent(report.report_type)}`;
+    }
+    copy.className = "weekly-report-copy";
+    heading.className = "weekly-report-heading";
+    title.textContent = report.title;
+    summary.className = "weekly-report-summary";
+    if (report.updated_at) {
+      const time = document.createElement("time");
+      time.dateTime = report.updated_at;
+      time.textContent = weeklyReportDate(report.updated_at);
+      summary.append(time, document.createTextNode(` · ${report.summary}`));
+    } else {
+      summary.textContent = report.summary;
+    }
+    badge.className = report.available ? "badge badge-success" : "badge badge-muted";
+    badge.textContent = report.status;
+    heading.append(title, badge);
+    copy.append(heading, summary);
+    main.append(copy);
+    card.append(main);
+    elements.automationWeeklyReportList.append(card);
+  });
+  if (!reports.length) {
+    appendAutomationEmpty(elements.automationWeeklyReportList, "暂无周报工作区。");
+  }
+}
+
+async function loadWeeklyReports({ clearMessage = true } = {}) {
   const requestVersion = accessVersion;
-  elements.refreshAutomations.disabled = true;
+  if (clearMessage) {
+    setMessage(elements.automationWeeklyReportMessage, "");
+  }
+  try {
+    const data = await apiFetch("/api/weekly-reports/current");
+    if (requestVersion !== accessVersion) {
+      return;
+    }
+    renderWeeklyReports(data);
+  } catch (error) {
+    if (requestVersion !== accessVersion) {
+      return;
+    }
+    if (!handleAccessError(error)) {
+      setMessage(
+        elements.automationWeeklyReportMessage,
+        error.message || "本期周报读取失败。",
+        "error",
+      );
+    }
+  }
+}
+
+async function loadAutomations({ manageRefreshButton = true } = {}) {
+  const requestVersion = accessVersion;
+  if (manageRefreshButton) {
+    elements.refreshAutomations.disabled = true;
+  }
   try {
     const data = await apiFetch("/api/automations");
     if (requestVersion !== accessVersion) {
@@ -636,6 +751,21 @@ async function loadAutomations() {
     if (!handleAccessError(error)) {
       setMessage(elements.automationMessage, error.message || "自动化任务读取失败。", "error");
     }
+  } finally {
+    if (manageRefreshButton) {
+      elements.refreshAutomations.disabled = false;
+    }
+  }
+}
+
+async function refreshAutomationCard() {
+  elements.refreshAutomations.disabled = true;
+  try {
+    await Promise.all([
+      loadAutomations({ manageRefreshButton: false }),
+      loadAutomationEnvironment(),
+      loadWeeklyReports(),
+    ]);
   } finally {
     elements.refreshAutomations.disabled = false;
   }

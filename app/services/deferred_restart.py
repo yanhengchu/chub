@@ -31,6 +31,7 @@ DeferredRestartOutcome = Literal[
 ]
 DeferredRestartReadiness = Literal["waiting", "ready", "sensitive_task_failed"]
 DeferredRestartImmediateDecision = Literal["launch", "claimed", "in_progress"]
+SENSITIVE_TASK_FAILED_REASON = "触发重启的关联任务未成功完成，重启已取消。"
 
 
 @dataclass(frozen=True)
@@ -243,6 +244,7 @@ class DeferredRestartCoordinator:
         operation_id: str,
         task_id: str,
         source_ip: str,
+        registration_handler: Callable[[DeferredRestartRegistration], None] | None = None,
     ) -> DeferredRestartRegistration:
         with self._lock:
             if self._state_error:
@@ -257,15 +259,21 @@ class DeferredRestartCoordinator:
                 and self._state.current.requested_instance_id == self.instance_id
                 and not self._closing_current
             ):
-                return DeferredRestartRegistration(
+                registration = DeferredRestartRegistration(
                     operation_id=self._state.current.operation_id,
                     created=False,
                 )
+                if registration_handler is not None:
+                    registration_handler(registration)
+                return registration
             if self._state is not None and self._state.next is not None:
-                return DeferredRestartRegistration(
+                registration = DeferredRestartRegistration(
                     operation_id=self._state.next.operation_id,
                     created=False,
                 )
+                if registration_handler is not None:
+                    registration_handler(registration)
+                return registration
             now = utc_now()
             request = DeferredRestartRequest(
                 operation_id=operation_id,
@@ -282,6 +290,9 @@ class DeferredRestartCoordinator:
                 state.next = request
             self._write(state)
             self._state = state
+            registration = DeferredRestartRegistration(operation_id=operation_id, created=True)
+            if registration_handler is not None:
+                registration_handler(registration)
         write_operation(
             operation_id=operation_id,
             action="restart_hub",
@@ -289,7 +300,7 @@ class DeferredRestartCoordinator:
             target="chub",
             source_ip=source_ip,
         )
-        return DeferredRestartRegistration(operation_id=operation_id, created=True)
+        return registration
 
     def service_started(self) -> bool:
         """Consume a request satisfied by any newer healthy Chub instance."""
@@ -441,6 +452,7 @@ class DeferredRestartCoordinator:
             status="failed",
             target="chub",
             source_ip=state.source_ip,
+            reason=reason,
         )
         completion_recorded = self._notify_completion(
             state,
@@ -475,7 +487,12 @@ class DeferredRestartCoordinator:
         state: DeferredRestartRequest,
         outcome: DeferredRestartOutcome,
     ) -> None:
-        if not self._notify_completion(state, outcome):
+        reason = (
+            SENSITIVE_TASK_FAILED_REASON
+            if outcome == "sensitive_task_failed"
+            else None
+        )
+        if not self._notify_completion(state, outcome, reason):
             with self._lock:
                 if self._matches_current(state):
                     self._scheduled = False
@@ -501,6 +518,7 @@ class DeferredRestartCoordinator:
             status="failed",
             target="chub",
             source_ip=state.source_ip,
+            reason=reason,
         )
         self.maybe_schedule()
 

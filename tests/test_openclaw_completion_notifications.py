@@ -163,8 +163,9 @@ def test_translation_confirmation_notification_has_fixed_text_commands() -> None
     assert result.status == "sent"
     message = notifier._send_messages.call_args.kwargs["message_factory"]()[0]
     assert "Translation ready" in message
-    assert "text ok" in message
-    assert "text <reproduce the English>" in message
+    assert message.endswith("Please confirm.")
+    assert "text ok" not in message
+    assert "text-check" not in message
 
 
 def executable(tmp_path: Path) -> Path:

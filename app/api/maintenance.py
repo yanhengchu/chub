@@ -235,6 +235,7 @@ def restart_hub(request: Request) -> ApiResponse[dict[str, str]]:
                 status="failed",
                 target="chub",
                 operation_id=operation_id,
+                reason="找不到 Chub 重启脚本。",
             )
             return error_response(503, "command_not_found", "找不到 Chub 重启脚本")
 
@@ -261,6 +262,7 @@ def restart_hub(request: Request) -> ApiResponse[dict[str, str]]:
                 status="failed",
                 target="chub",
                 operation_id=operation_id,
+                reason=failure_reason,
             )
             return error_response(500, "restart_failed", failure_reason)
 
@@ -285,6 +287,7 @@ def restart_hub(request: Request) -> ApiResponse[dict[str, str]]:
             status="failed",
             target="chub",
             source_ip=source_ip,
+            reason=reason,
         )
 
     monitor_restart_process(process, record_restart_failure)

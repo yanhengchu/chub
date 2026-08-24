@@ -43,6 +43,8 @@ from tests.openclaw_weixin_chub_mode_helpers import (
 @pytest.mark.parametrize(
     ("prompt", "message_type"),
     [
+        ("restart", "text"),
+        ("RESTART。", "text"),
         ("restart web", "text"),
         ("RESTART WEB。", "text"),
         ("重启 Web", "text"),
@@ -284,6 +286,34 @@ def test_duplicate_chub_restart_does_not_register_twice(settings: Settings) -> N
     quick_interactions.submit.assert_not_called()
 
 
+def test_chub_restart_persists_operation_before_registering_coordinator(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, _quick_interactions = configured_manager(settings)
+    coordinator, _notifier = enable_restart_command(manager)
+
+    def register(**kwargs):
+        request = SimpleNamespace(
+            operation_id=kwargs["operation_id"],
+            requested_task_id=kwargs["task_id"],
+        )
+        assert manager.deferred_restart_readiness(request) == "ready"
+        return SimpleNamespace(operation_id=kwargs["operation_id"], created=True)
+
+    coordinator.request.side_effect = register
+
+    result = manager.dispatch(
+        message_id="restart-registration-order",
+        prompt="restart web",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == "Restart: Scheduled. The result will be sent when completed."
+
+
 def test_second_chub_restart_reuses_active_route_operation(
     settings: Settings,
 ) -> None:
@@ -313,6 +343,128 @@ def test_second_chub_restart_reuses_active_route_operation(
     )
     coordinator.request.assert_called_once()
     assert len(manager._state.restart_operations) == 1
+
+
+def test_chub_restart_clears_orphaned_active_operation_before_retry(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, _quick_interactions = configured_manager(settings)
+    coordinator, _notifier = enable_restart_command(manager)
+    coordinator.state.return_value = None
+
+    manager.dispatch(
+        message_id="orphaned-restart",
+        prompt="restart web",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+    retried = manager.dispatch(
+        message_id="retry-after-orphaned-restart",
+        prompt="restart web",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert retried.message == "Restart: Scheduled. The result will be sent when completed."
+    assert coordinator.request.call_count == 2
+    operations = {item.message_id: item for item in manager._state.restart_operations}
+    assert operations["orphaned-restart"].status == "sensitive_task_failed"
+    assert operations["retry-after-orphaned-restart"].status == "pending"
+
+
+def test_chub_restart_registration_failure_does_not_block_retry(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, _quick_interactions = configured_manager(settings)
+    coordinator, _notifier = enable_restart_command(manager)
+    coordinator.request.side_effect = [
+        OSError("restart state unavailable"),
+        SimpleNamespace(operation_id="retry:restart", created=True),
+    ]
+
+    failed = manager.dispatch(
+        message_id="restart-registration-failure",
+        prompt="restart web",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+    retried = manager.dispatch(
+        message_id="restart-registration-retry",
+        prompt="restart web",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert failed.message.startswith("Restart: Not scheduled. Try again later.")
+    assert retried.message == "Restart: Scheduled. The result will be sent when completed."
+    assert coordinator.request.call_count == 2
+    operations = {item.message_id: item for item in manager._state.restart_operations}
+    assert operations["restart-registration-failure"].status == "start_failed"
+    assert operations["restart-registration-retry"].status == "pending"
+
+
+def test_chub_restart_binds_a_coalesced_operation_before_completion(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, _quick_interactions = configured_manager(settings)
+    coordinator, notifier = enable_restart_command(manager)
+
+    def coalesce(**kwargs):
+        registration = SimpleNamespace(
+            operation_id="existing-restart:restart",
+            created=False,
+        )
+        kwargs["registration_handler"](registration)
+        assert manager.record_deferred_restart_completion(
+            registration.operation_id,
+            kwargs["task_id"],
+            "succeeded",
+            utc_now(),
+        )
+        return registration
+
+    coordinator.request.side_effect = coalesce
+
+    result = manager.dispatch(
+        message_id="coalesced-restart",
+        prompt="restart web",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == "Restart: Scheduled. The result will be sent when completed."
+    assert manager._state.restart_operations[0].status == "succeeded"
+    notifier.assert_called_once_with(delivery_route(), "succeeded", None)
+
+
+def test_chub_restart_waits_briefly_for_operation_record(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, _quick_interactions = configured_manager(settings)
+    request = SimpleNamespace(
+        operation_id="not-yet-recorded:restart",
+        requested_task_id="weixin-restart-command",
+        requested_at=utc_now(),
+    )
+
+    assert manager.deferred_restart_readiness(request) == "waiting"
+    expired = request.__class__(
+        operation_id=request.operation_id,
+        requested_task_id=request.requested_task_id,
+        requested_at=utc_now() - timedelta(seconds=6),
+    )
+    assert manager.deferred_restart_readiness(expired) == "sensitive_task_failed"
+
 
 
 def test_chub_restart_rejects_unavailable_delivery_route(

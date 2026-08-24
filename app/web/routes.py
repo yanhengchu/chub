@@ -46,9 +46,6 @@ def index(request: Request) -> HTMLResponse:
             "design_document_count": len(design_documents),
             "design_documents_error": design_documents_error,
             "weekly_reports": weekly_reports,
-            "available_weekly_report_count": sum(
-                report.available for report in weekly_reports
-            ),
         },
     )
 

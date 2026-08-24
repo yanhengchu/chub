@@ -15,7 +15,7 @@
 | OpenClaw Agent Tool | OpenClaw TUI 或未进入微信 Chub 模式的 Agent 调用 | 查询 Chub 基础状态、发送预配置飞书通知 |
 | 微信 ClawBot | 已授权 Owner 通过私聊远程使用 Chub | 查询摘要、管理 Codex Session 和活动需求 |
 
-电脑端 CLI 与微信 ClawBot 是两套独立指令：前者用于本机服务运维，后者经 OpenClaw 转发到 Chub。包管理器（例如 npm 或 PyPI）只负责未来的版本分发，不属于当前 CLI 能力；`chub install` 仍表示本机用户服务安装，不表示包管理器安装。分发目标和职责边界见 [Chub CLI 分发、安装与发布设计](CHUB_CLI_DISTRIBUTION_DESIGN.md)。
+电脑端 CLI 与微信 ClawBot 是两套独立指令：前者用于本机服务运维，后者经 OpenClaw 转发到 Chub。当前没有 npm、PyPI 或独立发行包；`chub install` 只表示从当前工作区安装本机用户服务，不表示包管理器安装。正式分发方案仅记录在状态为“待实现”的[Chub CLI 分发、安装与发布设计](CHUB_CLI_DISTRIBUTION_DESIGN.md)，不属于本节当前能力。
 
 ## 2. 电脑端命令
 
@@ -36,7 +36,7 @@
 - `chub worker-recover`
 - `chub logs`
 
-`chub help` 是当前 CLI 的无服务帮助入口；未来版本必须在帮助首部给出新设备的 `npm install -g chub`、`chub help`、`chub start` 流程，并提示 Web/Quick Worker 与可选 ClawBot 的职责差异。
+`chub help` 是当前 CLI 的无服务帮助入口。
 
 `chub check` 是只读的完整系统检查入口，依次检查项目配置、用户服务、Web 健康、Quick Worker 健康和 `/api/status` 系统状态；任一必需检查失败时返回非零退出码，不执行重启、升级或任务清理。
 
@@ -48,9 +48,9 @@
 | Quick Worker | 已实现 | 与 Web 分离运行但由同一 CLI 安装/启动；通过 `chub worker-health` 检查，不提供普通用户独立启动入口 |
 | ClawBot | 已接入 | 由 OpenClaw Gateway、微信通道和 Chub OpenClaw 插件共同提供；不由 `chub start` 启动，安装/配置以[插件说明](../integrations/openclaw/chub/README.md)为准 |
 
-“已接入”表示 Chub 与相关通道的接口和路由已经具备，不表示本仓库包含 OpenClaw Gateway 或腾讯微信插件的源码、安装包和账号绑定流程。新设备应先按外部项目文档安装这两项，再按[Chub CLI 分发、安装与发布设计](CHUB_CLI_DISTRIBUTION_DESIGN.md)部署 Chub 插件和完成微信验收。
+“已接入”表示 Chub 与相关通道的接口和路由已经具备，不表示本仓库包含 OpenClaw Gateway 或腾讯微信插件的源码、安装包和账号绑定流程。新设备应先按外部项目文档安装这两项，再按已生效的[插件说明](../integrations/openclaw/chub/README.md)部署 Chub 插件并完成微信验收；[Chub CLI 分发、安装与发布设计](CHUB_CLI_DISTRIBUTION_DESIGN.md)仅记录待实现的正式分发目标。
 
-当前 `chub` 命令来自仓库内的 `scripts/chub`，依赖当前工作区、`.venv` 和本机配置。项目尚未发布 npm/PyPI/独立发行包，因此 `npm install -g chub`、`pipx install chub` 和无仓库启动不属于当前可用能力。未来分发层必须继续复用本节命令语义，不得创建第二套 CLI。新设备安装、npm 发布、版本管理和 GitHub Release 目标见 [Chub CLI 分发、安装与发布设计](CHUB_CLI_DISTRIBUTION_DESIGN.md)。
+当前 `chub` 命令来自仓库内的 `scripts/chub`，依赖当前工作区、`.venv` 和本机配置。项目尚未发布 npm/PyPI/独立发行包，因此 `npm install -g chub`、`pipx install chub` 和无仓库启动不属于当前可用能力。新设备安装、npm 发布、版本管理和 GitHub Release 的目标方案见状态为“待实现”的[Chub CLI 分发、安装与发布设计](CHUB_CLI_DISTRIBUTION_DESIGN.md)，不能替代本节命令。
 
 ### 2.2 通知指令
 
@@ -110,6 +110,7 @@
 | `chub` | `状态`、`查询状态` | 只读查询 Chub、Session、活动需求和用量摘要 |
 | `check` | `检查` | 只读检查当前 Chub/Web、Quick Worker 和系统状态；不执行重启、升级或任务清理 |
 | `usage` | 无 | 只读查询完整额度使用情况，不附加 Session 状态 |
+| `text [mode [direct\|auto\|confirm]\|list\|ok\|next\|cancel]` | 无 | 查询或调整微信后续正文处理方式；无参数时同时显示当前待确认任务，`list` 显示完整正文处理流水 |
 | `help` | `帮助` | 返回不附带状态尾部的双语指令清单 |
 | `model` | `模型` | 只读返回当前绑定 Session 的实际模型和推理等级；仅为发生变化的字段额外显示下一任务配置 |
 | `model list` | `模型列表` | 只读返回当前绑定 Session 的下一任务模型和 Codex 可用模型列表，不返回 Session 列表或额度尾部 |
@@ -117,8 +118,8 @@
 | `model use M#` | `模型切换 M#` | 空闲时为当前 Session 的后续任务配置指定模型及其默认等级 |
 | `model use L#` | `模型切换 L#` | 空闲时为当前 Session 的后续任务配置当前模型的指定等级 |
 | `model use M# L#` | `模型切换 M# L#` | 空闲时原子配置指定模型和该模型的指定等级 |
-| `text ok\|next\|cancel\|<English>` | 无 | 仅在收到 `Translation ready` 后处理确认队头；其他时候按普通正文处理 |
-| `restart web` | `重启 Web` | 登记 Chub Web 重启并独立通知最终结果 |
+| `text-check <English>` | 无 | 仅在收到 `Translation ready` 后以英文复述确认队头 |
+| `restart` / `restart web` | `重启 Web` | 登记 Chub Web 重启并独立通知最终结果 |
 | `restart worker` | `重启 Worker` | 清空排队任务、停止执行中任务并恢复 Quick Worker，独立通知最终结果 |
 | `restart clawbot` | `重启 ClawBot` | 同步固定插件/补丁基线，重启 Gateway 和消息通道，独立通知最终结果 |
 | `upgrade` | `升级系统` | 直接启动当前系统升级与恢复；复用页面的全部前置检查和执行器 |
@@ -145,7 +146,7 @@
 - `R1`–`R9` 是最多九个活动需求的真实槽位，不是更大列表的排序别名；英文 `cat`、`run` 和需求归档使用 `R1`–`R9`，中文别名使用对应的需求槽位。
 - `archive 2`、`archive2`、`archive S2` 和 `archiveS2` 归档 Session，`archive R2` 归档需求；`del 2`、`del2`、`del S2` 和 `delS2` 删除 Session，`del R2` 删除需求；需求形式优先于 Session 形式匹配。`cat README`、`run tests`等非需求槽位正文仍进入普通任务，不扩展为文件读取或系统命令。
 - Session 槽位指令 `switch`、`archive` 和 `del` 与合法槽位之间允许有空格或无空格；`stop` 的槽位参数可省略，省略时使用当前绑定 Session。带槽位的 `stop` 同样允许空格或无空格。裸槽位指令使用 `S1`–`S9`，后面可直接连接正文。中文 `切换`、`会话`、`停止`、`归档` 与合法槽位之间同样允许有空格或无空格。因此 `switch2`、`switch S2`、`switchS2`、`stop`、`stop2`、`stop S2`、`停止`、`停止2`、`归档S2`、`切换二`、`切换S2` 和 `会话S2` 均按对应规则处理。需求指令 `cat/run/archive/del R...` 仍保留 `R` 前缀，以避免与 Session 槽位混淆。
-- `restart web`、`restart worker`、`restart clawbot` 和 `upgrade` 均为精确无参数指令；大小写和首尾标点可忽略，附加任何正文时回退为普通任务。四条指令分别只作用于 Web、Quick Worker、ClawBot 或系统升级与恢复，不把目标名称交给客户端自由解析。
+- `restart`、`restart web`、`restart worker`、`restart clawbot` 和 `upgrade` 均为精确无参数指令；大小写和首尾标点可忽略，附加任何正文时回退为普通任务。`restart` 与 `restart web` 都只作用于 Web；其余三条分别只作用于 Quick Worker、ClawBot 或系统升级与恢复，不把目标名称交给客户端自由解析。
 - `restart worker` 会立即登记恢复操作，取消排队任务并停止执行中任务，不自动重放；`restart clawbot` 会在当前 OpenClaw 调度请求返回后异步执行，先同步固定兼容基线，再重启 Gateway，并在最终状态确认后发送独立结果。
 - `upgrade` 不接受版本号、路径或其他参数；升级方案不可用时按固定规则降级为当前版本运行态恢复，并明确不执行代码版本升级。升级受理后通过独立完成通知返回最终结果；不再提供微信 `upgrade status` 固定指令。系统升级页面和固定 API 的只读状态查询仍然保留。
 - `usage` 是精确无参数指令；大小写和首尾标点可忽略，附加任何正文时回退为普通任务。
@@ -165,10 +166,12 @@
 - 微信和 ClawBot 只分配 `quick` Session 的 S1–S9 槽位；`terminal` Session、升级扫描得到的 `discovered` Session 和内部翻译 Session 均不进入微信槽位或微信 Session 列表。微信不会创建或切换到实时终端 Session。
 - Session 类型在创建时固定；微信 `new` 创建的是 `quick` Session，Web 创建时由弹窗选择类型。不存在把同一 Session 从实时终端切换为快速交互的复合路径。
 
-- 设置页“正文处理方式”只影响之后新接收的正文任务：`直接执行`直接提交；`自动润色后执行`在独立只读 Session 生成中文润色和 English 后，自动提交润色后的中文；`自动润色后确认执行`生成同一份结果后进入确认队列。普通任务以及携带正文的 `switch` / `S1`–`S9` 都遵循该快照；其他固定指令和续提指令仍绕过文本优化。旧布尔配置 `translation_enabled=false/true` 分别等价于 `direct/auto`。
-- 确认模式下，翻译 FIFO 不等待用户操作；完成的译文按翻译完成顺序进入独立确认 FIFO。仅当队头的 `Translation ready` 通知已经成功送达时，文字消息才可使用 `text ok`（提交润色中文）、`text cancel`（丢弃）、`text next`（移至确认队尾）或 `text <完整英文复述>`。英文比较忽略大小写、空白和常见标点，词级相似度达到 90% 即提交润色中文；未达到时保留队头并提示重试。没有已送达的待确认队头时，`text ...` 是普通正文，不占用固定指令命名空间。确认、取消或过期均不会提交原文；待确认项 24 小时后失效。
+- 设置页“正文处理方式”只影响之后新接收的正文任务：`直接执行`直接提交；`自动润色后执行`在独立只读 Session 生成中文润色和 English 后，自动提交润色后的中文；`自动润色后确认执行`生成同一份结果后进入确认队列。普通任务以及携带正文的 `switch` / `S1`–`S9` 在正文不超过 `translation_preprocess_max_input_chars`（默认 1200 字符）时遵循该快照；超过阈值直接提交原正文，不润色、不翻译、不进入确认队列，以保持同步确认回复有界。其他固定指令和续提指令仍绕过文本优化。旧布尔配置 `translation_enabled=false/true` 分别等价于 `direct/auto`。
+- `text` 与设置页读取、保存同一个节点级处理方式：`text` 或 `text mode` 返回当前模式及当前已送达、可操作的待确认任务；其中 `text` 返回目标 Session、完整 `Polished` 正文和完整 `English`，不使用摘要。`text mode direct|auto|confirm` 立即保存并只影响之后新接收的正文。`text list` 显示完整正文处理流水：当前可操作确认队头以 `Confirming` 固定在最上方，其余已润色待轮到的确认项为 `Waiting confirmation`，仍在排队或翻译中的项目为 `Optimizing`；已确认但目标暂忙的项目显示为 `Waiting target`。每项返回目标 `S<槽位> · <标题>` 与下一行 `Task · <受限正文摘要>`，目标已不可用时显示 `Session · Unavailable`。已经在润色、确认或等待目标可写的项目继续按创建时快照完成。`text` 控制指令及 `text-check` 参数错误只返回用法而不作为普通任务提交。
+- 确认模式下，翻译 FIFO 不等待用户操作；完成的译文按翻译完成顺序进入独立确认 FIFO。仅当队头的 `Translation ready` 通知已经成功送达时，文字消息才可使用 `text ok`（提交润色中文）、`text cancel`（丢弃）、`text next`（移至确认队尾）或 `text-check <完整英文复述>`。英文比较忽略大小写、空白和常见标点，词级相似度达到 90% 即提交润色中文；未达到时保留队头并提示重试。没有已送达的待确认队头时，这些确认指令明确回复没有待确认正文；确认、取消或过期均不会提交原文；待确认项 24 小时后失效。
+- `text cancel` 与 `text next` 的同步回复先说明本次取消或后移结果，再附加更新后的 `text list` 正文处理流水；队头由此变化后，列表首项就是下一条可操作或待送达确认。
 - 翻译完成后目标暂忙时，自动执行正文与已确认正文都保留固定目标，待该目标可安全写入后自动重试；自动执行视为已确认，不得改投其他 Session，也不会要求再次英文复述。
-- 携带正文的切换先完成并持久化目标槽位，再启动正文的文本优化；同步回执显示 `Optimizing · Preparing to submit.`，表示正文已进入受控准备流程但尚未由主任务接收。文本优化任务被可靠受理后，普通任务的插件以 `handled` 静默结束同步链路；切换任务保留已切换和优化中的回执。初始校验或翻译任务受理失败时仍即时回复错误。润色成功且主任务被 Quick Worker 接收后发送 `Started`；润色失败、润色或 English 任一部分超过 8000 字符、原目标失效或变忙时均通知失败，不执行原文、不生成待续提任务。带正文切换已成功时保留切换结果，但正文不会提交。跨重启的持久化与幂等收敛由接入设计和 Worker 设计维护。
+- 携带正文的切换先完成并持久化目标槽位，再启动正文的文本优化；同步回执显示 `Optimizing · Preparing to submit.`，表示正文已进入受控准备流程但尚未由主任务接收。文本优化任务被可靠受理后，普通任务的插件以 `handled` 静默结束同步链路；切换任务保留已切换和优化中的回执。预处理提交不受目标 Session 当前运行态或已有翻译项阻塞，可继续进入翻译 FIFO；直接执行仍按当前 Session 忙碌规则拒绝。初始校验或翻译任务受理失败时仍即时回复错误。润色成功且主任务被 Quick Worker 接收后发送 `Started`；润色失败、润色或 English 任一部分超过 8000 字符、原目标失效时均通知失败，不执行原文、不生成待续提任务；目标暂忙则按固定目标等待重试。带正文切换已成功时保留切换结果，但正文不会提交。跨重启的持久化与幂等收敛由接入设计和 Worker 设计维护。
 - 同一目标 Session 可以继续进入翻译 FIFO 和确认 FIFO；翻译完成后的主任务写入仍由该固定目标的真实执行状态仲裁。目标正忙时，自动执行与已确认任务保留原目标并按恢复规则重试，不改投其他 Session；不同目标的主任务可并行。
 - 普通提交路径中，当前 Session 忙时拒绝提交，并短期保存最近一次待续提正文。
 - 普通任务、切换后提交和续提任务成功后，回执必须列出全部已登记 Session；每个运行中的 Session 紧跟对应 `Task`，当前绑定继续使用 `▶` 标记，方便直接判断可切换槽位。列表采集失败不得把已成功提交误报为失败，至少保留本次可信任务上下文。
@@ -236,7 +239,7 @@ Session 标题与任务摘要的显示规则：
 - 异步任务和文本优化队列只保存目标 `session_id`；`Started`、完成和失败通知发送时按该 ID 读取当前槽位与 Session 名称。润色任务的 `Started` 使用 `Started`、发送时校验的 `[▶ ]S<槽位> · <标题>`、`Submitted:` 完整润色中文及 `English:`；确认模式在确认结果持久化后立即结束微信入口请求，主任务提交与这一条 `Started` 均由确认队列异步处理，不再额外发送 `Translation confirmed · Preparing to submit.`，也不把 Worker 或通知耗时误报为提交未知。槽位暂忙时先回复等待，待实际接收后再发送 `Started`。槽位已释放或复用时标记 `Unavailable`，不得把新 Session 显示成原任务目标。
 - 主任务终态继续使用 `Done`、`Failed` 或 `Timed out`，`Task · <摘要>` 必须来源于实际提交文本。正常成功链路通常产生 `Started` 和 `Done` 两次异步通知；两者不设置到达顺序门禁，极快任务允许偶发轻微乱序。
 - 失败任务页面时间线明确显示错误来源：`Chub` 表示 Chub/Worker/解析边界错误，`Codex CLI（上游 Runtime）` 表示当前 Codex Runtime 子进程提供的原始诊断。微信完成通知只在 `Failed` 或文本优化失败标题中追加 `Chub` 或 `Codex CLI (upstream Runtime)`；`Timed out` 和 `Cancelled` 不追加错误来源。错误正文仍按 Worker 固定上限脱敏并以纯文本发送。`error_source=runtime` 保持 Runtime 通用语义，未来接入其他 Runtime 时必须重新定义对应展示标签并同步本节。
-- 文本优化失败或目标不可提交时只发送对应的一次异步失败通知。确认提示使用 `Translation ready`，包含固定目标、`Polished:`、`English:`及四种 `text` 回复格式；提示送达失败时不开放确认命令并持续按恢复规则重试。所有通知继续执行固定分段和总条数上限，超长内容可能拆成多条物理消息。
+- 文本优化失败或目标不可提交时只发送对应的一次异步失败通知。确认提示使用 `Translation ready`，包含固定目标、`Polished:`、`English:`，底部仅提示 `Please confirm.`；可用确认指令仍以本节命令契约为准。提示送达失败时不开放确认命令并持续按恢复规则重试。所有通知继续执行固定分段和总条数上限，超长内容可能拆成多条物理消息。
 - 普通任务结果通知失败保留在后台任务状态和运行日志中，不在 `chub` 中长期展示。
 - 重启、停止结果通知失败会影响维护操作终态判断，继续在 `chub` 的 Issues 中展示。
 

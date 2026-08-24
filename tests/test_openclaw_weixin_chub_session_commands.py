@@ -323,6 +323,53 @@ def test_codex_switch_task_uses_enabled_text_optimization(
     )
 
 
+def test_codex_switch_long_body_submits_directly(
+    settings: Settings,
+) -> None:
+    settings.openclaw.weixin_chub_mode.translation_preprocess_max_input_chars = 10
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager.translation_manager = MagicMock()
+    manager.translation_manager.processing_mode.return_value = "confirm"
+    manager.translation_manager.has_active_target.return_value = False
+    manager._state.session_id = "session-1"
+    sessions = [
+        CodexSession(
+            session_mode="quick",
+            id=f"session-{slot}",
+            workspace_id="chub",
+            workspace_name="Chub",
+            cwd="/project",
+            title=f"第 {slot} 项",
+            permission_mode="full-access",
+            status="stopped",
+            activity="idle",
+        )
+        for slot in (1, 2)
+    ]
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=slot, session_id=f"session-{slot}")
+        for slot in (1, 2)
+    ]
+    codex_manager.list_sessions.return_value = sessions
+    codex_manager.get_session.return_value = sessions[1]
+    long_prompt = "这是超过处理阈值的切换正文"
+
+    result = manager.dispatch(
+        message_id="switch-long-direct",
+        prompt=f"切换 2 {long_prompt}",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message is not None
+    assert result.message.startswith("Switch: Session 2 selected. Task submitted.")
+    quick_interactions.submit.assert_called_once()
+    assert quick_interactions.submit.call_args.args[1] == long_prompt
+    manager.translation_manager.enqueue.assert_not_called()
+
+
 def test_codex_switch_task_keeps_selection_when_optimization_cannot_queue(
     settings: Settings,
 ) -> None:

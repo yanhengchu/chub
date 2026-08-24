@@ -43,6 +43,14 @@ from app.services.openclaw_weixin_chub_models import (
         ("check", "check", None, None, False),
         ("检查。", "check", None, None, False),
         ("USAGE。", "usage", None, None, False),
+        ("text", "text_control", None, None, False),
+        ("TEXT MODE AUTO。", "text_control", None, None, False),
+        ("text list", "text_control", None, None, False),
+        ("text ok", "text_control", None, None, False),
+        ("text Please check the service status", "text_control", None, None, True),
+        ("text-check Please check the service status.", "text_check", None, "Please check the service status", False),
+        ("text mode automatic", "text_control", None, None, True),
+        ("text-check", "text_check", None, None, True),
         ("help", "help", None, None, False),
         ("帮助。", "help", None, None, False),
         ("model", "model", None, None, False),
@@ -61,6 +69,7 @@ from app.services.openclaw_weixin_chub_models import (
         ("model use M2 L3", "model_use", None, None, False),
         ("模型切换 M2 L3", "model_use", None, None, False),
         ("同步。", "sync", None, None, False),
+        ("restart", "restart_web", None, None, False),
         ("RESTART WEB。", "restart_web", None, None, False),
         ("重启 Web", "restart_web", None, None, False),
         ("RESTART WORKER", "restart_worker", None, None, False),
@@ -179,7 +188,6 @@ from app.services.openclaw_weixin_chub_models import (
         ("sync now", "normal", None, None, False),
         ("upgrade status now", "normal", None, None, False),
         ("system upgrade", "normal", None, None, False),
-        ("restart", "normal", None, None, False),
         ("systemupgrade", "normal", None, None, False),
         ("codex", "normal", None, None, False),
     ],
@@ -192,14 +200,14 @@ def test_parse_weixin_chub_command_contract(
     invalid_usage: bool,
 ) -> None:
     command = parse_weixin_chub_command(prompt)
-    expected_kind = "normal" if invalid_usage else kind
+    expected_kind = "normal" if invalid_usage and kind not in {"text_control", "text_check"} else kind
     expected_index = None if invalid_usage else requested_index
     expected_task_prompt = None if invalid_usage else task_prompt
 
     assert command.kind == expected_kind
     assert command.requested_index == expected_index
     assert command.task_prompt == expected_task_prompt
-    assert command.invalid_usage is False
+    assert command.invalid_usage is (invalid_usage and kind in {"text_control", "text_check"})
 
 
 @pytest.mark.parametrize(

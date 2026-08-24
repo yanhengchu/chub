@@ -16,7 +16,19 @@ def write_operation(
     status: str,
     target: str,
     source_ip: str,
+    reason: str | None = None,
 ) -> None:
+    if reason:
+        LOGGER.info(
+            "operation_id=%s action=%s status=%s target=%s source_ip=%s reason=%s",
+            operation_id,
+            action,
+            status,
+            target,
+            source_ip,
+            " ".join(reason.split())[:500],
+        )
+        return
     LOGGER.info(
         "operation_id=%s action=%s status=%s target=%s source_ip=%s",
         operation_id,
@@ -34,6 +46,7 @@ def log_operation(
     status: str,
     target: str,
     operation_id: str | None = None,
+    reason: str | None = None,
 ) -> str:
     resolved_id = operation_id or uuid4().hex
     source_ip = request.client.host if request.client else "unknown"
@@ -43,5 +56,6 @@ def log_operation(
         status=status,
         target=target,
         source_ip=source_ip,
+        reason=reason,
     )
     return resolved_id

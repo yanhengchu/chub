@@ -159,9 +159,14 @@ async def test_home_page_is_public_and_contains_no_credential_form(
     assert 'href="/automations"' in response.text
     assert 'id="design-documents-title"' in response.text
     assert "项目文档" in response.text
-    assert 'id="weekly-reports-title"' in response.text
-    assert "本期周报 · 2026-08-03至2026-08-09" in response.text
-    assert 'id="weekly-report-list"' in response.text
+    assert "查看设计方案和调研资料。" in response.text
+    assert 'id="automation-weekly-report-title"' in response.text
+    assert ">V 国内业务本期周报</h3>" in response.text
+    assert 'id="automation-weekly-download-title"' in response.text
+    assert 'id="automation-weekly-download"' in response.text
+    assert 'id="automation-weekly-documents-title"' in response.text
+    assert "周报文档 · 2026-08-03至2026-08-09" in response.text
+    assert 'id="automation-weekly-report-list"' in response.text
     assert "本期工作重点确认清单" in response.text
     assert "本期业务周报" in response.text
     assert "重点范围与取舍确认" in response.text
@@ -172,7 +177,7 @@ async def test_home_page_is_public_and_contains_no_credential_form(
     assert 'href="/weekly-reports/2026-08-03至2026-08-09/focus"' in response.text
     assert "待生成" in response.text
     assert 'data-card-key="project-docs"' in response.text
-    assert 'data-card-key="automations"' in response.text
+    assert 'data-card-key="automations" data-collapsible-card data-card-return-refresh="true"' in response.text
     assert 'data-card-key="logs"' not in response.text
     assert 'data-card-return-refresh="true"' in response.text
     workstation_card = response.text.split('data-card-key="workstation"', 1)[1]
@@ -604,6 +609,9 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert 'JSON.stringify({ mode: "headless" })' in dashboard_script
     assert 'error.message || "Debug Chrome 启动失败。"' in dashboard_script
     assert "Promise.all([loadAutomations(), loadAutomationEnvironment()])" in dashboard_script
+    assert 'apiFetch("/api/weekly-reports/current")' in dashboard_script
+    assert "loadWeeklyReports" in dashboard_script
+    assert "refreshAutomationCard" in script.text
     assert "/api/project-docs" in dashboard_script
     assert "loadProjectDocuments" in dashboard_script
     assert 'document.createElement("time")' in dashboard_script
@@ -1125,28 +1133,47 @@ async def test_design_document_pages_render_markdown(settings: Settings) -> None
 
 
 @pytest.mark.anyio
-async def test_project_document_card_api_allows_loopback(
+async def test_project_document_card_and_weekly_report_apis_allow_loopback(
     settings: Settings,
     weekly_reports_root: Path,
 ) -> None:
     transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/api/project-docs")
+        weekly_response = await client.get("/api/weekly-reports/current")
 
     assert response.status_code == 200
     data = response.json()["data"]
     assert data["count"] >= 1
-    assert [item["report_type"] for item in data["weekly_reports"]] == [
+    assert "weekly_reports" not in data
+    assert weekly_response.status_code == 200
+    weekly_reports = weekly_response.json()["data"]["reports"]
+    assert [item["report_type"] for item in weekly_reports] == [
         "focus",
         "report",
     ]
-    assert data["weekly_reports"][0]["available"] is True
-    assert data["weekly_reports"][1]["available"] is False
+    assert weekly_reports[0]["available"] is True
+    assert weekly_reports[1]["available"] is False
     assert len(data["documents"]) == 5
     assert any(document["status"] == "持续维护" for document in data["documents"])
     assert "openclaw-research" not in {
         document["id"] for document in data["documents"]
     }
+
+
+@pytest.mark.anyio
+async def test_weekly_report_card_api_requires_trusted_network(
+    settings: Settings,
+) -> None:
+    transport = httpx.ASGITransport(
+        app=create_app(settings),
+        client=("192.0.2.1", 12345),
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/api/weekly-reports/current")
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "trusted_network_required"
 
 
 @pytest.mark.anyio

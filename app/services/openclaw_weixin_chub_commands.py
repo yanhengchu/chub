@@ -14,6 +14,9 @@ CHUB_CHECK_ALIASES = frozenset({"检查"})
 CHUB_HELP_PROMPTS = frozenset({"help"})
 CHUB_HELP_ALIASES = frozenset({"帮助"})
 CHUB_USAGE_PROMPT = "usage"
+TEXT_PROMPT = "text"
+TEXT_CHECK_PROMPT = "text-check"
+TEXT_MODE_VALUES = frozenset({"direct", "auto", "confirm"})
 CHUB_MODEL_PROMPT = "model"
 CHUB_MODEL_ALIASES = frozenset({"模型"})
 CHUB_MODEL_LIST_PROMPT = "model list"
@@ -32,7 +35,7 @@ MODEL_USE_ALIAS_PATTERN = re.compile(
 )
 CHUB_SYNC_PROMPTS = frozenset({"sync"})
 CHUB_SYNC_ALIASES = frozenset({"同步"})
-CHUB_RESTART_WEB_PROMPTS = frozenset({"restart web"})
+CHUB_RESTART_WEB_PROMPTS = frozenset({"restart", "restart web"})
 CHUB_RESTART_WEB_ALIASES = frozenset({"重启 web"})
 CHUB_RESTART_WORKER_PROMPT = "restart worker"
 CHUB_RESTART_WORKER_ALIAS = "重启 worker"
@@ -162,6 +165,8 @@ WeixinChubCommandKind = Literal[
     "status",
     "check",
     "usage",
+    "text_control",
+    "text_check",
     "help",
     "model",
     "model_list",
@@ -190,6 +195,8 @@ FIXED_COMMAND_KINDS = frozenset(
         "status",
         "check",
         "usage",
+        "text_control",
+        "text_check",
         "help",
         "model",
         "model_list",
@@ -220,6 +227,8 @@ class WeixinChubCommand:
     kind: WeixinChubCommandKind
     normalized_prompt: str
     task_prompt: str | None = None
+    processing_mode: Literal["direct", "auto", "confirm"] | None = None
+    text_action: Literal["mode", "list", "ok", "next", "cancel"] | None = None
     requested_index: int | None = None
     model_index: int | None = None
     level_index: int | None = None
@@ -349,6 +358,29 @@ def parse_weixin_chub_command(prompt: str) -> WeixinChubCommand:
         return WeixinChubCommand("check", normalized)
     if folded == CHUB_USAGE_PROMPT:
         return WeixinChubCommand("usage", normalized)
+    text_parts = normalized.split()
+    text_check_parts = normalized.split(maxsplit=1)
+    if text_check_parts and text_check_parts[0].casefold() == TEXT_CHECK_PROMPT:
+        if len(text_check_parts) == 2:
+            return WeixinChubCommand("text_check", normalized, task_prompt=text_check_parts[1])
+        return WeixinChubCommand("text_check", normalized, invalid_usage=True)
+    if text_parts and text_parts[0].casefold() == TEXT_PROMPT:
+        if len(text_parts) == 1:
+            return WeixinChubCommand("text_control", normalized, text_action="mode")
+        action = text_parts[1].casefold()
+        if action in {"ok", "next", "cancel", "list"} and len(text_parts) == 2:
+            return WeixinChubCommand("text_control", normalized, text_action=action)
+        if action == "mode":
+            if len(text_parts) == 2:
+                return WeixinChubCommand("text_control", normalized, text_action="mode")
+            if len(text_parts) == 3 and text_parts[2].casefold() in TEXT_MODE_VALUES:
+                return WeixinChubCommand(
+                    "text_control",
+                    normalized,
+                    processing_mode=text_parts[2].casefold(),
+                    text_action="mode",
+                )
+        return WeixinChubCommand("text_control", normalized, invalid_usage=True)
     if folded in CHUB_HELP_PROMPTS or normalized in CHUB_HELP_ALIASES:
         return WeixinChubCommand("help", normalized)
     if folded == CHUB_MODEL_PROMPT or normalized in CHUB_MODEL_ALIASES:
@@ -612,10 +644,3 @@ def command_task_message_id(command_message_id: str) -> str:
         f"{command_message_id}\0command-task".encode("utf-8")
     ).hexdigest()
     return f"command-task-{digest}"
-
-
-def switch_retry_message_id(command_message_id: str) -> str:
-    digest = hashlib.sha256(
-        f"{command_message_id}\0switch-retry".encode("utf-8")
-    ).hexdigest()
-    return f"switch-retry-{digest}"

@@ -212,7 +212,7 @@ class OpenClawCompletionNotifier:
                 self._weixin_target_session_line(target_session_id),
                 f"Polished:\n{task.strip()}",
                 f"English:\n{english.strip()}",
-                "Reply:\ntext ok\ntext next\ntext cancel\ntext <reproduce the English>",
+                "Please confirm.",
             )
         )
         return self._send_messages(

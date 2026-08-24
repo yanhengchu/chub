@@ -78,6 +78,8 @@ openclaw:
     translation_queue_limit: 10
     translation_max_wait_seconds: 1800
     translation_max_input_chars: 8000
+    # Submit longer task bodies directly instead of polishing/translating them.
+    translation_preprocess_max_input_chars: 1200
   quick_interaction_completion:
     # Default recipient for Chub/page-origin quick interactions only.
     enabled: true

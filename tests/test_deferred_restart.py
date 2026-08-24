@@ -9,7 +9,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.core.response import ApiError
-from app.services.deferred_restart import DeferredRestartCoordinator
+from app.services.deferred_restart import (
+    SENSITIVE_TASK_FAILED_REASON,
+    DeferredRestartCoordinator,
+)
 
 
 def test_deferred_restart_waits_until_ready_and_persists_private_state(
@@ -68,6 +71,32 @@ def test_deferred_restart_coalesces_requests(tmp_path: Path) -> None:
     assert second.created is False
     assert second.operation_id == "operation-1"
     assert coordinator.state().operation_id == "operation-1"
+
+
+def test_deferred_restart_binds_coalesced_request_before_returning(
+    tmp_path: Path,
+) -> None:
+    coordinator = DeferredRestartCoordinator(
+        tmp_path / "deferred-restart.json",
+        "instance-1",
+        MagicMock(),
+    )
+    coordinator.request(
+        operation_id="operation-1",
+        task_id="task-1",
+        source_ip="127.0.0.1",
+    )
+    registrations = []
+
+    registration = coordinator.request(
+        operation_id="operation-2",
+        task_id="task-2",
+        source_ip="127.0.0.2",
+        registration_handler=registrations.append,
+    )
+
+    assert registration.created is False
+    assert registrations == [registration]
 
 
 def test_immediate_restart_without_deferred_request_is_reused_until_failure(
@@ -172,7 +201,9 @@ def test_sensitive_task_failure_cancels_waiting_restart(tmp_path: Path) -> None:
         "task-1",
         "sensitive_task_failed",
     )
+    assert completion_handler.call_args.args[4] == SENSITIVE_TASK_FAILED_REASON
     assert write_operation.call_args.kwargs["status"] == "failed"
+    assert write_operation.call_args.kwargs["reason"] == SENSITIVE_TASK_FAILED_REASON
 
 
 def test_request_during_sensitive_completion_is_preserved_as_next(

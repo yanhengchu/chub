@@ -558,6 +558,89 @@ class WeixinTranslationManager:
             )
             return entry.model_copy(deep=True) if entry is not None else None
 
+    def confirmation_queue(
+        self,
+        route: QuickInteractionWeixinRoute,
+    ) -> list[TranslationEntry]:
+        self._advance_confirmation_queue()
+        with self._lock:
+            entries = [
+                item.model_copy(deep=True)
+                for item in self._state.entries
+                if item.route == route
+                and item.status in {"ready_confirmation", "awaiting_confirmation"}
+            ]
+        active = next(
+            (item for item in entries if item.status == "awaiting_confirmation"),
+            None,
+        )
+        queued = sorted(
+            (item for item in entries if item.status != "awaiting_confirmation"),
+            key=lambda item: item.confirmation_order or 0,
+        )
+        return ([active] if active is not None else []) + queued
+
+    def processing_queue(
+        self,
+        route: QuickInteractionWeixinRoute,
+    ) -> list[tuple[str, list[TranslationEntry]]]:
+        """Return the active text-processing pipeline in user-facing order."""
+        self._advance_confirmation_queue()
+        with self._lock:
+            entries = [
+                item.model_copy(deep=True)
+                for item in self._state.entries
+                if item.route == route
+                and item.status
+                in {
+                    "queued",
+                    "running",
+                    "translated",
+                    "ready_confirmation",
+                    "awaiting_confirmation",
+                    "confirmed_waiting_target",
+                }
+            ]
+
+        def by_created(item: TranslationEntry) -> datetime:
+            return item.created_at
+
+        return [
+            (
+                "Confirming",
+                [item for item in entries if item.status == "awaiting_confirmation"],
+            ),
+            (
+                "Waiting confirmation",
+                sorted(
+                    (item for item in entries if item.status == "ready_confirmation"),
+                    key=lambda item: item.confirmation_order or 0,
+                ),
+            ),
+            (
+                "Waiting target",
+                sorted(
+                    (
+                        item
+                        for item in entries
+                        if item.status == "confirmed_waiting_target"
+                    ),
+                    key=by_created,
+                ),
+            ),
+            (
+                "Optimizing",
+                sorted(
+                    (
+                        item
+                        for item in entries
+                        if item.status in {"queued", "running", "translated"}
+                    ),
+                    key=by_created,
+                ),
+            ),
+        ]
+
     def confirmed_entry(self, entry_id: str) -> TranslationEntry | None:
         with self._lock:
             entry = next(

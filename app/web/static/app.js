@@ -2,6 +2,7 @@
 
 const CARD_RETURN_REFRESHERS = {
   codex: () => loadCodexSessions({ refreshModelPreference: true }),
+  automations: () => refreshAutomationCard(),
   "project-docs": () => loadProjectDocuments(),
 };
 
@@ -82,7 +83,7 @@ elements.restartHub.addEventListener("click", () => {
 });
 
 elements.refreshStatus.addEventListener("click", loadStatus);
-elements.refreshAutomations.addEventListener("click", () => loadAutomations());
+elements.refreshAutomations.addEventListener("click", refreshAutomationCard);
 
 
 cardCollapsedState = loadCardCollapsedState();

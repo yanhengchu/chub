@@ -12,51 +12,6 @@ function projectDocumentDate(value) {
 }
 
 function renderProjectDocuments(data) {
-  elements.weeklyReportsTitle.textContent = data.weekly_reports.length
-    ? `本期周报 · ${data.weekly_reports[0].period}`
-    : "本期周报";
-  elements.weeklyReportsList.replaceChildren();
-  data.weekly_reports.forEach((item) => {
-    const card = document.createElement("article");
-    const main = document.createElement(item.available ? "a" : "div");
-    const copy = document.createElement("span");
-    const heading = document.createElement("span");
-    const title = document.createElement("strong");
-    const summary = document.createElement("span");
-    const badge = document.createElement("span");
-    card.className = item.available
-      ? "design-document-item"
-      : "design-document-item design-document-item-unavailable";
-    main.className = "design-document-main";
-    if (item.available) {
-      main.href = `/weekly-reports/${encodeURIComponent(item.period)}/${encodeURIComponent(item.report_type)}`;
-    }
-    copy.className = "weekly-report-copy";
-    heading.className = "weekly-report-heading";
-    title.textContent = item.title;
-    summary.className = "weekly-report-summary";
-    if (item.updated_at) {
-      const time = document.createElement("time");
-      time.dateTime = item.updated_at;
-      time.textContent = projectDocumentDate(item.updated_at);
-      summary.append(time, document.createTextNode(` · ${item.summary}`));
-    } else {
-      summary.textContent = item.summary;
-    }
-    badge.className = item.available ? "badge badge-success" : "badge badge-muted";
-    badge.textContent = item.status;
-    heading.append(title, badge);
-    copy.append(heading, summary);
-    main.append(copy);
-    card.append(main);
-    elements.weeklyReportsList.append(card);
-  });
-  if (!data.weekly_reports.length) {
-    const empty = document.createElement("p");
-    empty.className = "empty-state";
-    empty.textContent = "暂无周报工作区。";
-    elements.weeklyReportsList.append(empty);
-  }
   elements.projectDocsList.replaceChildren();
   data.documents.forEach((item) => {
     const card = document.createElement("article");
