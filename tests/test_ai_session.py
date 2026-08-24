@@ -10,11 +10,15 @@ import pytest
 
 from app.ai_session.manager import AiSessionManager
 from app.ai_session.models import AiSession
+from app.ai_session.session_defaults import SessionDefaults, SessionDefaultsStore
 from app.ai_session.store import AiSessionStore, AiSessionStoreUnavailable
 from app.ai_session.supervisor import InteractiveSupervisor
 from app.ai_runtime import (
     RuntimeNativeSession,
+    RuntimeModelCatalog,
+    RuntimeModelInfo,
     RuntimeOperationError,
+    RuntimeReasoningLevel,
     RuntimeSessionDiscoveryResult,
 )
 from app.codex.models import SessionUsage, WorkspaceInfo
@@ -55,6 +59,133 @@ def test_ai_session_store_only_accepts_current_versioned_format(tmp_path: Path) 
     assert AiSessionStore(path).get(created.id) == created
 
 
+def test_session_defaults_store_is_atomic_and_private(tmp_path: Path) -> None:
+    path = tmp_path / "session-defaults.json"
+    store = SessionDefaultsStore(path)
+
+    store.save(SessionDefaults(model="gpt-test", reasoning_effort="medium"))
+
+    assert SessionDefaultsStore(path).read().model == "gpt-test"
+    assert SessionDefaultsStore(path).read().reasoning_effort == "medium"
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_ai_session_manager_uses_node_defaults_for_new_sessions(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    manager._require_available = MagicMock()
+    manager.runtime_adapter.validate_model = MagicMock()
+    manager.session_defaults.save(
+        SessionDefaults(model="gpt-5.6-terra", reasoning_effort="medium")
+    )
+
+    created = manager.create_session("chub", session_mode="quick")
+
+    assert created.model == "gpt-5.6-terra"
+    assert created.reasoning_effort == "medium"
+    manager.runtime_adapter.validate_model.assert_called_once_with(
+        "gpt-5.6-terra",
+        "medium",
+    )
+
+
+def test_ai_session_manager_updates_idle_quick_session_model(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    manager._require_available = MagicMock()
+    manager.runtime_adapter.validate_model = MagicMock()
+    created = session(settings.codex_pty.workspace, session_mode="quick")
+    manager.store.save(created)
+
+    updated = manager.update_quick_session_model(
+        created.id,
+        "gpt-5.6-terra",
+        "high",
+    )
+
+    assert updated.model == "gpt-5.6-terra"
+    assert updated.reasoning_effort == "high"
+    persisted = manager.store.get(created.id)
+    assert persisted is not None
+    assert persisted.model == "gpt-5.6-terra"
+    assert persisted.active_model is None
+    manager.runtime_adapter.validate_model.assert_called_once_with(
+        "gpt-5.6-terra",
+        "high",
+    )
+
+
+def test_native_projection_keeps_saved_next_task_model(
+    settings: Settings,
+) -> None:
+    logical = session(settings.codex_pty.workspace, session_mode="quick")
+    logical.model = "next-model"
+    logical.reasoning_effort = "high"
+    logical.active_model = "previous-model"
+    logical.active_reasoning_effort = "medium"
+    native = RuntimeNativeSession(
+        runtime_id="codex",
+        native_session_id="native-1",
+        cwd=settings.codex_pty.workspace,
+        title=None,
+        active_permission_mode="full-access",
+        active_model="previous-model",
+        active_reasoning_effort="medium",
+        created_at=logical.created_at,
+        updated_at=logical.updated_at,
+    )
+
+    changed = AiSessionManager._project_native_state(logical, native)
+
+    assert changed is False
+    assert logical.model == "next-model"
+    assert logical.reasoning_effort == "high"
+    assert logical.active_model == "previous-model"
+    assert logical.active_reasoning_effort == "medium"
+
+
+def test_ai_session_manager_exposes_node_defaults_in_model_catalog(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    manager.runtime_adapter.read_model_catalog = MagicMock(
+        return_value=RuntimeModelCatalog(
+            models=(
+                RuntimeModelInfo(
+                    id="gpt-5.6-luna",
+                    name="GPT-5.6-Luna",
+                    description="Luna",
+                    default_level="high",
+                    levels=(
+                        RuntimeReasoningLevel(id="high", description="Deep"),
+                    ),
+                ),
+                RuntimeModelInfo(
+                    id="gpt-5.6-terra",
+                    name="GPT-5.6-Terra",
+                    description="Terra",
+                    default_level="medium",
+                    levels=(
+                        RuntimeReasoningLevel(id="medium", description="Balanced"),
+                    ),
+                ),
+            ),
+            default_model="gpt-5.6-luna",
+            default_reasoning_effort="high",
+        )
+    )
+    manager.session_defaults.save(
+        SessionDefaults(model="gpt-5.6-terra", reasoning_effort="medium")
+    )
+
+    catalog = manager.read_model_catalog()
+
+    assert catalog.default_model == "gpt-5.6-terra"
+    assert catalog.default_reasoning_effort == "medium"
+
+
 def test_ai_session_store_fails_closed_for_legacy_or_unsafe_state(tmp_path: Path) -> None:
     path = tmp_path / "ai-sessions.json"
     path.write_text("[]", encoding="utf-8")
@@ -73,7 +204,9 @@ def test_ai_session_store_fails_closed_for_legacy_or_unsafe_state(tmp_path: Path
         insecure.list()
 
 
-def test_ai_session_manager_renames_without_writer_gate(settings: Settings) -> None:
+def test_ai_session_manager_rejects_rename_for_external_writer(
+    settings: Settings,
+) -> None:
     manager = AiSessionManager(settings)
     created = session(
         settings.codex_pty.workspace,
@@ -85,9 +218,11 @@ def test_ai_session_manager_renames_without_writer_gate(settings: Settings) -> N
     manager.runtime_adapter.has_active_writer = MagicMock(return_value=True)
     manager.supervisor.owns_terminal_writer = MagicMock(return_value=False)
 
-    renamed = manager.rename_session(created.id, "新标题")
+    with pytest.raises(ApiError) as error:
+        manager.rename_session(created.id, "新标题")
 
-    assert renamed.title == "新标题"
+    assert error.value.code == "codex_session_writer_active"
+    assert manager.store.get(created.id).title is None
 
 
 def test_ai_session_store_rejects_missing_runtime_owner(tmp_path: Path) -> None:

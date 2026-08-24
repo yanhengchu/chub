@@ -691,12 +691,29 @@ def test_help_and_unknown_command(service_env: tuple[dict[str, str], Path]) -> N
     assert help_result.returncode == 0
     assert "chub restart" not in help_result.stdout
     assert "restart" in help_result.stdout
+    assert "check" in help_result.stdout
     assert "worker-drain" in help_result.stdout
     assert "worker-reload" in help_result.stdout
     assert "worker-recover" in help_result.stdout
     assert invalid_result.returncode != 0
     assert "unknown command" in invalid_result.stderr
 
+
+def test_check_is_read_only_and_returns_failure_when_system_is_unhealthy(
+    service_env: tuple[dict[str, str], Path],
+) -> None:
+    env, calls = service_env
+    env["CHUB_TEST_PLATFORM"] = "Darwin"
+
+    result = run_chub("check", env)
+
+    assert result.returncode != 0
+    assert "Chub check failed" in result.stderr
+    manager_calls = calls.read_text(encoding="utf-8")
+    assert "launchctl print" in manager_calls
+    assert "bootstrap" not in manager_calls
+    assert "kickstart" not in manager_calls
+    assert "bootout" not in manager_calls
 
 def test_worker_reload_command_drains_tasks_and_checks_worker_final_state() -> None:
     content = CHUB.read_text(encoding="utf-8")

@@ -57,6 +57,21 @@ async def test_translation_settings_api_updates_and_persists_node_state(
 
 
 @pytest.mark.anyio
+async def test_translation_settings_api_supports_confirmation_mode(settings) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.put(
+            "/api/settings/weixin-translation",
+            headers=authorization(settings),
+            json={"mode": "confirm"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["mode"] == "confirm"
+    assert response.json()["data"]["enabled"] is True
+
+
+@pytest.mark.anyio
 async def test_translation_settings_api_fails_closed_for_invalid_state(
     settings,
 ) -> None:

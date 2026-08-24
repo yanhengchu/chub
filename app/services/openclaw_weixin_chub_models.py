@@ -33,6 +33,7 @@ WeixinChubModeSubmissionCode = Literal[
     "codex_usage_checked",
     # Reused by the current help route and compatible with legacy state files.
     "codex_help_checked",
+    "chub_check_checked",
     "codex_model_checked",
     # Kept for state-file compatibility with the retired status route.
     "codex_status_checked",
@@ -40,6 +41,7 @@ WeixinChubModeSubmissionCode = Literal[
     "codex_session_renamed",
     "codex_session_stopped",
     "codex_session_archived",
+    "codex_session_deleted",
     "codex_session_created",
     "codex_retry_checked",
     "chub_slots_synced",
@@ -100,7 +102,7 @@ class WeixinChubModeSubmission(_StrictModel):
     session_slot: int | None = Field(default=None, ge=1, le=MAX_WEIXIN_SESSION_SLOTS)
     session_title: str | None = Field(default=None, max_length=48)
     dispatch_disposition: Literal["pass", "reply", "handled"] | None = None
-    continuation_kind: Literal["task", "retry"] | None = None
+    continuation_kind: Literal["task", "translated_task", "confirmed_translated_task", "retry"] | None = None
     continuation_prompt: str | None = Field(
         default=None,
         max_length=MAX_PENDING_RETRY_PROMPT_CHARS,

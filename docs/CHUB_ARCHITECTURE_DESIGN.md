@@ -119,7 +119,7 @@ AI Session Manager/Store 管理逻辑 Session 和 Activity，Interactive Supervi
 
 ### 5.3 Request 需求储备
 
-拥有 R1–R9 活动槽位、需求正文、运行关联和归档状态。Request 可以提交到 AI Session，但不拥有 Session 或 Worker 任务终态。
+拥有 R1–R9 活动槽位、需求标题、正文和归档状态。Request 不参与 AI Session、Quick Worker 或其他 Runtime 的任务执行；维护者需要执行需求时，在 AI 对话中发送普通任务。
 
 ### 5.4 自动化与周报
 
@@ -147,7 +147,7 @@ AI Session Manager/Store 管理逻辑 Session 和 Activity，Interactive Supervi
 | AI 后台任务与租约 | Quick Worker | Web 恢复后重建投影并确认通知 |
 | 实时终端 Web 桥 | Interactive Supervisor、ttyd | Web 重启时可关闭并按逻辑 Session 重建 |
 | 实时终端载体 | 固定名称的 tmux | 普通 Web 重启保留，重新进入时复用 |
-| Request | Request Backlog Store | 执行时关联 Worker task/run ID，不复制任务终态 |
+| Request | Request Backlog Store | 只保存需求槽位、标题、正文和归档状态，不关联 Worker 任务 |
 | 微信绑定与通道 | OpenClaw；Chub 保存受控路由快照 | 每次提交校验，失败不回退全局目标 |
 | 自动化任务与产物 | Automation Store、锁和 artifacts | 页面读取受限状态与固定产物 |
 | 通知业务状态 | 发起通知的领域状态记录 | 主任务结果与通知终态分开保存，传输结果回写原记录 |

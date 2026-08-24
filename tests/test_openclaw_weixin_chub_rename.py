@@ -145,24 +145,30 @@ def test_rename_result_keeps_full_title_and_shortens_session_list(
 def test_rename_rejects_missing_or_invalid_title(settings: Settings) -> None:
     manager, codex_manager, quick_interactions = configured_manager(settings)
 
-    for message_id, prompt in (
-        ("rename-missing-title", "rename"),
-        ("rename-long-title", f"rename {'标' * 49}"),
-    ):
-        result = manager.dispatch(
-            message_id=message_id,
-            prompt=prompt,
-            message_type="text",
-            correlation_id=None,
-            source_ip="100.64.0.21",
-            delivery_route=delivery_route(),
-        )
-        assert result.message is not None
-        assert result.message == "Usage: rename <title> (maximum 48 characters)."
+    missing = manager.dispatch(
+        message_id="rename-missing-title",
+        prompt="rename",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+    assert missing.message is not None
+    assert "Task · rename" in missing.message
+    quick_interactions.submit.assert_called_once()
 
-    codex_manager.get_session.assert_not_called()
+    long_title = manager.dispatch(
+        message_id="rename-long-title",
+        prompt=f"rename {'标' * 49}",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+    assert long_title.message is not None
+    assert long_title.message == "Usage: rename <title> (maximum 48 characters)."
+
     codex_manager.rename_session.assert_not_called()
-    quick_interactions.submit.assert_not_called()
 
 
 def test_rename_requires_current_session(settings: Settings) -> None:
@@ -214,6 +220,39 @@ def test_rename_failure_keeps_command_out_of_normal_submission(
     assert result.message.startswith(
         "Rename: Failed. The current title was not changed. Try again later."
         "\n\nNo sessions\n\n"
+    )
+    assert result.message.endswith("Weekly Unavailable")
+    quick_interactions.submit.assert_not_called()
+
+
+def test_rename_external_writer_explains_how_to_recover(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager._state.session_id = "session-1"
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=1, session_id="session-1")
+    ]
+    codex_manager.get_session.return_value = _current_session()
+    codex_manager.rename_session.side_effect = ApiError(
+        409,
+        "codex_session_writer_active",
+        "This is open in another app, close it there to continue here.",
+    )
+
+    result = manager.dispatch(
+        message_id="rename-external-writer",
+        prompt="rename 新标题",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message is not None
+    assert result.message.startswith(
+        "Rename: Not completed. This is open in another app, "
+        "close it there to continue here.\n\nNo sessions\n\n"
     )
     assert result.message.endswith("Weekly Unavailable")
     quick_interactions.submit.assert_not_called()

@@ -17,6 +17,11 @@ from app.ai_session.models import (
     utc_now,
 )
 from app.ai_session.store import AiSessionStore, AiSessionStoreUnavailable
+from app.ai_session.session_defaults import (
+    SessionDefaults,
+    SessionDefaultsStore,
+    SessionDefaultsStoreUnavailable,
+)
 from app.ai_session.supervisor import InteractiveSupervisor
 from app.codex.models import (
     CodexModelCatalogData,
@@ -49,6 +54,9 @@ class AiSessionManager:
         self.settings = settings
         self.store = AiSessionStore(
             settings.codex_pty.data_file.with_name("ai-sessions.json")
+        )
+        self.session_defaults = SessionDefaultsStore(
+            settings.codex_pty.data_file.with_name("session-defaults.json")
         )
         adapter = CodexRuntimeAdapter(settings)
         self.runtime_registry = RuntimeRegistry([adapter])
@@ -153,6 +161,14 @@ class AiSessionManager:
         session_mode: SessionMode = "terminal",
     ) -> SessionInfo:
         self._require_available()
+        if model is None and reasoning_effort is None:
+            try:
+                defaults = self.session_defaults.read()
+            except SessionDefaultsStoreUnavailable:
+                LOGGER.warning("Unable to read node-level Session defaults", exc_info=True)
+            else:
+                model = defaults.model
+                reasoning_effort = defaults.reasoning_effort
         self.validate_model(model, reasoning_effort)
         workspace = next(
             (item for item in self.workspaces() if item.id == workspace_id),
@@ -229,7 +245,7 @@ class AiSessionManager:
             catalog = self.runtime_adapter.read_model_catalog()
         except RuntimeOperationError as exc:
             raise self._runtime_api_error(exc) from exc
-        return CodexModelCatalogData(
+        data = CodexModelCatalogData(
             models=[
                 CodexModelInfo(
                     id=model.id,
@@ -246,6 +262,73 @@ class AiSessionManager:
             default_model=catalog.default_model,
             default_reasoning_effort=catalog.default_reasoning_effort,
         )
+        try:
+            defaults = self.session_defaults.read()
+        except SessionDefaultsStoreUnavailable:
+            LOGGER.warning("Unable to read node-level Session defaults", exc_info=True)
+            return data
+        selected = next(
+            (model for model in data.models if model.id == defaults.model),
+            None,
+        )
+        if selected is None:
+            return data
+        if defaults.reasoning_effort is not None and not any(
+            level.id == defaults.reasoning_effort for level in selected.levels
+        ):
+            return data
+        return data.model_copy(
+            update={
+                "default_model": selected.id,
+                "default_reasoning_effort": (
+                    defaults.reasoning_effort or selected.default_level
+                ),
+            }
+        )
+
+    def update_session_defaults(
+        self,
+        model: str | None,
+        reasoning_effort: str | None,
+    ) -> CodexModelCatalogData:
+        self._require_available()
+        self.validate_model(model, reasoning_effort)
+        try:
+            self.session_defaults.save(
+                SessionDefaults(model=model, reasoning_effort=reasoning_effort)
+            )
+        except OSError as exc:
+            raise ApiError(
+                503,
+                "codex_session_defaults_unavailable",
+                "无法保存新建 Session 默认模型，请稍后重试。",
+            ) from exc
+        return self.read_model_catalog()
+
+    def update_quick_session_model(
+        self,
+        session_id: str,
+        model: str,
+        reasoning_effort: str,
+    ) -> AiSession:
+        """Persist the model for a future quick task after final writer checks."""
+        self._require_available()
+        self.validate_model(model, reasoning_effort)
+        with self._lock:
+            session = self.get_session(session_id)
+            self._require_quick_access(session)
+            usage = self._resolve_session_usage(session)
+            if usage.owner != "none" or usage.phase != "idle":
+                raise ApiError(
+                    409,
+                    "codex_session_model_update_busy",
+                    "Session 正在执行或被占用，请等待任务结束后重试。",
+                )
+            session.model = model
+            session.reasoning_effort = reasoning_effort
+            session.updated_at = utc_now()
+            self.store.save(session)
+            return session
 
     def prepare_quick_interaction(self) -> None:
         self._require_available()
@@ -514,6 +597,13 @@ class AiSessionManager:
                     409,
                     "codex_session_rename_not_allowed",
                     "内部翻译 Session 标题固定，不支持重命名。",
+                )
+            usage = self._resolve_session_usage(session)
+            if usage.owner == "external":
+                raise ApiError(
+                    409,
+                    "codex_session_writer_active",
+                    "This is open in another app, close it there to continue here.",
                 )
             session.title = title
             session.updated_at = utc_now()
@@ -1203,14 +1293,16 @@ class AiSessionManager:
         changed = False
         if native.active_model and session.active_model != native.active_model:
             session.active_model = native.active_model
-            session.model = native.active_model
+            if session.model is None:
+                session.model = native.active_model
             changed = True
         if (
             native.active_reasoning_effort
             and session.active_reasoning_effort != native.active_reasoning_effort
         ):
             session.active_reasoning_effort = native.active_reasoning_effort
-            session.reasoning_effort = native.active_reasoning_effort
+            if session.reasoning_effort is None:
+                session.reasoning_effort = native.active_reasoning_effort
             changed = True
         if native.title and not session.title:
             session.title = native.title[:48]

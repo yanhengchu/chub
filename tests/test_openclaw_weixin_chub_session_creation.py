@@ -184,7 +184,7 @@ def test_dispatch_returns_bounded_failure_instead_of_api_error(
 
 
 @pytest.mark.parametrize("prompt", ["new", "新建", " new。 "])
-def test_new_without_title_falls_back_to_normal_task(
+def test_new_without_title_creates_and_selects_default_session(
     settings: Settings,
     prompt: str,
 ) -> None:
@@ -218,12 +218,13 @@ def test_new_without_title_falls_back_to_normal_task(
     )
 
     assert result.message is not None
-    assert result.message.startswith("Submitted")
-    assert "Task · " in result.message
+    assert result.message.startswith(
+        'Create: Session 1 "Unnamed Session" was created and selected.'
+    )
     assert manager.session_id() == "session-new"
     codex_manager.create_session.assert_called_once()
     codex_manager.rename_session.assert_not_called()
-    quick_interactions.submit.assert_called_once()
+    quick_interactions.submit.assert_not_called()
 
 
 @pytest.mark.parametrize(

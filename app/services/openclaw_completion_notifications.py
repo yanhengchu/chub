@@ -47,7 +47,6 @@ class OpenClawCompletionNotifier:
             None
         )
         self.completion_usage_reader: Callable[[], str] | None = None
-        self.request_slot_validator: Callable[[int, str], bool] | None = None
 
     def notify(
         self,
@@ -181,8 +180,6 @@ class OpenClawCompletionNotifier:
             paragraphs = [target, error or "The task was not executed."]
             if task:
                 paragraphs.append(f"Task:\n{task.strip()}")
-            if english:
-                paragraphs.append(f"English:\n{english.strip()}")
         else:
             heading = "Optimization failed"
             paragraphs = [target, "The original task was not executed."]
@@ -198,6 +195,33 @@ class OpenClawCompletionNotifier:
                 heading,
                 "\n\n".join(paragraphs),
             ),
+        )
+
+    def notify_weixin_translation_confirmation(
+        self,
+        route: QuickInteractionWeixinRoute,
+        *,
+        target_session_id: str | None,
+        task: str,
+        english: str,
+    ) -> CompletionNotificationResult:
+        if not self.config.enabled:
+            return CompletionNotificationResult("skipped", "微信完成通知未启用。")
+        body = "\n\n".join(
+            (
+                self._weixin_target_session_line(target_session_id),
+                f"Polished:\n{task.strip()}",
+                f"English:\n{english.strip()}",
+                "Reply:\ntext ok\ntext next\ntext cancel\ntext <reproduce the English>",
+            )
+        )
+        return self._send_messages(
+            required_account_id=route.account_id,
+            recipient=route.recipient,
+            messages=[],
+            require_unique=True,
+            unavailable_status="failed",
+            message_factory=lambda: self._bounded_messages("Translation ready", body),
         )
 
     def _weixin_target_session_line(
@@ -413,12 +437,10 @@ class OpenClawCompletionNotifier:
         content = task.result if task.status == "succeeded" else task.error
         summary = (content or "No result.").strip()
         session_line = self._completion_session_line(task)
-        request_line = self._completion_request_line(task)
         single_prefix = self._completion_prefix(
             heading,
             task.summary,
             session_line,
-            request_line,
         )
         footer_suffix = f"\n\n{footer}" if footer else ""
         if (
@@ -431,7 +453,6 @@ class OpenClawCompletionNotifier:
             f"{heading} · {MAX_COMPLETION_MESSAGE_PARTS}/{MAX_COMPLETION_MESSAGE_PARTS}",
             task.summary,
             session_line,
-            request_line,
         )
         content_limit = self.config.max_message_chars - len(multipart_prefix)
         final_content_limit = content_limit - len(footer_suffix)
@@ -454,7 +475,7 @@ class OpenClawCompletionNotifier:
 
         total = len(parts)
         messages = [
-            f"{self._completion_prefix(f'{heading} · {index}/{total}', task.summary, session_line, request_line)}{part}"
+            f"{self._completion_prefix(f'{heading} · {index}/{total}', task.summary, session_line)}{part}"
             for index, part in enumerate(parts, start=1)
         ]
         if footer_suffix:
@@ -511,30 +532,13 @@ class OpenClawCompletionNotifier:
         heading: str,
         task_summary: str | None,
         session_line: str | None = None,
-        request_line: str | None = None,
     ) -> str:
         paragraphs = [heading]
         if session_line:
             paragraphs.append(session_line)
-        if request_line:
-            paragraphs.append(request_line)
         if task_summary:
             paragraphs.append(f"Task · {task_summary}")
         return "\n\n".join(paragraphs) + "\n\n"
-
-    def _completion_request_line(self, task: QuickInteractionTask) -> str | None:
-        slot = task.weixin_request_slot
-        generation = task.weixin_request_generation
-        title = task.weixin_request_title
-        if slot is None or generation is None or not title:
-            return None
-        suffix = ""
-        if (
-            self.request_slot_validator is not None
-            and not self.request_slot_validator(slot, generation)
-        ):
-            suffix = " (Unavailable)"
-        return f"Request · R{slot} · {title}{suffix}"
 
     def _completion_session_line(self, task: QuickInteractionTask) -> str | None:
         slot, title = self._read_session_context(task.session_id)

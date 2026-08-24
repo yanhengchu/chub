@@ -176,8 +176,8 @@ Worker 对已交付终态保留有限历史或墓碑，直到 Web 明确确认�
 
 - 翻译与主任务使用同一 Worker，但采用独立 FIFO 队列。
 - 启用微信文本优化时，普通任务先进入翻译 FIFO；成功解析中文润色与 English 后，才以持久化派生标识提交到原业务 Session。固定指令不进入该队列。
-- 翻译状态保存原消息标识、可信回送路由、目标 Session/槽位和结果。Web 重启不清空队列，也不会重复提交已经存在的翻译或主任务。
-- 翻译成功但目标 Session 失效或变忙时丢弃，不自动切换、不进入待续提；翻译失败不回退执行原文。
+- 翻译状态保存原消息标识、可信回送路由、目标 Session/槽位和结果；确认队列与翻译 FIFO 使用同一持久化状态。普通 Web 重启不清空任一队列，也不会重复提交已经存在的翻译或主任务。
+- 翻译成功后目标 Session 失效时丢弃，不自动切换；目标暂忙时保留固定目标并等待执行层可写后重试。自动执行任务视为已确认，确认模式任务仍先进入确认 FIFO；翻译失败不回退执行原文。
 - 翻译任务可靠进入 Worker 后，微信同步链路静默结束；只有润色文本对应的主任务也被 Worker 接收后，Web 才进入 `Started` 通知流程。
 - 润色中文和 English 各自最多 8000 字符，超限按翻译失败收敛且不得写入不可恢复状态。恢复时缺失 Worker 任务必须通知失败，并把源消息关闭为重复投递可静默重放的失败终态；派生主任务已经提交时按保存标识幂等确认，不得再次提交或改写为未提交。
 - Worker 或宿主机异常导致执行结果不确定时标记失败，不自动重放。
@@ -198,7 +198,7 @@ Worker 对已交付终态保留有限历史或墓碑，直到 Web 明确确认�
 
 ### 6.1 普通维护重启
 
-电脑端 `chub restart`、微信固定 `restart web` / `重启 Web` 或首页手动重启都只重启 Web 服务。Worker、正在运行的 Runner、翻译队列和实时 tmux Session 保持不变；实时终端的旧 `ttyd` 桥由旧实例关闭或新实例启动时清理，用户再次进入 Session 时重新创建桥并 attach 原 tmux。微信 `restart worker` / `重启 Worker` 才执行 Quick Worker 的任务清理与恢复，不影响 Web 或实时终端。升级/恢复清理后的旧逻辑映射则按升级操作保存的旧逻辑 ID 与原生 Session ID 重新绑定仍存在的 Chub tmux。实时终端的完整重连规则以[AI Session 状态模型设计](AI_SESSION_STATE_DESIGN.md)和 Runtime 设计为准。
+电脑端 `chub restart`、微信固定 `restart web` / `重启 Web` 或首页手动重启都只重启 Web 服务。Worker、正在运行的 Runner、翻译 FIFO、确认 FIFO 和实时 tmux Session 保持不变；新 Web 恢复已送达的确认队头与已确认但等待目标可写的任务，且不重复提交。实时终端的旧 `ttyd` 桥由旧实例关闭或新实例启动时清理，用户再次进入 Session 时重新创建桥并 attach 原 tmux。微信 `restart worker` / `重启 Worker` 才执行 Quick Worker 的任务清理与恢复，不影响 Web 或实时终端。升级/恢复清理后的旧逻辑映射则按升级操作保存的旧逻辑 ID 与原生 Session ID 重新绑定仍存在的 Chub tmux。实时终端的完整重连规则以[AI Session 状态模型设计](AI_SESSION_STATE_DESIGN.md)和 Runtime 设计为准。
 
 新实例健康后通过启动恢复门禁重建状态，再恢复 Session 写入和页面操作。
 

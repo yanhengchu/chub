@@ -97,6 +97,7 @@ def configured_manager(
         MagicMock(return_value=None),
     )
     manager.session_archiver = MagicMock()
+    manager.session_deleter = MagicMock()
     manager._status_cache["readiness"] = (manager.status(), utc_now())
     return (
         manager,

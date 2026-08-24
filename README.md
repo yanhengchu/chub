@@ -54,7 +54,7 @@ Web 是控制面和业务协调入口；Quick Worker 独立负责需要跨 Web �
 | --- | --- | --- |
 | 设备管理 | 查看节点与系统状态，执行后端白名单维护任务，查看受限、脱敏的操作日志和运行日志 | 首页、设置页、日志页 |
 | Codex 会话 | 在统一列表按创建时间倒序查看 Session；创建时选择“实时终端”或“快速交互”，并通用执行停止、归档、重命名和删除 | 首页、Session 页 |
-| 需求储备 | 使用 R1–R9 保存、更新和查看轻量需求，并从微信提交到当前 Session 执行 | 命令行、微信 ClawBot |
+| 需求储备 | 使用 R1–R9 保存、更新、查看、归档和删除轻量需求 | 命令行、微信 ClawBot |
 | OpenClaw 与微信 | 查看并维护 Gateway 和微信通道；将可信微信私聊交给 Chub 固定路由或 Codex 任务；任务结束后按原路返回结果 | 首页、设置页、微信 ClawBot |
 | 自动化任务 | 管理独立 Debug Chrome，复用登录状态运行配置驱动任务；当前支持飞书 Wiki Markdown 下载和周报资料准备 | 首页、自动化页、命令行 |
 | 周报 | 校验当期资料和周期，确认重点后生成、复核并展示正式周报 | 自动化页、周报页 |
@@ -114,6 +114,7 @@ chub start
 chub stop
 chub restart
 chub status
+chub check
 chub worker-health
 chub worker-drain
 chub worker-reload
@@ -124,6 +125,7 @@ chub uninstall
 
 macOS 使用两个独立 LaunchAgent，Ubuntu 使用两个独立 systemd user service，分别承载 Web 和
 Quick Worker。`chub restart` 只重启 Web，不停止 Worker；`chub status` 同时显示两个服务，
+`chub check` 汇总项目配置、服务、Web、Quick Worker 和系统状态并在检查失败时返回非零码；
 `chub worker-health` 通过本机私有 IPC 读取 Worker 健康信息；`chub worker-drain` 停止接收新任务并等待已受理任务收敛；`chub worker-reload` 关闭新提交、清理排队和执行中的任务、独立重载 Worker 并确认新 generation 健康；`chub worker-recover` 保留为本机服务恢复入口。`worker-drain`、`worker-reload` 和 `worker-recover` 只在本机终端执行，不能从正在运行的快速任务内部调用；首页“工作站环境”确认后可在 Worker 健康、忙碌、协议不兼容或不可达时重启并清理 Worker 任务。当前 Worker 已经接管页面、微信和翻译快速任务；
 macOS 与 Ubuntu 均已确认单独重启 Web 不会停止 Worker、Runner 或现有任务，恢复后的结果和通知不会重复。
 Worker 不健康时，快速交互 Session 写操作保持失败关闭，不回退到 Web Runner；实时终端使用独立的 Codex PTY/tmux 链路。
@@ -149,7 +151,7 @@ Codex PTY 依赖 `codex`、`ttyd` 和 `tmux`。安装服务时，Chub 会从当�
 - **实时终端**：使用原生 Codex TUI，适合审批、持续操作和实时输出；只显示在 Chub Web。
 - **快速交互**：提交后台任务并在时间线查看状态和结果，适合手机、普通网络和微信入口；只使用 Quick Worker。
 
-新建 Session 默认选择快速交互。Session 类型创建后不可切换；同一 Session 不会在两类入口间共享 writer。微信和 ClawBot 只使用快速交互 Session，实时终端 Session 不进入微信槽位或手机快速交互列表。
+新建 Session 默认选择快速交互。设置页选择的模型和推理等级会保存为当前节点的后续新建默认，Web 与微信 `new` 共用该默认；微信 Chub 模式显式配置的模型和等级仍优先。Session 类型创建后不可切换；同一 Session 不会在两类入口间共享 writer。微信和 ClawBot 只使用快速交互 Session，实时终端 Session 不进入微信槽位或手机快速交互列表。
 
 Session、Activity、usage 投影、槽位、标题和入口语义见[Chub AI Session 状态模型设计](docs/AI_SESSION_STATE_DESIGN.md)。后台任务、通知终态和 Worker 服务恢复见[Chub Quick Worker 独立服务设计](docs/CHUB_QUICK_WORKER_DESIGN.md)。
 
@@ -159,7 +161,7 @@ Session、Activity、usage 投影、槽位、标题和入口语义见[Chub AI Se
 
 轻量需求储备使用 `R1`–`R9` 九个活动槽位，不创建专用 Session。维护者明确要求保存或更新已经讨论成型的小需求后，编码 Agent 通过本机 `chub request save` 或 `chub request update` 受控写入；`chub request list` 和 `chub request show` 用于检查活动需求。保存和更新从标准输入读取完整正文，不直接编辑状态文件。
 
-微信 Chub 模式可在状态摘要中查看活动需求，并将指定需求提交到当前 Session 或归档非运行需求。完整的本机命令、微信语法、长度限制和失败语义见[Chub 集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md)；OpenClaw 定制、微信路由、持久化和通知边界见[OpenClaw 定制集成设计](docs/OPENCLAW_CUSTOMIZATION_DESIGN.md)。
+微信 Chub 模式可在状态摘要中查看活动需求，并归档或删除指定需求。需求执行由维护者在 AI 对话中发送普通任务完成，不提供微信固定执行指令。完整的本机命令、微信语法、长度限制和失败语义见[Chub 集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md)；OpenClaw 定制、微信路由、持久化和通知边界见[OpenClaw 定制集成设计](docs/OPENCLAW_CUSTOMIZATION_DESIGN.md)。
 
 ### AI 额度
 
@@ -177,7 +179,7 @@ OpenClaw 提供可信入口和通道上下文，Chub 负责业务路由、安全
 
 首页“工作站环境”卡片中的 OpenClaw 分区用于查看 Gateway、微信通道和 Tailscale 入口，并提供受控的启停、重启与恢复及微信绑定操作。重启与恢复发现固定插件或补丁基线不一致时会先同步，再重启 Gateway 和消息通道；底层 API action 仍使用 `restart`，微信端使用 `restart clawbot`。绑定成功只表示通道登录完成，不代表发送者配对或 Owner 权限已经配置。
 
-微信 Chub 固定维护指令为 `restart web`（重启 Web）、`restart worker`（重启 Worker）、`restart clawbot`（重启 ClawBot）和 `upgrade`（升级系统）；均按固定目标执行，不接受附加路径或命令。`upgrade status` 只读查询升级状态，四项操作的最终结果分别以新实例、Worker、Gateway/消息通道或升级运行态确认结果为准。
+微信 Chub 固定维护指令为 `restart web`（重启 Web）、`restart worker`（重启 Worker）、`restart clawbot`（重启 ClawBot）和 `upgrade`（升级系统）；均按固定目标执行，不接受附加路径或命令。四项操作的最终结果分别以新实例、Worker、Gateway/消息通道或升级运行态确认结果为准；升级完成结果通过独立通知返回。
 
 端到端状态和安全边界见 [OpenClaw 定制集成设计](docs/OPENCLAW_CUSTOMIZATION_DESIGN.md)；插件协议、构建和部署见仓库内维护资料 [Chub OpenClaw 插件说明](integrations/openclaw/chub/README.md)。
 
@@ -228,9 +230,11 @@ cp config/automations.example.yaml config/automations.local.yaml
 
 Runner 不会自行启动或停止 Debug Chrome。浏览器 Profile 未初始化、端口冲突或环境正被使用时会明确失败。周报资料下载、周期校验、人工重点确认和正式生成规则见 [本期工作周报自动化与生成设计](docs/WEEKLY_REPORT_AUTOMATION_DESIGN.md)。
 
-### 微信执行前润色
+### 微信正文处理
 
-设置页的“自动润色后执行”是节点级设置，需要真实 loopback 或可信 Tailnet 访问。开启后，微信普通任务先在独立只读 Session 生成中文润色和 English，再把润色后的中文提交到原目标 Session；翻译受理后不发送处理中回执，主任务被接收后发送包含实际提交文本和 English 的 `Started` 通知。固定指令绕过该流程，具体指令和匹配边界以[集成能力清单第 4 节](docs/CHUB_INTEGRATION_CAPABILITIES.md#4-微信-clawbot-指令)为准。首次状态由本机配置的 `translation_enabled` 决定，页面修改后由 Chub 私有状态持久化并即时生效，无需改写 YAML 或重启服务。
+设置页的“正文处理方式”是节点级设置，需要真实 loopback 或可信 Tailnet 访问。微信普通任务及携带正文的 `switch` / `S1`–`S9` 支持三档：`直接执行`直接提交原文；`自动润色后执行`先在独立只读 Session 生成中文润色和 English，再自动提交润色中文；`自动润色后确认执行`生成同一份内容后发送 `Translation ready`，由维护者用 `text ok`、`text next`、`text cancel` 或英文复述处理确认队头。主任务实际被接收后才发送包含润色中文和 English 的 `Started`；确认模式在受理后异步投递该通知，不增加单独的“Preparing to submit”回执。固定指令和续提指令绕过该流程，具体指令、队列和失败边界以[集成能力清单第 4 节](docs/CHUB_INTEGRATION_CAPABILITIES.md#4-微信-clawbot-指令)为准。
+
+首次默认由 `translation_mode`（`direct` / `auto` / `confirm`）决定；未设置时兼容读取旧 `translation_enabled`（`false` 为直接执行，`true` 为自动润色后执行）。页面修改后由 Chub 私有状态持久化并即时生效，无需改写 YAML 或重启服务。
 
 ### 界面风格
 

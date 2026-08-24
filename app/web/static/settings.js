@@ -19,8 +19,9 @@ const codexDefaultReasoningEffort = document.querySelector(
 const codexSessionSettingsMessage = document.querySelector(
   "#codex-session-settings-message",
 );
-const weixinTranslationEnabled = document.querySelector(
-  "#weixin-translation-enabled",
+const weixinProcessingMode = document.querySelector("#weixin-processing-mode");
+const weixinProcessingModeInputs = document.querySelectorAll(
+  'input[name="weixin-processing-mode"]',
 );
 const weixinTranslationMessage = document.querySelector(
   "#weixin-translation-message",
@@ -248,11 +249,14 @@ function renderCodexReasoningLevels(preferred = "") {
   return Boolean(supported || !preferred);
 }
 
-function renderCodexModels(models) {
-  const preferredModel = readCodexPreference(CODEX_DEFAULT_MODEL_KEY);
-  const preferredEffort = readCodexPreference(
+function renderCodexModels(data) {
+  const models = data.models;
+  const storedModel = readCodexPreference(CODEX_DEFAULT_MODEL_KEY);
+  const storedEffort = readCodexPreference(
     CODEX_DEFAULT_REASONING_EFFORT_KEY,
   );
+  const preferredModel = storedModel || data.default_model || "";
+  const preferredEffort = storedEffort || data.default_reasoning_effort || "";
   codexModels = models;
   const options = [createOption("", defaultModelOptionLabel())];
   models.forEach((model) => {
@@ -266,8 +270,8 @@ function renderCodexModels(models) {
     modelAvailable ? preferredEffort : "",
   );
   if (
-    (!modelAvailable && preferredModel)
-    || (!preferredModel && preferredEffort)
+    (!modelAvailable && storedModel)
+    || (!storedModel && storedEffort)
     || !effortAvailable
   ) {
     try {
@@ -277,12 +281,27 @@ function renderCodexModels(models) {
         codexDefaultReasoningEffort.value,
       );
       codexSessionSettingsMessage.textContent =
-        "之前保存的模型或等级当前不可用，已改为跟随 Codex 默认。";
+        "之前保存的模型或等级当前不可用，已改为节点默认。";
       codexSessionSettingsMessage.className = "message message-error";
     } catch (_error) {
       codexSessionSettingsMessage.textContent = "当前浏览器无法保存会话偏好。";
       codexSessionSettingsMessage.className = "message message-error";
     }
+  }
+}
+
+async function syncCodexSessionDefaults() {
+  const response = await fetch("/api/codex/session-defaults", {
+    method: "PUT",
+    headers: settingsHeaders(true),
+    body: JSON.stringify({
+      model: codexDefaultModel.value || null,
+      reasoning_effort: codexDefaultReasoningEffort.value || null,
+    }),
+  });
+  const payload = await response.json();
+  if (!response.ok || payload.success !== true) {
+    throw new Error(payload.error?.code || "session_defaults_update_failed");
   }
 }
 
@@ -293,7 +312,19 @@ async function loadCodexModels() {
     if (!response.ok || payload.success !== true || !Array.isArray(payload.data?.models)) {
       throw new Error("model_catalog_unavailable");
     }
-    renderCodexModels(payload.data.models);
+    renderCodexModels(payload.data);
+    if (
+      readCodexPreference(CODEX_DEFAULT_MODEL_KEY)
+      || readCodexPreference(CODEX_DEFAULT_REASONING_EFFORT_KEY)
+    ) {
+      try {
+        await syncCodexSessionDefaults();
+      } catch (_error) {
+        codexSessionSettingsMessage.textContent =
+          "浏览器偏好已保存，但节点默认同步失败；微信新建仍会使用旧默认。";
+        codexSessionSettingsMessage.className = "message message-error";
+      }
+    }
   } catch (_error) {
     try {
       saveCodexPreference(CODEX_DEFAULT_MODEL_KEY, "");
@@ -326,8 +357,11 @@ function settingsHeaders(includeJson = false) {
 }
 
 function renderWeixinTranslationStatus(status) {
-  weixinTranslationEnabled.checked = status.enabled === true;
-  weixinTranslationEnabled.disabled = false;
+  const selected = status.mode || (status.enabled ? "auto" : "direct");
+  for (const input of weixinProcessingModeInputs) {
+    input.checked = input.value === selected;
+  }
+  weixinProcessingMode.disabled = false;
   const active = Number(status.queued || 0) + Number(status.running || 0);
   const parts = [];
   if (active > 0) {
@@ -357,7 +391,7 @@ async function loadWeixinTranslationStatus(
   retry = false,
 ) {
   const requestVersion = ++weixinTranslationRequestVersion;
-  weixinTranslationEnabled.disabled = true;
+  weixinProcessingMode.disabled = true;
   try {
     const response = await fetch("/api/settings/weixin-translation", {
       headers: settingsHeaders(),
@@ -375,7 +409,7 @@ async function loadWeixinTranslationStatus(
     if (requestVersion !== weixinTranslationRequestVersion) {
       return false;
     }
-    weixinTranslationEnabled.disabled = true;
+    weixinProcessingMode.disabled = true;
     weixinTranslationMessage.textContent = failureMessage;
     weixinTranslationMessage.className = "message message-error";
     if (retry) {
@@ -387,18 +421,18 @@ async function loadWeixinTranslationStatus(
   }
 }
 
-async function saveWeixinTranslationStatus(enabled) {
+async function saveWeixinTranslationStatus(mode) {
   weixinTranslationRequestVersion += 1;
   if (weixinTranslationPollTimer !== null) {
     window.clearTimeout(weixinTranslationPollTimer);
     weixinTranslationPollTimer = null;
   }
-  weixinTranslationEnabled.disabled = true;
+  weixinProcessingMode.disabled = true;
   try {
     const response = await fetch("/api/settings/weixin-translation", {
       method: "PUT",
       headers: settingsHeaders(true),
-      body: JSON.stringify({ enabled }),
+      body: JSON.stringify({ mode }),
     });
     const payload = await response.json();
     if (!response.ok || payload.success !== true) {
@@ -423,33 +457,43 @@ codexDefaultPermission.addEventListener("change", () => {
   saveCodexDefaultPermission(codexDefaultPermission.value);
 });
 
-codexDefaultModel.addEventListener("change", () => {
+codexDefaultModel.addEventListener("change", async () => {
   try {
     saveCodexPreference(CODEX_DEFAULT_MODEL_KEY, codexDefaultModel.value);
     renderCodexReasoningLevels();
     saveCodexPreference(CODEX_DEFAULT_REASONING_EFFORT_KEY, "");
+    codexDefaultModel.disabled = true;
+    codexDefaultReasoningEffort.disabled = true;
+    await syncCodexSessionDefaults();
+    codexDefaultModel.disabled = false;
+    codexDefaultReasoningEffort.disabled = !selectedCodexModel();
     codexSessionSettingsMessage.textContent = "";
     codexSessionSettingsMessage.className = "message";
   } catch (_error) {
-    renderCodexModels(codexModels);
-    codexSessionSettingsMessage.textContent = "当前浏览器无法保存会话偏好。";
+    codexDefaultModel.disabled = false;
+    codexDefaultReasoningEffort.disabled = !selectedCodexModel();
+    codexSessionSettingsMessage.textContent = "节点默认保存失败，请稍后重试。";
     codexSessionSettingsMessage.className = "message message-error";
   }
 });
 
-codexDefaultReasoningEffort.addEventListener("change", () => {
+codexDefaultReasoningEffort.addEventListener("change", async () => {
   try {
     saveCodexPreference(
       CODEX_DEFAULT_REASONING_EFFORT_KEY,
       codexDefaultReasoningEffort.value,
     );
+    codexDefaultModel.disabled = true;
+    codexDefaultReasoningEffort.disabled = true;
+    await syncCodexSessionDefaults();
+    codexDefaultModel.disabled = false;
+    codexDefaultReasoningEffort.disabled = false;
     codexSessionSettingsMessage.textContent = "";
     codexSessionSettingsMessage.className = "message";
   } catch (_error) {
-    renderCodexReasoningLevels(
-      readCodexPreference(CODEX_DEFAULT_REASONING_EFFORT_KEY),
-    );
-    codexSessionSettingsMessage.textContent = "当前浏览器无法保存会话偏好。";
+    codexDefaultModel.disabled = false;
+    codexDefaultReasoningEffort.disabled = !selectedCodexModel();
+    codexSessionSettingsMessage.textContent = "节点默认保存失败，请稍后重试。";
     codexSessionSettingsMessage.className = "message message-error";
   }
 });
@@ -457,9 +501,11 @@ codexDefaultReasoningEffort.addEventListener("change", () => {
 loadCodexModels();
 loadWeixinTranslationStatus();
 
-weixinTranslationEnabled.addEventListener("change", () => {
-  saveWeixinTranslationStatus(weixinTranslationEnabled.checked);
-});
+for (const input of weixinProcessingModeInputs) {
+  input.addEventListener("change", () => {
+    if (input.checked) saveWeixinTranslationStatus(input.value);
+  });
+}
 
 cyberRainSpeed.value = String(readRangePreference(CYBER_RAIN_SPEED_KEY, 60));
 cyberRainBrightness.value = String(readRangePreference(CYBER_RAIN_BRIGHTNESS_KEY, 70));

@@ -340,10 +340,6 @@ class QuickInteractionManager:
         operation_id: str,
         source_ip: str,
         notification_route: QuickInteractionWeixinRoute | None = None,
-        weixin_request_slot: int | None = None,
-        weixin_request_generation: str | None = None,
-        weixin_request_run_id: str | None = None,
-        weixin_request_title: str | None = None,
         kind: str = "standard",
         translation_original: str | None = None,
         suppress_completion_notification: bool = False,
@@ -422,10 +418,6 @@ class QuickInteractionManager:
                         max_chars=summary_max_chars,
                         max_width=summary_max_width,
                     ),
-                    weixin_request_slot=weixin_request_slot,
-                    weixin_request_generation=weixin_request_generation,
-                    weixin_request_run_id=weixin_request_run_id,
-                    weixin_request_title=weixin_request_title,
                     kind=kind,
                     translation_original=translation_original,
                     restart_sensitive=restart_sensitive,
@@ -591,6 +583,27 @@ class QuickInteractionManager:
         if session_mode == "quick":
             self._require_worker_recovery()
         yield
+
+    def update_session_model(
+        self,
+        session_id: str,
+        model: str,
+        reasoning_effort: str,
+    ):
+        """Serialize a future-task model update with submissions for one Session."""
+        with self._session_lock(session_id):
+            with self._lock:
+                if self._any_running(session_id):
+                    raise ApiError(
+                        409,
+                        "codex_session_model_update_busy",
+                        "Session 正在执行，请等待任务结束后重试。",
+                    )
+            return self.codex_manager.update_quick_session_model(
+                session_id,
+                model,
+                reasoning_effort,
+            )
 
     def start_worker_reconciliation(self) -> None:
         with self._lock:
@@ -1072,27 +1085,6 @@ class QuickInteractionManager:
             if task is None:
                 raise ApiError(404, "quick_interaction_not_found", "快速交互任务不存在。")
             return task.model_copy(deep=True)
-
-    def find_request_task(
-        self,
-        slot: int,
-        generation: str,
-        run_id: str,
-    ) -> QuickInteractionTask | None:
-        with self._lock:
-            matches = [
-                task
-                for task in self._tasks.values()
-                if task.weixin_request_slot == slot
-                and task.weixin_request_generation == generation
-                and task.weixin_request_run_id == run_id
-            ]
-            if not matches:
-                return None
-            return max(
-                matches,
-                key=lambda task: (task.created_at, task.id),
-            ).model_copy(deep=True)
 
     def list_for_session(
         self,

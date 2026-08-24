@@ -286,6 +286,35 @@ async def test_codex_model_catalog_is_protected_and_filtered_by_manager(
 
 
 @pytest.mark.anyio
+async def test_update_codex_session_defaults_uses_manager_and_returns_catalog(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    manager = MagicMock()
+    manager.update_session_defaults.return_value = CodexModelCatalogData(
+        models=[],
+        default_model="gpt-5.6-terra",
+        default_reasoning_effort="medium",
+    )
+    app.state.codex_pty_manager = manager
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.put(
+            "/api/codex/session-defaults",
+            headers=authorization(settings),
+            json={"model": "gpt-5.6-terra", "reasoning_effort": "medium"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["default_model"] == "gpt-5.6-terra"
+    manager.update_session_defaults.assert_called_once_with(
+        "gpt-5.6-terra",
+        "medium",
+    )
+
+
+@pytest.mark.anyio
 async def test_create_session_uses_requested_model_and_reasoning_level(
     settings: Settings,
 ) -> None:
@@ -1144,6 +1173,41 @@ async def test_rename_session_logs_manager_failure(
         )
 
     assert response.status_code == 404
+    manager.rename_session.assert_called_once_with("session-1", "新标题")
+    assert statuses == ["requested", "started", "failed"]
+
+
+@pytest.mark.anyio
+async def test_rename_session_preserves_external_writer_error(
+    settings: Settings,
+    monkeypatch,
+) -> None:
+    app = create_app(settings)
+    manager = MagicMock()
+    manager.rename_session.side_effect = ApiError(
+        409,
+        "codex_session_writer_active",
+        "This is open in another app, close it there to continue here.",
+    )
+    app.state.codex_pty_manager = manager
+    statuses = []
+
+    def record_operation(_request, **kwargs):
+        statuses.append(kwargs["status"])
+        return kwargs.get("operation_id") or "rename-operation"
+
+    monkeypatch.setattr("app.codex.routes.log_operation", record_operation)
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.patch(
+            "/api/codex/sessions/session-1/title",
+            headers=authorization(settings),
+            json={"title": "新标题"},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "codex_session_writer_active"
     manager.rename_session.assert_called_once_with("session-1", "新标题")
     assert statuses == ["requested", "started", "failed"]
 

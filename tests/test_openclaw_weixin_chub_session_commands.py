@@ -258,6 +258,120 @@ def test_codex_switch_with_task_switches_and_submits_once(
     )
 
 
+def test_codex_switch_task_uses_enabled_text_optimization(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager.translation_manager = MagicMock()
+    manager.translation_manager.enabled.return_value = True
+    manager.translation_manager.has_active_target.return_value = False
+    manager.translation_manager.enqueue.return_value = True
+    manager._state.session_id = "session-1"
+    sessions = [
+        CodexSession(
+            session_mode="quick",
+            id=f"session-{slot}",
+            workspace_id="chub",
+            workspace_name="Chub",
+            cwd="/project",
+            title=f"第 {slot} 项",
+            permission_mode="full-access",
+            status="stopped",
+            activity="idle",
+        )
+        for slot in (1, 2)
+    ]
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=slot, session_id=f"session-{slot}")
+        for slot in (1, 2)
+    ]
+    codex_manager.list_sessions.return_value = sessions
+    codex_manager.get_session.return_value = sessions[1]
+
+    first = manager.dispatch(
+        message_id="switch-optimized-task",
+        prompt="切换 2 检查服务状态",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+    duplicate = manager.dispatch(
+        message_id="switch-optimized-task",
+        prompt="切换 2 重复正文不得执行",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert first.message is not None
+    assert first.message.startswith(
+        "Switch: Session 2 selected. Optimizing · Preparing to submit."
+    )
+    assert "▶ S2 · 第 2 项\n\nTask · 检查服务状态" in first.message
+    assert duplicate == first
+    assert manager.session_id() == "session-2"
+    quick_interactions.submit.assert_not_called()
+    manager.translation_manager.enqueue.assert_called_once_with(
+        message_id=manager._command_task_message_id("switch-optimized-task"),
+        original="检查服务状态",
+        route=delivery_route(),
+        operation_id=manager.translation_manager.enqueue.call_args.kwargs["operation_id"],
+        source_ip="100.64.0.21",
+        target_session_id="session-2",
+    )
+
+
+def test_codex_switch_task_keeps_selection_when_optimization_cannot_queue(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager.translation_manager = MagicMock()
+    manager.translation_manager.enabled.return_value = True
+    manager.translation_manager.has_active_target.return_value = False
+    manager.translation_manager.enqueue.return_value = False
+    manager._state.session_id = "session-1"
+    sessions = [
+        CodexSession(
+            session_mode="quick",
+            id=f"session-{slot}",
+            workspace_id="chub",
+            workspace_name="Chub",
+            cwd="/project",
+            title=f"第 {slot} 项",
+            permission_mode="full-access",
+            status="stopped",
+            activity="idle",
+        )
+        for slot in (1, 2)
+    ]
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=slot, session_id=f"session-{slot}")
+        for slot in (1, 2)
+    ]
+    codex_manager.list_sessions.return_value = sessions
+    codex_manager.get_session.return_value = sessions[1]
+
+    result = manager.dispatch(
+        message_id="switch-optimization-failed",
+        prompt="S2 检查服务状态",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message is not None
+    assert result.message.startswith(
+        "Switch: Session 2 selected, but the task was not submitted."
+    )
+    assert "Task · 检查服务状态" in result.message
+    assert manager.session_id() == "session-2"
+    quick_interactions.submit.assert_not_called()
+    manager.translation_manager.enqueue.assert_called_once()
+
+
 def test_codex_switch_with_task_failure_shows_task_summary(
     settings: Settings,
 ) -> None:
@@ -418,8 +532,12 @@ def test_codex_switch_without_current_uses_first_visible_session(
     "prompt",
     [
         "Archive 2。",
+        "Archive2。",
+        "ArchiveS2。",
         "Archive S2。",
         "归档 2",
+        "归档2",
+        "归档S2",
         "归档二",
         "归档 S2",
     ],
@@ -1363,3 +1481,46 @@ def test_duplicate_codex_switch_does_not_switch_twice(settings: Settings) -> Non
     assert manager.session_id() == "session-3"
     codex_manager.list_sessions.assert_called_once()
     manager.codex_account_reader.read_account_status.assert_called_once_with(force=True)
+
+
+def test_codex_delete_removes_target_and_clears_current_binding(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    session = CodexSession(
+        session_mode="quick",
+        id="session-1",
+        codex_session_id="native-1",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd="/project",
+        title="待删除",
+        permission_mode="full-access",
+        status="stopped",
+        activity="idle",
+    )
+    remaining_sessions = [session]
+    manager._state.session_id = "session-1"
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=1, session_id="session-1")
+    ]
+    codex_manager.list_sessions.side_effect = lambda: list(remaining_sessions)
+    codex_manager.get_session.return_value = session
+    manager.session_deleter.side_effect = lambda _session_id: remaining_sessions.clear()
+
+    result = manager.dispatch(
+        message_id="delete-session",
+        prompt="del S1",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message is not None
+    assert result.message.startswith(
+        "Delete: Session 1 deleted. The current selection was cleared."
+    )
+    manager.session_deleter.assert_called_once_with("session-1")
+    assert manager.session_id() is None
+    assert manager.session_slot_matches(1, "session-1") is False

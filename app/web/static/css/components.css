@@ -258,6 +258,62 @@ input[type="password"] {
   height: 1.15rem;
 }
 
+.settings-choice-list {
+  display: grid;
+  gap: 0.6rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.settings-choice-list legend {
+  margin-bottom: 0.55rem;
+  padding: 0;
+  color: var(--ink);
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.settings-choice {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: white;
+  cursor: pointer;
+}
+
+.settings-choice > span {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.settings-choice strong {
+  color: var(--ink);
+  font-size: 0.86rem;
+}
+
+.settings-choice small {
+  color: var(--muted);
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
+.settings-choice input[type="radio"] {
+  flex: none;
+  width: 1.15rem;
+  height: 1.15rem;
+}
+
+.settings-choice:has(input:checked) {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
 .settings-field-toggle {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -1128,6 +1184,7 @@ a.settings-utility-row > span:last-child {
 }
 
 :root[data-ui-style="cyber"] .settings-field,
+:root[data-ui-style="cyber"] .settings-choice,
 :root[data-ui-style="cyber"] .settings-meta > div,
 :root[data-ui-style="cyber"] .style-option,
 :root[data-ui-style="cyber"] .settings-details-panel,

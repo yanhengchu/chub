@@ -59,6 +59,7 @@ Commands:
              Stop the service
   restart    Restart the service and check its health
   status     Show Web and Quick Worker service status
+  check      Check project, services, Web, Worker, and system status
   worker-health
              Query Quick Worker health over private local IPC
   worker-drain
@@ -108,6 +109,7 @@ from app.core.config import load_settings
 settings = load_settings(sys.argv[2])
 values = {
     "health_url": f"http://127.0.0.1:{settings.server.port}/api/health",
+    "status_url": f"http://127.0.0.1:{settings.server.port}/api/status",
     "log_file": settings.logs.file,
     "tailnet_host": settings.server.tailnet_host or "",
 }
@@ -702,6 +704,75 @@ PY
     return 1
 }
 
+system_status_check() {
+    local health_url status_url
+    health_url="$(configured_value health_url 2>/dev/null)" \
+        || fail "configuration could not be read"
+    status_url="$(configured_value status_url 2>/dev/null)" \
+        || fail "configuration could not be read"
+    "$PYTHON_BIN" - "$health_url" "$status_url" <<'PY'
+import json
+import sys
+import urllib.error
+import urllib.request
+
+
+def read_json(url: str) -> dict:
+    with urllib.request.urlopen(url, timeout=2) as response:
+        payload = json.load(response)
+        if response.status != 200 or payload.get("success") is not True:
+            raise RuntimeError(f"unexpected response from {url}")
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise RuntimeError(f"invalid response from {url}")
+        return data
+
+
+try:
+    health = read_json(sys.argv[1])
+    status = read_json(sys.argv[2])
+except (OSError, ValueError, RuntimeError, urllib.error.URLError) as exc:
+    print(f"Chub API check: FAILED · {exc}", file=sys.stderr)
+    raise SystemExit(1)
+
+if health.get("status") != "ok":
+    print("Chub API check: FAILED · Web health is not ok", file=sys.stderr)
+    raise SystemExit(1)
+
+node = status.get("node")
+system = status.get("system")
+hub = status.get("hub")
+if not all(isinstance(value, dict) for value in (node, system, hub)):
+    print("Chub API check: FAILED · system status is incomplete", file=sys.stderr)
+    raise SystemExit(1)
+
+print(f"Web API: OK · instance {health.get('instance_id', 'unknown')}")
+print(
+    "System status: OK · "
+    f"node {node.get('name', 'unknown')} · "
+    f"memory {system.get('memory_percent', 'unknown')}% · "
+    f"disk {system.get('disk_percent', 'unknown')}%"
+)
+PY
+}
+
+check_service() {
+    local result=0
+    check_project || result=1
+    if [[ "$result" -eq 0 ]]; then
+        check_codex_pty_requirements || result=1
+        status_service || result=1
+        system_status_check || result=1
+        health_check true || result=1
+    fi
+    if [[ "$result" -eq 0 ]]; then
+        echo "Chub check passed"
+    else
+        echo "Chub check failed" >&2
+    fi
+    return "$result"
+}
+
 restart_service() {
     if [[ "${CHUB_ACTIVITY_SOURCE:-}" == "quick" ]]; then
         "$PROJECT_ROOT/scripts/chub-web-restart"
@@ -1021,6 +1092,7 @@ case "$command" in
         ;;
     restart) restart_service ;;
     status) status_service ;;
+    check) check_service ;;
     worker-health) quick_worker_health ;;
     worker-drain)
         shift

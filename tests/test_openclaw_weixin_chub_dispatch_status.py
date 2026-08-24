@@ -12,8 +12,11 @@ import pytest
 
 from app.ai_usage.models import AiTodayUsage, AiUsageData, AiUsageDisplay, AiWeeklyUsage
 from app.codex.models import (
+    CodexModelCatalogData,
+    CodexModelInfo,
     CodexQuotaData,
     CodexQuotaWindow,
+    CodexReasoningLevel,
     CodexSession,
     CodexTokenUsageData,
     QuickInteractionWeixinRoute,
@@ -216,30 +219,99 @@ def test_dispatch_returns_concise_chub_help(
 
     assert result.message == (
         "Commands\n\n"
-        "Commands are recognized at the beginning · 指令从文本开头识别；匹配失败按普通任务\n\n"
-        "Slots · N = SN = 一…九（中文数字可紧连中文指令）\n\n"
+        "指令从文本开头识别；匹配失败时按普通任务处理。\n\n"
+        "尖括号表示必选参数；方括号表示可选参数。\n\n"
+        "SN = 1-9 = S1-S9 = 一……九\n\n"
+        "查询与帮助指令\n\n"
         "chub · 状态 / 查询状态\n\n"
+        "check · 检查 Chub、Web、Worker 和系统\n\n"
         "usage · 完整额度\n\n"
-        "help · 帮助\n\n"
         "model · 模型\n\n"
+        "model list · 模型列表\n\n"
+        "model level · 模型等级\n\n"
+        "model level M# · 模型等级 M#\n\n"
+        "model use M# | L# | M# L# · 模型切换 M# | L# | M# L#\n\n"
+            "help · 帮助\n\n"
+            "翻译确认（仅收到 Translation ready 后）\n\n"
+            "text ok | next | cancel | <完整英文复述> · 确认润色正文\n\n"
+            "会话指令\n\n"
+        "sync · 同步\n\n"
+        "new [title] · 新建 [标题]\n\n"
+        "rename <title> · 重命名 <标题>\n\n"
+        "switch <SN> [task] · 切换槽位 [正文]\n\n"
+        "S1-S9 [task] · 会话槽位 [正文]\n\n"
+        "stop [SN] · 停止任务\n\n"
+        "archive <SN> · 归档槽位\n\n"
+        "del <SN> · 删除槽位\n\n"
+        "retry · 重试 / 继续执行\n\n"
+        "需求指令\n\n"
+        "cat <R1-R9> · 查看 R1-R9\n\n"
+        "archive <R1-R9> · 归档 R1-R9\n\n"
+        "del <R1-R9> · 删除 R1-R9\n\n"
+        "系统维护指令\n\n"
         "restart web · 重启 Web\n\n"
         "restart worker · 重启 Worker\n\n"
         "restart clawbot · 重启 ClawBot\n\n"
-        "upgrade · 升级系统\n\n"
-        "upgrade status\n\n"
-        "sync · 同步\n\n"
-        "new <title> · 新建 <标题>\n\n"
-        "rename <title> · 重命名 <标题>\n\n"
-        "switch <1-9|S1-S9> [task] · 切换 <槽位> [正文]\n\n"
-        "S1-S9 [task] · 会话 S1-S9 [正文]\n\n"
-        "stop <1-9|S1-S9> · 停止 <槽位>\n\n"
-            "archive <1-9|S1-S9> · 归档 <槽位>\n\n"
-            "cat <R1-R9> · 查看需求 <槽位>\n\n"
-            "run <R1-R9> · 执行需求 <槽位>\n\n"
-            "archive <R1-R9> · 归档需求 <槽位>\n\n"
-            "retry · 重试 / 继续执行"
+        "upgrade · 升级系统"
     )
     codex_manager.list_sessions.assert_not_called()
+    quick_interactions.submit.assert_not_called()
+
+
+def test_dispatch_runs_read_only_chub_check(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager.system_status_reader = lambda: SimpleNamespace(
+        system=SimpleNamespace(memory_percent=77.1, disk_percent=30.1)
+    )
+    manager.worker_health_reader = lambda: {
+        "success": True,
+        "data": {
+            "protocol_version": 9,
+            "status": "ready",
+            "active_tasks": 0,
+            "queued_tasks": 0,
+            "uncertain_tasks": 0,
+            "corrupt_tasks": 0,
+            "available_runtime_ids": ["codex"],
+        },
+    }
+
+    result = manager.dispatch(
+        message_id="check-command",
+        prompt="检查",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message is not None
+    assert re.match(r"Check · [1-9][0-9]*ms(?:\n|$)", result.message)
+    assert result.message.endswith(
+        "【服务】\n"
+        "- Web API：正常\n"
+        "- Quick Worker：`ready` · 协议版本 9\n\n"
+        "【资源】\n"
+        "- 活动任务：0 个 · 排队任务：0 个\n"
+        "- 系统：内存 77.1% · 磁盘 30.1%\n\n"
+        "【结果】健康检查：通过"
+    )
+    assert result.message == (
+        result.message.split("\n\n", 1)[0]
+        + "\n\n"
+        "【服务】\n"
+        "- Web API：正常\n"
+        "- Quick Worker：`ready` · 协议版本 9\n\n"
+        "【资源】\n"
+        "- 活动任务：0 个 · 排队任务：0 个\n"
+        "- 系统：内存 77.1% · 磁盘 30.1%\n\n"
+        "【结果】健康检查：通过"
+    )
+    assert "Done" not in result.message
+    assert "Task · chub check" not in result.message
+    assert "Weekly" not in result.message
     quick_interactions.submit.assert_not_called()
 
 
@@ -280,10 +352,47 @@ def test_model_command_reports_active_model_and_reasoning_effort(
         "Session\n\n"
         "▶ S1 · Unnamed Session\n\n"
         "Model · active-model\n\n"
-        "Level · high"
+        "Level · high\n\n"
+        "Next model · configured-model\n\n"
+        "Next level · medium"
     )
     assert "Sessions" not in result.message
     assert "Weekly" not in result.message
+    quick_interactions.submit.assert_not_called()
+
+
+def test_model_command_reports_only_the_changed_next_field(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager._state.session_id = "session-1"
+    codex_manager.get_session.return_value = CodexSession(
+        session_mode="quick",
+        id="session-1",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd="/project",
+        permission_mode="full-access",
+        status="stopped",
+        activity="idle",
+        model="active-model",
+        reasoning_effort="high",
+        active_model="active-model",
+        active_reasoning_effort="medium",
+    )
+
+    result = manager.dispatch(
+        message_id="model-command-next-level",
+        prompt="model",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message is not None
+    assert result.message.endswith("Level · medium\n\nNext level · high")
+    assert "Next model" not in result.message
     quick_interactions.submit.assert_not_called()
 
 
@@ -305,6 +414,19 @@ def test_model_command_uses_default_when_session_has_no_explicit_values(
         status="stopped",
         activity="idle",
     )
+    codex_manager.read_model_catalog.return_value = CodexModelCatalogData(
+        models=[
+            CodexModelInfo(
+                id="default-model",
+                name="Default Model",
+                description="",
+                default_level="medium",
+                levels=[CodexReasoningLevel(id="medium", description="")],
+            )
+        ],
+        default_model="default-model",
+        default_reasoning_effort="medium",
+    )
 
     result = manager.dispatch(
         message_id="model-command-default",
@@ -319,9 +441,504 @@ def test_model_command_uses_default_when_session_has_no_explicit_values(
     assert result.message == (
         "Session\n\n"
         "▶ S1 · Unnamed Session\n\n"
-        "Model · Default\n\n"
-        "Level · Default"
+        "Model · default-model\n\n"
+        "Level · medium"
     )
+
+
+def test_model_command_uses_selected_model_default_level(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    manager._state.session_id = "session-1"
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=1, session_id="session-1")
+    ]
+    codex_manager.get_session.return_value = CodexSession(
+        session_mode="quick",
+        id="session-1",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd="/project",
+        permission_mode="full-access",
+        status="stopped",
+        activity="idle",
+        model="selected-model",
+    )
+    codex_manager.read_model_catalog.return_value = CodexModelCatalogData(
+        models=[
+            CodexModelInfo(
+                id="selected-model",
+                name="Selected Model",
+                description="",
+                default_level="high",
+                levels=[CodexReasoningLevel(id="high", description="")],
+            )
+        ],
+        default_model="other-model",
+        default_reasoning_effort="low",
+    )
+
+    result = manager.dispatch(
+        message_id="model-command-selected-default-level",
+        prompt="model",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message is not None
+    assert result.message.endswith("Model · selected-model\n\nLevel · high")
+
+
+def test_model_levels_command_reports_levels_for_active_model(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager._state.session_id = "session-1"
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=1, session_id="session-1")
+    ]
+    codex_manager.get_session.return_value = CodexSession(
+        session_mode="quick",
+        id="session-1",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd="/project",
+        permission_mode="full-access",
+        status="stopped",
+        activity="idle",
+        active_model="active-model",
+        active_reasoning_effort="high",
+    )
+    codex_manager.read_model_catalog.return_value = CodexModelCatalogData(
+        models=[
+            CodexModelInfo(
+                id="active-model",
+                name="Active Model",
+                description="",
+                default_level="medium",
+                levels=[
+                    CodexReasoningLevel(id="low", description="Fast"),
+                    CodexReasoningLevel(id="medium", description="Balanced"),
+                    CodexReasoningLevel(id="high", description="Deep"),
+                ],
+            )
+        ],
+        default_model="active-model",
+        default_reasoning_effort="medium",
+    )
+
+    result = manager.dispatch(
+        message_id="model-levels-command",
+        prompt="模型等级",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == (
+        "Session\n\n"
+        "▶ S1 · Unnamed Session\n\n"
+        "Model · M1 · active-model\n\n"
+        "Level · high\n\n"
+        "Levels\n"
+        "L1 · low\n"
+        "L2 · medium\n"
+        "L3 · high"
+    )
+    quick_interactions.submit.assert_not_called()
+
+
+def test_model_list_command_reports_current_and_available_models(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager._state.session_id = "session-1"
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=1, session_id="session-1")
+    ]
+    codex_manager.get_session.return_value = CodexSession(
+        session_mode="quick",
+        id="session-1",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd="/project",
+        permission_mode="full-access",
+        status="stopped",
+        activity="idle",
+        active_model="active-model",
+    )
+    codex_manager.read_model_catalog.return_value = CodexModelCatalogData(
+        models=[
+            CodexModelInfo(
+                id="active-model",
+                name="Active Model",
+                description="",
+                default_level="medium",
+                levels=[CodexReasoningLevel(id="medium", description="")],
+            ),
+            CodexModelInfo(
+                id="other-model",
+                name="Other Model",
+                description="",
+                default_level="low",
+                levels=[CodexReasoningLevel(id="low", description="")],
+            ),
+        ],
+        default_model="active-model",
+        default_reasoning_effort="medium",
+    )
+
+    result = manager.dispatch(
+        message_id="model-list-command",
+        prompt="模型列表",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == (
+        "Session\n\n"
+        "▶ S1 · Unnamed Session\n\n"
+        "Model · M1 · active-model\n\n"
+        "Models\n"
+        "M1 · active-model\n"
+        "M2 · other-model"
+    )
+    quick_interactions.submit.assert_not_called()
+
+
+def test_model_levels_for_index_resolves_from_current_catalog(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager._state.session_id = "session-1"
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=1, session_id="session-1")
+    ]
+    codex_manager.get_session.return_value = CodexSession(
+        session_mode="quick",
+        id="session-1",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd="/project",
+        permission_mode="full-access",
+        status="stopped",
+        activity="idle",
+        model="active-model",
+        reasoning_effort="medium",
+    )
+    codex_manager.read_model_catalog.return_value = CodexModelCatalogData(
+        models=[
+            CodexModelInfo(
+                id="active-model",
+                name="Active Model",
+                description="",
+                default_level="medium",
+                levels=[CodexReasoningLevel(id="medium", description="")],
+            ),
+            CodexModelInfo(
+                id="other-model",
+                name="Other Model",
+                description="",
+                default_level="low",
+                levels=[
+                    CodexReasoningLevel(id="low", description=""),
+                    CodexReasoningLevel(id="high", description=""),
+                ],
+            ),
+        ],
+        default_model="active-model",
+        default_reasoning_effort="medium",
+    )
+
+    result = manager.dispatch(
+        message_id="model-levels-direct-index",
+        prompt="model level M2",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == (
+        "Session\n\n"
+        "▶ S1 · Unnamed Session\n\n"
+        "Model · M2 · other-model\n\n"
+        "Levels\n"
+        "L1 · low\n"
+        "L2 · high"
+    )
+    quick_interactions.submit.assert_not_called()
+
+
+def test_model_use_updates_both_model_and_level_from_current_catalog(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager._state.session_id = "session-1"
+    codex_manager.get_session.return_value = CodexSession(
+        session_mode="quick",
+        id="session-1",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd="/project",
+        permission_mode="full-access",
+        status="stopped",
+        activity="idle",
+        model="active-model",
+        reasoning_effort="medium",
+    )
+    codex_manager.read_model_catalog.return_value = CodexModelCatalogData(
+        models=[
+            CodexModelInfo(
+                id="active-model",
+                name="Active Model",
+                description="",
+                default_level="medium",
+                levels=[
+                    CodexReasoningLevel(id="low", description=""),
+                    CodexReasoningLevel(id="medium", description=""),
+                ],
+            ),
+            CodexModelInfo(
+                id="other-model",
+                name="Other Model",
+                description="",
+                default_level="low",
+                levels=[
+                    CodexReasoningLevel(id="low", description=""),
+                    CodexReasoningLevel(id="high", description=""),
+                ],
+            ),
+        ],
+        default_model="active-model",
+        default_reasoning_effort="medium",
+    )
+    result = manager.dispatch(
+        message_id="model-use-update",
+        prompt="model use M2 L2",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == (
+        "Model updated\n\nNext model · other-model\n\nNext level · high"
+    )
+    quick_interactions.update_session_model.assert_called_once_with(
+        "session-1",
+        "other-model",
+        "high",
+    )
+
+
+def test_model_use_level_resolves_from_current_model_catalog(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager._state.session_id = "session-1"
+    codex_manager.get_session.return_value = CodexSession(
+        session_mode="quick",
+        id="session-1",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd="/project",
+        permission_mode="full-access",
+        status="stopped",
+        activity="idle",
+        model="active-model",
+        reasoning_effort="medium",
+    )
+    codex_manager.read_model_catalog.return_value = CodexModelCatalogData(
+        models=[
+            CodexModelInfo(
+                id="active-model",
+                name="Active Model",
+                description="",
+                default_level="medium",
+                levels=[
+                    CodexReasoningLevel(id="low", description=""),
+                    CodexReasoningLevel(id="medium", description=""),
+                ],
+            )
+        ],
+        default_model="active-model",
+        default_reasoning_effort="medium",
+    )
+
+    result = manager.dispatch(
+        message_id="model-use-level-direct",
+        prompt="model use L1",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == "Model updated\n\nNext model · active-model\n\nNext level · low"
+    quick_interactions.update_session_model.assert_called_once_with(
+        "session-1",
+        "active-model",
+        "low",
+    )
+
+
+@pytest.mark.parametrize(
+    ("prompt", "expected_model", "expected_level"),
+    [
+        ("model use M2", "other-model", "low"),
+        ("model use L1", "active-model", "low"),
+    ],
+)
+def test_model_use_updates_one_dimension_from_current_catalog(
+    settings: Settings,
+    prompt: str,
+    expected_model: str,
+    expected_level: str,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager._state.session_id = "session-1"
+    codex_manager.get_session.return_value = CodexSession(
+        session_mode="quick",
+        id="session-1",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd="/project",
+        permission_mode="full-access",
+        status="stopped",
+        activity="idle",
+        model="active-model",
+        reasoning_effort="medium",
+    )
+    codex_manager.read_model_catalog.return_value = CodexModelCatalogData(
+        models=[
+            CodexModelInfo(
+                id="active-model",
+                name="Active Model",
+                description="",
+                default_level="medium",
+                levels=[
+                    CodexReasoningLevel(id="low", description=""),
+                    CodexReasoningLevel(id="medium", description=""),
+                ],
+            ),
+            CodexModelInfo(
+                id="other-model",
+                name="Other Model",
+                description="",
+                default_level="low",
+                levels=[CodexReasoningLevel(id="low", description="")],
+            ),
+        ],
+        default_model="active-model",
+        default_reasoning_effort="medium",
+    )
+    result = manager.dispatch(
+        message_id=f"{prompt}-use",
+        prompt=prompt,
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == (
+        f"Model updated\n\nNext model · {expected_model}\n\n"
+        f"Next level · {expected_level}"
+    )
+    quick_interactions.update_session_model.assert_called_once_with(
+        "session-1",
+        expected_model,
+        expected_level,
+    )
+
+
+def test_model_levels_command_fails_when_active_model_is_not_catalogued(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager._state.session_id = "session-1"
+    codex_manager.get_session.return_value = CodexSession(
+        session_mode="quick",
+        id="session-1",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd="/project",
+        permission_mode="full-access",
+        status="stopped",
+        activity="idle",
+        active_model="missing-model",
+    )
+    codex_manager.read_model_catalog.return_value = CodexModelCatalogData(
+        models=[],
+        default_model=None,
+        default_reasoning_effort=None,
+    )
+
+    result = manager.dispatch(
+        message_id="model-levels-unavailable",
+        prompt="model level",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == (
+        "Model levels: Unavailable. The current model has no available reasoning levels."
+    )
+    quick_interactions.submit.assert_not_called()
+
+
+def test_model_levels_command_fails_when_current_level_is_unavailable(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager._state.session_id = "session-1"
+    codex_manager.get_session.return_value = CodexSession(
+        session_mode="quick",
+        id="session-1",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd="/project",
+        permission_mode="full-access",
+        status="stopped",
+        activity="idle",
+        active_model="active-model",
+    )
+    codex_manager.read_model_catalog.return_value = CodexModelCatalogData(
+        models=[
+            CodexModelInfo(
+                id="active-model",
+                name="Active Model",
+                description="",
+                default_level=None,
+                levels=[CodexReasoningLevel(id="medium", description="")],
+            )
+        ],
+        default_model="active-model",
+        default_reasoning_effort=None,
+    )
+
+    result = manager.dispatch(
+        message_id="model-levels-current-unavailable",
+        prompt="model level",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == (
+        "Model levels: Unavailable. The current reasoning level could not be confirmed."
+    )
+    quick_interactions.submit.assert_not_called()
 
 
 def test_usage_returns_complete_usage_without_session_status(
@@ -1053,8 +1670,8 @@ def test_removed_or_unregistered_commands_are_normal_tasks(
     quick_interactions.submit.assert_called_once()
 
 
-@pytest.mark.parametrize("prompt", ["停止2", "归档2"])
-def test_malformed_numbered_commands_fall_back_to_normal_tasks(
+@pytest.mark.parametrize("prompt", ["停止10", "归档10"])
+def test_out_of_range_numbered_commands_fall_back_to_normal_tasks(
     settings: Settings,
     prompt: str,
 ) -> None:

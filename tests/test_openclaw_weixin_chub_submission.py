@@ -30,7 +30,11 @@ from app.services.openclaw_weixin_chub_models import (
     WeixinChubModeState,
     WeixinChubModeSubmission,
 )
-from app.services.weixin_translation import TranslationEntry
+from app.services.weixin_translation import (
+    TranslationConfirmationResult,
+    TranslationEntry,
+    TranslationExecutionOutcome,
+)
 
 from tests.openclaw_weixin_chub_mode_helpers import (
     configured_manager,
@@ -301,7 +305,7 @@ def test_enabled_translation_queues_optimization_before_main_submission(
     manager.translation_manager.enqueue.assert_called_once()
     quick_interactions.submit.assert_not_called()
     assert result.code == "translation_queued"
-    assert "The task has not been submitted" in result.message
+    assert "Optimizing · Preparing to submit." in result.message
 
 
 def test_enabled_translation_is_silently_accepted_and_replayed(
@@ -336,6 +340,130 @@ def test_enabled_translation_is_silently_accepted_and_replayed(
     assert replay.message is None
     manager.translation_manager.enqueue.assert_called_once()
     quick_interactions.submit.assert_not_called()
+
+
+def test_confirmed_translation_uses_started_notification_without_reply(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, _quick_interactions = configured_manager(settings)
+    entry = TranslationEntry(
+        id="confirmed-translation",
+        message_id="translation-source",
+        original="检查服务",
+        route=delivery_route(),
+        operation_id="translation-operation",
+        source_ip="100.64.0.21",
+        target_session_id="session-1",
+        polished="请检查服务状态。",
+        english="Please check the service status.",
+        status="awaiting_confirmation",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    manager.translation_manager = MagicMock()
+    manager.translation_manager.active_confirmation.return_value = entry
+    manager.translation_manager.confirm.return_value = TranslationConfirmationResult(
+        handled=True,
+        action="submit",
+        entry=entry,
+        message="Translation confirmed · Preparing to submit.",
+    )
+    manager.translation_manager.schedule_confirmed_submission_retry.return_value = True
+
+    result = manager.dispatch(
+        message_id="translation-confirm",
+        prompt="text ok",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.disposition == "handled"
+    assert result.message is None
+    manager.translation_manager.schedule_confirmed_submission_retry.assert_called_once_with(
+        delay_seconds=0
+    )
+
+
+def test_confirmed_translation_reports_waiting_until_target_is_writable(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, _quick_interactions = configured_manager(settings)
+    entry = TranslationEntry(
+        id="confirmed-waiting-translation",
+        message_id="translation-source",
+        original="检查服务",
+        route=delivery_route(),
+        operation_id="translation-operation",
+        source_ip="100.64.0.21",
+        target_session_id="session-1",
+        polished="请检查服务状态。",
+        english="Please check the service status.",
+        status="awaiting_confirmation",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    manager.translation_manager = MagicMock()
+    manager.translation_manager.active_confirmation.return_value = entry
+    manager.translation_manager.confirm.return_value = TranslationConfirmationResult(
+        handled=True,
+        action="submit",
+        entry=entry,
+    )
+    manager.quick_interactions.is_running.return_value = True
+    manager.translation_manager.schedule_confirmed_submission_retry.return_value = True
+
+    result = manager.dispatch(
+        message_id="translation-confirm-waiting",
+        prompt="text ok",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.disposition == "reply"
+    assert result.message == "Translation confirmed · Waiting for the target session."
+
+
+def test_replayed_confirmed_translation_stays_silent(settings: Settings) -> None:
+    manager, _codex_manager, _quick_interactions = configured_manager(settings)
+    entry = TranslationEntry(
+        id="replayed-confirmed-translation",
+        message_id="translation-source",
+        original="检查服务",
+        route=delivery_route(),
+        operation_id="translation-operation",
+        source_ip="100.64.0.21",
+        target_session_id="session-1",
+        polished="请检查服务状态。",
+        english="Please check the service status.",
+        status="confirmed_waiting_target",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    manager.translation_manager = MagicMock()
+    manager.translation_manager.active_confirmation.return_value = entry
+    manager.translation_manager.confirm.return_value = TranslationConfirmationResult(
+        handled=True,
+        action="retry",
+        entry=entry,
+        message="Translation confirmed · Preparing to submit.",
+    )
+
+    result = manager.dispatch(
+        message_id="translation-confirm-replay",
+        prompt="text ok",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.disposition == "handled"
+    assert result.message is None
+    manager.translation_manager.schedule_confirmed_submission_retry.assert_not_called()
 
 
 def test_same_session_optimization_is_rejected_without_pending_retry(
@@ -520,7 +648,7 @@ def test_interrupted_optimization_source_is_closed_and_replays_silently(
     quick_interactions.submit.assert_not_called()
 
 
-def test_optimized_task_is_discarded_if_target_becomes_busy(
+def test_optimized_task_waits_if_target_becomes_busy(
     settings: Settings,
 ) -> None:
     manager, codex_manager, quick_interactions = configured_manager(settings)
@@ -558,7 +686,7 @@ def test_optimized_task_is_discarded_if_target_becomes_busy(
         None,
     )
 
-    assert outcome.status == "discarded"
+    assert outcome.status == "confirmed_waiting_target"
     quick_interactions.submit.assert_not_called()
     assert manager._state.pending_retry is None
 

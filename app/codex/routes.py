@@ -22,6 +22,7 @@ from app.codex.models import (
     QuickInteractionRequest,
     SessionAccessData,
     SessionCreateRequest,
+    SessionDefaultsUpdateRequest,
     SessionInfo,
     SessionListData,
     SessionRenameRequest,
@@ -102,6 +103,36 @@ def read_session(session_id: str, request: Request) -> ApiResponse[SessionInfo]:
 @api_router.get("/models", response_model=ApiResponse[CodexModelCatalogData])
 def list_models(request: Request) -> ApiResponse[CodexModelCatalogData]:
     return ApiResponse(data=request.app.state.codex_pty_manager.read_model_catalog())
+
+
+@api_router.put(
+    "/session-defaults",
+    response_model=ApiResponse[CodexModelCatalogData],
+)
+def update_session_defaults(
+    payload: SessionDefaultsUpdateRequest,
+    request: Request,
+) -> ApiResponse[CodexModelCatalogData]:
+    try:
+        data = request.app.state.codex_pty_manager.update_session_defaults(
+            payload.model,
+            payload.reasoning_effort,
+        )
+    except Exception:
+        log_operation(
+            request,
+            action="update_codex_session_defaults",
+            status="failed",
+            target="node",
+        )
+        raise
+    log_operation(
+        request,
+        action="update_codex_session_defaults",
+        status="succeeded",
+        target="node",
+    )
+    return ApiResponse(data=data)
 
 
 @api_router.get("/quota", response_model=ApiResponse[CodexQuotaData])

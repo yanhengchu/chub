@@ -399,6 +399,16 @@ function sessionArchiveBlockReason(session) {
   return "";
 }
 
+function sessionRenameBlockReason(session, usagePresentation) {
+  if (session.workspace_id === "weixin-translation") {
+    return "内部翻译 Session 标题固定，不支持重命名。";
+  }
+  if (session.usage?.owner === "external") {
+    return usagePresentation.title;
+  }
+  return "";
+}
+
 function setCodexRenamePending(pending) {
   codexRenamePending = pending;
   codexRenameForm?.toggleAttribute("aria-busy", pending);
@@ -523,6 +533,7 @@ function renderCodexSessions(sessions) {
       ? usagePresentation.title
       : "";
     const archiveBlockReason = sessionArchiveBlockReason(session);
+    const renameBlockReason = sessionRenameBlockReason(session, usagePresentation);
     const entryBlocked = sessionEntryBlocked(session, usagePresentation);
     const stopReady = sessionStopReady(session);
     const item = document.createElement("article");
@@ -582,9 +593,9 @@ function renderCodexSessions(sessions) {
     rename.textContent = "重命名";
     rename.setAttribute("aria-haspopup", "dialog");
     rename.setAttribute("aria-controls", "codex-rename-dialog");
-    rename.title = "重命名 Session";
+    rename.title = renameBlockReason || "重命名 Session";
     rename.setAttribute("aria-label", "重命名 Session");
-    rename.disabled = session.workspace_id === "weixin-translation";
+    rename.disabled = Boolean(renameBlockReason);
     rename.addEventListener("click", () => openCodexRenameDialog(session, rename));
     archive.type = "button";
     archive.className = "button-secondary session-action";

@@ -118,30 +118,6 @@ def test_weixin_fixed_runtime_restart_commands_use_targeted_starter(
     quick_interactions.submit.assert_not_called()
 
 
-def test_system_upgrade_status_is_fixed_read_only_command(settings: Settings) -> None:
-    manager, _codex_manager, quick_interactions = configured_manager(settings)
-    reader = MagicMock(
-        return_value=SimpleNamespace(
-            state="available",
-            message="升级方案已就绪。",
-        )
-    )
-    manager.system_upgrade_status_reader = reader
-
-    result = manager.dispatch(
-        message_id="system-upgrade-status",
-        prompt="upgrade status",
-        message_type="text",
-        correlation_id=None,
-        source_ip="100.64.0.21",
-        delivery_route=delivery_route(),
-    )
-
-    assert result.message == "Upgrade: Ready · 升级方案已就绪。"
-    reader.assert_called_once_with()
-    quick_interactions.submit.assert_not_called()
-
-
 def test_system_upgrade_starts_once_without_creating_a_task(settings: Settings) -> None:
     manager, _codex_manager, quick_interactions = configured_manager(settings)
     starter = MagicMock(
@@ -169,7 +145,9 @@ def test_system_upgrade_starts_once_without_creating_a_task(settings: Settings) 
         delivery_route=delivery_route(),
     )
 
-    assert first.message == "Upgrade: Started. Check with upgrade status."
+    assert first.message == (
+        "Upgrade: Started. The final result will be sent when completed."
+    )
     assert duplicate == first
     starter.assert_called_once_with("100.64.0.21")
     quick_interactions.submit.assert_not_called()

@@ -263,7 +263,11 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
     assert 'id="settings-category"' not in response.text
     assert 'href="#quick-interaction-settings" aria-current="true"' in response.text
     assert 'href="#utility-settings"' in response.text
-    assert 'id="weixin-translation-enabled"' in response.text
+    assert 'id="weixin-processing-mode"' in response.text
+    assert 'class="settings-choice-list"' in response.text
+    assert 'value="direct"' in response.text
+    assert 'value="auto"' in response.text
+    assert 'value="confirm"' in response.text
     assert "自动润色后执行" in response.text
     assert "查看处理规则" not in response.text
     assert "Standard" in response.text
@@ -298,7 +302,7 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
     assert 'id="codex-show-translation-session"' not in response.text
     assert 'id="codex-default-model"' in response.text
     assert 'id="codex-default-reasoning-effort"' in response.text
-    assert "模型列表与默认值由当前节点的 Codex 提供。" in response.text
+    assert "这里选择的模型和等级会作为本节点后续新建 Session 的默认值。" in response.text
     assert "工作区配置可能覆盖默认值；Ultra 会自动拆分并行任务。" in response.text
     assert '<option value="full-access">Full access</option>' in response.text
     assert "只影响后续新建的 Session，已有会话保持原权限。" in response.text
@@ -313,6 +317,7 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
     assert "hub.codexDefaultReasoningEffort.v1" in script.text
     assert "hub.codexShowTranslationSession.v1" not in script.text
     assert "/api/codex/models" in script.text
+    assert "/api/codex/session-defaults" in script.text
     assert "/api/settings/weixin-translation" in script.text
     assert "项文本优化仍在处理中" in script.text
     assert "已开启，将从下一条微信普通任务开始处理" not in script.text

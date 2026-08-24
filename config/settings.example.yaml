@@ -71,9 +71,10 @@ openclaw:
     workspace_id: "chub"
     session_name_max_width: 30
     task_name_max_width: 64
-    # Initial default for the Settings-page translation switch. Later page changes
-    # are persisted in private Chub state without rewriting this file.
+    # Initial default for the Settings-page text-processing mode.  Existing
+    # translation_enabled values map false to direct and true to auto.
     translation_enabled: false
+    # translation_mode: "direct" # direct | auto | confirm
     translation_queue_limit: 10
     translation_max_wait_seconds: 1800
     translation_max_input_chars: 8000

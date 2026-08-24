@@ -1,4 +1,6 @@
 import json
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -212,6 +214,295 @@ def test_targeted_translation_completion_submits_parsed_result(settings) -> None
     assert manager._state.entries[0].main_task_id == "main-task"
     assert manager._state.entries[0].notification_status == "sent"
     notification_handler.assert_called_once()
+
+
+def test_confirmation_translation_waits_for_sent_prompt_and_scores_recitation(settings) -> None:
+    manager, _codex_manager, _quick_interactions = manager_without_worker(settings)
+    manager.set_processing_mode("confirm")
+    now = utc_now()
+    manager._state.entries.append(
+        TranslationEntry(
+            id="confirmation-entry",
+            message_id="confirmation-source",
+            original="检查服务",
+            route=route(),
+            operation_id="confirmation-operation:translation",
+            source_ip="100.64.0.21",
+            status="ready_confirmation",
+            target_session_id="session-1",
+            polished="请检查服务状态。",
+            english="Please check the service status.",
+            confirmation_required=True,
+            confirmation_order=1,
+            confirmation_expires_at=now.replace(year=now.year + 1),
+            notification_status="pending",
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    manager.set_notification_handler(
+        MagicMock(return_value=SimpleNamespace(status="sent", error=None))
+    )
+
+    manager._advance_confirmation_queue()
+    assert manager.active_confirmation(route()) is not None
+
+    retry = manager.confirm(
+        message_id="practice-failed",
+        route=route(),
+        action="recitation",
+        recitation="Please check service.",
+    )
+    assert retry.action == "retry"
+    assert "Try again" in (retry.message or "")
+
+    accepted = manager.confirm(
+        message_id="practice-passed",
+        route=route(),
+        action="recitation",
+        recitation="Please check the service status.",
+    )
+    assert accepted.action == "submit"
+    assert manager._state.entries[0].status == "confirmed_waiting_target"
+
+
+def test_confirmation_text_is_unavailable_until_notification_is_sent(settings) -> None:
+    manager, _codex_manager, _quick_interactions = manager_without_worker(settings)
+    now = utc_now()
+    manager._state.entries.append(
+        TranslationEntry(
+            id="unannounced-confirmation",
+            message_id="source",
+            original="检查服务",
+            route=route(),
+            operation_id="operation:translation",
+            source_ip="100.64.0.21",
+            status="ready_confirmation",
+            target_session_id="session-1",
+            polished="请检查服务状态。",
+            english="Please check the service status.",
+            confirmation_required=True,
+            confirmation_order=1,
+            confirmation_expires_at=now.replace(year=now.year + 1),
+            notification_status="pending",
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    manager.set_notification_handler(
+        MagicMock(return_value=SimpleNamespace(status="failed", error="offline"))
+    )
+
+    manager._advance_confirmation_queue()
+    assert manager.active_confirmation(route()) is None
+
+
+def test_confirmed_submission_persists_before_scheduling_started_notification(
+    settings,
+) -> None:
+    manager, _codex_manager, _quick_interactions = manager_without_worker(settings)
+    now = utc_now()
+    manager._state.entries.append(
+        TranslationEntry(
+            id="confirmed-submit",
+            message_id="confirmation-source",
+            original="检查服务",
+            route=route(),
+            operation_id="confirmation-operation:translation",
+            source_ip="100.64.0.21",
+            status="confirmed_waiting_target",
+            target_session_id="session-1",
+            polished="请检查服务状态。",
+            english="Please check the service status.",
+            confirmation_required=True,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    manager._schedule_targeted_notification = MagicMock()
+
+    manager.complete_confirmation_submission(
+        "confirmed-submit",
+        TranslationExecutionOutcome(status="submitted", main_task_id="main-task"),
+    )
+
+    entry = manager._state.entries[0]
+    assert entry.status == "submitted"
+    assert entry.main_task_id == "main-task"
+    assert entry.notification_status == "pending"
+    manager._schedule_targeted_notification.assert_called_once_with("confirmed-submit")
+
+
+def test_confirmed_submission_does_not_wait_for_started_notification(settings) -> None:
+    manager, _codex_manager, _quick_interactions = manager_without_worker(settings)
+    now = utc_now()
+    manager._state.entries.append(
+        TranslationEntry(
+            id="confirmed-async-notification",
+            message_id="confirmation-source",
+            original="检查服务",
+            route=route(),
+            operation_id="confirmation-operation:translation",
+            source_ip="100.64.0.21",
+            status="confirmed_waiting_target",
+            target_session_id="session-1",
+            polished="请检查服务状态。",
+            english="Please check the service status.",
+            confirmation_required=True,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    notification_started = threading.Event()
+    release_notification = threading.Event()
+    notification_finished = threading.Event()
+
+    def blocked_notification(_entry):
+        notification_started.set()
+        assert release_notification.wait(1)
+        notification_finished.set()
+        return SimpleNamespace(status="sent", error=None)
+
+    manager.set_notification_handler(blocked_notification)
+    started_at = time.monotonic()
+    try:
+        manager.complete_confirmation_submission(
+            "confirmed-async-notification",
+            TranslationExecutionOutcome(status="submitted", main_task_id="main-task"),
+        )
+        elapsed = time.monotonic() - started_at
+        assert elapsed < 0.25
+        assert notification_started.wait(0.5)
+        assert manager._state.entries[0].notification_status == "sending"
+    finally:
+        release_notification.set()
+    assert notification_finished.wait(0.5)
+
+
+def test_web_restart_delivers_pending_confirmed_started_once(settings) -> None:
+    state_file = settings.openclaw.weixin_chub_mode.state_file.with_name(
+        "weixin-translation.json"
+    )
+    now = utc_now()
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    state_file.write_text(
+        TranslationState(
+            entries=[
+                TranslationEntry(
+                    id="pending-confirmed-notification",
+                    message_id="confirmation-source",
+                    original="检查服务",
+                    route=route(),
+                    operation_id="confirmation-operation:translation",
+                    source_ip="100.64.0.21",
+                    status="submitted",
+                    target_session_id="session-1",
+                    polished="请检查服务状态。",
+                    english="Please check the service status.",
+                    main_task_id="main-task",
+                    notification_status="pending",
+                    confirmation_required=True,
+                    created_at=now,
+                    updated_at=now,
+                )
+            ]
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+    manager = WeixinTranslationManager(
+        settings.openclaw.weixin_chub_mode,
+        MagicMock(),
+        MagicMock(),
+    )
+    notifier = MagicMock(return_value=SimpleNamespace(status="sent", error=None))
+    manager.set_notification_handler(notifier)
+
+    manager.start_worker_recovery()
+    manager.start_worker_recovery()
+
+    assert manager._state.entries[0].status == "submitted"
+    assert manager._state.entries[0].main_task_id == "main-task"
+    assert manager._state.entries[0].notification_status == "sent"
+    notifier.assert_called_once()
+
+
+def test_configured_confirmation_mode_overrides_legacy_translation_boolean(settings) -> None:
+    settings.openclaw.weixin_chub_mode.translation_enabled = False
+    settings.openclaw.weixin_chub_mode.translation_mode = "confirm"
+
+    manager = WeixinTranslationManager(
+        settings.openclaw.weixin_chub_mode,
+        MagicMock(),
+        MagicMock(),
+    )
+
+    assert manager.processing_mode() == "confirm"
+
+
+def test_confirmed_submission_recovery_uses_one_shared_retry_timer(
+    settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, _codex_manager, _quick_interactions = manager_without_worker(settings)
+    now = utc_now()
+    for index in range(2):
+        manager._state.entries.append(
+            TranslationEntry(
+                id=f"confirmed-{index}",
+                message_id=f"message-{index}",
+                original="检查服务",
+                route=route(),
+                operation_id=f"operation-{index}:translation",
+                source_ip="100.64.0.21",
+                status="confirmed_waiting_target",
+                target_session_id=f"session-{index}",
+                polished="请检查服务状态。",
+                english="Please check the service status.",
+                confirmation_required=True,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+
+    class RetryTimer:
+        created: list["RetryTimer"] = []
+
+        def __init__(self, _delay, callback) -> None:
+            self.callback = callback
+            self.daemon = False
+            self.started = False
+            RetryTimer.created.append(self)
+
+        def start(self) -> None:
+            self.started = True
+
+        def is_alive(self) -> bool:
+            return self.started
+
+        def cancel(self) -> None:
+            self.started = False
+
+    monkeypatch.setattr("app.services.weixin_translation.threading.Timer", RetryTimer)
+    retry = MagicMock(
+        return_value=TranslationExecutionOutcome(status="confirmed_waiting_target")
+    )
+
+    manager.set_confirmed_handler(retry)
+    manager._resume_confirmed_submissions()
+
+    assert retry.call_count == 4
+    assert len(RetryTimer.created) == 1
+
+
+def test_system_upgrade_reset_preserves_processing_mode(settings) -> None:
+    manager, _codex_manager, _quick_interactions = manager_without_worker(settings)
+    manager.set_processing_mode("confirm")
+
+    manager.reset_for_system_upgrade(force=True)
+
+    assert manager.processing_mode() == "confirm"
+    persisted = json.loads(manager.path.read_text(encoding="utf-8"))
+    assert persisted["processing_mode_override"] == "confirm"
 
 
 def test_targeted_translation_missing_during_recovery_notifies_failure(

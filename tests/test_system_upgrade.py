@@ -1152,7 +1152,9 @@ def test_weixin_system_upgrade_uses_application_upgrade_coordinator(
         ),
     )
 
-    assert result.message == "Upgrade: Started. Check with upgrade status."
+    assert result.message == (
+        "Upgrade: Started. The final result will be sent when completed."
+    )
     operation = app.state.system_upgrade.operation()
     assert operation is not None
     assert operation.source_ip == "100.64.0.21"

@@ -38,33 +38,6 @@ def test_request_backlog_enforces_nine_active_requests(tmp_path) -> None:
         store.save(title="第十个需求", content="不能保存。")
 
 
-def test_request_backlog_run_is_versioned_and_blocks_archive(tmp_path) -> None:
-    store = RequestBacklogStore(tmp_path / "requests.json")
-    item = store.save(title="运行需求", content="验收：成功执行。")
-    claimed = store.claim_run(item.slot, "message-1")
-
-    with pytest.raises(RequestBacklogBusy):
-        store.claim_run(item.slot, "message-2")
-    with pytest.raises(RequestBacklogBusy):
-        store.archive(item.slot)
-
-    assert store.finish_run(
-        item.slot,
-        item.generation,
-        claimed.active_run_id or "",
-        "task-1",
-        succeeded=True,
-    )
-    assert store.get(item.slot).status == "succeeded"
-    assert not store.finish_run(
-        item.slot,
-        item.generation,
-        claimed.active_run_id or "",
-        "task-1",
-        succeeded=False,
-    )
-
-
 def test_request_update_replaces_generation_and_resets_status(tmp_path) -> None:
     store = RequestBacklogStore(tmp_path / "requests.json")
     original = store.save(title="旧标题", content="旧内容")
@@ -75,30 +48,6 @@ def test_request_update_replaces_generation_and_resets_status(tmp_path) -> None:
     assert updated.status == "ready"
     assert updated.title == "新标题"
     assert updated.content == "新内容"
-
-
-def test_system_upgrade_reset_is_idempotent_for_request_generation(tmp_path) -> None:
-    store = RequestBacklogStore(tmp_path / "requests.json")
-    original = store.save(title="升级后保留", content="保留标题和正文")
-    claimed = store.claim_run(original.slot, "message-1")
-    assert store.finish_run(
-        original.slot,
-        original.generation,
-        claimed.active_run_id or "",
-        "task-1",
-        succeeded=True,
-    )
-
-    store.reset_runs_for_system_upgrade("a" * 32)
-    first = store.get(original.slot)
-    store.reset_runs_for_system_upgrade("a" * 32)
-    second = store.get(original.slot)
-
-    assert first.generation == second.generation
-    assert second.status == "ready"
-    assert second.title == original.title
-    assert second.content == original.content
-    assert second.last_task_id is None
 
 
 def test_request_backlog_rejects_invalid_or_oversized_state(tmp_path) -> None:

@@ -53,7 +53,7 @@ chub start
 4. 提交一条低风险测试任务。
 5. 确认页面显示任务受理、执行状态和最终结果。
 
-正常使用不需要执行 `chub worker-health`。只有页面任务无法推进时，维护者才按[Quick Worker 设计](CHUB_QUICK_WORKER_DESIGN.md)使用 `chub status`、`chub worker-health` 或 `chub worker-reload` 排查和恢复；`chub worker-reload` 本身允许在 Worker 忙碌、协议不兼容或不可达时重建服务并清理 Worker 任务。`chub worker-recover` 仍保留为本机终端的直接服务恢复入口。
+正常使用不需要执行 `chub worker-health`。维护者需要一次性做完整只读诊断时可运行 `chub check`，它检查项目配置、两个服务、Web、Quick Worker 和系统状态，不执行重启。页面任务无法推进时，再按[Quick Worker 设计](CHUB_QUICK_WORKER_DESIGN.md)使用 `chub status`、`chub worker-health` 或 `chub worker-reload` 排查和恢复；`chub worker-reload` 本身允许在 Worker 忙碌、协议不兼容或不可达时重建服务并清理 Worker 任务。`chub worker-recover` 仍保留为本机终端的直接服务恢复入口。
 
 ## 2. 安装和使用 ClawBot
 

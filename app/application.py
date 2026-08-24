@@ -29,7 +29,6 @@ from app.api.logs import router as logs_router
 from app.api.maintenance import (
     router as maintenance_router,
     start_system_upgrade_for_source,
-    system_upgrade_status_data,
 )
 from app.api.notifications import router as notifications_router
 from app.api.openclaw import router as openclaw_router
@@ -41,7 +40,7 @@ from app.api.project_documents import router as project_documents_router
 from app.api.settings import router as settings_router
 from app.api.status import router as status_router
 from app.ai_session import AiSessionManager
-from app.ai_session.operations import archive_session
+from app.ai_session.operations import archive_session, delete_session
 from app.codex.quick_interactions import QuickInteractionManager
 from app.codex.rate_limits import CodexRateLimitService
 from app.codex.routes import api_router as codex_api_router
@@ -83,7 +82,7 @@ from app.services.system_upgrade import (
     runtime_recovery_plan,
     system_upgrade_restart_readiness,
 )
-from app.quick_worker import read_health, resume_after_drain
+from app.quick_worker import read_health, read_health_sync, resume_after_drain
 from app.notifications import NotificationService
 from app.web.routes import STATIC_DIR, router as web_router
 
@@ -315,6 +314,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             release_slot=release_weixin_session_slot_for_archive,
         )
 
+    def release_weixin_session_slot_for_delete(session_id: str) -> bool:
+        try:
+            weixin_chub_mode.release_session_slot(session_id)
+        except Exception as exc:
+            raise ApiError(
+                503,
+                "weixin_chub_mode_slot_release_unknown",
+                "Session 已完成原生删除，但关联槽位释放状态无法确认，请稍后重试。",
+            ) from exc
+        return True
+
+    def delete_weixin_session(session_id: str) -> None:
+        delete_session(
+            session_id,
+            manager=codex_pty_manager,
+            quick_interactions=quick_interactions,
+            terminal_tickets=terminal_tickets,
+            terminal_connections=terminal_connections,
+            release_slot=release_weixin_session_slot_for_delete,
+        )
+
     def stop_weixin_session(session_id: str):
         with quick_interactions.stop_operation_guard(session_id):
             codex_pty_manager.ensure_stop_allowed(session_id)
@@ -332,10 +352,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         codex_rate_limits,
         translation_manager=weixin_translation,
         session_archiver=archive_weixin_session,
+        session_deleter=delete_weixin_session,
         system_status_reader=lambda: collect_system_status(
             resolved_settings,
             detected_platform,
         ),
+        worker_health_reader=lambda: read_health_sync(resolved_settings),
         restart_coordinator=deferred_restart,
         restart_notifier=completion_notifier.notify_weixin_restart_command,
         ai_usage_reader=ai_usage,
@@ -344,6 +366,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         translation_result_notifier=(
             completion_notifier.notify_weixin_optimized_task
         ),
+        translation_confirmation_notifier=(
+            completion_notifier.notify_weixin_translation_confirmation
+        ),
     )
     weixin_translation.set_completion_handler(
         weixin_chub_mode.complete_optimized_task
@@ -351,8 +376,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     weixin_translation.set_notification_handler(
         weixin_chub_mode.notify_optimized_task_outcome
     )
-    quick_interactions.set_task_finished_handler(
-        weixin_chub_mode.record_request_task_completion
+    weixin_translation.set_confirmed_handler(
+        weixin_chub_mode.retry_confirmed_optimized_task
     )
 
     def restart_environment_readiness() -> str | None:
@@ -757,9 +782,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     completion_notifier.completion_usage_reader = lambda: usage_message(
         ai_usage.read(force=False)
     )
-    completion_notifier.request_slot_validator = (
-        weixin_chub_mode.request_backlog.slot_matches
-    )
     codex_pty_manager.set_quick_interaction_checker(quick_interactions.is_running)
     openclaw_manager = OpenClawManager()
     notification_service = NotificationService(resolved_settings.notifications)
@@ -868,7 +890,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         worker_maintenance_recovery_task = None
         system_upgrade_recovery_task = None
         await asyncio.to_thread(quick_interactions.start_worker_reconciliation)
-        await asyncio.to_thread(weixin_chub_mode.reconcile_request_runs)
         weixin_chub_mode.start_status_cache()
         upgrade_operation = system_upgrade.operation()
         if (
@@ -957,7 +978,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 system_upgrade_recovery_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await system_upgrade_recovery_task
-            weixin_chub_mode.close()
             await asyncio.to_thread(weixin_translation.close)
             await quick_interactions.aclose()
             await notification_service.close()
@@ -997,9 +1017,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.openclaw_manager = openclaw_manager
     application.state.notification_service = notification_service
 
-    def weixin_system_upgrade_status() -> object:
-        return asyncio.run(system_upgrade_status_data(application))
-
     def start_weixin_system_upgrade(source_ip: str) -> object:
         return asyncio.run(
             start_system_upgrade_for_source(
@@ -1009,7 +1026,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         )
 
-    weixin_chub_mode.system_upgrade_status_reader = weixin_system_upgrade_status
     weixin_chub_mode.system_upgrade_starter = start_weixin_system_upgrade
     application.add_middleware(SystemUpgradeGateMiddleware)
     application.add_middleware(SecurityHeadersMiddleware)

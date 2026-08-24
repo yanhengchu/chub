@@ -188,6 +188,13 @@ class SessionCreateRequest(BaseModel):
     reasoning_effort: str | None = Field(default=None, max_length=32)
 
 
+class SessionDefaultsUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    model: str | None = Field(default=None, max_length=128)
+    reasoning_effort: str | None = Field(default=None, max_length=32)
+
+
 class SessionRenameRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -327,18 +334,6 @@ class QuickInteractionTask(BaseModel):
     # Keep the legacy bound so persisted tasks created before the 13-character
     # summary limit remain readable after an upgrade.
     summary: str | None = Field(default=None, max_length=48)
-    weixin_request_slot: int | None = Field(default=None, ge=1, le=9)
-    weixin_request_generation: str | None = Field(
-        default=None,
-        min_length=32,
-        max_length=32,
-    )
-    weixin_request_run_id: str | None = Field(
-        default=None,
-        min_length=32,
-        max_length=32,
-    )
-    weixin_request_title: str | None = Field(default=None, max_length=48)
     kind: QuickInteractionKind = "standard"
     translation_original: str | None = Field(default=None, max_length=8000)
     restart_sensitive: bool = False

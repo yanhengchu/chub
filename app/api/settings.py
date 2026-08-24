@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel, ConfigDict
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from app.core.response import ApiError, ApiResponse
 from app.core.security import require_trusted_network
@@ -19,7 +21,18 @@ router = APIRouter(
 class TranslationSettingsUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    enabled: bool
+    mode: Literal["direct", "auto", "confirm"] | None = None
+    # Compatibility for the previous settings switch. A boolean request maps
+    # false to direct and true to automatic execution.
+    enabled: bool | None = None
+
+    @model_validator(mode="after")
+    def validate_mode(self):
+        if self.mode is None and self.enabled is None:
+            raise ValueError("mode is required")
+        if self.mode is not None and self.enabled is not None:
+            raise ValueError("provide mode only")
+        return self
 
 
 @router.get(
@@ -48,7 +61,10 @@ def update_weixin_translation_settings(
     request: Request,
     payload: TranslationSettingsUpdate,
 ) -> ApiResponse[TranslationSettingsStatus]:
-    target = "enabled" if payload.enabled else "disabled"
+    mode = payload.mode
+    if mode is None:
+        mode = "auto" if payload.enabled else "direct"
+    target = mode
     operation_id = log_operation(
         request,
         action="update_weixin_translation_setting",
@@ -63,7 +79,7 @@ def update_weixin_translation_settings(
         operation_id=operation_id,
     )
     try:
-        result = request.app.state.weixin_translation.set_enabled(payload.enabled)
+        result = request.app.state.weixin_translation.set_processing_mode(mode)
     except OSError:
         log_operation(
             request,

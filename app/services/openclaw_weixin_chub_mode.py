@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import queue
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -70,7 +71,6 @@ from app.services.openclaw_weixin_chub_messages import (
 from app.services.request_backlog import (
     RequestBacklogBusy,
     RequestBacklogError,
-    RequestBacklogItem,
     RequestBacklogNotFound,
     RequestBacklogStore,
 )
@@ -102,13 +102,13 @@ from app.services.weixin_translation import (
     TranslationEntry,
     TranslationExecutionOutcome,
 )
+from app.quick_worker import PROTOCOL_VERSION
 
 
 CODEX_STATUS_TIMEOUT_SECONDS = 9
 STOP_TARGET_TIMEOUT_SECONDS = 3
 MAX_EPHEMERAL_STATUS_REPLIES = 256
 MAX_EPHEMERAL_STATUS_INFLIGHT = 64
-REQUEST_RUN_RECOVERY_GRACE_SECONDS = 300
 LOGGER = logging.getLogger("hub.openclaw.weixin_chub_mode")
 FIXED_COMMAND_STATUS_CODES = frozenset(
     {
@@ -118,6 +118,7 @@ FIXED_COMMAND_STATUS_CODES = frozenset(
         "chub_slots_synced",
         "codex_retry_checked",
         "codex_session_archived",
+        "codex_session_deleted",
         "codex_session_created",
         "codex_session_renamed",
         "codex_session_stopped",
@@ -156,6 +157,7 @@ class WeixinChubModeManager:
         codex_account_reader: CodexRateLimitService | None = None,
         translation_manager=None,
         session_archiver: Callable[[str], object] | None = None,
+        session_deleter: Callable[[str], object] | None = None,
         system_status_reader: Callable[[], object] | None = None,
         restart_coordinator: DeferredRestartCoordinator | None = None,
         restart_notifier: Callable[
@@ -170,7 +172,8 @@ class WeixinChubModeManager:
         ]
         | None = None,
         translation_result_notifier: Callable[..., object] | None = None,
-        system_upgrade_status_reader: Callable[[], object] | None = None,
+        translation_confirmation_notifier: Callable[..., object] | None = None,
+        worker_health_reader: Callable[[], object] | None = None,
         system_upgrade_starter: Callable[[str], object] | None = None,
         maintenance_command_starter: Callable[
             [str, str, QuickInteractionWeixinRoute, str], object
@@ -186,13 +189,15 @@ class WeixinChubModeManager:
         self.ai_usage_reader = ai_usage_reader
         self.translation_manager = translation_manager
         self.session_archiver = session_archiver
+        self.session_deleter = session_deleter
         self.session_stopper = session_stopper
         self.session_stop_notifier = session_stop_notifier
         self.translation_result_notifier = translation_result_notifier
+        self.translation_confirmation_notifier = translation_confirmation_notifier
+        self.worker_health_reader = worker_health_reader
         self.system_status_reader = system_status_reader
         self.restart_coordinator = restart_coordinator
         self.restart_notifier = restart_notifier
-        self.system_upgrade_status_reader = system_upgrade_status_reader
         self.system_upgrade_starter = system_upgrade_starter
         self.maintenance_command_starter = maintenance_command_starter
         self.path = settings.openclaw.weixin_chub_mode.state_file
@@ -205,10 +210,6 @@ class WeixinChubModeManager:
         self._system_upgrade_lock = threading.Lock()
         self._stop_lock = threading.Lock()
         self._slot_lock = threading.RLock()
-        self._request_reconcile_lock = threading.Lock()
-        self._request_reconcile_timer: threading.Timer | None = None
-        self._request_reconcile_deadline: float | None = None
-        self._request_reconcile_closed = False
         self._status_condition = threading.Condition()
         self._status_refreshing = False
         self._status_refresh_succeeded = False
@@ -504,10 +505,10 @@ class WeixinChubModeManager:
         source_ip: str,
         delivery_route: QuickInteractionWeixinRoute,
         preprocess: bool = False,
+        confirmation_required: bool = False,
         target_session_id: str | None = None,
         retain_busy_retry: bool = True,
         ignore_translation_reservation: bool = False,
-        request_item: RequestBacklogItem | None = None,
     ) -> WeixinChubModeSubmissionResult:
         with self._slot_lock, self._lock:
             if self._state_error:
@@ -668,15 +669,6 @@ class WeixinChubModeManager:
                         "source_ip": source_ip,
                         "notification_route": delivery_route,
                     }
-                    if request_item is not None:
-                        submit_kwargs.update(
-                            {
-                                "weixin_request_slot": request_item.slot,
-                                "weixin_request_generation": request_item.generation,
-                                "weixin_request_run_id": request_item.active_run_id,
-                                "weixin_request_title": request_item.title,
-                            }
-                        )
                     if preprocess:
                         if self.translation_manager is None:
                             raise ApiError(
@@ -684,13 +676,18 @@ class WeixinChubModeManager:
                                 "weixin_translation_unavailable",
                                 "文本优化服务当前不可用，本次任务未执行。",
                             )
+                        enqueue_kwargs = {
+                            "message_id": message_id,
+                            "original": prompt,
+                            "route": delivery_route,
+                            "operation_id": operation_id,
+                            "source_ip": source_ip,
+                            "target_session_id": session_id,
+                        }
+                        if confirmation_required:
+                            enqueue_kwargs["confirmation_required"] = True
                         accepted = self.translation_manager.enqueue(
-                            message_id=message_id,
-                            original=prompt,
-                            route=delivery_route,
-                            operation_id=operation_id,
-                            source_ip=source_ip,
-                            target_session_id=session_id,
+                            **enqueue_kwargs,
                         )
                         if not accepted:
                             raise ApiError(
@@ -709,19 +706,6 @@ class WeixinChubModeManager:
                             ),
                             **submit_kwargs,
                         )
-                        if request_item is not None:
-                            try:
-                                self.request_backlog.record_submitted(
-                                    request_item.slot,
-                                    request_item.generation,
-                                    request_item.active_run_id or "",
-                                    task.id,
-                                )
-                            except RequestBacklogError:
-                                LOGGER.warning(
-                                    "Unable to persist submitted request task",
-                                    exc_info=True,
-                                )
             except ApiError as exc:
                 if reservation.status == "reserved":
                     if (
@@ -821,7 +805,7 @@ class WeixinChubModeManager:
                 reservation.status = "routed"
                 reservation.code = "translation_queued"
                 reservation.message = format_task_context(
-                    "Optimizing · The task has not been submitted.",
+                    "Optimizing · Preparing to submit.",
                     task_summary,
                     session_slot=session_slot,
                     session_title=session_title,
@@ -859,14 +843,6 @@ class WeixinChubModeManager:
                 submitted_session_title=session_title,
                 submitted_task_summary=task_summary,
             )
-            if request_item is not None:
-                _heading, separator, remainder = reservation.message.partition("\n\n")
-                request_line = f"Request · R{request_item.slot} · {request_item.title}"
-                reservation.message = (
-                    f"Submitted\n\n{request_line}\n\n{remainder}"
-                    if separator
-                    else f"Submitted\n\n{request_line}"
-                )
             reservation.http_status = 200
             reservation.session_id = session_id
             reservation.task_id = task.id
@@ -1066,6 +1042,9 @@ class WeixinChubModeManager:
                 error=error or "文本优化未返回有效结果。",
             )
 
+        if entry.confirmation_required:
+            return TranslationExecutionOutcome(status="ready_confirmation")
+
         try:
             submission = self.submit(
                 message_id=main_message_id,
@@ -1079,6 +1058,14 @@ class WeixinChubModeManager:
             )
         except ApiError as exc:
             reason = self._safe_submission_error(exc)
+            if exc.code in {
+                "weixin_chub_mode_in_progress",
+                "quick_interaction_in_progress",
+            }:
+                return TranslationExecutionOutcome(
+                    status="confirmed_waiting_target",
+                    error=reason,
+                )
             message = f"Optimized but not submitted · {reason}"
             self._finish_optimized_source_submission(
                 entry,
@@ -1136,6 +1123,23 @@ class WeixinChubModeManager:
         self,
         entry: TranslationEntry,
     ) -> object:
+        if entry.status == "ready_confirmation":
+            if self.translation_confirmation_notifier is None:
+                return SimpleNamespace(
+                    status="failed",
+                    error="微信翻译确认通知未配置。",
+                )
+            if not entry.polished or not entry.english:
+                return SimpleNamespace(
+                    status="failed",
+                    error="翻译确认内容不完整。",
+                )
+            return self.translation_confirmation_notifier(
+                entry.route,
+                target_session_id=entry.target_session_id,
+                task=entry.polished,
+                english=entry.english,
+            )
         if self.translation_result_notifier is None:
             return SimpleNamespace(
                 status="skipped",
@@ -1160,6 +1164,105 @@ class WeixinChubModeManager:
     def _replace_submission_status(message: str, status: str) -> str:
         _original_status, separator, remainder = message.partition("\n\n")
         return f"{status}\n\n{remainder}" if separator else status
+
+    @staticmethod
+    def _translation_confirmation_command(
+        prompt: str,
+    ) -> tuple[Literal["ok", "next", "cancel", "recitation"], str | None] | None:
+        match = re.fullmatch(r"\s*text(?:\s+(.+?))?\s*", prompt, re.DOTALL)
+        if match is None:
+            return None
+        value = (match.group(1) or "").strip()
+        if value.lower() in {"ok", "next", "cancel"}:
+            return value.lower(), None
+        if value:
+            return "recitation", value
+        return None
+
+    def _dispatch_translation_confirmation(
+        self,
+        *,
+        message_id: str,
+        prompt: str,
+        delivery_route: QuickInteractionWeixinRoute,
+    ) -> WeixinChubModeDispatchResult | None:
+        if self.translation_manager is None:
+            return None
+        command = self._translation_confirmation_command(prompt)
+        if command is None or self.translation_manager.active_confirmation(delivery_route) is None:
+            return None
+        action, recitation = command
+        result = self.translation_manager.confirm(
+            message_id=message_id,
+            route=delivery_route,
+            action=action,
+            recitation=recitation,
+        )
+        if not result.handled:
+            return None
+        if result.action != "submit" or result.entry is None:
+            if (
+                result.action == "retry"
+                and result.entry is not None
+                and result.entry.status
+                in {"confirmed_waiting_target", "submitted", "discarded", "failed"}
+            ):
+                # A repeated Weixin delivery must not recreate the removed
+                # transient confirmation reply after the durable result has
+                # already been accepted for asynchronous submission.
+                return WeixinChubModeDispatchResult(disposition="handled")
+            return WeixinChubModeDispatchResult(
+                disposition="reply",
+                message=result.message or "Translation confirmation processed.",
+            )
+        target_busy = False
+        if result.entry.target_session_id is not None:
+            try:
+                target_busy = self.quick_interactions.is_running(
+                    result.entry.target_session_id
+                )
+            except Exception:
+                # The persisted retry handler performs the definitive check.
+                pass
+        accepted = self.translation_manager.schedule_confirmed_submission_retry(
+            delay_seconds=0,
+        )
+        if accepted:
+            # Submission and outbound Started delivery both run after the
+            # synchronous Weixin endpoint returns.  The confirmation itself
+            # is already durable, so neither a slow Worker nor a slow message
+            # send can turn an accepted confirmation into a false timeout.
+            if not target_busy:
+                return WeixinChubModeDispatchResult(disposition="handled")
+            return WeixinChubModeDispatchResult(
+                disposition="reply",
+                message="Translation confirmed · Waiting for the target session.",
+            )
+        return WeixinChubModeDispatchResult(
+            disposition="reply",
+            message="Translation confirmation is temporarily unavailable.",
+        )
+
+    def retry_confirmed_optimized_task(
+        self,
+        entry: TranslationEntry,
+    ) -> TranslationExecutionOutcome:
+        if entry.target_session_id is None:
+            return TranslationExecutionOutcome(
+                status="failed", error="翻译确认任务缺少目标 Session。"
+            )
+        try:
+            busy = self.quick_interactions.is_running(entry.target_session_id)
+        except Exception:
+            busy = True
+        if busy:
+            return TranslationExecutionOutcome(status="confirmed_waiting_target")
+        return self.complete_optimized_task(
+            entry.model_copy(update={"confirmation_required": False}),
+            entry.polished,
+            entry.english,
+            None,
+        )
 
     def dispatch(
         self,
@@ -1191,6 +1294,17 @@ class WeixinChubModeManager:
                 ),
                 delivery_route,
             )
+        if mode_enabled and command.kind == "check":
+            return self._finalize_fixed_command_result(
+                command.kind,
+                self._dispatch_chub_check(
+                    message_id=message_id,
+                    correlation_id=correlation_id,
+                    route_fingerprint=self._route_fingerprint(delivery_route),
+                    source_ip=source_ip,
+                ),
+                delivery_route,
+            )
         if mode_enabled and command.kind == "usage":
             return self._dispatch_chub_usage(
                 message_id=message_id,
@@ -1218,10 +1332,10 @@ class WeixinChubModeManager:
                 ),
                 delivery_route,
             )
-        if mode_enabled and command.kind == "sync":
+        if mode_enabled and command.kind == "model_list":
             return self._finalize_fixed_command_result(
                 command.kind,
-                self._dispatch_chub_sync(
+                self._dispatch_codex_model_list(
                     message_id=message_id,
                     correlation_id=correlation_id,
                     route_fingerprint=self._route_fingerprint(delivery_route),
@@ -1229,10 +1343,35 @@ class WeixinChubModeManager:
                 ),
                 delivery_route,
             )
-        if mode_enabled and command.kind == "system_upgrade_status":
+        if mode_enabled and command.kind == "model_levels":
             return self._finalize_fixed_command_result(
                 command.kind,
-                self._dispatch_system_upgrade_status(
+                self._dispatch_codex_model_levels(
+                    message_id=message_id,
+                    correlation_id=correlation_id,
+                    route_fingerprint=self._route_fingerprint(delivery_route),
+                    source_ip=source_ip,
+                    model_index=command.model_index,
+                ),
+                delivery_route,
+            )
+        if mode_enabled and command.kind == "model_use":
+            return self._finalize_fixed_command_result(
+                command.kind,
+                self._dispatch_codex_model_use(
+                    message_id=message_id,
+                    correlation_id=correlation_id,
+                    route_fingerprint=self._route_fingerprint(delivery_route),
+                    source_ip=source_ip,
+                    model_index=command.model_index,
+                    level_index=command.level_index,
+                ),
+                delivery_route,
+            )
+        if mode_enabled and command.kind == "sync":
+            return self._finalize_fixed_command_result(
+                command.kind,
+                self._dispatch_chub_sync(
                     message_id=message_id,
                     correlation_id=correlation_id,
                     route_fingerprint=self._route_fingerprint(delivery_route),
@@ -1451,25 +1590,24 @@ class WeixinChubModeManager:
                     delivery_route,
                 )
 
-            if command.kind == "request_run":
+            if command.kind == "request_archive":
                 return self._finalize_fixed_command_result(
                     command.kind,
-                    self._dispatch_request_run(
+                    self._dispatch_request_archive(
                         message_id=message_id,
                         correlation_id=correlation_id,
                         route_fingerprint=route_fingerprint,
                         source_ip=source_ip,
-                        delivery_route=delivery_route,
                         requested_index=command.requested_index,
                         invalid_usage=command.invalid_usage,
                     ),
                     delivery_route,
                 )
 
-            if command.kind == "request_archive":
+            if command.kind == "request_delete":
                 return self._finalize_fixed_command_result(
                     command.kind,
-                    self._dispatch_request_archive(
+                    self._dispatch_request_delete(
                         message_id=message_id,
                         correlation_id=correlation_id,
                         route_fingerprint=route_fingerprint,
@@ -1510,7 +1648,33 @@ class WeixinChubModeManager:
                     delivery_route,
                 )
 
+            if command.kind == "delete":
+                return self._finalize_fixed_command_result(
+                    command.kind,
+                    self._dispatch_codex_delete(
+                        message_id=message_id,
+                        correlation_id=correlation_id,
+                        route_fingerprint=route_fingerprint,
+                        source_ip=source_ip,
+                        delivery_route=delivery_route,
+                        requested_index=command.requested_index,
+                        invalid_usage=command.invalid_usage,
+                    ),
+                    delivery_route,
+                )
+
             if command.kind in {"switch", "session_slot"}:
+                preprocess_task = False
+                confirmation_task = False
+                if command.task_prompt is not None and self.translation_manager is not None:
+                    try:
+                        processing_mode = self.translation_manager.processing_mode()
+                        preprocess_task = processing_mode != "direct"
+                        confirmation_task = processing_mode == "confirm"
+                    except OSError:
+                        # The fixed switch remains independent. Its follow-up
+                        # will fail closed if the optimization queue is down.
+                        preprocess_task = True
                 result = self._dispatch_codex_switch(
                     message_id=message_id,
                     correlation_id=correlation_id,
@@ -1520,6 +1684,8 @@ class WeixinChubModeManager:
                     invalid_usage=command.invalid_usage,
                     delivery_route=delivery_route,
                     task_prompt=command.task_prompt,
+                    preprocess_task=preprocess_task,
+                    confirmation_task=confirmation_task,
                 )
                 if (
                     command.task_prompt is not None
@@ -1541,11 +1707,23 @@ class WeixinChubModeManager:
                     delivery_route,
                 )
 
+            if command.kind == "normal" and message_type == "text":
+                confirmation = self._dispatch_translation_confirmation(
+                    message_id=message_id,
+                    prompt=prompt,
+                    delivery_route=delivery_route,
+                )
+                if confirmation is not None:
+                    return confirmation
+
             task_prompt = prompt
             preprocess = False
+            confirmation_required = False
             if command.kind == "normal" and self.translation_manager is not None:
                 try:
-                    preprocess = self.translation_manager.enabled()
+                    processing_mode = self.translation_manager.processing_mode()
+                    preprocess = processing_mode != "direct"
+                    confirmation_required = processing_mode == "confirm"
                 except OSError:
                     return self._with_failure_task_summary(
                         WeixinChubModeDispatchResult(
@@ -1565,6 +1743,7 @@ class WeixinChubModeManager:
                     source_ip=source_ip,
                     delivery_route=delivery_route,
                     preprocess=preprocess,
+                    confirmation_required=confirmation_required,
                 )
             except ApiError as exc:
                 return self._with_failure_task_summary(
@@ -1590,20 +1769,22 @@ class WeixinChubModeManager:
         operation_id = uuid4().hex
         self._log_dispatch(operation_id, "requested", source_ip)
         self._log_dispatch(operation_id, "started", source_ip)
-        usage = "Usage: new <title> (maximum 48 characters)."
-        try:
-            normalized_title = SessionRenameRequest(title=title).title
-        except ValueError:
-            return self._remember_fixed_reply(
-                message_id=message_id,
-                correlation_id=correlation_id,
-                operation_id=operation_id,
-                route_fingerprint=route_fingerprint,
-                source_ip=source_ip,
-                message=usage,
-                code="codex_session_created",
-                failed=True,
-            )
+        usage = "Usage: new [title] (maximum 48 characters)."
+        normalized_title = None
+        if title is not None:
+            try:
+                normalized_title = SessionRenameRequest(title=title).title
+            except ValueError:
+                return self._remember_fixed_reply(
+                    message_id=message_id,
+                    correlation_id=correlation_id,
+                    operation_id=operation_id,
+                    route_fingerprint=route_fingerprint,
+                    source_ip=source_ip,
+                    message=usage,
+                    code="codex_session_created",
+                    failed=True,
+                )
         now = utc_now()
         reservation = WeixinChubModeSubmission(
             message_id=message_id,
@@ -1660,33 +1841,36 @@ class WeixinChubModeManager:
             )
         slot = self._slot_for_session(session_id)
         slot_text = f"Session {slot}" if slot is not None else "Session"
-        self._log_rename(operation_id, "requested", session_id, source_ip)
-        self._log_rename(operation_id, "started", session_id, source_ip)
-        try:
-            renamed = self.codex_manager.rename_session(
-                session_id,
-                normalized_title,
-            )
-        except Exception:
-            LOGGER.warning("Unable to name new Weixin Codex session", exc_info=True)
-            self._log_rename(operation_id, "failed", session_id, source_ip)
-            message, _status_failed = self._codex_operation_message(
-                f"Create: {slot_text} was created and selected, but its title "
-                "could not be set. Send rename <title> to try again."
-            )
-            return self._remember_fixed_reply(
-                message_id=message_id,
-                correlation_id=correlation_id,
-                operation_id=operation_id,
-                route_fingerprint=route_fingerprint,
-                source_ip=source_ip,
-                message=message,
-                code="codex_session_created",
-                session_id=session_id,
-                failed=True,
-            )
-        self._log_rename(operation_id, "succeeded", session_id, source_ip)
-        renamed_title = renamed.title or normalized_title
+        if normalized_title is not None:
+            self._log_rename(operation_id, "requested", session_id, source_ip)
+            self._log_rename(operation_id, "started", session_id, source_ip)
+            try:
+                renamed = self.codex_manager.rename_session(
+                    session_id,
+                    normalized_title,
+                )
+            except Exception:
+                LOGGER.warning("Unable to name new Weixin Codex session", exc_info=True)
+                self._log_rename(operation_id, "failed", session_id, source_ip)
+                message, _status_failed = self._codex_operation_message(
+                    f"Create: {slot_text} was created and selected, but its title "
+                    "could not be set. Send rename <title> to try again."
+                )
+                return self._remember_fixed_reply(
+                    message_id=message_id,
+                    correlation_id=correlation_id,
+                    operation_id=operation_id,
+                    route_fingerprint=route_fingerprint,
+                    source_ip=source_ip,
+                    message=message,
+                    code="codex_session_created",
+                    session_id=session_id,
+                    failed=True,
+                )
+            self._log_rename(operation_id, "succeeded", session_id, source_ip)
+            renamed_title = renamed.title or normalized_title
+        else:
+            renamed_title = "Unnamed Session"
         message, _status_failed = self._codex_operation_message(
             f'Create: {slot_text} "{renamed_title}" was created and selected.'
         )
@@ -2128,6 +2312,7 @@ class WeixinChubModeManager:
         if code in {
             "codex_session_created",
             "codex_session_archived",
+            "codex_session_deleted",
             "codex_session_renamed",
             "codex_session_stopped",
             "codex_switch_checked",
@@ -2250,7 +2435,7 @@ class WeixinChubModeManager:
         message = getattr(data, "message", "")
         if started:
             if state in {"preparing", "draining", "cleaning", "restarting"}:
-                return "Upgrade: Started. Check with upgrade status."
+                return "Upgrade: Started. The final result will be sent when completed."
             if state == "succeeded":
                 return "Upgrade: Already completed."
         labels = {
@@ -2268,22 +2453,6 @@ class WeixinChubModeManager:
         detail = message.strip() if isinstance(message, str) else ""
         return f"Upgrade: {label}" + (f" · {detail}" if detail else ".")
 
-    def _dispatch_system_upgrade_status(
-        self,
-        *,
-        message_id: str,
-        correlation_id: str | None,
-        route_fingerprint: str,
-        source_ip: str,
-    ) -> WeixinChubModeDispatchResult:
-        return self._dispatch_system_upgrade_command(
-            message_id=message_id,
-            correlation_id=correlation_id,
-            route_fingerprint=route_fingerprint,
-            source_ip=source_ip,
-            start=False,
-        )
-
     def _dispatch_system_upgrade(
         self,
         *,
@@ -2297,7 +2466,6 @@ class WeixinChubModeManager:
             correlation_id=correlation_id,
             route_fingerprint=route_fingerprint,
             source_ip=source_ip,
-            start=True,
         )
 
     def _dispatch_system_upgrade_command(
@@ -2307,7 +2475,6 @@ class WeixinChubModeManager:
         correlation_id: str | None,
         route_fingerprint: str,
         source_ip: str,
-        start: bool,
     ) -> WeixinChubModeDispatchResult:
         """Persist an idempotent fixed reply around the shared upgrade service."""
         with self._system_upgrade_lock, self._lock:
@@ -2328,14 +2495,14 @@ class WeixinChubModeManager:
             operation_id = uuid4().hex
             self._log_dispatch(operation_id, "requested", source_ip)
             self._log_dispatch(operation_id, "started", source_ip)
-            reader = self.system_upgrade_starter if start else self.system_upgrade_status_reader
+            reader = self.system_upgrade_starter
             if reader is None:
                 message = "Upgrade: Unavailable."
                 failed = True
             else:
                 try:
-                    data = reader(source_ip) if start else reader()
-                    message = self._system_upgrade_message(data, started=start)
+                    data = reader(source_ip)
+                    message = self._system_upgrade_message(data, started=True)
                     failed = False
                 except ApiError as exc:
                     message = f"Upgrade: Not started · {exc.message}"
@@ -2351,7 +2518,7 @@ class WeixinChubModeManager:
                 route_fingerprint=route_fingerprint,
                 source_ip=source_ip,
                 message=message,
-                code=("system_upgrade_requested" if start else "system_upgrade_checked"),
+                code="system_upgrade_requested",
                 failed=failed,
             )
 
@@ -2508,6 +2675,122 @@ class WeixinChubModeManager:
             code="codex_help_checked",
         )
 
+    def _dispatch_chub_check(
+        self,
+        *,
+        message_id: str,
+        correlation_id: str | None,
+        route_fingerprint: str,
+        source_ip: str,
+    ) -> WeixinChubModeDispatchResult:
+        query_started_at = time.monotonic()
+        operation_id = uuid4().hex
+        self._log_dispatch(operation_id, "requested", source_ip)
+        self._log_dispatch(operation_id, "started", source_ip)
+        failed = False
+
+        try:
+            readiness = self.status()
+        except Exception:
+            LOGGER.warning("Unable to check Chub readiness", exc_info=True)
+            readiness = None
+        if readiness is not None and readiness.ready:
+            web_message = "Web API：正常"
+        else:
+            failed = True
+            code = getattr(readiness, "code", "unavailable")
+            web_message = f"Web API：异常（{code}）"
+
+        worker_message = "Quick Worker：不可用"
+        worker_tasks_message = "活动任务：无法确认，排队任务：无法确认"
+        if self.worker_health_reader is not None:
+            try:
+                payload = self.worker_health_reader()
+                data = payload.get("data") if isinstance(payload, dict) else None
+                worker_ready = (
+                    isinstance(payload, dict)
+                    and payload.get("success") is True
+                    and isinstance(data, dict)
+                    and data.get("protocol_version") == PROTOCOL_VERSION
+                    and data.get("status") == "ready"
+                    and data.get("uncertain_tasks") == 0
+                    and data.get("corrupt_tasks") == 0
+                    and "codex" in data.get("available_runtime_ids", [])
+                )
+                if worker_ready:
+                    active = max(0, int(data.get("active_tasks", 0)))
+                    queued = max(0, int(data.get("queued_tasks", 0)))
+                    worker_message = (
+                        "Quick Worker："
+                        f"`{data.get('status')}` · 协议版本 {data.get('protocol_version')}"
+                    )
+                    worker_tasks_message = (
+                        f"活动任务：{active} 个，排队任务：{queued} 个"
+                    )
+                else:
+                    failed = True
+                    status = data.get("status", "unknown") if isinstance(data, dict) else "unknown"
+                    protocol = (
+                        data.get("protocol_version", "unknown")
+                        if isinstance(data, dict)
+                        else "unknown"
+                    )
+                    worker_message = (
+                        f"Quick Worker：`{status}`，协议版本 {protocol}，健康检查未通过"
+                    )
+            except Exception:
+                LOGGER.warning("Unable to check Quick Worker health", exc_info=True)
+                failed = True
+                worker_message = "Quick Worker：不可用，健康检查失败"
+        else:
+            failed = True
+
+        try:
+            system = self.system_status_reader() if self.system_status_reader else None
+            system_data = getattr(system, "system", None)
+            if system_data is None:
+                raise ValueError("system status is incomplete")
+            system_message = (
+                f"系统：内存 {float(system_data.memory_percent):.1f}%，"
+                f"磁盘 {float(system_data.disk_percent):.1f}%"
+            )
+        except Exception:
+            LOGGER.warning("Unable to check system status", exc_info=True)
+            failed = True
+            system_message = "系统：状态无法确认"
+
+        health_result = "通过" if not failed else "未通过"
+        message = "\n\n".join(
+            (
+                f"Check · {format_elapsed_time(max(1, round((time.monotonic() - query_started_at) * 1000)))}",
+                "\n".join(
+                    (
+                        "【服务】",
+                        f"- {web_message}",
+                        f"- {worker_message}",
+                    )
+                ),
+                "\n".join(
+                    (
+                        "【资源】",
+                        f"- {worker_tasks_message.replace('，', ' · ', 1)}",
+                        f"- {system_message.replace('，', ' · ', 1)}",
+                    )
+                ),
+                f"【结果】健康检查：{health_result}",
+            )
+        )
+        return self._remember_fixed_reply(
+            message_id=message_id,
+            correlation_id=correlation_id,
+            operation_id=operation_id,
+            route_fingerprint=route_fingerprint,
+            source_ip=source_ip,
+            message=message,
+            code="chub_check_checked",
+            failed=failed,
+        )
+
     def _dispatch_codex_model(
         self,
         *,
@@ -2560,6 +2843,456 @@ class WeixinChubModeManager:
             getattr(session, "active_reasoning_effort", None)
             or getattr(session, "reasoning_effort", None)
         )
+        next_model = getattr(session, "model", None)
+        next_reasoning_effort = getattr(session, "reasoning_effort", None)
+        if model is None or reasoning_effort is None:
+            try:
+                catalog = self.codex_manager.read_model_catalog()
+            except Exception:
+                LOGGER.warning(
+                    "Unable to read Codex model defaults for Weixin Session",
+                    exc_info=True,
+                )
+            else:
+                if model is None:
+                    model = getattr(catalog, "default_model", None)
+                selected_model = next(
+                    (
+                        item
+                        for item in getattr(catalog, "models", ())
+                        if getattr(item, "id", None) == model
+                    ),
+                    None,
+                )
+                if reasoning_effort is None:
+                    reasoning_effort = getattr(
+                        selected_model,
+                        "default_level",
+                        None,
+                    ) or getattr(catalog, "default_reasoning_effort", None)
+                if next_model is None:
+                    next_model = model
+                if next_reasoning_effort is None and next_model == model:
+                    next_reasoning_effort = reasoning_effort
+        slot = self._slot_for_session(session_id)
+        title = build_session_title(
+            getattr(session, "title", None) or "Unnamed Session",
+            self.settings.openclaw.weixin_chub_mode.session_name_max_width,
+        )
+        session_message = (
+            format_session_name_line(slot, title, "Available", True)
+            if slot is not None
+            else f"Session · {title}"
+        )
+        next_lines = []
+        if next_model and next_model != model:
+            next_lines.append(f"Next model · {next_model}")
+        if next_reasoning_effort and next_reasoning_effort != reasoning_effort:
+            next_lines.append(f"Next level · {next_reasoning_effort}")
+        next_configuration = (
+            "\n\n" + "\n\n".join(next_lines) if next_lines else ""
+        )
+        return self._remember_fixed_reply(
+            message_id=message_id,
+            correlation_id=correlation_id,
+            operation_id=operation_id,
+            route_fingerprint=route_fingerprint,
+            source_ip=source_ip,
+            message=(
+                f"Session\n\n{session_message}\n\n"
+                f"Model · {model or 'Default'}\n\n"
+                f"Level · {reasoning_effort or 'Default'}{next_configuration}"
+            ),
+            code="codex_model_checked",
+        )
+
+    def _dispatch_codex_model_levels(
+        self,
+        *,
+        message_id: str,
+        correlation_id: str | None,
+        route_fingerprint: str,
+        source_ip: str,
+        model_index: int | None = None,
+    ) -> WeixinChubModeDispatchResult:
+        operation_id = uuid4().hex
+        self._log_dispatch(operation_id, "requested", source_ip)
+        self._log_dispatch(operation_id, "started", source_ip)
+        with self._lock:
+            session_id = self._state.session_id
+        if session_id is None:
+            return self._remember_fixed_reply(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                operation_id=operation_id,
+                route_fingerprint=route_fingerprint,
+                source_ip=source_ip,
+                message="Model levels: No Session is selected.",
+                code="codex_model_checked",
+                failed=True,
+            )
+        try:
+            session = self.codex_manager.get_session(session_id)
+            if getattr(session, "id", None) != session_id:
+                raise ValueError("Current Session identity could not be confirmed")
+            catalog = self.codex_manager.read_model_catalog()
+        except Exception:
+            LOGGER.warning(
+                "Unable to read current Weixin Session model levels",
+                exc_info=True,
+            )
+            return self._remember_fixed_reply(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                operation_id=operation_id,
+                route_fingerprint=route_fingerprint,
+                source_ip=source_ip,
+                message="Model levels: Unavailable. The current Session or model catalog could not be read.",
+                code="codex_model_checked",
+                failed=True,
+            )
+        model_ids = tuple(
+            item.id
+            for item in getattr(catalog, "models", ())
+            if isinstance(getattr(item, "id", None), str) and item.id
+        )
+        if model_index is not None:
+            model_id = (
+                model_ids[model_index - 1]
+                if 1 <= model_index <= len(model_ids)
+                else None
+            )
+            if model_id is None:
+                return self._remember_fixed_reply(
+                    message_id=message_id,
+                    correlation_id=correlation_id,
+                    operation_id=operation_id,
+                    route_fingerprint=route_fingerprint,
+                    source_ip=source_ip,
+                    message="Model levels: Model index is unavailable in the current catalog.",
+                    code="codex_model_checked",
+                    failed=True,
+                )
+        else:
+            model_id = getattr(session, "model", None) or getattr(
+                session,
+                "active_model",
+                None,
+            ) or getattr(catalog, "default_model", None)
+        reasoning_effort = None if model_index is not None else (
+            getattr(session, "reasoning_effort", None)
+            or getattr(session, "active_reasoning_effort", None)
+        )
+        selected_model = next(
+            (
+                item
+                for item in getattr(catalog, "models", ())
+                if getattr(item, "id", None) == model_id
+            ),
+            None,
+        )
+        levels = tuple(getattr(selected_model, "levels", ()))
+        if selected_model is None or not levels:
+            return self._remember_fixed_reply(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                operation_id=operation_id,
+                route_fingerprint=route_fingerprint,
+                source_ip=source_ip,
+                message="Model levels: Unavailable. The current model has no available reasoning levels.",
+                code="codex_model_checked",
+                failed=True,
+            )
+        if reasoning_effort is None and model_index is None:
+            reasoning_effort = getattr(
+                selected_model,
+                "default_level",
+                None,
+            ) or getattr(catalog, "default_reasoning_effort", None)
+        if reasoning_effort is None and model_index is None:
+            return self._remember_fixed_reply(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                operation_id=operation_id,
+                route_fingerprint=route_fingerprint,
+                source_ip=source_ip,
+                message="Model levels: Unavailable. The current reasoning level could not be confirmed.",
+                code="codex_model_checked",
+                failed=True,
+            )
+        slot = self._slot_for_session(session_id)
+        title = build_session_title(
+            getattr(session, "title", None) or "Unnamed Session",
+            self.settings.openclaw.weixin_chub_mode.session_name_max_width,
+        )
+        session_message = (
+            format_session_name_line(slot, title, "Available", True)
+            if slot is not None
+            else f"Session · {title}"
+        )
+        level_ids = tuple(
+            level_id
+            for level in levels
+            if isinstance((level_id := getattr(level, "id", None)), str) and level_id
+        )
+        if not level_ids:
+            return self._remember_fixed_reply(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                operation_id=operation_id,
+                route_fingerprint=route_fingerprint,
+                source_ip=source_ip,
+                message="Model levels: Unavailable. The current model has no available reasoning levels.",
+                code="codex_model_checked",
+                failed=True,
+            )
+        model_label = f"M{model_index}" if model_index is not None else None
+        if model_label is None and model_id in model_ids:
+            model_label = f"M{model_ids.index(model_id) + 1}"
+        display_model = f"{model_label} · {model_id}" if model_label else model_id
+        return self._remember_fixed_reply(
+            message_id=message_id,
+            correlation_id=correlation_id,
+            operation_id=operation_id,
+            route_fingerprint=route_fingerprint,
+            source_ip=source_ip,
+            message=(
+                f"Session\n\n{session_message}\n\n"
+                f"Model · {display_model}\n\n"
+                + (f"Level · {reasoning_effort}\n\n" if reasoning_effort else "")
+                + "Levels\n"
+                + "\n".join(
+                    f"L{index} · {level_id}"
+                    for index, level_id in enumerate(level_ids, start=1)
+                )
+            ),
+            code="codex_model_checked",
+        )
+
+    def _dispatch_codex_model_use(
+        self,
+        *,
+        message_id: str,
+        correlation_id: str | None,
+        route_fingerprint: str,
+        source_ip: str,
+        model_index: int | None,
+        level_index: int | None,
+    ) -> WeixinChubModeDispatchResult:
+        operation_id = uuid4().hex
+        self._log_dispatch(operation_id, "requested", source_ip)
+        self._log_dispatch(operation_id, "started", source_ip)
+        with self._lock:
+            session_id = self._state.session_id
+        if session_id is None:
+            return self._remember_fixed_reply(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                operation_id=operation_id,
+                route_fingerprint=route_fingerprint,
+                source_ip=source_ip,
+                message="Model update: No Session is selected.",
+                code="codex_model_checked",
+                failed=True,
+            )
+        try:
+            session = self.codex_manager.get_session(session_id)
+            if getattr(session, "id", None) != session_id:
+                raise ValueError("Current Session identity could not be confirmed")
+            catalog = self.codex_manager.read_model_catalog()
+        except Exception:
+            LOGGER.warning("Unable to read Weixin Session model update context", exc_info=True)
+            return self._remember_fixed_reply(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                operation_id=operation_id,
+                route_fingerprint=route_fingerprint,
+                source_ip=source_ip,
+                message="Model update: Unavailable. The current Session or model catalog could not be read.",
+                code="codex_model_checked",
+                failed=True,
+            )
+        current_model = getattr(session, "model", None) or getattr(
+            session,
+            "active_model",
+            None,
+        ) or getattr(catalog, "default_model", None)
+        model_ids = tuple(
+            item.id
+            for item in getattr(catalog, "models", ())
+            if isinstance(getattr(item, "id", None), str) and item.id
+        )
+        target_model = (
+            model_ids[model_index - 1]
+            if model_index is not None and 1 <= model_index <= len(model_ids)
+            else current_model if model_index is None else None
+        )
+        if target_model is None:
+            return self._remember_fixed_reply(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                operation_id=operation_id,
+                route_fingerprint=route_fingerprint,
+                source_ip=source_ip,
+                message="Model update: Model index is unavailable in the current catalog.",
+                code="codex_model_checked",
+                failed=True,
+            )
+        selected_model = next(
+            (
+                item
+                for item in getattr(catalog, "models", ())
+                if getattr(item, "id", None) == target_model
+            ),
+            None,
+        )
+        level_ids = tuple(
+            item.id
+            for item in getattr(selected_model, "levels", ())
+            if isinstance(getattr(item, "id", None), str) and item.id
+        )
+        if selected_model is None or not level_ids:
+            return self._remember_fixed_reply(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                operation_id=operation_id,
+                route_fingerprint=route_fingerprint,
+                source_ip=source_ip,
+                message="Model update: The current model is unavailable. Select a model with M#.",
+                code="codex_model_checked",
+                failed=True,
+            )
+        target_level = (
+            level_ids[level_index - 1]
+            if level_index is not None and 1 <= level_index <= len(level_ids)
+            else getattr(selected_model, "default_level", None)
+            if level_index is None
+            else None
+        )
+        if target_level is None or target_level not in level_ids:
+            guidance = (
+                "Level index is unavailable for the selected model."
+                if level_index is not None
+                else "Specify a level after the model index."
+            )
+            return self._remember_fixed_reply(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                operation_id=operation_id,
+                route_fingerprint=route_fingerprint,
+                source_ip=source_ip,
+                message=f"Model update: A compatible level could not be confirmed. {guidance}",
+                code="codex_model_checked",
+                failed=True,
+            )
+        try:
+            self.quick_interactions.update_session_model(
+                session_id,
+                target_model,
+                target_level,
+            )
+        except ApiError as exc:
+            return self._remember_fixed_reply(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                operation_id=operation_id,
+                route_fingerprint=route_fingerprint,
+                source_ip=source_ip,
+                message=f"Model update: {exc.message}",
+                code="codex_model_checked",
+                failed=True,
+            )
+        except Exception:
+            LOGGER.warning("Unable to update Weixin Session model", exc_info=True)
+            return self._remember_fixed_reply(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                operation_id=operation_id,
+                route_fingerprint=route_fingerprint,
+                source_ip=source_ip,
+                message="Model update: Unable to save the Session configuration.",
+                code="codex_model_checked",
+                failed=True,
+            )
+        return self._remember_fixed_reply(
+            message_id=message_id,
+            correlation_id=correlation_id,
+            operation_id=operation_id,
+            route_fingerprint=route_fingerprint,
+            source_ip=source_ip,
+            message=(
+                "Model updated\n\n"
+                f"Next model · {target_model}\n\n"
+                f"Next level · {target_level}"
+            ),
+            code="codex_model_checked",
+        )
+
+    def _dispatch_codex_model_list(
+        self,
+        *,
+        message_id: str,
+        correlation_id: str | None,
+        route_fingerprint: str,
+        source_ip: str,
+    ) -> WeixinChubModeDispatchResult:
+        operation_id = uuid4().hex
+        self._log_dispatch(operation_id, "requested", source_ip)
+        self._log_dispatch(operation_id, "started", source_ip)
+        with self._lock:
+            session_id = self._state.session_id
+        if session_id is None:
+            return self._remember_fixed_reply(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                operation_id=operation_id,
+                route_fingerprint=route_fingerprint,
+                source_ip=source_ip,
+                message="Model list: No Session is selected.",
+                code="codex_model_checked",
+                failed=True,
+            )
+        try:
+            session = self.codex_manager.get_session(session_id)
+            if getattr(session, "id", None) != session_id:
+                raise ValueError("Current Session identity could not be confirmed")
+            catalog = self.codex_manager.read_model_catalog()
+        except Exception:
+            LOGGER.warning(
+                "Unable to read current Weixin Session model list",
+                exc_info=True,
+            )
+            return self._remember_fixed_reply(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                operation_id=operation_id,
+                route_fingerprint=route_fingerprint,
+                source_ip=source_ip,
+                message="Model list: Unavailable. The current Session or model catalog could not be read.",
+                code="codex_model_checked",
+                failed=True,
+            )
+        model_id = getattr(session, "model", None) or getattr(
+            session,
+            "active_model",
+            None,
+        ) or getattr(catalog, "default_model", None)
+        model_ids = tuple(
+            model.id
+            for model in getattr(catalog, "models", ())
+            if isinstance(getattr(model, "id", None), str) and model.id
+        )
+        if model_id not in model_ids:
+            return self._remember_fixed_reply(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                operation_id=operation_id,
+                route_fingerprint=route_fingerprint,
+                source_ip=source_ip,
+                message="Model list: Unavailable. The current model is not in the Codex model catalog.",
+                code="codex_model_checked",
+                failed=True,
+            )
         slot = self._slot_for_session(session_id)
         title = build_session_title(
             getattr(session, "title", None) or "Unnamed Session",
@@ -2578,8 +3311,12 @@ class WeixinChubModeManager:
             source_ip=source_ip,
             message=(
                 f"Session\n\n{session_message}\n\n"
-                f"Model · {model or 'Default'}\n\n"
-                f"Level · {reasoning_effort or 'Default'}"
+                f"Model · M{model_ids.index(model_id) + 1} · {model_id}\n\n"
+                "Models\n"
+                + "\n".join(
+                    f"M{index} · {available_model}"
+                    for index, available_model in enumerate(model_ids, start=1)
+                )
             ),
             code="codex_model_checked",
         )
@@ -3864,13 +4601,16 @@ class WeixinChubModeManager:
         if (
             command_kind not in FIXED_COMMAND_KINDS
             or command_kind == "help"
+            or command_kind == "check"
             or command_kind == "usage"
             or command_kind == "model"
+            or command_kind == "model_list"
+            or command_kind == "model_levels"
+            or command_kind == "model_use"
             or command_kind in {
                 "request_cat",
-                "request_run",
                 "request_archive",
-                "system_upgrade_status",
+                "request_delete",
                 "upgrade",
             }
             or result.disposition != "reply"
@@ -4096,19 +4836,26 @@ class WeixinChubModeManager:
                 session_id,
                 normalized_title,
             )
-        except Exception:
+        except Exception as exc:
             LOGGER.warning("Codex Session rename failed", exc_info=True)
             self._log_rename(operation_id, "failed", session_id, source_ip)
+            if isinstance(exc, ApiError) and exc.code == "codex_session_writer_active":
+                message = (
+                    "Rename: Not completed. This is open in another app, "
+                    "close it there to continue here."
+                )
+            else:
+                message = (
+                    "Rename: Failed. The current title was not changed. "
+                    "Try again later."
+                )
             return self._remember_fixed_reply(
                 message_id=message_id,
                 correlation_id=correlation_id,
                 operation_id=operation_id,
                 route_fingerprint=route_fingerprint,
                 source_ip=source_ip,
-                message=(
-                    "Rename: Failed. The current title was not changed. "
-                    "Try again later."
-                ),
+                message=message,
                 code="codex_session_renamed",
                 failed=True,
             )
@@ -4207,7 +4954,7 @@ class WeixinChubModeManager:
                 failed=failed,
             )
 
-        if invalid_usage or requested_index is None:
+        if invalid_usage:
             return finish("Usage: stop <1-9|S1-S9|一-九>", failed=True)
 
         try:
@@ -4228,13 +4975,29 @@ class WeixinChubModeManager:
                 failed=True,
             )
 
-        target_entry = next(
-            (entry for entry in visible if entry[0] == requested_index),
-            None,
-        )
+        if requested_index is None:
+            current_session_id = self._state.session_id
+            if current_session_id is None:
+                return finish(
+                    "Stop: Not completed because no Session is selected.",
+                    failed=True,
+                )
+            target_entry = next(
+                (entry for entry in visible if entry[1].id == current_session_id),
+                None,
+            )
+        else:
+            target_entry = next(
+                (entry for entry in visible if entry[0] == requested_index),
+                None,
+            )
         if target_entry is None:
             return finish(
-                "Stop: Not completed because the Session number is invalid.",
+                (
+                    "Stop: Not completed because the current Session is unavailable."
+                    if requested_index is None
+                    else "Stop: Not completed because the Session number is invalid."
+                ),
                 failed=True,
             )
 
@@ -4651,132 +5414,6 @@ class WeixinChubModeManager:
         )
         return result
 
-    def _dispatch_request_run(
-        self,
-        *,
-        message_id: str,
-        correlation_id: str | None,
-        route_fingerprint: str,
-        source_ip: str,
-        delivery_route: QuickInteractionWeixinRoute,
-        requested_index: int | None,
-        invalid_usage: bool,
-    ) -> WeixinChubModeDispatchResult:
-        if invalid_usage or requested_index is None:
-            return self._remember_request_reply(
-                message_id=message_id,
-                correlation_id=correlation_id,
-                route_fingerprint=route_fingerprint,
-                source_ip=source_ip,
-                message="Usage: run <R1-R9> / 执行需求 <1-9|R1-R9|一-九>",
-                failed=True,
-            )
-        try:
-            item = self.request_backlog.claim_run(requested_index, message_id)
-        except RequestBacklogNotFound:
-            return self._remember_request_reply(
-                message_id=message_id,
-                correlation_id=correlation_id,
-                route_fingerprint=route_fingerprint,
-                source_ip=source_ip,
-                message=f"Run: Request R{requested_index} was not found.",
-                failed=True,
-            )
-        except RequestBacklogBusy:
-            return self._remember_request_reply(
-                message_id=message_id,
-                correlation_id=correlation_id,
-                route_fingerprint=route_fingerprint,
-                source_ip=source_ip,
-                message=f"Run: Request R{requested_index} is already running.",
-                failed=True,
-            )
-        except RequestBacklogError:
-            return self._remember_request_reply(
-                message_id=message_id,
-                correlation_id=correlation_id,
-                route_fingerprint=route_fingerprint,
-                source_ip=source_ip,
-                message="Run: Request backlog is unavailable.",
-                failed=True,
-            )
-
-        prompt = f"{item.title}\n\n{item.content}"
-        try:
-            submission = self.submit(
-                message_id=message_id,
-                prompt=prompt,
-                correlation_id=correlation_id,
-                source_ip=source_ip,
-                delivery_route=delivery_route,
-                retain_busy_retry=False,
-                request_item=item,
-            )
-        except ApiError as exc:
-            recovered_task = self.quick_interactions.find_request_task(
-                item.slot,
-                item.generation,
-                item.active_run_id or "",
-            )
-            if recovered_task is not None:
-                try:
-                    self.request_backlog.record_submitted(
-                        item.slot,
-                        item.generation,
-                        item.active_run_id or "",
-                        recovered_task.id,
-                    )
-                except RequestBacklogError:
-                    LOGGER.warning(
-                        "Unable to preserve uncertain request submission",
-                        exc_info=True,
-                    )
-            else:
-                try:
-                    self.request_backlog.finish_run(
-                        item.slot,
-                        item.generation,
-                        item.active_run_id or "",
-                        None,
-                        succeeded=False,
-                        error=exc.message,
-                    )
-                except RequestBacklogError:
-                    LOGGER.warning("Unable to release failed request run", exc_info=True)
-            if recovered_task is not None:
-                message = (
-                    "Submission pending confirmation · Waiting for the task result."
-                )
-            else:
-                failure = self._dispatch_failure_from_error(exc)
-                message = failure.message or "Run: Request was not submitted."
-            message = f"{message}\n\nRequest · R{item.slot} · {item.title}"
-            return self._remember_request_reply(
-                message_id=message_id,
-                correlation_id=correlation_id,
-                route_fingerprint=route_fingerprint,
-                source_ip=source_ip,
-                message=message,
-                failed=True,
-            )
-        try:
-            self.request_backlog.record_submitted(
-                item.slot,
-                item.generation,
-                item.active_run_id or "",
-                next(
-                    record.task_id
-                    for record in self._state.submissions
-                    if record.message_id == message_id and record.task_id is not None
-                ),
-            )
-        except (RequestBacklogError, StopIteration):
-            LOGGER.warning("Unable to record submitted request task", exc_info=True)
-        return WeixinChubModeDispatchResult(
-            disposition="reply",
-            message=submission.message,
-        )
-
     def _dispatch_request_archive(
         self,
         *,
@@ -4814,21 +5451,8 @@ class WeixinChubModeManager:
             message = f"Archive: Request R{requested_index} was not found."
             failed = True
         except RequestBacklogBusy:
-            self.reconcile_request_runs()
-            try:
-                item = self.request_backlog.archive(requested_index)
-            except RequestBacklogBusy:
-                message = f"Archive: Request R{requested_index} is running."
-                failed = True
-            except RequestBacklogError:
-                message = "Archive: Request backlog is unavailable."
-                failed = True
-            else:
-                message = (
-                    f"Archive: Request R{item.slot} archived.\n\n"
-                    f"Request · R{item.slot} · {item.title}"
-                )
-                failed = False
+            message = f"Archive: Request R{requested_index} is running."
+            failed = True
         except RequestBacklogError:
             message = "Archive: Request backlog is unavailable."
             failed = True
@@ -4859,142 +5483,338 @@ class WeixinChubModeManager:
         )
         return result
 
-    def record_request_task_completion(self, task: QuickInteractionTask) -> None:
-        if (
-            task.weixin_request_slot is None
-            or task.weixin_request_generation is None
-            or task.weixin_request_run_id is None
-        ):
-            return
-        self.request_backlog.finish_run(
-            task.weixin_request_slot,
-            task.weixin_request_generation,
-            task.weixin_request_run_id,
-            task.id,
-            succeeded=task.status == "succeeded",
-            error=task.error,
+    def _dispatch_request_delete(
+        self,
+        *,
+        message_id: str,
+        correlation_id: str | None,
+        route_fingerprint: str,
+        source_ip: str,
+        requested_index: int | None,
+        invalid_usage: bool,
+    ) -> WeixinChubModeDispatchResult:
+        if invalid_usage or requested_index is None:
+            return self._remember_request_reply(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                route_fingerprint=route_fingerprint,
+                source_ip=source_ip,
+                message="Usage: del <R1-R9>",
+                failed=True,
+            )
+        delete_operation_id = uuid4().hex
+        for status in ("requested", "started"):
+            write_operation(
+                operation_id=delete_operation_id,
+                action="request_backlog_delete",
+                status=status,
+                target=f"R{requested_index}",
+                source_ip=source_ip,
+            )
+        try:
+            item = self.request_backlog.delete(requested_index)
+        except RequestBacklogNotFound:
+            message = f"Delete: Request R{requested_index} was not found."
+            failed = True
+        except RequestBacklogBusy:
+            message = f"Delete: Request R{requested_index} is running."
+            failed = True
+        except RequestBacklogError:
+            message = "Delete: Request backlog is unavailable."
+            failed = True
+        else:
+            message = (
+                f"Delete: Request R{item.slot} deleted.\n\n"
+                f"Request · R{item.slot} · {item.title}"
+            )
+            failed = False
+        result = self._remember_request_reply(
+            message_id=message_id,
+            correlation_id=correlation_id,
+            route_fingerprint=route_fingerprint,
+            source_ip=source_ip,
+            message=message,
+            failed=failed,
+        )
+        write_operation(
+            operation_id=delete_operation_id,
+            action="request_backlog_delete",
+            status=(
+                "failed"
+                if failed or self._state_error or result.message != message
+                else "succeeded"
+            ),
+            target=f"R{requested_index}",
+            source_ip=source_ip,
+        )
+        return result
+
+    def _dispatch_codex_delete(
+        self,
+        *,
+        message_id: str,
+        correlation_id: str | None,
+        route_fingerprint: str,
+        source_ip: str,
+        delivery_route: QuickInteractionWeixinRoute,
+        requested_index: int | None,
+        invalid_usage: bool,
+    ) -> WeixinChubModeDispatchResult:
+        operation_id = uuid4().hex
+        now = utc_now()
+        record = WeixinChubModeSubmission(
+            message_id=message_id,
+            correlation_id=correlation_id,
+            operation_id=operation_id,
+            delivery_route_fingerprint=route_fingerprint,
+            status="reserved",
+            code="submission_interrupted",
+            message=(
+                "Delete: The result could not be confirmed. Send chub to check status."
+            ),
+            created_at=now,
+            updated_at=now,
+        )
+        next_state = self._state.model_copy(deep=True)
+        next_state.submissions.append(record)
+        self._log_dispatch(operation_id, "requested", source_ip)
+        self._log_dispatch(operation_id, "started", source_ip)
+        try:
+            self._write_state(next_state)
+        except OSError:
+            self._state_error = True
+            self._log_dispatch(operation_id, "failed", source_ip)
+            return self._dispatch_failure("state_unavailable")
+        self._state = next_state
+
+        usage = "Usage: del <1-9|S1-S9|一-九>"
+        if invalid_usage or requested_index is None:
+            return self._finish_codex_delete(
+                record,
+                usage,
+                source_ip=source_ip,
+                failed=True,
+            )
+
+        try:
+            configuration = self._state.configuration.model_copy(deep=True)
+            visible, _remaining = self._read_visible_codex_sessions(
+                configuration,
+                fill_candidates=False,
+            )
+        except OSError:
+            self._state_error = True
+            self._log_dispatch(operation_id, "failed", source_ip)
+            return self._dispatch_failure("state_unavailable")
+        except Exception:
+            LOGGER.warning("Codex delete target lookup failed", exc_info=True)
+            return self._finish_codex_delete(
+                record,
+                "Delete: Not completed because the Session list is unavailable.",
+                source_ip=source_ip,
+                failed=True,
+            )
+
+        target_entry = next(
+            (entry for entry in visible if entry[0] == requested_index),
+            None,
+        )
+        if target_entry is None:
+            message, _status_failed = self._codex_operation_message(
+                "Delete: Not completed because the Session number is invalid.",
+                fill_session_candidates=False,
+            )
+            return self._finish_codex_delete(
+                record,
+                message,
+                source_ip=source_ip,
+                failed=True,
+            )
+
+        target_slot, target, _listed_state = target_entry
+
+        try:
+            refreshed = self.codex_manager.get_session(target.id)
+            if (
+                refreshed.id != target.id
+                or self._slot_for_session(refreshed.id) != target_slot
+                or not self._session_matches_configuration(refreshed, configuration)
+            ):
+                raise ValueError("Session is no longer safe to delete")
+        except Exception:
+            LOGGER.info("Codex delete target is no longer available", exc_info=True)
+            message, _status_failed = self._codex_operation_message(
+                "Delete: Not completed because the target Session changed state.",
+                fill_session_candidates=False,
+            )
+            return self._finish_codex_delete(
+                record,
+                message,
+                source_ip=source_ip,
+                failed=True,
+            )
+
+        pending = self._state.pending_retry
+        pending_session_id = None
+        if pending is not None and pending.expires_at > utc_now():
+            pending_session_id = pending.session_id or pending.claimed_session_id
+            if pending_session_id is None and self._state.session_id == refreshed.id:
+                pending_session_id = refreshed.id
+        if pending_session_id == refreshed.id:
+            message, _status_failed = self._codex_operation_message(
+                "Delete: Not completed because the Session has a pending retry task.",
+                fill_session_candidates=False,
+            )
+            return self._finish_codex_delete(
+                record,
+                message,
+                source_ip=source_ip,
+                failed=True,
+            )
+
+        if self.session_deleter is None:
+            return self._finish_codex_delete(
+                record,
+                "Delete: Not completed because Session deletion is unavailable.",
+                source_ip=source_ip,
+                failed=True,
+            )
+
+        self._log_delete(operation_id, "requested", refreshed.id, source_ip)
+        self._log_delete(operation_id, "started", refreshed.id, source_ip)
+        try:
+            self.session_deleter(refreshed.id)
+        except Exception as exc:
+            LOGGER.warning("Codex delete command failed", exc_info=True)
+            self._log_delete(operation_id, "failed", refreshed.id, source_ip)
+            if isinstance(exc, ApiError) and exc.code == "codex_session_writer_active":
+                message = (
+                    "Delete: Not completed. This is open in another app, "
+                    "close it there to continue here."
+                )
+            elif isinstance(exc, ApiError) and exc.code in {
+                "codex_session_in_progress",
+                "quick_interaction_in_progress",
+                "quick_interaction_terminal_working",
+            }:
+                message = (
+                    "Delete: Not completed because the target Session is still "
+                    "running or its state is unknown."
+                )
+            else:
+                message = (
+                    "Delete: Failed. The Session may have stopped but remains "
+                    "listed. Send chub before trying again."
+                )
+            return self._finish_codex_delete(
+                record,
+                message,
+                source_ip=source_ip,
+                failed=True,
+            )
+
+        self._log_delete(operation_id, "succeeded", refreshed.id, source_ip)
+
+        title = build_session_title(
+            refreshed.title or "Unnamed Session",
+            self.settings.openclaw.weixin_chub_mode.session_name_max_width,
+        )
+        was_current = self._state.session_id == refreshed.id
+        record.status = "routed"
+        record.code = "codex_session_deleted"
+        record.message = "Delete: Completed, but status refresh was interrupted. Send chub."
+        record.http_status = 200
+        record.session_id = refreshed.id
+        record.session_slot = target_slot
+        record.session_title = title
+        record.dispatch_disposition = "reply"
+        record.updated_at = utc_now()
+        deleted_state = self._state.model_copy(deep=True)
+        deleted_state.session_slots = [
+            entry
+            for entry in deleted_state.session_slots
+            if entry.session_id != refreshed.id
+        ]
+        if deleted_state.session_id == refreshed.id:
+            deleted_state.session_id = None
+        deleted_state.submissions = [
+            record.model_copy(deep=True)
+            if item.message_id == record.message_id
+            else item
+            for item in deleted_state.submissions
+        ]
+        try:
+            self._write_state(deleted_state)
+        except OSError:
+            self._state_error = True
+            self._log_dispatch(operation_id, "failed", source_ip)
+            return WeixinChubModeDispatchResult(
+                disposition="reply",
+                message=(
+                    "Delete: Completed, but Chub could not synchronize the "
+                    "Session list. Send chub later."
+                ),
+            )
+        self._state = deleted_state
+        current_suffix = " The current selection was cleared." if was_current else ""
+        message, _status_failed = self._codex_operation_message(
+            f"Delete: Session {target_slot} deleted.{current_suffix}",
+            fill_session_candidates=False,
+        )
+        record.message = message
+        deleted_state = self._state.model_copy(deep=True)
+        deleted_state.submissions = [
+            record.model_copy(deep=True)
+            if item.message_id == record.message_id
+            else item
+            for item in deleted_state.submissions
+        ]
+        try:
+            self._write_state(deleted_state)
+        except OSError:
+            self._state_error = True
+            self._log_dispatch(operation_id, "failed", source_ip)
+            return WeixinChubModeDispatchResult(
+                disposition="reply",
+                message=(
+                    "Delete: Completed, but Chub could not synchronize the "
+                    "Session list. Send chub later."
+                ),
+            )
+        self._state = deleted_state
+        self._log_dispatch(operation_id, "succeeded", source_ip)
+        return WeixinChubModeDispatchResult(
+            disposition="reply",
+            message=message,
         )
 
-    def reconcile_request_runs(self) -> None:
+    def _finish_codex_delete(
+        self,
+        record: WeixinChubModeSubmission,
+        message: str,
+        *,
+        source_ip: str,
+        failed: bool = False,
+    ) -> WeixinChubModeDispatchResult:
+        message = self._with_command_status_suffix(message)
+        record.status = "routed"
+        record.code = "codex_session_deleted"
+        record.message = message
+        record.http_status = 200
+        record.dispatch_disposition = "reply"
+        record.updated_at = utc_now()
         try:
-            running = tuple(
-                item
-                for item in self.request_backlog.list_active()
-                if item.status == "running"
-            )
-        except RequestBacklogError:
-            LOGGER.warning("Unable to reconcile request backlog", exc_info=True)
-            return
-        submissions = {
-            item.message_id: item.task_id
-            for item in self._state.submissions
-            if item.task_id is not None
-        }
-        next_retry_seconds: float | None = None
-        for item in running:
-            task_id = item.active_task_id or submissions.get(item.active_message_id or "")
-            recovered_task = None
-            if task_id is None:
-                recovered_task = self.quick_interactions.find_request_task(
-                    item.slot,
-                    item.generation,
-                    item.active_run_id or "",
-                )
-                task_id = recovered_task.id if recovered_task is not None else None
-            if task_id is None:
-                remaining_grace = (
-                    timedelta(seconds=REQUEST_RUN_RECOVERY_GRACE_SECONDS)
-                    - (utc_now() - item.updated_at)
-                ).total_seconds()
-                if remaining_grace > 0:
-                    next_retry_seconds = (
-                        remaining_grace
-                        if next_retry_seconds is None
-                        else min(next_retry_seconds, remaining_grace)
-                    )
-                    continue
-                self.request_backlog.finish_run(
-                    item.slot,
-                    item.generation,
-                    item.active_run_id or "",
-                    None,
-                    succeeded=False,
-                    error="Submission was interrupted before a task was recorded.",
-                )
-                continue
-            try:
-                task = recovered_task or self.quick_interactions.get(task_id)
-            except Exception:
-                self.request_backlog.finish_run(
-                    item.slot,
-                    item.generation,
-                    item.active_run_id or "",
-                    task_id,
-                    succeeded=False,
-                    error="The submitted task is no longer available.",
-                )
-                continue
-            if task.status in {"succeeded", "failed", "timed_out", "cancelled"}:
-                self.record_request_task_completion(task)
-            elif item.active_task_id is None:
-                self.request_backlog.record_submitted(
-                    item.slot,
-                    item.generation,
-                    item.active_run_id or "",
-                    task_id,
-                )
-        if next_retry_seconds is not None:
-            self._schedule_request_reconciliation(next_retry_seconds)
-
-    def _schedule_request_reconciliation(self, delay_seconds: float) -> None:
-        delay = max(0.1, delay_seconds)
-        deadline = time.monotonic() + delay
-        with self._request_reconcile_lock:
-            if self._request_reconcile_closed:
-                return
-            existing = self._request_reconcile_timer
-            if (
-                existing is not None
-                and existing.is_alive()
-                and self._request_reconcile_deadline is not None
-                and self._request_reconcile_deadline <= deadline
-            ):
-                return
-            if existing is not None:
-                existing.cancel()
-            timer = threading.Timer(
-                delay,
-                self._run_scheduled_request_reconciliation,
-                args=(deadline,),
-            )
-            timer.daemon = True
-            timer.name = "chub-request-reconciliation"
-            self._request_reconcile_timer = timer
-            self._request_reconcile_deadline = deadline
-            timer.start()
-
-    def _run_scheduled_request_reconciliation(self, deadline: float) -> None:
-        with self._request_reconcile_lock:
-            if (
-                self._request_reconcile_closed
-                or self._request_reconcile_deadline != deadline
-            ):
-                return
-            self._request_reconcile_timer = None
-            self._request_reconcile_deadline = None
-        try:
-            self.reconcile_request_runs()
-        except Exception:
-            LOGGER.warning("Scheduled request reconciliation failed", exc_info=True)
-
-    def close(self) -> None:
-        with self._request_reconcile_lock:
-            self._request_reconcile_closed = True
-            timer = self._request_reconcile_timer
-            self._request_reconcile_timer = None
-            self._request_reconcile_deadline = None
-        if timer is not None:
-            timer.cancel()
+            self._replace_submission(record)
+        except OSError:
+            self._log_dispatch(record.operation_id, "failed", source_ip)
+            return self._dispatch_failure("state_unavailable")
+        self._log_dispatch(
+            record.operation_id,
+            "failed" if failed else "succeeded",
+            source_ip,
+        )
+        self._schedule_session_snapshot_refresh()
+        return WeixinChubModeDispatchResult(disposition="reply", message=message)
 
     def system_upgrade_readiness(self) -> str | None:
         with self._lock:
@@ -5012,8 +5832,6 @@ class WeixinChubModeManager:
                 for item in self._state.stop_operations
             ):
                 return "仍有微信 Session 停止操作或通知尚未结束。"
-        if any(item.status == "running" for item in self.request_backlog.list_active()):
-            return "仍有 Request 正在执行。"
         return None
 
     def reset_for_system_upgrade(self, operation_id: str, *, force: bool = False) -> None:
@@ -5027,7 +5845,6 @@ class WeixinChubModeManager:
             self._write_state(next_state)
             self._state = next_state
             self._system_upgrade_reset = True
-        self.request_backlog.reset_runs_for_system_upgrade(operation_id, force=force)
 
     def _dispatch_codex_archive(
         self,
@@ -5312,6 +6129,8 @@ class WeixinChubModeManager:
         invalid_usage: bool,
         delivery_route: QuickInteractionWeixinRoute,
         task_prompt: str | None = None,
+        preprocess_task: bool = False,
+        confirmation_task: bool = False,
         retry_after_switch: bool = False,
     ) -> WeixinChubModeDispatchResult:
         operation_id = uuid4().hex
@@ -5551,7 +6370,9 @@ class WeixinChubModeManager:
                 record.continuation_prompt = pending.prompt
                 record.continuation_original_message_id = pending.original_message_id
         elif task_prompt is not None:
-            record.continuation_kind = "task"
+            record.continuation_kind = (
+                "confirmed_translated_task" if confirmation_task else "translated_task" if preprocess_task else "task"
+            )
             record.continuation_prompt = task_prompt
         record.updated_at = utc_now()
         switched_state = self._state.model_copy(deep=True)
@@ -5634,6 +6455,9 @@ class WeixinChubModeManager:
                 )
             derived_message_id = self._command_task_message_id(record.message_id)
 
+        preprocess_task = record.continuation_kind in {"translated_task", "confirmed_translated_task"}
+        confirmation_task = record.continuation_kind == "confirmed_translated_task"
+
         try:
             submission = self.submit(
                 message_id=derived_message_id,
@@ -5642,7 +6466,9 @@ class WeixinChubModeManager:
                 source_ip=source_ip,
                 delivery_route=delivery_route,
                 target_session_id=record.session_id,
-                retain_busy_retry=record.continuation_kind == "task",
+                preprocess=preprocess_task,
+                confirmation_required=confirmation_task,
+                retain_busy_retry=record.continuation_kind in {"task", "translated_task", "confirmed_translated_task"},
             )
         except ApiError as exc:
             if record.continuation_kind == "retry":
@@ -5680,7 +6506,12 @@ class WeixinChubModeManager:
                 self._state = cleared_state
             status = f"Switch: Session {target_slot} selected. Retry: The task was resubmitted."
         else:
-            status = f"Switch: Session {target_slot} selected. Task submitted."
+            status = (
+                f"Switch: Session {target_slot} selected. "
+                "Optimizing · Preparing to submit."
+                if preprocess_task
+                else f"Switch: Session {target_slot} selected. Task submitted."
+            )
         return self._finish_codex_switch(
             record,
             self._replace_submission_status(submission.message, status),
@@ -6416,6 +7247,21 @@ class WeixinChubModeManager:
         write_operation(
             operation_id=operation_id,
             action="archive_codex_session",
+            status=status,
+            target=target,
+            source_ip=source_ip,
+        )
+
+    @staticmethod
+    def _log_delete(
+        operation_id: str,
+        status: str,
+        target: str,
+        source_ip: str,
+    ) -> None:
+        write_operation(
+            operation_id=operation_id,
+            action="delete_codex_session",
             status=status,
             target=target,
             source_ip=source_ip,

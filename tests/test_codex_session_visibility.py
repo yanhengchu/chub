@@ -194,7 +194,16 @@ const stopStates = [
   { usage: { owner: "quick_worker", phase: "waiting_result" } },
   { usage: { owner: "none", phase: "idle" } },
 ].map(sessionStopReady);
-process.stdout.write(JSON.stringify({ states, entryStates, stopStates }));
+const renameStates = [
+  { workspace_id: "chub", usage: { owner: "external", phase: "unknown" } },
+  { workspace_id: "chub", usage: { owner: "unknown", phase: "unknown" } },
+  { workspace_id: "weixin-translation", usage: { owner: "none", phase: "idle" } },
+  { workspace_id: "chub", usage: { owner: "quick_worker", phase: "waiting_result" } },
+].map((session) => sessionRenameBlockReason(
+  session,
+  sessionUsagePresentation(session),
+));
+process.stdout.write(JSON.stringify({ states, entryStates, stopStates, renameStates }));
 `);
 """
     result = subprocess.run(
@@ -230,4 +239,10 @@ process.stdout.write(JSON.stringify({ states, entryStates, stopStates }));
       ],
       "entryStates": [False, False, True, True],
       "stopStates": [True, False, True, False],
+      "renameStates": [
+        "This is open in another app, close it there to continue here.",
+        "",
+        "内部翻译 Session 标题固定，不支持重命名。",
+        "",
+      ],
     }

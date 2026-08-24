@@ -69,10 +69,17 @@ def configured_stop_target(settings: Settings):
 @pytest.mark.parametrize(
     "prompt",
     [
+        "stop",
         "stop 2",
+        "stop s2",
+        "stop2",
+        "stopS2",
         "stop S2",
         "STOP 2。",
         "停止 2",
+        "停止",
+        "停止2",
+        "停止S2",
         "停止二",
         "停止 S2",
     ],
@@ -307,11 +314,9 @@ def test_interrupted_session_stop_is_not_replayed_after_restart(
 @pytest.mark.parametrize(
     "prompt",
     [
-        "stop",
         "stop 0",
         "stop 10",
         "stop 2 extra",
-        "停止",
         "停止 0",
         "停止 2 继续处理",
     ],

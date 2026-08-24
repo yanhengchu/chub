@@ -796,6 +796,18 @@ async def read_health(settings: Settings) -> dict[str, object]:
     return payload
 
 
+def read_health_sync(settings: Settings) -> dict[str, object]:
+    """Read Quick Worker health from synchronous application services."""
+    return worker_request_sync(
+        settings,
+        {
+            "protocol_version": HEALTH_PROTOCOL_VERSION,
+            "request_id": uuid.uuid4().hex,
+            "action": "health",
+        },
+    )
+
+
 async def request_drain(
     settings: Settings,
     *,

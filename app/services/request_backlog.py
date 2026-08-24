@@ -137,96 +137,20 @@ class RequestBacklogStore:
         with self._locked():
             state = self._read_unlocked()
             item = self._find(state, slot)
-            if item.status == "running":
-                raise RequestBacklogBusy(f"Request R{slot} is running")
             item.generation = uuid4().hex
             item.content = resolved_content
             if resolved_title is not None:
                 item.title = resolved_title
             item.status = "ready"
-            item.active_run_id = None
-            item.active_message_id = None
-            item.active_task_id = None
-            item.last_task_id = None
-            item.last_error = None
-            item.finished_at = None
             item.updated_at = utc_now()
             self._write_unlocked(state)
         return item.model_copy(deep=True)
-
-    def claim_run(self, slot: int, message_id: str) -> RequestBacklogItem:
-        self._validate_slot(slot)
-        if not message_id or len(message_id) > 500:
-            raise ValueError("Message ID is invalid")
-        with self._locked():
-            state = self._read_unlocked()
-            item = self._find(state, slot)
-            if item.status == "running":
-                if item.active_message_id == message_id:
-                    return item.model_copy(deep=True)
-                raise RequestBacklogBusy(f"Request R{slot} is already running")
-            item.status = "running"
-            item.active_run_id = uuid4().hex
-            item.active_message_id = message_id
-            item.active_task_id = None
-            item.last_error = None
-            item.finished_at = None
-            item.updated_at = utc_now()
-            self._write_unlocked(state)
-        return item.model_copy(deep=True)
-
-    def record_submitted(
-        self,
-        slot: int,
-        generation: str,
-        run_id: str,
-        task_id: str,
-    ) -> None:
-        with self._locked():
-            state = self._read_unlocked()
-            item = self._find(state, slot)
-            if not self._matches_run(item, generation, run_id):
-                return
-            item.active_task_id = task_id
-            item.updated_at = utc_now()
-            self._write_unlocked(state)
-
-    def finish_run(
-        self,
-        slot: int,
-        generation: str,
-        run_id: str,
-        task_id: str | None,
-        *,
-        succeeded: bool,
-        error: str | None = None,
-    ) -> bool:
-        with self._locked():
-            state = self._read_unlocked()
-            try:
-                item = self._find(state, slot)
-            except RequestBacklogNotFound:
-                return False
-            if not self._matches_run(item, generation, run_id):
-                return False
-            item.status = "succeeded" if succeeded else "failed"
-            item.last_task_id = task_id or item.active_task_id
-            item.last_error = None if succeeded else (error or "Task failed")[:500]
-            item.active_run_id = None
-            item.active_message_id = None
-            item.active_task_id = None
-            item.finished_at = utc_now()
-            item.updated_at = item.finished_at
-            self._write_unlocked(state)
-            return True
 
     def archive(self, slot: int) -> ArchivedRequestBacklogItem:
         self._validate_slot(slot)
         with self._locked():
             state = self._read_unlocked()
             item = self._find(state, slot)
-            if item.status == "running":
-                raise RequestBacklogBusy(f"Request R{slot} is running")
             archived = ArchivedRequestBacklogItem(
                 **item.model_dump(),
                 archived_at=utc_now(),
@@ -236,44 +160,21 @@ class RequestBacklogStore:
             self._write_unlocked(state)
         return archived.model_copy(deep=True)
 
+    def delete(self, slot: int) -> RequestBacklogItem:
+        self._validate_slot(slot)
+        with self._locked():
+            state = self._read_unlocked()
+            item = self._find(state, slot)
+            state.active = [entry for entry in state.active if entry.slot != slot]
+            self._write_unlocked(state)
+        return item.model_copy(deep=True)
+
     def slot_matches(self, slot: int, generation: str) -> bool:
         try:
             item = self.get(slot)
         except (RequestBacklogError, OSError):
             return False
         return item.generation == generation
-
-    def reset_runs_for_system_upgrade(self, operation_id: str, *, force: bool = False) -> None:
-        if len(operation_id) != 32 or any(
-            char not in "0123456789abcdef" for char in operation_id
-        ):
-            raise ValueError("System upgrade operation ID is invalid")
-        with self._locked():
-            state = self._read_unlocked()
-            if not force and any(item.status == "running" for item in state.active):
-                raise RequestBacklogBusy("A request is still running")
-            now = utc_now()
-            for item in state.active:
-                item.generation = hashlib.sha256(
-                    f"{operation_id}:R{item.slot}".encode("ascii")
-                ).hexdigest()[:32]
-                item.status = "ready"
-                item.active_run_id = None
-                item.active_message_id = None
-                item.active_task_id = None
-                item.last_task_id = None
-                item.last_error = None
-                item.finished_at = None
-                item.updated_at = now
-            for item in state.archived:
-                item.active_run_id = None
-                item.active_message_id = None
-                item.active_task_id = None
-                item.last_task_id = None
-                item.last_error = None
-                item.finished_at = None
-                item.updated_at = now
-            self._write_unlocked(state)
 
     @contextmanager
     def _locked(self) -> Iterator[None]:
@@ -359,18 +260,6 @@ class RequestBacklogStore:
         if item is None:
             raise RequestBacklogNotFound(f"Request R{slot} was not found")
         return item
-
-    @staticmethod
-    def _matches_run(
-        item: RequestBacklogItem,
-        generation: str,
-        run_id: str,
-    ) -> bool:
-        return (
-            item.status == "running"
-            and item.generation == generation
-            and item.active_run_id == run_id
-        )
 
     @staticmethod
     def _validate_slot(slot: int) -> None:

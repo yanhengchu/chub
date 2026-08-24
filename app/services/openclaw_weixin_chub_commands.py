@@ -9,11 +9,27 @@ from typing import Literal
 
 TASK_STATUS_CHECK_PROMPTS = frozenset({"状态", "查询状态"})
 CHUB_STATUS_PROMPT = "chub"
+CHUB_CHECK_PROMPT = "check"
+CHUB_CHECK_ALIASES = frozenset({"检查"})
 CHUB_HELP_PROMPTS = frozenset({"help"})
 CHUB_HELP_ALIASES = frozenset({"帮助"})
 CHUB_USAGE_PROMPT = "usage"
 CHUB_MODEL_PROMPT = "model"
 CHUB_MODEL_ALIASES = frozenset({"模型"})
+CHUB_MODEL_LIST_PROMPT = "model list"
+CHUB_MODEL_LIST_ALIASES = frozenset({"模型列表"})
+CHUB_MODEL_LEVELS_PROMPT = "model level"
+CHUB_MODEL_LEVELS_ALIASES = frozenset({"模型等级"})
+MODEL_LEVEL_TARGET_PATTERN = re.compile(r"model\s+level\s+(M[1-9][0-9]*)", re.I)
+MODEL_LEVEL_TARGET_ALIAS_PATTERN = re.compile(r"模型等级\s+(M[1-9][0-9]*)", re.I)
+MODEL_USE_PATTERN = re.compile(
+    r"model\s+use\s+(?:(M[1-9][0-9]*)(?:\s+(L[1-9][0-9]*))?|(L[1-9][0-9]*))",
+    re.I,
+)
+MODEL_USE_ALIAS_PATTERN = re.compile(
+    r"模型切换\s+(?:(M[1-9][0-9]*)(?:\s+(L[1-9][0-9]*))?|(L[1-9][0-9]*))",
+    re.I,
+)
 CHUB_SYNC_PROMPTS = frozenset({"sync"})
 CHUB_SYNC_ALIASES = frozenset({"同步"})
 CHUB_RESTART_WEB_PROMPTS = frozenset({"restart web"})
@@ -24,7 +40,6 @@ CHUB_RESTART_CLAWBOT_PROMPT = "restart clawbot"
 CHUB_RESTART_CLAWBOT_ALIAS = "重启 clawbot"
 CHUB_UPGRADE_PROMPT = "upgrade"
 CHUB_UPGRADE_ALIAS = "升级系统"
-SYSTEM_UPGRADE_STATUS_PROMPT = "upgrade status"
 SESSION_RENAME_PROMPT = "rename"
 SESSION_RENAME_ALIASES = frozenset({"重命名"})
 SESSION_NEW_PROMPT = "new"
@@ -37,7 +52,10 @@ REMOVED_NEW_RETRY_ALIASES = frozenset({"新建 重试", "新建 继续执行"})
 REMOVED_SWITCH_RETRY_PROMPTS = frozenset({"retry"})
 REMOVED_SWITCH_RETRY_ALIASES = frozenset({"重试"})
 ENGLISH_SWITCH_PREFIX_PATTERN = re.compile(
-    r"switch\s+S?([1-9])", re.IGNORECASE
+    r"switch\s*S?([1-9])", re.IGNORECASE
+)
+ENGLISH_SWITCH_NUMBER_PREFIX_PATTERN = re.compile(
+    r"switch\s*([一二三四五六七八九])"
 )
 CHINESE_SWITCH_PREFIX_PATTERN = re.compile(
     r"切换\s*S?([1-9])", re.IGNORECASE
@@ -65,15 +83,28 @@ INVALID_SESSION_SLOT_PATTERN = re.compile(
     re.IGNORECASE,
 )
 SESSION_ARCHIVE_PROMPT = "archive"
-SESSION_ARCHIVE_PATTERN = re.compile(r"archive\s+S?([1-9])", re.IGNORECASE)
-CHINESE_ARCHIVE_PATTERN = re.compile(r"归档\s+S?([1-9])", re.IGNORECASE)
+SESSION_ARCHIVE_PATTERN = re.compile(r"archive\s*S?([1-9])", re.IGNORECASE)
+SESSION_ARCHIVE_NUMBER_PATTERN = re.compile(
+    r"archive\s*([一二三四五六七八九])"
+)
+CHINESE_ARCHIVE_PATTERN = re.compile(r"归档\s*S?([1-9])", re.IGNORECASE)
 INVALID_ARCHIVE_SLOT_PATTERN = re.compile(
     r"(?:archive|归档)\s*(?:S?\d+|[零〇一二两三四五六七八九十百千万]+)",
     re.IGNORECASE,
 )
+SESSION_DELETE_PROMPT = "del"
+SESSION_DELETE_PATTERN = re.compile(r"del\s*S?([1-9])", re.IGNORECASE)
+SESSION_DELETE_NUMBER_PATTERN = re.compile(r"del\s*([一二三四五六七八九])")
+INVALID_DELETE_SLOT_PATTERN = re.compile(
+    r"del\s*(?:S?\d+|[零〇一二两三四五六七八九十百千万]+)",
+    re.IGNORECASE,
+)
 SESSION_STOP_PROMPT = "stop"
-SESSION_STOP_PATTERN = re.compile(r"stop\s+S?([1-9])", re.IGNORECASE)
-CHINESE_STOP_PATTERN = re.compile(r"停止\s+S?([1-9])", re.IGNORECASE)
+SESSION_STOP_PATTERN = re.compile(r"stop\s*S?([1-9])", re.IGNORECASE)
+SESSION_STOP_NUMBER_PATTERN = re.compile(
+    r"stop\s*([一二三四五六七八九])"
+)
+CHINESE_STOP_PATTERN = re.compile(r"停止\s*S?([1-9])", re.IGNORECASE)
 INVALID_STOP_SLOT_PATTERN = re.compile(
     r"(?:stop|停止)\s*(?:S?\d+|[零〇一二两三四五六七八九十百千万]+)",
     re.IGNORECASE,
@@ -93,21 +124,10 @@ REQUEST_COMMAND_PATTERNS = (
     (
         "request_cat",
         re.compile(r"cat\s+R([1-9])", re.IGNORECASE),
-        re.compile(r"查看需求\s*R?([1-9])", re.IGNORECASE),
-        re.compile(r"查看需求\s*([一二三四五六七八九])"),
+        re.compile(r"(?:查看需求|查看)\s*R?([1-9])", re.IGNORECASE),
+        re.compile(r"(?:查看需求|查看)\s*([一二三四五六七八九])"),
         re.compile(
-            r"(?:cat\s+R|查看需求\s*R?)"
-            r"(?:\d+|[零〇一二两三四五六七八九十百千万]+)",
-            re.IGNORECASE,
-        ),
-    ),
-    (
-        "request_run",
-        re.compile(r"run\s+R([1-9])", re.IGNORECASE),
-        re.compile(r"执行需求\s*R?([1-9])", re.IGNORECASE),
-        re.compile(r"执行需求\s*([一二三四五六七八九])"),
-        re.compile(
-            r"(?:run\s+R|执行需求\s*R?)"
+            r"(?:cat\s+R|查看需求\s*R?|查看\s*R?)"
             r"(?:\d+|[零〇一二两三四五六七八九十百千万]+)",
             re.IGNORECASE,
         ),
@@ -115,11 +135,21 @@ REQUEST_COMMAND_PATTERNS = (
     (
         "request_archive",
         re.compile(r"archive\s+R([1-9])", re.IGNORECASE),
-        re.compile(r"归档需求\s*R?([1-9])", re.IGNORECASE),
+        re.compile(r"(?:归档需求\s*R?|归档\s*R)([1-9])", re.IGNORECASE),
         re.compile(r"归档需求\s*([一二三四五六七八九])"),
         re.compile(
             r"(?:archive\s+R|归档需求\s*R?)"
             r"(?:\d+|[零〇一二两三四五六七八九十百千万]+)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "request_delete",
+        re.compile(r"del\s+R([1-9])", re.IGNORECASE),
+        re.compile(r"(?!)"),
+        re.compile(r"(?!)"),
+        re.compile(
+            r"del\s+R(?:\d+|[零〇一二两三四五六七八九十百千万]+)",
             re.IGNORECASE,
         ),
     ),
@@ -130,49 +160,57 @@ CHINESE_NUMBERED_ALIAS_PATTERN = re.compile(
 
 WeixinChubCommandKind = Literal[
     "status",
+    "check",
     "usage",
     "help",
     "model",
+    "model_list",
+    "model_levels",
+    "model_use",
     "sync",
     "restart_web",
     "restart_worker",
     "restart_clawbot",
     "upgrade",
-    "system_upgrade_status",
     "retry",
     "new",
     "rename",
     "stop",
     "archive",
+    "delete",
     "switch",
     "session_slot",
     "request_cat",
-    "request_run",
     "request_archive",
+    "request_delete",
     "normal",
 ]
 FIXED_COMMAND_KINDS = frozenset(
     {
         "status",
+        "check",
         "usage",
         "help",
         "model",
+        "model_list",
+        "model_levels",
+        "model_use",
         "sync",
         "restart_web",
         "restart_worker",
         "restart_clawbot",
         "upgrade",
-        "system_upgrade_status",
         "retry",
         "new",
         "rename",
         "stop",
         "archive",
+        "delete",
         "switch",
         "session_slot",
         "request_cat",
-        "request_run",
         "request_archive",
+        "request_delete",
     }
 )
 
@@ -183,6 +221,8 @@ class WeixinChubCommand:
     normalized_prompt: str
     task_prompt: str | None = None
     requested_index: int | None = None
+    model_index: int | None = None
+    level_index: int | None = None
     invalid_usage: bool = False
 
 
@@ -256,6 +296,7 @@ def match_switch_command(prompt: str) -> tuple[int, str | None] | None:
     value = strip_command_whitespace(prompt)
     for pattern in (
         ENGLISH_SWITCH_PREFIX_PATTERN,
+        ENGLISH_SWITCH_NUMBER_PREFIX_PATTERN,
         CHINESE_SWITCH_PREFIX_PATTERN,
         CHINESE_SWITCH_NUMBER_PREFIX_PATTERN,
     ):
@@ -304,12 +345,47 @@ def parse_weixin_chub_command(prompt: str) -> WeixinChubCommand:
     folded = normalized.casefold()
     if normalized in TASK_STATUS_CHECK_PROMPTS or folded == CHUB_STATUS_PROMPT:
         return WeixinChubCommand("status", normalized)
+    if folded == CHUB_CHECK_PROMPT or normalized in CHUB_CHECK_ALIASES:
+        return WeixinChubCommand("check", normalized)
     if folded == CHUB_USAGE_PROMPT:
         return WeixinChubCommand("usage", normalized)
     if folded in CHUB_HELP_PROMPTS or normalized in CHUB_HELP_ALIASES:
         return WeixinChubCommand("help", normalized)
     if folded == CHUB_MODEL_PROMPT or normalized in CHUB_MODEL_ALIASES:
         return WeixinChubCommand("model", normalized)
+    if (
+        folded == CHUB_MODEL_LIST_PROMPT
+        or normalized in CHUB_MODEL_LIST_ALIASES
+    ):
+        return WeixinChubCommand("model_list", normalized)
+    if (
+        folded == CHUB_MODEL_LEVELS_PROMPT
+        or normalized in CHUB_MODEL_LEVELS_ALIASES
+    ):
+        return WeixinChubCommand("model_levels", normalized)
+    level_target = (
+        MODEL_LEVEL_TARGET_PATTERN.fullmatch(normalized)
+        or MODEL_LEVEL_TARGET_ALIAS_PATTERN.fullmatch(normalized)
+    )
+    if level_target is not None:
+        return WeixinChubCommand(
+            "model_levels",
+            normalized,
+            model_index=int(level_target.group(1)[1:]),
+        )
+    model_use = (
+        MODEL_USE_PATTERN.fullmatch(normalized)
+        or MODEL_USE_ALIAS_PATTERN.fullmatch(normalized)
+    )
+    if model_use is not None:
+        model_reference, paired_level, level_reference = model_use.groups()
+        selected_level = paired_level or level_reference
+        return WeixinChubCommand(
+            "model_use",
+            normalized,
+            model_index=(int(model_reference[1:]) if model_reference else None),
+            level_index=(int(selected_level[1:]) if selected_level else None),
+        )
     if folded in CHUB_SYNC_PROMPTS or normalized in CHUB_SYNC_ALIASES:
         return WeixinChubCommand("sync", normalized)
     if folded in CHUB_RESTART_WEB_PROMPTS or folded in {
@@ -328,8 +404,6 @@ def parse_weixin_chub_command(prompt: str) -> WeixinChubCommand:
         return WeixinChubCommand("restart_clawbot", normalized)
     if folded == CHUB_UPGRADE_PROMPT or normalized == CHUB_UPGRADE_ALIAS:
         return WeixinChubCommand("upgrade", normalized)
-    if folded == SYSTEM_UPGRADE_STATUS_PROMPT:
-        return WeixinChubCommand("system_upgrade_status", normalized)
     if folded in SESSION_RETRY_PROMPTS or normalized in SESSION_RETRY_ALIASES:
         return WeixinChubCommand("retry", normalized)
 
@@ -355,22 +429,22 @@ def parse_weixin_chub_command(prompt: str) -> WeixinChubCommand:
             )
         bare_english = {
             "request_cat": "cat",
-            "request_run": "run",
             "request_archive": "archive r",
+            "request_delete": "del r",
         }[kind]
-        bare_chinese = {
-            "request_cat": "查看需求",
-            "request_run": "执行需求",
-            "request_archive": "归档需求",
+        bare_chinese_aliases = {
+            "request_cat": {"查看需求", "查看"},
+            "request_archive": {"归档需求"},
+            "request_delete": set(),
         }[kind]
         if (
             normalized.casefold() == bare_english
-            or normalized == bare_chinese
+            or normalized in bare_chinese_aliases
             or invalid_pattern.fullmatch(normalized) is not None
             or (
-                kind in {"request_cat", "request_run"}
+                kind == "request_cat"
                 and re.fullmatch(
-                    rf"{'cat' if kind == 'request_cat' else 'run'}\s+S?\d+",
+                    r"cat\s+S?\d+",
                     normalized,
                     re.IGNORECASE,
                 )
@@ -379,8 +453,8 @@ def parse_weixin_chub_command(prompt: str) -> WeixinChubCommand:
             or re.match(
                 {
                     "request_cat": r"^cat\s+R(?:$|\d|\s)",
-                    "request_run": r"^run\s+R(?:$|\d|\s)",
                     "request_archive": r"^archive\s+R(?:$|\d|\s)",
+                    "request_delete": r"^del\s+R(?:$|\d|\s)",
                 }[kind],
                 normalized,
                 re.IGNORECASE,
@@ -388,9 +462,9 @@ def parse_weixin_chub_command(prompt: str) -> WeixinChubCommand:
             is not None
             or re.match(
                 {
-                    "request_cat": r"^查看需求\s*(?:$|R?\d|R?[零〇一二两三四五六七八九十百千万])",
-                    "request_run": r"^执行需求\s*(?:$|R?\d|R?[零〇一二两三四五六七八九十百千万])",
+                    "request_cat": r"^(?:查看需求|查看)\s*(?:$|R?\d|R?[零〇一二两三四五六七八九十百千万])",
                     "request_archive": r"^归档需求\s*(?:$|R?\d|R?[零〇一二两三四五六七八九十百千万])",
+                    "request_delete": r"^$",
                 }[kind],
                 normalized,
                 re.IGNORECASE,
@@ -411,7 +485,7 @@ def parse_weixin_chub_command(prompt: str) -> WeixinChubCommand:
     if title is not None:
         return WeixinChubCommand("rename", normalized, task_prompt=title)
     if folded == SESSION_RENAME_PROMPT or normalized in SESSION_RENAME_ALIASES:
-        return WeixinChubCommand("rename", normalized)
+        return WeixinChubCommand("normal", prompt)
 
     switch_command = match_switch_command(command)
     if switch_command is not None:
@@ -451,11 +525,20 @@ def parse_weixin_chub_command(prompt: str) -> WeixinChubCommand:
     ):
         return WeixinChubCommand("normal", prompt)
 
-    for kind, english, english_pattern, chinese, chinese_pattern, invalid_pattern in (
+    for (
+        kind,
+        english,
+        english_pattern,
+        english_number_pattern,
+        chinese,
+        chinese_pattern,
+        invalid_pattern,
+    ) in (
         (
             "stop",
             SESSION_STOP_PROMPT,
             SESSION_STOP_PATTERN,
+            SESSION_STOP_NUMBER_PATTERN,
             "停止",
             CHINESE_STOP_PATTERN,
             INVALID_STOP_SLOT_PATTERN,
@@ -464,25 +547,43 @@ def parse_weixin_chub_command(prompt: str) -> WeixinChubCommand:
             "archive",
             SESSION_ARCHIVE_PROMPT,
             SESSION_ARCHIVE_PATTERN,
+            SESSION_ARCHIVE_NUMBER_PATTERN,
             "归档",
             CHINESE_ARCHIVE_PATTERN,
             INVALID_ARCHIVE_SLOT_PATTERN,
         ),
+        (
+            "delete",
+            SESSION_DELETE_PROMPT,
+            SESSION_DELETE_PATTERN,
+            SESSION_DELETE_NUMBER_PATTERN,
+            "",
+            re.compile(r"(?!)"),
+            INVALID_DELETE_SLOT_PATTERN,
+        ),
     ):
-        match = english_pattern.fullmatch(
-            normalized
-        ) or chinese_pattern.fullmatch(normalized_numbered_alias)
+        match = (
+            english_pattern.fullmatch(normalized)
+            or english_number_pattern.fullmatch(normalized)
+            or chinese_pattern.fullmatch(normalized_numbered_alias)
+        )
         if match is not None:
+            slot = CHINESE_SLOT_NUMBERS.get(match.group(1), match.group(1))
             return WeixinChubCommand(
                 kind,
                 normalized,
-                requested_index=int(match.group(1)),
+                requested_index=int(slot),
             )
+        if (
+            kind == "stop"
+            and (folded == english or normalized == chinese)
+        ):
+            return WeixinChubCommand(kind, normalized)
         if (
             folded == english
             or folded.startswith(f"{english} ")
-            or normalized == chinese
-            or normalized.startswith(f"{chinese} ")
+            or (chinese and normalized == chinese)
+            or (chinese and normalized.startswith(f"{chinese} "))
             or invalid_pattern.fullmatch(normalized) is not None
         ):
             return WeixinChubCommand("normal", prompt)
@@ -491,7 +592,7 @@ def parse_weixin_chub_command(prompt: str) -> WeixinChubCommand:
     if title is not None:
         return WeixinChubCommand("new", normalized, task_prompt=title)
     if folded == SESSION_NEW_PROMPT or normalized in SESSION_NEW_ALIASES:
-        return WeixinChubCommand("normal", prompt)
+        return WeixinChubCommand("new", normalized)
 
     return WeixinChubCommand("normal", prompt)
 

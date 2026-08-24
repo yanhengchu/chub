@@ -119,6 +119,28 @@ def test_quick_interaction_timeout_is_configurable(tmp_path: Path) -> None:
     assert configured.timeout_seconds == 7_200
 
 
+def test_model_update_is_serialized_with_quick_session_tasks(tmp_path: Path) -> None:
+    quick_interactions = manager(tmp_path)
+
+    quick_interactions.update_session_model("session-1", "gpt-test", "high")
+
+    quick_interactions.codex_manager.update_quick_session_model.assert_called_once_with(
+        "session-1",
+        "gpt-test",
+        "high",
+    )
+
+
+def test_model_update_rejects_running_quick_session(tmp_path: Path) -> None:
+    quick_interactions = manager(tmp_path)
+    quick_interactions._running_sessions.add("session-1")
+
+    with pytest.raises(ApiError, match="正在执行"):
+        quick_interactions.update_session_model("session-1", "gpt-test", "high")
+
+    quick_interactions.codex_manager.update_quick_session_model.assert_not_called()
+
+
 def test_codex_execution_prompt_adds_delivery_guidance_without_changing_request(
     tmp_path: Path,
 ) -> None:

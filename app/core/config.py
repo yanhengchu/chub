@@ -233,6 +233,9 @@ class OpenClawWeixinChubModeConfig(StrictModel):
     task_name_max_width: int = Field(default=64, ge=4, le=96)
     # Translation runs an LLM over untrusted message text and must be opted in.
     translation_enabled: bool = False
+    # When set, this supersedes the legacy boolean above.  Keeping the boolean
+    # lets an existing local configuration retain its direct/automatic meaning.
+    translation_mode: Literal["direct", "auto", "confirm"] | None = None
     translation_queue_limit: int = Field(default=10, ge=1, le=50)
     translation_max_wait_seconds: int = Field(default=1800, ge=60, le=7200)
     translation_max_input_chars: int = Field(default=8000, ge=256, le=8000)
