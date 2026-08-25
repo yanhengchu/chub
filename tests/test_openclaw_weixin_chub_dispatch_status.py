@@ -375,11 +375,8 @@ def test_submission_and_session_list_use_the_same_task_summary(
     assert "Task · 任任任任任任任…" in overview
 
 
-@pytest.mark.parametrize(
-    "prompt",
-    ["chub", "状态", "查询状态"],
-)
-def test_dispatch_routes_chub_status_aliases_to_live_overview(
+@pytest.mark.parametrize("prompt", ["chub", "CHUB。"])
+def test_dispatch_routes_chub_status_to_live_overview(
     settings: Settings,
     prompt: str,
 ) -> None:
@@ -413,7 +410,10 @@ def test_dispatch_routes_chub_status_aliases_to_live_overview(
     quick_interactions.submit.assert_not_called()
 
 
-@pytest.mark.parametrize("prompt", ["状态查询", "检查状态", "状态检查"])
+@pytest.mark.parametrize(
+    "prompt",
+    ["状态", "查询状态", "状态查询", "检查状态", "状态检查"],
+)
 def test_removed_status_aliases_are_submitted_as_normal_tasks(
     settings: Settings,
     prompt: str,
@@ -433,10 +433,32 @@ def test_removed_status_aliases_are_submitted_as_normal_tasks(
     quick_interactions.submit.assert_called_once()
 
 
-@pytest.mark.parametrize("prompt", ["help", "HELP。", "帮助", " 帮助。 "])
-def test_dispatch_returns_concise_chub_help(
+@pytest.mark.parametrize(
+    ("prompt", "expected_message"),
+    [
+        (
+            "help",
+            "Commands\n\n"
+            "S# = session · R# = request · <required> · [optional]\n\n"
+            "Quick\n\n"
+            "chub · sync · new [title] · S# [task]\n\n"
+            "Reference\n\n"
+            "help model · help text · help session · help request · help system",
+        ),
+        (
+            "HELP MODEL。",
+            "Commands · Model\n\n"
+            "model\n\n"
+            "model list\n\n"
+            "model level [M#]\n\n"
+            "model use M# [L#]",
+        ),
+    ],
+)
+def test_dispatch_returns_compact_chub_help(
     settings: Settings,
     prompt: str,
+    expected_message: str,
 ) -> None:
     manager, codex_manager, quick_interactions = configured_manager(settings)
 
@@ -449,47 +471,7 @@ def test_dispatch_returns_concise_chub_help(
         delivery_route=delivery_route(),
     )
 
-    assert result.message == (
-        "Commands\n\n"
-        "指令从文本开头识别；匹配失败时按普通任务处理。\n\n"
-        "尖括号表示必选参数；方括号表示可选参数。\n\n"
-        "SN = 1-9 = S1-S9 = 一……九\n\n"
-        "查询与帮助指令\n\n"
-        "chub · 状态 / 查询状态\n\n"
-        "check · 检查 Chub、Web、Worker 和系统\n\n"
-        "usage · 完整额度\n\n"
-        "model · 模型\n\n"
-        "model list · 模型列表\n\n"
-        "model level · 模型等级\n\n"
-        "model level M# · 模型等级 M#\n\n"
-        "model use M# | L# | M# L# · 模型切换 M# | L# | M# L#\n\n"
-            "help · 帮助\n\n"
-            "正文处理与翻译确认\n\n"
-            "text · 当前正文处理方式和完整待确认内容\n\n"
-            "text mode direct|auto|confirm · 调整正文处理方式\n\n"
-            "text list · 当前正文处理流水\n\n"
-            "text ok|next|cancel · 处理确认队头\n\n"
-            "text-check <English> · 英文复述确认队头\n\n"
-            "会话指令\n\n"
-        "sync · 同步\n\n"
-        "new [title] · 新建 [标题]\n\n"
-        "rename <title> · 重命名 <标题>\n\n"
-        "switch <SN> [task] · 切换槽位 [正文]\n\n"
-        "S1-S9 [task] · 会话槽位 [正文]\n\n"
-        "stop [SN] · 停止任务\n\n"
-        "archive <SN> · 归档槽位\n\n"
-        "del <SN> · 删除槽位\n\n"
-        "retry · 重试 / 继续执行\n\n"
-        "需求指令\n\n"
-        "cat <R1-R9> · 查看 R1-R9\n\n"
-        "archive <R1-R9> · 归档 R1-R9\n\n"
-        "del <R1-R9> · 删除 R1-R9\n\n"
-        "系统维护指令\n\n"
-        "restart / restart web · 重启 Web\n\n"
-        "restart worker · 重启 Worker\n\n"
-        "restart clawbot · 重启 ClawBot\n\n"
-        "upgrade · 升级系统"
-    )
+    assert result.message == expected_message
     codex_manager.list_sessions.assert_not_called()
     quick_interactions.submit.assert_not_called()
 
@@ -516,7 +498,7 @@ def test_dispatch_runs_read_only_chub_check(
 
     result = manager.dispatch(
         message_id="check-command",
-        prompt="检查",
+        prompt="check",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -666,7 +648,7 @@ def test_model_command_uses_default_when_session_has_no_explicit_values(
 
     result = manager.dispatch(
         message_id="model-command-default",
-        prompt="模型",
+            prompt="model",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -768,7 +750,7 @@ def test_model_levels_command_reports_levels_for_active_model(
 
     result = manager.dispatch(
         message_id="model-levels-command",
-        prompt="模型等级",
+            prompt="model level",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -830,7 +812,7 @@ def test_model_list_command_reports_current_and_available_models(
 
     result = manager.dispatch(
         message_id="model-list-command",
-        prompt="模型列表",
+            prompt="model list",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -1716,7 +1698,7 @@ def test_chub_sync_failure_does_not_commit_partial_slots(
 
     result = manager.dispatch(
         message_id="chub-sync-write-failure",
-        prompt="同步",
+            prompt="sync",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",

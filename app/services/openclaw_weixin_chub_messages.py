@@ -23,46 +23,68 @@ WEEKLY_WINDOW_MINUTES = 7 * 24 * 60
 CHUB_HELP_MESSAGE = "\n\n".join(
     (
         "Commands",
-        "指令从文本开头识别；匹配失败时按普通任务处理。",
-        "尖括号表示必选参数；方括号表示可选参数。",
-        "SN = 1-9 = S1-S9 = 一……九",
-        "查询与帮助指令",
-        "chub · 状态 / 查询状态",
-        "check · 检查 Chub、Web、Worker 和系统",
-        "usage · 完整额度",
-        "model · 模型",
-        "model list · 模型列表",
-        "model level · 模型等级",
-        "model level M# · 模型等级 M#",
-        "model use M# | L# | M# L# · 模型切换 M# | L# | M# L#",
-        "help · 帮助",
-        "正文处理与翻译确认",
-        "text · 当前正文处理方式和完整待确认内容",
-        "text mode direct|auto|confirm · 调整正文处理方式",
-        "text list · 当前正文处理流水",
-        "text ok|next|cancel · 处理确认队头",
-        "text-check <English> · 英文复述确认队头",
-        "会话指令",
-        "sync · 同步",
-        "new [title] · 新建 [标题]",
-        "rename <title> · 重命名 <标题>",
-        "switch <SN> [task] · 切换槽位 [正文]",
-        "S1-S9 [task] · 会话槽位 [正文]",
-        "stop [SN] · 停止任务",
-        "archive <SN> · 归档槽位",
-        "del <SN> · 删除槽位",
-        "retry · 重试 / 继续执行",
-        "需求指令",
-        "cat <R1-R9> · 查看 R1-R9",
-        "archive <R1-R9> · 归档 R1-R9",
-        "del <R1-R9> · 删除 R1-R9",
-        "系统维护指令",
-        "restart / restart web · 重启 Web",
-        "restart worker · 重启 Worker",
-        "restart clawbot · 重启 ClawBot",
-        "upgrade · 升级系统",
+        "S# = session · R# = request · <required> · [optional]",
+        "Quick",
+        "chub · sync · new [title] · S# [task]",
+        "Reference",
+        "help model · help text · help session · help request · help system",
     )
 )
+CHUB_HELP_TOPICS = {
+    "model": "\n\n".join(
+        (
+            "Commands · Model",
+            "model",
+            "model list",
+            "model level [M#]",
+            "model use M# [L#]",
+        )
+    ),
+    "text": "\n\n".join(
+        (
+            "Commands · Text",
+            "text",
+            "text mode <direct|auto|confirm>",
+            "text list",
+            "text ok | text next | text cancel",
+            "text-check <English>",
+        )
+    ),
+    "session": "\n\n".join(
+        (
+            "Commands · Sessions",
+            "sync",
+            "new [title]",
+            "rename <title>",
+            "S# [task]",
+            "stop [S#]",
+            "archive S#",
+            "del S#",
+            "retry",
+        )
+    ),
+    "request": "\n\n".join(
+        (
+            "Commands · Requests",
+            "cat R#",
+            "archive R#",
+            "del R#",
+        )
+    ),
+    "system": "\n\n".join(
+        (
+            "Commands · System",
+            "restart | restart web",
+            "restart worker",
+            "restart clawbot",
+            "upgrade",
+        )
+    ),
+}
+
+
+def chub_help_message(topic: str | None = None) -> str:
+    return CHUB_HELP_TOPICS.get(topic, CHUB_HELP_MESSAGE)
 
 
 @dataclass(frozen=True)

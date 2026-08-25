@@ -150,7 +150,7 @@ def test_removed_sync_aliases_are_normal_tasks(
 
 @pytest.mark.parametrize(
     "sync_prompt",
-    ["sync", "SYNC。", " 同步。 "],
+    ["sync", "SYNC。", " sync。 "],
 )
 def test_chub_sync_lists_compatible_sessions_and_marks_current(
     settings: Settings,

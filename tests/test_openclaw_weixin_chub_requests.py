@@ -43,7 +43,7 @@ def test_request_cat_and_chinese_alias_return_full_saved_request(settings) -> No
 
     result = manager.dispatch(
         message_id="request-cat",
-        prompt="查看需求一",
+        prompt="cat R1",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",

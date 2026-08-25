@@ -47,8 +47,7 @@ from tests.openclaw_weixin_chub_mode_helpers import (
         ("RESTART。", "text"),
         ("restart web", "text"),
         ("RESTART WEB。", "text"),
-        ("重启 Web", "text"),
-        (" 重启 Web。 ", "voice"),
+        ("restart", "voice"),
     ],
 )
 def test_chub_restart_registers_fixed_restart_and_replies(
@@ -88,7 +87,7 @@ def test_chub_restart_registers_fixed_restart_and_replies(
     ("prompt", "target"),
     [
         ("restart worker", "worker"),
-        ("重启 ClawBot", "clawbot"),
+        ("restart clawbot", "clawbot"),
     ],
 )
 def test_weixin_fixed_runtime_restart_commands_use_targeted_starter(
@@ -330,7 +329,7 @@ def test_second_chub_restart_reuses_active_route_operation(
     )
     second = manager.dispatch(
         message_id="second-chub-restart",
-        prompt="重启 Web",
+            prompt="restart web",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -542,7 +541,7 @@ def test_chub_restart_interrupted_notification_is_not_retried(
     coordinator, notifier = enable_restart_command(manager)
     manager.dispatch(
         message_id="interrupted-chub-restart-notification",
-        prompt="重启 Web",
+            prompt="restart web",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",

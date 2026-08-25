@@ -100,7 +100,7 @@ def test_codex_switch_uses_creation_order_and_allows_busy_target(
 
     result = manager.dispatch(
         message_id="codex-switch-next",
-        prompt="Switch 3",
+        prompt="S3",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -109,7 +109,7 @@ def test_codex_switch_uses_creation_order_and_allows_busy_target(
 
     assert result.message is not None
     assert result.message.startswith(
-        "Switch: Session 3 selected.\n\n"
+        "Session: S3 selected.\n\n"
         "Sessions\n\n"
     )
     assert "▶ S3 · 第三项" in result.message
@@ -118,21 +118,8 @@ def test_codex_switch_uses_creation_order_and_allows_busy_target(
     quick_interactions.submit.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    "prompt",
-    [
-        "切换 2",
-        " 切换 2。 ",
-        "切换二",
-        "切换 二",
-        "S2",
-        "s2",
-        "会话 2",
-        "会话二",
-        "会话 S2",
-    ],
-)
-def test_chinese_switch_routes_to_numbered_session(
+@pytest.mark.parametrize("prompt", ["S2", " s2。 "])
+def test_canonical_switch_routes_to_numbered_session(
     settings: Settings,
     prompt: str,
 ) -> None:
@@ -165,7 +152,7 @@ def test_chinese_switch_routes_to_numbered_session(
     )
 
     result = manager.dispatch(
-        message_id=f"chinese-switch-{prompt}",
+        message_id=f"canonical-switch-{prompt}",
         prompt=prompt,
         message_type="voice",
         correlation_id=None,
@@ -183,13 +170,7 @@ def test_chinese_switch_routes_to_numbered_session(
 @pytest.mark.parametrize(
     ("prompt", "task_prompt"),
     [
-        ("switch 2 continue checking logs", "continue checking logs"),
         ("S2 continue checking logs", "continue checking logs"),
-        ("切换 2 继续检查正文", "继续检查正文"),
-        ("切换S2，继续检查正文", "继续检查正文"),
-        ("切换2继续检查正文", "继续检查正文"),
-        ("切换二继续检查正文", "继续检查正文"),
-        ("会话 2 继续检查正文", "继续检查正文"),
     ],
 )
 def test_codex_switch_with_task_switches_and_submits_once(
@@ -244,7 +225,7 @@ def test_codex_switch_with_task_switches_and_submits_once(
 
     assert first.disposition == "reply"
     assert first.message is not None
-    assert first.message.startswith("Switch: Session 2 selected.")
+    assert first.message.startswith("Session: S2 selected.")
     assert "\n\nSessions\n\n" in first.message
     assert "S1 · 第 1 项" in first.message
     assert f"▶ S2 · 第 2 项\n\nTask · {task_prompt}" in first.message
@@ -290,7 +271,7 @@ def test_codex_switch_task_uses_enabled_text_optimization(
 
     first = manager.dispatch(
         message_id="switch-optimized-task",
-        prompt="切换 2 检查服务状态",
+        prompt="S2 检查服务状态",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -298,7 +279,7 @@ def test_codex_switch_task_uses_enabled_text_optimization(
     )
     duplicate = manager.dispatch(
         message_id="switch-optimized-task",
-        prompt="切换 2 重复正文不得执行",
+        prompt="S2 重复正文不得执行",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -307,7 +288,7 @@ def test_codex_switch_task_uses_enabled_text_optimization(
 
     assert first.message is not None
     assert first.message.startswith(
-        "Switch: Session 2 selected. Optimizing · Preparing to submit."
+        "Session: S2 selected. Optimizing · Preparing to submit."
     )
     assert "▶ S2 · 第 2 项\n\nTask · 检查服务状态" in first.message
     assert duplicate == first
@@ -356,7 +337,7 @@ def test_codex_switch_long_body_submits_directly(
 
     result = manager.dispatch(
         message_id="switch-long-direct",
-        prompt=f"切换 2 {long_prompt}",
+        prompt=f"S2 {long_prompt}",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -364,7 +345,7 @@ def test_codex_switch_long_body_submits_directly(
     )
 
     assert result.message is not None
-    assert result.message.startswith("Switch: Session 2 selected. Task submitted.")
+    assert result.message.startswith("Session: S2 selected. Task submitted.")
     quick_interactions.submit.assert_called_once()
     assert quick_interactions.submit.call_args.args[1] == long_prompt
     manager.translation_manager.enqueue.assert_not_called()
@@ -411,7 +392,7 @@ def test_codex_switch_task_keeps_selection_when_optimization_cannot_queue(
 
     assert result.message is not None
     assert result.message.startswith(
-        "Switch: Session 2 selected, but the task was not submitted."
+        "Session: S2 selected, but the task was not submitted."
     )
     assert "Task · 检查服务状态" in result.message
     assert manager.session_id() == "session-2"
@@ -452,7 +433,7 @@ def test_codex_switch_with_task_failure_shows_task_summary(
 
     result = manager.dispatch(
         message_id="switch-with-failed-task",
-        prompt="切换 2 继续检查日志",
+        prompt="S2 继续检查日志",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -460,7 +441,7 @@ def test_codex_switch_with_task_failure_shows_task_summary(
     )
     duplicate = manager.dispatch(
         message_id="switch-with-failed-task",
-        prompt="切换 2 继续检查日志",
+        prompt="S2 继续检查日志",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -506,7 +487,7 @@ def test_codex_switch_with_task_busy_target_uses_target_without_current_marker(
 
     result = manager.dispatch(
         message_id="switch-with-busy-target-task",
-        prompt="切换 2 继续检查日志",
+        prompt="S2 继续检查日志",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -514,7 +495,7 @@ def test_codex_switch_with_task_busy_target_uses_target_without_current_marker(
     )
 
     assert result.message == (
-        "Switch: Not completed because the target Session is running. "
+        "Session: Not completed because the target Session is running. "
         "The task was not submitted.\n\n"
         "S2 · 第 2 项\n\n"
         "Task · 继续检查日志"
@@ -563,7 +544,7 @@ def test_codex_switch_without_current_uses_first_visible_session(
 
     result = manager.dispatch(
         message_id="codex-switch-first",
-        prompt="switch 1",
+        prompt="S1",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -578,15 +559,8 @@ def test_codex_switch_without_current_uses_first_visible_session(
 @pytest.mark.parametrize(
     "prompt",
     [
-        "Archive 2。",
-        "Archive2。",
-        "ArchiveS2。",
         "Archive S2。",
-        "归档 2",
-        "归档2",
-        "归档S2",
-        "归档二",
-        "归档 S2",
+        "Archive S2。",
     ],
 )
 def test_codex_archive_removes_target_and_clears_current_binding(
@@ -690,7 +664,7 @@ def test_codex_archive_allows_chub_only_session_without_native_binding(
 
     result = manager.dispatch(
         message_id="archive-chub-only",
-        prompt="归档 1",
+        prompt="archive S1",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -725,7 +699,7 @@ def test_duplicate_codex_archive_does_not_archive_twice(settings: Settings) -> N
 
     first = manager.dispatch(
         message_id="duplicate-archive",
-        prompt="归档 1",
+        prompt="archive S1",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -733,7 +707,7 @@ def test_duplicate_codex_archive_does_not_archive_twice(settings: Settings) -> N
     )
     duplicate = manager.dispatch(
         message_id="duplicate-archive",
-        prompt="归档 1",
+        prompt="archive S1",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -783,7 +757,7 @@ def test_codex_archive_status_preserves_freed_slot_for_codex_new(
 
     archived = manager.dispatch(
         message_id="archive-preserves-slot",
-        prompt="归档 2",
+        prompt="archive S2",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -840,7 +814,7 @@ def test_codex_archive_does_not_fill_unassigned_candidate(
 
     archived = manager.dispatch(
         message_id="archive-unassigned-candidate",
-        prompt="归档 2",
+        prompt="archive S2",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -914,7 +888,7 @@ def test_codex_archive_rejects_session_that_is_not_safely_idle(
 
     result = manager.dispatch(
         message_id=f"unsafe-archive-{activity}-{quick_running}-{writer_active}",
-        prompt="archive 1",
+        prompt="archive S1",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -1013,7 +987,7 @@ def test_codex_archive_failure_keeps_slot_and_explains_possible_stop(
 
     result = manager.dispatch(
         message_id="archive-command-failure",
-        prompt="归档 1",
+        prompt="archive S1",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -1062,7 +1036,7 @@ def test_codex_archive_rejects_session_with_pending_retry(
 
     result = manager.dispatch(
         message_id="archive-with-pending-retry",
-        prompt="归档 1",
+        prompt="archive S1",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -1111,7 +1085,7 @@ def test_codex_archive_state_sync_failure_reports_partial_success(
 
     result = manager.dispatch(
         message_id="archive-state-sync-failure",
-        prompt="归档 1",
+        prompt="archive S1",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -1158,7 +1132,7 @@ def test_codex_switch_number_uses_fresh_visible_list(settings: Settings) -> None
 
     result = manager.dispatch(
         message_id="codex-switch-number",
-        prompt=" switch 2 ",
+        prompt=" S2 ",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -1215,7 +1189,7 @@ def test_codex_switch_uses_one_deadline_and_reuses_session_scan(
         ):
             result = manager.dispatch(
                 message_id="codex-switch-bounded",
-                prompt="switch 2",
+                prompt="S2",
                 message_type="text",
                 correlation_id=None,
                 source_ip="100.64.0.21",
@@ -1226,7 +1200,7 @@ def test_codex_switch_uses_one_deadline_and_reuses_session_scan(
 
     assert result.message is not None
     assert result.message.startswith(
-        "Switch: Session 2 selected.\n\n"
+        "Session: S2 selected.\n\n"
         "Sessions\n\n"
     )
     assert result.message.endswith("Weekly Unavailable")
@@ -1255,7 +1229,7 @@ def test_codex_switch_out_of_range_returns_fresh_list_without_changing_binding(
 
     result = manager.dispatch(
         message_id="codex-switch-out-of-range",
-        prompt="switch 2",
+        prompt="S2",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -1264,7 +1238,7 @@ def test_codex_switch_out_of_range_returns_fresh_list_without_changing_binding(
 
     assert result.message is not None
     assert result.message.startswith(
-        "Switch: Not completed because the Session number is invalid.\n\n"
+        "Session: Not completed because the Session number is invalid.\n\n"
     )
     assert "Sessions" in result.message
     assert "▶ S1 · 当前会话" in result.message
@@ -1303,7 +1277,7 @@ def test_codex_switch_does_not_fill_unassigned_candidate(
 
     switched = manager.dispatch(
         message_id="switch-unassigned-candidate",
-        prompt="切换 2",
+        prompt="S2",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -1312,7 +1286,7 @@ def test_codex_switch_does_not_fill_unassigned_candidate(
 
     assert switched.message is not None
     assert switched.message.startswith(
-        "Switch: Not completed because the Session number is invalid. "
+        "Session: Not completed because the Session number is invalid. "
         "Unregistered Sessions are available. Send sync before switching.\n\n"
     )
     assert "1 more Sessions" in switched.message
@@ -1459,7 +1433,7 @@ def test_codex_switch_write_failure_keeps_previous_binding(
 
     result = manager.dispatch(
         message_id="codex-switch-write-failure",
-        prompt="switch 2",
+        prompt="S2",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -1509,7 +1483,7 @@ def test_duplicate_codex_switch_does_not_switch_twice(settings: Settings) -> Non
 
     first = manager.dispatch(
         message_id="duplicate-switch",
-        prompt="switch 3",
+        prompt="S3",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -1517,7 +1491,7 @@ def test_duplicate_codex_switch_does_not_switch_twice(settings: Settings) -> Non
     )
     duplicate = manager.dispatch(
         message_id="duplicate-switch",
-        prompt="switch 3",
+        prompt="S3",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",

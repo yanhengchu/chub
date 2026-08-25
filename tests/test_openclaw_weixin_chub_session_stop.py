@@ -70,18 +70,8 @@ def configured_stop_target(settings: Settings):
     "prompt",
     [
         "stop",
-        "stop 2",
-        "stop s2",
-        "stop2",
-        "stopS2",
         "stop S2",
-        "STOP 2。",
-        "停止 2",
-        "停止",
-        "停止2",
-        "停止S2",
-        "停止二",
-        "停止 S2",
+        "STOP S2。",
     ],
 )
 def test_session_stop_keeps_slot_and_current_binding(
@@ -144,7 +134,7 @@ def test_session_stop_final_notification_restores_other_running_task_name(
 
     manager.dispatch(
         message_id="stop-with-other-running-task",
-        prompt="stop 2",
+        prompt="stop S2",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -165,7 +155,7 @@ def test_session_stop_duplicate_does_not_stop_twice(settings: Settings) -> None:
     ) as write_operation:
         first = manager.dispatch(
             message_id="duplicate-stop",
-            prompt="停止 2",
+            prompt="stop S2",
             message_type="text",
             correlation_id=None,
             source_ip="100.64.0.21",
@@ -173,7 +163,7 @@ def test_session_stop_duplicate_does_not_stop_twice(settings: Settings) -> None:
         )
         duplicate = manager.dispatch(
             message_id="duplicate-stop",
-            prompt="停止 2",
+            prompt="stop S2",
             message_type="text",
             correlation_id=None,
             source_ip="100.64.0.21",
@@ -202,7 +192,7 @@ def test_session_stop_returns_before_background_operation_runs(
 
     result = manager.dispatch(
         message_id="scheduled-stop",
-        prompt="停止 2",
+        prompt="stop S2",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -233,7 +223,7 @@ def test_session_stop_notification_failure_is_persisted_and_reported(
 
     manager.dispatch(
         message_id="stop-notification-failed",
-        prompt="停止 2",
+        prompt="stop S2",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -258,7 +248,7 @@ def test_session_stop_result_write_failure_still_sends_final_notification(
     manager._start_stop_operation = MagicMock()
     manager.dispatch(
         message_id="stop-result-write-failed",
-        prompt="stop 2",
+        prompt="stop S2",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -287,7 +277,7 @@ def test_interrupted_session_stop_is_not_replayed_after_restart(
     manager._start_stop_operation = MagicMock()
     manager.dispatch(
         message_id="interrupted-stop",
-        prompt="停止 2",
+        prompt="stop S2",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -355,7 +345,7 @@ def test_session_stop_requires_confirmed_final_state_and_logs_failure(
     ) as write_operation:
         result = manager.dispatch(
             message_id="unconfirmed-stop",
-            prompt="stop 2",
+                prompt="stop S2",
             message_type="text",
             correlation_id=None,
             source_ip="100.64.0.21",

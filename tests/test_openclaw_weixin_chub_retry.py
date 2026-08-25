@@ -165,7 +165,7 @@ def test_removed_switch_retry_is_submitted_as_a_normal_task(
 
     result = manager.dispatch(
         message_id="switch-retry",
-        prompt="switch S2 retry",
+        prompt="S2 retry",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -182,11 +182,11 @@ def test_removed_switch_retry_is_submitted_as_a_normal_task(
     )
 
     assert result.message is not None
-    assert "Task · switch S2 retry" in result.message
-    assert manager.session_id() == "session-1"
+    assert "Task · retry" in result.message
+    assert manager.session_id() == "session-2"
     assert quick_interactions.submit.call_args.args[:2] == (
-        "session-1",
-        "switch S2 retry",
+        "session-2",
+        "retry",
     )
     assert duplicate == result
     assert quick_interactions.submit.call_count == submit_calls
@@ -312,7 +312,7 @@ def test_removed_switch_retry_does_not_consume_pending_retry(
 @pytest.mark.parametrize(
     ("prompt", "pending_prompt", "expected_status"),
     [
-        ("切换 S2 继续检查日志", None, "Task submitted"),
+        ("S2 继续检查日志", None, "Task submitted"),
     ],
 )
 def test_switch_continuation_resumes_after_final_state_write_is_interrupted(

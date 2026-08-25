@@ -44,7 +44,7 @@ from app.services.openclaw_weixin_chub_commands import (
     retry_submission_message_id,
 )
 from app.services.openclaw_weixin_chub_messages import (
-    CHUB_HELP_MESSAGE,
+    chub_help_message,
     ChubOverviewRequest,
     ChubOverviewSession,
     build_session_title,
@@ -288,7 +288,7 @@ class WeixinChubModeManager:
                     submission.status = "rejected"
                     submission.code = "submission_interrupted"
                     submission.message = (
-                        "Chub no longer supports switch retry. Send retry separately."
+                        "Chub does not combine slot selection with retry. Send retry separately."
                     )
                     submission.http_status = 409
                     submission.continuation_kind = None
@@ -1290,7 +1290,7 @@ class WeixinChubModeManager:
             prompt
             if command.kind == "normal"
             else command.task_prompt
-            if command.kind in {"switch", "session_slot"}
+            if command.kind == "session_slot"
             else None
         )
         mode_enabled = self._mode_enabled
@@ -1354,6 +1354,7 @@ class WeixinChubModeManager:
                     correlation_id=correlation_id,
                     route_fingerprint=self._route_fingerprint(delivery_route),
                     source_ip=source_ip,
+                    topic=command.task_prompt,
                 ),
                 delivery_route,
             )
@@ -1699,7 +1700,7 @@ class WeixinChubModeManager:
                     delivery_route,
                 )
 
-            if command.kind in {"switch", "session_slot"}:
+            if command.kind == "session_slot":
                 preprocess_task = False
                 confirmation_task = False
                 if (
@@ -1713,7 +1714,7 @@ class WeixinChubModeManager:
                         preprocess_task = processing_mode != "direct"
                         confirmation_task = processing_mode == "confirm"
                     except OSError:
-                        # The fixed switch remains independent. Its follow-up
+                        # The fixed slot selection remains independent. Its follow-up
                         # will fail closed if the optimization queue is down.
                         preprocess_task = True
                 result = self._dispatch_codex_switch(
@@ -2790,6 +2791,7 @@ class WeixinChubModeManager:
         correlation_id: str | None,
         route_fingerprint: str,
         source_ip: str,
+        topic: str | None,
     ) -> WeixinChubModeDispatchResult:
         operation_id = uuid4().hex
         self._log_dispatch(operation_id, "requested", source_ip)
@@ -2800,7 +2802,7 @@ class WeixinChubModeManager:
             operation_id=operation_id,
             route_fingerprint=route_fingerprint,
             source_ip=source_ip,
-            message=CHUB_HELP_MESSAGE,
+            message=chub_help_message(topic),
             code="codex_help_checked",
         )
 
@@ -6557,7 +6559,7 @@ class WeixinChubModeManager:
             status="reserved",
             code="submission_interrupted",
             message=(
-                "Switch: The result could not be confirmed. Send a new message "
+                "Session: The result could not be confirmed. Send a new message "
                 "to try again."
             ),
             created_at=now,
@@ -6575,7 +6577,7 @@ class WeixinChubModeManager:
             return self._dispatch_failure("state_unavailable")
         self._state = next_state
 
-        usage = "Usage: switch <1-9|S1-S9|一-九>"
+        usage = "Usage: S#"
         if invalid_usage or requested_index is None:
             return self._finish_codex_switch(
                 record,
@@ -6616,7 +6618,7 @@ class WeixinChubModeManager:
             LOGGER.warning("Codex session switch lookup failed", exc_info=True)
             return self._finish_codex_switch(
                 record,
-                "Switch: Not completed because the Session list is unavailable.",
+                "Session: Not completed because the Session list is unavailable.",
                 source_ip=source_ip,
                 failed=True,
                 failed_task_prompt=task_prompt,
@@ -6625,7 +6627,7 @@ class WeixinChubModeManager:
         if not visible:
             candidate_hint = self._switch_candidate_hint(remaining)
             hint = f" {candidate_hint}" if candidate_hint else ""
-            status = f"Switch: Not completed because no Sessions are available.{hint}"
+            status = f"Session: Not completed because no Sessions are available.{hint}"
             message = status
             if task_prompt is None:
                 message, _status_failed = self._codex_operation_message(
@@ -6644,7 +6646,7 @@ class WeixinChubModeManager:
         if requested_index not in slot_indexes:
             candidate_hint = self._switch_candidate_hint(remaining)
             hint = f" {candidate_hint}" if candidate_hint else ""
-            status = f"Switch: Not completed because the Session number is invalid.{hint}"
+            status = f"Session: Not completed because the Session number is invalid.{hint}"
             message = status
             if task_prompt is None:
                 message, _status_failed = self._codex_operation_message(
@@ -6666,7 +6668,7 @@ class WeixinChubModeManager:
             self.settings.openclaw.weixin_chub_mode.session_name_max_width,
         )
         if listed_state == "Unavailable":
-            status = "Switch: Not completed because the target Session is unavailable."
+            status = "Session: Not completed because the target Session is unavailable."
             message = status
             if task_prompt is None:
                 message, _status_failed = self._codex_operation_message(
@@ -6685,7 +6687,7 @@ class WeixinChubModeManager:
             )
         if task_prompt is not None and listed_state != "Available":
             message = (
-                "Switch: Not completed because the target Session is running. "
+                "Session: Not completed because the target Session is running. "
                 "The task was not submitted."
             )
             return self._finish_codex_switch(
@@ -6703,7 +6705,7 @@ class WeixinChubModeManager:
             and task_prompt is None
         ):
             message, _status_failed = self._codex_operation_message(
-                f"Switch: Not completed because Session {target_slot} is already selected.",
+                f"Session: Not completed because Session {target_slot} is already selected.",
                 fill_session_candidates=False,
             )
             return self._finish_codex_switch(
@@ -6728,7 +6730,7 @@ class WeixinChubModeManager:
                 raise ValueError("Session became unavailable")
         except Exception:
             LOGGER.info("Codex switch target is no longer available", exc_info=True)
-            status = "Switch: Not completed because the target Session is unavailable."
+            status = "Session: Not completed because the target Session is unavailable."
             message = status
             if task_prompt is None:
                 message, _status_failed = self._codex_operation_message(
@@ -6760,7 +6762,7 @@ class WeixinChubModeManager:
             remaining,
         )
         message = (
-            f"Switch: Session {target_slot} selected.\n\n"
+            f"Session: S{target_slot} selected.\n\n"
             f"{sessions_message}\n\n{usage_message}"
         )
 
@@ -6816,7 +6818,7 @@ class WeixinChubModeManager:
         if record.session_id is None:
             return self._finish_codex_switch(
                 record,
-                "Switch: The saved target Session is unavailable. The follow-up was not submitted.",
+                "Session: The saved target Session is unavailable. The follow-up was not submitted.",
                 source_ip=source_ip,
                 failed=True,
             )
@@ -6826,7 +6828,7 @@ class WeixinChubModeManager:
         if prompt is None:
             return self._finish_codex_switch(
                 record,
-                "Switch: The saved follow-up task is unavailable and was not submitted.",
+                "Session: The saved follow-up task is unavailable and was not submitted.",
                 source_ip=source_ip,
                 failed=True,
                 task_session_id=record.session_id,
@@ -6855,7 +6857,7 @@ class WeixinChubModeManager:
             failure = self._dispatch_failure_from_error(exc)
             return self._finish_codex_switch(
                 record,
-                f"Switch: Session {target_slot} selected, but the task was not submitted.\n\n"
+                f"Session: S{target_slot} selected, but the task was not submitted.\n\n"
                 f"{failure.message or 'Not submitted · Submission failed. Try again later.'}",
                 source_ip=source_ip,
                 failed=True,
@@ -6867,10 +6869,10 @@ class WeixinChubModeManager:
             )
 
         status = (
-            f"Switch: Session {target_slot} selected. "
+            f"Session: S{target_slot} selected. "
             "Optimizing · Preparing to submit."
             if preprocess_task
-            else f"Switch: Session {target_slot} selected. Task submitted."
+            else f"Session: S{target_slot} selected. Task submitted."
         )
         return self._finish_codex_switch(
             record,

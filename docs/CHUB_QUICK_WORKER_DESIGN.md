@@ -198,7 +198,7 @@ Worker 对已交付终态保留有限历史或墓碑，直到 Web 明确确认�
 
 ### 6.1 普通维护重启
 
-电脑端 `chub restart`、微信固定 `restart` / `restart web` / `重启 Web` 或首页手动重启都只重启 Web 服务。Worker、正在运行的 Runner、翻译 FIFO、确认 FIFO 和实时 tmux Session 保持不变；新 Web 恢复已送达的确认队头与已确认但等待目标可写的任务，且不重复提交。实时终端的旧 `ttyd` 桥由旧实例关闭或新实例启动时清理，用户再次进入 Session 时重新创建桥并 attach 原 tmux。微信 `restart worker` / `重启 Worker` 才执行 Quick Worker 的任务清理与恢复，不影响 Web 或实时终端。升级/恢复清理后的旧逻辑映射则按升级操作保存的旧逻辑 ID 与原生 Session ID 重新绑定仍存在的 Chub tmux。实时终端的完整重连规则以[AI Session 状态模型设计](AI_SESSION_STATE_DESIGN.md)和 Runtime 设计为准。
+电脑端 `chub restart`、微信固定 `restart` / `restart web` 或首页手动重启都只重启 Web 服务。Worker、正在运行的 Runner、翻译 FIFO、确认 FIFO 和实时 tmux Session 保持不变；新 Web 恢复已送达的确认队头与已确认但等待目标可写的任务，且不重复提交。实时终端的旧 `ttyd` 桥由旧实例关闭或新实例启动时清理，用户再次进入 Session 时重新创建桥并 attach 原 tmux。微信 `restart worker` 才执行 Quick Worker 的任务清理与恢复，不影响 Web 或实时终端。升级/恢复清理后的旧逻辑映射则按升级操作保存的旧逻辑 ID 与原生 Session ID 重新绑定仍存在的 Chub tmux。实时终端的完整重连规则以[AI Session 状态模型设计](AI_SESSION_STATE_DESIGN.md)和 Runtime 设计为准。
 
 新实例健康后通过启动恢复门禁重建状态，再恢复 Session 写入和页面操作。
 

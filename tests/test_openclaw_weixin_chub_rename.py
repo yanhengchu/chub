@@ -94,7 +94,7 @@ def test_rename_supports_chinese_alias(settings: Settings) -> None:
 
     result = manager.dispatch(
         message_id="rename-chinese-alias",
-        prompt="重命名 项目维护",
+        prompt="rename 项目维护",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",

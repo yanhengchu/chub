@@ -82,7 +82,7 @@ def test_duplicate_status_check_replays_without_rechecking(
     manager, _codex_manager, quick_interactions = configured_manager(settings)
     first = manager.dispatch(
         message_id="status-duplicate",
-        prompt="查询状态",
+        prompt="chub",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -90,7 +90,7 @@ def test_duplicate_status_check_replays_without_rechecking(
     )
     duplicate = manager.dispatch(
         message_id="status-duplicate",
-        prompt="状态查询",
+        prompt="chub",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -183,7 +183,7 @@ def test_dispatch_returns_bounded_failure_instead_of_api_error(
     quick_interactions.submit.assert_not_called()
 
 
-@pytest.mark.parametrize("prompt", ["new", "新建", " new。 "])
+@pytest.mark.parametrize("prompt", ["new", "NEW", " new。 "])
 def test_new_without_title_creates_and_selects_default_session(
     settings: Settings,
     prompt: str,
@@ -231,7 +231,7 @@ def test_new_without_title_creates_and_selects_default_session(
     ("prompt", "task_prompt"),
     [
         ("new Device status", "Device status"),
-        ("新建 设备状态", "设备状态"),
+        ("new 设备状态", "设备状态"),
         ("NEW .env 配置问题", ".env 配置问题"),
     ],
 )
@@ -312,7 +312,7 @@ def test_codex_new_naming_failure_keeps_created_session(settings: Settings) -> N
 
     result = manager.dispatch(
         message_id="new-with-failed-task",
-        prompt="新建 检查设备状态",
+        prompt="new 检查设备状态",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -320,7 +320,7 @@ def test_codex_new_naming_failure_keeps_created_session(settings: Settings) -> N
     )
     duplicate = manager.dispatch(
         message_id="new-with-failed-task",
-        prompt="新建 检查设备状态",
+        prompt="new 检查设备状态",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -352,7 +352,7 @@ def test_codex_new_creation_failure_does_not_link_current_session(
 
     result = manager.dispatch(
         message_id="new-with-task-create-failure",
-        prompt="新建 检查设备状态",
+        prompt="new 检查设备状态",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
