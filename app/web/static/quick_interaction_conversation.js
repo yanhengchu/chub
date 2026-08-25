@@ -11,6 +11,7 @@ const {
   readPageSize: readConversationPageSize,
   readSessionCreationPreferences: readConversationSessionCreationPreferences,
   shouldPoll: shouldPollConversation,
+  shouldSuppressReconnectError: shouldSuppressConversationReconnectError,
   shouldRetrySessionCreationWithDefaults: shouldRetryConversationCreationWithDefaults,
   submissionBlockReason: conversationSubmissionBlockReason,
 } = window.QuickInteractionCore;
@@ -664,6 +665,13 @@ function renderConversationSessionError(error) {
   conversationSessionView.renderError(error);
 }
 
+function conversationRestartPending() {
+  return conversationTasks.some(
+    (task) => task.deferred_restart_status === "pending"
+      || task.deferred_restart_status === "started",
+  );
+}
+
 async function performConversationLoad(generation, client) {
   window.clearTimeout(conversationPollTimer);
   const [historyResult, sessionContextResult] = await Promise.allSettled([
@@ -676,6 +684,20 @@ async function performConversationLoad(generation, client) {
   if (generation !== conversationGeneration) {
     return;
   }
+  const loadErrors = [historyResult, sessionContextResult]
+    .filter((result) => result.status === "rejected")
+    .map((result) => result.reason);
+  if (loadErrors.length === 0) {
+    conversationPollFailureCount = 0;
+  } else if (loadErrors.some(isRetryableConversationError)) {
+    conversationPollFailureCount += 1;
+  }
+  const restartPending = conversationRestartPending();
+  const suppressReconnectError = shouldSuppressConversationReconnectError({
+    loadErrors,
+    restartPending,
+    failureCount: conversationPollFailureCount,
+  });
   if (historyResult.status === "fulfilled") {
     const data = historyResult.value;
     conversationTotal = data.total;
@@ -692,6 +714,8 @@ async function performConversationLoad(generation, client) {
     conversationInitialized = true;
     conversationLoadEarlier.hidden = !conversationHasEarlier;
     showConversationMessage(conversationHistoryMessage, "");
+  } else if (suppressReconnectError) {
+    showConversationMessage(conversationHistoryMessage, "");
   } else {
     showConversationMessage(
       conversationHistoryMessage,
@@ -703,20 +727,14 @@ async function performConversationLoad(generation, client) {
     renderConversationSessionSwitcher(sessionContextResult.value.sessions);
     renderConversationSessionCreation(sessionContextResult.value);
     renderConversationSession(sessionContextResult.value.session);
-  } else {
+  } else if (!suppressReconnectError) {
     renderConversationSessionError(sessionContextResult.reason);
+  } else {
+    showConversationMessage(conversationSubmitMessage, "");
   }
   const session = sessionContextResult.status === "fulfilled"
     ? sessionContextResult.value.session
     : conversationSession;
-  const loadErrors = [historyResult, sessionContextResult]
-    .filter((result) => result.status === "rejected")
-    .map((result) => result.reason);
-  if (loadErrors.length === 0) {
-    conversationPollFailureCount = 0;
-  } else if (loadErrors.some(isRetryableConversationError)) {
-    conversationPollFailureCount += 1;
-  }
   if (shouldPollConversation({
     loadFailed: loadErrors.length > 0,
     loadErrors,
@@ -727,10 +745,7 @@ async function performConversationLoad(generation, client) {
       || task.deferred_restart_notification_status === "pending"
       || task.deferred_restart_notification_status === "sending"
     )),
-    restartPending: conversationTasks.some(
-      (task) => task.deferred_restart_status === "pending"
-        || task.deferred_restart_status === "started",
-    ),
+    restartPending,
     session,
     sessions: sessionContextResult.status === "fulfilled"
       ? sessionContextResult.value.sessions
@@ -777,11 +792,19 @@ async function performLoadEarlierConversation(generation, client) {
     if (generation !== conversationGeneration) {
       return;
     }
-    showConversationMessage(
-      conversationHistoryMessage,
-      formatConversationErrorMessage(error, "更早消息读取失败。"),
-      "error",
-    );
+    if (shouldSuppressConversationReconnectError({
+      loadErrors: [error],
+      restartPending: conversationRestartPending(),
+      failureCount: conversationPollFailureCount + 1,
+    })) {
+      showConversationMessage(conversationHistoryMessage, "");
+    } else {
+      showConversationMessage(
+        conversationHistoryMessage,
+        formatConversationErrorMessage(error, "更早消息读取失败。"),
+        "error",
+      );
+    }
   } finally {
     if (generation === conversationGeneration) {
       conversationLoadEarlier.disabled = false;

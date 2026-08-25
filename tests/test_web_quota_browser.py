@@ -169,6 +169,14 @@ EXPECTED_PARTS = {
 }
 
 VIEWPORTS = {
+    "android-compact": (
+        (360, 800),
+        {
+            "complete": (0, 1, 2),
+            "compact": (0, 0, 1),
+            "compact-local": (0, 0, 1),
+        },
+    ),
     "phone": (
         (390, 844),
         {
@@ -179,6 +187,14 @@ VIEWPORTS = {
     ),
     "phone-boundary": (
         (420, 900),
+        {
+            "complete": (0, 1, 2),
+            "compact": (0, 0, 1),
+            "compact-local": (0, 0, 1),
+        },
+    ),
+    "android-large": (
+        (412, 915),
         {
             "complete": (0, 1, 2),
             "compact": (0, 0, 1),
@@ -221,8 +237,8 @@ def _browser_settings(root: Path) -> Settings:
                 "name": "Browser Test Node",
                 "type": "ubuntu",
             },
-            "server": {"host": "127.0.0.1", "port": 8080},
-            "security": {"token": "browser-test-token-that-is-long-enough"},
+            "server": {"port": 8080},
+            "security": {"allow_tailscale": False},
             "logs": {
                 "file": root / "hub.log",
                 "operations_file": root / "operations.log",
@@ -246,6 +262,7 @@ def _browser_settings(root: Path) -> Settings:
             "project_documents": {
                 "state_file": root / "project-documents.json",
             },
+            "requests": {"state_file": root / "requests.json"},
             "notifications": {
                 "enabled": False,
                 "registry_file": root / "notifications.yaml",

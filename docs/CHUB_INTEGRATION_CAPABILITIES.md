@@ -70,6 +70,8 @@
 
 `RN` 只接受 `R1`–`R9`。标题最多 48 字符，正文最多 2000 字符；空正文、活动槽位已满或目标不存在时明确失败。保存和更新只在维护者明确要求后由本机编码 Agent 执行，不提供微信写入入口，也不得直接编辑需求状态文件。本机 CLI 不提供归档子命令；归档和删除使用第 4 节登记的微信固定指令。
 
+需求储备的权威文件是 `data/shared/chub/requests.json`，归 Chub 共享资料所有，不属于 OpenClaw 私有数据。该文件可由维护者通过 Git 工作流同步；Chub 不自动执行 Git 操作。多设备修改产生未合并冲突、非法 JSON 或同步状态无法确认时，读写必须失败关闭，不覆盖其他设备内容。共享需求不得包含凭证、本机秘密或其他不应进入 Git 历史的内容。
+
 完整安装条件、平台差异和命令说明见 [README](../README.md)。
 
 ## 3. 插件与固定 API
@@ -109,8 +111,8 @@
 | --- | --- |
 | `chub` / `check` / `usage` | 分别只读查询 Chub 摘要、Chub/Web/Worker/系统检查与完整额度 |
 | `help [model\|text\|session\|request\|system]` | 无参数显示紧凑索引；带主题时只显示该类的完整语法；均不附加状态尾部 |
-| `text [mode [direct\|auto\|confirm]\|list\|ok\|next\|cancel]` / `text-check <English>` | 查询或调整微信后续正文处理方式，或以英文复述确认队头 |
-| `model` / `model list` / `model level [M#]` / `model use M# [L#]` | 查询或配置当前 Session 后续任务的模型与推理等级 |
+| `text [mode [direct\|auto\|confirm]\|list\|ok\|next\|cancel]`、`text model list`、`text model level [M#]`、`text model use M# \| L# \| M# L#` / `text-check <English>` | 查询或调整微信后续正文处理方式、翻译任务默认模型和等级，或以英文复述确认队头 |
+| `model` / `model list` / `model level [M#]` / `model use M# \| L# \| M# L#` | 查询或配置当前 Session 后续任务的模型与推理等级 |
 | `sync` / `new [title]` / `rename <title>` / `retry` | 同步槽位、创建或重命名当前 Session，或提交待续提任务 |
 | `S# [task]` | 选择目标 Session；有正文时切换后提交任务 |
 | `stop [S#]` / `archive S#` / `del S#` | 停止、归档或永久删除指定 Session；`stop` 无参数时作用于当前绑定 Session |
@@ -134,7 +136,8 @@
 - `model` 是精确无参数指令；大小写和首尾标点可忽略，附加任何正文时回退为普通任务。它返回当前绑定 Session 最近一次已确认的 active 模型和推理等级；active 值缺失时继续读取该 Session 配置与 Runtime 模型目录默认值。若当前 Session 已为后续任务保存不同的模型或等级，只为不同字段额外显示 `Next model` 或 `Next level`，不把保存成功误报为已运行任务已切换。Runtime 目录无法读取或仍未提供某字段时才显示 `Default`，当前 Session 不存在或无法读取时失败关闭，不附加 Session 列表或额度尾部。
 - `model list` 是精确无参数指令；它显示当前 Session 为下一任务配置的模型，并以 `M1`…列出 Runtime 模型目录中当前可用的模型 ID。列表用于帮助选择，但不是后续切换的前置步骤；目录或当前模型无法确认时失败关闭，不返回残缺列表。
 - `model level` 可不带参数，或携带 `M#`。无参数时显示当前 Session 为下一任务配置的模型、当前等级及该模型的 `L1`…列表；带 `M#` 时按本次请求读取的当前 Runtime 目录选择目标模型，并只显示其 `L#` 列表而不切换。无需先执行 `model list`；索引、目录、模型、当前等级或等级列表无法确认时失败关闭。
-- `model use M#`、`model use L#` 和 `model use M# L#` 是精确参数指令。每次请求直接读取当前 Runtime 模型目录解析索引，无需先执行 `model list` 或 `model level`：仅模型时使用目标模型声明的默认等级；仅等级时保持当前模型；二者同时提供时，`L#` 按该目标模型本次可用等级列表解析并原子保存。切换只允许当前 `quick` Session 空闲且没有 Runtime writer 或 Worker 任务时执行，只影响后续任务，不改变已经运行的任务；成功回执显示实际保存的下一任务模型和等级。目录可能在两次消息之间变化，因此回执是最终选择依据；目录、索引、兼容性、空闲状态或保存结果不能确认时失败关闭，不部分更新、不猜测且不接受原始模型或等级 ID。
+- `model use M# | L# | M# L#` 是精确参数指令。每次请求直接读取当前 Runtime 模型目录解析索引，无需先执行 `model list` 或 `model level`：仅模型时使用目标模型声明的默认等级；仅等级时保持当前模型；二者同时提供时，`L#` 按该目标模型本次可用等级列表解析并原子保存。切换只允许当前 `quick` Session 空闲且没有 Runtime writer 或 Worker 任务时执行，只影响后续任务，不改变已经运行的任务；成功回执显示实际保存的下一任务模型和等级。目录可能在两次消息之间变化，因此回执是最终选择依据；目录、索引、兼容性、空闲状态或保存结果不能确认时失败关闭，不部分更新、不猜测且不接受原始模型或等级 ID。
+- `text` 是翻译处理方式的综合只读入口，返回当前 mode、翻译默认 model/level 和当前可操作确认项；`text model list`、`text model level [M#]` 和 `text model use M# | L# | M# L#` 使用同一组 `M#`/`L#` 语法，分别用于选择和切换翻译任务默认配置。读取设置页保存的翻译模型和等级，或读取当前 Runtime 目录展示可用选择；仅等级切换要求已有翻译模型，模型切换默认使用目标模型声明的默认等级。切换只保存下一次翻译任务提交时携带的模型和等级，不读取、切换或门禁隐藏翻译 Session，也不修改已进入队列或已运行任务；未选择模型和等级时继续跟随 Runtime 默认。目录、索引、兼容性或保存结果无法确认时失败关闭，不部分更新、不猜测且不接受原始模型或等级 ID。
 - `help`、`help model`、`help text`、`help session`、`help request` 和 `help system` 是精确帮助指令。顶层帮助只显示符号说明、常用指令和主题入口；主题帮助只展示本类完整语法。未知帮助主题按原文作为普通任务提交。
 - 无参数指令必须整句匹配。`S#` 后的剩余内容始终作为普通任务正文；例如 `S2 retry` 是切换并提交正文 `retry`，不会触发续提指令。`new retry` 作为普通任务，不创建 Session 或续提任务。
 - 只有表内英文规范格式属于固定指令。未登记的 `sn ...`、`session ...` 形式、旧别名和旧槽位写法均作为普通任务，不猜测为固定指令。
@@ -144,11 +147,13 @@
 
 ### 4.3 Session 与任务行为
 
+- 设置页“正文处理方式”下的翻译模型和等级是独立的翻译任务默认配置，不修改隐藏翻译 Session 的逻辑配置。保存时校验模型与等级组合；每个翻译任务在提交时快照当前配置并携带给 Native Runtime，已经进入队列的任务继续使用提交时快照，设置变化只影响之后提交的任务。未选择模型和等级时跟随 Runtime 默认。
+
 - 微信和 ClawBot 只分配 `quick` Session 的 S1–S9 槽位；`terminal` Session、升级扫描得到的 `discovered` Session 和内部翻译 Session 均不进入微信槽位或微信 Session 列表。微信不会创建或切换到实时终端 Session。
 - Session 类型在创建时固定；微信 `new` 创建的是 `quick` Session，Web 创建时由弹窗选择类型。不存在把同一 Session 从实时终端切换为快速交互的复合路径。
 
 - 设置页“正文处理方式”只影响之后新接收的正文任务：`直接执行`直接提交；`自动润色后执行`在独立只读 Session 生成中文润色和 English 后，自动提交润色后的中文；`自动润色后确认执行`生成同一份结果后进入确认队列。普通任务以及携带正文的 `S1`–`S9` 在正文不超过 `translation_preprocess_max_input_chars`（默认 1200 字符）时遵循该快照；超过阈值直接提交原正文，不润色、不翻译、不进入确认队列，以保持同步确认回复有界。其他固定指令和续提指令仍绕过文本优化。旧布尔配置 `translation_enabled=false/true` 分别等价于 `direct/auto`。
-- `text` 与设置页读取、保存同一个节点级处理方式：`text` 或 `text mode` 返回当前模式及当前已送达、可操作的待确认任务；其中 `text` 返回目标 Session、完整 `Polished` 正文和完整 `English`，不使用摘要。`text mode direct|auto|confirm` 立即保存并只影响之后新接收的正文。`text list` 显示完整正文处理流水：当前可操作确认队头以 `Confirming` 固定在最上方，其余已润色待轮到的确认项为 `Waiting confirmation`，仍在排队或翻译中的项目为 `Optimizing`；已确认但目标暂忙的项目显示为 `Waiting target`。每项返回目标 `S<槽位> · <标题>` 与下一行 `Task · <受限正文摘要>`，目标已不可用时显示 `Session · Unavailable`。已经在润色、确认或等待目标可写的项目继续按创建时快照完成。`text` 控制指令及 `text-check` 参数错误只返回用法而不作为普通任务提交。
+- `text` 与设置页读取、保存同一个节点级处理方式：`text` 按 `Text`、`Mode · <mode>`、`Model · <model> · <level>`、`Current confirmation` 的顺序返回当前状态；其中 `text` 返回目标 Session、完整 `Polished` 正文和完整 `English`，不使用摘要。`text mode direct|auto|confirm` 立即保存并只影响之后新接收的正文。`text list` 显示完整正文处理流水：当前可操作确认队头以 `Confirming` 固定在最上方，其余已润色待轮到的确认项为 `Waiting confirmation`，仍在排队或翻译中的项目为 `Optimizing`；已确认但目标暂忙的项目显示为 `Waiting target`。每项返回目标 `S<槽位> · <标题>` 与下一行 `Task · <受限正文摘要>`，目标已不可用时显示 `Session · Unavailable`。已经在润色、确认或等待目标可写的项目继续按创建时快照完成。`text` 控制指令及 `text-check` 参数错误只返回用法而不作为普通任务提交。
 - 确认模式下，翻译 FIFO 不等待用户操作；完成的译文按翻译完成顺序进入独立确认 FIFO。仅当队头的 `Translation ready` 通知已经成功送达时，文字消息才可使用 `text ok`（提交润色中文）、`text cancel`（丢弃）、`text next`（移至确认队尾）或 `text-check <完整英文复述>`。英文比较忽略大小写、空白和常见标点，词级相似度达到 90% 即提交润色中文；未达到时保留队头并提示重试。没有已送达的待确认队头时，这些确认指令明确回复没有待确认正文；确认、取消或过期均不会提交原文；待确认项 24 小时后失效。
 - `text cancel` 与 `text next` 的同步回复先说明本次取消或后移结果，再附加更新后的 `text list` 正文处理流水；队头由此变化后，列表首项就是下一条可操作或待送达确认。
 - 翻译完成后目标暂忙时，自动执行正文与已确认正文都保留固定目标，待该目标可安全写入后自动重试；自动执行视为已确认，不得改投其他 Session，也不会要求再次英文复述。
@@ -200,7 +205,7 @@ Session 标题与任务摘要的显示规则：
 | --- | --- |
 | `help`、`Usage` 用法错误 | 不附加 |
 | `usage` | 只返回完整额度使用情况，不附加 Session 状态 |
-| `model`、`model list`、`model level`、`model use` | 只返回模型查询或配置结果，不附加 Session 列表或用量状态 |
+| `model`、`model list`、`model level`、`model use`、`text model list`、`text model level`、`text model use` | 只返回模型查询或配置结果，不附加 Session 列表或用量状态 |
 | `check` | 使用任务完成格式，但不提交 AI 任务；只附加本次 `Weekly` 尾部，不附加完整 Session/用量状态 |
 | `cat R#`、`archive R#`及其失败 | 不附加 |
 | `del S#`、`del R#`及其失败 | 不附加 |
@@ -218,7 +223,7 @@ Session 标题与任务摘要的显示规则：
 
 - 尾部读取失败只降级对应状态，不得覆盖指令本身的成功或失败语义。
 - 异步任务和文本优化队列只保存目标 `session_id`；`Started`、完成和失败通知发送时按该 ID 读取当前槽位与 Session 名称。润色任务的 `Started` 使用 `Started`、发送时校验的 `[▶ ]S<槽位> · <标题>`、`Submitted:` 完整润色中文及 `English:`；确认模式在确认结果持久化后立即结束微信入口请求，主任务提交与这一条 `Started` 均由确认队列异步处理，不再额外发送 `Translation confirmed · Preparing to submit.`，也不把 Worker 或通知耗时误报为提交未知。槽位暂忙时先回复等待，待实际接收后再发送 `Started`。槽位已释放或复用时标记 `Unavailable`，不得把新 Session 显示成原任务目标。
-- 主任务终态继续使用 `Done`、`Failed` 或 `Timed out`，`Task · <摘要>` 必须来源于实际提交文本。正常成功链路通常产生 `Started` 和 `Done` 两次异步通知；两者不设置到达顺序门禁，极快任务允许偶发轻微乱序。
+- 主任务终态继续使用 `Done`、`Failed` 或 `Timed out`，`Task · <摘要>` 必须来源于实际提交文本。微信 ClawBot 任务正常成功链路通常产生 `Started` 和 `Done` 两次异步通知；Web 快速交互任务只在页面时间线展示结果，不主动回送 ClawBot。两者不设置到达顺序门禁，极快任务允许偶发轻微乱序。
 - 失败任务页面时间线明确显示错误来源：`Chub` 表示 Chub/Worker/解析边界错误，`Codex CLI（上游 Runtime）` 表示当前 Codex Runtime 子进程提供的原始诊断。微信完成通知只在 `Failed` 或文本优化失败标题中追加 `Chub` 或 `Codex CLI (upstream Runtime)`；`Timed out` 和 `Cancelled` 不追加错误来源。错误正文仍按 Worker 固定上限脱敏并以纯文本发送。`error_source=runtime` 保持 Runtime 通用语义，未来接入其他 Runtime 时必须重新定义对应展示标签并同步本节。
 - 文本优化失败或目标不可提交时只发送对应的一次异步失败通知。确认提示使用 `Translation ready`，包含固定目标、`Polished:`、`English:`，底部仅提示 `Please confirm.`；可用确认指令仍以本节命令契约为准。提示送达失败时不开放确认命令并持续按恢复规则重试。所有通知继续执行固定分段和总条数上限，超长内容可能拆成多条物理消息。
 - 普通任务结果通知失败保留在后台任务状态和运行日志中，不在 `chub` 中长期展示。

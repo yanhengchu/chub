@@ -187,7 +187,7 @@ def test_notification_skips_when_recipient_is_not_configured(
     result = notifier.notify(task())
 
     assert result.status == "skipped"
-    assert result.error == "尚未配置微信通知收件人。"
+    assert result.error == "页面任务结果仅在 Chub 快速交互页面展示。"
 
 
 def test_notification_uses_only_running_account_and_fixed_recipient(
@@ -227,7 +227,13 @@ def test_notification_uses_only_running_account_and_fixed_recipient(
         )
     )
 
-    result = notifier.notify(task(result="结果" * 300))
+    result = notifier.notify(
+        task(result="结果" * 300, notification_route="weixin-task"),
+        QuickInteractionWeixinRoute(
+            account_id="account-1",
+            recipient="recipient-1@im.wechat",
+        ),
+    )
 
     assert result.status == "sent"
     assert calls[0][1:] == ["channels", "status", "--json"]
@@ -245,9 +251,8 @@ def test_notification_uses_only_running_account_and_fixed_recipient(
     assert all(len(message) <= 256 for message in messages)
     assert messages[0].startswith("Done · 1/3\n\n")
     assert messages[-1].startswith("Done · 3/3\n\n")
-    assert "".join(message.split("\n\n", 1)[1] for message in messages) == (
-        "结果" * 300
-    )
+    joined = "".join(message.split("\n\n", 1)[1] for message in messages)
+    assert joined.removesuffix("\n\nWeekly Unavailable") == "结果" * 300
     assert all("完整结果请" not in message for message in messages)
 
 
@@ -532,7 +537,13 @@ def test_notification_reports_partial_delivery_and_stops(
         )
     )
 
-    result = notifier.notify(task(result="结果" * 300))
+    result = notifier.notify(
+        task(result="结果" * 300, notification_route="weixin-task"),
+        QuickInteractionWeixinRoute(
+            account_id="account-1",
+            recipient="recipient-1@im.wechat",
+        ),
+    )
 
     assert result.status == "failed"
     assert result.error == "微信通知部分送达（1/3）。"
@@ -579,7 +590,13 @@ def test_notification_parts_share_one_timeout(
         )
     )
 
-    result = notifier.notify(task(result="结果" * 300))
+    result = notifier.notify(
+        task(result="结果" * 300, notification_route="weixin-task"),
+        QuickInteractionWeixinRoute(
+            account_id="account-1",
+            recipient="recipient-1@im.wechat",
+        ),
+    )
 
     assert result.status == "failed"
     assert result.error == "微信通知部分送达（1/3）。"
@@ -617,10 +634,16 @@ def test_notification_does_not_fall_back_from_configured_stopped_account(
         )
     )
 
-    result = notifier.notify(task())
+    result = notifier.notify(
+        task(notification_route="weixin-task"),
+        QuickInteractionWeixinRoute(
+            account_id="account-1",
+            recipient="recipient-1@im.wechat",
+        ),
+    )
 
-    assert result.status == "skipped"
-    assert result.error == "配置的 ClawBot 当前未运行。"
+    assert result.status == "failed"
+    assert result.error == "原消息的 ClawBot 当前不可用。"
 
 
 def test_notification_reports_command_failure_without_details(
@@ -658,7 +681,13 @@ def test_notification_reports_command_failure_without_details(
         )
     )
 
-    result = notifier.notify(task())
+    result = notifier.notify(
+        task(notification_route="weixin-task"),
+        QuickInteractionWeixinRoute(
+            account_id="account-1",
+            recipient="recipient-1@im.wechat",
+        ),
+    )
 
     assert result.status == "failed"
     assert result.error == "微信通知未送达。"

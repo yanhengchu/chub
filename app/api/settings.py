@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.core.response import ApiError, ApiResponse
 from app.core.security import require_trusted_network
@@ -25,13 +25,29 @@ class TranslationSettingsUpdate(BaseModel):
     # Compatibility for the previous settings switch. A boolean request maps
     # false to direct and true to automatic execution.
     enabled: bool | None = None
+    model: str | None = Field(default=None, max_length=128)
+    reasoning_effort: str | None = Field(default=None, max_length=32)
+
+    @field_validator("model", "reasoning_effort", mode="before")
+    @classmethod
+    def normalize_selection(cls, value: object) -> object:
+        if isinstance(value, str):
+            value = value.strip()
+            return value or None
+        return value
 
     @model_validator(mode="after")
     def validate_mode(self):
-        if self.mode is None and self.enabled is None:
-            raise ValueError("mode is required")
+        mode_fields = {"mode", "enabled"} & self.model_fields_set
+        model_fields = {"model", "reasoning_effort"} & self.model_fields_set
+        if not mode_fields and not model_fields:
+            raise ValueError("a translation setting is required")
         if self.mode is not None and self.enabled is not None:
             raise ValueError("provide mode only")
+        if mode_fields and model_fields:
+            raise ValueError("provide mode or model settings only")
+        if model_fields and model_fields != {"model", "reasoning_effort"}:
+            raise ValueError("model and reasoning_effort must be provided together")
         return self
 
 
@@ -64,7 +80,8 @@ def update_weixin_translation_settings(
     mode = payload.mode
     if mode is None:
         mode = "auto" if payload.enabled else "direct"
-    target = mode
+    model_update = "model" in payload.model_fields_set
+    target = "translation_model" if model_update else mode
     operation_id = log_operation(
         request,
         action="update_weixin_translation_setting",
@@ -79,7 +96,22 @@ def update_weixin_translation_settings(
         operation_id=operation_id,
     )
     try:
-        result = request.app.state.weixin_translation.set_processing_mode(mode)
+        if model_update:
+            result = request.app.state.weixin_translation.set_model(
+                payload.model,
+                payload.reasoning_effort,
+            )
+        else:
+            result = request.app.state.weixin_translation.set_processing_mode(mode)
+    except ApiError:
+        log_operation(
+            request,
+            action="update_weixin_translation_setting",
+            status="failed",
+            target=target,
+            operation_id=operation_id,
+        )
+        raise
     except OSError:
         log_operation(
             request,

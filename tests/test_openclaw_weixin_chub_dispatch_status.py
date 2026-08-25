@@ -119,8 +119,7 @@ def test_text_mode_uses_the_same_translation_manager_setting(
     )
 
     assert result.message == (
-        "Text mode updated · Automatic polish and confirm.\n\n"
-        "Applies to new text tasks."
+        "Text mode updated · Automatic polish and confirm."
     )
     translation_manager.set_processing_mode.assert_called_once_with("confirm")
     quick_interactions.submit.assert_not_called()
@@ -138,6 +137,189 @@ def test_text_mode_uses_the_same_translation_manager_setting(
     translation_manager.set_processing_mode.assert_called_once()
 
 
+def _text_model_catalog() -> CodexModelCatalogData:
+    return CodexModelCatalogData(
+        models=[
+            CodexModelInfo(
+                id="translation-model",
+                name="Translation Model",
+                description="",
+                default_level="medium",
+                levels=[
+                    CodexReasoningLevel(id="low", description="Fast"),
+                    CodexReasoningLevel(id="medium", description="Balanced"),
+                ],
+            ),
+            CodexModelInfo(
+                id="other-model",
+                name="Other Model",
+                description="",
+                default_level="high",
+                levels=[
+                    CodexReasoningLevel(id="low", description="Fast"),
+                    CodexReasoningLevel(id="high", description="Deep"),
+                ],
+            ),
+        ],
+        default_model="translation-model",
+        default_reasoning_effort="medium",
+    )
+
+
+def test_text_model_status_is_included_in_the_text_summary(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    translation_manager = MagicMock()
+    translation_manager.status.return_value = SimpleNamespace(
+        mode="confirm",
+        model="translation-model",
+        reasoning_effort="medium",
+    )
+    translation_manager.active_confirmation.return_value = None
+    manager.translation_manager = translation_manager
+
+    result = manager.dispatch(
+        message_id="text-model-status",
+        prompt="text",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == (
+        "Text\n\n"
+        "Mode · Automatic polish and confirm\n\n"
+        "Model · translation-model · medium\n\n"
+        "Current confirmation: None."
+    )
+    translation_manager.status.assert_called_once_with()
+    codex_manager.read_model_catalog.assert_not_called()
+    quick_interactions.update_session_model.assert_not_called()
+
+
+def test_text_model_list_and_levels_use_the_current_translation_defaults(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    translation_manager = MagicMock()
+    translation_manager.status.return_value = SimpleNamespace(
+        model="translation-model",
+        reasoning_effort="medium",
+    )
+    manager.translation_manager = translation_manager
+    codex_manager.read_model_catalog.return_value = _text_model_catalog()
+
+    with patch(
+        "app.services.openclaw_weixin_chub_mode.write_operation"
+    ) as write_operation:
+        list_result = manager.dispatch(
+            message_id="text-model-list",
+            prompt="text model list",
+            message_type="text",
+            correlation_id=None,
+            source_ip="100.64.0.21",
+            delivery_route=delivery_route(),
+        )
+        levels_result = manager.dispatch(
+            message_id="text-model-levels",
+            prompt="text model level M2",
+            message_type="text",
+            correlation_id=None,
+            source_ip="100.64.0.21",
+            delivery_route=delivery_route(),
+        )
+
+    assert list_result.message == (
+        "Text model list\n\n"
+        "Model · M1 · translation-model\n\n"
+        "Models\n"
+        "M1 · translation-model\n"
+        "M2 · other-model"
+    )
+    assert levels_result.message == (
+        "Text model levels\n\n"
+        "Model · M2 · other-model\n\n"
+        "Levels\n"
+        "L1 · low\n"
+        "L2 · high"
+    )
+    quick_interactions.update_session_model.assert_not_called()
+    dispatch_statuses = [
+        call.kwargs["status"]
+        for call in write_operation.call_args_list
+        if call.kwargs["action"] == "weixin_chub_mode_dispatch"
+    ]
+    assert dispatch_statuses == [
+        "requested",
+        "started",
+        "succeeded",
+        "requested",
+        "started",
+        "succeeded",
+    ]
+
+
+def test_text_model_use_updates_translation_defaults_only_for_future_tasks(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    translation_manager = MagicMock()
+    translation_manager.status.return_value = SimpleNamespace(
+        model="translation-model",
+        reasoning_effort="medium",
+    )
+    manager.translation_manager = translation_manager
+    codex_manager.read_model_catalog.return_value = _text_model_catalog()
+
+    result = manager.dispatch(
+        message_id="text-model-use",
+        prompt="text model use M2 L2",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == (
+        "Text model updated\n\n"
+        "Next model · other-model\n\n"
+        "Next level · high"
+    )
+    translation_manager.set_model.assert_called_once_with("other-model", "high")
+    quick_interactions.update_session_model.assert_not_called()
+
+
+def test_text_model_use_level_requires_a_configured_translation_model(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    translation_manager = MagicMock()
+    translation_manager.status.return_value = SimpleNamespace(
+        model=None,
+        reasoning_effort=None,
+    )
+    manager.translation_manager = translation_manager
+    codex_manager.read_model_catalog.return_value = _text_model_catalog()
+
+    result = manager.dispatch(
+        message_id="text-model-use-level-without-model",
+        prompt="text model use L1",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == (
+        "Text model update: No translation model is configured. "
+        "Select a model with M#."
+    )
+    translation_manager.set_model.assert_not_called()
+    quick_interactions.update_session_model.assert_not_called()
+
+
 def test_text_returns_current_mode_and_actionable_confirmation(
     settings: Settings,
 ) -> None:
@@ -147,7 +329,11 @@ def test_text_returns_current_mode_and_actionable_confirmation(
     ]
     manager._state.session_id = "session-1"
     translation_manager = MagicMock()
-    translation_manager.status.return_value = SimpleNamespace(mode="confirm")
+    translation_manager.status.return_value = SimpleNamespace(
+        mode="confirm",
+        model="translation-model",
+        reasoning_effort="medium",
+    )
     translation_manager.active_confirmation.return_value = SimpleNamespace(
         target_session_id="session-1",
         original="Original text that must not be used as the confirmation body",
@@ -166,8 +352,9 @@ def test_text_returns_current_mode_and_actionable_confirmation(
     )
 
     assert result.message == (
-        "Text mode · Automatic polish and confirm.\n\n"
-        "Applies to new text tasks.\n\n"
+        "Text\n\n"
+        "Mode · Automatic polish and confirm\n\n"
+        "Model · translation-model · medium\n\n"
         "Current confirmation\n\n"
         "▶ S1 · Unnamed Session\n\n"
         "Polished:\nPolished text in full\n\n"
@@ -191,6 +378,9 @@ def test_text_mode_invalid_usage_never_submits_a_task(settings: Settings) -> Non
 
     assert result.message == (
         "Text: Usage · text [mode [direct|auto|confirm]|list|ok|next|cancel]\n\n"
+        "text model list\n\n"
+        "text model level [M#]\n\n"
+        "text model use M# | L# | M# L#\n\n"
         "text-check <English>"
     )
     quick_interactions.submit.assert_not_called()
@@ -451,7 +641,19 @@ def test_removed_status_aliases_are_submitted_as_normal_tasks(
             "model\n\n"
             "model list\n\n"
             "model level [M#]\n\n"
-            "model use M# [L#]",
+            "model use M# | L# | M# L#",
+        ),
+        (
+            "HELP TEXT",
+            "Commands · Text\n\n"
+            "text\n\n"
+            "text mode <direct|auto|confirm>\n\n"
+            "text list\n\n"
+            "text model list\n\n"
+            "text model level [M#]\n\n"
+            "text model use M# | L# | M# L#\n\n"
+            "text ok | text next | text cancel\n\n"
+            "text-check <English>",
         ),
     ],
 )

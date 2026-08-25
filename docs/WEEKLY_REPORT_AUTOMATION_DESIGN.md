@@ -41,7 +41,7 @@
 正式周报周期固定为周一至周日。每周三开始新一期处理窗口，从周三至下周二的下载和汇总始终归属同一周期，下周二为报送日。
 
 ```text
-data/artifacts/weekly-reports/<周期>/
+data/local/artifacts/weekly-reports/<周期>/
   inputs/
     <主周报>.md
     linked/

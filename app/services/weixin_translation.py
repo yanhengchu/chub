@@ -66,6 +66,8 @@ class TranslationEntry(_StrictModel):
         "confirmed_waiting_target",
     ] = "queued"
     quick_task_id: str | None = None
+    model: str | None = Field(default=None, max_length=128)
+    reasoning_effort: str | None = Field(default=None, max_length=32)
     target_session_id: str | None = Field(default=None, max_length=128)
     polished: str | None = Field(default=None, max_length=8000)
     english: str | None = Field(default=None, max_length=8000)
@@ -98,6 +100,8 @@ class TranslationState(_StrictModel):
     version: Literal[1] = 1
     enabled_override: bool | None = None
     processing_mode_override: Literal["direct", "auto", "confirm"] | None = None
+    model: str | None = Field(default=None, max_length=128)
+    reasoning_effort: str | None = Field(default=None, max_length=32)
     confirmation_next_order: int = Field(default=1, ge=1)
     generation: int = Field(default=0, ge=0)
     session_id: str | None = None
@@ -113,6 +117,8 @@ class TranslationSettingsStatus(_StrictModel):
     mode: Literal["direct", "auto", "confirm"]
     enabled: bool
     configured_default: bool
+    model: str | None = Field(default=None, max_length=128)
+    reasoning_effort: str | None = Field(default=None, max_length=32)
     weixin_chub_mode_enabled: bool
     queued: int = Field(ge=0)
     running: int = Field(ge=0)
@@ -266,6 +272,8 @@ class WeixinTranslationManager:
                 route=route,
                 operation_id=f"{operation_id}:translation",
                 source_ip=source_ip,
+                model=self._state.model,
+                reasoning_effort=self._state.reasoning_effort,
                 target_session_id=target_session_id,
                 confirmation_required=confirmation_required,
                 generation=self._state.generation,
@@ -318,6 +326,8 @@ class WeixinTranslationManager:
                 notification_route=entry.route,
                 kind="translation",
                 translation_original=entry.original,
+                model=entry.model,
+                reasoning_effort=entry.reasoning_effort,
                 suppress_completion_notification=entry.target_session_id is not None,
             )
             with self._lock:
@@ -1009,6 +1019,8 @@ class WeixinTranslationManager:
                 mode=self._processing_mode_locked(),
                 enabled=self._enabled_locked(),
                 configured_default=self.config.translation_enabled,
+                model=self._state.model,
+                reasoning_effort=self._state.reasoning_effort,
                 weixin_chub_mode_enabled=self.config.enabled,
                 queued=sum(item.status == "queued" for item in self._state.entries),
                 running=sum(
@@ -1020,6 +1032,26 @@ class WeixinTranslationManager:
 
     def set_enabled(self, enabled: bool) -> TranslationSettingsStatus:
         return self.set_processing_mode("auto" if enabled else "direct")
+
+    def set_model(
+        self,
+        model: str | None,
+        reasoning_effort: str | None,
+    ) -> TranslationSettingsStatus:
+        if self._state_error:
+            raise OSError("Weixin translation state is unavailable")
+        self.codex_manager.validate_model(model, reasoning_effort)
+        with self._lock:
+            if (
+                self._state.model != model
+                or self._state.reasoning_effort != reasoning_effort
+            ):
+                next_state = self._state.model_copy(deep=True)
+                next_state.model = model
+                next_state.reasoning_effort = reasoning_effort
+                self._write(next_state)
+                self._state = next_state
+        return self.status()
 
     def set_processing_mode(
         self,

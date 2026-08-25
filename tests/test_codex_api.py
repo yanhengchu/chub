@@ -542,6 +542,7 @@ async def test_page_quick_interaction_preserves_bound_weixin_session_context(
     assert submitted.args == ("session-1", "检查状态")
     assert "weixin_session_slot" not in submitted.kwargs
     assert "weixin_session_title" not in submitted.kwargs
+    assert submitted.kwargs.get("notification_route") is None
 
 
 @pytest.mark.anyio

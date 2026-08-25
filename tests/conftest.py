@@ -38,6 +38,9 @@ def settings(tmp_path: Path) -> Settings:
             "project_documents": {
                 "state_file": tmp_path / "project-documents.json",
             },
+            "requests": {
+                "state_file": tmp_path / "requests.json",
+            },
             "openclaw": {
                 "weixin_chub_mode": {
                     "state_file": tmp_path / "weixin-chub-mode.json",

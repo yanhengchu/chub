@@ -28,6 +28,13 @@ logs/*.log.*
 data/state/
 data/runtime/
 data/artifacts/
+data/local/
+
+# Shared Chub data is intentionally version-controlled.
+!data/shared/
+!data/shared/chub/
+data/shared/chub/.*
+!data/shared/chub/requests.json
 
 .DS_Store
 .idea/

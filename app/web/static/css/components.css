@@ -2415,7 +2415,7 @@ pre {
 
 .conversation-session-navigation {
   display: grid;
-  grid-template-columns: 36px minmax(0, 1fr);
+  grid-template-columns: 44px minmax(0, 1fr);
   gap: 0.5rem;
   width: 100%;
   min-width: 0;
@@ -2429,8 +2429,8 @@ pre {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
+  width: 44px;
+  height: 44px;
   min-height: 0;
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -2511,7 +2511,7 @@ pre {
   align-items: center;
   flex: none;
   gap: 0.45rem;
-  min-height: 36px;
+  min-height: 44px;
   margin: 0;
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -2585,8 +2585,8 @@ pre {
   align-items: center;
   justify-content: center;
   flex: none;
-  width: 2rem;
-  height: 2rem;
+  width: 2.75rem;
+  height: 2.75rem;
   min-height: 0;
   border: 0;
   border-radius: 6px;

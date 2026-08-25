@@ -114,17 +114,24 @@ def test_runtime_data_defaults_are_separated(
     settings = load_settings(config_file)
 
     assert settings.codex_pty.data_file.name == "sessions.json"
-    assert settings.codex_pty.runtime_dir.parts[-2:] == ("runtime", "codex")
-    assert settings.automations.state_dir.parts[-2:] == ("state", "automations")
-    assert settings.automations.runtime_dir.parts[-2:] == ("runtime", "automations")
-    assert settings.automations.artifacts_dir.parts[-3:] == (
+    assert settings.codex_pty.runtime_dir.parts[-3:] == ("local", "runtime", "codex")
+    assert settings.automations.state_dir.parts[-3:] == ("local", "state", "automations")
+    assert settings.automations.runtime_dir.parts[-3:] == ("local", "runtime", "automations")
+    assert settings.automations.artifacts_dir.parts[-4:] == (
+        "local",
         "artifacts",
         "automations",
         "downloads",
     )
-    assert settings.project_documents.state_file.parts[-2:] == (
+    assert settings.project_documents.state_file.parts[-3:] == (
+        "local",
         "state",
         "project-documents.json",
+    )
+    assert settings.requests.state_file.parts[-3:] == (
+        "shared",
+        "chub",
+        "requests.json",
     )
 
 

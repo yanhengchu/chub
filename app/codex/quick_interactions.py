@@ -319,8 +319,20 @@ class QuickInteractionManager:
                 recovered_tasks = True
             if task.notification_status == "sending":
                 recovered_tasks = True
-                task.notification_status = "failed"
-                task.notification_error = "服务重启时微信通知未完成。"
+                if task.notification_route == "weixin-task":
+                    task.notification_status = "failed"
+                    task.notification_error = "服务重启时微信通知未完成。"
+                else:
+                    task.notification_status = "skipped"
+                    task.notification_error = "页面任务结果仅在 Chub 快速交互页面展示。"
+                task.notification_updated_at = utc_now()
+            elif (
+                task.notification_route != "weixin-task"
+                and task.notification_status == "pending"
+            ):
+                recovered_tasks = True
+                task.notification_status = "skipped"
+                task.notification_error = "页面任务结果仅在 Chub 快速交互页面展示。"
                 task.notification_updated_at = utc_now()
             if task.deferred_restart_notification_status == "sending":
                 recovered_tasks = True
@@ -342,6 +354,8 @@ class QuickInteractionManager:
         notification_route: QuickInteractionWeixinRoute | None = None,
         kind: str = "standard",
         translation_original: str | None = None,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
         suppress_completion_notification: bool = False,
         summary_max_chars: int = TASK_SUMMARY_MAX_LENGTH,
         summary_max_width: int | None = None,
@@ -420,18 +434,32 @@ class QuickInteractionManager:
                     ),
                     kind=kind,
                     translation_original=translation_original,
+                    model=model if kind == "translation" else None,
+                    reasoning_effort=(
+                        reasoning_effort if kind == "translation" else None
+                    ),
                     restart_sensitive=restart_sensitive,
                     status="requested",
                     notification_status=(
-                        "skipped" if suppress_completion_notification else None
+                        "skipped"
+                        if suppress_completion_notification
+                        or notification_route is None
+                        else None
                     ),
                     notification_error=(
                         "Completion is handled by the translation workflow."
                         if suppress_completion_notification
-                        else None
+                        else (
+                            "页面任务结果仅在 Chub 快速交互页面展示。"
+                            if notification_route is None
+                            else None
+                        )
                     ),
                     notification_updated_at=(
-                        utc_now() if suppress_completion_notification else None
+                        utc_now()
+                        if suppress_completion_notification
+                        or notification_route is None
+                        else None
                     ),
                     notification_route=(
                         "weixin-task" if notification_route is not None else "default"
@@ -879,7 +907,10 @@ class QuickInteractionManager:
                     or (uuid.uuid4().hex, "unknown"),
                 )
                 for task in self._tasks.values()
-                if task.notification_status == "pending"
+                if (
+                    task.notification_status == "pending"
+                    and task.notification_route == "weixin-task"
+                )
             ]
         for task_id, operation in pending:
             try:
@@ -1751,6 +1782,12 @@ class QuickInteractionManager:
         session_runtime_id = getattr(session, "runtime_id", runtime_id)
         if session_runtime_id != runtime_id:
             raise OSError("Session Runtime owner does not match the active Runtime")
+        model = task.model if task.kind == "translation" else session.model
+        reasoning_effort = (
+            task.reasoning_effort
+            if task.kind == "translation"
+            else session.reasoning_effort
+        )
         return RuntimeTaskSubmission(
             task_id=worker_task_id,
             runtime_id=runtime_id,
@@ -1763,8 +1800,8 @@ class QuickInteractionManager:
             ),
             permission_profile=session.permission_mode,
             native_session_id=session.native_session_id,
-            model=session.model,
-            reasoning_effort=session.reasoning_effort,
+            model=model,
+            reasoning_effort=reasoning_effort,
             timeout_seconds=self.timeout_seconds,
             task_kind=task_kind,
             restart_sensitive=task.restart_sensitive,
@@ -2041,8 +2078,16 @@ class QuickInteractionManager:
                 task.error_source = error_source
             task.updated_at = utc_now()
             if (
+                task.notification_route != "weixin-task"
+                and task.notification_status is None
+            ):
+                task.notification_status = "skipped"
+                task.notification_error = "页面任务结果仅在 Chub 快速交互页面展示。"
+                task.notification_updated_at = task.updated_at
+            if (
                 self.completion_notifier is not None
                 and task.notification_status is None
+                and task.notification_route == "weixin-task"
                 and (
                     status == "succeeded"
                     or (
@@ -2090,7 +2135,11 @@ class QuickInteractionManager:
         notification_operation_id = f"{operation_id}:weixin"
         with self._lock:
             task = self._tasks.get(task_id)
-            if task is None or task.notification_status != "pending":
+            if (
+                task is None
+                or task.notification_status != "pending"
+                or task.notification_route != "weixin-task"
+            ):
                 return
             task.notification_status = "sending"
             task.notification_updated_at = utc_now()

@@ -40,8 +40,8 @@ def _browser_settings(root: Path) -> Settings:
                 "name": "Conversation Browser Test",
                 "type": "ubuntu",
             },
-            "server": {"host": "127.0.0.1", "port": 8080},
-            "security": {"token": "browser-test-token-that-is-long-enough"},
+            "server": {"port": 8080},
+            "security": {"allow_tailscale": False},
             "logs": {
                 "file": root / "hub.log",
                 "operations_file": root / "operations.log",
@@ -63,6 +63,7 @@ def _browser_settings(root: Path) -> Settings:
                 "artifacts_dir": root / "automation-artifacts",
             },
             "project_documents": {"state_file": root / "project-documents.json"},
+            "requests": {"state_file": root / "requests.json"},
             "notifications": {
                 "enabled": False,
                 "registry_file": root / "notifications.yaml",
@@ -80,6 +81,9 @@ def _browser_settings(root: Path) -> Settings:
 def conversation_browser_server(tmp_path_factory: pytest.TempPathFactory) -> str:
     root = tmp_path_factory.mktemp("conversation-browser")
     application = create_app(_browser_settings(root))
+    # The browser fixture supplies all Session/API data through ConversationApi;
+    # allow its synthetic IDs through the HTML page gate as well.
+    application.state.codex_pty_manager.require_quick_access = lambda _session_id: None
     listener = socket(AF_INET, SOCK_STREAM)
     listener.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
     listener.bind(("127.0.0.1", 0))
@@ -127,6 +131,7 @@ def _session(
         "created_at": created_at,
         "codex_session_id": f"native-{session_id}",
         "can_archive": can_archive,
+        "session_mode": "quick",
         "workspace_id": "chub",
         "status": "stopped",
         "activity": "idle",
@@ -188,6 +193,8 @@ class ConversationApi:
         }
         self.requested_paths: list[str] = []
         self.fail_submission_recovery = False
+        self.abort_load_requests = 0
+        self.invalid_json_load_requests = 0
         self.recovery_started = asyncio.Event()
         self.recovery_release = asyncio.Event()
         self._recovery_failure_pending = False
@@ -203,6 +210,18 @@ class ConversationApi:
         parsed = urlsplit(request.url)
         path = parsed.path
         self.requested_paths.append(f"{request.method} {path}")
+        if request.method == "GET" and self.abort_load_requests > 0:
+            self.abort_load_requests -= 1
+            await route.abort("failed")
+            return
+        if request.method == "GET" and self.invalid_json_load_requests > 0:
+            self.invalid_json_load_requests -= 1
+            await route.fulfill(
+                status=503,
+                content_type="text/plain",
+                body="Web is restarting",
+            )
+            return
         status = 200
         data: dict | None = None
 
@@ -269,6 +288,7 @@ class ConversationApi:
                 session["status"] = "stopped"
                 session["activity"] = "idle"
                 session["quick_interaction_running"] = False
+                session["usage"] = {"owner": "none", "phase": "idle"}
                 data = deepcopy(session)
             elif not action and request.method == "DELETE" and session:
                 self.sessions = [item for item in self.sessions if item["id"] != session_id]
@@ -400,7 +420,11 @@ async def test_terminal_page_returns_home_after_connection_takeover(
 
 
 @pytest.mark.parametrize("theme", ["standard", "cyber"])
-@pytest.mark.parametrize("viewport", [(390, 844), (1280, 900)], ids=["mobile", "desktop"])
+@pytest.mark.parametrize(
+    "viewport",
+    [(360, 800), (412, 915), (1280, 900)],
+    ids=["android-compact", "android-large", "desktop"],
+)
 async def test_conversation_layout_in_managed_chrome(
     conversation_browser_server: str,
     theme: str,
@@ -425,6 +449,19 @@ async def test_conversation_layout_in_managed_chrome(
                     const submit = document.querySelector("#conversation-submit");
                     const inputRect = input.getBoundingClientRect();
                     const submitRect = submit.getBoundingClientRect();
+                    const touchTargets = [
+                        navigation.querySelector("#conversation-session-create"),
+                        ...navigation.querySelectorAll(".conversation-session-switch"),
+                        ...document.querySelectorAll(
+                            "#conversation-session-rename, "
+                            + "#conversation-session-stop, "
+                            + "#conversation-session-archive, "
+                            + "#conversation-session-delete"
+                        ),
+                    ].map(node => {
+                        const rect = node.getBoundingClientRect();
+                        return { width: rect.width, height: rect.height };
+                    });
                     return {
                         theme: document.documentElement.dataset.uiStyle,
                         overflow: document.documentElement.scrollWidth - innerWidth,
@@ -435,6 +472,7 @@ async def test_conversation_layout_in_managed_chrome(
                             Math.min(inputRect.right, submitRect.right)
                                 - Math.max(inputRect.left, submitRect.left),
                         ),
+                        touchTargets,
                         titleVisible: !document.querySelector(
                             "#conversation-session-title-row"
                         ).hidden,
@@ -449,7 +487,46 @@ async def test_conversation_layout_in_managed_chrome(
     assert layout["composerWidth"] > 0
     assert layout["navigationWidth"] <= layout["composerWidth"] + 1
     assert layout["inputSubmitOverlap"] == 0
+    assert all(
+        target["width"] >= 44 and target["height"] >= 44
+        for target in layout["touchTargets"]
+    )
     assert layout["titleVisible"] is True
+    assert page_errors == []
+
+
+async def test_conversation_suppresses_transient_connection_errors(
+    conversation_browser_server: str,
+) -> None:
+    api = ConversationApi()
+    browser_session = session_factory()
+    async with browser_session(ensure_page=False) as chrome:
+        context, page, page_errors = await _open_conversation(
+            chrome.browser,
+            conversation_browser_server,
+            api,
+            theme="standard",
+            viewport=(1280, 900),
+        )
+        try:
+            api.abort_load_requests = 2
+            await page.evaluate("loadConversation()")
+            await expect(page.locator("#conversation-submit-message")).to_have_text("")
+            await expect(page.locator("#conversation-history-message")).to_have_text("")
+
+            api.invalid_json_load_requests = 1
+            await page.evaluate("loadConversation()")
+            await expect(page.locator("#conversation-submit-message")).to_have_text("")
+            await expect(page.locator("#conversation-history-message")).to_have_text("")
+
+            await page.evaluate("loadConversation()")
+            await expect(page.locator("#conversation-session-title")).to_have_text(
+                "Main Session"
+            )
+            await expect(page.locator("#conversation-submit-message")).to_have_text("")
+        finally:
+            await context.close()
+
     assert page_errors == []
 
 
@@ -537,6 +614,7 @@ async def test_conversation_stop_requires_confirmation_in_managed_chrome(
             "status": "running",
             "activity": "working",
             "quick_interaction_running": True,
+            "usage": {"owner": "quick_worker", "phase": "running"},
         }
     )
     browser_session = session_factory()

@@ -23,6 +23,18 @@ const weixinProcessingMode = document.querySelector("#weixin-processing-mode");
 const weixinProcessingModeInputs = document.querySelectorAll(
   'input[name="weixin-processing-mode"]',
 );
+const weixinTranslationModel = document.querySelector(
+  "#weixin-translation-model",
+);
+const weixinTranslationModelField = document.querySelector(
+  "#weixin-translation-model-field",
+);
+const weixinTranslationReasoningEffort = document.querySelector(
+  "#weixin-translation-reasoning-effort",
+);
+const weixinTranslationReasoningEffortField = document.querySelector(
+  "#weixin-translation-reasoning-effort-field",
+);
 const weixinTranslationMessage = document.querySelector(
   "#weixin-translation-message",
 );
@@ -40,6 +52,7 @@ const settingsNavigationLinks = document.querySelectorAll(
 );
 const settingsSections = document.querySelectorAll(".settings-content > section[id]");
 let codexModels = [];
+let weixinTranslationStatus = null;
 let weixinTranslationPollTimer = null;
 let weixinTranslationRequestVersion = 0;
 let settingsScrollFrame = null;
@@ -288,6 +301,45 @@ function renderCodexModels(data) {
       codexSessionSettingsMessage.className = "message message-error";
     }
   }
+  if (weixinTranslationStatus !== null) {
+    renderWeixinTranslationModelSettings(weixinTranslationStatus);
+  }
+}
+
+function renderWeixinTranslationModelSettings(status) {
+  const options = [createOption("", defaultModelOptionLabel())];
+  if (
+    status.model
+    && !codexModels.some((model) => model.id === status.model)
+  ) {
+    options.push(createOption(status.model, `${status.model}（当前不可用）`));
+  }
+  codexModels.forEach((model) => {
+    options.push(createOption(model.id, model.name));
+  });
+  weixinTranslationModel.replaceChildren(...options);
+  weixinTranslationModel.value = status.model || "";
+  weixinTranslationModel.disabled = codexModels.length === 0 && !status.model;
+
+  const model = codexModels.find(
+    (item) => item.id === weixinTranslationModel.value,
+  );
+  const levels = [createOption("", "跟随模型默认")];
+  if (model) {
+    model.levels.forEach((level) => {
+      levels.push(
+        createOption(level.id, CODEX_REASONING_LABELS[level.id] || level.id),
+      );
+    });
+  }
+  weixinTranslationReasoningEffort.replaceChildren(...levels);
+  weixinTranslationReasoningEffort.value = model
+    && model.levels.some((level) => level.id === status.reasoning_effort)
+    ? status.reasoning_effort
+    : "";
+  weixinTranslationReasoningEffort.disabled = !model;
+  weixinTranslationModelField.hidden = false;
+  weixinTranslationReasoningEffortField.hidden = false;
 }
 
 async function syncCodexSessionDefaults() {
@@ -357,10 +409,12 @@ function settingsHeaders(includeJson = false) {
 }
 
 function renderWeixinTranslationStatus(status) {
+  weixinTranslationStatus = status;
   const selected = status.mode || (status.enabled ? "auto" : "direct");
   for (const input of weixinProcessingModeInputs) {
     input.checked = input.value === selected;
   }
+  renderWeixinTranslationModelSettings(status);
   weixinProcessingMode.disabled = false;
   const active = Number(status.queued || 0) + Number(status.running || 0);
   const parts = [];
@@ -410,6 +464,10 @@ async function loadWeixinTranslationStatus(
       return false;
     }
     weixinProcessingMode.disabled = true;
+    weixinTranslationModel.disabled = true;
+    weixinTranslationReasoningEffort.disabled = true;
+    weixinTranslationModelField.hidden = true;
+    weixinTranslationReasoningEffortField.hidden = true;
     weixinTranslationMessage.textContent = failureMessage;
     weixinTranslationMessage.className = "message message-error";
     if (retry) {
@@ -442,6 +500,39 @@ async function saveWeixinTranslationStatus(mode) {
   } catch (_error) {
     await loadWeixinTranslationStatus(
       "设置结果未知，请稍后刷新页面重试。",
+    );
+  }
+}
+
+async function saveWeixinTranslationModelSettings() {
+  weixinTranslationRequestVersion += 1;
+  if (weixinTranslationPollTimer !== null) {
+    window.clearTimeout(weixinTranslationPollTimer);
+    weixinTranslationPollTimer = null;
+  }
+  weixinTranslationModel.disabled = true;
+  weixinTranslationReasoningEffort.disabled = true;
+  const model = weixinTranslationModel.value || null;
+  const reasoningEffort = model
+    ? (weixinTranslationReasoningEffort.value || null)
+    : null;
+  try {
+    const response = await fetch("/api/settings/weixin-translation", {
+      method: "PUT",
+      headers: settingsHeaders(true),
+      body: JSON.stringify({
+        model,
+        reasoning_effort: reasoningEffort,
+      }),
+    });
+    const payload = await response.json();
+    if (!response.ok || payload.success !== true) {
+      throw new Error(payload.error?.code || "settings_update_failed");
+    }
+    renderWeixinTranslationStatus(payload.data);
+  } catch (_error) {
+    await loadWeixinTranslationStatus(
+      "翻译模型设置结果未知，请稍后刷新页面重试。",
     );
   }
 }
@@ -506,6 +597,24 @@ for (const input of weixinProcessingModeInputs) {
     if (input.checked) saveWeixinTranslationStatus(input.value);
   });
 }
+
+weixinTranslationModel.addEventListener("change", () => {
+  const model = codexModels.find(
+    (item) => item.id === weixinTranslationModel.value,
+  );
+  if (model) {
+    const defaultLevel = model.default_level || "";
+    const supported = model.levels.some((level) => level.id === defaultLevel);
+    weixinTranslationReasoningEffort.value = supported ? defaultLevel : "";
+  } else {
+    weixinTranslationReasoningEffort.value = "";
+  }
+  saveWeixinTranslationModelSettings();
+});
+
+weixinTranslationReasoningEffort.addEventListener("change", () => {
+  saveWeixinTranslationModelSettings();
+});
 
 cyberRainSpeed.value = String(readRangePreference(CYBER_RAIN_SPEED_KEY, 60));
 cyberRainBrightness.value = String(readRangePreference(CYBER_RAIN_BRIGHTNESS_KEY, 70));

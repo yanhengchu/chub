@@ -40,6 +40,10 @@ from app.services.openclaw_weixin_chub_models import (
         ("text", "text_control", None, None, False),
         ("TEXT MODE AUTO。", "text_control", None, None, False),
         ("text list", "text_control", None, None, False),
+        ("text model", "text_control", None, None, True),
+        ("text model list", "text_control", None, None, False),
+        ("text model level M2", "text_control", None, None, False),
+        ("text model use M2 L3", "text_control", None, None, False),
         ("text Please check the service status", "text_control", None, None, True),
         ("text-check Please check the service status.", "text_check", None, "Please check the service status", False),
         ("help", "help", None, None, False),
@@ -198,6 +202,10 @@ def test_chub_help_topics_are_bounded_and_paragraph_separated(
         ("model use M2", 2, None),
         ("model use L3", None, 3),
         ("model use M2 L3", 2, 3),
+        ("text model level M2", 2, None),
+        ("text model use M2", 2, None),
+        ("text model use L3", None, 3),
+        ("text model use M2 L3", 2, 3),
     ],
 )
 def test_model_command_indices_are_parsed(

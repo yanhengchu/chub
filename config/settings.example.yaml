@@ -29,8 +29,8 @@ logs:
 codex_pty:
   enabled: true
   workspace: "~/workspace"
-  data_file: "data/state/codex/sessions.json"
-  runtime_dir: "data/runtime/codex"
+  data_file: "data/local/state/codex/sessions.json"
+  runtime_dir: "data/local/runtime/codex"
   ticket_ttl_seconds: 600
   max_running: 3
   quick_interaction_timeout_seconds: 21600
@@ -39,9 +39,9 @@ automations:
   enabled: true
   shared_config_file: "config/automations.yaml"
   local_config_file: "config/automations.local.yaml"
-  state_dir: "data/state/automations"
-  runtime_dir: "data/runtime/automations"
-  artifacts_dir: "data/artifacts/automations/downloads"
+  state_dir: "data/local/state/automations"
+  runtime_dir: "data/local/runtime/automations"
+  artifacts_dir: "data/local/artifacts/automations/downloads"
   max_home_tasks: 3
 
 ai_usage:
@@ -54,7 +54,10 @@ ai_usage:
     allow_private_http: false
 
 project_documents:
-  state_file: "data/state/project-documents.json"
+  state_file: "data/local/state/project-documents.json"
+
+requests:
+  state_file: "data/shared/chub/requests.json"
 
 notifications:
   enabled: true
@@ -81,7 +84,9 @@ openclaw:
     # Submit longer task bodies directly instead of polishing/translating them.
     translation_preprocess_max_input_chars: 1200
   quick_interaction_completion:
-    # Default recipient for Chub/page-origin quick interactions only.
+    # Completion notifications are sent only for tasks submitted through the
+    # Weixin ClawBot route. The following recipient fields are retained for
+    # compatibility with older local configuration and are not used for Web tasks.
     enabled: true
     weixin_account_id: null
     weixin_recipient: null

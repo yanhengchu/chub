@@ -2,7 +2,7 @@
 <html lang="zh-CN" data-ui-style="{{ 'cyber' if request.cookies.get('hub_ui_style') == 'cyber' else 'standard' }}">
   <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
     <meta name="color-scheme" content="{{ 'dark' if request.cookies.get('hub_ui_style') == 'cyber' else 'light' }}">
     <title>{{ document.title }} · {{ app_name }}</title>
     {% include "partials/app_styles.html" %}

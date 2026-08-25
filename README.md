@@ -23,7 +23,7 @@ Chub 是面向个人设备、本地优先的轻量 AI 工作站控制面。它�
 ### 当前进程架构
 
 ```text
-Browser / Mobile Browser / Chub CLI
+Browser / Android Browser / Chub CLI
   -> Chub Web、API、WebSocket 和固定本机入口
        |-> Quick Worker -> 固定 Runtime Runner -> Codex Runner
        |-> ttyd -> 固定 tmux carrier -> Codex 实时终端
@@ -99,6 +99,8 @@ cp config/settings.example.yaml config/settings.local.yaml
 
 Chub 始终监听 `127.0.0.1:<port>`，供本机浏览器与同机 OpenClaw 使用。`server.tailnet_host` 是可选的第二监听地址：设为节点自己的 Tailscale IP 后，Chub 才会同时监听该地址以供手机远程访问；留空则仅本机访问。不要配置 `0.0.0.0` 或普通局域网地址。Tailnet 请求只信任真实 socket 来源，不信任客户端转发 Header；如果 Tailnet 将来加入其他人的设备，应重新评估设备级授权和高风险操作边界。
 
+Android 手机访问使用 Tailscale Android 客户端连接同一 Tailnet，再用 Android Chrome 打开节点的 Tailscale IP 和端口；Chub 当前提供的是移动浏览器页面，不是原生 Android 应用或离线 PWA。Android 端可使用首页、设置、日志和快速交互等 Web 能力，实时终端仍依赖稳定的 WebSocket 和可信 Tailnet 连接；首次验收应覆盖 Chrome 的窄屏布局、软键盘展开/收起、横向无溢出和断线重连。
+
 ## 后台服务
 
 从当前开发目录安装用户级后台服务：
@@ -159,7 +161,7 @@ Session、Activity、usage 投影、槽位、标题和入口语义见[Chub AI Se
 
 ### 轻量需求储备
 
-轻量需求储备使用 `R1`–`R9` 九个活动槽位，不创建专用 Session。维护者明确要求保存或更新已经讨论成型的小需求后，编码 Agent 通过本机 `chub request save` 或 `chub request update` 受控写入；`chub request list` 和 `chub request show` 用于检查活动需求。保存和更新从标准输入读取完整正文，不直接编辑状态文件。
+轻量需求储备使用 `R1`–`R9` 九个活动槽位，不创建专用 Session。维护者明确要求保存或更新已经讨论成型的小需求后，编码 Agent 通过本机 `chub request save` 或 `chub request update` 受控写入；`chub request list` 和 `chub request show` 用于检查活动需求。需求权威文件位于 `data/shared/chub/requests.json`，属于 Chub 共享资料，可由维护者通过 Git 提交和同步；Chub 不自动执行 `pull`、`commit` 或 `push`。保存和更新从标准输入读取完整正文，不直接编辑状态文件。
 
 微信 Chub 模式可在状态摘要中查看活动需求，并归档或删除指定需求。需求执行由维护者在 AI 对话中发送普通任务完成，不提供微信固定执行指令。完整的本机命令、微信语法、长度限制和失败语义见[Chub 集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md)；OpenClaw 定制、微信路由、持久化和通知边界见[OpenClaw 定制集成设计](docs/OPENCLAW_CUSTOMIZATION_DESIGN.md)。
 
@@ -232,6 +234,8 @@ Runner 不会自行启动或停止 Debug Chrome。浏览器 Profile 未初始化
 
 ### 微信正文处理
 
+正文处理设置下的翻译模型和等级独立于隐藏翻译 Session，只影响之后新提交的文本优化任务。任务提交时保存参数快照，已经进入队列的任务不因设置变化而改写；未选择模型和等级时跟随 Runtime 默认。
+
 设置页的“正文处理方式”是节点级设置，需要真实 loopback 或可信 Tailnet 访问。微信普通任务及携带正文的 `S1`–`S9` 支持三档：`直接执行`直接提交原文；`自动润色后执行`先在独立只读 Session 生成中文润色和 English，再自动提交润色中文；`自动润色后确认执行`生成同一份内容后发送 `Translation ready`，由维护者用 `text ok`、`text next`、`text cancel` 或英文复述处理确认队头。正文超过 `translation_preprocess_max_input_chars`（默认 1200 字符）时直接提交，不进入润色、翻译或确认流程。主任务实际被接收后才发送包含润色中文和 English 的 `Started`；确认模式在受理后异步投递该通知，不增加单独的“Preparing to submit”回执。固定指令和续提指令绕过该流程，具体指令、队列和失败边界以[集成能力清单第 4 节](docs/CHUB_INTEGRATION_CAPABILITIES.md#4-微信-clawbot-指令)为准。
 
 首次默认由 `translation_mode`（`direct` / `auto` / `confirm`）决定；未设置时兼容读取旧 `translation_enabled`（`false` 为直接执行，`true` 为自动润色后执行）。页面修改后由 Chub 私有状态持久化并即时生效，无需改写 YAML 或重启服务。
@@ -244,15 +248,20 @@ Runner 不会自行启动或停止 Debug Chrome。浏览器 Profile 未初始化
 
 ## 数据与安全
 
-`data/` 中的运行数据不提交：
+`data/` 按共享资料和本机运行态分开：
 
-- `data/state/`：需要跨重启恢复的会话、任务、通知和页面状态。
-- `data/runtime/`：可重新生成的执行事件、临时附件、锁和任务日志。
-- `data/artifacts/`：自动化下载材料和周报正式产物。
+- `data/shared/`：允许进入 Git 的 Chub 共享资料；当前仅包含 `data/shared/chub/requests.json` 需求储备。
+- `data/local/state/`：本机专属会话、任务、通知和页面状态，不提交。
+- `data/local/runtime/`：本机可重新生成的执行事件、缓存、锁和任务日志，不提交。
+- `data/local/artifacts/`：本机自动化下载材料和周报正式产物，不提交。
+
+共享需求文件由 Git 工作流同步，不由后台服务自动合并。多台设备同时修改可能产生 Git 冲突；发现冲突、非法 JSON 或未完成合并时，需求读写必须失败关闭，不覆盖其他设备内容。共享需求不得保存 Token、Cookie、账号凭证、本机秘密或其他不适合进入 Git 历史的内容。
 
 首页“工作站环境”提供受控的“系统升级与恢复”状态行。它统一执行已准备的版本切换或当前版本的运行态恢复；确认后冻结受影响的 Chub AI Runtime 写入、停止 Quick Worker，在途快速任务终止并清理 Chub Session 关联、Hook 与固定 Worker 运行态。Codex 原生 Session、配置、日志、项目资料和业务数据不归档、不删除；新实例会重新发现仍存在的原生 Session。无需等待任务自然排空；启动只校验固定切换脚本、已安装服务定义和运行态清理路径，不以当前 Web 或 Worker 状态作为门禁。准备中的升级方案无法读取或校验时，入口降级为当前版本运行态恢复，并明确不执行代码版本升级。只有新 Web/Worker、Session 映射读取和微信 Chub Session 快照均完成最终验证，操作才标记完成；清理或服务切换失败会保持 AI Runtime 写入失败关闭，但在当前固定恢复目标和服务预检通过时释放 Web/Worker/升级入口，允许维护者继续重启或恢复。该入口不下载代码、不接受客户端路径或命令，也不提供任意数据清理。
 
-`scripts/chub-data-migrate` 只保留给历史安装的数据目录整理，不参与 AI Session 或 Worker 协议升级。新的持久化协议切换统一使用上述受控升级流程，直接清理方案白名单内的旧运行数据，不增加启动迁移、双写或旧格式兼容读取。
+`scripts/chub-data-migrate` 只保留给历史安装的数据目录整理，不参与 AI Session 或 Worker 协议升级。新的持久化协议切换统一使用上述受控升级流程，直接清理方案白名单内的旧运行数据，不增加启动迁移、双写或旧格式兼容读取。脚本会同时迁移微信 Chub 模式和正文处理的私有状态；历史需求储备迁移到 `data/shared/chub/requests.json` 时，只合并不冲突的槽位。非法内容、重复槽位或同一槽位内容冲突会停止并保留原文件，不能覆盖共享资料。
+
+执行历史目录迁移后，维护者必须检查未提交的 `config/settings.local.yaml`：删除已废弃的 `openclaw.weixin_chub_mode.request_state_file`，并确认顶层 `requests.state_file` 指向 `data/shared/chub/requests.json`；同时确认 Codex、自动化和项目资料路径已指向 `data/local/`。脚本不会覆盖配置文件；共享需求冲突或非法时保留原文件，并拒绝符号链接。
 
 受保护接口只接受真实 loopback socket，或在未关闭时接受真实 Tailnet socket 来源；其他来源拒绝。健康检查和项目资料详情是可信网络内的只读页面；公开展示的文档和周报不得包含 Token、Cookie、账号信息、本机秘密或其他不适合直接访问的内容。
 

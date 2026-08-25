@@ -37,7 +37,7 @@ CHUB_HELP_TOPICS = {
             "model",
             "model list",
             "model level [M#]",
-            "model use M# [L#]",
+            "model use M# | L# | M# L#",
         )
     ),
     "text": "\n\n".join(
@@ -46,6 +46,9 @@ CHUB_HELP_TOPICS = {
             "text",
             "text mode <direct|auto|confirm>",
             "text list",
+            "text model list",
+            "text model level [M#]",
+            "text model use M# | L# | M# L#",
             "text ok | text next | text cancel",
             "text-check <English>",
         )

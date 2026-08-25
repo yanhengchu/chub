@@ -2,7 +2,7 @@
 <html lang="zh-CN" data-ui-style="{{ 'cyber' if request.cookies.get('hub_ui_style') == 'cyber' else 'standard' }}">
   <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
     <meta name="color-scheme" content="{{ 'dark' if request.cookies.get('hub_ui_style') == 'cyber' else 'light' }}">
     <title>设置 · {{ app_name }}</title>
     {% include "partials/app_styles.html" %}
@@ -76,6 +76,38 @@
                   <input type="radio" name="weixin-processing-mode" value="confirm">
                 </label>
               </fieldset>
+              <label
+                id="weixin-translation-model-field"
+                class="settings-field"
+                for="weixin-translation-model"
+                hidden
+              >
+                <span>
+                  <strong>翻译模型</strong>
+                  <small>只影响之后新提交的文本优化任务，已提交任务继续使用原配置。</small>
+                </span>
+                <select id="weixin-translation-model" name="weixin-translation-model" disabled>
+                  <option value="">跟随 Codex 默认</option>
+                </select>
+              </label>
+              <label
+                id="weixin-translation-reasoning-effort-field"
+                class="settings-field"
+                for="weixin-translation-reasoning-effort"
+                hidden
+              >
+                <span>
+                  <strong>翻译等级</strong>
+                  <small>选择翻译模型后可指定推理等级；留空时使用该模型默认等级。</small>
+                </span>
+                <select
+                  id="weixin-translation-reasoning-effort"
+                  name="weixin-translation-reasoning-effort"
+                  disabled
+                >
+                  <option value="">跟随模型默认</option>
+                </select>
+              </label>
               <p id="weixin-translation-message" class="message" aria-live="polite"></p>
             </section>
 

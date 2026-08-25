@@ -74,6 +74,17 @@ Chub Web
 | ClawBot 重启与恢复 | OpenClaw Manager + 固定插件/补丁清单 | 确认 Gateway、通道和运行产物 |
 | 配置 | 环境变量、受控 YAML 和私有状态 | 客户端只能修改明确开放的设置 |
 
+### 4.1 共享资料与本机运行态
+
+`data/` 必须区分可通过仓库同步的共享资料和不可提交的本机运行态：
+
+- `data/shared/` 只保存明确允许进入 Git 的 Chub 共享资料；当前需求储备权威文件为 `data/shared/chub/requests.json`，其状态所有者是 Chub 需求储备服务，不是 OpenClaw。
+- `data/local/state/`、`data/local/runtime/` 和 `data/local/artifacts/` 保存本机配置外的运行状态、锁、缓存、临时文件或产物，默认不进入 Git。
+- OpenClaw、微信和 CLI 都是访问入口，不能直接拥有或替换共享需求文件。
+- Chub 不自动执行 Git `pull`、`commit` 或 `push`。共享文件未合并、格式非法或同步状态无法确认时，需求读写失败关闭，不覆盖其他设备内容。
+
+共享需求不保存 Token、Cookie、账号凭证、本机路径秘密或其他不适合进入 Git 历史的内容。变更共享资料路径或所有权时，必须同步 README、集成能力清单、配置示例、迁移说明和相关测试。
+
 所有持久状态都必须有大小、权限、格式和恢复边界。领域之间只交换稳定标识和公开模型，不直接修改对方私有状态文件。
 
 ## 5. 核心调用链

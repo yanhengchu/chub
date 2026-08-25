@@ -49,6 +49,10 @@ async def test_home_page_is_public_and_contains_no_credential_form(
     assert 'src="/static/theme.js"' in response.text
     assert '<html lang="zh-CN" data-ui-style="standard">' in response.text
     assert '<meta name="color-scheme" content="light">' in response.text
+    assert (
+        '<meta name="viewport" content="width=device-width, initial-scale=1, '
+        'viewport-fit=cover, interactive-widget=resizes-content">'
+    ) in response.text
     assert 'id="codex-rename-dialog"' in response.text
     assert 'id="codex-rename-input"' in response.text
     expected_stylesheets = [
@@ -307,6 +311,9 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
     assert 'id="codex-show-translation-session"' not in response.text
     assert 'id="codex-default-model"' in response.text
     assert 'id="codex-default-reasoning-effort"' in response.text
+    assert 'id="weixin-translation-model-field"' in response.text
+    assert 'id="weixin-translation-reasoning-effort-field"' in response.text
+    assert response.text.count("hidden") >= 2
     assert "这里选择的模型和等级会作为本节点后续新建 Session 的默认值。" in response.text
     assert "工作区配置可能覆盖默认值；Ultra 会自动拆分并行任务。" in response.text
     assert '<option value="full-access">Full access</option>' in response.text
@@ -999,7 +1006,7 @@ async def test_quick_interaction_conversation_page_is_available(
     assert ".conversation-composer" in stylesheet.text
     assert ".conversation-session-switcher" in stylesheet.text
     assert ".conversation-session-navigation" in stylesheet.text
-    assert "grid-template-columns: 36px minmax(0, 1fr);" in stylesheet.text
+    assert "grid-template-columns: 44px minmax(0, 1fr);" in stylesheet.text
     assert ".conversation-session-create" in stylesheet.text
     assert ".conversation-create-surface" in stylesheet.text
     assert ":not(.conversation-session-create)" in stylesheet.text

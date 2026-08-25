@@ -26,6 +26,7 @@ const unauthorized = { status: 401, retryable: false };
 const missing = { code: "codex_session_not_found", retryable: false };
 const serverError = { status: 503, retryable: true };
 const networkError = new Error("network unavailable");
+const transportError = { transport: true, retryable: true };
 Object.defineProperty(globalThis, "sessionStorage", {
   configurable: true,
   get: () => { throw new Error("storage blocked"); },
@@ -35,6 +36,31 @@ Object.defineProperty(globalThis, "localStorage", {
   value: { getItem: () => null },
 });
 const result = {
+  reconnectErrors: {
+    knownRestart: core.shouldSuppressReconnectError({
+      loadErrors: [transportError],
+      restartPending: true,
+      failureCount: 1,
+    }),
+    withinGrace: core.shouldSuppressReconnectError({
+      loadErrors: [transportError],
+      failureCount: 3,
+    }),
+    afterGrace: core.shouldSuppressReconnectError({
+      loadErrors: [transportError],
+      failureCount: 4,
+    }),
+    businessError: core.shouldSuppressReconnectError({
+      loadErrors: [unauthorized],
+      restartPending: true,
+      failureCount: 1,
+    }),
+    serverErrorDuringRestart: core.shouldSuppressReconnectError({
+      loadErrors: [serverError],
+      restartPending: true,
+      failureCount: 1,
+    }),
+  },
   pageSizes: [
     core.readPageSize(),
     ...[null, "5", "10", "20"].map((value) => core.readPageSize({
@@ -183,6 +209,13 @@ process.stdout.write(JSON.stringify(result));
 
     behavior = json.loads(result.stdout)
     assert behavior == {
+        "reconnectErrors": {
+            "knownRestart": True,
+            "withinGrace": True,
+            "afterGrace": False,
+            "businessError": False,
+            "serverErrorDuringRestart": True,
+        },
         "pageSizes": [5, 5, 5, 10, 5, 5],
         "delays": [1500, 1500, 3000, 6000, 10000, 10000],
         "unauthorized": False,
@@ -244,6 +277,39 @@ process.stdout.write(JSON.stringify(result));
             "middleClick": "new-tab",
             "rightClick": "default",
         },
+    }
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js is required for JavaScript behavior tests")
+def test_quick_interaction_client_marks_transport_failures_for_reconnect_handling() -> None:
+    program = """
+global.fetch = async () => {
+  throw new TypeError("Failed to fetch");
+};
+const core = require(process.argv[1]);
+core.request("/api/codex/sessions").then(() => {
+  process.exitCode = 1;
+}).catch((error) => {
+  process.stdout.write(JSON.stringify({
+    code: error.code,
+    message: error.message,
+    retryable: error.retryable,
+    transport: error.transport,
+  }));
+});
+"""
+    result = subprocess.run(
+        [NODE, "-e", program, str(CORE_SCRIPT)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert json.loads(result.stdout) == {
+        "code": "chub_connection_lost",
+        "message": "连接 Chub 失败，正在重试。",
+        "retryable": True,
+        "transport": True,
     }
 
 

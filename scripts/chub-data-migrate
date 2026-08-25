@@ -16,6 +16,10 @@ move_path() {
   if [[ ! -e "$source" ]]; then
     return
   fi
+  if [[ -L "$source" || -L "$target" ]]; then
+    printf 'Migration does not accept symbolic links: %s -> %s\n' "$source" "$target" >&2
+    exit 1
+  fi
   if [[ -e "$target" ]]; then
     printf 'Migration target already exists: %s\n' "$target" >&2
     exit 1
@@ -40,8 +44,12 @@ import os
 import sys
 import tempfile
 from pathlib import Path
+from app.services.request_backlog import RequestBacklogState
 
 source, target = map(Path, sys.argv[1:])
+for path in (source, target):
+    if path.is_symlink() or not path.is_file():
+        raise SystemExit(f"Migration state must be a regular file: {path}")
 old = json.loads(source.read_text(encoding="utf-8"))
 new = json.loads(target.read_text(encoding="utf-8"))
 if not isinstance(old, list) or not isinstance(new, list):
@@ -89,6 +97,9 @@ import tempfile
 from pathlib import Path
 
 source, target = map(Path, sys.argv[1:])
+for path in (source, target):
+    if path.is_symlink() or not path.is_file():
+        raise SystemExit(f"Migration state must be a regular file: {path}")
 old = json.loads(source.read_text(encoding="utf-8"))
 new = json.loads(target.read_text(encoding="utf-8"))
 if not isinstance(old, dict) or not isinstance(new, dict):
@@ -121,6 +132,10 @@ merge_directory() {
   if [[ ! -d "$source" ]]; then
     return
   fi
+  if [[ -L "$source" || -L "$target" ]]; then
+    printf 'Migration does not accept symbolic links: %s -> %s\n' "$source" "$target" >&2
+    exit 1
+  fi
   if [[ ! -e "$target" ]]; then
     mkdir -p "$(dirname -- "$target")"
     mv -- "$source" "$target"
@@ -134,6 +149,10 @@ merge_directory() {
   shopt -s dotglob nullglob
   for entry in "$source"/*; do
     local destination="$target/$(basename -- "$entry")"
+    if [[ -L "$entry" ]]; then
+      printf 'Migration does not accept symbolic links: %s\n' "$entry" >&2
+      exit 1
+    fi
     if [[ -d "$entry" ]]; then
       merge_directory "$entry" "$destination"
     elif [[ -e "$destination" ]]; then
@@ -147,21 +166,130 @@ merge_directory() {
   rmdir -- "$source"
 }
 
-merge_json_array data/codex-sessions.json data/state/codex/sessions.json
-merge_json_array data/codex-quick-interactions.json data/state/codex/quick-interactions.json
-merge_archived_document_state data/project-documents.json data/state/project-documents.json
-merge_directory data/codex-hooks data/runtime/codex/hooks
-merge_directory data/codex-quick-interactions data/runtime/codex/quick-interactions
+merge_shared_requests() {
+  local source=data/state/openclaw/requests.json
+  local target=data/shared/chub/requests.json
+  if [[ ! -e "$source" ]]; then
+    return
+  fi
+  if [[ -e "$target" ]]; then
+    .venv/bin/python - "$source" "$target" <<'PY'
+import json
+import os
+import sys
+import tempfile
+from pathlib import Path
 
-merge_directory data/automations/states data/state/automations
+source, target = map(Path, sys.argv[1:])
+
+for path in (source, target):
+    if path.is_symlink() or not path.is_file():
+        raise SystemExit(f"Request backlog must be a regular file: {path}")
+
+def read(path: Path) -> dict:
+    if path.stat().st_size > 512 * 1024:
+        raise SystemExit(f"Request backlog exceeds size limit: {path}")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise SystemExit(f"Request backlog is invalid: {path}") from exc
+    try:
+        return RequestBacklogState.model_validate(payload).model_dump(mode="json")
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(f"Request backlog has an unsupported format: {path}") from exc
+
+old = read(source)
+new = read(target)
+
+def active_by_slot(payload: dict) -> dict:
+    result = {}
+    for item in payload["active"]:
+        if not isinstance(item, dict) or not isinstance(item.get("slot"), int):
+            raise SystemExit("Request backlog contains an invalid active item")
+        slot = item["slot"]
+        if slot in result:
+            raise SystemExit(f"Request backlog contains duplicate active slot: R{slot}")
+        result[slot] = item
+    return result
+
+old_active = active_by_slot(old)
+new_active = active_by_slot(new)
+for slot in old_active.keys() & new_active.keys():
+    if old_active[slot] != new_active[slot]:
+        raise SystemExit(f"Conflicting active request slot during migration: R{slot}")
+active = {**old_active, **new_active}
+if any(not isinstance(slot, int) or not 1 <= slot <= 9 for slot in active):
+    raise SystemExit("Request backlog contains an invalid active slot")
+if len(active) > 9:
+    raise SystemExit("Merged request backlog exceeds R1-R9 capacity")
+
+archived = []
+seen_archived = {}
+for item in [*old["archived"], *new["archived"]]:
+    generation = item.get("generation") if isinstance(item, dict) else None
+    if not isinstance(generation, str):
+        raise SystemExit("Request backlog contains an invalid archived item")
+    previous = seen_archived.get(generation)
+    if previous is not None and previous != item:
+        raise SystemExit(f"Conflicting archived request during migration: {generation}")
+    if previous is None:
+        seen_archived[generation] = item
+        archived.append(item)
+
+payload = {
+    "version": 1,
+    "active": [active[slot] for slot in sorted(active)],
+    "archived": archived[-100:],
+}
+temporary = tempfile.NamedTemporaryFile(
+    mode="w", encoding="utf-8", dir=target.parent, delete=False
+)
+try:
+    with temporary:
+        json.dump(payload, temporary, ensure_ascii=False, separators=(",", ":"))
+        temporary.write("\n")
+    os.chmod(temporary.name, 0o600)
+    os.replace(temporary.name, target)
+    source.unlink()
+finally:
+    Path(temporary.name).unlink(missing_ok=True)
+PY
+    return
+  fi
+  move_path "$source" "$target"
+}
+
+merge_json_array data/codex-sessions.json data/local/state/codex/sessions.json
+merge_json_array data/codex-quick-interactions.json data/local/state/codex/quick-interactions.json
+merge_json_array data/state/codex/sessions.json data/local/state/codex/sessions.json
+merge_json_array data/state/codex/quick-interactions.json data/local/state/codex/quick-interactions.json
+merge_archived_document_state data/project-documents.json data/local/state/project-documents.json
+merge_archived_document_state data/state/project-documents.json data/local/state/project-documents.json
+merge_directory data/codex-hooks data/local/runtime/codex/hooks
+merge_directory data/codex-quick-interactions data/local/runtime/codex/quick-interactions
+merge_directory data/runtime/codex/hooks data/local/runtime/codex/hooks
+merge_directory data/runtime/codex/quick-interactions data/local/runtime/codex/quick-interactions
+
+merge_directory data/automations/states data/local/state/automations
 move_path data/automations/runtime/browser-profile-initialization.json \
-  data/state/automations/browser-profile-initialization.json
-merge_directory data/automations/locks data/runtime/automations/locks
-merge_directory data/automations/logs data/runtime/automations/logs
-merge_directory data/automations/runtime data/runtime/automations
-merge_directory data/automations/downloads data/artifacts/automations/downloads
-merge_directory data/weekly-reports data/artifacts/weekly-reports
+  data/local/state/automations/browser-profile-initialization.json
+merge_directory data/state/automations data/local/state/automations
+merge_directory data/automations/locks data/local/runtime/automations/locks
+merge_directory data/automations/logs data/local/runtime/automations/logs
+merge_directory data/automations/runtime data/local/runtime/automations
+merge_directory data/automations/downloads data/local/artifacts/automations/downloads
+merge_directory data/weekly-reports data/local/artifacts/weekly-reports
+merge_directory data/runtime/automations/locks data/local/runtime/automations/locks
+merge_directory data/runtime/automations/logs data/local/runtime/automations/logs
+merge_directory data/runtime/automations data/local/runtime/automations
+merge_directory data/artifacts/automations/downloads data/local/artifacts/automations/downloads
+merge_directory data/artifacts/weekly-reports data/local/artifacts/weekly-reports
+move_path data/state/openclaw/weixin-chub-mode.json \
+  data/local/state/openclaw/weixin-chub-mode.json
+move_path data/state/openclaw/weixin-translation.json \
+  data/local/state/openclaw/weixin-translation.json
+merge_shared_requests
 
-find data/state data/runtime data/artifacts -type d -exec chmod 700 {} + 2>/dev/null || true
-find data/state data/runtime data/artifacts -type f -exec chmod 600 {} + 2>/dev/null || true
+find data/local/state data/local/runtime data/local/artifacts -type d -exec chmod 700 {} + 2>/dev/null || true
+find data/local/state data/local/runtime data/local/artifacts -type f -exec chmod 600 {} + 2>/dev/null || true
 printf '%s\n' 'Chub data migration completed. Review config/settings.local.yaml, then start Chub.'

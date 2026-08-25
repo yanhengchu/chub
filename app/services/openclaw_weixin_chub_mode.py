@@ -201,7 +201,7 @@ class WeixinChubModeManager:
         self.system_upgrade_starter = system_upgrade_starter
         self.maintenance_command_starter = maintenance_command_starter
         self.path = settings.openclaw.weixin_chub_mode.state_file
-        request_state_file = settings.openclaw.weixin_chub_mode.request_state_file
+        request_state_file = settings.requests.state_file
         if not request_state_file.is_absolute() and self.path.is_absolute():
             request_state_file = self.path.with_name("requests.json")
         self.request_backlog = RequestBacklogStore(request_state_file)
@@ -1331,6 +1331,8 @@ class WeixinChubModeManager:
                     delivery_route=delivery_route,
                     processing_mode=command.processing_mode,
                     text_action=command.text_action,
+                    model_index=command.model_index,
+                    level_index=command.level_index,
                     invalid_usage=command.invalid_usage,
                 ),
                 delivery_route,
@@ -2931,7 +2933,19 @@ class WeixinChubModeManager:
         source_ip: str,
         delivery_route: QuickInteractionWeixinRoute,
         processing_mode: Literal["direct", "auto", "confirm"] | None,
-        text_action: Literal["mode", "list", "ok", "next", "cancel"] | None,
+        text_action: Literal[
+            "mode",
+            "list",
+            "ok",
+            "next",
+            "cancel",
+            "model",
+            "model_list",
+            "model_levels",
+            "model_use",
+        ] | None,
+        model_index: int | None,
+        level_index: int | None,
         invalid_usage: bool,
     ) -> WeixinChubModeDispatchResult:
         if text_action in {"ok", "next", "cancel"}:
@@ -2949,6 +2963,33 @@ class WeixinChubModeManager:
                 source_ip=source_ip,
                 invalid_usage=invalid_usage,
                 delivery_route=delivery_route,
+            )
+        if text_action == "model_list":
+            return self._dispatch_text_model_list(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                route_fingerprint=route_fingerprint,
+                source_ip=source_ip,
+                invalid_usage=invalid_usage,
+            )
+        if text_action == "model_levels":
+            return self._dispatch_text_model_levels(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                route_fingerprint=route_fingerprint,
+                source_ip=source_ip,
+                model_index=model_index,
+                invalid_usage=invalid_usage,
+            )
+        if text_action == "model_use":
+            return self._dispatch_text_model_use(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                route_fingerprint=route_fingerprint,
+                source_ip=source_ip,
+                model_index=model_index,
+                level_index=level_index,
+                invalid_usage=invalid_usage,
             )
         with self._text_mode_lock:
             with self._lock:
@@ -3064,6 +3105,8 @@ class WeixinChubModeManager:
         invalid_usage: bool,
     ) -> WeixinChubModeDispatchResult:
         operation_id = uuid4().hex
+        self._log_dispatch(operation_id, "requested", source_ip)
+        self._log_dispatch(operation_id, "started", source_ip)
         if invalid_usage:
             message = "Text: Usage · text list."
             failed = True
@@ -3124,6 +3167,9 @@ class WeixinChubModeManager:
                 source_ip=source_ip,
                 message=(
                     "Text: Usage · text [mode [direct|auto|confirm]|list|ok|next|cancel]\n\n"
+                    "text model list\n\n"
+                    "text model level [M#]\n\n"
+                    "text model use M# | L# | M# L#\n\n"
                     "text-check <English>"
                 ),
                 code="weixin_text_mode_checked",
@@ -3183,13 +3229,16 @@ class WeixinChubModeManager:
             target=status.mode,
             source_ip=source_ip,
         )
-        heading = "Text mode updated" if processing_mode is not None else "Text mode"
-        message = (
-            f"{heading} · {mode_description}.\n\n"
-            "Applies to new text tasks."
-        )
         if processing_mode is None:
-            message = f"{message}\n\n{self._text_current_confirmation_message(delivery_route)}"
+            message = (
+                "Text\n\n"
+                f"Mode · {mode_description}\n\n"
+                f"Model · {getattr(status, 'model', None) or 'Default'} · "
+                f"{getattr(status, 'reasoning_effort', None) or 'Default'}\n\n"
+                f"{self._text_current_confirmation_message(delivery_route)}"
+            )
+        else:
+            message = f"Text mode updated · {mode_description}."
         return self._remember_fixed_reply(
             message_id=message_id,
             correlation_id=correlation_id,
@@ -3198,6 +3247,286 @@ class WeixinChubModeManager:
             source_ip=source_ip,
             message=message,
             code="weixin_text_mode_checked",
+        )
+
+    def _read_text_model_catalog(self):
+        if self.translation_manager is None:
+            raise OSError("Weixin translation settings are unavailable")
+        status = self.translation_manager.status()
+        catalog = self.codex_manager.read_model_catalog()
+        models = tuple(
+            item
+            for item in getattr(catalog, "models", ())
+            if isinstance(getattr(item, "id", None), str) and item.id
+        )
+        if not models:
+            raise ValueError("The Codex model catalog is empty")
+        return status, catalog, models
+
+    def _dispatch_text_model_list(
+        self,
+        *,
+        message_id: str,
+        correlation_id: str | None,
+        route_fingerprint: str,
+        source_ip: str,
+        invalid_usage: bool,
+    ) -> WeixinChubModeDispatchResult:
+        operation_id = uuid4().hex
+        self._log_dispatch(operation_id, "requested", source_ip)
+        self._log_dispatch(operation_id, "started", source_ip)
+
+        if invalid_usage:
+            message = "Text model list: Usage · text model list."
+            return self._remember_fixed_reply(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                operation_id=operation_id,
+                route_fingerprint=route_fingerprint,
+                source_ip=source_ip,
+                message=message,
+                code="codex_model_checked",
+                failed=True,
+            )
+        try:
+            status, catalog, models = self._read_text_model_catalog()
+            model_id = getattr(status, "model", None) or getattr(
+                catalog, "default_model", None
+            )
+            model_ids = tuple(item.id for item in models)
+            if model_id not in model_ids:
+                raise ValueError("The configured translation model is unavailable")
+        except Exception:
+            LOGGER.warning("Unable to read Weixin translation model list", exc_info=True)
+            return self._remember_fixed_reply(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                operation_id=operation_id,
+                route_fingerprint=route_fingerprint,
+                source_ip=source_ip,
+                message="Text model list: Unavailable. The translation model catalog could not be read.",
+                code="codex_model_checked",
+                failed=True,
+            )
+        return self._remember_fixed_reply(
+            message_id=message_id,
+            correlation_id=correlation_id,
+            operation_id=operation_id,
+            route_fingerprint=route_fingerprint,
+            source_ip=source_ip,
+            message=(
+                "Text model list\n\n"
+                f"Model · M{model_ids.index(model_id) + 1} · {model_id}\n\n"
+                "Models\n"
+                + "\n".join(
+                    f"M{index} · {item.id}"
+                    for index, item in enumerate(models, start=1)
+                )
+            ),
+            code="codex_model_checked",
+        )
+
+    def _dispatch_text_model_levels(
+        self,
+        *,
+        message_id: str,
+        correlation_id: str | None,
+        route_fingerprint: str,
+        source_ip: str,
+        model_index: int | None,
+        invalid_usage: bool,
+    ) -> WeixinChubModeDispatchResult:
+        operation_id = uuid4().hex
+        self._log_dispatch(operation_id, "requested", source_ip)
+        self._log_dispatch(operation_id, "started", source_ip)
+
+        if invalid_usage:
+            message = "Text model levels: Usage · text model level [M#]."
+            return self._remember_fixed_reply(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                operation_id=operation_id,
+                route_fingerprint=route_fingerprint,
+                source_ip=source_ip,
+                message=message,
+                code="codex_model_checked",
+                failed=True,
+            )
+        try:
+            status, catalog, models = self._read_text_model_catalog()
+            model_ids = tuple(item.id for item in models)
+            if model_index is not None:
+                if not 1 <= model_index <= len(models):
+                    raise ValueError("The requested model index is unavailable")
+                selected_model = models[model_index - 1]
+                display_model = f"M{model_index} · {selected_model.id}"
+                current_level = None
+            else:
+                model_id = getattr(status, "model", None) or getattr(
+                    catalog, "default_model", None
+                )
+                selected_model = next(
+                    (item for item in models if item.id == model_id),
+                    None,
+                )
+                if selected_model is None:
+                    raise ValueError("The configured translation model is unavailable")
+                display_model = f"M{model_ids.index(model_id) + 1} · {model_id}"
+                current_level = getattr(status, "reasoning_effort", None) or getattr(
+                    selected_model, "default_level", None
+                ) or getattr(catalog, "default_reasoning_effort", None)
+                if current_level is None:
+                    raise ValueError("The current translation level is unavailable")
+            level_ids = tuple(
+                level.id
+                for level in getattr(selected_model, "levels", ())
+                if isinstance(getattr(level, "id", None), str) and level.id
+            )
+            if not level_ids:
+                raise ValueError("The selected model has no available levels")
+        except Exception:
+            LOGGER.warning("Unable to read Weixin translation model levels", exc_info=True)
+            return self._remember_fixed_reply(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                operation_id=operation_id,
+                route_fingerprint=route_fingerprint,
+                source_ip=source_ip,
+                message="Text model levels: Unavailable. The translation model or levels could not be read.",
+                code="codex_model_checked",
+                failed=True,
+            )
+        current_line = f"\n\nLevel · {current_level}" if current_level else ""
+        return self._remember_fixed_reply(
+            message_id=message_id,
+            correlation_id=correlation_id,
+            operation_id=operation_id,
+            route_fingerprint=route_fingerprint,
+            source_ip=source_ip,
+            message=(
+                f"Text model levels\n\nModel · {display_model}{current_line}\n\n"
+                "Levels\n"
+                + "\n".join(
+                    f"L{index} · {level_id}"
+                    for index, level_id in enumerate(level_ids, start=1)
+                )
+            ),
+            code="codex_model_checked",
+        )
+
+    def _dispatch_text_model_use(
+        self,
+        *,
+        message_id: str,
+        correlation_id: str | None,
+        route_fingerprint: str,
+        source_ip: str,
+        model_index: int | None,
+        level_index: int | None,
+        invalid_usage: bool,
+    ) -> WeixinChubModeDispatchResult:
+        operation_id = uuid4().hex
+        target = (
+            f"M{model_index}" if model_index is not None else f"L{level_index}"
+        )
+        write_operation(
+            operation_id=operation_id,
+            action="update_weixin_translation_setting",
+            status="requested",
+            target=target,
+            source_ip=source_ip,
+        )
+        write_operation(
+            operation_id=operation_id,
+            action="update_weixin_translation_setting",
+            status="started",
+            target=target,
+            source_ip=source_ip,
+        )
+
+        def fail(message: str) -> WeixinChubModeDispatchResult:
+            write_operation(
+                operation_id=operation_id,
+                action="update_weixin_translation_setting",
+                status="failed",
+                target=target,
+                source_ip=source_ip,
+            )
+            return self._remember_fixed_reply(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                operation_id=operation_id,
+                route_fingerprint=route_fingerprint,
+                source_ip=source_ip,
+                message=message,
+                code="codex_model_checked",
+                failed=True,
+            )
+
+        if invalid_usage or model_index is None and level_index is None:
+            return fail("Text model update: Usage · text model use M# | L# | M# L#.")
+        if self.translation_manager is None:
+            return fail("Text model update: Unavailable.")
+        try:
+            status, catalog, models = self._read_text_model_catalog()
+            model_ids = tuple(item.id for item in models)
+            if model_index is None:
+                model_id = getattr(status, "model", None)
+                if model_id is None:
+                    return fail(
+                        "Text model update: No translation model is configured. "
+                        "Select a model with M#."
+                    )
+                target_model = model_id
+            elif not 1 <= model_index <= len(models):
+                return fail("Text model update: Model index is unavailable in the current catalog.")
+            else:
+                target_model = model_ids[model_index - 1]
+            selected_model = next(
+                (item for item in models if item.id == target_model),
+                None,
+            )
+            if selected_model is None:
+                return fail("Text model update: The configured translation model is unavailable.")
+            level_ids = tuple(
+                level.id
+                for level in getattr(selected_model, "levels", ())
+                if isinstance(getattr(level, "id", None), str) and level.id
+            )
+            if level_index is None:
+                target_level = getattr(selected_model, "default_level", None)
+            elif 1 <= level_index <= len(level_ids):
+                target_level = level_ids[level_index - 1]
+            else:
+                return fail("Text model update: Level index is unavailable for the selected model.")
+            if target_level is None:
+                return fail("Text model update: A default level is unavailable for the selected model.")
+            self.translation_manager.set_model(target_model, target_level)
+        except ApiError:
+            LOGGER.warning("Unable to validate Weixin translation model update", exc_info=True)
+            return fail("Text model update: The selected model or level is unavailable.")
+        except Exception:
+            LOGGER.warning("Unable to save Weixin translation model", exc_info=True)
+            return fail("Text model update: Unable to save the translation configuration.")
+        write_operation(
+            operation_id=operation_id,
+            action="update_weixin_translation_setting",
+            status="succeeded",
+            target=f"{target_model}/{target_level}",
+            source_ip=source_ip,
+        )
+        return self._remember_fixed_reply(
+            message_id=message_id,
+            correlation_id=correlation_id,
+            operation_id=operation_id,
+            route_fingerprint=route_fingerprint,
+            source_ip=source_ip,
+            message=(
+                "Text model updated\n\n"
+                f"Next model · {target_model}\n\n"
+                f"Next level · {target_level}"
+            ),
+            code="codex_model_checked",
         )
 
     def _dispatch_codex_model(

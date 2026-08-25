@@ -390,6 +390,8 @@ def test_isolated_worker_maps_page_weixin_and_translation_to_one_protocol(
         source_ip="127.0.0.1",
         notification_route=route,
         kind="translation",
+        model="gpt-translation",
+        reasoning_effort="high",
     )
 
     assert [item["task_kind"] for item in submissions] == [
@@ -401,6 +403,8 @@ def test_isolated_worker_maps_page_weixin_and_translation_to_one_protocol(
     assert submissions[2]["queue_key"] == "weixin-translation"
     assert all(item["runtime_id"] == "codex" for item in submissions)
     assert submissions[2]["permission_profile"] == "read-only"
+    assert submissions[2]["model"] == "gpt-translation"
+    assert submissions[2]["reasoning_effort"] == "high"
     assert thread.start.call_count == 3
 
 
@@ -977,6 +981,7 @@ def test_quick_interaction_completion_notification_is_independent(
         id="task-1",
         session_id="session-1",
         prompt="检查状态",
+        notification_route="weixin-task",
         status="running",
         created_at=utc_now(),
         updated_at=utc_now(),
@@ -1023,6 +1028,7 @@ def test_notification_failure_does_not_change_task_result(
         id="task-1",
         session_id="session-1",
         prompt="检查状态",
+        notification_route="weixin-task",
         status="running",
         created_at=utc_now(),
         updated_at=utc_now(),
@@ -1182,8 +1188,8 @@ def test_restart_marks_incomplete_notification_failed(tmp_path: Path) -> None:
 
     recovered = quick_interactions.get("task-1")
     assert recovered.status == "succeeded"
-    assert recovered.notification_status == "failed"
-    assert recovered.notification_error == "服务重启时微信通知未完成。"
+    assert recovered.notification_status == "skipped"
+    assert recovered.notification_error == "页面任务结果仅在 Chub 快速交互页面展示。"
 
 
 def test_worker_restart_preserves_active_task_and_pending_notification(
@@ -1213,7 +1219,7 @@ def test_worker_restart_preserves_active_task_and_pending_notification(
     )
 
     assert recovered.get(task.id).status == "running"
-    assert recovered.get(task.id).notification_status == "pending"
+    assert recovered.get(task.id).notification_status == "skipped"
     assert recovered.is_running(task.session_id) is True
     codex_manager.recover_interrupted_quick_interaction.assert_not_called()
 
@@ -2486,7 +2492,7 @@ def test_failed_translation_does_not_queue_notification(tmp_path: Path) -> None:
 
     quick_interactions._finish(task.id, "failed", "translation failed")
 
-    assert quick_interactions.get(task.id).notification_status is None
+    assert quick_interactions.get(task.id).notification_status == "skipped"
     notifier.assert_not_called()
 
 

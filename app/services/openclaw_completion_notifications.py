@@ -53,21 +53,19 @@ class OpenClawCompletionNotifier:
         task: QuickInteractionTask,
         route: QuickInteractionWeixinRoute | None = None,
     ) -> CompletionNotificationResult:
-        route_specific = task.notification_route == "weixin-task"
+        if task.notification_route != "weixin-task":
+            return CompletionNotificationResult(
+                "skipped",
+                "页面任务结果仅在 Chub 快速交互页面展示。",
+            )
         return self._send(
             task,
             route,
-            [] if route_specific else self._messages_for(task),
+            [],
             disabled_message="微信完成通知未启用。",
-            message_factory=(
-                (
-                    lambda: self._messages_for(
-                        task,
-                        footer=self._completion_usage_footer(task),
-                    )
-                )
-                if route_specific
-                else None
+            message_factory=lambda: self._messages_for(
+                task,
+                footer=self._completion_usage_footer(task),
             ),
         )
 
@@ -255,23 +253,16 @@ class OpenClawCompletionNotifier:
     ) -> CompletionNotificationResult:
         if not self.config.enabled:
             return CompletionNotificationResult("skipped", disabled_message)
-        if task.notification_route == "weixin-task":
-            if route is None:
-                return CompletionNotificationResult(
-                    "failed",
-                    "微信原路回送信息不可用。",
-                )
-            account_id = route.account_id
-            recipient = route.recipient
-        else:
-            recipient = self.config.weixin_recipient
-            if not recipient:
-                return CompletionNotificationResult(
-                    "skipped",
-                    "尚未配置微信通知收件人。",
-                )
-            account_id = None
-        route_specific = task.notification_route == "weixin-task"
+        if task.notification_route != "weixin-task" or route is None:
+            return CompletionNotificationResult(
+                "failed" if task.notification_route == "weixin-task" else "skipped",
+                "微信原路回送信息不可用。"
+                if task.notification_route == "weixin-task"
+                else "页面任务结果仅在 Chub 快速交互页面展示。",
+            )
+        account_id = route.account_id
+        recipient = route.recipient
+        route_specific = True
         return self._send_messages(
             required_account_id=account_id,
             recipient=recipient,

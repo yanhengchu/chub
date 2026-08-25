@@ -148,6 +148,36 @@ def test_isolated_worker_translation_submits_without_web_scheduler(settings) -> 
     )
 
 
+def test_translation_model_settings_are_persisted_and_snapshotted(settings) -> None:
+    manager, codex_manager, quick_interactions = manager_without_worker(settings)
+    codex_manager.validate_model = MagicMock()
+    manager.set_model("gpt-test", "high")
+    manager._ensure_session = MagicMock(return_value="translation-session")
+
+    assert manager.enqueue(
+        message_id="snapshotted-translation",
+        original="使用提交时的翻译配置",
+        route=route(),
+        operation_id="operation-snapshotted",
+        source_ip="100.64.0.21",
+    )
+
+    manager.set_model("gpt-next", "medium")
+    entry = manager._state.entries[0]
+    assert entry.model == "gpt-test"
+    assert entry.reasoning_effort == "high"
+    assert quick_interactions.submit.call_args.kwargs["model"] == "gpt-test"
+    assert quick_interactions.submit.call_args.kwargs["reasoning_effort"] == "high"
+
+    reloaded = WeixinTranslationManager(
+        settings.openclaw.weixin_chub_mode,
+        MagicMock(),
+        MagicMock(),
+    )
+    assert reloaded.status().model == "gpt-next"
+    assert reloaded.status().reasoning_effort == "medium"
+
+
 def test_targeted_translation_suppresses_legacy_notification(settings) -> None:
     manager, _codex_manager, quick_interactions = manager_without_worker(settings)
     manager._ensure_session = MagicMock(return_value="translation-session")

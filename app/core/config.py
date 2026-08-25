@@ -71,8 +71,8 @@ class LogsConfig(StrictModel):
 class CodexPtyConfig(StrictModel):
     enabled: bool = True
     workspace: Path = Path("~/workspace")
-    data_file: Path = Path("data/state/codex/sessions.json")
-    runtime_dir: Path = Path("data/runtime/codex")
+    data_file: Path = Path("data/local/state/codex/sessions.json")
+    runtime_dir: Path = Path("data/local/runtime/codex")
     ticket_ttl_seconds: int = Field(default=600, ge=60, le=3600)
     max_running: int = Field(default=3, ge=1, le=10)
     quick_interaction_timeout_seconds: int = Field(
@@ -87,9 +87,9 @@ class AutomationsConfig(StrictModel):
     shared_config_file: Path = Path("config/automations.yaml")
     local_config_file: Path = Path("config/automations.local.yaml")
     config_file: Path | None = None
-    state_dir: Path = Path("data/state/automations")
-    runtime_dir: Path = Path("data/runtime/automations")
-    artifacts_dir: Path = Path("data/artifacts/automations/downloads")
+    state_dir: Path = Path("data/local/state/automations")
+    runtime_dir: Path = Path("data/local/runtime/automations")
+    artifacts_dir: Path = Path("data/local/artifacts/automations/downloads")
     max_home_tasks: int = Field(default=3, ge=1, le=10)
 
     @property
@@ -179,7 +179,11 @@ class AiUsageConfig(StrictModel):
 
 
 class ProjectDocumentsConfig(StrictModel):
-    state_file: Path = Path("data/state/project-documents.json")
+    state_file: Path = Path("data/local/state/project-documents.json")
+
+
+class RequestsConfig(StrictModel):
+    state_file: Path = Path("data/shared/chub/requests.json")
 
 
 class NotificationsConfig(StrictModel):
@@ -193,8 +197,18 @@ class NotificationsConfig(StrictModel):
 
 class OpenClawCompletionNotificationConfig(StrictModel):
     enabled: bool = True
-    weixin_account_id: str | None = Field(default=None, min_length=1, max_length=200)
-    weixin_recipient: str | None = Field(default=None, min_length=1, max_length=500)
+    weixin_account_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=200,
+        description="Legacy compatibility field; task routes provide the account.",
+    )
+    weixin_recipient: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=500,
+        description="Legacy compatibility field; Web tasks never use this recipient.",
+    )
     timeout_seconds: int = Field(default=20, ge=1, le=60)
     max_message_chars: int = Field(
         default=2000,
@@ -227,8 +241,7 @@ class OpenClawWeixinChubModeConfig(StrictModel):
     ] = "full-access"
     model: str | None = Field(default=None, min_length=1, max_length=128)
     reasoning_effort: str | None = Field(default=None, min_length=1, max_length=32)
-    state_file: Path = Path("data/state/openclaw/weixin-chub-mode.json")
-    request_state_file: Path = Path("data/state/openclaw/requests.json")
+    state_file: Path = Path("data/local/state/openclaw/weixin-chub-mode.json")
     session_name_max_width: int = Field(default=30, ge=4, le=96)
     task_name_max_width: int = Field(default=64, ge=4, le=96)
     # Translation runs an LLM over untrusted message text and must be opted in.
@@ -271,6 +284,7 @@ class Settings(StrictModel):
     automations: AutomationsConfig = AutomationsConfig()
     ai_usage: AiUsageConfig = AiUsageConfig()
     project_documents: ProjectDocumentsConfig = ProjectDocumentsConfig()
+    requests: RequestsConfig = RequestsConfig()
     notifications: NotificationsConfig = NotificationsConfig()
     openclaw: OpenClawConfig = OpenClawConfig()
 
@@ -321,13 +335,11 @@ class Settings(StrictModel):
             self.project_documents.state_file = (
                 PROJECT_ROOT / self.project_documents.state_file
             )
+        if not self.requests.state_file.is_absolute():
+            self.requests.state_file = PROJECT_ROOT / self.requests.state_file
         if not self.openclaw.weixin_chub_mode.state_file.is_absolute():
             self.openclaw.weixin_chub_mode.state_file = (
                 PROJECT_ROOT / self.openclaw.weixin_chub_mode.state_file
-            )
-        if not self.openclaw.weixin_chub_mode.request_state_file.is_absolute():
-            self.openclaw.weixin_chub_mode.request_state_file = (
-                PROJECT_ROOT / self.openclaw.weixin_chub_mode.request_state_file
             )
         self.notifications.registry_file = (
             self.notifications.registry_file.expanduser().resolve()

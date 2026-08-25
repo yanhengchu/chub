@@ -4,6 +4,7 @@
   const LONG_RUNNING_THRESHOLD_MS = 10 * 60 * 1000;
   const INITIAL_POLL_DELAY_MS = 1500;
   const MAX_POLL_DELAY_MS = 10000;
+  const CONNECTION_FAILURE_GRACE_ATTEMPTS = 3;
   const PAGE_SIZE_KEY = "hub.quickInteractionPageSize.v1";
   const DEFAULT_PERMISSION_KEY = "hub.codexDefaultPermission.v1";
   const DEFAULT_MODEL_KEY = "hub.codexDefaultModel.v1";
@@ -36,14 +37,32 @@
   }
 
   async function request(path, options = {}) {
-    const response = await fetch(path, {
-      cache: "no-store",
-      ...options,
-      headers: {
-        ...(options.headers || {}),
-      },
-    });
-    const payload = await response.json();
+    let response;
+    try {
+      response = await fetch(path, {
+        cache: "no-store",
+        ...options,
+        headers: {
+          ...(options.headers || {}),
+        },
+      });
+    } catch (_error) {
+      const error = new Error("连接 Chub 失败，正在重试。");
+      error.code = "chub_connection_lost";
+      error.retryable = true;
+      error.transport = true;
+      throw error;
+    }
+    let payload;
+    try {
+      payload = await response.json();
+    } catch (_error) {
+      const error = new Error("连接 Chub 失败，正在重试。");
+      error.code = "chub_connection_lost";
+      error.retryable = true;
+      error.transport = true;
+      throw error;
+    }
     if (!response.ok || payload.success !== true) {
       const error = new Error(payload?.error?.message || "请求失败。");
       error.code = payload?.error?.code || "request_failed";
@@ -326,6 +345,29 @@
     return error?.retryable !== false;
   }
 
+  function isTemporaryReconnectError(error) {
+    return error?.transport === true
+      || (error?.retryable === true && error?.status >= 500);
+  }
+
+  function shouldSuppressReconnectError({
+    loadErrors = [],
+    restartPending = false,
+    failureCount = 0,
+  }) {
+    if (
+      loadErrors.length === 0
+      || loadErrors.some((error) => !isTemporaryReconnectError(error))
+    ) {
+      return false;
+    }
+    if (restartPending) {
+      return true;
+    }
+    return loadErrors.some((error) => error?.transport === true)
+      && failureCount <= CONNECTION_FAILURE_GRACE_ATTEMPTS;
+  }
+
   function pollDelay(failureCount = 0) {
     if (failureCount <= 1) {
       return INITIAL_POLL_DELAY_MS;
@@ -498,6 +540,7 @@
     formatTime,
     formatErrorMessage,
     isRetryableRequestError,
+    shouldSuppressReconnectError,
     pollDelay,
     readPageSize,
     readSessionCreationPreferences,

@@ -106,7 +106,16 @@ class WeixinChubCommand:
     normalized_prompt: str
     task_prompt: str | None = None
     processing_mode: Literal["direct", "auto", "confirm"] | None = None
-    text_action: Literal["mode", "list", "ok", "next", "cancel"] | None = None
+    text_action: Literal[
+        "mode",
+        "list",
+        "ok",
+        "next",
+        "cancel",
+        "model_list",
+        "model_levels",
+        "model_use",
+    ] | None = None
     requested_index: int | None = None
     model_index: int | None = None
     level_index: int | None = None
@@ -194,6 +203,48 @@ def parse_weixin_chub_command(prompt: str) -> WeixinChubCommand:
                     processing_mode=text_parts[2].casefold(),
                     text_action="mode",
                 )
+        if action == "model" and len(text_parts) >= 3:
+            model_action = text_parts[2].casefold()
+            if model_action == "list" and len(text_parts) == 3:
+                return WeixinChubCommand(
+                    "text_control", normalized, text_action="model_list"
+                )
+            if model_action == "level":
+                if len(text_parts) == 3:
+                    return WeixinChubCommand(
+                        "text_control", normalized, text_action="model_levels"
+                    )
+                if (
+                    len(text_parts) == 4
+                    and re.fullmatch(r"M[1-9][0-9]*", text_parts[3], re.I)
+                ):
+                    return WeixinChubCommand(
+                        "text_control",
+                        normalized,
+                        text_action="model_levels",
+                        model_index=int(text_parts[3][1:]),
+                    )
+            if model_action == "use":
+                model_use = re.fullmatch(
+                    r"(?:(M[1-9][0-9]*)(?:\s+(L[1-9][0-9]*))?|"
+                    r"(L[1-9][0-9]*))",
+                    " ".join(text_parts[3:]),
+                    re.I,
+                )
+                if model_use is not None:
+                    model_reference, paired_level, level_reference = model_use.groups()
+                    selected_level = paired_level or level_reference
+                    return WeixinChubCommand(
+                        "text_control",
+                        normalized,
+                        text_action="model_use",
+                        model_index=(
+                            int(model_reference[1:]) if model_reference else None
+                        ),
+                        level_index=(
+                            int(selected_level[1:]) if selected_level else None
+                        ),
+                    )
         return WeixinChubCommand("text_control", normalized, invalid_usage=True)
     help_parts = folded.split()
     if help_parts == [CHUB_HELP_PROMPT]:

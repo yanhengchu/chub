@@ -37,7 +37,7 @@ def parser() -> argparse.ArgumentParser:
 def _store() -> RequestBacklogStore:
     settings = load_settings()
     return RequestBacklogStore(
-        settings.openclaw.weixin_chub_mode.request_state_file
+        settings.requests.state_file
     )
 
 

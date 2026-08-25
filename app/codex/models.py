@@ -336,6 +336,9 @@ class QuickInteractionTask(BaseModel):
     summary: str | None = Field(default=None, max_length=48)
     kind: QuickInteractionKind = "standard"
     translation_original: str | None = Field(default=None, max_length=8000)
+    # Translation tasks snapshot their private model selection at submission.
+    model: str | None = Field(default=None, max_length=128)
+    reasoning_effort: str | None = Field(default=None, max_length=32)
     restart_sensitive: bool = False
     status: QuickInteractionStatus
     result: str | None = Field(default=None, max_length=100_000)
