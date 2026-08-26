@@ -9,26 +9,73 @@
     <script src="/static/settings.js" defer></script>
   </head>
   <body>
+    <dialog id="openclaw-weixin-dialog" class="codex-workspace-dialog" aria-labelledby="openclaw-weixin-dialog-title">
+      <div class="codex-workspace-dialog-surface openclaw-weixin-dialog-surface">
+        <div class="codex-workspace-dialog-header">
+          <h2 id="openclaw-weixin-dialog-title">微信绑定</h2>
+          <button id="openclaw-weixin-close" class="button-link codex-workspace-dialog-close" type="button" aria-label="关闭微信绑定">关闭</button>
+        </div>
+        <p class="openclaw-weixin-lead">查看当前绑定状态后，可为此 ClawBot 生成新的微信连接二维码。</p>
+        <section class="openclaw-weixin-context" aria-label="当前微信绑定配置">
+          <div class="openclaw-weixin-context-row">
+            <span class="openclaw-weixin-context-label">消息通道</span>
+            <strong id="openclaw-weixin-account-summary" class="openclaw-weixin-context-value">正在读取当前账户状态</strong>
+          </div>
+          <div class="openclaw-weixin-context-row">
+            <span class="openclaw-weixin-context-label">Owner 授权</span>
+            <strong id="openclaw-weixin-owner-summary" class="openclaw-weixin-context-value">正在读取当前 Owner 配置</strong>
+          </div>
+        </section>
+        <p class="openclaw-weixin-notice">重新扫码可能使该 ClawBot 在其他设备上的服务端绑定失效。绑定只建立消息通道，不会自动完成发送者配对或 Owner 授权。</p>
+        <div id="openclaw-weixin-qr-panel" class="openclaw-weixin-qr-panel" hidden>
+          <img id="openclaw-weixin-qr" alt="微信 ClawBot 绑定二维码">
+          <p>请使用手机微信扫码，并在手机上确认连接。</p>
+        </div>
+        <form id="openclaw-weixin-verify-form" class="openclaw-weixin-verify-form" hidden>
+          <label for="openclaw-weixin-verify-code">手机显示的数字验证码</label>
+          <div class="token-row">
+            <input id="openclaw-weixin-verify-code" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" maxlength="12" required>
+            <button type="submit">提交验证码</button>
+          </div>
+        </form>
+        <p id="openclaw-weixin-message" class="message" role="status" aria-live="polite">点击“生成二维码”开始绑定。</p>
+        <div class="dialog-actions">
+          <button id="openclaw-weixin-cancel" class="button-danger" type="button" hidden>取消绑定</button>
+          <button id="openclaw-weixin-start" class="button-secondary" type="button">生成二维码</button>
+        </div>
+      </div>
+    </dialog>
+
     <main>
       <section class="card settings-card standalone-list-card" aria-labelledby="settings-title">
         <div class="card-heading-copy">
-          <p class="section-kicker">本机偏好</p>
+          <p class="section-kicker">功能配置</p>
           <h2 id="settings-title">设置</h2>
-          <p class="section-description">调整浏览器偏好和节点功能。</p>
+          <p class="section-description">按 Chub 核心、AI Runtime 与第三方服务查看现有配置。</p>
         </div>
 
         <div class="settings-layout">
           <aside class="settings-navigation">
             <nav class="settings-navigation-links" aria-label="设置分类">
+              <span class="settings-navigation-group">Chub 核心</span>
               <a href="#quick-interaction-settings" aria-current="true">快速交互</a>
-              <a href="#weixin-settings">微信处理</a>
-              <a href="#codex-session-settings">Codex 会话</a>
               <a href="#style-settings">界面风格</a>
               <a href="#utility-settings">诊断与关于</a>
+              <span class="settings-navigation-group">AI Runtime</span>
+              <a href="#codex-session-settings">Codex 会话默认项</a>
+              <a href="#weixin-settings">微信任务文本优化</a>
+              <span class="settings-navigation-group">第三方服务</span>
+              <a href="#openclaw-weixin-settings">OpenClaw · 微信 ClawBot</a>
             </nav>
           </aside>
 
           <div class="settings-content">
+            <section class="settings-layer" aria-labelledby="core-settings-title">
+              <div class="settings-layer-heading">
+                <p class="section-kicker">Chub 核心</p>
+                <h3 id="core-settings-title">浏览器偏好与节点信息</h3>
+                <p>管理当前浏览器的使用偏好，并查看本机 Chub 的诊断信息。</p>
+              </div>
             <section id="quick-interaction-settings" class="settings-section" aria-labelledby="quick-interaction-settings-title">
               <div class="settings-section-heading">
                 <h3 id="quick-interaction-settings-title">快速交互</h3>
@@ -45,121 +92,6 @@
                 </select>
               </label>
               <p id="settings-message" class="message" aria-live="polite"></p>
-            </section>
-
-            <section id="weixin-settings" class="settings-section" aria-labelledby="weixin-settings-title">
-              <div class="settings-section-heading">
-                <h3 id="weixin-settings-title">微信处理</h3>
-                <p>控制微信 Chub 普通任务执行前的文本处理。</p>
-              </div>
-              <div class="settings-subsection">
-                <h4 id="weixin-processing-mode-title">正文处理方式</h4>
-                <fieldset
-                  class="settings-choice-list"
-                  id="weixin-processing-mode"
-                  aria-labelledby="weixin-processing-mode-title"
-                  disabled
-                >
-                  <legend class="visually-hidden">正文处理方式</legend>
-                  <label class="settings-choice">
-                    <span>
-                      <strong>直接执行</strong>
-                      <small>正文直接提交到指定 Session。</small>
-                    </span>
-                    <input type="radio" name="weixin-processing-mode" value="direct">
-                  </label>
-                  <label class="settings-choice">
-                    <span>
-                      <strong>自动润色后执行</strong>
-                      <small>先润色和翻译，再自动提交润色后的中文正文。</small>
-                    </span>
-                    <input type="radio" name="weixin-processing-mode" value="auto">
-                  </label>
-                  <label class="settings-choice">
-                    <span>
-                      <strong>自动润色后确认执行</strong>
-                      <small>翻译继续串行处理；收到译文后使用 <code>text</code> 指令确认或复述。</small>
-                    </span>
-                    <input type="radio" name="weixin-processing-mode" value="confirm">
-                  </label>
-                </fieldset>
-              </div>
-              <div class="settings-subsection">
-                <h4 id="weixin-translation-model-title">正文处理模型</h4>
-                <label
-                  id="weixin-translation-model-field"
-                  class="settings-field"
-                  for="weixin-translation-model"
-                >
-                  <span>
-                    <strong>翻译模型</strong>
-                    <small>只影响之后新提交的文本优化任务，已提交任务继续使用原配置。</small>
-                  </span>
-                  <select id="weixin-translation-model" name="weixin-translation-model" disabled>
-                    <option value="">跟随 Codex 默认</option>
-                  </select>
-                </label>
-                <label
-                  id="weixin-translation-reasoning-effort-field"
-                  class="settings-field"
-                  for="weixin-translation-reasoning-effort"
-                >
-                  <span>
-                    <strong>翻译等级</strong>
-                    <small>选择翻译模型后可指定推理等级；留空时使用该模型默认等级。</small>
-                  </span>
-                  <select
-                    id="weixin-translation-reasoning-effort"
-                    name="weixin-translation-reasoning-effort"
-                    disabled
-                  >
-                    <option value="">跟随模型默认</option>
-                  </select>
-                </label>
-              </div>
-              <p id="weixin-translation-message" class="message" aria-live="polite"></p>
-            </section>
-
-            <section id="codex-session-settings" class="settings-section" aria-labelledby="codex-session-settings-title">
-              <div class="settings-section-heading">
-                <h3 id="codex-session-settings-title">Codex 会话</h3>
-                <p>设置页面展示与之后新建会话的默认配置。</p>
-              </div>
-              <label class="settings-field" for="codex-default-permission">
-                <span>
-                  <strong>默认权限</strong>
-                  <small>只影响后续新建的 Session，已有会话保持原权限。</small>
-                </span>
-                <select id="codex-default-permission" name="codex-default-permission">
-                  <option value="full-access">Full access</option>
-                  <option value="auto-review">Approve for me</option>
-                  <option value="ask">Ask for approval</option>
-                  <option value="read-only">Read Only</option>
-                </select>
-              </label>
-              <label class="settings-field" for="codex-default-model">
-                <span>
-                  <strong>默认模型</strong>
-                  <small>模型列表由当前节点的 Codex 提供；这里选择的模型和等级会作为本节点后续新建 Session 的默认值。</small>
-                </span>
-                <select id="codex-default-model" name="codex-default-model" disabled>
-                  <option value="">跟随 Codex 默认</option>
-                </select>
-              </label>
-              <label class="settings-field" for="codex-default-reasoning-effort">
-                <span>
-                  <strong>默认等级</strong>
-                  <small>工作区配置可能覆盖默认值；Ultra 会自动拆分并行任务。</small>
-                </span>
-                <select
-                  id="codex-default-reasoning-effort"
-                  name="codex-default-reasoning-effort"
-                  disabled
-                >
-                  <option value="">跟随模型默认</option>
-                </select>
-              </label>
-              <p id="codex-session-settings-message" class="message" aria-live="polite"></p>
             </section>
 
             <section id="style-settings" class="settings-section" aria-labelledby="style-settings-title">
@@ -260,10 +192,156 @@
                 </div>
               </div>
             </section>
+            </section>
+
+            <section class="settings-layer" aria-labelledby="ai-runtime-settings-title">
+              <div class="settings-layer-heading">
+                <p class="section-kicker">AI Runtime</p>
+                <h3 id="ai-runtime-settings-title">Codex 运行时配置</h3>
+                <p>设置后续 AI 会话与微信文本优化任务使用的 Codex 参数。</p>
+              </div>
+
+              <section id="codex-session-settings" class="settings-section" aria-labelledby="codex-session-settings-title">
+                <div class="settings-section-heading">
+                  <h3 id="codex-session-settings-title">Codex 会话默认项</h3>
+                  <p>只影响之后新建会话，已有会话保持原有配置。</p>
+                </div>
+                <label class="settings-field" for="codex-default-permission">
+                  <span>
+                    <strong>默认权限</strong>
+                    <small>只影响后续新建的 Session，已有会话保持原权限。</small>
+                  </span>
+                  <select id="codex-default-permission" name="codex-default-permission">
+                    <option value="full-access">Full access</option>
+                    <option value="auto-review">Approve for me</option>
+                    <option value="ask">Ask for approval</option>
+                    <option value="read-only">Read Only</option>
+                  </select>
+                </label>
+                <label class="settings-field" for="codex-default-model">
+                  <span>
+                    <strong>默认模型</strong>
+                    <small>模型列表由当前节点的 Codex 提供；这里选择的模型和等级会作为本节点后续新建 Session 的默认值。</small>
+                  </span>
+                  <select id="codex-default-model" name="codex-default-model" disabled>
+                    <option value="">跟随 Codex 默认</option>
+                  </select>
+                </label>
+                <label class="settings-field" for="codex-default-reasoning-effort">
+                  <span>
+                    <strong>默认推理等级</strong>
+                    <small>工作区配置可能覆盖默认值；Ultra 会自动拆分并行任务。</small>
+                  </span>
+                  <select
+                    id="codex-default-reasoning-effort"
+                    name="codex-default-reasoning-effort"
+                    disabled
+                  >
+                    <option value="">跟随模型默认</option>
+                  </select>
+                </label>
+                <p id="codex-session-settings-message" class="message" aria-live="polite"></p>
+              </section>
+
+              <section id="weixin-settings" class="settings-section" aria-labelledby="weixin-settings-title">
+                <div class="settings-section-heading">
+                  <h3 id="weixin-settings-title">微信任务文本优化</h3>
+                  <p>仅作用于微信 ClawBot 的普通文本任务，决定是否调用 Codex 进行润色与翻译。</p>
+                </div>
+                <div class="settings-subsection">
+                  <h4 id="weixin-processing-mode-title">正文处理方式</h4>
+                  <fieldset
+                    class="settings-choice-list"
+                    id="weixin-processing-mode"
+                    aria-labelledby="weixin-processing-mode-title"
+                    disabled
+                  >
+                    <legend class="visually-hidden">正文处理方式</legend>
+                    <label class="settings-choice">
+                      <span>
+                        <strong>直接执行</strong>
+                        <small>正文直接提交到指定 Session，不调用文本优化。</small>
+                      </span>
+                      <input type="radio" name="weixin-processing-mode" value="direct">
+                    </label>
+                    <label class="settings-choice">
+                      <span>
+                        <strong>自动润色后执行</strong>
+                        <small>先使用 Codex 润色和翻译，再自动提交优化后的中文正文。</small>
+                      </span>
+                      <input type="radio" name="weixin-processing-mode" value="auto">
+                    </label>
+                    <label class="settings-choice">
+                      <span>
+                        <strong>自动润色后确认执行</strong>
+                        <small>优化完成后，使用 <code>text</code> 指令确认或复述正文再执行。</small>
+                      </span>
+                      <input type="radio" name="weixin-processing-mode" value="confirm">
+                    </label>
+                  </fieldset>
+                </div>
+                <div class="settings-subsection">
+                  <h4 id="weixin-translation-model-title">文本优化运行参数</h4>
+                  <label
+                    id="weixin-translation-model-field"
+                    class="settings-field"
+                    for="weixin-translation-model"
+                  >
+                    <span>
+                      <strong>文本优化模型</strong>
+                      <small>只影响之后新提交的文本优化任务，已提交任务继续使用原配置。</small>
+                    </span>
+                    <select id="weixin-translation-model" name="weixin-translation-model" disabled>
+                      <option value="">跟随 Codex 默认</option>
+                    </select>
+                  </label>
+                  <label
+                    id="weixin-translation-reasoning-effort-field"
+                    class="settings-field"
+                    for="weixin-translation-reasoning-effort"
+                  >
+                    <span>
+                      <strong>文本优化推理等级</strong>
+                      <small>选择文本优化模型后可指定推理等级；留空时使用该模型默认等级。</small>
+                    </span>
+                    <select
+                      id="weixin-translation-reasoning-effort"
+                      name="weixin-translation-reasoning-effort"
+                      disabled
+                    >
+                      <option value="">跟随模型默认</option>
+                    </select>
+                  </label>
+                </div>
+                <p id="weixin-translation-message" class="message" aria-live="polite"></p>
+              </section>
+            </section>
+
+            <section class="settings-layer" aria-labelledby="third-party-settings-title">
+              <div class="settings-layer-heading">
+                <p class="section-kicker">第三方服务</p>
+                <h3 id="third-party-settings-title">OpenClaw 接入</h3>
+                <p>管理 Chub 使用的外部消息通道；服务运行与恢复仍在首页工作站环境查看。</p>
+              </div>
+
+              <section id="openclaw-weixin-settings" class="settings-section" aria-label="微信 ClawBot">
+                <div class="settings-field settings-integration-row">
+                  <span>
+                    <span class="settings-integration-title">
+                      <strong>微信 ClawBot</strong>
+                      <span id="settings-openclaw-weixin-badge" class="badge badge-muted">正在检查</span>
+                    </span>
+                    <small id="settings-openclaw-weixin-detail">正在读取 OpenClaw 与微信消息通道状态。</small>
+                  </span>
+                  <button id="settings-openclaw-bind-weixin" class="button-secondary" type="button" hidden disabled>绑定微信</button>
+                </div>
+                <p id="settings-openclaw-weixin-message" class="message" aria-live="polite"></p>
+              </section>
+            </section>
           </div>
         </div>
       </section>
     </main>
-    <footer>界面与会话偏好保存在当前浏览器；节点功能设置由 Chub 安全保存。</footer>
+    <footer>界面与 AI 会话偏好保存在当前浏览器；第三方服务配置由 Chub 安全保存。</footer>
   </body>
 </html>

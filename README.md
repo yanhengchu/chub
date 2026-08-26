@@ -2,7 +2,7 @@
 
 ## 项目介绍
 
-Chub 是面向个人设备、本地优先的轻量 AI 工作站控制面。它在统一的安全与状态边界内组织设备能力、AI Session 和任务入口，负责接收请求、选择执行目标、协调运行、恢复任务、确认最终状态并交付结果；Chub 本身不是模型，也不作为通用对话 Agent 执行任务。
+Chub 是面向个人设备、本地优先的轻量 AI 工作站控制面。它按 Chub 核心、AI Runtime 和第三方服务三层组织设备能力、AI Session 和任务入口，在统一的安全与状态边界内协调运行、恢复任务、确认最终状态并交付结果；Chub 本身不是模型，也不作为通用对话 Agent 执行任务。
 
 当前 Codex 是唯一完整接入的 Agent Runtime，负责实际的分析、编码和工具调用；Quick Worker 承载需要跨 Web 重启继续运行的后台 AI 任务；OpenClaw 在微信链路中只承担可信消息网关和通道适配。当前 Runtime 架构、能力矩阵和 AI Runtime 实现规范见 [Chub AI Runtime 架构设计](docs/CHUB_AI_RUNTIME_DESIGN.md)。具体业务能力和使用入口见“当前功能”，不在项目定位中重复列举。
 
@@ -23,27 +23,32 @@ Chub 是面向个人设备、本地优先的轻量 AI 工作站控制面。它�
 ### 当前进程架构
 
 ```text
-Browser / Android Browser / Chub CLI
-  -> Chub、API、WebSocket 和固定本机入口
-       |-> Chub Quick Worker -> 固定 Runtime Runner -> Codex Runner
-       |-> ttyd -> 固定 tmux carrier -> Codex 实时终端
+Browser / chub CLI / 固定自动化
+  -> Chub 核心层：Web、API、配置、安全、维护、自动化与通知
        |-> Chub Debug Chrome -> Debug Chrome 浏览器实例
-       |-> OpenClaw Plugin -> 微信固定调度 API
-       |-> Automation Runner -> Debug Chrome / 固定扩展
-       `-> Notification Service -> 预配置飞书目标
+       `-> Automation Runner -> Debug Chrome / 固定扩展
+
+AI Runtime 层
+  -> Chub Quick Worker -> 固定 Runtime Runner -> Codex Runner
+  `-> ttyd -> 固定 tmux carrier -> Codex 实时终端
+
+微信 ClawBot -> OpenClaw（第三方服务层）
+  -> Chub 插件 -> 固定 Chub 调度入口
+  -> 只读/维护能力调用核心层；AI 任务调用 AI Runtime 公开能力
 ```
 
-Web 是控制面和业务协调入口；Quick Worker 独立负责需要跨 Web 重启继续运行的后台 AI 任务；Codex、OpenClaw、Chrome、飞书和操作系统服务都通过固定 Adapter、Manager 或脚本受控访问。进程生命周期、状态所有权和外部边界详见总体架构，不在此重复展开。
+核心层不依赖具体 AI Runtime 或 OpenClaw；AI Runtime 与第三方服务均依赖核心层，第三方只有需要 AI 时才调用 AI Runtime 的公开能力。Web/API 的启动组合只负责注册公开契约，不拥有上层业务或私有状态。进程生命周期、状态所有权和外部边界详见总体架构，不在此重复展开。
 
 ### 仓库子模块索引
 
 | 路径 | 当前职责 | 细节入口 |
 | --- | --- | --- |
-| `app/api/`、`app/web/` | FastAPI 接口、页面、WebSocket 和项目资料展示 | [总体架构](docs/CHUB_ARCHITECTURE_DESIGN.md)、[前端 UI 设计](docs/FRONTEND_UI_DESIGN.md) |
+| `app/application.py`、`app/api/`、`app/web/` | 部署组合、FastAPI 接口、页面、WebSocket 和项目资料展示 | [总体架构](docs/CHUB_ARCHITECTURE_DESIGN.md)、[前端 UI 设计](docs/FRONTEND_UI_DESIGN.md) |
 | `app/ai_session/`、`app/codex/` | 逻辑 AI Session、实时终端和当前 Codex 正式入口 | [Session 状态模型](docs/AI_SESSION_STATE_DESIGN.md)、[AI Runtime 设计](docs/CHUB_AI_RUNTIME_DESIGN.md) |
 | `app/ai_runtime/`、`app/quick_worker*.py` | Runtime 契约、固定 Runner、后台任务、租约、恢复和终态 | [AI Runtime 设计](docs/CHUB_AI_RUNTIME_DESIGN.md)、[Quick Worker 设计](docs/CHUB_QUICK_WORKER_DESIGN.md) |
 | `app/automations/` | Debug Chrome、配置驱动自动化、下载产物和任务状态 | [总体架构](docs/CHUB_ARCHITECTURE_DESIGN.md)、[周报自动化设计](docs/WEEKLY_REPORT_AUTOMATION_DESIGN.md) |
-| `app/notifications/`、`app/requests/`、`app/ai_usage/` | 通知、R1–R9 需求储备、Codex/OpenAI 用量 | [总体架构](docs/CHUB_ARCHITECTURE_DESIGN.md)、[能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md)、[额度设计](docs/CODEX_AI_QUOTA_USAGE_DESIGN.md) |
+| `app/notifications/`、`app/requests/` | 核心层通知与 R1–R9 需求储备 | [总体架构](docs/CHUB_ARCHITECTURE_DESIGN.md)、[能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md) |
+| `app/ai_usage/` | AI Runtime 用量采集与共享快照 | [总体架构](docs/CHUB_ARCHITECTURE_DESIGN.md)、[额度设计](docs/CODEX_AI_QUOTA_USAGE_DESIGN.md) |
 | `app/core/`、`app/tasks/` | 配置、安全、日志、平台检测、白名单维护任务 | [总体架构](docs/CHUB_ARCHITECTURE_DESIGN.md) |
 | `app/services/` | 当前跨领域服务和协调逻辑；不是新的统一领域边界 | [总体架构](docs/CHUB_ARCHITECTURE_DESIGN.md) |
 | `integrations/openclaw/chub/` | Chub OpenClaw 插件源码、构建、部署和协议验收 | [OpenClaw 定制设计](docs/OPENCLAW_CUSTOMIZATION_DESIGN.md)、[插件说明](integrations/openclaw/chub/README.md) |
@@ -142,7 +147,7 @@ Ubuntu Supervisor 的服务定义，不再要求为这两个恢复入口手动�
 `chub system-upgrade-service` 是独立的本机恢复入口，只安装或恢复升级执行器；发现未完成的升级操作时会启动该执行器，不停止无关服务。
 首次安装、移动项目目录或修改 Web/Worker/Chrome/系统升级服务定义后，必须先从本机终端执行 `chub install`；如果已有未完成的升级操作，`chub install` 会安全拒绝，此时先执行 `chub system-upgrade-service` 恢复操作，待最终状态确认后再重新安装服务定义。
 
-当前 `chub` CLI 是仓库内的本机服务管理入口；项目尚未发布 npm/PyPI 或独立发行包。新设备的目标流程、核心 Chub（含自动运行的 Quick Worker）与可选 ClawBot 的职责、npm 发布、版本管理和 GitHub Release 目标见 [Chub CLI 分发、安装与发布设计](docs/CHUB_CLI_DISTRIBUTION_DESIGN.md)。服务直接依赖当前工作区和 `.venv`；移动目录或变更服务定义后需要重新安装。Web 配置变更使用
+当前 `chub` CLI 是仓库内的本机服务管理入口；项目尚未发布 npm/PyPI 或独立发行包。新设备的目标流程、Chub 主发行包（含自动运行的 Quick Worker）与可选 ClawBot 的职责、npm 发布、版本管理和 GitHub Release 目标见 [Chub CLI 分发、安装与发布设计](docs/CHUB_CLI_DISTRIBUTION_DESIGN.md)。这里的“主发行包”是安装范围，不等同于三层架构中的 Chub 核心层。服务直接依赖当前工作区和 `.venv`；移动目录或变更服务定义后需要重新安装。Web 配置变更使用
 `chub restart` 生效；Worker 代码升级使用 `chub worker-reload`，Worker 失败恢复使用首页入口或 `chub worker-recover`，只有服务定义变化时才需要重新执行安装。
 
 ## 日常使用
@@ -187,7 +192,7 @@ Session、Activity、usage 投影、槽位、标题和入口语义见[Chub AI Se
 
 OpenClaw 提供可信入口和通道上下文，Chub 负责业务路由、安全校验和最终状态；整条链路不调用 OpenClaw Agent，也不把消息拦截或任务提交等同于最终成功。
 
-首页“工作站环境”卡片中的 OpenClaw 分区用于查看 Gateway、微信通道和 Tailscale 入口，并提供受控的启停、重启与恢复及微信绑定操作。重启与恢复发现固定插件或补丁基线不一致时会先同步，再重启 Gateway 和消息通道；底层 API action 仍使用 `restart`，微信端使用 `restart clawbot`。绑定成功只表示通道登录完成，不代表发送者配对或 Owner 权限已经配置。
+首页“工作站环境”卡片中的 OpenClaw 分区用于查看 Gateway 和微信通道状态，并提供受控的启动、重启与恢复操作；微信绑定统一在设置页“第三方服务 / OpenClaw · 微信 ClawBot”中完成。重启与恢复发现固定插件或补丁基线不一致时会先同步，再重启 Gateway 和消息通道；底层 API action 仍使用 `restart`，微信端使用 `restart clawbot`。绑定成功只表示通道登录完成，不代表发送者配对或 Owner 权限已经配置。
 
 微信 Chub 固定维护指令为 `restart` / `restart web`（重启 Web）、`restart worker`（重启 Worker）、`restart clawbot`（重启 ClawBot）和 `upgrade`（升级系统）；均按固定目标执行，不接受附加路径或命令。四项操作的最终结果分别以新实例、Worker、Gateway/消息通道或升级运行态确认结果为准；升级完成结果通过独立通知返回。
 
@@ -265,7 +270,7 @@ Runner 不会自行启动或停止 Debug Chrome。浏览器 Profile 未初始化
 
 共享需求文件由 Git 工作流同步，不由后台服务自动合并。多台设备同时修改可能产生 Git 冲突；发现冲突、非法 JSON 或未完成合并时，需求读写必须失败关闭，不覆盖其他设备内容。共享需求不得保存 Token、Cookie、账号凭证、本机秘密或其他不适合进入 Git 历史的内容。
 
-首页“工作站环境”提供受控的“系统升级与恢复”状态行。它统一执行已准备的版本切换或当前版本的运行态恢复；确认后冻结受影响的 Chub AI Runtime 写入，并由独立于 Chub 的平台服务执行器负责停止 Chub、Chub Quick Worker 和 Ubuntu Chub Debug Chrome，终止在途快速任务并清理 Chub 自有 Session 关联、Hook 与固定 Worker 运行态。Ubuntu 使用独立的 systemd user oneshot service，macOS 使用独立的 LaunchAgent；Chub 只创建持久化操作并启动执行器，不直接持有升级进程。随后按固定边界处理当前工作区代码对应的 Python 依赖、重建 Chub/Chub Quick Worker/Chub Debug Chrome 服务定义、恢复 Quick Worker 协议，并同步 OpenClaw 插件、适配器和补丁基线。每个组件结果同时写入受限状态文件和升级执行器日志，日志只记录 operation ID、固定组件名和状态。Debug Chrome 浏览器实例不属于本流程的启动目标，结果明确记录为“未纳入升级”；它的未启动状态不构成升级失败。Codex 原生 Session、配置、日志、项目资料和业务数据不归档、不删除；新实例会重新发现仍存在的原生 Session。准备中的升级方案无法读取或校验时，入口降级为当前版本运行态恢复，并明确不执行代码版本升级。Chub、Python 依赖、服务定义和 Chub Quick Worker 是核心组件，失败会保留失败态并提供恢复重试；Chub Debug Chrome 和 OpenClaw Gateway 是独立组件，失败记录为降级但不阻断核心服务恢复。只有新 Chub/Chub Quick Worker、Session 映射和各组件结果均已记录后，操作才标记完成。该入口不执行 Git 同步、不接受客户端路径或命令，也不提供任意数据清理。
+首页“工作站环境”提供受控的“系统升级与恢复”状态行。它统一执行已准备的版本切换或当前版本的运行态恢复；确认后冻结受影响的 Chub AI Runtime 写入，并由独立于 Chub 的平台服务执行器负责停止 Chub、Chub Quick Worker 和 Ubuntu Chub Debug Chrome，终止在途快速任务并清理 Chub 自有 Session 关联、Hook 与固定 Worker 运行态。Ubuntu 使用独立的 systemd user oneshot service，macOS 使用独立的 LaunchAgent；Chub 只创建持久化操作并启动执行器，不直接持有升级进程。随后按固定边界处理当前工作区代码对应的 Python 依赖、重建 Chub/Chub Quick Worker/Chub Debug Chrome 服务定义并恢复 Quick Worker 协议。第三方 OpenClaw 的插件、适配器和补丁恢复通过可选的固定维护契约处理；当前直接同步实现是待收敛的过渡边界，失败记录为集成降级而不阻断核心层和 AI Runtime 恢复。每个组件结果同时写入受限状态文件和升级执行器日志，日志只记录 operation ID、固定组件名和状态。Debug Chrome 浏览器实例不属于本流程的启动目标，结果明确记录为“未纳入升级”；它的未启动状态不构成升级失败。Codex 原生 Session、配置、日志、项目资料和业务数据不归档、不删除；新实例会重新发现仍存在的原生 Session。准备中的升级方案无法读取或校验时，入口降级为当前版本运行态恢复，并明确不执行代码版本升级。Chub、Python 依赖、服务定义和 Chub Quick Worker 是核心组件，失败会保留失败态并提供恢复重试；Chub Debug Chrome 和 OpenClaw Gateway 是独立组件，失败记录为降级但不阻断核心服务恢复。只有新 Chub/Chub Quick Worker、Session 映射和各组件结果均已记录后，操作才标记完成。该入口不执行 Git 同步、不接受客户端路径或命令，也不提供任意数据清理。
 
 最终确认 Quick Worker 健康后，若存在更早的独立 Worker 重启终态记录，系统会将其从当前状态投影中清理；历史操作日志仍保留，失败中的新操作不会被升级成功结果掩盖。
 
@@ -334,9 +339,9 @@ CHUB_BROWSER_TESTS=1 .venv/bin/python -m pytest \
 | 文档 | 唯一职责 |
 | --- | --- |
 | [Chub 项目说明](README.md) | 项目概览、安装、日常入口、安全和文档导航 |
-| [Chub 总体架构设计](docs/CHUB_ARCHITECTURE_DESIGN.md) | 当前进程、领域、状态所有权和跨模块约束 |
+| [Chub 总体架构设计](docs/CHUB_ARCHITECTURE_DESIGN.md) | 核心、AI Runtime 与第三方服务三层架构、状态所有权和跨模块约束 |
 | [Chub AI Runtime 架构设计](docs/CHUB_AI_RUNTIME_DESIGN.md) | AI Runtime 架构、Session Manager、Worker 职责和 Runtime 实现规范 |
-| [Chub CLI 分发、安装与发布设计](docs/CHUB_CLI_DISTRIBUTION_DESIGN.md) | 新设备安装、核心 Chub 与可选 ClawBot 职责、npm 发布、版本管理和 GitHub Release |
+| [Chub CLI 分发、安装与发布设计](docs/CHUB_CLI_DISTRIBUTION_DESIGN.md) | 新设备安装、Chub 主发行包与可选 ClawBot 职责、npm 发布、版本管理和 GitHub Release |
 | [Chub AI Session 状态模型设计](docs/AI_SESSION_STATE_DESIGN.md) | Session、Activity、usage 投影、入口、操作、槽位和单 writer 语义 |
 | [Chub Quick Worker 独立服务设计](docs/CHUB_QUICK_WORKER_DESIGN.md) | Quick Worker 独立服务、非实时任务、恢复、通知终态和重启协调 |
 | [Codex AI 额度与用量采集设计](docs/CODEX_AI_QUOTA_USAGE_DESIGN.md) | Codex/OpenAI 用量来源、统一接口、缓存和展示口径 |

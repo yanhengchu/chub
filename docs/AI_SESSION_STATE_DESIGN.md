@@ -17,7 +17,7 @@ Chub Session 是 Chub 管理的一条逻辑记录，可以关联一个 Runtime �
 
 同一 `(runtime_id, native_session_id)` 只能绑定一条 Chub Session。找不到映射时，不得根据标题、工作目录或页面位置猜测归属。
 
-普通 Session 的 native ID 不允许被不同结果替换；内部翻译 Session 仍复用同一逻辑 Session，但 Worker 可以为新的只读翻译执行返回新的 native ID。只有确认旧 native Session 没有活动 writer 且新 ID 未被其他 Chub Session 占用时，才更新当前绑定。轮换只替换 Chub 当前映射，不主动删除或归档旧 native Session；旧 ID 不再作为该逻辑 Session 的当前入口，未来如需清理必须另行定义并复检原生数据边界。
+普通 Session 的 native ID 不允许被不同结果替换；内部翻译 Session 仍复用同一逻辑 Session，但 Worker 可以为新的只读翻译执行返回新的 native ID。只有确认旧 native Session 没有活动 writer 且新 ID 未被其他 Chub Session 占用时，才更新当前绑定。轮换只替换 Chub 当前映射，不主动删除或归档旧 native Session；唯一例外是 4.1 定义的、历史误导入记录的固定启动清理。旧 ID 不再作为该逻辑 Session 的当前入口，未来如需扩展清理范围必须另行定义并复检原生数据边界。
 
 每条 Session 创建时固定一种入口类型：
 
@@ -183,6 +183,7 @@ Chub Session 是 Chub 管理的一条逻辑记录，可以关联一个 Runtime �
 - `weixin_session_slot` 是 `S1`–`S9` 的后端分配结果；列表位置和标题不能生成槽位。
 - 首页统一按创建时间倒序展示 Session，并以类型标记区分实时终端和快速交互。
 - 内部翻译 Session 可以使用固定的 `quick` 记录，但不进入用户首页列表或微信槽位。
+- Web 启动完成 Quick Worker 恢复后，会一次性清理历史上被误导入为普通 `runtime-session` 的翻译记录。仅当记录同时命中固定旧翻译工作目录、固定翻译提示词和历史自动发现标记，且 Worker、原生 writer 均确认空闲时，才先归档原生 Session、再移除 Chub 记录；状态未知、仍在使用或归档无法确认时保持原样，留待下次启动复查。该维护动作不会按标题模糊匹配，也不清理当前内部翻译 Session。
 
 ## 5. 状态来源和最小转换
 

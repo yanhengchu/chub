@@ -8,7 +8,7 @@ Chub 仓库内的插件、API 和消息路由索引统一见[Chub 集成能力�
 
 ## 1. 插件定位
 
-Chub 插件通过固定 loopback 地址连接同机 Chub，承担 OpenClaw 与 Chub 之间的通道适配。微信 Chub 模式下，插件只负责拦截符合条件的 ClawBot 私聊、提取可信通道信息、调用一个固定的 Chub 消息调度接口，并把 Chub 的决定原路交付给微信。
+Chub 插件属于第三方服务层，通过固定 loopback 地址连接同机 Chub，承担 OpenClaw 与 Chub 之间的通道适配。微信 Chub 模式下，插件只负责拦截符合条件的 ClawBot 私聊、提取可信通道信息、调用一个固定的 Chub 消息调度接口，并把 Chub 的决定原路交付给微信。它只能使用 Chub 核心层或 AI Runtime 层公开的固定能力，不读取或修改 Session、Worker、Runtime 的私有状态。
 
 微信消息的业务含义统一由 Chub 判断。插件不识别业务指令，不选择业务接口，不调用 OpenClaw Agent 或 LLM，也不允许消息正文指定 URL、动作、Session、任务编号、命令或文件路径。
 

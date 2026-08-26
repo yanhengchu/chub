@@ -647,6 +647,43 @@ async def test_conversation_stop_requires_confirmation_in_managed_chrome(
     assert "POST /api/codex/sessions/session-1/stop" in api.requested_paths
 
 
+async def test_conversation_keeps_draft_editable_while_session_is_working(
+    conversation_browser_server: str,
+) -> None:
+    api = ConversationApi()
+    session = api._find_session("session-1")
+    assert session is not None
+    session.update(
+        {
+            "status": "running",
+            "activity": "working",
+            "quick_interaction_running": True,
+            "usage": {"owner": "quick_worker", "phase": "running"},
+        }
+    )
+    browser_session = session_factory()
+    async with browser_session(ensure_page=False) as chrome:
+        context, page, page_errors = await _open_conversation(
+            chrome.browser,
+            conversation_browser_server,
+            api,
+            theme="standard",
+            viewport=(1280, 900),
+        )
+        try:
+            await expect(page.locator("#conversation-submit")).to_be_disabled()
+            await expect(page.locator("#conversation-prompt")).to_be_enabled()
+            await page.locator("#conversation-prompt").fill("Prepare the next task")
+            await expect(page.locator("#conversation-prompt")).to_have_value(
+                "Prepare the next task"
+            )
+            await expect(page.locator("#conversation-submit")).to_be_disabled()
+        finally:
+            await context.close()
+
+    assert page_errors == []
+
+
 async def test_old_session_recovery_failure_does_not_override_switched_session(
     conversation_browser_server: str,
 ) -> None:

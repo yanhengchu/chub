@@ -22,7 +22,7 @@ from app.ai_runtime import (
     RuntimeSessionDiscoveryResult,
 )
 from app.codex.models import SessionUsage, WorkspaceInfo
-from app.core.config import Settings
+from app.core.config import PROJECT_ROOT, Settings
 from app.core.response import ApiError
 
 
@@ -387,6 +387,112 @@ def test_ai_session_manager_does_not_discover_internal_translation_session(
 
     assert [item.id for item in sessions] == [translation.id]
     assert manager.store.get(translation.id).native_session_id is None
+
+
+def test_ai_session_manager_does_not_discover_legacy_translation_session(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    manager._require_available = MagicMock()
+    legacy_workspace = PROJECT_ROOT / "data/runtime/codex/translation-workspace"
+    native = RuntimeNativeSession(
+        runtime_id="codex",
+        native_session_id="legacy-translation-native",
+        cwd=legacy_workspace,
+        title="You are a text editor and translator.",
+        active_permission_mode="read-only",
+        created_at=session(settings.codex_pty.workspace).created_at,
+        updated_at=session(settings.codex_pty.workspace).updated_at,
+    )
+    manager.runtime_adapter.discover_sessions = MagicMock(
+        return_value=RuntimeSessionDiscoveryResult(
+            sessions=(native,), archive_states={"legacy-translation-native": False}
+        )
+    )
+
+    assert manager.list_sessions() == []
+
+
+def test_ai_session_manager_archives_idle_legacy_translation_session(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    manager._require_available = MagicMock()
+    legacy = session(
+        PROJECT_ROOT / "data/runtime/codex/translation-workspace",
+        native_session_id="legacy-translation-native",
+    )
+    legacy.discovered = True
+    legacy.workspace_id = "runtime-session"
+    legacy.workspace_name = "translation-workspace"
+    legacy.title = "You are a text editor and translator.\n\nThe JSON"
+    manager.store.save(legacy)
+    manager.resolve_session_usage = MagicMock(
+        return_value=SessionUsage(
+            native_session_present=True,
+            owner="none",
+            phase="idle",
+        )
+    )
+    manager.runtime_adapter.run_native_action = MagicMock()
+    manager.stop_session = MagicMock()
+    quick_interactions = MagicMock()
+    quick_interactions.recovery_ready = True
+    quick_interactions.is_running.return_value = False
+
+    archived = manager.archive_legacy_translation_sessions(quick_interactions)
+
+    assert archived == 1
+    manager.runtime_adapter.run_native_action.assert_called_once_with(
+        "archive", "legacy-translation-native"
+    )
+    assert manager.store.get(legacy.id) is None
+
+
+def test_ai_session_manager_keeps_legacy_translation_session_when_usage_unknown(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    manager._require_available = MagicMock()
+    legacy = session(
+        PROJECT_ROOT / "data/runtime/codex/translation-workspace",
+        native_session_id="legacy-translation-native",
+    )
+    legacy.discovered = True
+    legacy.workspace_id = "runtime-session"
+    legacy.workspace_name = "translation-workspace"
+    legacy.title = "You are a text editor and translator.\n\nThe JSON"
+    manager.store.save(legacy)
+    manager.resolve_session_usage = MagicMock(
+        return_value=SessionUsage(
+            native_session_present=True,
+            owner="unknown",
+            phase="unknown",
+        )
+    )
+    manager.runtime_adapter.run_native_action = MagicMock()
+    quick_interactions = MagicMock()
+    quick_interactions.recovery_ready = True
+    quick_interactions.is_running.return_value = False
+
+    archived = manager.archive_legacy_translation_sessions(quick_interactions)
+
+    assert archived == 0
+    manager.runtime_adapter.run_native_action.assert_not_called()
+    assert manager.store.get(legacy.id) is not None
+
+
+def test_ai_session_manager_skips_legacy_cleanup_when_runtime_is_unavailable(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    manager._require_available = MagicMock(
+        side_effect=ApiError(503, "codex_pty_unavailable", "Codex 暂不可用。")
+    )
+    quick_interactions = MagicMock()
+    quick_interactions.recovery_ready = True
+
+    assert manager.archive_legacy_translation_sessions(quick_interactions) == 0
 
 
 def test_ai_session_manager_cleans_stale_translation_discovery_before_binding(

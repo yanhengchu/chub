@@ -871,6 +871,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         worker_maintenance_recovery_task = None
         system_upgrade_recovery_task = None
         await asyncio.to_thread(quick_interactions.start_worker_reconciliation)
+        if quick_interactions.recovery_ready and not system_upgrade.writes_blocked():
+            await asyncio.to_thread(
+                codex_pty_manager.archive_legacy_translation_sessions,
+                quick_interactions,
+            )
         weixin_chub_mode.start_status_cache()
         upgrade_operation = system_upgrade.operation()
         if (

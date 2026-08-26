@@ -7,6 +7,8 @@
 
 ## 0. 维护基线
 
+按[Chub 总体架构](CHUB_ARCHITECTURE_DESIGN.md)，OpenClaw/微信 ClawBot 属于第三方服务层。它依赖 Chub 核心层的固定入口、身份边界和维护能力；需要 AI 时只调用 AI Runtime 层公开的任务用例。它不拥有、读取或修改核心层、AI Session Manager、Quick Worker 或 Runtime Adapter 的私有状态。核心层和 AI Runtime 均不得反向依赖 OpenClaw 的具体实现。
+
 Chub 对 OpenClaw 的定制只保留以下内容：
 
 1. 仓库内的通用 Chub OpenClaw 插件，负责可信 Hook 适配和固定 dispatch 路由。
@@ -50,8 +52,8 @@ Chub 对 OpenClaw 的定制只保留以下内容：
 | --- | --- | --- |
 | OpenClaw Gateway/微信适配器 | 账号、Owner、微信上下文、消息收发、可信语音来源和 Context Token | Chub 指令解释、Session 选择、任务终态 |
 | Chub OpenClaw 插件 | 可信 Hook 上下文、固定 dispatch 请求、`pass`/`reply`/`handled` 交付 | 业务指令、Session/任务路由、任意命令或正文修复 |
-| Chub | 身份校验、业务路由、Session/Request 选择、幂等、任务和通知关联 | 保存微信 Token、调用 OpenClaw Agent |
-| Quick Worker/Codex | 任务执行、租约、恢复和执行终态 | 重新解释微信身份或选择收件人 |
+| Chub 核心入口 | 身份校验、固定业务路由、需求储备和维护能力 | 保存微信 Token、调用 OpenClaw Agent、拥有 AI Session 或任务终态 |
+| AI Runtime（Quick Worker/Codex） | Session 选择、任务执行、租约、恢复和执行终态 | 重新解释微信身份或选择收件人 |
 | OpenClaw 核心 | 上游标准消息、Hook 和指令解析能力 | Chub 定制源码；不得为本项目修改核心 |
 
 微信消息处理顺序是：

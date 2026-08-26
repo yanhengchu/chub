@@ -10,6 +10,8 @@
 
 本文只维护两部分设计：第一部分说明 AI Runtime 架构和当前 Codex 落地，第二部分说明如何按统一契约实现一个 AI Runtime。第二部分是规范性实现要求，不是项目计划；历史阶段的实施过程不覆盖当前规则，其他专项文档的领域契约也不在本文复制。
 
+按[Chub 总体架构](CHUB_ARCHITECTURE_DESIGN.md)，本文覆盖 AI Runtime 层。该层依赖 Chub 核心层的公开配置、安全、日志、通知和维护能力；第三方服务只有需要 AI 时才调用本文定义的公开任务用例。核心层、OpenClaw 和其他第三方服务不得直接读写 Runtime、Session Manager 或 Worker 的私有状态。
+
 AI Agent 处理 Runtime、Session 或 Quick Worker 需求时，先执行以下判断：
 
 1. **Chub 是控制面，不是模型或通用 Agent。** Chub 拥有入口认证、权限、逻辑 AI Session、任务状态、通知和用户可见最终结果；Runtime 负责实际分析、编码和工具执行。
@@ -39,12 +41,12 @@ AI Agent 处理 Runtime、Session 或 Quick Worker 需求时，先执行以下�
 ### 2. 当前架构与状态所有权
 
 ```text
-Browser / CLI / OpenClaw / 微信
+Chub 核心入口 / 第三方服务已完成认证与固定路由
              |
              v
-       Chub Web / API / 业务服务
-       - 认证、权限和固定产品规则
-       - 逻辑 Session、通知和用户可见终态
+       AI Runtime 公开用例
+       - 接收已校验请求和固定产品规则
+       - 逻辑 Session、任务与用户可见终态
           /                         \
          v                           v
  AI Session Manager             Quick Worker
@@ -129,7 +131,7 @@ AI Session 的 Session/Activity 枚举、交互入口、类型、槽位、页面
 
 Quick Worker 是独立本机服务，当前生产使用固定 `codex` Runner。Worker 拥有任务幂等、租约、进程组、超时、取消、恢复、通知关联和任务终态；Runtime Runner 只负责受控启动、事件/结果/错误读取及资源能力，不拥有任务终态或通知路由。
 
-- Web 负责入口认证、业务校验和任务提交；Worker 负责后台任务执行和 Session 租约，Web 不回退到内置 Runner。
+- 核心层入口负责认证、业务校验和调用 AI Runtime 的提交用例；Worker 负责后台任务执行和 Session 租约，入口不回退到内置 Runner。
 - Worker 健康、协议、任务/租约和恢复未完成时，快速交互 Session 写入失败关闭；实时终端使用独立的 Codex PTY/tmux 链路，不因 Quick Worker 恢复状态暂停。无关只读能力和独立入口按各自规则继续工作。
 - Web、Worker、ClawBot 的普通重启彼此独立；系统升级与恢复只锁定直接受影响的 Runtime 写入和服务，并以新实例健康、协议匹配、Session 映射和操作终态确认成功。
 

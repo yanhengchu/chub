@@ -313,7 +313,11 @@ def system_upgrade_restart_readiness(
             )
         )
         if not _safe_service_definition(systemd_root / "chub-system-upgrade.service"):
-            return "系统升级独立服务尚未安装或不安全，请先执行 chub system-upgrade-service。"
+            return (
+                "升级功能未就绪：独立升级执行器尚未安装或未通过安全校验；"
+                "当前 Chub 与 Quick Worker 不受影响。"
+                "请先在本机终端执行 chub system-upgrade-service。"
+            )
     elif detected_platform == "macos":
         if shutil.which("launchctl") is None:
             return "当前系统缺少 launchctl，不能执行服务切换。"
@@ -326,7 +330,11 @@ def system_upgrade_restart_readiness(
         if not _safe_service_definition(
             launch_agents / "com.chub.system-upgrade.plist"
         ):
-            return "系统升级独立服务尚未安装或不安全，请先执行 chub system-upgrade-service。"
+            return (
+                "升级功能未就绪：独立升级执行器尚未安装或未通过安全校验；"
+                "当前 Chub 与 Quick Worker 不受影响。"
+                "请先在本机终端执行 chub system-upgrade-service。"
+            )
     else:
         return "当前平台不支持从页面执行系统升级。"
     return None

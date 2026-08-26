@@ -160,7 +160,7 @@ def test_restart_environment_repairs_missing_service_definitions(
             is None
         )
         (systemd_root / "chub-system-upgrade.service").unlink()
-        assert "独立服务" in system_upgrade_restart_readiness(
+        assert "升级功能未就绪" in system_upgrade_restart_readiness(
             project_root,
             "ubuntu",
             environment=environment,
@@ -1135,6 +1135,7 @@ async def test_destructive_upgrade_failure_can_continue_with_same_operation(
         session_count=0,
     ).can_start is True
     app.state.run_system_upgrade = lambda _operation_id: None
+    app.state.system_upgrade_restart_readiness = lambda: None
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(

@@ -130,6 +130,9 @@ renderSystemUpgrade({ state: "available", message: "ready",
   operation: { operation_id: "old", status: "succeeded" } });
 const recoveryOnlyButton = elementCache.systemUpgradeStart.textContent;
 const upgradeHistorical = reloads;
+renderSystemUpgrade({ state: "blocked", message: "升级功能未就绪：独立升级执行器尚未安装；当前 Chub 与 Quick Worker 不受影响。",
+  can_start: false });
+const blockedUpgradeDetail = elementCache.systemUpgradeDetail.textContent;
 systemUpgradeReloadOperationId = "current";
 renderSystemUpgrade({ state: "available", message: "ready",
   operation: { operation_id: "other", status: "succeeded" } });
@@ -161,6 +164,7 @@ process.stdout.write(JSON.stringify({
   activeUpgradeControls,
   unknownTaskDetail,
   recoveryOnlyButton,
+  blockedUpgradeDetail,
   upgradeHistorical,
   upgradeNonMatching,
   upgradeSucceeded,
@@ -195,6 +199,7 @@ process.stdout.write(JSON.stringify({
         },
         "unknownTaskDetail": "任务数量暂无法确认；恢复流程会按固定边界清理。",
         "recoveryOnlyButton": "运行态恢复",
+        "blockedUpgradeDetail": "状态：升级功能未就绪。升级功能未就绪：独立升级执行器尚未安装；当前 Chub 与 Quick Worker 不受影响。",
         "upgradeHistorical": 1,
         "upgradeNonMatching": 1,
         "upgradeSucceeded": 2,

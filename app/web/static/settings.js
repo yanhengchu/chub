@@ -6,6 +6,7 @@ const CODEX_DEFAULT_MODEL_KEY = "hub.codexDefaultModel.v1";
 const CODEX_DEFAULT_REASONING_EFFORT_KEY = "hub.codexDefaultReasoningEffort.v1";
 const CODEX_MODEL_PREFERENCE_CACHE_KEY = "hub.codexModelPreferenceCache";
 const WEIXIN_TRANSLATION_SETTINGS_CACHE_KEY = "hub.weixinTranslationSettingsCache";
+const OPENCLAW_WEIXIN_SETTINGS_CACHE_KEY = "hub.openclawWeixinSettingsCache.v1";
 const CYBER_RAIN_SPEED_KEY = "hub.cyberRainSpeed.v1";
 const CYBER_RAIN_BRIGHTNESS_KEY = "hub.cyberRainBrightness.v1";
 const CYBER_RAIN_DENSITY_KEY = "hub.cyberRainDensity.v1";
@@ -40,6 +41,37 @@ const weixinTranslationReasoningEffortField = document.querySelector(
 const weixinTranslationMessage = document.querySelector(
   "#weixin-translation-message",
 );
+const settingsOpenClawWeixinBadge = document.querySelector(
+  "#settings-openclaw-weixin-badge",
+);
+const settingsOpenClawWeixinDetail = document.querySelector(
+  "#settings-openclaw-weixin-detail",
+);
+const settingsOpenClawBindWeixin = document.querySelector(
+  "#settings-openclaw-bind-weixin",
+);
+const settingsOpenClawWeixinMessage = document.querySelector(
+  "#settings-openclaw-weixin-message",
+);
+const openclawWeixinDialog = document.querySelector("#openclaw-weixin-dialog");
+const openclawWeixinClose = document.querySelector("#openclaw-weixin-close");
+const openclawWeixinAccountSummary = document.querySelector(
+  "#openclaw-weixin-account-summary",
+);
+const openclawWeixinOwnerSummary = document.querySelector(
+  "#openclaw-weixin-owner-summary",
+);
+const openclawWeixinQrPanel = document.querySelector("#openclaw-weixin-qr-panel");
+const openclawWeixinQr = document.querySelector("#openclaw-weixin-qr");
+const openclawWeixinVerifyForm = document.querySelector(
+  "#openclaw-weixin-verify-form",
+);
+const openclawWeixinVerifyCode = document.querySelector(
+  "#openclaw-weixin-verify-code",
+);
+const openclawWeixinMessage = document.querySelector("#openclaw-weixin-message");
+const openclawWeixinCancel = document.querySelector("#openclaw-weixin-cancel");
+const openclawWeixinStart = document.querySelector("#openclaw-weixin-start");
 const cyberRainSpeed = document.querySelector("#cyber-rain-speed");
 const cyberRainBrightness = document.querySelector("#cyber-rain-brightness");
 const cyberRainDensity = document.querySelector("#cyber-rain-density");
@@ -52,7 +84,7 @@ const cyberStyleDetails = document.querySelector("[data-cyber-style-details]");
 const settingsNavigationLinks = document.querySelectorAll(
   ".settings-navigation-links a",
 );
-const settingsSections = document.querySelectorAll(".settings-content > section[id]");
+const settingsSections = document.querySelectorAll(".settings-section[id]");
 let codexModels = [];
 let codexModelsLoaded = false;
 let weixinTranslationStatus = null;
@@ -60,6 +92,13 @@ let weixinTranslationStatusLive = false;
 let weixinTranslationCacheRestored = false;
 let weixinTranslationPollTimer = null;
 let weixinTranslationRequestVersion = 0;
+let settingsOpenClawStatus = null;
+let settingsOpenClawWeixinState = null;
+let settingsOpenClawWeixinCacheRestored = false;
+let settingsOpenClawWeixinPollTimer = 0;
+let settingsOpenClawWeixinPollFailures = 0;
+let settingsOpenClawWeixinQrObjectUrl = "";
+let settingsOpenClawWeixinQrUpdatedAt = "";
 let settingsScrollFrame = null;
 let settingsNavigationTarget = null;
 
@@ -630,6 +669,339 @@ async function saveWeixinTranslationModelSettings() {
   }
 }
 
+const OPENCLAW_WEIXIN_ACTIVE_STATES = new Set([
+  "starting",
+  "waiting_scan",
+  "needs_verification",
+  "confirming",
+  "cancelling",
+]);
+
+function setOpenClawWeixinMessage(element, text, kind = "") {
+  element.textContent = text;
+  element.className = kind ? `message message-${kind}` : "message";
+}
+
+function setOpenClawWeixinBadge(text, kind = "muted") {
+  settingsOpenClawWeixinBadge.textContent = text;
+  settingsOpenClawWeixinBadge.className = `badge badge-${kind}`;
+}
+
+async function fetchSettingsApi(path, options = {}) {
+  const response = await fetch(path, {
+    ...options,
+    headers: options.headers || settingsHeaders(),
+  });
+  const payload = await response.json();
+  if (!response.ok || payload.success !== true) {
+    throw new Error(payload.error?.message || payload.error?.code || "request_failed");
+  }
+  return payload.data;
+}
+
+function renderOpenClawWeixinContext(status) {
+  openclawWeixinAccountSummary.textContent = status?.channel_message
+    || "当前消息通道状态不可用。";
+  openclawWeixinOwnerSummary.textContent = status?.owner_message
+    || "当前 Owner 授权状态不可用。";
+}
+
+function renderOpenClawWeixinSettings(status, login, { live = true } = {}) {
+  settingsOpenClawStatus = status;
+  settingsOpenClawWeixinState = login;
+  renderOpenClawWeixinContext(status);
+
+  if (!status?.installed) {
+    setOpenClawWeixinBadge("未安装", "muted");
+    settingsOpenClawWeixinDetail.textContent = "OpenClaw Gateway 尚未安装。";
+    settingsOpenClawBindWeixin.hidden = true;
+    return;
+  }
+  if (!status.configured) {
+    setOpenClawWeixinBadge("未初始化", "timeout");
+    settingsOpenClawWeixinDetail.textContent = "OpenClaw Gateway 尚未完成初始化。";
+    settingsOpenClawBindWeixin.hidden = true;
+    return;
+  }
+
+  const active = OPENCLAW_WEIXIN_ACTIVE_STATES.has(login?.state);
+  const activePresentation = {
+    waiting_scan: ["等待扫码", "timeout", login?.message],
+    needs_verification: ["等待验证", "timeout", login?.message],
+    confirming: ["确认中", "muted", login?.message],
+    starting: ["准备中", "muted", login?.message],
+    cancelling: ["取消中", "muted", login?.message],
+  }[login?.state];
+  const channelPresentation = {
+    running: ["微信通道已连接", "success", status.channel_message],
+    degraded: ["微信通道部分异常", "timeout", status.channel_message],
+    stopped: ["微信通道异常", "failed", status.channel_message],
+    not_configured: ["微信通道未配置", "muted", status.channel_message],
+    unavailable: ["微信通道不可检查", "muted", status.channel_message],
+    unknown: ["微信通道状态未知", "failed", status.channel_message],
+  }[status.channel_state];
+  const presentation = activePresentation
+    || channelPresentation
+    || (login?.state === "succeeded"
+      ? ["微信通道已连接", "success", login.message]
+      : ["微信通道状态未知", "failed", "暂时无法确认微信消息通道状态。"]);
+  setOpenClawWeixinBadge(presentation[0], presentation[1]);
+  const detail = presentation[2] || "微信通道状态暂时不可用。";
+  settingsOpenClawWeixinDetail.textContent = live
+    ? detail
+    : `当前展示上次检测结果：${detail}`;
+  settingsOpenClawBindWeixin.hidden = false;
+  settingsOpenClawBindWeixin.disabled = !live || active || !login;
+  settingsOpenClawBindWeixin.textContent = status.channel_state === "running"
+    ? "重新绑定微信"
+    : "绑定微信";
+}
+
+function restoreOpenClawWeixinSettingsCache() {
+  if (settingsOpenClawWeixinCacheRestored) {
+    return;
+  }
+  settingsOpenClawWeixinCacheRestored = true;
+  try {
+    const cached = JSON.parse(
+      sessionStorage.getItem(OPENCLAW_WEIXIN_SETTINGS_CACHE_KEY) || "null",
+    );
+    if (cached?.status && cached?.login) {
+      renderOpenClawWeixinSettings(cached.status, cached.login, { live: false });
+    }
+  } catch (_error) {
+    try {
+      sessionStorage.removeItem(OPENCLAW_WEIXIN_SETTINGS_CACHE_KEY);
+    } catch (_storageError) {
+      // A storage failure must not block the live settings request.
+    }
+  }
+}
+
+function cacheOpenClawWeixinSettings(status, login) {
+  try {
+    sessionStorage.setItem(
+      OPENCLAW_WEIXIN_SETTINGS_CACHE_KEY,
+      JSON.stringify({ status, login }),
+    );
+  } catch (_error) {
+    // Caching is an optional page-recovery enhancement.
+  }
+}
+
+async function loadOpenClawWeixinSettings() {
+  restoreOpenClawWeixinSettingsCache();
+  if (!settingsOpenClawStatus || !settingsOpenClawWeixinState) {
+    settingsOpenClawBindWeixin.hidden = true;
+  }
+  settingsOpenClawBindWeixin.disabled = true;
+  try {
+    const [status, login] = await Promise.all([
+      fetchSettingsApi("/api/openclaw/status"),
+      fetchSettingsApi("/api/openclaw/weixin/login"),
+    ]);
+    renderOpenClawWeixinSettings(status, login);
+    cacheOpenClawWeixinSettings(status, login);
+    setOpenClawWeixinMessage(settingsOpenClawWeixinMessage, "");
+    return true;
+  } catch (_error) {
+    if (settingsOpenClawStatus && settingsOpenClawWeixinState) {
+      renderOpenClawWeixinSettings(
+        settingsOpenClawStatus,
+        settingsOpenClawWeixinState,
+        { live: false },
+      );
+      setOpenClawWeixinMessage(
+        settingsOpenClawWeixinMessage,
+        "状态刷新失败，当前展示上次检测结果。",
+        "error",
+      );
+      return false;
+    }
+    setOpenClawWeixinBadge("不可检查", "muted");
+    settingsOpenClawWeixinDetail.textContent = "暂时无法读取 OpenClaw 与微信绑定状态。";
+    setOpenClawWeixinMessage(
+      settingsOpenClawWeixinMessage,
+      "请确认当前连接位于可信网络，并稍后刷新页面重试。",
+      "error",
+    );
+    return false;
+  }
+}
+
+function releaseOpenClawWeixinQr() {
+  if (settingsOpenClawWeixinQrObjectUrl) {
+    URL.revokeObjectURL(settingsOpenClawWeixinQrObjectUrl);
+    settingsOpenClawWeixinQrObjectUrl = "";
+  }
+  settingsOpenClawWeixinQrUpdatedAt = "";
+  openclawWeixinQr.removeAttribute("src");
+  openclawWeixinQrPanel.hidden = true;
+}
+
+function stopOpenClawWeixinPolling() {
+  if (settingsOpenClawWeixinPollTimer) {
+    window.clearTimeout(settingsOpenClawWeixinPollTimer);
+    settingsOpenClawWeixinPollTimer = 0;
+  }
+}
+
+function closeOpenClawWeixinDialog() {
+  stopOpenClawWeixinPolling();
+  releaseOpenClawWeixinQr();
+  openclawWeixinVerifyForm.hidden = true;
+  openclawWeixinVerifyCode.value = "";
+  if (openclawWeixinDialog.open) {
+    openclawWeixinDialog.close();
+  }
+}
+
+async function loadOpenClawWeixinQr(updatedAt) {
+  if (
+    settingsOpenClawWeixinQrObjectUrl
+    && settingsOpenClawWeixinQrUpdatedAt === updatedAt
+  ) {
+    return;
+  }
+  try {
+    const response = await fetch("/api/openclaw/weixin/login/qr", {
+      headers: settingsHeaders(),
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      throw new Error("weixin_qr_unavailable");
+    }
+    const blob = await response.blob();
+    if (!openclawWeixinDialog.open) {
+      return;
+    }
+    releaseOpenClawWeixinQr();
+    settingsOpenClawWeixinQrObjectUrl = URL.createObjectURL(blob);
+    settingsOpenClawWeixinQrUpdatedAt = updatedAt;
+    openclawWeixinQr.src = settingsOpenClawWeixinQrObjectUrl;
+    openclawWeixinQrPanel.hidden = false;
+  } catch (_error) {
+    setOpenClawWeixinMessage(
+      openclawWeixinMessage,
+      "微信绑定二维码读取失败。",
+      "error",
+    );
+  }
+}
+
+function renderOpenClawWeixinLogin(login) {
+  const previousState = settingsOpenClawWeixinState?.state;
+  settingsOpenClawWeixinState = login;
+  const active = OPENCLAW_WEIXIN_ACTIVE_STATES.has(login.state);
+  const needsVerification = login.state === "needs_verification";
+  openclawWeixinCancel.hidden = !active || login.state === "cancelling";
+  openclawWeixinStart.hidden = active;
+  openclawWeixinStart.textContent = (
+    settingsOpenClawStatus?.channel_state === "running"
+    || login.state !== "idle"
+  )
+    ? "重新生成二维码"
+    : "生成二维码";
+  openclawWeixinVerifyForm.hidden = !needsVerification;
+  setOpenClawWeixinMessage(
+    openclawWeixinMessage,
+    login.message,
+    login.state === "succeeded"
+      ? "success"
+      : login.state === "failed"
+        ? "error"
+        : "",
+  );
+  if (login.qr_available) {
+    void loadOpenClawWeixinQr(login.updated_at);
+  } else {
+    releaseOpenClawWeixinQr();
+  }
+  if (settingsOpenClawStatus) {
+    renderOpenClawWeixinSettings(settingsOpenClawStatus, login);
+  }
+  if (login.state === "succeeded" && previousState !== "succeeded") {
+    void loadOpenClawWeixinSettings();
+  }
+}
+
+async function pollOpenClawWeixinLogin() {
+  stopOpenClawWeixinPolling();
+  if (!openclawWeixinDialog.open) {
+    return;
+  }
+  try {
+    const login = await fetchSettingsApi("/api/openclaw/weixin/login");
+    settingsOpenClawWeixinPollFailures = 0;
+    renderOpenClawWeixinLogin(login);
+    if (OPENCLAW_WEIXIN_ACTIVE_STATES.has(login.state)) {
+      settingsOpenClawWeixinPollTimer = window.setTimeout(
+        pollOpenClawWeixinLogin,
+        1000,
+      );
+    }
+  } catch (_error) {
+    settingsOpenClawWeixinPollFailures += 1;
+    setOpenClawWeixinMessage(
+      openclawWeixinMessage,
+      "微信绑定状态读取失败。",
+      "error",
+    );
+    if (openclawWeixinDialog.open) {
+      const retryDelay = Math.min(
+        5000,
+        1000 * (2 ** Math.min(settingsOpenClawWeixinPollFailures - 1, 3)),
+      );
+      settingsOpenClawWeixinPollTimer = window.setTimeout(
+        pollOpenClawWeixinLogin,
+        retryDelay,
+      );
+    }
+  }
+}
+
+async function openOpenClawWeixinDialog() {
+  if (!await loadOpenClawWeixinSettings()) {
+    return;
+  }
+  openclawWeixinDialog.showModal();
+  setOpenClawWeixinMessage(openclawWeixinMessage, "正在读取微信绑定状态…");
+  settingsOpenClawWeixinPollFailures = 0;
+  await pollOpenClawWeixinLogin();
+}
+
+async function startOpenClawWeixinLogin() {
+  openclawWeixinStart.disabled = true;
+  setOpenClawWeixinMessage(openclawWeixinMessage, "正在生成微信绑定二维码…");
+  try {
+    const login = await fetchSettingsApi("/api/openclaw/weixin/login", {
+      method: "POST",
+    });
+    renderOpenClawWeixinLogin(login);
+    settingsOpenClawWeixinPollTimer = window.setTimeout(
+      pollOpenClawWeixinLogin,
+      500,
+    );
+  } catch (_error) {
+    setOpenClawWeixinMessage(openclawWeixinMessage, "微信绑定启动失败。", "error");
+  } finally {
+    openclawWeixinStart.disabled = false;
+  }
+}
+
+async function cancelOpenClawWeixinLogin() {
+  openclawWeixinCancel.disabled = true;
+  try {
+    renderOpenClawWeixinLogin(
+      await fetchSettingsApi("/api/openclaw/weixin/login", { method: "DELETE" }),
+    );
+  } catch (_error) {
+    setOpenClawWeixinMessage(openclawWeixinMessage, "微信绑定取消失败。", "error");
+  } finally {
+    openclawWeixinCancel.disabled = false;
+  }
+}
+
 quickInteractionPageSize.addEventListener("change", () => {
   saveQuickInteractionPageSize(quickInteractionPageSize.value);
 });
@@ -684,6 +1056,7 @@ codexDefaultReasoningEffort.addEventListener("change", async () => {
 
 loadCodexModels();
 loadWeixinTranslationStatus();
+loadOpenClawWeixinSettings();
 
 for (const input of weixinProcessingModeInputs) {
   input.addEventListener("change", () => {
@@ -707,6 +1080,38 @@ weixinTranslationModel.addEventListener("change", () => {
 
 weixinTranslationReasoningEffort.addEventListener("change", () => {
   saveWeixinTranslationModelSettings();
+});
+
+settingsOpenClawBindWeixin.addEventListener("click", openOpenClawWeixinDialog);
+openclawWeixinClose.addEventListener("click", closeOpenClawWeixinDialog);
+openclawWeixinStart.addEventListener("click", startOpenClawWeixinLogin);
+openclawWeixinCancel.addEventListener("click", cancelOpenClawWeixinLogin);
+openclawWeixinVerifyForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const code = openclawWeixinVerifyCode.value.trim();
+  if (!code) {
+    return;
+  }
+  try {
+    const login = await fetchSettingsApi("/api/openclaw/weixin/login/verify", {
+      method: "POST",
+      headers: settingsHeaders(true),
+      body: JSON.stringify({ code }),
+    });
+    openclawWeixinVerifyCode.value = "";
+    renderOpenClawWeixinLogin(login);
+  } catch (_error) {
+    setOpenClawWeixinMessage(openclawWeixinMessage, "验证码提交失败。", "error");
+  }
+});
+openclawWeixinDialog.addEventListener("click", (event) => {
+  if (event.target === openclawWeixinDialog) {
+    closeOpenClawWeixinDialog();
+  }
+});
+openclawWeixinDialog.addEventListener("close", () => {
+  stopOpenClawWeixinPolling();
+  releaseOpenClawWeixinQr();
 });
 
 cyberRainSpeed.value = String(readRangePreference(CYBER_RAIN_SPEED_KEY, 60));

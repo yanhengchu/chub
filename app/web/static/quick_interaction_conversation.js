@@ -868,8 +868,8 @@ conversationForm.addEventListener("submit", async (event) => {
   })) {
     return;
   }
+  const submittedPrompt = conversationPrompt.value;
   conversationSubmit.disabled = true;
-  conversationPrompt.disabled = true;
   const generation = conversationGeneration;
   const client = conversationClient;
   try {
@@ -880,7 +880,9 @@ conversationForm.addEventListener("submit", async (event) => {
     if (generation !== conversationGeneration) {
       return;
     }
-    conversationPrompt.value = "";
+    if (conversationPrompt.value === submittedPrompt) {
+      conversationPrompt.value = "";
+    }
     saveConversationDraft();
     resizeConversationPrompt();
     conversationConfirmStopUnknownTerminal = false;

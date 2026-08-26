@@ -41,6 +41,13 @@ from app.core.response import ApiError
 LOGGER = logging.getLogger("hub.ai_session")
 
 
+_LEGACY_TRANSLATION_WORKSPACE = (
+    PROJECT_ROOT / "data/runtime/codex/translation-workspace"
+)
+_LEGACY_TRANSLATION_TITLE_PREFIX = "You are a text editor and translator."
+_MAX_LEGACY_TRANSLATION_ARCHIVES_PER_START = 20
+
+
 class AiSessionManager:
     """The sole owner of Chub logical AI Session state.
 
@@ -864,6 +871,67 @@ class AiSessionManager:
         self.archive_native_session(session_id)
         self.finalize_archive_session(session_id)
 
+    def archive_legacy_translation_sessions(self, quick_interactions) -> int:
+        """Archive old translation Sessions that were incorrectly imported.
+
+        This is intentionally a bounded startup-maintenance action.  A legacy
+        record must match the old private workspace and the fixed translation
+        prompt before it can be considered; any uncertain or active Session is
+        left untouched for a later startup.
+        """
+        try:
+            self._require_available()
+            if (
+                self._system_upgrade_writes_blocked()
+                or not quick_interactions.recovery_ready
+            ):
+                return 0
+            with self._lock:
+                candidates = [
+                    session
+                    for session in self.store.list()
+                    if self._is_legacy_translation_session(session)
+                ][:_MAX_LEGACY_TRANSLATION_ARCHIVES_PER_START]
+        except (ApiError, OSError):
+            LOGGER.warning(
+                "Skipping legacy translation Session cleanup because state is unavailable",
+                exc_info=True,
+            )
+            return 0
+
+        archived = 0
+        for session in candidates:
+            try:
+                if quick_interactions.is_running(session.id):
+                    continue
+                usage = self.resolve_session_usage(session.id)
+                if usage.owner != "none" or usage.phase != "idle":
+                    continue
+                # Import lazily to keep the Session manager independent from
+                # the Web/API entry points that also use this operation.
+                from app.ai_session.operations import archive_session
+
+                archive_session(
+                    session.id,
+                    manager=self,
+                    quick_interactions=quick_interactions,
+                    terminal_tickets=self.supervisor.tickets,
+                    terminal_connections=self.supervisor.connections,
+                )
+            except Exception:
+                # This cleanup must never make Web startup unavailable.  The
+                # native archive and Chub-side removal are both idempotent, so
+                # a later startup can retry a record that remains in storage.
+                LOGGER.warning(
+                    "Unable to archive a legacy translation Session",
+                    exc_info=True,
+                )
+                continue
+            archived += 1
+        if archived:
+            LOGGER.info("Archived %d legacy translation Sessions", archived)
+        return archived
+
     def system_upgrade_sessions(self) -> list[AiSession]:
         with self._lock:
             return self.store.validate_for_system_upgrade()
@@ -1252,12 +1320,36 @@ class AiSessionManager:
         return None
 
     def _is_translation_workspace(self, cwd: Path) -> bool:
+        return self._is_current_translation_workspace(
+            cwd
+        ) or self._is_legacy_translation_workspace(cwd)
+
+    def _is_current_translation_workspace(self, cwd: Path) -> bool:
         try:
             return cwd.expanduser().resolve(strict=False) == (
                 self.settings.codex_pty.runtime_dir / "translation-workspace"
             ).expanduser().resolve(strict=False)
         except OSError:
             return False
+
+    @staticmethod
+    def _is_legacy_translation_workspace(cwd: Path) -> bool:
+        try:
+            return cwd.expanduser().resolve(strict=False) == (
+                _LEGACY_TRANSLATION_WORKSPACE.expanduser().resolve(strict=False)
+            )
+        except OSError:
+            return False
+
+    def _is_legacy_translation_session(self, session: AiSession) -> bool:
+        return bool(
+            session.discovered
+            and session.session_mode == "terminal"
+            and session.workspace_id == DISCOVERED_RUNTIME_WORKSPACE_ID
+            and session.native_session_id is not None
+            and self._is_legacy_translation_workspace(session.cwd)
+            and (session.title or "").startswith(_LEGACY_TRANSLATION_TITLE_PREFIX)
+        )
 
     def _remove_stale_translation_discoveries(
         self,
@@ -1270,7 +1362,7 @@ class AiSessionManager:
                 session.discovered
                 and session.session_mode == "terminal"
                 and session.native_session_id is not None
-                and self._is_translation_workspace(session.cwd)
+                and self._is_current_translation_workspace(session.cwd)
             ):
                 retained.append(session)
                 continue

@@ -10,8 +10,8 @@
 
 把本文当作 Quick Worker 服务的运行契约，而不是某个页面或某个脚本的说明：
 
-1. Quick Worker 是与 Chub Web 独立运行的本机后台服务。Web 负责认证、业务校验、提交和页面投影；Worker 负责任务、Session 租约、Runner 进程、超时、取消、恢复和最终状态。
-2. 页面快速交互、微信 Chub 非实时任务和翻译任务都进入 Worker；Web 内不得回退执行。当前生产只允许固定的 `codex` Runtime Runner。
+1. Quick Worker 属于 AI Runtime 层，是与 Chub Web 独立运行的本机后台服务。核心层入口负责认证、业务校验、提交和页面投影；Worker 负责任务、Session 租约、Runner 进程、超时、取消、恢复和最终状态。
+2. 页面快速交互、经第三方服务层进入的微信 Chub 非实时任务和翻译任务都进入 Worker；核心层入口不得回退执行。当前生产只允许固定的 `codex` Runtime Runner。
 3. 同一逻辑 Session 只能有一个 writer。快速交互提交、实时终端建立连接和恢复流程都必须经过 Worker 租约与实时连接的最终仲裁，不能只依赖页面按钮状态；当前 Quick Worker 在自己的 Session 租约内可以完成自己的原生 ID 绑定，其他 writer 不得被接管。内部翻译 Session 仍复用逻辑 Session，但允许在旧 native Session 空闲且新 ID 未被占用时轮换绑定。
 4. Web 重启不会主动停止 Worker 或已接受任务。新 Web 必须完成 Worker 健康、协议、活动任务、租约、通知和重启状态恢复后，才开放快速交互 Session 写入；实时终端按独立的 Codex PTY/tmux 状态恢复。
 5. 普通任务提交、取消和交付在 Worker 或状态不可确认时必须失败关闭：不猜测任务成功、不重复提交、不在 Web 内执行、不切换 Session 或通知收件人。固定的 Worker 重启是恢复入口，允许在不可用状态下尝试重建，但最终结果仍必须确认。
@@ -22,7 +22,7 @@ AI Agent 修改或排障时，先判断问题是否属于 Worker 服务；再读
 
 ## 1. 服务定位与落地结论
 
-Chub 的非实时 AI 任务已经从 Web 进程中拆出，由独立 Worker 承载。页面快速交互、微信 Chub 模式任务和翻译任务统一进入 Worker；当前唯一生产 Runtime 仍是 Codex，实时 Session 继续由 tmux 承载。
+Chub 的非实时 AI 任务已经从 Web 进程中拆出，由 AI Runtime 层的独立 Worker 承载。页面快速交互、微信 Chub 模式任务和翻译任务统一进入 Worker；当前唯一生产 Runtime 仍是 Codex，实时 Session 继续由 tmux 承载。第三方服务只能调用 AI Runtime 的公开提交与状态用例，不能直接操作 Worker 私有状态。
 
 该方案解决以下核心问题：
 

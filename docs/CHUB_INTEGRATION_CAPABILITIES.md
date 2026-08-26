@@ -40,14 +40,14 @@
 
 `chub check` 是只读的完整系统检查入口，依次检查项目配置、用户服务、Web 健康、Quick Worker 健康和 `/api/status` 系统状态；任一必需检查失败时返回非零退出码，不执行重启、升级或任务清理。
 
-当前 Chub 三个核心服务和一个第三方 Gateway 的入口边界如下：
+当前 Chub 管理的三个服务和一个第三方 Gateway 的入口边界如下；这里的“Chub 管理”是服务安装范围，不等同于三层架构中的 Chub 核心层。
 
-| 运行部分 | 当前状态 | 当前入口与职责 |
-| --- | --- | --- |
-| Chub | 已实现 | 由 `chub install/start` 管理用户服务；提供页面、API 和快速交互入口 |
-| Chub Quick Worker | 已实现 | 与 Chub 分离运行但由同一 CLI 安装/启动；通过 `chub worker-health` 检查，不提供普通用户独立启动入口 |
-| Chub Debug Chrome | 已实现 | Ubuntu 由独立 Supervisor 服务持有 Debug Chrome；浏览器实例按需启动，macOS 沿用现有浏览器适配 |
-| OpenClaw Gateway | 已接入 | 第三方 Gateway、微信通道和 Chub OpenClaw 插件共同提供 ClawBot；不由 `chub start` 启动，安装/配置以[插件说明](../integrations/openclaw/chub/README.md)为准 |
+| 运行部分 | 所属层 | 当前状态 | 当前入口与职责 |
+| --- | --- | --- | --- |
+| Chub | 核心层 | 已实现 | 由 `chub install/start` 管理用户服务；提供页面、API 和快速交互入口 |
+| Chub Quick Worker | AI Runtime 层 | 已实现 | 与 Chub 分离运行但由同一 CLI 安装/启动；通过 `chub worker-health` 检查，不提供普通用户独立启动入口 |
+| Chub Debug Chrome | 核心层 | 已实现 | Ubuntu 由独立 Supervisor 服务持有 Debug Chrome；浏览器实例按需启动，macOS 沿用现有浏览器适配 |
+| OpenClaw Gateway | 第三方服务层 | 已接入 | 第三方 Gateway、微信通道和 Chub OpenClaw 插件共同提供 ClawBot；不由 `chub start` 启动，安装/配置以[插件说明](../integrations/openclaw/chub/README.md)为准 |
 
 “已接入”表示 Chub 与相关通道的接口和路由已经具备，不表示本仓库包含 OpenClaw Gateway 或腾讯微信插件的源码、安装包和账号绑定流程。新设备应先按外部项目文档安装这两项，再按已生效的[插件说明](../integrations/openclaw/chub/README.md)部署 Chub 插件并完成微信验收；[Chub CLI 分发、安装与发布设计](CHUB_CLI_DISTRIBUTION_DESIGN.md)仅记录待实现的正式分发目标。
 
@@ -253,5 +253,5 @@ Session 标题与任务摘要的显示规则：
 | [Chub AI Session 状态模型设计](AI_SESSION_STATE_DESIGN.md) | Session、Activity、usage 投影、入口、槽位和单 writer 语义 |
 | [Codex AI 额度与用量采集设计](CODEX_AI_QUOTA_USAGE_DESIGN.md) | Codex/OpenAI 用量来源、统一接口、缓存和展示口径 |
 | [Chub Quick Worker 独立服务设计](CHUB_QUICK_WORKER_DESIGN.md) | Quick Worker 独立服务、非实时任务、恢复、通知终态和重启协调 |
-| [Chub CLI 分发、安装与发布设计](CHUB_CLI_DISTRIBUTION_DESIGN.md) | 新设备安装、核心 Chub 与可选 ClawBot 职责、npm 发布、版本管理和 GitHub Release |
+| [Chub CLI 分发、安装与发布设计](CHUB_CLI_DISTRIBUTION_DESIGN.md) | 新设备安装、Chub 主发行包与可选 ClawBot 职责、npm 发布、版本管理和 GitHub Release |
 | [Chub OpenClaw 插件说明](../integrations/openclaw/chub/README.md) | 插件协议、源码、构建、部署和协议验收 |

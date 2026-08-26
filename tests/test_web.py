@@ -82,13 +82,8 @@ async def test_home_page_is_public_and_contains_no_credential_form(
     assert 'id="openclaw-restart"' in response.text
     assert ">重启与恢复</button>" in response.text
     assert 'id="openclaw-stop"' not in response.text
-    assert 'id="openclaw-bind-weixin"' in response.text
-    assert '>微信</button>' in response.text
-    assert 'id="openclaw-weixin-dialog"' in response.text
-    assert 'id="openclaw-weixin-account-summary"' in response.text
-    assert 'id="openclaw-weixin-owner-summary"' in response.text
-    assert 'id="openclaw-weixin-qr"' in response.text
-    assert 'id="openclaw-weixin-verify-form"' in response.text
+    assert 'id="openclaw-bind-weixin"' not in response.text
+    assert 'id="openclaw-weixin-dialog"' not in response.text
     assert 'id="openclaw-access-open"' not in response.text
     assert 'id="openclaw-access-url"' not in response.text
     assert 'id="openclaw-access-unavailable"' not in response.text
@@ -281,17 +276,32 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
     assert response.status_code == 200
     assert "设置 · Hub" in response.text
     assert "快速交互" in response.text
+    assert "浏览器偏好与节点信息" in response.text
     assert "调整会话历史记录的加载方式。" in response.text
-    assert "调整浏览器偏好和节点功能。" in response.text
+    assert "按 Chub 核心、AI Runtime 与第三方服务查看现有配置。" in response.text
     assert "界面风格" in response.text
-    assert "微信处理" in response.text
+    assert "微信任务文本优化" in response.text
+    assert "Codex 会话默认项" in response.text
+    assert "Chub 核心" in response.text
+    assert "AI Runtime" in response.text
+    assert "第三方服务" in response.text
     assert 'id="settings-category"' not in response.text
     assert 'href="#quick-interaction-settings" aria-current="true"' in response.text
     assert 'href="#utility-settings"' in response.text
+    assert 'href="#openclaw-weixin-settings"' in response.text
+    assert 'id="settings-openclaw-bind-weixin"' in response.text
+    assert 'class="settings-field settings-integration-row"' in response.text
+    assert "微信 ClawBot" in response.text
+    assert '<h3 id="openclaw-weixin-settings-title">OpenClaw</h3>' not in response.text
+    assert 'id="openclaw-weixin-dialog"' in response.text
+    assert 'id="openclaw-weixin-account-summary"' in response.text
+    assert 'id="openclaw-weixin-owner-summary"' in response.text
+    assert 'id="openclaw-weixin-qr"' in response.text
+    assert 'id="openclaw-weixin-verify-form"' in response.text
     assert 'id="weixin-processing-mode"' in response.text
     assert 'class="settings-choice-list"' in response.text
     assert '<h4 id="weixin-processing-mode-title">正文处理方式</h4>' in response.text
-    assert '<h4 id="weixin-translation-model-title">正文处理模型</h4>' in response.text
+    assert '<h4 id="weixin-translation-model-title">文本优化运行参数</h4>' in response.text
     assert 'aria-labelledby="weixin-processing-mode-title"' in response.text
     assert 'value="direct"' in response.text
     assert 'value="auto"' in response.text
@@ -326,7 +336,7 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
     assert '<option value="5" selected>5 条</option>' in response.text
     assert '<option value="10">10 条</option>' in response.text
     assert 'id="codex-default-permission"' in response.text
-    assert "设置页面展示与之后新建会话的默认配置。" in response.text
+    assert "只影响之后新建会话，已有会话保持原有配置。" in response.text
     assert 'id="codex-show-translation-session"' not in response.text
     assert 'id="codex-default-model"' in response.text
     assert 'id="codex-default-reasoning-effort"' in response.text
@@ -351,10 +361,20 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
     assert "hub.codexDefaultReasoningEffort.v1" in script.text
     assert "hub.codexModelPreferenceCache" in script.text
     assert "hub.weixinTranslationSettingsCache" in script.text
+    assert "hub.openclawWeixinSettingsCache.v1" in script.text
     assert "hub.codexShowTranslationSession.v1" not in script.text
     assert "/api/codex/models" in script.text
     assert "/api/codex/session-defaults" in script.text
     assert "/api/settings/weixin-translation" in script.text
+    assert "/api/openclaw/status" in script.text
+    assert "/api/openclaw/weixin/login" in script.text
+    assert "settingsOpenClawWeixinPollFailures" in script.text
+    assert "pollOpenClawWeixinLogin" in script.text
+    assert "微信通道已连接" in script.text
+    assert "微信通道未配置" in script.text
+    assert '"重新绑定微信"' in script.text
+    assert 'idle: ["未绑定"' not in script.text
+    assert "当前展示上次检测结果" in script.text
     assert "WEIXIN_TRANSLATION_SETTINGS_CACHE_KEY" in script.text
     assert "项文本优化仍在处理中" in script.text
     assert "已开启，将从下一条微信普通任务开始处理" not in script.text
@@ -623,8 +643,8 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "if (openclawBusy) {" in dashboard_script
     assert "正在重启 OpenClaw Gateway" not in dashboard_script
     assert "OpenClaw Gateway 已停止" not in dashboard_script
-    assert "openclawWeixinPollFailures" in dashboard_script
-    assert "setTimeout(\n          pollOpenClawWeixinLogin,\n          retryDelay" in dashboard_script
+    assert "OPENCLAW_WEIXIN_ACTIVE_STATES" in dashboard_script
+    assert "pollOpenClawWeixinLogin" not in dashboard_script
     assert "Promise.all([\n      apiFetch(\"/api/openclaw/status\")" not in dashboard_script
     assert "automationBrowserModeInputs" in dashboard_script
     assert "loadAutomationEnvironment" in dashboard_script

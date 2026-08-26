@@ -173,7 +173,7 @@ function systemUpgradePresentation(data) {
     restarting: "正在恢复",
     succeeded: "已完成",
     failed: "恢复失败",
-    blocked: "暂不可用",
+    blocked: "升级功能未就绪",
   }[data.state] || "状态未知";
 }
 

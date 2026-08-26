@@ -4,7 +4,7 @@
 > 主要读者：在新设备上安装 Chub、配置 ClawBot 或发布新版本的维护者；AI Agent 用本文执行安装和发布操作。
 > 本文负责：给出安装、启动、使用、升级和发布的具体动作与预期结果。
 > 本文不负责：解释 Web、Quick Worker、AI Runtime、Session、OpenClaw 协议和微信安全边界的内部实现；这些内容以相关架构、模块和[能力清单](CHUB_INTEGRATION_CAPABILITIES.md)为准。
-> 维护说明：本文只描述正式 npm 交付路径。核心 Chub 和 Chub OpenClaw 插件通过 npm 发布；GitHub Release 只负责版本说明和归档，不提供替代安装包。OpenClaw 和微信通道按各自官方渠道安装。
+> 维护说明：本文只描述正式 npm 交付路径。Chub 主发行包和 Chub OpenClaw 插件通过 npm 发布；GitHub Release 只负责版本说明和归档，不提供替代安装包。OpenClaw 和微信通道按各自官方渠道安装。这里的“主发行包”是安装包范围，不等同于三层架构中的 Chub 核心层。
 > 当前阶段：设计优化。本文中的包名、命令和版本号是目标交付契约；在“实施准入与待确认决策”完成前，不把它们当作当前可执行安装指令。
 
 ## 操作目标
@@ -13,10 +13,10 @@
 
 | 路径 | 目标 |
 | --- | --- |
-| 核心 Chub | 安装 CLI，启动 Chub，在 Web 中进行快速交互 |
+| Chub 主发行包 | 安装 CLI，启动 Chub，在 Web 中进行快速交互 |
 | 可选 ClawBot | 安装 OpenClaw/微信集成，在微信中进行交互 |
 
-Quick Worker 随核心 Chub 一起安装和启动，不需要单独安装或学习。只有排障时才查看它的状态。
+Quick Worker 随 Chub 主发行包一起安装和启动，不需要单独安装或学习。只有排障时才查看它的状态。
 
 本文所有操作都遵循三条判断：
 
@@ -24,7 +24,7 @@ Quick Worker 随核心 Chub 一起安装和启动，不需要单独安装或学�
 2. 安装或升级不得覆盖用户配置、Token、日志和第三方数据。
 3. 失败时停止后续动作，说明原因和下一步恢复动作。
 
-## 1. 安装核心 Chub
+## 1. 安装 Chub 主发行包
 
 ### 1.1 目标新设备安装流程
 
@@ -182,7 +182,7 @@ Use:
 
 ## 4. 升级和回滚
 
-### 4.1 核心 Chub
+### 4.1 Chub 主发行包
 
 升级到指定版本：
 
@@ -213,7 +213,7 @@ openclaw plugins inspect openclaw-weixin --runtime --json
 openclaw channels status --probe --json
 ```
 
-升级后必须重新执行 Context Token 复检，并由维护者确认实际微信结果。核心 Chub、Chub 插件与外部微信通道版本不兼容时，停止微信任务并按 Release notes 回退配套版本。
+升级后必须重新执行 Context Token 复检，并由维护者确认实际微信结果。Chub 主发行包、Chub 插件与外部微信通道版本不兼容时，停止微信任务并按 Release notes 回退配套版本。
 
 ## 5. npm 发布（维护者操作）
 
@@ -222,7 +222,7 @@ openclaw channels status --probe --json
 1. 确定产品版本 `X.Y.Z`。
 2. 更新 `chub` 和 `@chub/openclaw-plugin` 两个 npm 包的版本，以及 Python 应用和插件协议版本。
 3. 运行全量 Python 测试、插件构建、校验和测试；第三方微信适配器补丁单独按实际加载目录复检，不伪装成插件包内容。
-4. 运行 `npm pack --dry-run` 检查两个包的内容；核心包必须包含 CLI 入口、Python 应用、配置示例和 Quick Worker，插件包必须包含 `dist/`、`openclaw.plugin.json` 和 README。确认 `@chub/openclaw-plugin` 配置为公开发布（`publishConfig.access=public`）。
+4. 运行 `npm pack --dry-run` 检查两个包的内容；Chub 主发行包必须包含 CLI 入口、Python 应用、配置示例和 Quick Worker，插件包必须包含 `dist/`、`openclaw.plugin.json` 和 README。确认 `@chub/openclaw-plugin` 配置为公开发布（`publishConfig.access=public`）。
 5. 在干净环境测试 `npm install -g chub@X.Y.Z`、`openclaw plugins install npm:@chub/openclaw-plugin@X.Y.Z --pin`、`chub help` 和 `chub start`。
 
 ### 5.2 发布动作
@@ -284,7 +284,7 @@ Release 不承担安装职责，不上传用于替代 npm 安装的插件压缩�
 
 ## 目标交付边界
 
-- 用户安装和升级只使用 npm Registry：核心 CLI 为 `chub`，Chub OpenClaw 插件为 `@chub/openclaw-plugin`。
+- 用户安装和升级只使用 npm Registry：Chub 主 CLI 为 `chub`，Chub OpenClaw 插件为 `@chub/openclaw-plugin`。
 - `chub` 必须提供可执行的 `chub` bin 和首次启动引导；`@chub/openclaw-plugin` 必须设置 `publishConfig.access=public`，并包含运行产物、插件清单和 README；第三方微信适配器补丁不混入插件包。
 - Quick Worker 随 `chub` 一起安装和启动，不提供独立 npm 包或独立用户安装步骤。
 - OpenClaw Gateway 与第三方微信通道不属于 Chub 发布物，继续按各自官方文档安装。
