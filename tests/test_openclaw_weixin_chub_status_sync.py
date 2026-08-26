@@ -60,7 +60,7 @@ def test_chub_status_ignores_trailing_punctuation(
 
     assert result.disposition == "reply"
     assert result.message is not None
-    assert re.match(r"Chub · [1-9][0-9]*ms(?:\n|$)", result.message)
+    assert re.match(r"Test Node chub · [1-9][0-9]*ms(?:\n|$)", result.message)
     quick_interactions.weixin_task_status_snapshot.assert_called_once()
     quick_interactions.submit.assert_not_called()
 

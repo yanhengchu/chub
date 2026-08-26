@@ -3,8 +3,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import signal
-import stat
 import subprocess
 import threading
 import time
@@ -388,34 +386,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     def launch_system_upgrade_restart(operation_id: str):
-        command = PROJECT_ROOT / "scripts" / "chub-system-upgrade-restart"
+        command = PROJECT_ROOT / "scripts" / "chub-system-upgrade-start"
         readiness = restart_environment_readiness()
         if readiness is not None:
             raise OSError(readiness)
-        flags = (
-            os.O_APPEND
-            | os.O_CREAT
-            | os.O_WRONLY
-            | getattr(os, "O_NOFOLLOW", 0)
+        result = subprocess.run(
+            [str(command), operation_id],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
         )
-        descriptor = os.open(resolved_settings.logs.file, flags, 0o600)
-        try:
-            metadata = os.fstat(descriptor)
-            if (
-                not stat.S_ISREG(metadata.st_mode)
-                or metadata.st_uid != os.getuid()
-                or stat.S_IMODE(metadata.st_mode) & 0o077
-            ):
-                raise OSError("系统升级运行日志不安全。")
-            os.fchmod(descriptor, 0o600)
-            return subprocess.Popen(
-                [str(command), operation_id],
-                stdout=descriptor,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-            )
-        finally:
-            os.close(descriptor)
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip()
+            raise OSError(detail[-500:] or "系统升级独立服务未能启动。")
 
     def recover_drained_worker(operation_id: str, protocol_version: int) -> str | None:
         try:
@@ -497,6 +482,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     and "codex" in data.get("available_runtime_ids", [])
                     and quick_interactions.recovery_ready
                 ):
+                    system_upgrade.record_component(
+                        operation_id,
+                        "chub_web",
+                        "succeeded",
+                        "新 Chub Web 实例已确认运行目标版本",
+                    )
+                    system_upgrade.record_component(
+                        operation_id,
+                        "quick_worker",
+                        "succeeded",
+                        "Quick Worker 已确认目标协议和空闲健康状态",
+                    )
+                    known_components = {
+                        item.component
+                        for item in system_upgrade.component_results(operation_id)
+                    }
+                    for component in (
+                        "python_dependencies",
+                        "service_definitions",
+                        "browser_supervisor",
+                        "openclaw",
+                    ):
+                        if component not in known_components:
+                            system_upgrade.record_component(
+                                operation_id,
+                                component,
+                                "degraded",
+                                "升级脚本未能确认该独立组件的最终状态",
+                            )
                     rebind = getattr(
                         codex_pty_manager,
                         "rebind_upgrade_terminal_carriers",
@@ -524,6 +538,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     )
                     if quick_interactions.system_upgrade_readiness() is not None:
                         raise OSError("Quick Worker 恢复状态尚未满足最终验收条件。")
+                    quick_worker_maintenance.clear_terminal_operation()
                     system_upgrade.succeed(operation_id)
                     return
                 if asyncio.get_running_loop().time() >= deadline:
@@ -537,7 +552,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def launch_system_upgrade_services(operation_id: str) -> None:
         state = system_upgrade.operation()
-        process = None
         try:
             if (
                 state is None
@@ -552,13 +566,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 restart_launch_state="launching",
                 message="数据清理已完成，正在启动固定服务切换程序。",
             )
-            process = launch_system_upgrade_restart(operation_id)
+            launch_system_upgrade_restart(operation_id)
             system_upgrade.update(
                 operation_id,
                 stage="restarting_services",
                 restart_launch_state="launched",
-                restart_process_id=process.pid,
-                message="服务切换程序已启动，正在切换 Quick Worker 和 Chub Web。",
+                message="服务切换程序已启动，正在处理依赖、服务定义、浏览器和 OpenClaw，并切换核心服务。",
             )
         except Exception as exc:
             logging.getLogger("hub.system_upgrade").warning(
@@ -567,7 +580,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             try:
                 recovery_error = None
-                if process is None and state is not None:
+                if state is not None:
                     recovery_error = recover_drained_worker(
                         operation_id,
                         state.old_worker_protocol or state.plan.source_worker_protocol,
@@ -584,39 +597,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     exc_info=True,
                 )
             return
-
-        def monitor_restart() -> None:
-            try:
-                return_code = process.wait()
-            except Exception:
-                return
-            if return_code not in {0, -signal.SIGTERM}:
-                recovery_error = None
-                try:
-                    recovery = launch_system_upgrade_worker_recovery(operation_id)
-                    if recovery.wait() != 0:
-                        recovery_error = "Quick Worker 自动恢复失败，请检查服务状态。"
-                except Exception:
-                    recovery_error = "Quick Worker 自动恢复失败，请检查服务状态。"
-                try:
-                    system_upgrade.fail(
-                        operation_id,
-                        "服务切换脚本失败；" + (
-                            recovery_error or "Quick Worker 已恢复，Chub 可继续使用。"
-                        ),
-                        restart_launch_failed=True,
-                    )
-                except Exception:
-                    logging.getLogger("hub.system_upgrade").warning(
-                        "Unable to record system upgrade restart failure",
-                        exc_info=True,
-                    )
-
-        threading.Thread(
-            target=monitor_restart,
-            daemon=True,
-            name=f"chub-system-upgrade-monitor-{operation_id[:8]}",
-        ).start()
 
     def run_system_upgrade(operation_id: str) -> None:
         translation_upgrade_guard = False
@@ -1014,7 +994,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.weixin_translation = weixin_translation
     application.state.terminal_tickets = terminal_tickets
     application.state.terminal_connections = terminal_connections
-    application.state.automation_manager = AutomationManager(resolved_settings)
+    application.state.automation_manager = AutomationManager(
+        resolved_settings,
+        detected_platform=detected_platform,
+    )
     application.state.openclaw_manager = openclaw_manager
     application.state.notification_service = notification_service
 

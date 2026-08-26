@@ -4,15 +4,22 @@ set -euo pipefail
 
 SERVICE_NAME="chub"
 WORKER_SERVICE_NAME="chub-quick-worker"
+CHROME_SUPERVISOR_SERVICE_NAME="chub-debug-chrome"
 MACOS_LABEL="com.chub.node"
 WORKER_MACOS_LABEL="com.chub.quick-worker"
 SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PYTHON_BIN="$PROJECT_ROOT/.venv/bin/python"
 PLATFORM="${CHUB_TEST_PLATFORM:-$(uname -s)}"
-OPERATION_ID="${1:-}"
 MODE="${2:-restart}"
 LAUNCH_AGENTS_DIR="${CHUB_LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}"
+
+if [[ "${1:-}" == "--pending" ]]; then
+    OPERATION_ID="$("$PYTHON_BIN" -m app.system_upgrade_cli pending-operation)"
+    MODE="restart"
+else
+    OPERATION_ID="${1:-}"
+fi
 
 case "$OPERATION_ID" in
     ""|*[!a-f0-9]*)
@@ -44,8 +51,25 @@ wait_for_launch_confirmation() {
     (
         cd "$PROJECT_ROOT"
         "$PYTHON_BIN" -m app.system_upgrade_cli \
-            wait-for-launch "$OPERATION_ID" "$$"
+            wait-for-launch "$OPERATION_ID"
     )
+}
+
+record_component() {
+    local component="$1"
+    local status="$2"
+    local message="$3"
+    if (
+        cd "$PROJECT_ROOT"
+        "$PYTHON_BIN" -m app.system_upgrade_cli \
+            record-component "$OPERATION_ID" "$component" "$status" "$message"
+    ) >/dev/null 2>&1; then
+        echo "chub-system-upgrade-restart: component=$component status=$status operation_id=$OPERATION_ID"
+    fi
+}
+
+recover_web() {
+    "$PROJECT_ROOT/scripts/chub-web-restart" >/dev/null 2>&1 || true
 }
 
 echo "chub-system-upgrade-restart: waiting for launch confirmation operation_id=$OPERATION_ID"
@@ -104,7 +128,68 @@ if "codex" not in data.get("available_runtime_ids", []):
     return 1
 }
 
+ensure_chrome_supervisor() {
+    local action="--restart"
+    [[ "${1:-}" == "--start" ]] && action=""
+    [[ "$PLATFORM" == "Linux" ]] || {
+        record_component "browser_supervisor" "skipped" "当前平台没有独立浏览器 Supervisor 服务"
+        return 0
+    }
+    local reconcile_status=0
+    if [[ -n "$action" ]]; then
+        "$PROJECT_ROOT/scripts/chub" chrome-supervisor-reconcile "$action" || reconcile_status=$?
+    else
+        "$PROJECT_ROOT/scripts/chub" chrome-supervisor-reconcile || reconcile_status=$?
+    fi
+    if [[ "$reconcile_status" -eq 0 ]]; then
+        record_component "browser_supervisor" "succeeded" "Debug Chrome Supervisor 已重建并确认运行"
+    else
+        record_component "browser_supervisor" "degraded" "Debug Chrome Supervisor 未能确认运行，核心服务继续恢复"
+        echo "chub-system-upgrade-restart: warning: Debug Chrome Supervisor recovery failed" >&2
+    fi
+}
+
+record_debug_chrome_instance_scope() {
+    record_component \
+        "debug_chrome_instance" \
+        "skipped" \
+        "Debug Chrome 浏览器实例不属于系统升级范围，流程不会自动启动"
+}
+
+upgrade_openclaw() {
+    if (
+        cd "$PROJECT_ROOT"
+        "$PYTHON_BIN" -m app.openclaw_upgrade_cli
+    ); then
+        record_component "openclaw" "succeeded" "OpenClaw 插件、适配器和补丁基线已处理"
+    else
+        record_component "openclaw" "degraded" "OpenClaw 插件或补丁基线未能确认，核心服务继续恢复"
+        echo "chub-system-upgrade-restart: warning: OpenClaw runtime recovery failed" >&2
+    fi
+}
+
+recover_on_failure() {
+    local exit_code="$1"
+    [[ "$MODE" == "restart" && "$exit_code" -ne 0 ]] || return 0
+    set +e
+    (
+        cd "$PROJECT_ROOT"
+        "$PYTHON_BIN" -m app.system_upgrade_cli \
+            fail-operation "$OPERATION_ID" \
+            "服务切换脚本失败，退出码=$exit_code"
+    ) >/dev/null 2>&1 || true
+    "$PROJECT_ROOT/scripts/chub" service-definitions >/dev/null 2>&1
+    recover_worker >/dev/null 2>&1
+    recover_web
+    if [[ "$PLATFORM" == "Linux" ]]; then
+        "$PROJECT_ROOT/scripts/chub" chrome-supervisor-reconcile >/dev/null 2>&1
+    fi
+}
+
+trap 'recover_on_failure "$?"' EXIT
+
 if [[ "$MODE" == "--recover-worker" ]]; then
+    ensure_chrome_supervisor --start
     recover_worker
     wait_for_worker_ready
     exit 0
@@ -112,35 +197,68 @@ fi
 
 case "$PLATFORM" in
     Linux)
+        systemctl --user stop "$SERVICE_NAME.service" >/dev/null 2>&1 || true
         systemctl --user stop "$WORKER_SERVICE_NAME.service"
+        systemctl --user stop "$CHROME_SUPERVISOR_SERVICE_NAME.service" >/dev/null 2>&1 || true
         if ! prepare_restart; then
             recover_worker >/dev/null 2>&1 || true
             exit 1
         fi
+        if ! "$PROJECT_ROOT/scripts/chub" runtime-dependencies; then
+            record_component "python_dependencies" "failed" "Python 项目依赖安装失败"
+            exit 1
+        fi
+        record_component "python_dependencies" "succeeded" "Python 项目依赖已按固定清单处理"
+        if ! "$PROJECT_ROOT/scripts/chub" service-definitions; then
+            record_component "service_definitions" "failed" "Web、Worker 或浏览器服务定义修复失败"
+            exit 1
+        fi
+        record_component "service_definitions" "succeeded" "Web、Worker 和浏览器服务定义已重建"
+        ensure_chrome_supervisor
+        record_debug_chrome_instance_scope
+        upgrade_openclaw
         recover_worker
-        exec systemctl --user --no-block restart "$SERVICE_NAME.service"
+        exec "$PROJECT_ROOT/scripts/chub-web-restart"
         ;;
     Darwin)
         DOMAIN="gui/$(id -u)"
+        launchctl bootout "$DOMAIN/$MACOS_LABEL" >/dev/null 2>&1 || true
         launchctl bootout "$DOMAIN/$WORKER_MACOS_LABEL" >/dev/null 2>&1 || true
+        web_stopped=false
         worker_stopped=false
         for _attempt in 1 2 3 4 5 6 7 8 9 10; do
+            if ! launchctl print "$DOMAIN/$MACOS_LABEL" >/dev/null 2>&1; then
+                web_stopped=true
+            fi
             if ! launchctl print "$DOMAIN/$WORKER_MACOS_LABEL" >/dev/null 2>&1; then
                 worker_stopped=true
-                break
             fi
+            [[ "$web_stopped" == "true" && "$worker_stopped" == "true" ]] && break
             sleep 0.5
         done
-        if [[ "$worker_stopped" != "true" ]]; then
-            echo "chub-system-upgrade-restart: Quick Worker did not stop" >&2
+        if [[ "$web_stopped" != "true" || "$worker_stopped" != "true" ]]; then
+            echo "chub-system-upgrade-restart: Chub Web or Quick Worker did not stop" >&2
             exit 1
         fi
         if ! prepare_restart; then
             recover_worker >/dev/null 2>&1 || true
             exit 1
         fi
+        if ! "$PROJECT_ROOT/scripts/chub" runtime-dependencies; then
+            record_component "python_dependencies" "failed" "Python 项目依赖安装失败"
+            exit 1
+        fi
+        record_component "python_dependencies" "succeeded" "Python 项目依赖已按固定清单处理"
+        if ! "$PROJECT_ROOT/scripts/chub" service-definitions; then
+            record_component "service_definitions" "failed" "Web 或 Worker 服务定义修复失败"
+            exit 1
+        fi
+        record_component "service_definitions" "succeeded" "Web 和 Worker 服务定义已重建"
+        ensure_chrome_supervisor
+        record_debug_chrome_instance_scope
+        upgrade_openclaw
         recover_worker
-        exec launchctl kickstart -k "$DOMAIN/$MACOS_LABEL"
+        exec "$PROJECT_ROOT/scripts/chub-web-restart"
         ;;
     *)
         echo "chub-system-upgrade-restart: unsupported platform: $PLATFORM" >&2

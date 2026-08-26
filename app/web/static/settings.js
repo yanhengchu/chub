@@ -4,6 +4,8 @@ const QUICK_INTERACTION_PAGE_SIZE_KEY = "hub.quickInteractionPageSize.v1";
 const CODEX_DEFAULT_PERMISSION_KEY = "hub.codexDefaultPermission.v1";
 const CODEX_DEFAULT_MODEL_KEY = "hub.codexDefaultModel.v1";
 const CODEX_DEFAULT_REASONING_EFFORT_KEY = "hub.codexDefaultReasoningEffort.v1";
+const CODEX_MODEL_PREFERENCE_CACHE_KEY = "hub.codexModelPreferenceCache";
+const WEIXIN_TRANSLATION_SETTINGS_CACHE_KEY = "hub.weixinTranslationSettingsCache";
 const CYBER_RAIN_SPEED_KEY = "hub.cyberRainSpeed.v1";
 const CYBER_RAIN_BRIGHTNESS_KEY = "hub.cyberRainBrightness.v1";
 const CYBER_RAIN_DENSITY_KEY = "hub.cyberRainDensity.v1";
@@ -52,7 +54,10 @@ const settingsNavigationLinks = document.querySelectorAll(
 );
 const settingsSections = document.querySelectorAll(".settings-content > section[id]");
 let codexModels = [];
+let codexModelsLoaded = false;
 let weixinTranslationStatus = null;
+let weixinTranslationStatusLive = false;
+let weixinTranslationCacheRestored = false;
 let weixinTranslationPollTimer = null;
 let weixinTranslationRequestVersion = 0;
 let settingsScrollFrame = null;
@@ -245,7 +250,7 @@ function selectedCodexModel() {
   return codexModels.find((model) => model.id === codexDefaultModel.value) || null;
 }
 
-function renderCodexReasoningLevels(preferred = "") {
+function renderCodexReasoningLevels(preferred = "", catalogReady = codexModelsLoaded) {
   const model = selectedCodexModel();
   const options = [createOption("", defaultReasoningOptionLabel())];
   if (model) {
@@ -258,11 +263,14 @@ function renderCodexReasoningLevels(preferred = "") {
   codexDefaultReasoningEffort.replaceChildren(...options);
   const supported = model?.levels.some((level) => level.id === preferred);
   codexDefaultReasoningEffort.value = supported ? preferred : "";
-  codexDefaultReasoningEffort.disabled = !model;
+  codexDefaultReasoningEffort.disabled = !catalogReady || !model;
   return Boolean(supported || !preferred);
 }
 
-function renderCodexModels(data) {
+function renderCodexModels(
+  data,
+  { catalogReady = codexModelsLoaded, persistFallback = false } = {},
+) {
   const models = data.models;
   const storedModel = readCodexPreference(CODEX_DEFAULT_MODEL_KEY);
   const storedEffort = readCodexPreference(
@@ -278,14 +286,18 @@ function renderCodexModels(data) {
   codexDefaultModel.replaceChildren(...options);
   const modelAvailable = models.some((model) => model.id === preferredModel);
   codexDefaultModel.value = modelAvailable ? preferredModel : "";
-  codexDefaultModel.disabled = false;
+  codexDefaultModel.disabled = !catalogReady;
   const effortAvailable = renderCodexReasoningLevels(
     modelAvailable ? preferredEffort : "",
+    catalogReady,
   );
   if (
-    (!modelAvailable && storedModel)
-    || (!storedModel && storedEffort)
-    || !effortAvailable
+    persistFallback
+    && (
+      (!modelAvailable && storedModel)
+      || (!storedModel && storedEffort)
+      || !effortAvailable
+    )
   ) {
     try {
       saveCodexPreference(CODEX_DEFAULT_MODEL_KEY, codexDefaultModel.value);
@@ -319,7 +331,11 @@ function renderWeixinTranslationModelSettings(status) {
   });
   weixinTranslationModel.replaceChildren(...options);
   weixinTranslationModel.value = status.model || "";
-  weixinTranslationModel.disabled = codexModels.length === 0 && !status.model;
+  weixinTranslationModel.disabled = (
+    !codexModelsLoaded
+    || !weixinTranslationStatusLive
+    || (codexModels.length === 0 && !status.model)
+  );
 
   const model = codexModels.find(
     (item) => item.id === weixinTranslationModel.value,
@@ -337,7 +353,11 @@ function renderWeixinTranslationModelSettings(status) {
     && model.levels.some((level) => level.id === status.reasoning_effort)
     ? status.reasoning_effort
     : "";
-  weixinTranslationReasoningEffort.disabled = !model;
+  weixinTranslationReasoningEffort.disabled = (
+    !codexModelsLoaded
+    || !weixinTranslationStatusLive
+    || !model
+  );
   weixinTranslationModelField.hidden = false;
   weixinTranslationReasoningEffortField.hidden = false;
 }
@@ -359,12 +379,38 @@ async function syncCodexSessionDefaults() {
 
 async function loadCodexModels() {
   try {
+    const cached = JSON.parse(
+      sessionStorage.getItem(CODEX_MODEL_PREFERENCE_CACHE_KEY) || "null",
+    );
+    if (Array.isArray(cached?.models)) {
+      renderCodexModels(cached, { catalogReady: false });
+    }
+  } catch (_error) {
+    try {
+      sessionStorage.removeItem(CODEX_MODEL_PREFERENCE_CACHE_KEY);
+    } catch (_storageError) {
+      // A storage failure must not block the live catalog request.
+    }
+  }
+  try {
     const response = await fetch("/api/codex/models");
     const payload = await response.json();
     if (!response.ok || payload.success !== true || !Array.isArray(payload.data?.models)) {
       throw new Error("model_catalog_unavailable");
     }
-    renderCodexModels(payload.data);
+    codexModelsLoaded = true;
+    renderCodexModels(payload.data, {
+      catalogReady: true,
+      persistFallback: true,
+    });
+    try {
+      sessionStorage.setItem(
+        CODEX_MODEL_PREFERENCE_CACHE_KEY,
+        JSON.stringify(payload.data),
+      );
+    } catch (_storageError) {
+      // A storage failure must not affect the live settings.
+    }
     if (
       readCodexPreference(CODEX_DEFAULT_MODEL_KEY)
       || readCodexPreference(CODEX_DEFAULT_REASONING_EFFORT_KEY)
@@ -397,6 +443,9 @@ async function loadCodexModels() {
     codexSessionSettingsMessage.textContent =
       "暂时无法读取 Codex 模型，已改为跟随 Codex 默认。";
     codexSessionSettingsMessage.className = "message message-error";
+    if (weixinTranslationStatus !== null && codexModels.length > 0) {
+      renderWeixinTranslationModelSettings(weixinTranslationStatus);
+    }
   }
 }
 
@@ -408,14 +457,19 @@ function settingsHeaders(includeJson = false) {
   return headers;
 }
 
-function renderWeixinTranslationStatus(status) {
+function renderWeixinTranslationStatus(status, { live = true } = {}) {
   weixinTranslationStatus = status;
+  if (live) {
+    weixinTranslationStatusLive = true;
+  }
   const selected = status.mode || (status.enabled ? "auto" : "direct");
   for (const input of weixinProcessingModeInputs) {
     input.checked = input.value === selected;
   }
-  renderWeixinTranslationModelSettings(status);
-  weixinProcessingMode.disabled = false;
+  if (codexModelsLoaded || codexModels.length > 0) {
+    renderWeixinTranslationModelSettings(status);
+  }
+  weixinProcessingMode.disabled = !weixinTranslationStatusLive;
   const active = Number(status.queued || 0) + Number(status.running || 0);
   const parts = [];
   if (active > 0) {
@@ -445,6 +499,23 @@ async function loadWeixinTranslationStatus(
   retry = false,
 ) {
   const requestVersion = ++weixinTranslationRequestVersion;
+  if (!weixinTranslationCacheRestored) {
+    weixinTranslationCacheRestored = true;
+    try {
+      const cached = JSON.parse(
+        sessionStorage.getItem(WEIXIN_TRANSLATION_SETTINGS_CACHE_KEY) || "null",
+      );
+      if (cached && typeof cached === "object") {
+        renderWeixinTranslationStatus(cached, { live: false });
+      }
+    } catch (_error) {
+      try {
+        sessionStorage.removeItem(WEIXIN_TRANSLATION_SETTINGS_CACHE_KEY);
+      } catch (_storageError) {
+        // A storage failure must not block the live settings request.
+      }
+    }
+  }
   weixinProcessingMode.disabled = true;
   try {
     const response = await fetch("/api/settings/weixin-translation", {
@@ -458,6 +529,14 @@ async function loadWeixinTranslationStatus(
       return false;
     }
     renderWeixinTranslationStatus(payload.data);
+    try {
+      sessionStorage.setItem(
+        WEIXIN_TRANSLATION_SETTINGS_CACHE_KEY,
+        JSON.stringify(payload.data),
+      );
+    } catch (_storageError) {
+      // A storage failure must not affect the live settings.
+    }
     return true;
   } catch (_error) {
     if (requestVersion !== weixinTranslationRequestVersion) {
@@ -466,8 +545,6 @@ async function loadWeixinTranslationStatus(
     weixinProcessingMode.disabled = true;
     weixinTranslationModel.disabled = true;
     weixinTranslationReasoningEffort.disabled = true;
-    weixinTranslationModelField.hidden = true;
-    weixinTranslationReasoningEffortField.hidden = true;
     weixinTranslationMessage.textContent = failureMessage;
     weixinTranslationMessage.className = "message message-error";
     if (retry) {
@@ -497,6 +574,14 @@ async function saveWeixinTranslationStatus(mode) {
       throw new Error(payload.error?.code || "settings_update_failed");
     }
     renderWeixinTranslationStatus(payload.data);
+    try {
+      sessionStorage.setItem(
+        WEIXIN_TRANSLATION_SETTINGS_CACHE_KEY,
+        JSON.stringify(payload.data),
+      );
+    } catch (_storageError) {
+      // A storage failure must not affect the live settings.
+    }
   } catch (_error) {
     await loadWeixinTranslationStatus(
       "设置结果未知，请稍后刷新页面重试。",
@@ -530,6 +615,14 @@ async function saveWeixinTranslationModelSettings() {
       throw new Error(payload.error?.code || "settings_update_failed");
     }
     renderWeixinTranslationStatus(payload.data);
+    try {
+      sessionStorage.setItem(
+        WEIXIN_TRANSLATION_SETTINGS_CACHE_KEY,
+        JSON.stringify(payload.data),
+      );
+    } catch (_storageError) {
+      // A storage failure must not affect the live settings.
+    }
   } catch (_error) {
     await loadWeixinTranslationStatus(
       "翻译模型设置结果未知，请稍后刷新页面重试。",

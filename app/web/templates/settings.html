@@ -52,62 +52,71 @@
                 <h3 id="weixin-settings-title">微信处理</h3>
                 <p>控制微信 Chub 普通任务执行前的文本处理。</p>
               </div>
-              <fieldset class="settings-choice-list" id="weixin-processing-mode" disabled>
-                <legend>正文处理方式</legend>
-                <label class="settings-choice">
-                  <span>
-                    <strong>直接执行</strong>
-                    <small>正文直接提交到指定 Session。</small>
-                  </span>
-                  <input type="radio" name="weixin-processing-mode" value="direct">
-                </label>
-                <label class="settings-choice">
-                  <span>
-                    <strong>自动润色后执行</strong>
-                    <small>先润色和翻译，再自动提交润色后的中文正文。</small>
-                  </span>
-                  <input type="radio" name="weixin-processing-mode" value="auto">
-                </label>
-                <label class="settings-choice">
-                  <span>
-                    <strong>自动润色后确认执行</strong>
-                    <small>翻译继续串行处理；收到译文后使用 <code>text</code> 指令确认或复述。</small>
-                  </span>
-                  <input type="radio" name="weixin-processing-mode" value="confirm">
-                </label>
-              </fieldset>
-              <label
-                id="weixin-translation-model-field"
-                class="settings-field"
-                for="weixin-translation-model"
-                hidden
-              >
-                <span>
-                  <strong>翻译模型</strong>
-                  <small>只影响之后新提交的文本优化任务，已提交任务继续使用原配置。</small>
-                </span>
-                <select id="weixin-translation-model" name="weixin-translation-model" disabled>
-                  <option value="">跟随 Codex 默认</option>
-                </select>
-              </label>
-              <label
-                id="weixin-translation-reasoning-effort-field"
-                class="settings-field"
-                for="weixin-translation-reasoning-effort"
-                hidden
-              >
-                <span>
-                  <strong>翻译等级</strong>
-                  <small>选择翻译模型后可指定推理等级；留空时使用该模型默认等级。</small>
-                </span>
-                <select
-                  id="weixin-translation-reasoning-effort"
-                  name="weixin-translation-reasoning-effort"
+              <div class="settings-subsection">
+                <h4 id="weixin-processing-mode-title">正文处理方式</h4>
+                <fieldset
+                  class="settings-choice-list"
+                  id="weixin-processing-mode"
+                  aria-labelledby="weixin-processing-mode-title"
                   disabled
                 >
-                  <option value="">跟随模型默认</option>
-                </select>
-              </label>
+                  <legend class="visually-hidden">正文处理方式</legend>
+                  <label class="settings-choice">
+                    <span>
+                      <strong>直接执行</strong>
+                      <small>正文直接提交到指定 Session。</small>
+                    </span>
+                    <input type="radio" name="weixin-processing-mode" value="direct">
+                  </label>
+                  <label class="settings-choice">
+                    <span>
+                      <strong>自动润色后执行</strong>
+                      <small>先润色和翻译，再自动提交润色后的中文正文。</small>
+                    </span>
+                    <input type="radio" name="weixin-processing-mode" value="auto">
+                  </label>
+                  <label class="settings-choice">
+                    <span>
+                      <strong>自动润色后确认执行</strong>
+                      <small>翻译继续串行处理；收到译文后使用 <code>text</code> 指令确认或复述。</small>
+                    </span>
+                    <input type="radio" name="weixin-processing-mode" value="confirm">
+                  </label>
+                </fieldset>
+              </div>
+              <div class="settings-subsection">
+                <h4 id="weixin-translation-model-title">正文处理模型</h4>
+                <label
+                  id="weixin-translation-model-field"
+                  class="settings-field"
+                  for="weixin-translation-model"
+                >
+                  <span>
+                    <strong>翻译模型</strong>
+                    <small>只影响之后新提交的文本优化任务，已提交任务继续使用原配置。</small>
+                  </span>
+                  <select id="weixin-translation-model" name="weixin-translation-model" disabled>
+                    <option value="">跟随 Codex 默认</option>
+                  </select>
+                </label>
+                <label
+                  id="weixin-translation-reasoning-effort-field"
+                  class="settings-field"
+                  for="weixin-translation-reasoning-effort"
+                >
+                  <span>
+                    <strong>翻译等级</strong>
+                    <small>选择翻译模型后可指定推理等级；留空时使用该模型默认等级。</small>
+                  </span>
+                  <select
+                    id="weixin-translation-reasoning-effort"
+                    name="weixin-translation-reasoning-effort"
+                    disabled
+                  >
+                    <option value="">跟随模型默认</option>
+                  </select>
+                </label>
+              </div>
               <p id="weixin-translation-message" class="message" aria-live="polite"></p>
             </section>
 

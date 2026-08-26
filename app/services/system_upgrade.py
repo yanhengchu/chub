@@ -77,6 +77,29 @@ UpgradeStage = Literal[
     "failed",
 ]
 RestartLaunchState = Literal["not_started", "launching", "launched", "failed"]
+SystemUpgradeComponent = Literal[
+    "chub_web",
+    "python_dependencies",
+    "service_definitions",
+    "quick_worker",
+    "browser_supervisor",
+    "debug_chrome_instance",
+    "openclaw",
+]
+SystemUpgradeComponentStatus = Literal["pending", "succeeded", "degraded", "failed", "skipped"]
+
+
+class SystemUpgradeComponentResult(_StrictModel):
+    component: SystemUpgradeComponent
+    status: SystemUpgradeComponentStatus
+    message: str = Field(max_length=300)
+    updated_at: datetime
+
+
+class SystemUpgradeComponentReport(_StrictModel):
+    version: Literal[1] = 1
+    operation_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    components: list[SystemUpgradeComponentResult] = Field(default_factory=list, max_length=8)
 
 
 class SystemUpgradeOperation(_StrictModel):
@@ -122,10 +145,12 @@ class SystemUpgradeOperationView(_StrictModel):
     operation_id: str
     status: UpgradeStatus
     stage: UpgradeStage
+    failed_stage: UpgradeStage | None = None
     message: str
     archived_sessions: int = Field(ge=0)
     discarded_sessions: int = Field(ge=0)
     total_sessions: int = Field(ge=0)
+    components: list[SystemUpgradeComponentResult] = Field(default_factory=list)
     updated_at: datetime
 
 
@@ -254,19 +279,22 @@ def system_upgrade_restart_readiness(
     environment: dict[str, str] | None = None,
 ) -> str | None:
     environment = os.environ if environment is None else environment
-    command = project_root / "scripts" / "chub-system-upgrade-restart"
-    try:
-        metadata = command.lstat()
-    except OSError:
-        return "系统升级服务切换脚本不可用。"
-    if (
-        not stat.S_ISREG(metadata.st_mode)
-        or stat.S_ISLNK(metadata.st_mode)
-        or metadata.st_uid != os.getuid()
-        or stat.S_IMODE(metadata.st_mode) & 0o022
-        or not os.access(command, os.X_OK)
+    for command in (
+        project_root / "scripts" / "chub-system-upgrade-start",
+        project_root / "scripts" / "chub-system-upgrade-restart",
     ):
-        return "系统升级服务切换脚本的类型、所有者或权限不安全。"
+        try:
+            metadata = command.lstat()
+        except OSError:
+            return "系统升级服务切换脚本不可用。"
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or stat.S_IMODE(metadata.st_mode) & 0o022
+            or not os.access(command, os.X_OK)
+        ):
+            return "系统升级服务切换脚本的类型、所有者或权限不安全。"
     python = project_root / ".venv" / "bin" / "python"
     if not python.is_file() or not os.access(python, os.X_OK):
         return "系统升级使用的 Python 运行环境不可用。"
@@ -284,10 +312,8 @@ def system_upgrade_restart_readiness(
                 str(Path(config_home) / "systemd" / "user"),
             )
         )
-        definitions = (
-            systemd_root / "chub.service",
-            systemd_root / "chub-quick-worker.service",
-        )
+        if not _safe_service_definition(systemd_root / "chub-system-upgrade.service"):
+            return "系统升级独立服务尚未安装或不安全，请先执行 chub system-upgrade-service。"
     elif detected_platform == "macos":
         if shutil.which("launchctl") is None:
             return "当前系统缺少 launchctl，不能执行服务切换。"
@@ -297,26 +323,109 @@ def system_upgrade_restart_readiness(
                 str(Path.home() / "Library" / "LaunchAgents"),
             )
         )
-        definitions = (
-            launch_agents / "com.chub.node.plist",
-            launch_agents / "com.chub.quick-worker.plist",
-        )
+        if not _safe_service_definition(
+            launch_agents / "com.chub.system-upgrade.plist"
+        ):
+            return "系统升级独立服务尚未安装或不安全，请先执行 chub system-upgrade-service。"
     else:
         return "当前平台不支持从页面执行系统升级。"
+    return None
 
-    for definition in definitions:
-        try:
-            metadata = definition.lstat()
-        except OSError:
-            return "Chub Web 或 Quick Worker 的服务定义尚未安装。"
+
+def _safe_service_definition(path: Path) -> bool:
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return False
+    return bool(
+        stat.S_ISREG(metadata.st_mode)
+        and not stat.S_ISLNK(metadata.st_mode)
+        and metadata.st_uid == os.getuid()
+        and not stat.S_IMODE(metadata.st_mode) & 0o077
+    )
+
+
+def component_report_path(state_file: Path) -> Path:
+    return state_file.with_name("system-upgrade-components.json")
+
+
+def load_component_report(
+    state_file: Path,
+    operation_id: str,
+) -> list[SystemUpgradeComponentResult]:
+    path = component_report_path(state_file)
+    try:
+        metadata = path.lstat()
         if (
             not stat.S_ISREG(metadata.st_mode)
             or stat.S_ISLNK(metadata.st_mode)
             or metadata.st_uid != os.getuid()
-            or stat.S_IMODE(metadata.st_mode) & 0o022
+            or stat.S_IMODE(metadata.st_mode) & 0o077
+            or metadata.st_size > MAX_STATE_BYTES
         ):
-            return "Chub Web 或 Quick Worker 的服务定义不安全。"
-    return None
+            return []
+        report = SystemUpgradeComponentReport.model_validate_json(path.read_bytes())
+    except (FileNotFoundError, OSError, ValueError, ValidationError):
+        return []
+    if report.operation_id != operation_id:
+        return []
+    return [item.model_copy(deep=True) for item in report.components]
+
+
+def record_component_result(
+    state_file: Path,
+    operation_id: str,
+    component: SystemUpgradeComponent,
+    status: SystemUpgradeComponentStatus,
+    message: str,
+) -> None:
+    path = component_report_path(state_file)
+    components = load_component_report(state_file, operation_id)
+    result = SystemUpgradeComponentResult(
+        component=component,
+        status=status,
+        message=message[:300],
+        updated_at=utc_now(),
+    )
+    components = [item for item in components if item.component != component]
+    components.append(result)
+    report = SystemUpgradeComponentReport(
+        operation_id=operation_id,
+        components=components,
+    )
+    content = report.model_dump_json().encode("utf-8") + b"\n"
+    if len(content) > MAX_STATE_BYTES:
+        raise OSError("系统升级组件状态超过大小限制。")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(path.parent, 0o700)
+    if path.is_symlink():
+        raise OSError("系统升级组件状态不得是符号链接。")
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        descriptor = os.open(
+            temporary,
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        with os.fdopen(descriptor, "wb") as report_file:
+            report_file.write(content)
+            report_file.flush()
+            os.fsync(report_file.fileno())
+        os.replace(temporary, path)
+        os.chmod(path, 0o600)
+    finally:
+        temporary.unlink(missing_ok=True)
+    log_method = (
+        LOGGER.warning
+        if status in {"degraded", "failed"}
+        else LOGGER.info
+    )
+    log_method(
+        "System upgrade component result operation_id=%s component=%s status=%s",
+        operation_id,
+        component,
+        status,
+    )
 
 
 class SystemUpgradeCoordinator:
@@ -663,6 +772,7 @@ class SystemUpgradeCoordinator:
             state.stage = "failed"
             if restart_launch_failed:
                 state.restart_launch_state = "failed"
+            state.restart_process_id = None
             state.message = message[:500]
             state.updated_at = utc_now()
             self._write(state)
@@ -674,14 +784,47 @@ class SystemUpgradeCoordinator:
     def succeed(self, operation_id: str) -> None:
         with self._lock:
             state = self._require(operation_id)
+            degraded = [
+                item.component
+                for item in load_component_report(self.path, operation_id)
+                if item.status == "degraded"
+            ]
             state.status = "succeeded"
             state.stage = "completed"
-            state.message = "系统升级与恢复已完成，服务和运行态均已确认。"
+            state.restart_process_id = None
+            state.message = "系统升级与恢复已完成，核心服务和运行态均已确认。"
+            if degraded:
+                state.message += " 独立组件降级：" + "、".join(degraded) + "。"
             state.updated_at = utc_now()
             self._write(state)
             self._state = state
             self._writes_blocked = False
         self._record(state, "succeeded")
+
+    def record_component(
+        self,
+        operation_id: str,
+        component: SystemUpgradeComponent,
+        status: SystemUpgradeComponentStatus,
+        message: str,
+    ) -> None:
+        with self._lock:
+            self._require(operation_id)
+            record_component_result(
+                self.path,
+                operation_id,
+                component,
+                status,
+                message,
+            )
+
+    def component_results(
+        self,
+        operation_id: str,
+    ) -> list[SystemUpgradeComponentResult]:
+        with self._lock:
+            self._require(operation_id)
+            return load_component_report(self.path, operation_id)
 
     def mark_started(self, operation_id: str) -> None:
         with self._lock:
@@ -713,10 +856,15 @@ class SystemUpgradeCoordinator:
                 operation_id=operation.operation_id,
                 status=operation.status,
                 stage=operation.stage,
+                failed_stage=operation.failed_stage,
                 message=operation.message,
                 archived_sessions=operation.archived_sessions,
                 discarded_sessions=operation.discarded_sessions,
                 total_sessions=len(operation.sessions),
+                components=load_component_report(
+                    self.path,
+                    operation.operation_id,
+                ),
                 updated_at=operation.updated_at,
             )
             if operation.status in {"requested", "started"}:

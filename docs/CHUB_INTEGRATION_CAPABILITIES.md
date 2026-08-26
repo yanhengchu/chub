@@ -40,13 +40,14 @@
 
 `chub check` 是只读的完整系统检查入口，依次检查项目配置、用户服务、Web 健康、Quick Worker 健康和 `/api/status` 系统状态；任一必需检查失败时返回非零退出码，不执行重启、升级或任务清理。
 
-当前三个运行部分的入口边界如下：
+当前 Chub 三个核心服务和一个第三方 Gateway 的入口边界如下：
 
 | 运行部分 | 当前状态 | 当前入口与职责 |
 | --- | --- | --- |
-| Chub Web | 已实现 | 由 `chub install/start` 管理用户服务；浏览器用于页面和快速交互 |
-| Quick Worker | 已实现 | 与 Web 分离运行但由同一 CLI 安装/启动；通过 `chub worker-health` 检查，不提供普通用户独立启动入口 |
-| ClawBot | 已接入 | 由 OpenClaw Gateway、微信通道和 Chub OpenClaw 插件共同提供；不由 `chub start` 启动，安装/配置以[插件说明](../integrations/openclaw/chub/README.md)为准 |
+| Chub | 已实现 | 由 `chub install/start` 管理用户服务；提供页面、API 和快速交互入口 |
+| Chub Quick Worker | 已实现 | 与 Chub 分离运行但由同一 CLI 安装/启动；通过 `chub worker-health` 检查，不提供普通用户独立启动入口 |
+| Chub Debug Chrome | 已实现 | Ubuntu 由独立 Supervisor 服务持有 Debug Chrome；浏览器实例按需启动，macOS 沿用现有浏览器适配 |
+| OpenClaw Gateway | 已接入 | 第三方 Gateway、微信通道和 Chub OpenClaw 插件共同提供 ClawBot；不由 `chub start` 启动，安装/配置以[插件说明](../integrations/openclaw/chub/README.md)为准 |
 
 “已接入”表示 Chub 与相关通道的接口和路由已经具备，不表示本仓库包含 OpenClaw Gateway 或腾讯微信插件的源码、安装包和账号绑定流程。新设备应先按外部项目文档安装这两项，再按已生效的[插件说明](../integrations/openclaw/chub/README.md)部署 Chub 插件并完成微信验收；[Chub CLI 分发、安装与发布设计](CHUB_CLI_DISTRIBUTION_DESIGN.md)仅记录待实现的正式分发目标。
 
@@ -68,7 +69,7 @@
 - `chub request show RN`：查看一条活动需求的标题和完整正文。
 - `chub request list`：按槽位列出全部活动需求。
 
-`RN` 只接受 `R1`–`R9`。标题最多 48 字符，正文最多 2000 字符；空正文、活动槽位已满或目标不存在时明确失败。保存和更新只在维护者明确要求后由本机编码 Agent 执行，不提供微信写入入口，也不得直接编辑需求状态文件。本机 CLI 不提供归档子命令；归档和删除使用第 4 节登记的微信固定指令。
+`RN` 只接受 `R1`–`R9`。标题最多 48 字符，正文最多 2000 字符；空正文、活动槽位已满或目标不存在时明确失败。保存和更新只在维护者明确要求后由本机编码 Agent 执行，不提供微信写入入口，也不得直接编辑需求状态文件。标准输入中的段落必须使用真实换行；调用方不得把换行预先编码为字面量 `\\n`，写入后应使用 `chub request show RN` 验证段落格式。本机 CLI 不提供归档子命令；归档和删除使用第 4 节登记的微信固定指令。
 
 需求储备的权威文件是 `data/shared/chub/requests.json`，归 Chub 共享资料所有，不属于 OpenClaw 私有数据。该文件可由维护者通过 Git 工作流同步；Chub 不自动执行 Git 操作。多设备修改产生未合并冲突、非法 JSON 或同步状态无法确认时，读写必须失败关闭，不覆盖其他设备内容。共享需求不得包含凭证、本机秘密或其他不应进入 Git 历史的内容。
 
@@ -110,7 +111,7 @@
 | 指令 | 当前行为 |
 | --- | --- |
 | `chub` / `check` / `usage` | 分别只读查询 Chub 摘要、Chub/Web/Worker/系统检查与完整额度 |
-| `help [model\|text\|session\|request\|system]` | 无参数显示紧凑索引；带主题时只显示该类的完整语法；均不附加状态尾部 |
+| `help [model\|request\|system]`、`text help`、`session help` | 无参数显示紧凑索引；带主题时只显示该类的完整语法；均不附加状态尾部 |
 | `text [mode [direct\|auto\|confirm]\|list\|ok\|next\|cancel]`、`text model list`、`text model level [M#]`、`text model use M# \| L# \| M# L#` / `text-check <English>` | 查询或调整微信后续正文处理方式、翻译任务默认模型和等级，或以英文复述确认队头 |
 | `model` / `model list` / `model level [M#]` / `model use M# \| L# \| M# L#` | 查询或配置当前 Session 后续任务的模型与推理等级 |
 | `sync` / `new [title]` / `rename <title>` / `retry` | 同步槽位、创建或重命名当前 Session，或提交待续提任务 |
@@ -132,13 +133,14 @@
 - `restart`、`restart web`、`restart worker`、`restart clawbot` 和 `upgrade` 均为精确无参数指令；大小写和首尾标点可忽略，附加任何正文时回退为普通任务。`restart` 与 `restart web` 都只作用于 Web；其余三条分别只作用于 Quick Worker、ClawBot 或系统升级与恢复，不把目标名称交给客户端自由解析。
 - `restart worker` 会立即登记恢复操作，取消排队任务并停止执行中任务，不自动重放；`restart clawbot` 会在当前 OpenClaw 调度请求返回后异步执行，先同步固定兼容基线，再重启 Gateway，并在最终状态确认后发送独立结果。
 - `upgrade` 不接受版本号、路径或其他参数；升级方案不可用时按固定规则降级为当前版本运行态恢复，并明确不执行代码版本升级。升级受理后通过独立完成通知返回最终结果；不再提供微信 `upgrade status` 固定指令。系统升级页面和固定 API 的只读状态查询仍然保留。
+- `upgrade` 的最终组件状态会区分 Chub Debug Chrome 服务与 Debug Chrome 浏览器实例：前者确认服务可用，后者记录为未纳入升级且不会自动启动；浏览器实例仍由工作站环境统一控制，自动化只负责使用它执行飞书任务。
 - `usage` 是精确无参数指令；大小写和首尾标点可忽略，附加任何正文时回退为普通任务。
 - `model` 是精确无参数指令；大小写和首尾标点可忽略，附加任何正文时回退为普通任务。它返回当前绑定 Session 最近一次已确认的 active 模型和推理等级；active 值缺失时继续读取该 Session 配置与 Runtime 模型目录默认值。若当前 Session 已为后续任务保存不同的模型或等级，只为不同字段额外显示 `Next model` 或 `Next level`，不把保存成功误报为已运行任务已切换。Runtime 目录无法读取或仍未提供某字段时才显示 `Default`，当前 Session 不存在或无法读取时失败关闭，不附加 Session 列表或额度尾部。
 - `model list` 是精确无参数指令；它显示当前 Session 为下一任务配置的模型，并以 `M1`…列出 Runtime 模型目录中当前可用的模型 ID。列表用于帮助选择，但不是后续切换的前置步骤；目录或当前模型无法确认时失败关闭，不返回残缺列表。
 - `model level` 可不带参数，或携带 `M#`。无参数时显示当前 Session 为下一任务配置的模型、当前等级及该模型的 `L1`…列表；带 `M#` 时按本次请求读取的当前 Runtime 目录选择目标模型，并只显示其 `L#` 列表而不切换。无需先执行 `model list`；索引、目录、模型、当前等级或等级列表无法确认时失败关闭。
 - `model use M# | L# | M# L#` 是精确参数指令。每次请求直接读取当前 Runtime 模型目录解析索引，无需先执行 `model list` 或 `model level`：仅模型时使用目标模型声明的默认等级；仅等级时保持当前模型；二者同时提供时，`L#` 按该目标模型本次可用等级列表解析并原子保存。切换只允许当前 `quick` Session 空闲且没有 Runtime writer 或 Worker 任务时执行，只影响后续任务，不改变已经运行的任务；成功回执显示实际保存的下一任务模型和等级。目录可能在两次消息之间变化，因此回执是最终选择依据；目录、索引、兼容性、空闲状态或保存结果不能确认时失败关闭，不部分更新、不猜测且不接受原始模型或等级 ID。
 - `text` 是翻译处理方式的综合只读入口，返回当前 mode、翻译默认 model/level 和当前可操作确认项；`text model list`、`text model level [M#]` 和 `text model use M# | L# | M# L#` 使用同一组 `M#`/`L#` 语法，分别用于选择和切换翻译任务默认配置。读取设置页保存的翻译模型和等级，或读取当前 Runtime 目录展示可用选择；仅等级切换要求已有翻译模型，模型切换默认使用目标模型声明的默认等级。切换只保存下一次翻译任务提交时携带的模型和等级，不读取、切换或门禁隐藏翻译 Session，也不修改已进入队列或已运行任务；未选择模型和等级时继续跟随 Runtime 默认。目录、索引、兼容性或保存结果无法确认时失败关闭，不部分更新、不猜测且不接受原始模型或等级 ID。
-- `help`、`help model`、`help text`、`help session`、`help request` 和 `help system` 是精确帮助指令。顶层帮助只显示符号说明、常用指令和主题入口；主题帮助只展示本类完整语法。未知帮助主题按原文作为普通任务提交。
+- `help`、`help model`、`text help`、`session help`、`help request` 和 `help system` 是精确帮助指令。顶层帮助只显示符号说明、常用指令和主题入口；主题帮助只展示本类完整语法。未知帮助主题按原文作为普通任务提交。
 - 无参数指令必须整句匹配。`S#` 后的剩余内容始终作为普通任务正文；例如 `S2 retry` 是切换并提交正文 `retry`，不会触发续提指令。`new retry` 作为普通任务，不创建 Session 或续提任务。
 - 只有表内英文规范格式属于固定指令。未登记的 `sn ...`、`session ...` 形式、旧别名和旧槽位写法均作为普通任务，不猜测为固定指令。
 - 指令解析必须整体判定槽位；`S10` 等不匹配后作为普通任务，不得误解析成 `S1` 加正文。
@@ -182,11 +184,12 @@
 | 规则 | 契约 |
 | --- | --- |
 | 固定文案 | 默认使用英文；任务标题保留来源原文，Session 名称按任务保存的 `session_id` 在展示时读取当前值 |
-| 帮助清单 | `help` 只显示符号说明、Quick 的 `chub · sync · new [title] · S# [task]` 与五个主题入口；各主题帮助分别显示本类完整语法，标题统一为 `Commands · <Topic>`；标题与每项均为独立段落 |
+| 帮助清单 | `help` 只显示符号说明、Quick 的 `chub · sync · new [title] · S# [task]` 与五个主题入口；文本和会话主题使用 `text help`、`session help`，其余主题使用 `help <topic>`；各主题帮助分别显示本类完整语法，标题统一为 `Commands · <Topic>`；标题与每项均为独立段落 |
 | Session 行 | `[▶ ]S<槽位>[ !] · <标题>`；`▶` 仅表示当前绑定，`!` 表示不可用或状态未知 |
 | Task 行 | `Task · <摘要>`；无可信摘要时使用 `Task · Running`；无 Task 行表示没有运行任务 |
 | Request 行 | `R<槽位> · <标题>`用于`chub`列表和需求查询结果 |
 | 成功任务回执 | `状态`、`Sessions`、全部已登记 Session 及各自运行 Task；可用 Session 不显示 Task |
+| `chub` 状态回执 | 首行使用本地 `node.name`，格式为 `<node.name> chub · <耗时>`，后续状态内容保持不变 |
 | 失败任务回执 | `状态`、可信目标 Session、Task 依次使用独立段落；无法确认目标时省略 Session |
 | 段落 | Session、Task、结果正文和帮助项不得用可能被电脑微信折叠的单换行分隔 |
 | 空状态 | 无 Session 时显示`No sessions`；无活动需求时显示`No requests`；读取失败显示对应`Unavailable`或`Weekly Unavailable` |

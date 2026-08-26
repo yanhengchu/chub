@@ -30,7 +30,7 @@ async function loadStatus() {
       setBadge(elements.chubServiceBadge, "刷新失败", "failed");
       setMessage(
         elements.chubServiceMessage,
-        "Chub Web 状态刷新失败，当前展示上次检测结果。",
+        "Chub 状态刷新失败，当前展示上次检测结果。",
         "error",
       );
     }

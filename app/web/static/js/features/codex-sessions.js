@@ -2,6 +2,7 @@
 
 const CODEX_CARD_CACHE_KEY = "hub.codexCardCache";
 const CODEX_MODEL_PREFERENCE_CACHE_KEY = "hub.codexModelPreferenceCache";
+const WEIXIN_TRANSLATION_SETTINGS_CACHE_KEY = "hub.weixinTranslationSettingsCache";
 const CODEX_DEFAULT_PERMISSION_KEY = "hub.codexDefaultPermission.v1";
 const CODEX_DEFAULT_MODEL_KEY = "hub.codexDefaultModel.v1";
 const CODEX_DEFAULT_REASONING_EFFORT_KEY = "hub.codexDefaultReasoningEffort.v1";
@@ -875,6 +876,34 @@ function storeCodexModelPreferenceCache(data) {
   }
 }
 
+function storeWeixinTranslationSettingsCache(data) {
+  try {
+    sessionStorage.setItem(
+      WEIXIN_TRANSLATION_SETTINGS_CACHE_KEY,
+      JSON.stringify(data),
+    );
+  } catch {
+    // A storage failure must not affect the home page.
+  }
+}
+
+async function loadWeixinTranslationSettingsPreference() {
+  if (!hasProtectedAccess()) {
+    return;
+  }
+  const requestVersion = accessVersion;
+  try {
+    const data = await apiFetch("/api/settings/weixin-translation");
+    if (requestVersion === accessVersion && data && typeof data === "object") {
+      storeWeixinTranslationSettingsCache(data);
+    }
+  } catch (error) {
+    if (requestVersion === accessVersion) {
+      handleAccessError(error);
+    }
+  }
+}
+
 async function loadCodexModelPreference() {
   if (!elements.codexModelPreference || !hasProtectedAccess()) {
     return;
@@ -1255,6 +1284,7 @@ async function loadCodexSessions(options = {}) {
             }
           });
         }
+        void loadWeixinTranslationSettingsPreference();
         void loadCodexQuota({ force: refreshQuota });
       }
       const data = await apiFetch(codexSessionListUrl());

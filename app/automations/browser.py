@@ -93,7 +93,12 @@ def browser_profiles() -> tuple[list[BrowserProfileInfo], str | None]:
     return profiles, source_error
 
 
-def initialize_and_start_debug_chrome(profile_id: str, mode: str = "headless"):
+def initialize_and_start_debug_chrome(
+    profile_id: str,
+    mode: str = "headless",
+    *,
+    supervisor_socket: Path | None = None,
+):
     chrome_debug = _chrome_debug_module()
     chrome_profiles, copy_profile, profile_store = _profile_modules()
     profiles, _ = browser_profiles()
@@ -109,7 +114,7 @@ def initialize_and_start_debug_chrome(profile_id: str, mode: str = "headless"):
             close_running=False,
         )
     profile_store.select_profile(chrome_debug.DEFAULT_USER_DATA_DIR, profile_id)
-    current = chrome_debug.start(headless=mode == "headless")
+    current = start_debug_chrome(mode, supervisor_socket=supervisor_socket)
     if current.state != "running" or current.profile_directory != profile_id:
         raise RuntimeError("Debug Chrome did not start with the selected profile")
     return current
@@ -123,7 +128,12 @@ def cleanup_interrupted_profile_copy() -> None:
         copy_profile.cleanup_stale_staging(target)
 
 
-def select_and_start_debug_chrome(profile_id: str, mode: str = "headless"):
+def select_and_start_debug_chrome(
+    profile_id: str,
+    mode: str = "headless",
+    *,
+    supervisor_socket: Path | None = None,
+):
     chrome_debug = _chrome_debug_module()
     _, _, profile_store = _profile_modules()
     profiles, _ = browser_profiles()
@@ -131,15 +141,23 @@ def select_and_start_debug_chrome(profile_id: str, mode: str = "headless"):
     if selected is None or not selected.initialized:
         raise RuntimeError("Debug Chrome profile is not initialized")
     profile_store.select_profile(chrome_debug.DEFAULT_USER_DATA_DIR, profile_id)
-    current = chrome_debug.start(headless=mode == "headless")
+    current = start_debug_chrome(mode, supervisor_socket=supervisor_socket)
     if current.state != "running" or current.profile_directory != profile_id:
         raise RuntimeError("Debug Chrome did not start with the selected profile")
     return current
 
 
-def debug_chrome_status() -> tuple[str, str, str | None]:
+def debug_chrome_status(
+    *,
+    supervisor_socket: Path | None = None,
+) -> tuple[str, str, str | None]:
     try:
-        current = _chrome_debug_module().status()
+        if supervisor_socket is not None:
+            from app.automations.chrome_supervisor import request
+
+            current = request(supervisor_socket, "status")
+        else:
+            current = _chrome_debug_module().status()
     except Exception:
         return "unavailable", "无法检查状态", None
     if current.state == "running":
@@ -153,17 +171,37 @@ def debug_chrome_status() -> tuple[str, str, str | None]:
     return "invalid", "状态异常", None
 
 
-def current_debug_chrome_profile() -> str | None:
+def current_debug_chrome_profile(
+    *,
+    supervisor_socket: Path | None = None,
+) -> str | None:
     try:
-        current = _chrome_debug_module().status()
+        if supervisor_socket is not None:
+            from app.automations.chrome_supervisor import request
+
+            current = request(supervisor_socket, "status")
+        else:
+            current = _chrome_debug_module().status()
     except Exception:
         return None
     return current.profile_directory if current.state == "running" else None
 
 
-def start_debug_chrome(mode: str = "headless"):
+def start_debug_chrome(
+    mode: str = "headless",
+    *,
+    supervisor_socket: Path | None = None,
+):
+    if supervisor_socket is not None:
+        from app.automations.chrome_supervisor import request
+
+        return request(supervisor_socket, "start", mode=mode)
     return _chrome_debug_module().start(headless=mode == "headless")
 
 
-def stop_debug_chrome():
+def stop_debug_chrome(*, supervisor_socket: Path | None = None):
+    if supervisor_socket is not None:
+        from app.automations.chrome_supervisor import request
+
+        return request(supervisor_socket, "stop")
     return _chrome_debug_module().stop()

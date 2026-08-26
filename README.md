@@ -24,9 +24,10 @@ Chub 是面向个人设备、本地优先的轻量 AI 工作站控制面。它�
 
 ```text
 Browser / Android Browser / Chub CLI
-  -> Chub Web、API、WebSocket 和固定本机入口
-       |-> Quick Worker -> 固定 Runtime Runner -> Codex Runner
+  -> Chub、API、WebSocket 和固定本机入口
+       |-> Chub Quick Worker -> 固定 Runtime Runner -> Codex Runner
        |-> ttyd -> 固定 tmux carrier -> Codex 实时终端
+       |-> Chub Debug Chrome -> Debug Chrome 浏览器实例
        |-> OpenClaw Plugin -> 微信固定调度 API
        |-> Automation Runner -> Debug Chrome / 固定扩展
        `-> Notification Service -> 预配置飞书目标
@@ -125,14 +126,21 @@ chub logs
 chub uninstall
 ```
 
-macOS 使用两个独立 LaunchAgent，Ubuntu 使用两个独立 systemd user service，分别承载 Web 和
-Quick Worker。`chub restart` 只重启 Web，不停止 Worker；`chub status` 同时显示两个服务，
+macOS 使用 Chub、Chub Quick Worker 和系统升级执行器三个独立 LaunchAgent，Ubuntu 使用 Chub、Chub Quick Worker、Chub Debug Chrome
+和系统升级执行器四个独立 systemd user service。`chub restart` 只重启 Chub，不停止 Chub Quick Worker 或 Chub Debug Chrome；`chub status` 同时显示
+这些服务，
 `chub check` 汇总项目配置、服务、Web、Quick Worker 和系统状态并在检查失败时返回非零码；
 `chub worker-health` 通过本机私有 IPC 读取 Worker 健康信息；`chub worker-drain` 停止接收新任务并等待已受理任务收敛；`chub worker-reload` 关闭新提交、清理排队和执行中的任务、独立重载 Worker 并确认新 generation 健康；`chub worker-recover` 保留为本机服务恢复入口。`worker-drain`、`worker-reload` 和 `worker-recover` 只在本机终端执行，不能从正在运行的快速任务内部调用；首页“工作站环境”确认后可在 Worker 健康、忙碌、协议不兼容或不可达时重启并清理 Worker 任务。当前 Worker 已经接管页面、微信和翻译快速任务；
 macOS 与 Ubuntu 均已确认单独重启 Web 不会停止 Worker、Runner 或现有任务，恢复后的结果和通知不会重复。
 Worker 不健康时，快速交互 Session 写操作保持失败关闭，不回退到 Web Runner；实时终端使用独立的 Codex PTY/tmux 链路。
+Ubuntu 的自动化 Debug Chrome 由独立 Supervisor 持有，Web 只通过本机受限 socket 请求启动、停止和查询；Supervisor
+不可用时自动化浏览器控制失败关闭，不回退为 Web 子进程启动。`chub stop` 和 `chub uninstall` 会停止该 Supervisor
+及其受管浏览器；macOS 继续使用现有 LaunchAgent 与浏览器生命周期。系统升级服务切换和 Worker 恢复会自动补齐、启用并确认
+Ubuntu Supervisor 的服务定义，不再要求为这两个恢复入口手动重复执行完整 `chub install`。Supervisor 服务恢复不代表受管 Debug Chrome 浏览器实例已启动；浏览器实例仍由工作站环境单独按需启动，自动化环境只负责飞书登录检查与任务执行，系统升级流程不会自动启动它。首次安装 Chub 或服务定义发生变化时，仍需执行一次 `chub install`，以安装独立的系统升级执行器。
 
-`chub install`、`chub stop` 和 `chub uninstall` 仍默认拒绝中断活动或排队任务，并在空闲时先关闭 Worker 提交门禁；Quick Worker 专用的 `worker-reload` 是恢复入口，确认后会取消排队任务、停止执行中任务并重建 Worker，不自动重放。跨协议升级使用 `chub install --force` 统一安装当前版本并直接清理旧 Worker 数据；旧任务会被中断且不可恢复，不保留读取或迁移逻辑。
+`chub install`、`chub stop` 和 `chub uninstall` 仍默认拒绝中断活动或排队任务，并在空闲时先关闭 Worker 提交门禁；Quick Worker 专用的 `worker-reload` 是恢复入口，确认后会取消排队任务、停止执行中任务并重建 Worker，不自动重放。跨协议升级统一使用首页或微信 `upgrade` 的系统升级与恢复流程，直接清理旧 Worker 数据并确认目标协议；旧任务会被中断且不可恢复，不保留读取或迁移逻辑。
+`chub system-upgrade-service` 是独立的本机恢复入口，只安装或恢复升级执行器；发现未完成的升级操作时会启动该执行器，不停止无关服务。
+首次安装、移动项目目录或修改 Web/Worker/Chrome/系统升级服务定义后，必须先从本机终端执行 `chub install`；如果已有未完成的升级操作，`chub install` 会安全拒绝，此时先执行 `chub system-upgrade-service` 恢复操作，待最终状态确认后再重新安装服务定义。
 
 当前 `chub` CLI 是仓库内的本机服务管理入口；项目尚未发布 npm/PyPI 或独立发行包。新设备的目标流程、核心 Chub（含自动运行的 Quick Worker）与可选 ClawBot 的职责、npm 发布、版本管理和 GitHub Release 目标见 [Chub CLI 分发、安装与发布设计](docs/CHUB_CLI_DISTRIBUTION_DESIGN.md)。服务直接依赖当前工作区和 `.venv`；移动目录或变更服务定义后需要重新安装。Web 配置变更使用
 `chub restart` 生效；Worker 代码升级使用 `chub worker-reload`，Worker 失败恢复使用首页入口或 `chub worker-recover`，只有服务定义变化时才需要重新执行安装。
@@ -143,7 +151,7 @@ Worker 不健康时，快速交互 Session 写操作保持失败关闭，不回�
 
 Codex PTY 依赖 `codex`、`ttyd` 和 `tmux`。安装服务时，Chub 会从当前终端 `PATH` 记录所需程序路径。
 
-普通 Web 重启只重启 Chub Web 控制面，不停止独立的 Quick Worker 或 OpenClaw Gateway；已接受的快速任务继续运行。它会关闭并在需要时重建 Chub 自己的 `ttyd` Web 桥，但保留固定 tmux 和原生 Codex；再次进入同一
+普通 Chub 重启只重启 Chub 控制面，不停止独立的 Chub Quick Worker 或 OpenClaw Gateway；已接受的快速任务继续运行。它会关闭并在需要时重建 Chub 自己的 `ttyd` Web 桥，但保留固定 tmux 和原生 Codex；再次进入同一
 实时 Session 时会重新连接原 tmux。升级/恢复清理 Chub 运行态后，新实例按升级操作保存的旧逻辑 ID
 与原生 Session ID 关联，自动重新绑定仍存在的 Chub tmux。
 原生 Codex 不会因此被重启；若进程仍携带旧的 Chub 标识，Hook 会通过受控别名把 Activity 事件写入新的 Session。
@@ -161,7 +169,7 @@ Session、Activity、usage 投影、槽位、标题和入口语义见[Chub AI Se
 
 ### 轻量需求储备
 
-轻量需求储备使用 `R1`–`R9` 九个活动槽位，不创建专用 Session。维护者明确要求保存或更新已经讨论成型的小需求后，编码 Agent 通过本机 `chub request save` 或 `chub request update` 受控写入；`chub request list` 和 `chub request show` 用于检查活动需求。需求权威文件位于 `data/shared/chub/requests.json`，属于 Chub 共享资料，可由维护者通过 Git 提交和同步；Chub 不自动执行 `pull`、`commit` 或 `push`。保存和更新从标准输入读取完整正文，不直接编辑状态文件。
+轻量需求储备使用 `R1`–`R9` 九个活动槽位，不创建专用 Session。维护者明确要求保存或更新已经讨论成型的小需求后，编码 Agent 通过本机 `chub request save` 或 `chub request update` 受控写入；`chub request list` 和 `chub request show` 用于检查活动需求。需求权威文件位于 `data/shared/chub/requests.json`，属于 Chub 共享资料，可由维护者通过 Git 提交和同步；Chub 不自动执行 `pull`、`commit` 或 `push`。保存和更新从标准输入读取完整正文，必须保留真实换行，不得将换行写成字面量 `\\n`；写入后应使用 `chub request show RN` 检查段落格式。不直接编辑状态文件。
 
 微信 Chub 模式可在状态摘要中查看活动需求，并归档或删除指定需求。需求执行由维护者在 AI 对话中发送普通任务完成，不提供微信固定执行指令。完整的本机命令、微信语法、长度限制和失败语义见[Chub 集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md)；OpenClaw 定制、微信路由、持久化和通知边界见[OpenClaw 定制集成设计](docs/OPENCLAW_CUSTOMIZATION_DESIGN.md)。
 
@@ -224,7 +232,7 @@ Chub 使用独立 Debug Chrome 执行配置驱动的浏览器任务。公共任�
 cp config/automations.example.yaml config/automations.local.yaml
 ```
 
-首页“自动化任务”卡片管理浏览器环境、检查站点登录状态并运行任务；命令行也可调用统一 Runner：
+首页“工作站环境”卡片管理 Chub Debug Chrome，自动化任务卡片检查飞书登录状态并运行任务；命令行也可调用统一 Runner：
 
 ```bash
 .venv/bin/python -m app.automations.command run <task-id>
@@ -257,7 +265,9 @@ Runner 不会自行启动或停止 Debug Chrome。浏览器 Profile 未初始化
 
 共享需求文件由 Git 工作流同步，不由后台服务自动合并。多台设备同时修改可能产生 Git 冲突；发现冲突、非法 JSON 或未完成合并时，需求读写必须失败关闭，不覆盖其他设备内容。共享需求不得保存 Token、Cookie、账号凭证、本机秘密或其他不适合进入 Git 历史的内容。
 
-首页“工作站环境”提供受控的“系统升级与恢复”状态行。它统一执行已准备的版本切换或当前版本的运行态恢复；确认后冻结受影响的 Chub AI Runtime 写入、停止 Quick Worker，在途快速任务终止并清理 Chub Session 关联、Hook 与固定 Worker 运行态。Codex 原生 Session、配置、日志、项目资料和业务数据不归档、不删除；新实例会重新发现仍存在的原生 Session。无需等待任务自然排空；启动只校验固定切换脚本、已安装服务定义和运行态清理路径，不以当前 Web 或 Worker 状态作为门禁。准备中的升级方案无法读取或校验时，入口降级为当前版本运行态恢复，并明确不执行代码版本升级。只有新 Web/Worker、Session 映射读取和微信 Chub Session 快照均完成最终验证，操作才标记完成；清理或服务切换失败会保持 AI Runtime 写入失败关闭，但在当前固定恢复目标和服务预检通过时释放 Web/Worker/升级入口，允许维护者继续重启或恢复。该入口不下载代码、不接受客户端路径或命令，也不提供任意数据清理。
+首页“工作站环境”提供受控的“系统升级与恢复”状态行。它统一执行已准备的版本切换或当前版本的运行态恢复；确认后冻结受影响的 Chub AI Runtime 写入，并由独立于 Chub 的平台服务执行器负责停止 Chub、Chub Quick Worker 和 Ubuntu Chub Debug Chrome，终止在途快速任务并清理 Chub 自有 Session 关联、Hook 与固定 Worker 运行态。Ubuntu 使用独立的 systemd user oneshot service，macOS 使用独立的 LaunchAgent；Chub 只创建持久化操作并启动执行器，不直接持有升级进程。随后按固定边界处理当前工作区代码对应的 Python 依赖、重建 Chub/Chub Quick Worker/Chub Debug Chrome 服务定义、恢复 Quick Worker 协议，并同步 OpenClaw 插件、适配器和补丁基线。每个组件结果同时写入受限状态文件和升级执行器日志，日志只记录 operation ID、固定组件名和状态。Debug Chrome 浏览器实例不属于本流程的启动目标，结果明确记录为“未纳入升级”；它的未启动状态不构成升级失败。Codex 原生 Session、配置、日志、项目资料和业务数据不归档、不删除；新实例会重新发现仍存在的原生 Session。准备中的升级方案无法读取或校验时，入口降级为当前版本运行态恢复，并明确不执行代码版本升级。Chub、Python 依赖、服务定义和 Chub Quick Worker 是核心组件，失败会保留失败态并提供恢复重试；Chub Debug Chrome 和 OpenClaw Gateway 是独立组件，失败记录为降级但不阻断核心服务恢复。只有新 Chub/Chub Quick Worker、Session 映射和各组件结果均已记录后，操作才标记完成。该入口不执行 Git 同步、不接受客户端路径或命令，也不提供任意数据清理。
+
+最终确认 Quick Worker 健康后，若存在更早的独立 Worker 重启终态记录，系统会将其从当前状态投影中清理；历史操作日志仍保留，失败中的新操作不会被升级成功结果掩盖。
 
 `scripts/chub-data-migrate` 只保留给历史安装的数据目录整理，不参与 AI Session 或 Worker 协议升级。新的持久化协议切换统一使用上述受控升级流程，直接清理方案白名单内的旧运行数据，不增加启动迁移、双写或旧格式兼容读取。脚本会同时迁移微信 Chub 模式和正文处理的私有状态；历史需求储备迁移到 `data/shared/chub/requests.json` 时，只合并不冲突的槽位。非法内容、重复槽位或同一槽位内容冲突会停止并保留原文件，不能覆盖共享资料。
 
@@ -316,6 +326,8 @@ CHUB_BROWSER_TESTS=1 .venv/bin/python -m pytest \
   tests/test_web_quota_browser.py \
   tests/test_quick_interaction_browser.py
 ```
+
+测试涉及服务定义、服务日志或平台维护脚本时，必须使用临时 `HOME`、`CHUB_SYSTEMD_USER_DIR` 和 `CHUB_SERVICE_LOG_DIR`；替身服务管理器只能写入测试临时目录，不得写入真实 `~/.config/systemd/user`、本机日志或运行态。测试配置中的 `server.tailnet_host` 可以保持为空，但不得因此改变正式服务配置或污染正式运行环境。
 
 ## 核心项目文档
 

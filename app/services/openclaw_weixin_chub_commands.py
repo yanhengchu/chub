@@ -10,7 +10,6 @@ from typing import Literal
 CHUB_STATUS_PROMPT = "chub"
 CHUB_CHECK_PROMPT = "check"
 CHUB_HELP_PROMPT = "help"
-CHUB_HELP_TOPICS = frozenset({"model", "text", "session", "request", "system"})
 CHUB_USAGE_PROMPT = "usage"
 TEXT_PROMPT = "text"
 TEXT_CHECK_PROMPT = "text-check"
@@ -181,6 +180,17 @@ def parse_weixin_chub_command(prompt: str) -> WeixinChubCommand:
         return WeixinChubCommand("check", normalized)
     if folded == CHUB_USAGE_PROMPT:
         return WeixinChubCommand("usage", normalized)
+    help_parts = folded.split()
+    if help_parts == [CHUB_HELP_PROMPT]:
+        return WeixinChubCommand("help", normalized)
+    if (
+        len(help_parts) == 2
+        and help_parts[0] == CHUB_HELP_PROMPT
+        and help_parts[1] in {"model", "request", "system"}
+    ):
+        return WeixinChubCommand("help", normalized, task_prompt=help_parts[1])
+    if help_parts in [["text", CHUB_HELP_PROMPT], ["session", CHUB_HELP_PROMPT]]:
+        return WeixinChubCommand("help", normalized, task_prompt=help_parts[0])
     text_parts = normalized.split()
     text_check_parts = normalized.split(maxsplit=1)
     if text_check_parts and text_check_parts[0].casefold() == TEXT_CHECK_PROMPT:
@@ -246,11 +256,6 @@ def parse_weixin_chub_command(prompt: str) -> WeixinChubCommand:
                         ),
                     )
         return WeixinChubCommand("text_control", normalized, invalid_usage=True)
-    help_parts = folded.split()
-    if help_parts == [CHUB_HELP_PROMPT]:
-        return WeixinChubCommand("help", normalized)
-    if len(help_parts) == 2 and help_parts[0] == CHUB_HELP_PROMPT and help_parts[1] in CHUB_HELP_TOPICS:
-        return WeixinChubCommand("help", normalized, task_prompt=help_parts[1])
     if folded == CHUB_MODEL_PROMPT:
         return WeixinChubCommand("model", normalized)
     if folded == CHUB_MODEL_LIST_PROMPT:

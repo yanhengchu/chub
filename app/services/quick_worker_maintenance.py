@@ -151,6 +151,24 @@ class QuickWorkerReloadCoordinator:
                 updated_at=self._state.updated_at,
             )
 
+    def clear_terminal_operation(self) -> bool:
+        """Forget a completed reload result after a newer recovery is confirmed."""
+        with self._lock:
+            if self._state is None or self._state.status not in {"succeeded", "failed"}:
+                return False
+            try:
+                self.path.unlink(missing_ok=True)
+            except OSError:
+                self._state_error = True
+                LOGGER.warning(
+                    "Unable to clear completed Quick Worker reload result",
+                    exc_info=True,
+                )
+                return False
+            self._state = None
+            self._state_error = False
+            return True
+
     def begin(
         self,
         old_generation: str | None,

@@ -20,6 +20,7 @@ from app.services.system_upgrade import (
     SystemUpgradeCoordinator,
     SystemUpgradeSession,
     load_system_upgrade_plan,
+    load_component_report,
     runtime_recovery_plan,
     system_upgrade_restart_readiness,
 )
@@ -128,19 +129,22 @@ def test_app_uses_ai_session_manager_without_reading_legacy_store(
         application.state.codex_pty_manager.close()
 
 
-def test_restart_environment_requires_fixed_service_definitions(
+def test_restart_environment_repairs_missing_service_definitions(
     tmp_path: Path,
 ) -> None:
     project_root = tmp_path / "project"
-    script = project_root / "scripts" / "chub-system-upgrade-restart"
+    scripts = (
+        project_root / "scripts" / "chub-system-upgrade-start",
+        project_root / "scripts" / "chub-system-upgrade-restart",
+    )
     python = project_root / ".venv" / "bin" / "python"
     systemd_root = tmp_path / "systemd"
-    for path in (script, python):
+    for path in (*scripts, python):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
         path.chmod(0o700)
     systemd_root.mkdir()
-    for name in ("chub.service", "chub-quick-worker.service"):
+    for name in ("chub-system-upgrade.service",):
         target = systemd_root / name
         target.write_text("[Service]\n", encoding="utf-8")
         target.chmod(0o600)
@@ -155,8 +159,8 @@ def test_restart_environment_requires_fixed_service_definitions(
             )
             is None
         )
-        (systemd_root / "chub-quick-worker.service").unlink()
-        assert "尚未安装" in system_upgrade_restart_readiness(
+        (systemd_root / "chub-system-upgrade.service").unlink()
+        assert "独立服务" in system_upgrade_restart_readiness(
             project_root,
             "ubuntu",
             environment=environment,
@@ -185,9 +189,69 @@ def test_coordinator_blocks_writes_and_releases_before_destructive_failure(
     )
 
     assert coordinator.writes_blocked() is True
+    coordinator.update(operation.operation_id, restart_process_id=os.getpid())
     coordinator.fail(operation.operation_id, "preflight failed")
     assert coordinator.writes_blocked() is False
+    failed = coordinator.operation()
+    assert failed is not None
+    assert failed.restart_process_id is None
     assert calls == [operation.operation_id]
+
+
+def test_component_results_are_persisted_and_degraded_state_is_visible(
+    tmp_path: Path,
+) -> None:
+    plan_path = tmp_path / "plan.json"
+    write_plan(plan_path)
+    loaded = load_system_upgrade_plan(plan_path)
+    assert loaded is not None
+    state_path = tmp_path / "state" / "system-upgrade.json"
+    coordinator = SystemUpgradeCoordinator(state_path, plan_path, "old-instance")
+    operation = coordinator.begin(
+        loaded,
+        source_ip="127.0.0.1",
+        old_worker_generation=None,
+        runner=lambda _operation_id: None,
+    )
+
+    coordinator.record_component(
+        operation.operation_id,
+        "browser_supervisor",
+        "degraded",
+        "Supervisor unavailable",
+    )
+    coordinator.record_component(
+        operation.operation_id,
+        "quick_worker",
+        "succeeded",
+        "Worker ready",
+    )
+    coordinator.record_component(
+        operation.operation_id,
+        "debug_chrome_instance",
+        "skipped",
+        "Browser instance is outside the upgrade scope",
+    )
+    coordinator.update(
+        operation.operation_id,
+        restart_process_id=os.getpid(),
+    )
+
+    report = load_component_report(state_path, operation.operation_id)
+    assert {item.component: item.status for item in report} == {
+        "browser_supervisor": "degraded",
+        "debug_chrome_instance": "skipped",
+        "quick_worker": "succeeded",
+    }
+    status = coordinator.status_data(loaded, session_count=0)
+    assert status.operation is not None
+    assert status.operation.components[0].component == "browser_supervisor"
+
+    coordinator.succeed(operation.operation_id)
+    completed = coordinator.operation()
+    assert completed is not None
+    assert "browser_supervisor" in completed.message
+    assert completed.restart_process_id is None
 
 
 def test_coordinator_keeps_gate_closed_after_runtime_state_cleanup_failure(
@@ -622,6 +686,7 @@ def test_system_upgrade_restart_uses_fixed_linux_services(
     shutil.copytree(PROJECT_ROOT / "scripts", workspace / "scripts")
     shutil.copytree(PROJECT_ROOT / "app", workspace / "app")
     (workspace / ".venv").symlink_to(PROJECT_ROOT / ".venv", target_is_directory=True)
+    (workspace / "main.py").symlink_to(PROJECT_ROOT / "main.py")
     (workspace / "config").mkdir()
     config_path = workspace / "config" / "settings.local.yaml"
     config_path.write_text(
@@ -653,11 +718,24 @@ def test_system_upgrade_restart_uses_fixed_linux_services(
     environment.pop("CHUB_ACTIVITY_SOURCE", None)
     environment.update(
         {
-            "PATH": f"{fake_bin}:{environment['PATH']}",
+            "HOME": str(tmp_path / "home"),
+            "PATH": f"{fake_bin}:/usr/bin:/bin",
             "CHUB_TEST_PLATFORM": "Linux",
             "CHUB_TEST_CALLS": str(calls),
+            "CHUB_SYSTEMD_USER_DIR": str(tmp_path / "systemd"),
+            "CHUB_SERVICE_LOG_DIR": str(tmp_path / "logs"),
         }
     )
+
+    launch = subprocess.run(
+        [str(workspace / "scripts" / "chub-system-upgrade-start"), operation.operation_id],
+        cwd=workspace,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert launch.returncode == 0, launch.stderr or launch.stdout
 
     process = subprocess.Popen(
         [
@@ -680,7 +758,18 @@ def test_system_upgrade_restart_uses_fixed_linux_services(
 
     assert process.returncode == 0, stderr or stdout
     assert calls.read_text(encoding="utf-8").splitlines() == [
+        "--user --no-block start chub-system-upgrade.service",
+        "--user stop chub.service",
         "--user stop chub-quick-worker.service",
+        "--user stop chub-debug-chrome.service",
+        "--user daemon-reload",
+        "--user enable chub.service",
+        "--user enable chub-quick-worker.service",
+        "--user enable chub-debug-chrome.service",
+        "--user daemon-reload",
+        "--user enable chub-debug-chrome.service",
+        "--user restart chub-debug-chrome.service",
+        "--user is-active --quiet chub-debug-chrome.service",
         "--user restart chub-quick-worker.service",
         "--user --no-block restart chub.service",
     ]

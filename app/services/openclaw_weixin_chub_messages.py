@@ -27,7 +27,7 @@ CHUB_HELP_MESSAGE = "\n\n".join(
         "Quick",
         "chub · sync · new [title] · S# [task]",
         "Reference",
-        "help model · help text · help session · help request · help system",
+        "help model · text help · session help · help request · help system",
     )
 )
 CHUB_HELP_TOPICS = {
@@ -115,6 +115,7 @@ def format_elapsed_time(elapsed_ms: int) -> str:
 
 def format_chub_overview(
     *,
+    title: str = "Chub",
     elapsed_ms: int,
     readiness: object | None,
     memory_percent: float | None,
@@ -126,7 +127,7 @@ def format_chub_overview(
     requests: tuple[ChubOverviewRequest, ...] | None = (),
 ) -> str:
     anomalies: list[str] = []
-    lines = [f"Chub · {format_elapsed_time(elapsed_ms)}"]
+    lines = [f"{title} · {format_elapsed_time(elapsed_ms)}"]
     if readiness is None:
         anomalies.append("Chub status is not initialized.")
     elif not readiness.ready:

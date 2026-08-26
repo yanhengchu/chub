@@ -25,9 +25,27 @@ const fs = require("fs");
 const source = fs.readFileSync(process.argv[1], "utf8");
 const element = () => ({
   disabled: false,
+  hidden: false,
   textContent: "",
   addEventListener() {},
+  replaceChildren(...children) { this.children = children; },
 });
+globalThis.document = {
+  createDocumentFragment() {
+    return {
+      append(...children) { this.children = [...(this.children || []), ...children]; },
+    };
+  },
+  createElement() {
+    return {
+      className: "",
+      textContent: "",
+      classList: { add() {} },
+      setAttribute() {},
+      append() {},
+    };
+  },
+};
 const elementCache = {};
 globalThis.elements = new Proxy({}, {
   get(_target, property) {

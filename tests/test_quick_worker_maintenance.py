@@ -90,6 +90,36 @@ def test_corrupt_reload_state_fails_closed(settings: Settings) -> None:
     assert raised.value.code == "quick_worker_reload_state_unavailable"
 
 
+def test_clear_terminal_operation_removes_obsolete_result(settings: Settings) -> None:
+    state_path = settings.codex_pty.data_file.with_name(
+        "quick-worker-maintenance.json"
+    )
+    coordinator = QuickWorkerReloadCoordinator(
+        state_path,
+        settings.codex_pty.data_file.parent / "chub",
+    )
+    now = utc_now()
+    coordinator._write(
+        QuickWorkerReloadState(
+            operation_id="worker-reload:obsolete",
+            status="failed",
+            old_generation=None,
+            source_ip="127.0.0.1",
+            message="旧失败结果",
+            requested_at=now,
+            updated_at=now,
+        )
+    )
+    coordinator = QuickWorkerReloadCoordinator(
+        state_path,
+        settings.codex_pty.data_file.parent / "chub",
+    )
+
+    assert coordinator.clear_terminal_operation() is True
+    assert coordinator.operation() is None
+    assert not state_path.exists()
+
+
 def test_reload_state_write_failure_does_not_launch(settings: Settings) -> None:
     coordinator = QuickWorkerReloadCoordinator(
         settings.codex_pty.data_file.with_name("quick-worker-maintenance.json"),

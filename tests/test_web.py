@@ -75,7 +75,7 @@ async def test_home_page_is_public_and_contains_no_credential_form(
     assert 'id="codex-card-host"' in response.text
     assert 'id="openclaw-title"' not in response.text
     assert "OpenClaw 环境" not in response.text
-    assert "<strong>ClawBot</strong>" in response.text
+    assert "<strong>OpenClaw Gateway</strong>" in response.text
     assert 'id="openclaw-badge"' not in response.text
     assert 'id="refresh-openclaw"' not in response.text
     assert 'id="openclaw-start"' in response.text
@@ -116,15 +116,26 @@ async def test_home_page_is_public_and_contains_no_credential_form(
     assert 'id="automation-environment-badge"' not in response.text
     assert 'id="refresh-automation-environment"' not in response.text
     assert 'id="automation-environment-message"' in response.text
+    assert 'class="automation-feishu-panel"' in response.text
+    assert "复用飞书登录状态执行自动化任务。" in response.text
+    assert "查看 Chub、Chub Quick Worker、Chub Debug Chrome 和 OpenClaw Gateway 状态。" in response.text
     assert 'data-card-key="automation-environment"' not in response.text
     assert 'data-card-key="workstation" data-collapsible-card' in response.text
     assert 'data-card-key="workstation" data-collapsible-card data-collapsed="true"' not in response.text
     assert '<h2 id="workstation-title">工作站环境</h2>' in response.text
+    assert "<strong>Chub</strong>" in response.text
+    assert "<strong>Chub Quick Worker</strong>" in response.text
+    assert "<strong>Chub Debug Chrome</strong>" in response.text
+    assert "<strong>OpenClaw Gateway</strong>" in response.text
     assert 'id="refresh-workstation-environment"' in response.text
     assert 'id="workstation-service-title" class="card-group-title"' in response.text
     assert response.text.count('class="workstation-status-row') == 6
     assert 'id="system-upgrade-badge"' not in response.text
     assert 'id="system-upgrade-start"' in response.text
+    assert 'id="system-upgrade-components"' in response.text
+    assert 'id="system-upgrade-operation"' in response.text
+    assert 'id="system-upgrade-flow"' in response.text
+    assert 'id="system-upgrade-logs"' not in response.text
     assert response.text.index('id="clawbot-detail"') < response.text.index(
         'id="system-upgrade-detail"'
     )
@@ -135,7 +146,12 @@ async def test_home_page_is_public_and_contains_no_credential_form(
     )
     assert 'id="automation-browser-control"' in response.text
     assert 'id="automation-browser-detail"' in response.text
+    assert 'id="automation-browser-message"' in response.text
     assert 'aria-controls="automation-browser-dialog"' in response.text
+    assert response.text.index('id="automation-browser-detail"') > response.text.index(
+        'id="workstation-title"'
+    )
+    assert response.text.count('id="automation-browser-control"') == 1
     assert 'id="automation-browser-dialog"' in response.text
     assert 'id="automation-browser-form"' in response.text
     assert 'id="automation-browser-profile"' in response.text
@@ -149,7 +165,7 @@ async def test_home_page_is_public_and_contains_no_credential_form(
     assert 'id="automation-feishu-qr"' in response.text
     assert 'id="automation-feishu-verify"' not in response.text
     assert "飞书环境" in response.text
-    assert "用于执行浏览器自动化" in response.text
+    assert "浏览器控制服务：按需管理 Debug Chrome 实例" in response.text
     assert "用于飞书登录与任务执行" in response.text
     assert "有界面" in response.text
     assert "无界面" in response.text
@@ -157,7 +173,7 @@ async def test_home_page_is_public_and_contains_no_credential_form(
         'value="headed"'
     )
     assert 'id="refresh-automations"' in response.text
-    assert "复用登录状态执行自动化任务。" in response.text
+    assert "复用飞书登录状态执行自动化任务。" in response.text
     assert 'id="refresh-project-docs"' in response.text
     assert 'id="project-docs-count"' not in response.text
     assert 'href="/automations"' in response.text
@@ -274,6 +290,9 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
     assert 'href="#utility-settings"' in response.text
     assert 'id="weixin-processing-mode"' in response.text
     assert 'class="settings-choice-list"' in response.text
+    assert '<h4 id="weixin-processing-mode-title">正文处理方式</h4>' in response.text
+    assert '<h4 id="weixin-translation-model-title">正文处理模型</h4>' in response.text
+    assert 'aria-labelledby="weixin-processing-mode-title"' in response.text
     assert 'value="direct"' in response.text
     assert 'value="auto"' in response.text
     assert 'value="confirm"' in response.text
@@ -313,7 +332,10 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
     assert 'id="codex-default-reasoning-effort"' in response.text
     assert 'id="weixin-translation-model-field"' in response.text
     assert 'id="weixin-translation-reasoning-effort-field"' in response.text
-    assert response.text.count("hidden") >= 2
+    assert 'id="weixin-translation-model-field"' in response.text
+    assert 'id="weixin-translation-reasoning-effort-field"' in response.text
+    assert response.text.count('id="weixin-translation-model-field"') == 1
+    assert response.text.count('id="weixin-translation-reasoning-effort-field"') == 1
     assert "这里选择的模型和等级会作为本节点后续新建 Session 的默认值。" in response.text
     assert "工作区配置可能覆盖默认值；Ultra 会自动拆分并行任务。" in response.text
     assert '<option value="full-access">Full access</option>' in response.text
@@ -327,10 +349,13 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
     assert "hub.codexDefaultPermission.v1" in script.text
     assert "hub.codexDefaultModel.v1" in script.text
     assert "hub.codexDefaultReasoningEffort.v1" in script.text
+    assert "hub.codexModelPreferenceCache" in script.text
+    assert "hub.weixinTranslationSettingsCache" in script.text
     assert "hub.codexShowTranslationSession.v1" not in script.text
     assert "/api/codex/models" in script.text
     assert "/api/codex/session-defaults" in script.text
     assert "/api/settings/weixin-translation" in script.text
+    assert "WEIXIN_TRANSLATION_SETTINGS_CACHE_KEY" in script.text
     assert "项文本优化仍在处理中" in script.text
     assert "已开启，将从下一条微信普通任务开始处理" not in script.text
     assert "已关闭，新任务不再翻译" not in script.text
@@ -561,11 +586,20 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "/api/openclaw/weixin/login" in dashboard_script
     assert "/api/maintenance/quick-worker" in dashboard_script
     assert "/api/maintenance/system-upgrade" in dashboard_script
+    assert "debug_chrome_instance" in dashboard_script
+    assert "不会自动启动" in dashboard_script
     assert "reloadDashboardAfterMaintenance" in dashboard_script
+    assert "systemUpgradeOperation" in dashboard_script
+    assert "systemUpgradeFlow" in dashboard_script
+    assert "maintenance-timeline-step" in dashboard_script
+    assert "failed_stage" in dashboard_script
+    assert "最近操作" in dashboard_script
+    assert "SYSTEM_UPGRADE_TIMELINE" in dashboard_script
+    assert "已完成（有独立组件降级）" in dashboard_script
     assert "maintenanceReloadTimer" in dashboard_script
     assert "}, 2000);" in dashboard_script
     assert "浏览器将在稍后自动刷新页面" in dashboard_script
-    assert "Quick Worker 和 ClawBot 背后的 OpenClaw Gateway 是独立服务，不会被重启" in dashboard_script
+    assert "Chub Quick Worker、Ubuntu Chub Debug Chrome 和 OpenClaw Gateway 是独立服务，不会被重启" in dashboard_script
     assert "tmux 和原生 Codex 会话保留，重新进入时恢复" in dashboard_script
     assert 'setBadge(elements.quickWorkerBadge, "重启完成", "success")' in dashboard_script
     assert "systemUpgradeReloadOperationId" in dashboard_script
@@ -596,7 +630,9 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "loadAutomationEnvironment" in dashboard_script
     assert "automationBrowserDialog.showModal()" in dashboard_script
     assert "automationBrowserDialogConfirm" in dashboard_script
-    assert 'return "用于执行浏览器自动化"' in dashboard_script
+    assert 'return "浏览器控制服务可用；实例按需启动"' in dashboard_script
+    assert 'return ["实例已运行", "success"]' in dashboard_script
+    assert 'return ["实例未启动", "timeout"]' in dashboard_script
     assert 'return "用于飞书登录与任务执行"' in dashboard_script
     assert 'return `登录验证于 ${automationMonthDay(data.checked_at)}`' in dashboard_script
     assert "appendWeeklyReportMaterials" in dashboard_script

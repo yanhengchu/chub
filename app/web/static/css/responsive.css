@@ -171,19 +171,47 @@
     align-items: start;
   }
 
-  .automation-environment .automation-browser-actions {
+  .automation-environment .automation-feishu-actions {
     display: contents;
   }
 
-  .automation-environment .automation-browser-actions > .badge {
+  .automation-environment .automation-feishu-actions > .badge {
     grid-column: 2;
     grid-row: 1;
     align-self: center;
     width: fit-content;
   }
 
-  .automation-environment .automation-browser-actions > button {
+  .automation-environment .automation-feishu-actions > button {
     grid-column: 1 / -1;
+  }
+
+  .maintenance-timeline {
+    grid-template-columns: 1fr;
+    gap: 0.45rem;
+  }
+
+  .maintenance-timeline-step {
+    grid-template-columns: 0.75rem minmax(0, 1fr);
+    align-items: start;
+    gap: 0.45rem;
+    padding-top: 0;
+  }
+
+  .maintenance-timeline-step:not(:last-child)::after {
+    top: 0.8rem;
+    bottom: -0.45rem;
+    left: 0.25rem;
+    right: auto;
+    border-top: 0;
+    border-left: 1px solid var(--line);
+  }
+
+  .maintenance-timeline-marker {
+    position: relative;
+    top: 0.15rem;
+    width: 0.5rem;
+    height: 0.5rem;
   }
 
   .session-actions {

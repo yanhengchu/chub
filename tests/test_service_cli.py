@@ -360,6 +360,82 @@ def test_install_writes_independent_quick_worker_service(
     assert "quick-worker" in manager_calls
 
 
+@pytest.mark.parametrize(
+    ("platform", "service_file", "runner_identity"),
+    [
+        (
+            "Darwin",
+            "launch-agents/com.chub.system-upgrade.plist",
+            "chub-system-upgrade-restart",
+        ),
+        (
+            "Linux",
+            "systemd/chub-system-upgrade.service",
+            "chub-system-upgrade-restart",
+        ),
+    ],
+)
+def test_install_writes_independent_system_upgrade_service(
+    service_env: tuple[dict[str, str], Path],
+    platform: str,
+    service_file: str,
+    runner_identity: str,
+) -> None:
+    env, calls = service_env
+    env["CHUB_TEST_PLATFORM"] = platform
+
+    result = run_chub("install", env)
+
+    assert result.returncode == 0, result.stderr
+    generated = Path(env["HOME"]).parent / service_file
+    content = generated.read_text(encoding="utf-8")
+    assert runner_identity in content
+    assert "chub.service" not in content
+    assert "chub-quick-worker.service" not in content
+    if platform == "Darwin":
+        plistlib.loads(generated.read_bytes())
+        assert "<key>RunAtLoad</key>" in content
+        assert "<false/>" in content
+    else:
+        assert "Type=oneshot" in content
+        assert "TimeoutStartSec=infinity" in content
+        assert "chub-system-upgrade.service" not in calls.read_text(encoding="utf-8")
+
+
+def test_linux_install_writes_independent_debug_chrome_supervisor_service(
+    service_env: tuple[dict[str, str], Path],
+) -> None:
+    env, calls = service_env
+    env["CHUB_TEST_PLATFORM"] = "Linux"
+
+    result = run_chub("install", env)
+
+    assert result.returncode == 0, result.stderr
+    service = Path(env["CHUB_SYSTEMD_USER_DIR"]) / "chub-debug-chrome.service"
+    content = service.read_text(encoding="utf-8")
+    assert "app.automations.chrome_supervisor serve" in content
+    assert "KillMode=control-group" in content
+    assert "chub.service" not in content
+    assert "chub-quick-worker.service" not in content
+    manager_calls = calls.read_text(encoding="utf-8")
+    assert "enable chub-debug-chrome.service" in manager_calls
+    assert "restart chub-debug-chrome.service" in manager_calls
+
+
+def test_macos_install_does_not_write_debug_chrome_supervisor_service(
+    service_env: tuple[dict[str, str], Path],
+) -> None:
+    env, _ = service_env
+    env["CHUB_TEST_PLATFORM"] = "Darwin"
+
+    result = run_chub("install", env)
+
+    assert result.returncode == 0, result.stderr
+    assert not (
+        Path(env["CHUB_LAUNCH_AGENTS_DIR"]) / "chub-debug-chrome.service"
+    ).exists()
+
+
 def test_install_clears_only_retired_worker_state(
     service_env: tuple[dict[str, str], Path],
     tmp_path: Path,
@@ -439,6 +515,28 @@ def test_linux_install_restarts_service_to_apply_updated_environment(
     assert "systemctl --user enable chub-quick-worker.service" in manager_calls
     assert "systemctl --user restart chub-quick-worker.service" in manager_calls
     assert "systemctl --user restart chub.service" in manager_calls
+
+
+def test_chrome_supervisor_ensure_writes_and_starts_linux_service(
+    service_env: tuple[dict[str, str], Path],
+) -> None:
+    env, calls = service_env
+    env["CHUB_TEST_PLATFORM"] = "Linux"
+
+    result = run_chub("chrome-supervisor-ensure", env)
+
+    assert result.returncode == 0, result.stderr
+    unit = Path(env["CHUB_SYSTEMD_USER_DIR"]) / "chub-debug-chrome.service"
+    assert unit.is_file()
+    assert "app.automations.chrome_supervisor serve" in unit.read_text(
+        encoding="utf-8"
+    )
+    assert calls.read_text(encoding="utf-8").splitlines() == [
+        "systemctl --user daemon-reload",
+        "systemctl --user enable chub-debug-chrome.service",
+        "systemctl --user start chub-debug-chrome.service",
+        "systemctl --user is-active --quiet chub-debug-chrome.service",
+    ]
 
 
 def test_install_refuses_to_replace_unrelated_command(

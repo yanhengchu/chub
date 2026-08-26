@@ -31,17 +31,17 @@ function automationMonthDay(value) {
 
 function automationBrowserPresentation(data) {
   if (data.browser_state === "running") {
-    return ["已运行", "success"];
+    return ["实例已运行", "success"];
   }
   if (data.browser_state === "stopped") {
-    return ["未运行", "timeout"];
+    return ["实例未启动", "timeout"];
   }
   return [data.browser_message || "不可用", "failed"];
 }
 
 function automationBrowserDetail(data) {
   if (data.browser_state === "stopped") {
-    return "用于执行浏览器自动化";
+    return "浏览器控制服务可用；实例按需启动";
   }
   if (data.browser_state !== "running") {
     return data.browser_message || "";
@@ -50,7 +50,7 @@ function automationBrowserDetail(data) {
     headless: "无界面",
     headed: "有界面",
   }[data.browser_mode] || data.browser_mode;
-  return ["本地 Debug Chrome", mode].filter(Boolean).join(" · ");
+  return ["服务可用", "浏览器实例", mode].filter(Boolean).join(" · ");
 }
 
 function feishuPresentation(data) {
@@ -253,11 +253,11 @@ async function startAutomationBrowser(event) {
   event.preventDefault();
   const selectedProfile = selectedAutomationBrowserProfile();
   if (!selectedProfile) {
-    setMessage(elements.automationEnvironmentMessage, "请选择浏览器账户。", "error");
+    setMessage(elements.automationBrowserMessage, "请选择浏览器账户。", "error");
     return;
   }
   if (!selectedProfile.initialized && !selectedProfile.source_available) {
-    setMessage(elements.automationEnvironmentMessage, "该浏览器账户已不可用。", "error");
+    setMessage(elements.automationBrowserMessage, "该浏览器账户已不可用。", "error");
     return;
   }
   const requiresInitialization = !selectedProfile.initialized;
@@ -290,13 +290,13 @@ async function startAutomationBrowser(event) {
       },
     );
     closeAutomationBrowserDialog();
-    setMessage(elements.automationEnvironmentMessage, "");
+    setMessage(elements.automationBrowserMessage, "");
     await Promise.all([loadAutomationEnvironment(), loadAutomations()]);
   } catch (error) {
     if (!handleAccessError(error)) {
       await Promise.all([loadAutomationEnvironment(), loadAutomations()]);
       setMessage(
-        elements.automationEnvironmentMessage,
+        elements.automationBrowserMessage,
         error.message || "Debug Chrome 启动失败。",
         "error",
       );
@@ -316,7 +316,7 @@ async function stopAutomationBrowser() {
       elements.automationBrowserControl.textContent = "停止中…";
       try {
         await apiFetch("/api/automations/browser/stop", { method: "POST" });
-        setMessage(elements.automationEnvironmentMessage, "");
+        setMessage(elements.automationBrowserMessage, "");
         await Promise.all([loadAutomationEnvironment(), loadAutomations()]);
       } catch (error) {
         if (handleAccessError(error)) {
@@ -472,9 +472,9 @@ function renderAutomationEnvironment(data) {
     ? selectedProfile
     : null;
   if (failedInitialization?.initialization_message) {
-    setMessage(elements.automationEnvironmentMessage, failedInitialization.initialization_message, "error");
+    setMessage(elements.automationBrowserMessage, failedInitialization.initialization_message, "error");
   } else if (data.browser_profiles_error && !automationBrowserProfiles.length) {
-    setMessage(elements.automationEnvironmentMessage, data.browser_profiles_error, "error");
+    setMessage(elements.automationBrowserMessage, data.browser_profiles_error, "error");
   }
   const [feishuBadgeText, feishuBadgeKind] = feishuPresentation(data.feishu_environment);
   setBadge(elements.automationFeishuBadge, feishuBadgeText, feishuBadgeKind);
@@ -778,6 +778,7 @@ async function loadAutomationEnvironment() {
     if (requestVersion !== accessVersion) {
       return;
     }
+    setMessage(elements.automationBrowserMessage, "");
     setMessage(elements.automationEnvironmentMessage, "");
     const active = renderAutomationEnvironment(data);
     if (automationEnvironmentPollTimer) {
@@ -800,13 +801,14 @@ async function loadAutomationEnvironment() {
         input.disabled = true;
       });
       elements.automationBrowserDialogConfirm.disabled = true;
-      setBadge(elements.automationFeishuBadge, "检查失败", "failed");
-      elements.automationFeishuCheck.disabled = true;
       setMessage(
-        elements.automationEnvironmentMessage,
-        error.message || "自动化环境读取失败。",
+        elements.automationBrowserMessage,
+        error.message || "Debug Chrome 状态读取失败。",
         "error",
       );
+      setBadge(elements.automationFeishuBadge, "检查失败", "failed");
+      elements.automationFeishuCheck.disabled = true;
+      setMessage(elements.automationEnvironmentMessage, error.message || "自动化环境读取失败。", "error");
     }
   } finally {
     // The workstation-level refresh button owns only its fan-out busy state.

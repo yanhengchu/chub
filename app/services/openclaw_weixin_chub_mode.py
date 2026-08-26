@@ -4811,6 +4811,7 @@ class WeixinChubModeManager:
         except RequestBacklogError:
             overview_requests = None
         return format_chub_overview(
+            title=f"{self.settings.node.name} chub",
             elapsed_ms=elapsed_ms,
             readiness=readiness,
             memory_percent=memory_percent,

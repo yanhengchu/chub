@@ -22,19 +22,33 @@ Chub 是个人设备上的本地优先 AI 工作站控制面。它组织可信�
   `-- WeChat ClawBot
        `-> OpenClaw + Chub Plugin --(真实 loopback)--> Chub 固定微信调度 API
 
-Chub Web
-  |-- Unix socket --> Quick Worker --> 固定 Codex Runner
+Chub
+  |-- Unix socket --> Chub Quick Worker --> 固定 Codex Runner
   |-- ttyd ---------> 固定 tmux ----> Codex 实时终端
+  |-- Unix socket --> Chub Debug Chrome --> Debug Chrome 浏览器实例
   |-- CDP ----------> 受管 Debug Chrome / 固定扩展
   |-- OpenClaw CLI -> Gateway / 微信消息通道
   |-- HTTPS --------> 预配置飞书通知目标
-  `-- 固定脚本 -----> Web、Worker、系统和 ClawBot 维护操作
+  `-- 固定脚本 -----> Chub、Chub Quick Worker、Chub Debug Chrome、OpenClaw Gateway 和系统维护操作
 ```
+
+面向页面和服务清单的固定名称如下；技术正文可在需要说明实现边界时补充括号内的角色：
+
+| 固定名称 | 服务/组件边界 | 说明 |
+| --- | --- | --- |
+| `Chub` | `chub.service` 或 macOS Chub LaunchAgent | Chub Web 控制面 |
+| `Chub Quick Worker` | `chub-quick-worker.service` 或 macOS Worker LaunchAgent | 后台任务执行面 |
+| `Chub Debug Chrome` | `chub-debug-chrome.service`；macOS 沿用现有浏览器适配 | Debug Chrome Supervisor 与按需浏览器控制 |
+| `OpenClaw Gateway` | 第三方 Gateway 服务 | 承载 ClawBot、微信通道和 OpenClaw 插件 |
+
+`ClawBot` 是微信交互入口，不是独立服务名称；`Debug Chrome 浏览器实例` 是 Chub Debug Chrome 管理的按需资源，也不是独立服务。系统升级执行器是维护用 oneshot 服务，不列入常驻服务清单。
 
 | 边界 | 当前职责 | 不拥有的内容 |
 | --- | --- | --- |
-| Chub Web | 页面、API、入口认证、业务校验、状态投影、操作日志、通知协调和 Web 重启协调 | 原生 Codex 执行、Worker 任务终态、OpenClaw 通道状态 |
-| Quick Worker | 页面/微信/翻译的非实时任务、幂等提交、Session 租约、Runner、超时、取消、任务持久化和终态 | 页面、身份认证、微信路由、通知目标、设备维护 |
+| Chub | 页面、API、入口认证、业务校验、状态投影、操作日志、通知协调和 Web 重启协调 | 原生 Codex 执行、Worker 任务终态、OpenClaw 通道状态 |
+| Chub Quick Worker | 页面/微信/翻译的非实时任务、幂等提交、Session 租约、Runner、超时、取消、任务持久化和终态 | 页面、身份认证、微信路由、通知目标、设备维护 |
+| Chub Debug Chrome | Ubuntu 上 Debug Chrome Supervisor 的启动、停止、进程归属和 CDP 状态 | Web 生命周期、自动化任务状态、任意浏览器或任意命令 |
+| 受管 Debug Chrome 实例 | Supervisor 与 Chrome Adapter 提供的实时浏览器状态 | 系统升级不自动启动实例；工作站环境按需控制，自动化只负责使用 |
 | 实时终端链路 | `ttyd` Web 桥、固定 tmux 载体和原生 Codex TUI | Quick Worker 任务与租约 |
 | OpenClaw 与微信 | 可信消息入口、通道上下文、固定插件路由和原路回送 | Chub 设备能力、Session 权限、任务终态 |
 | 自动化 | 固定任务配置、跨进程锁、Runner、Debug Chrome 与受限产物 | 通用浏览器控制或任意任务执行 |
@@ -63,7 +77,7 @@ Chub Web
 | 节点与服务健康 | 操作系统、进程和健康探测 | Web 聚合展示，不缓存为永久真相 |
 | Chub AI Session 元数据 | AI Session Manager / Store | 页面、微信和 Worker 使用 Chub Session ID 关联 |
 | 原生 Codex Session 与 writer | Codex 本地状态、Runtime Adapter | Chub 仅保存已校验映射，不猜测或接管 writer |
-| 后台任务与租约 | Quick Worker | Web 恢复投影并确认通知 |
+| 后台任务与租约 | Chub Quick Worker | Chub 恢复投影并确认通知 |
 | 实时终端桥与载体 | Interactive Supervisor、`ttyd`、tmux | Web 重启后重建 Web 桥并复用原 tmux |
 | 微信绑定与通道 | OpenClaw；Chub 保存受控路由快照 | 每次提交校验，路由异常时不回退 |
 | 自动化任务与产物 | Automation Store、锁和 artifacts | 页面只读取受限状态和固定产物 |
@@ -71,7 +85,7 @@ Chub Web
 | Web 重启协调 | Deferred Restart State + 新实例健康 | 新实例 ID 变化且健康后才成功 |
 | Worker 重启 | Worker maintenance operation state | 确认新的 generation、协议和健康 |
 | 系统恢复 | System Upgrade Coordinator + 持久化操作状态 | 记录固定范围、阶段与最终验证 |
-| ClawBot 重启与恢复 | OpenClaw Manager + 固定插件/补丁清单 | 确认 Gateway、通道和运行产物 |
+| OpenClaw Gateway 重启与恢复 | OpenClaw Manager + 固定插件/补丁清单 | 确认 Gateway、通道和运行产物 |
 | 配置 | 环境变量、受控 YAML 和私有状态 | 客户端只能修改明确开放的设置 |
 
 ### 4.1 共享资料与本机运行态
@@ -112,7 +126,7 @@ Chub Web
   -> tmux 承载原生 Codex TUI
 ```
 
-`ttyd` 可重建，tmux 和原生 Codex 是实时交互载体。普通 Web 重启不会停止 Quick Worker、tmux、原生 Codex 或已受理后台任务。
+`ttyd` 可重建，tmux 和原生 Codex 是实时交互载体。普通 Chub 重启不会停止 Chub Quick Worker、tmux、原生 Codex 或已受理后台任务。
 
 ### 5.3 自动化与通知
 
@@ -125,16 +139,22 @@ Chub Web
 
 自动化只执行固定任务；通知投递成功不替代主业务成功。
 
+Ubuntu 的 Chub Debug Chrome 由独立用户服务持有。Chub 通过固定本机 Unix socket 请求 `status`、`start` 和 `stop`；
+Web 重启不停止该 Supervisor 或其受管浏览器。Supervisor 不可用、协议异常或浏览器最终状态无法确认时，
+自动化浏览器操作失败关闭，不在 Web 内回退启动。macOS 继续沿用现有 LaunchAgent/浏览器适配路径。
+
 ## 6. 维护操作边界
 
 | 操作 | 直接影响 | 成功条件 | 不影响 |
 | --- | --- | --- | --- |
-| Web 重启 | Chub Web、可重建的 ttyd Web 桥 | 新实例 ID 变化且健康 | Worker、OpenClaw、tmux、原生 Codex、已受理任务 |
-| Worker 重启 | Worker 任务、租约和运行映射 | 新 generation、协议和健康确认 | Web、ClawBot、tmux、原生 Codex |
+| Web 重启 | Chub、可重建的 ttyd Web 桥 | 新实例 ID 变化且健康 | Chub Quick Worker、OpenClaw Gateway、tmux、原生 Codex、已受理任务 |
+| Worker 重启 | Chub Quick Worker 任务、租约和运行映射 | 新 generation、协议和健康确认 | Chub、OpenClaw Gateway、tmux、原生 Codex |
 | 系统升级与运行态恢复 | 受影响的 AI Runtime 写入、Worker 与 Chub 自有运行态 | Web/Worker、目标版本或当前恢复目标、Session 映射和必要通知确认 | Codex 原生 Session、用户配置、日志、项目资料和无关服务 |
-| ClawBot 重启与恢复 | OpenClaw Gateway、微信通道、固定插件/补丁运行副本 | Gateway、已配置通道和兼容基线确认 | Web、Worker、实时终端 |
+| OpenClaw Gateway 重启与恢复 | OpenClaw Gateway、微信通道、固定插件/补丁运行副本 | Gateway、已配置通道和兼容基线确认 | Chub、Chub Quick Worker、实时终端 |
 
 门禁只覆盖直接冲突或数据破坏风险，按资源局部生效。恢复操作不因目标服务当前不健康、任务繁忙或状态未知而失去固定恢复入口；执行层无法安全尝试或最终结果无法确认时才失败关闭，并保留原因与恢复路径。
+
+系统升级与运行态恢复由独立于 Chub 的平台服务执行器统一编排：Ubuntu 使用独立的 systemd user oneshot service，macOS 使用独立的 LaunchAgent；Chub 只持久化操作并启动执行器，不能直接持有随后会停止 Chub 的升级进程。执行器先停止直接受影响的 Chub、Chub Quick Worker 和 Chub Debug Chrome，再清理 Chub 自有运行态，处理当前 `.venv` 的固定依赖清单，重建并启用服务定义，按 Chub Quick Worker、Chub Debug Chrome、Chub 顺序恢复，并调用现有 OpenClaw Gateway 固定插件/补丁同步入口。Debug Chrome 浏览器实例不属于升级启动目标，流程记录为 `skipped`，明确不会自动启动；其未启动状态不构成升级失败。每个组件结果持久化到受限状态文件，并由升级执行器日志记录固定的 operation ID、组件名和状态。重建服务定义时不得停止或删除当前升级执行器；执行器失败必须持久化失败状态并恢复核心服务。Chub、依赖、服务定义和 Chub Quick Worker 属于核心组件；Chub Debug Chrome 或 OpenClaw Gateway 失败只记录 `degraded`，不阻止核心服务达到可用状态。该流程不调用带 Worker 忙闲门禁的完整 `chub install`，也不执行 Git 或任意路径/命令。首次安装、移动项目目录或服务定义变化后，必须先从本机终端执行完整 `chub install`；若已有未完成操作，先使用 `chub system-upgrade-service` 恢复，不能用 `chub install` 中断当前恢复。
 
 ## 7. 版本与运行态边界
 
@@ -169,4 +189,4 @@ Chub Web
 | 页面分层与视觉交互 | [前端 UI 模块化设计](FRONTEND_UI_DESIGN.md) |
 | 额度、自动化、分发与发布 | README 的专项文档索引 |
 
-已核对当前进程边界、状态所有权、维护操作范围和专项文档入口。变更进程职责、状态权威来源、信任边界、固定协议、维护操作范围或用户可见能力时，必须同步复检本文和受影响的专项契约；本文件不替代对应功能的实现与实机验收。
+已核对当前进程边界、状态所有权、维护操作范围和专项文档入口。自动化回归覆盖核心服务定义修复、依赖处理、Worker/Supervisor/Web 顺序、浏览器实例 `skipped` 语义、独立组件降级记录和旧 Worker 终态清理；本轮已在 Ubuntu 本机实际确认两次升级与恢复的服务切换、Web/Worker/Supervisor 健康、OpenClaw Gateway 健康和 Quick Worker 最终状态。未在本轮实机验证 macOS、真实 Python 依赖安装或真实 OpenClaw 插件内容变更；这些范围不能由本轮 Ubuntu 结果代替。变更进程职责、状态权威来源、信任边界、固定协议、升级组件清单、维护操作范围或用户可见能力时，必须同步复检本文和受影响的专项契约；本文件不替代对应功能的实现与实机验收。

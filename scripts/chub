@@ -6,6 +6,9 @@ SERVICE_NAME="chub"
 MACOS_LABEL="com.chub.node"
 WORKER_SERVICE_NAME="chub-quick-worker"
 WORKER_MACOS_LABEL="com.chub.quick-worker"
+CHROME_SUPERVISOR_SERVICE_NAME="chub-debug-chrome"
+SYSTEM_UPGRADE_SERVICE_NAME="chub-system-upgrade"
+SYSTEM_UPGRADE_MACOS_LABEL="com.chub.system-upgrade"
 
 SCRIPT_PATH="${BASH_SOURCE[0]}"
 while [[ -L "$SCRIPT_PATH" ]]; do
@@ -68,6 +71,14 @@ Commands:
              Drain and independently reload Quick Worker, then verify takeover
   worker-recover
              Restart an unavailable Quick Worker and verify healthy takeover
+  service-definitions
+             Rebuild fixed Web, Worker, and browser service definitions
+  runtime-dependencies
+             Repair Python dependencies from the repository requirements file
+  system-upgrade-service
+             Install or recover the independent system upgrade service
+  chrome-supervisor-reconcile [--restart]
+             Rebuild and verify the Ubuntu Debug Chrome Supervisor
   logs       Follow Hub application logs
   notification
              Validate, list, test, or send configured notifications
@@ -95,6 +106,19 @@ check_project() {
     [[ -x "$PYTHON_BIN" ]] || fail "Python environment not found: $PYTHON_BIN"
     [[ -f "$MAIN_FILE" ]] || fail "Hub entry point not found: $MAIN_FILE"
     [[ -f "$CONFIG_FILE" ]] || fail "configuration not found: $CONFIG_FILE"
+}
+
+require_system_upgrade_idle() {
+    local result=0
+    (
+        cd "$PROJECT_ROOT"
+        "$PYTHON_BIN" -m app.system_upgrade_cli assert-idle
+    ) >/dev/null 2>&1 || result=$?
+    case "$result" in
+        0) ;;
+        1) fail "system upgrade or recovery is active; wait for it to finish" ;;
+        *) fail "system upgrade state is unavailable; maintenance was not started" ;;
+    esac
 }
 
 configured_value() {
@@ -214,12 +238,57 @@ worker_macos_plist_path() {
     echo "${CHUB_LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}/$WORKER_MACOS_LABEL.plist"
 }
 
+prepare_service_definition_path() {
+    local path="$1"
+    mkdir -p "$(dirname "$path")"
+    chmod 700 "$(dirname "$path")"
+    "$PYTHON_BIN" - "$path" <<'PY'
+import os
+import stat
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+parent = path.parent.lstat()
+if (
+    not stat.S_ISDIR(parent.st_mode)
+    or stat.S_ISLNK(parent.st_mode)
+    or parent.st_uid != os.getuid()
+    or stat.S_IMODE(parent.st_mode) & 0o077
+):
+    raise SystemExit("service definition directory is unsafe")
+try:
+    metadata = path.lstat()
+except FileNotFoundError:
+    raise SystemExit(0)
+if (
+    stat.S_ISLNK(metadata.st_mode)
+    or not stat.S_ISREG(metadata.st_mode)
+    or metadata.st_uid != os.getuid()
+    or stat.S_IMODE(metadata.st_mode) & 0o077
+):
+    raise SystemExit("service definition path is unsafe")
+PY
+}
+
 systemd_unit_path() {
     echo "${CHUB_SYSTEMD_USER_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user}/$SERVICE_NAME.service"
 }
 
 worker_systemd_unit_path() {
     echo "${CHUB_SYSTEMD_USER_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user}/$WORKER_SERVICE_NAME.service"
+}
+
+chrome_supervisor_systemd_unit_path() {
+    echo "${CHUB_SYSTEMD_USER_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user}/$CHROME_SUPERVISOR_SERVICE_NAME.service"
+}
+
+system_upgrade_systemd_unit_path() {
+    echo "${CHUB_SYSTEMD_USER_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user}/$SYSTEM_UPGRADE_SERVICE_NAME.service"
+}
+
+system_upgrade_macos_plist_path() {
+    echo "${CHUB_LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}/$SYSTEM_UPGRADE_MACOS_LABEL.plist"
 }
 
 macos_domain() {
@@ -289,10 +358,21 @@ start_macos_worker() {
     fi
 }
 
+load_macos_system_upgrade_service() {
+    local domain plist_path
+    domain="$(macos_domain)"
+    plist_path="$(system_upgrade_macos_plist_path)"
+    [[ -f "$plist_path" ]] || fail "system upgrade service is not installed; run chub install"
+    if ! launchctl print "$domain/$SYSTEM_UPGRADE_MACOS_LABEL" >/dev/null 2>&1; then
+        launchctl bootstrap "$domain" "$plist_path"
+    fi
+}
+
 write_macos_service() {
     local plist_path
     plist_path="$(macos_plist_path)"
-    mkdir -p "$(dirname "$plist_path")" "$SERVICE_LOG_DIR"
+    prepare_service_definition_path "$plist_path"
+    mkdir -p "$SERVICE_LOG_DIR"
     {
         echo '<?xml version="1.0" encoding="UTF-8"?>'
         echo '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
@@ -336,7 +416,8 @@ write_macos_service() {
 write_macos_worker_service() {
     local plist_path
     plist_path="$(worker_macos_plist_path)"
-    mkdir -p "$(dirname "$plist_path")" "$SERVICE_LOG_DIR"
+    prepare_service_definition_path "$plist_path"
+    mkdir -p "$SERVICE_LOG_DIR"
     {
         echo '<?xml version="1.0" encoding="UTF-8"?>'
         echo '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
@@ -379,10 +460,57 @@ write_macos_worker_service() {
     chmod 0600 "$plist_path"
 }
 
+write_macos_system_upgrade_service() {
+    local plist_path
+    plist_path="$(system_upgrade_macos_plist_path)"
+    prepare_service_definition_path "$plist_path"
+    secure_service_logs \
+        "$SERVICE_LOG_DIR/system-upgrade.out.log" \
+        "$SERVICE_LOG_DIR/system-upgrade.err.log"
+    {
+        echo '<?xml version="1.0" encoding="UTF-8"?>'
+        echo '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
+        echo '<plist version="1.0">'
+        echo '<dict>'
+        echo '  <key>Label</key>'
+        echo "  <string>$SYSTEM_UPGRADE_MACOS_LABEL</string>"
+        echo '  <key>ProgramArguments</key>'
+        echo '  <array>'
+        echo "    <string>$PROJECT_ROOT/scripts/chub-system-upgrade-restart</string>"
+        echo '    <string>--pending</string>'
+        echo '  </array>'
+        echo '  <key>WorkingDirectory</key>'
+        echo "  <string>$PROJECT_ROOT</string>"
+        echo '  <key>EnvironmentVariables</key>'
+        echo '  <dict>'
+        echo '    <key>PATH</key>'
+        echo "    <string>$RUNTIME_PATH</string>"
+        echo '  </dict>'
+        echo '  <key>RunAtLoad</key>'
+        echo '  <false/>'
+        echo '  <key>KeepAlive</key>'
+        echo '  <false/>'
+        echo '  <key>ProcessType</key>'
+        echo '  <string>Background</string>'
+        echo '  <key>ThrottleInterval</key>'
+        echo '  <integer>5</integer>'
+        echo '  <key>Umask</key>'
+        echo '  <integer>63</integer>'
+        echo '  <key>StandardOutPath</key>'
+        echo "  <string>$SERVICE_LOG_DIR/system-upgrade.out.log</string>"
+        echo '  <key>StandardErrorPath</key>'
+        echo "  <string>$SERVICE_LOG_DIR/system-upgrade.err.log</string>"
+        echo '</dict>'
+        echo '</plist>'
+    } > "$plist_path"
+    chmod 0600 "$plist_path"
+}
+
 write_systemd_service() {
     local unit_path
     unit_path="$(systemd_unit_path)"
-    mkdir -p "$(dirname "$unit_path")" "$SERVICE_LOG_DIR"
+    prepare_service_definition_path "$unit_path"
+    mkdir -p "$SERVICE_LOG_DIR"
     {
         echo '[Unit]'
         echo 'Description=Chub personal device node'
@@ -408,7 +536,8 @@ write_systemd_service() {
 write_systemd_worker_service() {
     local unit_path
     unit_path="$(worker_systemd_unit_path)"
-    mkdir -p "$(dirname "$unit_path")" "$SERVICE_LOG_DIR"
+    prepare_service_definition_path "$unit_path"
+    mkdir -p "$SERVICE_LOG_DIR"
     {
         echo '[Unit]'
         echo 'Description=Chub Quick Worker'
@@ -430,6 +559,153 @@ write_systemd_worker_service() {
         echo 'WantedBy=default.target'
     } > "$unit_path"
     chmod 0600 "$unit_path"
+}
+
+write_systemd_chrome_supervisor_service() {
+    local unit_path
+    unit_path="$(chrome_supervisor_systemd_unit_path)"
+    prepare_service_definition_path "$unit_path"
+    mkdir -p "$SERVICE_LOG_DIR"
+    {
+        echo '[Unit]'
+        echo 'Description=Chub Debug Chrome supervisor'
+        echo 'After=network.target'
+        echo 'StartLimitIntervalSec=60'
+        echo 'StartLimitBurst=5'
+        echo
+        echo '[Service]'
+        echo 'Type=simple'
+        printf 'WorkingDirectory=%s\n' "$PROJECT_ROOT"
+        printf 'ExecStart=%s -m app.automations.chrome_supervisor serve\n' "$PYTHON_BIN"
+        printf 'Environment=PATH=%s\n' "$RUNTIME_PATH"
+        echo 'UMask=0077'
+        echo 'KillMode=control-group'
+        echo 'Restart=on-failure'
+        echo 'RestartSec=5'
+        echo
+        echo '[Install]'
+        echo 'WantedBy=default.target'
+    } > "$unit_path"
+    chmod 0600 "$unit_path"
+}
+
+write_systemd_system_upgrade_service() {
+    local unit_path
+    unit_path="$(system_upgrade_systemd_unit_path)"
+    prepare_service_definition_path "$unit_path"
+    {
+        echo '[Unit]'
+        echo 'Description=Chub system upgrade and recovery runner'
+        echo
+        echo '[Service]'
+        echo 'Type=oneshot'
+        printf 'WorkingDirectory=%s\n' "$PROJECT_ROOT"
+        printf 'ExecStart=%s --pending\n' "$PROJECT_ROOT/scripts/chub-system-upgrade-restart"
+        printf 'Environment=PATH=%s\n' "$RUNTIME_PATH"
+        echo 'UMask=0077'
+        echo 'TimeoutStartSec=infinity'
+    } > "$unit_path"
+    chmod 0600 "$unit_path"
+}
+
+install_system_upgrade_service() {
+    check_project
+    case "$(platform_name)" in
+        macos)
+            write_macos_system_upgrade_service
+            load_macos_system_upgrade_service
+            ;;
+        ubuntu)
+            write_systemd_system_upgrade_service
+            systemctl --user daemon-reload
+            ;;
+    esac
+}
+
+recover_system_upgrade_service() {
+    install_system_upgrade_service
+    local result=0
+    (
+        cd "$PROJECT_ROOT"
+        "$PYTHON_BIN" -m app.system_upgrade_cli assert-idle
+    ) >/dev/null 2>&1 || result=$?
+    case "$result" in
+        0)
+            echo "System upgrade service is installed"
+            ;;
+        1)
+            case "$(platform_name)" in
+                macos)
+                    launchctl kickstart "$(macos_domain)/$SYSTEM_UPGRADE_MACOS_LABEL"
+                    ;;
+                ubuntu)
+                    systemctl --user --no-block start "$SYSTEM_UPGRADE_SERVICE_NAME.service"
+                    ;;
+            esac
+            echo "System upgrade service recovery started"
+            ;;
+        *)
+            fail "system upgrade state is unavailable; recovery was not started"
+            ;;
+    esac
+}
+
+ensure_chrome_supervisor_service() {
+    reconcile_chrome_supervisor_service
+}
+
+reconcile_chrome_supervisor_service() {
+    check_project
+    local action="start"
+    if [[ "${1:-}" == "--restart" ]]; then
+        action="restart"
+    elif [[ "${1:-}" != "" ]]; then
+        fail "usage: chub chrome-supervisor-reconcile [--restart]"
+    fi
+    case "$(platform_name)" in
+        macos)
+            return 0
+            ;;
+        ubuntu)
+            write_systemd_chrome_supervisor_service
+            systemctl --user daemon-reload
+            systemctl --user enable "$CHROME_SUPERVISOR_SERVICE_NAME.service"
+            systemctl --user "$action" "$CHROME_SUPERVISOR_SERVICE_NAME.service"
+            systemctl --user is-active --quiet "$CHROME_SUPERVISOR_SERVICE_NAME.service" \
+                || fail "Debug Chrome Supervisor did not become active"
+            echo "Debug Chrome Supervisor is active"
+            ;;
+    esac
+}
+
+write_service_definitions() {
+    check_project
+    case "$(platform_name)" in
+        macos)
+            write_macos_service
+            write_macos_worker_service
+            write_macos_system_upgrade_service
+            ;;
+        ubuntu)
+            write_systemd_service
+            write_systemd_worker_service
+            write_systemd_chrome_supervisor_service
+            write_systemd_system_upgrade_service
+            systemctl --user daemon-reload
+            systemctl --user enable "$SERVICE_NAME.service"
+            systemctl --user enable "$WORKER_SERVICE_NAME.service"
+            systemctl --user enable "$CHROME_SUPERVISOR_SERVICE_NAME.service"
+            ;;
+    esac
+}
+
+install_runtime_dependencies() {
+    check_project
+    local requirements_file="$PROJECT_ROOT/requirements.txt"
+    [[ -f "$requirements_file" ]] || return 0
+    "$PYTHON_BIN" -m pip install \
+        --disable-pip-version-check \
+        --requirement "$requirements_file"
 }
 
 install_command() {
@@ -603,6 +879,7 @@ install_service() {
         force=true
     fi
     check_project
+    require_system_upgrade_idle
     check_codex_pty_requirements
     require_worker_idle_for_maintenance install "$force"
     install_command
@@ -611,6 +888,9 @@ install_service() {
             local plist_path worker_plist_path
             plist_path="$(macos_plist_path)"
             worker_plist_path="$(worker_macos_plist_path)"
+            if [[ -f "$(system_upgrade_macos_plist_path)" ]]; then
+                launchctl bootout "$(macos_domain)/$SYSTEM_UPGRADE_MACOS_LABEL" >/dev/null 2>&1 || true
+            fi
             if [[ -f "$plist_path" ]]; then
                 stop_macos_service
             fi
@@ -620,19 +900,26 @@ install_service() {
             clear_retired_worker_state
             write_macos_service
             write_macos_worker_service
+            write_macos_system_upgrade_service
+            load_macos_system_upgrade_service
             start_macos_worker
             start_macos_service
             ;;
         ubuntu)
             systemctl --user stop "$SERVICE_NAME.service" >/dev/null 2>&1 || true
             systemctl --user stop "$WORKER_SERVICE_NAME.service" >/dev/null 2>&1 || true
+            systemctl --user stop "$CHROME_SUPERVISOR_SERVICE_NAME.service" >/dev/null 2>&1 || true
             clear_retired_worker_state
             write_systemd_service
             write_systemd_worker_service
+            write_systemd_chrome_supervisor_service
+            write_systemd_system_upgrade_service
             systemctl --user daemon-reload
             systemctl --user enable "$SERVICE_NAME.service"
             systemctl --user enable "$WORKER_SERVICE_NAME.service"
+            systemctl --user enable "$CHROME_SUPERVISOR_SERVICE_NAME.service"
             systemctl --user restart "$WORKER_SERVICE_NAME.service"
+            systemctl --user restart "$CHROME_SUPERVISOR_SERVICE_NAME.service"
             systemctl --user restart "$SERVICE_NAME.service"
             ;;
     esac
@@ -648,6 +935,7 @@ start_service() {
             ;;
         ubuntu)
             systemctl --user start "$WORKER_SERVICE_NAME.service"
+            systemctl --user start "$CHROME_SUPERVISOR_SERVICE_NAME.service"
             systemctl --user start "$SERVICE_NAME.service"
             ;;
     esac
@@ -658,6 +946,7 @@ stop_service() {
     if maintenance_force_requested stop "$@"; then
         force=true
     fi
+    require_system_upgrade_idle
     require_worker_idle_for_maintenance stop "$force"
     case "$(platform_name)" in
         macos)
@@ -667,6 +956,7 @@ stop_service() {
         ubuntu)
             systemctl --user stop "$SERVICE_NAME.service"
             systemctl --user stop "$WORKER_SERVICE_NAME.service"
+            systemctl --user stop "$CHROME_SUPERVISOR_SERVICE_NAME.service"
             ;;
     esac
 }
@@ -774,6 +1064,7 @@ check_service() {
 }
 
 restart_service() {
+    require_system_upgrade_idle
     if [[ "${CHUB_ACTIVITY_SOURCE:-}" == "quick" ]]; then
         "$PROJECT_ROOT/scripts/chub-web-restart"
         return
@@ -799,6 +1090,7 @@ status_service() {
         ubuntu)
             systemctl --user status "$SERVICE_NAME.service" --no-pager || result=$?
             systemctl --user status "$WORKER_SERVICE_NAME.service" --no-pager || result=$?
+            systemctl --user status "$CHROME_SUPERVISOR_SERVICE_NAME.service" --no-pager || result=$?
             ;;
     esac
     if ! quick_worker_health; then
@@ -1020,6 +1312,11 @@ quick_worker_recover() {
         fail "worker recovery must be run from a local terminal, not from a Quick Worker task"
     fi
     check_project
+    if [[ "$(platform_name)" == "ubuntu" ]]; then
+        if ! "$SCRIPT_PATH" chrome-supervisor-ensure; then
+            echo "chub: warning: Debug Chrome Supervisor recovery failed" >&2
+        fi
+    fi
     if ! reload_worker_service; then
         fail "Quick Worker service recovery failed"
     fi
@@ -1051,25 +1348,36 @@ uninstall_service() {
     if maintenance_force_requested uninstall "$@"; then
         force=true
     fi
+    require_system_upgrade_idle
     require_worker_idle_for_maintenance uninstall "$force"
     case "$(platform_name)" in
         macos)
-            local plist_path worker_plist_path
+            local plist_path worker_plist_path upgrade_plist_path
             plist_path="$(macos_plist_path)"
             worker_plist_path="$(worker_macos_plist_path)"
+            upgrade_plist_path="$(system_upgrade_macos_plist_path)"
             launchctl bootout "gui/$(id -u)/$MACOS_LABEL" >/dev/null 2>&1 || true
             launchctl bootout "gui/$(id -u)/$WORKER_MACOS_LABEL" >/dev/null 2>&1 || true
+            launchctl bootout "gui/$(id -u)/$SYSTEM_UPGRADE_MACOS_LABEL" >/dev/null 2>&1 || true
             rm -f "$plist_path"
             rm -f "$worker_plist_path"
+            rm -f "$upgrade_plist_path"
             ;;
         ubuntu)
-            local unit_path worker_unit_path
+            local unit_path worker_unit_path upgrade_unit_path
             unit_path="$(systemd_unit_path)"
             worker_unit_path="$(worker_systemd_unit_path)"
+            upgrade_unit_path="$(system_upgrade_systemd_unit_path)"
+            local chrome_supervisor_unit_path
+            chrome_supervisor_unit_path="$(chrome_supervisor_systemd_unit_path)"
             systemctl --user disable --now "$SERVICE_NAME.service" >/dev/null 2>&1 || true
             systemctl --user disable --now "$WORKER_SERVICE_NAME.service" >/dev/null 2>&1 || true
+            systemctl --user disable --now "$CHROME_SUPERVISOR_SERVICE_NAME.service" >/dev/null 2>&1 || true
+            systemctl --user disable --now "$SYSTEM_UPGRADE_SERVICE_NAME.service" >/dev/null 2>&1 || true
             rm -f "$unit_path"
             rm -f "$worker_unit_path"
+            rm -f "$chrome_supervisor_unit_path"
+            rm -f "$upgrade_unit_path"
             systemctl --user daemon-reload
             ;;
     esac
@@ -1114,6 +1422,22 @@ case "$command" in
             cd "$PROJECT_ROOT"
             "$PYTHON_BIN" -m app.requests.command "$@"
         )
+        ;;
+    chrome-supervisor-ensure)
+        ensure_chrome_supervisor_service
+        ;;
+    chrome-supervisor-reconcile)
+        shift
+        reconcile_chrome_supervisor_service "$@"
+        ;;
+    service-definitions)
+        write_service_definitions
+        ;;
+    runtime-dependencies)
+        install_runtime_dependencies
+        ;;
+    system-upgrade-service)
+        recover_system_upgrade_service
         ;;
     uninstall)
         shift

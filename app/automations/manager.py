@@ -25,6 +25,7 @@ from app.automations.browser import (
     start_debug_chrome,
     stop_debug_chrome,
 )
+from app.automations.chrome_supervisor import socket_path as chrome_supervisor_socket_path
 from app.automations.config import DuplicateAutomationTaskError, load_automations
 from app.automations.models import (
     AutomationListData,
@@ -84,8 +85,18 @@ def _feishu_environment_for_url(
 
 
 class AutomationManager:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        detected_platform: str | None = None,
+    ) -> None:
         self._settings = settings
+        self._browser_supervisor_socket = (
+            chrome_supervisor_socket_path(settings.automations.runtime_dir)
+            if detected_platform == "ubuntu"
+            else None
+        )
         self._store = AutomationStateStore(settings.automations.state_dir)
         self._launch_lock = threading.Lock()
         self._state_lock = threading.Lock()
@@ -110,6 +121,53 @@ class AutomationManager:
         )
         self._clear_feishu_qr()
         self._recover_browser_initialization()
+
+    def _debug_chrome_status(self) -> tuple[str, str, str | None]:
+        if self._browser_supervisor_socket is None:
+            return debug_chrome_status()
+        return debug_chrome_status(
+            supervisor_socket=self._browser_supervisor_socket,
+        )
+
+    def _current_debug_chrome_profile(self) -> str | None:
+        if self._browser_supervisor_socket is None:
+            return current_debug_chrome_profile()
+        return current_debug_chrome_profile(
+            supervisor_socket=self._browser_supervisor_socket,
+        )
+
+    def _start_debug_chrome(self, mode: str):
+        if self._browser_supervisor_socket is None:
+            return start_debug_chrome(mode)
+        return start_debug_chrome(
+            mode,
+            supervisor_socket=self._browser_supervisor_socket,
+        )
+
+    def _select_and_start_debug_chrome(self, profile_id: str, mode: str):
+        if self._browser_supervisor_socket is None:
+            return select_and_start_debug_chrome(profile_id, mode)
+        return select_and_start_debug_chrome(
+            profile_id,
+            mode,
+            supervisor_socket=self._browser_supervisor_socket,
+        )
+
+    def _stop_debug_chrome(self):
+        if self._browser_supervisor_socket is None:
+            return stop_debug_chrome()
+        return stop_debug_chrome(
+            supervisor_socket=self._browser_supervisor_socket,
+        )
+
+    def _initialize_and_start_debug_chrome(self, profile_id: str, mode: str):
+        if self._browser_supervisor_socket is None:
+            return initialize_and_start_debug_chrome(profile_id, mode)
+        return initialize_and_start_debug_chrome(
+            profile_id,
+            mode,
+            supervisor_socket=self._browser_supervisor_socket,
+        )
 
     def _write_browser_initialization(self) -> None:
         path = self._browser_initialization_path
@@ -394,7 +452,7 @@ class AutomationManager:
         self,
     ) -> tuple[list[BrowserProfilePublic], str | None, str | None, str | None]:
         profiles, error = browser_profiles()
-        current_id = current_debug_chrome_profile()
+        current_id = self._current_debug_chrome_profile()
         with self._launch_lock:
             initialization = self._browser_initialization.copy()
         public = []
@@ -434,7 +492,7 @@ class AutomationManager:
                 tasks=[],
             )
         config = self._load_config()
-        browser_state, browser_message, browser_mode = debug_chrome_status()
+        browser_state, browser_message, browser_mode = self._debug_chrome_status()
         profiles, profiles_error, profile_id, profile_name = self._browser_profile_data()
         tasks = []
         for task_id, task in config.tasks.items():
@@ -495,7 +553,7 @@ class AutomationManager:
         )
 
     def check_feishu_environment(self) -> FeishuEnvironmentState:
-        browser_state, _, _ = debug_chrome_status()
+        browser_state, _, _ = self._debug_chrome_status()
         if browser_state != "running":
             raise ApiError(409, "debug_chrome_not_running", "Debug Chrome 未运行")
 
@@ -563,7 +621,7 @@ class AutomationManager:
                 raise ApiError(404, "automation_not_found", "自动化任务不存在")
             if not task.enabled:
                 raise ApiError(409, "automation_disabled", "自动化任务未启用")
-            browser_state, _, _ = debug_chrome_status()
+            browser_state, _, _ = self._debug_chrome_status()
             if browser_state != "running":
                 raise ApiError(409, "debug_chrome_not_running", "Debug Chrome 未运行")
             current = self._current_state(task_id)
@@ -680,12 +738,12 @@ class AutomationManager:
                 try:
                     current = (
                         (
-                            select_and_start_debug_chrome(profile_id, mode)
+                            self._select_and_start_debug_chrome(profile_id, mode)
                             if profile_id
-                            else start_debug_chrome(mode)
+                            else self._start_debug_chrome(mode)
                         )
                         if action == "start"
-                        else stop_debug_chrome()
+                        else self._stop_debug_chrome()
                     )
                 except RuntimeError as exc:
                     message = str(exc)
@@ -759,7 +817,7 @@ class AutomationManager:
         selected = next((profile for profile in profiles if profile.id == profile_id), None)
         if selected is None or selected.initialized or not selected.source_available:
             raise ApiError(422, "browser_profile_invalid", "浏览器用户不可初始化")
-        browser_state, _, _ = debug_chrome_status()
+        browser_state, _, _ = self._debug_chrome_status()
         if browser_state != "stopped":
             raise ApiError(409, "automation_browser_busy", "请先停止 Debug Chrome")
         with self._launch_lock:
@@ -794,7 +852,7 @@ class AutomationManager:
             final_message = "浏览器用户初始化失败"
             try:
                 with file_lock(lock_path, 0):
-                    current = initialize_and_start_debug_chrome(profile_id, mode)
+                    current = self._initialize_and_start_debug_chrome(profile_id, mode)
                 if (
                     current.state != "running"
                     or current.profile_directory != profile_id

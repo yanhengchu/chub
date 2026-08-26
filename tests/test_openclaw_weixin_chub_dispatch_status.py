@@ -588,7 +588,7 @@ def test_dispatch_routes_chub_status_to_live_overview(
 
     assert result.disposition == "reply"
     assert result.message is not None
-    assert re.match(r"Chub · [1-9][0-9]*ms(?:\n|$)", result.message)
+    assert re.match(r"Test Node chub · [1-9][0-9]*ms(?:\n|$)", result.message)
     assert "Task result notifications failed" not in result.message
     assert "Issues" not in result.message
     assert result.message.endswith(
@@ -633,7 +633,7 @@ def test_removed_status_aliases_are_submitted_as_normal_tasks(
             "Quick\n\n"
             "chub · sync · new [title] · S# [task]\n\n"
             "Reference\n\n"
-            "help model · help text · help session · help request · help system",
+            "help model · text help · session help · help request · help system",
         ),
         (
             "HELP MODEL。",
@@ -644,7 +644,7 @@ def test_removed_status_aliases_are_submitted_as_normal_tasks(
             "model use M# | L# | M# L#",
         ),
         (
-            "HELP TEXT",
+            "TEXT HELP",
             "Commands · Text\n\n"
             "text\n\n"
             "text mode <direct|auto|confirm>\n\n"
@@ -654,6 +654,18 @@ def test_removed_status_aliases_are_submitted_as_normal_tasks(
             "text model use M# | L# | M# L#\n\n"
             "text ok | text next | text cancel\n\n"
             "text-check <English>",
+        ),
+        (
+            "SESSION HELP",
+            "Commands · Sessions\n\n"
+            "sync\n\n"
+            "new [title]\n\n"
+            "rename <title>\n\n"
+            "S# [task]\n\n"
+            "stop [S#]\n\n"
+            "archive S#\n\n"
+            "del S#\n\n"
+            "retry",
         ),
     ],
 )
@@ -1464,7 +1476,7 @@ def test_chub_status_refreshes_after_state_lock_is_released(settings: Settings) 
     assert completed.wait(timeout=1)
     thread.join(timeout=1)
 
-    assert re.match(r"Chub · [1-9][0-9]*ms(?:\n|$)", result_holder[0].message)
+    assert re.match(r"Test Node chub · [1-9][0-9]*ms(?:\n|$)", result_holder[0].message)
 
 
 def test_chub_overview_failure_completes_ephemeral_dedup(
@@ -1602,7 +1614,7 @@ def test_concurrent_chub_queries_share_one_live_collection(
 
     assert len(results) == 2
     assert all(
-        re.match(r"Chub · [1-9][0-9]*ms(?:\n|$)", result.message)
+        re.match(r"Test Node chub · [1-9][0-9]*ms(?:\n|$)", result.message)
         for result in results
     )
     manager.system_status_reader.assert_called_once()

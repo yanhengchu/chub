@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+OPERATION_ID="${1:-}"
+SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PYTHON_BIN="$PROJECT_ROOT/.venv/bin/python"
+PLATFORM="${CHUB_TEST_PLATFORM:-$(uname -s)}"
+LAUNCH_AGENTS_DIR="${CHUB_LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}"
+SYSTEM_UPGRADE_SERVICE_NAME="chub-system-upgrade"
+SYSTEM_UPGRADE_MACOS_LABEL="com.chub.system-upgrade"
+
+if [[ ! "$OPERATION_ID" =~ ^[a-f0-9]{32}$ ]]; then
+    echo "chub-system-upgrade-start: invalid operation id" >&2
+    exit 2
+fi
+
+if [[ ! -x "$PYTHON_BIN" ]]; then
+    echo "chub-system-upgrade-start: Python environment is unavailable" >&2
+    exit 1
+fi
+
+(
+    cd "$PROJECT_ROOT"
+    "$PYTHON_BIN" -m app.system_upgrade_cli validate-launch "$OPERATION_ID"
+)
+
+case "$PLATFORM" in
+    Linux)
+        systemctl --user --no-block start "$SYSTEM_UPGRADE_SERVICE_NAME.service"
+        ;;
+    Darwin)
+        DOMAIN="gui/$(id -u)"
+        PLIST_PATH="$LAUNCH_AGENTS_DIR/$SYSTEM_UPGRADE_MACOS_LABEL.plist"
+        [[ -f "$PLIST_PATH" ]] || {
+            echo "chub-system-upgrade-start: upgrade LaunchAgent is not installed" >&2
+            exit 1
+        }
+        if ! launchctl print "$DOMAIN/$SYSTEM_UPGRADE_MACOS_LABEL" >/dev/null 2>&1; then
+            launchctl bootstrap "$DOMAIN" "$PLIST_PATH"
+        fi
+        launchctl kickstart "$DOMAIN/$SYSTEM_UPGRADE_MACOS_LABEL"
+        ;;
+    *)
+        echo "chub-system-upgrade-start: unsupported platform: $PLATFORM" >&2
+        exit 1
+        ;;
+esac

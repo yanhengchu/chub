@@ -42,7 +42,7 @@ async function monitorHubRestart(previousInstanceId) {
   try {
     await waitForHubRestart(previousInstanceId);
     setBadge(elements.chubServiceBadge, "运行正常", "success");
-    showMaintenanceCompletion(elements.chubServiceDetail, "Chub Web 已重启并恢复。");
+    showMaintenanceCompletion(elements.chubServiceDetail, "Chub 已重启并恢复。");
     reloadDashboardAfterMaintenance();
   } catch (error) {
     if (!handleAccessError(error)) {
@@ -74,7 +74,7 @@ async function requestHubRestart() {
 elements.restartHub.addEventListener("click", () => {
   void showConfirmationDialog({
     title: "重启 Chub",
-    description: "重启会重新加载当前代码和配置，页面连接会短暂中断。Quick Worker 和 ClawBot 背后的 OpenClaw Gateway 是独立服务，不会被重启；已接受的快速任务会继续运行。实时终端连接可能中断，但 tmux 和原生 Codex 会话保留，重新进入时恢复。",
+    description: "重启会重新加载当前代码和配置，页面连接会短暂中断。Chub Quick Worker、Ubuntu Chub Debug Chrome 和 OpenClaw Gateway 是独立服务，不会被重启；已接受的快速任务会继续运行。实时终端连接可能中断，但 tmux 和原生 Codex 会话保留，重新进入时恢复。",
     confirmLabel: "确认重启",
     pendingLabel: "正在下发…",
     errorMessage: "重启失败。",
