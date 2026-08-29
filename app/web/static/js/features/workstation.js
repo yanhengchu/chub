@@ -87,6 +87,7 @@ function quickWorkerPresentation(state) {
     restarting: ["正在重启", "muted"],
     incompatible: ["版本不兼容", "failed"],
     unavailable: ["不可用", "failed"],
+    stopped: ["已停止", "timeout"],
   }[state] || ["状态未知", "failed"];
 }
 
@@ -104,11 +105,28 @@ function syncCoreMaintenanceControls() {
     || hubRestartInProgress
     || systemUpgradeIsRunning()
   );
+  elements.stopHub.disabled = (
+    !connected
+    || hubRestartInProgress
+    || systemUpgradeIsRunning()
+  );
   elements.quickWorkerRestart.disabled = (
     !connected
     || quickWorkerRequestInProgress
     || systemUpgradeIsRunning()
     || !quickWorkerState?.can_restart
+  );
+  elements.quickWorkerStart.disabled = (
+    !connected
+    || quickWorkerRequestInProgress
+    || systemUpgradeIsRunning()
+    || !quickWorkerState?.can_start
+  );
+  elements.quickWorkerStop.disabled = (
+    !connected
+    || quickWorkerRequestInProgress
+    || systemUpgradeIsRunning()
+    || !quickWorkerState?.can_stop
   );
   elements.systemUpgradeStart.disabled = (
     !connected
@@ -337,6 +355,9 @@ function resetQuickWorkerView() {
   setBadge(elements.quickWorkerBadge, "正在检查");
   elements.quickWorkerDetail.textContent = "正在检查任务执行服务";
   setMessage(elements.quickWorkerMessage, "");
+  elements.quickWorkerStart.hidden = true;
+  elements.quickWorkerRestart.hidden = true;
+  elements.quickWorkerStop.hidden = true;
   setBadge(elements.chubServiceBadge, "正在检查");
   elements.chubServiceDetail.textContent = "正在检查服务状态";
   setMessage(elements.chubServiceMessage, "");
@@ -356,7 +377,11 @@ function renderQuickWorker(data) {
   quickWorkerState = data;
   const [badgeText, badgeKind] = quickWorkerPresentation(data.state);
   setBadge(elements.quickWorkerBadge, badgeText, badgeKind);
-  elements.quickWorkerRestart.textContent = "重启并清理任务";
+  const stopped = data.state === "stopped";
+  elements.quickWorkerStart.hidden = !stopped;
+  elements.quickWorkerRestart.hidden = stopped || !data.can_restart;
+  elements.quickWorkerStop.hidden = stopped || !data.can_stop;
+  elements.quickWorkerRestart.textContent = "重启";
   elements.quickWorkerDetail.textContent = data.message;
   const failedOperation = data.operation?.status === "failed";
   setMessage(
@@ -447,6 +472,33 @@ async function requestQuickWorkerRestart() {
   }
 }
 
+async function requestQuickWorkerServiceAction(action) {
+  quickWorkerRequestInProgress = true;
+  setBadge(elements.quickWorkerBadge, action === "start" ? "正在启动" : "正在停止", "muted");
+  elements.quickWorkerDetail.textContent = action === "start"
+    ? "正在启动 Quick Worker"
+    : "正在停止 Quick Worker";
+  setMessage(elements.quickWorkerMessage, "");
+  syncCoreMaintenanceControls();
+  try {
+    const data = await apiFetch(`/api/maintenance/quick-worker/${action}`, {
+      method: "POST",
+    });
+    renderQuickWorker(data);
+  } catch (error) {
+    await loadQuickWorkerStatus();
+    setMessage(
+      elements.quickWorkerMessage,
+      error.message || `Quick Worker ${action === "start" ? "启动" : "停止"}失败。`,
+      "error",
+    );
+    throw error;
+  } finally {
+    quickWorkerRequestInProgress = false;
+    syncCoreMaintenanceControls();
+  }
+}
+
 function systemUpgradeImpactDetails() {
   const activeTasks = Number(quickWorkerState?.active_tasks || 0);
   const queuedTasks = Number(quickWorkerState?.queued_tasks || 0);
@@ -499,14 +551,27 @@ elements.refreshWorkstationEnvironment.addEventListener(
   "click",
   refreshWorkstationEnvironment,
 );
+elements.quickWorkerStart.addEventListener("click", () => {
+  void requestQuickWorkerServiceAction("start");
+});
 elements.quickWorkerRestart.addEventListener("click", () => {
   void showConfirmationDialog({
-    title: "重启并清理 Chub Quick Worker",
+    title: "重启 Chub Quick Worker",
     description: "排队任务会被取消，执行中的任务会停止并标记为未完成，任务不会自动重试。Chub、OpenClaw Gateway 和实时终端不受影响。",
-    confirmLabel: "确认重启并清理",
+    confirmLabel: "确认重启",
     pendingLabel: "正在下发…",
     errorMessage: "Chub Quick Worker 重启失败。",
     onConfirm: requestQuickWorkerRestart,
+  });
+});
+elements.quickWorkerStop.addEventListener("click", () => {
+  void showConfirmationDialog({
+    title: "停止 Chub Quick Worker",
+    description: "停止前必须没有排队或执行中的快速任务；停止后页面和微信快速任务将暂时无法提交，实时终端不受影响。",
+    confirmLabel: "确认停止",
+    pendingLabel: "正在停止…",
+    errorMessage: "Chub Quick Worker 停止失败。",
+    onConfirm: () => requestQuickWorkerServiceAction("stop"),
   });
 });
 

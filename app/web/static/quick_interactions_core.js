@@ -6,15 +6,6 @@
   const MAX_POLL_DELAY_MS = 10000;
   const CONNECTION_FAILURE_GRACE_ATTEMPTS = 3;
   const PAGE_SIZE_KEY = "hub.quickInteractionPageSize.v1";
-  const DEFAULT_PERMISSION_KEY = "hub.codexDefaultPermission.v1";
-  const DEFAULT_MODEL_KEY = "hub.codexDefaultModel.v1";
-  const DEFAULT_REASONING_EFFORT_KEY = "hub.codexDefaultReasoningEffort.v1";
-  const PERMISSION_MODES = new Set([
-    "ask",
-    "auto-review",
-    "read-only",
-    "full-access",
-  ]);
   const CREATION_PREFERENCE_ERRORS = new Set([
     "codex_model_catalog_unavailable",
     "codex_model_unavailable",
@@ -135,35 +126,14 @@
   }
 
   function readSessionCreationPreferences(storage) {
-    const read = (key) => {
-      if (storage === undefined) {
-        return readStoredValue("localStorage", key);
-      }
-      try {
-        return storage?.getItem(key) || "";
-      } catch (_error) {
-        return "";
-      }
-    };
-    const permissionMode = read(DEFAULT_PERMISSION_KEY);
     return {
-      permissionMode: PERMISSION_MODES.has(permissionMode)
-        ? permissionMode
-        : "full-access",
-      model: read(DEFAULT_MODEL_KEY) || null,
-      reasoningEffort: read(DEFAULT_REASONING_EFFORT_KEY) || null,
+      permissionMode: null,
+      model: null,
+      reasoningEffort: null,
     };
   }
 
-  function clearSessionModelPreferences(storage) {
-    try {
-      const target = storage === undefined ? root.localStorage : storage;
-      target?.removeItem(DEFAULT_MODEL_KEY);
-      target?.removeItem(DEFAULT_REASONING_EFFORT_KEY);
-    } catch (_error) {
-      // The current creation request can still retry with Codex defaults.
-    }
-  }
+  function clearSessionModelPreferences(_storage) {}
 
   function shouldRetrySessionCreationWithDefaults(error, preferences) {
     return Boolean(
@@ -416,6 +386,7 @@
     const encodedSessionId = encodeURIComponent(sessionId);
     async function loadSessionContext() {
       const data = await request(sessionListPath());
+      const quickCreation = data.quick_creation;
       const sessions = (Array.isArray(data.sessions) ? data.sessions : [])
         .filter(isQuickInteractionSession);
       let session = sessions.find((item) => item.id === sessionId);
@@ -432,8 +403,8 @@
       return {
         session,
         sessions,
-        available: data.available === true,
-        unavailableReason: data.unavailable_reason || "",
+        available: quickCreation?.available === true,
+        unavailableReason: quickCreation?.reason || "",
         workspaces: Array.isArray(data.workspaces) ? data.workspaces : [],
       };
     }
@@ -445,6 +416,21 @@
 
       loadSessionContext,
 
+      updateSessionConfiguration({ permissionMode, model, reasoningEffort }) {
+        return request(
+          `/api/codex/sessions/${encodedSessionId}/configuration`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              permission_mode: permissionMode,
+              model,
+              reasoning_effort: reasoningEffort,
+            }),
+          },
+        );
+      },
+
       createSession({ workspaceId, permissionMode, model, reasoningEffort }) {
         return request(
           "/api/codex/sessions",
@@ -454,9 +440,6 @@
             body: JSON.stringify({
               workspace_id: workspaceId,
               session_mode: "quick",
-              permission_mode: permissionMode,
-              model,
-              reasoning_effort: reasoningEffort,
             }),
           },
         );
@@ -543,6 +526,7 @@
     shouldSuppressReconnectError,
     pollDelay,
     readPageSize,
+    readModelCatalog: () => request("/api/codex/models"),
     readSessionCreationPreferences,
     request,
     firstSessionAfterArchive,

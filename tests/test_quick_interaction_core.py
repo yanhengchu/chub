@@ -251,12 +251,12 @@ process.stdout.write(JSON.stringify(result));
         "firstSessionAfterArchive": "newest",
         "noSessionAfterArchive": None,
         "creationPreferences": {
-            "permissionMode": "auto-review",
-            "model": "gpt-test",
-            "reasoningEffort": "high",
+            "permissionMode": None,
+            "model": None,
+            "reasoningEffort": None,
         },
         "invalidCreationPreferences": {
-            "permissionMode": "full-access",
+            "permissionMode": None,
             "model": None,
             "reasoningEffort": None,
         },
@@ -420,6 +420,7 @@ global.fetch = async (path) => {
     data: {
       available: true,
       unavailable_reason: null,
+      quick_creation: { available: true, reason: null },
       workspaces: [{ id: "chub", name: "Chub", path: "/workspace/chub", available: true }],
       sessions: [
         { id: "terminal", session_mode: "terminal" },
@@ -555,12 +556,9 @@ const client = core.createClient({ token: "", sessionId: "current-session" });
         "captured": {
             "path": "/api/codex/sessions",
             "method": "POST",
-                "body": {
-                    "workspace_id": "workspace/one",
-                    "session_mode": "quick",
-                    "permission_mode": "auto-review",
-                "model": "gpt-test",
-                "reasoning_effort": "high",
+            "body": {
+                "workspace_id": "workspace/one",
+                "session_mode": "quick",
             },
         },
         "session": {"id": "new-session"},

@@ -17,6 +17,7 @@ from app.quick_worker import PROTOCOL_VERSION
 from app.services.quick_worker_maintenance import (
     QuickWorkerReloadCoordinator,
     QuickWorkerReloadState,
+    QuickWorkerStatusData,
     inspect_quick_worker,
     launch_quick_worker_reload_process,
 )
@@ -151,6 +152,69 @@ async def test_quick_worker_status_requires_trusted_network(
         response = await client.get("/api/maintenance/quick-worker")
 
     assert response.status_code == 403
+
+
+@pytest.mark.anyio
+async def test_quick_worker_status_exposes_stopped_service_as_startable(
+    settings: Settings,
+) -> None:
+    coordinator = QuickWorkerReloadCoordinator(
+        settings.codex_pty.data_file.with_name("quick-worker-maintenance.json"),
+        Path("scripts/chub"),
+    )
+    with (
+        patch(
+            "app.services.quick_worker_maintenance.read_health",
+            new=AsyncMock(side_effect=OSError("worker stopped")),
+        ),
+        patch(
+            "app.services.quick_worker_maintenance.worker_service_state",
+            return_value="stopped",
+        ),
+    ):
+        inspection = await inspect_quick_worker(settings, True, coordinator)
+
+    assert inspection.data.state == "stopped"
+    assert inspection.data.can_start is True
+    assert inspection.data.can_restart is False
+    assert inspection.data.can_stop is False
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("action", ["start", "stop"])
+async def test_quick_worker_service_control_uses_fixed_action(
+    settings: Settings,
+    action: str,
+) -> None:
+    app = create_app(settings)
+    transport = httpx.ASGITransport(app=app)
+    inspection = SimpleNamespace(
+        data=QuickWorkerStatusData(
+            state="stopped" if action == "start" else "ready",
+            message="状态已确认",
+            can_start=action == "start",
+            can_stop=action == "stop",
+        )
+    )
+    with (
+        patch("app.api.maintenance.PROJECT_ROOT") as project_root,
+        patch(
+            "app.api.maintenance.run_worker_service_action"
+        ) as run_action,
+        patch(
+            "app.api.maintenance.inspect_quick_worker",
+            new=AsyncMock(return_value=inspection),
+        ),
+    ):
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            headers=AUTHORIZATION,
+        ) as client:
+            response = await client.post(f"/api/maintenance/quick-worker/{action}")
+
+    assert response.status_code == 200
+    run_action.assert_called_once_with(project_root / "scripts" / "chub", action)
 
 
 @pytest.mark.anyio

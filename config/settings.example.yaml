@@ -67,6 +67,20 @@ notifications:
   max_message_bytes: 4000
   dedup_ttl_seconds: 600
 
+# Disabled by default. On Ubuntu, set the Wi-Fi device and both UUIDs in
+# settings.local.yaml to allow the fixed `chub network-restart` and WeChat
+# `restart network` action. macOS does not support this NetworkManager action.
+# The action never accepts connection names, UUIDs, commands, or paths from a
+# caller, and leaves Tailscale unchanged.
+network_recovery:
+  enabled: false
+  wifi_device: null
+  wifi_connection_uuid: null
+  vpn_connection_uuid: null
+  wifi_timeout_seconds: 45
+  vpn_timeout_seconds: 60
+  lock_file: "data/local/runtime/network-recovery.lock"
+
 openclaw:
   weixin_chub_mode:
     # Explicitly enable only after the single-Owner WeChat private-message route is ready.

@@ -3,7 +3,11 @@ from pathlib import Path
 import pytest
 
 from app.core import config
-from app.core.config import OpenClawWeixinChubModeConfig, load_settings
+from app.core.config import (
+    NetworkRecoveryConfig,
+    OpenClawWeixinChubModeConfig,
+    load_settings,
+)
 
 
 VALID_CONFIG = """
@@ -67,6 +71,43 @@ def test_quick_interaction_timeout_defaults_to_six_hours(
     settings = load_settings(config_file)
 
     assert settings.codex_pty.quick_interaction_timeout_seconds == 21_600
+
+
+def test_network_recovery_requires_fixed_connection_uuids_when_enabled() -> None:
+    with pytest.raises(
+        ValueError, match="requires a Wi-Fi device and connection UUIDs"
+    ):
+        NetworkRecoveryConfig(enabled=True)
+
+    configured = NetworkRecoveryConfig(
+        enabled=True,
+        wifi_device="wlp3s0",
+        wifi_connection_uuid="61243ed4-ca59-4f3f-87bb-8e9d3ebe381c",
+        vpn_connection_uuid="c583eb7c-9e3a-4686-8980-f3978fd6a6f6",
+    )
+
+    assert configured.enabled is True
+    assert configured.wifi_connection_uuid == "61243ed4-ca59-4f3f-87bb-8e9d3ebe381c"
+
+
+def test_network_recovery_rejects_non_uuid_connection_targets() -> None:
+    with pytest.raises(ValueError, match="connection IDs must be UUIDs"):
+        NetworkRecoveryConfig(
+            enabled=True,
+            wifi_device="wlp3s0",
+            wifi_connection_uuid="home-wifi",
+            vpn_connection_uuid="c583eb7c-9e3a-4686-8980-f3978fd6a6f6",
+        )
+
+
+def test_network_recovery_rejects_unsafe_wifi_device_name() -> None:
+    with pytest.raises(ValueError, match="Wi-Fi device name is invalid"):
+        NetworkRecoveryConfig(
+            enabled=True,
+            wifi_device="wlp3s0; rm -rf /",
+            wifi_connection_uuid="61243ed4-ca59-4f3f-87bb-8e9d3ebe381c",
+            vpn_connection_uuid="c583eb7c-9e3a-4686-8980-f3978fd6a6f6",
+        )
 
 
 def test_weixin_chub_display_name_limits_are_configurable() -> None:

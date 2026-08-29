@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -15,6 +17,7 @@ from app.services.restart_command import (
 from app.services.quick_worker_maintenance import (
     QuickWorkerStatusData,
     inspect_quick_worker,
+    run_worker_service_action,
 )
 from app.services.system_upgrade import (
     SystemUpgradeStatusData,
@@ -295,6 +298,64 @@ def restart_hub(request: Request) -> ApiResponse[dict[str, str]]:
     return ApiResponse(data={"status": "restarting"})
 
 
+@router.post("/chub/stop", response_model=ApiResponse[dict[str, str]])
+def stop_hub(request: Request) -> ApiResponse[dict[str, str]]:
+    with request.app.state.maintenance_lock:
+        _require_runtime_maintenance_available(request)
+        operation_id = log_operation(
+            request,
+            action="stop_hub",
+            status="requested",
+            target="chub",
+        )
+        command = PROJECT_ROOT / "scripts" / "chub-web-stop"
+        if not command.is_file():
+            log_operation(
+                request,
+                action="stop_hub",
+                status="failed",
+                target="chub",
+                operation_id=operation_id,
+                reason="找不到 Chub 停止脚本。",
+            )
+            return error_response(503, "command_not_found", "找不到 Chub 停止脚本")
+        try:
+            process = launch_restart_process(command)
+        except OSError as error:
+            failure_reason = describe_restart_launch_error(error)
+            log_operation(
+                request,
+                action="stop_hub",
+                status="failed",
+                target="chub",
+                operation_id=operation_id,
+                reason=failure_reason,
+            )
+            return error_response(500, "stop_failed", failure_reason)
+
+    log_operation(
+        request,
+        action="stop_hub",
+        status="started",
+        target="chub",
+        operation_id=operation_id,
+    )
+    source_ip = request.client.host if request.client else "unknown"
+
+    def record_stop_failure(reason: str) -> None:
+        write_operation(
+            operation_id=operation_id,
+            action="stop_hub",
+            status="failed",
+            target="chub",
+            source_ip=source_ip,
+            reason=reason,
+        )
+
+    monitor_restart_process(process, record_stop_failure)
+    return ApiResponse(data={"status": "stopping"})
+
+
 @router.get(
     "/quick-worker",
     response_model=ApiResponse[QuickWorkerStatusData],
@@ -350,3 +411,83 @@ async def restart_quick_worker(
         coordinator,
     )
     return ApiResponse(data=refreshed.data)
+
+
+async def _control_quick_worker_service(
+    request: Request,
+    action: str,
+) -> ApiResponse[QuickWorkerStatusData]:
+    if action not in {"start", "stop"}:
+        raise ApiError(404, "quick_worker_action_not_found", "Quick Worker 操作不存在")
+    inspection = await inspect_quick_worker(
+        request.app.state.settings,
+        request.app.state.quick_interactions.recovery_ready,
+        request.app.state.quick_worker_maintenance,
+    )
+    if action == "start" and not inspection.data.can_start:
+        raise ApiError(409, "quick_worker_not_stopped", "Quick Worker 当前不是可启动状态")
+    if action == "stop" and not inspection.data.can_stop:
+        raise ApiError(
+            409,
+            "quick_worker_not_idle",
+            "Quick Worker 当前有在途任务或状态不可确认，未执行停止。",
+        )
+    with request.app.state.maintenance_lock:
+        _require_runtime_maintenance_available(request)
+        operation_id = log_operation(
+            request,
+            action=f"{action}_quick_worker",
+            status="requested",
+            target="quick-worker",
+        )
+        log_operation(
+            request,
+            action=f"{action}_quick_worker",
+            status="started",
+            target="quick-worker",
+            operation_id=operation_id,
+        )
+        try:
+            await asyncio.to_thread(
+                run_worker_service_action,
+                PROJECT_ROOT / "scripts" / "chub",
+                action,
+            )
+        except Exception:
+            log_operation(
+                request,
+                action=f"{action}_quick_worker",
+                status="failed",
+                target="quick-worker",
+                operation_id=operation_id,
+            )
+            raise
+        log_operation(
+            request,
+            action=f"{action}_quick_worker",
+            status="succeeded",
+            target="quick-worker",
+            operation_id=operation_id,
+        )
+    inspection = await inspect_quick_worker(
+        request.app.state.settings,
+        request.app.state.quick_interactions.recovery_ready,
+        request.app.state.quick_worker_maintenance,
+    )
+    return ApiResponse(data=inspection.data)
+
+
+@router.post(
+    "/quick-worker/start",
+    response_model=ApiResponse[QuickWorkerStatusData],
+)
+async def start_quick_worker(request: Request) -> ApiResponse[QuickWorkerStatusData]:
+    return await _control_quick_worker_service(request, "start")
+
+
+@router.post(
+    "/quick-worker/stop",
+    response_model=ApiResponse[QuickWorkerStatusData],
+)
+async def stop_quick_worker(request: Request) -> ApiResponse[QuickWorkerStatusData]:
+    return await _control_quick_worker_service(request, "stop")

@@ -291,8 +291,10 @@
         showMessage(elements.submitMessage, "");
       }
       elements.form.setAttribute("aria-busy", String(state.busy));
-      elements.submit.disabled = Boolean(state.submissionReason);
-      elements.submit.textContent = "发送";
+      elements.submit.disabled = Boolean(state.submissionReason)
+        || !elements.prompt.value.trim();
+      elements.submit.setAttribute("aria-label", "发送");
+      elements.submit.title = "发送";
       // A running task only blocks the next write. Keep the draft editable so
       // the next request can be prepared while this Session is working.
       elements.prompt.disabled = false;

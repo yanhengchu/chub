@@ -132,7 +132,10 @@ def format_chub_overview(
         anomalies.append("Chub status is not initialized.")
     elif not readiness.ready:
         code = getattr(readiness, "code", "unavailable")
-        anomalies.append(f"Chub is not ready ({code}).")
+        if code == "ai_runtime_disabled":
+            anomalies.append("AI Runtime is disabled. Chub is in base mode.")
+        else:
+            anomalies.append(f"Chub is not ready ({code}).")
     if memory_percent is not None and memory_percent >= 85:
         anomalies.append(f"Memory usage is high: {memory_percent:.0f}%")
     if disk_percent is not None and disk_percent >= 85:
@@ -202,6 +205,10 @@ def format_fixed_reply(message: str) -> str:
         ): "Not submitted · The WeChat Chub configuration is invalid.",
         "任务提交失败：Codex 当前不可用，请稍后重试。": (
             "Not submitted · Codex is unavailable. Try again later."
+        ),
+        "Codex Runtime 已停用，Chub 当前处于基础功能模式。请在设置页启用后再提交 AI 任务。": (
+            "Not submitted · Codex Runtime is disabled. Chub is in base mode. "
+            "Enable it in Settings to submit AI tasks."
         ),
         "任务提交失败：无法确认本次消息的微信回送通道，请稍后重试。": (
             "Not submitted · The reply route is unavailable."
@@ -541,6 +548,13 @@ def dispatch_failure(
             "Not submitted · The WeChat Chub configuration is invalid."
         ),
         "codex_unavailable": "Not submitted · Codex is unavailable. Try again later.",
+        "ai_runtime_disabled": (
+            "Not submitted · Codex Runtime is disabled. Chub is in base mode. "
+            "Enable it in Settings to submit AI tasks."
+        ),
+        "quick_worker_unavailable": (
+            "Not submitted · Quick Worker is unavailable. Try again later."
+        ),
         "delivery_route_invalid": "Not submitted · The reply route is unavailable.",
         "message_conflict": "Not submitted · The reply route does not match the original request.",
         "submission_interrupted": "Not submitted · A Chub restart interrupted the previous submission. Send it again.",
@@ -561,6 +575,8 @@ def dispatch_failure_from_error(exc: ApiError) -> WeixinChubModeDispatchResult:
         "weixin_chub_mode_in_progress": "in_progress",
         "weixin_chub_mode_configuration_invalid": "configuration_invalid",
         "weixin_chub_mode_codex_unavailable": "codex_unavailable",
+        "weixin_chub_mode_ai_runtime_disabled": "ai_runtime_disabled",
+        "weixin_chub_mode_quick_worker_unavailable": "quick_worker_unavailable",
         "weixin_chub_mode_delivery_route_invalid": "delivery_route_invalid",
         "weixin_chub_mode_message_conflict": "message_conflict",
         "weixin_chub_mode_submission_interrupted": "submission_interrupted",

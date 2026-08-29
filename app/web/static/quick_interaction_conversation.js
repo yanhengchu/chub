@@ -3,16 +3,14 @@
 let conversationSessionId = document.body.dataset.sessionId;
 const {
   canSubmit: canSubmitConversation,
-  clearSessionModelPreferences: clearConversationSessionModelPreferences,
   createClient: createConversationClient,
   formatErrorMessage: formatConversationErrorMessage,
   isRetryableRequestError: isRetryableConversationError,
   pollDelay: conversationPollDelay,
   readPageSize: readConversationPageSize,
-  readSessionCreationPreferences: readConversationSessionCreationPreferences,
+  readModelCatalog: readConversationModelCatalog,
   shouldPoll: shouldPollConversation,
   shouldSuppressReconnectError: shouldSuppressConversationReconnectError,
-  shouldRetrySessionCreationWithDefaults: shouldRetryConversationCreationWithDefaults,
   submissionBlockReason: conversationSubmissionBlockReason,
 } = window.QuickInteractionCore;
 const {
@@ -31,6 +29,15 @@ const conversationForm = document.querySelector("#conversation-form");
 const conversationPrompt = document.querySelector("#conversation-prompt");
 const conversationSubmit = document.querySelector("#conversation-submit");
 const conversationSubmitMessage = document.querySelector("#conversation-submit-message");
+const conversationPermissionTrigger = document.querySelector("#conversation-permission-trigger");
+const conversationPermissionValue = document.querySelector("#conversation-permission-value");
+const conversationPermissionMenu = document.querySelector("#conversation-permission-menu");
+const conversationModelTrigger = document.querySelector("#conversation-model-trigger");
+const conversationModelValue = document.querySelector("#conversation-model-value");
+const conversationModelMenu = document.querySelector("#conversation-model-menu");
+const conversationReasoningTrigger = document.querySelector("#conversation-reasoning-trigger");
+const conversationReasoningValue = document.querySelector("#conversation-reasoning-value");
+const conversationReasoningMenu = document.querySelector("#conversation-reasoning-menu");
 const conversationHistoryMessage = document.querySelector("#conversation-history-message");
 const conversationScroll = document.querySelector("#conversation-scroll");
 const conversationFeed = document.querySelector("#conversation-feed");
@@ -163,6 +170,31 @@ let conversationRenamePending = false;
 let conversationStopPending = false;
 let conversationArchivePending = false;
 let conversationDeletePending = false;
+let conversationConfigurationPending = false;
+let conversationModelCatalog = null;
+let conversationComposerSessionId = null;
+let conversationOpenComposerMenu = null;
+// The composer mirrors the current Session while its submission semantics remain session-owned.
+let conversationComposerSelections = {
+  permission: null,
+  model: null,
+  reasoningEffort: null,
+};
+
+const CONVERSATION_PERMISSION_LABELS = Object.freeze({
+  ask: "Ask for approval",
+  "auto-review": "Approve for me",
+  "full-access": "Full access",
+  "read-only": "Read Only",
+});
+const CONVERSATION_REASONING_LABELS = Object.freeze({
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra High",
+  max: "Max",
+  ultra: "Ultra",
+});
 
 function handleConversationSessionSwitch(event) {
   const request = conversationSessionView.navigationRequest(
@@ -191,6 +223,270 @@ function conversationDraftKey() {
   return `hub.quickInteractionDraft.v1.${conversationSessionId}`;
 }
 
+const conversationComposerMenus = [
+  [conversationPermissionTrigger, conversationPermissionMenu],
+  [conversationModelTrigger, conversationModelMenu],
+  [conversationReasoningTrigger, conversationReasoningMenu],
+];
+
+function closeConversationComposerMenus(exceptMenu = null) {
+  conversationComposerMenus.forEach(([trigger, menu]) => {
+    const open = menu === exceptMenu;
+    menu.hidden = !open;
+    trigger.setAttribute("aria-expanded", String(open));
+  });
+  conversationOpenComposerMenu = exceptMenu;
+}
+
+function positionConversationComposerMenu(trigger, menu) {
+  const triggerRect = trigger.getBoundingClientRect();
+  menu.style.position = "fixed";
+  menu.style.left = "0px";
+  menu.style.right = "auto";
+  menu.style.top = "auto";
+  menu.style.bottom = "0px";
+  menu.style.transform = "none";
+  const menuRect = menu.getBoundingClientRect();
+  const horizontalMargin = 8;
+  const left = Math.max(
+    horizontalMargin,
+    Math.min(
+      triggerRect.left,
+      window.innerWidth - menuRect.width - horizontalMargin,
+    ),
+  );
+  const spaceAbove = triggerRect.top - horizontalMargin;
+  const spaceBelow = window.innerHeight - triggerRect.bottom - horizontalMargin;
+  if (menuRect.height <= spaceAbove || spaceAbove >= spaceBelow) {
+    menu.style.left = `${left}px`;
+    menu.style.bottom = `${Math.max(8, window.innerHeight - triggerRect.top + 8)}px`;
+  } else {
+    menu.style.left = `${left}px`;
+    menu.style.top = `${Math.min(
+      window.innerHeight - menuRect.height - horizontalMargin,
+      triggerRect.bottom + 8,
+    )}px`;
+    menu.style.bottom = "auto";
+  }
+}
+
+function openConversationComposerMenu(trigger, menu) {
+  if (trigger.disabled) {
+    return;
+  }
+  const open = menu.hidden;
+  closeConversationComposerMenus(open ? menu : null);
+  if (open) {
+    positionConversationComposerMenu(trigger, menu);
+    conversationOpenComposerMenu = menu;
+    menu.querySelector('[role="option"]:not(:disabled)')?.focus();
+  }
+}
+
+function conversationModelInfo(modelId) {
+  return conversationModelCatalog?.models?.find((model) => model.id === modelId) || null;
+}
+
+function conversationOptionButton({ value, label, description, selected, disabled = false }) {
+  const button = document.createElement("button");
+  const title = document.createElement("span");
+  button.type = "button";
+  button.className = "conversation-composer-control conversation-setting-option";
+  button.setAttribute("role", "option");
+  button.dataset.value = value;
+  button.disabled = disabled;
+  button.setAttribute("aria-selected", String(selected));
+  if (disabled) {
+    button.setAttribute("aria-disabled", "true");
+  }
+  if (selected) {
+    button.classList.add("is-selected");
+  }
+  title.textContent = label;
+  button.append(title);
+  if (description) {
+    const hint = document.createElement("small");
+    hint.textContent = description;
+    button.append(hint);
+  }
+  return button;
+}
+
+function renderConversationComposerOptions(session) {
+  if (!session) {
+    conversationPermissionTrigger.disabled = true;
+    conversationModelTrigger.disabled = true;
+    conversationReasoningTrigger.disabled = true;
+    return;
+  }
+  if (conversationComposerSessionId !== session.id) {
+    conversationComposerSessionId = session.id;
+    conversationComposerSelections = {
+      permission: session.permission_mode || "full-access",
+      model: session.model || "",
+      reasoningEffort: session.reasoning_effort || "",
+    };
+  }
+
+  const permission = conversationComposerSelections.permission || session.permission_mode || "full-access";
+  const permissionLabel = CONVERSATION_PERMISSION_LABELS[permission] || permission;
+  conversationPermissionValue.textContent = permissionLabel;
+  conversationPermissionTrigger.setAttribute("aria-label", `权限：${permissionLabel}`);
+  conversationPermissionTrigger.disabled = conversationConfigurationPending;
+  conversationPermissionTrigger.title = permission === "ask"
+    ? "Ask for approval 需要进入实时终端"
+    : "查看权限选项";
+  conversationPermissionMenu.querySelectorAll("[role='option']").forEach((option) => {
+    option.setAttribute("aria-selected", String(option.dataset.value === permission));
+    option.classList.toggle("is-selected", option.dataset.value === permission);
+  });
+
+  const models = Array.isArray(conversationModelCatalog?.models)
+    ? conversationModelCatalog.models
+    : [];
+  const selectedModel = conversationComposerSelections.model || "";
+  const currentModel = conversationModelInfo(
+    selectedModel || conversationModelCatalog?.default_model,
+  )
+    || (session.model ? { id: session.model, name: session.model, levels: [] } : null);
+  conversationModelMenu.replaceChildren(
+    conversationOptionButton({
+      value: "",
+      label: "跟随 Codex 默认",
+      description: conversationModelCatalog?.default_model
+        ? `当前默认 ${conversationModelInfo(conversationModelCatalog.default_model)?.name || conversationModelCatalog.default_model}`
+        : "使用 Runtime 默认模型",
+      selected: selectedModel === "",
+      disabled: false,
+    }),
+    ...models.map((model) => conversationOptionButton({
+      value: model.id,
+      label: model.name || model.id,
+      description: model.description || "",
+      selected: model.id === selectedModel,
+    })),
+    ...(currentModel && !models.some((model) => model.id === currentModel.id)
+      ? [conversationOptionButton({
+        value: currentModel.id,
+        label: currentModel.name,
+        description: "当前 Session 配置",
+        selected: currentModel.id === selectedModel,
+      })]
+      : []),
+  );
+  conversationModelValue.textContent = currentModel?.name
+    || (conversationModelCatalog?.default_model
+      ? `跟随默认 · ${conversationModelInfo(conversationModelCatalog.default_model)?.name || conversationModelCatalog.default_model}`
+      : "跟随默认");
+  conversationModelTrigger.setAttribute(
+    "aria-label",
+    `模型：${conversationModelValue.textContent}`,
+  );
+  conversationModelTrigger.disabled = conversationConfigurationPending;
+
+  const levels = Array.isArray(currentModel?.levels) ? currentModel.levels : [];
+  const selectedLevel = conversationComposerSelections.reasoningEffort || "";
+  const defaultLevel = currentModel?.default_level
+    || conversationModelCatalog?.default_reasoning_effort
+    || "";
+  conversationReasoningMenu.replaceChildren(
+    conversationOptionButton({
+      value: "",
+      label: "跟随模型默认",
+      description: defaultLevel
+        ? `当前默认 ${CONVERSATION_REASONING_LABELS[defaultLevel] || defaultLevel}`
+        : "当前模型未提供默认等级",
+      selected: selectedLevel === "",
+    }),
+    ...levels.map((level) => conversationOptionButton({
+      value: level.id,
+      label: CONVERSATION_REASONING_LABELS[level.id] || level.id,
+      description: level.description || "",
+      selected: level.id === selectedLevel,
+      disabled: !selectedModel,
+    })),
+  );
+  conversationReasoningValue.textContent = selectedLevel
+    ? (CONVERSATION_REASONING_LABELS[selectedLevel] || selectedLevel)
+    : (defaultLevel
+      ? (CONVERSATION_REASONING_LABELS[defaultLevel] || defaultLevel)
+      : "跟随默认");
+  conversationReasoningTrigger.setAttribute(
+    "aria-label",
+    `推理等级：${conversationReasoningValue.textContent}`,
+  );
+  conversationReasoningTrigger.disabled = conversationConfigurationPending;
+}
+
+async function selectConversationComposerOption(kind, value) {
+  if (!conversationSession || conversationConfigurationPending) {
+    return;
+  }
+  const previous = {
+    permission: conversationSession.permission_mode || "full-access",
+    model: conversationSession.model || "",
+    reasoningEffort: conversationSession.reasoning_effort || "",
+  };
+  conversationComposerSelections = {
+    ...conversationComposerSelections,
+    [kind]: value,
+  };
+  if (kind === "model") {
+    conversationComposerSelections.reasoningEffort = "";
+  }
+  closeConversationComposerMenus();
+  renderConversationComposerOptions(conversationSession);
+  conversationConfigurationPending = true;
+  renderConversationComposerOptions(conversationSession);
+  const generation = conversationGeneration;
+  try {
+    const updated = await conversationClient.updateSessionConfiguration({
+      permissionMode: conversationComposerSelections.permission,
+      model: conversationComposerSelections.model || null,
+      reasoningEffort: conversationComposerSelections.reasoningEffort || null,
+    });
+    if (generation !== conversationGeneration) return;
+    conversationSession = updated;
+    conversationComposerSessionId = updated.id;
+    conversationComposerSelections = {
+      permission: updated.permission_mode,
+      model: updated.model || "",
+      reasoningEffort: updated.reasoning_effort || "",
+    };
+  } catch (error) {
+    if (generation === conversationGeneration) {
+      conversationSession = {
+        ...conversationSession,
+        permission_mode: previous.permission,
+        model: previous.model || null,
+        reasoning_effort: previous.reasoningEffort || null,
+      };
+      conversationComposerSelections = previous;
+      showConversationMessage(
+        conversationSubmitMessage,
+        formatConversationErrorMessage(error, "Session 配置保存失败。"),
+        "error",
+      );
+    }
+  } finally {
+    if (generation === conversationGeneration) {
+      conversationConfigurationPending = false;
+      renderConversationComposerOptions(conversationSession);
+    }
+  }
+}
+
+async function loadConversationModelCatalog() {
+  try {
+    conversationModelCatalog = await readConversationModelCatalog();
+    if (conversationSession) {
+      renderConversationComposerOptions(conversationSession);
+    }
+  } catch (_error) {
+    // The current Session values remain usable when the model catalog is unavailable.
+  }
+}
+
 function renderConversationSessionPreview(session) {
   conversationSessionView.renderPreview(session);
 }
@@ -206,6 +502,15 @@ function resetConversationSessionView(sessionPreview) {
   conversationInitialized = false;
   conversationActive = false;
   conversationSession = null;
+  conversationConfigurationPending = false;
+  conversationComposerSessionId = null;
+  conversationComposerSelections = {
+    permission: null,
+    model: null,
+    reasoningEffort: null,
+  };
+  renderConversationComposerOptions(null);
+  closeConversationComposerMenus();
   conversationConfirmStopUnknownTerminal = false;
   conversationStopPending = false;
   conversationDeletePending = false;
@@ -290,29 +595,8 @@ async function createConversationSession(workspaceId) {
     workspaces: conversationWorkspaces,
   });
   showConversationMessage(conversationCreateMessage, "正在创建 Session…");
-  const preferences = readConversationSessionCreationPreferences();
-  const createWithPreferences = (model, reasoningEffort) => (
-    conversationClient.createSession({
-      workspaceId,
-      permissionMode: preferences.permissionMode,
-      model,
-      reasoningEffort,
-    })
-  );
   try {
-    let session;
-    try {
-      session = await createWithPreferences(
-        preferences.model,
-        preferences.reasoningEffort,
-      );
-    } catch (error) {
-      if (!shouldRetryConversationCreationWithDefaults(error, preferences)) {
-        throw error;
-      }
-      clearConversationSessionModelPreferences();
-      session = await createWithPreferences(null, null);
-    }
+    const session = await conversationClient.createSession({ workspaceId });
     conversationCreationPending = false;
     conversationCreateDialog.close();
     switchConversationSession(
@@ -392,6 +676,7 @@ function mergeConversationTasks(tasks) {
 
 function renderConversationSession(session) {
   conversationSession = session;
+  renderConversationComposerOptions(session);
   const state = conversationSessionView.renderSession({
     session,
     activeInteraction: conversationActive,
@@ -1003,6 +1288,49 @@ conversationDeleteDialog.addEventListener("cancel", (event) => {
 });
 conversationScroll.addEventListener("scroll", updateConversationJumpLatest, { passive: true });
 
+conversationComposerMenus.forEach(([trigger, menu]) => {
+  trigger.addEventListener("click", () => {
+    openConversationComposerMenu(trigger, menu);
+  });
+  menu.addEventListener("click", (event) => {
+    const option = event.target.closest?.('[role="option"]');
+    if (!option || option.disabled) {
+      return;
+    }
+    const kind = option.closest("[data-composer-option]")?.dataset.composerOption;
+    if (kind) {
+      selectConversationComposerOption(
+        kind === "reasoning" ? "reasoningEffort" : kind,
+        option.dataset.value || "",
+      );
+    }
+  });
+});
+
+document.addEventListener("click", (event) => {
+  if (!event.target.closest(".conversation-composer-option")) {
+    closeConversationComposerMenus();
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    closeConversationComposerMenus();
+  }
+});
+
+window.addEventListener("resize", () => {
+  if (!conversationOpenComposerMenu) {
+    return;
+  }
+  const entry = conversationComposerMenus.find(([, menu]) => (
+    menu === conversationOpenComposerMenu
+  ));
+  if (entry) {
+    positionConversationComposerMenu(entry[0], entry[1]);
+  }
+});
+
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
     loadConversation();
@@ -1014,3 +1342,4 @@ document.addEventListener("visibilitychange", () => {
 conversationPrompt.value = readConversationDraft();
 resizeConversationPrompt();
 loadConversation();
+loadConversationModelCatalog();

@@ -26,6 +26,7 @@ CHUB_SYNC_PROMPT = "sync"
 CHUB_RESTART_WEB_PROMPTS = frozenset({"restart", "restart web"})
 CHUB_RESTART_WORKER_PROMPT = "restart worker"
 CHUB_RESTART_CLAWBOT_PROMPT = "restart clawbot"
+CHUB_RESTART_NETWORK_PROMPT = "restart network"
 CHUB_UPGRADE_PROMPT = "upgrade"
 SESSION_RENAME_PROMPT = "rename"
 SESSION_NEW_PROMPT = "new"
@@ -55,6 +56,7 @@ WeixinChubCommandKind = Literal[
     "restart_web",
     "restart_worker",
     "restart_clawbot",
+    "restart_network",
     "upgrade",
     "retry",
     "new",
@@ -84,6 +86,7 @@ FIXED_COMMAND_KINDS = frozenset(
         "restart_web",
         "restart_worker",
         "restart_clawbot",
+        "restart_network",
         "upgrade",
         "retry",
         "new",
@@ -287,6 +290,8 @@ def parse_weixin_chub_command(prompt: str) -> WeixinChubCommand:
         return WeixinChubCommand("restart_worker", normalized)
     if folded == CHUB_RESTART_CLAWBOT_PROMPT:
         return WeixinChubCommand("restart_clawbot", normalized)
+    if folded == CHUB_RESTART_NETWORK_PROMPT:
+        return WeixinChubCommand("restart_network", normalized)
     if folded == CHUB_UPGRADE_PROMPT:
         return WeixinChubCommand("upgrade", normalized)
     if folded == "retry":

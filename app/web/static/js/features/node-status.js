@@ -8,12 +8,12 @@ function renderStatus(data) {
   setBadge(elements.chubServiceBadge, "运行正常", "success");
   elements.chubServiceDetail.textContent = `v${data.hub.version} · 当前实例`;
   setMessage(elements.chubServiceMessage, "");
+  elements.stopHub.disabled = hubRestartInProgress || systemUpgradeIsRunning();
   syncCoreMaintenanceControls();
 }
 
 async function loadStatus() {
   const requestVersion = accessVersion;
-  elements.refreshStatus.disabled = true;
   try {
     const data = await apiFetch("/api/status");
     if (requestVersion !== accessVersion) {
@@ -34,7 +34,5 @@ async function loadStatus() {
         "error",
       );
     }
-  } finally {
-    elements.refreshStatus.disabled = false;
   }
 }

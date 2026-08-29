@@ -133,7 +133,6 @@ function appendWeeklyReportMaterials(copy, task) {
     return;
   }
   const materials = document.createElement("section");
-  const period = document.createElement("p");
   const mainLabel = document.createElement("p");
   const mainDocument = document.createElement("div");
   const mainDocumentName = document.createElement("span");
@@ -143,15 +142,13 @@ function appendWeeklyReportMaterials(copy, task) {
   );
   const mainPassed = task.state.validation_status === "passed";
   materials.className = "automation-weekly-materials";
-  period.className = "automation-weekly-period";
-  period.textContent = `本期下载 · ${task.reporting_period}`;
   mainLabel.className = `automation-material-summary${mainPassed ? " is-success" : ""}`;
   mainLabel.textContent = mainPassed ? "主文档 · 1/1 通过" : "主文档";
   mainDocument.className = "automation-linked-document";
   mainDocumentName.className = "automation-linked-document-name";
   mainDocumentName.textContent = task.main_document_name;
   mainDocument.append(mainDocumentName);
-  materials.append(period, mainLabel, mainDocument);
+  materials.append(mainLabel, mainDocument);
   backgroundDocuments.forEach((linkedDocument) => {
     const reference = document.createElement("div");
     const referenceName = document.createElement("span");
@@ -329,6 +326,32 @@ async function stopAutomationBrowser() {
   });
 }
 
+async function restartAutomationBrowser() {
+  await showConfirmationDialog({
+    title: "重启 Debug Chrome",
+    description: "重启会关闭当前调试浏览器页面；正在使用该环境的自动化任务必须先完成。浏览器账户和显示模式会保持不变。",
+    confirmLabel: "确认重启",
+    pendingLabel: "重启中…",
+    errorMessage: "Debug Chrome 重启失败。",
+    onConfirm: async () => {
+      elements.automationBrowserControl.disabled = true;
+      elements.automationBrowserRestart.disabled = true;
+      elements.automationBrowserRestart.textContent = "重启中…";
+      try {
+        await apiFetch("/api/automations/browser/restart", { method: "POST" });
+        setMessage(elements.automationBrowserMessage, "");
+        await Promise.all([loadAutomationEnvironment(), loadAutomations()]);
+      } catch (error) {
+        if (handleAccessError(error)) {
+          return;
+        }
+        await Promise.all([loadAutomationEnvironment(), loadAutomations()]);
+        throw error;
+      }
+    },
+  });
+}
+
 function controlAutomationBrowser() {
   if (automationBrowserState === "running") {
     return stopAutomationBrowser();
@@ -450,6 +473,13 @@ function renderAutomationEnvironment(data) {
     || (!browserRunning && (!selectedProfile || !selectedProfile.source_available && !selectedProfile.initialized))
     || initializing
   );
+  elements.automationBrowserRestart.hidden = !browserRunning;
+  elements.automationBrowserRestart.textContent = "重启";
+  elements.automationBrowserRestart.disabled = (
+    !browserRunning
+    || automationBusy
+    || initializing
+  );
   elements.automationBrowserProfile.disabled = data.browser_state !== "stopped" || initializing;
   elements.automationBrowserModeInputs.forEach((input) => {
     input.disabled = data.browser_state !== "stopped" || initializing;
@@ -502,7 +532,13 @@ function renderAutomationEnvironment(data) {
   return initializing || feishuChecking;
 }
 
-function renderAutomationTask(task, data, browserRunning, feishuChecking) {
+function renderAutomationTask(
+  task,
+  data,
+  browserRunning,
+  feishuChecking,
+  { includeHeading = true, includeButton = true } = {},
+) {
   const item = document.createElement("article");
   const copy = document.createElement("div");
   const heading = document.createElement("div");
@@ -540,11 +576,13 @@ function renderAutomationTask(task, data, browserRunning, feishuChecking) {
     || feishuChecking
   );
   button.addEventListener("click", () => runAutomation(task, button));
-  heading.append(name, status);
-  if (validationStatus.textContent) {
-    heading.append(validationStatus);
+  if (includeHeading) {
+    heading.append(name, status);
+    if (validationStatus.textContent) {
+      heading.append(validationStatus);
+    }
+    copy.append(heading);
   }
-  copy.append(heading);
   appendWeeklyReportMaterials(copy, task);
   const currentDocuments = (task.state.linked_documents || []).filter(
     (linkedDocument) => !linkedDocument.is_background,
@@ -585,8 +623,11 @@ function renderAutomationTask(task, data, browserRunning, feishuChecking) {
     });
     copy.append(details);
   }
-  item.append(copy, button);
-  return { item, busy };
+  item.append(copy);
+  if (includeButton) {
+    item.append(button);
+  }
+  return { item, busy, button, status, validationStatus };
 }
 
 function appendAutomationEmpty(container, text) {
@@ -598,6 +639,8 @@ function appendAutomationEmpty(container, text) {
 
 function renderAutomations(data) {
   elements.automationWeeklyDownload.replaceChildren();
+  elements.automationWeeklyDownloadStatus.replaceChildren();
+  elements.automationWeeklyDownloadAction.replaceChildren();
   elements.automationList.replaceChildren();
   const browserRunning = data.browser_state === "running";
   const feishuChecking = data.feishu_environment.state === "checking";
@@ -606,8 +649,8 @@ function renderAutomations(data) {
   automationBrowserState = data.browser_state;
   elements.automationWeeklyReportTitle.textContent = "V 国内业务本期周报";
   elements.automationWeeklyDownloadTitle.textContent = weeklyTask
-    ? `资料下载 · ${weeklyTask.reporting_period}`
-    : "资料下载";
+    ? `本期下载 · ${weeklyTask.reporting_period}`
+    : "本期下载";
   elements.automationCount.textContent = `已启用 ${Math.max(data.enabled_count - (weeklyTask?.enabled ? 1 : 0), 0)} 个任务`;
 
   if (!data.enabled) {
@@ -624,8 +667,14 @@ function renderAutomations(data) {
       data,
       browserRunning,
       feishuChecking,
+      { includeHeading: false, includeButton: false },
     );
     active = rendered.busy;
+    elements.automationWeeklyDownloadStatus.append(rendered.status);
+    if (rendered.validationStatus.textContent) {
+      elements.automationWeeklyDownloadStatus.append(rendered.validationStatus);
+    }
+    elements.automationWeeklyDownloadAction.append(rendered.button);
     elements.automationWeeklyDownload.append(rendered.item);
   } else {
     appendAutomationEmpty(elements.automationWeeklyDownload, "尚未配置 V 国内业务周报下载任务。");
@@ -816,6 +865,7 @@ async function loadAutomationEnvironment() {
 }
 
 elements.automationBrowserControl.addEventListener("click", controlAutomationBrowser);
+elements.automationBrowserRestart.addEventListener("click", restartAutomationBrowser);
 elements.automationBrowserProfile.addEventListener("change", updateAutomationBrowserDialog);
 elements.automationBrowserForm.addEventListener("submit", startAutomationBrowser);
 elements.automationBrowserDialogClose.addEventListener("click", closeAutomationBrowserDialog);

@@ -16,6 +16,7 @@ from app.services.weixin_translation import (
     WeixinTranslationManager,
 )
 from app.codex.models import utc_now
+from app.core.response import ApiError
 
 
 def route() -> QuickInteractionWeixinRoute:
@@ -68,6 +69,57 @@ def test_enqueue_persists_once_and_deduplicates_message(settings) -> None:
     payload = json.loads(manager.path.read_text(encoding="utf-8"))
     assert len(payload["entries"]) == 1
     assert payload["entries"][0]["original"] == "请优化这段文字"
+
+
+def test_enqueue_rejects_before_persisting_when_runtime_is_disabled(settings) -> None:
+    manager, codex_manager, _quick_interactions = manager_without_worker(settings)
+    codex_manager.require_runtime_submission.side_effect = ApiError(
+        409,
+        "ai_runtime_disabled",
+        "当前 AI Runtime 已停用，无法提交新的 AI 任务。",
+    )
+
+    accepted = manager.enqueue(
+        message_id="message-1",
+        original="请优化这段文字",
+        route=route(),
+        operation_id="operation-1",
+        source_ip="100.64.0.21",
+    )
+
+    assert accepted is False
+    assert manager._state.entries == []
+
+
+def test_enqueue_reuses_accepted_message_when_runtime_is_disabled(settings) -> None:
+    manager, codex_manager, quick_interactions = manager_without_worker(settings)
+    assert manager.enqueue(
+        message_id="message-1",
+        original="请优化这段文字",
+        route=route(),
+        operation_id="operation-1",
+        source_ip="100.64.0.21",
+    )
+    codex_manager.require_runtime_submission.reset_mock()
+    codex_manager.require_runtime_submission.side_effect = ApiError(
+        409,
+        "ai_runtime_disabled",
+        "当前 AI Runtime 已停用，无法提交新的 AI 任务。",
+    )
+
+    accepted = manager.enqueue(
+        message_id="message-1",
+        original="重复投递不应改变既有任务",
+        route=route(),
+        operation_id="operation-2",
+        source_ip="100.64.0.21",
+    )
+
+    assert accepted is True
+    assert len(manager._state.entries) == 1
+    assert manager._state.entries[0].original == "请优化这段文字"
+    codex_manager.require_runtime_submission.assert_not_called()
+    quick_interactions.submit.assert_called_once()
 
 
 def test_queue_limit_rejects_translation_without_raising(settings) -> None:

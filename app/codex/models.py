@@ -142,12 +142,38 @@ class SessionInfo(BaseModel):
     usage: SessionUsage = Field(default_factory=SessionUsage)
 
 
+class SessionCreationAvailability(BaseModel):
+    available: bool
+    reason: str | None = Field(default=None, max_length=300)
+
+
 class SessionListData(BaseModel):
     available: bool
     unavailable_reason: str | None = None
+    terminal_creation: SessionCreationAvailability
+    quick_creation: SessionCreationAvailability
     dependencies: dict[str, bool]
     workspaces: list[WorkspaceInfo]
     sessions: list[SessionInfo]
+
+
+class RuntimeManagementItem(BaseModel):
+    runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
+    name: str = Field(min_length=1, max_length=128)
+    enabled: bool
+    healthy: bool
+    reason: str | None = Field(default=None, max_length=300)
+
+
+class RuntimeManagementData(BaseModel):
+    runtimes: list[RuntimeManagementItem]
+    basic_mode: bool
+
+
+class RuntimeEnablementUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
 
 
 QuotaStatus = Literal["available", "unavailable"]
@@ -183,7 +209,7 @@ class SessionCreateRequest(BaseModel):
 
     workspace_id: Literal["home", "workspace", "chub"]
     session_mode: SessionMode
-    permission_mode: PermissionMode = "full-access"
+    permission_mode: PermissionMode | None = None
     model: str | None = Field(default=None, max_length=128)
     reasoning_effort: str | None = Field(default=None, max_length=32)
 
@@ -191,6 +217,17 @@ class SessionCreateRequest(BaseModel):
 class SessionDefaultsUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    permission_mode: Literal["read-only", "full-access"]
+
+
+class SessionDefaultsData(BaseModel):
+    permission_mode: Literal["read-only", "full-access"]
+
+
+class SessionConfigurationUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    permission_mode: PermissionMode
     model: str | None = Field(default=None, max_length=128)
     reasoning_effort: str | None = Field(default=None, max_length=32)
 
@@ -336,7 +373,9 @@ class QuickInteractionTask(BaseModel):
     summary: str | None = Field(default=None, max_length=48)
     kind: QuickInteractionKind = "standard"
     translation_original: str | None = Field(default=None, max_length=8000)
-    # Translation tasks snapshot their private model selection at submission.
+    permission_mode: PermissionMode | None = None
+    # Every accepted task snapshots its Session configuration; translation
+    # tasks use their own read-only permission and private model selection.
     model: str | None = Field(default=None, max_length=128)
     reasoning_effort: str | None = Field(default=None, max_length=32)
     restart_sensitive: bool = False

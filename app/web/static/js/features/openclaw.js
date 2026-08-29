@@ -145,7 +145,7 @@ function clawbotDetail(data) {
 
 function renderOpenClaw(data, { cache = true } = {}) {
   openclawState = data;
-  elements.openclawRestart.textContent = "重启与恢复";
+  elements.openclawRestart.textContent = "重启";
   const [badgeText, badgeKind] = clawbotPresentation(data);
   setBadge(elements.clawbotBadge, badgeText, badgeKind);
   elements.clawbotDetail.textContent = clawbotDetail(data);
@@ -155,12 +155,14 @@ function renderOpenClaw(data, { cache = true } = {}) {
   setMessage(elements.openclawMessage, openclawOverallMessage(data));
 
   const canStart = data.state === "stopped";
-  const canRecover = data.installed && data.state !== "service_missing";
+  const isRunning = ["running", "degraded"].includes(data.state);
   const weixinLoginActive = OPENCLAW_WEIXIN_ACTIVE_STATES.has(openclawWeixinState?.state);
   elements.openclawStart.hidden = !canStart;
-  elements.openclawRestart.hidden = !canRecover;
+  elements.openclawRestart.hidden = !isRunning;
+  elements.openclawStop.hidden = !isRunning;
   elements.openclawStart.disabled = openclawBusy || weixinLoginActive || !canStart;
-  elements.openclawRestart.disabled = openclawBusy || weixinLoginActive || !canRecover;
+  elements.openclawRestart.disabled = openclawBusy || weixinLoginActive || !isRunning;
+  elements.openclawStop.disabled = openclawBusy || weixinLoginActive || !isRunning;
   if (cache) {
     cacheOpenClawStatus(data);
   }
@@ -177,6 +179,7 @@ function resetOpenClawView() {
   elements.clawbotDetail.removeAttribute("title");
   elements.openclawStart.hidden = true;
   elements.openclawRestart.hidden = true;
+  elements.openclawStop.hidden = true;
   setMessage(elements.openclawMessage, "");
   closeOpenClawWeixinDialog();
 }
@@ -216,6 +219,7 @@ async function loadOpenClaw() {
     );
     elements.openclawStart.disabled = true;
     elements.openclawRestart.disabled = true;
+    elements.openclawStop.disabled = true;
   } finally {
     // The workstation-level refresh button owns only its fan-out busy state.
   }
@@ -269,9 +273,12 @@ function setOpenClawBusy(action) {
   );
   elements.clawbotDetail.textContent = action === "restart"
     ? "正在执行重启与恢复"
-    : "正在启动微信消息通道";
+    : action === "stop"
+      ? "正在停止 OpenClaw Gateway"
+      : "正在启动 OpenClaw Gateway";
   elements.openclawStart.disabled = true;
   elements.openclawRestart.disabled = true;
+  elements.openclawStop.disabled = true;
   setMessage(elements.openclawMessage, "");
 }
 
@@ -306,12 +313,12 @@ function requestOpenClawAction(action) {
   openclawAction = action;
   const restarting = action === "restart";
   elements.openclawDialogTitle.textContent = restarting
-    ? "确认重启与恢复 OpenClaw"
+    ? "确认重启 OpenClaw"
     : "确认停止 OpenClaw";
   elements.openclawDialogMessage.textContent = restarting
     ? "会短暂中断消息通道和 Agent 任务；发现插件或补丁版本不一致时，将先同步固定版本再重启，确定继续吗？"
     : "停止会中断当前频道连接和 Agent 任务，确定继续吗？";
-  elements.openclawDialogConfirm.textContent = restarting ? "确认重启与恢复" : "确认停止";
+  elements.openclawDialogConfirm.textContent = restarting ? "确认重启" : "确认停止";
   elements.openclawDialogConfirm.className = restarting
     ? "button-secondary"
     : "button-danger";
@@ -325,6 +332,7 @@ function closeOpenClawDialog() {
 
 elements.openclawStart.addEventListener("click", () => requestOpenClawAction("start"));
 elements.openclawRestart.addEventListener("click", () => requestOpenClawAction("restart"));
+elements.openclawStop.addEventListener("click", () => requestOpenClawAction("stop"));
 elements.openclawDialogClose.addEventListener("click", closeOpenClawDialog);
 elements.openclawDialogCancel.addEventListener("click", closeOpenClawDialog);
 elements.openclawDialogConfirm.addEventListener("click", () => {

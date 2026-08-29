@@ -62,7 +62,8 @@
               <a href="#style-settings">界面风格</a>
               <a href="#utility-settings">诊断与关于</a>
               <span class="settings-navigation-group">AI Runtime</span>
-              <a href="#codex-session-settings">Codex 会话默认项</a>
+              <a href="#runtime-settings">Runtime 管理</a>
+              <a href="#codex-session-settings">新建 Session 默认权限</a>
               <a href="#weixin-settings">微信任务文本优化</a>
               <span class="settings-navigation-group">第三方服务</span>
               <a href="#openclaw-weixin-settings">OpenClaw · 微信 ClawBot</a>
@@ -72,8 +73,7 @@
           <div class="settings-content">
             <section class="settings-layer" aria-labelledby="core-settings-title">
               <div class="settings-layer-heading">
-                <p class="section-kicker">Chub 核心</p>
-                <h3 id="core-settings-title">浏览器偏好与节点信息</h3>
+                <h3 id="core-settings-title" class="settings-layer-title">Chub 核心</h3>
                 <p>管理当前浏览器的使用偏好，并查看本机 Chub 的诊断信息。</p>
               </div>
             <section id="quick-interaction-settings" class="settings-section" aria-labelledby="quick-interaction-settings-title">
@@ -86,7 +86,7 @@
                   <strong>每页数量</strong>
                   <small>用于会话历史的首次加载与继续加载，下次进入快速交互时生效。</small>
                 </span>
-                <select id="quick-interaction-page-size" name="quick-interaction-page-size">
+                <select id="quick-interaction-page-size" name="quick-interaction-page-size" data-settings-picker>
                   <option value="5" selected>5 条</option>
                   <option value="10">10 条</option>
                 </select>
@@ -196,49 +196,32 @@
 
             <section class="settings-layer" aria-labelledby="ai-runtime-settings-title">
               <div class="settings-layer-heading">
-                <p class="section-kicker">AI Runtime</p>
-                <h3 id="ai-runtime-settings-title">Codex 运行时配置</h3>
-                <p>设置后续 AI 会话与微信文本优化任务使用的 Codex 参数。</p>
+                <h3 id="ai-runtime-settings-title" class="settings-layer-title">AI Runtime</h3>
+                <p>用于后续 AI 会话和微信任务的运行参数。</p>
               </div>
+
+              <section id="runtime-settings" class="settings-section" aria-labelledby="runtime-settings-title">
+                <div class="settings-section-heading">
+                  <h3 id="runtime-settings-title">Runtime 管理</h3>
+                  <p id="runtime-management-description" aria-live="polite">启用后可创建并提交该 Runtime 的 AI 任务；关闭不会中断已受理任务。</p>
+                </div>
+                <div id="runtime-management-list" class="runtime-management-list" aria-live="polite"></div>
+              </section>
 
               <section id="codex-session-settings" class="settings-section" aria-labelledby="codex-session-settings-title">
                 <div class="settings-section-heading">
-                  <h3 id="codex-session-settings-title">Codex 会话默认项</h3>
-                  <p>只影响之后新建会话，已有会话保持原有配置。</p>
+                  <h3 id="codex-session-settings-title">新建 Session 默认权限</h3>
+                  <p>模型和推理等级默认跟随 AI；权限开关只影响之后新建的 Session。</p>
                 </div>
-                <label class="settings-field" for="codex-default-permission">
+                <label class="settings-field settings-field-toggle" for="codex-default-full-access">
                   <span>
-                    <strong>默认权限</strong>
-                    <small>只影响后续新建的 Session，已有会话保持原权限。</small>
+                    <strong>默认使用 Full access</strong>
+                    <small>开启后新建 Session 默认使用 Full access；关闭后使用 Read Only，已有 Session 保持原权限。</small>
                   </span>
-                  <select id="codex-default-permission" name="codex-default-permission">
-                    <option value="full-access">Full access</option>
-                    <option value="auto-review">Approve for me</option>
-                    <option value="ask">Ask for approval</option>
-                    <option value="read-only">Read Only</option>
-                  </select>
-                </label>
-                <label class="settings-field" for="codex-default-model">
-                  <span>
-                    <strong>默认模型</strong>
-                    <small>模型列表由当前节点的 Codex 提供；这里选择的模型和等级会作为本节点后续新建 Session 的默认值。</small>
+                  <span class="settings-switch">
+                    <input id="codex-default-full-access" name="codex-default-full-access" type="checkbox" checked>
+                    <span class="settings-switch-track" aria-hidden="true"></span>
                   </span>
-                  <select id="codex-default-model" name="codex-default-model" disabled>
-                    <option value="">跟随 Codex 默认</option>
-                  </select>
-                </label>
-                <label class="settings-field" for="codex-default-reasoning-effort">
-                  <span>
-                    <strong>默认推理等级</strong>
-                    <small>工作区配置可能覆盖默认值；Ultra 会自动拆分并行任务。</small>
-                  </span>
-                  <select
-                    id="codex-default-reasoning-effort"
-                    name="codex-default-reasoning-effort"
-                    disabled
-                  >
-                    <option value="">跟随模型默认</option>
-                  </select>
                 </label>
                 <p id="codex-session-settings-message" class="message" aria-live="polite"></p>
               </section>
@@ -291,7 +274,7 @@
                       <strong>文本优化模型</strong>
                       <small>只影响之后新提交的文本优化任务，已提交任务继续使用原配置。</small>
                     </span>
-                    <select id="weixin-translation-model" name="weixin-translation-model" disabled>
+                    <select id="weixin-translation-model" name="weixin-translation-model" data-settings-picker disabled>
                       <option value="">跟随 Codex 默认</option>
                     </select>
                   </label>
@@ -307,7 +290,8 @@
                     <select
                       id="weixin-translation-reasoning-effort"
                       name="weixin-translation-reasoning-effort"
-                      disabled
+                    data-settings-picker
+                    disabled
                     >
                       <option value="">跟随模型默认</option>
                     </select>
@@ -319,8 +303,7 @@
 
             <section class="settings-layer" aria-labelledby="third-party-settings-title">
               <div class="settings-layer-heading">
-                <p class="section-kicker">第三方服务</p>
-                <h3 id="third-party-settings-title">OpenClaw 接入</h3>
+                <h3 id="third-party-settings-title" class="settings-layer-title">第三方服务</h3>
                 <p>管理 Chub 使用的外部消息通道；服务运行与恢复仍在首页工作站环境查看。</p>
               </div>
 
@@ -342,6 +325,6 @@
         </div>
       </section>
     </main>
-    <footer>界面与 AI 会话偏好保存在当前浏览器；第三方服务配置由 Chub 安全保存。</footer>
+    <footer>界面偏好保存在当前浏览器；Session 配置和第三方服务配置由 Chub 安全保存。</footer>
   </body>
 </html>

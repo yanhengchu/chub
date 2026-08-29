@@ -63,9 +63,11 @@ AI Usage Core -> Theme -> Dashboard Core -> Components -> Features -> app.js
 
 ## 3. Feature 与卡片边界
 
-首页当前包含节点状态、会话工作台（当前由 Codex Runtime 提供）、自动化任务、项目资料和工作站环境等 Feature。会话工作台统一管理实时终端和快速交互会话；其中实时终端与快速交互仍按各自的 Session 类型、状态和 writer 边界执行。自动化任务卡片将 `V 国内业务本期周报` 的资料下载与周报文档置于同一业务分区，但分别请求、渲染和报错，并各自标明所属周期：下载成功不代表重点清单或正式稿已生成，跨周在途下载也不覆盖新周期文档的周期标识；自动化环境只展示飞书登录与任务所需状态。工作站环境以“运行与维护”分组展示 `Chub`、`Chub Quick Worker`、`Chub Debug Chrome`、`OpenClaw Gateway` 和系统升级与恢复，并提供总刷新入口。各项分别拥有状态、操作、轮询和错误反馈，总刷新并行触发，不把单项失败扩散为整卡失败。OpenClaw Gateway 复用第三方 Gateway、消息通道和 Owner 状态，以综合状态和摘要展示；它提供受控重启和停止后启动，不提供停止或微信绑定入口。微信绑定统一在设置页“第三方服务 / OpenClaw · 微信 ClawBot”中完成；绑定只建立微信消息通道，不代替 Owner 配置或真实微信收发确认。首页不再展示低频日志卡片，完整日志页保留并由设置页“诊断”入口访问。
+首页当前包含节点状态、会话工作台（当前由 Codex Runtime 提供）、自动化任务、项目资料和工作站环境等 Feature。会话工作台统一管理实时终端和快速交互会话；其中实时终端与快速交互仍按各自的 Session 类型、状态和 writer 边界执行。自动化任务卡片将 `V 国内业务本期周报` 的资料下载与周报文档置于同一业务分区，但分别请求、渲染和报错，并各自标明所属周期：下载成功不代表重点清单或正式稿已生成，跨周在途下载也不覆盖新周期文档的周期标识；自动化环境只展示飞书登录与任务所需状态。工作站环境以“运行与维护”分组展示 `Chub`、`Chub Quick Worker`、`Chub Debug Chrome`、`OpenClaw Gateway` 和系统升级与恢复，并提供总刷新入口。各项分别拥有状态、操作、轮询和错误反馈，总刷新并行触发，不把单项失败扩散为整卡失败。OpenClaw Gateway 复用第三方 Gateway、消息通道和 Owner 状态，以综合状态和摘要展示；停止态可受控启动，运行态可重启或停止，不提供微信绑定入口。微信绑定统一在设置页“第三方服务 / OpenClaw · 微信 ClawBot”中完成；绑定只建立微信消息通道，不代替 Owner 配置或真实微信收发确认。首页不再展示低频日志卡片，完整日志页保留并由设置页“诊断”入口访问。
 
 工作站环境中的 `Chub Debug Chrome` 行展示 Supervisor 服务和浏览器实例的分层状态：服务可用不代表实例已启动；实例仍按自动化任务需要启动。系统升级与恢复行的标题区只展示标题、状态描述和操作按钮；下方使用时间线展示请求记录、执行器启动、任务与写入停止、运行态清理、服务恢复和最终健康确认，并以紧凑状态项展示组件结果。`Chub Debug Chrome` 的 `succeeded` 只表示服务可用，`Debug Chrome 浏览器实例` 的 `skipped` 表示本次不纳入升级且不会自动启动。升级摘要显示当前/最近操作、更新时间和操作 ID；完整日志统一从设置页“日志详情”入口进入，首页不承载日志入口或完整日志。自动化任务卡片中的“飞书环境”使用独立边框信息组承载登录状态、检查操作、登录二维码和反馈消息；它不是独立服务，也不重复展示 Chub Debug Chrome 的生命周期状态。
+
+工作站环境的服务按钮按明确状态切换：停止态显示“启动”，运行态显示“重启”和“停止”；状态未知、未安装、未配置或过渡态不显示会造成误判的启停按钮。Quick Worker 的“重启”按钮仍代表会清理排队和执行中任务，具体影响由标题下描述和确认弹窗说明。Chub 停止后页面会断开，恢复必须使用本机 `chub start` 或系统服务入口。
 
 每个动态能力遵循相同边界：
 
@@ -76,8 +78,9 @@ AI Usage Core -> Theme -> Dashboard Core -> Components -> Features -> app.js
 - Feature 不直接读取其他 Feature 的内部状态；共享资源操作由应用入口显式协调。
 - 卡片内存在多个同级业务分区时，统一使用 `card-group-title` 作为分组标题，并以自然间距区分；不使用横线分割标题，也不在上一组最后一个项目后额外添加分割线。
 - 环境类条目的状态标签使用短状态；未运行时，描述说明用途而不重复状态；可用时，描述展示连接方式、运行模式或校验日期；真实异常仍保留具体原因。
+- 设置页按 `Chub 核心`、`AI Runtime`、`第三方服务` 三个架构大项组织内容。大项使用轻量横幅表达架构归属，标题和描述只比内部功能标题略大；大项之间不再使用额外分割线。功能标题负责说明可配置内容，配置项使用独立边框卡片承载；AI Runtime 下提供“Runtime 管理”和“新建 Session 默认权限”。Runtime 管理列出已注册的 Runtime，以开关控制是否接受新的 AI 任务，并独立显示健康状态；关闭不会中断已受理任务。全部关闭时，Chub 处于基础功能模式。模型和推理等级不在设置页保存全局默认值：新建 Session 默认跟随 AI Runtime，快速交互中选择的值只写入当前 Chub Session，并影响该 Session 后续任务。首页新建会话默认快速交互，只以“实时会话”开关切换到终端；API 分别投影 Runtime 与 Quick Worker 的创建能力，Worker 不可用时首页仅保留实时会话，快速交互页的新建入口禁用。
 
-Chub、Chub Quick Worker、Ubuntu Chub Debug Chrome 与 OpenClaw Gateway 的普通重启彼此独立：它们分别由独立进程/服务承载，Chub 重启不会停止 Chub Quick Worker、Chub Debug Chrome 或 OpenClaw Gateway，Chub Quick Worker 重启也不会重启 Chub、Chub Debug Chrome 或 OpenClaw Gateway。Worker 重启是确认后的恢复操作，会取消排队任务、停止执行中任务并重建 Chub Quick Worker；它不等待 Worker 健康、任务空闲或 Chub 恢复，也不影响实时终端的 tmux 和原生 Codex。OpenClaw Gateway 的 API action `restart` 与微信 `restart clawbot` 都是“重启与恢复”入口：发现固定插件或补丁版本不一致时先同步，再重启 Gateway 并确认消息通道；当前 Gateway 停止、未知、未配置、通道异常或存在 Agent 任务不阻止恢复，目标版本、完整性或补丁锚点无法确认时失败关闭。页面按钮显示“重启与恢复”，API 和底层命令继续使用 `restart`，微信端使用 `restart clawbot`。微信固定维护指令为 `restart` / `restart web`、`restart worker`、`restart clawbot` 和 `upgrade`，均只接受精确无参数形式；受理与最终完成分别反馈。当前页面主动发起 Chub 重启、Chub Quick Worker 重启、OpenClaw Gateway 重启与恢复或系统升级与恢复时，只有在新 Chub 实例健康、与本页请求 operation ID 匹配的 Worker 重启成功、OpenClaw Gateway/通道及兼容基线恢复成功或本次升级 operation 成功后，先保留成功状态约 2 秒，再自动整页刷新一次；历史成功记录和失败终态不触发刷新。确认弹窗必须明确 OpenClaw Gateway 会短暂中断消息通道和 Agent 任务，Chub Quick Worker 任务会被取消/停止且不自动重试。系统升级与恢复是例外：它独占受影响的 Chub AI Runtime 写入，统一停止任务、清理 Chub Session 关联与 Worker 运行态并切换 Chub/Chub Quick Worker；启动门禁只校验固定脚本、服务定义和运行态路径，不检查当前 Chub/Chub Quick Worker 状态。升级方案无法读取或校验时，按钮降级为当前版本运行态恢复，并明确不执行代码版本升级；确认信息无法取得任务数量时，不显示为 0，而是提示按固定边界清理。确认弹窗按当前状态简要列出受影响的快速任务数、Chub Session 关联数和服务切换范围；升级完成后组件摘要明确区分 Chub Debug Chrome 服务已确认与浏览器实例未纳入升级（不会自动启动）。Codex 原生 Session、配置和业务资料不因该操作删除。系统升级进行中禁用 Chub、Chub Quick Worker、OpenClaw Gateway 重启与恢复及升级恢复的重复操作；失败终态释放这些入口，仍保留各自的固定目标和结果预检。重启或绑定后的状态不能代替维护者在微信客户端进行的实际收发确认。
+Chub、Chub Quick Worker、Ubuntu Chub Debug Chrome 与 OpenClaw Gateway 的普通重启彼此独立：它们分别由独立进程/服务承载，Chub 重启不会停止 Chub Quick Worker、Chub Debug Chrome 或 OpenClaw Gateway，Chub Quick Worker 重启也不会重启 Chub、Chub Debug Chrome 或 OpenClaw Gateway。Worker 重启是确认后的恢复操作，会取消排队任务、停止执行中任务并重建 Chub Quick Worker；它不等待 Worker 健康、任务空闲或 Chub 恢复，也不影响实时终端的 tmux 和原生 Codex。OpenClaw Gateway 的 API action `restart` 与微信 `restart clawbot` 都是“重启与恢复”入口：发现固定插件或补丁版本不一致时先同步，再重启 Gateway 并确认消息通道；当前 Gateway 停止、未知、未配置、通道异常或存在 Agent 任务不阻止恢复，目标版本、完整性或补丁锚点无法确认时失败关闭。页面按钮显示“重启”，其确认说明保留恢复影响；API 和底层命令继续使用 `restart`，微信端使用 `restart clawbot`。微信固定维护指令为 `restart` / `restart web`、`restart worker`、`restart clawbot`、`restart network` 和 `upgrade`，均只接受精确无参数形式；受理与最终完成分别反馈。当前页面主动发起 Chub 重启、Chub Quick Worker 重启、OpenClaw Gateway 重启与恢复或系统升级与恢复时，只有在新 Chub 实例健康、与本页请求 operation ID 匹配的 Worker 重启成功、OpenClaw Gateway/通道及兼容基线恢复成功或本次升级 operation 成功后，先保留成功状态约 2 秒，再自动整页刷新一次；历史成功记录和失败终态不触发刷新。确认弹窗必须明确 OpenClaw Gateway 会短暂中断消息通道和 Agent 任务，Chub Quick Worker 任务会被取消/停止且不自动重试。系统升级与恢复是例外：它独占受影响的 Chub AI Runtime 写入，统一停止任务、清理 Chub Session 关联与 Worker 运行态并切换 Chub/Chub Quick Worker；启动门禁只校验固定脚本、服务定义和运行态路径，不检查当前 Chub/Chub Quick Worker 状态。升级方案无法读取或校验时，按钮降级为当前版本运行态恢复，并明确不执行代码版本升级；确认信息无法取得任务数量时，不显示为 0，而是提示按固定边界清理。确认弹窗按当前状态简要列出受影响的快速任务数、Chub Session 关联数和服务切换范围；升级完成后组件摘要明确区分 Chub Debug Chrome 服务已确认与浏览器实例未纳入升级（不会自动启动）。Codex 原生 Session、配置和业务资料不因该操作删除。系统升级进行中禁用 Chub、Chub Quick Worker、OpenClaw Gateway 重启与恢复及升级恢复的重复操作；失败终态释放这些入口，仍保留各自的固定目标和结果预检。重启或绑定后的状态不能代替维护者在微信客户端进行的实际收发确认。
 
 不建立全局业务状态仓库，也不通过提示文案反推业务状态。API 路径、统一响应、认证和安全边界由后端契约决定，前端分层不能改变这些语义。
 
@@ -89,6 +92,7 @@ Chub、Chub Quick Worker、Ubuntu Chub Debug Chrome 与 OpenClaw Gateway 的普�
 
 - 动态内容通过 DOM API 和 `textContent` 渲染，不使用 `innerHTML` 注入外部内容；
 - 业务确认、选择和编辑使用 `showModal()` 打开的原生 `dialog`，不使用浏览器默认 `confirm()` 或 `alert()`；
+- 有限选项且需要展示当前选择、选中态或不可用项时，使用快速交互同款的自定义选择浮层，不使用浏览器原生下拉框；浮层由按钮以 `listbox` 语义触发，选项使用 `option` 语义，支持点击外部、Escape 关闭和焦点进入，且必须随原有权威选择控件的值、选项与禁用状态同步。数值范围使用原生滑杆，二元设置使用开关/复选框，少量互斥且需要同时比较说明的选项继续使用单选列表；
 - 确认弹窗统一包含标题、对象与影响说明、反馈区、取消和确认操作；危险操作使用危险按钮并说明恢复边界；
 - 提交期间锁定关闭和重复操作；同步失败留在弹窗展示，已受理异步操作的进度与最终失败回到所属卡片或全局反馈区；
 - 下级页面在当前标签打开并依赖浏览器返回，不额外增加专用返回栏；
@@ -148,6 +152,6 @@ tokens.css -> base.css -> components.css -> responsive.css
 
 ## 8. 验收范围与复检
 
-- 已验证范围：首页固定脚本/样式加载顺序、Core/Components/Feature 边界、动态卡片独立状态、确认弹窗与折叠交互、Standard/Cyber 主题，以及受管桌面 Chrome 模拟的 `360x800`、`412x915` 手机视口、键盘和减少动态效果页面契约。
+- 已验证范围：首页固定脚本/样式加载顺序、Core/Components/Feature 边界、动态卡片独立状态、确认弹窗与折叠交互、设置页三层架构横幅与配置卡层级、Standard/Cyber 主题，以及受管桌面 Chrome 模拟的 `360x800`、`412x915` 手机视口、键盘和减少动态效果页面契约。
 - 未验证或不承诺：真实 Android 设备、未在本次回归中实际运行的浏览器、平台或新增页面；本文不替代后端 API、安全边界和各业务专项的最终状态验收。
 - 复检触发：脚本或样式加载顺序、公共组件语义、页面状态投影、Standard/Cyber Token、响应式布局、键盘/无障碍行为或浏览器存储契约变化时，必须同步运行顺序测试并完成受影响桌面和手机视口的真实浏览器回归。

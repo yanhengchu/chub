@@ -37,6 +37,7 @@ from app.services.log_reader import redact_log_line
 from app.services.operation_log import write_operation
 from app.quick_worker import (
     PROTOCOL_VERSION,
+    WorkerHealth,
     WorkerRequestNotSent,
     worker_request_sync,
 )
@@ -404,7 +405,10 @@ class QuickInteractionManager:
                     "quick_interaction_writer_active",
                     ACTIVE_WRITER_ERROR,
                 )
-            self.codex_manager.prepare_quick_interaction()
+            if isinstance(session, AiSession):
+                self.codex_manager.prepare_quick_interaction(session.runtime_id)
+            else:
+                self.codex_manager.prepare_quick_interaction()
             if not session.native_session_id:
                 self.codex_manager.set_initial_quick_interaction_title(
                     session.id,
@@ -434,9 +438,14 @@ class QuickInteractionManager:
                     ),
                     kind=kind,
                     translation_original=translation_original,
-                    model=model if kind == "translation" else None,
+                    permission_mode=(
+                        "read-only" if kind == "translation" else session.permission_mode
+                    ),
+                    model=model if kind == "translation" else session.model,
                     reasoning_effort=(
-                        reasoning_effort if kind == "translation" else None
+                        reasoning_effort
+                        if kind == "translation"
+                        else session.reasoning_effort
                     ),
                     restart_sensitive=restart_sensitive,
                     status="requested",
@@ -609,8 +618,31 @@ class QuickInteractionManager:
     @contextmanager
     def session_creation_guard(self, session_mode: str = "quick") -> Iterator[None]:
         if session_mode == "quick":
-            self._require_worker_recovery()
+            self.require_quick_session_creation()
         yield
+
+    def quick_session_creation_availability(self) -> tuple[bool, str | None]:
+        try:
+            self.require_quick_session_creation()
+        except ApiError as exc:
+            return False, exc.message
+        return True, None
+
+    def require_quick_session_creation(self) -> None:
+        self._require_worker_recovery()
+        try:
+            payload = self._worker_call("health", timeout_seconds=1)
+            if payload.get("success") is not True:
+                raise OSError("Quick Worker health request failed")
+            health = WorkerHealth.model_validate(payload.get("data"))
+            if health.status != "ready":
+                raise OSError("Quick Worker is not ready")
+        except (OSError, ValueError) as exc:
+            raise ApiError(
+                503,
+                "quick_worker_unavailable",
+                "Quick Worker 当前不可用，无法创建快速交互 Session。",
+            ) from exc
 
     def update_session_model(
         self,
@@ -618,7 +650,7 @@ class QuickInteractionManager:
         model: str,
         reasoning_effort: str,
     ):
-        """Serialize a future-task model update with submissions for one Session."""
+        """Compatibility wrapper for updating a quick Session model."""
         with self._session_lock(session_id):
             with self._lock:
                 if self._any_running(session_id):
@@ -629,6 +661,29 @@ class QuickInteractionManager:
                     )
             return self.codex_manager.update_quick_session_model(
                 session_id,
+                model,
+                reasoning_effort,
+            )
+
+    def update_session_configuration(
+        self,
+        session_id: str,
+        permission_mode: str,
+        model: str | None,
+        reasoning_effort: str | None,
+    ):
+        """Serialize a persistent future-task configuration update."""
+        with self._session_lock(session_id):
+            with self._lock:
+                if self._any_running(session_id):
+                    raise ApiError(
+                        409,
+                        "codex_session_configuration_update_busy",
+                        "Session 正在执行，请等待任务结束后重试。",
+                    )
+            return self.codex_manager.update_session_configuration(
+                session_id,
+                permission_mode,
                 model,
                 reasoning_effort,
             )
@@ -1088,7 +1143,20 @@ class QuickInteractionManager:
     @contextmanager
     def destructive_operation_guard(self, session_id: str) -> Iterator[None]:
         with self._session_lock(session_id):
-            self._require_worker_recovery()
+            with self._lock:
+                if not self._recovery_ready:
+                    if self._local_state_error is not None:
+                        raise ApiError(
+                            503,
+                            "quick_worker_recovery_unavailable",
+                            "Quick Worker 状态不可用，无法确认该 Session 是否空闲。",
+                        )
+                    if self._any_running(session_id):
+                        raise ApiError(
+                            409,
+                            "quick_interaction_in_progress",
+                            "Quick Worker 当前不可用，且该 Session 仍有未完成的快速交互，无法删除。",
+                        )
             yield
 
     @contextmanager
@@ -1537,7 +1605,6 @@ class QuickInteractionManager:
 
     def remove_session_tasks(self, session_id: str) -> None:
         """Remove retained Quick Worker task records after a Session operation."""
-        self._require_worker_recovery()
         with self._session_lock(session_id):
             with self._lock:
                 if self._any_running(session_id):
@@ -1782,12 +1849,9 @@ class QuickInteractionManager:
         session_runtime_id = getattr(session, "runtime_id", runtime_id)
         if session_runtime_id != runtime_id:
             raise OSError("Session Runtime owner does not match the active Runtime")
-        model = task.model if task.kind == "translation" else session.model
-        reasoning_effort = (
-            task.reasoning_effort
-            if task.kind == "translation"
-            else session.reasoning_effort
-        )
+        model = task.model
+        reasoning_effort = task.reasoning_effort
+        permission_profile = task.permission_mode or session.permission_mode
         return RuntimeTaskSubmission(
             task_id=worker_task_id,
             runtime_id=runtime_id,
@@ -1798,7 +1862,7 @@ class QuickInteractionManager:
                 if task.kind == "translation"
                 else self._codex_execution_prompt(prompt)
             ),
-            permission_profile=session.permission_mode,
+            permission_profile=permission_profile,
             native_session_id=session.native_session_id,
             model=model,
             reasoning_effort=reasoning_effort,

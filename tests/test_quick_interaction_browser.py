@@ -251,6 +251,7 @@ class ConversationApi:
             data = {
                 "available": True,
                 "unavailable_reason": None,
+                "quick_creation": {"available": True, "reason": None},
                 "workspaces": [
                     {
                         "id": "chub",
@@ -260,6 +261,23 @@ class ConversationApi:
                     }
                 ],
                 "sessions": deepcopy(self.sessions),
+            }
+        elif path == "/api/codex/models" and request.method == "GET":
+            data = {
+                "models": [
+                    {
+                        "id": "gpt-test",
+                        "name": "GPT Test",
+                        "description": "Browser test model",
+                        "default_level": "medium",
+                        "levels": [
+                            {"id": "low", "description": "Light"},
+                            {"id": "medium", "description": "Balanced"},
+                        ],
+                    }
+                ],
+                "default_model": "gpt-test",
+                "default_reasoning_effort": "medium",
             }
         elif path == "/api/codex/sessions" and request.method == "POST":
             session = _session(
@@ -280,6 +298,12 @@ class ConversationApi:
             session = self._find_session(session_id)
             if action == "title" and request.method == "PATCH" and session:
                 session["title"] = request.post_data_json["title"]
+                data = deepcopy(session)
+            elif action == "configuration" and request.method == "PATCH" and session:
+                payload = request.post_data_json
+                session["permission_mode"] = payload["permission_mode"]
+                session["model"] = payload.get("model")
+                session["reasoning_effort"] = payload.get("reasoning_effort")
                 data = deepcopy(session)
             elif action == "archive" and request.method == "POST" and session:
                 self.sessions = [item for item in self.sessions if item["id"] != session_id]
@@ -447,6 +471,11 @@ async def test_conversation_layout_in_managed_chrome(
                     const navigation = document.querySelector("#conversation-session-navigation");
                     const input = document.querySelector("#conversation-prompt");
                     const submit = document.querySelector("#conversation-submit");
+                    const inputShell = document.querySelector(".conversation-input-row");
+                    const settingControls = [
+                        ...document.querySelectorAll(".conversation-setting-trigger"),
+                        submit,
+                    ];
                     const inputRect = input.getBoundingClientRect();
                     const submitRect = submit.getBoundingClientRect();
                     const touchTargets = [
@@ -460,17 +489,39 @@ async def test_conversation_layout_in_managed_chrome(
                         ),
                     ].map(node => {
                         const rect = node.getBoundingClientRect();
-                        return { width: rect.width, height: rect.height };
+                        return {
+                            id: node.id || node.dataset.sessionId,
+                            isSwitch: node.classList.contains("conversation-session-switch"),
+                            isFixed: !node.classList.contains("conversation-session-switch"),
+                            width: rect.width,
+                            height: rect.height,
+                        };
                     });
                     return {
                         theme: document.documentElement.dataset.uiStyle,
                         overflow: document.documentElement.scrollWidth - innerWidth,
                         composerWidth: composer.getBoundingClientRect().width,
                         navigationWidth: navigation.getBoundingClientRect().width,
+                        inputShellWidth: inputShell.getBoundingClientRect().width,
+                        settingControls: settingControls.map(node => {
+                            const rect = node.getBoundingClientRect();
+                            return {
+                                id: node.id,
+                                width: rect.width,
+                                height: rect.height,
+                            };
+                        }),
+                        composerMenusAbove: Array.from(
+                            document.querySelectorAll(".conversation-setting-menu")
+                        ).every(menu => getComputedStyle(menu).bottom !== "auto"),
                         inputSubmitOverlap: Math.max(
                             0,
                             Math.min(inputRect.right, submitRect.right)
                                 - Math.max(inputRect.left, submitRect.left),
+                        ) * Math.max(
+                            0,
+                            Math.min(inputRect.bottom, submitRect.bottom)
+                                - Math.max(inputRect.top, submitRect.top),
                         ),
                         touchTargets,
                         titleVisible: !document.querySelector(
@@ -486,12 +537,79 @@ async def test_conversation_layout_in_managed_chrome(
     assert layout["overflow"] <= 1
     assert layout["composerWidth"] > 0
     assert layout["navigationWidth"] <= layout["composerWidth"] + 1
+    assert layout["inputShellWidth"] <= layout["composerWidth"] + 1
+    assert all(
+        target["width"] == (30 if target["id"] == "conversation-submit" else target["width"])
+        and target["height"] == 30
+        for target in layout["settingControls"]
+    )
+    assert layout["composerMenusAbove"] is True
     assert layout["inputSubmitOverlap"] == 0
     assert all(
-        target["width"] >= 44 and target["height"] >= 44
+        (target["width"] == 30 if target["isFixed"] else target["width"] > 0)
+        and target["height"] == 30
         for target in layout["touchTargets"]
     )
     assert layout["titleVisible"] is True
+    assert page_errors == []
+
+
+@pytest.mark.parametrize("theme", ["standard", "cyber"])
+async def test_conversation_composer_options_show_current_values_and_disable_approval(
+    conversation_browser_server: str,
+    theme: str,
+) -> None:
+    api = ConversationApi()
+    browser_session = session_factory()
+    async with browser_session(ensure_page=False) as chrome:
+        context, page, page_errors = await _open_conversation(
+            chrome.browser,
+            conversation_browser_server,
+            api,
+            theme=theme,
+            viewport=(1280, 900),
+        )
+        try:
+            await expect(page.locator("#conversation-permission-value")).to_have_text(
+                "Full access"
+            )
+            await expect(page.locator("#conversation-model-value")).to_have_text("GPT Test")
+            await expect(page.locator("#conversation-reasoning-value")).to_have_text("Medium")
+            await expect(page.locator("#conversation-submit")).to_be_disabled()
+            await expect(page.locator("#conversation-submit")).to_have_text("")
+            assert await page.locator("#conversation-submit svg").count() == 1
+            await expect(page.locator("#conversation-permission-menu [data-value='ask']")).to_be_disabled()
+            before_hover = await page.locator(".conversation-setting-trigger").evaluate_all(
+                """nodes => nodes.map(node => ({
+                    color: getComputedStyle(node).color,
+                    shadow: getComputedStyle(node).boxShadow,
+                }))"""
+            )
+            assert all(item["shadow"] == "none" for item in before_hover)
+            assert all(item["color"] == before_hover[0]["color"] for item in before_hover)
+            await page.locator("#conversation-permission-trigger").hover()
+            after_hover = await page.locator("#conversation-permission-trigger").evaluate(
+                """node => ({
+                    color: getComputedStyle(node).color,
+                    shadow: getComputedStyle(node).boxShadow,
+                })"""
+            )
+            assert after_hover["color"] == before_hover[0]["color"]
+            assert after_hover["shadow"] == "none"
+            await page.locator("#conversation-model-trigger").click()
+            await expect(page.locator("#conversation-model-menu")).to_be_visible()
+            await page.locator("#conversation-model-menu [data-value='']").click()
+            await expect(page.locator("#conversation-model-menu")).not_to_be_visible()
+            await page.locator("#conversation-model-trigger").click()
+            await page.locator("#conversation-model-menu [data-value='gpt-test']").click()
+            await expect(page.locator("#conversation-model-value")).to_have_text("GPT Test")
+            await expect(page.locator("#conversation-model-trigger")).to_be_enabled()
+            assert "PATCH /api/codex/sessions/session-1/configuration" in api.requested_paths
+            await page.locator("#conversation-permission-trigger").click()
+            await expect(page.locator("#conversation-permission-menu")).to_be_visible()
+        finally:
+            await context.close()
+
     assert page_errors == []
 
 
@@ -550,7 +668,22 @@ async def test_conversation_workflows_in_managed_chrome(
                 "nodes => nodes.map(node => node.dataset.taskId)"
             ) == ["task-1", "task-2", "task-3"]
 
-            await page.locator("[data-session-id='session-2']").click()
+            await page.evaluate(
+                """() => switchConversationSession(
+                    "session-2",
+                    "/codex/session-2/quick-interactions/conversation",
+                )"""
+            )
+            switch_state = await page.locator(".conversation-setting-trigger").evaluate_all(
+                """nodes => nodes.map(node => ({
+                    disabled: node.disabled,
+                    color: getComputedStyle(node).color,
+                    opacity: getComputedStyle(node).opacity,
+                }))"""
+            )
+            assert all(item["disabled"] for item in switch_state)
+            assert all(item["color"] == switch_state[0]["color"] for item in switch_state)
+            assert all(item["opacity"] == "1" for item in switch_state)
             await expect(page).to_have_url(
                 f"{conversation_browser_server}/codex/session-2/quick-interactions/conversation"
             )
@@ -707,6 +840,8 @@ async def test_old_session_recovery_failure_does_not_override_switched_session(
             await expect(page.locator("#conversation-session-title")).to_have_text(
                 "Second Session"
             )
+            await expect(page.locator("#conversation-submit")).to_be_disabled()
+            await page.locator("#conversation-prompt").fill("Second session task")
             await expect(page.locator("#conversation-submit")).to_be_enabled()
 
             api.recovery_release.set()

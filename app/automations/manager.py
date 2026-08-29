@@ -704,7 +704,7 @@ class AutomationManager:
         mode: str = "headless",
         profile_id: str | None = None,
     ) -> BrowserControlResult:
-        if action not in {"start", "stop"}:
+        if action not in {"start", "stop", "restart"}:
             raise ApiError(404, "browser_action_not_found", "浏览器操作不存在")
         if action == "start" and mode not in {"headed", "headless"}:
             raise ApiError(422, "browser_mode_invalid", "Debug Chrome 启动模式无效")
@@ -721,7 +721,7 @@ class AutomationManager:
                     "automation_browser_busy",
                     "飞书环境正在检查",
                 )
-        if action == "stop":
+        if action in {"stop", "restart"}:
             config = self._load_config()
             if any(
                 self._current_state(task_id).status in {"queued", "running"}
@@ -736,15 +736,34 @@ class AutomationManager:
         try:
             with file_lock(lock_path, 0):
                 try:
-                    current = (
-                        (
+                    if action == "start":
+                        current = (
                             self._select_and_start_debug_chrome(profile_id, mode)
                             if profile_id
                             else self._start_debug_chrome(mode)
                         )
-                        if action == "start"
-                        else self._stop_debug_chrome()
-                    )
+                    elif action == "stop":
+                        current = self._stop_debug_chrome()
+                    else:
+                        browser_state, browser_mode, _ = self._debug_chrome_status()
+                        if browser_state != "running":
+                            raise ApiError(
+                                409,
+                                "debug_chrome_not_running",
+                                "Debug Chrome 当前未运行",
+                            )
+                        restart_profile = self._current_debug_chrome_profile()
+                        if restart_profile is None:
+                            raise ApiError(
+                                409,
+                                "debug_chrome_profile_unavailable",
+                                "无法确认 Debug Chrome 当前浏览器账户",
+                            )
+                        self._stop_debug_chrome()
+                        current = self._select_and_start_debug_chrome(
+                            restart_profile,
+                            browser_mode or "headless",
+                        )
                 except RuntimeError as exc:
                     message = str(exc)
                     if "profile" in message.lower() or "managed" in message.lower():
@@ -765,7 +784,7 @@ class AutomationManager:
                 "自动化任务正在使用 Debug Chrome",
             ) from exc
 
-        expected = "running" if action == "start" else "stopped"
+        expected = "stopped" if action == "stop" else "running"
         if current.state != expected:
             raise ApiError(
                 500,
@@ -800,7 +819,13 @@ class AutomationManager:
             mode=mode,
             profile_id=resolved_profile_id,
             profile_name=resolved_profile_name,
-            message="Debug Chrome 已启动" if action == "start" else "Debug Chrome 已停止",
+            message=(
+                "Debug Chrome 已启动"
+                if action == "start"
+                else "Debug Chrome 已停止"
+                if action == "stop"
+                else "Debug Chrome 已重启"
+            ),
         )
 
     def initialize_browser(

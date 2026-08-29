@@ -64,6 +64,7 @@ from app.services.openclaw import OpenClawManager
 from app.services.openclaw_completion_notifications import OpenClawCompletionNotifier
 from app.services.openclaw_weixin_chub_messages import usage_message
 from app.services.operation_log import write_operation
+from app.services.network_recovery import NetworkRecoveryError, restart_network
 from app.services.deferred_restart import DeferredRestartCoordinator
 from app.services.openclaw_weixin_chub_mode import WeixinChubModeManager
 from app.services.restart_command import RestartProcess, launch_restart_process
@@ -860,6 +861,45 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             timer.name = f"weixin-clawbot-restart-{operation_id[:8]}"
             timer.start()
             return "Restart ClawBot: Scheduled. The result will be sent when completed."
+
+        if target == "network":
+            def restart_configured_network() -> None:
+                try:
+                    result = restart_network(
+                        resolved_settings,
+                        operation_id=operation_id,
+                        source_ip=source_ip,
+                    )
+                    message = f"Restart Network: Completed. {result.message}"
+                except NetworkRecoveryError as exc:
+                    message = f"Restart Network: Failed. {exc}"
+                except Exception:
+                    logging.getLogger("hub.network_recovery").warning(
+                        "Unable to complete Weixin network restart",
+                        exc_info=True,
+                    )
+                    write_operation(
+                        operation_id=operation_id,
+                        action="network_restart",
+                        status="failed",
+                        target="networkmanager:configured-wifi-vpn",
+                        source_ip=source_ip,
+                        reason="network restart final state could not be confirmed",
+                    )
+                    message = (
+                        "Restart Network: Failed. The final state could not be confirmed."
+                    )
+                completion_notifier.notify_weixin_command_result(
+                    route,
+                    lambda: message,
+                )
+
+            # Let the current OpenClaw hook send its fixed receipt before Wi-Fi drops.
+            timer = threading.Timer(1.0, restart_configured_network)
+            timer.daemon = True
+            timer.name = f"weixin-network-restart-{operation_id[:8]}"
+            timer.start()
+            return "Restart Network: Scheduled. The result will be sent when completed."
 
         raise ApiError(400, "maintenance_target_invalid", "维护目标无效。")
 

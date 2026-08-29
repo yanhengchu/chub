@@ -45,6 +45,29 @@ from tests.openclaw_weixin_chub_mode_helpers import (
 )
 
 
+def test_restart_network_routes_only_the_fixed_network_target(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, _quick_interactions = configured_manager(settings)
+    starter = MagicMock(
+        return_value="Restart Network: Scheduled. The result will be sent when completed."
+    )
+    manager.maintenance_command_starter = starter
+
+    result = manager.dispatch(
+        message_id="restart-network",
+        prompt="restart network",
+        message_type="text",
+        correlation_id=None,
+        source_ip="127.0.0.1",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == "Restart Network: Scheduled. The result will be sent when completed."
+    assert starter.call_args.args[0] == "network"
+    assert starter.call_args.args[2] == delivery_route()
+
+
 def test_duplicate_dispatch_is_logged_without_resubmitting(
     settings: Settings,
 ) -> None:
@@ -774,6 +797,94 @@ def test_mode_readiness_no_longer_requires_global_recipient(
     status = manager.status()
 
     assert status.ready is True
+
+
+def test_disabled_runtime_has_specific_weixin_reply_and_chub_status(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    codex_manager.require_runtime_submission.side_effect = ApiError(
+        409,
+        "ai_runtime_disabled",
+        "当前 AI Runtime 已停用，无法提交新的 AI 任务。",
+    )
+
+    status = manager.status()
+    result = manager.dispatch(
+        message_id="runtime-disabled",
+        prompt="检查设备状态",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert status.ready is False
+    assert status.code == "ai_runtime_disabled"
+    assert result.message == (
+        "Not submitted · Codex Runtime is disabled. Chub is in base mode. "
+        "Enable it in Settings to submit AI tasks.\n\n"
+        "Task · 检查设备状态"
+    )
+    quick_interactions.submit.assert_not_called()
+
+
+def test_unavailable_quick_worker_has_specific_weixin_reply(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    quick_interactions.require_quick_session_creation.side_effect = ApiError(
+        503,
+        "quick_worker_unavailable",
+        "Quick Worker 当前不可用，无法创建快速交互 Session。",
+    )
+
+    status = manager.status()
+    result = manager.dispatch(
+        message_id="worker-unavailable",
+        prompt="检查设备状态",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert status.ready is False
+    assert status.code == "quick_worker_unavailable"
+    assert result.message == (
+        "Not submitted · Quick Worker is unavailable. Try again later.\n\n"
+        "Task · 检查设备状态"
+    )
+    quick_interactions.submit.assert_not_called()
+
+
+def test_unavailable_quick_worker_keeps_weixin_recovery_command_available(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    quick_interactions.require_quick_session_creation.side_effect = ApiError(
+        503,
+        "quick_worker_unavailable",
+        "Quick Worker 当前不可用，无法创建快速交互 Session。",
+    )
+    starter = MagicMock(
+        return_value="Restart Worker: Scheduled. The result will be sent when completed."
+    )
+    manager.maintenance_command_starter = starter
+
+    result = manager.dispatch(
+        message_id="worker-recovery",
+        prompt="restart worker",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == (
+        "Restart Worker: Scheduled. The result will be sent when completed."
+    )
+    assert starter.call_args.args[0] == "worker"
 
 
 def test_submit_reuses_session_when_defaults_resolve_to_effective_model(

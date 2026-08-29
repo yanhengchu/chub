@@ -9,6 +9,11 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from app.ai_runtime import RuntimeNativeSession, RuntimeOperationError, RuntimeRegistry
+from app.ai_runtime.enablement import (
+    RuntimeEnablement,
+    RuntimeEnablementStore,
+    RuntimeEnablementStoreUnavailable,
+)
 from app.ai_session.models import (
     ActivitySource,
     AiSession,
@@ -30,6 +35,8 @@ from app.codex.models import (
     SessionMode,
     SessionInfo,
     SessionUsage,
+    RuntimeManagementData,
+    RuntimeManagementItem,
     WorkspaceInfo,
 )
 from app.codex.runtime_adapter import CodexRuntimeAdapter
@@ -63,7 +70,10 @@ class AiSessionManager:
             settings.codex_pty.data_file.with_name("ai-sessions.json")
         )
         self.session_defaults = SessionDefaultsStore(
-            settings.codex_pty.data_file.with_name("session-defaults.json")
+            settings.codex_pty.data_file.with_name("session-creation-defaults.json")
+        )
+        self.runtime_enablement = RuntimeEnablementStore(
+            settings.codex_pty.data_file.with_name("runtime-enablement.json")
         )
         adapter = CodexRuntimeAdapter(settings)
         self.runtime_registry = RuntimeRegistry([adapter])
@@ -112,6 +122,70 @@ class AiSessionManager:
 
     def unavailable_reason(self) -> str | None:
         return self.store.unavailable_reason or self.runtime_adapter.status().reason
+
+    def read_runtime_management(self) -> RuntimeManagementData:
+        try:
+            disabled = set(self.runtime_enablement.read().disabled_runtime_ids)
+        except RuntimeEnablementStoreUnavailable as exc:
+            raise ApiError(
+                503,
+                "ai_runtime_enablement_unavailable",
+                "AI Runtime 启用状态不可用，请稍后重试。",
+            ) from exc
+        try:
+            matrix = self.runtime_registry.capability_matrix()
+        except RuntimeOperationError as exc:
+            raise self._runtime_api_error(exc) from exc
+        runtimes = [
+            RuntimeManagementItem(
+                runtime_id=item.runtime_id,
+                name=("Codex Runtime" if item.runtime_id == "codex" else item.runtime_id),
+                enabled=item.runtime_id not in disabled,
+                healthy=item.available,
+                reason=item.reason,
+            )
+            for item in matrix
+        ]
+        return RuntimeManagementData(
+            runtimes=runtimes,
+            basic_mode=not any(item.enabled for item in runtimes),
+        )
+
+    def update_runtime_enabled(
+        self,
+        runtime_id: str,
+        enabled: bool,
+    ) -> RuntimeManagementData:
+        try:
+            self.runtime_registry.require(runtime_id)
+            state = self.runtime_enablement.read()
+            disabled = set(state.disabled_runtime_ids)
+            if enabled:
+                disabled.discard(runtime_id)
+            else:
+                disabled.add(runtime_id)
+            self.runtime_enablement.save(
+                RuntimeEnablement(disabled_runtime_ids=sorted(disabled))
+            )
+        except RuntimeEnablementStoreUnavailable as exc:
+            raise ApiError(
+                503,
+                "ai_runtime_enablement_unavailable",
+                "AI Runtime 启用状态不可用，请稍后重试。",
+            ) from exc
+        except RuntimeOperationError as exc:
+            raise self._runtime_api_error(exc) from exc
+        return self.read_runtime_management()
+
+    def submission_available(self) -> tuple[bool, str | None]:
+        try:
+            self._require_runtime_submission(self.runtime_id)
+        except ApiError as exc:
+            return False, exc.message
+        return True, None
+
+    def require_runtime_submission(self, runtime_id: str) -> None:
+        self._require_runtime_submission(runtime_id)
 
     def workspaces(self) -> list[WorkspaceInfo]:
         entries = [
@@ -162,20 +236,21 @@ class AiSessionManager:
     def create_session(
         self,
         workspace_id: str,
-        permission_mode: PermissionMode = "full-access",
+        permission_mode: PermissionMode | None = None,
         model: str | None = None,
         reasoning_effort: str | None = None,
         session_mode: SessionMode = "terminal",
     ) -> SessionInfo:
-        self._require_available()
-        if model is None and reasoning_effort is None:
+        self._require_runtime_submission(self.runtime_id)
+        if permission_mode is None:
             try:
-                defaults = self.session_defaults.read()
-            except SessionDefaultsStoreUnavailable:
-                LOGGER.warning("Unable to read node-level Session defaults", exc_info=True)
-            else:
-                model = defaults.model
-                reasoning_effort = defaults.reasoning_effort
+                permission_mode = self.session_defaults.read().permission_mode
+            except SessionDefaultsStoreUnavailable as exc:
+                raise ApiError(
+                    503,
+                    "codex_session_defaults_unavailable",
+                    "无法读取新建 Session 默认权限，请稍后重试。",
+                ) from exc
         self.validate_model(model, reasoning_effort)
         workspace = next(
             (item for item in self.workspaces() if item.id == workspace_id),
@@ -202,7 +277,7 @@ class AiSessionManager:
         return self._public(session)
 
     def create_translation_session(self) -> SessionInfo:
-        self._require_available()
+        self._require_runtime_submission(self.runtime_id)
         workspace = self.settings.codex_pty.runtime_dir / "translation-workspace"
         workspace.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(workspace, 0o700)
@@ -269,48 +344,63 @@ class AiSessionManager:
             default_model=catalog.default_model,
             default_reasoning_effort=catalog.default_reasoning_effort,
         )
-        try:
-            defaults = self.session_defaults.read()
-        except SessionDefaultsStoreUnavailable:
-            LOGGER.warning("Unable to read node-level Session defaults", exc_info=True)
-            return data
-        selected = next(
-            (model for model in data.models if model.id == defaults.model),
-            None,
-        )
-        if selected is None:
-            return data
-        if defaults.reasoning_effort is not None and not any(
-            level.id == defaults.reasoning_effort for level in selected.levels
-        ):
-            return data
-        return data.model_copy(
-            update={
-                "default_model": selected.id,
-                "default_reasoning_effort": (
-                    defaults.reasoning_effort or selected.default_level
-                ),
-            }
-        )
+        return data
 
-    def update_session_defaults(
-        self,
-        model: str | None,
-        reasoning_effort: str | None,
-    ) -> CodexModelCatalogData:
+    def read_session_defaults(self) -> str:
+        try:
+            return self.session_defaults.read().permission_mode
+        except SessionDefaultsStoreUnavailable as exc:
+            raise ApiError(
+                503,
+                "codex_session_defaults_unavailable",
+                "无法读取新建 Session 默认权限，请稍后重试。",
+            ) from exc
+
+    def update_session_defaults(self, permission_mode: str) -> str:
         self._require_available()
-        self.validate_model(model, reasoning_effort)
         try:
             self.session_defaults.save(
-                SessionDefaults(model=model, reasoning_effort=reasoning_effort)
+                SessionDefaults(permission_mode=permission_mode)
             )
         except OSError as exc:
             raise ApiError(
                 503,
                 "codex_session_defaults_unavailable",
-                "无法保存新建 Session 默认模型，请稍后重试。",
+                "无法保存新建 Session 默认权限，请稍后重试。",
             ) from exc
-        return self.read_model_catalog()
+        return permission_mode
+
+    def update_session_configuration(
+        self,
+        session_id: str,
+        permission_mode: PermissionMode,
+        model: str | None,
+        reasoning_effort: str | None,
+    ) -> SessionInfo:
+        self._require_available()
+        if permission_mode == "ask":
+            raise ApiError(
+                409,
+                "quick_interaction_requires_terminal",
+                "Ask for approval 需要进入实时终端完成审批。",
+            )
+        self.validate_model(model, reasoning_effort)
+        with self._lock:
+            session = self.get_session(session_id)
+            self._require_quick_access(session)
+            usage = self._resolve_session_usage(session)
+            if usage.owner != "none" or usage.phase != "idle":
+                raise ApiError(
+                    409,
+                    "codex_session_configuration_update_busy",
+                    "Session 正在执行或被占用，请等待任务结束后重试。",
+                )
+            session.permission_mode = permission_mode
+            session.model = model
+            session.reasoning_effort = reasoning_effort
+            session.updated_at = utc_now()
+            self.store.save(session)
+            return self._public(session)
 
     def update_quick_session_model(
         self,
@@ -337,8 +427,8 @@ class AiSessionManager:
             self.store.save(session)
             return session
 
-    def prepare_quick_interaction(self) -> None:
-        self._require_available()
+    def prepare_quick_interaction(self, runtime_id: str | None = None) -> None:
+        self._require_runtime_submission(runtime_id or self.runtime_id)
         with self._lock:
             self._ensure_profile()
 
@@ -453,10 +543,10 @@ class AiSessionManager:
             raise self._runtime_api_error(exc) from exc
 
     def ensure_terminal(self, session_id: str) -> AiSession:
-        self._require_available()
         with self._lock:
             session = self.get_session(session_id)
             self._require_terminal_access(session)
+            self._require_runtime_submission(session.runtime_id)
             if self._quick_interaction_is_running(session.id):
                 raise ApiError(
                     409,
@@ -1040,6 +1130,27 @@ class AiSessionManager:
         if reason:
             raise ApiError(503, "codex_pty_unavailable", reason)
 
+    def _require_runtime_submission(self, runtime_id: str) -> None:
+        self._require_available()
+        try:
+            self.runtime_registry.require(runtime_id)
+        except RuntimeOperationError as exc:
+            raise self._runtime_api_error(exc) from exc
+        try:
+            disabled = set(self.runtime_enablement.read().disabled_runtime_ids)
+        except RuntimeEnablementStoreUnavailable as exc:
+            raise ApiError(
+                503,
+                "ai_runtime_enablement_unavailable",
+                "AI Runtime 启用状态不可用，请稍后重试。",
+            ) from exc
+        if runtime_id in disabled:
+            raise ApiError(
+                409,
+                "ai_runtime_disabled",
+                "当前 AI Runtime 已停用，无法提交新的 AI 任务。",
+            )
+
     def _require_store(self) -> None:
         if not self.store.available:
             raise ApiError(
@@ -1385,16 +1496,12 @@ class AiSessionManager:
         changed = False
         if native.active_model and session.active_model != native.active_model:
             session.active_model = native.active_model
-            if session.model is None:
-                session.model = native.active_model
             changed = True
         if (
             native.active_reasoning_effort
             and session.active_reasoning_effort != native.active_reasoning_effort
         ):
             session.active_reasoning_effort = native.active_reasoning_effort
-            if session.reasoning_effort is None:
-                session.reasoning_effort = native.active_reasoning_effort
             changed = True
         if native.title and not session.title:
             session.title = native.title[:48]

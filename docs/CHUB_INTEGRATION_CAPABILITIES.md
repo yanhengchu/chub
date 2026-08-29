@@ -34,9 +34,15 @@
 - `chub worker-drain`
 - `chub worker-reload`
 - `chub worker-recover`
+- `chub worker-start`
+- `chub worker-stop`
+- `chub network-restart`
 - `chub logs`
 
 `chub help` 是当前 CLI 的无服务帮助入口。
+
+`chub network-restart` 是 Ubuntu 专用的本机维护命令：只有
+`network_recovery.enabled` 为 `true`，且 Wi-Fi 设备名、Wi-Fi UUID 与 VPN UUID 都已在本机配置中固定时才会执行。它不接受参数，不影响 Tailscale，并在 Wi-Fi 和 VPN 都被确认是 NetworkManager 活动连接后才返回成功。macOS 调用会明确失败，不执行任何网络切换。
 
 `chub check` 是只读的完整系统检查入口，依次检查项目配置、用户服务、Web 健康、Quick Worker 健康和 `/api/status` 系统状态；任一必需检查失败时返回非零退出码，不执行重启、升级或任务清理。
 
@@ -45,7 +51,7 @@
 | 运行部分 | 所属层 | 当前状态 | 当前入口与职责 |
 | --- | --- | --- | --- |
 | Chub | 核心层 | 已实现 | 由 `chub install/start` 管理用户服务；提供页面、API 和快速交互入口 |
-| Chub Quick Worker | AI Runtime 层 | 已实现 | 与 Chub 分离运行但由同一 CLI 安装/启动；通过 `chub worker-health` 检查，不提供普通用户独立启动入口 |
+| Chub Quick Worker | AI Runtime 层 | 已实现 | 与 Chub 分离运行但由同一 CLI 安装；通过 `chub worker-health` 检查，并仅在本机 CLI 或首页受控入口启动、停止和重启 |
 | Chub Debug Chrome | 核心层 | 已实现 | Ubuntu 由独立 Supervisor 服务持有 Debug Chrome；浏览器实例按需启动，macOS 沿用现有浏览器适配 |
 | OpenClaw Gateway | 第三方服务层 | 已接入 | 第三方 Gateway、微信通道和 Chub OpenClaw 插件共同提供 ClawBot；不由 `chub start` 启动，安装/配置以[插件说明](../integrations/openclaw/chub/README.md)为准 |
 
@@ -118,7 +124,7 @@
 | `S# [task]` | 选择目标 Session；有正文时切换后提交任务 |
 | `stop [S#]` / `archive S#` / `del S#` | 停止、归档或永久删除指定 Session；`stop` 无参数时作用于当前绑定 Session |
 | `cat R#` / `archive R#` / `del R#` | 查看、归档或永久删除活动需求 |
-| `restart` / `restart web` / `restart worker` / `restart clawbot` / `upgrade` | 重启固定目标或启动系统升级与恢复；异步操作通过独立通知返回最终结果 |
+| `restart` / `restart web` / `restart worker` / `restart clawbot` / `restart network` / `upgrade` | 重启固定目标或启动系统升级与恢复；异步操作通过独立通知返回最终结果 |
 
 ### 4.2 语法与匹配
 
@@ -130,8 +136,9 @@
 - `S1`–`S9` 是持久槽位标识，不是 Session 列表的当前排序位置；列表排序变化不改变槽位。
 - `R1`–`R9` 是最多九个活动需求的真实槽位，不是更大列表的排序别名。需求操作必须保留 `R` 前缀，以避免与 Session 槽位混淆；`cat README`、`run tests` 等非需求槽位正文仍进入普通任务，不扩展为文件读取或系统命令。
 - Session 规范格式为 `S# [task]`、`stop [S#]`、`archive S#` 和 `del S#`。槽位与正文之间必须使用空格；`stop` 省略槽位时使用当前绑定 Session。需求规范格式为 `cat R#`、`archive R#` 和 `del R#`，同样要求空格。
-- `restart`、`restart web`、`restart worker`、`restart clawbot` 和 `upgrade` 均为精确无参数指令；大小写和首尾标点可忽略，附加任何正文时回退为普通任务。`restart` 与 `restart web` 都只作用于 Web；其余三条分别只作用于 Quick Worker、ClawBot 或系统升级与恢复，不把目标名称交给客户端自由解析。
+- `restart`、`restart web`、`restart worker`、`restart clawbot`、`restart network` 和 `upgrade` 均为精确无参数指令；大小写和首尾标点可忽略，附加任何正文时回退为普通任务。`restart` 与 `restart web` 都只作用于 Web；其余四条分别只作用于 Quick Worker、ClawBot、已配置的 Ubuntu NetworkManager Wi-Fi/VPN 或系统升级与恢复，不把目标名称交给客户端自由解析。
 - `restart worker` 会立即登记恢复操作，取消排队任务并停止执行中任务，不自动重放；`restart clawbot` 会在当前 OpenClaw 调度请求返回后异步执行，先同步固定兼容基线，再重启 Gateway，并在最终状态确认后发送独立结果。
+- `restart network` 与 `chub network-restart` 共用同一 Ubuntu NetworkManager 流程，仅在本机 `network_recovery.enabled` 为 `true`、且 Wi-Fi 设备名、Wi-Fi UUID 与 VPN UUID 均已固定配置时可用；macOS 调用明确失败，不执行网络切换。该流程按固定顺序断开 VPN、关闭再打开 Wi-Fi、等待指定无线设备可用、在该设备上重新连接 Wi-Fi 和 VPN，最后确认两者都是 NetworkManager 活动连接。它不接受连接名、UUID、设备名、命令或路径，也不控制 Tailscale。Wi-Fi 断开期间即时回执可能无法送达；最终结果只沿本次保存的微信路由回送，Wi-Fi 或 VPN 任一终态无法确认即记录失败而不伪报成功。
 - `upgrade` 不接受版本号、路径或其他参数；升级方案不可用时按固定规则降级为当前版本运行态恢复，并明确不执行代码版本升级。升级受理后通过独立完成通知返回最终结果；不再提供微信 `upgrade status` 固定指令。系统升级页面和固定 API 的只读状态查询仍然保留。
 - `upgrade` 的最终组件状态会区分 Chub Debug Chrome 服务与 Debug Chrome 浏览器实例：前者确认服务可用，后者记录为未纳入升级且不会自动启动；浏览器实例仍由工作站环境统一控制，自动化只负责使用它执行飞书任务。
 - `usage` 是精确无参数指令；大小写和首尾标点可忽略，附加任何正文时回退为普通任务。
@@ -150,9 +157,11 @@
 ### 4.3 Session 与任务行为
 
 - 设置页“正文处理方式”下的翻译模型和等级是独立的翻译任务默认配置，不修改隐藏翻译 Session 的逻辑配置。保存时校验模型与等级组合；每个翻译任务在提交时快照当前配置并携带给 Native Runtime，已经进入队列的任务继续使用提交时快照，设置变化只影响之后提交的任务。未选择模型和等级时跟随 Runtime 默认。
+- 当当前 AI Runtime 被设置页停用时，微信 ClawBot 的新任务固定回复 `Not submitted · Codex Runtime is disabled. Chub is in base mode. Enable it in Settings to submit AI tasks.`；`chub` 状态摘要在 `Issues` 中显示 `AI Runtime is disabled. Chub is in base mode.`。这不取消已受理任务，也不影响既有 Session 的维护指令。
+- 当 Quick Worker 当前不可用时，微信 ClawBot 的 `new` 和普通任务固定回复 `Not submitted · Quick Worker is unavailable. Try again later.`；实时终端不经微信创建，维护恢复指令仍按各自契约可用。
 
 - 微信和 ClawBot 只分配 `quick` Session 的 S1–S9 槽位；`terminal` Session、升级扫描得到的 `discovered` Session 和内部翻译 Session 均不进入微信槽位或微信 Session 列表。微信不会创建或切换到实时终端 Session。
-- Session 类型在创建时固定；微信 `new` 创建的是 `quick` Session，Web 创建时由弹窗选择类型。不存在把同一 Session 从实时终端切换为快速交互的复合路径。
+- Session 类型在创建时固定；微信 `new` 创建的是 `quick` Session，首页默认创建 `quick`，只通过“实时会话”开关创建 `terminal`。不存在把同一 Session 从实时终端切换为快速交互的复合路径。
 
 - 设置页“正文处理方式”只影响之后新接收的正文任务：`直接执行`直接提交；`自动润色后执行`在独立只读 Session 生成中文润色和 English 后，自动提交润色后的中文；`自动润色后确认执行`生成同一份结果后进入确认队列。普通任务以及携带正文的 `S1`–`S9` 在正文不超过 `translation_preprocess_max_input_chars`（默认 1200 字符）时遵循该快照；超过阈值直接提交原正文，不润色、不翻译、不进入确认队列，以保持同步确认回复有界。其他固定指令和续提指令仍绕过文本优化。旧布尔配置 `translation_enabled=false/true` 分别等价于 `direct/auto`。
 - `text` 与设置页读取、保存同一个节点级处理方式：`text` 按 `Text`、`Mode · <mode>`、`Model · <model> · <level>`、`Current confirmation` 的顺序返回当前状态；其中 `text` 返回目标 Session、完整 `Polished` 正文和完整 `English`，不使用摘要。`text mode direct|auto|confirm` 立即保存并只影响之后新接收的正文。`text list` 显示完整正文处理流水：当前可操作确认队头以 `Confirming` 固定在最上方，其余已润色待轮到的确认项为 `Waiting confirmation`，仍在排队或翻译中的项目为 `Optimizing`；已确认但目标暂忙的项目显示为 `Waiting target`。每项返回目标 `S<槽位> · <标题>` 与下一行 `Task · <受限正文摘要>`，目标已不可用时显示 `Session · Unavailable`。已经在润色、确认或等待目标可写的项目继续按创建时快照完成。`text` 控制指令及 `text-check` 参数错误只返回用法而不作为普通任务提交。

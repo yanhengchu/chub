@@ -69,6 +69,29 @@ async def test_restart_uses_chub_service_command(settings: Settings) -> None:
 
 
 @pytest.mark.anyio
+async def test_stop_uses_fixed_chub_web_stop_command(settings: Settings) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
+    with (
+        patch("app.api.maintenance.PROJECT_ROOT") as project_root,
+        patch("app.api.maintenance.launch_restart_process") as launch_restart,
+        patch("app.api.maintenance.monitor_restart_process") as monitor_restart,
+    ):
+        command = project_root / "scripts" / "chub-web-stop"
+        command.is_file.return_value = True
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            headers={"Authorization": "Bearer test-token-that-is-long-enough-for-tests"},
+        ) as client:
+            response = await client.post("/api/maintenance/chub/stop")
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {"status": "stopping"}
+    launch_restart.assert_called_once_with(command)
+    monitor_restart.assert_called_once_with(launch_restart.return_value, ANY)
+
+
+@pytest.mark.anyio
 async def test_restart_allows_active_quick_interaction(settings: Settings) -> None:
     app = create_app(settings)
     app.state.quick_interactions._active_task_ids.add("task-1")

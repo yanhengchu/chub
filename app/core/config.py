@@ -3,6 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from ipaddress import ip_address, ip_network
 from pathlib import Path
+import re
 from typing import Any, Literal
 
 import yaml
@@ -195,6 +196,61 @@ class NotificationsConfig(StrictModel):
     dedup_ttl_seconds: int = Field(default=600, ge=60, le=3600)
 
 
+_NETWORK_CONNECTION_UUID = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+_NETWORK_DEVICE_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+
+
+class NetworkRecoveryConfig(StrictModel):
+    """Fixed NetworkManager recovery targets; disabled unless locally configured."""
+
+    enabled: bool = False
+    wifi_device: str | None = None
+    wifi_connection_uuid: str | None = None
+    vpn_connection_uuid: str | None = None
+    wifi_timeout_seconds: int = Field(default=45, ge=10, le=120)
+    vpn_timeout_seconds: int = Field(default=60, ge=10, le=180)
+    lock_file: Path = Path("data/local/runtime/network-recovery.lock")
+
+    @field_validator(
+        "wifi_device", "wifi_connection_uuid", "vpn_connection_uuid", mode="before"
+    )
+    @classmethod
+    def normalize_network_identifier(cls, value: object) -> object:
+        if isinstance(value, str):
+            value = value.strip()
+            return value.lower() or None
+        return value
+
+    @field_validator("wifi_device")
+    @classmethod
+    def validate_wifi_device(cls, value: str | None) -> str | None:
+        if value is not None and _NETWORK_DEVICE_NAME.fullmatch(value) is None:
+            raise ValueError("network recovery Wi-Fi device name is invalid")
+        return value
+
+    @field_validator("wifi_connection_uuid", "vpn_connection_uuid")
+    @classmethod
+    def validate_connection_uuid(cls, value: str | None) -> str | None:
+        if value is not None and _NETWORK_CONNECTION_UUID.fullmatch(value) is None:
+            raise ValueError("network recovery connection IDs must be UUIDs")
+        return value
+
+    @model_validator(mode="after")
+    def validate_enabled_targets(self) -> "NetworkRecoveryConfig":
+        if self.enabled and (
+            self.wifi_device is None
+            or self.wifi_connection_uuid is None
+            or self.vpn_connection_uuid is None
+        ):
+            raise ValueError(
+                "enabled network recovery requires a Wi-Fi device and connection UUIDs"
+            )
+        return self
+
+
 class OpenClawCompletionNotificationConfig(StrictModel):
     enabled: bool = True
     weixin_account_id: str | None = Field(
@@ -286,6 +342,7 @@ class Settings(StrictModel):
     project_documents: ProjectDocumentsConfig = ProjectDocumentsConfig()
     requests: RequestsConfig = RequestsConfig()
     notifications: NotificationsConfig = NotificationsConfig()
+    network_recovery: NetworkRecoveryConfig = NetworkRecoveryConfig()
     openclaw: OpenClawConfig = OpenClawConfig()
 
     @model_validator(mode="before")
@@ -337,6 +394,10 @@ class Settings(StrictModel):
             )
         if not self.requests.state_file.is_absolute():
             self.requests.state_file = PROJECT_ROOT / self.requests.state_file
+        if not self.network_recovery.lock_file.is_absolute():
+            self.network_recovery.lock_file = (
+                PROJECT_ROOT / self.network_recovery.lock_file
+            )
         if not self.openclaw.weixin_chub_mode.state_file.is_absolute():
             self.openclaw.weixin_chub_mode.state_file = (
                 PROJECT_ROOT / self.openclaw.weixin_chub_mode.state_file

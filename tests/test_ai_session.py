@@ -20,7 +20,9 @@ from app.ai_runtime import (
     RuntimeOperationError,
     RuntimeReasoningLevel,
     RuntimeSessionDiscoveryResult,
+    RuntimeStatus,
 )
+from app.ai_runtime.enablement import RuntimeEnablement, RuntimeEnablementStore
 from app.codex.models import SessionUsage, WorkspaceInfo
 from app.core.config import PROJECT_ROOT, Settings
 from app.core.response import ApiError
@@ -63,30 +65,62 @@ def test_session_defaults_store_is_atomic_and_private(tmp_path: Path) -> None:
     path = tmp_path / "session-defaults.json"
     store = SessionDefaultsStore(path)
 
-    store.save(SessionDefaults(model="gpt-test", reasoning_effort="medium"))
+    store.save(SessionDefaults(permission_mode="read-only"))
 
-    assert SessionDefaultsStore(path).read().model == "gpt-test"
-    assert SessionDefaultsStore(path).read().reasoning_effort == "medium"
+    assert SessionDefaultsStore(path).read().permission_mode == "read-only"
     assert path.stat().st_mode & 0o777 == 0o600
 
 
-def test_ai_session_manager_uses_node_defaults_for_new_sessions(
+def test_runtime_enablement_store_is_atomic_and_private(tmp_path: Path) -> None:
+    path = tmp_path / "runtime-enablement.json"
+    store = RuntimeEnablementStore(path)
+
+    store.save(RuntimeEnablement(disabled_runtime_ids=["codex"]))
+
+    assert RuntimeEnablementStore(path).read().disabled_runtime_ids == ["codex"]
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_runtime_enablement_blocks_new_submission_without_hiding_management(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    manager._require_available = MagicMock()
+    manager.runtime_adapter.status = MagicMock(
+        return_value=RuntimeStatus(runtime_id="codex", available=True)
+    )
+
+    disabled = manager.update_runtime_enabled("codex", False)
+
+    assert disabled.basic_mode is True
+    assert disabled.runtimes[0].enabled is False
+    with pytest.raises(ApiError) as rejected:
+        manager.require_runtime_submission("codex")
+    assert rejected.value.code == "ai_runtime_disabled"
+    assert manager.submission_available()[0] is False
+
+    enabled = manager.update_runtime_enabled("codex", True)
+
+    assert enabled.basic_mode is False
+    manager.require_runtime_submission("codex")
+
+
+def test_ai_session_manager_uses_node_permission_default_for_new_sessions(
     settings: Settings,
 ) -> None:
     manager = AiSessionManager(settings)
     manager._require_available = MagicMock()
     manager.runtime_adapter.validate_model = MagicMock()
-    manager.session_defaults.save(
-        SessionDefaults(model="gpt-5.6-terra", reasoning_effort="medium")
-    )
+    manager.session_defaults.save(SessionDefaults(permission_mode="read-only"))
 
     created = manager.create_session("chub", session_mode="quick")
 
-    assert created.model == "gpt-5.6-terra"
-    assert created.reasoning_effort == "medium"
+    assert created.permission_mode == "read-only"
+    assert created.model is None
+    assert created.reasoning_effort is None
     manager.runtime_adapter.validate_model.assert_called_once_with(
-        "gpt-5.6-terra",
-        "medium",
+        None,
+        None,
     )
 
 
@@ -115,6 +149,29 @@ def test_ai_session_manager_updates_idle_quick_session_model(
         "gpt-5.6-terra",
         "high",
     )
+
+
+def test_ai_session_manager_updates_quick_session_configuration_as_public_data(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    manager._require_available = MagicMock()
+    manager.runtime_adapter.validate_model = MagicMock()
+    created = session(settings.codex_pty.workspace, session_mode="quick")
+    manager.store.save(created)
+
+    updated = manager.update_session_configuration(
+        created.id,
+        "full-access",
+        "gpt-5.6-terra",
+        "high",
+    )
+
+    assert updated.cwd == str(settings.codex_pty.workspace)
+    assert updated.permission_pending is False
+    assert updated.permission_mode == "full-access"
+    assert updated.model == "gpt-5.6-terra"
+    assert updated.reasoning_effort == "high"
 
 
 def test_native_projection_keeps_saved_next_task_model(
@@ -176,14 +233,10 @@ def test_ai_session_manager_exposes_node_defaults_in_model_catalog(
             default_reasoning_effort="high",
         )
     )
-    manager.session_defaults.save(
-        SessionDefaults(model="gpt-5.6-terra", reasoning_effort="medium")
-    )
-
     catalog = manager.read_model_catalog()
 
-    assert catalog.default_model == "gpt-5.6-terra"
-    assert catalog.default_reasoning_effort == "medium"
+    assert catalog.default_model == "gpt-5.6-luna"
+    assert catalog.default_reasoning_effort == "high"
 
 
 def test_ai_session_store_fails_closed_for_legacy_or_unsafe_state(tmp_path: Path) -> None:

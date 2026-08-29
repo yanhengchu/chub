@@ -360,6 +360,8 @@ def test_isolated_worker_maps_page_weixin_and_translation_to_one_protocol(
     )
     session = quick_interactions.codex_manager.get_session.return_value
     session.codex_session_id = "11111111-1111-4111-8111-111111111111"
+    session.model = "gpt-page"
+    session.reasoning_effort = "high"
 
     page = quick_interactions.submit(
         session.id,
@@ -373,6 +375,9 @@ def test_isolated_worker_maps_page_weixin_and_translation_to_one_protocol(
         account_id="weixin-account",
         recipient="owner@im.wechat",
     )
+    session.model = "gpt-next"
+    session.reasoning_effort = "low"
+    session.permission_mode = "read-only"
     weixin = quick_interactions.submit(
         session.id,
         "weixin",
@@ -382,7 +387,6 @@ def test_isolated_worker_maps_page_weixin_and_translation_to_one_protocol(
     )
     quick_interactions._active_task_ids.clear()
     quick_interactions._running_sessions.clear()
-    session.permission_mode = "read-only"
     translation = quick_interactions.submit(
         session.id,
         "translation",
@@ -405,6 +409,12 @@ def test_isolated_worker_maps_page_weixin_and_translation_to_one_protocol(
     assert submissions[2]["permission_profile"] == "read-only"
     assert submissions[2]["model"] == "gpt-translation"
     assert submissions[2]["reasoning_effort"] == "high"
+    assert submissions[0]["permission_profile"] == "auto-review"
+    assert submissions[0]["model"] == "gpt-page"
+    assert submissions[0]["reasoning_effort"] == "high"
+    assert submissions[1]["permission_profile"] == "read-only"
+    assert submissions[1]["model"] == "gpt-next"
+    assert submissions[1]["reasoning_effort"] == "low"
     assert thread.start.call_count == 3
 
 
@@ -1251,6 +1261,75 @@ def test_terminal_guards_do_not_require_quick_worker_recovery(
         pass
     with quick_interactions.terminal_input_guard("terminal-session") as allowed:
         assert allowed is True
+
+
+def test_delete_guard_allows_idle_session_when_quick_worker_is_unavailable(
+    settings,
+    tmp_path: Path,
+) -> None:
+    quick_interactions = worker_manager(tmp_path, settings)
+    task = QuickInteractionTask(
+        id="task-1",
+        session_id="session-1",
+        prompt="已完成任务",
+        status="succeeded",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    quick_interactions._tasks[task.id] = task
+
+    with quick_interactions.destructive_operation_guard("session-1"):
+        quick_interactions.remove_session_tasks("session-1")
+
+    assert task.id not in quick_interactions._tasks
+
+
+def test_delete_guard_keeps_active_session_blocked_when_quick_worker_is_unavailable(
+    settings,
+    tmp_path: Path,
+) -> None:
+    quick_interactions = worker_manager(tmp_path, settings)
+    quick_interactions._running_sessions.add("session-1")
+
+    with pytest.raises(ApiError) as error:
+        with quick_interactions.destructive_operation_guard("session-1"):
+            pass
+
+    assert error.value.status_code == 409
+    assert error.value.code == "quick_interaction_in_progress"
+
+
+def test_delete_guard_keeps_session_blocked_when_local_worker_state_is_invalid(
+    settings,
+    tmp_path: Path,
+) -> None:
+    quick_interactions = worker_manager(tmp_path, settings)
+    quick_interactions._local_state_error = "Quick Worker task state is invalid"
+
+    with pytest.raises(ApiError) as error:
+        with quick_interactions.destructive_operation_guard("session-1"):
+            pass
+
+    assert error.value.status_code == 503
+    assert error.value.code == "quick_worker_recovery_unavailable"
+
+
+def test_quick_session_creation_requires_ready_worker(
+    settings,
+    tmp_path: Path,
+) -> None:
+    quick_interactions = worker_manager(tmp_path, settings)
+    quick_interactions._recovery_ready = True
+    quick_interactions._worker_call = MagicMock(return_value={"success": False})
+
+    with pytest.raises(ApiError) as error:
+        with quick_interactions.session_creation_guard("quick"):
+            pass
+
+    assert error.value.status_code == 503
+    assert error.value.code == "quick_worker_unavailable"
+    with quick_interactions.session_creation_guard("terminal"):
+        pass
 
 
 def test_worker_reconciliation_merges_once_and_acknowledges_after_persistence(

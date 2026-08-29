@@ -20,8 +20,13 @@ from app.codex.models import (
     QuickInteractionListData,
     QuickInteractionOrder,
     QuickInteractionRequest,
+    RuntimeEnablementUpdateRequest,
+    RuntimeManagementData,
     SessionAccessData,
+    SessionCreationAvailability,
     SessionCreateRequest,
+    SessionConfigurationUpdateRequest,
+    SessionDefaultsData,
     SessionDefaultsUpdateRequest,
     SessionInfo,
     SessionListData,
@@ -70,15 +75,66 @@ def list_sessions(
         for session in manager.list_sessions()
         if session.workspace_id != "weixin-translation"
     ]
+    terminal_available, terminal_reason = manager.submission_available()
+    if terminal_available:
+        quick_available, quick_reason = (
+            request.app.state.quick_interactions.quick_session_creation_availability()
+        )
+    else:
+        quick_available, quick_reason = False, terminal_reason
     return ApiResponse(
         data=SessionListData(
-            available=manager.available(),
-            unavailable_reason=manager.unavailable_reason(),
+            available=terminal_available,
+            unavailable_reason=terminal_reason,
+            terminal_creation=SessionCreationAvailability(
+                available=terminal_available,
+                reason=terminal_reason,
+            ),
+            quick_creation=SessionCreationAvailability(
+                available=quick_available,
+                reason=quick_reason,
+            ),
             dependencies=manager.dependencies(),
             workspaces=manager.workspaces(),
             sessions=sessions,
         )
     )
+
+
+@api_router.get("/runtimes", response_model=ApiResponse[RuntimeManagementData])
+def read_runtime_management(request: Request) -> ApiResponse[RuntimeManagementData]:
+    return ApiResponse(data=request.app.state.codex_pty_manager.read_runtime_management())
+
+
+@api_router.put(
+    "/runtimes/{runtime_id}",
+    response_model=ApiResponse[RuntimeManagementData],
+)
+def update_runtime_enablement(
+    runtime_id: str,
+    payload: RuntimeEnablementUpdateRequest,
+    request: Request,
+) -> ApiResponse[RuntimeManagementData]:
+    try:
+        data = request.app.state.codex_pty_manager.update_runtime_enabled(
+            runtime_id,
+            payload.enabled,
+        )
+    except Exception:
+        log_operation(
+            request,
+            action="update_ai_runtime_enablement",
+            status="failed",
+            target=runtime_id,
+        )
+        raise
+    log_operation(
+        request,
+        action="update_ai_runtime_enablement",
+        status="succeeded",
+        target=runtime_id,
+    )
+    return ApiResponse(data=data)
 
 
 @api_router.get("/sessions/{session_id}", response_model=ApiResponse[SessionInfo])
@@ -105,18 +161,29 @@ def list_models(request: Request) -> ApiResponse[CodexModelCatalogData]:
     return ApiResponse(data=request.app.state.codex_pty_manager.read_model_catalog())
 
 
+@api_router.get(
+    "/session-defaults",
+    response_model=ApiResponse[SessionDefaultsData],
+)
+def read_session_defaults(request: Request) -> ApiResponse[SessionDefaultsData]:
+    return ApiResponse(
+        data=SessionDefaultsData(
+            permission_mode=request.app.state.codex_pty_manager.read_session_defaults(),
+        )
+    )
+
+
 @api_router.put(
     "/session-defaults",
-    response_model=ApiResponse[CodexModelCatalogData],
+    response_model=ApiResponse[SessionDefaultsData],
 )
 def update_session_defaults(
     payload: SessionDefaultsUpdateRequest,
     request: Request,
-) -> ApiResponse[CodexModelCatalogData]:
+) -> ApiResponse[SessionDefaultsData]:
     try:
-        data = request.app.state.codex_pty_manager.update_session_defaults(
-            payload.model,
-            payload.reasoning_effort,
+        permission_mode = request.app.state.codex_pty_manager.update_session_defaults(
+            payload.permission_mode,
         )
     except Exception:
         log_operation(
@@ -132,7 +199,7 @@ def update_session_defaults(
         status="succeeded",
         target="node",
     )
-    return ApiResponse(data=data)
+    return ApiResponse(data=SessionDefaultsData(permission_mode=permission_mode))
 
 
 @api_router.get("/quota", response_model=ApiResponse[CodexQuotaData])
@@ -292,6 +359,40 @@ async def rename_session(
         status="succeeded",
         target=session_id,
         operation_id=operation_id,
+    )
+    return ApiResponse(data=_with_weixin_session_slot(request, data))
+
+
+@api_router.patch(
+    "/sessions/{session_id}/configuration",
+    response_model=ApiResponse[SessionInfo],
+)
+async def update_session_configuration(
+    session_id: str,
+    payload: SessionConfigurationUpdateRequest,
+    request: Request,
+) -> ApiResponse[SessionInfo]:
+    try:
+        data = await asyncio.to_thread(
+            request.app.state.quick_interactions.update_session_configuration,
+            session_id,
+            payload.permission_mode,
+            payload.model,
+            payload.reasoning_effort,
+        )
+    except Exception:
+        log_operation(
+            request,
+            action="update_codex_session_configuration",
+            status="failed",
+            target=session_id,
+        )
+        raise
+    log_operation(
+        request,
+        action="update_codex_session_configuration",
+        status="succeeded",
+        target=session_id,
     )
     return ApiResponse(data=_with_weixin_session_slot(request, data))
 

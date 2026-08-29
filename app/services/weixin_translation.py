@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.codex.models import QuickInteractionWeixinRoute, utc_now
 from app.core.config import OpenClawWeixinChubModeConfig
+from app.core.response import ApiError
 from app.services.operation_log import write_operation
 
 
@@ -263,6 +264,11 @@ class WeixinTranslationManager:
                     operation_id,
                     source_ip,
                 )
+                return False
+            try:
+                self.codex_manager.require_runtime_submission("codex")
+            except ApiError:
+                self._reject(operation_id, source_ip)
                 return False
             now = utc_now()
             entry = TranslationEntry(

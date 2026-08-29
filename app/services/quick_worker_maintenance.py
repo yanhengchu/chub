@@ -14,7 +14,7 @@ import psutil
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.codex.models import utc_now
-from app.core.config import Settings
+from app.core.config import PROJECT_ROOT, Settings
 from app.core.response import ApiError
 from app.quick_worker import PROTOCOL_VERSION, read_health
 from app.services.operation_log import write_operation
@@ -57,11 +57,14 @@ class QuickWorkerStatusData(_StrictModel):
         "restarting",
         "incompatible",
         "unavailable",
+        "stopped",
     ]
     message: str = Field(min_length=1, max_length=300)
     active_tasks: int = Field(default=0, ge=0)
     queued_tasks: int = Field(default=0, ge=0)
+    can_start: bool = False
     can_restart: bool = False
+    can_stop: bool = False
     upgrade_required: bool = False
     operation: QuickWorkerOperationView | None = None
 
@@ -76,6 +79,42 @@ class WorkerReloadProcess(Protocol):
     pid: int
 
     def wait(self) -> int: ...
+
+
+def worker_service_state(command: Path) -> str:
+    """Read the fixed service manager state without exposing service commands."""
+    try:
+        result = subprocess.run(
+            [str(command), "worker-service-status"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "unknown"
+    state = result.stdout[:32].decode("utf-8", errors="replace").strip()
+    return state if state in {"running", "stopped", "unknown"} else "unknown"
+
+
+def run_worker_service_action(command: Path, action: Literal["start", "stop"]) -> None:
+    try:
+        result = subprocess.run(
+            [str(command), f"worker-{action}"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=60,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise ApiError(504, "quick_worker_control_timeout", "Quick Worker 操作超时") from error
+    except OSError as error:
+        raise ApiError(503, "quick_worker_control_unavailable", "Quick Worker 操作入口不可用") from error
+    if result.returncode != 0:
+        message = "Quick Worker 启动失败" if action == "start" else "Quick Worker 停止失败"
+        raise ApiError(409, "quick_worker_control_failed", message)
 
 
 def launch_quick_worker_reload_process(
@@ -450,6 +489,19 @@ async def inspect_quick_worker(
                 ),
                 None,
             )
+        service_state = worker_service_state(
+            PROJECT_ROOT / "scripts" / "chub"
+        )
+        if service_state == "stopped":
+            return QuickWorkerInspection(
+                QuickWorkerStatusData(
+                    state="stopped",
+                    message="Quick Worker 服务已停止，可以启动。",
+                    can_start=True,
+                    operation=operation,
+                ),
+                None,
+            )
         return QuickWorkerInspection(
             QuickWorkerStatusData(
                 state="unavailable",
@@ -536,6 +588,7 @@ async def inspect_quick_worker(
                     operation is not None and operation.status == "restarting"
                 )
             ),
+            can_stop=state in {"ready", "busy"},
             operation=operation,
         ),
         generation,

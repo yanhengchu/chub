@@ -8,16 +8,18 @@ const elements = {
   connectionBadge: document.querySelector("#connection-badge"),
   globalMessage: document.querySelector("#global-message"),
   dashboard: document.querySelector("#dashboard"),
-  refreshStatus: document.querySelector("#refresh-status"),
   siteSettings: document.querySelector("#site-settings"),
   refreshWorkstationEnvironment: document.querySelector("#refresh-workstation-environment"),
   restartHub: document.querySelector("#restart-hub"),
+  stopHub: document.querySelector("#stop-hub"),
   chubServiceBadge: document.querySelector("#chub-service-badge"),
   chubServiceDetail: document.querySelector("#chub-service-detail"),
   chubServiceMessage: document.querySelector("#chub-service-message"),
   quickWorkerBadge: document.querySelector("#quick-worker-badge"),
   quickWorkerDetail: document.querySelector("#quick-worker-detail"),
+  quickWorkerStart: document.querySelector("#quick-worker-start"),
   quickWorkerRestart: document.querySelector("#quick-worker-restart"),
+  quickWorkerStop: document.querySelector("#quick-worker-stop"),
   quickWorkerMessage: document.querySelector("#quick-worker-message"),
   systemUpgradeDetail: document.querySelector("#system-upgrade-detail"),
   systemUpgradeComponents: document.querySelector("#system-upgrade-components"),
@@ -30,6 +32,7 @@ const elements = {
   openclawMessage: document.querySelector("#openclaw-message"),
   openclawStart: document.querySelector("#openclaw-start"),
   openclawRestart: document.querySelector("#openclaw-restart"),
+  openclawStop: document.querySelector("#openclaw-stop"),
   openclawDialog: document.querySelector("#openclaw-dialog"),
   openclawDialogTitle: document.querySelector("#openclaw-dialog-title"),
   openclawDialogMessage: document.querySelector("#openclaw-dialog-message"),
@@ -40,6 +43,7 @@ const elements = {
   automationBrowserDetail: document.querySelector("#automation-browser-detail"),
   automationBrowserMessage: document.querySelector("#automation-browser-message"),
   automationBrowserControl: document.querySelector("#automation-browser-control"),
+  automationBrowserRestart: document.querySelector("#automation-browser-restart"),
   automationBrowserDialog: document.querySelector("#automation-browser-dialog"),
   automationBrowserForm: document.querySelector("#automation-browser-form"),
   automationBrowserDialogClose: document.querySelector("#automation-browser-dialog-close"),
@@ -55,6 +59,8 @@ const elements = {
   automationFeishuQr: document.querySelector("#automation-feishu-qr"),
   automationWeeklyReportTitle: document.querySelector("#automation-weekly-report-title"),
   automationWeeklyDownloadTitle: document.querySelector("#automation-weekly-download-title"),
+  automationWeeklyDownloadStatus: document.querySelector("#automation-weekly-download-status"),
+  automationWeeklyDownloadAction: document.querySelector("#automation-weekly-download-action"),
   automationWeeklyDownload: document.querySelector("#automation-weekly-download"),
   automationWeeklyDocumentsTitle: document.querySelector("#automation-weekly-documents-title"),
   automationWeeklyReportList: document.querySelector("#automation-weekly-report-list"),
@@ -170,7 +176,6 @@ function clearProtectedView() {
   elements.codexWorkspaces = null;
   elements.codexSessions = null;
   elements.codexMessage = null;
-  elements.codexModelPreference = null;
   elements.codexQuota = null;
   elements.codexSessionCount = null;
   elements.refreshCodex = null;
@@ -178,7 +183,6 @@ function clearProtectedView() {
   elements.codexWorkspaceDialog = null;
   releaseFeishuQr();
   sessionStorage.removeItem(CODEX_CARD_CACHE_KEY);
-  sessionStorage.removeItem(CODEX_MODEL_PREFERENCE_CACHE_KEY);
 }
 
 function showDisconnectedView(message, kind = "") {

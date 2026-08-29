@@ -1571,6 +1571,50 @@ def test_manager_starts_debug_chrome_headless(
     start.assert_called_once_with("headless")
 
 
+def test_manager_restarts_debug_chrome_with_current_profile_and_mode(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    configure_automations(settings, tmp_path)
+    manager = AutomationManager(settings)
+    with (
+        patch.object(manager, "_debug_chrome_status", return_value=("running", "headed", None)),
+        patch.object(manager, "_current_debug_chrome_profile", return_value="Profile 2"),
+        patch.object(manager, "_stop_debug_chrome", return_value=SimpleNamespace(state="stopped")) as stop,
+        patch.object(
+            manager,
+            "_select_and_start_debug_chrome",
+            return_value=SimpleNamespace(
+                state="running",
+                mode="headed",
+                profile_directory="Profile 2",
+            ),
+        ) as start,
+        patch(
+            "app.automations.manager.browser_profiles",
+            return_value=(
+                [
+                    BrowserProfileInfo(
+                        id="Profile 2",
+                        name="工作",
+                        initialized=True,
+                        source_available=True,
+                        active=True,
+                    )
+                ],
+                None,
+            ),
+        ),
+    ):
+        result = manager.control_browser("restart")
+
+    assert result.state == "running"
+    assert result.profile_id == "Profile 2"
+    assert result.mode == "有界面"
+    stop.assert_called_once_with()
+    start.assert_called_once_with("Profile 2", "headed")
+
+
 def test_manager_starts_selected_initialized_profile(
     settings: Settings,
     tmp_path: Path,

@@ -54,7 +54,60 @@
           <p id="conversation-submit-message" class="message" aria-live="polite"></p>
           <div class="conversation-input-row">
             <textarea id="conversation-prompt" rows="1" maxlength="8000" required placeholder="输入消息…" aria-label="快速交互需求" disabled></textarea>
-            <button id="conversation-submit" class="button-secondary" type="submit" disabled>发送</button>
+            <div class="conversation-composer-toolbar">
+              <div id="conversation-composer-options" class="conversation-composer-options" role="group" aria-label="当前 Session 配置">
+                <div class="conversation-composer-option" data-composer-option="permission">
+                  <button id="conversation-permission-trigger" class="conversation-composer-control conversation-setting-trigger" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="conversation-permission-menu" disabled>
+                    <span id="conversation-permission-value" class="conversation-setting-value">正在读取…</span>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                      <path d="m7 10 5 5 5-5"></path>
+                    </svg>
+                  </button>
+                  <div id="conversation-permission-menu" class="conversation-setting-menu" role="listbox" aria-label="权限" hidden>
+                    <button class="conversation-composer-control conversation-setting-option" type="button" role="option" data-value="full-access">
+                      <span>Full access</span>
+                      <small>不请求操作审批</small>
+                    </button>
+                    <button class="conversation-composer-control conversation-setting-option" type="button" role="option" data-value="auto-review">
+                      <span>Approve for me</span>
+                      <small>由 Codex 自动审核越界请求</small>
+                    </button>
+                    <button class="conversation-composer-control conversation-setting-option" type="button" role="option" data-value="read-only">
+                      <span>Read Only</span>
+                      <small>只能查看和分析</small>
+                    </button>
+                    <button class="conversation-composer-control conversation-setting-option is-unavailable" type="button" role="option" data-value="ask" disabled aria-disabled="true" title="Ask for approval 需要进入实时终端">
+                      <span>Ask for approval</span>
+                      <small>需实时终端</small>
+                    </button>
+                  </div>
+                </div>
+                <div class="conversation-composer-option" data-composer-option="model">
+                  <button id="conversation-model-trigger" class="conversation-composer-control conversation-setting-trigger" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="conversation-model-menu" disabled>
+                    <span id="conversation-model-value" class="conversation-setting-value">正在读取…</span>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                      <path d="m7 10 5 5 5-5"></path>
+                    </svg>
+                  </button>
+                  <div id="conversation-model-menu" class="conversation-setting-menu" role="listbox" aria-label="模型" hidden></div>
+                </div>
+                <div class="conversation-composer-option" data-composer-option="reasoning">
+                  <button id="conversation-reasoning-trigger" class="conversation-composer-control conversation-setting-trigger" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="conversation-reasoning-menu" disabled>
+                    <span id="conversation-reasoning-value" class="conversation-setting-value">正在读取…</span>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                      <path d="m7 10 5 5 5-5"></path>
+                    </svg>
+                  </button>
+                  <div id="conversation-reasoning-menu" class="conversation-setting-menu" role="listbox" aria-label="推理等级" hidden></div>
+                </div>
+              </div>
+              <button id="conversation-submit" class="conversation-composer-control conversation-submit" type="submit" aria-label="发送" title="发送" disabled>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                  <path d="m22 2-7 20-4-9-9-4Z"></path>
+                  <path d="M22 2 11 13"></path>
+                </svg>
+              </button>
+            </div>
           </div>
         </form>
 
@@ -64,7 +117,7 @@
               <h3 id="conversation-create-title">新建 Session</h3>
               <button id="conversation-create-close" class="button-link codex-workspace-dialog-close" type="button" aria-label="关闭新建 Session 窗口">关闭</button>
             </div>
-            <p class="conversation-create-description">首页列出三个常用目录；其他目录启动的 Codex 会话会自动出现在列表中。新建会话将使用设置页中的默认权限、模型和推理等级。</p>
+            <p class="conversation-create-description">首页列出三个常用目录；其他目录启动的 Codex 会话会自动出现在列表中。新建 Session 的权限使用设置页默认值，模型和推理等级跟随 AI 默认。</p>
             <div id="conversation-create-workspaces" class="workspace-list conversation-create-workspaces"></div>
             <p id="conversation-create-message" class="message" aria-live="polite"></p>
           </div>

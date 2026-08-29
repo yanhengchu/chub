@@ -71,6 +71,14 @@ Commands:
              Drain and independently reload Quick Worker, then verify takeover
   worker-recover
              Restart an unavailable Quick Worker and verify healthy takeover
+  worker-start
+             Start only the Quick Worker service and verify health
+  worker-stop
+             Stop only the Quick Worker service when it is idle
+  worker-service-status
+             Show whether the Quick Worker service is running
+  network-restart
+             Restart the locally configured NetworkManager Wi-Fi and VPN
   service-definitions
              Rebuild fixed Web, Worker, and browser service definitions
   runtime-dependencies
@@ -941,6 +949,69 @@ start_service() {
     esac
 }
 
+worker_service_status() {
+    case "$(platform_name)" in
+        macos)
+            local plist_path
+            plist_path="$(worker_macos_plist_path)"
+            [[ -f "$plist_path" ]] || { echo unknown; return 0; }
+            if launchctl print "$(macos_domain)/$WORKER_MACOS_LABEL" >/dev/null 2>&1; then
+                echo running
+            else
+                echo stopped
+            fi
+            ;;
+        ubuntu)
+            local unit_path
+            unit_path="$(worker_systemd_unit_path)"
+            [[ -f "$unit_path" ]] || { echo unknown; return 0; }
+            if systemctl --user is-active --quiet "$WORKER_SERVICE_NAME.service"; then
+                echo running
+            else
+                echo stopped
+            fi
+            ;;
+        *)
+            echo unknown
+            ;;
+    esac
+}
+
+start_worker_service() {
+    check_codex_pty_requirements
+    case "$(platform_name)" in
+        macos) start_macos_worker ;;
+        ubuntu) systemctl --user start "$WORKER_SERVICE_NAME.service" ;;
+    esac
+    local attempt payload
+    for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+        if [[ "$(worker_service_status)" == "running" ]] \
+            && payload="$(quick_worker_health 2>/dev/null)" \
+            && worker_health_generation "$payload" ready "" >/dev/null \
+            && worker_health_is_idle "$payload"; then
+            echo "Quick Worker started"
+            return
+        fi
+        sleep 0.5
+    done
+    fail "Quick Worker did not become healthy"
+}
+
+stop_worker_service() {
+    local force=false
+    if maintenance_force_requested stop-worker "$@"; then
+        force=true
+    fi
+    require_system_upgrade_idle
+    require_worker_idle_for_maintenance stop-worker "$force"
+    case "$(platform_name)" in
+        macos) stop_macos_worker ;;
+        ubuntu) systemctl --user stop "$WORKER_SERVICE_NAME.service" ;;
+    esac
+    [[ "$(worker_service_status)" == "stopped" ]] || fail "Quick Worker did not stop"
+    echo "Quick Worker stopped"
+}
+
 stop_service() {
     local force=false
     if maintenance_force_requested stop "$@"; then
@@ -1394,6 +1465,12 @@ case "$command" in
         install_service "$@"
         ;;
     start) start_service ;;
+    worker-start) start_worker_service ;;
+    worker-stop)
+        shift
+        stop_worker_service "$@"
+        ;;
+    worker-service-status) worker_service_status ;;
     stop)
         shift
         stop_service "$@"
@@ -1408,6 +1485,14 @@ case "$command" in
         ;;
     worker-reload) quick_worker_reload ;;
     worker-recover) quick_worker_recover ;;
+    network-restart)
+        shift
+        [[ $# -eq 0 ]] || fail "network-restart does not accept arguments"
+        (
+            cd "$PROJECT_ROOT"
+            "$PYTHON_BIN" -m app.network_recovery_cli
+        )
+        ;;
     logs) show_logs ;;
     notification)
         shift

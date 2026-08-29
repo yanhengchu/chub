@@ -101,6 +101,14 @@ def stop_browser(request: Request) -> ApiResponse[BrowserControlResult]:
 
 
 @router.post(
+    "/browser/restart",
+    response_model=ApiResponse[BrowserControlResult],
+)
+def restart_browser(request: Request) -> ApiResponse[BrowserControlResult]:
+    return _control_browser("restart", request)
+
+
+@router.post(
     "/browser/initialize",
     response_model=ApiResponse[BrowserInitializationAccepted],
     status_code=status.HTTP_202_ACCEPTED,

@@ -127,6 +127,10 @@ chub worker-health
 chub worker-drain
 chub worker-reload
 chub worker-recover
+chub worker-start
+chub worker-stop
+chub worker-service-status
+chub network-restart
 chub logs
 chub uninstall
 ```
@@ -135,7 +139,7 @@ macOS 使用 Chub、Chub Quick Worker 和系统升级执行器三个独立 Launc
 和系统升级执行器四个独立 systemd user service。`chub restart` 只重启 Chub，不停止 Chub Quick Worker 或 Chub Debug Chrome；`chub status` 同时显示
 这些服务，
 `chub check` 汇总项目配置、服务、Web、Quick Worker 和系统状态并在检查失败时返回非零码；
-`chub worker-health` 通过本机私有 IPC 读取 Worker 健康信息；`chub worker-drain` 停止接收新任务并等待已受理任务收敛；`chub worker-reload` 关闭新提交、清理排队和执行中的任务、独立重载 Worker 并确认新 generation 健康；`chub worker-recover` 保留为本机服务恢复入口。`worker-drain`、`worker-reload` 和 `worker-recover` 只在本机终端执行，不能从正在运行的快速任务内部调用；首页“工作站环境”确认后可在 Worker 健康、忙碌、协议不兼容或不可达时重启并清理 Worker 任务。当前 Worker 已经接管页面、微信和翻译快速任务；
+`chub worker-health` 通过本机私有 IPC 读取 Worker 健康信息；`chub worker-drain` 停止接收新任务并等待已受理任务收敛；`chub worker-reload` 关闭新提交、清理排队和执行中的任务、独立重载 Worker 并确认新 generation 健康；`chub worker-recover` 保留为本机服务恢复入口；`chub worker-start` 和 `chub worker-stop` 只控制 Quick Worker，启动或停止后确认服务状态，停止要求没有在途任务。`worker-drain`、`worker-reload`、`worker-recover`、`worker-start` 和 `worker-stop` 只在本机终端或首页受控入口执行，不能从正在运行的快速任务内部调用；首页“工作站环境”在停止态显示“启动”，运行态显示“重启”和“停止”，其中“重启”仍会清理 Worker 任务，具体影响放在确认说明中。当前 Worker 已经接管页面、微信和翻译快速任务；
 macOS 与 Ubuntu 均已确认单独重启 Web 不会停止 Worker、Runner 或现有任务，恢复后的结果和通知不会重复。
 Worker 不健康时，快速交互 Session 写操作保持失败关闭，不回退到 Web Runner；实时终端使用独立的 Codex PTY/tmux 链路。
 Ubuntu 的自动化 Debug Chrome 由独立 Supervisor 持有，Web 只通过本机受限 socket 请求启动、停止和查询；Supervisor
@@ -161,12 +165,12 @@ Codex PTY 依赖 `codex`、`ttyd` 和 `tmux`。安装服务时，Chub 会从当�
 与原生 Session ID 关联，自动重新绑定仍存在的 Chub tmux。
 原生 Codex 不会因此被重启；若进程仍携带旧的 Chub 标识，Hook 会通过受控别名把 Activity 事件写入新的 Session。
 
-节点页面使用一个“新建会话”按钮和弹窗创建 Session，可为新 Session 选择默认权限、模型和推理等级及固定类型。首页统一按创建时间倒序展示 Session，并以简洁标记区分类型：
+首页使用一个“新建会话”按钮和弹窗创建 Session，默认创建快速交互；弹窗中的“实时会话”开关打开时才创建实时终端。首页统一按创建时间倒序展示 Session，并以简洁标记区分类型：
 
 - **实时终端**：使用原生 Codex TUI，适合审批、持续操作和实时输出；只显示在 Chub Web。
 - **快速交互**：提交后台任务并在时间线查看状态和结果，适合手机、普通网络和微信入口；只使用 Quick Worker。
 
-新建 Session 默认选择快速交互。设置页选择的模型和推理等级会保存为当前节点的后续新建默认，Web 与微信 `new` 共用该默认；微信 Chub 模式显式配置的模型和等级仍优先。Session 类型创建后不可切换；同一 Session 不会在两类入口间共享 writer。微信和 ClawBot 只使用快速交互 Session，实时终端 Session 不进入微信槽位或手机快速交互列表。
+AI Runtime 是两类新建会话的共同前提。Quick Worker 仅承载快速交互：Worker 不可用但 Runtime 可用时，首页锁定为实时会话，仍可创建并进入实时终端；快速交互页和微信 `new` 则拒绝新建快速会话。没有可用 AI Runtime 时，三个入口都不能创建会话。模型和推理等级默认跟随 AI Runtime；快速交互中选择的模型和等级只保存到当前 Chub Session，并影响该 Session 后续任务。Session 类型创建后不可切换；同一 Session 不会在两类入口间共享 writer。微信和 ClawBot 只使用快速交互 Session，实时终端 Session 不进入微信槽位或手机快速交互列表。
 
 Session、Activity、usage 投影、槽位、标题和入口语义见[Chub AI Session 状态模型设计](docs/AI_SESSION_STATE_DESIGN.md)。后台任务、通知终态和 Worker 服务恢复见[Chub Quick Worker 独立服务设计](docs/CHUB_QUICK_WORKER_DESIGN.md)。
 
@@ -194,7 +198,7 @@ OpenClaw 提供可信入口和通道上下文，Chub 负责业务路由、安全
 
 首页“工作站环境”卡片中的 OpenClaw 分区用于查看 Gateway 和微信通道状态，并提供受控的启动、重启与恢复操作；微信绑定统一在设置页“第三方服务 / OpenClaw · 微信 ClawBot”中完成。重启与恢复发现固定插件或补丁基线不一致时会先同步，再重启 Gateway 和消息通道；底层 API action 仍使用 `restart`，微信端使用 `restart clawbot`。绑定成功只表示通道登录完成，不代表发送者配对或 Owner 权限已经配置。
 
-微信 Chub 固定维护指令为 `restart` / `restart web`（重启 Web）、`restart worker`（重启 Worker）、`restart clawbot`（重启 ClawBot）和 `upgrade`（升级系统）；均按固定目标执行，不接受附加路径或命令。四项操作的最终结果分别以新实例、Worker、Gateway/消息通道或升级运行态确认结果为准；升级完成结果通过独立通知返回。
+微信 Chub 固定维护指令为 `restart` / `restart web`（重启 Web）、`restart worker`（重启 Worker）、`restart clawbot`（重启 ClawBot）、`restart network`（重连已固定的 Ubuntu Wi-Fi/VPN）和 `upgrade`（升级系统）；均按固定目标执行，不接受附加路径或命令。网络重连与本机 `chub network-restart` 共用同一配置及终态校验：仅 Ubuntu 的 NetworkManager 可用，macOS 会明确拒绝，不会尝试切换网络；Tailscale 不在操作范围。各操作的最终结果分别以新实例、Worker、Gateway/消息通道、NetworkManager 活动连接或升级运行态确认结果为准；异步操作通过独立通知返回。
 
 端到端状态和安全边界见 [OpenClaw 定制集成设计](docs/OPENCLAW_CUSTOMIZATION_DESIGN.md)；插件协议、构建和部署见仓库内维护资料 [Chub OpenClaw 插件说明](integrations/openclaw/chub/README.md)。
 

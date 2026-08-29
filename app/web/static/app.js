@@ -1,7 +1,7 @@
 "use strict";
 
 const CARD_RETURN_REFRESHERS = {
-  codex: () => loadCodexSessions({ refreshModelPreference: true }),
+  codex: () => loadCodexSessions(),
   automations: () => refreshAutomationCard(),
   "project-docs": () => loadProjectDocuments(),
 };
@@ -15,6 +15,7 @@ function refreshCardsOnReturn() {
     return;
   }
   cardsRefreshAt = now;
+  loadStatus();
   document.querySelectorAll('[data-card-return-refresh="true"]').forEach((card) => {
     const refresh = CARD_RETURN_REFRESHERS[card.dataset.cardKey];
     if (refresh) {
@@ -82,7 +83,23 @@ elements.restartHub.addEventListener("click", () => {
   });
 });
 
-elements.refreshStatus.addEventListener("click", loadStatus);
+elements.stopHub.addEventListener("click", () => {
+  void showConfirmationDialog({
+    title: "停止 Chub",
+    description: "停止后当前页面会断开，首页不能继续执行启动操作；请使用本机 chub start 或系统服务入口恢复 Chub。Quick Worker、Debug Chrome 和 OpenClaw Gateway 不会被此操作停止。",
+    confirmLabel: "确认停止",
+    pendingLabel: "正在停止…",
+    errorMessage: "Chub 停止失败。",
+    onConfirm: async () => {
+      await apiFetch("/api/maintenance/chub/stop", { method: "POST" });
+      setBadge(elements.chubServiceBadge, "正在停止", "muted");
+      elements.chubServiceDetail.textContent = "页面连接即将断开";
+      elements.stopHub.disabled = true;
+      elements.restartHub.disabled = true;
+    },
+  });
+});
+
 elements.refreshAutomations.addEventListener("click", refreshAutomationCard);
 
 
@@ -103,6 +120,5 @@ if (typeof cardCollapsedState.workstation !== "boolean") {
 ensureCodexCard();
 setupCollapsibleCards();
 restoreCodexCardCache();
-restoreCodexModelPreferenceCache();
 restoreCodexQuotaCache();
 connectToHub();

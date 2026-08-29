@@ -1,19 +1,7 @@
 "use strict";
 
 const CODEX_CARD_CACHE_KEY = "hub.codexCardCache";
-const CODEX_MODEL_PREFERENCE_CACHE_KEY = "hub.codexModelPreferenceCache";
 const WEIXIN_TRANSLATION_SETTINGS_CACHE_KEY = "hub.weixinTranslationSettingsCache";
-const CODEX_DEFAULT_PERMISSION_KEY = "hub.codexDefaultPermission.v1";
-const CODEX_DEFAULT_MODEL_KEY = "hub.codexDefaultModel.v1";
-const CODEX_DEFAULT_REASONING_EFFORT_KEY = "hub.codexDefaultReasoningEffort.v1";
-const CODEX_REASONING_LABELS = {
-  low: "Low",
-  medium: "Medium",
-  high: "High",
-  xhigh: "Extra High",
-  max: "Max",
-  ultra: "Ultra",
-};
 const CODEX_PERMISSION_OPTIONS = [
   ["ask", "Ask for approval", "在当前工作区操作，越界时由你确认。"],
   ["auto-review", "Approve for me", "保持工作区边界，由 Codex 自动审核越界请求。"],
@@ -29,6 +17,11 @@ let codexShouldPoll = false;
 let codexSessionSignature = "";
 let codexLoadPromise = null;
 let codexMutationCount = 0;
+let codexCreationCapabilities = {
+  terminal: { available: false, reason: "" },
+  quick: { available: false, reason: "" },
+};
+let codexWorkspaces = [];
 const codexDocument = typeof document === "undefined" ? null : document;
 const codexRenameDialog = codexDocument?.querySelector("#codex-rename-dialog");
 const codexRenameForm = codexDocument?.querySelector("#codex-rename-form");
@@ -51,7 +44,6 @@ function createCodexCard() {
   const cardContentInner = document.createElement("div");
   const panel = document.createElement("div");
   const currentHint = document.createElement("p");
-  const modelPreference = document.createElement("p");
   const quota = document.createElement("p");
   const sessionsTitle = document.createElement("h3");
   const refreshButton = document.createElement("button");
@@ -62,13 +54,15 @@ function createCodexCard() {
   const workspaceDialogHeader = document.createElement("div");
   const workspaceDialogTitle = document.createElement("h3");
   const workspaceDialogClose = document.createElement("button");
-  const sessionModeField = document.createElement("fieldset");
-  const sessionModeLegend = document.createElement("legend");
+  const sessionModeField = document.createElement("div");
   const sessionModeControl = document.createElement("div");
-  const sessionModeQuickLabel = document.createElement("label");
-  const sessionModeTerminalLabel = document.createElement("label");
-  const sessionModeQuick = document.createElement("input");
+  const sessionModeLabel = document.createElement("label");
+  const sessionModeCopy = document.createElement("span");
+  const sessionModeTitle = document.createElement("strong");
+  const sessionModeDescription = document.createElement("small");
+  const sessionModeSwitch = document.createElement("span");
   const sessionModeTerminal = document.createElement("input");
+  const sessionModeTrack = document.createElement("span");
   const workspaceDialogDescription = document.createElement("p");
   const workspaceList = document.createElement("div");
   const sessionList = document.createElement("div");
@@ -99,10 +93,6 @@ function createCodexCard() {
   currentHint.className = "message";
   currentHint.id = "codex-message";
   currentHint.setAttribute("aria-live", "polite");
-  modelPreference.className = "codex-model-preference";
-  modelPreference.id = "codex-model-preference";
-  modelPreference.setAttribute("aria-live", "polite");
-  modelPreference.textContent = "新建默认：正在读取…";
   quota.className = "codex-quota";
   quota.id = "codex-quota";
   quota.setAttribute("aria-live", "polite");
@@ -126,25 +116,20 @@ function createCodexCard() {
   workspaceDialogClose.setAttribute("aria-label", "关闭目录选择");
   workspaceDialogClose.textContent = "关闭";
   sessionModeField.className = "codex-session-mode-field";
-  sessionModeLegend.textContent = "会话类型";
   sessionModeControl.className = "codex-session-mode-control";
-  sessionModeQuick.type = "radio";
-  sessionModeQuick.name = "codex-session-mode";
-  sessionModeQuick.value = "quick";
-  sessionModeQuick.checked = true;
-  sessionModeTerminal.type = "radio";
-  sessionModeTerminal.name = "codex-session-mode";
-  sessionModeTerminal.value = "terminal";
-  sessionModeQuickLabel.className = "codex-session-mode-option";
-  const sessionModeQuickText = document.createElement("span");
-  sessionModeQuickText.textContent = "快速交互";
-  sessionModeQuickLabel.append(sessionModeQuick, sessionModeQuickText);
-  sessionModeTerminalLabel.className = "codex-session-mode-option";
-  const sessionModeTerminalText = document.createElement("span");
-  sessionModeTerminalText.textContent = "实时终端";
-  sessionModeTerminalLabel.append(sessionModeTerminal, sessionModeTerminalText);
-  sessionModeControl.append(sessionModeQuickLabel, sessionModeTerminalLabel);
-  sessionModeField.append(sessionModeLegend, sessionModeControl);
+  sessionModeLabel.className = "codex-session-mode-option";
+  sessionModeCopy.className = "codex-session-mode-copy";
+  sessionModeTitle.textContent = "实时会话";
+  sessionModeDescription.textContent = "关闭后创建快速交互 Session。";
+  sessionModeTerminal.type = "checkbox";
+  sessionModeTerminal.id = "codex-session-realtime";
+  sessionModeTrack.className = "settings-switch-track";
+  sessionModeSwitch.className = "settings-switch";
+  sessionModeCopy.append(sessionModeTitle, sessionModeDescription);
+  sessionModeSwitch.append(sessionModeTerminal, sessionModeTrack);
+  sessionModeControl.append(sessionModeCopy, sessionModeSwitch);
+  sessionModeLabel.append(sessionModeControl);
+  sessionModeField.append(sessionModeLabel);
   workspaceDialogDescription.className = "section-description";
   workspaceDialogDescription.textContent = "首页列出三个常用目录；其他目录启动的 Codex 会话会自动出现在列表中。";
   workspaceList.className = "workspace-list";
@@ -172,7 +157,6 @@ function createCodexCard() {
   workspaceDialog.append(workspaceDialogSurface);
   panel.append(
     currentHint,
-    modelPreference,
     quota,
     sessionsTitle,
     sessionList,
@@ -186,23 +170,26 @@ function createCodexCard() {
   elements.codexPanel = panel;
   elements.codexWorkspaces = workspaceList;
   elements.codexMessage = currentHint;
-  elements.codexModelPreference = modelPreference;
   elements.codexQuota = quota;
   elements.codexSessions = sessionList;
   elements.codexSessionCount = sessionsTitle;
   elements.refreshCodex = refreshButton;
   elements.createCodex = createButton;
   elements.codexWorkspaceDialog = workspaceDialog;
-  elements.codexSessionModeControl = sessionModeControl;
+  elements.codexSessionModeToggle = sessionModeTerminal;
+  elements.codexSessionModeDescription = sessionModeDescription;
 
-  refreshButton.addEventListener("click", () =>
-    loadCodexSessions({ refreshModelPreference: true, refreshQuota: true }),
-  );
+  refreshButton.addEventListener("click", () => loadCodexSessions({ refreshQuota: true }));
   createButton.addEventListener("click", () => {
+    if (codexCreationCapabilities.quick.available) {
+      sessionModeTerminal.checked = false;
+    }
+    syncCodexCreationMode();
     if (!workspaceDialog.open) {
       workspaceDialog.showModal();
     }
   });
+  sessionModeTerminal.addEventListener("change", syncCodexCreationMode);
   workspaceDialogClose.addEventListener("click", () => workspaceDialog.close());
   workspaceDialog.addEventListener("click", (event) => {
     if (event.target === workspaceDialog) {
@@ -219,11 +206,36 @@ function ensureCodexCard() {
   elements.codexCardHost.replaceChildren(createCodexCard());
 }
 
-function renderCodexWorkspaces(workspaces, available) {
+function selectedCodexCreationCapability() {
+  return readCodexSessionMode() === "terminal"
+    ? codexCreationCapabilities.terminal
+    : codexCreationCapabilities.quick;
+}
+
+function syncCodexCreationMode() {
+  const toggle = elements.codexSessionModeToggle;
+  if (!toggle) return;
+  const terminalOnly = codexCreationCapabilities.terminal.available
+    && !codexCreationCapabilities.quick.available;
+  if (terminalOnly) {
+    toggle.checked = true;
+  }
+  toggle.disabled = !codexCreationCapabilities.terminal.available || terminalOnly;
+  if (elements.codexSessionModeDescription) {
+    elements.codexSessionModeDescription.textContent = terminalOnly
+      ? codexCreationCapabilities.quick.reason || "Quick Worker 当前不可用，仅可创建实时会话。"
+      : "关闭后创建快速交互 Session。";
+  }
+  renderCodexWorkspaces(codexWorkspaces);
+}
+
+function renderCodexWorkspaces(workspaces) {
   if (!elements.codexWorkspaces) {
     return;
   }
 
+  codexWorkspaces = workspaces;
+  const capability = selectedCodexCreationCapability();
   elements.codexWorkspaces.replaceChildren();
   let hasAvailableWorkspace = false;
   workspaces.forEach((workspace) => {
@@ -232,7 +244,7 @@ function renderCodexWorkspaces(workspaces, available) {
     const path = document.createElement("span");
     button.type = "button";
     button.className = "workspace-button";
-    button.disabled = !available || !workspace.available;
+    button.disabled = !capability.available || !workspace.available;
     hasAvailableWorkspace ||= !button.disabled;
     name.textContent = workspace.name;
     path.textContent = workspace.path;
@@ -244,51 +256,12 @@ function renderCodexWorkspaces(workspaces, available) {
     elements.codexWorkspaces.append(button);
   });
   if (elements.createCodex) {
-    elements.createCodex.disabled = !available || !hasAvailableWorkspace;
+    elements.createCodex.disabled = !capability.available || !hasAvailableWorkspace;
   }
 }
 
 function readCodexSessionMode() {
-  const selected = document.querySelector(
-    'input[name="codex-session-mode"]:checked',
-  );
-  return selected?.value === "terminal" ? "terminal" : "quick";
-}
-
-function readCodexDefaultPermission() {
-  try {
-    const stored = localStorage.getItem(CODEX_DEFAULT_PERMISSION_KEY);
-    return CODEX_PERMISSION_OPTIONS.some(([value]) => value === stored)
-      ? stored
-      : "full-access";
-  } catch (_error) {
-    return "full-access";
-  }
-}
-
-function readCodexDefaultModel() {
-  try {
-    return localStorage.getItem(CODEX_DEFAULT_MODEL_KEY) || null;
-  } catch (_error) {
-    return null;
-  }
-}
-
-function readCodexDefaultReasoningEffort() {
-  try {
-    return localStorage.getItem(CODEX_DEFAULT_REASONING_EFFORT_KEY) || null;
-  } catch (_error) {
-    return null;
-  }
-}
-
-function clearCodexModelPreferences() {
-  try {
-    localStorage.removeItem(CODEX_DEFAULT_MODEL_KEY);
-    localStorage.removeItem(CODEX_DEFAULT_REASONING_EFFORT_KEY);
-  } catch (_error) {
-    // Session creation can still retry with defaults for this request.
-  }
+  return elements.codexSessionModeToggle?.checked ? "terminal" : "quick";
 }
 
 function quickInteractionUrl(sessionId) {
@@ -683,14 +656,26 @@ function renderCodexData(data, { sessionsOnly = false } = {}) {
   if (
     !Array.isArray(data?.workspaces)
     || !Array.isArray(data?.sessions)
-    || typeof data?.available !== "boolean"
+    || typeof data?.terminal_creation?.available !== "boolean"
+    || typeof data?.quick_creation?.available !== "boolean"
     || !data?.dependencies
     || typeof data.dependencies !== "object"
   ) {
     return false;
   }
   if (!sessionsOnly) {
-    renderCodexWorkspaces(data.workspaces, data.available);
+    codexWorkspaces = data.workspaces;
+    codexCreationCapabilities = {
+      terminal: {
+        available: data.terminal_creation.available === true,
+        reason: data.terminal_creation.reason || "",
+      },
+      quick: {
+        available: data.quick_creation.available === true,
+        reason: data.quick_creation.reason || "",
+      },
+    };
+    syncCodexCreationMode();
   }
   const visibleSessions = visibleCodexSessions(data.sessions);
   renderCodexSessions(visibleSessions);
@@ -698,12 +683,12 @@ function renderCodexData(data, { sessionsOnly = false } = {}) {
   elements.codexSessionCount.textContent = `共 ${visibleSessions.length} 个会话`;
   if (!sessionsOnly) {
     const missing = dependencyMessage(data.dependencies);
-    if (data.available) {
+    if (data.terminal_creation.available || data.quick_creation.available) {
       setMessage(elements.codexMessage, "");
     } else {
       setMessage(
         elements.codexMessage,
-        missing || data.unavailable_reason || "会话工作台不可用。",
+        missing || data.terminal_creation.reason || "会话工作台不可用。",
         "error",
       );
     }
@@ -825,57 +810,6 @@ function readCodexPreference(key) {
   }
 }
 
-function codexReasoningLabel(effort) {
-  return CODEX_REASONING_LABELS[effort] || effort || "跟随模型默认";
-}
-
-function renderCodexModelPreference(data) {
-  if (!elements.codexModelPreference) {
-    return false;
-  }
-  const models = Array.isArray(data?.models) ? data.models : [];
-  const preferredModel = readCodexPreference(CODEX_DEFAULT_MODEL_KEY);
-  const preferredEffort = readCodexPreference(CODEX_DEFAULT_REASONING_EFFORT_KEY);
-  const selectedModelId = preferredModel || data?.default_model;
-  const model = models.find((item) => item?.id === selectedModelId);
-  if (!model || typeof model.name !== "string") {
-    elements.codexModelPreference.textContent = "新建默认：暂时无法确认模型与等级";
-    return false;
-  }
-  const levels = Array.isArray(model.levels) ? model.levels : [];
-  const selectedEffort = preferredEffort
-    || data?.default_reasoning_effort
-    || model.default_level;
-  const effort = levels.some((level) => level?.id === selectedEffort)
-    ? selectedEffort
-    : model.default_level;
-  const modelAndEffort = `${model.name} · ${codexReasoningLabel(effort)}`;
-  elements.codexModelPreference.textContent = `新建默认：${modelAndEffort}`;
-  elements.codexModelPreference.dataset.hasValue = "true";
-  return true;
-}
-
-function restoreCodexModelPreferenceCache() {
-  try {
-    const cached = JSON.parse(
-      sessionStorage.getItem(CODEX_MODEL_PREFERENCE_CACHE_KEY) || "null",
-    );
-    if (!renderCodexModelPreference(cached)) {
-      sessionStorage.removeItem(CODEX_MODEL_PREFERENCE_CACHE_KEY);
-    }
-  } catch {
-    sessionStorage.removeItem(CODEX_MODEL_PREFERENCE_CACHE_KEY);
-  }
-}
-
-function storeCodexModelPreferenceCache(data) {
-  try {
-    sessionStorage.setItem(CODEX_MODEL_PREFERENCE_CACHE_KEY, JSON.stringify(data));
-  } catch {
-    // A storage quota failure must not break the live Codex card.
-  }
-}
-
 function storeWeixinTranslationSettingsCache(data) {
   try {
     sessionStorage.setItem(
@@ -901,29 +835,6 @@ async function loadWeixinTranslationSettingsPreference() {
     if (requestVersion === accessVersion) {
       handleAccessError(error);
     }
-  }
-}
-
-async function loadCodexModelPreference() {
-  if (!elements.codexModelPreference || !hasProtectedAccess()) {
-    return;
-  }
-  const requestVersion = accessVersion;
-  try {
-    const data = await apiFetch("/api/codex/models");
-    if (requestVersion === accessVersion) {
-      if (renderCodexModelPreference(data)) {
-        storeCodexModelPreferenceCache(data);
-      }
-    }
-  } catch (error) {
-    if (requestVersion !== accessVersion) {
-      return;
-    }
-    if (elements.codexModelPreference?.dataset.hasValue !== "true") {
-      elements.codexModelPreference.textContent = "新建默认：暂时无法确认模型与等级";
-    }
-    handleAccessError(error);
   }
 }
 
@@ -984,9 +895,8 @@ async function createCodexSession(workspaceId, button, sessionMode = "quick") {
   });
   setCodexButtonBusy(button, true);
   beginCodexMutation();
-  let usedCodexDefaults = false;
   try {
-    const createRequest = (model, reasoningEffort) => apiFetch(
+    await apiFetch(
       "/api/codex/sessions",
       {
         method: "POST",
@@ -994,42 +904,11 @@ async function createCodexSession(workspaceId, button, sessionMode = "quick") {
         body: JSON.stringify({
           workspace_id: workspaceId,
           session_mode: sessionMode === "terminal" ? "terminal" : "quick",
-          permission_mode: readCodexDefaultPermission(),
-          model,
-          reasoning_effort: reasoningEffort,
         }),
       },
     );
-    const preferredModel = readCodexDefaultModel();
-    const preferredEffort = readCodexDefaultReasoningEffort();
-    try {
-      await createRequest(preferredModel, preferredEffort);
-    } catch (error) {
-      const preferenceErrors = new Set([
-        "codex_model_catalog_unavailable",
-        "codex_model_unavailable",
-        "codex_reasoning_effort_requires_model",
-        "codex_reasoning_effort_unsupported",
-      ]);
-      if (
-        (!preferredModel && !preferredEffort)
-        || !preferenceErrors.has(error.code)
-      ) {
-        throw error;
-      }
-      clearCodexModelPreferences();
-      await createRequest(null, null);
-      usedCodexDefaults = true;
-    }
     await loadCodexSessions({ force: true });
     elements.codexWorkspaceDialog?.close();
-    if (usedCodexDefaults) {
-      setMessage(
-        elements.codexMessage,
-        "原模型或等级当前不可用，已按 Codex 默认创建会话。",
-        "success",
-      );
-    }
   } catch (error) {
     if (!handleAccessError(error)) {
       setMessage(
@@ -1249,7 +1128,6 @@ function endCodexMutation() {
 async function loadCodexSessions(options = {}) {
   const background = options?.background === true;
   const force = options?.force === true;
-  const refreshModelPreference = options?.refreshModelPreference === true;
   const refreshQuota = options?.refreshQuota === true;
   if (
     !elements.codexPanel ||
@@ -1277,13 +1155,6 @@ async function loadCodexSessions(options = {}) {
   const loadPromise = (async () => {
     try {
       if (!background) {
-        if (refreshModelPreference || !elements.codexModelPreference.dataset.loaded) {
-          void loadCodexModelPreference().finally(() => {
-            if (elements.codexModelPreference) {
-              elements.codexModelPreference.dataset.loaded = "true";
-            }
-          });
-        }
         void loadWeixinTranslationSettingsPreference();
         void loadCodexQuota({ force: refreshQuota });
       }

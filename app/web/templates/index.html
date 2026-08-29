@@ -104,9 +104,6 @@
             <p id="connected-meta" class="connected-meta"></p>
             <p id="connected-summary" class="connected-summary"></p>
           </div>
-          <div class="connected-actions">
-            <button id="refresh-status" class="button-secondary" type="button">刷新</button>
-          </div>
         </div>
       </section>
 
@@ -170,11 +167,17 @@
           <div class="card-content" data-card-content>
           <div class="card-content-inner">
           <section class="automation-weekly-report-group" aria-labelledby="automation-weekly-report-title">
-            <h3 id="automation-weekly-report-title" class="card-group-title">V 国内业务本期周报</h3>
-            <section class="automation-weekly-subgroup" aria-labelledby="automation-weekly-download-title">
-              <h4 id="automation-weekly-download-title" class="automation-subgroup-title">资料下载</h4>
-              <div id="automation-weekly-download" class="automation-list"></div>
-            </section>
+            <div class="automation-weekly-download-heading">
+              <div class="automation-weekly-download-copy">
+                <div class="automation-item-heading">
+                  <h3 id="automation-weekly-report-title" class="card-group-title">V 国内业务本期周报</h3>
+                  <span id="automation-weekly-download-status" class="automation-weekly-download-status"></span>
+                </div>
+                <p id="automation-weekly-download-title" class="automation-weekly-download-description">本期下载</p>
+              </div>
+              <div id="automation-weekly-download-action" class="automation-weekly-download-action"></div>
+            </div>
+            <div id="automation-weekly-download" class="automation-list"></div>
             <section class="automation-weekly-subgroup" aria-labelledby="automation-weekly-documents-title">
               <h4 id="automation-weekly-documents-title" class="automation-subgroup-title">周报文档{% if weekly_reports %} · {{ weekly_reports[0].period }}{% endif %}</h4>
               <div id="automation-weekly-report-list" class="design-document-list design-document-list-compact">
@@ -264,6 +267,7 @@
                   <div class="workstation-status-actions">
                     <span id="chub-service-badge" class="badge badge-muted">正在检查</span>
                     <button id="restart-hub" class="button-secondary" type="button" aria-haspopup="dialog" aria-controls="confirmation-dialog" disabled>重启</button>
+                    <button id="stop-hub" class="button-danger" type="button" aria-haspopup="dialog" aria-controls="confirmation-dialog" disabled>停止</button>
                   </div>
                 </div>
                 <div class="workstation-status-row">
@@ -274,7 +278,9 @@
                   </div>
                   <div class="workstation-status-actions">
                     <span id="quick-worker-badge" class="badge badge-muted">正在检查</span>
-                    <button id="quick-worker-restart" class="button-secondary" type="button" aria-haspopup="dialog" aria-controls="confirmation-dialog" disabled>重启并清理任务</button>
+                    <button id="quick-worker-start" class="button-secondary" type="button" hidden>启动</button>
+                    <button id="quick-worker-restart" class="button-secondary" type="button" aria-haspopup="dialog" aria-controls="confirmation-dialog" hidden>重启</button>
+                    <button id="quick-worker-stop" class="button-danger" type="button" aria-haspopup="dialog" aria-controls="confirmation-dialog" hidden>停止</button>
                   </div>
                 </div>
                 <div class="workstation-status-row">
@@ -286,6 +292,7 @@
                   <div class="workstation-status-actions automation-browser-actions">
                     <span id="automation-browser-badge" class="badge badge-muted">正在检查</span>
                     <button id="automation-browser-control" class="button-secondary" type="button" aria-haspopup="dialog" aria-controls="automation-browser-dialog" disabled>检查中…</button>
+                    <button id="automation-browser-restart" class="button-secondary" type="button" aria-haspopup="dialog" aria-controls="confirmation-dialog" hidden>重启</button>
                   </div>
                 </div>
                 <div class="workstation-status-row">
@@ -297,7 +304,8 @@
                   <div class="workstation-status-actions openclaw-actions">
                     <span id="clawbot-badge" class="badge badge-muted">正在检查</span>
                     <button id="openclaw-start" class="button-secondary" type="button" hidden>启动</button>
-                    <button id="openclaw-restart" class="button-secondary" type="button" hidden>重启与恢复</button>
+                    <button id="openclaw-restart" class="button-secondary" type="button" hidden>重启</button>
+                    <button id="openclaw-stop" class="button-danger" type="button" hidden>停止</button>
                   </div>
                 </div>
                 <div class="workstation-status-row system-upgrade-row">

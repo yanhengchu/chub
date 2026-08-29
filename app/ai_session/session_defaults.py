@@ -20,13 +20,12 @@ class SessionDefaultsStoreUnavailable(OSError):
 class SessionDefaults(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    version: Literal[1] = 1
-    model: str | None = Field(default=None, max_length=128)
-    reasoning_effort: str | None = Field(default=None, max_length=32)
+    version: Literal[2] = 2
+    permission_mode: Literal["read-only", "full-access"] = "full-access"
 
 
 class SessionDefaultsStore:
-    """Small, current-format-only storage for node-level Session defaults."""
+    """Small, current-format-only storage for the new Session permission default."""
 
     def __init__(self, path: Path) -> None:
         self.path = path

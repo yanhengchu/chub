@@ -16,6 +16,8 @@ WeixinChubModeCode = Literal[
     "disabled",
     "configuration_invalid",
     "codex_unavailable",
+    "ai_runtime_disabled",
+    "quick_worker_unavailable",
 ]
 WeixinChubModeSubmissionCode = Literal[
     "submitted",
@@ -24,6 +26,8 @@ WeixinChubModeSubmissionCode = Literal[
     "mode_disabled",
     "configuration_invalid",
     "codex_unavailable",
+    "ai_runtime_disabled",
+    "quick_worker_unavailable",
     "delivery_route_invalid",
     "message_conflict",
     "submission_failed",
@@ -49,6 +53,7 @@ WeixinChubModeSubmissionCode = Literal[
     "chub_restart_requested",
     "quick_worker_restart_requested",
     "clawbot_restart_requested",
+    "network_restart_requested",
     "system_upgrade_checked",
     "system_upgrade_requested",
 ]
@@ -59,6 +64,8 @@ WeixinChubModeDispatchCode = Literal[
     "in_progress",
     "configuration_invalid",
     "codex_unavailable",
+    "ai_runtime_disabled",
+    "quick_worker_unavailable",
     "delivery_route_invalid",
     "message_conflict",
     "submission_failed",

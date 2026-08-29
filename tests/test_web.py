@@ -70,7 +70,7 @@ async def test_home_page_is_public_and_contains_no_credential_form(
     assert 'id="connected-bar"' in response.text
     assert "更换凭证" not in response.text
     assert "清除凭证" not in response.text
-    assert 'id="refresh-status"' in response.text
+    assert 'id="refresh-status"' not in response.text
     assert "节点任务" not in response.text
     assert 'id="codex-card-host"' in response.text
     assert 'id="openclaw-title"' not in response.text
@@ -80,8 +80,8 @@ async def test_home_page_is_public_and_contains_no_credential_form(
     assert 'id="refresh-openclaw"' not in response.text
     assert 'id="openclaw-start"' in response.text
     assert 'id="openclaw-restart"' in response.text
-    assert ">重启与恢复</button>" in response.text
-    assert 'id="openclaw-stop"' not in response.text
+    assert ">重启</button>" in response.text
+    assert 'id="openclaw-stop"' in response.text
     assert 'id="openclaw-bind-weixin"' not in response.text
     assert 'id="openclaw-weixin-dialog"' not in response.text
     assert 'id="openclaw-access-open"' not in response.text
@@ -178,6 +178,9 @@ async def test_home_page_is_public_and_contains_no_credential_form(
     assert 'id="automation-weekly-report-title"' in response.text
     assert ">V 国内业务本期周报</h3>" in response.text
     assert 'id="automation-weekly-download-title"' in response.text
+    assert "本期下载" in response.text
+    assert 'id="automation-weekly-download-status"' in response.text
+    assert 'id="automation-weekly-download-action"' in response.text
     assert 'id="automation-weekly-download"' in response.text
     assert 'id="automation-weekly-documents-title"' in response.text
     assert "周报文档 · 2026-08-03至2026-08-09" in response.text
@@ -217,6 +220,11 @@ async def test_home_page_is_public_and_contains_no_credential_form(
     assert 'id="chub-service-badge"' in response.text
     assert 'id="quick-worker-badge"' in response.text
     assert 'id="quick-worker-restart"' in response.text
+    assert 'id="quick-worker-start"' in response.text
+    assert 'id="quick-worker-stop"' in response.text
+    assert '>重启并清理任务</button>' not in response.text
+    assert 'id="stop-hub"' in response.text
+    assert 'id="automation-browser-restart"' in response.text
     assert 'id="system-upgrade-badge"' not in response.text
     assert 'id="system-upgrade-start"' in response.text
     assert 'aria-controls="confirmation-dialog"' in response.text
@@ -272,16 +280,23 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
         response = await client.get("/settings")
         script = await client.get("/static/settings.js")
         theme_script = await client.get("/static/theme.js")
+        stylesheet = await client.get("/static/css/components.css")
 
     assert response.status_code == 200
     assert "设置 · Hub" in response.text
     assert "快速交互" in response.text
-    assert "浏览器偏好与节点信息" in response.text
+    assert '<h3 id="core-settings-title" class="settings-layer-title">Chub 核心</h3>' in response.text
     assert "调整会话历史记录的加载方式。" in response.text
     assert "按 Chub 核心、AI Runtime 与第三方服务查看现有配置。" in response.text
     assert "界面风格" in response.text
     assert "微信任务文本优化" in response.text
-    assert "Codex 会话默认项" in response.text
+    assert '<h3 id="runtime-settings-title">Runtime 管理</h3>' in response.text
+    assert 'id="runtime-management-list"' in response.text
+    assert 'id="runtime-management-description"' in response.text
+    assert 'id="runtime-management-message"' not in response.text
+    assert "关闭不会中断已受理任务。" in response.text
+    assert "新建 Session 默认权限" in response.text
+    assert "Codex 会话默认项" not in response.text
     assert "Chub 核心" in response.text
     assert "AI Runtime" in response.text
     assert "第三方服务" in response.text
@@ -333,33 +348,41 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
     assert 'name="quick-interaction-view"' not in response.text
     assert "任务视图" not in response.text
     assert 'id="quick-interaction-page-size"' in response.text
+    assert 'name="quick-interaction-page-size" data-settings-picker' in response.text
     assert '<option value="5" selected>5 条</option>' in response.text
     assert '<option value="10">10 条</option>' in response.text
-    assert 'id="codex-default-permission"' in response.text
-    assert "只影响之后新建会话，已有会话保持原有配置。" in response.text
+    assert 'id="codex-default-full-access"' in response.text
+    assert 'name="codex-default-full-access"' in response.text
+    assert "模型和推理等级默认跟随 AI" in response.text
     assert 'id="codex-show-translation-session"' not in response.text
-    assert 'id="codex-default-model"' in response.text
-    assert 'id="codex-default-reasoning-effort"' in response.text
+    assert 'id="codex-default-model"' not in response.text
+    assert 'id="codex-default-reasoning-effort"' not in response.text
     assert 'id="weixin-translation-model-field"' in response.text
     assert 'id="weixin-translation-reasoning-effort-field"' in response.text
     assert 'id="weixin-translation-model-field"' in response.text
     assert 'id="weixin-translation-reasoning-effort-field"' in response.text
     assert response.text.count('id="weixin-translation-model-field"') == 1
     assert response.text.count('id="weixin-translation-reasoning-effort-field"') == 1
-    assert "这里选择的模型和等级会作为本节点后续新建 Session 的默认值。" in response.text
-    assert "工作区配置可能覆盖默认值；Ultra 会自动拆分并行任务。" in response.text
-    assert '<option value="full-access">Full access</option>' in response.text
-    assert "只影响后续新建的 Session，已有会话保持原权限。" in response.text
+    assert "默认使用 Full access" in response.text
+    assert "关闭后使用 Read Only" in response.text
     assert "尚未开放" not in response.text
     assert f"v{settings.app.version}" in response.text
     assert "返回首页" not in response.text
     assert script.status_code == 200
+    assert "initializeSettingsChoicePickers" in script.text
+    assert "loadRuntimeManagement" in script.text
+    assert "saveRuntimeEnablement" in script.text
+    assert 'aria-haspopup", "listbox"' in script.text
+    assert "closeSettingsChoicePicker" in script.text
+    assert "defaultReasoningDescription" in script.text
+    assert 'return "跟随模型默认"' in script.text
+    assert ":not(.settings-choice-picker-trigger):not(.settings-choice-picker-option)" in stylesheet.text
+    assert ':root[data-ui-style="cyber"] .settings-choice-picker-option {' in stylesheet.text
     assert "hub.quickInteractionView.v1" not in script.text
     assert "hub.quickInteractionPageSize.v1" in script.text
-    assert "hub.codexDefaultPermission.v1" in script.text
-    assert "hub.codexDefaultModel.v1" in script.text
-    assert "hub.codexDefaultReasoningEffort.v1" in script.text
-    assert "hub.codexModelPreferenceCache" in script.text
+    assert "hub.codexDefaultPermission.v1" not in script.text
+    assert "hub.codexDefaultModel.v1" not in script.text
+    assert "hub.codexDefaultReasoningEffort.v1" not in script.text
     assert "hub.weixinTranslationSettingsCache" in script.text
     assert "hub.openclawWeixinSettingsCache.v1" in script.text
     assert "hub.codexShowTranslationSession.v1" not in script.text
@@ -665,6 +688,13 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "上周参考 · ${linkedDocument.name}" in dashboard_script
     assert "各端周报 · ${linkedSuccesses}/${currentDocuments.length} 通过" in dashboard_script
     assert "automation-material-summary" in dashboard_script
+    assert "includeHeading = true, includeButton = true" in dashboard_script
+    assert "{ includeHeading: false, includeButton: false }" in dashboard_script
+    assert "automationWeeklyDownloadAction.append(rendered.button)" in dashboard_script
+    assert "automation-weekly-download-heading" in stylesheet.text
+    assert ".automation-weekly-report-group {\n  border: 1px solid var(--line);\n  border-radius: 8px;" in stylesheet.text
+    assert "border: 0;\n  padding: 0;\n  background: transparent;" in stylesheet.text
+    assert ".automation-item {\n  display: grid;\n  grid-template-columns: minmax(0, 1fr) auto;\n  align-items: start;" in stylesheet.text
     assert "本期下载 ·" in dashboard_script
     assert "待下载" in dashboard_script
     assert "启动并运行" in dashboard_script
@@ -711,13 +741,15 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert 'data-card-return-refresh="true"' in script.text
     assert "cardsRefreshAt" in script.text
     assert 'now - cardsRefreshAt < 500' in script.text
+    assert "cardsRefreshAt = now;\n  loadStatus();" in script.text
     assert 'window.addEventListener("pageshow"' in script.text
     assert 'document.addEventListener("visibilitychange"' in script.text
     assert "stopCodexSession" in script.text
     assert "archiveCodexSession" in script.text
     assert 'quickInteraction.textContent = "快速交互"' not in script.text
     assert 'interactionHistory.textContent = "交互记录"' not in script.text
-    assert "codex-session-mode" in script.text
+    assert "codex-session-realtime" in script.text
+    assert 'sessionModeTitle.textContent = "实时会话"' in script.text
     assert "QUICK_INTERACTION_VIEW_KEY" not in script.text
     assert "quickInteractionUrl" in script.text
     assert "quick-interactions/conversation" in script.text
@@ -755,29 +787,21 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "loadCodexSessions({ background: true })" in script.text
     assert "loadCodexSessions({ force: true })" in script.text
     assert "session.quick_interaction_running" in script.text
-    assert "CODEX_DEFAULT_PERMISSION_KEY" in script.text
-    assert 'permission_mode: readCodexDefaultPermission()' in script.text
-    assert "const preferredModel = readCodexDefaultModel()" in script.text
-    assert "const preferredEffort = readCodexDefaultReasoningEffort()" in script.text
-    assert "clearCodexModelPreferences()" in script.text
-    assert "await createRequest(null, null)" in script.text
+    assert "CODEX_DEFAULT_PERMISSION_KEY" not in script.text
+    assert "readCodexDefaultPermission" not in script.text
+    assert "readCodexDefaultModel" not in script.text
+    assert "readCodexDefaultReasoningEffort" not in script.text
+    assert "clearCodexModelPreferences" not in script.text
     assert "archive.disabled = !session.can_archive" in script.text
     assert "|| quickInteractionRunning" not in script.text
     assert "llmInteractionRunning" not in script.text
     assert "codexLoadPromise" in script.text
     assert 'CACHE_KEY = "hub.aiUsageCache"' in script.text
-    assert "CODEX_MODEL_PREFERENCE_CACHE_KEY" in script.text
     assert "REFRESH_MS = 5 * 60 * 1000" in script.text
-    assert '"/api/codex/models"' in script.text
-    assert "新建默认：正在读取…" in script.text
-    assert "renderCodexModelPreference" in script.text
-    assert "restoreCodexModelPreferenceCache" in script.text
-    assert "storeCodexModelPreferenceCache" in script.text
-    assert 'elements.codexModelPreference.dataset.hasValue = "true"' in script.text
-    assert 'elements.codexModelPreference?.dataset.hasValue !== "true"' in script.text
-    assert "新建默认：暂时无法确认模型与等级" in script.text
-    assert "|| data?.default_reasoning_effort" in script.text
-    assert "跟随 Codex 默认（${modelAndEffort}）" not in script.text
+    assert "新建默认：" not in script.text
+    assert "codex-model-preference" not in script.text
+    assert "restoreCodexModelPreferenceCache" not in dashboard_script
+    assert "refreshModelPreference" not in dashboard_script
     assert "/api/ai/usage" in script.text
     assert "额度：正在读取…" in script.text
     assert "renderCodexQuota" in script.text
@@ -788,7 +812,6 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "Weekly" in script.text
     assert "codexQuotaWindowLabel" not in script.text
     assert "refreshQuota: true" in script.text
-    assert "loadCodexSessions({ refreshModelPreference: true })" in script.text
     assert "codexMutationCount" in script.text
     assert "codexSessionsSignature" in script.text
     assert "codexLoadPromise = null" in script.text
@@ -938,7 +961,13 @@ async def test_quick_interaction_conversation_page_is_available(
     ) < page.text.index('id="conversation-session-delete"')
     assert 'id="conversation-engine"' not in page.text
     assert 'id="conversation-more"' not in page.text
-    assert 'id="conversation-submit" class="button-secondary" type="submit" disabled' in page.text
+    assert 'id="conversation-submit" class="conversation-composer-control conversation-submit" type="submit"' in page.text
+    assert '<svg viewBox="0 0 24 24"' in page.text
+    assert "conversation-setting-label" not in page.text
+    assert 'id="conversation-permission-trigger"' in page.text
+    assert 'data-value="ask" disabled aria-disabled="true"' in page.text
+    assert 'id="conversation-model-trigger"' in page.text
+    assert 'id="conversation-reasoning-trigger"' in page.text
     assert (
         page.text.index("/static/quick_interactions_core.js")
         < page.text.index("/static/quick_interaction_session.js")
@@ -967,10 +996,13 @@ async def test_quick_interaction_conversation_page_is_available(
     assert "client.submitTask" in script.text
     assert "client.loadSessionContext" in script.text
     assert "conversationClient.createSession" in script.text
-    assert "readConversationSessionCreationPreferences" in script.text
-    assert "shouldRetryConversationCreationWithDefaults" in script.text
-    assert "clearConversationSessionModelPreferences" in script.text
+    assert "readConversationSessionCreationPreferences" not in script.text
+    assert "shouldRetryConversationCreationWithDefaults" not in script.text
+    assert "clearConversationSessionModelPreferences" not in script.text
+    assert "updateSessionConfiguration" in script.text
     assert "conversationSessionView.openCreate" in script.text
+    assert 'label: "跟随模型默认"' in script.text
+    assert 'description: defaultLevel' in script.text
     assert "workspace.available !== true" in session_script.text
     assert "conversationCreationPending" in script.text
     assert "renderConversationSessionCreation(sessionContextResult.value)" in script.text
@@ -1027,7 +1059,8 @@ async def test_quick_interaction_conversation_page_is_available(
     assert "elements.switcher.hidden = state.items.length === 0" in session_script.text
     assert "hub.quickInteractionDraft.v1" in script.text
     assert "sessionStorage.setItem(conversationDraftKey" in script.text
-    assert 'elements.submit.textContent = "发送"' in session_script.text
+    assert 'elements.submit.setAttribute("aria-label", "发送")' in session_script.text
+    assert 'elements.submit.textContent = "发送"' not in session_script.text
     assert '"确认发送"' not in script.text
     assert 'pending: "待通知"' in timeline_script.text
     assert 'sent: "已通知"' in timeline_script.text
@@ -1062,7 +1095,7 @@ async def test_quick_interaction_conversation_page_is_available(
     assert ".conversation-composer" in stylesheet.text
     assert ".conversation-session-switcher" in stylesheet.text
     assert ".conversation-session-navigation" in stylesheet.text
-    assert "grid-template-columns: 44px minmax(0, 1fr);" in stylesheet.text
+    assert "grid-template-columns: 30px minmax(0, 1fr);" in stylesheet.text
     assert ".conversation-session-create" in stylesheet.text
     assert ".conversation-create-surface" in stylesheet.text
     assert ":not(.conversation-session-create)" in stylesheet.text
@@ -1085,9 +1118,15 @@ async def test_quick_interaction_conversation_page_is_available(
     assert ":not(.site-header-title):not(.session-enter)::before" in stylesheet.text
     assert 'a.button-link::before' in stylesheet.text
     assert ':root[data-ui-style="cyber"] .workspace-button strong' in stylesheet.text
+    assert ".workspace-button {\n  height: auto;" in stylesheet.text
+    assert "padding: 0.75rem 0.85rem;" in stylesheet.text
+    assert ".session-enter {\n  grid-column: 1 / -1;\n  height: auto;" in stylesheet.text
+    assert "padding: 0.75rem 0.85rem;" in stylesheet.text
     assert "font-size: 0.875rem;" in stylesheet.text
-    assert 'grid-template-columns: auto minmax(0, 1fr) minmax(4.25rem, max-content);' in stylesheet.text
-    assert "#conversation-submit" in stylesheet.text
+    assert ".conversation-composer-toolbar" in stylesheet.text
+    assert ".conversation-setting-menu" in stylesheet.text
+    assert ".conversation-setting-option:disabled" in stylesheet.text
+    assert ".conversation-submit" in stylesheet.text
 
 
 @pytest.mark.anyio

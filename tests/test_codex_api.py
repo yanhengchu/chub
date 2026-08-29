@@ -15,6 +15,8 @@ from app.codex.models import (
     CodexQuotaWindow,
     CodexSession,
     QuickInteractionTask,
+    RuntimeManagementData,
+    RuntimeManagementItem,
     SessionInfo,
     SessionListData,
     SessionRenameRequest,
@@ -63,8 +65,10 @@ async def test_codex_sessions_allow_loopback(settings: Settings) -> None:
 async def test_codex_session_list_reports_workspaces(settings: Settings) -> None:
     app = create_app(settings)
     manager = MagicMock()
-    manager.available.return_value = False
-    manager.unavailable_reason.return_value = "Codex PTY requires Tailscale"
+    manager.submission_available.return_value = (
+        False,
+        "Codex PTY requires Tailscale",
+    )
     manager.dependencies.return_value = {"codex": True, "ttyd": True, "tmux": False}
     manager.workspaces.return_value = [
         WorkspaceInfo(id="home", name="用户目录", path="/home/test", available=True)
@@ -82,8 +86,97 @@ async def test_codex_session_list_reports_workspaces(settings: Settings) -> None
     assert response.status_code == 200
     data = response.json()["data"]
     assert data["available"] is False
+    assert data["terminal_creation"] == {
+        "available": False,
+        "reason": "Codex PTY requires Tailscale",
+    }
+    assert data["quick_creation"] == {
+        "available": False,
+        "reason": "Codex PTY requires Tailscale",
+    }
     assert data["workspaces"][0]["id"] == "home"
     assert data["dependencies"]["tmux"] is False
+
+
+@pytest.mark.anyio
+async def test_codex_session_list_keeps_terminal_creation_available_without_worker(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    manager = MagicMock()
+    manager.submission_available.return_value = (True, None)
+    manager.dependencies.return_value = {"codex": True, "ttyd": True, "tmux": True}
+    manager.workspaces.return_value = []
+    manager.list_sessions.return_value = []
+    quick_interactions = MagicMock()
+    quick_interactions.active_sessions.return_value = {}
+    quick_interactions.quick_session_creation_availability.return_value = (
+        False,
+        "Quick Worker 当前不可用，无法创建快速交互 Session。",
+    )
+    app.state.codex_pty_manager = manager
+    app.state.quick_interactions = quick_interactions
+    app.state.weixin_chub_mode = MagicMock()
+    app.state.weixin_chub_mode.session_slots_snapshot.return_value = {}
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            "/api/codex/sessions",
+            headers=authorization(settings),
+        )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["available"] is True
+    assert data["terminal_creation"] == {"available": True, "reason": None}
+    assert data["quick_creation"] == {
+        "available": False,
+        "reason": "Quick Worker 当前不可用，无法创建快速交互 Session。",
+    }
+
+
+@pytest.mark.anyio
+async def test_runtime_management_lists_and_updates_enablement(settings: Settings) -> None:
+    app = create_app(settings)
+    manager = MagicMock()
+    current = RuntimeManagementData(
+        runtimes=[
+            RuntimeManagementItem(
+                runtime_id="codex",
+                name="Codex Runtime",
+                enabled=True,
+                healthy=True,
+            )
+        ],
+        basic_mode=False,
+    )
+    disabled = current.model_copy(
+        update={
+            "runtimes": [
+                current.runtimes[0].model_copy(update={"enabled": False})
+            ],
+            "basic_mode": True,
+        }
+    )
+    manager.read_runtime_management.return_value = current
+    manager.update_runtime_enabled.return_value = disabled
+    app.state.codex_pty_manager = manager
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        listed = await client.get("/api/codex/runtimes", headers=authorization(settings))
+        updated = await client.put(
+            "/api/codex/runtimes/codex",
+            headers=authorization(settings),
+            json={"enabled": False},
+        )
+
+    assert listed.status_code == 200
+    assert listed.json()["data"]["runtimes"][0]["enabled"] is True
+    assert updated.status_code == 200
+    assert updated.json()["data"]["basic_mode"] is True
+    manager.update_runtime_enabled.assert_called_once_with("codex", False)
 
 
 @pytest.mark.anyio
@@ -92,8 +185,7 @@ async def test_codex_session_list_hides_internal_translation_session(
 ) -> None:
     app = create_app(settings)
     manager = MagicMock()
-    manager.available.return_value = True
-    manager.unavailable_reason.return_value = None
+    manager.submission_available.return_value = (True, None)
     manager.dependencies.return_value = {}
     manager.workspaces.return_value = []
     manager.list_sessions.return_value = [
@@ -201,11 +293,7 @@ async def test_create_session_uses_requested_permission_mode(settings: Settings)
 
     assert response.status_code == 200
     manager.create_session.assert_called_once_with(
-        "chub",
-        "full-access",
-        None,
-        None,
-        "terminal",
+        "chub", "full-access", None, None, "terminal"
     )
 
 
@@ -242,13 +330,7 @@ async def test_create_session_defaults_to_full_access(settings: Settings) -> Non
         )
 
     assert response.status_code == 200
-    manager.create_session.assert_called_once_with(
-        "chub",
-        "full-access",
-        None,
-        None,
-        "terminal",
-    )
+    manager.create_session.assert_called_once_with("chub", None, None, None, "terminal")
 
 
 @pytest.mark.anyio
@@ -286,16 +368,12 @@ async def test_codex_model_catalog_is_protected_and_filtered_by_manager(
 
 
 @pytest.mark.anyio
-async def test_update_codex_session_defaults_uses_manager_and_returns_catalog(
+async def test_update_codex_session_defaults_uses_manager_and_returns_permission(
     settings: Settings,
 ) -> None:
     app = create_app(settings)
     manager = MagicMock()
-    manager.update_session_defaults.return_value = CodexModelCatalogData(
-        models=[],
-        default_model="gpt-5.6-terra",
-        default_reasoning_effort="medium",
-    )
+    manager.update_session_defaults.return_value = "read-only"
     app.state.codex_pty_manager = manager
     transport = httpx.ASGITransport(app=app)
 
@@ -303,14 +381,61 @@ async def test_update_codex_session_defaults_uses_manager_and_returns_catalog(
         response = await client.put(
             "/api/codex/session-defaults",
             headers=authorization(settings),
-            json={"model": "gpt-5.6-terra", "reasoning_effort": "medium"},
+            json={"permission_mode": "read-only"},
         )
 
     assert response.status_code == 200
-    assert response.json()["data"]["default_model"] == "gpt-5.6-terra"
+    assert response.json()["data"]["permission_mode"] == "read-only"
     manager.update_session_defaults.assert_called_once_with(
-        "gpt-5.6-terra",
-        "medium",
+        "read-only",
+    )
+
+
+@pytest.mark.anyio
+async def test_update_quick_session_configuration_uses_session_values(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    quick_interactions = MagicMock()
+    quick_interactions.update_session_configuration.return_value = SessionInfo(
+        id="session-1",
+        runtime_id="codex",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd="/workspace/chub",
+        title=None,
+        can_archive=True,
+        status="stopped",
+        activity="idle",
+        permission_mode="full-access",
+        active_permission_mode=None,
+        permission_pending=False,
+        model="gpt-test",
+        reasoning_effort="high",
+        error=None,
+        created_at="2026-08-07T10:00:00Z",
+        updated_at="2026-08-07T10:00:00Z",
+    )
+    app.state.quick_interactions = quick_interactions
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.patch(
+            "/api/codex/sessions/session-1/configuration",
+            headers=authorization(settings),
+            json={
+                "permission_mode": "full-access",
+                "model": "gpt-test",
+                "reasoning_effort": "high",
+            },
+        )
+
+    assert response.status_code == 200
+    quick_interactions.update_session_configuration.assert_called_once_with(
+        "session-1",
+        "full-access",
+        "gpt-test",
+        "high",
     )
 
 
@@ -400,8 +525,7 @@ async def test_codex_session_list_includes_active_quick_interaction(
 ) -> None:
     app = create_app(settings)
     manager = MagicMock()
-    manager.available.return_value = True
-    manager.unavailable_reason.return_value = None
+    manager.submission_available.return_value = (True, None)
     manager.dependencies.return_value = {"codex": True, "ttyd": True, "tmux": True}
     manager.workspaces.return_value = []
     manager.list_sessions.return_value = [
@@ -427,6 +551,7 @@ async def test_codex_session_list_includes_active_quick_interaction(
     quick_interactions.active_sessions.return_value = {
         "session-1": datetime(2026, 7, 24, 10, 2, tzinfo=UTC)
     }
+    quick_interactions.quick_session_creation_availability.return_value = (True, None)
     app.state.codex_pty_manager = manager
     app.state.quick_interactions = quick_interactions
     weixin_chub_mode = MagicMock()

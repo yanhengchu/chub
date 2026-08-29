@@ -43,7 +43,7 @@ Chub 对 OpenClaw 的定制只保留以下内容：
 6. 同一稳定消息 ID 与同一路由只能产生一个决定和一个派生任务；重复请求返回首次决定，路由冲突拒绝，未知副作用不自动重试。
 7. 任务结果和通知结果是两个状态；任务成功不等于通知成功，原保存路由失效时不得回退到全局收件人。
 8. Context Token 必须按 `accountId + userId` 持久化，Gateway 启动恢复，内存未命中时懒恢复；文件权限必须为 `600`。
-9. API action `restart` 和微信固定指令 `restart clawbot` 都是 ClawBot 的重启与恢复入口：发现固定插件或补丁基线不一致时先同步，再重启 Gateway；未知版本、包完整性或补丁锚点不得盲目覆盖。
+9. API action `restart` 和微信固定指令 `restart clawbot` 都是 ClawBot 的重启与恢复入口：发现固定插件或补丁基线不一致时先同步，再重启 Gateway；未知版本、包完整性或补丁锚点不得盲目覆盖。微信 `restart network` 是 Chub 核心层的独立固定维护操作，不由插件、OpenClaw Agent 或 Gateway 执行设备命令；它只在 Chub 配置的 Ubuntu NetworkManager UUID 白名单内恢复 Wi-Fi/VPN，完成后沿保存的请求路由回送。
 10. “进程已启动”“HTTP 200”“任务已创建”或“通知已开始”都不是最终成功；必须确认业务终态、健康状态或通知终态。
 
 ## 2. 归属与消息链路

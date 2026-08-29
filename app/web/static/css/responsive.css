@@ -21,7 +21,7 @@
     grid-template-columns: minmax(0, 1fr) auto;
   }
 
-  .settings-field select {
+  .settings-choice-picker {
     width: 100%;
     max-width: none;
   }
@@ -83,11 +83,6 @@
     flex-direction: column;
   }
 
-  .connected-actions {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-  }
-
   .workspace-list,
   .automation-item {
     grid-template-columns: 1fr;
@@ -119,6 +114,10 @@
 
   .automation-run {
     width: 100%;
+  }
+
+  .automation-weekly-download-action .automation-run {
+    width: auto;
   }
 
   .workstation-status-row {
@@ -220,6 +219,30 @@
 
   .conversation-page {
     width: 100%;
+  }
+
+  .conversation-setting-value {
+    max-width: 7.5rem;
+  }
+
+  .conversation-setting-menu {
+    max-width: min(17rem, calc(100vw - 1rem));
+  }
+
+  .conversation-composer-option[data-composer-option="permission"] .conversation-setting-menu {
+    right: auto;
+    left: 0;
+  }
+
+  .conversation-composer-option[data-composer-option="model"] .conversation-setting-menu {
+    right: auto;
+    left: 50%;
+    transform: translateX(-50%);
+  }
+
+  .conversation-composer-option[data-composer-option="reasoning"] .conversation-setting-menu {
+    right: 0;
+    left: auto;
   }
 
   .conversation-assistant-meta {

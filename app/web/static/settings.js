@@ -1,9 +1,6 @@
 "use strict";
 
 const QUICK_INTERACTION_PAGE_SIZE_KEY = "hub.quickInteractionPageSize.v1";
-const CODEX_DEFAULT_PERMISSION_KEY = "hub.codexDefaultPermission.v1";
-const CODEX_DEFAULT_MODEL_KEY = "hub.codexDefaultModel.v1";
-const CODEX_DEFAULT_REASONING_EFFORT_KEY = "hub.codexDefaultReasoningEffort.v1";
 const CODEX_MODEL_PREFERENCE_CACHE_KEY = "hub.codexModelPreferenceCache";
 const WEIXIN_TRANSLATION_SETTINGS_CACHE_KEY = "hub.weixinTranslationSettingsCache";
 const OPENCLAW_WEIXIN_SETTINGS_CACHE_KEY = "hub.openclawWeixinSettingsCache.v1";
@@ -14,10 +11,10 @@ const settingsMessage = document.querySelector("#settings-message");
 const quickInteractionPageSize = document.querySelector(
   "#quick-interaction-page-size",
 );
-const codexDefaultPermission = document.querySelector("#codex-default-permission");
-const codexDefaultModel = document.querySelector("#codex-default-model");
-const codexDefaultReasoningEffort = document.querySelector(
-  "#codex-default-reasoning-effort",
+const codexDefaultFullAccess = document.querySelector("#codex-default-full-access");
+const runtimeManagementList = document.querySelector("#runtime-management-list");
+const runtimeManagementDescription = document.querySelector(
+  "#runtime-management-description",
 );
 const codexSessionSettingsMessage = document.querySelector(
   "#codex-session-settings-message",
@@ -87,6 +84,7 @@ const settingsNavigationLinks = document.querySelectorAll(
 const settingsSections = document.querySelectorAll(".settings-section[id]");
 let codexModels = [];
 let codexModelsLoaded = false;
+let codexCatalogDefaultModelId = "";
 let weixinTranslationStatus = null;
 let weixinTranslationStatusLive = false;
 let weixinTranslationCacheRestored = false;
@@ -110,6 +108,165 @@ const CODEX_REASONING_LABELS = {
   max: "Max",
   ultra: "Ultra",
 };
+
+const settingsChoicePickers = new Map();
+let openSettingsChoicePicker = null;
+const SETTINGS_PICKER_DESCRIPTIONS = Object.freeze({
+  "quick-interaction-page-size": {
+    5: "每次加载 5 条交互记录",
+    10: "每次加载 10 条交互记录",
+  },
+});
+
+function settingsPickerLabel(select) {
+  return select.closest(".settings-field")?.querySelector("strong")?.textContent.trim()
+    || "选择设置";
+}
+
+function settingsPickerOptionDescription(select, option) {
+  return option.dataset.description
+    || SETTINGS_PICKER_DESCRIPTIONS[select.id]?.[option.value]
+    || "";
+}
+
+function closeSettingsChoicePicker(picker = openSettingsChoicePicker) {
+  if (!picker) return;
+  picker.menu.hidden = true;
+  picker.trigger.setAttribute("aria-expanded", "false");
+  if (openSettingsChoicePicker === picker) {
+    openSettingsChoicePicker = null;
+  }
+}
+
+function positionSettingsChoicePicker(picker) {
+  const triggerRect = picker.trigger.getBoundingClientRect();
+  const menu = picker.menu;
+  const margin = 8;
+  menu.style.visibility = "hidden";
+  menu.hidden = false;
+  const menuRect = menu.getBoundingClientRect();
+  const left = Math.max(
+    margin,
+    Math.min(triggerRect.left, window.innerWidth - menuRect.width - margin),
+  );
+  const spaceBelow = window.innerHeight - triggerRect.bottom - margin;
+  const top = spaceBelow >= menuRect.height || spaceBelow >= triggerRect.top - margin
+    ? Math.min(window.innerHeight - menuRect.height - margin, triggerRect.bottom + 8)
+    : Math.max(margin, triggerRect.top - menuRect.height - 8);
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
+  menu.style.visibility = "";
+}
+
+function renderSettingsChoicePicker(picker) {
+  const { select, trigger, menu } = picker;
+  const selected = select.selectedOptions[0] || select.options[0];
+  trigger.querySelector("[data-settings-picker-value]").textContent = selected?.textContent || "";
+  trigger.disabled = select.disabled;
+  menu.replaceChildren(...Array.from(select.options, (option) => {
+    const button = document.createElement("button");
+    const title = document.createElement("span");
+    const description = settingsPickerOptionDescription(select, option);
+    button.type = "button";
+    button.className = "settings-choice-picker-option";
+    button.setAttribute("role", "option");
+    button.setAttribute("aria-selected", String(option.selected));
+    title.textContent = option.textContent;
+    button.append(title);
+    if (description) {
+      const hint = document.createElement("small");
+      hint.textContent = description;
+      button.append(hint);
+    }
+    button.disabled = option.disabled;
+    if (option.selected) button.classList.add("is-selected");
+    button.addEventListener("click", () => {
+      if (option.disabled) return;
+      select.value = option.value;
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      renderSettingsChoicePicker(picker);
+      closeSettingsChoicePicker(picker);
+      trigger.focus();
+    });
+    return button;
+  }));
+}
+
+function initializeSettingsChoicePickers() {
+  document.querySelectorAll("select[data-settings-picker]").forEach((select) => {
+    if (settingsChoicePickers.has(select)) return;
+    const picker = document.createElement("div");
+    const trigger = document.createElement("button");
+    const value = document.createElement("span");
+    const chevron = document.createElement("span");
+    const menu = document.createElement("div");
+    const menuId = `${select.id}-menu`;
+
+    picker.className = "settings-choice-picker";
+    trigger.type = "button";
+    trigger.className = "settings-choice-picker-trigger";
+    trigger.setAttribute("aria-haspopup", "listbox");
+    trigger.setAttribute("aria-controls", menuId);
+    trigger.setAttribute("aria-expanded", "false");
+    trigger.setAttribute("aria-label", settingsPickerLabel(select));
+    value.dataset.settingsPickerValue = "";
+    chevron.setAttribute("aria-hidden", "true");
+    trigger.append(value, chevron);
+    menu.id = menuId;
+    menu.className = "settings-choice-picker-menu";
+    menu.setAttribute("role", "listbox");
+    menu.setAttribute("aria-label", settingsPickerLabel(select));
+    menu.hidden = true;
+    picker.append(trigger);
+    select.after(picker);
+    document.body.append(menu);
+
+    const state = { select, trigger, menu };
+    settingsChoicePickers.set(select, state);
+    renderSettingsChoicePicker(state);
+    trigger.addEventListener("click", () => {
+      if (trigger.disabled) return;
+      if (openSettingsChoicePicker === state) {
+        closeSettingsChoicePicker(state);
+        return;
+      }
+      closeSettingsChoicePicker();
+      renderSettingsChoicePicker(state);
+      positionSettingsChoicePicker(state);
+      openSettingsChoicePicker = state;
+      trigger.setAttribute("aria-expanded", "true");
+      menu.querySelector(".is-selected:not(:disabled), [role='option']:not(:disabled)")?.focus();
+    });
+    select.addEventListener("change", () => renderSettingsChoicePicker(state));
+    new MutationObserver(() => renderSettingsChoicePicker(state)).observe(select, {
+      attributes: true,
+      attributeFilter: ["disabled"],
+      childList: true,
+      subtree: true,
+    });
+  });
+}
+
+document.addEventListener("pointerdown", (event) => {
+  if (
+    openSettingsChoicePicker
+    && !openSettingsChoicePicker.trigger.contains(event.target)
+    && !openSettingsChoicePicker.menu.contains(event.target)
+  ) {
+    closeSettingsChoicePicker();
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && openSettingsChoicePicker) {
+    event.preventDefault();
+    const picker = openSettingsChoicePicker;
+    closeSettingsChoicePicker(picker);
+    picker.trigger.focus();
+  }
+});
+
+window.addEventListener("resize", () => closeSettingsChoicePicker());
 
 function renderStyleSelection(style) {
   styleOptionRows.forEach((row) => {
@@ -227,53 +384,11 @@ function saveQuickInteractionPageSize(value) {
   }
 }
 
-function readCodexDefaultPermission() {
-  try {
-    const value = localStorage.getItem(CODEX_DEFAULT_PERMISSION_KEY);
-    return ["ask", "auto-review", "read-only", "full-access"].includes(value)
-      ? value
-      : "full-access";
-  } catch (_error) {
-    return "full-access";
-  }
-}
-
-function saveCodexDefaultPermission(value) {
-  const selected = ["ask", "auto-review", "read-only", "full-access"].includes(value)
-    ? value
-    : "full-access";
-  try {
-    localStorage.setItem(CODEX_DEFAULT_PERMISSION_KEY, selected);
-    codexDefaultPermission.value = selected;
-    codexSessionSettingsMessage.textContent = "";
-    codexSessionSettingsMessage.className = "message";
-  } catch (_error) {
-    codexDefaultPermission.value = readCodexDefaultPermission();
-    codexSessionSettingsMessage.textContent = "当前浏览器无法保存会话偏好。";
-    codexSessionSettingsMessage.className = "message message-error";
-  }
-}
-
-function readCodexPreference(key) {
-  try {
-    return localStorage.getItem(key) || "";
-  } catch (_error) {
-    return "";
-  }
-}
-
-function saveCodexPreference(key, value) {
-  if (value) {
-    localStorage.setItem(key, value);
-  } else {
-    localStorage.removeItem(key);
-  }
-}
-
-function createOption(value, label) {
+function createOption(value, label, description = "") {
   const option = document.createElement("option");
   option.value = value;
   option.textContent = label;
+  if (description) option.dataset.description = description;
   return option;
 }
 
@@ -282,91 +397,34 @@ function defaultModelOptionLabel() {
 }
 
 function defaultReasoningOptionLabel() {
-  return "跟随 Codex 默认";
+  return "跟随模型默认";
 }
 
-function selectedCodexModel() {
-  return codexModels.find((model) => model.id === codexDefaultModel.value) || null;
+function defaultReasoningDescription(model) {
+  const level = model?.default_level || "";
+  return level
+    ? `当前默认 ${CODEX_REASONING_LABELS[level] || level}`
+    : "当前模型未提供默认等级";
 }
 
-function renderCodexReasoningLevels(preferred = "", catalogReady = codexModelsLoaded) {
-  const model = selectedCodexModel();
-  const options = [createOption("", defaultReasoningOptionLabel())];
-  if (model) {
-    model.levels.forEach((level) => {
-      options.push(
-        createOption(level.id, CODEX_REASONING_LABELS[level.id] || level.id),
-      );
-    });
-  }
-  codexDefaultReasoningEffort.replaceChildren(...options);
-  const supported = model?.levels.some((level) => level.id === preferred);
-  codexDefaultReasoningEffort.value = supported ? preferred : "";
-  codexDefaultReasoningEffort.disabled = !catalogReady || !model;
-  return Boolean(supported || !preferred);
-}
-
-function renderCodexModels(
-  data,
-  { catalogReady = codexModelsLoaded, persistFallback = false } = {},
-) {
-  const models = data.models;
-  const storedModel = readCodexPreference(CODEX_DEFAULT_MODEL_KEY);
-  const storedEffort = readCodexPreference(
-    CODEX_DEFAULT_REASONING_EFFORT_KEY,
-  );
-  const preferredModel = storedModel || data.default_model || "";
-  const preferredEffort = storedEffort || data.default_reasoning_effort || "";
-  codexModels = models;
-  const options = [createOption("", defaultModelOptionLabel())];
-  models.forEach((model) => {
-    options.push(createOption(model.id, model.name));
-  });
-  codexDefaultModel.replaceChildren(...options);
-  const modelAvailable = models.some((model) => model.id === preferredModel);
-  codexDefaultModel.value = modelAvailable ? preferredModel : "";
-  codexDefaultModel.disabled = !catalogReady;
-  const effortAvailable = renderCodexReasoningLevels(
-    modelAvailable ? preferredEffort : "",
-    catalogReady,
-  );
-  if (
-    persistFallback
-    && (
-      (!modelAvailable && storedModel)
-      || (!storedModel && storedEffort)
-      || !effortAvailable
-    )
-  ) {
-    try {
-      saveCodexPreference(CODEX_DEFAULT_MODEL_KEY, codexDefaultModel.value);
-      saveCodexPreference(
-        CODEX_DEFAULT_REASONING_EFFORT_KEY,
-        codexDefaultReasoningEffort.value,
-      );
-      codexSessionSettingsMessage.textContent =
-        "之前保存的模型或等级当前不可用，已改为节点默认。";
-      codexSessionSettingsMessage.className = "message message-error";
-    } catch (_error) {
-      codexSessionSettingsMessage.textContent = "当前浏览器无法保存会话偏好。";
-      codexSessionSettingsMessage.className = "message message-error";
-    }
-  }
+function renderCodexModels(data) {
+  codexModels = data.models;
+  codexCatalogDefaultModelId = data.default_model || "";
   if (weixinTranslationStatus !== null) {
     renderWeixinTranslationModelSettings(weixinTranslationStatus);
   }
 }
 
 function renderWeixinTranslationModelSettings(status) {
-  const options = [createOption("", defaultModelOptionLabel())];
+  const options = [createOption("", defaultModelOptionLabel(), "使用 Codex 当前默认模型")];
   if (
     status.model
     && !codexModels.some((model) => model.id === status.model)
   ) {
-    options.push(createOption(status.model, `${status.model}（当前不可用）`));
+    options.push(createOption(status.model, `${status.model}（当前不可用）`, "当前保存的模型"));
   }
   codexModels.forEach((model) => {
-    options.push(createOption(model.id, model.name));
+    options.push(createOption(model.id, model.name, model.description || ""));
   });
   weixinTranslationModel.replaceChildren(...options);
   weixinTranslationModel.value = status.model || "";
@@ -377,13 +435,21 @@ function renderWeixinTranslationModelSettings(status) {
   );
 
   const model = codexModels.find(
-    (item) => item.id === weixinTranslationModel.value,
+    (item) => item.id === (weixinTranslationModel.value || codexCatalogDefaultModelId),
   );
-  const levels = [createOption("", "跟随模型默认")];
+  const levels = [createOption(
+    "",
+    "跟随模型默认",
+    defaultReasoningDescription(model),
+  )];
   if (model) {
     model.levels.forEach((level) => {
       levels.push(
-        createOption(level.id, CODEX_REASONING_LABELS[level.id] || level.id),
+        createOption(
+          level.id,
+          CODEX_REASONING_LABELS[level.id] || level.id,
+          level.description || "",
+        ),
       );
     });
   }
@@ -401,18 +467,122 @@ function renderWeixinTranslationModelSettings(status) {
   weixinTranslationReasoningEffortField.hidden = false;
 }
 
-async function syncCodexSessionDefaults() {
-  const response = await fetch("/api/codex/session-defaults", {
-    method: "PUT",
-    headers: settingsHeaders(true),
-    body: JSON.stringify({
-      model: codexDefaultModel.value || null,
-      reasoning_effort: codexDefaultReasoningEffort.value || null,
-    }),
-  });
-  const payload = await response.json();
-  if (!response.ok || payload.success !== true) {
-    throw new Error(payload.error?.code || "session_defaults_update_failed");
+async function loadCodexSessionDefaults() {
+  try {
+    const response = await fetch("/api/codex/session-defaults", { cache: "no-store" });
+    const payload = await response.json();
+    if (!response.ok || payload.success !== true) throw new Error("session_defaults_unavailable");
+    codexDefaultFullAccess.checked = payload.data.permission_mode === "full-access";
+  } catch (_error) {
+    codexDefaultFullAccess.checked = true;
+    codexSessionSettingsMessage.textContent = "暂时无法读取新建 Session 默认权限。";
+    codexSessionSettingsMessage.className = "message message-error";
+  }
+}
+
+function setRuntimeManagementDescription(text, kind = "") {
+  runtimeManagementDescription.textContent = text;
+  runtimeManagementDescription.classList.toggle("message-error", kind === "error");
+}
+
+function renderRuntimeManagement(data) {
+  const runtimes = Array.isArray(data?.runtimes) ? data.runtimes : [];
+  runtimeManagementList.replaceChildren();
+  for (const runtime of runtimes) {
+    const field = document.createElement("label");
+    field.className = "settings-field settings-field-toggle";
+    const copy = document.createElement("span");
+    const title = document.createElement("span");
+    title.className = "settings-integration-title";
+    const name = document.createElement("strong");
+    name.textContent = runtime.name || runtime.runtime_id;
+    const badge = document.createElement("span");
+    badge.className = `badge ${runtime.healthy ? "badge-success" : "badge-muted"}`;
+    badge.textContent = runtime.healthy ? "健康" : "不可用";
+    title.append(name, badge);
+    const description = document.createElement("small");
+    description.textContent = runtime.enabled
+      ? (runtime.healthy ? "已启用，可创建并提交新的 AI 任务。" : (runtime.reason || "已启用，但当前不可提交任务。"))
+      : "已停用，不再接受新的 AI 任务；已受理任务继续收敛。";
+    copy.append(title, description);
+    const control = document.createElement("span");
+    control.className = "settings-switch";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = runtime.enabled === true;
+    input.dataset.runtimeId = runtime.runtime_id;
+    input.dataset.previousEnabled = String(runtime.enabled === true);
+    input.setAttribute("aria-label", `${name.textContent} ${input.checked ? "已启用" : "已停用"}`);
+    input.addEventListener("change", () => void saveRuntimeEnablement(input));
+    const track = document.createElement("span");
+    track.className = "settings-switch-track";
+    track.setAttribute("aria-hidden", "true");
+    control.append(input, track);
+    field.append(copy, control);
+    runtimeManagementList.append(field);
+  }
+  if (data?.basic_mode === true) {
+    setRuntimeManagementDescription("所有 AI Runtime 已停用，Chub 当前处于基础功能模式。");
+  } else {
+    setRuntimeManagementDescription(
+      "启用后可创建并提交该 Runtime 的 AI 任务；关闭不会中断已受理任务。",
+    );
+  }
+}
+
+async function loadRuntimeManagement() {
+  try {
+    const response = await fetch("/api/codex/runtimes", { cache: "no-store" });
+    const payload = await response.json();
+    if (!response.ok || payload.success !== true) throw new Error("runtime_management_unavailable");
+    renderRuntimeManagement(payload.data);
+  } catch (_error) {
+    runtimeManagementList.replaceChildren();
+    setRuntimeManagementDescription("暂时无法读取 AI Runtime 状态。", "error");
+  }
+}
+
+async function saveRuntimeEnablement(input) {
+  const previousEnabled = input.dataset.previousEnabled === "true";
+  const enabled = input.checked;
+  input.disabled = true;
+  try {
+    const response = await fetch(`/api/codex/runtimes/${encodeURIComponent(input.dataset.runtimeId)}`, {
+      method: "PUT",
+      headers: settingsHeaders(true),
+      body: JSON.stringify({ enabled }),
+    });
+    const payload = await response.json();
+    if (!response.ok || payload.success !== true) throw new Error("runtime_enablement_update_failed");
+    renderRuntimeManagement(payload.data);
+  } catch (_error) {
+    input.checked = previousEnabled;
+    input.disabled = false;
+    setRuntimeManagementDescription("AI Runtime 状态保存失败，请稍后重试。", "error");
+  }
+}
+
+async function saveCodexSessionDefaults() {
+  const previous = codexDefaultFullAccess.checked;
+  codexDefaultFullAccess.disabled = true;
+  try {
+    const response = await fetch("/api/codex/session-defaults", {
+      method: "PUT",
+      headers: settingsHeaders(true),
+      body: JSON.stringify({
+        permission_mode: codexDefaultFullAccess.checked ? "full-access" : "read-only",
+      }),
+    });
+    const payload = await response.json();
+    if (!response.ok || payload.success !== true) throw new Error("session_defaults_update_failed");
+    codexSessionSettingsMessage.textContent = "";
+    codexSessionSettingsMessage.className = "message";
+  } catch (_error) {
+    codexDefaultFullAccess.checked = previous;
+    codexSessionSettingsMessage.textContent = "新建 Session 默认权限保存失败，请稍后重试。";
+    codexSessionSettingsMessage.className = "message message-error";
+  } finally {
+    codexDefaultFullAccess.disabled = false;
   }
 }
 
@@ -422,7 +592,11 @@ async function loadCodexModels() {
       sessionStorage.getItem(CODEX_MODEL_PREFERENCE_CACHE_KEY) || "null",
     );
     if (Array.isArray(cached?.models)) {
-      renderCodexModels(cached, { catalogReady: false });
+      codexModels = cached.models;
+      codexCatalogDefaultModelId = cached.default_model || "";
+      if (weixinTranslationStatus !== null) {
+        renderWeixinTranslationModelSettings(weixinTranslationStatus);
+      }
     }
   } catch (_error) {
     try {
@@ -438,10 +612,7 @@ async function loadCodexModels() {
       throw new Error("model_catalog_unavailable");
     }
     codexModelsLoaded = true;
-    renderCodexModels(payload.data, {
-      catalogReady: true,
-      persistFallback: true,
-    });
+    renderCodexModels(payload.data);
     try {
       sessionStorage.setItem(
         CODEX_MODEL_PREFERENCE_CACHE_KEY,
@@ -450,38 +621,8 @@ async function loadCodexModels() {
     } catch (_storageError) {
       // A storage failure must not affect the live settings.
     }
-    if (
-      readCodexPreference(CODEX_DEFAULT_MODEL_KEY)
-      || readCodexPreference(CODEX_DEFAULT_REASONING_EFFORT_KEY)
-    ) {
-      try {
-        await syncCodexSessionDefaults();
-      } catch (_error) {
-        codexSessionSettingsMessage.textContent =
-          "浏览器偏好已保存，但节点默认同步失败；微信新建仍会使用旧默认。";
-        codexSessionSettingsMessage.className = "message message-error";
-      }
-    }
   } catch (_error) {
-    try {
-      saveCodexPreference(CODEX_DEFAULT_MODEL_KEY, "");
-      saveCodexPreference(CODEX_DEFAULT_REASONING_EFFORT_KEY, "");
-    } catch (_storageError) {
-      // The error message below already covers unavailable browser storage.
-    }
-    codexDefaultModel.replaceChildren(
-      createOption("", defaultModelOptionLabel()),
-    );
-    codexDefaultModel.value = "";
-    codexDefaultModel.disabled = true;
-    codexDefaultReasoningEffort.replaceChildren(
-      createOption("", defaultReasoningOptionLabel()),
-    );
-    codexDefaultReasoningEffort.value = "";
-    codexDefaultReasoningEffort.disabled = true;
-    codexSessionSettingsMessage.textContent =
-      "暂时无法读取 Codex 模型，已改为跟随 Codex 默认。";
-    codexSessionSettingsMessage.className = "message message-error";
+    codexModels = [];
     if (weixinTranslationStatus !== null && codexModels.length > 0) {
       renderWeixinTranslationModelSettings(weixinTranslationStatus);
     }
@@ -1007,54 +1148,13 @@ quickInteractionPageSize.addEventListener("change", () => {
 });
 
 quickInteractionPageSize.value = readQuickInteractionPageSize();
-codexDefaultPermission.value = readCodexDefaultPermission();
+initializeSettingsChoicePickers();
 
-codexDefaultPermission.addEventListener("change", () => {
-  saveCodexDefaultPermission(codexDefaultPermission.value);
-});
-
-codexDefaultModel.addEventListener("change", async () => {
-  try {
-    saveCodexPreference(CODEX_DEFAULT_MODEL_KEY, codexDefaultModel.value);
-    renderCodexReasoningLevels();
-    saveCodexPreference(CODEX_DEFAULT_REASONING_EFFORT_KEY, "");
-    codexDefaultModel.disabled = true;
-    codexDefaultReasoningEffort.disabled = true;
-    await syncCodexSessionDefaults();
-    codexDefaultModel.disabled = false;
-    codexDefaultReasoningEffort.disabled = !selectedCodexModel();
-    codexSessionSettingsMessage.textContent = "";
-    codexSessionSettingsMessage.className = "message";
-  } catch (_error) {
-    codexDefaultModel.disabled = false;
-    codexDefaultReasoningEffort.disabled = !selectedCodexModel();
-    codexSessionSettingsMessage.textContent = "节点默认保存失败，请稍后重试。";
-    codexSessionSettingsMessage.className = "message message-error";
-  }
-});
-
-codexDefaultReasoningEffort.addEventListener("change", async () => {
-  try {
-    saveCodexPreference(
-      CODEX_DEFAULT_REASONING_EFFORT_KEY,
-      codexDefaultReasoningEffort.value,
-    );
-    codexDefaultModel.disabled = true;
-    codexDefaultReasoningEffort.disabled = true;
-    await syncCodexSessionDefaults();
-    codexDefaultModel.disabled = false;
-    codexDefaultReasoningEffort.disabled = false;
-    codexSessionSettingsMessage.textContent = "";
-    codexSessionSettingsMessage.className = "message";
-  } catch (_error) {
-    codexDefaultModel.disabled = false;
-    codexDefaultReasoningEffort.disabled = !selectedCodexModel();
-    codexSessionSettingsMessage.textContent = "节点默认保存失败，请稍后重试。";
-    codexSessionSettingsMessage.className = "message message-error";
-  }
-});
+codexDefaultFullAccess.addEventListener("change", saveCodexSessionDefaults);
 
 loadCodexModels();
+loadRuntimeManagement();
+loadCodexSessionDefaults();
 loadWeixinTranslationStatus();
 loadOpenClawWeixinSettings();
 

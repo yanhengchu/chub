@@ -115,6 +115,7 @@ FIXED_COMMAND_STATUS_CODES = frozenset(
         "chub_restart_requested",
         "quick_worker_restart_requested",
         "clawbot_restart_requested",
+        "network_restart_requested",
         "chub_slots_synced",
         "codex_retry_checked",
         "codex_session_archived",
@@ -404,6 +405,34 @@ class WeixinChubModeManager:
                 ready=False,
                 code="codex_unavailable",
                 message="Codex 运行依赖当前不可用。",
+            )
+        try:
+            self.codex_manager.require_runtime_submission("codex")
+        except ApiError as exc:
+            if exc.code == "ai_runtime_disabled":
+                return WeixinChubModeStatus(
+                    enabled=configuration.enabled,
+                    ready=False,
+                    code="ai_runtime_disabled",
+                    message=(
+                        "Codex Runtime 已停用，Chub 当前处于基础功能模式。"
+                        "请在设置页启用后再提交 AI 任务。"
+                    ),
+                )
+            return WeixinChubModeStatus(
+                enabled=configuration.enabled,
+                ready=False,
+                code="codex_unavailable",
+                message="Codex 运行依赖当前不可用。",
+            )
+        try:
+            self.quick_interactions.require_quick_session_creation()
+        except ApiError:
+            return WeixinChubModeStatus(
+                enabled=configuration.enabled,
+                ready=False,
+                code="quick_worker_unavailable",
+                message="Quick Worker 当前不可用，微信任务暂不能提交。",
             )
         try:
             self.codex_manager.validate_model(
@@ -1442,7 +1471,11 @@ class WeixinChubModeManager:
                 ),
                 delivery_route,
             )
-        if mode_enabled and command.kind in {"restart_worker", "restart_clawbot"}:
+        if mode_enabled and command.kind in {
+            "restart_worker",
+            "restart_clawbot",
+            "restart_network",
+        }:
             return self._finalize_fixed_command_result(
                 command.kind,
                 self._dispatch_maintenance_command(
@@ -2302,6 +2335,7 @@ class WeixinChubModeManager:
                         "chub_restart_requested",
                         "quick_worker_restart_requested",
                         "clawbot_restart_requested",
+                        "network_restart_requested",
                     }
                     and message.startswith("Restart")
                     and "Scheduled." in message
@@ -2386,14 +2420,17 @@ class WeixinChubModeManager:
         source_ip: str,
         delivery_route: QuickInteractionWeixinRoute,
     ) -> WeixinChubModeDispatchResult:
-        """Start a fixed Worker/ClawBot maintenance operation after dispatch returns."""
+        """Start a fixed maintenance operation after dispatch returns."""
         operation_id = uuid4().hex
-        code = (
-            "quick_worker_restart_requested"
-            if target == "worker"
-            else "clawbot_restart_requested"
-        )
-        labels = {"worker": "Worker", "clawbot": "ClawBot"}
+        codes = {
+            "worker": "quick_worker_restart_requested",
+            "clawbot": "clawbot_restart_requested",
+            "network": "network_restart_requested",
+        }
+        code = codes.get(target)
+        if code is None:
+            return self._dispatch_failure("submission_failed")
+        labels = {"worker": "Worker", "clawbot": "ClawBot", "network": "Network"}
         label = labels.get(target, target)
         with self._lock:
             if self._state_error:
@@ -5364,7 +5401,12 @@ class WeixinChubModeManager:
             or not result.message
             or self._has_inline_task_context(result.message)
             or (
-                command_kind in {"restart_web", "restart_worker", "restart_clawbot"}
+                command_kind in {
+                    "restart_web",
+                    "restart_worker",
+                    "restart_clawbot",
+                    "restart_network",
+                }
                 and result.message.startswith("Restart")
                 and "Scheduled." in result.message
             )

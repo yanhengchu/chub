@@ -58,6 +58,7 @@ from app.services.openclaw_weixin_chub_models import (
         ("restart", "restart_web", None, None, False),
         ("RESTART WORKER", "restart_worker", None, None, False),
         ("restart clawbot", "restart_clawbot", None, None, False),
+        ("restart network", "restart_network", None, None, False),
         ("upgrade", "upgrade", None, None, False),
         ("retry", "retry", None, None, False),
         ("stop", "stop", None, None, False),
@@ -303,6 +304,21 @@ def test_format_chub_overview_uses_only_supplied_snapshot() -> None:
         "No requests\n\n"
         "Weekly 75% · Today 2M"
     )
+
+
+def test_format_chub_overview_names_base_mode() -> None:
+    message = format_chub_overview(
+        elapsed_ms=10,
+        readiness=SimpleNamespace(ready=False, code="ai_runtime_disabled"),
+        memory_percent=None,
+        disk_percent=None,
+        failed_restart_notifications=0,
+        failed_stop_notifications=0,
+        sessions=(),
+        usage_message="Weekly Unavailable",
+    )
+
+    assert "Issues\n1. AI Runtime is disabled. Chub is in base mode." in message
 
 
 def test_format_chub_overview_omits_sessions_heading_when_empty() -> None:

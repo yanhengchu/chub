@@ -93,6 +93,7 @@ async def test_automation_list_and_background_acceptance(
             "/api/automations/browser/start",
             json={"mode": "headless"},
         )
+        restart_browser = await client.post("/api/automations/browser/restart")
         check_feishu = await client.post("/api/automations/environment/feishu/check")
         qr = await client.get("/api/automations/environment/feishu/qr")
         initialize_browser = await client.post(
@@ -106,6 +107,8 @@ async def test_automation_list_and_background_acceptance(
     assert run.json()["data"]["status"] == "queued"
     assert start_browser.status_code == 200
     assert start_browser.json()["data"]["state"] == "running"
+    assert restart_browser.status_code == 200
+    assert restart_browser.json()["data"]["state"] == "running"
     assert check_feishu.status_code == 200
     assert check_feishu.json()["data"]["state"] == "available"
     assert qr.status_code == 200
@@ -117,7 +120,10 @@ async def test_automation_list_and_background_acceptance(
     assert manager.start.call_args.args == ("monthly-report",)
     assert len(manager.start.call_args.kwargs["operation_id"]) == 32
     assert manager.start.call_args.kwargs["source_ip"] == "127.0.0.1"
-    manager.control_browser.assert_called_once_with("start", "headless")
+    assert [call.args for call in manager.control_browser.call_args_list] == [
+        ("start", "headless"),
+        ("restart", "headless"),
+    ]
     manager.check_feishu_environment.assert_called_once_with()
     manager.feishu_qr_content.assert_called_once_with()
     manager.initialize_browser.assert_called_once()
