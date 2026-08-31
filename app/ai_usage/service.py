@@ -9,9 +9,11 @@ from decimal import Decimal, ROUND_HALF_UP
 from zoneinfo import ZoneInfo
 
 from app.ai_usage.models import (
+    AiFiveHourUsage,
     AiTodayUsage,
     AiUsageData,
     AiUsageDisplay,
+    AiUsageDisplayPart,
     AiUsageSource,
     AiWeeklyUsage,
 )
@@ -29,6 +31,7 @@ from app.core.config import Settings
 
 LOGGER = logging.getLogger("hub.ai_usage")
 WEEKLY_WINDOW_MINUTES = 7 * 24 * 60
+FIVE_HOUR_WINDOW_MINUTES = 5 * 60
 
 
 @dataclass(frozen=True)
@@ -101,6 +104,11 @@ class AiUsageService:
         now = datetime.now(timezone)
         if cached.weekly is None or cached.weekly.resets_at.astimezone(timezone) <= now:
             return False
+        if (
+            cached.five_hour is not None
+            and cached.five_hour.resets_at.astimezone(timezone) <= now
+        ):
+            return False
         if cached.today is not None and cached.today.date != now.date():
             return False
         if cached.checked_at is None:
@@ -128,22 +136,23 @@ class AiUsageService:
                     raise ProviderBrowserUnavailable("refresh_timeout")
                 collected = self._provider_browser.collect(timeout_seconds=remaining)
                 return _CollectionOutcome(
-                    "provider_api",
+                    "sub2api",
                     self._available(
-                        source="provider_api",
+                        source="sub2api",
                         weekly=collected.weekly,
+                        five_hour=collected.five_hour,
                         today=collected.today,
                     ),
                     "AI API 额度暂不可用。",
-                    self._provider_identity_key(),
+                    self._sub2api_identity_key(collected.subscription_id),
                 )
             except ProviderBrowserUnavailable as exc:
                 LOGGER.info("AI provider usage collection unavailable: %s", exc)
                 return _CollectionOutcome(
-                    "provider_api",
+                    "sub2api",
                     None,
                     "AI API 额度暂不可用。",
-                    self._provider_identity_key(),
+                    self._sub2api_identity_key(),
                 )
         LOGGER.info("AI authentication type is unavailable: %s", account.message)
         return _CollectionOutcome(None, None, "AI 认证状态暂不可用。")
@@ -167,6 +176,14 @@ class AiUsageService:
         )
         if weekly_window is None:
             return None
+        five_hour_window = next(
+            (
+                window
+                for window in quota.windows
+                if window.window_duration_minutes == FIVE_HOUR_WINDOW_MINUTES
+            ),
+            None,
+        )
 
         timezone = ZoneInfo(self._settings.ai_usage.timezone)
         today_date = datetime.now(timezone).date()
@@ -197,6 +214,14 @@ class AiUsageService:
                 remaining_percent=weekly_window.remaining_percent,
                 resets_at=weekly_window.resets_at,
             ),
+            five_hour=(
+                AiFiveHourUsage(
+                    remaining_percent=five_hour_window.remaining_percent,
+                    resets_at=five_hour_window.resets_at,
+                )
+                if five_hour_window is not None
+                else None
+            ),
             today=AiTodayUsage(
                 date=today_date,
                 tokens=tokens,
@@ -210,6 +235,7 @@ class AiUsageService:
         source: AiUsageSource,
         weekly: AiWeeklyUsage,
         today: AiTodayUsage,
+        five_hour: AiFiveHourUsage | None = None,
     ) -> AiUsageData:
         checked_at = datetime.now(ZoneInfo(self._settings.ai_usage.timezone))
         data = AiUsageData(
@@ -219,6 +245,7 @@ class AiUsageService:
             timezone=self._settings.ai_usage.timezone,
             checked_at=checked_at,
             weekly=weekly,
+            five_hour=five_hour,
             today=today,
         )
         return data.model_copy(update={"display": self._display(data)})
@@ -238,11 +265,18 @@ class AiUsageService:
                 today = cached.today
                 if today is not None and today.date != now.date():
                     today = AiTodayUsage(date=now.date())
+                five_hour = cached.five_hour
+                if (
+                    five_hour is not None
+                    and five_hour.resets_at.astimezone(timezone) <= now
+                ):
+                    five_hour = None
                 stale = cached.model_copy(
                     update={
                         "stale": True,
                         "message": outcome.message,
                         "today": today,
+                        "five_hour": five_hour,
                     }
                 )
                 return stale.model_copy(update={"display": self._display(stale)})
@@ -254,11 +288,12 @@ class AiUsageService:
             message=outcome.message,
         )
 
-    def _provider_identity_key(self) -> str | None:
-        subscription_id = self._settings.ai_usage.provider_api.subscription_id
+    def _sub2api_identity_key(self, subscription_id: int | None = None) -> str | None:
+        if subscription_id is None:
+            subscription_id = self._settings.ai_usage.sub2api.subscription_id
         if subscription_id is None:
             return None
-        return f"{self._settings.ai_usage.provider}:{subscription_id}"
+        return f"sub2api:{subscription_id}"
 
     @classmethod
     def _display(cls, data: AiUsageData) -> AiUsageDisplay:
@@ -287,12 +322,54 @@ class AiUsageService:
                 today_parts.append(token_text)
         timezone = ZoneInfo(data.timezone)
         reset = weekly.resets_at.astimezone(timezone)
+        weekly_reset_text = f"Reset {reset.month}/{reset.day} {reset:%H:%M}"
+        home_parts = [AiUsageDisplayPart(kind="weekly", text=weekly_text)]
+        if limit_text:
+            home_parts.append(AiUsageDisplayPart(kind="limit", text=limit_text))
+        home_parts.append(AiUsageDisplayPart(kind="reset", text=weekly_reset_text))
+
         long_parts = [weekly_text]
         if limit_text:
             long_parts.append(limit_text)
         if today_parts:
             long_parts.append(f"Today {' '.join(today_parts)}")
         long_parts.append(f"Resets {reset.month}/{reset.day} {reset:%H:%M}")
+
+        if data.five_hour is not None:
+            five_hour_reset = data.five_hour.resets_at.astimezone(timezone)
+            five_hour_text = f"5h {data.five_hour.remaining_percent}% left"
+            five_hour_reset_text = (
+                f"Reset {five_hour_reset.month}/{five_hour_reset.day} "
+                f"{five_hour_reset:%H:%M}"
+            )
+            home_parts.extend(
+                [
+                    AiUsageDisplayPart(kind="five_hour", text=five_hour_text),
+                    AiUsageDisplayPart(kind="reset", text=five_hour_reset_text),
+                ]
+            )
+            if today_parts:
+                home_parts.append(
+                    AiUsageDisplayPart(
+                        kind="today",
+                        text=f"Today {' '.join(today_parts)}",
+                    )
+                )
+            long_parts = [
+                weekly_text,
+                *([limit_text] if limit_text else []),
+                weekly_reset_text,
+                five_hour_text,
+                five_hour_reset_text,
+                *([f"Today {' '.join(today_parts)}"] if today_parts else []),
+            ]
+        elif today_parts:
+            home_parts.append(
+                AiUsageDisplayPart(
+                    kind="today",
+                    text=f"Today {' '.join(today_parts)}",
+                )
+            )
 
         short_parts = [f"Weekly {weekly.remaining_percent}%"]
         if data.today is not None and data.today.tokens is not None:
@@ -303,6 +380,7 @@ class AiUsageService:
         return AiUsageDisplay(
             long=" · ".join(long_parts),
             short=" · ".join(short_parts),
+            home=home_parts,
         )
 
     @staticmethod

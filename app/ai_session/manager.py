@@ -4,7 +4,7 @@ import logging
 import os
 import threading
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -53,15 +53,16 @@ _LEGACY_TRANSLATION_WORKSPACE = (
 )
 _LEGACY_TRANSLATION_TITLE_PREFIX = "You are a text editor and translator."
 _MAX_LEGACY_TRANSLATION_ARCHIVES_PER_START = 20
+_NATIVE_DISCOVERY_CLAIM_GRACE_SECONDS = 5
 
 
 class AiSessionManager:
     """The sole owner of Chub logical AI Session state.
 
-    Runtime-native IDs are accepted only from the fixed adapter or Worker
-    result path. They are deliberately never returned in the public Session
-    view. Unarchived Runtime sessions are discovered into fresh Chub records
-    so a runtime-data reset does not hide sessions created outside Chub.
+    Runtime-native IDs are deliberately never returned in the public Session
+    view. Worker results and terminal Hooks establish Chub-created Session
+    ownership; discovery creates records only for native Sessions that remain
+    unclaimed after a short, non-blocking observation window.
     """
 
     def __init__(self, settings: Settings) -> None:
@@ -99,6 +100,7 @@ class AiSessionManager:
         self._lock = threading.RLock()
         self._quick_interaction_is_running: Callable[[str], bool] = lambda _id: False
         self._system_upgrade_writes_blocked: Callable[[], bool] = lambda: False
+        self._pending_native_discoveries: dict[tuple[str, str], datetime] = {}
         self._reconcile_saved_terminals()
 
     def set_quick_interaction_checker(
@@ -219,7 +221,7 @@ class AiSessionManager:
         with self._lock:
             self._require_store()
             if reconcile and not self._system_upgrade_writes_blocked():
-                self._consume_hook_result(session_id)
+                self._consume_hook_result_safely(session_id)
                 self._sync_bound_native_sessions()
             session = self.store.get(session_id)
             if session is None:
@@ -544,7 +546,7 @@ class AiSessionManager:
 
     def ensure_terminal(self, session_id: str) -> AiSession:
         with self._lock:
-            session = self.get_session(session_id)
+            session = self.get_session(session_id, reconcile=False)
             self._require_terminal_access(session)
             self._require_runtime_submission(session.runtime_id)
             if self._quick_interaction_is_running(session.id):
@@ -564,6 +566,14 @@ class AiSessionManager:
                     "Codex Session 正在由其他进程使用，请等待任务结束。",
                 )
             was_running = session.status == "running"
+            if not self.supervisor.is_terminal_running(session.id):
+                # A Hook is accepted only for this launch. Persist before the
+                # Runtime starts so a late Hook from a previous carrier cannot
+                # bind an unbound Session.
+                session.terminal_launch_id = uuid.uuid4().hex
+                session.updated_at = utc_now()
+                self.store.save(session)
+                self._consume_hook_result_safely(session.id)
             try:
                 self._ensure_profile()
                 self.supervisor.ensure_terminal(
@@ -620,9 +630,16 @@ class AiSessionManager:
     def restart_terminal_backend(self, session_id: str) -> AiSession:
         self._require_available()
         with self._lock:
-            session = self.get_session(session_id)
+            session = self.get_session(session_id, reconcile=False)
             self._require_terminal_access(session)
             self._ensure_profile()
+            # Restarting the bridge creates a new terminal carrier. Advance the
+            # generation before it starts so a Hook from the carrier being
+            # stopped cannot affect this new instance.
+            session.terminal_launch_id = uuid.uuid4().hex
+            session.updated_at = utc_now()
+            self.store.save(session)
+            self._consume_hook_result_safely(session.id)
             self.supervisor.restart_terminal_backend(
                 session,
                 max_running=self.settings.codex_pty.max_running,
@@ -641,6 +658,7 @@ class AiSessionManager:
             session.status = "stopped"
             session.activity = "idle"
             session.activity_source = "none"
+            session.terminal_launch_id = None
             session.active_permission_mode = None
             session.error = None
             session.updated_at = utc_now()
@@ -711,6 +729,9 @@ class AiSessionManager:
         self,
         session_id: str,
         native_session_id: str,
+        *,
+        worker_task_id: str | None = None,
+        execution_id: str | None = None,
     ) -> None:
         with self._lock:
             self._require_store()
@@ -719,13 +740,32 @@ class AiSessionManager:
                 raise ApiError(404, "codex_session_not_found", "Codex session not found")
             self._require_quick_access(session)
             self.validate_native_session_id(native_session_id)
+            if worker_task_id is not None or execution_id is not None:
+                if (
+                    worker_task_id is None
+                    or execution_id is None
+                    or session.quick_native_claim_task_id != worker_task_id
+                    or session.quick_native_claim_execution_id not in {None, execution_id}
+                ):
+                    raise ApiError(
+                        409,
+                        "quick_interaction_native_session_stale",
+                        "Quick Worker result no longer belongs to the current Session task.",
+                    )
+                if session.quick_native_claim_execution_id != execution_id:
+                    session.quick_native_claim_execution_id = execution_id
+                    session.updated_at = utc_now()
+                    self.store.save(session)
             for candidate in self.store.list():
                 if (
                     candidate.id != session_id
                     and candidate.runtime_id == session.runtime_id
                     and candidate.native_session_id == native_session_id
                 ):
-                    if self._can_repair_discovered_quick_binding(session, candidate):
+                    if (
+                        candidate.discovered
+                        and not self.supervisor.owns_terminal_writer(candidate.id)
+                    ):
                         if (
                             self.has_active_writer(native_session_id)
                             and not self._quick_interaction_is_running(session.id)
@@ -749,6 +789,9 @@ class AiSessionManager:
                                 "Chub Session identity conflict: Codex session identity is "
                                 "already bound to another Session",
                             ) from exc
+                        adopted = self.store.get(session.id)
+                        if adopted is not None:
+                            self._clear_native_identity_conflict(adopted)
                         return
                     raise ApiError(
                         409,
@@ -779,6 +822,7 @@ class AiSessionManager:
                             "quick_interaction_native_session_conflict",
                             "Chub Session identity conflict: the translation native Session is already bound to another Session",
                         ) from exc
+                    self._clear_native_identity_conflict(session)
                     return
                 raise ApiError(
                     409,
@@ -800,22 +844,49 @@ class AiSessionManager:
                         "Chub Session identity conflict: Codex session identity is "
                         "already bound to another Session",
                     ) from exc
+            current = self.store.get(session_id)
+            if current is not None:
+                self._clear_native_identity_conflict(current)
 
-    def _can_repair_discovered_quick_binding(
-        self,
-        quick_session: AiSession,
-        discovered_session: AiSession,
-    ) -> bool:
-        """Recognize only the discovery race; never take over a real terminal."""
-        return (
-            quick_session.session_mode == "quick"
-            and quick_session.native_session_id is None
-            and discovered_session.session_mode == "terminal"
-            and discovered_session.discovered
-            and discovered_session.cwd == quick_session.cwd
-            and discovered_session.created_at >= quick_session.created_at
-            and not self.supervisor.owns_terminal_writer(discovered_session.id)
-        )
+    def _clear_native_identity_conflict(self, session: AiSession) -> None:
+        if session.error != "native_session_identity_conflict":
+            return
+        session.error = None
+        session.updated_at = utc_now()
+        self.store.save(session)
+
+    def register_quick_native_claim(self, session_id: str, worker_task_id: str) -> None:
+        """Reserve one current Quick Worker task as the only native-ID claimant."""
+        with self._lock:
+            session = self.store.get(session_id)
+            if session is None:
+                raise ApiError(404, "codex_session_not_found", "Codex session not found")
+            self._require_quick_access(session)
+            if session.quick_native_claim_task_id not in {None, worker_task_id}:
+                raise ApiError(
+                    409,
+                    "quick_interaction_native_session_claim_active",
+                    "A different Quick Worker task is already claiming this Session.",
+                )
+            if session.quick_native_claim_task_id == worker_task_id:
+                return
+            session.quick_native_claim_task_id = worker_task_id
+            session.quick_native_claim_execution_id = None
+            session.updated_at = utc_now()
+            self.store.save(session)
+
+    def clear_quick_native_claim(self, session_id: str, worker_task_id: str) -> None:
+        with self._lock:
+            session = self.store.get(session_id)
+            if (
+                session is None
+                or session.quick_native_claim_task_id != worker_task_id
+            ):
+                return
+            session.quick_native_claim_task_id = None
+            session.quick_native_claim_execution_id = None
+            session.updated_at = utc_now()
+            self.store.save(session)
 
     def recover_interrupted_quick_interaction(self, session_id: str) -> None:
         with self._lock:
@@ -1202,7 +1273,29 @@ class AiSessionManager:
 
     def _consume_hook_results(self) -> None:
         for session in self.store.list():
-            self._consume_hook_result(session.id)
+            self._consume_hook_result_safely(session.id)
+
+    def _consume_hook_result_safely(self, session_id: str) -> None:
+        """Keep one malformed or stale Hook from blocking Session management."""
+        try:
+            self._consume_hook_result(session_id)
+        except ApiError as exc:
+            if exc.code != "codex_session_native_conflict":
+                raise
+            LOGGER.warning(
+                "Discarding conflicting Runtime activity Hook for managed Session %s",
+                session_id,
+            )
+            session = self.store.get(session_id)
+            if session is not None:
+                # Keep the conflict local and visible without changing the
+                # native writer or turning an otherwise usable Session into a
+                # global service failure. A fresh terminal launch clears this
+                # diagnostic before it can claim an identity again.
+                session.error = "native_session_identity_conflict"
+                session.updated_at = utc_now()
+                self.store.save(session)
+            self._remove_hook_file(session_id)
 
     def _consume_hook_result(self, session_id: str) -> None:
         try:
@@ -1218,6 +1311,26 @@ class AiSessionManager:
         activity = event.activity
         activity_source = event.activity_source
         changed = False
+        if session and session.session_mode == "terminal":
+            # New terminal launches carry a persisted generation. Legacy Hooks
+            # may still update an already-bound Session, but may never claim an
+            # unbound Session because their origin cannot be proven.
+            if session.native_session_id is None:
+                launch_matches = (
+                    session.terminal_launch_id is not None
+                    and event.launch_id == session.terminal_launch_id
+                )
+            else:
+                # Existing pre-generation bindings are tolerated, but a
+                # generation-aware Session never accepts an unlabelled or old
+                # Hook as activity from its current terminal.
+                launch_matches = (
+                    session.terminal_launch_id is None
+                    and event.launch_id is None
+                ) or event.launch_id == session.terminal_launch_id
+            if not launch_matches:
+                self._remove_hook_file(session_id)
+                return
         if session and session.session_mode == "quick":
             # The Quick Worker result is the sole authority for native Session
             # identity. A nested Runtime command inherits the hook environment,
@@ -1237,21 +1350,51 @@ class AiSessionManager:
                         "Chub Session identity conflict: Runtime Session identity "
                         "does not match the managed Session",
                     )
-                # A native Session already represented by another Chub record
-                # is never reclassified across terminal and quick modes.
-                try:
-                    self.store.bind_native_session(
-                        session.id,
-                        native_session_id,
-                        session.runtime_id,
-                    )
-                except AiSessionStoreUnavailable as exc:
-                    raise ApiError(
-                        409,
-                        "codex_session_native_conflict",
-                        "Runtime Session identity is already bound to another managed Session",
-                    ) from exc
-                session = self.store.get(session.id)
+                duplicate = next(
+                    (
+                        candidate
+                        for candidate in self.store.list()
+                        if candidate.id != session.id
+                        and candidate.runtime_id == session.runtime_id
+                        and candidate.native_session_id == native_session_id
+                    ),
+                    None,
+                )
+                if (
+                    duplicate
+                    and duplicate.discovered
+                    and session.session_mode == "terminal"
+                    and self.supervisor.owns_terminal_writer(session.id)
+                ):
+                    try:
+                        self.store.adopt_discovered_native_session(
+                            session.id,
+                            duplicate.id,
+                            native_session_id,
+                            session.runtime_id,
+                        )
+                    except AiSessionStoreUnavailable as exc:
+                        raise ApiError(
+                            409,
+                            "codex_session_native_conflict",
+                            "Runtime Session identity is already bound to another managed Session",
+                        ) from exc
+                    session = self.store.get(session.id)
+                else:
+                    # A native Session already represented by another Chub record
+                    # is never reclassified across terminal and quick modes.
+                    try:
+                        self.store.bind_native_session(
+                            session.id,
+                            native_session_id,
+                            session.runtime_id,
+                        )
+                    except AiSessionStoreUnavailable as exc:
+                        raise ApiError(
+                            409,
+                            "codex_session_native_conflict",
+                            "Runtime Session identity is already bound to another managed Session",
+                        ) from exc
         if session and activity in {"working", "idle"}:
             expected_source = (
                 activity_source
@@ -1293,23 +1436,30 @@ class AiSessionManager:
             for item in discovery.sessions
         }
         stored = self._remove_stale_translation_discoveries(self.store.list())
-        pending_quick_cwds = {
-            session.cwd
-            for session in stored
-            if (
+        pending_native_claim = any(
+            (
                 session.session_mode == "quick"
                 and session.native_session_id is None
                 and self._quick_interaction_is_running(session.id)
             )
-        }
+            or (
+                session.session_mode == "terminal"
+                and session.native_session_id is None
+                and self.supervisor.owns_terminal_writer(session.id)
+            )
+            for session in stored
+        )
         bound_native_keys = {
             (session.runtime_id, session.native_session_id)
             for session in stored
             if session.native_session_id is not None
         }
+        now = utc_now()
+        seen_pending_keys: set[tuple[str, str]] = set()
         for native in discovery.sessions:
             native_key = (native.runtime_id, native.native_session_id)
             if native_key in bound_native_keys:
+                self._pending_native_discoveries.pop(native_key, None)
                 continue
             # The translation Runtime Session is an internal quick Session,
             # not a user-owned terminal Session. Its native record can outlive
@@ -1317,13 +1467,21 @@ class AiSessionManager:
             # terminal record during that binding/retirement window.
             if self._is_translation_workspace(native.cwd):
                 continue
-            # A quick Worker creates the native Session before its result can
-            # bind the Chub record. Do not auto-import that short-lived gap as
-            # a second terminal Session.
-            if native.cwd in pending_quick_cwds:
-                continue
+            if pending_native_claim:
+                first_seen = self._pending_native_discoveries.setdefault(native_key, now)
+                seen_pending_keys.add(native_key)
+                if now - first_seen < timedelta(
+                    seconds=_NATIVE_DISCOVERY_CLAIM_GRACE_SECONDS
+                ):
+                    continue
+            self._pending_native_discoveries.pop(native_key, None)
             self.store.save(self._session_from_native(native))
             bound_native_keys.add(native_key)
+        self._pending_native_discoveries = {
+            native_key: first_seen
+            for native_key, first_seen in self._pending_native_discoveries.items()
+            if native_key in seen_pending_keys
+        }
         for session in stored:
             native_session_id = session.native_session_id
             if native_session_id is None:

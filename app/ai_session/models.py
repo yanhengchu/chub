@@ -64,6 +64,15 @@ class AiSession(_StrictModel):
     workspace_name: str = Field(min_length=1, max_length=128)
     cwd: Path
     discovered: bool = False
+    terminal_launch_id: str | None = Field(
+        default=None, pattern=r"^[a-f0-9]{32}$"
+    )
+    quick_native_claim_task_id: str | None = Field(
+        default=None, pattern=r"^qw-[0-9]{13}-[a-f0-9]{32}$"
+    )
+    quick_native_claim_execution_id: str | None = Field(
+        default=None, pattern=r"^[a-f0-9]{32}$"
+    )
     title: str | None = Field(default=None, max_length=48)
     status: SessionStatus = "new"
     activity: TurnActivity = "unknown"

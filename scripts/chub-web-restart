@@ -43,7 +43,16 @@ fi
 
 case "$PLATFORM" in
     Darwin)
-        exec launchctl kickstart -k "gui/$(id -u)/$MACOS_LABEL"
+        domain="gui/$(id -u)"
+        plist_path="$HOME/Library/LaunchAgents/$MACOS_LABEL.plist"
+        if launchctl print "$domain/$MACOS_LABEL" >/dev/null 2>&1; then
+            exec launchctl kickstart -k "$domain/$MACOS_LABEL"
+        fi
+        [[ -f "$plist_path" ]] || {
+            echo "chub-web-restart: LaunchAgent plist is unavailable" >&2
+            exit 1
+        }
+        exec launchctl bootstrap "$domain" "$plist_path"
         ;;
     Linux)
         exec systemctl --user --no-block restart "$SERVICE_NAME.service"

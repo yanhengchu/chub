@@ -97,7 +97,8 @@ def accepted_worker_task(submission: dict[str, object]) -> dict[str, object]:
                 "created_at": now.isoformat(),
                 "updated_at": now.isoformat(),
                 "deadline_at": (now + timedelta(minutes=5)).isoformat(),
-                "worker_generation": "generation-1",
+            "worker_generation": "generation-1",
+            "execution_id": "11111111111111111111111111111111",
                 "runner_pid": None,
                 "cancellation_requested": False,
                 "restart_sensitive": submission.get("restart_sensitive", False),
@@ -1026,6 +1027,59 @@ def test_quick_interaction_completion_notification_is_independent(
     assert notification_route is None
 
 
+def test_claim_cleanup_failure_does_not_block_completion_or_notification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    notifier = MagicMock(return_value=SimpleNamespace(status="sent", error=None))
+    quick_interactions = manager(tmp_path, completion_notifier=notifier)
+    finished_handler = MagicMock()
+    quick_interactions.set_task_finished_handler(finished_handler)
+    task = QuickInteractionTask(
+        id="task-claim-cleanup",
+        worker_task_id="qw-1750000000000-11111111111111111111111111111111",
+        session_id="session-1",
+        prompt="检查状态",
+        notification_route="weixin-task",
+        status="running",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    quick_interactions._tasks[task.id] = task
+    quick_interactions._operations[task.id] = ("operation-1", "127.0.0.1")
+    quick_interactions.codex_manager.clear_quick_native_claim.side_effect = OSError(
+        "Session state is temporarily unavailable"
+    )
+
+    class ImmediateThread:
+        def __init__(self, *, target, args, daemon):
+            self.target = target
+            self.args = args
+
+        def start(self) -> None:
+            self.target(*self.args)
+
+    monkeypatch.setattr(
+        "app.codex.quick_interactions.threading.Thread",
+        ImmediateThread,
+    )
+
+    quick_interactions._finish(task.id, "succeeded", "完成")
+
+    finished = quick_interactions.get(task.id)
+    assert finished.status == "succeeded"
+    assert finished.notification_status == "sent"
+    finished_handler.assert_called_once()
+    assert quick_interactions._pending_native_claim_clears == {
+        (task.session_id, task.worker_task_id)
+    }
+
+    quick_interactions.codex_manager.clear_quick_native_claim.side_effect = None
+    quick_interactions._retry_pending_native_claim_clears()
+
+    assert quick_interactions._pending_native_claim_clears == set()
+
+
 def test_notification_failure_does_not_change_task_result(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1121,6 +1175,58 @@ def test_weixin_task_status_snapshot_is_read_only_and_route_scoped(
         ("session-1", "检查设备状态并核对当前运行任务列表中的完整标题是否正确展示"),
     )
     assert quick_interactions.get(ended.id) == before
+
+
+def test_running_standard_task_summaries_include_all_standard_tasks(
+    tmp_path: Path,
+) -> None:
+    quick_interactions = manager(tmp_path)
+    web_task = QuickInteractionTask(
+        id="web-task",
+        session_id="session-web",
+        prompt="检查 Web 任务摘要",
+        summary="检查 Web 任务摘要",
+        status="running",
+        notification_route="default",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    weixin_task = web_task.model_copy(
+        update={
+            "id": "weixin-task",
+            "session_id": "session-weixin",
+            "summary": "检查微信任务摘要",
+            "notification_route": "weixin-task",
+        }
+    )
+    translation_task = web_task.model_copy(
+        update={
+            "id": "translation-task",
+            "session_id": "session-translation",
+            "kind": "translation",
+        }
+    )
+    completed_task = web_task.model_copy(
+        update={
+            "id": "completed-task",
+            "session_id": "session-completed",
+            "status": "succeeded",
+        }
+    )
+    quick_interactions._tasks = {
+        task.id: task
+        for task in (web_task, weixin_task, translation_task, completed_task)
+    }
+
+    snapshot = quick_interactions.running_standard_task_summaries()
+
+    assert snapshot.running_tasks == (
+        ("session-web", "检查 Web 任务摘要"),
+        ("session-weixin", "检查微信任务摘要"),
+    )
+    assert snapshot.running_count == 0
+    assert snapshot.pending_notification_count == 0
+    assert snapshot.failed_notification_count == 0
 
 
 def test_weixin_notification_route_is_private_and_survives_restart(
@@ -1232,6 +1338,129 @@ def test_worker_restart_preserves_active_task_and_pending_notification(
     assert recovered.get(task.id).notification_status == "skipped"
     assert recovered.is_running(task.session_id) is True
     codex_manager.recover_interrupted_quick_interaction.assert_not_called()
+    codex_manager.register_quick_native_claim.assert_called_once_with(
+        task.session_id,
+        task.worker_task_id,
+    )
+
+
+def test_worker_recovery_treats_null_delivery_marker_as_unconfirmed(
+    settings,
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "quick-interactions.json"
+    task = QuickInteractionTask(
+        id="task-1",
+        worker_task_id="qw-1750000000000-11111111111111111111111111111111",
+        session_id="session-1",
+        prompt="检查状态",
+        status="running",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    serialized = task.model_dump(mode="json")
+    serialized["_operation_context"] = {
+        "operation_id": "operation-1",
+        "source_ip": "127.0.0.1",
+    }
+    serialized["_worker_delivery_confirmed"] = None
+    state.write_text(json.dumps([serialized]), encoding="utf-8")
+
+    recovered = QuickInteractionManager(
+        tmp_path / "codex-sessions.json",
+        tmp_path / "runtime",
+        MagicMock(),
+        MagicMock(),
+        worker_settings=settings,
+    )
+
+    assert recovered._local_state_error is None
+    persisted = json.loads(state.read_text(encoding="utf-8"))
+    assert "_worker_delivery_confirmed" not in persisted[0]
+
+
+def test_worker_claim_restore_conflict_is_local_and_reconciles_task(
+    settings,
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "quick-interactions.json"
+    task = QuickInteractionTask(
+        id="task-claim-conflict",
+        worker_task_id="qw-1750000000000-11111111111111111111111111111111",
+        session_id="session-1",
+        prompt="检查状态",
+        status="running",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    serialized = task.model_dump(mode="json")
+    serialized["_operation_context"] = {
+        "operation_id": "operation-1",
+        "source_ip": "127.0.0.1",
+    }
+    state.write_text(json.dumps([serialized]), encoding="utf-8")
+    codex_manager = MagicMock()
+    codex_manager.get_session.return_value = CodexSession(
+        id="session-1",
+        workspace_id="chub",
+        workspace_name="Chub",
+        cwd=tmp_path,
+        codex_session_id=None,
+        status="stopped",
+        permission_mode="auto-review",
+    )
+    codex_manager.register_quick_native_claim.side_effect = ApiError(
+        409,
+        "quick_interaction_native_session_claim_active",
+        "A different Quick Worker task is already claiming this Session.",
+    )
+    quick_interactions = QuickInteractionManager(
+        tmp_path / "codex-sessions.json",
+        tmp_path / "runtime",
+        codex_manager,
+        worker_settings=settings,
+    )
+    now = utc_now()
+    view = {
+        "task_id": task.worker_task_id,
+        "runtime_id": "codex",
+        "status": "succeeded",
+        "prompt_sha256": "a" * 64,
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat(),
+        "deadline_at": (now + timedelta(minutes=5)).isoformat(),
+        "worker_generation": "generation-1",
+        "execution_id": "11111111111111111111111111111111",
+        "runner_pid": None,
+        "cancellation_requested": False,
+        "result": "不应写回",
+        "error": None,
+        "error_source": None,
+        "error_code": None,
+        "exit_code": 0,
+        "native_session_id": "11111111-1111-4111-8111-111111111111",
+    }
+
+    def worker_call(action: str, **_payload):
+        if action == "task_list":
+            return {"success": True, "data": {"tasks": []}}
+        if action == "task_get":
+            return {"success": True, "data": {"task": view}}
+        if action == "task_acknowledge":
+            return {"success": True, "data": {"delivery": {}}}
+        raise AssertionError(action)
+
+    quick_interactions._worker_call = worker_call
+
+    quick_interactions._reconcile_worker_once(initial=True)
+
+    finished = quick_interactions.get(task.id)
+    assert quick_interactions._local_state_error is None
+    assert quick_interactions.recovery_ready is True
+    assert finished.status == "failed"
+    assert finished.result is None
+    assert "could not be restored" in (finished.error or "")
+    codex_manager.bind_quick_interaction_native_session.assert_not_called()
 
 
 def test_worker_recovery_barrier_fails_quick_session_writes_closed(
@@ -1374,6 +1603,7 @@ def test_worker_reconciliation_merges_once_and_acknowledges_after_persistence(
         "updated_at": now.isoformat(),
         "deadline_at": (now + timedelta(minutes=5)).isoformat(),
         "worker_generation": "generation-1",
+        "execution_id": "11111111111111111111111111111111",
         "runner_pid": None,
         "cancellation_requested": False,
         "result": "恢复后的唯一结果",
@@ -1548,6 +1778,7 @@ def test_worker_reconciliation_converges_native_session_conflict(
         "updated_at": now.isoformat(),
         "deadline_at": (now + timedelta(minutes=5)).isoformat(),
         "worker_generation": "generation-1",
+        "execution_id": "11111111111111111111111111111111",
         "runner_pid": None,
         "cancellation_requested": False,
         "result": "已完成",

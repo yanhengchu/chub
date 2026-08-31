@@ -89,7 +89,7 @@ async def test_home_page_is_public_and_contains_no_credential_form(
     assert 'id="openclaw-access-unavailable"' not in response.text
     assert "远程访问未启用" not in response.text
     assert 'data-card-key="openclaw"' not in response.text
-    assert 'id="clawbot-badge"' in response.text
+    assert 'id="clawbot-badge"' not in response.text
     assert 'id="clawbot-detail"' in response.text
     assert 'id="openclaw-gateway-badge"' not in response.text
     assert 'id="openclaw-channels"' not in response.text
@@ -113,7 +113,7 @@ async def test_home_page_is_public_and_contains_no_credential_form(
     assert 'id="automation-environment-message"' in response.text
     assert 'class="automation-feishu-panel"' in response.text
     assert "复用飞书登录状态执行自动化任务。" in response.text
-    assert "查看 Chub、Chub Quick Worker、Chub Debug Chrome 和 OpenClaw Gateway 状态。" in response.text
+    assert "查看服务运行状态并进行必要维护。" in response.text
     assert 'data-card-key="automation-environment"' not in response.text
     assert 'data-card-key="workstation" data-collapsible-card' in response.text
     assert 'data-card-key="workstation" data-collapsible-card data-collapsed="true"' not in response.text
@@ -140,6 +140,7 @@ async def test_home_page_is_public_and_contains_no_credential_form(
         'data-card-key="workstation"'
     )
     assert 'id="automation-browser-control"' in response.text
+    assert 'id="automation-browser-badge"' not in response.text
     assert 'id="automation-browser-detail"' in response.text
     assert 'id="automation-browser-message"' in response.text
     assert 'aria-controls="automation-browser-dialog"' in response.text
@@ -160,7 +161,7 @@ async def test_home_page_is_public_and_contains_no_credential_form(
     assert 'id="automation-feishu-qr"' in response.text
     assert 'id="automation-feishu-verify"' not in response.text
     assert "飞书环境" in response.text
-    assert "浏览器控制服务：按需管理 Debug Chrome 实例" in response.text
+    assert "正在检查浏览器控制服务" in response.text
     assert "用于飞书登录与任务执行" in response.text
     assert "有界面" in response.text
     assert "无界面" in response.text
@@ -217,14 +218,17 @@ async def test_home_page_is_public_and_contains_no_credential_form(
     assert '<button id="restart-hub"' in response.text
     assert '<button id="restart-hub" class="site-header-title"' not in response.text
     assert '<div class="site-header-title">' in response.text
-    assert 'id="chub-service-badge"' in response.text
-    assert 'id="quick-worker-badge"' in response.text
+    assert 'id="chub-service-badge"' not in response.text
+    assert 'id="quick-worker-badge"' not in response.text
     assert 'id="quick-worker-restart"' in response.text
     assert 'id="quick-worker-start"' in response.text
     assert 'id="quick-worker-stop"' in response.text
     assert '>重启并清理任务</button>' not in response.text
     assert 'id="stop-hub"' in response.text
     assert 'id="automation-browser-restart"' in response.text
+    assert response.text.index('id="automation-browser-restart"') < response.text.index(
+        'id="automation-browser-control"'
+    )
     assert 'id="system-upgrade-badge"' not in response.text
     assert 'id="system-upgrade-start"' in response.text
     assert 'aria-controls="confirmation-dialog"' in response.text
@@ -644,7 +648,7 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "浏览器将在稍后自动刷新页面" in dashboard_script
     assert "Chub Quick Worker、Ubuntu Chub Debug Chrome 和 OpenClaw Gateway 是独立服务，不会被重启" in dashboard_script
     assert "tmux 和原生 Codex 会话保留，重新进入时恢复" in dashboard_script
-    assert 'setBadge(elements.quickWorkerBadge, "重启完成", "success")' in dashboard_script
+    assert 'setWorkstationStatus(elements.quickWorkerDetail, data.operation.message, "success")' in dashboard_script
     assert "systemUpgradeReloadOperationId" in dashboard_script
     assert 'data.operation?.status === "succeeded"' in dashboard_script
     assert 'headers: { "Content-Type": "application/json" }' in dashboard_script
@@ -660,8 +664,8 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert 'dashboardNavigationEntry?.type === "back_forward"' in dashboard_script
     assert "if (dashboardIsHistoryReturn && openclawCacheRestored)" in dashboard_script
     assert "cardLoads.push(loadOpenClawWeixinStatus())" in dashboard_script
-    assert "状态刷新失败，当前展示上次检测结果" in dashboard_script
-    assert 'restart: ["正在重启", "muted"]' in dashboard_script
+    assert "无法读取最新任务执行服务状态，保留上次结果。" in dashboard_script
+    assert '"正在执行重启与恢复"' in dashboard_script
     assert "operationVersion !== openclawOperationVersion" in dashboard_script
     assert "if (openclawBusy) {" in dashboard_script
     assert "正在重启 OpenClaw Gateway" not in dashboard_script
@@ -673,9 +677,8 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "loadAutomationEnvironment" in dashboard_script
     assert "automationBrowserDialog.showModal()" in dashboard_script
     assert "automationBrowserDialogConfirm" in dashboard_script
-    assert 'return "浏览器控制服务可用；实例按需启动"' in dashboard_script
-    assert 'return ["实例已运行", "success"]' in dashboard_script
-    assert 'return ["实例未启动", "timeout"]' in dashboard_script
+    assert 'return ["浏览器控制服务可用；实例按需启动", "muted"]' in dashboard_script
+    assert '"浏览器控制服务可用", "实例正在运行", mode' in dashboard_script
     assert 'return "用于飞书登录与任务执行"' in dashboard_script
     assert 'return `登录验证于 ${automationMonthDay(data.checked_at)}`' in dashboard_script
     assert "appendWeeklyReportMaterials" in dashboard_script

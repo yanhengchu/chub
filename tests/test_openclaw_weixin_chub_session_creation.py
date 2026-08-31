@@ -98,7 +98,7 @@ def test_duplicate_status_check_replays_without_rechecking(
     )
 
     assert duplicate == first
-    quick_interactions.weixin_task_status_snapshot.assert_called_once()
+    quick_interactions.running_standard_task_summaries.assert_called_once()
     assert manager._state.submissions == []
 
 
@@ -219,7 +219,7 @@ def test_new_without_title_creates_and_selects_default_session(
 
     assert result.message is not None
     assert result.message.startswith(
-        'Create: Session 1 "Unnamed Session" was created and selected.'
+        "Create: S1 created and selected."
     )
     assert manager.session_id() == "session-new"
     codex_manager.create_session.assert_called_once()
@@ -280,7 +280,7 @@ def test_codex_new_creates_names_and_selects_without_submitting(
     assert first.disposition == "reply"
     assert first.message is not None
     assert first.message.startswith(
-        f'Create: Session 1 "{task_prompt}" was created and selected.\n\n'
+        "Create: S1 created and selected.\n\n"
     )
     assert f"▶ S1 · {task_prompt}" in first.message
     assert duplicate.message == first.message
@@ -328,7 +328,7 @@ def test_codex_new_naming_failure_keeps_created_session(settings: Settings) -> N
     )
 
     assert result.message is not None
-    assert "was created and selected, but its title could not be set" in result.message
+    assert "S1 created and selected, but its title could not be set" in result.message
     assert "Send rename <title> to try again." in result.message
     assert manager.session_id() == "session-new"
     assert duplicate == result

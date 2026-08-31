@@ -11,7 +11,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
-from app.ai_usage.models import AiTodayUsage, AiWeeklyUsage
+from app.ai_usage.models import AiFiveHourUsage, AiTodayUsage, AiWeeklyUsage
 from app.automations.browser import debug_chrome_status, session_factory
 from app.automations.lock import LockBusy, file_lock
 from app.core.config import AiUsageConfig, AutomationsConfig
@@ -28,6 +28,8 @@ class ProviderBrowserUnavailable(Exception):
 class ProviderBrowserCollection:
     weekly: AiWeeklyUsage
     today: AiTodayUsage
+    five_hour: AiFiveHourUsage | None = None
+    subscription_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -53,9 +55,8 @@ class ProviderBrowserAdapter:
         self._automations = automations
 
     def collect(self, *, timeout_seconds: float) -> ProviderBrowserCollection:
-        target = self._config.provider_api
-        if target.subscription_page_url is None or target.subscription_id is None:
-            raise ProviderBrowserUnavailable("provider_api_not_configured")
+        if self._config.sub2api.base_url is None:
+            raise ProviderBrowserUnavailable("sub2api_not_configured")
         state, _, _ = debug_chrome_status()
         if state != "running":
             raise ProviderBrowserUnavailable("debug_chrome_not_running")
@@ -86,8 +87,7 @@ class ProviderBrowserAdapter:
         )
 
     async def _capture_responses(self, timeout_seconds: float) -> _ProviderPayloads:
-        page_url = self._config.provider_api.subscription_page_url
-        assert page_url is not None
+        page_url = self._page_url("/subscriptions")
         dashboard_url = self._page_url(self.DASHBOARD_PATH)
         session = session_factory()
         async with session(ensure_page=True) as chrome:
@@ -206,10 +206,10 @@ class ProviderBrowserAdapter:
         return self._matches_response(response, self.STATS_PATH)
 
     def _matches_response(self, response: Any, path: str) -> bool:
-        page_url = self._config.provider_api.subscription_page_url
-        if page_url is None:
+        base_url = self._config.sub2api.base_url
+        if base_url is None:
             return False
-        target = urlsplit(page_url)
+        target = urlsplit(base_url)
         candidate = urlsplit(response.url)
         if self._origin(candidate) != self._origin(target):
             return False
@@ -223,7 +223,7 @@ class ProviderBrowserAdapter:
         return self._is_expected_page(value, "/subscriptions")
 
     def _is_expected_page(self, value: str, path: str) -> bool:
-        expected = urlsplit(self._config.provider_api.subscription_page_url or "")
+        expected = urlsplit(self._config.sub2api.base_url or "")
         actual = urlsplit(value)
         return (
             self._origin(actual) == self._origin(expected)
@@ -231,7 +231,7 @@ class ProviderBrowserAdapter:
         )
 
     def _page_url(self, path: str) -> str:
-        target = urlsplit(self._config.provider_api.subscription_page_url or "")
+        target = urlsplit(self._config.sub2api.base_url or "")
         return urlunsplit((target.scheme, target.netloc, path, "", ""))
 
     @staticmethod
@@ -253,23 +253,30 @@ class ProviderBrowserAdapter:
         values = payload.get("data")
         if not isinstance(values, list) or len(values) > self.MAX_SUBSCRIPTIONS:
             raise ProviderBrowserUnavailable("provider_response_invalid")
-        subscription_id = self._config.provider_api.subscription_id
         matches = []
         for value in values:
             if not isinstance(value, dict):
                 continue
             group = value.get("group")
             if (
-                value.get("id") == subscription_id
-                and value.get("status") == "active"
+                value.get("status") == "active"
                 and isinstance(group, dict)
                 and group.get("platform") == self._config.provider
+                and isinstance(value.get("id"), int)
+                and not isinstance(value.get("id"), bool)
             ):
                 matches.append((value, group))
+        subscription_id = self._config.sub2api.subscription_id
+        if subscription_id is not None:
+            matches = [item for item in matches if item[0]["id"] == subscription_id]
         if len(matches) != 1:
-            raise ProviderBrowserUnavailable("provider_subscription_not_found")
+            if subscription_id is None and matches:
+                value, group = matches[0]
+            else:
+                raise ProviderBrowserUnavailable("sub2api_subscription_not_found")
+        else:
+            value, group = matches[0]
 
-        value, group = matches[0]
         used = self._decimal(value.get("weekly_usage_usd"), minimum=Decimal("0"))
         limit = self._decimal(group.get("weekly_limit_usd"), minimum=Decimal("0.01"))
         daily = self._decimal(value.get("daily_usage_usd"), minimum=Decimal("0"))
@@ -297,6 +304,7 @@ class ProviderBrowserAdapter:
                 tokens=today_tokens,
                 tokens_scope="account" if today_tokens is not None else None,
             ),
+            subscription_id=value["id"],
         )
 
     def _parse_today_tokens(self, payload: object) -> int:

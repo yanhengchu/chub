@@ -68,8 +68,13 @@ record_component() {
     fi
 }
 
-recover_web() {
-    "$PROJECT_ROOT/scripts/chub-web-restart" >/dev/null 2>&1 || true
+confirm_recovered_worker() {
+    # Linux relies on the new Web instance to perform the existing final
+    # health reconciliation.  macOS must confirm here because bootstrap is
+    # also responsible for creating the Worker socket after the old job was
+    # explicitly unloaded.
+    [[ "$PLATFORM" == "Darwin" ]] || return 0
+    wait_for_worker_ready
 }
 
 echo "chub-system-upgrade-restart: waiting for launch confirmation operation_id=$OPERATION_ID"
@@ -180,7 +185,7 @@ recover_on_failure() {
     ) >/dev/null 2>&1 || true
     "$PROJECT_ROOT/scripts/chub" service-definitions >/dev/null 2>&1
     recover_worker >/dev/null 2>&1
-    recover_web
+    "$PROJECT_ROOT/scripts/chub-web-restart"
     if [[ "$PLATFORM" == "Linux" ]]; then
         "$PROJECT_ROOT/scripts/chub" chrome-supervisor-reconcile >/dev/null 2>&1
     fi
@@ -218,6 +223,7 @@ case "$PLATFORM" in
         record_debug_chrome_instance_scope
         upgrade_openclaw
         recover_worker
+        confirm_recovered_worker
         exec "$PROJECT_ROOT/scripts/chub-web-restart"
         ;;
     Darwin)
@@ -258,6 +264,7 @@ case "$PLATFORM" in
         record_debug_chrome_instance_scope
         upgrade_openclaw
         recover_worker
+        confirm_recovered_worker
         exec "$PROJECT_ROOT/scripts/chub-web-restart"
         ;;
     *)

@@ -62,6 +62,25 @@ def test_load_settings_ignores_removed_legacy_tasks_config(
     assert "tasks" not in settings.model_fields_set
 
 
+def test_load_settings_migrates_legacy_provider_api_config(tmp_path: Path) -> None:
+    config_file = tmp_path / "settings.yaml"
+    config_file.write_text(
+        f"""{VALID_CONFIG}
+ai_usage:
+  provider_api:
+    subscription_page_url: http://10.20.30.40/subscriptions
+    subscription_id: 179
+    allow_private_http: true
+""",
+        encoding="utf-8",
+    )
+
+    settings = load_settings(config_file)
+
+    assert settings.ai_usage.sub2api.base_url == "http://10.20.30.40"
+    assert settings.ai_usage.sub2api.subscription_id == 179
+
+
 def test_quick_interaction_timeout_defaults_to_six_hours(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

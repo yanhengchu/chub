@@ -78,6 +78,7 @@ class InteractiveSupervisor:
                 process_spec = self.runtime_adapter.terminal_command(
                     RuntimeTerminalRequest(
                         session_id=session.id,
+                        launch_id=session.terminal_launch_id,
                         cwd=session.cwd,
                         permission_mode=session.permission_mode,
                         native_session_id=session.native_session_id,

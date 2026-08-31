@@ -5,8 +5,10 @@ function renderStatus(data) {
     `CPU ${data.system.cpu_percent.toFixed(1)}% · ` +
     `内存 ${data.system.memory_percent.toFixed(1)}% · ` +
     `磁盘 ${data.system.disk_percent.toFixed(1)}%`;
-  setBadge(elements.chubServiceBadge, "运行正常", "success");
-  elements.chubServiceDetail.textContent = `v${data.hub.version} · 当前实例`;
+  setWorkstationStatus(
+    elements.chubServiceDetail,
+    `v${data.hub.version} · 当前实例可响应`,
+  );
   setMessage(elements.chubServiceMessage, "");
   elements.stopHub.disabled = hubRestartInProgress || systemUpgradeIsRunning();
   syncCoreMaintenanceControls();
@@ -27,7 +29,11 @@ async function loadStatus() {
     }
     if (!handleAccessError(error)) {
       setBadge(elements.connectionBadge, "刷新失败", "failed");
-      setBadge(elements.chubServiceBadge, "刷新失败", "failed");
+      setWorkstationStatus(
+        elements.chubServiceDetail,
+        "无法读取最新控制面状态，保留上次结果。",
+        "failed",
+      );
       setMessage(
         elements.chubServiceMessage,
         "Chub 状态刷新失败，当前展示上次检测结果。",

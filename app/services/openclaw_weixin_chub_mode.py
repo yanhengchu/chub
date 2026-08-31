@@ -1913,12 +1913,12 @@ class WeixinChubModeManager:
                 failed=True,
             )
         slot = self._slot_for_session(session_id)
-        slot_text = f"Session {slot}" if slot is not None else "Session"
+        slot_text = f"S{slot}" if slot is not None else "Session"
         if normalized_title is not None:
             self._log_rename(operation_id, "requested", session_id, source_ip)
             self._log_rename(operation_id, "started", session_id, source_ip)
             try:
-                renamed = self.codex_manager.rename_session(
+                self.codex_manager.rename_session(
                     session_id,
                     normalized_title,
                 )
@@ -1926,7 +1926,7 @@ class WeixinChubModeManager:
                 LOGGER.warning("Unable to name new Weixin Codex session", exc_info=True)
                 self._log_rename(operation_id, "failed", session_id, source_ip)
                 message, _status_failed = self._codex_operation_message(
-                    f"Create: {slot_text} was created and selected, but its title "
+                    f"Create: {slot_text} created and selected, but its title "
                     "could not be set. Send rename <title> to try again."
                 )
                 return self._remember_fixed_reply(
@@ -1941,11 +1941,8 @@ class WeixinChubModeManager:
                     failed=True,
                 )
             self._log_rename(operation_id, "succeeded", session_id, source_ip)
-            renamed_title = renamed.title or normalized_title
-        else:
-            renamed_title = "Unnamed Session"
         message, _status_failed = self._codex_operation_message(
-            f'Create: {slot_text} "{renamed_title}" was created and selected.'
+            f"Create: {slot_text} created and selected."
         )
         return self._remember_fixed_reply(
             message_id=message_id,
@@ -4358,16 +4355,14 @@ class WeixinChubModeManager:
 
         self._refresh_chub_cache()
         try:
-            task_snapshot = self.quick_interactions.weixin_task_status_snapshot(
-                delivery_route
-            )
+            task_snapshot = self.quick_interactions.running_standard_task_summaries()
             with self._status_condition:
                 self._task_status_cache[route_fingerprint] = (
                     task_snapshot,
                     utc_now(),
                 )
         except Exception:
-            LOGGER.warning("Unable to snapshot Weixin tasks", exc_info=True)
+            LOGGER.warning("Unable to snapshot running task summaries", exc_info=True)
         try:
             message = self._format_chub_overview(
                 route_fingerprint,

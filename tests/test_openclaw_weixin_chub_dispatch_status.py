@@ -1381,7 +1381,7 @@ def test_usage_returns_complete_usage_without_session_status(
     manager.ai_usage_reader.read.return_value = AiUsageData(
         status="available",
         provider="openai",
-        source="provider_api",
+        source="sub2api",
         timezone="Asia/Shanghai",
         weekly=AiWeeklyUsage(
             remaining_percent=78,
@@ -1817,7 +1817,7 @@ def test_chub_overview_uses_configured_task_name_limit(settings: Settings) -> No
     assert "任" * 8 not in message
 
 
-def test_chub_overview_uses_generic_task_line_without_trusted_summary(
+def test_chub_overview_shows_web_task_summary(
     settings: Settings,
 ) -> None:
     manager, codex_manager, quick_interactions = configured_manager(settings)
@@ -1838,11 +1838,8 @@ def test_chub_overview_uses_generic_task_line_without_trusted_summary(
             activity="working",
         )
     ]
-    quick_interactions.weixin_task_status_snapshot.return_value = SimpleNamespace(
-        running_count=0,
-        pending_notification_count=0,
-        failed_notification_count=0,
-        running_tasks=(),
+    quick_interactions.running_standard_task_summaries.return_value = SimpleNamespace(
+        running_tasks=(("session-1", "检查 Web 快速交互任务"),),
     )
 
     result = manager.dispatch(
@@ -1855,7 +1852,8 @@ def test_chub_overview_uses_generic_task_line_without_trusted_summary(
     )
 
     assert "▶ S1 · 终端任务" in (result.message or "")
-    assert "Task · Running" in (result.message or "")
+    assert "Task · 检查 Web 快速交互任务" in (result.message or "")
+    assert "Task · Running" not in (result.message or "")
 
 
 def test_chub_overview_does_not_repeat_unavailable_session_as_anomaly(

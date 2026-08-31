@@ -13,6 +13,11 @@ function setBadge(target, label, kind = "muted") {
   target.className = `badge badge-${kind}`;
 }
 
+function setWorkstationStatus(target, message, kind = "muted") {
+  target.textContent = message;
+  target.className = `workstation-status-detail workstation-status-detail-${kind}`;
+}
+
 const confirmationDialog = document.querySelector("#confirmation-dialog");
 const confirmationDialogForm = document.querySelector("#confirmation-dialog-form");
 const confirmationDialogTitle = document.querySelector("#confirmation-dialog-title");

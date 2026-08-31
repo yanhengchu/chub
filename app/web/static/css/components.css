@@ -2397,6 +2397,32 @@ pre {
   margin: 0 0 0.65rem;
 }
 
+.codex-quota-home-group {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: baseline;
+  white-space: nowrap;
+}
+
+.codex-quota-home-group + .codex-quota-home-group {
+  margin-left: 0.75rem;
+}
+
+.codex-quota-home-part + .codex-quota-home-part {
+  margin-left: 0.75rem;
+}
+
+@media (max-width: 420px) {
+  .codex-quota-home-group {
+    display: flex;
+    margin: 0;
+  }
+
+  .codex-quota-home-group + .codex-quota-home-group {
+    margin-left: 0;
+  }
+}
+
 .codex-quota-today-separator {
   display: none;
 }
@@ -3318,10 +3344,22 @@ pre {
   font-size: 0.86rem;
 }
 
-.workstation-status-copy > span {
+.workstation-status-detail {
   color: var(--muted);
   font-size: 0.76rem;
   line-height: 1.45;
+}
+
+.workstation-status-detail-warning {
+  color: #8a6413;
+}
+
+.workstation-status-detail-failed {
+  color: var(--danger);
+}
+
+.workstation-status-detail-success {
+  color: var(--accent);
 }
 
 .workstation-status-copy .message {
@@ -3449,12 +3487,6 @@ pre {
   justify-content: flex-end;
   gap: 0.55rem;
   min-width: 0;
-}
-
-.workstation-status-actions > .badge {
-  max-width: 15rem;
-  overflow-wrap: anywhere;
-  text-align: right;
 }
 
 .workstation-status-actions > button {

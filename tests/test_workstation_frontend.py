@@ -66,6 +66,7 @@ globalThis.sessionStorage = {
 globalThis.hasProtectedAccess = () => true;
 globalThis.hubRestartInProgress = false;
 globalThis.setBadge = () => {};
+globalThis.setWorkstationStatus = (element, message) => { element.textContent = message; };
 globalThis.setMessage = () => {};
 globalThis.apiFetch = async () => ({});
 globalThis.handleAccessError = () => false;

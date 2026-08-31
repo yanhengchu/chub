@@ -183,6 +183,8 @@ class QuickInteractionManager:
         self._operation_contexts: dict[str, QuickInteractionOperationContext] = {}
         self._worker_delivery_confirmed: set[str] = set()
         self._submitting_task_ids: set[str] = set()
+        self._native_claim_restore_errors: dict[str, str] = {}
+        self._pending_native_claim_clears: set[tuple[str, str]] = set()
         self._system_upgrade_reset = False
         self._local_state_error: str | None = None
         self._recovery_ready = False
@@ -248,6 +250,14 @@ class QuickInteractionManager:
                 "_worker_delivery_confirmed",
                 False,
             )
+            # Older interrupted writes may leave this optional marker as JSON
+            # null. It has the same safe meaning as an absent marker: delivery
+            # is not confirmed and must be reconciled with the Worker. Do not
+            # turn that recoverable per-task state into a permanent global
+            # Quick Worker write gate.
+            if worker_delivery_confirmed is None:
+                worker_delivery_confirmed = False
+                recovered_tasks = True
             try:
                 task = QuickInteractionTask.model_validate(task_payload)
             except ValueError:
@@ -343,6 +353,36 @@ class QuickInteractionManager:
                 )
                 task.deferred_restart_notification_updated_at = utc_now()
             self._tasks[task.id] = task
+        for task in self._tasks.values():
+            if task.status in FINAL_STATUSES and task.worker_task_id is not None:
+                self._clear_quick_native_claim_safely(
+                    task.session_id,
+                    task.worker_task_id,
+                )
+                continue
+            if task.status not in {"requested", "running"}:
+                continue
+            if task.worker_task_id is None:
+                continue
+            try:
+                # The Chub Session state is reloaded independently from the
+                # Web task list. Restore the durable claimant before worker
+                # reconciliation so a valid result received after a Web
+                # restart is not mistaken for a stale task.
+                self.codex_manager.register_quick_native_claim(
+                    task.session_id,
+                    task.worker_task_id,
+                )
+            except ApiError as exc:
+                # A stale claim belongs to this task and must not make unrelated
+                # Sessions unavailable. Keep reconciling the Worker task, but
+                # never apply its native identity or successful result.
+                self._native_claim_restore_errors[task.id] = exc.code
+                LOGGER.warning(
+                    "Unable to restore Quick Worker native Session claim for task %s: %s",
+                    task.id,
+                    exc.code,
+                )
         return recovered_tasks
 
     def submit(
@@ -500,8 +540,14 @@ class QuickInteractionManager:
                     self._operation_contexts.pop(task.id, None)
                     self._notification_routes.pop(task.id, None)
                     raise
+        if task.worker_task_id is None:
+            raise RuntimeError("Worker task identity is unavailable")
         self._log_status(task.id, "requested", session.id)
         try:
+            self.codex_manager.register_quick_native_claim(
+                session.id,
+                task.worker_task_id,
+            )
             self._submit_worker_task(task, session, prompt)
         except _WorkerSubmissionUncertain as exc:
             with self._lock:
@@ -522,6 +568,10 @@ class QuickInteractionManager:
                 "Quick Worker 提交结果暂时无法确认，Session 已保持占用。",
             ) from exc
         except Exception as exc:
+            self._clear_quick_native_claim_safely(
+                session.id,
+                task.worker_task_id,
+            )
             self._log_status(task.id, "failed", session.id)
             detail = self._worker_exception_detail(exc)
             with self._lock:
@@ -734,6 +784,7 @@ class QuickInteractionManager:
     def _reconcile_worker_once(self, *, initial: bool) -> None:
         if self._local_state_error is not None:
             raise OSError(self._local_state_error)
+        self._retry_pending_native_claim_clears()
         listed = self._worker_call("task_list", limit=100, recovery_only=True)
         if listed.get("success") is not True:
             raise OSError(self._worker_error(listed))
@@ -813,6 +864,7 @@ class QuickInteractionManager:
             if task is None or task.worker_task_id is None:
                 return
             worker_task_id = task.worker_task_id
+            claim_restore_error = self._native_claim_restore_errors.get(task.id)
         payload = self._worker_call("task_get", task_id=worker_task_id)
         if payload.get("success") is not True:
             error = payload.get("error")
@@ -866,12 +918,22 @@ class QuickInteractionManager:
             session = self.codex_manager.get_session(task.session_id)
         except Exception as exc:
             raise OSError("Worker task Session is unavailable") from exc
-        if snapshot.native_session_id:
+        if snapshot.native_session_id and claim_restore_error is None:
             try:
-                self.codex_manager.bind_quick_interaction_native_session(
-                    task.session_id,
-                    snapshot.native_session_id,
-                )
+                if task.kind == "translation":
+                    self.codex_manager.bind_quick_interaction_native_session(
+                        task.session_id,
+                        snapshot.native_session_id,
+                    )
+                else:
+                    if snapshot.execution_id is None:
+                        raise OSError("Worker native Session is missing execution identity")
+                    self.codex_manager.bind_quick_interaction_native_session(
+                        task.session_id,
+                        snapshot.native_session_id,
+                        worker_task_id=worker_task_id,
+                        execution_id=snapshot.execution_id,
+                    )
             except ApiError as exc:
                 if (
                     exc.code != "quick_interaction_native_session_conflict"
@@ -886,6 +948,18 @@ class QuickInteractionManager:
                         "error_source": "chub",
                     }
                 )
+        if claim_restore_error is not None and snapshot.status in FINAL_STATUSES:
+            snapshot = snapshot.model_copy(
+                update={
+                    "status": "failed",
+                    "result": None,
+                    "error": (
+                        "Quick Worker native Session claim could not be restored; "
+                        "the task result was not applied."
+                    ),
+                    "error_source": "chub",
+                }
+            )
         if snapshot.status not in FINAL_STATUSES:
             log_started = False
             with self._lock:
@@ -951,6 +1025,7 @@ class QuickInteractionManager:
             raise OSError(self._worker_error(acknowledged))
         with self._lock:
             self._worker_delivery_confirmed.add(task_id)
+            self._native_claim_restore_errors.pop(task_id, None)
             self._write()
 
     def resume_pending_completion_notifications(self) -> None:
@@ -1250,6 +1325,24 @@ class QuickInteractionManager:
                     for task in matching
                     if task.status in {"requested", "running"}
                 ),
+            )
+
+    def running_standard_task_summaries(self) -> WeixinTaskStatusSnapshot:
+        """Return bounded summaries for all running standard tasks without route data."""
+        with self._lock:
+            running_tasks = sorted(
+                (
+                    task
+                    for task in self._tasks.values()
+                    if task.kind == "standard"
+                    and task.status in {"requested", "running"}
+                ),
+                key=lambda task: (task.created_at, task.id),
+            )
+            return WeixinTaskStatusSnapshot(
+                running_tasks=tuple(
+                    (task.session_id, task.summary) for task in running_tasks
+                )
             )
 
     def active_sessions(self) -> dict[str, datetime]:
@@ -1779,10 +1872,20 @@ class QuickInteractionManager:
                         )
                         started_logged = True
                 if snapshot.native_session_id:
-                    self.codex_manager.bind_quick_interaction_native_session(
-                        session.id,
-                        snapshot.native_session_id,
-                    )
+                    if task.kind == "translation":
+                        self.codex_manager.bind_quick_interaction_native_session(
+                            session.id,
+                            snapshot.native_session_id,
+                        )
+                    else:
+                        if snapshot.execution_id is None:
+                            raise OSError("Worker native Session is missing execution identity")
+                        self.codex_manager.bind_quick_interaction_native_session(
+                            session.id,
+                            snapshot.native_session_id,
+                            worker_task_id=worker_task_id,
+                            execution_id=snapshot.execution_id,
+                        )
                 if snapshot.status in {"queued", "accepted", "starting", "running"}:
                     threading.Event().wait(0.1)
                     continue
@@ -2168,6 +2271,14 @@ class QuickInteractionManager:
                 )
             self._write()
             finished_snapshot = task.model_copy(deep=True)
+        if (
+            finished_snapshot is not None
+            and finished_snapshot.worker_task_id is not None
+        ):
+            self._clear_quick_native_claim_safely(
+                finished_snapshot.session_id,
+                finished_snapshot.worker_task_id,
+            )
         if finished_snapshot is not None and self._task_finished_handler is not None:
             try:
                 self._task_finished_handler(finished_snapshot)
@@ -2189,6 +2300,31 @@ class QuickInteractionManager:
                         task.notification_updated_at = utc_now()
                         self._write()
                 LOGGER.warning("Unable to start completion notification thread")
+
+    def _clear_quick_native_claim_safely(
+        self,
+        session_id: str,
+        worker_task_id: str,
+    ) -> None:
+        claim = (session_id, worker_task_id)
+        try:
+            self.codex_manager.clear_quick_native_claim(*claim)
+        except Exception:
+            with self._lock:
+                self._pending_native_claim_clears.add(claim)
+            LOGGER.warning(
+                "Unable to clear Quick Worker native Session claim; retrying during reconciliation",
+                exc_info=True,
+            )
+            return
+        with self._lock:
+            self._pending_native_claim_clears.discard(claim)
+
+    def _retry_pending_native_claim_clears(self) -> None:
+        with self._lock:
+            pending = tuple(self._pending_native_claim_clears)
+        for session_id, worker_task_id in pending:
+            self._clear_quick_native_claim_safely(session_id, worker_task_id)
 
     def _deliver_completion_notification(
         self,

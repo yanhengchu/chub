@@ -101,7 +101,7 @@ cp config/settings.example.yaml config/settings.local.yaml
 
 - `app.page_title`：浏览器标签和首页标题；省略时使用应用名称。
 - `security.allow_tailscale`：默认开启，允许真实 Tailnet socket 来源访问受保护接口；不信任客户端转发 Header，也不识别具体用户。
-- `ai_usage`：AI 额度供应商、地区和 API 方式的固定订阅页配置；不保存 Cookie、Authorization 或其他上游凭据。
+- `ai_usage.sub2api`：已登录 Sub2API 服务的本机基址和可选订阅 ID；采集路径固定，不保存 Cookie、Authorization 或其他上游凭据。
 
 Chub 始终监听 `127.0.0.1:<port>`，供本机浏览器与同机 OpenClaw 使用。`server.tailnet_host` 是可选的第二监听地址：设为节点自己的 Tailscale IP 后，Chub 才会同时监听该地址以供手机远程访问；留空则仅本机访问。不要配置 `0.0.0.0` 或普通局域网地址。Tailnet 请求只信任真实 socket 来源，不信任客户端转发 Header；如果 Tailnet 将来加入其他人的设备，应重新评估设备级授权和高风险操作边界。
 

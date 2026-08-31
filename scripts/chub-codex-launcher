@@ -65,6 +65,7 @@ def main() -> int:
     parser.add_argument("--cwd", required=True)
     parser.add_argument("--chub-session", required=True)
     parser.add_argument("--hook-dir", required=True)
+    parser.add_argument("--terminal-launch-id")
     parser.add_argument("--codex-session")
     parser.add_argument("--model")
     parser.add_argument("--reasoning-effort")
@@ -94,6 +95,12 @@ def main() -> int:
         (
             f"CHUB_PTY_SESSION_ID={shlex.quote(args.chub_session)}",
             f"CHUB_PTY_HOOK_DIR={shlex.quote(args.hook_dir)}",
+            (
+                "CHUB_TERMINAL_LAUNCH_ID="
+                f"{shlex.quote(args.terminal_launch_id)}"
+                if args.terminal_launch_id
+                else ""
+            ),
             shlex.join(codex),
         )
     )

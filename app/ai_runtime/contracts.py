@@ -153,6 +153,7 @@ class RuntimeModelCatalog(_StrictModel):
 
 class RuntimeTerminalRequest(_StrictModel):
     session_id: str = Field(min_length=1, max_length=128)
+    launch_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
     cwd: Path
     permission_mode: RuntimePermissionMode
     native_session_id: str | None = Field(default=None, min_length=1, max_length=128)
@@ -172,6 +173,7 @@ class RuntimeActivityEvent(_StrictModel):
     """A bounded activity update emitted by a Runtime-owned hook/event source."""
 
     native_session_id: str | None = Field(default=None, min_length=1, max_length=128)
+    launch_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
     activity: Literal["working", "idle"] | None = None
     activity_source: Literal["none", "terminal", "quick"] = "none"
 

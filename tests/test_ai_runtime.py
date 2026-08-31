@@ -564,7 +564,7 @@ def test_codex_adapter_owns_activity_event_file_boundary(
     hook = adapter.hook_dir / "123e4567-e89b-12d3-a456-426614174000.json"
     hook.write_text(
         '{"codex_session_id":"native-1","activity":"working",'
-        '"activity_source":"terminal"}',
+        '"activity_source":"terminal","launch_id":"' + "a" * 32 + '"}',
         encoding="utf-8",
     )
     hook.chmod(0o600)
@@ -575,6 +575,7 @@ def test_codex_adapter_owns_activity_event_file_boundary(
     assert event.native_session_id == "native-1"
     assert event.activity == "working"
     assert event.activity_source == "terminal"
+    assert event.launch_id == "a" * 32
     adapter.clear_activity_event("123e4567-e89b-12d3-a456-426614174000")
     assert adapter.read_activity_event("123e4567-e89b-12d3-a456-426614174000") is None
 
@@ -625,6 +626,7 @@ def test_codex_adapter_terminal_spec_uses_runtime_request(
     process_spec = adapter.terminal_command(
         RuntimeTerminalRequest(
             session_id="session-1",
+            launch_id="a" * 32,
             cwd=tmp_path,
             permission_mode="read-only",
             native_session_id="native-1",
@@ -636,6 +638,7 @@ def test_codex_adapter_terminal_spec_uses_runtime_request(
 
     command = list(process_spec.argv)
     assert command[command.index("--permission-mode") + 1] == "read-only"
+    assert command[command.index("--terminal-launch-id") + 1] == "a" * 32
     assert command[command.index("--codex-session") + 1] == "native-1"
 
 

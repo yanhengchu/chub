@@ -63,7 +63,7 @@ USAGE_RESPONSES = {
     "complete": {
         "status": "available",
         "provider": "openai",
-        "source": "provider_api",
+        "source": "sub2api",
         "timezone": "Asia/Shanghai",
         "stale": False,
         "message": None,
@@ -147,6 +147,46 @@ USAGE_RESPONSES = {
                 " · Resets 8/20 14:44"
             ),
         },
+    },
+}
+
+WINDOWED_USAGE = {
+    "status": "available",
+    "provider": "openai",
+    "source": "account_login",
+    "timezone": "Asia/Shanghai",
+    "stale": False,
+    "message": None,
+    "checked_at": "2026-08-15T10:00:00+08:00",
+    "weekly": {
+        "remaining_percent": 78,
+        "used_usd": None,
+        "remaining_usd": None,
+        "limit_usd": None,
+        "window_duration_minutes": 10080,
+        "resets_at": "2026-08-20T14:44:00+08:00",
+    },
+    "five_hour": {
+        "remaining_percent": 42,
+        "window_duration_minutes": 300,
+        "resets_at": "2026-08-15T18:20:00+08:00",
+    },
+    "today": {
+        "date": "2026-08-15",
+        "used_usd": None,
+        "tokens": 5600000,
+        "tokens_scope": "account",
+    },
+    "display": {
+        "short": "Weekly 78% · Today 5.6M",
+        "long": "Weekly 78% left · Reset 8/20 14:44 · 5h 42% left · Reset 8/15 18:20 · Today 5.6M tokens",
+        "home": [
+            {"kind": "weekly", "text": "Weekly 78% left"},
+            {"kind": "reset", "text": "Reset 8/20 14:44"},
+            {"kind": "five_hour", "text": "5h 42% left"},
+            {"kind": "reset", "text": "Reset 8/15 18:20"},
+            {"kind": "today", "text": "Today 5.6M tokens"},
+        ],
     },
 }
 
@@ -444,6 +484,63 @@ async def test_home_quota_layout_matrix_in_managed_chrome(
     assert layout["lines"] == list(expected_lines)
     assert layout["partRectCounts"] == [1, 1, 1]
     assert layout["height"] <= layout["lineHeight"] * (max(expected_lines) + 1) + 1
+    assert layout["quotaOverflow"] <= 1
+    assert layout["pageOverflow"] <= 1
+    assert page_errors == []
+    assert len(usage_requests) == 1
+
+
+async def test_home_quota_windowed_display_in_managed_chrome(
+    quota_browser_server: str,
+) -> None:
+    usage_requests: list[str] = []
+    browser_session = session_factory()
+    async with browser_session(ensure_page=False) as chrome:
+        context = await chrome.browser.new_context(
+            viewport={"width": 390, "height": 844},
+            reduced_motion="reduce",
+        )
+        try:
+            await context.route(
+                f"{quota_browser_server}/api/**",
+                lambda route: _mock_protected_api(
+                    route,
+                    WINDOWED_USAGE,
+                    usage_requests,
+                ),
+            )
+            page = await context.new_page()
+            page_errors: list[str] = []
+            page.on("pageerror", lambda error: page_errors.append(str(error)))
+            response = await page.goto(
+                quota_browser_server,
+                wait_until="domcontentloaded",
+            )
+            assert response is not None and response.status == 200
+            quota = page.locator("#codex-quota")
+            await expect(quota).to_contain_text("5h 42% left")
+            layout = await quota.evaluate(
+                """quota => {
+                    const groups = Array.from(
+                        quota.querySelectorAll(":scope > .codex-quota-home-group")
+                    );
+                    const parts = groups.flatMap(group => Array.from(
+                        group.querySelectorAll(":scope > .codex-quota-home-part")
+                    ));
+                    return {
+                        text: quota.textContent,
+                        parts: parts.map(node => node.textContent),
+                        groupLines: groups.map(node => node.getBoundingClientRect().top),
+                        quotaOverflow: quota.scrollWidth - quota.clientWidth,
+                        pageOverflow: document.documentElement.scrollWidth - innerWidth,
+                    };
+                }"""
+            )
+        finally:
+            await context.close()
+
+    assert layout["parts"] == [part["text"] for part in WINDOWED_USAGE["display"]["home"]]
+    assert len({round(value) for value in layout["groupLines"]}) == 3
     assert layout["quotaOverflow"] <= 1
     assert layout["pageOverflow"] <= 1
     assert page_errors == []

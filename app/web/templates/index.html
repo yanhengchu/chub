@@ -249,7 +249,7 @@
             <div class="card-heading-copy" data-card-heading>
               <p class="section-kicker">环境与服务</p>
               <h2 id="workstation-title">工作站环境</h2>
-            <p class="section-description">查看 Chub、Chub Quick Worker、Chub Debug Chrome 和 OpenClaw Gateway 状态。</p>
+            <p class="section-description">查看服务运行状态并进行必要维护。</p>
             </div>
             <button id="refresh-workstation-environment" class="button-secondary" type="button">刷新</button>
           </div>
@@ -261,11 +261,10 @@
                 <div class="workstation-status-row">
                   <div class="workstation-status-copy">
                     <strong>Chub</strong>
-                    <span id="chub-service-detail">控制面：页面、API、权限与任务协调</span>
+                    <span id="chub-service-detail" class="workstation-status-detail">正在检查控制面状态</span>
                     <p id="chub-service-message" class="message" aria-live="polite"></p>
                   </div>
                   <div class="workstation-status-actions">
-                    <span id="chub-service-badge" class="badge badge-muted">正在检查</span>
                     <button id="restart-hub" class="button-secondary" type="button" aria-haspopup="dialog" aria-controls="confirmation-dialog" disabled>重启</button>
                     <button id="stop-hub" class="button-danger" type="button" aria-haspopup="dialog" aria-controls="confirmation-dialog" disabled>停止</button>
                   </div>
@@ -273,11 +272,10 @@
                 <div class="workstation-status-row">
                   <div class="workstation-status-copy">
                     <strong>Chub Quick Worker</strong>
-                    <span id="quick-worker-detail">执行面：后台 AI 任务与可靠终态</span>
+                    <span id="quick-worker-detail" class="workstation-status-detail">正在检查任务执行服务</span>
                     <p id="quick-worker-message" class="message" aria-live="polite"></p>
                   </div>
                   <div class="workstation-status-actions">
-                    <span id="quick-worker-badge" class="badge badge-muted">正在检查</span>
                     <button id="quick-worker-start" class="button-secondary" type="button" hidden>启动</button>
                     <button id="quick-worker-restart" class="button-secondary" type="button" aria-haspopup="dialog" aria-controls="confirmation-dialog" hidden>重启</button>
                     <button id="quick-worker-stop" class="button-danger" type="button" aria-haspopup="dialog" aria-controls="confirmation-dialog" hidden>停止</button>
@@ -286,23 +284,21 @@
                 <div class="workstation-status-row">
                   <div class="workstation-status-copy">
                     <strong>Chub Debug Chrome</strong>
-                    <span id="automation-browser-detail">浏览器控制服务：按需管理 Debug Chrome 实例</span>
+                    <span id="automation-browser-detail" class="workstation-status-detail">正在检查浏览器控制服务</span>
                     <p id="automation-browser-message" class="message" aria-live="polite"></p>
                   </div>
                   <div class="workstation-status-actions automation-browser-actions">
-                    <span id="automation-browser-badge" class="badge badge-muted">正在检查</span>
-                    <button id="automation-browser-control" class="button-secondary" type="button" aria-haspopup="dialog" aria-controls="automation-browser-dialog" disabled>检查中…</button>
                     <button id="automation-browser-restart" class="button-secondary" type="button" aria-haspopup="dialog" aria-controls="confirmation-dialog" hidden>重启</button>
+                    <button id="automation-browser-control" class="button-secondary" type="button" aria-haspopup="dialog" aria-controls="automation-browser-dialog" disabled>检查中…</button>
                   </div>
                 </div>
                 <div class="workstation-status-row">
                   <div class="workstation-status-copy">
                     <strong>OpenClaw Gateway</strong>
-                    <span id="clawbot-detail">第三方网关：正在检查 ClawBot 与微信消息通道</span>
+                    <span id="clawbot-detail" class="workstation-status-detail">正在检查 Gateway、消息通道与 Owner 配置</span>
                     <p id="openclaw-message" class="message" aria-live="polite"></p>
                   </div>
                   <div class="workstation-status-actions openclaw-actions">
-                    <span id="clawbot-badge" class="badge badge-muted">正在检查</span>
                     <button id="openclaw-start" class="button-secondary" type="button" hidden>启动</button>
                     <button id="openclaw-restart" class="button-secondary" type="button" hidden>重启</button>
                     <button id="openclaw-stop" class="button-danger" type="button" hidden>停止</button>

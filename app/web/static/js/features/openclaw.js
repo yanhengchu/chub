@@ -135,20 +135,41 @@ function clawbotPresentation(data) {
   return openclawChannelPresentation(data);
 }
 
+function openclawDetailKind(data) {
+  const [, kind] = clawbotPresentation(data);
+  return kind === "success" ? "muted" : kind === "timeout" ? "warning" : kind;
+}
+
 function clawbotDetail(data) {
+  if (data.state !== "running") {
+    return data.message || "无法确认 OpenClaw Gateway 状态。";
+  }
   const [gatewayText] = openclawStatePresentation(data.state);
   const [channelText] = openclawChannelPresentation(data);
   const conciseGatewayText = gatewayText === "运行正常" ? "正常" : gatewayText;
   const conciseChannelText = channelText === "运行正常" ? "正常" : channelText;
-  return `网关${conciseGatewayText} · 消息通道${conciseChannelText}`;
+  const details = [`网关${conciseGatewayText}`, `消息通道${conciseChannelText}`];
+  if (data.channel_state === "running") {
+    const [ownerText] = data.owner_state === "configured"
+      ? ["Owner 已配置"]
+      : data.owner_state === "not_configured"
+        ? ["Owner 未配置"]
+        : data.owner_state === "unavailable"
+          ? ["Owner 不可检查"]
+          : ["Owner 状态未知"];
+    details.push(ownerText);
+  }
+  return details.join(" · ");
 }
 
 function renderOpenClaw(data, { cache = true } = {}) {
   openclawState = data;
   elements.openclawRestart.textContent = "重启";
-  const [badgeText, badgeKind] = clawbotPresentation(data);
-  setBadge(elements.clawbotBadge, badgeText, badgeKind);
-  elements.clawbotDetail.textContent = clawbotDetail(data);
+  setWorkstationStatus(
+    elements.clawbotDetail,
+    clawbotDetail(data),
+    openclawDetailKind(data),
+  );
   elements.clawbotDetail.title = [data.channel_message, data.owner_message]
     .filter(Boolean)
     .join("；");
@@ -174,8 +195,11 @@ function resetOpenClawView() {
   openclawBusy = false;
   openclawOperationVersion += 1;
   openclawWeixinState = null;
-  setBadge(elements.clawbotBadge, "正在检查");
-  elements.clawbotDetail.textContent = "交互面：正在检查微信消息通道";
+  setWorkstationStatus(
+    elements.clawbotDetail,
+    "正在检查 Gateway、消息通道与 Owner 配置",
+    "warning",
+  );
   elements.clawbotDetail.removeAttribute("title");
   elements.openclawStart.hidden = true;
   elements.openclawRestart.hidden = true;
@@ -261,21 +285,15 @@ async function loadOpenClawWeixinStatus({
 function setOpenClawBusy(action) {
   openclawBusy = true;
   openclawOperationVersion += 1;
-  const busyPresentation = {
-    start: ["正在启动", "muted"],
-    stop: ["正在停止", "timeout"],
-    restart: ["正在重启", "muted"],
-  }[action];
-  setBadge(
-    elements.clawbotBadge,
-    busyPresentation[0],
-    busyPresentation[1],
-  );
-  elements.clawbotDetail.textContent = action === "restart"
+  setWorkstationStatus(
+    elements.clawbotDetail,
+    action === "restart"
     ? "正在执行重启与恢复"
     : action === "stop"
       ? "正在停止 OpenClaw Gateway"
-      : "正在启动 OpenClaw Gateway";
+      : "正在启动 OpenClaw Gateway",
+    "warning",
+  );
   elements.openclawStart.disabled = true;
   elements.openclawRestart.disabled = true;
   elements.openclawStop.disabled = true;

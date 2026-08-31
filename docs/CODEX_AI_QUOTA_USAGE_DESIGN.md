@@ -3,15 +3,15 @@
 > 状态：已验收。
 > 主要读者：AI Agent、实现和排障 Agent；维护人员用于确认数据口径、配置和验收。
 > 本文负责：Chub 当前 Codex/OpenAI 额度和用量采集的接口、数据口径、安全和维护边界，遵循[Chub 总体架构](CHUB_ARCHITECTURE_DESIGN.md)。
-> 本文不负责：通用多 Runtime、多供应商额度设计，以及由调用方选择认证来源、账号、订阅、时区、浏览器页面或本机目录。
+> 本文不负责：通用多 Runtime、多供应商或任意 API Key 平台的额度适配，以及由调用方选择认证来源、账号、订阅、时区、浏览器页面或本机目录。
 
 ## 0. AI Agent 快速理解
 
 把本文当作“Codex 用量快照服务”的数据契约：
 
-1. Chub 只采集当前 Codex/OpenAI 配置对应的两类认证来源：ChatGPT 账号登录或 OpenAI API Key；调用方不能选择来源、账号、订阅、时区、浏览器页面或本机目录。
+1. Chub 只支持两条已实现路径：当前 Codex Runtime 的 ChatGPT 账号登录，或通过固定 Sub2API 适配器使用 OpenAI API Key；调用方不能选择来源、账号、订阅、时区、浏览器页面或本机目录。
 2. ChatGPT 账号登录优先使用 Codex 账户正式日桶；当天日桶尚未生成时，才读取当前系统用户可见的 Codex Session Token，并明确标记为 `local_device`。两者不能相加。
-3. API Key 方式只能复用已经登录的受管 Debug Chrome，从固定订阅页和仪表盘读取数据；不会自动启动浏览器、弹出登录或读取 Cookie/Authorization。
+3. Sub2API 路径只能复用已经登录的受管 Debug Chrome，从固定订阅页和仪表盘读取数据；不会自动启动浏览器、弹出登录或读取 Cookie/Authorization。
 4. 周额度是形成可用快照的必需数据；今日美元用量和 Token 是可选字段。缺失字段必须是 `null` 或省略展示，不得用 `0` 猜测。
 5. 失败降级只能复用同一来源、同一身份且仍在有效周期内的最近快照，并设置 `stale=true`；不能跨认证来源、账号、订阅或自然日复用。
 6. 认证失败、配置错误、采集超时和上游不可用要分别保持可诊断，但额度采集失败不得阻塞 Chub 健康检查、Session、任务或其他首页卡片。
@@ -22,19 +22,19 @@ AI Agent 排障顺序：先确认认证类型和当前身份，再确认周额�
 
 ## 1. 功能概览
 
-当前配置中的 `provider` 固定为 `openai`；这里的 `provider_api` 只是 Codex/OpenAI API Key 采集来源，不表示 Chub 已支持任意供应商。Chub 将账号登录和 API Key 两种用量来源收敛为同一份数据，供首页、微信状态、Session 回执和任务通知复用。调用方不选择来源，Chub 根据 Codex 返回的认证类型自动路由：
+当前配置中的 `provider` 固定为 `openai`，但两条路径的实现边界不同：账号登录复用当前 Codex Runtime 的结构化账户和用量接口，不依赖 Sub2API；API Key 则由固定的 Sub2API 采集器提供，不表示 Chub 已支持任意供应商或任意 API Key 平台。`ai_usage.sub2api.base_url` 是 Sub2API 的本机服务来源；采集器固定使用该来源下的订阅页、活跃订阅接口和 Dashboard 统计接口。`subscription_id` 可选，省略时按上游返回顺序使用第一条活跃 OpenAI 订阅。Chub 将账号登录和 Sub2API 两种用量来源收敛为同一份数据，供首页、微信状态、Session 回执和任务通知复用。调用方不选择来源，Chub 根据 Codex 返回的认证类型自动路由：
 
 | Codex 认证类型 | 数据来源 | 主要数据 |
 | --- | --- | --- |
-| ChatGPT 账号登录 | `account_login` | 账号周额度、账户或本机今日 Token |
-| API Key | `provider_api` | 订阅周额度、今日美元用量和今日 Token |
+| ChatGPT 账号登录 | `account_login` | 当前 Codex Runtime 的账号周额度、账户或本机今日 Token |
+| Sub2API API Key | `sub2api` | 固定 Sub2API 订阅周额度、今日美元用量和今日 Token |
 | 未登录或无法确认 | 无 | 返回暂不可用 |
 
 两种来源不会互相降级或拼接。账号接口失败不会改用浏览器数据，浏览器采集失败也不会改用账号数据。
 
 ### 1.1 账号登录方式
 
-Chub 通过 Codex 的结构化账户接口获取周额度和每日 Token：
+Chub 通过当前 Codex Runtime 的结构化账户接口获取周额度和每日 Token；这条逻辑不依赖特定 API 平台，但也不表示可适配其他供应商：
 
 - 只使用与当前日期精确匹配的账户日桶，不拿相邻日期猜测今日用量。
 - 当账户当天桶尚未生成时，汇总当前系统用户 `CODEX_HOME` 下 Codex Session 的结构化 Token 计数，返回 `tokens_scope=local_device` 并显示 `(local)`。
@@ -43,16 +43,18 @@ Chub 通过 Codex 的结构化账户接口获取周额度和每日 Token：
 
 本机值只代表当前设备、当前系统用户可见的 Codex Session，不是跨设备的账户总量。
 
-### 1.2 API Key 方式
+### 1.2 Sub2API API Key 方式
 
-Chub 复用已启动且已登录的受管 Debug Chrome：
+这不是通用 API Key 平台适配。Chub 复用已启动且已登录的受管 Debug Chrome，并只按固定的 Sub2API 路径和响应字段采集：
 
 - 并行打开固定订阅页和仪表盘页，读取页面自身发起的固定用量请求。
 - 订阅响应提供周额度和今日美元用量；仪表盘响应补充今日 Token。
 - 周额度是形成新快照的必需数据；今日 Token 采集失败时只省略 Token。
 - 查询不会自动启动 Chrome、初始化 Profile 或弹出登录流程。
 
-订阅地址和订阅 ID 来自本机固定配置，客户端不能指定。Chub 不读取或保存 Cookie、Authorization 和浏览器存储。
+Sub2API 服务来源来自本机固定配置，客户端不能指定。订阅 ID 未配置时，采集器使用第一条活跃 OpenAI 订阅；需要固定特定订阅时才设置该 ID。Chub 不读取或保存 Cookie、Authorization 和浏览器存储。
+
+旧本机配置中的 `ai_usage.provider_api` 会在加载时仅转换为 `ai_usage.sub2api`，不会回写或覆盖配置文件；后续维护只使用新节点。旧节点格式不合法时保持失败关闭，并提示修正配置。
 
 ## 2. 统一接口
 
@@ -91,6 +93,11 @@ GET /api/ai/usage?refresh=true
       "window_duration_minutes": 10080,
       "resets_at": "2026-08-20T14:44:00+08:00"
     },
+    "five_hour": {
+      "remaining_percent": 42,
+      "window_duration_minutes": 300,
+      "resets_at": "2026-08-15T18:20:00+08:00"
+    },
     "today": {
       "date": "2026-08-15",
       "used_usd": null,
@@ -98,8 +105,15 @@ GET /api/ai/usage?refresh=true
       "tokens_scope": "local_device"
     },
     "display": {
-      "long": "Weekly 78% left · Today 5.6M tokens (local) · Resets 8/20 14:44",
-      "short": "Weekly 78% · Today 5.6M (local)"
+      "long": "Weekly 78% left · Reset 8/20 14:44 · 5h 42% left · Reset 8/15 18:20 · Today 5.6M tokens (local)",
+      "short": "Weekly 78% · Today 5.6M (local)",
+      "home": [
+        {"kind": "weekly", "text": "Weekly 78% left"},
+        {"kind": "reset", "text": "Reset 8/20 14:44"},
+        {"kind": "five_hour", "text": "5h 42% left"},
+        {"kind": "reset", "text": "Reset 8/15 18:20"},
+        {"kind": "today", "text": "Today 5.6M tokens (local)"}
+      ]
     }
   }
 }
@@ -110,12 +124,13 @@ GET /api/ai/usage?refresh=true
 | 字段 | 说明 |
 | --- | --- |
 | `status` | `available` 或 `unavailable` |
-| `source` | `account_login` 或 `provider_api` |
-| `weekly` | 周剩余比例、可选美元额度和精确重置时间 |
+| `source` | `account_login` 或 `sub2api` |
+| `weekly` | 周剩余比例、可选美元额度和 weekly 独立重置时间 |
+| `five_hour` | 可选的 5 小时窗口剩余比例和独立重置时间；上游未提供时为 `null` |
 | `today` | 当前时区自然日、可选美元用量和 Token |
 | `tokens_scope` | `account`、`local_device`；Token 为空时为 `null` |
 | `stale` | 当前返回值是否为同一来源的最近有效快照 |
-| `display` | 后端统一生成的长、短展示文本 |
+| `display` | 后端统一生成的长、短展示文本和首页结构化片段 `home` |
 
 金额使用十进制字符串返回。缺失数据使用 `null`，不使用 `0` 冒充未知值。
 
@@ -123,7 +138,17 @@ GET /api/ai/usage?refresh=true
 
 ## 3. 展示规则
 
-首页使用长格式：
+首页使用结构化长格式，按以下顺序展示：
+
+```text
+Weekly $781.92 left (78%) · Limit $1,000 · Reset 8/20 15:45
+5h 42% left · Reset 8/15 18:20
+Today $181.02 used 100M tokens
+```
+
+`display.home` 提供首页使用的独立展示片段，页面不得从长文本解析业务字段。`display.long` 仍提供完整纯文本兼容展示；`display.short` 保持微信等短回执的紧凑格式。
+
+其他调用方使用短格式：
 
 ```text
 Weekly $781.92 left (78%) · Limit $1,000 · Today $181.02 used 100M tokens · Resets 8/20 15:45
@@ -140,17 +165,18 @@ Weekly 78% · Today 100M
 - 本机 Token 在长、短格式中都追加 `(local)`。
 - Token 缺失时省略 Token，不展示虚假零值或不可用占位。
 - 周额度不可用时不生成看似有效的百分比。
+- 5 小时窗口是可选数据，缺失时省略，不根据 weekly 推算，也不显示为 0。
 - Token 使用 `K`、`M`、`B` 紧凑格式，最多保留一位小数。
-- 页面和通知直接使用后端 `display`，不各自维护另一套文案。
+- 页面和通知直接使用后端 `display`，不各自维护另一套文案；首页使用结构化的 `display.home`，其他调用方使用 `long` 或 `short`。
 - 浏览器端由统一的 AI Usage Core 管理受保护请求、五分钟会话缓存、并发合并、强制刷新和清理；首页会话工作台与 Cyber 主题共享同一快照，不分别请求或缓存额度。
-- 首页会话工作台只按 `display.long` 渲染额度文本和响应式结构；Cyber 主题消费同一份只读快照，不单独请求或缓存。额度雨列的布局和动效由[前端 UI 模块化设计](FRONTEND_UI_DESIGN.md)维护；公开页面未通过认证时不使用浏览器旧值。
+- 首页会话工作台按 `display.home` 渲染额度分组和响应式结构；Cyber 主题消费同一份只读快照，不单独请求或缓存。额度雨列的布局和动效由[前端 UI 模块化设计](FRONTEND_UI_DESIGN.md)维护；公开页面未通过认证时不使用浏览器旧值。
 
-首页响应式展示保持完整 `display.long` 文本，只调整分行位置：
+首页展示保持完整额度信息，只调整分组和分行位置：
 
-- 完整额度包含 `Limit`、Today 美元用量和 Token。桌面双列等窄卡片显示为 `Weekly + Limit / Today + Resets` 两行；平板宽屏单列且卡片宽度至少 `40rem` 时合并为一行。
-- 手机视口不超过 `420px` 且 Today 同时包含美元用量和 Token 时，完整额度显示为 `Weekly + Limit / Today / Resets` 三行。
-- 账号简版没有 `Limit` 和 Today 美元用量，默认保持 `Weekly · Today tokens · Resets` 一行；手机视口不超过 `420px` 时仅将 `Resets` 放到第二行。
-- `420px` 应用手机专用 `Resets` 换行，`421px` 不应用；任何视口都不得截断、遮挡或产生横向溢出。
+- 完整额度按 `Weekly + Limit/Reset`、`5h + Reset`、`Today` 分组；Sub2API 来源的 `Limit` 和美元用量继续放入对应分组。
+- 桌面端三组按内容自然横向排列；手机视口不超过 `420px` 时每组自身纵向排列，保持 Weekly、5h、Today 三行，不会因每个片段各自换行而拆成五至六行。
+- 账号登录有 5h 数据时使用相同三组布局；没有 5h 或 Today 时只省略对应组，不显示占位内容。
+- 任何视口都不得截断、遮挡或产生横向溢出。
 
 真实浏览器回归加载正式首页、JavaScript 和 CSS，只模拟受保护 API。运行前启动受管 Debug Chrome，然后执行：
 
@@ -165,9 +191,10 @@ CHUB_BROWSER_TESTS=1 .venv/bin/python -m pytest tests/test_web_quota_browser.py
 - 同一页面的普通加载并发合并；普通加载期间收到强制刷新时，在普通请求结束后只补发一次强制请求，避免旧结果覆盖刷新结果。
 - 所有消费者共享 5 分钟缓存，整次刷新总预算为 8 秒。
 - 同一时刻只执行一次刷新，并发请求共享结果。
-- 自然日变化或周额度到达重置时间时，旧缓存立即失效，不继续等待 5 分钟。
+- 自然日变化、weekly 或 5 小时窗口到达重置时间时，旧缓存立即失效，不继续等待 5 分钟。
 - 刷新失败时，只能保留同一来源、同一身份且仍在有效周期内的最近成功快照，并设置 `stale=true`。
-- 越过周重置时间后刷新仍失败，返回不可用；越过自然日后不再把昨日用量显示为 `Today`。
+- 未配置 Sub2API 订阅 ID 时，采集失败后无法确认首条订阅是否变化，因此不复用旧快照。
+- 越过 weekly 重置时间后刷新仍失败，返回不可用；越过 5 小时重置时间后刷新仍失败时，不继续显示已过期的 5 小时窗口；越过自然日后不再把昨日用量显示为 `Today`。
 - 新快照缺少可选 Token 时不沿用上一份 Token。
 - 刷新检测到认证类型或账号身份变化时不复用旧数据；订阅配置变更随 Chub 重启生效。
 
@@ -176,7 +203,7 @@ CHUB_BROWSER_TESTS=1 .venv/bin/python -m pytest tests/test_web_quota_browser.py
 - 接口不返回账号、邮箱、Session ID、文件路径、凭据或上游原始响应。
 - 日志只记录固定来源和脱敏错误，不记录请求头、正文或登录信息。
 - 本机统计只读取固定 `CODEX_HOME` 下的 `sessions` 和 `archived_sessions`，只解析结构化计数字段；文件数、文件大小、总字节、单行和耗时均有上限。
-- 浏览器采集只接受后端固定主机、路径和订阅 ID，在共享浏览器锁内使用本次专用页面，不影响其他自动化页面。
+- Sub2API 采集只接受本机配置的服务来源和后端固定路径，在共享浏览器锁内使用本次专用页面，不影响其他自动化页面；订阅 ID 可选，省略时按固定列表顺序选择第一条活跃 OpenAI 订阅。
 - 外部调用方不能切换来源、订阅、时区、文件目录或上游地址。
 - 用量采集失败不得影响 Chub 健康检查、Session 管理或其他首页卡片。
 
@@ -186,22 +213,21 @@ CHUB_BROWSER_TESTS=1 .venv/bin/python -m pytest tests/test_web_quota_browser.py
 
 - 首页、统一接口、微信状态和任务通知共用同一用量服务。
 - 账号正式日桶优先，本机今日 Token 作为明确标记的降级值。
-- API Key 方式的周额度与今日 Token 通过受管浏览器采集。
+- Sub2API API Key 方式的周额度与今日 Token 通过受管浏览器采集。
 - 缓存、并发合并、跨日、周重置、失败降级和敏感信息边界均有自动化测试覆盖。
 
 真实环境验证：
 
-- Ubuntu：API Key 方式已验证周额度和今日 Token。
-- macOS：账号登录方式已验证周额度、本机今日 Token，并与账户后续生成的日桶交叉核对。
+- Ubuntu：Sub2API API Key 方式已验证周额度和今日 Token。
+- macOS：账号登录方式已验证周额度、本机今日 Token，并与账户后续生成的日桶交叉核对；当前 Sub2API 配置已通过受管 Chrome 采集验证周额度和今日 Token。
 
 已知限制：
 
 - 本机 Token 不包含其他设备或不可读取的历史数据，也无法证明全天始终使用同一账号。
-- API Key 方式依赖受管 Chrome 已运行且目标页面已经登录。
-- macOS 的真实浏览器采集路径尚未单独复验。
+- Sub2API API Key 方式依赖受管 Chrome 已运行且目标页面已经登录。
 
 ### 6.1 验收范围与复检
 
-- 已验收范围：统一用量接口、账号登录与 API Key 两种来源、今日 Token 降级标记、共享缓存、跨日/周重置、失败降级和安全边界；Ubuntu 已验收 API Key 采集，macOS 已验收账号登录采集。
-- 未验证或不承诺：macOS 的真实浏览器采集路径、其他认证来源、其他供应商和跨设备 Token 总量；缺少实机记录的路径不能视为已验收。
+- 已验收范围：统一用量接口、账号登录与固定 Sub2API API Key 两种来源、今日 Token 降级标记、共享缓存、跨日/周重置、失败降级和安全边界；Ubuntu 已验收 Sub2API 采集，macOS 已验收账号登录和当前 Sub2API 配置采集。
+- 未验证或不承诺：其他认证来源、其他供应商、其他 API Key 平台和跨设备 Token 总量；缺少实机记录的路径不能视为已验收。
 - 复检触发：上游接口、认证来源判定、额度/Token 口径、缓存身份键、受管浏览器路径、响应字段或展示契约变化时，必须重新执行自动化测试并复验受影响来源的最终数据。

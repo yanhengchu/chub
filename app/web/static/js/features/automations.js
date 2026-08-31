@@ -31,26 +31,19 @@ function automationMonthDay(value) {
 
 function automationBrowserPresentation(data) {
   if (data.browser_state === "running") {
-    return ["实例已运行", "success"];
+    const mode = {
+      headless: "无界面",
+      headed: "有界面",
+    }[data.browser_mode] || data.browser_mode;
+    return [
+      ["浏览器控制服务可用", "实例正在运行", mode].filter(Boolean).join(" · "),
+      "muted",
+    ];
   }
   if (data.browser_state === "stopped") {
-    return ["实例未启动", "timeout"];
+    return ["浏览器控制服务可用；实例按需启动", "muted"];
   }
-  return [data.browser_message || "不可用", "failed"];
-}
-
-function automationBrowserDetail(data) {
-  if (data.browser_state === "stopped") {
-    return "浏览器控制服务可用；实例按需启动";
-  }
-  if (data.browser_state !== "running") {
-    return data.browser_message || "";
-  }
-  const mode = {
-    headless: "无界面",
-    headed: "有界面",
-  }[data.browser_mode] || data.browser_mode;
-  return ["服务可用", "浏览器实例", mode].filter(Boolean).join(" · ");
+  return [data.browser_message || "无法使用浏览器控制服务", data.enabled ? "failed" : "muted"];
 }
 
 function feishuPresentation(data) {
@@ -464,9 +457,8 @@ function renderAutomationEnvironment(data) {
   const feishuChecking = data.feishu_environment.state === "checking";
   const automationBusy = initializing || feishuChecking || data.tasks.some((task) => ["queued", "running"].includes(task.state.status));
   automationBrowserState = data.browser_state;
-  const [browserBadgeText, browserBadgeKind] = automationBrowserPresentation(data);
-  setBadge(elements.automationBrowserBadge, browserBadgeText, browserBadgeKind);
-  elements.automationBrowserDetail.textContent = automationBrowserDetail(data);
+  const [browserDetail, browserDetailKind] = automationBrowserPresentation(data);
+  setWorkstationStatus(elements.automationBrowserDetail, browserDetail, browserDetailKind);
   elements.automationBrowserControl.disabled = (
     !["running", "stopped"].includes(data.browser_state)
     || (browserRunning && automationBusy)
@@ -474,7 +466,11 @@ function renderAutomationEnvironment(data) {
     || initializing
   );
   elements.automationBrowserRestart.hidden = !browserRunning;
+  elements.automationBrowserControl.hidden = !["running", "stopped"].includes(data.browser_state);
   elements.automationBrowserRestart.textContent = "重启";
+  elements.automationBrowserControl.className = browserRunning
+    ? "button-danger"
+    : "button-secondary";
   elements.automationBrowserRestart.disabled = (
     !browserRunning
     || automationBusy
@@ -843,7 +839,11 @@ async function loadAutomationEnvironment() {
     }
     if (!handleAccessError(error)) {
       automationBrowserState = "unknown";
-      setBadge(elements.automationBrowserBadge, "检查失败", "failed");
+      setWorkstationStatus(
+        elements.automationBrowserDetail,
+        "无法读取浏览器控制服务状态，保留上次结果。",
+        "failed",
+      );
       elements.automationBrowserControl.disabled = true;
       elements.automationBrowserProfile.disabled = true;
       elements.automationBrowserModeInputs.forEach((input) => {

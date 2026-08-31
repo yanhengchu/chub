@@ -78,17 +78,17 @@ function rememberSystemUpgradeReload(operationId) {
 
 let systemUpgradeReloadOperationId = readSystemUpgradeReloadOperationId();
 
-function quickWorkerPresentation(state) {
+function quickWorkerStatusKind(state) {
   return {
-    ready: ["运行正常", "success"],
-    busy: ["任务处理中", "timeout"],
-    draining: ["正在排空", "timeout"],
-    recovering: ["正在恢复", "muted"],
-    restarting: ["正在重启", "muted"],
-    incompatible: ["版本不兼容", "failed"],
-    unavailable: ["不可用", "failed"],
-    stopped: ["已停止", "timeout"],
-  }[state] || ["状态未知", "failed"];
+    ready: "muted",
+    busy: "warning",
+    draining: "warning",
+    recovering: "warning",
+    restarting: "warning",
+    incompatible: "failed",
+    unavailable: "failed",
+    stopped: "muted",
+  }[state] || "failed";
 }
 
 function systemUpgradeIsRunning() {
@@ -352,14 +352,12 @@ function resetQuickWorkerView() {
   quickWorkerState = null;
   quickWorkerRequestInProgress = false;
   quickWorkerReloadOperationId = null;
-  setBadge(elements.quickWorkerBadge, "正在检查");
-  elements.quickWorkerDetail.textContent = "正在检查任务执行服务";
+  setWorkstationStatus(elements.quickWorkerDetail, "正在检查任务执行服务", "warning");
   setMessage(elements.quickWorkerMessage, "");
   elements.quickWorkerStart.hidden = true;
   elements.quickWorkerRestart.hidden = true;
   elements.quickWorkerStop.hidden = true;
-  setBadge(elements.chubServiceBadge, "正在检查");
-  elements.chubServiceDetail.textContent = "正在检查服务状态";
+  setWorkstationStatus(elements.chubServiceDetail, "正在检查控制面状态", "warning");
   setMessage(elements.chubServiceMessage, "");
   clearSystemUpgradePollTimer();
   systemUpgradeState = null;
@@ -375,14 +373,16 @@ function resetQuickWorkerView() {
 
 function renderQuickWorker(data) {
   quickWorkerState = data;
-  const [badgeText, badgeKind] = quickWorkerPresentation(data.state);
-  setBadge(elements.quickWorkerBadge, badgeText, badgeKind);
+  setWorkstationStatus(
+    elements.quickWorkerDetail,
+    data.message,
+    quickWorkerStatusKind(data.state),
+  );
   const stopped = data.state === "stopped";
   elements.quickWorkerStart.hidden = !stopped;
   elements.quickWorkerRestart.hidden = stopped || !data.can_restart;
   elements.quickWorkerStop.hidden = stopped || !data.can_stop;
   elements.quickWorkerRestart.textContent = "重启";
-  elements.quickWorkerDetail.textContent = data.message;
   const failedOperation = data.operation?.status === "failed";
   setMessage(
     elements.quickWorkerMessage,
@@ -398,7 +398,7 @@ function renderQuickWorker(data) {
     quickWorkerReloadOperationId = null;
   }
   if (matchesRequestedReload && data.operation?.status === "succeeded") {
-    setBadge(elements.quickWorkerBadge, "重启完成", "success");
+    setWorkstationStatus(elements.quickWorkerDetail, data.operation.message, "success");
     showMaintenanceCompletion(elements.quickWorkerDetail, data.operation.message);
     quickWorkerReloadOperationId = null;
     reloadDashboardAfterMaintenance();
@@ -429,7 +429,11 @@ async function loadQuickWorkerStatus({ background = false } = {}) {
       return;
     }
     if (!background || !quickWorkerState) {
-      setBadge(elements.quickWorkerBadge, "刷新失败", "failed");
+      setWorkstationStatus(
+        elements.quickWorkerDetail,
+        "无法读取最新任务执行服务状态，保留上次结果。",
+        "failed",
+      );
     }
     setMessage(
       elements.quickWorkerMessage,
@@ -445,8 +449,7 @@ async function loadQuickWorkerStatus({ background = false } = {}) {
 
 async function requestQuickWorkerRestart() {
   quickWorkerRequestInProgress = true;
-  setBadge(elements.quickWorkerBadge, "正在下发", "muted");
-  elements.quickWorkerDetail.textContent = "正在请求受控重启";
+  setWorkstationStatus(elements.quickWorkerDetail, "正在请求受控重启", "warning");
   setMessage(elements.quickWorkerMessage, "");
   syncCoreMaintenanceControls();
   try {
@@ -474,10 +477,11 @@ async function requestQuickWorkerRestart() {
 
 async function requestQuickWorkerServiceAction(action) {
   quickWorkerRequestInProgress = true;
-  setBadge(elements.quickWorkerBadge, action === "start" ? "正在启动" : "正在停止", "muted");
-  elements.quickWorkerDetail.textContent = action === "start"
-    ? "正在启动 Quick Worker"
-    : "正在停止 Quick Worker";
+  setWorkstationStatus(
+    elements.quickWorkerDetail,
+    action === "start" ? "正在启动 Quick Worker" : "正在停止 Quick Worker",
+    "warning",
+  );
   setMessage(elements.quickWorkerMessage, "");
   syncCoreMaintenanceControls();
   try {

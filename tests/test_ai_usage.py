@@ -24,7 +24,7 @@ from app.application import create_app
 from app.codex.local_usage import CodexLocalUsageUnavailable
 from app.codex.models import CodexQuotaData, CodexQuotaWindow, CodexTokenUsageData
 from app.codex.rate_limits import CodexAccountCollection, CodexRateLimitService
-from app.core.config import AiUsageConfig, AiUsageProviderApiConfig, Settings
+from app.core.config import AiUsageConfig, AiUsageSub2ApiConfig, Settings
 
 
 def _authorization(settings: Settings) -> dict[str, str]:
@@ -33,11 +33,7 @@ def _authorization(settings: Settings) -> dict[str, str]:
 
 def _provider_config() -> AiUsageConfig:
     return AiUsageConfig(
-        provider_api=AiUsageProviderApiConfig(
-            subscription_page_url="http://10.20.30.40/subscriptions",
-            subscription_id=179,
-            allow_private_http=True,
-        )
+        sub2api=AiUsageSub2ApiConfig(base_url="http://10.20.30.40")
     )
 
 
@@ -77,25 +73,14 @@ def _subscription_payload() -> dict[str, object]:
     }
 
 
-def test_provider_configuration_requires_complete_safe_target() -> None:
-    with pytest.raises(ValueError, match="configured together"):
-        AiUsageProviderApiConfig(subscription_id=179)
-    with pytest.raises(ValueError, match="allow_private_http"):
-        AiUsageProviderApiConfig(
-            subscription_page_url="http://service.test/subscriptions",
-            subscription_id=179,
-        )
-    with pytest.raises(ValueError, match="fixed subscriptions page"):
-        AiUsageProviderApiConfig(
-            subscription_page_url="https://user:secret@service.test/other",
-            subscription_id=179,
-        )
+def test_sub2api_configuration_allows_default_subscription_and_safe_base_url() -> None:
+    assert AiUsageSub2ApiConfig(
+        base_url="http://10.20.30.40",
+    ).subscription_id is None
+    with pytest.raises(ValueError, match="Sub2API origin"):
+        AiUsageSub2ApiConfig(base_url="https://user:secret@service.test/other")
     with pytest.raises(ValueError, match="literal private address"):
-        AiUsageProviderApiConfig(
-            subscription_page_url="http://example.com/subscriptions",
-            subscription_id=179,
-            allow_private_http=True,
-        )
+        AiUsageSub2ApiConfig(base_url="http://example.com")
 
 
 def test_today_usage_requires_token_scope_with_tokens() -> None:
@@ -164,7 +149,7 @@ def test_account_mode_uses_local_today_without_neighbor_fallback(
                     remaining_percent=78,
                     window_duration_minutes=10080,
                     resets_at="2026-08-20T15:45:56+08:00",
-                )
+                ),
             ],
         ),
         usage=CodexTokenUsageData(
@@ -206,7 +191,12 @@ def test_account_mode_prefers_exact_account_today(settings: Settings) -> None:
                     remaining_percent=78,
                     window_duration_minutes=10080,
                     resets_at="2026-08-20T15:45:56+08:00",
-                )
+                ),
+                CodexQuotaWindow(
+                    remaining_percent=42,
+                    window_duration_minutes=300,
+                    resets_at="2026-08-15T18:20:00+08:00",
+                ),
             ],
         ),
         usage=CodexTokenUsageData(
@@ -230,6 +220,13 @@ def test_account_mode_prefers_exact_account_today(settings: Settings) -> None:
     assert result.today.tokens == 3_000_000
     assert result.today.tokens_scope == "account"
     assert result.display.short == "Weekly 78% · Today 3M"
+    assert result.five_hour is not None
+    assert result.five_hour.remaining_percent == 42
+    assert result.display.home[0].text == "Weekly 78% left"
+    assert result.display.home[1].text == "Reset 8/20 15:45"
+    assert result.display.home[2].text == "5h 42% left"
+    assert result.display.home[3].text == "Reset 8/15 18:20"
+    assert result.display.home[4].text == "Today 3M tokens"
     local_usage.read_today.assert_not_called()
 
 
@@ -283,7 +280,7 @@ def test_api_key_mode_formats_provider_usage_and_does_not_fallback(
 
     result = service.read(force=True)
 
-    assert result.source == "provider_api"
+    assert result.source == "sub2api"
     assert result.weekly is not None
     assert result.weekly.remaining_percent == 78
     assert result.display.long == (
@@ -296,6 +293,7 @@ def test_api_key_mode_formats_provider_usage_and_does_not_fallback(
 
 def test_refresh_failure_only_retains_same_source_snapshot(settings: Settings) -> None:
     settings.ai_usage = _provider_config()
+    settings.ai_usage.sub2api.subscription_id = 179
     codex = MagicMock()
     codex.collect_ai_account_status.return_value = CodexAccountCollection("apiKey")
     browser = MagicMock()
@@ -322,7 +320,7 @@ def test_refresh_failure_only_retains_same_source_snapshot(settings: Settings) -
     assert first.stale is False
     assert second.status == "available"
     assert second.stale is True
-    assert second.source == "provider_api"
+    assert second.source == "sub2api"
     codex.collect_ai_account_status.return_value = CodexAccountCollection(None)
     third = service.read(force=True)
     assert third.status == "unavailable"
@@ -377,7 +375,12 @@ def test_fresh_cache_refreshes_when_weekly_window_resets(settings: Settings) -> 
                         remaining_percent=5,
                         window_duration_minutes=10080,
                         resets_at="2026-08-15T10:00:00+08:00",
-                    )
+                    ),
+                    CodexQuotaWindow(
+                        remaining_percent=5,
+                        window_duration_minutes=300,
+                        resets_at="2026-08-15T10:00:00+08:00",
+                    ),
                 ],
             ),
         ),
@@ -390,7 +393,12 @@ def test_fresh_cache_refreshes_when_weekly_window_resets(settings: Settings) -> 
                         remaining_percent=100,
                         window_duration_minutes=10080,
                         resets_at="2026-08-22T10:00:00+08:00",
-                    )
+                    ),
+                    CodexQuotaWindow(
+                        remaining_percent=100,
+                        window_duration_minutes=300,
+                        resets_at="2026-08-15T15:00:00+08:00",
+                    ),
                 ],
             ),
         ),
@@ -528,6 +536,27 @@ def test_provider_browser_filters_fixed_request_and_subscription(
     assert result.weekly.resets_at.isoformat() == "2026-08-20T15:45:56+08:00"
     assert result.today.tokens == 35_023_210
     assert result.today.tokens_scope == "account"
+    assert result.subscription_id == 179
+
+
+def test_provider_browser_uses_first_active_openai_subscription_by_default(
+    settings: Settings,
+) -> None:
+    settings.ai_usage = _provider_config()
+    adapter = ProviderBrowserAdapter(settings.ai_usage, settings.automations)
+    payload = _subscription_payload()
+    payload["data"].insert(
+        0,
+        {
+            **payload["data"][0],
+            "id": 178,
+            "weekly_usage_usd": Decimal("100"),
+        },
+    )
+
+    result = adapter._parse_payload(payload)
+
+    assert result.subscription_id == 178
 
 
 def test_provider_browser_rejects_invalid_or_other_platform_token_stats(

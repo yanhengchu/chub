@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 AiUsageStatus = Literal["available", "unavailable"]
-AiUsageSource = Literal["account_login", "provider_api"]
+AiUsageSource = Literal["account_login", "sub2api"]
 AiTokenScope = Literal["account", "local_device"]
 
 
@@ -25,6 +25,12 @@ class AiWeeklyUsage(_StrictModel):
     resets_at: datetime
 
 
+class AiFiveHourUsage(_StrictModel):
+    remaining_percent: int = Field(ge=0, le=100)
+    window_duration_minutes: Literal[300] = 300
+    resets_at: datetime
+
+
 class AiTodayUsage(_StrictModel):
     date: date
     used_usd: Decimal | None = Field(default=None, ge=0)
@@ -38,9 +44,15 @@ class AiTodayUsage(_StrictModel):
         return self
 
 
+class AiUsageDisplayPart(_StrictModel):
+    kind: Literal["weekly", "limit", "reset", "five_hour", "today"]
+    text: str
+
+
 class AiUsageDisplay(_StrictModel):
     long: str | None = None
     short: str | None = None
+    home: list[AiUsageDisplayPart] = Field(default_factory=list)
 
 
 class AiUsageData(_StrictModel):
@@ -52,5 +64,6 @@ class AiUsageData(_StrictModel):
     stale: bool = False
     message: str | None = None
     weekly: AiWeeklyUsage | None = None
+    five_hour: AiFiveHourUsage | None = None
     today: AiTodayUsage | None = None
     display: AiUsageDisplay = Field(default_factory=AiUsageDisplay)

@@ -42,12 +42,16 @@ document.addEventListener("visibilitychange", () => {
 async function monitorHubRestart(previousInstanceId) {
   try {
     await waitForHubRestart(previousInstanceId);
-    setBadge(elements.chubServiceBadge, "运行正常", "success");
+    setWorkstationStatus(elements.chubServiceDetail, "Chub 已重启并恢复。", "success");
     showMaintenanceCompletion(elements.chubServiceDetail, "Chub 已重启并恢复。");
     reloadDashboardAfterMaintenance();
   } catch (error) {
     if (!handleAccessError(error)) {
-      setBadge(elements.chubServiceBadge, "恢复失败", "failed");
+      setWorkstationStatus(
+        elements.chubServiceDetail,
+        "重启后未能恢复控制面连接。",
+        "failed",
+      );
       setMessage(
         elements.chubServiceMessage,
         error.message || "重启后未能恢复连接。",
@@ -64,8 +68,7 @@ async function requestHubRestart() {
   const previousInstanceId = await hubInstanceId();
   await apiFetch("/api/maintenance/restart", { method: "POST" });
   hubRestartInProgress = true;
-  setBadge(elements.chubServiceBadge, "正在重启", "muted");
-  elements.chubServiceDetail.textContent = "正在等待新实例恢复";
+  setWorkstationStatus(elements.chubServiceDetail, "正在等待新实例恢复", "warning");
   setMessage(elements.chubServiceMessage, "");
   syncCoreMaintenanceControls();
   setMessage(elements.globalMessage, "");
@@ -92,8 +95,7 @@ elements.stopHub.addEventListener("click", () => {
     errorMessage: "Chub 停止失败。",
     onConfirm: async () => {
       await apiFetch("/api/maintenance/chub/stop", { method: "POST" });
-      setBadge(elements.chubServiceBadge, "正在停止", "muted");
-      elements.chubServiceDetail.textContent = "页面连接即将断开";
+      setWorkstationStatus(elements.chubServiceDetail, "页面连接即将断开", "warning");
       elements.stopHub.disabled = true;
       elements.restartHub.disabled = true;
     },

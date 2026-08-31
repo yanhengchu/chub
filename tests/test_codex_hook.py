@@ -18,7 +18,11 @@ def test_codex_hook_correlates_codex_and_chub_sessions(tmp_path: Path) -> None:
         text=True,
         check=True,
         env={
-            **os.environ,
+            **{
+                key: value
+                for key, value in os.environ.items()
+                if key != "CHUB_TERMINAL_LAUNCH_ID"
+            },
             "CHUB_PTY_SESSION_ID": "chub-session-id",
             "CHUB_PTY_HOOK_DIR": str(tmp_path),
             "CHUB_ACTIVITY_SOURCE": "terminal",
@@ -31,6 +35,7 @@ def test_codex_hook_correlates_codex_and_chub_sessions(tmp_path: Path) -> None:
     assert result == {
         "chub_session_id": "chub-session-id",
         "codex_session_id": "codex-session-id",
+        "launch_id": None,
         "cwd": "/workspace",
         "source": "startup",
         "activity": "idle",

@@ -195,9 +195,10 @@
 | 固定文案 | 默认使用英文；任务标题保留来源原文，Session 名称按任务保存的 `session_id` 在展示时读取当前值 |
 | 帮助清单 | `help` 只显示符号说明、Quick 的 `chub · sync · new [title] · S# [task]` 与五个主题入口；文本和会话主题使用 `text help`、`session help`，其余主题使用 `help <topic>`；各主题帮助分别显示本类完整语法，标题统一为 `Commands · <Topic>`；标题与每项均为独立段落 |
 | Session 行 | `[▶ ]S<槽位>[ !] · <标题>`；`▶` 仅表示当前绑定，`!` 表示不可用或状态未知 |
-| Task 行 | `Task · <摘要>`；无可信摘要时使用 `Task · Running`；无 Task 行表示没有运行任务 |
+| Task 行 | `Task · <摘要>`；`chub` 对当前微信槽位中的运行标准快速任务统一展示受限摘要，包含 Web 和微信入口；无可信摘要时使用 `Task · Running`；无 Task 行表示没有运行任务 |
 | Request 行 | `R<槽位> · <标题>`用于`chub`列表和需求查询结果 |
 | 成功任务回执 | `状态`、`Sessions`、全部已登记 Session 及各自运行 Task；可用 Session 不显示 Task |
+| `new` 成功回执 | `Create: S# created and selected.`；下方 `Sessions` 列表展示当前标记和 Session 名称，不在状态行重复名称 |
 | `chub` 状态回执 | 首行使用本地 `node.name`，格式为 `<node.name> chub · <耗时>`，后续状态内容保持不变 |
 | 失败任务回执 | `状态`、可信目标 Session、Task 依次使用独立段落；无法确认目标时省略 Session |
 | 段落 | Session、Task、结果正文和帮助项不得用可能被电脑微信折叠的单换行分隔 |

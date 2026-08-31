@@ -11,6 +11,7 @@ from pathlib import Path
 
 SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
 CODEX_SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+LAUNCH_ID_PATTERN = re.compile(r"^[a-f0-9]{32}$")
 MAX_REBIND_DEPTH = 8
 MAX_REBIND_BYTES = 256
 
@@ -88,6 +89,9 @@ def main() -> int:
     if activity is None:
         return 0
     chub_session_id = _resolve_rebound_session(directory, chub_session_id)
+    launch_id = os.environ.get("CHUB_TERMINAL_LAUNCH_ID")
+    if launch_id is not None and not LAUNCH_ID_PATTERN.fullmatch(launch_id):
+        return 0
     requested_source = os.environ.get("CHUB_ACTIVITY_SOURCE", "terminal")
     activity_source = (
         "quick"
@@ -105,6 +109,7 @@ def main() -> int:
             {
                 "chub_session_id": chub_session_id,
                 "codex_session_id": codex_session_id,
+                "launch_id": launch_id,
                 "cwd": payload.get("cwd"),
                 "source": payload.get("source"),
                 "activity": activity,

@@ -47,11 +47,11 @@ automations:
 ai_usage:
   provider: "openai"
   timezone: "Asia/Shanghai"
-  provider_api:
+  sub2api:
     # Configure only in settings.local.yaml after the managed browser is ready.
-    subscription_page_url: null
+    base_url: null
+    # Optional. Defaults to the first active OpenAI subscription returned by Sub2API.
     subscription_id: null
-    allow_private_http: false
 
 project_documents:
   state_file: "data/local/state/project-documents.json"

@@ -101,30 +101,25 @@ class AutomationsConfig(StrictModel):
         )
 
 
-class AiUsageProviderApiConfig(StrictModel):
-    subscription_page_url: str | None = Field(default=None, max_length=2048)
+class AiUsageSub2ApiConfig(StrictModel):
+    base_url: str | None = Field(default=None, max_length=2048)
     subscription_id: int | None = Field(default=None, ge=1)
-    allow_private_http: bool = False
 
-    @field_validator("subscription_page_url", mode="before")
+    @field_validator("base_url", mode="before")
     @classmethod
-    def normalize_subscription_page_url(cls, value: object) -> object:
+    def normalize_base_url(cls, value: object) -> object:
         if isinstance(value, str):
             value = value.strip()
             return value or None
         return value
 
     @model_validator(mode="after")
-    def validate_subscription_target(self) -> "AiUsageProviderApiConfig":
-        if (self.subscription_page_url is None) != (self.subscription_id is None):
-            raise ValueError(
-                "subscription_page_url and subscription_id must be configured together"
-            )
-        if self.subscription_page_url is None:
+    def validate_base_url(self) -> "AiUsageSub2ApiConfig":
+        if self.base_url is None:
             return self
         from urllib.parse import urlsplit
 
-        target = urlsplit(self.subscription_page_url)
+        target = urlsplit(self.base_url)
         if (
             target.scheme not in {"http", "https"}
             or not target.hostname
@@ -132,11 +127,9 @@ class AiUsageProviderApiConfig(StrictModel):
             or target.password is not None
             or target.query
             or target.fragment
-            or target.path.rstrip("/") != "/subscriptions"
+            or target.path.rstrip("/")
         ):
-            raise ValueError("subscription_page_url must be a fixed subscriptions page")
-        if target.scheme == "http" and not self.allow_private_http:
-            raise ValueError("HTTP subscription pages require allow_private_http")
+            raise ValueError("base_url must be a Sub2API origin")
         if target.scheme == "http":
             hostname = target.hostname.lower()
             if hostname != "localhost":
@@ -165,7 +158,7 @@ class AiUsageProviderApiConfig(StrictModel):
 class AiUsageConfig(StrictModel):
     provider: Literal["openai"] = "openai"
     timezone: str = Field(default="Asia/Shanghai", min_length=1, max_length=64)
-    provider_api: AiUsageProviderApiConfig = AiUsageProviderApiConfig()
+    sub2api: AiUsageSub2ApiConfig = AiUsageSub2ApiConfig()
 
     @field_validator("timezone")
     @classmethod
@@ -431,12 +424,47 @@ def _read_yaml(path: Path) -> dict[str, Any]:
     return content
 
 
+def _migrate_ai_usage_config(data: dict[str, Any]) -> None:
+    ai_usage = data.get("ai_usage")
+    if not isinstance(ai_usage, dict):
+        return
+    legacy = ai_usage.get("provider_api")
+    if not isinstance(legacy, dict):
+        return
+    if "sub2api" in ai_usage:
+        ai_usage.pop("provider_api")
+        return
+    page_url = legacy.get("subscription_page_url")
+    if not isinstance(page_url, str) or not page_url.strip():
+        return
+    from urllib.parse import urlsplit, urlunsplit
+
+    target = urlsplit(page_url.strip())
+    if (
+        target.path.rstrip("/") != "/subscriptions"
+        or target.query
+        or target.fragment
+        or target.username is not None
+        or target.password is not None
+    ):
+        return
+    migrated: dict[str, Any] = {
+        "base_url": urlunsplit((target.scheme, target.netloc, "", "", "")),
+    }
+    subscription_id = legacy.get("subscription_id")
+    if subscription_id is not None:
+        migrated["subscription_id"] = subscription_id
+    ai_usage["sub2api"] = migrated
+    ai_usage.pop("provider_api")
+
+
 def load_settings(config_file: str | Path | None = None) -> Settings:
     path = Path(config_file or DEFAULT_CONFIG_FILE).expanduser()
     if not path.is_absolute():
         path = PROJECT_ROOT / path
     path = path.resolve()
     data = _read_yaml(path)
+    _migrate_ai_usage_config(data)
 
     security = data.setdefault("security", {})
     if not isinstance(security, dict):

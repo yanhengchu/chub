@@ -149,8 +149,12 @@ class CodexRuntimeAdapter:
             activity_source = "none"
         elif activity != "working" and activity_source == "terminal":
             activity_source = "none"
+        launch_id = payload.get("launch_id")
+        if not isinstance(launch_id, str) or not re.fullmatch(r"[a-f0-9]{32}", launch_id):
+            launch_id = None
         return RuntimeActivityEvent(
             native_session_id=native_session_id,
+            launch_id=launch_id,
             activity=activity,
             activity_source=activity_source,
         )
@@ -496,6 +500,8 @@ class CodexRuntimeAdapter:
             "--chub-session", request.session_id, "--hook-dir", str(self.hook_dir),
             "--permission-mode", request.permission_mode,
         ]
+        if request.launch_id:
+            command.extend(["--terminal-launch-id", request.launch_id])
         if request.native_session_id:
             command.extend(["--codex-session", request.native_session_id])
         if request.model:

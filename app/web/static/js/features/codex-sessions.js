@@ -714,10 +714,49 @@ function renderCodexQuota(data) {
   if (!data || typeof data !== "object") {
     return false;
   }
+  elements.codexQuota.removeAttribute("aria-label");
   elements.codexQuota.classList.remove(
     "codex-quota-compact",
     "codex-quota-today-complete",
   );
+  const homeParts = data?.display?.home;
+  if (
+    data.status === "available"
+    && Array.isArray(homeParts)
+    && homeParts.length
+    && homeParts.every(
+      (part) => part && typeof part.kind === "string" && typeof part.text === "string",
+    )
+  ) {
+    const content = [];
+    let group = null;
+    for (const part of homeParts) {
+      if (
+        group === null
+        || ["weekly", "five_hour", "today"].includes(part.kind)
+      ) {
+        group = document.createElement("span");
+        group.className = `codex-quota-home-group codex-quota-home-${part.kind}-group`;
+        content.push(group);
+      }
+      const element = document.createElement("span");
+      element.className = `codex-quota-home-part codex-quota-home-${part.kind}`;
+      element.textContent = part.text;
+      group.append(element);
+    }
+    elements.codexQuota.setAttribute(
+      "aria-label",
+      homeParts.map((part) => part.text).join(" · "),
+    );
+    if (data.stale && typeof data.message === "string" && data.message) {
+      const stale = document.createElement("span");
+      stale.className = "codex-quota-home-stale";
+      stale.textContent = `；${data.message}`;
+      content.push(stale);
+    }
+    elements.codexQuota.replaceChildren(...content);
+    return true;
+  }
   const longText = data?.display?.long;
   if (data.status === "available" && typeof longText === "string" && longText) {
     const staleMessage = data.stale && typeof data.message === "string" && data.message

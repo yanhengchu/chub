@@ -132,13 +132,6 @@
     width: 100%;
   }
 
-  .workstation-status-actions > .badge {
-    align-self: flex-start;
-    max-width: none;
-    text-align: left;
-    width: fit-content;
-  }
-
   .workstation-status-actions > button,
   .automation-browser-actions > button {
     width: 100%;
@@ -152,12 +145,6 @@
 
   .workstation-card .workstation-status-actions {
     display: contents;
-  }
-
-  .workstation-card .workstation-status-actions > .badge {
-    grid-column: 2;
-    grid-row: 1;
-    align-self: center;
   }
 
   .workstation-card .workstation-status-actions > button {
