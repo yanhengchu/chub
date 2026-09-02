@@ -27,7 +27,8 @@ const element = () => ({
   disabled: false,
   hidden: false,
   textContent: "",
-  addEventListener() {},
+  listeners: {},
+  addEventListener(type, handler) { this.listeners[type] = handler; },
   replaceChildren(...children) { this.children = children; },
 });
 globalThis.document = {
@@ -82,8 +83,14 @@ globalThis.reloadDashboardAfterMaintenance = () => { reloads += 1; };
 
 eval(`${source}\n
 renderQuickWorker({ state: "ready", message: "ready", can_restart: true,
+  runtime_state: "available", runtimes: [
+    { name: "Codex Runtime", state: "available" },
+    { name: "Local Runtime", state: "disabled" },
+  ],
   operation: { operation_id: "old", status: "succeeded", message: "done" } });
 const workerHistorical = reloads;
+const initialWorkerDetail = elementCache.quickWorkerDetail.textContent;
+const initialRuntimeDetail = elementCache.aiRuntimeDetail.textContent;
 quickWorkerReloadOperationId = "failed";
 renderQuickWorker({ state: "unavailable", message: "failed", can_restart: false,
   operation: { operation_id: "failed", status: "failed", message: "failed" } });
@@ -153,9 +160,29 @@ renderSystemUpgrade({ state: "available", message: "ready",
   operation: { operation_id: "persisted", status: "succeeded", message: "ready" } });
 const restoredUpgradeReload = reloads;
 const restoredUpgradeMarker = sessionStorage.getItem(SYSTEM_UPGRADE_RELOAD_KEY);
+const upgradeIdleLabel = systemUpgradePresentation({ state: "idle" });
+const upgradeArchivingLabel = systemUpgradePresentation({ state: "archiving" });
+const noUpgradeDetail = systemUpgradeDetail({ state: "available", plan: { upgrade_points: [] } });
+const plannedUpgradeDetail = systemUpgradeDetail({ state: "available", plan: {
+  upgrade_points: ["Session 数据 v2 → v3", "Worker 协议 v8 → v9"],
+} });
+const recoveryOnlyDetail = systemUpgradeDetail({
+  state: "available",
+  plan_unavailable: true,
+  plan: { upgrade_points: [] },
+});
+let resumeDialog = null;
+showConfirmationDialog = (dialog) => { resumeDialog = dialog; };
+systemUpgradeState = {
+  resume: true,
+  plan: { plan_id: "runtime-recovery" },
+};
+elementCache.systemUpgradeStart.listeners.click();
 
 process.stdout.write(JSON.stringify({
   workerHistorical,
+  initialWorkerDetail,
+  initialRuntimeDetail,
   workerFailed,
   workerFailureCleared,
   workerAfterFailure,
@@ -172,6 +199,16 @@ process.stdout.write(JSON.stringify({
   upgradeCompletionDetail,
   restoredUpgradeReload,
   restoredUpgradeMarker,
+  upgradeIdleLabel,
+  upgradeArchivingLabel,
+  noUpgradeDetail,
+  plannedUpgradeDetail,
+  recoveryOnlyDetail,
+  resumeDialog: {
+    description: resumeDialog.description,
+    confirmLabel: resumeDialog.confirmLabel,
+    pendingLabel: resumeDialog.pendingLabel,
+  },
 }));`);
 """
     result = subprocess.run(
@@ -183,6 +220,8 @@ process.stdout.write(JSON.stringify({
 
     assert json.loads(result.stdout) == {
         "workerHistorical": 0,
+        "initialWorkerDetail": "ready",
+        "initialRuntimeDetail": "Codex Runtime：可用 · Local Runtime：已停用",
         "workerFailed": 0,
         "workerFailureCleared": True,
         "workerAfterFailure": 0,
@@ -207,6 +246,16 @@ process.stdout.write(JSON.stringify({
         "upgradeCompletionDetail": "状态：已完成。ready 浏览器将在稍后自动刷新页面。",
         "restoredUpgradeReload": 3,
         "restoredUpgradeMarker": None,
+        "upgradeIdleLabel": "可执行",
+        "upgradeArchivingLabel": "正在清理",
+        "noUpgradeDetail": "状态：无待升级。",
+        "plannedUpgradeDetail": "状态：待升级。Session 数据 v2 → v3 · Worker 协议 v8 → v9",
+        "recoveryOnlyDetail": "状态：仅可恢复。升级方案不可用。",
+        "resumeDialog": {
+            "description": "将继续上次未完成的恢复操作，按已保存的安全检查点恢复 Chub AI 运行态、Chub Web 与 Quick Worker。",
+            "confirmLabel": "继续恢复",
+            "pendingLabel": "正在继续…",
+        },
     }
 
 

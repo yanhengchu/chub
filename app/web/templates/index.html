@@ -279,7 +279,6 @@
                   </div>
                   <div class="workstation-status-actions">
                     <button id="restart-hub" class="button-secondary" type="button" aria-haspopup="dialog" aria-controls="confirmation-dialog" disabled>重启</button>
-                    <button id="stop-hub" class="button-danger" type="button" aria-haspopup="dialog" aria-controls="confirmation-dialog" disabled>停止</button>
                   </div>
                 </div>
                 <div class="workstation-status-row">
@@ -289,9 +288,13 @@
                     <p id="quick-worker-message" class="message" aria-live="polite"></p>
                   </div>
                   <div class="workstation-status-actions">
-                    <button id="quick-worker-start" class="button-secondary" type="button" hidden>启动</button>
-                    <button id="quick-worker-restart" class="button-secondary" type="button" aria-haspopup="dialog" aria-controls="confirmation-dialog" hidden>重启</button>
-                    <button id="quick-worker-stop" class="button-danger" type="button" aria-haspopup="dialog" aria-controls="confirmation-dialog" hidden>停止</button>
+                    <button id="quick-worker-restart" class="button-secondary" type="button" aria-haspopup="dialog" aria-controls="confirmation-dialog" disabled>重启</button>
+                  </div>
+                </div>
+                <div class="workstation-status-row runtime-status-row">
+                  <div class="workstation-status-copy">
+                    <strong>AI Runtime</strong>
+                    <span id="ai-runtime-detail" class="workstation-status-detail">正在检查 AI Runtime</span>
                   </div>
                 </div>
                 <div class="workstation-status-row system-upgrade-row">
@@ -302,11 +305,6 @@
                   <div class="workstation-status-actions">
                     <button id="system-upgrade-start" class="button-danger" type="button" aria-haspopup="dialog" aria-controls="confirmation-dialog" disabled>升级与恢复</button>
                   </div>
-                </div>
-                <div class="system-upgrade-timeline" aria-live="polite">
-                  <span id="system-upgrade-operation" class="maintenance-operation"></span>
-                  <ol id="system-upgrade-flow" class="maintenance-timeline" hidden></ol>
-                  <div id="system-upgrade-components" class="maintenance-components"></div>
                 </div>
                 </div>
               </section>

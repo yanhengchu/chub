@@ -56,14 +56,14 @@
 
 `chub check` 是只读的完整系统检查入口，依次检查项目配置、用户服务、Web 健康、Quick Worker 健康和 `/api/status` 系统状态；任一必需检查失败时返回非零退出码，不执行重启、升级或任务清理。
 
-`chub worker-service-status` 只读取 Quick Worker 服务状态。`chub service-definitions` 重建当前工作区对应的固定服务定义；`chub runtime-dependencies` 按仓库 `requirements.txt` 修复当前虚拟环境依赖；两者都不重启现有服务。`chub system-upgrade-service` 只安装或恢复独立升级执行器，发现未完成升级时启动该执行器，不停止无关服务。`chub chrome-supervisor-reconcile [--restart]` 仅在 Ubuntu 重建、启用并确认 Debug Chrome Supervisor，`--restart` 会重启该 Supervisor；macOS 不执行额外服务操作。上述命令均应从本机终端运行。
+`chub worker-service-status` 只读取 Quick Worker 服务状态。`chub service-definitions` 重建当前工作区对应的固定服务定义；`chub service-definitions --core` 仅重建 Chub Web、Quick Worker 和升级执行器定义，供升级与恢复内部使用，不处理 Debug Chrome。`chub runtime-dependencies` 按仓库 `requirements.txt` 修复当前虚拟环境依赖；它是独立部署修复入口，不属于升级与恢复步骤。上述服务定义和依赖修复命令都不重启现有服务。`chub system-upgrade-service` 只安装或恢复独立升级执行器，发现未完成升级时启动该执行器，不停止无关服务。`chub chrome-supervisor-reconcile [--restart]` 仅在 Ubuntu 重建、启用并确认 Debug Chrome Supervisor，`--restart` 会重启该 Supervisor；macOS 不执行额外服务操作。上述命令均应从本机终端运行。
 
 当前 Chub 管理的三个服务和一个第三方 Gateway 的入口边界如下；这里的“Chub 管理”是服务安装范围，不等同于三层架构中的 Chub 核心层。
 
 | 运行部分 | 所属层 | 当前状态 | 当前入口与职责 |
 | --- | --- | --- | --- |
 | Chub | 核心层 | 已实现 | 由 `chub install/start` 管理用户服务；提供页面、API 和快速交互入口 |
-| Chub Quick Worker | AI Runtime 层 | 已实现 | 与 Chub 分离运行但由同一 CLI 安装；通过 `chub worker-health` 检查，并仅在本机 CLI 或首页受控入口启动、停止和重启 |
+| Chub Quick Worker | AI Runtime 层 | 已实现 | 与 Chub 分离运行但由同一 CLI 安装；通过 `chub worker-health` 检查；启动、停止和排空仅在本机 CLI 执行，首页受控入口仅提供重启 |
 | Chub Debug Chrome | 核心层 | 已实现 | Ubuntu 由独立 Supervisor 服务持有 Debug Chrome；浏览器实例按需启动，macOS 沿用现有浏览器适配 |
 | OpenClaw Gateway | 第三方服务层 | 已接入 | 第三方 Gateway、微信通道和 Chub OpenClaw 插件共同提供 ClawBot；不由 `chub start` 启动，安装/配置以[插件说明](../integrations/openclaw/chub/README.md)为准 |
 
@@ -128,7 +128,7 @@
 
 | 指令 | 当前行为 |
 | --- | --- |
-| `chub` / `check` / `usage` | 分别只读查询 Chub 摘要、Chub/Web/Worker/系统检查与完整额度 |
+| `chub` / `check` / `usage` | 分别只读查询 Chub 摘要、核心服务维护检查与完整额度 |
 | `help`、`model help`、`text help`、`session help`、`request help`、`system help` | 无参数显示紧凑索引；带主题时只显示该类的完整语法；均不附加状态尾部 |
 | `text [mode [direct\|auto\|confirm]\|list\|ok\|next\|cancel]`、`text model list`、`text model level [M#]`、`text model use M# \| L# \| M# L#` / `text-check <English>` | 查询或调整微信后续正文处理方式、翻译任务默认模型和等级，或以英文复述确认队头 |
 | `model` / `model list` / `model level [M#]` / `model use M# \| L# \| M# L#` | 查询或配置当前 Session 后续任务的模型与推理等级 |
@@ -216,7 +216,7 @@
 | 段落 | Session、Task、结果正文和帮助项不得用可能被电脑微信折叠的单换行分隔 |
 | 空状态 | 无 Session 时显示`No sessions`；无活动需求时显示`No requests`；读取失败显示对应`Unavailable`或`Weekly Unavailable` |
 | 列表截断 | 未展示数量使用 `<N> more Sessions` |
-| `check` 回执 | 返回 `Check · <耗时>`，按“服务 / 资源 / 结果”分段展示脱敏核心检查明细；不附加任务、Session 或用量上下文 |
+| `check` 回执 | 返回 `Check · <耗时>`，按“服务 / 维护 / 资源 / 结果”分段展示 Chub Web、Quick Worker、AI Runtime、升级与恢复和脱敏资源明细；不附加任务、Session 或用量上下文。AI Runtime 被停用、未配置、不可用或状态无法确认只作为待处理提示，不把已就绪的 Web/Worker 误判为故障；升级失败或不可用、Web/Worker/系统检查失败才使核心服务检查未通过。 |
 
 Session 标题与任务摘要的显示规则：
 
@@ -231,7 +231,7 @@ Session 标题与任务摘要的显示规则：
 | `help`、`Usage` 用法错误 | 不附加 |
 | `usage` | 只返回完整额度使用情况，不附加 Session 状态 |
 | `model`、`model list`、`model level`、`model use`、`text model list`、`text model level`、`text model use` | 只返回模型查询或配置结果，不附加 Session 列表或用量状态 |
-| `check` | 使用任务完成格式，但不提交 AI 任务；只附加本次 `Weekly` 尾部，不附加完整 Session/用量状态 |
+| `check` | 不提交 AI 任务，也不附加 Session、用量或 `Weekly` 状态尾部 |
 | `cat R#`、`archive R#`及其失败 | 不附加 |
 | `del S#`、`del R#`及其失败 | 不附加 |
 | `stop [S#]` 的首次受理或进行中回复 | 不附加 |

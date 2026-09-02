@@ -11,7 +11,7 @@
   }
 
   const collapsedStorageKey = "chub.workspace.sidebarCollapsed";
-  const widthStorageKey = "chub.workspace.sidebarWidth";
+  const widthStorageKey = "chub.sidebarWidth";
   const minimumSidebarWidth = 225;
   const maximumSidebarWidth = 360;
   const defaultSidebarWidth = 225;
@@ -31,7 +31,9 @@
   };
 
   const setSidebarWidth = (value, { persist = true } = {}) => {
-    const width = clampSidebarWidth(value);
+    const width = Number.isFinite(value)
+      ? clampSidebarWidth(value)
+      : defaultSidebarWidth;
     shell.style.setProperty("--workspace-sidebar-width", `${width}px`);
     resizer.setAttribute("aria-valuenow", String(width));
     if (!persist) {

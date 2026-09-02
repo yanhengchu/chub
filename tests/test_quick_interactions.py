@@ -1478,6 +1478,46 @@ def test_worker_recovery_barrier_fails_quick_session_writes_closed(
         assert allowed is True
 
 
+def test_worker_reconciliation_logs_maintenance_disconnect_without_traceback(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    quick_interactions = manager(tmp_path)
+    quick_interactions.set_maintenance_window_checker(lambda: True)
+
+    with caplog.at_level("INFO", logger="hub.codex.quick_interactions"):
+        quick_interactions._record_reconciliation_failure(
+            WorkerRequestNotSent("worker socket unavailable")
+        )
+
+    assert quick_interactions.recovery_ready is False
+    record = next(
+        item
+        for item in caplog.records
+        if "temporarily unavailable during maintenance" in item.message
+    )
+    assert record.exc_info is None
+
+
+def test_worker_reconciliation_keeps_traceback_for_unexpected_disconnect(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    quick_interactions = manager(tmp_path)
+
+    with caplog.at_level("WARNING", logger="hub.codex.quick_interactions"):
+        quick_interactions._record_reconciliation_failure(
+            WorkerRequestNotSent("worker socket unavailable")
+        )
+
+    record = next(
+        item
+        for item in caplog.records
+        if "reconciliation became unavailable" in item.message
+    )
+    assert record.exc_info is not None
+
+
 def test_terminal_guards_do_not_require_quick_worker_recovery(
     settings,
     tmp_path: Path,

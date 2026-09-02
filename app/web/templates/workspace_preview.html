@@ -15,7 +15,7 @@
         <section class="workspace-preview-main">
           <header class="workspace-preview-toolbar" aria-label="工作台操作">
             <button id="workspace-sidebar-toggle" class="button-secondary workspace-preview-sidebar-toggle" type="button" aria-controls="workspace-sidebar" aria-pressed="false" aria-label="折叠侧边栏（⌘B / Ctrl+B）" title="折叠侧边栏（⌘B / Ctrl+B）"><span aria-hidden="true">☰</span></button>
-            <span class="badge badge-success">已连接</span>
+            <div class="workspace-preview-health"><span class="workspace-preview-health-dot" aria-hidden="true"></span>节点在线 · Worker 可用</div>
           </header>
           <nav class="workspace-preview-local-nav" aria-label="工作台分区">
             <span class="is-current">工作台</span>
@@ -93,7 +93,6 @@
             <span>会话</span>
             <span>自动化</span>
             <span>项目资料</span>
-            <span>设置</span>
           </nav>
           <button class="workspace-preview-create" type="button" disabled title="功能建设中">+ 新建 Session</button>
           <section class="workspace-preview-recent" aria-labelledby="workspace-preview-recent-title">
@@ -111,7 +110,11 @@
               <span><strong>需求评审</strong><small>空闲 · 昨天</small></span>
             </div>
           </section>
-          <div class="workspace-preview-health"><span class="workspace-preview-health-dot" aria-hidden="true"></span>节点在线 · Worker 可用</div>
+          <div class="workspace-preview-sidebar-footer">
+            <nav class="workspace-preview-nav" aria-label="工作台辅助导航">
+              <a href="/settings">设置</a>
+            </nav>
+          </div>
           </aside>
         <div id="workspace-sidebar-resizer" class="workspace-preview-sidebar-resizer" role="separator" aria-orientation="vertical" aria-controls="workspace-sidebar" aria-label="调整侧边栏宽度" aria-valuemin="225" aria-valuemax="360" aria-valuenow="225" tabindex="0"></div>
       </section>

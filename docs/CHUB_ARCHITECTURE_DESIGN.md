@@ -60,7 +60,7 @@ AI Runtime 层提供 Chub 的 AI 能力。当前完整接入的 Runtime 是 Code
 - Quick Worker、固定 Runner、Runtime Adapter、实时终端载体和本机 AI Agent 调用。
 - 模型、推理等级、AI 用量及 AI 任务相关的业务终态。
 
-当前生产只注册 `codex`，客户端不能选择 Runtime，也尚未提供暂停 Runtime 提交的设置。未来若实现 Runtime 选择或暂停新任务，必须按独立需求定义其配置、受理门禁和已受理任务的收敛语义。Runtime 缺失或不健康时，新任务必须失败关闭，不自动降级到其他 Runtime。已受理且拥有任务 ID 的任务由其权威执行器继续收敛；配置切换不取消、迁移或重放已受理任务。查看、停止、归档等已有 Session 维护能力按各自契约保持可用。
+当前生产只注册 `codex`，客户端不能选择 Runtime；设置页可启用或停用已注册 Runtime。停用只拒绝新的 AI 任务受理，不取消、迁移或重放已受理任务，也不改变 Worker 服务健康。Runtime 缺失、不健康或被停用时，新任务必须失败关闭，不自动降级到其他 Runtime；查看、停止、归档等已有 Session 维护能力按各自契约保持可用。未来引入多个 Runtime 时，才单独设计选择、聚合和切换语义。
 
 ### 2.3 第三方服务层
 
@@ -175,14 +175,18 @@ AI Runtime 层
 
 | 操作 | 直接影响 | 成功条件 | 不影响 |
 | --- | --- | --- | --- |
-| Web 重启 | 核心层 Chub、可重建的 ttyd Web 桥 | 新实例 ID 变化且健康 | Quick Worker、OpenClaw Gateway、tmux、原生 Codex、已受理任务 |
+| Web 启动、停止与重启 | 核心层 Chub、可重建的 ttyd Web 桥 | 启动/重启以 Web 健康确认，重启还须确认新实例 ID；停止以服务管理器停止确认 | Quick Worker、OpenClaw Gateway、tmux、原生 Codex、已受理任务 |
 | Worker 重启 | AI Runtime 层 Quick Worker 任务、租约和运行映射 | 新 generation、协议和健康确认 | Chub、OpenClaw Gateway、tmux、原生 Codex |
-| 系统升级 | 受影响的 AI Runtime 写入、Worker 与 Chub 自有运行态 | Web/Worker、目标版本、Session 映射和必要通知确认 | 原生 Codex、用户配置、项目资料、OpenClaw 与无关服务 |
+| 升级与恢复 | Chub 自有 AI 运行态、Chub Web 与 Quick Worker | Web 新实例、Worker、目标协议、Session 映射和写入恢复确认；AI Runtime 在完成后独立展示可用性 | 原生 Codex、用户配置、日志、项目资料、OpenClaw、Debug Chrome 与无关服务 |
 | OpenClaw Gateway 重启与恢复 | 第三方服务层 Gateway、微信通道与固定运行产物 | Gateway、已配置通道和兼容基线确认 | 核心层、AI Runtime、实时终端 |
 
-门禁只覆盖直接冲突或数据破坏风险，按资源局部生效。“升级与恢复”由独立于 Chub 的核心层平台执行器编排：Ubuntu 使用 systemd user oneshot service，macOS 使用独立 LaunchAgent；Chub 只持久化操作并启动执行器，不能持有随后会停止 Chub 的升级进程。执行器只停止直接受影响的 Chub 与 Quick Worker，按固定升级计划处理必要的 Chub 自有运行态，然后恢复并确认 Web、Worker、目标协议和写入可用。它不调用 OpenClaw CLI，也不处理 Gateway、插件、补丁或消息通道；这些第三方服务只通过其独立的恢复入口维护。升级计划无法读取或校验时仍按固定规则执行当前版本运行态恢复，并明确不升级代码版本。执行器不接受任意命令、路径、版本或清理目标，也不删除原生 Codex 数据、用户配置或业务资料。
+门禁只覆盖直接冲突或数据破坏风险，按资源局部生效。“升级与恢复”由独立于 Chub 的核心层平台执行器编排：Ubuntu 使用 systemd user oneshot service，macOS 使用独立 LaunchAgent；Chub 只持久化操作并启动执行器，不能持有随后会停止 Chub 的升级进程。执行器只重建 Chub 自有 AI 运行态、Chub Web 与 Quick Worker：按固定升级计划处理必要的 Chub 自有运行态，再恢复并确认 Web、Worker、目标协议和写入可用。AI Runtime 的启用和本机可用性在核心恢复完成后独立检查，不作为 Web 或 Worker 恢复失败的依据；首页的 Chub 行投影控制面当前状态，Quick Worker 行只投影 Worker 当前状态，其下方独立的 AI Runtime 状态行按注册顺序列出每个 Runtime 的可用、已停用或不可用状态。无注册项和状态无法读取分别明确显示“未配置 AI Runtime”与“AI Runtime 状态暂无法确认”，不能用历史升级结果宣称当前可用性。每个组件的固定状态与 AI Runtime 可用性分类写入同一升级操作 ID 的操作日志，组件状态文件仅用于恢复过程内部对账。它不调用 OpenClaw CLI，也不处理 Gateway、插件、补丁、消息通道、Debug Chrome 或 Python 依赖安装；这些能力只通过各自独立的维护入口处理。升级计划无法读取或校验时仍按固定规则执行当前版本运行态恢复，并明确不升级代码版本。执行器不接受任意命令、路径、版本或清理目标，也不删除原生 Codex 数据、用户配置、日志或业务资料。
 
-若升级在最终验证阶段失败，但持久化组件结果已确认新 Chub Web 与 Quick Worker 均成功，升级记录仍保持失败并允许后续复检或恢复；它不再单独阻断 AI Runtime 新写入。后续提交仍须通过各自的 Runtime 和 Worker 实时健康检查。该失败记录尚未收敛前，不能跳过它发起新的升级，必须继续当前恢复操作；缺少任一成功结果、组件报告无法安全读取，或失败发生在更早的清理/服务切换阶段时，写入继续失败关闭。
+### 7.1 当前复检结论
+
+截至 2026 年 9 月 2 日，核心维护链路不存在已知的范围冲突或恢复阻塞：Chub 重启以新实例健康为终态，Quick Worker 重启以新 generation、目标协议和健康状态为终态，升级与恢复以 Chub Web、Quick Worker 和 Chub 自有运行态恢复为终态。已完成 Runtime 可用与 Runtime 设置停用两轮升级验证；两轮均不将 Runtime 设置状态误判为 Worker 或核心恢复失败。该结论只覆盖当前 macOS 实例和已执行的验证路径，不替代 Ubuntu 或新增 Runtime 的实机复检。
+
+若升级在最终验证阶段失败，但持久化组件结果已确认新 Chub Web 与 Quick Worker 均成功，升级记录仍保持失败并允许后续复检或恢复；它不再单独阻断 AI Runtime 新写入。后续提交仍须通过各自的 Runtime 和 Worker 实时健康检查。能够从持久化安全检查点继续的失败保留“继续恢复”入口；该失败记录尚未收敛前，不能跳过它发起新的升级。缺少任一成功结果、组件报告无法安全读取，或失败发生在不能安全继续的阶段时，写入继续失败关闭，首页关闭升级入口并提示在本机终端检查 `chub logs upgrade` 和服务定义；普通 Chub 或 Worker 重启不得替代该恢复步骤。
 
 ## 8. 跨层不可违反约束
 

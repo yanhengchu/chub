@@ -725,6 +725,18 @@ def test_dispatch_runs_read_only_chub_check(
             "available_runtime_ids": ["codex"],
         },
     }
+    codex_manager.read_runtime_management.return_value = SimpleNamespace(
+        runtimes=[
+            SimpleNamespace(name="Codex Runtime", enabled=True, healthy=True),
+        ]
+    )
+    manager.system_upgrade_status_reader = lambda: SimpleNamespace(
+        state="available",
+        can_start=True,
+        plan_unavailable=False,
+        plan=SimpleNamespace(upgrade_points=[]),
+        operation=None,
+    )
 
     result = manager.dispatch(
         message_id="check-command",
@@ -740,26 +752,78 @@ def test_dispatch_runs_read_only_chub_check(
     assert result.message.endswith(
         "【服务】\n"
         "- Web API：正常\n"
-        "- Quick Worker：`ready` · 协议版本 9\n\n"
+        "- Quick Worker：`ready` · 协议版本 9\n"
+        "- AI Runtime：Codex Runtime 可用\n\n"
+        "【维护】\n"
+        "- 升级与恢复：无待升级\n\n"
         "【资源】\n"
         "- 活动任务：0 个 · 排队任务：0 个\n"
         "- 系统：内存 77.1% · 磁盘 30.1%\n\n"
-        "【结果】健康检查：通过"
+        "【结果】核心服务检查：通过"
     )
     assert result.message == (
         result.message.split("\n\n", 1)[0]
         + "\n\n"
         "【服务】\n"
         "- Web API：正常\n"
-        "- Quick Worker：`ready` · 协议版本 9\n\n"
+        "- Quick Worker：`ready` · 协议版本 9\n"
+        "- AI Runtime：Codex Runtime 可用\n\n"
+        "【维护】\n"
+        "- 升级与恢复：无待升级\n\n"
         "【资源】\n"
         "- 活动任务：0 个 · 排队任务：0 个\n"
         "- 系统：内存 77.1% · 磁盘 30.1%\n\n"
-        "【结果】健康检查：通过"
+        "【结果】核心服务检查：通过"
     )
     assert "Done" not in result.message
     assert "Task · chub check" not in result.message
     assert "Weekly" not in result.message
+    quick_interactions.submit.assert_not_called()
+
+
+def test_check_keeps_core_services_healthy_when_runtime_is_disabled(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    manager.system_status_reader = lambda: SimpleNamespace(
+        system=SimpleNamespace(memory_percent=30.0, disk_percent=20.0)
+    )
+    manager.worker_health_reader = lambda: {
+        "success": True,
+        "data": {
+            "protocol_version": 9,
+            "status": "ready",
+            "active_tasks": 0,
+            "queued_tasks": 0,
+            "uncertain_tasks": 0,
+            "corrupt_tasks": 0,
+        },
+    }
+    codex_manager.read_runtime_management.return_value = SimpleNamespace(
+        runtimes=[
+            SimpleNamespace(name="Codex Runtime", enabled=False, healthy=False),
+        ]
+    )
+    manager.system_upgrade_status_reader = lambda: SimpleNamespace(
+        state="available",
+        can_start=True,
+        plan_unavailable=False,
+        plan=SimpleNamespace(upgrade_points=[]),
+        operation=None,
+    )
+
+    result = manager.dispatch(
+        message_id="check-runtime-disabled",
+        prompt="check",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message is not None
+    assert "AI Runtime：已停用，请在 Settings 启用。" in result.message
+    assert "【结果】核心服务检查：通过，存在待处理提示" in result.message
     quick_interactions.submit.assert_not_called()
 
 

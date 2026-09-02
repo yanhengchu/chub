@@ -32,12 +32,15 @@ DeferredRestartOutcome = Literal[
 DeferredRestartReadiness = Literal["waiting", "ready", "sensitive_task_failed"]
 DeferredRestartImmediateDecision = Literal["launch", "claimed", "in_progress"]
 SENSITIVE_TASK_FAILED_REASON = "触发重启的关联任务未成功完成，重启已取消。"
+MANUAL_RESTART_TASK_ID = "manual-web-restart"
 
 
 @dataclass(frozen=True)
 class DeferredRestartRegistration:
     operation_id: str
     created: bool
+    launch: bool = False
+    claimed: bool = False
 
 
 class _StrictModel(BaseModel):
@@ -49,6 +52,7 @@ class DeferredRestartRequest(_StrictModel):
     requested_instance_id: str = Field(min_length=1, max_length=128)
     requested_task_id: str = Field(min_length=1, max_length=128)
     source_ip: str = Field(min_length=1, max_length=128)
+    kind: Literal["task", "manual"] = "task"
     status: Literal["waiting", "started"] = "waiting"
     requested_at: datetime
     updated_at: datetime
@@ -204,6 +208,49 @@ class DeferredRestartCoordinator:
             self._scheduled = True
             self._immediate_restart_claimed = True
             return "claimed"
+
+    def register_manual_restart(
+        self,
+        *,
+        operation_id: str,
+        source_ip: str,
+    ) -> DeferredRestartRegistration:
+        """Persist a Web-only restart so its new instance can confirm completion."""
+        with self._lock:
+            if self._state_error:
+                raise ApiError(
+                    503,
+                    "deferred_restart_state_unavailable",
+                    "重启状态文件不可用，本次不会重启。",
+                )
+            if self._state is not None:
+                decision = self.begin_immediate_restart()
+                return DeferredRestartRegistration(
+                    operation_id=self._state.current.operation_id,
+                    created=False,
+                    launch=decision in {"launch", "claimed"},
+                    claimed=decision == "claimed",
+                )
+            now = utc_now()
+            request = DeferredRestartRequest(
+                operation_id=operation_id,
+                requested_instance_id=self.instance_id,
+                requested_task_id=MANUAL_RESTART_TASK_ID,
+                source_ip=source_ip,
+                kind="manual",
+                status="started",
+                requested_at=now,
+                updated_at=now,
+            )
+            self._write(DeferredRestartState(current=request))
+            self._state = DeferredRestartState(current=request)
+            self._scheduled = True
+            self._immediate_restart_claimed = True
+            return DeferredRestartRegistration(
+                operation_id=operation_id,
+                created=True,
+                launch=True,
+            )
 
     def confirm_immediate_restart(self) -> None:
         with self._lock:

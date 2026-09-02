@@ -1,6 +1,7 @@
 "use strict";
 
 const QUICK_INTERACTION_PAGE_SIZE_KEY = "hub.quickInteractionPageSize.v1";
+const settingsPage = document.body.dataset.settingsPage || "";
 const CODEX_MODEL_PREFERENCE_CACHE_KEY = "hub.codexModelPreferenceCache";
 const WEIXIN_TRANSLATION_SETTINGS_CACHE_KEY = "hub.weixinTranslationSettingsCache";
 const OPENCLAW_WEIXIN_SETTINGS_CACHE_KEY = "hub.openclawWeixinSettingsCache.v1";
@@ -102,10 +103,6 @@ const cyberRainDensityValue = document.querySelector("#cyber-rain-density-value"
 const cyberStyleSettingsMessage = document.querySelector("#cyber-style-settings-message");
 const styleOptionRows = document.querySelectorAll("[data-style-option]");
 const cyberStyleDetails = document.querySelector("[data-cyber-style-details]");
-const settingsNavigationLinks = document.querySelectorAll(
-  ".settings-navigation-links a",
-);
-const settingsSections = document.querySelectorAll(".settings-section[id]");
 let codexModels = [];
 let codexModelsLoaded = false;
 let codexCatalogDefaultModelId = "";
@@ -121,8 +118,6 @@ let settingsOpenClawWeixinPollTimer = 0;
 let settingsOpenClawWeixinPollFailures = 0;
 let settingsOpenClawWeixinQrObjectUrl = "";
 let settingsOpenClawWeixinQrUpdatedAt = "";
-let settingsScrollFrame = null;
-let settingsNavigationTarget = null;
 let maintenanceTerminalOpening = false;
 
 const CODEX_REASONING_LABELS = {
@@ -306,55 +301,6 @@ function renderStyleSelection(style) {
   cyberStyleDetails.querySelector("summary").textContent = style === "cyber"
     ? "Cyber 参数 · 当前风格"
     : "Cyber 参数";
-}
-
-function setActiveSettingsSection(sectionId) {
-  settingsNavigationLinks.forEach((link) => {
-    if (link.getAttribute("href") === `#${sectionId}`) {
-      link.setAttribute("aria-current", "true");
-    } else {
-      link.removeAttribute("aria-current");
-    }
-  });
-}
-
-function scrollToSettingsSection(sectionId) {
-  const section = document.getElementById(sectionId);
-  if (!section) {
-    return;
-  }
-  settingsNavigationTarget = sectionId;
-  setActiveSettingsSection(sectionId);
-  section.scrollIntoView({
-    behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
-      ? "auto"
-      : "smooth",
-    block: "start",
-  });
-}
-
-function updateActiveSettingsSection() {
-  settingsScrollFrame = null;
-  if (settingsNavigationTarget) {
-    setActiveSettingsSection(settingsNavigationTarget);
-    return;
-  }
-  const threshold = 120;
-  let activeSection = settingsSections[0];
-  settingsSections.forEach((section) => {
-    if (section.getBoundingClientRect().top <= threshold) {
-      activeSection = section;
-    }
-  });
-  if (
-    window.innerHeight + window.scrollY
-    >= document.documentElement.scrollHeight - 2
-  ) {
-    activeSection = settingsSections[settingsSections.length - 1];
-  }
-  if (activeSection) {
-    setActiveSettingsSection(activeSection.id);
-  }
 }
 
 function readRangePreference(key, fallback) {
@@ -849,11 +795,13 @@ function setOpenClawWeixinMessage(element, text, kind = "") {
 }
 
 function setOpenClawWeixinBadge(text, kind = "muted") {
+  if (!settingsOpenClawWeixinBadge) return;
   settingsOpenClawWeixinBadge.textContent = text;
   settingsOpenClawWeixinBadge.className = `badge badge-${kind}`;
 }
 
 function setOpenClawBadge(text, kind = "muted") {
+  if (!settingsOpenClawBadge) return;
   settingsOpenClawBadge.textContent = text;
   settingsOpenClawBadge.className = `badge badge-${kind}`;
 }
@@ -877,11 +825,16 @@ function renderOpenClawGatewaySettings(status, { live = true } = {}) {
   }[status?.state] || ["不可检查", "muted"];
   setOpenClawBadge(presentation[0], presentation[1]);
   const detail = status?.message || "暂时无法读取 OpenClaw Gateway 状态。";
-  settingsOpenClawDetail.textContent = live
-    ? detail
-    : `当前展示上次检测结果：${detail}`;
+  if (settingsOpenClawDetail) {
+    settingsOpenClawDetail.textContent = live
+      ? detail
+      : `当前展示上次检测结果：${detail}`;
+  }
 
   const accessUrl = live ? localOpenClawAccessUrl(status) : "";
+  if (!settingsOpenClawOpen || !settingsOpenClawOpenLabel) {
+    return;
+  }
   if (accessUrl) {
     settingsOpenClawOpen.href = accessUrl;
     settingsOpenClawOpen.removeAttribute("aria-disabled");
@@ -906,6 +859,7 @@ async function fetchSettingsApi(path, options = {}) {
 }
 
 function renderOpenClawWeixinContext(status) {
+  if (!openclawWeixinAccountSummary || !openclawWeixinOwnerSummary) return;
   openclawWeixinAccountSummary.textContent = status?.channel_message
     || "当前消息通道状态不可用。";
   openclawWeixinOwnerSummary.textContent = status?.owner_message
@@ -1210,188 +1164,132 @@ async function cancelOpenClawWeixinLogin() {
   }
 }
 
-quickInteractionPageSize.addEventListener("change", () => {
-  saveQuickInteractionPageSize(quickInteractionPageSize.value);
-});
-
-quickInteractionPageSize.value = readQuickInteractionPageSize();
-initializeSettingsChoicePickers();
-
-codexDefaultFullAccess.addEventListener("change", saveCodexSessionDefaults);
-
-loadCodexModels();
-loadRuntimeManagement();
-loadCodexSessionDefaults();
-loadWeixinTranslationStatus();
-loadOpenClawWeixinSettings();
-
-for (const input of weixinProcessingModeInputs) {
-  input.addEventListener("change", () => {
-    if (input.checked) saveWeixinTranslationStatus(input.value);
-  });
-}
-
-weixinTranslationModel.addEventListener("change", () => {
-  const model = codexModels.find(
-    (item) => item.id === weixinTranslationModel.value,
-  );
-  if (model) {
-    const defaultLevel = model.default_level || "";
-    const supported = model.levels.some((level) => level.id === defaultLevel);
-    weixinTranslationReasoningEffort.value = supported ? defaultLevel : "";
-  } else {
-    weixinTranslationReasoningEffort.value = "";
-  }
-  saveWeixinTranslationModelSettings();
-});
-
-weixinTranslationReasoningEffort.addEventListener("change", () => {
-  saveWeixinTranslationModelSettings();
-});
-
-settingsOpenClawBindWeixin.addEventListener("click", openOpenClawWeixinDialog);
-openclawWeixinClose.addEventListener("click", closeOpenClawWeixinDialog);
-openclawWeixinStart.addEventListener("click", startOpenClawWeixinLogin);
-openclawWeixinCancel.addEventListener("click", cancelOpenClawWeixinLogin);
-openclawWeixinVerifyForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const code = openclawWeixinVerifyCode.value.trim();
-  if (!code) {
-    return;
-  }
-  try {
-    const login = await fetchSettingsApi("/api/openclaw/weixin/login/verify", {
-      method: "POST",
-      headers: settingsHeaders(true),
-      body: JSON.stringify({ code }),
-    });
-    openclawWeixinVerifyCode.value = "";
-    renderOpenClawWeixinLogin(login);
-  } catch (_error) {
-    setOpenClawWeixinMessage(openclawWeixinMessage, "验证码提交失败。", "error");
-  }
-});
-openclawWeixinDialog.addEventListener("click", (event) => {
-  if (event.target === openclawWeixinDialog) {
-    closeOpenClawWeixinDialog();
-  }
-});
-openclawWeixinDialog.addEventListener("close", () => {
-  stopOpenClawWeixinPolling();
-  releaseOpenClawWeixinQr();
-});
-
 function closeMaintenanceTerminalDialog() {
   if (maintenanceTerminalDialog.open) {
     maintenanceTerminalDialog.close();
   }
 }
 
-settingsMaintenanceTerminal.addEventListener("click", () => {
-  if (!maintenanceTerminalOpening) {
-    maintenanceTerminalDialogFeedback.textContent = "";
-    maintenanceTerminalDialogFeedback.className = "message";
-    maintenanceTerminalDialog.showModal();
-  }
-});
-maintenanceTerminalDialogClose.addEventListener("click", closeMaintenanceTerminalDialog);
-maintenanceTerminalDialogCancel.addEventListener("click", closeMaintenanceTerminalDialog);
-maintenanceTerminalDialog.addEventListener("click", (event) => {
-  if (event.target === maintenanceTerminalDialog) {
-    closeMaintenanceTerminalDialog();
-  }
-});
-maintenanceTerminalDialogConfirm.addEventListener("click", async () => {
-  if (maintenanceTerminalOpening) {
-    return;
-  }
-  maintenanceTerminalOpening = true;
-  settingsMaintenanceTerminal.disabled = true;
-  maintenanceTerminalDialogConfirm.disabled = true;
-  try {
-    const data = await fetchSettingsApi("/api/maintenance-terminal/access", {
-      method: "POST",
-      headers: settingsHeaders(true),
+function initializeAppearanceSettings() {
+  cyberRainSpeed.value = String(readRangePreference(CYBER_RAIN_SPEED_KEY, 60));
+  cyberRainBrightness.value = String(readRangePreference(CYBER_RAIN_BRIGHTNESS_KEY, 70));
+  cyberRainDensity.value = String(readRangePreference(CYBER_RAIN_DENSITY_KEY, 50));
+  cyberRainSpeedValue.value = `${cyberRainSpeed.value}%`;
+  cyberRainBrightnessValue.value = `${cyberRainBrightness.value}%`;
+  cyberRainDensityValue.value = `${cyberRainDensity.value}%`;
+  cyberRainSpeed.addEventListener("input", () => updateCyberControl(cyberRainSpeed, cyberRainSpeedValue, CYBER_RAIN_SPEED_KEY));
+  cyberRainBrightness.addEventListener("input", () => updateCyberControl(cyberRainBrightness, cyberRainBrightnessValue, CYBER_RAIN_BRIGHTNESS_KEY));
+  cyberRainDensity.addEventListener("input", () => updateCyberControl(cyberRainDensity, cyberRainDensityValue, CYBER_RAIN_DENSITY_KEY));
+  styleOptionRows.forEach((row) => {
+    row.querySelector("[data-style-apply]").addEventListener("click", () => {
+      const style = row.dataset.styleOption;
+      if (window.ChubTheme.applyStyle(style, { persist: true })) {
+        renderStyleSelection(style);
+        cyberStyleDetails.open = style === "cyber";
+        cyberStyleSettingsMessage.textContent = "";
+        cyberStyleSettingsMessage.className = "message";
+      } else {
+        cyberStyleSettingsMessage.textContent = "当前浏览器无法保存界面偏好。";
+        cyberStyleSettingsMessage.className = "message message-error";
+      }
     });
-    window.open(data.terminal_url, "_blank", "noopener");
-    closeMaintenanceTerminalDialog();
-  } catch (_error) {
-    maintenanceTerminalDialogFeedback.textContent = "维护终端暂时无法启动，请检查 ttyd 和 zsh。";
-    maintenanceTerminalDialogFeedback.className = "message message-error";
-  } finally {
-    maintenanceTerminalOpening = false;
-    settingsMaintenanceTerminal.disabled = false;
-    maintenanceTerminalDialogConfirm.disabled = false;
-  }
-});
-
-cyberRainSpeed.value = String(readRangePreference(CYBER_RAIN_SPEED_KEY, 60));
-cyberRainBrightness.value = String(readRangePreference(CYBER_RAIN_BRIGHTNESS_KEY, 70));
-cyberRainDensity.value = String(readRangePreference(CYBER_RAIN_DENSITY_KEY, 50));
-cyberRainSpeedValue.value = `${cyberRainSpeed.value}%`;
-cyberRainBrightnessValue.value = `${cyberRainBrightness.value}%`;
-cyberRainDensityValue.value = `${cyberRainDensity.value}%`;
-
-cyberRainSpeed.addEventListener("input", () => {
-  updateCyberControl(cyberRainSpeed, cyberRainSpeedValue, CYBER_RAIN_SPEED_KEY);
-});
-
-cyberRainBrightness.addEventListener("input", () => {
-  updateCyberControl(
-    cyberRainBrightness,
-    cyberRainBrightnessValue,
-    CYBER_RAIN_BRIGHTNESS_KEY,
-  );
-});
-
-cyberRainDensity.addEventListener("input", () => {
-  updateCyberControl(cyberRainDensity, cyberRainDensityValue, CYBER_RAIN_DENSITY_KEY);
-});
-
-styleOptionRows.forEach((row) => {
-  const button = row.querySelector("[data-style-apply]");
-  button.addEventListener("click", () => {
-    const style = row.dataset.styleOption;
-    if (window.ChubTheme.applyStyle(style, { persist: true })) {
-      renderStyleSelection(style);
-      cyberStyleDetails.open = style === "cyber";
-      cyberStyleSettingsMessage.textContent = "";
-      cyberStyleSettingsMessage.className = "message";
-    } else {
-      cyberStyleSettingsMessage.textContent = "当前浏览器无法保存界面偏好。";
-      cyberStyleSettingsMessage.className = "message message-error";
-    }
   });
-});
-
-settingsNavigationLinks.forEach((link) => {
-  link.addEventListener("click", (event) => {
-    event.preventDefault();
-    scrollToSettingsSection(link.getAttribute("href").slice(1));
-  });
-});
-
-window.addEventListener("scroll", () => {
-  if (settingsScrollFrame === null) {
-    settingsScrollFrame = window.requestAnimationFrame(updateActiveSettingsSection);
-  }
-}, { passive: true });
-
-function releaseSettingsNavigationTarget() {
-  settingsNavigationTarget = null;
+  renderStyleSelection(window.ChubTheme.currentStyle());
 }
 
-window.addEventListener("wheel", releaseSettingsNavigationTarget, { passive: true });
-window.addEventListener("touchstart", releaseSettingsNavigationTarget, { passive: true });
-window.addEventListener("pointerdown", releaseSettingsNavigationTarget, { passive: true });
-window.addEventListener("keydown", (event) => {
-  if (
-    ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "]
-      .includes(event.key)
-  ) {
-    releaseSettingsNavigationTarget();
-  }
-});
+function initializeDiagnosticsSettings() {
+  settingsMaintenanceTerminal.addEventListener("click", () => {
+    if (!maintenanceTerminalOpening) {
+      maintenanceTerminalDialogFeedback.textContent = "";
+      maintenanceTerminalDialogFeedback.className = "message";
+      maintenanceTerminalDialog.showModal();
+    }
+  });
+  maintenanceTerminalDialogClose.addEventListener("click", closeMaintenanceTerminalDialog);
+  maintenanceTerminalDialogCancel.addEventListener("click", closeMaintenanceTerminalDialog);
+  maintenanceTerminalDialog.addEventListener("click", (event) => {
+    if (event.target === maintenanceTerminalDialog) closeMaintenanceTerminalDialog();
+  });
+  maintenanceTerminalDialogConfirm.addEventListener("click", async () => {
+    if (maintenanceTerminalOpening) return;
+    maintenanceTerminalOpening = true;
+    settingsMaintenanceTerminal.disabled = true;
+    maintenanceTerminalDialogConfirm.disabled = true;
+    try {
+      const data = await fetchSettingsApi("/api/maintenance-terminal/access", { method: "POST", headers: settingsHeaders(true) });
+      window.open(data.terminal_url, "_blank", "noopener");
+      closeMaintenanceTerminalDialog();
+    } catch (_error) {
+      maintenanceTerminalDialogFeedback.textContent = "维护终端暂时无法启动，请检查 ttyd 和 zsh。";
+      maintenanceTerminalDialogFeedback.className = "message message-error";
+    } finally {
+      maintenanceTerminalOpening = false;
+      settingsMaintenanceTerminal.disabled = false;
+      maintenanceTerminalDialogConfirm.disabled = false;
+    }
+  });
+}
 
-renderStyleSelection(window.ChubTheme.currentStyle());
-updateActiveSettingsSection();
+function initializeWeixinTextSettings() {
+  initializeSettingsChoicePickers();
+  loadCodexModels();
+  loadWeixinTranslationStatus();
+  for (const input of weixinProcessingModeInputs) {
+    input.addEventListener("change", () => {
+      if (input.checked) saveWeixinTranslationStatus(input.value);
+    });
+  }
+  weixinTranslationModel.addEventListener("change", () => {
+    const model = codexModels.find((item) => item.id === weixinTranslationModel.value);
+    weixinTranslationReasoningEffort.value = model?.levels.some((level) => level.id === model.default_level)
+      ? model.default_level
+      : "";
+    saveWeixinTranslationModelSettings();
+  });
+  weixinTranslationReasoningEffort.addEventListener("change", saveWeixinTranslationModelSettings);
+}
+
+function initializeOpenClawSettings() {
+  loadOpenClawWeixinSettings();
+  settingsOpenClawBindWeixin.addEventListener("click", openOpenClawWeixinDialog);
+  openclawWeixinClose.addEventListener("click", closeOpenClawWeixinDialog);
+  openclawWeixinStart.addEventListener("click", startOpenClawWeixinLogin);
+  openclawWeixinCancel.addEventListener("click", cancelOpenClawWeixinLogin);
+  openclawWeixinVerifyForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const code = openclawWeixinVerifyCode.value.trim();
+    if (!code) return;
+    try {
+      openclawWeixinVerifyCode.value = "";
+      renderOpenClawWeixinLogin(await fetchSettingsApi("/api/openclaw/weixin/login/verify", { method: "POST", headers: settingsHeaders(true), body: JSON.stringify({ code }) }));
+    } catch (_error) {
+      setOpenClawWeixinMessage(openclawWeixinMessage, "验证码提交失败。", "error");
+    }
+  });
+  openclawWeixinDialog.addEventListener("click", (event) => {
+    if (event.target === openclawWeixinDialog) closeOpenClawWeixinDialog();
+  });
+  openclawWeixinDialog.addEventListener("close", () => {
+    stopOpenClawWeixinPolling();
+    releaseOpenClawWeixinQr();
+  });
+}
+
+if (settingsPage === "quick-interaction") {
+  quickInteractionPageSize.value = readQuickInteractionPageSize();
+  initializeSettingsChoicePickers();
+  quickInteractionPageSize.addEventListener("change", () => saveQuickInteractionPageSize(quickInteractionPageSize.value));
+} else if (settingsPage === "appearance") {
+  initializeAppearanceSettings();
+} else if (settingsPage === "diagnostics") {
+  initializeDiagnosticsSettings();
+} else if (settingsPage === "runtime") {
+  loadRuntimeManagement();
+} else if (settingsPage === "session-defaults") {
+  codexDefaultFullAccess.addEventListener("change", saveCodexSessionDefaults);
+  loadCodexSessionDefaults();
+} else if (settingsPage === "weixin-text") {
+  initializeWeixinTextSettings();
+} else if (settingsPage === "openclaw") {
+  initializeOpenClawSettings();
+}

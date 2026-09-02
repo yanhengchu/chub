@@ -128,15 +128,20 @@ async def test_home_page_is_public_and_contains_no_credential_form(
     assert 'id="refresh-core-capabilities"' in response.text
     assert 'id="refresh-third-party-services"' in response.text
     assert 'id="core-services-title" class="card-group-title"' in response.text
-    assert response.text.count('class="workstation-status-row') == 6
+    assert response.text.count('class="workstation-status-row') == 7
+    assert "<strong>AI Runtime</strong>" in response.text
+    assert 'id="ai-runtime-detail" class="workstation-status-detail"' in response.text
+    assert response.text.index("<strong>Chub Quick Worker</strong>") < response.text.index("<strong>AI Runtime</strong>") < response.text.index("<strong>升级与恢复</strong>")
     assert "<strong>升级与恢复</strong>" in response.text
     assert "<strong>系统升级与恢复</strong>" not in response.text
     assert 'id="system-upgrade-badge"' not in response.text
     assert 'id="system-upgrade-start"' in response.text
     assert 'id="system-upgrade-detail" class="workstation-status-detail"' in response.text
-    assert 'id="system-upgrade-components"' in response.text
-    assert 'id="system-upgrade-operation"' in response.text
-    assert 'id="system-upgrade-flow"' in response.text
+    assert 'id="system-upgrade-current-statuses"' not in response.text
+    assert 'id="system-upgrade-components"' not in response.text
+    assert 'id="system-upgrade-operation"' not in response.text
+    assert 'id="system-upgrade-runtime"' not in response.text
+    assert 'id="system-upgrade-flow"' not in response.text
     assert 'id="system-upgrade-logs"' not in response.text
     assert response.text.index('id="codex-card-host"') < response.text.index(
         'data-card-key="project-docs"'
@@ -240,10 +245,7 @@ async def test_home_page_is_public_and_contains_no_credential_form(
     assert 'id="chub-service-badge"' not in response.text
     assert 'id="quick-worker-badge"' not in response.text
     assert 'id="quick-worker-restart"' in response.text
-    assert 'id="quick-worker-start"' in response.text
-    assert 'id="quick-worker-stop"' in response.text
     assert '>重启并清理任务</button>' not in response.text
-    assert 'id="stop-hub"' in response.text
     assert 'id="automation-browser-restart"' in response.text
     assert response.text.index('id="automation-browser-restart"') < response.text.index(
         'id="automation-browser-control"'
@@ -282,7 +284,7 @@ async def test_cyber_style_is_rendered_before_assets_load(settings: Settings) ->
         client.cookies.set("hub_ui_style", "cyber")
         pages = await asyncio.gather(
             client.get("/"),
-            client.get("/settings"),
+            client.get("/settings/quick-interaction"),
                 client.get("/automations"),
                 client.get("/logs"),
                 client.get("/project-docs"),
@@ -295,18 +297,33 @@ async def test_cyber_style_is_rendered_before_assets_load(settings: Settings) ->
 
 
 @pytest.mark.anyio
-async def test_settings_page_supports_quick_interaction_page_size_preference(
+async def legacy_settings_page_supports_quick_interaction_page_size_preference(
     settings: Settings,
 ) -> None:
     transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/settings")
         script = await client.get("/static/settings.js")
+        sidebar_script = await client.get("/static/settings-sidebar.js")
+        sidebar_bootstrap_script = await client.get("/static/settings-sidebar-bootstrap.js")
         theme_script = await client.get("/static/theme.js")
         stylesheet = await client.get("/static/css/components.css")
 
     assert response.status_code == 200
     assert "设置 · Hub" in response.text
+    assert 'class="settings-workspace-shell"' in response.text
+    assert 'id="settings-sidebar"' in response.text
+    assert 'id="settings-sidebar-resizer"' in response.text
+    assert 'role="separator"' in response.text
+    assert 'aria-valuemin="225"' in response.text
+    assert 'aria-valuemax="360"' in response.text
+    assert 'id="settings-return-application" class="settings-workspace-return" href="/workspace"' in response.text
+    assert "返回应用" in response.text
+    assert 'src="/static/settings-sidebar-bootstrap.js"' in response.text
+    assert response.text.index('src="/static/settings-sidebar-bootstrap.js"') < response.text.index(
+        '/static/css/tokens.css',
+    )
+    assert 'src="/static/settings-sidebar.js"' in response.text
     assert "快速交互" in response.text
     assert '<h3 id="core-settings-title" class="settings-layer-title">Chub 核心</h3>' in response.text
     assert "调整会话历史记录的加载方式。" in response.text
@@ -325,9 +342,14 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
     assert "第三方服务" in response.text
     assert 'id="settings-category"' not in response.text
     assert 'href="#quick-interaction-settings" aria-current="true"' in response.text
+    assert response.text.count('class="settings-navigation-link"') == 7
+    assert response.text.count('class="settings-navigation-icon" aria-hidden="true"') == 7
     assert 'href="#utility-settings"' in response.text
     assert 'href="#openclaw-settings"' in response.text
-    assert 'href="#openclaw-weixin-settings"' in response.text
+    assert 'href="#openclaw-weixin-settings"' not in response.text
+    assert '<h3 id="openclaw-settings-title">OpenClaw</h3>' in response.text
+    assert '<h4 id="openclaw-gateway-settings-title">Gateway</h4>' in response.text
+    assert '<h4 id="openclaw-clawbot-settings-title">微信 ClawBot</h4>' in response.text
     assert 'id="settings-openclaw-badge"' in response.text
     assert 'id="settings-openclaw-detail"' in response.text
     assert 'id="settings-openclaw-open" class="settings-utility-row settings-integration-row"' in response.text
@@ -402,6 +424,20 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
     assert f"v{settings.app.version}" in response.text
     assert "返回首页" not in response.text
     assert script.status_code == 200
+    assert sidebar_script.status_code == 200
+    assert sidebar_bootstrap_script.status_code == 200
+    assert "chub.sidebarWidth" in sidebar_script.text
+    assert "chub.settings.sidebarWidth" not in sidebar_script.text
+    assert "minimumSidebarWidth = 225" in sidebar_script.text
+    assert "maximumSidebarWidth = 360" in sidebar_script.text
+    assert "Number.isFinite(value)" in sidebar_script.text
+    assert 'resizer.addEventListener("pointerdown"' in sidebar_script.text
+    assert "collapsed" not in sidebar_script.text
+    assert 'event.key.toLowerCase() !== "b"' not in sidebar_script.text
+    assert 'event.key !== "Escape"' not in sidebar_script.text
+    assert "window.location.assign" not in sidebar_script.text
+    assert "settings-sidebar-preload-width" in sidebar_bootstrap_script.text
+    assert "chub.sidebarWidth" in sidebar_bootstrap_script.text
     assert "initializeSettingsChoicePickers" in script.text
     assert "loadRuntimeManagement" in script.text
     assert "saveRuntimeEnablement" in script.text
@@ -412,6 +448,21 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
     assert ":not(.settings-choice-picker-trigger):not(.settings-choice-picker-option)" in stylesheet.text
     assert ':root[data-ui-style="cyber"] .settings-choice-picker-option {' in stylesheet.text
     assert ".settings-integration-row > span:first-child" in stylesheet.text
+    assert ".settings-workspace-shell" in stylesheet.text
+    assert "--settings-sidebar-width: var(--settings-sidebar-preload-width, 225px);" in stylesheet.text
+    assert stylesheet.text.count("overscroll-behavior-y: contain;") >= 2
+    assert ".settings-workspace-return {\n  display: flex;\n  height: 2.25rem;" in stylesheet.text
+    assert "  border-radius: 8px;\n  padding: 0 0.2rem;\n  color: var(--muted);" in stylesheet.text
+    assert ".settings-workspace-return:hover,\n.settings-workspace-return:active {\n  color: var(--accent-dark);\n  background: color-mix(in srgb, var(--accent) 8%, transparent);" in stylesheet.text
+    assert "grid-template-columns: var(--settings-sidebar-width) minmax(0, 1fr);" in stylesheet.text
+    assert ".settings-workspace-shell.is-sidebar-resizing" in stylesheet.text
+    assert ".settings-navigation-link[aria-current=\"true\"]" in stylesheet.text
+    assert "border: 1px solid transparent;" in stylesheet.text
+    assert "border-left: 2px solid var(--line);" not in stylesheet.text
+    assert ".settings-workspace-page {\n  width: 100%;\n  height: 100dvh;" in stylesheet.text
+    assert ".settings-workspace-main {\n  display: grid;" in stylesheet.text
+    assert "overflow-y: auto;" in stylesheet.text
+    assert "settingsWorkspaceMain.addEventListener(\"scroll\"" in script.text
     assert "hub.quickInteractionView.v1" not in script.text
     assert "hub.quickInteractionPageSize.v1" in script.text
     assert "hub.codexDefaultPermission.v1" not in script.text
@@ -455,6 +506,7 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
     assert "hub.uiStyle.v1" in theme_script.text
     assert "下次进入快速交互时生效" in response.text
     assert "scrollToSettingsSection" in script.text
+    assert "settingsWorkspaceMain.scrollTo({" in script.text
     assert "requestAnimationFrame(updateActiveSettingsSection)" in script.text
     assert response.headers["content-security-policy"] == (
         "default-src 'self'; "
@@ -466,6 +518,77 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
         "base-uri 'none'; "
         "frame-ancestors 'none'"
     )
+
+
+@pytest.mark.anyio
+async def test_settings_pages_use_independent_routes_and_page_scoped_content(
+    settings: Settings,
+) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
+    paths = {
+        "quick-interaction": "/settings/quick-interaction",
+        "appearance": "/settings/appearance",
+        "diagnostics": "/settings/diagnostics",
+        "runtime": "/settings/runtime",
+        "session-defaults": "/settings/session-defaults",
+        "weixin-text": "/settings/weixin-text",
+        "openclaw": "/settings/openclaw",
+    }
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        root = await client.get("/settings", follow_redirects=False)
+        legacy_gateway = await client.get("/settings/openclaw/gateway", follow_redirects=False)
+        legacy_clawbot = await client.get("/settings/openclaw/clawbot", follow_redirects=False)
+        pages = {
+            page: await client.get(path)
+            for page, path in paths.items()
+        }
+        script = await client.get("/static/settings.js")
+        stylesheet = await client.get("/static/css/components.css")
+
+    assert root.status_code == 307
+    assert root.headers["location"] == "/settings/quick-interaction"
+    assert legacy_gateway.status_code == 307
+    assert legacy_gateway.headers["location"] == "/settings/openclaw"
+    assert legacy_clawbot.status_code == 307
+    assert legacy_clawbot.headers["location"] == "/settings/openclaw"
+    assert all(response.status_code == 200 for response in pages.values())
+    for page, response in pages.items():
+        assert f'data-settings-page="{page}"' in response.text
+        assert 'href="#' not in response.text
+        assert 'id="settings-return-application" class="settings-workspace-return" href="/workspace"' in response.text
+        assert response.headers["content-security-policy"] == (
+            "default-src 'self'; "
+            "script-src 'self'; "
+            "style-src 'self'; "
+            "connect-src 'self'; "
+            "img-src 'self' data: blob:; "
+            "object-src 'none'; "
+            "base-uri 'none'; "
+            "frame-ancestors 'none'"
+        )
+
+    assert 'href="/settings/quick-interaction" aria-current="page"' in pages["quick-interaction"].text
+    assert 'id="quick-interaction-page-size"' in pages["quick-interaction"].text
+    assert 'id="runtime-management-list"' not in pages["quick-interaction"].text
+    assert 'id="runtime-management-list"' in pages["runtime"].text
+    assert 'id="quick-interaction-page-size"' not in pages["runtime"].text
+    assert 'id="cyber-rain-speed"' in pages["appearance"].text
+    assert 'id="maintenance-terminal-dialog"' in pages["diagnostics"].text
+    assert 'id="weixin-processing-mode"' in pages["weixin-text"].text
+    assert 'id="settings-openclaw-open"' in pages["openclaw"].text
+    assert 'id="settings-openclaw-bind-weixin"' in pages["openclaw"].text
+    assert pages["openclaw"].text.index('id="openclaw-gateway-settings-title"') < pages["openclaw"].text.index('id="openclaw-clawbot-settings-title"')
+    assert 'href="/settings/openclaw" aria-current="page"' in pages["openclaw"].text
+    assert "settings-subnavigation" not in pages["openclaw"].text
+    assert 'href="/settings/openclaw/gateway"' not in pages["openclaw"].text
+    assert 'href="/settings/openclaw/clawbot"' not in pages["openclaw"].text
+    assert script.status_code == 200
+    assert 'const settingsPage = document.body.dataset.settingsPage || "";' in script.text
+    assert "scrollToSettingsSection" not in script.text
+    assert "settingsWorkspaceMain.scrollTo" not in script.text
+    assert '.settings-navigation-link[aria-current="page"]' in stylesheet.text
+    assert "min-height: 34px;" in stylesheet.text
+    assert ".settings-subnavigation" not in stylesheet.text
 
 
 @pytest.mark.anyio
@@ -590,11 +713,19 @@ async def test_workspace_preview_is_static_and_available(settings: Settings) -> 
     assert 'id="workspace-sidebar-close"' not in response.text
     assert 'aria-label="工作台操作"' in response.text
     assert '<div class="workspace-preview-brand"><strong>Chub</strong></div>' in response.text
+    assert response.text.index("节点在线 · Worker 可用") < response.text.index(
+        'aria-label="工作台分区"',
+    )
+    assert 'aria-label="工作台辅助导航"' in response.text
+    assert response.text.index('aria-label="工作台辅助导航"') > response.text.index(
+        'id="workspace-preview-recent-title"',
+    )
     assert "个人 AI 工作站" not in response.text
     assert '>☰</span></button>' in response.text
     assert "WORKSPACE" not in response.text
     assert "<h1>工作台</h1>" not in response.text
     assert "当前为并行建设页面" not in response.text
+    assert '<a href="/settings">设置</a>' in response.text
     assert response.text.count('disabled title="功能建设中"') == 6
     assert 'aria-controls="workspace-sidebar"' in response.text
     assert 'src="/static/workspace-bootstrap.js"' in response.text
@@ -614,6 +745,8 @@ async def test_workspace_preview_is_static_and_available(settings: Settings) -> 
     assert "padding: var(--workspace-toolbar-top-gap) 1rem 1rem;" in stylesheet.text
     assert "padding: var(--workspace-toolbar-top-gap) clamp(0.75rem, 1.5vw, 1.25rem) 1rem;" in stylesheet.text
     assert ".workspace-preview-brand {\n  display: flex;\n  height: var(--workspace-toolbar-height);" in stylesheet.text
+    assert "color: color-mix(in srgb, var(--accent-dark) 78%, var(--muted));" in stylesheet.text
+    assert ".workspace-preview-sidebar-footer {\n  display: grid;\n  gap: 0.75rem;\n  margin-top: auto;" in stylesheet.text
     assert "gap: 0.75rem;" in stylesheet.text
     assert ".workspace-preview-toolbar" in stylesheet.text
     assert ".workspace-preview-main {\n  align-content: start;" in stylesheet.text
@@ -623,7 +756,8 @@ async def test_workspace_preview_is_static_and_available(settings: Settings) -> 
     assert 'event.key.toLowerCase() !== "b"' in workspace_script.text
     assert "workspace-sidebar-close" not in workspace_script.text
     assert "chub.workspace.sidebarCollapsed" in workspace_script.text
-    assert "chub.workspace.sidebarWidth" in workspace_script.text
+    assert "chub.sidebarWidth" in workspace_script.text
+    assert "chub.workspace.sidebarWidth" not in workspace_script.text
     assert "minimumSidebarWidth = 225" in workspace_script.text
     assert "maximumSidebarWidth = 360" in workspace_script.text
     assert 'resizer.addEventListener("pointerdown"' in workspace_script.text
@@ -637,6 +771,7 @@ async def test_workspace_preview_is_static_and_available(settings: Settings) -> 
     assert "shell.classList.add(\"is-sidebar-closing\")" in workspace_script.text
     assert 'requestAnimationFrame(() => shell.classList.add("is-layout-ready"));' in workspace_script.text
     assert "workspace-sidebar-preload-width" in bootstrap_script.text
+    assert "chub.sidebarWidth" in bootstrap_script.text
     assert "data-workspace-sidebar-collapsed" in stylesheet.text
     assert ".workspace-preview-shell.is-layout-ready" in stylesheet.text
 
@@ -754,13 +889,17 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "debug_chrome_instance" not in dashboard_script
     assert "未纳入升级" not in dashboard_script
     assert "reloadDashboardAfterMaintenance" in dashboard_script
-    assert "systemUpgradeOperation" in dashboard_script
-    assert "systemUpgradeFlow" in dashboard_script
-    assert "maintenance-timeline-step" in dashboard_script
-    assert "failed_stage" in dashboard_script
-    assert "最近操作" in dashboard_script
-    assert "SYSTEM_UPGRADE_TIMELINE" in dashboard_script
-    assert "已完成（有独立组件降级）" in dashboard_script
+    assert "systemUpgradeCurrentStatuses" not in dashboard_script
+    assert "systemUpgradeOperation" not in dashboard_script
+    assert "systemUpgradeRuntime" not in dashboard_script
+    assert "systemUpgradeFlow" not in dashboard_script
+    assert "maintenance-timeline-step" not in dashboard_script
+    assert "failed_stage" not in dashboard_script
+    assert "runtime_message ? ` · ${data.runtime_message}`" not in dashboard_script
+    assert "最近操作" not in dashboard_script
+    assert "SYSTEM_UPGRADE_TIMELINE" not in dashboard_script
+    assert "runtime_message" in dashboard_script
+    assert "data.runtimes" in dashboard_script
     assert "maintenanceReloadTimer" in dashboard_script
     assert "}, 2000);" in dashboard_script
     assert "浏览器将在稍后自动刷新页面" in dashboard_script

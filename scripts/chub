@@ -57,10 +57,9 @@ Usage: chub <command> [options]
 Commands:
   install [--force]
              Install and start the user service
-  start      Start the service
-  stop [--force]
-             Stop the service
-  restart    Restart the service and check its health
+  start      Start Chub Web and check its health
+  stop       Stop Chub Web
+  restart    Restart Chub Web and check its health
   status [--verbose]
              Show a concise Web, Worker, browser, and upgrade status summary
              --verbose also prints the platform service-manager details
@@ -81,8 +80,8 @@ Commands:
              Show whether the Quick Worker service is running
   network-restart
              Restart the locally configured NetworkManager Wi-Fi and VPN
-  service-definitions
-             Rebuild fixed Web, Worker, and browser service definitions
+  service-definitions [--core]
+             Rebuild fixed service definitions; --core limits this to Web, Worker, and upgrade executor
   runtime-dependencies
              Repair Python dependencies from the repository requirements file
   system-upgrade-service
@@ -694,6 +693,12 @@ reconcile_chrome_supervisor_service() {
 
 write_service_definitions() {
     check_project
+    local core_only=false
+    if [[ "${1:-}" == "--core" && "$#" -eq 1 ]]; then
+        core_only=true
+    elif [[ "$#" -ne 0 ]]; then
+        fail "usage: chub service-definitions [--core]"
+    fi
     case "$(platform_name)" in
         macos)
             write_macos_service
@@ -703,12 +708,16 @@ write_service_definitions() {
         ubuntu)
             write_systemd_service
             write_systemd_worker_service
-            write_systemd_chrome_supervisor_service
             write_systemd_system_upgrade_service
+            if [[ "$core_only" != true ]]; then
+                write_systemd_chrome_supervisor_service
+            fi
             systemctl --user daemon-reload
             systemctl --user enable "$SERVICE_NAME.service"
             systemctl --user enable "$WORKER_SERVICE_NAME.service"
-            systemctl --user enable "$CHROME_SUPERVISOR_SERVICE_NAME.service"
+            if [[ "$core_only" != true ]]; then
+                systemctl --user enable "$CHROME_SUPERVISOR_SERVICE_NAME.service"
+            fi
             ;;
     esac
 }
@@ -943,16 +952,10 @@ install_service() {
 start_service() {
     check_codex_pty_requirements
     case "$(platform_name)" in
-        macos)
-            start_macos_worker
-            start_macos_service
-            ;;
-        ubuntu)
-            systemctl --user start "$WORKER_SERVICE_NAME.service"
-            systemctl --user start "$CHROME_SUPERVISOR_SERVICE_NAME.service"
-            systemctl --user start "$SERVICE_NAME.service"
-            ;;
+        macos) start_macos_service ;;
+        ubuntu) systemctl --user start "$SERVICE_NAME.service" ;;
     esac
+    health_check || fail "Chub Web did not become healthy"
 }
 
 worker_service_status() {
@@ -1019,23 +1022,17 @@ stop_worker_service() {
 }
 
 stop_service() {
-    local force=false
-    if maintenance_force_requested stop "$@"; then
-        force=true
+    if [[ "$#" -eq 1 && "${1:-}" == "--force" ]]; then
+        echo "chub: --force has no effect when stopping only Chub Web" >&2
+    elif [[ "$#" -ne 0 ]]; then
+        fail "usage: chub stop [--force]"
     fi
     require_system_upgrade_idle
-    require_worker_idle_for_maintenance stop "$force"
     case "$(platform_name)" in
-        macos)
-            stop_macos_service
-            stop_macos_worker
-            ;;
-        ubuntu)
-            systemctl --user stop "$SERVICE_NAME.service"
-            systemctl --user stop "$WORKER_SERVICE_NAME.service"
-            systemctl --user stop "$CHROME_SUPERVISOR_SERVICE_NAME.service"
-            ;;
+        macos) stop_macos_service ;;
+        ubuntu) systemctl --user stop "$SERVICE_NAME.service" ;;
     esac
+    echo "Chub Web stopped"
 }
 
 health_check() {
@@ -1147,13 +1144,7 @@ restart_service() {
         return
     fi
     check_codex_pty_requirements
-    case "$(platform_name)" in
-        macos)
-            stop_macos_service
-            start_macos_service
-            ;;
-        ubuntu) systemctl --user restart "$SERVICE_NAME.service" ;;
-    esac
+    "$PROJECT_ROOT/scripts/chub-web-restart"
     health_check || fail "service restart health verification failed"
 }
 
@@ -1343,12 +1334,13 @@ record_worker_reload_operation() {
     local operation_id="$1"
     local operation_status="$2"
     local generation="$3"
+    local reason="${4:-}"
     if [[ "${CHUB_WORKER_RELOAD_EXTERNAL_LOGGING:-}" == "1" ]]; then
         return 0
     fi
     (
         cd "$PROJECT_ROOT"
-        "$PYTHON_BIN" - "$CONFIG_FILE" "$operation_id" "$operation_status" "$generation" <<'PY'
+        "$PYTHON_BIN" - "$CONFIG_FILE" "$operation_id" "$operation_status" "$generation" "$reason" <<'PY'
 import re
 import sys
 
@@ -1356,7 +1348,7 @@ from app.core.config import load_settings
 from app.core.logger import configure_worker_operation_logging
 from app.services.operation_log import write_operation
 
-config_file, operation_id, status, generation = sys.argv[1:]
+config_file, operation_id, status, generation, reason = sys.argv[1:]
 if re.fullmatch(r"worker-reload:[a-f0-9]{32}", operation_id) is None:
     raise SystemExit(2)
 if status not in {"requested", "started", "succeeded", "failed"}:
@@ -1371,6 +1363,7 @@ write_operation(
     status=status,
     target=f"quick-worker:{generation or 'unknown'}",
     source_ip="127.0.0.1",
+    reason=reason or None,
 )
 PY
     )
@@ -1417,7 +1410,6 @@ if (
     or (sys.argv[4] != "true" and protocol_version != int(sys.argv[1]))
     or data.get("status") != sys.argv[2]
     or data.get("corrupt_tasks") != 0
-    or "codex" not in data.get("available_runtime_ids", [])
     or not isinstance(generation, str)
     or re.fullmatch(r"[a-f0-9]{32}", generation) is None
     or (sys.argv[3] and generation == sys.argv[3])
@@ -1510,7 +1502,8 @@ quick_worker_reload() {
             )" \
             && worker_health_is_idle "$new_payload"; then
             record_worker_reload_operation \
-                "$operation_id" succeeded "$new_generation" || true
+                "$operation_id" succeeded "$new_generation" \
+                "old_generation=${old_generation:-unknown} new_generation=$new_generation protocol=$current_protocol verified_idle=true" || true
             echo "Quick Worker reloaded: $old_generation -> $new_generation"
             return
         fi
@@ -1525,11 +1518,6 @@ quick_worker_recover() {
         fail "worker recovery must be run from a local terminal, not from a Quick Worker task"
     fi
     check_project
-    if [[ "$(platform_name)" == "ubuntu" ]]; then
-        if ! "$SCRIPT_PATH" chrome-supervisor-ensure; then
-            echo "chub: warning: Debug Chrome Supervisor recovery failed" >&2
-        fi
-    fi
     if ! reload_worker_service; then
         fail "Quick Worker service recovery failed"
     fi
@@ -1680,7 +1668,8 @@ case "$command" in
         reconcile_chrome_supervisor_service "$@"
         ;;
     service-definitions)
-        write_service_definitions
+        shift
+        write_service_definitions "$@"
         ;;
     runtime-dependencies)
         install_runtime_dependencies

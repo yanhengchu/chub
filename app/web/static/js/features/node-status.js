@@ -10,7 +10,6 @@ function renderStatus(data) {
     `v${data.hub.version} · 当前实例可响应`,
   );
   setMessage(elements.chubServiceMessage, "");
-  elements.stopHub.disabled = hubRestartInProgress || systemUpgradeIsRunning();
   syncCoreMaintenanceControls();
 }
 

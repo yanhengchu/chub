@@ -79,13 +79,17 @@ UpgradeStage = Literal[
 RestartLaunchState = Literal["not_started", "launching", "launched", "failed"]
 SystemUpgradeComponent = Literal[
     "chub_web",
-    "python_dependencies",
-    "service_definitions",
     "quick_worker",
-    "browser_supervisor",
-    "debug_chrome_instance",
+    "ai_runtime",
 ]
-SystemUpgradeComponentStatus = Literal["pending", "succeeded", "degraded", "failed", "skipped"]
+SystemUpgradeComponentStatus = Literal[
+    "pending",
+    "succeeded",
+    "checked",
+    "degraded",
+    "failed",
+    "skipped",
+]
 
 
 class SystemUpgradeComponentResult(_StrictModel):
@@ -98,7 +102,7 @@ class SystemUpgradeComponentResult(_StrictModel):
 class SystemUpgradeComponentReport(_StrictModel):
     version: Literal[1] = 1
     operation_id: str = Field(pattern=r"^[a-f0-9]{32}$")
-    components: list[SystemUpgradeComponentResult] = Field(default_factory=list, max_length=7)
+    components: list[SystemUpgradeComponentResult] = Field(default_factory=list, max_length=3)
 
 
 class SystemUpgradeOperation(_StrictModel):
@@ -133,6 +137,7 @@ class SystemUpgradePlanView(_StrictModel):
     target_session_schema: int
     source_worker_protocol: int
     target_worker_protocol: int
+    upgrade_points: list[str] = Field(default_factory=list, max_length=3)
     fingerprint: str
     session_count: int = Field(ge=0)
     session_labels: list[str] = Field(default_factory=list, max_length=100)
@@ -149,7 +154,6 @@ class SystemUpgradeOperationView(_StrictModel):
     archived_sessions: int = Field(ge=0)
     discarded_sessions: int = Field(ge=0)
     total_sessions: int = Field(ge=0)
-    components: list[SystemUpgradeComponentResult] = Field(default_factory=list)
     updated_at: datetime
 
 
@@ -169,6 +173,7 @@ class SystemUpgradeStatusData(_StrictModel):
     message: str = Field(min_length=1, max_length=500)
     can_start: bool = False
     resume: bool = False
+    plan_unavailable: bool = False
     writes_blocked: bool = False
     plan: SystemUpgradePlanView | None = None
     operation: SystemUpgradeOperationView | None = None
@@ -214,7 +219,7 @@ def runtime_recovery_plan() -> LoadedSystemUpgradePlan:
         plan_id="runtime-recovery",
         action="runtime-data-reset",
         title="升级与恢复",
-        summary="重建 Chub AI 运行态并确认 Web 与 Quick Worker 健康。",
+        summary="重建 Chub AI 运行态、Chub Web 与 Quick Worker，并在完成后检查 AI Runtime 可用性。",
         source_code_version=WEB_CODE_VERSION,
         target_code_version=WEB_CODE_VERSION,
         source_session_schema=SESSION_SCHEMA_VERSION,
@@ -799,7 +804,7 @@ class SystemUpgradeCoordinator:
             if restart_launch_failed:
                 state.restart_launch_state = "failed"
             state.restart_process_id = None
-            state.message = message[:500]
+            state.message = self._failure_message(state.failed_stage)
             state.updated_at = utc_now()
             self._write(state)
             self._state = state
@@ -809,18 +814,10 @@ class SystemUpgradeCoordinator:
     def succeed(self, operation_id: str) -> None:
         with self._lock:
             state = self._require(operation_id)
-            degraded = [
-                item.component
-                for item in load_component_report(self.path, operation_id)
-                if item.status == "degraded"
-                and item.component not in {"browser_supervisor", "debug_chrome_instance"}
-            ]
             state.status = "succeeded"
             state.stage = "completed"
             state.restart_process_id = None
-            state.message = "升级与恢复已完成，核心服务和运行态均已确认。"
-            if degraded:
-                state.message += " 独立组件降级：" + "、".join(degraded) + "。"
+            state.message = "升级与恢复已完成，Chub Web、Quick Worker 和本地运行态均已确认。"
             state.updated_at = utc_now()
             self._write(state)
             self._state = state
@@ -835,7 +832,7 @@ class SystemUpgradeCoordinator:
         message: str,
     ) -> None:
         with self._lock:
-            self._require(operation_id)
+            state = self._require(operation_id)
             record_component_result(
                 self.path,
                 operation_id,
@@ -843,6 +840,7 @@ class SystemUpgradeCoordinator:
                 status,
                 message,
             )
+        self._record_component(state, component, status, message)
 
     def component_results(
         self,
@@ -887,15 +885,6 @@ class SystemUpgradeCoordinator:
                 archived_sessions=operation.archived_sessions,
                 discarded_sessions=operation.discarded_sessions,
                 total_sessions=len(operation.sessions),
-                components=[
-                    item
-                    for item in load_component_report(
-                        self.path,
-                        operation.operation_id,
-                    )
-                    if item.component
-                    not in {"browser_supervisor", "debug_chrome_instance"}
-                ],
                 updated_at=operation.updated_at,
             )
             if operation.status in {"requested", "started"}:
@@ -937,9 +926,16 @@ class SystemUpgradeCoordinator:
                         }
                     )
                 )
+                message = operation.message
+                if not retryable:
+                    guidance = (
+                        " 当前恢复操作不能安全继续，升级入口已关闭；"
+                        "请在本机终端检查 chub logs upgrade 和服务定义后再处理。"
+                    )
+                    message = f"{message[: 500 - len(guidance)]}{guidance}"
                 return SystemUpgradeStatusData(
                     state="failed",
-                    message=operation.message,
+                    message=message,
                     can_start=retryable,
                     resume=retryable and operation.destructive_started,
                     writes_blocked=writes_blocked,
@@ -1008,6 +1004,21 @@ class SystemUpgradeCoordinator:
         session_labels: list[str] | None = None,
     ) -> SystemUpgradePlanView:
         plan = loaded.plan
+        upgrade_points = []
+        if plan.source_code_version != plan.target_code_version:
+            upgrade_points.append(
+                f"Chub v{plan.source_code_version} → v{plan.target_code_version}"
+            )
+        if plan.source_session_schema != plan.target_session_schema:
+            upgrade_points.append(
+                "Session 数据 "
+                f"v{plan.source_session_schema} → v{plan.target_session_schema}"
+            )
+        if plan.source_worker_protocol != plan.target_worker_protocol:
+            upgrade_points.append(
+                "Worker 协议 "
+                f"v{plan.source_worker_protocol} → v{plan.target_worker_protocol}"
+            )
         return SystemUpgradePlanView(
             plan_id=plan.plan_id,
             title=plan.title,
@@ -1016,6 +1027,7 @@ class SystemUpgradeCoordinator:
             target_session_schema=plan.target_session_schema,
             source_worker_protocol=plan.source_worker_protocol,
             target_worker_protocol=plan.target_worker_protocol,
+            upgrade_points=upgrade_points,
             fingerprint=loaded.fingerprint,
             session_count=session_count,
             session_labels=list(session_labels or []),
@@ -1075,15 +1087,78 @@ class SystemUpgradeCoordinator:
     @staticmethod
     def _record(state: SystemUpgradeOperation, status: UpgradeStatus) -> None:
         try:
+            reason = (
+                SystemUpgradeCoordinator._failure_reason(state)
+                if status == "failed"
+                else None
+            )
             write_operation(
                 operation_id=state.operation_id,
                 action="system_upgrade",
                 status=status,
                 target=state.plan.plan_id,
                 source_ip=state.source_ip,
+                reason=reason,
             )
         except Exception:
             LOGGER.warning("Unable to record system upgrade operation", exc_info=True)
+
+    @staticmethod
+    def _record_component(
+        state: SystemUpgradeOperation,
+        component: SystemUpgradeComponent,
+        status: SystemUpgradeComponentStatus,
+        message: str,
+    ) -> None:
+        runtime_state = ""
+        if component == "ai_runtime":
+            if message.startswith("AI Runtime 可用"):
+                runtime_state = " runtime_state=available"
+            elif "已在设置中停用" in message:
+                runtime_state = " runtime_state=disabled"
+            elif "当前不可用" in message:
+                runtime_state = " runtime_state=unavailable"
+            else:
+                runtime_state = " runtime_state=unknown"
+        try:
+            write_operation(
+                operation_id=state.operation_id,
+                action="system_upgrade_component",
+                status="succeeded" if status != "failed" else "failed",
+                target=component,
+                source_ip=state.source_ip,
+                reason=f"component_status={status}{runtime_state}",
+            )
+        except Exception:
+            LOGGER.warning("Unable to record system upgrade component", exc_info=True)
+
+    @staticmethod
+    def _failure_message(failed_stage: UpgradeStage | None) -> str:
+        messages = {
+            "waiting_for_writes": "升级准备未完成，尚未开始清理运行状态。",
+            "draining_worker": "Quick Worker 停止或任务收敛未能确认，尚未开始清理运行状态。",
+            "freezing_sessions": "Session 写入冻结未能确认，尚未开始清理运行状态。",
+            "archiving_sessions": "Session 归档未能确认，尚未完成运行状态清理。",
+            "cleaning_state": "运行状态清理未能确认，请继续当前恢复操作。",
+            "launching_services": "固定服务切换程序未能启动，请继续当前恢复操作。",
+            "restarting_services": "服务切换未能确认，请继续当前恢复操作。",
+            "verifying_new_instance": "新 Web 或 Quick Worker 的最终健康状态未能确认，请继续当前恢复操作。",
+        }
+        return messages.get(failed_stage, "升级与恢复未能确认最终状态。")
+
+    @staticmethod
+    def _failure_reason(state: SystemUpgradeOperation) -> str:
+        reasons = {
+            "waiting_for_writes": "upgrade preparation did not complete",
+            "draining_worker": "quick worker drain could not be confirmed",
+            "freezing_sessions": "session write freeze could not be confirmed",
+            "archiving_sessions": "session archive could not be confirmed",
+            "cleaning_state": "runtime state cleanup could not be confirmed",
+            "launching_services": "service switch launcher could not be confirmed",
+            "restarting_services": "service switch could not be confirmed",
+            "verifying_new_instance": "new web or quick worker health could not be confirmed",
+        }
+        return reasons.get(state.failed_stage, "system upgrade final state could not be confirmed")
 
 
 def _is_current_runtime_recovery_plan(loaded: LoadedSystemUpgradePlan) -> bool:

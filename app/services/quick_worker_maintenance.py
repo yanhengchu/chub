@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 import threading
 from datetime import datetime
@@ -23,6 +24,7 @@ from app.services.operation_log import write_operation
 LOGGER = logging.getLogger("hub.quick_worker_maintenance")
 MAX_RELOAD_STATE_BYTES = 16 * 1024
 RELOAD_HANDOFF_GRACE_SECONDS = 15.0
+WORKER_HEALTH_OUTPUT_BYTES = 16 * 1024
 
 
 class _StrictModel(BaseModel):
@@ -37,6 +39,7 @@ class QuickWorkerReloadState(_StrictModel):
     process_id: int | None = Field(default=None, ge=1)
     source_ip: str = Field(min_length=1, max_length=128)
     message: str = Field(default="", max_length=300)
+    audit: str = Field(default="", max_length=300)
     requested_at: datetime
     updated_at: datetime
 
@@ -46,6 +49,11 @@ class QuickWorkerOperationView(_StrictModel):
     status: Literal["restarting", "succeeded", "failed"]
     message: str = Field(default="", max_length=300)
     updated_at: datetime
+
+
+class QuickWorkerRuntimeStatus(_StrictModel):
+    name: str = Field(min_length=1, max_length=128)
+    state: Literal["available", "disabled", "unavailable"]
 
 
 class QuickWorkerStatusData(_StrictModel):
@@ -60,11 +68,18 @@ class QuickWorkerStatusData(_StrictModel):
         "stopped",
     ]
     message: str = Field(min_length=1, max_length=300)
+    runtime_state: Literal[
+        "available",
+        "disabled",
+        "unavailable",
+        "unconfigured",
+        "unknown",
+    ] = "unknown"
+    runtime_message: str = Field(default="", max_length=300)
+    runtimes: list[QuickWorkerRuntimeStatus] = Field(default_factory=list, max_length=32)
     active_tasks: int = Field(default=0, ge=0)
     queued_tasks: int = Field(default=0, ge=0)
-    can_start: bool = False
     can_restart: bool = False
-    can_stop: bool = False
     upgrade_required: bool = False
     operation: QuickWorkerOperationView | None = None
 
@@ -79,6 +94,55 @@ class WorkerReloadProcess(Protocol):
     pid: int
 
     def wait(self) -> int: ...
+
+
+def worker_reload_audit(command: Path, old_generation: str | None) -> str:
+    """Read a bounded, non-sensitive post-reload health summary for audit logs."""
+    try:
+        result = subprocess.run(
+            [str(command), "worker-health"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "verified_idle=true post_reload_health=unavailable"
+    if result.returncode != 0 or len(result.stdout) > WORKER_HEALTH_OUTPUT_BYTES:
+        return "verified_idle=true post_reload_health=unavailable"
+    try:
+        payload = json.loads(result.stdout)
+        data = payload.get("data") if payload.get("success") is True else None
+        if not isinstance(data, dict):
+            raise ValueError("missing health data")
+        generation = data.get("generation")
+        protocol_version = data.get("protocol_version")
+        active_tasks = data.get("active_tasks")
+        queued_tasks = data.get("queued_tasks")
+        if (
+            not isinstance(generation, str)
+            or re.fullmatch(r"[a-f0-9]{32}", generation) is None
+            or not isinstance(protocol_version, int)
+            or isinstance(protocol_version, bool)
+            or protocol_version < 1
+            or not isinstance(active_tasks, int)
+            or isinstance(active_tasks, bool)
+            or active_tasks < 0
+            or not isinstance(queued_tasks, int)
+            or isinstance(queued_tasks, bool)
+            or queued_tasks < 0
+        ):
+            raise ValueError("invalid health data")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return "verified_idle=true post_reload_health=unavailable"
+    previous = old_generation or "unknown"
+    return (
+        f"old_generation={previous} new_generation={generation} "
+        f"protocol={protocol_version} verified_idle=true "
+        f"post_reload_active_tasks={active_tasks} "
+        f"post_reload_queued_tasks={queued_tasks}"
+    )
 
 
 def worker_service_state(command: Path) -> str:
@@ -96,25 +160,6 @@ def worker_service_state(command: Path) -> str:
         return "unknown"
     state = result.stdout[:32].decode("utf-8", errors="replace").strip()
     return state if state in {"running", "stopped", "unknown"} else "unknown"
-
-
-def run_worker_service_action(command: Path, action: Literal["start", "stop"]) -> None:
-    try:
-        result = subprocess.run(
-            [str(command), f"worker-{action}"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=60,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as error:
-        raise ApiError(504, "quick_worker_control_timeout", "Quick Worker 操作超时") from error
-    except OSError as error:
-        raise ApiError(503, "quick_worker_control_unavailable", "Quick Worker 操作入口不可用") from error
-    if result.returncode != 0:
-        message = "Quick Worker 启动失败" if action == "start" else "Quick Worker 停止失败"
-        raise ApiError(409, "quick_worker_control_failed", message)
 
 
 def launch_quick_worker_reload_process(
@@ -323,7 +368,16 @@ class QuickWorkerReloadCoordinator:
         if state is None or state.status not in {"requested", "started"}:
             return
         if generation and generation != state.old_generation and ready:
-            self._finish(state.operation_id, "succeeded", "Quick Worker 已重启并恢复。")
+            self._finish(
+                state.operation_id,
+                "succeeded",
+                "Quick Worker 已重启并恢复。",
+                audit=(
+                    f"old_generation={state.old_generation or 'unknown'} "
+                    f"new_generation={generation} protocol={PROTOCOL_VERSION} "
+                    "verified_idle=true"
+                ),
+            )
             return
         if has_local_process:
             return
@@ -354,7 +408,17 @@ class QuickWorkerReloadCoordinator:
             )
             return
         if return_code == 0:
-            self._finish(operation_id, "succeeded", "Quick Worker 已重启并恢复。")
+            with self._lock:
+                state = self._matching_state(operation_id)
+            self._finish(
+                operation_id,
+                "succeeded",
+                "Quick Worker 已重启并恢复。",
+                audit=worker_reload_audit(
+                    self.command,
+                    state.old_generation if state is not None else None,
+                ),
+            )
         else:
             LOGGER.warning(
                 "Quick Worker reload exited unsuccessfully: return_code=%s",
@@ -371,6 +435,8 @@ class QuickWorkerReloadCoordinator:
         operation_id: str,
         status: Literal["succeeded", "failed"],
         message: str,
+        *,
+        audit: str = "",
     ) -> None:
         with self._lock:
             state = self._matching_state(operation_id)
@@ -378,6 +444,7 @@ class QuickWorkerReloadCoordinator:
                 return
             state.status = status
             state.message = message
+            state.audit = audit
             state.updated_at = utc_now()
             try:
                 self._write(state)
@@ -418,6 +485,7 @@ class QuickWorkerReloadCoordinator:
                 status=status,
                 target="quick-worker",
                 source_ip=state.source_ip,
+                reason=state.audit or None,
             )
         except Exception:
             LOGGER.warning("Unable to record Quick Worker reload operation", exc_info=True)
@@ -473,7 +541,18 @@ async def inspect_quick_worker(
     settings: Settings,
     recovery_ready: bool,
     reload_coordinator: QuickWorkerReloadCoordinator,
+    *,
+    runtime_state: Literal[
+        "available",
+        "disabled",
+        "unavailable",
+        "unconfigured",
+        "unknown",
+    ] = "unknown",
+    runtime_message: str = "",
+    runtimes: list[QuickWorkerRuntimeStatus] | None = None,
 ) -> QuickWorkerInspection:
+    runtime_items = list(runtimes or [])
     operation = reload_coordinator.operation()
     try:
         payload = await read_health(settings)
@@ -485,6 +564,9 @@ async def inspect_quick_worker(
                 QuickWorkerStatusData(
                     state="restarting",
                     message="正在重启并等待健康恢复。",
+                    runtime_state=runtime_state,
+                    runtime_message=runtime_message,
+                    runtimes=runtime_items,
                     operation=operation,
                 ),
                 None,
@@ -496,8 +578,11 @@ async def inspect_quick_worker(
             return QuickWorkerInspection(
                 QuickWorkerStatusData(
                     state="stopped",
-                    message="Quick Worker 服务已停止，可以启动。",
-                    can_start=True,
+                    message="Quick Worker 服务已停止，可以重启恢复。",
+                    runtime_state=runtime_state,
+                    runtime_message=runtime_message,
+                    runtimes=runtime_items,
+                    can_restart=reload_coordinator.maintenance_available(),
                     operation=operation,
                 ),
                 None,
@@ -506,6 +591,9 @@ async def inspect_quick_worker(
             QuickWorkerStatusData(
                 state="unavailable",
                 message="无法连接 Quick Worker，可以执行重启恢复。",
+                runtime_state=runtime_state,
+                runtime_message=runtime_message,
+                runtimes=runtime_items,
                 can_restart=reload_coordinator.maintenance_available(),
                 operation=operation,
             ),
@@ -519,6 +607,9 @@ async def inspect_quick_worker(
             QuickWorkerStatusData(
                 state="unavailable",
                 message="Quick Worker 健康状态不可用，可以执行重启恢复。",
+                runtime_state=runtime_state,
+                runtime_message=runtime_message,
+                runtimes=runtime_items,
                 can_restart=reload_coordinator.maintenance_available(),
                 operation=reload_coordinator.operation(),
             ),
@@ -532,7 +623,6 @@ async def inspect_quick_worker(
         data.get("status") == "ready"
         and data.get("uncertain_tasks") == 0
         and data.get("corrupt_tasks") == 0
-        and "codex" in data.get("available_runtime_ids", [])
     )
     worker_ready = (
         data.get("protocol_version") == PROTOCOL_VERSION and worker_healthy
@@ -549,9 +639,7 @@ async def inspect_quick_worker(
     elif data.get("uncertain_tasks") != 0:
         state = "unavailable"
         message = "Worker 存在未确认任务，可通过重启清理并恢复。"
-    elif data.get("corrupt_tasks") != 0 or "codex" not in data.get(
-        "available_runtime_ids", []
-    ):
+    elif data.get("corrupt_tasks") != 0:
         state = "unavailable"
         message = "Worker 健康检查未通过。"
     elif data.get("status") == "draining":
@@ -580,6 +668,9 @@ async def inspect_quick_worker(
         QuickWorkerStatusData(
             state=state,
             message=message,
+            runtime_state=runtime_state,
+            runtime_message=runtime_message,
+            runtimes=runtime_items,
             active_tasks=active_tasks,
             queued_tasks=queued_tasks,
             can_restart=(
@@ -588,7 +679,6 @@ async def inspect_quick_worker(
                     operation is not None and operation.status == "restarting"
                 )
             ),
-            can_stop=state in {"ready", "busy"},
             operation=operation,
         ),
         generation,

@@ -194,6 +194,7 @@ class QuickInteractionManager:
         self._reconciler_thread: threading.Thread | None = None
         self._untracked_worker_sessions: set[str] = set()
         self._recovery_ready_handler: Callable[[], object] | None = None
+        self._maintenance_window_checker: Callable[[], bool] | None = None
         self._task_finished_handler: Callable[[QuickInteractionTask], object] | None = (
             None
         )
@@ -763,6 +764,9 @@ class QuickInteractionManager:
                 self._reconciler_thread = None
             self._record_reconciliation_failure(exc)
 
+    def set_maintenance_window_checker(self, checker: Callable[[], bool]) -> None:
+        self._maintenance_window_checker = checker
+
     def _run_resident_reconciler(self) -> None:
         while not self._reconciler_stop.wait(WORKER_RECONCILE_INTERVAL_SECONDS):
             try:
@@ -776,10 +780,25 @@ class QuickInteractionManager:
             self._recovery_ready = False
             self._recovery_error = str(exc)[:500] or type(exc).__name__
         if was_ready:
+            if self._maintenance_window_active():
+                LOGGER.info(
+                    "Quick Worker reconciliation is temporarily unavailable during "
+                    "maintenance; Session writes remain blocked"
+                )
+                return
             LOGGER.warning(
                 "Quick Worker reconciliation became unavailable; Session writes are blocked",
                 exc_info=True,
             )
+
+    def _maintenance_window_active(self) -> bool:
+        checker = self._maintenance_window_checker
+        if checker is None:
+            return False
+        try:
+            return bool(checker())
+        except Exception:
+            return False
 
     def _reconcile_worker_once(self, *, initial: bool) -> None:
         if self._local_state_error is not None:

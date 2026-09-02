@@ -70,7 +70,10 @@ from app.services.openclaw_weixin_chub_messages import usage_message
 from app.services.operation_log import write_operation
 from app.services.network_recovery import NetworkRecoveryError, restart_network
 from app.services.maintenance_terminal import MaintenanceTerminalManager
-from app.services.deferred_restart import DeferredRestartCoordinator
+from app.services.deferred_restart import (
+    MANUAL_RESTART_TASK_ID,
+    DeferredRestartCoordinator,
+)
 from app.services.openclaw_weixin_chub_mode import WeixinChubModeManager
 from app.services.restart_command import RestartProcess, launch_restart_process
 from app.services.quick_worker_maintenance import (
@@ -136,7 +139,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             or request.url.path.startswith("/static/")
             or request.url.path.startswith("/project-docs")
             or request.url.path.startswith("/automations")
-            or request.url.path == "/settings"
+            or request.url.path.startswith("/settings")
         ):
             response.headers["Content-Security-Policy"] = (
                 "default-src 'self'; "
@@ -225,11 +228,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             detected_platform,
         )
     logger.info(
-        "node_id=%s node_name=%s platform=%s version=%s",
+        "node_id=%s node_name=%s platform=%s version=%s instance_id=%s",
         resolved_settings.node.id,
         resolved_settings.node.name,
         detected_platform,
         resolved_settings.app.version,
+        instance_id,
     )
 
     # The AI Session Manager is the sole production owner.  The old
@@ -279,6 +283,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         resolved_settings.codex_pty.data_file.with_name("system-upgrade.json"),
         PROJECT_ROOT / "config" / "system-upgrade.json",
         instance_id,
+    )
+    quick_interactions.set_maintenance_window_checker(
+        lambda: (
+            system_upgrade.in_progress()
+            or quick_worker_maintenance.in_progress()
+        )
     )
     codex_pty_manager.set_system_upgrade_checker(system_upgrade.writes_blocked)
     terminal_tickets = codex_pty_manager.supervisor.tickets
@@ -349,6 +359,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             terminal_connections.close_session(session_id)
             return codex_pty_manager.stop_session(session_id)
 
+    def weixin_system_upgrade_check_status():
+        try:
+            loaded = system_upgrade.plan()
+        except OSError:
+            status = system_upgrade.status_data(
+                runtime_recovery_plan(),
+                session_count=0,
+            )
+            status.plan_unavailable = True
+            return status
+        return system_upgrade.status_data(loaded, session_count=0)
+
     weixin_chub_mode = WeixinChubModeManager(
         resolved_settings,
         codex_pty_manager,
@@ -364,6 +386,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             detected_platform,
         ),
         worker_health_reader=lambda: read_health_sync(resolved_settings),
+        system_upgrade_status_reader=weixin_system_upgrade_check_status,
         restart_coordinator=deferred_restart,
         restart_notifier=completion_notifier.notify_weixin_restart_command,
         ai_usage_reader=ai_usage,
@@ -486,7 +509,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     and data.get("queued_tasks") == 0
                     and data.get("uncertain_tasks") == 0
                     and data.get("corrupt_tasks") == 0
-                    and "codex" in data.get("available_runtime_ids", [])
                     and quick_interactions.recovery_ready
                 ):
                     system_upgrade.record_component(
@@ -501,22 +523,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         "succeeded",
                         "Quick Worker 已确认目标协议和空闲健康状态",
                     )
-                    known_components = {
-                        item.component
-                        for item in system_upgrade.component_results(operation_id)
-                    }
-                    for component in (
-                        "python_dependencies",
-                        "service_definitions",
-                        "browser_supervisor",
-                    ):
-                        if component not in known_components:
-                            system_upgrade.record_component(
-                                operation_id,
-                                component,
-                                "degraded",
-                                "升级脚本未能确认该独立组件的最终状态",
-                            )
                     rebind = getattr(
                         codex_pty_manager,
                         "rebind_upgrade_terminal_carriers",
@@ -539,11 +545,41 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         await asyncio.to_thread(verifier)
                     else:
                         await asyncio.to_thread(codex_pty_manager.list_sessions)
-                    await asyncio.to_thread(
-                        weixin_chub_mode.verify_system_upgrade_readiness
-                    )
                     if quick_interactions.system_upgrade_readiness() is not None:
                         raise OSError("Quick Worker 恢复状态尚未满足最终验收条件。")
+                    try:
+                        runtime_management = await asyncio.to_thread(
+                            codex_pty_manager.read_runtime_management
+                        )
+                        enabled = [
+                            item
+                            for item in runtime_management.runtimes
+                            if item.enabled
+                        ]
+                        available = [item for item in enabled if item.healthy]
+                        if available:
+                            runtime_message = "AI Runtime 可用：" + "、".join(
+                                item.name for item in available
+                            )
+                            runtime_status = "checked"
+                        elif not runtime_management.runtimes:
+                            runtime_message = "未配置 AI Runtime，不影响核心服务恢复"
+                            runtime_status = "checked"
+                        elif not enabled:
+                            runtime_message = "AI Runtime 已在设置中停用，不影响核心服务恢复"
+                            runtime_status = "checked"
+                        else:
+                            runtime_message = "已启用的 AI Runtime 当前不可用，不影响核心服务恢复"
+                            runtime_status = "checked"
+                    except ApiError:
+                        runtime_message = "AI Runtime 可用性暂无法确认，不影响核心服务恢复"
+                        runtime_status = "checked"
+                    system_upgrade.record_component(
+                        operation_id,
+                        "ai_runtime",
+                        runtime_status,
+                        runtime_message,
+                    )
                     quick_worker_maintenance.clear_terminal_operation()
                     system_upgrade.succeed(operation_id)
                     return
@@ -577,7 +613,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 operation_id,
                 stage="restarting_services",
                 restart_launch_state="launched",
-                message="服务切换程序已启动，正在处理依赖、服务定义和浏览器，并切换核心服务。",
+                message="服务切换程序已启动，正在重建 Chub Web 与 Quick Worker。",
             )
         except Exception as exc:
             logging.getLogger("hub.system_upgrade").warning(
@@ -605,7 +641,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return
 
     def run_system_upgrade(operation_id: str) -> None:
-        translation_upgrade_guard = False
         state = None
         try:
             state = system_upgrade.operation()
@@ -638,8 +673,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 message="正在停止 Quick Worker，在途任务将终止并清理运行态。",
                 worker_drain_started=True,
             )
-            weixin_translation.acquire_system_upgrade_guard(force=True)
-            translation_upgrade_guard = True
             if state.destructive_started:
                 sessions = state.sessions
             else:
@@ -673,10 +706,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 session.status = "discarded"
                 system_upgrade.update(operation_id, sessions=sessions)
             quick_interactions.reset_for_system_upgrade(force=True)
-            weixin_translation.reset_for_system_upgrade(force=True)
-            weixin_chub_mode.reset_for_system_upgrade(operation_id, force=True)
-            weixin_translation.release_system_upgrade_guard()
-            translation_upgrade_guard = False
             launch_system_upgrade_services(operation_id)
         except Exception as exc:
             logging.getLogger("hub.system_upgrade").warning(
@@ -693,11 +722,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "Unable to persist system upgrade failure",
                     exc_info=True,
                 )
-        finally:
-            if translation_upgrade_guard:
-                weixin_translation.release_system_upgrade_guard()
-
     def deferred_restart_ready(request):
+        if request.requested_task_id == MANUAL_RESTART_TASK_ID:
+            return "ready"
         fixed_readiness = weixin_chub_mode.deferred_restart_readiness(request)
         has_quick_context = quick_interactions.has_deferred_restart_context(
             request.operation_id,
@@ -719,6 +746,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         task_id,
         started_at,
     ) -> None:
+        if task_id == MANUAL_RESTART_TASK_ID:
+            return
         if quick_interactions.has_deferred_restart_context(operation_id, task_id):
             quick_interactions.record_deferred_restart_started(
                 operation_id,
@@ -738,6 +767,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         completed_at,
         failure_reason=None,
     ) -> None:
+        if task_id == MANUAL_RESTART_TASK_ID:
+            return
         if quick_interactions.has_deferred_restart_context(operation_id, task_id):
             quick_interactions.record_deferred_restart_completion(
                 operation_id,

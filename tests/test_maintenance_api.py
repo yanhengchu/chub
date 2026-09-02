@@ -7,6 +7,7 @@ import pytest
 from app.application import create_app
 from app.codex.models import QuickInteractionTask, utc_now
 from app.core.config import Settings
+from app.services.deferred_restart import DeferredRestartCoordinator
 
 
 @pytest.mark.anyio
@@ -64,30 +65,8 @@ async def test_restart_uses_chub_service_command(settings: Settings) -> None:
 
     assert response.status_code == 200
     assert response.json()["data"] == {"status": "restarting"}
-    launch_restart.assert_called_once_with(command)
-    monitor_restart.assert_called_once_with(launch_restart.return_value, ANY)
-
-
-@pytest.mark.anyio
-async def test_stop_uses_fixed_chub_web_stop_command(settings: Settings) -> None:
-    transport = httpx.ASGITransport(app=create_app(settings))
-    with (
-        patch("app.api.maintenance.PROJECT_ROOT") as project_root,
-        patch("app.api.maintenance.launch_restart_process") as launch_restart,
-        patch("app.api.maintenance.monitor_restart_process") as monitor_restart,
-    ):
-        command = project_root / "scripts" / "chub-web-stop"
-        command.is_file.return_value = True
-        async with httpx.AsyncClient(
-            transport=transport,
-            base_url="http://test",
-            headers={"Authorization": "Bearer test-token-that-is-long-enough-for-tests"},
-        ) as client:
-            response = await client.post("/api/maintenance/chub/stop")
-
-    assert response.status_code == 200
-    assert response.json()["data"] == {"status": "stopping"}
-    launch_restart.assert_called_once_with(command)
+    assert launch_restart.call_args.args == (command,)
+    assert launch_restart.call_args.kwargs["environment"]["CHUB_OPERATION_ID"]
     monitor_restart.assert_called_once_with(launch_restart.return_value, ANY)
 
 
@@ -231,6 +210,40 @@ async def test_restart_reuses_manual_restart_without_deferred_request(
 
 
 @pytest.mark.anyio
+async def test_manual_restart_is_confirmed_by_a_new_healthy_instance(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    transport = httpx.ASGITransport(app=app)
+
+    with (
+        patch("app.api.maintenance.launch_restart_process"),
+        patch("app.api.maintenance.monitor_restart_process"),
+    ):
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            headers={"Authorization": "Bearer test-token-that-is-long-enough-for-tests"},
+        ) as client:
+            response = await client.post("/api/maintenance/restart")
+
+    assert response.status_code == 200
+    state = app.state.deferred_restart.state()
+    assert state is not None
+    assert state.kind == "manual"
+    confirmed = DeferredRestartCoordinator(
+        app.state.deferred_restart.path,
+        "new-instance",
+        lambda: None,
+    )
+    with patch("app.services.deferred_restart.write_operation") as operation_log:
+        assert confirmed.service_started() is True
+
+    assert operation_log.call_args.kwargs["operation_id"] == state.operation_id
+    assert operation_log.call_args.kwargs["status"] == "succeeded"
+
+
+@pytest.mark.anyio
 async def test_restart_launch_failure_ends_claim_without_background_retry(
     settings: Settings,
 ) -> None:
@@ -305,7 +318,7 @@ async def test_restart_async_failure_records_manual_operation_failure(
     with (
         patch("app.api.maintenance.launch_restart_process"),
         patch("app.api.maintenance.monitor_restart_process") as monitor_restart,
-        patch("app.api.maintenance.write_operation") as write_operation,
+        patch("app.services.deferred_restart.write_operation") as write_operation,
     ):
         async with httpx.AsyncClient(
             transport=transport,

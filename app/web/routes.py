@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from app.services.design_documents import (
@@ -83,8 +83,13 @@ def log_details(request: Request) -> HTMLResponse:
     )
 
 
-@router.get("/settings", response_class=HTMLResponse, include_in_schema=False)
-def settings_page(request: Request) -> HTMLResponse:
+def render_settings_page(
+    request: Request,
+    *,
+    page: str,
+    title: str,
+    description: str,
+) -> HTMLResponse:
     settings = request.app.state.settings
     return templates.TemplateResponse(
         request=request,
@@ -92,8 +97,61 @@ def settings_page(request: Request) -> HTMLResponse:
         context={
             "app_name": settings.app.name,
             "app_version": settings.app.version,
+            "settings_page": page,
+            "settings_title": title,
+            "settings_description": description,
         },
     )
+
+
+@router.get("/settings", include_in_schema=False)
+def settings_page() -> RedirectResponse:
+    return RedirectResponse("/settings/quick-interaction", status_code=307)
+
+
+@router.get("/settings/quick-interaction", response_class=HTMLResponse, include_in_schema=False)
+def quick_interaction_settings(request: Request) -> HTMLResponse:
+    return render_settings_page(request, page="quick-interaction", title="快速交互", description="调整会话历史记录的加载方式。")
+
+
+@router.get("/settings/appearance", response_class=HTMLResponse, include_in_schema=False)
+def appearance_settings(request: Request) -> HTMLResponse:
+    return render_settings_page(request, page="appearance", title="界面风格", description="查看可用风格及常用界面元素的实际效果。")
+
+
+@router.get("/settings/diagnostics", response_class=HTMLResponse, include_in_schema=False)
+def diagnostics_settings(request: Request) -> HTMLResponse:
+    return render_settings_page(request, page="diagnostics", title="诊断与关于", description="查看节点记录与当前版本。")
+
+
+@router.get("/settings/runtime", response_class=HTMLResponse, include_in_schema=False)
+def runtime_settings(request: Request) -> HTMLResponse:
+    return render_settings_page(request, page="runtime", title="Runtime 管理", description="管理后续 AI 会话可使用的 Runtime。")
+
+
+@router.get("/settings/session-defaults", response_class=HTMLResponse, include_in_schema=False)
+def session_defaults_settings(request: Request) -> HTMLResponse:
+    return render_settings_page(request, page="session-defaults", title="新建 Session 默认权限", description="设置之后新建 Session 使用的默认权限。")
+
+
+@router.get("/settings/weixin-text", response_class=HTMLResponse, include_in_schema=False)
+def weixin_text_settings(request: Request) -> HTMLResponse:
+    return render_settings_page(request, page="weixin-text", title="微信任务文本优化", description="设置微信 ClawBot 普通文本任务的处理方式。")
+
+
+@router.get("/settings/openclaw", response_class=HTMLResponse, include_in_schema=False)
+def openclaw_settings(request: Request) -> HTMLResponse:
+    return render_settings_page(request, page="openclaw", title="OpenClaw", description="管理 OpenClaw Gateway 与微信 ClawBot。")
+
+
+@router.get("/settings/openclaw/gateway", include_in_schema=False)
+def legacy_openclaw_gateway_settings() -> RedirectResponse:
+    return RedirectResponse("/settings/openclaw", status_code=307)
+
+
+@router.get("/settings/openclaw/clawbot", include_in_schema=False)
+def legacy_openclaw_clawbot_settings() -> RedirectResponse:
+    return RedirectResponse("/settings/openclaw", status_code=307)
 
 
 @router.get(

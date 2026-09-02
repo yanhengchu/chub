@@ -73,6 +73,8 @@ def service_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
                 f"if [ '{command}' = launchctl ] && [ \"$1\" = print ]; then"
                 " [ \"${CHUB_TEST_LAUNCHCTL_PRINT:-}\" = available ] && exit 0;"
                 " exit 1; fi\n"
+                f"if [ '{command}' = systemctl ] && [ \"$2\" = is-active ] &&"
+                " [ \"${CHUB_TEST_SYSTEMCTL_INACTIVE:-}\" = 1 ]; then exit 1; fi\n"
             ),
             encoding="utf-8",
         )
@@ -899,87 +901,25 @@ def test_worker_reload_command_drains_tasks_and_checks_worker_final_state() -> N
     assert record_body.index("CHUB_WORKER_RELOAD_EXTERNAL_LOGGING") < record_body.index(
         "write_operation"
     )
+    assert "verified_idle=true" in reload_body
+    assert "reason=reason or None" in record_body
 
 
-def test_stop_refuses_active_worker_without_explicit_force(
+def test_stop_controls_only_chub_web_without_worker_precondition(
     service_env: tuple[dict[str, str], Path],
-    tmp_path: Path,
 ) -> None:
     env, calls = service_env
     env["CHUB_TEST_PLATFORM"] = "Linux"
-    worker_runtime = tmp_path / "worker-runtime"
-    config_file = Path(env["CHUB_TEST_ROOT"]) / "config" / "settings.local.yaml"
-    config_file.write_text(
-        "\n".join(
-            [
-                "app:",
-                "  name: Hub",
-                "  version: 0.1.0",
-                "node:",
-                "  id: test",
-                "  name: Test",
-                "  type: unknown",
-                "server:",
-                "  tailnet_host: null",
-                "  port: 8080",
-                "security: {}",
-                "codex_pty:",
-                f"  runtime_dir: {worker_runtime}",
-                f"  data_file: {tmp_path / 'sessions.json'}",
-                "",
-            ]
-        ),
-        encoding="utf-8",
-    )
     assert run_chub("install", env).returncode == 0
     calls.write_text("", encoding="utf-8")
+    env["CHUB_TEST_SYSTEMCTL_INACTIVE"] = "1"
 
-    identity = hashlib.sha256(str(worker_runtime).encode("utf-8")).hexdigest()[:12]
-    socket_dir = Path("/tmp") / f"chub-qw-{os.getuid()}-{identity}"
-    socket_dir.mkdir(mode=0o700)
-    socket_path = socket_dir / "worker.sock"
-    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    listener.bind(str(socket_path))
-    listener.listen(1)
+    stopped = run_chub("stop", env)
 
-    def serve_health() -> None:
-        try:
-            connection, _ = listener.accept()
-        except OSError:
-            return
-        with connection:
-            request = json.loads(connection.makefile("rb").readline())
-            response = {
-                "success": True,
-                "request_id": request["request_id"],
-                "data": {
-                    "protocol_version": PROTOCOL_VERSION,
-                    "status": "ready",
-                    "generation": "a" * 32,
-                    "code_version": "test-worker",
-                    "pid": os.getpid(),
-                    "active_tasks": 1,
-                },
-            }
-            connection.sendall((json.dumps(response) + "\n").encode("utf-8"))
-
-    thread = threading.Thread(target=serve_health, daemon=True)
-    thread.start()
-    try:
-        blocked = run_chub("stop", env)
-    finally:
-        thread.join(timeout=3)
-        listener.close()
-        socket_path.unlink(missing_ok=True)
-        socket_dir.rmdir()
-
-    assert blocked.returncode != 0
-    assert "active or queued tasks" in blocked.stderr
-    assert calls.read_text(encoding="utf-8") == ""
-
-    forced = run_chub("stop", env, "--force")
-    assert forced.returncode == 0, forced.stderr
-    assert "systemctl --user stop" in calls.read_text(encoding="utf-8")
+    assert stopped.returncode == 0, stopped.stderr
+    manager_calls = calls.read_text(encoding="utf-8")
+    assert "systemctl --user stop chub.service" in manager_calls
+    assert "chub-quick-worker.service" not in manager_calls
 
 
 @pytest.mark.parametrize("command", ["worker-drain", "worker-reload", "worker-recover"])
@@ -1024,40 +964,35 @@ def test_service_commands_use_platform_manager(
 
 
 @pytest.mark.parametrize(
-    ("platform", "command", "web_call", "worker_call"),
+    ("platform", "command", "web_call"),
     [
         (
             "Darwin",
             "start",
             "com.chub.node",
-            "com.chub.quick-worker",
         ),
         (
             "Darwin",
             "stop",
             "com.chub.node",
-            "com.chub.quick-worker",
         ),
         (
             "Linux",
             "start",
             "start chub.service",
-            "start chub-quick-worker.service",
         ),
         (
             "Linux",
             "stop",
             "stop chub.service",
-            "stop chub-quick-worker.service",
         ),
     ],
 )
-def test_node_commands_manage_web_and_worker_as_separate_services(
+def test_chub_commands_manage_only_the_web_control_plane(
     service_env: tuple[dict[str, str], Path],
     platform: str,
     command: str,
     web_call: str,
-    worker_call: str,
 ) -> None:
     env, calls = service_env
     env["CHUB_TEST_PLATFORM"] = platform
@@ -1069,4 +1004,4 @@ def test_node_commands_manage_web_and_worker_as_separate_services(
     assert result.returncode == 0, result.stderr
     manager_calls = calls.read_text(encoding="utf-8")
     assert web_call in manager_calls
-    assert worker_call in manager_calls
+    assert "chub-quick-worker" not in manager_calls

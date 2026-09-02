@@ -243,12 +243,12 @@ Worker 对已交付终态保留有限历史或墓碑，直到 Web 明确确认�
 - Worker 重启是恢复入口，不以 Worker 健康、协议状态、排队任务、执行中任务或 Web 恢复状态作为开始门禁；只保留重复维护和系统升级直接冲突等最小保护。
 - 确认重启后立即关闭新任务提交；排队任务进入 `cancelled`，执行中任务停止完整 Runner 进程组并进入 `failed/worker_restarted`，相关 Session 租约释放，任务不自动重放。任务记录保留，不静默删除。
 - 后端只调用固定的 `worker-reload`：能连接当前协议 Worker 时先通过重启标识的 drain 原子关闭提交并终止任务；Worker 不可达或协议不兼容时直接重载服务，不迁移旧协议运行态，新实例只接管当前协议数据。
-- 重启成功必须确认新 generation、当前协议、Worker 健康和任务计数归零；不能只以子进程创建或 HTTP 受理为成功。Web 只负责发起、展示和恢复后对账，不作为 Worker 重启成功的健康门禁。
+- 重启成功必须确认新 generation、当前协议、Worker 健康和任务计数归零；不能只以子进程创建或 HTTP 受理为成功。Runtime 是否已启用或可用不属于 Worker 健康门槛；Worker 已就绪而没有可用 Runtime 时，新的 AI 任务仍按 Runtime 规则失败关闭。首页的 Quick Worker 行只展示 Worker 当前状态；其下方无操作的 AI Runtime 行按注册顺序单独展示每个 Runtime 的“可用”“已停用”或“不可用”状态。没有注册项显示“未配置 AI Runtime”，Runtime 管理状态无法读取时显示“AI Runtime 状态暂无法确认”；不把 Runtime 被停用标为 Worker 故障。Web 只负责发起、展示和恢复后对账，不作为 Worker 重启成功的健康门禁。
 - Quick Worker 与 Web、ClawBot 服务重启彼此独立；Worker 重启期间只影响快速任务提交、租约和结果写入，其他首页只读能力、Web 服务、ClawBot 和实时终端继续可用。
-- 操作记录完整保留 `requested`、`started`、`succeeded` 和 `failed`；Web 在操作过程中重启后，依靠持久化状态、新 generation 和进程校验收敛最终结果。
-- 系统升级与恢复最终确认 Worker 健康后，升级结果优先于更早的独立 Worker 重启终态；仅清理已结束的 `succeeded`/`failed` 当前状态投影，不删除历史操作日志，也不清理仍处于 `requested`/`started` 的操作。这样页面展示当前可用状态，不会把已恢复服务继续显示为旧的重启失败。
-- 首页停止态只显示“启动”，运行态显示“重启”和“停止”；状态未知、协议不兼容或不可达时不直接显示为停止。`worker-start` 和 `worker-stop` 只控制 Worker 服务并确认服务管理器最终状态；停止要求没有排队或执行中的任务，失败时保留原状态和恢复路径。
-- “重启”是页面短按钮文案；其确认说明必须保留取消排队任务、停止执行中任务且不自动重放的影响。启动、停止和重启均记录 `requested`、`started`、`succeeded` 或 `failed`，不能把命令进程创建当作成功。
+- 操作记录完整保留 `requested`、`started`、`succeeded` 和 `failed`；重启成功记录固定的旧/新 generation、协议版本和空闲核验摘要，不记录任务正文、路径或运行参数。Web 在操作过程中重启后，依靠持久化状态、新 generation 和进程校验收敛最终结果。
+- 系统升级与恢复最终确认 Worker 健康后，升级结果优先于更早的独立 Worker 重启终态；仅清理已结束的 `succeeded`/`failed` 当前状态投影，不删除历史操作日志，也不清理仍处于 `requested`/`started` 的操作。AI Runtime 在核心恢复完成后统一重新检查；首页按注册项逐项显示 Runtime 状态，无注册项才显示“未配置 AI Runtime”。Runtime 被停用或不可用只说明新 AI 任务当前不可提交，不把已恢复服务显示为降级或失败。
+- 首页核心服务卡只提供“重启”；停止、启动和排空仅保留为本机终端维护操作。Worker 停止、未知、协议不兼容或不可达时，页面均不显示启停按钮；停止态在重启可用时通过“重启”恢复。`worker-start` 和 `worker-stop` 只控制 Worker 服务并确认服务管理器最终状态；停止要求没有排队或执行中的任务，失败时保留原状态和恢复路径。
+- “重启”是页面短按钮文案；其确认说明必须保留取消排队任务、停止执行中任务且不自动重放的影响。页面和 CLI `worker-reload` 的重启完整记录 `requested`、`started`、`succeeded` 或 `failed`，不能把命令进程创建当作成功；本机 `worker-start`、`worker-stop` 直接确认服务最终状态，不创建这类操作记录。
 
 ## 7. 持久化、协议与安全
 
@@ -289,8 +289,8 @@ Worker 对已交付终态保留有限历史或墓碑，直到 Web 明确确认�
 
 - Web 与 Worker 使用不同服务单元，普通 Web 重启不得带停 Worker。
 - Worker 重启或代码升级使用固定 `worker-reload`；它先关闭新提交并清理当前任务，再独立重载服务以及确认协议、generation、损坏记录和固定 Runner 健康状态。该操作只影响 Worker 自身任务资源，不等同于 Web 或 ClawBot 互斥。
-- 协议升级需要 Web、Worker、测试和部署产物同步发布；首页系统升级与恢复流程会停止 Worker、清理旧协议运行态、重建固定服务定义并确认目标协议和空闲健康状态，旧任务会被中断且不会迁移或自动重放。该流程只恢复 Debug Chrome Supervisor 服务，不自动启动 Debug Chrome 浏览器实例；Debug Chrome 的服务和实例状态均由自动化环境单独展示，不进入升级摘要。普通 Worker 重启遇到协议不兼容时只负责重建当前 Worker，不代替系统升级流程。
-- `chub install`、`chub stop` 和 `chub uninstall` 遇到活动或排队任务时必须明确拒绝；确认空闲后仍需通过原子 drain 关闭提交门禁再执行操作。只有维护者确认任务可以中断时才使用对应命令的 `--force`。
+- 协议升级需要 Web、Worker、测试和部署产物同步发布；首页系统升级与恢复流程会停止 Worker、清理旧协议运行态、重建 Chub Web 与 Worker 的固定服务定义并确认目标协议和空闲健康状态，旧任务会被中断且不会迁移或自动重放。完成核心恢复后单独检查 AI Runtime 可用性，不把 Runtime 被停用或暂不可用判为 Worker 或升级失败。Debug Chrome、OpenClaw 和 Python 依赖安装由各自维护入口处理，不进入升级摘要。普通 Worker 重启遇到协议不兼容时只负责重建当前 Worker，不代替系统升级流程。
+- `chub install` 和 `chub uninstall` 遇到活动或排队任务时必须明确拒绝；确认空闲后仍需通过原子 drain 关闭提交门禁再执行操作。`chub stop` 只停止 Chub Web，不检查 Worker 空闲；`worker-stop` 只在 Worker 空闲时停止服务。只有维护者确认 Worker 任务可以中断时才对支持该选项的维护命令使用 `--force`。
 - Web 与 Worker 分别写入独立操作日志；日志详情页提供两个固定来源，避免两个常驻进程共同轮转同一文件。
 
 ## 9. 失败语义

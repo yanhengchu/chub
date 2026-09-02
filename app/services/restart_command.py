@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import signal
 import subprocess
 import threading
@@ -17,12 +18,21 @@ class RestartProcess(Protocol):
     def wait(self) -> int: ...
 
 
-def launch_restart_process(command: Path) -> RestartProcess:
+def launch_restart_process(
+    command: Path,
+    *,
+    environment: dict[str, str] | None = None,
+) -> RestartProcess:
+    env = None
+    if environment is not None:
+        env = os.environ.copy()
+        env.update(environment)
     return subprocess.Popen(
         [str(command)],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
+        env=env,
     )
 
 

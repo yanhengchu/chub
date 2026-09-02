@@ -3,14 +3,13 @@ import os
 from pathlib import Path
 import stat
 import threading
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
 
 from app.application import create_app
-from app.codex.models import utc_now
+from app.codex.models import RuntimeManagementData, RuntimeManagementItem, utc_now
 from app.core.config import Settings
 from app.core.response import ApiError
 from app.quick_worker import PROTOCOL_VERSION
@@ -155,7 +154,7 @@ async def test_quick_worker_status_requires_trusted_network(
 
 
 @pytest.mark.anyio
-async def test_quick_worker_status_exposes_stopped_service_as_startable(
+async def test_quick_worker_status_exposes_stopped_service_as_restartable(
     settings: Settings,
 ) -> None:
     coordinator = QuickWorkerReloadCoordinator(
@@ -175,35 +174,132 @@ async def test_quick_worker_status_exposes_stopped_service_as_startable(
         inspection = await inspect_quick_worker(settings, True, coordinator)
 
     assert inspection.data.state == "stopped"
-    assert inspection.data.can_start is True
-    assert inspection.data.can_restart is False
-    assert inspection.data.can_stop is False
+    assert inspection.data.can_restart is True
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("action", ["start", "stop"])
-async def test_quick_worker_service_control_uses_fixed_action(
+async def test_quick_worker_restart_recovers_stopped_service(
     settings: Settings,
-    action: str,
 ) -> None:
     app = create_app(settings)
+    process = WaitingProcess()
     transport = httpx.ASGITransport(app=app)
-    inspection = SimpleNamespace(
-        data=QuickWorkerStatusData(
-            state="stopped" if action == "start" else "ready",
-            message="状态已确认",
-            can_start=action == "start",
-            can_stop=action == "stop",
-        )
-    )
+
     with (
-        patch("app.api.maintenance.PROJECT_ROOT") as project_root,
         patch(
-            "app.api.maintenance.run_worker_service_action"
-        ) as run_action,
+            "app.services.quick_worker_maintenance.read_health",
+            new=AsyncMock(side_effect=OSError("worker stopped")),
+        ),
         patch(
-            "app.api.maintenance.inspect_quick_worker",
-            new=AsyncMock(return_value=inspection),
+            "app.services.quick_worker_maintenance.worker_service_state",
+            return_value="stopped",
+        ),
+        patch(
+            "app.services.quick_worker_maintenance.launch_quick_worker_reload_process",
+            return_value=process,
+        ) as launch,
+    ):
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            headers=AUTHORIZATION,
+        ) as client:
+            response = await client.post("/api/maintenance/quick-worker/restart")
+        process.release.set()
+
+    assert response.status_code == 200
+    assert response.json()["data"]["state"] == "restarting"
+    launch.assert_called_once_with(app.state.quick_worker_maintenance.command)
+
+
+@pytest.mark.anyio
+async def test_quick_worker_remains_ready_without_an_available_runtime(
+    settings: Settings,
+) -> None:
+    coordinator = QuickWorkerReloadCoordinator(
+        settings.codex_pty.data_file.with_name("quick-worker-maintenance.json"),
+        Path("scripts/chub"),
+    )
+    health = worker_health()
+    health["data"]["available_runtime_ids"] = []
+
+    with patch(
+        "app.services.quick_worker_maintenance.read_health",
+        new=AsyncMock(return_value=health),
+    ):
+        inspection = await inspect_quick_worker(settings, True, coordinator)
+
+    assert inspection.data.state == "ready"
+
+
+@pytest.mark.anyio
+async def test_quick_worker_status_reports_disabled_runtime_without_failing_worker(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    app.state.quick_interactions._recovery_ready = True
+    app.state.codex_pty_manager.update_runtime_enabled("codex", False)
+    transport = httpx.ASGITransport(app=app)
+
+    with patch(
+        "app.services.quick_worker_maintenance.read_health",
+        new=AsyncMock(return_value=worker_health()),
+    ):
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            headers=AUTHORIZATION,
+        ) as client:
+            response = await client.get("/api/maintenance/quick-worker")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["state"] == "ready"
+    assert data["runtime_state"] == "disabled"
+    assert data["runtime_message"] == ""
+    assert data["runtimes"] == [{"name": "Codex Runtime", "state": "disabled"}]
+
+
+@pytest.mark.anyio
+async def test_quick_worker_status_lists_each_runtime_independently(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    app.state.quick_interactions._recovery_ready = True
+    management = RuntimeManagementData(
+        basic_mode=False,
+        runtimes=[
+            RuntimeManagementItem(
+                runtime_id="codex",
+                name="Codex",
+                enabled=True,
+                healthy=True,
+            ),
+            RuntimeManagementItem(
+                runtime_id="local",
+                name="Local Runtime",
+                enabled=False,
+                healthy=False,
+            ),
+            RuntimeManagementItem(
+                runtime_id="remote",
+                name="Remote",
+                enabled=True,
+                healthy=False,
+            ),
+        ],
+    )
+    transport = httpx.ASGITransport(app=app)
+
+    with (
+        patch.object(
+            app.state.codex_pty_manager,
+            "read_runtime_management",
+            return_value=management,
+        ),
+        patch(
+            "app.services.quick_worker_maintenance.read_health",
+            new=AsyncMock(return_value=worker_health()),
         ),
     ):
         async with httpx.AsyncClient(
@@ -211,10 +307,51 @@ async def test_quick_worker_service_control_uses_fixed_action(
             base_url="http://test",
             headers=AUTHORIZATION,
         ) as client:
-            response = await client.post(f"/api/maintenance/quick-worker/{action}")
+            response = await client.get("/api/maintenance/quick-worker")
 
     assert response.status_code == 200
-    run_action.assert_called_once_with(project_root / "scripts" / "chub", action)
+    data = response.json()["data"]
+    assert data["state"] == "ready"
+    assert data["runtime_state"] == "available"
+    assert data["runtimes"] == [
+        {"name": "Codex Runtime", "state": "available"},
+        {"name": "Local Runtime", "state": "disabled"},
+        {"name": "Remote Runtime", "state": "unavailable"},
+    ]
+
+
+@pytest.mark.anyio
+async def test_quick_worker_status_reports_unconfigured_runtime(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    app.state.quick_interactions._recovery_ready = True
+    transport = httpx.ASGITransport(app=app)
+
+    with (
+        patch.object(
+            app.state.codex_pty_manager,
+            "read_runtime_management",
+            return_value=RuntimeManagementData(runtimes=[], basic_mode=True),
+        ),
+        patch(
+            "app.services.quick_worker_maintenance.read_health",
+            new=AsyncMock(return_value=worker_health()),
+        ),
+    ):
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            headers=AUTHORIZATION,
+        ) as client:
+            response = await client.get("/api/maintenance/quick-worker")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["state"] == "ready"
+    assert data["runtime_state"] == "unconfigured"
+    assert data["runtime_message"] == "未配置 AI Runtime。"
+    assert data["runtimes"] == []
 
 
 @pytest.mark.anyio
@@ -369,6 +506,23 @@ async def test_quick_worker_restart_allows_busy_worker(
 
 
 @pytest.mark.anyio
+async def test_busy_quick_worker_cannot_be_stopped(settings: Settings) -> None:
+    coordinator = QuickWorkerReloadCoordinator(
+        settings.codex_pty.data_file.with_name("quick-worker-maintenance.json"),
+        settings.codex_pty.data_file.parent / "chub",
+    )
+
+    with patch(
+        "app.services.quick_worker_maintenance.read_health",
+        new=AsyncMock(return_value=worker_health(active_tasks=1)),
+    ):
+        inspection = await inspect_quick_worker(settings, True, coordinator)
+
+    assert inspection.data.state == "busy"
+    assert inspection.data.can_restart is True
+
+
+@pytest.mark.anyio
 async def test_quick_worker_restart_uses_fixed_controlled_command(
     settings: Settings,
 ) -> None:
@@ -387,6 +541,15 @@ async def test_quick_worker_restart_uses_fixed_controlled_command(
             return_value=process,
         ) as launch,
         patch("app.services.quick_worker_maintenance.write_operation") as operation_log,
+        patch(
+            "app.services.quick_worker_maintenance.worker_reload_audit",
+            return_value=(
+                "old_generation=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa "
+                "new_generation=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb protocol=9 "
+                "verified_idle=true post_reload_active_tasks=0 "
+                "post_reload_queued_tasks=0"
+            ),
+        ),
     ):
         async with httpx.AsyncClient(
             transport=transport,
@@ -413,6 +576,9 @@ async def test_quick_worker_restart_uses_fixed_controlled_command(
             threading.Event().wait(0.01)
 
     assert app.state.quick_worker_maintenance.operation().status == "succeeded"
+    succeeded = operation_log.call_args_list[-1].kwargs
+    assert succeeded["status"] == "succeeded"
+    assert "new_generation=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" in succeeded["reason"]
     state_path = settings.codex_pty.data_file.with_name(
         "quick-worker-maintenance.json"
     )
@@ -535,7 +701,7 @@ async def test_concurrent_chub_and_worker_restarts_launch_independently(
         await asyncio.wait_for(chub_launched.wait(), timeout=1)
         return worker_health()
 
-    def launch_chub(_command):
+    def launch_chub(_command, **_kwargs):
         event_loop.call_soon_threadsafe(chub_launched.set)
         return object()
 

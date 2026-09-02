@@ -1,5 +1,35 @@
 
 @media (max-width: 760px) {
+  .settings-workspace-page {
+    height: auto;
+    min-height: 100vh;
+    overflow: visible;
+  }
+
+  .settings-workspace-shell {
+    height: auto;
+    min-height: 100vh;
+    grid-template-columns: 1fr;
+    overflow: visible;
+  }
+
+  .settings-workspace-sidebar,
+  .settings-sidebar-resizer {
+    display: none;
+  }
+
+  .settings-workspace-main {
+    grid-column: 1;
+    height: auto;
+    min-height: 100vh;
+    padding: 1rem 0.75rem 1.5rem;
+    overflow: visible;
+  }
+
+  .settings-workspace-footer {
+    width: min(100% - 1.5rem, 960px);
+  }
+
   .settings-layout {
     grid-template-columns: 1fr;
     gap: 1rem;
@@ -170,34 +200,6 @@
 
   .automation-environment .automation-feishu-actions > button {
     grid-column: 1 / -1;
-  }
-
-  .maintenance-timeline {
-    grid-template-columns: 1fr;
-    gap: 0.45rem;
-  }
-
-  .maintenance-timeline-step {
-    grid-template-columns: 0.75rem minmax(0, 1fr);
-    align-items: start;
-    gap: 0.45rem;
-    padding-top: 0;
-  }
-
-  .maintenance-timeline-step:not(:last-child)::after {
-    top: 0.8rem;
-    bottom: -0.45rem;
-    left: 0.25rem;
-    right: auto;
-    border-top: 0;
-    border-left: 1px solid var(--line);
-  }
-
-  .maintenance-timeline-marker {
-    position: relative;
-    top: 0.15rem;
-    width: 0.5rem;
-    height: 0.5rem;
   }
 
   .session-actions {

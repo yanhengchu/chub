@@ -137,18 +137,17 @@ chub uninstall
 ```
 
 macOS 使用 Chub、Chub Quick Worker 和系统升级执行器三个独立 LaunchAgent，Ubuntu 使用 Chub、Chub Quick Worker、Chub Debug Chrome
-和系统升级执行器四个独立 systemd user service。`chub restart` 只重启 Chub，不停止 Chub Quick Worker 或 Chub Debug Chrome；`chub status` 默认以简洁摘要显示
+和系统升级执行器四个独立 systemd user service。`chub start`、`chub stop` 和 `chub restart` 都只控制 Chub Web，不启动、停止或要求 Chub Quick Worker 空闲；Quick Worker 使用 `worker-start`、`worker-stop`、`worker-reload` 或 `worker-recover` 独立维护。`chub status` 默认以简洁摘要显示
 Web、Quick Worker、Debug Chrome 与系统升级执行器的最终可用状态；排障时使用 `chub status --verbose` 查看平台服务管理器的原始详情。
 `chub check` 汇总项目配置、服务、Web、Quick Worker 和系统状态并在检查失败时返回非零码；
-`chub worker-health` 通过本机私有 IPC 读取 Worker 健康信息；`chub worker-drain` 停止接收新任务并等待已受理任务收敛；`chub worker-reload` 关闭新提交、清理排队和执行中的任务、独立重载 Worker 并确认新 generation 健康；`chub worker-recover` 保留为本机服务恢复入口；`chub worker-start` 和 `chub worker-stop` 只控制 Quick Worker，启动或停止后确认服务状态，停止要求没有在途任务。`worker-drain`、`worker-reload`、`worker-recover`、`worker-start` 和 `worker-stop` 只在本机终端或首页核心服务卡的受控入口执行，不能从正在运行的快速任务内部调用；停止态显示“启动”，运行态显示“重启”和“停止”，其中“重启”仍会清理 Worker 任务，具体影响放在确认说明中。当前 Worker 已经接管页面、微信和翻译快速任务；
+`chub worker-health` 通过本机私有 IPC 读取 Worker 健康信息；`chub worker-drain` 停止接收新任务并等待已受理任务收敛；`chub worker-reload` 关闭新提交、清理排队和执行中的任务、独立重载 Worker 并确认新 generation 健康；`chub worker-recover` 保留为本机服务恢复入口；`chub worker-start` 和 `chub worker-stop` 只控制 Quick Worker，启动或停止后确认服务状态，停止要求没有在途任务。重启成功日志会记录 generation、协议和空闲核验摘要。`worker-drain`、`worker-reload`、`worker-recover`、`worker-start` 和 `worker-stop` 只在本机终端执行，不能从正在运行的快速任务内部调用；首页核心服务卡对 Chub 和 Quick Worker 仅提供“重启”，停止态的 Worker 也通过“重启”恢复。当前 Worker 已经接管页面、微信和翻译快速任务；
 macOS 与 Ubuntu 均已确认单独重启 Web 不会停止 Worker、Runner 或现有任务，恢复后的结果和通知不会重复。
 Worker 不健康时，快速交互 Session 写操作保持失败关闭，不回退到 Web Runner；实时终端使用独立的 Codex PTY/tmux 链路。
 Ubuntu 的自动化 Debug Chrome 由独立 Supervisor 持有，Web 只通过本机受限 socket 请求启动、停止和查询；Supervisor
-不可用时自动化浏览器控制失败关闭，不回退为 Web 子进程启动。`chub stop` 和 `chub uninstall` 会停止该 Supervisor
-及其受管浏览器；macOS 继续使用现有 LaunchAgent 与浏览器生命周期。系统升级服务切换和 Worker 恢复会自动补齐、启用并确认
-Ubuntu Supervisor 的服务定义，不再要求为这两个恢复入口手动重复执行完整 `chub install`。Supervisor 服务恢复不代表受管 Debug Chrome 浏览器实例已启动；浏览器实例在自动化任务卡的“自动化环境”中按需启动，系统升级流程不会自动启动它。首次安装 Chub 或服务定义发生变化时，仍需执行一次 `chub install`，以安装独立的系统升级执行器。
+不可用时自动化浏览器控制失败关闭，不回退为 Web 子进程启动。`chub uninstall` 会停止该 Supervisor
+及其受管浏览器；macOS 继续使用现有 LaunchAgent 与浏览器生命周期。Debug Chrome 的服务定义和恢复由自动化维护入口单独处理；系统升级与 Worker 恢复不会启动、停止或修复该服务。首次安装 Chub 或服务定义发生变化时，仍需执行一次 `chub install`，以安装独立的系统升级执行器。
 
-`chub install`、`chub stop` 和 `chub uninstall` 仍默认拒绝中断活动或排队任务，并在空闲时先关闭 Worker 提交门禁；Quick Worker 专用的 `worker-reload` 是恢复入口，确认后会取消排队任务、停止执行中任务并重建 Worker，不自动重放。跨协议升级统一使用首页或微信 `upgrade` 的系统升级与恢复流程，直接清理旧 Worker 数据并确认目标协议；旧任务会被中断且不可恢复，不保留读取或迁移逻辑。
+`chub install` 和 `chub uninstall` 仍默认拒绝中断活动或排队任务，并在空闲时先关闭 Worker 提交门禁；`chub stop` 仅停止 Chub Web，不对 Worker 施加前置条件。Quick Worker 专用的 `worker-reload` 是恢复入口，确认后会取消排队任务、停止执行中任务并重建 Worker，不自动重放。跨协议升级统一使用首页或微信 `upgrade` 的系统升级与恢复流程，直接清理旧 Worker 数据并确认目标协议；旧任务会被中断且不可恢复，不保留读取或迁移逻辑。
 `chub system-upgrade-service` 是独立的本机恢复入口，只安装或恢复升级执行器；发现未完成的升级操作时会启动该执行器，不停止无关服务。
 首次安装、移动项目目录或修改 Web/Worker/Chrome/系统升级服务定义后，必须先从本机终端执行 `chub install`；如果已有未完成的升级操作，`chub install` 会安全拒绝，此时先执行 `chub system-upgrade-service` 恢复操作，待最终状态确认后再重新安装服务定义。
 
@@ -277,11 +276,15 @@ Runner 不会自行启动或停止 Debug Chrome。浏览器 Profile 未初始化
 
 共享需求文件由 Git 工作流同步，不由后台服务自动合并。多台设备同时修改可能产生 Git 冲突；发现冲突、非法 JSON 或未完成合并时，需求读写必须失败关闭，不覆盖其他设备内容。共享需求不得保存 Token、Cookie、账号凭证、本机秘密或其他不适合进入 Git 历史的内容。
 
-首页已将“核心服务”和“第三方服务”分为独立卡片，刷新、状态与错误反馈分别作用于本卡。核心服务卡包含 Chub、Quick Worker 与“升级与恢复”入口；自动化任务卡的“自动化环境”承载 Debug Chrome；第三方服务卡单独承载 OpenClaw Gateway/ClawBot 的启动、重启、停止和状态。
+首页已将“核心服务”和“第三方服务”分为独立卡片，刷新、状态与错误反馈分别作用于本卡。核心服务卡包含 Chub、Quick Worker、AI Runtime 状态和“升级与恢复”入口；自动化任务卡的“自动化环境”承载 Debug Chrome；第三方服务卡单独承载 OpenClaw Gateway/ClawBot 的启动、重启、停止和状态。
 
-“升级与恢复”只处理 Chub 核心与 AI Runtime：持久化操作、冻结新写入、有界收敛 Quick Worker、由独立执行器切换 Chub/Quick Worker，并确认新实例、协议、健康和写入恢复。Codex 原生 Session、配置、日志、项目资料和业务数据始终保留。OpenClaw Gateway、插件、补丁和消息通道属于第三方服务恢复，不作为核心升级的前置条件、执行步骤或完成条件；第三方恢复失败不会影响核心升级的最终判断，应在第三方服务卡中单独处理。
+“升级与恢复”只重建 Chub 自有 AI 运行态、Chub Web 与 Quick Worker：持久化操作、冻结新写入、有界收敛 Quick Worker、清理本次范围内的旧运行态，再由独立执行器恢复 Web/Worker，并确认新实例、协议、Worker 健康和写入恢复。Chub 行展示当前控制面状态，Quick Worker 行只展示 Worker 当前状态；其下方 AI Runtime 行按注册顺序展示每个 Runtime 的可用、已停用或不可用状态，并在页面加载和核心服务刷新时重新读取。没有注册项时显示“未配置 AI Runtime”，读取失败时显示“AI Runtime 状态暂无法确认”；这些 Runtime 状态不改变 Worker 或核心恢复成功结论。升级行没有版本或协议差异时显示“状态：无待升级”，有差异时只展示 Chub 版本、Session 数据或 Worker 协议的升级点；升级方案不可读取时显示“状态：仅可恢复。升级方案不可用”。完整影响说明保留在确认弹窗与日志。每个组件的固定结果会随升级操作 ID 写入操作日志，供多轮验收追溯，不作为首页状态。它不重建 Codex 原生 Session、用户配置、日志、项目资料或业务数据。OpenClaw Gateway、插件、补丁、消息通道、Debug Chrome 和 Python 依赖安装都不属于核心升级步骤或完成条件，应由各自维护入口单独处理。
+
+当前核心服务维护只有三项：`Chub` 重启重建控制面，`Chub Quick Worker` 重启重建执行面，升级与恢复统一重建 Chub 自有 AI 运行态并切换 Web/Worker。三者只在直接冲突时互斥；普通 Chub 重启不要求 Worker 空闲，也不会停止 Worker 或已接受任务。核心服务卡只表达当前状态和可执行操作，历史升级结论、组件结果与操作 ID 统一从日志查询。
 
 升级执行器不调用 OpenClaw CLI，也不读取或写入 OpenClaw 插件、补丁、Gateway 或消息通道状态。升级方案不可用时仍按固定规则执行当前版本运行态恢复，并明确不执行代码版本升级。该入口不执行 Git 同步、不接受客户端路径或命令，也不提供任意数据清理。
+
+升级失败后，能够从持久化安全检查点继续的操作会保留“继续恢复”入口；无法安全继续时入口关闭，并明确提示在本机终端检查 `chub logs upgrade` 和服务定义。普通 Chub 或 Quick Worker 重启不能替代该恢复步骤。
 
 最终确认 Quick Worker 健康后，若存在更早的独立 Worker 重启终态记录，系统会将其从当前状态投影中清理；历史操作日志仍保留，失败中的新操作不会被升级成功结果掩盖。
 

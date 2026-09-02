@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -58,6 +59,19 @@ def configure_operation_logging(config: LogsConfig) -> None:
 
 def configure_worker_operation_logging(config: LogsConfig) -> None:
     _configure_operation_logging(config.worker_operations_file)
+
+
+def configure_worker_runtime_logging() -> None:
+    """Emit bounded Worker lifecycle facts to the dedicated service log."""
+    worker_logger = logging.getLogger("hub.quick_worker")
+    for handler in worker_logger.handlers:
+        handler.close()
+    worker_logger.handlers.clear()
+    worker_logger.setLevel(logging.INFO)
+    worker_logger.propagate = False
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter(LOG_FORMAT, DATE_FORMAT))
+    worker_logger.addHandler(handler)
 
 
 def configure_logging(config: LogsConfig) -> None:

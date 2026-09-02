@@ -4,365 +4,81 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
     <meta name="color-scheme" content="{{ 'dark' if request.cookies.get('hub_ui_style') == 'cyber' else 'light' }}">
-    <title>设置 · {{ app_name }}</title>
+    <title>{{ settings_title }} · 设置 · {{ app_name }}</title>
+    <script src="/static/settings-sidebar-bootstrap.js"></script>
     {% include "partials/app_styles.html" %}
     <script src="/static/settings.js" defer></script>
+    <script src="/static/settings-sidebar.js" defer></script>
   </head>
-  <body>
+  <body data-settings-page="{{ settings_page }}">
+    {% if settings_page == "openclaw" %}
     <dialog id="openclaw-weixin-dialog" class="codex-workspace-dialog" aria-labelledby="openclaw-weixin-dialog-title">
       <div class="codex-workspace-dialog-surface openclaw-weixin-dialog-surface">
-        <div class="codex-workspace-dialog-header">
-          <h2 id="openclaw-weixin-dialog-title">微信绑定</h2>
-          <button id="openclaw-weixin-close" class="button-link codex-workspace-dialog-close" type="button" aria-label="关闭微信绑定">关闭</button>
-        </div>
+        <div class="codex-workspace-dialog-header"><h2 id="openclaw-weixin-dialog-title">微信绑定</h2><button id="openclaw-weixin-close" class="button-link codex-workspace-dialog-close" type="button" aria-label="关闭微信绑定">关闭</button></div>
         <p class="openclaw-weixin-lead">查看当前绑定状态后，可为此 ClawBot 生成新的微信连接二维码。</p>
         <section class="openclaw-weixin-context" aria-label="当前微信绑定配置">
-          <div class="openclaw-weixin-context-row">
-            <span class="openclaw-weixin-context-label">消息通道</span>
-            <strong id="openclaw-weixin-account-summary" class="openclaw-weixin-context-value">正在读取当前账户状态</strong>
-          </div>
-          <div class="openclaw-weixin-context-row">
-            <span class="openclaw-weixin-context-label">Owner 授权</span>
-            <strong id="openclaw-weixin-owner-summary" class="openclaw-weixin-context-value">正在读取当前 Owner 配置</strong>
-          </div>
+          <div class="openclaw-weixin-context-row"><span class="openclaw-weixin-context-label">消息通道</span><strong id="openclaw-weixin-account-summary" class="openclaw-weixin-context-value">正在读取当前账户状态</strong></div>
+          <div class="openclaw-weixin-context-row"><span class="openclaw-weixin-context-label">Owner 授权</span><strong id="openclaw-weixin-owner-summary" class="openclaw-weixin-context-value">正在读取当前 Owner 配置</strong></div>
         </section>
         <p class="openclaw-weixin-notice">重新扫码可能使该 ClawBot 在其他设备上的服务端绑定失效。绑定只建立消息通道，不会自动完成发送者配对或 Owner 授权。</p>
-        <div id="openclaw-weixin-qr-panel" class="openclaw-weixin-qr-panel" hidden>
-          <img id="openclaw-weixin-qr" alt="微信 ClawBot 绑定二维码">
-          <p>请使用手机微信扫码，并在手机上确认连接。</p>
-        </div>
-        <form id="openclaw-weixin-verify-form" class="openclaw-weixin-verify-form" hidden>
-          <label for="openclaw-weixin-verify-code">手机显示的数字验证码</label>
-          <div class="token-row">
-            <input id="openclaw-weixin-verify-code" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" maxlength="12" required>
-            <button type="submit">提交验证码</button>
-          </div>
-        </form>
+        <div id="openclaw-weixin-qr-panel" class="openclaw-weixin-qr-panel" hidden><img id="openclaw-weixin-qr" alt="微信 ClawBot 绑定二维码"><p>请使用手机微信扫码，并在手机上确认连接。</p></div>
+        <form id="openclaw-weixin-verify-form" class="openclaw-weixin-verify-form" hidden><label for="openclaw-weixin-verify-code">手机显示的数字验证码</label><div class="token-row"><input id="openclaw-weixin-verify-code" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" maxlength="12" required><button type="submit">提交验证码</button></div></form>
         <p id="openclaw-weixin-message" class="message" role="status" aria-live="polite">点击“生成二维码”开始绑定。</p>
-        <div class="dialog-actions">
-          <button id="openclaw-weixin-cancel" class="button-danger" type="button" hidden>取消绑定</button>
-          <button id="openclaw-weixin-start" class="button-secondary" type="button">生成二维码</button>
-        </div>
+        <div class="dialog-actions"><button id="openclaw-weixin-cancel" class="button-danger" type="button" hidden>取消绑定</button><button id="openclaw-weixin-start" class="button-secondary" type="button">生成二维码</button></div>
       </div>
     </dialog>
-
+    {% endif %}
+    {% if settings_page == "diagnostics" %}
     <dialog id="maintenance-terminal-dialog" class="codex-workspace-dialog confirmation-dialog" aria-labelledby="maintenance-terminal-dialog-title" aria-describedby="maintenance-terminal-dialog-message">
       <div class="codex-workspace-dialog-surface confirmation-dialog-surface">
-        <div class="codex-workspace-dialog-header">
-          <h2 id="maintenance-terminal-dialog-title">打开维护终端</h2>
-          <button id="maintenance-terminal-dialog-close" class="button-link codex-workspace-dialog-close" type="button" aria-label="关闭维护终端确认">关闭</button>
-        </div>
+        <div class="codex-workspace-dialog-header"><h2 id="maintenance-terminal-dialog-title">打开维护终端</h2><button id="maintenance-terminal-dialog-close" class="button-link codex-workspace-dialog-close" type="button" aria-label="关闭维护终端确认">关闭</button></div>
         <p id="maintenance-terminal-dialog-message" class="confirmation-dialog-description">维护终端会在独立标签页中打开 Chub 的项目 Shell。终端中的命令将直接作用于当前设备。</p>
         <p id="maintenance-terminal-dialog-feedback" class="message" role="status" aria-live="polite"></p>
-        <div class="confirmation-dialog-actions">
-          <button id="maintenance-terminal-dialog-cancel" class="button-link" type="button">取消</button>
-          <button id="maintenance-terminal-dialog-confirm" class="button-danger" type="button">打开终端</button>
-        </div>
+        <div class="confirmation-dialog-actions"><button id="maintenance-terminal-dialog-cancel" class="button-link" type="button">取消</button><button id="maintenance-terminal-dialog-confirm" class="button-danger" type="button">打开终端</button></div>
       </div>
     </dialog>
-
-    <main>
-      <section class="card settings-card standalone-list-card" aria-labelledby="settings-title">
-        <div class="card-heading-copy">
-          <p class="section-kicker">功能配置</p>
-          <h2 id="settings-title">设置</h2>
-          <p class="section-description">按 Chub 核心、AI Runtime 与第三方服务查看现有配置。</p>
-        </div>
-
-        <div class="settings-layout">
-          <aside class="settings-navigation">
-            <nav class="settings-navigation-links" aria-label="设置分类">
-              <span class="settings-navigation-group">Chub 核心</span>
-              <a href="#quick-interaction-settings" aria-current="true">快速交互</a>
-              <a href="#style-settings">界面风格</a>
-              <a href="#utility-settings">诊断与关于</a>
-              <span class="settings-navigation-group">AI Runtime</span>
-              <a href="#runtime-settings">Runtime 管理</a>
-              <a href="#codex-session-settings">新建 Session 默认权限</a>
-              <a href="#weixin-settings">微信任务文本优化</a>
-              <span class="settings-navigation-group">第三方服务</span>
-              <a href="#openclaw-settings">OpenClaw Gateway</a>
-              <a href="#openclaw-weixin-settings">OpenClaw · 微信 ClawBot</a>
-            </nav>
-          </aside>
-
+    {% endif %}
+    <main class="settings-workspace-page">
+      <section class="settings-workspace-shell" aria-label="设置工作区">
+        <aside id="settings-sidebar" class="settings-workspace-sidebar">
+          <a id="settings-return-application" class="settings-workspace-return" href="/workspace"><span class="settings-workspace-return-icon" aria-hidden="true">&larr;</span><span>返回应用</span></a>
+          <p class="settings-workspace-sidebar-label">设置</p>
+          <nav class="settings-navigation settings-navigation-links" aria-label="设置分类">
+            <span class="settings-navigation-group">Chub 核心</span>
+            <a class="settings-navigation-link" href="/settings/quick-interaction"{% if settings_page == "quick-interaction" %} aria-current="page"{% endif %}><span class="settings-navigation-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M21 11.5a8.4 8.4 0 0 1-9 8.5 9.8 9.8 0 0 1-4.9-1.3L3 20l1.4-3.7A8.4 8.4 0 0 1 3 11.5a8.4 8.4 0 0 1 9-8.5 8.4 8.4 0 0 1 9 8.5Z"></path></svg></span><span>快速交互</span></a>
+            <a class="settings-navigation-link" href="/settings/appearance"{% if settings_page == "appearance" %} aria-current="page"{% endif %}><span class="settings-navigation-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M12 3a9 9 0 1 0 0 18h1.2a1.8 1.8 0 0 0 1.7-2.4l-.2-.6a1.8 1.8 0 0 1 1.7-2.4H18a3 3 0 0 0 3-3A9.7 9.7 0 0 0 12 3Z"></path><path d="M7.5 11.5h.01M9 7.5h.01M14.5 7.5h.01M17 11.5h.01"></path></svg></span><span>界面风格</span></a>
+            <a class="settings-navigation-link" href="/settings/diagnostics"{% if settings_page == "diagnostics" %} aria-current="page"{% endif %}><span class="settings-navigation-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><circle cx="12" cy="12" r="9"></circle><path d="M9.8 9a2.3 2.3 0 1 1 3.7 1.8c-1.2.9-1.5 1.3-1.5 2.7"></path><path d="M12 16.5h.01"></path></svg></span><span>诊断与关于</span></a>
+            <span class="settings-navigation-group">AI Runtime</span>
+            <a class="settings-navigation-link" href="/settings/runtime"{% if settings_page == "runtime" %} aria-current="page"{% endif %}><span class="settings-navigation-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><rect width="14" height="14" x="5" y="5" rx="2"></rect><path d="M9 1v4M15 1v4M9 19v4M15 19v4M1 9h4M1 15h4M19 9h4M19 15h4"></path></svg></span><span>Runtime 管理</span></a>
+            <a class="settings-navigation-link" href="/settings/session-defaults"{% if settings_page == "session-defaults" %} aria-current="page"{% endif %}><span class="settings-navigation-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M12 3 5 6v5c0 4.6 3 8.3 7 10 4-1.7 7-5.4 7-10V6l-7-3Z"></path><path d="m9 12 2 2 4-4"></path></svg></span><span>新建 Session 默认权限</span></a>
+            <a class="settings-navigation-link" href="/settings/weixin-text"{% if settings_page == "weixin-text" %} aria-current="page"{% endif %}><span class="settings-navigation-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="m5 8 3-3 3 3"></path><path d="M8 5v11a3 3 0 0 0 3 3h1"></path><path d="m19 16-3 3-3-3"></path><path d="M16 19V8a3 3 0 0 0-3-3h-1"></path></svg></span><span>微信任务文本优化</span></a>
+            <span class="settings-navigation-group">第三方服务</span>
+            <a class="settings-navigation-link" href="/settings/openclaw"{% if settings_page == "openclaw" %} aria-current="page"{% endif %}><span class="settings-navigation-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><circle cx="6" cy="12" r="2"></circle><circle cx="18" cy="6" r="2"></circle><circle cx="18" cy="18" r="2"></circle><path d="m7.8 11 8.4-4M7.8 13l8.4 4"></path></svg></span><span>OpenClaw</span></a>
+          </nav>
+        </aside>
+        <div id="settings-sidebar-resizer" class="settings-sidebar-resizer" role="separator" aria-orientation="vertical" aria-controls="settings-sidebar" aria-label="调整设置侧边栏宽度" aria-valuemin="225" aria-valuemax="360" aria-valuenow="225" tabindex="0"></div>
+        <section class="settings-workspace-main">
+          <header class="settings-workspace-toolbar"><p class="section-kicker">功能配置</p><h1 id="settings-title" class="settings-workspace-title">{{ settings_title }}</h1><p class="settings-workspace-description">{{ settings_description }}</p></header>
           <div class="settings-content">
-            <section class="settings-layer" aria-labelledby="core-settings-title">
-              <div class="settings-layer-heading">
-                <h3 id="core-settings-title" class="settings-layer-title">Chub 核心</h3>
-                <p>管理当前浏览器的使用偏好，并查看本机 Chub 的诊断信息。</p>
-              </div>
-            <section id="quick-interaction-settings" class="settings-section" aria-labelledby="quick-interaction-settings-title">
-              <div class="settings-section-heading">
-                <h3 id="quick-interaction-settings-title">快速交互</h3>
-                <p>调整会话历史记录的加载方式。</p>
-              </div>
-              <label class="settings-field" for="quick-interaction-page-size">
-                <span>
-                  <strong>每页数量</strong>
-                  <small>用于会话历史的首次加载与继续加载，下次进入快速交互时生效。</small>
-                </span>
-                <select id="quick-interaction-page-size" name="quick-interaction-page-size" data-settings-picker>
-                  <option value="5" selected>5 条</option>
-                  <option value="10">10 条</option>
-                </select>
-              </label>
-              <p id="settings-message" class="message" aria-live="polite"></p>
-            </section>
-
-            <section id="style-settings" class="settings-section" aria-labelledby="style-settings-title">
-              <div class="settings-section-heading">
-                <h3 id="style-settings-title">界面风格</h3>
-                <p>查看可用风格及常用界面元素的实际效果。预览不会修改当前页面。</p>
-              </div>
-              <div class="style-option-row" data-style-option="standard">
-                <a class="style-option" href="/settings/styles/standard">
-                  <span class="style-option-swatch" aria-hidden="true">
-                    <i></i><i></i><i></i>
-                  </span>
-                  <span class="style-option-copy">
-                    <span class="style-option-heading">
-                      <strong>Standard</strong>
-                      <span class="badge badge-success" data-style-badge>当前风格</span>
-                    </span>
-                    <small>简约标准版 · 清晰、克制、轻量的工具型界面</small>
-                  </span>
-                  <span class="style-option-action">预览</span>
-                </a>
-                <button class="button-secondary style-apply" type="button" data-style-apply="standard">使用中</button>
-              </div>
-              <div class="style-option-row" data-style-option="cyber">
-                <a class="style-option" href="/settings/styles/cyber">
-                  <span class="style-option-swatch style-option-swatch-cyber" aria-hidden="true">
-                    <i></i><i></i><i></i>
-                  </span>
-                  <span class="style-option-copy">
-                    <span class="style-option-heading">
-                      <strong>Cyber</strong>
-                      <span class="badge badge-muted" data-style-badge>可用风格</span>
-                    </span>
-                    <small>科技终端版 · 深色、冷光、现代设备控制台</small>
-                  </span>
-                  <span class="style-option-action">预览</span>
-                </a>
-                <button class="button-secondary style-apply" type="button" data-style-apply="cyber">应用</button>
-              </div>
-              <details class="settings-details settings-details-panel" data-cyber-style-details>
-                <summary>Cyber 参数</summary>
-                <div class="cyber-style-controls" aria-label="Cyber 代码雨设置">
-                  <label class="cyber-style-control" for="cyber-rain-speed">
-                    <span>
-                      <strong>代码雨速度</strong>
-                      <small>数值越高，下落越快。</small>
-                    </span>
-                    <span class="cyber-style-control-input">
-                      <input id="cyber-rain-speed" type="range" min="10" max="100" value="60">
-                      <output id="cyber-rain-speed-value" for="cyber-rain-speed">60%</output>
-                    </span>
-                  </label>
-                  <label class="cyber-style-control" for="cyber-rain-brightness">
-                    <span>
-                      <strong>代码雨亮度</strong>
-                      <small>调整整体亮度，并保留雨头明暗层次。</small>
-                    </span>
-                    <span class="cyber-style-control-input">
-                      <input id="cyber-rain-brightness" type="range" min="10" max="100" value="70">
-                      <output id="cyber-rain-brightness-value" for="cyber-rain-brightness">70%</output>
-                    </span>
-                  </label>
-                  <label class="cyber-style-control" for="cyber-rain-density">
-                    <span>
-                      <strong>代码雨密度</strong>
-                      <small>调整同屏显示的雨列数量。</small>
-                    </span>
-                    <span class="cyber-style-control-input">
-                      <input id="cyber-rain-density" type="range" min="10" max="100" value="50">
-                      <output id="cyber-rain-density-value" for="cyber-rain-density">50%</output>
-                    </span>
-                  </label>
-                </div>
-              </details>
-              <p id="cyber-style-settings-message" class="message" aria-live="polite"></p>
-              <p class="settings-section-note">风格选择保存在当前浏览器，可随时预览或切换。</p>
-            </section>
-
-            <section id="utility-settings" class="settings-section settings-utility-section" aria-labelledby="utility-settings-title">
-              <div class="settings-section-heading">
-                <h3 id="utility-settings-title">诊断与关于</h3>
-                <p>查看节点记录与当前版本。</p>
-              </div>
-              <div class="settings-utility-list">
-                  <a class="settings-utility-row" href="/logs">
-                  <span>
-                    <strong>日志详情</strong>
-                    <small>节点操作与运行记录</small>
-                  </span>
-                    <span aria-hidden="true">打开</span>
-                  </a>
-                  <button id="settings-maintenance-terminal" class="settings-utility-row" type="button">
-                    <span>
-                      <strong>维护终端</strong>
-                      <small id="settings-maintenance-terminal-detail">在独立标签页打开当前项目目录的 Shell。</small>
-                    </span>
-                    <span id="settings-maintenance-terminal-label" aria-hidden="true">打开</span>
-                  </button>
-                  <div class="settings-utility-row">
-                  <span>
-                    <strong>Chub 版本</strong>
-                    <small>当前节点运行版本</small>
-                  </span>
-                  <b>v{{ app_version }}</b>
-                </div>
-              </div>
-            </section>
-            </section>
-
-            <section class="settings-layer" aria-labelledby="ai-runtime-settings-title">
-              <div class="settings-layer-heading">
-                <h3 id="ai-runtime-settings-title" class="settings-layer-title">AI Runtime</h3>
-                <p>用于后续 AI 会话和微信任务的运行参数。</p>
-              </div>
-
-              <section id="runtime-settings" class="settings-section" aria-labelledby="runtime-settings-title">
-                <div class="settings-section-heading">
-                  <h3 id="runtime-settings-title">Runtime 管理</h3>
-                  <p id="runtime-management-description" aria-live="polite">启用后可创建并提交该 Runtime 的 AI 任务；关闭不会中断已受理任务。</p>
-                </div>
-                <div id="runtime-management-list" class="runtime-management-list" aria-live="polite"></div>
-              </section>
-
-              <section id="codex-session-settings" class="settings-section" aria-labelledby="codex-session-settings-title">
-                <div class="settings-section-heading">
-                  <h3 id="codex-session-settings-title">新建 Session 默认权限</h3>
-                  <p>模型和推理等级默认跟随 AI；权限开关只影响之后新建的 Session。</p>
-                </div>
-                <label class="settings-field settings-field-toggle" for="codex-default-full-access">
-                  <span>
-                    <strong>默认使用 Full access</strong>
-                    <small>开启后新建 Session 默认使用 Full access；关闭后使用 Read Only，已有 Session 保持原权限。</small>
-                  </span>
-                  <span class="settings-switch">
-                    <input id="codex-default-full-access" name="codex-default-full-access" type="checkbox" checked>
-                    <span class="settings-switch-track" aria-hidden="true"></span>
-                  </span>
-                </label>
-                <p id="codex-session-settings-message" class="message" aria-live="polite"></p>
-              </section>
-
-              <section id="weixin-settings" class="settings-section" aria-labelledby="weixin-settings-title">
-                <div class="settings-section-heading">
-                  <h3 id="weixin-settings-title">微信任务文本优化</h3>
-                  <p>仅作用于微信 ClawBot 的普通文本任务，决定是否调用 Codex 进行润色与翻译。</p>
-                </div>
-                <div class="settings-subsection">
-                  <h4 id="weixin-processing-mode-title">正文处理方式</h4>
-                  <fieldset
-                    class="settings-choice-list"
-                    id="weixin-processing-mode"
-                    aria-labelledby="weixin-processing-mode-title"
-                    disabled
-                  >
-                    <legend class="visually-hidden">正文处理方式</legend>
-                    <label class="settings-choice">
-                      <span>
-                        <strong>直接执行</strong>
-                        <small>正文直接提交到指定 Session，不调用文本优化。</small>
-                      </span>
-                      <input type="radio" name="weixin-processing-mode" value="direct">
-                    </label>
-                    <label class="settings-choice">
-                      <span>
-                        <strong>自动润色后执行</strong>
-                        <small>先使用 Codex 润色和翻译，再自动提交优化后的中文正文。</small>
-                      </span>
-                      <input type="radio" name="weixin-processing-mode" value="auto">
-                    </label>
-                    <label class="settings-choice">
-                      <span>
-                        <strong>自动润色后确认执行</strong>
-                        <small>优化完成后，使用 <code>text</code> 指令确认或复述正文再执行。</small>
-                      </span>
-                      <input type="radio" name="weixin-processing-mode" value="confirm">
-                    </label>
-                  </fieldset>
-                </div>
-                <div class="settings-subsection">
-                  <h4 id="weixin-translation-model-title">文本优化运行参数</h4>
-                  <label
-                    id="weixin-translation-model-field"
-                    class="settings-field"
-                    for="weixin-translation-model"
-                  >
-                    <span>
-                      <strong>文本优化模型</strong>
-                      <small>只影响之后新提交的文本优化任务，已提交任务继续使用原配置。</small>
-                    </span>
-                    <select id="weixin-translation-model" name="weixin-translation-model" data-settings-picker disabled>
-                      <option value="">跟随 Codex 默认</option>
-                    </select>
-                  </label>
-                  <label
-                    id="weixin-translation-reasoning-effort-field"
-                    class="settings-field"
-                    for="weixin-translation-reasoning-effort"
-                  >
-                    <span>
-                      <strong>文本优化推理等级</strong>
-                      <small>选择文本优化模型后可指定推理等级；留空时使用该模型默认等级。</small>
-                    </span>
-                    <select
-                      id="weixin-translation-reasoning-effort"
-                      name="weixin-translation-reasoning-effort"
-                    data-settings-picker
-                    disabled
-                    >
-                      <option value="">跟随模型默认</option>
-                    </select>
-                  </label>
-                </div>
-                <p id="weixin-translation-message" class="message" aria-live="polite"></p>
-              </section>
-            </section>
-
-            <section class="settings-layer" aria-labelledby="third-party-settings-title">
-              <div class="settings-layer-heading">
-                <h3 id="third-party-settings-title" class="settings-layer-title">第三方服务</h3>
-                <p>查看 OpenClaw Gateway 与消息通道状态；服务运行与恢复仍在首页工作站环境查看。</p>
-              </div>
-
-              <section id="openclaw-settings" class="settings-section" aria-label="OpenClaw Gateway">
-                <div class="settings-utility-list">
-                  <a id="settings-openclaw-open" class="settings-utility-row settings-integration-row" aria-disabled="true">
-                    <span>
-                      <span class="settings-integration-title">
-                        <strong>OpenClaw Gateway</strong>
-                        <span id="settings-openclaw-badge" class="badge badge-muted">正在检查</span>
-                      </span>
-                      <small id="settings-openclaw-detail">正在读取 OpenClaw Gateway 状态。</small>
-                    </span>
-                    <span id="settings-openclaw-open-label" aria-hidden="true">不可用</span>
-                  </a>
-                </div>
-              </section>
-
-              <section id="openclaw-weixin-settings" class="settings-section" aria-label="微信 ClawBot">
-                <div class="settings-field settings-integration-row">
-                  <span>
-                    <span class="settings-integration-title">
-                      <strong>微信 ClawBot</strong>
-                      <span id="settings-openclaw-weixin-badge" class="badge badge-muted">正在检查</span>
-                    </span>
-                    <small id="settings-openclaw-weixin-detail">正在读取 OpenClaw 与微信消息通道状态。</small>
-                  </span>
-                  <button id="settings-openclaw-bind-weixin" class="button-secondary" type="button" hidden disabled>绑定微信</button>
-                </div>
-                <p id="settings-openclaw-weixin-message" class="message" aria-live="polite"></p>
-              </section>
-            </section>
+            {% if settings_page == "quick-interaction" %}
+            <section class="settings-section" aria-labelledby="quick-interaction-settings-title"><div class="settings-section-heading"><h2 id="quick-interaction-settings-title">快速交互</h2><p>调整会话历史记录的加载方式。</p></div><label class="settings-field" for="quick-interaction-page-size"><span><strong>每页数量</strong><small>用于会话历史的首次加载与继续加载，下次进入快速交互时生效。</small></span><select id="quick-interaction-page-size" name="quick-interaction-page-size" data-settings-picker><option value="5" selected>5 条</option><option value="10">10 条</option></select></label><p id="settings-message" class="message" aria-live="polite"></p></section>
+            {% elif settings_page == "appearance" %}
+            <section class="settings-section" aria-labelledby="style-settings-title"><div class="settings-section-heading"><h2 id="style-settings-title">界面风格</h2><p>查看可用风格及常用界面元素的实际效果。预览不会修改当前页面。</p></div><div class="style-option-row" data-style-option="standard"><a class="style-option" href="/settings/styles/standard"><span class="style-option-swatch" aria-hidden="true"><i></i><i></i><i></i></span><span class="style-option-copy"><span class="style-option-heading"><strong>Standard</strong><span class="badge badge-success" data-style-badge>当前风格</span></span><small>简约标准版 · 清晰、克制、轻量的工具型界面</small></span><span class="style-option-action">预览</span></a><button class="button-secondary style-apply" type="button" data-style-apply="standard">使用中</button></div><div class="style-option-row" data-style-option="cyber"><a class="style-option" href="/settings/styles/cyber"><span class="style-option-swatch style-option-swatch-cyber" aria-hidden="true"><i></i><i></i><i></i></span><span class="style-option-copy"><span class="style-option-heading"><strong>Cyber</strong><span class="badge badge-muted" data-style-badge>可用风格</span></span><small>科技终端版 · 深色、冷光、现代设备控制台</small></span><span class="style-option-action">预览</span></a><button class="button-secondary style-apply" type="button" data-style-apply="cyber">应用</button></div><details class="settings-details settings-details-panel" data-cyber-style-details><summary>Cyber 参数</summary><div class="cyber-style-controls" aria-label="Cyber 代码雨设置"><label class="cyber-style-control" for="cyber-rain-speed"><span><strong>代码雨速度</strong><small>数值越高，下落越快。</small></span><span class="cyber-style-control-input"><input id="cyber-rain-speed" type="range" min="10" max="100" value="60"><output id="cyber-rain-speed-value" for="cyber-rain-speed">60%</output></span></label><label class="cyber-style-control" for="cyber-rain-brightness"><span><strong>代码雨亮度</strong><small>调整整体亮度，并保留雨头明暗层次。</small></span><span class="cyber-style-control-input"><input id="cyber-rain-brightness" type="range" min="10" max="100" value="70"><output id="cyber-rain-brightness-value" for="cyber-rain-brightness">70%</output></span></label><label class="cyber-style-control" for="cyber-rain-density"><span><strong>代码雨密度</strong><small>调整同屏显示的雨列数量。</small></span><span class="cyber-style-control-input"><input id="cyber-rain-density" type="range" min="10" max="100" value="50"><output id="cyber-rain-density-value" for="cyber-rain-density">50%</output></span></label></div></details><p id="cyber-style-settings-message" class="message" aria-live="polite"></p><p class="settings-section-note">风格选择保存在当前浏览器，可随时预览或切换。</p></section>
+            {% elif settings_page == "diagnostics" %}
+            <section class="settings-section settings-utility-section" aria-labelledby="utility-settings-title"><div class="settings-section-heading"><h2 id="utility-settings-title">诊断与关于</h2><p>查看节点记录与当前版本。</p></div><div class="settings-utility-list"><a class="settings-utility-row" href="/logs"><span><strong>日志详情</strong><small>节点操作与运行记录</small></span><span aria-hidden="true">打开</span></a><button id="settings-maintenance-terminal" class="settings-utility-row" type="button"><span><strong>维护终端</strong><small id="settings-maintenance-terminal-detail">在独立标签页打开当前项目目录的 Shell。</small></span><span id="settings-maintenance-terminal-label" aria-hidden="true">打开</span></button><div class="settings-utility-row"><span><strong>Chub 版本</strong><small>当前节点运行版本</small></span><b>v{{ app_version }}</b></div></div></section>
+            {% elif settings_page == "runtime" %}
+            <section class="settings-section" aria-labelledby="runtime-settings-title"><div class="settings-section-heading"><h2 id="runtime-settings-title">Runtime 管理</h2><p id="runtime-management-description" aria-live="polite">启用后可创建并提交该 Runtime 的 AI 任务；关闭不会中断已受理任务。</p></div><div id="runtime-management-list" class="runtime-management-list" aria-live="polite"></div></section>
+            {% elif settings_page == "session-defaults" %}
+            <section class="settings-section" aria-labelledby="codex-session-settings-title"><div class="settings-section-heading"><h2 id="codex-session-settings-title">新建 Session 默认权限</h2><p>模型和推理等级默认跟随 AI；权限开关只影响之后新建的 Session。</p></div><label class="settings-field settings-field-toggle" for="codex-default-full-access"><span><strong>默认使用 Full access</strong><small>开启后新建 Session 默认使用 Full access；关闭后使用 Read Only，已有 Session 保持原权限。</small></span><span class="settings-switch"><input id="codex-default-full-access" name="codex-default-full-access" type="checkbox" checked><span class="settings-switch-track" aria-hidden="true"></span></span></label><p id="codex-session-settings-message" class="message" aria-live="polite"></p></section>
+            {% elif settings_page == "weixin-text" %}
+            <section class="settings-section" aria-labelledby="weixin-settings-title"><div class="settings-section-heading"><h2 id="weixin-settings-title">微信任务文本优化</h2><p>仅作用于微信 ClawBot 的普通文本任务，决定是否调用 Codex 进行润色与翻译。</p></div><div class="settings-subsection"><h3 id="weixin-processing-mode-title">正文处理方式</h3><fieldset class="settings-choice-list" id="weixin-processing-mode" aria-labelledby="weixin-processing-mode-title" disabled><legend class="visually-hidden">正文处理方式</legend><label class="settings-choice"><span><strong>直接执行</strong><small>正文直接提交到指定 Session，不调用文本优化。</small></span><input type="radio" name="weixin-processing-mode" value="direct"></label><label class="settings-choice"><span><strong>自动润色后执行</strong><small>先使用 Codex 润色和翻译，再自动提交优化后的中文正文。</small></span><input type="radio" name="weixin-processing-mode" value="auto"></label><label class="settings-choice"><span><strong>自动润色后确认执行</strong><small>优化完成后，使用 <code>text</code> 指令确认或复述正文再执行。</small></span><input type="radio" name="weixin-processing-mode" value="confirm"></label></fieldset></div><div class="settings-subsection"><h3 id="weixin-translation-model-title">文本优化运行参数</h3><label id="weixin-translation-model-field" class="settings-field" for="weixin-translation-model"><span><strong>文本优化模型</strong><small>只影响之后新提交的文本优化任务，已提交任务继续使用原配置。</small></span><select id="weixin-translation-model" name="weixin-translation-model" data-settings-picker disabled><option value="">跟随 Codex 默认</option></select></label><label id="weixin-translation-reasoning-effort-field" class="settings-field" for="weixin-translation-reasoning-effort"><span><strong>文本优化推理等级</strong><small>选择文本优化模型后可指定推理等级；留空时使用该模型默认等级。</small></span><select id="weixin-translation-reasoning-effort" name="weixin-translation-reasoning-effort" data-settings-picker disabled><option value="">跟随模型默认</option></select></label></div><p id="weixin-translation-message" class="message" aria-live="polite"></p></section>
+            {% elif settings_page == "openclaw" %}
+            <section class="settings-section" aria-labelledby="openclaw-settings-title"><div class="settings-section-heading"><h2 id="openclaw-settings-title">OpenClaw</h2><p>查看 OpenClaw Gateway 与微信 ClawBot 的当前状态，并管理微信绑定。</p></div><div class="settings-subsection" aria-labelledby="openclaw-gateway-settings-title"><h3 id="openclaw-gateway-settings-title">Gateway</h3><div class="settings-utility-list"><a id="settings-openclaw-open" class="settings-utility-row settings-integration-row" aria-disabled="true"><span><span class="settings-integration-title"><strong>OpenClaw Gateway</strong><span id="settings-openclaw-badge" class="badge badge-muted">正在检查</span></span><small id="settings-openclaw-detail">正在读取 OpenClaw Gateway 状态。</small></span><span id="settings-openclaw-open-label" aria-hidden="true">不可用</span></a></div></div><div class="settings-subsection" aria-labelledby="openclaw-clawbot-settings-title"><h3 id="openclaw-clawbot-settings-title">微信 ClawBot</h3><div class="settings-field settings-integration-row"><span><span class="settings-integration-title"><strong>微信 ClawBot</strong><span id="settings-openclaw-weixin-badge" class="badge badge-muted">正在检查</span></span><small id="settings-openclaw-weixin-detail">正在读取 OpenClaw 与微信消息通道状态。</small></span><button id="settings-openclaw-bind-weixin" class="button-secondary" type="button" hidden disabled>绑定微信</button></div><p id="settings-openclaw-weixin-message" class="message" aria-live="polite"></p></div></section>
+            {% endif %}
           </div>
-        </div>
+          <footer class="settings-workspace-footer">界面偏好保存在当前浏览器；Session 配置和第三方服务配置由 Chub 安全保存。</footer>
+        </section>
       </section>
     </main>
-    <footer>界面偏好保存在当前浏览器；Session 配置和第三方服务配置由 Chub 安全保存。</footer>
   </body>
 </html>

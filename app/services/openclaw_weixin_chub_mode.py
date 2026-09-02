@@ -175,6 +175,7 @@ class WeixinChubModeManager:
         translation_result_notifier: Callable[..., object] | None = None,
         translation_confirmation_notifier: Callable[..., object] | None = None,
         worker_health_reader: Callable[[], object] | None = None,
+        system_upgrade_status_reader: Callable[[], object] | None = None,
         system_upgrade_starter: Callable[[str], object] | None = None,
         maintenance_command_starter: Callable[
             [str, str, QuickInteractionWeixinRoute, str], object
@@ -196,6 +197,7 @@ class WeixinChubModeManager:
         self.translation_result_notifier = translation_result_notifier
         self.translation_confirmation_notifier = translation_confirmation_notifier
         self.worker_health_reader = worker_health_reader
+        self.system_upgrade_status_reader = system_upgrade_status_reader
         self.system_status_reader = system_status_reader
         self.restart_coordinator = restart_coordinator
         self.restart_notifier = restart_notifier
@@ -2882,7 +2884,6 @@ class WeixinChubModeManager:
                     and data.get("status") == "ready"
                     and data.get("uncertain_tasks") == 0
                     and data.get("corrupt_tasks") == 0
-                    and "codex" in data.get("available_runtime_ids", [])
                 )
                 if worker_ready:
                     active = max(0, int(data.get("active_tasks", 0)))
@@ -2912,6 +2913,75 @@ class WeixinChubModeManager:
         else:
             failed = True
 
+        runtime_attention = False
+        try:
+            management = self.codex_manager.read_runtime_management()
+            runtimes = list(getattr(management, "runtimes", []))
+            if not runtimes:
+                runtime_message = "AI Runtime：未配置"
+                runtime_attention = True
+            else:
+                available = [
+                    item
+                    for item in runtimes
+                    if getattr(item, "enabled", False) and getattr(item, "healthy", False)
+                ]
+                enabled = [item for item in runtimes if getattr(item, "enabled", False)]
+                if available:
+                    runtime_message = "AI Runtime：" + "、".join(
+                        f"{item.name} 可用" for item in available
+                    )
+                elif enabled:
+                    runtime_message = "AI Runtime：当前不可用，请检查运行环境。"
+                    runtime_attention = True
+                else:
+                    runtime_message = "AI Runtime：已停用，请在 Settings 启用。"
+                    runtime_attention = True
+        except Exception:
+            LOGGER.warning("Unable to check AI Runtime availability", exc_info=True)
+            runtime_message = "AI Runtime：状态无法确认"
+            runtime_attention = True
+
+        upgrade_attention = False
+        try:
+            upgrade_status = (
+                self.system_upgrade_status_reader()
+                if self.system_upgrade_status_reader is not None
+                else None
+            )
+            upgrade_state = getattr(upgrade_status, "state", "unknown")
+            upgrade_operation = getattr(upgrade_status, "operation", None)
+            if upgrade_state in {"preparing", "draining", "cleaning", "restarting"}:
+                upgrade_message = "升级与恢复：正在进行"
+                upgrade_attention = True
+            elif upgrade_state == "failed":
+                failed = True
+                if getattr(upgrade_status, "can_start", False):
+                    upgrade_message = "升级与恢复：失败，可发送 upgrade 继续恢复。"
+                else:
+                    upgrade_message = "升级与恢复：失败，请在本机终端检查 chub logs upgrade。"
+            elif upgrade_state == "blocked":
+                failed = True
+                upgrade_message = "升级与恢复：不可用，请在本机终端检查 chub logs upgrade。"
+            elif getattr(upgrade_status, "plan_unavailable", False):
+                upgrade_message = "升级与恢复：仅可恢复，升级方案不可用。"
+                upgrade_attention = True
+            else:
+                points = list(
+                    getattr(getattr(upgrade_status, "plan", None), "upgrade_points", [])
+                )
+                upgrade_message = (
+                    "升级与恢复：待升级 · " + " · ".join(points)
+                    if points
+                    else "升级与恢复：无待升级"
+                )
+            if upgrade_operation is not None and upgrade_state == "unknown":
+                upgrade_attention = True
+        except Exception:
+            LOGGER.warning("Unable to check system upgrade status", exc_info=True)
+            upgrade_message = "升级与恢复：状态无法确认"
+            upgrade_attention = True
+
         try:
             system = self.system_status_reader() if self.system_status_reader else None
             system_data = getattr(system, "system", None)
@@ -2926,7 +2996,12 @@ class WeixinChubModeManager:
             failed = True
             system_message = "系统：状态无法确认"
 
-        health_result = "通过" if not failed else "未通过"
+        if failed:
+            health_result = "核心服务检查：未通过"
+        elif runtime_attention or upgrade_attention:
+            health_result = "核心服务检查：通过，存在待处理提示"
+        else:
+            health_result = "核心服务检查：通过"
         message = "\n\n".join(
             (
                 f"Check · {format_elapsed_time(max(1, round((time.monotonic() - query_started_at) * 1000)))}",
@@ -2935,6 +3010,13 @@ class WeixinChubModeManager:
                         "【服务】",
                         f"- {web_message}",
                         f"- {worker_message}",
+                        f"- {runtime_message}",
+                    )
+                ),
+                "\n".join(
+                    (
+                        "【维护】",
+                        f"- {upgrade_message}",
                     )
                 ),
                 "\n".join(
@@ -2944,7 +3026,7 @@ class WeixinChubModeManager:
                         f"- {system_message.replace('，', ' · ', 1)}",
                     )
                 ),
-                f"【结果】健康检查：{health_result}",
+                f"【结果】{health_result}",
             )
         )
         return self._remember_fixed_reply(

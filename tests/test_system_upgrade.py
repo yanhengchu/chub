@@ -79,6 +79,29 @@ def test_plan_loader_accepts_only_current_fixed_source(tmp_path: Path) -> None:
     assert len(loaded.fingerprint) == 64
 
 
+def test_plan_view_lists_only_actual_upgrade_points(tmp_path: Path) -> None:
+    plan_path = tmp_path / "system-upgrade.json"
+    write_plan(plan_path)
+    loaded = load_system_upgrade_plan(plan_path)
+    assert loaded is not None
+    coordinator = SystemUpgradeCoordinator(
+        tmp_path / "state" / "system-upgrade-state.json",
+        plan_path,
+        "old-instance",
+    )
+
+    status = coordinator.status_data(loaded, session_count=0)
+
+    assert status.plan is not None
+    assert status.plan.upgrade_points == [
+        f"Session 数据 v{SESSION_SCHEMA_VERSION} → v{SESSION_SCHEMA_VERSION + 1}",
+        f"Worker 协议 v{PROTOCOL_VERSION - 1} → v{PROTOCOL_VERSION}",
+    ]
+    recovery = coordinator.status_data(runtime_recovery_plan(), session_count=0)
+    assert recovery.plan is not None
+    assert recovery.plan.upgrade_points == []
+
+
 def test_core_upgrade_executor_does_not_manage_openclaw() -> None:
     executor = (PROJECT_ROOT / "scripts" / "chub-system-upgrade-restart").read_text(
         encoding="utf-8"
@@ -88,14 +111,27 @@ def test_core_upgrade_executor_does_not_manage_openclaw() -> None:
     assert 'record_component "openclaw"' not in executor
 
 
+def test_core_upgrade_executor_does_not_manage_browser_or_dependencies() -> None:
+    executor = (PROJECT_ROOT / "scripts" / "chub-system-upgrade-restart").read_text(
+        encoding="utf-8"
+    )
+
+    assert "runtime-dependencies" not in executor
+    assert "chrome-supervisor" not in executor
+    assert "chub-debug-chrome" not in executor
+    assert "service-definitions --core" in executor
+    assert "scope=chub_ai_runtime,chub_web,quick_worker" in executor
+
+
 def test_final_upgrade_verification_does_not_record_openclaw() -> None:
     application = (PROJECT_ROOT / "app" / "application.py").read_text(
         encoding="utf-8"
     )
-    start = application.index("                    known_components = {")
+    start = application.index('                        "quick_worker",')
     end = application.index("                    rebind = getattr(", start)
 
     assert '"openclaw"' not in application[start:end]
+    assert "weixin_chub_mode.verify_system_upgrade_readiness" not in application[start:end]
 
 
 def test_plan_loader_rejects_writable_plan(tmp_path: Path) -> None:
@@ -217,7 +253,7 @@ def test_coordinator_blocks_writes_and_releases_before_destructive_failure(
     assert calls == [operation.operation_id]
 
 
-def test_debug_chrome_component_results_are_persisted_but_excluded_from_upgrade_view(
+def test_upgrade_component_report_contains_only_core_results(
     tmp_path: Path,
 ) -> None:
     plan_path = tmp_path / "plan.json"
@@ -235,21 +271,15 @@ def test_debug_chrome_component_results_are_persisted_but_excluded_from_upgrade_
 
     coordinator.record_component(
         operation.operation_id,
-        "browser_supervisor",
-        "degraded",
-        "Supervisor unavailable",
-    )
-    coordinator.record_component(
-        operation.operation_id,
         "quick_worker",
         "succeeded",
         "Worker ready",
     )
     coordinator.record_component(
         operation.operation_id,
-        "debug_chrome_instance",
-        "skipped",
-        "Browser instance is outside the upgrade scope",
+        "ai_runtime",
+        "checked",
+        "No Runtime available",
     )
     coordinator.update(
         operation.operation_id,
@@ -258,23 +288,62 @@ def test_debug_chrome_component_results_are_persisted_but_excluded_from_upgrade_
 
     report = load_component_report(state_path, operation.operation_id)
     assert {item.component: item.status for item in report} == {
-        "browser_supervisor": "degraded",
-        "debug_chrome_instance": "skipped",
         "quick_worker": "succeeded",
+        "ai_runtime": "checked",
     }
     status = coordinator.status_data(loaded, session_count=0)
     assert status.operation is not None
-    assert all(
-        item.component not in {"browser_supervisor", "debug_chrome_instance"}
-        for item in status.operation.components
-    )
-    assert [item.component for item in status.operation.components] == ["quick_worker"]
+    assert "components" not in status.operation.model_dump()
 
     coordinator.succeed(operation.operation_id)
     completed = coordinator.operation()
     assert completed is not None
-    assert "browser_supervisor" not in completed.message
+    assert "降级" not in completed.message
     assert completed.restart_process_id is None
+
+
+def test_upgrade_component_audit_logs_runtime_outcome(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan_path = tmp_path / "plan.json"
+    write_plan(plan_path)
+    loaded = load_system_upgrade_plan(plan_path)
+    assert loaded is not None
+    coordinator = SystemUpgradeCoordinator(
+        tmp_path / "state" / "system-upgrade.json",
+        plan_path,
+        "old-instance",
+    )
+    operation = coordinator.begin(
+        loaded,
+        source_ip="127.0.0.1",
+        old_worker_generation=None,
+        runner=lambda _operation_id: None,
+    )
+    captured: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "app.services.system_upgrade.write_operation",
+        lambda **kwargs: captured.append(kwargs),
+    )
+
+    coordinator.record_component(
+        operation.operation_id,
+        "ai_runtime",
+        "checked",
+        "AI Runtime 已在设置中停用，不影响核心服务恢复",
+    )
+
+    assert captured == [
+        {
+            "operation_id": operation.operation_id,
+            "action": "system_upgrade_component",
+            "status": "succeeded",
+            "target": "ai_runtime",
+            "source_ip": "127.0.0.1",
+            "reason": "component_status=checked runtime_state=disabled",
+        }
+    ]
 
 
 def test_coordinator_keeps_gate_closed_after_runtime_state_cleanup_failure(
@@ -310,6 +379,58 @@ def test_coordinator_keeps_gate_closed_after_runtime_state_cleanup_failure(
             old_worker_generation="c" * 32,
             runner=lambda _operation_id: None,
         )
+
+
+@pytest.mark.parametrize(
+    ("failed_stage", "expected_reason"),
+    [
+        ("draining_worker", "quick worker drain could not be confirmed"),
+        ("cleaning_state", "runtime state cleanup could not be confirmed"),
+        (
+            "verifying_new_instance",
+            "new web or quick worker health could not be confirmed",
+        ),
+    ],
+)
+def test_upgrade_failure_operation_log_uses_fixed_stage_reason(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failed_stage: str,
+    expected_reason: str,
+) -> None:
+    plan_path = tmp_path / "plan.json"
+    write_plan(plan_path)
+    loaded = load_system_upgrade_plan(plan_path)
+    assert loaded is not None
+    coordinator = SystemUpgradeCoordinator(
+        tmp_path / "state" / "system-upgrade.json",
+        plan_path,
+        "old-instance",
+    )
+    operation = coordinator.begin(
+        loaded,
+        source_ip="127.0.0.1",
+        old_worker_generation="a" * 32,
+        runner=lambda _operation_id: None,
+    )
+    coordinator.update(
+        operation.operation_id,
+        stage=failed_stage,
+        destructive_started=failed_stage != "draining_worker",
+    )
+    captured: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "app.services.system_upgrade.write_operation",
+        lambda **kwargs: captured.append(kwargs),
+    )
+
+    coordinator.fail(operation.operation_id, "token=should-not-be-recorded")
+
+    failed = coordinator.operation()
+    assert failed is not None
+    assert failed.message != "token=should-not-be-recorded"
+    assert captured[-1]["status"] == "failed"
+    assert captured[-1]["reason"] == expected_reason
 
 
 def test_final_verification_failure_reopens_gate_after_web_and_worker_recover(
@@ -829,15 +950,9 @@ def test_system_upgrade_restart_uses_fixed_linux_services(
         "--user --no-block start chub-system-upgrade.service",
         "--user stop chub.service",
         "--user stop chub-quick-worker.service",
-        "--user stop chub-debug-chrome.service",
         "--user daemon-reload",
         "--user enable chub.service",
         "--user enable chub-quick-worker.service",
-        "--user enable chub-debug-chrome.service",
-        "--user daemon-reload",
-        "--user enable chub-debug-chrome.service",
-        "--user restart chub-debug-chrome.service",
-        "--user is-active --quiet chub-debug-chrome.service",
         "--user restart chub-quick-worker.service",
         "--user --no-block restart chub.service",
     ]
@@ -866,6 +981,8 @@ async def test_system_upgrade_status_allows_runtime_recovery_without_plan(
     assert data["state"] == "available"
     assert data["can_start"] is True
     assert data["plan"]["plan_id"] == "runtime-recovery"
+    assert data["plan_unavailable"] is False
+    assert data["plan"]["upgrade_points"] == []
     assert data["plan"]["session_count"] == 0
 
 
@@ -900,6 +1017,8 @@ async def test_invalid_upgrade_plan_falls_back_to_runtime_recovery(
     assert preview_data["state"] == "available"
     assert preview_data["can_start"] is True
     assert preview_data["plan"]["plan_id"] == "runtime-recovery"
+    assert preview_data["plan_unavailable"] is True
+    assert preview_data["plan"]["upgrade_points"] == []
     assert preview_data["message"] == "升级方案不可用，当前仅可执行运行态恢复。"
     assert started.status_code == 200
     assert started.json()["data"]["state"] == "preparing"
@@ -1230,6 +1349,41 @@ async def test_destructive_upgrade_failure_can_continue_with_same_operation(
     assert continued.status == "started"
     assert continued.stage == "draining_worker"
     assert app.state.system_upgrade.writes_blocked() is True
+
+
+def test_status_data_explains_non_resumable_upgrade_failure(tmp_path: Path) -> None:
+    plan_path = tmp_path / "plan.json"
+    write_plan(plan_path)
+    loaded = load_system_upgrade_plan(plan_path)
+    assert loaded is not None
+    coordinator = SystemUpgradeCoordinator(
+        tmp_path / "state" / "system-upgrade.json",
+        plan_path,
+        "old-instance",
+    )
+    operation = coordinator.begin(
+        loaded,
+        source_ip="127.0.0.1",
+        old_worker_generation=None,
+        runner=lambda _operation_id: None,
+    )
+    coordinator.mark_started(operation.operation_id)
+    coordinator.update(
+        operation.operation_id,
+        stage="freezing_sessions",
+        destructive_started=True,
+    )
+    coordinator.fail(operation.operation_id, "Session 写入冻结未能确认。")
+
+    status = coordinator.status_data(loaded, session_count=0)
+
+    assert status.state == "failed"
+    assert status.can_start is False
+    assert status.resume is False
+    assert status.message == (
+        "Session 写入冻结未能确认，尚未开始清理运行状态。 当前恢复操作不能安全继续，升级入口已关闭；"
+        "请在本机终端检查 chub logs upgrade 和服务定义后再处理。"
+    )
 
 
 @pytest.mark.anyio

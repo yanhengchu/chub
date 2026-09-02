@@ -145,7 +145,7 @@ Web 提交只表示任务已受理；成功必须以文件或完整输入集最�
 - 项目资料页面只展示适合可信网络只读访问的内容，敏感业务材料不得直接纳入公开展示。
 - 当前不支持验证码或多因素认证自动处理、任意脚本、多下载并行、跨设备编排、集中式任务队列或系统定时调度。
 - Ubuntu 的 Chub Debug Chrome 由独立的 `chub-debug-chrome.service` 和固定本机 Unix socket Supervisor 持有；Chub 重启不停止该服务，Supervisor 不可用时自动化启动、停止和状态查询失败关闭。macOS 继续沿用现有 LaunchAgent/浏览器适配路径。
-- Ubuntu 的升级与恢复服务切换会停止并重建 `chub-debug-chrome.service`，确认 Supervisor 服务为 `active` 后再恢复 Worker 和 Web；这只代表浏览器控制服务已就绪，不代表 Debug Chrome 实例已启动。Debug Chrome 的 Supervisor 和浏览器实例均属于自动化环境按需状态，不出现在升级组件摘要；Supervisor 失败按独立恢复状态处理，不阻断核心服务恢复。Quick Worker 专用恢复只补齐并启动 Supervisor，不执行完整 `chub install`。该流程只处理当前 Python 依赖和固定服务定义，不同步 OpenClaw 插件、适配器或补丁。
+- Debug Chrome Supervisor 与浏览器实例均属于自动化环境的独立按需状态：Chub、Quick Worker 和升级与恢复都不会启动、停止或修复 `chub-debug-chrome.service`。Ubuntu 上需要恢复 Supervisor 时，只能使用 `chub chrome-supervisor-reconcile [--restart]`；Supervisor 服务就绪不代表浏览器实例已经启动。Python 依赖修复使用 `chub runtime-dependencies`，同样不属于核心升级步骤。OpenClaw 插件、适配器和补丁继续由第三方服务维护入口处理。
 - macOS 已完成受管 Chrome 无界面生命周期和 Playwright 会话的实机验证；Ubuntu 已完成 Profile 与有界面生命周期实机验证，无界面生命周期和 Playwright 会话仍只有自动化覆盖，相关真实环境使用前需补验。Windows 不属于 Chub 当前支持平台，其验证状态仅由 `chrome-cdp` 技能维护。
 
 飞书页面结构、来源角色、周期、报告结构或稳定业务口径变化时，应同步维护自动化模板、技能 reference、样例和测试。仅本周事实变化时不修改通用规则。现阶段继续保留人工触发和重点确认，是保障输入完整性与最终事实准确性的产品边界。

@@ -5,6 +5,7 @@ import asyncio
 import fcntl
 import hashlib
 import json
+import logging
 import os
 import signal
 import shutil
@@ -20,7 +21,10 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.core.config import PROJECT_ROOT, Settings, get_settings
-from app.core.logger import configure_worker_operation_logging
+from app.core.logger import (
+    configure_worker_operation_logging,
+    configure_worker_runtime_logging,
+)
 from app.ai_runtime import WorkerRuntimeRegistry, validate_runtime_wiring
 from app.codex.runtime_adapter import CodexRuntimeAdapter
 from app.codex.worker_runtime import CodexWorkerRuntime
@@ -41,6 +45,7 @@ MAX_REQUEST_BYTES = 64 * 1024
 MAX_RESPONSE_BYTES = 256 * 1024
 CLIENT_TIMEOUT_SECONDS = 2.0
 MAX_CONCURRENT_CONNECTIONS = 16
+LOGGER = logging.getLogger("hub.quick_worker")
 
 
 class WorkerRequestNotSent(OSError):
@@ -356,6 +361,13 @@ class QuickWorkerServer:
             os.chmod(self.socket_path, 0o600)
             metadata = self.socket_path.lstat()
             self._socket_identity = (metadata.st_dev, metadata.st_ino)
+            LOGGER.info(
+                "Quick Worker ready generation=%s protocol=%s code_version=%s runtimes=%s",
+                self.generation,
+                PROTOCOL_VERSION,
+                WORKER_CODE_VERSION,
+                ",".join(self.runtime_ids) or "none",
+            )
         except Exception:
             self._release_resources()
             raise
@@ -372,6 +384,12 @@ class QuickWorkerServer:
         await self.close()
 
     def request_stop(self) -> None:
+        LOGGER.info(
+            "Quick Worker stop requested generation=%s active_tasks=%s queued_tasks=%s",
+            self.generation,
+            self.task_manager.running_count,
+            self.task_manager.queued_count,
+        )
         self.status = "draining"
         self._stopped.set()
 
@@ -459,6 +477,11 @@ class QuickWorkerServer:
             await asyncio.gather(self._drain_task, return_exceptions=True)
         await self.task_manager.close(interrupt_tasks=interrupt_tasks)
         self._release_resources()
+        LOGGER.info(
+            "Quick Worker stopped generation=%s interrupted_tasks=%s",
+            self.generation,
+            interrupt_tasks,
+        )
 
     def _release_resources(self) -> None:
         try:
@@ -910,6 +933,7 @@ def main() -> int:
         return 1
     try:
         configure_worker_operation_logging(settings.logs)
+        configure_worker_runtime_logging()
     except OSError:
         print("quick-worker: operation log is unavailable", file=sys.stderr)
         return 1
