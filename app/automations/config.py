@@ -80,6 +80,8 @@ def _load_automation_file(path: Path) -> AutomationsFile:
     content = _read_yaml(path, label="automations configuration")
     try:
         if content.get("version") == 2:
+            if content.get("tasks") is None:
+                content = {**content, "tasks": {}}
             return _expand_feishu_tasks(FeishuDocumentFile.model_validate(content))
         return AutomationsFile.model_validate(content)
     except ValidationError as exc:

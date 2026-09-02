@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+    <meta name="color-scheme" content="dark">
+    <title>维护终端 · Chub</title>
+    <link rel="stylesheet" href="/static/terminal.css">
+  </head>
+  <body data-page-id="{{ page.id }}">
+    <main>
+      <iframe title="Chub 维护终端" src="/maintenance-terminal/terminal/?page_id={{ page.id }}&amp;disableLeaveAlert=true" allow="clipboard-read; clipboard-write"></iframe>
+    </main>
+    <script src="/static/maintenance_terminal.js" defer></script>
+  </body>
+</html>

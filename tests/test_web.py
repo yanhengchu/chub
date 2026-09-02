@@ -112,32 +112,42 @@ async def test_home_page_is_public_and_contains_no_credential_form(
     assert 'id="refresh-automation-environment"' not in response.text
     assert 'id="automation-environment-message"' in response.text
     assert 'class="automation-feishu-panel"' in response.text
+    assert 'class="automation-browser-panel"' in response.text
     assert "复用飞书登录状态执行自动化任务。" in response.text
-    assert "查看服务运行状态并进行必要维护。" in response.text
+    assert "查看 Chub 运行状态并进行必要维护。" in response.text
     assert 'data-card-key="automation-environment"' not in response.text
-    assert 'data-card-key="workstation" data-collapsible-card' in response.text
-    assert 'data-card-key="workstation" data-collapsible-card data-collapsed="true"' not in response.text
-    assert '<h2 id="workstation-title">工作站环境</h2>' in response.text
+    assert 'data-card-key="core-capabilities" data-collapsible-card' in response.text
+    assert 'data-card-key="core-capabilities" data-collapsible-card data-collapsed="true"' not in response.text
+    assert 'data-card-key="third-party-services" data-collapsible-card' in response.text
+    assert '<h2 id="core-capabilities-title">核心服务</h2>' in response.text
+    assert '<h2 id="third-party-services-title">OpenClaw 与 ClawBot</h2>' in response.text
     assert "<strong>Chub</strong>" in response.text
     assert "<strong>Chub Quick Worker</strong>" in response.text
     assert "<strong>Chub Debug Chrome</strong>" in response.text
     assert "<strong>OpenClaw Gateway</strong>" in response.text
-    assert 'id="refresh-workstation-environment"' in response.text
-    assert 'id="workstation-service-title" class="card-group-title"' in response.text
+    assert 'id="refresh-core-capabilities"' in response.text
+    assert 'id="refresh-third-party-services"' in response.text
+    assert 'id="core-services-title" class="card-group-title"' in response.text
     assert response.text.count('class="workstation-status-row') == 6
+    assert "<strong>升级与恢复</strong>" in response.text
+    assert "<strong>系统升级与恢复</strong>" not in response.text
     assert 'id="system-upgrade-badge"' not in response.text
     assert 'id="system-upgrade-start"' in response.text
+    assert 'id="system-upgrade-detail" class="workstation-status-detail"' in response.text
     assert 'id="system-upgrade-components"' in response.text
     assert 'id="system-upgrade-operation"' in response.text
     assert 'id="system-upgrade-flow"' in response.text
     assert 'id="system-upgrade-logs"' not in response.text
-    assert response.text.index('id="clawbot-detail"') < response.text.index(
-        'id="system-upgrade-detail"'
-    )
     assert response.text.index('id="codex-card-host"') < response.text.index(
         'data-card-key="project-docs"'
     ) < response.text.index('data-card-key="automations"') < response.text.index(
-        'data-card-key="workstation"'
+        'data-card-key="core-capabilities"'
+    ) < response.text.index(
+        'data-card-key="third-party-services"'
+    )
+    dashboard_markup = response.text.split('<div id="dashboard"', 1)[1].split('</div>\n    </main>', 1)[0]
+    assert dashboard_markup.index('data-card-key="core-capabilities"') < dashboard_markup.index(
+        'data-card-key="third-party-services"'
     )
     assert 'id="automation-browser-control"' in response.text
     assert 'id="automation-browser-badge"' not in response.text
@@ -145,7 +155,13 @@ async def test_home_page_is_public_and_contains_no_credential_form(
     assert 'id="automation-browser-message"' in response.text
     assert 'aria-controls="automation-browser-dialog"' in response.text
     assert response.text.index('id="automation-browser-detail"') > response.text.index(
-        'id="workstation-title"'
+        'id="automation-environment-title"'
+    )
+    assert response.text.index('id="automation-browser-detail"') < response.text.index(
+        'id="automation-feishu-detail"'
+    )
+    assert response.text.index('id="automation-browser-detail"') < response.text.index(
+        'id="core-capabilities-title"'
     )
     assert response.text.count('id="automation-browser-control"') == 1
     assert 'id="automation-browser-dialog"' in response.text
@@ -176,7 +192,7 @@ async def test_home_page_is_public_and_contains_no_credential_form(
     assert 'id="design-documents-title"' in response.text
     assert "项目文档" in response.text
     assert "查看设计方案和调研资料。" in response.text
-    assert 'id="automation-weekly-report-title"' in response.text
+    assert 'id="automation-weekly-report-title" class="automation-item-title"' in response.text
     assert ">V 国内业务本期周报</h3>" in response.text
     assert 'id="automation-weekly-download-title"' in response.text
     assert "本期下载" in response.text
@@ -199,8 +215,10 @@ async def test_home_page_is_public_and_contains_no_credential_form(
     assert 'data-card-key="automations" data-collapsible-card data-card-return-refresh="true"' in response.text
     assert 'data-card-key="logs"' not in response.text
     assert 'data-card-return-refresh="true"' in response.text
-    workstation_card = response.text.split('data-card-key="workstation"', 1)[1]
-    assert 'data-card-return-refresh="true"' not in workstation_card
+    core_capabilities_card = response.text.split('data-card-key="core-capabilities"', 1)[1]
+    third_party_services_card = response.text.split('data-card-key="third-party-services"', 1)[1]
+    assert 'data-card-return-refresh="true"' not in core_capabilities_card
+    assert 'data-card-return-refresh="true"' not in third_party_services_card
     assert "OpenClaw 方案调研" not in response.text
     assert "持续维护" in response.text
     assert response.text.count("document-archive-action") == 5
@@ -217,7 +235,8 @@ async def test_home_page_is_public_and_contains_no_credential_form(
     assert 'id="restart-hub"' in response.text
     assert '<button id="restart-hub"' in response.text
     assert '<button id="restart-hub" class="site-header-title"' not in response.text
-    assert '<div class="site-header-title">' in response.text
+    assert 'class="site-header-title" href="/workspace"' in response.text
+    assert 'aria-label="进入新版首页"' in response.text
     assert 'id="chub-service-badge"' not in response.text
     assert 'id="quick-worker-badge"' not in response.text
     assert 'id="quick-worker-restart"' in response.text
@@ -245,7 +264,7 @@ async def test_home_page_is_public_and_contains_no_credential_form(
     assert 'data-card-heading' in response.text
     assert 'data-card-content' in response.text
     assert 'data-collapsible-card' in response.text
-    assert response.text.count('class="card-content-inner"') == 3
+    assert response.text.count('class="card-content-inner"') == 4
     assert "退出" not in response.text
     assert 'id="task-list"' not in response.text
     assert "data-log-source" not in response.text
@@ -307,7 +326,12 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
     assert 'id="settings-category"' not in response.text
     assert 'href="#quick-interaction-settings" aria-current="true"' in response.text
     assert 'href="#utility-settings"' in response.text
+    assert 'href="#openclaw-settings"' in response.text
     assert 'href="#openclaw-weixin-settings"' in response.text
+    assert 'id="settings-openclaw-badge"' in response.text
+    assert 'id="settings-openclaw-detail"' in response.text
+    assert 'id="settings-openclaw-open" class="settings-utility-row settings-integration-row"' in response.text
+    assert 'id="settings-openclaw-open-label"' in response.text
     assert 'id="settings-openclaw-bind-weixin"' in response.text
     assert 'class="settings-field settings-integration-row"' in response.text
     assert "微信 ClawBot" in response.text
@@ -332,12 +356,17 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
     assert "当前风格" in response.text
     assert 'href="/settings/styles/standard"' in response.text
     assert 'href="/settings/styles/cyber"' in response.text
+    assert 'href="/settings/workspace-preview"' not in response.text
+    assert "工作台交互预览" not in response.text
     assert 'id="cyber-rain-speed"' in response.text
     assert 'id="cyber-rain-brightness"' in response.text
     assert 'id="cyber-rain-density"' in response.text
     assert "风格选择保存在当前浏览器" in response.text
     assert '<h3 id="utility-settings-title">诊断与关于</h3>' in response.text
     assert 'class="settings-utility-row" href="/logs"' in response.text
+    assert 'id="settings-maintenance-terminal" class="settings-utility-row" type="button"' in response.text
+    assert 'id="maintenance-terminal-dialog" class="codex-workspace-dialog confirmation-dialog"' in response.text
+    assert "打开维护终端" in response.text
     assert "Chub 版本" in response.text
     assert 'data-cyber-style-details' in response.text
     cyber_details_end = response.text.index(
@@ -382,6 +411,7 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
     assert 'return "跟随模型默认"' in script.text
     assert ":not(.settings-choice-picker-trigger):not(.settings-choice-picker-option)" in stylesheet.text
     assert ':root[data-ui-style="cyber"] .settings-choice-picker-option {' in stylesheet.text
+    assert ".settings-integration-row > span:first-child" in stylesheet.text
     assert "hub.quickInteractionView.v1" not in script.text
     assert "hub.quickInteractionPageSize.v1" in script.text
     assert "hub.codexDefaultPermission.v1" not in script.text
@@ -394,6 +424,10 @@ async def test_settings_page_supports_quick_interaction_page_size_preference(
     assert "/api/codex/session-defaults" in script.text
     assert "/api/settings/weixin-translation" in script.text
     assert "/api/openclaw/status" in script.text
+    assert "local_access_url" in script.text
+    assert "localOpenClawAccessUrl" in script.text
+    assert "/api/maintenance-terminal/access" in script.text
+    assert 'window.open(data.terminal_url, "_blank", "noopener")' in script.text
     assert "/api/openclaw/weixin/login" in script.text
     assert "settingsOpenClawWeixinPollFailures" in script.text
     assert "pollOpenClawWeixinLogin" in script.text
@@ -528,6 +562,86 @@ async def test_cyber_style_preview_is_available(settings: Settings) -> None:
 
 
 @pytest.mark.anyio
+async def test_workspace_preview_is_static_and_available(settings: Settings) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/workspace")
+        removed_preview_response = await client.get("/settings/workspace-preview")
+        stylesheet = await client.get("/static/css/components.css")
+        workspace_script = await client.get("/static/workspace.js")
+        bootstrap_script = await client.get("/static/workspace-bootstrap.js")
+
+    assert response.status_code == 200
+    assert removed_preview_response.status_code == 404
+    assert "新版首页 · Hub" in response.text
+    assert "操作" in response.text
+    assert "工作台分区" in response.text
+    assert "最近 Session" in response.text
+    assert "当前工作" in response.text
+    assert "输入消息…" in response.text
+    assert "Full access" in response.text
+    assert "workspace-preview-shell" in response.text
+    assert "workspace-preview-work-surface" in response.text
+    assert 'id="workspace-sidebar-toggle"' in response.text
+    assert 'id="workspace-sidebar-resizer"' in response.text
+    assert 'role="separator"' in response.text
+    assert 'aria-valuemin="225"' in response.text
+    assert 'aria-valuemax="360"' in response.text
+    assert 'id="workspace-sidebar-close"' not in response.text
+    assert 'aria-label="工作台操作"' in response.text
+    assert '<div class="workspace-preview-brand"><strong>Chub</strong></div>' in response.text
+    assert "个人 AI 工作站" not in response.text
+    assert '>☰</span></button>' in response.text
+    assert "WORKSPACE" not in response.text
+    assert "<h1>工作台</h1>" not in response.text
+    assert "当前为并行建设页面" not in response.text
+    assert response.text.count('disabled title="功能建设中"') == 6
+    assert 'aria-controls="workspace-sidebar"' in response.text
+    assert 'src="/static/workspace-bootstrap.js"' in response.text
+    assert response.text.index('src="/static/workspace-bootstrap.js"') < response.text.index(
+        '/static/css/tokens.css',
+    )
+    assert 'src="/static/workspace.js"' in response.text
+    assert ".workspace-preview-shell" in stylesheet.text
+    assert ".workspace-preview-shell.is-sidebar-collapsed" in stylesheet.text
+    assert "--workspace-sidebar-width: var(--workspace-sidebar-preload-width, 225px);" in stylesheet.text
+    assert "grid-template-columns: var(--workspace-sidebar-width) minmax(0, 1fr);" in stylesheet.text
+    assert "border-right: 1px solid var(--line);" in stylesheet.text
+    assert "width: 1.75rem;" in stylesheet.text
+    assert "--workspace-toolbar-height: 2.25rem;" in stylesheet.text
+    assert "--workspace-toolbar-top-gap: 0.45rem;" in stylesheet.text
+    assert "height: var(--workspace-toolbar-height);" in stylesheet.text
+    assert "padding: var(--workspace-toolbar-top-gap) 1rem 1rem;" in stylesheet.text
+    assert "padding: var(--workspace-toolbar-top-gap) clamp(0.75rem, 1.5vw, 1.25rem) 1rem;" in stylesheet.text
+    assert ".workspace-preview-brand {\n  display: flex;\n  height: var(--workspace-toolbar-height);" in stylesheet.text
+    assert "gap: 0.75rem;" in stylesheet.text
+    assert ".workspace-preview-toolbar" in stylesheet.text
+    assert ".workspace-preview-main {\n  align-content: start;" in stylesheet.text
+    assert workspace_script.status_code == 200
+    assert bootstrap_script.status_code == 200
+    assert "event.metaKey || event.ctrlKey" in workspace_script.text
+    assert 'event.key.toLowerCase() !== "b"' in workspace_script.text
+    assert "workspace-sidebar-close" not in workspace_script.text
+    assert "chub.workspace.sidebarCollapsed" in workspace_script.text
+    assert "chub.workspace.sidebarWidth" in workspace_script.text
+    assert "minimumSidebarWidth = 225" in workspace_script.text
+    assert "maximumSidebarWidth = 360" in workspace_script.text
+    assert 'resizer.addEventListener("pointerdown"' in workspace_script.text
+    assert "ArrowLeft: currentSidebarWidth() - sidebarWidthStep" in workspace_script.text
+    assert 'toggle.title = sidebarLabel;' in workspace_script.text
+    assert '@media (min-width: 761px) and (max-width: 1080px)' in stylesheet.text
+    assert ':root[data-workspace-sidebar-collapsed="true"] .workspace-preview-shell,' in stylesheet.text
+    assert "const expandSidebar = () =>" in workspace_script.text
+    assert "const collapseSidebar = () =>" in workspace_script.text
+    assert "shell.classList.add(\"is-sidebar-opening\")" in workspace_script.text
+    assert "shell.classList.add(\"is-sidebar-closing\")" in workspace_script.text
+    assert 'requestAnimationFrame(() => shell.classList.add("is-layout-ready"));' in workspace_script.text
+    assert "workspace-sidebar-preload-width" in bootstrap_script.text
+    assert "data-workspace-sidebar-collapsed" in stylesheet.text
+    assert ".workspace-preview-shell.is-layout-ready" in stylesheet.text
+
+
+@pytest.mark.anyio
 async def test_home_page_uses_configured_page_title(settings: Settings) -> None:
     settings.app.page_title = "Ubuntu · Hub"
     transport = httpx.ASGITransport(app=create_app(settings))
@@ -608,6 +722,7 @@ async def test_web_assets_are_available(settings: Settings) -> None:
         ]
         terminal_stylesheet = await client.get("/static/terminal.css")
         terminal_script = await client.get("/static/terminal.js")
+        maintenance_terminal_script = await client.get("/static/maintenance_terminal.js")
 
     assert all(script.status_code == 200 for script in scripts)
     assert polling_script.status_code == 200
@@ -616,6 +731,8 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert all(asset.status_code == 200 for asset in stylesheets)
     assert terminal_stylesheet.status_code == 200
     assert terminal_script.status_code == 200
+    assert maintenance_terminal_script.status_code == 200
+    assert "/maintenance-terminal/connection/" in maintenance_terminal_script.text
     dashboard_script = "\n".join(script.text for script in scripts)
     script = MagicMock(text=dashboard_script)
     stylesheet = MagicMock(
@@ -633,8 +750,9 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "/api/openclaw/weixin/login" in dashboard_script
     assert "/api/maintenance/quick-worker" in dashboard_script
     assert "/api/maintenance/system-upgrade" in dashboard_script
-    assert "debug_chrome_instance" in dashboard_script
-    assert "不会自动启动" in dashboard_script
+    assert "browser_supervisor" not in dashboard_script
+    assert "debug_chrome_instance" not in dashboard_script
+    assert "未纳入升级" not in dashboard_script
     assert "reloadDashboardAfterMaintenance" in dashboard_script
     assert "systemUpgradeOperation" in dashboard_script
     assert "systemUpgradeFlow" in dashboard_script
@@ -776,6 +894,7 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "visibleSessions.length" in script.text
     assert "实时终端 · 等待输入" in script.text
     assert "实时终端 · 执行中" in script.text
+    assert "实时终端 · 正在使用" in script.text
     assert "快速交互 · 待输入" in script.text
     assert "快速交互 · 执行中" in script.text
     assert "快速交互 · 等待结果" not in script.text

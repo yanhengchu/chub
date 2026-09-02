@@ -1,0 +1,26 @@
+--- a/dist/channel-selection-Y-t8NT33.js
++++ b/dist/channel-selection-Y-t8NT33.js
+@@ -9,12 +9,12 @@
+ import { n as normalizeMessageChannel } from "./message-channel-core-DpLp0BgI.js";
+ import { d as isDeliverableMessageChannel } from "./message-channel-B5ay7uNh.js";
+ import { r as listRuntimeVisibleChannelPlugins } from "./runtime-visible-channels-DnLIiz8X.js";
+-import { r as resolveOutboundChannelPlugin, t as normalizeDeliverableOutboundChannel } from "./channel-resolution-zYSVON6s.js";
++import { r as resolveOutboundChannelPlugin } from "./channel-resolution-zYSVON6s.js";
+ import { n as resolveMissingOfficialExternalChannelPluginRepairHints, t as resolveMissingOfficialExternalChannelPluginRepairHint } from "./official-external-plugin-repair-hints-BbDBR_ag.js";
+ import { t as isAccountEnabled } from "./account-enabled-ClTLgAXM.js";
+ //#region src/infra/outbound/channel-selection.ts
+ function resolveAvailableKnownChannel(params) {
+-	const normalized = normalizeDeliverableOutboundChannel(params.value);
++	const normalized = normalizeMessageChannel(params.value);
+ 	if (!normalized) return;
+ 	const plugin = resolveOutboundChannelPlugin({
+ 		channel: normalized,
+@@ -23,7 +23,7 @@
+ 		allowBootstrap: true
+ 	});
+ 	return plugin ? {
+-		channel: normalized,
++		channel: plugin.id,
+ 		plugin
+ 	} : void 0;
+ }

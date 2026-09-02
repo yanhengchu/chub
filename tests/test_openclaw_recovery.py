@@ -3,7 +3,27 @@ from pathlib import Path
 import pytest
 
 from app.core.response import ApiError
-from app.services.openclaw_recovery import _patch_state, _verify_patch_integrity
+from app.services.openclaw_recovery import (
+    _openclaw_runtime_root,
+    _patch_state,
+    _verify_patch_integrity,
+)
+
+
+def test_openclaw_runtime_root_requires_matching_package_metadata(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "openclaw"
+    runtime_root.mkdir()
+    executable = runtime_root / "openclaw.mjs"
+    executable.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+    (runtime_root / "dist").mkdir()
+    (runtime_root / "package.json").write_text(
+        '{"name":"openclaw","version":"2026.8.1"}',
+        encoding="utf-8",
+    )
+
+    assert _openclaw_runtime_root(str(executable), "2026.8.1") == runtime_root
 
 
 def test_patch_state_distinguishes_missing_partial_and_applied(tmp_path: Path) -> None:

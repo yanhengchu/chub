@@ -84,7 +84,6 @@ SystemUpgradeComponent = Literal[
     "quick_worker",
     "browser_supervisor",
     "debug_chrome_instance",
-    "openclaw",
 ]
 SystemUpgradeComponentStatus = Literal["pending", "succeeded", "degraded", "failed", "skipped"]
 
@@ -99,7 +98,7 @@ class SystemUpgradeComponentResult(_StrictModel):
 class SystemUpgradeComponentReport(_StrictModel):
     version: Literal[1] = 1
     operation_id: str = Field(pattern=r"^[a-f0-9]{32}$")
-    components: list[SystemUpgradeComponentResult] = Field(default_factory=list, max_length=8)
+    components: list[SystemUpgradeComponentResult] = Field(default_factory=list, max_length=7)
 
 
 class SystemUpgradeOperation(_StrictModel):
@@ -214,7 +213,7 @@ def runtime_recovery_plan() -> LoadedSystemUpgradePlan:
     plan = SystemUpgradePlan(
         plan_id="runtime-recovery",
         action="runtime-data-reset",
-        title="系统升级与恢复",
+        title="升级与恢复",
         summary="重建 Chub AI 运行态并确认 Web 与 Quick Worker 健康。",
         source_code_version=WEB_CODE_VERSION,
         target_code_version=WEB_CODE_VERSION,
@@ -448,17 +447,36 @@ class SystemUpgradeCoordinator:
         self._active_writes = 0
         self._state_error = False
         self._state = self._load()
-        self._writes_blocked = self._state_error or bool(
-            self._state is not None
-            and (
-                self._state.status in {"requested", "started"}
-                or (
-                    self._state.status == "failed"
-                    and self._state.destructive_started
-                )
-            )
-        )
+        self._writes_blocked = self._writes_must_remain_closed(self._state)
         self._runner: threading.Thread | None = None
+
+    def _writes_must_remain_closed(
+        self,
+        state: SystemUpgradeOperation | None,
+    ) -> bool:
+        if self._state_error:
+            return True
+        if state is None or state.status not in {"requested", "started", "failed"}:
+            return False
+        if state.status in {"requested", "started"}:
+            return True
+        if not state.destructive_started:
+            return False
+        # A failed final report must not keep the whole AI Runtime closed once
+        # the new Web and Worker have both written their own durable success
+        # results. The failed upgrade remains visible and resumable; normal
+        # submission still performs its regular Runtime/Worker health checks.
+        if state.failed_stage == "verifying_new_instance":
+            components = {
+                item.component: item.status
+                for item in load_component_report(self.path, state.operation_id)
+            }
+            if (
+                components.get("chub_web") == "succeeded"
+                and components.get("quick_worker") == "succeeded"
+            ):
+                return False
+        return True
 
     def plan(self) -> LoadedSystemUpgradePlan | None:
         return load_system_upgrade_plan(self.plan_path)
@@ -530,7 +548,7 @@ class SystemUpgradeCoordinator:
                 raise ApiError(
                     409,
                     "system_upgrade_recovery_required",
-                    "上次升级已清理运行状态但未通过最终验证，写入仍保持关闭。",
+                    "上次升级已清理运行状态但未通过最终验证，请继续当前恢复操作后再发起新的升级。",
                 )
             now = utc_now()
             state = SystemUpgradeOperation(
@@ -785,8 +803,7 @@ class SystemUpgradeCoordinator:
             state.updated_at = utc_now()
             self._write(state)
             self._state = state
-            if not state.destructive_started:
-                self._writes_blocked = False
+            self._writes_blocked = self._writes_must_remain_closed(state)
         self._record(state, "failed")
 
     def succeed(self, operation_id: str) -> None:
@@ -796,11 +813,12 @@ class SystemUpgradeCoordinator:
                 item.component
                 for item in load_component_report(self.path, operation_id)
                 if item.status == "degraded"
+                and item.component not in {"browser_supervisor", "debug_chrome_instance"}
             ]
             state.status = "succeeded"
             state.stage = "completed"
             state.restart_process_id = None
-            state.message = "系统升级与恢复已完成，核心服务和运行态均已确认。"
+            state.message = "升级与恢复已完成，核心服务和运行态均已确认。"
             if degraded:
                 state.message += " 独立组件降级：" + "、".join(degraded) + "。"
             state.updated_at = utc_now()
@@ -869,10 +887,15 @@ class SystemUpgradeCoordinator:
                 archived_sessions=operation.archived_sessions,
                 discarded_sessions=operation.discarded_sessions,
                 total_sessions=len(operation.sessions),
-                components=load_component_report(
-                    self.path,
-                    operation.operation_id,
-                ),
+                components=[
+                    item
+                    for item in load_component_report(
+                        self.path,
+                        operation.operation_id,
+                    )
+                    if item.component
+                    not in {"browser_supervisor", "debug_chrome_instance"}
+                ],
                 updated_at=operation.updated_at,
             )
             if operation.status in {"requested", "started"}:

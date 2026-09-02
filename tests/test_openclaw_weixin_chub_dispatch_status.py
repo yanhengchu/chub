@@ -633,10 +633,10 @@ def test_removed_status_aliases_are_submitted_as_normal_tasks(
             "Quick\n\n"
             "chub · sync · new [title] · S# [task]\n\n"
             "Reference\n\n"
-            "help model · text help · session help · help request · help system",
+            "model help · text help · session help · request help · system help",
         ),
         (
-            "HELP MODEL。",
+            "MODEL HELP。",
             "Commands · Model\n\n"
             "model\n\n"
             "model list\n\n"
@@ -666,6 +666,22 @@ def test_removed_status_aliases_are_submitted_as_normal_tasks(
             "archive S#\n\n"
             "del S#\n\n"
             "retry",
+        ),
+        (
+            "REQUEST HELP",
+            "Commands · Requests\n\n"
+            "cat R#\n\n"
+            "archive R#\n\n"
+            "del R#",
+        ),
+        (
+            "SYSTEM HELP",
+            "Commands · System\n\n"
+            "restart | restart web\n\n"
+            "restart worker\n\n"
+            "restart clawbot\n\n"
+            "restart network\n\n"
+            "upgrade",
         ),
     ],
 )

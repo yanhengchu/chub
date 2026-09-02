@@ -2,8 +2,3 @@ version: 2
 
 # Tasks in this file are version-controlled and shared by every deployed node.
 tasks:
-  v-domestic-weekly-report:
-    name: "V 国内业务周报"
-    title: "V 国内业务周报下载"
-    url: "https://qw6xxurweq.feishu.cn/wiki/EZnjwx57DiS6jUksWgMcHm8cnoe"
-    extension: v-weekly-report-linked-documents

@@ -309,7 +309,7 @@ function sessionUsagePresentation(session) {
         ? "实时终端 · 执行中"
         : phase === "idle"
           ? "实时终端 · 等待输入"
-          : "活动状态未知 · 请刷新",
+          : "实时终端 · 正在使用",
       blocked: false,
       title: "",
     };

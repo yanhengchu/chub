@@ -89,7 +89,7 @@ POST /api/openclaw/wechat-chub-mode/dispatch
 
 ## 6. 业务依赖边界
 
-可信语音字段、Context Token 和日志脱敏由腾讯微信插件维护，补丁 ID、独立版本和适用基线以 `../../../integrations/openclaw/patches/manifest.json` 为准，最小补丁与升级后的复检要求见[OpenClaw 定制集成设计第 4、7 节](../../../docs/OPENCLAW_CUSTOMIZATION_DESIGN.md#4-第三方微信适配器兼容边界)。普通文本正文首尾空白不属于 Chub 的兼容承诺。Chub 任务、Session、最终通知和重启结果属于 Chub 业务，见[OpenClaw 定制集成设计](../../../docs/OPENCLAW_CUSTOMIZATION_DESIGN.md)。
+可信语音字段、Context Token 和日志脱敏由腾讯微信插件维护。补丁索引为 `../../../integrations/openclaw/patches/manifest.json`，每个 OpenClaw 版本在 `patches/<版本>/` 保留独立清单和补丁；只有完整 `validated` 基线可被 Chub 恢复流程使用。当前 `2026.8.1` 基线包含已完成精确版本、哈希、正反向 dry-run 和维护者消息发送验收的微信适配器兼容补丁与 OpenClaw CLI 完成通知补丁，恢复流程会在版本、包完整性和锚点全部匹配时自动同步。Chub 插件保持单一通用源码，只有 Hook 或插件协议发生版本分歧时才建立版本专属源码。最小补丁与升级后的复检要求见[OpenClaw 定制集成设计第 4、7 节](../../../docs/OPENCLAW_CUSTOMIZATION_DESIGN.md#4-第三方微信适配器兼容边界)。普通文本正文首尾空白不属于 Chub 的兼容承诺。Chub 任务、Session、最终通知和重启结果属于 Chub 业务，见[OpenClaw 定制集成设计](../../../docs/OPENCLAW_CUSTOMIZATION_DESIGN.md)。
 
 Chub 插件只传递可信入站路由和交付同步决定，不保存 Token 正文，不跟踪异步任务终态，也不把通知失败改写为任务失败。
 
@@ -114,7 +114,7 @@ Chub 插件只传递可信入站路由和交付同步决定，不保存 Token �
 
 ## 8. 源码、构建与部署
 
-本目录是 Chub 插件的唯一源码和发布来源。OpenClaw 不直接从本目录运行插件；安装命令会将构建产物复制到当前用户的扩展目录，通常为 `~/.openclaw/extensions/chub/`。实际运行位置以 `openclaw plugins inspect chub --runtime --json` 的 `rootDir` 和 `source` 为准。部分 OpenClaw 版本会同时记录 `install.sourcePath`，该字段存在时应指向本目录；缺失时结合运行路径、加载状态、配置和部署产物版本校验，不单独判定安装失败。
+本目录是 Chub 插件的唯一源码和构建部署来源。OpenClaw 不直接从本目录运行插件；安装命令会将构建产物复制到当前用户的扩展目录，通常为 `~/.openclaw/extensions/chub/`。实际运行位置以 `openclaw plugins inspect chub --runtime --json` 的 `rootDir` 和 `source` 为准。部分 OpenClaw 版本会同时记录 `install.sourcePath`，该字段存在时应指向本目录；缺失时结合运行路径、加载状态、配置和部署产物版本校验，不单独判定安装失败。
 
 扩展目录只是部署副本，不得直接修改，也不得从部署副本反向维护源码。`dist/` 是生成物，不作为人工维护的源码记录。
 
@@ -134,7 +134,7 @@ openclaw plugins inspect chub --runtime --json
 openclaw channels status --probe --json
 ```
 
-以上是底层手动命令。Chub 首页的“重启与恢复”使用 `restart` API action；微信端使用 `restart clawbot`。两者都会先按固定版本清单同步 Chub 插件和微信适配器补丁，再执行 Gateway 重启和最终状态检查；不要用任意插件路径或未验证版本替代该流程。
+以上是底层手动命令。Chub 首页的“重启与恢复”使用 `restart` API action；微信端使用 `restart clawbot`。两者只会按完整 `validated` 基线同步 Chub 插件、微信适配器补丁和 OpenClaw 运行产物补丁，再执行 Gateway 重启和最终状态检查；不要用任意插件路径或未验证版本替代该流程。
 
 验收时确认插件状态为 `loaded`、运行时来源位于 OpenClaw 扩展目录、部署产物与仓库构建版本一致，并确认微信账号恢复 `running`；存在仓库来源记录时还需确认其指向本目录。不兼容协议变更必须与 Chub 配套切换；版本不一致期间只允许统一失败关闭，不能回退 Agent。
 

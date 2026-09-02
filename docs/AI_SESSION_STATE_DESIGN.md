@@ -1,6 +1,6 @@
 # Chub AI Session 状态模型设计
 
-> 状态：持续维护。
+> 状态：已验收
 > 主要读者：AI Agent、实现和排障 Agent；维护人员用于确认 Session 的核心状态和展示边界。
 > 本文负责：Chub 逻辑 Session、原生 Session 映射、入口类型、Activity、使用状态投影、首页展示语义和 Session 操作定义。
 > 本文不负责：操作的接口编排和实现细节、Runtime 私有协议、Quick Worker 任务恢复与通知、终端桥接实现、升级流程和微信路由；这些内容以对应专项文档为准。
@@ -51,8 +51,8 @@ Chub Session 是 Chub 管理的一条逻辑记录，可以关联一个 Runtime �
 | 状态 | 含义 |
 | --- | --- |
 | `new` | Chub 记录已创建，尚未确认可恢复的原生 Session 或执行入口 |
-| `running` | Chub 管理的入口运行时存在 |
-| `stopped` | 当前入口运行时不存在，但 Session 记录仍可恢复或继续提交 |
+| `running` | Chub 管理的实时终端载体正在运行；快速交互不使用此状态表达任务执行 |
+| `stopped` | 实时终端载体当前不存在，但 Session 记录仍可恢复或继续提交；快速交互有原生映射但没有终端载体时也可处于此状态 |
 | `error` | Chub 无法可靠建立、恢复或管理该入口 |
 
 ### 2.2 Activity 与来源
@@ -118,7 +118,6 @@ Chub Session 是 Chub 管理的一条逻辑记录，可以关联一个 Runtime �
 | --- | --- |
 | `其他应用 · 正在使用` | 原生 Session 被外部进程占用，Chub 不接管写入 |
 | `占用状态未知 · 请刷新` | 无法确认 writer 归属，暂不允许高风险操作 |
-| `活动状态未知 · 请刷新` | 无法确认当前是否正在处理 Turn |
 | `会话异常 · 可重试` | Chub Session 生命周期或恢复异常 |
 | `终端连接异常 · 可重试` | Chub 终端桥或连接异常 |
 | `尚未启动 · 可进入` | Chub 记录尚未启动原生 Session |
@@ -126,8 +125,10 @@ Chub Session 是 Chub 管理的一条逻辑记录，可以关联一个 Runtime �
 | `快速交互 · 执行中` | 快速交互正在执行任务 |
 | `实时终端 · 等待输入` | 实时终端已建立但当前空闲 |
 | `实时终端 · 执行中` | 实时终端正在处理 Turn |
+| `实时终端 · 正在使用` | 已确认 Chub 实时终端持有 Session，但尚不能确认当前 Turn 是等待输入还是执行中 |
+| `活动状态未知 · 请刷新` | 仅用于异常或不完整的 Session 投影，无法归入已确认的 owner/phase 组合；不是普通终端重启后的展示 |
 
-“占用状态未知”和“活动状态未知”不能混用。Quick Worker 的内部 `waiting_result` 阶段统一映射为“快速交互 · 执行中”；任务时间线继续展示任务自身的等待、完成、失败、超时和停止状态。
+`占用状态未知`只表示 writer 归属无法确认；当 `owner=terminal` 而 `phase=unknown` 时，页面展示“实时终端 · 正在使用”，不把 Chub 已确认持有的终端误标为外部或未知占用。该文案不宣称 Turn 已确认执行，具体操作仍按后端的实时占用与执行状态判断。Quick Worker 的内部 `waiting_result` 阶段统一映射为“快速交互 · 执行中”；任务时间线继续展示任务自身的等待、完成、失败、超时和停止状态。
 
 ### 3.2 快速交互 Session 切换栏
 
@@ -212,14 +213,15 @@ Chub Session 是 Chub 管理的一条逻辑记录，可以关联一个 Runtime �
 | Quick Worker 任务、租约和任务终态 | Quick Worker |
 | 实时终端 owner 和连接载体 | Interactive Supervisor |
 
-页面、Hook、进程创建、HTTP 成功或任务已受理都不能单独宣称业务成功；必须由对应权威来源确认终态。事件缺失、乱序、文件不可读或外部状态无法确认时，保守写入 `unknown`，并保留可恢复路径。
+页面、Hook、进程创建、HTTP 成功或任务已受理都不能单独宣称业务成功；必须由对应权威来源确认终态。事件缺失、乱序、文件不可读或外部状态无法确认时，当前读取的 `usage` 投影保守返回 `unknown`；只有对应权威来源确认需要持久化收敛时，才将 Session `activity` 写为 `unknown`，并保留可恢复路径。
 
 最小状态关系如下：
 
 ```text
-new --入口创建确认--> running + unknown
+new --实时终端创建确认--> running + unknown
+new/stopped --快速任务开始--> working + quick（任务执行仍以 Worker 状态为准）
 unknown --可信状态--> idle / working
-idle --终端或快速任务开始--> working + 对应 source
+idle --终端 Turn 开始--> working + terminal
 working --确认 Turn 终态--> idle + none
 running --停止确认--> stopped
 任意状态 --无法继续管理--> error + unknown
@@ -244,7 +246,7 @@ running --停止确认--> stopped
 
 ## 7. 当前维护边界与后续复检
 
-当前实现已提供统一的 `usage` 投影、按需状态轮询、四项 Session 操作的最小门禁，以及原生优先、可重试的归档/删除清理流程。归档和删除均先处理原生 Session，再清理 Chub 记录、Quick Worker 任务、终端载体和槽位；无原生 Session 时直接清理 Chub 侧数据。
+当前实现已提供统一的 `usage` 投影、按需状态轮询、四项 Session 操作的最小门禁，以及原生优先、可重试的归档/删除清理流程。归档先处理原生 Session，再清理 Quick Worker 任务、终端载体、Chub 记录和槽位；删除先取消当前 Quick Worker、尽力关闭 Chub 终端载体，再处理原生 Session，随后清理任务、Chub 记录和槽位。无原生 Session 时跳过原生动作并按各自流程完成 Chub 侧清理。
 
 四项操作的服务端最终校验、操作日志和接口终态均优先于页面按钮状态。只有状态枚举、owner/phase 语义、原生映射、操作契约或用户可见提示变化时，才需要重新复检本节。
 

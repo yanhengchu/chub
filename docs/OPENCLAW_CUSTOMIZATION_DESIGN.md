@@ -15,21 +15,30 @@ Chub 对 OpenClaw 的定制只保留以下内容：
 2. 第三方微信适配器的可信语音来源兼容，使 Chub 能区分可信语音和普通文本。
 3. 第三方微信适配器的 Context Token 持久化、启动恢复、懒恢复和出站回退。
 4. 第三方微信适配器日志中的账号/收件人标识脱敏，不改变消息和路由行为。
+5. OpenClaw CLI 对已加载第三方微信通道的完成通知选择；只修复固定 `openclaw message send` 路由，不新增任意消息出口。
 
 普通文本原始正文的首尾空格不属于 Chub 兼容承诺。不得为了保留这类空格修改 OpenClaw 核心、微信适配器或 Chub 插件；固定指令由 Chub 按集成能力清单从消息开头解析。
 
-当前本机验收基线如下。版本只表示本次已检查的组合，不表示其他版本自动兼容：
+完整验收基线为下表的 `2026.8.1` 组合；它是当前“重启与恢复”自动同步的唯一目标。版本只表示已检查组合，不表示其他版本自动兼容：
 
 | 对象 | 当前验收版本 | 仓库来源或运行位置 |
 | --- | --- | --- |
 | Chub OpenClaw 插件 | `0.1.1` | 源码和构建入口：`integrations/openclaw/chub/`；运行副本位置以 `openclaw plugins inspect chub --runtime --json` 为准 |
-| 腾讯微信适配器 | `@tencent-weixin/openclaw-weixin@2.4.6` | 运行副本的 `rootDir` 和 `source` 以 `openclaw plugins inspect openclaw-weixin --runtime --json` 为准 |
-| OpenClaw Gateway | `2026.7.1-2` | 由 OpenClaw 官方安装路径提供，不在本仓库维护 |
-| 微信适配器可信语音补丁 | `weixin-voice-transcript-origin@1.0.0` | `integrations/openclaw/patches/weixin-clawbot-voice-transcript-origin.patch` |
-| 微信适配器 Context Token 补丁 | `weixin-context-token-persistence@1.0.0` | `integrations/openclaw/patches/weixin-clawbot-context-token-persistence.patch` |
-| 微信适配器日志脱敏补丁 | `weixin-log-redaction@1.0.0` | `integrations/openclaw/patches/weixin-clawbot-log-redaction.patch` |
+| 腾讯微信适配器 | `@tencent-weixin/openclaw-weixin@2.4.8` | 运行副本的 `rootDir` 和 `source` 以 `openclaw plugins inspect openclaw-weixin --runtime --json` 为准 |
+| OpenClaw Gateway | `2026.8.1` | 由 OpenClaw 官方安装路径提供，不在本仓库维护 |
+| 微信适配器兼容补丁 | `weixin-chub-compatibility@1.0.0` | `integrations/openclaw/patches/2026.8.1/` |
+| OpenClaw CLI 通知补丁 | `openclaw-cli-plugin-message-channel@1.0.0` | `integrations/openclaw/patches/2026.8.1/` |
 
-补丁 ID 和独立版本以 [`integrations/openclaw/patches/manifest.json`](../integrations/openclaw/patches/manifest.json) 为唯一元数据来源；补丁版本与 Chub 插件版本、微信适配器版本分别管理，但每个补丁仍只对清单记录的目标包版本、包完整性和 OpenClaw 版本负责。版本、来源、补丁锚点或实际加载目录变化时，当前基线立即失效，必须按第 7 节重新检查。仓库补丁是版本相关的参考变更，不是对所有 OpenClaw/微信插件版本通用的脚本。
+当前本机运行组合与完整基线分开记录如下：
+
+| 范围 | 当前组合 | 已确认 | 未确认或不可推断 |
+| --- | --- | --- | --- |
+| Chub 插件 | `0.1.1`，状态 `loaded` | 固定 dispatch 协议与微信任务路由保持可用 | 不因 OpenClaw 版本升级自动获得新的插件能力 |
+| OpenClaw/微信适配器 | `2026.8.1` / `2.4.8` | Gateway、微信通道、补丁状态和维护者消息发送验收；两类补丁均已通过精确版本、哈希和正反向 dry-run 检查 | 其他 OpenClaw 或微信插件版本、加载目录和未经重新校验的运行产物不推断兼容 |
+
+补丁索引以 [`integrations/openclaw/patches/manifest.json`](../integrations/openclaw/patches/manifest.json) 为唯一入口；每个 OpenClaw 版本在 `integrations/openclaw/patches/<版本>/` 下保存独立清单和补丁文件。索引只把 `validated` 基线交给 Chub 自动恢复；当前自动恢复目标为 `2026.8.1`。`candidate` 目录只记录尚未验收的上游版本和包完整性，绝不参与自动同步。补丁版本与 Chub 插件版本、微信适配器版本分别管理；每个补丁仍只对清单记录的目标包版本、包完整性和 OpenClaw 版本负责。版本、来源、补丁锚点或实际加载目录变化时，当前基线立即失效，必须按第 7 节重新检查。Chub 插件保持单一通用源码，只有其 Hook 或插件协议发生版本分歧时才另行建立版本专属源码，不为目录整齐复制插件。
+
+OpenClaw 升级、重装或实际加载目录变化后，先检查运行版本、Chub 插件和微信适配器的加载状态；当前组合精确匹配 `2026.8.1` 清单时，恢复入口才可自动同步两类固定补丁，再完成最终状态检查。任何一步不匹配都停止应用并保留候选状态，不回退到其他版本的补丁，也不把 Gateway 可达视为微信完成通知已恢复。
 
 ## 1. AI 可执行契约
 
@@ -43,7 +52,7 @@ Chub 对 OpenClaw 的定制只保留以下内容：
 6. 同一稳定消息 ID 与同一路由只能产生一个决定和一个派生任务；重复请求返回首次决定，路由冲突拒绝，未知副作用不自动重试。
 7. 任务结果和通知结果是两个状态；任务成功不等于通知成功，原保存路由失效时不得回退到全局收件人。
 8. Context Token 必须按 `accountId + userId` 持久化，Gateway 启动恢复，内存未命中时懒恢复；文件权限必须为 `600`。
-9. API action `restart` 和微信固定指令 `restart clawbot` 都是 ClawBot 的重启与恢复入口：发现固定插件或补丁基线不一致时先同步，再重启 Gateway；未知版本、包完整性或补丁锚点不得盲目覆盖。微信 `restart network` 是 Chub 核心层的独立固定维护操作，不由插件、OpenClaw Agent 或 Gateway 执行设备命令；它只在 Chub 配置的 Ubuntu NetworkManager UUID 白名单内恢复 Wi-Fi/VPN，完成后沿保存的请求路由回送。
+9. API action `restart` 和微信固定指令 `restart clawbot` 都是 ClawBot 的重启与恢复入口：只对完整已验证基线同步固定插件和补丁后再重启 Gateway；未知版本、包完整性或补丁锚点不得盲目覆盖。微信 `restart network` 是 Chub 核心层的独立固定维护操作，不由插件、OpenClaw Agent 或 Gateway 执行设备命令；它只在 Chub 配置的 Ubuntu NetworkManager UUID 白名单内恢复 Wi-Fi/VPN，完成后沿保存的请求路由回送。
 10. “进程已启动”“HTTP 200”“任务已创建”或“通知已开始”都不是最终成功；必须确认业务终态、健康状态或通知终态。
 
 ## 2. 归属与消息链路
@@ -54,7 +63,7 @@ Chub 对 OpenClaw 的定制只保留以下内容：
 | Chub OpenClaw 插件 | 可信 Hook 上下文、固定 dispatch 请求、`pass`/`reply`/`handled` 交付 | 业务指令、Session/任务路由、任意命令或正文修复 |
 | Chub 核心入口 | 身份校验、固定业务路由、需求储备和维护能力 | 保存微信 Token、调用 OpenClaw Agent、拥有 AI Session 或任务终态 |
 | AI Runtime（Quick Worker/Codex） | Session 选择、任务执行、租约、恢复和执行终态 | 重新解释微信身份或选择收件人 |
-| OpenClaw 核心 | 上游标准消息、Hook 和指令解析能力 | Chub 定制源码；不得为本项目修改核心 |
+| OpenClaw 核心 | 上游标准消息、Hook 和指令解析能力 | Chub 业务源码；默认不修改核心，只有清单登记、精确版本锚定且已复检的兼容补丁例外 |
 
 微信消息处理顺序是：
 
@@ -90,7 +99,7 @@ Chub 对 OpenClaw 的定制只保留以下内容：
 
 补丁 `weixin-voice-transcript-origin@1.0.0` 的文件为：
 
-`integrations/openclaw/patches/weixin-clawbot-voice-transcript-origin.patch`
+`integrations/openclaw/patches/2026.7.1-2/weixin-clawbot-voice-transcript-origin.patch`
 
 它只解决来源类型边界：适配器根据通道提供的可信语音消息项设置固定标记，普通文本使用标准化正文；Chub 插件只有看到可信标记时才读取干净转写并发送 `message_type=voice`。不得根据正文内容、客户端字段或用户声明猜测语音来源。
 
@@ -100,7 +109,7 @@ Chub 对 OpenClaw 的定制只保留以下内容：
 
 补丁 `weixin-context-token-persistence@1.0.0` 的文件为：
 
-`integrations/openclaw/patches/weixin-clawbot-context-token-persistence.patch`
+`integrations/openclaw/patches/2026.7.1-2/weixin-clawbot-context-token-persistence.patch`
 
 必须保持以下行为：
 
@@ -116,6 +125,14 @@ Context Token 没有本文定义的 TTL 或刷新保证。约 10 分钟等本机
 ### 4.3 日志脱敏
 
 补丁 `weixin-log-redaction@1.0.0` 只将适配器入站/出站日志中的完整 `from/to` 标识替换为既有 `redactToken` 的前缀和长度形式；消息正文、路由、发送目标和 Chub 请求字段不因此改变。Token 仍必须使用同一脱敏函数，日志不得记录完整账号、收件人、正文或凭证。
+
+`2026.8.1` 的 `@tencent-weixin/openclaw-weixin@2.4.8` 是当前完整已验收基线。仓库中的 `weixin-chub-compatibility@1.0.0` 同时覆盖可信语音来源标记、Context Token 文件权限/懒恢复/缺失失败关闭，以及入站与出站收件人日志脱敏；它只对清单记录的源码和运行产物锚点负责。该 npm 发布包未携带 `tsconfig.json`，无法在发布包内重建 `dist/`，因此以源码与对应运行产物双侧补丁、哈希和正反向 dry-run 复检；维护者已完成当前消息发送验收。包版本、来源或锚点变化时必须重新验收，不能沿用本基线结论。
+
+### 4.4 OpenClaw CLI 第三方通道完成通知
+
+`2026.8.1` 的 `openclaw message send` 会加载已配置的第三方通道插件，却在通道选择前只认可全局注册的通道，造成 `openclaw-weixin` 被错误报为未知通道。补丁 `openclaw-cli-plugin-message-channel@1.0.0` 改为先标准化原始通道名，再以已加载的可发送插件的实际 ID 作为路由结果。它只允许已经由 OpenClaw 插件注册并可发送的通道；未知通道仍失败关闭。
+
+该补丁只作用于 OpenClaw npm 发布包中的固定 `dist/channel-selection-Y-t8NT33.js`。该发布包未提供相同版本的 TypeScript 源码，故本次按精确运行产物锚点、补丁哈希、正反向 dry-run 和 CLI `--dry-run` 验证；OpenClaw 版本、包文件名或锚点变化时不得套用，必须重新评估。它不修改微信适配器，不读取、写入或绕过 Context Token，也不自动补发历史通知。
 
 ## 5. 安全、路由与失败边界
 
@@ -155,27 +172,27 @@ openclaw plugins inspect openclaw-weixin --runtime --json
 
 记录但不写入凭证：插件版本、`packageName`、`resolvedVersion`、`rootDir`、`source`、加载状态和包完整性信息。实际运行目录以命令结果为准；不得假定 `~/.openclaw/extensions/` 或某个用户绝对路径永远不变。
 
-### 7.2 应用第三方兼容补丁
+### 7.2 应用兼容补丁
 
-1. 读取 `integrations/openclaw/patches/manifest.json`，对照第 0 节版本基线确认包名、版本、包完整性、OpenClaw 版本、补丁 ID、补丁版本和锚点。
-2. 在实际运行目录同时检查源码与运行产物的补丁锚点。源码或运行产物已具备等价行为时不重复应用；只具备单侧差异时不得宣称补丁完成。
-3. 手工应用补丁时，版本不匹配、锚点缺失、补丁上下文不一致或构建工具链不可用时停止，不强行修改；“重启与恢复”入口只在 Gateway 版本匹配时，先恢复清单指定的适配器版本，再继续固定补丁同步。
-4. 应用后从源码重新构建运行产物，并检查源文件/运行产物、文件权限、非敏感版本信息和关键行为；不得打印 Token 或完整收件人。
-5. 重新加载 Gateway，确认 Gateway 可达、微信插件 `loaded`、微信账号 `running`、Context Token 已恢复且无新的兼容错误。
-6. 由维护者在真实微信客户端分别验证普通文字、可信语音、Gateway 重启后的出站回送和 Chub 任务最终通知。
+1. 先读取 `integrations/openclaw/patches/manifest.json` 和精确版本目录的 `manifest.json`，确认目标包、版本、完整性、OpenClaw 版本、补丁 ID、哈希和锚点。
+2. 微信适配器补丁只能来自 `validated` 完整基线；在实际运行目录同时检查源码与运行产物，源码或运行产物已具备等价行为时不重复应用，只具备单侧差异时不得宣称补丁完成。
+3. `2026.8.1` 完整基线中的 OpenClaw CLI 补丁由恢复流程与微信适配器补丁一起校验和应用；先完成正向 dry-run，应用后再完成反向 dry-run 和 `openclaw message send --dry-run`。它不适用于其他 OpenClaw 版本。
+4. 版本不匹配、锚点缺失、补丁上下文不一致或构建工具链不可用时停止，不强行修改。自动“重启与恢复”仍只同步完整 `validated` 基线。
+5. 适配器补丁应用后从源码重新构建运行产物，并检查文件权限、非敏感版本信息和关键行为；CLI 发布包未附带同版本源码时按第 4.4 节执行运行产物复检。
+6. 由维护者在真实微信客户端验证普通文字、可信语音、Gateway 重启后的出站回送和 Chub 任务最终通知；只完成完成通知验证时，只能确认该子路径，不得推断其他兼容项。
 
 补丁只针对第三方适配器的实际运行副本；不得把补丁逻辑复制到 Chub 插件，不得从运行副本反向维护仓库源码。第三方 npm 重装或升级会覆盖补丁，升级后必须从第 7.1 节重新开始。
 
 ### 7.3 回滚
 
-补丁应用失败或最终验收失败时，停止继续提交，保留诊断信息，使用与目标版本匹配的官方微信插件副本恢复；不得对版本不匹配的源码盲目执行反向 patch。重启与恢复入口只使用固定目标版本和仓库补丁清单自动同步；无法确认目标版本、包完整性或锚点时失败关闭。恢复后重新确认 Gateway、微信通道和 Chub 插件状态。
+补丁应用失败或最终验收失败时，停止继续提交，保留诊断信息。微信适配器使用与目标版本匹配的官方副本恢复；OpenClaw CLI 补丁使用相同版本的官方 OpenClaw 包恢复。不得对版本不匹配的源码或运行产物盲目执行反向 patch。重启与恢复入口只使用固定目标版本和仓库补丁清单自动同步；无法确认目标版本、包完整性或锚点时失败关闭。恢复后重新确认 Gateway、微信通道和 Chub 插件状态。
 
 ### 7.4 重启与恢复
 
 API action `restart` 和微信 `restart clawbot` 的用户可见语义都是“重启与恢复”，底层仍调用固定的 `openclaw gateway restart`。它的目标是恢复 Gateway 和微信消息通道，不承担任意版本升级或任意补丁操作。
 
 - **执行前**：检查 Gateway 版本、Chub 插件加载状态、微信适配器版本与完整性，以及清单中补丁的目标基线和运行时锚点。
-- **同步范围**：Chub 插件只从仓库固定源码构建并安装；微信适配器只同步清单指定版本；补丁文件先校验清单中的 `sha256` 和 `validated` 状态，再在目标版本、完整性和锚点均匹配时按固定补丁文件应用，并同时校验源码和运行产物。
+- **同步范围**：Chub 插件只从仓库固定源码构建并安装；微信适配器只同步完整 `validated` 基线指定版本；微信适配器与 OpenClaw 运行产物补丁均先校验清单中的 `sha256` 和 `validated` 状态，再在目标版本、完整性和锚点均匹配时按固定补丁文件应用。
 - **最小门禁**：可信入口、OpenClaw 可执行文件、固定服务定义、目标版本可确认以及 OpenClaw 维护操作互斥。Gateway 停止、未知、未配置、消息通道异常或 Agent 任务存在，不阻止进入恢复流程。
 - **最终结果**：Gateway 就绪、已配置消息通道恢复运行、插件为 `loaded` 且补丁运行产物一致，才记录完整恢复成功；未配置消息通道时只确认 Gateway 重启成功并明确提示“消息通道未配置”，不把它宣称为 ClawBot 已就绪；同步不完整或最终状态未知时记录失败或降级，不把 Gateway 进程启动当作 ClawBot 可用。
 
@@ -190,14 +207,14 @@ Chub 插件升级只从 `integrations/openclaw/chub/` 构建并安装；插件�
 适配器复检至少覆盖：
 
 - 当前包名、版本、实际加载目录和运行产物。
-- `manifest.json` 中三个补丁的 ID、版本、目标基线和文件哈希。
+- `manifest.json` 中微信适配器补丁和 OpenClaw CLI 补丁的 ID、版本、目标基线和文件哈希。
 - 可信语音来源标记、干净转写和普通文本回退边界。
 - Context Token 保存、启动恢复、懒恢复、出站回退和权限 `600`。
-- Gateway 健康、微信通道运行状态和补丁后的真实微信收发。
+- Gateway 健康、微信通道运行状态、CLI `--dry-run` 的第三方通道解析，以及补丁后的真实微信收发。
 
-补丁验收必须确认源码差异与构建后的运行产物差异语义一致；仅修改部署目录中的 `dist/` 不算完成，补丁版本也不能代替真实微信收发验收。
+微信适配器补丁必须确认源码差异与构建后的运行产物差异语义一致；仅修改部署目录中的 `dist/` 不算完成。OpenClaw CLI 发布包未附带对应源码时，只允许使用清单登记的精确运行产物补丁，并完成哈希、正反向 dry-run 与 CLI dry-run 验证；两类补丁版本都不能代替真实微信收发验收。
 
-已确认范围：当前验收基线中的 Chub 插件协议、身份、路由、幂等、失败关闭、通知终态、Context Token 兼容行为和适配器日志脱敏行为。普通文本原始首尾空格不承诺；其他 OpenClaw/微信插件版本、其他加载目录和未经重新构建验证的运行产物不承诺。
+已确认范围：完整 `2026.8.1` 基线中的 Chub 插件协议、身份、路由、幂等、失败关闭、通知终态、Context Token 兼容行为、适配器日志脱敏、CLI 通道选择和维护者消息发送验收。普通文本原始首尾空格不承诺；其他 OpenClaw/微信插件版本、其他加载目录和未经重新校验的运行产物不承诺。
 
 真实微信文字、语音、点击和收件只能由维护者本人完成。Agent 只能检查 Chub/OpenClaw 后台日志、任务状态和通知终态，后台记录不能替代微信客户端验收。
 

@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import plistlib
+import signal
 import shutil
 import socket
 import stat
@@ -70,6 +71,7 @@ def service_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
                 f"#!/bin/sh\nprintf '%s %s\\n' '{command}' \"$*\""
                 " >> \"$CHUB_TEST_CALLS\"\n"
                 f"if [ '{command}' = launchctl ] && [ \"$1\" = print ]; then"
+                " [ \"${CHUB_TEST_LAUNCHCTL_PRINT:-}\" = available ] && exit 0;"
                 " exit 1; fi\n"
             ),
             encoding="utf-8",
@@ -135,6 +137,8 @@ def test_web_restart_uses_atomic_service_manager_restart(
 ) -> None:
     env, calls = service_env
     env["CHUB_TEST_PLATFORM"] = platform
+    if platform == "Darwin":
+        env["CHUB_TEST_LAUNCHCTL_PRINT"] = "available"
 
     result = subprocess.run(
         ["bash", str(WEB_RESTART)],
@@ -647,18 +651,22 @@ def test_logs_uses_configured_log_path(
         encoding="utf-8",
     )
     process = subprocess.Popen(
-            ["bash", env["CHUB_TEST_SCRIPT"], "logs"],
+        ["bash", env["CHUB_TEST_SCRIPT"], "logs"],
         cwd=tmp_path,
         env=env,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        start_new_session=True,
     )
     try:
         assert process.stdout is not None
         assert process.stdout.readline().strip() == "configured log entry"
     finally:
-        process.terminate()
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
         process.wait(timeout=3)
 
 
@@ -792,9 +800,50 @@ def test_help_and_unknown_command(service_env: tuple[dict[str, str], Path]) -> N
     assert "check" in help_result.stdout
     assert "worker-drain" in help_result.stdout
     assert "worker-reload" in help_result.stdout
+    assert "Cancel queued and running Worker tasks" in help_result.stdout
+    assert "logs [web|worker|upgrade]" in help_result.stdout
+    assert "version, --version" in help_result.stdout
     assert "worker-recover" in help_result.stdout
     assert invalid_result.returncode != 0
     assert "unknown command" in invalid_result.stderr
+
+
+def test_version_reports_configured_version_and_platform(
+    service_env: tuple[dict[str, str], Path],
+) -> None:
+    env, _ = service_env
+    env["CHUB_TEST_PLATFORM"] = "Darwin"
+
+    result = run_chub("--version", env)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "Chub v0.1.0 · macos"
+
+
+def test_status_accepts_only_verbose_option(
+    service_env: tuple[dict[str, str], Path],
+) -> None:
+    env, _ = service_env
+
+    result = run_chub("status", env, "--unexpected")
+
+    assert result.returncode != 0
+    assert "usage: chub status [--verbose]" in result.stderr
+
+
+def test_status_reports_concise_component_summary(
+    service_env: tuple[dict[str, str], Path],
+) -> None:
+    env, _ = service_env
+    env["CHUB_TEST_PLATFORM"] = "Darwin"
+
+    result = run_chub("status", env)
+
+    assert result.returncode != 0
+    assert "Chub Web · service unknown · health " in result.stdout
+    assert "Quick Worker · service unknown · unavailable" in result.stdout
+    assert "Debug Chrome Supervisor · not-managed" in result.stdout
+    assert "System upgrade executor · missing" in result.stdout
 
 
 def test_check_is_read_only_and_returns_failure_when_system_is_unhealthy(
@@ -807,8 +856,9 @@ def test_check_is_read_only_and_returns_failure_when_system_is_unhealthy(
 
     assert result.returncode != 0
     assert "Chub check failed" in result.stderr
-    manager_calls = calls.read_text(encoding="utf-8")
-    assert "launchctl print" in manager_calls
+    manager_calls = calls.read_text(encoding="utf-8") if calls.exists() else ""
+    # Without an installed service definition, the concise status path reports
+    # the service as unknown without querying the service manager.
     assert "bootstrap" not in manager_calls
     assert "kickstart" not in manager_calls
     assert "bootout" not in manager_calls

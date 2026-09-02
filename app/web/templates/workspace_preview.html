@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="zh-CN" data-ui-style="{{ 'cyber' if request.cookies.get('hub_ui_style') == 'cyber' else 'standard' }}">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+    <meta name="color-scheme" content="{{ 'dark' if request.cookies.get('hub_ui_style') == 'cyber' else 'light' }}">
+    <title>新版首页 · {{ app_name }}</title>
+    <script src="/static/workspace-bootstrap.js"></script>
+    {% include "partials/app_styles.html" %}
+    <script src="/static/workspace.js" defer></script>
+  </head>
+  <body class="workspace-preview-body">
+    <main class="workspace-preview-page">
+      <section class="workspace-preview-shell" aria-label="新版首页交互布局">
+        <section class="workspace-preview-main">
+          <header class="workspace-preview-toolbar" aria-label="工作台操作">
+            <button id="workspace-sidebar-toggle" class="button-secondary workspace-preview-sidebar-toggle" type="button" aria-controls="workspace-sidebar" aria-pressed="false" aria-label="折叠侧边栏（⌘B / Ctrl+B）" title="折叠侧边栏（⌘B / Ctrl+B）"><span aria-hidden="true">☰</span></button>
+            <span class="badge badge-success">已连接</span>
+          </header>
+          <nav class="workspace-preview-local-nav" aria-label="工作台分区">
+            <span class="is-current">工作台</span>
+            <span>活动</span>
+            <span>自动化</span>
+            <span>维护</span>
+          </nav>
+
+          <section class="workspace-preview-work-surface" aria-label="工作台内容预览">
+            <section class="workspace-preview-summary workspace-preview-work-section" aria-label="运行概览">
+              <article><span>Chub</span><strong>运行中</strong><small>控制面正常</small></article>
+              <article><span>Quick Worker</span><strong>可用</strong><small>1 个任务执行中</small></article>
+              <article><span>AI Runtime</span><strong>Codex</strong><small>接受新任务</small></article>
+              <article><span>OpenClaw</span><strong>已接入</strong><small>通道运行正常</small></article>
+            </section>
+
+            <div class="workspace-preview-content-grid workspace-preview-work-section">
+              <section class="workspace-preview-panel workspace-preview-current-work" aria-labelledby="workspace-preview-current-title">
+                <div class="workspace-preview-panel-heading">
+                  <div>
+                    <h2 id="workspace-preview-current-title">当前工作</h2>
+                    <p>正在执行的任务保持可见，结果以最终状态为准。</p>
+                  </div>
+                  <span class="badge badge-warning">执行中</span>
+                </div>
+                <div class="workspace-preview-task">
+                  <div><strong>周报整理</strong><small>正在核对本期输入并生成重点确认清单。</small></div>
+                  <span>10:42</span>
+                </div>
+                <div class="workspace-preview-task-actions"><button class="button-secondary" type="button" disabled title="功能建设中">查看 Session</button><button class="button-link" type="button" disabled title="功能建设中">停止任务</button></div>
+              </section>
+
+              <section class="workspace-preview-panel" aria-labelledby="workspace-preview-shortcuts-title">
+                <div class="workspace-preview-panel-heading">
+                  <div>
+                    <h2 id="workspace-preview-shortcuts-title">常用入口</h2>
+                    <p>将低频维护与独立业务保留为清晰入口。</p>
+                  </div>
+                </div>
+                <div class="workspace-preview-shortcuts">
+                  <span><strong>自动化</strong><small>本期周报资料已准备</small></span>
+                  <span><strong>项目资料</strong><small>8 份可查看文档</small></span>
+                  <span><strong>工作站环境</strong><small>查看服务与恢复操作</small></span>
+                </div>
+              </section>
+            </div>
+
+            <section class="workspace-preview-conversation workspace-preview-work-section" aria-labelledby="workspace-preview-conversation-title">
+              <header>
+                <div>
+                  <h2 id="workspace-preview-conversation-title">周报整理</h2>
+                  <p><span class="workspace-preview-running-dot" aria-hidden="true"></span>执行中 · Full access</p>
+                </div>
+                <button class="button-secondary" type="button" disabled title="功能建设中">•••</button>
+              </header>
+              <div class="workspace-preview-feed">
+                <article class="workspace-preview-message is-user"><p>先检查资料是否齐备，再生成本期重点确认清单。</p><small>10:41</small></article>
+                <article class="workspace-preview-message is-assistant"><p>任务已受理，正在校验输入材料与周期。完成后会显示最终结果。</p><small>Codex · 10:41</small></article>
+                <article class="workspace-preview-message is-status"><p>执行中：正在读取并核对 6 份资料。</p><small>10:42</small></article>
+              </div>
+              <div class="workspace-preview-composer">
+                <span>输入消息…</span>
+                <button class="workspace-preview-settings" type="button" disabled title="功能建设中">任务设置</button>
+                <button type="button" aria-label="发送" disabled title="功能建设中">↑</button>
+              </div>
+            </section>
+          </section>
+        </section>
+
+          <aside id="workspace-sidebar" class="workspace-preview-sidebar">
+            <div class="workspace-preview-brand"><strong>Chub</strong></div>
+          <p class="workspace-preview-sidebar-label">操作</p>
+          <nav class="workspace-preview-nav" aria-label="工作台导航">
+            <span class="is-current">工作台</span>
+            <span>会话</span>
+            <span>自动化</span>
+            <span>项目资料</span>
+            <span>设置</span>
+          </nav>
+          <button class="workspace-preview-create" type="button" disabled title="功能建设中">+ 新建 Session</button>
+          <section class="workspace-preview-recent" aria-labelledby="workspace-preview-recent-title">
+            <p id="workspace-preview-recent-title">最近 Session</p>
+            <div class="workspace-preview-session is-current">
+              <span class="workspace-preview-session-dot is-running" aria-hidden="true"></span>
+              <span><strong>周报整理</strong><small>执行中 · 刚刚</small></span>
+            </div>
+            <div class="workspace-preview-session">
+              <span class="workspace-preview-session-dot" aria-hidden="true"></span>
+              <span><strong>文档优化</strong><small>空闲 · 18 分钟前</small></span>
+            </div>
+            <div class="workspace-preview-session">
+              <span class="workspace-preview-session-dot" aria-hidden="true"></span>
+              <span><strong>需求评审</strong><small>空闲 · 昨天</small></span>
+            </div>
+          </section>
+          <div class="workspace-preview-health"><span class="workspace-preview-health-dot" aria-hidden="true"></span>节点在线 · Worker 可用</div>
+          </aside>
+        <div id="workspace-sidebar-resizer" class="workspace-preview-sidebar-resizer" role="separator" aria-orientation="vertical" aria-controls="workspace-sidebar" aria-label="调整侧边栏宽度" aria-valuemin="225" aria-valuemax="360" aria-valuenow="225" tabindex="0"></div>
+      </section>
+    </main>
+  </body>
+</html>

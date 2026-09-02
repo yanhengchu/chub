@@ -1,6 +1,6 @@
 # Chub AI Runtime 架构设计
 
-> 状态：已验收。
+> 状态：已验收
 > 主要读者：需要评估、生成或维护 Runtime Adapter/Runner 的 AI Agent；维护人员用于确认当前能力、接入边界和验收结果。
 > 本文负责：说明 Chub 当前已经落地的 AI Runtime 架构，并定义实现任一 AI Runtime 所需的通用契约、边界和验收规则。
 > 本文不负责：Session/Activity 的完整产品枚举（见 [AI Session 状态模型](AI_SESSION_STATE_DESIGN.md)）、Quick Worker 的任务恢复和通知细节（见 [Chub Quick Worker 独立服务设计](CHUB_QUICK_WORKER_DESIGN.md)）、微信路由和用户可见指令（见 [OpenClaw 定制集成设计](OPENCLAW_CUSTOMIZATION_DESIGN.md)）。

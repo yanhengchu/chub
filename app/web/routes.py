@@ -138,6 +138,20 @@ def cyber_style_preview(request: Request) -> HTMLResponse:
     )
 
 
+@router.get(
+    "/workspace",
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
+def workspace_preview(request: Request) -> HTMLResponse:
+    settings = request.app.state.settings
+    return templates.TemplateResponse(
+        request=request,
+        name="workspace_preview.html",
+        context={"app_name": settings.app.name},
+    )
+
+
 @router.get("/automations", response_class=HTMLResponse, include_in_schema=False)
 def automation_details(request: Request) -> HTMLResponse:
     settings = request.app.state.settings

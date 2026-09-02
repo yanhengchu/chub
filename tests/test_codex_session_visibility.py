@@ -153,7 +153,7 @@ process.stdout.write(JSON.stringify({ states, entryStates, stopStates, renameSta
         },
         {"label": "实时终端 · 执行中", "blocked": False, "title": ""},
         {"label": "实时终端 · 等待输入", "blocked": False, "title": ""},
-        {"label": "活动状态未知 · 请刷新", "blocked": False, "title": ""},
+        {"label": "实时终端 · 正在使用", "blocked": False, "title": ""},
         {"label": "快速交互 · 执行中", "blocked": False, "title": ""},
         {"label": "快速交互 · 执行中", "blocked": False, "title": ""},
         {"label": "快速交互 · 待输入", "blocked": False, "title": ""},

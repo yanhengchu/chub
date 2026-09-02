@@ -1,48 +1,16 @@
 {
-  "schema_version": 1,
-  "target": {
-    "package_name": "@tencent-weixin/openclaw-weixin",
-    "package_version": "2.4.6",
-    "package_integrity": "sha512-qw9k3PLTiMWGNjjsknHgcTManH1w4j+Ji1ArWIaYLKCq3aFRsVwcqnPi127bvOoVMJGW4dbyJ8NECEMgoO+iRw==",
-    "openclaw_version": "2026.7.1-2"
-  },
-  "patches": [
+  "schema_version": 2,
+  "default_openclaw_version": "2026.8.1",
+  "baselines": [
     {
-      "id": "weixin-voice-transcript-origin",
-      "version": "1.0.0",
-      "file": "integrations/openclaw/patches/weixin-clawbot-voice-transcript-origin.patch",
-      "sha256": "b82bafad29c653ee05dfbf9590080b6260b8c14df52a65e6d782df3a345013a7",
-      "scope": "source-and-runtime",
-      "status": "validated",
-      "anchors": [
-        "src/messaging/inbound.ts:WeixinMsgContext.BodyForAgent",
-        "src/messaging/process-message.ts:CHUB_VOICE_TRANSCRIPT_MARKER"
-      ]
+      "openclaw_version": "2026.7.1-2",
+      "status": "candidate",
+      "manifest": "integrations/openclaw/patches/2026.7.1-2/manifest.json"
     },
     {
-      "id": "weixin-context-token-persistence",
-      "version": "1.0.0",
-      "file": "integrations/openclaw/patches/weixin-clawbot-context-token-persistence.patch",
-      "sha256": "d15a48f3108b756d064a186597cd87bae75e6dab99dbf95f5dd5abeac38f8868",
-      "scope": "source-and-runtime",
+      "openclaw_version": "2026.8.1",
       "status": "validated",
-      "anchors": [
-        "src/messaging/inbound.ts:persistContextTokens",
-        "src/messaging/inbound.ts:getContextToken",
-        "src/channel.ts:sendWeixinOutbound"
-      ]
-    },
-    {
-      "id": "weixin-log-redaction",
-      "version": "1.0.0",
-      "file": "integrations/openclaw/patches/weixin-clawbot-log-redaction.patch",
-      "sha256": "7bc77e0f0d0a6bf6211eddad93e97908ebf1c5e55c896c8ad71df40af2e4a63e",
-      "scope": "source-and-runtime",
-      "status": "validated",
-      "anchors": [
-        "src/messaging/process-message.ts:inbound log",
-        "src/messaging/process-message.ts:outbound log"
-      ]
+      "manifest": "integrations/openclaw/patches/2026.8.1/manifest.json"
     }
   ]
 }

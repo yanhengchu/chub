@@ -188,11 +188,9 @@ def parse_weixin_chub_command(prompt: str) -> WeixinChubCommand:
         return WeixinChubCommand("help", normalized)
     if (
         len(help_parts) == 2
-        and help_parts[0] == CHUB_HELP_PROMPT
-        and help_parts[1] in {"model", "request", "system"}
+        and help_parts[1] == CHUB_HELP_PROMPT
+        and help_parts[0] in {"model", "text", "session", "request", "system"}
     ):
-        return WeixinChubCommand("help", normalized, task_prompt=help_parts[1])
-    if help_parts in [["text", CHUB_HELP_PROMPT], ["session", CHUB_HELP_PROMPT]]:
         return WeixinChubCommand("help", normalized, task_prompt=help_parts[0])
     text_parts = normalized.split()
     text_check_parts = normalized.split(maxsplit=1)

@@ -1,6 +1,6 @@
 # Chub 集成能力清单
 
-> 状态：持续维护。
+> 状态：持续维护
 > 主要读者：AI Agent、实现和排障 Agent；维护人员用于确认当前可调用能力、指令契约和同步清单。
 > 本文负责：在[Chub 总体架构](CHUB_ARCHITECTURE_DESIGN.md)之后统一登记“当前能调用什么”；第 4 节是微信 Chub 固定指令的唯一产品契约。
 > 本文不负责：实现细节、身份安全、并发/持久化/调度协议字段或尚未实现的目标架构；这些内容由对应专项设计和插件 README 维护。
@@ -15,7 +15,7 @@
 | OpenClaw Agent Tool | OpenClaw TUI 或未进入微信 Chub 模式的 Agent 调用 | 查询 Chub 基础状态、发送预配置飞书通知 |
 | 微信 ClawBot | 已授权 Owner 通过私聊远程使用 Chub | 查询摘要、管理 Codex Session 和活动需求 |
 
-电脑端 CLI 与微信 ClawBot 是两套独立指令：前者用于本机服务运维，后者经 OpenClaw 转发到 Chub。当前没有 npm、PyPI 或独立发行包；`chub install` 只表示从当前工作区安装本机用户服务，不表示包管理器安装。正式分发方案仅记录在状态为“待实现”的[Chub CLI 分发、安装与发布设计](CHUB_CLI_DISTRIBUTION_DESIGN.md)，不属于本节当前能力。
+电脑端 CLI 与微信 ClawBot 是两套独立指令：前者用于本机服务运维，后者经 OpenClaw 转发到 Chub。当前没有 npm、PyPI 或独立发行包；`chub install` 只表示从当前工作区安装本机用户服务，不表示包管理器安装。
 
 ## 2. 电脑端命令
 
@@ -28,7 +28,7 @@
 - `chub start`
 - `chub stop [--force]`
 - `chub restart`
-- `chub status`
+- `chub status [--verbose]`
 - `chub check`
 - `chub worker-health`
 - `chub worker-drain`
@@ -36,15 +36,27 @@
 - `chub worker-recover`
 - `chub worker-start`
 - `chub worker-stop`
+- `chub worker-service-status`
 - `chub network-restart`
-- `chub logs`
+- `chub service-definitions`
+- `chub runtime-dependencies`
+- `chub system-upgrade-service`
+- `chub chrome-supervisor-reconcile [--restart]`
+- `chub logs [web|worker|upgrade]`
+- `chub version`、`chub --version`
 
 `chub help` 是当前 CLI 的无服务帮助入口。
+
+`chub status` 默认汇总 Web、Quick Worker、Debug Chrome Supervisor 与系统升级执行器的服务和最终健康状态；需要平台服务管理器原始信息时使用 `--verbose`。`chub logs` 默认跟随 Web 日志，也可选择 Worker 或系统升级日志。`chub version` 输出当前本机版本与平台。
+
+`chub worker-reload` 会取消排队和执行中的 Worker 任务，且不会自动重放；仅应在维护者确认可中断这些任务后使用。
 
 `chub network-restart` 是 Ubuntu 专用的本机维护命令：只有
 `network_recovery.enabled` 为 `true`，且 Wi-Fi 设备名、Wi-Fi UUID 与 VPN UUID 都已在本机配置中固定时才会执行。它不接受参数，不影响 Tailscale，并在 Wi-Fi 和 VPN 都被确认是 NetworkManager 活动连接后才返回成功。macOS 调用会明确失败，不执行任何网络切换。
 
 `chub check` 是只读的完整系统检查入口，依次检查项目配置、用户服务、Web 健康、Quick Worker 健康和 `/api/status` 系统状态；任一必需检查失败时返回非零退出码，不执行重启、升级或任务清理。
+
+`chub worker-service-status` 只读取 Quick Worker 服务状态。`chub service-definitions` 重建当前工作区对应的固定服务定义；`chub runtime-dependencies` 按仓库 `requirements.txt` 修复当前虚拟环境依赖；两者都不重启现有服务。`chub system-upgrade-service` 只安装或恢复独立升级执行器，发现未完成升级时启动该执行器，不停止无关服务。`chub chrome-supervisor-reconcile [--restart]` 仅在 Ubuntu 重建、启用并确认 Debug Chrome Supervisor，`--restart` 会重启该 Supervisor；macOS 不执行额外服务操作。上述命令均应从本机终端运行。
 
 当前 Chub 管理的三个服务和一个第三方 Gateway 的入口边界如下；这里的“Chub 管理”是服务安装范围，不等同于三层架构中的 Chub 核心层。
 
@@ -55,9 +67,9 @@
 | Chub Debug Chrome | 核心层 | 已实现 | Ubuntu 由独立 Supervisor 服务持有 Debug Chrome；浏览器实例按需启动，macOS 沿用现有浏览器适配 |
 | OpenClaw Gateway | 第三方服务层 | 已接入 | 第三方 Gateway、微信通道和 Chub OpenClaw 插件共同提供 ClawBot；不由 `chub start` 启动，安装/配置以[插件说明](../integrations/openclaw/chub/README.md)为准 |
 
-“已接入”表示 Chub 与相关通道的接口和路由已经具备，不表示本仓库包含 OpenClaw Gateway 或腾讯微信插件的源码、安装包和账号绑定流程。新设备应先按外部项目文档安装这两项，再按已生效的[插件说明](../integrations/openclaw/chub/README.md)部署 Chub 插件并完成微信验收；[Chub CLI 分发、安装与发布设计](CHUB_CLI_DISTRIBUTION_DESIGN.md)仅记录待实现的正式分发目标。
+“已接入”表示 Chub 与相关通道的接口和路由已经具备，不表示本仓库包含 OpenClaw Gateway 或腾讯微信插件的源码、安装包和账号绑定流程。新设备应先按外部项目文档安装这两项，再按已生效的[插件说明](../integrations/openclaw/chub/README.md)部署 Chub 插件并完成微信验收。
 
-当前 `chub` 命令来自仓库内的 `scripts/chub`，依赖当前工作区、`.venv` 和本机配置。项目尚未发布 npm/PyPI/独立发行包，因此 `npm install -g chub`、`pipx install chub` 和无仓库启动不属于当前可用能力。新设备安装、npm 发布、版本管理和 GitHub Release 的目标方案见状态为“待实现”的[Chub CLI 分发、安装与发布设计](CHUB_CLI_DISTRIBUTION_DESIGN.md)，不能替代本节命令。
+当前 `chub` 命令来自仓库内的 `scripts/chub`，依赖当前工作区、`.venv` 和本机配置。项目尚未发布 npm/PyPI/独立发行包，因此 `npm install -g chub`、`pipx install chub` 和无仓库启动不属于当前可用能力。
 
 ### 2.2 通知指令
 
@@ -117,7 +129,7 @@
 | 指令 | 当前行为 |
 | --- | --- |
 | `chub` / `check` / `usage` | 分别只读查询 Chub 摘要、Chub/Web/Worker/系统检查与完整额度 |
-| `help [model\|request\|system]`、`text help`、`session help` | 无参数显示紧凑索引；带主题时只显示该类的完整语法；均不附加状态尾部 |
+| `help`、`model help`、`text help`、`session help`、`request help`、`system help` | 无参数显示紧凑索引；带主题时只显示该类的完整语法；均不附加状态尾部 |
 | `text [mode [direct\|auto\|confirm]\|list\|ok\|next\|cancel]`、`text model list`、`text model level [M#]`、`text model use M# \| L# \| M# L#` / `text-check <English>` | 查询或调整微信后续正文处理方式、翻译任务默认模型和等级，或以英文复述确认队头 |
 | `model` / `model list` / `model level [M#]` / `model use M# \| L# \| M# L#` | 查询或配置当前 Session 后续任务的模型与推理等级 |
 | `sync` / `new [title]` / `rename <title>` / `retry` | 同步槽位、创建或重命名当前 Session，或提交待续提任务 |
@@ -140,14 +152,14 @@
 - `restart worker` 会立即登记恢复操作，取消排队任务并停止执行中任务，不自动重放；`restart clawbot` 会在当前 OpenClaw 调度请求返回后异步执行，先同步固定兼容基线，再重启 Gateway，并在最终状态确认后发送独立结果。
 - `restart network` 与 `chub network-restart` 共用同一 Ubuntu NetworkManager 流程，仅在本机 `network_recovery.enabled` 为 `true`、且 Wi-Fi 设备名、Wi-Fi UUID 与 VPN UUID 均已固定配置时可用；macOS 调用明确失败，不执行网络切换。该流程按固定顺序断开 VPN、关闭再打开 Wi-Fi、等待指定无线设备可用、在该设备上重新连接 Wi-Fi 和 VPN，最后确认两者都是 NetworkManager 活动连接。它不接受连接名、UUID、设备名、命令或路径，也不控制 Tailscale。Wi-Fi 断开期间即时回执可能无法送达；最终结果只沿本次保存的微信路由回送，Wi-Fi 或 VPN 任一终态无法确认即记录失败而不伪报成功。
 - `upgrade` 不接受版本号、路径或其他参数；升级方案不可用时按固定规则降级为当前版本运行态恢复，并明确不执行代码版本升级。升级受理后通过独立完成通知返回最终结果；不再提供微信 `upgrade status` 固定指令。系统升级页面和固定 API 的只读状态查询仍然保留。
-- `upgrade` 的最终组件状态会区分 Chub Debug Chrome 服务与 Debug Chrome 浏览器实例：前者确认服务可用，后者记录为未纳入升级且不会自动启动；浏览器实例仍由工作站环境统一控制，自动化只负责使用它执行飞书任务。
+- `upgrade` 的最终组件状态只展示 Chub 核心与 AI Runtime 组件。Debug Chrome Supervisor 与浏览器实例均由自动化环境统一控制，不出现在升级摘要；浏览器实例不在升级范围且不会自动启动。
 - `usage` 是精确无参数指令；大小写和首尾标点可忽略，附加任何正文时回退为普通任务。
 - `model` 是精确无参数指令；大小写和首尾标点可忽略，附加任何正文时回退为普通任务。它返回当前绑定 Session 最近一次已确认的 active 模型和推理等级；active 值缺失时继续读取该 Session 配置与 Runtime 模型目录默认值。若当前 Session 已为后续任务保存不同的模型或等级，只为不同字段额外显示 `Next model` 或 `Next level`，不把保存成功误报为已运行任务已切换。Runtime 目录无法读取或仍未提供某字段时才显示 `Default`，当前 Session 不存在或无法读取时失败关闭，不附加 Session 列表或额度尾部。
 - `model list` 是精确无参数指令；它显示当前 Session 为下一任务配置的模型，并以 `M1`…列出 Runtime 模型目录中当前可用的模型 ID。列表用于帮助选择，但不是后续切换的前置步骤；目录或当前模型无法确认时失败关闭，不返回残缺列表。
 - `model level` 可不带参数，或携带 `M#`。无参数时显示当前 Session 为下一任务配置的模型、当前等级及该模型的 `L1`…列表；带 `M#` 时按本次请求读取的当前 Runtime 目录选择目标模型，并只显示其 `L#` 列表而不切换。无需先执行 `model list`；索引、目录、模型、当前等级或等级列表无法确认时失败关闭。
 - `model use M# | L# | M# L#` 是精确参数指令。每次请求直接读取当前 Runtime 模型目录解析索引，无需先执行 `model list` 或 `model level`：仅模型时使用目标模型声明的默认等级；仅等级时保持当前模型；二者同时提供时，`L#` 按该目标模型本次可用等级列表解析并原子保存。切换只允许当前 `quick` Session 空闲且没有 Runtime writer 或 Worker 任务时执行，只影响后续任务，不改变已经运行的任务；成功回执显示实际保存的下一任务模型和等级。目录可能在两次消息之间变化，因此回执是最终选择依据；目录、索引、兼容性、空闲状态或保存结果不能确认时失败关闭，不部分更新、不猜测且不接受原始模型或等级 ID。
 - `text` 是翻译处理方式的综合只读入口，返回当前 mode、翻译默认 model/level 和当前可操作确认项；`text model list`、`text model level [M#]` 和 `text model use M# | L# | M# L#` 使用同一组 `M#`/`L#` 语法，分别用于选择和切换翻译任务默认配置。读取设置页保存的翻译模型和等级，或读取当前 Runtime 目录展示可用选择；仅等级切换要求已有翻译模型，模型切换默认使用目标模型声明的默认等级。切换只保存下一次翻译任务提交时携带的模型和等级，不读取、切换或门禁隐藏翻译 Session，也不修改已进入队列或已运行任务；未选择模型和等级时继续跟随 Runtime 默认。目录、索引、兼容性或保存结果无法确认时失败关闭，不部分更新、不猜测且不接受原始模型或等级 ID。
-- `help`、`help model`、`text help`、`session help`、`help request` 和 `help system` 是精确帮助指令。顶层帮助只显示符号说明、常用指令和主题入口；主题帮助只展示本类完整语法。未知帮助主题按原文作为普通任务提交。
+- `help`、`model help`、`text help`、`session help`、`request help` 和 `system help` 是精确帮助指令。顶层帮助只显示符号说明、常用指令和主题入口；主题帮助只展示本类完整语法。旧的 `help <topic>` 和未知帮助主题按原文作为普通任务提交。
 - 无参数指令必须整句匹配。`S#` 后的剩余内容始终作为普通任务正文；例如 `S2 retry` 是切换并提交正文 `retry`，不会触发续提指令。`new retry` 作为普通任务，不创建 Session 或续提任务。
 - 只有表内英文规范格式属于固定指令。未登记的 `sn ...`、`session ...` 形式、旧别名和旧槽位写法均作为普通任务，不猜测为固定指令。
 - 指令解析必须整体判定槽位；`S10` 等不匹配后作为普通任务，不得误解析成 `S1` 加正文。
@@ -193,7 +205,7 @@
 | 规则 | 契约 |
 | --- | --- |
 | 固定文案 | 默认使用英文；任务标题保留来源原文，Session 名称按任务保存的 `session_id` 在展示时读取当前值 |
-| 帮助清单 | `help` 只显示符号说明、Quick 的 `chub · sync · new [title] · S# [task]` 与五个主题入口；文本和会话主题使用 `text help`、`session help`，其余主题使用 `help <topic>`；各主题帮助分别显示本类完整语法，标题统一为 `Commands · <Topic>`；标题与每项均为独立段落 |
+| 帮助清单 | `help` 只显示符号说明、Quick 的 `chub · sync · new [title] · S# [task]` 与五个主题入口；所有主题统一使用 `<topic> help`；各主题帮助分别显示本类完整语法，标题统一为 `Commands · <Topic>`；标题与每项均为独立段落 |
 | Session 行 | `[▶ ]S<槽位>[ !] · <标题>`；`▶` 仅表示当前绑定，`!` 表示不可用或状态未知 |
 | Task 行 | `Task · <摘要>`；`chub` 对当前微信槽位中的运行标准快速任务统一展示受限摘要，包含 Web 和微信入口；无可信摘要时使用 `Task · Running`；无 Task 行表示没有运行任务 |
 | Request 行 | `R<槽位> · <标题>`用于`chub`列表和需求查询结果 |
@@ -263,5 +275,4 @@ Session 标题与任务摘要的显示规则：
 | [Chub AI Session 状态模型设计](AI_SESSION_STATE_DESIGN.md) | Session、Activity、usage 投影、入口、槽位和单 writer 语义 |
 | [Codex AI 额度与用量采集设计](CODEX_AI_QUOTA_USAGE_DESIGN.md) | Codex/OpenAI 用量来源、统一接口、缓存和展示口径 |
 | [Chub Quick Worker 独立服务设计](CHUB_QUICK_WORKER_DESIGN.md) | Quick Worker 独立服务、非实时任务、恢复、通知终态和重启协调 |
-| [Chub CLI 分发、安装与发布设计](CHUB_CLI_DISTRIBUTION_DESIGN.md) | 新设备安装、Chub 主发行包与可选 ClawBot 职责、npm 发布、版本管理和 GitHub Release |
 | [Chub OpenClaw 插件说明](../integrations/openclaw/chub/README.md) | 插件协议、源码、构建、部署和协议验收 |

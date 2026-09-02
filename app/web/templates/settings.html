@@ -46,6 +46,21 @@
       </div>
     </dialog>
 
+    <dialog id="maintenance-terminal-dialog" class="codex-workspace-dialog confirmation-dialog" aria-labelledby="maintenance-terminal-dialog-title" aria-describedby="maintenance-terminal-dialog-message">
+      <div class="codex-workspace-dialog-surface confirmation-dialog-surface">
+        <div class="codex-workspace-dialog-header">
+          <h2 id="maintenance-terminal-dialog-title">打开维护终端</h2>
+          <button id="maintenance-terminal-dialog-close" class="button-link codex-workspace-dialog-close" type="button" aria-label="关闭维护终端确认">关闭</button>
+        </div>
+        <p id="maintenance-terminal-dialog-message" class="confirmation-dialog-description">维护终端会在独立标签页中打开 Chub 的项目 Shell。终端中的命令将直接作用于当前设备。</p>
+        <p id="maintenance-terminal-dialog-feedback" class="message" role="status" aria-live="polite"></p>
+        <div class="confirmation-dialog-actions">
+          <button id="maintenance-terminal-dialog-cancel" class="button-link" type="button">取消</button>
+          <button id="maintenance-terminal-dialog-confirm" class="button-danger" type="button">打开终端</button>
+        </div>
+      </div>
+    </dialog>
+
     <main>
       <section class="card settings-card standalone-list-card" aria-labelledby="settings-title">
         <div class="card-heading-copy">
@@ -66,6 +81,7 @@
               <a href="#codex-session-settings">新建 Session 默认权限</a>
               <a href="#weixin-settings">微信任务文本优化</a>
               <span class="settings-navigation-group">第三方服务</span>
+              <a href="#openclaw-settings">OpenClaw Gateway</a>
               <a href="#openclaw-weixin-settings">OpenClaw · 微信 ClawBot</a>
             </nav>
           </aside>
@@ -176,14 +192,21 @@
                 <p>查看节点记录与当前版本。</p>
               </div>
               <div class="settings-utility-list">
-                <a class="settings-utility-row" href="/logs">
+                  <a class="settings-utility-row" href="/logs">
                   <span>
                     <strong>日志详情</strong>
                     <small>节点操作与运行记录</small>
                   </span>
-                  <span aria-hidden="true">打开</span>
-                </a>
-                <div class="settings-utility-row">
+                    <span aria-hidden="true">打开</span>
+                  </a>
+                  <button id="settings-maintenance-terminal" class="settings-utility-row" type="button">
+                    <span>
+                      <strong>维护终端</strong>
+                      <small id="settings-maintenance-terminal-detail">在独立标签页打开当前项目目录的 Shell。</small>
+                    </span>
+                    <span id="settings-maintenance-terminal-label" aria-hidden="true">打开</span>
+                  </button>
+                  <div class="settings-utility-row">
                   <span>
                     <strong>Chub 版本</strong>
                     <small>当前节点运行版本</small>
@@ -304,8 +327,23 @@
             <section class="settings-layer" aria-labelledby="third-party-settings-title">
               <div class="settings-layer-heading">
                 <h3 id="third-party-settings-title" class="settings-layer-title">第三方服务</h3>
-                <p>管理 Chub 使用的外部消息通道；服务运行与恢复仍在首页工作站环境查看。</p>
+                <p>查看 OpenClaw Gateway 与消息通道状态；服务运行与恢复仍在首页工作站环境查看。</p>
               </div>
+
+              <section id="openclaw-settings" class="settings-section" aria-label="OpenClaw Gateway">
+                <div class="settings-utility-list">
+                  <a id="settings-openclaw-open" class="settings-utility-row settings-integration-row" aria-disabled="true">
+                    <span>
+                      <span class="settings-integration-title">
+                        <strong>OpenClaw Gateway</strong>
+                        <span id="settings-openclaw-badge" class="badge badge-muted">正在检查</span>
+                      </span>
+                      <small id="settings-openclaw-detail">正在读取 OpenClaw Gateway 状态。</small>
+                    </span>
+                    <span id="settings-openclaw-open-label" aria-hidden="true">不可用</span>
+                  </a>
+                </div>
+              </section>
 
               <section id="openclaw-weixin-settings" class="settings-section" aria-label="微信 ClawBot">
                 <div class="settings-field settings-integration-row">

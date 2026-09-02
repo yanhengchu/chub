@@ -121,7 +121,7 @@ Android 手机访问使用 Tailscale Android 客户端连接同一 Tailnet，再
 chub start
 chub stop
 chub restart
-chub status
+chub status [--verbose]
 chub check
 chub worker-health
 chub worker-drain
@@ -131,27 +131,28 @@ chub worker-start
 chub worker-stop
 chub worker-service-status
 chub network-restart
-chub logs
+chub logs [web|worker|upgrade]
+chub version
 chub uninstall
 ```
 
 macOS 使用 Chub、Chub Quick Worker 和系统升级执行器三个独立 LaunchAgent，Ubuntu 使用 Chub、Chub Quick Worker、Chub Debug Chrome
-和系统升级执行器四个独立 systemd user service。`chub restart` 只重启 Chub，不停止 Chub Quick Worker 或 Chub Debug Chrome；`chub status` 同时显示
-这些服务，
+和系统升级执行器四个独立 systemd user service。`chub restart` 只重启 Chub，不停止 Chub Quick Worker 或 Chub Debug Chrome；`chub status` 默认以简洁摘要显示
+Web、Quick Worker、Debug Chrome 与系统升级执行器的最终可用状态；排障时使用 `chub status --verbose` 查看平台服务管理器的原始详情。
 `chub check` 汇总项目配置、服务、Web、Quick Worker 和系统状态并在检查失败时返回非零码；
-`chub worker-health` 通过本机私有 IPC 读取 Worker 健康信息；`chub worker-drain` 停止接收新任务并等待已受理任务收敛；`chub worker-reload` 关闭新提交、清理排队和执行中的任务、独立重载 Worker 并确认新 generation 健康；`chub worker-recover` 保留为本机服务恢复入口；`chub worker-start` 和 `chub worker-stop` 只控制 Quick Worker，启动或停止后确认服务状态，停止要求没有在途任务。`worker-drain`、`worker-reload`、`worker-recover`、`worker-start` 和 `worker-stop` 只在本机终端或首页受控入口执行，不能从正在运行的快速任务内部调用；首页“工作站环境”在停止态显示“启动”，运行态显示“重启”和“停止”，其中“重启”仍会清理 Worker 任务，具体影响放在确认说明中。当前 Worker 已经接管页面、微信和翻译快速任务；
+`chub worker-health` 通过本机私有 IPC 读取 Worker 健康信息；`chub worker-drain` 停止接收新任务并等待已受理任务收敛；`chub worker-reload` 关闭新提交、清理排队和执行中的任务、独立重载 Worker 并确认新 generation 健康；`chub worker-recover` 保留为本机服务恢复入口；`chub worker-start` 和 `chub worker-stop` 只控制 Quick Worker，启动或停止后确认服务状态，停止要求没有在途任务。`worker-drain`、`worker-reload`、`worker-recover`、`worker-start` 和 `worker-stop` 只在本机终端或首页核心服务卡的受控入口执行，不能从正在运行的快速任务内部调用；停止态显示“启动”，运行态显示“重启”和“停止”，其中“重启”仍会清理 Worker 任务，具体影响放在确认说明中。当前 Worker 已经接管页面、微信和翻译快速任务；
 macOS 与 Ubuntu 均已确认单独重启 Web 不会停止 Worker、Runner 或现有任务，恢复后的结果和通知不会重复。
 Worker 不健康时，快速交互 Session 写操作保持失败关闭，不回退到 Web Runner；实时终端使用独立的 Codex PTY/tmux 链路。
 Ubuntu 的自动化 Debug Chrome 由独立 Supervisor 持有，Web 只通过本机受限 socket 请求启动、停止和查询；Supervisor
 不可用时自动化浏览器控制失败关闭，不回退为 Web 子进程启动。`chub stop` 和 `chub uninstall` 会停止该 Supervisor
 及其受管浏览器；macOS 继续使用现有 LaunchAgent 与浏览器生命周期。系统升级服务切换和 Worker 恢复会自动补齐、启用并确认
-Ubuntu Supervisor 的服务定义，不再要求为这两个恢复入口手动重复执行完整 `chub install`。Supervisor 服务恢复不代表受管 Debug Chrome 浏览器实例已启动；浏览器实例仍由工作站环境单独按需启动，自动化环境只负责飞书登录检查与任务执行，系统升级流程不会自动启动它。首次安装 Chub 或服务定义发生变化时，仍需执行一次 `chub install`，以安装独立的系统升级执行器。
+Ubuntu Supervisor 的服务定义，不再要求为这两个恢复入口手动重复执行完整 `chub install`。Supervisor 服务恢复不代表受管 Debug Chrome 浏览器实例已启动；浏览器实例在自动化任务卡的“自动化环境”中按需启动，系统升级流程不会自动启动它。首次安装 Chub 或服务定义发生变化时，仍需执行一次 `chub install`，以安装独立的系统升级执行器。
 
 `chub install`、`chub stop` 和 `chub uninstall` 仍默认拒绝中断活动或排队任务，并在空闲时先关闭 Worker 提交门禁；Quick Worker 专用的 `worker-reload` 是恢复入口，确认后会取消排队任务、停止执行中任务并重建 Worker，不自动重放。跨协议升级统一使用首页或微信 `upgrade` 的系统升级与恢复流程，直接清理旧 Worker 数据并确认目标协议；旧任务会被中断且不可恢复，不保留读取或迁移逻辑。
 `chub system-upgrade-service` 是独立的本机恢复入口，只安装或恢复升级执行器；发现未完成的升级操作时会启动该执行器，不停止无关服务。
 首次安装、移动项目目录或修改 Web/Worker/Chrome/系统升级服务定义后，必须先从本机终端执行 `chub install`；如果已有未完成的升级操作，`chub install` 会安全拒绝，此时先执行 `chub system-upgrade-service` 恢复操作，待最终状态确认后再重新安装服务定义。
 
-当前 `chub` CLI 是仓库内的本机服务管理入口；项目尚未发布 npm/PyPI 或独立发行包。新设备的目标流程、Chub 主发行包（含自动运行的 Quick Worker）与可选 ClawBot 的职责、npm 发布、版本管理和 GitHub Release 目标见 [Chub CLI 分发、安装与发布设计](docs/CHUB_CLI_DISTRIBUTION_DESIGN.md)。这里的“主发行包”是安装范围，不等同于三层架构中的 Chub 核心层。服务直接依赖当前工作区和 `.venv`；移动目录或变更服务定义后需要重新安装。Web 配置变更使用
+`chub logs` 默认跟随 Web 日志，也可明确选择 `worker` 或 `upgrade`；`chub version`（或 `chub --version`）显示当前本机版本与平台。当前 `chub` CLI 是仓库内的本机服务管理入口；项目尚未发布 npm/PyPI 或独立发行包。服务直接依赖当前工作区和 `.venv`；移动目录或变更服务定义后需要重新安装。Web 配置变更使用
 `chub restart` 生效；Worker 代码升级使用 `chub worker-reload`，Worker 失败恢复使用首页入口或 `chub worker-recover`，只有服务定义变化时才需要重新执行安装。
 
 ## 日常使用
@@ -196,7 +197,7 @@ Session、Activity、usage 投影、槽位、标题和入口语义见[Chub AI Se
 
 OpenClaw 提供可信入口和通道上下文，Chub 负责业务路由、安全校验和最终状态；整条链路不调用 OpenClaw Agent，也不把消息拦截或任务提交等同于最终成功。
 
-首页“工作站环境”卡片中的 OpenClaw 分区用于查看 Gateway 和微信通道状态，并提供受控的启动、重启与恢复操作；微信绑定统一在设置页“第三方服务 / OpenClaw · 微信 ClawBot”中完成。重启与恢复发现固定插件或补丁基线不一致时会先同步，再重启 Gateway 和消息通道；底层 API action 仍使用 `restart`，微信端使用 `restart clawbot`。绑定成功只表示通道登录完成，不代表发送者配对或 Owner 权限已经配置。
+首页“第三方服务”卡用于查看 Gateway 和微信通道状态，并提供受控的启动、重启与恢复操作；设置页“第三方服务”会单独展示 OpenClaw Gateway 状态，并且仅当 Gateway 已就绪且确认使用 loopback 绑定时提供本机访问入口。设置页“诊断与关于”的维护终端是 Chub 自有的独立 `ttyd`/`zsh` 页面：它固定从当前项目目录启动，允许本机或受信 Tailnet 浏览器执行任意 Shell 命令，不依赖或代理 OpenClaw。该入口等同于当前设备用户的 Shell 权限；Tailnet 访问者获得同等权限，维护者必须只允许可信设备加入 Tailnet。微信绑定统一在“OpenClaw · 微信 ClawBot”中完成。重启与恢复只会同步完整已验证基线中的固定插件和补丁，再重启 Gateway 和消息通道；候选版本的局部兼容补丁必须按定制设计人工复检，不会因重启而自动应用。底层 API action 仍使用 `restart`，微信端使用 `restart clawbot`。绑定成功只表示通道登录完成，不代表发送者配对或 Owner 权限已经配置。
 
 微信 Chub 固定维护指令为 `restart` / `restart web`（重启 Web）、`restart worker`（重启 Worker）、`restart clawbot`（重启 ClawBot）、`restart network`（重连已固定的 Ubuntu Wi-Fi/VPN）和 `upgrade`（升级系统）；均按固定目标执行，不接受附加路径或命令。网络重连与本机 `chub network-restart` 共用同一配置及终态校验：仅 Ubuntu 的 NetworkManager 可用，macOS 会明确拒绝，不会尝试切换网络；Tailscale 不在操作范围。各操作的最终结果分别以新实例、Worker、Gateway/消息通道、NetworkManager 活动连接或升级运行态确认结果为准；异步操作通过独立通知返回。
 
@@ -237,11 +238,13 @@ chub notification test --target test
 
 Chub 使用独立 Debug Chrome 执行配置驱动的浏览器任务。公共任务维护在 `config/automations.yaml`，本机任务维护在不提交的 `config/automations.local.yaml`：
 
+公共配置允许只保留 `version: 2` 和空的 `tasks:`，这表示当前没有需要跨节点共享的任务；本机任务仍会正常加载。
+
 ```bash
 cp config/automations.example.yaml config/automations.local.yaml
 ```
 
-首页“工作站环境”卡片管理 Chub Debug Chrome，自动化任务卡片检查飞书登录状态并运行任务；命令行也可调用统一 Runner：
+自动化任务卡片的“自动化环境”管理 Chub Debug Chrome、检查飞书登录状态并运行任务；命令行也可调用统一 Runner：
 
 ```bash
 .venv/bin/python -m app.automations.command run <task-id>
@@ -274,7 +277,11 @@ Runner 不会自行启动或停止 Debug Chrome。浏览器 Profile 未初始化
 
 共享需求文件由 Git 工作流同步，不由后台服务自动合并。多台设备同时修改可能产生 Git 冲突；发现冲突、非法 JSON 或未完成合并时，需求读写必须失败关闭，不覆盖其他设备内容。共享需求不得保存 Token、Cookie、账号凭证、本机秘密或其他不适合进入 Git 历史的内容。
 
-首页“工作站环境”提供受控的“系统升级与恢复”状态行。它统一执行已准备的版本切换或当前版本的运行态恢复；确认后冻结受影响的 Chub AI Runtime 写入，并由独立于 Chub 的平台服务执行器负责停止 Chub、Chub Quick Worker 和 Ubuntu Chub Debug Chrome，终止在途快速任务并清理 Chub 自有 Session 关联、Hook 与固定 Worker 运行态。Ubuntu 使用独立的 systemd user oneshot service，macOS 使用独立的 LaunchAgent；Chub 只创建持久化操作并启动执行器，不直接持有升级进程。随后按固定边界处理当前工作区代码对应的 Python 依赖、重建 Chub/Chub Quick Worker/Chub Debug Chrome 服务定义并恢复 Quick Worker 协议。第三方 OpenClaw 的插件、适配器和补丁恢复通过可选的固定维护契约处理；当前直接同步实现是待收敛的过渡边界，失败记录为集成降级而不阻断核心层和 AI Runtime 恢复。每个组件结果同时写入受限状态文件和升级执行器日志，日志只记录 operation ID、固定组件名和状态。Debug Chrome 浏览器实例不属于本流程的启动目标，结果明确记录为“未纳入升级”；它的未启动状态不构成升级失败。Codex 原生 Session、配置、日志、项目资料和业务数据不归档、不删除；新实例会重新发现仍存在的原生 Session。准备中的升级方案无法读取或校验时，入口降级为当前版本运行态恢复，并明确不执行代码版本升级。Chub、Python 依赖、服务定义和 Chub Quick Worker 是核心组件，失败会保留失败态并提供恢复重试；Chub Debug Chrome 和 OpenClaw Gateway 是独立组件，失败记录为降级但不阻断核心服务恢复。只有新 Chub/Chub Quick Worker、Session 映射和各组件结果均已记录后，操作才标记完成。该入口不执行 Git 同步、不接受客户端路径或命令，也不提供任意数据清理。
+首页已将“核心服务”和“第三方服务”分为独立卡片，刷新、状态与错误反馈分别作用于本卡。核心服务卡包含 Chub、Quick Worker 与“升级与恢复”入口；自动化任务卡的“自动化环境”承载 Debug Chrome；第三方服务卡单独承载 OpenClaw Gateway/ClawBot 的启动、重启、停止和状态。
+
+“升级与恢复”只处理 Chub 核心与 AI Runtime：持久化操作、冻结新写入、有界收敛 Quick Worker、由独立执行器切换 Chub/Quick Worker，并确认新实例、协议、健康和写入恢复。Codex 原生 Session、配置、日志、项目资料和业务数据始终保留。OpenClaw Gateway、插件、补丁和消息通道属于第三方服务恢复，不作为核心升级的前置条件、执行步骤或完成条件；第三方恢复失败不会影响核心升级的最终判断，应在第三方服务卡中单独处理。
+
+升级执行器不调用 OpenClaw CLI，也不读取或写入 OpenClaw 插件、补丁、Gateway 或消息通道状态。升级方案不可用时仍按固定规则执行当前版本运行态恢复，并明确不执行代码版本升级。该入口不执行 Git 同步、不接受客户端路径或命令，也不提供任意数据清理。
 
 最终确认 Quick Worker 健康后，若存在更早的独立 Worker 重启终态记录，系统会将其从当前状态投影中清理；历史操作日志仍保留，失败中的新操作不会被升级成功结果掩盖。
 
@@ -345,7 +352,7 @@ CHUB_BROWSER_TESTS=1 .venv/bin/python -m pytest \
 | [Chub 项目说明](README.md) | 项目概览、安装、日常入口、安全和文档导航 |
 | [Chub 总体架构设计](docs/CHUB_ARCHITECTURE_DESIGN.md) | 核心、AI Runtime 与第三方服务三层架构、状态所有权和跨模块约束 |
 | [Chub AI Runtime 架构设计](docs/CHUB_AI_RUNTIME_DESIGN.md) | AI Runtime 架构、Session Manager、Worker 职责和 Runtime 实现规范 |
-| [Chub CLI 分发、安装与发布设计](docs/CHUB_CLI_DISTRIBUTION_DESIGN.md) | 新设备安装、Chub 主发行包与可选 ClawBot 职责、npm 发布、版本管理和 GitHub Release |
+| [本机大模型部署设计](docs/LOCAL_LLM_LEARNING_DEPLOYMENT_DESIGN.md) | 当前 MacBook 上独立的 Ollama 本机模型部署、常用 API、资源边界、阶段和验收 |
 | [Chub AI Session 状态模型设计](docs/AI_SESSION_STATE_DESIGN.md) | Session、Activity、usage 投影、入口、操作、槽位和单 writer 语义 |
 | [Chub Quick Worker 独立服务设计](docs/CHUB_QUICK_WORKER_DESIGN.md) | Quick Worker 独立服务、非实时任务、恢复、通知终态和重启协调 |
 | [Codex AI 额度与用量采集设计](docs/CODEX_AI_QUOTA_USAGE_DESIGN.md) | Codex/OpenAI 用量来源、统一接口、缓存和展示口径 |

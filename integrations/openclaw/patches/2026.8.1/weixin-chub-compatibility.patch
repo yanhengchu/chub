@@ -1,0 +1,345 @@
+--- a/src/messaging/inbound.ts
++++ b/src/messaging/inbound.ts
+@@ -48,7 +48,11 @@
+   try {
+     const dir = path.dirname(filePath);
+     fs.mkdirSync(dir, { recursive: true });
+-    fs.writeFileSync(filePath, JSON.stringify(tokens, null, 0), "utf-8");
++    fs.writeFileSync(filePath, JSON.stringify(tokens, null, 0), {
++      encoding: "utf-8",
++      mode: 0o600,
++    });
++    fs.chmodSync(filePath, 0o600);
+   } catch (err) {
+     logger.warn(`persistContextTokens: failed to write ${filePath}: ${String(err)}`);
+   }
+@@ -62,6 +66,7 @@
+   const filePath = resolveContextTokenFilePath(accountId);
+   try {
+     if (!fs.existsSync(filePath)) return;
++    fs.chmodSync(filePath, 0o600);
+     const raw = fs.readFileSync(filePath, "utf-8");
+     const tokens = JSON.parse(raw) as Record<string, string>;
+     let count = 0;
+@@ -105,7 +110,11 @@
+ /** Retrieve the cached context token for a given account+user pair. */
+ export function getContextToken(accountId: string, userId: string): string | undefined {
+   const k = contextTokenKey(accountId, userId);
+-  const val = contextTokenStore.get(k);
++  let val = contextTokenStore.get(k);
++  if (val === undefined) {
++    restoreContextTokens(accountId);
++    val = contextTokenStore.get(k);
++  }
+   logger.debug(
+     `getContextToken: key=${k} found=${val !== undefined} storeSize=${contextTokenStore.size}`,
+   );
+@@ -138,6 +147,7 @@
+ /** Inbound context passed to the OpenClaw core pipeline (matches MsgContext shape). */
+ export type WeixinMsgContext = {
+   Body: string;
++  BodyForAgent?: string;
+   From: string;
+   To: string;
+   AccountId: string;
+--- a/src/channel.ts
++++ b/src/channel.ts
+@@ -120,8 +120,13 @@
+     aLog.error(`sendWeixinOutbound: account not configured`);
+     throw new Error("weixin not configured: please run `openclaw channels login --channel openclaw-weixin`");
+   }
++  const contextToken = params.contextToken ?? getContextToken(account.accountId, params.to);
++  if (!contextToken) {
++    aLog.warn("sendWeixinOutbound: contextToken unavailable for configured recipient");
++    throw new Error("weixin_context_missing: ask the recipient to message the bot first");
++  }
+   if (!params.contextToken) {
+-    aLog.warn(`sendWeixinOutbound: contextToken missing for to=${params.to}, sending without context`);
++    aLog.info("sendWeixinOutbound: restored persisted contextToken for configured recipient");
+   }
+   const f = new StreamingMarkdownFilter();
+   const rawText = params.text ?? "";
+@@ -142,7 +147,7 @@
+     const result = await sendMessageWeixin({ to: params.to, text: filteredText, opts: {
+       baseUrl: account.baseUrl,
+       token: account.token,
+-      contextToken: params.contextToken,
++      contextToken,
+     }});
+     emitWeixinMessageSent({ to: params.to, content: filteredText, success: true, accountId: account.accountId });
+     return { channel: "openclaw-weixin", messageId: result.messageId };
+--- a/src/messaging/process-message.ts
++++ b/src/messaging/process-message.ts
+@@ -37,6 +37,7 @@
+ import { handleSlashCommand } from "./slash-commands.js";
+ 
+ const MEDIA_OUTBOUND_TEMP_DIR = path.join(resolvePreferredOpenClawTmpDir(), "weixin/media/outbound-temp");
++const CHUB_VOICE_TRANSCRIPT_MARKER = "[[chub-weixin-voice-transcript]]";
+ 
+ /** Dependencies for processOneMessage, injected by the monitor loop. */
+ export type ProcessMessageDeps = {
+@@ -167,7 +168,11 @@
+ 
+   // --- Framework command authorization ---
+   const rawBody = ctx.Body?.trim() ?? "";
+-  ctx.CommandBody = rawBody;
++  const hasVoiceTranscript = full.item_list?.some(
++    (item) => item.type === MessageItemType.VOICE && Boolean(item.voice_item?.text?.trim()),
++  ) ?? false;
++  ctx.BodyForAgent = rawBody;
++  ctx.CommandBody = hasVoiceTranscript ? CHUB_VOICE_TRANSCRIPT_MARKER : rawBody;
+ 
+   const senderId = full.from_user_id ?? "";
+ 
+@@ -199,14 +204,14 @@
+ 
+   if (directDmOutcome === "disabled" || directDmOutcome === "unauthorized") {
+     logger.info(
+-      `authorization: dropping message from=${senderId} outcome=${directDmOutcome}`,
++      `authorization: dropping message from=${redactToken(senderId)} outcome=${directDmOutcome}`,
+     );
+     return;
+   }
+ 
+   ctx.CommandAuthorized = commandAuthorized;
+   logger.debug(
+-    `authorization: senderId=${senderId} commandAuthorized=${String(commandAuthorized)} senderAllowed=${String(senderAllowedForCommands)}`,
++    `authorization: senderId=${redactToken(senderId)} commandAuthorized=${String(commandAuthorized)} senderAllowed=${String(senderAllowedForCommands)}`,
+   );
+ 
+   if (debug) {
+@@ -227,7 +232,7 @@
+   );
+   if (!route.agentId) {
+     logger.error(
+-      `resolveAgentRoute: no agentId resolved for peer=${ctx.To} accountId=${deps.accountId} — message will not be dispatched`,
++      `resolveAgentRoute: no agentId resolved for peer=${redactToken(ctx.To)} accountId=${deps.accountId} — message will not be dispatched`,
+     );
+   }
+ 
+@@ -249,7 +254,7 @@
+   );
+ 
+   logger.info(
+-    `inbound: from=${finalized.From} to=${finalized.To} bodyLen=${(finalized.Body ?? "").length} hasMedia=${Boolean(finalized.MediaPath ?? finalized.MediaUrl)}`,
++    `inbound: from=${redactToken(finalized.From)} to=${redactToken(finalized.To)} bodyLen=${(finalized.Body ?? "").length} hasMedia=${Boolean(finalized.MediaPath ?? finalized.MediaUrl)}`,
+   );
+   logger.debug(`inbound context: ${redactBody(JSON.stringify(finalized))}`);
+ 
+@@ -335,7 +340,7 @@
+         const mediaUrl = payload.mediaUrl ?? payload.mediaUrls?.[0];
+         logger.debug(`outbound payload: ${redactBody(JSON.stringify(payload))}`);
+         logger.info(
+-          `outbound: to=${ctx.To} contextToken=${redactToken(contextToken)} textLen=${text.length} mediaUrl=${mediaUrl ? "present" : "none"}`,
++          `outbound: to=${redactToken(ctx.To)} contextToken=${redactToken(contextToken)} textLen=${text.length} mediaUrl=${mediaUrl ? "present" : "none"}`,
+         );
+ 
+         if (debug) {
+@@ -355,7 +360,7 @@
+           runId,
+         });
+         if (sendingResult.cancelled) {
+-          logger.info(`outbound: cancelled by message_sending hook to=${ctx.To}`);
++          logger.info(`outbound: cancelled by message_sending hook to=${redactToken(ctx.To)}`);
+           return;
+         }
+         text = sendingResult.text;
+@@ -388,7 +393,7 @@
+                 runId,
+               }});
+               emitWeixinMessageSent({ to: ctx.To, content: text, success: true, accountId: deps.accountId, runId });
+-              logger.info(`outbound: text sent to=${ctx.To}`);
++              logger.info(`outbound: text sent to=${redactToken(ctx.To)}`);
+               return;
+             }
+             await sendWeixinMediaFile({
+@@ -399,7 +404,7 @@
+               cdnBaseUrl: deps.cdnBaseUrl,
+             });
+             emitWeixinMessageSent({ to: ctx.To, content: text, success: true, accountId: deps.accountId, runId });
+-            logger.info(`outbound: media sent OK to=${ctx.To}`);
++            logger.info(`outbound: media sent OK to=${redactToken(ctx.To)}`);
+           } else {
+             logger.debug(`outbound: sending text message to=${ctx.To}`);
+             await sendMessageWeixin({ to: ctx.To, text, opts: {
+@@ -409,12 +414,12 @@
+               runId,
+             }});
+             emitWeixinMessageSent({ to: ctx.To, content: text, success: true, accountId: deps.accountId, runId });
+-            logger.info(`outbound: text sent OK to=${ctx.To}`);
++            logger.info(`outbound: text sent OK to=${redactToken(ctx.To)}`);
+           }
+         } catch (err) {
+           emitWeixinMessageSent({ to: ctx.To, content: text, success: false, error: String(err), accountId: deps.accountId, runId });
+           logger.error(
+-            `outbound: FAILED to=${ctx.To} mediaUrl=${mediaUrl ?? "none"} err=${String(err)} stack=${(err as Error).stack ?? ""}`,
++            `outbound: FAILED to=${redactToken(ctx.To)} mediaUrl=${mediaUrl ?? "none"} err=${String(err)} stack=${(err as Error).stack ?? ""}`,
+           );
+           throw err;
+         }
+--- a/dist/src/messaging/inbound.js
++++ b/dist/src/messaging/inbound.js
+@@ -35,7 +35,11 @@
+     try {
+         const dir = path.dirname(filePath);
+         fs.mkdirSync(dir, { recursive: true });
+-        fs.writeFileSync(filePath, JSON.stringify(tokens, null, 0), "utf-8");
++        fs.writeFileSync(filePath, JSON.stringify(tokens, null, 0), {
++            encoding: "utf-8",
++            mode: 0o600,
++        });
++        fs.chmodSync(filePath, 0o600);
+     }
+     catch (err) {
+         logger.warn(`persistContextTokens: failed to write ${filePath}: ${String(err)}`);
+@@ -50,6 +54,7 @@
+     try {
+         if (!fs.existsSync(filePath))
+             return;
++        fs.chmodSync(filePath, 0o600);
+         const raw = fs.readFileSync(filePath, "utf-8");
+         const tokens = JSON.parse(raw);
+         let count = 0;
+@@ -93,7 +98,11 @@
+ /** Retrieve the cached context token for a given account+user pair. */
+ export function getContextToken(accountId, userId) {
+     const k = contextTokenKey(accountId, userId);
+-    const val = contextTokenStore.get(k);
++    let val = contextTokenStore.get(k);
++    if (val === undefined) {
++        restoreContextTokens(accountId);
++        val = contextTokenStore.get(k);
++    }
+     logger.debug(`getContextToken: key=${k} found=${val !== undefined} storeSize=${contextTokenStore.size}`);
+     return val;
+ }
+--- a/dist/src/channel.js
++++ b/dist/src/channel.js
+@@ -74,8 +74,13 @@
+         aLog.error(`sendWeixinOutbound: account not configured`);
+         throw new Error("weixin not configured: please run `openclaw channels login --channel openclaw-weixin`");
+     }
++    const contextToken = params.contextToken ?? getContextToken(account.accountId, params.to);
++    if (!contextToken) {
++        aLog.warn("sendWeixinOutbound: contextToken unavailable for configured recipient");
++        throw new Error("weixin_context_missing: ask the recipient to message the bot first");
++    }
+     if (!params.contextToken) {
+-        aLog.warn(`sendWeixinOutbound: contextToken missing for to=${params.to}, sending without context`);
++        aLog.info("sendWeixinOutbound: restored persisted contextToken for configured recipient");
+     }
+     const f = new StreamingMarkdownFilter();
+     const rawText = params.text ?? "";
+@@ -94,7 +99,7 @@
+         const result = await sendMessageWeixin({ to: params.to, text: filteredText, opts: {
+                 baseUrl: account.baseUrl,
+                 token: account.token,
+-                contextToken: params.contextToken,
++                contextToken,
+             } });
+         emitWeixinMessageSent({ to: params.to, content: filteredText, success: true, accountId: account.accountId });
+         return { channel: "openclaw-weixin", messageId: result.messageId };
+--- a/dist/src/messaging/process-message.js
++++ b/dist/src/messaging/process-message.js
+@@ -22,6 +22,7 @@
+ import { WeixinReplyProgressSender } from "./reply-progress-sender.js";
+ import { handleSlashCommand } from "./slash-commands.js";
+ const MEDIA_OUTBOUND_TEMP_DIR = path.join(resolvePreferredOpenClawTmpDir(), "weixin/media/outbound-temp");
++const CHUB_VOICE_TRANSCRIPT_MARKER = "[[chub-weixin-voice-transcript]]";
+ /** Extract text body from item_list (for slash command detection). */
+ function extractTextBody(itemList) {
+     if (!itemList?.length)
+@@ -104,7 +105,9 @@
+     const ctx = weixinMessageToMsgContext(full, deps.accountId, mediaOpts);
+     // --- Framework command authorization ---
+     const rawBody = ctx.Body?.trim() ?? "";
+-    ctx.CommandBody = rawBody;
++    const hasVoiceTranscript = full.item_list?.some((item) => item.type === MessageItemType.VOICE && Boolean(item.voice_item?.text?.trim())) ?? false;
++    ctx.BodyForAgent = rawBody;
++    ctx.CommandBody = hasVoiceTranscript ? CHUB_VOICE_TRANSCRIPT_MARKER : rawBody;
+     const senderId = full.from_user_id ?? "";
+     const { senderAllowedForCommands, commandAuthorized } = await resolveSenderCommandAuthorizationWithRuntime({
+         cfg: deps.config,
+@@ -131,11 +134,11 @@
+         senderAllowedForCommands,
+     });
+     if (directDmOutcome === "disabled" || directDmOutcome === "unauthorized") {
+-        logger.info(`authorization: dropping message from=${senderId} outcome=${directDmOutcome}`);
++        logger.info(`authorization: dropping message from=${redactToken(senderId)} outcome=${directDmOutcome}`);
+         return;
+     }
+     ctx.CommandAuthorized = commandAuthorized;
+-    logger.debug(`authorization: senderId=${senderId} commandAuthorized=${String(commandAuthorized)} senderAllowed=${String(senderAllowedForCommands)}`);
++    logger.debug(`authorization: senderId=${redactToken(senderId)} commandAuthorized=${String(commandAuthorized)} senderAllowed=${String(senderAllowedForCommands)}`);
+     if (debug) {
+         debugTrace.push("── 鉴权 & 路由 ──", `│ auth: cmdAuthorized=${String(commandAuthorized)} senderAllowed=${String(senderAllowedForCommands)}`);
+     }
+@@ -147,7 +150,7 @@
+     });
+     logger.debug(`resolveAgentRoute: agentId=${route.agentId ?? "(none)"} sessionKey=${route.sessionKey ?? "(none)"} mainSessionKey=${route.mainSessionKey ?? "(none)"}`);
+     if (!route.agentId) {
+-        logger.error(`resolveAgentRoute: no agentId resolved for peer=${ctx.To} accountId=${deps.accountId} — message will not be dispatched`);
++        logger.error(`resolveAgentRoute: no agentId resolved for peer=${redactToken(ctx.To)} accountId=${deps.accountId} — message will not be dispatched`);
+     }
+     if (debug) {
+         debugTrace.push(`│ route: agent=${route.agentId ?? "none"} session=${route.sessionKey ?? "none"}`);
+@@ -161,7 +164,7 @@
+         agentId: route.agentId,
+     });
+     const finalized = deps.channelRuntime.reply.finalizeInboundContext(ctx);
+-    logger.info(`inbound: from=${finalized.From} to=${finalized.To} bodyLen=${(finalized.Body ?? "").length} hasMedia=${Boolean(finalized.MediaPath ?? finalized.MediaUrl)}`);
++    logger.info(`inbound: from=${redactToken(finalized.From)} to=${redactToken(finalized.To)} bodyLen=${(finalized.Body ?? "").length} hasMedia=${Boolean(finalized.MediaPath ?? finalized.MediaUrl)}`);
+     logger.debug(`inbound context: ${redactBody(JSON.stringify(finalized))}`);
+     await deps.channelRuntime.session.recordInboundSession({
+         storePath,
+@@ -235,7 +238,7 @@
+             })();
+             const mediaUrl = payload.mediaUrl ?? payload.mediaUrls?.[0];
+             logger.debug(`outbound payload: ${redactBody(JSON.stringify(payload))}`);
+-            logger.info(`outbound: to=${ctx.To} contextToken=${redactToken(contextToken)} textLen=${text.length} mediaUrl=${mediaUrl ? "present" : "none"}`);
++            logger.info(`outbound: to=${redactToken(ctx.To)} contextToken=${redactToken(contextToken)} textLen=${text.length} mediaUrl=${mediaUrl ? "present" : "none"}`);
+             if (debug) {
+                 debugDeliveries.push({
+                     textLen: text.length,
+@@ -252,7 +255,7 @@
+                 runId,
+             });
+             if (sendingResult.cancelled) {
+-                logger.info(`outbound: cancelled by message_sending hook to=${ctx.To}`);
++                logger.info(`outbound: cancelled by message_sending hook to=${redactToken(ctx.To)}`);
+                 return;
+             }
+             text = sendingResult.text;
+@@ -286,7 +289,7 @@
+                                 runId,
+                             } });
+                         emitWeixinMessageSent({ to: ctx.To, content: text, success: true, accountId: deps.accountId, runId });
+-                        logger.info(`outbound: text sent to=${ctx.To}`);
++                        logger.info(`outbound: text sent to=${redactToken(ctx.To)}`);
+                         return;
+                     }
+                     await sendWeixinMediaFile({
+@@ -297,7 +300,7 @@
+                         cdnBaseUrl: deps.cdnBaseUrl,
+                     });
+                     emitWeixinMessageSent({ to: ctx.To, content: text, success: true, accountId: deps.accountId, runId });
+-                    logger.info(`outbound: media sent OK to=${ctx.To}`);
++                    logger.info(`outbound: media sent OK to=${redactToken(ctx.To)}`);
+                 }
+                 else {
+                     logger.debug(`outbound: sending text message to=${ctx.To}`);
+@@ -308,12 +311,12 @@
+                             runId,
+                         } });
+                     emitWeixinMessageSent({ to: ctx.To, content: text, success: true, accountId: deps.accountId, runId });
+-                    logger.info(`outbound: text sent OK to=${ctx.To}`);
++                    logger.info(`outbound: text sent OK to=${redactToken(ctx.To)}`);
+                 }
+             }
+             catch (err) {
+                 emitWeixinMessageSent({ to: ctx.To, content: text, success: false, error: String(err), accountId: deps.accountId, runId });
+-                logger.error(`outbound: FAILED to=${ctx.To} mediaUrl=${mediaUrl ?? "none"} err=${String(err)} stack=${err.stack ?? ""}`);
++                logger.error(`outbound: FAILED to=${redactToken(ctx.To)} mediaUrl=${mediaUrl ?? "none"} err=${String(err)} stack=${err.stack ?? ""}`);
+                 throw err;
+             }
+         },

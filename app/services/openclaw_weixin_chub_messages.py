@@ -27,7 +27,7 @@ CHUB_HELP_MESSAGE = "\n\n".join(
         "Quick",
         "chub · sync · new [title] · S# [task]",
         "Reference",
-        "help model · text help · session help · help request · help system",
+        "model help · text help · session help · request help · system help",
     )
 )
 CHUB_HELP_TOPICS = {
@@ -80,6 +80,7 @@ CHUB_HELP_TOPICS = {
             "restart | restart web",
             "restart worker",
             "restart clawbot",
+            "restart network",
             "upgrade",
         )
     ),

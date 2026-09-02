@@ -119,6 +119,9 @@ function openclawOverallMessage(data) {
   if (data.state !== "running") {
     return "";
   }
+  if (data.compatibility_state === "mismatch") {
+    return data.compatibility_message || "Chub 兼容性未验证。";
+  }
   if (data.channel_state && data.channel_state !== "running") {
     return data.channel_message || data.message || "";
   }
@@ -137,6 +140,9 @@ function clawbotPresentation(data) {
 
 function openclawDetailKind(data) {
   const [, kind] = clawbotPresentation(data);
+  if (data.compatibility_state === "mismatch" && kind === "muted") {
+    return "warning";
+  }
   return kind === "success" ? "muted" : kind === "timeout" ? "warning" : kind;
 }
 
@@ -159,6 +165,9 @@ function clawbotDetail(data) {
           : ["Owner 状态未知"];
     details.push(ownerText);
   }
+  if (data.compatibility_state === "mismatch") {
+    details.push("Chub 兼容性未验证");
+  }
   return details.join(" · ");
 }
 
@@ -170,7 +179,11 @@ function renderOpenClaw(data, { cache = true } = {}) {
     clawbotDetail(data),
     openclawDetailKind(data),
   );
-  elements.clawbotDetail.title = [data.channel_message, data.owner_message]
+  elements.clawbotDetail.title = [
+    data.channel_message,
+    data.owner_message,
+    data.compatibility_message,
+  ]
     .filter(Boolean)
     .join("；");
   setMessage(elements.openclawMessage, openclawOverallMessage(data));
@@ -314,7 +327,9 @@ async function controlOpenClaw(action) {
       }
       setMessage(
         elements.openclawMessage,
-        error.message || "OpenClaw 维护操作失败。",
+        error.code === "openclaw_compatibility_mismatch"
+          ? openclawState?.compatibility_message || error.message
+          : error.message || "OpenClaw 维护操作失败。",
         "error",
       );
     }

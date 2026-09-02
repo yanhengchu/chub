@@ -189,7 +189,7 @@ def _require_runtime_maintenance_available(request: Request) -> None:
         raise ApiError(
             409,
             "system_upgrade_in_progress",
-            "系统升级与恢复正在处理 Chub Web 和 Quick Worker，请等待当前操作结束。",
+            "升级与恢复正在处理 Chub Web 和 Quick Worker，请等待当前操作结束。",
         )
 
 

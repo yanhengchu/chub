@@ -1,3 +1,5 @@
+import hashlib
+import json
 from unittest.mock import MagicMock
 import threading
 from pathlib import Path
@@ -6,11 +8,64 @@ import pytest
 
 from app.core.response import ApiError
 from app.services.openclaw import OpenClawManager, OpenClawStatus
-from app.services.openclaw_recovery import OpenClawSyncReport
+from app.services.openclaw_recovery import (
+    OpenClawSyncReport,
+    expected_openclaw_gateway_version,
+)
 from app.services.openclaw_weixin import (
     OpenClawWeixinLogin,
     extract_terminal_qr_png,
 )
+
+
+def test_openclaw_202681_cli_plugin_channel_patch_is_version_scoped() -> None:
+    patch_root = Path("integrations/openclaw/patches/2026.8.1")
+    manifest = json.loads((patch_root / "manifest.json").read_text(encoding="utf-8"))
+
+    assert manifest["status"] == "validated"
+    assert manifest["target"]["openclaw_version"] == "2026.8.1"
+    patch = manifest["openclaw_runtime_patches"][0]
+    patch_file = Path(patch["file"])
+
+    assert patch["id"] == "openclaw-cli-plugin-message-channel"
+    assert patch["scope"] == "runtime-dist"
+    assert hashlib.sha256(patch_file.read_bytes()).hexdigest() == patch["sha256"]
+    contents = patch_file.read_text(encoding="utf-8")
+    assert "normalizeMessageChannel(params.value)" in contents
+    assert "channel: plugin.id" in contents
+
+
+def test_openclaw_202681_weixin_compatibility_patch_is_version_scoped() -> None:
+    patch_root = Path("integrations/openclaw/patches/2026.8.1")
+    manifest = json.loads((patch_root / "manifest.json").read_text(encoding="utf-8"))
+
+    assert manifest["status"] == "validated"
+    patch = manifest["patches"][0]
+    patch_file = Path(patch["file"])
+
+    assert patch["id"] == "weixin-chub-compatibility"
+    assert patch["scope"] == "source-and-runtime"
+    assert patch["status"] == "validated"
+    assert hashlib.sha256(patch_file.read_bytes()).hexdigest() == patch["sha256"]
+    contents = patch_file.read_text(encoding="utf-8")
+    assert "CHUB_VOICE_TRANSCRIPT_MARKER" in contents
+    assert "chmodSync(filePath, 0o600)" in contents
+    assert "weixin_context_missing" in contents
+    assert "redactToken(finalized.From)" in contents
+
+
+def test_openclaw_202681_is_the_default_validated_baseline() -> None:
+    registry = json.loads(
+        Path("integrations/openclaw/patches/manifest.json").read_text(encoding="utf-8")
+    )
+
+    assert expected_openclaw_gateway_version() == "2026.8.1"
+    baseline = next(
+        item
+        for item in registry["baselines"]
+        if item["openclaw_version"] == "2026.8.1"
+    )
+    assert baseline["status"] == "validated"
 
 
 def status_payload(
@@ -99,6 +154,7 @@ def test_openclaw_status_is_derived_from_curated_json(
         "service_manager",
         "bind_mode",
         "port",
+        "local_access_url",
         "access_url",
         "channel_state",
         "channel_count",
@@ -107,9 +163,41 @@ def test_openclaw_status_is_derived_from_curated_json(
         "owner_state",
         "owner_count",
         "owner_message",
+        "compatibility_state",
+        "compatibility_message",
         "message",
         "checked_at",
     }
+
+
+def test_openclaw_local_access_url_requires_ready_loopback_gateway() -> None:
+    running = openclaw_status("running")
+
+    assert OpenClawManager._local_access_url(running) == "http://127.0.0.1:18789/"
+    assert OpenClawManager._local_access_url(openclaw_status("degraded")) is None
+    assert OpenClawManager._local_access_url(
+        running.model_copy(update={"bind_mode": "lan"})
+    ) is None
+
+
+def test_openclaw_compatibility_status_keeps_gateway_health_independent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = OpenClawManager()
+    running = openclaw_status("running").model_copy(update={"version": "2026.7.1-2"})
+    monkeypatch.setattr(
+        "app.services.openclaw.expected_openclaw_gateway_version",
+        lambda: "2026.8.1",
+    )
+
+    compatibility = manager._compatibility_status(running)
+
+    assert compatibility["compatibility_state"] == "mismatch"
+    assert "自动恢复、插件同步与补丁应用已暂停" in compatibility["compatibility_message"]
+    assert "Gateway 运行状态不受此提示影响" in compatibility["compatibility_message"]
+    assert OpenClawManager._local_access_url(
+        running.model_copy(update={"port": 70000})
+    ) is None
 
 
 @pytest.mark.parametrize(
@@ -292,9 +380,11 @@ def test_openclaw_status_includes_channel_summary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manager = OpenClawManager()
+    gateway_status = status_payload(loaded=True, ready=True, port_status="listening")
+    gateway_status["cli"]["version"] = "2026.8.1"
     run_json = MagicMock(
         side_effect=[
-            status_payload(loaded=True, ready=True, port_status="listening"),
+            gateway_status,
             {
                 "channelAccounts": {
                     "openclaw-weixin": [
@@ -321,6 +411,7 @@ def test_openclaw_status_includes_channel_summary(
     assert status.channel_count == 1
     assert status.owner_state == "configured"
     assert status.owner_count == 1
+    assert status.compatibility_state == "compatible"
     assert run_json.call_args_list[1].args[1] == ["channels", "status", "--json"]
     assert run_json.call_args_list[2].args[1] == [
         "config",

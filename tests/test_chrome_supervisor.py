@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import socket
 import threading
+from uuid import uuid4
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -21,7 +22,11 @@ from app.automations.manager import AutomationManager
 
 
 def test_supervisor_request_uses_bounded_fixed_protocol(tmp_path: Path) -> None:
-    socket_file = tmp_path / SOCKET_NAME
+    # macOS AF_UNIX paths are capped at 104 bytes.  pytest's standard temporary
+    # directory can exceed that limit, so use the stable short system temp root
+    # while retaining a unique name for parallel-safe isolation.
+    socket_root = Path("/tmp") if Path("/tmp").is_dir() else tmp_path
+    socket_file = socket_root / f"chub-{uuid4().hex[:12]}.sock"
     listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     listener.bind(str(socket_file))
     listener.listen(1)
@@ -57,6 +62,7 @@ def test_supervisor_request_uses_bounded_fixed_protocol(tmp_path: Path) -> None:
     finally:
         thread.join(timeout=2)
         listener.close()
+        socket_file.unlink(missing_ok=True)
 
     assert result.state == "stopped"
     assert json.loads(received[0]) == {"action": "status"}

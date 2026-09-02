@@ -199,7 +199,7 @@ process.stdout.write(JSON.stringify({
             "systemUpgradeStart": True,
         },
         "unknownTaskDetail": "任务数量暂无法确认；恢复流程会按固定边界清理。",
-        "recoveryOnlyButton": "运行态恢复",
+        "recoveryOnlyButton": "升级与恢复",
         "blockedUpgradeDetail": "状态：升级功能未就绪。升级功能未就绪：独立升级执行器尚未安装；当前 Chub 与 Quick Worker 不受影响。",
         "upgradeHistorical": 1,
         "upgradeNonMatching": 1,
@@ -207,4 +207,127 @@ process.stdout.write(JSON.stringify({
         "upgradeCompletionDetail": "状态：已完成。ready 浏览器将在稍后自动刷新页面。",
         "restoredUpgradeReload": 3,
         "restoredUpgradeMarker": None,
+    }
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js is required for JavaScript behavior tests")
+def test_core_and_third_party_refreshes_are_scoped_to_their_cards() -> None:
+    program = r'''
+const fs = require("fs");
+const source = fs.readFileSync(process.argv[1], "utf8");
+const element = () => ({
+  disabled: false,
+  hidden: false,
+  textContent: "",
+  addEventListener() {},
+  replaceChildren() {},
+});
+globalThis.document = {
+  createDocumentFragment() { return { append() {} }; },
+  createElement() { return { className: "", classList: { add() {} }, setAttribute() {}, append() {} }; },
+};
+globalThis.elements = new Proxy({}, {
+  get(target, property) { return target[property] ||= element(); },
+});
+globalThis.window = { clearTimeout() {}, setTimeout() { return 1; } };
+globalThis.sessionStorage = { getItem() { return null; }, setItem() {}, removeItem() {} };
+globalThis.hasProtectedAccess = () => true;
+globalThis.hubRestartInProgress = false;
+globalThis.setWorkstationStatus = () => {};
+globalThis.setMessage = () => {};
+globalThis.setBadge = () => {};
+globalThis.handleAccessError = () => false;
+globalThis.showConfirmationDialog = () => {};
+globalThis.showMaintenanceCompletion = () => {};
+globalThis.reloadDashboardAfterMaintenance = () => {};
+globalThis.apiFetch = async () => ({});
+globalThis.loadStatus = async () => {};
+globalThis.loadAutomationEnvironment = async () => {};
+globalThis.loadOpenClaw = async () => {};
+
+eval(`${source}
+const calls = [];
+loadStatus = async () => { calls.push("status"); };
+loadQuickWorkerStatus = async () => { calls.push("worker"); };
+loadSystemUpgradeStatus = async () => { calls.push("upgrade"); };
+loadAutomationEnvironment = async () => { calls.push("chrome"); };
+loadOpenClaw = async () => { calls.push("openclaw"); };
+(async () => {
+  await refreshCoreCapabilities();
+  const core = [...calls];
+  calls.length = 0;
+  await refreshThirdPartyServices();
+  process.stdout.write(JSON.stringify({ core, thirdParty: calls }));
+})();`);
+'''
+    result = subprocess.run(
+        [NODE, "-e", program, str(WORKSTATION_SCRIPT)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert json.loads(result.stdout) == {
+        "core": ["status", "worker", "upgrade", "chrome"],
+        "thirdParty": ["openclaw"],
+    }
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js is required for JavaScript behavior tests")
+def test_quick_worker_status_waits_for_hub_restart_without_error() -> None:
+    program = r'''
+const fs = require("fs");
+const source = fs.readFileSync(process.argv[1], "utf8");
+const element = () => ({
+  disabled: false,
+  hidden: false,
+  textContent: "",
+  addEventListener() {},
+  replaceChildren() {},
+});
+const elementCache = {};
+globalThis.document = {
+  createDocumentFragment() { return { append() {} }; },
+  createElement() { return { className: "", classList: { add() {} }, setAttribute() {}, append() {} }; },
+};
+globalThis.elements = new Proxy({}, {
+  get(target, property) { return target[property] ||= element(); },
+});
+globalThis.window = { clearTimeout() {}, setTimeout() { return 1; } };
+globalThis.sessionStorage = { getItem() { return null; }, setItem() {}, removeItem() {} };
+globalThis.hasProtectedAccess = () => true;
+globalThis.hubRestartInProgress = true;
+globalThis.accessVersion = 0;
+globalThis.setWorkstationStatus = (element, message) => { element.textContent = message; };
+globalThis.setMessage = (element, message) => { element.textContent = message; };
+globalThis.setBadge = () => {};
+globalThis.handleAccessError = () => false;
+globalThis.showConfirmationDialog = () => {};
+globalThis.showMaintenanceCompletion = () => {};
+globalThis.reloadDashboardAfterMaintenance = () => {};
+globalThis.apiFetch = async () => { throw new Error("无法连接 Hub，请检查服务和网络。"); };
+globalThis.loadStatus = async () => {};
+globalThis.loadAutomationEnvironment = async () => {};
+globalThis.loadOpenClaw = async () => {};
+
+eval(`${source}
+quickWorkerState = { state: "ready", message: "ready", can_restart: true };
+(async () => {
+  await loadQuickWorkerStatus();
+  process.stdout.write(JSON.stringify({
+    detail: elements.quickWorkerDetail.textContent,
+    message: elements.quickWorkerMessage.textContent,
+  }));
+})();`);
+'''
+    result = subprocess.run(
+        [NODE, "-e", program, str(WORKSTATION_SCRIPT)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert json.loads(result.stdout) == {
+        "detail": "Chub 正在重启，Quick Worker 状态将在控制面恢复后重新确认。",
+        "message": "",
     }

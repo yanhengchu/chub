@@ -94,7 +94,12 @@ def configure_network_recovery(settings: Settings) -> None:
 
 def test_network_recovery_runs_only_fixed_networkmanager_sequence(
     settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        "app.services.network_recovery.platform.system",
+        lambda: "Linux",
+    )
     configure_network_recovery(settings)
     runner = NetworkManagerRunner()
 
@@ -127,7 +132,12 @@ def test_network_recovery_runs_only_fixed_networkmanager_sequence(
 
 def test_network_recovery_waits_for_the_configured_wifi_device(
     settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        "app.services.network_recovery.platform.system",
+        lambda: "Linux",
+    )
     configure_network_recovery(settings)
     runner = NetworkManagerRunner()
     runner.wifi_device_states = ["unavailable", "disconnected"]

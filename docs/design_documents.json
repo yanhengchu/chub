@@ -23,17 +23,17 @@
       "path": "CHUB_AI_RUNTIME_DESIGN.md"
     },
     {
-      "id": "chub-cli-distribution",
-      "title": "Chub CLI 分发、安装与发布设计",
-      "summary": "面向新设备定义核心 Chub（含自动运行的 Quick Worker）和可选 ClawBot 的安装使用边界，以及 npm 分发、版本管理和 GitHub Release 验收规则。",
-      "status": "待实现",
-      "path": "CHUB_CLI_DISTRIBUTION_DESIGN.md"
+      "id": "local-llm-learning-deployment",
+      "title": "本机大模型部署设计",
+      "summary": "定义当前 MacBook 上独立于 Chub 的 Ollama 本机模型部署、资源边界、常用 API、分阶段模型选择和验收规则。",
+      "status": "已验收",
+      "path": "LOCAL_LLM_LEARNING_DEPLOYMENT_DESIGN.md"
     },
     {
       "id": "ai-session-state",
       "title": "Chub AI Session 状态模型设计",
       "summary": "定义 Codex Session、Activity、交互入口、usage 投影、Session 操作、微信槽位和单 writer 状态语义。",
-      "status": "持续维护",
+      "status": "已验收",
       "path": "AI_SESSION_STATE_DESIGN.md"
     },
     {
@@ -53,7 +53,7 @@
     {
       "id": "openclaw-customization",
       "title": "OpenClaw 定制集成设计",
-      "summary": "面向 AI Agent 统一定义 Chub/OpenClaw/微信 ClawBot 的接入、插件协议边界、Context Token 持久化、幂等和安全验收。",
+      "summary": "面向 AI Agent 统一定义 Chub/OpenClaw/微信 ClawBot 的接入、版本化插件补丁、Context Token、幂等、通知与安全验收边界。",
       "status": "已验收",
       "path": "OPENCLAW_CUSTOMIZATION_DESIGN.md"
     },

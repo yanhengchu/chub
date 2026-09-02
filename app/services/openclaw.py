@@ -15,7 +15,10 @@ from pydantic import BaseModel
 
 from app.codex.models import utc_now
 from app.core.response import ApiError
-from app.services.openclaw_recovery import synchronize_openclaw_runtime
+from app.services.openclaw_recovery import (
+    expected_openclaw_gateway_version,
+    synchronize_openclaw_runtime,
+)
 from app.services.openclaw_weixin import OpenClawWeixinLogin, WeixinLoginStatus
 
 
@@ -42,6 +45,7 @@ OpenClawOwnerState = Literal[
     "configured",
     "unknown",
 ]
+OpenClawCompatibilityState = Literal["compatible", "mismatch", "unknown", "unavailable"]
 
 STATUS_TIMEOUT_SECONDS = 15
 ACTION_TIMEOUT_SECONDS = 45
@@ -65,6 +69,7 @@ class OpenClawStatus(BaseModel):
     service_manager: str | None = None
     bind_mode: str | None = None
     port: int | None = None
+    local_access_url: str | None = None
     access_url: str | None = None
     channel_state: OpenClawChannelState
     channel_count: int
@@ -73,6 +78,8 @@ class OpenClawStatus(BaseModel):
     owner_state: OpenClawOwnerState
     owner_count: int
     owner_message: str
+    compatibility_state: OpenClawCompatibilityState = "unknown"
+    compatibility_message: str = "Chub 兼容性尚未检查。"
     message: str
     checked_at: datetime
 
@@ -92,13 +99,56 @@ class OpenClawManager:
             return status
         channel_update, channel_ids = self._channel_status(executable, status)
         owner_update = self._owner_status(executable, status, channel_ids)
+        compatibility_update = self._compatibility_status(status)
         return status.model_copy(
             update={
+                "local_access_url": self._local_access_url(status),
                 "access_url": self._tailscale_access_url(status.port),
                 **channel_update,
                 **owner_update,
+                **compatibility_update,
             }
         )
+
+    @staticmethod
+    def _compatibility_status(status: OpenClawStatus) -> dict[str, str]:
+        if not status.installed:
+            return {
+                "compatibility_state": "unavailable",
+                "compatibility_message": "OpenClaw 未安装，无法检查 Chub 兼容性。",
+            }
+        expected_version = expected_openclaw_gateway_version()
+        if not expected_version or not status.version:
+            return {
+                "compatibility_state": "unknown",
+                "compatibility_message": "无法读取 Chub 的 OpenClaw 兼容基线。",
+            }
+        if status.version == expected_version:
+            return {
+                "compatibility_state": "compatible",
+                "compatibility_message": "当前 OpenClaw 版本符合 Chub 已验收基线。",
+            }
+        return {
+            "compatibility_state": "mismatch",
+            "compatibility_message": (
+                f"Chub 兼容性未验证：当前 OpenClaw {status.version}，"
+                f"已验收基线为 {expected_version}。"
+                "Chub 自动恢复、插件同步与补丁应用已暂停；"
+                "Gateway 运行状态不受此提示影响。"
+            ),
+        }
+
+    @staticmethod
+    def _local_access_url(status: OpenClawStatus) -> str | None:
+        """Expose only a verified loopback Gateway URL to the local settings page."""
+        if (
+            status.state != "running"
+            or status.bind_mode != "loopback"
+            or not isinstance(status.port, int)
+            or not 1 <= status.port <= 65535
+        ):
+            return None
+        return f"http://127.0.0.1:{status.port}/"
 
     def _gateway_status(self) -> tuple[OpenClawStatus, str | None]:
         executable = self._resolve_executable()

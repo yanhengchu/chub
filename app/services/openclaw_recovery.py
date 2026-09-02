@@ -12,8 +12,10 @@ from app.core.response import ApiError
 
 
 MAX_METADATA_BYTES = 64 * 1024
+MAX_PACKAGE_METADATA_BYTES = 512 * 1024
 SYNC_TIMEOUT_SECONDS = 120
 PATCH_TIMEOUT_SECONDS = 30
+PATCHES_ROOT = PROJECT_ROOT / "integrations/openclaw/patches"
 
 
 @dataclass(frozen=True)
@@ -22,15 +24,52 @@ class OpenClawSyncReport:
     message: str
 
 
+def expected_openclaw_gateway_version() -> str | None:
+    """Return the repository's fixed Gateway baseline without affecting health checks."""
+    try:
+        registry = _load_json(PATCHES_ROOT / "manifest.json")
+    except ApiError:
+        return None
+    version = registry.get("default_openclaw_version")
+    return version if isinstance(version, str) and version else None
+
+
+def _load_baseline_manifest(openclaw_version: str) -> dict:
+    registry = _load_json(PATCHES_ROOT / "manifest.json")
+    baselines = registry.get("baselines")
+    if not isinstance(baselines, list):
+        raise _sync_error("OpenClaw 补丁基线索引不可用。")
+    for baseline in baselines:
+        if not isinstance(baseline, dict) or baseline.get("openclaw_version") != openclaw_version:
+            continue
+        if baseline.get("status") != "validated":
+            raise _sync_error("当前 OpenClaw 版本的补丁基线尚未验收。")
+        relative_path = baseline.get("manifest")
+        if not isinstance(relative_path, str):
+            break
+        path = _fixed_patch_file(relative_path)
+        return _load_json(path)
+    raise _sync_error("当前 OpenClaw 版本没有已验收的补丁基线。")
+
+
 def synchronize_openclaw_runtime(executable: str, gateway_version: str | None) -> OpenClawSyncReport:
     """Synchronize only the repository's fixed OpenClaw/Weixin baseline."""
-    manifest = _load_json(PROJECT_ROOT / "integrations/openclaw/patches/manifest.json")
+    expected_gateway = expected_openclaw_gateway_version()
+    if not expected_gateway:
+        raise _sync_error("固定 OpenClaw 版本清单不可用。")
+    if gateway_version != expected_gateway:
+        raise ApiError(
+            409,
+            "openclaw_compatibility_mismatch",
+            f"OpenClaw Gateway 版本不匹配，当前为 {gateway_version or '未知'}，需要 {expected_gateway}。",
+        )
+    manifest = _load_baseline_manifest(expected_gateway)
     package = _load_json(PROJECT_ROOT / "integrations/openclaw/chub/package.json")
     target = manifest.get("target")
     if not isinstance(target, dict) or not isinstance(package, dict):
         raise _sync_error("固定 OpenClaw 版本清单不可用。")
 
-    expected_gateway = target.get("openclaw_version")
+    manifest_gateway = target.get("openclaw_version")
     expected_adapter = target.get("package_version")
     expected_package = target.get("package_name")
     expected_integrity = target.get("package_integrity")
@@ -38,7 +77,7 @@ def synchronize_openclaw_runtime(executable: str, gateway_version: str | None) -
     if not all(
         isinstance(value, str) and value
         for value in (
-            expected_gateway,
+            manifest_gateway,
             expected_adapter,
             expected_package,
             expected_integrity,
@@ -46,12 +85,8 @@ def synchronize_openclaw_runtime(executable: str, gateway_version: str | None) -
         )
     ):
         raise _sync_error("固定 OpenClaw 版本清单不完整。")
-    if gateway_version != expected_gateway:
-        raise ApiError(
-            409,
-            "openclaw_compatibility_mismatch",
-            f"OpenClaw Gateway 版本不匹配，当前为 {gateway_version or '未知'}，需要 {expected_gateway}。",
-        )
+    if manifest_gateway != expected_gateway:
+        raise _sync_error("固定 OpenClaw 补丁基线与索引不一致。")
 
     changed = False
     plugin_info = _inspect_plugin(executable, "chub")
@@ -103,17 +138,7 @@ def synchronize_openclaw_runtime(executable: str, gateway_version: str | None) -
     patches = manifest.get("patches")
     if not adapter_root or not isinstance(patches, list) or not patches:
         raise _sync_error("微信适配器运行目录或补丁清单不可用。")
-    patch_files = []
-    patch_states = []
-    for patch in patches:
-        if not isinstance(patch, dict):
-            raise _sync_error("补丁清单包含无法识别的项目。")
-        patch_file = _fixed_patch_file(patch.get("file"))
-        _verify_patch_integrity(patch_file, patch)
-        patch_files.append((patch, patch_file))
-        patch_states.append(_patch_state(adapter_root, patch_file))
-
-    if any(state != "applied" for state in patch_states):
+    if _manifest_patch_state(adapter_root, patches) != "applied":
         _run_command(
             executable,
             ["plugins", "install", f"{expected_package}@{expected_adapter}", "--force"],
@@ -133,17 +158,13 @@ def synchronize_openclaw_runtime(executable: str, gateway_version: str | None) -
         adapter_root = _plugin_root(adapter_info)
         if not adapter_root:
             raise _sync_error("微信适配器补丁基线恢复后运行目录不可用。")
+    changed = _apply_manifest_patches(adapter_root, patches) or changed
 
-    for patch, patch_file in patch_files:
-        patch_state = _patch_state(adapter_root, patch_file)
-        if patch_state == "applied":
-            continue
-        if patch_state == "partial":
-            raise _sync_error(f"补丁 {patch.get('id', 'unknown')} 恢复后仍只应用了一部分。")
-        _apply_patch(adapter_root, patch_file)
-        changed = True
-        if _patch_state(adapter_root, patch_file) != "applied":
-            raise _sync_error(f"补丁 {patch.get('id', 'unknown')} 应用后校验失败。")
+    runtime_patches = manifest.get("openclaw_runtime_patches")
+    if not isinstance(runtime_patches, list) or not runtime_patches:
+        raise _sync_error("OpenClaw 运行产物补丁清单不可用。")
+    runtime_root = _openclaw_runtime_root(executable, expected_gateway)
+    changed = _apply_manifest_patches(runtime_root, runtime_patches) or changed
 
     return OpenClawSyncReport(
         changed=changed,
@@ -152,8 +173,16 @@ def synchronize_openclaw_runtime(executable: str, gateway_version: str | None) -
 
 
 def _load_json(path: Path) -> dict:
+    return _load_bounded_json(path, max_bytes=MAX_METADATA_BYTES)
+
+
+def _load_package_metadata(path: Path) -> dict:
+    return _load_bounded_json(path, max_bytes=MAX_PACKAGE_METADATA_BYTES)
+
+
+def _load_bounded_json(path: Path, *, max_bytes: int) -> dict:
     try:
-        if path.stat().st_size > MAX_METADATA_BYTES:
+        if path.stat().st_size > max_bytes:
             raise OSError("metadata too large")
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -282,6 +311,26 @@ def _plugin_root(info: dict) -> Path | None:
     return path
 
 
+def _openclaw_runtime_root(executable: str, expected_version: str) -> Path:
+    try:
+        executable_path = Path(executable).resolve(strict=True)
+    except (OSError, ValueError) as exc:
+        raise _sync_error("OpenClaw 运行目录不可用。") from exc
+    for candidate in (executable_path.parent, *executable_path.parents[:2]):
+        package_file = candidate / "package.json"
+        try:
+            package = _load_package_metadata(package_file)
+        except ApiError:
+            continue
+        if (
+            package.get("name") == "openclaw"
+            and package.get("version") == expected_version
+            and (candidate / "dist").is_dir()
+        ):
+            return candidate
+    raise _sync_error("OpenClaw 运行目录或版本不可用。")
+
+
 def _fixed_patch_file(value: object) -> Path:
     if not isinstance(value, str) or not value.startswith("integrations/openclaw/patches/"):
         raise _sync_error("补丁路径不在固定目录内。")
@@ -307,6 +356,38 @@ def _verify_patch_integrity(path: Path, metadata: dict) -> None:
         raise _sync_error("补丁文件完整性校验失败。") from exc
     if digest.hexdigest().lower() != expected.lower():
         raise _sync_error("固定补丁文件完整性校验失败。")
+
+
+def _manifest_patch_state(root: Path, patches: list[object]) -> str:
+    states = []
+    for patch in patches:
+        if not isinstance(patch, dict):
+            raise _sync_error("补丁清单包含无法识别的项目。")
+        patch_file = _fixed_patch_file(patch.get("file"))
+        _verify_patch_integrity(patch_file, patch)
+        states.append(_patch_state(root, patch_file))
+    if any(state == "partial" for state in states):
+        return "partial"
+    return "applied" if all(state == "applied" for state in states) else "missing"
+
+
+def _apply_manifest_patches(root: Path, patches: list[object]) -> bool:
+    changed = False
+    for patch in patches:
+        if not isinstance(patch, dict):
+            raise _sync_error("补丁清单包含无法识别的项目。")
+        patch_file = _fixed_patch_file(patch.get("file"))
+        _verify_patch_integrity(patch_file, patch)
+        patch_state = _patch_state(root, patch_file)
+        if patch_state == "applied":
+            continue
+        if patch_state == "partial":
+            raise _sync_error(f"补丁 {patch.get('id', 'unknown')} 只应用了一部分。")
+        _apply_patch(root, patch_file)
+        changed = True
+        if _patch_state(root, patch_file) != "applied":
+            raise _sync_error(f"补丁 {patch.get('id', 'unknown')} 应用后校验失败。")
+    return changed
 
 
 def _patch_state(root: Path, patch_file: Path) -> str:

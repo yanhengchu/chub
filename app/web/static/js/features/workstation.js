@@ -19,16 +19,12 @@ const SYSTEM_UPGRADE_COMPONENT_LABELS = Object.freeze({
   python_dependencies: "Python 依赖",
   service_definitions: "服务定义",
   quick_worker: "Chub Quick Worker",
-  browser_supervisor: "Chub Debug Chrome",
-  debug_chrome_instance: "Debug Chrome 浏览器实例",
-  openclaw: "OpenClaw Gateway",
 });
 const SYSTEM_UPGRADE_COMPONENT_STATUS = Object.freeze({
   pending: "等待确认",
   succeeded: "已确认",
   degraded: "已降级",
   failed: "失败",
-  skipped: "未纳入升级",
 });
 const SYSTEM_UPGRADE_OPERATION_STATUS = Object.freeze({
   requested: "已受理",
@@ -152,13 +148,6 @@ function renderSystemUpgradeComponents(data) {
   const fragment = document.createDocumentFragment();
   components.forEach((item) => {
     const label = SYSTEM_UPGRADE_COMPONENT_LABELS[item.component] || item.component;
-    if (item.component === "debug_chrome_instance" && item.status === "skipped") {
-      const chip = document.createElement("span");
-      chip.className = "maintenance-component maintenance-component-muted";
-      chip.textContent = `${label}：未纳入升级（不会自动启动）`;
-      fragment.append(chip);
-      return;
-    }
     const status = SYSTEM_UPGRADE_COMPONENT_STATUS[item.status] || "状态未知";
     const chip = document.createElement("span");
     chip.className = `maintenance-component maintenance-component-${item.status}`;
@@ -271,9 +260,7 @@ function renderSystemUpgradeOperation(data) {
 
 function renderSystemUpgrade(data) {
   systemUpgradeState = data;
-  elements.systemUpgradeStart.textContent = (
-    data.plan?.plan_id === "runtime-recovery" ? "运行态恢复" : "升级与恢复"
-  );
+  elements.systemUpgradeStart.textContent = "升级与恢复";
   elements.systemUpgradeDetail.textContent = `状态：${systemUpgradePresentation(data)}。${data.message}`;
   renderSystemUpgradeComponents(data);
   renderSystemUpgradeOperation(data);
@@ -415,6 +402,16 @@ function scheduleQuickWorkerPoll() {
   }
 }
 
+function deferQuickWorkerStatusDuringHubRestart() {
+  clearQuickWorkerPollTimer();
+  setWorkstationStatus(
+    elements.quickWorkerDetail,
+    "Chub 正在重启，Quick Worker 状态将在控制面恢复后重新确认。",
+    "warning",
+  );
+  setMessage(elements.quickWorkerMessage, "");
+}
+
 async function loadQuickWorkerStatus({ background = false } = {}) {
   const requestVersion = accessVersion;
   try {
@@ -426,6 +423,10 @@ async function loadQuickWorkerStatus({ background = false } = {}) {
     scheduleQuickWorkerPoll();
   } catch (error) {
     if (requestVersion !== accessVersion || handleAccessError(error)) {
+      return;
+    }
+    if (hubRestartInProgress) {
+      deferQuickWorkerStatusDuringHubRestart();
       return;
     }
     if (!background || !quickWorkerState) {
@@ -533,27 +534,42 @@ function systemUpgradeImpactDetails() {
   ];
 }
 
-async function refreshWorkstationEnvironment() {
+async function refreshCoreCapabilities() {
   if (!hasProtectedAccess()) {
     return;
   }
-  elements.refreshWorkstationEnvironment.disabled = true;
+  elements.refreshCoreCapabilities.disabled = true;
   try {
     await Promise.allSettled([
       loadStatus(),
       loadQuickWorkerStatus(),
       loadSystemUpgradeStatus(),
       loadAutomationEnvironment(),
-      loadOpenClaw(),
     ]);
   } finally {
-    elements.refreshWorkstationEnvironment.disabled = false;
+    elements.refreshCoreCapabilities.disabled = false;
   }
 }
 
-elements.refreshWorkstationEnvironment.addEventListener(
+async function refreshThirdPartyServices() {
+  if (!hasProtectedAccess()) {
+    return;
+  }
+  elements.refreshThirdPartyServices.disabled = true;
+  try {
+    await loadOpenClaw();
+  } finally {
+    elements.refreshThirdPartyServices.disabled = false;
+  }
+}
+
+elements.refreshCoreCapabilities.addEventListener(
   "click",
-  refreshWorkstationEnvironment,
+  refreshCoreCapabilities,
+);
+elements.refreshThirdPartyServices.addEventListener(
+  "click",
+  refreshThirdPartyServices,
 );
 elements.quickWorkerStart.addEventListener("click", () => {
   void requestQuickWorkerServiceAction("start");
@@ -582,16 +598,14 @@ elements.quickWorkerStop.addEventListener("click", () => {
 elements.systemUpgradeStart.addEventListener("click", () => {
   const recoveryOnly = systemUpgradeState?.plan?.plan_id === "runtime-recovery";
   void showConfirmationDialog({
-    title: recoveryOnly ? "运行态恢复" : "系统升级与恢复",
+    title: "升级与恢复",
     description: recoveryOnly
       ? "准备中的升级方案不可用，本次只重建当前版本运行态，不升级代码版本。"
       : "以下运行态将按当前状态重建。",
     details: systemUpgradeImpactDetails(),
-    confirmLabel: recoveryOnly ? "确认运行态恢复" : "确认升级与恢复",
+    confirmLabel: "确认升级与恢复",
     pendingLabel: "正在开始…",
-    errorMessage: recoveryOnly
-      ? "运行态恢复未能启动。"
-      : "系统升级与恢复未能启动。",
+    errorMessage: "升级与恢复未能启动。",
     onConfirm: startSystemUpgrade,
   });
 });

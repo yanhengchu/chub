@@ -166,6 +166,13 @@ tasks:
     assert sum(step.expect == "download" for step in task.steps) == 1
 
 
+def test_load_feishu_document_config_allows_empty_tasks(tmp_path: Path) -> None:
+    path = tmp_path / "automations.yaml"
+    path.write_text("version: 2\ntasks:\n", encoding="utf-8")
+
+    assert load_automations(path).tasks == {}
+
+
 @pytest.mark.parametrize(
     "url",
     [
@@ -248,6 +255,28 @@ tasks:
     config = load_automations(shared, local)
 
     assert list(config.tasks) == ["shared-report", "local-report"]
+
+
+def test_load_automations_merges_empty_shared_file_with_local_tasks(
+    tmp_path: Path,
+) -> None:
+    shared = tmp_path / "automations.yaml"
+    local = tmp_path / "automations.local.yaml"
+    shared.write_text("version: 2\ntasks:\n", encoding="utf-8")
+    local.write_text(
+        """\
+version: 2
+tasks:
+  local-report:
+    name: 本机周报
+    url: https://tenant.feishu.cn/wiki/local-document
+""",
+        encoding="utf-8",
+    )
+
+    config = load_automations(shared, local)
+
+    assert list(config.tasks) == ["local-report"]
 
 
 def test_load_automations_allows_missing_source_file(tmp_path: Path) -> None:
@@ -750,7 +779,7 @@ def test_weekly_report_downloads_use_the_active_period_input_directory(
 
     task = _weekly_report_download_task(
         load_automations(
-            Path(__file__).parents[1] / "config" / "automations.yaml"
+            Path(__file__).parents[1] / "config" / "automations.example.yaml"
         ).tasks["v-domestic-weekly-report"]
     )
     assert _output_path(

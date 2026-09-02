@@ -38,6 +38,30 @@ const weixinTranslationReasoningEffortField = document.querySelector(
 const weixinTranslationMessage = document.querySelector(
   "#weixin-translation-message",
 );
+const settingsOpenClawBadge = document.querySelector("#settings-openclaw-badge");
+const settingsOpenClawDetail = document.querySelector("#settings-openclaw-detail");
+const settingsOpenClawOpen = document.querySelector("#settings-openclaw-open");
+const settingsOpenClawOpenLabel = document.querySelector(
+  "#settings-openclaw-open-label",
+);
+const settingsMaintenanceTerminal = document.querySelector(
+  "#settings-maintenance-terminal",
+);
+const maintenanceTerminalDialog = document.querySelector(
+  "#maintenance-terminal-dialog",
+);
+const maintenanceTerminalDialogClose = document.querySelector(
+  "#maintenance-terminal-dialog-close",
+);
+const maintenanceTerminalDialogCancel = document.querySelector(
+  "#maintenance-terminal-dialog-cancel",
+);
+const maintenanceTerminalDialogConfirm = document.querySelector(
+  "#maintenance-terminal-dialog-confirm",
+);
+const maintenanceTerminalDialogFeedback = document.querySelector(
+  "#maintenance-terminal-dialog-feedback",
+);
 const settingsOpenClawWeixinBadge = document.querySelector(
   "#settings-openclaw-weixin-badge",
 );
@@ -99,6 +123,7 @@ let settingsOpenClawWeixinQrObjectUrl = "";
 let settingsOpenClawWeixinQrUpdatedAt = "";
 let settingsScrollFrame = null;
 let settingsNavigationTarget = null;
+let maintenanceTerminalOpening = false;
 
 const CODEX_REASONING_LABELS = {
   low: "Low",
@@ -828,6 +853,46 @@ function setOpenClawWeixinBadge(text, kind = "muted") {
   settingsOpenClawWeixinBadge.className = `badge badge-${kind}`;
 }
 
+function setOpenClawBadge(text, kind = "muted") {
+  settingsOpenClawBadge.textContent = text;
+  settingsOpenClawBadge.className = `badge badge-${kind}`;
+}
+
+function localOpenClawAccessUrl(status) {
+  const url = status?.local_access_url;
+  return typeof url === "string" && /^http:\/\/127\.0\.0\.1:[1-9]\d{0,4}\/$/.test(url)
+    ? url
+    : "";
+}
+
+function renderOpenClawGatewaySettings(status, { live = true } = {}) {
+  const presentation = {
+    unavailable: ["未安装", "muted"],
+    unconfigured: ["未初始化", "timeout"],
+    service_missing: ["服务未安装", "timeout"],
+    stopped: ["已停止", "timeout"],
+    running: ["运行正常", "success"],
+    degraded: ["尚未就绪", "timeout"],
+    unknown: ["状态未知", "failed"],
+  }[status?.state] || ["不可检查", "muted"];
+  setOpenClawBadge(presentation[0], presentation[1]);
+  const detail = status?.message || "暂时无法读取 OpenClaw Gateway 状态。";
+  settingsOpenClawDetail.textContent = live
+    ? detail
+    : `当前展示上次检测结果：${detail}`;
+
+  const accessUrl = live ? localOpenClawAccessUrl(status) : "";
+  if (accessUrl) {
+    settingsOpenClawOpen.href = accessUrl;
+    settingsOpenClawOpen.removeAttribute("aria-disabled");
+    settingsOpenClawOpenLabel.textContent = "打开";
+  } else {
+    settingsOpenClawOpen.removeAttribute("href");
+    settingsOpenClawOpen.setAttribute("aria-disabled", "true");
+    settingsOpenClawOpenLabel.textContent = "不可用";
+  }
+}
+
 async function fetchSettingsApi(path, options = {}) {
   const response = await fetch(path, {
     ...options,
@@ -850,6 +915,7 @@ function renderOpenClawWeixinContext(status) {
 function renderOpenClawWeixinSettings(status, login, { live = true } = {}) {
   settingsOpenClawStatus = status;
   settingsOpenClawWeixinState = login;
+  renderOpenClawGatewaySettings(status, { live });
   renderOpenClawWeixinContext(status);
 
   if (!status?.installed) {
@@ -961,6 +1027,7 @@ async function loadOpenClawWeixinSettings() {
     }
     setOpenClawWeixinBadge("不可检查", "muted");
     settingsOpenClawWeixinDetail.textContent = "暂时无法读取 OpenClaw 与微信绑定状态。";
+    renderOpenClawGatewaySettings(null);
     setOpenClawWeixinMessage(
       settingsOpenClawWeixinMessage,
       "请确认当前连接位于可信网络，并稍后刷新页面重试。",
@@ -1212,6 +1279,50 @@ openclawWeixinDialog.addEventListener("click", (event) => {
 openclawWeixinDialog.addEventListener("close", () => {
   stopOpenClawWeixinPolling();
   releaseOpenClawWeixinQr();
+});
+
+function closeMaintenanceTerminalDialog() {
+  if (maintenanceTerminalDialog.open) {
+    maintenanceTerminalDialog.close();
+  }
+}
+
+settingsMaintenanceTerminal.addEventListener("click", () => {
+  if (!maintenanceTerminalOpening) {
+    maintenanceTerminalDialogFeedback.textContent = "";
+    maintenanceTerminalDialogFeedback.className = "message";
+    maintenanceTerminalDialog.showModal();
+  }
+});
+maintenanceTerminalDialogClose.addEventListener("click", closeMaintenanceTerminalDialog);
+maintenanceTerminalDialogCancel.addEventListener("click", closeMaintenanceTerminalDialog);
+maintenanceTerminalDialog.addEventListener("click", (event) => {
+  if (event.target === maintenanceTerminalDialog) {
+    closeMaintenanceTerminalDialog();
+  }
+});
+maintenanceTerminalDialogConfirm.addEventListener("click", async () => {
+  if (maintenanceTerminalOpening) {
+    return;
+  }
+  maintenanceTerminalOpening = true;
+  settingsMaintenanceTerminal.disabled = true;
+  maintenanceTerminalDialogConfirm.disabled = true;
+  try {
+    const data = await fetchSettingsApi("/api/maintenance-terminal/access", {
+      method: "POST",
+      headers: settingsHeaders(true),
+    });
+    window.open(data.terminal_url, "_blank", "noopener");
+    closeMaintenanceTerminalDialog();
+  } catch (_error) {
+    maintenanceTerminalDialogFeedback.textContent = "维护终端暂时无法启动，请检查 ttyd 和 zsh。";
+    maintenanceTerminalDialogFeedback.className = "message message-error";
+  } finally {
+    maintenanceTerminalOpening = false;
+    settingsMaintenanceTerminal.disabled = false;
+    maintenanceTerminalDialogConfirm.disabled = false;
+  }
 });
 
 cyberRainSpeed.value = String(readRangePreference(CYBER_RAIN_SPEED_KEY, 60));

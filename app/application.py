@@ -28,6 +28,10 @@ from app.api.maintenance import (
     router as maintenance_router,
     start_system_upgrade_for_source,
 )
+from app.api.maintenance_terminal import (
+    api_router as maintenance_terminal_api_router,
+    web_router as maintenance_terminal_web_router,
+)
 from app.api.notifications import router as notifications_router
 from app.api.openclaw import router as openclaw_router
 from app.api.openclaw_wechat_chub_mode import (
@@ -65,6 +69,7 @@ from app.services.openclaw_completion_notifications import OpenClawCompletionNot
 from app.services.openclaw_weixin_chub_messages import usage_message
 from app.services.operation_log import write_operation
 from app.services.network_recovery import NetworkRecoveryError, restart_network
+from app.services.maintenance_terminal import MaintenanceTerminalManager
 from app.services.deferred_restart import DeferredRestartCoordinator
 from app.services.openclaw_weixin_chub_mode import WeixinChubModeManager
 from app.services.restart_command import RestartProcess, launch_restart_process
@@ -278,6 +283,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     codex_pty_manager.set_system_upgrade_checker(system_upgrade.writes_blocked)
     terminal_tickets = codex_pty_manager.supervisor.tickets
     terminal_connections = codex_pty_manager.supervisor.connections
+    maintenance_terminal = MaintenanceTerminalManager(resolved_settings)
     weixin_translation = WeixinTranslationManager(
         resolved_settings.openclaw.weixin_chub_mode,
         codex_pty_manager,
@@ -503,7 +509,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         "python_dependencies",
                         "service_definitions",
                         "browser_supervisor",
-                        "openclaw",
                     ):
                         if component not in known_components:
                             system_upgrade.record_component(
@@ -572,7 +577,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 operation_id,
                 stage="restarting_services",
                 restart_launch_state="launched",
-                message="服务切换程序已启动，正在处理依赖、服务定义、浏览器和 OpenClaw，并切换核心服务。",
+                message="服务切换程序已启动，正在处理依赖、服务定义和浏览器，并切换核心服务。",
             )
         except Exception as exc:
             logging.getLogger("hub.system_upgrade").warning(
@@ -681,7 +686,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             try:
                 system_upgrade.fail(
                     operation_id,
-                    str(exc) or "系统升级与恢复失败。",
+                    str(exc) or "升级与恢复失败。",
                 )
             except Exception:
                 logging.getLogger("hub.system_upgrade").warning(
@@ -1007,6 +1012,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await asyncio.to_thread(weixin_translation.close)
             await quick_interactions.aclose()
             await notification_service.close()
+            maintenance_terminal.close()
             codex_pty_manager.close()
             openclaw_manager.close()
 
@@ -1039,6 +1045,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.weixin_translation = weixin_translation
     application.state.terminal_tickets = terminal_tickets
     application.state.terminal_connections = terminal_connections
+    application.state.maintenance_terminal = maintenance_terminal
     application.state.automation_manager = AutomationManager(
         resolved_settings,
         detected_platform=detected_platform,
@@ -1078,7 +1085,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(settings_router)
     application.include_router(status_router)
     application.include_router(codex_api_router)
+    application.include_router(maintenance_terminal_api_router)
     application.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     application.include_router(codex_web_router)
+    application.include_router(maintenance_terminal_web_router)
     application.include_router(web_router)
     return application

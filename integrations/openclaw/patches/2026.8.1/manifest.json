@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "status": "validated",
+  "target": {
+    "package_name": "@tencent-weixin/openclaw-weixin",
+    "package_version": "2.4.8",
+    "package_integrity": "sha512-hhO9prUQwzfSpIL6XGWazRsxNs89K+Mis3iQW6a8eum4AIDxOUiTFMg4nlNVD/au0SjAx5CcJjo3KYWZqGpgQA==",
+    "openclaw_version": "2026.8.1"
+  },
+  "patches": [
+    {
+      "id": "weixin-chub-compatibility",
+      "version": "1.0.0",
+      "file": "integrations/openclaw/patches/2026.8.1/weixin-chub-compatibility.patch",
+      "sha256": "b0b6d06f80faeb8c2f1bbc4687da421a95a226f4078015c85a94ccf22ff4d4dc",
+      "scope": "source-and-runtime",
+      "status": "validated",
+      "anchors": [
+        "src/messaging/inbound.ts:chmodSync(filePath, 0o600)",
+        "src/messaging/process-message.ts:CHUB_VOICE_TRANSCRIPT_MARKER",
+        "src/channel.ts:weixin_context_missing"
+      ]
+    }
+  ],
+  "openclaw_runtime_patches": [
+    {
+      "id": "openclaw-cli-plugin-message-channel",
+      "version": "1.0.0",
+      "file": "integrations/openclaw/patches/2026.8.1/openclaw-cli-plugin-message-channel.patch",
+      "sha256": "11442292a5a1f3eadef13ebe3fa64c3503809b963ecd376e9180c0f1c93a960a",
+      "scope": "runtime-dist",
+      "status": "validated",
+      "anchors": [
+        "dist/channel-selection-Y-t8NT33.js:resolveAvailableKnownChannel",
+        "dist/channel-selection-Y-t8NT33.js:normalizeMessageChannel(params.value)",
+        "dist/channel-selection-Y-t8NT33.js:channel: plugin.id"
+      ]
+    }
+  ]
+}

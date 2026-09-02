@@ -79,6 +79,25 @@ def test_plan_loader_accepts_only_current_fixed_source(tmp_path: Path) -> None:
     assert len(loaded.fingerprint) == 64
 
 
+def test_core_upgrade_executor_does_not_manage_openclaw() -> None:
+    executor = (PROJECT_ROOT / "scripts" / "chub-system-upgrade-restart").read_text(
+        encoding="utf-8"
+    )
+
+    assert "app.openclaw_upgrade_cli" not in executor
+    assert 'record_component "openclaw"' not in executor
+
+
+def test_final_upgrade_verification_does_not_record_openclaw() -> None:
+    application = (PROJECT_ROOT / "app" / "application.py").read_text(
+        encoding="utf-8"
+    )
+    start = application.index("                    known_components = {")
+    end = application.index("                    rebind = getattr(", start)
+
+    assert '"openclaw"' not in application[start:end]
+
+
 def test_plan_loader_rejects_writable_plan(tmp_path: Path) -> None:
     path = tmp_path / "system-upgrade.json"
     write_plan(path)
@@ -198,7 +217,7 @@ def test_coordinator_blocks_writes_and_releases_before_destructive_failure(
     assert calls == [operation.operation_id]
 
 
-def test_component_results_are_persisted_and_degraded_state_is_visible(
+def test_debug_chrome_component_results_are_persisted_but_excluded_from_upgrade_view(
     tmp_path: Path,
 ) -> None:
     plan_path = tmp_path / "plan.json"
@@ -245,12 +264,16 @@ def test_component_results_are_persisted_and_degraded_state_is_visible(
     }
     status = coordinator.status_data(loaded, session_count=0)
     assert status.operation is not None
-    assert status.operation.components[0].component == "browser_supervisor"
+    assert all(
+        item.component not in {"browser_supervisor", "debug_chrome_instance"}
+        for item in status.operation.components
+    )
+    assert [item.component for item in status.operation.components] == ["quick_worker"]
 
     coordinator.succeed(operation.operation_id)
     completed = coordinator.operation()
     assert completed is not None
-    assert "browser_supervisor" in completed.message
+    assert "browser_supervisor" not in completed.message
     assert completed.restart_process_id is None
 
 
@@ -287,6 +310,51 @@ def test_coordinator_keeps_gate_closed_after_runtime_state_cleanup_failure(
             old_worker_generation="c" * 32,
             runner=lambda _operation_id: None,
         )
+
+
+def test_final_verification_failure_reopens_gate_after_web_and_worker_recover(
+    tmp_path: Path,
+) -> None:
+    plan_path = tmp_path / "plan.json"
+    write_plan(plan_path)
+    loaded = load_system_upgrade_plan(plan_path)
+    assert loaded is not None
+    state_path = tmp_path / "state" / "system-upgrade.json"
+    coordinator = SystemUpgradeCoordinator(state_path, plan_path, "old-instance")
+    operation = coordinator.begin(
+        loaded,
+        source_ip="127.0.0.1",
+        old_worker_generation="b" * 32,
+        runner=lambda _operation_id: None,
+    )
+    coordinator.mark_started(operation.operation_id)
+    coordinator.update(
+        operation.operation_id,
+        stage="verifying_new_instance",
+        destructive_started=True,
+    )
+    coordinator.record_component(
+        operation.operation_id,
+        "chub_web",
+        "succeeded",
+        "New Web instance is healthy",
+    )
+    coordinator.record_component(
+        operation.operation_id,
+        "quick_worker",
+        "succeeded",
+        "Worker is ready",
+    )
+    coordinator.fail(operation.operation_id, "final report failed")
+
+    recovered = SystemUpgradeCoordinator(state_path, plan_path, "new-instance")
+
+    assert recovered.operation() is not None
+    assert recovered.operation().status == "failed"
+    assert recovered.operation().failed_stage == "verifying_new_instance"
+    assert recovered.writes_blocked() is False
+    with recovered.mutation_guard():
+        pass
 
 
 @pytest.mark.parametrize(

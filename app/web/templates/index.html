@@ -20,10 +20,10 @@
   </head>
   <body>
     <header class="site-header">
-      <div class="site-header-title">
+      <a class="site-header-title" href="/workspace" aria-label="进入新版首页">
         <p class="eyebrow">PERSONAL DEVICE HUB</p>
         <h1>{{ site_title }}</h1>
-      </div>
+      </a>
       <a id="site-settings" class="button-link site-settings-link" href="/settings" hidden>设置</a>
     </header>
 
@@ -170,7 +170,7 @@
             <div class="automation-weekly-download-heading">
               <div class="automation-weekly-download-copy">
                 <div class="automation-item-heading">
-                  <h3 id="automation-weekly-report-title" class="card-group-title">V 国内业务本期周报</h3>
+                  <h3 id="automation-weekly-report-title" class="automation-item-title">V 国内业务本期周报</h3>
                   <span id="automation-weekly-download-status" class="automation-weekly-download-status"></span>
                 </div>
                 <p id="automation-weekly-download-title" class="automation-weekly-download-description">本期下载</p>
@@ -218,11 +218,24 @@
           </section>
           <section class="automation-environment" aria-labelledby="automation-environment-title">
             <h3 id="automation-environment-title" class="card-group-title">自动化环境</h3>
-            <div class="automation-feishu-panel">
+              <div class="automation-browser-panel">
+                <div class="workstation-status-row">
+                  <div class="workstation-status-copy">
+                    <strong>Chub Debug Chrome</strong>
+                    <span id="automation-browser-detail" class="workstation-status-detail">正在检查浏览器控制服务</span>
+                    <p id="automation-browser-message" class="message" aria-live="polite"></p>
+                  </div>
+                  <div class="workstation-status-actions automation-browser-actions">
+                    <button id="automation-browser-restart" class="button-secondary" type="button" aria-haspopup="dialog" aria-controls="confirmation-dialog" hidden>重启</button>
+                    <button id="automation-browser-control" class="button-secondary" type="button" aria-haspopup="dialog" aria-controls="automation-browser-dialog" disabled>检查中…</button>
+                  </div>
+                </div>
+              </div>
+              <div class="automation-feishu-panel">
               <div class="workstation-status-row">
                 <div class="workstation-status-copy">
                   <strong>飞书环境</strong>
-                  <span id="automation-feishu-detail">用于飞书登录与任务执行</span>
+                  <span id="automation-feishu-detail" class="workstation-status-detail">用于飞书登录与任务执行</span>
                 </div>
                 <div class="workstation-status-actions automation-feishu-actions">
                   <span id="automation-feishu-badge" class="badge badge-muted">未检查</span>
@@ -234,8 +247,8 @@
                 <p>请使用飞书移动端扫码登录</p>
               </div>
               <p id="automation-environment-message" class="message" aria-live="polite"></p>
-            </div>
-          </section>
+              </div>
+            </section>
           <p id="automation-message" class="message" aria-live="polite"></p>
           <div class="card-footer-actions">
             <a class="button-link" href="/automations">全部任务</a>
@@ -244,19 +257,19 @@
           </div>
         </section>
 
-        <section class="card workstation-card" data-card-key="workstation" data-collapsible-card aria-labelledby="workstation-title">
+        <section class="card workstation-card core-capabilities-card" data-card-key="core-capabilities" data-collapsible-card aria-labelledby="core-capabilities-title">
           <div class="section-heading">
             <div class="card-heading-copy" data-card-heading>
-              <p class="section-kicker">环境与服务</p>
-              <h2 id="workstation-title">工作站环境</h2>
-            <p class="section-description">查看服务运行状态并进行必要维护。</p>
+              <p class="section-kicker">核心能力</p>
+              <h2 id="core-capabilities-title">核心服务</h2>
+              <p class="section-description">查看 Chub 运行状态并进行必要维护。</p>
             </div>
-            <button id="refresh-workstation-environment" class="button-secondary" type="button">刷新</button>
+            <button id="refresh-core-capabilities" class="button-secondary" type="button">刷新</button>
           </div>
           <div class="card-content" data-card-content>
             <div class="card-content-inner">
-              <section class="workstation-service-group" aria-labelledby="workstation-service-title">
-                <h3 id="workstation-service-title" class="card-group-title">运行与维护</h3>
+              <section class="workstation-service-group" aria-labelledby="core-services-title">
+                <h3 id="core-services-title" class="card-group-title">运行与维护</h3>
                 <div class="workstation-status-list">
                 <div class="workstation-status-row">
                   <div class="workstation-status-copy">
@@ -281,33 +294,10 @@
                     <button id="quick-worker-stop" class="button-danger" type="button" aria-haspopup="dialog" aria-controls="confirmation-dialog" hidden>停止</button>
                   </div>
                 </div>
-                <div class="workstation-status-row">
-                  <div class="workstation-status-copy">
-                    <strong>Chub Debug Chrome</strong>
-                    <span id="automation-browser-detail" class="workstation-status-detail">正在检查浏览器控制服务</span>
-                    <p id="automation-browser-message" class="message" aria-live="polite"></p>
-                  </div>
-                  <div class="workstation-status-actions automation-browser-actions">
-                    <button id="automation-browser-restart" class="button-secondary" type="button" aria-haspopup="dialog" aria-controls="confirmation-dialog" hidden>重启</button>
-                    <button id="automation-browser-control" class="button-secondary" type="button" aria-haspopup="dialog" aria-controls="automation-browser-dialog" disabled>检查中…</button>
-                  </div>
-                </div>
-                <div class="workstation-status-row">
-                  <div class="workstation-status-copy">
-                    <strong>OpenClaw Gateway</strong>
-                    <span id="clawbot-detail" class="workstation-status-detail">正在检查 Gateway、消息通道与 Owner 配置</span>
-                    <p id="openclaw-message" class="message" aria-live="polite"></p>
-                  </div>
-                  <div class="workstation-status-actions openclaw-actions">
-                    <button id="openclaw-start" class="button-secondary" type="button" hidden>启动</button>
-                    <button id="openclaw-restart" class="button-secondary" type="button" hidden>重启</button>
-                    <button id="openclaw-stop" class="button-danger" type="button" hidden>停止</button>
-                  </div>
-                </div>
                 <div class="workstation-status-row system-upgrade-row">
                   <div class="workstation-status-copy">
-                    <strong>系统升级与恢复</strong>
-                    <span id="system-upgrade-detail">状态：正在检查运行态恢复条件</span>
+                    <strong>升级与恢复</strong>
+                    <span id="system-upgrade-detail" class="workstation-status-detail">状态：正在检查运行态恢复条件</span>
                   </div>
                   <div class="workstation-status-actions">
                     <button id="system-upgrade-start" class="button-danger" type="button" aria-haspopup="dialog" aria-controls="confirmation-dialog" disabled>升级与恢复</button>
@@ -321,6 +311,34 @@
                 </div>
               </section>
             </div>
+          </div>
+        </section>
+
+        <section class="card workstation-card third-party-services-card" data-card-key="third-party-services" data-collapsible-card aria-labelledby="third-party-services-title">
+          <div class="section-heading">
+            <div class="card-heading-copy" data-card-heading>
+              <p class="section-kicker">第三方服务</p>
+              <h2 id="third-party-services-title">OpenClaw 与 ClawBot</h2>
+              <p class="section-description">查看 Gateway、消息通道与 Owner 配置。</p>
+            </div>
+            <button id="refresh-third-party-services" class="button-secondary" type="button">刷新</button>
+          </div>
+          <div class="card-content" data-card-content>
+            <div class="card-content-inner">
+              <div class="workstation-status-list">
+                <div class="workstation-status-row">
+                  <div class="workstation-status-copy">
+                    <strong>OpenClaw Gateway</strong>
+                    <span id="clawbot-detail" class="workstation-status-detail">正在检查 Gateway、消息通道与 Owner 配置</span>
+                    <p id="openclaw-message" class="message" aria-live="polite"></p>
+                  </div>
+                  <div class="workstation-status-actions openclaw-actions">
+                    <button id="openclaw-start" class="button-secondary" type="button" hidden>启动</button>
+                    <button id="openclaw-restart" class="button-secondary" type="button" hidden>重启</button>
+                    <button id="openclaw-stop" class="button-danger" type="button" hidden>停止</button>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </section>

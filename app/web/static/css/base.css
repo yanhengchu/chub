@@ -74,6 +74,7 @@ footer {
   color: inherit;
   background: transparent;
   text-align: left;
+  text-decoration: none;
 }
 
 .site-header-title:hover {

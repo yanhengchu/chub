@@ -1,7 +1,9 @@
 version: 2
 
+# Tasks in this file are version-controlled and shared by every deployed node.
 tasks:
-  feishu-weekly-report:
-    name: "飞书业务周报"
-    url: "https://tenant.feishu.cn/wiki/document-id"
-    # extension: v-weekly-report-linked-documents
+  v-domestic-weekly-report:
+    name: "V 国内业务周报"
+    title: "V 国内业务周报下载"
+    url: "https://qw6xxurweq.feishu.cn/wiki/EZnjwx57DiS6jUksWgMcHm8cnoe"
+    extension: v-weekly-report-linked-documents

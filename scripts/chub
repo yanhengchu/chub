@@ -52,7 +52,7 @@ unset runtime_command
 
 usage() {
     cat <<'EOF'
-Usage: chub <command>
+Usage: chub <command> [options]
 
 Commands:
   install [--force]
@@ -61,14 +61,16 @@ Commands:
   stop [--force]
              Stop the service
   restart    Restart the service and check its health
-  status     Show Web and Quick Worker service status
+  status [--verbose]
+             Show a concise Web, Worker, browser, and upgrade status summary
+             --verbose also prints the platform service-manager details
   check      Check project, services, Web, Worker, and system status
   worker-health
              Query Quick Worker health over private local IPC
   worker-drain
              Stop accepting new Worker tasks and wait until accepted tasks finish
   worker-reload
-             Drain and independently reload Quick Worker, then verify takeover
+             Cancel queued and running Worker tasks, then verify healthy takeover
   worker-recover
              Restart an unavailable Quick Worker and verify healthy takeover
   worker-start
@@ -87,7 +89,10 @@ Commands:
              Install or recover the independent system upgrade service
   chrome-supervisor-reconcile [--restart]
              Rebuild and verify the Ubuntu Debug Chrome Supervisor
-  logs       Follow Hub application logs
+  logs [web|worker|upgrade]
+             Follow the selected component log (default: web)
+  version, --version
+             Show the local Chub version and platform
   notification
              Validate, list, test, or send configured notifications
   request    Save, update, or inspect the local request backlog
@@ -142,6 +147,7 @@ settings = load_settings(sys.argv[2])
 values = {
     "health_url": f"http://127.0.0.1:{settings.server.port}/api/health",
     "status_url": f"http://127.0.0.1:{settings.server.port}/api/status",
+    "app_version": settings.app.version,
     "log_file": settings.logs.file,
     "tailnet_host": settings.server.tailnet_host or "",
 }
@@ -1151,22 +1157,158 @@ restart_service() {
     health_check || fail "service restart health verification failed"
 }
 
-status_service() {
+web_service_status() {
+    case "$(platform_name)" in
+        macos)
+            [[ -f "$(macos_plist_path)" ]] || { echo unknown; return 0; }
+            if launchctl print "$(macos_domain)/$MACOS_LABEL" >/dev/null 2>&1; then
+                echo running
+            else
+                echo stopped
+            fi
+            ;;
+        ubuntu)
+            [[ -f "$(systemd_unit_path)" ]] || { echo unknown; return 0; }
+            if systemctl --user is-active --quiet "$SERVICE_NAME.service"; then
+                echo running
+            else
+                echo stopped
+            fi
+            ;;
+    esac
+}
+
+chrome_supervisor_status() {
+    case "$(platform_name)" in
+        macos) echo not-managed ;;
+        ubuntu)
+            [[ -f "$(chrome_supervisor_systemd_unit_path)" ]] || { echo unknown; return 0; }
+            if systemctl --user is-active --quiet "$CHROME_SUPERVISOR_SERVICE_NAME.service"; then
+                echo running
+            else
+                echo stopped
+            fi
+            ;;
+    esac
+}
+
+system_upgrade_executor_status() {
+    case "$(platform_name)" in
+        macos)
+            [[ -f "$(system_upgrade_macos_plist_path)" ]] && echo installed || echo missing
+            ;;
+        ubuntu)
+            [[ -f "$(system_upgrade_systemd_unit_path)" ]] && echo installed || echo missing
+            ;;
+    esac
+}
+
+web_health_status() {
+    local health_url
+    health_url="$(configured_value health_url 2>/dev/null)" || { echo unavailable; return 1; }
+    "$PYTHON_BIN" - "$health_url" <<'PY'
+import json
+import sys
+import urllib.error
+import urllib.request
+
+try:
+    with urllib.request.urlopen(sys.argv[1], timeout=2) as response:
+        payload = json.load(response)
+    data = payload.get("data") if payload.get("success") is True else None
+    if response.status != 200 or not isinstance(data, dict) or data.get("status") != "ok":
+        raise RuntimeError("not healthy")
+except (OSError, ValueError, RuntimeError, urllib.error.URLError):
+    print("unavailable")
+    raise SystemExit(1)
+print("healthy")
+PY
+}
+
+quick_worker_status_summary() {
+    local payload
+    payload="$(quick_worker_health 2>/dev/null)" || { echo unavailable; return 1; }
+    "$PYTHON_BIN" -c '
+import json
+import sys
+
+try:
+    payload = json.load(sys.stdin)
+    data = payload.get("data") if payload.get("success") is True else None
+    if not isinstance(data, dict):
+        raise ValueError("missing data")
+    status = data.get("status")
+    active = data.get("active_tasks")
+    queued = data.get("queued_tasks")
+    if (
+        not isinstance(status, str)
+        or not isinstance(active, int)
+        or isinstance(active, bool)
+        or not isinstance(queued, int)
+        or isinstance(queued, bool)
+    ):
+        raise ValueError("invalid data")
+except (ValueError, TypeError, json.JSONDecodeError):
+    print("unavailable")
+    raise SystemExit(1)
+print(f"{status} · active {active} · queued {queued}")
+raise SystemExit(0 if status == "ready" else 1)
+' <<<"$payload"
+}
+
+status_service_verbose() {
     local result=0
     case "$(platform_name)" in
         macos)
-            launchctl print "gui/$(id -u)/$MACOS_LABEL" || result=$?
-            launchctl print "gui/$(id -u)/$WORKER_MACOS_LABEL" || result=$?
+            launchctl print "gui/$(id -u)/$MACOS_LABEL" \
+                | awk '/^[[:space:]]*(inherited |default )?environment =/{exit} {print}' \
+                || result=1
+            launchctl print "gui/$(id -u)/$WORKER_MACOS_LABEL" \
+                | awk '/^[[:space:]]*(inherited |default )?environment =/{exit} {print}' \
+                || result=1
             ;;
         ubuntu)
-            systemctl --user status "$SERVICE_NAME.service" --no-pager || result=$?
-            systemctl --user status "$WORKER_SERVICE_NAME.service" --no-pager || result=$?
-            systemctl --user status "$CHROME_SUPERVISOR_SERVICE_NAME.service" --no-pager || result=$?
+            systemctl --user show "$SERVICE_NAME.service" \
+                -p LoadState -p ActiveState -p SubState -p MainPID --no-pager || result=1
+            systemctl --user show "$WORKER_SERVICE_NAME.service" \
+                -p LoadState -p ActiveState -p SubState -p MainPID --no-pager || result=1
+            systemctl --user show "$CHROME_SUPERVISOR_SERVICE_NAME.service" \
+                -p LoadState -p ActiveState -p SubState -p MainPID --no-pager || result=1
             ;;
     esac
-    if ! quick_worker_health; then
-        echo "chub: Quick Worker health is unavailable" >&2
-        [[ "$result" -ne 0 ]] || result=1
+    return "$result"
+}
+
+status_service() {
+    local verbose=false
+    if [[ "${1:-}" == "--verbose" && "$#" -eq 1 ]]; then
+        verbose=true
+    elif [[ "$#" -ne 0 ]]; then
+        fail "usage: chub status [--verbose]"
+    fi
+
+    local result=0 web_service web_health worker_service worker_health chrome_status upgrade_status
+    web_service="$(web_service_status)"
+    web_health="$(web_health_status)" || result=1
+    worker_service="$(worker_service_status)"
+    worker_health="$(quick_worker_status_summary)" || result=1
+    chrome_status="$(chrome_supervisor_status)"
+    upgrade_status="$(system_upgrade_executor_status)"
+
+    printf 'Chub Web · service %s · health %s\n' "$web_service" "$web_health"
+    printf 'Quick Worker · service %s · %s\n' "$worker_service" "$worker_health"
+    printf 'Debug Chrome Supervisor · %s\n' "$chrome_status"
+    printf 'System upgrade executor · %s\n' "$upgrade_status"
+
+    [[ "$web_service" == "running" ]] || result=1
+    [[ "$worker_service" == "running" ]] || result=1
+    [[ "$chrome_status" == "running" || "$chrome_status" == "not-managed" ]] || result=1
+    [[ "$upgrade_status" == "installed" ]] || result=1
+
+    if [[ "$verbose" == true ]]; then
+        echo
+        echo 'Service-manager details:'
+        status_service_verbose || result=1
     fi
     return "$result"
 }
@@ -1407,11 +1549,26 @@ quick_worker_recover() {
 }
 
 show_logs() {
-    local log_file
-    log_file="$(configured_value log_file 2>/dev/null)" \
-        || fail "configuration could not be read"
-    [[ -f "$log_file" ]] || fail "application log not found: $log_file"
+    local component="${1:-web}" log_file
+    [[ "$#" -le 1 ]] || fail "usage: chub logs [web|worker|upgrade]"
+    case "$component" in
+        web)
+            log_file="$(configured_value log_file 2>/dev/null)" \
+                || fail "configuration could not be read"
+            ;;
+        worker) log_file="$SERVICE_LOG_DIR/quick-worker.out.log" ;;
+        upgrade) log_file="$SERVICE_LOG_DIR/system-upgrade.out.log" ;;
+        *) fail "usage: chub logs [web|worker|upgrade]" ;;
+    esac
+    [[ -f "$log_file" ]] || fail "$component log not found: $log_file"
     tail -n 100 -f "$log_file"
+}
+
+show_version() {
+    local app_version
+    app_version="$(configured_value app_version 2>/dev/null)" \
+        || fail "configuration could not be read"
+    printf 'Chub v%s · %s\n' "$app_version" "$(platform_name)"
 }
 
 uninstall_service() {
@@ -1476,7 +1633,10 @@ case "$command" in
         stop_service "$@"
         ;;
     restart) restart_service ;;
-    status) status_service ;;
+    status)
+        shift
+        status_service "$@"
+        ;;
     check) check_service ;;
     worker-health) quick_worker_health ;;
     worker-drain)
@@ -1493,7 +1653,11 @@ case "$command" in
             "$PYTHON_BIN" -m app.network_recovery_cli
         )
         ;;
-    logs) show_logs ;;
+    logs)
+        shift
+        show_logs "$@"
+        ;;
+    version|--version) show_version ;;
     notification)
         shift
         (

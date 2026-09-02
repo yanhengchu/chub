@@ -40,12 +40,14 @@ document.addEventListener("visibilitychange", () => {
 });
 
 async function monitorHubRestart(previousInstanceId) {
+  let restartFailed = false;
   try {
     await waitForHubRestart(previousInstanceId);
     setWorkstationStatus(elements.chubServiceDetail, "Chub 已重启并恢复。", "success");
     showMaintenanceCompletion(elements.chubServiceDetail, "Chub 已重启并恢复。");
     reloadDashboardAfterMaintenance();
   } catch (error) {
+    restartFailed = true;
     if (!handleAccessError(error)) {
       setWorkstationStatus(
         elements.chubServiceDetail,
@@ -61,6 +63,9 @@ async function monitorHubRestart(previousInstanceId) {
   } finally {
     hubRestartInProgress = false;
     syncCoreMaintenanceControls();
+    if (restartFailed) {
+      void loadQuickWorkerStatus();
+    }
   }
 }
 
@@ -70,6 +75,7 @@ async function requestHubRestart() {
   hubRestartInProgress = true;
   setWorkstationStatus(elements.chubServiceDetail, "正在等待新实例恢复", "warning");
   setMessage(elements.chubServiceMessage, "");
+  deferQuickWorkerStatusDuringHubRestart();
   syncCoreMaintenanceControls();
   setMessage(elements.globalMessage, "");
   void monitorHubRestart(previousInstanceId);
