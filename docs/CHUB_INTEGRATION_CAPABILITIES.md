@@ -158,7 +158,7 @@
 - `model list` 是精确无参数指令；它显示当前 Session 为下一任务配置的模型，并以 `M1`…列出 Runtime 模型目录中当前可用的模型 ID。列表用于帮助选择，但不是后续切换的前置步骤；目录或当前模型无法确认时失败关闭，不返回残缺列表。
 - `model level` 可不带参数，或携带 `M#`。无参数时显示当前 Session 为下一任务配置的模型、当前等级及该模型的 `L1`…列表；带 `M#` 时按本次请求读取的当前 Runtime 目录选择目标模型，并只显示其 `L#` 列表而不切换。无需先执行 `model list`；索引、目录、模型、当前等级或等级列表无法确认时失败关闭。
 - `model use M# | L# | M# L#` 是精确参数指令。每次请求直接读取当前 Runtime 模型目录解析索引，无需先执行 `model list` 或 `model level`：仅模型时使用目标模型声明的默认等级；仅等级时保持当前模型；二者同时提供时，`L#` 按该目标模型本次可用等级列表解析并原子保存。切换只允许当前 `quick` Session 空闲且没有 Runtime writer 或 Worker 任务时执行，只影响后续任务，不改变已经运行的任务；成功回执显示实际保存的下一任务模型和等级。目录可能在两次消息之间变化，因此回执是最终选择依据；目录、索引、兼容性、空闲状态或保存结果不能确认时失败关闭，不部分更新、不猜测且不接受原始模型或等级 ID。
-- `text` 是翻译处理方式的综合只读入口，返回当前 mode、翻译默认 model/level 和当前可操作确认项；`text model list`、`text model level [M#]` 和 `text model use M# | L# | M# L#` 使用同一组 `M#`/`L#` 语法，分别用于选择和切换翻译任务默认配置。读取设置页保存的翻译模型和等级，或读取当前 Runtime 目录展示可用选择；仅等级切换要求已有翻译模型，模型切换默认使用目标模型声明的默认等级。切换只保存下一次翻译任务提交时携带的模型和等级，不读取、切换或门禁隐藏翻译 Session，也不修改已进入队列或已运行任务；未选择模型和等级时继续跟随 Runtime 默认。目录、索引、兼容性或保存结果无法确认时失败关闭，不部分更新、不猜测且不接受原始模型或等级 ID。
+- `text` 是翻译处理方式的综合只读入口，返回当前 mode、下一次翻译实际使用的 model/level 和当前可操作确认项；`text model list`、`text model level [M#]` 和 `text model use M# | L# | M# L#` 使用同一组 `M#`/`L#` 语法，分别用于选择和切换翻译任务默认配置。读取设置页保存的翻译模型和等级，或读取当前 Runtime 目录展示可用选择；仅等级切换要求已有翻译模型，模型切换默认使用目标模型声明的默认等级。切换只保存下一次翻译任务提交时携带的模型和等级，不读取、切换或门禁隐藏翻译 Session，也不修改已进入队列或已运行任务；未选择模型和等级时继续跟随 Runtime 默认，但展示具体解析结果。目录、索引、兼容性或保存结果无法确认时失败关闭，不部分更新、不猜测且不接受原始模型或等级 ID。
 - `help`、`model help`、`text help`、`session help`、`request help` 和 `system help` 是精确帮助指令。顶层帮助只显示符号说明、常用指令和主题入口；主题帮助只展示本类完整语法。旧的 `help <topic>` 和未知帮助主题按原文作为普通任务提交。
 - 无参数指令必须整句匹配。`S#` 后的剩余内容始终作为普通任务正文；例如 `S2 retry` 是切换并提交正文 `retry`，不会触发续提指令。`new retry` 作为普通任务，不创建 Session 或续提任务。
 - 只有表内英文规范格式属于固定指令。未登记的 `sn ...`、`session ...` 形式、旧别名和旧槽位写法均作为普通任务，不猜测为固定指令。
@@ -211,10 +211,10 @@
 | Request 行 | `R<槽位> · <标题>`用于`chub`列表和需求查询结果 |
 | 成功任务回执 | `状态`、`Sessions`、全部已登记 Session 及各自运行 Task；可用 Session 不显示 Task |
 | `new` 成功回执 | `Create: S# created and selected.`；下方 `Sessions` 列表展示当前标记和 Session 名称，不在状态行重复名称 |
-| `chub` 状态回执 | 首行使用本地 `node.name`，格式为 `<node.name> chub · <耗时>`，后续状态内容保持不变 |
+| `chub` 状态回执 | 首行使用本地 `node.name`，格式为 `<node.name> chub · <耗时>`；当前微信绑定 Session 已确认 active 模型和推理等级时，列表标题为 `Sessions · <model> · <level>`，否则保留 `Sessions` |
 | 失败任务回执 | `状态`、可信目标 Session、Task 依次使用独立段落；无法确认目标时省略 Session |
 | 段落 | Session、Task、结果正文和帮助项不得用可能被电脑微信折叠的单换行分隔 |
-| 空状态 | 无 Session 时显示`No sessions`；无活动需求时显示`No requests`；读取失败显示对应`Unavailable`或`Weekly Unavailable` |
+| 空状态 | 无 Session 时显示`No sessions`；无活动需求时显示`No requests`；读取失败显示对应`Unavailable`或`Usage unavailable`；仅已取得额度响应但缺少 Weekly 窗口时显示`Weekly Unavailable` |
 | 列表截断 | 未展示数量使用 `<N> more Sessions` |
 | `check` 回执 | 返回 `Check · <耗时>`，按“服务 / 维护 / 资源 / 结果”分段展示 Chub Web、Quick Worker、AI Runtime、升级与恢复和脱敏资源明细；不附加任务、Session 或用量上下文。AI Runtime 被停用、未配置、不可用或状态无法确认只作为待处理提示，不把已就绪的 Web/Worker 误判为故障；升级失败或不可用、Web/Worker/系统检查失败才使核心服务检查未通过。 |
 
@@ -239,14 +239,14 @@ Session 标题与任务摘要的显示规则：
 | `restart web` 已在进行中或同步失败的回复 | 按现有固定指令规则附加可用状态 |
 | `upgrade` | 不附加 Session/用量状态；直接返回升级受理结果，最终状态通过独立通知返回 |
 | 切换并提交任务、续提任务、切换后正文的优化中回执或未启用文本优化的普通任务回执 | 不附加 |
-| 其他固定指令结果 | 附加 Session 状态和 `Weekly <quota> · Today <usage>` |
+| 其他固定指令结果 | 附加 Session 状态和紧凑用量；有 5h 时为 `5h <quota> · <HH:MM> · Today <usage>`，否则为 `Weekly <quota> · <M/D> · Today <usage>` |
 | 主任务成功通知 | 只在结果底部追加用量，不附加完整 Session 状态 |
 | 主任务失败、超时及文本优化通知 | 不附加 |
 | Web、Worker、ClawBot 重启的独立完成通知 | 附加操作后的最终状态；受理或进程启动不视为完成 |
 
-`usage` 的完整回执使用独立分行格式：`Weekly` 显示带美元符号的剩余金额及其末尾的 `Remaining` 标签、周额度剩余百分比及其末尾的 `left` 标签；`Today` 显示带美元符号的已用额度及其末尾的 `Used` 标签和 Token，`Resets` 使用 `YYYY-MM-DD HH:MM` 的本地时间格式。微信回执暂不显示限额数值。首页额度长格式不受此指令调整影响。
+`usage` 的完整回执按 `5h`、`Weekly`、`Today` 分行；5h 存在时先显示其剩余百分比和 `YYYY-MM-DD HH:MM` 重置时间。`Weekly` 显示带美元符号的剩余金额及其末尾的 `Remaining` 标签、周额度剩余百分比及其末尾的 `left` 标签和同样格式的重置时间；`Today` 显示带美元符号的已用额度及其末尾的 `Used` 标签和 Token。5h 缺失时仅省略该行。微信回执暂不显示限额数值。
 
-- 尾部读取失败只降级对应状态，不得覆盖指令本身的成功或失败语义。
+- 尾部读取失败只降级对应状态，不得覆盖指令本身的成功或失败语义。所有微信回执的额度读取超时、异常或空结果固定显示 `Usage unavailable`，不误报为 Weekly 窗口异常；`Weekly Unavailable` 只用于已取得额度响应但缺少 Weekly 窗口的场景。
 - 异步任务和文本优化队列只保存目标 `session_id`；`Started`、完成和失败通知发送时按该 ID 读取当前槽位与 Session 名称。润色任务的 `Started` 使用 `Started`、发送时校验的 `[▶ ]S<槽位> · <标题>`、`Submitted:` 完整润色中文及 `English:`；确认模式在确认结果持久化后立即结束微信入口请求，主任务提交与这一条 `Started` 均由确认队列异步处理，不再额外发送 `Translation confirmed · Preparing to submit.`，也不把 Worker 或通知耗时误报为提交未知。槽位暂忙时先回复等待，待实际接收后再发送 `Started`。槽位已释放或复用时标记 `Unavailable`，不得把新 Session 显示成原任务目标。
 - 主任务终态继续使用 `Done`、`Failed` 或 `Timed out`，`Task · <摘要>` 必须来源于实际提交文本。微信 ClawBot 任务正常成功链路通常产生 `Started` 和 `Done` 两次异步通知；Web 快速交互任务只在页面时间线展示结果，不主动回送 ClawBot。两者不设置到达顺序门禁，极快任务允许偶发轻微乱序。
 - 失败任务页面时间线明确显示错误来源：`Chub` 表示 Chub/Worker/解析边界错误，`Codex CLI（上游 Runtime）` 表示当前 Codex Runtime 子进程提供的原始诊断。微信完成通知只在 `Failed` 或文本优化失败标题中追加 `Chub` 或 `Codex CLI (upstream Runtime)`；`Timed out` 和 `Cancelled` 不追加错误来源。错误正文仍按 Worker 固定上限脱敏并以纯文本发送。`error_source=runtime` 保持 Runtime 通用语义，未来接入其他 Runtime 时必须重新定义对应展示标签并同步本节。

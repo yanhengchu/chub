@@ -174,7 +174,7 @@ def test_account_mode_uses_local_today_without_neighbor_fallback(
     assert result.source == "account_login"
     assert result.today is not None and result.today.tokens == 2_500_000
     assert result.today.tokens_scope == "local_device"
-    assert result.display.short == "Weekly 78% · Today 2.5M (local)"
+    assert result.display.short == "Weekly 78% · 8/20 · Today 2.5M (local)"
     assert "Today 2.5M tokens (local)" in (result.display.long or "")
     local_usage.read_today.assert_called_once()
     browser.collect.assert_not_called()
@@ -219,13 +219,17 @@ def test_account_mode_prefers_exact_account_today(settings: Settings) -> None:
     assert result.today is not None
     assert result.today.tokens == 3_000_000
     assert result.today.tokens_scope == "account"
-    assert result.display.short == "Weekly 78% · Today 3M"
+    assert result.display.short == "5h 42% · 18:20 · Today 3M"
     assert result.five_hour is not None
     assert result.five_hour.remaining_percent == 42
-    assert result.display.home[0].text == "Weekly 78% left"
-    assert result.display.home[1].text == "Reset 8/20 15:45"
-    assert result.display.home[2].text == "5h 42% left"
-    assert result.display.home[3].text == "Reset 8/15 18:20"
+    assert result.display.long == (
+        "5h 42% left · Reset 8/15 18:20 · Weekly 78% left · "
+        "Reset 8/20 15:45 · Today 3M tokens"
+    )
+    assert result.display.home[0].text == "5h 42% left"
+    assert result.display.home[1].text == "Reset 8/15 18:20"
+    assert result.display.home[2].text == "Weekly 78% left"
+    assert result.display.home[3].text == "Reset 8/20 15:45"
     assert result.display.home[4].text == "Today 3M tokens"
     local_usage.read_today.assert_not_called()
 
@@ -266,7 +270,7 @@ def test_account_mode_omits_today_when_local_usage_is_unavailable(
 
     assert result.today is not None and result.today.tokens is None
     assert result.today.tokens_scope is None
-    assert result.display.short == "Weekly 78%"
+    assert result.display.short == "Weekly 78% · 8/20"
 
 
 def test_api_key_mode_formats_provider_usage_and_does_not_fallback(
@@ -284,10 +288,10 @@ def test_api_key_mode_formats_provider_usage_and_does_not_fallback(
     assert result.weekly is not None
     assert result.weekly.remaining_percent == 78
     assert result.display.long == (
-        "Weekly $781.92 left (78%) · Limit $1,000 · "
-        "Today $181.02 used 100M tokens · Resets 8/20 15:45"
+        "Weekly $781.92 left (78%) · Limit $1,000 · Reset 8/20 15:45 · "
+        "Today $181.02 used 100M tokens"
     )
-    assert result.display.short == "Weekly 78% · Today 100M"
+    assert result.display.short == "Weekly 78% · 8/20 · Today 100M"
     browser.collect.assert_called_once()
 
 

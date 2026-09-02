@@ -56,7 +56,7 @@ AI Usage Core -> Theme -> Dashboard Core -> Components -> Features -> app.js
 - `theme.js` 只管理风格和 Cyber 代码雨；需要额度时订阅 Core 快照，不拥有额度请求或缓存。
 - `app.js` 负责页面组合、启动、认证失效清理及确有必要的跨功能协调。
 - 快速交互页按 `Quick Interaction Core -> Session View -> Timeline View -> Page Controller` 固定顺序加载。Core 管理请求与无状态业务规则；Session View 和 Timeline View 只消费只读快照、渲染 DOM 并通过回调上报操作；Page Controller 是 Session、任务列表、分页、轮询、提交和草稿状态的唯一所有者。
-- 首页与快速交互页消费 Session API 返回的统一 `usage` 投影；Session 状态和入口规则以 [AI Session 状态模型](AI_SESSION_STATE_DESIGN.md) 为准。前端只负责按该投影展示入口、状态和刷新结果，不另行定义 owner、phase 或 Session 操作语义。首页 AI 额度使用 `display.home` 的结构化片段，按 `Weekly + Reset`、`5h + Reset`、`Today` 分组；5h 或今日 Token 缺失时不补零、不从其他窗口推算。
+- 首页与快速交互页消费 Session API 返回的统一 `usage` 投影；Session 状态和入口规则以 [AI Session 状态模型](AI_SESSION_STATE_DESIGN.md) 为准。前端只负责按该投影展示入口、状态和刷新结果，不另行定义 owner、phase 或 Session 操作语义。首页 AI 额度使用 `display.home` 的结构化片段，按 `5h + Reset`、`Weekly + Reset`、`Today` 分组；5h 或今日 Token 缺失时不补零、不从其他窗口推算。
 - 其他次级页面可继续使用独立脚本；只有形成稳定共享边界时才迁移公共能力。
 
 调整文件或脚本顺序时，必须同步顺序测试并完成真实浏览器回归。

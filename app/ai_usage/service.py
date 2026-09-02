@@ -323,17 +323,18 @@ class AiUsageService:
         timezone = ZoneInfo(data.timezone)
         reset = weekly.resets_at.astimezone(timezone)
         weekly_reset_text = f"Reset {reset.month}/{reset.day} {reset:%H:%M}"
-        home_parts = [AiUsageDisplayPart(kind="weekly", text=weekly_text)]
+        weekly_home_parts = [AiUsageDisplayPart(kind="weekly", text=weekly_text)]
         if limit_text:
-            home_parts.append(AiUsageDisplayPart(kind="limit", text=limit_text))
-        home_parts.append(AiUsageDisplayPart(kind="reset", text=weekly_reset_text))
+            weekly_home_parts.append(AiUsageDisplayPart(kind="limit", text=limit_text))
+        weekly_home_parts.append(
+            AiUsageDisplayPart(kind="reset", text=weekly_reset_text)
+        )
 
-        long_parts = [weekly_text]
+        weekly_long_parts = [weekly_text]
         if limit_text:
-            long_parts.append(limit_text)
-        if today_parts:
-            long_parts.append(f"Today {' '.join(today_parts)}")
-        long_parts.append(f"Resets {reset.month}/{reset.day} {reset:%H:%M}")
+            weekly_long_parts.append(limit_text)
+        weekly_long_parts.append(weekly_reset_text)
+        today_text = f"Today {' '.join(today_parts)}" if today_parts else None
 
         if data.five_hour is not None:
             five_hour_reset = data.five_hour.resets_at.astimezone(timezone)
@@ -342,36 +343,38 @@ class AiUsageService:
                 f"Reset {five_hour_reset.month}/{five_hour_reset.day} "
                 f"{five_hour_reset:%H:%M}"
             )
-            home_parts.extend(
+            home_parts = [
                 [
                     AiUsageDisplayPart(kind="five_hour", text=five_hour_text),
                     AiUsageDisplayPart(kind="reset", text=five_hour_reset_text),
-                ]
-            )
-            if today_parts:
-                home_parts.append(
-                    AiUsageDisplayPart(
-                        kind="today",
-                        text=f"Today {' '.join(today_parts)}",
-                    )
-                )
+                ],
+                weekly_home_parts,
+            ]
+            home_parts = [part for group in home_parts for part in group]
+            if today_text:
+                home_parts.append(AiUsageDisplayPart(kind="today", text=today_text))
             long_parts = [
-                weekly_text,
-                *([limit_text] if limit_text else []),
-                weekly_reset_text,
                 five_hour_text,
                 five_hour_reset_text,
-                *([f"Today {' '.join(today_parts)}"] if today_parts else []),
+                *weekly_long_parts,
+                *([today_text] if today_text else []),
             ]
-        elif today_parts:
-            home_parts.append(
-                AiUsageDisplayPart(
-                    kind="today",
-                    text=f"Today {' '.join(today_parts)}",
-                )
-            )
+        else:
+            home_parts = weekly_home_parts
+            if today_text:
+                home_parts.append(AiUsageDisplayPart(kind="today", text=today_text))
+            long_parts = [*weekly_long_parts, *([today_text] if today_text else [])]
 
-        short_parts = [f"Weekly {weekly.remaining_percent}%"]
+        if data.five_hour is not None:
+            short_parts = [
+                f"5h {data.five_hour.remaining_percent}%",
+                f"{data.five_hour.resets_at.astimezone(timezone):%H:%M}",
+            ]
+        else:
+            short_parts = [
+                f"Weekly {weekly.remaining_percent}%",
+                f"{reset.month}/{reset.day}",
+            ]
         if data.today is not None and data.today.tokens is not None:
             token_text = f"Today {cls.compact_tokens(data.today.tokens)}"
             if data.today.tokens_scope == "local_device":

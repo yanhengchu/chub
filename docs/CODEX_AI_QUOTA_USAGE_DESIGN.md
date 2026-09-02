@@ -105,13 +105,13 @@ GET /api/ai/usage?refresh=true
       "tokens_scope": "local_device"
     },
     "display": {
-      "long": "Weekly 78% left · Reset 8/20 14:44 · 5h 42% left · Reset 8/15 18:20 · Today 5.6M tokens (local)",
-      "short": "Weekly 78% · Today 5.6M (local)",
+      "long": "5h 42% left · Reset 8/15 18:20 · Weekly 78% left · Reset 8/20 14:44 · Today 5.6M tokens (local)",
+      "short": "5h 42% · 18:20 · Today 5.6M (local)",
       "home": [
-        {"kind": "weekly", "text": "Weekly 78% left"},
-        {"kind": "reset", "text": "Reset 8/20 14:44"},
         {"kind": "five_hour", "text": "5h 42% left"},
         {"kind": "reset", "text": "Reset 8/15 18:20"},
+        {"kind": "weekly", "text": "Weekly 78% left"},
+        {"kind": "reset", "text": "Reset 8/20 14:44"},
         {"kind": "today", "text": "Today 5.6M tokens (local)"}
       ]
     }
@@ -141,23 +141,23 @@ GET /api/ai/usage?refresh=true
 首页使用结构化长格式，按以下顺序展示：
 
 ```text
-Weekly $781.92 left (78%) · Limit $1,000 · Reset 8/20 15:45
 5h 42% left · Reset 8/15 18:20
+Weekly $781.92 left (78%) · Limit $1,000 · Reset 8/20 15:45
 Today $181.02 used 100M tokens
 ```
 
 `display.home` 提供首页使用的独立展示片段，页面不得从长文本解析业务字段。`display.long` 仍提供完整纯文本兼容展示；`display.short` 保持微信等短回执的紧凑格式。
 
-其他调用方使用短格式：
+完整纯文本使用相同的 `5h → Weekly → Today` 顺序；没有 5h 时以 `Weekly → Today` 展示。微信状态、Session 回执和任务通知使用短格式：有 5h 时显示 5h 剩余百分比、其重置时间和今日 Token；没有 5h 时显示 Weekly 剩余百分比、其重置日期和今日 Token。
 
 ```text
-Weekly $781.92 left (78%) · Limit $1,000 · Today $181.02 used 100M tokens · Resets 8/20 15:45
+5h 42% · 18:20 · Today 100M
 ```
 
-微信状态、Session 回执和任务通知使用短格式：
+没有 5h 时：
 
 ```text
-Weekly 78% · Today 100M
+Weekly 78% · 8/20 · Today 100M
 ```
 
 统一规则：
@@ -173,8 +173,8 @@ Weekly 78% · Today 100M
 
 首页展示保持完整额度信息，只调整分组和分行位置：
 
-- 完整额度按 `Weekly + Limit/Reset`、`5h + Reset`、`Today` 分组；Sub2API 来源的 `Limit` 和美元用量继续放入对应分组。
-- 桌面端三组按内容自然横向排列；手机视口不超过 `420px` 时每组自身纵向排列，保持 Weekly、5h、Today 三行，不会因每个片段各自换行而拆成五至六行。
+- 完整额度按 `5h + Reset`、`Weekly + Limit/Reset`、`Today` 分组；Sub2API 来源的 `Limit` 和美元用量继续放入对应分组。
+- 桌面端三组按内容自然横向排列；手机视口不超过 `420px` 时每组自身纵向排列，保持 5h、Weekly、Today 三行，不会因每个片段各自换行而拆成五至六行。
 - 账号登录有 5h 数据时使用相同三组布局；没有 5h 或 Today 时只省略对应组，不显示占位内容。
 - 任何视口都不得截断、遮挡或产生横向溢出。
 

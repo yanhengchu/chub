@@ -10,7 +10,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.ai_usage.models import AiTodayUsage, AiUsageData, AiUsageDisplay, AiWeeklyUsage
+from app.ai_usage.models import (
+    AiFiveHourUsage,
+    AiTodayUsage,
+    AiUsageData,
+    AiUsageDisplay,
+    AiWeeklyUsage,
+)
 from app.codex.models import (
     CodexModelCatalogData,
     CodexModelInfo,
@@ -173,11 +179,12 @@ def test_text_model_status_is_included_in_the_text_summary(
     translation_manager = MagicMock()
     translation_manager.status.return_value = SimpleNamespace(
         mode="confirm",
-        model="translation-model",
-        reasoning_effort="medium",
+        model=None,
+        reasoning_effort=None,
     )
     translation_manager.active_confirmation.return_value = None
     manager.translation_manager = translation_manager
+    codex_manager.read_model_catalog.return_value = _text_model_catalog()
 
     result = manager.dispatch(
         message_id="text-model-status",
@@ -195,8 +202,46 @@ def test_text_model_status_is_included_in_the_text_summary(
         "Current confirmation: None."
     )
     translation_manager.status.assert_called_once_with()
-    codex_manager.read_model_catalog.assert_not_called()
+    codex_manager.read_model_catalog.assert_called_once_with()
     quick_interactions.update_session_model.assert_not_called()
+
+
+def test_text_fails_closed_when_the_default_model_cannot_be_resolved(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    translation_manager = MagicMock()
+    translation_manager.status.return_value = SimpleNamespace(
+        mode="confirm",
+        model=None,
+        reasoning_effort=None,
+    )
+    manager.translation_manager = translation_manager
+    codex_manager.read_model_catalog.side_effect = ApiError(
+        503,
+        "codex_model_catalog_unavailable",
+        "Catalog unavailable",
+    )
+
+    with patch(
+        "app.services.openclaw_weixin_chub_mode.write_operation"
+    ) as write_operation:
+        result = manager.dispatch(
+            message_id="text-model-unavailable",
+            prompt="text",
+            message_type="text",
+            correlation_id=None,
+            source_ip="100.64.0.21",
+            delivery_route=delivery_route(),
+        )
+
+    assert result.message == "Text: Model and level are unavailable."
+    statuses = [
+        call.kwargs["status"]
+        for call in write_operation.call_args_list
+        if call.kwargs["action"] == "update_weixin_translation_setting"
+    ]
+    assert statuses == ["requested", "started", "failed"]
 
 
 def test_text_model_list_and_levels_use_the_current_translation_defaults(
@@ -592,7 +637,7 @@ def test_dispatch_routes_chub_status_to_live_overview(
     assert "Task result notifications failed" not in result.message
     assert "Issues" not in result.message
     assert result.message.endswith(
-        "No sessions\n\nNo requests\n\nWeekly Unavailable"
+        "No sessions\n\nNo requests\n\nUsage unavailable"
     )
     assert "Sessions\n\nNo sessions" not in result.message
     assert "执行中 2" not in result.message
@@ -1469,6 +1514,10 @@ def test_usage_returns_complete_usage_without_session_status(
             limit_usd="1000",
             resets_at="2026-08-20T15:45:00+08:00",
         ),
+        five_hour=AiFiveHourUsage(
+            remaining_percent=42,
+            resets_at="2026-08-15T18:20:00+08:00",
+        ),
         today=AiTodayUsage(
             date="2026-08-15",
             used_usd="181.02",
@@ -1476,10 +1525,11 @@ def test_usage_returns_complete_usage_without_session_status(
             tokens_scope="account",
         ),
         display=AiUsageDisplay(
-            short="Weekly 78% · Today 100M",
+            short="5h 42% · 18:20 · Today 100M",
             long=(
-                "Weekly $781.92 left (78%) · Limit $1,000 · "
-                "Today $181.02 used 100M tokens · Resets 8/20 15:45"
+                "5h 42% left · Reset 8/15 18:20 · "
+                "Weekly $781.92 left (78%) · Limit $1,000 · Reset 8/20 15:45 · "
+                "Today $181.02 used 100M tokens"
             ),
         ),
     )
@@ -1496,9 +1546,9 @@ def test_usage_returns_complete_usage_without_session_status(
     assert result.disposition == "reply"
     assert result.message == (
         "Usage\n\n"
-        "Weekly · $781.92 Remaining · 78% left\n"
-        "Today · $181.02 Used · 100M tokens\n"
-        "Resets · 2026-08-20 15:45"
+        "5h · 42% left · Resets · 2026-08-15 18:20\n"
+        "Weekly · $781.92 Remaining · 78% left · Resets · 2026-08-20 15:45\n"
+        "Today · $181.02 Used · 100M tokens"
     )
     manager.ai_usage_reader.read.assert_called_once_with(force=False)
     codex_manager.list_sessions.assert_not_called()
@@ -1586,7 +1636,7 @@ def test_chub_overview_failure_completes_ephemeral_dedup(
     assert first.message.startswith(
         "Status: Failed to build the Chub overview. Try again later."
     )
-    assert first.message.endswith("Weekly Unavailable")
+    assert first.message.endswith("Usage unavailable")
     assert duplicate == first
 
 
@@ -1640,8 +1690,8 @@ def test_chub_refreshes_status_on_every_query(
     )
 
     assert "Disk usage is high: 86%" in (first.message or "")
-    assert "Weekly Unavailable" in (first.message or "")
-    assert "Weekly Unavailable" in (second.message or "")
+    assert "Usage unavailable" in (first.message or "")
+    assert "Usage unavailable" in (second.message or "")
     assert manager.system_status_reader.call_count == 2
     assert manager.codex_account_reader.read_account_status.call_count == 2
     manager.codex_account_reader.read_account_status.assert_called_with(force=True)
@@ -1838,6 +1888,8 @@ def test_chub_overview_separates_each_busy_session_block(
                 title="项目文档优化",
                 state="Busy",
                 current=True,
+                active_model="gpt-5.1-codex",
+                active_reasoning_effort="high",
             ),
         ),
         utc_now(),
@@ -1857,14 +1909,30 @@ def test_chub_overview_separates_each_busy_session_block(
     message = manager._format_chub_overview("route", elapsed_ms=129)
 
     assert (
-        "Sessions\n\n"
+            "Sessions · gpt-5.1-codex · high\n\n"
         "S1 · Chub 快速交互独立…\n\n"
         "Task · 开始执行第四个阶段\n\n"
         "▶ S2 · 项目文档优化\n\n"
             "Task · 项目文档优化\n\n"
             "No requests\n\n"
-            "Weekly"
+            "Usage unavailable"
     ) in message
+
+
+def test_decorated_chub_sessions_heading_is_not_appended_twice(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, _quick_interactions = configured_manager(settings)
+    message = (
+        "Chub · 129ms\n\n"
+        "Sessions · gpt-5.1-codex · high\n\n"
+        "▶ S1 · 项目文档优化\n\n"
+        "No requests\n\n"
+        "5h 52% · 23:54 · Today 17.1M (local)"
+    )
+
+    assert manager._has_command_status_suffix(message)
+    assert manager._with_command_status_suffix(message) == message
 
 
 def test_chub_overview_uses_configured_task_name_limit(settings: Settings) -> None:
@@ -1999,7 +2067,7 @@ def test_chub_sync_failure_does_not_commit_partial_slots(
 
     assert result.message == (
         "Request: Failed because Chub state is unavailable. Try again later.\n\n"
-        "Sessions\n\nUnavailable\n\nWeekly Unavailable"
+        "Sessions\n\nUnavailable\n\nUsage unavailable"
     )
     assert manager.session_slot_matches(1, "missing")
     manager._write_state = original_write
@@ -2022,6 +2090,15 @@ def test_session_slots_snapshot_is_consistent_copy(settings: Settings) -> None:
 def test_codex_status_does_not_report_missing_daily_bucket_as_zero() -> None:
     message = WeixinChubModeManager._codex_usage_message(
         CodexQuotaData(status="unavailable"),
+        CodexTokenUsageData(status="available", daily_usage=[]),
+    )
+
+    assert message == "Usage unavailable"
+
+
+def test_codex_status_reports_a_missing_weekly_window() -> None:
+    message = WeixinChubModeManager._codex_usage_message(
+        CodexQuotaData(status="available"),
         CodexTokenUsageData(status="available", daily_usage=[]),
     )
 

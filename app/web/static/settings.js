@@ -30,11 +30,17 @@ const weixinTranslationModel = document.querySelector(
 const weixinTranslationModelField = document.querySelector(
   "#weixin-translation-model-field",
 );
+const weixinTranslationModelDescription = document.querySelector(
+  "#weixin-translation-model-description",
+);
 const weixinTranslationReasoningEffort = document.querySelector(
   "#weixin-translation-reasoning-effort",
 );
 const weixinTranslationReasoningEffortField = document.querySelector(
   "#weixin-translation-reasoning-effort-field",
+);
+const weixinTranslationReasoningEffortDescription = document.querySelector(
+  "#weixin-translation-reasoning-effort-description",
 );
 const weixinTranslationMessage = document.querySelector(
   "#weixin-translation-message",
@@ -106,6 +112,7 @@ const cyberStyleDetails = document.querySelector("[data-cyber-style-details]");
 let codexModels = [];
 let codexModelsLoaded = false;
 let codexCatalogDefaultModelId = "";
+let codexCatalogDefaultReasoningEffort = "";
 let weixinTranslationStatus = null;
 let weixinTranslationStatusLive = false;
 let weixinTranslationCacheRestored = false;
@@ -367,12 +374,18 @@ function defaultModelOptionLabel() {
   return "跟随 Codex 默认";
 }
 
+function defaultModelDescription(model) {
+  const modelName = model?.name || model?.id || "不可用";
+  const modelId = model?.id && model?.name !== model.id ? `（${model.id}）` : "";
+  const level = codexCatalogDefaultReasoningEffort || model?.default_level || "不可用";
+  return `当前 Codex 默认 · ${modelName}${modelId} · ${CODEX_REASONING_LABELS[level] || level}`;
+}
+
 function defaultReasoningOptionLabel() {
   return "跟随模型默认";
 }
 
-function defaultReasoningDescription(model) {
-  const level = model?.default_level || "";
+function defaultReasoningDescription(level) {
   return level
     ? `当前默认 ${CODEX_REASONING_LABELS[level] || level}`
     : "当前模型未提供默认等级";
@@ -381,13 +394,21 @@ function defaultReasoningDescription(model) {
 function renderCodexModels(data) {
   codexModels = data.models;
   codexCatalogDefaultModelId = data.default_model || "";
+  codexCatalogDefaultReasoningEffort = data.default_reasoning_effort || "";
   if (weixinTranslationStatus !== null) {
     renderWeixinTranslationModelSettings(weixinTranslationStatus);
   }
 }
 
 function renderWeixinTranslationModelSettings(status) {
-  const options = [createOption("", defaultModelOptionLabel(), "使用 Codex 当前默认模型")];
+  const defaultModel = codexModels.find(
+    (model) => model.id === codexCatalogDefaultModelId,
+  );
+  const options = [createOption(
+    "",
+    defaultModelOptionLabel(),
+    defaultModelDescription(defaultModel),
+  )];
   if (
     status.model
     && !codexModels.some((model) => model.id === status.model)
@@ -408,10 +429,26 @@ function renderWeixinTranslationModelSettings(status) {
   const model = codexModels.find(
     (item) => item.id === (weixinTranslationModel.value || codexCatalogDefaultModelId),
   );
+  const effectiveModelName = model?.name || model?.id || "不可用";
+  const effectiveLevel = status.reasoning_effort
+    || (!status.model && codexCatalogDefaultReasoningEffort)
+    || model?.default_level
+    || "不可用";
+  const effectiveLevelName = CODEX_REASONING_LABELS[effectiveLevel] || effectiveLevel;
+  weixinTranslationModelDescription.textContent = status.model
+    ? `当前使用 ${effectiveModelName}；只影响之后新提交的文本优化任务。`
+    : `跟随 Codex 默认，当前为 ${effectiveModelName} · ${effectiveLevelName}。`;
+  weixinTranslationReasoningEffortDescription.textContent = status.reasoning_effort
+    ? `当前使用 ${effectiveLevelName}；只影响之后新提交的文本优化任务。`
+    : `跟随模型默认，当前为 ${effectiveLevelName}。`;
   const levels = [createOption(
     "",
     "跟随模型默认",
-    defaultReasoningDescription(model),
+    defaultReasoningDescription(
+      status.reasoning_effort
+      || (!status.model && codexCatalogDefaultReasoningEffort)
+      || model?.default_level,
+    ),
   )];
   if (model) {
     model.levels.forEach((level) => {
@@ -565,6 +602,7 @@ async function loadCodexModels() {
     if (Array.isArray(cached?.models)) {
       codexModels = cached.models;
       codexCatalogDefaultModelId = cached.default_model || "";
+      codexCatalogDefaultReasoningEffort = cached.default_reasoning_effort || "";
       if (weixinTranslationStatus !== null) {
         renderWeixinTranslationModelSettings(weixinTranslationStatus);
       }
@@ -594,6 +632,8 @@ async function loadCodexModels() {
     }
   } catch (_error) {
     codexModels = [];
+    weixinTranslationModelDescription.textContent = "无法读取 Codex 当前默认模型。";
+    weixinTranslationReasoningEffortDescription.textContent = "无法读取 Codex 当前默认推理等级。";
     if (weixinTranslationStatus !== null && codexModels.length > 0) {
       renderWeixinTranslationModelSettings(weixinTranslationStatus);
     }

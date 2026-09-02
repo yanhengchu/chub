@@ -443,7 +443,7 @@ def test_codex_retry_rejects_expired_or_different_route_without_side_effects(
         "Retry: No task is waiting to be continued. Send the task again."
         "\n\nNo sessions\n\n"
     )
-    assert result.message.endswith("Weekly Unavailable")
+    assert result.message.endswith("Usage unavailable")
     codex_manager.create_session.assert_not_called()
     quick_interactions.submit.assert_not_called()
 
@@ -477,7 +477,7 @@ def test_codex_retry_cannot_claim_task_from_different_route(
         "Retry: No task is waiting to be continued. Send the task again."
         "\n\nNo sessions\n\n"
     )
-    assert result.message.endswith("Weekly Unavailable")
+    assert result.message.endswith("Usage unavailable")
     codex_manager.create_session.assert_not_called()
     quick_interactions.submit.assert_not_called()
     assert manager._state.pending_retry is not None

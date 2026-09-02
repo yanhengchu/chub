@@ -65,7 +65,7 @@ def test_chub_overview_lists_requests_below_sessions(settings) -> None:
 
     message = manager._format_chub_overview("route", elapsed_ms=10)
 
-    assert "No sessions\n\nRequests\n\nR1 · 第一项需求\n\nWeekly" in message
+    assert "No sessions\n\nRequests\n\nR1 · 第一项需求\n\nUsage unavailable" in message
 
 
 def test_chub_overview_does_not_report_unreadable_requests_as_empty(settings) -> None:

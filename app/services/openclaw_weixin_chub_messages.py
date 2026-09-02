@@ -126,6 +126,8 @@ def format_chub_overview(
     sessions: tuple[ChubOverviewSession, ...] | None,
     usage_message: str,
     requests: tuple[ChubOverviewRequest, ...] | None = (),
+    current_model: str | None = None,
+    current_reasoning_effort: str | None = None,
 ) -> str:
     anomalies: list[str] = []
     lines = [f"{title} · {format_elapsed_time(elapsed_ms)}"]
@@ -157,7 +159,10 @@ def format_chub_overview(
             for index, message in enumerate(dict.fromkeys(anomalies), start=1)
         )
 
-    session_lines = ["Sessions"]
+    session_heading = "Sessions"
+    if current_model is not None and current_reasoning_effort is not None:
+        session_heading += f" · {current_model} · {current_reasoning_effort}"
+    session_lines = [session_heading]
     if sessions:
         for item in sessions:
             session_block = format_session_name_line(
@@ -392,6 +397,8 @@ def codex_usage_message(
     quota: CodexQuotaData,
     usage: CodexTokenUsageData,
 ) -> str:
+    if quota.status != "available":
+        return "Usage unavailable"
     weekly = next(
         (
             window
@@ -422,14 +429,16 @@ def usage_message(value: object) -> str:
     if isinstance(value, AiUsageData):
         if value.status == "available" and value.display.short:
             return value.display.short
-        return "Weekly Unavailable"
+        return "Usage unavailable"
     quota, usage = value
     return codex_usage_message(quota, usage)
 
 
 def detailed_usage_message(value: object) -> str:
     if isinstance(value, AiUsageData):
-        if value.status != "available" or value.weekly is None:
+        if value.status != "available":
+            return "Usage unavailable"
+        if value.weekly is None:
             return "Weekly Unavailable"
         weekly = value.weekly
         weekly_values = []
@@ -440,8 +449,20 @@ def detailed_usage_message(value: object) -> str:
         weekly_line = "Weekly"
         if weekly_values:
             weekly_line += f" · {' · '.join(weekly_values)}"
-        weekly_line += f" · {weekly.remaining_percent}% left"
-        lines = ["Usage", "", weekly_line]
+        weekly_reset = weekly.resets_at.astimezone(ZoneInfo(value.timezone))
+        weekly_line += (
+            f" · {weekly.remaining_percent}% left"
+            f" · Resets · {weekly_reset:%Y-%m-%d %H:%M}"
+        )
+        lines = ["Usage", ""]
+        if value.five_hour is not None:
+            five_hour_reset = value.five_hour.resets_at.astimezone(ZoneInfo(value.timezone))
+            lines.append(
+                "5h"
+                f" · {value.five_hour.remaining_percent}% left"
+                f" · Resets · {five_hour_reset:%Y-%m-%d %H:%M}"
+            )
+        lines.append(weekly_line)
         today_parts: list[str] = []
         if value.today is not None:
             if value.today.used_usd is not None:
@@ -455,8 +476,6 @@ def detailed_usage_message(value: object) -> str:
                 today_parts.append(token_text)
         if today_parts:
             lines.extend([f"Today · {' · '.join(today_parts)}"])
-        reset = weekly.resets_at.astimezone(ZoneInfo(value.timezone))
-        lines.append(f"Resets · {reset:%Y-%m-%d %H:%M}")
         return "\n".join(lines)
 
     quota, usage = value

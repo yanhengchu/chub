@@ -73,7 +73,7 @@ def test_rename_current_session_normalizes_title_and_is_idempotent(
         'Rename: Session 1 renamed to "新 标题".\n\n'
         "Sessions\n\n▶ S1 · 新 标题\n\nTask · 优化微信指令交互流程\n\n"
     )
-    assert first.message.endswith("Weekly Unavailable")
+    assert first.message.endswith("Usage unavailable")
     assert duplicate == first
     codex_manager.rename_session.assert_called_once_with("session-1", "新 标题")
     quick_interactions.submit.assert_not_called()
@@ -106,7 +106,7 @@ def test_rename_supports_chinese_alias(settings: Settings) -> None:
         'Rename: Session 3 renamed to "项目维护".\n\n'
         "Sessions\n\n▶ S3 · 项目维护\n\n"
     )
-    assert result.message.endswith("Weekly Unavailable")
+    assert result.message.endswith("Usage unavailable")
     codex_manager.rename_session.assert_called_once_with("session-1", "项目维护")
 
 
@@ -139,7 +139,7 @@ def test_rename_result_keeps_full_title_and_shortens_session_list(
     assert result.message is not None
     assert result.message.startswith(f'Rename: Session 1 renamed to "{title}".')
     assert f"▶ S1 · {'标' * 14}…" in result.message
-    assert result.message.endswith("Weekly Unavailable")
+    assert result.message.endswith("Usage unavailable")
 
 
 def test_rename_rejects_missing_or_invalid_title(settings: Settings) -> None:
@@ -187,7 +187,7 @@ def test_rename_requires_current_session(settings: Settings) -> None:
     assert result.message.startswith(
         "Rename: Not completed because no Session is selected.\n\nNo sessions\n\n"
     )
-    assert result.message.endswith("Weekly Unavailable")
+    assert result.message.endswith("Usage unavailable")
     codex_manager.rename_session.assert_not_called()
     quick_interactions.submit.assert_not_called()
 
@@ -221,7 +221,7 @@ def test_rename_failure_keeps_command_out_of_normal_submission(
         "Rename: Failed. The current title was not changed. Try again later."
         "\n\nNo sessions\n\n"
     )
-    assert result.message.endswith("Weekly Unavailable")
+    assert result.message.endswith("Usage unavailable")
     quick_interactions.submit.assert_not_called()
 
 
@@ -254,5 +254,5 @@ def test_rename_external_writer_explains_how_to_recover(
         "Rename: Not completed. This is open in another app, "
         "close it there to continue here.\n\nNo sessions\n\n"
     )
-    assert result.message.endswith("Weekly Unavailable")
+    assert result.message.endswith("Usage unavailable")
     quick_interactions.submit.assert_not_called()

@@ -113,7 +113,7 @@ def test_codex_switch_uses_creation_order_and_allows_busy_target(
         "Sessions\n\n"
     )
     assert "▶ S3 · 第三项" in result.message
-    assert result.message.endswith("Weekly Unavailable")
+    assert result.message.endswith("Usage unavailable")
     assert manager.session_id() == "c-available"
     quick_interactions.submit.assert_not_called()
 
@@ -619,7 +619,7 @@ def test_codex_archive_removes_target_and_clears_current_binding(
         "Archive: Session 2 archived. The current selection was cleared.\n\n"
         "Sessions\n\n"
     )
-    assert result.message.endswith("Weekly Unavailable")
+    assert result.message.endswith("Usage unavailable")
     assert "S1 · 候选 1" in result.message
     assert "候选 2" not in result.message
     assert " · Current" not in result.message
@@ -999,7 +999,7 @@ def test_codex_archive_failure_keeps_slot_and_explains_possible_stop(
         "Archive: Failed. The Session may have stopped but remains listed."
         " Send chub before trying again.\n\nSessions\n\n"
     )
-    assert result.message.endswith("Weekly Unavailable")
+    assert result.message.endswith("Usage unavailable")
     assert manager.session_slot_matches(1, "session-1") is True
 
 
@@ -1097,7 +1097,7 @@ def test_codex_archive_state_sync_failure_reports_partial_success(
         "Archive: Completed, but Chub could not synchronize the Session list."
         " Send chub later.\n\nSessions\n\n"
     )
-    assert result.message.endswith("Weekly Unavailable")
+    assert result.message.endswith("Usage unavailable")
     manager.session_archiver.assert_called_once_with("session-1")
 
 
@@ -1203,7 +1203,7 @@ def test_codex_switch_uses_one_deadline_and_reuses_session_scan(
         "Session: S2 selected.\n\n"
         "Sessions\n\n"
     )
-    assert result.message.endswith("Weekly Unavailable")
+    assert result.message.endswith("Usage unavailable")
     assert "▶ S2 · 候选 2" in result.message
     assert manager.session_id() == "session-2"
     codex_manager.list_sessions.assert_called_once()
@@ -1442,7 +1442,7 @@ def test_codex_switch_write_failure_keeps_previous_binding(
 
     assert result.message == (
         "Request: Failed because Chub state is unavailable. Try again later.\n\n"
-        "Sessions\n\nUnavailable\n\nWeekly Unavailable"
+        "Sessions\n\nUnavailable\n\nUsage unavailable"
     )
     assert manager.session_id() == "session-1"
     persisted = json.loads(

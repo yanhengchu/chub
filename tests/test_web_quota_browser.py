@@ -83,11 +83,11 @@ USAGE_RESPONSES = {
             "tokens_scope": "account",
         },
         "display": {
-            "short": "Weekly 78% · Today 100M",
+            "short": "Weekly 78% · 8/20 · Today 100M",
             "long": (
                 "Weekly $781.92 left (78%) · Limit $1,000"
+                " · Reset 8/20 15:45"
                 " · Today $181.02 used 100M tokens"
-                " · Resets 8/20 15:45"
             ),
         },
     },
@@ -114,8 +114,8 @@ USAGE_RESPONSES = {
             "tokens_scope": "account",
         },
         "display": {
-            "short": "Weekly 78% · Today 5.6M",
-            "long": "Weekly 78% left · Today 5.6M tokens · Resets 8/20 14:44",
+            "short": "Weekly 78% · 8/20 · Today 5.6M",
+            "long": "Weekly 78% left · Reset 8/20 14:44 · Today 5.6M tokens",
         },
     },
     "compact-local": {
@@ -141,10 +141,10 @@ USAGE_RESPONSES = {
             "tokens_scope": "local_device",
         },
         "display": {
-            "short": "Weekly 78% · Today 5.6M (local)",
+            "short": "Weekly 78% · 8/20 · Today 5.6M (local)",
             "long": (
-                "Weekly 78% left · Today 5.6M tokens (local)"
-                " · Resets 8/20 14:44"
+                "Weekly 78% left · Reset 8/20 14:44"
+                " · Today 5.6M tokens (local)"
             ),
         },
     },
@@ -178,13 +178,13 @@ WINDOWED_USAGE = {
         "tokens_scope": "account",
     },
     "display": {
-        "short": "Weekly 78% · Today 5.6M",
-        "long": "Weekly 78% left · Reset 8/20 14:44 · 5h 42% left · Reset 8/15 18:20 · Today 5.6M tokens",
+        "short": "5h 42% · 18:20 · Today 5.6M",
+        "long": "5h 42% left · Reset 8/15 18:20 · Weekly 78% left · Reset 8/20 14:44 · Today 5.6M tokens",
         "home": [
-            {"kind": "weekly", "text": "Weekly 78% left"},
-            {"kind": "reset", "text": "Reset 8/20 14:44"},
             {"kind": "five_hour", "text": "5h 42% left"},
             {"kind": "reset", "text": "Reset 8/15 18:20"},
+            {"kind": "weekly", "text": "Weekly 78% left"},
+            {"kind": "reset", "text": "Reset 8/20 14:44"},
             {"kind": "today", "text": "Today 5.6M tokens"},
         ],
     },
@@ -193,18 +193,18 @@ WINDOWED_USAGE = {
 EXPECTED_PARTS = {
     "complete": [
         "Weekly $781.92 left (78%) · Limit $1,000",
+        "Reset 8/20 15:45",
         "Today $181.02 used 100M tokens",
-        "Resets 8/20 15:45",
     ],
     "compact": [
         "Weekly 78% left",
+        "Reset 8/20 14:44",
         "Today 5.6M tokens",
-        "Resets 8/20 14:44",
     ],
     "compact-local": [
         "Weekly 78% left",
+        "Reset 8/20 14:44",
         "Today 5.6M tokens (local)",
-        "Resets 8/20 14:44",
     ],
 }
 

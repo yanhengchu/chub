@@ -414,6 +414,8 @@ async def legacy_settings_page_supports_quick_interaction_page_size_preference(
     assert 'id="codex-default-reasoning-effort"' not in response.text
     assert 'id="weixin-translation-model-field"' in response.text
     assert 'id="weixin-translation-reasoning-effort-field"' in response.text
+    assert 'id="weixin-translation-model-description"' in response.text
+    assert 'id="weixin-translation-reasoning-effort-description"' in response.text
     assert 'id="weixin-translation-model-field"' in response.text
     assert 'id="weixin-translation-reasoning-effort-field"' in response.text
     assert response.text.count('id="weixin-translation-model-field"') == 1
@@ -474,6 +476,8 @@ async def legacy_settings_page_supports_quick_interaction_page_size_preference(
     assert "/api/codex/models" in script.text
     assert "/api/codex/session-defaults" in script.text
     assert "/api/settings/weixin-translation" in script.text
+    assert "当前 Codex 默认 ·" in script.text
+    assert "defaultReasoningDescription(" in script.text
     assert "/api/openclaw/status" in script.text
     assert "local_access_url" in script.text
     assert "localOpenClawAccessUrl" in script.text

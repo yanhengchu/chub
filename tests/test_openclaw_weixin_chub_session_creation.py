@@ -501,7 +501,7 @@ def test_codex_operation_log_uses_operation_result_not_status_refresh(
         )
 
     assert created.message is not None
-    assert "Weekly Unavailable" in created.message
+    assert "Usage unavailable" in created.message
     dispatch_entries = [
         call.kwargs
         for call in write_operation.call_args_list

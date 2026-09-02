@@ -338,7 +338,7 @@ def test_second_chub_restart_reuses_active_route_operation(
 
     assert second.message == (
         "Restart: Already in progress. The result will be sent when completed.\n\n"
-        "No sessions\n\nWeekly Unavailable"
+        "No sessions\n\nUsage unavailable"
     )
     coordinator.request.assert_called_once()
     assert len(manager._state.restart_operations) == 1
@@ -484,7 +484,7 @@ def test_chub_restart_rejects_unavailable_delivery_route(
 
     assert result.message == (
         "Restart: Not scheduled because the reply route is unavailable.\n\n"
-        "No sessions\n\nWeekly Unavailable"
+        "No sessions\n\nUsage unavailable"
     )
     coordinator.request.assert_not_called()
     quick_interactions.submit.assert_not_called()

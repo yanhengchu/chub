@@ -294,6 +294,8 @@ def test_format_chub_overview_uses_only_supplied_snapshot() -> None:
             ),
         ),
         usage_message="Weekly 75% · Today 2M",
+        current_model="gpt-5.1-codex",
+        current_reasoning_effort="high",
     )
 
     assert message == (
@@ -303,7 +305,7 @@ def test_format_chub_overview_uses_only_supplied_snapshot() -> None:
         "2. Memory usage is high: 91%\n"
         "3. Restart result notifications failed: 2\n"
         "4. Stop result notifications failed: 3\n\n"
-        "Sessions\n\n"
+        "Sessions · gpt-5.1-codex · high\n\n"
         "▶ S1 · 检查服务\n\n"
         "Task · 检查设备状态\n\n"
         "No requests\n\n"
@@ -320,7 +322,7 @@ def test_format_chub_overview_names_base_mode() -> None:
         failed_restart_notifications=0,
         failed_stop_notifications=0,
         sessions=(),
-        usage_message="Weekly Unavailable",
+        usage_message="Usage unavailable",
     )
 
     assert "Issues\n1. AI Runtime is disabled. Chub is in base mode." in message
@@ -412,7 +414,7 @@ def test_dispatch_failure_message_contract_is_stable() -> None:
 def test_task_summary_is_inserted_before_status_suffix_once() -> None:
     message = (
         "任务提交失败，请稍后重试。\n\n"
-        "Sessions\n\n▶ S1 · 项目维护\n\nWeekly Unavailable"
+        "Sessions\n\n▶ S1 · 项目维护\n\nUsage unavailable"
     )
 
     result = with_task_summary(message, "检查设备状态")
@@ -420,7 +422,7 @@ def test_task_summary_is_inserted_before_status_suffix_once() -> None:
     assert result == (
         "任务提交失败，请稍后重试。\n\n"
         "Task · 检查设备状态\n\n"
-        "Sessions\n\n▶ S1 · 项目维护\n\nWeekly Unavailable"
+        "Sessions\n\n▶ S1 · 项目维护\n\nUsage unavailable"
     )
     assert with_task_summary(result, "不会重复") == result
 

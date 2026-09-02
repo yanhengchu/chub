@@ -25,6 +25,7 @@ ERROR_SOURCE_LABELS = {
 OVERFLOW_MESSAGE = "结果超过微信发送上限，剩余内容请在 Chub 快速交互页面查看。"
 COMPLETION_OVERFLOW_MESSAGE = "More in Chub."
 COMPLETION_USAGE_TIMEOUT_SECONDS = 2.0
+COMPLETION_USAGE_UNAVAILABLE = "Usage unavailable"
 
 
 @dataclass(frozen=True)
@@ -129,12 +130,12 @@ class OpenClawCompletionNotifier:
 
     def _restart_codex_status(self, route: QuickInteractionWeixinRoute) -> str:
         if self.codex_status_reader is None:
-            return "Sessions\n\nUnavailable\n\nWeekly Unavailable"
+            return "Sessions\n\nUnavailable\n\nUsage unavailable"
         try:
             message = self.codex_status_reader(route)
         except Exception:
-            return "Sessions\n\nUnavailable\n\nWeekly Unavailable"
-        return message or "Sessions\n\nUnavailable\n\nWeekly Unavailable"
+            return "Sessions\n\nUnavailable\n\nUsage unavailable"
+        return message or "Sessions\n\nUnavailable\n\nUsage unavailable"
 
     def notify_weixin_command_result(
         self,
@@ -477,7 +478,7 @@ class OpenClawCompletionNotifier:
         if task.kind == "translation" or task.status != "succeeded":
             return None
         if self.completion_usage_reader is None:
-            return "Weekly Unavailable"
+            return COMPLETION_USAGE_UNAVAILABLE
 
         result: queue.Queue[str] = queue.Queue(maxsize=1)
 
@@ -485,9 +486,9 @@ class OpenClawCompletionNotifier:
             try:
                 message = self.completion_usage_reader()
             except Exception:
-                message = "Weekly Unavailable"
+                message = COMPLETION_USAGE_UNAVAILABLE
             try:
-                result.put_nowait(message or "Weekly Unavailable")
+                result.put_nowait(message or COMPLETION_USAGE_UNAVAILABLE)
             except queue.Full:
                 pass
 
@@ -495,7 +496,7 @@ class OpenClawCompletionNotifier:
         try:
             return result.get(timeout=COMPLETION_USAGE_TIMEOUT_SECONDS)
         except queue.Empty:
-            return "Weekly Unavailable"
+            return COMPLETION_USAGE_UNAVAILABLE
 
     def _bounded_messages(self, heading: str, content: str) -> list[str]:
         prefix = f"{heading}\n\n"

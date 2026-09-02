@@ -247,7 +247,7 @@ def test_chub_sync_lists_compatible_sessions_and_marks_current(
     assert result.message.index("S3 · 正在排障") < result.message.index(
         "▶ S1 · 微信 Chub"
     ) < result.message.index("S2 · 项目维护")
-    assert result.message.endswith("Weekly Unavailable")
+    assert result.message.endswith("Usage unavailable")
     assert "不应显示" not in result.message
     persisted = json.loads(
         settings.openclaw.weixin_chub_mode.state_file.read_text(encoding="utf-8")
@@ -350,7 +350,7 @@ def test_chub_sync_hides_unavailable_sessions(settings: Settings) -> None:
     assert result.message is not None
     assert "\n\nNo sessions\n\n" in result.message
     assert "Sessions\n\nNo sessions" not in result.message
-    assert result.message.endswith("Weekly Unavailable")
+    assert result.message.endswith("Usage unavailable")
     assert "不可用会话" not in result.message
 
 
@@ -391,7 +391,7 @@ def test_chub_sync_keeps_success_when_usage_lookup_fails(
         "Sessions\n\n"
         "S1 · 项目维护"
     )
-    assert result.message.endswith("Weekly Unavailable")
+    assert result.message.endswith("Usage unavailable")
     assert manager.session_slot_matches(1, "available-session")
 
 

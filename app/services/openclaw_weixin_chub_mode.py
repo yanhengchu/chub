@@ -135,6 +135,8 @@ class _ChubSessionSnapshot:
     title: str
     state: str
     current: bool
+    active_model: str | None = None
+    active_reasoning_effort: str | None = None
 
 
 @dataclass(frozen=True)
@@ -3338,6 +3340,41 @@ class WeixinChubModeManager:
             "auto": "Automatic polish and submit",
             "confirm": "Automatic polish and confirm",
         }[status.mode]
+        if processing_mode is None:
+            try:
+                model, reasoning_effort = self._effective_text_model_configuration(
+                    status
+                )
+            except Exception:
+                LOGGER.warning(
+                    "Unable to resolve the effective Weixin translation model",
+                    exc_info=True,
+                )
+                write_operation(
+                    operation_id=operation_id,
+                    action="update_weixin_translation_setting",
+                    status="failed",
+                    target=target,
+                    source_ip=source_ip,
+                )
+                return self._remember_fixed_reply(
+                    message_id=message_id,
+                    correlation_id=correlation_id,
+                    operation_id=operation_id,
+                    route_fingerprint=route_fingerprint,
+                    source_ip=source_ip,
+                    message="Text: Model and level are unavailable.",
+                    code="weixin_text_mode_checked",
+                    failed=True,
+                )
+            message = (
+                "Text\n\n"
+                f"Mode · {mode_description}\n\n"
+                f"Model · {model} · {reasoning_effort}\n\n"
+                f"{self._text_current_confirmation_message(delivery_route)}"
+            )
+        else:
+            message = f"Text mode updated · {mode_description}."
         write_operation(
             operation_id=operation_id,
             action="update_weixin_translation_setting",
@@ -3345,16 +3382,6 @@ class WeixinChubModeManager:
             target=status.mode,
             source_ip=source_ip,
         )
-        if processing_mode is None:
-            message = (
-                "Text\n\n"
-                f"Mode · {mode_description}\n\n"
-                f"Model · {getattr(status, 'model', None) or 'Default'} · "
-                f"{getattr(status, 'reasoning_effort', None) or 'Default'}\n\n"
-                f"{self._text_current_confirmation_message(delivery_route)}"
-            )
-        else:
-            message = f"Text mode updated · {mode_description}."
         return self._remember_fixed_reply(
             message_id=message_id,
             correlation_id=correlation_id,
@@ -3378,6 +3405,36 @@ class WeixinChubModeManager:
         if not models:
             raise ValueError("The Codex model catalog is empty")
         return status, catalog, models
+
+    def _effective_text_model_configuration(self, status: object) -> tuple[str, str]:
+        """Resolve the concrete model and level used by the next text task."""
+        configured_model = getattr(status, "model", None)
+        configured_reasoning_effort = getattr(status, "reasoning_effort", None)
+        if configured_model and configured_reasoning_effort:
+            return configured_model, configured_reasoning_effort
+        catalog = self.codex_manager.read_model_catalog()
+        models = tuple(
+            item
+            for item in getattr(catalog, "models", ())
+            if isinstance(getattr(item, "id", None), str) and item.id
+        )
+        if not models:
+            raise ValueError("The Codex model catalog is empty")
+        model_id = configured_model or getattr(
+            catalog, "default_model", None
+        )
+        selected_model = next(
+            (item for item in models if item.id == model_id),
+            None,
+        )
+        if selected_model is None:
+            raise ValueError("The configured translation model is unavailable")
+        reasoning_effort = configured_reasoning_effort or getattr(
+            selected_model, "default_level", None
+        ) or getattr(catalog, "default_reasoning_effort", None)
+        if reasoning_effort is None:
+            raise ValueError("The configured translation level is unavailable")
+        return model_id, reasoning_effort
 
     def _dispatch_text_model_list(
         self,
@@ -4522,7 +4579,7 @@ class WeixinChubModeManager:
             message = detailed_usage_message(self._read_ai_usage(force=False))
         except Exception:
             LOGGER.warning("Unable to read complete AI usage", exc_info=True)
-            message = "Weekly Unavailable"
+            message = "Usage unavailable"
         with self._status_condition:
             self._ephemeral_usage_replies[message_id] = (
                 route_fingerprint,
@@ -4793,6 +4850,10 @@ class WeixinChubModeManager:
                 ),
                 state=self._codex_session_dispatch_state(session),
                 current=session.id == current_session_id,
+                active_model=getattr(session, "active_model", None),
+                active_reasoning_effort=getattr(
+                    session, "active_reasoning_effort", None
+                ),
             )
             for session in sessions_newest_first(sessions.values())
             if session.id in slots_by_session_id
@@ -4880,10 +4941,21 @@ class WeixinChubModeManager:
             for session_id, summary in getattr(tasks, "running_tasks", ())
         }
         session_cached = cache.get("sessions")
+        current_model = None
+        current_reasoning_effort = None
         if session_cached is None:
             overview_sessions = None
         else:
             sessions = session_cached[0]
+            current_snapshot = next(
+                (item for item in sessions if item.current),
+                None,
+            )
+            if current_snapshot is not None:
+                current_model = getattr(current_snapshot, "active_model", None)
+                current_reasoning_effort = getattr(
+                    current_snapshot, "active_reasoning_effort", None
+                )
             overview_sessions = tuple(
                 ChubOverviewSession(
                     slot=item.slot,
@@ -4907,7 +4979,7 @@ class WeixinChubModeManager:
             )
         account_cached = cache.get("account")
         account_message = (
-            "Weekly Unavailable"
+            "Usage unavailable"
             if account_cached is None
             else self._usage_message(account_cached[0])
         )
@@ -4935,6 +5007,8 @@ class WeixinChubModeManager:
             sessions=overview_sessions,
             usage_message=account_message,
             requests=overview_requests,
+            current_model=current_model,
+            current_reasoning_effort=current_reasoning_effort,
         )
 
     _format_elapsed_time = staticmethod(format_elapsed_time)
@@ -5010,7 +5084,7 @@ class WeixinChubModeManager:
                         )
                     except Exception:
                         LOGGER.warning("Codex usage check failed", exc_info=True)
-                        account_results.put("Weekly Unavailable")
+                        account_results.put("Usage unavailable")
 
                 deadline = time.monotonic() + CODEX_STATUS_TIMEOUT_SECONDS
                 try:
@@ -5019,7 +5093,7 @@ class WeixinChubModeManager:
                     LOGGER.warning(
                         "Unable to start Codex usage check during slot synchronization"
                     )
-                    account_results.put("Weekly Unavailable")
+                    account_results.put("Usage unavailable")
                 sessions = self.codex_manager.list_sessions()
                 synced = self._build_synced_slots(
                     configuration,
@@ -5060,7 +5134,7 @@ class WeixinChubModeManager:
                 )
             except queue.Empty:
                 LOGGER.warning("Codex usage check timed out during slot synchronization")
-                usage_message = "Weekly Unavailable"
+                usage_message = "Usage unavailable"
             with self._lock:
                 if (
                     self._state.configuration != configuration
@@ -5219,6 +5293,10 @@ class WeixinChubModeManager:
                 ),
                 state=self._codex_session_dispatch_state(session),
                 current=session.id == current_session_id,
+                active_model=getattr(session, "active_model", None),
+                active_reasoning_effort=getattr(
+                    session, "active_reasoning_effort", None
+                ),
             )
             for session in sessions_newest_first(eligible.values())
             if session.id in slots_by_session_id
@@ -5238,20 +5316,41 @@ class WeixinChubModeManager:
         return codex_operation_message(operation_status, codex_message), codex_failed
 
     @staticmethod
-    def _has_command_status_suffix(message: str) -> bool:
+    def _is_sessions_heading(value: str) -> bool:
+        return value == "Sessions" or value.startswith("Sessions · ")
+
+    @classmethod
+    def _command_status_index(cls, message: str) -> int:
         status_index = max(
             message.rfind("\n\nSessions\n\n"),
+            message.rfind("\n\nSessions · "),
             message.rfind("\n\nNo sessions\n\n"),
         )
+        if status_index >= 0:
+            return status_index
+        return 0 if (
+            message.startswith("Sessions\n\n")
+            or message.startswith("Sessions · ")
+            or message.startswith("No sessions\n\n")
+        ) else -1
+
+    @classmethod
+    def _has_command_status_suffix(cls, message: str) -> bool:
+        status_index = cls._command_status_index(message)
         if status_index < 0:
             return False
-        return "\n\nWeekly " in message[status_index:]
+        status_suffix = message[status_index:]
+        return (
+            "\n\n5h " in status_suffix
+            or "\n\nWeekly " in status_suffix
+            or "\n\nUsage unavailable" in status_suffix
+        )
 
-    @staticmethod
-    def _has_inline_task_context(message: str) -> bool:
+    @classmethod
+    def _has_inline_task_context(cls, message: str) -> bool:
         first_paragraph = message.partition("\n\n")[0]
         if (
-            "\n\nSessions\n\n" in message
+            cls._command_status_index(message) >= 0
             and "\n\nTask · " in message
             and (
                 first_paragraph == "Submitted"
@@ -5263,10 +5362,7 @@ class WeixinChubModeManager:
         task_index = message.find("\nTask · ")
         if task_index < 0:
             return False
-        status_index = max(
-            message.rfind("\n\nSessions\n\n"),
-            message.rfind("\n\nNo sessions\n\n"),
-        )
+        status_index = cls._command_status_index(message)
         return status_index < 0 or task_index < status_index
 
     def _refresh_replayed_task_context(
@@ -5277,7 +5373,7 @@ class WeixinChubModeManager:
         if not message or not self._has_inline_task_context(message):
             return message
         paragraphs = message.split("\n\n")
-        if "Sessions" in paragraphs:
+        if any(self._is_sessions_heading(paragraph) for paragraph in paragraphs):
             target_slot = submission.session_slot
             target_matches = (
                 target_slot is not None
@@ -5313,12 +5409,18 @@ class WeixinChubModeManager:
                     skip_target_task = False
                     continue
                 refreshed.append(paragraph)
-            if "Sessions" in refreshed and not any(
+            if any(self._is_sessions_heading(paragraph) for paragraph in refreshed) and not any(
                 paragraph.removeprefix("▶ ").startswith("S")
                 and " · " in paragraph
                 for paragraph in refreshed
             ):
-                refreshed.remove("Sessions")
+                refreshed.remove(
+                    next(
+                        paragraph
+                        for paragraph in refreshed
+                        if self._is_sessions_heading(paragraph)
+                    )
+                )
             return "\n\n".join(refreshed)
         for index in range(1, min(3, len(paragraphs))):
             session_line = paragraphs[index].removeprefix("▶ ")
@@ -5338,12 +5440,18 @@ class WeixinChubModeManager:
             else:
                 current = self._state.session_id == submission.session_id
                 paragraphs[index] = f"{'▶ ' if current else ''}{session_line}"
-            if "Sessions" in paragraphs and not any(
+            if any(self._is_sessions_heading(paragraph) for paragraph in paragraphs) and not any(
                 paragraph.removeprefix("▶ ").startswith("S")
                 and " · " in paragraph
                 for paragraph in paragraphs
             ):
-                paragraphs.remove("Sessions")
+                paragraphs.remove(
+                    next(
+                        paragraph
+                        for paragraph in paragraphs
+                        if self._is_sessions_heading(paragraph)
+                    )
+                )
             return "\n\n".join(paragraphs)
         lines = message.splitlines()
         for index in range(1, min(3, len(lines))):
@@ -5364,11 +5472,13 @@ class WeixinChubModeManager:
             else:
                 current = self._state.session_id == submission.session_id
                 lines[index] = f"{'▶ ' if current else ''}{session_line}"
-            if "Sessions" in lines and not any(
+            if any(self._is_sessions_heading(line) for line in lines) and not any(
                 line.removeprefix("▶ ").startswith("S") and " · " in line
                 for line in lines
             ):
-                lines.remove("Sessions")
+                lines.remove(
+                    next(line for line in lines if self._is_sessions_heading(line))
+                )
             task_index = next(
                 (
                     task_line_index
@@ -5401,7 +5511,7 @@ class WeixinChubModeManager:
             return message
         if not self._has_command_status_suffix(message):
             if self._state_error:
-                status = "Sessions\n\nUnavailable\n\nWeekly Unavailable"
+                status = "Sessions\n\nUnavailable\n\nUsage unavailable"
             else:
                 status, _failed = self._read_codex_status_message(
                     self._state.configuration.model_copy(deep=True),
@@ -5582,7 +5692,7 @@ class WeixinChubModeManager:
             message = self._usage_message(self._read_ai_usage(force=False))
         except Exception:
             LOGGER.warning("Codex usage check failed", exc_info=True)
-            message = "Weekly Unavailable"
+            message = "Usage unavailable"
             account_failed = True
 
         try:
@@ -7049,7 +7159,7 @@ class WeixinChubModeManager:
                 )
             except Exception:
                 LOGGER.warning("Codex usage check failed", exc_info=True)
-                account_results.put(("Weekly Unavailable", True))
+                account_results.put(("Usage unavailable", True))
 
         threading.Thread(target=read_account, daemon=True).start()
 
@@ -7204,7 +7314,7 @@ class WeixinChubModeManager:
             )
         except queue.Empty:
             LOGGER.warning("Codex usage check timed out during session switch")
-            usage_message = "Weekly Unavailable"
+            usage_message = "Usage unavailable"
         sessions_message = self._format_codex_sessions(
             visible,
             refreshed.id,
@@ -7616,7 +7726,7 @@ class WeixinChubModeManager:
                 )
             except Exception:
                 LOGGER.warning("AI usage snapshot is unavailable", exc_info=True)
-                usage_message = "Weekly Unavailable"
+                usage_message = "Usage unavailable"
         else:
             usage_message = self._usage_message(account_cached[0])
         if sessions_cached is None:

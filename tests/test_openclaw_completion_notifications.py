@@ -252,7 +252,7 @@ def test_notification_uses_only_running_account_and_fixed_recipient(
     assert messages[0].startswith("Done · 1/3\n\n")
     assert messages[-1].startswith("Done · 3/3\n\n")
     joined = "".join(message.split("\n\n", 1)[1] for message in messages)
-    assert joined.removesuffix("\n\nWeekly Unavailable") == "结果" * 300
+    assert joined.removesuffix("\n\nUsage unavailable") == "结果" * 300
     assert all("完整结果请" not in message for message in messages)
 
 
@@ -414,7 +414,7 @@ def test_completion_usage_footer_degrades_without_affecting_result() -> None:
     notifier = OpenClawCompletionNotifier(OpenClawCompletionNotificationConfig())
     notifier.completion_usage_reader = MagicMock(side_effect=OSError("unavailable"))
 
-    assert notifier._completion_usage_footer(task()) == "Weekly Unavailable"
+    assert notifier._completion_usage_footer(task()) == "Usage unavailable"
 
 
 def test_notification_caps_long_result_at_five_messages() -> None:
@@ -826,7 +826,7 @@ def test_restart_notification_uses_weixin_task_route(
             "Sessions\n\n"
             "S1 · session new，我…\n\n"
             "▶ S3 · 服务检查\n\n"
-            "Weekly Unavailable"
+            "Usage unavailable"
         )
 
     status_reader = MagicMock(side_effect=read_status)
@@ -856,7 +856,7 @@ def test_restart_notification_uses_weixin_task_route(
         "Sessions\n\n"
         "S1 · session new，我…\n\n"
         "▶ S3 · 服务检查\n\n"
-        "Weekly Unavailable"
+        "Usage unavailable"
     )
 
 
@@ -881,7 +881,7 @@ def test_weixin_restart_command_notification_uses_saved_route() -> None:
     assert kwargs["unavailable_status"] == "failed"
     assert kwargs["message_factory"]() == [
         "Restart: Completed. Chub is available.\n\n"
-        "Sessions\n\nUnavailable\n\nWeekly Unavailable"
+        "Sessions\n\nUnavailable\n\nUsage unavailable"
     ]
 
 
@@ -899,7 +899,7 @@ def test_weixin_command_result_notification_uses_saved_route() -> None:
         route,
         lambda: (
             "Stop: Session 2 stopped.\n\nSessions\n\n"
-            "S2 · Title\n\nWeekly Unavailable"
+            "S2 · Title\n\nUsage unavailable"
         ),
     )
 
@@ -911,7 +911,7 @@ def test_weixin_command_result_notification_uses_saved_route() -> None:
     assert kwargs["unavailable_status"] == "failed"
     assert kwargs["messages"] == []
     assert kwargs["message_factory"]() == [
-        "Stop: Session 2 stopped.\n\nSessions\n\nS2 · Title\n\nWeekly Unavailable"
+        "Stop: Session 2 stopped.\n\nSessions\n\nS2 · Title\n\nUsage unavailable"
     ]
 
 
@@ -933,7 +933,7 @@ def test_weixin_restart_command_failure_uses_recorded_reason() -> None:
 
     assert notifier._send_messages.call_args.kwargs["message_factory"]() == [
         "Restart: Failed. Check the Chub runtime logs.\n\n"
-        "Sessions\n\nUnavailable\n\nWeekly Unavailable"
+        "Sessions\n\nUnavailable\n\nUsage unavailable"
     ]
 
 
@@ -1023,7 +1023,7 @@ def test_restart_notification_omits_legacy_related_context(
     message = calls[1][calls[1].index("--message") + 1]
     assert "Related Session:" not in message
     assert "Task:" not in message
-    assert "Sessions\n\nUnavailable\n\nWeekly Unavailable" in message
+    assert "Sessions\n\nUnavailable\n\nUsage unavailable" in message
 
 
 def test_weixin_route_validation_requires_one_healthy_clawbot(
