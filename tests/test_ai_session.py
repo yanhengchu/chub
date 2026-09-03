@@ -279,6 +279,24 @@ def test_ai_session_manager_rejects_rename_for_external_writer(
     assert manager.store.get(created.id).title is None
 
 
+def test_terminal_activity_time_is_not_changed_by_session_rename(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    created = session(settings.codex_pty.workspace, native_session_id="native-1")
+    manager.store.save(created)
+    manager._sync_bound_native_sessions = MagicMock()
+    activity_at = utc_now()
+
+    manager.set_activity(created.id, "working", "terminal", updated_at=activity_at)
+    manager.rename_session(created.id, "新标题")
+
+    stored = manager.store.get(created.id)
+    assert stored is not None
+    assert stored.last_activity_at == activity_at
+    assert stored.updated_at >= activity_at
+
+
 def test_ai_session_store_rejects_missing_runtime_owner(tmp_path: Path) -> None:
     path = tmp_path / "ai-sessions.json"
     payload = {

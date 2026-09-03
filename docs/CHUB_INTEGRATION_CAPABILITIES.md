@@ -171,6 +171,7 @@
 - 设置页“正文处理方式”下的翻译模型和等级是独立的翻译任务默认配置，不修改隐藏翻译 Session 的逻辑配置。保存时校验模型与等级组合；每个翻译任务在提交时快照当前配置并携带给 Native Runtime，已经进入队列的任务继续使用提交时快照，设置变化只影响之后提交的任务。未选择模型和等级时跟随 Runtime 默认。
 - 当当前 AI Runtime 被设置页停用时，微信 ClawBot 的新任务固定回复 `Not submitted · Codex Runtime is disabled. Chub is in base mode. Enable it in Settings to submit AI tasks.`；`chub` 状态摘要在 `Issues` 中显示 `AI Runtime is disabled. Chub is in base mode.`。这不取消已受理任务，也不影响既有 Session 的维护指令。
 - 当 Quick Worker 当前不可用时，微信 ClawBot 的 `new` 和普通任务固定回复 `Not submitted · Quick Worker is unavailable. Try again later.`；实时终端不经微信创建，维护恢复指令仍按各自契约可用。
+- 当 Quick Worker 提交回执暂时无法确认时，微信回执以 `Submission is being verified by Quick Worker. Do not resend yet.` 开头，并保留当前 Session/Task 上下文。这不是任务失败：Chub 先进行有限次主动核验，随后持续以同一任务 ID 对账或幂等补交，Web 重启后继续；确认接收后继续交付，只有 Worker 明确确认未接收时才允许重试。
 
 - 微信和 ClawBot 只分配 `quick` Session 的 S1–S9 槽位；`terminal` Session、升级扫描得到的 `discovered` Session 和内部翻译 Session 均不进入微信槽位或微信 Session 列表。微信不会创建或切换到实时终端 Session。
 - Session 类型在创建时固定；微信 `new` 创建的是 `quick` Session，首页默认创建 `quick`，只通过“实时会话”开关创建 `terminal`。不存在把同一 Session 从实时终端切换为快速交互的复合路径。

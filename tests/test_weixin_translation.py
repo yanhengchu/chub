@@ -176,6 +176,33 @@ def test_worker_start_failure_marks_entry_failed(settings) -> None:
     assert manager._state.entries[0].status == "failed"
 
 
+def test_verifying_worker_submission_stays_queued_for_reconciliation(settings) -> None:
+    manager, _codex_manager, quick_interactions = manager_without_worker(settings)
+    manager._ensure_session = MagicMock(return_value="translation-session")
+    quick_interactions.submit.return_value = SimpleNamespace(
+        id="quick-task-verifying",
+        submission_verifying=True,
+    )
+
+    assert manager.enqueue(
+        message_id="worker-submission-uncertain",
+        original="待翻译文本",
+        route=route(),
+        operation_id="operation-worker-uncertain",
+        source_ip="100.64.0.21",
+    )
+
+    entry = manager._state.entries[0]
+    assert entry.status == "queued"
+    assert entry.quick_task_id == "quick-task-verifying"
+    assert entry.error is None
+    manager._start_worker_watcher.assert_called_once_with(
+        entry.id,
+        "translation-session",
+        "quick-task-verifying",
+    )
+
+
 def test_isolated_worker_translation_submits_without_web_scheduler(settings) -> None:
     manager, _codex_manager, quick_interactions = manager_without_worker(settings)
     manager._ensure_session = MagicMock(return_value="translation-session")

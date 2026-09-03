@@ -138,7 +138,6 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             request.url.path == "/"
             or request.url.path.startswith("/static/")
             or request.url.path.startswith("/project-docs")
-            or request.url.path.startswith("/automations")
             or request.url.path.startswith("/settings")
         ):
             response.headers["Content-Security-Policy"] = (
@@ -162,6 +161,15 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                     "font-src 'self' data:; "
                     "frame-ancestors 'self'; "
                     "object-src 'none'"
+                )
+            elif "/quick-interactions/conversation" in request.url.path:
+                response.headers["Content-Security-Policy"] = (
+                    "default-src 'self'; "
+                    "style-src 'self'; "
+                    "frame-src 'self'; "
+                    "frame-ancestors 'self'; "
+                    "object-src 'none'; "
+                    "base-uri 'none'"
                 )
             else:
                 response.headers["Content-Security-Policy"] = (

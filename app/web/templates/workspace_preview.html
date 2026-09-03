@@ -1,51 +1,106 @@
 <!doctype html>
-<html lang="zh-CN" data-ui-style="{{ 'cyber' if request.cookies.get('hub_ui_style') == 'cyber' else 'standard' }}">
+<html lang="zh-CN" data-ui-style="{{ 'code-dark' if request.cookies.get('hub_ui_style') == 'code-dark' else 'standard' }}">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
-    <meta name="color-scheme" content="{{ 'dark' if request.cookies.get('hub_ui_style') == 'cyber' else 'light' }}">
-    <title>新版首页 · {{ app_name }}</title>
+    <meta name="color-scheme" content="{{ 'dark' if request.cookies.get('hub_ui_style') == 'code-dark' else 'light' }}">
+    <title>{{ page_title }}</title>
     <script src="/static/workspace-bootstrap.js"></script>
     {% include "partials/app_styles.html" %}
+    <script src="/static/js/components/ui.js" defer></script>
     <script src="/static/workspace.js" defer></script>
+    <script src="/static/js/features/workspace-sessions.js" defer></script>
+    <script src="/static/js/features/workspace-workstation.js" defer></script>
   </head>
   <body class="workspace-preview-body">
     <main class="workspace-preview-page">
       <section class="workspace-preview-shell" aria-label="新版首页交互布局">
-        <section class="workspace-preview-main">
+        <section class="workspace-preview-main{% if workspace_session_id %} is-showing-quick-session{% endif %}">
           <header class="workspace-preview-toolbar" aria-label="工作台操作">
-            <button id="workspace-sidebar-toggle" class="button-secondary workspace-preview-sidebar-toggle" type="button" aria-controls="workspace-sidebar" aria-pressed="false" aria-label="折叠侧边栏（⌘B / Ctrl+B）" title="折叠侧边栏（⌘B / Ctrl+B）"><span aria-hidden="true">☰</span></button>
-            <div class="workspace-preview-health"><span class="workspace-preview-health-dot" aria-hidden="true"></span>节点在线 · Worker 可用</div>
+            <div class="workspace-preview-toolbar-actions">
+              <button id="workspace-sidebar-toggle" class="button-secondary workspace-preview-sidebar-toggle" type="button" aria-controls="workspace-sidebar" aria-pressed="false" aria-label="折叠侧边栏（⌘B / Ctrl+B）" title="折叠侧边栏（⌘B / Ctrl+B）"><span aria-hidden="true">☰</span></button>
+              <nav class="workspace-preview-compact-nav" data-workspace-section-navigation aria-label="折叠侧栏导航">
+                <a href="/workspace"{% if workspace_section == "workbench" %} aria-current="page" class="is-current"{% endif %} aria-label="工作台" title="工作台"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><rect x="4" y="4" width="6" height="6" rx="1"></rect><rect x="14" y="4" width="6" height="6" rx="1"></rect><rect x="4" y="14" width="6" height="6" rx="1"></rect><rect x="14" y="14" width="6" height="6" rx="1"></rect></svg></a>
+                <a href="/workspace?section=automations"{% if workspace_section == "automations" %} aria-current="page" class="is-current"{% endif %} aria-label="自动化" title="自动化"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><rect x="4" y="5" width="16" height="15" rx="2"></rect><path d="M4 9h16M7 3v4M17 3v4M14 12l4 2.5-4 2.5Z"></path></svg></a>
+                <a href="/workspace?section=project-docs"{% if workspace_section == "project-docs" %} aria-current="page" class="is-current"{% endif %} aria-label="项目资料" title="项目资料"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M6 3.5h9l3 3V20a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1Z"></path><path d="M14 3.5V7h4M8.5 11h7M8.5 15h7"></path></svg></a>
+                <a class="workspace-preview-compact-nav-external" href="/settings" aria-label="设置" title="设置"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2 2-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5v.2h-2.8v-.2a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1-2-2 .1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H5.7v-2.8h.2a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.9L7 8.2l2-2 .1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.5v-.2h2.8v.2a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1 2 2-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.5 1h.2V14h-.2a1.7 1.7 0 0 0-1.5 1Z"></path></svg></a>
+              </nav>
+            </div>
+            <div id="workspace-preview-health" class="workspace-preview-health"><span class="workspace-preview-health-dot" aria-hidden="true"></span>{% if workspace_section == "workbench" %}正在读取工作台状态…{% elif workspace_section == "automations" %}正在读取自动化状态…{% else %}正在读取项目资料…{% endif %}</div>
           </header>
-          <nav class="workspace-preview-local-nav" aria-label="工作台分区">
-            <span class="is-current">工作台</span>
-            <span>活动</span>
-            <span>自动化</span>
-            <span>维护</span>
-          </nav>
-
-          <section class="workspace-preview-work-surface" aria-label="工作台内容预览">
+          {% if workspace_session_id %}
+          <div id="workspace-section-content" class="workspace-inline-quick-session" data-workspace-session-id="{{ workspace_session_id }}" aria-label="快速会话">
+            <iframe class="workspace-inline-quick-session-frame" title="快速会话" src="/codex/{{ workspace_session_id | urlencode }}/quick-interactions/conversation?embedded=workspace"></iframe>
+          </div>
+          {% else %}
+          <div id="workspace-section-content">
+          {% if workspace_section == "workbench" %}
+          <section class="workspace-preview-work-surface" aria-label="工作台内容">
             <section class="workspace-preview-summary workspace-preview-work-section" aria-label="运行概览">
-              <article><span>Chub</span><strong>运行中</strong><small>控制面正常</small></article>
-              <article><span>Quick Worker</span><strong>可用</strong><small>1 个任务执行中</small></article>
-              <article><span>AI Runtime</span><strong>Codex</strong><small>接受新任务</small></article>
-              <article><span>OpenClaw</span><strong>已接入</strong><small>通道运行正常</small></article>
+              <article><span>Chub</span><strong id="workspace-chub-summary"></strong><small id="workspace-chub-summary-detail"></small></article>
+              <article><span>Quick Worker</span><strong id="workspace-worker-summary"></strong><small id="workspace-worker-summary-detail"></small></article>
+              <article><span>AI Runtime</span><strong id="workspace-runtime-summary"></strong><small id="workspace-runtime-summary-detail"></small></article>
+              <article><span>设备资源</span><strong id="workspace-system-summary"></strong><small id="workspace-system-summary-detail"></small></article>
+            </section>
+
+            <section class="workspace-preview-panel workspace-workstation workspace-preview-work-section" aria-labelledby="workspace-workstation-title">
+              <div class="workspace-preview-panel-heading">
+                <div>
+                  <h2 id="workspace-workstation-title">工作站环境</h2>
+                  <p>查看当前实际状态，并只对直接受影响的服务执行维护。</p>
+                </div>
+                <button id="workspace-workstation-refresh" class="button-secondary" type="button">刷新</button>
+              </div>
+              <div class="workstation-status-list workspace-workstation-status-list">
+                <div class="workstation-status-row">
+                  <div class="workstation-status-copy">
+                    <strong>Chub</strong>
+                    <span id="workspace-chub-detail" class="workstation-status-detail"></span>
+                    <p id="workspace-chub-message" class="message" aria-live="polite"></p>
+                  </div>
+                  <div class="workstation-status-actions">
+                    <button id="workspace-chub-restart" class="button-secondary" type="button" disabled>重启</button>
+                  </div>
+                </div>
+                <div class="workstation-status-row">
+                  <div class="workstation-status-copy">
+                    <strong>Chub Quick Worker</strong>
+                    <span id="workspace-worker-detail" class="workstation-status-detail"></span>
+                    <p id="workspace-worker-message" class="message" aria-live="polite"></p>
+                  </div>
+                  <div class="workstation-status-actions">
+                    <button id="workspace-worker-restart" class="button-secondary" type="button" disabled>重启</button>
+                  </div>
+                </div>
+                <div class="workstation-status-row">
+                  <div class="workstation-status-copy">
+                    <strong>AI Runtime</strong>
+                    <span id="workspace-runtime-detail" class="workstation-status-detail"></span>
+                  </div>
+                </div>
+                <div class="workstation-status-row">
+                  <div class="workstation-status-copy">
+                    <strong>升级与恢复</strong>
+                    <span id="workspace-upgrade-detail" class="workstation-status-detail"></span>
+                  </div>
+                  <div class="workstation-status-actions">
+                    <button id="workspace-upgrade-start" class="button-danger" type="button" disabled>升级与恢复</button>
+                  </div>
+                </div>
+              </div>
             </section>
 
             <div class="workspace-preview-content-grid workspace-preview-work-section">
               <section class="workspace-preview-panel workspace-preview-current-work" aria-labelledby="workspace-preview-current-title">
                 <div class="workspace-preview-panel-heading">
                   <div>
-                    <h2 id="workspace-preview-current-title">当前工作</h2>
-                    <p>正在执行的任务保持可见，结果以最终状态为准。</p>
+                    <h2 id="workspace-preview-current-title">设备状态</h2>
+                    <p>资源读数来自 Chub 当前状态接口。</p>
                   </div>
-                  <span class="badge badge-warning">执行中</span>
                 </div>
                 <div class="workspace-preview-task">
-                  <div><strong>周报整理</strong><small>正在核对本期输入并生成重点确认清单。</small></div>
-                  <span>10:42</span>
+                  <div><strong id="workspace-device-name"></strong><small id="workspace-device-detail"></small></div>
                 </div>
-                <div class="workspace-preview-task-actions"><button class="button-secondary" type="button" disabled title="功能建设中">查看 Session</button><button class="button-link" type="button" disabled title="功能建设中">停止任务</button></div>
               </section>
 
               <section class="workspace-preview-panel" aria-labelledby="workspace-preview-shortcuts-title">
@@ -56,68 +111,203 @@
                   </div>
                 </div>
                 <div class="workspace-preview-shortcuts">
-                  <span><strong>自动化</strong><small>本期周报资料已准备</small></span>
-                  <span><strong>项目资料</strong><small>8 份可查看文档</small></span>
-                  <span><strong>工作站环境</strong><small>查看服务与恢复操作</small></span>
+                  <span><strong>自动化</strong><small>在左侧切换后查看环境与任务。</small></span>
+                  <span><strong>项目资料</strong><small>在左侧切换后查看可信资料。</small></span>
+                  <span><strong>AI Session</strong><small>在侧边栏创建或进入当前会话。</small></span>
                 </div>
               </section>
             </div>
-
-            <section class="workspace-preview-conversation workspace-preview-work-section" aria-labelledby="workspace-preview-conversation-title">
-              <header>
-                <div>
-                  <h2 id="workspace-preview-conversation-title">周报整理</h2>
-                  <p><span class="workspace-preview-running-dot" aria-hidden="true"></span>执行中 · Full access</p>
-                </div>
-                <button class="button-secondary" type="button" disabled title="功能建设中">•••</button>
-              </header>
-              <div class="workspace-preview-feed">
-                <article class="workspace-preview-message is-user"><p>先检查资料是否齐备，再生成本期重点确认清单。</p><small>10:41</small></article>
-                <article class="workspace-preview-message is-assistant"><p>任务已受理，正在校验输入材料与周期。完成后会显示最终结果。</p><small>Codex · 10:41</small></article>
-                <article class="workspace-preview-message is-status"><p>执行中：正在读取并核对 6 份资料。</p><small>10:42</small></article>
-              </div>
-              <div class="workspace-preview-composer">
-                <span>输入消息…</span>
-                <button class="workspace-preview-settings" type="button" disabled title="功能建设中">任务设置</button>
-                <button type="button" aria-label="发送" disabled title="功能建设中">↑</button>
-              </div>
-            </section>
           </section>
+          {% elif workspace_section == "project-docs" %}
+          <section class="workspace-preview-work-surface workspace-project-documents" aria-labelledby="workspace-project-documents-title">
+            <header class="workspace-project-documents-heading workspace-preview-work-section">
+              <div>
+                <p class="section-kicker">项目资料</p>
+                <h2 id="workspace-project-documents-title">项目说明、设计方案与维护文档</h2>
+                <p>共 {{ document_count }} 份可查看资料；选择一项进入完整阅读。</p>
+              </div>
+              <a class="button-secondary workspace-project-documents-all" href="/project-docs">全部项目资料</a>
+            </header>
+            <div class="workspace-preview-work-section">
+              {% if documents_error %}
+              <p class="message message-error">{{ documents_error }}</p>
+              {% elif documents %}
+              <div class="workspace-project-document-list">
+                {% for document in documents %}
+                <a class="workspace-project-document" href="/project-docs/{{ document.id }}">
+                  <span>
+                    <strong>{{ document.title }}</strong>
+                    <small>{{ document.summary }}</small>
+                  </span>
+                  <span class="workspace-project-document-meta">
+                    <span class="badge badge-success">{{ document.status }}</span>
+                    <time datetime="{{ document.updated_at.isoformat() }}">{{ document.updated_at.strftime('%Y-%m-%d') }}</time>
+                  </span>
+                </a>
+                {% endfor %}
+              </div>
+              {% else %}
+              <p class="empty-state">暂无项目资料。</p>
+              {% endif %}
+            </div>
+          </section>
+          {% else %}
+          <section class="workspace-preview-work-surface workspace-automations" aria-labelledby="workspace-automations-title">
+            <header class="workspace-project-documents-heading workspace-preview-work-section">
+              <div>
+                <p class="section-kicker">自动化</p>
+                <h2 id="workspace-automations-title">自动化任务</h2>
+                {% if automations %}
+                <p>共 {{ automations.tasks|length }} 个任务，已启用 {{ automations.enabled_count }} 个。</p>
+                {% else %}
+                <p>查看自动化任务与 Debug Chrome 当前状态。</p>
+                {% endif %}
+              </div>
+            </header>
+            <div class="workspace-preview-work-section">
+              {% if automations_error %}
+              <p class="message message-error">{{ automations_error }}</p>
+              {% elif automations %}
+              <section class="workspace-automation-environment" aria-labelledby="workspace-automation-environment-title">
+                <h3 id="workspace-automation-environment-title">自动化环境</h3>
+                <div class="workspace-automation-environment-row">
+                  <div><strong>Chub Debug Chrome</strong><small>{{ automations.browser_message }}</small></div>
+                  <div class="workspace-automation-environment-actions">
+                    <span class="badge {% if automations.browser_state == 'running' %}badge-success{% elif automations.browser_state == 'stopped' %}badge-timeout{% else %}badge-failed{% endif %}">{% if automations.browser_state == 'running' %}运行中{% elif automations.browser_state == 'stopped' %}按需启动{% else %}不可用{% endif %}</span>
+                    {% if automations.browser_state == 'running' %}
+                    <button id="workspace-automation-browser-stop" class="button-danger" type="button">停止</button>
+                    {% elif automations.browser_state == 'stopped' %}
+                    <button id="workspace-automation-browser-start" class="button-secondary" type="button"{% if not automation_start_available %} disabled title="未找到可用浏览器账户"{% endif %}>启动</button>
+                    {% endif %}
+                  </div>
+                </div>
+                <div class="workspace-automation-environment-row">
+                  <div><strong>飞书环境</strong><small>{{ automations.feishu_environment.message }}</small></div>
+                  <span class="badge {% if automations.feishu_environment.state == 'available' %}badge-success{% elif automations.feishu_environment.state in ['login_required', 'checking'] %}badge-timeout{% elif automations.feishu_environment.state == 'failed' %}badge-failed{% else %}badge-muted{% endif %}">{% if automations.feishu_environment.state == 'available' %}登录有效{% elif automations.feishu_environment.state == 'login_required' %}需登录{% elif automations.feishu_environment.state == 'checking' %}检查中{% elif automations.feishu_environment.state == 'failed' %}失败{% else %}未检查{% endif %}</span>
+                </div>
+              </section>
+              <section class="workspace-automation-task-list" aria-labelledby="workspace-automation-task-title">
+                <h3 id="workspace-automation-task-title">自动化任务列表</h3>
+                {% if automations.tasks %}
+                <div class="workspace-project-document-list">
+                {% for task in automations.tasks %}
+                <article class="workspace-automation-task">
+                  <div>
+                    <strong>{{ task.title }}</strong>
+                    <small>{{ task.description or '暂无任务说明。' }}</small>
+                  </div>
+                  <span class="workspace-project-document-meta">
+                    <span class="badge {% if task.state.status == 'success' %}badge-success{% elif task.state.status == 'failed' %}badge-failed{% elif task.state.status in ['queued', 'running', 'waiting'] %}badge-timeout{% else %}badge-muted{% endif %}">{% if task.state.status == 'idle' %}尚未执行{% elif task.state.status == 'queued' %}等待执行{% elif task.state.status == 'running' %}执行中{% elif task.state.status == 'waiting' %}等待更新{% elif task.state.status == 'success' %}成功{% else %}失败{% endif %}</span>
+                    {% if task.reporting_period %}<span class="workspace-automation-period">{{ task.reporting_period }}</span>{% endif %}
+                  </span>
+                </article>
+                {% endfor %}
+                </div>
+              {% else %}
+              <p class="empty-state">暂无自动化任务。</p>
+              {% endif %}
+              </section>
+              {% else %}
+              <p class="empty-state">自动化状态暂时无法读取。</p>
+              {% endif %}
+            </div>
+          </section>
+          {% endif %}
+
+        {% if workspace_section == "automations" and automations and automations.browser_state == "stopped" %}
+        <dialog id="workspace-automation-browser-start-dialog" class="codex-workspace-dialog" aria-labelledby="workspace-automation-browser-start-title">
+          <form id="workspace-automation-browser-start-form" class="codex-workspace-dialog-surface automation-browser-form">
+            <div class="codex-workspace-dialog-header">
+              <h3 id="workspace-automation-browser-start-title">启动 Debug Chrome</h3>
+              <button id="workspace-automation-browser-start-close" class="button-link codex-workspace-dialog-close" type="button" aria-label="关闭浏览器启动窗口">关闭</button>
+            </div>
+            <label class="automation-browser-field" for="workspace-automation-browser-profile">浏览器账户</label>
+            <select id="workspace-automation-browser-profile" aria-label="浏览器账户" required>
+              {% for profile in automations.browser_profiles %}
+              <option value="{{ profile.id }}" data-initialized="{{ 'true' if profile.initialized else 'false' }}"{% if profile.active %} selected{% endif %}{% if not profile.initialized and not profile.source_available %} disabled{% endif %}>{{ profile.name }}{% if not profile.initialized %} · 首次初始化{% endif %}</option>
+              {% endfor %}
+            </select>
+            <fieldset class="automation-browser-mode">
+              <legend>启动方式</legend>
+              <div class="automation-browser-mode-options">
+                <label><input type="radio" name="workspace-automation-browser-mode" value="headless" checked><span>无界面</span></label>
+                <label><input type="radio" name="workspace-automation-browser-mode" value="headed"><span>有界面</span></label>
+              </div>
+            </fieldset>
+            <p id="workspace-automation-browser-start-message" class="message" aria-live="polite"></p>
+            <div class="dialog-actions">
+              <button id="workspace-automation-browser-start-cancel" class="button-link" type="button">取消</button>
+              <button id="workspace-automation-browser-start-confirm" class="button-secondary" type="submit">启动</button>
+            </div>
+          </form>
+        </dialog>
+        {% endif %}
+
+        {% if workspace_section == "automations" and automations and automations.browser_state == "running" %}
+        <dialog id="workspace-automation-browser-stop-dialog" class="codex-workspace-dialog confirmation-dialog" aria-labelledby="workspace-automation-browser-stop-title">
+          <form id="workspace-automation-browser-stop-form" class="codex-workspace-dialog-surface confirmation-dialog-surface">
+            <div class="codex-workspace-dialog-header">
+              <h3 id="workspace-automation-browser-stop-title">停止 Debug Chrome</h3>
+              <button id="workspace-automation-browser-stop-close" class="button-link codex-workspace-dialog-close" type="button" aria-label="关闭停止确认窗口">关闭</button>
+            </div>
+            <p class="confirmation-dialog-description">停止会关闭当前调试浏览器页面；正在使用该环境的自动化任务可能失败。</p>
+            <p id="workspace-automation-browser-stop-message" class="message" aria-live="polite"></p>
+            <div class="confirmation-dialog-actions">
+              <button id="workspace-automation-browser-stop-cancel" class="button-link" type="button">取消</button>
+              <button id="workspace-automation-browser-stop-confirm" class="button-danger" type="submit">确认停止</button>
+            </div>
+          </form>
+        </dialog>
+        {% endif %}
+          </div>
+          {% endif %}
         </section>
 
           <aside id="workspace-sidebar" class="workspace-preview-sidebar">
-            <div class="workspace-preview-brand"><strong>Chub</strong></div>
+            <div class="workspace-preview-brand"><strong>Chub</strong><button id="workspace-sidebar-close" class="button-secondary workspace-preview-sidebar-close" type="button" aria-label="关闭侧边栏导航" title="关闭侧边栏导航"><span aria-hidden="true">×</span></button></div>
           <p class="workspace-preview-sidebar-label">操作</p>
-          <nav class="workspace-preview-nav" aria-label="工作台导航">
-            <span class="is-current">工作台</span>
-            <span>会话</span>
-            <span>自动化</span>
-            <span>项目资料</span>
+          <nav class="workspace-preview-nav" data-workspace-section-navigation aria-label="工作台导航">
+            <a href="/"{% if workspace_section == "workbench" %} aria-current="page" class="is-current"{% endif %}><span class="workspace-preview-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><rect x="4" y="4" width="6" height="6" rx="1"></rect><rect x="14" y="4" width="6" height="6" rx="1"></rect><rect x="4" y="14" width="6" height="6" rx="1"></rect><rect x="14" y="14" width="6" height="6" rx="1"></rect></svg></span><span>工作台</span></a>
+            <a href="/?section=automations"{% if workspace_section == "automations" %} aria-current="page" class="is-current"{% endif %}><span class="workspace-preview-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><rect x="4" y="5" width="16" height="15" rx="2"></rect><path d="M4 9h16M7 3v4M17 3v4M14 12l4 2.5-4 2.5Z"></path></svg></span><span>自动化</span></a>
+            <a href="/?section=project-docs"{% if workspace_section == "project-docs" %} aria-current="page" class="is-current"{% endif %}><span class="workspace-preview-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M6 3.5h9l3 3V20a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1Z"></path><path d="M14 3.5V7h4M8.5 11h7M8.5 15h7"></path></svg></span><span>项目资料</span></a>
           </nav>
-          <button class="workspace-preview-create" type="button" disabled title="功能建设中">+ 新建 Session</button>
-          <section class="workspace-preview-recent" aria-labelledby="workspace-preview-recent-title">
-            <p id="workspace-preview-recent-title">最近 Session</p>
-            <div class="workspace-preview-session is-current">
-              <span class="workspace-preview-session-dot is-running" aria-hidden="true"></span>
-              <span><strong>周报整理</strong><small>执行中 · 刚刚</small></span>
-            </div>
-            <div class="workspace-preview-session">
-              <span class="workspace-preview-session-dot" aria-hidden="true"></span>
-              <span><strong>文档优化</strong><small>空闲 · 18 分钟前</small></span>
-            </div>
-            <div class="workspace-preview-session">
-              <span class="workspace-preview-session-dot" aria-hidden="true"></span>
-              <span><strong>需求评审</strong><small>空闲 · 昨天</small></span>
-            </div>
+          <section class="workspace-preview-sessions" aria-labelledby="workspace-preview-sessions-title">
+            <p id="workspace-preview-sessions-title">AI Session</p>
+            <button id="workspace-session-create" class="workspace-preview-create" type="button" disabled>+ 新建 Session</button>
+            <p id="workspace-session-message" class="workspace-preview-session-message" aria-live="polite"></p>
+            <div id="workspace-session-list" class="workspace-preview-session-list" aria-live="polite"></div>
           </section>
           <div class="workspace-preview-sidebar-footer">
             <nav class="workspace-preview-nav" aria-label="工作台辅助导航">
-              <a href="/settings">设置</a>
+              <a href="/settings"><span class="workspace-preview-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2 2-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5v.2h-2.8v-.2a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1-2-2 .1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H5.7v-2.8h.2a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.9L7 8.2l2-2 .1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.5v-.2h2.8v.2a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1 2 2-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.5 1h.2V14h-.2a1.7 1.7 0 0 0-1.5 1Z"></path></svg></span><span>设置</span></a>
             </nav>
           </div>
           </aside>
+          <dialog id="workspace-session-create-dialog" class="codex-workspace-dialog" aria-labelledby="workspace-session-create-title">
+            <form id="workspace-session-create-form" class="codex-workspace-dialog-surface workspace-session-create-form">
+              <div class="codex-workspace-dialog-header">
+                <h3 id="workspace-session-create-title">新建 Session</h3>
+                <button id="workspace-session-create-close" class="button-link codex-workspace-dialog-close" type="button" aria-label="关闭新建 Session 窗口">关闭</button>
+              </div>
+              <p class="workspace-session-create-description">选择工作目录和交互方式；创建后会显示在当前列表中。</p>
+              <label class="workspace-session-create-field" for="workspace-session-workspace">工作目录</label>
+              <select id="workspace-session-workspace" required></select>
+              <fieldset class="workspace-session-create-mode">
+                <legend>交互方式</legend>
+                <label><input type="radio" name="workspace-session-mode" value="quick" checked><span>快速交互</span></label>
+                <label><input type="radio" name="workspace-session-mode" value="terminal"><span>实时终端</span></label>
+              </fieldset>
+              <p id="workspace-session-create-message" class="message" aria-live="polite"></p>
+              <div class="dialog-actions">
+                <button id="workspace-session-create-cancel" class="button-link" type="button">取消</button>
+                <button id="workspace-session-create-confirm" class="button-secondary" type="submit">创建</button>
+              </div>
+            </form>
+          </dialog>
+          <button id="workspace-sidebar-scrim" class="workspace-preview-sidebar-scrim" type="button" aria-label="关闭侧边栏导航"></button>
         <div id="workspace-sidebar-resizer" class="workspace-preview-sidebar-resizer" role="separator" aria-orientation="vertical" aria-controls="workspace-sidebar" aria-label="调整侧边栏宽度" aria-valuemin="225" aria-valuemax="360" aria-valuenow="225" tabindex="0"></div>
       </section>
+      {% include "partials/confirmation_dialog.html" %}
     </main>
   </body>
 </html>

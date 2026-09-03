@@ -266,6 +266,42 @@ def test_submit_creates_one_private_session_and_replays_duplicate(
     assert persisted["submissions"][0]["task_id"] == "task-1"
 
 
+def test_submit_accepts_worker_verification_without_inviting_resend(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    quick_interactions.submit.return_value = SimpleNamespace(
+        id="task-verifying",
+        summary="检查设备状态",
+        submission_verifying=True,
+    )
+
+    first = manager.submit(
+        message_id="message-verifying",
+        prompt="检查设备状态",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+    )
+    duplicate = manager.submit(
+        message_id="message-verifying",
+        prompt="不应重复提交",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+    )
+
+    assert first.accepted is True
+    assert first.code == "submitted"
+    assert "being verified" in first.message
+    assert "Do not resend" in first.message
+    assert duplicate.duplicate is True
+    assert duplicate.message == first.message
+    assert quick_interactions.submit.call_count == 1
+    stored = manager._find_submission("message-verifying")
+    assert stored is not None
+    assert stored.status == "submitted"
+    assert stored.task_id == "task-verifying"
+
+
 def test_duplicate_submission_refreshes_current_session_marker(
     settings: Settings,
 ) -> None:

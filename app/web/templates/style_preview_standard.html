@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN" data-style-preview="{{ 'cyber' if preview_body_class == 'cyber-preview' else 'standard' }}">
+<html lang="zh-CN" data-style-preview="{{ 'code-dark' if preview_body_class == 'code-dark-preview' else 'standard' }}">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
@@ -10,9 +10,6 @@
     <script src="/static/style-preview.js" defer></script>
   </head>
   <body class="{{ preview_body_class }}">
-    {% if preview_body_class == "cyber-preview" %}
-    <div class="cyber-matrix" aria-hidden="true"></div>
-    {% endif %}
     <main class="style-preview-page">
       <section class="card style-preview-intro" aria-labelledby="style-preview-title">
         <div class="card-heading-copy">

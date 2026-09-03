@@ -1,13 +1,14 @@
+(() => {
 "use strict";
+
+window.initializeSettingsPage = () => {
+  window.disposeSettingsPage?.();
 
 const QUICK_INTERACTION_PAGE_SIZE_KEY = "hub.quickInteractionPageSize.v1";
 const settingsPage = document.body.dataset.settingsPage || "";
 const CODEX_MODEL_PREFERENCE_CACHE_KEY = "hub.codexModelPreferenceCache";
 const WEIXIN_TRANSLATION_SETTINGS_CACHE_KEY = "hub.weixinTranslationSettingsCache";
 const OPENCLAW_WEIXIN_SETTINGS_CACHE_KEY = "hub.openclawWeixinSettingsCache.v1";
-const CYBER_RAIN_SPEED_KEY = "hub.cyberRainSpeed.v1";
-const CYBER_RAIN_BRIGHTNESS_KEY = "hub.cyberRainBrightness.v1";
-const CYBER_RAIN_DENSITY_KEY = "hub.cyberRainDensity.v1";
 const settingsMessage = document.querySelector("#settings-message");
 const quickInteractionPageSize = document.querySelector(
   "#quick-interaction-page-size",
@@ -100,15 +101,7 @@ const openclawWeixinVerifyCode = document.querySelector(
 const openclawWeixinMessage = document.querySelector("#openclaw-weixin-message");
 const openclawWeixinCancel = document.querySelector("#openclaw-weixin-cancel");
 const openclawWeixinStart = document.querySelector("#openclaw-weixin-start");
-const cyberRainSpeed = document.querySelector("#cyber-rain-speed");
-const cyberRainBrightness = document.querySelector("#cyber-rain-brightness");
-const cyberRainDensity = document.querySelector("#cyber-rain-density");
-const cyberRainSpeedValue = document.querySelector("#cyber-rain-speed-value");
-const cyberRainBrightnessValue = document.querySelector("#cyber-rain-brightness-value");
-const cyberRainDensityValue = document.querySelector("#cyber-rain-density-value");
-const cyberStyleSettingsMessage = document.querySelector("#cyber-style-settings-message");
 const styleOptionRows = document.querySelectorAll("[data-style-option]");
-const cyberStyleDetails = document.querySelector("[data-cyber-style-details]");
 let codexModels = [];
 let codexModelsLoaded = false;
 let codexCatalogDefaultModelId = "";
@@ -137,6 +130,7 @@ const CODEX_REASONING_LABELS = {
 };
 
 const settingsChoicePickers = new Map();
+const settingsChoicePickerObservers = [];
 let openSettingsChoicePicker = null;
 const SETTINGS_PICKER_DESCRIPTIONS = Object.freeze({
   "quick-interaction-page-size": {
@@ -265,16 +259,18 @@ function initializeSettingsChoicePickers() {
       menu.querySelector(".is-selected:not(:disabled), [role='option']:not(:disabled)")?.focus();
     });
     select.addEventListener("change", () => renderSettingsChoicePicker(state));
-    new MutationObserver(() => renderSettingsChoicePicker(state)).observe(select, {
+    const observer = new MutationObserver(() => renderSettingsChoicePicker(state));
+    observer.observe(select, {
       attributes: true,
       attributeFilter: ["disabled"],
       childList: true,
       subtree: true,
     });
+    settingsChoicePickerObservers.push(observer);
   });
 }
 
-document.addEventListener("pointerdown", (event) => {
+const closePickerOnPointerDown = (event) => {
   if (
     openSettingsChoicePicker
     && !openSettingsChoicePicker.trigger.contains(event.target)
@@ -282,18 +278,21 @@ document.addEventListener("pointerdown", (event) => {
   ) {
     closeSettingsChoicePicker();
   }
-});
+};
 
-document.addEventListener("keydown", (event) => {
+const closePickerOnEscape = (event) => {
   if (event.key === "Escape" && openSettingsChoicePicker) {
     event.preventDefault();
     const picker = openSettingsChoicePicker;
     closeSettingsChoicePicker(picker);
     picker.trigger.focus();
   }
-});
+};
 
-window.addEventListener("resize", () => closeSettingsChoicePicker());
+const closePickerOnResize = () => closeSettingsChoicePicker();
+document.addEventListener("pointerdown", closePickerOnPointerDown);
+document.addEventListener("keydown", closePickerOnEscape);
+window.addEventListener("resize", closePickerOnResize);
 
 function renderStyleSelection(style) {
   styleOptionRows.forEach((row) => {
@@ -305,37 +304,6 @@ function renderStyleSelection(style) {
     button.textContent = selected ? "使用中" : "应用";
     button.disabled = selected;
   });
-  cyberStyleDetails.querySelector("summary").textContent = style === "cyber"
-    ? "Cyber 参数 · 当前风格"
-    : "Cyber 参数";
-}
-
-function readRangePreference(key, fallback) {
-  try {
-    const value = Number(localStorage.getItem(key));
-    return Number.isFinite(value) && value >= 10 && value <= 100
-      ? value
-      : fallback;
-  } catch (_error) {
-    return fallback;
-  }
-}
-
-function updateCyberControl(input, output, key) {
-  const value = Math.min(100, Math.max(10, Number(input.value)));
-  try {
-    localStorage.setItem(key, String(value));
-    input.value = String(value);
-    output.value = `${value}%`;
-    cyberStyleSettingsMessage.textContent = "";
-    cyberStyleSettingsMessage.className = "message";
-    if (window.ChubTheme.currentStyle() === "cyber") {
-      window.ChubTheme.refreshCyberRain();
-    }
-  } catch (_error) {
-    cyberStyleSettingsMessage.textContent = "当前浏览器无法保存界面偏好。";
-    cyberStyleSettingsMessage.className = "message message-error";
-  }
 }
 
 function readQuickInteractionPageSize() {
@@ -376,9 +344,7 @@ function defaultModelOptionLabel() {
 
 function defaultModelDescription(model) {
   const modelName = model?.name || model?.id || "不可用";
-  const modelId = model?.id && model?.name !== model.id ? `（${model.id}）` : "";
-  const level = codexCatalogDefaultReasoningEffort || model?.default_level || "不可用";
-  return `当前 Codex 默认 · ${modelName}${modelId} · ${CODEX_REASONING_LABELS[level] || level}`;
+  return `当前默认 ${modelName}`;
 }
 
 function defaultReasoningOptionLabel() {
@@ -1211,27 +1177,10 @@ function closeMaintenanceTerminalDialog() {
 }
 
 function initializeAppearanceSettings() {
-  cyberRainSpeed.value = String(readRangePreference(CYBER_RAIN_SPEED_KEY, 60));
-  cyberRainBrightness.value = String(readRangePreference(CYBER_RAIN_BRIGHTNESS_KEY, 70));
-  cyberRainDensity.value = String(readRangePreference(CYBER_RAIN_DENSITY_KEY, 50));
-  cyberRainSpeedValue.value = `${cyberRainSpeed.value}%`;
-  cyberRainBrightnessValue.value = `${cyberRainBrightness.value}%`;
-  cyberRainDensityValue.value = `${cyberRainDensity.value}%`;
-  cyberRainSpeed.addEventListener("input", () => updateCyberControl(cyberRainSpeed, cyberRainSpeedValue, CYBER_RAIN_SPEED_KEY));
-  cyberRainBrightness.addEventListener("input", () => updateCyberControl(cyberRainBrightness, cyberRainBrightnessValue, CYBER_RAIN_BRIGHTNESS_KEY));
-  cyberRainDensity.addEventListener("input", () => updateCyberControl(cyberRainDensity, cyberRainDensityValue, CYBER_RAIN_DENSITY_KEY));
   styleOptionRows.forEach((row) => {
     row.querySelector("[data-style-apply]").addEventListener("click", () => {
       const style = row.dataset.styleOption;
-      if (window.ChubTheme.applyStyle(style, { persist: true })) {
-        renderStyleSelection(style);
-        cyberStyleDetails.open = style === "cyber";
-        cyberStyleSettingsMessage.textContent = "";
-        cyberStyleSettingsMessage.className = "message";
-      } else {
-        cyberStyleSettingsMessage.textContent = "当前浏览器无法保存界面偏好。";
-        cyberStyleSettingsMessage.className = "message message-error";
-      }
+      if (window.ChubTheme.applyStyle(style, { persist: true })) renderStyleSelection(style);
     });
   });
   renderStyleSelection(window.ChubTheme.currentStyle());
@@ -1333,3 +1282,22 @@ if (settingsPage === "quick-interaction") {
 } else if (settingsPage === "openclaw") {
   initializeOpenClawSettings();
 }
+
+  window.disposeSettingsPage = () => {
+    if (weixinTranslationPollTimer !== null) {
+      window.clearTimeout(weixinTranslationPollTimer);
+    }
+    if (settingsPage === "openclaw") {
+      closeOpenClawWeixinDialog();
+    }
+    closeSettingsChoicePicker();
+    settingsChoicePickerObservers.forEach((observer) => observer.disconnect());
+    settingsChoicePickers.forEach(({ menu }) => menu.remove());
+    document.removeEventListener("pointerdown", closePickerOnPointerDown);
+    document.removeEventListener("keydown", closePickerOnEscape);
+    window.removeEventListener("resize", closePickerOnResize);
+  };
+};
+
+window.initializeSettingsPage();
+})();

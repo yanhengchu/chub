@@ -86,6 +86,7 @@ class AiSession(_StrictModel):
     error: str | None = Field(default=None, max_length=300)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+    last_activity_at: datetime | None = None
 
     @field_validator("id")
     @classmethod

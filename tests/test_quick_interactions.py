@@ -526,7 +526,7 @@ def test_failed_sensitive_submission_rechecks_deferred_restart(
     deferred_restart.maybe_schedule.assert_called_once_with()
 
 
-def test_isolated_worker_submit_response_loss_reconciles_without_releasing_session(
+def test_isolated_worker_submit_response_loss_adopts_accepted_task(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -539,11 +539,7 @@ def test_isolated_worker_submit_response_loss_reconciles_without_releasing_sessi
         [
             OSError("submit response lost"),
             OSError("retry response lost"),
-            {
-                "success": True,
-                "data": {"task": {}},
-            },
-            {"success": True, "data": {"task": {"status": "cancelled"}}},
+            None,
         ]
     )
 
@@ -551,6 +547,8 @@ def test_isolated_worker_submit_response_loss_reconciles_without_releasing_sessi
         result = next(calls)
         if isinstance(result, Exception):
             raise result
+        if result is None:
+            return accepted_worker_task(_payload["task"])
         return result
 
     quick_interactions._worker_call = MagicMock(side_effect=worker_call)
@@ -572,21 +570,91 @@ def test_isolated_worker_submit_response_loss_reconciles_without_releasing_sessi
         "_start_uncertain_submission_reconciler",
         start_reconciler,
     )
+    observer = MagicMock()
+    monkeypatch.setattr(quick_interactions, "_start_worker_observer", observer)
     reconciler_release.set()
 
-    with pytest.raises(ApiError) as error:
-        quick_interactions.submit(
-            "session-1",
-            "uncertain submission",
-            operation_id="operation-1",
-            source_ip="127.0.0.1",
-        )
+    submitted_task = quick_interactions.submit(
+        "session-1",
+        "uncertain submission",
+        operation_id="operation-1",
+        source_ip="127.0.0.1",
+    )
 
     assert reconciler_started.is_set()
-    assert error.value.code == "quick_worker_submission_uncertain"
+    assert submitted_task.submission_verifying is False
     task = next(iter(quick_interactions._tasks.values()))
-    assert task.status == "failed"
-    assert quick_interactions.is_running("session-1") is False
+    assert task.status == "requested"
+    assert task.submission_verifying is False
+    assert task.error is None
+    assert quick_interactions.is_running("session-1") is True
+    assert [call.args[0] for call in quick_interactions._worker_call.call_args_list] == [
+        "runtime_task_submit",
+        "runtime_task_submit",
+        "runtime_task_submit",
+    ]
+    observer.assert_called_once_with(task, quick_interactions.codex_manager.get_session.return_value, "uncertain submission")
+
+
+def test_uncertain_submission_uses_persisted_recovery_after_bounded_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    quick_interactions = manager(tmp_path)
+    monkeypatch.setattr(
+        "app.codex.quick_interactions.UNCERTAIN_SUBMISSION_RETRY_SECONDS",
+        0,
+    )
+    initial_calls = iter(
+        [OSError("response lost"), OSError("retry lost")]
+        + [OSError("verification unavailable")] * 8
+    )
+    def initial_worker_call(_action: str, **_payload: object) -> dict[str, object]:
+        result = next(initial_calls)
+        raise result
+
+    quick_interactions._worker_call = MagicMock(side_effect=initial_worker_call)
+    monkeypatch.setattr(
+        quick_interactions,
+        "_start_uncertain_submission_reconciler",
+        lambda task, session, submission: quick_interactions._reconcile_uncertain_submission(
+            task.id,
+            session,
+            submission,
+        ),
+    )
+
+    task = quick_interactions.submit(
+        "session-1",
+        "bounded verification",
+        operation_id="operation-bounded-verification",
+        source_ip="127.0.0.1",
+    )
+
+    assert task.submission_verifying is True
+    assert task.id not in quick_interactions._submitting_task_ids
+    assert quick_interactions.is_running("session-1") is True
+
+    quick_interactions._worker_call = MagicMock(
+        side_effect=lambda action, **payload: (
+            {
+                "success": False,
+                "error": {"code": "worker_task_not_found"},
+            }
+            if action == "task_get"
+            else accepted_worker_task(payload["task"])
+        )
+    )
+    quick_interactions._reconcile_worker_task(task.id)
+
+    recovered = quick_interactions.get(task.id)
+    assert recovered.submission_verifying is False
+    assert recovered.error is None
+    assert quick_interactions.is_running("session-1") is True
+    assert [call.args[0] for call in quick_interactions._worker_call.call_args_list] == [
+        "task_get",
+        "runtime_task_submit",
+    ]
 
 
 def test_isolated_worker_accepts_wrapped_8000_character_prompt(

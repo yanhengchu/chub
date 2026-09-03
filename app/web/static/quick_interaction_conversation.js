@@ -174,6 +174,7 @@ let conversationConfigurationPending = false;
 let conversationModelCatalog = null;
 let conversationComposerSessionId = null;
 let conversationOpenComposerMenu = null;
+let conversationWorkspaceActivitySignature = "";
 // The composer mirrors the current Session while its submission semantics remain session-owned.
 let conversationComposerSelections = {
   permission: null,
@@ -195,6 +196,25 @@ const CONVERSATION_REASONING_LABELS = Object.freeze({
   max: "Max",
   ultra: "Ultra",
 });
+
+function notifyWorkspaceSessionActivity() {
+  if (window.parent === window) return;
+  const latestTask = conversationTasks.reduce((latest, task) => (
+    !latest || Date.parse(task.updated_at) > Date.parse(latest.updated_at)
+      ? task
+      : latest
+  ), null);
+  const payload = {
+    type: "chub.workspace.quick-session-activity",
+    sessionId: conversationSessionId,
+    running: conversationActive,
+    updatedAt: latestTask?.updated_at || null,
+  };
+  const signature = JSON.stringify(payload);
+  if (signature === conversationWorkspaceActivitySignature) return;
+  conversationWorkspaceActivitySignature = signature;
+  window.parent.postMessage(payload, window.location.origin);
+}
 
 function handleConversationSessionSwitch(event) {
   const request = conversationSessionView.navigationRequest(
@@ -543,11 +563,22 @@ function switchConversationSession(sessionId, url, sessionPreview = null) {
     sessionId,
   });
   document.body.dataset.sessionId = sessionId;
+  const targetUrl = new URL(url, window.location.origin);
+  if (new URL(window.location.href).searchParams.get("embedded") === "workspace") {
+    targetUrl.searchParams.set("embedded", "workspace");
+  }
+  const historyUrl = `${targetUrl.pathname}${targetUrl.search}${targetUrl.hash}`;
   try {
-    window.history.replaceState(window.history.state, "", url);
+    window.history.replaceState(window.history.state, "", historyUrl);
   } catch (_error) {
-    window.location.replace(url);
+    window.location.replace(historyUrl);
     return;
+  }
+  if (window.parent !== window) {
+    window.parent.postMessage(
+      { type: "chub.workspace.quick-session-selection", sessionId },
+      window.location.origin,
+    );
   }
   resetConversationSessionView(preview);
   renderConversationSessionSwitcher(conversationSessions);
@@ -990,6 +1021,7 @@ async function performConversationLoad(generation, client) {
     conversationActive = conversationTasks.some(
       (task) => ["requested", "running"].includes(task.status),
     );
+    notifyWorkspaceSessionActivity();
     if (!conversationInitialized) {
       conversationHasEarlier = data.has_more;
     } else if (conversationHistoryExpanded) {
@@ -1174,6 +1206,7 @@ conversationForm.addEventListener("submit", async (event) => {
     conversationActive = true;
     conversationTotal += conversationTasks.some((task) => task.id === data.task.id) ? 0 : 1;
     mergeConversationTasks([data.task]);
+    notifyWorkspaceSessionActivity();
     renderConversationTasks({ forceBottom: true });
     showConversationMessage(conversationSubmitMessage, "");
     await loadConversation();
@@ -1317,6 +1350,22 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     closeConversationComposerMenus();
   }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (
+    event.defaultPrevented
+    || event.repeat
+    || event.altKey
+    || !(event.metaKey || event.ctrlKey)
+    || event.key.toLowerCase() !== "b"
+    || window.parent === window
+    || typeof window.parent.toggleWorkspaceSidebar !== "function"
+  ) {
+    return;
+  }
+  event.preventDefault();
+  window.parent.toggleWorkspaceSidebar();
 });
 
 window.addEventListener("resize", () => {

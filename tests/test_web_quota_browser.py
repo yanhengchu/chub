@@ -391,7 +391,7 @@ async def _mock_protected_api(
 
 def _layout_cases() -> list[object]:
     cases = []
-    for theme in ("standard", "cyber"):
+    for theme in ("standard", "code-dark"):
         for shape in ("complete", "compact", "compact-local"):
             for viewport_name, (viewport, expected_by_shape) in VIEWPORTS.items():
                 cases.append(

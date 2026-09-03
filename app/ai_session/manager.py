@@ -191,9 +191,9 @@ class AiSessionManager:
 
     def workspaces(self) -> list[WorkspaceInfo]:
         entries = [
+            ("chub", "Chub", PROJECT_ROOT),
             ("home", "用户目录", Path.home()),
             ("workspace", "Workspace", self.settings.codex_pty.workspace),
-            ("chub", "Chub", PROJECT_ROOT),
         ]
         return [
             WorkspaceInfo(
@@ -691,7 +691,13 @@ class AiSessionManager:
                 raise ApiError(404, "codex_session_not_found", "Codex session not found")
             session.activity = activity
             session.activity_source = source
-            session.updated_at = max(session.updated_at, updated_at or utc_now())
+            activity_at = updated_at or utc_now()
+            session.updated_at = max(session.updated_at, activity_at)
+            if source == "terminal":
+                session.last_activity_at = max(
+                    session.last_activity_at or activity_at,
+                    activity_at,
+                )
             self.store.save(session)
 
     def set_initial_quick_interaction_title(self, session_id: str, title: str) -> None:
@@ -1258,6 +1264,7 @@ class AiSessionManager:
             error=session.error,
             created_at=session.created_at,
             updated_at=session.updated_at,
+            last_activity_at=session.last_activity_at,
             session_mode=session.session_mode,
             terminal_access_allowed=session.session_mode == "terminal",
             usage=self._resolve_session_usage(session),
@@ -1396,6 +1403,7 @@ class AiSessionManager:
                             "Runtime Session identity is already bound to another managed Session",
                         ) from exc
         if session and activity in {"working", "idle"}:
+            activity_at = utc_now()
             expected_source = (
                 activity_source
                 if activity == "working" and activity_source in {"terminal", "quick"}
@@ -1411,6 +1419,12 @@ class AiSessionManager:
             if session.activity != activity or session.activity_source != expected_source:
                 session.activity = activity
                 session.activity_source = expected_source
+                changed = True
+            if activity_source == "terminal":
+                session.last_activity_at = max(
+                    session.last_activity_at or activity_at,
+                    activity_at,
+                )
                 changed = True
         if session and changed:
             session.updated_at = utc_now()

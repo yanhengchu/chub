@@ -54,8 +54,12 @@ MAX_RESULT_BYTES = 100_000
 MAX_QUICK_INTERACTION_STATE_BYTES = 8 * 1024 * 1024
 MAX_STORED_TASKS = 30
 MAX_SESSION_TITLE_LENGTH = 48
-WORKER_RECONCILE_INTERVAL_SECONDS = 0.25
+# The Worker is authoritative; resident reconciliation is recovery work and must
+# not continuously contend with interactive IPC submissions.
+WORKER_RECONCILE_INTERVAL_SECONDS = 1.0
 WORKER_CONNECTION_RETRY_DELAYS = (0.2, 0.5, 1.0, 2.0, 2.0)
+UNCERTAIN_SUBMISSION_MAX_ATTEMPTS = 8
+UNCERTAIN_SUBMISSION_RETRY_SECONDS = 0.25
 LOGGER = logging.getLogger("hub.codex.quick_interactions")
 CODEX_QUICK_INTERACTION_INSTRUCTIONS = (
     "[Chub 快速交互交付要求]\n"
@@ -552,9 +556,9 @@ class QuickInteractionManager:
             self._submit_worker_task(task, session, prompt)
         except _WorkerSubmissionUncertain as exc:
             with self._lock:
+                task.submission_verifying = True
                 task.error = (
-                    "Quick Worker 提交结果暂时无法确认；Session 保持占用，"
-                    "不会在 Web 内回退执行。"
+                    "Quick Worker 正在核验本次提交；请勿重复提交。"
                 )
                 task.updated_at = utc_now()
                 self._write()
@@ -563,11 +567,11 @@ class QuickInteractionManager:
                 session,
                 exc.submission,
             )
-            raise ApiError(
-                503,
-                "quick_worker_submission_uncertain",
-                "Quick Worker 提交结果暂时无法确认，Session 已保持占用。",
-            ) from exc
+            # The task is durably accepted by Chub, but Worker acceptance is
+            # still being verified.  Returning it prevents every caller from
+            # presenting a false "not submitted" result and retrying with a
+            # second task identity.
+            return task
         except Exception as exc:
             self._clear_quick_native_claim_safely(
                 session.id,
@@ -889,6 +893,59 @@ class QuickInteractionManager:
             error = payload.get("error")
             code = error.get("code") if isinstance(error, dict) else None
             if code == "worker_task_not_found":
+                if task.submission_verifying:
+                    # A bounded foreground probe did not settle the outcome.
+                    # Once the Worker is reachable, retry only this immutable
+                    # task identity; a successful response is the acceptance
+                    # proof, while an explicit rejection is the only safe
+                    # reason to release the Session.
+                    try:
+                        session = self.codex_manager.get_session(task.session_id)
+                        if not task.prompt:
+                            raise OSError("Verifying Worker task has no prompt")
+                        submission = self._worker_submission(task, session, task.prompt)
+                        submitted = self._worker_call(
+                            "runtime_task_submit",
+                            task=submission.model_dump(mode="json"),
+                        )
+                    except OSError:
+                        raise
+                    if submitted.get("success") is not True:
+                        submitted_error = submitted.get("error")
+                        submitted_code = (
+                            submitted_error.get("code")
+                            if isinstance(submitted_error, dict)
+                            else None
+                        )
+                        if submitted_code in {
+                            "worker_action_unavailable",
+                            "worker_protocol_incompatible",
+                            "worker_capacity_reached",
+                            "worker_queue_capacity_reached",
+                            "worker_workspace_unavailable",
+                            "runtime_unavailable",
+                        }:
+                            self._finish_rejected_submission(
+                                task_id,
+                                session,
+                                worker_task_id,
+                                "Quick Worker 未接受任务，且未在 Web 内回退执行。",
+                            )
+                            return
+                        raise OSError(self._worker_error(submitted))
+                    try:
+                        self._validate_worker_submission_response(submitted, submission)
+                    except (OSError, ValueError) as exc:
+                        raise OSError("Worker returned mismatched submission identity") from exc
+                    with self._lock:
+                        current = self._tasks.get(task_id)
+                        if current is None:
+                            return
+                        current.submission_verifying = False
+                        current.error = None
+                        current.updated_at = utc_now()
+                        self._write()
+                    return
                 with self._lock:
                     current = self._tasks.get(task_id)
                     if current is None:
@@ -1118,14 +1175,15 @@ class QuickInteractionManager:
             with self._lock:
                 self._submitting_task_ids.discard(task_id)
             return
-        while True:
+        message: str | None = None
+        for _attempt in range(UNCERTAIN_SUBMISSION_MAX_ATTEMPTS):
             try:
                 submitted = self._worker_call(
                     "runtime_task_submit",
                     task=submission.model_dump(mode="json"),
                 )
             except OSError:
-                time.sleep(0.25)
+                time.sleep(UNCERTAIN_SUBMISSION_RETRY_SECONDS)
                 continue
             if submitted.get("success") is not True:
                 error = submitted.get("error")
@@ -1140,31 +1198,68 @@ class QuickInteractionManager:
                 }:
                     message = "Quick Worker 未接受任务，且未在 Web 内回退执行。"
                     break
-                time.sleep(0.25)
+                time.sleep(UNCERTAIN_SUBMISSION_RETRY_SECONDS)
                 continue
             try:
-                cancelled = self._worker_call(
-                    "task_cancel",
-                    task_id=worker_task_id,
-                    timeout_seconds=5,
-                )
-            except OSError:
-                time.sleep(0.25)
+                self._validate_worker_submission_response(submitted, submission)
+            except (OSError, ValueError):
+                # The request was accepted, but its identity is not safe to adopt.
+                # Keep the Session fail-closed and continue the idempotent probe.
+                time.sleep(UNCERTAIN_SUBMISSION_RETRY_SECONDS)
                 continue
-            if cancelled.get("success") is True:
-                message = "Quick Worker 提交响应丢失；任务已停止且未在 Web 内回退执行。"
-                break
-            error = cancelled.get("error")
-            if isinstance(error, dict) and error.get("code") == "worker_task_not_found":
-                message = "Quick Worker 未接受任务，且未在 Web 内回退执行。"
-                break
-            time.sleep(0.25)
+            with self._lock:
+                current = self._tasks.get(task_id)
+                if current is None:
+                    self._submitting_task_ids.discard(task_id)
+                    return
+                current.submission_verifying = False
+                current.error = None
+                current.updated_at = utc_now()
+                self._submitting_task_ids.discard(task_id)
+                self._write()
+            # A matching Worker task is the acceptance proof.  Never cancel it
+            # merely because its original IPC response was delayed or lost.
+            self._start_worker_observer(
+                current,
+                session,
+                current.prompt or submission.prompt,
+            )
+            return
+        if message is None:
+            with self._lock:
+                current = self._tasks.get(task_id)
+                if current is None:
+                    self._submitting_task_ids.discard(task_id)
+                    return
+                # Do not leave a daemon retry loop holding the Session forever.
+                # The persisted task is picked up by normal Worker reconciliation,
+                # which can safely query or retry this exact Worker task identity.
+                current.submission_verifying = True
+                current.error = (
+                    "Quick Worker 尚未确认本次提交；Chub 将继续后台核验，"
+                    "请勿重复提交。"
+                )
+                current.updated_at = utc_now()
+                self._submitting_task_ids.discard(task_id)
+                self._write()
+            return
+        self._finish_rejected_submission(task_id, session, worker_task_id, message)
+
+    def _finish_rejected_submission(
+        self,
+        task_id: str,
+        session: AiSession,
+        worker_task_id: str,
+        message: str,
+    ) -> None:
+        self._clear_quick_native_claim_safely(session.id, worker_task_id)
         with self._lock:
             current = self._tasks.get(task_id)
             if current is None:
                 self._submitting_task_ids.discard(task_id)
                 return
             current.status = "failed"
+            current.submission_verifying = False
             current.error = message
             current.updated_at = utc_now()
             self._active_task_ids.discard(task_id)
@@ -1193,7 +1288,7 @@ class QuickInteractionManager:
                 )
             except Exception:
                 LOGGER.warning(
-                    "Unable to clear uncertain Worker submission activity",
+                    "Unable to clear rejected Worker submission activity",
                     exc_info=True,
                 )
         if self.deferred_restart is not None:
@@ -1278,6 +1373,14 @@ class QuickInteractionManager:
             if task is None:
                 raise ApiError(404, "quick_interaction_not_found", "快速交互任务不存在。")
             return task.model_copy(deep=True)
+
+    def find_for_operation(self, operation_id: str) -> QuickInteractionTask | None:
+        """Return the locally reserved task for one trusted operation, if any."""
+        with self._lock:
+            for task_id, context in self._operations.items():
+                if context[0] == operation_id and (task := self._tasks.get(task_id)):
+                    return task.model_copy(deep=True)
+        return None
 
     def list_for_session(
         self,
@@ -1382,6 +1485,16 @@ class QuickInteractionManager:
                 )
                 for session_id in active
             }
+
+    def session_activity_times(self) -> dict[str, datetime]:
+        """Return the latest task update for each quick-interaction Session."""
+        with self._lock:
+            activity_times: dict[str, datetime] = {}
+            for task in self._tasks.values():
+                current = activity_times.get(task.session_id)
+                if current is None or task.updated_at > current:
+                    activity_times[task.session_id] = task.updated_at
+            return activity_times
 
     def is_running(self, session_id: str) -> bool:
         with self._lock:

@@ -245,6 +245,12 @@ def test_fixed_reply_uses_english_labels_and_preserves_task_title() -> None:
     )
 
 
+def test_fixed_reply_explains_that_an_uncertain_submission_is_being_verified() -> None:
+    assert format_fixed_reply("Quick Worker 正在核验本次提交；请勿重复发送。") == (
+        "Submission is being verified by Quick Worker. Do not resend yet."
+    )
+
+
 def test_stable_command_message_ids_are_namespaced_and_deterministic() -> None:
     retry_id = retry_submission_message_id("command-1", "original-1")
     task_id = command_task_message_id("command-1")

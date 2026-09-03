@@ -443,7 +443,7 @@ async def test_terminal_page_returns_home_after_connection_takeover(
             await context.close()
 
 
-@pytest.mark.parametrize("theme", ["standard", "cyber"])
+@pytest.mark.parametrize("theme", ["standard", "code-dark"])
 @pytest.mark.parametrize(
     "viewport",
     [(360, 800), (412, 915), (1280, 900)],
@@ -554,7 +554,7 @@ async def test_conversation_layout_in_managed_chrome(
     assert page_errors == []
 
 
-@pytest.mark.parametrize("theme", ["standard", "cyber"])
+@pytest.mark.parametrize("theme", ["standard", "code-dark"])
 async def test_conversation_composer_options_show_current_values_and_disable_approval(
     conversation_browser_server: str,
     theme: str,

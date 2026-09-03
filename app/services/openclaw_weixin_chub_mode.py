@@ -879,7 +879,11 @@ class WeixinChubModeManager:
             reservation.status = "submitted"
             reservation.code = "submitted"
             reservation.message = self._format_submitted_task_message(
-                "Submitted",
+                (
+                    "Submission is being verified by Quick Worker. Do not resend yet."
+                    if getattr(task, "submission_verifying", False)
+                    else "Submitted"
+                ),
                 delivery_route=delivery_route,
                 submitted_session_id=session_id,
                 submitted_session_slot=session_slot,

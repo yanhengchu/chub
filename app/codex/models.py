@@ -70,6 +70,7 @@ class CodexSession(BaseModel):
     ttyd_port: int | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+    last_activity_at: datetime | None = None
 
     @property
     def native_session_id(self) -> str | None:
@@ -135,6 +136,7 @@ class SessionInfo(BaseModel):
     error: str | None
     created_at: datetime
     updated_at: datetime
+    last_activity_at: datetime | None = None
     quick_interaction_running: bool = False
     quick_interaction_updated_at: datetime | None = None
     terminal_access_allowed: bool = True
@@ -379,6 +381,11 @@ class QuickInteractionTask(BaseModel):
     model: str | None = Field(default=None, max_length=128)
     reasoning_effort: str | None = Field(default=None, max_length=32)
     restart_sensitive: bool = False
+    # A lost IPC response does not prove that the Worker rejected the task.
+    # Keep this explicit, persisted intermediate state separate from a failure
+    # so every entry can safely resume the same-id reconciliation after Web
+    # recovery without inviting a duplicate submission.
+    submission_verifying: bool = False
     status: QuickInteractionStatus
     result: str | None = Field(default=None, max_length=100_000)
     error: str | None = Field(default=None, max_length=4000)

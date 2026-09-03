@@ -110,6 +110,7 @@ async def test_codex_session_list_keeps_terminal_creation_available_without_work
     manager.list_sessions.return_value = []
     quick_interactions = MagicMock()
     quick_interactions.active_sessions.return_value = {}
+    quick_interactions.session_activity_times.return_value = {}
     quick_interactions.quick_session_creation_availability.return_value = (
         False,
         "Quick Worker 当前不可用，无法创建快速交互 Session。",
@@ -545,10 +546,31 @@ async def test_codex_session_list_includes_active_quick_interaction(
             error=None,
             created_at="2026-07-24T10:00:00Z",
             updated_at="2026-07-24T10:01:00Z",
-        )
+        ),
+        SessionInfo(
+            id="session-2",
+            runtime_id="codex",
+            workspace_id="chub",
+            workspace_name="Chub",
+            cwd="/workspace/chub",
+            title=None,
+            can_archive=True,
+            status="stopped",
+            activity="unknown",
+            permission_mode="auto-review",
+            active_permission_mode=None,
+            permission_pending=False,
+            error=None,
+            created_at="2026-07-20T10:00:00Z",
+            updated_at="2026-07-24T10:03:00Z",
+            last_activity_at="2026-07-21T10:00:00Z",
+        ),
     ]
     quick_interactions = MagicMock()
     quick_interactions.active_sessions.return_value = {
+        "session-1": datetime(2026, 7, 24, 10, 2, tzinfo=UTC)
+    }
+    quick_interactions.session_activity_times.return_value = {
         "session-1": datetime(2026, 7, 24, 10, 2, tzinfo=UTC)
     }
     quick_interactions.quick_session_creation_availability.return_value = (True, None)
@@ -565,9 +587,12 @@ async def test_codex_session_list_includes_active_quick_interaction(
             headers=authorization(settings),
         )
 
-    session = response.json()["data"]["sessions"][0]
+    sessions = response.json()["data"]["sessions"]
+    session = sessions[0]
     assert session["quick_interaction_running"] is True
     assert session["quick_interaction_updated_at"] == "2026-07-24T10:02:00Z"
+    assert session["last_activity_at"] == "2026-07-24T10:02:00Z"
+    assert sessions[1]["last_activity_at"] == "2026-07-21T10:00:00Z"
     assert session["weixin_session_slot"] == 3
     weixin_chub_mode.session_slots_snapshot.assert_called_once_with()
 

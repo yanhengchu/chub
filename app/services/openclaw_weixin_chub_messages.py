@@ -231,6 +231,9 @@ def format_fixed_reply(message: str) -> str:
         "任务提交失败：Chub 当前状态不可用，请稍后重试。": (
             "Not submitted · Chub state is unavailable. Try again later."
         ),
+        "Quick Worker 正在核验本次提交；请勿重复发送。": (
+            "Submission is being verified by Quick Worker. Do not resend yet."
+        ),
         "任务提交失败，请稍后重试。": "Not submitted · Submission failed. Try again later.",
     }
     paragraphs = message.split("\n\n")
@@ -551,6 +554,9 @@ def safe_submission_error(exc: ApiError) -> str:
         ),
         "weixin_translation_unavailable": (
             "文本优化服务当前不可用，本次任务未执行。"
+        ),
+        "quick_worker_submission_uncertain": (
+            "Quick Worker 正在核验本次提交；请勿重复发送。"
         ),
     }
     return allowed.get(exc.code, "微信任务提交失败。")

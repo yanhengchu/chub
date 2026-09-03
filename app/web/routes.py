@@ -1,4 +1,5 @@
 from pathlib import Path
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -10,7 +11,8 @@ from app.services.design_documents import (
     list_design_documents,
     select_home_design_documents,
 )
-from app.services.weekly_reports import get_weekly_report, list_latest_weekly_reports
+from app.core.response import ApiError
+from app.services.weekly_reports import get_weekly_report
 
 
 WEB_DIR = Path(__file__).resolve().parent
@@ -20,33 +22,27 @@ templates = Jinja2Templates(directory=WEB_DIR / "templates")
 router = APIRouter(tags=["web"])
 
 
+def _settings_return_url(request: Request) -> str:
+    raw_return_url = request.query_params.get("return_to", "")
+    parsed = urlsplit(raw_return_url)
+    if (
+        parsed.scheme
+        or parsed.netloc
+        or parsed.path not in {"/", "/workspace"}
+    ):
+        return "/"
+    return urlunsplit(("", "", parsed.path, parsed.query, ""))
+
+
 @router.get("/", response_class=HTMLResponse, include_in_schema=False)
-def index(request: Request) -> HTMLResponse:
-    settings = request.app.state.settings
-    design_documents_error = None
-    try:
-        design_documents = list_design_documents(
-            settings.project_documents.state_file,
-            include_archived=False,
-        )
-    except DesignDocumentIndexError:
-        design_documents = []
-        design_documents_error = "项目资料暂时无法加载，请检查资料索引。"
-    weekly_reports = list_latest_weekly_reports()
-    return templates.TemplateResponse(
-        request=request,
-        name="index.html",
-        context={
-            "app_name": settings.app.name,
-            "page_title": settings.app.page_title
-            or f"{settings.app.name} 管理面板",
-            "site_title": settings.app.page_title or settings.app.name,
-            "app_version": settings.app.version,
-            "design_documents": select_home_design_documents(design_documents),
-            "design_document_count": len(design_documents),
-            "design_documents_error": design_documents_error,
-            "weekly_reports": weekly_reports,
-        },
+def index(request: Request, section: str = "workbench") -> HTMLResponse:
+    workspace_session_id = request.query_params.get("session", "").strip()
+    if len(workspace_session_id) > 200:
+        workspace_session_id = ""
+    return render_workspace(
+        request,
+        "workbench" if workspace_session_id else section,
+        workspace_session_id=workspace_session_id or None,
     )
 
 
@@ -100,13 +96,18 @@ def render_settings_page(
             "settings_page": page,
             "settings_title": title,
             "settings_description": description,
+            "settings_return_url": _settings_return_url(request),
         },
     )
 
 
 @router.get("/settings", include_in_schema=False)
-def settings_page() -> RedirectResponse:
-    return RedirectResponse("/settings/quick-interaction", status_code=307)
+def settings_page(request: Request) -> RedirectResponse:
+    return_url = _settings_return_url(request)
+    target = "/settings/quick-interaction"
+    if return_url != "/":
+        target = f"{target}?{urlencode({'return_to': return_url})}"
+    return RedirectResponse(target, status_code=307)
 
 
 @router.get("/settings/quick-interaction", response_class=HTMLResponse, include_in_schema=False)
@@ -176,21 +177,21 @@ def standard_style_preview(request: Request) -> HTMLResponse:
 
 
 @router.get(
-    "/settings/styles/cyber",
+    "/settings/styles/code-dark",
     response_class=HTMLResponse,
     include_in_schema=False,
 )
-def cyber_style_preview(request: Request) -> HTMLResponse:
+def code_dark_style_preview(request: Request) -> HTMLResponse:
     settings = request.app.state.settings
     return templates.TemplateResponse(
         request=request,
         name="style_preview_standard.html",
         context={
             "app_name": settings.app.name,
-            "style_name": "Cyber",
+            "style_name": "Code Dark",
             "style_badge": "设计预览",
-            "style_description": "科技终端版以深色控制台、冷色边缘光、等宽信息和明确状态为核心。",
-            "preview_body_class": "cyber-preview",
+            "style_description": "深色开发工作台以沉稳背景、分层面板、蓝色强调和清晰状态为核心。",
+            "preview_body_class": "code-dark-preview",
             "color_scheme": "dark",
         },
     )
@@ -198,25 +199,66 @@ def cyber_style_preview(request: Request) -> HTMLResponse:
 
 @router.get(
     "/workspace",
-    response_class=HTMLResponse,
     include_in_schema=False,
 )
-def workspace_preview(request: Request) -> HTMLResponse:
+def workspace_preview(
+    section: str = "workbench",
+) -> RedirectResponse:
+    if section not in {"workbench", "project-docs", "automations"}:
+        raise HTTPException(status_code=404, detail="Workspace section not found")
+    destination = "/" if section == "workbench" else f"/?section={section}"
+    return RedirectResponse(destination, status_code=307)
+
+
+def render_workspace(
+    request: Request,
+    section: str,
+    *,
+    workspace_session_id: str | None = None,
+) -> HTMLResponse:
     settings = request.app.state.settings
+    if section not in {"workbench", "project-docs", "automations"}:
+        raise HTTPException(status_code=404, detail="Workspace section not found")
+    documents_error = None
+    documents = []
+    document_count = 0
+    automations = None
+    automations_error = None
+    automation_start_available = False
+    if section == "project-docs":
+        try:
+            all_documents = list_design_documents(
+                settings.project_documents.state_file,
+                include_archived=False,
+            )
+            documents = select_home_design_documents(all_documents)
+            document_count = len(all_documents)
+        except DesignDocumentIndexError:
+            documents_error = "项目资料暂时无法加载，请检查资料索引。"
+    elif section == "automations":
+        try:
+            automations = request.app.state.automation_manager.list(home_only=False)
+            automation_start_available = any(
+                profile.initialized or profile.source_available
+                for profile in automations.browser_profiles
+            )
+        except ApiError as exc:
+            automations_error = exc.message
     return templates.TemplateResponse(
         request=request,
         name="workspace_preview.html",
-        context={"app_name": settings.app.name},
-    )
-
-
-@router.get("/automations", response_class=HTMLResponse, include_in_schema=False)
-def automation_details(request: Request) -> HTMLResponse:
-    settings = request.app.state.settings
-    return templates.TemplateResponse(
-        request=request,
-        name="automations.html",
-        context={"app_name": settings.app.name},
+        context={
+            "app_name": settings.app.name,
+            "page_title": settings.app.page_title or settings.app.name,
+            "workspace_section": section,
+            "workspace_session_id": workspace_session_id,
+            "documents": documents,
+            "document_count": document_count,
+            "documents_error": documents_error,
+            "automations": automations,
+            "automations_error": automations_error,
+            "automation_start_available": automation_start_available,
+        },
     )
 
 

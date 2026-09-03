@@ -34,6 +34,7 @@ def weekly_reports_root(
 
 
 @pytest.mark.anyio
+@pytest.mark.skip(reason="旧首页已移除，由根路径工作台测试替代")
 async def test_home_page_is_public_and_contains_no_credential_form(
     settings: Settings,
     weekly_reports_root: Path,
@@ -193,7 +194,7 @@ async def test_home_page_is_public_and_contains_no_credential_form(
     assert "复用飞书登录状态执行自动化任务。" in response.text
     assert 'id="refresh-project-docs"' in response.text
     assert 'id="project-docs-count"' not in response.text
-    assert 'href="/automations"' in response.text
+    assert 'href="/automations"' not in response.text
     assert 'id="design-documents-title"' in response.text
     assert "项目文档" in response.text
     assert "查看设计方案和调研资料。" in response.text
@@ -278,22 +279,21 @@ async def test_home_page_is_public_and_contains_no_credential_form(
 
 
 @pytest.mark.anyio
-async def test_cyber_style_is_rendered_before_assets_load(settings: Settings) -> None:
+async def test_removed_cyber_style_falls_back_to_standard_before_assets_load(settings: Settings) -> None:
     transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         client.cookies.set("hub_ui_style", "cyber")
         pages = await asyncio.gather(
             client.get("/"),
             client.get("/settings/quick-interaction"),
-                client.get("/automations"),
                 client.get("/logs"),
                 client.get("/project-docs"),
         )
 
     assert all(page.status_code == 200 for page in pages)
     for page in pages:
-        assert '<html lang="zh-CN" data-ui-style="cyber">' in page.text
-        assert '<meta name="color-scheme" content="dark">' in page.text
+        assert '<html lang="zh-CN" data-ui-style="standard">' in page.text
+        assert '<meta name="color-scheme" content="light">' in page.text
 
 
 @pytest.mark.anyio
@@ -310,6 +310,8 @@ async def legacy_settings_page_supports_quick_interaction_page_size_preference(
         stylesheet = await client.get("/static/css/components.css")
 
     assert response.status_code == 200
+    assert 'return `当前默认 ${modelName}`;' in script.text
+    assert "当前 Codex 默认 ·" not in script.text
     assert "设置 · Hub" in response.text
     assert 'class="settings-workspace-shell"' in response.text
     assert 'id="settings-sidebar"' in response.text
@@ -317,13 +319,31 @@ async def legacy_settings_page_supports_quick_interaction_page_size_preference(
     assert 'role="separator"' in response.text
     assert 'aria-valuemin="225"' in response.text
     assert 'aria-valuemax="360"' in response.text
-    assert 'id="settings-return-application" class="settings-workspace-return" href="/workspace"' in response.text
+    assert 'id="settings-return-application" class="settings-workspace-return" href="/"' in response.text
     assert "返回应用" in response.text
     assert 'src="/static/settings-sidebar-bootstrap.js"' in response.text
     assert response.text.index('src="/static/settings-sidebar-bootstrap.js"') < response.text.index(
         '/static/css/tokens.css',
     )
     assert 'src="/static/settings-sidebar.js"' in response.text
+    assert 'class="settings-mobile-nav" aria-label="设置导航"' in response.text
+    assert 'class="settings-mobile-nav-external" href="/"' in response.text
+    assert 'class="settings-mobile-nav-link" type="button" data-settings-url="/settings/quick-interaction"' in response.text
+    assert "history.replaceState(history.state, \"\", targetUrl.href);" in sidebar_script.text
+    assert 'target.closest("a.settings-navigation-link")' in sidebar_script.text
+    assert 'target.closest("button.settings-mobile-nav-link")' in sidebar_script.text
+    assert "const replaceSettingsPage" in sidebar_script.text
+    assert 'document.addEventListener("click", replaceSettingsPage);' in sidebar_script.text
+    assert 'new URL(item.dataset.settingsUrl || "", window.location.href).href' in sidebar_script.text
+    assert 'targetUrl.searchParams.set("return_to", returnUrl);' in sidebar_script.text
+    assert "const hasWorkspaceReturnHistory = (link) =>" in sidebar_script.text
+    assert "window.history.back();" in sidebar_script.text
+    assert "navigationController?.abort();" in sidebar_script.text
+    assert "if (requestId !== navigationRequestId) return;" in sidebar_script.text
+    assert "window.initializeSettingsPage = () =>" in script.text
+    assert "window.disposeSettingsPage = () =>" in script.text
+    assert 'if (settingsPage === "openclaw") {' in script.text
+    assert "closeOpenClawWeixinDialog();" in script.text
     assert "快速交互" in response.text
     assert '<h3 id="core-settings-title" class="settings-layer-title">Chub 核心</h3>' in response.text
     assert "调整会话历史记录的加载方式。" in response.text
@@ -374,15 +394,15 @@ async def legacy_settings_page_supports_quick_interaction_page_size_preference(
     assert "自动润色后执行" in response.text
     assert "查看处理规则" not in response.text
     assert "Standard" in response.text
-    assert "Cyber" in response.text
+    assert "Code Dark" in response.text
     assert "当前风格" in response.text
     assert 'href="/settings/styles/standard"' in response.text
-    assert 'href="/settings/styles/cyber"' in response.text
+    assert 'href="/settings/styles/code-dark"' in response.text
     assert 'href="/settings/workspace-preview"' not in response.text
     assert "工作台交互预览" not in response.text
-    assert 'id="cyber-rain-speed"' in response.text
-    assert 'id="cyber-rain-brightness"' in response.text
-    assert 'id="cyber-rain-density"' in response.text
+    assert 'id="cyber-rain-speed"' not in response.text
+    assert 'id="cyber-rain-brightness"' not in response.text
+    assert 'id="cyber-rain-density"' not in response.text
     assert "风格选择保存在当前浏览器" in response.text
     assert '<h3 id="utility-settings-title">诊断与关于</h3>' in response.text
     assert 'class="settings-utility-row" href="/logs"' in response.text
@@ -390,16 +410,9 @@ async def legacy_settings_page_supports_quick_interaction_page_size_preference(
     assert 'id="maintenance-terminal-dialog" class="codex-workspace-dialog confirmation-dialog"' in response.text
     assert "打开维护终端" in response.text
     assert "Chub 版本" in response.text
-    assert 'data-cyber-style-details' in response.text
-    cyber_details_end = response.text.index(
-        "</details>",
-        response.text.index("data-cyber-style-details"),
-    )
-    assert cyber_details_end < response.text.index(
-        'id="cyber-style-settings-message"'
-    )
+    assert 'data-cyber-style-details' not in response.text
     assert 'data-style-apply="standard"' in response.text
-    assert 'data-style-apply="cyber"' in response.text
+    assert 'data-style-apply="cyber"' not in response.text
     assert 'name="quick-interaction-view"' not in response.text
     assert "任务视图" not in response.text
     assert 'id="quick-interaction-page-size"' in response.text
@@ -448,7 +461,8 @@ async def legacy_settings_page_supports_quick_interaction_page_size_preference(
     assert "defaultReasoningDescription" in script.text
     assert 'return "跟随模型默认"' in script.text
     assert ":not(.settings-choice-picker-trigger):not(.settings-choice-picker-option)" in stylesheet.text
-    assert ':root[data-ui-style="cyber"] .settings-choice-picker-option {' in stylesheet.text
+    assert ':root[data-ui-style="code-dark"] .settings-choice-picker-option {' in stylesheet.text
+    assert ':root[data-ui-style="code-dark"] .automation-browser-panel,' in stylesheet.text
     assert ".settings-integration-row > span:first-child" in stylesheet.text
     assert ".settings-workspace-shell" in stylesheet.text
     assert "--settings-sidebar-width: var(--settings-sidebar-preload-width, 225px);" in stylesheet.text
@@ -457,6 +471,7 @@ async def legacy_settings_page_supports_quick_interaction_page_size_preference(
     assert "  border-radius: 8px;\n  padding: 0 0.2rem;\n  color: var(--muted);" in stylesheet.text
     assert ".settings-workspace-return:hover,\n.settings-workspace-return:active {\n  color: var(--accent-dark);\n  background: color-mix(in srgb, var(--accent) 8%, transparent);" in stylesheet.text
     assert "grid-template-columns: var(--settings-sidebar-width) minmax(0, 1fr);" in stylesheet.text
+    assert ".settings-mobile-nav {" in stylesheet.text
     assert ".settings-workspace-shell.is-sidebar-resizing" in stylesheet.text
     assert ".settings-navigation-link[aria-current=\"true\"]" in stylesheet.text
     assert "border: 1px solid transparent;" in stylesheet.text
@@ -502,9 +517,9 @@ async def legacy_settings_page_supports_quick_interaction_page_size_preference(
     assert "之后新建的 Session 将使用该权限" not in script.text
     assert "之后新建的 Session 将使用该模型与等级" not in script.text
     assert "localStorage.setItem" in script.text
-    assert "hub.cyberRainSpeed.v1" in script.text
-    assert "hub.cyberRainBrightness.v1" in script.text
-    assert "hub.cyberRainDensity.v1" in script.text
+    assert "hub.cyberRainSpeed.v1" not in script.text
+    assert "hub.cyberRainBrightness.v1" not in script.text
+    assert "hub.cyberRainDensity.v1" not in script.text
     assert "ChubTheme.applyStyle" in script.text
     assert theme_script.status_code == 200
     assert "hub.uiStyle.v1" in theme_script.text
@@ -558,8 +573,10 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert all(response.status_code == 200 for response in pages.values())
     for page, response in pages.items():
         assert f'data-settings-page="{page}"' in response.text
+        assert 'id="settings-workspace-main"' in response.text
+        assert 'id="settings-page-dialogs"' in response.text
         assert 'href="#' not in response.text
-        assert 'id="settings-return-application" class="settings-workspace-return" href="/workspace"' in response.text
+        assert 'id="settings-return-application" class="settings-workspace-return" href="/"' in response.text
         assert response.headers["content-security-policy"] == (
             "default-src 'self'; "
             "script-src 'self'; "
@@ -576,7 +593,7 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert 'id="runtime-management-list"' not in pages["quick-interaction"].text
     assert 'id="runtime-management-list"' in pages["runtime"].text
     assert 'id="quick-interaction-page-size"' not in pages["runtime"].text
-    assert 'id="cyber-rain-speed"' in pages["appearance"].text
+    assert 'data-style-apply="code-dark"' in pages["appearance"].text
     assert 'id="maintenance-terminal-dialog"' in pages["diagnostics"].text
     assert 'id="weixin-processing-mode"' in pages["weixin-text"].text
     assert 'id="settings-openclaw-open"' in pages["openclaw"].text
@@ -633,25 +650,27 @@ async def test_standard_style_preview_is_static_and_available(
 
 
 @pytest.mark.anyio
-async def test_cyber_style_preview_is_available(settings: Settings) -> None:
+async def test_code_dark_style_preview_is_available(settings: Settings) -> None:
     transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get("/settings/styles/cyber")
+        response = await client.get("/settings/styles/code-dark")
+        removed_response = await client.get("/settings/styles/cyber")
         script = await client.get("/static/style-preview.js")
         ai_usage_script = await client.get("/static/js/core/ai-usage.js")
         theme_script = await client.get("/static/theme.js")
         stylesheet = await client.get("/static/css/components.css")
 
     assert response.status_code == 200
-    assert "Cyber 风格预览 · Hub" in response.text
-    assert 'class="cyber-preview"' in response.text
+    assert removed_response.status_code == 404
+    assert "Code Dark 风格预览 · Hub" in response.text
+    assert 'class="code-dark-preview"' in response.text
     assert 'content="dark"' in response.text
-    assert "科技终端版" in response.text
-    assert 'class="cyber-matrix"' in response.text
+    assert "深色开发工作台" in response.text
+    assert 'class="cyber-matrix"' not in response.text
     assert 'id="cyber-rain-speed"' not in response.text
     assert 'id="cyber-rain-brightness"' not in response.text
     assert "0x7F" not in response.text
-    assert '<div class="cyber-matrix" aria-hidden="true"></div>' in response.text
+    assert '<div class="cyber-matrix" aria-hidden="true"></div>' not in response.text
     assert "节点状态" in response.text
     assert "快速交互" in response.text
     assert 'data-collapsible-persist="false"' in response.text
@@ -659,88 +678,130 @@ async def test_cyber_style_preview_is_available(settings: Settings) -> None:
     assert ai_usage_script.status_code == 200
     assert theme_script.status_code == 200
     assert stylesheet.status_code == 200
-    assert "hub.cyberRainSpeed.v1" in theme_script.text
-    assert "hub.cyberRainBrightness.v1" in theme_script.text
-    assert "hub.cyberRainDensity.v1" in theme_script.text
-    assert "Math.random" in theme_script.text
-    assert "rainSequence" in theme_script.text
-    assert "RAIN_PHRASES" in theme_script.text
-    assert '"good morning"' in theme_script.text
-    assert '"build passing"' in theme_script.text
-    assert '"thanks again"' in theme_script.text
-    assert "randomPhraseRain" in theme_script.text
-    assert "setCyberRainQuota" in theme_script.text
-    assert "ChubAiUsage?.subscribe" in theme_script.text
-    assert "ChubAiUsage?.load" in theme_script.text
-    assert "root.dataset.stylePreview ? null : data" in theme_script.text
-    assert "loadAiUsage" not in theme_script.text
-    assert "clearAiUsage" not in theme_script.text
-    assert "/api/ai/usage" not in theme_script.text
+    assert "code-dark" in theme_script.text
+    assert "hub.cyberRainSpeed.v1" not in theme_script.text
+    assert "Math.random" not in theme_script.text
+    assert "rainSequence" not in theme_script.text
+    assert "RAIN_PHRASES" not in theme_script.text
+    assert "setCyberRainQuota" not in theme_script.text
+    assert "ChubAiUsage?.subscribe" not in theme_script.text
+    assert "ChubAiUsage?.load" not in theme_script.text
     assert 'CACHE_KEY = "hub.aiUsageCache"' in ai_usage_script.text
     assert "/api/ai/usage" in ai_usage_script.text
     assert "window.ChubAiUsage" in ai_usage_script.text
-    assert "quotaRainParts" in theme_script.text
-    assert 'stream.dataset.rainDynamic = "true"' in theme_script.text
-    assert 'stream.dataset.rainKind = "quota"' in theme_script.text
-    assert "scaledRainDuration" in theme_script.text
-    assert 'character.textContent = "\\u00a0"' in theme_script.text
-    assert 'data-rain-dynamic="true"' in stylesheet.text
-    assert "Cyber 使用命令式说明和终端化主次按钮表达操作影响" in script.text
+    assert "quotaRainParts" not in theme_script.text
+    assert 'data-rain-dynamic="true"' not in stylesheet.text
+    assert "Code Dark 使用深色工作台层级和明确的主次按钮表达操作影响" in script.text
 
 
 @pytest.mark.anyio
+@pytest.mark.skip(reason="并行新版入口已移除，由根路径工作台测试替代")
 async def test_workspace_preview_is_static_and_available(settings: Settings) -> None:
     transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/workspace")
+        project_documents_response = await client.get("/workspace?section=project-docs")
+        automations_response = await client.get("/workspace?section=automations")
         removed_preview_response = await client.get("/settings/workspace-preview")
         stylesheet = await client.get("/static/css/components.css")
         workspace_script = await client.get("/static/workspace.js")
+        workspace_sessions_script = await client.get("/static/js/features/workspace-sessions.js")
+        workspace_workstation_script = await client.get("/static/js/features/workspace-workstation.js")
         bootstrap_script = await client.get("/static/workspace-bootstrap.js")
 
     assert response.status_code == 200
+    assert project_documents_response.status_code == 200
+    assert automations_response.status_code == 200
     assert removed_preview_response.status_code == 404
     assert "新版首页 · Hub" in response.text
     assert "操作" in response.text
-    assert "工作台分区" in response.text
-    assert "最近 Session" in response.text
-    assert "当前工作" in response.text
-    assert "输入消息…" in response.text
-    assert "Full access" in response.text
+    assert "工作台分区" not in response.text
+    assert "最近 Session" not in response.text
+    assert "AI Session" in response.text
+    assert "工作站环境" in response.text
+    assert "设备状态" in response.text
+    assert 'id="workspace-chub-restart"' in response.text
+    assert 'id="workspace-worker-restart"' in response.text
+    assert 'id="workspace-upgrade-start"' in response.text
     assert "workspace-preview-shell" in response.text
     assert "workspace-preview-work-surface" in response.text
     assert 'id="workspace-sidebar-toggle"' in response.text
     assert 'id="workspace-sidebar-resizer"' in response.text
+    assert 'id="workspace-sidebar-scrim"' in response.text
     assert 'role="separator"' in response.text
     assert 'aria-valuemin="225"' in response.text
     assert 'aria-valuemax="360"' in response.text
-    assert 'id="workspace-sidebar-close"' not in response.text
+    assert 'id="workspace-sidebar-close"' in response.text
     assert 'aria-label="工作台操作"' in response.text
-    assert '<div class="workspace-preview-brand"><strong>Chub</strong></div>' in response.text
-    assert response.text.index("节点在线 · Worker 可用") < response.text.index(
-        'aria-label="工作台分区"',
-    )
+    assert '<div class="workspace-preview-brand"><strong>Chub</strong><button id="workspace-sidebar-close"' in response.text
     assert 'aria-label="工作台辅助导航"' in response.text
     assert response.text.index('aria-label="工作台辅助导航"') > response.text.index(
-        'id="workspace-preview-recent-title"',
+        'id="workspace-preview-sessions-title"',
     )
     assert "个人 AI 工作站" not in response.text
     assert '>☰</span></button>' in response.text
     assert "WORKSPACE" not in response.text
     assert "<h1>工作台</h1>" not in response.text
     assert "当前为并行建设页面" not in response.text
-    assert '<a href="/settings">设置</a>' in response.text
-    assert response.text.count('disabled title="功能建设中"') == 6
+    assert '<a href="/settings"><span class="workspace-preview-nav-icon"' in response.text
+    assert 'disabled title="功能建设中"' not in response.text
     assert 'aria-controls="workspace-sidebar"' in response.text
     assert 'src="/static/workspace-bootstrap.js"' in response.text
     assert response.text.index('src="/static/workspace-bootstrap.js"') < response.text.index(
         '/static/css/tokens.css',
     )
     assert 'src="/static/workspace.js"' in response.text
+    assert 'src="/static/js/features/workspace-sessions.js"' in response.text
+    assert 'src="/static/js/features/workspace-workstation.js"' in response.text
+    assert 'href="/workspace?section=project-docs"' in response.text
+    assert 'href="/workspace?section=automations"' in response.text
+    assert 'href="/workspace" aria-current="page" class="is-current"><span class="workspace-preview-nav-icon"' in response.text
+    assert response.text.count('class="workspace-preview-nav-icon" aria-hidden="true"') == 4
+    assert 'class="workspace-preview-compact-nav" data-workspace-section-navigation aria-label="折叠侧栏导航"' in response.text
+    assert 'aria-label="工作台" title="工作台"' in response.text
+    assert 'class="workspace-preview-compact-nav-external" href="/settings"' in response.text
+    assert 'id="workspace-session-create"' in response.text
+    assert 'id="workspace-session-list"' in response.text
+    assert 'id="workspace-session-create-dialog"' in response.text
+    assert response.text.index('id="confirmation-dialog"') > response.text.index(
+        'id="workspace-sidebar-resizer"',
+    )
+    assert '<span>会话</span>' not in response.text
+    assert 'href="/workspace"' in project_documents_response.text
+    assert 'href="/workspace?section=project-docs" aria-current="page" class="is-current"><span class="workspace-preview-nav-icon"' in project_documents_response.text
+    assert "项目说明、设计方案与维护文档" in project_documents_response.text
+    assert "workspace-project-document-list" in project_documents_response.text
+    assert 'class="button-secondary workspace-project-documents-all" href="/project-docs"' in project_documents_response.text
+    assert "Chub 项目说明" in project_documents_response.text
+    assert 'href="/workspace?section=automations" aria-current="page" class="is-current"><span class="workspace-preview-nav-icon"' in automations_response.text
+    assert "自动化任务" in automations_response.text
+    assert "自动化环境" in automations_response.text
+    assert "自动化任务列表" in automations_response.text
+    assert 'id="workspace-automation-browser-start"' not in automations_response.text
+    assert 'href="/automations"' not in automations_response.text
     assert ".workspace-preview-shell" in stylesheet.text
+    assert "workspace-preview-local-nav" not in response.text
+    assert ".workspace-project-documents-all {\n  display: inline-flex;" in stylesheet.text
+    assert ".workspace-automation-task {\n  grid-template-columns: minmax(0, 1fr) auto;" in stylesheet.text
+    assert ".workspace-automation-environment-row > .workspace-automation-environment-actions {\n  display: inline-flex;\n  flex-wrap: nowrap;" in stylesheet.text
     assert ".workspace-preview-shell.is-sidebar-collapsed" in stylesheet.text
     assert "--workspace-sidebar-width: var(--workspace-sidebar-preload-width, 225px);" in stylesheet.text
     assert "grid-template-columns: var(--workspace-sidebar-width) minmax(0, 1fr);" in stylesheet.text
+    assert '.workspace-preview-nav a[aria-current="page"] {' in stylesheet.text
+    assert ".workspace-preview-nav-icon {" in stylesheet.text
+    assert ".workspace-preview-compact-nav {" in stylesheet.text
+    assert ".workspace-preview-shell.is-sidebar-collapsed .workspace-preview-compact-nav" in stylesheet.text
+    assert ".workspace-preview-compact-nav a:not(.workspace-preview-compact-nav-external):hover" in stylesheet.text
+    assert ".workspace-preview-compact-nav-external:active" in stylesheet.text
+    assert "  min-width: 0;\n  overflow: hidden;" in stylesheet.text
+    assert ".workspace-preview-nav > span," in stylesheet.text
+    assert "border-color: var(--accent);" in stylesheet.text
+    assert ".workspace-preview-session {\n  display: grid;" in stylesheet.text
+    assert ".workspace-preview-session.is-current {\n  border-color: var(--accent);" in stylesheet.text
+    assert ".workspace-preview-session.is-current strong {\n  color: var(--accent-dark);" in stylesheet.text
+    assert "  height: auto;\n  min-height: 3.75rem;" in stylesheet.text
+    assert ".workspace-preview-session strong {\n  color: var(--ink);" in stylesheet.text
+    assert "  padding: 0.6rem 0.65rem;" in stylesheet.text
     assert "border-right: 1px solid var(--line);" in stylesheet.text
     assert "width: 1.75rem;" in stylesheet.text
     assert "--workspace-toolbar-height: 2.25rem;" in stylesheet.text
@@ -755,11 +816,34 @@ async def test_workspace_preview_is_static_and_available(settings: Settings) -> 
     assert ".workspace-preview-toolbar" in stylesheet.text
     assert ".workspace-preview-main {\n  align-content: start;" in stylesheet.text
     assert workspace_script.status_code == 200
+    assert workspace_sessions_script.status_code == 200
+    assert workspace_workstation_script.status_code == 200
     assert bootstrap_script.status_code == 200
     assert "event.metaKey || event.ctrlKey" in workspace_script.text
+    assert "window.location.replace(link.href);" in workspace_script.text
+    assert 'document.getElementById("workspace-section-content")' in workspace_script.text
+    assert "currentContent.replaceWith(nextContent);" in workspace_script.text
+    assert "const preserveWorkspaceReturnTarget = (event) =>" in workspace_script.text
+    assert 'targetUrl.searchParams.set(\n      "return_to",' in workspace_script.text
+    assert "const clearWorkspaceSectionSelection = () =>" in workspace_script.text
+    assert "clearWorkspaceSectionSelection();" in workspace_script.text
+    assert 'targetUrl.pathname !== "/workspace"' in workspace_script.text
+    assert "link.blur();" in workspace_script.text
+    assert "window.initializeWorkspaceAutomationControls?.();" in workspace_script.text
+    assert "window.initializeWorkspaceWorkstation?.();" in workspace_script.text
+    assert '"/api/automations/browser/start"' in workspace_script.text
+    assert '"/api/automations/browser/stop"' in workspace_script.text
+    assert '"workspace-automation-browser-start-dialog"' in workspace_script.text
     assert 'event.key.toLowerCase() !== "b"' in workspace_script.text
-    assert "workspace-sidebar-close" not in workspace_script.text
+    assert 'document.getElementById("workspace-sidebar-close")' in workspace_script.text
     assert "chub.workspace.sidebarCollapsed" in workspace_script.text
+    assert '"/api/codex/sessions"' in workspace_sessions_script.text
+    assert "/quick-interactions/conversation" in workspace_sessions_script.text
+    assert "/access" in workspace_sessions_script.text
+    assert '"/api/status"' in workspace_workstation_script.text
+    assert '"/api/maintenance/restart"' in workspace_workstation_script.text
+    assert '"/api/maintenance/quick-worker/restart"' in workspace_workstation_script.text
+    assert '"/api/maintenance/system-upgrade"' in workspace_workstation_script.text
     assert "chub.sidebarWidth" in workspace_script.text
     assert "chub.workspace.sidebarWidth" not in workspace_script.text
     assert "minimumSidebarWidth = 225" in workspace_script.text
@@ -768,16 +852,91 @@ async def test_workspace_preview_is_static_and_available(settings: Settings) -> 
     assert "ArrowLeft: currentSidebarWidth() - sidebarWidthStep" in workspace_script.text
     assert 'toggle.title = sidebarLabel;' in workspace_script.text
     assert '@media (min-width: 761px) and (max-width: 1080px)' in stylesheet.text
+    assert ".workspace-preview-shell.is-mobile-sidebar-open .workspace-preview-sidebar" in stylesheet.text
+    assert ".workspace-preview-sidebar-scrim" in stylesheet.text
+    assert ".workspace-preview-sidebar-close" in stylesheet.text
     assert ':root[data-workspace-sidebar-collapsed="true"] .workspace-preview-shell,' in stylesheet.text
     assert "const expandSidebar = () =>" in workspace_script.text
     assert "const collapseSidebar = () =>" in workspace_script.text
     assert "shell.classList.add(\"is-sidebar-opening\")" in workspace_script.text
     assert "shell.classList.add(\"is-sidebar-closing\")" in workspace_script.text
+    assert "const setMobileSidebarOpen = (open) =>" in workspace_script.text
+    assert "sidebar.inert = !open;" in workspace_script.text
+    assert "const openMobileSidebar = () =>" in workspace_script.text
+    assert "history.pushState(" in workspace_script.text
+    assert 'window.addEventListener("popstate"' in workspace_script.text
+    assert 'sidebarClose.addEventListener("click"' in workspace_script.text
+    assert 'document.addEventListener("pointerdown"' in workspace_script.text
+    assert "sidebar.contains(event.target)" in workspace_script.text
     assert 'requestAnimationFrame(() => shell.classList.add("is-layout-ready"));' in workspace_script.text
     assert "workspace-sidebar-preload-width" in bootstrap_script.text
     assert "chub.sidebarWidth" in bootstrap_script.text
     assert "data-workspace-sidebar-collapsed" in stylesheet.text
     assert ".workspace-preview-shell.is-layout-ready" in stylesheet.text
+    assert 'content.className = "workspace-preview-session-content";' in workspace_sessions_script.text
+    assert ".workspace-preview-session-content {" in stylesheet.text
+
+
+@pytest.mark.anyio
+async def test_root_page_is_the_workspace_and_legacy_workspace_redirects(
+    settings: Settings,
+) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        home = await client.get("/")
+        selected_session = await client.get("/?session=session-123")
+        automations = await client.get("/?section=automations")
+        project_documents = await client.get("/?section=project-docs")
+        settings_redirect = await client.get(
+            "/settings?return_to=%2F%3Fsession%3Dsession-123",
+            follow_redirects=False,
+        )
+        settings_with_return_target = await client.get(
+            "/settings/quick-interaction?return_to=%2F%3Fsession%3Dsession-123"
+        )
+        invalid_settings_return_target = await client.get(
+            "/settings/quick-interaction?return_to=https%3A%2F%2Fexample.invalid"
+        )
+        legacy_workspace = await client.get("/workspace", follow_redirects=False)
+        legacy_automations = await client.get(
+            "/workspace?section=automations",
+            follow_redirects=False,
+        )
+        removed_assets = await asyncio.gather(
+            client.get("/static/app.js"),
+            client.get("/static/codex_polling.js"),
+            client.get("/static/js/core/dashboard-core.js"),
+            client.get("/static/js/features/codex-sessions.js"),
+        )
+
+    assert home.status_code == 200
+    assert selected_session.status_code == 200
+    assert automations.status_code == 200
+    assert project_documents.status_code == 200
+    assert settings_redirect.status_code == 307
+    assert settings_redirect.headers["location"] == (
+        "/settings/quick-interaction?return_to=%2F%3Fsession%3Dsession-123"
+    )
+    assert 'id="settings-return-application" class="settings-workspace-return" href="/?session=session-123"' in settings_with_return_target.text
+    assert 'class="settings-mobile-nav-external" href="/?session=session-123"' in settings_with_return_target.text
+    assert 'id="settings-return-application" class="settings-workspace-return" href="/"' in invalid_settings_return_target.text
+    assert '<title>Hub</title>' in home.text
+    assert 'href="/" aria-current="page"' in home.text
+    assert 'href="/?section=automations"' in home.text
+    assert 'href="/?section=project-docs"' in home.text
+    assert "工作站环境" in home.text
+    assert "AI Session" in home.text
+    assert 'data-workspace-session-id="session-123"' in selected_session.text
+    assert 'src="/codex/session-123/quick-interactions/conversation?embedded=workspace"' in selected_session.text
+    assert 'class="workspace-preview-main is-showing-quick-session"' in selected_session.text
+    assert "workspace-chub-summary" not in selected_session.text
+    assert "自动化任务" in automations.text
+    assert "项目说明、设计方案与维护文档" in project_documents.text
+    assert legacy_workspace.status_code == 307
+    assert legacy_workspace.headers["location"] == "/"
+    assert legacy_automations.status_code == 307
+    assert legacy_automations.headers["location"] == "/?section=automations"
+    assert all(response.status_code == 404 for response in removed_assets)
 
 
 @pytest.mark.anyio
@@ -788,11 +947,11 @@ async def test_home_page_uses_configured_page_title(settings: Settings) -> None:
         response = await client.get("/")
 
     assert "<title>Ubuntu · Hub</title>" in response.text
-    assert "<h1>Ubuntu · Hub</h1>" in response.text
+    assert 'class="workspace-preview-page"' in response.text
 
 
 @pytest.mark.anyio
-async def test_home_page_reports_design_document_index_error(
+async def test_project_documents_workspace_reports_design_document_index_error(
     settings: Settings,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -802,7 +961,7 @@ async def test_home_page_reports_design_document_index_error(
     )
     transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get("/")
+        response = await client.get("/?section=project-docs")
         api_response = await client.get("/api/project-docs")
 
     assert response.status_code == 200
@@ -823,17 +982,18 @@ async def test_removed_task_api_is_not_available(settings: Settings) -> None:
 
 
 @pytest.mark.anyio
-async def test_home_page_title_keeps_backward_compatible_default(
+async def test_home_page_title_uses_application_name_by_default(
     settings: Settings,
 ) -> None:
     transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/")
 
-    assert "<title>Hub 管理面板</title>" in response.text
+    assert "<title>Hub</title>" in response.text
 
 
 @pytest.mark.anyio
+@pytest.mark.skip(reason="旧首页资源已移除，由新版工作台资源测试替代")
 async def test_web_assets_are_available(settings: Settings) -> None:
     transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -1180,6 +1340,9 @@ async def test_quick_interaction_conversation_page_is_available(
         page = await client.get(
             "/codex/session-1/quick-interactions/conversation"
         )
+        embedded_page = await client.get(
+            "/codex/session-1/quick-interactions/conversation?embedded=workspace"
+        )
         session_script = await client.get("/static/quick_interaction_session.js")
         timeline_script = await client.get("/static/quick_interaction_timeline.js")
         script = await client.get("/static/quick_interaction_conversation.js")
@@ -1187,7 +1350,11 @@ async def test_quick_interaction_conversation_page_is_available(
 
     assert removed_page.status_code == 404
     assert page.status_code == 200
+    assert embedded_page.status_code == 200
+    assert "frame-ancestors 'self'" in page.headers["content-security-policy"]
+    assert "frame-ancestors 'none'" not in page.headers["content-security-policy"]
     assert 'data-session-id="session-1"' in page.text
+    assert 'class="conversation-body conversation-body-embedded"' in embedded_page.text
     assert "Session Conversation" not in page.text
     assert 'class="conversation-header"' not in page.text
     assert 'id="conversation-scroll"' in page.text
@@ -1257,6 +1424,10 @@ async def test_quick_interaction_conversation_page_is_available(
     assert "if (!conversationSubmit.disabled)" in script.text
     assert "canSubmitConversation" in script.text
     assert "conversationEngine" not in script.text
+    assert '.workspace-preview-main.is-showing-quick-session' in stylesheet.text
+    assert '.conversation-body-embedded main' in stylesheet.text
+    assert '.conversation-body-embedded .conversation-page' in stylesheet.text
+    assert 'padding-bottom: max(1.25rem, env(safe-area-inset-bottom));' in stylesheet.text
     assert "conversationTimelineView.restoreTopAnchor(anchor)" in script.text
     assert "client.submitTask" in script.text
     assert "client.loadSessionContext" in script.text
@@ -1303,7 +1474,7 @@ async def test_quick_interaction_conversation_page_is_available(
     assert "handleConversationSessionSwitch" in script.text
     assert "button.dataset.sessionId" in session_script.text
     assert "button.dataset.sessionUrl" in session_script.text
-    assert 'window.history.replaceState(window.history.state, "", url)' in script.text
+    assert 'window.history.replaceState(window.history.state, "", historyUrl)' in script.text
     assert "window.location.reload()" not in script.text
     assert "resetConversationSessionView" in script.text
     assert "renderConversationSessionPreview" in script.text
@@ -1358,6 +1529,7 @@ async def test_quick_interaction_conversation_page_is_available(
     assert "width: min(100%, 720px);" not in stylesheet.text
     assert ".conversation-message-user" in stylesheet.text
     assert ".conversation-composer" in stylesheet.text
+    assert ".conversation-composer {\n  position: relative;\n  z-index: 2;\n  display: grid;\n  gap: 0.35rem;" in stylesheet.text
     assert ".conversation-session-switcher" in stylesheet.text
     assert ".conversation-session-navigation" in stylesheet.text
     assert "grid-template-columns: 30px minmax(0, 1fr);" in stylesheet.text
@@ -1367,6 +1539,7 @@ async def test_quick_interaction_conversation_page_is_available(
     assert ":not(.conversation-session-switch)" in stylesheet.text
     assert "overflow-x: auto;" in stylesheet.text
     assert "overscroll-behavior-x: contain;" in stylesheet.text
+    assert "padding: 0.05rem 0.05rem 0.1rem;" in stylesheet.text
     assert ".conversation-session-switch.is-current" in stylesheet.text
     assert ".conversation-session-title" in stylesheet.text
     assert ".conversation-session-title {\n  display: inline;" in stylesheet.text
@@ -1382,7 +1555,7 @@ async def test_quick_interaction_conversation_page_is_available(
     assert ":not(.conversation-session-archive)" in stylesheet.text
     assert ":not(.site-header-title):not(.session-enter)::before" in stylesheet.text
     assert 'a.button-link::before' in stylesheet.text
-    assert ':root[data-ui-style="cyber"] .workspace-button strong' in stylesheet.text
+    assert ':root[data-ui-style="code-dark"] .workspace-button strong' in stylesheet.text
     assert ".workspace-button {\n  height: auto;" in stylesheet.text
     assert "padding: 0.75rem 0.85rem;" in stylesheet.text
     assert ".session-enter {\n  grid-column: 1 / -1;\n  height: auto;" in stylesheet.text
@@ -1413,41 +1586,21 @@ async def test_log_details_page_and_script_are_available(settings: Settings) -> 
 
 
 @pytest.mark.anyio
-async def test_automation_details_page_and_script_are_available(
+async def test_automation_details_page_has_been_removed(
     settings: Settings,
 ) -> None:
     transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         page = await client.get("/automations")
-        script = await client.get("/static/automations.js")
 
-    assert page.status_code == 200
-    assert "全部任务" in page.text
-    assert "返回首页" not in page.text
-    assert "standalone-list-card" in page.text
-    assert 'id="detail-automation-list"' in page.text
-    assert script.status_code == 200
-    assert "appendWeeklyReportMaterials" in script.text
-    assert "weeklyDownloadStatus" in script.text
-    assert "weeklyValidationStatus" in script.text
-    assert "下载成功" in script.text
-    assert "校验通过" in script.text
-    assert "automation-material-summary" in script.text
-    assert "本期下载 ·" in script.text
-    assert "启动并运行" in script.text
-    assert 'request("/api/automations/browser/start"' in script.text
-    assert 'JSON.stringify({ mode: "headless" })' in script.text
-    assert "/api/automations?all_tasks=true" in script.text
-    assert "showMessage(data.browser_message" not in script.text
-    assert "innerHTML" not in script.text
-    assert "default-src 'self'" in page.headers["content-security-policy"]
+    assert page.status_code == 404
 
 
 @pytest.mark.anyio
 async def test_design_document_pages_render_markdown(settings: Settings) -> None:
     transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        home = await client.get("/")
+        home = await client.get("/?section=project-docs")
         listing = await client.get("/project-docs")
         detail = await client.get("/project-docs/automation-download")
         project_readme = await client.get("/project-docs/project-readme")
@@ -1697,15 +1850,59 @@ async def test_security_headers_apply_to_unhandled_errors(
 
 
 @pytest.mark.anyio
-async def test_codex_sessions_use_placeholder_for_empty_title(
+async def test_workspace_sessions_use_placeholder_for_empty_title(
     settings: Settings,
 ) -> None:
     transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get("/static/js/features/codex-sessions.js")
+        response = await client.get("/static/js/features/workspace-sessions.js")
+        workspace_script = await client.get("/static/workspace.js")
+        conversation_script = await client.get("/static/quick_interaction_conversation.js")
+        stylesheet = await client.get("/static/css/components.css")
 
     assert response.status_code == 200
-    assert 'session.title || "未命名 Session"' in response.text
+    assert workspace_script.status_code == 200
+    assert conversation_script.status_code == 200
+    assert stylesheet.status_code == 200
+    assert '"未命名 Session"' in response.text
+    assert "return relativeTime(session.last_activity_at || session.created_at);" in response.text
+    assert 'new URL(window.location.href).searchParams.get("session")' in response.text
+    assert "setSelectedQuickSessionLocation(session.id);" in response.text
+    assert "restoreSelectedQuickSession(data.sessions);" in response.text
+    assert 'if (!selectedSessionUnavailable) setSidebarMessage("");' in response.text
+    assert 'if (window.workspaceQuickSessionOpen) {' in response.text
+    assert "window.selectWorkspaceQuickSession = (sessionId) =>" in response.text
+    assert "window.clearWorkspaceQuickSessionSelection = () =>" in response.text
+    assert '"chub.workspace.quick-session-selection"' in workspace_script.text
+    assert '"chub.workspace.quick-session-activity"' in workspace_script.text
+    assert "event.source !== frame.contentWindow" in workspace_script.text
+    assert "window.selectWorkspaceQuickSession?.(selection.sessionId);" in workspace_script.text
+    assert "window.updateWorkspaceQuickSessionActivity?.(" in workspace_script.text
+    assert "window.parent.postMessage(" in conversation_script.text
+    assert "window.parent !== window" in conversation_script.text
+    assert "function notifyWorkspaceSessionActivity()" in conversation_script.text
+    assert "notifyWorkspaceSessionActivity();" in conversation_script.text
+    assert "window.updateWorkspaceQuickSessionActivity = (sessionId, running, updatedAt) =>" in response.text
+    assert 'targetUrl.searchParams.set("embedded", "workspace");' in conversation_script.text
+    assert ".workspace-preview-session.is-current {\n  border-color: var(--accent);" in stylesheet.text
+    assert ".workspace-preview-session.is-current strong {\n  color: var(--accent-dark);" in stylesheet.text
+
+
+@pytest.mark.anyio
+async def test_workspace_chub_restart_refreshes_after_new_instance_is_confirmed(
+    settings: Settings,
+) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/static/js/features/workspace-workstation.js")
+
+    assert response.status_code == 200
+    assert 'await waitForRestart(previous.instance_id);' in response.text
+    assert '"Chub 已重启并恢复。浏览器将在稍后自动刷新页面。"' in response.text
+    assert "elements.chubRestart.disabled = hubRestarting || upgradeRunning;" in response.text
+    assert 'await waitForWorkerRestart(operationId);' in response.text
+    assert '"Quick Worker 已重启并恢复。浏览器将在稍后自动刷新页面。"' in response.text
+    assert "window.setTimeout(() => window.location.reload(), 2000);" in response.text
 
 
 @pytest.mark.anyio
@@ -1715,22 +1912,17 @@ async def test_page_uses_external_script_only(settings: Settings) -> None:
         response = await client.get("/")
 
     expected_scripts = [
-        "/static/codex_polling.js",
-        "/static/js/core/dashboard-core.js",
         "/static/js/components/ui.js",
-        "/static/js/components/collapsible-card.js",
-        "/static/js/features/node-status.js",
-        "/static/js/features/codex-sessions.js",
-        "/static/js/features/openclaw.js",
-        "/static/js/features/automations.js",
-        "/static/js/features/workstation.js",
-        "/static/js/features/project-documents.js",
-        "/static/app.js",
+        "/static/workspace.js",
+        "/static/js/features/workspace-sessions.js",
+        "/static/js/features/workspace-workstation.js",
     ]
-    assert response.text.count("<script") == len(expected_scripts) + 2
+    assert response.text.count("<script") == len(expected_scripts) + 3
+    assert '<script src="/static/workspace-bootstrap.js"></script>' in response.text
     assert '<script src="/static/js/core/ai-usage.js"></script>' in response.text
     assert '<script src="/static/theme.js"></script>' in response.text
     positions = [
+        response.text.index('<script src="/static/workspace-bootstrap.js"></script>'),
         response.text.index('<script src="/static/js/core/ai-usage.js"></script>'),
         response.text.index('<script src="/static/theme.js"></script>'),
     ] + [

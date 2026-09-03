@@ -20,8 +20,8 @@ document.querySelectorAll("[data-preview-feedback]").forEach((button) => {
 });
 
 previewDialogOpen.addEventListener("click", () => {
-  previewDialogDescription.textContent = document.body.classList.contains("cyber-preview")
-    ? "Cyber 使用命令式说明和终端化主次按钮表达操作影响。"
+  previewDialogDescription.textContent = document.body.classList.contains("code-dark-preview")
+    ? "Code Dark 使用深色工作台层级和明确的主次按钮表达操作影响。"
     : "Standard 使用清晰的说明和明确的主次按钮表达操作影响。";
   previewDialog.showModal();
 });

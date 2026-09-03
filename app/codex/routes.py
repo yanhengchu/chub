@@ -54,6 +54,18 @@ web_router = APIRouter(tags=["codex-web"])
 templates = Jinja2Templates(directory=WEB_DIR / "templates")
 
 
+def _last_session_activity_at(
+    session: SessionInfo,
+    quick_activity_times: dict[str, datetime],
+) -> datetime | None:
+    quick_activity_at = quick_activity_times.get(session.id)
+    if quick_activity_at is not None:
+        return quick_activity_at
+    if session.session_mode == "quick":
+        return None
+    return session.last_activity_at
+
+
 @api_router.get("/sessions", response_model=ApiResponse[SessionListData])
 def list_sessions(
     request: Request,
@@ -64,11 +76,18 @@ def list_sessions(
     quick_sessions: dict[str, datetime] = (
         request.app.state.quick_interactions.active_sessions()
     )
+    quick_activity_times: dict[str, datetime] = (
+        request.app.state.quick_interactions.session_activity_times()
+    )
     sessions = [
         session.model_copy(
             update={
                 "quick_interaction_running": session.id in quick_sessions,
                 "quick_interaction_updated_at": quick_sessions.get(session.id),
+                "last_activity_at": _last_session_activity_at(
+                    session,
+                    quick_activity_times,
+                ),
                 "weixin_session_slot": session_slots.get(session.id),
             }
         )
@@ -143,6 +162,9 @@ def read_session(session_id: str, request: Request) -> ApiResponse[SessionInfo]:
     quick_sessions: dict[str, datetime] = (
         request.app.state.quick_interactions.active_sessions()
     )
+    quick_activity_times: dict[str, datetime] = (
+        request.app.state.quick_interactions.session_activity_times()
+    )
     return ApiResponse(
         data=_with_weixin_session_slot(
             request,
@@ -150,6 +172,10 @@ def read_session(session_id: str, request: Request) -> ApiResponse[SessionInfo]:
                 update={
                     "quick_interaction_running": session.id in quick_sessions,
                     "quick_interaction_updated_at": quick_sessions.get(session.id),
+                    "last_activity_at": _last_session_activity_at(
+                        session,
+                        quick_activity_times,
+                    ),
                 }
             ),
         )

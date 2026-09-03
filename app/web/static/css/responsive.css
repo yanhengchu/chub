@@ -26,6 +26,66 @@
     overflow: visible;
   }
 
+  .settings-mobile-nav {
+    display: flex;
+    align-items: center;
+    gap: 0.2rem;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .settings-mobile-nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .settings-mobile-nav a,
+  .settings-mobile-nav button {
+    display: grid;
+    width: 1.75rem;
+    height: 1.75rem;
+    padding: 0;
+    flex: 0 0 auto;
+    place-items: center;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: transparent;
+    color: color-mix(in srgb, var(--accent-dark) 65%, var(--muted));
+    font: inherit;
+    line-height: normal;
+    cursor: pointer;
+  }
+
+  .settings-mobile-nav-link:hover,
+  .settings-mobile-nav-link:active,
+  .settings-mobile-nav-link[aria-current="page"] {
+    border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+    color: var(--accent-dark);
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+  }
+
+  .settings-mobile-nav a:focus-visible,
+  .settings-mobile-nav button:focus-visible {
+    outline: 3px solid color-mix(in srgb, var(--accent) 25%, transparent);
+    outline-offset: 1px;
+  }
+
+  .settings-mobile-nav svg {
+    width: 1.1rem;
+    height: 1.1rem;
+    stroke-width: 1.8;
+  }
+
+  .settings-mobile-nav-external {
+    font-size: 1.15rem;
+    line-height: 1;
+  }
+
+  .settings-mobile-nav-external:active {
+    opacity: 0.72;
+    transform: scale(0.94);
+  }
+
   .settings-workspace-footer {
     width: min(100% - 1.5rem, 960px);
   }
@@ -70,11 +130,6 @@
 
   .style-option-action {
     grid-column: 2;
-  }
-
-  .cyber-style-control {
-    grid-template-columns: 1fr;
-    gap: 0.55rem;
   }
 
   .style-preview-actions > button {
