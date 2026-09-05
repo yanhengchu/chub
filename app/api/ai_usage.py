@@ -59,6 +59,41 @@ def _general_runtime_settings(request: Request) -> AiRuntimeGeneralSettingsData:
                     ),
                 ),
             ),
+            RuntimeSettingsSection(
+                id="weekly-report-session",
+                title="周报自动化会话",
+                description="用于生成重点确认清单和正式周报的新建 Quick Session。",
+                fields=(
+                    RuntimeSettingsField(
+                        id="weekly-report-runtime",
+                        label="AI Runtime",
+                        description="当前只接入 Codex；后续已接入 Runtime 会在这里提供选择。",
+                        input_type="select",
+                        value=general.weekly_report_session.runtime_id,
+                    ),
+                    RuntimeSettingsField(
+                        id="weekly-report-permission",
+                        label="权限",
+                        description="只读权限不能生成周报产物，运行入口会保持不可用。",
+                        input_type="select",
+                        value=general.weekly_report_session.permission_mode,
+                    ),
+                    RuntimeSettingsField(
+                        id="weekly-report-model",
+                        label="模型",
+                        description="仅影响之后新建的周报生成 Session。",
+                        input_type="select",
+                        value=general.weekly_report_session.model or "__default__",
+                    ),
+                    RuntimeSettingsField(
+                        id="weekly-report-reasoning",
+                        label="推理等级",
+                        description="仅影响之后新建的周报生成 Session。",
+                        input_type="select",
+                        value=general.weekly_report_session.reasoning_effort or "__default__",
+                    ),
+                ),
+            ),
         ),
     )
 
@@ -81,14 +116,16 @@ def update_general_runtime_settings(
     payload: RuntimeSettingsUpdate,
     request: Request,
 ) -> ApiResponse[AiRuntimeGeneralSettingsData]:
-    if set(payload.values) != {"usage-timezone"}:
-        raise ApiError(
-            400,
-            "ai_runtime_settings_invalid",
-            "AI Runtime 通用配置无效。",
-        )
-    timezone = payload.values["usage-timezone"]
-    if not isinstance(timezone, str) or not timezone.strip():
+    field_ids = set(payload.values)
+    if frozenset(field_ids) not in {
+        frozenset({"usage-timezone"}),
+        frozenset({
+            "weekly-report-runtime",
+            "weekly-report-permission",
+            "weekly-report-model",
+            "weekly-report-reasoning",
+        }),
+    }:
         raise ApiError(
             400,
             "ai_runtime_settings_invalid",
@@ -108,7 +145,38 @@ def update_general_runtime_settings(
         operation_id=operation_id,
     )
     try:
-        general = AiRuntimeGeneralSettings(timezone=timezone)
+        general = request.app.state.ai_session_manager.runtime_settings_store.read_general()
+        if field_ids == {"usage-timezone"}:
+            timezone = payload.values["usage-timezone"]
+            if not isinstance(timezone, str) or not timezone.strip():
+                raise ValueError("timezone is required")
+            general = AiRuntimeGeneralSettings.model_validate(
+                {
+                    **general.model_dump(mode="json"),
+                    "timezone": timezone,
+                }
+            )
+        else:
+            runtime_id = payload.values["weekly-report-runtime"]
+            permission_mode = payload.values["weekly-report-permission"]
+            model = payload.values["weekly-report-model"]
+            reasoning_effort = payload.values["weekly-report-reasoning"]
+            if not all(isinstance(value, str) and value.strip() for value in (runtime_id, permission_mode, model, reasoning_effort)):
+                raise ValueError("weekly report session settings are required")
+            model = None if model == "__default__" else model
+            reasoning_effort = None if reasoning_effort == "__default__" else reasoning_effort
+            request.app.state.ai_session_manager.validate_model(model, reasoning_effort)
+            general = AiRuntimeGeneralSettings.model_validate(
+                {
+                    **general.model_dump(mode="json"),
+                    "weekly_report_session": {
+                        "runtime_id": runtime_id,
+                        "permission_mode": permission_mode,
+                        "model": model,
+                        "reasoning_effort": reasoning_effort,
+                    },
+                }
+            )
     except ValueError as exc:
         log_operation(
             request,

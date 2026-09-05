@@ -7,12 +7,14 @@ import httpx
 import pytest
 
 from app.application import create_app
+from app.ai_usage.models import AiUsageData
 from app.automations.models import (
     AutomationListData,
     AutomationRunAccepted,
     BrowserControlResult,
     BrowserInitializationAccepted,
     FeishuEnvironmentState,
+    RuntimeAccountEnvironmentState,
 )
 from app.core.config import Settings
 
@@ -30,6 +32,7 @@ async def test_automations_require_trusted_network(settings: Settings) -> None:
         listing = await client.get("/api/automations")
         run = await client.post("/api/automations/task/run")
         check_feishu = await client.post("/api/automations/environment/feishu/check")
+        check_codex = await client.post("/api/automations/environment/codex/check")
         qr = await client.get("/api/automations/environment/feishu/qr")
         initialize_browser = await client.post(
             "/api/automations/browser/initialize",
@@ -39,6 +42,7 @@ async def test_automations_require_trusted_network(settings: Settings) -> None:
     assert listing.status_code == 403
     assert run.status_code == 403
     assert check_feishu.status_code == 403
+    assert check_codex.status_code == 403
     assert qr.status_code == 403
     assert initialize_browser.status_code == 403
 
@@ -75,6 +79,10 @@ async def test_automation_list_and_background_acceptance(
         state="available",
         message="登录有效",
     )
+    manager.check_codex_runtime_account.return_value = RuntimeAccountEnvironmentState(
+        state="available",
+        message="ChatGPT 登录有效",
+    )
     qr_path = settings.automations.runtime_dir / "feishu-login-qr.png"
     qr_path.parent.mkdir(parents=True)
     qr_path.write_bytes(b"\x89PNG\r\n\x1a\ncontent")
@@ -95,6 +103,7 @@ async def test_automation_list_and_background_acceptance(
         )
         restart_browser = await client.post("/api/automations/browser/restart")
         check_feishu = await client.post("/api/automations/environment/feishu/check")
+        check_codex = await client.post("/api/automations/environment/codex/check")
         qr = await client.get("/api/automations/environment/feishu/qr")
         initialize_browser = await client.post(
             "/api/automations/browser/initialize",
@@ -111,6 +120,8 @@ async def test_automation_list_and_background_acceptance(
     assert restart_browser.json()["data"]["state"] == "running"
     assert check_feishu.status_code == 200
     assert check_feishu.json()["data"]["state"] == "available"
+    assert check_codex.status_code == 200
+    assert check_codex.json()["data"]["state"] == "available"
     assert qr.status_code == 200
     assert initialize_browser.status_code == 202
     assert qr.headers["content-type"] == "image/png"
@@ -125,8 +136,39 @@ async def test_automation_list_and_background_acceptance(
         ("restart", "headless"),
     ]
     manager.check_feishu_environment.assert_called_once_with()
+    manager.check_codex_runtime_account.assert_called_once_with()
     manager.feishu_qr_content.assert_called_once_with()
     manager.initialize_browser.assert_called_once()
+
+
+@pytest.mark.anyio
+async def test_codex_runtime_account_check_requires_available_ai_usage(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    app.state.ai_usage.read = MagicMock(
+        return_value=AiUsageData(
+            status="unavailable",
+            provider="OpenAI",
+            source="sub2api",
+            timezone="Asia/Shanghai",
+            message="AI API 额度账户未登录。",
+        )
+    )
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers=AUTH,
+    ) as client:
+        response = await client.post("/api/automations/environment/codex/check")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["state"] == "failed"
+    assert response.json()["data"]["message"] == "API Key 已配置，但 AI 额度账户未登录"
+    assert response.json()["data"]["checked_at"]
+    app.state.ai_usage.read.assert_called_once_with(force=True)
 
 
 @pytest.mark.anyio

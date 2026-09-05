@@ -75,8 +75,8 @@ def write_confirmation(
 ) -> Path:
     checklist = workspace / "output" / "本期工作重点确认清单.md"
     checklist.write_text(
-        "## 本期重点事项\n\n"
-        "## 重点关注内容对照\n\n"
+        "## 本周需要同步的事项\n\n"
+        "## 需要维护者确认的重点事项\n\n"
         "## 维护者确认结果\n\n"
         f"- 输入指纹：{fingerprint}\n",
         encoding="utf-8",
@@ -359,7 +359,7 @@ def test_report_validator_enforces_profile_template_and_checklist(tmp_path: Path
         "required_section_text": {
             "产品体验提升": ["目标：", "当前进展："],
         },
-        "checklist_required_sections": ["重点关注内容对照"],
+        "checklist_required_sections": ["需要维护者确认的重点事项"],
     }
     mapping.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     assert run_script(

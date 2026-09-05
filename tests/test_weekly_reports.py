@@ -1,5 +1,9 @@
 from datetime import date
+import hashlib
+import json
 from pathlib import Path
+
+import pytest
 
 import app.services.weekly_reports as service
 
@@ -10,6 +14,61 @@ def _write_report(root: Path, period: str, report_type: str, content: str) -> Pa
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
     return path
+
+
+def _write_ready_inputs_manifest(root: Path, period: str) -> Path:
+    workspace = root / period
+    source = workspace / "inputs" / "linked" / "product.md"
+    source.parent.mkdir(parents=True)
+    source.write_text("# 产品周报\n\n本期资料\n", encoding="utf-8")
+    (workspace / ".inputs-updated").write_text("updated", encoding="utf-8")
+    manifest = {
+        "version": 1,
+        "report_period": {
+            "start": "2026-08-03",
+            "end": "2026-08-09",
+            "timezone": "Asia/Shanghai",
+        },
+        "data_root": "..",
+        "source_root": "inputs",
+        "required_roles": ["product"],
+        "documents": [
+            {
+                "role": "product",
+                "path": "linked/product.md",
+                "download_status": "succeeded",
+                "content_status": "ready",
+                "usage_period": {"start": "2026-08-03", "end": "2026-08-09"},
+                "usage": {"mode": "whole-document"},
+                "file_size": source.stat().st_size,
+                "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+            }
+        ],
+    }
+    manifest["fingerprint"] = service._manifest_fingerprint(manifest)
+    manifest_path = workspace / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    return source
+
+
+def test_weekly_report_inputs_require_current_manifest_and_source_hashes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(service, "WEEKLY_REPORTS_ROOT", tmp_path)
+    period = "2026-08-03至2026-08-09"
+    workspace = tmp_path / period
+    inputs = workspace / "inputs"
+    inputs.mkdir(parents=True)
+    (workspace / ".inputs-updated").write_text("updated", encoding="utf-8")
+
+    assert service.weekly_report_inputs_available(period) is False
+
+    source = _write_ready_inputs_manifest(tmp_path, period)
+    assert service.weekly_report_inputs_available(period) is True
+
+    source.write_text("# 产品周报\n\n内容已变化\n", encoding="utf-8")
+    assert service.weekly_report_inputs_available(period) is False
 
 
 def test_latest_weekly_reports_include_available_and_pending_slots(
@@ -59,6 +118,95 @@ def test_latest_weekly_reports_degrade_when_file_inspection_fails(
     assert len(reports) == 2
     assert all(report.available is False for report in reports)
     assert all(report.status == "待生成" for report in reports)
+
+
+def test_weekly_report_focus_confirmation_requires_current_checklist_and_manifest(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(service, "WEEKLY_REPORTS_ROOT", tmp_path)
+    period = "2026-07-27至2026-08-02"
+    checklist = _write_report(tmp_path, period, "focus", "## 维护者确认结果\n")
+    (tmp_path / period / "manifest.json").write_text(
+        json.dumps({"fingerprint": "manifest-fingerprint"}), encoding="utf-8"
+    )
+    (tmp_path / period / "output" / "weekly-report-confirmation.json").write_text(
+        json.dumps(
+            {
+                "status": "confirmed",
+                "confirmed_at": "2026-08-03T10:00:00+08:00",
+                "manifest_fingerprint": "manifest-fingerprint",
+                "decisions": ["纳入重点"],
+                "checklist": {
+                    "path": checklist.name,
+                    "sha256": hashlib.sha256(checklist.read_bytes()).hexdigest(),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert service.weekly_report_focus_confirmed(period) is True
+
+    checklist.write_text("# 已变更的重点", encoding="utf-8")
+
+    assert service.weekly_report_focus_confirmed(period) is False
+
+
+def test_maintainer_confirmation_writes_current_confirmation_record(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(service, "WEEKLY_REPORTS_ROOT", tmp_path)
+    period = "2026-08-03至2026-08-09"
+    _write_ready_inputs_manifest(tmp_path, period)
+    _write_report(tmp_path, period, "focus", "## 维护者确认结果\n")
+
+    service.confirm_weekly_report_focus(period)
+
+    confirmation = json.loads(
+        (tmp_path / period / "output" / "weekly-report-confirmation.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert confirmation["status"] == "confirmed"
+    assert confirmation["decisions"] == ["维护者已确认按当前工作重点确认清单生成正式周报。"]
+    assert service.weekly_report_focus_confirmed(period) is True
+
+
+def test_weekly_report_confirmation_requires_configured_checklist_sections(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(service, "WEEKLY_REPORTS_ROOT", tmp_path)
+    period = "2026-08-03至2026-08-09"
+    _write_ready_inputs_manifest(tmp_path, period)
+    manifest_path = tmp_path / period / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["report_validation"] = {
+        "checklist_required_sections": [
+            "本周需要同步的事项",
+            "需要维护者确认的重点事项",
+        ]
+    }
+    manifest["fingerprint"] = service._manifest_fingerprint(manifest)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    _write_report(tmp_path, period, "focus", "## 维护者确认结果\n")
+
+    with pytest.raises(ValueError, match="缺少必需章节"):
+        service.confirm_weekly_report_focus(period)
+
+    _write_report(
+        tmp_path,
+        period,
+        "focus",
+        "## 本周需要同步的事项\n\n"
+        "## 需要维护者确认的重点事项\n\n"
+        "## 维护者确认结果\n",
+    )
+    service.confirm_weekly_report_focus(period)
+
+    assert service.weekly_report_focus_confirmed(period) is True
 
 
 def test_weekly_reports_switch_on_wednesday_and_remain_stable_through_tuesday(

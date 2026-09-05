@@ -24,10 +24,6 @@ from app.ai_runtime import (
     RuntimeProcessSpec,
     RuntimeReasoningLevel,
     RuntimeSessionDiscoveryResult,
-    RuntimeSettingsData,
-    RuntimeSettingsField,
-    RuntimeSettingsSection,
-    RuntimeSettingsUpdate,
     RuntimeStatus,
     RuntimeTerminalRequest,
 )
@@ -36,11 +32,10 @@ from app.codex.discovery import CodexSessionDiscovery
 from app.codex.model_catalog import CodexModelCatalog
 from app.codex.rate_limits import CodexRateLimitService
 from app.codex.usage_settings import (
-    CodexRuntimeSettings,
     AiRuntimeSettingsStore,
-    CodexSub2ApiUsageSettings,
+    CodexProviderConfigReader,
+    CodexProviderConfigUnavailable,
     CodexUsageSettings,
-    CodexUsageRuntimeSettings,
     RuntimeSettingsStoreUnavailable,
 )
 from app.core.config import PROJECT_ROOT, Settings
@@ -48,7 +43,9 @@ from app.core.config import PROJECT_ROOT, Settings
 
 PROFILE_MARKER = "# Managed by Chub Codex PTY"
 CODEX_SESSION_ID_PATTERN = r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}"
-CODEX_RUNTIME_CAPABILITIES: frozenset[RuntimeCapability] = RUNTIME_CAPABILITIES
+CODEX_RUNTIME_CAPABILITIES: frozenset[RuntimeCapability] = (
+    RUNTIME_CAPABILITIES - {"runtime_settings"}
+)
 MAX_ACTIVITY_EVENT_BYTES = 32 * 1024
 
 
@@ -69,6 +66,7 @@ class CodexRuntimeAdapter:
         which: Callable[[str], str | None] | None = None,
         run: Callable[..., subprocess.CompletedProcess] | None = None,
         runtime_settings_store: AiRuntimeSettingsStore | None = None,
+        provider_config_reader: CodexProviderConfigReader | None = None,
         rate_limits: CodexRateLimitService | None = None,
     ) -> None:
         self.settings = settings
@@ -82,6 +80,9 @@ class CodexRuntimeAdapter:
         self._which = which
         self._run = run
         self._runtime_settings_store = runtime_settings_store or AiRuntimeSettingsStore()
+        self._provider_config_reader = provider_config_reader or CodexProviderConfigReader(
+            self.codex_home
+        )
         self.rate_limits = rate_limits or CodexRateLimitService()
         self._usage_service: AiUsageService | None = None
         self._usage_settings: CodexUsageSettings | None = None
@@ -295,104 +296,22 @@ class CodexRuntimeAdapter:
             update={"runtime_id": self.descriptor.runtime_id}
         )
 
-    def read_runtime_settings(self) -> RuntimeSettingsData:
-        usage = self._read_usage_settings()
-        return RuntimeSettingsData(
-            runtime_id=self.descriptor.runtime_id,
-            sections=(
-                RuntimeSettingsSection(
-                    id="usage",
-                    title="用量来源",
-                    description="仅在 Codex 使用 API Key 时读取已登录 Sub2API 的额度。",
-                    fields=(
-                        RuntimeSettingsField(
-                            id="sub2api-base-url",
-                            label="Sub2API 地址",
-                            description="已登录 Sub2API 的本机或 HTTPS 服务地址；留空则不启用该采集来源。",
-                            input_type="text",
-                            value=usage.sub2api.base_url,
-                            placeholder="https://sub2api.example",
-                        ),
-                        RuntimeSettingsField(
-                            id="sub2api-subscription-id",
-                            label="订阅 ID",
-                            description="可选。留空时使用第一条活跃 OpenAI 订阅。",
-                            input_type="number",
-                            value=usage.sub2api.subscription_id,
-                            placeholder="可选",
-                        ),
-                    ),
-                ),
-            ),
-        )
-
-    def update_runtime_settings(
-        self,
-        update: RuntimeSettingsUpdate,
-    ) -> RuntimeSettingsData:
-        expected = {
-            "sub2api-base-url",
-            "sub2api-subscription-id",
-        }
-        if set(update.values) != expected:
-            raise RuntimeOperationError(
-                "codex_runtime_settings_invalid",
-                "Codex Runtime settings are invalid",
-                kind="invalid_request",
-            )
-        base_url = update.values["sub2api-base-url"]
-        subscription_id = update.values["sub2api-subscription-id"]
-        if base_url is not None and not isinstance(base_url, str):
-            raise RuntimeOperationError(
-                "codex_runtime_settings_invalid",
-                "Codex Runtime settings are invalid",
-                kind="invalid_request",
-            )
-        if subscription_id is not None and (
-            isinstance(subscription_id, bool) or not isinstance(subscription_id, int)
-        ):
-            raise RuntimeOperationError(
-                "codex_runtime_settings_invalid",
-                "Codex Runtime settings are invalid",
-                kind="invalid_request",
-            )
-        try:
-            settings = CodexRuntimeSettings(
-                usage=CodexUsageRuntimeSettings(
-                    sub2api=CodexSub2ApiUsageSettings(
-                        base_url=base_url,
-                        subscription_id=subscription_id,
-                    )
-                )
-            )
-        except ValueError as exc:
-            raise RuntimeOperationError(
-                "codex_runtime_settings_invalid",
-                "Codex Runtime settings are invalid",
-                kind="invalid_request",
-            ) from exc
-        try:
-            self._runtime_settings_store.save(settings)
-        except RuntimeSettingsStoreUnavailable as exc:
-            raise RuntimeOperationError(
-                "codex_runtime_settings_unavailable",
-                "Codex Runtime settings are unavailable",
-            ) from exc
-        self._usage_service = None
-        self._usage_settings = None
-        return self.read_runtime_settings()
-
     def _read_usage_settings(self) -> CodexUsageSettings:
         try:
-            return CodexUsageSettings(
-                timezone=self._runtime_settings_store.read_general().timezone,
-                sub2api=self._runtime_settings_store.read().usage.sub2api,
-            )
+            timezone = self._runtime_settings_store.read_general().timezone
         except RuntimeSettingsStoreUnavailable as exc:
             raise RuntimeOperationError(
                 "codex_runtime_settings_unavailable",
                 "Codex Runtime settings are unavailable",
             ) from exc
+        try:
+            provider_base_url = self._provider_config_reader.read_base_url()
+        except CodexProviderConfigUnavailable:
+            provider_base_url = None
+        return CodexUsageSettings(
+            timezone=timezone,
+            provider_base_url=provider_base_url,
+        )
 
     @staticmethod
     def validate_native_session_id(native_session_id: str) -> None:

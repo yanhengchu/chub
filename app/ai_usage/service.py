@@ -161,10 +161,15 @@ class AiUsageService:
                 )
             except ProviderBrowserUnavailable as exc:
                 LOGGER.info("AI provider usage collection unavailable: %s", exc)
+                message = (
+                    "AI API 额度账户未登录。"
+                    if str(exc) == "provider_login_unavailable"
+                    else "AI API 额度暂不可用。"
+                )
                 return _CollectionOutcome(
                     "sub2api",
                     None,
-                    "AI API 额度暂不可用。",
+                    message,
                     self._sub2api_identity_key(),
                 )
         LOGGER.info("AI authentication type is unavailable: %s", account.message)
@@ -303,10 +308,11 @@ class AiUsageService:
 
     def _sub2api_identity_key(self, subscription_id: int | None = None) -> str | None:
         if subscription_id is None:
-            subscription_id = self._settings.sub2api.subscription_id
-        if subscription_id is None:
             return None
-        return f"sub2api:{subscription_id}"
+        base_url = self._settings.provider_base_url
+        if base_url is None:
+            return None
+        return f"sub2api:{base_url}:{subscription_id}"
 
     @classmethod
     def _display(cls, data: AiUsageData) -> AiUsageDisplay:
@@ -314,20 +320,23 @@ class AiUsageService:
         if data.status != "available" or weekly is None:
             return AiUsageDisplay()
 
+        weekly_text = f"Weekly {weekly.remaining_percent}%"
         if weekly.remaining_usd is not None and weekly.limit_usd is not None:
-            weekly_text = (
-                f"Weekly ${cls._money(weekly.remaining_usd, fixed=True)} left "
-                f"({weekly.remaining_percent}%)"
+            weekly_amount_text = (
+                f"${cls._money(weekly.remaining_usd, fixed=True)} / "
+                f"${cls._money(weekly.limit_usd, fixed=False)}"
             )
-            limit_text = f"Limit ${cls._money(weekly.limit_usd, fixed=False)}"
+        elif weekly.remaining_usd is not None:
+            weekly_amount_text = f"${cls._money(weekly.remaining_usd, fixed=True)}"
+        elif weekly.limit_usd is not None:
+            weekly_amount_text = f"${cls._money(weekly.limit_usd, fixed=False)}"
         else:
-            weekly_text = f"Weekly {weekly.remaining_percent}% left"
-            limit_text = None
+            weekly_amount_text = None
 
         today_parts = []
         if data.today is not None:
             if data.today.used_usd is not None:
-                today_parts.append(f"${cls._money(data.today.used_usd, fixed=True)} used")
+                today_parts.append(f"${cls._money(data.today.used_usd, fixed=True)}")
             if data.today.tokens is not None:
                 token_text = f"{cls.compact_tokens(data.today.tokens)} tokens"
                 if data.today.tokens_scope == "local_device":
@@ -335,26 +344,25 @@ class AiUsageService:
                 today_parts.append(token_text)
         timezone = ZoneInfo(data.timezone)
         reset = weekly.resets_at.astimezone(timezone)
-        weekly_reset_text = f"Reset {reset.month}/{reset.day} {reset:%H:%M}"
+        weekly_reset_text = f"{reset.month}/{reset.day} {reset:%H:%M}"
         weekly_home_parts = [AiUsageDisplayPart(kind="weekly", text=weekly_text)]
-        if limit_text:
-            weekly_home_parts.append(AiUsageDisplayPart(kind="limit", text=limit_text))
+        if weekly_amount_text:
+            weekly_home_parts.append(AiUsageDisplayPart(kind="limit", text=weekly_amount_text))
         weekly_home_parts.append(
             AiUsageDisplayPart(kind="reset", text=weekly_reset_text)
         )
 
         weekly_long_parts = [weekly_text]
-        if limit_text:
-            weekly_long_parts.append(limit_text)
+        if weekly_amount_text:
+            weekly_long_parts.append(weekly_amount_text)
         weekly_long_parts.append(weekly_reset_text)
-        today_text = f"Today {' '.join(today_parts)}" if today_parts else None
+        today_text = f"Today {' · '.join(today_parts)}" if today_parts else None
 
         if data.five_hour is not None:
             five_hour_reset = data.five_hour.resets_at.astimezone(timezone)
-            five_hour_text = f"5h {data.five_hour.remaining_percent}% left"
+            five_hour_text = f"5h {data.five_hour.remaining_percent}%"
             five_hour_reset_text = (
-                f"Reset {five_hour_reset.month}/{five_hour_reset.day} "
-                f"{five_hour_reset:%H:%M}"
+                f"{five_hour_reset.month}/{five_hour_reset.day} {five_hour_reset:%H:%M}"
             )
             home_parts = [
                 [
@@ -378,16 +386,20 @@ class AiUsageService:
                 home_parts.append(AiUsageDisplayPart(kind="today", text=today_text))
             long_parts = [*weekly_long_parts, *([today_text] if today_text else [])]
 
+        short_parts = []
         if data.five_hour is not None:
-            short_parts = [
-                f"5h {data.five_hour.remaining_percent}%",
-                f"{data.five_hour.resets_at.astimezone(timezone):%H:%M}",
-            ]
-        else:
-            short_parts = [
+            short_parts.extend(
+                [
+                    f"5h {data.five_hour.remaining_percent}%",
+                    f"{data.five_hour.resets_at.astimezone(timezone):%H:%M}",
+                ]
+            )
+        short_parts.extend(
+            [
                 f"Weekly {weekly.remaining_percent}%",
                 f"{reset.month}/{reset.day}",
             ]
+        )
         if data.today is not None and data.today.tokens is not None:
             token_text = f"Today {cls.compact_tokens(data.today.tokens)}"
             if data.today.tokens_scope == "local_device":

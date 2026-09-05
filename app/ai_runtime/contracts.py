@@ -187,7 +187,7 @@ class RuntimeTurnResult(_StrictModel):
     truncated: bool = False
 
 
-RuntimeSettingInputType = Literal["text", "number"]
+RuntimeSettingInputType = Literal["text", "number", "select"]
 RuntimeSettingValue = str | int | None
 
 

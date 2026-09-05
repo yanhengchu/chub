@@ -16,6 +16,76 @@
     chub: "Chub",
     runtime: "Codex CLI（上游 Runtime）",
   });
+  const QUICK_SESSION_PERMISSION_OPTIONS = Object.freeze([
+    Object.freeze({ value: "full-access", label: "Full access", description: "不请求操作审批" }),
+    Object.freeze({ value: "auto-review", label: "Approve for me", description: "由 Codex 自动审核越界请求" }),
+    Object.freeze({ value: "read-only", label: "Read Only", description: "只能查看和分析" }),
+    Object.freeze({ value: "ask", label: "Ask for approval", description: "快速交互不支持", disabled: true }),
+  ]);
+  const QUICK_SESSION_REASONING_LABELS = Object.freeze({
+    low: "Low",
+    medium: "Medium",
+    high: "High",
+    xhigh: "Extra High",
+    max: "Max",
+    ultra: "Ultra",
+  });
+
+  function quickSessionModelOptions(catalog, selectedModel = "") {
+    const models = Array.isArray(catalog?.models) ? catalog.models : [];
+    const defaultModel = models.find((item) => item.id === catalog?.default_model);
+    const options = [{
+      value: "",
+      label: "跟随 Codex 默认",
+      description: defaultModel?.name
+        ? `当前默认 ${defaultModel.name}`
+        : "使用 Runtime 默认模型",
+    }];
+    if (selectedModel && !models.some((item) => item.id === selectedModel)) {
+      options.push({
+        value: selectedModel,
+        label: selectedModel,
+        description: "当前 Session 配置，模型目录中不可用",
+      });
+    }
+    models.forEach((item) => options.push({
+      value: item.id,
+      label: item.name || item.id,
+      description: item.description || "",
+    }));
+    return options;
+  }
+
+  function quickSessionReasoningOptions(catalog, modelId = "", selectedLevel = "") {
+    const models = Array.isArray(catalog?.models) ? catalog.models : [];
+    const effectiveModel = models.find(
+      (item) => item.id === (modelId || catalog?.default_model),
+    );
+    const defaultLevel = effectiveModel?.default_level
+      || catalog?.default_reasoning_effort
+      || "";
+    const options = [{
+      value: "",
+      label: "跟随模型默认",
+      description: defaultLevel
+        ? `当前默认 ${QUICK_SESSION_REASONING_LABELS[defaultLevel] || defaultLevel}`
+        : "当前模型未提供默认等级",
+    }];
+    if (selectedLevel && !effectiveModel?.levels?.some((item) => item.id === selectedLevel)) {
+      options.push({
+        value: selectedLevel,
+        label: QUICK_SESSION_REASONING_LABELS[selectedLevel] || selectedLevel,
+        description: "当前 Session 配置，模型目录中不可用",
+      });
+    }
+    effectiveModel?.levels?.forEach((item) => options.push({
+      value: item.id,
+      label: QUICK_SESSION_REASONING_LABELS[item.id] || item.id,
+      description: item.description || "",
+      disabled: !modelId,
+    }));
+    return options;
+  }
 
   function errorSourceLabel(source) {
     return ERROR_SOURCE_LABELS[source] || "";
@@ -527,6 +597,10 @@
     pollDelay,
     readPageSize,
     readModelCatalog: () => request("/api/codex/models"),
+    quickSessionModelOptions,
+    quickSessionPermissionOptions: QUICK_SESSION_PERMISSION_OPTIONS,
+    quickSessionReasoningLabels: QUICK_SESSION_REASONING_LABELS,
+    quickSessionReasoningOptions,
     readSessionCreationPreferences,
     request,
     firstSessionAfterArchive,

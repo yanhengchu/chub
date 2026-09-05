@@ -9,6 +9,7 @@ import sys
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Callable
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -36,6 +37,7 @@ from app.automations.models import (
     BrowserInitializationAccepted,
     BrowserProfilePublic,
     FeishuEnvironmentState,
+    RuntimeAccountEnvironmentState,
 )
 from app.automations.operations import log_final_operation
 from app.automations.lock import LockBusy, file_lock
@@ -90,6 +92,7 @@ class AutomationManager:
         settings: Settings,
         *,
         detected_platform: str | None = None,
+        codex_account_checker: Callable[[], RuntimeAccountEnvironmentState] | None = None,
     ) -> None:
         self._settings = settings
         self._browser_supervisor_socket = (
@@ -103,6 +106,9 @@ class AutomationManager:
         self._qr_lock = threading.Lock()
         self._feishu_environment = FeishuEnvironmentState()
         self._feishu_checking = False
+        self._codex_account_checker = codex_account_checker
+        self._codex_runtime_account = RuntimeAccountEnvironmentState()
+        self._codex_runtime_account_checking = False
         self._browser_initialization_path = (
             settings.automations.state_dir
             / "browser-profile-initialization.json"
@@ -294,6 +300,17 @@ class AutomationManager:
     def _set_feishu_environment(self, state: FeishuEnvironmentState) -> None:
         with self._state_lock:
             self._feishu_environment = state
+
+    def _public_codex_runtime_account(self) -> RuntimeAccountEnvironmentState:
+        with self._state_lock:
+            return self._codex_runtime_account.model_copy()
+
+    def _set_codex_runtime_account(
+        self,
+        state: RuntimeAccountEnvironmentState,
+    ) -> None:
+        with self._state_lock:
+            self._codex_runtime_account = state
 
     async def _check_feishu_page(self) -> FeishuEnvironmentState:
         session = session_factory()
@@ -488,6 +505,7 @@ class AutomationManager:
                     state="browser_stopped",
                     message="浏览器未启动",
                 ),
+                codex_runtime_account=self._public_codex_runtime_account(),
                 enabled_count=0,
                 tasks=[],
             )
@@ -548,9 +566,47 @@ class AutomationManager:
             browser_profiles=profiles,
             browser_profiles_error=profiles_error,
             feishu_environment=self._public_feishu_environment(browser_state),
+            codex_runtime_account=self._public_codex_runtime_account(),
             enabled_count=sum(task.enabled for task in config.tasks.values()),
             tasks=tasks,
         )
+
+    def check_codex_runtime_account(self) -> RuntimeAccountEnvironmentState:
+        with self._state_lock:
+            if self._codex_runtime_account_checking:
+                raise ApiError(
+                    409,
+                    "codex_runtime_account_checking",
+                    "Codex Runtime 账户正在检查",
+                )
+            self._codex_runtime_account_checking = True
+            self._codex_runtime_account = RuntimeAccountEnvironmentState(
+                state="checking",
+                message="检查中",
+            )
+
+        try:
+            if self._codex_account_checker is None:
+                result = RuntimeAccountEnvironmentState(
+                    state="failed",
+                    message="Codex Runtime 账户检查不可用",
+                    checked_at=datetime.now().astimezone(),
+                )
+            else:
+                result = self._codex_account_checker()
+        except Exception:
+            LOGGER.exception("Codex Runtime account check failed")
+            result = RuntimeAccountEnvironmentState(
+                state="failed",
+                message="Codex Runtime 认证状态暂时不可用",
+                checked_at=datetime.now().astimezone(),
+            )
+        finally:
+            with self._state_lock:
+                self._codex_runtime_account_checking = False
+
+        self._set_codex_runtime_account(result)
+        return result
 
     def check_feishu_environment(self) -> FeishuEnvironmentState:
         browser_state, _, _ = self._debug_chrome_status()
@@ -558,42 +614,27 @@ class AutomationManager:
             raise ApiError(409, "debug_chrome_not_running", "Debug Chrome 未运行")
 
         with self._launch_lock:
-            config = self._load_config()
-            if self._feishu_checking or any(
-                self._current_state(task_id).status in {"queued", "running"}
-                for task_id in config.tasks
-            ):
+            if self._feishu_checking:
                 raise ApiError(
                     409,
                     "automation_browser_busy",
-                    "自动化任务正在使用 Debug Chrome",
+                    "飞书环境正在检查",
                 )
             self._feishu_checking = True
             self._set_feishu_environment(
                 FeishuEnvironmentState(state="checking", message="检查中")
             )
 
-        lock_path = self._settings.automations.runtime_dir / "locks" / "debug-chrome.lock"
         try:
-            with file_lock(lock_path, 0):
-                try:
-                    result = asyncio.run(self._check_feishu_page())
-                except Exception:
-                    LOGGER.exception("Feishu environment check failed")
-                    self._clear_feishu_qr()
-                    result = FeishuEnvironmentState(
-                        state="failed",
-                        message="检查失败",
-                        checked_at=datetime.now().astimezone(),
-                    )
-        except LockBusy as exc:
-            result = FeishuEnvironmentState(state="unchecked", message="未检查")
-            self._set_feishu_environment(result)
-            raise ApiError(
-                409,
-                "automation_browser_busy",
-                "自动化任务正在使用 Debug Chrome",
-            ) from exc
+            result = asyncio.run(self._check_feishu_page())
+        except Exception:
+            LOGGER.exception("Feishu environment check failed")
+            self._clear_feishu_qr()
+            result = FeishuEnvironmentState(
+                state="failed",
+                message="检查失败",
+                checked_at=datetime.now().astimezone(),
+            )
         finally:
             with self._launch_lock:
                 self._feishu_checking = False

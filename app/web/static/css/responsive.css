@@ -192,7 +192,7 @@
     width: 100%;
   }
 
-  .workstation-status-actions > button,
+  .workstation-status-actions > .button-secondary,
   .automation-browser-actions > button {
     width: 100%;
   }
@@ -207,7 +207,7 @@
     display: contents;
   }
 
-  .workstation-card .workstation-status-actions > button {
+  .workstation-card .workstation-status-actions > .button-secondary {
     grid-column: 1 / -1;
   }
 

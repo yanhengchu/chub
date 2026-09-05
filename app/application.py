@@ -8,6 +8,7 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from contextlib import suppress
+from datetime import datetime
 from uuid import uuid4
 
 import httpx
@@ -48,6 +49,7 @@ from app.ai_runtime.usage import RuntimeUsageService
 from app.codex.routes import api_router as codex_api_router
 from app.codex.routes import web_router as codex_web_router
 from app.automations.manager import AutomationManager
+from app.automations.models import RuntimeAccountEnvironmentState
 from app.core.config import PROJECT_ROOT, Settings, load_settings
 from app.core.logger import configure_logging
 from app.core.security import require_trusted_network
@@ -80,6 +82,7 @@ from app.services.quick_worker_maintenance import (
 )
 from app.services.system_status import collect_system_status
 from app.services.weixin_translation import WeixinTranslationManager
+from app.services.weekly_report_generation import WeeklyReportGenerationService
 from app.services.system_upgrade import (
     SystemUpgradeBusy,
     SystemUpgradeCoordinator,
@@ -213,6 +216,7 @@ def _is_ai_runtime_mutation(request: Request) -> bool:
         path.startswith("/api/codex/")
         or path.startswith("/api/ai/runtimes/")
         or path == "/api/ai/settings"
+        or path.startswith("/api/weekly-reports/")
         or path.startswith("/api/openclaw/wechat-chub-mode/")
     )
 
@@ -278,6 +282,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         wait_seconds=(
             resolved_settings.openclaw.weixin_chub_mode.translation_max_wait_seconds
         ),
+    )
+    weekly_report_generation = WeeklyReportGenerationService(
+        resolved_settings.ai_runtime.codex.data_file.with_name(
+            "weekly-report-generation.json"
+        ),
+        codex_pty_manager,
+        quick_interactions,
     )
     quick_worker_maintenance = QuickWorkerReloadCoordinator(
         resolved_settings.ai_runtime.codex.data_file.with_name(
@@ -1071,6 +1082,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.codex_rate_limits = codex_rate_limits
     application.state.ai_usage = ai_usage
     application.state.quick_interactions = quick_interactions
+    application.state.weekly_report_generation = weekly_report_generation
     application.state.quick_worker_maintenance = quick_worker_maintenance
     application.state.system_upgrade = system_upgrade
     application.state.run_system_upgrade = run_system_upgrade
@@ -1084,9 +1096,41 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.terminal_tickets = terminal_tickets
     application.state.terminal_connections = terminal_connections
     application.state.maintenance_terminal = maintenance_terminal
+    def check_codex_runtime_account() -> RuntimeAccountEnvironmentState:
+        usage = ai_usage.read(force=True)
+        checked_at = datetime.now().astimezone()
+        if usage.status == "available" and usage.source == "account_login":
+            return RuntimeAccountEnvironmentState(
+                state="available",
+                message="ChatGPT 登录与 AI 额度可用",
+                checked_at=checked_at,
+            )
+        if usage.status == "available" and usage.source == "sub2api":
+            return RuntimeAccountEnvironmentState(
+                state="available",
+                message="API Key 已配置，AI 额度可用",
+                checked_at=checked_at,
+            )
+        if usage.source == "account_login":
+            message = "ChatGPT 已登录，但 AI 额度不可用"
+        elif usage.source == "sub2api":
+            message = (
+                "API Key 已配置，但 AI 额度账户未登录"
+                if usage.message == "AI API 额度账户未登录。"
+                else "API Key 已配置，但 AI 额度暂不可用"
+            )
+        else:
+            message = usage.message or "Codex Runtime 认证状态暂时不可用"
+        return RuntimeAccountEnvironmentState(
+            state="failed",
+            message=message,
+            checked_at=checked_at,
+        )
+
     application.state.automation_manager = AutomationManager(
         resolved_settings,
         detected_platform=detected_platform,
+        codex_account_checker=check_codex_runtime_account,
     )
     application.state.openclaw_manager = openclaw_manager
     application.state.notification_service = notification_service

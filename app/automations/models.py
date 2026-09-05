@@ -360,6 +360,7 @@ class LinkedDocumentResult(StrictAutomationModel):
     name: str
     status: Literal["success", "waiting", "failed"]
     message: str
+    source_url: str | None = None
     output_file: str | None = None
     is_background: bool = False
 
@@ -414,6 +415,12 @@ class FeishuEnvironmentState(StrictAutomationModel):
     qr_available: bool = False
 
 
+class RuntimeAccountEnvironmentState(StrictAutomationModel):
+    state: Literal["unchecked", "checking", "available", "failed"] = "unchecked"
+    message: str = "未检查"
+    checked_at: datetime | None = None
+
+
 class BrowserProfilePublic(StrictAutomationModel):
     id: str
     name: str
@@ -435,6 +442,9 @@ class AutomationListData(StrictAutomationModel):
     browser_profiles_error: str | None = None
     feishu_environment: FeishuEnvironmentState = Field(
         default_factory=FeishuEnvironmentState
+    )
+    codex_runtime_account: RuntimeAccountEnvironmentState = Field(
+        default_factory=RuntimeAccountEnvironmentState
     )
     enabled_count: int = 0
     tasks: list[AutomationTaskPublic]

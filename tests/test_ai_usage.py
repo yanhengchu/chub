@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
-from contextlib import nullcontext
 from dataclasses import replace
 from datetime import datetime
 from decimal import Decimal
@@ -19,6 +18,7 @@ from app.ai_usage.provider_browser import (
     ProviderBrowserCollection,
     ProviderBrowserUnavailable,
 )
+from app.automations.lock import file_lock
 from app.ai_usage.service import AiUsageService
 from app.application import create_app
 from app.codex.local_usage import CodexLocalUsageUnavailable
@@ -26,7 +26,8 @@ from app.codex.models import CodexQuotaData, CodexQuotaWindow, CodexTokenUsageDa
 from app.codex.rate_limits import CodexAccountCollection, CodexRateLimitService
 from app.codex.usage_settings import (
     AiRuntimeSettingsStore,
-    CodexSub2ApiUsageSettings,
+    CodexProviderConfigReader,
+    CodexProviderConfigUnavailable,
     CodexUsageSettings,
 )
 from app.core.config import Settings
@@ -37,9 +38,7 @@ def _authorization(settings: Settings) -> dict[str, str]:
 
 
 def _provider_config() -> CodexUsageSettings:
-    return CodexUsageSettings(
-        sub2api=CodexSub2ApiUsageSettings(base_url="http://10.20.30.40")
-    )
+    return CodexUsageSettings(provider_base_url="http://10.20.30.40")
 
 
 def _provider_collection(*, tokens: int | None = 100_000_000) -> ProviderBrowserCollection:
@@ -78,14 +77,39 @@ def _subscription_payload() -> dict[str, object]:
     }
 
 
-def test_sub2api_configuration_allows_default_subscription_and_safe_base_url() -> None:
-    assert CodexSub2ApiUsageSettings(
-        base_url="http://10.20.30.40",
-    ).subscription_id is None
-    with pytest.raises(ValueError, match="Sub2API origin"):
-        CodexSub2ApiUsageSettings(base_url="https://user:secret@service.test/other")
-    with pytest.raises(ValueError, match="literal private address"):
-        CodexSub2ApiUsageSettings(base_url="http://example.com")
+def test_provider_config_reader_uses_active_codex_provider_origin(tmp_path) -> None:
+    (tmp_path / "config.toml").write_text(
+        """
+model_provider = "OpenAI"
+
+[model_providers.OpenAI]
+base_url = "http://203.0.113.8:19099/"
+wire_api = "responses"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    assert CodexProviderConfigReader(tmp_path).read_base_url() == (
+        "http://203.0.113.8:19099"
+    )
+
+
+def test_provider_config_reader_fails_closed_for_invalid_or_missing_config(tmp_path) -> None:
+    reader = CodexProviderConfigReader(tmp_path)
+    with pytest.raises(CodexProviderConfigUnavailable):
+        reader.read_base_url()
+
+    (tmp_path / "config.toml").write_text(
+        '[model_providers.OpenAI]\nbase_url = "https://user:secret@example.test"\n',
+        encoding="utf-8",
+    )
+    assert reader.read_base_url() is None
+
+    (tmp_path / "config.toml").write_text(
+        'model_provider = "OpenAI"\n[model_providers.OpenAI]\nbase_url = "https://example.test:not-a-port"\n',
+        encoding="utf-8",
+    )
+    assert reader.read_base_url() is None
 
 
 @pytest.mark.anyio
@@ -115,6 +139,44 @@ async def test_general_runtime_settings_reject_invalid_timezone_as_user_input(
         "America/Los_Angeles"
     )
     assert store.read_general().timezone == "America/Los_Angeles"
+
+
+@pytest.mark.anyio
+async def test_general_runtime_settings_save_weekly_report_session_defaults(
+    settings: Settings,
+    tmp_path,
+) -> None:
+    app = create_app(settings)
+    store = AiRuntimeSettingsStore(tmp_path / "ai-runtimes.local.yaml")
+    app.state.ai_session_manager.runtime_settings_store = store
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.put(
+            "/api/ai/settings",
+            json={
+                "values": {
+                    "weekly-report-runtime": "codex",
+                    "weekly-report-permission": "auto-review",
+                    "weekly-report-model": "__default__",
+                    "weekly-report-reasoning": "__default__",
+                }
+            },
+        )
+
+    assert response.status_code == 200
+    section = response.json()["data"]["sections"][1]
+    assert section["id"] == "weekly-report-session"
+    assert {field["id"] for field in section["fields"]} == {
+        "weekly-report-runtime",
+        "weekly-report-permission",
+        "weekly-report-model",
+        "weekly-report-reasoning",
+    }
+    saved = store.read_general().weekly_report_session
+    assert saved.permission_mode == "auto-review"
+    assert saved.model is None
+    assert saved.reasoning_effort is None
 
 
 def test_today_usage_requires_token_scope_with_tokens() -> None:
@@ -253,17 +315,16 @@ def test_account_mode_prefers_exact_account_today(settings: Settings) -> None:
     assert result.today is not None
     assert result.today.tokens == 3_000_000
     assert result.today.tokens_scope == "account"
-    assert result.display.short == "5h 42% · 18:20 · Today 3M"
+    assert result.display.short == "5h 42% · 18:20 · Weekly 78% · 8/20 · Today 3M"
     assert result.five_hour is not None
     assert result.five_hour.remaining_percent == 42
     assert result.display.long == (
-        "5h 42% left · Reset 8/15 18:20 · Weekly 78% left · "
-        "Reset 8/20 15:45 · Today 3M tokens"
+        "5h 42% · 8/15 18:20 · Weekly 78% · 8/20 15:45 · Today 3M tokens"
     )
-    assert result.display.home[0].text == "5h 42% left"
-    assert result.display.home[1].text == "Reset 8/15 18:20"
-    assert result.display.home[2].text == "Weekly 78% left"
-    assert result.display.home[3].text == "Reset 8/20 15:45"
+    assert result.display.home[0].text == "5h 42%"
+    assert result.display.home[1].text == "8/15 18:20"
+    assert result.display.home[2].text == "Weekly 78%"
+    assert result.display.home[3].text == "8/20 15:45"
     assert result.display.home[4].text == "Today 3M tokens"
     local_usage.read_today.assert_not_called()
 
@@ -322,16 +383,32 @@ def test_api_key_mode_formats_provider_usage_and_does_not_fallback(
     assert result.weekly is not None
     assert result.weekly.remaining_percent == 78
     assert result.display.long == (
-        "Weekly $781.92 left (78%) · Limit $1,000 · Reset 8/20 15:45 · "
-        "Today $181.02 used 100M tokens"
+        "Weekly 78% · $781.92 / $1,000 · 8/20 15:45 · "
+        "Today $181.02 · 100M tokens"
     )
     assert result.display.short == "Weekly 78% · 8/20 · Today 100M"
     browser.collect.assert_called_once()
 
 
+def test_api_key_mode_reports_provider_account_login_required(
+    settings: Settings,
+) -> None:
+    codex = MagicMock()
+    codex.collect_ai_account_status.return_value = CodexAccountCollection("apiKey")
+    browser = MagicMock()
+    browser.collect.side_effect = ProviderBrowserUnavailable("provider_login_unavailable")
+    service = AiUsageService(settings, codex, browser)
+
+    result = service.read(force=True)
+
+    assert result.status == "unavailable"
+    assert result.source == "sub2api"
+    assert result.message == "AI API 额度账户未登录。"
+
+
 def test_refresh_failure_only_retains_same_source_snapshot(settings: Settings) -> None:
     usage_settings = _provider_config().model_copy(
-        update={"sub2api": CodexSub2ApiUsageSettings(base_url="http://10.20.30.40", subscription_id=179)}
+        update={"provider_base_url": "http://10.20.30.40"}
     )
     codex = MagicMock()
     codex.collect_ai_account_status.return_value = CodexAccountCollection("apiKey")
@@ -357,8 +434,8 @@ def test_refresh_failure_only_retains_same_source_snapshot(settings: Settings) -
     second = service.read(force=True)
 
     assert first.stale is False
-    assert second.status == "available"
-    assert second.stale is True
+    assert second.status == "unavailable"
+    assert second.stale is False
     assert second.source == "sub2api"
     codex.collect_ai_account_status.return_value = CodexAccountCollection(None)
     third = service.read(force=True)
@@ -636,17 +713,13 @@ def test_provider_browser_invalid_stats_does_not_fail_fresh_quota(
         )
     )
 
-    with (
-        patch(
+    browser_lock = settings.automations.runtime_dir / "locks" / "debug-chrome.lock"
+    with file_lock(browser_lock, 0):
+        with patch(
             "app.ai_usage.provider_browser.debug_chrome_status",
             return_value=("running", None, None),
-        ),
-        patch(
-            "app.ai_usage.provider_browser.file_lock",
-            return_value=nullcontext(),
-        ),
-    ):
-        result = adapter.collect(timeout_seconds=1)
+        ):
+            result = adapter.collect(timeout_seconds=1)
 
     assert result.weekly.remaining_percent == 78
     assert result.today.tokens is None

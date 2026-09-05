@@ -9,6 +9,10 @@ const {
   pollDelay: conversationPollDelay,
   readPageSize: readConversationPageSize,
   readModelCatalog: readConversationModelCatalog,
+  quickSessionModelOptions: conversationModelOptions,
+  quickSessionPermissionOptions: conversationPermissionOptions,
+  quickSessionReasoningLabels: CONVERSATION_REASONING_LABELS,
+  quickSessionReasoningOptions: conversationReasoningOptions,
   shouldPoll: shouldPollConversation,
   shouldSuppressReconnectError: shouldSuppressConversationReconnectError,
   submissionBlockReason: conversationSubmissionBlockReason,
@@ -193,20 +197,9 @@ let conversationComposerSelections = {
   reasoningEffort: null,
 };
 
-const CONVERSATION_PERMISSION_LABELS = Object.freeze({
-  ask: "Ask for approval",
-  "auto-review": "Approve for me",
-  "full-access": "Full access",
-  "read-only": "Read Only",
-});
-const CONVERSATION_REASONING_LABELS = Object.freeze({
-  low: "Low",
-  medium: "Medium",
-  high: "High",
-  xhigh: "Extra High",
-  max: "Max",
-  ultra: "Ultra",
-});
+const CONVERSATION_PERMISSION_LABELS = Object.freeze(
+  Object.fromEntries(conversationPermissionOptions.map((option) => [option.value, option.label])),
+);
 
 function notifyWorkspaceSessionActivity() {
   if (window.parent === window) return;
@@ -384,10 +377,9 @@ function renderConversationComposerOptions(session) {
   conversationPermissionTrigger.title = permission === "ask"
     ? "快速交互不支持 Ask for approval，请改为其他权限"
     : "查看权限选项";
-  conversationPermissionMenu.querySelectorAll("[role='option']").forEach((option) => {
-    option.setAttribute("aria-selected", String(option.dataset.value === permission));
-    option.classList.toggle("is-selected", option.dataset.value === permission);
-  });
+  conversationPermissionMenu.replaceChildren(...conversationPermissionOptions.map((option) => (
+    conversationOptionButton({ ...option, selected: option.value === permission })
+  )));
 
   const models = Array.isArray(conversationModelCatalog?.models)
     ? conversationModelCatalog.models
@@ -397,31 +389,13 @@ function renderConversationComposerOptions(session) {
     selectedModel || conversationModelCatalog?.default_model,
   )
     || (session.model ? { id: session.model, name: session.model, levels: [] } : null);
-  conversationModelMenu.replaceChildren(
-    conversationOptionButton({
-      value: "",
-      label: "跟随 Codex 默认",
-      description: conversationModelCatalog?.default_model
-        ? `当前默认 ${conversationModelInfo(conversationModelCatalog.default_model)?.name || conversationModelCatalog.default_model}`
-        : "使用 Runtime 默认模型",
-      selected: selectedModel === "",
-      disabled: false,
-    }),
-    ...models.map((model) => conversationOptionButton({
-      value: model.id,
-      label: model.name || model.id,
-      description: model.description || "",
-      selected: model.id === selectedModel,
-    })),
-    ...(currentModel && !models.some((model) => model.id === currentModel.id)
-      ? [conversationOptionButton({
-        value: currentModel.id,
-        label: currentModel.name,
-        description: "当前 Session 配置",
-        selected: currentModel.id === selectedModel,
-      })]
-      : []),
-  );
+  conversationModelMenu.replaceChildren(...conversationModelOptions(
+    conversationModelCatalog,
+    selectedModel,
+  ).map((option) => conversationOptionButton({
+    ...option,
+    selected: option.value === selectedModel,
+  })));
   conversationModelValue.textContent = currentModel?.name
     || (conversationModelCatalog?.default_model
       ? `跟随默认 · ${conversationModelInfo(conversationModelCatalog.default_model)?.name || conversationModelCatalog.default_model}`
@@ -432,28 +406,18 @@ function renderConversationComposerOptions(session) {
   );
   conversationModelTrigger.disabled = conversationConfigurationPending;
 
-  const levels = Array.isArray(currentModel?.levels) ? currentModel.levels : [];
   const selectedLevel = conversationComposerSelections.reasoningEffort || "";
   const defaultLevel = currentModel?.default_level
     || conversationModelCatalog?.default_reasoning_effort
     || "";
-  conversationReasoningMenu.replaceChildren(
-    conversationOptionButton({
-      value: "",
-      label: "跟随模型默认",
-      description: defaultLevel
-        ? `当前默认 ${CONVERSATION_REASONING_LABELS[defaultLevel] || defaultLevel}`
-        : "当前模型未提供默认等级",
-      selected: selectedLevel === "",
-    }),
-    ...levels.map((level) => conversationOptionButton({
-      value: level.id,
-      label: CONVERSATION_REASONING_LABELS[level.id] || level.id,
-      description: level.description || "",
-      selected: level.id === selectedLevel,
-      disabled: !selectedModel,
-    })),
-  );
+  conversationReasoningMenu.replaceChildren(...conversationReasoningOptions(
+    conversationModelCatalog,
+    selectedModel,
+    selectedLevel,
+  ).map((option) => conversationOptionButton({
+    ...option,
+    selected: option.value === selectedLevel,
+  })));
   conversationReasoningValue.textContent = selectedLevel
     ? (CONVERSATION_REASONING_LABELS[selectedLevel] || selectedLevel)
     : (defaultLevel

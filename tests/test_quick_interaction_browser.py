@@ -580,6 +580,44 @@ async def test_conversation_layout_in_managed_chrome(
 
 
 @pytest.mark.parametrize("theme", [theme.id for theme in WEB_THEMES])
+async def test_conversation_prompt_placeholder_uses_current_theme(
+    conversation_browser_server: str,
+    theme: str,
+) -> None:
+    api = ConversationApi()
+    browser_session = session_factory()
+    async with browser_session(ensure_page=False) as chrome:
+        context, page, page_errors = await _open_conversation(
+            chrome.browser,
+            conversation_browser_server,
+            api,
+            theme=theme,
+            viewport=(1280, 900),
+        )
+        try:
+            appearance = await page.locator("#conversation-prompt").evaluate(
+                """(input) => {
+                    const probe = document.createElement("span");
+                    probe.style.color = "var(--color-text-muted)";
+                    document.body.append(probe);
+                    const result = {
+                        color: getComputedStyle(input, "::placeholder").color,
+                        opacity: getComputedStyle(input, "::placeholder").opacity,
+                        mutedColor: getComputedStyle(probe).color,
+                    };
+                    probe.remove();
+                    return result;
+                }""",
+            )
+        finally:
+            await context.close()
+
+    assert appearance["color"] == appearance["mutedColor"]
+    assert appearance["opacity"] == "0.8"
+    assert page_errors == []
+
+
+@pytest.mark.parametrize("theme", [theme.id for theme in WEB_THEMES])
 async def test_conversation_composer_options_show_current_values_and_disable_approval(
     conversation_browser_server: str,
     theme: str,
@@ -770,6 +808,7 @@ async def test_conversation_workflows_in_managed_chrome(
             await session_create.focus()
             await page.keyboard.press("Enter")
             await expect(page.locator("#conversation-create-dialog")).to_be_visible()
+            await expect(page.locator("#conversation-create-confirm")).to_be_focused()
             await page.keyboard.press("Escape")
             await expect(page.locator("#conversation-create-dialog")).not_to_be_visible()
             assert await session_create.evaluate(

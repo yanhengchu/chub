@@ -1659,21 +1659,6 @@ button.settings-utility-row > span:last-child {
   bottom: auto;
 }
 
-.workspace-preview-task-orchestration {
-  display: grid;
-  gap: 0.35rem;
-  margin-top: 0.4rem;
-  padding-top: 0.65rem;
-  border-top: 1px solid var(--color-border);
-}
-
-.workspace-preview-task-orchestration > p {
-  color: var(--color-text-muted);
-  margin: 0;
-  font-size: 0.73rem;
-  font-weight: 700;
-}
-
 .workspace-task-orchestration-panel {
   max-width: none;
 }
@@ -2836,6 +2821,7 @@ button.settings-utility-row > span:last-child {
 .automation-task-group,
 .automation-weekly-report-group,
 .automation-environment,
+.automation-account-environment,
 .workstation-service-group {
   display: grid;
   gap: 0.65rem;
@@ -4153,6 +4139,11 @@ pre {
   outline: 0;
 }
 
+.conversation-input-row textarea::placeholder {
+  color: var(--color-text-muted);
+  opacity: 0.8;
+}
+
 .conversation-composer-toolbar {
   display: flex;
   align-items: center;
@@ -4406,6 +4397,20 @@ pre {
   min-width: 0;
 }
 
+.workstation-weekly-workflow {
+  display: grid;
+  gap: 0.5rem;
+  min-width: 0;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid var(--color-border);
+  border-radius: 0.7rem;
+}
+
+.workstation-weekly-workflow h4 {
+  margin: 0;
+  font-size: 0.86rem;
+}
+
 .workstation-status-row {
   display: flex;
   align-items: center;
@@ -4441,6 +4446,14 @@ pre {
   line-height: 1.45;
 }
 
+.workspace-automation-browser-detail,
+.workspace-automation-feishu-detail,
+.workspace-automation-codex-account-detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .workstation-status-detail-warning {
   color: var(--color-warning);
 }
@@ -4470,16 +4483,32 @@ pre {
   min-width: 0;
 }
 
-.workstation-status-actions > button {
+.workstation-status-actions > .button-secondary {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--control-height);
+  min-height: 0;
   min-width: 4.5rem;
+  border-radius: 10px;
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 700;
+  line-height: normal;
   white-space: nowrap;
+}
+
+.workstation-status-action-link {
+  text-decoration: none;
 }
 
 .workspace-third-party-environment {
   margin-top: 0;
 }
 
-.automation-environment .workstation-status-row {
+.automation-environment .workstation-status-row,
+.automation-account-environment .workstation-status-row {
   min-height: 0;
   padding-block: 0.45rem;
 }

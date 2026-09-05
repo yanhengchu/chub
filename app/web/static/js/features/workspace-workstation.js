@@ -13,20 +13,16 @@ window.initializeWorkspaceWorkstation = () => {
     systemSummary: byId("workspace-system-summary"),
     systemSummaryDetail: byId("workspace-system-summary-detail"),
     chubDetail: byId("workspace-chub-detail"),
-    chubMessage: byId("workspace-chub-message"),
     chubRestart: byId("workspace-chub-restart"),
     workerDetail: byId("workspace-worker-detail"),
-    workerMessage: byId("workspace-worker-message"),
     workerRestart: byId("workspace-worker-restart"),
     upgradeDetail: byId("workspace-upgrade-detail"),
     upgradeStart: byId("workspace-upgrade-start"),
     thirdPartyRefresh: byId("workspace-third-party-refresh"),
     openclawDetail: byId("workspace-openclaw-detail"),
-    openclawMessage: byId("workspace-openclaw-message"),
     openclawStart: byId("workspace-openclaw-start"),
     openclawRestart: byId("workspace-openclaw-restart"),
     openclawWeixinDetail: byId("workspace-openclaw-weixin-detail"),
-    openclawWeixinFeedback: byId("workspace-openclaw-weixin-feedback"),
     openclawBindWeixin: byId("workspace-openclaw-bind-weixin"),
     openclawWeixinDialog: byId("workspace-openclaw-weixin-dialog"),
     openclawWeixinClose: byId("workspace-openclaw-weixin-close"),
@@ -172,6 +168,10 @@ window.initializeWorkspaceWorkstation = () => {
     elements.health.lastChild.textContent = text;
   };
 
+  const showToolbarFeedback = (text, kind = "error") => {
+    window.showWorkspaceToolbarFeedback?.(text, kind);
+  };
+
   const workerLabel = (state) => ({
     ready: "可用",
     busy: "执行中",
@@ -254,14 +254,18 @@ window.initializeWorkspaceWorkstation = () => {
 
   const renderWorker = (data) => {
     workerState = data;
-    setStatus(elements.workerDetail, data.message, workerKind(data.state));
+    const operationFailed = data.operation?.status === "failed";
+    setStatus(
+      elements.workerDetail,
+      operationFailed ? data.operation.message : data.message,
+      operationFailed ? "failed" : workerKind(data.state),
+    );
     setSummaryStatus(
       elements.runtimeSummary,
       data.runtime_state === "available" ? "可用" : runtimeDetail(data),
       runtimeKind(data),
     );
     elements.runtimeSummaryDetail.textContent = runtimeDetail(data);
-    setMessage(elements.workerMessage, data.operation?.status === "failed" ? data.operation.message : "", data.operation?.status === "failed" ? "error" : "");
     syncControls();
   };
 
@@ -293,13 +297,13 @@ window.initializeWorkspaceWorkstation = () => {
       snapshot.status = data;
       statusIsCurrent = true;
       cacheSnapshot();
-      setMessage(elements.chubMessage, "");
     } catch (error) {
       if (disposed || error?.name === "AbortError") return false;
       if (!snapshot.status) {
-        setStatus(elements.chubDetail, "无法读取当前控制面状态。", "failed");
+        setStatus(elements.chubDetail, error.message || "无法读取当前控制面状态。", "failed");
+      } else {
+        showToolbarFeedback(error.message || "Chub 状态读取失败。");
       }
-      setMessage(elements.chubMessage, error.message || "Chub 状态读取失败。", "error");
       return false;
     }
     return true;
@@ -316,9 +320,10 @@ window.initializeWorkspaceWorkstation = () => {
     } catch (error) {
       if (disposed || error?.name === "AbortError") return false;
       if (!snapshot.worker) {
-        setStatus(elements.workerDetail, "无法读取当前任务执行服务状态。", "failed");
+        setStatus(elements.workerDetail, error.message || "无法读取当前任务执行服务状态。", "failed");
+      } else {
+        showToolbarFeedback(error.message || "Quick Worker 状态读取失败。");
       }
-      setMessage(elements.workerMessage, error.message || "Quick Worker 状态读取失败。", "error");
       return false;
     }
     scheduleWorkerRefresh();
@@ -392,16 +397,15 @@ window.initializeWorkspaceWorkstation = () => {
       if (disposed) return false;
       renderOpenClaw(status, login);
       cacheThirdPartySnapshot(status, login);
-      setMessage(elements.openclawMessage, "");
-      setMessage(elements.openclawWeixinFeedback, "");
       return true;
     } catch (error) {
       if (disposed || error?.name === "AbortError") return false;
       if (!openclawStatus) {
-        setStatus(elements.openclawDetail, "暂时无法读取 OpenClaw Gateway 状态。", "failed");
-        setStatus(elements.openclawWeixinDetail, "暂时无法读取微信 ClawBot 状态。", "failed");
+        setStatus(elements.openclawDetail, error.message || "暂时无法读取 OpenClaw Gateway 状态。", "failed");
+        setStatus(elements.openclawWeixinDetail, error.message || "暂时无法读取微信 ClawBot 状态。", "failed");
+      } else {
+        showToolbarFeedback(error.message || "第三方服务状态读取失败。");
       }
-      setMessage(elements.openclawMessage, error.message || "第三方服务状态读取失败。", "error");
       syncControls();
       return false;
     } finally {
@@ -419,19 +423,18 @@ window.initializeWorkspaceWorkstation = () => {
         "正在重启与恢复 OpenClaw Gateway，并确认 Gateway 与消息通道最终状态。",
         "warning",
       );
-      setMessage(elements.openclawMessage, "");
     } else if (action === "start") {
-      setStatus(elements.openclawDetail, "正在启动 OpenClaw Gateway。", "warning");
-      setMessage(elements.openclawMessage, "正在确认 Gateway 最终状态。", "");
+      setStatus(elements.openclawDetail, "正在启动 OpenClaw Gateway，并确认最终状态。", "warning");
     }
     try {
       const status = await request(`/api/openclaw/${action}`, { method: "POST" });
       const login = await request("/api/openclaw/weixin/login", { cache: "no-store" });
       renderOpenClaw(status, login);
       cacheThirdPartySnapshot(status, login);
-      setMessage(elements.openclawMessage, "");
     } catch (error) {
-      setMessage(elements.openclawMessage, error.message || "OpenClaw Gateway 操作失败。", "error");
+      const message = error.message || "OpenClaw Gateway 操作失败。";
+      setStatus(elements.openclawDetail, message, "failed");
+      showToolbarFeedback(message);
     } finally {
       openclawOperating = false;
       syncControls();

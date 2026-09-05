@@ -21,7 +21,6 @@ from app.ai_runtime import (
 )
 from app.codex.runtime_adapter import CodexRuntimeAdapter
 from app.codex.usage_settings import AiRuntimeGeneralSettings, AiRuntimeSettingsStore
-from app.ai_runtime import RuntimeSettingsUpdate
 from app.codex.manager import CodexPtyManager
 from app.codex.models import (
     CodexModelCatalogData,
@@ -331,58 +330,36 @@ def test_codex_adapter_declares_current_capabilities(settings: Settings) -> None
                 "model_catalog",
                 "permission_profiles",
                 "usage_snapshot",
-                "runtime_settings",
         }
     )
     assert adapter.status().available is True
 
 
-def test_codex_runtime_settings_are_runtime_local_and_reset_usage_cache(
+def test_codex_runtime_usage_settings_follow_active_provider_config(
     settings: Settings,
     tmp_path: Path,
 ) -> None:
     store = AiRuntimeSettingsStore(tmp_path / "ai-runtimes.local.yaml")
-    adapter = CodexRuntimeAdapter(settings, runtime_settings_store=store)
-
-    before = adapter.read_runtime_settings()
-    assert before.sections[0].fields[0].value is None
-    updated = adapter.update_runtime_settings(
-        RuntimeSettingsUpdate(
-            values={
-                "sub2api-base-url": "http://10.20.30.40",
-                "sub2api-subscription-id": 179,
-            }
-        )
+    codex_home = tmp_path / "codex"
+    codex_home.mkdir()
+    config = codex_home / "config.toml"
+    config.write_text(
+        'model_provider = "OpenAI"\n[model_providers.OpenAI]\nbase_url = "http://10.20.30.40"\n',
+        encoding="utf-8",
     )
-
-    assert updated.sections[0].fields[0].value == "http://10.20.30.40"
-    assert updated.sections[0].fields[1].value == 179
-    assert store.read().usage.sub2api.subscription_id == 179
-
-
-def test_codex_runtime_settings_reject_invalid_sub2api_url_as_user_input(
-    settings: Settings,
-    tmp_path: Path,
-) -> None:
     adapter = CodexRuntimeAdapter(
         settings,
-        runtime_settings_store=AiRuntimeSettingsStore(
-            tmp_path / "ai-runtimes.local.yaml"
-        ),
+        codex_home=codex_home,
+        runtime_settings_store=store,
     )
 
-    with pytest.raises(RuntimeOperationError) as exc_info:
-        adapter.update_runtime_settings(
-            RuntimeSettingsUpdate(
-                values={
-                    "sub2api-base-url": "https://example.test/not-an-origin",
-                    "sub2api-subscription-id": None,
-                }
-            )
-        )
+    assert adapter._read_usage_settings().provider_base_url == "http://10.20.30.40"
+    config.write_text(
+        'model_provider = "OpenAI"\n[model_providers.OpenAI]\nbase_url = "https://provider.example"\n',
+        encoding="utf-8",
+    )
 
-    assert exc_info.value.code == "codex_runtime_settings_invalid"
-    assert exc_info.value.kind == "invalid_request"
+    assert adapter._read_usage_settings().provider_base_url == "https://provider.example"
 
 
 def test_ai_runtime_general_timezone_is_shared_by_runtime_collectors(

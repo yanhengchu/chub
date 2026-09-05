@@ -268,7 +268,7 @@ async def _mock_workspace_api_with_quick_sessions(route) -> None:
             "available": True,
             "quick_creation": {"available": True},
             "terminal_creation": {"available": True},
-            "workspaces": [],
+            "workspaces": [{"id": "chub", "name": "Chub", "available": True}],
             "sessions": [
                 {
                     "id": "quick-slot",
@@ -345,7 +345,7 @@ async def _mock_workspace_api_with_task_orchestration(route) -> None:
 
 
 @pytest.mark.parametrize("viewport", [(390, 844), (1280, 900)], ids=["phone", "desktop"])
-async def test_task_orchestration_opens_as_workspace_subpage_from_ai_session_group(
+async def test_task_orchestration_opens_from_ai_runtime_settings_navigation(
     workspace_browser_server: str,
     viewport: tuple[int, int],
 ) -> None:
@@ -363,13 +363,17 @@ async def test_task_orchestration_opens_as_workspace_subpage_from_ai_session_gro
             page = await context.new_page()
             page_errors: list[str] = []
             page.on("pageerror", lambda error: page_errors.append(str(error)))
-            response = await page.goto(workspace_browser_server, wait_until="domcontentloaded")
+            response = await page.goto(
+                f"{workspace_browser_server}/settings/runtime",
+                wait_until="domcontentloaded",
+            )
             assert response is not None and response.status == 200
             if viewport[0] < 760:
-                await page.locator("#workspace-sidebar-toggle").click()
-            await page.get_by_role("link", name="微信任务润色").click()
-            await expect(page).to_have_url(re.compile(r"[?&]section=task-orchestration"))
-            await expect(page.get_by_role("heading", name="微信任务润色")).to_be_visible()
+                await page.get_by_role("button", name="微信任务润色").click()
+            else:
+                await page.get_by_role("link", name="微信任务润色").click()
+            await expect(page).to_have_url(re.compile(r"/settings/task-orchestration"))
+            await expect(page.locator("#workspace-task-orchestration-title")).to_be_visible()
             await expect(page.locator("#workspace-task-processing-value")).to_have_text(
                 "自动润色后执行",
             )
@@ -599,6 +603,36 @@ async def test_collapsed_sidebar_shows_quick_sessions_in_toolbar(
             await expect(slot_button).to_have_class(re.compile("is-current"))
             await page.set_viewport_size({"width": 390, "height": 844})
             await expect(toolbar).to_be_hidden()
+        finally:
+            await context.close()
+
+    assert page_errors == []
+
+
+async def test_workspace_new_session_dialog_focuses_create_button(
+    workspace_browser_server: str,
+) -> None:
+    browser_session = session_factory()
+    async with browser_session(ensure_page=False) as chrome:
+        context = await chrome.browser.new_context(viewport={"width": 1280, "height": 900})
+        try:
+            await context.route(
+                f"{workspace_browser_server}/api/**",
+                _mock_workspace_api_with_quick_sessions,
+            )
+            page = await context.new_page()
+            page_errors: list[str] = []
+            page.on("pageerror", lambda error: page_errors.append(str(error)))
+            response = await page.goto(workspace_browser_server, wait_until="domcontentloaded")
+            assert response is not None and response.status == 200
+            create_button = page.locator("#workspace-session-create")
+            await expect(create_button).to_be_enabled()
+            await create_button.click()
+            await expect(page.locator("#workspace-session-create-dialog")).to_be_visible()
+            await expect(page.locator("#workspace-session-create-confirm")).to_be_focused()
+            await page.keyboard.press("Escape")
+            await expect(page.locator("#workspace-session-create-dialog")).not_to_be_visible()
+            await expect(create_button).to_be_focused()
         finally:
             await context.close()
 

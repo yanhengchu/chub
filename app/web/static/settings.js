@@ -16,10 +16,10 @@ const runtimeManagementList = document.querySelector("#runtime-management-list")
 const runtimeManagementDescription = document.querySelector(
   "#runtime-management-description",
 );
-const runtimeSettingsPanel = document.querySelector("#runtime-settings-panel");
 const generalRuntimeSettingsPanel = document.querySelector(
   "#ai-runtime-general-settings",
 );
+const quickInteractionCore = window.QuickInteractionCore;
 const codexSessionSettingsMessage = document.querySelector(
   "#codex-session-settings-message",
 );
@@ -167,7 +167,7 @@ function initializeSettingsChoicePickers() {
     select.after(picker);
     document.body.append(menu);
 
-    const state = { select, trigger, menu };
+    const state = { select, trigger, menu, picker, observer: null };
     settingsChoicePickers.set(select, state);
     renderSettingsChoicePicker(state);
     trigger.addEventListener("click", () => {
@@ -184,14 +184,14 @@ function initializeSettingsChoicePickers() {
       menu.querySelector(".is-selected:not(:disabled), [role='option']:not(:disabled)")?.focus();
     });
     select.addEventListener("change", () => renderSettingsChoicePicker(state));
-    const observer = new MutationObserver(() => renderSettingsChoicePicker(state));
-    observer.observe(select, {
+    state.observer = new MutationObserver(() => renderSettingsChoicePicker(state));
+    state.observer.observe(select, {
       attributes: true,
       attributeFilter: ["disabled"],
       childList: true,
       subtree: true,
     });
-    settingsChoicePickerObservers.push(observer);
+    settingsChoicePickerObservers.push(state.observer);
   });
 }
 
@@ -340,7 +340,52 @@ async function loadRuntimeManagement() {
   }
 }
 
-function runtimeSettingInput(field) {
+function runtimeSettingOptions(field, catalog, values) {
+  if (field.id === "weekly-report-runtime") {
+    return [{ value: "codex", label: "Codex", description: "当前可用于周报自动化的 AI Runtime。" }];
+  }
+  if (field.id === "weekly-report-permission") {
+    return quickInteractionCore?.quickSessionPermissionOptions || [];
+  }
+  if (field.id === "weekly-report-model") {
+    return quickInteractionCore?.quickSessionModelOptions(
+      catalog,
+      values["weekly-report-model"] === "__default__" ? "" : values["weekly-report-model"],
+    ).map((option) => ({
+      ...option,
+      value: option.value || "__default__",
+    })) || [];
+  }
+  if (field.id === "weekly-report-reasoning") {
+    return quickInteractionCore?.quickSessionReasoningOptions(
+      catalog,
+      values["weekly-report-model"] === "__default__" ? "" : values["weekly-report-model"],
+      values["weekly-report-reasoning"] === "__default__" ? "" : values["weekly-report-reasoning"],
+    ).map((option) => ({
+      ...option,
+      value: option.value || "__default__",
+    })) || [];
+  }
+  return [];
+}
+
+function runtimeSettingInput(field, catalog, values) {
+  if (field.input_type === "select") {
+    const select = document.createElement("select");
+    select.id = `runtime-setting-${field.id}`;
+    select.name = field.id;
+    select.dataset.runtimeSetting = field.id;
+    for (const optionData of runtimeSettingOptions(field, catalog, values)) {
+      const option = document.createElement("option");
+      option.value = optionData.value;
+      option.textContent = optionData.label;
+      option.dataset.description = optionData.description || "";
+      option.selected = optionData.value === field.value;
+      option.disabled = optionData.disabled === true;
+      select.append(option);
+    }
+    return select;
+  }
   const input = document.createElement("input");
   input.id = `runtime-setting-${field.id}`;
   input.name = field.id;
@@ -355,74 +400,21 @@ function runtimeSettingInput(field) {
   return input;
 }
 
-function renderRuntimeSettings(data) {
-  if (!(runtimeSettingsPanel instanceof HTMLElement)) return;
-  const runtimeId = runtimeSettingsPanel.dataset.runtimeId || "";
-  if (!data || data.runtime_id !== runtimeId) throw new Error("runtime_settings_invalid");
-  runtimeSettingsPanel.replaceChildren();
-  const sections = Array.isArray(data.sections) ? data.sections : [];
-  for (const section of sections) {
-    const heading = document.createElement("h3");
-    heading.textContent = section.title;
-    runtimeSettingsPanel.append(heading);
-    if (section.description) {
-      const description = document.createElement("p");
-      description.className = "settings-subsection-description";
-      description.textContent = section.description;
-      runtimeSettingsPanel.append(description);
-    }
-    const form = document.createElement("form");
-    form.className = "runtime-settings-form";
-    form.dataset.runtimeSettingsSection = section.id;
-    for (const field of Array.isArray(section.fields) ? section.fields : []) {
-      const label = document.createElement("label");
-      label.className = "settings-field";
-      label.htmlFor = `runtime-setting-${field.id}`;
-      const copy = document.createElement("span");
-      const title = document.createElement("strong");
-      const detail = document.createElement("small");
-      title.textContent = field.label;
-      detail.textContent = field.description;
-      copy.append(title, detail);
-      label.append(copy, runtimeSettingInput(field));
-      form.append(label);
-    }
-    const actions = document.createElement("div");
-    actions.className = "settings-form-actions";
-    const submit = document.createElement("button");
-    submit.className = "secondary-button";
-    submit.type = "submit";
-    submit.textContent = "保存";
-    const message = document.createElement("p");
-    message.className = "message";
-    message.setAttribute("aria-live", "polite");
-    actions.append(submit);
-    form.append(actions, message);
-    form.addEventListener("submit", (event) => {
-      event.preventDefault();
-      void saveRuntimeSettings(runtimeId, form, submit, message);
-    });
-    runtimeSettingsPanel.append(form);
-  }
-}
-
-async function loadRuntimeSettings() {
-  if (!(runtimeSettingsPanel instanceof HTMLElement)) return;
-  const runtimeId = runtimeSettingsPanel.dataset.runtimeId || "";
-  try {
-    const data = await fetchSettingsApi(`/api/ai/runtimes/${encodeURIComponent(runtimeId)}/settings`);
-    renderRuntimeSettings(data);
-  } catch (_error) {
-    runtimeSettingsPanel.replaceChildren();
-    const message = document.createElement("p");
-    message.className = "message message-error";
-    message.textContent = "暂时无法读取此 Runtime 的专属配置。";
-    runtimeSettingsPanel.append(message);
-  }
-}
-
-function renderGeneralRuntimeSettings(data) {
+function disposeGeneralRuntimeSettingsPickers() {
   if (!(generalRuntimeSettingsPanel instanceof HTMLElement)) return;
+  for (const [select, picker] of settingsChoicePickers) {
+    if (!generalRuntimeSettingsPanel.contains(select)) continue;
+    if (openSettingsChoicePicker === picker) closeSettingsChoicePicker(picker);
+    picker.observer?.disconnect();
+    picker.menu.remove();
+    picker.picker.remove();
+    settingsChoicePickers.delete(select);
+  }
+}
+
+function renderGeneralRuntimeSettings(data, catalog = null) {
+  if (!(generalRuntimeSettingsPanel instanceof HTMLElement)) return;
+  disposeGeneralRuntimeSettingsPickers();
   generalRuntimeSettingsPanel.replaceChildren();
   const sections = Array.isArray(data?.sections) ? data.sections : [];
   for (const section of sections) {
@@ -437,6 +429,9 @@ function renderGeneralRuntimeSettings(data) {
     }
     const form = document.createElement("form");
     form.className = "runtime-settings-form";
+    const values = Object.fromEntries(
+      (Array.isArray(section.fields) ? section.fields : []).map((field) => [field.id, field.value]),
+    );
     for (const field of Array.isArray(section.fields) ? section.fields : []) {
       const label = document.createElement("label");
       label.className = "settings-field";
@@ -447,32 +442,37 @@ function renderGeneralRuntimeSettings(data) {
       title.textContent = field.label;
       detail.textContent = field.description;
       copy.append(title, detail);
-      label.append(copy, runtimeSettingInput(field));
+      const input = runtimeSettingInput(field, catalog, values);
+      label.append(copy, input);
+      if (input instanceof HTMLSelectElement) {
+        input.dataset.settingsPicker = "";
+      }
+      input.addEventListener("change", () => {
+        if (field.id === "weekly-report-model") {
+          const reasoning = form.querySelector("[data-runtime-setting='weekly-report-reasoning']");
+          if (reasoning instanceof HTMLSelectElement) reasoning.value = "__default__";
+        }
+        void saveGeneralRuntimeSettings(form, input, message);
+      });
       form.append(label);
     }
-    const actions = document.createElement("div");
-    actions.className = "settings-form-actions";
-    const submit = document.createElement("button");
-    submit.className = "secondary-button";
-    submit.type = "submit";
-    submit.textContent = "保存";
     const message = document.createElement("p");
     message.className = "message";
     message.setAttribute("aria-live", "polite");
-    actions.append(submit);
-    form.append(actions, message);
-    form.addEventListener("submit", (event) => {
-      event.preventDefault();
-      void saveGeneralRuntimeSettings(form, submit, message);
-    });
+    form.append(message);
     generalRuntimeSettingsPanel.append(form);
   }
+  initializeSettingsChoicePickers();
 }
 
 async function loadGeneralRuntimeSettings() {
   if (!(generalRuntimeSettingsPanel instanceof HTMLElement)) return;
   try {
-    renderGeneralRuntimeSettings(await fetchSettingsApi("/api/ai/settings"));
+    const [data, catalog] = await Promise.all([
+      fetchSettingsApi("/api/ai/settings"),
+      quickInteractionCore?.readModelCatalog().catch(() => null) || Promise.resolve(null),
+    ]);
+    renderGeneralRuntimeSettings(data, catalog);
   } catch (_error) {
     generalRuntimeSettingsPanel.replaceChildren();
     const message = document.createElement("p");
@@ -482,45 +482,25 @@ async function loadGeneralRuntimeSettings() {
   }
 }
 
-async function saveGeneralRuntimeSettings(form, submit, message) {
+async function saveGeneralRuntimeSettings(form, changedInput, message) {
   const values = {};
   form.querySelectorAll("[data-runtime-setting]").forEach((input) => {
     values[input.dataset.runtimeSetting] = input.value.trim() || null;
   });
-  submit.disabled = true;
+  const inputs = Array.from(form.querySelectorAll("[data-runtime-setting]"));
+  inputs.forEach((input) => { input.disabled = true; });
   setSettingsMessage(message, "");
   try {
-    renderGeneralRuntimeSettings(await fetchSettingsApi("/api/ai/settings", {
-      method: "PUT",
-      headers: settingsHeaders(true),
-      body: JSON.stringify({ values }),
-    }));
-  } catch (_error) {
-    submit.disabled = false;
-    setSettingsMessage(message, "保存失败，请检查配置后重试。", "error");
-  }
-}
-
-async function saveRuntimeSettings(runtimeId, form, submit, message) {
-  const values = {};
-  form.querySelectorAll("[data-runtime-setting]").forEach((input) => {
-    if (input.type === "number") {
-      values[input.dataset.runtimeSetting] = input.value === "" ? null : Number(input.value);
-    } else {
-      values[input.dataset.runtimeSetting] = input.value.trim() || null;
-    }
-  });
-  submit.disabled = true;
-  setSettingsMessage(message, "");
-  try {
-    const data = await fetchSettingsApi(`/api/ai/runtimes/${encodeURIComponent(runtimeId)}/settings`, {
+    const data = await fetchSettingsApi("/api/ai/settings", {
       method: "PUT",
       headers: settingsHeaders(true),
       body: JSON.stringify({ values }),
     });
-    renderRuntimeSettings(data);
+    const catalog = await (quickInteractionCore?.readModelCatalog().catch(() => null) || Promise.resolve(null));
+    renderGeneralRuntimeSettings(data, catalog);
   } catch (_error) {
-    submit.disabled = false;
+    inputs.forEach((input) => { input.disabled = false; });
+    if (changedInput instanceof HTMLElement) changedInput.focus();
     setSettingsMessage(message, "保存失败，请检查配置后重试。", "error");
   }
 }
@@ -797,9 +777,10 @@ if (settingsPage === "appearance") {
   initializeDiagnosticsSettings();
 } else if (settingsPage === "runtime-detail") {
   loadRuntimeManagement();
-  void loadRuntimeSettings();
 } else if (settingsPage === "runtime") {
   void loadGeneralRuntimeSettings();
+} else if (settingsPage === "task-orchestration") {
+  window.initializeWorkspaceTaskOrchestration?.();
 } else if (settingsPage === "session-defaults") {
   quickInteractionPageSize.value = readQuickInteractionPageSize();
   initializeSettingsChoicePickers();
@@ -811,6 +792,7 @@ if (settingsPage === "appearance") {
 }
 
   window.disposeSettingsPage = () => {
+    window.disposeWorkspaceTaskOrchestration?.();
     closeSettingsChoicePicker();
     settingsChoicePickerObservers.forEach((observer) => observer.disconnect());
     settingsChoicePickers.forEach(({ menu }) => menu.remove());

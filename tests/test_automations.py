@@ -28,6 +28,7 @@ from app.automations.models import (
     AutomationState,
     FeishuEnvironmentState,
     LinkedDocumentResult,
+    RuntimeAccountEnvironmentState,
 )
 from app.automations.operations import log_final_operation
 from app.automations.runner import (
@@ -51,6 +52,7 @@ import app.automations.runner as runner
 from app.automations.store import AutomationStateStore
 from app.core.config import Settings
 from app.core.response import ApiError
+import app.services.weekly_reports as weekly_reports
 from app.services.weekly_reports import reporting_period
 
 
@@ -848,6 +850,7 @@ tasks:
     settings.automations.runtime_dir = tmp_path / "runtime"
     settings.automations.artifacts_dir = tmp_path / "artifacts"
     monkeypatch.setattr(runner, "WEEKLY_REPORTS_ROOT", tmp_path / "weekly-reports")
+    monkeypatch.setattr(weekly_reports, "WEEKLY_REPORTS_ROOT", tmp_path / "weekly-reports")
     period = reporting_period()
 
     def fake_run(task, _settings, _run_id, *, output_root=None):
@@ -855,12 +858,16 @@ tasks:
         target.parent.mkdir(parents=True, exist_ok=True)
         if task.name == "国内业务周报":
             target.write_text(
-                "# 2026/07/27-2026/07/31（第一百三十四周）\n\n# 各端周报\n[2026/07/27\\-2026/07/31（第一百三十四周）](https://tenant.feishu.cn/wiki/previous)\n[本期资料一](https://tenant.feishu.cn/docx/current-1)\n[本期资料二](https://tenant.feishu.cn/wiki/current-2)\n[本期资料三](https://tenant.feishu.cn/wiki/current-3)\n[本期资料四](https://tenant.feishu.cn/wiki/current-4)\n[本期资料五](https://tenant.feishu.cn/docx/current-5)\n",
+                "# V 国内业务周报\n\n# 各端周报\n[2026/07/27\\-2026/07/31（第一百三十四周）](https://tenant.feishu.cn/wiki/previous)\n[vivo音乐产品周报](https://tenant.feishu.cn/docx/current-1)\n[vivo产品周报](https://tenant.feishu.cn/wiki/current-2)\n[vivo运营周报](https://tenant.feishu.cn/wiki/current-3)\n[移动端周会](https://tenant.feishu.cn/wiki/current-4)\n[服务端开发部周报](https://tenant.feishu.cn/docx/current-5)\n",
                 encoding="utf-8",
             )
         else:
+            headings = {
+                "移动端周会": f"# 移动端周会\n\n## 日期：{period}\n\n# 五、VIVO国内\n\n内容\n\n# 六、小米国内\n",
+                "服务端开发部周报": f"# 服务端开发部周报\n\n## 日期：{period}\n\n# 一、南京服务端 @薛峰\n\n内容\n\n# 二、其他服务端\n",
+            }
             target.write_text(
-                f"# 产品端周报\n\n## 日期：{period}\n",
+                headings.get(task.name, f"# {task.name}\n\n## 日期：{period}\n"),
                 encoding="utf-8",
             )
         return target, target.stat().st_size, False
@@ -872,9 +879,27 @@ tasks:
     assert result.status == "success"
     assert result.validation_status == "passed"
     assert (input_root / "国内业务周报.md").is_file()
-    assert (input_root / "linked" / "本期资料一.md").is_file()
+    assert (input_root / "linked" / "vivo音乐产品周报.md").is_file()
     assert (input_root.parent / ".inputs-updated").is_file()
+    assert (input_root.parent / "mapping.json").is_file()
+    assert (input_root.parent / "manifest.json").is_file()
+    assert weekly_reports.weekly_report_inputs_available(period) is True
     assert not list(input_root.parent.glob(".inputs-run-1.*"))
+
+    mapping = json.loads((input_root.parent / "mapping.json").read_text(encoding="utf-8"))
+    manifest = json.loads((input_root.parent / "manifest.json").read_text(encoding="utf-8"))
+    assert mapping["report_validation"] == runner._WEEKLY_REPORT_VALIDATION
+    assert manifest["report_validation"] == runner._WEEKLY_REPORT_VALIDATION
+    source_urls = {item["role"]: item.get("source_url") for item in manifest["documents"]}
+    assert source_urls == {
+        "main-report": "https://tenant.feishu.cn/wiki/source",
+        "previous-report": "https://tenant.feishu.cn/wiki/previous",
+        "music-product": "https://tenant.feishu.cn/docx/current-1",
+        "product": "https://tenant.feishu.cn/wiki/current-2",
+        "operations": "https://tenant.feishu.cn/wiki/current-3",
+        "client": "https://tenant.feishu.cn/wiki/current-4",
+        "server": "https://tenant.feishu.cn/docx/current-5",
+    }
 
 
 def test_weekly_input_publish_restores_inputs_and_marker_after_replace_failure(
@@ -1199,8 +1224,10 @@ def test_run_automation_updates_persistent_state(
     async def fake_browser_task(*_args):
         return output, output.stat().st_size, False
 
-    with patch("app.automations.runner._run_browser_task", fake_browser_task):
-        result = run_automation(settings, "monthly-report", run_id="run-1")
+    browser_lock = settings.automations.runtime_dir / "locks" / "debug-chrome.lock"
+    with file_lock(browser_lock, 0):
+        with patch("app.automations.runner._run_browser_task", fake_browser_task):
+            result = run_automation(settings, "monthly-report", run_id="run-1")
 
     assert result.status == "success"
     assert result.output_file == str(output)
@@ -1420,6 +1447,7 @@ def test_manager_checks_and_caches_feishu_environment(
     configure_automations(settings, tmp_path)
     manager = AutomationManager(settings)
     checked_at = datetime.now().astimezone()
+    manager._store.write(AutomationState(task_id="monthly-report", status="running"))
 
     async def fake_check():
         return FeishuEnvironmentState(
@@ -1440,6 +1468,26 @@ def test_manager_checks_and_caches_feishu_environment(
 
     assert result.state == "available"
     assert listing.feishu_environment == result
+
+
+def test_manager_checks_and_caches_codex_runtime_account(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    configure_automations(settings, tmp_path)
+    checked_at = datetime.now().astimezone()
+    checker = lambda: RuntimeAccountEnvironmentState(
+        state="available",
+        message="ChatGPT 登录有效",
+        checked_at=checked_at,
+    )
+    manager = AutomationManager(settings, codex_account_checker=checker)
+
+    result = manager.check_codex_runtime_account()
+    listing = manager.list()
+
+    assert result.state == "available"
+    assert listing.codex_runtime_account == result
 
 
 def test_manager_resets_feishu_environment_when_browser_stops(
@@ -1856,14 +1904,13 @@ def test_manager_logs_failed_when_initialization_thread_cannot_start(
     assert manager._browser_initialization["operation_logged"] is True
 
 
-def test_manager_refuses_to_stop_browser_while_automation_lock_is_held(
+def test_manager_refuses_to_stop_browser_while_automation_task_is_running(
     settings: Settings,
     tmp_path: Path,
 ) -> None:
     configure_automations(settings, tmp_path)
     manager = AutomationManager(settings)
-    lock_path = settings.automations.runtime_dir / "locks" / "debug-chrome.lock"
+    manager._store.write(AutomationState(task_id="monthly-report", status="running"))
 
-    with file_lock(lock_path, 0):
-        with pytest.raises(ApiError, match="自动化任务正在使用"):
-            manager.control_browser("stop")
+    with pytest.raises(ApiError, match="自动化任务正在使用"):
+        manager.control_browser("stop")

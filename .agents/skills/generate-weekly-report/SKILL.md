@@ -32,20 +32,14 @@ Read the `重点关注内容` section of the downloaded `V 国内业务周报` b
 
 Then read only each document's declared `usage` range. Read [references/v-report-profile.md](references/v-report-profile.md) while extracting V-business coverage and [references/review-rules.md](references/review-rules.md) for fact handling.
 
-Create `output/本期工作重点确认清单-<周期>.md` with:
+Create `output/本期工作重点确认清单-<周期>.md` with exactly two business-content sections, both using short lists:
 
-- when the main report declares OKRs, reproduce each OKR title and target text verbatim under `目标：`, then group current focus items beneath their one primary OKR;
-- a separate `其他重点工作` section for confirmed important work that is not part of a declared OKR;
-- a clear status on each focus item, using concise states such as `已处理`、`持续跟进`、`持续推进`、`评审中`、`待决策` or `资料已输出`;
-- proposed inclusions, merges/weakening, and exclusions;
-- continuations from the previous report;
-- a `重点关注内容对照` section that records the disposition of every main-report priority item;
-- conflicts, missing information, and questions;
-- a proposed narrative of the formal report;
-- source-by-source coverage;
-- a `维护者确认结果` section.
+1. `本周需要同步的事项`: confirmed facts that merit weekly communication, including key numbers, dates, versions, states, ownership boundaries, previous-week continuations, and every main-report priority item classified as included or merged. When the main report declares OKRs, identify the applicable OKR title inline; do not duplicate target text or create separate OKR sections.
+2. `需要维护者确认的重点事项`: every main-report priority item classified as downgraded, excluded, or awaiting confirmation, plus material conflicts, missing information, interpretation choices, and formal-report inclusion or weakening decisions. State exactly what requires confirmation; do not turn an unverified concern into a conclusion.
 
-Keep entries factual and short. Preserve key numbers, dates, versions, states, and ownership boundaries. Use concrete dates for resolved or scheduled events. Do not draft polished report prose yet.
+Every main-report priority item must appear in one of the two lists. Do not add standalone sections for OKRs, other work, source coverage, priority reconciliation, proposed narrative, conflicts, or previous-week continuations; fold the necessary context into the relevant list item. Keep a short input-period/Manifest-fingerprint header and a `维护者确认结果` section after the two business sections. The confirmation section is a gate record, not a third business-content section.
+
+Keep entries factual and short. Use concrete dates for resolved or scheduled events. Do not draft polished report prose yet.
 
 Pause for explicit maintainer confirmation. Persist the confirmation time, decisions, approved gaps, final interpretations, and the manifest fingerprint in the checklist. Revalidate inputs immediately before Stage B; regenerate the checklist if any source hash changed.
 

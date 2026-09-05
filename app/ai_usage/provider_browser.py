@@ -13,7 +13,6 @@ from zoneinfo import ZoneInfo
 
 from app.ai_usage.models import AiFiveHourUsage, AiTodayUsage, AiWeeklyUsage
 from app.automations.browser import debug_chrome_status, session_factory
-from app.automations.lock import LockBusy, file_lock
 from app.codex.usage_settings import CodexUsageSettings
 from app.core.config import AutomationsConfig
 
@@ -56,22 +55,18 @@ class ProviderBrowserAdapter:
         self._automations = automations
 
     def collect(self, *, timeout_seconds: float) -> ProviderBrowserCollection:
-        if self._config.sub2api.base_url is None:
-            raise ProviderBrowserUnavailable("sub2api_not_configured")
+        if self._config.provider_base_url is None:
+            raise ProviderBrowserUnavailable("provider_base_url_unavailable")
         state, _, _ = debug_chrome_status()
         if state != "running":
             raise ProviderBrowserUnavailable("debug_chrome_not_running")
 
         deadline = time.monotonic() + max(0.1, timeout_seconds)
-        lock_path = self._automations.runtime_dir / "locks" / "debug-chrome.lock"
         try:
-            with file_lock(lock_path, max(0.0, deadline - time.monotonic())):
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise ProviderBrowserUnavailable("browser_lock_timeout")
-                payloads = asyncio.run(self._capture_responses(remaining))
-        except LockBusy as exc:
-            raise ProviderBrowserUnavailable("browser_lock_timeout") from exc
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ProviderBrowserUnavailable("browser_collection_timeout")
+            payloads = asyncio.run(self._capture_responses(remaining))
         except ProviderBrowserUnavailable:
             raise
         except Exception as exc:
@@ -207,7 +202,7 @@ class ProviderBrowserAdapter:
         return self._matches_response(response, self.STATS_PATH)
 
     def _matches_response(self, response: Any, path: str) -> bool:
-        base_url = self._config.sub2api.base_url
+        base_url = self._config.provider_base_url
         if base_url is None:
             return False
         target = urlsplit(base_url)
@@ -224,7 +219,7 @@ class ProviderBrowserAdapter:
         return self._is_expected_page(value, "/subscriptions")
 
     def _is_expected_page(self, value: str, path: str) -> bool:
-        expected = urlsplit(self._config.sub2api.base_url or "")
+        expected = urlsplit(self._config.provider_base_url or "")
         actual = urlsplit(value)
         return (
             self._origin(actual) == self._origin(expected)
@@ -232,7 +227,7 @@ class ProviderBrowserAdapter:
         )
 
     def _page_url(self, path: str) -> str:
-        target = urlsplit(self._config.sub2api.base_url or "")
+        target = urlsplit(self._config.provider_base_url or "")
         return urlunsplit((target.scheme, target.netloc, path, "", ""))
 
     @staticmethod
@@ -267,16 +262,9 @@ class ProviderBrowserAdapter:
                 and not isinstance(value.get("id"), bool)
             ):
                 matches.append((value, group))
-        subscription_id = self._config.sub2api.subscription_id
-        if subscription_id is not None:
-            matches = [item for item in matches if item[0]["id"] == subscription_id]
-        if len(matches) != 1:
-            if subscription_id is None and matches:
-                value, group = matches[0]
-            else:
-                raise ProviderBrowserUnavailable("sub2api_subscription_not_found")
-        else:
-            value, group = matches[0]
+        if not matches:
+            raise ProviderBrowserUnavailable("provider_subscription_not_found")
+        value, group = matches[0]
 
         used = self._decimal(value.get("weekly_usage_usd"), minimum=Decimal("0"))
         limit = self._decimal(group.get("weekly_limit_usd"), minimum=Decimal("0.01"))

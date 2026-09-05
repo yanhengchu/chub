@@ -268,7 +268,11 @@
       };
       showMessage(elements.createMessage, "");
       elements.createDialog.showModal();
-      elements.createWorkspacePicker.focus();
+      windowRef.requestAnimationFrame(() => {
+        if (elements.createDialog.open && !elements.createConfirm.disabled) {
+          elements.createConfirm.focus();
+        }
+      });
     }
 
     function setCreatePending(pending) {

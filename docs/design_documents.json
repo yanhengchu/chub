@@ -23,6 +23,13 @@
       "path": "CHUB_AI_RUNTIME_DESIGN.md"
     },
     {
+      "id": "chub-external-module",
+      "title": "Chub 外置模块功能设计",
+      "summary": "定义 AI Runtime 与任务编排外置模块的压缩包形态、动态加载、设置页展示和轻量接入边界。",
+      "status": "待实现",
+      "path": "CHUB_EXTERNAL_MODULE_DESIGN.md"
+    },
+    {
       "id": "local-llm-learning-deployment",
       "title": "本机大模型部署设计",
       "summary": "定义当前 MacBook 上独立于 Chub 的 Ollama 本机模型部署、资源边界、常用 API、分阶段模型选择和验收规则。",

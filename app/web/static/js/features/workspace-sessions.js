@@ -977,6 +977,9 @@
   createButton.addEventListener("click", () => {
     setMessage(createMessage, "");
     dialog.showModal();
+    window.requestAnimationFrame(() => {
+      if (dialog.open && !confirmButton.disabled) confirmButton.focus();
+    });
   });
   closeButton?.addEventListener("click", closeDialog);
   cancelButton?.addEventListener("click", closeDialog);

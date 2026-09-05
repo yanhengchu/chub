@@ -1,41 +1,109 @@
 from __future__ import annotations
 
 import os
-from ipaddress import ip_address, ip_network
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from app.core.config import PROJECT_ROOT
 
 
 CODEX_RUNTIME_SETTINGS_FILE = PROJECT_ROOT / "config" / "ai-runtimes.local.yaml"
 MAX_RUNTIME_SETTINGS_BYTES = 64 * 1024
+MAX_CODEX_CONFIG_BYTES = 512 * 1024
 
 
 class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class CodexSub2ApiUsageSettings(_StrictModel):
-    base_url: str | None = Field(default=None, max_length=2048)
-    subscription_id: int | None = Field(default=None, ge=1)
+class AiRuntimeGeneralSettings(_StrictModel):
+    timezone: str = Field(default="Asia/Shanghai", min_length=1, max_length=64)
+    weekly_report_session: "WeeklyReportSessionSettings" = Field(
+        default_factory=lambda: WeeklyReportSessionSettings()
+    )
 
-    @field_validator("base_url", mode="before")
+    @field_validator("timezone")
     @classmethod
-    def normalize_base_url(cls, value: object) -> object:
-        return value.strip() or None if isinstance(value, str) else value
+    def validate_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError("timezone must be a valid IANA timezone") from exc
+        return value
 
-    @model_validator(mode="after")
-    def validate_base_url(self) -> "CodexSub2ApiUsageSettings":
-        if self.base_url is None:
-            return self
-        target = urlsplit(self.base_url)
+
+class WeeklyReportSessionSettings(_StrictModel):
+    runtime_id: Literal["codex"] = "codex"
+    permission_mode: Literal["auto-review", "read-only", "full-access"] = "full-access"
+    model: str | None = Field(default=None, min_length=1, max_length=128)
+    reasoning_effort: str | None = Field(default=None, min_length=1, max_length=32)
+
+
+class CodexUsageSettings(_StrictModel):
+    """Resolved Codex collector settings from Runtime-general and Codex config."""
+
+    timezone: str = Field(default="Asia/Shanghai", min_length=1, max_length=64)
+    provider_base_url: str | None = Field(default=None, max_length=2048)
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError("timezone must be a valid IANA timezone") from exc
+        return value
+
+
+class RuntimeSettingsStoreUnavailable(OSError):
+    pass
+
+
+class CodexProviderConfigUnavailable(OSError):
+    pass
+
+
+class CodexProviderConfigReader:
+    """Reads the active Codex provider origin without exposing credentials."""
+
+    def __init__(self, codex_home: Path) -> None:
+        self._path = codex_home / "config.toml"
+
+    def read_base_url(self) -> str | None:
+        try:
+            if self._path.is_symlink():
+                raise OSError("Codex config cannot be a symlink")
+            with self._path.open("rb") as config_file:
+                content = config_file.read(MAX_CODEX_CONFIG_BYTES + 1)
+        except OSError as exc:
+            raise CodexProviderConfigUnavailable("Codex provider config unavailable") from exc
+        if len(content) > MAX_CODEX_CONFIG_BYTES:
+            raise CodexProviderConfigUnavailable("Codex provider config is too large")
+        try:
+            import tomllib
+
+            data = tomllib.loads(content.decode("utf-8"))
+        except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+            raise CodexProviderConfigUnavailable("Codex provider config is invalid") from exc
+        provider_name = data.get("model_provider")
+        providers = data.get("model_providers")
+        if not isinstance(provider_name, str) or not isinstance(providers, dict):
+            return None
+        provider = providers.get(provider_name)
+        base_url = provider.get("base_url") if isinstance(provider, dict) else None
+        if not isinstance(base_url, str):
+            return None
+        return self._normalize_origin(base_url)
+
+    @staticmethod
+    def _normalize_origin(value: str) -> str | None:
+        target = urlsplit(value.strip())
         if (
             target.scheme not in {"http", "https"}
             or not target.hostname
@@ -45,80 +113,17 @@ class CodexSub2ApiUsageSettings(_StrictModel):
             or target.fragment
             or target.path.rstrip("/")
         ):
-            raise ValueError("base_url must be a Sub2API origin")
-        if target.scheme == "http":
-            hostname = target.hostname.lower()
-            if hostname != "localhost":
-                try:
-                    address = ip_address(hostname)
-                except ValueError as exc:
-                    raise ValueError(
-                        "HTTP subscription pages must use a literal private address"
-                    ) from exc
-                private_ranges = (
-                    ip_network("10.0.0.0/8"), ip_network("172.16.0.0/12"),
-                    ip_network("192.168.0.0/16"), ip_network("127.0.0.0/8"),
-                    ip_network("fc00::/7"), ip_network("fe80::/10"),
-                    ip_network("::1/128"),
-                )
-                if not any(address in network for network in private_ranges):
-                    raise ValueError(
-                        "HTTP subscription pages must use a literal private address"
-                    )
-        return self
-
-
-class AiRuntimeGeneralSettings(_StrictModel):
-    timezone: str = Field(default="Asia/Shanghai", min_length=1, max_length=64)
-
-    @field_validator("timezone")
-    @classmethod
-    def validate_timezone(cls, value: str) -> str:
+            return None
         try:
-            ZoneInfo(value)
-        except ZoneInfoNotFoundError as exc:
-            raise ValueError("timezone must be a valid IANA timezone") from exc
-        return value
-
-
-class CodexUsageRuntimeSettings(_StrictModel):
-    sub2api: CodexSub2ApiUsageSettings = CodexSub2ApiUsageSettings()
-
-
-class CodexUsageSettings(_StrictModel):
-    """Resolved Codex collector settings, including Runtime-general values."""
-
-    timezone: str = Field(default="Asia/Shanghai", min_length=1, max_length=64)
-    sub2api: CodexSub2ApiUsageSettings = CodexSub2ApiUsageSettings()
-
-    @field_validator("timezone")
-    @classmethod
-    def validate_timezone(cls, value: str) -> str:
-        try:
-            ZoneInfo(value)
-        except ZoneInfoNotFoundError as exc:
-            raise ValueError("timezone must be a valid IANA timezone") from exc
-        return value
-
-
-class CodexRuntimeSettings(_StrictModel):
-    usage: CodexUsageRuntimeSettings = CodexUsageRuntimeSettings()
-
-
-class RuntimeSettingsStoreUnavailable(OSError):
-    pass
+            target.port
+        except ValueError:
+            return None
+        return target.geturl().rstrip("/")
 
 
 class AiRuntimeSettingsStore:
     def __init__(self, path: Path = CODEX_RUNTIME_SETTINGS_FILE) -> None:
         self._path = path
-
-    def read(self) -> CodexRuntimeSettings:
-        data = self._read_raw()
-        try:
-            return CodexRuntimeSettings.model_validate(data.get("codex", {}))
-        except (ValidationError, ValueError) as exc:
-            raise RuntimeSettingsStoreUnavailable("Codex Runtime settings are invalid") from exc
 
     def read_general(self) -> AiRuntimeGeneralSettings:
         data = self._read_raw()
@@ -148,12 +153,6 @@ class AiRuntimeSettingsStore:
             return data
         except (yaml.YAMLError, ValueError) as exc:
             raise RuntimeSettingsStoreUnavailable("Codex Runtime settings are invalid") from exc
-
-    def save(self, settings: CodexRuntimeSettings) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        data = self._read_raw()
-        data["codex"] = settings.model_dump(mode="json", exclude_none=True)
-        self._write_raw(data)
 
     def save_general(self, settings: AiRuntimeGeneralSettings) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)

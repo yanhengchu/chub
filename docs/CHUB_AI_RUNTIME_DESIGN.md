@@ -108,7 +108,7 @@ Chub 核心入口 / 第三方服务已完成认证与固定路由
 
 #### 3.3 Runtime 启用状态
 
-- 已注册 Runtime 的健康状态、部署可用性与任务接入策略分离：健康状态由 Adapter 报告；`settings.local.yaml` 的 `ai_runtime.<runtime_id>.enabled` 决定 Runtime 是否可作为部署实例启动；设置页的“接收新任务”由 Chub 在本机受限状态文件中保存，只控制后续新 AI 任务，不中断已受理任务。设置页的“AI Runtime”分组包含“通用配置”和每个已接入 Runtime 的独立入口；Runtime 页面展示标识、健康状态、任务接入策略和可日常维护的专属配置，不展示工作目录、运行目录等部署字段。
+- 已注册 Runtime 的健康状态、部署可用性与任务接入策略分离：健康状态由 Adapter 报告；`settings.local.yaml` 的 `ai_runtime.<runtime_id>.enabled` 决定 Runtime 是否可作为部署实例启动；设置页的“接收新任务”由 Chub 在本机受限状态文件中保存，只控制后续新 AI 任务，不中断已受理任务。设置页的“AI Runtime”分组包含“通用配置”和每个已接入 Runtime 的独立入口；Runtime 页面展示标识、健康状态、任务接入策略和可日常维护的专属配置，不展示工作目录、运行目录等部署字段。通用配置还可保存固定产品流程的新建 Session 预设；预设只允许后端已注册、适配该流程的 Runtime，不能由请求正文填写任意 Runtime 或 Runner。
 - 启用的 Runtime 可以接受新的 Session、快速交互、实时终端和微信文本优化任务；停用只拒绝新的任务受理，不取消、阻塞或改写已受理任务，也不影响读取、停止、归档和删除已有 Session。
 - 所有 Runtime 都停用时，Chub 保持基础功能模式。核心设备管理、第三方服务和已有任务的状态查看仍可用；AI 提交入口明确显示不可用原因。
 - 当前生产实例只注册 `codex`。设置页的列表和启用状态为后续固定注册的 Runtime 预留管理入口，但不提供 Runtime 选择器，也不允许既有 Session 跨 Runtime 迁移。
@@ -238,7 +238,7 @@ Quick Worker 是独立本机服务，当前生产使用固定 `codex` Runner。W
 
 当前仓库的共享契约位于 `app/ai_runtime/contracts.py`、`app/ai_runtime/registry.py` 和 `app/ai_runtime/worker.py`。Runtime 实现必须直接复用 `app.ai_runtime` 导出的模型和 Protocol，不复制一套同名模型，不把 Codex 私有模型当作共享接口。下表是生成 Adapter/Runner 时必须遵守的字段和约束；所有共享 Pydantic 模型均为严格、不可变且禁止额外字段。
 
-部署级 Runtime 配置使用 `settings.local.yaml` 的 `ai_runtime.<runtime_id>` 层级。当前 Codex 固定为 `ai_runtime.codex`，包含部署可用性、工作目录、运行目录、终端票据、并发和快速交互超时；旧顶层 `codex_pty` 不再读取。设置页不展示这类部署字段：其“接收新任务”开关是独立运行策略。设置页的 AI Runtime 通用配置保存跨 Runtime 共享的用量时区；各 Runtime 页面只保存其专属业务配置，例如 Codex 的 Sub2API 地址和订阅 ID。它们均保存于 `config/ai-runtimes.local.yaml`，但按 `general` 与 Runtime ID 隔离。
+部署级 Runtime 配置使用 `settings.local.yaml` 的 `ai_runtime.<runtime_id>` 层级。当前 Codex 固定为 `ai_runtime.codex`，包含部署可用性、工作目录、运行目录、终端票据、并发和快速交互超时；旧顶层 `codex_pty` 不再读取。设置页不展示这类部署字段：其“接收新任务”开关是独立运行策略。设置页的 AI Runtime 通用配置保存跨 Runtime 共享的用量时区，以及“周报自动化会话”的 Runtime、权限、模型和推理等级预设；该预设只用于之后由周报流程创建的 Quick Session，任务受理时写入 Session 快照，不修改 Runtime 全局默认或已有 Session。当前只接入 Codex；只读预设不能运行需写入产物的周报生成步骤。Codex 当前没有 Runtime 专属设置：其 API Key 用量采集从 `CODEX_HOME/config.toml` 的已选 provider 动态读取根地址，不在 Chub 保存第二份地址或订阅 ID。
 
 | 模型 | 必须提供的字段与边界 |
 | --- | --- |

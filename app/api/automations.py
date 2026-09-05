@@ -10,6 +10,7 @@ from app.automations.models import (
     BrowserInitializationRequest,
     BrowserStartRequest,
     FeishuEnvironmentState,
+    RuntimeAccountEnvironmentState,
 )
 from app.core.response import ApiResponse
 from app.core.security import require_trusted_network
@@ -180,6 +181,47 @@ def check_feishu_environment(
         action="check_feishu_environment",
         status="succeeded",
         target="feishu",
+        operation_id=operation_id,
+    )
+    return ApiResponse(data=result)
+
+
+@router.post(
+    "/environment/codex/check",
+    response_model=ApiResponse[RuntimeAccountEnvironmentState],
+)
+def check_codex_runtime_account(
+    request: Request,
+) -> ApiResponse[RuntimeAccountEnvironmentState]:
+    operation_id = log_operation(
+        request,
+        action="check_codex_runtime_account",
+        status="requested",
+        target="codex-runtime",
+    )
+    log_operation(
+        request,
+        action="check_codex_runtime_account",
+        status="started",
+        target="codex-runtime",
+        operation_id=operation_id,
+    )
+    try:
+        result = request.app.state.automation_manager.check_codex_runtime_account()
+    except Exception:
+        log_operation(
+            request,
+            action="check_codex_runtime_account",
+            status="failed",
+            target="codex-runtime",
+            operation_id=operation_id,
+        )
+        raise
+    log_operation(
+        request,
+        action="check_codex_runtime_account",
+        status="succeeded",
+        target="codex-runtime",
         operation_id=operation_id,
     )
     return ApiResponse(data=result)

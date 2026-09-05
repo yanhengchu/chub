@@ -12,7 +12,12 @@ from app.services.design_documents import (
     select_home_design_documents,
 )
 from app.core.response import ApiError
-from app.services.weekly_reports import get_weekly_report
+from app.services.weekly_reports import (
+    get_weekly_report,
+    list_latest_weekly_reports,
+    weekly_report_inputs_available,
+    weekly_report_focus_confirmed,
+)
 from app.web.themes import configure_theme_templates
 
 
@@ -184,9 +189,14 @@ def runtime_detail_settings(request: Request, runtime_id: str) -> HTMLResponse:
     )
 
 
-@router.get("/settings/task-orchestration", include_in_schema=False)
-def legacy_task_orchestration_settings() -> RedirectResponse:
-    return RedirectResponse("/?section=task-orchestration", status_code=307)
+@router.get("/settings/task-orchestration", response_class=HTMLResponse, include_in_schema=False)
+def task_orchestration_settings(request: Request) -> HTMLResponse:
+    return render_settings_page(
+        request,
+        page="task-orchestration",
+        title="微信任务润色",
+        description="配置微信 ClawBot 普通文本任务的处理方式和 AI Runtime 参数。",
+    )
 
 
 @router.get("/settings/session-defaults", response_class=HTMLResponse, include_in_schema=False)
@@ -196,7 +206,11 @@ def session_defaults_settings(request: Request) -> HTMLResponse:
 
 @router.get("/settings/weixin-text", include_in_schema=False)
 def legacy_weixin_text_settings(request: Request) -> RedirectResponse:
-    return RedirectResponse("/?section=task-orchestration", status_code=307)
+    return_url = _settings_return_url(request)
+    target = "/settings/task-orchestration"
+    if return_url != "/":
+        target = f"{target}?{urlencode({'return_to': return_url})}"
+    return RedirectResponse(target, status_code=307)
 
 
 @router.get("/settings/openclaw", response_class=HTMLResponse, include_in_schema=False)
@@ -231,7 +245,7 @@ def legacy_code_dark_style_preview() -> RedirectResponse:
 def workspace_preview(
     section: str = "workbench",
 ) -> RedirectResponse:
-    if section not in {"workbench", "project-docs", "automations", "task-orchestration"}:
+    if section not in {"workbench", "project-docs", "automations"}:
         raise HTTPException(status_code=404, detail="Workspace section not found")
     destination = "/" if section == "workbench" else f"/?section={section}"
     return RedirectResponse(destination, status_code=307)
@@ -244,7 +258,7 @@ def render_workspace(
     workspace_session_id: str | None = None,
 ) -> HTMLResponse:
     settings = request.app.state.settings
-    if section not in {"workbench", "project-docs", "automations", "task-orchestration"}:
+    if section not in {"workbench", "project-docs", "automations"}:
         raise HTTPException(status_code=404, detail="Workspace section not found")
     documents_error = None
     documents = []
@@ -252,6 +266,13 @@ def render_workspace(
     automations = None
     automations_error = None
     automation_start_available = False
+    weekly_reports = {}
+    weekly_report_focus_is_confirmed = False
+    weekly_report_formal_is_current = False
+    weekly_report_inputs_ready = False
+    weekly_report_generation = {}
+    weekly_report_generation_ready = False
+    weekly_report_generation_unavailable_reason = None
     if section == "project-docs":
         try:
             all_documents = list_design_documents(
@@ -269,6 +290,36 @@ def render_workspace(
                 profile.initialized or profile.source_available
                 for profile in automations.browser_profiles
             )
+            latest_weekly_reports = list_latest_weekly_reports()
+            weekly_reports = {
+                report.report_type: report for report in latest_weekly_reports
+            }
+            if latest_weekly_reports:
+                weekly_report_focus_is_confirmed = weekly_report_focus_confirmed(
+                    latest_weekly_reports[0].period
+                )
+                weekly_report_inputs_ready = weekly_report_inputs_available(
+                    latest_weekly_reports[0].period
+                )
+                focus_report = weekly_reports.get("focus")
+                formal_report = weekly_reports.get("report")
+                weekly_report_formal_is_current = bool(
+                    weekly_report_focus_is_confirmed
+                    and focus_report
+                    and focus_report.available
+                    and focus_report.updated_at
+                    and formal_report
+                    and formal_report.available
+                    and formal_report.updated_at
+                    and formal_report.updated_at >= focus_report.updated_at
+                )
+            weekly_report_generation = (
+                request.app.state.weekly_report_generation.read_current()
+            )
+            (
+                weekly_report_generation_ready,
+                weekly_report_generation_unavailable_reason,
+            ) = request.app.state.weekly_report_generation.configuration_ready()
         except ApiError as exc:
             automations_error = exc.message
     return templates.TemplateResponse(
@@ -285,6 +336,13 @@ def render_workspace(
             "automations": automations,
             "automations_error": automations_error,
             "automation_start_available": automation_start_available,
+            "weekly_reports": weekly_reports,
+            "weekly_report_focus_is_confirmed": weekly_report_focus_is_confirmed,
+            "weekly_report_formal_is_current": weekly_report_formal_is_current,
+            "weekly_report_inputs_ready": weekly_report_inputs_ready,
+            "weekly_report_generation": weekly_report_generation,
+            "weekly_report_generation_ready": weekly_report_generation_ready,
+            "weekly_report_generation_unavailable_reason": weekly_report_generation_unavailable_reason,
         },
     )
 

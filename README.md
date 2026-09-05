@@ -8,6 +8,8 @@ Chub 是面向个人设备、本地优先的轻量 AI 工作站控制面。它�
 
 长期目标是让 Chub 成为不依赖单一 Agent 产品的个人 AI 工作站：在保持统一安全、逻辑 Session、任务和最终状态语义的前提下，通过稳定契约接入经过验证的 Agent Runtime。项目继续坚持本地优先、可靠终态和适合个人维护的复杂度，支持 macOS LaunchAgent 与 Ubuntu systemd user service；新 Runtime 只由真实需求驱动，并在能力、权限和恢复机制通过验证后接入。
 
+Chub 按维护者授信的个人工作站运行，不按多用户平台或零信任插件市场设计。日常设计以功能可用、简单运维、局部恢复和最终结果可确认优先；只为直接的数据破坏、安全或不可恢复冲突设置门禁，不默认增加签名、发布者认证、沙箱、逐项审批、复杂依赖解析或全局阻塞。维护者直接安装的本机扩展可使用轻量加载规则；微信、OpenClaw 等外部入口仍保持固定身份、路由、敏感信息和设备控制边界。
+
 ## AI Agent 快速理解
 
 本文是 Chub 项目入口，负责项目定位、当前能力、运行入口、核心安全边界、架构概览和专项文档导航。本文不替代 Session、Worker、Runtime、OpenClaw、自动化、前端或用量等子模块设计，也不重复维护微信固定指令和用户可见回复格式；这些细节以对应专项文档和[集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md)为准。
@@ -66,7 +68,7 @@ AI Runtime 层
 | 周报 | 校验当期资料和周期，确认重点后生成、复核并展示正式周报 | 自动化页、周报页 |
 | 通知 | 向预配置的飞书目标发送有界纯文本通知，不接受任意目标或 Webhook | 命令行、Chub API、OpenClaw Tool |
 | 项目资料 | 在可信网络内查看已登记的项目说明、设计方案与维护文档，并由维护入口控制首页显示 | 首页、项目资料页 |
-| 任务编排 | 调整微信普通任务的执行前润色、模型和推理等级 | 首页 AI Session 分组下的微信任务润色配置页 |
+| 任务编排 | 调整微信普通任务的执行前润色、模型和推理等级 | 设置页 AI Runtime 分组下的微信任务润色配置页 |
 | 外观 | 切换 Standard、Code Dark、Studio Cyan 主题，以及小、默认、大三档文字大小 | 设置页 |
 
 页面、微信和翻译快速任务统一由独立 Worker 承载，Web 重启不会中断已接受的任务。Worker 服务、恢复、通知和协调重启的完整边界见[Chub Quick Worker 独立服务设计](docs/CHUB_QUICK_WORKER_DESIGN.md)。
@@ -102,7 +104,7 @@ cp config/settings.example.yaml config/settings.local.yaml
 - `app.page_title`：浏览器标签和首页标题；省略时使用应用名称。
 - `security.allow_tailscale`：默认开启，允许真实 Tailnet socket 来源访问受保护接口；不信任客户端转发 Header，也不识别具体用户。
 - `ai_runtime.codex`：Codex Runtime 的部署可用性、工作目录、运行数据目录、终端票据、并发和快速交互超时等部署级配置。设置页的“接收新任务”是独立运行策略，不会改写此处的 `enabled`。旧顶层 `codex_pty` 已移除。
-- “设置 → AI Runtime → 通用配置”维护已接入 Runtime 共用的用量时区；Codex 的 Sub2API 用量来源在“设置 → AI Runtime → Codex Runtime”维护。两类设置均保存于未提交的 `config/ai-runtimes.local.yaml`，按 `general` 与 Runtime ID 隔离；采集路径固定，不保存 Cookie、Authorization 或其他上游凭据。
+- “设置 → AI Runtime → 通用配置”维护已接入 Runtime 共用的用量时区，并保存于未提交的 `config/ai-runtimes.local.yaml`。Codex 使用 API Key 时，从当前 `CODEX_HOME/config.toml` 的已选 provider 动态读取请求根地址；采集路径固定，不保存 Cookie、Authorization 或其他上游凭据。
 - `openclaw.integration_config_path` 与 `openclaw.integration_state_dir`：仅当 OpenClaw Gateway 使用与 Chub 不同的 profile 或进程环境时，同时登记其实际配置文件和状态目录，供设置页读取插件配置与安装索引；不填写时按 Chub 进程可见的 OpenClaw 环境变量和默认位置推导。
 
 Chub 始终监听 `127.0.0.1:<port>`，供本机浏览器与同机 OpenClaw 使用。每次启动时，Chub 通过固定 `tailscale ip -4` 查询本机当前地址，并在每个可用地址的 `server.port` 上自动增加 Tailnet 监听；不再维护固定 Tailnet 地址配置。若没有可用地址或地址当前不可绑定，Chub 保持 loopback 可用并在首页标记远程访问不可用，不会因 Tailnet 监听失败停止控制面，也不会影响本机 Codex Runtime、快速任务或本机实时终端。工作台会显示实际成功监听的 Tailnet 地址和端口；Tailscale 地址在 Web 运行期间变化时，需重启 Web 重新建立监听。不要配置 `0.0.0.0` 或普通局域网地址。Tailnet 请求只信任真实 socket 来源，不信任客户端转发 Header；如果 Tailnet 将来加入其他人的设备，应重新评估设备级授权和高风险操作边界。
@@ -198,7 +200,7 @@ Session、Activity、usage 投影、槽位、标题和入口语义见[Chub AI Se
 
 OpenClaw 提供可信入口和通道上下文，Chub 负责业务路由、安全校验和最终状态；整条链路不调用 OpenClaw Agent，也不把消息拦截或任务提交等同于最终成功。
 
-首页“工作站环境”中的“第三方服务环境”独立展示 Gateway 和微信 ClawBot 状态，并提供受控的启动、重启及微信绑定：Gateway 停止时只显示启动，运行或降级时只显示重启；确认弹窗保留“重启与恢复”的完整影响说明。其刷新和失败反馈不影响 Chub、Quick Worker 与升级恢复状态；启动或重启成功后会写入当前浏览器会话缓存，重新进入工作台先展示这次最终状态，再在后台重新核验。设置页“第三方服务”的 OpenClaw 只核对本机 OpenClaw 配置、插件安装元数据和固定清单，不读取或展示 Gateway 信息，也不启动 OpenClaw CLI。Gateway 运行状态只在首页工作站环境查看。补丁列表只表示 Chub 已验收基线中的清单登记，补丁内容和运行时加载状态只在“重启与恢复”流程核验；设置页不再重复提供运行操作。微信普通任务的文本处理方式、文本优化模型和推理等级位于首页 AI Session 分组下“任务编排”内的微信任务润色配置页。诊断响应不展示运行目录、来源路径或完整性数据。设置页“维护与版本”的维护终端是 Chub 自有的独立 `ttyd`/`zsh` 页面：它固定从当前项目目录启动，允许本机或受信 Tailnet 浏览器执行任意 Shell 命令，不依赖或代理 OpenClaw。该入口等同于当前设备用户 Shell 权限；Tailnet 访问者获得同等权限，维护者必须只允许可信设备加入 Tailnet。重启与恢复只会同步完整已验证基线中的固定插件和补丁，再重启 Gateway 和消息通道；候选版本的局部兼容补丁必须按定制设计人工复检，不会因重启而自动应用。底层 API action 仍使用 `restart`，微信端使用 `restart clawbot`。绑定成功只表示通道登录完成，不代表发送者配对或 Owner 权限已经配置。
+首页“工作站环境”中的“第三方服务环境”独立展示 Gateway 和微信 ClawBot 状态，并提供受控的启动、重启及微信绑定：Gateway 停止时只显示启动，运行或降级时只显示重启；确认弹窗保留“重启与恢复”的完整影响说明。其刷新和失败反馈不影响 Chub、Quick Worker 与升级恢复状态；启动或重启成功后会写入当前浏览器会话缓存，重新进入工作台先展示这次最终状态，再在后台重新核验。设置页“第三方服务”的 OpenClaw 只核对本机 OpenClaw 配置、插件安装元数据和固定清单，不读取或展示 Gateway 信息，也不启动 OpenClaw CLI。Gateway 运行状态只在首页工作站环境查看。补丁列表只表示 Chub 已验收基线中的清单登记，补丁内容和运行时加载状态只在“重启与恢复”流程核验；设置页不再重复提供运行操作。微信普通任务的文本处理方式、文本优化模型和推理等级位于设置页 AI Runtime 分组下的微信任务润色配置页。诊断响应不展示运行目录、来源路径或完整性数据。设置页“维护与版本”的维护终端是 Chub 自有的独立 `ttyd`/`zsh` 页面：它固定从当前项目目录启动，允许本机或受信 Tailnet 浏览器执行任意 Shell 命令，不依赖或代理 OpenClaw。该入口等同于当前设备用户 Shell 权限；Tailnet 访问者获得同等权限，维护者必须只允许可信设备加入 Tailnet。重启与恢复只会同步完整已验证基线中的固定插件和补丁，再重启 Gateway 和消息通道；候选版本的局部兼容补丁必须按定制设计人工复检，不会因重启而自动应用。底层 API action 仍使用 `restart`，微信端使用 `restart clawbot`。绑定成功只表示通道登录完成，不代表发送者配对或 Owner 权限已经配置。
 
 微信 Chub 固定维护指令为 `restart` / `restart web`（重启 Web）、`restart worker`（重启 Worker）、`restart clawbot`（重启 ClawBot）、`restart network`（重连已固定的 Ubuntu Wi-Fi/VPN）和 `upgrade`（升级系统）；均按固定目标执行，不接受附加路径或命令。网络重连与本机 `chub network-restart` 共用同一配置及终态校验：仅 Ubuntu 的 NetworkManager 可用，macOS 会明确拒绝，不会尝试切换网络；Tailscale 不在操作范围。各操作的最终结果分别以新实例、Worker、Gateway/消息通道、NetworkManager 活动连接或升级运行态确认结果为准；异步操作通过独立通知返回。
 
@@ -245,7 +247,7 @@ Chub 使用独立 Debug Chrome 执行配置驱动的浏览器任务。公共任�
 cp config/automations.example.yaml config/automations.local.yaml
 ```
 
-自动化任务卡片的“自动化环境”管理 Chub Debug Chrome、检查飞书登录状态并运行任务；命令行也可调用统一 Runner：
+自动化任务卡片将 Debug Chrome 放在“自动化环境”，并在“账户环境”中分别检查飞书账户和 Codex Runtime 账户状态；飞书检查使用受管浏览器，Codex Runtime 检查复用 AI 额度最终快照，只有认证类型与额度均可读取时才显示可用。API Key 已配置但额度账户未登录时明确提示登录缺失；其他采集错误仍显示暂不可用。检查不展示账号标识或凭据。命令行仍可调用统一 Runner：
 
 ```bash
 .venv/bin/python -m app.automations.command run <task-id>
@@ -255,11 +257,9 @@ Runner 不会自行启动或停止 Debug Chrome。浏览器 Profile 未初始化
 
 ### 微信正文处理
 
-正文处理设置下的翻译模型和等级独立于隐藏翻译 Session，只影响之后新提交的文本优化任务。任务提交时保存参数快照，已经进入队列的任务不因设置变化而改写；未选择模型和等级时跟随 Runtime 默认。
+设置页 AI Runtime 分组下的微信任务润色配置页是节点级设置，需要真实 loopback 或可信 Tailnet 访问。它调整微信普通文本任务的执行前处理、文本优化模型和推理等级，只影响之后新接收的正文任务；页面修改即时生效，不改写已经受理的任务，也无需改写 YAML 或重启服务。
 
-首页 AI Session 分组下“任务编排”内的微信任务润色配置页是节点级设置，需要真实 loopback 或可信 Tailnet 访问。微信普通任务及携带正文的 `S1`–`S9` 支持三档：`直接执行`直接提交原文；`自动润色后执行`先在独立只读 Session 生成中文润色和 English，再自动提交润色中文；`自动润色后确认执行`生成同一份内容后发送 `Translation ready`，由维护者用 `text ok`、`text next`、`text cancel` 或英文复述处理确认队头。自动润色与确认模式在原消息、固定目标和回送路由已持久化进入 Chub 队列后即受理，隐藏 Worker 交接不会阻塞微信同步回执；后续交接或润色失败会单独通知，且不会执行原文。正文超过 `translation_preprocess_max_input_chars`（默认 1200 字符）时直接提交，不进入润色、翻译或确认流程。主任务实际被接收后才发送包含润色中文和 English 的 `Started`；确认模式在受理后异步投递该通知，不增加单独的“Preparing to submit”回执。固定指令和续提指令绕过该流程，具体指令、队列和失败边界以[集成能力清单第 4 节](docs/CHUB_INTEGRATION_CAPABILITIES.md#4-微信-clawbot-指令)为准。
-
-首次默认由 `translation_mode`（`direct` / `auto` / `confirm`）决定；未设置时兼容读取旧 `translation_enabled`（`false` 为直接执行，`true` 为自动润色后执行）。页面修改后由 Chub 私有状态持久化并即时生效，无需改写 YAML 或重启服务。
+处理模式、固定指令、用户可见通知和确认流程以[Chub 集成能力清单第 4 节](docs/CHUB_INTEGRATION_CAPABILITIES.md#4-微信-clawbot-指令)为唯一依据；Worker 队列、持久化、失败与恢复边界见[Chub Quick Worker 独立服务设计](docs/CHUB_QUICK_WORKER_DESIGN.md)。
 
 ### 外观
 
@@ -278,7 +278,7 @@ Runner 不会自行启动或停止 Debug Chrome。浏览器 Profile 未初始化
 
 共享需求文件由 Git 工作流同步，不由后台服务自动合并。多台设备同时修改可能产生 Git 冲突；发现冲突、非法 JSON 或未完成合并时，需求读写必须失败关闭，不覆盖其他设备内容。共享需求不得保存 Token、Cookie、账号凭证、本机秘密或其他不适合进入 Git 历史的内容。
 
-首页工作站环境包含 Chub、Quick Worker 和“升级与恢复”；其中“第三方服务环境”是独立状态分区，单独承载 OpenClaw Gateway/微信 ClawBot 的启动、重启、微信绑定和状态刷新。自动化任务的“自动化环境”继续承载 Debug Chrome。
+首页工作站环境包含 Chub、Quick Worker 和“升级与恢复”；其中“第三方服务环境”是独立状态分区，单独承载 OpenClaw Gateway/微信 ClawBot 的启动、重启、微信绑定和状态刷新。自动化任务的“自动化环境”承载 Debug Chrome，“账户环境”承载飞书和 Codex Runtime 的账户状态检查。
 
 “升级与恢复”只重建 Chub 自有 AI 运行态、Chub Web 与 Quick Worker：持久化操作、冻结新写入、有界收敛 Quick Worker、清理本次范围内的旧运行态，再由独立执行器恢复 Web/Worker，并确认新实例、协议、Worker 健康和写入恢复。Chub 行展示当前控制面状态，Quick Worker 行只展示 Worker 当前状态；其下方 AI Runtime 行按注册顺序展示每个 Runtime 的可用、已停用或不可用状态，并在页面加载和核心服务刷新时重新读取。没有注册项时显示“未配置 AI Runtime”，读取失败时显示“AI Runtime 状态暂无法确认”；这些 Runtime 状态不改变 Worker 或核心恢复成功结论。升级行没有版本或协议差异时显示“状态：无待升级”，有差异时只展示 Chub 版本、Session 数据或 Worker 协议的升级点；升级方案不可读取时显示“状态：仅可恢复。升级方案不可用”。完整影响说明保留在确认弹窗与日志。每个组件的固定结果会随升级操作 ID 写入操作日志，供多轮验收追溯，不作为首页状态。它不重建 Codex 原生 Session、用户配置、日志、项目资料或业务数据。OpenClaw Gateway、插件、补丁、消息通道、Debug Chrome 和 Python 依赖安装都不属于核心升级步骤或完成条件，应由各自维护入口单独处理。
 
@@ -357,6 +357,7 @@ CHUB_BROWSER_TESTS=1 .venv/bin/python -m pytest \
 | [Chub 项目说明](README.md) | 项目概览、安装、日常入口、安全和文档导航 |
 | [Chub 总体架构设计](docs/CHUB_ARCHITECTURE_DESIGN.md) | 核心、AI Runtime 与第三方服务三层架构、状态所有权和跨模块约束 |
 | [Chub AI Runtime 架构设计](docs/CHUB_AI_RUNTIME_DESIGN.md) | AI Runtime 架构、Session Manager、Worker 职责和 Runtime 实现规范 |
+| [Chub 外置模块功能设计](docs/CHUB_EXTERNAL_MODULE_DESIGN.md) | AI Runtime 与任务编排外置模块的压缩包形态、动态加载和轻量接入边界 |
 | [本机大模型部署设计](docs/LOCAL_LLM_LEARNING_DEPLOYMENT_DESIGN.md) | 当前 MacBook 上独立的 Ollama 本机模型部署、常用 API、资源边界、阶段和验收 |
 | [Chub AI Session 状态模型设计](docs/AI_SESSION_STATE_DESIGN.md) | Session、Activity、usage 投影、入口、操作、槽位和单 writer 语义 |
 | [Chub Quick Worker 独立服务设计](docs/CHUB_QUICK_WORKER_DESIGN.md) | Quick Worker 独立服务、非实时任务、恢复、通知终态和重启协调 |

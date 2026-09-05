@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timezone
 import re
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -12,11 +13,13 @@ from app.automations.models import (
     AutomationTaskPublic,
     BrowserProfilePublic,
     FeishuEnvironmentState,
+    RuntimeAccountEnvironmentState,
 )
 from app.application import create_app
 from app.codex.models import CodexSession, RuntimeManagementData, RuntimeManagementItem
 from app.core.config import Settings
 import app.services.weekly_reports as weekly_report_service
+import app.web.routes as web_routes
 from app.web.themes import WEB_FONT_SIZES, WEB_THEMES
 
 
@@ -764,6 +767,7 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
         "diagnostics": "/settings/diagnostics",
         "runtime": "/settings/runtime",
         "runtime-detail": "/settings/runtime/codex",
+        "task-orchestration": "/settings/task-orchestration",
         "session-defaults": "/settings/session-defaults",
         "openclaw": "/settings/openclaw",
     }
@@ -774,10 +778,6 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
             follow_redirects=False,
         )
         legacy_weixin_text = await client.get("/settings/weixin-text", follow_redirects=False)
-        legacy_task_orchestration = await client.get(
-            "/settings/task-orchestration",
-            follow_redirects=False,
-        )
         legacy_gateway = await client.get("/settings/openclaw/gateway", follow_redirects=False)
         legacy_clawbot = await client.get("/settings/openclaw/clawbot", follow_redirects=False)
         unknown_runtime = await client.get("/settings/runtime/unknown")
@@ -799,9 +799,7 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert "通用设置" in pages["appearance"].text
     assert "会话与偏好" not in pages["appearance"].text
     assert legacy_weixin_text.status_code == 307
-    assert legacy_weixin_text.headers["location"] == "/?section=task-orchestration"
-    assert legacy_task_orchestration.status_code == 307
-    assert legacy_task_orchestration.headers["location"] == "/?section=task-orchestration"
+    assert legacy_weixin_text.headers["location"] == "/settings/task-orchestration"
     assert legacy_gateway.status_code == 307
     assert legacy_gateway.headers["location"] == "/settings/openclaw"
     assert legacy_clawbot.status_code == 307
@@ -840,7 +838,7 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert 'id="quick-interaction-page-size"' not in pages["runtime"].text
     assert 'data-settings-page="runtime-detail"' in pages["runtime-detail"].text
     assert 'id="runtime-management-list"' in pages["runtime-detail"].text
-    assert 'id="runtime-settings-panel"' in pages["runtime-detail"].text
+    assert 'id="runtime-settings-panel"' not in pages["runtime-detail"].text
     assert "控制是否接收新任务" in pages["runtime-detail"].text
     assert "ai_runtime.{{ settings_runtime_id }}" not in pages["runtime-detail"].text
     assert "ai_runtime.codex" in pages["runtime-detail"].text
@@ -850,7 +848,9 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert 'data-runtime-id="codex"' in pages["runtime-detail"].text
     assert pages["runtime-detail"].text.count('id="runtime-management-description"') == 1
     assert 'href="/settings/runtime/codex" aria-current="page"' in pages["runtime-detail"].text
-    assert 'href="/settings/task-orchestration"' not in pages["runtime"].text
+    assert 'href="/settings/task-orchestration"' in pages["runtime"].text
+    assert 'href="/settings/task-orchestration" aria-current="page"' in pages["task-orchestration"].text
+    assert 'id="workspace-task-processing-trigger"' in pages["task-orchestration"].text
     assert 'class="theme-option-grid" role="radiogroup" aria-label="主题选择"' in pages["appearance"].text
     assert '<title>外观 · 设置 ·' in pages["appearance"].text
     assert '<span>外观</span></a>' in pages["appearance"].text
@@ -898,7 +898,7 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert 'OPENCLAW_INTEGRATION_CACHE_KEY' not in script.text
     assert '"当前展示上次检查结果，正在重新核验。"' not in script.text
     assert 'data.message?.includes("均已确认")' not in script.text
-    assert 'task-orchestration' not in script.text
+    assert 'settingsPage === "task-orchestration"' in script.text
     assert 'row.classList.toggle("is-selected", selected);' in script.text
     assert 'input.addEventListener("change", () => {' in script.text
     assert 'const THEME_DETAILS_EXPANDED_KEY = "hub.themeDetailsExpanded.v1";' in script.text
@@ -907,7 +907,7 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert 'setDetailsExpanded(detailsExpanded, { persist: false, animate: false });' in script.text
     assert 'const settingsPage = document.body.dataset.settingsPage || "";' in script.text
     assert 'settingsPage === "runtime-detail"' in script.text
-    assert 'loadRuntimeSettings();' in script.text
+    assert 'loadRuntimeSettings();' not in script.text
     assert 'settingsPage === "runtime"' in script.text
     assert 'loadGeneralRuntimeSettings();' in script.text
     assert "scrollToSettingsSection" not in script.text
@@ -942,13 +942,10 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert "border-radius: 50%;" in stylesheet.text
     assert ".settings-subnavigation" not in stylesheet.text
     assert home.status_code == 200
-    assert 'id="workspace-preview-task-orchestration-title">任务编排' in home.text
-    assert 'href="/?section=task-orchestration"' in home.text
-    assert home.text.index('id="workspace-preview-task-orchestration-title"') > home.text.index(
-        'id="workspace-session-list"',
-    )
     assert 'id="workspace-task-orchestration-dialog"' not in home.text
-    assert 'src="/static/js/features/workspace-task-orchestration.js"' in home.text
+    assert 'workspace-preview-task-orchestration' not in home.text
+    assert 'src="/static/js/features/workspace-task-orchestration.js"' not in home.text
+    assert 'src="/static/js/features/workspace-task-orchestration.js"' in pages["task-orchestration"].text
     assert workspace_script.status_code == 200
     assert '"/api/settings/weixin-translation"' in workspace_script.text
     assert '"/api/codex/models"' in workspace_script.text
@@ -1121,7 +1118,7 @@ async def test_workspace_preview_is_static_and_available(settings: Settings) -> 
     assert ".workspace-automation-details > .workstation-group + .workstation-group::before" in stylesheet.text
     assert "right: -1rem;" in stylesheet.text
     assert "left: -1rem;" in stylesheet.text
-    assert ".automation-environment .workstation-status-row {\n  min-height: 0;" in stylesheet.text
+    assert ".automation-environment .workstation-status-row,\n.automation-account-environment .workstation-status-row {\n  min-height: 0;" in stylesheet.text
     assert ".workspace-preview-shell.is-sidebar-collapsed" in stylesheet.text
     assert ".workspace-quick-session-toolbar-button" in stylesheet.text
     assert "--workspace-sidebar-width: var(--workspace-sidebar-preload-width, 225px);" in stylesheet.text
@@ -1174,7 +1171,13 @@ async def test_workspace_preview_is_static_and_available(settings: Settings) -> 
     assert '"/api/automations/browser/start"' in workspace_script.text
     assert '"/api/automations/browser/stop"' in workspace_script.text
     assert '"/api/automations/environment/feishu/check"' in workspace_script.text
+    assert '"/api/automations/environment/codex/check"' in workspace_script.text
     assert 'automationFeishuCheck.textContent = "检查中…";' in workspace_script.text
+    assert 'automationCodexAccountCheck.textContent = "检查中…";' in workspace_script.text
+    assert 'automationBrowserDetail.dataset.browserState === "running"' in workspace_script.text
+    assert 'detail.dataset.accountState === "unchecked"' in workspace_script.text
+    assert 'automationFeishuCheck?.click();' in workspace_script.text
+    assert 'automationCodexAccountCheck?.click();' in workspace_script.text
     assert '"workspace-automation-browser-start-dialog"' in workspace_script.text
     assert 'automationStartConfirm?.focus();' in workspace_script.text
     assert 'automationStopConfirm?.focus();' in workspace_script.text
@@ -1318,6 +1321,10 @@ async def test_home_workstation_third_party_controls_are_state_driven(
     assert 'id="workspace-openclaw-stop"' not in response.text
     assert 'id="workspace-openclaw-bind-weixin"' in response.text
     assert 'id="workspace-openclaw-weixin-dialog"' in response.text
+    assert 'id="workspace-chub-message"' not in response.text
+    assert 'id="workspace-worker-message"' not in response.text
+    assert 'id="workspace-openclaw-message"' not in response.text
+    assert 'id="workspace-openclaw-weixin-feedback"' not in response.text
     assert script.status_code == 200
     assert 'elements.openclawStart.hidden = !gatewayStopped;' in script.text
     assert 'elements.openclawRestart.hidden = !gatewayRestartable;' in script.text
@@ -1335,6 +1342,12 @@ async def test_home_workstation_third_party_controls_are_state_driven(
     assert 'let thirdPartyLoading = false;' in script.text
     assert 'elements.thirdPartyRefresh.disabled = thirdPartyLoading;' in script.text
     assert 'elements.openclawBindWeixin.disabled = thirdPartyLoading ||' in script.text
+    assert 'const showToolbarFeedback = (text, kind = "error") =>' in script.text
+    assert 'window.showWorkspaceToolbarFeedback?.(text, kind);' in script.text
+    assert "chubMessage" not in script.text
+    assert "workerMessage" not in script.text
+    assert "openclawMessage" not in script.text
+    assert "openclawWeixinFeedback" not in script.text
     assert 'if (!await loadThirdParty()) return;' not in script.text
     assert 'return `${platform === "macos" ? "macOS" : platform} · Chub 可用`;' in script.text
     assert 'const workbenchStatusLoadingMinimumMs = 220;' in script.text
@@ -1348,6 +1361,7 @@ async def test_home_workstation_third_party_controls_are_state_driven(
 @pytest.mark.anyio
 async def test_automation_section_uses_workstation_status_rows(
     settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = create_app(settings)
     app.state.automation_manager.list = MagicMock(
@@ -1355,6 +1369,8 @@ async def test_automation_section_uses_workstation_status_rows(
             enabled=True,
             browser_state="stopped",
             browser_message="Debug Chrome 未启动，按需启动。",
+            browser_profile_name="Default",
+            browser_mode="无界面",
             browser_profiles=[
                 BrowserProfilePublic(
                     id="default",
@@ -1367,6 +1383,12 @@ async def test_automation_section_uses_workstation_status_rows(
             feishu_environment=FeishuEnvironmentState(
                 state="login_required",
                 message="飞书登录已失效，请重新登录。",
+                checked_at=datetime(2026, 9, 5, 12, 30, tzinfo=timezone.utc),
+            ),
+            codex_runtime_account=RuntimeAccountEnvironmentState(
+                state="available",
+                message="ChatGPT 登录与 AI 额度可用",
+                checked_at=datetime(2026, 9, 5, 12, 31, tzinfo=timezone.utc),
             ),
             enabled_count=2,
             tasks=[
@@ -1377,7 +1399,12 @@ async def test_automation_section_uses_workstation_status_rows(
                     description="下载本期资料",
                     enabled=True,
                     reporting_period="2026-08-31至2026-09-06",
-                    state=AutomationState(task_id="weekly-report", status="running"),
+                    main_document_name="V 国内业务周报",
+                    state=AutomationState(
+                        task_id="weekly-report",
+                        status="running",
+                        message="正在下载主周报及关联文档",
+                    ),
                 ),
                 AutomationTaskPublic(
                     id="monthly-report",
@@ -1385,19 +1412,51 @@ async def test_automation_section_uses_workstation_status_rows(
                     title="月报资料准备",
                     description="下载本月资料",
                     enabled=True,
-                    state=AutomationState(task_id="monthly-report", status="failed"),
+                    state=AutomationState(
+                        task_id="monthly-report",
+                        status="failed",
+                        message="飞书登录状态已失效",
+                    ),
                 ),
             ],
         )
     )
+    period = "2026-08-31至2026-09-06"
+    monkeypatch.setattr(
+        web_routes,
+        "list_latest_weekly_reports",
+        lambda: [
+            weekly_report_service.WeeklyReportView(
+                period=period,
+                report_type="focus",
+                title="本期工作重点确认清单",
+                summary="重点范围与取舍确认",
+                status="可查看",
+                updated_at=None,
+                available=True,
+            ),
+            weekly_report_service.WeeklyReportView(
+                period=period,
+                report_type="report",
+                title="本期业务周报",
+                summary="各端进展汇总",
+                status="待生成",
+                updated_at=None,
+                available=False,
+            ),
+        ],
+    )
+    monkeypatch.setattr(web_routes, "weekly_report_focus_confirmed", lambda _: False)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/?section=automations")
+        workspace_script = await client.get("/static/workspace.js")
 
     assert response.status_code == 200
     assert 'aria-label="自动化总览"' in response.text
     assert 'aria-label="自动化详情"' in response.text
-    assert "管理 Debug Chrome 与飞书登录状态。" in response.text
+    assert "管理 Debug Chrome 与浏览器用户。" in response.text
+    assert "检查自动化所需账户的当前登录状态。" in response.text
     assert "查看已配置任务的当前执行状态。" in response.text
     assert "自动化任务</span>" in response.text
     assert "进行中</span>" in response.text
@@ -1406,16 +1465,221 @@ async def test_automation_section_uses_workstation_status_rows(
     assert "1 项" in response.text
     assert 'class="workspace-preview-panel workstation-card workspace-automation-details workspace-preview-work-section"' in response.text
     assert 'class="workstation-group automation-environment"' in response.text
+    assert 'class="workstation-group automation-account-environment"' in response.text
     assert 'id="workspace-automation-browser-start"' in response.text
     assert 'id="workspace-automation-feishu-check"' in response.text
     assert 'id="workspace-automation-feishu-detail"' in response.text
-    assert 'id="workspace-automation-feishu-message" class="message" aria-live="polite" hidden' in response.text
-    assert "飞书登录已失效，请重新登录。" in response.text
-    assert "执行中 · 下载本期资料 · 2026-08-31至2026-09-06" in response.text
-    assert "执行失败 · 下载本月资料" in response.text
+    assert 'id="workspace-automation-codex-account-check"' in response.text
+    assert 'id="workspace-automation-codex-account-detail"' in response.text
+    assert 'data-browser-state="stopped"' in response.text
+    assert 'data-account-state="login_required"' in response.text
+    assert 'data-account-state="available"' in response.text
+    assert "Debug Chrome 未启动，按需启动。 · 浏览器用户：Default · 无界面" in response.text
+    assert 'id="workspace-automation-browser-message"' not in response.text
+    assert "飞书登录已失效，请重新登录。 · 检查于 09-05 12:30" in response.text
+    assert "ChatGPT 登录与 AI 额度可用 · 检查于 09-05 12:31" in response.text
+    assert 'id="workspace-automation-feishu-message"' not in response.text
+    assert "周报资料准备 · 2026-08-31至2026-09-06" in response.text
+    assert 'class="workstation-weekly-workflow"' in response.text
+    assert "下载本期资料" in response.text
+    assert "生成工作重点确认清单" in response.text
+    assert "生成正式周报" in response.text
+    assert "正在下载主周报及关联文档" in response.text
+    assert "重点确认清单已生成，待维护者确认" in response.text
+    assert "等待重点确认完成" in response.text
+    assert 'href="/weekly-reports/2026-08-31%E8%87%B32026-09-06/focus"' in response.text
+    assert ">查看文档</a>" in response.text
+    assert 'data-weekly-report-stage="focus">重新运行</button>' in response.text
+    assert 'href="/weekly-reports/2026-08-31%E8%87%B32026-09-06/report"' not in response.text
+    assert 'class="button-secondary workspace-weekly-report-confirm-and-run"' in response.text
+    assert ">确认并生成正式周报</button>" in response.text
+    assert "正在执行 · 2026-08-31至2026-09-06" not in response.text
+    assert "飞书登录状态已失效" in response.text
+    assert "从飞书 Wiki 下载 Markdown 归档。" not in response.text
+    assert response.text.count('class="button-secondary workspace-automation-run"') == 2
+    assert 'data-automation-task-id="weekly-report"' in response.text
+    assert 'data-automation-task-id="monthly-report"' in response.text
+    assert 'title="该自动化任务正在执行"' in response.text
+    assert 'id="workspace-automation-feishu-check" class="button-secondary" type="button" disabled title="请先启动 Debug Chrome"' in response.text
+    assert 'title="请等待当前自动化任务完成"' not in response.text
+    assert 'title="请先启动 Debug Chrome"' in response.text
+    assert 'data-automation-task-message' not in response.text
+    assert workspace_script.status_code == 200
+    assert 'showConfirmationDialog({' in workspace_script.text
+    assert '`/api/automations/${encodeURIComponent(taskId)}/run`' in workspace_script.text
+    assert 'setWorkstationStatus(taskDetail, "任务已受理，正在刷新状态。", "warning");' in workspace_script.text
+    assert '".workspace-weekly-report-view-session"' in workspace_script.text
+    assert "window.selectWorkspaceQuickSession?.(sessionId);" in workspace_script.text
+    assert "window.openWorkspaceQuickSession({ id: sessionId, session_mode: \"quick\", title });" in workspace_script.text
+    assert "window.location.assign(`/?session=${encodeURIComponent(sessionId)}`);" in workspace_script.text
+    assert '".workspace-weekly-report-confirm-and-run"' in workspace_script.text
+    assert '"/api/weekly-reports/current/report/confirm-and-run"' in workspace_script.text
+    assert "setAutomationBrowserMessage" not in workspace_script.text
+    assert "setAutomationFeishuMessage" not in workspace_script.text
+    assert 'data-automation-refresh-active="' in response.text
+    assert 'const refreshWorkspaceAutomations = async () =>' in workspace_script.text
+    assert 'fetch("/?section=automations", {' in workspace_script.text
+    assert 'currentSurface.replaceWith(nextSurface);' in workspace_script.text
+    assert 'document.hidden ? 5_000 : 1_500' in workspace_script.text
+    assert 'automationRefreshRequest?.abort();' in workspace_script.text
+    assert 'document.removeEventListener("visibilitychange", automationVisibilityListener);' in workspace_script.text
     assert "badge-success" not in response.text
     assert "workspace-automation-task-list" not in response.text
     assert "查看自动化环境和已配置任务的当前执行状态。" not in response.text
+
+    monkeypatch.setattr(
+        web_routes,
+        "list_latest_weekly_reports",
+        lambda: [
+            weekly_report_service.WeeklyReportView(
+                period=period,
+                report_type="focus",
+                title="本期工作重点确认清单",
+                summary="重点范围与取舍确认",
+                status="可查看",
+                updated_at=datetime(2026, 9, 5, 12, 35, tzinfo=timezone.utc),
+                available=True,
+            ),
+            weekly_report_service.WeeklyReportView(
+                period=period,
+                report_type="report",
+                title="本期业务周报",
+                summary="各端进展汇总",
+                status="可查看",
+                updated_at=datetime(2026, 9, 5, 12, 20, tzinfo=timezone.utc),
+                available=True,
+            ),
+        ],
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        stale_report_response = await client.get("/?section=automations")
+
+    assert "正式周报基于旧确认清单，需重新生成" in stale_report_response.text
+    assert 'href="/weekly-reports/2026-08-31%E8%87%B32026-09-06/report">查看旧文档</a>' in stale_report_response.text
+    assert ">确认并生成正式周报</button>" in stale_report_response.text
+
+    app.state.weekly_report_generation.read_current = MagicMock(
+        return_value={
+            "focus": type(
+                "GenerationStep",
+                (),
+                {
+                    "session_id": "weekly-session-1",
+                    "status": "failed",
+                    "message": "生成会话未完成，请查看会话结果。",
+                },
+            )(),
+            "report": type(
+                "GenerationStep",
+                (),
+                {"session_id": None, "status": "idle", "message": "等待前序步骤完成"},
+            )(),
+        }
+    )
+    monkeypatch.setattr(
+        web_routes,
+        "list_latest_weekly_reports",
+        lambda: [
+            weekly_report_service.WeeklyReportView(
+                period=period,
+                report_type="focus",
+                title="本期工作重点确认清单",
+                summary="重点范围与取舍确认",
+                status="可查看",
+                updated_at=None,
+                available=True,
+            ),
+            weekly_report_service.WeeklyReportView(
+                period=period,
+                report_type="report",
+                title="本期业务周报",
+                summary="各端进展汇总",
+                status="待生成",
+                updated_at=None,
+                available=False,
+            ),
+        ],
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        session_response = await client.get("/?section=automations")
+
+    assert 'class="button-secondary workspace-weekly-report-view-session"' in session_response.text
+    assert 'data-weekly-report-session-id="weekly-session-1"' in session_response.text
+    assert 'href="/weekly-reports/2026-08-31%E8%87%B32026-09-06/focus">查看文档</a>' in session_response.text
+    assert 'data-weekly-report-stage="focus">重新运行</button>' in session_response.text
+    assert 'href="/codex/weekly-session-1/quick-interactions/conversation"' not in session_response.text
+
+    app.state.weekly_report_generation.read_current = MagicMock(
+        return_value={
+            "focus": type(
+                "GenerationStep",
+                (),
+                {
+                    "session_id": None,
+                    "status": "failed",
+                    "message": "生成会话记录不可用",
+                },
+            )(),
+            "report": type(
+                "GenerationStep",
+                (),
+                {"session_id": None, "status": "idle", "message": "等待前序步骤完成"},
+            )(),
+        }
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        unavailable_session_response = await client.get("/?section=automations")
+
+    assert 'data-weekly-report-session-id="weekly-session-1"' not in unavailable_session_response.text
+    assert 'href="/weekly-reports/2026-08-31%E8%87%B32026-09-06/focus">查看文档</a>' in unavailable_session_response.text
+
+    app.state.weekly_report_generation.read_current = MagicMock(
+        return_value={
+            "focus": type(
+                "GenerationStep",
+                (),
+                {"session_id": None, "status": "idle", "message": "等待前序步骤完成"},
+            )(),
+            "report": type(
+                "GenerationStep",
+                (),
+                {"session_id": None, "status": "idle", "message": "等待前序步骤完成"},
+            )(),
+        }
+    )
+    monkeypatch.setattr(
+        web_routes,
+        "list_latest_weekly_reports",
+        lambda: [
+            weekly_report_service.WeeklyReportView(
+                period=period,
+                report_type="focus",
+                title="本期工作重点确认清单",
+                summary="重点范围与取舍确认",
+                status="待生成",
+                updated_at=None,
+                available=False,
+            ),
+            weekly_report_service.WeeklyReportView(
+                period=period,
+                report_type="report",
+                title="本期业务周报",
+                summary="各端进展汇总",
+                status="待生成",
+                updated_at=None,
+                available=False,
+            ),
+        ],
+    )
+    monkeypatch.setattr(web_routes, "weekly_report_inputs_available", lambda _: False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        blocked_response = await client.get("/?section=automations")
+
+    assert "等待资料完整发布" in blocked_response.text
+    assert (
+        'data-weekly-report-stage="focus" disabled '
+        'title="请先完成资料下载并发布完整 Manifest 输入"'
+    ) in blocked_response.text
 
 
 @pytest.mark.anyio
@@ -1832,6 +2096,7 @@ async def test_quick_interaction_conversation_page_is_available(
         )
         session_script = await client.get("/static/quick_interaction_session.js")
         timeline_script = await client.get("/static/quick_interaction_timeline.js")
+        core_script = await client.get("/static/quick_interactions_core.js")
         script = await client.get("/static/quick_interaction_conversation.js")
         ui_script = await client.get("/static/js/components/ui.js")
         stylesheet = await client.get("/static/css/components.css")
@@ -1889,7 +2154,7 @@ async def test_quick_interaction_conversation_page_is_available(
     assert '<svg viewBox="0 0 24 24"' in page.text
     assert "conversation-setting-label" not in page.text
     assert 'id="conversation-permission-trigger"' in page.text
-    assert 'data-value="ask" disabled aria-disabled="true"' in page.text
+    assert 'id="conversation-permission-menu" class="conversation-setting-menu"' in page.text
     assert 'id="conversation-model-trigger"' in page.text
     assert 'id="conversation-reasoning-trigger"' in page.text
     assert (
@@ -1901,10 +2166,13 @@ async def test_quick_interaction_conversation_page_is_available(
     )
     assert session_script.status_code == 200
     assert timeline_script.status_code == 200
+    assert core_script.status_code == 200
     assert script.status_code == 200
     assert ui_script.status_code == 200
     assert 'order: "timeline"' in script.text
     assert "CONVERSATION_PAGE_SIZE = readConversationPageSize()" in script.text
+    assert "quickSessionPermissionOptions: conversationPermissionOptions" in script.text
+    assert "quickSessionModelOptions" in core_script.text
     assert "before: { createdAt: oldest.created_at, id: oldest.id }" in script.text
     assert "performLoadEarlierConversation(generation, client)" in script.text
     assert "conversationPollDelay(conversationPollFailureCount)" in script.text
@@ -1934,8 +2202,8 @@ async def test_quick_interaction_conversation_page_is_available(
     assert "sessionId: conversationSessionId" in script.text
     assert "window.showChubToast" in ui_script.text
     assert "conversationSessionView.openCreate" in script.text
-    assert 'label: "跟随模型默认"' in script.text
-    assert 'description: defaultLevel' in script.text
+    assert 'label: "跟随模型默认"' in core_script.text
+    assert "quickSessionReasoningOptions" in core_script.text
     assert 'const usableWorkspaces = workspaces.filter((workspace) => workspace.available);' in session_script.text
     assert 'elements.createWorkspacePicker.setOptions(' in session_script.text
     assert 'elements.createForm.onsubmit = (event) => {' in session_script.text
@@ -2379,6 +2647,10 @@ async def test_workspace_sessions_use_placeholder_for_empty_title(
     assert "window.clearWorkspaceQuickSessionSelection = () =>" in response.text
     assert "window.setWorkspaceToolbarError = (text = \"\") =>" in workspace_script.text
     assert "window.showWorkspaceToolbarFeedback = (text, kind = \"error\") =>" in workspace_script.text
+    assert 'fetch("/api/ai/usage", { signal: controller.signal })' in workspace_script.text
+    assert "result.data.display.long.trim()" in workspace_script.text
+    assert 'setToolbarStatus(usage || "AI 额度暂不可用。")' in workspace_script.text
+    assert "void loadQuickSessionToolbarUsage();" in workspace_script.text
     assert "window.setWorkspaceToolbarError?.(text);" in response.text
     assert "const sidebarMessageMinimumVisibleMs = 6000;" in response.text
     assert "sidebarMessageClearTimer = window.setTimeout" in response.text
@@ -2506,7 +2778,6 @@ async def test_page_uses_external_script_only(settings: Settings) -> None:
         "/static/js/components/ui.js",
         "/static/workspace.js",
         "/static/js/features/workspace-sessions.js",
-        "/static/js/features/workspace-task-orchestration.js",
         "/static/js/features/workspace-workstation.js",
     ]
     assert response.text.count("<script") == len(expected_scripts) + 2
