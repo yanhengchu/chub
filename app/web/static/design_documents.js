@@ -42,9 +42,8 @@ async function updateArchiveState(button) {
       ? `恢复显示“${title}”后，该资料会重新显示在首页。`
       : `隐藏“${title}”后，该资料不再显示在首页，但仍保留在“已隐藏”列表中。此操作不会移动或冻结仓库文件。`,
     confirmLabel: `确认${action}`,
-    pendingLabel: `${action}中…`,
     tone: archived ? "secondary" : "danger",
-    errorMessage: `${action}失败。`,
+    closeOnConfirm: true,
     onConfirm: async () => {
       button.disabled = true;
       try {
@@ -77,6 +76,8 @@ async function updateArchiveState(button) {
         }
         showMessage(`${action}成功。`, "success");
         applyFilter(activeFilter);
+      } catch (error) {
+        showMessage(error.message || `${action}失败。`, "error");
       } finally {
         button.disabled = false;
       }

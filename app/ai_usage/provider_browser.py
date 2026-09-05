@@ -14,7 +14,8 @@ from zoneinfo import ZoneInfo
 from app.ai_usage.models import AiFiveHourUsage, AiTodayUsage, AiWeeklyUsage
 from app.automations.browser import debug_chrome_status, session_factory
 from app.automations.lock import LockBusy, file_lock
-from app.core.config import AiUsageConfig, AutomationsConfig
+from app.codex.usage_settings import CodexUsageSettings
+from app.core.config import AutomationsConfig
 
 
 LOGGER = logging.getLogger("hub.ai_usage.provider_browser")
@@ -48,7 +49,7 @@ class ProviderBrowserAdapter:
 
     def __init__(
         self,
-        config: AiUsageConfig,
+        config: CodexUsageSettings,
         automations: AutomationsConfig,
     ) -> None:
         self._config = config
@@ -261,7 +262,7 @@ class ProviderBrowserAdapter:
             if (
                 value.get("status") == "active"
                 and isinstance(group, dict)
-                and group.get("platform") == self._config.provider
+                and group.get("platform") == "openai"
                 and isinstance(value.get("id"), int)
                 and not isinstance(value.get("id"), bool)
             ):
@@ -320,7 +321,7 @@ class ProviderBrowserAdapter:
             value
             for value in platforms
             if isinstance(value, dict)
-            and value.get("platform") == self._config.provider
+                and value.get("platform") == "openai"
         ]
         if len(matches) != 1:
             raise ProviderBrowserUnavailable("provider_token_response_invalid")

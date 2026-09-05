@@ -453,7 +453,7 @@ def test_restart_resets_unverified_running_activity(
     session = native_session("77777777-7777-4777-8777-777777777777")
     session.status = "running"
     session.activity = "idle"
-    CodexSessionStore(settings.codex_pty.data_file).save(session)
+    CodexSessionStore(settings.ai_runtime.codex.data_file).save(session)
     monkeypatch.setattr("app.codex.manager.shutil.which", lambda _name: "/tmux")
     monkeypatch.setattr(
         "app.codex.manager.subprocess.run",

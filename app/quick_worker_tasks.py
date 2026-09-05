@@ -84,7 +84,7 @@ def new_worker_task_id(now: datetime | None = None) -> str:
 
 
 def worker_state_dir(settings: Settings) -> Path:
-    return settings.codex_pty.data_file.parent / "quick-worker"
+    return settings.ai_runtime.codex.data_file.parent / "quick-worker"
 
 
 def worker_tasks_dir(settings: Settings, protocol_version: int) -> Path:
@@ -472,8 +472,8 @@ class WorkerTaskManager:
         self.tasks_dir = worker_tasks_dir(settings, protocol_version)
         self.tombstones_dir = worker_tombstones_dir(settings, protocol_version)
         self.leases_dir = worker_leases_dir(settings, protocol_version)
-        self.hook_dir = settings.codex_pty.runtime_dir / "hooks"
-        self.restart_request_dir = settings.codex_pty.runtime_dir / "restart-requests"
+        self.hook_dir = settings.ai_runtime.codex.runtime_dir / "hooks"
+        self.restart_request_dir = settings.ai_runtime.codex.runtime_dir / "restart-requests"
         self.generation = generation
         self.protocol_version = protocol_version
         self.allow_test_tasks = allow_test_tasks

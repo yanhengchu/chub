@@ -315,55 +315,6 @@ def test_openclaw_owner_status_requires_owner_for_configured_channel() -> None:
     assert unrelated["owner_count"] == 0
 
 
-def test_tailscale_access_url_requires_https_ts_net_proxy_to_gateway() -> None:
-    payload = {
-        "Web": {
-            "chuyh-macbook.tail71831.ts.net:443": {
-                "Handlers": {
-                    "/": {"Proxy": "http://127.0.0.1:18789"},
-                }
-            },
-            "malicious.example.com:443": {
-                "Handlers": {
-                    "/": {"Proxy": "http://127.0.0.1:18789"},
-                }
-            },
-        }
-    }
-
-    assert OpenClawManager._parse_tailscale_access_url(payload, 18789) == (
-        "https://chuyh-macbook.tail71831.ts.net/"
-    )
-    assert OpenClawManager._parse_tailscale_access_url(payload, 19000) is None
-
-
-def test_tailscale_access_url_rejects_non_root_or_non_loopback_proxy() -> None:
-    assert OpenClawManager._parse_tailscale_access_url(
-        {
-            "Web": {
-                "chuyh-macbook.tail71831.ts.net:443": {
-                    "Handlers": {
-                        "/chat": {"Proxy": "http://127.0.0.1:18789"},
-                    }
-                }
-            }
-        },
-        18789,
-    ) is None
-    assert OpenClawManager._parse_tailscale_access_url(
-        {
-            "Web": {
-                "chuyh-macbook.tail71831.ts.net:443": {
-                    "Handlers": {
-                        "/": {"Proxy": "http://192.168.1.2:18789"},
-                    }
-                }
-            }
-        },
-        18789,
-    ) is None
-
-
 def test_openclaw_status_reports_missing_cli(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -374,6 +325,24 @@ def test_openclaw_status_reports_missing_cli(
 
     assert status.state == "unavailable"
     assert status.installed is False
+
+
+def test_openclaw_gateway_status_failure_preserves_installed_executable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = OpenClawManager()
+    monkeypatch.setattr(manager, "_resolve_executable", lambda: "/usr/bin/openclaw")
+    monkeypatch.setattr(
+        manager,
+        "_run_json",
+        MagicMock(side_effect=ApiError(502, "openclaw_command_failed", "failed")),
+    )
+
+    status, executable = manager._gateway_status()
+
+    assert status.state == "unknown"
+    assert status.installed is True
+    assert executable == "/usr/bin/openclaw"
 
 
 def test_openclaw_status_includes_channel_summary(
@@ -401,8 +370,6 @@ def test_openclaw_status_includes_channel_summary(
     )
     monkeypatch.setattr(manager, "_resolve_executable", lambda: "/usr/bin/openclaw")
     monkeypatch.setattr(manager, "_run_json", run_json)
-    monkeypatch.setattr(manager, "_tailscale_access_url", lambda port: None)
-
     status = manager.status()
 
     assert status.state == "running"
@@ -412,6 +379,8 @@ def test_openclaw_status_includes_channel_summary(
     assert status.owner_state == "configured"
     assert status.owner_count == 1
     assert status.compatibility_state == "compatible"
+    assert status.access_url is None
+    assert len(run_json.call_args_list) == 3
     assert run_json.call_args_list[1].args[1] == ["channels", "status", "--json"]
     assert run_json.call_args_list[2].args[1] == [
         "config",
@@ -434,8 +403,6 @@ def test_openclaw_channel_check_failure_preserves_gateway_status(
     )
     monkeypatch.setattr(manager, "_resolve_executable", lambda: "/usr/bin/openclaw")
     monkeypatch.setattr(manager, "_run_json", run_json)
-    monkeypatch.setattr(manager, "_tailscale_access_url", lambda port: None)
-
     status = manager.status()
 
     assert status.state == "running"

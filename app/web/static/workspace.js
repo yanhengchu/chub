@@ -9,6 +9,7 @@
   const sectionNavigations = document.querySelectorAll(
     "[data-workspace-section-navigation]",
   );
+  const toolbarError = document.getElementById("workspace-toolbar-error");
   if (
     !(shell instanceof HTMLElement)
     || !(toggle instanceof HTMLButtonElement)
@@ -32,18 +33,25 @@
     workbench: "正在读取工作台状态…",
     automations: "正在读取自动化状态…",
     "project-docs": "正在读取项目资料…",
+    "task-orchestration": "正在读取任务编排…",
   };
   const sectionToolbarLoadedStatus = {
     automations: "自动化已加载",
     "project-docs": "项目资料已加载",
+    "task-orchestration": "任务编排已加载",
   };
   const toolbarLoadingMinimumMs = 220;
   let toolbarTransitionId = 0;
+  let toolbarFeedbackTimer = null;
+  let toolbarPersistentError = "";
   const initialQuickSessionPanel = document.querySelector(
     "#workspace-section-content.workspace-inline-quick-session",
   );
   const quickSessionSelectionMessageType = "chub.workspace.quick-session-selection";
   const quickSessionActivityMessageType = "chub.workspace.quick-session-activity";
+  const quickSessionInteractionMessageType = "chub.workspace.quick-session-interaction";
+  const quickSessionChangedMessageType = "chub.workspace.quick-session-changed";
+  const quickSessionFeedbackMessageType = "chub.workspace.quick-session-feedback";
   window.workspaceQuickSessionOpen = initialQuickSessionPanel instanceof HTMLElement;
 
   const preserveWorkspaceReturnTarget = (event) => {
@@ -67,6 +75,34 @@
   const setToolbarStatus = (text) => {
     const health = document.getElementById("workspace-preview-health");
     if (health instanceof HTMLElement) health.lastChild.textContent = text;
+  };
+
+  const setWorkspaceToolbarFeedback = (text = "", kind = "error") => {
+    if (!(toolbarError instanceof HTMLElement)) return;
+    toolbarError.textContent = text;
+    toolbarError.className = kind === "warning"
+      ? "workspace-preview-toolbar-error workspace-preview-toolbar-error-warning"
+      : "workspace-preview-toolbar-error";
+    toolbarError.hidden = !text;
+  };
+
+  window.setWorkspaceToolbarError = (text = "") => {
+    window.clearTimeout(toolbarFeedbackTimer);
+    toolbarFeedbackTimer = null;
+    toolbarPersistentError = text;
+    setWorkspaceToolbarFeedback(toolbarPersistentError, "error");
+  };
+
+  window.showWorkspaceToolbarFeedback = (text, kind = "error") => {
+    window.clearTimeout(toolbarFeedbackTimer);
+    setWorkspaceToolbarFeedback(text, kind);
+    if (!text) {
+      setWorkspaceToolbarFeedback(toolbarPersistentError, "error");
+      return;
+    }
+    toolbarFeedbackTimer = window.setTimeout(() => {
+      setWorkspaceToolbarFeedback(toolbarPersistentError, "error");
+    }, kind === "warning" ? 5500 : 7000);
   };
 
   const showSectionToolbarLoading = (section) => {
@@ -139,10 +175,12 @@
       const documentFragment = new DOMParser().parseFromString(await response.text(), "text/html");
       const nextContent = documentFragment.getElementById("workspace-section-content");
       if (!(nextContent instanceof HTMLElement)) throw new Error("工作台分区响应无效。");
+      window.disposeWorkspaceWorkstation?.();
+      window.disposeWorkspaceTaskOrchestration?.();
       currentContent.replaceWith(nextContent);
       window.workspaceQuickSessionOpen = false;
       workspaceMain?.classList.remove("is-showing-quick-session");
-      history.replaceState(history.state, "", link.href);
+      history.replaceState(history.state, "", targetUrl.href);
       sectionNavigations.forEach((navigation) => {
         navigation.querySelectorAll("a").forEach((item) => {
           const selected = item.href === link.href;
@@ -153,8 +191,9 @@
       });
       window.initializeWorkspaceAutomationControls?.();
       window.initializeWorkspaceWorkstation?.();
+      window.initializeWorkspaceTaskOrchestration?.();
       finishSectionToolbarLoading(targetSection);
-      if (compactViewport.matches) closeMobileSidebar();
+      if (compactViewport.matches) closeMobileSidebar({ restoreHistory: false });
     } catch {
       window.location.replace(link.href);
     } finally {
@@ -193,6 +232,19 @@
         selection.running === true,
         selection.updatedAt,
       );
+    } else if (selection.type === quickSessionInteractionMessageType) {
+      window.dispatchEvent(new Event("chub.workspace.session-action-menu-dismiss"));
+    } else if (selection.type === quickSessionChangedMessageType) {
+      window.dispatchEvent(new Event("chub.workspace.session-action-menu-dismiss"));
+      if (selection.returnToWorkspace === true) {
+        window.location.replace("/");
+        return;
+      }
+      window.refreshWorkspaceSessions?.();
+    } else if (selection.type === quickSessionFeedbackMessageType) {
+      const text = typeof selection.text === "string" ? selection.text.trim() : "";
+      const kind = selection.kind === "warning" ? "warning" : "error";
+      if (text) window.showWorkspaceToolbarFeedback?.(text, kind);
     }
   });
 
@@ -217,6 +269,7 @@
       }
     }, { once: true });
     panel.append(frame);
+    window.disposeWorkspaceWorkstation?.();
     currentContent.replaceWith(panel);
     window.workspaceQuickSessionOpen = true;
     workspaceMain?.classList.add("is-showing-quick-session");
@@ -233,14 +286,20 @@
   const automationStartForm = document.getElementById("workspace-automation-browser-start-form");
   const automationStartClose = document.getElementById("workspace-automation-browser-start-close");
   const automationStartCancel = document.getElementById("workspace-automation-browser-start-cancel");
+  const automationStartConfirm = document.getElementById("workspace-automation-browser-start-confirm");
   const automationStartProfile = document.getElementById("workspace-automation-browser-profile");
-  const automationStartMessage = document.getElementById("workspace-automation-browser-start-message");
+  const automationBrowserDetail = document.getElementById("workspace-automation-browser-detail");
+  const automationBrowserMessage = document.getElementById("workspace-automation-browser-message");
+  const automationFeishuDetail = document.getElementById("workspace-automation-feishu-detail");
+  const automationFeishuMessage = document.getElementById("workspace-automation-feishu-message");
+  const automationFeishuCheck = document.getElementById("workspace-automation-feishu-check");
   const automationStopButton = document.getElementById("workspace-automation-browser-stop");
   const automationStopDialog = document.getElementById("workspace-automation-browser-stop-dialog");
   const automationStopForm = document.getElementById("workspace-automation-browser-stop-form");
   const automationStopClose = document.getElementById("workspace-automation-browser-stop-close");
   const automationStopCancel = document.getElementById("workspace-automation-browser-stop-cancel");
-  const automationStopMessage = document.getElementById("workspace-automation-browser-stop-message");
+  const automationStopConfirm = document.getElementById("workspace-automation-browser-stop-confirm");
+  let automationFeishuChecking = false;
 
   const automationRequest = async (path, payload) => {
     const response = await fetch(path, {
@@ -261,14 +320,53 @@
     }
   };
 
+  const setAutomationBrowserStatus = (text, kind = "muted") => {
+    if (automationBrowserDetail instanceof HTMLElement) {
+      setWorkstationStatus(automationBrowserDetail, text, kind);
+    }
+  };
+
+  const setAutomationBrowserMessage = (text = "", kind = "") => {
+    if (automationBrowserMessage instanceof HTMLElement) {
+      setMessage(automationBrowserMessage, text, kind);
+      automationBrowserMessage.hidden = !text;
+    }
+  };
+
+  const feishuStatusKind = (state) => {
+    if (state === "available") return "success";
+    if (["login_required", "checking"].includes(state)) return "warning";
+    if (state === "failed") return "failed";
+    return "muted";
+  };
+
+  const setAutomationFeishuStatus = (state) => {
+    if (automationFeishuDetail instanceof HTMLElement) {
+      setWorkstationStatus(
+        automationFeishuDetail,
+        state?.message || "飞书环境状态暂时无法读取。",
+        feishuStatusKind(state?.state),
+      );
+    }
+  };
+
+  const setAutomationFeishuMessage = (text = "", kind = "") => {
+    if (automationFeishuMessage instanceof HTMLElement) {
+      setMessage(automationFeishuMessage, text, kind);
+      automationFeishuMessage.hidden = !text;
+    }
+  };
+
   if (
     automationStartButton instanceof HTMLButtonElement
     && automationStartDialog instanceof HTMLDialogElement
     && automationStartForm instanceof HTMLFormElement
     && automationStartProfile instanceof HTMLSelectElement
-    && automationStartMessage instanceof HTMLElement
   ) {
-    automationStartButton.addEventListener("click", () => automationStartDialog.showModal());
+    automationStartButton.addEventListener("click", () => {
+      automationStartDialog.showModal();
+      automationStartConfirm?.focus();
+    });
     [automationStartClose, automationStartCancel].forEach((button) => {
       button?.addEventListener("click", () => closeDialog(automationStartDialog));
     });
@@ -280,30 +378,29 @@
         return;
       }
       const initializing = selected.dataset.initialized !== "true";
-      const confirm = automationStartForm.querySelector('button[type="submit"]');
-      if (confirm instanceof HTMLButtonElement) {
-        confirm.disabled = true;
-        confirm.textContent = initializing ? "初始化中…" : "启动中…";
-      }
-      automationStartMessage.className = "message";
-      automationStartMessage.textContent = "";
+      closeDialog(automationStartDialog);
+      automationStartButton.disabled = true;
+      setAutomationBrowserStatus(
+        initializing ? "正在初始化 Debug Chrome 账户。" : "正在启动 Debug Chrome。",
+        "warning",
+      );
+      setAutomationBrowserMessage("");
       try {
         await automationRequest(
           initializing ? "/api/automations/browser/initialize" : "/api/automations/browser/start",
           { profile_id: selected.value, mode: mode.value },
         );
-        automationStartMessage.className = "message message-success";
-        automationStartMessage.textContent = initializing
+        setAutomationBrowserMessage(initializing
           ? "浏览器账户初始化已受理，正在刷新状态。"
-          : "Debug Chrome 已启动，正在刷新状态。";
+          : "Debug Chrome 已启动，正在刷新状态。", "success");
         window.setTimeout(() => window.location.reload(), 500);
       } catch (error) {
-        automationStartMessage.className = "message message-error";
-        automationStartMessage.textContent = error instanceof Error ? error.message : "自动化环境操作失败。";
-        if (confirm instanceof HTMLButtonElement) {
-          confirm.disabled = false;
-          confirm.textContent = "启动";
-        }
+        setAutomationBrowserStatus("Debug Chrome 启动失败。", "failed");
+        setAutomationBrowserMessage(
+          error instanceof Error ? error.message : "自动化环境操作失败。",
+          "error",
+        );
+        automationStartButton.disabled = false;
       }
     });
   }
@@ -312,33 +409,57 @@
     automationStopButton instanceof HTMLButtonElement
     && automationStopDialog instanceof HTMLDialogElement
     && automationStopForm instanceof HTMLFormElement
-    && automationStopMessage instanceof HTMLElement
   ) {
-    automationStopButton.addEventListener("click", () => automationStopDialog.showModal());
+    automationStopButton.addEventListener("click", () => {
+      automationStopDialog.showModal();
+      automationStopConfirm?.focus();
+    });
     [automationStopClose, automationStopCancel].forEach((button) => {
       button?.addEventListener("click", () => closeDialog(automationStopDialog));
     });
     automationStopForm.addEventListener("submit", async (event) => {
       event.preventDefault();
-      const confirm = automationStopForm.querySelector('button[type="submit"]');
-      if (confirm instanceof HTMLButtonElement) {
-        confirm.disabled = true;
-        confirm.textContent = "停止中…";
-      }
-      automationStopMessage.className = "message";
-      automationStopMessage.textContent = "";
+      closeDialog(automationStopDialog);
+      automationStopButton.disabled = true;
+      setAutomationBrowserStatus("正在停止 Debug Chrome。", "warning");
+      setAutomationBrowserMessage("");
       try {
         await automationRequest("/api/automations/browser/stop");
-        automationStopMessage.className = "message message-success";
-        automationStopMessage.textContent = "Debug Chrome 已停止，正在刷新状态。";
+        setAutomationBrowserMessage("Debug Chrome 已停止，正在刷新状态。", "success");
         window.setTimeout(() => window.location.reload(), 500);
       } catch (error) {
-        automationStopMessage.className = "message message-error";
-        automationStopMessage.textContent = error instanceof Error ? error.message : "自动化环境操作失败。";
-        if (confirm instanceof HTMLButtonElement) {
-          confirm.disabled = false;
-          confirm.textContent = "确认停止";
-        }
+        setAutomationBrowserStatus("Debug Chrome 停止失败。", "failed");
+        setAutomationBrowserMessage(
+          error instanceof Error ? error.message : "自动化环境操作失败。",
+          "error",
+        );
+        automationStopButton.disabled = false;
+      }
+    });
+  }
+
+  if (automationFeishuCheck instanceof HTMLButtonElement) {
+    automationFeishuCheck.addEventListener("click", async () => {
+      if (automationFeishuChecking || automationFeishuCheck.disabled) return;
+      automationFeishuChecking = true;
+      automationFeishuCheck.disabled = true;
+      automationFeishuCheck.textContent = "检查中…";
+      setAutomationFeishuStatus({ state: "checking", message: "正在检查飞书登录状态。" });
+      setAutomationFeishuMessage("");
+      try {
+        setAutomationFeishuStatus(
+          await automationRequest("/api/automations/environment/feishu/check"),
+        );
+      } catch (error) {
+        setAutomationFeishuStatus({ state: "failed", message: "飞书环境检查失败。" });
+        setAutomationFeishuMessage(
+          error instanceof Error ? error.message : "飞书环境检查失败。",
+          "error",
+        );
+      } finally {
+        automationFeishuChecking = false;
+        automationFeishuCheck.disabled = false;
+        automationFeishuCheck.textContent = "检查";
       }
     });
   }

@@ -1,9 +1,11 @@
 <!doctype html>
-<html lang="zh-CN" data-ui-style="{{ 'code-dark' if request.cookies.get('hub_ui_style') == 'code-dark' else 'standard' }}">
+{% set ui_theme = resolve_ui_theme(request.cookies.get('hub_ui_style')) %}
+{% set ui_font_size = resolve_ui_font_size(request.cookies.get('hub_ui_font_size')) %}
+<html lang="zh-CN" data-ui-style="{{ ui_theme.id }}" data-ui-theme-default="{{ default_ui_theme }}" data-ui-theme-schemes="{{ ui_theme_schemes }}" data-ui-font-size="{{ ui_font_size.id }}" data-ui-font-size-default="{{ default_ui_font_size }}" data-ui-font-size-scales="{{ ui_font_size_scales }}">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
-    <meta name="color-scheme" content="{{ 'dark' if request.cookies.get('hub_ui_style') == 'code-dark' else 'light' }}">
+    <meta name="color-scheme" content="{{ ui_theme.color_scheme }}">
     <title>{{ report.title }} · {{ report.period }} · {{ app_name }}</title>
     {% include "partials/app_styles.html" %}
   </head>

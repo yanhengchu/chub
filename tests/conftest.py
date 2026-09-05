@@ -11,7 +11,7 @@ def settings(tmp_path: Path) -> Settings:
         {
             "app": {"name": "Hub", "version": "0.1.0"},
             "node": {"id": "test-node", "name": "Test Node", "type": "unknown"},
-            "server": {"tailnet_host": None, "port": 8080},
+            "server": {"port": 8080},
             "security": {},
             "logs": {
                 "file": tmp_path / "hub.log",
@@ -20,13 +20,15 @@ def settings(tmp_path: Path) -> Settings:
                 "level": "INFO",
                 "max_lines": 100,
             },
-            "codex_pty": {
-                "enabled": True,
-                "workspace": tmp_path / "workspace",
-                "data_file": tmp_path / "codex-sessions.json",
-                "runtime_dir": tmp_path / "codex-runtime",
-                "ticket_ttl_seconds": 600,
-                "max_running": 3,
+            "ai_runtime": {
+                "codex": {
+                    "enabled": True,
+                    "workspace": tmp_path / "workspace",
+                    "data_file": tmp_path / "codex-sessions.json",
+                    "runtime_dir": tmp_path / "codex-runtime",
+                    "ticket_ttl_seconds": 600,
+                    "max_running": 3,
+                },
             },
             "automations": {
                 "shared_config_file": tmp_path / "automations.yaml",

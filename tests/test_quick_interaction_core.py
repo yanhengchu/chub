@@ -233,7 +233,7 @@ process.stdout.write(JSON.stringify(result));
             "missingSession": False,
             "blocked": False,
         },
-        "switcherStatuses": ["待输入", "执行中", "异常", "需终端", "状态未知"],
+            "switcherStatuses": ["待输入", "执行中", "异常", "权限需调整", "状态未知"],
         "switcherEntries": [
             "current",
             "slot-two",

@@ -89,7 +89,7 @@ def configure_network_recovery(settings: Settings) -> None:
     settings.network_recovery.wifi_device = WIFI_DEVICE
     settings.network_recovery.wifi_connection_uuid = WIFI_UUID
     settings.network_recovery.vpn_connection_uuid = VPN_UUID
-    settings.network_recovery.lock_file = settings.codex_pty.runtime_dir / "network.lock"
+    settings.network_recovery.lock_file = settings.ai_runtime.codex.runtime_dir / "network.lock"
 
 
 def test_network_recovery_runs_only_fixed_networkmanager_sequence(

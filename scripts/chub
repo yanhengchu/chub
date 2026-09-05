@@ -148,7 +148,6 @@ values = {
     "status_url": f"http://127.0.0.1:{settings.server.port}/api/status",
     "app_version": settings.app.version,
     "log_file": settings.logs.file,
-    "tailnet_host": settings.server.tailnet_host or "",
 }
 print(values[sys.argv[1]])
 PY
@@ -156,22 +155,6 @@ PY
 }
 
 check_codex_pty_requirements() {
-    local tailnet_host
-    tailnet_host="$(configured_value tailnet_host 2>/dev/null)" \
-        || fail "configuration could not be read"
-    if ! (
-        cd "$PROJECT_ROOT"
-        "$PYTHON_BIN" - "$tailnet_host" <<'PY'
-import sys
-
-from app.core.network import is_tailscale_ip
-
-raise SystemExit(0 if is_tailscale_ip(sys.argv[1]) else 1)
-PY
-    )
-    then
-        echo "chub: warning: server.tailnet_host is not configured or is not a Tailscale IP; Codex PTY will be disabled" >&2
-    fi
     local dependency
     for dependency in codex ttyd tmux; do
         if ! PATH="$RUNTIME_PATH" command -v "$dependency" >/dev/null 2>&1; then

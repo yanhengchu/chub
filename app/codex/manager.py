@@ -57,7 +57,7 @@ LOGGER = logging.getLogger("hub.codex")
 class CodexPtyManager:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.store = CodexSessionStore(settings.codex_pty.data_file)
+        self.store = CodexSessionStore(settings.ai_runtime.codex.data_file)
         adapter = CodexRuntimeAdapter(
             settings,
             which=lambda name: shutil.which(name),
@@ -111,7 +111,7 @@ class CodexPtyManager:
         entries = [
             ("chub", "Chub", PROJECT_ROOT),
             ("home", "用户目录", Path.home()),
-            ("workspace", "Workspace", self.settings.codex_pty.workspace),
+            ("workspace", "Workspace", self.settings.ai_runtime.codex.workspace),
         ]
         return [
             WorkspaceInfo(
@@ -198,7 +198,7 @@ class CodexPtyManager:
     def create_translation_session(self) -> SessionInfo:
         """Create the fixed, read-only Session used for text transformation."""
         self._require_available()
-        workspace = self.settings.codex_pty.runtime_dir / "translation-workspace"
+        workspace = self.settings.ai_runtime.codex.runtime_dir / "translation-workspace"
         workspace.mkdir(parents=True, exist_ok=True)
         os.chmod(workspace, 0o700)
         session = CodexSession(
@@ -317,7 +317,7 @@ class CodexPtyManager:
             if (
                 session.status != "running"
                 and self._running_tmux_count()
-                >= self.settings.codex_pty.max_running
+                >= self.settings.ai_runtime.codex.max_running
             ):
                 raise ApiError(
                     409,

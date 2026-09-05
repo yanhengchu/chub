@@ -28,7 +28,6 @@ let conversationClient = createConversationClient({
 const conversationForm = document.querySelector("#conversation-form");
 const conversationPrompt = document.querySelector("#conversation-prompt");
 const conversationSubmit = document.querySelector("#conversation-submit");
-const conversationSubmitMessage = document.querySelector("#conversation-submit-message");
 const conversationPermissionTrigger = document.querySelector("#conversation-permission-trigger");
 const conversationPermissionValue = document.querySelector("#conversation-permission-value");
 const conversationPermissionMenu = document.querySelector("#conversation-permission-menu");
@@ -53,10 +52,24 @@ const conversationSessionStop = document.querySelector("#conversation-session-st
 const conversationSessionArchive = document.querySelector("#conversation-session-archive");
 const conversationSessionDelete = document.querySelector("#conversation-session-delete");
 const conversationCreateDialog = document.querySelector("#conversation-create-dialog");
-const conversationCreateSurface = document.querySelector("#conversation-create-surface");
+const conversationCreateForm = document.querySelector("#conversation-create-form");
+const conversationCreateSurface = conversationCreateForm;
 const conversationCreateWorkspaces = document.querySelector("#conversation-create-workspaces");
+const conversationCreateWorkspacesTrigger = document.querySelector("#conversation-create-workspaces-trigger");
+const conversationCreateWorkspacesValue = document.querySelector("#conversation-create-workspaces-value");
+const conversationCreateWorkspacesMenu = document.querySelector("#conversation-create-workspaces-menu");
 const conversationCreateMessage = document.querySelector("#conversation-create-message");
 const conversationCreateClose = document.querySelector("#conversation-create-close");
+const conversationCreateCancel = document.querySelector("#conversation-create-cancel");
+const conversationCreateConfirm = document.querySelector("#conversation-create-confirm");
+const conversationCreateWorkspacePicker = window.createChoicePicker?.({
+  trigger: conversationCreateWorkspacesTrigger,
+  value: conversationCreateWorkspacesValue,
+  menu: conversationCreateWorkspacesMenu,
+  onSelect: (workspaceId) => {
+    conversationCreateWorkspaces.value = workspaceId;
+  },
+});
 const conversationRenameDialog = document.querySelector("#conversation-rename-dialog");
 const conversationRenameForm = document.querySelector("#conversation-rename-form");
 const conversationRenameInput = document.querySelector("#conversation-rename-input");
@@ -67,21 +80,18 @@ const conversationRenameConfirm = document.querySelector("#conversation-rename-c
 const conversationStopDialog = document.querySelector("#conversation-stop-dialog");
 const conversationStopForm = document.querySelector("#conversation-stop-form");
 const conversationStopDescription = document.querySelector("#conversation-stop-description");
-const conversationStopMessage = document.querySelector("#conversation-stop-message");
 const conversationStopClose = document.querySelector("#conversation-stop-close");
 const conversationStopCancel = document.querySelector("#conversation-stop-cancel");
 const conversationStopConfirm = document.querySelector("#conversation-stop-confirm");
 const conversationArchiveDialog = document.querySelector("#conversation-archive-dialog");
 const conversationArchiveForm = document.querySelector("#conversation-archive-form");
 const conversationArchiveDescription = document.querySelector("#conversation-archive-description");
-const conversationArchiveMessage = document.querySelector("#conversation-archive-message");
 const conversationArchiveClose = document.querySelector("#conversation-archive-close");
 const conversationArchiveCancel = document.querySelector("#conversation-archive-cancel");
 const conversationArchiveConfirm = document.querySelector("#conversation-archive-confirm");
 const conversationDeleteDialog = document.querySelector("#conversation-delete-dialog");
 const conversationDeleteForm = document.querySelector("#conversation-delete-form");
 const conversationDeleteDescription = document.querySelector("#conversation-delete-description");
-const conversationDeleteMessage = document.querySelector("#conversation-delete-message");
 const conversationDeleteClose = document.querySelector("#conversation-delete-close");
 const conversationDeleteCancel = document.querySelector("#conversation-delete-cancel");
 const conversationDeleteConfirm = document.querySelector("#conversation-delete-confirm");
@@ -90,6 +100,7 @@ const conversationSessionView = createConversationSessionView({
   documentRef: document,
   windowRef: window,
   showMessage: showConversationMessage,
+  showFeedback: showConversationFeedback,
   elements: {
     navigation: conversationSessionNavigation,
     switcher: conversationSessionSwitcher,
@@ -102,9 +113,13 @@ const conversationSessionView = createConversationSessionView({
     create: conversationSessionCreate,
     createDialog: conversationCreateDialog,
     createSurface: conversationCreateSurface,
+    createForm: conversationCreateForm,
     createWorkspaces: conversationCreateWorkspaces,
+    createWorkspacePicker: conversationCreateWorkspacePicker,
     createMessage: conversationCreateMessage,
     createClose: conversationCreateClose,
+    createCancel: conversationCreateCancel,
+    createConfirm: conversationCreateConfirm,
     renameDialog: conversationRenameDialog,
     renameForm: conversationRenameForm,
     renameInput: conversationRenameInput,
@@ -115,28 +130,24 @@ const conversationSessionView = createConversationSessionView({
     stopDialog: conversationStopDialog,
     stopForm: conversationStopForm,
     stopDescription: conversationStopDescription,
-    stopMessage: conversationStopMessage,
     stopClose: conversationStopClose,
     stopCancel: conversationStopCancel,
     stopConfirm: conversationStopConfirm,
     archiveDialog: conversationArchiveDialog,
     archiveForm: conversationArchiveForm,
     archiveDescription: conversationArchiveDescription,
-    archiveMessage: conversationArchiveMessage,
     archiveClose: conversationArchiveClose,
     archiveCancel: conversationArchiveCancel,
     archiveConfirm: conversationArchiveConfirm,
     deleteDialog: conversationDeleteDialog,
     deleteForm: conversationDeleteForm,
     deleteDescription: conversationDeleteDescription,
-    deleteMessage: conversationDeleteMessage,
     deleteClose: conversationDeleteClose,
     deleteCancel: conversationDeleteCancel,
     deleteConfirm: conversationDeleteConfirm,
     form: conversationForm,
     prompt: conversationPrompt,
     submit: conversationSubmit,
-    submitMessage: conversationSubmitMessage,
   },
 });
 const conversationTimelineView = createConversationTimelineView({
@@ -214,6 +225,23 @@ function notifyWorkspaceSessionActivity() {
   if (signature === conversationWorkspaceActivitySignature) return;
   conversationWorkspaceActivitySignature = signature;
   window.parent.postMessage(payload, window.location.origin);
+}
+
+function notifyWorkspaceSessionInteraction() {
+  if (window.parent === window || typeof conversationSessionId !== "string") return;
+  window.parent.postMessage({
+    type: "chub.workspace.quick-session-interaction",
+    sessionId: conversationSessionId,
+  }, window.location.origin);
+}
+
+function notifyWorkspaceSessionChanged(sessionId, { returnToWorkspace = false } = {}) {
+  if (window.parent === window || typeof sessionId !== "string") return;
+  window.parent.postMessage({
+    type: "chub.workspace.quick-session-changed",
+    sessionId,
+    returnToWorkspace,
+  }, window.location.origin);
 }
 
 function handleConversationSessionSwitch(event) {
@@ -354,7 +382,7 @@ function renderConversationComposerOptions(session) {
   conversationPermissionTrigger.setAttribute("aria-label", `权限：${permissionLabel}`);
   conversationPermissionTrigger.disabled = conversationConfigurationPending;
   conversationPermissionTrigger.title = permission === "ask"
-    ? "Ask for approval 需要进入实时终端"
+    ? "快速交互不支持 Ask for approval，请改为其他权限"
     : "查看权限选项";
   conversationPermissionMenu.querySelectorAll("[role='option']").forEach((option) => {
     option.setAttribute("aria-selected", String(option.dataset.value === permission));
@@ -465,6 +493,7 @@ async function selectConversationComposerOption(kind, value) {
       model: conversationComposerSelections.model || null,
       reasoningEffort: conversationComposerSelections.reasoningEffort || null,
     });
+    notifyWorkspaceSessionChanged(updated.id);
     if (generation !== conversationGeneration) return;
     conversationSession = updated;
     conversationComposerSessionId = updated.id;
@@ -482,8 +511,7 @@ async function selectConversationComposerOption(kind, value) {
         reasoning_effort: previous.reasoningEffort || null,
       };
       conversationComposerSelections = previous;
-      showConversationMessage(
-        conversationSubmitMessage,
+      showConversationFeedback(
         formatConversationErrorMessage(error, "Session 配置保存失败。"),
         "error",
       );
@@ -544,7 +572,6 @@ function resetConversationSessionView(sessionPreview) {
   conversationSubmit.disabled = true;
   conversationForm.setAttribute("aria-busy", "true");
   showConversationMessage(conversationHistoryMessage, "");
-  showConversationMessage(conversationSubmitMessage, "");
   resizeConversationPrompt();
 }
 
@@ -628,6 +655,7 @@ async function createConversationSession(workspaceId) {
   showConversationMessage(conversationCreateMessage, "正在创建 Session…");
   try {
     const session = await conversationClient.createSession({ workspaceId });
+    notifyWorkspaceSessionChanged(session.id);
     conversationCreationPending = false;
     conversationCreateDialog.close();
     switchConversationSession(
@@ -678,6 +706,23 @@ function showConversationMessage(element, text, kind = "") {
   }
 }
 
+function showConversationFeedback(text, kind = "error") {
+  if (!text) return;
+  if (window.parent !== window) {
+    window.parent.postMessage(
+      {
+        type: "chub.workspace.quick-session-feedback",
+        sessionId: conversationSessionId,
+        text,
+        kind: kind === "warning" ? "warning" : "error",
+      },
+      window.location.origin,
+    );
+    return;
+  }
+  window.showChubToast?.(text, { kind });
+}
+
 function renderConversationTasks({ forceBottom = false, preservePosition = false } = {}) {
   conversationTimelineView.render(
     conversationTasks,
@@ -717,6 +762,14 @@ function renderConversationSession(session) {
     promptLength: conversationPrompt.value.length,
   });
   conversationConfirmStopUnknownTerminal = state.confirmStopUnknownTerminal;
+}
+
+function focusConversationPromptAfterSessionAction() {
+  window.requestAnimationFrame(() => {
+    if (!conversationPrompt.disabled) {
+      conversationPrompt.focus({ preventScroll: true });
+    }
+  });
 }
 
 function closeConversationRenameDialog() {
@@ -760,25 +813,25 @@ async function stopConversationSession(event) {
   }
   conversationStopPending = true;
   conversationSessionView.setStopPending(true);
-  showConversationMessage(conversationStopMessage, "");
+  conversationStopDialog.close();
   window.clearTimeout(conversationPollTimer);
   const generation = conversationGeneration;
   const client = conversationClient;
   try {
     const session = await client.stopSession();
+    notifyWorkspaceSessionChanged(session.id);
     if (generation !== conversationGeneration) {
       return;
     }
     conversationActive = false;
     renderConversationSession(session);
-    conversationStopDialog.close();
     await loadConversation();
+    focusConversationPromptAfterSessionAction();
   } catch (error) {
     if (generation !== conversationGeneration) {
       return;
     }
-    showConversationMessage(
-      conversationStopMessage,
+    showConversationFeedback(
       formatConversationErrorMessage(error, "Session 停止失败。"),
       "error",
     );
@@ -814,12 +867,14 @@ async function renameConversationSession(event) {
   const client = conversationClient;
   try {
     const session = await client.renameSession(title);
+    notifyWorkspaceSessionChanged(session.id);
     if (generation !== conversationGeneration) {
       return;
     }
     renderConversationSession(session);
     conversationRenameDialog.close();
     void loadConversation();
+    focusConversationPromptAfterSessionAction();
   } catch (error) {
     if (generation !== conversationGeneration) {
       return;
@@ -868,7 +923,7 @@ async function archiveConversationSession(event) {
   }
   conversationArchivePending = true;
   conversationSessionView.setArchivePending(true);
-  showConversationMessage(conversationArchiveMessage, "");
+  conversationArchiveDialog.close();
   window.clearTimeout(conversationPollTimer);
   const generation = conversationGeneration;
   const archivedSessionId = conversationSessionId;
@@ -886,12 +941,13 @@ async function archiveConversationSession(event) {
       ? conversationSessionUrl(nextSession.id)
       : "/";
     if (!nextSession) {
-      window.location.replace(nextSessionUrl);
+      notifyWorkspaceSessionChanged(archivedSessionId, { returnToWorkspace: true });
+      if (window.parent === window) window.location.replace(nextSessionUrl);
       return;
     }
+    notifyWorkspaceSessionChanged(archivedSessionId);
     conversationArchivePending = false;
     conversationSessionView.setArchivePending(false);
-    conversationArchiveDialog.close();
     conversationSessions = conversationSessions.filter(
       (session) => session.id !== archivedSessionId,
     );
@@ -904,13 +960,13 @@ async function archiveConversationSession(event) {
       // The list can be stale while another reconciliation or client has
       // already removed this Session. Archive is then already complete from
       // the user's perspective; leave the retired conversation page.
-      window.location.replace("/");
+      notifyWorkspaceSessionChanged(archivedSessionId, { returnToWorkspace: true });
+      if (window.parent === window) window.location.replace("/");
       return;
     }
     conversationArchivePending = false;
     conversationSessionView.setArchivePending(false);
-    showConversationMessage(
-      conversationArchiveMessage,
+    showConversationFeedback(
       formatConversationErrorMessage(error, "Session 归档失败。"),
       "error",
     );
@@ -926,7 +982,7 @@ async function deleteConversationSession(event) {
   }
   conversationDeletePending = true;
   conversationSessionView.setDeletePending(true);
-  showConversationMessage(conversationDeleteMessage, "");
+  conversationDeleteDialog.close();
   window.clearTimeout(conversationPollTimer);
   const generation = conversationGeneration;
   const deletedSessionId = conversationSessionId;
@@ -944,12 +1000,13 @@ async function deleteConversationSession(event) {
       ? conversationSessionUrl(nextSession.id)
       : "/";
     if (!nextSession) {
-      window.location.replace(nextSessionUrl);
+      notifyWorkspaceSessionChanged(deletedSessionId, { returnToWorkspace: true });
+      if (window.parent === window) window.location.replace(nextSessionUrl);
       return;
     }
+    notifyWorkspaceSessionChanged(deletedSessionId);
     conversationDeletePending = false;
     conversationSessionView.setDeletePending(false);
-    conversationDeleteDialog.close();
     conversationSessions = conversationSessions.filter(
       (session) => session.id !== deletedSessionId,
     );
@@ -962,13 +1019,13 @@ async function deleteConversationSession(event) {
       // The list can be stale while another reconciliation or client has
       // already removed this Session. Deletion is already complete from the
       // user's perspective; leave the retired conversation page.
-      window.location.replace("/");
+      notifyWorkspaceSessionChanged(deletedSessionId, { returnToWorkspace: true });
+      if (window.parent === window) window.location.replace("/");
       return;
     }
     conversationDeletePending = false;
     conversationSessionView.setDeletePending(false);
-    showConversationMessage(
-      conversationDeleteMessage,
+    showConversationFeedback(
       formatConversationErrorMessage(error, "Session 删除失败。"),
       "error",
     );
@@ -1046,8 +1103,6 @@ async function performConversationLoad(generation, client) {
     renderConversationSession(sessionContextResult.value.session);
   } else if (!suppressReconnectError) {
     renderConversationSessionError(sessionContextResult.reason);
-  } else {
-    showConversationMessage(conversationSubmitMessage, "");
   }
   const session = sessionContextResult.status === "fulfilled"
     ? sessionContextResult.value.session
@@ -1194,6 +1249,7 @@ conversationForm.addEventListener("submit", async (event) => {
       prompt: value,
       confirmStopUnknownTerminal: conversationConfirmStopUnknownTerminal,
     });
+    notifyWorkspaceSessionChanged(conversationSessionId);
     if (generation !== conversationGeneration) {
       return;
     }
@@ -1208,7 +1264,6 @@ conversationForm.addEventListener("submit", async (event) => {
     mergeConversationTasks([data.task]);
     notifyWorkspaceSessionActivity();
     renderConversationTasks({ forceBottom: true });
-    showConversationMessage(conversationSubmitMessage, "");
     await loadConversation();
   } catch (error) {
     if (generation !== conversationGeneration) {
@@ -1218,14 +1273,12 @@ conversationForm.addEventListener("submit", async (event) => {
       error.code === "quick_interaction_terminal_confirmation_required"
     ) {
       conversationConfirmStopUnknownTerminal = true;
-      showConversationMessage(
-        conversationSubmitMessage,
+      showConversationFeedback(
         "请确认影响后再次点击发送。",
-        "error",
+        "warning",
       );
     } else {
-      showConversationMessage(
-        conversationSubmitMessage,
+      showConversationFeedback(
         formatConversationErrorMessage(error, "快速交互提交失败。"),
         "error",
       );
@@ -1253,6 +1306,7 @@ conversationSessionSwitcher.addEventListener("click", handleConversationSessionS
 conversationSessionSwitcher.addEventListener("auxclick", handleConversationSessionSwitch);
 conversationSessionCreate.addEventListener("click", openConversationCreateDialog);
 conversationCreateClose.addEventListener("click", closeConversationCreateDialog);
+conversationCreateCancel.addEventListener("click", closeConversationCreateDialog);
 conversationCreateDialog.addEventListener("click", (event) => {
   if (event.target === conversationCreateDialog) {
     closeConversationCreateDialog();
@@ -1320,6 +1374,7 @@ conversationDeleteDialog.addEventListener("cancel", (event) => {
   }
 });
 conversationScroll.addEventListener("scroll", updateConversationJumpLatest, { passive: true });
+document.addEventListener("pointerdown", notifyWorkspaceSessionInteraction, { capture: true });
 
 conversationComposerMenus.forEach(([trigger, menu]) => {
   trigger.addEventListener("click", () => {

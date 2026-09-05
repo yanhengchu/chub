@@ -67,7 +67,7 @@
     {
       "id": "frontend-ui",
       "title": "Chub 前端 UI 模块化设计",
-      "summary": "定义首页 Core、公共组件、Feature、样式层及 Standard/Code Dark 的当前维护边界。",
+      "summary": "定义首页 Core、公共组件、Feature、样式层、主题注册和完整视觉 Token 的当前维护边界。",
       "status": "已验收",
       "path": "FRONTEND_UI_DESIGN.md"
     },

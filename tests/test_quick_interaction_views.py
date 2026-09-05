@@ -122,6 +122,9 @@ process.stdout.write(JSON.stringify(result));
     assert behavior["busy"]["archiveLabel"] == "Session 当前正在执行，请等待任务结束后再归档。"
     assert behavior["busy"]["submissionReason"] == "当前快速交互正在执行，请等待任务结束。"
     assert behavior["externallyUsed"]["usageBlocked"] is True
+    assert behavior["externallyUsed"]["renameVisible"] is True
+    assert behavior["externallyUsed"]["renameAllowed"] is False
+    assert behavior["externallyUsed"]["renameLabel"] == "其他应用正在使用此 Session；仅可查看历史。"
     assert behavior["externallyUsed"]["stopReady"] is False
     assert behavior["externallyUsed"]["archiveBusy"] is True
     assert behavior["externallyUsed"]["deleteBusy"] is True

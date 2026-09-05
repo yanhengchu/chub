@@ -24,13 +24,26 @@ from app.ai_runtime import (
     RuntimeProcessSpec,
     RuntimeReasoningLevel,
     RuntimeSessionDiscoveryResult,
+    RuntimeSettingsData,
+    RuntimeSettingsField,
+    RuntimeSettingsSection,
+    RuntimeSettingsUpdate,
     RuntimeStatus,
     RuntimeTerminalRequest,
 )
+from app.ai_usage.service import AiUsageService
 from app.codex.discovery import CodexSessionDiscovery
 from app.codex.model_catalog import CodexModelCatalog
+from app.codex.rate_limits import CodexRateLimitService
+from app.codex.usage_settings import (
+    CodexRuntimeSettings,
+    AiRuntimeSettingsStore,
+    CodexSub2ApiUsageSettings,
+    CodexUsageSettings,
+    CodexUsageRuntimeSettings,
+    RuntimeSettingsStoreUnavailable,
+)
 from app.core.config import PROJECT_ROOT, Settings
-from app.core.network import is_tailscale_ip
 
 
 PROFILE_MARKER = "# Managed by Chub Codex PTY"
@@ -55,6 +68,8 @@ class CodexRuntimeAdapter:
         executable: str | Path | None = None,
         which: Callable[[str], str | None] | None = None,
         run: Callable[..., subprocess.CompletedProcess] | None = None,
+        runtime_settings_store: AiRuntimeSettingsStore | None = None,
+        rate_limits: CodexRateLimitService | None = None,
     ) -> None:
         self.settings = settings
         self.codex_home = codex_home or Path(
@@ -63,9 +78,13 @@ class CodexRuntimeAdapter:
         self.executable = str(executable) if executable is not None else "codex"
         self.discovery = CodexSessionDiscovery(self.codex_home)
         self.model_catalog = CodexModelCatalog(self.codex_home)
-        self.hook_dir = settings.codex_pty.runtime_dir / "hooks"
+        self.hook_dir = settings.ai_runtime.codex.runtime_dir / "hooks"
         self._which = which
         self._run = run
+        self._runtime_settings_store = runtime_settings_store or AiRuntimeSettingsStore()
+        self.rate_limits = rate_limits or CodexRateLimitService()
+        self._usage_service: AiUsageService | None = None
+        self._usage_settings: CodexUsageSettings | None = None
 
     @property
     def descriptor(self) -> RuntimeDescriptor:
@@ -77,6 +96,10 @@ class CodexRuntimeAdapter:
     @property
     def display_name(self) -> str:
         return "Codex"
+
+    @property
+    def runtime_settings_store(self) -> AiRuntimeSettingsStore:
+        return self._runtime_settings_store
 
     @staticmethod
     def runtime_process_matches(command: tuple[str, ...]) -> bool:
@@ -211,10 +234,6 @@ class CodexRuntimeAdapter:
                 kind="invalid_request",
             )
 
-    @property
-    def network_available(self) -> bool:
-        return is_tailscale_ip(self.settings.server.tailnet_host or "")
-
     def dependencies(self) -> dict[str, bool]:
         import shutil
 
@@ -224,10 +243,8 @@ class CodexRuntimeAdapter:
     def status(self) -> RuntimeStatus:
         dependencies = self.dependencies()
         reason = None
-        if not self.settings.codex_pty.enabled:
+        if not self.settings.ai_runtime.codex.enabled:
             reason = "Codex PTY is disabled"
-        elif not self.network_available:
-            reason = "Codex PTY requires a Tailscale listen address"
         else:
             missing = [name for name, found in dependencies.items() if not found]
             if missing:
@@ -264,6 +281,118 @@ class CodexRuntimeAdapter:
             default_model=catalog.default_model,
             default_reasoning_effort=catalog.default_reasoning_effort,
         )
+
+    def read_usage_snapshot(self, *, force: bool = False):
+        settings = self._read_usage_settings()
+        if self._usage_service is None or settings != self._usage_settings:
+            self._usage_service = AiUsageService(
+                settings,
+                self.rate_limits,
+                self.settings.automations,
+            )
+            self._usage_settings = settings
+        return self._usage_service.read(force=force).model_copy(
+            update={"runtime_id": self.descriptor.runtime_id}
+        )
+
+    def read_runtime_settings(self) -> RuntimeSettingsData:
+        usage = self._read_usage_settings()
+        return RuntimeSettingsData(
+            runtime_id=self.descriptor.runtime_id,
+            sections=(
+                RuntimeSettingsSection(
+                    id="usage",
+                    title="用量来源",
+                    description="仅在 Codex 使用 API Key 时读取已登录 Sub2API 的额度。",
+                    fields=(
+                        RuntimeSettingsField(
+                            id="sub2api-base-url",
+                            label="Sub2API 地址",
+                            description="已登录 Sub2API 的本机或 HTTPS 服务地址；留空则不启用该采集来源。",
+                            input_type="text",
+                            value=usage.sub2api.base_url,
+                            placeholder="https://sub2api.example",
+                        ),
+                        RuntimeSettingsField(
+                            id="sub2api-subscription-id",
+                            label="订阅 ID",
+                            description="可选。留空时使用第一条活跃 OpenAI 订阅。",
+                            input_type="number",
+                            value=usage.sub2api.subscription_id,
+                            placeholder="可选",
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+    def update_runtime_settings(
+        self,
+        update: RuntimeSettingsUpdate,
+    ) -> RuntimeSettingsData:
+        expected = {
+            "sub2api-base-url",
+            "sub2api-subscription-id",
+        }
+        if set(update.values) != expected:
+            raise RuntimeOperationError(
+                "codex_runtime_settings_invalid",
+                "Codex Runtime settings are invalid",
+                kind="invalid_request",
+            )
+        base_url = update.values["sub2api-base-url"]
+        subscription_id = update.values["sub2api-subscription-id"]
+        if base_url is not None and not isinstance(base_url, str):
+            raise RuntimeOperationError(
+                "codex_runtime_settings_invalid",
+                "Codex Runtime settings are invalid",
+                kind="invalid_request",
+            )
+        if subscription_id is not None and (
+            isinstance(subscription_id, bool) or not isinstance(subscription_id, int)
+        ):
+            raise RuntimeOperationError(
+                "codex_runtime_settings_invalid",
+                "Codex Runtime settings are invalid",
+                kind="invalid_request",
+            )
+        try:
+            settings = CodexRuntimeSettings(
+                usage=CodexUsageRuntimeSettings(
+                    sub2api=CodexSub2ApiUsageSettings(
+                        base_url=base_url,
+                        subscription_id=subscription_id,
+                    )
+                )
+            )
+        except ValueError as exc:
+            raise RuntimeOperationError(
+                "codex_runtime_settings_invalid",
+                "Codex Runtime settings are invalid",
+                kind="invalid_request",
+            ) from exc
+        try:
+            self._runtime_settings_store.save(settings)
+        except RuntimeSettingsStoreUnavailable as exc:
+            raise RuntimeOperationError(
+                "codex_runtime_settings_unavailable",
+                "Codex Runtime settings are unavailable",
+            ) from exc
+        self._usage_service = None
+        self._usage_settings = None
+        return self.read_runtime_settings()
+
+    def _read_usage_settings(self) -> CodexUsageSettings:
+        try:
+            return CodexUsageSettings(
+                timezone=self._runtime_settings_store.read_general().timezone,
+                sub2api=self._runtime_settings_store.read().usage.sub2api,
+            )
+        except RuntimeSettingsStoreUnavailable as exc:
+            raise RuntimeOperationError(
+                "codex_runtime_settings_unavailable",
+                "Codex Runtime settings are unavailable",
+            ) from exc
 
     @staticmethod
     def validate_native_session_id(native_session_id: str) -> None:

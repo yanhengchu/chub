@@ -3,6 +3,7 @@
 .direnv/
 
 config/settings.local.yaml
+config/ai-runtimes.local.yaml
 config/settings.*.local.yaml
 config/automations.local.yaml
 

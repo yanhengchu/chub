@@ -13,6 +13,8 @@ from app.ai_runtime.contracts import (
     RuntimeNativeSessionAdapter,
     RuntimeOperationError,
     RuntimeSessionArchiveAdapter,
+    RuntimeSettingsAdapter,
+    RuntimeUsageSnapshotAdapter,
     RuntimeWriterProbeAdapter,
 )
 
@@ -25,6 +27,8 @@ _ADAPTER_CAPABILITY_CONTRACTS = {
     "writer_probe": RuntimeWriterProbeAdapter,
     "activity_events": RuntimeActivityEventAdapter,
     "model_catalog": RuntimeModelCatalogAdapter,
+    "usage_snapshot": RuntimeUsageSnapshotAdapter,
+    "runtime_settings": RuntimeSettingsAdapter,
 }
 
 

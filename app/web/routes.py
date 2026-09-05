@@ -13,11 +13,13 @@ from app.services.design_documents import (
 )
 from app.core.response import ApiError
 from app.services.weekly_reports import get_weekly_report
+from app.web.themes import configure_theme_templates
 
 
 WEB_DIR = Path(__file__).resolve().parent
 STATIC_DIR = WEB_DIR / "static"
 templates = Jinja2Templates(directory=WEB_DIR / "templates")
+configure_theme_templates(templates)
 
 router = APIRouter(tags=["web"])
 
@@ -85,8 +87,19 @@ def render_settings_page(
     page: str,
     title: str,
     description: str,
+    runtime_id: str | None = None,
 ) -> HTMLResponse:
     settings = request.app.state.settings
+    runtime_navigation = []
+    try:
+        management = request.app.state.codex_pty_manager.read_runtime_management()
+        runtime_navigation = [
+            {"runtime_id": item.runtime_id, "name": item.name}
+            for item in management.runtimes
+        ]
+    except ApiError:
+        # Runtime settings remain reachable even when live status is unavailable.
+        pass
     return templates.TemplateResponse(
         request=request,
         name="settings.html",
@@ -97,6 +110,8 @@ def render_settings_page(
             "settings_title": title,
             "settings_description": description,
             "settings_return_url": _settings_return_url(request),
+            "settings_runtime_id": runtime_id,
+            "runtime_navigation": runtime_navigation,
         },
     )
 
@@ -104,45 +119,89 @@ def render_settings_page(
 @router.get("/settings", include_in_schema=False)
 def settings_page(request: Request) -> RedirectResponse:
     return_url = _settings_return_url(request)
-    target = "/settings/quick-interaction"
+    target = "/settings/appearance"
     if return_url != "/":
         target = f"{target}?{urlencode({'return_to': return_url})}"
     return RedirectResponse(target, status_code=307)
 
 
-@router.get("/settings/quick-interaction", response_class=HTMLResponse, include_in_schema=False)
-def quick_interaction_settings(request: Request) -> HTMLResponse:
-    return render_settings_page(request, page="quick-interaction", title="快速交互", description="调整会话历史记录的加载方式。")
+@router.get("/settings/quick-interaction", include_in_schema=False)
+def legacy_quick_interaction_settings(request: Request) -> RedirectResponse:
+    return_url = _settings_return_url(request)
+    target = "/settings/session-defaults"
+    if return_url != "/":
+        target = f"{target}?{urlencode({'return_to': return_url})}"
+    return RedirectResponse(target, status_code=307)
 
 
 @router.get("/settings/appearance", response_class=HTMLResponse, include_in_schema=False)
 def appearance_settings(request: Request) -> HTMLResponse:
-    return render_settings_page(request, page="appearance", title="界面风格", description="查看可用风格及常用界面元素的实际效果。")
+    return render_settings_page(
+        request,
+        page="appearance",
+        title="外观",
+        description="调整工作台主题、文字层级和常用界面元素的显示效果。",
+    )
 
 
 @router.get("/settings/diagnostics", response_class=HTMLResponse, include_in_schema=False)
 def diagnostics_settings(request: Request) -> HTMLResponse:
-    return render_settings_page(request, page="diagnostics", title="诊断与关于", description="查看节点记录与当前版本。")
+    return render_settings_page(request, page="diagnostics", title="维护与版本", description="查看节点记录、维护入口与当前版本。")
 
 
 @router.get("/settings/runtime", response_class=HTMLResponse, include_in_schema=False)
 def runtime_settings(request: Request) -> HTMLResponse:
-    return render_settings_page(request, page="runtime", title="Runtime 管理", description="管理后续 AI 会话可使用的 Runtime。")
+    return render_settings_page(
+        request,
+        page="runtime",
+        title="通用配置",
+        description="查看适用于所有 AI Runtime 的管理规则。",
+    )
+
+
+@router.get(
+    "/settings/runtime/{runtime_id}",
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
+def runtime_detail_settings(request: Request, runtime_id: str) -> HTMLResponse:
+    try:
+        management = request.app.state.codex_pty_manager.read_runtime_management()
+    except ApiError as exc:
+        raise HTTPException(status_code=503, detail="Runtime settings unavailable") from exc
+    runtime = next(
+        (item for item in management.runtimes if item.runtime_id == runtime_id),
+        None,
+    )
+    if runtime is None:
+        raise HTTPException(status_code=404, detail="Runtime not found")
+    return render_settings_page(
+        request,
+        page="runtime-detail",
+        title=runtime.name,
+        description="查看并调整此 AI Runtime 的独立配置。",
+        runtime_id=runtime.runtime_id,
+    )
+
+
+@router.get("/settings/task-orchestration", include_in_schema=False)
+def legacy_task_orchestration_settings() -> RedirectResponse:
+    return RedirectResponse("/?section=task-orchestration", status_code=307)
 
 
 @router.get("/settings/session-defaults", response_class=HTMLResponse, include_in_schema=False)
 def session_defaults_settings(request: Request) -> HTMLResponse:
-    return render_settings_page(request, page="session-defaults", title="新建 Session 默认权限", description="设置之后新建 Session 使用的默认权限。")
+    return render_settings_page(request, page="session-defaults", title="会话设置", description="调整快速交互记录加载方式和新建 Session 默认权限。")
 
 
-@router.get("/settings/weixin-text", response_class=HTMLResponse, include_in_schema=False)
-def weixin_text_settings(request: Request) -> HTMLResponse:
-    return render_settings_page(request, page="weixin-text", title="微信任务文本优化", description="设置微信 ClawBot 普通文本任务的处理方式。")
+@router.get("/settings/weixin-text", include_in_schema=False)
+def legacy_weixin_text_settings(request: Request) -> RedirectResponse:
+    return RedirectResponse("/?section=task-orchestration", status_code=307)
 
 
 @router.get("/settings/openclaw", response_class=HTMLResponse, include_in_schema=False)
 def openclaw_settings(request: Request) -> HTMLResponse:
-    return render_settings_page(request, page="openclaw", title="OpenClaw", description="管理 OpenClaw Gateway 与微信 ClawBot。")
+    return render_settings_page(request, page="openclaw", title="OpenClaw", description="查看 OpenClaw 集成基线与补丁状态。")
 
 
 @router.get("/settings/openclaw/gateway", include_in_schema=False)
@@ -155,46 +214,14 @@ def legacy_openclaw_clawbot_settings() -> RedirectResponse:
     return RedirectResponse("/settings/openclaw", status_code=307)
 
 
-@router.get(
-    "/settings/styles/standard",
-    response_class=HTMLResponse,
-    include_in_schema=False,
-)
-def standard_style_preview(request: Request) -> HTMLResponse:
-    settings = request.app.state.settings
-    return templates.TemplateResponse(
-        request=request,
-        name="style_preview_standard.html",
-        context={
-            "app_name": settings.app.name,
-            "style_name": "Standard",
-            "style_badge": "当前风格",
-            "style_description": "简约标准版以清晰信息层级、克制配色、自然高度卡片和轻量反馈为核心。",
-            "preview_body_class": "standard-preview",
-            "color_scheme": "light",
-        },
-    )
+@router.get("/settings/styles/standard", include_in_schema=False)
+def legacy_standard_style_preview() -> RedirectResponse:
+    return RedirectResponse("/settings/appearance", status_code=307)
 
 
-@router.get(
-    "/settings/styles/code-dark",
-    response_class=HTMLResponse,
-    include_in_schema=False,
-)
-def code_dark_style_preview(request: Request) -> HTMLResponse:
-    settings = request.app.state.settings
-    return templates.TemplateResponse(
-        request=request,
-        name="style_preview_standard.html",
-        context={
-            "app_name": settings.app.name,
-            "style_name": "Code Dark",
-            "style_badge": "设计预览",
-            "style_description": "深色开发工作台以沉稳背景、分层面板、蓝色强调和清晰状态为核心。",
-            "preview_body_class": "code-dark-preview",
-            "color_scheme": "dark",
-        },
-    )
+@router.get("/settings/styles/code-dark", include_in_schema=False)
+def legacy_code_dark_style_preview() -> RedirectResponse:
+    return RedirectResponse("/settings/appearance", status_code=307)
 
 
 @router.get(
@@ -204,7 +231,7 @@ def code_dark_style_preview(request: Request) -> HTMLResponse:
 def workspace_preview(
     section: str = "workbench",
 ) -> RedirectResponse:
-    if section not in {"workbench", "project-docs", "automations"}:
+    if section not in {"workbench", "project-docs", "automations", "task-orchestration"}:
         raise HTTPException(status_code=404, detail="Workspace section not found")
     destination = "/" if section == "workbench" else f"/?section={section}"
     return RedirectResponse(destination, status_code=307)
@@ -217,7 +244,7 @@ def render_workspace(
     workspace_session_id: str | None = None,
 ) -> HTMLResponse:
     settings = request.app.state.settings
-    if section not in {"workbench", "project-docs", "automations"}:
+    if section not in {"workbench", "project-docs", "automations", "task-orchestration"}:
         raise HTTPException(status_code=404, detail="Workspace section not found")
     documents_error = None
     documents = []

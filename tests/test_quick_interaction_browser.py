@@ -17,6 +17,7 @@ from playwright.async_api import expect
 from app.application import create_app
 from app.automations.browser import session_factory
 from app.core.config import Settings
+from app.web.themes import WEB_THEMES
 
 
 RUN_BROWSER_TESTS = os.getenv("CHUB_BROWSER_TESTS") == "1"
@@ -49,12 +50,12 @@ def _browser_settings(root: Path) -> Settings:
                 "level": "ERROR",
                 "max_lines": 100,
             },
-            "codex_pty": {
+            "ai_runtime": {"codex": {
                 "enabled": True,
                 "workspace": root / "workspace",
                 "data_file": root / "codex-sessions.json",
                 "runtime_dir": root / "codex-runtime",
-            },
+            }},
             "automations": {
                 "shared_config_file": root / "automations.yaml",
                 "local_config_file": root / "automations.local.yaml",
@@ -258,7 +259,31 @@ class ConversationApi:
                         "name": "Chub",
                         "path": "/workspace/chub",
                         "available": True,
-                    }
+                    },
+                    {
+                        "id": "docs",
+                        "name": "Docs",
+                        "path": "/workspace/docs",
+                        "available": True,
+                    },
+                    {
+                        "id": "sandbox",
+                        "name": "Sandbox",
+                        "path": "/workspace/sandbox",
+                        "available": True,
+                    },
+                    {
+                        "id": "tools",
+                        "name": "Tools",
+                        "path": "/workspace/tools",
+                        "available": True,
+                    },
+                    {
+                        "id": "unavailable",
+                        "name": "Unavailable",
+                        "path": "/workspace/unavailable",
+                        "available": False,
+                    },
                 ],
                 "sessions": deepcopy(self.sessions),
             }
@@ -443,7 +468,7 @@ async def test_terminal_page_returns_home_after_connection_takeover(
             await context.close()
 
 
-@pytest.mark.parametrize("theme", ["standard", "code-dark"])
+@pytest.mark.parametrize("theme", [theme.id for theme in WEB_THEMES])
 @pytest.mark.parametrize(
     "viewport",
     [(360, 800), (412, 915), (1280, 900)],
@@ -554,7 +579,7 @@ async def test_conversation_layout_in_managed_chrome(
     assert page_errors == []
 
 
-@pytest.mark.parametrize("theme", ["standard", "code-dark"])
+@pytest.mark.parametrize("theme", [theme.id for theme in WEB_THEMES])
 async def test_conversation_composer_options_show_current_values_and_disable_approval(
     conversation_browser_server: str,
     theme: str,
@@ -627,21 +652,30 @@ async def test_conversation_suppresses_transient_connection_errors(
             viewport=(1280, 900),
         )
         try:
+            await page.evaluate(
+                'showConversationFeedback("Session 配置保存失败。", "error")'
+            )
+            toast = page.locator(".chub-toast")
+            await expect(toast).to_be_visible()
+            await expect(toast).to_contain_text("Session 配置保存失败。")
+            assert await toast.evaluate(
+                "node => getComputedStyle(node).position"
+            ) == "fixed"
+            await toast.locator(".chub-toast-dismiss").click()
+            await expect(toast).to_be_hidden()
+
             api.abort_load_requests = 2
             await page.evaluate("loadConversation()")
-            await expect(page.locator("#conversation-submit-message")).to_have_text("")
             await expect(page.locator("#conversation-history-message")).to_have_text("")
 
             api.invalid_json_load_requests = 1
             await page.evaluate("loadConversation()")
-            await expect(page.locator("#conversation-submit-message")).to_have_text("")
             await expect(page.locator("#conversation-history-message")).to_have_text("")
 
             await page.evaluate("loadConversation()")
             await expect(page.locator("#conversation-session-title")).to_have_text(
                 "Main Session"
             )
-            await expect(page.locator("#conversation-submit-message")).to_have_text("")
         finally:
             await context.close()
 
@@ -662,6 +696,29 @@ async def test_conversation_workflows_in_managed_chrome(
             viewport=(1280, 900),
         )
         try:
+            assert await page.evaluate(
+                """() => {
+                    const root = document.createElement("div");
+                    const trigger = document.createElement("button");
+                    const value = document.createElement("span");
+                    const menu = document.createElement("div");
+                    trigger.type = "button";
+                    root.append(trigger, value, menu);
+                    document.body.append(root);
+                    const picker = window.createChoicePicker({
+                        trigger,
+                        value,
+                        menu,
+                        onSelect: () => {},
+                    });
+                    picker.setOptions([{ value: "one", label: "One" }], "one");
+                    picker.setDisabled(true);
+                    picker.setOptions([{ value: "one", label: "One" }], "one");
+                    const remainsDisabled = trigger.disabled;
+                    root.remove();
+                    return remainsDisabled;
+                }"""
+            )
             await page.locator("#conversation-load-earlier").click()
             await expect(page.locator("[data-task-id]")).to_have_count(3)
             assert await page.locator("[data-task-id]").evaluate_all(
@@ -706,8 +763,37 @@ async def test_conversation_workflows_in_managed_chrome(
             )
             await expect(page.locator("#conversation-session-title")).to_have_text("Main Session")
 
-            await page.locator("#conversation-session-create").click()
-            await page.locator("#conversation-create-workspaces .workspace-button").click()
+            session_create = page.locator("#conversation-session-create")
+            default_create_background = await session_create.evaluate(
+                "node => getComputedStyle(node).backgroundColor"
+            )
+            await session_create.focus()
+            await page.keyboard.press("Enter")
+            await expect(page.locator("#conversation-create-dialog")).to_be_visible()
+            await page.keyboard.press("Escape")
+            await expect(page.locator("#conversation-create-dialog")).not_to_be_visible()
+            assert await session_create.evaluate(
+                "node => document.activeElement === node"
+            )
+            assert await session_create.evaluate(
+                "node => getComputedStyle(node).backgroundColor"
+            ) == default_create_background
+
+            await session_create.click()
+            await expect(page.locator("#conversation-create-workspaces")).to_have_value("chub")
+            await page.locator("#conversation-create-workspaces-trigger").click()
+            await expect(page.locator("#conversation-create-workspaces-menu [role='option']")).to_have_count(4)
+            assert await page.locator("#conversation-create-workspaces-trigger").evaluate(
+                "node => node.getBoundingClientRect().right - node.lastElementChild.getBoundingClientRect().right"
+            ) >= 14
+            assert await page.locator("#conversation-create-workspaces-menu").evaluate(
+                "node => { const rect = node.getBoundingClientRect(); return rect.top >= 0 && rect.bottom <= innerHeight; }"
+            )
+            assert await page.locator("#conversation-create-workspaces-menu [role='option']:last-child").evaluate(
+                "node => { const rect = node.getBoundingClientRect(); const target = document.elementFromPoint(rect.left + 4, rect.top + rect.height / 2); return node.contains(target); }"
+            )
+            await page.locator("#conversation-create-workspaces-menu [role='option']").first.click()
+            await page.locator("#conversation-create-confirm").click()
             await expect(page).to_have_url(
                 f"{conversation_browser_server}/codex/session-3/quick-interactions/conversation"
             )
@@ -850,9 +936,6 @@ async def test_old_session_recovery_failure_does_not_override_switched_session(
                 "Second Session"
             )
             await expect(page.locator("#conversation-submit")).to_be_enabled()
-            await expect(page.locator("#conversation-submit-message")).not_to_contain_text(
-                "Old Session recovery failed"
-            )
         finally:
             api.recovery_release.set()
             await context.close()

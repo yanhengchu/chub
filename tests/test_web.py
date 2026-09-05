@@ -1,14 +1,49 @@
 import asyncio
+import re
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import httpx
 import pytest
 
+from app.automations.models import (
+    AutomationListData,
+    AutomationState,
+    AutomationTaskPublic,
+    BrowserProfilePublic,
+    FeishuEnvironmentState,
+)
 from app.application import create_app
-from app.codex.models import CodexSession
+from app.codex.models import CodexSession, RuntimeManagementData, RuntimeManagementItem
 from app.core.config import Settings
 import app.services.weekly_reports as weekly_report_service
+from app.web.themes import WEB_FONT_SIZES, WEB_THEMES
+
+
+def _theme_hex_color(tokens: str, theme_id: str, suffix: str) -> str:
+    match = re.search(
+        rf"^\s*--{re.escape(theme_id)}-{re.escape(suffix)}:\s*(#[0-9a-fA-F]{{6}});",
+        tokens,
+        flags=re.MULTILINE,
+    )
+    assert match is not None
+    return match.group(1)
+
+
+def _contrast_ratio(foreground: str, background: str) -> float:
+    def relative_luminance(value: str) -> float:
+        channels = [int(value[index:index + 2], 16) / 255 for index in (1, 3, 5)]
+        linear = [
+            channel / 12.92 if channel <= 0.04045 else ((channel + 0.055) / 1.055) ** 2.4
+            for channel in channels
+        ]
+        return sum(weight * channel for weight, channel in zip((0.2126, 0.7152, 0.0722), linear))
+
+    lighter, darker = sorted(
+        (relative_luminance(foreground), relative_luminance(background)),
+        reverse=True,
+    )
+    return (lighter + 0.05) / (darker + 0.05)
 
 
 @pytest.fixture
@@ -129,10 +164,14 @@ async def test_home_page_is_public_and_contains_no_credential_form(
     assert 'id="refresh-core-capabilities"' in response.text
     assert 'id="refresh-third-party-services"' in response.text
     assert 'id="core-services-title" class="card-group-title"' in response.text
-    assert response.text.count('class="workstation-status-row') == 7
-    assert "<strong>AI Runtime</strong>" in response.text
-    assert 'id="ai-runtime-detail" class="workstation-status-detail"' in response.text
-    assert response.text.index("<strong>Chub Quick Worker</strong>") < response.text.index("<strong>AI Runtime</strong>") < response.text.index("<strong>升级与恢复</strong>")
+    assert response.text.count('class="workstation-status-row') == 6
+    assert '<article><span>Tailnet</span><strong id="workspace-tailnet-summary"></strong><small id="workspace-tailnet-summary-detail"></small></article>' in response.text
+    assert 'id="workspace-task-summary"' not in response.text
+    assert 'id="workspace-chub-summary"' not in response.text
+    assert 'id="workspace-worker-summary"' not in response.text
+    assert 'id="workspace-runtime-detail"' not in response.text
+    assert 'id="workspace-tailnet-row"' not in response.text
+    assert response.text.index("<strong>Chub Quick Worker</strong>") < response.text.index("<strong>升级与恢复</strong>")
     assert "<strong>升级与恢复</strong>" in response.text
     assert "<strong>系统升级与恢复</strong>" not in response.text
     assert 'id="system-upgrade-badge"' not in response.text
@@ -285,15 +324,187 @@ async def test_removed_cyber_style_falls_back_to_standard_before_assets_load(set
         client.cookies.set("hub_ui_style", "cyber")
         pages = await asyncio.gather(
             client.get("/"),
-            client.get("/settings/quick-interaction"),
+            client.get("/settings/session-defaults"),
                 client.get("/logs"),
                 client.get("/project-docs"),
         )
 
     assert all(page.status_code == 200 for page in pages)
     for page in pages:
-        assert '<html lang="zh-CN" data-ui-style="standard">' in page.text
+        assert '<html lang="zh-CN" data-ui-style="standard"' in page.text
         assert '<meta name="color-scheme" content="light">' in page.text
+
+
+@pytest.mark.anyio
+async def test_invalid_font_size_falls_back_to_default_before_assets_load(
+    settings: Settings,
+) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        client.cookies.set("hub_ui_font_size", "extra-large")
+        pages = await asyncio.gather(
+            client.get("/"),
+            client.get("/settings/appearance"),
+            client.get("/logs"),
+            client.get("/project-docs"),
+        )
+
+    assert all(page.status_code == 200 for page in pages)
+    for page in pages:
+        assert 'data-ui-font-size="default"' in page.text
+        assert 'data-ui-font-size-default="default"' in page.text
+        assert 'data-ui-font-size-scales="small:0.9,default:1,large:1.1"' in page.text
+
+
+@pytest.mark.anyio
+async def test_registered_font_size_is_applied_before_assets_load(settings: Settings) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        client.cookies.set("hub_ui_font_size", "large")
+        pages = await asyncio.gather(
+            client.get("/"),
+            client.get("/settings/appearance"),
+            client.get("/logs"),
+            client.get("/project-docs"),
+        )
+
+    assert all(page.status_code == 200 for page in pages)
+    for page in pages:
+        assert 'data-ui-font-size="large"' in page.text
+        assert 'data-ui-font-size-default="default"' in page.text
+        assert 'data-ui-font-size-scales="small:0.9,default:1,large:1.1"' in page.text
+
+
+@pytest.mark.anyio
+async def test_registered_theme_is_applied_before_assets_load(settings: Settings) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        client.cookies.set("hub_ui_style", "studio-cyan")
+        pages = await asyncio.gather(
+            client.get("/"),
+            client.get("/settings/appearance"),
+            client.get("/logs"),
+            client.get("/project-docs"),
+        )
+
+    assert all(page.status_code == 200 for page in pages)
+    for page in pages:
+        assert '<html lang="zh-CN" data-ui-style="studio-cyan"' in page.text
+        assert 'data-ui-theme-schemes="standard:light,code-dark:dark,studio-cyan:light"' in page.text
+        assert '<meta name="color-scheme" content="light">' in page.text
+
+
+@pytest.mark.anyio
+async def test_theme_packages_are_complete_and_component_css_uses_semantic_tokens(
+    settings: Settings,
+) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        tokens = await client.get("/static/css/tokens.css")
+        base = await client.get("/static/css/base.css")
+        components = await client.get("/static/css/components.css")
+        responsive = await client.get("/static/css/responsive.css")
+
+    assert tokens.status_code == 200
+    required_suffixes = (
+        "canvas",
+        "surface",
+        "surface-raised",
+        "surface-field",
+        "surface-subtle",
+        "surface-hover",
+        "surface-selected",
+        "surface-disabled",
+        "surface-code",
+        "text",
+        "text-muted",
+        "text-disabled",
+        "text-inverse",
+        "border",
+        "border-strong",
+        "accent",
+        "accent-hover",
+        "accent-text",
+        "accent-inverse",
+        "focus-ring",
+        "shadow",
+        "overlay",
+        "success",
+        "success-background",
+        "success-border",
+        "warning",
+        "warning-background",
+        "warning-border",
+        "danger",
+        "danger-background",
+        "danger-border",
+        "info",
+        "info-background",
+        "info-border",
+    )
+    for theme in WEB_THEMES:
+        for suffix in required_suffixes:
+            assert f"--{theme.id}-{suffix}:" in tokens.text
+        surface = _theme_hex_color(tokens.text, theme.id, "surface")
+        for suffix in ("text", "text-muted", "accent-text"):
+            assert _contrast_ratio(_theme_hex_color(tokens.text, theme.id, suffix), surface) >= 4.5
+        assert _contrast_ratio(
+            _theme_hex_color(tokens.text, theme.id, "text"),
+            _theme_hex_color(tokens.text, theme.id, "surface-code"),
+        ) >= 4.5
+        assert _contrast_ratio(
+            _theme_hex_color(tokens.text, theme.id, "text-inverse"),
+            _theme_hex_color(tokens.text, theme.id, "accent"),
+        ) >= 4.5
+
+    for stylesheet in (base, components, responsive):
+        assert stylesheet.status_code == 200
+        assert "var(--ink)" not in stylesheet.text
+        assert "var(--muted)" not in stylesheet.text
+        assert "var(--line)" not in stylesheet.text
+        assert "var(--paper)" not in stylesheet.text
+        assert "var(--accent)" not in stylesheet.text
+        assert "var(--accent-dark)" not in stylesheet.text
+        assert "var(--text)" not in stylesheet.text
+        assert re.search(r"#[0-9a-fA-F]{3,8}\b", stylesheet.text) is None
+
+    preview_suffixes = (
+        "background",
+        "surface",
+        "field",
+        "ink",
+        "muted",
+        "accent",
+        "accent-ink",
+        "line",
+        "success",
+        "success-background",
+        "warning",
+        "warning-background",
+        "danger",
+        "danger-background",
+    )
+    for theme in WEB_THEMES:
+        assert f'.theme-option[data-style-option="{theme.id}"]' in tokens.text
+        for suffix in preview_suffixes:
+            assert f"--theme-preview-{suffix}: var(--{theme.id}-" in tokens.text
+    assert "--theme-preview-background:" not in components.text
+    assert ':root[data-ui-style="code-dark"]' not in components.text
+    assert ':root[data-ui-style="studio-cyan"]' not in components.text
+    assert ".markdown-body pre {" in components.text
+    assert "background: var(--color-surface-code);" in components.text
+    assert "border: 1px solid var(--color-border);" in components.text
+    assert "overflow-x: auto;" in components.text
+    assert ".markdown-body pre code {\n  padding: 0;\n  color: var(--color-text);" in components.text
+    assert "--font-size-scale: 1;" in tokens.text
+    for font_size in WEB_FONT_SIZES:
+        expected_selector = (
+            rf':root\[data-ui-font-size="{re.escape(font_size.id)}"\] '
+            rf'\{{\s*--font-size-scale: {font_size.scale:g};'
+        )
+        assert re.search(expected_selector, tokens.text) is not None
+    assert "font-size: clamp(" not in base.text
+    assert "letter-spacing: -0.055em" not in base.text
 
 
 @pytest.mark.anyio
@@ -343,7 +554,9 @@ async def legacy_settings_page_supports_quick_interaction_page_size_preference(
     assert "window.initializeSettingsPage = () =>" in script.text
     assert "window.disposeSettingsPage = () =>" in script.text
     assert 'if (settingsPage === "openclaw") {' in script.text
-    assert "closeOpenClawWeixinDialog();" in script.text
+    assert "openclaw-weixin-dialog" not in script.text
+    assert 'fetchSettingsApi("/api/openclaw/status")' not in script.text
+    assert 'fetchSettingsApi("/api/openclaw/weixin/login")' not in script.text
     assert "快速交互" in response.text
     assert '<h3 id="core-settings-title" class="settings-layer-title">Chub 核心</h3>' in response.text
     assert "调整会话历史记录的加载方式。" in response.text
@@ -468,8 +681,8 @@ async def legacy_settings_page_supports_quick_interaction_page_size_preference(
     assert "--settings-sidebar-width: var(--settings-sidebar-preload-width, 225px);" in stylesheet.text
     assert stylesheet.text.count("overscroll-behavior-y: contain;") >= 2
     assert ".settings-workspace-return {\n  display: flex;\n  height: 2.25rem;" in stylesheet.text
-    assert "  border-radius: 8px;\n  padding: 0 0.2rem;\n  color: var(--muted);" in stylesheet.text
-    assert ".settings-workspace-return:hover,\n.settings-workspace-return:active {\n  color: var(--accent-dark);\n  background: color-mix(in srgb, var(--accent) 8%, transparent);" in stylesheet.text
+    assert "  border-radius: 8px;\n  padding: 0 0.2rem;\n  color: var(--color-text-muted);" in stylesheet.text
+    assert ".settings-workspace-return:hover,\n.settings-workspace-return:active {\n  color: var(--color-accent-text);\n  background: color-mix(in srgb, var(--color-accent) 8%, transparent);" in stylesheet.text
     assert "grid-template-columns: var(--settings-sidebar-width) minmax(0, 1fr);" in stylesheet.text
     assert ".settings-mobile-nav {" in stylesheet.text
     assert ".settings-workspace-shell.is-sidebar-resizing" in stylesheet.text
@@ -497,7 +710,9 @@ async def legacy_settings_page_supports_quick_interaction_page_size_preference(
     assert "local_access_url" in script.text
     assert "localOpenClawAccessUrl" in script.text
     assert "/api/maintenance-terminal/access" in script.text
-    assert 'window.open(data.terminal_url, "_blank", "noopener")' in script.text
+    assert 'const terminalWindow = window.open("", "_blank");' in script.text
+    assert "terminalWindow.opener = null;" in script.text
+    assert "terminalWindow.location.replace(data.terminal_url);" in script.text
     assert "/api/openclaw/weixin/login" in script.text
     assert "settingsOpenClawWeixinPollFailures" in script.text
     assert "pollOpenClawWeixinLogin" in script.text
@@ -545,31 +760,53 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
 ) -> None:
     transport = httpx.ASGITransport(app=create_app(settings))
     paths = {
-        "quick-interaction": "/settings/quick-interaction",
         "appearance": "/settings/appearance",
         "diagnostics": "/settings/diagnostics",
         "runtime": "/settings/runtime",
+        "runtime-detail": "/settings/runtime/codex",
         "session-defaults": "/settings/session-defaults",
-        "weixin-text": "/settings/weixin-text",
         "openclaw": "/settings/openclaw",
     }
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         root = await client.get("/settings", follow_redirects=False)
+        legacy_quick_interaction = await client.get(
+            "/settings/quick-interaction",
+            follow_redirects=False,
+        )
+        legacy_weixin_text = await client.get("/settings/weixin-text", follow_redirects=False)
+        legacy_task_orchestration = await client.get(
+            "/settings/task-orchestration",
+            follow_redirects=False,
+        )
         legacy_gateway = await client.get("/settings/openclaw/gateway", follow_redirects=False)
         legacy_clawbot = await client.get("/settings/openclaw/clawbot", follow_redirects=False)
+        unknown_runtime = await client.get("/settings/runtime/unknown")
         pages = {
             page: await client.get(path)
             for page, path in paths.items()
         }
         script = await client.get("/static/settings.js")
+        workspace_script = await client.get(
+            "/static/js/features/workspace-task-orchestration.js",
+        )
+        home = await client.get("/")
         stylesheet = await client.get("/static/css/components.css")
 
     assert root.status_code == 307
-    assert root.headers["location"] == "/settings/quick-interaction"
+    assert root.headers["location"] == "/settings/appearance"
+    assert legacy_quick_interaction.status_code == 307
+    assert legacy_quick_interaction.headers["location"] == "/settings/session-defaults"
+    assert "通用设置" in pages["appearance"].text
+    assert "会话与偏好" not in pages["appearance"].text
+    assert legacy_weixin_text.status_code == 307
+    assert legacy_weixin_text.headers["location"] == "/?section=task-orchestration"
+    assert legacy_task_orchestration.status_code == 307
+    assert legacy_task_orchestration.headers["location"] == "/?section=task-orchestration"
     assert legacy_gateway.status_code == 307
     assert legacy_gateway.headers["location"] == "/settings/openclaw"
     assert legacy_clawbot.status_code == 307
     assert legacy_clawbot.headers["location"] == "/settings/openclaw"
+    assert unknown_runtime.status_code == 404
     assert all(response.status_code == 200 for response in pages.values())
     for page, response in pages.items():
         assert f'data-settings-page="{page}"' in response.text
@@ -588,110 +825,195 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
             "frame-ancestors 'none'"
         )
 
-    assert 'href="/settings/quick-interaction" aria-current="page"' in pages["quick-interaction"].text
-    assert 'id="quick-interaction-page-size"' in pages["quick-interaction"].text
-    assert 'id="runtime-management-list"' not in pages["quick-interaction"].text
-    assert 'id="runtime-management-list"' in pages["runtime"].text
+    assert 'href="/settings/session-defaults" aria-current="page"' in pages["session-defaults"].text
+    assert '<p class="settings-workspace-sidebar-label">设置</p>' not in pages["session-defaults"].text
+    assert 'id="quick-interaction-page-size"' in pages["session-defaults"].text
+    assert 'id="codex-default-full-access"' in pages["session-defaults"].text
+    assert 'id="runtime-management-list"' not in pages["session-defaults"].text
+    assert pages["appearance"].text.index('href="/settings/appearance"') < pages["appearance"].text.index('href="/settings/session-defaults"')
+    assert 'id="runtime-management-list"' not in pages["runtime"].text
+    assert 'id="runtime-general-settings-title">任务接入规则</h3>' in pages["runtime"].text
+    assert 'id="ai-runtime-general-settings"' in pages["runtime"].text
+    assert "按 Runtime 分别控制" in pages["runtime"].text
+    assert 'href="/settings/runtime" aria-current="page"' in pages["runtime"].text
+    assert 'href="/settings/runtime/codex"' in pages["runtime"].text
     assert 'id="quick-interaction-page-size"' not in pages["runtime"].text
-    assert 'data-style-apply="code-dark"' in pages["appearance"].text
+    assert 'data-settings-page="runtime-detail"' in pages["runtime-detail"].text
+    assert 'id="runtime-management-list"' in pages["runtime-detail"].text
+    assert 'id="runtime-settings-panel"' in pages["runtime-detail"].text
+    assert "控制是否接收新任务" in pages["runtime-detail"].text
+    assert "ai_runtime.{{ settings_runtime_id }}" not in pages["runtime-detail"].text
+    assert "ai_runtime.codex" in pages["runtime-detail"].text
+    assert "usage-timezone" not in pages["runtime-detail"].text
+    assert '.settings-field input[type="text"]' in stylesheet.text
+    assert 'background: var(--color-surface-field);' in stylesheet.text
+    assert 'data-runtime-id="codex"' in pages["runtime-detail"].text
+    assert pages["runtime-detail"].text.count('id="runtime-management-description"') == 1
+    assert 'href="/settings/runtime/codex" aria-current="page"' in pages["runtime-detail"].text
+    assert 'href="/settings/task-orchestration"' not in pages["runtime"].text
+    assert 'class="theme-option-grid" role="radiogroup" aria-label="主题选择"' in pages["appearance"].text
+    assert '<title>外观 · 设置 ·' in pages["appearance"].text
+    assert '<span>外观</span></a>' in pages["appearance"].text
+    assert 'name="ui-style" value="standard"' in pages["appearance"].text
+    assert 'name="ui-style" value="code-dark"' in pages["appearance"].text
+    assert 'name="ui-style" value="studio-cyan"' in pages["appearance"].text
+    assert '<strong>Standard</strong><small>亮色主题</small>' in pages["appearance"].text
+    assert '<strong>Code Dark</strong><small>暗色主题</small>' in pages["appearance"].text
+    assert '<strong>Studio Cyan</strong><small>冷静浅色主题</small>' in pages["appearance"].text
+    assert "theme-option-indicator" not in pages["appearance"].text
+    assert 'aria-label="Standard 的主文字、次文字和主强调色"' in pages["appearance"].text
+    assert 'aria-label="Code Dark 的主文字、次文字和主强调色"' in pages["appearance"].text
+    assert 'aria-label="Studio Cyan 的主文字、次文字和主强调色"' in pages["appearance"].text
+    assert 'data-theme-details-toggle aria-expanded="false"' in pages["appearance"].text
+    assert 'data-theme-details-label>显示文字层级示例</span>' in pages["appearance"].text
+    assert '<p>比较文字、状态与控件效果。</p>' in pages["appearance"].text
+    assert pages["appearance"].text.count('<strong>标题文本</strong><small>描述文案</small><p>正文内容用于展示主要阅读层级。</p></span><span class="theme-option-preview-selected">当前选中</span>') == len(WEB_THEMES)
+    assert pages["appearance"].text.count('<span class="theme-option-preview-status is-success">已完成</span><span class="theme-option-preview-status">处理中</span><span class="theme-option-preview-status is-failed">需处理</span>') == len(WEB_THEMES)
+    assert pages["appearance"].text.count('<em class="is-secondary">次要操作</em><em>主要操作</em>') == len(WEB_THEMES)
+    assert 'href="/settings/styles/standard"' not in pages["appearance"].text
+    assert 'href="/settings/styles/code-dark"' not in pages["appearance"].text
+    assert 'class="font-size-option-grid" role="radiogroup" aria-label="文字大小选择"' in pages["appearance"].text
+    assert 'name="ui-font-size" value="small"' in pages["appearance"].text
+    assert 'name="ui-font-size" value="default"' in pages["appearance"].text
+    assert 'name="ui-font-size" value="large"' in pages["appearance"].text
+    assert '<strong>小</strong><small>90%</small>' in pages["appearance"].text
+    assert '<strong>默认</strong><small>100%</small>' in pages["appearance"].text
+    assert '<strong>大</strong><small>110%</small>' in pages["appearance"].text
     assert 'id="maintenance-terminal-dialog"' in pages["diagnostics"].text
-    assert 'id="weixin-processing-mode"' in pages["weixin-text"].text
-    assert 'id="settings-openclaw-open"' in pages["openclaw"].text
-    assert 'id="settings-openclaw-bind-weixin"' in pages["openclaw"].text
-    assert pages["openclaw"].text.index('id="openclaw-gateway-settings-title"') < pages["openclaw"].text.index('id="openclaw-clawbot-settings-title"')
+    assert 'id="settings-openclaw-integration-list"' in pages["openclaw"].text
+    assert 'id="settings-openclaw-patch-list"' in pages["openclaw"].text
+    assert 'id="settings-openclaw-open"' not in pages["openclaw"].text
+    assert 'id="settings-openclaw-bind-weixin"' not in pages["openclaw"].text
+    assert 'id="weixin-processing-mode"' not in pages["openclaw"].text
+    assert 'id="weixin-translation-model-field"' not in pages["openclaw"].text
+    assert pages["openclaw"].text.index('id="openclaw-integration-settings-title"') < pages["openclaw"].text.index('id="openclaw-patch-settings-title"')
+    assert pages["openclaw"].text.index('id="openclaw-integration-settings-title"') < pages["openclaw"].text.index('id="settings-openclaw-integration-message"') < pages["openclaw"].text.index('id="settings-openclaw-integration-list"')
+    assert "第三方服务配置由 Chub 安全保存" not in pages["openclaw"].text
     assert 'href="/settings/openclaw" aria-current="page"' in pages["openclaw"].text
+    assert 'href="/settings/weixin-text"' not in pages["openclaw"].text
     assert "settings-subnavigation" not in pages["openclaw"].text
     assert 'href="/settings/openclaw/gateway"' not in pages["openclaw"].text
     assert 'href="/settings/openclaw/clawbot"' not in pages["openclaw"].text
     assert script.status_code == 200
+    assert 'OPENCLAW_INTEGRATION_CACHE_KEY' not in script.text
+    assert '"当前展示上次检查结果，正在重新核验。"' not in script.text
+    assert 'data.message?.includes("均已确认")' not in script.text
+    assert 'task-orchestration' not in script.text
+    assert 'row.classList.toggle("is-selected", selected);' in script.text
+    assert 'input.addEventListener("change", () => {' in script.text
+    assert 'const THEME_DETAILS_EXPANDED_KEY = "hub.themeDetailsExpanded.v1";' in script.text
+    assert 'detailsToggle.addEventListener("click", () => setDetailsExpanded(!detailsExpanded));' in script.text
+    assert 'detailsToggleLabel.textContent = toggleLabel;' in script.text
+    assert 'setDetailsExpanded(detailsExpanded, { persist: false, animate: false });' in script.text
     assert 'const settingsPage = document.body.dataset.settingsPage || "";' in script.text
+    assert 'settingsPage === "runtime-detail"' in script.text
+    assert 'loadRuntimeSettings();' in script.text
+    assert 'settingsPage === "runtime"' in script.text
+    assert 'loadGeneralRuntimeSettings();' in script.text
     assert "scrollToSettingsSection" not in script.text
     assert "settingsWorkspaceMain.scrollTo" not in script.text
     assert '.settings-navigation-link[aria-current="page"]' in stylesheet.text
     assert "min-height: 34px;" in stylesheet.text
+    assert ".settings-choice-picker-trigger:hover:not(:disabled)" in stylesheet.text
+    assert "background: color-mix(in srgb, var(--color-accent) 3%, var(--color-surface-raised));" in stylesheet.text
+    assert ".settings-choice-picker-option.is-selected" in stylesheet.text
+    assert ".theme-option-grid" in stylesheet.text
+    assert ".theme-option.is-selected" in stylesheet.text
+    assert "min-height: 72px;" in stylesheet.text
+    assert "grid-template-rows: minmax(3.1rem, auto) auto;" in stylesheet.text
+    assert ".theme-option:has(input:focus-visible)" in stylesheet.text
+    assert ".theme-option:focus-within" not in stylesheet.text
+    assert "--theme-preview-background:" not in stylesheet.text
+    assert "background: var(--theme-preview-background);" in stylesheet.text
+    assert ':root[data-ui-style="code-dark"]' not in stylesheet.text
+    assert "background: var(--color-surface-selected);" in stylesheet.text
+    assert "style-preview" not in stylesheet.text
+    assert ".theme-option-preview" in stylesheet.text
+    assert ".theme-option-preview-surface" in stylesheet.text
+    assert ".theme-option-preview-selected" in stylesheet.text
+    assert ".theme-option-preview-statuses" in stylesheet.text
+    assert ".theme-details-toggle" in stylesheet.text
+    assert ".theme-option-toolbar p" in stylesheet.text
+    assert ".theme-option-preview-copy" in stylesheet.text
+    assert "max-height 180ms ease 140ms" in stylesheet.text
+    assert ".theme-option.is-expanded .theme-option-preview" in stylesheet.text
+    assert ".theme-option-preview-status" in stylesheet.text
+    assert ".theme-option-preview-field" in stylesheet.text
+    assert "border-radius: 50%;" in stylesheet.text
     assert ".settings-subnavigation" not in stylesheet.text
+    assert home.status_code == 200
+    assert 'id="workspace-preview-task-orchestration-title">任务编排' in home.text
+    assert 'href="/?section=task-orchestration"' in home.text
+    assert home.text.index('id="workspace-preview-task-orchestration-title"') > home.text.index(
+        'id="workspace-session-list"',
+    )
+    assert 'id="workspace-task-orchestration-dialog"' not in home.text
+    assert 'src="/static/js/features/workspace-task-orchestration.js"' in home.text
+    assert workspace_script.status_code == 200
+    assert '"/api/settings/weixin-translation"' in workspace_script.text
+    assert '"/api/codex/models"' in workspace_script.text
+    assert 'window.initializeWorkspaceTaskOrchestration' in workspace_script.text
+    assert 'window.disposeWorkspaceTaskOrchestration' in workspace_script.text
+    assert '.workspace-preview-session-group + .workspace-preview-session-group' in stylesheet.text
+    session_group_rules = stylesheet.text[
+        stylesheet.text.index('.workspace-preview-session-group + .workspace-preview-session-group'):stylesheet.text.index('.workspace-preview-session-group-title')
+    ]
+    assert 'border-top: 1px solid var(--color-border);' not in session_group_rules
 
 
 @pytest.mark.anyio
-async def test_standard_style_preview_is_static_and_available(
+async def test_runtime_settings_navigation_lists_each_registered_runtime(
     settings: Settings,
 ) -> None:
-    transport = httpx.ASGITransport(app=create_app(settings))
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get("/settings/styles/standard")
-        script = await client.get("/static/style-preview.js")
+    app = create_app(settings)
+    app.state.codex_pty_manager.read_runtime_management = MagicMock(
+        return_value=RuntimeManagementData(
+            basic_mode=False,
+            runtimes=[
+                RuntimeManagementItem(
+                    runtime_id="codex",
+                    name="Codex Runtime",
+                    enabled=True,
+                    healthy=True,
+                ),
+                RuntimeManagementItem(
+                    runtime_id="local",
+                    name="Local Runtime",
+                    enabled=False,
+                    healthy=False,
+                    reason="Local Runtime is unavailable",
+                ),
+            ],
+        )
+    )
+    transport = httpx.ASGITransport(app=app)
 
-    assert response.status_code == 200
-    assert "Standard 风格预览 · Hub" in response.text
-    assert "以下内容均为静态示例" in response.text
-    assert "节点状态" in response.text
-    assert "自动化任务" in response.text
-    assert "会话工作台" in response.text
-    assert "控件与反馈" in response.text
-    assert "状态与折叠" in response.text
-    assert "暂无可展示内容" in response.text
-    assert "刷新失败，已保留上一次成功内容" in response.text
-    assert 'data-collapsible-card' in response.text
-    assert 'data-collapsible-persist="false"' in response.text
-    assert 'type="password"' in response.text
-    assert 'type="checkbox"' in response.text
-    assert 'href="#standard-conversation-preview"' not in response.text
-    assert 'id="standard-conversation-preview"' in response.text
-    assert "任务执行中，请稍候" in response.text
-    assert "已通知" in response.text
-    assert "待通知" in response.text
-    assert '<span class="conversation-message-meta">Codex CLI</span>' in response.text
-    assert "查看会话" not in response.text
-    assert 'class="button-link conversation-pin"' not in response.text
-    assert 'id="preview-dialog"' in response.text
-    assert script.status_code == 200
-    assert "showModal" in script.text
-    assert "setupCollapsibleCards" in script.text
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        general = await client.get("/settings/runtime")
+        local = await client.get("/settings/runtime/local")
+
+    assert general.status_code == 200
+    assert local.status_code == 200
+    assert 'href="/settings/runtime/codex"' in general.text
+    assert 'href="/settings/runtime/local"' in general.text
+    assert 'data-settings-url="/settings/runtime/local"' in general.text
+    assert 'href="/settings/runtime/local" aria-current="page"' in local.text
+    assert 'data-runtime-id="local"' in local.text
 
 
 @pytest.mark.anyio
-async def test_code_dark_style_preview_is_available(settings: Settings) -> None:
+async def test_legacy_style_preview_routes_return_to_theme_settings(settings: Settings) -> None:
     transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get("/settings/styles/code-dark")
+        standard_response = await client.get("/settings/styles/standard", follow_redirects=False)
+        code_dark_response = await client.get("/settings/styles/code-dark", follow_redirects=False)
         removed_response = await client.get("/settings/styles/cyber")
-        script = await client.get("/static/style-preview.js")
-        ai_usage_script = await client.get("/static/js/core/ai-usage.js")
-        theme_script = await client.get("/static/theme.js")
-        stylesheet = await client.get("/static/css/components.css")
 
-    assert response.status_code == 200
+    assert standard_response.status_code == 307
+    assert standard_response.headers["location"] == "/settings/appearance"
+    assert code_dark_response.status_code == 307
+    assert code_dark_response.headers["location"] == "/settings/appearance"
     assert removed_response.status_code == 404
-    assert "Code Dark 风格预览 · Hub" in response.text
-    assert 'class="code-dark-preview"' in response.text
-    assert 'content="dark"' in response.text
-    assert "深色开发工作台" in response.text
-    assert 'class="cyber-matrix"' not in response.text
-    assert 'id="cyber-rain-speed"' not in response.text
-    assert 'id="cyber-rain-brightness"' not in response.text
-    assert "0x7F" not in response.text
-    assert '<div class="cyber-matrix" aria-hidden="true"></div>' not in response.text
-    assert "节点状态" in response.text
-    assert "快速交互" in response.text
-    assert 'data-collapsible-persist="false"' in response.text
-    assert script.status_code == 200
-    assert ai_usage_script.status_code == 200
-    assert theme_script.status_code == 200
-    assert stylesheet.status_code == 200
-    assert "code-dark" in theme_script.text
-    assert "hub.cyberRainSpeed.v1" not in theme_script.text
-    assert "Math.random" not in theme_script.text
-    assert "rainSequence" not in theme_script.text
-    assert "RAIN_PHRASES" not in theme_script.text
-    assert "setCyberRainQuota" not in theme_script.text
-    assert "ChubAiUsage?.subscribe" not in theme_script.text
-    assert "ChubAiUsage?.load" not in theme_script.text
-    assert 'CACHE_KEY = "hub.aiUsageCache"' in ai_usage_script.text
-    assert "/api/ai/usage" in ai_usage_script.text
-    assert "window.ChubAiUsage" in ai_usage_script.text
-    assert "quotaRainParts" not in theme_script.text
-    assert 'data-rain-dynamic="true"' not in stylesheet.text
-    assert "Code Dark 使用深色工作台层级和明确的主次按钮表达操作影响" in script.text
 
 
 @pytest.mark.anyio
@@ -719,7 +1041,10 @@ async def test_workspace_preview_is_static_and_available(settings: Settings) -> 
     assert "最近 Session" not in response.text
     assert "AI Session" in response.text
     assert "工作站环境" in response.text
-    assert "设备状态" in response.text
+    assert 'class="workstation-group workspace-core-environment"' in response.text
+    assert 'class="workstation-group workspace-third-party-environment"' in response.text
+    assert "设备状态" not in response.text
+    assert "常用入口" not in response.text
     assert 'id="workspace-chub-restart"' in response.text
     assert 'id="workspace-worker-restart"' in response.text
     assert 'id="workspace-upgrade-start"' in response.text
@@ -733,6 +1058,7 @@ async def test_workspace_preview_is_static_and_available(settings: Settings) -> 
     assert 'aria-valuemax="360"' in response.text
     assert 'id="workspace-sidebar-close"' in response.text
     assert 'aria-label="工作台操作"' in response.text
+    assert 'id="workspace-toolbar-error" class="workspace-preview-toolbar-error" aria-live="polite" hidden' in response.text
     assert '<div class="workspace-preview-brand"><strong>Chub</strong><button id="workspace-sidebar-close"' in response.text
     assert 'aria-label="工作台辅助导航"' in response.text
     assert response.text.index('aria-label="工作台辅助导航"') > response.text.index(
@@ -760,9 +1086,12 @@ async def test_workspace_preview_is_static_and_available(settings: Settings) -> 
     assert 'class="workspace-preview-compact-nav" data-workspace-section-navigation aria-label="折叠侧栏导航"' in response.text
     assert 'aria-label="工作台" title="工作台"' in response.text
     assert 'class="workspace-preview-compact-nav-external" href="/settings"' in response.text
-    assert 'id="workspace-session-create"' in response.text
+    assert 'id="workspace-session-create" class="workspace-preview-create" type="button" disabled>+ New Session</button>' in response.text
     assert 'id="workspace-session-list"' in response.text
+    assert 'id="workspace-quick-session-toolbar" class="workspace-quick-session-toolbar" aria-label="快速会话切换" hidden' in response.text
     assert 'id="workspace-session-create-dialog"' in response.text
+    assert 'id="workspace-session-more-dialog"' not in response.text
+    assert 'id="workspace-session-rename-dialog"' in response.text
     assert response.text.index('id="confirmation-dialog"') > response.text.index(
         'id="workspace-sidebar-resizer"',
     )
@@ -776,15 +1105,25 @@ async def test_workspace_preview_is_static_and_available(settings: Settings) -> 
     assert 'href="/workspace?section=automations" aria-current="page" class="is-current"><span class="workspace-preview-nav-icon"' in automations_response.text
     assert "自动化任务" in automations_response.text
     assert "自动化环境" in automations_response.text
-    assert "自动化任务列表" in automations_response.text
+    assert 'class="workspace-preview-panel workstation-card workspace-automation-details workspace-preview-work-section"' in automations_response.text
+    assert 'class="workstation-group automation-environment"' in automations_response.text
+    assert 'class="workstation-status-list"' in automations_response.text
     assert 'id="workspace-automation-browser-start"' not in automations_response.text
     assert 'href="/automations"' not in automations_response.text
     assert ".workspace-preview-shell" in stylesheet.text
     assert "workspace-preview-local-nav" not in response.text
     assert ".workspace-project-documents-all {\n  display: inline-flex;" in stylesheet.text
-    assert ".workspace-automation-task {\n  grid-template-columns: minmax(0, 1fr) auto;" in stylesheet.text
-    assert ".workspace-automation-environment-row > .workspace-automation-environment-actions {\n  display: inline-flex;\n  flex-wrap: nowrap;" in stylesheet.text
+    assert ".workstation-group {\n  display: grid;" in stylesheet.text
+    assert ".workstation-group-heading h2,\n.workstation-group-heading h3 {\n  margin: 0;\n  font-size: 1rem;" in stylesheet.text
+    assert ".workstation-status-row {\n  display: flex;" in stylesheet.text
+    assert ".workspace-workstation {\n  gap: 0;" in stylesheet.text
+    assert ".workspace-workstation > .workstation-group + .workstation-group::before" in stylesheet.text
+    assert ".workspace-automation-details > .workstation-group + .workstation-group::before" in stylesheet.text
+    assert "right: -1rem;" in stylesheet.text
+    assert "left: -1rem;" in stylesheet.text
+    assert ".automation-environment .workstation-status-row {\n  min-height: 0;" in stylesheet.text
     assert ".workspace-preview-shell.is-sidebar-collapsed" in stylesheet.text
+    assert ".workspace-quick-session-toolbar-button" in stylesheet.text
     assert "--workspace-sidebar-width: var(--workspace-sidebar-preload-width, 225px);" in stylesheet.text
     assert "grid-template-columns: var(--workspace-sidebar-width) minmax(0, 1fr);" in stylesheet.text
     assert '.workspace-preview-nav a[aria-current="page"] {' in stylesheet.text
@@ -795,10 +1134,10 @@ async def test_workspace_preview_is_static_and_available(settings: Settings) -> 
     assert ".workspace-preview-compact-nav-external:active" in stylesheet.text
     assert "  min-width: 0;\n  overflow: hidden;" in stylesheet.text
     assert ".workspace-preview-nav > span," in stylesheet.text
-    assert "border-color: var(--accent);" in stylesheet.text
+    assert "border-color: var(--color-accent);" in stylesheet.text
     assert ".workspace-preview-session {\n  display: grid;" in stylesheet.text
-    assert ".workspace-preview-session.is-current {\n  border-color: var(--accent);" in stylesheet.text
-    assert ".workspace-preview-session.is-current strong {\n  color: var(--accent-dark);" in stylesheet.text
+    assert ".workspace-preview-session.is-current {\n  border-color: var(--color-accent);" in stylesheet.text
+    assert ".workspace-preview-session.is-current strong {\n  color: var(--color-accent-text);" in stylesheet.text
     assert "  height: auto;\n  min-height: 3.75rem;" in stylesheet.text
     assert ".workspace-preview-session strong {\n  color: var(--ink);" in stylesheet.text
     assert "  padding: 0.6rem 0.65rem;" in stylesheet.text
@@ -822,6 +1161,7 @@ async def test_workspace_preview_is_static_and_available(settings: Settings) -> 
     assert "event.metaKey || event.ctrlKey" in workspace_script.text
     assert "window.location.replace(link.href);" in workspace_script.text
     assert 'document.getElementById("workspace-section-content")' in workspace_script.text
+    assert "window.disposeWorkspaceWorkstation?.();" in workspace_script.text
     assert "currentContent.replaceWith(nextContent);" in workspace_script.text
     assert "const preserveWorkspaceReturnTarget = (event) =>" in workspace_script.text
     assert 'targetUrl.searchParams.set(\n      "return_to",' in workspace_script.text
@@ -833,11 +1173,18 @@ async def test_workspace_preview_is_static_and_available(settings: Settings) -> 
     assert "window.initializeWorkspaceWorkstation?.();" in workspace_script.text
     assert '"/api/automations/browser/start"' in workspace_script.text
     assert '"/api/automations/browser/stop"' in workspace_script.text
+    assert '"/api/automations/environment/feishu/check"' in workspace_script.text
+    assert 'automationFeishuCheck.textContent = "检查中…";' in workspace_script.text
     assert '"workspace-automation-browser-start-dialog"' in workspace_script.text
+    assert 'automationStartConfirm?.focus();' in workspace_script.text
+    assert 'automationStopConfirm?.focus();' in workspace_script.text
     assert 'event.key.toLowerCase() !== "b"' in workspace_script.text
     assert 'document.getElementById("workspace-sidebar-close")' in workspace_script.text
     assert "chub.workspace.sidebarCollapsed" in workspace_script.text
     assert '"/api/codex/sessions"' in workspace_sessions_script.text
+    assert "const renderQuickSessionToolbar = (orderedSessions) =>" in workspace_sessions_script.text
+    assert "const quickSessionLabel = (session) =>" in workspace_sessions_script.text
+    assert 'workspace-quick-session-toolbar-button' in workspace_sessions_script.text
     assert "/quick-interactions/conversation" in workspace_sessions_script.text
     assert "/access" in workspace_sessions_script.text
     assert '"/api/status"' in workspace_workstation_script.text
@@ -891,11 +1238,19 @@ async def test_root_page_is_the_workspace_and_legacy_workspace_redirects(
             "/settings?return_to=%2F%3Fsession%3Dsession-123",
             follow_redirects=False,
         )
+        legacy_settings_with_return_target = await client.get(
+            "/settings/quick-interaction?return_to=%2F%3Fsession%3Dsession-123",
+            follow_redirects=False,
+        )
+        legacy_invalid_settings_return_target = await client.get(
+            "/settings/quick-interaction?return_to=https%3A%2F%2Fexample.invalid",
+            follow_redirects=False,
+        )
         settings_with_return_target = await client.get(
-            "/settings/quick-interaction?return_to=%2F%3Fsession%3Dsession-123"
+            "/settings/session-defaults?return_to=%2F%3Fsession%3Dsession-123"
         )
         invalid_settings_return_target = await client.get(
-            "/settings/quick-interaction?return_to=https%3A%2F%2Fexample.invalid"
+            "/settings/session-defaults?return_to=https%3A%2F%2Fexample.invalid"
         )
         legacy_workspace = await client.get("/workspace", follow_redirects=False)
         legacy_automations = await client.get(
@@ -915,8 +1270,14 @@ async def test_root_page_is_the_workspace_and_legacy_workspace_redirects(
     assert project_documents.status_code == 200
     assert settings_redirect.status_code == 307
     assert settings_redirect.headers["location"] == (
-        "/settings/quick-interaction?return_to=%2F%3Fsession%3Dsession-123"
+        "/settings/appearance?return_to=%2F%3Fsession%3Dsession-123"
     )
+    assert legacy_settings_with_return_target.status_code == 307
+    assert legacy_settings_with_return_target.headers["location"] == (
+        "/settings/session-defaults?return_to=%2F%3Fsession%3Dsession-123"
+    )
+    assert legacy_invalid_settings_return_target.status_code == 307
+    assert legacy_invalid_settings_return_target.headers["location"] == "/settings/session-defaults"
     assert 'id="settings-return-application" class="settings-workspace-return" href="/?session=session-123"' in settings_with_return_target.text
     assert 'class="settings-mobile-nav-external" href="/?session=session-123"' in settings_with_return_target.text
     assert 'id="settings-return-application" class="settings-workspace-return" href="/"' in invalid_settings_return_target.text
@@ -937,6 +1298,124 @@ async def test_root_page_is_the_workspace_and_legacy_workspace_redirects(
     assert legacy_automations.status_code == 307
     assert legacy_automations.headers["location"] == "/?section=automations"
     assert all(response.status_code == 404 for response in removed_assets)
+
+
+@pytest.mark.anyio
+async def test_home_workstation_third_party_controls_are_state_driven(
+    settings: Settings,
+) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/")
+        script = await client.get("/static/js/features/workspace-workstation.js")
+
+    assert response.status_code == 200
+    assert "第三方服务环境" in response.text
+    assert 'id="workspace-third-party-refresh"' in response.text
+    assert 'id="workspace-openclaw-start"' in response.text
+    assert 'id="workspace-openclaw-restart"' in response.text
+    assert '>重启</button></div>' in response.text
+    assert 'id="workspace-openclaw-stop"' not in response.text
+    assert 'id="workspace-openclaw-bind-weixin"' in response.text
+    assert 'id="workspace-openclaw-weixin-dialog"' in response.text
+    assert script.status_code == 200
+    assert 'elements.openclawStart.hidden = !gatewayStopped;' in script.text
+    assert 'elements.openclawRestart.hidden = !gatewayRestartable;' in script.text
+    assert "openclawStop" not in script.text
+    assert '"正在重启与恢复 OpenClaw Gateway，并确认 Gateway 与消息通道最终状态。"' in script.text
+    assert 'closeOnConfirm: true,' in script.text
+    assert 'onConfirm: () => controlOpenClaw("restart"),' in script.text
+    assert "OpenClaw Gateway 已完成重启与恢复检查。" not in script.text
+    assert "正在检查固定插件、补丁和运行状态。" not in script.text
+    assert '? "Gateway 运行正常并已通过连接探测。"' in script.text
+    assert 'const thirdPartySnapshotCacheKey = "chub.workspace.thirdParty.v1";' in script.text
+    assert 'window.sessionStorage.getItem(thirdPartySnapshotCacheKey)' in script.text
+    assert 'window.sessionStorage.setItem(' in script.text
+    assert script.text.count('cacheThirdPartySnapshot(status, login);') == 2
+    assert 'let thirdPartyLoading = false;' in script.text
+    assert 'elements.thirdPartyRefresh.disabled = thirdPartyLoading;' in script.text
+    assert 'elements.openclawBindWeixin.disabled = thirdPartyLoading ||' in script.text
+    assert 'if (!await loadThirdParty()) return;' not in script.text
+    assert 'return `${platform === "macos" ? "macOS" : platform} · Chub 可用`;' in script.text
+    assert 'const workbenchStatusLoadingMinimumMs = 220;' in script.text
+    assert 'workbenchStatusLoadingMinimumMs - (window.performance.now() - refreshStartedAt)' in script.text
+    assert "const requestAbortController = new AbortController();" in script.text
+    assert "const cancelPendingWaits = () =>" in script.text
+    assert "requestAbortController.abort();" in script.text
+    assert "cancelPendingWaits();" in script.text
+
+
+@pytest.mark.anyio
+async def test_automation_section_uses_workstation_status_rows(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    app.state.automation_manager.list = MagicMock(
+        return_value=AutomationListData(
+            enabled=True,
+            browser_state="stopped",
+            browser_message="Debug Chrome 未启动，按需启动。",
+            browser_profiles=[
+                BrowserProfilePublic(
+                    id="default",
+                    name="Default",
+                    initialized=True,
+                    source_available=True,
+                    active=False,
+                )
+            ],
+            feishu_environment=FeishuEnvironmentState(
+                state="login_required",
+                message="飞书登录已失效，请重新登录。",
+            ),
+            enabled_count=2,
+            tasks=[
+                AutomationTaskPublic(
+                    id="weekly-report",
+                    name="周报资料",
+                    title="周报资料准备",
+                    description="下载本期资料",
+                    enabled=True,
+                    reporting_period="2026-08-31至2026-09-06",
+                    state=AutomationState(task_id="weekly-report", status="running"),
+                ),
+                AutomationTaskPublic(
+                    id="monthly-report",
+                    name="月报资料",
+                    title="月报资料准备",
+                    description="下载本月资料",
+                    enabled=True,
+                    state=AutomationState(task_id="monthly-report", status="failed"),
+                ),
+            ],
+        )
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/?section=automations")
+
+    assert response.status_code == 200
+    assert 'aria-label="自动化总览"' in response.text
+    assert 'aria-label="自动化详情"' in response.text
+    assert "管理 Debug Chrome 与飞书登录状态。" in response.text
+    assert "查看已配置任务的当前执行状态。" in response.text
+    assert "自动化任务</span>" in response.text
+    assert "进行中</span>" in response.text
+    assert "需处理</span>" in response.text
+    assert "2 / 2" in response.text
+    assert "1 项" in response.text
+    assert 'class="workspace-preview-panel workstation-card workspace-automation-details workspace-preview-work-section"' in response.text
+    assert 'class="workstation-group automation-environment"' in response.text
+    assert 'id="workspace-automation-browser-start"' in response.text
+    assert 'id="workspace-automation-feishu-check"' in response.text
+    assert 'id="workspace-automation-feishu-detail"' in response.text
+    assert 'id="workspace-automation-feishu-message" class="message" aria-live="polite" hidden' in response.text
+    assert "飞书登录已失效，请重新登录。" in response.text
+    assert "执行中 · 下载本期资料 · 2026-08-31至2026-09-06" in response.text
+    assert "执行失败 · 下载本月资料" in response.text
+    assert "badge-success" not in response.text
+    assert "workspace-automation-task-list" not in response.text
+    assert "查看自动化环境和已配置任务的当前执行状态。" not in response.text
 
 
 @pytest.mark.anyio
@@ -1041,6 +1520,8 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "window.confirm" not in dashboard_script
     assert "showConfirmationDialog" in dashboard_script
     assert "confirmationDialogBusy" in dashboard_script
+    assert "closeOnConfirm = false" in dashboard_script
+    assert "if (current.closeOnConfirm)" in dashboard_script
     assert 'siteSettings: document.querySelector("#site-settings")' in dashboard_script
     assert "elements.siteSettings.hidden = true" in dashboard_script
     assert "elements.siteSettings.hidden = false" in dashboard_script
@@ -1195,13 +1676,19 @@ async def test_web_assets_are_available(settings: Settings) -> None:
     assert "visibleCodexSessions" in script.text
     assert 'session.workspace_id !== "weixin-translation"' in script.text
     assert "visibleSessions.length" in script.text
-    assert "实时终端 · 等待输入" in script.text
-    assert "实时终端 · 执行中" in script.text
-    assert "实时终端 · 正在使用" in script.text
-    assert "快速交互 · 待输入" in script.text
-    assert "快速交互 · 执行中" in script.text
+    assert 'return "等待输入";' in script.text
+    assert 'return "执行中";' in script.text
+    assert 'return "正在使用";' in script.text
+    assert "实时终端 · 等待输入" not in script.text
+    assert "快速交互 · 待输入" not in script.text
+    assert "快速交互 · 执行中" not in script.text
     assert "快速交互 · 等待结果" not in script.text
     assert "活动状态未知 · 请刷新" in script.text
+    assert script.text.index('if (session.status === "error" || session.error)') < script.text.index(
+        'if (session.session_mode === "terminal" && owner === "terminal")'
+    )
+    assert 'session.error === "terminal_backend_failed"' in script.text
+    assert 'session.status === "new"' in script.text
     assert "尚未启动 · 可进入" in script.text
     assert "终端连接异常 · 可重试" in script.text
     assert "会话异常 · 可重试" in script.text
@@ -1346,6 +1833,7 @@ async def test_quick_interaction_conversation_page_is_available(
         session_script = await client.get("/static/quick_interaction_session.js")
         timeline_script = await client.get("/static/quick_interaction_timeline.js")
         script = await client.get("/static/quick_interaction_conversation.js")
+        ui_script = await client.get("/static/js/components/ui.js")
         stylesheet = await client.get("/static/css/components.css")
 
     assert removed_page.status_code == 404
@@ -1370,6 +1858,7 @@ async def test_quick_interaction_conversation_page_is_available(
     assert 'id="conversation-session-stop"' in page.text
     assert 'id="conversation-session-archive"' in page.text
     assert 'id="conversation-session-delete"' in page.text
+    assert 'id="conversation-submit-message"' not in page.text
     assert 'id="conversation-rename-dialog"' in page.text
     assert 'id="conversation-rename-input"' in page.text
     assert 'id="conversation-archive-dialog"' in page.text
@@ -1379,7 +1868,10 @@ async def test_quick_interaction_conversation_page_is_available(
     assert 'class="codex-workspace-dialog confirmation-dialog conversation-archive-dialog"' in page.text
     assert 'class="confirmation-dialog-description"' in page.text
     assert 'id="conversation-create-dialog"' in page.text
-    assert 'id="conversation-create-workspaces"' in page.text
+    assert 'id="conversation-create-form" class="codex-workspace-dialog-surface workspace-session-create-form"' in page.text
+    assert 'id="conversation-create-workspaces" type="hidden"' in page.text
+    assert 'id="conversation-create-workspaces-trigger" class="settings-choice-picker-trigger"' in page.text
+    assert 'id="conversation-create-confirm" class="button-secondary" type="submit">创建</button>' in page.text
     assert page.text.index('id="conversation-session-create"') < page.text.index(
         'id="conversation-session-switcher"'
     )
@@ -1401,7 +1893,8 @@ async def test_quick_interaction_conversation_page_is_available(
     assert 'id="conversation-model-trigger"' in page.text
     assert 'id="conversation-reasoning-trigger"' in page.text
     assert (
-        page.text.index("/static/quick_interactions_core.js")
+        page.text.index("/static/js/components/ui.js")
+        < page.text.index("/static/quick_interactions_core.js")
         < page.text.index("/static/quick_interaction_session.js")
         < page.text.index("/static/quick_interaction_timeline.js")
         < page.text.index("/static/quick_interaction_conversation.js")
@@ -1409,6 +1902,7 @@ async def test_quick_interaction_conversation_page_is_available(
     assert session_script.status_code == 200
     assert timeline_script.status_code == 200
     assert script.status_code == 200
+    assert ui_script.status_code == 200
     assert 'order: "timeline"' in script.text
     assert "CONVERSATION_PAGE_SIZE = readConversationPageSize()" in script.text
     assert "before: { createdAt: oldest.created_at, id: oldest.id }" in script.text
@@ -1436,10 +1930,17 @@ async def test_quick_interaction_conversation_page_is_available(
     assert "shouldRetryConversationCreationWithDefaults" not in script.text
     assert "clearConversationSessionModelPreferences" not in script.text
     assert "updateSessionConfiguration" in script.text
+    assert "showConversationFeedback" in script.text
+    assert "sessionId: conversationSessionId" in script.text
+    assert "window.showChubToast" in ui_script.text
     assert "conversationSessionView.openCreate" in script.text
     assert 'label: "跟随模型默认"' in script.text
     assert 'description: defaultLevel' in script.text
-    assert "workspace.available !== true" in session_script.text
+    assert 'const usableWorkspaces = workspaces.filter((workspace) => workspace.available);' in session_script.text
+    assert 'elements.createWorkspacePicker.setOptions(' in session_script.text
+    assert 'elements.createForm.onsubmit = (event) => {' in session_script.text
+    assert '.workspace-session-choice-picker .settings-choice-picker-menu {' in stylesheet.text
+    assert '.workspace-session-create-description {\n  margin: 0;\n  color: var(--color-text-muted);\n  line-height: 1.45;' in stylesheet.text
     assert "conversationCreationPending" in script.text
     assert "renderConversationSessionCreation(sessionContextResult.value)" in script.text
     assert "switchConversationSession(" in script.text
@@ -1495,7 +1996,8 @@ async def test_quick_interaction_conversation_page_is_available(
     assert "elements.switcher.hidden = state.items.length === 0" in session_script.text
     assert "hub.quickInteractionDraft.v1" in script.text
     assert "sessionStorage.setItem(conversationDraftKey" in script.text
-    assert 'elements.submit.setAttribute("aria-label", "发送")' in session_script.text
+    assert 'const submitLabel = state.submissionReason || "发送";' in session_script.text
+    assert 'elements.submit.setAttribute("aria-label", submitLabel);' in session_script.text
     assert 'elements.submit.textContent = "发送"' not in session_script.text
     assert '"确认发送"' not in script.text
     assert 'pending: "待通知"' in timeline_script.text
@@ -1517,6 +2019,8 @@ async def test_quick_interaction_conversation_page_is_available(
     assert "textContent" in timeline_script.text
     assert "innerHTML" not in session_script.text
     assert "innerHTML" not in timeline_script.text
+    assert "function focusConversationPromptAfterSessionAction()" in script.text
+    assert "conversationPrompt.focus({ preventScroll: true });" in script.text
     assert "fetch(" not in session_script.text
     assert "fetch(" not in timeline_script.text
     assert "conversationTasks =" not in timeline_script.text
@@ -1534,9 +2038,9 @@ async def test_quick_interaction_conversation_page_is_available(
     assert ".conversation-session-navigation" in stylesheet.text
     assert "grid-template-columns: 30px minmax(0, 1fr);" in stylesheet.text
     assert ".conversation-session-create" in stylesheet.text
-    assert ".conversation-create-surface" in stylesheet.text
-    assert ":not(.conversation-session-create)" in stylesheet.text
-    assert ":not(.conversation-session-switch)" in stylesheet.text
+    assert ".workspace-session-create-form" in stylesheet.text
+    assert ":not(.conversation-session-create)" not in stylesheet.text
+    assert ":not(.conversation-session-switch)" not in stylesheet.text
     assert "overflow-x: auto;" in stylesheet.text
     assert "overscroll-behavior-x: contain;" in stylesheet.text
     assert "padding: 0.05rem 0.05rem 0.1rem;" in stylesheet.text
@@ -1551,11 +2055,11 @@ async def test_quick_interaction_conversation_page_is_available(
     assert "margin-left: 0.35rem;" in stylesheet.text
     assert ".conversation-rename-form" in stylesheet.text
     assert "conversation-session-archive:not(:disabled):hover" in stylesheet.text
-    assert ":not(.conversation-session-rename)" in stylesheet.text
-    assert ":not(.conversation-session-archive)" in stylesheet.text
-    assert ":not(.site-header-title):not(.session-enter)::before" in stylesheet.text
-    assert 'a.button-link::before' in stylesheet.text
-    assert ':root[data-ui-style="code-dark"] .workspace-button strong' in stylesheet.text
+    assert ":not(.conversation-session-rename)" not in stylesheet.text
+    assert ":not(.conversation-session-archive)" not in stylesheet.text
+    assert ":not(.site-header-title):not(.session-enter)::before" not in stylesheet.text
+    assert 'a.button-link::before' not in stylesheet.text
+    assert ':root[data-ui-style="code-dark"] .workspace-button strong' not in stylesheet.text
     assert ".workspace-button {\n  height: auto;" in stylesheet.text
     assert "padding: 0.75rem 0.85rem;" in stylesheet.text
     assert ".session-enter {\n  grid-column: 1 / -1;\n  height: auto;" in stylesheet.text
@@ -1873,19 +2377,99 @@ async def test_workspace_sessions_use_placeholder_for_empty_title(
     assert 'if (window.workspaceQuickSessionOpen) {' in response.text
     assert "window.selectWorkspaceQuickSession = (sessionId) =>" in response.text
     assert "window.clearWorkspaceQuickSessionSelection = () =>" in response.text
+    assert "window.setWorkspaceToolbarError = (text = \"\") =>" in workspace_script.text
+    assert "window.showWorkspaceToolbarFeedback = (text, kind = \"error\") =>" in workspace_script.text
+    assert "window.setWorkspaceToolbarError?.(text);" in response.text
+    assert "const sidebarMessageMinimumVisibleMs = 6000;" in response.text
+    assert "sidebarMessageClearTimer = window.setTimeout" in response.text
+    assert "workspace-session-message" not in response.text
+    assert ".workspace-preview-toolbar-error {" in stylesheet.text
+    assert ".workspace-preview-toolbar-error.workspace-preview-toolbar-error-warning" in stylesheet.text
+    assert ".chub-toast {" in stylesheet.text
+    assert 'className = "workspace-preview-session-more"' in response.text
+    assert 'more.setAttribute("aria-haspopup", "menu");' in response.text
+    assert 'menu.className = "workspace-session-action-menu";' in response.text
+    assert "document.body.append(menu);" in response.text
+    assert 'actionButton.setAttribute("role", "menuitem");' in response.text
+    assert "toggleSessionActionMenu(more, currentSession, clickPoint);" in response.text
+    assert "const eventIsInsideSessionActionMenu = (event) =>" in response.text
+    assert 'document.addEventListener("pointerdown", (event) => {' in response.text
+    assert 'Boolean(event.target.closest(".workspace-session-action-menu"))' in response.text
+    assert 'window.addEventListener("chub.workspace.session-action-menu-dismiss", closeSessionActionMenu);' in response.text
+    assert "const triggerRect = trigger.getBoundingClientRect();" in response.text
+    assert "const anchorX = Number.isFinite(clickPoint?.x) ? clickPoint.x : triggerRect.right;" in response.text
+    assert "const anchorY = Number.isFinite(clickPoint?.y) ? clickPoint.y : triggerRect.bottom;" in response.text
+    assert "openSessionActionSessionId = session.id;" in response.text
+    assert 'owner === "external"' in response.text
+    assert 'return "其他应用 · 正在使用";' in response.text
+    assert 'return "正在使用";' in response.text
+    assert 'return "等待输入";' in response.text
+    assert 'return "执行中";' in response.text
+    assert "const sessionHasActiveExecution = (session) =>" in response.text
+    assert "const sessionNeedsRefresh = (session) =>" in response.text
+    assert "let sessionRequestGeneration = 0;" in response.text
+    assert "const requestGeneration = ++sessionRequestGeneration;" in response.text
+    assert "if (requestGeneration !== sessionRequestGeneration) return;" in response.text
+    assert "|| sessionNeedsRefresh(session)" in response.text
+    assert "session.status === \"running\" && session.activity === \"unknown\"" not in response.text
+    assert "const sessionIsExternallyOccupied = (session) => session.usage?.owner === \"external\";" in response.text
+    assert "more.hidden = sessionIsExternallyOccupied(session);" in response.text
+    assert "if (sessionIsExternallyOccupied(session)) return;" in response.text
+    assert "const externalQuickReadOnly = externallyOccupied && session.session_mode === \"quick\";" in response.text
+    assert "button.disabled = externallyOccupied && !externalQuickReadOnly;" in response.text
+    assert "|| sessionIsExternallyOccupied(session)" in response.text
+    assert 'showConfirmationDialog({' in response.text
+    assert "/title`, {" in response.text
+    assert "const opensSessionInNewTab = (event) =>" in response.text
+    assert 'window.open(quickSessionUrl(session.id), "_blank", "noopener");' in response.text
+    assert 'const terminalTab = newTab ? window.open("", "_blank") : null;' in response.text
+    assert "terminalTab.location.replace(data.terminal_url);" in response.text
+    assert 'button.addEventListener("auxclick"' in response.text
     assert '"chub.workspace.quick-session-selection"' in workspace_script.text
     assert '"chub.workspace.quick-session-activity"' in workspace_script.text
+    assert '"chub.workspace.quick-session-interaction"' in workspace_script.text
+    assert '"chub.workspace.quick-session-changed"' in workspace_script.text
+    assert "window.refreshWorkspaceSessions?.();" in workspace_script.text
+    assert "window.refreshWorkspaceSessions = () =>" in response.text
+    assert "function notifyWorkspaceSessionChanged(sessionId, { returnToWorkspace = false } = {})" in conversation_script.text
+    assert "notifyWorkspaceSessionChanged(session.id);" in conversation_script.text
+    assert "notifyWorkspaceSessionChanged(archivedSessionId);" in conversation_script.text
+    assert "notifyWorkspaceSessionChanged(deletedSessionId);" in conversation_script.text
+    assert "notifyWorkspaceSessionChanged(conversationSessionId);" in conversation_script.text
+    assert "returnToWorkspace: true" in conversation_script.text
+    assert 'window.location.replace("/");' in workspace_script.text
     assert "event.source !== frame.contentWindow" in workspace_script.text
     assert "window.selectWorkspaceQuickSession?.(selection.sessionId);" in workspace_script.text
     assert "window.updateWorkspaceQuickSessionActivity?.(" in workspace_script.text
     assert "window.parent.postMessage(" in conversation_script.text
     assert "window.parent !== window" in conversation_script.text
     assert "function notifyWorkspaceSessionActivity()" in conversation_script.text
+    assert "function notifyWorkspaceSessionInteraction()" in conversation_script.text
+    assert 'document.addEventListener("pointerdown", notifyWorkspaceSessionInteraction, { capture: true });' in conversation_script.text
     assert "notifyWorkspaceSessionActivity();" in conversation_script.text
     assert "window.updateWorkspaceQuickSessionActivity = (sessionId, running, updatedAt) =>" in response.text
     assert 'targetUrl.searchParams.set("embedded", "workspace");' in conversation_script.text
-    assert ".workspace-preview-session.is-current {\n  border-color: var(--accent);" in stylesheet.text
-    assert ".workspace-preview-session.is-current strong {\n  color: var(--accent-dark);" in stylesheet.text
+    assert ".workspace-preview-session.is-current {\n  border-color: var(--color-accent);" in stylesheet.text
+    assert ".workspace-preview-session.is-current strong {\n  color: var(--color-accent-text);" in stylesheet.text
+    assert ".workspace-preview-session-row {" in stylesheet.text
+    assert ".workspace-preview-session-more {" in stylesheet.text
+    assert ".workspace-preview-session-row.is-current {" in stylesheet.text
+    assert ".workspace-preview-session-row.is-externally-occupied:hover," in stylesheet.text
+    assert ".workspace-preview-session-row.is-externally-occupied {" in stylesheet.text
+    assert ".workspace-preview-session-row.is-externally-occupied .workspace-preview-session:disabled {" in stylesheet.text
+    assert ".workspace-preview-session-more:hover," in stylesheet.text
+    assert ".workspace-session-action-menu {" in stylesheet.text
+    assert "position: fixed;" in stylesheet.text
+    assert "width: 10.5rem;" in stylesheet.text
+    assert "z-index: 100;" in stylesheet.text
+    assert ".workspace-session-action {" in stylesheet.text
+    assert ".workspace-session-action.is-danger {" in stylesheet.text
+    assert "grid-template-columns: minmax(0, 1fr) 24px;" in stylesheet.text
+    assert "grid-template-columns: minmax(0, 1fr) 30px;" in stylesheet.text
+    assert ".workspace-preview-session small {\n  color: var(--color-text-muted);" in stylesheet.text
+    assert "workspace-session-marquee" in stylesheet.text
+    assert "updateSessionMarquee" in response.text
+    assert "--workspace-session-marquee-duration" in response.text
 
 
 @pytest.mark.anyio
@@ -1903,6 +2487,13 @@ async def test_workspace_chub_restart_refreshes_after_new_instance_is_confirmed(
     assert 'await waitForWorkerRestart(operationId);' in response.text
     assert '"Quick Worker 已重启并恢复。浏览器将在稍后自动刷新页面。"' in response.text
     assert "window.setTimeout(() => window.location.reload(), 2000);" in response.text
+    assert 'unavailable: ["不可用", "远程访问", "warning"]' in response.text
+    assert 'unknown: ["状态未知", "远程访问", "muted"]' in response.text
+    assert "tailnetDetail" not in response.text
+    assert "const setSummaryStatus = (target, text, kind = \"muted\") =>" in response.text
+    assert "taskSummary" not in response.text
+    assert "runtimeKind(data)," in response.text
+    assert "setStatus(elements.upgradeDetail, `状态：${upgradeLabel(data)}。${data.message}`" in response.text
 
 
 @pytest.mark.anyio
@@ -1915,15 +2506,14 @@ async def test_page_uses_external_script_only(settings: Settings) -> None:
         "/static/js/components/ui.js",
         "/static/workspace.js",
         "/static/js/features/workspace-sessions.js",
+        "/static/js/features/workspace-task-orchestration.js",
         "/static/js/features/workspace-workstation.js",
     ]
-    assert response.text.count("<script") == len(expected_scripts) + 3
+    assert response.text.count("<script") == len(expected_scripts) + 2
     assert '<script src="/static/workspace-bootstrap.js"></script>' in response.text
-    assert '<script src="/static/js/core/ai-usage.js"></script>' in response.text
     assert '<script src="/static/theme.js"></script>' in response.text
     positions = [
         response.text.index('<script src="/static/workspace-bootstrap.js"></script>'),
-        response.text.index('<script src="/static/js/core/ai-usage.js"></script>'),
         response.text.index('<script src="/static/theme.js"></script>'),
     ] + [
         response.text.index(f'<script src="{source}" defer></script>')

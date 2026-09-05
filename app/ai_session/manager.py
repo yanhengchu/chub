@@ -68,15 +68,16 @@ class AiSessionManager:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.store = AiSessionStore(
-            settings.codex_pty.data_file.with_name("ai-sessions.json")
+            settings.ai_runtime.codex.data_file.with_name("ai-sessions.json")
         )
         self.session_defaults = SessionDefaultsStore(
-            settings.codex_pty.data_file.with_name("session-creation-defaults.json")
+            settings.ai_runtime.codex.data_file.with_name("session-creation-defaults.json")
         )
         self.runtime_enablement = RuntimeEnablementStore(
-            settings.codex_pty.data_file.with_name("runtime-enablement.json")
+            settings.ai_runtime.codex.data_file.with_name("runtime-enablement.json")
         )
         adapter = CodexRuntimeAdapter(settings)
+        self.runtime_settings_store = adapter.runtime_settings_store
         self.runtime_registry = RuntimeRegistry([adapter])
         self.runtime_id = adapter.descriptor.runtime_id
         self.runtime_adapter = self.runtime_registry.require(
@@ -95,7 +96,7 @@ class AiSessionManager:
         )
         self.supervisor = InteractiveSupervisor(
             adapter,
-            ticket_ttl_seconds=settings.codex_pty.ticket_ttl_seconds,
+            ticket_ttl_seconds=settings.ai_runtime.codex.ticket_ttl_seconds,
         )
         self._lock = threading.RLock()
         self._quick_interaction_is_running: Callable[[str], bool] = lambda _id: False
@@ -112,12 +113,12 @@ class AiSessionManager:
     def set_system_upgrade_checker(self, checker: Callable[[], bool]) -> None:
         self._system_upgrade_writes_blocked = checker
 
-    @property
-    def network_available(self) -> bool:
-        return self.runtime_adapter.network_available
-
     def dependencies(self) -> dict[str, bool]:
         return self.runtime_adapter.dependencies()
+
+    @property
+    def codex_rate_limits(self):
+        return self.runtime_adapter.rate_limits
 
     def available(self) -> bool:
         return self.store.available and self.runtime_adapter.status().available
@@ -193,7 +194,7 @@ class AiSessionManager:
         entries = [
             ("chub", "Chub", PROJECT_ROOT),
             ("home", "用户目录", Path.home()),
-            ("workspace", "Workspace", self.settings.codex_pty.workspace),
+            ("workspace", "Workspace", self.settings.ai_runtime.codex.workspace),
         ]
         return [
             WorkspaceInfo(
@@ -253,6 +254,12 @@ class AiSessionManager:
                     "codex_session_defaults_unavailable",
                     "无法读取新建 Session 默认权限，请稍后重试。",
                 ) from exc
+        if session_mode == "quick" and permission_mode == "ask":
+            raise ApiError(
+                409,
+                "quick_interaction_ask_not_supported",
+                "快速交互不支持 Ask for approval，请选择只读、自动审核或完全访问权限。",
+            )
         self.validate_model(model, reasoning_effort)
         workspace = next(
             (item for item in self.workspaces() if item.id == workspace_id),
@@ -274,13 +281,14 @@ class AiSessionManager:
             permission_mode=permission_mode,
             model=model,
             reasoning_effort=reasoning_effort,
+            activity="idle" if session_mode == "quick" else "unknown",
         )
         self.store.save(session)
         return self._public(session)
 
     def create_translation_session(self) -> SessionInfo:
         self._require_runtime_submission(self.runtime_id)
-        workspace = self.settings.codex_pty.runtime_dir / "translation-workspace"
+        workspace = self.settings.ai_runtime.codex.runtime_dir / "translation-workspace"
         workspace.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(workspace, 0o700)
         session = AiSession(
@@ -292,6 +300,7 @@ class AiSessionManager:
             cwd=workspace,
             title="文本优化与翻译",
             permission_mode="read-only",
+            activity="idle",
         )
         self.store.save(session)
         return self._public(session)
@@ -383,8 +392,8 @@ class AiSessionManager:
         if permission_mode == "ask":
             raise ApiError(
                 409,
-                "quick_interaction_requires_terminal",
-                "Ask for approval 需要进入实时终端完成审批。",
+                "quick_interaction_ask_not_supported",
+                "快速交互不支持 Ask for approval，请选择只读、自动审核或完全访问权限。",
             )
         self.validate_model(model, reasoning_effort)
         with self._lock:
@@ -578,7 +587,7 @@ class AiSessionManager:
                 self._ensure_profile()
                 self.supervisor.ensure_terminal(
                     session,
-                    max_running=self.settings.codex_pty.max_running,
+                    max_running=self.settings.ai_runtime.codex.max_running,
                 )
             except Exception:
                 if not was_running:
@@ -642,7 +651,7 @@ class AiSessionManager:
             self._consume_hook_result_safely(session.id)
             self.supervisor.restart_terminal_backend(
                 session,
-                max_running=self.settings.codex_pty.max_running,
+                max_running=self.settings.ai_runtime.codex.max_running,
             )
             return session
 
@@ -1588,10 +1597,10 @@ class AiSessionManager:
             (
                 "weixin-translation",
                 "微信文本优化与翻译",
-                self.settings.codex_pty.runtime_dir / "translation-workspace",
+                self.settings.ai_runtime.codex.runtime_dir / "translation-workspace",
             ),
             ("chub", "Chub", PROJECT_ROOT),
-            ("workspace", "Workspace", self.settings.codex_pty.workspace),
+            ("workspace", "Workspace", self.settings.ai_runtime.codex.workspace),
             ("home", "用户目录", Path.home()),
         )
         for workspace_id, workspace_name, path in candidates:
@@ -1610,7 +1619,7 @@ class AiSessionManager:
     def _is_current_translation_workspace(self, cwd: Path) -> bool:
         try:
             return cwd.expanduser().resolve(strict=False) == (
-                self.settings.codex_pty.runtime_dir / "translation-workspace"
+                self.settings.ai_runtime.codex.runtime_dir / "translation-workspace"
             ).expanduser().resolve(strict=False)
         except OSError:
             return False

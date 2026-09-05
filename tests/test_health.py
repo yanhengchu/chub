@@ -4,6 +4,7 @@ import pytest
 from app.application import _confirm_healthy_instance, create_app
 from app.core.build_info import SESSION_SCHEMA_VERSION, WEB_CODE_VERSION
 from app.core.config import Settings
+from app.server import listen_sockets
 
 
 @pytest.mark.anyio
@@ -79,22 +80,71 @@ def test_local_and_tailnet_access_requires_no_credential(settings: Settings) -> 
     assert application.state.settings.security.allow_tailscale is True
 
 
-def test_codex_pty_requires_tailscale_listener(
-    settings: Settings, capsys: pytest.CaptureFixture[str]
-) -> None:
-    settings.server.tailnet_host = "0.0.0.0"
-
-    application = create_app(settings)
-
-    assert application.state.codex_pty_available is False
-    assert "Codex PTY is disabled" in capsys.readouterr().err
-
-
-def test_codex_pty_is_available_on_tailscale_listener(
+def test_tailnet_discovery_does_not_disable_local_runtime(
     settings: Settings,
 ) -> None:
-    settings.server.tailnet_host = "100.100.100.100"
-
     application = create_app(settings)
 
-    assert application.state.codex_pty_available is True
+    assert application.state.codex_pty_manager.runtime_adapter.status().reason is None
+
+
+def test_unavailable_tailnet_listener_keeps_loopback_available(
+    settings: Settings,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    loopback_listener = object()
+
+    def listen(host: str, _port: int) -> object:
+        if host == "127.0.0.1":
+            return loopback_listener
+        raise OSError(49, "Can't assign requested address")
+
+    availability = []
+
+    with caplog.at_level("WARNING", logger="hub.startup"):
+        listeners = listen_sockets(
+            settings,
+            set_tailnet_listener_available=availability.append,
+            bind_listener=listen,
+            find_tailnet_hosts=lambda: ("100.64.0.20",),
+        )
+
+    assert listeners == [loopback_listener]
+    assert availability == [False]
+    assert "continuing with loopback only" in caplog.text
+
+
+def test_auto_tailnet_listener_binds_discovered_host(
+    settings: Settings,
+) -> None:
+    loopback_listener = object()
+    tailnet_listener = object()
+    availability = []
+    hosts = []
+
+    listeners = listen_sockets(
+        settings,
+        set_tailnet_listener_available=availability.append,
+        set_tailnet_listener_hosts=hosts.append,
+        bind_listener=lambda host, _port: (
+            loopback_listener if host == "127.0.0.1" else tailnet_listener
+        ),
+        find_tailnet_hosts=lambda: ("100.64.0.20",),
+    )
+
+    assert listeners == [loopback_listener, tailnet_listener]
+    assert availability == [True]
+    assert hosts == [("100.64.0.20",)]
+
+
+def test_unavailable_loopback_listener_still_fails(
+    settings: Settings,
+) -> None:
+    with pytest.raises(OSError, match="Address already in use"):
+        listen_sockets(
+            settings,
+            set_tailnet_listener_available=lambda _available: None,
+            bind_listener=lambda _host, _port: (_ for _ in ()).throw(
+                OSError(48, "Address already in use")
+            ),
+        )

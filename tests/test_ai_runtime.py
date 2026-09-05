@@ -20,6 +20,8 @@ from app.ai_runtime import (
     validate_runtime_wiring,
 )
 from app.codex.runtime_adapter import CodexRuntimeAdapter
+from app.codex.usage_settings import AiRuntimeGeneralSettings, AiRuntimeSettingsStore
+from app.ai_runtime import RuntimeSettingsUpdate
 from app.codex.manager import CodexPtyManager
 from app.codex.models import (
     CodexModelCatalogData,
@@ -308,7 +310,6 @@ def test_worker_runtime_registry_rejects_descriptor_identity_drift() -> None:
 
 
 def test_codex_adapter_declares_current_capabilities(settings: Settings) -> None:
-    settings.server.tailnet_host = "100.64.0.1"
     adapter = CodexRuntimeAdapter(
         settings,
         which=lambda _name: "/available",
@@ -327,11 +328,72 @@ def test_codex_adapter_declares_current_capabilities(settings: Settings) -> None
                 "structured_events",
                 "activity_events",
                 "writer_probe",
-            "model_catalog",
-            "permission_profiles",
+                "model_catalog",
+                "permission_profiles",
+                "usage_snapshot",
+                "runtime_settings",
         }
     )
     assert adapter.status().available is True
+
+
+def test_codex_runtime_settings_are_runtime_local_and_reset_usage_cache(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    store = AiRuntimeSettingsStore(tmp_path / "ai-runtimes.local.yaml")
+    adapter = CodexRuntimeAdapter(settings, runtime_settings_store=store)
+
+    before = adapter.read_runtime_settings()
+    assert before.sections[0].fields[0].value is None
+    updated = adapter.update_runtime_settings(
+        RuntimeSettingsUpdate(
+            values={
+                "sub2api-base-url": "http://10.20.30.40",
+                "sub2api-subscription-id": 179,
+            }
+        )
+    )
+
+    assert updated.sections[0].fields[0].value == "http://10.20.30.40"
+    assert updated.sections[0].fields[1].value == 179
+    assert store.read().usage.sub2api.subscription_id == 179
+
+
+def test_codex_runtime_settings_reject_invalid_sub2api_url_as_user_input(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    adapter = CodexRuntimeAdapter(
+        settings,
+        runtime_settings_store=AiRuntimeSettingsStore(
+            tmp_path / "ai-runtimes.local.yaml"
+        ),
+    )
+
+    with pytest.raises(RuntimeOperationError) as exc_info:
+        adapter.update_runtime_settings(
+            RuntimeSettingsUpdate(
+                values={
+                    "sub2api-base-url": "https://example.test/not-an-origin",
+                    "sub2api-subscription-id": None,
+                }
+            )
+        )
+
+    assert exc_info.value.code == "codex_runtime_settings_invalid"
+    assert exc_info.value.kind == "invalid_request"
+
+
+def test_ai_runtime_general_timezone_is_shared_by_runtime_collectors(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    store = AiRuntimeSettingsStore(tmp_path / "ai-runtimes.local.yaml")
+    store.save_general(AiRuntimeGeneralSettings(timezone="America/Los_Angeles"))
+    adapter = CodexRuntimeAdapter(settings, runtime_settings_store=store)
+
+    assert adapter._read_usage_settings().timezone == "America/Los_Angeles"
 
 
 def test_codex_manager_production_registry_only_exposes_codex(
@@ -493,6 +555,21 @@ def test_codex_adapter_fails_closed_when_writer_cannot_be_confirmed(
     assert invalid_id.value.code == "codex_writer_status_unavailable"
 
 
+def test_codex_adapter_status_does_not_depend_on_tailnet_listener(
+    settings: Settings,
+) -> None:
+    adapter = CodexRuntimeAdapter(
+        settings,
+        which=lambda _name: "/fixed/dependency",
+    )
+
+    assert adapter.status().available is True
+
+    status = adapter.status()
+    assert status.available is True
+    assert status.reason is None
+
+
 def test_codex_runner_normalizes_malformed_events_and_truncated_results(
     tmp_path: Path,
 ) -> None:
@@ -558,7 +635,7 @@ def test_codex_adapter_owns_activity_event_file_boundary(
     settings: Settings,
     tmp_path: Path,
 ) -> None:
-    settings.codex_pty.runtime_dir = tmp_path / "runtime"
+    settings.ai_runtime.codex.runtime_dir = tmp_path / "runtime"
     adapter = CodexRuntimeAdapter(settings)
     adapter.hook_dir.mkdir(parents=True)
     hook = adapter.hook_dir / "123e4567-e89b-12d3-a456-426614174000.json"
@@ -584,7 +661,7 @@ def test_codex_adapter_preserves_quick_origin_for_idle_hook(
     settings: Settings,
     tmp_path: Path,
 ) -> None:
-    settings.codex_pty.runtime_dir = tmp_path / "runtime"
+    settings.ai_runtime.codex.runtime_dir = tmp_path / "runtime"
     adapter = CodexRuntimeAdapter(settings)
     adapter.hook_dir.mkdir(parents=True)
     hook = adapter.hook_dir / "123e4567-e89b-12d3-a456-426614174000.json"
@@ -606,7 +683,7 @@ def test_codex_adapter_persists_activity_session_rebind(
     settings: Settings,
     tmp_path: Path,
 ) -> None:
-    settings.codex_pty.runtime_dir = tmp_path / "runtime"
+    settings.ai_runtime.codex.runtime_dir = tmp_path / "runtime"
     adapter = CodexRuntimeAdapter(settings)
     old_session_id = "123e4567-e89b-12d3-a456-426614174000"
     new_session_id = "123e4567-e89b-12d3-a456-426614174001"

@@ -1,11 +1,14 @@
 <!doctype html>
-<html lang="zh-CN" data-ui-style="{{ 'code-dark' if request.cookies.get('hub_ui_style') == 'code-dark' else 'standard' }}">
+{% set ui_theme = resolve_ui_theme(request.cookies.get('hub_ui_style')) %}
+{% set ui_font_size = resolve_ui_font_size(request.cookies.get('hub_ui_font_size')) %}
+<html lang="zh-CN" data-ui-style="{{ ui_theme.id }}" data-ui-theme-default="{{ default_ui_theme }}" data-ui-theme-schemes="{{ ui_theme_schemes }}" data-ui-font-size="{{ ui_font_size.id }}" data-ui-font-size-default="{{ default_ui_font_size }}" data-ui-font-size-scales="{{ ui_font_size_scales }}">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
-    <meta name="color-scheme" content="{{ 'dark' if request.cookies.get('hub_ui_style') == 'code-dark' else 'light' }}">
+    <meta name="color-scheme" content="{{ ui_theme.color_scheme }}">
     <title>快速交互</title>
     {% include "partials/app_styles.html" %}
+    <script src="/static/js/components/ui.js" defer></script>
     <script src="/static/quick_interactions_core.js" defer></script>
     <script src="/static/quick_interaction_session.js" defer></script>
     <script src="/static/quick_interaction_timeline.js" defer></script>
@@ -51,7 +54,6 @@
               </svg>
             </button>
           </div>
-          <p id="conversation-submit-message" class="message" aria-live="polite"></p>
           <div class="conversation-input-row">
             <textarea id="conversation-prompt" rows="1" maxlength="8000" required placeholder="输入消息…" aria-label="快速交互需求" disabled></textarea>
             <div class="conversation-composer-toolbar">
@@ -76,9 +78,9 @@
                       <span>Read Only</span>
                       <small>只能查看和分析</small>
                     </button>
-                    <button class="conversation-composer-control conversation-setting-option is-unavailable" type="button" role="option" data-value="ask" disabled aria-disabled="true" title="Ask for approval 需要进入实时终端">
+                    <button class="conversation-composer-control conversation-setting-option is-unavailable" type="button" role="option" data-value="ask" disabled aria-disabled="true" title="快速交互不支持 Ask for approval">
                       <span>Ask for approval</span>
-                      <small>需实时终端</small>
+                      <small>快速交互不支持</small>
                     </button>
                   </div>
                 </div>
@@ -112,15 +114,24 @@
         </form>
 
         <dialog id="conversation-create-dialog" class="codex-workspace-dialog conversation-create-dialog" aria-labelledby="conversation-create-title">
-          <div id="conversation-create-surface" class="codex-workspace-dialog-surface conversation-create-surface">
+          <form id="conversation-create-form" class="codex-workspace-dialog-surface workspace-session-create-form" aria-labelledby="conversation-create-title">
             <div class="codex-workspace-dialog-header">
               <h3 id="conversation-create-title">新建 Session</h3>
               <button id="conversation-create-close" class="button-link codex-workspace-dialog-close" type="button" aria-label="关闭新建 Session 窗口">关闭</button>
             </div>
-            <p class="conversation-create-description">首页列出三个常用目录；其他目录启动的 Codex 会话会自动出现在列表中。新建 Session 的权限使用设置页默认值，模型和推理等级跟随 AI 默认。</p>
-            <div id="conversation-create-workspaces" class="workspace-list conversation-create-workspaces"></div>
+            <p class="workspace-session-create-description">选择工作目录后创建快速交互 Session。</p>
+            <label class="workspace-session-create-field" for="conversation-create-workspaces">工作目录</label>
+            <input id="conversation-create-workspaces" type="hidden">
+            <div class="settings-choice-picker workspace-session-choice-picker">
+              <button id="conversation-create-workspaces-trigger" class="settings-choice-picker-trigger" type="button" aria-haspopup="listbox" aria-controls="conversation-create-workspaces-menu" aria-expanded="false"><span id="conversation-create-workspaces-value"></span><span aria-hidden="true"></span></button>
+              <div id="conversation-create-workspaces-menu" class="settings-choice-picker-menu" role="listbox" aria-label="工作目录" hidden></div>
+            </div>
             <p id="conversation-create-message" class="message" aria-live="polite"></p>
-          </div>
+            <div class="dialog-actions">
+              <button id="conversation-create-cancel" class="button-link" type="button">取消</button>
+              <button id="conversation-create-confirm" class="button-secondary" type="submit">创建</button>
+            </div>
+          </form>
         </dialog>
 
         <dialog id="conversation-rename-dialog" class="codex-workspace-dialog conversation-rename-dialog" aria-labelledby="conversation-rename-title">
@@ -148,7 +159,6 @@
               <button id="conversation-stop-close" class="button-link codex-workspace-dialog-close" type="button" aria-label="关闭停止确认">关闭</button>
             </div>
             <p id="conversation-stop-description" class="confirmation-dialog-description"></p>
-            <p id="conversation-stop-message" class="message" aria-live="polite"></p>
             <div class="confirmation-dialog-actions">
               <button id="conversation-stop-cancel" class="button-link" type="button">取消</button>
               <button id="conversation-stop-confirm" class="button-danger" type="submit">确认停止</button>
@@ -163,7 +173,6 @@
               <button id="conversation-archive-close" class="button-link codex-workspace-dialog-close" type="button" aria-label="关闭归档确认">关闭</button>
             </div>
             <p id="conversation-archive-description" class="confirmation-dialog-description"></p>
-            <p id="conversation-archive-message" class="message" aria-live="polite"></p>
             <div class="confirmation-dialog-actions">
               <button id="conversation-archive-cancel" class="button-link" type="button">取消</button>
               <button id="conversation-archive-confirm" class="button-danger" type="submit">确认归档</button>
@@ -178,7 +187,6 @@
               <button id="conversation-delete-close" class="button-link codex-workspace-dialog-close" type="button" aria-label="关闭删除确认">关闭</button>
             </div>
             <p id="conversation-delete-description" class="confirmation-dialog-description"></p>
-            <p id="conversation-delete-message" class="message" aria-live="polite"></p>
             <div class="confirmation-dialog-actions">
               <button id="conversation-delete-cancel" class="button-link" type="button">取消</button>
               <button id="conversation-delete-confirm" class="button-danger" type="submit">确认删除</button>

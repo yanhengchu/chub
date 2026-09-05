@@ -67,6 +67,7 @@ class TranslationEntry(_StrictModel):
         "confirmed_waiting_target",
     ] = "queued"
     quick_task_id: str | None = None
+    worker_submission_started_at: datetime | None = None
     model: str | None = Field(default=None, max_length=128)
     reasoning_effort: str | None = Field(default=None, max_length=32)
     target_session_id: str | None = Field(default=None, max_length=128)
@@ -160,6 +161,7 @@ class WeixinTranslationManager:
         self._system_upgrade_reset = False
         self._state_error = False
         self._worker_watchers: set[str] = set()
+        self._worker_submissions: set[str] = set()
         self._confirmed_retry_timer: threading.Timer | None = None
         self._completion_handler: Callable[
             [TranslationEntry, str | None, str | None, str | None],
@@ -197,6 +199,12 @@ class WeixinTranslationManager:
                     kind="translation",
                 )
             if task is None or task.kind != "translation":
+                if (
+                    entry.status == "queued"
+                    and entry.worker_submission_started_at is None
+                ):
+                    self._schedule_worker_submission(entry.id)
+                    continue
                 error = "服务重启前翻译任务未完成提交，未自动重试。"
                 if entry.target_session_id is not None:
                     self._complete_targeted_entry(entry.id, error=error)
@@ -316,7 +324,92 @@ class WeixinTranslationManager:
                 return False
             self._state = next_state
         self._log(entry.operation_id, "requested", source_ip)
-        return self._submit_to_worker_queue(entry)
+        self._schedule_worker_submission(entry.id)
+        return True
+
+    def _schedule_worker_submission(self, entry_id: str) -> None:
+        """Hand a durable queue entry to Worker without delaying the Hook reply."""
+        with self._lock:
+            if self._closed or entry_id in self._worker_submissions:
+                return
+            entry = next(
+                (item for item in self._state.entries if item.id == entry_id),
+                None,
+            )
+            if (
+                entry is None
+                or entry.status != "queued"
+                or entry.quick_task_id is not None
+            ):
+                return
+            self._worker_submissions.add(entry_id)
+        try:
+            threading.Thread(
+                target=self._submit_queued_worker_entry,
+                args=(entry_id,),
+                daemon=True,
+                name=f"chub-translation-submit-{entry_id[:8]}",
+            ).start()
+        except RuntimeError:
+            with self._lock:
+                self._worker_submissions.discard(entry_id)
+            LOGGER.warning("Unable to schedule translation Worker submission")
+            self._fail_queued_worker_submission(entry_id)
+
+    def _fail_queued_worker_submission(self, entry_id: str) -> None:
+        with self._lock:
+            entry = next(
+                (item for item in self._state.entries if item.id == entry_id),
+                None,
+            )
+            if entry is None or entry.status != "queued" or entry.quick_task_id is not None:
+                return
+            snapshot = entry.model_copy(deep=True)
+        error = "翻译任务未能提交到 Quick Worker。"
+        if snapshot.target_session_id is not None:
+            self._complete_targeted_entry(
+                entry_id,
+                error=error,
+                schedule_notification=True,
+            )
+        else:
+            self._finish(entry_id, "failed", error)
+            self._log(snapshot.operation_id, "failed", snapshot.source_ip)
+
+    def _submit_queued_worker_entry(self, entry_id: str) -> None:
+        try:
+            with self._lock:
+                if self._closed:
+                    return
+                current = next(
+                    (item for item in self._state.entries if item.id == entry_id),
+                    None,
+                )
+                if (
+                    current is None
+                    or current.status != "queued"
+                    or current.quick_task_id is not None
+                ):
+                    return
+                next_state = self._state.model_copy(deep=True)
+                entry = next(item for item in next_state.entries if item.id == entry_id)
+                entry.worker_submission_started_at = utc_now()
+                entry.updated_at = utc_now()
+                try:
+                    self._write(next_state)
+                except OSError:
+                    self._state_error = True
+                    LOGGER.warning(
+                        "Unable to persist translation Worker handoff",
+                        exc_info=True,
+                    )
+                    return
+                self._state = next_state
+                snapshot = entry.model_copy(deep=True)
+            self._submit_to_worker_queue(snapshot)
+        finally:
+            with self._lock:
+                self._worker_submissions.discard(entry_id)
 
     def _submit_to_worker_queue(self, entry: TranslationEntry) -> bool:
         task = None
@@ -355,8 +448,12 @@ class WeixinTranslationManager:
                         "Unable to cancel untracked Worker translation",
                         exc_info=True,
                     )
-            self._finish(entry.id, "failed", "翻译任务未能提交到 Quick Worker。")
-            self._log(entry.operation_id, "failed", entry.source_ip)
+            error = "翻译任务未能提交到 Quick Worker。"
+            if entry.target_session_id is not None:
+                self._complete_targeted_entry(entry.id, error=error)
+            else:
+                self._finish(entry.id, "failed", error)
+                self._log(entry.operation_id, "failed", entry.source_ip)
             return False
 
     def _start_worker_watcher(
@@ -792,6 +889,7 @@ class WeixinTranslationManager:
         entry_id: str,
         *,
         error: str | None = None,
+        schedule_notification: bool = False,
     ) -> None:
         entry = self._entry(entry_id).model_copy(deep=True)
         handler = self._completion_handler
@@ -849,7 +947,10 @@ class WeixinTranslationManager:
                 else "failed",
                 entry.source_ip,
             )
-            self._deliver_targeted_notification(entry_id)
+            if schedule_notification:
+                self._schedule_targeted_notification(entry_id)
+            else:
+                self._deliver_targeted_notification(entry_id)
         self._retire_completed_sessions()
 
     def complete_confirmation_submission(
@@ -884,13 +985,13 @@ class WeixinTranslationManager:
 
     def _schedule_targeted_notification(self, entry_id: str) -> None:
         """Deliver a persisted notification without blocking an inbound command."""
-        worker = threading.Thread(
-            target=self._deliver_targeted_notification,
-            args=(entry_id,),
-            name=f"chub-translation-notify-{entry_id[:8]}",
-            daemon=True,
-        )
         try:
+            worker = threading.Thread(
+                target=self._deliver_targeted_notification,
+                args=(entry_id,),
+                name=f"chub-translation-notify-{entry_id[:8]}",
+                daemon=True,
+            )
             worker.start()
         except RuntimeError:
             # Keep the durable pending state for normal Web-start recovery.

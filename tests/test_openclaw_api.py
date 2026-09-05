@@ -2,10 +2,16 @@ from unittest.mock import ANY, MagicMock, call
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 from app.application import create_app
 from app.core.config import Settings
-from app.services.openclaw import OpenClawManager
+from app.services.openclaw import (
+    OpenClawIntegrationComponentStatus,
+    OpenClawIntegrationPatchStatus,
+    OpenClawIntegrationStatus,
+    OpenClawManager,
+)
 from app.services.openclaw_weixin import WeixinLoginStatus
 from app.codex.models import utc_now
 
@@ -32,6 +38,29 @@ def running_status():
     )
 
 
+def integration_status() -> OpenClawIntegrationStatus:
+    verified = OpenClawIntegrationComponentStatus(
+        version="2026.8.1",
+        expected_version="2026.8.1",
+        state="verified",
+        message="已匹配 Chub 已验收基线。",
+    )
+    return OpenClawIntegrationStatus(
+        weixin_adapter=verified.model_copy(update={"version": "2.4.8", "expected_version": "2.4.8"}),
+        chub_plugin=verified.model_copy(update={"version": "0.1.1", "expected_version": "0.1.1"}),
+        patches=[
+            OpenClawIntegrationPatchStatus(
+                identifier="weixin-chub-compatibility",
+                version="1.0.0",
+                scope="source-and-runtime",
+                state="declared",
+            )
+        ],
+        message="插件配置和安装元数据已匹配。",
+        checked_at=utc_now(),
+    )
+
+
 @pytest.mark.anyio
 async def test_openclaw_status_is_protected(settings: Settings) -> None:
     app = create_app(settings)
@@ -50,6 +79,38 @@ async def test_openclaw_status_is_protected(settings: Settings) -> None:
     assert response.json()["data"]["state"] == "running"
     assert "sourcePath" not in response.text
     manager.status.assert_called_once_with()
+
+
+@pytest.mark.anyio
+async def test_openclaw_integration_status_is_protected_and_does_not_leak_runtime_paths(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    manager = MagicMock()
+    manager.integration_status.return_value = integration_status()
+    app.state.openclaw_manager = manager
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            "/api/openclaw/integration",
+            headers=authorization(settings),
+        )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["chub_plugin"]["state"] == "verified"
+    assert response.json()["data"]["patches"][0]["state"] == "declared"
+    assert "sourcePath" not in response.text
+    assert "integrity" not in response.text
+    manager.integration_status.assert_called_once_with()
+
+
+def test_openclaw_settings_patch_status_only_describes_declared_baseline() -> None:
+    with pytest.raises(ValidationError):
+        OpenClawIntegrationPatchStatus(
+            identifier="weixin-chub-compatibility",
+            state="applied",
+        )
 
 
 @pytest.mark.anyio

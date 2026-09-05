@@ -1,5 +1,6 @@
 from app.ai_runtime.contracts import (
     AgentRuntimeAdapter,
+    AiRuntimeGeneralSettingsData,
     PermissionProfile,
     RuntimeCapability,
     RuntimeCapabilityMatrix,
@@ -23,11 +24,17 @@ from app.ai_runtime.contracts import (
     RuntimeReasoningLevel,
     RuntimeSessionDiscoveryResult,
     RuntimeSessionArchiveAdapter,
+    RuntimeSettingsAdapter,
+    RuntimeSettingsData,
+    RuntimeSettingsField,
+    RuntimeSettingsSection,
+    RuntimeSettingsUpdate,
     RuntimeStatus,
     RuntimeTerminalRequest,
     RuntimeTurnResult,
     RuntimeTurnRequest,
     RuntimeWriterProbeAdapter,
+    RuntimeUsageSnapshotAdapter,
 )
 from app.ai_runtime.registry import RuntimeRegistry, validate_runtime_wiring
 from app.ai_runtime.worker import (
@@ -40,6 +47,7 @@ from app.ai_runtime.worker import (
 
 __all__ = [
     "AgentRuntimeAdapter",
+    "AiRuntimeGeneralSettingsData",
     "PermissionProfile",
     "RuntimeCapability",
     "RuntimeCapabilityMatrix",
@@ -65,11 +73,17 @@ __all__ = [
     "validate_runtime_wiring",
     "RuntimeSessionDiscoveryResult",
     "RuntimeSessionArchiveAdapter",
+    "RuntimeSettingsAdapter",
+    "RuntimeSettingsData",
+    "RuntimeSettingsField",
+    "RuntimeSettingsSection",
+    "RuntimeSettingsUpdate",
     "RuntimeStatus",
     "RuntimeTerminalRequest",
     "RuntimeTurnResult",
     "RuntimeTurnRequest",
     "RuntimeWriterProbeAdapter",
+    "RuntimeUsageSnapshotAdapter",
     "BACKGROUND_RUNTIME_CAPABILITIES",
     "RuntimeWorkerLaunchRequest",
     "RuntimeWorkerLaunchSpec",

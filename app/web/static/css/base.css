@@ -28,20 +28,20 @@ button {
   border: 0;
   border-radius: 10px;
   padding: 0 1rem;
-  color: white;
-  background: var(--accent);
+  color: var(--color-accent-inverse);
+  background: var(--color-accent);
   cursor: pointer;
   font-size: 0.875rem;
   font-weight: 700;
 }
 
 button:hover {
-  background: var(--accent-dark);
+  background: var(--color-accent-hover);
 }
 
 button:focus-visible,
 input:focus-visible {
-  outline: 3px solid rgba(23, 107, 74, 0.25);
+  outline: 3px solid var(--color-focus-ring);
   outline-offset: 2px;
 }
 
@@ -94,13 +94,13 @@ p {
 
 h1 {
   margin-bottom: 0;
-  font-size: clamp(2rem, 8vw, 3.25rem);
-  letter-spacing: -0.055em;
+  font-size: 2.5rem;
+  letter-spacing: 0;
   line-height: 0.95;
 }
 
 .site-header h1 {
-  font-size: clamp(1.65rem, 5vw, 2.5rem);
+  font-size: 2rem;
   line-height: 1;
 }
 
@@ -112,14 +112,14 @@ h2 {
 .eyebrow,
 .section-kicker {
   margin-bottom: 0.35rem;
-  color: var(--accent);
+  color: var(--color-accent);
   font-size: 0.72rem;
   font-weight: 800;
   letter-spacing: 0.12em;
 }
 
 .version {
-  color: var(--muted);
+  color: var(--color-text-muted);
   font-size: 0.85rem;
 }
 
@@ -153,13 +153,13 @@ h2 {
 
 .connected-meta {
   margin: 0.4rem 0 0;
-  color: var(--muted);
+  color: var(--color-text-muted);
   font-size: 0.84rem;
 }
 
 .connected-summary {
   margin: 0.35rem 0 0;
-  color: var(--ink);
+  color: var(--color-text);
   font-size: 0.84rem;
   font-weight: 700;
 }

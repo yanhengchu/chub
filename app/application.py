@@ -19,7 +19,6 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
-from app.ai_usage.service import AiUsageService
 from app.api.ai_usage import router as ai_usage_router
 from app.api.health import router as health_router
 from app.api.automations import router as automations_router
@@ -45,13 +44,12 @@ from app.api.status import router as status_router
 from app.ai_session import AiSessionManager
 from app.ai_session.operations import archive_session, delete_session
 from app.codex.quick_interactions import QuickInteractionManager
-from app.codex.rate_limits import CodexRateLimitService
+from app.ai_runtime.usage import RuntimeUsageService
 from app.codex.routes import api_router as codex_api_router
 from app.codex.routes import web_router as codex_web_router
 from app.automations.manager import AutomationManager
 from app.core.config import PROJECT_ROOT, Settings, load_settings
 from app.core.logger import configure_logging
-from app.core.network import is_tailscale_ip
 from app.core.security import require_trusted_network
 from app.core.platform import detect_platform
 from app.core.response import (
@@ -213,6 +211,8 @@ def _is_ai_runtime_mutation(request: Request) -> bool:
     path = request.url.path
     return (
         path.startswith("/api/codex/")
+        or path.startswith("/api/ai/runtimes/")
+        or path == "/api/ai/settings"
         or path.startswith("/api/openclaw/wechat-chub-mode/")
     )
 
@@ -224,11 +224,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     detected_platform = detect_platform()
     logger = logging.getLogger("hub.startup")
-    codex_pty_available = is_tailscale_ip(resolved_settings.server.tailnet_host or "")
-    if not codex_pty_available:
-        logger.warning(
-            "server.tailnet_host is not configured; Codex PTY is disabled",
-        )
     if resolved_settings.node.type != detected_platform:
         logger.warning(
             "configured_platform=%s detected_platform=%s",
@@ -248,8 +243,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # Codex Session Store is cleaned by the fixed upgrade flow and is never
     # used as a startup-time compatibility switch.
     codex_pty_manager = AiSessionManager(resolved_settings)
-    codex_rate_limits = CodexRateLimitService()
-    ai_usage = AiUsageService(resolved_settings, codex_rate_limits)
+    codex_rate_limits = codex_pty_manager.codex_rate_limits
+    ai_usage = RuntimeUsageService(
+        codex_pty_manager.runtime_registry,
+        default_runtime_id=codex_pty_manager.runtime_id,
+    )
     completion_notifier = OpenClawCompletionNotifier(
         resolved_settings.openclaw.quick_interaction_completion
     )
@@ -261,18 +259,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return launch_restart_process(command)
 
     deferred_restart = DeferredRestartCoordinator(
-        resolved_settings.codex_pty.data_file.with_name("deferred-restart.json"),
+        resolved_settings.ai_runtime.codex.data_file.with_name("deferred-restart.json"),
         instance_id,
         start_deferred_restart,
     )
     quick_interactions = QuickInteractionManager(
-        resolved_settings.codex_pty.data_file,
-        resolved_settings.codex_pty.runtime_dir,
+        resolved_settings.ai_runtime.codex.data_file,
+        resolved_settings.ai_runtime.codex.runtime_dir,
         codex_pty_manager,
         completion_notifier.notify,
         deferred_restart,
         restart_notifier=completion_notifier.notify_restart,
-        timeout_seconds=resolved_settings.codex_pty.quick_interaction_timeout_seconds,
+        timeout_seconds=resolved_settings.ai_runtime.codex.quick_interaction_timeout_seconds,
         worker_settings=resolved_settings,
     )
     quick_interactions.configure_translation_worker_queue(
@@ -282,13 +280,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ),
     )
     quick_worker_maintenance = QuickWorkerReloadCoordinator(
-        resolved_settings.codex_pty.data_file.with_name(
+        resolved_settings.ai_runtime.codex.data_file.with_name(
             "quick-worker-maintenance.json"
         ),
         PROJECT_ROOT / "scripts" / "chub",
     )
     system_upgrade = SystemUpgradeCoordinator(
-        resolved_settings.codex_pty.data_file.with_name("system-upgrade.json"),
+        resolved_settings.ai_runtime.codex.data_file.with_name("system-upgrade.json"),
         PROJECT_ROOT / "config" / "system-upgrade.json",
         instance_id,
     )
@@ -809,7 +807,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ai_usage.read(force=False)
     )
     codex_pty_manager.set_quick_interaction_checker(quick_interactions.is_running)
-    openclaw_manager = OpenClawManager()
+    openclaw_manager = OpenClawManager(resolved_settings.openclaw)
     notification_service = NotificationService(resolved_settings.notifications)
 
     def start_weixin_maintenance(
@@ -1066,7 +1064,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.settings = resolved_settings
     application.state.instance_id = instance_id
     application.state.detected_platform = detected_platform
-    application.state.codex_pty_available = codex_pty_available
+    application.state.tailnet_listener_available = None
+    application.state.tailnet_listener_hosts = ()
     application.state.ai_session_manager = codex_pty_manager
     application.state.codex_pty_manager = codex_pty_manager
     application.state.codex_rate_limits = codex_rate_limits

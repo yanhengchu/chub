@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from app.ai_session.store import AiSessionStoreUnavailable
 from app.codex.models import (
     CodexSession,
     QuickInteractionDeferredRestartContext,
@@ -924,7 +925,8 @@ async def test_isolated_web_manager_restart_recovers_running_worker_task(
 ) -> None:
     native_id = "11111111-1111-4111-8111-111111111111"
     monkeypatch.setenv("FAKE_CODEX_SESSION_ID", native_id)
-    monkeypatch.setenv("FAKE_CODEX_DELAY", "0.5")
+    release_path = tmp_path / "release-worker-task"
+    monkeypatch.setenv("FAKE_CODEX_RELEASE_PATH", str(release_path))
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     executable = tmp_path / "fake-codex-recovery"
@@ -938,9 +940,11 @@ from pathlib import Path
 args = sys.argv[1:]
 result_path = Path(args[args.index("--output-last-message") + 1])
 native_id = os.environ["FAKE_CODEX_SESSION_ID"]
+release_path = Path(os.environ["FAKE_CODEX_RELEASE_PATH"])
 prompt = sys.stdin.read()
 print(json.dumps({"type": "thread.started", "thread_id": native_id}), flush=True)
-time.sleep(float(os.environ["FAKE_CODEX_DELAY"]))
+while not release_path.exists():
+    time.sleep(0.01)
 result_path.write_text(f"recovered:{prompt}", encoding="utf-8")
 """,
         encoding="utf-8",
@@ -1004,6 +1008,7 @@ result_path.write_text(f"recovered:{prompt}", encoding="utf-8")
         await asyncio.to_thread(second.start_worker_reconciliation)
         with second.session_operation_guard("other-session"):
             pass
+        release_path.write_text("release", encoding="utf-8")
         deadline = asyncio.get_running_loop().time() + 3
         while asyncio.get_running_loop().time() < deadline:
             recovered = second.get(task.id)
@@ -1529,6 +1534,46 @@ def test_worker_claim_restore_conflict_is_local_and_reconciles_task(
     assert finished.result is None
     assert "could not be restored" in (finished.error or "")
     codex_manager.bind_quick_interaction_native_session.assert_not_called()
+
+
+def test_worker_claim_restore_store_unavailable_is_local(
+    settings,
+    tmp_path: Path,
+) -> None:
+    task = QuickInteractionTask(
+        id="task-store-unavailable",
+        worker_task_id="qw-1750000000000-11111111111111111111111111111111",
+        session_id="session-1",
+        prompt="检查状态",
+        status="running",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    serialized = task.model_dump(mode="json")
+    serialized["_operation_context"] = {
+        "operation_id": "operation-1",
+        "source_ip": "127.0.0.1",
+    }
+    (tmp_path / "quick-interactions.json").write_text(
+        json.dumps([serialized]),
+        encoding="utf-8",
+    )
+    codex_manager = MagicMock()
+    codex_manager.register_quick_native_claim.side_effect = AiSessionStoreUnavailable(
+        "AI Session 状态文件与当前内存状态不一致。"
+    )
+
+    quick_interactions = QuickInteractionManager(
+        tmp_path / "quick-interactions.json",
+        tmp_path / "runtime",
+        codex_manager,
+        worker_settings=settings,
+    )
+
+    assert quick_interactions._local_state_error is None
+    assert quick_interactions._native_claim_restore_errors[task.id] == (
+        "ai_session_store_unavailable"
+    )
 
 
 def test_worker_recovery_barrier_fails_quick_session_writes_closed(

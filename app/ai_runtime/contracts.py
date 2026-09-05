@@ -20,6 +20,8 @@ RuntimeCapability = Literal[
     "writer_probe",
     "model_catalog",
     "permission_profiles",
+    "usage_snapshot",
+    "runtime_settings",
 ]
 RuntimeCapabilityState = Literal["supported", "unsupported", "unavailable"]
 RUNTIME_ID_PATTERN = r"^[a-z][a-z0-9-]{0,31}$"
@@ -37,6 +39,8 @@ RUNTIME_CAPABILITIES: frozenset[RuntimeCapability] = frozenset(
         "writer_probe",
         "model_catalog",
         "permission_profiles",
+        "usage_snapshot",
+        "runtime_settings",
     }
 )
 PermissionProfile = Literal["auto-review", "read-only", "full-access"]
@@ -183,6 +187,39 @@ class RuntimeTurnResult(_StrictModel):
     truncated: bool = False
 
 
+RuntimeSettingInputType = Literal["text", "number"]
+RuntimeSettingValue = str | int | None
+
+
+class RuntimeSettingsField(_StrictModel):
+    id: str = Field(pattern=r"^[a-z][a-z0-9-]{0,63}$")
+    label: str = Field(min_length=1, max_length=100)
+    description: str = Field(min_length=1, max_length=300)
+    input_type: RuntimeSettingInputType
+    value: RuntimeSettingValue = None
+    placeholder: str | None = Field(default=None, max_length=200)
+
+
+class RuntimeSettingsSection(_StrictModel):
+    id: str = Field(pattern=r"^[a-z][a-z0-9-]{0,63}$")
+    title: str = Field(min_length=1, max_length=100)
+    description: str | None = Field(default=None, max_length=300)
+    fields: tuple[RuntimeSettingsField, ...]
+
+
+class RuntimeSettingsData(_StrictModel):
+    runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
+    sections: tuple[RuntimeSettingsSection, ...]
+
+
+class AiRuntimeGeneralSettingsData(_StrictModel):
+    sections: tuple[RuntimeSettingsSection, ...]
+
+
+class RuntimeSettingsUpdate(_StrictModel):
+    values: dict[str, RuntimeSettingValue] = Field(min_length=1, max_length=20)
+
+
 class RuntimeOperationError(RuntimeError):
     def __init__(
         self,
@@ -280,3 +317,18 @@ class RuntimeSessionArchiveAdapter(Protocol):
         action: RuntimeNativeAction,
         native_session_id: str,
     ) -> None: ...
+
+
+@runtime_checkable
+class RuntimeUsageSnapshotAdapter(Protocol):
+    def read_usage_snapshot(self, *, force: bool = False): ...
+
+
+@runtime_checkable
+class RuntimeSettingsAdapter(Protocol):
+    def read_runtime_settings(self) -> RuntimeSettingsData: ...
+
+    def update_runtime_settings(
+        self,
+        update: RuntimeSettingsUpdate,
+    ) -> RuntimeSettingsData: ...

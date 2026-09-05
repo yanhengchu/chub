@@ -540,7 +540,7 @@ def safe_submission_error(exc: ApiError) -> str:
         "weixin_chub_mode_session_reclaim_failed": (
             "微信通道当前绑定 Session 状态未知且未能安全停止，请稍后重试。"
         ),
-        "quick_interaction_requires_terminal": "当前权限不支持微信快速交互。",
+        "quick_interaction_ask_not_supported": "当前权限不支持微信快速交互。",
         "codex_model_unavailable": "所选 Codex 模型当前不可用。",
         "codex_reasoning_effort_unsupported": "所选推理等级当前不可用。",
         "weixin_chub_mode_session_slots_full": (

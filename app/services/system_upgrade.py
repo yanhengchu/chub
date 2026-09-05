@@ -239,12 +239,12 @@ def runtime_recovery_plan() -> LoadedSystemUpgradePlan:
 def runtime_cleanup_readiness(settings) -> str | None:
     """Validate the fixed local paths before accepting a destructive reset."""
     files = (
-        settings.codex_pty.data_file,
-        settings.codex_pty.data_file.with_name("ai-sessions.json"),
+        settings.ai_runtime.codex.data_file,
+        settings.ai_runtime.codex.data_file.with_name("ai-sessions.json"),
     )
     directories = (
-        settings.codex_pty.runtime_dir / "hooks",
-        settings.codex_pty.runtime_dir / "restart-requests",
+        settings.ai_runtime.codex.runtime_dir / "hooks",
+        settings.ai_runtime.codex.runtime_dir / "restart-requests",
     )
     for path in files:
         try:

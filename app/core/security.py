@@ -21,7 +21,7 @@ def _allows_tailscale_request(request: Request) -> bool:
     client_host = request.client.host if request.client else ""
     return (
         settings.security.allow_tailscale
-        and is_tailscale_ip(settings.server.tailnet_host or "")
+        and getattr(request.app.state, "tailnet_listener_available", None) is True
         and is_tailscale_ip(client_host)
     )
 

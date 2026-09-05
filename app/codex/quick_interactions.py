@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from app.ai_session.models import AiSession
+from app.ai_session.store import AiSessionStoreUnavailable
 from app.codex.models import (
     QuickInteractionDeferredRestartContext,
     QuickInteractionErrorSource,
@@ -193,6 +194,7 @@ class QuickInteractionManager:
         self._local_state_error: str | None = None
         self._recovery_ready = False
         self._recovery_error: str | None = None
+        self._closed = threading.Event()
         self._resident_reconciler_started = False
         self._reconciler_stop = threading.Event()
         self._reconciler_thread: threading.Thread | None = None
@@ -378,15 +380,20 @@ class QuickInteractionManager:
                     task.session_id,
                     task.worker_task_id,
                 )
-            except ApiError as exc:
+            except (ApiError, AiSessionStoreUnavailable) as exc:
                 # A stale claim belongs to this task and must not make unrelated
                 # Sessions unavailable. Keep reconciling the Worker task, but
                 # never apply its native identity or successful result.
-                self._native_claim_restore_errors[task.id] = exc.code
+                error_code = (
+                    exc.code
+                    if isinstance(exc, ApiError)
+                    else "ai_session_store_unavailable"
+                )
+                self._native_claim_restore_errors[task.id] = error_code
                 LOGGER.warning(
                     "Unable to restore Quick Worker native Session claim for task %s: %s",
                     task.id,
-                    exc.code,
+                    error_code,
                 )
         return recovered_tasks
 
@@ -433,7 +440,11 @@ class QuickInteractionManager:
                     "当前实时终端状态不允许快速交互。",
                 )
             if session.permission_mode == "ask":
-                raise ApiError(409, "quick_interaction_requires_terminal", "Ask for approval 需要进入实时终端完成审批。")
+                raise ApiError(
+                    409,
+                    "quick_interaction_ask_not_supported",
+                    "快速交互不支持 Ask for approval，请选择只读、自动审核或完全访问权限。",
+                )
             with self._lock:
                 if self._any_running(session_id) and not queued_translation:
                     raise ApiError(
@@ -745,6 +756,8 @@ class QuickInteractionManager:
 
     def start_worker_reconciliation(self) -> None:
         with self._lock:
+            if self._closed.is_set():
+                return
             if self._resident_reconciler_started:
                 return
             self._resident_reconciler_started = True
@@ -805,6 +818,8 @@ class QuickInteractionManager:
             return False
 
     def _reconcile_worker_once(self, *, initial: bool) -> None:
+        if self._closed.is_set():
+            return
         if self._local_state_error is not None:
             raise OSError(self._local_state_error)
         self._retry_pending_native_claim_clears()
@@ -855,6 +870,8 @@ class QuickInteractionManager:
                 "Worker has an active or undelivered Codex task without Web delivery metadata"
             )
         for task_id in candidates:
+            if self._closed.is_set():
+                return
             self._reconcile_worker_task(task_id)
         with self._lock:
             became_ready = not self._recovery_ready
@@ -1136,7 +1153,7 @@ class QuickInteractionManager:
         prompt: str,
     ) -> None:
         with self._lock:
-            if self._resident_reconciler_started:
+            if self._closed.is_set() or self._resident_reconciler_started:
                 return
         threading.Thread(
             target=self._run_worker,
@@ -1963,6 +1980,8 @@ class QuickInteractionManager:
             return task_id in self._cancelled_task_ids
 
     def _run_worker(self, task_id: str, session: AiSession, prompt: str) -> None:
+        if self._closed.is_set():
+            return
         with self._lock:
             task = self._tasks[task_id]
         started_logged = False
@@ -1972,7 +1991,7 @@ class QuickInteractionManager:
                 raise OSError("Worker task identity is unavailable")
             while True:
                 with self._lock:
-                    if self._system_upgrade_reset:
+                    if self._system_upgrade_reset or self._closed.is_set():
                         return
                 snapshot_payload = self._worker_call(
                     "task_get",
@@ -1986,6 +2005,8 @@ class QuickInteractionManager:
                 snapshot = WorkerTaskView.model_validate_json(
                     json.dumps(data.get("task"), ensure_ascii=False)
                 )
+                if self._closed.is_set():
+                    return
                 if snapshot.task_id != worker_task_id:
                     raise OSError("Worker returned a mismatched task identity")
                 if snapshot.status in {"starting", "running"}:
@@ -2036,7 +2057,7 @@ class QuickInteractionManager:
                 )
         finally:
             with self._lock:
-                if self._system_upgrade_reset:
+                if self._system_upgrade_reset or self._closed.is_set():
                     return
             finished = self.get(task_id)
             with self._lock:
@@ -2587,6 +2608,7 @@ class QuickInteractionManager:
         return matches[0].model_copy(deep=True) if matches else None
 
     def close(self) -> None:
+        self._closed.set()
         self._reconciler_stop.set()
         reconciler = self._reconciler_thread
         if reconciler is not None and reconciler is not threading.current_thread():

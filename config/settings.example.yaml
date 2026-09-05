@@ -12,13 +12,13 @@ node:
 
 server:
   # Chub always listens on 127.0.0.1 for local browser and OpenClaw access.
-  # Set this node's Tailscale IP to enable remote access and Codex PTY.
-  tailnet_host: null
+  # At startup Chub also discovers and listens on available Tailscale IPv4
+  # addresses. This does not affect local Web, Codex Runtime, or Quick Worker.
   port: 8080
 
 security:
   # Allow direct requests from devices in the same tailnet.
-  # This only takes effect when server.tailnet_host is configured.
+  # This only takes effect after Chub has opened a Tailnet listener.
   allow_tailscale: true
 
 logs:
@@ -26,14 +26,15 @@ logs:
   level: "INFO"
   max_lines: 100
 
-codex_pty:
-  enabled: true
-  workspace: "~/workspace"
-  data_file: "data/local/state/codex/sessions.json"
-  runtime_dir: "data/local/runtime/codex"
-  ticket_ttl_seconds: 600
-  max_running: 3
-  quick_interaction_timeout_seconds: 21600
+ai_runtime:
+  codex:
+    enabled: true
+    workspace: "~/workspace"
+    data_file: "data/local/state/codex/sessions.json"
+    runtime_dir: "data/local/runtime/codex"
+    ticket_ttl_seconds: 600
+    max_running: 3
+    quick_interaction_timeout_seconds: 21600
 
 automations:
   enabled: true
@@ -43,15 +44,6 @@ automations:
   runtime_dir: "data/local/runtime/automations"
   artifacts_dir: "data/local/artifacts/automations/downloads"
   max_home_tasks: 3
-
-ai_usage:
-  provider: "openai"
-  timezone: "Asia/Shanghai"
-  sub2api:
-    # Configure only in settings.local.yaml after the managed browser is ready.
-    base_url: null
-    # Optional. Defaults to the first active OpenAI subscription returned by Sub2API.
-    subscription_id: null
 
 project_documents:
   state_file: "data/local/state/project-documents.json"
@@ -82,6 +74,10 @@ network_recovery:
   lock_file: "data/local/runtime/network-recovery.lock"
 
 openclaw:
+  # Optional: set both values only when the Gateway uses a different process
+  # environment from Chub, such as a named profile or a custom state directory.
+  # integration_config_path: "~/.openclaw/openclaw.json"
+  # integration_state_dir: "~/.openclaw"
   weixin_chub_mode:
     # Explicitly enable only after the single-Owner WeChat private-message route is ready.
     enabled: false

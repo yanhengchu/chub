@@ -41,6 +41,7 @@ from app.core.security import require_trusted_network
 from app.services.operation_log import log_operation, write_operation
 from app.services.system_upgrade import SystemUpgradeBusy
 from app.web.routes import WEB_DIR
+from app.web.themes import configure_theme_templates
 
 
 COOKIE_NAME = "chub_terminal"
@@ -52,6 +53,7 @@ api_router = APIRouter(
 )
 web_router = APIRouter(tags=["codex-web"])
 templates = Jinja2Templates(directory=WEB_DIR / "templates")
+configure_theme_templates(templates)
 
 
 def _last_session_activity_at(

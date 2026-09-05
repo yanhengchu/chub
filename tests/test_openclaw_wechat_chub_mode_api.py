@@ -68,7 +68,6 @@ def test_dispatch_response_rejects_invalid_message_combinations(
 async def test_dispatch_accepts_only_bounded_fixed_fields(
     settings: Settings,
 ) -> None:
-    settings.server.tailnet_host = "100.64.0.20"
     app = create_app(settings)
     app.state.weixin_chub_mode.dispatch = MagicMock(return_value=dispatch_result())
 
@@ -114,7 +113,6 @@ async def test_dispatch_accepts_only_bounded_fixed_fields(
 async def test_dispatch_returns_pass_without_exposing_internal_state(
     settings: Settings,
 ) -> None:
-    settings.server.tailnet_host = "100.64.0.20"
     app = create_app(settings)
     app.state.weixin_chub_mode.dispatch = MagicMock(
         return_value=dispatch_result(
@@ -148,7 +146,6 @@ async def test_dispatch_returns_pass_without_exposing_internal_state(
 async def test_dispatch_rejects_protocol_mismatch_before_routing(
     settings: Settings,
 ) -> None:
-    settings.server.tailnet_host = "100.64.0.20"
     app = create_app(settings)
     app.state.weixin_chub_mode.dispatch = MagicMock()
 
@@ -176,7 +173,6 @@ async def test_dispatch_rejects_protocol_mismatch_before_routing(
 async def test_dispatch_rejects_injected_configuration(
     settings: Settings,
 ) -> None:
-    settings.server.tailnet_host = "100.64.0.20"
     app = create_app(settings)
     app.state.weixin_chub_mode.dispatch = MagicMock()
 
@@ -204,8 +200,8 @@ async def test_dispatch_rejects_injected_configuration(
 async def test_dispatch_requires_local_openclaw_source(
     settings: Settings,
 ) -> None:
-    settings.server.tailnet_host = "100.64.0.20"
     app = create_app(settings)
+    app.state.tailnet_listener_available = True
     app.state.weixin_chub_mode.dispatch = MagicMock()
 
     async with tailscale_client(app) as client:
@@ -232,7 +228,6 @@ async def test_dispatch_requires_local_openclaw_source(
 async def test_old_status_and_submit_endpoints_are_removed(
     settings: Settings,
 ) -> None:
-    settings.server.tailnet_host = "100.64.0.20"
     app = create_app(settings)
 
     async with local_openclaw_client(app) as client:

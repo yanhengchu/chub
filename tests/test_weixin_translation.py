@@ -46,6 +46,15 @@ def manager_without_worker(settings):
     return manager, codex_manager, quick_interactions
 
 
+def wait_for(predicate, timeout: float = 1) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
+
+
 def test_enqueue_persists_once_and_deduplicates_message(settings) -> None:
     manager, _codex_manager, _quick_interactions = manager_without_worker(
         settings
@@ -119,6 +128,7 @@ def test_enqueue_reuses_accepted_message_when_runtime_is_disabled(settings) -> N
     assert len(manager._state.entries) == 1
     assert manager._state.entries[0].original == "请优化这段文字"
     codex_manager.require_runtime_submission.assert_not_called()
+    assert wait_for(lambda: quick_interactions.submit.call_count == 1)
     quick_interactions.submit.assert_called_once()
 
 
@@ -164,16 +174,34 @@ def test_restart_pending_allows_translation(settings) -> None:
 def test_worker_start_failure_marks_entry_failed(settings) -> None:
     manager, _codex_manager, _quick_interactions = manager_without_worker(settings)
     manager.quick_interactions.submit.side_effect = OSError("worker unavailable")
+    completed = threading.Event()
+    manager.set_completion_handler(
+        MagicMock(
+            return_value=TranslationExecutionOutcome(
+                status="failed",
+                error="翻译任务未能提交到 Quick Worker。",
+            )
+        )
+    )
 
-    assert not manager.enqueue(
+    def notify(_entry):
+        completed.set()
+        return SimpleNamespace(status="sent", error=None)
+
+    manager.set_notification_handler(notify)
+
+    assert manager.enqueue(
         message_id="worker-failure",
         original="待翻译文本",
         route=route(),
         operation_id="operation-worker-failure",
         source_ip="100.64.0.21",
+        target_session_id="session-1",
     )
+    assert completed.wait(1)
+    assert wait_for(lambda: manager._state.entries[0].notification_status == "sent")
     assert manager._state.entries[0].status == "failed"
-    assert manager._state.entries[0].status == "failed"
+    assert manager._state.entries[0].notification_status == "sent"
 
 
 def test_verifying_worker_submission_stays_queued_for_reconciliation(settings) -> None:
@@ -192,6 +220,7 @@ def test_verifying_worker_submission_stays_queued_for_reconciliation(settings) -
         source_ip="100.64.0.21",
     )
 
+    assert wait_for(lambda: manager._state.entries[0].quick_task_id is not None)
     entry = manager._state.entries[0]
     assert entry.status == "queued"
     assert entry.quick_task_id == "quick-task-verifying"
@@ -216,6 +245,7 @@ def test_isolated_worker_translation_submits_without_web_scheduler(settings) -> 
     )
 
     assert accepted is True
+    assert wait_for(lambda: quick_interactions.submit.call_count == 1)
     quick_interactions.submit.assert_called_once()
     assert quick_interactions.submit.call_args.kwargs["kind"] == "translation"
     assert manager._state.entries[0].quick_task_id == "quick-task-1"
@@ -225,6 +255,68 @@ def test_isolated_worker_translation_submits_without_web_scheduler(settings) -> 
         "translation-session",
         "quick-task-1",
     )
+
+
+def test_enqueue_returns_after_durable_queueing_before_slow_worker_submission(
+    settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = manager_without_worker(settings)
+    manager._ensure_session = MagicMock(return_value="translation-session")
+    entered_worker_submit = threading.Event()
+    release_worker_submit = threading.Event()
+
+    def submit(*_args, **_kwargs):
+        entered_worker_submit.set()
+        assert release_worker_submit.wait(1)
+        return SimpleNamespace(id="slow-translation-task")
+
+    quick_interactions.submit.side_effect = submit
+
+    assert manager.enqueue(
+        message_id="slow-worker-translation",
+        original="待翻译文本",
+        route=route(),
+        operation_id="slow-worker-operation",
+        source_ip="100.64.0.21",
+    )
+    assert entered_worker_submit.wait(1)
+    assert manager._state.entries[0].status == "queued"
+    assert manager._state.entries[0].quick_task_id is None
+    release_worker_submit.set()
+
+    deadline = time.monotonic() + 1
+    while manager._state.entries[0].quick_task_id is None and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert manager._state.entries[0].quick_task_id == "slow-translation-task"
+
+
+def test_worker_submission_thread_failure_closes_targeted_entry(settings) -> None:
+    manager, _codex_manager, _quick_interactions = manager_without_worker(settings)
+    completion_handler = MagicMock(
+        return_value=TranslationExecutionOutcome(
+            status="failed",
+            error="翻译任务未能提交到 Quick Worker。",
+        )
+    )
+    manager.set_completion_handler(completion_handler)
+
+    with patch(
+        "app.services.weixin_translation.threading.Thread",
+        side_effect=RuntimeError("no thread"),
+    ):
+        assert manager.enqueue(
+            message_id="worker-thread-failure",
+            original="待翻译文本",
+            route=route(),
+            operation_id="worker-thread-operation",
+            source_ip="100.64.0.21",
+            target_session_id="session-1",
+        )
+
+    entry = manager._state.entries[0]
+    assert entry.status == "failed"
+    assert entry.notification_status == "pending"
+    completion_handler.assert_called_once()
 
 
 def test_translation_model_settings_are_persisted_and_snapshotted(settings) -> None:
@@ -242,6 +334,7 @@ def test_translation_model_settings_are_persisted_and_snapshotted(settings) -> N
     )
 
     manager.set_model("gpt-next", "medium")
+    assert wait_for(lambda: quick_interactions.submit.call_count == 1)
     entry = manager._state.entries[0]
     assert entry.model == "gpt-test"
     assert entry.reasoning_effort == "high"
@@ -270,6 +363,7 @@ def test_targeted_translation_suppresses_legacy_notification(settings) -> None:
         target_session_id="session-1",
     )
 
+    assert wait_for(lambda: quick_interactions.submit.call_count == 1)
     kwargs = quick_interactions.submit.call_args.kwargs
     assert kwargs["suppress_completion_notification"] is True
 
@@ -724,7 +818,7 @@ def test_system_upgrade_reset_preserves_processing_mode(settings) -> None:
     assert persisted["processing_mode_override"] == "confirm"
 
 
-def test_targeted_translation_missing_during_recovery_notifies_failure(
+def test_unstarted_targeted_translation_resumes_worker_handoff_after_recovery(
     settings,
 ) -> None:
     manager, _codex_manager, quick_interactions = manager_without_worker(settings)
@@ -738,6 +832,35 @@ def test_targeted_translation_missing_during_recovery_notifies_failure(
         source_ip="100.64.0.21",
         status="queued",
         target_session_id="session-1",
+        created_at=now,
+        updated_at=now,
+    )
+    manager._state.entries.append(entry)
+    quick_interactions.find_task_by_operation.return_value = None
+    manager._schedule_worker_submission = MagicMock()
+
+    manager.start_worker_recovery()
+
+    manager._schedule_worker_submission.assert_called_once_with(entry.id)
+    recovered = manager._state.entries[0]
+    assert recovered.status == "queued"
+
+
+def test_started_targeted_translation_missing_during_recovery_notifies_failure(
+    settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = manager_without_worker(settings)
+    now = utc_now()
+    entry = TranslationEntry(
+        id="missing-started-translation",
+        message_id="missing-started-message",
+        original="检查服务",
+        route=route(),
+        operation_id="missing-started-operation:translation",
+        source_ip="100.64.0.21",
+        status="queued",
+        target_session_id="session-1",
+        worker_submission_started_at=now,
         created_at=now,
         updated_at=now,
     )
@@ -764,7 +887,6 @@ def test_targeted_translation_missing_during_recovery_notifies_failure(
     recovered = manager._state.entries[0]
     assert recovered.status == "failed"
     assert recovered.notification_status == "sent"
-    notification_handler.assert_called_once()
 
 
 @pytest.mark.parametrize(
@@ -792,7 +914,9 @@ def test_isolated_worker_reference_write_failure_cancels_exact_task(settings) ->
     manager, _codex_manager, quick_interactions = manager_without_worker(settings)
     manager._ensure_session = MagicMock(return_value="translation-session")
     quick_interactions.submit.return_value = SimpleNamespace(id="quick-task-2")
-    manager._write = MagicMock(side_effect=[None, OSError("write failed"), None])
+    manager._write = MagicMock(
+        side_effect=[None, None, OSError("write failed"), None]
+    )
 
     accepted = manager.enqueue(
         message_id="worker-translation-write-failure",
@@ -802,7 +926,8 @@ def test_isolated_worker_reference_write_failure_cancels_exact_task(settings) ->
         source_ip="100.64.0.21",
     )
 
-    assert accepted is False
+    assert accepted is True
+    assert wait_for(lambda: quick_interactions.cancel_unobserved_task.call_count == 1)
     quick_interactions.cancel_unobserved_task.assert_called_once_with("quick-task-2")
     assert manager._state.entries[0].status == "failed"
 
@@ -1030,7 +1155,7 @@ def test_worker_restart_preserves_and_resumes_translation_observation(settings) 
         session_mode="quick",
         workspace_id="weixin-translation",
         workspace_name="Translation",
-        cwd=settings.codex_pty.workspace,
+        cwd=settings.ai_runtime.codex.workspace,
         permission_mode="read-only",
     )
     manager = WeixinTranslationManager(

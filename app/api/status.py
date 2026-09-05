@@ -22,6 +22,12 @@ def status(request: Request) -> ApiResponse[StatusData]:
         data = collect_system_status(
             request.app.state.settings,
             request.app.state.detected_platform,
+            tailnet_listener_available=getattr(
+                request.app.state, "tailnet_listener_available", None
+            ),
+            tailnet_listener_hosts=getattr(
+                request.app.state, "tailnet_listener_hosts", ()
+            ),
         )
         data.authentication_method = getattr(request.state, "authentication_method", None)
     except Exception as exc:

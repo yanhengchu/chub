@@ -14,9 +14,11 @@ from typing import Literal
 from pydantic import BaseModel
 
 from app.codex.models import utc_now
+from app.core.config import OpenClawConfig
 from app.core.response import ApiError
 from app.services.openclaw_recovery import (
     expected_openclaw_gateway_version,
+    inspect_openclaw_integration,
     synchronize_openclaw_runtime,
 )
 from app.services.openclaw_weixin import OpenClawWeixinLogin, WeixinLoginStatus
@@ -52,10 +54,6 @@ ACTION_TIMEOUT_SECONDS = 45
 FINAL_STATE_TIMEOUT_SECONDS = 20
 CLI_VERSION_TIMEOUT_SECONDS = 10
 MAX_COMMAND_OUTPUT_BYTES = 256_000
-TAILSCALE_STATUS_TIMEOUT_SECONDS = 5
-TAILSCALE_HOST_PATTERN = re.compile(
-    r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+ts\.net$"
-)
 
 
 class OpenClawStatus(BaseModel):
@@ -84,10 +82,38 @@ class OpenClawStatus(BaseModel):
     checked_at: datetime
 
 
+class OpenClawIntegrationComponentStatus(BaseModel):
+    version: str | None = None
+    expected_version: str | None = None
+    state: Literal["verified", "mismatch", "unavailable", "unknown"]
+    message: str
+
+
+class OpenClawIntegrationPatchStatus(BaseModel):
+    identifier: str
+    version: str | None = None
+    scope: str | None = None
+    state: Literal["declared"]
+
+
+class OpenClawIntegrationStatus(BaseModel):
+    weixin_adapter: OpenClawIntegrationComponentStatus
+    chub_plugin: OpenClawIntegrationComponentStatus
+    patches: list[OpenClawIntegrationPatchStatus]
+    message: str
+    checked_at: datetime
+
+
 class OpenClawManager:
-    def __init__(self) -> None:
+    def __init__(self, config: OpenClawConfig | None = None) -> None:
         self._operation_lock = threading.Lock()
         self.weixin_login = OpenClawWeixinLogin(self._operation_lock)
+        self._integration_config_path = (
+            config.integration_config_path if config is not None else None
+        )
+        self._integration_state_dir = (
+            config.integration_state_dir if config is not None else None
+        )
 
     @staticmethod
     def _resolve_executable() -> str | None:
@@ -103,11 +129,23 @@ class OpenClawManager:
         return status.model_copy(
             update={
                 "local_access_url": self._local_access_url(status),
-                "access_url": self._tailscale_access_url(status.port),
                 **channel_update,
                 **owner_update,
                 **compatibility_update,
             }
+        )
+
+    def integration_status(self) -> OpenClawIntegrationStatus:
+        report = inspect_openclaw_integration(
+            config_path=self._integration_config_path,
+            state_dir=self._integration_state_dir,
+        )
+        return OpenClawIntegrationStatus(
+            weixin_adapter=report.weixin_adapter.__dict__,
+            chub_plugin=report.chub_plugin.__dict__,
+            patches=[patch.__dict__ for patch in report.patches],
+            message=report.message,
+            checked_at=utc_now(),
         )
 
     @staticmethod
@@ -193,7 +231,7 @@ class OpenClawManager:
                 owner_message="暂时无法检查 Owner 权限。",
                 message=exc.message,
                 checked_at=utc_now(),
-            ), None
+            ), executable
         return self._parse_status(payload), executable
 
     def _channel_status(
@@ -581,49 +619,6 @@ class OpenClawManager:
             message=message,
             checked_at=utc_now(),
         )
-
-    def _tailscale_access_url(self, gateway_port: int | None) -> str | None:
-        if gateway_port is None:
-            return None
-        executable = shutil.which("tailscale")
-        if executable is None:
-            return None
-        try:
-            payload = self._run_json(
-                executable,
-                ["serve", "status", "--json"],
-                timeout=TAILSCALE_STATUS_TIMEOUT_SECONDS,
-                environment_overrides={"TAILSCALE_BE_CLI": "1"},
-            )
-        except ApiError:
-            return None
-        return self._parse_tailscale_access_url(payload, gateway_port)
-
-    @staticmethod
-    def _parse_tailscale_access_url(
-        payload: dict,
-        gateway_port: int,
-    ) -> str | None:
-        web = payload.get("Web")
-        if not isinstance(web, dict):
-            return None
-        expected_proxy = f"http://127.0.0.1:{gateway_port}"
-        for endpoint, details in sorted(web.items()):
-            if not isinstance(endpoint, str) or not isinstance(details, dict):
-                continue
-            hostname, separator, port = endpoint.rpartition(":")
-            if (
-                separator != ":"
-                or port != "443"
-                or not TAILSCALE_HOST_PATTERN.fullmatch(hostname.lower())
-            ):
-                continue
-            handlers = details.get("Handlers")
-            root = handlers.get("/") if isinstance(handlers, dict) else None
-            if not isinstance(root, dict) or root.get("Proxy") != expected_proxy:
-                continue
-            return f"https://{hostname.lower()}/"
-        return None
 
     @staticmethod
     def _run_json(

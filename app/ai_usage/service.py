@@ -26,7 +26,8 @@ from app.codex.local_usage import (
     CodexLocalUsageUnavailable,
 )
 from app.codex.rate_limits import CodexAccountCollection, CodexRateLimitService
-from app.core.config import Settings
+from app.codex.usage_settings import CodexUsageSettings
+from app.core.config import AutomationsConfig, Settings
 
 
 LOGGER = logging.getLogger("hub.ai_usage")
@@ -48,16 +49,28 @@ class AiUsageService:
 
     def __init__(
         self,
-        settings: Settings,
+        settings: CodexUsageSettings | Settings,
         codex_reader: CodexRateLimitService,
+        automations: AutomationsConfig | ProviderBrowserAdapter | None = None,
         provider_browser: ProviderBrowserAdapter | None = None,
         local_usage_reader: CodexLocalUsageReader | None = None,
     ) -> None:
-        self._settings = settings
+        if isinstance(settings, Settings):
+            # Transitional constructor support for internal callers/tests. Runtime
+            # configuration is never read from Settings.
+            self._settings = CodexUsageSettings()
+            resolved_automations = settings.automations
+            if provider_browser is None and automations is not None:
+                provider_browser = automations
+        else:
+            self._settings = settings
+            if not isinstance(automations, AutomationsConfig):
+                raise TypeError("automations is required for Runtime usage collection")
+            resolved_automations = automations
         self._codex_reader = codex_reader
         self._provider_browser = provider_browser or ProviderBrowserAdapter(
-            settings.ai_usage,
-            settings.automations,
+            self._settings,
+            resolved_automations,
         )
         self._local_usage_reader = local_usage_reader or CodexLocalUsageReader()
         self._lock = threading.Lock()
@@ -185,7 +198,7 @@ class AiUsageService:
             None,
         )
 
-        timezone = ZoneInfo(self._settings.ai_usage.timezone)
+        timezone = ZoneInfo(self._settings.timezone)
         today_date = datetime.now(timezone).date()
         tokens = None
         tokens_scope = None
@@ -237,12 +250,12 @@ class AiUsageService:
         today: AiTodayUsage,
         five_hour: AiFiveHourUsage | None = None,
     ) -> AiUsageData:
-        checked_at = datetime.now(ZoneInfo(self._settings.ai_usage.timezone))
+        checked_at = datetime.now(ZoneInfo(self._settings.timezone))
         data = AiUsageData(
             status="available",
-            provider=self._settings.ai_usage.provider,
+            provider="openai",
             source=source,
-            timezone=self._settings.ai_usage.timezone,
+            timezone=self._settings.timezone,
             checked_at=checked_at,
             weekly=weekly,
             five_hour=five_hour,
@@ -282,15 +295,15 @@ class AiUsageService:
                 return stale.model_copy(update={"display": self._display(stale)})
         return AiUsageData(
             status="unavailable",
-            provider=self._settings.ai_usage.provider,
+            provider="openai",
             source=outcome.source,
-            timezone=self._settings.ai_usage.timezone,
+            timezone=self._settings.timezone,
             message=outcome.message,
         )
 
     def _sub2api_identity_key(self, subscription_id: int | None = None) -> str | None:
         if subscription_id is None:
-            subscription_id = self._settings.ai_usage.sub2api.subscription_id
+            subscription_id = self._settings.sub2api.subscription_id
         if subscription_id is None:
             return None
         return f"sub2api:{subscription_id}"

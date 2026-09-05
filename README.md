@@ -48,7 +48,7 @@ AI Runtime 层
 | `app/ai_runtime/`、`app/quick_worker*.py` | Runtime 契约、固定 Runner、后台任务、租约、恢复和终态 | [AI Runtime 设计](docs/CHUB_AI_RUNTIME_DESIGN.md)、[Quick Worker 设计](docs/CHUB_QUICK_WORKER_DESIGN.md) |
 | `app/automations/` | Debug Chrome、配置驱动自动化、下载产物和任务状态 | [总体架构](docs/CHUB_ARCHITECTURE_DESIGN.md)、[周报自动化设计](docs/WEEKLY_REPORT_AUTOMATION_DESIGN.md) |
 | `app/notifications/`、`app/requests/` | 核心层通知与 R1–R9 需求储备 | [总体架构](docs/CHUB_ARCHITECTURE_DESIGN.md)、[能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md) |
-| `app/ai_usage/` | AI Runtime 用量采集与共享快照 | [总体架构](docs/CHUB_ARCHITECTURE_DESIGN.md)、[额度设计](docs/CODEX_AI_QUOTA_USAGE_DESIGN.md) |
+| `app/ai_runtime/`、`app/ai_usage/` | Runtime 用量契约、共享快照与展示口径 | [总体架构](docs/CHUB_ARCHITECTURE_DESIGN.md)、[额度设计](docs/CODEX_AI_QUOTA_USAGE_DESIGN.md) |
 | `app/core/`、`app/tasks/` | 配置、安全、日志、平台检测、白名单维护任务 | [总体架构](docs/CHUB_ARCHITECTURE_DESIGN.md) |
 | `app/services/` | 当前跨领域服务和协调逻辑；不是新的统一领域边界 | [总体架构](docs/CHUB_ARCHITECTURE_DESIGN.md) |
 | `integrations/openclaw/chub/` | Chub OpenClaw 插件源码、构建、部署和协议验收 | [OpenClaw 定制设计](docs/OPENCLAW_CUSTOMIZATION_DESIGN.md)、[插件说明](integrations/openclaw/chub/README.md) |
@@ -59,15 +59,15 @@ AI Runtime 层
 | 功能域 | 当前可用能力 | 主要入口 |
 | --- | --- | --- |
 | 设备管理 | 查看节点与系统状态，执行后端白名单维护任务，查看受限、脱敏的操作日志和运行日志 | 首页、设置页、日志页 |
-| Codex 会话 | 在统一列表按创建时间倒序查看 Session；创建时选择“实时终端”或“快速交互”，并通用执行停止、归档、重命名和删除 | 首页、Session 页 |
+| Codex 会话 | 按“快速会话”和“实时会话”分组查看 Session，各组按创建时间倒序；创建时选择“实时终端”或“快速交互”，并通用执行停止、归档、重命名和删除 | 首页、Session 页 |
 | 需求储备 | 使用 R1–R9 保存、更新、查看、归档和删除轻量需求 | 命令行、微信 ClawBot |
 | OpenClaw 与微信 | 查看并维护 Gateway 和微信通道；将可信微信私聊交给 Chub 固定路由或 Codex 任务；任务结束后按原路返回结果 | 首页、设置页、微信 ClawBot |
 | 自动化任务 | 管理独立 Debug Chrome，复用登录状态运行配置驱动任务；当前支持飞书 Wiki Markdown 下载和周报资料准备 | 首页、自动化页、命令行 |
 | 周报 | 校验当期资料和周期，确认重点后生成、复核并展示正式周报 | 自动化页、周报页 |
 | 通知 | 向预配置的飞书目标发送有界纯文本通知，不接受任意目标或 Webhook | 命令行、Chub API、OpenClaw Tool |
 | 项目资料 | 在可信网络内查看已登记的项目说明、设计方案与维护文档，并由维护入口控制首页显示 | 首页、项目资料页 |
-| 执行设置 | 即时启停微信普通任务的执行前润色与翻译 | 设置页 |
-| 界面风格 | 切换 Standard/Cyber 风格 | 设置页 |
+| 任务编排 | 调整微信普通任务的执行前润色、模型和推理等级 | 首页 AI Session 分组下的微信任务润色配置页 |
+| 外观 | 切换 Standard、Code Dark、Studio Cyan 主题，以及小、默认、大三档文字大小 | 设置页 |
 
 页面、微信和翻译快速任务统一由独立 Worker 承载，Web 重启不会中断已接受的任务。Worker 服务、恢复、通知和协调重启的完整边界见[Chub Quick Worker 独立服务设计](docs/CHUB_QUICK_WORKER_DESIGN.md)。
 
@@ -101,9 +101,11 @@ cp config/settings.example.yaml config/settings.local.yaml
 
 - `app.page_title`：浏览器标签和首页标题；省略时使用应用名称。
 - `security.allow_tailscale`：默认开启，允许真实 Tailnet socket 来源访问受保护接口；不信任客户端转发 Header，也不识别具体用户。
-- `ai_usage.sub2api`：已登录 Sub2API 服务的本机基址和可选订阅 ID；采集路径固定，不保存 Cookie、Authorization 或其他上游凭据。
+- `ai_runtime.codex`：Codex Runtime 的部署可用性、工作目录、运行数据目录、终端票据、并发和快速交互超时等部署级配置。设置页的“接收新任务”是独立运行策略，不会改写此处的 `enabled`。旧顶层 `codex_pty` 已移除。
+- “设置 → AI Runtime → 通用配置”维护已接入 Runtime 共用的用量时区；Codex 的 Sub2API 用量来源在“设置 → AI Runtime → Codex Runtime”维护。两类设置均保存于未提交的 `config/ai-runtimes.local.yaml`，按 `general` 与 Runtime ID 隔离；采集路径固定，不保存 Cookie、Authorization 或其他上游凭据。
+- `openclaw.integration_config_path` 与 `openclaw.integration_state_dir`：仅当 OpenClaw Gateway 使用与 Chub 不同的 profile 或进程环境时，同时登记其实际配置文件和状态目录，供设置页读取插件配置与安装索引；不填写时按 Chub 进程可见的 OpenClaw 环境变量和默认位置推导。
 
-Chub 始终监听 `127.0.0.1:<port>`，供本机浏览器与同机 OpenClaw 使用。`server.tailnet_host` 是可选的第二监听地址：设为节点自己的 Tailscale IP 后，Chub 才会同时监听该地址以供手机远程访问；留空则仅本机访问。不要配置 `0.0.0.0` 或普通局域网地址。Tailnet 请求只信任真实 socket 来源，不信任客户端转发 Header；如果 Tailnet 将来加入其他人的设备，应重新评估设备级授权和高风险操作边界。
+Chub 始终监听 `127.0.0.1:<port>`，供本机浏览器与同机 OpenClaw 使用。每次启动时，Chub 通过固定 `tailscale ip -4` 查询本机当前地址，并在每个可用地址的 `server.port` 上自动增加 Tailnet 监听；不再维护固定 Tailnet 地址配置。若没有可用地址或地址当前不可绑定，Chub 保持 loopback 可用并在首页标记远程访问不可用，不会因 Tailnet 监听失败停止控制面，也不会影响本机 Codex Runtime、快速任务或本机实时终端。工作台会显示实际成功监听的 Tailnet 地址和端口；Tailscale 地址在 Web 运行期间变化时，需重启 Web 重新建立监听。不要配置 `0.0.0.0` 或普通局域网地址。Tailnet 请求只信任真实 socket 来源，不信任客户端转发 Header；如果 Tailnet 将来加入其他人的设备，应重新评估设备级授权和高风险操作边界。
 
 Android 手机访问使用 Tailscale Android 客户端连接同一 Tailnet，再用 Android Chrome 打开节点的 Tailscale IP 和端口；Chub 当前提供的是移动浏览器页面，不是原生 Android 应用或离线 PWA。Android 端可使用首页、设置、日志和快速交互等 Web 能力，实时终端仍依赖稳定的 WebSocket 和可信 Tailnet 连接；首次验收应覆盖 Chrome 的窄屏布局、软键盘展开/收起、横向无溢出和断线重连。
 
@@ -165,7 +167,7 @@ Codex PTY 依赖 `codex`、`ttyd` 和 `tmux`。安装服务时，Chub 会从当�
 与原生 Session ID 关联，自动重新绑定仍存在的 Chub tmux。
 原生 Codex 不会因此被重启；若进程仍携带旧的 Chub 标识，Hook 会通过受控别名把 Activity 事件写入新的 Session。
 
-首页使用一个“新建会话”按钮和弹窗创建 Session，默认创建快速交互；弹窗中的“实时会话”开关打开时才创建实时终端。首页统一按创建时间倒序展示 Session，并以简洁标记区分类型：
+首页使用一个“新建会话”按钮和弹窗创建 Session，默认创建快速交互；弹窗中的“实时会话”开关打开时才创建实时终端。首页统一按创建时间倒序展示 Session，并按“快速会话”和“实时会话”分组：
 
 - **实时终端**：使用原生 Codex TUI，适合审批、持续操作和实时输出；只显示在 Chub Web。
 - **快速交互**：提交后台任务并在时间线查看状态和结果，适合手机、普通网络和微信入口；只使用 Quick Worker。
@@ -184,7 +186,7 @@ Session、Activity、usage 投影、槽位、标题和入口语义见[Chub AI Se
 
 ### AI 额度
 
-首页会话工作台通过统一的 `/api/ai/usage` 展示周额度、今日用量和重置时间。ChatGPT 账号登录优先使用账户日桶，当天桶缺失时显示明确标记的本机 Token；API Key 方式复用已登录的受管 Debug Chrome。两种来源不会互相降级，完整数据口径、接口和缓存规则见[Codex AI 额度与用量采集设计](docs/CODEX_AI_QUOTA_USAGE_DESIGN.md)。
+`/api/ai/usage` 为受保护的统一用量查询接口，供微信状态、Session 回执、任务通知及受控调用方读取当前 Runtime 的周额度、今日用量和重置时间；当前首页不展示独立额度卡片。ChatGPT 账号登录优先使用账户日桶，当天桶缺失时返回明确标记的本机 Token；Codex 的 API Key 方式复用已登录的受管 Debug Chrome。两种来源不会互相降级，完整数据口径、接口和缓存规则见[Codex AI 额度与用量采集设计](docs/CODEX_AI_QUOTA_USAGE_DESIGN.md)。
 
 ### OpenClaw 与微信 ClawBot
 
@@ -196,7 +198,7 @@ Session、Activity、usage 投影、槽位、标题和入口语义见[Chub AI Se
 
 OpenClaw 提供可信入口和通道上下文，Chub 负责业务路由、安全校验和最终状态；整条链路不调用 OpenClaw Agent，也不把消息拦截或任务提交等同于最终成功。
 
-首页“第三方服务”卡用于查看 Gateway 和微信通道状态，并提供受控的启动、重启与恢复操作；设置页“第三方服务”会单独展示 OpenClaw Gateway 状态，并且仅当 Gateway 已就绪且确认使用 loopback 绑定时提供本机访问入口。设置页“诊断与关于”的维护终端是 Chub 自有的独立 `ttyd`/`zsh` 页面：它固定从当前项目目录启动，允许本机或受信 Tailnet 浏览器执行任意 Shell 命令，不依赖或代理 OpenClaw。该入口等同于当前设备用户的 Shell 权限；Tailnet 访问者获得同等权限，维护者必须只允许可信设备加入 Tailnet。微信绑定统一在“OpenClaw · 微信 ClawBot”中完成。重启与恢复只会同步完整已验证基线中的固定插件和补丁，再重启 Gateway 和消息通道；候选版本的局部兼容补丁必须按定制设计人工复检，不会因重启而自动应用。底层 API action 仍使用 `restart`，微信端使用 `restart clawbot`。绑定成功只表示通道登录完成，不代表发送者配对或 Owner 权限已经配置。
+首页“工作站环境”中的“第三方服务环境”独立展示 Gateway 和微信 ClawBot 状态，并提供受控的启动、重启及微信绑定：Gateway 停止时只显示启动，运行或降级时只显示重启；确认弹窗保留“重启与恢复”的完整影响说明。其刷新和失败反馈不影响 Chub、Quick Worker 与升级恢复状态；启动或重启成功后会写入当前浏览器会话缓存，重新进入工作台先展示这次最终状态，再在后台重新核验。设置页“第三方服务”的 OpenClaw 只核对本机 OpenClaw 配置、插件安装元数据和固定清单，不读取或展示 Gateway 信息，也不启动 OpenClaw CLI。Gateway 运行状态只在首页工作站环境查看。补丁列表只表示 Chub 已验收基线中的清单登记，补丁内容和运行时加载状态只在“重启与恢复”流程核验；设置页不再重复提供运行操作。微信普通任务的文本处理方式、文本优化模型和推理等级位于首页 AI Session 分组下“任务编排”内的微信任务润色配置页。诊断响应不展示运行目录、来源路径或完整性数据。设置页“维护与版本”的维护终端是 Chub 自有的独立 `ttyd`/`zsh` 页面：它固定从当前项目目录启动，允许本机或受信 Tailnet 浏览器执行任意 Shell 命令，不依赖或代理 OpenClaw。该入口等同于当前设备用户 Shell 权限；Tailnet 访问者获得同等权限，维护者必须只允许可信设备加入 Tailnet。重启与恢复只会同步完整已验证基线中的固定插件和补丁，再重启 Gateway 和消息通道；候选版本的局部兼容补丁必须按定制设计人工复检，不会因重启而自动应用。底层 API action 仍使用 `restart`，微信端使用 `restart clawbot`。绑定成功只表示通道登录完成，不代表发送者配对或 Owner 权限已经配置。
 
 微信 Chub 固定维护指令为 `restart` / `restart web`（重启 Web）、`restart worker`（重启 Worker）、`restart clawbot`（重启 ClawBot）、`restart network`（重连已固定的 Ubuntu Wi-Fi/VPN）和 `upgrade`（升级系统）；均按固定目标执行，不接受附加路径或命令。网络重连与本机 `chub network-restart` 共用同一配置及终态校验：仅 Ubuntu 的 NetworkManager 可用，macOS 会明确拒绝，不会尝试切换网络；Tailscale 不在操作范围。各操作的最终结果分别以新实例、Worker、Gateway/消息通道、NetworkManager 活动连接或升级运行态确认结果为准；异步操作通过独立通知返回。
 
@@ -255,13 +257,13 @@ Runner 不会自行启动或停止 Debug Chrome。浏览器 Profile 未初始化
 
 正文处理设置下的翻译模型和等级独立于隐藏翻译 Session，只影响之后新提交的文本优化任务。任务提交时保存参数快照，已经进入队列的任务不因设置变化而改写；未选择模型和等级时跟随 Runtime 默认。
 
-设置页的“正文处理方式”是节点级设置，需要真实 loopback 或可信 Tailnet 访问。微信普通任务及携带正文的 `S1`–`S9` 支持三档：`直接执行`直接提交原文；`自动润色后执行`先在独立只读 Session 生成中文润色和 English，再自动提交润色中文；`自动润色后确认执行`生成同一份内容后发送 `Translation ready`，由维护者用 `text ok`、`text next`、`text cancel` 或英文复述处理确认队头。正文超过 `translation_preprocess_max_input_chars`（默认 1200 字符）时直接提交，不进入润色、翻译或确认流程。主任务实际被接收后才发送包含润色中文和 English 的 `Started`；确认模式在受理后异步投递该通知，不增加单独的“Preparing to submit”回执。固定指令和续提指令绕过该流程，具体指令、队列和失败边界以[集成能力清单第 4 节](docs/CHUB_INTEGRATION_CAPABILITIES.md#4-微信-clawbot-指令)为准。
+首页 AI Session 分组下“任务编排”内的微信任务润色配置页是节点级设置，需要真实 loopback 或可信 Tailnet 访问。微信普通任务及携带正文的 `S1`–`S9` 支持三档：`直接执行`直接提交原文；`自动润色后执行`先在独立只读 Session 生成中文润色和 English，再自动提交润色中文；`自动润色后确认执行`生成同一份内容后发送 `Translation ready`，由维护者用 `text ok`、`text next`、`text cancel` 或英文复述处理确认队头。自动润色与确认模式在原消息、固定目标和回送路由已持久化进入 Chub 队列后即受理，隐藏 Worker 交接不会阻塞微信同步回执；后续交接或润色失败会单独通知，且不会执行原文。正文超过 `translation_preprocess_max_input_chars`（默认 1200 字符）时直接提交，不进入润色、翻译或确认流程。主任务实际被接收后才发送包含润色中文和 English 的 `Started`；确认模式在受理后异步投递该通知，不增加单独的“Preparing to submit”回执。固定指令和续提指令绕过该流程，具体指令、队列和失败边界以[集成能力清单第 4 节](docs/CHUB_INTEGRATION_CAPABILITIES.md#4-微信-clawbot-指令)为准。
 
 首次默认由 `translation_mode`（`direct` / `auto` / `confirm`）决定；未设置时兼容读取旧 `translation_enabled`（`false` 为直接执行，`true` 为自动润色后执行）。页面修改后由 Chub 私有状态持久化并即时生效，无需改写 YAML 或重启服务。
 
-### 界面风格
+### 外观
 
-设置页可选择 `Standard`（简约标准版）或 `Cyber`（科技终端版），偏好保存在当前浏览器并应用到公共页面。Standard 是新增页面和功能的默认基线；Cyber 保持相同的信息结构、安全边界、键盘操作和响应式能力。
+设置页“外观”提供 `Standard`、`Code Dark`、`Studio Cyan` 三套主题，以及小（90%）、默认（100%）、大（110%）三档文字大小。偏好保存在当前浏览器，终端不受影响；主题预览、持久化、扩展规则和验收边界见下方前端设计文档。
 
 完整视觉规范见 [Chub 前端 UI 模块化设计](docs/FRONTEND_UI_DESIGN.md)。
 
@@ -276,7 +278,7 @@ Runner 不会自行启动或停止 Debug Chrome。浏览器 Profile 未初始化
 
 共享需求文件由 Git 工作流同步，不由后台服务自动合并。多台设备同时修改可能产生 Git 冲突；发现冲突、非法 JSON 或未完成合并时，需求读写必须失败关闭，不覆盖其他设备内容。共享需求不得保存 Token、Cookie、账号凭证、本机秘密或其他不适合进入 Git 历史的内容。
 
-首页已将“核心服务”和“第三方服务”分为独立卡片，刷新、状态与错误反馈分别作用于本卡。核心服务卡包含 Chub、Quick Worker、AI Runtime 状态和“升级与恢复”入口；自动化任务卡的“自动化环境”承载 Debug Chrome；第三方服务卡单独承载 OpenClaw Gateway/ClawBot 的启动、重启、停止和状态。
+首页工作站环境包含 Chub、Quick Worker 和“升级与恢复”；其中“第三方服务环境”是独立状态分区，单独承载 OpenClaw Gateway/微信 ClawBot 的启动、重启、微信绑定和状态刷新。自动化任务的“自动化环境”继续承载 Debug Chrome。
 
 “升级与恢复”只重建 Chub 自有 AI 运行态、Chub Web 与 Quick Worker：持久化操作、冻结新写入、有界收敛 Quick Worker、清理本次范围内的旧运行态，再由独立执行器恢复 Web/Worker，并确认新实例、协议、Worker 健康和写入恢复。Chub 行展示当前控制面状态，Quick Worker 行只展示 Worker 当前状态；其下方 AI Runtime 行按注册顺序展示每个 Runtime 的可用、已停用或不可用状态，并在页面加载和核心服务刷新时重新读取。没有注册项时显示“未配置 AI Runtime”，读取失败时显示“AI Runtime 状态暂无法确认”；这些 Runtime 状态不改变 Worker 或核心恢复成功结论。升级行没有版本或协议差异时显示“状态：无待升级”，有差异时只展示 Chub 版本、Session 数据或 Worker 协议的升级点；升级方案不可读取时显示“状态：仅可恢复。升级方案不可用”。完整影响说明保留在确认弹窗与日志。每个组件的固定结果会随升级操作 ID 写入操作日志，供多轮验收追溯，不作为首页状态。它不重建 Codex 原生 Session、用户配置、日志、项目资料或业务数据。OpenClaw Gateway、插件、补丁、消息通道、Debug Chrome 和 Python 依赖安装都不属于核心升级步骤或完成条件，应由各自维护入口单独处理。
 
@@ -337,16 +339,16 @@ README 是项目入口和文档管理规则的维护入口；总体架构是所�
 .venv/bin/python -m pytest
 ```
 
-全量测试默认跳过需要受管 Chrome 的真实浏览器回归。调整首页额度、主题或快速交互页面时，启动隔离 Debug Chrome 后显式执行：
+全量测试默认跳过需要受管 Chrome 的真实浏览器回归。调整工作站、主题或快速交互页面时，启动隔离 Debug Chrome 后显式执行：
 
 ```bash
 python3 .agents/skills/chrome-cdp/scripts/chrome_debug.py start --headless
 CHUB_BROWSER_TESTS=1 .venv/bin/python -m pytest \
-  tests/test_web_quota_browser.py \
+  tests/test_workspace_browser.py \
   tests/test_quick_interaction_browser.py
 ```
 
-测试涉及服务定义、服务日志或平台维护脚本时，必须使用临时 `HOME`、`CHUB_SYSTEMD_USER_DIR` 和 `CHUB_SERVICE_LOG_DIR`；替身服务管理器只能写入测试临时目录，不得写入真实 `~/.config/systemd/user`、本机日志或运行态。测试配置中的 `server.tailnet_host` 可以保持为空，但不得因此改变正式服务配置或污染正式运行环境。
+测试涉及服务定义、服务日志或平台维护脚本时，必须使用临时 `HOME`、`CHUB_SYSTEMD_USER_DIR` 和 `CHUB_SERVICE_LOG_DIR`；替身服务管理器只能写入测试临时目录，不得写入真实 `~/.config/systemd/user`、本机日志或运行态。
 
 ## 核心项目文档
 
@@ -361,7 +363,7 @@ CHUB_BROWSER_TESTS=1 .venv/bin/python -m pytest \
 | [Codex AI 额度与用量采集设计](docs/CODEX_AI_QUOTA_USAGE_DESIGN.md) | Codex/OpenAI 用量来源、统一接口、缓存和展示口径 |
 | [OpenClaw 定制集成设计](docs/OPENCLAW_CUSTOMIZATION_DESIGN.md) | OpenClaw/微信端到端业务、插件定制、Context Token、身份、路由和通知边界 |
 | [本期工作周报自动化与生成设计](docs/WEEKLY_REPORT_AUTOMATION_DESIGN.md) | 飞书资料准备、确认门禁、周报生成和复核 |
-| [Chub 前端 UI 模块化设计](docs/FRONTEND_UI_DESIGN.md) | 前端分层、公共交互和 Standard/Cyber 视觉契约 |
+| [Chub 前端 UI 模块化设计](docs/FRONTEND_UI_DESIGN.md) | 前端分层、公共交互、主题、文字大小注册与视觉 Token 契约 |
 | [Chub 集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md) | 当前可用命令、插件、固定 API，以及微信固定指令唯一产品契约 |
 | [Chub OpenClaw 插件说明](integrations/openclaw/chub/README.md) | 仓库内维护的 Chub 插件协议、源码、构建、部署和协议验收 |
 

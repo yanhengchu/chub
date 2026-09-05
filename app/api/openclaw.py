@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 from app.core.response import ApiResponse
 from app.core.security import require_trusted_network
-from app.services.openclaw import OpenClawStatus
+from app.services.openclaw import OpenClawIntegrationStatus, OpenClawStatus
 from app.services.openclaw_weixin import WeixinLoginStatus
 from app.services.operation_log import log_operation
 
@@ -26,6 +26,11 @@ class WeixinVerificationRequest(BaseModel):
 @router.get("/status", response_model=ApiResponse[OpenClawStatus])
 def get_openclaw_status(request: Request) -> ApiResponse[OpenClawStatus]:
     return ApiResponse(data=request.app.state.openclaw_manager.status())
+
+
+@router.get("/integration", response_model=ApiResponse[OpenClawIntegrationStatus])
+def get_openclaw_integration(request: Request) -> ApiResponse[OpenClawIntegrationStatus]:
+    return ApiResponse(data=request.app.state.openclaw_manager.integration_status())
 
 
 def _control(

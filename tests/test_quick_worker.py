@@ -2262,7 +2262,7 @@ result_path.write_text(completed.stdout.strip(), encoding="utf-8")
         finished = await _wait_for_status(settings, task_id, {"succeeded"})
         assert "restart registered" in finished["result"]
         request_path = (
-            settings.codex_pty.runtime_dir / "restart-requests" / f"{task_id}.request"
+            settings.ai_runtime.codex.runtime_dir / "restart-requests" / f"{task_id}.request"
         )
         assert request_path.is_file()
         assert stat.S_IMODE(request_path.stat().st_mode) == 0o600

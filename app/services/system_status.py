@@ -4,6 +4,7 @@ import platform
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
 import psutil
 from pydantic import BaseModel
@@ -39,14 +40,26 @@ class HubStatus(BaseModel):
     current_time: datetime
 
 
+class TailnetStatus(BaseModel):
+    state: Literal["available", "unavailable", "unknown"]
+    endpoints: list[str]
+
+
 class StatusData(BaseModel):
     node: NodeStatus
     system: SystemStatus
     hub: HubStatus
+    tailnet: TailnetStatus
     authentication_method: str | None = None
 
 
-def collect_system_status(settings: Settings, detected_platform: str) -> StatusData:
+def collect_system_status(
+    settings: Settings,
+    detected_platform: str,
+    *,
+    tailnet_listener_available: bool | None = None,
+    tailnet_listener_hosts: tuple[str, ...] = (),
+) -> StatusData:
     memory = psutil.virtual_memory()
     disk_root = Path.home().anchor or "/"
     disk = psutil.disk_usage(disk_root)
@@ -78,5 +91,18 @@ def collect_system_status(settings: Settings, detected_platform: str) -> StatusD
         hub=HubStatus(
             version=settings.app.version,
             current_time=datetime.fromtimestamp(now_timestamp, timezone.utc),
+        ),
+        tailnet=TailnetStatus(
+            state=(
+                "available"
+                if tailnet_listener_available is True
+                else "unavailable"
+                if tailnet_listener_available is False
+                else "unknown"
+            ),
+            endpoints=[
+                f"{host}:{settings.server.port}"
+                for host in tailnet_listener_hosts
+            ],
         ),
     )

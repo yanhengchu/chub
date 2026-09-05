@@ -108,7 +108,7 @@ Chub 核心入口 / 第三方服务已完成认证与固定路由
 
 #### 3.3 Runtime 启用状态
 
-- 已注册 Runtime 的健康状态与启用状态分离：健康状态由 Adapter 报告，启用状态由 Chub 在本机受限状态文件中保存并在设置页以 Runtime 列表展示。
+- 已注册 Runtime 的健康状态、部署可用性与任务接入策略分离：健康状态由 Adapter 报告；`settings.local.yaml` 的 `ai_runtime.<runtime_id>.enabled` 决定 Runtime 是否可作为部署实例启动；设置页的“接收新任务”由 Chub 在本机受限状态文件中保存，只控制后续新 AI 任务，不中断已受理任务。设置页的“AI Runtime”分组包含“通用配置”和每个已接入 Runtime 的独立入口；Runtime 页面展示标识、健康状态、任务接入策略和可日常维护的专属配置，不展示工作目录、运行目录等部署字段。
 - 启用的 Runtime 可以接受新的 Session、快速交互、实时终端和微信文本优化任务；停用只拒绝新的任务受理，不取消、阻塞或改写已受理任务，也不影响读取、停止、归档和删除已有 Session。
 - 所有 Runtime 都停用时，Chub 保持基础功能模式。核心设备管理、第三方服务和已有任务的状态查看仍可用；AI 提交入口明确显示不可用原因。
 - 当前生产实例只注册 `codex`。设置页的列表和启用状态为后续固定注册的 Runtime 预留管理入口，但不提供 Runtime 选择器，也不允许既有 Session 跨 Runtime 迁移。
@@ -148,7 +148,8 @@ Quick Worker 是独立本机服务，当前生产使用固定 `codex` Runner。W
 
 ### 6. 当前数据、入口与安全边界
 
-- 当前生产正式入口仍是 `/api/codex/*`、Codex 页面、微信固定路由和 Quick Worker；已有的 `/api/ai/usage` 只是独立的用量只读接口，不表示支持多 Runtime。除用量接口外，不为了内部通用化新增通用 Runtime 选择或 Session API，也不提供客户端 Runtime 选择器。
+- 当前生产正式入口仍是 `/api/codex/*`、Codex 页面、微信固定路由和 Quick Worker。`/api/ai/usage` 读取默认 Runtime 的 `usage_snapshot`，响应以 `runtime_id` 标识归属；`/api/ai/runtimes/{runtime_id}/settings` 只面向设置页读取和保存该 Runtime 已声明的专属配置。它们不提供客户端 Runtime 选择器、跨 Runtime 聚合或通用 Session API。
+- Runtime 可独立声明 `usage_snapshot` 和 `runtime_settings` 能力。前者由 Runtime 自行决定认证、缓存和快照口径，后者由 Runtime 自行校验字段并保存本机专属配置；核心层只做固定 Runtime ID 路由、认证、统一响应和操作日志。未声明能力的 Runtime 不展示对应设置，也不得由核心层猜测或代管其供应商配置。
 - Chub 自有旧运行数据、旧协议状态和已经改变的功能默认不兼容；按固定升级边界清理后从新格式初始化。Codex 原生历史、用户配置、第三方数据和明确要求保留的数据必须按各自规则处理。
 - Worker 协议、任务目录、事件、stdout、stderr 和错误原文受固定字节、行长、数量、权限和敏感信息限制；不得暴露 Token、终端票据、任意路径或命令。
 - 认证、固定命令/路径白名单、权限映射、微信真实身份和 OpenClaw 固定路由失败时必须失败关闭；客户端不能扩大权限。
@@ -236,6 +237,8 @@ Quick Worker 是独立本机服务，当前生产使用固定 `codex` Runner。W
 ### 8.2 共享代码契约（实现者必读）
 
 当前仓库的共享契约位于 `app/ai_runtime/contracts.py`、`app/ai_runtime/registry.py` 和 `app/ai_runtime/worker.py`。Runtime 实现必须直接复用 `app.ai_runtime` 导出的模型和 Protocol，不复制一套同名模型，不把 Codex 私有模型当作共享接口。下表是生成 Adapter/Runner 时必须遵守的字段和约束；所有共享 Pydantic 模型均为严格、不可变且禁止额外字段。
+
+部署级 Runtime 配置使用 `settings.local.yaml` 的 `ai_runtime.<runtime_id>` 层级。当前 Codex 固定为 `ai_runtime.codex`，包含部署可用性、工作目录、运行目录、终端票据、并发和快速交互超时；旧顶层 `codex_pty` 不再读取。设置页不展示这类部署字段：其“接收新任务”开关是独立运行策略。设置页的 AI Runtime 通用配置保存跨 Runtime 共享的用量时区；各 Runtime 页面只保存其专属业务配置，例如 Codex 的 Sub2API 地址和订阅 ID。它们均保存于 `config/ai-runtimes.local.yaml`，但按 `general` 与 Runtime ID 隔离。
 
 | 模型 | 必须提供的字段与边界 |
 | --- | --- |

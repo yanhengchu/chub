@@ -57,7 +57,7 @@ def _read_operation(operation_id: str) -> SystemUpgradeOperation:
     if re.fullmatch(r"[a-f0-9]{32}", operation_id) is None:
         raise OSError("Invalid system upgrade operation ID")
     settings = load_settings()
-    state_path = settings.codex_pty.data_file.with_name("system-upgrade.json")
+    state_path = settings.ai_runtime.codex.data_file.with_name("system-upgrade.json")
     metadata = state_path.lstat()
     if (
         not stat.S_ISREG(metadata.st_mode)
@@ -78,7 +78,7 @@ def _read_operation(operation_id: str) -> SystemUpgradeOperation:
 
 def _state_path():
     settings = load_settings()
-    return settings.codex_pty.data_file.with_name("system-upgrade.json")
+    return settings.ai_runtime.codex.data_file.with_name("system-upgrade.json")
 
 
 def _read_current_operation() -> SystemUpgradeOperation:
@@ -183,13 +183,13 @@ def prepare_restart(operation_id: str) -> None:
     # removes only Chub's local Session mappings and Hook results; native Codex
     # sessions, configuration, logs and other user data are outside this list.
     for path in (
-        settings.codex_pty.data_file,
-        settings.codex_pty.data_file.with_name("ai-sessions.json"),
+        settings.ai_runtime.codex.data_file,
+        settings.ai_runtime.codex.data_file.with_name("ai-sessions.json"),
     ):
         _remove_private_file(path)
     for path in (
-        settings.codex_pty.runtime_dir / "hooks",
-        settings.codex_pty.runtime_dir / "restart-requests",
+        settings.ai_runtime.codex.runtime_dir / "hooks",
+        settings.ai_runtime.codex.runtime_dir / "restart-requests",
     ):
         _remove_private_directory(path)
 
@@ -205,7 +205,7 @@ def record_component(
         raise OSError("System upgrade is not active")
     settings = load_settings()
     record_component_result(
-        settings.codex_pty.data_file.with_name("system-upgrade.json"),
+        settings.ai_runtime.codex.data_file.with_name("system-upgrade.json"),
         operation_id,
         component,
         status,

@@ -153,7 +153,7 @@ class WorkerHealth(_StrictModel):
 
 def worker_runtime_dir(settings: Settings) -> Path:
     identity = hashlib.sha256(
-        str(settings.codex_pty.runtime_dir).encode("utf-8")
+        str(settings.ai_runtime.codex.runtime_dir).encode("utf-8")
     ).hexdigest()[:12]
     return Path("/tmp") / f"chub-qw-{os.getuid()}-{identity}"
 
@@ -165,10 +165,10 @@ def worker_socket_path(settings: Settings) -> Path:
 def production_codex_workspaces(settings: Settings) -> dict[str, Path]:
     return {
         "home": Path.home(),
-        "workspace": settings.codex_pty.workspace,
+        "workspace": settings.ai_runtime.codex.workspace,
         "chub": PROJECT_ROOT,
         "weixin-translation": (
-            settings.codex_pty.runtime_dir / "translation-workspace"
+            settings.ai_runtime.codex.runtime_dir / "translation-workspace"
         ),
     }
 

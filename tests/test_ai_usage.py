@@ -24,16 +24,21 @@ from app.application import create_app
 from app.codex.local_usage import CodexLocalUsageUnavailable
 from app.codex.models import CodexQuotaData, CodexQuotaWindow, CodexTokenUsageData
 from app.codex.rate_limits import CodexAccountCollection, CodexRateLimitService
-from app.core.config import AiUsageConfig, AiUsageSub2ApiConfig, Settings
+from app.codex.usage_settings import (
+    AiRuntimeSettingsStore,
+    CodexSub2ApiUsageSettings,
+    CodexUsageSettings,
+)
+from app.core.config import Settings
 
 
 def _authorization(settings: Settings) -> dict[str, str]:
     return {}
 
 
-def _provider_config() -> AiUsageConfig:
-    return AiUsageConfig(
-        sub2api=AiUsageSub2ApiConfig(base_url="http://10.20.30.40")
+def _provider_config() -> CodexUsageSettings:
+    return CodexUsageSettings(
+        sub2api=CodexSub2ApiUsageSettings(base_url="http://10.20.30.40")
     )
 
 
@@ -74,13 +79,42 @@ def _subscription_payload() -> dict[str, object]:
 
 
 def test_sub2api_configuration_allows_default_subscription_and_safe_base_url() -> None:
-    assert AiUsageSub2ApiConfig(
+    assert CodexSub2ApiUsageSettings(
         base_url="http://10.20.30.40",
     ).subscription_id is None
     with pytest.raises(ValueError, match="Sub2API origin"):
-        AiUsageSub2ApiConfig(base_url="https://user:secret@service.test/other")
+        CodexSub2ApiUsageSettings(base_url="https://user:secret@service.test/other")
     with pytest.raises(ValueError, match="literal private address"):
-        AiUsageSub2ApiConfig(base_url="http://example.com")
+        CodexSub2ApiUsageSettings(base_url="http://example.com")
+
+
+@pytest.mark.anyio
+async def test_general_runtime_settings_reject_invalid_timezone_as_user_input(
+    settings: Settings,
+    tmp_path,
+) -> None:
+    app = create_app(settings)
+    store = AiRuntimeSettingsStore(tmp_path / "ai-runtimes.local.yaml")
+    app.state.ai_session_manager.runtime_settings_store = store
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        invalid = await client.put(
+            "/api/ai/settings",
+            json={"values": {"usage-timezone": "not/a-timezone"}},
+        )
+        saved = await client.put(
+            "/api/ai/settings",
+            json={"values": {"usage-timezone": "America/Los_Angeles"}},
+        )
+
+    assert invalid.status_code == 400
+    assert invalid.json()["error"]["code"] == "ai_runtime_settings_invalid"
+    assert saved.status_code == 200
+    assert saved.json()["data"]["sections"][0]["fields"][0]["value"] == (
+        "America/Los_Angeles"
+    )
+    assert store.read_general().timezone == "America/Los_Angeles"
 
 
 def test_today_usage_requires_token_scope_with_tokens() -> None:
@@ -296,8 +330,9 @@ def test_api_key_mode_formats_provider_usage_and_does_not_fallback(
 
 
 def test_refresh_failure_only_retains_same_source_snapshot(settings: Settings) -> None:
-    settings.ai_usage = _provider_config()
-    settings.ai_usage.sub2api.subscription_id = 179
+    usage_settings = _provider_config().model_copy(
+        update={"sub2api": CodexSub2ApiUsageSettings(base_url="http://10.20.30.40", subscription_id=179)}
+    )
     codex = MagicMock()
     codex.collect_ai_account_status.return_value = CodexAccountCollection("apiKey")
     browser = MagicMock()
@@ -316,7 +351,7 @@ def test_refresh_failure_only_retains_same_source_snapshot(settings: Settings) -
         fresh,
         ProviderBrowserUnavailable("provider_response_timeout"),
     ]
-    service = AiUsageService(settings, codex, browser)
+    service = AiUsageService(usage_settings, codex, settings.automations, browser)
 
     first = service.read(force=True)
     second = service.read(force=True)
@@ -495,8 +530,7 @@ def test_concurrent_forced_refreshes_share_one_collection(settings: Settings) ->
 def test_provider_browser_filters_fixed_request_and_subscription(
     settings: Settings,
 ) -> None:
-    settings.ai_usage = _provider_config()
-    adapter = ProviderBrowserAdapter(settings.ai_usage, settings.automations)
+    adapter = ProviderBrowserAdapter(_provider_config(), settings.automations)
     assert adapter._matches_usage_response(
         SimpleNamespace(
             url=(
@@ -546,8 +580,7 @@ def test_provider_browser_filters_fixed_request_and_subscription(
 def test_provider_browser_uses_first_active_openai_subscription_by_default(
     settings: Settings,
 ) -> None:
-    settings.ai_usage = _provider_config()
-    adapter = ProviderBrowserAdapter(settings.ai_usage, settings.automations)
+    adapter = ProviderBrowserAdapter(_provider_config(), settings.automations)
     payload = _subscription_payload()
     payload["data"].insert(
         0,
@@ -566,8 +599,7 @@ def test_provider_browser_uses_first_active_openai_subscription_by_default(
 def test_provider_browser_rejects_invalid_or_other_platform_token_stats(
     settings: Settings,
 ) -> None:
-    settings.ai_usage = _provider_config()
-    adapter = ProviderBrowserAdapter(settings.ai_usage, settings.automations)
+    adapter = ProviderBrowserAdapter(_provider_config(), settings.automations)
 
     with pytest.raises(ProviderBrowserUnavailable, match="token_response_invalid"):
         adapter._parse_today_tokens(
@@ -596,8 +628,7 @@ def test_provider_browser_rejects_invalid_or_other_platform_token_stats(
 def test_provider_browser_invalid_stats_does_not_fail_fresh_quota(
     settings: Settings,
 ) -> None:
-    settings.ai_usage = _provider_config()
-    adapter = ProviderBrowserAdapter(settings.ai_usage, settings.automations)
+    adapter = ProviderBrowserAdapter(_provider_config(), settings.automations)
     adapter._capture_responses = AsyncMock(
         return_value=SimpleNamespace(
             subscription=_subscription_payload(),
@@ -624,8 +655,7 @@ def test_provider_browser_invalid_stats_does_not_fail_fresh_quota(
 def test_provider_browser_closes_its_page_on_login_redirect(
     settings: Settings,
 ) -> None:
-    settings.ai_usage = _provider_config()
-    adapter = ProviderBrowserAdapter(settings.ai_usage, settings.automations)
+    adapter = ProviderBrowserAdapter(_provider_config(), settings.automations)
 
     pages = []
 

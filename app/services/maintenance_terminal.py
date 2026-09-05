@@ -18,7 +18,7 @@ class MaintenanceTerminalManager:
     mount_path = "/maintenance-terminal/terminal"
 
     def __init__(self, settings: Settings) -> None:
-        self.tickets = TerminalTicketStore(settings.codex_pty.ticket_ttl_seconds)
+        self.tickets = TerminalTicketStore(settings.ai_runtime.codex.ticket_ttl_seconds)
         self.connections = TerminalConnectionRegistry()
         self._lock = threading.RLock()
         self._process: subprocess.Popen[bytes] | None = None

@@ -47,17 +47,17 @@ def service_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
                 "  name: Test Node",
                 "  type: unknown",
                 "server:",
-                "  tailnet_host: null",
                 "  port: 8080",
                 "security: {}",
                 "logs:",
                 f"  file: {tmp_path / 'hub.log'}",
                 f"  operations_file: {tmp_path / 'operations.log'}",
                 f"  worker_operations_file: {tmp_path / 'worker-operations.log'}",
-                "codex_pty:",
-                f"  workspace: {tmp_path / 'workspace'}",
-                f"  data_file: {tmp_path / 'state' / 'sessions.json'}",
-                f"  runtime_dir: {tmp_path / 'runtime'}",
+                "ai_runtime:",
+                "  codex:",
+                f"    workspace: {tmp_path / 'workspace'}",
+                f"    data_file: {tmp_path / 'state' / 'sessions.json'}",
+                f"    runtime_dir: {tmp_path / 'runtime'}",
                 "",
             ]
         ),
@@ -642,7 +642,6 @@ def test_logs_uses_configured_log_path(
                 "  name: Test",
                 "  type: unknown",
                 "server:",
-                "  tailnet_host: null",
                 "  port: 8080",
                 "security: {}",
                 "logs:",
@@ -705,7 +704,6 @@ def test_restart_checks_configured_listen_address(
                 "  name: Test",
                 "  type: unknown",
                 "server:",
-                "  tailnet_host: null",
                 f"  port: {server.server_port}",
                 "security: {}",
                 "",
@@ -727,40 +725,6 @@ def test_restart_checks_configured_listen_address(
         f"Chub is healthy on http://127.0.0.1:{server.server_port}/api/health"
         in result.stdout
     )
-
-
-def test_start_rejects_non_private_listener(
-    service_env: tuple[dict[str, str], Path],
-    tmp_path: Path,
-) -> None:
-    env, _ = service_env
-    config_file = Path(env["CHUB_TEST_ROOT"]) / "config" / "settings.local.yaml"
-    config_file.write_text(
-        "\n".join(
-            [
-                "app:",
-                "  name: Hub",
-                "  version: 0.1.0",
-                "node:",
-                "  id: test",
-                "  name: Test",
-                "  type: unknown",
-                "server:",
-                "  tailnet_host: 0.0.0.0",
-                "  port: 8080",
-                "security: {}",
-                "",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    env, _ = service_env
-    env["CHUB_TEST_PLATFORM"] = "Linux"
-
-    result = run_chub("start", env, cwd=tmp_path)
-
-    assert result.returncode == 1
-    assert "configuration could not be read" in result.stderr
 
 
 @pytest.mark.parametrize("platform", ["Darwin", "Linux"])

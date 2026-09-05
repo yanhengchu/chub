@@ -5,6 +5,7 @@ import pytest
 from app.core import config
 from app.core.config import (
     NetworkRecoveryConfig,
+    OpenClawConfig,
     OpenClawWeixinChubModeConfig,
     load_settings,
 )
@@ -19,7 +20,6 @@ node:
   name: Test
   type: unknown
 server:
-  tailnet_host: null
   port: 8080
 security:
   {}
@@ -36,16 +36,13 @@ def test_load_settings_defaults_to_trusted_network_access(tmp_path: Path) -> Non
     assert settings.node.id == "test"
 
 
-@pytest.mark.parametrize("tailnet_host", ["127.0.0.1", "192.168.1.20", "example.com"])
-def test_load_settings_rejects_non_tailscale_listener_hosts(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tailnet_host: str
-) -> None:
+def test_load_settings_rejects_removed_tailnet_host(tmp_path: Path) -> None:
     config_file = tmp_path / "settings.yaml"
     config_file.write_text(
-        VALID_CONFIG.replace("tailnet_host: null", f"tailnet_host: {tailnet_host}"),
+        VALID_CONFIG.replace("server:\n", "server:\n  tailnet_host: auto\n"),
         encoding="utf-8",
     )
-    with pytest.raises(RuntimeError, match="tailnet_host must be a Tailscale IP"):
+    with pytest.raises(RuntimeError, match="tailnet_host"):
         load_settings(config_file)
 
 
@@ -62,7 +59,7 @@ def test_load_settings_ignores_removed_legacy_tasks_config(
     assert "tasks" not in settings.model_fields_set
 
 
-def test_load_settings_migrates_legacy_provider_api_config(tmp_path: Path) -> None:
+def test_load_settings_rejects_removed_ai_usage_config(tmp_path: Path) -> None:
     config_file = tmp_path / "settings.yaml"
     config_file.write_text(
         f"""{VALID_CONFIG}
@@ -75,10 +72,22 @@ ai_usage:
         encoding="utf-8",
     )
 
-    settings = load_settings(config_file)
+    with pytest.raises(RuntimeError, match="ai_usage"):
+        load_settings(config_file)
 
-    assert settings.ai_usage.sub2api.base_url == "http://10.20.30.40"
-    assert settings.ai_usage.sub2api.subscription_id == 179
+
+def test_load_settings_rejects_removed_codex_pty_config(tmp_path: Path) -> None:
+    config_file = tmp_path / "settings.yaml"
+    config_file.write_text(
+        f"""{VALID_CONFIG}
+codex_pty:
+  workspace: ~/workspace
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="codex_pty"):
+        load_settings(config_file)
 
 
 def test_quick_interaction_timeout_defaults_to_six_hours(
@@ -89,7 +98,7 @@ def test_quick_interaction_timeout_defaults_to_six_hours(
     config_file.write_text(VALID_CONFIG, encoding="utf-8")
     settings = load_settings(config_file)
 
-    assert settings.codex_pty.quick_interaction_timeout_seconds == 21_600
+    assert settings.ai_runtime.codex.quick_interaction_timeout_seconds == 21_600
 
 
 def test_network_recovery_requires_fixed_connection_uuids_when_enabled() -> None:
@@ -142,6 +151,24 @@ def test_weixin_chub_display_name_limits_are_configurable() -> None:
     assert configured.task_name_max_width == 72
 
 
+def test_openclaw_integration_paths_are_optional_and_resolved(tmp_path: Path) -> None:
+    config_file = tmp_path / "settings.yaml"
+    config_file.write_text(
+        f"""{VALID_CONFIG}
+openclaw:
+  integration_config_path: ~/openclaw-config.json
+  integration_state_dir: {tmp_path}/openclaw-state
+""",
+        encoding="utf-8",
+    )
+
+    settings = load_settings(config_file)
+
+    assert settings.openclaw.integration_config_path == Path.home() / "openclaw-config.json"
+    assert settings.openclaw.integration_state_dir == tmp_path / "openclaw-state"
+    assert OpenClawConfig().integration_config_path is None
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -173,8 +200,8 @@ def test_runtime_data_defaults_are_separated(
     config_file.write_text(VALID_CONFIG, encoding="utf-8")
     settings = load_settings(config_file)
 
-    assert settings.codex_pty.data_file.name == "sessions.json"
-    assert settings.codex_pty.runtime_dir.parts[-3:] == ("local", "runtime", "codex")
+    assert settings.ai_runtime.codex.data_file.name == "sessions.json"
+    assert settings.ai_runtime.codex.runtime_dir.parts[-3:] == ("local", "runtime", "codex")
     assert settings.automations.state_dir.parts[-3:] == ("local", "state", "automations")
     assert settings.automations.runtime_dir.parts[-3:] == ("local", "runtime", "automations")
     assert settings.automations.artifacts_dir.parts[-4:] == (

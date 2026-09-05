@@ -50,7 +50,7 @@
     border: 1px solid transparent;
     border-radius: 6px;
     background: transparent;
-    color: color-mix(in srgb, var(--accent-dark) 65%, var(--muted));
+    color: color-mix(in srgb, var(--color-accent-text) 65%, var(--color-text-muted));
     font: inherit;
     line-height: normal;
     cursor: pointer;
@@ -59,14 +59,14 @@
   .settings-mobile-nav-link:hover,
   .settings-mobile-nav-link:active,
   .settings-mobile-nav-link[aria-current="page"] {
-    border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
-    color: var(--accent-dark);
-    background: color-mix(in srgb, var(--accent) 8%, transparent);
+    border-color: color-mix(in srgb, var(--color-accent) 40%, var(--color-border));
+    color: var(--color-accent-text);
+    background: color-mix(in srgb, var(--color-accent) 8%, transparent);
   }
 
   .settings-mobile-nav a:focus-visible,
   .settings-mobile-nav button:focus-visible {
-    outline: 3px solid color-mix(in srgb, var(--accent) 25%, transparent);
+    outline: 3px solid color-mix(in srgb, var(--color-accent) 25%, transparent);
     outline-offset: 1px;
   }
 
@@ -116,33 +116,8 @@
     max-width: none;
   }
 
-  .style-option {
-    grid-template-columns: auto minmax(0, 1fr);
-  }
-
-  .style-option-row {
+  .theme-option-grid {
     grid-template-columns: 1fr;
-  }
-
-  .style-apply {
-    width: 100%;
-  }
-
-  .style-option-action {
-    grid-column: 2;
-  }
-
-  .style-preview-actions > button {
-    width: 100%;
-  }
-
-  .style-preview-field {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .style-preview-field select {
-    width: 100%;
   }
 
   .site-settings-link {
@@ -233,27 +208,6 @@
   }
 
   .workstation-card .workstation-status-actions > button {
-    grid-column: 1 / -1;
-  }
-
-  .automation-environment .workstation-status-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) max-content;
-    align-items: start;
-  }
-
-  .automation-environment .automation-feishu-actions {
-    display: contents;
-  }
-
-  .automation-environment .automation-feishu-actions > .badge {
-    grid-column: 2;
-    grid-row: 1;
-    align-self: center;
-    width: fit-content;
-  }
-
-  .automation-environment .automation-feishu-actions > button {
     grid-column: 1 / -1;
   }
 

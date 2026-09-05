@@ -211,11 +211,11 @@
     if (usageBlock) {
       return usageBlock;
     }
+    if (session.status === "error") {
+      return "会话当前异常，请重试或调整配置后再提交。";
+    }
     if (activeInteraction) {
       return "当前快速交互正在执行，请等待任务结束。";
-    }
-    if (session.status === "error") {
-      return "会话当前异常，请先通过实时终端重试。";
     }
     if (session.quick_interaction_running) {
       return "当前快速交互正在执行，请等待任务结束。";
@@ -226,7 +226,7 @@
         : "当前会话正在执行，请等待任务结束。";
     }
     if (session.permission_mode === "ask") {
-      return "Ask for approval 需要进入实时终端完成审批。";
+      return "当前 Session 使用 Ask for approval，请改为只读、自动审核或完全访问权限。";
     }
     return "";
   }
@@ -236,17 +236,17 @@
     if (usageStatus) {
       return usageStatus;
     }
+    if (session.status === "error" || session.error) {
+      return "异常";
+    }
     if (
       session.quick_interaction_running === true
       || session.activity === "working"
     ) {
       return "执行中";
     }
-    if (session.status === "error" || session.error) {
-      return "异常";
-    }
     if (session.permission_mode === "ask") {
-      return "需终端";
+      return "权限需调整";
     }
     if (
       session.status === "new"

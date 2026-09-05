@@ -34,6 +34,9 @@
     const busy = activeInteraction || session.quick_interaction_running === true;
     const usageBlockReason = core.sessionUsageBlockReason(session);
     const usageBlocked = Boolean(usageBlockReason);
+    const externallyOccupied = session?.usage?.owner === "external";
+    const renameVisible = preview.renameAllowed;
+    const renameAllowed = renameVisible && !externallyOccupied;
     const deleteBlockReason = core.sessionDeleteBlockReason(session);
     const archiveBlockReason = core.sessionArchiveBlockReason(session);
     const stopReady = core.sessionStopReady(session);
@@ -64,6 +67,11 @@
     });
     return Object.freeze({
       ...preview,
+      renameVisible,
+      renameAllowed,
+      renameLabel: externallyOccupied
+        ? "其他应用正在使用此 Session；仅可查看历史。"
+        : "重命名 Session",
       busy,
       stopReady: stopReady && !usageBlocked,
       stopBusy: mutationPending || usageBlocked,
@@ -143,7 +151,14 @@
       + "停止后可以重新进入 Session，但在途任务不会恢复。";
   }
 
-  function createView({ documentRef, windowRef, elements, showMessage }) {
+  function createView({
+    documentRef,
+    windowRef,
+    elements,
+    showMessage,
+    showFeedback = () => {},
+  }) {
+    let sessionLoadError = "";
     function renderPreview(session) {
       const state = buildSessionPreview(session);
       elements.title.textContent = state.displayTitle;
@@ -238,32 +253,31 @@
     }
 
     function openCreate(workspaces, onCreate) {
-      elements.createWorkspaces.replaceChildren();
-      workspaces.forEach((workspace) => {
-        const button = documentRef.createElement("button");
-        const name = documentRef.createElement("strong");
-        const path = documentRef.createElement("span");
-        button.type = "button";
-        button.className = "workspace-button";
-        button.disabled = workspace.available !== true;
-        button.dataset.workspaceAvailable = String(workspace.available === true);
-        name.textContent = workspace.name;
-        path.textContent = workspace.path;
-        button.append(name, path);
-        button.addEventListener("click", () => onCreate(workspace.id));
-        elements.createWorkspaces.append(button);
-      });
+      const usableWorkspaces = workspaces.filter((workspace) => workspace.available);
+      elements.createWorkspaces.value = usableWorkspaces[0]?.id || "";
+      elements.createWorkspacePicker.setOptions(
+        usableWorkspaces.map((workspace) => ({ value: workspace.id, label: workspace.name })),
+        elements.createWorkspaces.value,
+      );
+      elements.createConfirm.disabled = !elements.createWorkspaces.value;
+      elements.createForm.onsubmit = (event) => {
+        event.preventDefault();
+        if (elements.createWorkspaces.value) {
+          onCreate(elements.createWorkspaces.value);
+        }
+      };
       showMessage(elements.createMessage, "");
       elements.createDialog.showModal();
-      elements.createWorkspaces.querySelector("button:not(:disabled)")?.focus();
+      elements.createWorkspacePicker.focus();
     }
 
     function setCreatePending(pending) {
       elements.createSurface.toggleAttribute("aria-busy", pending);
       elements.createClose.disabled = pending;
-      elements.createWorkspaces.querySelectorAll("button").forEach((button) => {
-        button.disabled = pending || button.dataset.workspaceAvailable !== "true";
-      });
+      elements.createCancel.disabled = pending;
+      elements.createConfirm.disabled = pending || !elements.createWorkspaces.value;
+      elements.createConfirm.textContent = pending ? "创建中…" : "创建";
+      elements.createWorkspacePicker.setDisabled(pending);
     }
 
     function renderSession(snapshot) {
@@ -273,10 +287,10 @@
       documentRef.title = state.documentTitle;
       elements.titleRow.hidden = false;
       elements.titleRow.removeAttribute("aria-busy");
-      elements.rename.hidden = !state.renameAllowed;
+      elements.rename.hidden = !state.renameVisible;
       elements.rename.disabled = !state.renameAllowed;
-      elements.rename.title = "重命名 Session";
-      elements.rename.setAttribute("aria-label", "重命名 Session");
+      elements.rename.title = state.renameLabel;
+      elements.rename.setAttribute("aria-label", state.renameLabel);
       elements.stop.disabled = !state.stopReady || state.stopBusy;
       elements.stop.title = state.stopLabel;
       elements.stop.setAttribute("aria-label", state.stopLabel);
@@ -286,26 +300,17 @@
       elements.delete.disabled = state.deleteBusy;
       elements.delete.title = state.deleteLabel;
       elements.delete.setAttribute("aria-label", state.deleteLabel);
-      if (elements.submitMessage.dataset.sessionLoadError === "true") {
-        delete elements.submitMessage.dataset.sessionLoadError;
-        showMessage(elements.submitMessage, "");
-      }
+      sessionLoadError = "";
       elements.form.setAttribute("aria-busy", String(state.busy));
       elements.submit.disabled = Boolean(state.submissionReason)
         || !elements.prompt.value.trim();
-      elements.submit.setAttribute("aria-label", "发送");
-      elements.submit.title = "发送";
+      const submitLabel = state.submissionReason || "发送";
+      elements.submit.setAttribute("aria-label", submitLabel);
+      elements.submit.title = submitLabel;
+      elements.prompt.title = state.submissionReason || "";
       // A running task only blocks the next write. Keep the draft editable so
       // the next request can be prepared while this Session is working.
       elements.prompt.disabled = false;
-      if (state.submissionReason && !state.busy) {
-        showMessage(elements.submitMessage, state.submissionReason);
-      } else if (
-        state.busy
-        || !elements.submitMessage.classList.contains("message-error")
-      ) {
-        showMessage(elements.submitMessage, "");
-      }
       return state;
     }
 
@@ -329,7 +334,6 @@
 
     function openArchive(session) {
       elements.archiveDescription.textContent = archiveDescription(session);
-      showMessage(elements.archiveMessage, "");
       elements.archiveDialog.showModal();
       elements.archiveConfirm.focus();
     }
@@ -348,7 +352,6 @@
 
     function openStop(session) {
       elements.stopDescription.textContent = stopDescription(session);
-      showMessage(elements.stopMessage, "");
       elements.stopDialog.showModal();
       elements.stopConfirm.focus();
     }
@@ -374,7 +377,6 @@
 
     function openDelete(session) {
       elements.deleteDescription.textContent = deleteDescription(session);
-      showMessage(elements.deleteMessage, "");
       elements.deleteDialog.showModal();
       elements.deleteConfirm.focus();
     }
@@ -406,12 +408,11 @@
       elements.submit.disabled = true;
       elements.prompt.disabled = false;
       elements.form.setAttribute("aria-busy", "false");
-      elements.submitMessage.dataset.sessionLoadError = "true";
-      showMessage(
-        elements.submitMessage,
-        core.formatErrorMessage(error, "会话状态读取失败。"),
-        "error",
-      );
+      const message = core.formatErrorMessage(error, "会话状态读取失败。");
+      if (message !== sessionLoadError) {
+        sessionLoadError = message;
+        showFeedback(message, "error");
+      }
     }
 
     return Object.freeze({

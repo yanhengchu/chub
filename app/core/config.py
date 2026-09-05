@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from ipaddress import ip_address, ip_network
 from pathlib import Path
 import re
 from typing import Any, Literal
@@ -16,7 +15,6 @@ from pydantic import (
     model_validator,
 )
 
-from app.core.network import is_tailscale_ip
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -41,20 +39,6 @@ class NodeConfig(StrictModel):
 
 class ServerConfig(StrictModel):
     port: int = Field(ge=1, le=65535)
-    tailnet_host: str | None = None
-
-    @field_validator("tailnet_host")
-    @classmethod
-    def validate_tailnet_host(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        try:
-            address = ip_address(value)
-        except ValueError as error:
-            raise ValueError("server.tailnet_host must be a Tailscale IP") from error
-        if is_tailscale_ip(value):
-            return value
-        raise ValueError("server.tailnet_host must be a Tailscale IP")
 
 
 class SecurityConfig(StrictModel):
@@ -69,7 +53,7 @@ class LogsConfig(StrictModel):
     max_lines: int = Field(default=100, ge=1, le=500)
 
 
-class CodexPtyConfig(StrictModel):
+class CodexRuntimeConfig(StrictModel):
     enabled: bool = True
     workspace: Path = Path("~/workspace")
     data_file: Path = Path("data/local/state/codex/sessions.json")
@@ -101,75 +85,8 @@ class AutomationsConfig(StrictModel):
         )
 
 
-class AiUsageSub2ApiConfig(StrictModel):
-    base_url: str | None = Field(default=None, max_length=2048)
-    subscription_id: int | None = Field(default=None, ge=1)
-
-    @field_validator("base_url", mode="before")
-    @classmethod
-    def normalize_base_url(cls, value: object) -> object:
-        if isinstance(value, str):
-            value = value.strip()
-            return value or None
-        return value
-
-    @model_validator(mode="after")
-    def validate_base_url(self) -> "AiUsageSub2ApiConfig":
-        if self.base_url is None:
-            return self
-        from urllib.parse import urlsplit
-
-        target = urlsplit(self.base_url)
-        if (
-            target.scheme not in {"http", "https"}
-            or not target.hostname
-            or target.username is not None
-            or target.password is not None
-            or target.query
-            or target.fragment
-            or target.path.rstrip("/")
-        ):
-            raise ValueError("base_url must be a Sub2API origin")
-        if target.scheme == "http":
-            hostname = target.hostname.lower()
-            if hostname != "localhost":
-                try:
-                    address = ip_address(hostname)
-                except ValueError as exc:
-                    raise ValueError(
-                        "HTTP subscription pages must use a literal private address"
-                    ) from exc
-                private_ranges = (
-                    ip_network("10.0.0.0/8"),
-                    ip_network("172.16.0.0/12"),
-                    ip_network("192.168.0.0/16"),
-                    ip_network("127.0.0.0/8"),
-                    ip_network("fc00::/7"),
-                    ip_network("fe80::/10"),
-                    ip_network("::1/128"),
-                )
-                if not any(address in network for network in private_ranges):
-                    raise ValueError(
-                        "HTTP subscription pages must use a literal private address"
-                    )
-        return self
-
-
-class AiUsageConfig(StrictModel):
-    provider: Literal["openai"] = "openai"
-    timezone: str = Field(default="Asia/Shanghai", min_length=1, max_length=64)
-    sub2api: AiUsageSub2ApiConfig = AiUsageSub2ApiConfig()
-
-    @field_validator("timezone")
-    @classmethod
-    def validate_timezone(cls, value: str) -> str:
-        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-
-        try:
-            ZoneInfo(value)
-        except ZoneInfoNotFoundError as exc:
-            raise ValueError("timezone must be a valid IANA timezone") from exc
-        return value
+class AiRuntimeConfig(StrictModel):
+    codex: CodexRuntimeConfig = CodexRuntimeConfig()
 
 
 class ProjectDocumentsConfig(StrictModel):
@@ -315,6 +232,8 @@ class OpenClawWeixinChubModeConfig(StrictModel):
 
 
 class OpenClawConfig(StrictModel):
+    integration_config_path: Path | None = None
+    integration_state_dir: Path | None = None
     quick_interaction_completion: OpenClawCompletionNotificationConfig = (
         OpenClawCompletionNotificationConfig()
     )
@@ -329,9 +248,8 @@ class Settings(StrictModel):
     server: ServerConfig
     security: SecurityConfig
     logs: LogsConfig = LogsConfig()
-    codex_pty: CodexPtyConfig = CodexPtyConfig()
+    ai_runtime: AiRuntimeConfig = AiRuntimeConfig()
     automations: AutomationsConfig = AutomationsConfig()
-    ai_usage: AiUsageConfig = AiUsageConfig()
     project_documents: ProjectDocumentsConfig = ProjectDocumentsConfig()
     requests: RequestsConfig = RequestsConfig()
     notifications: NotificationsConfig = NotificationsConfig()
@@ -355,11 +273,17 @@ class Settings(StrictModel):
             self.logs.worker_operations_file = (
                 PROJECT_ROOT / self.logs.worker_operations_file
             )
-        self.codex_pty.workspace = self.codex_pty.workspace.expanduser().resolve()
-        if not self.codex_pty.data_file.is_absolute():
-            self.codex_pty.data_file = PROJECT_ROOT / self.codex_pty.data_file
-        if not self.codex_pty.runtime_dir.is_absolute():
-            self.codex_pty.runtime_dir = PROJECT_ROOT / self.codex_pty.runtime_dir
+        self.ai_runtime.codex.workspace = (
+            self.ai_runtime.codex.workspace.expanduser().resolve()
+        )
+        if not self.ai_runtime.codex.data_file.is_absolute():
+            self.ai_runtime.codex.data_file = (
+                PROJECT_ROOT / self.ai_runtime.codex.data_file
+            )
+        if not self.ai_runtime.codex.runtime_dir.is_absolute():
+            self.ai_runtime.codex.runtime_dir = (
+                PROJECT_ROOT / self.ai_runtime.codex.runtime_dir
+            )
         if not self.automations.shared_config_file.is_absolute():
             self.automations.shared_config_file = (
                 PROJECT_ROOT / self.automations.shared_config_file
@@ -395,6 +319,14 @@ class Settings(StrictModel):
             self.openclaw.weixin_chub_mode.state_file = (
                 PROJECT_ROOT / self.openclaw.weixin_chub_mode.state_file
             )
+        if self.openclaw.integration_config_path is not None:
+            self.openclaw.integration_config_path = (
+                self.openclaw.integration_config_path.expanduser().resolve()
+            )
+        if self.openclaw.integration_state_dir is not None:
+            self.openclaw.integration_state_dir = (
+                self.openclaw.integration_state_dir.expanduser().resolve()
+            )
         self.notifications.registry_file = (
             self.notifications.registry_file.expanduser().resolve()
         )
@@ -424,48 +356,12 @@ def _read_yaml(path: Path) -> dict[str, Any]:
     return content
 
 
-def _migrate_ai_usage_config(data: dict[str, Any]) -> None:
-    ai_usage = data.get("ai_usage")
-    if not isinstance(ai_usage, dict):
-        return
-    legacy = ai_usage.get("provider_api")
-    if not isinstance(legacy, dict):
-        return
-    if "sub2api" in ai_usage:
-        ai_usage.pop("provider_api")
-        return
-    page_url = legacy.get("subscription_page_url")
-    if not isinstance(page_url, str) or not page_url.strip():
-        return
-    from urllib.parse import urlsplit, urlunsplit
-
-    target = urlsplit(page_url.strip())
-    if (
-        target.path.rstrip("/") != "/subscriptions"
-        or target.query
-        or target.fragment
-        or target.username is not None
-        or target.password is not None
-    ):
-        return
-    migrated: dict[str, Any] = {
-        "base_url": urlunsplit((target.scheme, target.netloc, "", "", "")),
-    }
-    subscription_id = legacy.get("subscription_id")
-    if subscription_id is not None:
-        migrated["subscription_id"] = subscription_id
-    ai_usage["sub2api"] = migrated
-    ai_usage.pop("provider_api")
-
-
 def load_settings(config_file: str | Path | None = None) -> Settings:
     path = Path(config_file or DEFAULT_CONFIG_FILE).expanduser()
     if not path.is_absolute():
         path = PROJECT_ROOT / path
     path = path.resolve()
     data = _read_yaml(path)
-    _migrate_ai_usage_config(data)
-
     security = data.setdefault("security", {})
     if not isinstance(security, dict):
         raise RuntimeError("Configuration field 'security' must be a mapping")
