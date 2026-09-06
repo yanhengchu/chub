@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from app.codex.local_usage import (
+from chub_codex_runtime.local_usage import (
     CodexLocalUsageReader,
     CodexLocalUsageUnavailable,
 )

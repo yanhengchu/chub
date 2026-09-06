@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
-from app.codex.models import CodexSession, PermissionMode, sessions_newest_first
+from .models import CodexSession, PermissionMode, sessions_newest_first
 
 
 PERMISSION_TAIL_BYTES = 512 * 1024

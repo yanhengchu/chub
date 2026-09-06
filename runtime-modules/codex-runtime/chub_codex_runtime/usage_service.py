@@ -17,16 +17,16 @@ from app.ai_usage.models import (
     AiUsageSource,
     AiWeeklyUsage,
 )
-from app.ai_usage.provider_browser import (
+from .provider_browser import (
     ProviderBrowserAdapter,
     ProviderBrowserUnavailable,
 )
-from app.codex.local_usage import (
+from .local_usage import (
     CodexLocalUsageReader,
     CodexLocalUsageUnavailable,
 )
-from app.codex.rate_limits import CodexAccountCollection, CodexRateLimitService
-from app.codex.usage_settings import CodexUsageSettings
+from .rate_limits import CodexAccountCollection, CodexRateLimitService
+from .usage_settings import CodexUsageSettings
 from app.core.config import AutomationsConfig, Settings
 
 

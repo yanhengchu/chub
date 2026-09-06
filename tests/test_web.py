@@ -1137,6 +1137,7 @@ async def test_workspace_preview_is_static_and_available(settings: Settings) -> 
     assert 'class="workspace-preview-compact-nav" data-workspace-section-navigation aria-label="折叠侧栏导航"' in response.text
     assert 'aria-label="工作台" title="工作台"' in response.text
     assert 'class="workspace-preview-compact-nav-external" href="/settings"' in response.text
+    assert 'id="workspace-preview-sessions" class="workspace-preview-sessions" aria-labelledby="workspace-preview-sessions-title" hidden' in response.text
     assert 'id="workspace-session-create" class="workspace-preview-create" type="button" disabled>+ New Session</button>' in response.text
     assert 'id="workspace-session-list"' in response.text
     assert 'id="workspace-quick-session-toolbar" class="workspace-quick-session-toolbar" aria-label="快速会话切换" hidden' in response.text
@@ -1239,6 +1240,8 @@ async def test_workspace_preview_is_static_and_available(settings: Settings) -> 
     assert 'document.getElementById("workspace-sidebar-close")' in workspace_script.text
     assert "chub.workspace.sidebarCollapsed" in workspace_script.text
     assert '"/api/codex/sessions"' in workspace_sessions_script.text
+    assert 'const sessionSection = document.getElementById("workspace-preview-sessions");' in workspace_sessions_script.text
+    assert "sessionSection.hidden = !data.runtime_registered;" in workspace_sessions_script.text
     assert "const renderQuickSessionToolbar = (orderedSessions) =>" in workspace_sessions_script.text
     assert "const quickSessionLabel = (session) =>" in workspace_sessions_script.text
     assert 'workspace-quick-session-toolbar-button' in workspace_sessions_script.text
@@ -2739,7 +2742,7 @@ async def test_workspace_sessions_use_placeholder_for_empty_title(
     assert "|| sessionNeedsRefresh(session)" in response.text
     assert "session.status === \"running\" && session.activity === \"unknown\"" not in response.text
     assert "const sessionIsExternallyOccupied = (session) => session.usage?.owner === \"external\";" in response.text
-    assert "more.hidden = sessionIsExternallyOccupied(session);" in response.text
+    assert "more.hidden = sessionIsExternallyOccupied(session)" in response.text
     assert "if (sessionIsExternallyOccupied(session)) return;" in response.text
     assert "const externalQuickReadOnly = externallyOccupied && session.session_mode === \"quick\";" in response.text
     assert "button.disabled = externallyOccupied && !externalQuickReadOnly;" in response.text

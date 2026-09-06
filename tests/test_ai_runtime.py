@@ -1,5 +1,6 @@
+import asyncio
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import ValidationError
@@ -20,19 +21,21 @@ from app.ai_runtime import (
     WorkerRuntimeRegistry,
     validate_runtime_wiring,
 )
-from app.codex.runtime_adapter import CodexRuntimeAdapter
-from app.codex.runtime_module import create_builtin_runtime_modules
+from app.ai_runtime.external_modules import ExternalRuntimeModuleService
 from app.ai_session.manager import AiSessionManager
-from app.codex.usage_settings import AiRuntimeGeneralSettings, AiRuntimeSettingsStore
-from app.codex.manager import CodexPtyManager
+from app.application import create_app
+from app.ai_runtime.general_settings import AiRuntimeGeneralSettings, AiRuntimeSettingsStore
+from legacy_codex_manager import CodexPtyManager
 from app.codex.models import (
     CodexModelCatalogData,
     CodexModelInfo,
     CodexReasoningLevel,
     CodexSession,
 )
-from app.codex.runtime_runner import CodexRuntimeRunner
+from chub_codex_runtime.runtime_adapter import CodexRuntimeAdapter
+from chub_codex_runtime.runtime_runner import CodexRuntimeRunner
 from app.core.config import Settings
+from app.core.response import ApiError
 
 
 class StubRuntime:
@@ -339,7 +342,7 @@ def test_session_manager_isolates_external_adapter_construction_failure(
     manager = AiSessionManager(settings)
     modules = BuiltinRuntimeModuleRegistry(
         [
-            manager._builtin_runtime_modules.require("codex"),
+            manager.runtime_modules.require("codex"),
             BrokenAdapterRuntimeModule("broken-runtime"),
         ]
     )
@@ -351,20 +354,109 @@ def test_session_manager_isolates_external_adapter_construction_failure(
     assert manager.runtime_module_failures[0].module_id == "broken-runtime"
 
 
-def test_builtin_codex_module_builds_matching_adapter_and_worker_runner(
+def test_session_manager_keeps_codex_adapter_when_a_healthy_external_runtime_loads(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    modules = BuiltinRuntimeModuleRegistry(
+        [
+            manager.runtime_modules.require("codex"),
+            StubBuiltinRuntimeModule("healthy-runtime"),
+        ]
+    )
+    manager.runtime_module_service.build_registry = MagicMock(return_value=(modules, ()))
+
+    manager.refresh_external_runtime_modules()
+
+    assert manager.runtime_adapter.descriptor.runtime_id == "codex"
+    assert manager.supervisor.runtime_adapter.descriptor.runtime_id == "codex"
+    assert manager.runtime_modules.runtime_ids() == ("codex", "healthy-runtime")
+
+
+def test_session_manager_starts_without_an_installed_runtime(settings: Settings) -> None:
+    service = ExternalRuntimeModuleService(settings)
+    removal = service.remove("codex", operation_id="0" * 32)
+    service.finalize_removal(removal)
+    manager = AiSessionManager(settings)
+
+    available, reason = manager.submission_available()
+
+    assert manager.runtime_modules.runtime_ids() == ()
+    assert manager.runtime_registry.runtime_ids() == ()
+    assert available is False
+    assert reason == "Codex Runtime is not installed"
+    assert manager.read_runtime_management().runtimes == []
+
+
+@pytest.mark.anyio
+async def test_application_lifespan_starts_without_an_installed_runtime(
+    settings: Settings,
+) -> None:
+    service = ExternalRuntimeModuleService(settings)
+    removal = service.remove("codex", operation_id="1" * 32)
+    service.finalize_removal(removal)
+    application = create_app(settings)
+
+    async with application.router.lifespan_context(application):
+        available, reason = application.state.ai_session_manager.submission_available()
+
+    assert available is False
+    assert reason == "Codex Runtime is not installed"
+
+
+@pytest.mark.anyio
+async def test_application_lifespan_recovers_pending_runtime_state_cleanup(
+    settings: Settings,
+) -> None:
+    service = ExternalRuntimeModuleService(settings)
+    service.begin_state_cleanup(
+        operation_id="e" * 32,
+        action="remove_runtime_module",
+        module_id="codex",
+        session_ids=("session-1", "session-2"),
+    )
+    application = create_app(settings)
+    manager = application.state.ai_session_manager
+    manager.clear_runtime_module_state = MagicMock()
+    application.state.quick_interactions.remove_session_tasks = MagicMock()
+
+    with patch(
+        "app.application.clear_runtime_state",
+        new=AsyncMock(return_value={"success": True}),
+    ) as clear_runtime_state:
+        async with application.router.lifespan_context(application):
+            for _ in range(20):
+                if service.pending_state_cleanup() is None:
+                    break
+                await asyncio.sleep(0.01)
+
+    assert service.pending_state_cleanup() is None
+    clear_runtime_state.assert_awaited_once_with(settings, runtime_id="codex")
+    assert application.state.quick_interactions.remove_session_tasks.call_args_list == [
+        (("session-1",), {}),
+        (("session-2",), {}),
+    ]
+    manager.clear_runtime_module_state.assert_called_once_with("codex")
+
+
+def test_external_codex_module_builds_matching_adapter_and_worker_runner(
     settings: Settings,
     tmp_path: Path,
 ) -> None:
-    modules = create_builtin_runtime_modules(
-        settings,
-        codex_home=tmp_path / "codex-home",
-        codex_executable="/fixed/codex",
+    registry, failures = ExternalRuntimeModuleService(settings).build_registry(
+        BuiltinRuntimeModuleRegistry()
     )
-    module = modules.default()
+    module = registry.default()
     adapter = module.build_adapter()
+    module.configure_worker_adapter(
+        adapter,
+        codex_home=tmp_path / "codex-home",
+        executable="/fixed/codex",
+    )
     runner = module.build_worker_runner(adapter, workspaces={"chub": tmp_path})
 
-    assert modules.runtime_ids() == ("codex",)
+    assert failures == ()
+    assert registry.runtime_ids() == ("codex",)
     assert module.display_name == "Codex"
     assert module.is_default is True
     assert adapter.descriptor == module.descriptor == runner.descriptor

@@ -11,7 +11,7 @@ import tomllib
 from pathlib import Path
 
 from app.ai_runtime import RuntimeOperationError
-from app.codex.models import (
+from .models import (
     CodexModelCatalogData,
     CodexModelInfo,
     CodexReasoningLevel,

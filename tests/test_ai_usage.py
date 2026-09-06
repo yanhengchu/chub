@@ -13,23 +13,26 @@ import httpx
 import pytest
 
 from app.ai_usage.models import AiTodayUsage, AiWeeklyUsage
-from app.ai_usage.provider_browser import (
+from app.ai_runtime.general_settings import RuntimeSettingsStoreUnavailable
+from app.ai_runtime.external_modules import ExternalRuntimeModuleService
+from app.ai_runtime.usage import RuntimeUsageService
+from chub_codex_runtime.provider_browser import (
     ProviderBrowserAdapter,
     ProviderBrowserCollection,
     ProviderBrowserUnavailable,
 )
 from app.automations.lock import file_lock
-from app.ai_usage.service import AiUsageService
+from chub_codex_runtime.usage_service import AiUsageService
 from app.application import create_app
-from app.codex.local_usage import CodexLocalUsageUnavailable
+from chub_codex_runtime.local_usage import CodexLocalUsageUnavailable
 from app.codex.models import CodexQuotaData, CodexQuotaWindow, CodexTokenUsageData
-from app.codex.rate_limits import CodexAccountCollection, CodexRateLimitService
-from app.codex.usage_settings import (
-    AiRuntimeSettingsStore,
+from chub_codex_runtime.rate_limits import CodexAccountCollection, CodexRateLimitService
+from chub_codex_runtime.usage_settings import (
     CodexProviderConfigReader,
     CodexProviderConfigUnavailable,
     CodexUsageSettings,
 )
+from app.ai_runtime.general_settings import AiRuntimeSettingsStore
 from app.core.config import Settings
 
 
@@ -112,6 +115,27 @@ def test_provider_config_reader_fails_closed_for_invalid_or_missing_config(tmp_p
     assert reader.read_base_url() is None
 
 
+def test_runtime_usage_service_reads_the_current_runtime_registry() -> None:
+    first_registry = MagicMock()
+    first_registry.require.side_effect = RuntimeError("runtime removed")
+    second_registry = MagicMock()
+    adapter = MagicMock()
+    expected = MagicMock(runtime_id="codex")
+    adapter.read_usage_snapshot.return_value = expected
+    second_registry.require.return_value = adapter
+    current_registry = first_registry
+    usage = RuntimeUsageService(
+        lambda: current_registry,
+        default_runtime_id="codex",
+    )
+
+    current_registry = second_registry
+
+    assert usage.read(force=True) is expected
+    second_registry.require.assert_called_once_with("codex", {"usage_snapshot"})
+    adapter.read_usage_snapshot.assert_called_once_with(force=True)
+
+
 @pytest.mark.anyio
 async def test_general_runtime_settings_reject_invalid_timezone_as_user_input(
     settings: Settings,
@@ -177,6 +201,61 @@ async def test_general_runtime_settings_save_weekly_report_session_defaults(
     assert saved.permission_mode == "auto-review"
     assert saved.model is None
     assert saved.reasoning_effort is None
+
+
+@pytest.mark.anyio
+async def test_general_runtime_settings_hide_weekly_session_controls_without_runtime(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    manager = app.state.ai_session_manager
+    manager.remove_runtime_module("codex", operation_id="a" * 32)
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/api/ai/settings")
+
+    assert response.status_code == 200
+    section = response.json()["data"]["sections"][1]
+    assert section["id"] == "weekly-report-session"
+    assert section["fields"] == []
+    assert "资料下载仍可独立运行" in section["description"]
+
+
+@pytest.mark.anyio
+async def test_external_runtime_settings_failure_returns_service_unavailable(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    adapter = app.state.ai_session_manager.runtime_adapter
+    assert adapter.__class__.__module__.startswith("_chub_runtime_codex.")
+    app.state.ai_session_manager.runtime_settings_store.read_general = MagicMock(
+        side_effect=RuntimeSettingsStoreUnavailable("settings unavailable")
+    )
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/api/ai/settings")
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "ai_runtime_settings_unavailable"
+
+
+@pytest.mark.anyio
+async def test_ai_usage_returns_runtime_unavailable_without_an_installed_runtime(
+    settings: Settings,
+) -> None:
+    service = ExternalRuntimeModuleService(settings)
+    removal = service.remove("codex", operation_id="a" * 32)
+    service.finalize_removal(removal)
+    app = create_app(settings)
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/api/ai/usage")
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "ai_runtime_unavailable"
 
 
 def test_today_usage_requires_token_scope_with_tokens() -> None:
@@ -263,7 +342,7 @@ def test_account_mode_uses_local_today_without_neighbor_fallback(
         local_usage_reader=local_usage,
     )
 
-    with patch("app.ai_usage.service.datetime") as current:
+    with patch("chub_codex_runtime.usage_service.datetime") as current:
         current.now.return_value = datetime.fromisoformat("2026-08-15T09:00:00+08:00")
         result = service.read(force=True)
 
@@ -308,7 +387,7 @@ def test_account_mode_prefers_exact_account_today(settings: Settings) -> None:
         local_usage_reader=local_usage,
     )
 
-    with patch("app.ai_usage.service.datetime") as current:
+    with patch("chub_codex_runtime.usage_service.datetime") as current:
         current.now.return_value = datetime.fromisoformat("2026-08-15T09:00:00+08:00")
         result = service.read(force=True)
 
@@ -359,7 +438,7 @@ def test_account_mode_omits_today_when_local_usage_is_unavailable(
         local_usage_reader=local_usage,
     )
 
-    with patch("app.ai_usage.service.datetime") as current:
+    with patch("chub_codex_runtime.usage_service.datetime") as current:
         current.now.return_value = datetime.fromisoformat("2026-08-15T09:00:00+08:00")
         result = service.read(force=True)
 
@@ -467,7 +546,7 @@ def test_fresh_cache_refreshes_after_today_date_changes(settings: Settings) -> N
         local_usage_reader=local_usage,
     )
 
-    with patch("app.ai_usage.service.datetime") as current:
+    with patch("chub_codex_runtime.usage_service.datetime") as current:
         current.now.return_value = datetime.fromisoformat("2026-08-15T23:59:59+08:00")
         first = service.read(force=True)
         current.now.return_value = datetime.fromisoformat("2026-08-16T00:00:01+08:00")
@@ -526,7 +605,7 @@ def test_fresh_cache_refreshes_when_weekly_window_resets(settings: Settings) -> 
         local_usage_reader=MagicMock(read_today=MagicMock(return_value=0)),
     )
 
-    with patch("app.ai_usage.service.datetime") as current:
+    with patch("chub_codex_runtime.usage_service.datetime") as current:
         current.now.return_value = datetime.fromisoformat("2026-08-15T09:59:59+08:00")
         first = service.read(force=True)
         current.now.return_value = datetime.fromisoformat("2026-08-15T10:00:01+08:00")
@@ -716,7 +795,7 @@ def test_provider_browser_invalid_stats_does_not_fail_fresh_quota(
     browser_lock = settings.automations.runtime_dir / "locks" / "debug-chrome.lock"
     with file_lock(browser_lock, 0):
         with patch(
-            "app.ai_usage.provider_browser.debug_chrome_status",
+            "chub_codex_runtime.provider_browser.debug_chrome_status",
             return_value=("running", None, None),
         ):
             result = adapter.collect(timeout_seconds=1)
@@ -760,7 +839,7 @@ def test_provider_browser_closes_its_page_on_login_redirect(
             return None
 
     with patch(
-        "app.ai_usage.provider_browser.session_factory",
+        "chub_codex_runtime.provider_browser.session_factory",
         return_value=lambda **_kwargs: Session(),
     ):
         with pytest.raises(ProviderBrowserUnavailable, match="login_unavailable"):

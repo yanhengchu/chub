@@ -172,6 +172,44 @@ async def test_codex_runtime_account_check_requires_available_ai_usage(
 
 
 @pytest.mark.anyio
+async def test_codex_runtime_account_check_logs_account_state(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_app(settings)
+    app.state.automation_manager = MagicMock()
+    app.state.automation_manager.check_codex_runtime_account.return_value = (
+        RuntimeAccountEnvironmentState(
+            state="failed",
+            message="Codex Runtime 未安装",
+        )
+    )
+    operations: list[dict[str, object]] = []
+
+    def record_operation(_request, **payload):
+        operations.append(payload)
+        return payload.get("operation_id") or "operation-id"
+
+    monkeypatch.setattr("app.api.automations.log_operation", record_operation)
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers=AUTH,
+    ) as client:
+        response = await client.post("/api/automations/environment/codex/check")
+
+    assert response.status_code == 200
+    assert [operation["status"] for operation in operations] == [
+        "requested",
+        "started",
+        "succeeded",
+    ]
+    assert operations[-1]["reason"] == "account_state=failed"
+
+
+@pytest.mark.anyio
 async def test_browser_profile_rejects_client_paths(settings: Settings) -> None:
     transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(

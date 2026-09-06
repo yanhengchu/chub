@@ -223,6 +223,7 @@ def check_codex_runtime_account(
         status="succeeded",
         target="codex-runtime",
         operation_id=operation_id,
+        reason=f"account_state={result.state}",
     )
     return ApiResponse(data=result)
 

@@ -564,6 +564,7 @@ async def test_quick_worker_restart_uses_fixed_controlled_command(
         assert response.json()["data"]["operation"]["operation_id"].startswith(
             "worker-reload:"
         )
+        operation_id = response.json()["data"]["operation"]["operation_id"]
         launch.assert_called_once_with(app.state.quick_worker_maintenance.command)
         assert [call.kwargs["status"] for call in operation_log.call_args_list[:2]] == [
             "requested",
@@ -571,12 +572,22 @@ async def test_quick_worker_restart_uses_fixed_controlled_command(
         ]
         process.release.set()
         for _attempt in range(20):
-            if app.state.quick_worker_maintenance.operation().status == "succeeded":
+            operation = app.state.quick_worker_maintenance.operation()
+            if (
+                operation is not None
+                and operation.status == "succeeded"
+                and len(operation_log.call_args_list) >= 3
+            ):
                 break
             threading.Event().wait(0.01)
 
     assert app.state.quick_worker_maintenance.operation().status == "succeeded"
-    succeeded = operation_log.call_args_list[-1].kwargs
+    assert len(operation_log.call_args_list) >= 3
+    succeeded = next(
+        call.kwargs
+        for call in reversed(operation_log.call_args_list)
+        if call.kwargs["operation_id"] == operation_id
+    )
     assert succeeded["status"] == "succeeded"
     assert "new_generation=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" in succeeded["reason"]
     state_path = settings.ai_runtime.codex.data_file.with_name(

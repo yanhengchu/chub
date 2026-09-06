@@ -25,8 +25,8 @@
     {
       "id": "chub-external-module",
       "title": "Chub 外置模块功能设计",
-      "summary": "定义 AI Runtime 与任务编排外置模块的压缩包形态、动态加载、设置页展示和轻量接入边界。",
-      "status": "进行中",
+      "summary": "定义当前 Runtime ZIP 外置架构；Codex 第一阶段已验收，Ubuntu 验收和后续外置方向冻结。",
+      "status": "第一阶段已验收",
       "path": "CHUB_EXTERNAL_MODULE_DESIGN.md"
     },
     {

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 import app.services.weekly_report_generation as generation
-from app.codex.usage_settings import (
+from app.ai_runtime.general_settings import (
     AiRuntimeGeneralSettings,
     WeeklyReportSessionSettings,
 )
@@ -39,6 +39,14 @@ class _SessionManager:
 
     def discard_unstarted_session(self, session_id: str) -> None:
         self.sessions.discard(session_id)
+
+    def require_runtime_submission(self, runtime_id: str) -> None:
+        assert runtime_id == self.runtime_id
+
+
+class _UnavailableSessionManager(_SessionManager):
+    def require_runtime_submission(self, runtime_id: str) -> None:
+        raise ApiError(503, "runtime_unavailable", "Codex Runtime is not installed")
 
 
 class _QuickInteractions:
@@ -250,3 +258,19 @@ def test_read_only_weekly_report_session_is_not_runnable(tmp_path) -> None:
         False,
         "当前周报自动化会话为只读权限，无法生成周报产物。",
     )
+
+
+def test_missing_runtime_disables_weekly_generation_even_with_existing_session(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    period = "2026-08-31至2026-09-06"
+    monkeypatch.setattr(generation, "reporting_period", lambda: period)
+    manager = _UnavailableSessionManager(AiRuntimeGeneralSettings())
+    manager.sessions.add("session-1")
+    service = generation.WeeklyReportGenerationService(
+        tmp_path / "weekly-report-generation.json", manager, _QuickInteractions()
+    )
+    service._save_stage(period, "focus", session_id="session-1", task_id="task-1")
+
+    assert service.configuration_ready() == (False, "Codex Runtime is not installed")

@@ -27,16 +27,18 @@ from app.ai_runtime import (
     RuntimeStatus,
     RuntimeTerminalRequest,
 )
-from app.ai_usage.service import AiUsageService
-from app.codex.discovery import CodexSessionDiscovery
-from app.codex.model_catalog import CodexModelCatalog
-from app.codex.rate_limits import CodexRateLimitService
-from app.codex.usage_settings import (
+from app.ai_runtime.general_settings import (
     AiRuntimeSettingsStore,
+    RuntimeSettingsStoreUnavailable,
+)
+from .usage_service import AiUsageService
+from .discovery import CodexSessionDiscovery
+from .model_catalog import CodexModelCatalog
+from .rate_limits import CodexRateLimitService
+from .usage_settings import (
     CodexProviderConfigReader,
     CodexProviderConfigUnavailable,
     CodexUsageSettings,
-    RuntimeSettingsStoreUnavailable,
 )
 from app.core.config import PROJECT_ROOT, Settings
 
@@ -102,6 +104,19 @@ class CodexRuntimeAdapter:
     @property
     def runtime_settings_store(self) -> AiRuntimeSettingsStore:
         return self._runtime_settings_store
+
+    def configure_worker_environment(
+        self,
+        *,
+        executable: str | None,
+        codex_home: Path,
+    ) -> None:
+        """Apply the Worker-only executable override without host type coupling."""
+        self.codex_home = codex_home
+        self.executable = executable or "codex"
+        self.discovery = CodexSessionDiscovery(codex_home)
+        self.model_catalog = CodexModelCatalog(codex_home)
+        self._provider_config_reader = CodexProviderConfigReader(codex_home)
 
     @staticmethod
     def runtime_process_matches(command: tuple[str, ...]) -> bool:

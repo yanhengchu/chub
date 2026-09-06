@@ -3,7 +3,7 @@
 > 状态：已验收
 > 主要读者：AI Agent、实现和排障 Agent；维护人员用于确认运行边界和验收结果。
 > 本文负责：Chub Quick Worker 独立服务的职责、任务权威状态、Session 租约、恢复、通知终态和重启语义，遵循[Chub 总体架构](CHUB_ARCHITECTURE_DESIGN.md)。
-> 本文不负责：长期 Runtime 无关边界（见[Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)）、Session/Activity 枚举与页面语义（见[AI Session 状态模型](AI_SESSION_STATE_DESIGN.md)）以及微信路由与收件人身份（见[OpenClaw 定制集成设计](OPENCLAW_CUSTOMIZATION_DESIGN.md)）。
+> 本文不负责：Runtime ZIP 协议、模块安装/移除、注册确认和模块状态清理（见[Chub 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md)）、长期 Runtime 无关边界（见[Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)）、Session/Activity 枚举与页面语义（见[AI Session 状态模型](AI_SESSION_STATE_DESIGN.md)）以及微信路由与收件人身份（见[OpenClaw 定制集成设计](OPENCLAW_CUSTOMIZATION_DESIGN.md)）。
 > 维护说明：独立服务、跨 Web 重启恢复和 Runtime 通用化基线已完成当前范围验收；协议或状态边界变化时按本文末尾复检规则重新验收。
 
 ## 0. AI Agent 快速理解
@@ -11,7 +11,7 @@
 把本文当作 Quick Worker 服务的运行契约，而不是某个页面或某个脚本的说明：
 
 1. Quick Worker 属于 AI Runtime 层，是与 Chub Web 独立运行的本机后台服务。核心层入口负责认证、业务校验、提交和页面投影；Worker 负责任务、Session 租约、Runner 进程、超时、取消、恢复和最终状态。
-2. 页面快速交互、经第三方服务层进入的微信 Chub 非实时任务和翻译任务都进入 Worker；核心层入口不得回退执行。当前生产只允许固定的 `codex` Runtime Runner。
+2. 页面快速交互、经第三方服务层进入的微信 Chub 非实时任务和翻译任务都进入 Worker；核心层入口不得回退执行。当前生产使用已安装 Codex Runtime 模块提供的 Runner；模块安装、替换或移除的维护流程不由 Worker 文档定义。
 3. 同一逻辑 Session 只能有一个 writer。快速交互提交、实时终端建立连接和恢复流程都必须经过 Worker 租约与实时连接的最终仲裁，不能只依赖页面按钮状态；当前 Quick Worker 在自己的 Session 租约内可以完成自己的原生 ID 绑定，其他 writer 不得被接管。内部翻译 Session 仍复用逻辑 Session，但允许在旧 native Session 空闲且新 ID 未被占用时轮换绑定。
 4. Web 重启不会主动停止 Worker 或已接受任务。新 Web 必须完成 Worker 健康、协议、活动任务、租约、通知和重启状态恢复后，才开放快速交互 Session 写入；实时终端按独立的 Codex PTY/tmux 状态恢复。
 5. 普通任务提交、取消和交付在 Worker 或状态不可确认时必须失败关闭：不猜测任务成功、不重复提交、不在 Web 内执行、不切换 Session 或通知收件人。固定的 Worker 重启是恢复入口，允许在不可用状态下尝试重建，但最终结果仍必须确认。
@@ -22,7 +22,7 @@ AI Agent 修改或排障时，先判断问题是否属于 Worker 服务；再读
 
 ## 1. 服务定位与落地结论
 
-Chub 的非实时 AI 任务已经从 Web 进程中拆出，由 AI Runtime 层的独立 Worker 承载。页面快速交互、微信 Chub 模式任务和翻译任务统一进入 Worker；当前唯一生产 Runtime 仍是 Codex，实时 Session 继续由 tmux 承载。第三方服务只能调用 AI Runtime 的公开提交与状态用例，不能直接操作 Worker 私有状态。
+Chub 的非实时 AI 任务已经从 Web 进程中拆出，由 AI Runtime 层的独立 Worker 承载。页面快速交互、微信 Chub 模式任务和翻译任务统一进入 Worker；当前唯一生产 Runtime 仍是由已安装模块提供的 Codex，实时 Session 继续由 tmux 承载。第三方服务只能调用 AI Runtime 的公开提交与状态用例，不能直接操作 Worker 私有状态。
 
 该方案解决以下核心问题：
 
@@ -336,6 +336,6 @@ Worker 对已交付终态保留有限历史或墓碑，直到 Web 明确确认�
 
 ### 10.1 验收范围与复检
 
-- 已验收范围：独立 Worker、Web 重启恢复、快速交互/微信/翻译任务、Session 租约、任务和通知终态、固定 `codex` Runner、当前协议 `9` 的自动化和契约回归，以及系统升级脚本对 Worker 协议与服务定义的模拟编排。
+- 已验收范围：独立 Worker、Web 重启恢复、快速交互/微信/翻译任务、Session 租约、任务和通知终态、当前安装 Codex 模块提供的 Runner、当前协议 `9` 的自动化和契约回归，以及系统升级脚本对 Worker 协议与服务定义的模拟编排。
 - 未验证或不承诺：第二个真实 Runtime、其他未实际复检的平台，以及本文没有列出的协议兼容或任务迁移能力；自动化覆盖不得替代未完成的平台实机验收。
 - 复检触发：任务权威来源、租约、恢复屏障、通知终态、协议版本、Runtime 能力矩阵、重启门禁或 Web/Worker 服务关系变化时，必须按当前协议重新验证最终状态、操作日志和失败关闭边界。

@@ -790,6 +790,11 @@ input[type="password"] {
   gap: 0.5rem;
 }
 
+.runtime-module-row-actions > button {
+  min-width: 3.5rem;
+  white-space: nowrap;
+}
+
 .runtime-settings-form {
   display: grid;
   gap: 0.75rem;

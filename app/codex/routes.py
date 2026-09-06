@@ -73,6 +73,10 @@ def list_sessions(
     request: Request,
 ) -> ApiResponse[SessionListData]:
     manager = request.app.state.codex_pty_manager
+    runtime_registered = (
+        not isinstance(getattr(manager, "runtime_id", None), str)
+        or manager.runtime_id in manager.runtime_modules.runtime_ids()
+    )
     weixin_chub_mode = request.app.state.weixin_chub_mode
     session_slots = weixin_chub_mode.session_slots_snapshot()
     quick_sessions: dict[str, datetime] = (
@@ -93,7 +97,7 @@ def list_sessions(
                 "weixin_session_slot": session_slots.get(session.id),
             }
         )
-        for session in manager.list_sessions()
+        for session in (manager.list_sessions() if runtime_registered else [])
         if session.workspace_id != "weixin-translation"
     ]
     terminal_available, terminal_reason = manager.submission_available()
@@ -107,6 +111,7 @@ def list_sessions(
         data=SessionListData(
             available=terminal_available,
             unavailable_reason=terminal_reason,
+            runtime_registered=runtime_registered,
             terminal_creation=SessionCreationAvailability(
                 available=terminal_available,
                 reason=terminal_reason,

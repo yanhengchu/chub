@@ -23,6 +23,7 @@ from app.ai_runtime import (
     RuntimeSessionDiscoveryResult,
     RuntimeStatus,
 )
+from app.ai_runtime.external_modules import ExternalRuntimeModuleService
 from app.ai_runtime.enablement import RuntimeEnablement, RuntimeEnablementStore
 from app.codex.models import SessionUsage, WorkspaceInfo
 from app.core.config import PROJECT_ROOT, Settings
@@ -637,15 +638,17 @@ def test_ai_session_manager_keeps_legacy_translation_session_when_usage_unknown(
 
 def test_ai_session_manager_skips_legacy_cleanup_when_runtime_is_unavailable(
     settings: Settings,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
+    service = ExternalRuntimeModuleService(settings)
+    removal = service.remove("codex", operation_id="a" * 32)
+    service.finalize_removal(removal)
     manager = AiSessionManager(settings)
-    manager._require_available = MagicMock(
-        side_effect=ApiError(503, "codex_pty_unavailable", "Codex 暂不可用。")
-    )
     quick_interactions = MagicMock()
     quick_interactions.recovery_ready = True
 
     assert manager.archive_legacy_translation_sessions(quick_interactions) == 0
+    assert "Skipping legacy translation Session cleanup" not in caplog.text
 
 
 def test_ai_session_manager_cleans_stale_translation_discovery_before_binding(
@@ -1702,6 +1705,38 @@ def test_ai_session_manager_removes_externally_archived_native_session(
 
     assert manager.store.get(created.id) is None
     manager.supervisor.stop_backend.assert_called_once_with(created.id)
+
+
+def test_ai_session_manager_recovers_chub_terminal_carrier_after_session_reset(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    recovered = session(
+        settings.ai_runtime.codex.workspace,
+        native_session_id="native-1",
+    )
+    recovered.discovered = True
+    recovered.status = "stopped"
+    manager.store.save(recovered)
+    manager.supervisor.reconcile_after_restart = MagicMock(return_value=set())
+    manager.supervisor.rebind_terminal_carrier_by_native_session = MagicMock(
+        return_value=True
+    )
+    manager.supervisor.owns_terminal_writer = MagicMock(return_value=True)
+
+    manager._reconcile_saved_terminals()
+
+    restored = manager.store.get(recovered.id)
+    assert restored is not None
+    assert restored.status == "running"
+    assert restored.activity == "unknown"
+    usage = manager.ensure_delete_allowed(recovered.id, reconcile=False)
+    assert usage.owner == "terminal"
+    assert usage.phase == "unknown"
+    manager.supervisor.rebind_terminal_carrier_by_native_session.assert_called_once_with(
+        "native-1",
+        recovered.id,
+    )
 
 
 def test_ai_session_manager_upgrade_discard_preserves_native_session(

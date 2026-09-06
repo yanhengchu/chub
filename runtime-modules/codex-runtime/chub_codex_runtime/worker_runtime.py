@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from app.ai_runtime import (
+    DISCOVERED_RUNTIME_WORKSPACE_ID,
     RuntimeDescriptor,
     RuntimeEventSummary,
     RuntimeOperationError,
@@ -13,11 +14,9 @@ from app.ai_runtime import (
     RuntimeWorkerLaunchRequest,
     RuntimeWorkerLaunchSpec,
 )
-from app.codex.runtime_adapter import CodexRuntimeAdapter
-from app.codex.runtime_runner import CodexRuntimeRunner
-
-
-DISCOVERED_RUNTIME_WORKSPACE_ID = "runtime-session"
+from app.core.config import PROJECT_ROOT
+from .runtime_adapter import CodexRuntimeAdapter
+from .runtime_runner import CodexRuntimeRunner
 
 
 class CodexWorkerRuntime:
@@ -69,8 +68,7 @@ class CodexWorkerRuntime:
         workspace = self._workspace_for_turn(request.workspace_id, request.turn)
         argv = [
             sys.executable,
-            "-m",
-            "app.quick_worker_runner",
+            str(Path(__file__).with_name("worker_entry.py")),
             "--task-dir",
             str(request.task_dir),
             "--release-fd",
@@ -79,6 +77,8 @@ class CodexWorkerRuntime:
             "codex",
             "--runtime-executable",
             self._executable,
+            "--chub-root",
+            str(PROJECT_ROOT),
             "--working-directory",
             str(workspace),
         ]

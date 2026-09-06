@@ -3,7 +3,7 @@
 > 状态：已验收
 > 主要读者：AI Agent、实现和排障 Agent；维护人员用于确认 Session 的核心状态和展示边界。
 > 本文负责：Chub 逻辑 Session、原生 Session 映射、入口类型、Activity、使用状态投影、首页展示语义和 Session 操作定义。
-> 本文不负责：操作的接口编排和实现细节、Runtime 私有协议、Quick Worker 任务恢复与通知、终端桥接实现、升级流程和微信路由；这些内容以对应专项文档为准。
+> 本文不负责：操作的接口编排和实现细节、Runtime ZIP 的安装/替换/移除和状态清理、Runtime 私有协议、Quick Worker 任务恢复与通知、终端桥接实现、升级流程和微信路由；这些内容以对应专项文档为准。
 
 ## 1. 核心定义
 
@@ -13,7 +13,7 @@ Chub Session 是 Chub 管理的一条逻辑记录，可以关联一个 Runtime �
 
 - `session_id`：Chub 逻辑 Session 的稳定标识。页面、API 和任务入口统一使用它。
 - `native_session_id`：Runtime 原生 Session 的不透明标识，只由后端解析和保存，客户端不能提交或替换；内部翻译 Session 可在安全确认后由 Worker 轮换当前绑定。
-- `runtime_id`：原生 Session 所属 Runtime，由后端固定写入；当前生产值为 `codex`。
+- `runtime_id`：原生 Session 所属 Runtime，由后端固定写入；当前生产值为 `codex`。Runtime ZIP 的安装和切换不在本文定义。
 
 同一 `(runtime_id, native_session_id)` 只能绑定一条 Chub Session。找不到映射时，不得根据标题、工作目录或页面位置猜测归属。
 
@@ -30,6 +30,8 @@ Chub Session 是 Chub 管理的一条逻辑记录，可以关联一个 Runtime �
 每次实际新建实时终端载体前（包括重启终端后端），Session Manager 生成并持久化一个新的 `terminal_launch_id`；Launcher 与 Hook 必须原样传递，只有当前代次的 Hook 能为未绑定 terminal 认领原生 ID。停止终端会使该代次失效；迟到、缺失或不匹配的 Hook 只被丢弃，不能修改映射。Quick Worker 在每次任务启动前登记当前 `worker_task_id`，无论该 Session 是否已绑定原生 ID；回传原生 ID 时同时提供 Worker 的 `execution_id`，Manager 只接受仍与该 Session 登记匹配的任务/执行代次。Web 从本地任务状态恢复进行中的 Quick 任务时，必须先重建同一认领，再开始向 Worker 对账。任务终态会释放未完成的认领，旧任务结果不得绑定后续 Session 状态。
 
 创建 Chub 映射不等于接管 writer。自动发现的原生 Session 有外部 writer 时显示“其他应用 · 正在使用”；writer 释放后，同一记录在实时会话分组内显示“等待输入”，用户进入时 Chub 才接管终端 writer。writer 检查失败只能显示未知，不能当作空闲。`discovered` 仅是内部来源元数据，不改变用户可见的 Session 类型或列表位置。
+
+Web 启动恢复时，若当前记录的原生 Session 与一个 Chub 命名 tmux 载体的固定 Chub 标识及 `resume` 目标同时匹配，Chub 必须将该载体重绑到当前逻辑 Session 并显示为 Chub 持有的实时会话，而不是“其他应用”。重绑只恢复 Chub 的载体归属，不关闭 Codex、不改变原生 Session，也不匹配或接管不带 Chub 标识的进程；维护者随后可在页面正常进入、归档或删除该 Session。活动阶段仍未知时，不把停止入口错误开放为可安全停止。无法完成这一窄匹配时，仍按外部占用处理。
 
 普通 Session 的 native ID 不允许被不同结果替换；内部翻译 Session 仍复用同一逻辑 Session，但 Worker 可以为新的只读翻译执行返回新的 native ID。只有确认旧 native Session 没有活动 writer 且新 ID 未被其他 Chub Session 占用时，才更新当前绑定。轮换只替换 Chub 当前映射，不主动删除或归档旧 native Session；唯一例外是 4.1 定义的、历史误导入记录的固定启动清理。旧 ID 不再作为该逻辑 Session 的当前入口，未来如需扩展清理范围必须另行定义并复检原生数据边界。
 
@@ -251,6 +253,7 @@ running --停止确认--> stopped
 以下内容不在本文重复维护：
 
 - Runtime 私有命令、Hook 文件、原生协议和 writer 锁格式：见 [Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)。
+- Runtime ZIP 协议、安装/移除和模块状态清理：见 [Chub 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md)。
 - Quick Worker 任务、租约、恢复、通知和 Web 重启：见 [Chub Quick Worker 独立服务设计](CHUB_QUICK_WORKER_DESIGN.md)。
 - OpenClaw、微信身份、固定指令和路由：见 [OpenClaw 定制集成设计](OPENCLAW_CUSTOMIZATION_DESIGN.md)。
 - 页面组件、按钮、弹窗和视觉规范：见 [Chub 前端 UI 模块化设计](FRONTEND_UI_DESIGN.md)。

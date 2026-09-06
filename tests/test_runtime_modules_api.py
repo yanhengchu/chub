@@ -202,7 +202,7 @@ async def test_runtime_module_install_keeps_confirmed_module_when_state_cleanup_
         patch("app.api.runtime_modules.request_drain", new=AsyncMock(return_value={"success": True})),
         patch("app.api.runtime_modules._wait_for_reload", new=AsyncMock(return_value=True)),
         patch("app.api.runtime_modules.clear_runtime_state", new=AsyncMock(return_value={"success": False})),
-        patch("app.api.runtime_modules.log_operation", side_effect=["operation-1", None, None]),
+        patch("app.api.runtime_modules.log_operation", side_effect=["a" * 32, None, None]),
     ):
         async with httpx.AsyncClient(transport=transport, base_url="http://test", headers=AUTHORIZATION) as client:
             response = await client.post(
@@ -225,6 +225,7 @@ async def test_runtime_module_removal_keeps_confirmed_removal_when_state_cleanup
     manager = app.state.ai_session_manager
     removal = SimpleNamespace(module_id="local-test", operation_id="operation-1")
     manager.remove_runtime_module = MagicMock(return_value=removal)
+    manager.runtime_session_ids = MagicMock(return_value=())
     manager.runtime_module_service.rollback_removal = MagicMock()
     manager.runtime_module_service.finalize_removal = MagicMock()
     app.state.quick_worker_maintenance.begin = MagicMock(return_value=True)
@@ -248,7 +249,7 @@ async def test_runtime_module_removal_keeps_confirmed_removal_when_state_cleanup
         patch("app.api.runtime_modules.request_drain", new=AsyncMock(return_value={"success": True})),
         patch("app.api.runtime_modules._wait_for_reload", new=AsyncMock(return_value=True)),
         patch("app.api.runtime_modules.clear_runtime_state", new=AsyncMock(return_value={"success": False})),
-        patch("app.api.runtime_modules.log_operation", side_effect=["operation-1", None, None]),
+        patch("app.api.runtime_modules.log_operation", side_effect=["a" * 32, None, None]),
     ):
         async with httpx.AsyncClient(transport=transport, base_url="http://test", headers=AUTHORIZATION) as client:
             response = await client.delete("/api/runtime-modules/local-test")
@@ -257,6 +258,108 @@ async def test_runtime_module_removal_keeps_confirmed_removal_when_state_cleanup
     assert response.json()["error"]["code"] == "runtime_module_state_cleanup_unconfirmed"
     manager.runtime_module_service.rollback_removal.assert_not_called()
     manager.runtime_module_service.finalize_removal.assert_called_once_with(removal)
+
+
+@pytest.mark.anyio
+async def test_runtime_module_removal_clears_chub_owned_session_tasks(settings) -> None:
+    app = create_app(settings)
+    manager = app.state.ai_session_manager
+    removal = SimpleNamespace(module_id="local-test", operation_id="operation-1")
+    manager.remove_runtime_module = MagicMock(return_value=removal)
+    manager.runtime_session_ids = MagicMock(return_value=("session-1", "session-2"))
+    manager.clear_runtime_module_state = MagicMock()
+    manager.runtime_module_service.finalize_removal = MagicMock()
+    app.state.quick_worker_maintenance.begin = MagicMock(return_value=True)
+    app.state.quick_interactions.remove_session_tasks = MagicMock()
+    health = {
+        "success": True,
+        "data": {
+            "status": "ready",
+            "generation": "a" * 32,
+            "active_tasks": 0,
+            "queued_tasks": 0,
+            "uncertain_tasks": 0,
+            "corrupt_tasks": 0,
+            "runtime_ids": ["codex"],
+            "available_runtime_ids": ["codex"],
+        },
+    }
+    transport = httpx.ASGITransport(app=app)
+
+    with (
+        patch("app.api.runtime_modules.read_health", new=AsyncMock(return_value=health)),
+        patch("app.api.runtime_modules.request_drain", new=AsyncMock(return_value={"success": True})),
+        patch("app.api.runtime_modules._wait_for_reload", new=AsyncMock(return_value=True)),
+        patch("app.api.runtime_modules.clear_runtime_state", new=AsyncMock(return_value={"success": True})),
+        patch("app.api.runtime_modules.log_operation", side_effect=["a" * 32, None, None]),
+    ):
+        async with httpx.AsyncClient(transport=transport, base_url="http://test", headers=AUTHORIZATION) as client:
+            response = await client.delete("/api/runtime-modules/local-test")
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {"module_id": "local-test", "worker_generation": "a" * 32}
+    assert app.state.quick_interactions.remove_session_tasks.call_args_list == [
+        (("session-1",), {}),
+        (("session-2",), {}),
+    ]
+    manager.clear_runtime_module_state.assert_called_once_with("local-test")
+    manager.runtime_module_service.finalize_removal.assert_called_once_with(removal)
+
+
+@pytest.mark.anyio
+async def test_runtime_module_replacement_clears_chub_owned_session_tasks(settings) -> None:
+    app = create_app(settings)
+    manager = app.state.ai_session_manager
+    activation = SimpleNamespace(
+        installed=SimpleNamespace(manifest=SimpleNamespace(module_id="local-test")),
+        operation_id="operation-1",
+    )
+    manager.install_runtime_module = MagicMock(return_value=activation)
+    manager.runtime_module_service.inspect_archive = MagicMock(
+        return_value=SimpleNamespace(module_id="local-test"),
+    )
+    manager.runtime_module_service.mark_worker_reload_requested = MagicMock()
+    manager.runtime_module_service.finalize = MagicMock()
+    manager.runtime_session_ids = MagicMock(return_value=("session-1", "session-2"))
+    manager.clear_runtime_module_state = MagicMock()
+    app.state.quick_worker_maintenance.begin = MagicMock(return_value=True)
+    app.state.quick_interactions.remove_session_tasks = MagicMock()
+    health = {
+        "success": True,
+        "data": {
+            "status": "ready",
+            "generation": "a" * 32,
+            "active_tasks": 0,
+            "queued_tasks": 0,
+            "uncertain_tasks": 0,
+            "corrupt_tasks": 0,
+            "runtime_ids": ["codex", "local-test"],
+            "available_runtime_ids": ["codex", "local-test"],
+        },
+    }
+    transport = httpx.ASGITransport(app=app)
+
+    with (
+        patch("app.api.runtime_modules.read_health", new=AsyncMock(return_value=health)),
+        patch("app.api.runtime_modules.request_drain", new=AsyncMock(return_value={"success": True})),
+        patch("app.api.runtime_modules._wait_for_reload", new=AsyncMock(return_value=True)),
+        patch("app.api.runtime_modules.clear_runtime_state", new=AsyncMock(return_value={"success": True})),
+        patch("app.api.runtime_modules.log_operation", side_effect=["a" * 32, None, None]),
+    ):
+        async with httpx.AsyncClient(transport=transport, base_url="http://test", headers=AUTHORIZATION) as client:
+            response = await client.post(
+                "/api/runtime-modules/install",
+                content=b"zip-content",
+                headers={"X-Chub-Module-Filename": "module.zip"},
+            )
+
+    assert response.status_code == 200
+    assert app.state.quick_interactions.remove_session_tasks.call_args_list == [
+        (("session-1",), {}),
+        (("session-2",), {}),
+    ]
+    manager.clear_runtime_module_state.assert_called_once_with("local-test")
+    manager.runtime_module_service.finalize.assert_called_once_with(activation)
 
 
 @pytest.mark.anyio

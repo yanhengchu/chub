@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from app.codex.manager import CodexPtyManager, PROFILE_MARKER
+from legacy_codex_manager import CodexPtyManager, PROFILE_MARKER
 from app.core.config import Settings
 
 

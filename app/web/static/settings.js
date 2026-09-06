@@ -372,13 +372,16 @@ function runtimeModuleRow(module, { candidate = false } = {}) {
     const badge = document.createElement("span");
     badge.className = `badge ${module.status === "active" ? "badge-success" : "badge-muted"}`;
     badge.textContent = module.status === "active" ? "已激活" : "不可用";
-    const remove = document.createElement("button");
-    remove.className = "button-danger";
-    remove.type = "button";
-    remove.textContent = "移除";
-    remove.disabled = runtimeModuleBusy;
-    remove.addEventListener("click", () => void confirmRuntimeModuleRemoval(module));
-    actions.append(badge, remove);
+    actions.append(badge);
+    if (module.removable !== false) {
+      const remove = document.createElement("button");
+      remove.className = "button-danger";
+      remove.type = "button";
+      remove.textContent = "移除";
+      remove.disabled = runtimeModuleBusy;
+      remove.addEventListener("click", () => void confirmRuntimeModuleRemoval(module));
+      actions.append(remove);
+    }
   }
   row.append(copy, actions);
   return row;
@@ -583,6 +586,7 @@ function renderGeneralRuntimeSettings(data, catalog = null) {
       description.textContent = section.description;
       generalRuntimeSettingsPanel.append(description);
     }
+    if (!Array.isArray(section.fields) || section.fields.length === 0) continue;
     const form = document.createElement("form");
     form.className = "runtime-settings-form";
     const values = Object.fromEntries(

@@ -9,7 +9,15 @@ from unittest.mock import patch
 
 import pytest
 
+from app.ai_runtime import BuiltinRuntimeModuleRegistry
 from app.ai_runtime.external_modules import ExternalRuntimeModuleService, RuntimeModuleInstallError
+
+
+@pytest.fixture(autouse=True)
+def _remove_default_codex_runtime(settings) -> None:
+    service = ExternalRuntimeModuleService(settings)
+    removal = service.remove("codex", operation_id="0" * 32)
+    service.finalize_removal(removal)
 
 
 def _runtime_archive(
@@ -19,6 +27,7 @@ def _runtime_archive(
     chub_version: str | None = None,
     version: str = "1.0.0",
     dependencies: bool = False,
+    is_default: bool = False,
 ) -> bytes:
     manifest = {
         "protocol_version": 1,
@@ -34,8 +43,8 @@ def _runtime_archive(
         manifest["dependencies"] = "requirements.txt"
     source = f'''\
 from app.ai_runtime import RuntimeDescriptor, RuntimeStatus
-from app.codex.runtime_adapter import CodexRuntimeAdapter, CODEX_RUNTIME_CAPABILITIES
-from app.codex.worker_runtime import CodexWorkerRuntime
+from chub_codex_runtime.runtime_adapter import CodexRuntimeAdapter, CODEX_RUNTIME_CAPABILITIES
+from chub_codex_runtime.worker_runtime import CodexWorkerRuntime
 
 DESCRIPTOR = RuntimeDescriptor(runtime_id="{module_id}", capabilities=CODEX_RUNTIME_CAPABILITIES)
 
@@ -51,7 +60,7 @@ class Module:
     descriptor = DESCRIPTOR
     display_name = "Local Test"
     description = "Local Runtime test module."
-    is_default = False
+    is_default = {is_default!r}
     def __init__(self, settings):
         self.settings = settings
     def build_adapter(self):
@@ -85,8 +94,8 @@ def _namespaced_runtime_archive(settings, *, module_id: str, label: str) -> byte
     source = f'''\
 from .helper import DESCRIPTION, DISPLAY_NAME
 from app.ai_runtime import RuntimeDescriptor, RuntimeStatus
-from app.codex.runtime_adapter import CodexRuntimeAdapter, CODEX_RUNTIME_CAPABILITIES
-from app.codex.worker_runtime import CodexWorkerRuntime
+from chub_codex_runtime.runtime_adapter import CodexRuntimeAdapter, CODEX_RUNTIME_CAPABILITIES
+from chub_codex_runtime.worker_runtime import CodexWorkerRuntime
 
 DESCRIPTOR = RuntimeDescriptor(runtime_id="{module_id}", capabilities=CODEX_RUNTIME_CAPABILITIES)
 
@@ -134,6 +143,20 @@ def test_runtime_zip_installs_and_discovers_a_non_default_module(settings) -> No
 
     assert activation.installed.manifest.module_id == "local-test"
     assert [item.manifest.module_id for item in installed] == ["local-test"]
+    assert failures == ()
+
+
+def test_external_runtime_can_provide_the_unique_default(settings) -> None:
+    service = ExternalRuntimeModuleService(settings)
+    activation = service.install(
+        _runtime_archive(settings, module_id="default-test", is_default=True),
+        source_name="default.zip",
+    )
+    service.finalize(activation)
+
+    registry, failures = service.build_registry(BuiltinRuntimeModuleRegistry())
+
+    assert registry.default().descriptor.runtime_id == "default-test"
     assert failures == ()
 
 
@@ -251,6 +274,58 @@ def test_runtime_zip_dependency_install_is_required_before_activation(settings) 
     assert "依赖安装失败" in raised.value.message
 
 
+def test_dependency_failure_during_replacement_preserves_installed_runtime(
+    settings,
+) -> None:
+    service = ExternalRuntimeModuleService(settings)
+    initial = service.install(
+        _runtime_archive(settings, version="1.0.0"),
+        source_name="v1.zip",
+    )
+    service.finalize(initial)
+
+    with (
+        patch(
+            "app.ai_runtime.external_modules.subprocess.run",
+            return_value=SimpleNamespace(returncode=1),
+        ),
+        pytest.raises(RuntimeModuleInstallError, match="依赖安装失败"),
+    ):
+        service.install(
+            _runtime_archive(settings, version="2.0.0", dependencies=True),
+            source_name="v2.zip",
+        )
+
+    installed, failures = service.discover()
+
+    assert [item.manifest.version for item in installed] == ["1.0.0"]
+    assert failures == ()
+    assert not service.activation_journal_path.exists()
+
+
+def test_damaged_installed_runtime_is_isolated_from_other_runtimes(settings) -> None:
+    service = ExternalRuntimeModuleService(settings)
+    healthy = service.install(
+        _runtime_archive(settings, module_id="healthy-test"),
+        source_name="healthy.zip",
+    )
+    service.finalize(healthy)
+    damaged = service.install(
+        _runtime_archive(settings, module_id="damaged-test"),
+        source_name="damaged.zip",
+    )
+    service.finalize(damaged)
+    (damaged.installed.root / "runtime_entry.py").unlink()
+
+    installed, failures = service.discover()
+    registry, registry_failures = service.build_registry(BuiltinRuntimeModuleRegistry())
+
+    assert [item.manifest.module_id for item in installed] == ["healthy-test"]
+    assert [failure.module_id for failure in failures] == ["damaged-test"]
+    assert registry.runtime_ids() == ("healthy-test",)
+    assert [failure.module_id for failure in registry_failures] == ["damaged-test"]
+
+
 def test_generated_verification_runtime_zip_is_installable(settings, tmp_path: Path) -> None:
     output = tmp_path / "verification-runtime.zip"
     result = subprocess.run(
@@ -275,6 +350,48 @@ def test_generated_verification_runtime_zip_is_installable(settings, tmp_path: P
 
     assert [item.manifest.module_id for item in installed] == ["verification-runtime"]
     assert failures == ()
+
+
+def test_generated_codex_runtime_zip_loads_the_packaged_runtime_implementation(
+    settings,
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "codex-runtime.zip"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/build_codex_runtime_zip.py",
+            "--output",
+            str(output),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    service = ExternalRuntimeModuleService(settings)
+    activation = service.install(output.read_bytes(), source_name=output.name)
+    service.finalize(activation)
+    registry, failures = service.build_registry(BuiltinRuntimeModuleRegistry())
+    module = registry.default()
+    adapter = module.build_adapter()
+    runner = module.build_worker_runner(adapter, workspaces={})
+
+    assert failures == ()
+    assert module.descriptor.runtime_id == "codex"
+    assert adapter.__class__.__module__.startswith("_chub_runtime_codex.")
+    assert runner.__class__.__module__.startswith("_chub_runtime_codex.")
+    assert runner.__class__.__module__.endswith("worker_runtime")
+    assert "worker_entry.py" in runner.build_launch.__code__.co_consts
+    with zipfile.ZipFile(output) as archive:
+        for name in archive.namelist():
+            if name.endswith(".py"):
+                assert b"app.codex" not in archive.read(name)
+        models = archive.read("chub_codex_runtime/models.py")
+        assert b"class SessionListData" not in models
+        assert b"class QuickInteractionTask" not in models
+        assert b"class RuntimeManagementData" not in models
 
 
 def test_incomplete_runtime_activation_is_restored_on_next_service_instance(
@@ -329,3 +446,26 @@ def test_finalized_runtime_replacement_has_no_recovery_record(settings) -> None:
     assert recovery is None
     assert [item.manifest.version for item in installed] == ["2.0.0"]
     assert failures == ()
+
+
+def test_runtime_state_cleanup_record_survives_service_recreation(settings) -> None:
+    service = ExternalRuntimeModuleService(settings)
+
+    service.begin_state_cleanup(
+        operation_id="d" * 32,
+        action="remove_runtime_module",
+        module_id="local-test",
+        session_ids=("session-1", "session-2"),
+    )
+
+    pending = ExternalRuntimeModuleService(settings).pending_state_cleanup()
+
+    assert pending is not None
+    assert pending.operation_id == "d" * 32
+    assert pending.action == "remove_runtime_module"
+    assert pending.module_id == "local-test"
+    assert pending.session_ids == ("session-1", "session-2")
+
+    ExternalRuntimeModuleService(settings).complete_state_cleanup("d" * 32)
+
+    assert ExternalRuntimeModuleService(settings).pending_state_cleanup() is None

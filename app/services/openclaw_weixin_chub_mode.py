@@ -16,7 +16,6 @@ from typing import Callable, Literal
 from uuid import uuid4
 
 from app.ai_usage.models import AiUsageData
-from app.ai_usage.service import AiUsageService
 from app.codex.models import (
     QuickInteractionTask,
     QuickInteractionWeixinRoute,
@@ -25,7 +24,6 @@ from app.codex.models import (
     utc_now,
 )
 from app.codex.quick_interactions import build_task_summary
-from app.codex.rate_limits import CodexRateLimitService
 from app.core.config import OpenClawWeixinChubModeConfig, Settings
 from app.core.response import ApiError
 from app.services.deferred_restart import (
@@ -158,7 +156,7 @@ class WeixinChubModeManager:
         route_validator: Callable[[QuickInteractionWeixinRoute], str | None]
         | None = None,
         terminal_reclaimer: Callable[[str], object] | None = None,
-        codex_account_reader: CodexRateLimitService | None = None,
+        codex_account_reader: object | None = None,
         translation_manager=None,
         session_archiver: Callable[[str], object] | None = None,
         session_deleter: Callable[[str], object] | None = None,
@@ -169,7 +167,7 @@ class WeixinChubModeManager:
             object,
         ]
         | None = None,
-        ai_usage_reader: AiUsageService | None = None,
+        ai_usage_reader: object | None = None,
         session_stopper: Callable[[str], object] | None = None,
         session_stop_notifier: Callable[
             [QuickInteractionWeixinRoute, Callable[[], str]], object

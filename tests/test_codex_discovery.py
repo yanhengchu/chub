@@ -2,7 +2,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from app.codex.discovery import CodexSessionDiscovery
+from chub_codex_runtime.discovery import CodexSessionDiscovery
 
 
 def write_jsonl(path: Path, payload: dict[str, object]) -> None:

@@ -7,7 +7,6 @@ from typing import Iterable, Mapping
 from zoneinfo import ZoneInfo
 
 from app.ai_usage.models import AiUsageData
-from app.ai_usage.service import AiUsageService
 from app.codex.models import CodexQuotaData, CodexTokenUsageData
 from app.codex.quick_interactions import build_task_summary
 from app.core.response import ApiError
@@ -423,7 +422,7 @@ def codex_usage_message(
     if usage.status == "available" and today_bucket is not None:
         return (
             f"{weekly_text} · Today "
-            f"{AiUsageService.compact_tokens(today_bucket.tokens)}"
+            f"{compact_token_count(today_bucket.tokens)}"
         )
     return weekly_text
 
@@ -473,7 +472,7 @@ def detailed_usage_message(value: object) -> str:
                     f"{_format_usage_money(value.today.used_usd)} Used"
                 )
             if value.today.tokens is not None:
-                token_text = f"{AiUsageService.compact_tokens(value.today.tokens)} tokens"
+                token_text = f"{compact_token_count(value.today.tokens)} tokens"
                 if value.today.tokens_scope == "local_device":
                     token_text += " (local)"
                 today_parts.append(token_text)
@@ -501,7 +500,7 @@ def detailed_usage_message(value: object) -> str:
         )
         if today_bucket is not None:
             lines.append(
-                f"Today · {AiUsageService.compact_tokens(today_bucket.tokens)} tokens"
+                f"Today · {compact_token_count(today_bucket.tokens)} tokens"
             )
     reset = weekly.resets_at.astimezone()
     lines.append(f"Resets · {reset:%Y-%m-%d %H:%M}")
@@ -522,7 +521,8 @@ def compact_token_count(tokens: int) -> str:
         (1_000, "K"),
     ):
         if tokens >= divisor:
-            return f"{tokens / divisor:.1f}{suffix}"
+            rendered = f"{Decimal(tokens / divisor):.1f}".rstrip("0").rstrip(".")
+            return f"{rendered}{suffix}"
     return str(tokens)
 
 

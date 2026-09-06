@@ -8,7 +8,7 @@ from tempfile import NamedTemporaryFile
 import threading
 from uuid import uuid4
 
-from app.codex.usage_settings import RuntimeSettingsStoreUnavailable
+from app.ai_runtime.general_settings import RuntimeSettingsStoreUnavailable
 from app.core.response import ApiError
 from app.services.weekly_reports import (
     confirm_weekly_report_focus,
@@ -49,12 +49,12 @@ class WeeklyReportGenerationService:
         }
 
     def configuration_ready(self) -> tuple[bool, str | None]:
-        if self._read_period_session_id(reporting_period()) is not None:
-            return True, None
         try:
             settings = self._read_settings()
         except ApiError as exc:
             return False, exc.message
+        if self._read_period_session_id(reporting_period()) is not None:
+            return True, None
         if settings.permission_mode == "read-only":
             return False, "当前周报自动化会话为只读权限，无法生成周报产物。"
         return True, None
@@ -165,12 +165,14 @@ class WeeklyReportGenerationService:
                 "ai_runtime_settings_unavailable",
                 "AI Runtime 通用配置暂时无法读取。",
             ) from exc
-        if settings.weekly_report_session.runtime_id != self._session_manager.runtime_id:
+        runtime_id = settings.weekly_report_session.runtime_id
+        if runtime_id is None:
             raise ApiError(
                 409,
                 "weekly_report_runtime_unavailable",
                 "当前周报自动化 Runtime 不可用。",
             )
+        self._session_manager.require_runtime_submission(runtime_id)
         return settings.weekly_report_session
 
     def _read_stage(self, period: str, stage: str) -> WeeklyReportGenerationStep:

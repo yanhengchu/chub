@@ -30,6 +30,7 @@ class RuntimeModuleData(BaseModel):
     description: str | None = Field(default=None, max_length=300)
     status: Literal["active", "unavailable"]
     reason: str | None = Field(default=None, max_length=300)
+    removable: bool = True
 
 
 class RuntimeModuleListData(BaseModel):
@@ -68,6 +69,7 @@ def _module_list(request: Request) -> RuntimeModuleListData:
                 description=item.manifest.description,
                 status="active" if module_id in active_ids and reason is None else "unavailable",
                 reason=reason,
+                removable=module_id not in manager._builtin_runtime_modules.runtime_ids(),
             )
         )
     known = {item.module_id for item in entries}
@@ -79,6 +81,7 @@ def _module_list(request: Request) -> RuntimeModuleListData:
             description=None,
             status="unavailable",
             reason=reason,
+            removable=False,
         )
         for module_id, reason in failures.items()
         if module_id not in known
@@ -186,6 +189,26 @@ async def _confirm_worker_runtime_removed(request: Request, module_id: str) -> s
     return generation
 
 
+async def complete_runtime_state_cleanup(request: Request, cleanup) -> None:
+    """Clear the Runtime's Worker, Quick and Session state from one journaled plan."""
+    cleared = await clear_runtime_state(
+        request.app.state.settings,
+        runtime_id=cleanup.module_id,
+    )
+    if cleared.get("success") is not True:
+        raise ApiError(
+            503,
+            "runtime_module_state_cleanup_unconfirmed",
+            "Runtime 模块已切换，但关联运行态清理未确认。",
+        )
+    for session_id in cleanup.session_ids:
+        request.app.state.quick_interactions.remove_session_tasks(session_id)
+    request.app.state.ai_session_manager.clear_runtime_module_state(cleanup.module_id)
+    request.app.state.ai_session_manager.runtime_module_service.complete_state_cleanup(
+        cleanup.operation_id
+    )
+
+
 async def _read_archive(request: Request) -> tuple[str, bytes]:
     source_name = request.headers.get("X-Chub-Module-Filename", "runtime-module.zip")
     if len(source_name) > 255:
@@ -240,6 +263,7 @@ async def install_runtime_module(request: Request) -> ApiResponse[RuntimeModuleI
     registry_confirmed = False
     state_cleanup_started = False
     state_cleanup_completed = False
+    activation_finalized = False
     drain_operation_id = f"runtime-module:{operation_id}"
     old_generation: str | None = None
     coordinator = request.app.state.quick_worker_maintenance
@@ -248,6 +272,7 @@ async def install_runtime_module(request: Request) -> ApiResponse[RuntimeModuleI
             archive,
             source_name=source_name,
         )
+        session_ids = manager.runtime_session_ids(preview.module_id)
         old_generation = await _read_idle_worker_generation(request)
         drain = await request_drain(
             request.app.state.settings,
@@ -288,20 +313,24 @@ async def install_runtime_module(request: Request) -> ApiResponse[RuntimeModuleI
         registry_confirmed = True
         # Registry confirmation is the last rollback-prone step. Clear the
         # upgrade boundary only after both Web and Worker use the new module.
-        state_cleanup_started = True
-        cleared = await clear_runtime_state(
-            request.app.state.settings,
-            runtime_id=preview.module_id,
+        manager.runtime_module_service.begin_state_cleanup(
+            operation_id=operation_id,
+            action="install_runtime_module",
+            module_id=preview.module_id,
+            session_ids=session_ids,
         )
-        if cleared.get("success") is not True:
+        state_cleanup_started = True
+        manager.runtime_module_service.finalize(activation)
+        activation_finalized = True
+        cleanup = manager.runtime_module_service.pending_state_cleanup()
+        if cleanup is None:
             raise ApiError(
                 503,
                 "runtime_module_state_cleanup_unconfirmed",
                 "Runtime 模块已激活，但关联运行态清理未确认。",
             )
-        manager.clear_runtime_module_state(preview.module_id)
+        await complete_runtime_state_cleanup(request, cleanup)
         state_cleanup_completed = True
-        manager.runtime_module_service.finalize(activation)
         log_operation(
             request,
             action="install_runtime_module",
@@ -334,15 +363,16 @@ async def install_runtime_module(request: Request) -> ApiResponse[RuntimeModuleI
 
     if activation is not None and registry_confirmed and state_cleanup_started:
         finalized = True
-        try:
-            manager.runtime_module_service.finalize(activation)
-        except Exception:
-            finalized = False
-            error = ApiError(
-                503,
-                "runtime_module_finalization_unconfirmed",
-                "Runtime 模块已激活，但最终状态无法确认。",
-            )
+        if not activation_finalized:
+            try:
+                manager.runtime_module_service.finalize(activation)
+            except Exception:
+                finalized = False
+                error = ApiError(
+                    503,
+                    "runtime_module_finalization_unconfirmed",
+                    "Runtime 模块已激活，但最终状态无法确认。",
+                )
         if finalized and not state_cleanup_completed:
             error = ApiError(
                 503,
@@ -429,9 +459,11 @@ async def remove_runtime_module(module_id: str, request: Request) -> ApiResponse
     registry_confirmed = False
     state_cleanup_started = False
     state_cleanup_completed = False
+    removal_finalized = False
     coordinator = request.app.state.quick_worker_maintenance
     drain_operation_id = f"runtime-module:{operation_id}"
     try:
+        session_ids = manager.runtime_session_ids(module_id)
         old_generation = await _read_idle_worker_generation(request)
         drained_result = await request_drain(
             request.app.state.settings,
@@ -449,18 +481,22 @@ async def remove_runtime_module(module_id: str, request: Request) -> ApiResponse
             raise ApiError(503, "runtime_module_worker_refresh_unconfirmed", "Quick Worker 未能确认 Runtime 已移除。")
         generation = await _confirm_worker_runtime_removed(request, module_id)
         registry_confirmed = True
-        # The removed Runtime is no longer registered in either process, so
-        # a later Worker reload failure cannot force a stateful rollback.
-        state_cleanup_started = True
-        cleared = await clear_runtime_state(
-            request.app.state.settings,
-            runtime_id=module_id,
+        # Module removal discards Chub-owned Runtime state. Native Runtime
+        # data, operation logs and generated artifacts remain outside scope.
+        manager.runtime_module_service.begin_state_cleanup(
+            operation_id=operation_id,
+            action="remove_runtime_module",
+            module_id=module_id,
+            session_ids=session_ids,
         )
-        if cleared.get("success") is not True:
-            raise ApiError(503, "runtime_module_state_cleanup_unconfirmed", "Runtime 模块已移除，但关联运行态清理未确认。")
-        manager.clear_runtime_module_state(module_id)
-        state_cleanup_completed = True
+        state_cleanup_started = True
         manager.runtime_module_service.finalize_removal(removal)
+        removal_finalized = True
+        cleanup = manager.runtime_module_service.pending_state_cleanup()
+        if cleanup is None:
+            raise ApiError(503, "runtime_module_state_cleanup_unconfirmed", "Runtime 模块已移除，但关联运行态清理未确认。")
+        await complete_runtime_state_cleanup(request, cleanup)
+        state_cleanup_completed = True
         log_operation(request, action="remove_runtime_module", status="succeeded", target=module_id, operation_id=operation_id)
         return ApiResponse(data=RuntimeModuleInstallData(module_id=module_id, worker_generation=generation))
     except ApiError as exc:
@@ -471,15 +507,16 @@ async def remove_runtime_module(module_id: str, request: Request) -> ApiResponse
         error = ApiError(500, "runtime_module_remove_failed", "Runtime 模块移除失败，当前模块已保持不变。")
     if removal is not None and registry_confirmed and state_cleanup_started:
         finalized = True
-        try:
-            manager.runtime_module_service.finalize_removal(removal)
-        except Exception:
-            finalized = False
-            error = ApiError(
-                503,
-                "runtime_module_finalization_unconfirmed",
-                "Runtime 模块已移除，但最终状态无法确认。",
-            )
+        if not removal_finalized:
+            try:
+                manager.runtime_module_service.finalize_removal(removal)
+            except Exception:
+                finalized = False
+                error = ApiError(
+                    503,
+                    "runtime_module_finalization_unconfirmed",
+                    "Runtime 模块已移除，但最终状态无法确认。",
+                )
         if finalized and not state_cleanup_completed:
             error = ApiError(
                 503,

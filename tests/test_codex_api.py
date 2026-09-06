@@ -62,6 +62,26 @@ async def test_codex_sessions_allow_loopback(settings: Settings) -> None:
 
 
 @pytest.mark.anyio
+async def test_removed_runtime_hides_sessions_and_blocks_creation(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    manager = app.state.ai_session_manager
+    session = manager.create_session("chub", session_mode="quick")
+    manager.remove_runtime_module("codex", operation_id="a" * 32)
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/api/codex/sessions")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["runtime_registered"] is False
+    assert data["quick_creation"]["available"] is False
+    assert data["sessions"] == []
+
+
+@pytest.mark.anyio
 async def test_codex_session_list_reports_workspaces(settings: Settings) -> None:
     app = create_app(settings)
     manager = MagicMock()
@@ -86,6 +106,7 @@ async def test_codex_session_list_reports_workspaces(settings: Settings) -> None
     assert response.status_code == 200
     data = response.json()["data"]
     assert data["available"] is False
+    assert data["runtime_registered"] is True
     assert data["terminal_creation"] == {
         "available": False,
         "reason": "Codex PTY requires Tailscale",
@@ -130,6 +151,7 @@ async def test_codex_session_list_keeps_terminal_creation_available_without_work
     assert response.status_code == 200
     data = response.json()["data"]
     assert data["available"] is True
+    assert data["runtime_registered"] is True
     assert data["terminal_creation"] == {"available": True, "reason": None}
     assert data["quick_creation"] == {
         "available": False,

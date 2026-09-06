@@ -51,6 +51,7 @@ from app.ai_runtime.external_modules import (
 )
 from app.ai_runtime.worker import (
     BACKGROUND_RUNTIME_CAPABILITIES,
+    DISCOVERED_RUNTIME_WORKSPACE_ID,
     RuntimeWorkerLaunchRequest,
     RuntimeWorkerLaunchSpec,
     RuntimeWorkerRunner,
@@ -105,6 +106,7 @@ __all__ = [
     "RuntimeWriterProbeAdapter",
     "RuntimeUsageSnapshotAdapter",
     "BACKGROUND_RUNTIME_CAPABILITIES",
+    "DISCOVERED_RUNTIME_WORKSPACE_ID",
     "RuntimeWorkerLaunchRequest",
     "RuntimeWorkerLaunchSpec",
     "RuntimeWorkerRunner",

@@ -8,8 +8,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from app.ai_runtime import RuntimeOperationError
-from app.codex.worker_runtime import DISCOVERED_RUNTIME_WORKSPACE_ID
-from app.codex.manager import CodexPtyManager
+from app.ai_runtime import DISCOVERED_RUNTIME_WORKSPACE_ID
+from legacy_codex_manager import CodexPtyManager
 from app.codex.models import CodexSession, SessionInfo, WorkspaceInfo, utc_now
 from app.codex.store import CodexSessionStore
 from app.core.config import Settings
@@ -265,7 +265,7 @@ def test_sync_removes_session_archived_or_deleted_outside_chub(
     manager.runtime_adapter.discovery = MagicMock()
     manager.runtime_adapter.discovery.discover.return_value = []
     manager.runtime_adapter.discovery.session_archive_states.return_value = archive_states
-    monkeypatch.setattr("app.codex.manager.shutil.which", lambda _name: None)
+    monkeypatch.setattr("legacy_codex_manager.shutil.which", lambda _name: None)
 
     manager._sync_native_sessions()
 
@@ -284,7 +284,7 @@ def test_sync_keeps_unindexed_active_native_session(
     manager.runtime_adapter.discovery.session_archive_states.return_value = {
         session.codex_session_id: False
     }
-    monkeypatch.setattr("app.codex.manager.shutil.which", lambda _name: None)
+    monkeypatch.setattr("legacy_codex_manager.shutil.which", lambda _name: None)
 
     manager._sync_native_sessions()
 
@@ -304,7 +304,7 @@ def test_sync_keeps_missing_native_session_while_quick_interaction_runs(
     manager.runtime_adapter.discovery = MagicMock()
     manager.runtime_adapter.discovery.discover.return_value = []
     manager.runtime_adapter.discovery.session_archive_states.return_value = {}
-    monkeypatch.setattr("app.codex.manager.shutil.which", lambda _name: None)
+    monkeypatch.setattr("legacy_codex_manager.shutil.which", lambda _name: None)
 
     manager._sync_native_sessions()
 
@@ -323,7 +323,7 @@ def test_sync_removes_missing_native_session_after_quick_interaction_finishes(
     manager.runtime_adapter.discovery = MagicMock()
     manager.runtime_adapter.discovery.discover.return_value = []
     manager.runtime_adapter.discovery.session_archive_states.return_value = {}
-    monkeypatch.setattr("app.codex.manager.shutil.which", lambda _name: None)
+    monkeypatch.setattr("legacy_codex_manager.shutil.which", lambda _name: None)
 
     manager._sync_native_sessions()
     assert manager.store.get(session.id) is not None
@@ -454,9 +454,9 @@ def test_restart_resets_unverified_running_activity(
     session.status = "running"
     session.activity = "idle"
     CodexSessionStore(settings.ai_runtime.codex.data_file).save(session)
-    monkeypatch.setattr("app.codex.manager.shutil.which", lambda _name: "/tmux")
+    monkeypatch.setattr("legacy_codex_manager.shutil.which", lambda _name: "/tmux")
     monkeypatch.setattr(
-        "app.codex.manager.subprocess.run",
+        "legacy_codex_manager.subprocess.run",
         MagicMock(return_value=CompletedProcess([], 0)),
     )
 
@@ -479,7 +479,7 @@ def test_list_clears_stale_quick_activity_without_active_task(
     manager.runtime_adapter.discovery = MagicMock()
     manager.runtime_adapter.discovery.discover.return_value = [session]
     manager.runtime_adapter.discovery.session_archive_states.return_value = None
-    monkeypatch.setattr("app.codex.manager.shutil.which", lambda _name: None)
+    monkeypatch.setattr("legacy_codex_manager.shutil.which", lambda _name: None)
 
     listed = manager.list_sessions()
 
@@ -562,7 +562,7 @@ def test_terminal_backend_reconnect_preserves_running_tmux_activity(
     manager._running_tmux_count = MagicMock(return_value=0)
     process = MagicMock(pid=1234)
     monkeypatch.setattr(
-        "app.codex.manager.subprocess.Popen",
+        "legacy_codex_manager.subprocess.Popen",
         MagicMock(return_value=process),
     )
 
@@ -594,7 +594,7 @@ def test_terminal_backend_failure_records_retryable_error(
     manager._ttyd_command = MagicMock(return_value=["ttyd"])
     manager._running_tmux_count = MagicMock(return_value=0)
     monkeypatch.setattr(
-        "app.codex.manager.subprocess.Popen",
+        "legacy_codex_manager.subprocess.Popen",
         MagicMock(side_effect=OSError("failed")),
     )
 
@@ -615,9 +615,9 @@ def test_refresh_preserves_terminal_error_until_retry(
     session.status = "error"
     session.error = "terminal_backend_failed"
     manager.store.save(session)
-    monkeypatch.setattr("app.codex.manager.shutil.which", lambda _name: "/tmux")
+    monkeypatch.setattr("legacy_codex_manager.shutil.which", lambda _name: "/tmux")
     monkeypatch.setattr(
-        "app.codex.manager.subprocess.run",
+        "legacy_codex_manager.subprocess.run",
         MagicMock(return_value=CompletedProcess([], 1)),
     )
 
@@ -638,7 +638,7 @@ def test_archive_uses_codex_cli_and_removes_mapping(
     monkeypatch.setattr(manager, "get_session", lambda _session_id: session)
     monkeypatch.setattr(manager, "stop_session", MagicMock())
     run = MagicMock(return_value=CompletedProcess([], 0))
-    monkeypatch.setattr("app.codex.manager.subprocess.run", run)
+    monkeypatch.setattr("legacy_codex_manager.subprocess.run", run)
 
     manager.archive_session(session.id)
 
@@ -662,7 +662,7 @@ def test_archive_failure_preserves_mapping(
     monkeypatch.setattr(manager, "get_session", lambda _session_id: session)
     monkeypatch.setattr(manager, "stop_session", MagicMock())
     monkeypatch.setattr(
-        "app.codex.manager.subprocess.run",
+        "legacy_codex_manager.subprocess.run",
         MagicMock(return_value=CompletedProcess([], 1, stderr="failed")),
     )
 
@@ -798,7 +798,7 @@ def test_delete_failure_preserves_mapping(
     monkeypatch.setattr(manager, "get_session", lambda _session_id: session)
     monkeypatch.setattr(manager, "stop_session", MagicMock())
     monkeypatch.setattr(
-        "app.codex.manager.subprocess.run",
+        "legacy_codex_manager.subprocess.run",
         MagicMock(return_value=CompletedProcess([], 1, stderr="failed")),
     )
 

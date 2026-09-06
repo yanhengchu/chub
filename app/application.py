@@ -46,6 +46,7 @@ from app.api.status import router as status_router
 from app.ai_session import AiSessionManager
 from app.ai_session.operations import archive_session, delete_session
 from app.codex.quick_interactions import QuickInteractionManager
+from app.ai_runtime import RuntimeOperationError
 from app.ai_runtime.usage import RuntimeUsageService
 from app.codex.routes import api_router as codex_api_router
 from app.codex.routes import web_router as codex_web_router
@@ -93,6 +94,7 @@ from app.services.system_upgrade import (
     system_upgrade_restart_readiness,
 )
 from app.quick_worker import (
+    clear_runtime_state,
     read_health,
     read_health_sync,
     request_drain,
@@ -253,9 +255,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # Codex Session Store is cleaned by the fixed upgrade flow and is never
     # used as a startup-time compatibility switch.
     codex_pty_manager = AiSessionManager(resolved_settings)
-    codex_rate_limits = codex_pty_manager.codex_rate_limits
+    class CurrentCodexRateLimits:
+        def read(self, *, force: bool = False):
+            return codex_pty_manager.codex_rate_limits.read(force=force)
+
+        def read_account_status(self, *, force: bool = False):
+            return codex_pty_manager.codex_rate_limits.read_account_status(force=force)
+
+    codex_rate_limits = CurrentCodexRateLimits()
     ai_usage = RuntimeUsageService(
-        codex_pty_manager.runtime_registry,
+        lambda: codex_pty_manager.runtime_registry,
         default_runtime_id=codex_pty_manager.runtime_id,
     )
     completion_notifier = OpenClawCompletionNotifier(
@@ -970,6 +979,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         worker_maintenance_recovery_task = None
         system_upgrade_recovery_task = None
         runtime_module_recovery_task = None
+        runtime_state_cleanup_task = None
         runtime_module_recovery = codex_pty_manager.runtime_module_recovery
         if runtime_module_recovery is not None:
             write_operation(
@@ -1037,6 +1047,65 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 restore_runtime_module_worker()
             )
             await asyncio.sleep(0)
+
+        async def recover_runtime_module_state_cleanup() -> None:
+            """Retry only the deferred local state cleanup for one Runtime."""
+            reported_failure = False
+            while True:
+                try:
+                    cleanup = codex_pty_manager.runtime_module_service.pending_state_cleanup()
+                except Exception:
+                    logging.getLogger("hub.runtime_modules").warning(
+                        "Unable to read deferred Runtime module state cleanup",
+                        exc_info=True,
+                    )
+                    return
+                if cleanup is None:
+                    reported_failure = False
+                    await asyncio.sleep(5)
+                    continue
+                try:
+                    cleared = await clear_runtime_state(
+                        resolved_settings,
+                        runtime_id=cleanup.module_id,
+                    )
+                    if cleared.get("success") is not True:
+                        raise OSError("Quick Worker Runtime state cleanup was not confirmed")
+                    for session_id in cleanup.session_ids:
+                        quick_interactions.remove_session_tasks(session_id)
+                    codex_pty_manager.clear_runtime_module_state(cleanup.module_id)
+                    codex_pty_manager.runtime_module_service.complete_state_cleanup(
+                        cleanup.operation_id
+                    )
+                    write_operation(
+                        operation_id=f"runtime-module-state-cleanup:{cleanup.operation_id}",
+                        action="recover_runtime_module_state_cleanup",
+                        status="succeeded",
+                        target=cleanup.module_id,
+                        source_ip="127.0.0.1",
+                    )
+                    reported_failure = False
+                    continue
+                except Exception:
+                    if not reported_failure:
+                        logging.getLogger("hub.runtime_modules").warning(
+                            "Deferred Runtime module state cleanup is pending",
+                            exc_info=True,
+                        )
+                        write_operation(
+                            operation_id=f"runtime-module-state-cleanup:{cleanup.operation_id}",
+                            action="recover_runtime_module_state_cleanup",
+                            status="failed",
+                            target=cleanup.module_id,
+                            source_ip="127.0.0.1",
+                            reason="runtime module state cleanup remains pending",
+                        )
+                        reported_failure = True
+                    await asyncio.sleep(5)
+
+        runtime_state_cleanup_task = asyncio.create_task(
+            recover_runtime_module_state_cleanup()
+        )
         await asyncio.to_thread(quick_interactions.start_worker_reconciliation)
         if quick_interactions.recovery_ready and not system_upgrade.writes_blocked():
             await asyncio.to_thread(
@@ -1123,6 +1192,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 runtime_module_recovery_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await runtime_module_recovery_task
+            if runtime_state_cleanup_task is not None:
+                runtime_state_cleanup_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await runtime_state_cleanup_task
             if worker_maintenance_recovery_task is not None:
                 worker_maintenance_recovery_task.cancel()
                 with suppress(asyncio.CancelledError):
@@ -1175,8 +1248,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.terminal_connections = terminal_connections
     application.state.maintenance_terminal = maintenance_terminal
     def check_codex_runtime_account() -> RuntimeAccountEnvironmentState:
-        usage = ai_usage.read(force=True)
         checked_at = datetime.now().astimezone()
+        try:
+            usage = ai_usage.read(force=True)
+        except RuntimeOperationError:
+            return RuntimeAccountEnvironmentState(
+                state="failed",
+                message="Codex Runtime 当前不可用",
+                checked_at=checked_at,
+            )
         if usage.status == "available" and usage.source == "account_login":
             return RuntimeAccountEnvironmentState(
                 state="available",

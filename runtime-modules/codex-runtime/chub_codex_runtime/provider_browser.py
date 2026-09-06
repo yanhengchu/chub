@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 
 from app.ai_usage.models import AiFiveHourUsage, AiTodayUsage, AiWeeklyUsage
 from app.automations.browser import debug_chrome_status, session_factory
-from app.codex.usage_settings import CodexUsageSettings
+from .usage_settings import CodexUsageSettings
 from app.core.config import AutomationsConfig
 
 

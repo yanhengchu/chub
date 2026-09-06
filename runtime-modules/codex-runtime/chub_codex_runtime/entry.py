@@ -5,29 +5,19 @@ from pathlib import Path
 
 from app.ai_runtime import (
     AgentRuntimeAdapter,
-    BuiltinRuntimeModuleRegistry,
     RuntimeDescriptor,
     RuntimeOperationError,
     RuntimeWorkerRunner,
 )
-from app.codex.runtime_adapter import CODEX_RUNTIME_DESCRIPTOR, CodexRuntimeAdapter
-from app.codex.worker_runtime import CodexWorkerRuntime
 from app.core.config import Settings
 
+from .runtime_adapter import CODEX_RUNTIME_DESCRIPTOR, CodexRuntimeAdapter
+from .worker_runtime import CodexWorkerRuntime
 
-class CodexBuiltinRuntimeModule:
-    """The current trusted Codex Runtime registered without external loading."""
 
-    def __init__(
-        self,
-        settings: Settings,
-        *,
-        codex_home: Path | None = None,
-        executable: str | None = None,
-    ) -> None:
+class CodexRuntimeModule:
+    def __init__(self, settings: Settings) -> None:
         self._settings = settings
-        self._codex_home = codex_home
-        self._executable = executable
 
     @property
     def descriptor(self) -> RuntimeDescriptor:
@@ -46,10 +36,24 @@ class CodexBuiltinRuntimeModule:
         return True
 
     def build_adapter(self) -> CodexRuntimeAdapter:
-        return CodexRuntimeAdapter(
-            self._settings,
-            codex_home=self._codex_home,
-            executable=self._executable,
+        return CodexRuntimeAdapter(self._settings)
+
+    def configure_worker_adapter(
+        self,
+        adapter: AgentRuntimeAdapter,
+        *,
+        executable: str | None,
+        codex_home: Path,
+    ) -> None:
+        if not isinstance(adapter, CodexRuntimeAdapter):
+            raise RuntimeOperationError(
+                "runtime_module_wiring_invalid",
+                "Codex Runtime module requires its own Adapter",
+                kind="conflict",
+            )
+        adapter.configure_worker_environment(
+            executable=executable,
+            codex_home=codex_home,
         )
 
     def build_worker_runner(
@@ -66,23 +70,10 @@ class CodexBuiltinRuntimeModule:
             )
         return CodexWorkerRuntime(
             adapter,
-            executable=self._executable,
+            executable=adapter.executable,
             workspaces=dict(workspaces),
         )
 
 
-def create_builtin_runtime_modules(
-    settings: Settings,
-    *,
-    codex_home: Path | None = None,
-    codex_executable: str | None = None,
-) -> BuiltinRuntimeModuleRegistry:
-    return BuiltinRuntimeModuleRegistry(
-        [
-            CodexBuiltinRuntimeModule(
-                settings,
-                codex_home=codex_home,
-                executable=codex_executable,
-            )
-        ]
-    )
+def create_runtime_module(settings: Settings) -> CodexRuntimeModule:
+    return CodexRuntimeModule(settings)

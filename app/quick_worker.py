@@ -25,9 +25,12 @@ from app.core.logger import (
     configure_worker_operation_logging,
     configure_worker_runtime_logging,
 )
-from app.ai_runtime import WorkerRuntimeRegistry, validate_runtime_wiring
+from app.ai_runtime import (
+    BuiltinRuntimeModuleRegistry,
+    WorkerRuntimeRegistry,
+    validate_runtime_wiring,
+)
 from app.ai_runtime.external_modules import ExternalRuntimeModuleService
-from app.codex.runtime_module import create_builtin_runtime_modules
 from app.quick_worker_tasks import (
     RuntimeTaskSubmission,
     TestTaskSubmission,
@@ -292,25 +295,30 @@ class QuickWorkerServer:
                     if codex_home is not None
                     else Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
                 )
-                builtin_runtime_modules = create_builtin_runtime_modules(
-                    settings,
-                    codex_home=resolved_codex_home,
-                    codex_executable=resolved_executable,
+                runtime_modules, failures = ExternalRuntimeModuleService(settings).build_registry(
+                    BuiltinRuntimeModuleRegistry()
                 )
-                runtime_modules, failures = ExternalRuntimeModuleService(
-                    settings
-                ).build_registry(builtin_runtime_modules)
                 for failure in failures:
                     LOGGER.warning(
                         "Runtime module unavailable: module_id=%s reason=%s",
                         failure.module_id,
                         failure.reason,
                     )
-                builtin_runtime_ids = set(builtin_runtime_modules.runtime_ids())
                 for runtime_id in runtime_modules.runtime_ids():
                     runtime_module = runtime_modules.require(runtime_id)
                     try:
                         adapter = runtime_module.build_adapter()
+                        configure_worker_adapter = getattr(
+                            runtime_module,
+                            "configure_worker_adapter",
+                            None,
+                        )
+                        if callable(configure_worker_adapter):
+                            configure_worker_adapter(
+                                adapter,
+                                executable=resolved_executable,
+                                codex_home=resolved_codex_home,
+                            )
                         runner = runtime_module.build_worker_runner(
                             adapter,
                             workspaces=codex_workspaces,
@@ -318,8 +326,6 @@ class QuickWorkerServer:
                         validate_runtime_wiring(adapter, runner)
                         runners.append(runner)
                     except Exception:
-                        if runtime_id in builtin_runtime_ids:
-                            raise
                         LOGGER.warning(
                             "Runtime module unavailable during Worker startup: module_id=%s",
                             runtime_id,

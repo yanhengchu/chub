@@ -24,7 +24,7 @@ from app.ai_runtime import (
     RuntimeTurnRequest,
     RuntimeWorkerLaunchRequest,
 )
-from app.codex.worker_runtime import CodexWorkerRuntime
+from chub_codex_runtime.worker_runtime import CodexWorkerRuntime
 from app.quick_worker import (
     HEALTH_PROTOCOL_VERSION,
     PROTOCOL_VERSION,

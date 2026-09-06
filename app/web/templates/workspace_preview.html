@@ -355,7 +355,7 @@
             <a href="/?section=automations"{% if workspace_section == "automations" %} aria-current="page" class="is-current"{% endif %}><span class="workspace-preview-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><rect x="4" y="5" width="16" height="15" rx="2"></rect><path d="M4 9h16M7 3v4M17 3v4M14 12l4 2.5-4 2.5Z"></path></svg></span><span>自动化</span></a>
             <a href="/?section=project-docs"{% if workspace_section == "project-docs" %} aria-current="page" class="is-current"{% endif %}><span class="workspace-preview-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M6 3.5h9l3 3V20a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1Z"></path><path d="M14 3.5V7h4M8.5 11h7M8.5 15h7"></path></svg></span><span>项目资料</span></a>
           </nav>
-          <section class="workspace-preview-sessions" aria-labelledby="workspace-preview-sessions-title">
+          <section id="workspace-preview-sessions" class="workspace-preview-sessions" aria-labelledby="workspace-preview-sessions-title" hidden>
             <p id="workspace-preview-sessions-title">AI Session</p>
             <button id="workspace-session-create" class="workspace-preview-create" type="button" disabled>+ New Session</button>
             <div id="workspace-session-list" class="workspace-preview-session-list" aria-live="polite"></div>

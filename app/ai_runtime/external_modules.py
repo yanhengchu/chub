@@ -28,6 +28,7 @@ from app.core.config import Settings
 MANIFEST_NAME = "chub-module.json"
 INSTALL_METADATA_NAME = ".chub-install.json"
 ACTIVATION_JOURNAL_NAME = "runtime-module-activation.json"
+STATE_CLEANUP_NAME = "runtime-module-state-cleanup.json"
 MODULE_PROTOCOL_VERSION = 1
 MAX_MANIFEST_BYTES = 32 * 1024
 MAX_ARCHIVE_MEMBERS = 500
@@ -77,6 +78,16 @@ class _ActivationJournal(BaseModel):
     phase: Literal["activated", "worker_reload_requested", "removed"] = "activated"
 
 
+class _StateCleanupRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    version: Literal[1] = 1
+    operation_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    action: Literal["install_runtime_module", "remove_runtime_module"]
+    module_id: str = Field(pattern=RUNTIME_MODULE_ID_PATTERN)
+    session_ids: tuple[str, ...] = Field(default=(), max_length=500)
+
+
 @dataclass(frozen=True)
 class InstalledRuntimeModule:
     manifest: _Manifest
@@ -96,6 +107,14 @@ class RuntimeModuleRecovery:
     operation_id: str
     module_id: str
     action: Literal["install_runtime_module", "remove_runtime_module"]
+
+
+@dataclass(frozen=True)
+class RuntimeModuleStateCleanup:
+    operation_id: str
+    action: Literal["install_runtime_module", "remove_runtime_module"]
+    module_id: str
+    session_ids: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -142,6 +161,7 @@ class ExternalRuntimeModuleService:
         self.runtimes_dir = self.root / "runtimes"
         self.staging_dir = self.root / ".staging"
         self.activation_journal_path = self.staging_dir / ACTIVATION_JOURNAL_NAME
+        self.state_cleanup_path = self.staging_dir / STATE_CLEANUP_NAME
 
     def recover_incomplete_activation(self) -> RuntimeModuleRecovery | None:
         """Restore the previous module after a process stopped mid-activation."""
@@ -234,14 +254,6 @@ class ExternalRuntimeModuleService:
         for runtime_id in builtin.runtime_ids():
             registry.register(builtin.require(runtime_id))
         for installed in modules:
-            if installed.module.is_default:
-                failures += (
-                    RuntimeModuleLoadFailure(
-                        installed.manifest.module_id,
-                        "外置 Runtime 在 Codex 外置迁移前不能成为默认 Runtime。",
-                    ),
-                )
-                continue
             try:
                 registry.register(installed.module)
             except RuntimeOperationError as exc:
@@ -358,6 +370,64 @@ class ExternalRuntimeModuleService:
     def finalize_removal(self, removal: RuntimeModuleRemoval) -> None:
         self._clear_activation_journal(removal.operation_id)
         shutil.rmtree(removal.previous_root, ignore_errors=True)
+
+    def begin_state_cleanup(
+        self,
+        *,
+        operation_id: str,
+        action: Literal["install_runtime_module", "remove_runtime_module"],
+        module_id: str,
+        session_ids: tuple[str, ...],
+    ) -> None:
+        self._prepare_root()
+        record = _StateCleanupRecord(
+            operation_id=operation_id,
+            action=action,
+            module_id=module_id,
+            session_ids=session_ids,
+        )
+        existing = self.pending_state_cleanup()
+        if existing is not None and existing.operation_id != operation_id:
+            raise self._invalid("Runtime 模块状态清理仍在恢复。")
+        temporary = self.state_cleanup_path.with_suffix(".tmp")
+        try:
+            temporary.write_text(record.model_dump_json(), encoding="utf-8")
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, self.state_cleanup_path)
+        except OSError as exc:
+            temporary.unlink(missing_ok=True)
+            raise self._invalid("Runtime 模块状态清理记录不可写入。") from exc
+
+    def pending_state_cleanup(self) -> RuntimeModuleStateCleanup | None:
+        try:
+            raw = self.state_cleanup_path.read_bytes()
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise self._invalid("Runtime 模块状态清理记录不可读取。") from exc
+        if len(raw) > MAX_MANIFEST_BYTES:
+            raise self._invalid("Runtime 模块状态清理记录无效。")
+        try:
+            record = _StateCleanupRecord.model_validate_json(raw)
+        except ValidationError as exc:
+            raise self._invalid("Runtime 模块状态清理记录无效。") from exc
+        return RuntimeModuleStateCleanup(
+            operation_id=record.operation_id,
+            action=record.action,
+            module_id=record.module_id,
+            session_ids=record.session_ids,
+        )
+
+    def complete_state_cleanup(self, operation_id: str) -> None:
+        record = self.pending_state_cleanup()
+        if record is None:
+            return
+        if record.operation_id != operation_id:
+            raise self._invalid("Runtime 模块状态清理记录已变化。")
+        try:
+            self.state_cleanup_path.unlink(missing_ok=True)
+        except OSError as exc:
+            raise self._invalid("Runtime 模块状态清理记录无法清理。") from exc
 
     def rollback_removal(self, removal: RuntimeModuleRemoval) -> None:
         if not is_runtime_module_id(removal.module_id):

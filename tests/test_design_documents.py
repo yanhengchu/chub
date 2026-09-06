@@ -284,13 +284,18 @@ def test_registered_project_documents_exist() -> None:
     assert all(service._document_path(document).is_file() for document in documents)
     assert all(
         document.status in service.ALLOWED_DOCUMENT_STATUSES
-        and 2 <= len(document.status) <= 4
+        and 2 <= len(document.status) <= 7
         for document in documents
     )
     assert any(
         document.id == "project-readme"
         and document.status == "持续维护"
         and service._document_path(document) == service.PROJECT_ROOT / "README.md"
+        for document in documents
+    )
+    assert any(
+        document.id == "chub-external-module"
+        and document.status == "第一阶段已验收"
         for document in documents
     )
 

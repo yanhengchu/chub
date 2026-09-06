@@ -9,7 +9,7 @@ from app.ai_runtime import (
     RuntimeSettingsSection,
     RuntimeSettingsUpdate,
 )
-from app.codex.usage_settings import (
+from app.ai_runtime.general_settings import (
     AiRuntimeGeneralSettings,
     RuntimeSettingsStoreUnavailable,
 )
@@ -30,7 +30,15 @@ def read_ai_usage(
     request: Request,
     refresh: bool = Query(default=False),
 ) -> ApiResponse[AiUsageData]:
-    return ApiResponse(data=request.app.state.ai_usage.read(force=refresh))
+    try:
+        usage = request.app.state.ai_usage.read(force=refresh)
+    except RuntimeOperationError as exc:
+        raise ApiError(
+            503,
+            "ai_runtime_unavailable",
+            "AI Runtime 当前不可用。",
+        ) from exc
+    return ApiResponse(data=usage)
 
 
 def _general_runtime_settings(request: Request) -> AiRuntimeGeneralSettingsData:
@@ -42,6 +50,51 @@ def _general_runtime_settings(request: Request) -> AiRuntimeGeneralSettingsData:
             "ai_runtime_settings_unavailable",
             "AI Runtime 通用配置暂时无法读取。",
         ) from exc
+    manager = request.app.state.ai_session_manager
+    weekly_runtime_available = manager.runtime_id in manager.runtime_modules.runtime_ids()
+    weekly_report_section = RuntimeSettingsSection(
+        id="weekly-report-session",
+        title="周报自动化会话",
+        description=(
+            "用于生成重点确认清单和正式周报的新建 Quick Session。"
+            if weekly_runtime_available
+            else "当前没有可用于周报生成的 AI Runtime；资料下载仍可独立运行。"
+        ),
+        fields=(
+            (
+                RuntimeSettingsField(
+                    id="weekly-report-runtime",
+                    label="AI Runtime",
+                    description="当前只接入 Codex；后续已接入 Runtime 会在这里提供选择。",
+                    input_type="select",
+                    value=general.weekly_report_session.runtime_id or manager.runtime_id,
+                ),
+                RuntimeSettingsField(
+                    id="weekly-report-permission",
+                    label="权限",
+                    description="只读权限不能生成周报产物，运行入口会保持不可用。",
+                    input_type="select",
+                    value=general.weekly_report_session.permission_mode,
+                ),
+                RuntimeSettingsField(
+                    id="weekly-report-model",
+                    label="模型",
+                    description="仅影响之后新建的周报生成 Session。",
+                    input_type="select",
+                    value=general.weekly_report_session.model or "__default__",
+                ),
+                RuntimeSettingsField(
+                    id="weekly-report-reasoning",
+                    label="推理等级",
+                    description="仅影响之后新建的周报生成 Session。",
+                    input_type="select",
+                    value=general.weekly_report_session.reasoning_effort or "__default__",
+                ),
+            )
+            if weekly_runtime_available
+            else ()
+        ),
+    )
     return AiRuntimeGeneralSettingsData(
         sections=(
             RuntimeSettingsSection(
@@ -59,41 +112,7 @@ def _general_runtime_settings(request: Request) -> AiRuntimeGeneralSettingsData:
                     ),
                 ),
             ),
-            RuntimeSettingsSection(
-                id="weekly-report-session",
-                title="周报自动化会话",
-                description="用于生成重点确认清单和正式周报的新建 Quick Session。",
-                fields=(
-                    RuntimeSettingsField(
-                        id="weekly-report-runtime",
-                        label="AI Runtime",
-                        description="当前只接入 Codex；后续已接入 Runtime 会在这里提供选择。",
-                        input_type="select",
-                        value=general.weekly_report_session.runtime_id,
-                    ),
-                    RuntimeSettingsField(
-                        id="weekly-report-permission",
-                        label="权限",
-                        description="只读权限不能生成周报产物，运行入口会保持不可用。",
-                        input_type="select",
-                        value=general.weekly_report_session.permission_mode,
-                    ),
-                    RuntimeSettingsField(
-                        id="weekly-report-model",
-                        label="模型",
-                        description="仅影响之后新建的周报生成 Session。",
-                        input_type="select",
-                        value=general.weekly_report_session.model or "__default__",
-                    ),
-                    RuntimeSettingsField(
-                        id="weekly-report-reasoning",
-                        label="推理等级",
-                        description="仅影响之后新建的周报生成 Session。",
-                        input_type="select",
-                        value=general.weekly_report_session.reasoning_effort or "__default__",
-                    ),
-                ),
-            ),
+            weekly_report_section,
         ),
     )
 
@@ -163,6 +182,12 @@ def update_general_runtime_settings(
             reasoning_effort = payload.values["weekly-report-reasoning"]
             if not all(isinstance(value, str) and value.strip() for value in (runtime_id, permission_mode, model, reasoning_effort)):
                 raise ValueError("weekly report session settings are required")
+            if runtime_id not in request.app.state.ai_session_manager.runtime_modules.runtime_ids():
+                raise ApiError(
+                    409,
+                    "weekly_report_runtime_unavailable",
+                    "当前周报自动化 Runtime 不可用。",
+                )
             model = None if model == "__default__" else model
             reasoning_effort = None if reasoning_effort == "__default__" else reasoning_effort
             request.app.state.ai_session_manager.validate_model(model, reasoning_effort)
@@ -177,6 +202,15 @@ def update_general_runtime_settings(
                     },
                 }
             )
+    except ApiError:
+        log_operation(
+            request,
+            action="update_ai_runtime_general_settings",
+            status="failed",
+            target="general",
+            operation_id=operation_id,
+        )
+        raise
     except ValueError as exc:
         log_operation(
             request,

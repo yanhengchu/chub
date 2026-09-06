@@ -67,6 +67,12 @@ const result = {
     archivePending: false,
     promptLength: 4,
   }),
+  unavailable: sessionView.buildSessionState({
+    session: { ...session, runtime_submission_available: false, runtime_submission_reason: "Codex Runtime is not installed" },
+    activeInteraction: false,
+    archivePending: false,
+    promptLength: 4,
+  }),
   creation: sessionView.buildCreationState({
     available: true,
     workspaces: [
@@ -134,6 +140,7 @@ process.stdout.write(JSON.stringify(result));
     assert behavior["uncertain"]["archiveBusy"] is False
     assert behavior["uncertain"]["archiveLabel"] == "归档 Session"
     assert behavior["uncertain"]["deleteBusy"] is False
+    assert behavior["unavailable"]["submissionReason"] == "Codex Runtime is not installed"
     assert behavior["creation"]["disabled"] is False
     assert behavior["creation"]["label"] == "新建 Session"
     assert [item["id"] for item in behavior["switcher"]["items"]] == [

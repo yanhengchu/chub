@@ -2,6 +2,7 @@
 
 (() => {
   const createButton = document.getElementById("workspace-session-create");
+  const sessionSection = document.getElementById("workspace-preview-sessions");
   const sessionList = document.getElementById("workspace-session-list");
   const quickSessionToolbar = document.getElementById("workspace-quick-session-toolbar");
   const dialog = document.getElementById("workspace-session-create-dialog");
@@ -24,6 +25,7 @@
 
   if (
     !(createButton instanceof HTMLButtonElement)
+    || !(sessionSection instanceof HTMLElement)
     || !(sessionList instanceof HTMLElement)
     || !(quickSessionToolbar instanceof HTMLElement)
     || !(dialog instanceof HTMLDialogElement)
@@ -116,6 +118,7 @@
   const isSessionListData = (data) => (
     data
     && typeof data === "object"
+    && typeof data.runtime_registered === "boolean"
     && Array.isArray(data.sessions)
     && Array.isArray(data.workspaces)
   );
@@ -704,6 +707,7 @@
   };
 
   const applySessionData = (data, { restoreSelectedSession = false } = {}) => {
+    sessionSection.hidden = !data.runtime_registered;
     creation = {
       quick: data.quick_creation || { available: false },
       terminal: data.terminal_creation || { available: false },

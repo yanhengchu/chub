@@ -21,7 +21,15 @@ DOCUMENTS_ROOT = PROJECT_ROOT / "docs"
 DOCUMENTS_INDEX = DOCUMENTS_ROOT / "design_documents.json"
 MAX_DOCUMENT_BYTES = 512 * 1024
 ALLOWED_DOCUMENT_STATUSES = frozenset(
-    {"调研中", "待实现", "进行中", "待验收", "已验收", "持续维护"}
+    {
+        "调研中",
+        "待实现",
+        "进行中",
+        "待验收",
+        "第一阶段已验收",
+        "已验收",
+        "持续维护",
+    }
 )
 LOGGER = logging.getLogger("hub.project_documents")
 _STATE_LOCK = Lock()

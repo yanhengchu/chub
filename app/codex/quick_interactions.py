@@ -2549,7 +2549,8 @@ class QuickInteractionManager:
     def _log_status(self, task_id: str, status: str, target: str) -> None:
         operation_status = (
             status
-            if status in {"requested", "started", "succeeded", "failed"}
+            if status
+            in {"requested", "started", "succeeded", "failed", "cancelled"}
             else "failed"
         )
         with self._lock:

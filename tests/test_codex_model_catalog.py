@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from app.ai_runtime import RuntimeOperationError
-from app.codex.model_catalog import (
+from chub_codex_runtime.model_catalog import (
     CodexModelCatalog,
     _ModelCatalogOutputTooLarge,
 )
@@ -44,7 +44,7 @@ def test_catalog_returns_only_visible_models(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("app.codex.model_catalog.shutil.which", lambda _name: "/codex")
+    monkeypatch.setattr("chub_codex_runtime.model_catalog.shutil.which", lambda _name: "/codex")
     run = MagicMock(return_value=CompletedProcess([], 0, catalog_payload(), b""))
     monkeypatch.setattr(CodexModelCatalog, "_run_bounded", run)
 
@@ -60,7 +60,7 @@ def test_catalog_validates_model_and_reasoning_level(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("app.codex.model_catalog.shutil.which", lambda _name: "/codex")
+    monkeypatch.setattr("chub_codex_runtime.model_catalog.shutil.which", lambda _name: "/codex")
     monkeypatch.setattr(
         CodexModelCatalog,
         "_run_bounded",
@@ -89,7 +89,7 @@ def test_catalog_rejects_oversized_output(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("app.codex.model_catalog.shutil.which", lambda _name: "/codex")
+    monkeypatch.setattr("chub_codex_runtime.model_catalog.shutil.which", lambda _name: "/codex")
     monkeypatch.setattr(
         CodexModelCatalog,
         "_run_bounded",
@@ -114,7 +114,7 @@ def test_catalog_reports_chub_profile_defaults(
         'model = "gpt-test"\nmodel_reasoning_effort = "medium"\n',
         encoding="utf-8",
     )
-    monkeypatch.setattr("app.codex.model_catalog.shutil.which", lambda _name: "/codex")
+    monkeypatch.setattr("chub_codex_runtime.model_catalog.shutil.which", lambda _name: "/codex")
     monkeypatch.setattr(
         CodexModelCatalog,
         "_run_bounded",

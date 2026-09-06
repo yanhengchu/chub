@@ -140,6 +140,8 @@ class SessionInfo(BaseModel):
     quick_interaction_running: bool = False
     quick_interaction_updated_at: datetime | None = None
     terminal_access_allowed: bool = True
+    runtime_submission_available: bool = True
+    runtime_submission_reason: str | None = Field(default=None, max_length=300)
     weixin_session_slot: int | None = Field(default=None, ge=1, le=9)
     usage: SessionUsage = Field(default_factory=SessionUsage)
 
@@ -152,6 +154,7 @@ class SessionCreationAvailability(BaseModel):
 class SessionListData(BaseModel):
     available: bool
     unavailable_reason: str | None = None
+    runtime_registered: bool
     terminal_creation: SessionCreationAvailability
     quick_creation: SessionCreationAvailability
     dependencies: dict[str, bool]
@@ -340,8 +343,8 @@ class QuickInteractionOperationContext(BaseModel):
     operation_id: str = Field(min_length=1, max_length=160)
     source_ip: str = Field(min_length=1, max_length=128)
     logged_statuses: tuple[
-        Literal["requested", "started", "succeeded", "failed"], ...
-    ] = Field(default=(), max_length=4)
+        Literal["requested", "started", "succeeded", "failed", "cancelled"], ...
+    ] = Field(default=(), max_length=5)
 
 
 class QuickInteractionRequest(BaseModel):

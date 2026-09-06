@@ -2273,6 +2273,47 @@ def test_worker_operation_log_projection_is_persisted_and_idempotent(
     assert persisted[0]["_operation_context"]["logged_statuses"] == ["failed"]
 
 
+def test_worker_operation_log_preserves_cancelled_terminal_status(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    quick_interactions = worker_manager(tmp_path, settings)
+    task = QuickInteractionTask(
+        id="task-cancelled",
+        worker_task_id="qw-1750000000000-66666666666666666666666666666666",
+        session_id="session-1",
+        prompt="取消日志",
+        status="cancelled",
+        error="已由用户停止。",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    quick_interactions._tasks[task.id] = task
+    quick_interactions._operation_contexts[task.id] = (
+        QuickInteractionOperationContext(
+            operation_id="operation-cancelled",
+            source_ip="127.0.0.1",
+        )
+    )
+    quick_interactions._operations[task.id] = (
+        "operation-cancelled",
+        "127.0.0.1",
+    )
+    logged: list[str] = []
+    monkeypatch.setattr(
+        "app.codex.quick_interactions.write_operation",
+        lambda **payload: logged.append(payload["status"]),
+    )
+
+    quick_interactions._log_status(task.id, task.status, task.session_id)
+    quick_interactions._log_status(task.id, task.status, task.session_id)
+
+    assert logged == ["cancelled"]
+    persisted = json.loads(quick_interactions.path.read_text(encoding="utf-8"))
+    assert persisted[0]["_operation_context"]["logged_statuses"] == ["cancelled"]
+
+
 def test_worker_reconciliation_recovers_missing_started_operation_log(
     settings,
     tmp_path: Path,

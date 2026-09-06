@@ -26,6 +26,7 @@ BACKGROUND_RUNTIME_CAPABILITIES = frozenset(
         "permission_profiles",
     }
 )
+DISCOVERED_RUNTIME_WORKSPACE_ID = "runtime-session"
 
 
 class _StrictModel(BaseModel):

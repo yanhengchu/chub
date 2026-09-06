@@ -3,7 +3,7 @@
 > 状态：持续维护。
 > 主要读者：AI Agent、实现和排障 Agent；维护人员用于确认系统分层、状态边界和验收范围。
 > 本文负责：Chub 三层架构、进程边界、依赖方向、状态所有权、核心调用链和跨模块约束。
-> 本文不负责：专项功能的完整操作契约、固定指令语法、插件实现或部署步骤；这些内容以对应专项文档为准。
+> 本文不负责：专项功能的完整操作契约、固定指令语法、Runtime ZIP 协议与模块维护流程、插件实现或部署步骤；这些内容以对应专项文档为准。
 
 本文与 [README](../README.md) 是理解项目的首要入口。README 说明产品、当前能力和使用方式；本文定义所有专项设计必须遵循的三层职责、依赖和状态边界。当前可调用能力以[集成能力清单](CHUB_INTEGRATION_CAPABILITIES.md)为准；目标分层不能将尚未实现的能力写成当前可用能力。
 
@@ -124,7 +124,7 @@ AI Runtime 层
 | --- | --- | --- |
 | `app/core/`、`app/tasks/`、`app/automations/`、`app/notifications/`、`app/requests/` | 核心层 | 配置、安全、日志、维护任务、固定自动化、通知和需求储备 |
 | `app/application.py`、`app/api/`、`app/web/`、`scripts/`、`config/` | 部署组合根与核心层入口 | Web、CLI、受控服务维护与配置；仅注册或调用对应层公开能力 |
-| `app/ai_runtime/`、`app/ai_session/`、`app/codex/`、`app/quick_worker*.py`、`app/ai_usage/` | AI Runtime 层 | Runtime 契约、Session、Worker、Runner、终端，以及由 Runtime 归属的 AI 用量与专属设置 |
+| `app/ai_runtime/`、`app/ai_session/`、`app/codex/`、`app/quick_worker*.py`、`app/ai_usage/`、`runtime-modules/` | AI Runtime 层 | Runtime 契约、ZIP 模块、Session、Worker、Runner、终端，以及由 Runtime 归属的 AI 用量与专属设置 |
 | `integrations/openclaw/chub/`、OpenClaw/微信适配协调 | 第三方服务层 | 插件、通道、绑定、固定路由和第三方协议 |
 | `app/services/` | 过渡区 | 已有跨领域协调；新增逻辑不得以此作为新的通用领域，应按三层归属落位 |
 
@@ -173,6 +173,10 @@ AI Runtime 层
 
 自动化只执行固定任务；通知投递成功不替代主业务成功。自动化需要 AI 时，从 Runner 的明确步骤调用 AI Runtime 公开用例，任务本身仍由 AI Runtime 维护终态。
 
+### 6.3 Runtime 模块维护
+
+Runtime ZIP 的发现、安装、替换和移除属于 AI Runtime 层的受控维护用例：Web 与 Quick Worker 必须分别确认同一注册表后，才处理目标 Runtime 的 Chub 自有状态。ZIP 协议、维护步骤、恢复记录和清理边界以[Chub 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md)为唯一依据；本文不重复这些专项规则。
+
 ## 7. 维护与恢复边界
 
 | 操作 | 直接影响 | 成功条件 | 不影响 |
@@ -207,6 +211,7 @@ AI Runtime 层
 | --- | --- |
 | 当前命令、插件、固定 API 与微信用户可见契约 | [集成能力清单](CHUB_INTEGRATION_CAPABILITIES.md) |
 | Runtime、Adapter、Runner 与能力矩阵 | [AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md) |
+| Runtime ZIP、模块安装/移除、注册确认与状态清理 | [外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md) |
 | Session、Activity、usage 与单 writer 语义 | [AI Session 状态模型](AI_SESSION_STATE_DESIGN.md) |
 | Worker 任务、恢复、通知与重启协调 | [Quick Worker 独立服务设计](CHUB_QUICK_WORKER_DESIGN.md) |
 | OpenClaw、微信身份、路由与插件协议 | [OpenClaw 定制集成设计](OPENCLAW_CUSTOMIZATION_DESIGN.md) |

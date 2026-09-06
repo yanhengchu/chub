@@ -13,7 +13,7 @@ from app.ai_runtime import (
     RuntimeTurnRequest,
     RuntimeTurnResult,
 )
-from app.codex.runtime_adapter import is_valid_codex_session_id
+from .runtime_adapter import is_valid_codex_session_id
 from app.services.log_reader import redact_log_line
 
 

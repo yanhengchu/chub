@@ -42,11 +42,11 @@ from app.codex.models import (
     utc_now,
 )
 from app.codex.store import CodexSessionStore
-from app.codex.runtime_adapter import (
+from chub_codex_runtime.runtime_adapter import (
     PROFILE_MARKER,
     CodexRuntimeAdapter,
 )
-from app.codex.worker_runtime import DISCOVERED_RUNTIME_WORKSPACE_ID
+from app.ai_runtime import DISCOVERED_RUNTIME_WORKSPACE_ID
 from app.core.config import PROJECT_ROOT, Settings
 from app.core.response import ApiError
 

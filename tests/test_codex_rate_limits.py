@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 from app.codex.models import CodexQuotaData, CodexQuotaWindow, CodexTokenUsageData
-from app.codex.rate_limits import CodexRateLimitService
+from chub_codex_runtime.rate_limits import CodexRateLimitService
 
 
 def test_rate_limit_response_only_exposes_quota_windows() -> None:
@@ -130,7 +130,7 @@ def test_account_status_reads_quota_and_usage_in_one_app_server_session() -> Non
         }
     )
 
-    with patch("app.codex.rate_limits.shutil.which", return_value="/usr/bin/codex"):
+    with patch("chub_codex_runtime.rate_limits.shutil.which", return_value="/usr/bin/codex"):
         quota, usage = service.read_account_status(force=True)
 
     assert quota.windows[0].remaining_percent == 41

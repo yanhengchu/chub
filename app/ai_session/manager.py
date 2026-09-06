@@ -8,7 +8,14 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable, Iterable
 
-from app.ai_runtime import RuntimeNativeSession, RuntimeOperationError, RuntimeRegistry
+from app.ai_runtime import (
+    DISCOVERED_RUNTIME_WORKSPACE_ID,
+    RuntimeDescriptor,
+    RuntimeNativeSession,
+    RuntimeOperationError,
+    RuntimeRegistry,
+    RuntimeStatus,
+)
 from app.ai_runtime.external_modules import (
     ExternalRuntimeModuleService,
     RuntimeModuleActivation,
@@ -21,6 +28,7 @@ from app.ai_runtime.enablement import (
     RuntimeEnablementStore,
     RuntimeEnablementStoreUnavailable,
 )
+from app.ai_runtime.general_settings import AiRuntimeSettingsStore
 from app.ai_session.models import (
     ActivitySource,
     AiSession,
@@ -46,9 +54,6 @@ from app.codex.models import (
     RuntimeManagementItem,
     WorkspaceInfo,
 )
-from app.codex.runtime_adapter import CodexRuntimeAdapter
-from app.codex.runtime_module import create_builtin_runtime_modules
-from app.codex.worker_runtime import DISCOVERED_RUNTIME_WORKSPACE_ID
 from app.core.config import PROJECT_ROOT, Settings
 from app.core.response import ApiError
 
@@ -64,6 +69,48 @@ _MAX_LEGACY_TRANSLATION_ARCHIVES_PER_START = 20
 _NATIVE_DISCOVERY_CLAIM_GRACE_SECONDS = 5
 
 
+class _UnavailableRuntimeRateLimits:
+    def read(self, *, force: bool = False):
+        del force
+        raise RuntimeOperationError(
+            "runtime_unavailable",
+            "Codex Runtime is not installed",
+            kind="unavailable",
+        )
+
+
+class _UnavailableCodexRuntime:
+    descriptor = RuntimeDescriptor(runtime_id="codex", capabilities=frozenset())
+    display_name = "Codex"
+    rate_limits = _UnavailableRuntimeRateLimits()
+
+    def status(self) -> RuntimeStatus:
+        return RuntimeStatus(
+            runtime_id="codex",
+            available=False,
+            reason="Codex Runtime is not installed",
+            dependencies={},
+        )
+
+    def dependencies(self) -> dict[str, bool]:
+        return {}
+
+    @staticmethod
+    def runtime_process_matches(_command: tuple[str, ...]) -> bool:
+        return False
+
+    @staticmethod
+    def terminal_backend_matches(_command: tuple[str, ...], _session_id: str) -> bool:
+        return False
+
+    def __getattr__(self, _name: str):
+        raise RuntimeOperationError(
+            "runtime_unavailable",
+            "Codex Runtime is not installed",
+            kind="unavailable",
+        )
+
+
 class AiSessionManager:
     """The sole owner of Chub logical AI Session state.
 
@@ -73,7 +120,12 @@ class AiSessionManager:
     unclaimed after a short, non-blocking observation window.
     """
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        builtin_runtime_modules: BuiltinRuntimeModuleRegistry | None = None,
+    ) -> None:
         self.settings = settings
         self.store = AiSessionStore(
             settings.ai_runtime.codex.data_file.with_name("ai-sessions.json")
@@ -84,41 +136,23 @@ class AiSessionManager:
         self.runtime_enablement = RuntimeEnablementStore(
             settings.ai_runtime.codex.data_file.with_name("runtime-enablement.json")
         )
-        self._builtin_runtime_modules = create_builtin_runtime_modules(settings)
+        self._builtin_runtime_modules = (
+            BuiltinRuntimeModuleRegistry()
+            if builtin_runtime_modules is None
+            else builtin_runtime_modules
+        )
         self.runtime_module_service = ExternalRuntimeModuleService(settings)
         self.runtime_module_recovery = (
             self.runtime_module_service.recover_incomplete_activation()
         )
-        self.runtime_modules, self.runtime_module_failures = (
-            self.runtime_module_service.build_registry(self._builtin_runtime_modules)
-        )
-        runtime_module = self.runtime_modules.default()
-        adapter = runtime_module.build_adapter()
-        if not isinstance(adapter, CodexRuntimeAdapter):
-            raise RuntimeOperationError(
-                "runtime_module_wiring_invalid",
-                "The default Runtime module did not build a Codex Adapter",
-                kind="conflict",
-            )
-        self.runtime_settings_store = adapter.runtime_settings_store
-        self.runtime_id = runtime_module.descriptor.runtime_id
-        self.runtime_registry = RuntimeRegistry([adapter])
-        self.runtime_adapter = self.runtime_registry.require(
-            self.runtime_id,
-            {
-                "runtime_status",
-                "native_session_mapping",
-                "interactive_terminal",
-                "session_resume",
-                "session_archive",
-                "writer_probe",
-                "activity_events",
-                "model_catalog",
-                "permission_profiles",
-            },
-        )
+        self.runtime_id = "codex"
+        self.runtime_modules = BuiltinRuntimeModuleRegistry()
+        self.runtime_module_failures = ()
+        self.runtime_registry = RuntimeRegistry([])
+        self.runtime_adapter = _UnavailableCodexRuntime()
+        self.runtime_settings_store = AiRuntimeSettingsStore()
         self.supervisor = InteractiveSupervisor(
-            adapter,
+            self.runtime_adapter,
             ticket_ttl_seconds=settings.ai_runtime.codex.ticket_ttl_seconds,
         )
         self._lock = threading.RLock()
@@ -163,13 +197,9 @@ class AiSessionManager:
         modules, failures = self.runtime_module_service.build_registry(
             self._builtin_runtime_modules
         )
-        available_modules = BuiltinRuntimeModuleRegistry(
-            [modules.require(self.runtime_id)]
-        )
-        adapters = [self.runtime_adapter]
+        available_modules = BuiltinRuntimeModuleRegistry()
+        adapters = []
         for runtime_id in modules.runtime_ids():
-            if runtime_id == self.runtime_id:
-                continue
             module = modules.require(runtime_id)
             try:
                 adapter = module.build_adapter()
@@ -186,6 +216,35 @@ class AiSessionManager:
         self.runtime_modules = available_modules
         self.runtime_module_failures = failures
         self.runtime_registry = RuntimeRegistry(adapters)
+        try:
+            adapter = self.runtime_registry.require(
+                self.runtime_id,
+                {
+                    "runtime_status",
+                    "native_session_mapping",
+                    "interactive_terminal",
+                    "session_resume",
+                    "session_archive",
+                    "writer_probe",
+                    "activity_events",
+                    "model_catalog",
+                    "permission_profiles",
+                },
+            )
+        except RuntimeOperationError:
+            adapter = _UnavailableCodexRuntime()
+        if adapter is not self.runtime_adapter:
+            self.supervisor.close()
+            self.runtime_adapter = adapter
+            self.runtime_settings_store = (
+                AiRuntimeSettingsStore()
+                if isinstance(adapter, _UnavailableCodexRuntime)
+                else adapter.runtime_settings_store
+            )
+            self.supervisor = InteractiveSupervisor(
+                adapter,
+                ticket_ttl_seconds=self.settings.ai_runtime.codex.ticket_ttl_seconds,
+            )
 
     def remove_runtime_module(
         self,
@@ -222,6 +281,15 @@ class AiSessionManager:
             for key, observed_at in self._pending_native_discoveries.items()
             if key[0] != module_id
         }
+
+    def runtime_session_ids(self, runtime_id: str) -> tuple[str, ...]:
+        with self._lock:
+            self._require_store()
+            return tuple(
+                session.id
+                for session in self.store.list()
+                if session.runtime_id == runtime_id
+            )
 
     def set_quick_interaction_checker(
         self,
@@ -328,7 +396,7 @@ class AiSessionManager:
     def list_sessions(self) -> list[SessionInfo]:
         with self._lock:
             self._require_store()
-            if self._system_upgrade_writes_blocked():
+            if self._system_upgrade_writes_blocked() or not self.runtime_adapter.status().available:
                 return [self._public(session) for session in self.store.list()]
             self._consume_hook_results()
             self._sync_bound_native_sessions()
@@ -340,13 +408,14 @@ class AiSessionManager:
     def get_session(self, session_id: str, *, reconcile: bool = True) -> AiSession:
         with self._lock:
             self._require_store()
-            if reconcile and not self._system_upgrade_writes_blocked():
+            runtime_available = self.runtime_adapter.status().available
+            if reconcile and not self._system_upgrade_writes_blocked() and runtime_available:
                 self._consume_hook_result_safely(session_id)
                 self._sync_bound_native_sessions()
             session = self.store.get(session_id)
             if session is None:
                 raise ApiError(404, "codex_session_not_found", "Codex session not found")
-            if reconcile and not self._system_upgrade_writes_blocked():
+            if reconcile and not self._system_upgrade_writes_blocked() and runtime_available:
                 self._refresh_status(session)
                 self._reconcile_quick_activity(session)
                 session = self.store.get(session_id) or session
@@ -1174,6 +1243,8 @@ class AiSessionManager:
         prompt before it can be considered; any uncertain or active Session is
         left untouched for a later startup.
         """
+        if not self.runtime_adapter.status().available:
+            return 0
         try:
             self._require_available()
             if (
@@ -1365,6 +1436,13 @@ class AiSessionManager:
             )
 
     def _public(self, session: AiSession) -> SessionInfo:
+        try:
+            self._require_runtime_submission(session.runtime_id)
+            runtime_submission_available = True
+            runtime_submission_reason = None
+        except ApiError as exc:
+            runtime_submission_available = False
+            runtime_submission_reason = exc.message
         return SessionInfo(
             id=session.id,
             runtime_id=session.runtime_id,
@@ -1395,6 +1473,8 @@ class AiSessionManager:
             last_activity_at=session.last_activity_at,
             session_mode=session.session_mode,
             terminal_access_allowed=session.session_mode == "terminal",
+            runtime_submission_available=runtime_submission_available,
+            runtime_submission_reason=runtime_submission_reason,
             usage=self._resolve_session_usage(session),
         )
 
@@ -1844,6 +1924,22 @@ class AiSessionManager:
         try:
             sessions = self.store.list()
             running = self.supervisor.reconcile_after_restart(sessions)
+            # A Web restart or a Chub-owned state reset can leave a tmux
+            # carrier with its previous logical Session ID. Its native resume
+            # target remains stable, so rebind that narrowly verified carrier
+            # before treating its native writer as external.
+            for session in sessions:
+                if (
+                    session.id in running
+                    or session.session_mode != "terminal"
+                    or session.native_session_id is None
+                ):
+                    continue
+                if self.supervisor.rebind_terminal_carrier_by_native_session(
+                    session.native_session_id,
+                    session.id,
+                ):
+                    running.add(session.id)
             for session in sessions:
                 if session.id in running:
                     session.status = "running"

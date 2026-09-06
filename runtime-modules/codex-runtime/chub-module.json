@@ -1,0 +1,10 @@
+{
+  "protocol_version": 1,
+  "module_id": "codex",
+  "module_type": "runtime",
+  "display_name": "Codex",
+  "description": "使用 Codex CLI 运行快速交互、实时终端和后台 AI 任务。",
+  "version": "1.0.0",
+  "chub_version": "0.1.0",
+  "entry": "chub_codex_runtime.entry:create_runtime_module"
+}

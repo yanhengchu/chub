@@ -4,7 +4,7 @@
 
 Chub 是面向个人设备、本地优先的轻量 AI 工作站控制面。它按 Chub 核心、AI Runtime 和第三方服务三层组织设备能力、AI Session 和任务入口，在统一的安全与状态边界内协调运行、恢复任务、确认最终状态并交付结果；Chub 本身不是模型，也不作为通用对话 Agent 执行任务。
 
-当前 Codex 是唯一完整接入的 Agent Runtime，负责实际的分析、编码和工具调用；Quick Worker 承载需要跨 Web 重启继续运行的后台 AI 任务；OpenClaw 在微信链路中只承担可信消息网关和通道适配。当前 Runtime 架构、能力矩阵和 AI Runtime 实现规范见 [Chub AI Runtime 架构设计](docs/CHUB_AI_RUNTIME_DESIGN.md)。具体业务能力和使用入口见“当前功能”，不在项目定位中重复列举。
+当前 Codex 是唯一完整接入的 Agent Runtime，负责实际的分析、编码和工具调用；其 Runtime 注册对象由本机安装的受控 Codex ZIP 提供，ZIP 源码在仓库中、生成产物和安装目录仅保留在本地。Quick Worker 承载需要跨 Web 重启继续运行的后台 AI 任务；OpenClaw 在微信链路中只承担可信消息网关和通道适配。Runtime 契约和实现规范见 [Chub AI Runtime 架构设计](docs/CHUB_AI_RUNTIME_DESIGN.md)，ZIP 安装、替换和清理边界见 [Chub 外置模块功能设计](docs/CHUB_EXTERNAL_MODULE_DESIGN.md)。具体业务能力和使用入口见“当前功能”，不在项目定位中重复列举。
 
 长期目标是让 Chub 成为不依赖单一 Agent 产品的个人 AI 工作站：在保持统一安全、逻辑 Session、任务和最终状态语义的前提下，通过稳定契约接入经过验证的 Agent Runtime。项目继续坚持本地优先、可靠终态和适合个人维护的复杂度，支持 macOS LaunchAgent 与 Ubuntu systemd user service；新 Runtime 只由真实需求驱动，并在能力、权限和恢复机制通过验证后接入。
 
@@ -46,11 +46,12 @@ AI Runtime 层
 | 路径 | 当前职责 | 细节入口 |
 | --- | --- | --- |
 | `app/application.py`、`app/api/`、`app/web/` | 部署组合、FastAPI 接口、页面、WebSocket 和项目资料展示 | [总体架构](docs/CHUB_ARCHITECTURE_DESIGN.md)、[前端 UI 设计](docs/FRONTEND_UI_DESIGN.md) |
-| `app/ai_session/`、`app/codex/` | 逻辑 AI Session、实时终端和当前 Codex 正式入口 | [Session 状态模型](docs/AI_SESSION_STATE_DESIGN.md)、[AI Runtime 设计](docs/CHUB_AI_RUNTIME_DESIGN.md) |
-| `app/ai_runtime/`、`app/quick_worker*.py` | Runtime 契约、固定 Runner、后台任务、租约、恢复和终态 | [AI Runtime 设计](docs/CHUB_AI_RUNTIME_DESIGN.md)、[Quick Worker 设计](docs/CHUB_QUICK_WORKER_DESIGN.md) |
+| `app/ai_session/` | 逻辑 AI Session、实时终端和 Session 状态投影 | [Session 状态模型](docs/AI_SESSION_STATE_DESIGN.md) |
+| `app/ai_runtime/`、`runtime-modules/codex-runtime/` | Runtime 共享契约、模块 ZIP 生命周期，以及第一方 Codex Runtime ZIP 构建源码 | [AI Runtime 设计](docs/CHUB_AI_RUNTIME_DESIGN.md)、[外置模块设计](docs/CHUB_EXTERNAL_MODULE_DESIGN.md) |
+| `app/quick_worker*.py` | 后台任务、租约、恢复和终态 | [Quick Worker 设计](docs/CHUB_QUICK_WORKER_DESIGN.md) |
 | `app/automations/` | Debug Chrome、配置驱动自动化、下载产物和任务状态 | [总体架构](docs/CHUB_ARCHITECTURE_DESIGN.md)、[周报自动化设计](docs/WEEKLY_REPORT_AUTOMATION_DESIGN.md) |
 | `app/notifications/`、`app/requests/` | 核心层通知与 R1–R9 需求储备 | [总体架构](docs/CHUB_ARCHITECTURE_DESIGN.md)、[能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md) |
-| `app/ai_runtime/`、`app/ai_usage/` | Runtime 用量契约、共享快照与展示口径 | [总体架构](docs/CHUB_ARCHITECTURE_DESIGN.md)、[额度设计](docs/CODEX_AI_QUOTA_USAGE_DESIGN.md) |
+| `app/ai_usage/` | Runtime 用量契约、共享快照与展示口径 | [总体架构](docs/CHUB_ARCHITECTURE_DESIGN.md)、[额度设计](docs/CODEX_AI_QUOTA_USAGE_DESIGN.md) |
 | `app/core/`、`app/tasks/` | 配置、安全、日志、平台检测、白名单维护任务 | [总体架构](docs/CHUB_ARCHITECTURE_DESIGN.md) |
 | `app/services/` | 当前跨领域服务和协调逻辑；不是新的统一领域边界 | [总体架构](docs/CHUB_ARCHITECTURE_DESIGN.md) |
 | `integrations/openclaw/chub/` | Chub OpenClaw 插件源码、构建、部署和协议验收 | [OpenClaw 定制设计](docs/OPENCLAW_CUSTOMIZATION_DESIGN.md)、[插件说明](integrations/openclaw/chub/README.md) |
@@ -68,7 +69,7 @@ AI Runtime 层
 | 周报 | 校验当期资料和周期，确认重点后生成、复核并展示正式周报 | 自动化页、周报页 |
 | 通知 | 向预配置的飞书目标发送有界纯文本通知，不接受任意目标或 Webhook | 命令行、Chub API、OpenClaw Tool |
 | 项目资料 | 在可信网络内查看已登记的项目说明、设计方案与维护文档，并由维护入口控制首页显示 | 首页、项目资料页 |
-| 任务编排 | 调整微信普通任务的执行前润色、模型和推理等级 | 设置页 AI Runtime 分组下的微信任务润色配置页 |
+| 任务编排 | 调整微信普通任务的执行前润色、模型和推理等级；当前继续由主项目提供，外置迁移已冻结 | 设置页 AI Runtime 分组下的微信任务润色配置页 |
 | 外观 | 切换 Standard、Code Dark、Studio Cyan 主题，以及小、默认、大三档文字大小 | 设置页 |
 
 页面、微信和翻译快速任务统一由独立 Worker 承载，Web 重启不会中断已接受的任务。Worker 服务、恢复、通知和协调重启的完整边界见[Chub Quick Worker 独立服务设计](docs/CHUB_QUICK_WORKER_DESIGN.md)。
@@ -311,7 +312,7 @@ README 是项目入口和文档管理规则的维护入口；总体架构是所�
 
 文档的第一读者是 AI Agent，第二读者是项目维护者。每份当前文档的开头必须先说明“项目/功能是什么、本文负责什么、哪些内容不在本文范围”；关键规则、状态所有权、失败关闭条件和验收标准必须用明确的规范性语言保留，不能只写背景或实现过程。维护者操作步骤、版本记录和历史说明放在核心契约之后，且不得与 AI 可执行规则混在一起。
 
-当前专项文档统一使用最低头部结构：`状态`、`主要读者`、`本文负责`、`本文不负责`；`状态` 必须与 `docs/design_documents.json` 的标准值精确一致，维护触发条件另写为补充说明。已验收的当前专项文档末尾还应写明已验证功能/平台、未验证或不承诺范围和复检触发条件；局部实机验证不能扩大为全平台或全链路承诺。
+当前专项文档统一使用最低头部结构：`状态`、`主要读者`、`本文负责`、`本文不负责`；`状态` 必须与 `docs/design_documents.json` 的标准值精确一致，维护触发条件另写为补充说明。已验收或第一阶段已验收的当前专项文档末尾还应写明已验证功能/平台、未验证或不承诺范围和复检触发条件；局部实机验证不能扩大为全平台或全链路承诺。
 
 - **项目说明**：README 维护项目定位、能力概览、安装、使用入口、数据安全和文档导航。
 - **总体架构**：定义系统边界、进程、领域、状态所有权、依赖方向和跨模块约束；所有专项设计必须遵循。
@@ -326,7 +327,7 @@ README 是项目入口和文档管理规则的维护入口；总体架构是所�
 - **阶段记录**：阶段已经闭环，但仍被当前工作引用或尚未被新文档替代。
 - **归档文档**：只用于历史追溯，移动到 `docs/archive/phase-N/` 并原则上冻结。
 
-项目资料页面展示的当前文档统一登记在 `docs/design_documents.json`，完整列表按索引顺序遵循“项目说明、总体架构、专项设计、当前能力契约、维护资料”的权威层级。首页未隐藏文档中固定优先展示项目说明和总体架构，其余位置按文件最后更新时间倒序补足五份。普通文档使用相对于 `docs/` 的 Markdown 路径；项目根 README 使用唯一保留别名 `@project/README.md`，不能借此读取其他根目录文件。索引状态只使用“调研中”“待实现”“进行中”“待验收”“已验收”或“持续维护”。
+项目资料页面展示的当前文档统一登记在 `docs/design_documents.json`，完整列表按索引顺序遵循“项目说明、总体架构、专项设计、当前能力契约、维护资料”的权威层级。首页未隐藏文档中固定优先展示项目说明和总体架构，其余位置按文件最后更新时间倒序补足五份。普通文档使用相对于 `docs/` 的 Markdown 路径；项目根 README 使用唯一保留别名 `@project/README.md`，不能借此读取其他根目录文件。索引状态只使用“调研中”“待实现”“进行中”“待验收”“第一阶段已验收”“已验收”或“持续维护”。
 
 项目资料页的“隐藏/恢复显示”只控制首页展示，状态保存在本机私有运行数据中，不移动、冻结或改写仓库文档。生命周期归档仍需把历史文档移动到 `docs/archive/phase-N/`，并同步索引和相关引用。
 
@@ -356,8 +357,8 @@ CHUB_BROWSER_TESTS=1 .venv/bin/python -m pytest \
 | --- | --- |
 | [Chub 项目说明](README.md) | 项目概览、安装、日常入口、安全和文档导航 |
 | [Chub 总体架构设计](docs/CHUB_ARCHITECTURE_DESIGN.md) | 核心、AI Runtime 与第三方服务三层架构、状态所有权和跨模块约束 |
-| [Chub AI Runtime 架构设计](docs/CHUB_AI_RUNTIME_DESIGN.md) | AI Runtime 架构、Session Manager、Worker 职责和 Runtime 实现规范 |
-| [Chub 外置模块功能设计](docs/CHUB_EXTERNAL_MODULE_DESIGN.md) | AI Runtime 与任务编排外置模块的压缩包形态、动态加载和轻量接入边界 |
+| [Chub AI Runtime 架构设计](docs/CHUB_AI_RUNTIME_DESIGN.md) | Runtime 共享契约、能力矩阵、Adapter/Runner 边界与新增 Runtime 实现规范 |
+| [Chub 外置模块功能设计](docs/CHUB_EXTERNAL_MODULE_DESIGN.md) | Runtime ZIP 协议、安装/替换/移除、双端注册确认和模块状态清理边界 |
 | [本机大模型部署设计](docs/LOCAL_LLM_LEARNING_DEPLOYMENT_DESIGN.md) | 当前 MacBook 上独立的 Ollama 本机模型部署、常用 API、资源边界、阶段和验收 |
 | [Chub AI Session 状态模型设计](docs/AI_SESSION_STATE_DESIGN.md) | Session、Activity、usage 投影、入口、操作、槽位和单 writer 语义 |
 | [Chub Quick Worker 独立服务设计](docs/CHUB_QUICK_WORKER_DESIGN.md) | Quick Worker 独立服务、非实时任务、恢复、通知终态和重启协调 |

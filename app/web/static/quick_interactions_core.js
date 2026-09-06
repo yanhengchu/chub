@@ -277,6 +277,9 @@
     if (!session) {
       return "正在读取会话状态…";
     }
+    if (session.runtime_submission_available === false) {
+      return session.runtime_submission_reason || "当前 AI Runtime 不可用，无法发送消息。";
+    }
     const usageBlock = sessionUsageBlockReason(session);
     if (usageBlock) {
       return usageBlock;
