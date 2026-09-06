@@ -225,6 +225,91 @@ async def test_dispatch_requires_local_openclaw_source(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("content", ["chub", "check", "help", "usage", "model list"])
+async def test_upgrade_allows_weixin_read_only_commands(
+    settings: Settings,
+    content: str,
+) -> None:
+    settings.openclaw.weixin_chub_mode.enabled = True
+    app = create_app(settings)
+    app.state.system_upgrade._writes_blocked = True
+    app.state.weixin_chub_mode.dispatch = MagicMock(return_value=dispatch_result())
+
+    async with local_openclaw_client(app) as client:
+        response = await client.post(
+            "/api/openclaw/wechat-chub-mode/dispatch",
+            json={
+                "protocol_version": 3,
+                "message_id": f"read-only-{content}",
+                "content": content,
+                "message_type": "text",
+                "reply_account_id": "weixin-account",
+                "reply_recipient": "owner@im.wechat",
+            },
+        )
+
+    assert response.status_code == 200
+    app.state.weixin_chub_mode.dispatch.assert_called_once()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("content", ["new", "model use M1", "text mode auto", "run tests"])
+async def test_upgrade_blocks_weixin_runtime_writes(
+    settings: Settings,
+    content: str,
+) -> None:
+    settings.openclaw.weixin_chub_mode.enabled = True
+    app = create_app(settings)
+    app.state.system_upgrade._writes_blocked = True
+    app.state.weixin_chub_mode.dispatch = MagicMock(return_value=dispatch_result())
+
+    async with local_openclaw_client(app) as client:
+        response = await client.post(
+            "/api/openclaw/wechat-chub-mode/dispatch",
+            json={
+                "protocol_version": 3,
+                "message_id": f"write-{content}",
+                "content": content,
+                "message_type": "text",
+                "reply_account_id": "weixin-account",
+                "reply_recipient": "owner@im.wechat",
+            },
+        )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "system_upgrade_in_progress"
+    app.state.weixin_chub_mode.dispatch.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_upgrade_keeps_disabled_weixin_chub_mode_on_pass_path(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    app.state.system_upgrade._writes_blocked = True
+
+    async with local_openclaw_client(app) as client:
+        response = await client.post(
+            "/api/openclaw/wechat-chub-mode/dispatch",
+            json={
+                "protocol_version": 3,
+                "message_id": "disabled-mode-pass",
+                "content": "normal task",
+                "message_type": "text",
+                "reply_account_id": "weixin-account",
+                "reply_recipient": "owner@im.wechat",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {
+        "protocol_version": 3,
+        "disposition": "pass",
+        "message": None,
+    }
+
+
+@pytest.mark.anyio
 async def test_old_status_and_submit_endpoints_are_removed(
     settings: Settings,
 ) -> None:

@@ -205,6 +205,19 @@ async def _mock_workspace_api(route) -> None:
         "/api/openclaw/integration": OPENCLAW_INTEGRATION_RESPONSE,
         "/api/openclaw/weixin/login": WEIXIN_LOGIN_RESPONSE,
         "/api/codex/sessions": {"success": True, "data": {"available": False, "sessions": []}},
+        "/api/codex/runtimes": {
+            "success": True,
+            "data": {
+                "basic_mode": False,
+                "runtimes": [{
+                    "runtime_id": "codex",
+                    "name": "Codex",
+                    "enabled": True,
+                    "healthy": True,
+                    "reason": None,
+                }],
+            },
+        },
     }.get(path)
     if payload is None:
         payload = {
@@ -440,6 +453,95 @@ async def test_task_orchestration_opens_from_ai_runtime_settings_navigation(
             assert bounds["top"] >= 0
             assert bounds["bottom"] <= viewport[1]
             assert bounds["bottom"] <= viewport[1]
+        finally:
+            await context.close()
+
+    assert page_errors == []
+
+
+@pytest.mark.parametrize("viewport", [(390, 844), (1280, 900)], ids=["phone", "desktop"])
+async def test_runtime_settings_use_registered_navigation_and_presentation(
+    workspace_browser_server: str,
+    viewport: tuple[int, int],
+) -> None:
+    browser_session = session_factory()
+    async with browser_session(ensure_page=False) as chrome:
+        context = await chrome.browser.new_context(
+            viewport={"width": viewport[0], "height": viewport[1]},
+            reduced_motion="reduce",
+        )
+        try:
+            await context.route(f"{workspace_browser_server}/api/**", _mock_workspace_api)
+            page = await context.new_page()
+            page_errors: list[str] = []
+            page.on("pageerror", lambda error: page_errors.append(str(error)))
+            response = await page.goto(
+                f"{workspace_browser_server}/settings/runtime",
+                wait_until="domcontentloaded",
+            )
+            assert response is not None and response.status == 200
+            if viewport[0] < 760:
+                await page.get_by_role("button", name="Codex").click()
+            else:
+                await page.get_by_role("link", name="Codex").click()
+            await expect(page).to_have_url(re.compile(r"/settings/runtime/codex"))
+            await expect(page.get_by_role("heading", name="Codex", exact=True)).to_be_visible()
+            await expect(page.locator(".settings-workspace-description")).to_have_text(
+                "使用 Codex CLI 运行快速交互、实时终端和后台 AI 任务。",
+            )
+            await expect(page.locator("#runtime-management-list")).to_contain_text("健康")
+            assert await page.evaluate("document.documentElement.scrollWidth - innerWidth") == 0
+        finally:
+            await context.close()
+
+    assert page_errors == []
+
+
+async def test_runtime_settings_keep_registered_description_when_status_is_unavailable(
+    workspace_browser_server: str,
+) -> None:
+    browser_session = session_factory()
+    async with browser_session(ensure_page=False) as chrome:
+        context = await chrome.browser.new_context(
+            viewport={"width": 1280, "height": 900},
+            reduced_motion="reduce",
+        )
+
+        async def route_runtime_status_failure(route) -> None:
+            if urlsplit(route.request.url).path == "/api/codex/runtimes":
+                await route.fulfill(
+                    status=503,
+                    content_type="application/json",
+                    body=json.dumps({
+                        "success": False,
+                        "error": {
+                            "code": "ai_runtime_enablement_unavailable",
+                            "message": "Runtime 状态不可用。",
+                        },
+                    }),
+                )
+                return
+            await _mock_workspace_api(route)
+
+        try:
+            await context.route(
+                f"{workspace_browser_server}/api/**",
+                route_runtime_status_failure,
+            )
+            page = await context.new_page()
+            page_errors: list[str] = []
+            page.on("pageerror", lambda error: page_errors.append(str(error)))
+            response = await page.goto(
+                f"{workspace_browser_server}/settings/runtime/codex",
+                wait_until="domcontentloaded",
+            )
+            assert response is not None and response.status == 200
+            await expect(page.locator(".settings-workspace-description")).to_have_text(
+                "使用 Codex CLI 运行快速交互、实时终端和后台 AI 任务。",
+            )
+            await expect(page.locator("#runtime-management-message")).to_have_text(
+                "暂时无法读取 AI Runtime 状态。",
+            )
         finally:
             await context.close()
 
@@ -697,6 +799,38 @@ async def test_appearance_theme_previews_keep_their_own_token_packages(
                 wait_until="domcontentloaded",
             )
             assert response is not None and response.status == 200
+            theme_heading_layout = await page.evaluate(
+                """() => {
+                    const heading = document.querySelector('.theme-settings-heading');
+                    const copy = heading.querySelector('div');
+                    const button = heading.querySelector('button');
+                    return {
+                        centerOffset: Math.abs(
+                            (button.getBoundingClientRect().top + button.getBoundingClientRect().height / 2)
+                            - (copy.getBoundingClientRect().top + copy.getBoundingClientRect().height / 2),
+                        ),
+                        buttonRight: Math.abs(
+                            heading.getBoundingClientRect().right - button.getBoundingClientRect().right,
+                        ),
+                    };
+                }""",
+            )
+            theme_groups = await page.evaluate(
+                """() => Object.fromEntries([...document.querySelectorAll('.theme-option-group')].map(group => [
+                    group.querySelector('h4')?.textContent.trim(),
+                    [...group.querySelectorAll('[data-style-option]')].map(option => option.dataset.styleOption),
+                ]))""",
+            )
+            theme_group_divider = await page.evaluate(
+                """() => getComputedStyle(document.querySelector('.theme-option-group + .theme-option-group')).borderTopWidth""",
+            )
+            font_size_section_gap = await page.evaluate(
+                """() => {
+                    const themes = document.querySelector('#theme-option-grid');
+                    const title = document.querySelector('#font-size-settings-title');
+                    return title.getBoundingClientRect().top - themes.getBoundingClientRect().bottom;
+                }""",
+            )
             preview_colors = await page.evaluate(
                 """() => Object.fromEntries([...document.querySelectorAll('[data-style-option]')].map(option => {
                     const id = option.dataset.styleOption;
@@ -729,6 +863,14 @@ async def test_appearance_theme_previews_keep_their_own_token_packages(
             "package": "#f2f6f8", "muted": "#1f7489", "surface": "rgb(255, 255, 255)", "swatch": "rgb(31, 116, 137)",
         },
     }
+    assert theme_groups == {
+        "亮色系主题": ["standard", "studio-cyan"],
+        "暗色系主题": ["code-dark"],
+    }
+    assert theme_group_divider == "0px"
+    assert theme_heading_layout["centerOffset"] <= 0.5
+    assert theme_heading_layout["buttonRight"] <= 0.5
+    assert font_size_section_gap >= 20
     assert overflow == 0
     assert page_errors == []
 

@@ -11,7 +11,7 @@ import stat
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import psutil
 import pytest
@@ -453,7 +453,55 @@ async def test_completed_upgrade_drain_can_resume_worker(settings) -> None:
     await server.start()
     operation_id = f"system-upgrade:{uuid.uuid4().hex}"
     try:
-        drain = await quick_worker.request_drain(
+        with patch("app.quick_worker.write_operation") as operation_log:
+            drain = await quick_worker.request_drain(
+                settings,
+                operation_id=operation_id,
+                wait_seconds=1,
+            )
+            resumed = await quick_worker.resume_after_drain(
+                settings,
+                operation_id=operation_id,
+            )
+            health = await read_health(settings)
+
+        assert drain["success"] is True
+        assert resumed["success"] is True
+        assert health["data"]["status"] == "ready"
+        assert health["data"]["drain_operation_id"] is None
+        assert [call.kwargs["status"] for call in operation_log.call_args_list] == [
+            "requested",
+            "started",
+            "succeeded",
+        ]
+    finally:
+        await server.close()
+
+
+@pytest.mark.anyio
+async def test_completed_drain_can_clear_one_runtime_task_state(settings) -> None:
+    server = QuickWorkerServer(settings, allow_test_tasks=True)
+    await server.start()
+    task_id = new_worker_task_id()
+    tombstone_only_task_id = new_worker_task_id()
+    operation_id = f"runtime-module:{uuid.uuid4().hex}"
+    try:
+        submitted = await _submit(settings, task_id=task_id)
+        tombstone_only_submitted = await _submit(
+            settings,
+            task_id=tombstone_only_task_id,
+        )
+        assert submitted["success"] is True
+        assert tombstone_only_submitted["success"] is True
+        await _wait_for_status(settings, task_id, {"succeeded"})
+        await _wait_for_status(settings, tombstone_only_task_id, {"succeeded"})
+        tombstone_path = (
+            worker_tombstones_dir(settings, PROTOCOL_VERSION)
+            / f"{tombstone_only_task_id}.json"
+        )
+        assert tombstone_path.is_file()
+        shutil.rmtree(worker_tasks_dir(settings, PROTOCOL_VERSION) / tombstone_only_task_id)
+        drained = await quick_worker.request_drain(
             settings,
             operation_id=operation_id,
             wait_seconds=1,
@@ -462,12 +510,18 @@ async def test_completed_upgrade_drain_can_resume_worker(settings) -> None:
             settings,
             operation_id=operation_id,
         )
-        health = await read_health(settings)
+        cleared = await quick_worker.clear_runtime_state(
+            settings,
+            runtime_id="fixed-test",
+        )
+        listed = await _request(settings, "task_list", limit=100)
 
-        assert drain["success"] is True
+        assert drained["success"] is True
         assert resumed["success"] is True
-        assert health["data"]["status"] == "ready"
-        assert health["data"]["drain_operation_id"] is None
+        assert cleared["success"] is True
+        assert cleared["data"]["removed_tasks"] == 1
+        assert task_id not in {item["task_id"] for item in listed["data"]["tasks"]}
+        assert not tombstone_path.exists()
     finally:
         await server.close()
 

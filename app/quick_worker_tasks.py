@@ -6,6 +6,7 @@ import json
 import os
 import re
 import signal
+import shutil
 import stat
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -848,6 +849,66 @@ class WorkerTaskManager:
                     "Task process did not reach a final state after cancellation",
                 ) from exc
         return self.get(task_id)
+
+    async def clear_runtime_state(self, runtime_id: str) -> int:
+        """Discard completed task records, tombstones and leases for one Runtime."""
+        if re.fullmatch(RUNTIME_ID_PATTERN, runtime_id) is None:
+            raise WorkerTaskError("worker_runtime_invalid", "Runtime ID is invalid")
+        async with self._lock:
+            if self.running_count or self.queued_count:
+                raise WorkerTaskError(
+                    "worker_not_idle", "Worker still has active or queued tasks"
+                )
+            try:
+                entries = list(self.tasks_dir.iterdir())
+            except OSError as exc:
+                raise WorkerTaskError(
+                    "worker_store_unavailable", "Worker task store could not be read"
+                ) from exc
+            task_ids: list[str] = []
+            for entry in entries:
+                if not entry.is_dir() or entry.is_symlink():
+                    continue
+                try:
+                    spec = self._read_spec(entry.name)
+                except (OSError, ValidationError, ValueError):
+                    continue
+                if spec.runtime_id == runtime_id:
+                    task_ids.append(spec.task_id)
+            tombstone_paths: list[Path] = []
+            for tombstone_path in self.tombstones_dir.iterdir():
+                if not tombstone_path.is_file() or tombstone_path.is_symlink():
+                    continue
+                try:
+                    tombstone = _read_model(
+                        tombstone_path,
+                        TaskTombstone,
+                        max_bytes=MAX_STATE_BYTES,
+                    )
+                except (OSError, ValidationError, ValueError):
+                    continue
+                if tombstone.runtime_id == runtime_id:
+                    tombstone_paths.append(tombstone_path)
+            for task_id in task_ids:
+                shutil.rmtree(self.tasks_dir / task_id)
+                self._recovery_task_ids.discard(task_id)
+                self._corrupt_task_ids.discard(task_id)
+            for tombstone_path in tombstone_paths:
+                tombstone_path.unlink()
+            for lease_path in self.leases_dir.iterdir():
+                if not lease_path.is_file() or lease_path.is_symlink():
+                    continue
+                try:
+                    lease = _read_model(
+                        lease_path,
+                        SessionLease,
+                        max_bytes=MAX_STATE_BYTES,
+                    )
+                except (OSError, ValidationError, ValueError):
+                    continue
+                if lease.runtime_id == runtime_id:
+                    lease_path.unlink()
+            return len(task_ids)
 
     def get(self, task_id: str) -> WorkerTaskView:
         self._validate_task_id(task_id)

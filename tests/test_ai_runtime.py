@@ -6,6 +6,7 @@ from pydantic import ValidationError
 
 from app.ai_runtime import (
     BACKGROUND_RUNTIME_CAPABILITIES,
+    BuiltinRuntimeModuleRegistry,
     RUNTIME_CAPABILITIES,
     RuntimeDescriptor,
     RuntimeEventSummary,
@@ -20,6 +21,8 @@ from app.ai_runtime import (
     validate_runtime_wiring,
 )
 from app.codex.runtime_adapter import CodexRuntimeAdapter
+from app.codex.runtime_module import create_builtin_runtime_modules
+from app.ai_session.manager import AiSessionManager
 from app.codex.usage_settings import AiRuntimeGeneralSettings, AiRuntimeSettingsStore
 from app.codex.manager import CodexPtyManager
 from app.codex.models import (
@@ -133,6 +136,51 @@ class IncompleteWorkerRuntime(StubWorkerRuntime):
     read_result = None
 
 
+class StubBuiltinRuntimeModule:
+    def __init__(
+        self,
+        runtime_id: str,
+        *,
+        is_default: bool = False,
+        display_name: str | None = None,
+        description: str | None = None,
+    ) -> None:
+        self._runtime_id = runtime_id
+        self._is_default = is_default
+        self._display_name = display_name or runtime_id
+        self._description = description or f"{runtime_id} description"
+
+    @property
+    def descriptor(self) -> RuntimeDescriptor:
+        return RuntimeDescriptor(
+            runtime_id=self._runtime_id,
+            capabilities=frozenset({"runtime_status"}),
+        )
+
+    @property
+    def display_name(self) -> str:
+        return self._display_name
+
+    @property
+    def description(self) -> str:
+        return self._description
+
+    @property
+    def is_default(self) -> bool:
+        return self._is_default
+
+    def build_adapter(self) -> StubRuntime:
+        return StubRuntime(self._runtime_id)
+
+    def build_worker_runner(self, _adapter, *, workspaces) -> StubWorkerRuntime:
+        return StubWorkerRuntime(self._runtime_id)
+
+
+class BrokenAdapterRuntimeModule(StubBuiltinRuntimeModule):
+    def build_adapter(self) -> StubRuntime:
+        raise RuntimeError("adapter construction failed")
+
+
 class MutableWorkerDescriptorRuntime(StubWorkerRuntime):
     def __init__(self) -> None:
         super().__init__("mutable-runtime")
@@ -235,6 +283,92 @@ def test_runtime_wiring_rejects_adapter_runner_owner_mismatch() -> None:
         validate_runtime_wiring(StubRuntime("codex"), DescriptorOnly())
 
     assert invalid.value.code == "runtime_wiring_invalid"
+
+
+def test_runtime_wiring_rejects_capability_mismatch() -> None:
+    class AdapterDescriptor:
+        descriptor = RuntimeDescriptor(
+            runtime_id="codex",
+            capabilities=frozenset({"runtime_status", "model_catalog"}),
+        )
+
+    class DescriptorOnly:
+        descriptor = RuntimeDescriptor(
+            runtime_id="codex",
+            capabilities=frozenset({"runtime_status"}),
+        )
+
+    with pytest.raises(RuntimeOperationError) as invalid:
+        validate_runtime_wiring(AdapterDescriptor(), DescriptorOnly())
+
+    assert invalid.value.code == "runtime_wiring_invalid"
+
+
+def test_builtin_runtime_module_registry_requires_one_unique_default() -> None:
+    registry = BuiltinRuntimeModuleRegistry(
+        [StubBuiltinRuntimeModule("codex", is_default=True)]
+    )
+
+    assert registry.runtime_ids() == ("codex",)
+    assert registry.default().descriptor.runtime_id == "codex"
+    with pytest.raises(RuntimeOperationError) as duplicate:
+        registry.register(StubBuiltinRuntimeModule("other", is_default=True))
+    assert duplicate.value.code == "runtime_module_default_duplicate"
+
+
+def test_builtin_runtime_module_registry_keeps_registered_presentation() -> None:
+    module = StubBuiltinRuntimeModule(
+        "codex",
+        is_default=True,
+        display_name="Codex",
+        description="Initial description",
+    )
+    registry = BuiltinRuntimeModuleRegistry([module])
+    module._display_name = "Changed name"
+    module._description = "Changed description"
+
+    presentation = registry.require_navigation("codex")
+
+    assert presentation.name == "Codex"
+    assert presentation.description == "Initial description"
+
+
+def test_session_manager_isolates_external_adapter_construction_failure(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    modules = BuiltinRuntimeModuleRegistry(
+        [
+            manager._builtin_runtime_modules.require("codex"),
+            BrokenAdapterRuntimeModule("broken-runtime"),
+        ]
+    )
+    manager.runtime_module_service.build_registry = MagicMock(return_value=(modules, ()))
+
+    manager.refresh_external_runtime_modules()
+
+    assert manager.runtime_modules.runtime_ids() == ("codex",)
+    assert manager.runtime_module_failures[0].module_id == "broken-runtime"
+
+
+def test_builtin_codex_module_builds_matching_adapter_and_worker_runner(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    modules = create_builtin_runtime_modules(
+        settings,
+        codex_home=tmp_path / "codex-home",
+        codex_executable="/fixed/codex",
+    )
+    module = modules.default()
+    adapter = module.build_adapter()
+    runner = module.build_worker_runner(adapter, workspaces={"chub": tmp_path})
+
+    assert modules.runtime_ids() == ("codex",)
+    assert module.display_name == "Codex"
+    assert module.is_default is True
+    assert adapter.descriptor == module.descriptor == runner.descriptor
+    assert validate_runtime_wiring(adapter, runner) == "codex"
 
 
 def test_worker_runtime_registry_is_fixed_and_fails_before_submission() -> None:

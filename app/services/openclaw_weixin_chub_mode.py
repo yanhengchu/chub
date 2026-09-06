@@ -39,6 +39,7 @@ from app.services.operation_log import write_operation
 from app.services.openclaw_weixin_chub_commands import (
     FIXED_COMMAND_KINDS,
     command_task_message_id,
+    is_ai_runtime_write_command,
     normalize_fixed_prompt,
     parse_weixin_chub_command,
     retry_submission_message_id,
@@ -376,6 +377,11 @@ class WeixinChubModeManager:
                 message="微信 Chub 模式状态文件不可用。",
             )
         return self._validate_configuration(configuration)
+
+    def requires_system_upgrade_write_guard(self, command) -> bool:
+        """Only gate writes that this enabled Chub mode will actually handle."""
+        with self._lock:
+            return self._mode_enabled and is_ai_runtime_write_command(command)
 
     def _validate_configuration(
         self,

@@ -67,6 +67,13 @@ class CodexRuntimeConfig(StrictModel):
     )
 
 
+class ExternalRuntimeModulesConfig(StrictModel):
+    """Fixed local storage for trusted Runtime ZIP installations."""
+
+    install_dir: Path = Path("data/local/runtime/modules")
+    max_archive_bytes: int = Field(default=32 * 1024 * 1024, ge=1024)
+
+
 class AutomationsConfig(StrictModel):
     enabled: bool = True
     shared_config_file: Path = Path("config/automations.yaml")
@@ -87,6 +94,7 @@ class AutomationsConfig(StrictModel):
 
 class AiRuntimeConfig(StrictModel):
     codex: CodexRuntimeConfig = CodexRuntimeConfig()
+    modules: ExternalRuntimeModulesConfig = ExternalRuntimeModulesConfig()
 
 
 class ProjectDocumentsConfig(StrictModel):
@@ -283,6 +291,10 @@ class Settings(StrictModel):
         if not self.ai_runtime.codex.runtime_dir.is_absolute():
             self.ai_runtime.codex.runtime_dir = (
                 PROJECT_ROOT / self.ai_runtime.codex.runtime_dir
+            )
+        if not self.ai_runtime.modules.install_dir.is_absolute():
+            self.ai_runtime.modules.install_dir = (
+                PROJECT_ROOT / self.ai_runtime.modules.install_dir
             )
         if not self.automations.shared_config_file.is_absolute():
             self.automations.shared_config_file = (

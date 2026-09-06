@@ -9,6 +9,13 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from app.ai_runtime import RuntimeNativeSession, RuntimeOperationError, RuntimeRegistry
+from app.ai_runtime.external_modules import (
+    ExternalRuntimeModuleService,
+    RuntimeModuleActivation,
+    RuntimeModuleLoadFailure,
+    RuntimeModuleRemoval,
+)
+from app.ai_runtime.modules import BuiltinRuntimeModuleRegistry
 from app.ai_runtime.enablement import (
     RuntimeEnablement,
     RuntimeEnablementStore,
@@ -40,6 +47,7 @@ from app.codex.models import (
     WorkspaceInfo,
 )
 from app.codex.runtime_adapter import CodexRuntimeAdapter
+from app.codex.runtime_module import create_builtin_runtime_modules
 from app.codex.worker_runtime import DISCOVERED_RUNTIME_WORKSPACE_ID
 from app.core.config import PROJECT_ROOT, Settings
 from app.core.response import ApiError
@@ -76,10 +84,25 @@ class AiSessionManager:
         self.runtime_enablement = RuntimeEnablementStore(
             settings.ai_runtime.codex.data_file.with_name("runtime-enablement.json")
         )
-        adapter = CodexRuntimeAdapter(settings)
+        self._builtin_runtime_modules = create_builtin_runtime_modules(settings)
+        self.runtime_module_service = ExternalRuntimeModuleService(settings)
+        self.runtime_module_recovery = (
+            self.runtime_module_service.recover_incomplete_activation()
+        )
+        self.runtime_modules, self.runtime_module_failures = (
+            self.runtime_module_service.build_registry(self._builtin_runtime_modules)
+        )
+        runtime_module = self.runtime_modules.default()
+        adapter = runtime_module.build_adapter()
+        if not isinstance(adapter, CodexRuntimeAdapter):
+            raise RuntimeOperationError(
+                "runtime_module_wiring_invalid",
+                "The default Runtime module did not build a Codex Adapter",
+                kind="conflict",
+            )
         self.runtime_settings_store = adapter.runtime_settings_store
+        self.runtime_id = runtime_module.descriptor.runtime_id
         self.runtime_registry = RuntimeRegistry([adapter])
-        self.runtime_id = adapter.descriptor.runtime_id
         self.runtime_adapter = self.runtime_registry.require(
             self.runtime_id,
             {
@@ -102,7 +125,103 @@ class AiSessionManager:
         self._quick_interaction_is_running: Callable[[str], bool] = lambda _id: False
         self._system_upgrade_writes_blocked: Callable[[], bool] = lambda: False
         self._pending_native_discoveries: dict[tuple[str, str], datetime] = {}
+        self.refresh_external_runtime_modules()
         self._reconcile_saved_terminals()
+
+    def install_runtime_module(
+        self,
+        archive: bytes,
+        *,
+        source_name: str,
+        operation_id: str,
+    ) -> RuntimeModuleActivation:
+        activation = self.runtime_module_service.install(
+            archive,
+            source_name=source_name,
+            operation_id=operation_id,
+        )
+        try:
+            self.refresh_external_runtime_modules()
+            activated = (
+                activation.installed.manifest.module_id in self.runtime_modules.runtime_ids()
+            )
+        except Exception:
+            self.runtime_module_service.rollback(activation)
+            self.refresh_external_runtime_modules()
+            raise
+        if not activated:
+            self.runtime_module_service.rollback(activation)
+            self.refresh_external_runtime_modules()
+            raise ApiError(
+                503,
+                "runtime_module_activation_unconfirmed",
+                "Runtime 模块已写入，但 Web 注册表未能确认激活。",
+            )
+        return activation
+
+    def refresh_external_runtime_modules(self) -> None:
+        modules, failures = self.runtime_module_service.build_registry(
+            self._builtin_runtime_modules
+        )
+        available_modules = BuiltinRuntimeModuleRegistry(
+            [modules.require(self.runtime_id)]
+        )
+        adapters = [self.runtime_adapter]
+        for runtime_id in modules.runtime_ids():
+            if runtime_id == self.runtime_id:
+                continue
+            module = modules.require(runtime_id)
+            try:
+                adapter = module.build_adapter()
+                RuntimeRegistry([adapter])
+                available_modules.register(module)
+                adapters.append(adapter)
+            except Exception:
+                failures += (
+                    RuntimeModuleLoadFailure(
+                        runtime_id,
+                        "Runtime 模块装配失败。",
+                    ),
+                )
+        self.runtime_modules = available_modules
+        self.runtime_module_failures = failures
+        self.runtime_registry = RuntimeRegistry(adapters)
+
+    def remove_runtime_module(
+        self,
+        module_id: str,
+        *,
+        operation_id: str,
+    ) -> RuntimeModuleRemoval:
+        if module_id in self._builtin_runtime_modules.runtime_ids():
+            raise ApiError(422, "runtime_module_remove_invalid", "内置 Runtime 不可移除。")
+        removal = self.runtime_module_service.remove(module_id, operation_id=operation_id)
+        try:
+            self.refresh_external_runtime_modules()
+            if module_id in self.runtime_modules.runtime_ids():
+                raise ApiError(503, "runtime_module_removal_unconfirmed", "Web 注册表未能确认 Runtime 已移除。")
+        except Exception:
+            self.runtime_module_service.rollback_removal(removal)
+            self.refresh_external_runtime_modules()
+            raise
+        return removal
+
+    def clear_runtime_module_state(self, module_id: str) -> None:
+        """Clear Chub-owned state covered by a Runtime upgrade boundary."""
+        self.store.remove_runtime(module_id)
+        enablement = self.runtime_enablement.read()
+        disabled = [
+            runtime_id
+            for runtime_id in enablement.disabled_runtime_ids
+            if runtime_id != module_id
+        ]
+        if len(disabled) != len(enablement.disabled_runtime_ids):
+            self.runtime_enablement.save(RuntimeEnablement(disabled_runtime_ids=disabled))
+        self._pending_native_discoveries = {
+            key: observed_at
+            for key, observed_at in self._pending_native_discoveries.items()
+            if key[0] != module_id
+        }
 
     def set_quick_interaction_checker(
         self,
@@ -142,7 +261,7 @@ class AiSessionManager:
         runtimes = [
             RuntimeManagementItem(
                 runtime_id=item.runtime_id,
-                name=("Codex Runtime" if item.runtime_id == "codex" else item.runtime_id),
+                name=self.runtime_modules.require_navigation(item.runtime_id).name,
                 enabled=item.runtime_id not in disabled,
                 healthy=item.available,
                 reason=item.reason,

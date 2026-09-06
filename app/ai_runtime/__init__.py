@@ -37,6 +37,18 @@ from app.ai_runtime.contracts import (
     RuntimeUsageSnapshotAdapter,
 )
 from app.ai_runtime.registry import RuntimeRegistry, validate_runtime_wiring
+from app.ai_runtime.modules import (
+    BuiltinRuntimeModule,
+    BuiltinRuntimeModuleRegistry,
+    BuiltinRuntimeNavigation,
+)
+from app.ai_runtime.external_modules import (
+    ExternalRuntimeModuleService,
+    RuntimeModuleActivation,
+    RuntimeModuleInstallError,
+    RuntimeModuleLoadFailure,
+    RuntimeModuleRecovery,
+)
 from app.ai_runtime.worker import (
     BACKGROUND_RUNTIME_CAPABILITIES,
     RuntimeWorkerLaunchRequest,
@@ -71,6 +83,14 @@ __all__ = [
     "RuntimeReasoningLevel",
     "RuntimeRegistry",
     "validate_runtime_wiring",
+    "BuiltinRuntimeModule",
+    "BuiltinRuntimeModuleRegistry",
+    "BuiltinRuntimeNavigation",
+    "ExternalRuntimeModuleService",
+    "RuntimeModuleActivation",
+    "RuntimeModuleInstallError",
+    "RuntimeModuleLoadFailure",
+    "RuntimeModuleRecovery",
     "RuntimeSessionDiscoveryResult",
     "RuntimeSessionArchiveAdapter",
     "RuntimeSettingsAdapter",

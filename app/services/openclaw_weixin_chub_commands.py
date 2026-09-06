@@ -101,6 +101,21 @@ FIXED_COMMAND_KINDS = frozenset(
     }
 )
 
+_READ_ONLY_COMMAND_KINDS = frozenset(
+    {
+        "status",
+        "check",
+        "usage",
+        "help",
+        "model",
+        "model_list",
+        "model_levels",
+        "request_cat",
+    }
+)
+
+_READ_ONLY_TEXT_ACTIONS = frozenset({"list", "model_list", "model_levels"})
+
 
 @dataclass(frozen=True)
 class WeixinChubCommand:
@@ -122,6 +137,21 @@ class WeixinChubCommand:
     model_index: int | None = None
     level_index: int | None = None
     invalid_usage: bool = False
+
+
+def is_ai_runtime_write_command(command: WeixinChubCommand) -> bool:
+    """Return whether a parsed command can change AI Runtime-owned state."""
+    if command.kind in _READ_ONLY_COMMAND_KINDS:
+        return False
+    if command.kind == "text_check":
+        return not command.invalid_usage
+    if command.kind == "text_control":
+        if command.invalid_usage:
+            return False
+        if command.text_action == "mode":
+            return command.processing_mode is not None
+        return command.text_action not in _READ_ONLY_TEXT_ACTIONS
+    return True
 
 
 def normalize_fixed_prompt(prompt: str) -> str:

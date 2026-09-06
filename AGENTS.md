@@ -119,9 +119,9 @@ AI Agent 处理任何需求前先用下面的规则建立判断基线，详细�
 
 ## 前端目录与加载边界
 
-- 首页 JavaScript 按 `static/js/core/`、`static/js/components/`、`static/js/features/` 和 `static/app.js` 分层；`app.js` 只负责页面组合、跨功能协调和启动，新功能的请求、状态与渲染放入对应 Feature 文件。
-- 当前首轮拆分仍使用全局函数和固定 `defer` 顺序，不是 ES Modules。`index.html` 中的脚本顺序属于兼容契约，调整时必须同步顺序测试并完成浏览器回归。
-- 首页共享请求、认证、页面恢复和跨功能清理由 Core 承担；通用 DOM 行为放入 Components；Feature 之间不直接读取对方内部状态。
+- 根路径 `/` 是正式工作台，`/workspace` 只跳转到对应分区。首页使用 `workspace-bootstrap.js`、`theme.js`、`static/js/components/`、`workspace.js` 和 `static/js/features/` 分层；`workspace.js` 只负责侧栏、分区切换、跨功能协调和清理，业务请求、状态和渲染留在所属 Feature。快速交互继续使用独立的 Core、View 和 Page Controller 脚本。
+- 当前前端仍使用全局函数和固定加载顺序，不是 ES Modules。工作台顺序为 `Workspace Bootstrap -> Theme -> Components -> Workspace Coordinator -> Workspace Features`；调整模板引用或顺序时必须同步顺序测试并完成浏览器回归。
+- 共享 DOM 行为放入 Components；Feature 之间不直接读取对方内部状态。页面恢复、请求与跨功能清理由当前页面协调层承担，不恢复已经删除的 `static/app.js`、`static/js/core/` 或旧首页资源。
 - 公共页面样式通过 `templates/partials/app_styles.html` 统一加载，顺序固定为 `tokens.css`、`base.css`、`components.css`、`responsive.css`；不要恢复已删除的 `static/app.css`，也不要在各模板重复维护样式列表。
 - CSS 首轮按原规则顺序安全拆分，`components.css` 仍可能包含页面专用规则。后续只在真实页面改动时渐进归类，不为了目录整齐批量搬动导致层叠变化。
 

@@ -13,12 +13,16 @@ const quickInteractionPageSize = document.querySelector(
 );
 const codexDefaultFullAccess = document.querySelector("#codex-default-full-access");
 const runtimeManagementList = document.querySelector("#runtime-management-list");
-const runtimeManagementDescription = document.querySelector(
-  "#runtime-management-description",
+const runtimeManagementMessage = document.querySelector(
+  "#runtime-management-message",
 );
 const generalRuntimeSettingsPanel = document.querySelector(
   "#ai-runtime-general-settings",
 );
+const runtimeModuleInstallForm = document.querySelector("#runtime-module-install-form");
+const runtimeModuleFile = document.querySelector("#runtime-module-file");
+const runtimeModuleFileTrigger = document.querySelector("#runtime-module-file-trigger");
+const runtimeModuleList = document.querySelector("#runtime-module-list");
 const quickInteractionCore = window.QuickInteractionCore;
 const codexSessionSettingsMessage = document.querySelector(
   "#codex-session-settings-message",
@@ -272,10 +276,10 @@ async function loadCodexSessionDefaults() {
   }
 }
 
-function setRuntimeManagementDescription(text, kind = "") {
-  if (!(runtimeManagementDescription instanceof HTMLElement)) return;
-  runtimeManagementDescription.textContent = text;
-  runtimeManagementDescription.classList.toggle("message-error", kind === "error");
+function setRuntimeManagementMessage(text, kind = "") {
+  if (!(runtimeManagementMessage instanceof HTMLElement)) return;
+  runtimeManagementMessage.textContent = text;
+  runtimeManagementMessage.className = kind === "error" ? "message message-error" : "message";
 }
 
 function renderRuntimeManagement(data) {
@@ -320,11 +324,9 @@ function renderRuntimeManagement(data) {
     runtimeManagementList.append(field);
   }
   if (data?.basic_mode === true) {
-    setRuntimeManagementDescription("所有 AI Runtime 已停止接收新任务，Chub 当前处于基础功能模式。");
+    setRuntimeManagementMessage("所有 AI Runtime 已停止接收新任务，Chub 当前处于基础功能模式。");
   } else {
-    setRuntimeManagementDescription(
-      "允许后可创建并提交该 Runtime 的 AI 任务；停止接入不会中断已受理任务。",
-    );
+    setRuntimeManagementMessage("");
   }
 }
 
@@ -336,8 +338,162 @@ async function loadRuntimeManagement() {
     renderRuntimeManagement(payload.data);
   } catch (_error) {
     runtimeManagementList?.replaceChildren();
-    setRuntimeManagementDescription("暂时无法读取 AI Runtime 状态。", "error");
+    setRuntimeManagementMessage("暂时无法读取 AI Runtime 状态。", "error");
   }
+}
+
+function runtimeModuleRow(module, { candidate = false } = {}) {
+  const row = document.createElement("div");
+  row.className = "settings-utility-row runtime-module-row";
+  const copy = document.createElement("span");
+  const title = document.createElement("strong");
+  const detail = document.createElement("small");
+  title.textContent = module.name || module.module_id;
+  detail.textContent = candidate
+    ? `${module.description} · ${module.module_id} · ${module.version}`
+    : (module.status === "active"
+      ? `${module.description || module.module_id} · ${module.version}`
+      : (module.reason || "模块不可用。"));
+  copy.append(title, detail);
+  const actions = document.createElement("span");
+  actions.className = "runtime-module-row-actions";
+  if (candidate) {
+    const install = document.createElement("button");
+    install.className = "button-secondary";
+    install.type = "button";
+    install.textContent = "导入";
+    install.disabled = runtimeModuleBusy;
+    install.addEventListener("click", () => void installSelectedRuntimeModule());
+    const badge = document.createElement("span");
+    badge.className = "badge badge-muted";
+    badge.textContent = runtimeModuleBusy ? "处理中" : "准备导入";
+    actions.append(badge, install);
+  } else {
+    const badge = document.createElement("span");
+    badge.className = `badge ${module.status === "active" ? "badge-success" : "badge-muted"}`;
+    badge.textContent = module.status === "active" ? "已激活" : "不可用";
+    const remove = document.createElement("button");
+    remove.className = "button-danger";
+    remove.type = "button";
+    remove.textContent = "移除";
+    remove.disabled = runtimeModuleBusy;
+    remove.addEventListener("click", () => void confirmRuntimeModuleRemoval(module));
+    actions.append(badge, remove);
+  }
+  row.append(copy, actions);
+  return row;
+}
+
+let runtimeModuleCandidate = null;
+let runtimeModuleBusy = false;
+let runtimeModuleData = { modules: [] };
+
+function showRuntimeModuleToast(text, kind = "info") {
+  window.showChubToast?.(text, { kind });
+}
+
+function renderRuntimeModules(data = runtimeModuleData) {
+  if (!(runtimeModuleList instanceof HTMLElement)) return;
+  runtimeModuleData = data || { modules: [] };
+  const modules = Array.isArray(runtimeModuleData.modules) ? runtimeModuleData.modules : [];
+  const rows = [];
+  if (runtimeModuleCandidate) rows.push(runtimeModuleRow(runtimeModuleCandidate, { candidate: true }));
+  rows.push(...modules.map((module) => runtimeModuleRow(module)));
+  runtimeModuleList.replaceChildren(...rows);
+}
+
+async function loadRuntimeModules() {
+  if (!(runtimeModuleList instanceof HTMLElement)) return;
+  try {
+    renderRuntimeModules(await fetchSettingsApi("/api/runtime-modules"));
+  } catch (_error) {
+    runtimeModuleList.replaceChildren();
+    showRuntimeModuleToast("暂时无法读取 Runtime 模块状态。", "error");
+  }
+}
+
+async function runtimeModuleRequest(path, { method = "POST", file } = {}) {
+  const response = await fetch(path, {
+    method,
+    headers: file ? { "Content-Type": "application/zip", "X-Chub-Module-Filename": file.name } : undefined,
+    body: file ? await file.arrayBuffer() : undefined,
+    cache: "no-store",
+  });
+  const payload = await response.json();
+  if (!response.ok || payload.success !== true) {
+    throw new Error(payload?.error?.message || "Runtime 模块操作失败。");
+  }
+  return payload.data;
+}
+
+async function installSelectedRuntimeModule() {
+  const file = runtimeModuleCandidate?.file;
+  if (!file || runtimeModuleBusy) return;
+  runtimeModuleBusy = true;
+  renderRuntimeModules();
+  showRuntimeModuleToast("正在导入并确认 Runtime 模块。", "info");
+  try {
+    await runtimeModuleRequest("/api/runtime-modules/install", { file });
+    runtimeModuleCandidate = null;
+    if (runtimeModuleFile instanceof HTMLInputElement) runtimeModuleFile.value = "";
+    showRuntimeModuleToast("Runtime 模块已激活。", "success");
+    await loadRuntimeModules();
+  } catch (error) {
+    showRuntimeModuleToast(error instanceof Error ? error.message : "Runtime 模块未能激活。", "error");
+  } finally {
+    runtimeModuleBusy = false;
+    renderRuntimeModules();
+  }
+}
+
+async function confirmRuntimeModuleRemoval(module) {
+  if (runtimeModuleBusy || typeof showConfirmationDialog !== "function") return;
+  await showConfirmationDialog({
+    title: "移除 Runtime 模块",
+    description: "移除后，该模块的安装代码和关联 Chub 运行态将被清理；旧版本不会保留。",
+    details: [{ label: "Runtime", value: module.name || module.module_id }],
+    confirmLabel: "移除",
+    pendingLabel: "正在移除…",
+    errorMessage: "Runtime 模块未能移除。",
+    onConfirm: async () => {
+      runtimeModuleBusy = true;
+      renderRuntimeModules();
+      try {
+        await runtimeModuleRequest(`/api/runtime-modules/${encodeURIComponent(module.module_id)}`, { method: "DELETE" });
+        showRuntimeModuleToast("Runtime 模块已移除。", "success");
+        await loadRuntimeModules();
+      } finally {
+        runtimeModuleBusy = false;
+        renderRuntimeModules();
+      }
+    },
+  });
+}
+
+function initializeRuntimeModuleInstall() {
+  if (!(runtimeModuleFile instanceof HTMLInputElement)) return;
+  runtimeModuleFileTrigger?.addEventListener("click", () => runtimeModuleFile.click());
+  runtimeModuleFile.addEventListener("change", async () => {
+    const file = runtimeModuleFile.files?.[0];
+    runtimeModuleCandidate = null;
+    if (!file) {
+      renderRuntimeModules();
+      return;
+    }
+    runtimeModuleBusy = true;
+    renderRuntimeModules();
+    try {
+      const preview = await runtimeModuleRequest("/api/runtime-modules/inspect", { file });
+      runtimeModuleCandidate = { ...preview, file };
+    } catch (error) {
+      runtimeModuleFile.value = "";
+      showRuntimeModuleToast(error instanceof Error ? error.message : "Runtime 模块清单不可读取。", "error");
+    } finally {
+      runtimeModuleBusy = false;
+      renderRuntimeModules();
+    }
+  });
+  void loadRuntimeModules();
 }
 
 function runtimeSettingOptions(field, catalog, values) {
@@ -779,6 +935,7 @@ if (settingsPage === "appearance") {
   loadRuntimeManagement();
 } else if (settingsPage === "runtime") {
   void loadGeneralRuntimeSettings();
+  initializeRuntimeModuleInstall();
 } else if (settingsPage === "task-orchestration") {
   window.initializeWorkspaceTaskOrchestration?.();
 } else if (settingsPage === "session-defaults") {

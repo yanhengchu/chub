@@ -12,6 +12,7 @@ from app.services.design_documents import (
     select_home_design_documents,
 )
 from app.core.response import ApiError
+from app.ai_runtime import RuntimeOperationError
 from app.services.weekly_reports import (
     get_weekly_report,
     list_latest_weekly_reports,
@@ -95,15 +96,11 @@ def render_settings_page(
     runtime_id: str | None = None,
 ) -> HTMLResponse:
     settings = request.app.state.settings
-    runtime_navigation = []
+    runtime_navigation = ()
     try:
-        management = request.app.state.codex_pty_manager.read_runtime_management()
-        runtime_navigation = [
-            {"runtime_id": item.runtime_id, "name": item.name}
-            for item in management.runtimes
-        ]
-    except ApiError:
-        # Runtime settings remain reachable even when live status is unavailable.
+        runtime_navigation = request.app.state.ai_session_manager.runtime_modules.navigation()
+    except RuntimeOperationError:
+        # Runtime settings remain reachable when a live module registration is invalid.
         pass
     return templates.TemplateResponse(
         request=request,
@@ -171,20 +168,16 @@ def runtime_settings(request: Request) -> HTMLResponse:
 )
 def runtime_detail_settings(request: Request, runtime_id: str) -> HTMLResponse:
     try:
-        management = request.app.state.codex_pty_manager.read_runtime_management()
-    except ApiError as exc:
-        raise HTTPException(status_code=503, detail="Runtime settings unavailable") from exc
-    runtime = next(
-        (item for item in management.runtimes if item.runtime_id == runtime_id),
-        None,
-    )
-    if runtime is None:
+        runtime = request.app.state.ai_session_manager.runtime_modules.require_navigation(
+            runtime_id
+        )
+    except RuntimeOperationError:
         raise HTTPException(status_code=404, detail="Runtime not found")
     return render_settings_page(
         request,
         page="runtime-detail",
         title=runtime.name,
-        description="查看并调整此 AI Runtime 的独立配置。",
+        description=runtime.description,
         runtime_id=runtime.runtime_id,
     )
 

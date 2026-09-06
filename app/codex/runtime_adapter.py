@@ -46,6 +46,10 @@ CODEX_SESSION_ID_PATTERN = r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}"
 CODEX_RUNTIME_CAPABILITIES: frozenset[RuntimeCapability] = (
     RUNTIME_CAPABILITIES - {"runtime_settings"}
 )
+CODEX_RUNTIME_DESCRIPTOR = RuntimeDescriptor(
+    runtime_id="codex",
+    capabilities=CODEX_RUNTIME_CAPABILITIES,
+)
 MAX_ACTIVITY_EVENT_BYTES = 32 * 1024
 
 
@@ -89,10 +93,7 @@ class CodexRuntimeAdapter:
 
     @property
     def descriptor(self) -> RuntimeDescriptor:
-        return RuntimeDescriptor(
-            runtime_id="codex",
-            capabilities=CODEX_RUNTIME_CAPABILITIES,
-        )
+        return CODEX_RUNTIME_DESCRIPTOR
 
     @property
     def display_name(self) -> str:

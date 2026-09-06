@@ -357,7 +357,9 @@ if (confirmationDialog) {
       dismissToast();
       return;
     }
-    const tone = kind === "warning" ? "warning" : "error";
+    const tone = ["info", "success", "warning", "error"].includes(kind)
+      ? kind
+      : "error";
     const message = target.querySelector(".chub-toast-message");
     if (!(message instanceof HTMLElement)) return;
     window.clearTimeout(toastTimer);
@@ -366,7 +368,9 @@ if (confirmationDialog) {
     target.hidden = false;
     toastTimer = window.setTimeout(
       dismissToast,
-      Number.isFinite(duration) ? duration : tone === "warning" ? 5500 : 7000,
+      Number.isFinite(duration)
+        ? duration
+        : (tone === "info" ? 4000 : (tone === "success" ? 5000 : (tone === "warning" ? 5500 : 7000))),
     );
   };
 })();

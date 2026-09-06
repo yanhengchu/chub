@@ -760,6 +760,36 @@ input[type="password"] {
   gap: 0.6rem;
 }
 
+.runtime-module-install-form,
+.runtime-module-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.runtime-module-row {
+  align-items: center;
+}
+
+.runtime-module-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.runtime-module-file-button {
+  width: fit-content;
+  margin: 0;
+}
+
+.runtime-module-row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
 .runtime-settings-form {
   display: grid;
   gap: 0.75rem;
@@ -896,24 +926,51 @@ input[type="password"] {
   line-height: 1.5;
 }
 
+.theme-option-groups {
+  display: grid;
+  gap: 1rem;
+}
+
+.theme-option-group {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.theme-option-group + .theme-option-group {
+  padding-top: 1rem;
+}
+
+.theme-option-group h4 {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
 .theme-option-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.65rem;
 }
 
-.theme-option-toolbar {
+.theme-settings-heading {
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 0.65rem;
-  margin-bottom: 0.5rem;
+  min-width: 0;
 }
 
-.theme-option-toolbar p {
-  margin: 0 auto 0 0;
-  color: var(--color-text-muted);
-  font-size: 0.76rem;
+.theme-settings-heading > div {
+  display: grid;
+  min-width: 0;
+  gap: 0.25rem;
+  margin-right: auto;
+}
+
+.theme-settings-heading .settings-subsection-description {
+  margin: 0;
 }
 
 .theme-option {
@@ -1195,6 +1252,7 @@ input[type="password"] {
 
 .appearance-font-size-settings {
   gap: 0.55rem;
+  margin-top: 0.5rem;
 }
 
 .font-size-option-grid {
@@ -2713,6 +2771,18 @@ button.settings-utility-row > span:last-child {
   border-color: var(--color-warning-border);
   color: var(--color-warning);
   background: var(--color-warning-background);
+}
+
+.chub-toast-info {
+  border-color: color-mix(in srgb, var(--color-accent) 42%, var(--color-border));
+  color: var(--color-accent-text);
+  background: var(--color-surface-raised);
+}
+
+.chub-toast-success {
+  border-color: var(--color-success-border);
+  color: var(--color-success);
+  background: var(--color-success-background);
 }
 
 .chub-toast-message {

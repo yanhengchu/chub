@@ -26,8 +26,8 @@ from app.core.logger import (
     configure_worker_runtime_logging,
 )
 from app.ai_runtime import WorkerRuntimeRegistry, validate_runtime_wiring
-from app.codex.runtime_adapter import CodexRuntimeAdapter
-from app.codex.worker_runtime import CodexWorkerRuntime
+from app.ai_runtime.external_modules import ExternalRuntimeModuleService
+from app.codex.runtime_module import create_builtin_runtime_modules
 from app.quick_worker_tasks import (
     RuntimeTaskSubmission,
     TestTaskSubmission,
@@ -100,6 +100,13 @@ class WorkerResumeRequest(_StrictModel):
         max_length=128,
         pattern=r"^[A-Za-z0-9:_-]+$",
     )
+
+
+class WorkerRuntimeStateClearRequest(_StrictModel):
+    protocol_version: int
+    request_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+    action: Literal["runtime_state_clear"]
+    runtime_id: str = Field(pattern=r"^[a-z][a-z0-9-]{0,31}$")
 
 
 class WorkerTaskGetRequest(_StrictModel):
@@ -285,18 +292,39 @@ class QuickWorkerServer:
                     if codex_home is not None
                     else Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
                 )
-                adapter = CodexRuntimeAdapter(
+                builtin_runtime_modules = create_builtin_runtime_modules(
                     settings,
                     codex_home=resolved_codex_home,
-                    executable=resolved_executable,
+                    codex_executable=resolved_executable,
                 )
-                runner = CodexWorkerRuntime(
-                    adapter,
-                    executable=resolved_executable,
-                    workspaces=codex_workspaces,
-                )
-                validate_runtime_wiring(adapter, runner)
-                runners.append(runner)
+                runtime_modules, failures = ExternalRuntimeModuleService(
+                    settings
+                ).build_registry(builtin_runtime_modules)
+                for failure in failures:
+                    LOGGER.warning(
+                        "Runtime module unavailable: module_id=%s reason=%s",
+                        failure.module_id,
+                        failure.reason,
+                    )
+                builtin_runtime_ids = set(builtin_runtime_modules.runtime_ids())
+                for runtime_id in runtime_modules.runtime_ids():
+                    runtime_module = runtime_modules.require(runtime_id)
+                    try:
+                        adapter = runtime_module.build_adapter()
+                        runner = runtime_module.build_worker_runner(
+                            adapter,
+                            workspaces=codex_workspaces,
+                        )
+                        validate_runtime_wiring(adapter, runner)
+                        runners.append(runner)
+                    except Exception:
+                        if runtime_id in builtin_runtime_ids:
+                            raise
+                        LOGGER.warning(
+                            "Runtime module unavailable during Worker startup: module_id=%s",
+                            runtime_id,
+                            exc_info=True,
+                        )
             if allow_test_tasks:
                 runners.append(FixedTestWorkerRuntime())
             runtime_registry = WorkerRuntimeRegistry(runners)
@@ -441,7 +469,6 @@ class QuickWorkerServer:
                 raise WorkerTaskError(
                     "worker_not_idle", "Worker still has active or queued tasks"
                 )
-            self._record_drain_operation("failed")
             self._drain_operation_id = None
             self._drain_task = None
             self._drain_complete = False
@@ -644,6 +671,7 @@ class QuickWorkerServer:
             "runtime_task_submit": WorkerRuntimeTaskSubmitRequest,
             "drain": WorkerDrainRequest,
             "resume": WorkerResumeRequest,
+            "runtime_state_clear": WorkerRuntimeStateClearRequest,
             "task_get": WorkerTaskGetRequest,
             "task_list": WorkerTaskListRequest,
             "task_cancel": WorkerTaskCancelRequest,
@@ -691,6 +719,17 @@ class QuickWorkerServer:
         if isinstance(request, WorkerResumeRequest):
             await self.resume_after_drain(request.operation_id)
             return {"operation_id": request.operation_id, "status": self.status}
+        if isinstance(request, WorkerRuntimeStateClearRequest):
+            async with self._submission_gate:
+                if self.status not in {"ready", "draining"} or (
+                    self.status == "draining" and not self._drain_complete
+                ):
+                    raise WorkerTaskError(
+                        "worker_not_idle",
+                        "Worker Runtime state can only be cleared while idle",
+                    )
+                removed = await self.task_manager.clear_runtime_state(request.runtime_id)
+            return {"runtime_id": request.runtime_id, "removed_tasks": removed}
         if isinstance(request, WorkerTaskSubmitRequest):
             async with self._submission_gate:
                 if self.status != "ready":
@@ -911,6 +950,26 @@ async def resume_after_drain(
     if not isinstance(data, dict) or data.get("status") != "ready":
         raise OSError("Quick Worker did not resume ready state")
     return payload
+
+
+async def clear_runtime_state(
+    settings: Settings,
+    *,
+    runtime_id: str,
+    protocol_version: int | None = None,
+) -> dict[str, object]:
+    resolved_protocol_version = protocol_version or PROTOCOL_VERSION
+    if resolved_protocol_version < 1:
+        raise ValueError("Quick Worker protocol version must be positive")
+    return await worker_request(
+        settings,
+        {
+            "protocol_version": resolved_protocol_version,
+            "request_id": uuid.uuid4().hex,
+            "action": "runtime_state_clear",
+            "runtime_id": runtime_id,
+        },
+    )
 
 
 def _parser() -> argparse.ArgumentParser:

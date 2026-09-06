@@ -274,6 +274,28 @@ class AiSessionStore:
                 self._sessions[session_id] = existing
                 raise
 
+    def remove_runtime(self, runtime_id: str) -> int:
+        """Remove Chub-owned mappings for a Runtime being replaced or removed."""
+        with self._lock:
+            self._require_available()
+            self._assert_on_disk_matches_memory()
+            removed_ids = [
+                session_id
+                for session_id, session in self._sessions.items()
+                if session.runtime_id == runtime_id
+            ]
+            if not removed_ids:
+                return 0
+            before = dict(self._sessions)
+            for session_id in removed_ids:
+                self._sessions.pop(session_id, None)
+            try:
+                self._write()
+            except Exception:
+                self._sessions = before
+                raise
+            return len(removed_ids)
+
     def _write(self) -> None:
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         temporary = self.path.with_name(f".{self.path.name}.tmp")

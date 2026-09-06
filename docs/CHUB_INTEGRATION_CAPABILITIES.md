@@ -152,6 +152,7 @@
 - `restart worker` 会立即登记恢复操作，取消排队任务并停止执行中任务，不自动重放；`restart clawbot` 会在当前 OpenClaw 调度请求返回后异步执行，先同步固定兼容基线，再重启 Gateway，并在最终状态确认后发送独立结果。
 - `restart network` 与 `chub network-restart` 共用同一 Ubuntu NetworkManager 流程，仅在本机 `network_recovery.enabled` 为 `true`、且 Wi-Fi 设备名、Wi-Fi UUID 与 VPN UUID 均已固定配置时可用；macOS 调用明确失败，不执行网络切换。该流程按固定顺序断开 VPN、关闭再打开 Wi-Fi、等待指定无线设备可用、在该设备上重新连接 Wi-Fi 和 VPN，最后确认两者都是 NetworkManager 活动连接。它不接受连接名、UUID、设备名、命令或路径，也不控制 Tailscale。Wi-Fi 断开期间即时回执可能无法送达；最终结果只沿本次保存的微信路由回送，Wi-Fi 或 VPN 任一终态无法确认即记录失败而不伪报成功。
 - `upgrade` 不接受版本号、路径或其他参数；升级方案不可用时按固定规则降级为当前版本运行态恢复，并明确不执行代码版本升级。升级受理后通过独立完成通知返回最终结果；不再提供微信 `upgrade status` 固定指令。系统升级页面和固定 API 的只读状态查询仍然保留。
+- 系统升级进行中，`chub`、`check`、`usage`、帮助、模型查询和 `cat R#` 等只读固定指令继续可用；普通任务、Session/需求变更、文本或模型设置和维护指令作为直接受影响的写入操作明确拒绝，不会借微信调度 POST 入口整体阻断。
 - `upgrade` 的最终组件状态只展示 Chub 核心与 AI Runtime 组件。Debug Chrome Supervisor 与浏览器实例均由自动化环境统一控制，不出现在升级摘要；浏览器实例不在升级范围且不会自动启动。
 - `usage` 是精确无参数指令；大小写和首尾标点可忽略，附加任何正文时回退为普通任务。
 - `model` 是精确无参数指令；大小写和首尾标点可忽略，附加任何正文时回退为普通任务。它返回当前绑定 Session 最近一次已确认的 active 模型和推理等级；active 值缺失时继续读取该 Session 配置与 Runtime 模型目录默认值。若当前 Session 已为后续任务保存不同的模型或等级，只为不同字段额外显示 `Next model` 或 `Next level`，不把保存成功误报为已运行任务已切换。Runtime 目录无法读取或仍未提供某字段时才显示 `Default`，当前 Session 不存在或无法读取时失败关闭，不附加 Session 列表或额度尾部。

@@ -46,10 +46,13 @@ def validate_runtime_wiring(adapter: object, runner: object) -> str:
             "Runtime Adapter and Runner descriptors are invalid",
             kind="conflict",
         )
-    if adapter_descriptor.runtime_id != runner_descriptor.runtime_id:
+    if (
+        adapter_descriptor.runtime_id != runner_descriptor.runtime_id
+        or adapter_descriptor.capabilities != runner_descriptor.capabilities
+    ):
         raise RuntimeOperationError(
             "runtime_wiring_invalid",
-            "Runtime Adapter and Runner owners do not match",
+            "Runtime Adapter and Runner descriptors do not match",
             kind="conflict",
         )
     return adapter_descriptor.runtime_id

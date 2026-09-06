@@ -41,6 +41,7 @@ from app.api.openclaw_wechat_chub_mode import (
 from app.api.project_documents import router as project_documents_router
 from app.api.weekly_reports import router as weekly_reports_router
 from app.api.settings import router as settings_router
+from app.api.runtime_modules import router as runtime_modules_router
 from app.api.status import router as status_router
 from app.ai_session import AiSessionManager
 from app.ai_session.operations import archive_session, delete_session
@@ -91,7 +92,12 @@ from app.services.system_upgrade import (
     runtime_recovery_plan,
     system_upgrade_restart_readiness,
 )
-from app.quick_worker import read_health, read_health_sync, resume_after_drain
+from app.quick_worker import (
+    read_health,
+    read_health_sync,
+    request_drain,
+    resume_after_drain,
+)
 from app.notifications import NotificationService
 from app.web.routes import STATIC_DIR, router as web_router
 
@@ -214,10 +220,10 @@ def _is_ai_runtime_mutation(request: Request) -> bool:
     path = request.url.path
     return (
         path.startswith("/api/codex/")
+        or path.startswith("/api/runtime-modules/")
         or path.startswith("/api/ai/runtimes/")
         or path == "/api/ai/settings"
         or path.startswith("/api/weekly-reports/")
-        or path.startswith("/api/openclaw/wechat-chub-mode/")
     )
 
 
@@ -963,6 +969,74 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         restart_recovery_task = None
         worker_maintenance_recovery_task = None
         system_upgrade_recovery_task = None
+        runtime_module_recovery_task = None
+        runtime_module_recovery = codex_pty_manager.runtime_module_recovery
+        if runtime_module_recovery is not None:
+            write_operation(
+                operation_id=runtime_module_recovery.operation_id,
+                action=runtime_module_recovery.action,
+                status="failed",
+                target=runtime_module_recovery.module_id,
+                source_ip="127.0.0.1",
+                reason="recovered incomplete Runtime module operation before confirmation",
+            )
+
+            async def restore_runtime_module_worker() -> None:
+                drain_id = f"runtime-module-recovery:{runtime_module_recovery.operation_id}"
+                try:
+                    drained = await request_drain(
+                        resolved_settings,
+                        operation_id=drain_id,
+                        wait_seconds=7200,
+                    )
+                    if drained.get("success") is not True:
+                        raise OSError("Quick Worker drain could not be confirmed")
+                    health = await read_health(resolved_settings)
+                    data = health.get("data") if health.get("success") is True else None
+                    generation = data.get("generation") if isinstance(data, dict) else None
+                    if not isinstance(generation, str) or not quick_worker_maintenance.begin(
+                        generation,
+                        "127.0.0.1",
+                    ):
+                        raise OSError("Quick Worker reload could not be started")
+                    while quick_worker_maintenance.in_progress():
+                        await asyncio.sleep(0.2)
+                    operation = quick_worker_maintenance.operation()
+                    if operation is None or operation.status != "succeeded":
+                        raise OSError("Quick Worker reload could not be confirmed")
+                    write_operation(
+                        operation_id=f"runtime-module-recovery:{runtime_module_recovery.operation_id}",
+                        action=(
+                            "recover_runtime_module_removal"
+                            if runtime_module_recovery.action == "remove_runtime_module"
+                            else "recover_runtime_module_activation"
+                        ),
+                        status="succeeded",
+                        target=runtime_module_recovery.module_id,
+                        source_ip="127.0.0.1",
+                    )
+                except Exception:
+                    logging.getLogger("hub.runtime_modules").warning(
+                        "Unable to reconcile incomplete Runtime module activation",
+                        exc_info=True,
+                    )
+                    write_operation(
+                        operation_id=f"runtime-module-recovery:{runtime_module_recovery.operation_id}",
+                        action=(
+                            "recover_runtime_module_removal"
+                            if runtime_module_recovery.action == "remove_runtime_module"
+                            else "recover_runtime_module_activation"
+                        ),
+                        status="failed",
+                        target=runtime_module_recovery.module_id,
+                        source_ip="127.0.0.1",
+                        reason="quick worker registry recovery could not be confirmed",
+                    )
+
+            runtime_module_recovery_task = asyncio.create_task(
+                restore_runtime_module_worker()
+            )
+            await asyncio.sleep(0)
         await asyncio.to_thread(quick_interactions.start_worker_reconciliation)
         if quick_interactions.recovery_ready and not system_upgrade.writes_blocked():
             await asyncio.to_thread(
@@ -1045,6 +1119,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             yield
         finally:
+            if runtime_module_recovery_task is not None:
+                runtime_module_recovery_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await runtime_module_recovery_task
             if worker_maintenance_recovery_task is not None:
                 worker_maintenance_recovery_task.cancel()
                 with suppress(asyncio.CancelledError):
@@ -1165,6 +1243,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(project_documents_router)
     application.include_router(weekly_reports_router)
     application.include_router(settings_router)
+    application.include_router(runtime_modules_router)
     application.include_router(status_router)
     application.include_router(codex_api_router)
     application.include_router(maintenance_terminal_api_router)

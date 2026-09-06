@@ -1,0 +1,10 @@
+{
+  "protocol_version": 1,
+  "module_id": "verification-runtime",
+  "module_type": "runtime",
+  "display_name": "Verification Runtime",
+  "description": "Validates Runtime ZIP installation and Worker registration.",
+  "version": "1.0.0",
+  "chub_version": "__CHUB_VERSION__",
+  "entry": "chub_verification_runtime:create_runtime_module"
+}

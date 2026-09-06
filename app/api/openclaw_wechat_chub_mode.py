@@ -8,6 +8,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from app.codex.models import QuickInteractionWeixinRoute
 from app.core.response import ApiError, ApiResponse
 from app.core.security import _allows_loopback_request
+from app.services.openclaw_weixin_chub_commands import (
+    parse_weixin_chub_command,
+)
+from app.services.system_upgrade import SystemUpgradeBusy
 
 
 WEIXIN_CHUB_MODE_PROTOCOL_VERSION = 3
@@ -98,17 +102,33 @@ def dispatch_wechat_chub_mode_message(
             "weixin_chub_mode_protocol_mismatch",
             "OpenClaw 与 Chub 微信调度协议版本不匹配。",
         )
-    result = request.app.state.weixin_chub_mode.dispatch(
-        message_id=payload.message_id,
-        prompt=payload.content,
-        message_type=payload.message_type,
-        correlation_id=payload.correlation_id,
-        source_ip=request.client.host if request.client else "unknown",
-        delivery_route=QuickInteractionWeixinRoute(
-            account_id=payload.reply_account_id,
-            recipient=payload.reply_recipient,
-        ),
-    )
+    command = parse_weixin_chub_command(payload.content)
+
+    def dispatch() -> object:
+        return request.app.state.weixin_chub_mode.dispatch(
+            message_id=payload.message_id,
+            prompt=payload.content,
+            message_type=payload.message_type,
+            correlation_id=payload.correlation_id,
+            source_ip=request.client.host if request.client else "unknown",
+            delivery_route=QuickInteractionWeixinRoute(
+                account_id=payload.reply_account_id,
+                recipient=payload.reply_recipient,
+            ),
+        )
+
+    if request.app.state.weixin_chub_mode.requires_system_upgrade_write_guard(command):
+        try:
+            with request.app.state.system_upgrade.mutation_guard():
+                result = dispatch()
+        except SystemUpgradeBusy as exc:
+            raise ApiError(
+                409,
+                "system_upgrade_in_progress",
+                "系统升级期间暂不接受新的写入操作。",
+            ) from exc
+    else:
+        result = dispatch()
     return ApiResponse(
         data=WeixinChubModeDispatchData.model_validate(result.model_dump())
     )

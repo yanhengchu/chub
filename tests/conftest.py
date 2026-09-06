@@ -29,6 +29,9 @@ def settings(tmp_path: Path) -> Settings:
                     "ticket_ttl_seconds": 600,
                     "max_running": 3,
                 },
+                "modules": {
+                    "install_dir": tmp_path / "runtime-modules",
+                },
             },
             "automations": {
                 "shared_config_file": tmp_path / "automations.yaml",

@@ -14,6 +14,13 @@ class WebTheme:
 
 
 @dataclass(frozen=True)
+class WebThemeGroup:
+    id: str
+    name: str
+    themes: tuple[WebTheme, ...]
+
+
+@dataclass(frozen=True)
 class WebFontSize:
     id: str
     name: str
@@ -61,6 +68,29 @@ THEME_SCHEMES = ",".join(
     f"{theme.id}:{theme.color_scheme}" for theme in WEB_THEMES
 )
 
+WEB_THEME_GROUPS = tuple(
+    WebThemeGroup(
+        id=color_scheme,
+        name=group_name,
+        themes=tuple(
+            theme for theme in WEB_THEMES if theme.color_scheme == color_scheme
+        ),
+    )
+    for color_scheme, group_name in (
+        ("light", "亮色系主题"),
+        ("dark", "暗色系主题"),
+    )
+)
+_THEME_GROUPED_IDS = tuple(
+    theme.id for group in WEB_THEME_GROUPS for theme in group.themes
+)
+if (
+    any(not group.themes for group in WEB_THEME_GROUPS)
+    or len(_THEME_GROUPED_IDS) != len(WEB_THEMES)
+    or set(_THEME_GROUPED_IDS) != set(_THEMES_BY_ID)
+):
+    raise RuntimeError("Web theme groups are invalid")
+
 DEFAULT_FONT_SIZE_ID = "default"
 WEB_FONT_SIZES = (
     WebFontSize(id="small", name="小", description="90%", scale=0.9),
@@ -104,6 +134,7 @@ def configure_theme_templates(templates: Jinja2Templates) -> None:
         resolve_ui_theme=resolve_web_theme,
         ui_theme_schemes=THEME_SCHEMES,
         web_themes=WEB_THEMES,
+        web_theme_groups=WEB_THEME_GROUPS,
         default_ui_font_size=DEFAULT_FONT_SIZE_ID,
         resolve_ui_font_size=resolve_web_font_size,
         ui_font_size_scales=FONT_SIZE_SCALES,

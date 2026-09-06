@@ -2,6 +2,7 @@ import asyncio
 from datetime import datetime, timezone
 import re
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import httpx
@@ -15,6 +16,7 @@ from app.automations.models import (
     FeishuEnvironmentState,
     RuntimeAccountEnvironmentState,
 )
+from app.ai_runtime import BuiltinRuntimeModuleRegistry, RuntimeDescriptor
 from app.application import create_app
 from app.codex.models import CodexSession, RuntimeManagementData, RuntimeManagementItem
 from app.core.config import Settings
@@ -846,12 +848,15 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert '.settings-field input[type="text"]' in stylesheet.text
     assert 'background: var(--color-surface-field);' in stylesheet.text
     assert 'data-runtime-id="codex"' in pages["runtime-detail"].text
-    assert pages["runtime-detail"].text.count('id="runtime-management-description"') == 1
+    assert pages["runtime-detail"].text.count('id="runtime-management-message"') == 1
     assert 'href="/settings/runtime/codex" aria-current="page"' in pages["runtime-detail"].text
     assert 'href="/settings/task-orchestration"' in pages["runtime"].text
     assert 'href="/settings/task-orchestration" aria-current="page"' in pages["task-orchestration"].text
     assert 'id="workspace-task-processing-trigger"' in pages["task-orchestration"].text
-    assert 'class="theme-option-grid" role="radiogroup" aria-label="主题选择"' in pages["appearance"].text
+    assert 'class="theme-option-groups" role="radiogroup" aria-label="主题选择"' in pages["appearance"].text
+    assert 'id="theme-option-group-light-title">亮色系主题</h4>' in pages["appearance"].text
+    assert 'id="theme-option-group-dark-title">暗色系主题</h4>' in pages["appearance"].text
+    assert pages["appearance"].text.index('data-style-option="standard"') < pages["appearance"].text.index('data-style-option="studio-cyan"') < pages["appearance"].text.index('data-style-option="code-dark"')
     assert '<title>外观 · 设置 ·' in pages["appearance"].text
     assert '<span>外观</span></a>' in pages["appearance"].text
     assert 'name="ui-style" value="standard"' in pages["appearance"].text
@@ -866,7 +871,7 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert 'aria-label="Studio Cyan 的主文字、次文字和主强调色"' in pages["appearance"].text
     assert 'data-theme-details-toggle aria-expanded="false"' in pages["appearance"].text
     assert 'data-theme-details-label>显示文字层级示例</span>' in pages["appearance"].text
-    assert '<p>比较文字、状态与控件效果。</p>' in pages["appearance"].text
+    assert '<div class="theme-settings-heading"><div><h3 id="style-settings-title">主题</h3><p class="settings-subsection-description">比较文字、状态与控件效果。</p></div><button class="theme-details-toggle"' in pages["appearance"].text
     assert pages["appearance"].text.count('<strong>标题文本</strong><small>描述文案</small><p>正文内容用于展示主要阅读层级。</p></span><span class="theme-option-preview-selected">当前选中</span>') == len(WEB_THEMES)
     assert pages["appearance"].text.count('<span class="theme-option-preview-status is-success">已完成</span><span class="theme-option-preview-status">处理中</span><span class="theme-option-preview-status is-failed">需处理</span>') == len(WEB_THEMES)
     assert pages["appearance"].text.count('<em class="is-secondary">次要操作</em><em>主要操作</em>') == len(WEB_THEMES)
@@ -918,6 +923,12 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert "background: color-mix(in srgb, var(--color-accent) 3%, var(--color-surface-raised));" in stylesheet.text
     assert ".settings-choice-picker-option.is-selected" in stylesheet.text
     assert ".theme-option-grid" in stylesheet.text
+    assert ".theme-option-groups" in stylesheet.text
+    assert ".theme-option-group + .theme-option-group" in stylesheet.text
+    theme_group_rules = stylesheet.text[
+        stylesheet.text.index(".theme-option-group + .theme-option-group"):stylesheet.text.index(".theme-option-group h4")
+    ]
+    assert "border-top" not in theme_group_rules
     assert ".theme-option.is-selected" in stylesheet.text
     assert "min-height: 72px;" in stylesheet.text
     assert "grid-template-rows: minmax(3.1rem, auto) auto;" in stylesheet.text
@@ -933,7 +944,11 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert ".theme-option-preview-selected" in stylesheet.text
     assert ".theme-option-preview-statuses" in stylesheet.text
     assert ".theme-details-toggle" in stylesheet.text
-    assert ".theme-option-toolbar p" in stylesheet.text
+    assert ".theme-settings-heading" in stylesheet.text
+    assert ".theme-settings-heading > div" in stylesheet.text
+    assert ".theme-settings-heading .settings-subsection-description" in stylesheet.text
+    assert ".appearance-font-size-settings" in stylesheet.text
+    assert "margin-top: 0.5rem;" in stylesheet.text
     assert ".theme-option-preview-copy" in stylesheet.text
     assert "max-height 180ms ease 140ms" in stylesheet.text
     assert ".theme-option.is-expanded .theme-option-preview" in stylesheet.text
@@ -963,6 +978,44 @@ async def test_runtime_settings_navigation_lists_each_registered_runtime(
     settings: Settings,
 ) -> None:
     app = create_app(settings)
+    runtime_modules = MagicMock(spec=BuiltinRuntimeModuleRegistry)
+    codex_runtime = SimpleNamespace(
+        runtime_id="codex",
+        name="Codex Runtime",
+        descriptor=RuntimeDescriptor(
+            runtime_id="codex",
+            capabilities=frozenset({"runtime_status"}),
+        ),
+        display_name="Codex Runtime",
+        description="Codex Runtime description",
+    )
+    local_runtime = SimpleNamespace(
+        runtime_id="local",
+        name="Local Runtime",
+        descriptor=RuntimeDescriptor(
+            runtime_id="local",
+            capabilities=frozenset({"runtime_status"}),
+        ),
+        display_name="Local Runtime",
+        description="Local Runtime description",
+    )
+    runtime_modules.navigation.return_value = (
+        SimpleNamespace(
+            runtime_id="codex",
+            name="Codex Runtime",
+            description="Codex Runtime description",
+        ),
+        SimpleNamespace(
+            runtime_id="local",
+            name="Local Runtime",
+            description="Local Runtime description",
+        ),
+    )
+    runtime_modules.require_navigation.side_effect = {
+        "codex": codex_runtime,
+        "local": local_runtime,
+    }.__getitem__
+    app.state.ai_session_manager.runtime_modules = runtime_modules
     app.state.codex_pty_manager.read_runtime_management = MagicMock(
         return_value=RuntimeManagementData(
             basic_mode=False,
@@ -996,6 +1049,7 @@ async def test_runtime_settings_navigation_lists_each_registered_runtime(
     assert 'data-settings-url="/settings/runtime/local"' in general.text
     assert 'href="/settings/runtime/local" aria-current="page"' in local.text
     assert 'data-runtime-id="local"' in local.text
+    assert "Local Runtime description" in local.text
 
 
 @pytest.mark.anyio
