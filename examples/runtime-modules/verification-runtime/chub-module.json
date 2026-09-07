@@ -1,6 +1,9 @@
 {
   "protocol_version": 1,
   "module_id": "verification-runtime",
+  "runtime_id": "verification-runtime",
+  "implementation_id": "verification-runtime",
+  "native_session_compatibility_id": "verification-v1",
   "module_type": "runtime",
   "display_name": "Verification Runtime",
   "description": "Validates Runtime ZIP installation and Worker registration.",

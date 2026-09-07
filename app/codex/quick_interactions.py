@@ -270,6 +270,18 @@ class QuickInteractionManager:
             except ValueError:
                 self._local_state_error = "Web quick interaction state contains an invalid task"
                 continue
+            if task.implementation_id == "codex" and task.status in {"requested", "running"}:
+                # The pre-R1 record had no implementation snapshot. Its Worker
+                # protocol state is intentionally incompatible, so never retry
+                # it through an arbitrary current version.
+                task.status = "failed"
+                task.error = (
+                    "runtime_implementation_snapshot_missing: "
+                    "该任务创建于 Runtime 多版本切换前，无法安全恢复，未重新执行。"
+                )
+                task.error_source = "chub"
+                task.updated_at = utc_now()
+                recovered_tasks = True
             if task.id in seen_task_ids or (
                 task.worker_task_id is not None
                 and task.worker_task_id in seen_worker_task_ids
@@ -409,6 +421,7 @@ class QuickInteractionManager:
         translation_original: str | None = None,
         model: str | None = None,
         reasoning_effort: str | None = None,
+        implementation_id: str | None = None,
         suppress_completion_notification: bool = False,
         summary_max_chars: int = TASK_SUMMARY_MAX_LENGTH,
         summary_max_width: int | None = None,
@@ -461,10 +474,30 @@ class QuickInteractionManager:
                     "quick_interaction_writer_active",
                     ACTIVE_WRITER_ERROR,
                 )
-            if isinstance(session, AiSession):
-                self.codex_manager.prepare_quick_interaction(session.runtime_id)
+            if implementation_id is None:
+                resolve_default = getattr(
+                    self.codex_manager,
+                    "default_submission_implementation_id",
+                    None,
+                )
+                selected_implementation_id = (
+                    resolve_default() if callable(resolve_default) else "builtin-dev"
+                )
+                if not isinstance(selected_implementation_id, str):
+                    selected_implementation_id = "builtin-dev"
             else:
+                selected_implementation_id = implementation_id
+            if implementation_id is None:
                 self.codex_manager.prepare_quick_interaction()
+            else:
+                self.codex_manager.prepare_quick_interaction(selected_implementation_id)
+            ensure_compatible = getattr(
+                self.codex_manager,
+                "ensure_session_implementation_compatible",
+                None,
+            )
+            if callable(ensure_compatible):
+                ensure_compatible(session_id, selected_implementation_id)
             if not session.native_session_id:
                 self.codex_manager.set_initial_quick_interaction_title(
                     session.id,
@@ -486,6 +519,7 @@ class QuickInteractionManager:
                     id=str(uuid.uuid4()),
                     worker_task_id=new_worker_task_id(),
                     session_id=session_id,
+                    implementation_id=selected_implementation_id,
                     prompt=persisted_prompt,
                     summary=build_task_summary(
                         persisted_prompt,
@@ -1017,6 +1051,7 @@ class QuickInteractionManager:
                     self.codex_manager.bind_quick_interaction_native_session(
                         task.session_id,
                         snapshot.native_session_id,
+                        implementation_id=task.implementation_id,
                     )
                 else:
                     if snapshot.execution_id is None:
@@ -1026,6 +1061,7 @@ class QuickInteractionManager:
                         snapshot.native_session_id,
                         worker_task_id=worker_task_id,
                         execution_id=snapshot.execution_id,
+                        implementation_id=task.implementation_id,
                     )
             except ApiError as exc:
                 if (
@@ -2029,6 +2065,7 @@ class QuickInteractionManager:
                         self.codex_manager.bind_quick_interaction_native_session(
                             session.id,
                             snapshot.native_session_id,
+                            implementation_id=task.implementation_id,
                         )
                     else:
                         if snapshot.execution_id is None:
@@ -2038,6 +2075,7 @@ class QuickInteractionManager:
                             snapshot.native_session_id,
                             worker_task_id=worker_task_id,
                             execution_id=snapshot.execution_id,
+                            implementation_id=task.implementation_id,
                         )
                 if snapshot.status in {"queued", "accepted", "starting", "running"}:
                     threading.Event().wait(0.1)
@@ -2111,6 +2149,7 @@ class QuickInteractionManager:
         return RuntimeTaskSubmission(
             task_id=worker_task_id,
             runtime_id=runtime_id,
+            implementation_id=task.implementation_id,
             session_id=session.id,
             workspace_id=session.workspace_id,
             prompt=(

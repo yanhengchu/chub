@@ -3,7 +3,7 @@
 > 状态：已验收
 > 主要读者：AI Agent、实现和排障 Agent；维护人员用于确认运行边界和验收结果。
 > 本文负责：Chub Quick Worker 独立服务的职责、任务权威状态、Session 租约、恢复、通知终态和重启语义，遵循[Chub 总体架构](CHUB_ARCHITECTURE_DESIGN.md)。
-> 本文不负责：Runtime ZIP 协议、模块安装/移除、注册确认和模块状态清理（见[Chub 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md)）、长期 Runtime 无关边界（见[Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)）、Session/Activity 枚举与页面语义（见[AI Session 状态模型](AI_SESSION_STATE_DESIGN.md)）以及微信路由与收件人身份（见[OpenClaw 定制集成设计](OPENCLAW_CUSTOMIZATION_DESIGN.md)）。
+> 本文不负责：Runtime ZIP 协议、模块安装/移除、注册确认和模块状态清理（见[Chub AI Runtime 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md)）、任务编排模块的计划与切换规则（见[Chub 任务编排外置设计](CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md)）、长期 Runtime 无关边界（见[Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)）、Session/Activity 枚举与页面语义（见[AI Session 状态模型](AI_SESSION_STATE_DESIGN.md)）以及微信路由与收件人身份（见[OpenClaw 定制集成设计](OPENCLAW_CUSTOMIZATION_DESIGN.md)）。
 > 维护说明：独立服务、跨 Web 重启恢复和 Runtime 通用化基线已完成当前范围验收；协议或状态边界变化时按本文末尾复检规则重新验收。
 
 ## 0. AI Agent 快速理解
@@ -11,7 +11,7 @@
 把本文当作 Quick Worker 服务的运行契约，而不是某个页面或某个脚本的说明：
 
 1. Quick Worker 属于 AI Runtime 层，是与 Chub Web 独立运行的本机后台服务。核心层入口负责认证、业务校验、提交和页面投影；Worker 负责任务、Session 租约、Runner 进程、超时、取消、恢复和最终状态。
-2. 页面快速交互、经第三方服务层进入的微信 Chub 非实时任务和翻译任务都进入 Worker；核心层入口不得回退执行。当前生产使用已安装 Codex Runtime 模块提供的 Runner；模块安装、替换或移除的维护流程不由 Worker 文档定义。
+2. 页面快速交互、经第三方服务层进入的微信 Chub 非实时任务和翻译任务都进入 Worker；核心层入口不得回退执行。Worker 只执行核心已校验并持久化的任务快照；当前 Runtime 模块与未来任务编排模块的安装、替换或移除流程不由 Worker 文档定义。
 3. 同一逻辑 Session 只能有一个 writer。快速交互提交、实时终端建立连接和恢复流程都必须经过 Worker 租约与实时连接的最终仲裁，不能只依赖页面按钮状态；当前 Quick Worker 在自己的 Session 租约内可以完成自己的原生 ID 绑定，其他 writer 不得被接管。内部翻译 Session 仍复用逻辑 Session，但允许在旧 native Session 空闲且新 ID 未被占用时轮换绑定。
 4. Web 重启不会主动停止 Worker 或已接受任务。新 Web 必须完成 Worker 健康、协议、活动任务、租约、通知和重启状态恢复后，才开放快速交互 Session 写入；实时终端按独立的 Codex PTY/tmux 状态恢复。
 5. 普通任务提交、取消和交付在 Worker 或状态不可确认时必须失败关闭：不猜测任务成功、不重复提交、不在 Web 内执行、不切换 Session 或通知收件人。固定的 Worker 重启是恢复入口，允许在不可用状态下尝试重建，但最终结果仍必须确认。
@@ -76,7 +76,7 @@ Browser / WeChat / OpenClaw
       fixed Runtime Runner registry
              |
              v
-         Codex Runner
+         Runtime Runner
 ```
 
 ### 3.1 Web 职责
@@ -102,9 +102,8 @@ Browser / WeChat / OpenClaw
 ### 3.3 Runner 边界
 
 - Worker 通过最小 Runtime Runner 契约校验能力、准备固定进程规格、解释原生事件和读取规范化结果；Worker 本身继续拥有任务、租约、进程组、超时、取消、恢复和终态。
-- 当前生产只注册 Codex Runner；固定测试 Runner 不进入生产组合，也不提供用户入口。
+- 当前生产只注册一个由已安装 Runtime 模块提供的 Runner；固定测试 Runner 不进入生产组合，也不提供用户入口。
 - 命令和参数来自后端固定配置；首页常用工作区只提供便捷创建入口，原生 Session 的实际工作目录由 Worker 通过可信原生 ID 重新发现，客户端不能提交路径。
-- Codex Runner 的非交互式快速交互固定使用 `--skip-git-repo-check`，不要求普通工作目录预先执行 `git init`。该参数不是权限放宽：工作目录仍必须来自 Chub 已选工作区或经 Runtime Adapter 校验的原生 Session，审批、沙箱和单 writer 规则继续生效，客户端不能覆盖此参数。
 - 任务正文通过受控输入传递，不拼接任意系统命令。
 - 取消和超时作用于完整进程组，不能只结束父进程。
 - 子进程成功创建只代表任务开始，不代表任务成功。

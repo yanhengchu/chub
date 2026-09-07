@@ -6,6 +6,7 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
+from app.ai_runtime.enablement import RuntimeEnablement
 from app.application import create_app
 from app.codex.models import (
     CodexModelCatalogData,
@@ -62,13 +63,13 @@ async def test_codex_sessions_allow_loopback(settings: Settings) -> None:
 
 
 @pytest.mark.anyio
-async def test_removed_runtime_hides_sessions_and_blocks_creation(
+async def test_disabled_runtime_keeps_sessions_and_blocks_creation(
     settings: Settings,
 ) -> None:
     app = create_app(settings)
     manager = app.state.ai_session_manager
     session = manager.create_session("chub", session_mode="quick")
-    manager.remove_runtime_module("codex", operation_id="a" * 32)
+    manager.runtime_enablement.save(RuntimeEnablement(disabled_runtime_ids=["codex"]))
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -76,9 +77,9 @@ async def test_removed_runtime_hides_sessions_and_blocks_creation(
 
     assert response.status_code == 200
     data = response.json()["data"]
-    assert data["runtime_registered"] is False
+    assert data["runtime_registered"] is True
     assert data["quick_creation"]["available"] is False
-    assert data["sessions"] == []
+    assert session.id in {item["id"] for item in data["sessions"]}
 
 
 @pytest.mark.anyio

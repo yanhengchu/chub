@@ -14,6 +14,7 @@ from app.ai_runtime.contracts import (
     RuntimeOperationError,
     RuntimeSessionArchiveAdapter,
     RuntimeSettingsAdapter,
+    RuntimeUsageLoginPageAdapter,
     RuntimeUsageSnapshotAdapter,
     RuntimeWriterProbeAdapter,
 )
@@ -28,6 +29,7 @@ _ADAPTER_CAPABILITY_CONTRACTS = {
     "activity_events": RuntimeActivityEventAdapter,
     "model_catalog": RuntimeModelCatalogAdapter,
     "usage_snapshot": RuntimeUsageSnapshotAdapter,
+    "usage_login_page": RuntimeUsageLoginPageAdapter,
     "runtime_settings": RuntimeSettingsAdapter,
 }
 
@@ -73,11 +75,11 @@ class RuntimeRegistry:
                 "Runtime Adapter descriptor is invalid",
                 kind="conflict",
             )
-        runtime_id = descriptor.runtime_id
-        if runtime_id in self._adapters:
+        implementation_id = descriptor.effective_implementation_id
+        if implementation_id in self._adapters:
             raise RuntimeOperationError(
                 "runtime_duplicate",
-                f"Runtime is already registered: {runtime_id}",
+                f"Runtime implementation is already registered: {implementation_id}",
                 kind="conflict",
             )
         for capability, contract in _ADAPTER_CAPABILITY_CONTRACTS.items():
@@ -87,11 +89,11 @@ class RuntimeRegistry:
             ):
                 raise RuntimeOperationError(
                     "runtime_capability_invalid",
-                    f"Runtime {runtime_id} does not implement capability: {capability}",
+                    f"Runtime {implementation_id} does not implement capability: {capability}",
                     kind="conflict",
                 )
-        self._adapters[runtime_id] = adapter
-        self._descriptors[runtime_id] = descriptor
+        self._adapters[implementation_id] = adapter
+        self._descriptors[implementation_id] = descriptor
 
     def _require_identity(
         self,
@@ -115,6 +117,15 @@ class RuntimeRegistry:
     ) -> AgentRuntimeAdapter:
         adapter = self._adapters.get(runtime_id)
         if adapter is None:
+            matches = [
+                implementation_id
+                for implementation_id, descriptor in self._descriptors.items()
+                if descriptor.runtime_id == runtime_id
+            ]
+            if len(matches) == 1:
+                adapter = self._adapters[matches[0]]
+                runtime_id = matches[0]
+        if adapter is None:
             raise RuntimeOperationError(
                 "runtime_unavailable",
                 f"Runtime is not registered: {runtime_id}",
@@ -132,20 +143,31 @@ class RuntimeRegistry:
         return adapter
 
     def runtime_ids(self) -> tuple[str, ...]:
-        for runtime_id, adapter in self._adapters.items():
-            self._require_identity(runtime_id, adapter)
-        return tuple(self._adapters)
+        values: list[str] = []
+        for implementation_id, adapter in self._adapters.items():
+            descriptor = self._require_identity(implementation_id, adapter)
+            if descriptor.runtime_id not in values:
+                values.append(descriptor.runtime_id)
+        return tuple(values)
+
+    def implementation_ids(self, runtime_id: str | None = None) -> tuple[str, ...]:
+        values: list[str] = []
+        for implementation_id, adapter in self._adapters.items():
+            descriptor = self._require_identity(implementation_id, adapter)
+            if runtime_id is None or descriptor.runtime_id == runtime_id:
+                values.append(implementation_id)
+        return tuple(values)
 
     def capability_matrix(self) -> tuple[RuntimeCapabilityMatrix, ...]:
         """Return the fixed adapter capability view without selecting a Runtime."""
         matrix: list[RuntimeCapabilityMatrix] = []
-        for runtime_id, adapter in self._adapters.items():
-            descriptor = self._require_identity(runtime_id, adapter)
+        for implementation_id, adapter in self._adapters.items():
+            descriptor = self._require_identity(implementation_id, adapter)
             status = adapter.status()
-            if status.runtime_id != runtime_id:
+            if status.runtime_id != descriptor.runtime_id:
                 raise RuntimeOperationError(
                     "runtime_status_invalid",
-                    f"Runtime Adapter status does not match descriptor: {runtime_id}",
+                    "Runtime Adapter status does not match its logical Runtime",
                     kind="conflict",
                 )
             matrix.append(

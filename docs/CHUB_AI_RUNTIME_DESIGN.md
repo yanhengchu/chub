@@ -2,44 +2,39 @@
 
 > 状态：已验收
 > 主要读者：需要评估、生成或维护 Runtime Adapter/Runner 的 AI Agent；维护人员用于确认当前能力、接入边界和验收结果。
-> 本文负责：说明 Chub 当前已经落地的 AI Runtime 架构，并定义实现任一 AI Runtime 所需的通用契约、边界和验收规则。
-> 本文不负责：Runtime ZIP 协议、安装/替换/移除和模块状态清理（见[Chub 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md)）、Session/Activity 的完整产品枚举（见 [AI Session 状态模型](AI_SESSION_STATE_DESIGN.md)）、Quick Worker 的任务恢复和通知细节（见 [Chub Quick Worker 独立服务设计](CHUB_QUICK_WORKER_DESIGN.md)）、微信路由和用户可见指令（见 [OpenClaw 定制集成设计](OPENCLAW_CUSTOMIZATION_DESIGN.md)）。
+> 本文负责：定义 Chub AI Runtime 的共享契约、能力边界和新增 Runtime 的实现与验收规则，并以当前部署作为契约落地证据。
+> 本文不负责：Runtime ZIP 协议、安装/替换/移除和模块状态清理（见[Chub AI Runtime 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md)）、任务编排外置（见[Chub 任务编排外置设计](CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md)）、Session/Activity 的完整产品枚举（见 [AI Session 状态模型](AI_SESSION_STATE_DESIGN.md)）、Quick Worker 的任务恢复和通知细节（见 [Chub Quick Worker 独立服务设计](CHUB_QUICK_WORKER_DESIGN.md)）、微信路由和用户可见指令（见 [OpenClaw 定制集成设计](OPENCLAW_CUSTOMIZATION_DESIGN.md)）。
 > 维护说明：此前的分阶段实施记录已经收敛为当前契约；本文不记录项目排期或过程性阶段日志，只有行为、状态所有权或 Runtime 实现边界变化时才需要更新。
 
 ## AI 可执行契约
 
-本文只维护两部分设计：第一部分说明 AI Runtime 架构和当前 Codex 落地，第二部分说明如何按统一契约实现一个 AI Runtime。第二部分是规范性实现要求，不是项目计划；历史阶段的实施过程不覆盖当前规则，其他专项文档的领域契约也不在本文复制。
+本文只维护两部分设计：第一部分说明 AI Runtime 的共享架构和当前部署的契约落地，第二部分说明如何按统一契约实现一个 AI Runtime。第二部分是规范性实现要求，不是项目计划；历史阶段的实施过程不覆盖当前规则，其他专项文档的领域契约也不在本文复制。
 
 按[Chub 总体架构](CHUB_ARCHITECTURE_DESIGN.md)，本文覆盖 AI Runtime 层。该层依赖 Chub 核心层的公开配置、安全、日志、通知和维护能力；第三方服务只有需要 AI 时才调用本文定义的公开任务用例。核心层、OpenClaw 和其他第三方服务不得直接读写 Runtime、Session Manager 或 Worker 的私有状态。
 
 AI Agent 处理 Runtime、Session 或 Quick Worker 需求时，先执行以下判断：
 
-1. **Chub 是控制面，不是模型或通用 Agent。** Chub 拥有入口认证、权限、逻辑 AI Session、任务状态、通知和用户可见最终结果；Runtime 负责实际分析、编码和工具执行。
-2. **当前生产只有 `codex`。** `runtime_id` 由后端固定注册和写入，客户端、微信正文、任务正文和页面不能选择 Runtime、Runner、命令、工作目录或环境变量。
-3. **状态必须有唯一权威来源。** AI Session 的逻辑状态归 AI Session Manager；后台任务、租约、恢复和终态归 Quick Worker；Runtime 原生状态只由对应 Adapter 解释；实时连接由 Interactive Supervisor 管理。
-4. **同一逻辑 Session 同时只能有一个 writer。** 门禁只阻止当前直接冲突或破坏风险，不因历史 writer、旧 PID、页面状态或未知标记把整个系统锁死。`terminal` 与 `quick` 是创建后不可切换的入口类型，不互相接管 writer；当前 Quick Worker 只能在自己的 Session 租约内完成自己的原生 ID 绑定，其他 writer 必须失败关闭。
-5. **可靠终态优先。** 进程创建、HTTP 200、任务已受理、Tool Call 已创建或模型已返回都不等于成功；必须确认任务、Session、通知或维护操作的最终状态。无法确认时失败关闭并提供恢复路径。
-6. **Session 配置分层。** Chub 逻辑 Session 保存后续任务的期望权限、模型和推理等级；Runtime 原生 Session 的 `active_*` 字段只表示实际观察到的生效状态。新建 Session 的模型和推理等级为空时跟随 Runtime 默认，页面修改只更新当前 Chub Session，不修改 Runtime 全局默认；任务受理时必须保存配置快照。
-7. **Runtime 错误保留上游原文。** Chub 不维护一套覆盖所有 Runtime 的错误翻译表；只做有界读取、纯文本展示和敏感信息脱敏。没有可用原文时才使用通用兜底错误。
-8. **旧运行态默认不兼容。** Chub 自有且不再适用的旧 Session、任务、租约和协议数据在受控升级边界内直接清理并初始化新格式；不增加双读、双写或长期迁移分支。用户配置、第三方原生数据和明确要求保留的数据不适用此规则。
-9. **服务操作局部生效。** Web、Quick Worker、ClawBot 的普通重启彼此独立；升级与恢复只重建 Chub 自有 AI 运行态、Chub Web 与 Quick Worker，只锁定直接受影响的 AI Runtime 写入和相关服务，不阻断无关只读能力或独立入口。
-10. **能力不足不能静默模拟。** Runtime 不支持的能力必须返回不支持或不可用；不得通过猜测、自动切换、放宽权限或重复提交制造表面兼容。
+1. **本文只定义 Runtime 共享能力。** Chub 保留入口认证、逻辑 Session、任务终态和通知；Runtime 只提供其私有 Agent 执行能力，并通过 Adapter/Runner 输出规范化结果。
+2. **Runtime 由后端固定注册。** 客户端、页面和外部通道不能选择 Runtime、Runner、命令、工作目录或环境变量。
+3. **跨领域状态不在本文重新定义。** Session 的产品状态由[AI Session 状态模型](AI_SESSION_STATE_DESIGN.md)维护，任务、租约、恢复和通知终态由[Quick Worker 设计](CHUB_QUICK_WORKER_DESIGN.md)维护；Runtime 只解释原生状态并提供可信结果。
+4. **能力和错误必须明确。** 不支持的能力直接拒绝；上游错误只以有界、脱敏的纯文本返回，不能由 Runtime 静默切换、放宽权限或重复提交。
+5. **共享契约不覆盖模块或具体 Runtime。** Runtime ZIP 生命周期由[外置模块设计](CHUB_EXTERNAL_MODULE_DESIGN.md)维护；各 Runtime 的认证、上游数据、专属配置和用户可见展示由其专属设计维护。
 
 ## 第一部分：AI Runtime 架构
 
 ### 1. 当前结论与范围
 
-此前的 Runtime 架构收敛工作已经完成并通过维护者验收，结果已落地到当前代码和服务。本部分说明架构、职责、状态所有权和当前 Codex 实现，不记录项目排期或分阶段实施日志。
+此前的 Runtime 架构收敛工作已经完成并通过维护者验收，结果已落地到当前代码和服务。本部分说明共享架构、职责、状态所有权和当前部署的契约落地，不记录项目排期、分阶段实施日志或具体 Runtime 的私有实现。
 
 当前结论：
 
 - Chub 已有运行时无关的 AI Session Manager、Interactive Supervisor、Quick Worker、Runtime Adapter 和 Runtime Runner 边界。
 - Codex 是当前唯一完整接入的生产 Runtime，由已安装的第一方 Runtime ZIP 提供；模块安装生命周期不在本文维护。
 - Runtime ID、能力矩阵、原生 Session 映射、活动事件、实时终端边界和上游错误传播已有统一契约。
-- `/api/codex/*`、现有页面、微信固定指令、通知格式和额度展示仍是当前正式产品入口；内部架构收敛没有新增 Runtime 选择器。
+- 当前 Runtime 的专属入口、页面、通知格式和额度展示仍由其产品契约维护；共享架构没有新增 Runtime 选择器。
 - 当前架构已经具备实现其他 Runtime 所需的边界，但没有接入第二个真实 Runtime。需要新增 Runtime 时，按本文第二部分的实现规范执行。
 
-Runtime 的 ZIP 清单、安装/替换/移除、Web 与 Worker 注册确认以及模块状态清理，以[Chub 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md)为唯一依据。本文只约束安装完成后 Runtime 必须提供的共享能力和实现质量。
+Runtime 的 ZIP 清单、安装/替换/移除、Web 与 Worker 注册确认以及模块状态清理，以[Chub AI Runtime 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md)为唯一依据。本文只约束安装完成后 Runtime 必须提供的共享能力和实现质量。
 
 ### 2. 当前架构与状态所有权
 
@@ -61,9 +56,9 @@ Chub 核心入口 / 第三方服务已完成认证与固定路由
  - 实时连接和终端生命周期        - 后台 Turn 固定执行规格
          \                           /
           v                         v
-              Codex Runtime Adapter
-       - Codex 原生 Session、命令、事件和错误
-       - 当前唯一生产 Runtime 实现
+              Runtime Adapter
+       - 原生 Session、命令、事件和错误
+       - 当前部署由 Codex 实现
 ```
 
 | 对象 | 当前唯一所有者 | 不应由谁代替 |
@@ -105,17 +100,28 @@ Chub 核心入口 / 第三方服务已完成认证与固定路由
 | `writer_probe` | 确认原生 Session 是否有其他 writer |
 | `model_catalog` | 提供模型和推理等级目录 |
 | `permission_profiles` | 无损映射 Chub 产品级权限配置 |
+| `usage_snapshot` | 提供带固定 `runtime_id` 的受限用量快照；上游来源和度量口径由 Runtime 私有设计定义 |
+| `usage_login_page` | 在 Runtime 私有设计明确的认证失败场景下打开固定登录恢复页；不接受调用方提供 URL、账号、认证参数或浏览器数据 |
 
-后台 Runtime 的最低接入能力是 `runtime_status`、`background_turn`、`task_cancel`、`native_session_mapping`、`structured_events` 和 `permission_profiles`。如果要复用已有原生 Session，需要 `session_resume`；如果还要和实时终端共享 Session，需要可靠的 `writer_probe` 和 `activity_events`；实时终端自身需要 `interactive_terminal`。能力缺失只影响直接依赖它的入口，不扩散为全局不可用。
+后台 Runtime 的最低接入能力是 `runtime_status`、`background_turn`、`task_cancel`、`native_session_mapping`、`structured_events` 和 `permission_profiles`。如果要复用已有原生 Session，需要 `session_resume`；如果还要和实时终端共享 Session，需要可靠的 `writer_probe` 和 `activity_events`；实时终端自身需要 `interactive_terminal`。`usage_snapshot` 和 `usage_login_page` 是独立的可选能力，只影响受控用量查询、展示和明确的登录恢复，不能成为提交、Session、Worker 或核心健康的门禁。能力缺失只影响直接依赖它的入口，不扩散为全局不可用。
 
 #### 3.3 Runtime 启用状态
 
 - 已注册 Runtime 的健康状态、部署可用性与任务接入策略分离：健康状态由 Adapter 报告；`settings.local.yaml` 的 `ai_runtime.<runtime_id>.enabled` 决定 Runtime 是否可作为部署实例启动；设置页的“接收新任务”由 Chub 在本机受限状态文件中保存，只控制后续新 AI 任务，不中断已受理任务。设置页的“AI Runtime”分组包含“通用配置”和每个已接入 Runtime 的独立入口；Runtime 页面展示标识、健康状态、任务接入策略和可日常维护的专属配置，不展示工作目录、运行目录等部署字段。通用配置还可保存固定产品流程的新建 Session 预设；预设只允许后端已注册、适配该流程的 Runtime，不能由请求正文填写任意 Runtime 或 Runner。
-- 启用的 Runtime 可以接受新的 Session、快速交互、实时终端和微信文本优化任务；停用只拒绝新的任务受理，不取消、阻塞或改写已受理任务，也不影响读取、停止、归档和删除已有 Session。
+- 启用的 Runtime 可以接受新的 Session、快速交互、实时终端和微信文本优化任务；停用只拒绝新的任务受理，不取消、阻塞或改写已受理任务，也不影响读取、停止、归档、删除已有 Session 或 Runtime 专属维护配置。默认实现选择仍只允许目标实现健康且启用，因此维护者可在 Runtime 停用期间预先调整恢复后使用的版本。
 - 所有 Runtime 都停用时，Chub 保持基础功能模式。核心设备管理、第三方服务和已有任务的状态查看仍可用；AI 提交入口明确显示不可用原因。
-- 当前生产实例只注册 `codex`。设置页的模块导入、替换、移除与恢复语义由外置模块设计维护；本节只定义已注册 Runtime 的健康、部署可用性和新任务接入策略，不提供 Runtime 选择器，也不允许既有 Session 跨 Runtime 迁移。
+- 当前生产逻辑 Runtime 为 `codex`，可同时注册 `builtin-dev` 和多个正式 `implementation_id`。默认实现必须健康且启用；实时终端、快速交互、微信、自动化和周报等无选择入口固定使用默认实现。任务受理后保存实际实现；默认变更不改写旧任务。既有原生 Session 只能在相同 `native_session_compatibility_id` 的实现间继续使用。
 
-#### 3.4 权限、事件和错误
+#### 3.4 用量快照
+
+- 声明 `usage_snapshot` 的 Runtime 必须通过 `read_usage_snapshot(force=...)` 返回规范化快照，快照的 `runtime_id` 必须与 Adapter descriptor 一致。调用方不能指定其他 Runtime、认证来源、账号、订阅、浏览器页面、上游地址或本机目录。
+- 声明 `usage_login_page` 的 Runtime 必须通过 `open_usage_login_page()` 打开其私有设计规定的固定恢复页。核心层只在账户检查明确声明可恢复、且自动化服务已确认有界面浏览器规则后调用它；该接口不接收调用方提供的 URL、账号、认证参数或浏览器内容。
+- Runtime 负责上游认证判定、私有采集、来源隔离和特有数据口径；共享用量服务只对默认 Runtime 执行固定路由、合并受控刷新并提供统一 API/展示投影。快照中未知的可选额度、金额或 Token 必须保持缺失，不得以 `0` 或历史值猜测。
+- 用量读取失败只返回该 Runtime 的明确不可用或允许范围内的同一来源旧快照；不得跨 Runtime、认证来源、账号、订阅或自然日拼接数据。读取失败不阻塞 AI 任务、Session、Worker、核心健康或无关页面。
+- 本文不规定某个 Runtime 的额度字段、单位、文本顺序、长短文案或页面入口。具体 Runtime 的来源、缓存身份键、字段、展示口径和实机验收由对应 Runtime 专属设计维护；页面、微信和通知在哪些入口消费快照，由前端设计和当前能力契约维护。
+- 凭据、账号标识、Cookie、Authorization、原始上游响应和不受限路径不得进入快照、日志、页面、通知或 API。
+
+#### 3.5 权限、事件和错误
 
 - Adapter 必须报告权限配置能否无损映射；无法映射时拒绝创建或执行，不自动提升权限。
 - 原生事件、Hook 文件、升级期间的 Session 别名、路径、权限、格式、限长读取和清理由
@@ -125,7 +131,7 @@ Chub 核心入口 / 第三方服务已完成认证与固定路由
 - Runner 失败时先读取 Runtime 错误原文；读取成功但没有文本时再回退到 `stderr`，两者为空才使用 `Task runner exited unsuccessfully.` 等通用兜底。读取或解析过程本身失败时必须保留 Chub Runtime 错误码和诊断，并进入明确失败终态。
 - 错误原文只作为有界纯文本保存、查询和通知，不作为命令、HTML 或新任务输入执行。`Authorization`、`Bearer`、配置 Token、终端票据等敏感值必须在 Runner/Worker 边界脱敏。
 - `error_code` 只表示 Chub/Worker 终态分类，不要求与上游错误一一对应；`error_source=runtime` 时保留上游 AI Runtime 子进程原文，`error_source=chub` 时明确标记 Chub/Worker/解析边界错误。任务被取消或超时不是错误来源，`error_source` 必须为空；失败但来源元数据缺失时只能显示“来源未确认”，不得猜测为 Runtime 或 Chub。
-- API 错误响应必须带 `error.source`：`runtime` 仅用于 Chub 已确认该错误来自 Runtime API/CLI 的转换，`chub` 用于认证、参数、Worker、Session、页面通道和其他 Chub 控制面错误。API 层不改写 Runtime 原文；页面和通知将 `runtime` 标为“Codex CLI（上游 Runtime）”，将 `chub` 标为“Chub”。
+- API 错误响应必须带 `error.source`：`runtime` 仅用于 Chub 已确认该错误来自 Runtime API/CLI 的转换，`chub` 用于认证、参数、Worker、Session、页面通道和其他 Chub 控制面错误。API 层不改写 Runtime 原文；具体 Runtime 的用户可见来源标签由其专属设计定义。
 - 未知错误不得触发自动重试、自动切换 Runtime 或重复提交。
 
 ### 4. Runtime 与 AI Session 的边界
@@ -135,23 +141,22 @@ AI Session 的 Session/Activity 枚举、交互入口、类型、槽位、页面
 - AI Session Manager 拥有 Chub 逻辑 Session 和公开元数据；Runtime Adapter 只负责原生 Session 映射、规范化事件、writer 探测和终端/后台执行能力。
 - Runtime 私有进程、Hook、事件格式、原生路径和错误读取只能由 Adapter/Runner 解释，不能进入 Session 公共模型或页面契约。
 - Runtime 接入不得绕过 Session Manager、Interactive Supervisor 或 Quick Worker，也不得向客户端暴露 Runtime、Runner、命令或工作目录选择器。
-- 入口冲突、writer 所有权、Session 类型限制和最终状态确认由 Session/Worker 专项文档共同约束；Runtime 只提供后端完成这些判断所需的可信结果。Runtime 不把“tmux 存在”解释为原生 Codex 一定健康，也不把 Web 连接存在解释为 writer 仍由浏览器持有。
+- 入口冲突、writer 所有权、Session 类型限制和最终状态确认由 Session/Worker 专项文档共同约束；Runtime 只提供后端完成这些判断所需的可信结果。运行载体或页面连接存在都不能单独证明原生 Runtime 健康或 writer 归属。
 
 ### 5. Runtime 与 Quick Worker 的边界
 
-Quick Worker 是独立本机服务，当前生产加载已安装 Codex 模块提供的 Runner。Worker 拥有任务幂等、租约、进程组、超时、取消、恢复、通知关联和任务终态；Runtime Runner 只负责受控启动、事件/结果/错误读取及资源能力，不拥有任务终态或通知路由。模块变更期间的排空、重载和注册确认以外置模块设计为准。
+Quick Worker 是独立本机服务，当前生产加载已安装 Runtime 模块提供的 Runner。Worker 拥有任务幂等、租约、进程组、超时、取消、恢复、通知关联和任务终态；Runtime Runner 只负责受控启动、事件/结果/错误读取及资源能力，不拥有任务终态或通知路由。模块变更期间的排空、重载和注册确认以外置模块设计为准。
 
 - 核心层入口负责认证、业务校验和调用 AI Runtime 的提交用例；Worker 负责后台任务执行和 Session 租约，入口不回退到内置 Runner。
-- Worker 健康、协议、任务/租约和恢复未完成时，快速交互 Session 写入失败关闭；实时终端使用独立的 Codex PTY/tmux 链路，不因 Quick Worker 恢复状态暂停。无关只读能力和独立入口按各自规则继续工作。
-- 新建会话先要求可用 AI Runtime；Quick Worker 只额外约束 `quick` Session。首页默认创建 `quick`，但 Worker 不可用而 Runtime 可用时只允许创建 `terminal`；快速交互页和微信 `new` 不回退创建终端。没有可用 Runtime 时两种创建均不可用。
-- Web、Worker、ClawBot 的普通重启彼此独立；升级与恢复只重建 Chub 自有 AI 运行态、Chub Web 与 Quick Worker，并以新实例健康、协议匹配、Session 映射和操作终态确认成功。AI Runtime 的启用与可用性在完成后独立检查；Runtime 被停用或不可用时关闭新 AI 任务，但不反向判定 Worker 或升级恢复失败。
+- Worker 健康、协议、任务/租约和恢复未完成时，快速交互写入失败关闭；实时终端和无关只读能力按各自规则继续工作。
+- 新建会话、入口类型、服务重启和升级恢复的具体产品规则以 Session、Worker 和总体架构文档为准；Runtime 只提供这些规则所需的能力和可用性结果。
 
 任务状态、租约、恢复、通知、重启合并和维护命令的详细规则以 [Chub Quick Worker 独立服务设计](CHUB_QUICK_WORKER_DESIGN.md) 为准；本节不复制其任务状态机或维护步骤。
 
-### 6. 当前数据、入口与安全边界
+### 6. 共享入口与安全边界
 
-- 当前生产正式入口仍是 `/api/codex/*`、Codex 页面、微信固定路由和 Quick Worker。`/api/ai/usage` 读取默认 Runtime 的 `usage_snapshot`，响应以 `runtime_id` 标识归属；`/api/ai/runtimes/{runtime_id}/settings` 只面向设置页读取和保存该 Runtime 已声明的专属配置。它们不提供客户端 Runtime 选择器、跨 Runtime 聚合或通用 Session API。
-- Runtime 可独立声明 `usage_snapshot` 和 `runtime_settings` 能力。前者由 Runtime 自行决定认证、缓存和快照口径，后者由 Runtime 自行校验字段并保存本机专属配置；核心层只做固定 Runtime ID 路由、认证、统一响应和操作日志。未声明能力的 Runtime 不展示对应设置，也不得由核心层猜测或代管其供应商配置。
+- `/api/ai/usage` 读取默认 Runtime 的 `usage_snapshot`，响应以 `runtime_id` 标识归属；`/api/ai/runtimes/{runtime_id}/settings` 只面向设置页读取和保存该 Runtime 已声明的专属配置。它们不提供客户端 Runtime 选择器、跨 Runtime 聚合或通用 Session API。具体 Runtime 的产品入口由对应专属设计维护。
+- Runtime 可独立声明 `usage_snapshot`、`usage_login_page` 和 `runtime_settings` 能力。前两者必须遵守第 3.4 节的统一快照和固定恢复边界，Runtime 私有设计再定义认证、来源、缓存身份键、数据口径与固定页面；后者由 Runtime 自行校验字段并保存本机专属配置。核心层只做固定 Runtime ID 路由、认证、统一响应和操作日志。未声明能力的 Runtime 不展示对应恢复操作或设置，也不得由核心层猜测或代管其供应商配置。
 - Chub 自有旧运行数据、旧协议状态和已经改变的功能默认不兼容；按固定升级边界清理后从新格式初始化。Codex 原生历史、用户配置、第三方数据和明确要求保留的数据必须按各自规则处理。
 - Worker 协议、任务目录、事件、stdout、stderr 和错误原文受固定字节、行长、数量、权限和敏感信息限制；不得暴露 Token、终端票据、任意路径或命令。
 - 认证、固定命令/路径白名单、权限映射、微信真实身份和 OpenClaw 固定路由失败时必须失败关闭；客户端不能扩大权限。
@@ -159,18 +164,9 @@ Quick Worker 是独立本机服务，当前生产加载已安装 Codex 模块提
 
 ### 7. 当前验收结论
 
-当前已验收范围：
+当前已验收 Runtime 共享边界、Runtime ID、能力矩阵、Adapter/Runner 固定组合和测试替身契约。Session、Worker、外部通道及具体 Runtime 的行为验收分别由各自专项文档维护。
 
-- 已完成的 Runtime 边界、Runtime ID、能力矩阵、Adapter/Runner 固定 wiring 和测试替身契约。
-- AI Session Manager、Session 原生映射、Activity 事件、实时终端与快速交互单 writer 规则。
-- Quick Worker 任务、租约、恢复、上游错误透传、通知终态以及 Web/Worker/ClawBot 独立重启语义。
-- 现有 Codex 页面、API、CLI、微信固定入口和服务状态没有因 Runtime 收敛改变。
-
-当前不承诺：
-
-- 第二个真实 Runtime 的实现或其特有能力。
-- 多 Runtime 同时展示、跨 Runtime Session 聚合/迁移或客户端 Runtime 选择。
-- 未在当前维护机器实际验证的平台行为或外部 Runtime 特有的权限、事件和终端语义。
+当前不承诺第二个真实 Runtime、多 Runtime Session 聚合/迁移、客户端 Runtime 选择，或未在当前维护机器实际验证的平台和 Runtime 专属行为。
 
 ## 第二部分：AI Runtime 实现规范
 
@@ -222,6 +218,8 @@ Quick Worker 是独立本机服务，当前生产加载已安装 Codex 模块提
 | `writer_probe` | 能判断原生 Session 是否被其他 writer 占用，并等待释放。 |
 | `activity_events` | 能提供可校验的 working/idle 等生命周期信号。 |
 | `model_catalog` | 能读取和校验模型、默认值和推理等级。 |
+| `usage_snapshot` | 能返回与 Runtime ID 一致的受限快照；缺失字段不猜测，失败不阻塞 AI 执行，也不泄露认证或上游原始数据。 |
+| `usage_login_page` | 仅在后端已判定的可恢复认证失败场景下打开 Runtime 私有设计的固定登录页；不接受调用方 URL 或认证输入，也不读取或回传浏览器认证数据。 |
 
 #### 通用判断规则
 
@@ -240,7 +238,7 @@ Quick Worker 是独立本机服务，当前生产加载已安装 Codex 模块提
 
 当前仓库的共享契约位于 `app/ai_runtime/contracts.py`、`app/ai_runtime/registry.py` 和 `app/ai_runtime/worker.py`。Runtime 实现必须直接复用 `app.ai_runtime` 导出的模型和 Protocol，不复制一套同名模型，不把 Codex 私有模型当作共享接口。下表是生成 Adapter/Runner 时必须遵守的字段和约束；所有共享 Pydantic 模型均为严格、不可变且禁止额外字段。
 
-部署级 Runtime 配置使用 `settings.local.yaml` 的 `ai_runtime.<runtime_id>` 层级。当前 Codex 固定为 `ai_runtime.codex`，包含部署可用性、工作目录、运行目录、终端票据、并发和快速交互超时；旧顶层 `codex_pty` 不再读取。设置页不展示这类部署字段：其“接收新任务”开关是独立运行策略。设置页的 AI Runtime 通用配置保存跨 Runtime 共享的用量时区，以及“周报自动化会话”的 Runtime、权限、模型和推理等级预设；该预设只用于之后由周报流程创建的 Quick Session，任务受理时写入 Session 快照，不修改 Runtime 全局默认或已有 Session。当前只接入 Codex；只读预设不能运行需写入产物的周报生成步骤。Codex 当前没有 Runtime 专属设置：其 API Key 用量采集从 `CODEX_HOME/config.toml` 的已选 provider 动态读取根地址，不在 Chub 保存第二份地址或订阅 ID。
+部署级 Runtime 配置使用 `settings.local.yaml` 的 `ai_runtime.<runtime_id>` 层级。当前 Codex 固定为 `ai_runtime.codex`，包含部署可用性、工作目录、运行目录、终端票据、并发和快速交互超时；旧顶层 `codex_pty` 不再读取。设置页不展示这类部署字段：其“接收新任务”开关是独立运行策略。设置页的 AI Runtime 通用配置仅保存“周报自动化会话”的 Runtime、权限、模型和推理等级预设；该预设只用于之后由周报流程创建的 Quick Session，任务受理时写入 Session 快照，不修改 Runtime 全局默认或已有 Session。用量日期和重置时间固定按 `Asia/Shanghai` 显示，不提供跨 Runtime 时区配置。当前只接入 Codex；只读预设不能运行需写入产物的周报生成步骤。Codex 当前没有 Runtime 专属设置：其 API Key 用量采集从 `CODEX_HOME/config.toml` 的已选 provider 动态读取根地址，不在 Chub 保存第二份地址或订阅 ID。
 
 | 模型 | 必须提供的字段与边界 |
 | --- | --- |
@@ -281,6 +279,8 @@ status() -> RuntimeStatus
 | `writer_probe` | Adapter `RuntimeWriterProbeAdapter`，并由 Runner 转发 | `has_active_writer(native_session_id: str | None) -> bool`、`wait_for_writer_release(native_session_id: str | None, *, timeout: float = 3.0) -> bool`、`runtime_process_matches(command: tuple[str, ...]) -> bool`。无法确认时抛出错误，不得返回“空闲”。 |
 | `activity_events` | Adapter `RuntimeActivityEventAdapter` | `read_activity_event(session_id: str) -> RuntimeActivityEvent | None`、`clear_activity_event(session_id: str) -> None`、`rebind_activity_session(old_session_id: str, new_session_id: str) -> None`。升级别名必须固定在 Runtime 私有目录、使用当前用户权限并进行有界校验。 |
 | `model_catalog` | Adapter `RuntimeModelCatalogAdapter` | `validate_model(model: str | None, reasoning_effort: str | None) -> None`、`read_model_catalog() -> RuntimeModelCatalog`。 |
+| `usage_snapshot` | Adapter `RuntimeUsageSnapshotAdapter` | `read_usage_snapshot(force=False)` 返回与 descriptor 一致的 Runtime 快照；认证、来源、缓存与字段口径由 Runtime 专属设计定义。 |
+| `usage_login_page` | Adapter `RuntimeUsageLoginPageAdapter` | `open_usage_login_page()` 打开 Runtime 私有设计的固定恢复页；由核心固定 Runtime 路由和账户环境恢复操作调用，不接收页面 URL 或认证参数。 |
 | `background_turn` | Worker Runner | 由 `RuntimeWorkerRunner.validate_turn()` 和 `build_launch()` 表达；Runner 必须提供固定进程规格、受控输入和最终结果读取。 |
 | `structured_events` | Worker Runner | `parse_event_stream(path, *, max_event_bytes, missing_ok=False) -> RuntimeEventSummary`；只输出规范化事件摘要。 |
 | `task_cancel` | Quick Worker | 没有单独的 Adapter 方法；Runner 进程必须可由 Worker 以进程组方式终止，Worker 决定取消、超时和最终状态。 |
@@ -331,7 +331,7 @@ RuntimeRegistry([adapter])
 WorkerRuntimeRegistry([runner])
 ```
 
-### 8.5 当前代码的接入限制
+### 8.5 当前组合的接入限制
 
 共享契约已经运行时无关，但当前生产装配仍有 Codex 专用表面，生成 Adapter 时必须显式处理，不能伪造 Codex 属性来绕过：
 
@@ -352,8 +352,6 @@ Adapter 输出只能是共享层定义的规范化结果。每个原生 ID 在�
 #### 9.2 Runtime Runner
 
 Runtime Runner 必须实现 `RuntimeWorkerRunner` 的完整方法集，只提供固定后台执行规格、受控输入、结构化事件、最终结果和有界错误读取。`build_launch()` 接收 Worker 提供的受信任目录和文件描述符，返回固定 `argv`、是否通过 stdin 传 Prompt 以及最小环境；不得把 Prompt、Token 或任意客户端路径写入命令行。`parse_event_stream()` 只能读取有界的私有事件文件并提取一个已校验的原生 Session ID；`read_error()` 是诊断读取，失败时 Worker 仍必须写入任务终态；`read_result()` 读取有界最终文本。Quick Worker 继续拥有：
-
-当 Codex Runner 使用非交互式 `codex exec` 时，必须由后端固定加入 `--skip-git-repo-check`，使受信任的普通目录和 Git 仓库使用相同的快速交互路径。该参数只跳过 Codex 的 Git 仓库前置检查，不跳过 Chub 的可信工作目录发现、Session 归属校验、权限映射、审批或沙箱；客户端不能提交、关闭或覆盖该参数。非 Git 目录没有版本控制回滚保障，实际可写范围仍必须以 Session 的权限配置为准。
 
 - 幂等任务 ID、Session 租约和单 writer 仲裁；
 - 进程组、超时、取消、输出/结果上限和资源清理；
@@ -380,6 +378,8 @@ Runner 启动或 Tool Call 创建不能宣告任务成功；未知错误不得�
 | 与实时终端共享 Session | 上述能力 + `writer_probe`、`activity_events`、可靠的单 writer 仲裁 |
 | 开放实时终端 | 上述共享 Session 能力 + `interactive_terminal`、连接恢复和进程监督 |
 | 模型/归档入口 | 额外具备 `model_catalog` / `session_archive`；缺失时只关闭对应入口 |
+| 用量查询与展示 | `usage_snapshot`；缺失时仅显示该 Runtime 用量不可用，不影响其他入口 |
+| 登录恢复 | `usage_login_page` + 账户检查明确给出的恢复可用性；缺失时不展示恢复操作，不影响其他入口 |
 
 所有场景还必须满足 Worker 的固定保证：幂等、租约、取消、超时、恢复、结果限制、敏感信息保护和最终状态确认。Runtime 不能通过声明额外能力绕过这些保证。
 
@@ -393,7 +393,7 @@ Runner 启动或 Tool Call 创建不能宣告任务成功；未知错误不得�
 4. **完成 Runner。** 接入固定进程规格和受控输入，验证结构化事件、最终结果、退出、取消、超时、崩溃、结果超限和原文错误传播。
 5. **完成固定装配。** 调用 `validate_runtime_wiring()`，注册 Adapter/Runner，补齐当前 Codex 专用 facade 或固定 dispatch 的等价实现；不得开放客户端 Runtime 选择。
 6. **绑定业务边界。** 只为已确认场景补充 Session、终端、页面或微信 wiring；不修改没有直接依赖的 Codex 入口和其他业务。
-7. **执行受控数据/协议切换。** 如数据结构变化，按固定维护窗口清理不再适用的 Chub 自有运行态并初始化新格式；不迁移旧运行态，不删除原生 Runtime 数据。
+7. **执行受控数据/协议切换。** 如新增或变更的 Runtime 通过 ZIP 模块交付，必须先按《Chub AI Runtime 外置模块功能设计》完成 Web/Worker 注册确认，再清理不再适用的 Chub 自有运行态并初始化新格式；不得由 Runtime 实现单独触发清理，不迁移旧运行态，不删除原生 Runtime 数据。
 8. **完成回归和最终状态验收。** 通过契约、故障、权限、跨平台、页面/API/微信和服务恢复测试后，才把 Runtime 写入当前能力清单。
 
 ### 12. 实现完成判定
@@ -425,16 +425,10 @@ Runner 启动或 Tool Call 创建不能宣告任务成功；未知错误不得�
 
 本专项文档需要重新检查的触发条件：新增 Runtime；改变 Runtime ID、能力矩阵、Adapter/Runner、Session/Worker 状态所有权、单 writer、错误传播、持久化/协议格式、服务关系、升级恢复或用户可见入口。仅代码重排、测试补充或不影响契约的内部实现不需要恢复历史阶段章节。
 
-其他文档的权威边界：
-
-- [Chub 总体架构设计](CHUB_ARCHITECTURE_DESIGN.md)：系统进程、领域分层和全局状态所有权。
-- [Chub 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md)：Runtime ZIP 协议、安装恢复和模块状态清理。
-- [AI Session 状态模型](AI_SESSION_STATE_DESIGN.md)：Session/Activity 枚举、页面状态和单 writer 产品细节。
-- [Chub Quick Worker 独立服务设计](CHUB_QUICK_WORKER_DESIGN.md)：任务状态、租约、通知、恢复和重启细节。
-- [Chub 集成能力清单](CHUB_INTEGRATION_CAPABILITIES.md)：当前可用 API、插件能力、微信指令和用户可见格式。
+完整文档导航和各文档的唯一职责由[README](../README.md#核心项目文档)维护。本文件仅在 Runtime 共享边界需要时引用相关专项文档。
 
 ## 验收范围与复检
 
-- 已验收：已落地的 Codex Runtime 边界、AI Session/Quick Worker 所有权、能力矩阵、Adapter/Runner wiring、实时终端与快速交互规则、错误透传、现有 Codex 业务回归，以及 Runtime 实现规范、共享代码契约、能力评估和 Adapter/Runner 生成清单；本次协议 `9` 的错误来源投影已通过自动化回归。
-- 已验证：设置页已列出当前已注册 Runtime 并可启用或停用；停用 Runtime 会拒绝新的 AI 任务受理，同时保持已受理任务与已有 Session 的读取和维护入口。当前只在自动化测试环境验证，尚待维护者在实际 Web 页面确认。
-- 当前不承诺：第二个真实 Runtime、多 Runtime Session 聚合、客户端 Runtime 选择器，以及未在当前维护机器实际验证的平台或外部 Runtime 特有行为；本次协议 `9`、ttyd/tmux 与旧进程 Hook 别名重连已完成 macOS/Ubuntu 服务重载后的真实最终状态复检并通过维护者验收。
+- 已验收：Runtime 共享契约、能力矩阵、Adapter/Runner 固定组合、能力评估和实现自检要求。
+- 未验证或不承诺：第二个真实 Runtime、多 Runtime Session 聚合、客户端 Runtime 选择器，以及未实际验证的平台或 Runtime 专属行为。
+- 复检触发：Runtime ID、能力矩阵、Adapter/Runner、共享状态边界、错误传播、共享 API 或实现准入条件变化时，必须重做受影响的契约与业务验收。

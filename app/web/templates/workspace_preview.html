@@ -216,6 +216,7 @@
                     </div>
                     <div class="workstation-status-actions">
                       <button id="workspace-automation-feishu-check" class="button-secondary" type="button"{% if automations.browser_state != 'running' or automations.feishu_environment.state == 'checking' %} disabled{% if automations.browser_state != 'running' %} title="请先启动 Debug Chrome"{% endif %}{% endif %}>检查</button>
+                      <button id="workspace-automation-feishu-open-login" class="button-secondary" type="button"{% if not automations.feishu_environment.login_page_available %} hidden{% endif %}{% if automation_browser_in_use.value and automations.browser_mode != '有界面' %} disabled title="请等待当前自动化任务完成"{% endif %}>打开登录页面</button>
                     </div>
                   </div>
                   <div class="workstation-status-row">
@@ -225,6 +226,7 @@
                     </div>
                     <div class="workstation-status-actions">
                       <button id="workspace-automation-codex-account-check" class="button-secondary" type="button"{% if automations.codex_runtime_account.state == 'checking' %} disabled{% endif %}>检查</button>
+                      <button id="workspace-automation-codex-account-open-login" class="button-secondary" type="button"{% if not automations.codex_runtime_account.login_page_available %} hidden{% endif %}{% if automation_browser_in_use.value and automations.browser_mode != '有界面' %} disabled title="请等待当前自动化任务完成"{% endif %}>打开登录页面</button>
                     </div>
                   </div>
                 </div>

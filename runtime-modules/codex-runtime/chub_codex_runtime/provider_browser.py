@@ -8,11 +8,16 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
-from urllib.parse import parse_qs, urlsplit, urlunsplit
+from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
+import websockets
 
 from app.ai_usage.models import AiFiveHourUsage, AiTodayUsage, AiWeeklyUsage
-from app.automations.browser import debug_chrome_status, session_factory
+from app.automations.browser import (
+    debug_chrome_status,
+    debug_chrome_websocket_url,
+    session_factory,
+)
 from .usage_settings import CodexUsageSettings
 from app.core.config import AutomationsConfig
 
@@ -45,6 +50,37 @@ class ProviderBrowserAdapter:
     ACTIVE_PATH = "/api/v1/subscriptions/active"
     DASHBOARD_PATH = "/dashboard"
     STATS_PATH = "/api/v1/usage/dashboard/stats"
+    LOGIN_PAGE_NAME = "chub-codex-provider-login"
+    PAGE_REQUEST_SCRIPT = """
+        async ({ url, maxBytes }) => {
+            const response = await fetch(url, { credentials: "include" });
+            const contentType = response.headers.get("content-type") || "";
+            const contentLength = response.headers.get("content-length");
+            if (contentLength && Number(contentLength) > maxBytes) {
+                return {
+                    url: response.url,
+                    status: response.status,
+                    contentType,
+                    tooLarge: true,
+                };
+            }
+            const body = await response.text();
+            if (new TextEncoder().encode(body).length > maxBytes) {
+                return {
+                    url: response.url,
+                    status: response.status,
+                    contentType,
+                    tooLarge: true,
+                };
+            }
+            return {
+                url: response.url,
+                status: response.status,
+                contentType,
+                body,
+            };
+        }
+    """
 
     def __init__(
         self,
@@ -82,110 +118,262 @@ class ProviderBrowserAdapter:
             today_tokens=today_tokens,
         )
 
-    async def _capture_responses(self, timeout_seconds: float) -> _ProviderPayloads:
-        page_url = self._page_url("/subscriptions")
-        dashboard_url = self._page_url(self.DASHBOARD_PATH)
+    def open_login_page(self) -> None:
+        if self._config.provider_base_url is None:
+            raise ProviderBrowserUnavailable("provider_base_url_unavailable")
+        state, _, _ = debug_chrome_status()
+        if state != "running":
+            raise ProviderBrowserUnavailable("debug_chrome_not_running")
+        try:
+            asyncio.run(self._open_login_page())
+        except ProviderBrowserUnavailable:
+            raise
+        except Exception as exc:
+            raise ProviderBrowserUnavailable("provider_login_page_failed") from exc
+
+    async def _open_login_page(self) -> None:
         session = session_factory()
         async with session(ensure_page=True) as chrome:
-            subscription_task = asyncio.create_task(
-                self._capture_page_payload(
-                    chrome.context,
-                    page_url=page_url,
-                    expected_page_path="/subscriptions",
-                    response_matcher=self._matches_usage_response,
-                    timeout_seconds=timeout_seconds,
-                )
-            )
-            stats_task = asyncio.create_task(
-                self._capture_optional_stats(
-                    chrome.context,
-                    page_url=dashboard_url,
-                    timeout_seconds=min(
-                        timeout_seconds,
-                        self.OPTIONAL_STATS_TIMEOUT_SECONDS,
-                    ),
-                )
-            )
-            tasks = (subscription_task, stats_task)
+            for page in chrome.context.pages:
+                if page.is_closed():
+                    continue
+                try:
+                    if await page.evaluate("window.name") == self.LOGIN_PAGE_NAME:
+                        await page.bring_to_front()
+                        return
+                except Exception:
+                    continue
+            page = await chrome.context.new_page()
             try:
-                subscription = await subscription_task
-                stats = await stats_task
+                await page.add_init_script(
+                    f"window.name = {self.LOGIN_PAGE_NAME!r};"
+                )
+                await page.goto(
+                    self._page_url("/subscriptions"),
+                    wait_until="domcontentloaded",
+                    timeout=30_000,
+                )
+                await page.bring_to_front()
+            except Exception:
+                if not page.is_closed():
+                    await page.close()
+                raise
+
+    async def _capture_responses(self, timeout_seconds: float) -> _ProviderPayloads:
+        return await self._capture_background_page_responses(timeout_seconds)
+
+    async def _capture_background_page_responses(
+        self,
+        timeout_seconds: float,
+    ) -> _ProviderPayloads:
+        websocket_url = debug_chrome_websocket_url()
+        if websocket_url is None:
+            raise ProviderBrowserUnavailable("debug_chrome_unavailable")
+        deadline = time.monotonic() + timeout_seconds
+        async with websockets.connect(websocket_url, max_size=self.MAX_RESPONSE_BYTES * 2) as socket:
+            sequence = 0
+            backlog: list[dict[str, object]] = []
+
+            async def request(
+                method: str,
+                params: dict[str, object] | None = None,
+                session_id: str | None = None,
+            ) -> dict[str, object]:
+                nonlocal sequence
+                sequence += 1
+                request_id = sequence
+                payload: dict[str, object] = {
+                    "id": request_id,
+                    "method": method,
+                    "params": params or {},
+                }
+                if session_id is not None:
+                    payload["sessionId"] = session_id
+                await socket.send(json.dumps(payload))
+                while True:
+                    message = json.loads(await socket.recv())
+                    if message.get("id") == request_id:
+                        return message
+                    if isinstance(message, dict):
+                        backlog.append(message)
+
+            created = await request(
+                "Target.createTarget",
+                {"url": "about:blank", "background": True, "focus": False},
+            )
+            target_id = (created.get("result") or {}).get("targetId")
+            if not isinstance(target_id, str):
+                raise ProviderBrowserUnavailable("provider_background_page_failed")
+            try:
+                attached = await request(
+                    "Target.attachToTarget",
+                    {"targetId": target_id, "flatten": True},
+                )
+                session_id = (attached.get("result") or {}).get("sessionId")
+                if not isinstance(session_id, str):
+                    raise ProviderBrowserUnavailable("provider_background_page_failed")
+                for method, params in (
+                    ("Network.enable", {}),
+                    ("Page.enable", {}),
+                    ("Emulation.setFocusEmulationEnabled", {"enabled": True}),
+                    ("Page.setWebLifecycleState", {"state": "active"}),
+                ):
+                    result = await request(method, params, session_id)
+                    if result.get("error"):
+                        raise ProviderBrowserUnavailable("provider_background_page_failed")
+                subscription = await self._capture_background_payload(
+                    request,
+                    socket,
+                    backlog,
+                    session_id=session_id,
+                    page_url=self._page_url("/subscriptions"),
+                    path=self.ACTIVE_PATH,
+                    timeout_seconds=max(0.1, deadline - time.monotonic()),
+                )
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return _ProviderPayloads(subscription=subscription, stats=None)
+                try:
+                    stats = await self._capture_background_payload(
+                        request,
+                        socket,
+                        backlog,
+                        session_id=session_id,
+                        page_url=self._page_url(self.DASHBOARD_PATH),
+                        path=self.STATS_PATH,
+                        timeout_seconds=min(remaining, self.OPTIONAL_STATS_TIMEOUT_SECONDS),
+                    )
+                except ProviderBrowserUnavailable as exc:
+                    LOGGER.info("AI provider token collection unavailable: %s", exc)
+                    stats = None
                 return _ProviderPayloads(subscription=subscription, stats=stats)
             finally:
-                for task in tasks:
-                    if not task.done():
-                        task.cancel()
-                await asyncio.gather(*tasks, return_exceptions=True)
+                await request("Target.closeTarget", {"targetId": target_id})
+
+    async def _capture_background_payload(
+        self,
+        request: Any,
+        socket: Any,
+        backlog: list[dict[str, object]],
+        *,
+        session_id: str,
+        page_url: str,
+        path: str,
+        timeout_seconds: float,
+    ) -> object:
+        navigation = await request("Page.navigate", {"url": page_url}, session_id)
+        if navigation.get("error"):
+            raise ProviderBrowserUnavailable("provider_background_page_failed")
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            try:
+                message = (
+                    backlog.pop(0)
+                    if backlog
+                    else json.loads(await asyncio.wait_for(socket.recv(), 0.1))
+                )
+            except TimeoutError:
+                continue
+            if (
+                message.get("sessionId") != session_id
+                or message.get("method") != "Network.responseReceived"
+            ):
+                continue
+            params = message.get("params")
+            if not isinstance(params, dict):
+                continue
+            response = params.get("response")
+            request_id = params.get("requestId")
+            if not isinstance(response, dict) or not isinstance(request_id, str):
+                continue
+            url = response.get("url")
+            if not isinstance(url, str) or not self._matches_response_url(url, path):
+                continue
+            status = response.get("status")
+            if status in {401, 403} or not 200 <= status < 300:
+                raise ProviderBrowserUnavailable("provider_login_unavailable")
+            headers = response.get("headers")
+            content_type = (
+                next(
+                    (
+                        value
+                        for key, value in headers.items()
+                        if isinstance(key, str) and key.lower() == "content-type"
+                    ),
+                    "",
+                )
+                if isinstance(headers, dict)
+                else ""
+            )
+            if not isinstance(content_type, str) or "json" not in content_type.lower():
+                raise ProviderBrowserUnavailable("provider_response_invalid")
+            body_response = await request(
+                "Network.getResponseBody", {"requestId": request_id}, session_id
+            )
+            body = ((body_response.get("result") or {}).get("body"))
+            if not isinstance(body, str) or len(body.encode("utf-8")) > self.MAX_RESPONSE_BYTES:
+                raise ProviderBrowserUnavailable("provider_response_too_large")
+            return json.loads(body, parse_float=Decimal)
+        raise ProviderBrowserUnavailable("provider_response_timeout")
 
     async def _capture_optional_stats(
         self,
         context: Any,
         *,
-        page_url: str,
+        path: str,
         timeout_seconds: float,
     ) -> object | None:
         try:
-            return await self._capture_page_payload(
+            return await self._capture_request_payload(
                 context,
-                page_url=page_url,
-                expected_page_path=self.DASHBOARD_PATH,
-                response_matcher=self._matches_stats_response,
+                path=path,
                 timeout_seconds=timeout_seconds,
             )
         except ProviderBrowserUnavailable as exc:
             LOGGER.info("AI provider token collection unavailable: %s", exc)
             return None
 
-    async def _capture_page_payload(
+    async def _capture_request_payload(
         self,
         context: Any,
         *,
-        page_url: str,
-        expected_page_path: str,
-        response_matcher: Any,
+        path: str,
         timeout_seconds: float,
     ) -> object:
-        async def capture() -> bytes:
-            page = await context.new_page()
-            try:
-                timeout_ms = max(1, int(timeout_seconds * 1000))
-                response_ready = asyncio.get_running_loop().create_future()
-
-                def capture_response(response: Any) -> None:
-                    if not response_ready.done() and response_matcher(response):
-                        response_ready.set_result(response)
-
-                page.on("response", capture_response)
-                await page.goto(
-                    page_url,
-                    wait_until="domcontentloaded",
-                    timeout=timeout_ms,
-                )
-                while not response_ready.done():
-                    if not self._is_expected_page(page.url, expected_page_path):
-                        raise ProviderBrowserUnavailable("provider_login_unavailable")
-                    await asyncio.sleep(0.05)
-                response = response_ready.result()
-                if not 200 <= response.status < 300:
-                    raise ProviderBrowserUnavailable("provider_response_failed")
-                content_type = response.headers.get("content-type", "").lower()
-                if "json" not in content_type:
-                    raise ProviderBrowserUnavailable("provider_response_invalid")
-                if not self._is_expected_page(page.url, expected_page_path):
-                    raise ProviderBrowserUnavailable("provider_login_unavailable")
-                length = response.headers.get("content-length")
-                if length and int(length) > self.MAX_RESPONSE_BYTES:
-                    raise ProviderBrowserUnavailable("provider_response_too_large")
-                body = await response.body()
-                if len(body) > self.MAX_RESPONSE_BYTES:
-                    raise ProviderBrowserUnavailable("provider_response_too_large")
-                return body
-            finally:
-                await page.close()
-
         try:
-            body = await asyncio.wait_for(capture(), timeout=timeout_seconds)
-            return json.loads(body.decode("utf-8"), parse_float=Decimal)
+            page = self._find_provider_page(context)
+            timeout_ms = max(1, int(timeout_seconds * 1000))
+            response = await asyncio.wait_for(
+                page.evaluate(
+                    self.PAGE_REQUEST_SCRIPT,
+                    {"url": self._api_url(path), "maxBytes": self.MAX_RESPONSE_BYTES},
+                ),
+                timeout=timeout_seconds,
+            )
+            if not isinstance(response, dict):
+                raise ProviderBrowserUnavailable("provider_response_invalid")
+            response_url = response.get("url")
+            status = response.get("status")
+            content_type = response.get("contentType")
+            if not isinstance(response_url, str) or not self._matches_response_url(
+                response_url, path
+            ):
+                raise ProviderBrowserUnavailable("provider_login_unavailable")
+            if isinstance(status, bool) or not isinstance(status, int):
+                raise ProviderBrowserUnavailable("provider_response_invalid")
+            if not 200 <= status < 300:
+                raise ProviderBrowserUnavailable("provider_response_failed")
+            if not isinstance(content_type, str) or "json" not in content_type.lower():
+                raise ProviderBrowserUnavailable("provider_response_invalid")
+            if response.get("tooLarge") is True:
+                raise ProviderBrowserUnavailable("provider_response_too_large")
+            body = response.get("body")
+            if not isinstance(body, str):
+                raise ProviderBrowserUnavailable("provider_response_invalid")
+            body_bytes = body.encode("utf-8")
+            if len(body_bytes) > self.MAX_RESPONSE_BYTES:
+                raise ProviderBrowserUnavailable("provider_response_too_large")
+            return json.loads(body_bytes.decode("utf-8"), parse_float=Decimal)
         except ProviderBrowserUnavailable:
             raise
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
@@ -202,11 +390,14 @@ class ProviderBrowserAdapter:
         return self._matches_response(response, self.STATS_PATH)
 
     def _matches_response(self, response: Any, path: str) -> bool:
+        return self._matches_response_url(response.url, path)
+
+    def _matches_response_url(self, value: str, path: str) -> bool:
         base_url = self._config.provider_base_url
         if base_url is None:
             return False
         target = urlsplit(base_url)
-        candidate = urlsplit(response.url)
+        candidate = urlsplit(value)
         if self._origin(candidate) != self._origin(target):
             return False
         if candidate.path != path:
@@ -215,20 +406,24 @@ class ProviderBrowserAdapter:
             "timezone": [self._config.timezone]
         }
 
-    def _is_subscription_page(self, value: str) -> bool:
-        return self._is_expected_page(value, "/subscriptions")
-
-    def _is_expected_page(self, value: str, path: str) -> bool:
-        expected = urlsplit(self._config.provider_base_url or "")
-        actual = urlsplit(value)
-        return (
-            self._origin(actual) == self._origin(expected)
-            and actual.path.rstrip("/") == path
-        )
+    def _find_provider_page(self, context: Any) -> Any:
+        base_url = self._config.provider_base_url
+        if base_url is None:
+            raise ProviderBrowserUnavailable("provider_base_url_unavailable")
+        expected = urlsplit(base_url)
+        for page in context.pages:
+            if page.is_closed():
+                continue
+            if self._origin(urlsplit(page.url)) == self._origin(expected):
+                return page
+        raise ProviderBrowserUnavailable("provider_browser_page_unavailable")
 
     def _page_url(self, path: str) -> str:
         target = urlsplit(self._config.provider_base_url or "")
         return urlunsplit((target.scheme, target.netloc, path, "", ""))
+
+    def _api_url(self, path: str) -> str:
+        return f"{self._page_url(path)}?{urlencode({'timezone': self._config.timezone})}"
 
     @staticmethod
     def _origin(value) -> tuple[str, str | None, int | None]:

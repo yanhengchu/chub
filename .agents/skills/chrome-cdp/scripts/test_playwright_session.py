@@ -222,6 +222,29 @@ class PlaywrightSessionTest(unittest.IsolatedAsyncioTestCase):
             self.ensure_target.assert_not_called()
             self.assertEqual(chromium.calls, 1)
 
+    async def test_retries_read_only_connection_without_creating_a_page(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            browser = FakeBrowser(FakeContext([object()]))
+            playwright = FakePlaywright(browser)
+            chromium = RecoveringChromium(browser)
+            playwright.chromium = chromium
+            self.ensure_target.reset_mock()
+            with patch(
+                "playwright_session.status",
+                return_value=running_status(root),
+            ):
+                async with playwright_session.session(
+                    root,
+                    ensure_page=False,
+                    retry_connection=True,
+                    _playwright_factory=lambda: FakeManager(playwright),
+                ) as active:
+                    self.assertIs(active.context, browser.contexts[0])
+
+            self.ensure_target.assert_not_called()
+            self.assertEqual(chromium.calls, 2)
+
     def test_ensure_page_target_creates_only_when_page_is_missing(self) -> None:
         no_targets = BytesIO(b"[]")
         existing_page = BytesIO(

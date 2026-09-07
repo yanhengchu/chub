@@ -89,17 +89,24 @@ def _ensure_page_target(endpoint: str) -> None:
     _create_page_target(endpoint)
 
 
-async def _connect_over_cdp(chromium: Any, current: DebugStatus, ensure_page: bool) -> Any:
+async def _connect_over_cdp(
+    chromium: Any,
+    current: DebugStatus,
+    ensure_page: bool,
+    retry_connection: bool,
+) -> Any:
     if ensure_page:
         await asyncio.to_thread(_ensure_page_target, current.endpoint)
     try:
         return await chromium.connect_over_cdp(current.endpoint)
     except Exception:
-        if not ensure_page:
+        if not ensure_page and not retry_connection:
             raise
         # A user can close the last page between the target check and connection.
-        # Recheck once and retry without depending on Playwright's error wording.
-        await asyncio.to_thread(_ensure_page_target, current.endpoint)
+        # Read-only callers may retry a transient CDP setup failure without
+        # creating a visible recovery page.
+        if ensure_page:
+            await asyncio.to_thread(_ensure_page_target, current.endpoint)
         return await chromium.connect_over_cdp(current.endpoint)
 
 
@@ -108,6 +115,7 @@ async def session(
     user_data_dir: Path = DEFAULT_USER_DATA_DIR,
     *,
     ensure_page: bool = True,
+    retry_connection: bool = False,
     _playwright_factory: Callable[[], Any] | None = None,
 ) -> AsyncIterator[ChromeSession]:
     current = require_running_debug_chrome(user_data_dir)
@@ -119,6 +127,7 @@ async def session(
             playwright.chromium,
             current,
             ensure_page,
+            retry_connection,
         )
         verified = require_running_debug_chrome(user_data_dir)
         if verified.endpoint != current.endpoint:

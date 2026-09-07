@@ -1352,7 +1352,7 @@ def test_restart_rejects_active_task_without_worker_identity(tmp_path: Path) -> 
 
     quick_interactions = manager(tmp_path)
 
-    assert quick_interactions.get("task-1").status == "running"
+    assert quick_interactions.get("task-1").status == "failed"
     assert quick_interactions.recovery_error is None
     quick_interactions.start_worker_reconciliation()
     assert quick_interactions.recovery_ready is False
@@ -1390,6 +1390,7 @@ def test_worker_restart_preserves_active_task_and_pending_notification(
         id="task-1",
         worker_task_id="qw-1750000000000-11111111111111111111111111111111",
         session_id="session-1",
+        implementation_id="builtin-dev",
         prompt="检查状态",
         status="running",
         notification_status="pending",
@@ -1461,6 +1462,7 @@ def test_worker_claim_restore_conflict_is_local_and_reconciles_task(
         id="task-claim-conflict",
         worker_task_id="qw-1750000000000-11111111111111111111111111111111",
         session_id="session-1",
+        implementation_id="builtin-dev",
         prompt="检查状态",
         status="running",
         created_at=utc_now(),
@@ -1497,6 +1499,7 @@ def test_worker_claim_restore_conflict_is_local_and_reconciles_task(
     view = {
         "task_id": task.worker_task_id,
         "runtime_id": "codex",
+        "implementation_id": "builtin-dev",
         "status": "succeeded",
         "prompt_sha256": "a" * 64,
         "created_at": now.isoformat(),
@@ -1544,6 +1547,7 @@ def test_worker_claim_restore_store_unavailable_is_local(
         id="task-store-unavailable",
         worker_task_id="qw-1750000000000-11111111111111111111111111111111",
         session_id="session-1",
+        implementation_id="builtin-dev",
         prompt="检查状态",
         status="running",
         created_at=utc_now(),
@@ -1991,6 +1995,7 @@ def test_worker_reconciliation_allows_translation_native_session_rotation(
         id="task-translation-rotation",
         worker_task_id="qw-1750000000000-33333333333333333333333333333333",
         session_id="session-1",
+        implementation_id="builtin-dev",
         prompt="优化文本",
         kind="translation",
         status="running",
@@ -2005,6 +2010,7 @@ def test_worker_reconciliation_allows_translation_native_session_rotation(
     view = {
         "task_id": task.worker_task_id,
         "runtime_id": "codex",
+        "implementation_id": "builtin-dev",
         "status": "succeeded",
         "prompt_sha256": "b" * 64,
         "created_at": now.isoformat(),
@@ -2042,6 +2048,7 @@ def test_worker_reconciliation_allows_translation_native_session_rotation(
     quick_interactions.codex_manager.bind_quick_interaction_native_session.assert_called_once_with(
         task.session_id,
         new_native_session_id,
+        implementation_id="builtin-dev",
     )
     assert quick_interactions.is_running(task.session_id) is False
     assert quick_interactions.recovery_ready is True

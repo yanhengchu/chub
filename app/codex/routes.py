@@ -22,6 +22,9 @@ from app.codex.models import (
     QuickInteractionRequest,
     RuntimeEnablementUpdateRequest,
     RuntimeManagementData,
+    RuntimeImplementationData,
+    RuntimeImplementationEnabledUpdateRequest,
+    RuntimeDefaultImplementationUpdateRequest,
     SessionAccessData,
     SessionCreationAvailability,
     SessionCreateRequest,
@@ -130,6 +133,34 @@ def list_sessions(
 @api_router.get("/runtimes", response_model=ApiResponse[RuntimeManagementData])
 def read_runtime_management(request: Request) -> ApiResponse[RuntimeManagementData]:
     return ApiResponse(data=request.app.state.codex_pty_manager.read_runtime_management())
+
+
+@api_router.get("/runtime-implementations", response_model=ApiResponse[RuntimeImplementationData])
+def read_runtime_implementations(request: Request) -> ApiResponse[RuntimeImplementationData]:
+    return ApiResponse(data=request.app.state.codex_pty_manager.read_runtime_implementations())
+
+
+@api_router.put(
+    "/runtime-implementations/{implementation_id}/enabled",
+    response_model=ApiResponse[RuntimeImplementationData],
+)
+def update_runtime_implementation_enabled(
+    implementation_id: str,
+    payload: RuntimeImplementationEnabledUpdateRequest,
+    request: Request,
+) -> ApiResponse[RuntimeImplementationData]:
+    return ApiResponse(data=request.app.state.codex_pty_manager.update_runtime_implementation_enabled(implementation_id, payload.enabled))
+
+
+@api_router.put(
+    "/runtime-implementations/default",
+    response_model=ApiResponse[RuntimeImplementationData],
+)
+def update_default_runtime_implementation(
+    payload: RuntimeDefaultImplementationUpdateRequest,
+    request: Request,
+) -> ApiResponse[RuntimeImplementationData]:
+    return ApiResponse(data=request.app.state.codex_pty_manager.update_default_implementation(payload.implementation_id))
 
 
 @api_router.put(
@@ -455,6 +486,7 @@ async def submit_quick_interaction(
                     payload.prompt,
                     operation_id=operation_id,
                     source_ip=source_ip,
+                    implementation_id=payload.implementation_id,
                 )
 
         task = await asyncio.to_thread(submit_codex)

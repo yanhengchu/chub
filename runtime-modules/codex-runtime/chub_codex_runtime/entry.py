@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import json
 from pathlib import Path
 
 from app.ai_runtime import (
@@ -18,10 +19,18 @@ from .worker_runtime import CodexWorkerRuntime
 class CodexRuntimeModule:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
+        manifest = json.loads(Path(__file__).parent.parent.joinpath("chub-module.json").read_text("utf-8"))
+        self._descriptor = CODEX_RUNTIME_DESCRIPTOR.model_copy(
+            update={
+                "runtime_id": manifest["runtime_id"],
+                "implementation_id": manifest["implementation_id"],
+                "native_session_compatibility_id": manifest["native_session_compatibility_id"],
+            }
+        )
 
     @property
     def descriptor(self) -> RuntimeDescriptor:
-        return CODEX_RUNTIME_DESCRIPTOR
+        return self._descriptor
 
     @property
     def display_name(self) -> str:
@@ -33,10 +42,10 @@ class CodexRuntimeModule:
 
     @property
     def is_default(self) -> bool:
-        return True
+        return self._descriptor.effective_implementation_id == "builtin-dev"
 
     def build_adapter(self) -> CodexRuntimeAdapter:
-        return CodexRuntimeAdapter(self._settings)
+        return CodexRuntimeAdapter(self._settings, descriptor=self._descriptor)
 
     def configure_worker_adapter(
         self,

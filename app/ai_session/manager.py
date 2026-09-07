@@ -23,12 +23,18 @@ from app.ai_runtime.external_modules import (
     RuntimeModuleRemoval,
 )
 from app.ai_runtime.modules import BuiltinRuntimeModuleRegistry
+from app.ai_runtime.codex_builtin import load_builtin_codex_module
 from app.ai_runtime.enablement import (
     RuntimeEnablement,
     RuntimeEnablementStore,
     RuntimeEnablementStoreUnavailable,
 )
 from app.ai_runtime.general_settings import AiRuntimeSettingsStore
+from app.ai_runtime.implementation_preferences import (
+    RuntimeImplementationPreferences,
+    RuntimeImplementationPreferencesStore,
+    RuntimeImplementationPreferencesUnavailable,
+)
 from app.ai_session.models import (
     ActivitySource,
     AiSession,
@@ -52,6 +58,8 @@ from app.codex.models import (
     SessionUsage,
     RuntimeManagementData,
     RuntimeManagementItem,
+    RuntimeImplementationData,
+    RuntimeImplementationItem,
     WorkspaceInfo,
 )
 from app.core.config import PROJECT_ROOT, Settings
@@ -136,8 +144,11 @@ class AiSessionManager:
         self.runtime_enablement = RuntimeEnablementStore(
             settings.ai_runtime.codex.data_file.with_name("runtime-enablement.json")
         )
+        self.runtime_implementation_preferences = RuntimeImplementationPreferencesStore(
+            settings.ai_runtime.codex.data_file.with_name("runtime-implementation-preferences.json")
+        )
         self._builtin_runtime_modules = (
-            BuiltinRuntimeModuleRegistry()
+            BuiltinRuntimeModuleRegistry([load_builtin_codex_module(settings)])
             if builtin_runtime_modules is None
             else builtin_runtime_modules
         )
@@ -149,6 +160,8 @@ class AiSessionManager:
         self.runtime_modules = BuiltinRuntimeModuleRegistry()
         self.runtime_module_failures = ()
         self.runtime_registry = RuntimeRegistry([])
+        self.runtime_adapters: dict[str, object] = {}
+        self.default_implementation_id: str | None = None
         self.runtime_adapter = _UnavailableCodexRuntime()
         self.runtime_settings_store = AiRuntimeSettingsStore()
         self.supervisor = InteractiveSupervisor(
@@ -177,7 +190,8 @@ class AiSessionManager:
         try:
             self.refresh_external_runtime_modules()
             activated = (
-                activation.installed.manifest.module_id in self.runtime_modules.runtime_ids()
+                activation.installed.manifest.implementation_id
+                in self.runtime_modules.implementation_ids("codex")
             )
         except Exception:
             self.runtime_module_service.rollback(activation)
@@ -199,8 +213,8 @@ class AiSessionManager:
         )
         available_modules = BuiltinRuntimeModuleRegistry()
         adapters = []
-        for runtime_id in modules.runtime_ids():
-            module = modules.require(runtime_id)
+        for implementation_id in modules.implementation_ids():
+            module = modules.require(implementation_id)
             try:
                 adapter = module.build_adapter()
                 RuntimeRegistry([adapter])
@@ -209,16 +223,24 @@ class AiSessionManager:
             except Exception:
                 failures += (
                     RuntimeModuleLoadFailure(
-                        runtime_id,
+                        implementation_id,
                         "Runtime 模块装配失败。",
                     ),
                 )
         self.runtime_modules = available_modules
         self.runtime_module_failures = failures
         self.runtime_registry = RuntimeRegistry(adapters)
+        self.runtime_adapters = {
+            adapter.descriptor.effective_implementation_id: adapter
+            for adapter in adapters
+        }
+        self.default_implementation_id = self._resolve_default_implementation_id()
+        self._activate_default_implementation()
+
+    def _activate_default_implementation(self) -> None:
         try:
             adapter = self.runtime_registry.require(
-                self.runtime_id,
+                self.default_implementation_id or "__missing__",
                 {
                     "runtime_status",
                     "native_session_mapping",
@@ -252,12 +274,18 @@ class AiSessionManager:
         *,
         operation_id: str,
     ) -> RuntimeModuleRemoval:
-        if module_id in self._builtin_runtime_modules.runtime_ids():
+        if module_id in self._builtin_runtime_modules.implementation_ids():
             raise ApiError(422, "runtime_module_remove_invalid", "内置 Runtime 不可移除。")
+        if module_id == self.default_implementation_id:
+            raise ApiError(
+                409,
+                "runtime_default_implementation_required",
+                "请先选择其他默认 Runtime 版本。",
+            )
         removal = self.runtime_module_service.remove(module_id, operation_id=operation_id)
         try:
             self.refresh_external_runtime_modules()
-            if module_id in self.runtime_modules.runtime_ids():
+            if module_id in self.runtime_modules.implementation_ids("codex"):
                 raise ApiError(503, "runtime_module_removal_unconfirmed", "Web 注册表未能确认 Runtime 已移除。")
         except Exception:
             self.runtime_module_service.rollback_removal(removal)
@@ -267,7 +295,8 @@ class AiSessionManager:
 
     def clear_runtime_module_state(self, module_id: str) -> None:
         """Clear Chub-owned state covered by a Runtime upgrade boundary."""
-        self.store.remove_runtime(module_id)
+        # Implementations share the logical Codex Session mapping. Replacing
+        # or removing one version must never discard shared Session/history.
         enablement = self.runtime_enablement.read()
         disabled = [
             runtime_id
@@ -279,7 +308,7 @@ class AiSessionManager:
         self._pending_native_discoveries = {
             key: observed_at
             for key, observed_at in self._pending_native_discoveries.items()
-            if key[0] != module_id
+            if key[0] != self.runtime_id
         }
 
     def runtime_session_ids(self, runtime_id: str) -> tuple[str, ...]:
@@ -290,6 +319,153 @@ class AiSessionManager:
                 for session in self.store.list()
                 if session.runtime_id == runtime_id
             )
+
+    def _resolve_default_implementation_id(self) -> str | None:
+        try:
+            preferences = self.runtime_implementation_preferences.read()
+        except RuntimeImplementationPreferencesUnavailable:
+            return None
+        available = {
+            implementation_id
+            for implementation_id, adapter in self.runtime_adapters.items()
+            if adapter.status().available
+            and implementation_id not in preferences.disabled_implementation_ids
+        }
+        if preferences.default_implementation_id is not None:
+            return (
+                preferences.default_implementation_id
+                if preferences.default_implementation_id in available
+                else None
+            )
+        selected = "builtin-dev" if "builtin-dev" in available else next(iter(available), None)
+        if selected is not None:
+            self.runtime_implementation_preferences.save(
+                preferences.model_copy(update={"default_implementation_id": selected})
+            )
+        return selected
+
+    def require_implementation_submission(self, implementation_id: str) -> None:
+        try:
+            disabled_runtimes = set(self.runtime_enablement.read().disabled_runtime_ids)
+        except RuntimeEnablementStoreUnavailable as exc:
+            raise ApiError(
+                503,
+                "ai_runtime_enablement_unavailable",
+                "AI Runtime 启用状态不可用，请稍后重试。",
+            ) from exc
+        if self.runtime_id in disabled_runtimes:
+            raise ApiError(
+                409,
+                "ai_runtime_disabled",
+                "当前 AI Runtime 已停用，无法提交新的 AI 任务。",
+            )
+        self.require_implementation_available(implementation_id)
+
+    def require_implementation_available(self, implementation_id: str) -> None:
+        try:
+            preferences = self.runtime_implementation_preferences.read()
+        except RuntimeImplementationPreferencesUnavailable as exc:
+            raise ApiError(503, "runtime_implementation_preferences_unavailable", str(exc)) from exc
+        if implementation_id in preferences.disabled_implementation_ids:
+            raise ApiError(409, "runtime_implementation_disabled", "当前 Runtime 版本已停用，无法提交新任务。")
+        adapter = self.runtime_adapters.get(implementation_id)
+        if adapter is None or not adapter.status().available:
+            raise ApiError(503, "runtime_implementation_unavailable", "当前 Runtime 版本不可用，无法提交新任务。")
+
+    def default_submission_implementation_id(self) -> str:
+        implementation_id = self.default_implementation_id
+        if implementation_id is None:
+            raise ApiError(503, "runtime_default_implementation_unavailable", "默认 Codex Runtime 版本不可用。")
+        self.require_implementation_submission(implementation_id)
+        return implementation_id
+
+    def read_runtime_implementations(self) -> RuntimeImplementationData:
+        try:
+            preferences = self.runtime_implementation_preferences.read()
+        except RuntimeImplementationPreferencesUnavailable as exc:
+            raise ApiError(503, "runtime_implementation_preferences_unavailable", str(exc)) from exc
+        installed, _failures = self.runtime_module_service.discover()
+        manifests = {item.manifest.implementation_id: item.manifest for item in installed}
+        items: list[RuntimeImplementationItem] = []
+        for implementation_id in self.runtime_modules.implementation_ids(self.runtime_id):
+            module = self.runtime_modules.require(implementation_id)
+            adapter = self.runtime_adapters.get(implementation_id)
+            status = adapter.status() if adapter is not None else None
+            manifest = manifests.get(implementation_id)
+            items.append(
+                RuntimeImplementationItem(
+                    implementation_id=implementation_id,
+                    name=module.display_name,
+                    version=manifest.version if manifest is not None else "dev",
+                    enabled=implementation_id not in preferences.disabled_implementation_ids,
+                    healthy=status is not None and status.available,
+                    is_default=implementation_id == self.default_implementation_id,
+                    compatibility_id=(
+                        module.descriptor.native_session_compatibility_id
+                    ),
+                    removable=implementation_id != "builtin-dev",
+                    reason=None if status is None else status.reason,
+                )
+            )
+        return RuntimeImplementationData(
+            runtime_id=self.runtime_id,
+            default_implementation_id=self.default_implementation_id,
+            implementations=items,
+        )
+
+    def update_runtime_implementation_enabled(
+        self, implementation_id: str, enabled: bool
+    ) -> RuntimeImplementationData:
+        with self._lock:
+            if implementation_id not in self.runtime_modules.implementation_ids(self.runtime_id):
+                raise ApiError(404, "runtime_implementation_not_found", "Codex Runtime 版本不存在。")
+            preferences = self.runtime_implementation_preferences.read()
+            disabled = set(preferences.disabled_implementation_ids)
+            if enabled:
+                adapter = self.runtime_adapters.get(implementation_id)
+                if adapter is None or not adapter.status().available:
+                    raise ApiError(409, "runtime_implementation_unavailable", "不可用的 Runtime 版本不能启用。")
+                disabled.discard(implementation_id)
+            else:
+                if implementation_id == preferences.default_implementation_id:
+                    raise ApiError(409, "runtime_default_implementation_required", "请先选择其他默认 Runtime 版本。")
+                disabled.add(implementation_id)
+            self.runtime_implementation_preferences.save(
+                preferences.model_copy(update={"disabled_implementation_ids": sorted(disabled)})
+            )
+            self.default_implementation_id = self._resolve_default_implementation_id()
+            return self.read_runtime_implementations()
+
+    def update_default_implementation(self, implementation_id: str) -> RuntimeImplementationData:
+        with self._lock:
+            self.require_implementation_available(implementation_id)
+            if any(
+                self.supervisor.owns_terminal_writer(session.id)
+                for session in self.store.list()
+                if session.runtime_id == self.runtime_id
+            ):
+                raise ApiError(
+                    409,
+                    "runtime_default_implementation_terminal_active",
+                    "实时终端正在使用当前 Runtime 版本，请结束终端任务后再切换默认版本。",
+                )
+            previous_id = self.default_implementation_id
+            previous_adapter = self.runtime_adapter
+            preferences = self.runtime_implementation_preferences.read()
+            self.default_implementation_id = implementation_id
+            try:
+                self._activate_default_implementation()
+                self.runtime_implementation_preferences.save(
+                    preferences.model_copy(
+                        update={"default_implementation_id": implementation_id}
+                    )
+                )
+            except Exception:
+                self.default_implementation_id = previous_id
+                if self.runtime_adapter is not previous_adapter:
+                    self._activate_default_implementation()
+                raise
+            return self.read_runtime_implementations()
 
     def set_quick_interaction_checker(
         self,
@@ -322,20 +498,29 @@ class AiSessionManager:
                 "ai_runtime_enablement_unavailable",
                 "AI Runtime 启用状态不可用，请稍后重试。",
             ) from exc
-        try:
-            matrix = self.runtime_registry.capability_matrix()
-        except RuntimeOperationError as exc:
-            raise self._runtime_api_error(exc) from exc
-        runtimes = [
-            RuntimeManagementItem(
-                runtime_id=item.runtime_id,
-                name=self.runtime_modules.require_navigation(item.runtime_id).name,
-                enabled=item.runtime_id not in disabled,
-                healthy=item.available,
-                reason=item.reason,
+        runtimes: list[RuntimeManagementItem] = []
+        for runtime_id in self.runtime_modules.runtime_ids():
+            implementation_id = (
+                self.default_implementation_id
+                if runtime_id == self.runtime_id
+                else next(iter(self.runtime_modules.implementation_ids(runtime_id)), None)
             )
-            for item in matrix
-        ]
+            adapter = (
+                self.runtime_adapters.get(implementation_id)
+                if implementation_id is not None
+                else None
+            )
+            status = adapter.status() if adapter is not None else None
+            navigation_id = implementation_id or runtime_id
+            runtimes.append(
+                RuntimeManagementItem(
+                    runtime_id=runtime_id,
+                    name=self.runtime_modules.require_navigation(navigation_id).name,
+                    enabled=runtime_id not in disabled,
+                    healthy=status is not None and status.available,
+                    reason=None if status is None else status.reason,
+                )
+            )
         return RuntimeManagementData(
             runtimes=runtimes,
             basic_mode=not any(item.enabled for item in runtimes),
@@ -347,10 +532,22 @@ class AiSessionManager:
         enabled: bool,
     ) -> RuntimeManagementData:
         try:
-            self.runtime_registry.require(runtime_id)
             state = self.runtime_enablement.read()
             disabled = set(state.disabled_runtime_ids)
             if enabled:
+                selected_id = (
+                    self.default_implementation_id
+                    if runtime_id == self.runtime_id
+                    else runtime_id
+                )
+                if selected_id is None:
+                    raise ApiError(
+                        503,
+                        "runtime_default_implementation_unavailable",
+                        "默认 Codex Runtime 版本不可用。",
+                    )
+                self.require_implementation_available(selected_id)
+                self.runtime_registry.require(selected_id)
                 disabled.discard(runtime_id)
             else:
                 disabled.add(runtime_id)
@@ -627,9 +824,31 @@ class AiSessionManager:
             return session
 
     def prepare_quick_interaction(self, runtime_id: str | None = None) -> None:
-        self._require_runtime_submission(runtime_id or self.runtime_id)
+        if runtime_id is None or runtime_id == self.runtime_id:
+            self.default_submission_implementation_id()
+        else:
+            self.require_implementation_submission(runtime_id)
         with self._lock:
             self._ensure_profile()
+
+    def ensure_session_implementation_compatible(
+        self, session_id: str, implementation_id: str
+    ) -> None:
+        self.require_implementation_submission(implementation_id)
+        session = self.get_session(session_id)
+        if session.native_session_id is None:
+            return
+        adapter = self.runtime_adapters[implementation_id]
+        compatibility_id = adapter.descriptor.native_session_compatibility_id
+        if (
+            session.native_session_compatibility_id is not None
+            and compatibility_id != session.native_session_compatibility_id
+        ):
+            raise ApiError(
+                409,
+                "runtime_implementation_incompatible_session",
+                "当前 Runtime 版本与该 Session 的原生格式不兼容，请选择兼容版本或新建 Session。",
+            )
 
     def has_active_writer(self, native_session_id: str | None) -> bool:
         try:
@@ -935,6 +1154,7 @@ class AiSessionManager:
         *,
         worker_task_id: str | None = None,
         execution_id: str | None = None,
+        implementation_id: str | None = None,
     ) -> None:
         with self._lock:
             self._require_store()
@@ -943,6 +1163,8 @@ class AiSessionManager:
                 raise ApiError(404, "codex_session_not_found", "Codex session not found")
             self._require_quick_access(session)
             self.validate_native_session_id(native_session_id)
+            if implementation_id is not None:
+                self.ensure_session_implementation_compatible(session_id, implementation_id)
             if worker_task_id is not None or execution_id is not None:
                 if (
                     worker_task_id is None
@@ -1049,6 +1271,12 @@ class AiSessionManager:
                     ) from exc
             current = self.store.get(session_id)
             if current is not None:
+                if implementation_id is not None and current.native_session_compatibility_id is None:
+                    current.native_session_compatibility_id = self.runtime_adapters[
+                        implementation_id
+                    ].descriptor.native_session_compatibility_id
+                    current.updated_at = utc_now()
+                    self.store.save(current)
                 self._clear_native_identity_conflict(current)
 
     def _clear_native_identity_conflict(self, session: AiSession) -> None:
@@ -1409,7 +1637,12 @@ class AiSessionManager:
     def _require_runtime_submission(self, runtime_id: str) -> None:
         self._require_available()
         try:
-            self.runtime_registry.require(runtime_id)
+            selected_id = (
+                self.default_implementation_id
+                if runtime_id == self.runtime_id and self.default_implementation_id is not None
+                else runtime_id
+            )
+            self.runtime_registry.require(selected_id)
         except RuntimeOperationError as exc:
             raise self._runtime_api_error(exc) from exc
         try:

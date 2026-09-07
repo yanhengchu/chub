@@ -13,8 +13,11 @@ const quickInteractionPageSize = document.querySelector(
 );
 const codexDefaultFullAccess = document.querySelector("#codex-default-full-access");
 const runtimeManagementList = document.querySelector("#runtime-management-list");
-const runtimeManagementMessage = document.querySelector(
-  "#runtime-management-message",
+const runtimeManagementDescription = document.querySelector(
+  "#runtime-management-description",
+);
+const runtimeManagementStatus = document.querySelector(
+  "#runtime-management-status",
 );
 const generalRuntimeSettingsPanel = document.querySelector(
   "#ai-runtime-general-settings",
@@ -23,6 +26,13 @@ const runtimeModuleInstallForm = document.querySelector("#runtime-module-install
 const runtimeModuleFile = document.querySelector("#runtime-module-file");
 const runtimeModuleFileTrigger = document.querySelector("#runtime-module-file-trigger");
 const runtimeModuleList = document.querySelector("#runtime-module-list");
+const codexDefaultRuntimeImplementation = document.querySelector(
+  "#codex-default-runtime-implementation",
+);
+const codexRuntimeVersionList = document.querySelector("#codex-runtime-version-list");
+const codexRuntimeSettingsMessage = document.querySelector(
+  "#codex-runtime-settings-message",
+);
 const quickInteractionCore = window.QuickInteractionCore;
 const codexSessionSettingsMessage = document.querySelector(
   "#codex-session-settings-message",
@@ -276,10 +286,14 @@ async function loadCodexSessionDefaults() {
   }
 }
 
-function setRuntimeManagementMessage(text, kind = "") {
-  if (!(runtimeManagementMessage instanceof HTMLElement)) return;
-  runtimeManagementMessage.textContent = text;
-  runtimeManagementMessage.className = kind === "error" ? "message message-error" : "message";
+function setRuntimeManagementStatus(text, kind = "") {
+  if (runtimeManagementDescription instanceof HTMLElement) {
+    runtimeManagementDescription.hidden = Boolean(text);
+  }
+  if (!(runtimeManagementStatus instanceof HTMLElement)) return;
+  runtimeManagementStatus.hidden = !text;
+  runtimeManagementStatus.textContent = text;
+  runtimeManagementStatus.className = `runtime-management-status${kind ? ` is-${kind}` : ""}`;
 }
 
 function renderRuntimeManagement(data) {
@@ -306,6 +320,9 @@ function renderRuntimeManagement(data) {
     description.textContent = runtime.enabled
       ? (runtime.healthy ? "正在接收新 AI 任务。" : (runtime.reason || "允许接收新任务，但当前 Runtime 不可用。"))
       : "已停止接收新 AI 任务；已受理任务继续收敛。";
+    if (!runtime.enabled) {
+      description.className = "runtime-management-item-status is-warning";
+    }
     copy.append(title, identifier, description);
     const control = document.createElement("span");
     control.className = "settings-switch";
@@ -323,11 +340,7 @@ function renderRuntimeManagement(data) {
     field.append(copy, control);
     runtimeManagementList.append(field);
   }
-  if (data?.basic_mode === true) {
-    setRuntimeManagementMessage("所有 AI Runtime 已停止接收新任务，Chub 当前处于基础功能模式。");
-  } else {
-    setRuntimeManagementMessage("");
-  }
+  setRuntimeManagementStatus("");
 }
 
 async function loadRuntimeManagement() {
@@ -338,7 +351,7 @@ async function loadRuntimeManagement() {
     renderRuntimeManagement(payload.data);
   } catch (_error) {
     runtimeManagementList?.replaceChildren();
-    setRuntimeManagementMessage("暂时无法读取 AI Runtime 状态。", "error");
+    setRuntimeManagementStatus("暂时无法读取 AI Runtime 状态。", "error");
   }
 }
 
@@ -348,11 +361,11 @@ function runtimeModuleRow(module, { candidate = false } = {}) {
   const copy = document.createElement("span");
   const title = document.createElement("strong");
   const detail = document.createElement("small");
-  title.textContent = module.name || module.module_id;
+  title.textContent = `${module.name || "Runtime"} · ${module.module_id} · ${module.version}`;
   detail.textContent = candidate
-    ? `${module.description} · ${module.module_id} · ${module.version}`
+    ? (module.description || "等待导入。")
     : (module.status === "active"
-      ? `${module.description || module.module_id} · ${module.version}`
+      ? (module.description || "模块已导入。")
       : (module.reason || "模块不可用。"));
   copy.append(title, detail);
   const actions = document.createElement("span");
@@ -361,13 +374,10 @@ function runtimeModuleRow(module, { candidate = false } = {}) {
     const install = document.createElement("button");
     install.className = "button-secondary";
     install.type = "button";
-    install.textContent = "导入";
+    install.textContent = runtimeModuleBusy ? "导入中" : "导入";
     install.disabled = runtimeModuleBusy;
     install.addEventListener("click", () => void installSelectedRuntimeModule());
-    const badge = document.createElement("span");
-    badge.className = "badge badge-muted";
-    badge.textContent = runtimeModuleBusy ? "处理中" : "准备导入";
-    actions.append(badge, install);
+    actions.append(install);
   } else {
     const badge = document.createElement("span");
     badge.className = `badge ${module.status === "active" ? "badge-success" : "badge-muted"}`;
@@ -395,23 +405,154 @@ function showRuntimeModuleToast(text, kind = "info") {
   window.showChubToast?.(text, { kind });
 }
 
+function setCodexRuntimeSettingsMessage(text, kind = "") {
+  if (!(codexRuntimeSettingsMessage instanceof HTMLElement)) return;
+  codexRuntimeSettingsMessage.textContent = text;
+  codexRuntimeSettingsMessage.className = kind === "error" ? "message message-error" : "message";
+}
+
+function versionTitle(item) {
+  return `${item.name} · ${item.version}`;
+}
+
+function renderCodexRuntimeVersions(implementations) {
+  if (!(codexRuntimeVersionList instanceof HTMLElement)) return;
+  const versions = Array.isArray(implementations?.implementations)
+    ? implementations.implementations
+    : [];
+  if (codexDefaultRuntimeImplementation instanceof HTMLSelectElement) {
+    codexDefaultRuntimeImplementation.replaceChildren();
+    versions
+      .filter((item) => item.enabled === true && item.healthy === true)
+      .forEach((item) => {
+        const option = document.createElement("option");
+        option.value = item.implementation_id;
+        option.textContent = versionTitle(item);
+        option.dataset.description = item.implementation_id;
+        option.selected = item.is_default === true;
+        codexDefaultRuntimeImplementation.append(option);
+      });
+    codexDefaultRuntimeImplementation.disabled = runtimeModuleBusy
+      || codexDefaultRuntimeImplementation.options.length === 0;
+  }
+  const rows = versions.map((item) => {
+    const row = document.createElement("div");
+    row.className = "settings-utility-row runtime-module-row";
+    const copy = document.createElement("span");
+    const titleLine = document.createElement("span");
+    titleLine.className = "settings-integration-title";
+    const title = document.createElement("strong");
+    const detail = document.createElement("small");
+    title.textContent = versionTitle(item);
+    detail.textContent = item.healthy ? item.implementation_id : (item.reason || "版本不可用。");
+    titleLine.append(title);
+    if (item.is_default) {
+      const badge = document.createElement("span");
+      badge.className = "badge badge-success";
+      badge.textContent = "默认";
+      titleLine.append(badge);
+    }
+    copy.append(titleLine, detail);
+    const actions = document.createElement("span");
+    actions.className = "runtime-module-row-actions";
+    const enabledLabel = document.createElement("label");
+    enabledLabel.className = "settings-switch";
+    enabledLabel.title = item.is_default ? "默认版本必须保持启用" : `启用 ${title.textContent}`;
+    const enabled = document.createElement("input");
+    enabled.type = "checkbox";
+    enabled.checked = item.enabled === true;
+    enabled.disabled = runtimeModuleBusy || item.healthy !== true || item.is_default === true;
+    enabled.setAttribute("aria-label", `启用 ${title.textContent}`);
+    const track = document.createElement("span");
+    track.className = "settings-switch-track";
+    track.setAttribute("aria-hidden", "true");
+    enabled.addEventListener("change", async () => {
+      if (runtimeModuleBusy) return;
+      runtimeModuleBusy = true;
+      renderRuntimeModules();
+      setCodexRuntimeSettingsMessage("");
+      try {
+        await fetchSettingsApi(`/api/codex/runtime-implementations/${encodeURIComponent(item.implementation_id)}/enabled`, {
+          method: "PUT",
+          body: JSON.stringify({ enabled: enabled.checked }),
+          headers: { "Content-Type": "application/json" },
+        });
+        await loadRuntimeModules();
+      } catch (error) {
+        setCodexRuntimeSettingsMessage(error instanceof Error ? error.message : "Runtime 版本状态未能更新。", "error");
+      } finally {
+        runtimeModuleBusy = false;
+        await loadRuntimeModules();
+      }
+    });
+    enabledLabel.append(enabled, track);
+    actions.append(enabledLabel);
+    if (item.removable) {
+      const remove = document.createElement("button");
+      remove.className = "button-danger";
+      remove.type = "button";
+      remove.textContent = "移除";
+      remove.disabled = runtimeModuleBusy || item.is_default;
+      remove.addEventListener("click", () => void confirmRuntimeModuleRemoval({
+        module_id: item.implementation_id,
+        name: title.textContent,
+      }));
+      actions.append(remove);
+    }
+    row.append(copy, actions);
+    return row;
+  });
+  codexRuntimeVersionList.replaceChildren(...rows);
+}
+
+async function saveCodexDefaultRuntimeImplementation() {
+  if (!(codexDefaultRuntimeImplementation instanceof HTMLSelectElement) || runtimeModuleBusy) return;
+  runtimeModuleBusy = true;
+  renderRuntimeModules();
+  setCodexRuntimeSettingsMessage("");
+  try {
+    await fetchSettingsApi("/api/codex/runtime-implementations/default", {
+      method: "PUT",
+      body: JSON.stringify({ implementation_id: codexDefaultRuntimeImplementation.value }),
+      headers: { "Content-Type": "application/json" },
+    });
+    await loadRuntimeModules();
+  } catch (error) {
+    setCodexRuntimeSettingsMessage(
+      error instanceof Error ? error.message : "默认 Runtime 版本未能更新。",
+      "error",
+    );
+  } finally {
+    runtimeModuleBusy = false;
+    await loadRuntimeModules();
+  }
+}
+
 function renderRuntimeModules(data = runtimeModuleData) {
-  if (!(runtimeModuleList instanceof HTMLElement)) return;
   runtimeModuleData = data || { modules: [] };
   const modules = Array.isArray(runtimeModuleData.modules) ? runtimeModuleData.modules : [];
   const rows = [];
+  const implementations = runtimeModuleData.implementations;
+  renderCodexRuntimeVersions(implementations);
   if (runtimeModuleCandidate) rows.push(runtimeModuleRow(runtimeModuleCandidate, { candidate: true }));
   rows.push(...modules.map((module) => runtimeModuleRow(module)));
-  runtimeModuleList.replaceChildren(...rows);
+  runtimeModuleList?.replaceChildren(...rows);
 }
 
 async function loadRuntimeModules() {
-  if (!(runtimeModuleList instanceof HTMLElement)) return;
   try {
-    renderRuntimeModules(await fetchSettingsApi("/api/runtime-modules"));
+    const [modules, implementations] = await Promise.all([
+      fetchSettingsApi("/api/runtime-modules"),
+      fetchSettingsApi("/api/codex/runtime-implementations"),
+    ]);
+    renderRuntimeModules({ ...modules, implementations });
   } catch (_error) {
-    runtimeModuleList.replaceChildren();
-    showRuntimeModuleToast("暂时无法读取 Runtime 模块状态。", "error");
+    runtimeModuleList?.replaceChildren();
+    codexRuntimeVersionList?.replaceChildren();
+    setCodexRuntimeSettingsMessage("暂时无法读取 Codex Runtime 版本状态。", "error");
+    if (runtimeModuleList instanceof HTMLElement) {
+      showRuntimeModuleToast("暂时无法读取 Runtime 模块状态。", "error");
+    }
   }
 }
 
@@ -937,6 +1078,14 @@ if (settingsPage === "appearance") {
   initializeDiagnosticsSettings();
 } else if (settingsPage === "runtime-detail") {
   loadRuntimeManagement();
+  if (codexDefaultRuntimeImplementation instanceof HTMLSelectElement) {
+    initializeSettingsChoicePickers();
+    codexDefaultRuntimeImplementation.addEventListener(
+      "change",
+      () => void saveCodexDefaultRuntimeImplementation(),
+    );
+    void loadRuntimeModules();
+  }
 } else if (settingsPage === "runtime") {
   void loadGeneralRuntimeSettings();
   initializeRuntimeModuleInstall();

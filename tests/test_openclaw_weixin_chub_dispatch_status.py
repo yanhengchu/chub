@@ -31,6 +31,7 @@ from app.codex.models import (
 )
 from app.core.config import Settings
 from app.core.response import ApiError
+from app.quick_worker import PROTOCOL_VERSION
 from app.services.openclaw_weixin_chub_mode import WeixinChubModeManager
 from app.services.openclaw_weixin_chub_models import (
     MAX_STATE_BYTES,
@@ -761,7 +762,7 @@ def test_dispatch_runs_read_only_chub_check(
     manager.worker_health_reader = lambda: {
         "success": True,
         "data": {
-            "protocol_version": 9,
+                "protocol_version": PROTOCOL_VERSION,
             "status": "ready",
             "active_tasks": 0,
             "queued_tasks": 0,
@@ -797,7 +798,7 @@ def test_dispatch_runs_read_only_chub_check(
     assert result.message.endswith(
         "【服务】\n"
         "- Web API：正常\n"
-        "- Quick Worker：`ready` · 协议版本 9\n"
+            f"- Quick Worker：`ready` · 协议版本 {PROTOCOL_VERSION}\n"
         "- AI Runtime：Codex Runtime 可用\n\n"
         "【维护】\n"
         "- 升级与恢复：无待升级\n\n"
@@ -811,7 +812,7 @@ def test_dispatch_runs_read_only_chub_check(
         + "\n\n"
         "【服务】\n"
         "- Web API：正常\n"
-        "- Quick Worker：`ready` · 协议版本 9\n"
+        f"- Quick Worker：`ready` · 协议版本 {PROTOCOL_VERSION}\n"
         "- AI Runtime：Codex Runtime 可用\n\n"
         "【维护】\n"
         "- 升级与恢复：无待升级\n\n"
@@ -836,7 +837,7 @@ def test_check_keeps_core_services_healthy_when_runtime_is_disabled(
     manager.worker_health_reader = lambda: {
         "success": True,
         "data": {
-            "protocol_version": 9,
+            "protocol_version": PROTOCOL_VERSION,
             "status": "ready",
             "active_tasks": 0,
             "queued_tasks": 0,

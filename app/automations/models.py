@@ -412,13 +412,14 @@ class FeishuEnvironmentState(StrictAutomationModel):
     ] = "unchecked"
     message: str = "未检查"
     checked_at: datetime | None = None
-    qr_available: bool = False
+    login_page_available: bool = False
 
 
 class RuntimeAccountEnvironmentState(StrictAutomationModel):
     state: Literal["unchecked", "checking", "available", "failed"] = "unchecked"
     message: str = "未检查"
     checked_at: datetime | None = None
+    login_page_available: bool = False
 
 
 class BrowserProfilePublic(StrictAutomationModel):
@@ -461,6 +462,12 @@ class BrowserControlResult(StrictAutomationModel):
     mode: str | None = None
     profile_id: str | None = None
     profile_name: str | None = None
+    message: str
+
+
+class AccountLoginPageResult(StrictAutomationModel):
+    state: Literal["opened"] = "opened"
+    browser_mode: Literal["headed"] = "headed"
     message: str
 
 

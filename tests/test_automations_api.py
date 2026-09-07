@@ -11,6 +11,7 @@ from app.ai_usage.models import AiUsageData
 from app.automations.models import (
     AutomationListData,
     AutomationRunAccepted,
+    AccountLoginPageResult,
     BrowserControlResult,
     BrowserInitializationAccepted,
     FeishuEnvironmentState,
@@ -33,7 +34,13 @@ async def test_automations_require_trusted_network(settings: Settings) -> None:
         run = await client.post("/api/automations/task/run")
         check_feishu = await client.post("/api/automations/environment/feishu/check")
         check_codex = await client.post("/api/automations/environment/codex/check")
-        qr = await client.get("/api/automations/environment/feishu/qr")
+        open_feishu_login = await client.post(
+            "/api/automations/environment/feishu/login-page"
+        )
+        open_codex_login = await client.post(
+            "/api/automations/environment/codex/login-page"
+        )
+        retired_qr = await client.get("/api/automations/environment/feishu/qr")
         initialize_browser = await client.post(
             "/api/automations/browser/initialize",
             json={"profile_id": "Profile 2", "mode": "headed"},
@@ -43,7 +50,9 @@ async def test_automations_require_trusted_network(settings: Settings) -> None:
     assert run.status_code == 403
     assert check_feishu.status_code == 403
     assert check_codex.status_code == 403
-    assert qr.status_code == 403
+    assert open_feishu_login.status_code == 403
+    assert open_codex_login.status_code == 403
+    assert retired_qr.status_code == 404
     assert initialize_browser.status_code == 403
 
 
@@ -83,10 +92,12 @@ async def test_automation_list_and_background_acceptance(
         state="available",
         message="ChatGPT 登录有效",
     )
-    qr_path = settings.automations.runtime_dir / "feishu-login-qr.png"
-    qr_path.parent.mkdir(parents=True)
-    qr_path.write_bytes(b"\x89PNG\r\n\x1a\ncontent")
-    manager.feishu_qr_content.return_value = qr_path.read_bytes()
+    manager.open_feishu_login_page.return_value = AccountLoginPageResult(
+        message="飞书登录页面已打开"
+    )
+    manager.open_codex_runtime_login_page.return_value = AccountLoginPageResult(
+        message="Codex Runtime 登录页面已打开"
+    )
     app.state.automation_manager = manager
     transport = httpx.ASGITransport(app=app)
 
@@ -104,7 +115,12 @@ async def test_automation_list_and_background_acceptance(
         restart_browser = await client.post("/api/automations/browser/restart")
         check_feishu = await client.post("/api/automations/environment/feishu/check")
         check_codex = await client.post("/api/automations/environment/codex/check")
-        qr = await client.get("/api/automations/environment/feishu/qr")
+        open_feishu_login = await client.post(
+            "/api/automations/environment/feishu/login-page"
+        )
+        open_codex_login = await client.post(
+            "/api/automations/environment/codex/login-page"
+        )
         initialize_browser = await client.post(
             "/api/automations/browser/initialize",
             json={"profile_id": "Profile 2", "mode": "headed"},
@@ -122,10 +138,11 @@ async def test_automation_list_and_background_acceptance(
     assert check_feishu.json()["data"]["state"] == "available"
     assert check_codex.status_code == 200
     assert check_codex.json()["data"]["state"] == "available"
-    assert qr.status_code == 200
+    assert open_feishu_login.status_code == 200
+    assert open_feishu_login.json()["data"]["state"] == "opened"
+    assert open_codex_login.status_code == 200
+    assert open_codex_login.json()["data"]["state"] == "opened"
     assert initialize_browser.status_code == 202
-    assert qr.headers["content-type"] == "image/png"
-    assert "no-store" in qr.headers["cache-control"]
     manager.list.assert_called_once_with(home_only=False)
     manager.start.assert_called_once()
     assert manager.start.call_args.args == ("monthly-report",)
@@ -137,7 +154,8 @@ async def test_automation_list_and_background_acceptance(
     ]
     manager.check_feishu_environment.assert_called_once_with()
     manager.check_codex_runtime_account.assert_called_once_with()
-    manager.feishu_qr_content.assert_called_once_with()
+    manager.open_feishu_login_page.assert_called_once_with()
+    manager.open_codex_runtime_login_page.assert_called_once_with()
     manager.initialize_browser.assert_called_once()
 
 
@@ -155,6 +173,7 @@ async def test_codex_runtime_account_check_requires_available_ai_usage(
             message="AI API 额度账户未登录。",
         )
     )
+    app.state.ai_usage.login_page_available = MagicMock(return_value=True)
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(
@@ -168,7 +187,9 @@ async def test_codex_runtime_account_check_requires_available_ai_usage(
     assert response.json()["data"]["state"] == "failed"
     assert response.json()["data"]["message"] == "API Key 已配置，但 AI 额度账户未登录"
     assert response.json()["data"]["checked_at"]
+    assert response.json()["data"]["login_page_available"] is True
     app.state.ai_usage.read.assert_called_once_with(force=True)
+    app.state.ai_usage.login_page_available.assert_called_once_with()
 
 
 @pytest.mark.anyio

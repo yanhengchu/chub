@@ -164,18 +164,25 @@ class InteractiveSupervisor:
         with self._lock:
             if self._tmux_running(session_id):
                 return True
-            for process in psutil.process_iter(("cmdline",)):
-                try:
-                    environment = process.environ()
-                    command = process.info.get("cmdline") or []
-                except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
-                    continue
-                if environment.get("CHUB_PTY_SESSION_ID") != session_id:
-                    continue
-                if environment.get("CHUB_ACTIVITY_SOURCE") == "quick":
-                    continue
-                if self.runtime_adapter.runtime_process_matches(tuple(command)):
-                    return True
+            try:
+                processes = psutil.process_iter(("cmdline",))
+            except (psutil.Error, OSError):
+                return False
+            try:
+                for process in processes:
+                    try:
+                        environment = process.environ()
+                        command = process.info.get("cmdline") or []
+                    except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+                        continue
+                    if environment.get("CHUB_PTY_SESSION_ID") != session_id:
+                        continue
+                    if environment.get("CHUB_ACTIVITY_SOURCE") == "quick":
+                        continue
+                    if self.runtime_adapter.runtime_process_matches(tuple(command)):
+                        return True
+            except (psutil.Error, OSError):
+                return False
             return False
 
     def rebind_terminal_carrier(

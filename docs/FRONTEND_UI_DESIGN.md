@@ -3,7 +3,7 @@
 > 状态：已验收
 > 主要读者：AI Agent、实现和排障 Agent；维护人员用于确认页面分层、交互边界和验收范围。
 > 本文负责：Chub Web 前端分层、页面状态归属、公共交互、固定资源加载顺序，以及主题、文字大小注册、完整 Token 包和语义 Token 契约，遵循[Chub 总体架构](CHUB_ARCHITECTURE_DESIGN.md)。
-> 本文不负责：后端 API、认证与安全契约、Runtime ZIP 协议和模块状态清理、Quick Worker/OpenClaw 的业务状态、服务恢复流程和历史前端拆分过程；这些内容分别以总体架构、专项设计和能力清单为准。
+> 本文不负责：后端 API、认证与安全契约、Runtime ZIP 协议和模块状态清理、任务编排模块协议、Quick Worker/OpenClaw 的业务状态、服务恢复流程和历史前端拆分过程；这些内容分别以总体架构、专项设计和能力清单为准。
 
 ## 1. AI Agent 执行摘要
 
@@ -28,12 +28,16 @@ Chub Web 使用 FastAPI、Jinja2、原生 JavaScript 和 CSS，同源部署且�
 | 工作站、自动化、项目资料 | 各自 Feature | 独立读取、会话级成功缓存、局部刷新和局部失败反馈 | 本文第 3 节 |
 | 页面级切换与共享资源 | `workspace.js` / 页面 Controller | 组装页面、切换分区、触发受影响 Feature 刷新、释放已替换 Feature | 本文第 3 节 |
 | 外观偏好 | `theme.js` | 保存、恢复和应用有效主题与文字大小；为首屏同步非敏感 Cookie | 本文第 6 节 |
-| Runtime 模块管理 | 设置页 Feature | 预检、导入、替换、移除的受控交互与最终反馈；不解释 ZIP 或 Worker 状态 | [外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md) |
+| Runtime 模块管理 | 设置页 Feature | 预检、导入、替换、移除的受控交互与最终反馈；不解释 ZIP 或 Worker 状态 | [AI Runtime 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md) |
+| 任务编排设置 | 设置页 Feature | 展示当前固定处理配置；未来模块管理只呈现核心确认的最终状态，不解释计划或任务恢复 | [任务编排外置设计](CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md) |
+| Runtime 用量展示 | 快速交互 Page Controller 与微信入口投影 | 只消费后端 `display` 或不可用状态，不重新计算额度、Token 或格式 | [AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)、[集成能力清单](CHUB_INTEGRATION_CAPABILITIES.md) |
 | 设置 OpenClaw 信息 | 设置页 Feature | 读取本机配置、安装元数据和补丁清单；不读取 Gateway 运行状态 | OpenClaw 定制设计 |
 
 前端不得另行定义 Session owner、phase、入口权限或维护操作成功条件。Session 快照中的 `usage`、`status` 和 `activity` 含义以状态模型为准；HTTP 成功、任务受理或子进程创建都不能渲染为业务成功。
 
-首页工作站、AI Session、自动化和项目资料是同级分区。设置按维护对象分为通用设置、AI Runtime、第三方服务和维护；AI Runtime 分组在侧栏中包含“通用配置”、Runtime 模块管理和每个已接入 Runtime 的独立入口。模块管理只呈现后端预检、确认和最终结果，不在前端推断 ZIP 兼容性、Worker 排空或状态清理完成条件；这些规则以外置模块设计为准。跨 Runtime 的用量时区及固定产品流程的新建 Session 预设（如周报自动化的 Runtime、权限、模型和推理等级）在通用配置维护；控件选择或文本变更即提交，不提供额外保存按钮，失败时在所属配置区保留错误。周报会话的权限、模型和推理等级复用快速交互输入框的同一选项、说明和模型联动规则；预设只影响之后由对应流程创建的 Session，Runtime 专属配置不混入通用页。Runtime 详情页只展示健康状态、任务接入策略和适合日常维护的专属配置；工作目录、运行目录和其他部署字段保留在 `settings.local.yaml` 的 `ai_runtime.<runtime_id>`，不得伪装成设置页可编辑项。设置入口是独立 URL，侧栏切换替换当前历史条目，浏览器返回应离开设置回到进入前的应用页。次级详情页沿用当前标签和浏览器返回，不额外创建专用返回栏。
+Runtime 用量的字段、单位、长短文本和缺失项语义由对应 Runtime 专属设计定义；前端只决定当前页面是否请求、展示后端给出的 `display` 还是显示不可用反馈。微信和通知的展示入口以能力清单为准，前端不得根据当前 Codex 格式推断或拼接其他 Runtime 的用量文本。
+
+首页工作站、AI Session、自动化和项目资料是同级分区。设置按维护对象分为通用设置、AI Runtime、第三方服务和维护；AI Runtime 分组在侧栏中包含“通用配置”、Runtime 模块管理和每个已接入 Runtime 的独立入口。模块管理只呈现后端预检、确认和最终结果，不在前端推断 ZIP 兼容性、Worker 排空或状态清理完成条件；这些规则以外置模块设计为准。固定产品流程的新建 Session 预设（如周报自动化的 Runtime、权限、模型和推理等级）在通用配置维护；用量日期和重置时间固定按 `Asia/Shanghai` 显示，不提供时区控件。控件选择或文本变更即提交，不提供额外保存按钮，失败时在所属配置区保留错误。周报会话的权限、模型和推理等级复用快速交互输入框的同一选项、说明和模型联动规则；预设只影响之后由对应流程创建的 Session，Runtime 专属配置不混入通用页。Runtime 详情页只展示健康状态、任务接入策略和适合日常维护的专属配置；工作目录、运行目录和其他部署字段保留在 `settings.local.yaml` 的 `ai_runtime.<runtime_id>`，不得伪装成设置页可编辑项。设置入口是独立 URL，侧栏切换替换当前历史条目，浏览器返回应离开设置回到进入前的应用页。次级详情页沿用当前标签和浏览器返回，不额外创建专用返回栏。
 
 设置 OpenClaw 页面只呈现微信 ClawBot 适配器、Chub 插件的本机配置/安装元数据匹配，以及已验收补丁基线的清单登记。该读取应直接读取固定配置或清单，不因页面性能引入长时命令探测或 Gateway 检查；读取失败只表示元数据无法确认，不得推断 Gateway、插件加载或补丁运行结果。
 

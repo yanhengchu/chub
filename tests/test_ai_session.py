@@ -636,13 +636,10 @@ def test_ai_session_manager_keeps_legacy_translation_session_when_usage_unknown(
     assert manager.store.get(legacy.id) is not None
 
 
-def test_ai_session_manager_skips_legacy_cleanup_when_runtime_is_unavailable(
+def test_ai_session_manager_keeps_legacy_cleanup_safe_with_builtin_runtime(
     settings: Settings,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    service = ExternalRuntimeModuleService(settings)
-    removal = service.remove("codex", operation_id="a" * 32)
-    service.finalize_removal(removal)
     manager = AiSessionManager(settings)
     quick_interactions = MagicMock()
     quick_interactions.recovery_ready = True

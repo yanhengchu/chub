@@ -118,23 +118,23 @@ class WorkerRuntimeRegistry:
                 "Runtime Runner descriptor is invalid",
                 kind="conflict",
             )
-        runtime_id = descriptor.runtime_id
-        if runtime_id in self._runners:
+        implementation_id = descriptor.effective_implementation_id
+        if implementation_id in self._runners:
             raise RuntimeOperationError(
                 "runtime_runner_duplicate",
-                f"Runtime Runner is already registered: {runtime_id}",
+                f"Runtime Runner is already registered: {implementation_id}",
                 kind="conflict",
             )
         missing = BACKGROUND_RUNTIME_CAPABILITIES - descriptor.capabilities
         if missing:
             raise RuntimeOperationError(
                 "runtime_runner_capability_invalid",
-                f"Runtime Runner {runtime_id} is missing capabilities: "
+                f"Runtime Runner {implementation_id} is missing capabilities: "
                 f"{', '.join(sorted(missing))}",
                 kind="conflict",
             )
-        self._runners[runtime_id] = runner
-        self._descriptors[runtime_id] = descriptor
+        self._runners[implementation_id] = runner
+        self._descriptors[implementation_id] = descriptor
 
     def _require_identity(
         self,
@@ -153,6 +153,15 @@ class WorkerRuntimeRegistry:
     def require(self, runtime_id: str) -> RuntimeWorkerRunner:
         runner = self._runners.get(runtime_id)
         if runner is None:
+            matches = [
+                implementation_id
+                for implementation_id, descriptor in self._descriptors.items()
+                if descriptor.runtime_id == runtime_id
+            ]
+            if len(matches) == 1:
+                runtime_id = matches[0]
+                runner = self._runners[runtime_id]
+        if runner is None:
             raise RuntimeOperationError(
                 "runtime_unavailable",
                 f"Runtime is not registered for background execution: {runtime_id}",
@@ -166,17 +175,46 @@ class WorkerRuntimeRegistry:
         return runner
 
     def runtime_ids(self) -> tuple[str, ...]:
-        for runtime_id, runner in self._runners.items():
-            self._require_identity(runtime_id, runner)
-        return tuple(self._runners)
+        values: list[str] = []
+        for implementation_id, runner in self._runners.items():
+            descriptor = self._require_identity(implementation_id, runner)
+            if descriptor.runtime_id not in values:
+                values.append(descriptor.runtime_id)
+        return tuple(values)
+
+    def implementation_ids(self, runtime_id: str | None = None) -> tuple[str, ...]:
+        values: list[str] = []
+        for implementation_id, runner in self._runners.items():
+            descriptor = self._require_identity(implementation_id, runner)
+            if runtime_id is None or descriptor.runtime_id == runtime_id:
+                values.append(implementation_id)
+        return tuple(values)
 
     def available_runtime_ids(self) -> tuple[str, ...]:
         available: list[str] = []
-        for runtime_id, runner in self._runners.items():
-            self._require_identity(runtime_id, runner)
-            if runner.available:
-                available.append(runtime_id)
+        for implementation_id, runner in self._runners.items():
+            descriptor = self._require_identity(implementation_id, runner)
+            if runner.available and descriptor.runtime_id not in available:
+                available.append(descriptor.runtime_id)
         return tuple(available)
+
+    def available_implementation_ids(self) -> tuple[str, ...]:
+        available: list[str] = []
+        for implementation_id, runner in self._runners.items():
+            self._require_identity(implementation_id, runner)
+            if runner.available:
+                available.append(implementation_id)
+        return tuple(available)
+
+    def registered_runner(self, implementation_id: str) -> RuntimeWorkerRunner:
+        runner = self._runners.get(implementation_id)
+        if runner is None:
+            raise RuntimeOperationError(
+                "runtime_unavailable",
+                f"Runtime is not registered for background execution: {implementation_id}",
+            )
+        self._require_identity(implementation_id, runner)
+        return runner
 
     def workspace_ids(self) -> dict[str, tuple[str, ...]]:
         workspaces: dict[str, tuple[str, ...]] = {}

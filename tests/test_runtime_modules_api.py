@@ -10,46 +10,49 @@ from app.application import create_app
 AUTHORIZATION = {"Authorization": "Bearer test-token-that-is-long-enough-for-tests"}
 
 
-@pytest.mark.anyio
-async def test_runtime_module_install_records_terminal_failure_for_unexpected_error(
-    settings,
-) -> None:
-    app = create_app(settings)
-    manager = app.state.ai_session_manager
-    manager.install_runtime_module = MagicMock(side_effect=RuntimeError("broken module"))
-    transport = httpx.ASGITransport(app=app)
-    health = {
+def _worker_health(*, implementations: list[str] | None = None) -> dict[str, object]:
+    registered = implementations or ["builtin-dev", "codex-010000"]
+    return {
         "success": True,
         "data": {
             "status": "ready",
             "generation": "a" * 32,
-            "active_tasks": 0,
-            "queued_tasks": 0,
-            "uncertain_tasks": 0,
-            "corrupt_tasks": 0,
-            "runtime_ids": ["codex"],
-            "available_runtime_ids": ["codex"],
+            "implementation_ids": registered,
+            "available_implementation_ids": registered,
         },
     }
-    drain = {"success": True, "data": {"status": "draining"}}
-    resume = {"success": True, "data": {"status": "ready"}}
+
+
+@pytest.mark.anyio
+async def test_invalid_runtime_module_id_is_rejected_before_worker_lookup(settings) -> None:
+    app = create_app(settings)
+    transport = httpx.ASGITransport(app=app)
+
+    with patch("app.api.runtime_modules.list_tasks", new=AsyncMock()) as list_tasks:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test", headers=AUTHORIZATION) as client:
+            response = await client.delete("/api/runtime-modules/invalid_module")
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "runtime_module_id_invalid"
+    list_tasks.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_install_records_terminal_failure_when_web_activation_raises(settings) -> None:
+    app = create_app(settings)
+    manager = app.state.ai_session_manager
+    manager.install_runtime_module = MagicMock(side_effect=RuntimeError("broken module"))
+    manager.runtime_module_service.inspect_archive = MagicMock(
+        return_value=SimpleNamespace(implementation_id="codex-010001")
+    )
+    transport = httpx.ASGITransport(app=app)
 
     with (
-        patch.object(
-            manager.runtime_module_service,
-            "inspect_archive",
-            return_value=SimpleNamespace(module_id="local-test"),
-        ),
-        patch("app.api.runtime_modules.read_health", new=AsyncMock(return_value=health)),
-        patch("app.api.runtime_modules.request_drain", new=AsyncMock(return_value=drain)),
-        patch("app.api.runtime_modules.resume_after_drain", new=AsyncMock(return_value=resume)) as resume_after,
-        patch("app.api.runtime_modules.log_operation", side_effect=["operation-1", None, None]) as operation_log,
+        patch("app.api.runtime_modules.list_tasks", new=AsyncMock(return_value={"success": True, "data": {"tasks": []}})),
+        patch("app.api.runtime_modules.read_health", new=AsyncMock(return_value=_worker_health())),
+        patch("app.api.runtime_modules.log_operation", side_effect=["a" * 32, None, None]) as operation_log,
     ):
-        async with httpx.AsyncClient(
-            transport=transport,
-            base_url="http://test",
-            headers=AUTHORIZATION,
-        ) as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test", headers=AUTHORIZATION) as client:
             response = await client.post(
                 "/api/runtime-modules/install",
                 content=b"zip-content",
@@ -58,79 +61,30 @@ async def test_runtime_module_install_records_terminal_failure_for_unexpected_er
 
     assert response.status_code == 500
     assert response.json()["error"]["code"] == "runtime_module_install_failed"
-    resume_after.assert_awaited_once()
     assert operation_log.call_args_list[-1].kwargs["status"] == "failed"
     assert operation_log.call_args_list[-1].kwargs["reason"] == "runtime_module_install_failed"
 
 
 @pytest.mark.anyio
-async def test_invalid_runtime_module_does_not_drain_worker(settings) -> None:
-    app = create_app(settings)
-    transport = httpx.ASGITransport(app=app)
-
-    with patch("app.api.runtime_modules.request_drain", new=AsyncMock()) as drain:
-        async with httpx.AsyncClient(
-            transport=transport,
-            base_url="http://test",
-            headers=AUTHORIZATION,
-        ) as client:
-            response = await client.post(
-                "/api/runtime-modules/install",
-                content=b"not-a-zip",
-                headers={"X-Chub-Module-Filename": "invalid.zip"},
-            )
-
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "runtime_module_install_invalid"
-    drain.assert_not_awaited()
-
-
-@pytest.mark.anyio
-async def test_runtime_module_install_does_not_clear_state_before_worker_reload(
-    settings,
-) -> None:
+async def test_install_rejects_a_busy_target_implementation(settings) -> None:
     app = create_app(settings)
     manager = app.state.ai_session_manager
-    activation = SimpleNamespace(
-        installed=SimpleNamespace(
-            manifest=SimpleNamespace(module_id="local-test"),
-        ),
-        operation_id="operation-1",
-    )
-    manager.install_runtime_module = MagicMock(return_value=activation)
     manager.runtime_module_service.inspect_archive = MagicMock(
-        return_value=SimpleNamespace(module_id="local-test"),
+        return_value=SimpleNamespace(implementation_id="codex-010001")
     )
-    manager.runtime_module_service.mark_worker_reload_requested = MagicMock()
-    manager.runtime_module_service.rollback = MagicMock()
-    manager.refresh_external_runtime_modules = MagicMock()
-    app.state.quick_worker_maintenance.begin = MagicMock(return_value=False)
+    manager.install_runtime_module = MagicMock()
     transport = httpx.ASGITransport(app=app)
-    health = {
-        "success": True,
-        "data": {
-            "status": "ready",
-            "generation": "a" * 32,
-            "active_tasks": 0,
-            "queued_tasks": 0,
-            "uncertain_tasks": 0,
-            "corrupt_tasks": 0,
-            "runtime_ids": ["codex"],
-            "available_runtime_ids": ["codex"],
-        },
-    }
 
-    with (
-        patch("app.api.runtime_modules.read_health", new=AsyncMock(return_value=health)),
-        patch("app.api.runtime_modules.request_drain", new=AsyncMock(return_value={"success": True})),
-        patch("app.api.runtime_modules.resume_after_drain", new=AsyncMock(return_value={"success": True})),
-        patch("app.api.runtime_modules.clear_runtime_state", new=AsyncMock()) as clear_state,
+    with patch(
+        "app.api.runtime_modules.list_tasks",
+        new=AsyncMock(
+            return_value={
+                "success": True,
+                "data": {"tasks": [{"implementation_id": "codex-010001"}]},
+            }
+        ),
     ):
-        async with httpx.AsyncClient(
-            transport=transport,
-            base_url="http://test",
-            headers=AUTHORIZATION,
-        ) as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test", headers=AUTHORIZATION) as client:
             response = await client.post(
                 "/api/runtime-modules/install",
                 content=b"zip-content",
@@ -138,239 +92,34 @@ async def test_runtime_module_install_does_not_clear_state_before_worker_reload(
             )
 
     assert response.status_code == 409
-    assert response.json()["error"]["code"] == "quick_worker_reload_in_progress"
-    clear_state.assert_not_awaited()
+    assert response.json()["error"]["code"] == "runtime_implementation_busy"
+    manager.install_runtime_module.assert_not_called()
 
 
 @pytest.mark.anyio
-async def test_runtime_module_removal_resumes_worker_after_web_rejection(settings) -> None:
-    app = create_app(settings)
-    app.state.ai_session_manager.remove_runtime_module = MagicMock(
-        side_effect=RuntimeError("broken removal")
-    )
-    transport = httpx.ASGITransport(app=app)
-    health = {"success": True, "data": {"status": "ready", "generation": "a" * 32, "active_tasks": 0, "queued_tasks": 0, "uncertain_tasks": 0, "corrupt_tasks": 0, "runtime_ids": ["codex"], "available_runtime_ids": ["codex"]}}
-
-    with (
-        patch("app.api.runtime_modules.read_health", new=AsyncMock(return_value=health)),
-        patch("app.api.runtime_modules.request_drain", new=AsyncMock(return_value={"success": True})),
-        patch("app.api.runtime_modules.resume_after_drain", new=AsyncMock(return_value={"success": True})) as resume_after,
-    ):
-        async with httpx.AsyncClient(transport=transport, base_url="http://test", headers=AUTHORIZATION) as client:
-            response = await client.delete("/api/runtime-modules/local-test")
-
-    assert response.status_code == 500
-    assert response.json()["error"]["code"] == "runtime_module_remove_failed"
-    resume_after.assert_awaited_once()
-
-
-@pytest.mark.anyio
-async def test_runtime_module_install_keeps_confirmed_module_when_state_cleanup_fails(
-    settings,
-) -> None:
+async def test_remove_confirms_target_is_absent_from_worker_registry(settings) -> None:
     app = create_app(settings)
     manager = app.state.ai_session_manager
-    activation = SimpleNamespace(
-        installed=SimpleNamespace(manifest=SimpleNamespace(module_id="local-test")),
-        operation_id="operation-1",
-    )
-    manager.install_runtime_module = MagicMock(return_value=activation)
-    manager.runtime_module_service.inspect_archive = MagicMock(
-        return_value=SimpleNamespace(module_id="local-test"),
-    )
-    manager.runtime_module_service.mark_worker_reload_requested = MagicMock()
-    manager.runtime_module_service.rollback = MagicMock()
-    manager.runtime_module_service.finalize = MagicMock()
-    app.state.quick_worker_maintenance.begin = MagicMock(return_value=True)
-    health = {
-        "success": True,
-        "data": {
-            "status": "ready",
-            "generation": "a" * 32,
-            "active_tasks": 0,
-            "queued_tasks": 0,
-            "uncertain_tasks": 0,
-            "corrupt_tasks": 0,
-            "runtime_ids": ["codex", "local-test"],
-            "available_runtime_ids": ["codex", "local-test"],
-        },
-    }
-    transport = httpx.ASGITransport(app=app)
-
-    with (
-        patch("app.api.runtime_modules.read_health", new=AsyncMock(return_value=health)),
-        patch("app.api.runtime_modules.request_drain", new=AsyncMock(return_value={"success": True})),
-        patch("app.api.runtime_modules._wait_for_reload", new=AsyncMock(return_value=True)),
-        patch("app.api.runtime_modules.clear_runtime_state", new=AsyncMock(return_value={"success": False})),
-        patch("app.api.runtime_modules.log_operation", side_effect=["a" * 32, None, None]),
-    ):
-        async with httpx.AsyncClient(transport=transport, base_url="http://test", headers=AUTHORIZATION) as client:
-            response = await client.post(
-                "/api/runtime-modules/install",
-                content=b"zip-content",
-                headers={"X-Chub-Module-Filename": "module.zip"},
-            )
-
-    assert response.status_code == 503
-    assert response.json()["error"]["code"] == "runtime_module_state_cleanup_unconfirmed"
-    manager.runtime_module_service.rollback.assert_not_called()
-    manager.runtime_module_service.finalize.assert_called_once_with(activation)
-
-
-@pytest.mark.anyio
-async def test_runtime_module_removal_keeps_confirmed_removal_when_state_cleanup_fails(
-    settings,
-) -> None:
-    app = create_app(settings)
-    manager = app.state.ai_session_manager
-    removal = SimpleNamespace(module_id="local-test", operation_id="operation-1")
+    removal = SimpleNamespace(module_id="codex-010001", operation_id="b" * 32)
     manager.remove_runtime_module = MagicMock(return_value=removal)
-    manager.runtime_session_ids = MagicMock(return_value=())
-    manager.runtime_module_service.rollback_removal = MagicMock()
     manager.runtime_module_service.finalize_removal = MagicMock()
-    app.state.quick_worker_maintenance.begin = MagicMock(return_value=True)
-    health = {
-        "success": True,
-        "data": {
-            "status": "ready",
-            "generation": "a" * 32,
-            "active_tasks": 0,
-            "queued_tasks": 0,
-            "uncertain_tasks": 0,
-            "corrupt_tasks": 0,
-            "runtime_ids": ["codex"],
-            "available_runtime_ids": ["codex"],
-        },
-    }
     transport = httpx.ASGITransport(app=app)
 
     with (
-        patch("app.api.runtime_modules.read_health", new=AsyncMock(return_value=health)),
-        patch("app.api.runtime_modules.request_drain", new=AsyncMock(return_value={"success": True})),
-        patch("app.api.runtime_modules._wait_for_reload", new=AsyncMock(return_value=True)),
-        patch("app.api.runtime_modules.clear_runtime_state", new=AsyncMock(return_value={"success": False})),
-        patch("app.api.runtime_modules.log_operation", side_effect=["a" * 32, None, None]),
+        patch("app.api.runtime_modules.list_tasks", new=AsyncMock(return_value={"success": True, "data": {"tasks": []}})),
+        patch(
+            "app.api.runtime_modules.read_health",
+            new=AsyncMock(return_value=_worker_health(implementations=["builtin-dev"])),
+        ),
+        patch("app.api.runtime_modules.refresh_runtime_registry", new=AsyncMock(return_value={"success": True})),
+        patch("app.api.runtime_modules.log_operation", side_effect=["b" * 32, None, None]),
     ):
         async with httpx.AsyncClient(transport=transport, base_url="http://test", headers=AUTHORIZATION) as client:
-            response = await client.delete("/api/runtime-modules/local-test")
-
-    assert response.status_code == 503
-    assert response.json()["error"]["code"] == "runtime_module_state_cleanup_unconfirmed"
-    manager.runtime_module_service.rollback_removal.assert_not_called()
-    manager.runtime_module_service.finalize_removal.assert_called_once_with(removal)
-
-
-@pytest.mark.anyio
-async def test_runtime_module_removal_clears_chub_owned_session_tasks(settings) -> None:
-    app = create_app(settings)
-    manager = app.state.ai_session_manager
-    removal = SimpleNamespace(module_id="local-test", operation_id="operation-1")
-    manager.remove_runtime_module = MagicMock(return_value=removal)
-    manager.runtime_session_ids = MagicMock(return_value=("session-1", "session-2"))
-    manager.clear_runtime_module_state = MagicMock()
-    manager.runtime_module_service.finalize_removal = MagicMock()
-    app.state.quick_worker_maintenance.begin = MagicMock(return_value=True)
-    app.state.quick_interactions.remove_session_tasks = MagicMock()
-    health = {
-        "success": True,
-        "data": {
-            "status": "ready",
-            "generation": "a" * 32,
-            "active_tasks": 0,
-            "queued_tasks": 0,
-            "uncertain_tasks": 0,
-            "corrupt_tasks": 0,
-            "runtime_ids": ["codex"],
-            "available_runtime_ids": ["codex"],
-        },
-    }
-    transport = httpx.ASGITransport(app=app)
-
-    with (
-        patch("app.api.runtime_modules.read_health", new=AsyncMock(return_value=health)),
-        patch("app.api.runtime_modules.request_drain", new=AsyncMock(return_value={"success": True})),
-        patch("app.api.runtime_modules._wait_for_reload", new=AsyncMock(return_value=True)),
-        patch("app.api.runtime_modules.clear_runtime_state", new=AsyncMock(return_value={"success": True})),
-        patch("app.api.runtime_modules.log_operation", side_effect=["a" * 32, None, None]),
-    ):
-        async with httpx.AsyncClient(transport=transport, base_url="http://test", headers=AUTHORIZATION) as client:
-            response = await client.delete("/api/runtime-modules/local-test")
+            response = await client.delete("/api/runtime-modules/codex-010001")
 
     assert response.status_code == 200
-    assert response.json()["data"] == {"module_id": "local-test", "worker_generation": "a" * 32}
-    assert app.state.quick_interactions.remove_session_tasks.call_args_list == [
-        (("session-1",), {}),
-        (("session-2",), {}),
-    ]
-    manager.clear_runtime_module_state.assert_called_once_with("local-test")
-    manager.runtime_module_service.finalize_removal.assert_called_once_with(removal)
-
-
-@pytest.mark.anyio
-async def test_runtime_module_replacement_clears_chub_owned_session_tasks(settings) -> None:
-    app = create_app(settings)
-    manager = app.state.ai_session_manager
-    activation = SimpleNamespace(
-        installed=SimpleNamespace(manifest=SimpleNamespace(module_id="local-test")),
-        operation_id="operation-1",
-    )
-    manager.install_runtime_module = MagicMock(return_value=activation)
-    manager.runtime_module_service.inspect_archive = MagicMock(
-        return_value=SimpleNamespace(module_id="local-test"),
-    )
-    manager.runtime_module_service.mark_worker_reload_requested = MagicMock()
-    manager.runtime_module_service.finalize = MagicMock()
-    manager.runtime_session_ids = MagicMock(return_value=("session-1", "session-2"))
-    manager.clear_runtime_module_state = MagicMock()
-    app.state.quick_worker_maintenance.begin = MagicMock(return_value=True)
-    app.state.quick_interactions.remove_session_tasks = MagicMock()
-    health = {
-        "success": True,
-        "data": {
-            "status": "ready",
-            "generation": "a" * 32,
-            "active_tasks": 0,
-            "queued_tasks": 0,
-            "uncertain_tasks": 0,
-            "corrupt_tasks": 0,
-            "runtime_ids": ["codex", "local-test"],
-            "available_runtime_ids": ["codex", "local-test"],
-        },
+    assert response.json()["data"] == {
+        "module_id": "codex-010001",
+        "worker_generation": "a" * 32,
     }
-    transport = httpx.ASGITransport(app=app)
-
-    with (
-        patch("app.api.runtime_modules.read_health", new=AsyncMock(return_value=health)),
-        patch("app.api.runtime_modules.request_drain", new=AsyncMock(return_value={"success": True})),
-        patch("app.api.runtime_modules._wait_for_reload", new=AsyncMock(return_value=True)),
-        patch("app.api.runtime_modules.clear_runtime_state", new=AsyncMock(return_value={"success": True})),
-        patch("app.api.runtime_modules.log_operation", side_effect=["a" * 32, None, None]),
-    ):
-        async with httpx.AsyncClient(transport=transport, base_url="http://test", headers=AUTHORIZATION) as client:
-            response = await client.post(
-                "/api/runtime-modules/install",
-                content=b"zip-content",
-                headers={"X-Chub-Module-Filename": "module.zip"},
-            )
-
-    assert response.status_code == 200
-    assert app.state.quick_interactions.remove_session_tasks.call_args_list == [
-        (("session-1",), {}),
-        (("session-2",), {}),
-    ]
-    manager.clear_runtime_module_state.assert_called_once_with("local-test")
-    manager.runtime_module_service.finalize.assert_called_once_with(activation)
-
-
-@pytest.mark.anyio
-async def test_runtime_module_removal_rejects_invalid_id_before_worker_drain(settings) -> None:
-    app = create_app(settings)
-    transport = httpx.ASGITransport(app=app)
-
-    with patch("app.api.runtime_modules.request_drain", new=AsyncMock()) as drain:
-        async with httpx.AsyncClient(transport=transport, base_url="http://test", headers=AUTHORIZATION) as client:
-            response = await client.delete("/api/runtime-modules/invalid_module")
-
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "runtime_module_id_invalid"
-    drain.assert_not_awaited()
+    manager.runtime_module_service.finalize_removal.assert_called_once_with(removal)

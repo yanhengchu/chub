@@ -265,7 +265,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     codex_rate_limits = CurrentCodexRateLimits()
     ai_usage = RuntimeUsageService(
         lambda: codex_pty_manager.runtime_registry,
-        default_runtime_id=codex_pty_manager.runtime_id,
+        default_runtime_id=codex_pty_manager.default_submission_implementation_id,
     )
     completion_notifier = OpenClawCompletionNotifier(
         resolved_settings.openclaw.quick_interaction_completion
@@ -687,7 +687,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             }:
                 launch_system_upgrade_services(operation_id)
                 return
-            loaded = system_upgrade.plan() or runtime_recovery_plan()
+            loaded = system_upgrade.plan()
+            if (
+                loaded is not None
+                and loaded.plan.plan_id == "runtime-recovery"
+                and loaded.plan.action == "runtime-data-reset"
+            ):
+                loaded = runtime_recovery_plan()
+            loaded = loaded or runtime_recovery_plan()
             if loaded.fingerprint != state.fingerprint:
                 raise OSError("系统升级方案已经变化，本次升级已停止。")
             system_upgrade.mark_started(operation_id)
@@ -1283,12 +1290,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             state="failed",
             message=message,
             checked_at=checked_at,
+            login_page_available=(
+                usage.source == "sub2api"
+                and usage.message == "AI API 额度账户未登录。"
+                and ai_usage.login_page_available()
+            ),
         )
+
+    def open_codex_runtime_login_page() -> None:
+        ai_usage.open_login_page()
 
     application.state.automation_manager = AutomationManager(
         resolved_settings,
         detected_platform=detected_platform,
         codex_account_checker=check_codex_runtime_account,
+        codex_account_login_opener=open_codex_runtime_login_page,
     )
     application.state.openclaw_manager = openclaw_manager
     application.state.notification_service = notification_service

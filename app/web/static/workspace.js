@@ -333,8 +333,10 @@
   const automationBrowserDetail = document.getElementById("workspace-automation-browser-detail");
   const automationFeishuDetail = document.getElementById("workspace-automation-feishu-detail");
   const automationFeishuCheck = document.getElementById("workspace-automation-feishu-check");
+  const automationFeishuOpenLogin = document.getElementById("workspace-automation-feishu-open-login");
   const automationCodexAccountDetail = document.getElementById("workspace-automation-codex-account-detail");
   const automationCodexAccountCheck = document.getElementById("workspace-automation-codex-account-check");
+  const automationCodexAccountOpenLogin = document.getElementById("workspace-automation-codex-account-open-login");
   const automationStopButton = document.getElementById("workspace-automation-browser-stop");
   const automationStopDialog = document.getElementById("workspace-automation-browser-stop-dialog");
   const automationStopForm = document.getElementById("workspace-automation-browser-stop-form");
@@ -450,23 +452,42 @@
     return "muted";
   };
 
+  const automationCheckedAt = (value) => {
+    if (typeof value !== "string") return "";
+    const match = value.match(/^\d{4}-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+    return match ? ` · 检查于 ${match[1]}-${match[2]} ${match[3]}:${match[4]}` : "";
+  };
+
+  const setAutomationAccountStatus = (detail, state, statusKind, fallbackMessage) => {
+    if (!(detail instanceof HTMLElement)) return;
+    const message = state?.message || fallbackMessage;
+    const checkedAt = state?.state === "checking"
+      ? ""
+      : automationCheckedAt(state?.checked_at);
+    setWorkstationStatus(detail, `${message}${checkedAt}`, statusKind(state?.state));
+  };
+
   const setAutomationFeishuStatus = (state) => {
-    if (automationFeishuDetail instanceof HTMLElement) {
-      setWorkstationStatus(
-        automationFeishuDetail,
-        state?.message || "飞书环境状态暂时无法读取。",
-        feishuStatusKind(state?.state),
-      );
+    setAutomationAccountStatus(
+      automationFeishuDetail,
+      state,
+      feishuStatusKind,
+      "飞书环境状态暂时无法读取。",
+    );
+    if (automationFeishuOpenLogin instanceof HTMLButtonElement) {
+      automationFeishuOpenLogin.hidden = state?.login_page_available !== true;
     }
   };
 
   const setAutomationCodexAccountStatus = (state) => {
-    if (automationCodexAccountDetail instanceof HTMLElement) {
-      setWorkstationStatus(
-        automationCodexAccountDetail,
-        state?.message || "Codex Runtime 账户状态暂时无法读取。",
-        codexAccountStatusKind(state?.state),
-      );
+    setAutomationAccountStatus(
+      automationCodexAccountDetail,
+      state,
+      codexAccountStatusKind,
+      "Codex Runtime 账户状态暂时无法读取。",
+    );
+    if (automationCodexAccountOpenLogin instanceof HTMLButtonElement) {
+      automationCodexAccountOpenLogin.hidden = state?.login_page_available !== true;
     }
   };
 
@@ -577,6 +598,45 @@
       }
     });
   }
+
+  const bindAutomationLoginPageButton = (button, path, setStatus, fallbackMessage) => {
+    if (!(button instanceof HTMLButtonElement)) return;
+    let opening = false;
+    button.addEventListener("click", async () => {
+      if (opening || button.disabled) return;
+      opening = true;
+      button.disabled = true;
+      button.textContent = "打开中…";
+      try {
+        await automationRequest(path);
+        window.setTimeout(refreshWorkspaceAutomations, 500);
+      } catch (error) {
+        setStatus({
+          state: "failed",
+          login_page_available: true,
+          message: error instanceof Error ? error.message : fallbackMessage,
+        });
+      } finally {
+        opening = false;
+        button.disabled = false;
+        button.textContent = "打开登录页面";
+      }
+    });
+  };
+
+  bindAutomationLoginPageButton(
+    automationFeishuOpenLogin,
+    "/api/automations/environment/feishu/login-page",
+    setAutomationFeishuStatus,
+    "无法打开飞书登录页面。",
+  );
+
+  bindAutomationLoginPageButton(
+    automationCodexAccountOpenLogin,
+    "/api/automations/environment/codex/login-page",
+    setAutomationCodexAccountStatus,
+    "无法打开 Codex Runtime 登录页面。",
+  );
 
   if (automationCodexAccountCheck instanceof HTMLButtonElement) {
     automationCodexAccountCheck.addEventListener("click", async () => {

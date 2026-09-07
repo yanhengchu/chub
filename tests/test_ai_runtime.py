@@ -22,9 +22,11 @@ from app.ai_runtime import (
     validate_runtime_wiring,
 )
 from app.ai_runtime.external_modules import ExternalRuntimeModuleService
+from app.ai_runtime.implementation_preferences import RuntimeImplementationPreferences
+from app.ai_runtime.enablement import RuntimeEnablement
 from app.ai_session.manager import AiSessionManager
 from app.application import create_app
-from app.ai_runtime.general_settings import AiRuntimeGeneralSettings, AiRuntimeSettingsStore
+from app.ai_runtime.general_settings import AiRuntimeSettingsStore
 from legacy_codex_manager import CodexPtyManager
 from app.codex.models import (
     CodexModelCatalogData,
@@ -39,14 +41,22 @@ from app.core.response import ApiError
 
 
 class StubRuntime:
-    def __init__(self, runtime_id: str = "test", *, available: bool = True) -> None:
+    def __init__(
+        self,
+        runtime_id: str = "test",
+        *,
+        implementation_id: str | None = None,
+        available: bool = True,
+    ) -> None:
         self._runtime_id = runtime_id
+        self._implementation_id = implementation_id
         self._available = available
 
     @property
     def descriptor(self) -> RuntimeDescriptor:
         return RuntimeDescriptor(
             runtime_id=self._runtime_id,
+            implementation_id=self._implementation_id,
             capabilities=frozenset({"runtime_status"}),
         )
 
@@ -77,11 +87,13 @@ class StubWorkerRuntime:
         self,
         runtime_id: str = "worker-test",
         *,
+        implementation_id: str | None = None,
         available: bool = True,
         capabilities=frozenset(BACKGROUND_RUNTIME_CAPABILITIES),
     ) -> None:
         self._descriptor = RuntimeDescriptor(
             runtime_id=runtime_id,
+            implementation_id=implementation_id,
             capabilities=capabilities,
         )
         self._available = available
@@ -144,11 +156,13 @@ class StubBuiltinRuntimeModule:
         self,
         runtime_id: str,
         *,
+        implementation_id: str | None = None,
         is_default: bool = False,
         display_name: str | None = None,
         description: str | None = None,
     ) -> None:
         self._runtime_id = runtime_id
+        self._implementation_id = implementation_id
         self._is_default = is_default
         self._display_name = display_name or runtime_id
         self._description = description or f"{runtime_id} description"
@@ -157,6 +171,7 @@ class StubBuiltinRuntimeModule:
     def descriptor(self) -> RuntimeDescriptor:
         return RuntimeDescriptor(
             runtime_id=self._runtime_id,
+            implementation_id=self._implementation_id,
             capabilities=frozenset({"runtime_status"}),
         )
 
@@ -173,7 +188,10 @@ class StubBuiltinRuntimeModule:
         return self._is_default
 
     def build_adapter(self) -> StubRuntime:
-        return StubRuntime(self._runtime_id)
+        return StubRuntime(
+            self._runtime_id,
+            implementation_id=self._implementation_id,
+        )
 
     def build_worker_runner(self, _adapter, *, workspaces) -> StubWorkerRuntime:
         return StubWorkerRuntime(self._runtime_id)
@@ -251,6 +269,35 @@ def test_runtime_capability_matrix_rejects_mismatched_status_owner() -> None:
         registry.capability_matrix()
 
     assert invalid.value.code == "runtime_status_invalid"
+
+
+def test_runtime_capability_matrix_accepts_multiple_implementations_of_one_runtime() -> None:
+    class CodexImplementation(StubRuntime):
+        def __init__(self, implementation_id: str) -> None:
+            super().__init__("codex")
+            self._implementation_id = implementation_id
+
+        @property
+        def descriptor(self) -> RuntimeDescriptor:
+            return RuntimeDescriptor(
+                runtime_id="codex",
+                implementation_id=self._implementation_id,
+                capabilities=frozenset({"runtime_status"}),
+            )
+
+    registry = RuntimeRegistry(
+        [CodexImplementation("builtin-dev"), CodexImplementation("codex-010000")]
+    )
+
+    assert registry.runtime_ids() == ("codex",)
+    assert registry.implementation_ids("codex") == (
+        "builtin-dev",
+        "codex-010000",
+    )
+    assert [item.runtime_id for item in registry.capability_matrix()] == [
+        "codex",
+        "codex",
+    ]
 
 
 def test_runtime_registry_rejects_descriptor_identity_drift() -> None:
@@ -336,6 +383,28 @@ def test_builtin_runtime_module_registry_keeps_registered_presentation() -> None
     assert presentation.description == "Initial description"
 
 
+def test_builtin_runtime_module_registry_navigation_groups_versions_by_runtime() -> None:
+    registry = BuiltinRuntimeModuleRegistry(
+        [
+            StubBuiltinRuntimeModule(
+                "codex",
+                implementation_id="builtin-dev",
+                is_default=True,
+                display_name="Codex",
+            ),
+            StubBuiltinRuntimeModule(
+                "codex",
+                implementation_id="codex-010001",
+                display_name="Codex",
+            ),
+        ]
+    )
+
+    assert registry.runtime_ids() == ("codex",)
+    assert [item.runtime_id for item in registry.navigation()] == ["codex"]
+    assert registry.require_navigation("codex").implementation_id == "builtin-dev"
+
+
 def test_session_manager_isolates_external_adapter_construction_failure(
     settings: Settings,
 ) -> None:
@@ -373,35 +442,77 @@ def test_session_manager_keeps_codex_adapter_when_a_healthy_external_runtime_loa
     assert manager.runtime_modules.runtime_ids() == ("codex", "healthy-runtime")
 
 
-def test_session_manager_starts_without_an_installed_runtime(settings: Settings) -> None:
+def test_session_manager_allows_default_version_change_when_runtime_is_stopped(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    modules = BuiltinRuntimeModuleRegistry(
+        [
+            StubBuiltinRuntimeModule(
+                "codex",
+                implementation_id="builtin-dev",
+                is_default=True,
+                display_name="Codex",
+            ),
+            StubBuiltinRuntimeModule(
+                "codex",
+                implementation_id="codex-010001",
+                display_name="Codex",
+            ),
+        ]
+    )
+    builtin = StubRuntime("codex", implementation_id="builtin-dev")
+    formal = StubRuntime("codex", implementation_id="codex-010001")
+    manager.runtime_modules = modules
+    manager.runtime_registry = RuntimeRegistry([builtin, formal])
+    manager.runtime_adapters = {
+        "builtin-dev": builtin,
+        "codex-010001": formal,
+    }
+    manager.default_implementation_id = "builtin-dev"
+    manager.runtime_adapter = builtin
+    manager.runtime_implementation_preferences.save(
+        RuntimeImplementationPreferences(default_implementation_id="builtin-dev")
+    )
+    manager.runtime_enablement.save(RuntimeEnablement(disabled_runtime_ids=["codex"]))
+
+    result = manager.update_default_implementation("codex-010001")
+
+    assert result.default_implementation_id == "codex-010001"
+    assert manager.default_implementation_id == "codex-010001"
+    with pytest.raises(ApiError) as rejected:
+        manager.require_implementation_submission("codex-010001")
+    assert rejected.value.code == "ai_runtime_disabled"
+
+
+def test_session_manager_starts_with_builtin_runtime_when_no_formal_version_is_installed(settings: Settings) -> None:
     service = ExternalRuntimeModuleService(settings)
-    removal = service.remove("codex", operation_id="0" * 32)
+    removal = service.remove("codex-010000", operation_id="0" * 32)
     service.finalize_removal(removal)
     manager = AiSessionManager(settings)
 
     available, reason = manager.submission_available()
 
-    assert manager.runtime_modules.runtime_ids() == ()
-    assert manager.runtime_registry.runtime_ids() == ()
-    assert available is False
-    assert reason == "Codex Runtime is not installed"
-    assert manager.read_runtime_management().runtimes == []
+    assert manager.runtime_modules.implementation_ids("codex") == ("builtin-dev",)
+    assert manager.runtime_registry.runtime_ids() == ("codex",)
+    assert available is True
+    assert reason is None
 
 
 @pytest.mark.anyio
-async def test_application_lifespan_starts_without_an_installed_runtime(
+async def test_application_lifespan_starts_with_builtin_runtime_when_no_formal_version_is_installed(
     settings: Settings,
 ) -> None:
     service = ExternalRuntimeModuleService(settings)
-    removal = service.remove("codex", operation_id="1" * 32)
+    removal = service.remove("codex-010000", operation_id="1" * 32)
     service.finalize_removal(removal)
     application = create_app(settings)
 
     async with application.router.lifespan_context(application):
         available, reason = application.state.ai_session_manager.submission_available()
 
-    assert available is False
-    assert reason == "Codex Runtime is not installed"
+    assert available is True
+    assert reason is None
 
 
 @pytest.mark.anyio
@@ -446,7 +557,7 @@ def test_external_codex_module_builds_matching_adapter_and_worker_runner(
     registry, failures = ExternalRuntimeModuleService(settings).build_registry(
         BuiltinRuntimeModuleRegistry()
     )
-    module = registry.default()
+    module = registry.require("codex-010000")
     adapter = module.build_adapter()
     module.configure_worker_adapter(
         adapter,
@@ -458,7 +569,7 @@ def test_external_codex_module_builds_matching_adapter_and_worker_runner(
     assert failures == ()
     assert registry.runtime_ids() == ("codex",)
     assert module.display_name == "Codex"
-    assert module.is_default is True
+    assert module.is_default is False
     assert adapter.descriptor == module.descriptor == runner.descriptor
     assert validate_runtime_wiring(adapter, runner) == "codex"
 
@@ -484,6 +595,22 @@ def test_worker_runtime_registry_is_fixed_and_fails_before_submission() -> None:
     with pytest.raises(RuntimeOperationError) as offline:
         unavailable.require("offline")
     assert offline.value.code == "runtime_unavailable"
+
+
+def test_worker_runtime_registry_reports_logical_runtime_ids_for_versions() -> None:
+    registry = WorkerRuntimeRegistry(
+        [
+            StubWorkerRuntime("codex", implementation_id="builtin-dev"),
+            StubWorkerRuntime("codex", implementation_id="codex-010000"),
+        ]
+    )
+
+    assert registry.runtime_ids() == ("codex",)
+    assert registry.available_runtime_ids() == ("codex",)
+    assert registry.available_implementation_ids() == (
+        "builtin-dev",
+        "codex-010000",
+    )
 
 
 def test_worker_runtime_capability_matrix_allows_second_runtime_runner() -> None:
@@ -556,6 +683,7 @@ def test_codex_adapter_declares_current_capabilities(settings: Settings) -> None
                 "model_catalog",
                 "permission_profiles",
                 "usage_snapshot",
+                "usage_login_page",
         }
     )
     assert adapter.status().available is True
@@ -588,15 +716,20 @@ def test_codex_runtime_usage_settings_follow_active_provider_config(
     assert adapter._read_usage_settings().provider_base_url == "https://provider.example"
 
 
-def test_ai_runtime_general_timezone_is_shared_by_runtime_collectors(
+def test_codex_runtime_usage_uses_default_timezone_despite_legacy_general_setting(
     settings: Settings,
     tmp_path: Path,
 ) -> None:
-    store = AiRuntimeSettingsStore(tmp_path / "ai-runtimes.local.yaml")
-    store.save_general(AiRuntimeGeneralSettings(timezone="America/Los_Angeles"))
+    settings_path = tmp_path / "ai-runtimes.local.yaml"
+    store = AiRuntimeSettingsStore(settings_path)
+    settings_path.write_text(
+        "general:\n  timezone: America/Los_Angeles\n",
+        encoding="utf-8",
+    )
     adapter = CodexRuntimeAdapter(settings, runtime_settings_store=store)
 
-    assert adapter._read_usage_settings().timezone == "America/Los_Angeles"
+    assert store.read_general().weekly_report_session.runtime_id == "codex"
+    assert adapter._read_usage_settings().timezone == "Asia/Shanghai"
 
 
 def test_codex_manager_production_registry_only_exposes_codex(

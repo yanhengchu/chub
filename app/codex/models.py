@@ -175,6 +175,34 @@ class RuntimeManagementData(BaseModel):
     basic_mode: bool
 
 
+class RuntimeImplementationItem(BaseModel):
+    implementation_id: str = Field(pattern=RUNTIME_ID_PATTERN)
+    name: str = Field(min_length=1, max_length=128)
+    version: str = Field(min_length=1, max_length=64)
+    enabled: bool
+    healthy: bool
+    is_default: bool
+    compatibility_id: str | None = Field(default=None, max_length=64)
+    removable: bool
+    reason: str | None = Field(default=None, max_length=300)
+
+
+class RuntimeImplementationData(BaseModel):
+    runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
+    default_implementation_id: str | None = Field(default=None, pattern=RUNTIME_ID_PATTERN)
+    implementations: list[RuntimeImplementationItem]
+
+
+class RuntimeImplementationEnabledUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool
+
+
+class RuntimeDefaultImplementationUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    implementation_id: str = Field(pattern=RUNTIME_ID_PATTERN)
+
+
 class RuntimeEnablementUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -352,6 +380,7 @@ class QuickInteractionRequest(BaseModel):
 
     prompt: str = Field(min_length=1, max_length=8000)
     confirm_stop_unknown_terminal: bool = False
+    implementation_id: str | None = Field(default=None, pattern=RUNTIME_ID_PATTERN)
 
     @field_validator("prompt")
     @classmethod
@@ -370,6 +399,7 @@ class QuickInteractionTask(BaseModel):
         pattern=r"^qw-[0-9]{13}-[a-f0-9]{32}$",
     )
     session_id: str
+    implementation_id: str = Field(default="codex", pattern=RUNTIME_ID_PATTERN)
     # Internal translation tasks add a fixed bounded instruction around an
     # otherwise API-limited 8000-character source.
     prompt: str | None = Field(default=None, max_length=20_000)

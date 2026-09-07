@@ -29,9 +29,9 @@ from app.ai_runtime import (
 )
 from app.ai_runtime.general_settings import (
     AiRuntimeSettingsStore,
-    RuntimeSettingsStoreUnavailable,
 )
 from .usage_service import AiUsageService
+from .provider_browser import ProviderBrowserAdapter, ProviderBrowserUnavailable
 from .discovery import CodexSessionDiscovery
 from .model_catalog import CodexModelCatalog
 from .rate_limits import CodexRateLimitService
@@ -50,6 +50,8 @@ CODEX_RUNTIME_CAPABILITIES: frozenset[RuntimeCapability] = (
 )
 CODEX_RUNTIME_DESCRIPTOR = RuntimeDescriptor(
     runtime_id="codex",
+    implementation_id="builtin-dev",
+    native_session_compatibility_id="codex-v1",
     capabilities=CODEX_RUNTIME_CAPABILITIES,
 )
 MAX_ACTIVITY_EVENT_BYTES = 32 * 1024
@@ -67,6 +69,7 @@ class CodexRuntimeAdapter:
         self,
         settings: Settings,
         *,
+        descriptor: RuntimeDescriptor = CODEX_RUNTIME_DESCRIPTOR,
         codex_home: Path | None = None,
         executable: str | Path | None = None,
         which: Callable[[str], str | None] | None = None,
@@ -75,6 +78,7 @@ class CodexRuntimeAdapter:
         provider_config_reader: CodexProviderConfigReader | None = None,
         rate_limits: CodexRateLimitService | None = None,
     ) -> None:
+        self._descriptor = descriptor
         self.settings = settings
         self.codex_home = codex_home or Path(
             os.environ.get("CODEX_HOME", Path.home() / ".codex")
@@ -95,7 +99,7 @@ class CodexRuntimeAdapter:
 
     @property
     def descriptor(self) -> RuntimeDescriptor:
-        return CODEX_RUNTIME_DESCRIPTOR
+        return self._descriptor
 
     @property
     def display_name(self) -> str:
@@ -312,20 +316,22 @@ class CodexRuntimeAdapter:
             update={"runtime_id": self.descriptor.runtime_id}
         )
 
-    def _read_usage_settings(self) -> CodexUsageSettings:
+    def open_usage_login_page(self) -> None:
+        settings = self._read_usage_settings()
         try:
-            timezone = self._runtime_settings_store.read_general().timezone
-        except RuntimeSettingsStoreUnavailable as exc:
+            ProviderBrowserAdapter(settings, self.settings.automations).open_login_page()
+        except ProviderBrowserUnavailable as exc:
             raise RuntimeOperationError(
-                "codex_runtime_settings_unavailable",
-                "Codex Runtime settings are unavailable",
+                "codex_usage_login_unavailable",
+                "Codex Runtime 登录页面当前不可用",
             ) from exc
+
+    def _read_usage_settings(self) -> CodexUsageSettings:
         try:
             provider_base_url = self._provider_config_reader.read_base_url()
         except CodexProviderConfigUnavailable:
             provider_base_url = None
         return CodexUsageSettings(
-            timezone=timezone,
             provider_base_url=provider_base_url,
         )
 

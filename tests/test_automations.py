@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -26,6 +26,8 @@ from app.automations.manager import AutomationManager, _feishu_environment_for_u
 from app.automations.browser import BrowserProfileInfo
 from app.automations.models import (
     AutomationState,
+    BrowserControlResult,
+    AccountLoginPageResult,
     FeishuEnvironmentState,
     LinkedDocumentResult,
     RuntimeAccountEnvironmentState,
@@ -1470,6 +1472,116 @@ def test_manager_checks_and_caches_feishu_environment(
     assert listing.feishu_environment == result
 
 
+def test_manager_opens_feishu_login_page_in_headed_browser(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    configure_automations(settings, tmp_path)
+    manager = AutomationManager(settings)
+    manager._store.write(AutomationState(task_id="monthly-report", status="running"))
+    opened = False
+
+    async def fake_open() -> None:
+        nonlocal opened
+        opened = True
+
+    with (
+        patch(
+            "app.automations.manager.debug_chrome_status",
+            return_value=("running", "Debug Chrome 已运行", "headed"),
+        ),
+        patch.object(manager, "_open_feishu_login_page", fake_open),
+        patch.object(manager, "control_browser") as control_browser,
+    ):
+        result = manager.open_feishu_login_page()
+
+    assert result == AccountLoginPageResult(message="飞书登录页面已打开")
+    assert opened is True
+    control_browser.assert_not_called()
+
+
+def test_manager_switches_idle_headless_browser_before_opening_feishu_login_page(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    configure_automations(settings, tmp_path)
+    manager = AutomationManager(settings)
+
+    async def fake_open() -> None:
+        return None
+
+    with (
+        patch(
+            "app.automations.manager.debug_chrome_status",
+            return_value=("running", "Debug Chrome 已运行", "headless"),
+        ),
+        patch.object(manager, "_open_feishu_login_page", fake_open),
+        patch.object(
+            manager,
+            "control_browser",
+            return_value=BrowserControlResult(
+                state="running",
+                mode="有界面",
+                message="Debug Chrome 已重启",
+            ),
+        ) as control_browser,
+    ):
+        result = manager.open_feishu_login_page()
+
+    assert result.message == "已启动有界面 Debug Chrome 并打开飞书登录页面"
+    control_browser.assert_called_once_with("restart", restart_mode="headed")
+
+
+def test_manager_does_not_switch_busy_browser_for_feishu_login_page(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    configure_automations(settings, tmp_path)
+    manager = AutomationManager(settings)
+    manager._store.write(AutomationState(task_id="monthly-report", status="running"))
+
+    with patch(
+        "app.automations.manager.debug_chrome_status",
+        return_value=("running", "Debug Chrome 已运行", "headless"),
+    ):
+        with pytest.raises(ApiError, match="自动化任务正在使用 Debug Chrome"):
+            manager.open_feishu_login_page()
+
+
+def test_manager_opens_codex_runtime_login_page_in_headed_browser(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    configure_automations(settings, tmp_path)
+    opened = MagicMock()
+    manager = AutomationManager(settings, codex_account_login_opener=opened)
+    manager._store.write(AutomationState(task_id="monthly-report", status="running"))
+
+    with (
+        patch(
+            "app.automations.manager.debug_chrome_status",
+            return_value=("running", "Debug Chrome 已运行", "headed"),
+        ),
+        patch.object(manager, "control_browser") as control_browser,
+    ):
+        result = manager.open_codex_runtime_login_page()
+
+    assert result == AccountLoginPageResult(message="Codex Runtime 登录页面已打开")
+    opened.assert_called_once_with()
+    control_browser.assert_not_called()
+
+
+def test_manager_rejects_codex_runtime_login_page_without_runtime_support(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    configure_automations(settings, tmp_path)
+    manager = AutomationManager(settings)
+
+    with pytest.raises(ApiError, match="Codex Runtime 登录页面当前不可用"):
+        manager.open_codex_runtime_login_page()
+
+
 def test_manager_checks_and_caches_codex_runtime_account(
     settings: Settings,
     tmp_path: Path,
@@ -1508,34 +1620,6 @@ def test_manager_resets_feishu_environment_when_browser_stops(
 
     assert stopped.feishu_environment.state == "browser_stopped"
 
-
-def test_manager_stores_private_feishu_qr_and_clears_it_on_browser_stop(
-    settings: Settings,
-    tmp_path: Path,
-) -> None:
-    configure_automations(settings, tmp_path)
-    manager = AutomationManager(settings)
-    manager._save_feishu_qr(b"\x89PNG\r\n\x1a\ncontent")
-    manager._set_feishu_environment(
-        FeishuEnvironmentState(
-            state="login_required",
-            message="需要登录",
-            qr_available=True,
-        )
-    )
-    content = manager.feishu_qr_content()
-    path = settings.automations.runtime_dir / "feishu-login-qr.png"
-
-    assert content == b"\x89PNG\r\n\x1a\ncontent"
-    assert path.stat().st_mode & 0o777 == 0o600
-
-    with patch(
-        "app.automations.manager.debug_chrome_status",
-        return_value=("stopped", "Debug Chrome 未启动", None),
-    ):
-        manager.list()
-
-    assert not path.exists()
 
 
 def test_manager_logs_final_web_operation_once(

@@ -37,6 +37,9 @@ from app.quick_worker import (
 )
 from app.quick_worker_tasks import (
     RuntimeTaskSubmission,
+    StoredTaskSpec,
+    _digest_stored_spec,
+    _digest_submission,
     new_worker_task_id,
     worker_leases_dir,
     worker_state_dir,
@@ -55,6 +58,42 @@ async def _request(settings, action: str, **fields: object) -> dict[str, object]
             **fields,
         },
     )
+
+
+def test_runtime_task_stored_digest_includes_implementation_id() -> None:
+    created_at = datetime.now(UTC)
+    submission = RuntimeTaskSubmission(
+        task_id=new_worker_task_id(created_at),
+        runtime_id="codex",
+        implementation_id="builtin-dev",
+        session_id="quick-session",
+        workspace_id="chub",
+        prompt="hello",
+        permission_profile="full-access",
+        timeout_seconds=60,
+    )
+    spec = StoredTaskSpec(
+        protocol_version=PROTOCOL_VERSION,
+        task_id=submission.task_id,
+        runtime_id=submission.runtime_id,
+        implementation_id=submission.implementation_id,
+        prompt=submission.prompt,
+        prompt_sha256=hashlib.sha256(submission.prompt.encode()).hexdigest(),
+        spec_sha256=_digest_submission(submission),
+        session_id=submission.session_id,
+        workspace_id=submission.workspace_id,
+        permission_profile=submission.permission_profile,
+        native_session_id=submission.native_session_id,
+        model=submission.model,
+        reasoning_effort=submission.reasoning_effort,
+        timeout_seconds=submission.timeout_seconds,
+        task_kind=submission.task_kind,
+        restart_sensitive=submission.restart_sensitive,
+        created_at=created_at,
+        deadline_at=created_at + timedelta(seconds=submission.timeout_seconds),
+    )
+
+    assert _digest_stored_spec(spec) == spec.spec_sha256
 
 
 async def _wait_for_status(
@@ -116,6 +155,7 @@ async def _submit_codex(
         task={
             "task_id": task_id,
             "runtime_id": "codex",
+            "implementation_id": "builtin-dev",
             "session_id": session_id,
             "workspace_id": "isolated",
             "prompt": prompt,
@@ -136,6 +176,7 @@ def test_restart_sensitive_is_derived_and_cannot_be_spoofed() -> None:
     fields = {
         "task_id": new_worker_task_id(),
         "runtime_id": "codex",
+        "implementation_id": "builtin-dev",
         "session_id": "session-1",
         "workspace_id": "chub",
         "prompt": "modify Chub",
@@ -747,7 +788,8 @@ async def test_codex_capability_does_not_enable_fixed_test_tasks(
         assert health["data"]["runtime_ids"] == ["codex"]
         assert health["data"]["available_runtime_ids"] == ["codex"]
         assert health["data"]["runtime_workspace_ids"] == {
-            "codex": ["isolated", "runtime-session"]
+            "builtin-dev": ["isolated", "runtime-session"],
+            "codex-010000": ["isolated", "runtime-session"],
         }
         rejected = await _submit(settings, task_id=new_worker_task_id())
         assert rejected["success"] is False
@@ -850,6 +892,7 @@ async def test_worker_persists_restart_sensitive_through_final_state(
             task={
                 "task_id": task_id,
                 "runtime_id": "codex",
+                "implementation_id": "builtin-dev",
                 "session_id": "sensitive-session",
                 "workspace_id": "chub",
                 "prompt": "modify Chub",

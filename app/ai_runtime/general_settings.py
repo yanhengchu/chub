@@ -4,10 +4,9 @@ import os
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any, Literal
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.core.config import PROJECT_ROOT
 
@@ -21,19 +20,9 @@ class _StrictModel(BaseModel):
 
 
 class AiRuntimeGeneralSettings(_StrictModel):
-    timezone: str = Field(default="Asia/Shanghai", min_length=1, max_length=64)
     weekly_report_session: "WeeklyReportSessionSettings" = Field(
         default_factory=lambda: WeeklyReportSessionSettings()
     )
-
-    @field_validator("timezone")
-    @classmethod
-    def validate_timezone(cls, value: str) -> str:
-        try:
-            ZoneInfo(value)
-        except ZoneInfoNotFoundError as exc:
-            raise ValueError("timezone must be a valid IANA timezone") from exc
-        return value
 
 
 class WeeklyReportSessionSettings(_StrictModel):
@@ -53,8 +42,12 @@ class AiRuntimeSettingsStore:
 
     def read_general(self) -> AiRuntimeGeneralSettings:
         data = self._read_raw()
+        general = data.get("general", {})
+        if isinstance(general, dict):
+            # The former usage timezone is no longer configurable.
+            general = {key: value for key, value in general.items() if key != "timezone"}
         try:
-            return AiRuntimeGeneralSettings.model_validate(data.get("general", {}))
+            return AiRuntimeGeneralSettings.model_validate(general)
         except (ValidationError, ValueError) as exc:
             raise RuntimeSettingsStoreUnavailable(
                 "AI Runtime general settings are invalid"

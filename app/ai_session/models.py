@@ -60,6 +60,11 @@ class AiSession(_StrictModel):
         max_length=128,
         pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
     )
+    native_session_compatibility_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+    )
     workspace_id: str = Field(min_length=1, max_length=64)
     workspace_name: str = Field(min_length=1, max_length=128)
     cwd: Path

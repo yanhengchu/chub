@@ -760,10 +760,48 @@ input[type="password"] {
   gap: 0.6rem;
 }
 
+.runtime-management-status {
+  display: block;
+  color: var(--color-text-muted);
+  font-weight: 600;
+}
+
+.runtime-management-status.is-warning {
+  color: var(--color-warning);
+}
+
+.runtime-management-status.is-error {
+  color: var(--color-danger);
+}
+
+.runtime-management-item-status.is-warning {
+  color: var(--color-warning);
+  font-weight: 600;
+}
+
+.runtime-module-install-heading,
 .runtime-module-install-form,
 .runtime-module-list {
   display: grid;
   gap: 0.75rem;
+}
+
+.runtime-module-install-heading {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.runtime-module-install-heading > div {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.runtime-module-install-heading .settings-subsection-description {
+  margin: 0;
+}
+
+.runtime-module-list:empty {
+  display: none;
 }
 
 .runtime-module-row {
@@ -2959,21 +2997,18 @@ button.settings-utility-row > span:last-child {
   font-weight: 600;
 }
 
-.automation-browser-actions,
-.automation-feishu-actions {
+.automation-browser-actions {
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 0.55rem;
 }
 
-.automation-browser-actions > button,
-.automation-feishu-actions > button {
+.automation-browser-actions > button {
   min-width: 4.5rem;
   white-space: nowrap;
 }
 
-.automation-feishu-panel,
 .automation-browser-panel {
   display: grid;
   gap: 0.55rem;
@@ -2983,51 +3018,9 @@ button.settings-utility-row > span:last-child {
   background: var(--color-surface-subtle);
 }
 
-.automation-feishu-panel > .workstation-status-row,
 .automation-browser-panel > .workstation-status-row {
   min-height: 50px;
   padding-block: 0.1rem;
-}
-
-.automation-feishu-panel > .automation-feishu-login {
-  margin-top: 0.1rem;
-  border: 0;
-  border-top: 1px solid var(--color-border);
-  border-radius: 0;
-  padding: 0.75rem 0 0;
-  background: transparent;
-}
-
-.automation-feishu-panel > .message {
-  margin: 0;
-}
-
-.automation-feishu-login {
-  display: grid;
-  justify-items: center;
-  gap: 0.7rem;
-  border: 1px solid var(--color-border);
-  border-radius: 12px;
-  padding: 0.9rem;
-  background: var(--color-surface-raised);
-}
-
-.automation-feishu-login[hidden] {
-  display: none;
-}
-
-.automation-feishu-login img {
-  display: block;
-  width: min(200px, 100%);
-  height: auto;
-  image-rendering: auto;
-}
-
-.automation-feishu-login p {
-  margin: 0;
-  color: var(--color-text-muted);
-  font-size: 0.78rem;
-  text-align: center;
 }
 
 .automation-list {

@@ -3,7 +3,7 @@
 > 状态：已验收
 > 主要读者：AI Agent、实现和排障 Agent；维护人员用于确认 Session 的核心状态和展示边界。
 > 本文负责：Chub 逻辑 Session、原生 Session 映射、入口类型、Activity、使用状态投影、首页展示语义和 Session 操作定义。
-> 本文不负责：操作的接口编排和实现细节、Runtime ZIP 的安装/替换/移除和状态清理、Runtime 私有协议、Quick Worker 任务恢复与通知、终端桥接实现、升级流程和微信路由；这些内容以对应专项文档为准。
+> 本文不负责：操作的接口编排和实现细节、Runtime ZIP 的安装/替换/移除和状态清理、任务编排模块、Runtime 私有协议、Quick Worker 任务恢复与通知、终端桥接实现、升级流程和微信路由；这些内容以对应专项文档为准。
 
 ## 1. 核心定义
 
@@ -253,7 +253,8 @@ running --停止确认--> stopped
 以下内容不在本文重复维护：
 
 - Runtime 私有命令、Hook 文件、原生协议和 writer 锁格式：见 [Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)。
-- Runtime ZIP 协议、安装/移除和模块状态清理：见 [Chub 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md)。
+- Runtime ZIP 协议、安装/移除和模块状态清理：见 [Chub AI Runtime 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md)。
+- 任务编排模块、受控计划和版本快照：见 [Chub 任务编排外置设计](CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md)。
 - Quick Worker 任务、租约、恢复、通知和 Web 重启：见 [Chub Quick Worker 独立服务设计](CHUB_QUICK_WORKER_DESIGN.md)。
 - OpenClaw、微信身份、固定指令和路由：见 [OpenClaw 定制集成设计](OPENCLAW_CUSTOMIZATION_DESIGN.md)。
 - 页面组件、按钮、弹窗和视觉规范：见 [Chub 前端 UI 模块化设计](FRONTEND_UI_DESIGN.md)。

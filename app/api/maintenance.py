@@ -100,6 +100,16 @@ def _system_upgrade_session_label(session: object) -> str:
     return " · ".join(part for part in (name, workspace, suffix) if part)[:128]
 
 
+def _current_runtime_recovery_plan(loaded):
+    if (
+        loaded is not None
+        and loaded.plan.plan_id == "runtime-recovery"
+        and loaded.plan.action == "runtime-data-reset"
+    ):
+        return runtime_recovery_plan()
+    return loaded
+
+
 async def system_upgrade_status_data(application) -> SystemUpgradeStatusData:
     """Return the single authoritative upgrade readiness view for all entry points."""
     coordinator = application.state.system_upgrade
@@ -112,6 +122,7 @@ async def system_upgrade_status_data(application) -> SystemUpgradeStatusData:
         # recovery path. The fallback never claims to perform a code upgrade.
         loaded = runtime_recovery_plan()
         recovery_fallback = True
+    loaded = _current_runtime_recovery_plan(loaded)
     session_labels = []
     try:
         current_sessions = application.state.codex_pty_manager.system_upgrade_sessions()
@@ -181,7 +192,7 @@ async def start_system_upgrade_for_source(
     if coordinator.in_progress():
         return await system_upgrade_status_data(application)
     try:
-        loaded = coordinator.plan()
+        loaded = _current_runtime_recovery_plan(coordinator.plan())
     except OSError:
         # The fixed runtime reset is the recovery fallback when a prepared
         # upgrade plan cannot be read or validated.

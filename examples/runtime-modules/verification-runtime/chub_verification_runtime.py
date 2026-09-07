@@ -21,6 +21,8 @@ from app.ai_runtime import (
 
 DESCRIPTOR = RuntimeDescriptor(
     runtime_id="verification-runtime",
+    implementation_id="verification-runtime",
+    native_session_compatibility_id="verification-v1",
     capabilities=BACKGROUND_RUNTIME_CAPABILITIES,
 )
 

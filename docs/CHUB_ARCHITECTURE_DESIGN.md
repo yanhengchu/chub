@@ -11,7 +11,7 @@
 
 Chub 是个人设备上的本地优先 AI 工作站控制面。它组织可信入口、设备能力、AI Session、任务、自动化、通知和最终状态；它不是模型，也不作为通用对话 Agent 执行任务。
 
-Chub 按维护者授信的个人工作站运行，不按多用户平台或零信任插件市场设计。功能可用、简单运维、局部恢复和最终结果可确认优先于假设性的多用户隔离、签名体系、发布者认证、沙箱、逐项审批、复杂依赖解析和全局门禁。维护者直接操作的本机功能与扩展只需固定位置、基础兼容性检查、局部失败隔离和必要记录；单项忙、未知、历史状态或加载失败不得阻塞无关能力。此定位不改变外部入口的安全边界：微信、OpenClaw、远程浏览器等仍只能通过已确认的身份、固定路由和受控用例访问 Chub，不能获得任意命令、路径、设备控制或敏感数据。
+Chub 按维护者授信的个人工作站运行，优先保证本地可用、局部恢复和最终状态可确认，不按多用户平台或零信任插件市场设计。此定位不放宽外部入口的安全边界：微信、OpenClaw 和远程浏览器仍只能通过已确认的身份、固定路由和受控用例访问 Chub，不能获得任意命令、路径、设备控制或敏感数据。
 
 Chub 按以下三层组织。分层首先约束职责与代码依赖，不要求立即把每层拆成独立进程；当前仍是模块化单体，Web、Quick Worker 和外部 Gateway 保持各自的现有进程边界。
 
@@ -62,7 +62,7 @@ AI Runtime 层提供 Chub 的 AI 能力。当前完整接入的 Runtime 是 Code
 - Quick Worker、固定 Runner、Runtime Adapter、实时终端载体和本机 AI Agent 调用。
 - 模型、推理等级、AI 用量及 AI 任务相关的业务终态。
 
-当前生产只注册 `codex`，客户端不能选择 Runtime；设置页可启用或停用已注册 Runtime。停用只拒绝新的 AI 任务受理，不取消、迁移或重放已受理任务，也不改变 Worker 服务健康。Runtime 缺失、不健康或被停用时，新任务必须失败关闭，不自动降级到其他 Runtime；查看、停止、归档等已有 Session 维护能力按各自契约保持可用。未来引入多个 Runtime 时，才单独设计选择、聚合和切换语义。
+当前部署只启用一个后端固定注册的 Runtime，现有实例为 Codex；客户端不能选择 Runtime。设置页可启用或停用已注册 Runtime。停用只拒绝新的 AI 任务受理，不取消、迁移或重放已受理任务，也不改变 Worker 服务健康。Runtime 缺失、不健康或被停用时，新任务必须失败关闭，不自动降级到其他 Runtime；查看、停止、归档等已有 Session 维护能力按各自契约保持可用。多个 Runtime 的选择、聚合和切换语义由 Runtime 专项设计在真实接入前单独定义。
 
 ### 2.3 第三方服务层
 
@@ -96,8 +96,8 @@ AI Runtime 层提供 Chub 的 AI 能力。当前完整接入的 Runtime 是 Code
   `-- 微信 ClawBot -> OpenClaw + Chub Plugin --(真实 loopback)--> Chub 第三方入口适配
 
 AI Runtime 层
-  |-- Unix socket --> Chub Quick Worker --> 固定 Codex Runner
-  `-- ttyd ---------> 固定 tmux ----> Codex 实时终端
+  |-- Unix socket --> Chub Quick Worker --> 固定 Runtime Runner
+  `-- ttyd ---------> 固定 tmux ----> 当前 Runtime 实时终端
 
 核心层
   |-- Unix socket --> Chub Debug Chrome --> Debug Chrome 浏览器实例
@@ -138,7 +138,7 @@ AI Runtime 层
 | --- | --- | --- |
 | 节点、平台服务、配置、维护操作、自动化任务与产物 | 核心层；操作系统、受控配置、Automation Store 与锁 | 聚合展示或调用固定维护用例 |
 | Chub AI Session 元数据、后台任务、租约、Runtime 健康与用量 | AI Runtime 层；Session Manager、Quick Worker、Runtime Adapter | 核心与第三方只使用公开 ID、投影和任务用例 |
-| 原生 Codex Session 与 writer | 本机 Codex 状态、Runtime Adapter | Chub 仅保存已校验映射，不猜测或接管 writer |
+| 原生 Runtime Session 与 writer | 当前 Runtime 的原生状态、Runtime Adapter | Chub 仅保存已校验映射，不猜测或接管 writer |
 | 实时终端桥与载体 | AI Runtime 层的 Interactive Supervisor、`ttyd`、tmux | Web 重启后重建桥并复用原 tmux |
 | 微信绑定、通道与 Gateway 状态 | 第三方服务层；OpenClaw | 核心保存受控路由快照并在提交时校验 |
 | 通知业务状态 | 发起通知的业务领域 | 核心通知能力只回写投递终态 |
@@ -173,9 +173,9 @@ AI Runtime 层
 
 自动化只执行固定任务；通知投递成功不替代主业务成功。自动化需要 AI 时，从 Runner 的明确步骤调用 AI Runtime 公开用例，任务本身仍由 AI Runtime 维护终态。
 
-### 6.3 Runtime 模块维护
+### 6.3 外置能力维护
 
-Runtime ZIP 的发现、安装、替换和移除属于 AI Runtime 层的受控维护用例：Web 与 Quick Worker 必须分别确认同一注册表后，才处理目标 Runtime 的 Chub 自有状态。ZIP 协议、维护步骤、恢复记录和清理边界以[Chub 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md)为唯一依据；本文不重复这些专项规则。
+核心层只提供受保护的外置能力维护入口，并执行固定的认证、操作记录和最终状态展示；它不解释 Runtime 模块协议或任务编排策略。Runtime 模块的安装、替换、移除、注册确认和状态清理由[Chub AI Runtime 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md)定义；任务编排外置的受控计划、版本快照和后续接入边界由[Chub 任务编排外置设计](CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md)定义。
 
 ## 7. 维护与恢复边界
 
@@ -186,13 +186,9 @@ Runtime ZIP 的发现、安装、替换和移除属于 AI Runtime 层的受控�
 | 升级与恢复 | Chub 自有 AI 运行态、Chub Web 与 Quick Worker | Web 新实例、Worker、目标协议、Session 映射和写入恢复确认；AI Runtime 在完成后独立展示可用性 | 原生 Codex、用户配置、日志、项目资料、OpenClaw、Debug Chrome 与无关服务 |
 | OpenClaw Gateway 重启与恢复 | 第三方服务层 Gateway、微信通道与固定运行产物 | Gateway、已配置通道和兼容基线确认 | 核心层、AI Runtime、实时终端 |
 
-门禁只覆盖直接冲突或数据破坏风险，按资源局部生效。“升级与恢复”由独立于 Chub 的核心层平台执行器编排：Ubuntu 使用 systemd user oneshot service，macOS 使用独立 LaunchAgent；Chub 只持久化操作并启动执行器，不能持有随后会停止 Chub 的升级进程。执行器只重建 Chub 自有 AI 运行态、Chub Web 与 Quick Worker：按固定升级计划处理必要的 Chub 自有运行态，再恢复并确认 Web、Worker、目标协议和写入可用。AI Runtime 的启用和本机可用性在核心恢复完成后独立检查，不作为 Web 或 Worker 恢复失败的依据；首页的 Chub 行投影控制面当前状态，Quick Worker 行只投影 Worker 当前状态，其下方独立的 AI Runtime 状态行按注册顺序列出每个 Runtime 的可用、已停用或不可用状态。无注册项和状态无法读取分别明确显示“未配置 AI Runtime”与“AI Runtime 状态暂无法确认”，不能用历史升级结果宣称当前可用性。每个组件的固定状态与 AI Runtime 可用性分类写入同一升级操作 ID 的操作日志，组件状态文件仅用于恢复过程内部对账。它不调用 OpenClaw CLI，也不处理 Gateway、插件、补丁、消息通道、Debug Chrome 或 Python 依赖安装；这些能力只通过各自独立的维护入口处理。升级计划无法读取或校验时仍按固定规则执行当前版本运行态恢复，并明确不升级代码版本。执行器不接受任意命令、路径、版本或清理目标，也不删除原生 Codex 数据、用户配置、日志或业务资料。
+门禁只覆盖直接冲突或数据破坏风险，按资源局部生效。升级与恢复只处理 Chub 自有 AI 运行态、Web 与 Quick Worker；不扩展到原生 Runtime 数据、用户配置、日志、项目资料、OpenClaw、Debug Chrome 或无关服务。每项维护操作必须按表中的最终状态确认，不能以受理、进程创建或 HTTP 成功替代业务完成。
 
-### 7.1 当前复检结论
-
-截至 2026 年 9 月 2 日，核心维护链路不存在已知的范围冲突或恢复阻塞：Chub 重启以新实例健康为终态，Quick Worker 重启以新 generation、目标协议和健康状态为终态，升级与恢复以 Chub Web、Quick Worker 和 Chub 自有运行态恢复为终态。已完成 Runtime 可用与 Runtime 设置停用两轮升级验证；两轮均不将 Runtime 设置状态误判为 Worker 或核心恢复失败。该结论只覆盖当前 macOS 实例和已执行的验证路径，不替代 Ubuntu 或新增 Runtime 的实机复检。
-
-若升级在最终验证阶段失败，但持久化组件结果已确认新 Chub Web 与 Quick Worker 均成功，升级记录仍保持失败并允许后续复检或恢复；它不再单独阻断 AI Runtime 新写入。后续提交仍须通过各自的 Runtime 和 Worker 实时健康检查。能够从持久化安全检查点继续的失败保留“继续恢复”入口；该失败记录尚未收敛前，不能跳过它发起新的升级。缺少任一成功结果、组件报告无法安全读取，或失败发生在不能安全继续的阶段时，写入继续失败关闭，首页关闭升级入口并提示在本机终端检查 `chub logs upgrade` 和服务定义；普通 Chub 或 Worker 重启不得替代该恢复步骤。
+升级执行、Worker 恢复、Runtime 状态、OpenClaw Gateway 维护和自动化浏览器维护分别由对应专项文档定义。总体架构不维护具体清理步骤、页面状态文案、操作日志字段或某次实机验证结论。
 
 ## 8. 跨层不可违反约束
 
@@ -205,21 +201,12 @@ Runtime ZIP 的发现、安装、替换和移除属于 AI Runtime 层的受控�
 - 配置、Token、终端票据和其他秘密不得进入页面、日志、通知、测试输出或示例配置。
 - macOS LaunchAgent 与 Ubuntu systemd user service 都是支持目标；未实机验证的平台不能宣称已验证。
 
-## 9. 专项文档入口与复检
+## 9. 相关文档
 
-| 需要确认的内容 | 权威文档 |
-| --- | --- |
-| 当前命令、插件、固定 API 与微信用户可见契约 | [集成能力清单](CHUB_INTEGRATION_CAPABILITIES.md) |
-| Runtime、Adapter、Runner 与能力矩阵 | [AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md) |
-| Runtime ZIP、模块安装/移除、注册确认与状态清理 | [外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md) |
-| Session、Activity、usage 与单 writer 语义 | [AI Session 状态模型](AI_SESSION_STATE_DESIGN.md) |
-| Worker 任务、恢复、通知与重启协调 | [Quick Worker 独立服务设计](CHUB_QUICK_WORKER_DESIGN.md) |
-| OpenClaw、微信身份、路由与插件协议 | [OpenClaw 定制集成设计](OPENCLAW_CUSTOMIZATION_DESIGN.md) |
-| 页面分层与视觉交互 | [前端 UI 模块化设计](FRONTEND_UI_DESIGN.md) |
-| 额度与自动化 | README 的专项文档索引 |
+完整文档导航和各文档的唯一职责由[README](../README.md#核心项目文档)维护。本文只在涉及具体边界时链接对应专项文档；当前可调用能力以[集成能力清单](CHUB_INTEGRATION_CAPABILITIES.md)为准。
 
 ### 验收范围与复检
 
-- 已确认：当前进程边界、状态所有权、维护操作范围，以及 Web、Quick Worker、OpenClaw 和 Debug Chrome 的独立恢复语义。
-- 未验证或不承诺：本文件声明的目录收敛与公开用例尚未自动等同于代码迁移完成；新增 Runtime、第三方服务或未实际复检的平台必须按专项文档完成验证。
-- 重新验收触发：修改层间依赖方向、状态权威来源、信任边界、固定协议、升级组件清单、维护操作范围，或将现有跨层协调迁移为公开用例时，必须复检受影响的最终状态、失败关闭边界和平台服务恢复。
+- 已确认：当前三层依赖方向、进程边界、状态所有权和维护影响范围。
+- 未验证或不承诺：本文件的目录归属不等同于已完成代码迁移；新增 Runtime、第三方服务或未实际复检的平台必须按专项文档完成验证。
+- 重新验收触发：修改层间依赖方向、状态权威来源、信任边界、维护影响范围，或将现有跨层协调迁移为公开用例时，必须复检受影响的最终状态、失败关闭边界和平台服务恢复。

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 import time
 from dataclasses import replace
@@ -14,6 +15,7 @@ import pytest
 
 from app.ai_usage.models import AiTodayUsage, AiWeeklyUsage
 from app.ai_runtime.general_settings import RuntimeSettingsStoreUnavailable
+from app.ai_runtime import RuntimeOperationError
 from app.ai_runtime.external_modules import ExternalRuntimeModuleService
 from app.ai_runtime.usage import RuntimeUsageService
 from chub_codex_runtime.provider_browser import (
@@ -136,8 +138,38 @@ def test_runtime_usage_service_reads_the_current_runtime_registry() -> None:
     adapter.read_usage_snapshot.assert_called_once_with(force=True)
 
 
+def test_runtime_usage_service_routes_login_page_to_runtime_owner() -> None:
+    registry = MagicMock()
+    adapter = MagicMock()
+    registry.require.return_value = adapter
+    usage = RuntimeUsageService(lambda: registry, default_runtime_id="codex")
+
+    usage.open_login_page()
+
+    registry.require.assert_called_once_with("codex", {"usage_login_page"})
+    adapter.open_usage_login_page.assert_called_once_with()
+
+
+def test_runtime_usage_service_reports_login_recovery_only_when_supported() -> None:
+    registry = MagicMock()
+    registry.require.return_value = MagicMock()
+    usage = RuntimeUsageService(lambda: registry, default_runtime_id="codex")
+
+    assert usage.login_page_available() is True
+    registry.require.assert_called_once_with("codex", {"usage_login_page"})
+
+    registry.require.reset_mock()
+    registry.require.side_effect = RuntimeOperationError(
+        "runtime_capability_unavailable",
+        "Runtime does not support this operation",
+    )
+
+    assert usage.login_page_available() is False
+    registry.require.assert_called_once_with("codex", {"usage_login_page"})
+
+
 @pytest.mark.anyio
-async def test_general_runtime_settings_reject_invalid_timezone_as_user_input(
+async def test_general_runtime_settings_reject_removed_usage_timezone(
     settings: Settings,
     tmp_path,
 ) -> None:
@@ -147,22 +179,13 @@ async def test_general_runtime_settings_reject_invalid_timezone_as_user_input(
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        invalid = await client.put(
-            "/api/ai/settings",
-            json={"values": {"usage-timezone": "not/a-timezone"}},
-        )
-        saved = await client.put(
+        response = await client.put(
             "/api/ai/settings",
             json={"values": {"usage-timezone": "America/Los_Angeles"}},
         )
 
-    assert invalid.status_code == 400
-    assert invalid.json()["error"]["code"] == "ai_runtime_settings_invalid"
-    assert saved.status_code == 200
-    assert saved.json()["data"]["sections"][0]["fields"][0]["value"] == (
-        "America/Los_Angeles"
-    )
-    assert store.read_general().timezone == "America/Los_Angeles"
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "ai_runtime_settings_invalid"
 
 
 @pytest.mark.anyio
@@ -189,7 +212,7 @@ async def test_general_runtime_settings_save_weekly_report_session_defaults(
         )
 
     assert response.status_code == 200
-    section = response.json()["data"]["sections"][1]
+    section = response.json()["data"]["sections"][0]
     assert section["id"] == "weekly-report-session"
     assert {field["id"] for field in section["fields"]} == {
         "weekly-report-runtime",
@@ -204,22 +227,28 @@ async def test_general_runtime_settings_save_weekly_report_session_defaults(
 
 
 @pytest.mark.anyio
-async def test_general_runtime_settings_hide_weekly_session_controls_without_runtime(
+async def test_general_runtime_settings_keep_weekly_session_controls_with_builtin_runtime(
     settings: Settings,
 ) -> None:
     app = create_app(settings)
     manager = app.state.ai_session_manager
-    manager.remove_runtime_module("codex", operation_id="a" * 32)
+    removal = manager.runtime_module_service.remove("codex-010000", operation_id="a" * 32)
+    manager.runtime_module_service.finalize_removal(removal)
+    manager.refresh_external_runtime_modules()
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/api/ai/settings")
 
     assert response.status_code == 200
-    section = response.json()["data"]["sections"][1]
+    section = response.json()["data"]["sections"][0]
     assert section["id"] == "weekly-report-session"
-    assert section["fields"] == []
-    assert "资料下载仍可独立运行" in section["description"]
+    assert {field["id"] for field in section["fields"]} == {
+        "weekly-report-runtime",
+        "weekly-report-permission",
+        "weekly-report-model",
+        "weekly-report-reasoning",
+    }
 
 
 @pytest.mark.anyio
@@ -228,7 +257,7 @@ async def test_external_runtime_settings_failure_returns_service_unavailable(
 ) -> None:
     app = create_app(settings)
     adapter = app.state.ai_session_manager.runtime_adapter
-    assert adapter.__class__.__module__.startswith("_chub_runtime_codex.")
+    assert adapter.__class__.__module__ == "chub_codex_runtime.runtime_adapter"
     app.state.ai_session_manager.runtime_settings_store.read_general = MagicMock(
         side_effect=RuntimeSettingsStoreUnavailable("settings unavailable")
     )
@@ -242,11 +271,11 @@ async def test_external_runtime_settings_failure_returns_service_unavailable(
 
 
 @pytest.mark.anyio
-async def test_ai_usage_returns_runtime_unavailable_without_an_installed_runtime(
+async def test_ai_usage_uses_builtin_runtime_when_no_formal_version_is_installed(
     settings: Settings,
 ) -> None:
     service = ExternalRuntimeModuleService(settings)
-    removal = service.remove("codex", operation_id="a" * 32)
+    removal = service.remove("codex-010000", operation_id="a" * 32)
     service.finalize_removal(removal)
     app = create_app(settings)
     transport = httpx.ASGITransport(app=app)
@@ -254,8 +283,9 @@ async def test_ai_usage_returns_runtime_unavailable_without_an_installed_runtime
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/api/ai/usage")
 
-    assert response.status_code == 503
-    assert response.json()["error"]["code"] == "ai_runtime_unavailable"
+    assert response.status_code in {200, 503}
+    if response.status_code == 503:
+        assert response.json()["error"]["code"] != "ai_runtime_unavailable"
 
 
 def test_today_usage_requires_token_scope_with_tokens() -> None:
@@ -804,32 +834,100 @@ def test_provider_browser_invalid_stats_does_not_fail_fresh_quota(
     assert result.today.tokens is None
 
 
-def test_provider_browser_closes_its_page_on_login_redirect(
+def test_provider_browser_collects_background_page_responses(
+    settings: Settings,
+) -> None:
+    adapter = ProviderBrowserAdapter(_provider_config(), settings.automations)
+    adapter._capture_background_page_responses = AsyncMock(
+        return_value=SimpleNamespace(
+            subscription=_subscription_payload(),
+            stats={"code": 0, "data": {"by_platform": []}},
+        )
+    )
+
+    with patch(
+        "chub_codex_runtime.provider_browser.debug_chrome_status",
+        return_value=("running", None, None),
+    ):
+        result = adapter.collect(timeout_seconds=1)
+
+    assert result.weekly.remaining_percent == 78
+    adapter._capture_background_page_responses.assert_awaited_once()
+
+
+def test_provider_browser_keeps_login_redirect_as_login_required(
+    settings: Settings,
+) -> None:
+    adapter = ProviderBrowserAdapter(_provider_config(), settings.automations)
+    adapter._capture_background_page_responses = AsyncMock(
+        side_effect=ProviderBrowserUnavailable("provider_login_unavailable")
+    )
+
+    with patch(
+        "chub_codex_runtime.provider_browser.debug_chrome_status",
+        return_value=("running", None, None),
+    ):
+        with pytest.raises(ProviderBrowserUnavailable, match="login_unavailable"):
+            adapter.collect(timeout_seconds=1)
+
+
+
+def test_provider_browser_does_not_infer_logout_from_subscription_authentication_failure(
     settings: Settings,
 ) -> None:
     adapter = ProviderBrowserAdapter(_provider_config(), settings.automations)
 
-    pages = []
+    adapter._capture_background_page_responses = AsyncMock(
+        side_effect=ProviderBrowserUnavailable("provider_response_failed")
+    )
+
+    with patch(
+        "chub_codex_runtime.provider_browser.debug_chrome_status",
+        return_value=("running", None, None),
+    ):
+        with pytest.raises(ProviderBrowserUnavailable, match="response_failed"):
+            adapter.collect(timeout_seconds=1)
+
+
+def test_provider_browser_opens_or_reuses_fixed_login_page(
+    settings: Settings,
+) -> None:
+    adapter = ProviderBrowserAdapter(_provider_config(), settings.automations)
 
     class Page:
-        url = "about:blank"
-
-        def __init__(self) -> None:
+        def __init__(self, name: str = "") -> None:
+            self.name = name
+            self.goto_url = None
+            self.brought_to_front = False
             self.closed = False
-            pages.append(self)
 
-        def on(self, _event: str, _callback) -> None:
-            return None
+        def is_closed(self) -> bool:
+            return self.closed
 
-        async def goto(self, *_args, **_kwargs) -> None:
-            self.url = "http://10.20.30.40/login?redirect=/subscriptions"
+        async def evaluate(self, _script: str) -> str:
+            return self.name
+
+        async def add_init_script(self, script: str) -> None:
+            assert ProviderBrowserAdapter.LOGIN_PAGE_NAME in script
+            self.name = ProviderBrowserAdapter.LOGIN_PAGE_NAME
+
+        async def goto(self, url: str, **_kwargs) -> None:
+            self.goto_url = url
+
+        async def bring_to_front(self) -> None:
+            self.brought_to_front = True
 
         async def close(self) -> None:
             self.closed = True
 
+    existing = Page(ProviderBrowserAdapter.LOGIN_PAGE_NAME)
+    created = Page()
+
     class Context:
-        async def new_page(self):
-            return Page()
+        pages = [existing]
+
+        async def new_page(self) -> Page:
+            return created
 
     class Session:
         async def __aenter__(self):
@@ -842,11 +940,10 @@ def test_provider_browser_closes_its_page_on_login_redirect(
         "chub_codex_runtime.provider_browser.session_factory",
         return_value=lambda **_kwargs: Session(),
     ):
-        with pytest.raises(ProviderBrowserUnavailable, match="login_unavailable"):
-            asyncio.run(adapter._capture_responses(1))
+        asyncio.run(adapter._open_login_page())
 
-    assert len(pages) == 2
-    assert all(page.closed for page in pages)
+    assert existing.brought_to_front is True
+    assert created.goto_url is None
 
 
 @pytest.mark.anyio

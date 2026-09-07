@@ -42,6 +42,7 @@ class BuiltinRuntimeModule(Protocol):
 @dataclass(frozen=True)
 class BuiltinRuntimeNavigation:
     runtime_id: str
+    implementation_id: str
     name: str
     description: str
 
@@ -88,23 +89,26 @@ class BuiltinRuntimeModuleRegistry:
                 "Runtime module default marker is invalid",
                 kind="conflict",
             )
-        runtime_id = descriptor.runtime_id
-        if runtime_id in self._modules:
+        implementation_id = descriptor.effective_implementation_id
+        if implementation_id in self._modules:
             raise RuntimeOperationError(
                 "runtime_module_duplicate",
-                f"Runtime module is already registered: {runtime_id}",
+                f"Runtime implementation is already registered: {implementation_id}",
                 kind="conflict",
             )
-        if module.is_default and any(item.is_default for item in self._modules.values()):
+        if module.is_default and any(
+            candidate.is_default for candidate in self._modules.values()
+        ):
             raise RuntimeOperationError(
                 "runtime_module_default_duplicate",
-                "More than one default Runtime module is registered",
+                "Exactly one default Runtime module may be registered",
                 kind="conflict",
             )
-        self._modules[runtime_id] = module
-        self._descriptors[runtime_id] = descriptor
-        self._navigation[runtime_id] = BuiltinRuntimeNavigation(
-            runtime_id=runtime_id,
+        self._modules[implementation_id] = module
+        self._descriptors[implementation_id] = descriptor
+        self._navigation[implementation_id] = BuiltinRuntimeNavigation(
+            runtime_id=descriptor.runtime_id,
+            implementation_id=implementation_id,
             name=module.display_name,
             description=module.description,
         )
@@ -125,19 +129,47 @@ class BuiltinRuntimeModuleRegistry:
         return registered
 
     def runtime_ids(self) -> tuple[str, ...]:
-        for runtime_id, module in self._modules.items():
-            self._require_identity(runtime_id, module)
-        return tuple(self._modules)
+        values: list[str] = []
+        for implementation_id, module in self._modules.items():
+            descriptor = self._require_identity(implementation_id, module)
+            if descriptor.runtime_id not in values:
+                values.append(descriptor.runtime_id)
+        return tuple(values)
+
+    def implementation_ids(self, runtime_id: str | None = None) -> tuple[str, ...]:
+        values: list[str] = []
+        for implementation_id, module in self._modules.items():
+            descriptor = self._require_identity(implementation_id, module)
+            if runtime_id is None or descriptor.runtime_id == runtime_id:
+                values.append(implementation_id)
+        return tuple(values)
 
     def navigation(self) -> tuple[BuiltinRuntimeNavigation, ...]:
         navigation: list[BuiltinRuntimeNavigation] = []
-        for runtime_id, module in self._modules.items():
-            self._require_identity(runtime_id, module)
-            navigation.append(self._navigation[runtime_id])
+        runtime_ids: set[str] = set()
+        for implementation_id, module in self._modules.items():
+            descriptor = self._require_identity(implementation_id, module)
+            if descriptor.runtime_id in runtime_ids:
+                continue
+            runtime_ids.add(descriptor.runtime_id)
+            navigation.append(self._navigation[implementation_id])
         return tuple(navigation)
 
     def require_navigation(self, runtime_id: str) -> BuiltinRuntimeNavigation:
         module = self._modules.get(runtime_id)
+        if module is None:
+            matches = [
+                implementation_id
+                for implementation_id, descriptor in self._descriptors.items()
+                if descriptor.runtime_id == runtime_id
+            ]
+            if len(matches) == 1:
+                runtime_id = matches[0]
+                module = self._modules[runtime_id]
+            elif len(matches) > 1:
+                defaults = [item for item in matches if self._modules[item].is_default]
+                if len(defaults) == 1:
+                    return self._navigation[defaults[0]]
         if module is None:
             raise RuntimeOperationError(
                 "runtime_module_unavailable",
@@ -149,6 +181,20 @@ class BuiltinRuntimeModuleRegistry:
     def require(self, runtime_id: str) -> BuiltinRuntimeModule:
         module = self._modules.get(runtime_id)
         if module is None:
+            matches = [
+                implementation_id
+                for implementation_id, descriptor in self._descriptors.items()
+                if descriptor.runtime_id == runtime_id
+            ]
+            if len(matches) == 1:
+                runtime_id = matches[0]
+                module = self._modules[runtime_id]
+            elif len(matches) > 1:
+                defaults = [item for item in matches if self._modules[item].is_default]
+                if len(defaults) == 1:
+                    runtime_id = defaults[0]
+                    module = self._modules[runtime_id]
+        if module is None:
             raise RuntimeOperationError(
                 "runtime_module_unavailable",
                 f"Runtime module is not registered: {runtime_id}",
@@ -157,11 +203,7 @@ class BuiltinRuntimeModuleRegistry:
         return module
 
     def default(self) -> BuiltinRuntimeModule:
-        defaults: list[BuiltinRuntimeModule] = []
-        for runtime_id, module in self._modules.items():
-            self._require_identity(runtime_id, module)
-            if module.is_default:
-                defaults.append(module)
+        defaults = [module for module in self._modules.values() if module.is_default]
         if len(defaults) != 1:
             raise RuntimeOperationError(
                 "runtime_module_default_unavailable",

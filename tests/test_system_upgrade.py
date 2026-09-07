@@ -1442,6 +1442,112 @@ async def test_changed_recovery_plan_can_continue_failed_cleanup(
     assert resumed.json()["data"]["state"] == "draining"
 
 
+@pytest.mark.anyio
+async def test_stale_runtime_recovery_plan_rebases_failed_final_verification(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    app = create_app(settings)
+    plan_path = tmp_path / "plan" / "system-upgrade.json"
+    plan_path.parent.mkdir()
+    old_plan = runtime_recovery_plan().plan.model_dump(mode="json")
+    old_plan["target_worker_protocol"] = PROTOCOL_VERSION - 1
+    old_plan["source_worker_protocol"] = PROTOCOL_VERSION - 1
+    plan_path.write_text(json.dumps(old_plan), encoding="utf-8")
+    plan_path.chmod(0o600)
+    loaded = load_system_upgrade_plan(plan_path)
+    assert loaded is not None
+    app.state.system_upgrade.plan_path = plan_path
+    operation = app.state.system_upgrade.begin(
+        loaded,
+        source_ip="127.0.0.1",
+        old_worker_generation="a" * 32,
+        runner=lambda _operation_id: None,
+    )
+    app.state.system_upgrade.mark_started(operation.operation_id)
+    app.state.system_upgrade.update(
+        operation.operation_id,
+        stage="verifying_new_instance",
+        destructive_started=True,
+        restart_launch_state="launched",
+    )
+    app.state.system_upgrade.fail(operation.operation_id, "旧 Worker 协议未能确认")
+    current = runtime_recovery_plan()
+    app.state.quick_interactions._recovery_ready = True
+    app.state.system_upgrade_restart_readiness = lambda: None
+    app.state.run_system_upgrade = lambda _operation_id: None
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    ) as client:
+        preview = await client.get("/api/maintenance/system-upgrade")
+        resumed = await client.post(
+            "/api/maintenance/system-upgrade",
+            json={"fingerprint": current.fingerprint},
+        )
+
+    assert preview.status_code == 200
+    assert preview.json()["data"]["plan"]["fingerprint"] == current.fingerprint
+    assert resumed.status_code == 200
+    continued = app.state.system_upgrade.operation()
+    assert continued is not None
+    assert continued.fingerprint == current.fingerprint
+    assert continued.status == "started"
+    assert continued.stage == "verifying_new_instance"
+
+
+@pytest.mark.anyio
+async def test_stale_runtime_recovery_plan_uses_current_protocol_before_start(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    app = create_app(settings)
+    plan_path = tmp_path / "plan" / "system-upgrade.json"
+    plan_path.parent.mkdir()
+    old_plan = runtime_recovery_plan().plan.model_dump(mode="json")
+    old_plan["target_worker_protocol"] = PROTOCOL_VERSION - 1
+    old_plan["source_worker_protocol"] = PROTOCOL_VERSION - 1
+    plan_path.write_text(json.dumps(old_plan), encoding="utf-8")
+    plan_path.chmod(0o600)
+    app.state.system_upgrade.plan_path = plan_path
+    app.state.quick_interactions._recovery_ready = True
+    app.state.system_upgrade_restart_readiness = lambda: None
+    app.state.run_system_upgrade = lambda _operation_id: None
+    current = runtime_recovery_plan()
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    ) as client:
+        preview = await client.get("/api/maintenance/system-upgrade")
+        started = await client.post(
+            "/api/maintenance/system-upgrade",
+            json={"fingerprint": current.fingerprint},
+        )
+
+    assert preview.status_code == 200
+    assert preview.json()["data"]["plan"]["target_worker_protocol"] == PROTOCOL_VERSION
+    assert started.status_code == 200
+    operation = app.state.system_upgrade.operation()
+    assert operation is not None
+    assert operation.plan.target_worker_protocol == PROTOCOL_VERSION
+
+
+def test_system_upgrade_runner_uses_current_fixed_runtime_recovery_plan() -> None:
+    application = (PROJECT_ROOT / "app" / "application.py").read_text(encoding="utf-8")
+    start = application.index("    def run_system_upgrade(operation_id: str) -> None:")
+    end = application.index("    def deferred_restart_ready(request):", start)
+
+    assert "loaded = system_upgrade.plan()" in application[start:end]
+    assert "loaded = runtime_recovery_plan()" in application[start:end]
+    assert "loaded.fingerprint != state.fingerprint" in application[start:end]
+
+
 def test_weixin_system_upgrade_uses_application_upgrade_coordinator(
     settings: Settings,
     tmp_path: Path,

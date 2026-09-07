@@ -80,6 +80,25 @@
 - `chub notification send --target <target> --message <message> --mention-all`
 - `chub notification send --target <target> --message <message> --mention-recipient <recipient> [--mention-recipient <recipient> ...]`
 
+通知目标登记在 `~/.config/chub/notifications/registry.yaml`，Webhook 保存在
+`~/.config/chub/notifications/secrets/` 下权限为 `600` 的独立文件。调用方只能选择预配置目标并发送有界纯文本，不能指定任意 URL、Open ID、Secret 路径或凭据。
+
+首次配置可从不含真实凭据的示例开始：
+
+```bash
+mkdir -p ~/.config/chub/notifications/secrets
+chmod 700 ~/.config/chub/notifications ~/.config/chub/notifications/secrets
+cp -n config/notifications.example.yaml ~/.config/chub/notifications/registry.yaml
+touch ~/.config/chub/notifications/secrets/test.webhook
+chmod 600 \
+  ~/.config/chub/notifications/registry.yaml \
+  ~/.config/chub/notifications/secrets/test.webhook
+```
+
+将完整飞书机器人 Webhook URL 作为唯一一行写入 `test.webhook`；需要指定人员时，在 registry 的 `recipients` 中使用本机别名登记对应 Open ID。真实 Webhook、Open ID 和 registry 不得提交到仓库。
+
+配置后执行 `chub notification validate`、`chub notification list` 和 `chub notification test --target test`。`test` 会真实发送固定测试消息。Codex 实时终端和快速交互直接使用 `chub notification send`；OpenClaw TUI 和微信入口使用 `chub_send_notification`。
+
 ### 2.3 需求储备指令
 
 - `chub request save --title <标题>`：从标准输入保存一条新需求，占用编号最小的空闲 R 槽位。
@@ -116,7 +135,7 @@
 | 请求 | 调用场景 | 功能 |
 | --- | --- | --- |
 | `GET /api/status` | `chub_get_status` | 查询节点健康和基础状态 |
-| `GET /api/ai/usage` | 微信状态、Session 回执、任务通知、受控调用方 | 查询默认 Runtime 的周额度、今日用量和重置时间；当前首页不展示独立额度卡片，账号当天桶延迟时返回明确标记的本机 Token |
+| `GET /api/ai/usage` | 微信状态、Session 回执、任务通知、受控调用方 | 查询默认 Runtime 的受限用量快照；当前 Runtime 的字段与展示口径以其专属设计为准 |
 | `POST /api/notifications/send` | `chub_send_notification` | 向预配置目标发送通知 |
 | `POST /api/openclaw/wechat-chub-mode/dispatch` | 微信 `before_dispatch` | 调度可信微信私聊 |
 
@@ -231,7 +250,7 @@ Session 标题与任务摘要的显示规则：
 | 回复类型 | Session/用量状态尾部 |
 | --- | --- |
 | `help`、`Usage` 用法错误 | 不附加 |
-| `usage` | 只返回完整额度使用情况，不附加 Session 状态 |
+| `usage` | 只返回默认 Runtime 的完整用量展示，不附加 Session 状态 |
 | `model`、`model list`、`model level`、`model use`、`text model list`、`text model level`、`text model use` | 只返回模型查询或配置结果，不附加 Session 列表或用量状态 |
 | `check` | 不提交 AI 任务，也不附加 Session、用量或 `Weekly` 状态尾部 |
 | `cat R#`、`archive R#`及其失败 | 不附加 |
@@ -241,12 +260,12 @@ Session 标题与任务摘要的显示规则：
 | `restart web` 已在进行中或同步失败的回复 | 按现有固定指令规则附加可用状态 |
 | `upgrade` | 不附加 Session/用量状态；直接返回升级受理结果，最终状态通过独立通知返回 |
 | 切换并提交任务、续提任务、切换后正文的优化中回执或未启用文本优化的普通任务回执 | 不附加 |
-| 其他固定指令结果 | 附加 Session 状态和紧凑用量；有 5h 时为 `5h <quota> · <HH:MM> · Weekly <quota> · <M/D> · Today <usage>`，否则为 `Weekly <quota> · <M/D> · Today <usage>` |
-| 主任务成功通知 | 只在结果底部追加用量，不附加完整 Session 状态 |
+| 其他固定指令结果 | 附加 Session 状态和默认 Runtime 的紧凑用量展示 |
+| 主任务成功通知 | 只在结果底部追加默认 Runtime 的紧凑用量展示，不附加完整 Session 状态 |
 | 主任务失败、超时及文本优化通知 | 不附加 |
 | Web、Worker、ClawBot 重启的独立完成通知 | 附加操作后的最终状态；受理或进程启动不视为完成 |
 
-`usage` 的完整回执按 `5h`、`Weekly`、`Today` 分行；5h 存在时先显示其剩余百分比和 `YYYY-MM-DD HH:MM` 重置时间。`Weekly` 显示带美元符号的剩余金额及其末尾的 `Remaining` 标签、周额度剩余百分比及其末尾的 `left` 标签和同样格式的重置时间；`Today` 显示带美元符号的已用额度及其末尾的 `Used` 标签和 Token。5h 缺失时仅省略该行。微信回执暂不显示限额数值。
+本节只定义哪些微信结果展示完整或紧凑用量，以及读取失败时如何降级；当前 Codex 的字段、单位、长短文本与缺失项处理以[Chub Codex Runtime 设计](CHUB_CODEX_RUNTIME_DESIGN.md)为准。未来默认 Runtime 变化时，必须先由对应 Runtime 专属设计定义其快照展示，再同步复检本节的入口和通知契约。
 
 - 尾部读取失败只降级对应状态，不得覆盖指令本身的成功或失败语义。所有微信回执的额度读取超时、异常或空结果固定显示 `Usage unavailable`，不误报为 Weekly 窗口异常；`Weekly Unavailable` 只用于已取得额度响应但缺少 Weekly 窗口的场景。
 - 异步任务和文本优化队列只保存目标 `session_id`；`Started`、完成和失败通知发送时按该 ID 读取当前槽位与 Session 名称。润色任务的 `Started` 使用 `Started`、发送时校验的 `[▶ ]S<槽位> · <标题>`、`Submitted:` 完整润色中文及 `English:`；确认模式在确认结果持久化后立即结束微信入口请求，主任务提交与这一条 `Started` 均由确认队列异步处理，不再额外发送 `Translation confirmed · Preparing to submit.`，也不把 Worker 或通知耗时误报为提交未知。槽位暂忙时先回复等待，待实际接收后再发送 `Started`。槽位已释放或复用时标记 `Unavailable`，不得把新 Session 显示成原任务目标。
@@ -275,6 +294,7 @@ Session 标题与任务摘要的显示规则：
 | [README](../README.md) | 项目概览、安装、主要入口和文档导航 |
 | [OpenClaw 定制集成设计](OPENCLAW_CUSTOMIZATION_DESIGN.md) | 微信端到端业务、身份、权限、插件定制、Context Token 和通知 |
 | [Chub AI Session 状态模型设计](AI_SESSION_STATE_DESIGN.md) | Session、Activity、usage 投影、入口、槽位和单 writer 语义 |
-| [Codex AI 额度与用量采集设计](CODEX_AI_QUOTA_USAGE_DESIGN.md) | Codex/OpenAI 用量来源、统一接口、缓存和展示口径 |
+| [Chub Codex Runtime 设计](CHUB_CODEX_RUNTIME_DESIGN.md) | 当前 Codex Runtime 的专属边界，以及 Codex/OpenAI 用量来源、接口、缓存和展示口径 |
 | [Chub Quick Worker 独立服务设计](CHUB_QUICK_WORKER_DESIGN.md) | Quick Worker 独立服务、非实时任务、恢复、通知终态和重启协调 |
+| [Chub 任务编排外置设计](CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md) | 任务编排模块的未来边界；不改变本节当前固定指令契约 |
 | [Chub OpenClaw 插件说明](../integrations/openclaw/chub/README.md) | 插件协议、源码、构建、部署和协议验收 |

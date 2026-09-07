@@ -21,10 +21,12 @@ RuntimeCapability = Literal[
     "model_catalog",
     "permission_profiles",
     "usage_snapshot",
+    "usage_login_page",
     "runtime_settings",
 ]
 RuntimeCapabilityState = Literal["supported", "unsupported", "unavailable"]
 RUNTIME_ID_PATTERN = r"^[a-z][a-z0-9-]{0,31}$"
+RUNTIME_IMPLEMENTATION_ID_PATTERN = r"^[a-z][a-z0-9-]{0,31}$"
 RUNTIME_CAPABILITIES: frozenset[RuntimeCapability] = frozenset(
     {
         "runtime_status",
@@ -40,6 +42,7 @@ RUNTIME_CAPABILITIES: frozenset[RuntimeCapability] = frozenset(
         "model_catalog",
         "permission_profiles",
         "usage_snapshot",
+        "usage_login_page",
         "runtime_settings",
     }
 )
@@ -64,7 +67,22 @@ class _StrictModel(BaseModel):
 
 class RuntimeDescriptor(_StrictModel):
     runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
+    # The logical Runtime remains stable while trusted local implementations
+    # may coexist. Older test-only descriptors omit this and use runtime_id.
+    implementation_id: str | None = Field(
+        default=None,
+        pattern=RUNTIME_IMPLEMENTATION_ID_PATTERN,
+    )
+    native_session_compatibility_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+    )
     capabilities: frozenset[RuntimeCapability]
+
+    @property
+    def effective_implementation_id(self) -> str:
+        return self.implementation_id or self.runtime_id
 
 
 class RuntimeCapabilityMatrix(_StrictModel):
@@ -322,6 +340,11 @@ class RuntimeSessionArchiveAdapter(Protocol):
 @runtime_checkable
 class RuntimeUsageSnapshotAdapter(Protocol):
     def read_usage_snapshot(self, *, force: bool = False): ...
+
+
+@runtime_checkable
+class RuntimeUsageLoginPageAdapter(Protocol):
+    def open_usage_login_page(self) -> None: ...
 
 
 @runtime_checkable

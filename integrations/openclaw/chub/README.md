@@ -1,8 +1,10 @@
 # Chub OpenClaw 插件
 
-> 本 README 是插件源码、构建、部署和协议升级操作手册。业务身份、路由、幂等、安全边界及微信 Context Token 规则统一见 [OpenClaw 定制集成设计](../../../docs/OPENCLAW_CUSTOMIZATION_DESIGN.md)。
-
-> 状态：统一消息调度 v3 已部署，普通文字和可信语音已完成 macOS、Ubuntu 真实验收；插件协议边界已完成自动化验证。微信适配器的可信语音、Context Token 与日志脱敏补丁不属于本插件，普通文本原文首尾空格不属于兼容承诺；Chub 内部固定指令和 Requests 的业务验收状态由接入设计维护。
+> 状态：已验收。
+> 主要读者：需要构建、部署或升级 Chub OpenClaw 插件的 AI Agent；维护人员用于执行插件维护和验收。
+> 本文负责：插件源码、构建、部署、固定调度协议和协议升级同步清单。
+> 本文不负责：业务身份、路由、幂等、安全边界、微信 Context Token、固定指令或用户可见回复格式；这些内容以[OpenClaw 定制集成设计](../../../docs/OPENCLAW_CUSTOMIZATION_DESIGN.md)和[Chub 集成能力清单](../../../docs/CHUB_INTEGRATION_CAPABILITIES.md)为准。
+> 维护说明：统一消息调度 v3 已部署，普通文字和可信语音已完成 macOS、Ubuntu 真实验收；插件协议边界已完成自动化验证。微信适配器的可信语音、Context Token 与日志脱敏补丁不属于本插件，普通文本原文首尾空格不属于兼容承诺。
 
 Chub 仓库内的插件、API 和消息路由索引统一见[Chub 集成能力清单](../../../docs/CHUB_INTEGRATION_CAPABILITIES.md)；整体边界遵循[Chub 总体架构](../../../docs/CHUB_ARCHITECTURE_DESIGN.md)和[OpenClaw 定制集成设计](../../../docs/OPENCLAW_CUSTOMIZATION_DESIGN.md)。本文只维护 `chub` 插件自身的协议、源码、部署和验收规则。
 

@@ -122,6 +122,7 @@ class TestTaskSubmission(_StrictModel):
 class RuntimeTaskSubmission(_StrictModel):
     task_id: str = Field(pattern=TASK_ID_PATTERN)
     runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
+    implementation_id: str = Field(pattern=RUNTIME_ID_PATTERN)
     session_id: str = Field(pattern=SESSION_ID_PATTERN)
     workspace_id: str = Field(pattern=WORKSPACE_ID_PATTERN)
     prompt: str = Field(min_length=1, max_length=MAX_PROMPT_CHARS)
@@ -165,6 +166,7 @@ class StoredTaskSpec(_StrictModel):
     protocol_version: int
     task_id: str = Field(pattern=TASK_ID_PATTERN)
     runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
+    implementation_id: str = Field(pattern=RUNTIME_ID_PATTERN)
     prompt: str = Field(min_length=1, max_length=MAX_PROMPT_CHARS)
     prompt_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     spec_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
@@ -229,6 +231,7 @@ class StoredTaskSpec(_StrictModel):
 class StoredTaskState(_StrictModel):
     task_id: str = Field(pattern=TASK_ID_PATTERN)
     runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
+    implementation_id: str = Field(default="codex", pattern=RUNTIME_ID_PATTERN)
     spec_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     status: TaskStatus
     worker_generation: str
@@ -245,6 +248,7 @@ class StoredTaskState(_StrictModel):
 class StoredRuntimeEvent(_StrictModel):
     task_id: str = Field(pattern=TASK_ID_PATTERN)
     runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
+    implementation_id: str = Field(default="codex", pattern=RUNTIME_ID_PATTERN)
     spec_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     execution_id: str = Field(pattern=EXECUTION_ID_PATTERN)
     native_session_id: str = Field(min_length=1, max_length=128)
@@ -254,6 +258,7 @@ class StoredRuntimeEvent(_StrictModel):
 class StoredTaskCompletion(_StrictModel):
     task_id: str = Field(pattern=TASK_ID_PATTERN)
     runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
+    implementation_id: str = Field(default="codex", pattern=RUNTIME_ID_PATTERN)
     spec_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     execution_id: str | None = Field(default=None, pattern=EXECUTION_ID_PATTERN)
     status: FinalTaskStatus
@@ -270,6 +275,7 @@ class TaskTombstone(_StrictModel):
     protocol_version: int
     task_id: str = Field(pattern=TASK_ID_PATTERN)
     runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
+    implementation_id: str = Field(default="codex", pattern=RUNTIME_ID_PATTERN)
     spec_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     completed_at: datetime
     expires_at: datetime
@@ -279,6 +285,7 @@ class SessionLease(_StrictModel):
     session_id: str = Field(pattern=SESSION_ID_PATTERN)
     task_id: str = Field(pattern=TASK_ID_PATTERN)
     runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
+    implementation_id: str = Field(default="codex", pattern=RUNTIME_ID_PATTERN)
     spec_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     created_at: datetime
 
@@ -286,6 +293,7 @@ class SessionLease(_StrictModel):
 class WorkerTaskView(_StrictModel):
     task_id: str = Field(pattern=TASK_ID_PATTERN)
     runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
+    implementation_id: str = Field(default="codex", pattern=RUNTIME_ID_PATTERN)
     status: TaskStatus
     prompt_sha256: str
     created_at: datetime
@@ -307,6 +315,7 @@ class WorkerTaskView(_StrictModel):
 class WorkerTaskSummary(_StrictModel):
     task_id: str = Field(pattern=TASK_ID_PATTERN)
     runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
+    implementation_id: str = Field(default="codex", pattern=RUNTIME_ID_PATTERN)
     status: TaskStatus
     prompt_sha256: str
     session_id: str | None = None
@@ -386,6 +395,7 @@ def _digest_stored_spec(spec: StoredTaskSpec) -> str:
     else:
         payload = {
             "runtime_id": spec.runtime_id,
+            "implementation_id": spec.implementation_id,
             "session_id": spec.session_id,
             "workspace_id": spec.workspace_id,
             "prompt": spec.prompt,
@@ -577,7 +587,7 @@ class WorkerTaskManager:
 
     async def submit_runtime(self, submission: RuntimeTaskSubmission) -> WorkerTaskView:
         try:
-            runner = self.runtime_registry.require(submission.runtime_id)
+            runner = self.runtime_registry.require(submission.implementation_id)
             runner.validate_turn(
                 submission.workspace_id,
                 RuntimeTurnRequest(
@@ -612,7 +622,14 @@ class WorkerTaskManager:
                         "worker_task_corrupt",
                         "Existing task record is invalid; the task was not replayed",
                     ) from None
-                if spec.spec_sha256 != spec_digest or spec.runtime_id != runtime_id:
+                if (
+                    spec.spec_sha256 != spec_digest
+                    or spec.runtime_id != runtime_id
+                    or (
+                        isinstance(submission, RuntimeTaskSubmission)
+                        and spec.implementation_id != submission.implementation_id
+                    )
+                ):
                     raise WorkerTaskError(
                         "worker_task_conflict",
                         "Task ID is already reserved for a different specification",
@@ -677,6 +694,11 @@ class WorkerTaskManager:
                 protocol_version=self.protocol_version,
                 task_id=submission.task_id,
                 runtime_id=runtime_id,
+                implementation_id=(
+                    submission.implementation_id
+                    if isinstance(submission, RuntimeTaskSubmission)
+                    else "fixed-test"
+                ),
                 prompt=submission.prompt,
                 prompt_sha256=prompt_sha256,
                 spec_sha256=spec_digest,
@@ -762,6 +784,7 @@ class WorkerTaskManager:
             state = StoredTaskState(
                 task_id=submission.task_id,
                 runtime_id=runtime_id,
+                implementation_id=spec.implementation_id,
                 spec_sha256=spec_digest,
                 status="queued" if queued_translation else "accepted",
                 worker_generation=self.generation,
@@ -775,6 +798,7 @@ class WorkerTaskManager:
                             session_id=spec.session_id,
                             task_id=spec.task_id,
                             runtime_id=spec.runtime_id,
+                            implementation_id=spec.implementation_id,
                             spec_sha256=spec.spec_sha256,
                             created_at=now,
                         )
@@ -978,6 +1002,7 @@ class WorkerTaskManager:
                 WorkerTaskSummary(
                     task_id=view.task_id,
                     runtime_id=view.runtime_id,
+                    implementation_id=view.implementation_id,
                     status=view.status,
                     prompt_sha256=view.prompt_sha256,
                     session_id=spec.session_id,
@@ -1180,7 +1205,7 @@ class WorkerTaskManager:
                         candidate_native_session_id
                         if candidate_native_session_id is not None
                         and self._native_session_available(
-                            spec.runtime_id,
+                            spec.implementation_id,
                             candidate_native_session_id,
                         )
                         else None
@@ -1191,6 +1216,7 @@ class WorkerTaskManager:
                                 session_id=spec.session_id or "",
                                 task_id=spec.task_id,
                                 runtime_id=spec.runtime_id,
+                                implementation_id=spec.implementation_id,
                                 spec_sha256=spec.spec_sha256,
                                 created_at=utc_now(),
                             )
@@ -1241,7 +1267,7 @@ class WorkerTaskManager:
                     state.runner_created_at,
                 )
             if spec.task_kind != "test":
-                runner = self.runtime_registry.require(spec.runtime_id)
+                runner = self.runtime_registry.require(spec.implementation_id)
                 native_session_id = self._extract_native_session_id(
                     runner,
                     self.tasks_dir / task_id / "stdout.txt",
@@ -1300,7 +1326,7 @@ class WorkerTaskManager:
                     )
                     return
                 try:
-                    runner = self.runtime_registry.require(spec.runtime_id)
+                    runner = self.runtime_registry.require(spec.implementation_id)
                 except RuntimeOperationError as exc:
                     raise _RuntimeBoundaryError(exc) from exc
                 expected_native_id = self._expected_native_session_id(spec, state)
@@ -1593,7 +1619,7 @@ class WorkerTaskManager:
         while True:
             try:
                 spec = self._read_spec(task_id)
-                runner = self.runtime_registry.require(spec.runtime_id)
+                runner = self.runtime_registry.require(spec.implementation_id)
                 native_session_id = self._extract_native_session_id(
                     runner,
                     path,
@@ -1923,6 +1949,7 @@ class WorkerTaskManager:
         return WorkerTaskView(
             task_id=spec.task_id,
             runtime_id=spec.runtime_id,
+            implementation_id=spec.implementation_id,
             status=state.status,
             prompt_sha256=spec.prompt_sha256,
             created_at=spec.created_at,
@@ -1961,6 +1988,7 @@ class WorkerTaskManager:
             StoredRuntimeEvent(
                 task_id=spec.task_id,
                 runtime_id=spec.runtime_id,
+                implementation_id=spec.implementation_id,
                 spec_sha256=spec.spec_sha256,
                 execution_id=state.execution_id,
                 native_session_id=native_session_id,
@@ -1988,6 +2016,7 @@ class WorkerTaskManager:
         completion = StoredTaskCompletion(
             task_id=spec.task_id,
             runtime_id=spec.runtime_id,
+            implementation_id=spec.implementation_id,
             spec_sha256=spec.spec_sha256,
             execution_id=state.execution_id,
             status=status,
@@ -2014,6 +2043,7 @@ class WorkerTaskManager:
             protocol_version=self.protocol_version,
             task_id=spec.task_id,
             runtime_id=spec.runtime_id,
+            implementation_id=spec.implementation_id,
             spec_sha256=spec.spec_sha256,
             completed_at=completed_at,
             expires_at=spec.created_at + TASK_RETRY_WINDOW,
@@ -2145,6 +2175,7 @@ class WorkerTaskManager:
             lease.session_id != spec.session_id
             or lease.task_id != spec.task_id
             or lease.runtime_id != spec.runtime_id
+            or lease.implementation_id != spec.implementation_id
             or lease.spec_sha256 != spec.spec_sha256
         ):
             raise ValueError("Session lease does not match its task")
@@ -2157,11 +2188,11 @@ class WorkerTaskManager:
 
     def _native_session_available(
         self,
-        runtime_id: str,
+        implementation_id: str,
         native_session_id: str,
     ) -> bool:
         try:
-            return self.runtime_registry.require(runtime_id).native_session_available(
+            return self.runtime_registry.require(implementation_id).native_session_available(
                 native_session_id
             )
         except RuntimeOperationError as exc:

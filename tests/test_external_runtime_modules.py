@@ -14,10 +14,12 @@ from app.ai_runtime.external_modules import ExternalRuntimeModuleService, Runtim
 
 
 @pytest.fixture(autouse=True)
-def _remove_default_codex_runtime(settings) -> None:
+def _remove_fixture_runtime_implementations(settings) -> None:
     service = ExternalRuntimeModuleService(settings)
-    removal = service.remove("codex", operation_id="0" * 32)
-    service.finalize_removal(removal)
+    installed, _failures = service.discover()
+    for item in installed:
+        removal = service.remove(item.manifest.implementation_id, operation_id="0" * 32)
+        service.finalize_removal(removal)
 
 
 def _runtime_archive(
@@ -27,11 +29,13 @@ def _runtime_archive(
     chub_version: str | None = None,
     version: str = "1.0.0",
     dependencies: bool = False,
-    is_default: bool = False,
 ) -> bytes:
     manifest = {
         "protocol_version": 1,
         "module_id": module_id,
+        "runtime_id": "codex",
+        "implementation_id": module_id,
+        "native_session_compatibility_id": "codex-v1",
         "module_type": "runtime",
         "display_name": "Local Test",
         "description": "Local Runtime test module.",
@@ -46,7 +50,7 @@ from app.ai_runtime import RuntimeDescriptor, RuntimeStatus
 from chub_codex_runtime.runtime_adapter import CodexRuntimeAdapter, CODEX_RUNTIME_CAPABILITIES
 from chub_codex_runtime.worker_runtime import CodexWorkerRuntime
 
-DESCRIPTOR = RuntimeDescriptor(runtime_id="{module_id}", capabilities=CODEX_RUNTIME_CAPABILITIES)
+DESCRIPTOR = RuntimeDescriptor(runtime_id="codex", implementation_id="{module_id}", native_session_compatibility_id="codex-v1", capabilities=CODEX_RUNTIME_CAPABILITIES)
 
 class Adapter(CodexRuntimeAdapter):
     @property
@@ -54,13 +58,13 @@ class Adapter(CodexRuntimeAdapter):
         return DESCRIPTOR
     def status(self):
         status = super().status()
-        return RuntimeStatus(runtime_id="{module_id}", available=status.available, reason=status.reason, dependencies=status.dependencies)
+        return RuntimeStatus(runtime_id="codex", available=status.available, reason=status.reason, dependencies=status.dependencies)
 
 class Module:
     descriptor = DESCRIPTOR
     display_name = "Local Test"
     description = "Local Runtime test module."
-    is_default = {is_default!r}
+    is_default = False
     def __init__(self, settings):
         self.settings = settings
     def build_adapter(self):
@@ -84,6 +88,9 @@ def _namespaced_runtime_archive(settings, *, module_id: str, label: str) -> byte
     manifest = {
         "protocol_version": 1,
         "module_id": module_id,
+        "runtime_id": "codex",
+        "implementation_id": module_id,
+        "native_session_compatibility_id": "codex-v1",
         "module_type": "runtime",
         "display_name": f"{label} Runtime",
         "description": f"{label} Runtime module.",
@@ -97,7 +104,7 @@ from app.ai_runtime import RuntimeDescriptor, RuntimeStatus
 from chub_codex_runtime.runtime_adapter import CodexRuntimeAdapter, CODEX_RUNTIME_CAPABILITIES
 from chub_codex_runtime.worker_runtime import CodexWorkerRuntime
 
-DESCRIPTOR = RuntimeDescriptor(runtime_id="{module_id}", capabilities=CODEX_RUNTIME_CAPABILITIES)
+DESCRIPTOR = RuntimeDescriptor(runtime_id="codex", implementation_id="{module_id}", native_session_compatibility_id="codex-v1", capabilities=CODEX_RUNTIME_CAPABILITIES)
 
 class Adapter(CodexRuntimeAdapter):
     @property
@@ -105,7 +112,7 @@ class Adapter(CodexRuntimeAdapter):
         return DESCRIPTOR
     def status(self):
         status = super().status()
-        return RuntimeStatus(runtime_id="{module_id}", available=status.available, reason=status.reason, dependencies=status.dependencies)
+        return RuntimeStatus(runtime_id="codex", available=status.available, reason=status.reason, dependencies=status.dependencies)
 
 class Module:
     descriptor = DESCRIPTOR
@@ -146,17 +153,18 @@ def test_runtime_zip_installs_and_discovers_a_non_default_module(settings) -> No
     assert failures == ()
 
 
-def test_external_runtime_can_provide_the_unique_default(settings) -> None:
+def test_external_runtime_registers_as_a_codex_implementation(settings) -> None:
     service = ExternalRuntimeModuleService(settings)
     activation = service.install(
-        _runtime_archive(settings, module_id="default-test", is_default=True),
+        _runtime_archive(settings, module_id="default-test"),
         source_name="default.zip",
     )
     service.finalize(activation)
 
     registry, failures = service.build_registry(BuiltinRuntimeModuleRegistry())
 
-    assert registry.default().descriptor.runtime_id == "default-test"
+    assert registry.runtime_ids() == ("codex",)
+    assert registry.require("default-test").descriptor.runtime_id == "codex"
     assert failures == ()
 
 
@@ -217,7 +225,7 @@ def test_runtime_zip_preview_reads_manifest_without_installing(settings) -> None
 
     assert preview.module_id == "local-test"
     assert preview.name == "Local Test"
-    assert list(service.runtimes_dir.iterdir()) == []
+    assert list((service.runtimes_dir / "codex").iterdir()) == []
     assert list(service.staging_dir.iterdir()) == []
 
 
@@ -322,7 +330,7 @@ def test_damaged_installed_runtime_is_isolated_from_other_runtimes(settings) -> 
 
     assert [item.manifest.module_id for item in installed] == ["healthy-test"]
     assert [failure.module_id for failure in failures] == ["damaged-test"]
-    assert registry.runtime_ids() == ("healthy-test",)
+    assert registry.runtime_ids() == ("codex",)
     assert [failure.module_id for failure in registry_failures] == ["damaged-test"]
 
 
@@ -374,14 +382,14 @@ def test_generated_codex_runtime_zip_loads_the_packaged_runtime_implementation(
     activation = service.install(output.read_bytes(), source_name=output.name)
     service.finalize(activation)
     registry, failures = service.build_registry(BuiltinRuntimeModuleRegistry())
-    module = registry.default()
+    module = registry.require("codex-010000")
     adapter = module.build_adapter()
     runner = module.build_worker_runner(adapter, workspaces={})
 
     assert failures == ()
     assert module.descriptor.runtime_id == "codex"
-    assert adapter.__class__.__module__.startswith("_chub_runtime_codex.")
-    assert runner.__class__.__module__.startswith("_chub_runtime_codex.")
+    assert adapter.__class__.__module__.startswith("_chub_runtime_codex_010000.")
+    assert runner.__class__.__module__.startswith("_chub_runtime_codex_010000.")
     assert runner.__class__.__module__.endswith("worker_runtime")
     assert "worker_entry.py" in runner.build_launch.__code__.co_consts
     with zipfile.ZipFile(output) as archive:

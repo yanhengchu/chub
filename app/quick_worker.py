@@ -31,6 +31,7 @@ from app.ai_runtime import (
     validate_runtime_wiring,
 )
 from app.ai_runtime.external_modules import ExternalRuntimeModuleService
+from app.ai_runtime.codex_builtin import load_builtin_codex_module
 from app.quick_worker_tasks import (
     RuntimeTaskSubmission,
     TestTaskSubmission,
@@ -42,8 +43,8 @@ from app.services.operation_log import write_operation
 
 
 HEALTH_PROTOCOL_VERSION = 1
-PROTOCOL_VERSION = 9
-WORKER_CODE_VERSION = "quick-worker-9-error-source"
+PROTOCOL_VERSION = 10
+WORKER_CODE_VERSION = "quick-worker-10-runtime-refresh"
 MAX_REQUEST_BYTES = 64 * 1024
 MAX_RESPONSE_BYTES = 256 * 1024
 CLIENT_TIMEOUT_SECONDS = 2.0
@@ -112,6 +113,14 @@ class WorkerRuntimeStateClearRequest(_StrictModel):
     runtime_id: str = Field(pattern=r"^[a-z][a-z0-9-]{0,31}$")
 
 
+class WorkerRuntimeRegistryRefreshRequest(_StrictModel):
+    protocol_version: int
+    request_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+    action: Literal["runtime_registry_refresh"]
+    implementation_id: str = Field(pattern=r"^[a-z][a-z0-9-]{0,31}$")
+    expected_present: bool
+
+
 class WorkerTaskGetRequest(_StrictModel):
     protocol_version: int
     request_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
@@ -155,6 +164,8 @@ class WorkerHealth(_StrictModel):
     test_tasks_enabled: bool = False
     runtime_ids: list[str] = Field(default_factory=list, max_length=16)
     available_runtime_ids: list[str] = Field(default_factory=list, max_length=16)
+    implementation_ids: list[str] = Field(default_factory=list, max_length=32)
+    available_implementation_ids: list[str] = Field(default_factory=list, max_length=32)
     runtime_workspace_ids: dict[str, list[str]] = Field(default_factory=dict)
     drain_operation_id: str | None = Field(default=None, max_length=128)
     drain_complete: bool = False
@@ -282,8 +293,8 @@ class QuickWorkerServer:
         self.socket_path = worker_socket_path(settings)
         self.generation = uuid.uuid4().hex
         self.status: Literal["ready", "draining"] = "ready"
+        self._runtime_registry_factory = None
         if runtime_registry is None:
-            runners = []
             if codex_workspaces:
                 resolved_executable = (
                     str(codex_executable)
@@ -295,45 +306,35 @@ class QuickWorkerServer:
                     if codex_home is not None
                     else Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
                 )
-                runtime_modules, failures = ExternalRuntimeModuleService(settings).build_registry(
-                    BuiltinRuntimeModuleRegistry()
-                )
-                for failure in failures:
-                    LOGGER.warning(
-                        "Runtime module unavailable: module_id=%s reason=%s",
-                        failure.module_id,
-                        failure.reason,
+                def build_registry() -> WorkerRuntimeRegistry:
+                    runners = []
+                    runtime_modules, failures = ExternalRuntimeModuleService(settings).build_registry(
+                        BuiltinRuntimeModuleRegistry([load_builtin_codex_module(settings)])
                     )
-                for runtime_id in runtime_modules.runtime_ids():
-                    runtime_module = runtime_modules.require(runtime_id)
-                    try:
-                        adapter = runtime_module.build_adapter()
-                        configure_worker_adapter = getattr(
-                            runtime_module,
-                            "configure_worker_adapter",
-                            None,
-                        )
-                        if callable(configure_worker_adapter):
-                            configure_worker_adapter(
-                                adapter,
-                                executable=resolved_executable,
-                                codex_home=resolved_codex_home,
-                            )
-                        runner = runtime_module.build_worker_runner(
-                            adapter,
-                            workspaces=codex_workspaces,
-                        )
-                        validate_runtime_wiring(adapter, runner)
-                        runners.append(runner)
-                    except Exception:
-                        LOGGER.warning(
-                            "Runtime module unavailable during Worker startup: module_id=%s",
-                            runtime_id,
-                            exc_info=True,
-                        )
-            if allow_test_tasks:
-                runners.append(FixedTestWorkerRuntime())
-            runtime_registry = WorkerRuntimeRegistry(runners)
+                    for failure in failures:
+                        LOGGER.warning("Runtime module unavailable: module_id=%s reason=%s", failure.module_id, failure.reason)
+                    for implementation_id in runtime_modules.implementation_ids():
+                        runtime_module = runtime_modules.require(implementation_id)
+                        try:
+                            adapter = runtime_module.build_adapter()
+                            configure_worker_adapter = getattr(runtime_module, "configure_worker_adapter", None)
+                            if callable(configure_worker_adapter):
+                                configure_worker_adapter(adapter, executable=resolved_executable, codex_home=resolved_codex_home)
+                            runner = runtime_module.build_worker_runner(adapter, workspaces=codex_workspaces)
+                            validate_runtime_wiring(adapter, runner)
+                            runners.append(runner)
+                        except Exception:
+                            LOGGER.warning("Runtime module unavailable during Worker refresh: module_id=%s", implementation_id, exc_info=True)
+                    if allow_test_tasks:
+                        runners.append(FixedTestWorkerRuntime())
+                    return WorkerRuntimeRegistry(runners)
+
+                self._runtime_registry_factory = build_registry
+                runtime_registry = build_registry()
+            else:
+                runtime_registry = WorkerRuntimeRegistry(
+                    [FixedTestWorkerRuntime()] if allow_test_tasks else []
+                )
         self.runtime_registry = runtime_registry
         self.task_manager = WorkerTaskManager(
             settings,
@@ -480,6 +481,54 @@ class QuickWorkerServer:
             self._drain_complete = False
             self._drain_error = None
             self.status = "ready"
+
+    async def refresh_runtime_registry(
+        self,
+        implementation_id: str,
+        *,
+        expected_present: bool,
+    ) -> None:
+        """Reload trusted Runtime modules without interrupting other implementations."""
+        if self._runtime_registry_factory is None:
+            raise WorkerTaskError(
+                "runtime_registry_refresh_unavailable",
+                "This Quick Worker cannot refresh its Runtime registry.",
+            )
+        async with self._submission_gate:
+            if self.status != "ready":
+                raise WorkerTaskError(
+                    "worker_draining", "Worker is not accepting Runtime maintenance."
+                )
+            async with self.task_manager._lock:
+                active = self.task_manager.list(limit=100, active_only=True)
+                if any(task.implementation_id == implementation_id for task in active):
+                    raise WorkerTaskError(
+                        "runtime_implementation_busy",
+                        "The Runtime implementation still has active tasks.",
+                    )
+                discovered = self._runtime_registry_factory()
+                registered = implementation_id in discovered.implementation_ids()
+                if registered != expected_present:
+                    raise WorkerTaskError(
+                        "runtime_registry_refresh_unconfirmed",
+                        "Quick Worker Runtime registry does not match the requested change.",
+                    )
+                if expected_present:
+                    discovered.require(implementation_id)
+                # Active tasks retain the Runner they obtained at launch. Keep
+                # every unrelated registered Runner object as well, so a
+                # target-version maintenance operation cannot alter another
+                # version's in-flight parsing or native-session handling.
+                runners = [
+                    self.runtime_registry.registered_runner(item)
+                    for item in self.runtime_registry.implementation_ids()
+                    if item != implementation_id
+                ]
+                if expected_present:
+                    runners.append(discovered.registered_runner(implementation_id))
+                registry = WorkerRuntimeRegistry(runners)
+                self.runtime_registry = registry
+                self.task_manager.runtime_registry = registry
 
     async def _finish_drain(self) -> None:
         if self._drain_operation_id and self._drain_operation_id.startswith(
@@ -678,6 +727,7 @@ class QuickWorkerServer:
             "drain": WorkerDrainRequest,
             "resume": WorkerResumeRequest,
             "runtime_state_clear": WorkerRuntimeStateClearRequest,
+            "runtime_registry_refresh": WorkerRuntimeRegistryRefreshRequest,
             "task_get": WorkerTaskGetRequest,
             "task_list": WorkerTaskListRequest,
             "task_cancel": WorkerTaskCancelRequest,
@@ -702,6 +752,10 @@ class QuickWorkerServer:
                 runtime_ids=list(self.runtime_registry.runtime_ids()),
                 available_runtime_ids=list(
                     self.runtime_registry.available_runtime_ids()
+                ),
+                implementation_ids=list(self.runtime_registry.implementation_ids()),
+                available_implementation_ids=list(
+                    self.runtime_registry.available_implementation_ids()
                 ),
                 runtime_workspace_ids={
                     runtime_id: list(workspace_ids)
@@ -736,6 +790,15 @@ class QuickWorkerServer:
                     )
                 removed = await self.task_manager.clear_runtime_state(request.runtime_id)
             return {"runtime_id": request.runtime_id, "removed_tasks": removed}
+        if isinstance(request, WorkerRuntimeRegistryRefreshRequest):
+            await self.refresh_runtime_registry(
+                request.implementation_id,
+                expected_present=request.expected_present,
+            )
+            return {
+                "implementation_id": request.implementation_id,
+                "implementation_ids": list(self.runtime_registry.implementation_ids()),
+            }
         if isinstance(request, WorkerTaskSubmitRequest):
             async with self._submission_gate:
                 if self.status != "ready":
@@ -862,6 +925,38 @@ async def read_health(settings: Settings) -> dict[str, object]:
             raise OSError("Quick Worker returned invalid health data") from exc
         payload["data"] = health.model_dump(mode="json")
     return payload
+
+
+async def list_tasks(settings: Settings, *, active_only: bool = False) -> dict[str, object]:
+    return await worker_request(
+        settings,
+        {
+            "protocol_version": PROTOCOL_VERSION,
+            "request_id": uuid.uuid4().hex,
+            "action": "task_list",
+            "limit": 100,
+            "active_only": active_only,
+            "recovery_only": False,
+        },
+    )
+
+
+async def refresh_runtime_registry(
+    settings: Settings,
+    *,
+    implementation_id: str,
+    expected_present: bool,
+) -> dict[str, object]:
+    return await worker_request(
+        settings,
+        {
+            "protocol_version": PROTOCOL_VERSION,
+            "request_id": uuid.uuid4().hex,
+            "action": "runtime_registry_refresh",
+            "implementation_id": implementation_id,
+            "expected_present": expected_present,
+        },
+    )
 
 
 def read_health_sync(settings: Settings) -> dict[str, object]:

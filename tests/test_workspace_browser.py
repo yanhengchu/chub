@@ -539,7 +539,7 @@ async def test_runtime_settings_keep_registered_description_when_status_is_unava
             await expect(page.locator(".settings-workspace-description")).to_have_text(
                 "使用 Codex CLI 运行快速交互、实时终端和后台 AI 任务。",
             )
-            await expect(page.locator("#runtime-management-message")).to_have_text(
+            await expect(page.locator("#runtime-management-status")).to_have_text(
                 "暂时无法读取 AI Runtime 状态。",
             )
         finally:

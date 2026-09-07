@@ -3,7 +3,7 @@
 > 状态：已验收
 > 主要读者：AI Agent、实现和排障 Agent；维护人员用于确认定制范围、版本、部署和验收边界。
 > 本文负责：Chub 对 OpenClaw/微信 ClawBot 的最小定制范围、身份与路由边界、插件归属、第三方适配器兼容补丁、Context Token 持久化和验收规则。
-> 本文不负责：微信固定指令语法和用户可见回复格式（见[Chub 集成能力清单](CHUB_INTEGRATION_CAPABILITIES.md)），插件协议、构建和部署命令（见[Chub OpenClaw 插件说明](../integrations/openclaw/chub/README.md)），以及 OpenClaw 或腾讯微信插件自身的上游功能。
+> 本文不负责：微信固定指令语法和用户可见回复格式（见[Chub 集成能力清单](CHUB_INTEGRATION_CAPABILITIES.md)），任务编排模块的策略与切换（见[Chub 任务编排外置设计](CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md)），插件协议、构建和部署命令（见[Chub OpenClaw 插件说明](../integrations/openclaw/chub/README.md)），以及 OpenClaw 或腾讯微信插件自身的上游功能。
 
 ## 0. 维护基线
 
@@ -228,3 +228,4 @@ Chub 插件升级只从 `integrations/openclaw/chub/` 构建并安装；插件�
 - [Chub OpenClaw 插件说明](../integrations/openclaw/chub/README.md)：插件源码、构建、安装、部署和协议升级操作手册。
 - [Chub 总体架构](CHUB_ARCHITECTURE_DESIGN.md)：系统边界和状态所有权。
 - [Chub Quick Worker 设计](CHUB_QUICK_WORKER_DESIGN.md)：任务执行、恢复、通知终态和重启协调。
+- [Chub 任务编排外置设计](CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md)：未来任务编排模块的策略、计划和切换边界。

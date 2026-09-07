@@ -223,8 +223,6 @@ async def test_home_page_is_public_and_contains_no_credential_form(
     assert 'id="automation-feishu-badge"' in response.text
     assert 'id="automation-feishu-detail"' in response.text
     assert 'id="automation-feishu-check"' in response.text
-    assert 'id="automation-feishu-login"' in response.text
-    assert 'id="automation-feishu-qr"' in response.text
     assert 'id="automation-feishu-verify"' not in response.text
     assert "飞书环境" in response.text
     assert "正在检查浏览器控制服务" in response.text
@@ -832,14 +830,23 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert 'id="runtime-management-list"' not in pages["session-defaults"].text
     assert pages["appearance"].text.index('href="/settings/appearance"') < pages["appearance"].text.index('href="/settings/session-defaults"')
     assert 'id="runtime-management-list"' not in pages["runtime"].text
-    assert 'id="runtime-general-settings-title">任务接入规则</h3>' in pages["runtime"].text
+    assert 'id="runtime-general-settings-title"' not in pages["runtime"].text
+    assert "此处控制 Runtime 是否接收后续新 AI 任务" not in pages["runtime"].text
+    assert 'id="codex-default-runtime-implementation"' not in pages["runtime"].text
+    assert "Runtime 模块导入" in pages["runtime"].text
+    assert 'class="runtime-module-install-heading"' in pages["runtime"].text
     assert 'id="ai-runtime-general-settings"' in pages["runtime"].text
-    assert "按 Runtime 分别控制" in pages["runtime"].text
     assert 'href="/settings/runtime" aria-current="page"' in pages["runtime"].text
     assert 'href="/settings/runtime/codex"' in pages["runtime"].text
     assert 'id="quick-interaction-page-size"' not in pages["runtime"].text
     assert 'data-settings-page="runtime-detail"' in pages["runtime-detail"].text
     assert 'id="runtime-management-list"' in pages["runtime-detail"].text
+    assert 'id="codex-runtime-versions-title">Codex Runtime 版本</h3>' in pages["runtime-detail"].text
+    assert 'id="codex-default-runtime-implementation" data-settings-picker disabled' in pages["runtime-detail"].text
+    assert pages["runtime-detail"].text.index('id="runtime-management-list"') < pages["runtime-detail"].text.index('id="codex-default-runtime-implementation"') < pages["runtime-detail"].text.index('id="codex-runtime-versions-title"')
+    assert 'id="codex-runtime-versions-message"' not in pages["runtime-detail"].text
+    assert 'id="codex-runtime-settings-message"' in pages["runtime-detail"].text
+    assert 'id="codex-runtime-version-list"' in pages["runtime-detail"].text
     assert 'id="runtime-settings-panel"' not in pages["runtime-detail"].text
     assert "控制是否接收新任务" in pages["runtime-detail"].text
     assert "ai_runtime.{{ settings_runtime_id }}" not in pages["runtime-detail"].text
@@ -848,7 +855,9 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert '.settings-field input[type="text"]' in stylesheet.text
     assert 'background: var(--color-surface-field);' in stylesheet.text
     assert 'data-runtime-id="codex"' in pages["runtime-detail"].text
-    assert pages["runtime-detail"].text.count('id="runtime-management-message"') == 1
+    assert pages["runtime-detail"].text.count('id="runtime-management-description"') == 1
+    assert pages["runtime-detail"].text.count('id="runtime-management-status"') == 1
+    assert 'id="runtime-management-message"' not in pages["runtime-detail"].text
     assert 'href="/settings/runtime/codex" aria-current="page"' in pages["runtime-detail"].text
     assert 'href="/settings/task-orchestration"' in pages["runtime"].text
     assert 'href="/settings/task-orchestration" aria-current="page"' in pages["task-orchestration"].text
@@ -1441,11 +1450,13 @@ async def test_automation_section_uses_workstation_status_rows(
                 state="login_required",
                 message="飞书登录已失效，请重新登录。",
                 checked_at=datetime(2026, 9, 5, 12, 30, tzinfo=timezone.utc),
+                login_page_available=True,
             ),
             codex_runtime_account=RuntimeAccountEnvironmentState(
-                state="available",
-                message="ChatGPT 登录与 AI 额度可用",
+                state="failed",
+                message="API Key 已配置，但 AI 额度账户未登录",
                 checked_at=datetime(2026, 9, 5, 12, 31, tzinfo=timezone.utc),
+                login_page_available=True,
             ),
             enabled_count=2,
             tasks=[
@@ -1525,16 +1536,18 @@ async def test_automation_section_uses_workstation_status_rows(
     assert 'class="workstation-group automation-account-environment"' in response.text
     assert 'id="workspace-automation-browser-start"' in response.text
     assert 'id="workspace-automation-feishu-check"' in response.text
+    assert 'id="workspace-automation-feishu-open-login" class="button-secondary" type="button" disabled title="请等待当前自动化任务完成">打开登录页面</button>' in response.text
     assert 'id="workspace-automation-feishu-detail"' in response.text
     assert 'id="workspace-automation-codex-account-check"' in response.text
+    assert 'id="workspace-automation-codex-account-open-login" class="button-secondary" type="button" disabled title="请等待当前自动化任务完成">打开登录页面</button>' in response.text
     assert 'id="workspace-automation-codex-account-detail"' in response.text
     assert 'data-browser-state="stopped"' in response.text
     assert 'data-account-state="login_required"' in response.text
-    assert 'data-account-state="available"' in response.text
+    assert 'data-account-state="failed"' in response.text
     assert "Debug Chrome 未启动，按需启动。 · 浏览器用户：Default · 无界面" in response.text
     assert 'id="workspace-automation-browser-message"' not in response.text
     assert "飞书登录已失效，请重新登录。 · 检查于 09-05 12:30" in response.text
-    assert "ChatGPT 登录与 AI 额度可用 · 检查于 09-05 12:31" in response.text
+    assert "API Key 已配置，但 AI 额度账户未登录 · 检查于 09-05 12:31" in response.text
     assert 'id="workspace-automation-feishu-message"' not in response.text
     assert "周报资料准备 · 2026-08-31至2026-09-06" in response.text
     assert 'class="workstation-weekly-workflow"' in response.text
@@ -1558,7 +1571,7 @@ async def test_automation_section_uses_workstation_status_rows(
     assert 'data-automation-task-id="monthly-report"' in response.text
     assert 'title="该自动化任务正在执行"' in response.text
     assert 'id="workspace-automation-feishu-check" class="button-secondary" type="button" disabled title="请先启动 Debug Chrome"' in response.text
-    assert 'title="请等待当前自动化任务完成"' not in response.text
+    assert response.text.count('title="请等待当前自动化任务完成"') == 2
     assert 'title="请先启动 Debug Chrome"' in response.text
     assert 'data-automation-task-message' not in response.text
     assert workspace_script.status_code == 200
@@ -1573,6 +1586,12 @@ async def test_automation_section_uses_workstation_status_rows(
     assert '"/api/weekly-reports/current/report/confirm-and-run"' in workspace_script.text
     assert "setAutomationBrowserMessage" not in workspace_script.text
     assert "setAutomationFeishuMessage" not in workspace_script.text
+    assert '"/api/automations/environment/feishu/login-page"' in workspace_script.text
+    assert '"/api/automations/environment/codex/login-page"' in workspace_script.text
+    assert 'automationCodexAccountOpenLogin.hidden = state?.login_page_available !== true;' in workspace_script.text
+    assert 'return match ? ` · 检查于 ${match[1]}-${match[2]} ${match[3]}:${match[4]}` : "";' in workspace_script.text
+    assert 'const setAutomationAccountStatus = (detail, state, statusKind, fallbackMessage) => {' in workspace_script.text
+    assert 'setAutomationAccountStatus(\n      automationCodexAccountDetail,' in workspace_script.text
     assert 'data-automation-refresh-active="' in response.text
     assert 'const refreshWorkspaceAutomations = async () =>' in workspace_script.text
     assert 'fetch("/?section=automations", {' in workspace_script.text
@@ -2210,6 +2229,7 @@ async def test_quick_interaction_conversation_page_is_available(
     assert 'id="conversation-submit" class="conversation-composer-control conversation-submit" type="submit"' in page.text
     assert '<svg viewBox="0 0 24 24"' in page.text
     assert "conversation-setting-label" not in page.text
+    assert 'id="conversation-runtime-version"' not in page.text
     assert 'id="conversation-permission-trigger"' in page.text
     assert 'id="conversation-permission-menu" class="conversation-setting-menu"' in page.text
     assert 'id="conversation-model-trigger"' in page.text
@@ -2225,6 +2245,9 @@ async def test_quick_interaction_conversation_page_is_available(
     assert timeline_script.status_code == 200
     assert core_script.status_code == 200
     assert script.status_code == 200
+    assert "loadConversationRuntimeVersions" not in script.text
+    assert "implementationId:" not in script.text
+    assert "implementation_id: implementationId" not in core_script.text
     assert ui_script.status_code == 200
     assert 'order: "timeline"' in script.text
     assert "CONVERSATION_PAGE_SIZE = readConversationPageSize()" in script.text

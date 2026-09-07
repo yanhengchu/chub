@@ -4,6 +4,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
+from urllib.request import urlopen
 
 from app.core.config import PROJECT_ROOT
 
@@ -169,6 +171,34 @@ def debug_chrome_status(
     if current.state == "stopped":
         return "stopped", "未启动", None
     return "invalid", "状态异常", None
+
+
+def debug_chrome_websocket_url() -> str | None:
+    """Return the validated browser CDP websocket without exposing credentials."""
+    try:
+        current = _chrome_debug_module().status()
+        if current.state != "running":
+            return None
+        endpoint = urlsplit(current.endpoint)
+        if endpoint.scheme != "http" or endpoint.hostname not in {"127.0.0.1", "::1"}:
+            return None
+        with urlopen(f"{current.endpoint}/json/version", timeout=3) as response:
+            import json
+
+            payload = json.load(response)
+        websocket_url = payload.get("webSocketDebuggerUrl")
+        parsed = urlsplit(websocket_url) if isinstance(websocket_url, str) else None
+        if (
+            parsed is None
+            or parsed.scheme != "ws"
+            or parsed.hostname != endpoint.hostname
+            or parsed.port != endpoint.port
+            or not parsed.path.startswith("/devtools/browser/")
+        ):
+            return None
+        return websocket_url
+    except Exception:
+        return None
 
 
 def current_debug_chrome_profile(

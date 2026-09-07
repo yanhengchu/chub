@@ -7,6 +7,7 @@ from app.ai_runtime.contracts import (
     RuntimeCapabilityState,
     RUNTIME_CAPABILITIES,
     RUNTIME_ID_PATTERN,
+    RUNTIME_IMPLEMENTATION_ID_PATTERN,
     RuntimeActivityEvent,
     RuntimeActivityEventAdapter,
     RuntimeDescriptor,
@@ -35,6 +36,7 @@ from app.ai_runtime.contracts import (
     RuntimeTurnRequest,
     RuntimeWriterProbeAdapter,
     RuntimeUsageSnapshotAdapter,
+    RuntimeUsageLoginPageAdapter,
 )
 from app.ai_runtime.registry import RuntimeRegistry, validate_runtime_wiring
 from app.ai_runtime.modules import (
@@ -57,6 +59,11 @@ from app.ai_runtime.worker import (
     RuntimeWorkerRunner,
     WorkerRuntimeRegistry,
 )
+from app.ai_runtime.implementation_preferences import (
+    RuntimeImplementationPreferences,
+    RuntimeImplementationPreferencesStore,
+    RuntimeImplementationPreferencesUnavailable,
+)
 
 __all__ = [
     "AgentRuntimeAdapter",
@@ -67,6 +74,7 @@ __all__ = [
     "RuntimeCapabilityState",
     "RUNTIME_CAPABILITIES",
     "RUNTIME_ID_PATTERN",
+    "RUNTIME_IMPLEMENTATION_ID_PATTERN",
     "RuntimeActivityEvent",
     "RuntimeActivityEventAdapter",
     "RuntimeDescriptor",
@@ -105,10 +113,14 @@ __all__ = [
     "RuntimeTurnRequest",
     "RuntimeWriterProbeAdapter",
     "RuntimeUsageSnapshotAdapter",
+    "RuntimeUsageLoginPageAdapter",
     "BACKGROUND_RUNTIME_CAPABILITIES",
     "DISCOVERED_RUNTIME_WORKSPACE_ID",
     "RuntimeWorkerLaunchRequest",
     "RuntimeWorkerLaunchSpec",
     "RuntimeWorkerRunner",
     "WorkerRuntimeRegistry",
+    "RuntimeImplementationPreferences",
+    "RuntimeImplementationPreferencesStore",
+    "RuntimeImplementationPreferencesUnavailable",
 ]

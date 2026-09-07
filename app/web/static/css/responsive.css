@@ -116,6 +116,15 @@
     max-width: none;
   }
 
+  .runtime-module-install-heading {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .runtime-module-file-button {
+    width: 100%;
+  }
+
   .theme-option-grid {
     grid-template-columns: 1fr;
   }

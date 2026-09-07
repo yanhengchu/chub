@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request, Response, status
+from fastapi import APIRouter, Depends, Request, status
 
 from app.automations.models import (
     AutomationListData,
@@ -10,6 +10,7 @@ from app.automations.models import (
     BrowserInitializationRequest,
     BrowserStartRequest,
     FeishuEnvironmentState,
+    AccountLoginPageResult,
     RuntimeAccountEnvironmentState,
 )
 from app.core.response import ApiResponse
@@ -187,6 +188,90 @@ def check_feishu_environment(
 
 
 @router.post(
+    "/environment/feishu/login-page",
+    response_model=ApiResponse[AccountLoginPageResult],
+)
+def open_feishu_login_page(
+    request: Request,
+) -> ApiResponse[AccountLoginPageResult]:
+    operation_id = log_operation(
+        request,
+        action="open_feishu_login_page",
+        status="requested",
+        target="feishu-login-page",
+    )
+    log_operation(
+        request,
+        action="open_feishu_login_page",
+        status="started",
+        target="feishu-login-page",
+        operation_id=operation_id,
+    )
+    try:
+        result = request.app.state.automation_manager.open_feishu_login_page()
+    except Exception:
+        log_operation(
+            request,
+            action="open_feishu_login_page",
+            status="failed",
+            target="feishu-login-page",
+            operation_id=operation_id,
+        )
+        raise
+    log_operation(
+        request,
+        action="open_feishu_login_page",
+        status="succeeded",
+        target="feishu-login-page",
+        operation_id=operation_id,
+        reason="browser_mode=headed",
+    )
+    return ApiResponse(data=result)
+
+
+@router.post(
+    "/environment/codex/login-page",
+    response_model=ApiResponse[AccountLoginPageResult],
+)
+def open_codex_runtime_login_page(
+    request: Request,
+) -> ApiResponse[AccountLoginPageResult]:
+    operation_id = log_operation(
+        request,
+        action="open_codex_runtime_login_page",
+        status="requested",
+        target="codex-runtime-login-page",
+    )
+    log_operation(
+        request,
+        action="open_codex_runtime_login_page",
+        status="started",
+        target="codex-runtime-login-page",
+        operation_id=operation_id,
+    )
+    try:
+        result = request.app.state.automation_manager.open_codex_runtime_login_page()
+    except Exception:
+        log_operation(
+            request,
+            action="open_codex_runtime_login_page",
+            status="failed",
+            target="codex-runtime-login-page",
+            operation_id=operation_id,
+        )
+        raise
+    log_operation(
+        request,
+        action="open_codex_runtime_login_page",
+        status="succeeded",
+        target="codex-runtime-login-page",
+        operation_id=operation_id,
+        reason="browser_mode=headed",
+    )
+    return ApiResponse(data=result)
+
+
+@router.post(
     "/environment/codex/check",
     response_model=ApiResponse[RuntimeAccountEnvironmentState],
 )
@@ -226,20 +311,6 @@ def check_codex_runtime_account(
         reason=f"account_state={result.state}",
     )
     return ApiResponse(data=result)
-
-
-@router.get("/environment/feishu/qr", response_class=Response)
-def get_feishu_login_qr(request: Request) -> Response:
-    content = request.app.state.automation_manager.feishu_qr_content()
-    return Response(
-        content=content,
-        media_type="image/png",
-        headers={
-            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-            "Pragma": "no-cache",
-            "X-Content-Type-Options": "nosniff",
-        },
-    )
 
 
 @router.get("", response_model=ApiResponse[AutomationListData])
