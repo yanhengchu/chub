@@ -74,7 +74,7 @@ CODEX_QUICK_INTERACTION_INSTRUCTIONS = (
 )
 DEFERRED_RESTART_RESULT_SUFFIX = "本次处理已完成，即将重启 Chub 服务。"
 DEFERRED_RESTART_FAILED_SUFFIX = "Chub 重启登记失败，本次不会自动重启。"
-ACTIVE_WRITER_ERROR = "Codex Session 正在由其他进程使用，请等待任务结束或停止实时终端。"
+ACTIVE_WRITER_ERROR = "Codex Session 正在由其他进程使用，请等待任务结束后重试。"
 VOICE_TRANSCRIPT_MARKER = "[[chub-weixin-voice-transcript]]"
 SENSITIVE_SUMMARY_VALUE_PATTERN = re.compile(
     r"(?i)\b(token|secret|password|passwd|webhook)"
@@ -141,7 +141,7 @@ class QuickInteractionManager:
     def __init__(
         self,
         data_file: Path,
-        runtime_dir: Path,
+        restart_request_dir: Path,
         codex_manager,
         completion_notifier: Callable[
             [QuickInteractionTask, QuickInteractionWeixinRoute | None],
@@ -204,7 +204,7 @@ class QuickInteractionManager:
         self._task_finished_handler: Callable[[QuickInteractionTask], object] | None = (
             None
         )
-        self.restart_request_dir = runtime_dir / "restart-requests"
+        self.restart_request_dir = restart_request_dir
         recovered_tasks = self._load()
         if recovered_tasks and self._local_state_error is None:
             self._write()
@@ -393,6 +393,29 @@ class QuickInteractionManager:
                     task.worker_task_id,
                 )
             except (ApiError, AiSessionStoreUnavailable) as exc:
+                if isinstance(exc, ApiError) and exc.code == "codex_session_not_found":
+                    # The Session mapping is authoritative. A retained Web
+                    # task without it cannot safely receive a Worker result or
+                    # be replayed. Drop the local Worker identity so a still
+                    # live Worker task is detected as untracked during
+                    # reconciliation instead of being silently adopted.
+                    task.status = "failed"
+                    task.error = (
+                        "该任务关联的 Chub Session 已不存在，旧运行态不会恢复或重新执行。"
+                    )
+                    task.error_source = "chub"
+                    task.worker_task_id = None
+                    task.submission_verifying = False
+                    task.updated_at = utc_now()
+                    self._active_task_ids.discard(task.id)
+                    self._running_sessions.discard(task.session_id)
+                    self._task_done_events.pop(task.id, None)
+                    recovered_tasks = True
+                    LOGGER.info(
+                        "Discarded stale Web quick interaction task without Chub Session: %s",
+                        task.id,
+                    )
+                    continue
                 # A stale claim belongs to this task and must not make unrelated
                 # Sessions unavailable. Keep reconciling the Worker task, but
                 # never apply its native identity or successful result.
@@ -434,23 +457,7 @@ class QuickInteractionManager:
                 raise ApiError(
                     409,
                     "quick_interaction_session_error",
-                    "会话当前异常，请先通过实时终端重试。",
-                )
-            if session.activity == "working" and not queued_translation:
-                raise ApiError(
-                    409,
-                    "quick_interaction_terminal_working",
-                    "实时终端正在执行，请等待当前任务结束。",
-                )
-            if (
-                session.status == "running"
-                and session.activity != "idle"
-                and not queued_translation
-            ):
-                raise ApiError(
-                    409,
-                    "quick_interaction_terminal_active",
-                    "当前实时终端状态不允许快速交互。",
+                    "会话当前状态异常，请刷新后重试。",
                 )
             if session.permission_mode == "ask":
                 raise ApiError(
@@ -500,7 +507,6 @@ class QuickInteractionManager:
                     "quick_interaction_writer_active",
                     ACTIVE_WRITER_ERROR,
                 )
-            self.codex_manager.prepare_quick_interaction(selected_implementation_id)
             ensure_compatible = getattr(
                 self.codex_manager,
                 "ensure_session_implementation_compatible",
@@ -726,9 +732,8 @@ class QuickInteractionManager:
         self._task_finished_handler = handler
 
     @contextmanager
-    def session_creation_guard(self, session_mode: str = "quick") -> Iterator[None]:
-        if session_mode == "quick":
-            self.require_quick_session_creation()
+    def session_creation_guard(self) -> Iterator[None]:
+        self.require_quick_session_creation()
         yield
 
     def quick_session_creation_availability(self) -> tuple[bool, str | None]:
@@ -769,7 +774,7 @@ class QuickInteractionManager:
                         "codex_session_model_update_busy",
                         "Session 正在执行，请等待任务结束后重试。",
                     )
-            return self.codex_manager.update_quick_session_model(
+            return self.codex_manager.update_session_model(
                 session_id,
                 model,
                 reasoning_effort,
@@ -903,6 +908,9 @@ class QuickInteractionManager:
             for worker_task_id, summary in recovery_worker_tasks.items()
             if summary.session_id is not None and worker_task_id not in local_by_worker_id
         ]
+        unknown_recovery = self._discard_final_worker_tasks_without_session(
+            unknown_recovery
+        )
         with self._lock:
             self._untracked_worker_sessions.update(
                 summary.session_id
@@ -919,16 +927,58 @@ class QuickInteractionManager:
             self._reconcile_worker_task(task_id)
         with self._lock:
             became_ready = not self._recovery_ready
-        self.resume_pending_completion_notifications()
-        self.resume_pending_deferred_restart_notifications()
-        if became_ready and self._recovery_ready_handler is not None:
-            self._recovery_ready_handler()
-        with self._lock:
             self._untracked_worker_sessions.clear()
             self._recovery_ready = True
             self._recovery_error = None
+        self.resume_pending_completion_notifications()
+        self.resume_pending_deferred_restart_notifications()
+        if became_ready and self._recovery_ready_handler is not None:
+            try:
+                self._recovery_ready_handler()
+            except Exception:
+                # Translation recovery is independent from the Worker-backed
+                # Chub Session contract. Its local failure must not block new
+                # Session writes after Worker reconciliation has succeeded.
+                LOGGER.warning(
+                    "Independent post-Worker recovery failed; Chub Session writes remain available",
+                    exc_info=True,
+                )
         if self.deferred_restart is not None:
             self.deferred_restart.maybe_schedule()
+
+    def _discard_final_worker_tasks_without_session(
+        self,
+        tasks: list[WorkerTaskSummary],
+    ) -> list[WorkerTaskSummary]:
+        """Acknowledge only final Worker tasks whose Chub Session was discarded."""
+        unresolved: list[WorkerTaskSummary] = []
+        for task in tasks:
+            if task.status not in FINAL_STATUSES or task.session_id is None:
+                unresolved.append(task)
+                continue
+            try:
+                self.codex_manager.get_session(task.session_id)
+            except ApiError as exc:
+                if exc.code != "codex_session_not_found":
+                    unresolved.append(task)
+                    continue
+            except Exception:
+                unresolved.append(task)
+                continue
+            else:
+                unresolved.append(task)
+                continue
+            acknowledged = self._worker_call(
+                "task_acknowledge",
+                task_id=task.task_id,
+            )
+            if acknowledged.get("success") is not True:
+                raise OSError(self._worker_error(acknowledged))
+            LOGGER.info(
+                "Discarded final Worker task without Chub Session: %s",
+                task.task_id,
+            )
+        return unresolved
 
     def _require_worker_recovery(self) -> None:
         with self._lock:
@@ -1410,25 +1460,6 @@ class QuickInteractionManager:
                             "Quick Worker 当前不可用，且该 Session 仍有未完成的快速交互，无法删除。",
                         )
             yield
-
-    @contextmanager
-    def terminal_access_guard(self, session_id: str) -> Iterator[None]:
-        with self._session_lock(session_id):
-            with self._lock:
-                if self._any_running(session_id):
-                    raise ApiError(
-                        409,
-                        "quick_interaction_in_progress",
-                        "该会话正在执行 Codex CLI 快速交互，请等待任务结束。",
-                    )
-            yield
-
-    @contextmanager
-    def terminal_input_guard(self, session_id: str) -> Iterator[bool]:
-        with self._session_lock(session_id):
-            with self._lock:
-                allowed = not self._any_running(session_id)
-            yield allowed
 
     def get(self, task_id: str) -> QuickInteractionTask:
         with self._lock:
@@ -1921,6 +1952,17 @@ class QuickInteractionManager:
                 self._running_sessions.discard(session_id)
                 self._untracked_worker_sessions.discard(session_id)
                 self._write()
+
+    def try_remove_session_tasks(self, session_id: str) -> bool:
+        """Remove retained tasks only when this Session is not being submitted."""
+        session_lock = self._session_lock(session_id)
+        if not session_lock.acquire(blocking=False):
+            return False
+        try:
+            self.remove_session_tasks(session_id)
+            return True
+        finally:
+            session_lock.release()
 
     def cancel_task(self, task_id: str, *, timeout: float = 5) -> bool:
         """Cancel one exact task without guessing among a shared Session queue."""

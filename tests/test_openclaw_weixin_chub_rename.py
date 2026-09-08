@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from tests.session_fixtures import CodexSession
+
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from app.codex.models import CodexQuotaData, CodexSession, CodexTokenUsageData
+from app.codex.models import CodexQuotaData , CodexTokenUsageData
 from app.core.config import Settings
 from app.core.response import ApiError
 from app.services.openclaw_weixin_chub_models import WeixinChubModeSessionSlot
@@ -12,7 +14,6 @@ from tests.openclaw_weixin_chub_mode_helpers import configured_manager, delivery
 
 def _current_session(*, title: str = "旧标题", activity: str = "idle") -> CodexSession:
     return CodexSession(
-        session_mode="quick",
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",

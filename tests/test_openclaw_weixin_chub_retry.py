@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.session_fixtures import CodexSession
+
 import json
 import re
 import stat
@@ -13,7 +15,6 @@ import pytest
 from app.codex.models import (
     CodexQuotaData,
     CodexQuotaWindow,
-    CodexSession,
     CodexTokenUsageData,
     QuickInteractionWeixinRoute,
     WorkspaceInfo,
@@ -100,7 +101,6 @@ def test_removed_new_retry_is_submitted_as_a_normal_task(
 
     codex_manager.create_session.return_value = SimpleNamespace(id="session-2")
     codex_manager.get_session.return_value = CodexSession(
-        session_mode="quick",
         id="session-2",
         workspace_id="chub",
         workspace_name="Chub",
@@ -137,7 +137,6 @@ def test_removed_switch_retry_is_submitted_as_a_normal_task(
     ]
     sessions = [
         CodexSession(
-            session_mode="quick",
             id=f"session-{slot}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -203,7 +202,6 @@ def test_removed_switch_retry_does_not_switch_or_retry(
     ]
     sessions = [
         CodexSession(
-            session_mode="quick",
             id="session-1",
             workspace_id="chub",
             workspace_name="Chub",
@@ -214,7 +212,6 @@ def test_removed_switch_retry_does_not_switch_or_retry(
             activity="idle",
         ),
         CodexSession(
-            session_mode="quick",
             id="session-2",
             workspace_id="chub",
             workspace_name="Chub",
@@ -267,7 +264,6 @@ def test_removed_switch_retry_does_not_consume_pending_retry(
         WeixinChubModeSessionSlot(slot=1, session_id="session-1")
     ]
     session = CodexSession(
-        session_mode="quick",
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",
@@ -325,7 +321,6 @@ def test_switch_continuation_resumes_after_final_state_write_is_interrupted(
     manager._state.session_id = "session-1"
     sessions = [
         CodexSession(
-            session_mode="quick",
             id=f"session-{slot}",
             workspace_id="chub",
             workspace_name="Chub",

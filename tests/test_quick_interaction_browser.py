@@ -84,7 +84,7 @@ def conversation_browser_server(tmp_path_factory: pytest.TempPathFactory) -> str
     application = create_app(_browser_settings(root))
     # The browser fixture supplies all Session/API data through ConversationApi;
     # allow its synthetic IDs through the HTML page gate as well.
-    application.state.codex_pty_manager.require_quick_access = lambda _session_id: None
+    application.state.ai_session_manager.require_session_access = lambda _session_id: None
     listener = socket(AF_INET, SOCK_STREAM)
     listener.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
     listener.bind(("127.0.0.1", 0))
@@ -132,8 +132,7 @@ def _session(
         "created_at": created_at,
         "codex_session_id": f"native-{session_id}",
         "can_archive": can_archive,
-        "session_mode": "quick",
-        "workspace_id": "chub",
+                "workspace_id": "chub",
         "status": "stopped",
         "activity": "idle",
         "activity_source": None,

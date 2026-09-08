@@ -46,7 +46,7 @@ def _quick_worker_runtime_status(
 ) -> tuple[str, str, list[QuickWorkerRuntimeStatus]]:
     """Project the independent AI Runtime check without changing Worker health."""
     try:
-        management = application.state.codex_pty_manager.read_runtime_management()
+        management = application.state.ai_session_manager.read_runtime_management()
     except ApiError:
         return "unknown", "AI Runtime 状态暂无法确认。", []
     runtimes = list(management.runtimes)
@@ -125,7 +125,7 @@ async def system_upgrade_status_data(application) -> SystemUpgradeStatusData:
     loaded = _current_runtime_recovery_plan(loaded)
     session_labels = []
     try:
-        current_sessions = application.state.codex_pty_manager.system_upgrade_sessions()
+        current_sessions = application.state.ai_session_manager.system_upgrade_sessions()
         session_labels = [
             _system_upgrade_session_label(session)
             for session in current_sessions

@@ -84,6 +84,13 @@
       "summary": "统一登记 Chub 当前可用的命令、插件、固定 API，并维护微信固定指令产品契约。",
       "status": "持续维护",
       "path": "CHUB_INTEGRATION_CAPABILITIES.md"
+    },
+    {
+      "id": "local-llm-learning",
+      "title": "本机大模型部署设计",
+      "summary": "记录独立于 Chub Runtime 的本机模型学习环境、资源边界和验收范围。",
+      "status": "已验收",
+      "path": "LOCAL_LLM_LEARNING_DEPLOYMENT_DESIGN.md"
     }
   ]
 }

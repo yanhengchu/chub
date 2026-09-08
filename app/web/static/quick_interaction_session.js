@@ -83,9 +83,6 @@
       deleteLabel,
       submissionReason,
       usageBlocked,
-      confirmStopUnknownTerminal: (
-        session.status === "running" && session.activity === "unknown"
-      ),
     });
   }
 
@@ -147,7 +144,7 @@
 
   function stopDescription(session) {
     const title = session?.title?.trim() || "未命名 Session";
-    return `停止“${title}”将终止正在执行的快速任务并关闭实时终端；`
+    return `停止“${title}”将终止正在执行的快速任务；`
       + "停止后可以重新进入 Session，但在途任务不会恢复。";
   }
 
@@ -374,8 +371,8 @@
 
     function deleteDescription(session) {
       const title = session?.title?.trim() || "未命名 Session";
-      return `删除“${title}”后，该 Session 将永久删除，无法恢复；`
-        + "执行中的 Quick Worker 任务会在删除过程中先停止，实时终端也会关闭；"
+    return `删除“${title}”后，该 Session 将永久删除，无法恢复；`
+      + "执行中的 Quick Worker 任务会在删除过程中先停止；"
         + "如已分配微信槽位，槽位也会释放。";
     }
 

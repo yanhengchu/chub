@@ -362,7 +362,6 @@ def test_session_formatting_and_configuration_match_are_stateless() -> None:
         reasoning_effort="high",
     )
     session = SimpleNamespace(
-        session_mode="quick",
         workspace_id="chub",
         permission_mode="full-access",
         model="gpt-5",

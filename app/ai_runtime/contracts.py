@@ -12,11 +12,9 @@ RuntimeCapability = Literal[
     "background_turn",
     "task_cancel",
     "native_session_mapping",
-    "interactive_terminal",
     "session_resume",
     "session_archive",
     "structured_events",
-    "activity_events",
     "writer_probe",
     "model_catalog",
     "permission_profiles",
@@ -33,11 +31,9 @@ RUNTIME_CAPABILITIES: frozenset[RuntimeCapability] = frozenset(
         "background_turn",
         "task_cancel",
         "native_session_mapping",
-        "interactive_terminal",
         "session_resume",
         "session_archive",
         "structured_events",
-        "activity_events",
         "writer_probe",
         "model_catalog",
         "permission_profiles",
@@ -134,13 +130,6 @@ class RuntimeNativeSession(_StrictModel):
     native_session_id: str = Field(min_length=1, max_length=128)
     cwd: Path
     title: str | None = Field(default=None, max_length=500)
-    active_permission_mode: RuntimePermissionMode | None = None
-    active_model: str | None = Field(default=None, min_length=1, max_length=128)
-    active_reasoning_effort: str | None = Field(
-        default=None,
-        min_length=1,
-        max_length=32,
-    )
     created_at: datetime
     updated_at: datetime
 
@@ -148,6 +137,7 @@ class RuntimeNativeSession(_StrictModel):
 class RuntimeSessionDiscoveryResult(_StrictModel):
     sessions: tuple[RuntimeNativeSession, ...]
     archive_states: dict[str, bool] | None = None
+    complete: bool = False
 
 
 class RuntimeReasoningLevel(_StrictModel):
@@ -173,31 +163,12 @@ class RuntimeModelCatalog(_StrictModel):
     )
 
 
-class RuntimeTerminalRequest(_StrictModel):
-    session_id: str = Field(min_length=1, max_length=128)
-    launch_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
-    cwd: Path
-    permission_mode: RuntimePermissionMode
-    native_session_id: str | None = Field(default=None, min_length=1, max_length=128)
-    model: str | None = Field(default=None, min_length=1, max_length=128)
-    reasoning_effort: str | None = Field(default=None, min_length=1, max_length=32)
-
-
 class RuntimeProcessSpec(_StrictModel):
     argv: tuple[str, ...] = Field(min_length=1, max_length=64)
 
 
 class RuntimeEventSummary(_StrictModel):
     native_session_id: str | None = Field(default=None, min_length=1, max_length=128)
-
-
-class RuntimeActivityEvent(_StrictModel):
-    """A bounded activity update emitted by a Runtime-owned hook/event source."""
-
-    native_session_id: str | None = Field(default=None, min_length=1, max_length=128)
-    launch_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
-    activity: Literal["working", "idle"] | None = None
-    activity_source: Literal["none", "terminal", "quick"] = "none"
 
 
 class RuntimeTurnResult(_StrictModel):
@@ -284,15 +255,6 @@ class RuntimeWriterProbeAdapter(Protocol):
 
 
 @runtime_checkable
-class RuntimeActivityEventAdapter(Protocol):
-    def read_activity_event(self, session_id: str) -> RuntimeActivityEvent | None: ...
-
-    def clear_activity_event(self, session_id: str) -> None: ...
-
-    def rebind_activity_session(self, old_session_id: str, new_session_id: str) -> None: ...
-
-
-@runtime_checkable
 class RuntimeModelCatalogAdapter(Protocol):
     def validate_model(
         self,
@@ -301,21 +263,6 @@ class RuntimeModelCatalogAdapter(Protocol):
     ) -> None: ...
 
     def read_model_catalog(self) -> RuntimeModelCatalog: ...
-
-
-@runtime_checkable
-class RuntimeInteractiveTerminalAdapter(Protocol):
-    def terminal_command(
-        self,
-        request: RuntimeTerminalRequest,
-        port: int,
-    ) -> RuntimeProcessSpec: ...
-
-    def terminal_backend_matches(
-        self,
-        command: tuple[str, ...],
-        session_id: str,
-    ) -> bool: ...
 
 
 @runtime_checkable

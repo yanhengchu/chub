@@ -32,7 +32,7 @@ class TerminalConnection:
 
 
 class TerminalConnectionRegistry:
-    """Coordinate one active browser terminal for each logical Session."""
+    """Coordinate one active browser connection for the maintenance terminal."""
 
     def __init__(
         self,
@@ -205,7 +205,7 @@ class TerminalConnectionRegistry:
 
 
 class TerminalTicketStore:
-    """Keep short-lived browser terminal tickets bound to one logical Session."""
+    """Keep short-lived browser tickets bound to the maintenance terminal."""
 
     def __init__(self, ttl_seconds: int) -> None:
         self.ttl_seconds = ttl_seconds

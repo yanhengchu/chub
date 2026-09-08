@@ -70,7 +70,7 @@ AI Agent 处理任何需求前先用下面的规则建立判断基线，详细�
 - `app/requests/`：轻量需求储备和请求命令。
 - `app/services/`：可复用服务逻辑。
 - `app/tasks/`：白名单维护任务及平台实现。
-- `app/codex/`：Codex PTY 会话、票据和连接管理。
+- `app/codex/`：Codex Session、Quick Worker 任务与页面/API 入口。
 - `app/quick_worker*.py`：Quick Worker 服务入口、任务、Runner 和本机协议。
 - `app/automations/`：配置驱动的浏览器自动化、Runner、状态和跨进程锁。
 - `app/web/templates/`：Jinja2 页面模板。
@@ -84,10 +84,10 @@ AI Agent 处理任何需求前先用下面的规则建立判断基线，详细�
 ## 实现约束
 
 - API 保持统一的 `ApiResponse`/`ApiError` 响应结构。
-- 在 Chub 的 Codex PTY 或快速交互 Codex 模式中发送飞书通知时，直接使用 `chub notification send` 或 Chub 通知 API，不要通过 `openclaw agent` 间接调用；OpenClaw TUI 和微信入口才使用 `chub_send_notification`。
+- Chub 的 Codex Session 或 Quick Worker 任务发送飞书通知时，直接使用 `chub notification send` 或 Chub 通知 API，不要通过 `openclaw agent` 间接调用；OpenClaw TUI 和微信入口才使用 `chub_send_notification`。
 - 受保护接口只接受真实 loopback socket，或在默认启用的 `security.allow_tailscale` 未被关闭时接受真实 Tailscale socket 来源；其他来源拒绝。不得信任客户端转发 Header，健康检查除外。
 - 除“维护终端”外，不允许客户端提供任意文件路径或任意系统命令，只能使用后端固定映射或白名单。维护终端是维护者明确批准的高权限例外：仅由 Chub 的受保护入口创建，固定从当前项目目录启动 `zsh`，仅本机或受信 Tailnet 浏览器可访问，允许任意命令；短期 HttpOnly 票据、同源 WebSocket 校验和单一活动连接仍必须保留。该入口等同当前设备用户 Shell 权限，不能被微信、OpenClaw、自动化或其他外部 Agent 调用。
-- 不在日志、响应、测试输出或文档中暴露 Token、Authorization、终端票据等敏感数据。
+- 不在日志、响应、测试输出或文档中暴露 Token、Authorization、访问票据等敏感数据。
 - 项目资料列表和设计文档详情是可信网络内的只读页面，不要求认证；文档内容不得包含凭证、账号信息、本机秘密或其他不适合直接访问的内容。首页项目资料卡片的动态刷新接口仍需真实 loopback 或未被关闭的 Tailnet 可信访问。
 - 页面渲染外部内容和日志时使用 `textContent`，不要使用 `innerHTML`。
 - 文件读取必须限制行数、字节数和单行长度，避免一次加载无界内容。
@@ -97,8 +97,8 @@ AI Agent 处理任何需求前先用下面的规则建立判断基线，详细�
 - 只有当前代码、配置或页面改动必须重新加载 Web 才能生效时，Agent 才调用一次
   `scripts/chub-web-restart`；文档、测试或无需重新加载即可生效的改动不重启。快速交互环境会将该调用登记为
   受协调的延迟 Web 重启，Agent 不等待维护者再次确认，继续完成验证和最终回复，也不得重复调用重启脚本。
-- Web 重启只替换 Chub Web 控制面，不停止 Quick Worker、已接受的 Runner/任务、翻译 FIFO、确认 FIFO、实时 tmux
-  或原生 Session；不得为 Web 重启等待、取消或阻塞这些独立资源。Worker 代码或 Worker 服务变更使用既有
+- Web 重启只替换 Chub Web 控制面，不停止 Quick Worker、已接受的 Runner/任务、翻译 FIFO、确认 FIFO 或原生
+  Session；不得为 Web 重启等待、取消或阻塞这些独立资源。Worker 代码或 Worker 服务变更使用既有
   Worker reload/recover 入口，不用 Web 重启替代。
 - 重启调用完成后必须确认新 Web 实例的健康状态和实例变化；脚本调用成功、进程创建或 HTTP 200 都不单独代表重启
   成功。若最终状态无法确认，应按失败或状态未知汇报，不伪造成功。

@@ -90,7 +90,7 @@ def test_corrupt_reload_state_fails_closed(settings: Settings) -> None:
     assert raised.value.code == "quick_worker_reload_state_unavailable"
 
 
-def test_clear_terminal_operation_removes_obsolete_result(settings: Settings) -> None:
+def test_clear_completed_operation_removes_obsolete_result(settings: Settings) -> None:
     state_path = settings.ai_runtime.codex.data_file.with_name(
         "quick-worker-maintenance.json"
     )
@@ -115,7 +115,7 @@ def test_clear_terminal_operation_removes_obsolete_result(settings: Settings) ->
         settings.ai_runtime.codex.data_file.parent / "chub",
     )
 
-    assert coordinator.clear_terminal_operation() is True
+    assert coordinator.clear_completed_operation() is True
     assert coordinator.operation() is None
     assert not state_path.exists()
 
@@ -238,7 +238,7 @@ async def test_quick_worker_status_reports_disabled_runtime_without_failing_work
 ) -> None:
     app = create_app(settings)
     app.state.quick_interactions._recovery_ready = True
-    app.state.codex_pty_manager.update_runtime_enabled("codex", False)
+    app.state.ai_session_manager.update_runtime_enabled("codex", False)
     transport = httpx.ASGITransport(app=app)
 
     with patch(
@@ -293,7 +293,7 @@ async def test_quick_worker_status_lists_each_runtime_independently(
 
     with (
         patch.object(
-            app.state.codex_pty_manager,
+            app.state.ai_session_manager,
             "read_runtime_management",
             return_value=management,
         ),
@@ -330,7 +330,7 @@ async def test_quick_worker_status_reports_unconfigured_runtime(
 
     with (
         patch.object(
-            app.state.codex_pty_manager,
+            app.state.ai_session_manager,
             "read_runtime_management",
             return_value=RuntimeManagementData(runtimes=[], basic_mode=True),
         ),

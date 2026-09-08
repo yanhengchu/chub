@@ -8,7 +8,6 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.ai_runtime import RUNTIME_ID_PATTERN
-from app.codex.models import SessionMode
 
 
 def utc_now() -> datetime:
@@ -17,7 +16,7 @@ def utc_now() -> datetime:
 
 SessionStatus = Literal["new", "running", "stopped", "error"]
 TurnActivity = Literal["unknown", "working", "idle"]
-ActivitySource = Literal["none", "terminal", "quick"]
+ActivitySource = Literal["none", "quick"]
 PermissionMode = Literal["ask", "auto-review", "read-only", "full-access"]
 
 
@@ -56,7 +55,6 @@ class AiSession(_StrictModel):
     # New Sessions pin one concrete implementation. ``None`` is retained only
     # for persisted Sessions created before implementation pinning existed.
     implementation_id: str | None = Field(default=None, pattern=RUNTIME_ID_PATTERN)
-    session_mode: SessionMode
     native_session_id: str | None = Field(
         default=None,
         min_length=1,
@@ -71,10 +69,6 @@ class AiSession(_StrictModel):
     workspace_id: str = Field(min_length=1, max_length=64)
     workspace_name: str = Field(min_length=1, max_length=128)
     cwd: Path
-    discovered: bool = False
-    terminal_launch_id: str | None = Field(
-        default=None, pattern=r"^[a-f0-9]{32}$"
-    )
     quick_native_claim_task_id: str | None = Field(
         default=None, pattern=r"^qw-[0-9]{13}-[a-f0-9]{32}$"
     )
@@ -86,11 +80,8 @@ class AiSession(_StrictModel):
     activity: TurnActivity = "unknown"
     activity_source: ActivitySource = "none"
     permission_mode: PermissionMode = "ask"
-    active_permission_mode: PermissionMode | None = None
     model: str | None = Field(default=None, max_length=128)
     reasoning_effort: str | None = Field(default=None, max_length=32)
-    active_model: str | None = Field(default=None, max_length=128)
-    active_reasoning_effort: str | None = Field(default=None, max_length=32)
     error: str | None = Field(default=None, max_length=300)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -117,5 +108,5 @@ class AiSession(_StrictModel):
 
 
 class AiSessionState(_StrictModel):
-    version: Literal[2] = 2
+    version: Literal[3] = 3
     sessions: list[AiSession] = Field(default_factory=list)

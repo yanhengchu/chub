@@ -82,7 +82,6 @@ def service_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
 
     env = os.environ.copy()
     for name in (
-        "CHUB_ACTIVITY_SOURCE",
         "CHUB_QUICK_TASK_ID",
         "CHUB_QUICK_RESTART_DIR",
     ):
@@ -165,7 +164,6 @@ def test_web_restart_is_deferred_inside_quick_interaction(
     request_dir.mkdir()
     env.update(
         {
-            "CHUB_ACTIVITY_SOURCE": "quick",
             "CHUB_QUICK_TASK_ID": "task-1",
             "CHUB_QUICK_RESTART_DIR": str(request_dir),
             "CHUB_TEST_PLATFORM": "Unsupported",
@@ -211,7 +209,6 @@ def test_web_restart_does_not_fall_back_when_quick_context_is_invalid(
     env, calls = service_env
     env.update(
         {
-            "CHUB_ACTIVITY_SOURCE": "quick",
             "CHUB_QUICK_TASK_ID": "task-1",
             "CHUB_TEST_PLATFORM": "Darwin",
         }
@@ -242,7 +239,6 @@ def test_web_restart_rejects_symlink_request_file(
     (request_dir / "task-1.request").symlink_to(target)
     env.update(
         {
-            "CHUB_ACTIVITY_SOURCE": "quick",
             "CHUB_QUICK_TASK_ID": "task-1",
             "CHUB_QUICK_RESTART_DIR": str(request_dir),
             "CHUB_TEST_PLATFORM": "Darwin",
@@ -272,7 +268,6 @@ def test_chub_restart_uses_same_quick_interaction_deferral(
     request_dir.mkdir()
     env.update(
         {
-            "CHUB_ACTIVITY_SOURCE": "quick",
             "CHUB_QUICK_TASK_ID": "task-1",
             "CHUB_QUICK_RESTART_DIR": str(request_dir),
         }
@@ -892,7 +887,7 @@ def test_worker_maintenance_refuses_to_wait_on_its_own_quick_task(
     command: str,
 ) -> None:
     env, calls = service_env
-    env["CHUB_ACTIVITY_SOURCE"] = "quick"
+    env["CHUB_QUICK_TASK_ID"] = "task-1"
 
     result = run_chub(command, env)
 

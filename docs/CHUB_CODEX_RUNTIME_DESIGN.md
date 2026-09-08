@@ -40,11 +40,15 @@ Codex 实现 `native_session_mapping` 的方式以[Chub AI Runtime 架构设计]
 
 每次 `discover_sessions()` 都直接读取当前 `CODEX_HOME` 的原生数据，不使用 Chub 快照：
 
-1. 遍历 `sessions/**/*.jsonl`。每个可用文件的第一条 JSON 记录提供 `payload.id` 或 `payload.session_id`、`payload.cwd` 和 `payload.timestamp`；文件修改时间作为更新时间。
+1. 遍历 `sessions/**/*.jsonl`。每个可用文件的第一条 JSON 记录最多读取 256 KiB，提供 `payload.id` 或 `payload.session_id`、`payload.cwd` 和 `payload.timestamp`；文件修改时间作为更新时间。超过该单项边界的文件直接忽略。
 2. 原生 ID 必须是有效 UUID，工作目录和时间必须可解析；不满足条件、读取失败或 JSON 损坏的单个文件直接忽略，其他文件继续发现。结果按创建时间和 ID 倒序返回。
-3. 标题优先读取只读 `state_5.sqlite`（兼容 `sqlite/state_5.sqlite`）中未归档线程的 `threads.title`；无法取得时，以 `session_index.jsonl` 的 `id` 和非空 `thread_name` 补充。标题缺失保持为空，不推测标题。
-4. 从每个会话文件尾部最多读取 512 KiB，跳过超过 256 KiB 的单行；由最近可解析的 `thread_settings_applied` 或 `turn_context` 提取权限、模型和推理等级。不能解析的可选字段保持为空。
+3. 标题优先读取只读 `state_5.sqlite`（兼容 `sqlite/state_5.sqlite`）中未归档线程的 `threads.title`；无法取得时，以 `session_index.jsonl` 的 `id` 和非空 `thread_name` 补充。Session Index 按行读取，每行最多 256 KiB；无法解析或超过边界的单条索引直接忽略。标题最多保留 500 个字符，缺失保持为空，不推测标题。
+4. 不读取会话文件尾部的线程设置；权限、模型和推理等级的 Native Session 元数据字段保留在共享契约中，但 Codex 自动发现始终返回为空。
 5. 同一只读状态库的 `threads.archived` 生成可选 `archive_states`，仅供 Chub 确认归档/删除边界；状态库缺失或不可读时该字段为缺失，不影响当前可读取的会话列表。
+
+发现遵循本机尽力读取规则：单个会话文件的首条记录无法读取、格式无效或缺少必要字段时，只忽略该项；标题是辅助信息，状态库不可用时继续尝试 Session Index，Index 中无法解析的单条记录直接忽略。不能读取标题或归档辅助来源，不得清空已经读到的会话列表、改写 Chub Session 或阻塞无关能力；下一次 `discover_sessions()` 仍直接读取当前原生来源，不复用 Chub Native 发现快照。发现结果明确携带完整性：扫描中出现不可读、损坏或超限会话文件，或 Session 来源目录缺失时为不完整，该次结果仍可展示其他项，但不得用“未发现”确认任一 Session 已删除。只有完整扫描且可用状态库中该 ID 也不存在时，Chub 才将其视为已删除；状态库明确标记归档时直接清理绑定。首次 Chub 任务认领 Native ID 时，Session 层可短暂抑制未关联列表的页面投影；认领结束后的下一次列表读取立即重新执行 discovery，Codex Adapter 不自动导入任何结果。
+
+发现不因为历史 Session 数量、单次读取时长或单一辅助来源问题设置全局拒绝门禁。实现仍必须使用有界的单项读取并及时关闭会话文件、SQLite 连接和 writer probe 文件描述符，避免单个异常记录或未释放资源拖累后续刷新。归档和删除的原生终态确认不属于辅助发现：归档状态无法确认时，操作不能宣称成功。
 
 Codex Adapter 将上述数据规范化为共享 `RuntimeNativeSession`：
 
@@ -54,8 +58,6 @@ Codex Adapter 将上述数据规范化为共享 `RuntimeNativeSession`：
 | `native_session_id` | 会话文件中的已校验 UUID。 |
 | `cwd` | 会话第一条记录的 `payload.cwd`。 |
 | `title` | 状态库标题优先，随后为 Session Index 标题；均不可读时为空。 |
-| `active_permission_mode` | 最近线程设置中的权限或 sandbox 配置映射为 Chub 权限枚举；不可映射时为空。 |
-| `active_model` / `active_reasoning_effort` | 最近线程设置中的 `model` 与 `effort`/`reasoning_effort`，通过长度校验后返回。 |
 | `created_at` | 会话第一条记录的 `payload.timestamp`。 |
 | `updated_at` | 会话 JSONL 文件的修改时间。 |
 

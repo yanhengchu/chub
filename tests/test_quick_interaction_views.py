@@ -22,7 +22,6 @@ const session = {
   created_at: "2026-08-15T08:00:00Z",
       can_archive: true,
       workspace_id: "chub",
-      session_mode: "quick",
       status: "stopped",
   activity: "idle",
   permission_mode: "full-access",
@@ -87,7 +86,6 @@ const result = {
             id: "session-two",
             title: "Other",
             created_at: "2026-08-14T08:00:00Z",
-            session_mode: "quick",
             status: "running",
         activity: "working",
         permission_mode: "full-access",
@@ -150,7 +148,7 @@ process.stdout.write(JSON.stringify(result));
     assert behavior["switcher"]["items"][0]["current"] is True
     assert behavior["switcher"]["items"][1]["text"] == "S2 · 执行中"
     assert "Chub 页面暂不提供恢复入口" in behavior["archiveDescription"]
-    assert "将终止正在执行的快速任务并关闭实时终端" in behavior["stopDescription"]
+    assert "将终止正在执行的快速任务" in behavior["stopDescription"]
     assert "在途任务不会恢复" in behavior["stopDescription"]
     assert behavior["url"] == "/codex/session%2Fone/quick-interactions/conversation"
 

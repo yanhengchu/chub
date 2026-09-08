@@ -27,6 +27,7 @@ from app.services.system_upgrade import (
 from app.system_upgrade_cli import prepare_restart
 from app.quick_worker_tasks import (
     worker_leases_dir,
+    worker_restart_request_dir,
     worker_tasks_dir,
     worker_tombstones_dir,
 )
@@ -128,10 +129,11 @@ def test_final_upgrade_verification_does_not_record_openclaw() -> None:
         encoding="utf-8"
     )
     start = application.index('                        "quick_worker",')
-    end = application.index("                    rebind = getattr(", start)
+    end = application.index("                    if quick_interactions.system_upgrade_readiness()", start)
 
     assert '"openclaw"' not in application[start:end]
     assert "weixin_chub_mode.verify_system_upgrade_readiness" not in application[start:end]
+    assert "rebind_upgrade_terminal_carriers" not in application[start:end]
 
 
 def test_plan_loader_rejects_writable_plan(tmp_path: Path) -> None:
@@ -177,11 +179,10 @@ def test_app_uses_ai_session_manager_without_reading_legacy_store(
 
     application = create_app(settings)
     try:
-        assert isinstance(application.state.codex_pty_manager, AiSessionManager)
-        assert application.state.ai_session_manager is application.state.codex_pty_manager
-        assert not application.state.codex_pty_manager.store.list()
+        assert isinstance(application.state.ai_session_manager, AiSessionManager)
+        assert not application.state.ai_session_manager.store.list()
     finally:
-        application.state.codex_pty_manager.close()
+        application.state.ai_session_manager.close()
 
 
 def test_restart_environment_repairs_missing_service_definitions(
@@ -817,10 +818,7 @@ def test_prepare_restart_removes_actual_and_declared_worker_protocol_state(
     ):
         path.write_text("[]", encoding="utf-8")
         path.chmod(0o600)
-    for path in (
-        settings.ai_runtime.codex.runtime_dir / "hooks",
-        settings.ai_runtime.codex.runtime_dir / "restart-requests",
-    ):
+    for path in (worker_restart_request_dir(settings),):
         path.mkdir(parents=True)
         path.chmod(0o700)
         (path / "record.json").write_text("{}", encoding="utf-8")
@@ -833,8 +831,7 @@ def test_prepare_restart_removes_actual_and_declared_worker_protocol_state(
     assert all(path.is_dir() for path in unrelated_paths)
     assert not settings.ai_runtime.codex.data_file.exists()
     assert not settings.ai_runtime.codex.data_file.with_name("ai-sessions.json").exists()
-    assert not (settings.ai_runtime.codex.runtime_dir / "hooks").exists()
-    assert not (settings.ai_runtime.codex.runtime_dir / "restart-requests").exists()
+    assert not worker_restart_request_dir(settings).exists()
 
 
 def test_system_upgrade_restart_uses_fixed_linux_services(
@@ -906,7 +903,6 @@ def test_system_upgrade_restart_uses_fixed_linux_services(
     )
     os.chmod(systemctl, 0o700)
     environment = os.environ.copy()
-    environment.pop("CHUB_ACTIVITY_SOURCE", None)
     environment.update(
         {
             "HOME": str(tmp_path / "home"),
@@ -1044,12 +1040,12 @@ async def test_system_upgrade_does_not_gate_on_web_or_worker_status(
 
     with (
         patch.object(
-            app.state.codex_pty_manager,
+            app.state.ai_session_manager,
             "system_upgrade_sessions",
             side_effect=OSError("unavailable"),
         ),
         patch.object(
-            app.state.codex_pty_manager,
+            app.state.ai_session_manager,
             "available",
             return_value=False,
         ) as available,

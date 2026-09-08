@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.session_fixtures import CodexSession
+
 from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
@@ -9,7 +11,6 @@ import pytest
 from app.application import create_app
 from app.codex.models import (
     CodexQuotaData,
-    CodexSession,
     CodexTokenUsageData,
 )
 from app.core.config import Settings
@@ -25,7 +26,6 @@ from tests.openclaw_weixin_chub_mode_helpers import (
 def configured_stop_target(settings: Settings):
     manager, codex_manager, quick_interactions = configured_manager(settings)
     session = CodexSession(
-        session_mode="quick",
         id="session-2",
         codex_session_id="native-2",
         workspace_id="chub",
@@ -109,7 +109,6 @@ def test_session_stop_final_notification_restores_other_running_task_name(
 ) -> None:
     manager, target, quick_interactions = configured_stop_target(settings)
     other = CodexSession(
-        session_mode="quick",
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",
@@ -377,21 +376,15 @@ def test_application_stop_callback_cleans_resources_in_order(
     application = create_app(settings)
     parent = MagicMock()
     quick_interactions = application.state.quick_interactions
-    terminal_tickets = application.state.terminal_tickets
-    terminal_connections = application.state.terminal_connections
-    codex_manager = application.state.codex_pty_manager
+    codex_manager = application.state.ai_session_manager
     quick_interactions.stop_operation_guard = MagicMock(
         return_value=nullcontext()
     )
     quick_interactions.cancel_codex_session = MagicMock()
-    terminal_tickets.revoke_session = MagicMock()
-    terminal_connections.close_session = MagicMock()
     codex_manager.ensure_stop_allowed = MagicMock()
     codex_manager.stop_session = MagicMock()
     parent.attach_mock(codex_manager.ensure_stop_allowed, "gate")
     parent.attach_mock(quick_interactions.cancel_codex_session, "cancel")
-    parent.attach_mock(terminal_tickets.revoke_session, "revoke")
-    parent.attach_mock(terminal_connections.close_session, "close")
     parent.attach_mock(codex_manager.stop_session, "stop")
     codex_manager.stop_session.return_value = SimpleNamespace(
         status="stopped",
@@ -404,7 +397,5 @@ def test_application_stop_callback_cleans_resources_in_order(
     assert parent.mock_calls == [
         call.gate("session-2"),
         call.cancel("session-2"),
-        call.revoke("session-2"),
-        call.close("session-2"),
         call.stop("session-2"),
     ]

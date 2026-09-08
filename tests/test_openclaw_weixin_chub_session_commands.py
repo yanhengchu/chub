@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.session_fixtures import CodexSession
+
 import json
 import re
 import stat
@@ -13,7 +15,6 @@ import pytest
 from app.codex.models import (
     CodexQuotaData,
     CodexQuotaWindow,
-    CodexSession,
     CodexTokenUsageData,
     QuickInteractionWeixinRoute,
     WorkspaceInfo,
@@ -47,7 +48,6 @@ def test_codex_switch_uses_creation_order_and_allows_busy_target(
     manager._state.session_id = "a-current"
     sessions = [
         CodexSession(
-            session_mode="quick",
             id="c-available",
             workspace_id="chub",
             workspace_name="Chub",
@@ -58,7 +58,6 @@ def test_codex_switch_uses_creation_order_and_allows_busy_target(
             activity="idle",
         ),
         CodexSession(
-            session_mode="quick",
             id="a-current",
             workspace_id="chub",
             workspace_name="Chub",
@@ -69,7 +68,6 @@ def test_codex_switch_uses_creation_order_and_allows_busy_target(
             activity="idle",
         ),
         CodexSession(
-            session_mode="quick",
             id="b-busy",
             workspace_id="chub",
             workspace_name="Chub",
@@ -127,7 +125,6 @@ def test_canonical_switch_routes_to_numbered_session(
     manager._state.session_id = "session-1"
     sessions = [
         CodexSession(
-            session_mode="quick",
             id=f"session-{slot}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -182,7 +179,6 @@ def test_codex_switch_with_task_switches_and_submits_once(
     manager._state.session_id = "session-1"
     sessions = [
         CodexSession(
-            session_mode="quick",
             id=f"session-{slot}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -250,7 +246,6 @@ def test_codex_switch_task_uses_enabled_text_optimization(
     manager._state.session_id = "session-1"
     sessions = [
         CodexSession(
-            session_mode="quick",
             id=f"session-{slot}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -315,7 +310,6 @@ def test_codex_switch_long_body_submits_directly(
     manager._state.session_id = "session-1"
     sessions = [
         CodexSession(
-            session_mode="quick",
             id=f"session-{slot}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -362,7 +356,6 @@ def test_codex_switch_task_keeps_selection_when_optimization_cannot_queue(
     manager._state.session_id = "session-1"
     sessions = [
         CodexSession(
-            session_mode="quick",
             id=f"session-{slot}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -407,7 +400,6 @@ def test_codex_switch_with_task_failure_shows_task_summary(
     manager._state.session_id = "session-1"
     sessions = [
         CodexSession(
-            session_mode="quick",
             id=f"session-{slot}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -464,7 +456,6 @@ def test_codex_switch_with_task_busy_target_uses_target_without_current_marker(
     manager._state.session_id = "session-1"
     sessions = [
         CodexSession(
-            session_mode="quick",
             id=f"session-{slot}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -509,7 +500,6 @@ def test_codex_switch_without_current_uses_first_visible_session(
 ) -> None:
     manager, codex_manager, _quick_interactions = configured_manager(settings)
     unavailable = CodexSession(
-        session_mode="quick",
         id="a-unavailable",
         workspace_id="chub",
         workspace_name="Chub",
@@ -521,7 +511,6 @@ def test_codex_switch_without_current_uses_first_visible_session(
         error="private failure",
     )
     available = CodexSession(
-        session_mode="quick",
         id="b-available",
         workspace_id="chub",
         workspace_name="Chub",
@@ -570,7 +559,6 @@ def test_codex_archive_removes_target_and_clears_current_binding(
     manager, codex_manager, quick_interactions = configured_manager(settings)
     sessions = [
         CodexSession(
-            session_mode="quick",
             id=f"session-{index}",
             codex_session_id=f"native-{index}",
             workspace_id="chub",
@@ -644,7 +632,6 @@ def test_codex_archive_allows_chub_only_session_without_native_binding(
 ) -> None:
     manager, codex_manager, _quick_interactions = configured_manager(settings)
     session = CodexSession(
-        session_mode="quick",
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",
@@ -680,7 +667,6 @@ def test_codex_archive_allows_chub_only_session_without_native_binding(
 def test_duplicate_codex_archive_does_not_archive_twice(settings: Settings) -> None:
     manager, codex_manager, _quick_interactions = configured_manager(settings)
     session = CodexSession(
-        session_mode="quick",
         id="session-1",
         codex_session_id="native-1",
         workspace_id="chub",
@@ -724,7 +710,6 @@ def test_codex_archive_status_preserves_freed_slot_for_codex_new(
     manager, codex_manager, _quick_interactions = configured_manager(settings)
     sessions = [
         CodexSession(
-            session_mode="quick",
             id=f"session-{index}",
             codex_session_id=f"native-{index}",
             workspace_id="chub",
@@ -789,7 +774,6 @@ def test_codex_archive_does_not_fill_unassigned_candidate(
     manager, codex_manager, _quick_interactions = configured_manager(settings)
     sessions = [
         CodexSession(
-            session_mode="quick",
             id=f"session-{index}",
             codex_session_id=f"native-{index}",
             workspace_id="chub",
@@ -853,7 +837,6 @@ def test_codex_archive_rejects_session_that_is_not_safely_idle(
 ) -> None:
     manager, codex_manager, quick_interactions = configured_manager(settings)
     session = CodexSession(
-        session_mode="quick",
         id="session-1",
         codex_session_id="native-1",
         workspace_id="chub",
@@ -963,7 +946,6 @@ def test_codex_archive_failure_keeps_slot_and_explains_possible_stop(
 ) -> None:
     manager, codex_manager, _quick_interactions = configured_manager(settings)
     session = CodexSession(
-        session_mode="quick",
         id="session-1",
         codex_session_id="native-1",
         workspace_id="chub",
@@ -1008,7 +990,6 @@ def test_codex_archive_rejects_session_with_pending_retry(
 ) -> None:
     manager, codex_manager, _quick_interactions = configured_manager(settings)
     session = CodexSession(
-        session_mode="quick",
         id="session-1",
         codex_session_id="native-1",
         workspace_id="chub",
@@ -1055,7 +1036,6 @@ def test_codex_archive_state_sync_failure_reports_partial_success(
 ) -> None:
     manager, codex_manager, _quick_interactions = configured_manager(settings)
     session = CodexSession(
-        session_mode="quick",
         id="session-1",
         codex_session_id="native-1",
         workspace_id="chub",
@@ -1105,7 +1085,6 @@ def test_codex_switch_number_uses_fresh_visible_list(settings: Settings) -> None
     manager, codex_manager, _quick_interactions = configured_manager(settings)
     sessions = [
         CodexSession(
-            session_mode="quick",
             id=f"session-{index}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -1151,7 +1130,6 @@ def test_codex_switch_uses_one_deadline_and_reuses_session_scan(
     manager._state.session_id = "session-1"
     sessions = [
         CodexSession(
-            session_mode="quick",
             id=f"session-{index}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -1215,7 +1193,6 @@ def test_codex_switch_out_of_range_returns_fresh_list_without_changing_binding(
     manager, codex_manager, _quick_interactions = configured_manager(settings)
     manager._state.session_id = "session-1"
     session = CodexSession(
-        session_mode="quick",
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",
@@ -1253,7 +1230,6 @@ def test_codex_switch_does_not_fill_unassigned_candidate(
     manager._state.session_id = "session-1"
     sessions = [
         CodexSession(
-            session_mode="quick",
             id=f"session-{index}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -1400,7 +1376,6 @@ def test_codex_switch_write_failure_keeps_previous_binding(
     manager._state.session_id = "session-1"
     sessions = [
         CodexSession(
-            session_mode="quick",
             id=f"session-{index}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -1456,7 +1431,6 @@ def test_duplicate_codex_switch_does_not_switch_twice(settings: Settings) -> Non
     manager._state.session_id = "session-1"
     sessions = [
         CodexSession(
-            session_mode="quick",
             id=f"session-{index}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -1509,7 +1483,6 @@ def test_codex_delete_removes_target_and_clears_current_binding(
 ) -> None:
     manager, codex_manager, _quick_interactions = configured_manager(settings)
     session = CodexSession(
-        session_mode="quick",
         id="session-1",
         codex_session_id="native-1",
         workspace_id="chub",

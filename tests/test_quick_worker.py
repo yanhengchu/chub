@@ -42,6 +42,7 @@ from app.quick_worker_tasks import (
     _digest_submission,
     new_worker_task_id,
     worker_leases_dir,
+    worker_restart_request_dir,
     worker_state_dir,
     worker_tasks_dir,
     worker_tombstones_dir,
@@ -297,7 +298,6 @@ def test_worker_uses_native_discovered_workspace_without_fixed_directory_gate(
             task_kind="standard",
             workspace_id="runtime-session",
             turn=turn,
-            hook_dir=tmp_path / "hooks",
             restart_request_dir=tmp_path / "restart",
         )
     )
@@ -2412,9 +2412,7 @@ result_path.write_text(completed.stdout.strip(), encoding="utf-8")
         assert submitted["success"] is True
         finished = await _wait_for_status(settings, task_id, {"succeeded"})
         assert "restart registered" in finished["result"]
-        request_path = (
-            settings.ai_runtime.codex.runtime_dir / "restart-requests" / f"{task_id}.request"
-        )
+        request_path = worker_restart_request_dir(settings) / f"{task_id}.request"
         assert request_path.is_file()
         assert stat.S_IMODE(request_path.stat().st_mode) == 0o600
     finally:

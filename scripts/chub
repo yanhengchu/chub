@@ -45,7 +45,7 @@ add_runtime_command_dir() {
     esac
 }
 
-for runtime_command in codex ttyd tmux docker; do
+for runtime_command in codex docker; do
     add_runtime_command_dir "$runtime_command"
 done
 unset runtime_command
@@ -154,11 +154,11 @@ PY
     )
 }
 
-check_codex_pty_requirements() {
+check_codex_runtime_requirements() {
     local dependency
-    for dependency in codex ttyd tmux; do
+    for dependency in codex; do
         if ! PATH="$RUNTIME_PATH" command -v "$dependency" >/dev/null 2>&1; then
-            echo "chub: warning: $dependency is not installed or not available on the service PATH; Codex PTY will be disabled" >&2
+            echo "chub: warning: $dependency is not installed or not available on the service PATH; Codex Runtime will be disabled" >&2
         fi
     done
 }
@@ -815,7 +815,7 @@ PY
 require_worker_idle_for_maintenance() {
     local action="$1"
     local force="$2"
-    if [[ "${CHUB_ACTIVITY_SOURCE:-}" == "quick" ]]; then
+    if [[ -n "${CHUB_QUICK_TASK_ID:-}" ]]; then
         fail "$action must be run from a local terminal, not from a Quick Worker task"
     fi
     worker_service_definition_exists || return 0
@@ -886,7 +886,7 @@ install_service() {
     fi
     check_project
     require_system_upgrade_idle
-    check_codex_pty_requirements
+    check_codex_runtime_requirements
     require_worker_idle_for_maintenance install "$force"
     install_command
     case "$(platform_name)" in
@@ -933,7 +933,7 @@ install_service() {
 }
 
 start_service() {
-    check_codex_pty_requirements
+    check_codex_runtime_requirements
     case "$(platform_name)" in
         macos) start_macos_service ;;
         ubuntu) systemctl --user start "$SERVICE_NAME.service" ;;
@@ -970,7 +970,7 @@ worker_service_status() {
 }
 
 start_worker_service() {
-    check_codex_pty_requirements
+    check_codex_runtime_requirements
     case "$(platform_name)" in
         macos) start_macos_worker ;;
         ubuntu) systemctl --user start "$WORKER_SERVICE_NAME.service" ;;
@@ -1107,7 +1107,7 @@ check_service() {
     local result=0
     check_project || result=1
     if [[ "$result" -eq 0 ]]; then
-        check_codex_pty_requirements || result=1
+        check_codex_runtime_requirements || result=1
         status_service || result=1
         system_status_check || result=1
         health_check true || result=1
@@ -1122,11 +1122,11 @@ check_service() {
 
 restart_service() {
     require_system_upgrade_idle
-    if [[ "${CHUB_ACTIVITY_SOURCE:-}" == "quick" ]]; then
+    if [[ -n "${CHUB_QUICK_TASK_ID:-}" ]]; then
         "$PROJECT_ROOT/scripts/chub-web-restart"
         return
     fi
-    check_codex_pty_requirements
+    check_codex_runtime_requirements
     "$PROJECT_ROOT/scripts/chub-web-restart"
     health_check || fail "service restart health verification failed"
 }
@@ -1295,7 +1295,7 @@ quick_worker_health() {
 }
 
 quick_worker_drain() {
-    if [[ "${CHUB_ACTIVITY_SOURCE:-}" == "quick" ]]; then
+    if [[ -n "${CHUB_QUICK_TASK_ID:-}" ]]; then
         fail "worker drain must be run from a local terminal, not from a Quick Worker task"
     fi
     local operation_id="${1:-}"
@@ -1454,7 +1454,7 @@ reload_worker_service() {
 }
 
 quick_worker_reload() {
-    if [[ "${CHUB_ACTIVITY_SOURCE:-}" == "quick" ]]; then
+    if [[ -n "${CHUB_QUICK_TASK_ID:-}" ]]; then
         fail "worker reload must be run from a local terminal, not from a Quick Worker task"
     fi
     check_project
@@ -1497,7 +1497,7 @@ quick_worker_reload() {
 }
 
 quick_worker_recover() {
-    if [[ "${CHUB_ACTIVITY_SOURCE:-}" == "quick" ]]; then
+    if [[ -n "${CHUB_QUICK_TASK_ID:-}" ]]; then
         fail "worker recovery must be run from a local terminal, not from a Quick Worker task"
     fi
     check_project

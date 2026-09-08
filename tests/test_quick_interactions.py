@@ -1,3 +1,5 @@
+from tests.session_fixtures import CodexSession
+
 import json
 import asyncio
 import hashlib
@@ -11,7 +13,6 @@ import pytest
 
 from app.ai_session.store import AiSessionStoreUnavailable
 from app.codex.models import (
-    CodexSession,
     QuickInteractionDeferredRestartContext,
     QuickInteractionOperationContext,
     QuickInteractionTask,
@@ -48,7 +49,6 @@ def manager(
         permission_mode="auto-review",
     )
     codex_manager.has_active_writer.return_value = False
-    codex_manager.hook_dir = tmp_path / "hooks"
     quick_interactions = QuickInteractionManager(
         tmp_path / "codex-sessions.json",
         tmp_path / "runtime",
@@ -126,7 +126,7 @@ def test_model_update_is_serialized_with_quick_session_tasks(tmp_path: Path) -> 
 
     quick_interactions.update_session_model("session-1", "gpt-test", "high")
 
-    quick_interactions.codex_manager.update_quick_session_model.assert_called_once_with(
+    quick_interactions.codex_manager.update_session_model.assert_called_once_with(
         "session-1",
         "gpt-test",
         "high",
@@ -140,7 +140,7 @@ def test_model_update_rejects_running_quick_session(tmp_path: Path) -> None:
     with pytest.raises(ApiError, match="正在执行"):
         quick_interactions.update_session_model("session-1", "gpt-test", "high")
 
-    quick_interactions.codex_manager.update_quick_session_model.assert_not_called()
+    quick_interactions.codex_manager.update_session_model.assert_not_called()
 
 
 def test_codex_execution_prompt_adds_delivery_guidance_without_changing_request(
@@ -203,7 +203,7 @@ def test_task_summary_is_stable_bounded_and_redacted() -> None:
     assert build_task_summary("检查 Ubuntu 服务状态") == "检查 Ubuntu 服务状态"
 
 
-def test_submit_allows_new_session_and_prepares_managed_profile(
+def test_submit_allows_new_session_without_runtime_profile_mutation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -226,9 +226,7 @@ def test_submit_allows_new_session_and_prepares_managed_profile(
     assert task.status == "requested"
     assert task.prompt == "执行第一条任务"
     assert task.summary == "执行第一条任务"
-    quick_interactions.codex_manager.prepare_quick_interaction.assert_called_once_with(
-        "builtin-dev"
-    )
+    quick_interactions.codex_manager.prepare_quick_interaction.assert_not_called()
     quick_interactions.codex_manager.set_initial_quick_interaction_title.assert_called_once_with(
         session.id,
         "执行第一条任务",
@@ -973,7 +971,6 @@ result_path.write_text(f"recovered:{prompt}", encoding="utf-8")
             permission_mode="read-only",
         )
         value.has_active_writer.return_value = False
-        value.hook_dir = tmp_path / "hooks"
         return value
 
     def new_manager() -> QuickInteractionManager:
@@ -1582,6 +1579,100 @@ def test_worker_claim_restore_store_unavailable_is_local(
     )
 
 
+def test_missing_session_discards_stale_web_task_without_hiding_worker_recovery(
+    settings,
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "quick-interactions.json"
+    task = QuickInteractionTask(
+        id="task-missing-session",
+        worker_task_id="qw-1750000000000-11111111111111111111111111111111",
+        session_id="missing-session",
+        implementation_id="builtin-dev",
+        prompt="检查状态",
+        status="running",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    serialized = task.model_dump(mode="json")
+    serialized["_operation_context"] = {
+        "operation_id": "operation-1",
+        "source_ip": "127.0.0.1",
+    }
+    state.write_text(json.dumps([serialized]), encoding="utf-8")
+    codex_manager = MagicMock()
+    codex_manager.register_quick_native_claim.side_effect = ApiError(
+        404,
+        "codex_session_not_found",
+        "Codex session not found",
+    )
+    quick_interactions = QuickInteractionManager(
+        tmp_path / "codex-sessions.json",
+        tmp_path / "runtime",
+        codex_manager,
+        worker_settings=settings,
+    )
+    quick_interactions._worker_call = MagicMock(
+        return_value={"success": True, "data": {"tasks": []}}
+    )
+
+    quick_interactions._reconcile_worker_once(initial=True)
+
+    recovered = quick_interactions.get(task.id)
+    assert recovered.status == "failed"
+    assert recovered.worker_task_id is None
+    assert "Chub Session 已不存在" in (recovered.error or "")
+    assert quick_interactions.is_running(task.session_id) is False
+    assert quick_interactions.recovery_ready is True
+    persisted = json.loads(state.read_text(encoding="utf-8"))
+    assert persisted[0]["worker_task_id"] is None
+
+
+def test_final_untracked_worker_task_without_session_is_acknowledged(
+    settings,
+    tmp_path: Path,
+) -> None:
+    quick_interactions = worker_manager(tmp_path, settings)
+    quick_interactions.codex_manager.get_session.side_effect = ApiError(
+        404,
+        "codex_session_not_found",
+        "Codex session not found",
+    )
+    now = utc_now()
+    summary = {
+        "task_id": "qw-1750000000000-11111111111111111111111111111111",
+        "runtime_id": "codex",
+        "implementation_id": "builtin-dev",
+        "status": "succeeded",
+        "prompt_sha256": "a" * 64,
+        "session_id": "missing-session",
+        "task_kind": "standard",
+        "execution_id": "11111111111111111111111111111111",
+        "restart_sensitive": False,
+        "native_session_id": "11111111-1111-4111-8111-111111111111",
+        "delivery_acknowledged": False,
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat(),
+    }
+
+    def worker_call(action: str, **_payload):
+        if action == "task_list":
+            return {"success": True, "data": {"tasks": [summary]}}
+        if action == "task_acknowledge":
+            return {"success": True, "data": {"delivery": {}}}
+        raise AssertionError(action)
+
+    quick_interactions._worker_call = MagicMock(side_effect=worker_call)
+
+    quick_interactions._reconcile_worker_once(initial=True)
+
+    assert quick_interactions.recovery_ready is True
+    assert [call.args[0] for call in quick_interactions._worker_call.call_args_list] == [
+        "task_list",
+        "task_acknowledge",
+    ]
+
+
 def test_worker_recovery_barrier_fails_quick_session_writes_closed(
     settings,
     tmp_path: Path,
@@ -1593,8 +1684,6 @@ def test_worker_recovery_barrier_fails_quick_session_writes_closed(
             pass
     assert error.value.status_code == 503
     assert error.value.code == "quick_worker_recovery_unavailable"
-    with quick_interactions.terminal_input_guard("session-1") as allowed:
-        assert allowed is True
 
 
 def test_worker_reconciliation_logs_maintenance_disconnect_without_traceback(
@@ -1637,18 +1726,16 @@ def test_worker_reconciliation_keeps_traceback_for_unexpected_disconnect(
     assert record.exc_info is not None
 
 
-def test_terminal_guards_do_not_require_quick_worker_recovery(
+def test_session_creation_requires_ready_worker(
     settings,
     tmp_path: Path,
 ) -> None:
     quick_interactions = worker_manager(tmp_path, settings)
 
-    with quick_interactions.session_creation_guard("terminal"):
-        pass
-    with quick_interactions.terminal_access_guard("terminal-session"):
-        pass
-    with quick_interactions.terminal_input_guard("terminal-session") as allowed:
-        assert allowed is True
+    with pytest.raises(ApiError) as error:
+        with quick_interactions.session_creation_guard():
+            pass
+    assert error.value.code == "quick_worker_recovery_unavailable"
 
 
 def test_delete_guard_allows_idle_session_when_quick_worker_is_unavailable(
@@ -1711,13 +1798,11 @@ def test_quick_session_creation_requires_ready_worker(
     quick_interactions._worker_call = MagicMock(return_value={"success": False})
 
     with pytest.raises(ApiError) as error:
-        with quick_interactions.session_creation_guard("quick"):
+        with quick_interactions.session_creation_guard():
             pass
 
     assert error.value.status_code == 503
     assert error.value.code == "quick_worker_unavailable"
-    with quick_interactions.session_creation_guard("terminal"):
-        pass
 
 
 def test_worker_reconciliation_merges_once_and_acknowledges_after_persistence(
@@ -1868,7 +1953,7 @@ def test_worker_reconciliation_not_found_delivers_failure_notification(
     notifier.assert_called_once()
 
 
-def test_worker_recovery_ready_waits_for_recovery_handler(
+def test_worker_recovery_handler_failure_does_not_block_chub_session_writes(
     settings,
     tmp_path: Path,
 ) -> None:
@@ -1878,15 +1963,14 @@ def test_worker_recovery_ready_waits_for_recovery_handler(
     )
 
     def fail_recovery_handler() -> None:
-        assert quick_interactions.recovery_ready is False
+        assert quick_interactions.recovery_ready is True
         raise OSError("translation recovery failed")
 
     quick_interactions.set_recovery_ready_handler(fail_recovery_handler)
 
-    with pytest.raises(OSError, match="translation recovery failed"):
-        quick_interactions._reconcile_worker_once(initial=True)
+    quick_interactions._reconcile_worker_once(initial=True)
 
-    assert quick_interactions.recovery_ready is False
+    assert quick_interactions.recovery_ready is True
 
 
 def test_worker_recovery_retries_deferred_restart_after_barrier_opens(
@@ -2546,34 +2630,6 @@ def test_is_running_reports_session_input_lock(tmp_path: Path) -> None:
     assert quick_interactions.is_running("session-1") is True
 
 
-def test_terminal_input_guard_serializes_session_operations(tmp_path: Path) -> None:
-    quick_interactions = manager(tmp_path)
-    entered = threading.Event()
-
-    def enter_session_operation() -> None:
-        with quick_interactions.session_operation_guard("session-1"):
-            entered.set()
-
-    with quick_interactions.terminal_input_guard("session-1") as allowed:
-        assert allowed is True
-        worker = threading.Thread(target=enter_session_operation)
-        worker.start()
-        assert entered.wait(0.05) is False
-
-    worker.join(timeout=1)
-    assert entered.is_set()
-
-
-def test_terminal_input_guard_rejects_input_during_quick_interaction(
-    tmp_path: Path,
-) -> None:
-    quick_interactions = manager(tmp_path)
-    quick_interactions._running_sessions.add("session-1")
-
-    with quick_interactions.terminal_input_guard("session-1") as allowed:
-        assert allowed is False
-
-
 def test_local_history_retains_at_most_thirty_tasks(tmp_path: Path) -> None:
     quick_interactions = manager(tmp_path)
     tasks = [
@@ -2727,20 +2783,23 @@ def test_local_history_keeps_finished_task_until_session_cleanup(
     assert "just-finished" not in quick_interactions._tasks
 
 
-def test_submit_rechecks_terminal_status(tmp_path: Path) -> None:
+def test_submit_uses_worker_and_native_writer_guards_for_running_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     quick_interactions = manager(tmp_path)
     quick_interactions.codex_manager.get_session.return_value.status = "running"
     quick_interactions.codex_manager.get_session.return_value.activity = "working"
+    monkeypatch.setattr(quick_interactions, "_start_worker_observer", MagicMock())
 
-    with pytest.raises(ApiError) as error:
-        quick_interactions.submit(
-            "session-1",
-            "检查状态",
-            operation_id="operation-1",
-            source_ip="127.0.0.1",
-        )
+    task = quick_interactions.submit(
+        "session-1",
+        "检查状态",
+        operation_id="operation-1",
+        source_ip="127.0.0.1",
+    )
 
-    assert error.value.code == "quick_interaction_terminal_working"
+    assert task.status == "requested"
 
 
 def test_submit_rejects_active_native_writer(tmp_path: Path) -> None:
@@ -2778,7 +2837,7 @@ def test_submit_allows_new_task_while_restart_is_pending(
     )
 
     assert task.status == "requested"
-    quick_interactions.codex_manager.prepare_quick_interaction.assert_called_once()
+    quick_interactions.codex_manager.prepare_quick_interaction.assert_not_called()
 
 
 def test_deferred_restart_ready_waits_only_for_requesting_task_notifications(

@@ -740,7 +740,7 @@ window.initializeWorkspaceWorkstation = () => {
   elements.chubRestart.addEventListener("click", () => {
     void showConfirmationDialog({
       title: "重启 Chub",
-      description: "只重启 Chub Web 控制面；已接受的快速任务、Quick Worker、实时终端和原生 Codex 不会被停止。",
+      description: "只重启 Chub Web 控制面；已接受的快速任务、Quick Worker 和原生 Codex 不会被停止。",
       confirmLabel: "确认重启",
       pendingLabel: "正在等待新实例…",
       tone: "secondary",
@@ -751,7 +751,7 @@ window.initializeWorkspaceWorkstation = () => {
   elements.workerRestart.addEventListener("click", () => {
     void showConfirmationDialog({
       title: "重启 Chub Quick Worker",
-      description: "排队任务会取消，执行中的快速任务会停止并标记为未完成，且不会自动重试。Chub、OpenClaw 和实时终端不受影响。",
+      description: "排队任务会取消，执行中的快速任务会停止并标记为未完成，且不会自动重试。Chub 和 OpenClaw 不受影响。",
       confirmLabel: "确认重启",
       pendingLabel: "正在下发…",
       errorMessage: "Quick Worker 重启失败。",

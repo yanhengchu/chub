@@ -244,10 +244,10 @@
   );
   if (initialQuickSessionPanel instanceof HTMLElement) {
     clearWorkspaceSectionSelection();
-    setToolbarStatus("正在加载快速会话…");
+    setToolbarStatus("正在加载Chub Session…");
     initialQuickSessionPanel.querySelector("iframe")?.addEventListener("load", () => {
       if (window.workspaceQuickSessionOpen) {
-        setToolbarStatus("快速会话已加载");
+        setToolbarStatus("Chub Session已加载");
         void loadQuickSessionToolbarUsage();
       }
     }, { once: true });
@@ -288,7 +288,7 @@
   });
 
   window.openWorkspaceQuickSession = (session) => {
-    if (!session || session.session_mode !== "quick" || typeof session.id !== "string") return;
+    if (!session || typeof session.id !== "string") return;
     const currentContent = document.getElementById("workspace-section-content");
     if (!(currentContent instanceof HTMLElement)) {
       window.location.assign(`/codex/${encodeURIComponent(session.id)}/quick-interactions/conversation`);
@@ -298,13 +298,13 @@
     const frame = document.createElement("iframe");
     panel.id = "workspace-section-content";
     panel.className = "workspace-inline-quick-session";
-    panel.setAttribute("aria-label", "快速会话");
+    panel.setAttribute("aria-label", "Chub Session");
     frame.className = "workspace-inline-quick-session-frame";
-    frame.title = session.title || session.workspace_name || "快速会话";
+    frame.title = session.title || session.workspace_name || "Chub Session";
     frame.src = `/codex/${encodeURIComponent(session.id)}/quick-interactions/conversation?embedded=workspace`;
     frame.addEventListener("load", () => {
       if (window.workspaceQuickSessionOpen && document.getElementById("workspace-section-content") === panel) {
-        setToolbarStatus("快速会话已加载");
+        setToolbarStatus("Chub Session已加载");
         void loadQuickSessionToolbarUsage();
       }
     }, { once: true });
@@ -316,7 +316,7 @@
     workspaceMain?.classList.add("is-showing-quick-session");
     clearWorkspaceSectionSelection();
     showSectionToolbarLoading("quick-session");
-    setToolbarStatus("正在加载快速会话…");
+    setToolbarStatus("正在加载Chub Session…");
     if (compactViewport.matches) closeMobileSidebar();
   };
 
@@ -772,7 +772,7 @@
       const title = button.dataset.weeklyReportSessionTitle || "周报生成会话";
       window.selectWorkspaceQuickSession?.(sessionId);
       if (typeof window.openWorkspaceQuickSession === "function") {
-        window.openWorkspaceQuickSession({ id: sessionId, session_mode: "quick", title });
+        window.openWorkspaceQuickSession({ id: sessionId, title });
         return;
       }
       window.location.assign(`/?session=${encodeURIComponent(sessionId)}`);

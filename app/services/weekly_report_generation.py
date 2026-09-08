@@ -33,7 +33,7 @@ class WeeklyReportGenerationStep:
 
 
 class WeeklyReportGenerationService:
-    """Run both report-generation stages in one bounded Quick Session per period."""
+    """Run both report-generation stages in one bounded Chub Session per period."""
 
     def __init__(self, state_file: Path, session_manager, quick_interactions) -> None:
         self._state_file = state_file
@@ -85,13 +85,12 @@ class WeeklyReportGenerationService:
                             "weekly_report_generation_read_only",
                             "当前周报自动化会话为只读权限，无法生成周报产物。",
                         )
-                    with self._quick_interactions.session_creation_guard("quick"):
+                    with self._quick_interactions.session_creation_guard():
                         session = self._session_manager.create_session(
                             "chub",
                             settings.permission_mode,
                             settings.model,
                             settings.reasoning_effort,
-                            "quick",
                         )
                     session_id = session.id
                     created_session = True

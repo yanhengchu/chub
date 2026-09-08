@@ -1,6 +1,6 @@
 # Chub 总体架构设计
 
-> 状态：持续维护。
+> 状态：持续维护
 > 主要读者：AI Agent、实现和排障 Agent；维护人员用于确认系统分层、状态边界和验收范围。
 > 本文负责：Chub 三层架构、进程边界、依赖方向、状态所有权、核心调用链和跨模块约束。
 > 本文不负责：专项功能的完整操作契约、固定指令语法、Runtime ZIP 协议与模块维护流程、插件实现或部署步骤；这些内容以对应专项文档为准。
@@ -59,7 +59,7 @@ AI Runtime 层提供 Chub 的 AI 能力。当前完整接入的 Runtime 是 Code
 
 - Runtime 注册、能力目录、健康状态和由后端固定的提交门禁。
 - AI Session、任务提交、幂等、租约、超时、取消、恢复和最终状态。
-- Quick Worker、固定 Runner、Runtime Adapter、实时终端载体和本机 AI Agent 调用。
+- Quick Worker、固定 Runner、Runtime Adapter 和本机 AI Agent 调用。
 - 模型、推理等级、AI 用量及 AI 任务相关的业务终态。
 
 当前部署只启用一个后端固定注册的 Runtime，现有实例为 Codex；客户端不能选择 Runtime。设置页可启用或停用已注册 Runtime。停用只拒绝新的 AI 任务受理，不取消、迁移或重放已受理任务，也不改变 Worker 服务健康。Runtime 缺失、不健康或被停用时，新任务必须失败关闭，不自动降级到其他 Runtime；查看、停止、归档等已有 Session 维护能力按各自契约保持可用。多个 Runtime 的选择、聚合和切换语义由 Runtime 专项设计在真实接入前单独定义。
@@ -96,8 +96,7 @@ AI Runtime 层提供 Chub 的 AI 能力。当前完整接入的 Runtime 是 Code
   `-- 微信 ClawBot -> OpenClaw + Chub Plugin --(真实 loopback)--> Chub 第三方入口适配
 
 AI Runtime 层
-  |-- Unix socket --> Chub Quick Worker --> 固定 Runtime Runner
-  `-- ttyd ---------> 固定 tmux ----> 当前 Runtime 实时终端
+  `-- Unix socket --> Chub Quick Worker --> 固定 Runtime Runner
 
 核心层
   |-- Unix socket --> Chub Debug Chrome --> Debug Chrome 浏览器实例
@@ -124,7 +123,7 @@ AI Runtime 层
 | --- | --- | --- |
 | `app/core/`、`app/tasks/`、`app/automations/`、`app/notifications/`、`app/requests/` | 核心层 | 配置、安全、日志、维护任务、固定自动化、通知和需求储备 |
 | `app/application.py`、`app/api/`、`app/web/`、`scripts/`、`config/` | 部署组合根与核心层入口 | Web、CLI、受控服务维护与配置；仅注册或调用对应层公开能力 |
-| `app/ai_runtime/`、`app/ai_session/`、`app/codex/`、`app/quick_worker*.py`、`app/ai_usage/`、`runtime-modules/` | AI Runtime 层 | Runtime 契约、ZIP 模块、Session、Worker、Runner、终端，以及由 Runtime 归属的 AI 用量与专属设置 |
+| `app/ai_runtime/`、`app/ai_session/`、`app/codex/`、`app/quick_worker*.py`、`app/ai_usage/`、`runtime-modules/` | AI Runtime 层 | Runtime 契约、ZIP 模块、Session、Worker、Runner，以及由 Runtime 归属的 AI 用量与专属设置 |
 | `integrations/openclaw/chub/`、OpenClaw/微信适配协调 | 第三方服务层 | 插件、通道、绑定、固定路由和第三方协议 |
 | `app/services/` | 过渡区 | 已有跨领域协调；新增逻辑不得以此作为新的通用领域，应按三层归属落位 |
 
@@ -139,7 +138,6 @@ AI Runtime 层
 | 节点、平台服务、配置、维护操作、自动化任务与产物 | 核心层；操作系统、受控配置、Automation Store 与锁 | 聚合展示或调用固定维护用例 |
 | Chub AI Session 元数据、后台任务、租约、Runtime 健康与用量 | AI Runtime 层；Session Manager、Quick Worker、Runtime Adapter | 核心与第三方只使用公开 ID、投影和任务用例 |
 | 原生 Runtime Session 与 writer | 当前 Runtime 的原生状态、Runtime Adapter | Chub 仅保存已校验映射，不猜测或接管 writer |
-| 实时终端桥与载体 | AI Runtime 层的 Interactive Supervisor、`ttyd`、tmux | Web 重启后重建桥并复用原 tmux |
 | 微信绑定、通道与 Gateway 状态 | 第三方服务层；OpenClaw | 核心保存受控路由快照并在提交时校验 |
 | 通知业务状态 | 发起通知的业务领域 | 核心通知能力只回写投递终态 |
 | Web 重启协调 | 核心层；Deferred Restart State + 新实例健康 | 新实例 ID 变化且健康后才成功 |
@@ -181,10 +179,10 @@ AI Runtime 层
 
 | 操作 | 直接影响 | 成功条件 | 不影响 |
 | --- | --- | --- | --- |
-| Web 启动、停止与重启 | 核心层 Chub、可重建的 ttyd Web 桥 | 启动/重启以 Web 健康确认，重启还须确认新实例 ID；停止以服务管理器停止确认 | Quick Worker、OpenClaw Gateway、tmux、原生 Codex、已受理任务 |
-| Worker 重启 | AI Runtime 层 Quick Worker 任务、租约和运行映射 | 新 generation、协议和健康确认 | Chub、OpenClaw Gateway、tmux、原生 Codex |
+| Web 启动、停止与重启 | 核心层 Chub | 启动/重启以 Web 健康确认，重启还须确认新实例 ID；停止以服务管理器停止确认 | Quick Worker、OpenClaw Gateway、原生 Codex、已受理任务 |
+| Worker 重启 | AI Runtime 层 Quick Worker 任务、租约和运行映射 | 新 generation、协议和健康确认 | Chub、OpenClaw Gateway、原生 Codex |
 | 升级与恢复 | Chub 自有 AI 运行态、Chub Web 与 Quick Worker | Web 新实例、Worker、目标协议、Session 映射和写入恢复确认；AI Runtime 在完成后独立展示可用性 | 原生 Codex、用户配置、日志、项目资料、OpenClaw、Debug Chrome 与无关服务 |
-| OpenClaw Gateway 重启与恢复 | 第三方服务层 Gateway、微信通道与固定运行产物 | Gateway、已配置通道和兼容基线确认 | 核心层、AI Runtime、实时终端 |
+| OpenClaw Gateway 重启与恢复 | 第三方服务层 Gateway、微信通道与固定运行产物 | Gateway、已配置通道和兼容基线确认 | 核心层、AI Runtime |
 
 门禁只覆盖直接冲突或数据破坏风险，按资源局部生效。升级与恢复只处理 Chub 自有 AI 运行态、Web 与 Quick Worker；不扩展到原生 Runtime 数据、用户配置、日志、项目资料、OpenClaw、Debug Chrome 或无关服务。每项维护操作必须按表中的最终状态确认，不能以受理、进程创建或 HTTP 成功替代业务完成。
 
@@ -198,7 +196,7 @@ AI Runtime 层
 - 同一逻辑 Session 同时只有一个 writer；Chub 不接管其他应用占用的原生 Session。
 - 异步操作必须记录并确认 `requested`、`started`、`succeeded` 或 `failed` 的业务终态；受理和启动不是成功。
 - 外部身份、路由、协议、占用状态或最终结果无法确认时，相关高风险操作失败关闭；无关只读能力和独立服务继续可用。
-- 配置、Token、终端票据和其他秘密不得进入页面、日志、通知、测试输出或示例配置。
+- 配置、Token、访问票据和其他秘密不得进入页面、日志、通知、测试输出或示例配置。
 - macOS LaunchAgent 与 Ubuntu systemd user service 都是支持目标；未实机验证的平台不能宣称已验证。
 
 ## 9. 相关文档

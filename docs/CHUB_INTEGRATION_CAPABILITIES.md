@@ -13,7 +13,7 @@
 | --- | --- | --- |
 | 电脑端 `chub` CLI | 在 Chub 所在电脑安装、维护和排查服务 | 管理 Web 与 Quick Worker、维护需求储备、查看日志、发送预配置通知 |
 | OpenClaw Agent Tool | OpenClaw TUI 或未进入微信 Chub 模式的 Agent 调用 | 查询 Chub 基础状态、发送预配置飞书通知 |
-| 微信 ClawBot | 已授权 Owner 通过私聊远程使用 Chub | 查询摘要、管理 Codex Session 和活动需求 |
+| 微信 ClawBot | 已授权 Owner 通过私聊远程使用 Chub | 查询摘要、管理 Chub Session 和活动需求 |
 
 电脑端 CLI 与微信 ClawBot 是两套独立指令：前者用于本机服务运维，后者经 OpenClaw 转发到 Chub。当前没有 npm、PyPI 或独立发行包；`chub install` 只表示从当前工作区安装本机用户服务，不表示包管理器安装。
 
@@ -97,7 +97,7 @@ chmod 600 \
 
 将完整飞书机器人 Webhook URL 作为唯一一行写入 `test.webhook`；需要指定人员时，在 registry 的 `recipients` 中使用本机别名登记对应 Open ID。真实 Webhook、Open ID 和 registry 不得提交到仓库。
 
-配置后执行 `chub notification validate`、`chub notification list` 和 `chub notification test --target test`。`test` 会真实发送固定测试消息。Codex 实时终端和快速交互直接使用 `chub notification send`；OpenClaw TUI 和微信入口使用 `chub_send_notification`。
+配置后执行 `chub notification validate`、`chub notification list` 和 `chub notification test --target test`。`test` 会真实发送固定测试消息。Chub 的 Codex Quick Worker 任务直接使用 `chub notification send`；OpenClaw TUI 和微信入口使用 `chub_send_notification`。
 
 ### 2.3 需求储备指令
 
@@ -190,11 +190,10 @@ chmod 600 \
 
 - 设置页 AI Runtime 分组下的微信任务润色配置页中的翻译模型和等级是独立的翻译任务默认配置，不修改隐藏翻译 Session 的逻辑配置。保存时校验模型与等级组合；每个翻译任务在提交时快照当前配置并携带给 Native Runtime，已经进入队列的任务继续使用提交时快照，设置变化只影响之后提交的任务。未选择模型和等级时跟随 Runtime 默认。
 - 当当前 AI Runtime 被设置页停用时，微信 ClawBot 的新任务固定回复 `Not submitted · Codex Runtime is disabled. Chub is in base mode. Enable it in Settings to submit AI tasks.`；`chub` 状态摘要在 `Issues` 中显示 `AI Runtime is disabled. Chub is in base mode.`。这不取消已受理任务，也不影响既有 Session 的维护指令。
-- 当 Quick Worker 当前不可用时，微信 ClawBot 的 `new` 和普通任务固定回复 `Not submitted · Quick Worker is unavailable. Try again later.`；实时终端不经微信创建，维护恢复指令仍按各自契约可用。
+- 当 Quick Worker 当前不可用时，微信 ClawBot 的 `new` 和普通任务固定回复 `Not submitted · Quick Worker is unavailable. Try again later.`；维护恢复指令仍按各自契约可用。
 - 当 Quick Worker 提交回执暂时无法确认时，微信回执以 `Submission is being verified by Quick Worker. Do not resend yet.` 开头，并保留当前 Session/Task 上下文。这不是任务失败：Chub 先进行有限次主动核验，随后持续以同一任务 ID 对账或幂等补交，Web 重启后继续；确认接收后继续交付，只有 Worker 明确确认未接收时才允许重试。
 
-- 微信和 ClawBot 只分配 `quick` Session 的 S1–S9 槽位；`terminal` Session、升级扫描得到的 `discovered` Session 和内部翻译 Session 均不进入微信槽位或微信 Session 列表。微信不会创建或切换到实时终端 Session。
-- Session 类型在创建时固定；微信 `new` 创建的是 `quick` Session，首页默认创建 `quick`，只通过“实时会话”开关创建 `terminal`。不存在把同一 Session 从实时终端切换为快速交互的复合路径。
+- 微信和 ClawBot 为普通 Chub Session 分配 S1–S9 槽位；内部翻译 Session 不进入微信槽位或微信 Session 列表。微信 `new` 与首页新建使用同一种 Chub Session，不存在 Session 类型切换。
 
 - 设置页 AI Runtime 分组下的微信任务润色配置页只影响之后新接收的正文任务：`直接执行`直接提交；`自动润色后执行`在独立只读 Session 生成中文润色和 English 后，自动提交润色后的中文；`自动润色后确认执行`生成同一份结果后进入确认队列。普通任务以及携带正文的 `S1`–`S9` 在正文不超过 `translation_preprocess_max_input_chars`（默认 1200 字符）时遵循该快照；超过阈值直接提交原正文，不润色、不翻译、不进入确认队列，以保持同步确认回复有界。其他固定指令和续提指令仍绕过文本优化。旧布尔配置 `translation_enabled=false/true` 分别等价于 `direct/auto`。
 - `text` 与设置页 AI Runtime 分组下的微信任务润色配置页读取、保存同一个节点级处理方式：`text` 按 `Text`、`Mode · <mode>`、`Model · <model> · <level>`、`Current confirmation` 的顺序返回当前状态；其中 `text` 返回目标 Session、完整 `Polished` 正文和完整 `English`，不使用摘要。`text mode direct|auto|confirm` 立即保存并只影响之后新接收的正文。`text list` 显示完整正文处理流水：当前可操作确认队头以 `Confirming` 固定在最上方，其余已润色待轮到的确认项为 `Waiting confirmation`，仍在排队或翻译中的项目为 `Optimizing`；已确认但目标暂忙的项目显示为 `Waiting target`。每项返回目标 `S<槽位> · <标题>` 与下一行 `Task · <受限正文摘要>`，目标已不可用时显示 `Session · Unavailable`。已经在润色、确认或等待目标可写的项目继续按创建时快照完成。`text` 控制指令及 `text-check` 参数错误只返回用法而不作为普通任务提交。
@@ -206,9 +205,9 @@ chmod 600 \
 - 普通提交路径中，当前 Session 忙时拒绝提交，并短期保存最近一次待续提正文。
 - 普通任务、切换后提交和续提任务成功后，回执必须列出全部已登记 Session；每个运行中的 Session 紧跟对应 `Task`，当前绑定继续使用 `▶` 标记，方便直接判断可切换槽位。列表采集失败不得把已成功提交误报为失败，至少保留本次可信任务上下文。
 - `new [title]` 创建成功后即选中新 Session；无标题时保留创建后的默认名称，提供标题时再执行命名；当微信 Chub 模式未显式配置模型和推理等级时，使用设置页保存的当前节点新建默认，命名失败时保留该 Session，并提示使用 `rename` 修正。显式微信配置优先于节点默认，已有 Session 不受新默认变化影响。
-- `stop [S#]` 先回复已安排，再异步取消目标 Session 中的任务并停止其当前执行载体；省略槽位时目标为当前绑定 Session。只有目标由 Chub 终端或 Quick Worker 执行时才允许，原生 Session 被外部进程占用或当前没有执行时拒绝。最终结果只发送到本次保存的微信路由。停止不释放槽位，只有归档或删除操作释放槽位。
+- `stop [S#]` 先回复已安排，再异步取消目标 Session 中当前由 Quick Worker 执行的任务；省略槽位时目标为当前绑定 Session。原生 Session 被外部进程占用、占用状态未知或当前没有执行任务时拒绝。最终结果只发送到本次保存的微信路由。停止不释放槽位，只有归档或删除操作释放槽位。
 - `archive S#` 仅在明确知道 Session 正处于执行中时拒绝，并与 Web 使用同一条归档流程；状态未知时先交给 native session 尝试归档，由 native 返回可行性和最终结果。有原生 Session 时，原生失败或结果未知则保留 Chub 记录、任务和槽位并返回原因；原生归档成功后再清理记录并释放槽位。没有原生 Session 时直接完成 Chub 侧清理。若原生归档已完成但 Chub 清理或槽位同步中断，保留记录并允许重试，重试先确认原生已归档，不重复执行原生归档。
-- `del S#` 永久删除目标 Session 及其 Chub 记录；删除前先取消可取消的 Quick Worker 任务并关闭 Chub 终端载体，再由 Runtime 确认原生删除，成功后释放槽位。外部占用、运行态或结果未知时失败关闭并保留槽位；删除结果未知时不得宣告成功。
+- `del S#` 永久删除目标 Session 及其 Chub 记录；删除前先取消可取消的 Quick Worker 任务，再由 Runtime 确认原生删除，成功后释放槽位。外部占用、运行态或结果未知时失败关闭并保留槽位；删除结果未知时不得宣告成功。
 - 重复消息不重复执行。重复回执发送前刷新当前标记；槽位已释放或复用时移除不再可信的 Session 行。
 - 插件等待 Chub 超时时只说明提交状态未知，不生成 Session、任务摘要或成功结论。
 

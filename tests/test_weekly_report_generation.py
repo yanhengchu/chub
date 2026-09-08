@@ -56,7 +56,7 @@ class _QuickInteractions:
         self.submissions: list[tuple[str, str]] = []
 
     @contextmanager
-    def session_creation_guard(self, _kind: str):
+    def session_creation_guard(self):
         yield
 
     @contextmanager
@@ -96,7 +96,7 @@ def test_focus_generation_creates_configured_quick_session_after_download(
 
     step = service.start("focus", source_ip="127.0.0.1")
 
-    assert manager.created == [("chub", "auto-review", "gpt-5.2", "high", "quick")]
+    assert manager.created == [("chub", "auto-review", "gpt-5.2", "high")]
     assert manager.title == f"V 国内业务周报 · {period}"
     assert step.status == "running"
     assert "generate-weekly-report" in (quick.prompt or "")

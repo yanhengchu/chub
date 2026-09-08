@@ -3,7 +3,7 @@ import threading
 
 import pytest
 
-from app.codex.connections import TerminalConnectionRegistry
+from app.services.maintenance_terminal_transport import TerminalConnectionRegistry
 
 
 @pytest.mark.anyio

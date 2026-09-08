@@ -19,7 +19,7 @@ Chub 按维护者授信的个人工作站运行：优先保证本地可用、局
 | 功能域 | 当前可用能力 | 主要入口 |
 | --- | --- | --- |
 | 设备与维护 | 查看节点状态、执行白名单维护任务、查看受限日志 | 工作台、设置、日志页、`chub` CLI |
-| AI Runtime 与会话 | 使用 Codex Runtime 创建实时终端或快速交互 Session，查看用量与任务结果 | 工作台、Session 页、微信 ClawBot |
+| AI Runtime 与会话 | 使用 Codex Runtime 创建 Chub Session，通过 Quick Worker 连续执行任务、查看原生会话和结果 | 工作台、Session 页、微信 ClawBot |
 | 任务执行 | 通过独立 Quick Worker 执行页面、微信和翻译快速任务 | 快速交互页、微信 ClawBot |
 | 需求储备 | 管理 R1-R9 轻量需求 | `chub` CLI、微信 ClawBot |
 | 自动化与周报 | 使用受管 Debug Chrome 运行固定自动化，准备并生成周报 | 自动化页、周报页、命令行 |

@@ -56,7 +56,7 @@ def _general_runtime_settings(request: Request) -> AiRuntimeGeneralSettingsData:
         id="weekly-report-session",
         title="周报自动化会话",
         description=(
-            "用于生成重点确认清单和正式周报的新建 Quick Session。"
+            "用于生成重点确认清单和正式周报的新建 Chub Session。"
             if weekly_runtime_available
             else "当前没有可用于周报生成的 AI Runtime；资料下载仍可独立运行。"
         ),

@@ -28,6 +28,38 @@ class AiSessionStore:
         self._load_error: str | None = None
         self._load()
 
+    @classmethod
+    def discard_legacy_session_state(cls, path: Path) -> bool:
+        """Discard Chub-owned Session state that predates the current contract."""
+        temporary_store = cls.__new__(cls)
+        temporary_store.path = path
+        try:
+            payload = temporary_store._read_payload()
+        except FileNotFoundError:
+            return False
+        except AiSessionStoreUnavailable:
+            return False
+        if not isinstance(payload, dict):
+            return False
+        sessions = payload.get("sessions")
+        obsolete_projection = isinstance(sessions, list) and any(
+            isinstance(session, dict)
+            and {
+                "active_permission_mode",
+                "active_model",
+                "active_reasoning_effort",
+            }.intersection(session)
+            for session in sessions
+        )
+        if payload.get("version") != 2 and not obsolete_projection:
+            return False
+        temporary_store._sessions = {}
+        try:
+            temporary_store._write()
+        except OSError:
+            return False
+        return True
+
     @property
     def available(self) -> bool:
         return self._load_error is None

@@ -32,9 +32,11 @@ ai_runtime:
     workspace: "~/workspace"
     data_file: "data/local/state/codex/sessions.json"
     runtime_dir: "data/local/runtime/codex"
-    ticket_ttl_seconds: 600
     max_running: 3
     quick_interaction_timeout_seconds: 21600
+
+maintenance_terminal:
+  ticket_ttl_seconds: 600
 
 automations:
   enabled: true

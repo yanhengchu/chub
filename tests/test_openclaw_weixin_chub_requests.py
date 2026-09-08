@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from tests.session_fixtures import CodexSession
+
 from datetime import timedelta
 
 from app.core.response import ApiError
-from app.codex.models import CodexSession, QuickInteractionTask, utc_now
+from app.codex.models import QuickInteractionTask, utc_now
 from app.services import openclaw_weixin_chub_mode as chub_mode_module
 from app.services.openclaw_weixin_chub_models import WeixinChubModeSessionSlot
 
@@ -16,7 +18,6 @@ from tests.openclaw_weixin_chub_mode_helpers import (
 
 def _prepare_current_session(manager, codex_manager) -> None:
     session = CodexSession(
-        session_mode="quick",
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",

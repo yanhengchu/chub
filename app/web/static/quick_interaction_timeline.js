@@ -85,10 +85,10 @@
 
   function buildTaskState(task) {
     const hasResult = Boolean(task.result || task.error);
-    const error = ["failed", "timed_out", "cancelled", "needs_terminal"].includes(
+    const error = ["failed", "timed_out", "cancelled"].includes(
       task.status,
     );
-    const sourceVisible = ["failed", "needs_terminal"].includes(task.status);
+    const sourceVisible = task.status === "failed";
     return Object.freeze({
       signature: taskSignature(task),
       turnClass: `conversation-turn conversation-turn-${task.status}`,

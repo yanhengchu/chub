@@ -42,7 +42,6 @@ class RuntimeWorkerLaunchRequest(_StrictModel):
     workspace_id: str | None = Field(default=None, min_length=1, max_length=64)
     turn: RuntimeTurnRequest | None = None
     start_new_session: bool = False
-    hook_dir: Path
     restart_request_dir: Path
     test_behavior: str | None = Field(default=None, max_length=32)
     test_run_seconds: float | None = Field(default=None, ge=0.0, le=60.0)

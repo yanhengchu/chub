@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from tests.session_fixtures import CodexSession
+
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
 from app.codex.models import (
-    CodexSession,
     QuickInteractionWeixinRoute,
     WorkspaceInfo,
     utc_now,
@@ -68,7 +69,6 @@ def configured_manager(
     codex_manager.available.return_value = True
     codex_manager.create_session.return_value = SimpleNamespace(id="session-1")
     codex_manager.get_session.return_value = CodexSession(
-        session_mode="quick",
         id="session-1",
         workspace_id="chub",
         workspace_name="Chub",

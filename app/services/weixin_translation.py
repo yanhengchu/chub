@@ -1357,8 +1357,7 @@ class WeixinTranslationManager:
                 try:
                     session = self.codex_manager.get_session(session_id)
                     if (
-                        session.session_mode == "quick"
-                        and session.workspace_id == "weixin-translation"
+                        session.workspace_id == "weixin-translation"
                         and session.permission_mode == "read-only"
                     ):
                         return session_id

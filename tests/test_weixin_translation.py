@@ -1,3 +1,5 @@
+from tests.session_fixtures import CodexSession
+
 import json
 import threading
 import time
@@ -7,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.codex.models import CodexSession, QuickInteractionWeixinRoute
+from app.codex.models import QuickInteractionWeixinRoute
 from app.services.weixin_translation import (
     TRANSLATION_PROMPT,
     TranslationEntry,
@@ -1152,7 +1154,6 @@ def test_worker_restart_preserves_and_resumes_translation_observation(settings) 
     codex_manager = MagicMock()
     codex_manager.get_session.return_value = CodexSession(
         id="translation-session",
-        session_mode="quick",
         workspace_id="weixin-translation",
         workspace_name="Translation",
         cwd=settings.ai_runtime.codex.workspace,
@@ -1349,7 +1350,6 @@ def test_translation_session_is_reused_and_never_uses_numbered_slot(settings) ->
     manager._state.session_id = "translation-session"
     codex_manager.get_session.return_value = CodexSession(
         id="translation-session",
-        session_mode="quick",
         workspace_id="weixin-translation",
         workspace_name="微信文本优化与翻译",
         cwd="/translation",
@@ -1405,7 +1405,6 @@ def test_disable_drains_existing_generation_and_reenable_uses_new_session(
     manager._state.session_generation = 0
     codex_manager.get_session.return_value = CodexSession(
         id="old-session",
-        session_mode="quick",
         workspace_id="weixin-translation",
         workspace_name="微信文本优化与翻译",
         cwd="/translation",

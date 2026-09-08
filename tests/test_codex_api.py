@@ -1,3 +1,5 @@
+from tests.session_fixtures import CodexSession
+
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, call
@@ -14,7 +16,6 @@ from app.codex.models import (
     CodexReasoningLevel,
     CodexQuotaData,
     CodexQuotaWindow,
-    CodexSession,
     NativeSessionInfo,
     QuickInteractionTask,
     RuntimeManagementData,
@@ -35,14 +36,7 @@ def authorization(settings: Settings) -> dict[str, str]:
 
 def allow_session_writes(app) -> None:
     app.state.quick_interactions._recovery_ready = True
-
-
-def reject_quick_access(manager: MagicMock) -> None:
-    manager.require_quick_access.side_effect = ApiError(
-        409,
-        "codex_quick_access_disabled",
-        "实时终端 Session 仅支持实时终端入口。",
-    )
+    app.state.quick_interactions.session_creation_guard = MagicMock()
 
 
 def test_session_rename_request_normalizes_title_and_rejects_controls() -> None:
@@ -86,7 +80,7 @@ async def test_disabled_runtime_keeps_sessions_and_blocks_creation(
 ) -> None:
     app = create_app(settings)
     manager = app.state.ai_session_manager
-    session = manager.create_session("chub", session_mode="quick")
+    session = manager.create_session("chub")
     manager.runtime_enablement.save(RuntimeEnablement(disabled_runtime_ids=["codex"]))
     transport = httpx.ASGITransport(app=app)
 
@@ -106,14 +100,14 @@ async def test_codex_session_list_reports_workspaces(settings: Settings) -> None
     manager = MagicMock()
     manager.submission_available.return_value = (
         False,
-        "Codex PTY requires Tailscale",
+        "Codex Runtime requires Codex CLI",
     )
-    manager.dependencies.return_value = {"codex": True, "ttyd": True, "tmux": False}
+    manager.dependencies.return_value = {"codex": False}
     manager.workspaces.return_value = [
         WorkspaceInfo(id="home", name="用户目录", path="/home/test", available=True)
     ]
     manager.list_sessions.return_value = []
-    app.state.codex_pty_manager = manager
+    app.state.ai_session_manager = manager
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -126,26 +120,22 @@ async def test_codex_session_list_reports_workspaces(settings: Settings) -> None
     data = response.json()["data"]
     assert data["available"] is False
     assert data["runtime_registered"] is True
-    assert data["terminal_creation"] == {
-        "available": False,
-        "reason": "Codex PTY requires Tailscale",
-    }
     assert data["quick_creation"] == {
         "available": False,
-        "reason": "Codex PTY requires Tailscale",
+        "reason": "Codex Runtime requires Codex CLI",
     }
     assert data["workspaces"][0]["id"] == "home"
-    assert data["dependencies"]["tmux"] is False
+    assert data["dependencies"] == {"codex": False}
 
 
 @pytest.mark.anyio
-async def test_codex_session_list_keeps_terminal_creation_available_without_worker(
+async def test_codex_session_list_blocks_creation_without_worker(
     settings: Settings,
 ) -> None:
     app = create_app(settings)
     manager = MagicMock()
     manager.submission_available.return_value = (True, None)
-    manager.dependencies.return_value = {"codex": True, "ttyd": True, "tmux": True}
+    manager.dependencies.return_value = {"codex": True}
     manager.workspaces.return_value = []
     manager.list_sessions.return_value = []
     quick_interactions = MagicMock()
@@ -155,7 +145,7 @@ async def test_codex_session_list_keeps_terminal_creation_available_without_work
         False,
         "Quick Worker 当前不可用，无法创建快速交互 Session。",
     )
-    app.state.codex_pty_manager = manager
+    app.state.ai_session_manager = manager
     app.state.quick_interactions = quick_interactions
     app.state.weixin_chub_mode = MagicMock()
     app.state.weixin_chub_mode.session_slots_snapshot.return_value = {}
@@ -169,9 +159,8 @@ async def test_codex_session_list_keeps_terminal_creation_available_without_work
 
     assert response.status_code == 200
     data = response.json()["data"]
-    assert data["available"] is True
+    assert data["available"] is False
     assert data["runtime_registered"] is True
-    assert data["terminal_creation"] == {"available": True, "reason": None}
     assert data["quick_creation"] == {
         "available": False,
         "reason": "Quick Worker 当前不可用，无法创建快速交互 Session。",
@@ -203,7 +192,7 @@ async def test_runtime_management_lists_and_updates_enablement(settings: Setting
     )
     manager.read_runtime_management.return_value = current
     manager.update_runtime_enabled.return_value = disabled
-    app.state.codex_pty_manager = manager
+    app.state.ai_session_manager = manager
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -234,9 +223,8 @@ async def test_codex_session_list_hides_internal_translation_session(
         NativeSessionInfo(
             cwd="/workspace/chub",
             title="发现的终端",
-            active_permission_mode="full-access",
-            active_model="gpt-test",
-            active_reasoning_effort="high",
+            model="gpt-test",
+            reasoning_effort="high",
             created_at="2026-08-14T10:00:00Z",
             updated_at="2026-08-14T10:01:00Z",
         )
@@ -253,12 +241,9 @@ async def test_codex_session_list_hides_internal_translation_session(
             status="stopped",
             activity="idle",
             permission_mode="full-access",
-            active_permission_mode=None,
-            permission_pending=False,
             error=None,
             created_at="2026-08-14T10:00:00Z",
             updated_at="2026-08-14T10:00:00Z",
-            session_mode="terminal",
             discovered=True,
         ),
         SessionInfo(
@@ -272,12 +257,9 @@ async def test_codex_session_list_hides_internal_translation_session(
             status="stopped",
             activity="idle",
             permission_mode="read-only",
-            active_permission_mode=None,
-            permission_pending=False,
             error=None,
             created_at="2026-08-14T11:00:00Z",
             updated_at="2026-08-14T11:00:00Z",
-            session_mode="quick",
         ),
     ]
     manager.list_sessions_with_native_sessions.return_value = (
@@ -285,7 +267,7 @@ async def test_codex_session_list_hides_internal_translation_session(
         native_sessions,
     )
     manager.read_session.return_value = manager.list_sessions.return_value[1]
-    app.state.codex_pty_manager = manager
+    app.state.ai_session_manager = manager
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -306,7 +288,6 @@ async def test_codex_session_list_hides_internal_translation_session(
     assert [item["id"] for item in hidden.json()["data"]["sessions"]] == [
         "ordinary-session"
     ]
-    assert hidden.json()["data"]["sessions"][0]["discovered"] is True
     assert hidden.json()["data"]["native_sessions"][0]["title"] == "发现的终端"
     assert [item["id"] for item in visible.json()["data"]["sessions"]] == [
         "ordinary-session"
@@ -331,13 +312,11 @@ async def test_create_session_uses_requested_permission_mode(settings: Settings)
         status="new",
         activity="unknown",
         permission_mode="full-access",
-        active_permission_mode=None,
-        permission_pending=False,
         error=None,
         created_at="2026-08-07T10:00:00Z",
         updated_at="2026-08-07T10:00:00Z",
     )
-    app.state.codex_pty_manager = manager
+    app.state.ai_session_manager = manager
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -346,15 +325,12 @@ async def test_create_session_uses_requested_permission_mode(settings: Settings)
             headers=authorization(settings),
             json={
                 "workspace_id": "chub",
-                "session_mode": "terminal",
                 "permission_mode": "full-access",
             },
         )
 
     assert response.status_code == 200
-    manager.create_session.assert_called_once_with(
-        "chub", "full-access", None, None, "terminal"
-    )
+    manager.create_session.assert_called_once_with("chub", "full-access", None, None)
 
 
 @pytest.mark.anyio
@@ -373,24 +349,22 @@ async def test_create_session_defaults_to_full_access(settings: Settings) -> Non
         status="new",
         activity="unknown",
         permission_mode="full-access",
-        active_permission_mode=None,
-        permission_pending=False,
         error=None,
         created_at="2026-08-07T10:00:00Z",
         updated_at="2026-08-07T10:00:00Z",
     )
-    app.state.codex_pty_manager = manager
+    app.state.ai_session_manager = manager
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
             "/api/codex/sessions",
             headers=authorization(settings),
-            json={"workspace_id": "chub", "session_mode": "terminal"},
+            json={"workspace_id": "chub"},
         )
 
     assert response.status_code == 200
-    manager.create_session.assert_called_once_with("chub", None, None, None, "terminal")
+    manager.create_session.assert_called_once_with("chub", None, None, None)
 
 
 @pytest.mark.anyio
@@ -412,7 +386,7 @@ async def test_codex_model_catalog_is_protected_and_filtered_by_manager(
         default_model="gpt-test",
         default_reasoning_effort="medium",
     )
-    app.state.codex_pty_manager = manager
+    app.state.ai_session_manager = manager
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -434,7 +408,7 @@ async def test_update_codex_session_defaults_uses_manager_and_returns_permission
     app = create_app(settings)
     manager = MagicMock()
     manager.update_session_defaults.return_value = "read-only"
-    app.state.codex_pty_manager = manager
+    app.state.ai_session_manager = manager
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -468,8 +442,6 @@ async def test_update_quick_session_configuration_uses_session_values(
         status="stopped",
         activity="idle",
         permission_mode="full-access",
-        active_permission_mode=None,
-        permission_pending=False,
         model="gpt-test",
         reasoning_effort="high",
         error=None,
@@ -517,15 +489,13 @@ async def test_create_session_uses_requested_model_and_reasoning_level(
         status="new",
         activity="unknown",
         permission_mode="full-access",
-        active_permission_mode=None,
-        permission_pending=False,
         model="gpt-test",
         reasoning_effort="high",
         error=None,
         created_at="2026-08-07T10:00:00Z",
         updated_at="2026-08-07T10:00:00Z",
     )
-    app.state.codex_pty_manager = manager
+    app.state.ai_session_manager = manager
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -534,7 +504,6 @@ async def test_create_session_uses_requested_model_and_reasoning_level(
             headers=authorization(settings),
             json={
                 "workspace_id": "chub",
-                "session_mode": "terminal",
                 "permission_mode": "full-access",
                 "model": "gpt-test",
                 "reasoning_effort": "high",
@@ -547,7 +516,6 @@ async def test_create_session_uses_requested_model_and_reasoning_level(
         "full-access",
         "gpt-test",
         "high",
-        "terminal",
     )
 
 
@@ -586,7 +554,7 @@ async def test_codex_session_list_includes_active_quick_interaction(
     app = create_app(settings)
     manager = MagicMock()
     manager.submission_available.return_value = (True, None)
-    manager.dependencies.return_value = {"codex": True, "ttyd": True, "tmux": True}
+    manager.dependencies.return_value = {"codex": True}
     manager.workspaces.return_value = []
     manager.list_sessions.return_value = [
         SessionInfo(
@@ -600,8 +568,6 @@ async def test_codex_session_list_includes_active_quick_interaction(
             status="stopped",
             activity="idle",
             permission_mode="auto-review",
-            active_permission_mode=None,
-            permission_pending=False,
             error=None,
             created_at="2026-07-24T10:00:00Z",
             updated_at="2026-07-24T10:01:00Z",
@@ -617,8 +583,6 @@ async def test_codex_session_list_includes_active_quick_interaction(
             status="stopped",
             activity="unknown",
             permission_mode="auto-review",
-            active_permission_mode=None,
-            permission_pending=False,
             error=None,
             created_at="2026-07-20T10:00:00Z",
             updated_at="2026-07-24T10:03:00Z",
@@ -633,7 +597,7 @@ async def test_codex_session_list_includes_active_quick_interaction(
         "session-1": datetime(2026, 7, 24, 10, 2, tzinfo=UTC)
     }
     quick_interactions.quick_session_creation_availability.return_value = (True, None)
-    app.state.codex_pty_manager = manager
+    app.state.ai_session_manager = manager
     app.state.quick_interactions = quick_interactions
     weixin_chub_mode = MagicMock()
     weixin_chub_mode.session_slots_snapshot.return_value = {"session-1": 3}
@@ -668,46 +632,6 @@ def quick_task() -> QuickInteractionTask:
 
 
 @pytest.mark.anyio
-async def test_quick_interaction_takes_over_idle_unconnected_terminal(
-    settings: Settings,
-) -> None:
-    app = create_app(settings)
-    manager = MagicMock()
-    session = CodexSession(
-        id="session-1",
-        workspace_id="chub",
-        workspace_name="Chub",
-        cwd=Path("/workspace/chub"),
-        session_mode="terminal",
-        codex_session_id="codex-session-1",
-        status="running",
-        activity="idle",
-        permission_mode="auto-review",
-    )
-    manager.get_session.return_value = session
-    reject_quick_access(manager)
-    quick_interactions = MagicMock()
-    quick_interactions.submit.return_value = quick_task()
-    app.state.codex_pty_manager = manager
-    app.state.quick_interactions = quick_interactions
-    app.state.terminal_connections = MagicMock()
-    app.state.terminal_connections.has_active_connection.return_value = False
-    transport = httpx.ASGITransport(app=app)
-
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.post(
-            "/api/codex/sessions/session-1/quick-interactions",
-            headers=authorization(settings),
-            json={"prompt": "检查状态"},
-        )
-
-    assert response.status_code == 409
-    assert response.json()["error"]["code"] == "codex_quick_access_disabled"
-    manager.stop_session.assert_not_called()
-    quick_interactions.submit.assert_not_called()
-
-
-@pytest.mark.anyio
 async def test_page_quick_interaction_preserves_bound_weixin_session_context(
     settings: Settings,
 ) -> None:
@@ -730,7 +654,7 @@ async def test_page_quick_interaction_preserves_bound_weixin_session_context(
     session_guard = MagicMock()
     session_guard.__enter__.side_effect = lambda: lock_order.append("session-lock")
     quick_interactions.session_operation_guard.return_value = session_guard
-    app.state.codex_pty_manager = manager
+    app.state.ai_session_manager = manager
     app.state.quick_interactions = quick_interactions
     app.state.weixin_chub_mode = MagicMock()
     app.state.weixin_chub_mode.session_slot.side_effect = lambda _session_id: (
@@ -755,193 +679,12 @@ async def test_page_quick_interaction_preserves_bound_weixin_session_context(
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize(
-    ("activity", "connected", "confirm", "expected_code"),
-    [
-        ("working", False, False, "quick_interaction_terminal_working"),
-        (
-            "unknown",
-            False,
-            False,
-            "quick_interaction_terminal_confirmation_required",
-        ),
-    ],
-)
-async def test_quick_interaction_rejects_unsafe_terminal_switch(
-    settings: Settings,
-    monkeypatch: pytest.MonkeyPatch,
-    activity: str,
-    connected: bool,
-    confirm: bool,
-    expected_code: str,
-) -> None:
-    write_operation = MagicMock()
-    monkeypatch.setattr("app.codex.routes.write_operation", write_operation)
-    app = create_app(settings)
-    manager = MagicMock()
-    manager.get_session.return_value = CodexSession(
-        id="session-1",
-        workspace_id="chub",
-        workspace_name="Chub",
-        cwd=Path("/workspace/chub"),
-        session_mode="terminal",
-        codex_session_id="codex-session-1",
-        status="running",
-        activity=activity,
-        permission_mode="auto-review",
-    )
-    reject_quick_access(manager)
-    quick_interactions = MagicMock()
-    app.state.codex_pty_manager = manager
-    app.state.quick_interactions = quick_interactions
-    app.state.terminal_connections = MagicMock()
-    app.state.terminal_connections.has_active_connection.return_value = connected
-    transport = httpx.ASGITransport(app=app)
-
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.post(
-            "/api/codex/sessions/session-1/quick-interactions",
-            headers=authorization(settings),
-            json={
-                "prompt": "检查状态",
-                "confirm_stop_unknown_terminal": confirm,
-            },
-        )
-
-    assert response.status_code == 409
-    assert response.json()["error"]["code"] == "codex_quick_access_disabled"
-    manager.stop_session.assert_not_called()
-    quick_interactions.submit.assert_not_called()
-    write_operation.assert_called_once()
-
-
-@pytest.mark.anyio
-async def test_quick_interaction_takes_over_idle_connected_terminal(
-    settings: Settings,
-) -> None:
-    app = create_app(settings)
-    manager = MagicMock()
-    manager.get_session.return_value = CodexSession(
-        id="session-1",
-        workspace_id="chub",
-        workspace_name="Chub",
-        cwd=Path("/workspace/chub"),
-        session_mode="terminal",
-        codex_session_id="codex-session-1",
-        status="running",
-        activity="idle",
-        permission_mode="auto-review",
-    )
-    reject_quick_access(manager)
-    quick_interactions = MagicMock()
-    quick_interactions.submit.return_value = quick_task()
-    app.state.codex_pty_manager = manager
-    app.state.quick_interactions = quick_interactions
-    app.state.terminal_connections = MagicMock()
-    app.state.terminal_connections.has_active_connection.return_value = True
-    transport = httpx.ASGITransport(app=app)
-
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.post(
-            "/api/codex/sessions/session-1/quick-interactions",
-            headers=authorization(settings),
-            json={"prompt": "检查状态"},
-        )
-
-    assert response.status_code == 409
-    assert response.json()["error"]["code"] == "codex_quick_access_disabled"
-    manager.stop_session.assert_not_called()
-    quick_interactions.submit.assert_not_called()
-
-
-@pytest.mark.anyio
-async def test_quick_interaction_confirmed_unknown_terminal_is_stopped(
-    settings: Settings,
-) -> None:
-    app = create_app(settings)
-    manager = MagicMock()
-    manager.get_session.return_value = CodexSession(
-        id="session-1",
-        workspace_id="chub",
-        workspace_name="Chub",
-        cwd=Path("/workspace/chub"),
-        session_mode="terminal",
-        codex_session_id="codex-session-1",
-        status="running",
-        activity="unknown",
-        permission_mode="auto-review",
-    )
-    reject_quick_access(manager)
-    quick_interactions = MagicMock()
-    quick_interactions.submit.return_value = quick_task()
-    app.state.codex_pty_manager = manager
-    app.state.quick_interactions = quick_interactions
-    app.state.terminal_connections = MagicMock()
-    app.state.terminal_connections.has_active_connection.return_value = False
-    transport = httpx.ASGITransport(app=app)
-
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.post(
-            "/api/codex/sessions/session-1/quick-interactions",
-            headers=authorization(settings),
-            json={
-                "prompt": "检查状态",
-                "confirm_stop_unknown_terminal": True,
-            },
-        )
-
-    assert response.status_code == 409
-    assert response.json()["error"]["code"] == "codex_quick_access_disabled"
-    manager.stop_session.assert_not_called()
-
-
-@pytest.mark.anyio
-async def test_quick_interaction_rejects_if_idle_terminal_starts_working_on_submit(
-    settings: Settings,
-) -> None:
-    app = create_app(settings)
-    manager = MagicMock()
-    base = CodexSession(
-        id="session-1",
-        workspace_id="chub",
-        workspace_name="Chub",
-        cwd=Path("/workspace/chub"),
-        session_mode="terminal",
-        codex_session_id="codex-session-1",
-        status="running",
-        activity="idle",
-        permission_mode="auto-review",
-    )
-    working = base.model_copy(update={"activity": "working"})
-    manager.get_session.side_effect = [base, working]
-    reject_quick_access(manager)
-    quick_interactions = MagicMock()
-    app.state.codex_pty_manager = manager
-    app.state.quick_interactions = quick_interactions
-    app.state.terminal_connections = MagicMock()
-    app.state.terminal_connections.has_active_connection.return_value = False
-    transport = httpx.ASGITransport(app=app)
-
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.post(
-            "/api/codex/sessions/session-1/quick-interactions",
-            headers=authorization(settings),
-            json={"prompt": "检查状态"},
-        )
-
-    assert response.status_code == 409
-    assert response.json()["error"]["code"] == "codex_quick_access_disabled"
-    manager.stop_session.assert_not_called()
-    quick_interactions.submit.assert_not_called()
-
-
-@pytest.mark.anyio
 async def test_quick_interaction_history_is_paginated(
     settings: Settings,
 ) -> None:
     app = create_app(settings)
-    app.state.codex_pty_manager = MagicMock()
-    app.state.codex_pty_manager.require_quick_access.return_value = MagicMock()
+    app.state.ai_session_manager = MagicMock()
+    app.state.ai_session_manager.require_session_access.return_value = MagicMock()
     tasks = [
         quick_task().model_copy(update={"id": f"task-{index}"})
         for index in range(7)
@@ -977,8 +720,8 @@ async def test_quick_interaction_history_supports_timeline_order(
     settings: Settings,
 ) -> None:
     app = create_app(settings)
-    app.state.codex_pty_manager = MagicMock()
-    app.state.codex_pty_manager.require_quick_access.return_value = MagicMock()
+    app.state.ai_session_manager = MagicMock()
+    app.state.ai_session_manager.require_session_access.return_value = MagicMock()
     quick_interactions = MagicMock()
     quick_interactions.list_for_session.return_value = [quick_task()]
     app.state.quick_interactions = quick_interactions
@@ -1002,8 +745,8 @@ async def test_quick_interaction_timeline_cursor_is_stable_when_new_task_arrives
     settings: Settings,
 ) -> None:
     app = create_app(settings)
-    app.state.codex_pty_manager = MagicMock()
-    app.state.codex_pty_manager.require_quick_access.return_value = MagicMock()
+    app.state.ai_session_manager = MagicMock()
+    app.state.ai_session_manager.require_session_access.return_value = MagicMock()
     base = utc_now()
 
     def timeline_task(task_id: str, minutes: int) -> QuickInteractionTask:
@@ -1098,8 +841,8 @@ async def test_quick_interaction_timeline_rejects_invalid_cursor(
     message: str,
 ) -> None:
     app = create_app(settings)
-    app.state.codex_pty_manager = MagicMock()
-    app.state.codex_pty_manager.require_quick_access.return_value = MagicMock()
+    app.state.ai_session_manager = MagicMock()
+    app.state.ai_session_manager.require_session_access.return_value = MagicMock()
     quick_interactions = MagicMock()
     app.state.quick_interactions = quick_interactions
     transport = httpx.ASGITransport(app=app)
@@ -1136,86 +879,6 @@ async def test_quick_interaction_pin_endpoint_is_removed(settings: Settings) -> 
 
 
 @pytest.mark.anyio
-async def test_access_issues_scoped_http_only_cookie(settings: Settings) -> None:
-    app = create_app(settings)
-    allow_session_writes(app)
-    manager = MagicMock()
-    manager.ensure_terminal.return_value = CodexSession(
-        id="session-1",
-        workspace_id="chub",
-        workspace_name="Chub",
-        cwd=Path("/workspace/chub"),
-    )
-    app.state.codex_pty_manager = manager
-    transport = httpx.ASGITransport(app=app)
-
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.post(
-            "/api/codex/sessions/session-1/access",
-            headers=authorization(settings),
-        )
-
-    assert response.status_code == 200
-    assert response.json()["data"]["terminal_url"] == "/codex/session-1"
-    cookie = response.headers["set-cookie"]
-    assert "HttpOnly" in cookie
-    assert "SameSite=strict" in cookie
-    assert "Path=/codex/session-1" in cookie
-
-
-@pytest.mark.anyio
-async def test_access_revokes_old_session_tickets_before_issuing_new_one(
-    settings: Settings,
-) -> None:
-    app = create_app(settings)
-    allow_session_writes(app)
-    manager = MagicMock()
-    tickets = MagicMock()
-    tickets.ttl_seconds = 600
-    tickets.issue.return_value = "new-ticket"
-    app.state.codex_pty_manager = manager
-    app.state.terminal_tickets = tickets
-    transport = httpx.ASGITransport(app=app)
-
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.post(
-            "/api/codex/sessions/session-1/access",
-            headers=authorization(settings),
-        )
-
-    assert response.status_code == 200
-    tickets.revoke_session.assert_called_once_with("session-1")
-    tickets.issue.assert_called_once_with("session-1")
-
-
-@pytest.mark.anyio
-async def test_access_rejects_running_quick_interaction(settings: Settings) -> None:
-    app = create_app(settings)
-    manager = MagicMock()
-    quick_interactions = MagicMock()
-    guard = MagicMock()
-    guard.__enter__.side_effect = ApiError(
-        409,
-        "quick_interaction_in_progress",
-        "该会话正在执行快速交互，请等待任务结束。",
-    )
-    quick_interactions.terminal_access_guard.return_value = guard
-    app.state.codex_pty_manager = manager
-    app.state.quick_interactions = quick_interactions
-    transport = httpx.ASGITransport(app=app)
-
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.post(
-            "/api/codex/sessions/session-1/access",
-            headers=authorization(settings),
-        )
-
-    assert response.status_code == 409
-    assert response.json()["error"]["code"] == "quick_interaction_in_progress"
-    manager.ensure_terminal.assert_not_called()
-
-
-@pytest.mark.anyio
 async def test_stop_cancels_running_quick_interaction_before_session(
     settings: Settings,
 ) -> None:
@@ -1232,8 +895,6 @@ async def test_stop_cancels_running_quick_interaction_before_session(
         status="stopped",
         activity="idle",
         permission_mode="auto-review",
-        active_permission_mode=None,
-        permission_pending=False,
         error=None,
         created_at=utc_now(),
         updated_at=utc_now(),
@@ -1244,10 +905,8 @@ async def test_stop_cancels_running_quick_interaction_before_session(
     manager.stop_session.side_effect = lambda _id: (
         events.append("stop") or manager.stop_session.return_value
     )
-    app.state.codex_pty_manager = manager
+    app.state.ai_session_manager = manager
     app.state.quick_interactions = quick_interactions
-    app.state.terminal_tickets = MagicMock()
-    app.state.terminal_connections = MagicMock()
     weixin_chub_mode = MagicMock()
     weixin_chub_mode.session_slot.return_value = 4
     app.state.weixin_chub_mode = weixin_chub_mode
@@ -1278,10 +937,8 @@ async def test_stop_rejects_external_writer_before_cancelling_chub_work(
         "This is open in another app, close it there to continue here.",
     )
     quick_interactions = MagicMock()
-    app.state.codex_pty_manager = manager
+    app.state.ai_session_manager = manager
     app.state.quick_interactions = quick_interactions
-    app.state.terminal_tickets = MagicMock()
-    app.state.terminal_connections = MagicMock()
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -1294,8 +951,6 @@ async def test_stop_rejects_external_writer_before_cancelling_chub_work(
     assert response.json()["error"]["code"] == "codex_session_writer_active"
     manager.ensure_stop_allowed.assert_called_once_with("session-1")
     quick_interactions.cancel_codex_session.assert_not_called()
-    app.state.terminal_tickets.revoke_session.assert_not_called()
-    app.state.terminal_connections.close_session.assert_not_called()
 
 
 @pytest.mark.anyio
@@ -1317,8 +972,6 @@ async def test_rename_session_allows_running_task_and_logs_lifecycle(
         activity="working",
         activity_source="quick",
         permission_mode="auto-review",
-        active_permission_mode=None,
-        permission_pending=False,
         error=None,
         created_at=utc_now(),
         updated_at=utc_now(),
@@ -1326,7 +979,7 @@ async def test_rename_session_allows_running_task_and_logs_lifecycle(
     quick_interactions = MagicMock()
     weixin_chub_mode = MagicMock()
     weixin_chub_mode.session_slot.return_value = 2
-    app.state.codex_pty_manager = manager
+    app.state.ai_session_manager = manager
     app.state.quick_interactions = quick_interactions
     app.state.weixin_chub_mode = weixin_chub_mode
     statuses = []
@@ -1365,7 +1018,7 @@ async def test_rename_session_logs_manager_failure(
         "codex_session_not_found",
         "Codex session not found",
     )
-    app.state.codex_pty_manager = manager
+    app.state.ai_session_manager = manager
     statuses = []
 
     def record_operation(_request, **kwargs):
@@ -1399,7 +1052,7 @@ async def test_rename_session_preserves_external_writer_error(
         "codex_session_writer_active",
         "This is open in another app, close it there to continue here.",
     )
-    app.state.codex_pty_manager = manager
+    app.state.ai_session_manager = manager
     statuses = []
 
     def record_operation(_request, **kwargs):
@@ -1451,8 +1104,7 @@ async def test_archive_session_revokes_access_and_calls_manager(
     app.state.weixin_chub_mode.release_session_slot.side_effect = (
         lambda _id: events.append("release") or True
     )
-    app.state.codex_pty_manager = manager
-    app.state.terminal_tickets = tickets
+    app.state.ai_session_manager = manager
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -1462,7 +1114,6 @@ async def test_archive_session_revokes_access_and_calls_manager(
         )
 
     assert response.status_code == 200
-    tickets.revoke_session.assert_called_once_with("session-1")
     manager.archive_native_session.assert_called_once_with("session-1")
     manager.finalize_archive_session.assert_called_once_with("session-1")
     app.state.quick_interactions.cancel_codex_session.assert_called_once_with(
@@ -1480,6 +1131,51 @@ async def test_archive_session_revokes_access_and_calls_manager(
 
 
 @pytest.mark.anyio
+async def test_native_session_actions_use_opaque_reference(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_app(settings)
+    manager = MagicMock()
+    manager.native_action_audit_target.return_value = "native:stable-target"
+    app.state.ai_session_manager = manager
+    transport = httpx.ASGITransport(app=app)
+    reference = "native-action-reference-123456"
+    operations = []
+    monkeypatch.setattr(
+        "app.codex.routes.log_operation",
+        lambda _request, **kwargs: operations.append(kwargs),
+    )
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        archived = await client.post(
+            f"/api/codex/native-sessions/{reference}/archive",
+            headers=authorization(settings),
+        )
+        deleted = await client.delete(
+            f"/api/codex/native-sessions/{reference}",
+            headers=authorization(settings),
+        )
+
+    assert archived.status_code == 200
+    assert deleted.status_code == 200
+    assert manager.run_discovered_native_action.call_args_list == [
+        call("archive", reference),
+        call("delete", reference),
+    ]
+    assert {entry["target"] for entry in operations} == {"native:stable-target"}
+    assert [operation["status"] for operation in operations] == [
+        "requested",
+        "started",
+        "succeeded",
+        "requested",
+        "started",
+        "succeeded",
+    ]
+    assert all(reference not in operation["target"] for operation in operations)
+
+
+@pytest.mark.anyio
 async def test_archive_session_is_idempotent_when_stale_mapping_is_gone(
     settings: Settings,
 ) -> None:
@@ -1493,10 +1189,8 @@ async def test_archive_session_is_idempotent_when_stale_mapping_is_gone(
         "Codex session not found",
     )
     manager.finalize_archive_session = MagicMock()
-    app.state.codex_pty_manager = manager
+    app.state.ai_session_manager = manager
     app.state.quick_interactions = quick_interactions
-    app.state.terminal_tickets = MagicMock()
-    app.state.terminal_connections = MagicMock()
     app.state.weixin_chub_mode = MagicMock()
     transport = httpx.ASGITransport(app=app)
 
@@ -1510,6 +1204,50 @@ async def test_archive_session_is_idempotent_when_stale_mapping_is_gone(
     quick_interactions.cancel_codex_session.assert_called_once_with("session-1")
     quick_interactions.remove_session_tasks.assert_called_once_with("session-1")
     manager.finalize_archive_session.assert_called_once_with("session-1")
+
+
+@pytest.mark.anyio
+async def test_chub_session_archive_and_delete_log_full_lifecycle(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_app(settings)
+    operations: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "app.codex.routes.log_operation",
+        lambda _request, **kwargs: operations.append(kwargs),
+    )
+    app.state.ai_session_manager = MagicMock()
+    app.state.quick_interactions = MagicMock()
+    app.state.quick_interactions.stop_operation_guard.return_value = MagicMock()
+    app.state.quick_interactions.destructive_operation_guard.return_value = MagicMock()
+    app.state.weixin_chub_mode = MagicMock()
+    app.state.weixin_chub_mode.release_session_slot.return_value = True
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        archived = await client.post(
+            "/api/codex/sessions/session-1/archive",
+            headers=authorization(settings),
+        )
+        deleted = await client.delete(
+            "/api/codex/sessions/session-2",
+            headers=authorization(settings),
+        )
+
+    assert archived.status_code == 200
+    assert deleted.status_code == 200
+    assert [entry["status"] for entry in operations] == [
+        "requested",
+        "started",
+        "succeeded",
+        "requested",
+        "started",
+        "succeeded",
+    ]
+    assert len({entry["operation_id"] for entry in operations[:3]}) == 1
+    assert len({entry["operation_id"] for entry in operations[3:]}) == 1
+    assert operations[0]["operation_id"] != operations[3]["operation_id"]
 
 
 @pytest.mark.anyio
@@ -1531,10 +1269,8 @@ async def test_delete_session_is_idempotent_when_stale_mapping_is_gone(
         "Codex session not found",
     )
     manager.finalize_delete_session = MagicMock()
-    app.state.codex_pty_manager = manager
+    app.state.ai_session_manager = manager
     app.state.quick_interactions = quick_interactions
-    app.state.terminal_tickets = MagicMock()
-    app.state.terminal_connections = MagicMock()
     app.state.weixin_chub_mode = MagicMock()
     transport = httpx.ASGITransport(app=app)
 
@@ -1546,10 +1282,87 @@ async def test_delete_session_is_idempotent_when_stale_mapping_is_gone(
 
     assert response.status_code == 200
     quick_interactions.remove_session_tasks.assert_called_once_with("session-1")
-    manager.finalize_delete_session.assert_called_once_with(
-        "session-1",
-        terminal_already_closed=True,
+    manager.finalize_delete_session.assert_called_once_with("session-1")
+
+
+@pytest.mark.anyio
+async def test_forget_session_only_cleans_chub_state(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_app(settings)
+    operations: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "app.codex.routes.log_operation",
+        lambda _request, **kwargs: operations.append(kwargs),
     )
+    manager = MagicMock()
+    quick_interactions = MagicMock()
+    quick_interactions.destructive_operation_guard.return_value = MagicMock()
+    app.state.ai_session_manager = manager
+    app.state.quick_interactions = quick_interactions
+    app.state.weixin_chub_mode = MagicMock()
+    app.state.weixin_chub_mode.release_session_slot.return_value = True
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.delete(
+            "/api/codex/sessions/session-1/management",
+            headers=authorization(settings),
+        )
+
+    assert response.status_code == 200
+    quick_interactions.cancel_codex_session.assert_called_once_with("session-1")
+    quick_interactions.remove_session_tasks.assert_called_once_with("session-1")
+    manager.forget_session.assert_called_once_with("session-1")
+    manager.archive_native_session.assert_not_called()
+    manager.delete_native_session.assert_not_called()
+    assert [entry["status"] for entry in operations] == [
+        "requested",
+        "started",
+        "succeeded",
+    ]
+    assert len({entry["operation_id"] for entry in operations}) == 1
+
+
+@pytest.mark.anyio
+async def test_forget_session_logs_failed_lifecycle(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_app(settings)
+    operations: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "app.codex.routes.log_operation",
+        lambda _request, **kwargs: operations.append(kwargs),
+    )
+    manager = MagicMock()
+    manager.forget_session.side_effect = ApiError(
+        status_code=409,
+        code="codex_session_forget_failed",
+        message="Session is still active.",
+    )
+    quick_interactions = MagicMock()
+    quick_interactions.destructive_operation_guard.return_value = MagicMock()
+    app.state.ai_session_manager = manager
+    app.state.quick_interactions = quick_interactions
+    app.state.weixin_chub_mode = MagicMock()
+    app.state.weixin_chub_mode.release_session_slot.return_value = True
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.delete(
+            "/api/codex/sessions/session-1/management",
+            headers=authorization(settings),
+        )
+
+    assert response.status_code == 409
+    assert [entry["status"] for entry in operations] == [
+        "requested",
+        "started",
+        "failed",
+    ]
+    assert len({entry["operation_id"] for entry in operations}) == 1
 
 
 @pytest.mark.anyio
@@ -1562,7 +1375,7 @@ async def test_archive_session_fails_when_slot_release_cannot_be_confirmed(
     app = create_app(settings)
     allow_session_writes(app)
     manager = MagicMock()
-    app.state.codex_pty_manager = manager
+    app.state.ai_session_manager = manager
     app.state.weixin_chub_mode = MagicMock()
     app.state.weixin_chub_mode.release_session_slot.side_effect = OSError(
         "disk unavailable"
@@ -1613,7 +1426,7 @@ async def test_delete_session_releases_slot_after_destructive_guard(
     manager.finalize_delete_session.side_effect = (
         lambda _id, **_kwargs: events.append("finalize")
     )
-    app.state.codex_pty_manager = manager
+    app.state.ai_session_manager = manager
     app.state.weixin_chub_mode = MagicMock()
     app.state.weixin_chub_mode.release_session_slot.side_effect = (
         lambda _id: events.append("release") or True
@@ -1630,7 +1443,6 @@ async def test_delete_session_releases_slot_after_destructive_guard(
     assert events == [
         "guard-enter",
         "cancel",
-        "stop",
         "delete",
         "remove-tasks",
         "release",
@@ -1640,18 +1452,16 @@ async def test_delete_session_releases_slot_after_destructive_guard(
 
 
 @pytest.mark.anyio
-async def test_delete_session_does_not_gate_native_delete_on_terminal_cleanup_error(
+async def test_delete_session_continues_when_session_stop_is_already_unavailable(
     settings: Settings,
 ) -> None:
     app = create_app(settings)
     manager = MagicMock()
     quick_interactions = MagicMock()
     quick_interactions.destructive_operation_guard.return_value = MagicMock()
-    manager.stop_session.side_effect = OSError("terminal carrier unavailable")
-    app.state.codex_pty_manager = manager
+    manager.stop_session.side_effect = OSError("Session is already unavailable")
+    app.state.ai_session_manager = manager
     app.state.quick_interactions = quick_interactions
-    app.state.terminal_tickets = MagicMock()
-    app.state.terminal_connections = MagicMock()
     app.state.weixin_chub_mode = MagicMock()
     transport = httpx.ASGITransport(app=app)
 
@@ -1663,10 +1473,7 @@ async def test_delete_session_does_not_gate_native_delete_on_terminal_cleanup_er
 
     assert response.status_code == 200
     manager.delete_native_session.assert_called_once_with("session-1")
-    manager.finalize_delete_session.assert_called_once_with(
-        "session-1",
-        terminal_already_closed=True,
-    )
+    manager.finalize_delete_session.assert_called_once_with("session-1")
 
 
 @pytest.mark.anyio
@@ -1678,10 +1485,8 @@ async def test_archive_session_uses_stop_guard_before_manager_gate(
     quick_interactions = MagicMock()
     guard = MagicMock()
     quick_interactions.stop_operation_guard.return_value = guard
-    app.state.codex_pty_manager = manager
+    app.state.ai_session_manager = manager
     app.state.quick_interactions = quick_interactions
-    app.state.terminal_tickets = MagicMock()
-    app.state.terminal_connections = MagicMock()
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -1693,8 +1498,6 @@ async def test_archive_session_uses_stop_guard_before_manager_gate(
     assert response.status_code == 200
     manager.archive_native_session.assert_called_once_with("session-1")
     quick_interactions.cancel_codex_session.assert_called_once_with("session-1")
-    app.state.terminal_tickets.revoke_session.assert_called_once_with("session-1")
-    app.state.terminal_connections.close_session.assert_called_once_with("session-1")
     manager.finalize_archive_session.assert_called_once_with("session-1")
 
 
@@ -1709,11 +1512,9 @@ async def test_archive_session_stops_before_cleaning_when_native_archive_fails(
         "codex_session_writer_active",
         "This is open in another app, close it there to continue here.",
     )
-    app.state.codex_pty_manager = manager
+    app.state.ai_session_manager = manager
     app.state.quick_interactions = MagicMock()
     app.state.quick_interactions.stop_operation_guard.return_value = MagicMock()
-    app.state.terminal_tickets = MagicMock()
-    app.state.terminal_connections = MagicMock()
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -1725,8 +1526,6 @@ async def test_archive_session_stops_before_cleaning_when_native_archive_fails(
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "codex_session_writer_active"
     app.state.quick_interactions.cancel_codex_session.assert_not_called()
-    app.state.terminal_tickets.revoke_session.assert_not_called()
-    app.state.terminal_connections.close_session.assert_not_called()
     manager.finalize_archive_session.assert_not_called()
 
 
@@ -1744,9 +1543,7 @@ async def test_delete_session_preserves_state_when_quick_cancellation_fails(
         "快速交互停止状态无法确认，请稍后重试。",
     )
     manager = MagicMock()
-    app.state.codex_pty_manager = manager
-    app.state.terminal_tickets = MagicMock()
-    app.state.terminal_connections = MagicMock()
+    app.state.ai_session_manager = manager
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -1760,5 +1557,3 @@ async def test_delete_session_preserves_state_when_quick_cancellation_fails(
     manager.delete_native_session.assert_not_called()
     manager.finalize_delete_session.assert_not_called()
     app.state.quick_interactions.remove_session_tasks.assert_not_called()
-    app.state.terminal_tickets.revoke_session.assert_not_called()
-    app.state.terminal_connections.close_session.assert_not_called()

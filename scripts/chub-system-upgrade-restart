@@ -34,7 +34,7 @@ if [[ "$MODE" != "restart" && "$MODE" != "--recover-worker" ]]; then
     echo "chub-system-upgrade-restart: invalid mode" >&2
     exit 2
 fi
-if [[ "${CHUB_ACTIVITY_SOURCE:-}" == "quick" ]]; then
+if [[ -n "${CHUB_QUICK_TASK_ID:-}" ]]; then
     echo "chub-system-upgrade-restart: cannot run from Quick Worker" >&2
     exit 1
 fi

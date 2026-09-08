@@ -4,14 +4,10 @@ import asyncio
 import logging
 from datetime import datetime
 from uuid import uuid4
-from urllib.parse import urlsplit
 
-import httpx
-import websockets
-from fastapi import APIRouter, Depends, Query, Request, Response, WebSocket
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from starlette.websockets import WebSocketDisconnect
 
 from app.codex.models import (
     CodexModelCatalogData,
@@ -25,7 +21,6 @@ from app.codex.models import (
     RuntimeImplementationData,
     RuntimeImplementationEnabledUpdateRequest,
     RuntimeDefaultImplementationUpdateRequest,
-    SessionAccessData,
     SessionCreationAvailability,
     SessionCreateRequest,
     SessionConfigurationUpdateRequest,
@@ -40,17 +35,16 @@ from app.codex.models import (
 from app.ai_session.operations import (
     archive_session as archive_session_operation,
     delete_session as delete_session_operation,
+    forget_session as forget_session_operation,
 )
-from app.core.response import ApiError, ApiResponse, error_response
+from app.core.response import ApiError, ApiResponse
 from app.core.security import require_trusted_network
 from app.services.operation_log import log_operation, write_operation
-from app.services.system_upgrade import SystemUpgradeBusy
 from app.web.routes import WEB_DIR
 from app.web.themes import configure_theme_templates
 
 
-COOKIE_NAME = "chub_terminal"
-LOGGER = logging.getLogger("hub.codex.terminal")
+LOGGER = logging.getLogger("hub.codex")
 api_router = APIRouter(
     prefix="/api/codex",
     tags=["codex"],
@@ -68,8 +62,6 @@ def _last_session_activity_at(
     quick_activity_at = quick_activity_times.get(session.id)
     if quick_activity_at is not None:
         return quick_activity_at
-    if session.session_mode == "quick":
-        return None
     return session.last_activity_at
 
 
@@ -77,7 +69,7 @@ def _last_session_activity_at(
 def list_sessions(
     request: Request,
 ) -> ApiResponse[SessionListData]:
-    manager = request.app.state.codex_pty_manager
+    manager = request.app.state.ai_session_manager
     runtime_registered = (
         not isinstance(getattr(manager, "runtime_id", None), str)
         or manager.runtime_id in manager.runtime_modules.runtime_ids()
@@ -119,13 +111,11 @@ def list_sessions(
         for session in listed_sessions
         if session.workspace_id != "weixin-translation"
     ]
-    terminal_available, terminal_reason = manager.submission_available()
-    if terminal_available:
-        quick_available, quick_reason = (
+    available, unavailable_reason = manager.submission_available()
+    if available:
+        available, unavailable_reason = (
             request.app.state.quick_interactions.quick_session_creation_availability()
         )
-    else:
-        quick_available, quick_reason = False, terminal_reason
     runtime_groups = [
         SessionRuntimeGroup(runtime_id=item.runtime_id, name=item.name)
         for item in manager.read_runtime_management().runtimes
@@ -133,16 +123,12 @@ def list_sessions(
     ]
     return ApiResponse(
         data=SessionListData(
-            available=terminal_available,
-            unavailable_reason=terminal_reason,
+            available=available,
+            unavailable_reason=unavailable_reason,
             runtime_registered=runtime_registered,
-            terminal_creation=SessionCreationAvailability(
-                available=terminal_available,
-                reason=terminal_reason,
-            ),
             quick_creation=SessionCreationAvailability(
-                available=quick_available,
-                reason=quick_reason,
+                available=available,
+                reason=unavailable_reason,
             ),
             dependencies=manager.dependencies(),
             workspaces=manager.workspaces(),
@@ -155,12 +141,12 @@ def list_sessions(
 
 @api_router.get("/runtimes", response_model=ApiResponse[RuntimeManagementData])
 def read_runtime_management(request: Request) -> ApiResponse[RuntimeManagementData]:
-    return ApiResponse(data=request.app.state.codex_pty_manager.read_runtime_management())
+    return ApiResponse(data=request.app.state.ai_session_manager.read_runtime_management())
 
 
 @api_router.get("/runtime-implementations", response_model=ApiResponse[RuntimeImplementationData])
 def read_runtime_implementations(request: Request) -> ApiResponse[RuntimeImplementationData]:
-    return ApiResponse(data=request.app.state.codex_pty_manager.read_runtime_implementations())
+    return ApiResponse(data=request.app.state.ai_session_manager.read_runtime_implementations())
 
 
 @api_router.put(
@@ -172,7 +158,7 @@ def update_runtime_implementation_enabled(
     payload: RuntimeImplementationEnabledUpdateRequest,
     request: Request,
 ) -> ApiResponse[RuntimeImplementationData]:
-    return ApiResponse(data=request.app.state.codex_pty_manager.update_runtime_implementation_enabled(implementation_id, payload.enabled))
+    return ApiResponse(data=request.app.state.ai_session_manager.update_runtime_implementation_enabled(implementation_id, payload.enabled))
 
 
 @api_router.put(
@@ -183,7 +169,7 @@ def update_default_runtime_implementation(
     payload: RuntimeDefaultImplementationUpdateRequest,
     request: Request,
 ) -> ApiResponse[RuntimeImplementationData]:
-    return ApiResponse(data=request.app.state.codex_pty_manager.update_default_implementation(payload.implementation_id))
+    return ApiResponse(data=request.app.state.ai_session_manager.update_default_implementation(payload.implementation_id))
 
 
 @api_router.put(
@@ -196,7 +182,7 @@ def update_runtime_enablement(
     request: Request,
 ) -> ApiResponse[RuntimeManagementData]:
     try:
-        data = request.app.state.codex_pty_manager.update_runtime_enabled(
+        data = request.app.state.ai_session_manager.update_runtime_enabled(
             runtime_id,
             payload.enabled,
         )
@@ -219,7 +205,7 @@ def update_runtime_enablement(
 
 @api_router.get("/sessions/{session_id}", response_model=ApiResponse[SessionInfo])
 def read_session(session_id: str, request: Request) -> ApiResponse[SessionInfo]:
-    session = request.app.state.codex_pty_manager.read_session(session_id)
+    session = request.app.state.ai_session_manager.read_session(session_id)
     quick_sessions: dict[str, datetime] = (
         request.app.state.quick_interactions.active_sessions()
     )
@@ -245,7 +231,7 @@ def read_session(session_id: str, request: Request) -> ApiResponse[SessionInfo]:
 
 @api_router.get("/models", response_model=ApiResponse[CodexModelCatalogData])
 def list_models(request: Request) -> ApiResponse[CodexModelCatalogData]:
-    return ApiResponse(data=request.app.state.codex_pty_manager.read_model_catalog())
+    return ApiResponse(data=request.app.state.ai_session_manager.read_model_catalog())
 
 
 @api_router.get(
@@ -255,7 +241,7 @@ def list_models(request: Request) -> ApiResponse[CodexModelCatalogData]:
 def read_session_defaults(request: Request) -> ApiResponse[SessionDefaultsData]:
     return ApiResponse(
         data=SessionDefaultsData(
-            permission_mode=request.app.state.codex_pty_manager.read_session_defaults(),
+            permission_mode=request.app.state.ai_session_manager.read_session_defaults(),
         )
     )
 
@@ -269,7 +255,7 @@ def update_session_defaults(
     request: Request,
 ) -> ApiResponse[SessionDefaultsData]:
     try:
-        permission_mode = request.app.state.codex_pty_manager.update_session_defaults(
+        permission_mode = request.app.state.ai_session_manager.update_session_defaults(
             payload.permission_mode,
         )
     except Exception:
@@ -303,15 +289,12 @@ def create_session(
     request: Request,
 ) -> ApiResponse[SessionInfo]:
     try:
-        with request.app.state.quick_interactions.session_creation_guard(
-            payload.session_mode
-        ):
-            session = request.app.state.codex_pty_manager.create_session(
+        with request.app.state.quick_interactions.session_creation_guard():
+            session = request.app.state.ai_session_manager.create_session(
                 payload.workspace_id,
                 payload.permission_mode,
                 payload.model,
                 payload.reasoning_effort,
-                payload.session_mode,
             )
     except Exception:
         log_operation(
@@ -330,50 +313,6 @@ def create_session(
     return ApiResponse(data=_with_weixin_session_slot(request, session))
 
 
-@api_router.post(
-    "/sessions/{session_id}/access",
-    response_model=ApiResponse[SessionAccessData],
-)
-def access_session(
-    session_id: str,
-    request: Request,
-    response: Response,
-) -> ApiResponse[SessionAccessData]:
-    try:
-        with request.app.state.quick_interactions.terminal_access_guard(session_id):
-            request.app.state.codex_pty_manager.ensure_terminal(session_id)
-        request.app.state.terminal_tickets.revoke_session(session_id)
-        ticket = request.app.state.terminal_tickets.issue(session_id)
-    except Exception:
-        log_operation(
-            request,
-            action="access_codex_session",
-            status="failed",
-            target=session_id,
-        )
-        raise
-    response.set_cookie(
-        COOKIE_NAME,
-        ticket,
-        max_age=request.app.state.terminal_tickets.ttl_seconds,
-        httponly=True,
-        samesite="strict",
-        secure=False,
-        path=f"/codex/{session_id}",
-    )
-    log_operation(
-        request,
-        action="access_codex_session",
-        status="succeeded",
-        target=session_id,
-    )
-    return ApiResponse(
-        data=SessionAccessData(
-            terminal_url=f"/codex/{session_id}",
-            expires_in=request.app.state.terminal_tickets.ttl_seconds,
-        )
-    )
-
 
 @api_router.post(
     "/sessions/{session_id}/stop",
@@ -383,11 +322,9 @@ async def stop_session(session_id: str, request: Request) -> ApiResponse[Session
     try:
         def stop_with_guard() -> SessionInfo:
             with request.app.state.quick_interactions.stop_operation_guard(session_id):
-                request.app.state.codex_pty_manager.ensure_stop_allowed(session_id)
+                request.app.state.ai_session_manager.ensure_stop_allowed(session_id)
                 request.app.state.quick_interactions.cancel_codex_session(session_id)
-                request.app.state.terminal_tickets.revoke_session(session_id)
-                request.app.state.terminal_connections.close_session(session_id)
-                return request.app.state.codex_pty_manager.stop_session(session_id)
+                return request.app.state.ai_session_manager.stop_session(session_id)
 
         data = await asyncio.to_thread(stop_with_guard)
     except Exception:
@@ -427,7 +364,7 @@ async def rename_session(
         )
     try:
         data = await asyncio.to_thread(
-            request.app.state.codex_pty_manager.rename_session,
+            request.app.state.ai_session_manager.rename_session,
             session_id,
             payload.title,
         )
@@ -497,8 +434,8 @@ async def submit_quick_interaction(
     source_ip = request.client.host if request.client else "unknown"
     try:
         quick_interactions = request.app.state.quick_interactions
-        manager = request.app.state.codex_pty_manager
-        manager.require_quick_access(session_id)
+        manager = request.app.state.ai_session_manager
+        manager.require_session_access(session_id)
 
         def submit_codex():
             with quick_interactions.session_operation_guard(session_id):
@@ -512,15 +449,14 @@ async def submit_quick_interaction(
                 )
 
         task = await asyncio.to_thread(submit_codex)
-    except ApiError as exc:
-        if exc.code != "quick_interaction_terminal_confirmation_required":
-            write_operation(
-                operation_id=operation_id,
-                action="quick_interaction",
-                status="failed",
-                target=session_id,
-                source_ip=source_ip,
-            )
+    except ApiError:
+        write_operation(
+            operation_id=operation_id,
+            action="quick_interaction",
+            status="failed",
+            target=session_id,
+            source_ip=source_ip,
+        )
         raise
     except Exception:
         write_operation(
@@ -540,7 +476,7 @@ async def submit_quick_interaction(
 )
 def get_quick_interaction(task_id: str, request: Request) -> ApiResponse[QuickInteractionData]:
     task = request.app.state.quick_interactions.get(task_id)
-    request.app.state.codex_pty_manager.require_quick_access(task.session_id)
+    request.app.state.ai_session_manager.require_session_access(task.session_id)
     return ApiResponse(data=QuickInteractionData(task=task))
 
 
@@ -586,7 +522,7 @@ def list_quick_interactions(
             "invalid_quick_interaction_cursor",
             "时间线游标只能用于 timeline 排序。",
         )
-    request.app.state.codex_pty_manager.require_quick_access(session_id)
+    request.app.state.ai_session_manager.require_session_access(session_id)
     tasks = request.app.state.quick_interactions.list_for_session(
         session_id,
         order=order,
@@ -613,14 +549,21 @@ def list_quick_interactions(
 
 @api_router.post("/sessions/{session_id}/archive", response_model=ApiResponse[None])
 async def archive_session(session_id: str, request: Request) -> ApiResponse[None]:
+    operation_id = uuid4().hex
+    for status in ("requested", "started"):
+        log_operation(
+            request,
+            action="archive_codex_session",
+            status=status,
+            target=session_id,
+            operation_id=operation_id,
+        )
     try:
         await asyncio.to_thread(
             archive_session_operation,
             session_id,
-            manager=request.app.state.codex_pty_manager,
+            manager=request.app.state.ai_session_manager,
             quick_interactions=request.app.state.quick_interactions,
-            terminal_tickets=request.app.state.terminal_tickets,
-            terminal_connections=request.app.state.terminal_connections,
             release_slot=lambda target_id: _release_weixin_session_slot(
                 request, target_id
             ),
@@ -631,6 +574,7 @@ async def archive_session(session_id: str, request: Request) -> ApiResponse[None
             action="archive_codex_session",
             status="failed",
             target=session_id,
+            operation_id=operation_id,
         )
         raise
     log_operation(
@@ -638,20 +582,28 @@ async def archive_session(session_id: str, request: Request) -> ApiResponse[None
         action="archive_codex_session",
         status="succeeded",
         target=session_id,
+        operation_id=operation_id,
     )
     return ApiResponse(data=None)
 
 
 @api_router.delete("/sessions/{session_id}", response_model=ApiResponse[None])
 async def delete_session(session_id: str, request: Request) -> ApiResponse[None]:
+    operation_id = uuid4().hex
+    for status in ("requested", "started"):
+        log_operation(
+            request,
+            action="delete_codex_session",
+            status=status,
+            target=session_id,
+            operation_id=operation_id,
+        )
     try:
         await asyncio.to_thread(
             delete_session_operation,
             session_id,
-            manager=request.app.state.codex_pty_manager,
+            manager=request.app.state.ai_session_manager,
             quick_interactions=request.app.state.quick_interactions,
-            terminal_tickets=request.app.state.terminal_tickets,
-            terminal_connections=request.app.state.terminal_connections,
             release_slot=lambda target_id: _release_weixin_session_slot(
                 request, target_id
             ),
@@ -662,6 +614,7 @@ async def delete_session(session_id: str, request: Request) -> ApiResponse[None]
             action="delete_codex_session",
             status="failed",
             target=session_id,
+            operation_id=operation_id,
         )
         raise
     log_operation(
@@ -669,6 +622,142 @@ async def delete_session(session_id: str, request: Request) -> ApiResponse[None]
         action="delete_codex_session",
         status="succeeded",
         target=session_id,
+        operation_id=operation_id,
+    )
+    return ApiResponse(data=None)
+
+
+@api_router.delete(
+    "/sessions/{session_id}/management",
+    response_model=ApiResponse[None],
+)
+async def forget_session(session_id: str, request: Request) -> ApiResponse[None]:
+    operation_id = uuid4().hex
+    log_operation(
+        request,
+        action="forget_codex_session",
+        status="requested",
+        target=session_id,
+        operation_id=operation_id,
+    )
+    log_operation(
+        request,
+        action="forget_codex_session",
+        status="started",
+        target=session_id,
+        operation_id=operation_id,
+    )
+    try:
+        await asyncio.to_thread(
+            forget_session_operation,
+            session_id,
+            manager=request.app.state.ai_session_manager,
+            quick_interactions=request.app.state.quick_interactions,
+            release_slot=lambda target_id: _release_weixin_session_slot(
+                request, target_id
+            ),
+        )
+    except Exception:
+        log_operation(
+            request,
+            action="forget_codex_session",
+            status="failed",
+            target=session_id,
+            operation_id=operation_id,
+        )
+        raise
+    log_operation(
+        request,
+        action="forget_codex_session",
+        status="succeeded",
+        target=session_id,
+        operation_id=operation_id,
+    )
+    return ApiResponse(data=None)
+
+
+@api_router.post("/native-sessions/{native_action_ref}/archive", response_model=ApiResponse[None])
+async def archive_native_session(native_action_ref: str, request: Request) -> ApiResponse[None]:
+    operation_id = uuid4().hex
+    target = request.app.state.ai_session_manager.native_action_audit_target(native_action_ref)
+    log_operation(
+        request,
+        action="archive_native_session",
+        status="requested",
+        target=target,
+        operation_id=operation_id,
+    )
+    log_operation(
+        request,
+        action="archive_native_session",
+        status="started",
+        target=target,
+        operation_id=operation_id,
+    )
+    try:
+        await asyncio.to_thread(
+            request.app.state.ai_session_manager.run_discovered_native_action,
+            "archive",
+            native_action_ref,
+        )
+    except Exception:
+        log_operation(
+            request,
+            action="archive_native_session",
+            status="failed",
+            target=target,
+            operation_id=operation_id,
+        )
+        raise
+    log_operation(
+        request,
+        action="archive_native_session",
+        status="succeeded",
+        target=target,
+        operation_id=operation_id,
+    )
+    return ApiResponse(data=None)
+
+
+@api_router.delete("/native-sessions/{native_action_ref}", response_model=ApiResponse[None])
+async def delete_native_session(native_action_ref: str, request: Request) -> ApiResponse[None]:
+    operation_id = uuid4().hex
+    target = request.app.state.ai_session_manager.native_action_audit_target(native_action_ref)
+    log_operation(
+        request,
+        action="delete_native_session",
+        status="requested",
+        target=target,
+        operation_id=operation_id,
+    )
+    log_operation(
+        request,
+        action="delete_native_session",
+        status="started",
+        target=target,
+        operation_id=operation_id,
+    )
+    try:
+        await asyncio.to_thread(
+            request.app.state.ai_session_manager.run_discovered_native_action,
+            "delete",
+            native_action_ref,
+        )
+    except Exception:
+        log_operation(
+            request,
+            action="delete_native_session",
+            status="failed",
+            target=target,
+            operation_id=operation_id,
+        )
+        raise
+    log_operation(
+        request,
+        action="delete_native_session",
+        status="succeeded",
+        target=target,
+        operation_id=operation_id,
     )
     return ApiResponse(data=None)
 
@@ -719,13 +808,6 @@ def _with_weixin_session_slot(
     )
 
 
-def _terminal_authorized(connection: Request | WebSocket, session_id: str) -> bool:
-    return connection.app.state.terminal_tickets.valid(
-        connection.cookies.get(COOKIE_NAME),
-        session_id,
-    )
-
-
 @web_router.get(
     "/codex/{session_id}/quick-interactions/conversation",
     response_class=HTMLResponse,
@@ -735,288 +817,9 @@ async def quick_interaction_conversation_page(
     request: Request,
     session_id: str,
 ) -> HTMLResponse:
-    request.app.state.codex_pty_manager.require_quick_access(session_id)
+    request.app.state.ai_session_manager.require_session_access(session_id)
     return templates.TemplateResponse(
         request=request,
         name="quick_interaction_conversation.html",
         context={"session_id": session_id},
-    )
-
-
-@web_router.get(
-    "/codex/{session_id}",
-    response_class=HTMLResponse,
-    include_in_schema=False,
-)
-async def terminal_page(request: Request, session_id: str) -> HTMLResponse:
-    if not _terminal_authorized(request, session_id):
-        raise ApiError(401, "terminal_access_required", "Terminal access expired")
-    try:
-        with request.app.state.system_upgrade.mutation_guard():
-            session = request.app.state.codex_pty_manager.require_terminal_access(
-                session_id
-            )
-            page = request.app.state.terminal_connections.open_page(
-                session_id,
-                request.cookies[COOKIE_NAME],
-            )
-    except SystemUpgradeBusy as exc:
-        raise ApiError(
-            409,
-            "system_upgrade_in_progress",
-            "系统升级期间暂不建立新的终端连接。",
-        ) from exc
-    return templates.TemplateResponse(
-        request=request,
-        name="terminal.html",
-        context={
-            "session": session,
-            "page": page,
-        },
-    )
-
-
-@web_router.get(
-    "/codex/{session_id}/connection/{page_id}",
-    include_in_schema=False,
-)
-async def terminal_connection_status(
-    request: Request,
-    session_id: str,
-    page_id: str,
-) -> JSONResponse:
-    state = request.app.state.terminal_connections.page_state(session_id, page_id)
-    if state is None:
-        return JSONResponse({"state": "unknown"}, status_code=404)
-    return JSONResponse({"state": state})
-
-
-@web_router.websocket("/codex/{session_id}/terminal/ws")
-async def terminal_websocket(websocket: WebSocket, session_id: str) -> None:
-    if not _terminal_authorized(websocket, session_id) or not _valid_origin(websocket):
-        await websocket.close(code=4401)
-        return
-    offered = websocket.headers.get("sec-websocket-protocol", "")
-    if "tty" not in {item.strip() for item in offered.split(",")}:
-        await websocket.close(code=4400)
-        return
-    page_id = websocket.query_params.get("page_id")
-    if not page_id:
-        await websocket.close(code=4401)
-        return
-    manager = websocket.app.state.codex_pty_manager
-    ticket = websocket.cookies[COOKIE_NAME]
-    connection = None
-    try:
-        with websocket.app.state.system_upgrade.mutation_guard():
-            await websocket.accept(subprotocol="tty")
-            LOGGER.info(
-                "terminal_websocket_accepted session_id=%s page_id=%s",
-                session_id,
-                page_id,
-            )
-            connection, released = await websocket.app.state.terminal_connections.claim(
-                session_id,
-                ticket,
-                page_id,
-            )
-            if not released:
-                LOGGER.warning(
-                    "session_id=%s old terminal connection did not release; recycling ttyd",
-                    session_id,
-                )
-                await asyncio.to_thread(manager.restart_terminal_backend, session_id)
-            backend_url = manager.backend_ws_url(session_id)
-            session = manager.get_session(session_id)
-    except SystemUpgradeBusy:
-        await websocket.close(code=4412, reason="System upgrade in progress")
-        return
-    except ValueError:
-        await websocket.close(code=4401, reason="Terminal page access expired")
-        return
-    except (ApiError, OSError, RuntimeError) as exc:
-        if connection is not None:
-            websocket.app.state.terminal_connections.release(connection)
-        LOGGER.warning(
-            "terminal_websocket_setup_failed session_id=%s page_id=%s error_type=%s",
-            session_id,
-            page_id,
-            type(exc).__name__,
-        )
-        try:
-            await websocket.close(code=1011, reason="Terminal backend unavailable")
-        except RuntimeError:
-            pass
-        return
-    try:
-        async with websockets.connect(
-            backend_url,
-            origin=manager.backend_origin(session_id),
-            subprotocols=["tty"],
-        ) as backend:
-            if not websocket.app.state.terminal_connections.activate(connection):
-                await websocket.close(code=4410, reason="Terminal connection superseded")
-                return
-
-            async def client_to_backend() -> None:
-                while True:
-                    message = await websocket.receive()
-                    if message.get("type") == "websocket.disconnect":
-                        return
-                    try:
-                        with websocket.app.state.system_upgrade.mutation_guard():
-                            with websocket.app.state.quick_interactions.terminal_input_guard(
-                                session_id
-                            ) as allowed:
-                                if not allowed:
-                                    continue
-                                if message.get("bytes") is not None:
-                                    await backend.send(message["bytes"])
-                                elif message.get("text") is not None:
-                                    await backend.send(message["text"])
-                    except SystemUpgradeBusy:
-                        await websocket.close(
-                            code=4412,
-                            reason="System upgrade in progress",
-                        )
-                        return
-
-            async def backend_to_client() -> None:
-                async for message in backend:
-                    if isinstance(message, bytes):
-                        await websocket.send_bytes(message)
-                    else:
-                        await websocket.send_text(message)
-
-            tasks = [
-                asyncio.create_task(client_to_backend()),
-                asyncio.create_task(backend_to_client()),
-                asyncio.create_task(connection.takeover.wait()),
-            ]
-            done, pending = await asyncio.wait(
-                tasks,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            for task in pending:
-                task.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
-            for task in done:
-                if not task.cancelled():
-                    task.result()
-    except WebSocketDisconnect as exc:
-        LOGGER.info(
-            "terminal_websocket_disconnected session_id=%s page_id=%s code=%s",
-            session_id,
-            page_id,
-            exc.code,
-        )
-        return
-    except (OSError, RuntimeError, websockets.WebSocketException) as exc:
-        LOGGER.warning(
-            "terminal_websocket_failed session_id=%s page_id=%s error_type=%s",
-            session_id,
-            page_id,
-            type(exc).__name__,
-        )
-        return
-    finally:
-        if connection is not None:
-            websocket.app.state.terminal_connections.release(connection)
-        if connection is not None and connection.takeover.is_set():
-            try:
-                await websocket.close(code=4409, reason="Terminal opened elsewhere")
-            except RuntimeError:
-                pass
-
-
-@web_router.api_route(
-    "/codex/{session_id}/terminal",
-    methods=["GET", "HEAD"],
-    include_in_schema=False,
-)
-@web_router.api_route(
-    "/codex/{session_id}/terminal/{path:path}",
-    methods=["GET", "POST", "HEAD"],
-    include_in_schema=False,
-)
-async def terminal_http(
-    request: Request,
-    session_id: str,
-    path: str = "",
-) -> Response:
-    if not _terminal_authorized(request, session_id):
-        return error_response(401, "terminal_access_required", "Terminal access expired")
-    if not path and request.url.path.endswith("/terminal"):
-        return RedirectResponse(
-            url=f"/codex/{session_id}/terminal/",
-            status_code=307,
-        )
-    manager = request.app.state.codex_pty_manager
-    try:
-        with request.app.state.system_upgrade.mutation_guard():
-            backend_url = manager.backend_url(
-                session_id,
-                path,
-                request.url.query,
-            )
-        headers = {
-            key: value
-            for key, value in request.headers.items()
-            if key.lower() not in {"host", "content-length", "accept-encoding", "cookie"}
-        }
-        async with httpx.AsyncClient(timeout=10) as client:
-            upstream = await client.request(
-                request.method,
-                backend_url,
-                headers=headers,
-                content=await request.body(),
-            )
-    except SystemUpgradeBusy:
-        return error_response(
-            409,
-            "system_upgrade_in_progress",
-            "系统升级期间暂不建立新的终端连接。",
-        )
-    except httpx.HTTPError as exc:
-        LOGGER.warning(
-            "terminal_http_proxy_failed session_id=%s error_type=%s",
-            session_id,
-            type(exc).__name__,
-        )
-        return error_response(502, "terminal_proxy_failed", "Terminal proxy failed")
-    except ApiError as exc:
-        LOGGER.warning(
-            "terminal_http_backend_unavailable session_id=%s error_code=%s",
-            session_id,
-            exc.code,
-        )
-        return error_response(502, "terminal_proxy_failed", "Terminal proxy failed")
-    response_headers = {
-        key: value
-        for key, value in upstream.headers.items()
-        if key.lower()
-        not in {
-            "connection",
-            "content-encoding",
-            "content-length",
-            "content-security-policy",
-            "location",
-            "transfer-encoding",
-            "x-frame-options",
-        }
-    }
-    return Response(
-        content=upstream.content,
-        status_code=upstream.status_code,
-        headers=response_headers,
-    )
-
-
-def _valid_origin(websocket: WebSocket) -> bool:
-    origin = websocket.headers.get("origin")
-    if not origin:
-        return False
-    parsed = urlsplit(origin)
-    return parsed.scheme in {"http", "https"} and parsed.netloc == websocket.headers.get(
-        "host"
     )

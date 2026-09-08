@@ -379,8 +379,7 @@ def session_matches_configuration(
     configuration: WeixinChubModeRuntimeConfig,
 ) -> bool:
     return bool(
-        getattr(session, "session_mode", None) == "quick"
-        and getattr(session, "workspace_id", None) == configuration.workspace_id
+        getattr(session, "workspace_id", None) == configuration.workspace_id
         and getattr(session, "permission_mode", None) == configuration.permission_mode
         and configuration.permission_mode != "ask"
         and (
@@ -529,11 +528,7 @@ def compact_token_count(tokens: int) -> str:
 def safe_submission_error(exc: ApiError) -> str:
     allowed = {
         "quick_interaction_in_progress": "微信通道当前绑定 Session 正在执行任务，请等待完成。",
-        "quick_interaction_terminal_working": "微信通道当前绑定 Session 正在由终端使用。",
-        "quick_interaction_terminal_active": "微信通道当前绑定 Session 不能执行快速交互。",
-        "quick_interaction_writer_active": (
-            "微信通道当前绑定 Session 仍由实时终端占用，请先停止终端。"
-        ),
+        "quick_interaction_writer_active": "微信通道当前绑定 Session 正在由其他写入方使用，请稍后重试。",
         "codex_writer_status_unavailable": (
             "暂时无法确认微信通道当前绑定 Session 是否可写，请稍后重试。"
         ),

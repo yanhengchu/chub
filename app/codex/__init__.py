@@ -1,1 +1,1 @@
-"""Managed Codex PTY sessions."""
+"""Chub Codex Session and Quick Worker APIs."""

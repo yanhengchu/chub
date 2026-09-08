@@ -19,6 +19,7 @@ from app.services.system_upgrade import (
 )
 from app.quick_worker_tasks import (
     worker_leases_dir,
+    worker_restart_request_dir,
     worker_tasks_dir,
     worker_tombstones_dir,
 )
@@ -180,17 +181,14 @@ def prepare_restart(operation_id: str) -> None:
         ):
             _remove_private_directory(path)
     # This is the fixed, post-Worker-stop cleanup boundary. It intentionally
-    # removes only Chub's local Session mappings and Hook results; native Codex
+    # removes only Chub's local Session mappings and Worker restart requests; native Codex
     # sessions, configuration, logs and other user data are outside this list.
     for path in (
         settings.ai_runtime.codex.data_file,
         settings.ai_runtime.codex.data_file.with_name("ai-sessions.json"),
     ):
         _remove_private_file(path)
-    for path in (
-        settings.ai_runtime.codex.runtime_dir / "hooks",
-        settings.ai_runtime.codex.runtime_dir / "restart-requests",
-    ):
+    for path in (worker_restart_request_dir(settings),):
         _remove_private_directory(path)
 
 

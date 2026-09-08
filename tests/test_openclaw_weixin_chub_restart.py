@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.session_fixtures import CodexSession
+
 import json
 import re
 import stat
@@ -13,7 +15,6 @@ import pytest
 from app.codex.models import (
     CodexQuotaData,
     CodexQuotaWindow,
-    CodexSession,
     CodexTokenUsageData,
     QuickInteractionWeixinRoute,
     WorkspaceInfo,
@@ -184,7 +185,6 @@ def test_chub_restart_initial_reply_does_not_list_sessions_or_usage(
     enable_restart_command(manager)
     sessions = [
         CodexSession(
-            session_mode="quick",
             id=f"session-{slot}",
             workspace_id="chub",
             workspace_name="Chub",

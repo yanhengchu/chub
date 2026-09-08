@@ -76,20 +76,6 @@ ai_usage:
         load_settings(config_file)
 
 
-def test_load_settings_rejects_removed_codex_pty_config(tmp_path: Path) -> None:
-    config_file = tmp_path / "settings.yaml"
-    config_file.write_text(
-        f"""{VALID_CONFIG}
-codex_pty:
-  workspace: ~/workspace
-""",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(RuntimeError, match="codex_pty"):
-        load_settings(config_file)
-
-
 def test_quick_interaction_timeout_defaults_to_six_hours(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

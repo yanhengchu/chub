@@ -46,6 +46,7 @@ from app.api.status import router as status_router
 from app.ai_session import AiSessionManager
 from app.ai_session.operations import archive_session, delete_session
 from app.codex.quick_interactions import QuickInteractionManager
+from app.quick_worker_tasks import worker_restart_request_dir
 from app.ai_runtime import RuntimeOperationError
 from app.ai_runtime.usage import RuntimeUsageService
 from app.codex.routes import api_router as codex_api_router
@@ -254,18 +255,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # The AI Session Manager is the sole production owner.  The old
     # Codex Session Store is cleaned by the fixed upgrade flow and is never
     # used as a startup-time compatibility switch.
-    codex_pty_manager = AiSessionManager(resolved_settings)
+    ai_session_manager = AiSessionManager(resolved_settings)
     class CurrentCodexRateLimits:
         def read(self, *, force: bool = False):
-            return codex_pty_manager.codex_rate_limits.read(force=force)
+            return ai_session_manager.codex_rate_limits.read(force=force)
 
         def read_account_status(self, *, force: bool = False):
-            return codex_pty_manager.codex_rate_limits.read_account_status(force=force)
+            return ai_session_manager.codex_rate_limits.read_account_status(force=force)
 
     codex_rate_limits = CurrentCodexRateLimits()
     ai_usage = RuntimeUsageService(
-        lambda: codex_pty_manager.runtime_registry,
-        default_runtime_id=codex_pty_manager.default_submission_implementation_id,
+        lambda: ai_session_manager.runtime_registry,
+        default_runtime_id=ai_session_manager.default_submission_implementation_id,
     )
     completion_notifier = OpenClawCompletionNotifier(
         resolved_settings.openclaw.quick_interaction_completion
@@ -284,8 +285,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     quick_interactions = QuickInteractionManager(
         resolved_settings.ai_runtime.codex.data_file,
-        resolved_settings.ai_runtime.codex.runtime_dir,
-        codex_pty_manager,
+        worker_restart_request_dir(resolved_settings),
+        ai_session_manager,
         completion_notifier.notify,
         deferred_restart,
         restart_notifier=completion_notifier.notify_restart,
@@ -302,7 +303,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         resolved_settings.ai_runtime.codex.data_file.with_name(
             "weekly-report-generation.json"
         ),
-        codex_pty_manager,
+        ai_session_manager,
         quick_interactions,
     )
     quick_worker_maintenance = QuickWorkerReloadCoordinator(
@@ -322,22 +323,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             or quick_worker_maintenance.in_progress()
         )
     )
-    codex_pty_manager.set_system_upgrade_checker(system_upgrade.writes_blocked)
-    terminal_tickets = codex_pty_manager.supervisor.tickets
-    terminal_connections = codex_pty_manager.supervisor.connections
+    ai_session_manager.set_system_upgrade_checker(system_upgrade.writes_blocked)
     maintenance_terminal = MaintenanceTerminalManager(resolved_settings)
     weixin_translation = WeixinTranslationManager(
         resolved_settings.openclaw.weixin_chub_mode,
-        codex_pty_manager,
+        ai_session_manager,
         quick_interactions,
     )
     quick_interactions.set_recovery_ready_handler(
         weixin_translation.start_worker_recovery
     )
-    def reclaim_weixin_terminal(session_id: str):
-        terminal_tickets.revoke_session(session_id)
-        terminal_connections.close_session(session_id)
-        return codex_pty_manager.stop_session(session_id)
+    def reclaim_weixin_session(session_id: str):
+        return ai_session_manager.stop_session(session_id)
 
     def release_weixin_session_slot_for_archive(session_id: str) -> bool:
         try:
@@ -355,10 +352,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def archive_weixin_session(session_id: str) -> None:
         archive_session(
             session_id,
-            manager=codex_pty_manager,
+            manager=ai_session_manager,
             quick_interactions=quick_interactions,
-            terminal_tickets=terminal_tickets,
-            terminal_connections=terminal_connections,
             release_slot=release_weixin_session_slot_for_archive,
         )
 
@@ -376,20 +371,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def delete_weixin_session(session_id: str) -> None:
         delete_session(
             session_id,
-            manager=codex_pty_manager,
+            manager=ai_session_manager,
             quick_interactions=quick_interactions,
-            terminal_tickets=terminal_tickets,
-            terminal_connections=terminal_connections,
             release_slot=release_weixin_session_slot_for_delete,
         )
 
     def stop_weixin_session(session_id: str):
         with quick_interactions.stop_operation_guard(session_id):
-            codex_pty_manager.ensure_stop_allowed(session_id)
+            ai_session_manager.ensure_stop_allowed(session_id)
             quick_interactions.cancel_codex_session(session_id)
-            terminal_tickets.revoke_session(session_id)
-            terminal_connections.close_session(session_id)
-            return codex_pty_manager.stop_session(session_id)
+            return ai_session_manager.stop_session(session_id)
 
     def weixin_system_upgrade_check_status():
         try:
@@ -405,11 +396,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     weixin_chub_mode = WeixinChubModeManager(
         resolved_settings,
-        codex_pty_manager,
+        ai_session_manager,
         quick_interactions,
         completion_notifier.validate_weixin_route,
-        reclaim_weixin_terminal,
-        codex_rate_limits,
+        session_reclaimer=reclaim_weixin_session,
+        codex_account_reader=codex_rate_limits,
         translation_manager=weixin_translation,
         session_archiver=archive_weixin_session,
         session_deleter=delete_weixin_session,
@@ -555,33 +546,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         "succeeded",
                         "Quick Worker 已确认目标协议和空闲健康状态",
                     )
-                    rebind = getattr(
-                        codex_pty_manager,
-                        "rebind_upgrade_terminal_carriers",
-                        None,
-                    )
-                    if callable(rebind):
-                        await asyncio.to_thread(
-                            rebind,
-                            [
-                                (item.session_id, item.native_session_id)
-                                for item in operation.sessions
-                            ],
-                        )
                     verifier = getattr(
-                        codex_pty_manager,
+                        ai_session_manager,
                         "verify_system_upgrade_readiness",
                         None,
                     )
                     if callable(verifier):
                         await asyncio.to_thread(verifier)
                     else:
-                        await asyncio.to_thread(codex_pty_manager.list_sessions)
+                        await asyncio.to_thread(ai_session_manager.list_sessions)
                     if quick_interactions.system_upgrade_readiness() is not None:
                         raise OSError("Quick Worker 恢复状态尚未满足最终验收条件。")
                     try:
                         runtime_management = await asyncio.to_thread(
-                            codex_pty_manager.read_runtime_management
+                            ai_session_manager.read_runtime_management
                         )
                         enabled = [
                             item
@@ -612,7 +590,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         runtime_status,
                         runtime_message,
                     )
-                    quick_worker_maintenance.clear_terminal_operation()
+                    quick_worker_maintenance.clear_completed_operation()
                     system_upgrade.succeed(operation_id)
                     return
                 if asyncio.get_running_loop().time() >= deadline:
@@ -721,7 +699,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             session_id=session.id,
                             native_session_id=session.native_session_id,
                         )
-                        for session in codex_pty_manager.system_upgrade_sessions()
+                        for session in ai_session_manager.system_upgrade_sessions()
                     ]
                 except (OSError, ValueError):
                     # The fixed restart helper removes the local Store after the
@@ -737,9 +715,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             for session in sessions:
                 if session.status == "discarded":
                     continue
-                terminal_tickets.revoke_session(session.session_id)
-                terminal_connections.close_session(session.session_id)
-                codex_pty_manager.discard_session_for_system_upgrade(
+                ai_session_manager.discard_session_for_system_upgrade(
                     session.session_id
                 )
                 session.status = "discarded"
@@ -839,7 +815,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     completion_notifier.completion_usage_reader = lambda: usage_message(
         ai_usage.read(force=False)
     )
-    codex_pty_manager.set_quick_interaction_checker(quick_interactions.is_running)
+    ai_session_manager.set_quick_interaction_checker(quick_interactions.is_running)
+
+    def cleanup_passively_removed_session(session_id: str) -> bool:
+        return quick_interactions.try_remove_session_tasks(
+            session_id
+        ) and weixin_chub_mode.try_release_session_slot(session_id)
+
+    ai_session_manager.set_passive_session_cleanup(cleanup_passively_removed_session)
     openclaw_manager = OpenClawManager(resolved_settings.openclaw)
     notification_service = NotificationService(resolved_settings.notifications)
 
@@ -987,7 +970,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         system_upgrade_recovery_task = None
         runtime_module_recovery_task = None
         runtime_state_cleanup_task = None
-        runtime_module_recovery = codex_pty_manager.runtime_module_recovery
+        runtime_module_recovery = ai_session_manager.runtime_module_recovery
         if runtime_module_recovery is not None:
             write_operation(
                 operation_id=runtime_module_recovery.operation_id,
@@ -1060,7 +1043,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             reported_failure = False
             while True:
                 try:
-                    cleanup = codex_pty_manager.runtime_module_service.pending_state_cleanup()
+                    cleanup = ai_session_manager.runtime_module_service.pending_state_cleanup()
                 except Exception:
                     logging.getLogger("hub.runtime_modules").warning(
                         "Unable to read deferred Runtime module state cleanup",
@@ -1080,8 +1063,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         raise OSError("Quick Worker Runtime state cleanup was not confirmed")
                     for session_id in cleanup.session_ids:
                         quick_interactions.remove_session_tasks(session_id)
-                    codex_pty_manager.clear_runtime_module_state(cleanup.module_id)
-                    codex_pty_manager.runtime_module_service.complete_state_cleanup(
+                    ai_session_manager.clear_runtime_module_state(cleanup.module_id)
+                    ai_session_manager.runtime_module_service.complete_state_cleanup(
                         cleanup.operation_id
                     )
                     write_operation(
@@ -1116,7 +1099,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await asyncio.to_thread(quick_interactions.start_worker_reconciliation)
         if quick_interactions.recovery_ready and not system_upgrade.writes_blocked():
             await asyncio.to_thread(
-                codex_pty_manager.archive_legacy_translation_sessions,
+                ai_session_manager.archive_legacy_translation_sessions,
                 quick_interactions,
             )
         weixin_chub_mode.start_status_cache()
@@ -1219,7 +1202,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await quick_interactions.aclose()
             await notification_service.close()
             maintenance_terminal.close()
-            codex_pty_manager.close()
+            ai_session_manager.close()
             openclaw_manager.close()
 
     application = FastAPI(
@@ -1235,8 +1218,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.detected_platform = detected_platform
     application.state.tailnet_listener_available = None
     application.state.tailnet_listener_hosts = ()
-    application.state.ai_session_manager = codex_pty_manager
-    application.state.codex_pty_manager = codex_pty_manager
+    application.state.ai_session_manager = ai_session_manager
     application.state.codex_rate_limits = codex_rate_limits
     application.state.ai_usage = ai_usage
     application.state.quick_interactions = quick_interactions
@@ -1251,8 +1233,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.maintenance_lock = threading.RLock()
     application.state.weixin_chub_mode = weixin_chub_mode
     application.state.weixin_translation = weixin_translation
-    application.state.terminal_tickets = terminal_tickets
-    application.state.terminal_connections = terminal_connections
     application.state.maintenance_terminal = maintenance_terminal
     def check_codex_runtime_account() -> RuntimeAccountEnvironmentState:
         checked_at = datetime.now().astimezone()

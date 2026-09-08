@@ -1,4 +1,9 @@
+from tests.session_fixtures import CodexSession
+
 import asyncio
+import sqlite3
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -14,30 +19,34 @@ from app.ai_runtime import (
     RuntimeEventSummary,
     RuntimeOperationError,
     RuntimeRegistry,
+    RuntimeSessionDiscoveryResult,
     RuntimeStatus,
-    RuntimeTerminalRequest,
     RuntimeTurnRequest,
     RuntimeTurnResult,
     RuntimeWorkerLaunchSpec,
+    RuntimeNativeSession,
     WorkerRuntimeRegistry,
     validate_runtime_wiring,
 )
+from app.ai_session.models import AiSession
 from app.ai_runtime.external_modules import ExternalRuntimeModuleService
 from app.ai_runtime.implementation_preferences import RuntimeImplementationPreferences
 from app.ai_runtime.enablement import RuntimeEnablement
 from app.ai_session.manager import AiSessionManager
 from app.application import create_app
 from app.ai_runtime.general_settings import AiRuntimeSettingsStore
-from legacy_codex_manager import CodexPtyManager
 from app.codex.models import (
     CodexModelCatalogData,
     CodexModelInfo,
     CodexReasoningLevel,
-    CodexSession,
 )
 from chub_codex_runtime.runtime_adapter import CodexRuntimeAdapter
 from chub_codex_runtime.runtime_adapter import CODEX_RUNTIME_DESCRIPTOR
 from chub_codex_runtime.runtime_runner import CodexRuntimeRunner
+from chub_codex_runtime.discovery import (
+    MAX_DISCOVERY_LINE_BYTES,
+    CodexSessionDiscovery,
+)
 from app.core.config import Settings
 from app.core.response import ApiError
 
@@ -252,7 +261,6 @@ def test_runtime_capability_matrix_is_explicit_and_runtime_neutral() -> None:
     ]
     assert matrix[1].available is True
     assert matrix[1].capabilities["runtime_status"] == "supported"
-    assert matrix[1].capabilities["interactive_terminal"] == "unsupported"
     assert set(matrix[1].capabilities) == set(RUNTIME_CAPABILITIES)
     assert all(
         state == "unsupported"
@@ -440,14 +448,11 @@ def test_session_manager_keeps_codex_adapter_when_a_healthy_external_runtime_loa
     manager.refresh_external_runtime_modules()
 
     assert manager.runtime_adapter.descriptor.runtime_id == "codex"
-    assert manager.supervisor.runtime_adapter.descriptor.runtime_id == "codex"
     assert manager.runtime_modules.runtime_ids() == ("codex", "healthy-runtime")
 
 
-@pytest.mark.parametrize("terminal_activity", ["working", "unknown"])
-def test_session_manager_allows_default_version_change_while_terminal_uses_current_version(
+def test_session_manager_allows_default_version_change_while_existing_session_uses_current_version(
     settings: Settings,
-    terminal_activity: str,
 ) -> None:
     manager = AiSessionManager(settings)
     modules = BuiltinRuntimeModuleRegistry(
@@ -490,15 +495,11 @@ def test_session_manager_allows_default_version_change_while_terminal_uses_curre
     manager.store.list = MagicMock(
         return_value=[
             SimpleNamespace(
-                id="terminal-session",
+                id="session-1",
                 runtime_id="codex",
-                activity=terminal_activity,
             )
         ]
     )
-    supervisor = manager.supervisor
-    supervisor.owns_terminal_writer = MagicMock(return_value=True)
-    supervisor.close = MagicMock()
 
     result = manager.update_default_implementation("codex-010001")
 
@@ -510,9 +511,6 @@ def test_session_manager_allows_default_version_change_while_terminal_uses_curre
     assert selected.description == "codex description"
     assert manager.default_implementation_id == "codex-010001"
     assert manager.runtime_adapter is formal
-    assert manager.supervisor is supervisor
-    assert supervisor.runtime_adapter is formal
-    supervisor.close.assert_not_called()
     with pytest.raises(ApiError) as rejected:
         manager.require_implementation_submission("codex-010001")
     assert rejected.value.code == "ai_runtime_disabled"
@@ -526,13 +524,11 @@ def test_session_manager_pins_new_sessions_to_the_default_implementation(
     first = manager.create_session(
         "chub",
         permission_mode="full-access",
-        session_mode="quick",
     )
     manager.update_default_implementation("codex-010000")
     second = manager.create_session(
         "chub",
         permission_mode="full-access",
-        session_mode="quick",
     )
 
     assert manager.get_session(first.id).implementation_id == "builtin-dev"
@@ -552,6 +548,153 @@ def test_session_manager_starts_with_builtin_runtime_when_no_formal_version_is_i
     assert manager.runtime_registry.runtime_ids() == ("codex",)
     assert available is True
     assert reason is None
+
+
+def test_discovered_native_actions_revalidate_and_bound_references(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    native_id = "native-session-1"
+    reference = manager._issue_native_action_ref(native_id)
+    assert manager._issue_native_action_ref(native_id) == reference
+
+    for index in range(300):
+        manager._issue_native_action_ref(f"native-session-{index + 2}")
+    assert len(manager._native_action_refs) == 256
+
+    manager._native_action_refs = {
+        reference: (native_id, time.monotonic() + 60),
+    }
+    manager._native_action_refs_by_native_id = {native_id: reference}
+    manager._sync_bound_native_sessions = MagicMock(
+        return_value=[SimpleNamespace(native_session_id=native_id)]
+    )
+    manager.store.list = MagicMock(return_value=[])
+    manager.runtime_adapter = MagicMock()
+    manager.runtime_adapter.has_active_writer.return_value = False
+    manager.runtime_adapter.native_session_archive_state.return_value = True
+
+    manager.run_discovered_native_action("archive", reference)
+
+    manager.runtime_adapter.run_native_action.assert_called_once_with("archive", native_id)
+    manager.runtime_adapter.native_session_archive_state.assert_called_once_with(native_id)
+
+    stale_reference = manager._issue_native_action_ref(native_id)
+    manager.store.list.return_value = [SimpleNamespace(native_session_id=native_id)]
+    with pytest.raises(ApiError) as stale:
+        manager.run_discovered_native_action("delete", stale_reference)
+    assert stale.value.code == "native_session_action_stale"
+    manager.runtime_adapter.run_native_action.assert_called_once()
+
+
+def test_native_discovery_keeps_bound_session_when_record_is_missing(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    session = SimpleNamespace(
+        id="session-1",
+        runtime_id="codex",
+        implementation_id="builtin-dev",
+        native_session_id="11111111-1111-4111-8111-111111111111",
+    )
+    adapter = MagicMock()
+    adapter.status.return_value = RuntimeStatus(runtime_id="codex", available=True)
+    adapter.discover_sessions.return_value = RuntimeSessionDiscoveryResult(
+        sessions=(),
+        archive_states={},
+    )
+    manager.runtime_adapters = {"builtin-dev": adapter}
+    manager.default_implementation_id = "builtin-dev"
+    manager.store.list = MagicMock(return_value=[session])
+    manager.store.delete = MagicMock()
+
+    manager._sync_bound_native_sessions()
+
+    manager.store.delete.assert_not_called()
+
+
+def test_native_discovery_removes_bound_session_only_after_explicit_archive(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    native_session_id = "11111111-1111-4111-8111-111111111111"
+    session = SimpleNamespace(
+        id="session-1",
+        runtime_id="codex",
+        implementation_id="builtin-dev",
+        native_session_id=native_session_id,
+    )
+    adapter = MagicMock()
+    adapter.status.return_value = RuntimeStatus(runtime_id="codex", available=True)
+    adapter.discover_sessions.return_value = RuntimeSessionDiscoveryResult(
+        sessions=(),
+        archive_states={native_session_id: True},
+    )
+    manager.runtime_adapters = {"builtin-dev": adapter}
+    manager.default_implementation_id = "builtin-dev"
+    manager.store.list = MagicMock(return_value=[session])
+    manager.store.delete = MagicMock()
+
+    manager._sync_bound_native_sessions()
+
+    manager.store.delete.assert_called_once_with("session-1")
+
+
+def test_native_discovery_removes_bound_session_after_complete_delete(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    native_session_id = "11111111-1111-4111-8111-111111111111"
+    session = SimpleNamespace(
+        id="session-1",
+        runtime_id="codex",
+        implementation_id="builtin-dev",
+        native_session_id=native_session_id,
+    )
+    adapter = MagicMock()
+    adapter.status.return_value = RuntimeStatus(runtime_id="codex", available=True)
+    adapter.discover_sessions.return_value = RuntimeSessionDiscoveryResult(
+        sessions=(),
+        archive_states={},
+        complete=True,
+    )
+    manager.runtime_adapters = {"builtin-dev": adapter}
+    manager.default_implementation_id = "builtin-dev"
+    manager.store.list = MagicMock(return_value=[session])
+    manager.store.delete = MagicMock()
+
+    manager._sync_bound_native_sessions()
+
+    manager.store.delete.assert_called_once_with("session-1")
+
+
+def test_native_discovery_keeps_session_when_passive_cleanup_is_unconfirmed(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    native_session_id = "11111111-1111-4111-8111-111111111111"
+    session = SimpleNamespace(
+        id="session-1",
+        runtime_id="codex",
+        implementation_id="builtin-dev",
+        native_session_id=native_session_id,
+    )
+    adapter = MagicMock()
+    adapter.status.return_value = RuntimeStatus(runtime_id="codex", available=True)
+    adapter.discover_sessions.return_value = RuntimeSessionDiscoveryResult(
+        sessions=(), archive_states={}, complete=True
+    )
+    cleanup = MagicMock(return_value=False)
+    manager.set_passive_session_cleanup(cleanup)
+    manager.runtime_adapters = {"builtin-dev": adapter}
+    manager.default_implementation_id = "builtin-dev"
+    manager.store.list = MagicMock(return_value=[session])
+    manager.store.delete = MagicMock()
+
+    manager._sync_bound_native_sessions()
+
+    cleanup.assert_called_once_with("session-1")
+    manager.store.delete.assert_not_called()
 
 
 @pytest.mark.anyio
@@ -729,11 +872,9 @@ def test_codex_adapter_declares_current_capabilities(settings: Settings) -> None
             "background_turn",
             "task_cancel",
             "native_session_mapping",
-            "interactive_terminal",
             "session_resume",
                 "session_archive",
                 "structured_events",
-                "activity_events",
                 "writer_probe",
                 "model_catalog",
                 "permission_profiles",
@@ -741,6 +882,16 @@ def test_codex_adapter_declares_current_capabilities(settings: Settings) -> None
                 "usage_login_page",
         }
     )
+    assert adapter.status().available is True
+
+
+def test_codex_adapter_health_only_requires_codex_cli(settings: Settings) -> None:
+    adapter = CodexRuntimeAdapter(
+        settings,
+        which=lambda name: "/available" if name == "codex" else None,
+    )
+
+    assert adapter.dependencies() == {"codex": True}
     assert adapter.status().available is True
 
 
@@ -787,15 +938,6 @@ def test_codex_runtime_usage_uses_default_timezone_despite_legacy_general_settin
     assert adapter._read_usage_settings().timezone == "Asia/Shanghai"
 
 
-def test_codex_manager_production_registry_only_exposes_codex(
-    settings: Settings,
-) -> None:
-    manager = CodexPtyManager(settings)
-
-    assert manager.runtime_registry.runtime_ids() == ("codex",)
-    assert manager.runtime_adapter is manager.runtime_registry.require("codex")
-
-
 @pytest.mark.parametrize(
     ("permission_profile", "expected"),
     [
@@ -825,12 +967,11 @@ def test_codex_runner_maps_permissions_without_elevation(
     )
     command = list(process_spec.argv)
 
-    assert command[0:5] == [
+    assert command[0:4] == [
         "/fixed/codex",
         "exec",
         "--skip-git-repo-check",
-        "--profile",
-        "chub",
+        "--json",
     ]
     assert command.count("--skip-git-repo-check") == 1
     assert expected in command
@@ -1022,117 +1163,6 @@ def test_codex_runner_preserves_upstream_error_text(tmp_path: Path) -> None:
     )
 
 
-def test_codex_adapter_owns_activity_event_file_boundary(
-    settings: Settings,
-    tmp_path: Path,
-) -> None:
-    settings.ai_runtime.codex.runtime_dir = tmp_path / "runtime"
-    adapter = CodexRuntimeAdapter(settings)
-    adapter.hook_dir.mkdir(parents=True)
-    hook = adapter.hook_dir / "123e4567-e89b-12d3-a456-426614174000.json"
-    hook.write_text(
-        '{"codex_session_id":"native-1","activity":"working",'
-        '"activity_source":"terminal","launch_id":"' + "a" * 32 + '"}',
-        encoding="utf-8",
-    )
-    hook.chmod(0o600)
-
-    event = adapter.read_activity_event("123e4567-e89b-12d3-a456-426614174000")
-
-    assert event is not None
-    assert event.native_session_id == "native-1"
-    assert event.activity == "working"
-    assert event.activity_source == "terminal"
-    assert event.launch_id == "a" * 32
-    adapter.clear_activity_event("123e4567-e89b-12d3-a456-426614174000")
-    assert adapter.read_activity_event("123e4567-e89b-12d3-a456-426614174000") is None
-
-
-def test_codex_adapter_preserves_quick_origin_for_idle_hook(
-    settings: Settings,
-    tmp_path: Path,
-) -> None:
-    settings.ai_runtime.codex.runtime_dir = tmp_path / "runtime"
-    adapter = CodexRuntimeAdapter(settings)
-    adapter.hook_dir.mkdir(parents=True)
-    hook = adapter.hook_dir / "123e4567-e89b-12d3-a456-426614174000.json"
-    hook.write_text(
-        '{"codex_session_id":"native-1","activity":"idle",'
-        '"activity_source":"quick"}',
-        encoding="utf-8",
-    )
-    hook.chmod(0o600)
-
-    event = adapter.read_activity_event("123e4567-e89b-12d3-a456-426614174000")
-
-    assert event is not None
-    assert event.activity == "idle"
-    assert event.activity_source == "quick"
-
-
-def test_codex_adapter_persists_activity_session_rebind(
-    settings: Settings,
-    tmp_path: Path,
-) -> None:
-    settings.ai_runtime.codex.runtime_dir = tmp_path / "runtime"
-    adapter = CodexRuntimeAdapter(settings)
-    old_session_id = "123e4567-e89b-12d3-a456-426614174000"
-    new_session_id = "123e4567-e89b-12d3-a456-426614174001"
-
-    adapter.rebind_activity_session(old_session_id, new_session_id)
-
-    alias = adapter.hook_dir / f".{old_session_id}.rebind"
-    assert alias.read_text(encoding="ascii") == f"{new_session_id}\n"
-    assert alias.stat().st_mode & 0o777 == 0o600
-
-
-def test_codex_adapter_terminal_spec_uses_runtime_request(
-    settings: Settings,
-    tmp_path: Path,
-) -> None:
-    adapter = CodexRuntimeAdapter(settings)
-    process_spec = adapter.terminal_command(
-        RuntimeTerminalRequest(
-            session_id="session-1",
-            launch_id="a" * 32,
-            cwd=tmp_path,
-            permission_mode="read-only",
-            native_session_id="native-1",
-            model="gpt-test",
-            reasoning_effort="high",
-        ),
-        12345,
-    )
-
-    command = list(process_spec.argv)
-    assert command[command.index("--permission-mode") + 1] == "read-only"
-    assert command[command.index("--terminal-launch-id") + 1] == "a" * 32
-    assert command[command.index("--codex-session") + 1] == "native-1"
-
-
-def test_codex_adapter_rejects_invalid_cli_session_id(
-    settings: Settings,
-    tmp_path: Path,
-) -> None:
-    run = MagicMock()
-    adapter = CodexRuntimeAdapter(settings, run=run)
-    request = RuntimeTerminalRequest(
-        session_id="session-1",
-        cwd=tmp_path,
-        permission_mode="read-only",
-        native_session_id="--help",
-    )
-
-    with pytest.raises(RuntimeOperationError) as terminal:
-        adapter.terminal_command(request, 12345)
-    with pytest.raises(RuntimeOperationError) as action:
-        adapter.run_native_action("archive", "--help")
-
-    assert terminal.value.code == "codex_session_invalid"
-    assert action.value.code == "codex_session_invalid"
-    run.assert_not_called()
-
-
 def test_codex_adapter_normalizes_discovery_and_model_catalog(
     settings: Settings,
     tmp_path: Path,
@@ -1145,9 +1175,6 @@ def test_codex_adapter_normalizes_discovery_and_model_catalog(
         cwd=tmp_path,
         title="x" * 501,
         codex_session_id="native-1",
-        active_permission_mode="read-only",
-        active_model="gpt-test",
-        active_reasoning_effort="high",
     )
     adapter.discovery = MagicMock()
     adapter.discovery.discover.return_value = [native]
@@ -1174,7 +1201,264 @@ def test_codex_adapter_normalizes_discovery_and_model_catalog(
 
     assert discovery.sessions[0].native_session_id == "native-1"
     assert discovery.sessions[0].title == "x" * 500
-    assert discovery.sessions[0].active_permission_mode == "read-only"
     assert discovery.archive_states == {"native-1": False}
     assert catalog.models[0].id == "gpt-test"
     assert catalog.models[0].levels[0].id == "high"
+
+
+def test_codex_native_discovery_does_not_read_thread_settings(tmp_path: Path) -> None:
+    session_id = "11111111-1111-4111-8111-111111111111"
+    session_path = tmp_path / "sessions" / "2026" / "09" / "08" / "rollout.jsonl"
+    session_path.parent.mkdir(parents=True)
+    session_path.write_text(
+        "\n".join(
+            (
+                '{"payload":{"id":"%s","cwd":"/workspace/chub",'
+                '"timestamp":"2026-09-08T10:00:00Z"}}' % session_id,
+                '{"type":"turn_context","payload":{"approval_policy":"never",'
+                '"model":"gpt-test","reasoning_effort":"high"}}',
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    discovered = CodexSessionDiscovery(tmp_path).discover()
+
+    assert len(discovered) == 1
+    assert discovered[0].codex_session_id == session_id
+
+
+def test_codex_native_discovery_skips_bad_index_records_and_keeps_reading(
+    tmp_path: Path,
+) -> None:
+    session_id = "11111111-1111-4111-8111-111111111111"
+    session_path = tmp_path / "sessions" / "2026" / "09" / "08" / "rollout.jsonl"
+    session_path.parent.mkdir(parents=True)
+    session_path.write_text(
+        '{"payload":{"id":"%s","cwd":"/workspace/chub",'
+        '"timestamp":"2026-09-08T10:00:00Z"}}\n' % session_id,
+        encoding="utf-8",
+    )
+    (tmp_path / "session_index.jsonl").write_bytes(
+        b"\xff\xfe\n"
+        + b"[]\n"
+        + (b"x" * (MAX_DISCOVERY_LINE_BYTES + 1))
+        + b"\n"
+        + ('{"id":"%s","thread_name":"Recovered title"}\n' % session_id).encode()
+    )
+
+    discovered = CodexSessionDiscovery(tmp_path).discover()
+
+    assert len(discovered) == 1
+    assert discovered[0].title == "Recovered title"
+
+
+def test_codex_native_discovery_uses_index_when_title_database_is_unavailable(
+    tmp_path: Path,
+) -> None:
+    session_id = "11111111-1111-4111-8111-111111111111"
+    session_path = tmp_path / "sessions" / "2026" / "09" / "08" / "rollout.jsonl"
+    session_path.parent.mkdir(parents=True)
+    session_path.write_text(
+        '{"payload":{"id":"%s","cwd":"/workspace/chub",'
+        '"timestamp":"2026-09-08T10:00:00Z"}}\n' % session_id,
+        encoding="utf-8",
+    )
+    (tmp_path / "session_index.jsonl").write_text(
+        '{"id":"%s","thread_name":"Index fallback"}\n' % session_id,
+        encoding="utf-8",
+    )
+    discovery = CodexSessionDiscovery(tmp_path)
+    discovery._read_database_titles = MagicMock(return_value={})
+
+    discovered = discovery.discover()
+
+    assert len(discovered) == 1
+    assert discovered[0].title == "Index fallback"
+
+
+def test_codex_archive_state_read_failure_does_not_prevent_discovery(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    adapter = CodexRuntimeAdapter(settings, codex_home=tmp_path)
+    native = CodexSession(
+        id="native-1",
+        workspace_id="codex",
+        workspace_name="workspace",
+        cwd=tmp_path,
+        codex_session_id="native-1",
+    )
+    adapter.discovery = MagicMock()
+    adapter.discovery.discover.return_value = [native]
+    adapter.discovery.session_archive_states.return_value = None
+
+    discovered = adapter.discover_sessions()
+
+    assert [item.native_session_id for item in discovered.sessions] == ["native-1"]
+    assert discovered.archive_states is None
+
+
+def test_codex_delete_confirmation_is_unknown_after_incomplete_discovery(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    native_session_id = "11111111-1111-4111-8111-111111111111"
+    database = tmp_path / "state_5.sqlite"
+    with sqlite3.connect(database) as connection:
+        connection.execute("CREATE TABLE threads (id TEXT, title TEXT, archived INTEGER)")
+    malformed = tmp_path / "sessions" / "unreadable.jsonl"
+    malformed.parent.mkdir()
+    malformed.write_text('{"payload":{}}\n', encoding="utf-8")
+
+    adapter = CodexRuntimeAdapter(settings, codex_home=tmp_path)
+
+    assert adapter.native_session_deleted_state(native_session_id) is None
+
+
+def test_codex_discovery_reports_an_invalid_sessions_source(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "sessions").write_text("not a directory", encoding="utf-8")
+    adapter = CodexRuntimeAdapter(settings, codex_home=tmp_path)
+
+    with pytest.raises(RuntimeOperationError) as unavailable:
+        adapter.discover_sessions()
+
+    assert unavailable.value.code == "codex_session_discovery_unavailable"
+
+
+def test_native_list_omits_bound_items_before_writer_probe(settings: Settings) -> None:
+    manager = AiSessionManager(settings)
+    bound_id = "11111111-1111-4111-8111-111111111111"
+    unbound_id = "22222222-2222-4222-8222-222222222222"
+    now = datetime(2026, 9, 8, 10, tzinfo=UTC)
+    bound = SimpleNamespace(id="session-1", runtime_id="codex", native_session_id=bound_id)
+    manager.store.list = MagicMock(return_value=[bound])
+    manager._sync_bound_native_sessions = MagicMock(
+        return_value=(
+            RuntimeNativeSession(
+                runtime_id="codex",
+                native_session_id=bound_id,
+                cwd=Path("/workspace/bound"),
+                created_at=now,
+                updated_at=now,
+            ),
+            RuntimeNativeSession(
+                runtime_id="codex",
+                native_session_id=unbound_id,
+                cwd=Path("/workspace/unbound"),
+                created_at=now,
+                updated_at=now,
+            ),
+        )
+    )
+    manager._refresh_status = MagicMock()
+    manager._reconcile_quick_activity = MagicMock()
+    manager._public = MagicMock(side_effect=lambda session: session)
+    manager.runtime_adapter = MagicMock()
+    manager.runtime_adapter.has_active_writer.return_value = False
+
+    _sessions, native_sessions = manager.list_sessions_with_native_sessions()
+
+    assert [item.cwd for item in native_sessions] == ["/workspace/unbound"]
+    manager.runtime_adapter.has_active_writer.assert_called_once_with(unbound_id)
+
+
+def test_native_list_hides_unbound_items_during_initial_native_claim(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    now = datetime(2026, 9, 8, 10, tzinfo=UTC)
+    claiming = SimpleNamespace(
+        id="session-1",
+        runtime_id="codex",
+        native_session_id=None,
+        quick_native_claim_task_id=f"qw-0000000000000-{'a' * 32}",
+    )
+    manager.store.list = MagicMock(return_value=[claiming])
+    manager._sync_bound_native_sessions = MagicMock(
+        return_value=(
+            RuntimeNativeSession(
+                runtime_id="codex",
+                native_session_id="22222222-2222-4222-8222-222222222222",
+                cwd=Path("/workspace/unbound"),
+                created_at=now,
+                updated_at=now,
+            ),
+        )
+    )
+    manager._quick_interaction_is_running = MagicMock(return_value=True)
+    manager._refresh_status = MagicMock()
+    manager._reconcile_quick_activity = MagicMock()
+    manager._public = MagicMock(side_effect=lambda session: session)
+    manager.runtime_adapter = MagicMock()
+
+    _sessions, native_sessions = manager.list_sessions_with_native_sessions()
+
+    assert native_sessions == []
+    manager.runtime_adapter.has_active_writer.assert_not_called()
+
+
+def test_native_list_restores_unbound_items_after_initial_claim_finishes(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    now = datetime(2026, 9, 8, 10, tzinfo=UTC)
+    claiming = SimpleNamespace(
+        id="session-1",
+        runtime_id="codex",
+        native_session_id=None,
+        quick_native_claim_task_id=f"qw-0000000000000-{'a' * 32}",
+    )
+    manager.store.list = MagicMock(return_value=[claiming])
+    manager._sync_bound_native_sessions = MagicMock(
+        return_value=(
+            RuntimeNativeSession(
+                runtime_id="codex",
+                native_session_id="22222222-2222-4222-8222-222222222222",
+                cwd=Path("/workspace/unbound"),
+                created_at=now,
+                updated_at=now,
+            ),
+        )
+    )
+    manager._quick_interaction_is_running = MagicMock(return_value=False)
+    manager._refresh_status = MagicMock()
+    manager._reconcile_quick_activity = MagicMock()
+    manager._public = MagicMock(side_effect=lambda session: session)
+    manager.runtime_adapter = MagicMock()
+    manager.runtime_adapter.has_active_writer.return_value = False
+
+    _sessions, native_sessions = manager.list_sessions_with_native_sessions()
+
+    assert [item.cwd for item in native_sessions] == ["/workspace/unbound"]
+
+
+def test_native_discovery_projects_only_title_and_timestamp_to_chub_session() -> None:
+    session = AiSession.model_validate(
+        {
+            "id": "11111111-1111-4111-8111-111111111111",
+            "runtime_id": "codex",
+            "implementation_id": "builtin-dev",
+            "workspace_id": "chub",
+            "workspace_name": "Chub",
+            "cwd": "/workspace/chub",
+            "permission_mode": "read-only",
+        }
+    )
+    native = RuntimeNativeSession(
+        runtime_id="codex",
+        native_session_id="native-session",
+        cwd=Path("/workspace/chub"),
+        title="Native title",
+        created_at=datetime(2026, 9, 8, 10, tzinfo=UTC),
+        updated_at=datetime(2026, 9, 8, 10, 1, tzinfo=UTC),
+    )
+
+    changed = AiSessionManager._project_native_state(session, native)
+
+    assert changed is True
+    assert session.title == "Native title"

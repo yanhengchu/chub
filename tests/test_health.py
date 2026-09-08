@@ -85,7 +85,7 @@ def test_tailnet_discovery_does_not_disable_local_runtime(
 ) -> None:
     application = create_app(settings)
 
-    assert application.state.codex_pty_manager.runtime_adapter.status().reason is None
+    assert application.state.ai_session_manager.runtime_adapter.status().reason is None
 
 
 def test_unavailable_tailnet_listener_keeps_loopback_available(

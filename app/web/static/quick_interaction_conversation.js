@@ -179,7 +179,6 @@ let conversationSessions = [];
 let conversationCreationAvailable = false;
 let conversationCreationPending = false;
 let conversationWorkspaces = [];
-let conversationConfirmStopUnknownTerminal = false;
 let conversationSessionSwitcherSignature = "";
 let conversationRenamePending = false;
 let conversationStopPending = false;
@@ -523,7 +522,6 @@ function resetConversationSessionView(sessionPreview) {
   };
   renderConversationComposerOptions(null);
   closeConversationComposerMenus();
-  conversationConfirmStopUnknownTerminal = false;
   conversationStopPending = false;
   conversationDeletePending = false;
   conversationFeed.replaceChildren();
@@ -725,7 +723,6 @@ function renderConversationSession(session) {
     deletePending: conversationDeletePending,
     promptLength: conversationPrompt.value.length,
   });
-  conversationConfirmStopUnknownTerminal = state.confirmStopUnknownTerminal;
 }
 
 function focusConversationPromptAfterSessionAction() {
@@ -1211,7 +1208,6 @@ conversationForm.addEventListener("submit", async (event) => {
   try {
     const data = await client.submitTask({
       prompt: value,
-      confirmStopUnknownTerminal: conversationConfirmStopUnknownTerminal,
     });
     notifyWorkspaceSessionChanged(conversationSessionId);
     if (generation !== conversationGeneration) {
@@ -1222,7 +1218,6 @@ conversationForm.addEventListener("submit", async (event) => {
     }
     saveConversationDraft();
     resizeConversationPrompt();
-    conversationConfirmStopUnknownTerminal = false;
     conversationActive = true;
     conversationTotal += conversationTasks.some((task) => task.id === data.task.id) ? 0 : 1;
     mergeConversationTasks([data.task]);
@@ -1233,20 +1228,10 @@ conversationForm.addEventListener("submit", async (event) => {
     if (generation !== conversationGeneration) {
       return;
     }
-    if (
-      error.code === "quick_interaction_terminal_confirmation_required"
-    ) {
-      conversationConfirmStopUnknownTerminal = true;
-      showConversationFeedback(
-        "请确认影响后再次点击发送。",
-        "warning",
-      );
-    } else {
-      showConversationFeedback(
-        formatConversationErrorMessage(error, "快速交互提交失败。"),
-        "error",
-      );
-    }
+    showConversationFeedback(
+      formatConversationErrorMessage(error, "快速交互提交失败。"),
+      "error",
+    );
     try {
       const session = await client.loadSession();
       if (generation !== conversationGeneration) {

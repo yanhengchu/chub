@@ -1,26 +1,36 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
-from .models import CodexSession, PermissionMode, sessions_newest_first
+from .models import CodexSession, sessions_newest_first
 
 
-PERMISSION_TAIL_BYTES = 512 * 1024
-PERMISSION_MAX_LINE_BYTES = 256 * 1024
+MAX_DISCOVERY_LINE_BYTES = 256 * 1024
+MAX_DISCOVERED_TITLE_CHARS = 500
 
 
 class CodexSessionDiscovery:
     def __init__(self, codex_home: Path) -> None:
         self.codex_home = codex_home
+        self.last_discovery_complete = True
 
     def discover(self) -> list[CodexSession]:
         titles = self._read_titles()
         sessions: list[CodexSession] = []
         root = self.codex_home / "sessions"
+        self.last_discovery_complete = True
+        if root.exists() and (
+            not root.is_dir() or not os.access(root, os.R_OK | os.X_OK)
+        ):
+            raise OSError("Codex sessions source is unavailable")
+        if not root.is_dir():
+            self.last_discovery_complete = False
+            return []
         for path in root.glob("**/*.jsonl"):
             session = self._read_session(path, titles)
             if session is not None:
@@ -34,18 +44,17 @@ class CodexSessionDiscovery:
         try:
             connection = sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)
             try:
-                rows = connection.execute(
+                states: dict[str, bool] = {}
+                for session_id, archived in connection.execute(
                     "SELECT id, archived FROM threads"
-                ).fetchall()
+                ):
+                    if isinstance(session_id, str):
+                        states[session_id] = bool(archived)
             finally:
                 connection.close()
-        except (OSError, sqlite3.Error):
+        except (OSError, ValueError, sqlite3.Error):
             return None
-        return {
-            session_id: bool(archived)
-            for session_id, archived in rows
-            if isinstance(session_id, str)
-        }
+        return states
 
     def _read_session(
         self,
@@ -53,11 +62,16 @@ class CodexSessionDiscovery:
         titles: dict[str, str],
     ) -> CodexSession | None:
         try:
-            with path.open(encoding="utf-8") as file:
-                first = json.loads(file.readline())
+            with path.open("rb") as file:
+                first_line = file.readline(MAX_DISCOVERY_LINE_BYTES + 1)
+            if len(first_line) > MAX_DISCOVERY_LINE_BYTES:
+                self.last_discovery_complete = False
+                return None
+            first = json.loads(first_line.decode("utf-8"))
             payload = first["payload"]
             session_id = payload.get("id") or payload.get("session_id")
             if not isinstance(session_id, str):
+                self.last_discovery_complete = False
                 return None
             UUID(session_id)
             cwd = Path(payload["cwd"]).expanduser()
@@ -70,14 +84,12 @@ class CodexSessionDiscovery:
             KeyError,
             OSError,
             TypeError,
+            UnicodeDecodeError,
             ValueError,
             json.JSONDecodeError,
         ):
+            self.last_discovery_complete = False
             return None
-        thread_settings = self._read_thread_settings(path)
-        active_model, active_reasoning_effort = self._model_settings(
-            thread_settings
-        )
         return CodexSession(
             id=session_id,
             workspace_id="codex",
@@ -86,117 +98,36 @@ class CodexSessionDiscovery:
             title=titles.get(session_id),
             codex_session_id=session_id,
             status="stopped",
-            active_permission_mode=self._permission_mode_from_settings(
-                thread_settings
-            ),
-            model=active_model,
-            reasoning_effort=active_reasoning_effort,
-            active_model=active_model,
-            active_reasoning_effort=active_reasoning_effort,
             created_at=timestamp,
             updated_at=updated_at,
         )
-
-    def _read_thread_settings(self, path: Path) -> dict[str, object]:
-        try:
-            with path.open("rb") as file:
-                size = file.seek(0, 2)
-                start = max(0, size - PERMISSION_TAIL_BYTES)
-                file.seek(start)
-                data = file.read(PERMISSION_TAIL_BYTES)
-        except OSError:
-            return {}
-        lines = data.splitlines()
-        if start and lines:
-            lines = lines[1:]
-        resolved: dict[str, object] = {}
-        for raw_line in reversed(lines):
-            if len(raw_line) > PERMISSION_MAX_LINE_BYTES:
-                continue
-            try:
-                item = json.loads(raw_line)
-            except (UnicodeDecodeError, json.JSONDecodeError):
-                continue
-            settings = self._permission_settings(item)
-            if settings is None:
-                continue
-            for key, value in settings.items():
-                canonical_key = (
-                    "reasoning_effort"
-                    if key in {"effort", "reasoning_effort"}
-                    else key
-                )
-                resolved.setdefault(canonical_key, value)
-        return resolved
-
-    @staticmethod
-    def _model_settings(
-        settings: dict[str, object],
-    ) -> tuple[str | None, str | None]:
-        model = settings.get("model")
-        effort = settings.get("reasoning_effort")
-        return (
-            model if isinstance(model, str) and 0 < len(model) <= 128 else None,
-            effort if isinstance(effort, str) and 0 < len(effort) <= 32 else None,
-        )
-
-    @staticmethod
-    def _permission_settings(item: object) -> dict[str, object] | None:
-        if not isinstance(item, dict):
-            return None
-        payload = item.get("payload")
-        if not isinstance(payload, dict):
-            return None
-        if (
-            item.get("type") == "event_msg"
-            and payload.get("type") == "thread_settings_applied"
-            and isinstance(payload.get("thread_settings"), dict)
-        ):
-            return payload["thread_settings"]
-        if item.get("type") == "turn_context":
-            return payload
-        return None
-
-    @staticmethod
-    def _permission_mode_from_settings(
-        settings: dict[str, object],
-    ) -> PermissionMode | None:
-        active = settings.get("active_permission_profile")
-        profile_id = active.get("id") if isinstance(active, dict) else None
-        sandbox = settings.get("sandbox_policy")
-        sandbox_type = sandbox.get("type") if isinstance(sandbox, dict) else None
-        if profile_id == ":danger-full-access" or sandbox_type == "danger-full-access":
-            return "full-access"
-        if profile_id == ":read-only" or sandbox_type == "read-only":
-            return "read-only"
-        reviewer = settings.get("approvals_reviewer")
-        if profile_id == ":workspace" or sandbox_type == "workspace-write":
-            return "auto-review" if reviewer == "auto_review" else "ask"
-        if settings.get("approval_policy") == "never":
-            return "full-access"
-        return None
 
     def _read_titles(self) -> dict[str, str]:
         titles = self._read_database_titles()
         path = self.codex_home / "session_index.jsonl"
         try:
-            lines = path.read_text(encoding="utf-8").splitlines()
+            with path.open("rb") as file:
+                while raw_line := file.readline(MAX_DISCOVERY_LINE_BYTES + 1):
+                    if len(raw_line) > MAX_DISCOVERY_LINE_BYTES:
+                        while raw_line and not raw_line.endswith(b"\n"):
+                            raw_line = file.readline(MAX_DISCOVERY_LINE_BYTES + 1)
+                        continue
+                    try:
+                        item = json.loads(raw_line.decode("utf-8"))
+                    except (UnicodeDecodeError, json.JSONDecodeError):
+                        continue
+                    if not isinstance(item, dict):
+                        continue
+                    session_id = item.get("id")
+                    title = self._title_value(item.get("thread_name"))
+                    if (
+                        isinstance(session_id, str)
+                        and session_id not in titles
+                        and title is not None
+                    ):
+                        titles[session_id] = title
         except OSError:
             return titles
-        for line in lines:
-            try:
-                item = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            session_id = item.get("id")
-            title = item.get("thread_name")
-            if (
-                isinstance(session_id, str)
-                and session_id not in titles
-                and isinstance(title, str)
-                and title.strip()
-            ):
-                titles[session_id] = title.strip()
         return titles
 
     def _read_database_titles(self) -> dict[str, str]:
@@ -206,20 +137,25 @@ class CodexSessionDiscovery:
         try:
             connection = sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)
             try:
-                rows = connection.execute(
+                titles: dict[str, str] = {}
+                for session_id, raw_title in connection.execute(
                     "SELECT id, title FROM threads WHERE archived = 0"
-                ).fetchall()
+                ):
+                    title = self._title_value(raw_title)
+                    if isinstance(session_id, str) and title is not None:
+                        titles[session_id] = title
             finally:
                 connection.close()
-        except (OSError, sqlite3.Error):
+        except (OSError, ValueError, sqlite3.Error):
             return {}
-        return {
-            session_id: title.strip()
-            for session_id, title in rows
-            if isinstance(session_id, str)
-            and isinstance(title, str)
-            and title.strip()
-        }
+        return titles
+
+    @staticmethod
+    def _title_value(value: object) -> str | None:
+        if not isinstance(value, str):
+            return None
+        title = value[: MAX_DISCOVERED_TITLE_CHARS + 1].strip()
+        return title[:MAX_DISCOVERED_TITLE_CHARS] or None
 
     def _state_database(self) -> Path | None:
         candidates = (

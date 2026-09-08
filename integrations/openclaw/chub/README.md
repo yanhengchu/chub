@@ -1,6 +1,6 @@
 # Chub OpenClaw 插件
 
-> 状态：已验收。
+> 状态：已验收
 > 主要读者：需要构建、部署或升级 Chub OpenClaw 插件的 AI Agent；维护人员用于执行插件维护和验收。
 > 本文负责：插件源码、构建、部署、固定调度协议和协议升级同步清单。
 > 本文不负责：业务身份、路由、幂等、安全边界、微信 Context Token、固定指令或用户可见回复格式；这些内容以[OpenClaw 定制集成设计](../../../docs/OPENCLAW_CUSTOMIZATION_DESIGN.md)和[Chub 集成能力清单](../../../docs/CHUB_INTEGRATION_CAPABILITIES.md)为准。

@@ -23,6 +23,7 @@ from app.core.build_info import (
 )
 from app.core.response import ApiError
 from app.quick_worker import PROTOCOL_VERSION
+from app.quick_worker_tasks import worker_restart_request_dir
 from app.services.operation_log import write_operation
 
 
@@ -242,10 +243,7 @@ def runtime_cleanup_readiness(settings) -> str | None:
         settings.ai_runtime.codex.data_file,
         settings.ai_runtime.codex.data_file.with_name("ai-sessions.json"),
     )
-    directories = (
-        settings.ai_runtime.codex.runtime_dir / "hooks",
-        settings.ai_runtime.codex.runtime_dir / "restart-requests",
-    )
+    directories = (worker_restart_request_dir(settings),)
     for path in files:
         try:
             metadata = path.lstat()

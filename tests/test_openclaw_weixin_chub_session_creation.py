@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.session_fixtures import CodexSession
+
 import json
 import re
 import stat
@@ -13,7 +15,6 @@ import pytest
 from app.codex.models import (
     CodexQuotaData,
     CodexQuotaWindow,
-    CodexSession,
     CodexTokenUsageData,
     QuickInteractionWeixinRoute,
     WorkspaceInfo,
@@ -197,7 +198,6 @@ def test_new_without_title_creates_and_selects_default_session(
     )
     codex_manager.list_sessions.return_value = [
         CodexSession(
-            session_mode="quick",
             id="session-new",
             workspace_id="chub",
             workspace_name="Chub",
@@ -242,7 +242,6 @@ def test_codex_new_creates_names_and_selects_without_submitting(
 ) -> None:
     manager, codex_manager, quick_interactions = configured_manager(settings)
     session = CodexSession(
-        session_mode="quick",
         id="session-new",
         workspace_id="chub",
         workspace_name="Chub",
@@ -292,7 +291,6 @@ def test_codex_new_creates_names_and_selects_without_submitting(
 def test_codex_new_naming_failure_keeps_created_session(settings: Settings) -> None:
     manager, codex_manager, quick_interactions = configured_manager(settings)
     session = CodexSession(
-        session_mode="quick",
         id="session-new",
         workspace_id="chub",
         workspace_name="Chub",
@@ -371,7 +369,6 @@ def test_codex_new_status_does_not_fill_unassigned_candidate(
     manager, codex_manager, _quick_interactions = configured_manager(settings)
     sessions = [
         CodexSession(
-            session_mode="quick",
             id=session_id,
             workspace_id="chub",
             workspace_name="Chub",
@@ -426,7 +423,6 @@ def test_internal_codex_status_does_not_fill_unassigned_candidate(
     manager, codex_manager, _quick_interactions = configured_manager(settings)
     sessions = [
         CodexSession(
-            session_mode="quick",
             id=f"session-{index}",
             workspace_id="chub",
             workspace_name="Chub",
@@ -477,7 +473,6 @@ def test_codex_operation_log_uses_operation_result_not_status_refresh(
     codex_manager.create_session.return_value = SimpleNamespace(id="session-new")
     codex_manager.list_sessions.return_value = [
         CodexSession(
-            session_mode="quick",
             id="session-new",
             workspace_id="chub",
             workspace_name="Chub",
@@ -544,7 +539,6 @@ def test_duplicate_codex_new_replays_status_without_creating_twice(
     codex_manager.create_session.return_value = SimpleNamespace(id="session-new")
     codex_manager.list_sessions.return_value = [
         CodexSession(
-            session_mode="quick",
             id="session-new",
             workspace_id="chub",
             workspace_name="Chub",
@@ -603,7 +597,6 @@ def test_chub_sync_uses_placeholder_for_untitled_session(
     )
     codex_manager.list_sessions.return_value = [
         CodexSession(
-            session_mode="quick",
             id="untitled-session",
             workspace_id="chub",
             workspace_name="Chub",

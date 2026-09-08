@@ -100,6 +100,10 @@ def worker_leases_dir(settings: Settings, protocol_version: int) -> Path:
     return worker_state_dir(settings) / f"session-leases-v{protocol_version}"
 
 
+def worker_restart_request_dir(settings: Settings) -> Path:
+    return worker_state_dir(settings) / "restart-requests"
+
+
 class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -483,8 +487,7 @@ class WorkerTaskManager:
         self.tasks_dir = worker_tasks_dir(settings, protocol_version)
         self.tombstones_dir = worker_tombstones_dir(settings, protocol_version)
         self.leases_dir = worker_leases_dir(settings, protocol_version)
-        self.hook_dir = settings.ai_runtime.codex.runtime_dir / "hooks"
-        self.restart_request_dir = settings.ai_runtime.codex.runtime_dir / "restart-requests"
+        self.restart_request_dir = worker_restart_request_dir(settings)
         self.generation = generation
         self.protocol_version = protocol_version
         self.allow_test_tasks = allow_test_tasks
@@ -531,7 +534,6 @@ class WorkerTaskManager:
         _private_directory(self.tasks_dir)
         _private_directory(self.tombstones_dir)
         _private_directory(self.leases_dir)
-        _private_directory(self.hook_dir)
         _private_directory(self.restart_request_dir)
         self._validate_runtime_registry()
         await self._recover_tasks()
@@ -1381,7 +1383,6 @@ class WorkerTaskManager:
                                 spec.task_kind == "translation"
                                 and expected_native_id is None
                             ),
-                            hook_dir=self.hook_dir,
                             restart_request_dir=self.restart_request_dir,
                             test_behavior=spec.test_behavior,
                             test_run_seconds=spec.test_run_seconds,
@@ -1391,9 +1392,6 @@ class WorkerTaskManager:
                     raise _RuntimeBoundaryError(exc) from exc
                 runner_env = os.environ.copy()
                 for name in (
-                    "CHUB_PTY_SESSION_ID",
-                    "CHUB_PTY_HOOK_DIR",
-                    "CHUB_ACTIVITY_SOURCE",
                     "CHUB_QUICK_TASK_ID",
                     "CHUB_QUICK_RESTART_DIR",
                 ):

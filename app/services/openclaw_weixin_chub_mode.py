@@ -134,8 +134,8 @@ class _ChubSessionSnapshot:
     title: str
     state: str
     current: bool
-    active_model: str | None = None
-    active_reasoning_effort: str | None = None
+    model: str | None = None
+    reasoning_effort: str | None = None
 
 
 @dataclass(frozen=True)
@@ -155,7 +155,7 @@ class WeixinChubModeManager:
         quick_interactions,
         route_validator: Callable[[QuickInteractionWeixinRoute], str | None]
         | None = None,
-        terminal_reclaimer: Callable[[str], object] | None = None,
+        session_reclaimer: Callable[[str], object] | None = None,
         codex_account_reader: object | None = None,
         translation_manager=None,
         session_archiver: Callable[[str], object] | None = None,
@@ -187,7 +187,7 @@ class WeixinChubModeManager:
         self.codex_manager = codex_manager
         self.quick_interactions = quick_interactions
         self.route_validator = route_validator
-        self.terminal_reclaimer = terminal_reclaimer
+        self.session_reclaimer = session_reclaimer
         self.codex_account_reader = codex_account_reader
         self.ai_usage_reader = ai_usage_reader
         self.translation_manager = translation_manager
@@ -3753,15 +3753,8 @@ class WeixinChubModeManager:
                 code="codex_model_checked",
                 failed=True,
             )
-        model = getattr(session, "active_model", None) or getattr(
-            session,
-            "model",
-            None,
-        )
-        reasoning_effort = (
-            getattr(session, "active_reasoning_effort", None)
-            or getattr(session, "reasoning_effort", None)
-        )
+        model = getattr(session, "model", None)
+        reasoning_effort = getattr(session, "reasoning_effort", None)
         next_model = getattr(session, "model", None)
         next_reasoning_effort = getattr(session, "reasoning_effort", None)
         if model is None or reasoning_effort is None:
@@ -3894,13 +3887,10 @@ class WeixinChubModeManager:
                 )
         else:
             model_id = getattr(session, "model", None) or getattr(
-                session,
-                "active_model",
-                None,
-            ) or getattr(catalog, "default_model", None)
-        reasoning_effort = None if model_index is not None else (
-            getattr(session, "reasoning_effort", None)
-            or getattr(session, "active_reasoning_effort", None)
+                catalog, "default_model", None
+            )
+        reasoning_effort = (
+            None if model_index is not None else getattr(session, "reasoning_effort", None)
         )
         selected_model = next(
             (
@@ -4032,10 +4022,8 @@ class WeixinChubModeManager:
                 failed=True,
             )
         current_model = getattr(session, "model", None) or getattr(
-            session,
-            "active_model",
-            None,
-        ) or getattr(catalog, "default_model", None)
+            catalog, "default_model", None
+        )
         model_ids = tuple(
             item.id
             for item in getattr(catalog, "models", ())
@@ -4192,10 +4180,8 @@ class WeixinChubModeManager:
                 failed=True,
             )
         model_id = getattr(session, "model", None) or getattr(
-            session,
-            "active_model",
-            None,
-        ) or getattr(catalog, "default_model", None)
+            catalog, "default_model", None
+        )
         model_ids = tuple(
             model.id
             for model in getattr(catalog, "models", ())
@@ -4858,9 +4844,9 @@ class WeixinChubModeManager:
                 ),
                 state=self._codex_session_dispatch_state(session),
                 current=session.id == current_session_id,
-                active_model=getattr(session, "active_model", None),
-                active_reasoning_effort=getattr(
-                    session, "active_reasoning_effort", None
+                model=getattr(session, "model", None),
+                reasoning_effort=getattr(
+                    session, "reasoning_effort", None
                 ),
             )
             for session in sessions_newest_first(sessions.values())
@@ -4960,9 +4946,9 @@ class WeixinChubModeManager:
                 None,
             )
             if current_snapshot is not None:
-                current_model = getattr(current_snapshot, "active_model", None)
+                current_model = getattr(current_snapshot, "model", None)
                 current_reasoning_effort = getattr(
-                    current_snapshot, "active_reasoning_effort", None
+                    current_snapshot, "reasoning_effort", None
                 )
             overview_sessions = tuple(
                 ChubOverviewSession(
@@ -5301,9 +5287,9 @@ class WeixinChubModeManager:
                 ),
                 state=self._codex_session_dispatch_state(session),
                 current=session.id == current_session_id,
-                active_model=getattr(session, "active_model", None),
-                active_reasoning_effort=getattr(
-                    session, "active_reasoning_effort", None
+                model=getattr(session, "model", None),
+                reasoning_effort=getattr(
+                    session, "reasoning_effort", None
                 ),
             )
             for session in sessions_newest_first(eligible.values())
@@ -6679,7 +6665,6 @@ class WeixinChubModeManager:
             elif isinstance(exc, ApiError) and exc.code in {
                 "codex_session_in_progress",
                 "quick_interaction_in_progress",
-                "quick_interaction_terminal_working",
             }:
                 message = (
                     "Delete: Not completed because the target Session is still "
@@ -6979,7 +6964,6 @@ class WeixinChubModeManager:
             elif isinstance(exc, ApiError) and exc.code in {
                 "codex_session_in_progress",
                 "quick_interaction_in_progress",
-                "quick_interaction_terminal_working",
             }:
                 message = (
                     "Archive: Not completed because the target Session is still "
@@ -7780,6 +7764,29 @@ class WeixinChubModeManager:
                 self._schedule_session_snapshot_refresh()
                 return True
 
+    def try_release_session_slot(self, session_id: str) -> bool:
+        """Release a slot without waiting behind an in-progress Weixin operation."""
+        if not self._slot_lock.acquire(blocking=False):
+            return False
+        try:
+            with self._lock:
+                if self._slot_for_session(session_id) is None:
+                    return True
+                next_state = self._state.model_copy(deep=True)
+                next_state.session_slots = [
+                    entry
+                    for entry in next_state.session_slots
+                    if entry.session_id != session_id
+                ]
+                if next_state.session_id == session_id:
+                    next_state.session_id = None
+                self._write_state(next_state)
+                self._state = next_state
+                self._schedule_session_snapshot_refresh()
+                return True
+        finally:
+            self._slot_lock.release()
+
     _session_matches_configuration = staticmethod(session_matches_configuration)
 
     def _codex_session_dispatch_state(self, session: object) -> str:
@@ -7926,7 +7933,6 @@ class WeixinChubModeManager:
                 configuration.permission_mode,
                 configuration.model,
                 configuration.reasoning_effort,
-                "quick",
             )
         next_state = self._state.model_copy(deep=True)
         next_state.session_id = created.id
@@ -7972,8 +7978,8 @@ class WeixinChubModeManager:
             )
         try:
             stopped = (
-                self.terminal_reclaimer(session_id)
-                if self.terminal_reclaimer is not None
+                self.session_reclaimer(session_id)
+                if self.session_reclaimer is not None
                 else self.codex_manager.stop_session(session_id)
             )
             if (

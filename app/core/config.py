@@ -58,7 +58,6 @@ class CodexRuntimeConfig(StrictModel):
     workspace: Path = Path("~/workspace")
     data_file: Path = Path("data/local/state/codex/sessions.json")
     runtime_dir: Path = Path("data/local/runtime/codex")
-    ticket_ttl_seconds: int = Field(default=600, ge=60, le=3600)
     max_running: int = Field(default=3, ge=1, le=10)
     quick_interaction_timeout_seconds: int = Field(
         default=6 * 60 * 60,
@@ -95,6 +94,10 @@ class AutomationsConfig(StrictModel):
 class AiRuntimeConfig(StrictModel):
     codex: CodexRuntimeConfig = CodexRuntimeConfig()
     modules: ExternalRuntimeModulesConfig = ExternalRuntimeModulesConfig()
+
+
+class MaintenanceTerminalConfig(StrictModel):
+    ticket_ttl_seconds: int = Field(default=600, ge=60, le=3600)
 
 
 class ProjectDocumentsConfig(StrictModel):
@@ -257,6 +260,7 @@ class Settings(StrictModel):
     security: SecurityConfig
     logs: LogsConfig = LogsConfig()
     ai_runtime: AiRuntimeConfig = AiRuntimeConfig()
+    maintenance_terminal: MaintenanceTerminalConfig = MaintenanceTerminalConfig()
     automations: AutomationsConfig = AutomationsConfig()
     project_documents: ProjectDocumentsConfig = ProjectDocumentsConfig()
     requests: RequestsConfig = RequestsConfig()

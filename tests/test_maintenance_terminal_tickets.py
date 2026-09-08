@@ -1,18 +1,18 @@
 from unittest.mock import patch
 
-from app.codex.tickets import TerminalTicketStore
+from app.services.maintenance_terminal_transport import TerminalTicketStore
 
 
 def test_ticket_is_bound_to_session_and_expires() -> None:
-    with patch("app.codex.tickets.time.monotonic", return_value=100):
+    with patch("app.services.maintenance_terminal_transport.time.monotonic", return_value=100):
         store = TerminalTicketStore(60)
         ticket = store.issue("session-1")
 
-    with patch("app.codex.tickets.time.monotonic", return_value=120):
+    with patch("app.services.maintenance_terminal_transport.time.monotonic", return_value=120):
         assert store.valid(ticket, "session-1") is True
         assert store.valid(ticket, "session-2") is False
 
-    with patch("app.codex.tickets.time.monotonic", return_value=161):
+    with patch("app.services.maintenance_terminal_transport.time.monotonic", return_value=161):
         assert store.valid(ticket, "session-1") is False
 
 

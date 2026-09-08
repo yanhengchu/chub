@@ -6,7 +6,10 @@ import subprocess
 import threading
 import time
 
-from app.ai_session.terminal import TerminalConnectionRegistry, TerminalTicketStore
+from app.services.maintenance_terminal_transport import (
+    TerminalConnectionRegistry,
+    TerminalTicketStore,
+)
 from app.core.config import PROJECT_ROOT, Settings
 from app.core.response import ApiError
 
@@ -18,7 +21,7 @@ class MaintenanceTerminalManager:
     mount_path = "/maintenance-terminal/terminal"
 
     def __init__(self, settings: Settings) -> None:
-        self.tickets = TerminalTicketStore(settings.ai_runtime.codex.ticket_ttl_seconds)
+        self.tickets = TerminalTicketStore(settings.maintenance_terminal.ticket_ttl_seconds)
         self.connections = TerminalConnectionRegistry()
         self._lock = threading.RLock()
         self._process: subprocess.Popen[bytes] | None = None

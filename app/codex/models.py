@@ -5,15 +5,14 @@ from pathlib import Path
 from typing import Iterable, Literal, Protocol, TypeVar
 from unicodedata import category
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.ai_runtime import RUNTIME_ID_PATTERN
 
 SessionStatus = Literal["new", "running", "stopped", "error"]
 TurnActivity = Literal["unknown", "working", "idle"]
-ActivitySource = Literal["none", "terminal", "quick"]
-SessionMode = Literal["terminal", "quick"]
-SessionUsageOwner = Literal["none", "terminal", "quick_worker", "external", "unknown"]
+ActivitySource = Literal["none", "quick"]
+SessionUsageOwner = Literal["none", "quick_worker", "external", "unknown"]
 SessionUsagePhase = Literal["idle", "running", "waiting_result", "unknown"]
 PermissionMode = Literal["ask", "auto-review", "read-only", "full-access"]
 QuickInteractionOrder = Literal["task", "timeline"]
@@ -46,61 +45,6 @@ def sessions_newest_first(
     )
 
 
-class CodexSession(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    id: str
-    session_mode: SessionMode = "terminal"
-    workspace_id: str
-    workspace_name: str
-    cwd: Path
-    title: str | None = None
-    codex_session_id: str | None = None
-    status: SessionStatus = "new"
-    activity: TurnActivity = "unknown"
-    activity_source: ActivitySource = "none"
-    permission_mode: PermissionMode = "ask"
-    active_permission_mode: PermissionMode | None = None
-    model: str | None = Field(default=None, max_length=128)
-    reasoning_effort: str | None = Field(default=None, max_length=32)
-    active_model: str | None = Field(default=None, max_length=128)
-    active_reasoning_effort: str | None = Field(default=None, max_length=32)
-    error: str | None = None
-    ttyd_pid: int | None = None
-    ttyd_port: int | None = None
-    created_at: datetime = Field(default_factory=utc_now)
-    updated_at: datetime = Field(default_factory=utc_now)
-    last_activity_at: datetime | None = None
-
-    @property
-    def native_session_id(self) -> str | None:
-        """Compatibility view for test fixtures and one-time upgrade records."""
-        return self.codex_session_id
-
-    @native_session_id.setter
-    def native_session_id(self, value: str | None) -> None:
-        self.codex_session_id = value
-
-    @field_validator("permission_mode", "active_permission_mode", mode="before")
-    @classmethod
-    def migrate_legacy_permission_mode(cls, value: object) -> object:
-        return {
-            "inherit": "ask",
-            "workspace-write": "ask",
-        }.get(value, value)
-
-    @model_validator(mode="after")
-    def normalize_activity_source(self) -> CodexSession:
-        if self.activity != "working":
-            self.activity_source = "none"
-        elif self.activity_source == "none":
-            if self.status == "running":
-                self.activity_source = "terminal"
-            else:
-                self.activity = "unknown"
-        return self
-
-
 class WorkspaceInfo(BaseModel):
     id: str
     name: str
@@ -117,8 +61,6 @@ class SessionUsage(BaseModel):
 class SessionInfo(BaseModel):
     id: str
     runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
-    session_mode: SessionMode = "terminal"
-    discovered: bool = False
     workspace_id: str
     workspace_name: str
     cwd: str
@@ -128,19 +70,14 @@ class SessionInfo(BaseModel):
     activity: TurnActivity
     activity_source: ActivitySource = "none"
     permission_mode: PermissionMode
-    active_permission_mode: PermissionMode | None
-    permission_pending: bool
     model: str | None = None
     reasoning_effort: str | None = None
-    active_model: str | None = None
-    active_reasoning_effort: str | None = None
     error: str | None
     created_at: datetime
     updated_at: datetime
     last_activity_at: datetime | None = None
     quick_interaction_running: bool = False
     quick_interaction_updated_at: datetime | None = None
-    terminal_access_allowed: bool = True
     runtime_submission_available: bool = True
     runtime_submission_reason: str | None = Field(default=None, max_length=300)
     weixin_session_slot: int | None = Field(default=None, ge=1, le=9)
@@ -164,21 +101,18 @@ class NativeSessionInfo(BaseModel):
 
     cwd: str
     title: str | None = Field(default=None, max_length=500)
-    active_permission_mode: PermissionMode | None = None
-    active_model: str | None = Field(default=None, max_length=128)
-    active_reasoning_effort: str | None = Field(default=None, max_length=32)
     created_at: datetime
     updated_at: datetime
     writer_lock_state: Literal["held", "free", "unknown"] = "unknown"
     chub_writer_lock_state: Literal["held", "free", "unknown"] = "unknown"
     chub_session_id: str | None = None
+    native_action_ref: str | None = Field(default=None, min_length=16, max_length=128)
 
 
 class SessionListData(BaseModel):
     available: bool
     unavailable_reason: str | None = None
     runtime_registered: bool
-    terminal_creation: SessionCreationAvailability
     quick_creation: SessionCreationAvailability
     dependencies: dict[str, bool]
     workspaces: list[WorkspaceInfo]
@@ -267,7 +201,6 @@ class SessionCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     workspace_id: Literal["home", "workspace", "chub"]
-    session_mode: SessionMode
     permission_mode: PermissionMode | None = None
     model: str | None = Field(default=None, max_length=128)
     reasoning_effort: str | None = Field(default=None, max_length=32)
@@ -328,11 +261,6 @@ class CodexModelCatalogData(BaseModel):
     default_reasoning_effort: str | None = None
 
 
-class SessionAccessData(BaseModel):
-    terminal_url: str
-    expires_in: int
-
-
 QuickInteractionStatus = Literal[
     "requested",
     "running",
@@ -340,7 +268,6 @@ QuickInteractionStatus = Literal[
     "failed",
     "timed_out",
     "cancelled",
-    "needs_terminal",
 ]
 QuickInteractionNotificationStatus = Literal[
     "pending",
@@ -405,7 +332,6 @@ class QuickInteractionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     prompt: str = Field(min_length=1, max_length=8000)
-    confirm_stop_unknown_terminal: bool = False
 
     @field_validator("prompt")
     @classmethod

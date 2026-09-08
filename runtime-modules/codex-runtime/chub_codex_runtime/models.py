@@ -4,12 +4,11 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Iterable, Literal, Protocol, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 SessionStatus = Literal["new", "running", "stopped", "error"]
 TurnActivity = Literal["unknown", "working", "idle"]
-ActivitySource = Literal["none", "terminal", "quick"]
-SessionMode = Literal["terminal", "quick"]
+ActivitySource = Literal["none", "quick"]
 PermissionMode = Literal["ask", "auto-review", "read-only", "full-access"]
 
 
@@ -42,7 +41,6 @@ class CodexSession(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
-    session_mode: SessionMode = "terminal"
     workspace_id: str
     workspace_name: str
     cwd: Path
@@ -52,14 +50,9 @@ class CodexSession(BaseModel):
     activity: TurnActivity = "unknown"
     activity_source: ActivitySource = "none"
     permission_mode: PermissionMode = "ask"
-    active_permission_mode: PermissionMode | None = None
     model: str | None = Field(default=None, max_length=128)
     reasoning_effort: str | None = Field(default=None, max_length=32)
-    active_model: str | None = Field(default=None, max_length=128)
-    active_reasoning_effort: str | None = Field(default=None, max_length=32)
     error: str | None = None
-    ttyd_pid: int | None = None
-    ttyd_port: int | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     last_activity_at: datetime | None = None
@@ -73,23 +66,12 @@ class CodexSession(BaseModel):
     def native_session_id(self, value: str | None) -> None:
         self.codex_session_id = value
 
-    @field_validator("permission_mode", "active_permission_mode", mode="before")
-    @classmethod
-    def migrate_legacy_permission_mode(cls, value: object) -> object:
-        return {
-            "inherit": "ask",
-            "workspace-write": "ask",
-        }.get(value, value)
-
     @model_validator(mode="after")
     def normalize_activity_source(self) -> CodexSession:
         if self.activity != "working":
             self.activity_source = "none"
         elif self.activity_source == "none":
-            if self.status == "running":
-                self.activity_source = "terminal"
-            else:
-                self.activity = "unknown"
+            self.activity = "unknown"
         return self
 
 

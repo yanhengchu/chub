@@ -37,13 +37,13 @@ def settings(tmp_path: Path) -> Settings:
                     "workspace": tmp_path / "workspace",
                     "data_file": tmp_path / "codex-sessions.json",
                     "runtime_dir": tmp_path / "codex-runtime",
-                    "ticket_ttl_seconds": 600,
                     "max_running": 3,
                 },
                 "modules": {
                     "install_dir": tmp_path / "runtime-modules",
                 },
             },
+            "maintenance_terminal": {"ticket_ttl_seconds": 600},
             "automations": {
                 "shared_config_file": tmp_path / "automations.yaml",
                 "local_config_file": tmp_path / "automations.local.yaml",

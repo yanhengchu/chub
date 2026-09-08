@@ -13,8 +13,6 @@ def archive_session(
     *,
     manager,
     quick_interactions,
-    terminal_tickets,
-    terminal_connections,
     release_slot=None,
 ) -> None:
     """Run the one archive workflow shared by Web and ClawBot entry points."""
@@ -29,8 +27,6 @@ def archive_session(
                 raise
         quick_interactions.cancel_codex_session(session_id)
         quick_interactions.remove_session_tasks(session_id)
-        terminal_tickets.revoke_session(session_id)
-        terminal_connections.close_session(session_id)
         if release_slot is not None and not release_slot(session_id):
             raise ApiError(
                 503,
@@ -45,8 +41,6 @@ def delete_session(
     *,
     manager,
     quick_interactions,
-    terminal_tickets,
-    terminal_connections,
     release_slot=None,
 ) -> None:
     """Run the destructive Session workflow shared by Web entry points."""
@@ -62,23 +56,6 @@ def delete_session(
         # native action is still blocked until cancellation reaches a final
         # state, so a failed cancellation never deletes a live writer.
         quick_interactions.cancel_codex_session(session_id)
-        terminal_tickets.revoke_session(session_id)
-        terminal_connections.close_session(session_id)
-        try:
-            # Close Chub's own terminal carrier before asking Runtime to delete
-            # the native Session. This is cleanup, not a state gate: if Chub
-            # lost the carrier after a restart, native delete is still tried.
-            manager.stop_session(session_id, reconcile=False)
-        except Exception as exc:
-            if getattr(exc, "code", None) != "codex_session_not_found":
-                LOGGER.warning(
-                    "Unable to close Chub terminal before Session deletion",
-                    extra={
-                        "session_id": session_id,
-                        "error_code": getattr(exc, "code", None),
-                    },
-                    exc_info=True,
-                )
         try:
             manager.delete_native_session(session_id)
         except ApiError as exc:
@@ -94,7 +71,24 @@ def delete_session(
                 "weixin_chub_mode_slot_release_unknown",
                 "Session 已完成原生删除，但关联槽位释放状态无法确认，请稍后重试。",
             )
-        manager.finalize_delete_session(
-            session_id,
-            terminal_already_closed=True,
-        )
+        manager.finalize_delete_session(session_id)
+
+
+def forget_session(
+    session_id: str,
+    *,
+    manager,
+    quick_interactions,
+    release_slot=None,
+) -> None:
+    """Stop Chub management without inspecting or changing the Native Session."""
+    with quick_interactions.destructive_operation_guard(session_id):
+        quick_interactions.cancel_codex_session(session_id)
+        quick_interactions.remove_session_tasks(session_id)
+        if release_slot is not None and not release_slot(session_id):
+            raise ApiError(
+                503,
+                "weixin_chub_mode_slot_release_unknown",
+                "Session 的 Chub 记录尚未清理，关联槽位释放状态无法确认，请稍后重试。",
+            )
+        manager.forget_session(session_id)

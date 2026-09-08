@@ -81,8 +81,6 @@ class CodexRuntimeRunner:
             executable,
             "exec",
             "--skip-git-repo-check",
-            "--profile",
-            "chub",
             "--json",
             *cls._PERMISSION_ARGS[request.permission_profile],
             "--output-last-message",

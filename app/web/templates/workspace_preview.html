@@ -42,14 +42,14 @@
                 <a href="/workspace?section=project-docs"{% if workspace_section == "project-docs" %} aria-current="page" class="is-current"{% endif %} aria-label="项目资料" title="项目资料"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M6 3.5h9l3 3V20a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1Z"></path><path d="M14 3.5V7h4M8.5 11h7M8.5 15h7"></path></svg></a>
                 <a class="workspace-preview-compact-nav-external" href="/settings" aria-label="设置" title="设置"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2 2-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5v.2h-2.8v-.2a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1-2-2 .1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H5.7v-2.8h.2a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.9L7 8.2l2-2 .1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.5v-.2h2.8v.2a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1 2 2-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.5 1h.2V14h-.2a1.7 1.7 0 0 0-1.5 1Z"></path></svg></a>
               </nav>
-              <nav id="workspace-quick-session-toolbar" class="workspace-quick-session-toolbar" aria-label="快速会话切换" hidden></nav>
+              <nav id="workspace-quick-session-toolbar" class="workspace-quick-session-toolbar" aria-label="Chub Session切换" hidden></nav>
             </div>
             <p id="workspace-toolbar-error" class="workspace-preview-toolbar-error" aria-live="polite" hidden></p>
             <div id="workspace-preview-health" class="workspace-preview-health"><span class="workspace-preview-health-dot" aria-hidden="true"></span>{% if workspace_section == "workbench" %}正在读取工作台状态…{% elif workspace_section == "automations" %}正在读取自动化状态…{% else %}正在读取项目资料…{% endif %}</div>
           </header>
           {% if workspace_session_id %}
-          <div id="workspace-section-content" class="workspace-inline-quick-session" data-workspace-session-id="{{ workspace_session_id }}" aria-label="快速会话">
-            <iframe class="workspace-inline-quick-session-frame" title="快速会话" src="/codex/{{ workspace_session_id | urlencode }}/quick-interactions/conversation?embedded=workspace"></iframe>
+          <div id="workspace-section-content" class="workspace-inline-quick-session" data-workspace-session-id="{{ workspace_session_id }}" aria-label="Chub Session">
+            <iframe class="workspace-inline-quick-session-frame" title="Chub Session" src="/codex/{{ workspace_session_id | urlencode }}/quick-interactions/conversation?embedded=workspace"></iframe>
           </div>
           {% else %}
           <div id="workspace-section-content">
@@ -372,18 +372,13 @@
                 <h3 id="workspace-session-create-title">新建 Session</h3>
                 <button id="workspace-session-create-close" class="button-link codex-workspace-dialog-close" type="button" aria-label="关闭新建 Session 窗口">关闭</button>
               </div>
-              <p class="workspace-session-create-description">选择工作目录和交互方式；创建后会显示在当前列表中。</p>
+              <p class="workspace-session-create-description">选择工作目录；创建后会显示在当前列表中。</p>
               <label class="workspace-session-create-field" for="workspace-session-workspace">工作目录</label>
               <input id="workspace-session-workspace" type="hidden">
               <div class="settings-choice-picker workspace-session-choice-picker">
                 <button id="workspace-session-workspace-trigger" class="settings-choice-picker-trigger" type="button" aria-haspopup="listbox" aria-controls="workspace-session-workspace-menu" aria-expanded="false"><span id="workspace-session-workspace-value"></span><span aria-hidden="true"></span></button>
                 <div id="workspace-session-workspace-menu" class="settings-choice-picker-menu" role="listbox" aria-label="工作目录" hidden></div>
               </div>
-              <fieldset class="workspace-session-create-mode">
-                <legend>交互方式</legend>
-                <label><input type="radio" name="workspace-session-mode" value="quick" checked><span>快速交互</span></label>
-                <label><input type="radio" name="workspace-session-mode" value="terminal"><span>实时终端</span></label>
-              </fieldset>
               <p id="workspace-session-create-message" class="message" aria-live="polite"></p>
               <div class="dialog-actions">
                 <button id="workspace-session-create-cancel" class="button-link" type="button">取消</button>

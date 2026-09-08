@@ -138,27 +138,27 @@ const result = {
   ].map(core.sessionSwitcherStatus),
   switcherEntries: core.sessionSwitcherEntries([
     { id: "translation", created_at: "2026-08-15T00:00:00Z", workspace_id: "weixin-translation", weixin_session_slot: null },
-    { id: "unassigned-other", created_at: "2026-08-11T00:00:00Z", session_mode: "quick", weixin_session_slot: null },
-    { id: "slot-nine", created_at: "2026-08-12T00:00:00Z", session_mode: "quick", weixin_session_slot: 9 },
-    { id: "current", created_at: "2026-08-14T00:00:00Z", session_mode: "quick", weixin_session_slot: null },
-    { id: "slot-two", created_at: "2026-08-13T00:00:00Z", session_mode: "quick", weixin_session_slot: 2 },
-    { id: "invalid-slot", created_at: "2026-08-10T00:00:00Z", session_mode: "quick", weixin_session_slot: 10 },
+    { id: "unassigned-other", created_at: "2026-08-11T00:00:00Z", weixin_session_slot: null },
+    { id: "slot-nine", created_at: "2026-08-12T00:00:00Z", weixin_session_slot: 9 },
+    { id: "current", created_at: "2026-08-14T00:00:00Z", weixin_session_slot: null },
+    { id: "slot-two", created_at: "2026-08-13T00:00:00Z", weixin_session_slot: 2 },
+    { id: "invalid-slot", created_at: "2026-08-10T00:00:00Z", weixin_session_slot: 10 },
   ]).map((session) => session.id),
   switcherLabels: Array.from(core.sessionSwitcherLabels(core.sessionSwitcherEntries([
-    { id: "translation", created_at: "2026-08-15T00:00:00Z", session_mode: "quick", workspace_id: "weixin-translation", weixin_session_slot: null },
-    { id: "unassigned-other", created_at: "2026-08-11T00:00:00Z", session_mode: "quick", weixin_session_slot: null },
-    { id: "slot-nine", created_at: "2026-08-12T00:00:00Z", session_mode: "quick", weixin_session_slot: 9 },
-    { id: "current", created_at: "2026-08-14T00:00:00Z", session_mode: "quick", weixin_session_slot: null },
-    { id: "slot-two", created_at: "2026-08-13T00:00:00Z", session_mode: "quick", weixin_session_slot: 2 },
-    { id: "invalid-slot", created_at: "2026-08-10T00:00:00Z", session_mode: "quick", weixin_session_slot: 10 },
+    { id: "translation", created_at: "2026-08-15T00:00:00Z", workspace_id: "weixin-translation", weixin_session_slot: null },
+    { id: "unassigned-other", created_at: "2026-08-11T00:00:00Z", weixin_session_slot: null },
+    { id: "slot-nine", created_at: "2026-08-12T00:00:00Z", weixin_session_slot: 9 },
+    { id: "current", created_at: "2026-08-14T00:00:00Z", weixin_session_slot: null },
+    { id: "slot-two", created_at: "2026-08-13T00:00:00Z", weixin_session_slot: 2 },
+    { id: "invalid-slot", created_at: "2026-08-10T00:00:00Z", weixin_session_slot: 10 },
   ])).entries()),
   firstSessionAfterArchive: core.firstSessionAfterArchive([
-    { id: "older", created_at: "2026-08-12T00:00:00Z", session_mode: "quick" },
-    { id: "archived", created_at: "2026-08-14T00:00:00Z", session_mode: "quick" },
-    { id: "newest", created_at: "2026-08-15T00:00:00Z", session_mode: "quick" },
+    { id: "older", created_at: "2026-08-12T00:00:00Z" },
+    { id: "archived", created_at: "2026-08-14T00:00:00Z" },
+    { id: "newest", created_at: "2026-08-15T00:00:00Z" },
   ], "archived").id,
   noSessionAfterArchive: core.firstSessionAfterArchive([
-    { id: "archived", created_at: "2026-08-14T00:00:00Z", session_mode: "quick" },
+    { id: "archived", created_at: "2026-08-14T00:00:00Z" },
   ], "archived"),
   creationPreferences: core.readSessionCreationPreferences({
     getItem: (key) => ({
@@ -184,9 +184,9 @@ const result = {
     core.formatErrorMessage({ message: "Unknown failure" }, "fallback"),
   ],
   currentSlottedEntries: core.sessionSwitcherEntries([
-    { id: "current", created_at: "2026-08-14T00:00:00Z", session_mode: "quick", weixin_session_slot: 3 },
-    { id: "unassigned", created_at: "2026-08-13T00:00:00Z", session_mode: "quick", weixin_session_slot: null },
-    { id: "slot-one", created_at: "2026-08-12T00:00:00Z", session_mode: "quick", weixin_session_slot: 1 },
+    { id: "current", created_at: "2026-08-14T00:00:00Z", weixin_session_slot: 3 },
+    { id: "unassigned", created_at: "2026-08-13T00:00:00Z", weixin_session_slot: null },
+    { id: "slot-one", created_at: "2026-08-12T00:00:00Z", weixin_session_slot: 1 },
   ]).map((session) => session.id),
   navigationModes: {
     switchSession: core.sessionNavigationMode({}),
@@ -423,9 +423,8 @@ global.fetch = async (path) => {
       quick_creation: { available: true, reason: null },
       workspaces: [{ id: "chub", name: "Chub", path: "/workspace/chub", available: true }],
       sessions: [
-        { id: "terminal", session_mode: "terminal" },
-        { id: "session-1", session_mode: "quick" },
-        { id: "session-2", session_mode: "quick" },
+        { id: "session-1" },
+        { id: "session-2" },
       ],
     },
   }),
@@ -452,8 +451,8 @@ const client = core.createClient({ token: "", sessionId: "session-2" });
     behavior = json.loads(result.stdout)
     assert behavior == {
         "context": {
-            "session": {"id": "session-2", "session_mode": "quick"},
-            "sessions": [{"id": "session-1", "session_mode": "quick"}, {"id": "session-2", "session_mode": "quick"}],
+            "session": {"id": "session-2"},
+            "sessions": [{"id": "session-1"}, {"id": "session-2"}],
             "available": True,
             "unavailableReason": "",
             "workspaces": [
@@ -465,7 +464,7 @@ const client = core.createClient({ token: "", sessionId: "session-2" });
                 }
             ],
         },
-        "session": {"id": "session-2", "session_mode": "quick"},
+        "session": {"id": "session-2"},
         "requests": ["/api/codex/sessions", "/api/codex/sessions"],
     }
 
@@ -484,7 +483,7 @@ global.fetch = async (path) => {
       success: true,
       data: detail
         ? { id: "translation-session", workspace_id: "weixin-translation" }
-        : { available: true, workspaces: [], sessions: [{ id: "ordinary", session_mode: "quick" }] },
+        : { available: true, workspaces: [], sessions: [{ id: "ordinary" }] },
     }),
   };
 };
@@ -507,7 +506,7 @@ const client = core.createClient({ token: "", sessionId: "translation-session" }
 
     behavior = json.loads(result.stdout)
     assert behavior["context"]["session"]["id"] == "translation-session"
-    assert behavior["context"]["sessions"] == [{"id": "ordinary", "session_mode": "quick"}]
+    assert behavior["context"]["sessions"] == [{"id": "ordinary"}]
     assert behavior["requests"] == [
         "/api/codex/sessions",
         "/api/codex/sessions/translation-session",
@@ -558,7 +557,6 @@ const client = core.createClient({ token: "", sessionId: "current-session" });
             "method": "POST",
             "body": {
                 "workspace_id": "workspace/one",
-                "session_mode": "quick",
             },
         },
         "session": {"id": "new-session"},

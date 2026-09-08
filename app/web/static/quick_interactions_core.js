@@ -164,7 +164,6 @@
       failed: "执行失败",
       timed_out: "执行超时",
       cancelled: "已停止",
-      needs_terminal: "需要实时终端",
     }[task.status] || task.status;
   }
 
@@ -237,11 +236,8 @@
     }
     const phase = session?.usage?.phase || "unknown";
     if (
-      (owner === "terminal" && phase === "running")
-      || (
-        owner === "quick_worker"
-        && ["running", "waiting_result"].includes(phase)
-      )
+      owner === "quick_worker"
+      && ["running", "waiting_result"].includes(phase)
     ) {
       return "Session 当前正在执行，请等待任务结束后再归档。";
     }
@@ -262,11 +258,10 @@
   function sessionStopReady(session) {
     const owner = session?.usage?.owner || "none";
     const phase = session?.usage?.phase || "unknown";
-    return (owner === "terminal" && phase === "running")
-      || (
-        owner === "quick_worker"
-        && ["running", "waiting_result"].includes(phase)
-      );
+    return (
+      owner === "quick_worker"
+      && ["running", "waiting_result"].includes(phase)
+    );
   }
 
   function submissionBlockReason({
@@ -294,9 +289,7 @@
       return "当前快速交互正在执行，请等待任务结束。";
     }
     if (session.activity === "working") {
-      return session.activity_source === "terminal"
-        ? "实时终端正在执行，请等待当前任务结束。"
-        : "当前会话正在执行，请等待任务结束。";
+      return "当前会话正在执行，请等待任务结束。";
     }
     if (session.permission_mode === "ask") {
       return "当前 Session 使用 Ask for approval，请改为只读、自动审核或完全访问权限。";
@@ -345,8 +338,7 @@
   }
 
   function isQuickInteractionSession(session) {
-    return session.session_mode === "quick"
-      && session.workspace_id !== "weixin-translation";
+    return session.workspace_id !== "weixin-translation";
   }
 
   function sessionSwitcherLabels(sessions) {
@@ -512,7 +504,6 @@
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               workspace_id: workspaceId,
-              session_mode: "quick",
             }),
           },
         );
@@ -571,7 +562,7 @@
         );
       },
 
-      submitTask({ prompt, confirmStopUnknownTerminal = false }) {
+      submitTask({ prompt }) {
         return request(
           `/api/codex/sessions/${encodedSessionId}/quick-interactions`,
           {
@@ -579,7 +570,6 @@
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               prompt,
-              confirm_stop_unknown_terminal: confirmStopUnknownTerminal,
             }),
           },
         );

@@ -87,19 +87,11 @@ class CodexWorkerRuntime:
         elif request.turn.native_session_id is not None:
             argv.extend(["--native-session-id", request.turn.native_session_id])
         environment: dict[str, str] = {}
-        if request.session_id is not None:
+        if request.session_id is not None and request.task_kind != "translation":
             environment = {
-                "CHUB_PTY_SESSION_ID": request.session_id,
-                "CHUB_PTY_HOOK_DIR": str(request.hook_dir),
-                "CHUB_ACTIVITY_SOURCE": "quick",
+                "CHUB_QUICK_TASK_ID": request.task_id,
+                "CHUB_QUICK_RESTART_DIR": str(request.restart_request_dir),
             }
-            if request.task_kind != "translation":
-                environment.update(
-                    {
-                        "CHUB_QUICK_TASK_ID": request.task_id,
-                        "CHUB_QUICK_RESTART_DIR": str(request.restart_request_dir),
-                    }
-                )
         return RuntimeWorkerLaunchSpec(
             argv=tuple(argv),
             stdin_prompt=True,

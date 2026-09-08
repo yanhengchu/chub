@@ -6,7 +6,7 @@ SERVICE_NAME="chub"
 MACOS_LABEL="com.chub.node"
 PLATFORM="${CHUB_TEST_PLATFORM:-$(uname -s)}"
 
-if [[ "${CHUB_ACTIVITY_SOURCE:-}" == "quick" ]]; then
+if [[ -n "${CHUB_QUICK_TASK_ID:-}" ]]; then
     REQUEST_DIR="${CHUB_QUICK_RESTART_DIR:-}"
     TASK_ID="${CHUB_QUICK_TASK_ID:-}"
     if [[ -z "$REQUEST_DIR" || "$REQUEST_DIR" != /* || ! -d "$REQUEST_DIR" || -L "$REQUEST_DIR" ]]; then

@@ -281,36 +281,25 @@ async def _mock_workspace_api_with_quick_sessions(route) -> None:
             "available": True,
             "runtime_registered": True,
             "quick_creation": {"available": True},
-            "terminal_creation": {"available": True},
             "workspaces": [{"id": "chub", "name": "Chub", "available": True}],
             "sessions": [
                 {
                     "id": "quick-slot",
-                    "title": "带槽位的快速会话",
+                    "title": "带槽位的Chub Session",
                     "created_at": "2026-08-15T09:00:00Z",
-                    "session_mode": "quick",
-                    "status": "stopped",
+                                        "status": "stopped",
                     "activity": "idle",
                     "quick_interaction_running": False,
                     "weixin_session_slot": 1,
                 },
                 {
                     "id": "quick-unassigned",
-                    "title": "未分配槽位的快速会话",
+                    "title": "未分配槽位的Chub Session",
                     "created_at": "2026-08-15T08:00:00Z",
-                    "session_mode": "quick",
-                    "status": "stopped",
+                                        "status": "stopped",
                     "activity": "idle",
                     "quick_interaction_running": True,
                     "weixin_session_slot": None,
-                },
-                {
-                    "id": "terminal-session",
-                    "title": "实时会话",
-                    "created_at": "2026-08-15T07:00:00Z",
-                    "session_mode": "terminal",
-                    "status": "stopped",
-                    "activity": "idle",
                 },
             ],
         },
@@ -490,7 +479,7 @@ async def test_runtime_settings_use_registered_navigation_and_presentation(
             await expect(page).to_have_url(re.compile(r"/settings/runtime/codex"))
             await expect(page.get_by_role("heading", name="Codex", exact=True)).to_be_visible()
             await expect(page.locator(".settings-workspace-description")).to_have_text(
-                "使用 Codex CLI 运行快速交互、实时终端和后台 AI 任务。",
+                "使用 Codex CLI 运行后台 AI 任务。",
             )
             await expect(page.locator("#runtime-management-list")).to_contain_text("健康")
             assert await page.evaluate("document.documentElement.scrollWidth - innerWidth") == 0
@@ -540,7 +529,7 @@ async def test_runtime_settings_keep_registered_description_when_status_is_unava
             )
             assert response is not None and response.status == 200
             await expect(page.locator(".settings-workspace-description")).to_have_text(
-                "使用 Codex CLI 运行快速交互、实时终端和后台 AI 任务。",
+                "使用 Codex CLI 运行后台 AI 任务。",
             )
             await expect(page.locator("#runtime-management-status")).to_have_text(
                 "暂时无法读取 AI Runtime 状态。",
@@ -813,7 +802,7 @@ async def test_collapsed_sidebar_shows_quick_sessions_in_toolbar(
             unassigned_button = toolbar.locator('[data-session-id="quick-unassigned"]')
             await expect(slot_button).to_have_text("S1")
             await expect(unassigned_button).to_have_text("S")
-            await expect(slot_button).to_have_attribute("title", re.compile("带槽位的快速会话"))
+            await expect(slot_button).to_have_attribute("title", re.compile("带槽位的Chub Session"))
             await expect(unassigned_button).to_have_class(re.compile("is-running"))
             await expect(toolbar.locator('[data-session-id="terminal-session"]')).to_have_count(0)
             await slot_button.click()

@@ -45,7 +45,7 @@
     return;
   }
 
-  let creation = { quick: { available: false }, terminal: { available: false } };
+  let creation = { quick: { available: false } };
   let workspaces = [];
   let refreshTimer = null;
   let sessionRequestGeneration = 0;
@@ -55,20 +55,19 @@
   let runtimeSessionGroups = [];
   let nativeSessions = [];
   const pendingSessionMutations = new Set();
+  const pendingNativeSessionMutations = new Set();
   let activeQuickSessionId = new URL(window.location.href).searchParams.get("session");
   let renameSessionId = null;
   let renaming = false;
   let sessionActionMenu = null;
   let openSessionActionSessionId = null;
+  let openNativeSessionActionRef = null;
   let openSessionActionTrigger = null;
   let sidebarMessageClearTimer = null;
   let sidebarMessageVisibleUntil = 0;
   const sessionCacheKey = "chub.workspace.sessions.v1";
   const sidebarMessageMinimumVisibleMs = 6000;
 
-  const sessionModeInputs = Array.from(
-    form.querySelectorAll('input[name="workspace-session-mode"]'),
-  ).filter((input) => input instanceof HTMLInputElement);
   const workspacePicker = window.createChoicePicker?.({
     trigger: workspaceTrigger,
     value: workspaceValue,
@@ -198,18 +197,8 @@
     const phase = session.usage?.phase;
     if (owner === "external") return "其他应用 · 正在使用";
     if (owner === "unknown") return "占用状态未知 · 请刷新";
-    if (session.error === "terminal_backend_failed") return "终端连接异常 · 可重试";
     if (session.status === "error" || session.error) return "会话异常 · 可重试";
-    if (session.status === "new") {
-      return session.session_mode === "terminal" ? "尚未启动 · 可进入" : "等待输入";
-    }
-    if (session.session_mode === "terminal" && owner === "terminal") {
-      if (phase === "running" || session.activity === "working") {
-        return "执行中";
-      }
-      if (phase === "unknown") return "正在使用";
-      return "等待输入";
-    }
+    if (session.status === "new") return "等待输入";
     if (session.quick_interaction_running || session.activity === "working") {
       return "执行中";
     }
@@ -223,9 +212,7 @@
 
   const sessionTitle = (session) => session.title || session.workspace_name || "未命名 Session";
 
-  const isVisibleQuickSession = (session) => (
-    session.session_mode === "quick" && session.workspace_id !== "weixin-translation"
-  );
+  const isVisibleQuickSession = (session) => session.workspace_id !== "weixin-translation";
 
   const quickSessionLabel = (session) => {
     const slot = session.weixin_session_slot;
@@ -244,15 +231,13 @@
     const usage = session.usage;
     return usage?.owner === "external"
       || usage?.owner === "unknown"
-      || (usage?.owner === "terminal" && usage.phase === "unknown")
       || session.activity === "unknown";
   };
 
   const sessionIsWorking = (session) => {
     const usage = session.usage;
     const usageRunning = usage && (
-      (usage.owner === "terminal" && usage.phase === "running")
-      || (usage.owner === "quick_worker" && ["running", "waiting_result"].includes(usage.phase))
+      usage.owner === "quick_worker" && ["running", "waiting_result"].includes(usage.phase)
     );
     return session.quick_interaction_running || session.activity === "working" || usageRunning;
   };
@@ -260,8 +245,7 @@
   const sessionHasActiveExecution = (session) => {
     const usage = session.usage;
     return Boolean(usage && (
-      (usage.owner === "terminal" && usage.phase === "running")
-      || (usage.owner === "quick_worker" && ["running", "waiting_result"].includes(usage.phase))
+      usage.owner === "quick_worker" && ["running", "waiting_result"].includes(usage.phase)
     ));
   };
 
@@ -274,6 +258,7 @@
         stop: { disabled: true, title: "操作进行中" },
         archive: { disabled: true, title: "操作进行中" },
         delete: { disabled: true, title: "操作进行中" },
+        forget: { disabled: true, title: "操作进行中" },
       };
     }
     return {
@@ -291,6 +276,7 @@
             : "归档 Session",
       },
       delete: { disabled: false, title: "永久删除 Session" },
+      forget: { disabled: activeExecution, title: activeExecution ? "Session 当前正在执行，请先停止或等待任务结束后再停止管理。" : "停止由 Chub 管理此 Session" },
     };
   };
 
@@ -308,6 +294,7 @@
       stop: ["M6 6h12v12H6Z"],
       archive: ["M3 5h18v4H3Z", "M5 9v10h14V9", "M10 13h4"],
       delete: ["M4 7h16", "M10 11v6", "M14 11v6", "m6 7 1 13h10l1-13", "M9 7V4h6v3"],
+      forget: ["M4 4l16 16", "M20 4 4 20"],
     };
     (paths[action] || []).forEach((definition) => {
       const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
@@ -330,12 +317,13 @@
       ["stop", "停止"],
       ["archive", "归档"],
       ["delete", "删除"],
+      ["forget", "停止管理"],
     ].forEach(([action, label]) => {
       const actionButton = document.createElement("button");
       const actionLabel = document.createElement("span");
       actionButton.type = "button";
       actionButton.className = "workspace-session-action";
-      if (action === "delete") actionButton.classList.add("is-danger");
+      if (action === "delete" || action === "forget") actionButton.classList.add("is-danger");
       actionButton.dataset.sessionAction = action;
       actionButton.setAttribute("role", "menuitem");
       actionLabel.textContent = label;
@@ -345,13 +333,22 @@
     menu.addEventListener("click", (event) => {
       const actionButton = event.target.closest?.("[data-session-action]");
       if (!(actionButton instanceof HTMLButtonElement) || actionButton.disabled) return;
+      const action = actionButton.dataset.sessionAction;
+      const nativeActionRef = openNativeSessionActionRef;
+      if (nativeActionRef) {
+        closeSessionActionMenu();
+        if (action === "archive" || action === "delete") {
+          confirmNativeSessionMutation(nativeActionRef, action);
+        }
+        return;
+      }
       const session = sessionsById.get(openSessionActionSessionId);
       if (!session || sessionIsExternallyOccupied(session)) return;
       closeSessionActionMenu();
-      if (actionButton.dataset.sessionAction === "rename") {
+      if (action === "rename") {
         openRenameDialog(session);
       } else {
-        confirmSessionMutation(session, actionButton.dataset.sessionAction);
+        confirmSessionMutation(session, action);
       }
     });
     document.body.append(menu);
@@ -366,20 +363,30 @@
       openSessionActionTrigger.setAttribute("aria-expanded", "false");
     }
     openSessionActionSessionId = null;
+    openNativeSessionActionRef = null;
     openSessionActionTrigger = null;
   };
 
-  const toggleSessionActionMenu = (trigger, session, clickPoint = null, { native = false } = {}) => {
-    if (sessionIsExternallyOccupied(session)) return;
+  const toggleSessionActionMenu = (trigger, session, clickPoint = null, { nativeActionRef = null } = {}) => {
+    if (!nativeActionRef && sessionIsExternallyOccupied(session)) return;
     const menu = ensureSessionActionMenu();
-    const open = menu.hidden || openSessionActionSessionId !== session.id;
+    const open = menu.hidden || (nativeActionRef
+      ? openNativeSessionActionRef !== nativeActionRef
+      : openSessionActionSessionId !== session.id);
     closeSessionActionMenu();
     if (!open) return;
-    const state = sessionMoreState(session);
+    const state = nativeActionRef
+      ? {
+        archive: { disabled: false, title: "归档 Native Session" },
+        delete: { disabled: false, title: "永久删除 Native Session" },
+      }
+      : sessionMoreState(session);
     menu.querySelectorAll("[data-session-action]").forEach((actionButton) => {
       const action = state[actionButton.dataset.sessionAction];
-      if (!(actionButton instanceof HTMLButtonElement) || !action) return;
-      actionButton.hidden = native && actionButton.dataset.sessionAction === "rename";
+      if (!(actionButton instanceof HTMLButtonElement)) return;
+      actionButton.hidden = nativeActionRef
+        && !["archive", "delete"].includes(actionButton.dataset.sessionAction);
+      if (!action) return;
       actionButton.disabled = action.disabled;
       actionButton.title = action.title;
     });
@@ -398,7 +405,8 @@
       : anchorY + 8;
     menu.style.left = `${left}px`;
     menu.style.top = `${top}px`;
-    openSessionActionSessionId = session.id;
+    openSessionActionSessionId = nativeActionRef ? null : session.id;
+    openNativeSessionActionRef = nativeActionRef;
     openSessionActionTrigger = trigger;
     menu.querySelector("[data-session-action]:not(:disabled):not([hidden])")?.focus();
   };
@@ -418,7 +426,7 @@
     const running = session.quick_interaction_running || session.activity === "working";
     const name = sessionTitle(session);
     const externallyOccupied = sessionIsExternallyOccupied(session);
-    const externalQuickReadOnly = externallyOccupied && session.session_mode === "quick";
+    const externalQuickReadOnly = externallyOccupied;
 
     button.disabled = externallyOccupied && !externalQuickReadOnly;
     button.title = externallyOccupied
@@ -434,7 +442,7 @@
           : `Session 正由其他应用使用：${name}`
         : `打开 Session：${name}`,
     );
-    const current = session.session_mode === "quick" && session.id === activeQuickSessionId;
+    const current = session.id === activeQuickSessionId;
     button.classList.toggle("is-current", current);
     const row = button.closest(".workspace-preview-session-row");
     row?.classList.toggle("is-current", current);
@@ -467,10 +475,10 @@
     button.setAttribute(
       "aria-label",
       current
-        ? `当前快速会话：${name}，${state}`
+        ? `当前Chub Session：${name}，${state}`
         : externallyOccupied
-          ? `以只读方式打开快速会话：${name}，${state}`
-          : `打开快速会话：${name}，${state}`,
+          ? `以只读方式打开Chub Session：${name}，${state}`
+          : `打开Chub Session：${name}，${state}`,
     );
     if (dot) {
       dot.classList.toggle("is-running", running);
@@ -630,13 +638,13 @@
 
   const nativeSessionDetailLines = (session) => [
     `目录：${session.cwd}`,
-    `属性：${session.active_permission_mode || "未知"} · ${session.active_model || "未知"} · ${session.active_reasoning_effort || "未知"}`,
     `创建：${new Date(session.created_at).toLocaleString("zh-CN")} · 更新：${new Date(session.updated_at).toLocaleString("zh-CN")}`,
   ];
 
   const renderNativeSessions = (items, sessions) => {
     let group = items.querySelector(':scope > .workspace-preview-session-group[data-session-group="native-sessions"]');
-    if (!sessions.length) {
+    const unboundSessions = sessions.filter((session) => !session.chub_session_id);
+    if (!unboundSessions.length) {
       group?.remove();
       return;
     }
@@ -653,17 +661,14 @@
     }
     const list = group.querySelector(".workspace-preview-session-group-list");
     if (!(list instanceof HTMLElement)) return;
-    const ordered = [...sessions].sort(
+    const ordered = [...unboundSessions].sort(
       (left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at),
     );
     list.replaceChildren(...ordered.map((session) => {
+      const unavailable = nativeSessionIsUnavailable(session);
       const row = document.createElement("article");
       const title = document.createElement("strong");
       const details = document.createElement("div");
-      const chubSession = typeof session.chub_session_id === "string"
-        ? sessionsById.get(session.chub_session_id)
-        : null;
-      const unavailable = nativeSessionIsUnavailable(session);
       row.className = "workspace-preview-native-session";
       row.classList.toggle("is-unavailable", unavailable);
       title.textContent = session.title || "未命名 Native Session";
@@ -680,7 +685,7 @@
         if (event.pointerType !== "mouse") return;
         row.querySelectorAll(".workspace-preview-native-session small").forEach(updateSessionMarquee);
       });
-      if (chubSession && !unavailable) {
+      if (session.native_action_ref) {
         const actions = document.createElement("div");
         const more = document.createElement("button");
         const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -691,6 +696,7 @@
         more.setAttribute("aria-label", `更多操作：${title.textContent}`);
         more.setAttribute("aria-haspopup", "menu");
         more.setAttribute("aria-expanded", "false");
+        more.setAttribute("aria-controls", "workspace-session-action-menu");
         more.title = "更多操作";
         icon.setAttribute("viewBox", "0 0 24 24");
         icon.setAttribute("fill", "currentColor");
@@ -703,9 +709,12 @@
           icon.append(dot);
         });
         more.append(icon);
+        ensureSessionActionMenu();
         more.addEventListener("click", (event) => {
           const clickPoint = event.detail > 0 ? { x: event.clientX, y: event.clientY } : null;
-          toggleSessionActionMenu(more, chubSession, clickPoint, { native: true });
+          toggleSessionActionMenu(more, null, clickPoint, {
+            nativeActionRef: session.native_action_ref,
+          });
         });
         actions.append(more);
         row.append(actions);
@@ -773,16 +782,9 @@
       } else {
         items.querySelector(":scope > .empty-state")?.remove();
         [
-          {
-            title: "快速会话",
-            matches: (session) => session.session_mode === "quick",
-          },
-          {
-            title: "实时会话",
-            matches: (session) => session.session_mode === "terminal",
-          },
-        ].forEach(({ title, matches }) => {
-          const groupSessions = runtimeSessions.filter(matches);
+          { title: "Chub Sessions" },
+        ].forEach(({ title }) => {
+          const groupSessions = runtimeSessions;
           const groupId = title.toLowerCase().replaceAll(" ", "-");
           let group = items.querySelector(`:scope > .workspace-preview-session-group[data-session-group="${groupId}"]`);
           if (!groupSessions.length) {
@@ -837,10 +839,10 @@
 
   const syncCreation = () => {
     const usableWorkspaces = workspaces.filter((workspace) => workspace.available);
-    const available = creation.quick.available || creation.terminal.available;
+    const available = creation.quick.available;
     createButton.disabled = !available || !usableWorkspaces.length;
     createButton.title = createButton.disabled
-      ? creation.quick.reason || creation.terminal.reason || "当前没有可用工作目录"
+      ? creation.quick.reason || "当前没有可用工作目录"
       : "";
 
     const selectedWorkspaceId = usableWorkspaces.some(
@@ -851,14 +853,6 @@
       usableWorkspaces.map((workspace) => ({ value: workspace.id, label: workspace.name })),
       selectedWorkspaceId,
     );
-    sessionModeInputs.forEach((input) => {
-      input.disabled = !creation[input.value]?.available;
-    });
-    const selected = sessionModeInputs.find((input) => input.checked && !input.disabled);
-    if (!selected) {
-      const firstAvailable = sessionModeInputs.find((input) => !input.disabled);
-      if (firstAvailable) firstAvailable.checked = true;
-    }
   };
 
   const scheduleRefresh = (sessions) => {
@@ -875,7 +869,7 @@
   const restoreSelectedQuickSession = (sessions) => {
     if (!activeQuickSessionId) return false;
     const session = sessions.find((item) => (
-      item.id === activeQuickSessionId && item.session_mode === "quick"
+      item.id === activeQuickSessionId
     ));
     if (!session) {
       activeQuickSessionId = null;
@@ -885,7 +879,7 @@
         return true;
       }
       renderSessions(sessions);
-      setSidebarMessage("此前选择的快速会话已不可用，已回到工作台。");
+      setSidebarMessage("此前选择的Chub Session已不可用，已回到工作台。");
       return true;
     }
     if (window.workspaceQuickSessionOpen) return false;
@@ -900,7 +894,6 @@
     sessionSection.hidden = groups.length === 0;
     creation = {
       quick: data.quick_creation || { available: false },
-      terminal: data.terminal_creation || { available: false },
     };
     workspaces = data.workspaces;
     syncCreation();
@@ -940,43 +933,23 @@
   const openSession = async (session, button, { newTab = false } = {}) => {
     closeSessionActionMenu();
     setSidebarMessage("");
-    if (session.session_mode === "quick" && newTab) {
+    if (newTab) {
       window.open(quickSessionUrl(session.id), "_blank", "noopener");
       return;
     }
 
-    // The terminal URL contains a short-lived server-issued ticket. Open the
-    // blank tab inside the user gesture, then replace it after the ticket API
-    // responds so browsers do not block the requested new tab.
-    const terminalTab = newTab ? window.open("", "_blank") : null;
-    if (newTab && !terminalTab) {
-      setSidebarMessage("浏览器阻止了新标签页，请允许此站点打开弹窗后重试。");
-      return;
-    }
-    if (terminalTab) terminalTab.opener = null;
     button.disabled = true;
     try {
-      if (session.session_mode === "quick") {
-        activeQuickSessionId = session.id;
-        setSelectedQuickSessionLocation(session.id);
-        renderSessions([...sessionsById.values()]);
-        if (typeof window.openWorkspaceQuickSession === "function") {
-          window.openWorkspaceQuickSession(session);
-          button.disabled = false;
-          return;
-        }
-        window.location.assign(quickSessionUrl(session.id));
-        return;
-      }
-      const data = await request(`/api/codex/sessions/${encodeURIComponent(session.id)}/access`, { method: "POST" });
-      if (terminalTab) {
-        terminalTab.location.replace(data.terminal_url);
+      activeQuickSessionId = session.id;
+      setSelectedQuickSessionLocation(session.id);
+      renderSessions([...sessionsById.values()]);
+      if (typeof window.openWorkspaceQuickSession === "function") {
+        window.openWorkspaceQuickSession(session);
         button.disabled = false;
         return;
       }
-      window.location.assign(data.terminal_url);
+      window.location.assign(quickSessionUrl(session.id));
     } catch (error) {
-      terminalTab?.close();
       setSidebarMessage(error.message || "打开 Session 失败，请稍后重试。");
       button.disabled = false;
       loadSessions();
@@ -1005,6 +978,8 @@
       await request(`/api/codex/sessions/${sessionId}/archive`, { method: "POST" });
     } else if (action === "delete") {
       await request(`/api/codex/sessions/${sessionId}`, { method: "DELETE" });
+    } else if (action === "forget") {
+      await request(`/api/codex/sessions/${sessionId}/management`, { method: "DELETE" });
     }
     await loadSessions();
   };
@@ -1017,14 +992,16 @@
     ) return;
     const name = sessionTitle(session);
     const descriptions = {
-      stop: `停止“${name}”将终止当前执行中的任务或实时终端。停止后可以再次进入 Session，但在途任务不会恢复。`,
+      stop: `停止“${name}”将终止当前执行中的任务。停止后可以再次进入 Session，但在途任务不会恢复。`,
       archive: `归档“${name}”后，该 Session 将从活动列表移除。如已分配微信槽位，槽位也会释放。Chub 页面暂不提供恢复入口。`,
       delete: `删除“${name}”会永久移除该 Session 及其 Chub 记录，无法恢复。`,
+      forget: `停止管理“${name}”将移除 Chub 保存的 Session、任务记录和关联槽位，但不会确认、归档或删除 Native Session。此操作无法恢复。`,
     };
     const labels = {
       stop: ["停止 Session", "确认停止", "secondary"],
       archive: ["归档 Session", "确认归档", "danger"],
       delete: ["删除 Session", "确认删除", "danger"],
+      forget: ["停止由 Chub 管理", "确认停止管理", "danger"],
     };
     const [title, confirmLabel, tone] = labels[action];
     void showConfirmationDialog({
@@ -1048,10 +1025,51 @@
     });
   };
 
+  const requestNativeSessionMutation = async (nativeActionRef, action) => {
+    const reference = encodeURIComponent(nativeActionRef);
+    if (action === "archive") {
+      await request(`/api/codex/native-sessions/${reference}/archive`, { method: "POST" });
+    } else if (action === "delete") {
+      await request(`/api/codex/native-sessions/${reference}`, { method: "DELETE" });
+    }
+  };
+
+  const confirmNativeSessionMutation = (nativeActionRef, action) => {
+    if (!nativeActionRef || typeof showConfirmationDialog !== "function") return;
+    const labels = {
+      archive: ["归档 Native Session", "确认归档"],
+      delete: ["删除 Native Session", "确认删除"],
+    };
+    const descriptions = {
+      archive: "归档将只移除 Runtime 原生会话，不会改动 Chub Session、任务或槽位。Chub 页面暂不提供恢复入口。",
+      delete: "删除将永久移除 Runtime 原生会话，不会改动 Chub Session、任务或槽位，且无法恢复。",
+    };
+    const [title, confirmLabel] = labels[action];
+    void showConfirmationDialog({
+      title,
+      description: descriptions[action],
+      confirmLabel,
+      tone: "danger",
+      closeOnConfirm: true,
+      onConfirm: async () => {
+        if (pendingNativeSessionMutations.has(nativeActionRef)) return;
+        pendingNativeSessionMutations.add(nativeActionRef);
+        setSidebarMessage(`${title}中…`);
+        try {
+          await requestNativeSessionMutation(nativeActionRef, action);
+        } catch (error) {
+          setSidebarMessage(error.message || `${title}失败。`);
+        } finally {
+          pendingNativeSessionMutations.delete(nativeActionRef);
+          await loadSessions();
+        }
+      },
+    });
+  };
+
   window.selectWorkspaceQuickSession = (sessionId) => {
     if (typeof sessionId !== "string" || !sessionId) return false;
     const session = sessionsById.get(sessionId);
-    if (session && session.session_mode !== "quick") return false;
     activeQuickSessionId = sessionId;
     setSelectedQuickSessionLocation(sessionId);
     renderSessions([...sessionsById.values()]);
@@ -1185,14 +1203,12 @@
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const selectedMode = sessionModeInputs.find((input) => input.checked && !input.disabled);
-    if (!workspaceSelect.value || !selectedMode) return;
+    if (!workspaceSelect.value) return;
 
     creating = true;
     confirmButton.disabled = true;
     confirmButton.textContent = "创建中…";
     workspacePicker.setDisabled(true);
-    sessionModeInputs.forEach((input) => { input.disabled = true; });
     if (closeButton instanceof HTMLButtonElement) closeButton.disabled = true;
     if (cancelButton instanceof HTMLButtonElement) cancelButton.disabled = true;
     setMessage(createMessage, "正在创建 Session…");
@@ -1200,7 +1216,7 @@
       await request("/api/codex/sessions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workspace_id: workspaceSelect.value, session_mode: selectedMode.value }),
+        body: JSON.stringify({ workspace_id: workspaceSelect.value }),
       });
       dialog.close();
       await loadSessions();
