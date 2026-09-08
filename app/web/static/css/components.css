@@ -1492,7 +1492,9 @@ button.settings-utility-row > span:last-child {
 
 .workspace-preview-page {
   width: 100%;
-  min-height: 100vh;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
 }
 
 .workspace-preview-shell {
@@ -1500,7 +1502,8 @@ button.settings-utility-row > span:last-child {
   --workspace-toolbar-top-gap: 0.45rem;
   --workspace-sidebar-width: var(--workspace-sidebar-preload-width, 225px);
   display: grid;
-  min-height: 100vh;
+  height: 100%;
+  min-height: 0;
   grid-template-columns: var(--workspace-sidebar-width) minmax(0, 1fr);
   position: relative;
   overflow: hidden;
@@ -1521,7 +1524,9 @@ button.settings-utility-row > span:last-child {
   gap: 0.75rem;
   border-right: 1px solid var(--color-border);
   padding: var(--workspace-toolbar-top-gap) 1rem 1rem;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
 }
 
 .workspace-preview-shell.is-layout-ready .workspace-preview-sidebar {
@@ -1837,6 +1842,8 @@ button.settings-utility-row > span:last-child {
   gap: 0.35rem;
 }
 
+.workspace-preview-runtime-session-group,
+.workspace-preview-runtime-session-list,
 .workspace-preview-session-group,
 .workspace-preview-session-group-list,
 .workspace-preview-session-row {
@@ -1844,14 +1851,17 @@ button.settings-utility-row > span:last-child {
   gap: 0.35rem;
 }
 
+.workspace-preview-runtime-session-group,
 .workspace-preview-session-group {
   padding-top: 0.45rem;
 }
 
+.workspace-preview-runtime-session-group + .workspace-preview-runtime-session-group,
 .workspace-preview-session-group + .workspace-preview-session-group {
   margin-top: 0.2rem;
 }
 
+.workspace-preview-runtime-session-title,
 .workspace-preview-session-group-title {
   margin: 0;
   color: var(--color-text-muted);
@@ -1859,15 +1869,105 @@ button.settings-utility-row > span:last-child {
   font-weight: 700;
 }
 
-.workspace-preview-sessions > p {
+.workspace-preview-runtime-session-title {
   color: color-mix(in srgb, var(--color-accent-text) 78%, var(--color-text-muted));
   margin: 0.25rem 0 0.2rem;
+  font-size: 0.78rem;
   font-weight: 700;
+}
+
+.workspace-preview-session-group-title {
+  font-size: 0.67rem;
 }
 
 .workspace-preview-session-list .empty-state {
   margin: 0.25rem 0;
   font-size: 0.8rem;
+}
+
+.workspace-preview-native-session {
+  display: grid;
+  width: 100%;
+  min-height: 3.75rem;
+  box-sizing: border-box;
+  gap: 0.16rem;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 0.6rem 0.65rem;
+  color: var(--color-text);
+  background: transparent;
+}
+
+.workspace-preview-native-session strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.84rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-preview-native-session-details {
+  display: grid;
+  gap: 0.12rem;
+  min-width: 0;
+}
+
+.workspace-preview-native-session.has-actions {
+  grid-template-columns: minmax(0, 1fr) 24px;
+}
+
+.workspace-preview-native-session.has-actions > strong,
+.workspace-preview-native-session.has-actions > .workspace-preview-native-session-details {
+  grid-column: 1;
+}
+
+.workspace-preview-native-session-actions {
+  display: none;
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  width: 24px;
+  align-self: stretch;
+}
+
+.workspace-preview-native-session:hover .workspace-preview-native-session-actions,
+.workspace-preview-native-session:focus-within .workspace-preview-native-session-actions {
+  display: grid;
+  place-items: center;
+}
+
+.workspace-preview-native-session.is-unavailable {
+  opacity: 0.58;
+}
+
+.workspace-preview-native-session small {
+  display: block;
+  color: var(--color-text-muted);
+  font-size: 0.76rem;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow-wrap: anywhere;
+}
+
+.workspace-preview-native-session small > span {
+  display: inline-block;
+  min-width: 100%;
+  white-space: nowrap;
+}
+
+.workspace-preview-native-session:hover small.is-overflowing > span {
+  animation: workspace-session-marquee var(--workspace-session-marquee-duration) linear 0.2s 1 both;
+}
+
+.workspace-preview-native-session:hover,
+.workspace-preview-native-session:active {
+  background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+}
+
+.workspace-preview-native-session.is-unavailable:hover,
+.workspace-preview-native-session.is-unavailable:active {
+  background: transparent;
 }
 
 .workspace-preview-session {
@@ -2126,7 +2226,8 @@ button.settings-utility-row > span:last-child {
 
 @media (prefers-reduced-motion: reduce) {
   .workspace-preview-session-row:hover .workspace-preview-session strong.is-overflowing > span,
-  .workspace-preview-session-row:hover .workspace-preview-session small.is-overflowing > span {
+  .workspace-preview-session-row:hover .workspace-preview-session small.is-overflowing > span,
+  .workspace-preview-native-session:hover small.is-overflowing > span {
     animation: none;
   }
 }
@@ -2257,8 +2358,13 @@ button.settings-utility-row > span:last-child {
   grid-column: 2;
   grid-row: 1;
   gap: 0.75rem;
+  min-height: 0;
   min-width: 0;
   padding: var(--workspace-toolbar-top-gap) clamp(0.75rem, 1.5vw, 1.25rem) 1rem;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-gutter: stable;
 }
 
 .workspace-preview-toolbar,

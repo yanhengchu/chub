@@ -399,19 +399,43 @@ def test_ai_session_manager_imports_discovered_unarchived_runtime_sessions(
     manager.runtime_adapter.validate_model = MagicMock()
 
     created = manager.create_session("chub")
-    sessions = manager.list_sessions()
+    sessions, native_sessions = manager.list_sessions_with_native_sessions()
 
     assert created.runtime_id == "codex"
     assert {item.title for item in sessions} == {created.title, "命令行 Session"}
     discovered = next(item for item in sessions if item.title == "命令行 Session")
     assert discovered.workspace_id == "workspace"
+    assert discovered.discovered is True
     assert discovered.status == "stopped"
     assert discovered.permission_mode == "full-access"
     assert "codex_session_id" not in sessions[0].model_dump()
     assert discovered.can_archive is True
+    assert len(native_sessions) == 1
+    assert native_sessions[0].title == "命令行 Session"
+    assert native_sessions[0].active_model == "gpt-test"
 
     manager.list_sessions()
     assert len(manager.store.list()) == 2
+
+
+def test_ai_session_manager_hides_native_list_when_discovery_fails(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    created = session(settings.ai_runtime.codex.workspace)
+    manager.store.save(created)
+    manager.runtime_adapter.discover_sessions = MagicMock(
+        side_effect=RuntimeOperationError(
+            "runtime_discovery_unavailable",
+            "Runtime discovery is temporarily unavailable",
+            kind="unavailable",
+        )
+    )
+
+    sessions, native_sessions = manager.list_sessions_with_native_sessions()
+
+    assert [item.id for item in sessions] == [created.id]
+    assert native_sessions == []
 
 
 def test_ai_session_manager_defers_discovery_while_quick_session_is_binding(

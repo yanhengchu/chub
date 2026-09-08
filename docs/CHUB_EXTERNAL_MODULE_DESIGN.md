@@ -46,7 +46,7 @@ Web 与 Quick Worker 各自构造进程内 Runtime 实例，但都从同一个�
 
 ### 与其他领域的契约
 
-Runtime 模块只拥有 Runtime 私有实现和清单声明。Adapter/Runner 的共享契约、能力矩阵和新增 Runtime 实现规范以[Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)为准；逻辑 Session 和单 writer 语义以[AI Session 状态模型](AI_SESSION_STATE_DESIGN.md)为准；任务、租约、恢复和通知终态以[Chub Quick Worker 独立服务设计](CHUB_QUICK_WORKER_DESIGN.md)为准。
+Runtime 模块只拥有 Runtime 私有实现和清单声明。Adapter/Runner 的共享契约、能力矩阵和新增 Runtime 实现规范以[Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)为准；逻辑 Session 和单 writer 语义以[Chub Session 状态模型](AI_SESSION_STATE_DESIGN.md)为准；任务、租约、恢复和通知终态以[Chub Quick Worker 独立服务设计](CHUB_QUICK_WORKER_DESIGN.md)为准。
 
 模块安装流程只负责把已验证的目标 Runtime 槽位加入 Web 与 Worker 注册表。Chub 负责保存 Session 与任务的槽位引用、记录交互任务并投影 native/Worker 最终状态；模块不得接管上述领域状态，也不得创建路由、页面导航、外部指令、后台服务、任意命令或任意文件路径。Adapter 和 Runner 必须使用同一个 `runtime_id` 与能力声明，并通过 `validate_runtime_wiring()`。
 

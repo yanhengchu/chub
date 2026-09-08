@@ -108,7 +108,7 @@ Chub 始终提供 loopback 访问；启用默认的 Tailnet 可信访问后，�
 | 文档 | 唯一职责 |
 | --- | --- |
 | [Chub 任务编排外置设计](docs/CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md) | 任务编排模块的目标职责、受控任务计划、版本快照和后续接入验收边界 |
-| [Chub AI Session 状态模型设计](docs/AI_SESSION_STATE_DESIGN.md) | Session、Activity、usage 投影、入口、操作、槽位和单 writer 语义 |
+| [Chub Session 状态模型设计](docs/AI_SESSION_STATE_DESIGN.md) | Chub Session、Native Session 数据消费与映射、Activity、usage 投影、入口、操作、槽位和单 writer 语义 |
 | [Chub Quick Worker 独立服务设计](docs/CHUB_QUICK_WORKER_DESIGN.md) | Quick Worker 独立服务、非实时任务、恢复、通知终态和重启协调 |
 
 ### 专项能力与外部集成

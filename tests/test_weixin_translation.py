@@ -1361,6 +1361,21 @@ def test_translation_session_is_reused_and_never_uses_numbered_slot(settings) ->
 
     assert manager._ensure_session() == "translation-session"
     codex_manager.create_translation_session.assert_not_called()
+    codex_manager.cleanup_translation_sessions_for_replacement.assert_not_called()
+
+
+def test_new_translation_session_cleans_stale_translation_sessions(settings) -> None:
+    manager, codex_manager, _quick_interactions = manager_without_worker(settings)
+    codex_manager.get_session.side_effect = ApiError(
+        404,
+        "codex_session_not_found",
+        "Codex session not found",
+    )
+
+    assert manager._ensure_session() == "translation-session"
+
+    codex_manager.cleanup_translation_sessions_for_replacement.assert_called_once_with()
+    codex_manager.create_translation_session.assert_called_once_with()
 
 
 def test_translation_setting_persists_across_manager_restart(settings) -> None:
@@ -1421,7 +1436,7 @@ def test_disable_drains_existing_generation_and_reenable_uses_new_session(
         source_ip="100.64.0.21",
     )
     assert manager._ensure_session(0) == "old-session"
-    codex_manager.archive_session.assert_not_called()
+    codex_manager.delete_session.assert_not_called()
 
     manager.set_enabled(True)
     assert manager.enqueue(
@@ -1439,14 +1454,14 @@ def test_disable_drains_existing_generation_and_reenable_uses_new_session(
     manager._finish(old_entry.id, "succeeded", None)
     manager._retire_completed_sessions()
 
-    codex_manager.archive_session.assert_called_once_with("old-session")
+    codex_manager.delete_session.assert_called_once_with("old-session")
     assert manager.session_id() == "new-session"
 
 
 def test_retired_translation_session_cleanup_retries_after_failure(settings) -> None:
     manager, codex_manager, _quick_interactions = manager_without_worker(settings)
     manager._state.session_id = "old-session"
-    codex_manager.archive_session.side_effect = [OSError("busy"), None]
+    codex_manager.delete_session.side_effect = [OSError("busy"), None]
 
     manager.set_enabled(False)
 
@@ -1457,7 +1472,7 @@ def test_retired_translation_session_cleanup_retries_after_failure(settings) -> 
     manager.set_enabled(False)
 
     assert manager._state.retired_sessions == []
-    assert codex_manager.archive_session.call_count == 2
+    assert codex_manager.delete_session.call_count == 2
 
 
 def test_translation_prompt_encodes_source_as_json_data() -> None:

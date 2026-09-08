@@ -2,8 +2,8 @@
 
 > 状态：已验收
 > 主要读者：AI Agent、实现和排障 Agent；维护人员用于确认数据口径、配置和验收。
-> 本文负责：定义当前 Codex Runtime 的专属能力与配置边界，并具体维护其额度与用量采集、数据口径、安全和验收。
-> 本文不负责：Runtime 共享能力契约、Adapter/Runner 通用实现、Runtime ZIP 生命周期、其他 Runtime 的专属实现，以及由调用方选择认证来源、账号、订阅、时区、浏览器页面或本机目录。
+> 本文负责：定义当前 Codex Runtime 的专属能力与配置边界，并具体维护 Codex Native Session 发现、额度与用量采集、数据口径、安全和验收。
+> 本文不负责：Runtime 共享能力契约、Chub Session 状态和映射规则、Adapter/Runner 通用实现、Runtime ZIP 生命周期、其他 Runtime 的专属实现，以及由调用方选择认证来源、账号、订阅、时区、浏览器页面或本机目录。
 > 维护说明：Codex 是当前已接入 Runtime；本文只记录其私有行为和当前实现证据。所有 Runtime 共用的能力、状态所有权和接入判定以[Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)为准。
 
 ## 0. AI Agent 快速理解
@@ -29,9 +29,37 @@ Codex 通过 Runtime 共享契约接入 Chub。通用的 Session、Worker、Adap
 | --- | --- | --- |
 | 共享 Runtime 能力 | 声明并实现已接入的能力；不改变能力模型或状态所有权 | [Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md) |
 | Runtime ZIP | 由第一方 Codex ZIP 打包、安装和维护 | [Chub AI Runtime 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md) |
+| Native Session 发现 | 从 Codex 固定本机数据源读取、校验并规范化当前原生 Session | 本文第 1.1 节 |
 | 用量快照 | 使用 Codex 账户或固定 Sub2API 路径生成 `usage_snapshot` | 本文第 2 节至第 7 节 |
 | 登录恢复 | 在已明确的 Sub2API 未登录状态下，打开固定 provider 登录页 | 本文第 2.2 节 |
 | 部署级配置 | 使用固定 `ai_runtime.codex` 与 `CODEX_HOME`；调用方不能指定路径或上游地址 | 本文与项目说明 |
+
+### 1.1 Codex Native Session 发现
+
+Codex 实现 `native_session_mapping` 的方式以[Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)为共享契约。本节只定义 Codex 的具体来源与字段映射；Chub Session 是否建立映射、何时导入实时会话以及页面如何使用结果，以[Chub Session 状态模型设计](AI_SESSION_STATE_DESIGN.md)为准。
+
+每次 `discover_sessions()` 都直接读取当前 `CODEX_HOME` 的原生数据，不使用 Chub 快照：
+
+1. 遍历 `sessions/**/*.jsonl`。每个可用文件的第一条 JSON 记录提供 `payload.id` 或 `payload.session_id`、`payload.cwd` 和 `payload.timestamp`；文件修改时间作为更新时间。
+2. 原生 ID 必须是有效 UUID，工作目录和时间必须可解析；不满足条件、读取失败或 JSON 损坏的单个文件直接忽略，其他文件继续发现。结果按创建时间和 ID 倒序返回。
+3. 标题优先读取只读 `state_5.sqlite`（兼容 `sqlite/state_5.sqlite`）中未归档线程的 `threads.title`；无法取得时，以 `session_index.jsonl` 的 `id` 和非空 `thread_name` 补充。标题缺失保持为空，不推测标题。
+4. 从每个会话文件尾部最多读取 512 KiB，跳过超过 256 KiB 的单行；由最近可解析的 `thread_settings_applied` 或 `turn_context` 提取权限、模型和推理等级。不能解析的可选字段保持为空。
+5. 同一只读状态库的 `threads.archived` 生成可选 `archive_states`，仅供 Chub 确认归档/删除边界；状态库缺失或不可读时该字段为缺失，不影响当前可读取的会话列表。
+
+Codex Adapter 将上述数据规范化为共享 `RuntimeNativeSession`：
+
+| 共享字段 | Codex 来源与规则 |
+| --- | --- |
+| `runtime_id` | 固定为 `codex`。 |
+| `native_session_id` | 会话文件中的已校验 UUID。 |
+| `cwd` | 会话第一条记录的 `payload.cwd`。 |
+| `title` | 状态库标题优先，随后为 Session Index 标题；均不可读时为空。 |
+| `active_permission_mode` | 最近线程设置中的权限或 sandbox 配置映射为 Chub 权限枚举；不可映射时为空。 |
+| `active_model` / `active_reasoning_effort` | 最近线程设置中的 `model` 与 `effort`/`reasoning_effort`，通过长度校验后返回。 |
+| `created_at` | 会话第一条记录的 `payload.timestamp`。 |
+| `updated_at` | 会话 JSONL 文件的修改时间。 |
+
+整体原生来源无法读取时，Adapter 返回 `codex_session_discovery_unavailable`；无可用会话时返回空列表。发现过程只读 Codex 数据，绝不改写 JSONL、Session Index 或状态库，也不保存 Chub 原生发现副本。
 
 ## 2. Codex 用量与额度能力
 

@@ -15,6 +15,7 @@ from app.codex.models import (
     CodexQuotaData,
     CodexQuotaWindow,
     CodexSession,
+    NativeSessionInfo,
     QuickInteractionTask,
     RuntimeManagementData,
     RuntimeManagementItem,
@@ -74,6 +75,9 @@ async def test_codex_sessions_allow_loopback(settings: Settings) -> None:
         response = await client.get("/api/codex/sessions")
 
     assert response.status_code == 200
+    assert response.json()["data"]["runtime_groups"] == [
+        {"runtime_id": "codex", "name": "Codex"}
+    ]
 
 
 @pytest.mark.anyio
@@ -226,6 +230,17 @@ async def test_codex_session_list_hides_internal_translation_session(
     manager.submission_available.return_value = (True, None)
     manager.dependencies.return_value = {}
     manager.workspaces.return_value = []
+    native_sessions = [
+        NativeSessionInfo(
+            cwd="/workspace/chub",
+            title="发现的终端",
+            active_permission_mode="full-access",
+            active_model="gpt-test",
+            active_reasoning_effort="high",
+            created_at="2026-08-14T10:00:00Z",
+            updated_at="2026-08-14T10:01:00Z",
+        )
+    ]
     manager.list_sessions.return_value = [
         SessionInfo(
             id="ordinary-session",
@@ -244,6 +259,7 @@ async def test_codex_session_list_hides_internal_translation_session(
             created_at="2026-08-14T10:00:00Z",
             updated_at="2026-08-14T10:00:00Z",
             session_mode="terminal",
+            discovered=True,
         ),
         SessionInfo(
             id="translation-session",
@@ -264,6 +280,10 @@ async def test_codex_session_list_hides_internal_translation_session(
             session_mode="quick",
         ),
     ]
+    manager.list_sessions_with_native_sessions.return_value = (
+        manager.list_sessions.return_value,
+        native_sessions,
+    )
     manager.read_session.return_value = manager.list_sessions.return_value[1]
     app.state.codex_pty_manager = manager
     transport = httpx.ASGITransport(app=app)
@@ -286,6 +306,8 @@ async def test_codex_session_list_hides_internal_translation_session(
     assert [item["id"] for item in hidden.json()["data"]["sessions"]] == [
         "ordinary-session"
     ]
+    assert hidden.json()["data"]["sessions"][0]["discovered"] is True
+    assert hidden.json()["data"]["native_sessions"][0]["title"] == "发现的终端"
     assert [item["id"] for item in visible.json()["data"]["sessions"]] == [
         "ordinary-session"
     ]

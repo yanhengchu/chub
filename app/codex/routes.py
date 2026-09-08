@@ -33,6 +33,8 @@ from app.codex.models import (
     SessionDefaultsUpdateRequest,
     SessionInfo,
     SessionListData,
+    NativeSessionInfo,
+    SessionRuntimeGroup,
     SessionRenameRequest,
 )
 from app.ai_session.operations import (
@@ -88,6 +90,20 @@ def list_sessions(
     quick_activity_times: dict[str, datetime] = (
         request.app.state.quick_interactions.session_activity_times()
     )
+    listed_sessions: list[SessionInfo] = []
+    native_sessions: list[NativeSessionInfo] = []
+    if runtime_registered:
+        combined_sessions = manager.list_sessions_with_native_sessions()
+        if (
+            isinstance(combined_sessions, tuple)
+            and len(combined_sessions) == 2
+            and isinstance(combined_sessions[0], list)
+            and isinstance(combined_sessions[1], list)
+            and all(isinstance(item, NativeSessionInfo) for item in combined_sessions[1])
+        ):
+            listed_sessions, native_sessions = combined_sessions
+        else:
+            listed_sessions = manager.list_sessions()
     sessions = [
         session.model_copy(
             update={
@@ -100,7 +116,7 @@ def list_sessions(
                 "weixin_session_slot": session_slots.get(session.id),
             }
         )
-        for session in (manager.list_sessions() if runtime_registered else [])
+        for session in listed_sessions
         if session.workspace_id != "weixin-translation"
     ]
     terminal_available, terminal_reason = manager.submission_available()
@@ -110,6 +126,11 @@ def list_sessions(
         )
     else:
         quick_available, quick_reason = False, terminal_reason
+    runtime_groups = [
+        SessionRuntimeGroup(runtime_id=item.runtime_id, name=item.name)
+        for item in manager.read_runtime_management().runtimes
+        if item.enabled
+    ]
     return ApiResponse(
         data=SessionListData(
             available=terminal_available,
@@ -126,6 +147,8 @@ def list_sessions(
             dependencies=manager.dependencies(),
             workspaces=manager.workspaces(),
             sessions=sessions,
+            native_sessions=native_sessions,
+            runtime_groups=runtime_groups,
         )
     )
 

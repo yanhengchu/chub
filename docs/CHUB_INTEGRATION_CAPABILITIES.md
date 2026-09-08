@@ -293,7 +293,7 @@ Session 标题与任务摘要的显示规则：
 | --- | --- |
 | [README](../README.md) | 项目概览、安装、主要入口和文档导航 |
 | [OpenClaw 定制集成设计](OPENCLAW_CUSTOMIZATION_DESIGN.md) | 微信端到端业务、身份、权限、插件定制、Context Token 和通知 |
-| [Chub AI Session 状态模型设计](AI_SESSION_STATE_DESIGN.md) | Session、Activity、usage 投影、入口、槽位和单 writer 语义 |
+| [Chub Session 状态模型设计](AI_SESSION_STATE_DESIGN.md) | Chub Session、Native Session 数据消费与映射、Activity、usage 投影、入口、槽位和单 writer 语义 |
 | [Chub Codex Runtime 设计](CHUB_CODEX_RUNTIME_DESIGN.md) | 当前 Codex Runtime 的专属边界，以及 Codex/OpenAI 用量来源、接口、缓存和展示口径 |
 | [Chub Quick Worker 独立服务设计](CHUB_QUICK_WORKER_DESIGN.md) | Quick Worker 独立服务、非实时任务、恢复、通知终态和重启协调 |
 | [Chub 任务编排外置设计](CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md) | 任务编排模块的未来边界；不改变本节当前固定指令契约 |

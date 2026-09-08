@@ -1369,6 +1369,7 @@ class WeixinTranslationManager:
             # Sessions before either one records its ID, leaving later native
             # binding to race between those records.
             with self.quick_interactions.session_creation_guard():
+                self.codex_manager.cleanup_translation_sessions_for_replacement()
                 created = self.codex_manager.create_translation_session()
             next_state = self._state.model_copy(deep=True)
             if (
@@ -1413,10 +1414,10 @@ class WeixinTranslationManager:
                         binding.session_id
                     )
                     if not removed:
-                        self.codex_manager.archive_session(binding.session_id)
+                        self.codex_manager.delete_session(binding.session_id)
                 except Exception:
                     LOGGER.warning(
-                        "Unable to archive retired Weixin translation Session",
+                        "Unable to delete retired Weixin translation Session",
                         exc_info=True,
                     )
                     continue

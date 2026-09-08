@@ -1141,7 +1141,7 @@ async def test_workspace_preview_is_static_and_available(settings: Settings) -> 
     assert '<div class="workspace-preview-brand"><strong>Chub</strong><button id="workspace-sidebar-close"' in response.text
     assert 'aria-label="工作台辅助导航"' in response.text
     assert response.text.index('aria-label="工作台辅助导航"') > response.text.index(
-        'id="workspace-preview-sessions-title"',
+        'aria-label="Runtime Session 列表"',
     )
     assert "个人 AI 工作站" not in response.text
     assert '>☰</span></button>' in response.text
@@ -1165,7 +1165,7 @@ async def test_workspace_preview_is_static_and_available(settings: Settings) -> 
     assert 'class="workspace-preview-compact-nav" data-workspace-section-navigation aria-label="折叠侧栏导航"' in response.text
     assert 'aria-label="工作台" title="工作台"' in response.text
     assert 'class="workspace-preview-compact-nav-external" href="/settings"' in response.text
-    assert 'id="workspace-preview-sessions" class="workspace-preview-sessions" aria-labelledby="workspace-preview-sessions-title" hidden' in response.text
+    assert 'id="workspace-preview-sessions" class="workspace-preview-sessions" aria-label="Runtime Session 列表" hidden' in response.text
     assert 'id="workspace-session-create" class="workspace-preview-create" type="button" disabled>+ New Session</button>' in response.text
     assert 'id="workspace-session-list"' in response.text
     assert 'id="workspace-quick-session-toolbar" class="workspace-quick-session-toolbar" aria-label="快速会话切换" hidden' in response.text
@@ -1232,8 +1232,14 @@ async def test_workspace_preview_is_static_and_available(settings: Settings) -> 
     assert "color: color-mix(in srgb, var(--accent-dark) 78%, var(--muted));" in stylesheet.text
     assert ".workspace-preview-sidebar-footer {\n  display: grid;\n  gap: 0.75rem;\n  margin-top: auto;" in stylesheet.text
     assert "gap: 0.75rem;" in stylesheet.text
+    assert ".workspace-preview-page {\n  width: 100%;\n  height: 100vh;\n  height: 100dvh;\n  overflow: hidden;" in stylesheet.text
+    assert ".workspace-preview-sidebar {\n  display: flex;" in stylesheet.text
+    assert stylesheet.text.count("overscroll-behavior-y: contain;") >= 4
+    assert ".workspace-preview-native-session:hover small.is-overflowing > span" in stylesheet.text
+    assert ".workspace-preview-native-session:hover,\n.workspace-preview-native-session:active" in stylesheet.text
     assert ".workspace-preview-toolbar" in stylesheet.text
     assert ".workspace-preview-main {\n  align-content: start;" in stylesheet.text
+    assert "  overflow-y: auto;\n  overscroll-behavior-y: contain;\n  scrollbar-gutter: stable;" in stylesheet.text
     assert workspace_script.status_code == 200
     assert workspace_sessions_script.status_code == 200
     assert workspace_workstation_script.status_code == 200
@@ -1269,7 +1275,18 @@ async def test_workspace_preview_is_static_and_available(settings: Settings) -> 
     assert "chub.workspace.sidebarCollapsed" in workspace_script.text
     assert '"/api/codex/sessions"' in workspace_sessions_script.text
     assert 'const sessionSection = document.getElementById("workspace-preview-sessions");' in workspace_sessions_script.text
-    assert "sessionSection.hidden = !data.runtime_registered;" in workspace_sessions_script.text
+    assert "sessionSection.hidden = groups.length === 0;" in workspace_sessions_script.text
+    assert 'heading.textContent = `${runtimeGroup.name} Sessions`;' in workspace_sessions_script.text
+    assert 'title: "Native Sessions"' in workspace_sessions_script.text
+    assert 'matches: (session) => session.session_mode === "terminal"' in workspace_sessions_script.text
+    assert "const nativeSessionDetailLines = (session) => [" in workspace_sessions_script.text
+    assert "`目录：${session.cwd}`" in workspace_sessions_script.text
+    assert '`属性：${session.active_permission_mode || "未知"}' in workspace_sessions_script.text
+    assert "const renderNativeSessions = (items, sessions) =>" in workspace_sessions_script.text
+    assert 'details.className = "workspace-preview-native-session-details";' in workspace_sessions_script.text
+    assert 'row.querySelectorAll(".workspace-preview-native-session small").forEach(updateSessionMarquee);' in workspace_sessions_script.text
+    assert 'JSON.stringify({ ...data, native_sessions: [] })' in workspace_sessions_script.text
+    assert 'nativeSessions = [];' in workspace_sessions_script.text
     assert "const renderQuickSessionToolbar = (orderedSessions) =>" in workspace_sessions_script.text
     assert "const quickSessionLabel = (session) =>" in workspace_sessions_script.text
     assert 'workspace-quick-session-toolbar-button' in workspace_sessions_script.text
@@ -1374,7 +1391,7 @@ async def test_root_page_is_the_workspace_and_legacy_workspace_redirects(
     assert 'href="/?section=automations"' in home.text
     assert 'href="/?section=project-docs"' in home.text
     assert "工作站环境" in home.text
-    assert "AI Session" in home.text
+    assert 'aria-label="Runtime Session 列表"' in home.text
     assert 'data-workspace-session-id="session-123"' in selected_session.text
     assert 'src="/codex/session-123/quick-interactions/conversation?embedded=workspace"' in selected_session.text
     assert 'class="workspace-preview-main is-showing-quick-session"' in selected_session.text

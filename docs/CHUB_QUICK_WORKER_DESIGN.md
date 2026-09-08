@@ -3,7 +3,7 @@
 > 状态：已验收
 > 主要读者：AI Agent、实现和排障 Agent；维护人员用于确认运行边界和验收结果。
 > 本文负责：Chub Quick Worker 独立服务的职责、任务权威状态、Session 租约、恢复、通知终态和重启语义，遵循[Chub 总体架构](CHUB_ARCHITECTURE_DESIGN.md)。
-> 本文不负责：Runtime ZIP 协议、导入/覆盖/删除、注册确认和引用保护（见[Chub AI Runtime 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md)）、任务编排模块的计划与切换规则（见[Chub 任务编排外置设计](CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md)）、长期 Runtime 无关边界（见[Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)）、Session/Activity 枚举与页面语义（见[AI Session 状态模型](AI_SESSION_STATE_DESIGN.md)）以及微信路由与收件人身份（见[OpenClaw 定制集成设计](OPENCLAW_CUSTOMIZATION_DESIGN.md)）。
+> 本文不负责：Runtime ZIP 协议、导入/覆盖/删除、注册确认和引用保护（见[Chub AI Runtime 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md)）、任务编排模块的计划与切换规则（见[Chub 任务编排外置设计](CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md)）、长期 Runtime 无关边界（见[Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)）、Session/Activity 枚举与页面语义（见[Chub Session 状态模型](AI_SESSION_STATE_DESIGN.md)）以及微信路由与收件人身份（见[OpenClaw 定制集成设计](OPENCLAW_CUSTOMIZATION_DESIGN.md)）。
 > 维护说明：独立服务、跨 Web 重启恢复和 Runtime 通用化基线已完成当前范围验收；协议或状态边界变化时按本文末尾复检规则重新验收。
 
 ## 0. AI Agent 快速理解
@@ -204,7 +204,7 @@ Worker 对已交付终态保留有限历史或墓碑，直到 Web 明确确认�
 
 ### 6.1 普通维护重启
 
-电脑端 `chub restart`、微信固定 `restart` / `restart web` 或首页手动重启都只重启 Web 服务。Worker、正在运行的 Runner、翻译 FIFO、确认 FIFO 和实时 tmux Session 保持不变；新 Web 恢复已送达的确认队头与已确认但等待目标可写的任务，且不重复提交。实时终端的旧 `ttyd` 桥由旧实例关闭或新实例启动时清理，用户再次进入 Session 时重新创建桥并 attach 原 tmux。微信 `restart worker` 才执行 Quick Worker 的任务清理与恢复，不影响 Web 或实时终端。升级/恢复清理后的旧逻辑映射则按升级操作保存的旧逻辑 ID 与原生 Session ID 重新绑定仍存在的 Chub tmux。实时终端的完整重连规则以[AI Session 状态模型设计](AI_SESSION_STATE_DESIGN.md)和 Runtime 设计为准。
+电脑端 `chub restart`、微信固定 `restart` / `restart web` 或首页手动重启都只重启 Web 服务。Worker、正在运行的 Runner、翻译 FIFO、确认 FIFO 和实时 tmux Session 保持不变；新 Web 恢复已送达的确认队头与已确认但等待目标可写的任务，且不重复提交。实时终端的旧 `ttyd` 桥由旧实例关闭或新实例启动时清理，用户再次进入 Session 时重新创建桥并 attach 原 tmux。微信 `restart worker` 才执行 Quick Worker 的任务清理与恢复，不影响 Web 或实时终端。升级/恢复清理后的旧逻辑映射则按升级操作保存的旧逻辑 ID 与原生 Session ID 重新绑定仍存在的 Chub tmux。实时终端的完整重连规则以[Chub Session 状态模型设计](AI_SESSION_STATE_DESIGN.md)和 Runtime 设计为准。
 
 新实例健康后通过启动恢复门禁重建状态，再恢复 Session 写入和页面操作。
 

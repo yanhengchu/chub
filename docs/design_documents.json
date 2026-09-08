@@ -38,8 +38,8 @@
     },
     {
       "id": "ai-session-state",
-      "title": "Chub AI Session 状态模型设计",
-      "summary": "定义 Chub AI Session、Activity、交互入口、usage 投影、Session 操作、微信槽位和单 writer 状态语义。",
+      "title": "Chub Session 状态模型设计",
+      "summary": "定义 Chub Session、Native Session 数据消费与映射、Activity、交互入口、usage 投影、操作、微信槽位和单 writer 状态语义。",
       "status": "已验收",
       "path": "AI_SESSION_STATE_DESIGN.md"
     },

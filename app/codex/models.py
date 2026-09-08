@@ -118,6 +118,7 @@ class SessionInfo(BaseModel):
     id: str
     runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
     session_mode: SessionMode = "terminal"
+    discovered: bool = False
     workspace_id: str
     workspace_name: str
     cwd: str
@@ -151,6 +152,28 @@ class SessionCreationAvailability(BaseModel):
     reason: str | None = Field(default=None, max_length=300)
 
 
+class SessionRuntimeGroup(BaseModel):
+    """An enabled Runtime that owns a visible workspace Session group."""
+
+    runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
+    name: str = Field(min_length=1, max_length=128)
+
+
+class NativeSessionInfo(BaseModel):
+    """Public read-only projection of a Runtime-native discovery record."""
+
+    cwd: str
+    title: str | None = Field(default=None, max_length=500)
+    active_permission_mode: PermissionMode | None = None
+    active_model: str | None = Field(default=None, max_length=128)
+    active_reasoning_effort: str | None = Field(default=None, max_length=32)
+    created_at: datetime
+    updated_at: datetime
+    writer_lock_state: Literal["held", "free", "unknown"] = "unknown"
+    chub_writer_lock_state: Literal["held", "free", "unknown"] = "unknown"
+    chub_session_id: str | None = None
+
+
 class SessionListData(BaseModel):
     available: bool
     unavailable_reason: str | None = None
@@ -160,6 +183,8 @@ class SessionListData(BaseModel):
     dependencies: dict[str, bool]
     workspaces: list[WorkspaceInfo]
     sessions: list[SessionInfo]
+    native_sessions: list[NativeSessionInfo] = Field(default_factory=list)
+    runtime_groups: list[SessionRuntimeGroup] = Field(default_factory=list)
 
 
 class RuntimeManagementItem(BaseModel):

@@ -52,6 +52,8 @@
   let creating = false;
   let hasSessionSnapshot = false;
   let sessionsById = new Map();
+  let runtimeSessionGroups = [];
+  let nativeSessions = [];
   const pendingSessionMutations = new Set();
   let activeQuickSessionId = new URL(window.location.href).searchParams.get("session");
   let renameSessionId = null;
@@ -123,10 +125,34 @@
     && Array.isArray(data.workspaces)
   );
 
+  const runtimeGroups = (data) => {
+    if (Array.isArray(data.runtime_groups)) {
+      return data.runtime_groups.filter((group) => (
+        group
+        && typeof group.runtime_id === "string"
+        && typeof group.name === "string"
+        && group.name.trim()
+      ));
+    }
+    // Keep a previously cached Session snapshot usable while upgrading the Web API.
+    return data.runtime_registered ? [{ runtime_id: "codex", name: "Codex" }] : [];
+  };
+
+  const nativeSessionList = (data) => (
+    Array.isArray(data.native_sessions)
+      ? data.native_sessions.filter((session) => (
+        session
+        && typeof session.cwd === "string"
+        && typeof session.created_at === "string"
+        && typeof session.updated_at === "string"
+      ))
+      : []
+  );
+
   const readCachedSessions = () => {
     try {
       const data = JSON.parse(window.sessionStorage.getItem(sessionCacheKey) || "null");
-      return isSessionListData(data) ? data : null;
+      return isSessionListData(data) ? { ...data, native_sessions: [] } : null;
     } catch {
       return null;
     }
@@ -134,7 +160,10 @@
 
   const cacheSessions = (data) => {
     try {
-      window.sessionStorage.setItem(sessionCacheKey, JSON.stringify(data));
+      window.sessionStorage.setItem(
+        sessionCacheKey,
+        JSON.stringify({ ...data, native_sessions: [] }),
+      );
     } catch {
       // The latest server response remains usable when browser storage is unavailable.
     }
@@ -204,6 +233,12 @@
   };
 
   const sessionIsExternallyOccupied = (session) => session.usage?.owner === "external";
+
+  const nativeSessionIsUnavailable = (session) => (
+    session.writer_lock_state === "unknown"
+    || session.chub_writer_lock_state === "unknown"
+    || (session.writer_lock_state === "held" && session.chub_writer_lock_state !== "held")
+  );
 
   const sessionNeedsRefresh = (session) => {
     const usage = session.usage;
@@ -334,7 +369,7 @@
     openSessionActionTrigger = null;
   };
 
-  const toggleSessionActionMenu = (trigger, session, clickPoint = null) => {
+  const toggleSessionActionMenu = (trigger, session, clickPoint = null, { native = false } = {}) => {
     if (sessionIsExternallyOccupied(session)) return;
     const menu = ensureSessionActionMenu();
     const open = menu.hidden || openSessionActionSessionId !== session.id;
@@ -344,6 +379,7 @@
     menu.querySelectorAll("[data-session-action]").forEach((actionButton) => {
       const action = state[actionButton.dataset.sessionAction];
       if (!(actionButton instanceof HTMLButtonElement) || !action) return;
+      actionButton.hidden = native && actionButton.dataset.sessionAction === "rename";
       actionButton.disabled = action.disabled;
       actionButton.title = action.title;
     });
@@ -364,7 +400,7 @@
     menu.style.top = `${top}px`;
     openSessionActionSessionId = session.id;
     openSessionActionTrigger = trigger;
-    menu.querySelector("[data-session-action]:not(:disabled)")?.focus();
+    menu.querySelector("[data-session-action]:not(:disabled):not([hidden])")?.focus();
   };
 
   const quickSessionUrl = (sessionId) => (
@@ -581,71 +617,222 @@
     return row;
   };
 
-  const renderSessions = (sessions) => {
+  const createUnavailableRuntimeCreateButton = (runtimeGroup) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "workspace-preview-create";
+    button.dataset.runtimeId = runtimeGroup.runtime_id;
+    button.disabled = true;
+    button.title = `${runtimeGroup.name} 尚未提供新建 Session 入口。`;
+    button.textContent = "+ New Session";
+    return button;
+  };
+
+  const nativeSessionDetailLines = (session) => [
+    `目录：${session.cwd}`,
+    `属性：${session.active_permission_mode || "未知"} · ${session.active_model || "未知"} · ${session.active_reasoning_effort || "未知"}`,
+    `创建：${new Date(session.created_at).toLocaleString("zh-CN")} · 更新：${new Date(session.updated_at).toLocaleString("zh-CN")}`,
+  ];
+
+  const renderNativeSessions = (items, sessions) => {
+    let group = items.querySelector(':scope > .workspace-preview-session-group[data-session-group="native-sessions"]');
+    if (!sessions.length) {
+      group?.remove();
+      return;
+    }
+    if (!group) {
+      group = document.createElement("section");
+      const heading = document.createElement("p");
+      const list = document.createElement("div");
+      group.className = "workspace-preview-session-group workspace-preview-native-session-group";
+      group.dataset.sessionGroup = "native-sessions";
+      heading.className = "workspace-preview-session-group-title";
+      heading.textContent = "Native Sessions";
+      list.className = "workspace-preview-session-group-list";
+      group.append(heading, list);
+    }
+    const list = group.querySelector(".workspace-preview-session-group-list");
+    if (!(list instanceof HTMLElement)) return;
+    const ordered = [...sessions].sort(
+      (left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at),
+    );
+    list.replaceChildren(...ordered.map((session) => {
+      const row = document.createElement("article");
+      const title = document.createElement("strong");
+      const details = document.createElement("div");
+      const chubSession = typeof session.chub_session_id === "string"
+        ? sessionsById.get(session.chub_session_id)
+        : null;
+      const unavailable = nativeSessionIsUnavailable(session);
+      row.className = "workspace-preview-native-session";
+      row.classList.toggle("is-unavailable", unavailable);
+      title.textContent = session.title || "未命名 Native Session";
+      details.className = "workspace-preview-native-session-details";
+      nativeSessionDetailLines(session).forEach((line) => {
+        const detail = document.createElement("small");
+        const detailText = document.createElement("span");
+        detailText.textContent = line;
+        detail.append(detailText);
+        details.append(detail);
+      });
+      row.append(title, details);
+      row.addEventListener("pointerenter", (event) => {
+        if (event.pointerType !== "mouse") return;
+        row.querySelectorAll(".workspace-preview-native-session small").forEach(updateSessionMarquee);
+      });
+      if (chubSession && !unavailable) {
+        const actions = document.createElement("div");
+        const more = document.createElement("button");
+        const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        row.classList.add("has-actions");
+        actions.className = "workspace-preview-native-session-actions";
+        more.type = "button";
+        more.className = "workspace-preview-session-more";
+        more.setAttribute("aria-label", `更多操作：${title.textContent}`);
+        more.setAttribute("aria-haspopup", "menu");
+        more.setAttribute("aria-expanded", "false");
+        more.title = "更多操作";
+        icon.setAttribute("viewBox", "0 0 24 24");
+        icon.setAttribute("fill", "currentColor");
+        icon.setAttribute("aria-hidden", "true");
+        [5, 12, 19].forEach((cx) => {
+          const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+          dot.setAttribute("cx", String(cx));
+          dot.setAttribute("cy", "12");
+          dot.setAttribute("r", "1.5");
+          icon.append(dot);
+        });
+        more.append(icon);
+        more.addEventListener("click", (event) => {
+          const clickPoint = event.detail > 0 ? { x: event.clientX, y: event.clientY } : null;
+          toggleSessionActionMenu(more, chubSession, clickPoint, { native: true });
+        });
+        actions.append(more);
+        row.append(actions);
+      }
+      return row;
+    }));
+    items.append(group);
+  };
+
+  const renderSessions = (
+    sessions,
+    visibleRuntimeGroups = runtimeSessionGroups,
+    visibleNativeSessions = nativeSessions,
+  ) => {
     const orderedSessions = [...sessions].sort(
       (left, right) => Date.parse(right.created_at) - Date.parse(left.created_at),
     );
     sessionsById = new Map(orderedSessions.map((session) => [session.id, session]));
     renderQuickSessionToolbar(orderedSessions);
 
-    if (!orderedSessions.length) {
-      sessionList.querySelectorAll(":scope > .workspace-preview-session-group").forEach((group) => group.remove());
-      let empty = sessionList.querySelector(":scope > .empty-state");
-      if (!empty) {
-        empty = document.createElement("p");
-        empty.className = "empty-state";
-        empty.textContent = "暂无 Session。";
-        sessionList.append(empty);
-      }
-      return;
-    }
+    const activeRuntimeIds = new Set(visibleRuntimeGroups.map((group) => group.runtime_id));
+    sessionList.querySelectorAll(":scope > .workspace-preview-runtime-session-group").forEach((group) => {
+      if (!activeRuntimeIds.has(group.dataset.runtimeId)) group.remove();
+    });
 
-    sessionList.querySelector(":scope > .empty-state")?.remove();
-    [
-      { mode: "quick", title: "快速会话" },
-      { mode: "terminal", title: "实时会话" },
-    ].forEach(({ mode, title }) => {
-      const groupSessions = orderedSessions.filter((session) => session.session_mode === mode);
-      let group = sessionList.querySelector(`:scope > .workspace-preview-session-group[data-session-mode="${mode}"]`);
-      if (!groupSessions.length) {
-        group?.remove();
-        return;
-      }
-      if (!group) {
-        group = document.createElement("section");
+    visibleRuntimeGroups.forEach((runtimeGroup, runtimeIndex) => {
+      const runtimeId = runtimeGroup.runtime_id;
+      const runtimeSessions = orderedSessions.filter((session) => session.runtime_id === runtimeId);
+      let runtimeContainer = sessionList.querySelector(
+        `:scope > .workspace-preview-runtime-session-group[data-runtime-id="${runtimeId}"]`,
+      );
+      if (!runtimeContainer) {
+        runtimeContainer = document.createElement("section");
         const heading = document.createElement("p");
         const items = document.createElement("div");
-        group.className = "workspace-preview-session-group";
-        group.dataset.sessionMode = mode;
-        heading.className = "workspace-preview-session-group-title";
-        heading.textContent = title;
-        items.className = "workspace-preview-session-group-list";
-        group.append(heading, items);
+        runtimeContainer.className = "workspace-preview-runtime-session-group";
+        runtimeContainer.dataset.runtimeId = runtimeId;
+        heading.className = "workspace-preview-runtime-session-title";
+        items.className = "workspace-preview-runtime-session-list";
+        runtimeContainer.append(heading, items);
       }
-      const items = group.querySelector(".workspace-preview-session-group-list");
-      if (!(items instanceof HTMLElement)) return;
-      const existingRows = new Map(
-        [...items.querySelectorAll(":scope > .workspace-preview-session-row")]
-          .map((row) => [row.dataset.sessionId, row]),
-      );
-      existingRows.forEach((row, sessionId) => {
-        if (!groupSessions.some((session) => session.id === sessionId)) row.remove();
-      });
-      groupSessions.forEach((session, index) => {
-        const row = existingRows.get(session.id) || createSessionButton(session);
-        const button = row.querySelector(".workspace-preview-session");
-        const more = row.querySelector(".workspace-preview-session-more");
-        if (!(button instanceof HTMLButtonElement) || !(more instanceof HTMLButtonElement)) return;
-        updateSessionButton(button, session);
-        more.hidden = sessionIsExternallyOccupied(session);
-        if (more.hidden && openSessionActionSessionId === session.id) closeSessionActionMenu();
-        more.setAttribute("aria-label", `更多操作：${sessionTitle(session)}`);
-        if (items.children[index] !== row) {
-          items.insertBefore(row, items.children[index] || null);
+      const heading = runtimeContainer.querySelector(".workspace-preview-runtime-session-title");
+      const items = runtimeContainer.querySelector(".workspace-preview-runtime-session-list");
+      if (!(heading instanceof HTMLElement) || !(items instanceof HTMLElement)) return;
+      heading.textContent = `${runtimeGroup.name} Sessions`;
+
+      if (runtimeId === "codex") {
+        if (createButton.parentElement !== runtimeContainer) {
+          runtimeContainer.insertBefore(createButton, items);
         }
-      });
-      sessionList.append(group);
+      } else if (!runtimeContainer.querySelector(":scope > .workspace-preview-create")) {
+        runtimeContainer.insertBefore(createUnavailableRuntimeCreateButton(runtimeGroup), items);
+      }
+
+      const runtimeNativeSessions = runtimeId === "codex" ? visibleNativeSessions : [];
+      if (!runtimeSessions.length && !runtimeNativeSessions.length) {
+        items.querySelectorAll(":scope > .workspace-preview-session-group").forEach((group) => group.remove());
+        let empty = items.querySelector(":scope > .empty-state");
+        if (!empty) {
+          empty = document.createElement("p");
+          empty.className = "empty-state";
+          empty.textContent = "暂无 Session。";
+          items.append(empty);
+        }
+      } else {
+        items.querySelector(":scope > .empty-state")?.remove();
+        [
+          {
+            title: "快速会话",
+            matches: (session) => session.session_mode === "quick",
+          },
+          {
+            title: "实时会话",
+            matches: (session) => session.session_mode === "terminal",
+          },
+        ].forEach(({ title, matches }) => {
+          const groupSessions = runtimeSessions.filter(matches);
+          const groupId = title.toLowerCase().replaceAll(" ", "-");
+          let group = items.querySelector(`:scope > .workspace-preview-session-group[data-session-group="${groupId}"]`);
+          if (!groupSessions.length) {
+            group?.remove();
+            return;
+          }
+          if (!group) {
+            group = document.createElement("section");
+            const groupHeading = document.createElement("p");
+            const groupItems = document.createElement("div");
+            group.className = "workspace-preview-session-group";
+            group.dataset.sessionGroup = groupId;
+            groupHeading.className = "workspace-preview-session-group-title";
+            groupHeading.textContent = title;
+            groupItems.className = "workspace-preview-session-group-list";
+            group.append(groupHeading, groupItems);
+          }
+          const groupItems = group.querySelector(".workspace-preview-session-group-list");
+          if (!(groupItems instanceof HTMLElement)) return;
+          const existingRows = new Map(
+            [...groupItems.querySelectorAll(":scope > .workspace-preview-session-row")]
+              .map((row) => [row.dataset.sessionId, row]),
+          );
+          existingRows.forEach((row, sessionId) => {
+            if (!groupSessions.some((session) => session.id === sessionId)) row.remove();
+          });
+          groupSessions.forEach((session, index) => {
+            const row = existingRows.get(session.id) || createSessionButton(session);
+            const button = row.querySelector(".workspace-preview-session");
+            const more = row.querySelector(".workspace-preview-session-more");
+            if (!(button instanceof HTMLButtonElement) || !(more instanceof HTMLButtonElement)) return;
+            updateSessionButton(button, session);
+            more.hidden = sessionIsExternallyOccupied(session);
+            if (more.hidden && openSessionActionSessionId === session.id) closeSessionActionMenu();
+            more.setAttribute("aria-label", `更多操作：${sessionTitle(session)}`);
+            if (groupItems.children[index] !== row) {
+              groupItems.insertBefore(row, groupItems.children[index] || null);
+            }
+          });
+          items.append(group);
+        });
+        renderNativeSessions(items, runtimeNativeSessions);
+      }
+      if (sessionList.children[runtimeIndex] !== runtimeContainer) {
+        sessionList.insertBefore(runtimeContainer, sessionList.children[runtimeIndex] || null);
+      }
     });
+    if (!visibleRuntimeGroups.some((group) => group.runtime_id === "codex")) {
+      createButton.remove();
+    }
   };
 
   const syncCreation = () => {
@@ -707,14 +894,17 @@
   };
 
   const applySessionData = (data, { restoreSelectedSession = false } = {}) => {
-    sessionSection.hidden = !data.runtime_registered;
+    const groups = runtimeGroups(data);
+    runtimeSessionGroups = groups;
+    nativeSessions = nativeSessionList(data);
+    sessionSection.hidden = groups.length === 0;
     creation = {
       quick: data.quick_creation || { available: false },
       terminal: data.terminal_creation || { available: false },
     };
     workspaces = data.workspaces;
     syncCreation();
-    renderSessions(data.sessions);
+    renderSessions(data.sessions, groups, nativeSessions);
     hasSessionSnapshot = true;
     return restoreSelectedSession && restoreSelectedQuickSession(data.sessions);
   };
@@ -741,7 +931,9 @@
         setSidebarMessage(error.message || "会话读取失败，请稍后重试。");
         return;
       }
-      setSidebarMessage("会话状态暂时无法更新，正在显示最近一次列表。");
+      nativeSessions = [];
+      renderSessions([...sessionsById.values()], runtimeSessionGroups, nativeSessions);
+      setSidebarMessage("会话状态暂时无法更新；Native Sessions 暂不展示。");
     }
   };
 

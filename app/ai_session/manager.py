@@ -53,6 +53,7 @@ from app.codex.models import (
     CodexModelCatalogData,
     CodexModelInfo,
     CodexReasoningLevel,
+    NativeSessionInfo,
     SessionMode,
     SessionInfo,
     SessionUsage,
@@ -661,16 +662,60 @@ class AiSessionManager:
         ]
 
     def list_sessions(self) -> list[SessionInfo]:
+        sessions, _native_sessions = self.list_sessions_with_native_sessions()
+        return sessions
+
+    def list_sessions_with_native_sessions(
+        self,
+    ) -> tuple[list[SessionInfo], list[NativeSessionInfo]]:
         with self._lock:
             self._require_store()
             if self._system_upgrade_writes_blocked():
-                return [self._public(session) for session in self.store.list()]
+                return [self._public(session) for session in self.store.list()], []
             self._consume_hook_results()
-            self._sync_bound_native_sessions()
+            native_sessions = self._sync_bound_native_sessions()
             for session in self.store.list():
                 self._refresh_status(session)
                 self._reconcile_quick_activity(session)
-            return [self._public(session) for session in self.store.list()]
+            bound_sessions = {
+                (session.runtime_id, session.native_session_id): session
+                for session in self.store.list()
+                if session.native_session_id is not None
+            }
+
+            def native_writer_state(native: RuntimeNativeSession) -> str:
+                try:
+                    return "held" if self.runtime_adapter.has_active_writer(native.native_session_id) else "free"
+                except RuntimeOperationError:
+                    return "unknown"
+
+            return (
+                [self._public(session) for session in self.store.list()],
+                [
+                    NativeSessionInfo(
+                        cwd=str(item.cwd),
+                        title=item.title,
+                        active_permission_mode=item.active_permission_mode,
+                        active_model=item.active_model,
+                        active_reasoning_effort=item.active_reasoning_effort,
+                        created_at=item.created_at,
+                        updated_at=item.updated_at,
+                        writer_lock_state=native_writer_state(item),
+                        chub_writer_lock_state=(
+                            "held"
+                            if (bound := bound_sessions.get((item.runtime_id, item.native_session_id)))
+                            and self._quick_interaction_is_running(bound.id)
+                            else "free"
+                        ),
+                        chub_session_id=(
+                            bound.id
+                            if (bound := bound_sessions.get((item.runtime_id, item.native_session_id)))
+                            else None
+                        ),
+                    )
+                    for item in native_sessions
+                ],
+            )
 
     def get_session(self, session_id: str, *, reconcile: bool = True) -> AiSession:
         with self._lock:
@@ -765,6 +810,60 @@ class AiSessionManager:
         )
         self.store.save(session)
         return self._public(session)
+
+    def cleanup_translation_sessions_for_replacement(self) -> None:
+        """Delete idle internal translation Sessions before creating a replacement."""
+        with self._lock:
+            self._require_store()
+            translation_sessions = [
+                session
+                for session in self.store.list()
+                if session.workspace_id == "weixin-translation"
+            ]
+            bound_native_ids = {
+                session.native_session_id
+                for session in translation_sessions
+                if session.native_session_id is not None
+            }
+            for session in translation_sessions:
+                if self._quick_interaction_is_running(session.id):
+                    continue
+                try:
+                    if session.native_session_id and self.has_active_writer(
+                        session.native_session_id,
+                        implementation_id=session.implementation_id or "builtin-dev",
+                    ):
+                        continue
+                    self.delete_session(session.id)
+                except Exception:
+                    LOGGER.warning(
+                        "Unable to delete stale internal translation Session",
+                        extra={"session_id": session.id},
+                        exc_info=True,
+                    )
+
+            adapter = self.runtime_adapter
+            try:
+                discovery = adapter.discover_sessions()
+            except RuntimeOperationError:
+                LOGGER.warning("Unable to discover stale translation native Sessions", exc_info=True)
+                return
+            for native in discovery.sessions:
+                if (
+                    native.native_session_id in bound_native_ids
+                    or not self._is_translation_workspace(native.cwd)
+                ):
+                    continue
+                try:
+                    if adapter.has_active_writer(native.native_session_id):
+                        continue
+                    adapter.run_native_action("delete", native.native_session_id)
+                except RuntimeOperationError:
+                    LOGGER.warning(
+                        "Unable to delete stale translation native Session",
+                        extra={"native_session_id": native.native_session_id},
+                        exc_info=True,
+                    )
 
     def discard_unstarted_session(self, session_id: str) -> bool:
         with self._lock:
@@ -1873,6 +1972,7 @@ class AiSessionManager:
         return SessionInfo(
             id=session.id,
             runtime_id=session.runtime_id,
+            discovered=session.discovered,
             workspace_id=session.workspace_id,
             workspace_name=session.workspace_name,
             cwd=str(session.cwd),
@@ -2072,7 +2172,7 @@ class AiSessionManager:
             self.store.save(session)
         self._remove_hook_file(session_id)
 
-    def _sync_bound_native_sessions(self) -> None:
+    def _sync_bound_native_sessions(self) -> tuple[RuntimeNativeSession, ...]:
         stored = self._remove_stale_translation_discoveries(self.store.list())
         default_implementation_id = self.default_implementation_id
         implementation_ids = {
@@ -2088,8 +2188,6 @@ class AiSessionManager:
             try:
                 discovery = adapter.discover_sessions()
             except RuntimeOperationError as exc:
-                if implementation_id == default_implementation_id:
-                    raise self._runtime_api_error(exc) from exc
                 LOGGER.warning(
                     "Unable to discover Sessions for a bound Runtime implementation",
                     extra={"implementation_id": implementation_id},
@@ -2197,6 +2295,7 @@ class AiSessionManager:
             if changed:
                 session.updated_at = utc_now()
                 self.store.save(session)
+        return default_discovery.sessions if default_discovery is not None else ()
 
     def _session_from_native(
         self,

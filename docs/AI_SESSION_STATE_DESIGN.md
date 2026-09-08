@@ -1,13 +1,13 @@
-# Chub AI Session 状态模型设计
+# Chub Session 状态模型设计
 
 > 状态：已验收
 > 主要读者：AI Agent、实现和排障 Agent；维护人员用于确认 Session 的核心状态和展示边界。
-> 本文负责：Chub 逻辑 Session、原生 Session 映射、入口类型、Activity、使用状态投影、首页展示语义和 Session 操作定义。
-> 本文不负责：操作的接口编排和实现细节、Runtime ZIP 的导入/覆盖/删除和引用保护、任务编排模块、Runtime 私有协议、Quick Worker 任务恢复与通知、终端桥接实现、升级流程和微信路由；这些内容以对应专项文档为准。
+> 本文负责：Chub 逻辑 Session、对 Native Session 数据的只读消费与映射、入口类型、Activity、使用状态投影、首页展示语义和 Session 操作定义。
+> 本文不负责：Native Session 的发现来源、字段解析、读取性能与 Runtime 私有协议，操作的接口编排和实现细节、Runtime ZIP 的导入/覆盖/删除和引用保护、任务编排模块、Quick Worker 任务恢复与通知、终端桥接实现、升级流程和微信路由；这些内容以对应专项文档为准。
 
 ## 1. 核心定义
 
-Chub Session 是 Chub 管理的一条逻辑记录，可以关联一个 Runtime 的原生 Session，也可以暂时没有原生 Session。
+Chub Session 是 Chub 管理的一条逻辑记录，可以关联一个 Runtime 的 Native Session，也可以暂时没有 Native Session。Native Session 是 Runtime 的原生数据，Chub 不拥有也不修改其内容；Chub 只保存自身逻辑记录、不透明的绑定标识，以及用于 Chub Session 展示和执行的派生投影字段。派生字段属于 Chub 记录，不能写回、覆盖或替代 Native Session 原始数据。
 
 标识含义固定如下：
 
@@ -18,7 +18,9 @@ Chub Session 是 Chub 管理的一条逻辑记录，可以关联一个 Runtime �
 
 同一 `(runtime_id, native_session_id)` 只能绑定一条 Chub Session。找不到映射时，不得根据标题、工作目录或页面位置猜测归属。
 
-原生 Session 与 Chub 逻辑记录通过三条链路汇聚，用户列表统一展示为 Session，不再区分“内部/外部”产品类型：
+Native Session 数据的发现、字段来源和失败语义以 [Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md) 的 `native_session_mapping` 契约及具体 Runtime 专属设计为准。Session Manager 对一轮发现结果只有两类使用：按 Runtime 分组投影独立只读的 Native Sessions 列表，以及依照下列认领规则建立或校正 Chub 自有映射和派生字段。Native Sessions 中的一项本身不是 Chub Session；即使同一原生 Session 后续被自动发现导入为 `terminal` 记录，两者仍分别代表 Runtime 原生数据和 Chub 逻辑记录。原生项的 Runtime 归属来自外层分组，不向原生记录写入 `implementation_id`。
+
+Chub Session 可以通过三条链路获得或确认 Native Session 映射：
 
 | 链路 | 先出现的身份 | 原生 ID 的权威确认 | 未被确认时的处理 |
 | --- | --- | --- | --- |
@@ -26,15 +28,15 @@ Chub Session 是 Chub 管理的一条逻辑记录，可以关联一个 Runtime �
 | 实时终端 | Chub `terminal` Session | 当前 Chub 终端 Hook 回传的原生 ID | 自动发现短暂观察，不创建重复记录 |
 | 原生自动发现 | Runtime 原生 ID | Runtime Adapter 发现结果 | 确认没有上述待回传认领后，创建并绑定 `terminal` 记录 |
 
-自动发现可继续展示 Runtime 中已有的原生 Session，但不是 Quick Worker 或终端 Hook 的替代 writer。发现到未知原生 ID 且存在正在等待原生 ID 的 Quick 任务或实时终端时，只在内存中短暂观察；该窗口只延迟该条未知发现项的展示，不阻塞 Runtime、Worker、列表、其他 Session 或原生写入。Worker/Hook 认领时，直接绑定到原有逻辑记录；超过固定短窗口仍未被认领时，才创建一条可接管的 `terminal` 记录。重启导致观察缓存丢失只会重新开始观察，不能据此猜测归属。
+自动发现可继续把 Runtime 中已有的原生 Session 导入为 Chub `terminal` 记录，但不是 Quick Worker 或终端 Hook 的替代 writer。发现到未知原生 ID 且存在正在等待原生 ID 的 Quick 任务或实时终端时，只在内存中短暂观察；该窗口只延迟该条未知发现项创建 Chub 记录，不阻塞 Runtime、Worker、列表、其他 Session 或原生写入。Worker/Hook 认领时，直接绑定到原有逻辑记录；超过固定短窗口仍未被认领时，才创建一条可接管的 `terminal` 记录。重启导致观察缓存丢失只会重新开始观察，不能据此猜测归属。
 
 每次实际新建实时终端载体前（包括重启终端后端），Session Manager 生成并持久化一个新的 `terminal_launch_id`；Launcher 与 Hook 必须原样传递，只有当前代次的 Hook 能为未绑定 terminal 认领原生 ID。停止终端会使该代次失效；迟到、缺失或不匹配的 Hook 只被丢弃，不能修改映射。Quick Worker 在每次任务启动前登记当前 `worker_task_id`，无论该 Session 是否已绑定原生 ID；回传原生 ID 时同时提供 Worker 的 `execution_id`，Manager 只接受仍与该 Session 登记匹配的任务/执行代次。Web 从本地任务状态恢复进行中的 Quick 任务时，必须先重建同一认领，再开始向 Worker 对账。任务终态会释放未完成的认领，旧任务结果不得绑定后续 Session 状态。
 
-创建 Chub 映射不等于接管 writer。自动发现的原生 Session 有外部 writer 时显示“其他应用 · 正在使用”；writer 释放后，同一记录在实时会话分组内显示“等待输入”，用户进入时 Chub 才接管终端 writer。writer 检查失败只能显示未知，不能当作空闲；未知状态只阻止当前无法安全尝试的双写或破坏操作，不能阻止其他 Session、默认 Runtime 切换、Runtime ZIP 覆盖、开发重载或该 native session 的只读观察。`discovered` 仅是内部来源元数据，不改变用户可见的 Session 类型或列表位置。
+创建 Chub 映射不等于接管 writer。自动发现的原生 Session 有外部 writer 时显示“其他应用 · 正在使用”；writer 释放后，同一实时会话记录显示“等待输入”，用户进入时 Chub 才接管终端 writer。writer 检查失败只能显示未知，不能当作空闲；未知状态只阻止当前无法安全尝试的双写或破坏操作，不能阻止其他 Session、默认 Runtime 切换、Runtime ZIP 覆盖、开发重载或该 native session 的只读观察。`discovered` 是 Chub Session 的内部来源元数据，不改变逻辑 Session 类型、列表位置、原生 ID 保密边界或接管规则。
 
 Web 启动恢复时，若当前记录的原生 Session 与一个 Chub 命名 tmux 载体的固定 Chub 标识及 `resume` 目标同时匹配，Chub 必须将该载体重绑到当前逻辑 Session 并显示为 Chub 持有的实时会话，而不是“其他应用”。重绑只恢复 Chub 的载体归属，不关闭 Codex、不改变原生 Session，也不匹配或接管不带 Chub 标识的进程；维护者随后可在页面正常进入、归档或删除该 Session。活动阶段仍未知时，不把停止入口错误开放为可安全停止。无法完成这一窄匹配时，仍按外部占用处理。
 
-普通 Session 的 native ID 不允许被不同结果替换；内部翻译 Session 仍复用同一逻辑 Session，但 Worker 可以为新的只读翻译执行返回新的 native ID。只有确认旧 native Session 没有活动 writer 且新 ID 未被其他 Chub Session 占用时，才更新当前绑定。轮换只替换 Chub 当前映射，不主动删除或归档旧 native Session；唯一例外是 4.1 定义的、历史误导入记录的固定启动清理。旧 ID 不再作为该逻辑 Session 的当前入口，未来如需扩展清理范围必须另行定义并复检原生数据边界。
+普通 Session 的 native ID 不允许被不同结果替换；内部翻译 Session 仍复用同一逻辑 Session，但 Worker 可以为新的只读翻译执行返回新的 native ID。只有确认旧 native Session 没有活动 writer 且新 ID 未被其他 Chub Session 占用时，才更新当前绑定。轮换只替换 Chub 当前映射。确需新建内部翻译 Session 时，先清理旧翻译工作目录中的空闲逻辑和原生 Session：直接删除，仍有 writer、任务或状态未知的项保留且不阻塞新建。旧 ID 不再作为该逻辑 Session 的当前入口。
 
 每条 Session 创建时固定一种入口类型：
 
@@ -117,7 +119,7 @@ Web 启动恢复时，若当前记录的原生 Session 与一个 Chub 命名 tmu
 
 ### 3.1 首页展示文案
 
-首页按“快速会话”和“实时会话”分组，分组标题是类型的唯一展示位置。每条 Session 副文案只显示状态和相对时间，不重复“快速交互”或“实时终端”前缀。展示优先级固定为：外部占用、占用未知、Session 异常、已确认的 Chub 执行或终端持有、活动未知、空闲。两类会话空闲时统一展示“等待输入”。
+首页按已启用 Runtime 分组展示 Chub Session；每个 Runtime 分组内再按“快速会话”和“实时会话”展示 Chub Session，自动发现创建的实时记录仍在“实时会话”。Runtime 分组底部追加该 Runtime 的只读 `Native Sessions` 列表，投影 Runtime 当前返回的工作目录、标题、权限、模型、推理等级、创建和更新时间，不公开原生 ID，也不提供 Session 操作。前端只展示接口返回项，不将 Native Session 的展示状态写回或反推为 Chub Session 状态。当前生产只有 Codex，故只展示 Codex 分组；接入其他 Runtime 时按同一结构新增分组，不混入 Codex。原生发现的数据来源、失败边界和投影规则以 [Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md) 的 `native_session_mapping` 契约为准。Chub Session 副文案只显示状态和相对时间，不重复入口前缀。展示优先级固定为：外部占用、占用未知、Session 异常、已确认的 Chub 执行或终端持有、活动未知、空闲。两类 Chub 会话空闲时统一展示“等待输入”。
 
 | 共享状态 | 含义 |
 | --- | --- |
@@ -213,7 +215,7 @@ Web 启动恢复时，若当前记录的原生 Session 与一个 Chub 命名 tmu
 
 - `title`、权限、工作目录和槽位是 Session 元数据，不改变 `status`、`activity` 或原生上下文。
 - `weixin_session_slot` 是 `S1`–`S9` 的后端分配结果；列表位置和标题不能生成槽位。
-- 首页在各自分组内按创建时间倒序展示 Session，类型只由“快速会话”和“实时会话”分组标题表达。
+- 首页在“快速会话”和“实时会话”内按创建时间倒序展示 Chub Session；`Native Sessions` 按 Runtime 返回的原生更新时间倒序展示。
 - 内部翻译 Session 可以使用固定的 `quick` 记录，但不进入用户首页列表或微信槽位。
 - Web 启动完成 Quick Worker 恢复后，会一次性清理历史上被误导入为普通 `runtime-session` 的翻译记录。仅当记录同时命中固定旧翻译工作目录、固定翻译提示词和历史自动发现标记，且 Worker、原生 writer 均确认空闲时，才先归档原生 Session、再移除 Chub 记录；状态未知、仍在使用或归档无法确认时保持原样，留待下次启动复查。该维护动作不会按标题模糊匹配，也不清理当前内部翻译 Session。
 
