@@ -64,7 +64,10 @@ def settings(tmp_path: Path) -> Settings:
             },
         }
     )
-    archive = build_codex_runtime_zip(tmp_path / "codex-runtime.zip")
+    archive = build_codex_runtime_zip(
+        tmp_path / "codex-runtime.zip",
+        description="测试用 Codex Runtime 正式版本。",
+    )
     service = ExternalRuntimeModuleService(resolved)
     activation = service.install(archive.read_bytes(), source_name=archive.name)
     service.finalize(activation)

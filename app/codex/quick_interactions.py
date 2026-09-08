@@ -465,32 +465,42 @@ class QuickInteractionManager:
                         "quick_interaction_in_progress",
                         "该会话已有快速交互任务正在执行。",
                     )
+            selected_implementation_id = getattr(session, "implementation_id", None)
+            if not isinstance(selected_implementation_id, str):
+                resolve_session_implementation = getattr(
+                    self.codex_manager,
+                    "session_implementation_id",
+                    None,
+                )
+                resolved_implementation_id = (
+                    resolve_session_implementation(session_id)
+                    if callable(resolve_session_implementation)
+                    else None
+                )
+                selected_implementation_id = (
+                    resolved_implementation_id
+                    if isinstance(resolved_implementation_id, str)
+                    else "builtin-dev"
+                )
+            if implementation_id is not None and implementation_id != selected_implementation_id:
+                raise ApiError(
+                    409,
+                    "runtime_implementation_session_bound",
+                    "该 Chub Session 已绑定其他 Runtime 版本，请新建 Session 后再使用该版本。",
+                )
             if (
                 not queued_translation
-                and self.codex_manager.has_active_writer(session.native_session_id)
+                and self.codex_manager.has_active_writer(
+                    session.native_session_id,
+                    implementation_id=selected_implementation_id,
+                )
             ):
                 raise ApiError(
                     409,
                     "quick_interaction_writer_active",
                     ACTIVE_WRITER_ERROR,
                 )
-            if implementation_id is None:
-                resolve_default = getattr(
-                    self.codex_manager,
-                    "default_submission_implementation_id",
-                    None,
-                )
-                selected_implementation_id = (
-                    resolve_default() if callable(resolve_default) else "builtin-dev"
-                )
-                if not isinstance(selected_implementation_id, str):
-                    selected_implementation_id = "builtin-dev"
-            else:
-                selected_implementation_id = implementation_id
-            if implementation_id is None:
-                self.codex_manager.prepare_quick_interaction()
-            else:
-                self.codex_manager.prepare_quick_interaction(selected_implementation_id)
+            self.codex_manager.prepare_quick_interaction(selected_implementation_id)
             ensure_compatible = getattr(
                 self.codex_manager,
                 "ensure_session_implementation_compatible",

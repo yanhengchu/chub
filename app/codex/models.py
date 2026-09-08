@@ -179,6 +179,7 @@ class RuntimeImplementationItem(BaseModel):
     implementation_id: str = Field(pattern=RUNTIME_ID_PATTERN)
     name: str = Field(min_length=1, max_length=128)
     version: str = Field(min_length=1, max_length=64)
+    description: str = Field(min_length=1, max_length=300)
     enabled: bool
     healthy: bool
     is_default: bool
@@ -380,7 +381,6 @@ class QuickInteractionRequest(BaseModel):
 
     prompt: str = Field(min_length=1, max_length=8000)
     confirm_stop_unknown_terminal: bool = False
-    implementation_id: str | None = Field(default=None, pattern=RUNTIME_ID_PATTERN)
 
     @field_validator("prompt")
     @classmethod

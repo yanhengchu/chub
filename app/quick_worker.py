@@ -43,8 +43,8 @@ from app.services.operation_log import write_operation
 
 
 HEALTH_PROTOCOL_VERSION = 1
-PROTOCOL_VERSION = 10
-WORKER_CODE_VERSION = "quick-worker-10-runtime-refresh"
+PROTOCOL_VERSION = 11
+WORKER_CODE_VERSION = "quick-worker-11-runtime-maintenance"
 MAX_REQUEST_BYTES = 64 * 1024
 MAX_RESPONSE_BYTES = 256 * 1024
 CLIENT_TIMEOUT_SECONDS = 2.0
@@ -119,6 +119,7 @@ class WorkerRuntimeRegistryRefreshRequest(_StrictModel):
     action: Literal["runtime_registry_refresh"]
     implementation_id: str = Field(pattern=r"^[a-z][a-z0-9-]{0,31}$")
     expected_present: bool
+    reload_builtin_source: bool = False
 
 
 class WorkerTaskGetRequest(_StrictModel):
@@ -306,10 +307,12 @@ class QuickWorkerServer:
                     if codex_home is not None
                     else Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
                 )
-                def build_registry() -> WorkerRuntimeRegistry:
+                def build_registry(*, reload_builtin_source: bool = False) -> WorkerRuntimeRegistry:
                     runners = []
                     runtime_modules, failures = ExternalRuntimeModuleService(settings).build_registry(
-                        BuiltinRuntimeModuleRegistry([load_builtin_codex_module(settings)])
+                        BuiltinRuntimeModuleRegistry([
+                            load_builtin_codex_module(settings, reload_source=reload_builtin_source)
+                        ])
                     )
                     for failure in failures:
                         LOGGER.warning("Runtime module unavailable: module_id=%s reason=%s", failure.module_id, failure.reason)
@@ -487,6 +490,7 @@ class QuickWorkerServer:
         implementation_id: str,
         *,
         expected_present: bool,
+        reload_builtin_source: bool = False,
     ) -> None:
         """Reload trusted Runtime modules without interrupting other implementations."""
         if self._runtime_registry_factory is None:
@@ -500,13 +504,7 @@ class QuickWorkerServer:
                     "worker_draining", "Worker is not accepting Runtime maintenance."
                 )
             async with self.task_manager._lock:
-                active = self.task_manager.list(limit=100, active_only=True)
-                if any(task.implementation_id == implementation_id for task in active):
-                    raise WorkerTaskError(
-                        "runtime_implementation_busy",
-                        "The Runtime implementation still has active tasks.",
-                    )
-                discovered = self._runtime_registry_factory()
+                discovered = self._runtime_registry_factory(reload_builtin_source=reload_builtin_source)
                 registered = implementation_id in discovered.implementation_ids()
                 if registered != expected_present:
                     raise WorkerTaskError(
@@ -515,6 +513,12 @@ class QuickWorkerServer:
                     )
                 if expected_present:
                     discovered.require(implementation_id)
+                active = self.task_manager.list(limit=100, active_only=True)
+                if any(task.implementation_id == implementation_id for task in active):
+                    raise WorkerTaskError(
+                        "runtime_implementation_busy",
+                        "The Runtime implementation still has active tasks.",
+                    )
                 # Active tasks retain the Runner they obtained at launch. Keep
                 # every unrelated registered Runner object as well, so a
                 # target-version maintenance operation cannot alter another
@@ -794,6 +798,7 @@ class QuickWorkerServer:
             await self.refresh_runtime_registry(
                 request.implementation_id,
                 expected_present=request.expected_present,
+                reload_builtin_source=request.reload_builtin_source,
             )
             return {
                 "implementation_id": request.implementation_id,
@@ -946,6 +951,7 @@ async def refresh_runtime_registry(
     *,
     implementation_id: str,
     expected_present: bool,
+    reload_builtin_source: bool = False,
 ) -> dict[str, object]:
     return await worker_request(
         settings,
@@ -955,6 +961,7 @@ async def refresh_runtime_registry(
             "action": "runtime_registry_refresh",
             "implementation_id": implementation_id,
             "expected_present": expected_present,
+            "reload_builtin_source": reload_builtin_source,
         },
     )
 

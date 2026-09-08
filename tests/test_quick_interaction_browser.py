@@ -149,6 +149,7 @@ def _task(
     result: str,
     created_at: str,
     *,
+    implementation_id: str = "builtin-dev",
     notification_status: str = "sent",
 ) -> dict:
     return {
@@ -157,6 +158,7 @@ def _task(
         "prompt": prompt,
         "result": result,
         "error": None,
+        "implementation_id": implementation_id,
         "created_at": created_at,
         "updated_at": created_at,
         "notification_status": notification_status,
@@ -185,6 +187,7 @@ class ConversationApi:
                     "Latest question",
                     "Latest answer",
                     "2026-08-15T08:20:00Z",
+                    implementation_id="codex-010001",
                     notification_status="failed",
                 ),
             ],
@@ -576,6 +579,42 @@ async def test_conversation_layout_in_managed_chrome(
         for target in layout["touchTargets"]
     )
     assert layout["titleVisible"] is True
+    assert page_errors == []
+
+
+async def test_conversation_task_footer_shows_task_runtime_before_notification(
+    conversation_browser_server: str,
+) -> None:
+    api = ConversationApi()
+    browser_session = session_factory()
+    async with browser_session(ensure_page=False) as chrome:
+        context, page, page_errors = await _open_conversation(
+            chrome.browser,
+            conversation_browser_server,
+            api,
+            theme="standard",
+            viewport=(1280, 900),
+        )
+        try:
+            task = page.locator('[data-task-id="task-3"]')
+            info = task.locator(".conversation-assistant-info")
+            notification = task.locator(".conversation-notification")
+            await expect(info).to_contain_text("Runtime：codex-010001")
+            await expect(notification).to_have_text("通知失败")
+            positions = await task.locator(".conversation-assistant-meta").evaluate(
+                """meta => {
+                    const info = meta.querySelector(".conversation-assistant-info");
+                    const notification = meta.querySelector(".conversation-notification");
+                    return {
+                        infoRight: info.getBoundingClientRect().right,
+                        notificationLeft: notification.getBoundingClientRect().left,
+                    };
+                }"""
+            )
+        finally:
+            await context.close()
+
+    assert positions["infoRight"] < positions["notificationLeft"]
     assert page_errors == []
 
 

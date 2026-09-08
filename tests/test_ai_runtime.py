@@ -1,5 +1,6 @@
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -35,6 +36,7 @@ from app.codex.models import (
     CodexSession,
 )
 from chub_codex_runtime.runtime_adapter import CodexRuntimeAdapter
+from chub_codex_runtime.runtime_adapter import CODEX_RUNTIME_DESCRIPTOR
 from chub_codex_runtime.runtime_runner import CodexRuntimeRunner
 from app.core.config import Settings
 from app.core.response import ApiError
@@ -442,8 +444,10 @@ def test_session_manager_keeps_codex_adapter_when_a_healthy_external_runtime_loa
     assert manager.runtime_modules.runtime_ids() == ("codex", "healthy-runtime")
 
 
-def test_session_manager_allows_default_version_change_when_runtime_is_stopped(
+@pytest.mark.parametrize("terminal_activity", ["working", "unknown"])
+def test_session_manager_allows_default_version_change_while_terminal_uses_current_version(
     settings: Settings,
+    terminal_activity: str,
 ) -> None:
     manager = AiSessionManager(settings)
     modules = BuiltinRuntimeModuleRegistry(
@@ -461,8 +465,16 @@ def test_session_manager_allows_default_version_change_when_runtime_is_stopped(
             ),
         ]
     )
-    builtin = StubRuntime("codex", implementation_id="builtin-dev")
-    formal = StubRuntime("codex", implementation_id="codex-010001")
+    builtin = CodexRuntimeAdapter(settings)
+    formal = CodexRuntimeAdapter(
+        settings,
+        descriptor=CODEX_RUNTIME_DESCRIPTOR.model_copy(
+            update={"implementation_id": "codex-010001"}
+        ),
+    )
+    available_status = RuntimeStatus(runtime_id="codex", available=True)
+    builtin.status = MagicMock(return_value=available_status)
+    formal.status = MagicMock(return_value=available_status)
     manager.runtime_modules = modules
     manager.runtime_registry = RuntimeRegistry([builtin, formal])
     manager.runtime_adapters = {
@@ -475,14 +487,57 @@ def test_session_manager_allows_default_version_change_when_runtime_is_stopped(
         RuntimeImplementationPreferences(default_implementation_id="builtin-dev")
     )
     manager.runtime_enablement.save(RuntimeEnablement(disabled_runtime_ids=["codex"]))
+    manager.store.list = MagicMock(
+        return_value=[
+            SimpleNamespace(
+                id="terminal-session",
+                runtime_id="codex",
+                activity=terminal_activity,
+            )
+        ]
+    )
+    supervisor = manager.supervisor
+    supervisor.owns_terminal_writer = MagicMock(return_value=True)
+    supervisor.close = MagicMock()
 
     result = manager.update_default_implementation("codex-010001")
 
     assert result.default_implementation_id == "codex-010001"
+    selected = next(
+        item for item in result.implementations
+        if item.implementation_id == "codex-010001"
+    )
+    assert selected.description == "codex description"
     assert manager.default_implementation_id == "codex-010001"
+    assert manager.runtime_adapter is formal
+    assert manager.supervisor is supervisor
+    assert supervisor.runtime_adapter is formal
+    supervisor.close.assert_not_called()
     with pytest.raises(ApiError) as rejected:
         manager.require_implementation_submission("codex-010001")
     assert rejected.value.code == "ai_runtime_disabled"
+
+
+def test_session_manager_pins_new_sessions_to_the_default_implementation(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+
+    first = manager.create_session(
+        "chub",
+        permission_mode="full-access",
+        session_mode="quick",
+    )
+    manager.update_default_implementation("codex-010000")
+    second = manager.create_session(
+        "chub",
+        permission_mode="full-access",
+        session_mode="quick",
+    )
+
+    assert manager.get_session(first.id).implementation_id == "builtin-dev"
+    assert manager.session_implementation_id(first.id) == "builtin-dev"
+    assert manager.get_session(second.id).implementation_id == "codex-010000"
 
 
 def test_session_manager_starts_with_builtin_runtime_when_no_formal_version_is_installed(settings: Settings) -> None:

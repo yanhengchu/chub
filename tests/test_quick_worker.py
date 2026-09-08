@@ -1841,6 +1841,60 @@ async def test_translation_queue_is_fifo_and_uses_latest_native_session(
 
 
 @pytest.mark.anyio
+async def test_runtime_maintenance_rejects_a_queued_target_task(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    codex_home = tmp_path / "codex-home"
+    server = QuickWorkerServer(
+        settings,
+        codex_workspaces={"isolated": workspace},
+        codex_executable=_fake_codex(tmp_path),
+        codex_home=codex_home,
+    )
+    release_supervisor = asyncio.Event()
+
+    async def keep_task_queued(_task_id: str) -> None:
+        await release_supervisor.wait()
+
+    monkeypatch.setattr(server.task_manager, "_launch_and_monitor", keep_task_queued)
+    await server.start()
+    task_id = new_worker_task_id()
+    try:
+        submitted = await _submit_codex(
+            settings,
+            task_id=task_id,
+            session_id="maintenance-translation-session",
+            prompt="queued",
+            task_kind="translation",
+            queue_key="maintenance-translation-queue",
+            queue_limit=1,
+            queue_wait_seconds=5,
+        )
+        assert submitted["success"] is True
+        queued = await _request(settings, "task_get", task_id=task_id)
+        assert queued["data"]["task"]["status"] == "queued"
+
+        refreshed = await _request(
+            settings,
+            "runtime_registry_refresh",
+            implementation_id="builtin-dev",
+            expected_present=True,
+        )
+
+        assert refreshed["success"] is False
+        assert refreshed["error"]["code"] == "runtime_implementation_busy"
+        still_queued = await _request(settings, "task_get", task_id=task_id)
+        assert still_queued["data"]["task"]["status"] == "queued"
+    finally:
+        release_supervisor.set()
+        await server.close()
+
+
+@pytest.mark.anyio
 async def test_worker_drain_waits_for_accepted_translation_queue(
     settings,
     tmp_path: Path,

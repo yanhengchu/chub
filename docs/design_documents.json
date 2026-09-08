@@ -25,8 +25,8 @@
     {
       "id": "chub-external-module",
       "title": "Chub AI Runtime 外置模块功能设计",
-      "summary": "定义当前 Runtime ZIP 的安装、替换、双端注册确认和状态清理边界；第一阶段已验收。",
-      "status": "第一阶段已验收",
+      "summary": "定义 Runtime 版本槽位、默认实现选择、ZIP 覆盖、开发重载和双端注册边界。",
+      "status": "持续维护",
       "path": "CHUB_EXTERNAL_MODULE_DESIGN.md"
     },
     {

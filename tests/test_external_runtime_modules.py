@@ -11,6 +11,7 @@ import pytest
 
 from app.ai_runtime import BuiltinRuntimeModuleRegistry
 from app.ai_runtime.external_modules import ExternalRuntimeModuleService, RuntimeModuleInstallError
+from scripts.build_codex_runtime_zip import build as build_codex_runtime_zip
 
 
 @pytest.fixture(autouse=True)
@@ -25,17 +26,18 @@ def _remove_fixture_runtime_implementations(settings) -> None:
 def _runtime_archive(
     settings,
     *,
-    module_id: str = "local-test",
+    module_id: str = "codex-010001",
     chub_version: str | None = None,
     version: str = "1.0.0",
     dependencies: bool = False,
+    compatibility_id: str = "codex-v1",
 ) -> bytes:
     manifest = {
         "protocol_version": 1,
         "module_id": module_id,
         "runtime_id": "codex",
         "implementation_id": module_id,
-        "native_session_compatibility_id": "codex-v1",
+        "native_session_compatibility_id": compatibility_id,
         "module_type": "runtime",
         "display_name": "Local Test",
         "description": "Local Runtime test module.",
@@ -50,7 +52,7 @@ from app.ai_runtime import RuntimeDescriptor, RuntimeStatus
 from chub_codex_runtime.runtime_adapter import CodexRuntimeAdapter, CODEX_RUNTIME_CAPABILITIES
 from chub_codex_runtime.worker_runtime import CodexWorkerRuntime
 
-DESCRIPTOR = RuntimeDescriptor(runtime_id="codex", implementation_id="{module_id}", native_session_compatibility_id="codex-v1", capabilities=CODEX_RUNTIME_CAPABILITIES)
+DESCRIPTOR = RuntimeDescriptor(runtime_id="codex", implementation_id="{module_id}", native_session_compatibility_id="{compatibility_id}", capabilities=CODEX_RUNTIME_CAPABILITIES)
 
 class Adapter(CodexRuntimeAdapter):
     @property
@@ -148,15 +150,29 @@ def test_runtime_zip_installs_and_discovers_a_non_default_module(settings) -> No
     service.finalize(activation)
     installed, failures = service.discover()
 
-    assert activation.installed.manifest.module_id == "local-test"
-    assert [item.manifest.module_id for item in installed] == ["local-test"]
+    assert activation.installed.manifest.module_id == "codex-010001"
+    assert [item.manifest.module_id for item in installed] == ["codex-010001"]
     assert failures == ()
+
+
+def test_runtime_zip_rejects_cover_with_a_different_native_compatibility_group(
+    settings,
+) -> None:
+    service = ExternalRuntimeModuleService(settings)
+    first = service.install(_runtime_archive(settings), source_name="first.zip")
+    service.finalize(first)
+
+    with pytest.raises(RuntimeModuleInstallError, match="原生 Session 兼容组"):
+        service.install(
+            _runtime_archive(settings, compatibility_id="codex-v2"),
+            source_name="incompatible.zip",
+        )
 
 
 def test_external_runtime_registers_as_a_codex_implementation(settings) -> None:
     service = ExternalRuntimeModuleService(settings)
     activation = service.install(
-        _runtime_archive(settings, module_id="default-test"),
+        _runtime_archive(settings, module_id="codex-010002"),
         source_name="default.zip",
     )
     service.finalize(activation)
@@ -164,7 +180,7 @@ def test_external_runtime_registers_as_a_codex_implementation(settings) -> None:
     registry, failures = service.build_registry(BuiltinRuntimeModuleRegistry())
 
     assert registry.runtime_ids() == ("codex",)
-    assert registry.require("default-test").descriptor.runtime_id == "codex"
+    assert registry.require("codex-010002").descriptor.runtime_id == "codex"
     assert failures == ()
 
 
@@ -173,12 +189,12 @@ def test_runtime_modules_with_same_package_name_are_loaded_in_isolated_namespace
 ) -> None:
     service = ExternalRuntimeModuleService(settings)
     first = service.install(
-        _namespaced_runtime_archive(settings, module_id="first-test", label="First"),
+        _namespaced_runtime_archive(settings, module_id="codex-010003", label="First"),
         source_name="first.zip",
     )
     service.finalize(first)
     second = service.install(
-        _namespaced_runtime_archive(settings, module_id="second-test", label="Second"),
+        _namespaced_runtime_archive(settings, module_id="codex-010004", label="Second"),
         source_name="second.zip",
     )
     service.finalize(second)
@@ -186,8 +202,8 @@ def test_runtime_modules_with_same_package_name_are_loaded_in_isolated_namespace
     installed, failures = service.discover()
 
     assert [(item.manifest.module_id, item.module.display_name) for item in installed] == [
-        ("first-test", "First Runtime"),
-        ("second-test", "Second Runtime"),
+        ("codex-010003", "First Runtime"),
+        ("codex-010004", "Second Runtime"),
     ]
     assert failures == ()
 
@@ -218,12 +234,22 @@ def test_runtime_zip_rejects_incompatible_chub_version(settings) -> None:
     assert "不兼容" in raised.value.message
 
 
+def test_codex_runtime_zip_rejects_non_versioned_implementation_id(settings) -> None:
+    with pytest.raises(RuntimeModuleInstallError) as raised:
+        ExternalRuntimeModuleService(settings).inspect_archive(
+            _runtime_archive(settings, module_id="codex-dev"),
+            source_name="invalid-id.zip",
+        )
+
+    assert raised.value.code == "runtime_module_install_invalid"
+
+
 def test_runtime_zip_preview_reads_manifest_without_installing(settings) -> None:
     service = ExternalRuntimeModuleService(settings)
 
     preview = service.inspect_archive(_runtime_archive(settings), source_name="local.zip")
 
-    assert preview.module_id == "local-test"
+    assert preview.module_id == "codex-010001"
     assert preview.name == "Local Test"
     assert list((service.runtimes_dir / "codex").iterdir()) == []
     assert list(service.staging_dir.iterdir()) == []
@@ -234,12 +260,12 @@ def test_runtime_module_removal_can_be_rolled_back_or_finalized(settings) -> Non
     activation = service.install(_runtime_archive(settings), source_name="local.zip")
     service.finalize(activation)
 
-    removal = service.remove("local-test", operation_id="b" * 32)
+    removal = service.remove("codex-010001", operation_id="b" * 32)
     service.rollback_removal(removal)
     restored, _ = service.discover()
-    assert [item.manifest.module_id for item in restored] == ["local-test"]
+    assert [item.manifest.module_id for item in restored] == ["codex-010001"]
 
-    removal = service.remove("local-test", operation_id="c" * 32)
+    removal = service.remove("codex-010001", operation_id="c" * 32)
     service.finalize_removal(removal)
     removed, failures = service.discover()
     assert removed == ()
@@ -314,12 +340,12 @@ def test_dependency_failure_during_replacement_preserves_installed_runtime(
 def test_damaged_installed_runtime_is_isolated_from_other_runtimes(settings) -> None:
     service = ExternalRuntimeModuleService(settings)
     healthy = service.install(
-        _runtime_archive(settings, module_id="healthy-test"),
+        _runtime_archive(settings, module_id="codex-010005"),
         source_name="healthy.zip",
     )
     service.finalize(healthy)
     damaged = service.install(
-        _runtime_archive(settings, module_id="damaged-test"),
+        _runtime_archive(settings, module_id="codex-010006"),
         source_name="damaged.zip",
     )
     service.finalize(damaged)
@@ -328,10 +354,10 @@ def test_damaged_installed_runtime_is_isolated_from_other_runtimes(settings) -> 
     installed, failures = service.discover()
     registry, registry_failures = service.build_registry(BuiltinRuntimeModuleRegistry())
 
-    assert [item.manifest.module_id for item in installed] == ["healthy-test"]
-    assert [failure.module_id for failure in failures] == ["damaged-test"]
+    assert [item.manifest.module_id for item in installed] == ["codex-010005"]
+    assert [failure.module_id for failure in failures] == ["codex-010006"]
     assert registry.runtime_ids() == ("codex",)
-    assert [failure.module_id for failure in registry_failures] == ["damaged-test"]
+    assert [failure.module_id for failure in registry_failures] == ["codex-010006"]
 
 
 def test_generated_verification_runtime_zip_is_installable(settings, tmp_path: Path) -> None:
@@ -371,6 +397,8 @@ def test_generated_codex_runtime_zip_loads_the_packaged_runtime_implementation(
             "scripts/build_codex_runtime_zip.py",
             "--output",
             str(output),
+            "--description",
+            "测试构建的 Codex Runtime 正式版本。",
         ],
         check=False,
         capture_output=True,
@@ -391,6 +419,7 @@ def test_generated_codex_runtime_zip_loads_the_packaged_runtime_implementation(
     assert adapter.__class__.__module__.startswith("_chub_runtime_codex_010000.")
     assert runner.__class__.__module__.startswith("_chub_runtime_codex_010000.")
     assert runner.__class__.__module__.endswith("worker_runtime")
+    assert module.description == "测试构建的 Codex Runtime 正式版本。"
     assert "worker_entry.py" in runner.build_launch.__code__.co_consts
     with zipfile.ZipFile(output) as archive:
         for name in archive.namelist():
@@ -400,6 +429,14 @@ def test_generated_codex_runtime_zip_loads_the_packaged_runtime_implementation(
         assert b"class SessionListData" not in models
         assert b"class QuickInteractionTask" not in models
         assert b"class RuntimeManagementData" not in models
+
+
+def test_codex_runtime_zip_builder_requires_a_release_summary(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="release summary"):
+        build_codex_runtime_zip(
+            tmp_path / "codex-runtime.zip",
+            description="   ",
+        )
 
 
 def test_incomplete_runtime_activation_is_restored_on_next_service_instance(
@@ -420,7 +457,7 @@ def test_incomplete_runtime_activation_is_restored_on_next_service_instance(
     assert replacement.installed.manifest.version == "2.0.0"
     assert recovery is not None
     assert recovery.operation_id == "a" * 32
-    assert recovery.module_id == "local-test"
+    assert recovery.module_id == "codex-010001"
     assert recovery.action == "install_runtime_module"
     assert [item.manifest.version for item in installed] == ["1.0.0"]
     assert failures == ()
@@ -430,14 +467,14 @@ def test_incomplete_runtime_removal_is_restored_with_removal_action(settings) ->
     service = ExternalRuntimeModuleService(settings)
     activation = service.install(_runtime_archive(settings), source_name="local.zip")
     service.finalize(activation)
-    service.remove("local-test", operation_id="b" * 32)
+    service.remove("codex-010001", operation_id="b" * 32)
 
     recovery = ExternalRuntimeModuleService(settings).recover_incomplete_activation()
     installed, failures = ExternalRuntimeModuleService(settings).discover()
 
     assert recovery is not None
     assert recovery.action == "remove_runtime_module"
-    assert [item.manifest.module_id for item in installed] == ["local-test"]
+    assert [item.manifest.module_id for item in installed] == ["codex-010001"]
     assert failures == ()
 
 
@@ -462,7 +499,7 @@ def test_runtime_state_cleanup_record_survives_service_recreation(settings) -> N
     service.begin_state_cleanup(
         operation_id="d" * 32,
         action="remove_runtime_module",
-        module_id="local-test",
+        module_id="codex-010001",
         session_ids=("session-1", "session-2"),
     )
 
@@ -471,7 +508,7 @@ def test_runtime_state_cleanup_record_survives_service_recreation(settings) -> N
     assert pending is not None
     assert pending.operation_id == "d" * 32
     assert pending.action == "remove_runtime_module"
-    assert pending.module_id == "local-test"
+    assert pending.module_id == "codex-010001"
     assert pending.session_ids == ("session-1", "session-2")
 
     ExternalRuntimeModuleService(settings).complete_state_cleanup("d" * 32)

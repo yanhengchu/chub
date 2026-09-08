@@ -33,6 +33,7 @@
       task.result,
       task.error,
       task.error_source,
+      task.implementation_id,
       task.notification_status,
       task.notification_error,
       task.deferred_restart_status,
@@ -95,6 +96,7 @@
       createdTime: core.formatTime(task.created_at),
       assistantText: hasResult ? task.result || task.error : core.statusText(task),
       assistantTime: core.formatTime(task.updated_at),
+      runtime: `Runtime：${task.implementation_id || "未知"}`,
       errorSource: sourceVisible
         ? ERROR_SOURCE_LABELS[task.error_source] || "来源未确认"
         : "",
@@ -177,7 +179,10 @@
       if (state.errorSource) {
         assistantInfo.append(createMeta(`错误来源：${state.errorSource}`));
       }
-      assistantInfo.append(createMeta(state.assistantTime));
+      assistantInfo.append(
+        createMeta(state.assistantTime),
+        createMeta(state.runtime),
+      );
       assistantContent.textContent = state.assistantText;
       if (state.statusOnly) {
         assistantBubble.classList.add("is-status");

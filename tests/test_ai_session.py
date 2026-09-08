@@ -457,7 +457,7 @@ def test_ai_session_manager_defers_discovery_while_terminal_is_binding(
     terminal.status = "running"
     manager.store.save(terminal)
     manager.supervisor.owns_terminal_writer = MagicMock(
-        side_effect=lambda session_id: session_id == terminal.id
+        side_effect=lambda session_id, **_kwargs: session_id == terminal.id
     )
     native = RuntimeNativeSession(
         runtime_id="codex",
@@ -1457,7 +1457,7 @@ def test_terminal_hook_adopts_discovery_created_during_terminal_start(
     manager.store.save(terminal)
     manager.store.save(discovered)
     manager.supervisor.owns_terminal_writer = MagicMock(
-        side_effect=lambda session_id: session_id == terminal.id
+        side_effect=lambda session_id, **_kwargs: session_id == terminal.id
     )
     manager.runtime_adapter.hook_dir.mkdir(parents=True)
     hook_path = manager.runtime_adapter.hook_dir / f"{terminal.id}.json"
@@ -1704,6 +1704,31 @@ def test_ai_session_manager_removes_externally_archived_native_session(
     manager.supervisor.stop_backend.assert_called_once_with(created.id)
 
 
+def test_ai_session_manager_syncs_bound_session_when_default_runtime_is_unavailable(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    created = session(settings.ai_runtime.codex.workspace, native_session_id="native-1")
+    created.implementation_id = "codex-010001"
+    manager.store.save(created)
+    formal = MagicMock()
+    formal.status.return_value = RuntimeStatus(runtime_id="codex", available=True)
+    formal.read_activity_event.return_value = None
+    formal.discover_sessions.return_value = RuntimeSessionDiscoveryResult(
+        sessions=(),
+        archive_states={"native-1": False},
+    )
+    manager.runtime_adapters["codex-010001"] = formal
+    manager.runtime_adapter.status = MagicMock(
+        return_value=RuntimeStatus(runtime_id="codex", available=False)
+    )
+
+    sessions = manager.list_sessions()
+
+    assert [item.id for item in sessions] == [created.id]
+    formal.discover_sessions.assert_called_once_with()
+
+
 def test_ai_session_manager_recovers_chub_terminal_carrier_after_session_reset(
     settings: Settings,
 ) -> None:
@@ -1816,10 +1841,14 @@ def test_ai_session_manager_reenters_owned_terminal_without_runtime_writer_probe
     manager.ensure_terminal(created.id)
 
     manager.runtime_adapter.has_active_writer.assert_not_called()
-    manager.supervisor.owns_terminal_writer.assert_called_once_with(created.id)
+    manager.supervisor.owns_terminal_writer.assert_called_once_with(
+        created.id,
+        runtime_adapter=manager.runtime_adapter,
+    )
     manager.supervisor.ensure_terminal.assert_called_once_with(
         created,
         max_running=settings.ai_runtime.codex.max_running,
+        runtime_adapter=manager.runtime_adapter,
     )
 
 
@@ -1839,10 +1868,14 @@ def test_ai_session_manager_reenters_terminal_without_probing_native_writer(
 
     manager.ensure_terminal(created.id)
 
-    manager.supervisor.owns_terminal_writer.assert_called_once_with(created.id)
+    manager.supervisor.owns_terminal_writer.assert_called_once_with(
+        created.id,
+        runtime_adapter=manager.runtime_adapter,
+    )
     manager.supervisor.ensure_terminal.assert_called_once_with(
         created,
         max_running=settings.ai_runtime.codex.max_running,
+        runtime_adapter=manager.runtime_adapter,
     )
 
 
@@ -1868,6 +1901,7 @@ def test_ai_session_manager_restarts_terminal_with_new_launch_generation(
     manager.supervisor.restart_terminal_backend.assert_called_once_with(
         refreshed,
         max_running=settings.ai_runtime.codex.max_running,
+        runtime_adapter=manager.runtime_adapter,
     )
 
 
@@ -2139,6 +2173,28 @@ def test_system_upgrade_reconciles_an_already_archived_native_session(
 
     assert outcome == "archived"
     assert manager.store.get(created.id) is None
+    manager.runtime_adapter.run_native_action.assert_not_called()
+
+
+def test_system_upgrade_archives_with_the_session_bound_runtime_adapter(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    created = session(settings.ai_runtime.codex.workspace, native_session_id="native-1")
+    created.implementation_id = "codex-010001"
+    manager.store.save(created)
+    formal = MagicMock()
+    formal.status.return_value = RuntimeStatus(runtime_id="codex", available=True)
+    formal.discovery.session_archive_states.return_value = {"native-1": False}
+    manager.runtime_adapters["codex-010001"] = formal
+    manager.stop_session = MagicMock()
+    manager.runtime_adapter.run_native_action = MagicMock()
+
+    outcome = manager.archive_session_for_system_upgrade(created.id, "native-1")
+
+    assert outcome == "archived"
+    formal.validate_native_session_id.assert_called_once_with("native-1")
+    formal.run_native_action.assert_called_once_with("archive", "native-1")
     manager.runtime_adapter.run_native_action.assert_not_called()
 
 

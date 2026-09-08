@@ -226,7 +226,9 @@ def test_submit_allows_new_session_and_prepares_managed_profile(
     assert task.status == "requested"
     assert task.prompt == "执行第一条任务"
     assert task.summary == "执行第一条任务"
-    quick_interactions.codex_manager.prepare_quick_interaction.assert_called_once_with()
+    quick_interactions.codex_manager.prepare_quick_interaction.assert_called_once_with(
+        "builtin-dev"
+    )
     quick_interactions.codex_manager.set_initial_quick_interaction_title.assert_called_once_with(
         session.id,
         "执行第一条任务",

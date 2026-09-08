@@ -279,6 +279,7 @@ async def _mock_workspace_api_with_quick_sessions(route) -> None:
         "success": True,
         "data": {
             "available": True,
+            "runtime_registered": True,
             "quick_creation": {"available": True},
             "terminal_creation": {"available": True},
             "workspaces": [{"id": "chub", "name": "Chub", "available": True}],
@@ -386,7 +387,9 @@ async def test_task_orchestration_opens_from_ai_runtime_settings_navigation(
             else:
                 await page.get_by_role("link", name="微信任务润色").click()
             await expect(page).to_have_url(re.compile(r"/settings/task-orchestration"))
-            await expect(page.locator("#workspace-task-orchestration-title")).to_be_visible()
+            await expect(
+                page.get_by_role("region", name="微信任务润色"),
+            ).to_be_visible()
             await expect(page.locator("#workspace-task-processing-value")).to_have_text(
                 "自动润色后执行",
             )
@@ -545,6 +548,119 @@ async def test_runtime_settings_keep_registered_description_when_status_is_unava
         finally:
             await context.close()
 
+    assert page_errors == []
+
+
+async def test_codex_default_runtime_selection_persists_the_selected_implementation(
+    workspace_browser_server: str,
+) -> None:
+    browser_session = session_factory()
+    selected_implementation = "builtin-dev"
+    updates: list[str] = []
+
+    def implementations_response() -> dict[str, object]:
+        return {
+            "success": True,
+            "data": {
+                "default_implementation_id": selected_implementation,
+                "implementations": [
+                    {
+                        "implementation_id": "builtin-dev",
+                        "name": "Codex",
+                        "version": "dev",
+                        "description": "开发实现。",
+                        "enabled": True,
+                        "healthy": True,
+                        "is_default": selected_implementation == "builtin-dev",
+                        "compatibility_id": "codex-v1",
+                        "removable": False,
+                        "reason": None,
+                    },
+                    {
+                        "implementation_id": "codex-010001",
+                        "name": "Codex",
+                        "version": "1.0.1",
+                        "description": "正式版本。",
+                        "enabled": True,
+                        "healthy": True,
+                        "is_default": selected_implementation == "codex-010001",
+                        "compatibility_id": "codex-v1",
+                        "removable": True,
+                        "reason": None,
+                    },
+                ],
+            },
+        }
+
+    async def route_runtime_selection(route) -> None:
+        nonlocal selected_implementation
+        request = route.request
+        path = urlsplit(request.url).path
+        if path == "/api/codex/runtime-implementations/default":
+            if request.method == "PUT":
+                payload = json.loads(request.post_data or "{}")
+                selected_implementation = payload["implementation_id"]
+                updates.append(selected_implementation)
+            await route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(implementations_response()),
+            )
+            return
+        if path == "/api/codex/runtime-implementations":
+            await route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(implementations_response()),
+            )
+            return
+        if path == "/api/runtime-modules":
+            await route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"success": True, "data": {"modules": []}}),
+            )
+            return
+        if path == "/api/runtime-modules/builtin-dev/refresh-availability":
+            await route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"success": True, "data": {"available": True, "reason": None}}),
+            )
+            return
+        await _mock_workspace_api(route)
+
+    async with browser_session(ensure_page=False) as chrome:
+        context = await chrome.browser.new_context(
+            viewport={"width": 1280, "height": 900},
+            reduced_motion="reduce",
+        )
+        try:
+            await context.route(
+                f"{workspace_browser_server}/api/**",
+                route_runtime_selection,
+            )
+            page = await context.new_page()
+            page_errors: list[str] = []
+            page.on("pageerror", lambda error: page_errors.append(str(error)))
+            response = await page.goto(
+                f"{workspace_browser_server}/settings/runtime/codex",
+                wait_until="domcontentloaded",
+            )
+            assert response is not None and response.status == 200
+            select = page.locator("#codex-default-runtime-implementation")
+            await expect(select).to_have_value("builtin-dev")
+            await page.locator(".settings-choice-picker-trigger").click()
+            await page.locator(
+                ".settings-choice-picker-menu [role='option']",
+            ).filter(has_text="Codex · 1.0.1").click()
+            await expect(select).to_have_value("codex-010001")
+            await page.reload(wait_until="domcontentloaded")
+            await expect(select).to_have_value("codex-010001")
+        finally:
+            await context.close()
+
+    assert updates == ["codex-010001"]
     assert page_errors == []
 
 

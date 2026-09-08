@@ -486,7 +486,6 @@ async def submit_quick_interaction(
                     payload.prompt,
                     operation_id=operation_id,
                     source_ip=source_ip,
-                    implementation_id=payload.implementation_id,
                 )
 
         task = await asyncio.to_thread(submit_codex)

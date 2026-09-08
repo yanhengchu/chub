@@ -295,7 +295,7 @@ def test_registered_project_documents_exist() -> None:
     )
     assert any(
         document.id == "chub-external-module"
-        and document.status == "第一阶段已验收"
+        and document.status == "持续维护"
         for document in documents
     )
 

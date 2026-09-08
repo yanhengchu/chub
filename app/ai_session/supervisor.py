@@ -20,22 +20,32 @@ class InteractiveSupervisor:
 
     def __init__(self, runtime_adapter, *, ticket_ttl_seconds: int = 600) -> None:
         self.runtime_adapter = runtime_adapter
-        display_name = getattr(runtime_adapter, "display_name", None)
-        descriptor = getattr(runtime_adapter, "descriptor", None)
-        descriptor_id = getattr(descriptor, "runtime_id", None)
-        self.runtime_name = (
-            display_name
-            if isinstance(display_name, str) and display_name
-            else descriptor_id
-            if isinstance(descriptor_id, str) and descriptor_id
-            else "Runtime"
-        )
+        self.runtime_name = self._runtime_name(runtime_adapter)
         self.tickets = TerminalTicketStore(ticket_ttl_seconds)
         self.connections = TerminalConnectionRegistry()
         self._lock = threading.RLock()
         self._processes: dict[str, subprocess.Popen[bytes]] = {}
         self._ports: dict[str, int] = {}
         self._known_session_ids: set[str] = set()
+
+    @staticmethod
+    def _runtime_name(runtime_adapter) -> str:
+        display_name = getattr(runtime_adapter, "display_name", None)
+        descriptor = getattr(runtime_adapter, "descriptor", None)
+        descriptor_id = getattr(descriptor, "runtime_id", None)
+        return (
+            display_name
+            if isinstance(display_name, str) and display_name
+            else descriptor_id
+            if isinstance(descriptor_id, str) and descriptor_id
+            else "Runtime"
+        )
+
+    def set_runtime_adapter(self, runtime_adapter) -> None:
+        """Use an updated default only for terminal work started after the switch."""
+        with self._lock:
+            self.runtime_adapter = runtime_adapter
+            self.runtime_name = self._runtime_name(runtime_adapter)
 
     def reconcile_after_restart(self, sessions: Iterable[AiSession]) -> set[str]:
         """Stop stale Web-owned ttyd children and report still-running tmux Sessions."""
@@ -48,8 +58,16 @@ class InteractiveSupervisor:
                     running.add(session.id)
         return running
 
-    def ensure_terminal(self, session: AiSession, *, max_running: int) -> int:
+    def ensure_terminal(
+        self,
+        session: AiSession,
+        *,
+        max_running: int,
+        runtime_adapter=None,
+    ) -> int:
         with self._lock:
+            adapter = runtime_adapter or self.runtime_adapter
+            runtime_name = self._runtime_name(adapter)
             self._known_session_ids.add(session.id)
             existing = self._processes.get(session.id)
             port = self._ports.get(session.id)
@@ -71,11 +89,11 @@ class InteractiveSupervisor:
                 raise ApiError(
                     409,
                     "codex_session_limit",
-                    f"Too many {self.runtime_name} terminals are running",
+                    f"Too many {runtime_name} terminals are running",
                 )
             port = self._available_port()
             try:
-                process_spec = self.runtime_adapter.terminal_command(
+                process_spec = adapter.terminal_command(
                     RuntimeTerminalRequest(
                         session_id=session.id,
                         launch_id=session.terminal_launch_id,
@@ -100,10 +118,20 @@ class InteractiveSupervisor:
             self._ports[session.id] = port
             return port
 
-    def restart_terminal_backend(self, session: AiSession, *, max_running: int) -> int:
+    def restart_terminal_backend(
+        self,
+        session: AiSession,
+        *,
+        max_running: int,
+        runtime_adapter=None,
+    ) -> int:
         with self._lock:
             self.stop_backend(session.id)
-            return self.ensure_terminal(session, max_running=max_running)
+            return self.ensure_terminal(
+                session,
+                max_running=max_running,
+                runtime_adapter=runtime_adapter,
+            )
 
     def stop_backend(self, session_id: str) -> None:
         with self._lock:
@@ -153,7 +181,7 @@ class InteractiveSupervisor:
         with self._lock:
             return self._tmux_running(session_id)
 
-    def owns_terminal_writer(self, session_id: str) -> bool:
+    def owns_terminal_writer(self, session_id: str, *, runtime_adapter=None) -> bool:
         """Identify a live terminal writer that was launched by Chub.
 
         A detached tmux session is the normal proof. If a browser disconnect
@@ -162,6 +190,7 @@ class InteractiveSupervisor:
         carry an explicit ``quick`` source and never qualify here.
         """
         with self._lock:
+            adapter = runtime_adapter or self.runtime_adapter
             if self._tmux_running(session_id):
                 return True
             try:
@@ -179,7 +208,7 @@ class InteractiveSupervisor:
                         continue
                     if environment.get("CHUB_ACTIVITY_SOURCE") == "quick":
                         continue
-                    if self.runtime_adapter.runtime_process_matches(tuple(command)):
+                    if adapter.runtime_process_matches(tuple(command)):
                         return True
             except (psutil.Error, OSError):
                 return False

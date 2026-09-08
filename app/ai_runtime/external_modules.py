@@ -17,7 +17,7 @@ from pathlib import Path, PurePosixPath
 from typing import Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from app.ai_runtime.contracts import RuntimeOperationError
 from app.ai_runtime.modules import BuiltinRuntimeModule, BuiltinRuntimeModuleRegistry
@@ -34,6 +34,7 @@ MODULE_PROTOCOL_VERSION = 1
 MAX_MANIFEST_BYTES = 32 * 1024
 MAX_ARCHIVE_MEMBERS = 500
 RUNTIME_MODULE_ID_PATTERN = r"^[a-z][a-z0-9-]{0,31}$"
+CODEX_FORMAL_IMPLEMENTATION_ID_PATTERN = r"^codex-[0-9]{6}$"
 _MODULE_IMPORT_LOCK = threading.RLock()
 
 
@@ -63,6 +64,15 @@ class _Manifest(BaseModel):
         max_length=200,
     )
     dependencies: str | None = Field(default=None, max_length=160)
+
+    @model_validator(mode="after")
+    def validate_codex_implementation_identity(self) -> _Manifest:
+        if self.runtime_id == "codex" and re.fullmatch(
+            CODEX_FORMAL_IMPLEMENTATION_ID_PATTERN,
+            self.implementation_id,
+        ) is None:
+            raise ValueError("Codex 正式 Runtime 版本标识必须为 codex- 加六位数字。")
+        return self
 
 
 class _InstallMetadata(BaseModel):
@@ -329,6 +339,16 @@ class ExternalRuntimeModuleService:
             self._write_metadata(content, manifest, safe_name)
             destination = self.runtimes_dir / manifest.runtime_id / manifest.implementation_id
             destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if destination.exists():
+                previous_manifest = self._read_manifest(destination)
+                if (
+                    previous_manifest.runtime_id != manifest.runtime_id
+                    or previous_manifest.native_session_compatibility_id
+                    != manifest.native_session_compatibility_id
+                ):
+                    raise self._invalid(
+                        "覆盖同一 Runtime 版本必须保持原生 Session 兼容组。"
+                    )
             backup = self.staging_dir / f"{manifest.implementation_id}.previous.{uuid4().hex}"
             previous_root: Path | None = None
             resolved_operation_id = operation_id or uuid4().hex

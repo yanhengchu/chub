@@ -53,6 +53,9 @@ class AiSession(_StrictModel):
     # Runtime IDs are opaque to Chub. The current backend writes ``codex``;
     # persisted records must still carry an explicit owner.
     runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
+    # New Sessions pin one concrete implementation. ``None`` is retained only
+    # for persisted Sessions created before implementation pinning existed.
+    implementation_id: str | None = Field(default=None, pattern=RUNTIME_ID_PATTERN)
     session_mode: SessionMode
     native_session_id: str | None = Field(
         default=None,

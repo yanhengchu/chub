@@ -3,7 +3,7 @@
 > 状态：已验收
 > 主要读者：AI Agent、实现和排障 Agent；维护人员用于确认运行边界和验收结果。
 > 本文负责：Chub Quick Worker 独立服务的职责、任务权威状态、Session 租约、恢复、通知终态和重启语义，遵循[Chub 总体架构](CHUB_ARCHITECTURE_DESIGN.md)。
-> 本文不负责：Runtime ZIP 协议、模块安装/移除、注册确认和模块状态清理（见[Chub AI Runtime 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md)）、任务编排模块的计划与切换规则（见[Chub 任务编排外置设计](CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md)）、长期 Runtime 无关边界（见[Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)）、Session/Activity 枚举与页面语义（见[AI Session 状态模型](AI_SESSION_STATE_DESIGN.md)）以及微信路由与收件人身份（见[OpenClaw 定制集成设计](OPENCLAW_CUSTOMIZATION_DESIGN.md)）。
+> 本文不负责：Runtime ZIP 协议、导入/覆盖/删除、注册确认和引用保护（见[Chub AI Runtime 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md)）、任务编排模块的计划与切换规则（见[Chub 任务编排外置设计](CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md)）、长期 Runtime 无关边界（见[Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)）、Session/Activity 枚举与页面语义（见[AI Session 状态模型](AI_SESSION_STATE_DESIGN.md)）以及微信路由与收件人身份（见[OpenClaw 定制集成设计](OPENCLAW_CUSTOMIZATION_DESIGN.md)）。
 > 维护说明：独立服务、跨 Web 重启恢复和 Runtime 通用化基线已完成当前范围验收；协议或状态边界变化时按本文末尾复检规则重新验收。
 
 ## 0. AI Agent 快速理解
@@ -11,8 +11,8 @@
 把本文当作 Quick Worker 服务的运行契约，而不是某个页面或某个脚本的说明：
 
 1. Quick Worker 属于 AI Runtime 层，是与 Chub Web 独立运行的本机后台服务。核心层入口负责认证、业务校验、提交和页面投影；Worker 负责任务、Session 租约、Runner 进程、超时、取消、恢复和最终状态。
-2. 页面快速交互、经第三方服务层进入的微信 Chub 非实时任务和翻译任务都进入 Worker；核心层入口不得回退执行。Worker 只执行核心已校验并持久化的任务快照；当前 Runtime 模块与未来任务编排模块的安装、替换或移除流程不由 Worker 文档定义。
-3. 同一逻辑 Session 只能有一个 writer。快速交互提交、实时终端建立连接和恢复流程都必须经过 Worker 租约与实时连接的最终仲裁，不能只依赖页面按钮状态；当前 Quick Worker 在自己的 Session 租约内可以完成自己的原生 ID 绑定，其他 writer 不得被接管。内部翻译 Session 仍复用逻辑 Session，但允许在旧 native Session 空闲且新 ID 未被占用时轮换绑定。
+2. 页面快速交互、经第三方服务层进入的微信 Chub 非实时任务和翻译任务都进入 Worker；核心层入口不得回退执行。Worker 只执行核心已校验并持久化的任务快照，其中必须包含创建 Session 时固定的 Runtime 版本槽位；当前 Runtime 模块的覆盖、开发重载和删除流程不由 Worker 文档定义。
+3. 同一逻辑 Session 同时最多一个 Chub writer。快速交互提交、实时终端建立连接和恢复流程都必须经过 Worker 租约与实时连接的最终仲裁，不能只依赖页面按钮状态；租约只避免 Chub 重复提交或双写，不取代 native session 的最终状态，也不能因旧租约、历史任务或短暂未知状态长期锁住 Session。当前 Quick Worker 在自己的 Session 租约内可以完成自己的原生 ID 绑定，其他 writer 不得被接管。内部翻译 Session 仍复用逻辑 Session，但允许在旧 native Session 空闲且新 ID 未被占用时轮换绑定。
 4. Web 重启不会主动停止 Worker 或已接受任务。新 Web 必须完成 Worker 健康、协议、活动任务、租约、通知和重启状态恢复后，才开放快速交互 Session 写入；实时终端按独立的 Codex PTY/tmux 状态恢复。
 5. 普通任务提交、取消和交付在 Worker 或状态不可确认时必须失败关闭：不猜测任务成功、不重复提交、不在 Web 内执行、不切换 Session 或通知收件人。固定的 Worker 重启是恢复入口，允许在不可用状态下尝试重建，但最终结果仍必须确认。
 6. 任务终态、通知终态、Web 重启终态和 Worker 重启终态分别确认；“进程已创建”“任务已受理”或“HTTP 200”都不是成功。
@@ -140,6 +140,7 @@ accepted -> starting -> running -> succeeded
 - Codex Session 映射与基础元数据：AI Session Store。
 - 实时连接、tmux 和实时写入者：现有实时连接管理。
 - 页面 `working`、结果提示和时间线：Web 对权威状态的可恢复投影。
+- Runtime 槽位选择：AI Session Store 在创建时固定；Worker 只从任务快照执行和记录，不能因默认 Runtime 改变、ZIP 覆盖或开发重载而改投、重试或重写已有任务。
 
 ### 4.2 提交与幂等
 
@@ -148,6 +149,8 @@ accepted -> starting -> running -> succeeded
 3. 租约可用时接受任务；已有快速任务或实时写入者时返回明确冲突。
 4. Web 在提交响应不确定时使用相同任务 ID 查询，不创建第二个任务。
 5. Worker 进入终态后释放租约，Web 再恢复 Session 的可提交状态。
+
+租约冲突只拒绝当前重复 Chub 写入；它不阻止默认 Runtime 切换、无任务槽位的 ZIP 覆盖或开发重载、其他 Session 的任务或 native session 的独立运行。Worker 不能以“维护中”状态替代 Runtime 源码生命周期门禁；目标槽位有排队或运行任务时，覆盖或重载由模块入口拒绝，活动任务继续持有已取得的 Runner，新任务按所属 Session 的槽位选择 Runner。
 
 提交响应超时只表示 Web 未及时收到回执，不表示 Worker 未接收任务。Web 必须保留本次稳定任务 ID 和 Session 占用，以同一 ID 重试或查询；Worker 返回匹配任务后直接接管观察并继续正常交付，绝不因为原回执丢失而取消该任务。短时主动核验有固定次数上限；超过上限后，任务持久化为“正在核验”，由常驻对账以同一 ID 查询或幂等补交，Web 重启后继续该流程。页面和微信均将其作为已受理但尚未确认的状态，并提示不要重复提交。只有 Worker 明确拒绝且查询确认不存在该任务时，才将其收敛为“未提交”。
 

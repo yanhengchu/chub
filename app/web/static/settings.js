@@ -30,6 +30,7 @@ const codexDefaultRuntimeImplementation = document.querySelector(
   "#codex-default-runtime-implementation",
 );
 const codexRuntimeVersionList = document.querySelector("#codex-runtime-version-list");
+const codexBuiltinRuntimeRefresh = document.querySelector("#codex-builtin-runtime-refresh");
 const codexRuntimeSettingsMessage = document.querySelector(
   "#codex-runtime-settings-message",
 );
@@ -301,6 +302,10 @@ function renderRuntimeManagement(data) {
   const runtimeId = runtimeManagementList.dataset.runtimeId || "";
   const runtimes = (Array.isArray(data?.runtimes) ? data.runtimes : [])
     .filter((runtime) => !runtimeId || runtime.runtime_id === runtimeId);
+  if (runtimeId === "codex") {
+    codexRuntimeEnabled = runtimes.find((runtime) => runtime.runtime_id === "codex")?.enabled === true;
+    renderRuntimeModules();
+  }
   runtimeManagementList.replaceChildren();
   for (const runtime of runtimes) {
     const field = document.createElement("label");
@@ -400,6 +405,8 @@ function runtimeModuleRow(module, { candidate = false } = {}) {
 let runtimeModuleCandidate = null;
 let runtimeModuleBusy = false;
 let runtimeModuleData = { modules: [] };
+let codexRuntimeEnabled = null;
+let builtinRuntimeRefreshAvailability = { available: false, reason: "正在检查开发代码加载条件。" };
 
 function showRuntimeModuleToast(text, kind = "info") {
   window.showChubToast?.(text, { kind });
@@ -415,7 +422,28 @@ function versionTitle(item) {
   return `${item.name} · ${item.version}`;
 }
 
+function implementationTitle(item) {
+  return `${item.name} · ${item.implementation_id} · ${item.version}`;
+}
+
+function implementationDescription(item) {
+  if (item.implementation_id === "builtin-dev") {
+    return "开发实现：直接加载本项目当前的 Codex Runtime 源码，适用于开发与验证。";
+  }
+  return `已导入正式版本：${item.description || "用于处理 Codex AI 任务。"}`;
+}
+
 function renderCodexRuntimeVersions(implementations) {
+  if (codexBuiltinRuntimeRefresh instanceof HTMLButtonElement) {
+    const unavailableReason = builtinRuntimeRefreshAvailability.reason || "开发代码暂不可重新加载。";
+    codexBuiltinRuntimeRefresh.disabled = runtimeModuleBusy
+      || codexRuntimeEnabled !== true
+      || builtinRuntimeRefreshAvailability.available !== true;
+    codexBuiltinRuntimeRefresh.title = codexBuiltinRuntimeRefresh.disabled && !runtimeModuleBusy
+      ? unavailableReason
+      : "重新加载本项目中的 Codex Runtime 开发代码。";
+    codexBuiltinRuntimeRefresh.textContent = runtimeModuleBusy ? "正在重新加载" : "重新加载开发代码";
+  }
   if (!(codexRuntimeVersionList instanceof HTMLElement)) return;
   const versions = Array.isArray(implementations?.implementations)
     ? implementations.implementations
@@ -443,8 +471,10 @@ function renderCodexRuntimeVersions(implementations) {
     titleLine.className = "settings-integration-title";
     const title = document.createElement("strong");
     const detail = document.createElement("small");
-    title.textContent = versionTitle(item);
-    detail.textContent = item.healthy ? item.implementation_id : (item.reason || "版本不可用。");
+    title.textContent = implementationTitle(item);
+    detail.textContent = item.healthy
+      ? implementationDescription(item)
+      : (item.reason || "版本不可用。");
     titleLine.append(title);
     if (item.is_default) {
       const badge = document.createElement("span");
@@ -479,7 +509,10 @@ function renderCodexRuntimeVersions(implementations) {
         });
         await loadRuntimeModules();
       } catch (error) {
-        setCodexRuntimeSettingsMessage(error instanceof Error ? error.message : "Runtime 版本状态未能更新。", "error");
+        showRuntimeModuleToast(
+          error instanceof Error ? error.message : "Runtime 版本状态未能更新。",
+          "error",
+        );
       } finally {
         runtimeModuleBusy = false;
         await loadRuntimeModules();
@@ -507,19 +540,40 @@ function renderCodexRuntimeVersions(implementations) {
 
 async function saveCodexDefaultRuntimeImplementation() {
   if (!(codexDefaultRuntimeImplementation instanceof HTMLSelectElement) || runtimeModuleBusy) return;
+  const implementationId = codexDefaultRuntimeImplementation.value;
+  if (!implementationId) return;
   runtimeModuleBusy = true;
   renderRuntimeModules();
   setCodexRuntimeSettingsMessage("");
   try {
     await fetchSettingsApi("/api/codex/runtime-implementations/default", {
       method: "PUT",
-      body: JSON.stringify({ implementation_id: codexDefaultRuntimeImplementation.value }),
+      body: JSON.stringify({ implementation_id: implementationId }),
       headers: { "Content-Type": "application/json" },
     });
     await loadRuntimeModules();
   } catch (error) {
-    setCodexRuntimeSettingsMessage(
+    showRuntimeModuleToast(
       error instanceof Error ? error.message : "默认 Runtime 版本未能更新。",
+      "error",
+    );
+  } finally {
+    runtimeModuleBusy = false;
+    await loadRuntimeModules();
+  }
+}
+
+async function refreshBuiltinCodexRuntime() {
+  if (runtimeModuleBusy) return;
+  runtimeModuleBusy = true;
+  renderRuntimeModules();
+  setCodexRuntimeSettingsMessage("");
+  try {
+    await runtimeModuleRequest("/api/runtime-modules/builtin-dev/refresh");
+    showRuntimeModuleToast("开发代码已重新加载，并已完成 Web 与 Quick Worker 校验。", "success");
+  } catch (error) {
+    showRuntimeModuleToast(
+      error instanceof Error ? error.message : "开发代码重新加载未能确认。",
       "error",
     );
   } finally {
@@ -541,12 +595,19 @@ function renderRuntimeModules(data = runtimeModuleData) {
 
 async function loadRuntimeModules() {
   try {
-    const [modules, implementations] = await Promise.all([
+    const [modules, implementations, refreshAvailability] = await Promise.all([
       fetchSettingsApi("/api/runtime-modules"),
       fetchSettingsApi("/api/codex/runtime-implementations"),
+      fetchSettingsApi("/api/runtime-modules/builtin-dev/refresh-availability"),
     ]);
+    builtinRuntimeRefreshAvailability = refreshAvailability;
     renderRuntimeModules({ ...modules, implementations });
   } catch (_error) {
+    builtinRuntimeRefreshAvailability = {
+      available: false,
+      reason: "暂时无法确认开发代码是否可以重新加载。",
+    };
+    renderRuntimeModules();
     runtimeModuleList?.replaceChildren();
     codexRuntimeVersionList?.replaceChildren();
     setCodexRuntimeSettingsMessage("暂时无法读取 Codex Runtime 版本状态。", "error");
@@ -729,7 +790,7 @@ function renderGeneralRuntimeSettings(data, catalog = null) {
     }
     if (!Array.isArray(section.fields) || section.fields.length === 0) continue;
     const form = document.createElement("form");
-    form.className = "runtime-settings-form";
+    form.className = "runtime-settings-form settings-divided-list";
     const values = Object.fromEntries(
       (Array.isArray(section.fields) ? section.fields : []).map((field) => [field.id, field.value]),
     );
@@ -1084,6 +1145,7 @@ if (settingsPage === "appearance") {
       "change",
       () => void saveCodexDefaultRuntimeImplementation(),
     );
+    codexBuiltinRuntimeRefresh?.addEventListener("click", () => void refreshBuiltinCodexRuntime());
     void loadRuntimeModules();
   }
 } else if (settingsPage === "runtime") {

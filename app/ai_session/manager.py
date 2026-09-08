@@ -237,6 +237,32 @@ class AiSessionManager:
         self.default_implementation_id = self._resolve_default_implementation_id()
         self._activate_default_implementation()
 
+    def refresh_builtin_codex_module(self) -> BuiltinRuntimeModuleRegistry:
+        """Reload the checked-out Codex module and return the prior registry."""
+        previous_builtin = self._builtin_runtime_modules
+        try:
+            candidate = BuiltinRuntimeModuleRegistry(
+                [load_builtin_codex_module(self.settings, reload_source=True)]
+            )
+            self._builtin_runtime_modules = candidate
+            self.refresh_external_runtime_modules()
+            if "builtin-dev" not in self.runtime_modules.implementation_ids("codex"):
+                raise ApiError(503, "builtin_runtime_refresh_unconfirmed", "开发版 Runtime 未能通过 Web 注册表校验。")
+            return previous_builtin
+        except Exception:
+            self._builtin_runtime_modules = previous_builtin
+            self.refresh_external_runtime_modules()
+            raise
+
+    def restore_builtin_codex_module(
+        self,
+        previous_builtin: BuiltinRuntimeModuleRegistry,
+    ) -> None:
+        """Restore Web's prior development Runtime after Worker rejects a refresh."""
+        with self._lock:
+            self._builtin_runtime_modules = previous_builtin
+            self.refresh_external_runtime_modules()
+
     def _activate_default_implementation(self) -> None:
         try:
             adapter = self.runtime_registry.require(
@@ -256,17 +282,13 @@ class AiSessionManager:
         except RuntimeOperationError:
             adapter = _UnavailableCodexRuntime()
         if adapter is not self.runtime_adapter:
-            self.supervisor.close()
             self.runtime_adapter = adapter
             self.runtime_settings_store = (
                 AiRuntimeSettingsStore()
                 if isinstance(adapter, _UnavailableCodexRuntime)
                 else adapter.runtime_settings_store
             )
-            self.supervisor = InteractiveSupervisor(
-                adapter,
-                ticket_ttl_seconds=self.settings.ai_runtime.codex.ticket_ttl_seconds,
-            )
+            self.supervisor.set_runtime_adapter(adapter)
 
     def remove_runtime_module(
         self,
@@ -292,6 +314,21 @@ class AiSessionManager:
             self.refresh_external_runtime_modules()
             raise
         return removal
+
+    def require_implementation_maintenance_available(
+        self, implementation_id: str
+    ) -> None:
+        """Keep physical removal local while a Session still needs this code."""
+        with self._lock:
+            if any(
+                session.implementation_id == implementation_id
+                for session in self.store.list()
+            ):
+                raise ApiError(
+                    409,
+                    "runtime_implementation_session_bound",
+                    "该 Runtime 版本仍被 Chub Session 绑定，归档或删除这些 Session 后再移除。",
+                )
 
     def clear_runtime_module_state(self, module_id: str) -> None:
         """Clear Chub-owned state covered by a Runtime upgrade boundary."""
@@ -379,6 +416,28 @@ class AiSessionManager:
         self.require_implementation_submission(implementation_id)
         return implementation_id
 
+    def session_implementation_id(self, session_id: str) -> str:
+        """Return the implementation pinned at Session creation.
+
+        Legacy persisted Sessions are assigned to the original built-in slot,
+        never to whichever default happened to be selected later.
+        """
+        with self._lock:
+            session = self.get_session(session_id, reconcile=False)
+            if session.implementation_id is not None:
+                return session.implementation_id
+            implementation_id = "builtin-dev"
+            if implementation_id not in self.runtime_adapters:
+                raise ApiError(
+                    503,
+                    "runtime_implementation_unavailable",
+                    "历史 Session 对应的内置 Runtime 版本不可用。",
+                )
+            session.implementation_id = implementation_id
+            session.updated_at = utc_now()
+            self.store.save(session)
+            return implementation_id
+
     def read_runtime_implementations(self) -> RuntimeImplementationData:
         try:
             preferences = self.runtime_implementation_preferences.read()
@@ -397,6 +456,11 @@ class AiSessionManager:
                     implementation_id=implementation_id,
                     name=module.display_name,
                     version=manifest.version if manifest is not None else "dev",
+                    description=(
+                        manifest.description
+                        if manifest is not None
+                        else module.description
+                    ),
                     enabled=implementation_id not in preferences.disabled_implementation_ids,
                     healthy=status is not None and status.available,
                     is_default=implementation_id == self.default_implementation_id,
@@ -439,16 +503,6 @@ class AiSessionManager:
     def update_default_implementation(self, implementation_id: str) -> RuntimeImplementationData:
         with self._lock:
             self.require_implementation_available(implementation_id)
-            if any(
-                self.supervisor.owns_terminal_writer(session.id)
-                for session in self.store.list()
-                if session.runtime_id == self.runtime_id
-            ):
-                raise ApiError(
-                    409,
-                    "runtime_default_implementation_terminal_active",
-                    "实时终端正在使用当前 Runtime 版本，请结束终端任务后再切换默认版本。",
-                )
             previous_id = self.default_implementation_id
             previous_adapter = self.runtime_adapter
             preferences = self.runtime_implementation_preferences.read()
@@ -574,6 +628,22 @@ class AiSessionManager:
     def require_runtime_submission(self, runtime_id: str) -> None:
         self._require_runtime_submission(runtime_id)
 
+    def require_runtime_enabled_for_maintenance(self, runtime_id: str) -> None:
+        try:
+            disabled = set(self.runtime_enablement.read().disabled_runtime_ids)
+        except RuntimeEnablementStoreUnavailable as exc:
+            raise ApiError(
+                503,
+                "ai_runtime_enablement_unavailable",
+                "AI Runtime 启用状态不可用，请稍后重试。",
+            ) from exc
+        if runtime_id in disabled:
+            raise ApiError(
+                409,
+                "ai_runtime_disabled",
+                "当前 AI Runtime 已停用，无法刷新开发版。",
+            )
+
     def workspaces(self) -> list[WorkspaceInfo]:
         entries = [
             ("chub", "Chub", PROJECT_ROOT),
@@ -593,7 +663,7 @@ class AiSessionManager:
     def list_sessions(self) -> list[SessionInfo]:
         with self._lock:
             self._require_store()
-            if self._system_upgrade_writes_blocked() or not self.runtime_adapter.status().available:
+            if self._system_upgrade_writes_blocked():
                 return [self._public(session) for session in self.store.list()]
             self._consume_hook_results()
             self._sync_bound_native_sessions()
@@ -605,14 +675,13 @@ class AiSessionManager:
     def get_session(self, session_id: str, *, reconcile: bool = True) -> AiSession:
         with self._lock:
             self._require_store()
-            runtime_available = self.runtime_adapter.status().available
-            if reconcile and not self._system_upgrade_writes_blocked() and runtime_available:
+            if reconcile and not self._system_upgrade_writes_blocked():
                 self._consume_hook_result_safely(session_id)
                 self._sync_bound_native_sessions()
             session = self.store.get(session_id)
             if session is None:
                 raise ApiError(404, "codex_session_not_found", "Codex session not found")
-            if reconcile and not self._system_upgrade_writes_blocked() and runtime_available:
+            if reconcile and not self._system_upgrade_writes_blocked():
                 self._refresh_status(session)
                 self._reconcile_quick_activity(session)
                 session = self.store.get(session_id) or session
@@ -645,7 +714,12 @@ class AiSessionManager:
                 "quick_interaction_ask_not_supported",
                 "快速交互不支持 Ask for approval，请选择只读、自动审核或完全访问权限。",
             )
-        self.validate_model(model, reasoning_effort)
+        implementation_id = self.default_submission_implementation_id()
+        self.validate_model(
+            model,
+            reasoning_effort,
+            implementation_id=implementation_id,
+        )
         workspace = next(
             (item for item in self.workspaces() if item.id == workspace_id),
             None,
@@ -659,6 +733,7 @@ class AiSessionManager:
         session = AiSession(
             id=str(uuid.uuid4()),
             runtime_id=self.runtime_id,
+            implementation_id=implementation_id,
             session_mode=session_mode,
             workspace_id=workspace.id,
             workspace_name=workspace.name,
@@ -679,6 +754,7 @@ class AiSessionManager:
         session = AiSession(
             id=str(uuid.uuid4()),
             runtime_id=self.runtime_id,
+            implementation_id=self.default_submission_implementation_id(),
             session_mode="quick",
             workspace_id="weixin-translation",
             workspace_name="微信文本优化与翻译",
@@ -702,19 +778,47 @@ class AiSessionManager:
             self._remove_hook_file(session_id)
             return True
 
+    def _adapter_for_session(self, session: AiSession):
+        implementation_id = self.session_implementation_id(session.id)
+        adapter = self.runtime_adapters.get(implementation_id)
+        if adapter is None or not adapter.status().available:
+            raise ApiError(
+                503,
+                "runtime_implementation_unavailable",
+                "该 Session 绑定的 Runtime 版本不可用。",
+            )
+        return adapter
+
     def validate_model(
         self,
         model: str | None,
         reasoning_effort: str | None,
+        *,
+        implementation_id: str | None = None,
     ) -> None:
         try:
-            self.runtime_adapter.validate_model(model, reasoning_effort)
+            adapter = (
+                self.runtime_adapters[implementation_id]
+                if implementation_id is not None
+                else self.runtime_adapter
+            )
+            adapter.validate_model(model, reasoning_effort)
         except RuntimeOperationError as exc:
             raise self._runtime_api_error(exc) from exc
 
-    def validate_native_session_id(self, native_session_id: str) -> None:
+    def validate_native_session_id(
+        self,
+        native_session_id: str,
+        *,
+        implementation_id: str | None = None,
+    ) -> None:
         try:
-            self.runtime_adapter.validate_native_session_id(native_session_id)
+            adapter = (
+                self.runtime_adapters[implementation_id]
+                if implementation_id is not None
+                else self.runtime_adapter
+            )
+            adapter.validate_native_session_id(native_session_id)
         except RuntimeOperationError as exc:
             raise self._runtime_api_error(exc) from exc
 
@@ -780,10 +884,14 @@ class AiSessionManager:
                 "quick_interaction_ask_not_supported",
                 "快速交互不支持 Ask for approval，请选择只读、自动审核或完全访问权限。",
             )
-        self.validate_model(model, reasoning_effort)
         with self._lock:
             session = self.get_session(session_id)
             self._require_quick_access(session)
+            self.validate_model(
+                model,
+                reasoning_effort,
+                implementation_id=self.session_implementation_id(session.id),
+            )
             usage = self._resolve_session_usage(session)
             if usage.owner != "none" or usage.phase != "idle":
                 raise ApiError(
@@ -806,10 +914,14 @@ class AiSessionManager:
     ) -> AiSession:
         """Persist the model for a future quick task after final writer checks."""
         self._require_available()
-        self.validate_model(model, reasoning_effort)
         with self._lock:
             session = self.get_session(session_id)
             self._require_quick_access(session)
+            self.validate_model(
+                model,
+                reasoning_effort,
+                implementation_id=self.session_implementation_id(session.id),
+            )
             usage = self._resolve_session_usage(session)
             if usage.owner != "none" or usage.phase != "idle":
                 raise ApiError(
@@ -825,17 +937,25 @@ class AiSessionManager:
 
     def prepare_quick_interaction(self, runtime_id: str | None = None) -> None:
         if runtime_id is None or runtime_id == self.runtime_id:
-            self.default_submission_implementation_id()
+            implementation_id = self.default_submission_implementation_id()
         else:
             self.require_implementation_submission(runtime_id)
+            implementation_id = runtime_id
         with self._lock:
-            self._ensure_profile()
+            self._ensure_profile(self.runtime_adapters[implementation_id])
 
     def ensure_session_implementation_compatible(
         self, session_id: str, implementation_id: str
     ) -> None:
-        self.require_implementation_submission(implementation_id)
         session = self.get_session(session_id)
+        pinned_implementation_id = self.session_implementation_id(session_id)
+        if implementation_id != pinned_implementation_id:
+            raise ApiError(
+                409,
+                "runtime_implementation_session_bound",
+                "该 Chub Session 已绑定其他 Runtime 版本，请新建 Session 后再使用该版本。",
+            )
+        self.require_implementation_submission(implementation_id)
         if session.native_session_id is None:
             return
         adapter = self.runtime_adapters[implementation_id]
@@ -850,9 +970,19 @@ class AiSessionManager:
                 "当前 Runtime 版本与该 Session 的原生格式不兼容，请选择兼容版本或新建 Session。",
             )
 
-    def has_active_writer(self, native_session_id: str | None) -> bool:
+    def has_active_writer(
+        self,
+        native_session_id: str | None,
+        *,
+        implementation_id: str | None = None,
+    ) -> bool:
         try:
-            return self.runtime_adapter.has_active_writer(native_session_id)
+            adapter = (
+                self.runtime_adapters[implementation_id]
+                if implementation_id is not None
+                else self.runtime_adapter
+            )
+            return adapter.has_active_writer(native_session_id)
         except RuntimeOperationError as exc:
             LOGGER.warning("Unable to inspect Runtime writer lock", exc_info=True)
             raise self._runtime_api_error(exc) from exc
@@ -899,6 +1029,14 @@ class AiSessionManager:
     def _resolve_session_usage(self, session: AiSession) -> SessionUsage:
         native_session_present = session.native_session_id is not None
         try:
+            implementation_id = session.implementation_id or "builtin-dev"
+            adapter = self.runtime_adapters.get(implementation_id)
+            if adapter is None or not adapter.status().available:
+                return SessionUsage(
+                    native_session_present=native_session_present,
+                    owner="unknown",
+                    phase="unknown",
+                )
             if self._quick_interaction_is_running(session.id):
                 return SessionUsage(
                     native_session_present=native_session_present,
@@ -906,7 +1044,10 @@ class AiSessionManager:
                     phase="waiting_result",
                 )
 
-            if self.supervisor.owns_terminal_writer(session.id):
+            if self.supervisor.owns_terminal_writer(
+                session.id,
+                runtime_adapter=adapter,
+            ):
                 phase = {
                     "working": "running",
                     "idle": "idle",
@@ -920,7 +1061,7 @@ class AiSessionManager:
             if not native_session_present:
                 return SessionUsage()
 
-            writer_active = self.runtime_adapter.has_active_writer(
+            writer_active = adapter.has_active_writer(
                 session.native_session_id
             )
             if writer_active:
@@ -951,9 +1092,15 @@ class AiSessionManager:
         native_session_id: str | None,
         *,
         timeout: float = 3.0,
+        implementation_id: str | None = None,
     ) -> bool:
         try:
-            return self.runtime_adapter.wait_for_writer_release(
+            adapter = (
+                self.runtime_adapters[implementation_id]
+                if implementation_id is not None
+                else self.runtime_adapter
+            )
+            return adapter.wait_for_writer_release(
                 native_session_id,
                 timeout=timeout,
             )
@@ -964,7 +1111,8 @@ class AiSessionManager:
         with self._lock:
             session = self.get_session(session_id, reconcile=False)
             self._require_terminal_access(session)
-            self._require_runtime_submission(session.runtime_id)
+            implementation_id = self.session_implementation_id(session.id)
+            adapter = self._adapter_for_session(session)
             if self._quick_interaction_is_running(session.id):
                 raise ApiError(
                     409,
@@ -973,8 +1121,11 @@ class AiSessionManager:
                 )
             if (
                 session.native_session_id
-                and not self.supervisor.owns_terminal_writer(session.id)
-                and self.has_active_writer(session.native_session_id)
+                and not self.supervisor.owns_terminal_writer(session.id, runtime_adapter=adapter)
+                and self.has_active_writer(
+                    session.native_session_id,
+                    implementation_id=implementation_id,
+                )
             ):
                 raise ApiError(
                     409,
@@ -991,10 +1142,11 @@ class AiSessionManager:
                 self.store.save(session)
                 self._consume_hook_result_safely(session.id)
             try:
-                self._ensure_profile()
+                self._ensure_profile(adapter)
                 self.supervisor.ensure_terminal(
                     session,
                     max_running=self.settings.ai_runtime.codex.max_running,
+                    runtime_adapter=adapter,
                 )
             except Exception:
                 if not was_running:
@@ -1048,7 +1200,8 @@ class AiSessionManager:
         with self._lock:
             session = self.get_session(session_id, reconcile=False)
             self._require_terminal_access(session)
-            self._ensure_profile()
+            adapter = self._adapter_for_session(session)
+            self._ensure_profile(adapter)
             # Restarting the bridge creates a new terminal carrier. Advance the
             # generation before it starts so a Hook from the carrier being
             # stopped cannot affect this new instance.
@@ -1059,6 +1212,7 @@ class AiSessionManager:
             self.supervisor.restart_terminal_backend(
                 session,
                 max_running=self.settings.ai_runtime.codex.max_running,
+                runtime_adapter=adapter,
             )
             return session
 
@@ -1162,9 +1316,15 @@ class AiSessionManager:
             if session is None:
                 raise ApiError(404, "codex_session_not_found", "Codex session not found")
             self._require_quick_access(session)
-            self.validate_native_session_id(native_session_id)
+            pinned_implementation_id = self.session_implementation_id(session_id)
             if implementation_id is not None:
                 self.ensure_session_implementation_compatible(session_id, implementation_id)
+            else:
+                implementation_id = pinned_implementation_id
+            self.validate_native_session_id(
+                native_session_id,
+                implementation_id=implementation_id,
+            )
             if worker_task_id is not None or execution_id is not None:
                 if (
                     worker_task_id is None
@@ -1192,7 +1352,10 @@ class AiSessionManager:
                         and not self.supervisor.owns_terminal_writer(candidate.id)
                     ):
                         if (
-                            self.has_active_writer(native_session_id)
+                            self.has_active_writer(
+                                native_session_id,
+                                implementation_id=implementation_id,
+                            )
                             and not self._quick_interaction_is_running(session.id)
                         ):
                             raise ApiError(
@@ -1231,7 +1394,10 @@ class AiSessionManager:
                     # Translation keeps one logical Chub Session but may rotate
                     # its internal native Session when the Worker starts a new
                     # read-only execution. Never rotate through an active writer.
-                    if self.has_active_writer(session.native_session_id):
+                    if self.has_active_writer(
+                        session.native_session_id,
+                        implementation_id=implementation_id,
+                    ):
                         raise ApiError(
                             409,
                             "quick_interaction_native_session_conflict",
@@ -1359,9 +1525,13 @@ class AiSessionManager:
         session = self.get_session(session_id, reconcile=False)
         self.ensure_delete_allowed(session_id, reconcile=False)
         if session.native_session_id:
-            self.validate_native_session_id(session.native_session_id)
+            adapter = self._adapter_for_session(session)
+            self.validate_native_session_id(
+                session.native_session_id,
+                implementation_id=self.session_implementation_id(session.id),
+            )
             try:
-                self.runtime_adapter.run_native_action(
+                adapter.run_native_action(
                     "delete",
                     session.native_session_id,
                 )
@@ -1369,7 +1539,7 @@ class AiSessionManager:
                 if exc.code == "codex_session_delete_failed":
                     try:
                         if (
-                            self.runtime_adapter.native_session_deleted_state(
+                            adapter.native_session_deleted_state(
                                 session.native_session_id
                             )
                             is True
@@ -1393,8 +1563,12 @@ class AiSessionManager:
             except ApiError as exc:
                 if exc.code != "codex_session_not_found":
                     raise
+        session = self.store.get(session_id)
         self.store.delete(session_id)
-        self._remove_hook_file(session_id)
+        self._remove_hook_file(
+            session_id,
+            implementation_id=session.implementation_id if session is not None else None,
+        )
 
     def ensure_archive_allowed(
         self,
@@ -1428,9 +1602,13 @@ class AiSessionManager:
         session = self.get_session(session_id, reconcile=False)
         self.ensure_archive_allowed(session_id, reconcile=False)
         if session.native_session_id:
-            self.validate_native_session_id(session.native_session_id)
+            adapter = self._adapter_for_session(session)
+            self.validate_native_session_id(
+                session.native_session_id,
+                implementation_id=self.session_implementation_id(session.id),
+            )
             try:
-                self.runtime_adapter.run_native_action(
+                adapter.run_native_action(
                     "archive",
                     session.native_session_id,
                 )
@@ -1438,7 +1616,7 @@ class AiSessionManager:
                 if exc.code == "codex_session_archive_failed":
                     try:
                         if (
-                            self.runtime_adapter.native_session_archive_state(
+                            adapter.native_session_archive_state(
                                 session.native_session_id
                             )
                             is True
@@ -1456,8 +1634,12 @@ class AiSessionManager:
         except ApiError as exc:
             if exc.code != "codex_session_not_found":
                 raise
+        session = self.store.get(session_id)
         self.store.delete(session_id)
-        self._remove_hook_file(session_id)
+        self._remove_hook_file(
+            session_id,
+            implementation_id=session.implementation_id if session is not None else None,
+        )
 
     def archive_session(self, session_id: str) -> None:
         self.archive_native_session(session_id)
@@ -1471,8 +1653,6 @@ class AiSessionManager:
         prompt before it can be considered; any uncertain or active Session is
         left untouched for a later startup.
         """
-        if not self.runtime_adapter.status().available:
-            return 0
         try:
             self._require_available()
             if (
@@ -1567,7 +1747,7 @@ class AiSessionManager:
                         session.id,
                     )
                 if rebound:
-                    self.runtime_adapter.rebind_activity_session(
+                    self._adapter_for_session(session).rebind_activity_session(
                         old_session_id,
                         session.id,
                     )
@@ -1581,7 +1761,10 @@ class AiSessionManager:
                 return
             self.supervisor.stop_backend(session_id)
             self.store.delete(session_id)
-            self._remove_hook_file(session_id)
+            self._remove_hook_file(
+                session_id,
+                implementation_id=current.implementation_id,
+            )
 
     def archive_session_for_system_upgrade(
         self,
@@ -1596,20 +1779,28 @@ class AiSessionManager:
                 raise OSError("Session native identity changed during system upgrade")
             self.stop_session(session_id)
             if native_session_id is not None:
-                self.validate_native_session_id(native_session_id)
-                archive_states = self.runtime_adapter.discovery.session_archive_states()
+                implementation_id = self.session_implementation_id(current.id)
+                adapter = self._adapter_for_session(current)
+                self.validate_native_session_id(
+                    native_session_id,
+                    implementation_id=implementation_id,
+                )
+                archive_states = adapter.discovery.session_archive_states()
                 if archive_states is None or native_session_id not in archive_states:
                     raise OSError("Native Session archive state cannot be confirmed")
                 if archive_states[native_session_id] is False:
                     try:
-                        self.runtime_adapter.run_native_action("archive", native_session_id)
+                        adapter.run_native_action("archive", native_session_id)
                     except RuntimeOperationError as exc:
                         raise self._runtime_api_error(exc) from exc
                 outcome = "archived"
             else:
                 outcome = "discarded"
             self.store.delete(session_id)
-            self._remove_hook_file(session_id)
+            self._remove_hook_file(
+                session_id,
+                implementation_id=current.implementation_id,
+            )
             return outcome
 
     def backend_url(self, session_id: str, path: str, query: str = "") -> str:
@@ -1670,7 +1861,10 @@ class AiSessionManager:
 
     def _public(self, session: AiSession) -> SessionInfo:
         try:
-            self._require_runtime_submission(session.runtime_id)
+            if session.implementation_id is None:
+                self._require_runtime_submission(session.runtime_id)
+            else:
+                self.require_implementation_submission(session.implementation_id)
             runtime_submission_available = True
             runtime_submission_reason = None
         except ApiError as exc:
@@ -1728,6 +1922,8 @@ class AiSessionManager:
         try:
             self._consume_hook_result(session_id)
         except ApiError as exc:
+            if exc.code == "runtime_implementation_unavailable":
+                return
             if exc.code != "codex_session_native_conflict":
                 raise
             LOGGER.warning(
@@ -1746,15 +1942,16 @@ class AiSessionManager:
             self._remove_hook_file(session_id)
 
     def _consume_hook_result(self, session_id: str) -> None:
+        session = self.store.get(session_id)
+        adapter = self._adapter_for_session(session) if session is not None else self.runtime_adapter
         try:
-            event = self.runtime_adapter.read_activity_event(session_id)
+            event = adapter.read_activity_event(session_id)
         except RuntimeOperationError:
             LOGGER.warning("Ignoring unsafe Runtime activity event", exc_info=True)
             self._remove_hook_file(session_id)
             return
         if event is None:
             return
-        session = self.store.get(session_id)
         native_session_id = event.native_session_id
         activity = event.activity
         activity_source = event.activity_source
@@ -1787,7 +1984,7 @@ class AiSessionManager:
             native_session_id = None
         if session and isinstance(native_session_id, str) and native_session_id:
             try:
-                self.runtime_adapter.validate_native_session_id(native_session_id)
+                adapter.validate_native_session_id(native_session_id)
             except RuntimeOperationError:
                 native_session_id = None
             if native_session_id and session.native_session_id != native_session_id:
@@ -1812,7 +2009,10 @@ class AiSessionManager:
                     duplicate
                     and duplicate.discovered
                     and session.session_mode == "terminal"
-                    and self.supervisor.owns_terminal_writer(session.id)
+                    and self.supervisor.owns_terminal_writer(
+                        session.id,
+                        runtime_adapter=adapter,
+                    )
                 ):
                     try:
                         self.store.adopt_discovered_native_session(
@@ -1873,12 +2073,30 @@ class AiSessionManager:
         self._remove_hook_file(session_id)
 
     def _sync_bound_native_sessions(self) -> None:
-        try:
-            discovery = self.runtime_adapter.discover_sessions()
-        except RuntimeOperationError as exc:
-            raise self._runtime_api_error(exc) from exc
-        for native in discovery.sessions:
-            if native.runtime_id != self.runtime_id:
+        stored = self._remove_stale_translation_discoveries(self.store.list())
+        default_implementation_id = self.default_implementation_id
+        implementation_ids = {
+            session.implementation_id or "builtin-dev" for session in stored
+        }
+        if default_implementation_id is not None:
+            implementation_ids.add(default_implementation_id)
+        discoveries = {}
+        for implementation_id in implementation_ids:
+            adapter = self.runtime_adapters.get(implementation_id)
+            if adapter is None or not adapter.status().available:
+                continue
+            try:
+                discovery = adapter.discover_sessions()
+            except RuntimeOperationError as exc:
+                if implementation_id == default_implementation_id:
+                    raise self._runtime_api_error(exc) from exc
+                LOGGER.warning(
+                    "Unable to discover Sessions for a bound Runtime implementation",
+                    extra={"implementation_id": implementation_id},
+                    exc_info=True,
+                )
+                continue
+            if any(native.runtime_id != self.runtime_id for native in discovery.sessions):
                 raise self._runtime_api_error(
                     RuntimeOperationError(
                         "runtime_session_identity_invalid",
@@ -1886,61 +2104,79 @@ class AiSessionManager:
                         kind="conflict",
                     )
                 )
-        discovered = {
-            (item.runtime_id, item.native_session_id): item
-            for item in discovery.sessions
-        }
-        stored = self._remove_stale_translation_discoveries(self.store.list())
-        pending_native_claim = any(
-            (
-                session.session_mode == "quick"
-                and session.native_session_id is None
-                and self._quick_interaction_is_running(session.id)
+            discoveries[implementation_id] = discovery
+
+        default_discovery = discoveries.get(default_implementation_id)
+        if default_discovery is not None:
+            pending_native_claim = any(
+                (
+                    session.session_mode == "quick"
+                    and session.native_session_id is None
+                    and self._quick_interaction_is_running(session.id)
+                )
+                or (
+                    session.session_mode == "terminal"
+                    and session.native_session_id is None
+                    and self.supervisor.owns_terminal_writer(
+                        session.id,
+                        runtime_adapter=self.runtime_adapters.get(
+                            session.implementation_id or "builtin-dev",
+                            self.runtime_adapter,
+                        ),
+                    )
+                )
+                for session in stored
             )
-            or (
-                session.session_mode == "terminal"
-                and session.native_session_id is None
-                and self.supervisor.owns_terminal_writer(session.id)
-            )
-            for session in stored
-        )
-        bound_native_keys = {
-            (session.runtime_id, session.native_session_id)
-            for session in stored
-            if session.native_session_id is not None
-        }
-        now = utc_now()
-        seen_pending_keys: set[tuple[str, str]] = set()
-        for native in discovery.sessions:
-            native_key = (native.runtime_id, native.native_session_id)
-            if native_key in bound_native_keys:
-                self._pending_native_discoveries.pop(native_key, None)
-                continue
-            # The translation Runtime Session is an internal quick Session,
-            # not a user-owned terminal Session. Its native record can outlive
-            # the Worker task briefly, so never import it as a discovered
-            # terminal record during that binding/retirement window.
-            if self._is_translation_workspace(native.cwd):
-                continue
-            if pending_native_claim:
-                first_seen = self._pending_native_discoveries.setdefault(native_key, now)
-                seen_pending_keys.add(native_key)
-                if now - first_seen < timedelta(
-                    seconds=_NATIVE_DISCOVERY_CLAIM_GRACE_SECONDS
-                ):
+            bound_native_keys = {
+                (session.runtime_id, session.native_session_id)
+                for session in stored
+                if session.native_session_id is not None
+            }
+            now = utc_now()
+            seen_pending_keys: set[tuple[str, str]] = set()
+            for native in default_discovery.sessions:
+                native_key = (native.runtime_id, native.native_session_id)
+                if native_key in bound_native_keys:
+                    self._pending_native_discoveries.pop(native_key, None)
                     continue
-            self._pending_native_discoveries.pop(native_key, None)
-            self.store.save(self._session_from_native(native))
-            bound_native_keys.add(native_key)
-        self._pending_native_discoveries = {
-            native_key: first_seen
-            for native_key, first_seen in self._pending_native_discoveries.items()
-            if native_key in seen_pending_keys
-        }
+                # The translation Runtime Session is an internal quick Session,
+                # not a user-owned terminal Session. Its native record can outlive
+                # the Worker task briefly, so never import it as a discovered
+                # terminal record during that binding/retirement window.
+                if self._is_translation_workspace(native.cwd):
+                    continue
+                if pending_native_claim:
+                    first_seen = self._pending_native_discoveries.setdefault(native_key, now)
+                    seen_pending_keys.add(native_key)
+                    if now - first_seen < timedelta(
+                        seconds=_NATIVE_DISCOVERY_CLAIM_GRACE_SECONDS
+                    ):
+                        continue
+                self._pending_native_discoveries.pop(native_key, None)
+                self.store.save(
+                    self._session_from_native(
+                        native,
+                        implementation_id=default_implementation_id,
+                    )
+                )
+                bound_native_keys.add(native_key)
+            self._pending_native_discoveries = {
+                native_key: first_seen
+                for native_key, first_seen in self._pending_native_discoveries.items()
+                if native_key in seen_pending_keys
+            }
         for session in stored:
             native_session_id = session.native_session_id
             if native_session_id is None:
                 continue
+            implementation_id = session.implementation_id or "builtin-dev"
+            discovery = discoveries.get(implementation_id)
+            if discovery is None:
+                continue
+            discovered = {
+                (item.runtime_id, item.native_session_id): item
+                for item in discovery.sessions
+            }
             current = discovered.get((session.runtime_id, native_session_id))
             changed = False
             if current is not None:
@@ -1953,13 +2189,21 @@ class AiSessionManager:
                     continue
                 self.supervisor.stop_terminal(session.id)
                 self.store.delete(session.id)
-                self._remove_hook_file(session.id)
+                self._remove_hook_file(
+                    session.id,
+                    implementation_id=implementation_id,
+                )
                 continue
             if changed:
                 session.updated_at = utc_now()
                 self.store.save(session)
 
-    def _session_from_native(self, native: RuntimeNativeSession) -> AiSession:
+    def _session_from_native(
+        self,
+        native: RuntimeNativeSession,
+        *,
+        implementation_id: str | None = None,
+    ) -> AiSession:
         permission_mode = native.active_permission_mode or "ask"
         workspace = self._workspace_for_native_cwd(native.cwd) or (
             DISCOVERED_RUNTIME_WORKSPACE_ID,
@@ -1968,6 +2212,11 @@ class AiSessionManager:
         return AiSession(
             id=str(uuid.uuid4()),
             runtime_id=native.runtime_id,
+            implementation_id=(
+                implementation_id
+                if implementation_id is not None
+                else self.default_implementation_id
+            ),
             session_mode="terminal",
             native_session_id=native.native_session_id,
             workspace_id=workspace[0],
@@ -2093,7 +2342,11 @@ class AiSessionManager:
             # A live writer is never taken over, even in the reserved workspace.
             # Keep the duplicate so the normal binding path fails closed.
             try:
-                active_writer = self.has_active_writer(session.native_session_id)
+                implementation_id = self.session_implementation_id(session.id)
+                active_writer = self.has_active_writer(
+                    session.native_session_id,
+                    implementation_id=implementation_id,
+                )
             except ApiError:
                 retained.append(session)
                 continue
@@ -2101,7 +2354,10 @@ class AiSessionManager:
                 retained.append(session)
                 continue
             self.store.delete(session.id)
-            self._remove_hook_file(session.id)
+            self._remove_hook_file(
+                session.id,
+                implementation_id=implementation_id,
+            )
         return retained
 
     @staticmethod
@@ -2145,9 +2401,9 @@ class AiSessionManager:
             session.updated_at = utc_now()
             self.store.save(session)
 
-    def _ensure_profile(self) -> None:
+    def _ensure_profile(self, adapter=None) -> None:
         try:
-            self.runtime_adapter.ensure_profile()
+            (adapter or self.runtime_adapter).ensure_profile()
         except RuntimeOperationError as exc:
             raise self._runtime_api_error(exc) from exc
 
@@ -2183,9 +2439,18 @@ class AiSessionManager:
         except (AiSessionStoreUnavailable, OSError):
             LOGGER.warning("Unable to reconcile AI terminal backends", exc_info=True)
 
-    def _remove_hook_file(self, session_id: str) -> None:
+    def _remove_hook_file(
+        self,
+        session_id: str,
+        *,
+        implementation_id: str | None = None,
+    ) -> None:
         try:
-            self.runtime_adapter.clear_activity_event(session_id)
+            if implementation_id is None:
+                session = self.store.get(session_id) if self.store.available else None
+                implementation_id = session.implementation_id if session is not None else None
+            adapter = self.runtime_adapters.get(implementation_id, self.runtime_adapter)
+            adapter.clear_activity_event(session_id)
         except RuntimeOperationError:
             LOGGER.warning("Unable to clear Runtime activity event", exc_info=True)
 

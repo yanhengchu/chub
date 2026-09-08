@@ -164,6 +164,7 @@ const oldTask = {
   status: "succeeded",
   prompt: "old prompt",
   result: "old result",
+  implementation_id: "builtin-dev",
   created_at: "2026-08-15T08:00:00Z",
   updated_at: "2026-08-15T08:01:00Z",
   notification_status: "sent",
@@ -174,6 +175,7 @@ const failedTask = {
   status: "failed",
   prompt: "run",
   error: "failed result",
+  implementation_id: "codex-010001",
   error_source: "runtime",
   created_at: "2026-08-15T09:00:00Z",
   updated_at: "2026-08-15T09:01:00Z",
@@ -227,8 +229,10 @@ process.stdout.write(JSON.stringify({
     ]
     assert behavior["trimmed"] == ["failed", "newest"]
     assert behavior["old"]["assistantText"] == "updated result"
+    assert behavior["old"]["runtime"] == "Runtime：builtin-dev"
     assert behavior["old"]["notification"]["label"] == "已通知"
     assert behavior["failed"]["error"] is True
+    assert behavior["failed"]["runtime"] == "Runtime：codex-010001"
     assert behavior["failed"]["errorSource"] == "Codex CLI（上游 Runtime）"
     assert behavior["timedOut"]["errorSource"] == ""
     assert behavior["unknownFailed"]["errorSource"] == "来源未确认"

@@ -54,6 +54,20 @@ def test_session_rename_request_normalizes_title_and_rejects_controls() -> None:
 
 
 @pytest.mark.anyio
+async def test_quick_interaction_rejects_caller_selected_runtime_implementation(settings: Settings) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/codex/sessions/session-1/quick-interactions",
+            headers=authorization(settings),
+            json={"prompt": "检查状态", "implementation_id": "codex-010001"},
+        )
+
+    assert response.status_code == 422
+
+
+@pytest.mark.anyio
 async def test_codex_sessions_allow_loopback(settings: Settings) -> None:
     transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:

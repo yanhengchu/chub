@@ -47,6 +47,14 @@ class RuntimeModulePreviewData(BaseModel):
     description: str = Field(min_length=1, max_length=300)
 
 
+class BuiltinRuntimeRefreshAvailabilityData(BaseModel):
+    available: bool
+    reason: str | None = Field(default=None, max_length=300)
+
+
+_BUILTIN_CODEX_IMPLEMENTATION_ID = "builtin-dev"
+
+
 def _module_list(request: Request) -> RuntimeModuleListData:
     manager = request.app.state.ai_session_manager
     active_ids = set(manager.runtime_modules.implementation_ids())
@@ -128,7 +136,29 @@ async def _require_implementation_idle(request: Request, implementation_id: str)
     if not isinstance(tasks, list):
         raise ApiError(503, "runtime_module_worker_health_unavailable", "Quick Worker 任务状态不可确认，本次未维护 Runtime 版本。")
     if any(item.get("implementation_id") == implementation_id for item in tasks if isinstance(item, dict)):
-        raise ApiError(409, "runtime_implementation_busy", "该 Runtime 版本仍有已受理任务，请等待其结束后再覆盖或移除。")
+        raise ApiError(409, "runtime_implementation_busy", "该 Runtime 版本仍有已受理任务，请等待其结束后再维护源码。")
+
+
+@router.get("/builtin-dev/refresh-availability", response_model=ApiResponse[BuiltinRuntimeRefreshAvailabilityData])
+async def read_builtin_runtime_refresh_availability(
+    request: Request,
+) -> ApiResponse[BuiltinRuntimeRefreshAvailabilityData]:
+    manager = request.app.state.ai_session_manager
+    try:
+        manager.require_runtime_enabled_for_maintenance("codex")
+        await _worker_generation(request)
+        await _require_implementation_idle(
+            request,
+            _BUILTIN_CODEX_IMPLEMENTATION_ID,
+        )
+    except ApiError as exc:
+        return ApiResponse(
+            data=BuiltinRuntimeRefreshAvailabilityData(
+                available=False,
+                reason=exc.message,
+            )
+        )
+    return ApiResponse(data=BuiltinRuntimeRefreshAvailabilityData(available=True))
 
 
 async def _confirm_worker_runtime(
@@ -164,6 +194,32 @@ async def _confirm_worker_runtime(
             "Quick Worker 未能确认新的 Runtime 注册表。",
         )
     return generation
+
+
+def _require_builtin_refresh_worker_confirmation(payload: dict[str, object]) -> None:
+    if payload.get("success") is True:
+        return
+    error = payload.get("error")
+    code = error.get("code") if isinstance(error, dict) else None
+    if code == "runtime_implementation_busy":
+        raise ApiError(
+            409,
+            code,
+            "开发版仍有运行中任务，请等待任务结束后再刷新。",
+        )
+    if code == "worker_draining":
+        raise ApiError(409, code, "Quick Worker 正在维护中，请稍后再刷新开发版。")
+    if code in {"worker_request_invalid", "worker_protocol_incompatible"}:
+        raise ApiError(
+            409,
+            "quick_worker_refresh_upgrade_required",
+            "Quick Worker 尚未加载开发版刷新能力；请等待当前任务结束后重载 Quick Worker，再重试开发版刷新。",
+        )
+    raise ApiError(
+        503,
+        "builtin_runtime_worker_refresh_unconfirmed",
+        "Quick Worker 未能确认开发版 Runtime 刷新。",
+    )
 
 
 async def _read_archive(request: Request) -> tuple[str, bytes]:
@@ -249,6 +305,88 @@ async def install_runtime_module(request: Request) -> ApiResponse[RuntimeModuleI
     raise error
 
 
+@router.post("/builtin-dev/refresh", response_model=ApiResponse[RuntimeModuleInstallData])
+async def refresh_builtin_codex_module(request: Request) -> ApiResponse[RuntimeModuleInstallData]:
+    """Explicitly reload the checked-out Codex source in Web and Quick Worker."""
+    manager = request.app.state.ai_session_manager
+    manager.require_runtime_enabled_for_maintenance("codex")
+    operation_id = log_operation(
+        request,
+        action="refresh_builtin_runtime_module",
+        status="requested",
+        target=_BUILTIN_CODEX_IMPLEMENTATION_ID,
+    )
+    log_operation(
+        request,
+        action="refresh_builtin_runtime_module",
+        status="started",
+        target=_BUILTIN_CODEX_IMPLEMENTATION_ID,
+        operation_id=operation_id,
+    )
+    previous_builtin = None
+    worker_refresh_outcome_known = False
+    worker_refresh_confirmed = False
+    try:
+        await _require_implementation_idle(request, _BUILTIN_CODEX_IMPLEMENTATION_ID)
+        await _worker_generation(request)
+        previous_builtin = manager.refresh_builtin_codex_module()
+        refreshed = await refresh_runtime_registry(
+            request.app.state.settings,
+            implementation_id=_BUILTIN_CODEX_IMPLEMENTATION_ID,
+            expected_present=True,
+            reload_builtin_source=True,
+        )
+        worker_refresh_outcome_known = True
+        worker_refresh_confirmed = refreshed.get("success") is True
+        _require_builtin_refresh_worker_confirmation(refreshed)
+        generation = await _confirm_worker_runtime(
+            request,
+            _BUILTIN_CODEX_IMPLEMENTATION_ID,
+            expected_present=True,
+        )
+        log_operation(
+            request,
+            action="refresh_builtin_runtime_module",
+            status="succeeded",
+            target=_BUILTIN_CODEX_IMPLEMENTATION_ID,
+            operation_id=operation_id,
+        )
+        return ApiResponse(
+            data=RuntimeModuleInstallData(
+                module_id=_BUILTIN_CODEX_IMPLEMENTATION_ID,
+                worker_generation=generation,
+            )
+        )
+    except ApiError as exc:
+        error = exc
+    except OSError:
+        error = ApiError(503, "builtin_runtime_worker_refresh_unconfirmed", "Quick Worker 未能确认开发版 Runtime 刷新。")
+    except Exception:
+        error = ApiError(500, "builtin_runtime_refresh_failed", "开发版 Runtime 刷新失败，当前状态请以设置页和操作日志为准。")
+    if (
+        previous_builtin is not None
+        and worker_refresh_outcome_known
+        and not worker_refresh_confirmed
+    ):
+        try:
+            manager.restore_builtin_codex_module(previous_builtin)
+        except Exception:
+            error = ApiError(
+                503,
+                "builtin_runtime_rollback_unconfirmed",
+                "开发版刷新被 Quick Worker 拒绝，但 Web 注册表恢复状态无法确认。",
+            )
+    log_operation(
+        request,
+        action="refresh_builtin_runtime_module",
+        status="failed",
+        target=_BUILTIN_CODEX_IMPLEMENTATION_ID,
+        operation_id=operation_id,
+        reason=error.code,
+    )
+    raise error
+
+
 @router.delete("/{module_id}", response_model=ApiResponse[RuntimeModuleInstallData])
 async def remove_runtime_module(module_id: str, request: Request) -> ApiResponse[RuntimeModuleInstallData]:
     if not is_runtime_module_id(module_id):
@@ -258,6 +396,7 @@ async def remove_runtime_module(module_id: str, request: Request) -> ApiResponse
     log_operation(request, action="remove_runtime_module", status="started", target=module_id, operation_id=operation_id)
     removal = None
     try:
+        manager.require_implementation_maintenance_available(module_id)
         await _require_implementation_idle(request, module_id)
         await _worker_generation(request)
         removal = manager.remove_runtime_module(module_id, operation_id=operation_id)

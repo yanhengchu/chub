@@ -27,6 +27,7 @@ class CodexRuntimeModule:
                 "native_session_compatibility_id": manifest["native_session_compatibility_id"],
             }
         )
+        self._description = manifest["description"]
 
     @property
     def descriptor(self) -> RuntimeDescriptor:
@@ -38,7 +39,7 @@ class CodexRuntimeModule:
 
     @property
     def description(self) -> str:
-        return "使用 Codex CLI 运行快速交互、实时终端和后台 AI 任务。"
+        return self._description
 
     @property
     def is_default(self) -> bool:
