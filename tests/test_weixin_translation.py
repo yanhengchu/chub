@@ -82,6 +82,25 @@ def test_enqueue_persists_once_and_deduplicates_message(settings) -> None:
     assert payload["entries"][0]["original"] == "请优化这段文字"
 
 
+def test_enqueue_binds_the_orchestration_request(settings) -> None:
+    manager, _codex_manager, _quick_interactions = manager_without_worker(settings)
+    orchestration_id = "00000000-0000-0000-0000-000000000001"
+
+    assert manager.enqueue(
+        message_id="orchestration-message-1",
+        original="请优化这段文字",
+        route=route(),
+        operation_id="orchestration-operation-1",
+        source_ip="100.64.0.21",
+        orchestration_id=orchestration_id,
+    )
+
+    entry = manager.entry_for_orchestration(orchestration_id)
+    assert entry is not None
+    assert entry.message_id == "orchestration-message-1"
+    assert entry.orchestration_id == orchestration_id
+
+
 def test_enqueue_rejects_before_persisting_when_runtime_is_disabled(settings) -> None:
     manager, codex_manager, _quick_interactions = manager_without_worker(settings)
     codex_manager.require_runtime_submission.side_effect = ApiError(
@@ -421,6 +440,91 @@ def test_targeted_translation_completion_submits_parsed_result(settings) -> None
     notification_handler.assert_called_once()
 
 
+def test_orchestration_translation_completion_submits_parsed_result_without_target(
+    settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = manager_without_worker(settings)
+    now = utc_now()
+    entry = TranslationEntry(
+        id="orchestration-entry",
+        message_id="orchestration-message",
+        orchestration_id="00000000-0000-0000-0000-000000000001",
+        original="检查服务",
+        route=route(),
+        operation_id="orchestration-operation:translation",
+        source_ip="100.64.0.21",
+        status="running",
+        quick_task_id="quick-task",
+        created_at=now,
+        updated_at=now,
+    )
+    manager._state.entries.append(entry)
+    handler = MagicMock(
+        return_value=TranslationExecutionOutcome(
+            status="submitted",
+            main_task_id="main-task",
+        )
+    )
+    manager.set_completion_handler(handler)
+    notification_handler = MagicMock(
+        return_value=SimpleNamespace(status="sent", error=None)
+    )
+    manager.set_notification_handler(notification_handler)
+    quick_interactions.get.return_value = SimpleNamespace(
+        status="succeeded",
+        result=(
+            "润色：\n请检查服务状态。\n\n"
+            "English：\nPlease check the service status."
+        ),
+        error=None,
+        notification_status="skipped",
+    )
+
+    manager._watch_worker_entry(entry.id, "translation-session", "quick-task")
+
+    handler.assert_called_once()
+    assert handler.call_args.args[1:3] == (
+        "请检查服务状态。",
+        "Please check the service status.",
+    )
+    assert manager._state.entries[0].status == "submitted"
+    assert manager._state.entries[0].main_task_id == "main-task"
+    notification_handler.assert_called_once()
+
+
+def test_recovery_reobserves_completed_orchestration_translation(settings) -> None:
+    manager, _codex_manager, quick_interactions = manager_without_worker(settings)
+    now = utc_now()
+    entry = TranslationEntry(
+        id="recovery-orchestration-entry",
+        message_id="recovery-orchestration-message",
+        orchestration_id="00000000-0000-0000-0000-000000000001",
+        original="检查服务",
+        route=route(),
+        operation_id="recovery-orchestration-operation:translation",
+        source_ip="100.64.0.21",
+        status="succeeded",
+        quick_task_id="quick-task",
+        created_at=now,
+        updated_at=now,
+    )
+    manager._state.entries.append(entry)
+    quick_interactions.get.return_value = SimpleNamespace(
+        id="quick-task",
+        kind="translation",
+        session_id="translation-session",
+    )
+    manager._start_worker_watcher = MagicMock()
+
+    manager.start_worker_recovery()
+
+    manager._start_worker_watcher.assert_called_once_with(
+        entry.id,
+        "translation-session",
+        "quick-task",
+    )
+
+
 def test_confirmation_translation_waits_for_sent_prompt_and_scores_recitation(settings) -> None:
     manager, _codex_manager, _quick_interactions = manager_without_worker(settings)
     manager.set_processing_mode("confirm")
@@ -549,6 +653,44 @@ def test_confirmation_queue_places_the_actionable_head_first(settings) -> None:
     queue = manager.confirmation_queue(route())
 
     assert [entry.id for entry in queue] == ["actionable-second", "queued-first"]
+
+
+def test_cancelled_confirmation_notifies_the_discarded_handler(settings) -> None:
+    manager, _codex_manager, _quick_interactions = manager_without_worker(settings)
+    now = utc_now()
+    entry = TranslationEntry(
+        id="cancel-confirmation",
+        message_id="cancel-source",
+        original="取消确认",
+        route=route(),
+        operation_id="cancel-operation:translation",
+        source_ip="100.64.0.21",
+        status="awaiting_confirmation",
+        target_session_id="session-1",
+        polished="取消确认",
+        english="Cancel confirmation.",
+        confirmation_required=True,
+        confirmation_order=1,
+        confirmation_expires_at=now.replace(year=now.year + 1),
+        notification_status="sent",
+        created_at=now,
+        updated_at=now,
+    )
+    manager._state.entries.append(entry)
+    discarded_handler = MagicMock()
+    manager.set_confirmation_discarded_handler(discarded_handler)
+
+    result = manager.confirm(
+        message_id="cancel-command",
+        route=route(),
+        action="cancel",
+    )
+
+    assert result.action == "cancel"
+    discarded_handler.assert_called_once()
+    discarded = discarded_handler.call_args.args[0]
+    assert discarded.id == entry.id
+    assert discarded.status == "discarded"
 
 
 def test_processing_queue_groups_confirmation_and_optimization_states(settings) -> None:
@@ -805,8 +947,43 @@ def test_confirmed_submission_recovery_uses_one_shared_retry_timer(
     manager.set_confirmed_handler(retry)
     manager._resume_confirmed_submissions()
 
-    assert retry.call_count == 4
+    assert retry.call_count == 2
     assert len(RetryTimer.created) == 1
+
+
+def test_confirmed_submission_recovery_waits_for_worker_reconciliation(
+    settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, _codex_manager, _quick_interactions = manager_without_worker(settings)
+    now = utc_now()
+    entry = TranslationEntry(
+        id="confirmed-after-worker-recovery",
+        message_id="confirmed-after-worker-recovery-message",
+        original="检查服务",
+        route=route(),
+        operation_id="confirmed-after-worker-recovery-operation:translation",
+        source_ip="100.64.0.21",
+        status="confirmed_waiting_target",
+        target_session_id="session-1",
+        polished="请检查服务状态。",
+        english="Please check the service status.",
+        confirmation_required=False,
+        created_at=now,
+        updated_at=now,
+    )
+    manager._state.entries.append(entry)
+    retry = MagicMock(
+        return_value=TranslationExecutionOutcome(status="confirmed_waiting_target")
+    )
+    manager.set_confirmed_handler(retry)
+
+    retry.assert_not_called()
+    with patch("app.services.weixin_translation.threading.Timer"):
+        manager.start_worker_recovery()
+
+    retry.assert_called_once()
+    assert retry.call_args.args[0].id == entry.id
 
 
 def test_system_upgrade_reset_preserves_processing_mode(settings) -> None:
@@ -1472,6 +1649,82 @@ def test_retired_translation_session_cleanup_retries_after_failure(settings) -> 
 
     assert manager._state.retired_sessions == []
     assert codex_manager.delete_session.call_count == 2
+
+
+def test_native_cleanup_failure_is_persisted_and_retry_is_bounded(settings) -> None:
+    manager, codex_manager, _quick_interactions = manager_without_worker(settings)
+    codex_manager.cleanup_stale_translation_native_sessions.return_value = SimpleNamespace(
+        pending=2,
+        reason="部分历史翻译 Session 暂时无法删除。",
+        retry_required=True,
+    )
+
+    with patch("app.services.weixin_translation.threading.Timer") as timer:
+        manager._reconcile_stale_native_sessions(reset_attempts=True)
+
+        assert manager._state.native_cleanup_pending == 2
+        assert manager._state.native_cleanup_attempts == 1
+        assert manager._state.native_cleanup_error == "部分历史翻译 Session 暂时无法删除。"
+        assert manager._state.native_cleanup_retry_required is True
+        timer.assert_called_once()
+
+        manager._native_cleanup_timer = None
+        manager._reconcile_stale_native_sessions()
+        manager._native_cleanup_timer = None
+        manager._reconcile_stale_native_sessions()
+
+    assert manager._state.native_cleanup_attempts == 3
+    assert manager._native_cleanup_timer is None
+    reloaded_codex_manager = MagicMock()
+    reloaded_codex_manager.cleanup_stale_translation_native_sessions.return_value = (
+        SimpleNamespace(
+            pending=2,
+            reason="部分历史翻译 Session 暂时无法删除。",
+            retry_required=True,
+        )
+    )
+    with patch("app.services.weixin_translation.threading.Timer"):
+        reloaded = WeixinTranslationManager(
+            settings.openclaw.weixin_chub_mode,
+            reloaded_codex_manager,
+            MagicMock(),
+        )
+    assert reloaded.status().native_cleanup_pending == 2
+    assert reloaded.status().native_cleanup_error == "部分历史翻译 Session 暂时无法删除。"
+
+
+def test_startup_defers_native_cleanup_until_worker_recovery_is_ready(settings) -> None:
+    manager, codex_manager, _quick_interactions = manager_without_worker(settings)
+
+    codex_manager.cleanup_stale_translation_native_sessions.assert_not_called()
+
+    manager.start_worker_recovery()
+
+    codex_manager.cleanup_stale_translation_native_sessions.assert_called_once_with()
+
+
+def test_native_cleanup_state_write_failure_does_not_disable_translation(settings) -> None:
+    manager, codex_manager, _quick_interactions = manager_without_worker(settings)
+    codex_manager.cleanup_stale_translation_native_sessions.return_value = SimpleNamespace(
+        pending=1,
+        reason="部分历史翻译 Session 暂时无法删除。",
+        retry_required=True,
+    )
+    original_write = manager._write
+    manager._write = MagicMock(side_effect=OSError("state unavailable"))
+
+    manager._reconcile_stale_native_sessions(reset_attempts=True)
+
+    assert manager._state_error is False
+    assert manager.status().native_cleanup_pending == 1
+    manager._write = original_write
+    assert manager.enqueue(
+        message_id="cleanup-state-write-failure",
+        original="仍应接受新的翻译任务",
+        route=route(),
+        operation_id="cleanup-state-write-failure",
+        source_ip="100.64.0.21",
+    )
 
 
 def test_translation_prompt_encodes_source_as_json_data() -> None:

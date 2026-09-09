@@ -7,6 +7,7 @@ import secrets
 import threading
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterable
@@ -69,6 +70,12 @@ LOGGER = logging.getLogger("hub.ai_session")
 NATIVE_ACTION_REF_TTL_SECONDS = 300
 MAX_NATIVE_ACTION_REFS = 256
 
+
+@dataclass(frozen=True)
+class TranslationNativeCleanupResult:
+    pending: int = 0
+    reason: str | None = None
+    retry_required: bool = False
 
 
 
@@ -911,11 +918,6 @@ class AiSessionManager:
                 for session in self.store.list()
                 if session.workspace_id == "weixin-translation"
             ]
-            bound_native_ids = {
-                session.native_session_id
-                for session in translation_sessions
-                if session.native_session_id is not None
-            }
             for session in translation_sessions:
                 if self._quick_interaction_is_running(session.id):
                     continue
@@ -933,12 +935,37 @@ class AiSessionManager:
                         exc_info=True,
                     )
 
+        self.cleanup_stale_translation_native_sessions()
+
+    def cleanup_stale_translation_native_sessions(self) -> TranslationNativeCleanupResult:
+        """Remove every idle, unbound Native Session in the translation workspace.
+
+        A translation Worker can rotate its Native Session without replacing the
+        logical Chub Session.  This reconciliation deliberately uses the
+        Runtime discovery result as the source of truth, so a prior failed
+        deletion is picked up by a later pass too.
+        """
+        with self._lock:
+            self._require_store()
+            bound_native_ids = {
+                session.native_session_id
+                for session in self.store.list()
+                if (
+                    session.workspace_id == "weixin-translation"
+                    and session.native_session_id is not None
+                )
+            }
             adapter = self.runtime_adapter
             try:
                 discovery = adapter.discover_sessions()
             except RuntimeOperationError:
                 LOGGER.warning("Unable to discover stale translation native Sessions", exc_info=True)
-                return
+                return TranslationNativeCleanupResult(
+                    reason="暂时无法读取翻译 Native Session。",
+                    retry_required=True,
+                )
+            pending = 0
+            reason = None
             for native in discovery.sessions:
                 if (
                     native.native_session_id in bound_native_ids
@@ -947,14 +974,30 @@ class AiSessionManager:
                     continue
                 try:
                     if adapter.has_active_writer(native.native_session_id):
+                        pending += 1
+                        reason = reason or "部分历史翻译 Session 仍在执行。"
                         continue
                     adapter.run_native_action("delete", native.native_session_id)
+                    if adapter.native_session_deleted_state(native.native_session_id) is not True:
+                        pending += 1
+                        reason = reason or "部分历史翻译 Session 的删除结果尚未确认。"
+                        LOGGER.warning(
+                            "Stale translation native Session deletion was not confirmed",
+                            extra={"native_session_id": native.native_session_id},
+                        )
                 except RuntimeOperationError:
+                    pending += 1
+                    reason = reason or "部分历史翻译 Session 暂时无法删除。"
                     LOGGER.warning(
                         "Unable to delete stale translation native Session",
                         extra={"native_session_id": native.native_session_id},
                         exc_info=True,
                     )
+            return TranslationNativeCleanupResult(
+                pending=pending,
+                reason=reason,
+                retry_required=pending > 0,
+            )
 
     def discard_unstarted_session(self, session_id: str) -> bool:
         with self._lock:

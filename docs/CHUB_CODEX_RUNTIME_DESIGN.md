@@ -10,6 +10,15 @@
 
 把本文当作“当前 Codex Runtime 的专属设计”，其中用量快照是已启用的 Runtime 能力：
 
+先按问题类型定位权威文档，避免把本文当作 Runtime ZIP 的通用协议：
+
+| 需要判断的事项 | 先读的权威文档 |
+| --- | --- |
+| Codex 私有的 Native Session 发现、认证来源、用量口径、缓存或展示 | 本文 |
+| Codex ZIP 的导入、覆盖、移除、`builtin-dev` 重载或实现槽位保护 | [Chub AI Runtime 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md) |
+| Runtime 共享能力、Adapter/Runner 契约或新增 Runtime 接入 | [Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md) |
+| Chub Session 映射、Quick Worker 任务/恢复或微信用户可见行为 | 对应的 Session、Quick Worker 或集成专项设计 |
+
 1. Chub 只支持两条已实现路径：当前 Codex Runtime 的 ChatGPT 账号登录，或通过固定 Sub2API 适配器使用 OpenAI API Key；调用方不能选择来源、账号、订阅、浏览器页面或本机目录。
 2. ChatGPT 账号登录优先使用 Codex 账户正式日桶；当天日桶尚未生成时，才读取当前系统用户可见的 Codex Session Token，并明确标记为 `local_device`。两者不能相加。
 3. Sub2API 路径从当前 `CODEX_HOME/config.toml` 的已选 provider 动态读取根地址，只能复用已经登录的受管 Debug Chrome，从固定订阅页和仪表盘读取数据；普通采集不会自动启动浏览器、弹出登录或读取 Cookie/Authorization。仅当账户检查明确判定为未登录、维护者点击固定恢复操作时，Runtime 才会在 Chub 已确认的有界面 Debug Chrome 中打开固定 provider 登录页。

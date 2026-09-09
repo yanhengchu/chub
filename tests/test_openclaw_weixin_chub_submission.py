@@ -23,6 +23,7 @@ from app.codex.models import (
 from app.core.config import Settings
 from app.core.response import ApiError
 from app.services.openclaw_weixin_chub_mode import WeixinChubModeManager
+from app.services.weixin_orchestration_dev import WeixinDevelopmentImplementation
 from app.services.openclaw_weixin_chub_models import (
     MAX_STATE_BYTES,
     WeixinChubModePendingRetry,
@@ -44,6 +45,18 @@ from tests.openclaw_weixin_chub_mode_helpers import (
     inject_default_delivery_route,
     submitted_task_message,
 )
+
+
+def development_stage(source_hash: str = "a" * 64) -> MagicMock:
+    stage = MagicMock()
+    stage.snapshot.return_value = WeixinDevelopmentImplementation(
+        implementation_id="weixin-orchestration-dev",
+        source_hash=source_hash,
+    )
+    stage.execute_refinement.side_effect = (
+        lambda *, enqueue_refinement, **_kwargs: enqueue_refinement()
+    )
+    return stage
 
 
 def test_restart_network_routes_only_the_fixed_network_target(
@@ -126,6 +139,121 @@ def test_dispatch_immediately_acknowledges_voice_task(
     assert result.protocol_version == 3
     assert result.disposition == "reply"
     assert result.message == submitted_task_message(settings, "检查语音任务")
+
+
+def test_submission_persists_one_internal_orchestration_request(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+
+    manager.dispatch(
+        message_id="orchestration-record-1",
+        prompt="整理今天的任务",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+    manager.dispatch(
+        message_id="orchestration-record-1",
+        prompt="重复投递不应创建新请求",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert quick_interactions.submit.call_count == 1
+    assert len(manager._state.orchestration_requests) == 1
+    request = manager._state.orchestration_requests[0]
+    assert request.message_id == "orchestration-record-1"
+    assert request.implementation == "internal"
+    assert request.status == "waiting"
+    assert request.checkpoint == "task.submitted"
+    assert request.session_id == "session-1"
+    assert request.candidate_session_refs == [request.session_ref]
+    assert request.creation_context == "default_slot"
+    assert request.task_id == "task-1"
+    assert request.original_prompt == "整理今天的任务"
+    assert request.current_prompt == "整理今天的任务"
+    assert request.stage_chain == []
+    assert request.cursor == 0
+    assert [(call.name, call.outcome) for call in request.capability_calls] == [
+        ("create_session", "succeeded"),
+        ("submit_task", "succeeded"),
+    ]
+
+
+def test_reconcile_records_terminal_task_without_resubmitting(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    manager.dispatch(
+        message_id="orchestration-reconcile-1",
+        prompt="检查设备状态",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+    quick_interactions.get.return_value = SimpleNamespace(id="task-1", status="succeeded")
+
+    manager.reconcile_orchestration_requests()
+
+    request = manager._state.orchestration_requests[0]
+    assert request.status == "completed"
+    assert request.checkpoint == "task.finished"
+    assert request.capability_calls[-1].name == "await_task"
+    assert request.capability_calls[-1].outcome == "succeeded"
+    assert quick_interactions.submit.call_count == 1
+
+
+def test_reconcile_keeps_unconfirmed_task_out_of_success(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    manager.dispatch(
+        message_id="orchestration-unknown-1",
+        prompt="检查设备状态",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+    quick_interactions.get.side_effect = ApiError(503, "quick_unavailable", "暂时不可用")
+
+    manager.reconcile_orchestration_requests()
+
+    request = manager._state.orchestration_requests[0]
+    assert request.status == "unknown"
+    assert request.checkpoint == "task.result_unknown"
+    assert request.capability_calls[-1].outcome == "unknown"
+    assert quick_interactions.submit.call_count == 1
+
+
+def test_worker_completion_advances_the_bound_orchestration_request(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    manager.dispatch(
+        message_id="orchestration-completion-1",
+        prompt="检查设备状态",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    manager.record_orchestration_task_finished(
+        SimpleNamespace(id="task-1", status="succeeded")
+    )
+
+    request = manager._state.orchestration_requests[0]
+    assert request.status == "completed"
+    assert request.checkpoint == "task.finished"
+    assert request.capability_calls[-1].name == "await_task"
+    assert request.capability_calls[-1].outcome == "succeeded"
+    assert quick_interactions.submit.call_count == 1
 
 
 def test_successful_submission_lists_all_sessions_and_running_tasks(
@@ -596,11 +724,14 @@ def test_removed_direct_command_is_a_normal_task(settings: Settings) -> None:
     manager.translation_manager.enqueue.assert_called_once()
 
 
-def test_optimized_task_submits_to_captured_session(settings: Settings) -> None:
+def test_optimized_task_selects_the_final_session_after_refinement(settings: Settings) -> None:
     manager, codex_manager, quick_interactions = configured_manager(settings)
     manager.translation_manager = MagicMock()
     manager.translation_manager.has_active_target.return_value = False
     manager.translation_manager.enqueue.return_value = True
+    manager.translation_manager.entry_for_orchestration.return_value = SimpleNamespace(
+        id="translation-entry"
+    )
     manager.translation_result_notifier = MagicMock()
     manager.submit(
         message_id="optimized-source",
@@ -611,6 +742,17 @@ def test_optimized_task_submits_to_captured_session(settings: Settings) -> None:
         preprocess=True,
     )
     source = manager._find_submission("optimized-source")
+    request = manager._state.orchestration_requests[0]
+    assert codex_manager.create_session.call_count == 0
+    assert quick_interactions.submit.call_count == 0
+    assert request.original_prompt == "检查下服务咋样"
+    assert request.current_prompt == "检查下服务咋样"
+    assert [(stage.kind, stage.stage_id) for stage in request.stage_chain] == [
+        ("internal", "weixin_refinement")
+    ]
+    assert request.cursor == 0
+    assert request.translation_entry_id == "translation-entry"
+    assert request.checkpoint == "internal.weixin_refinement.queued"
     codex_manager.list_sessions.return_value = [codex_manager.get_session.return_value]
     entry = TranslationEntry(
         id="translation-entry",
@@ -634,9 +776,20 @@ def test_optimized_task_submits_to_captured_session(settings: Settings) -> None:
     assert outcome.status == "submitted", outcome.error
     assert quick_interactions.submit.call_count == 1
     assert quick_interactions.submit.call_args.args == (
-        source.session_id,
+        "session-1",
         "请检查服务状态。",
     )
+    assert len(manager._state.orchestration_requests) == 1
+    request = manager._state.orchestration_requests[0]
+    assert request.id == source.orchestration_id
+    assert request.task_id == outcome.main_task_id
+    assert request.checkpoint == "task.submitted"
+    assert request.current_prompt == "请检查服务状态。"
+    assert request.cursor == 1
+    assert [(call.name, call.outcome) for call in request.capability_calls] == [
+        ("create_session", "succeeded"),
+        ("submit_task", "succeeded"),
+    ]
     recovered_outcome = manager.complete_optimized_task(
         entry,
         "请检查服务状态。",
@@ -676,6 +829,334 @@ def test_optimized_task_submits_to_captured_session(settings: Settings) -> None:
     assert replay.disposition == "handled"
     assert replay.message is None
     assert quick_interactions.submit.call_count == 1
+
+
+def test_development_implementation_snapshots_new_refinement_requests(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    manager.development_stage = development_stage()
+    manager.translation_manager = MagicMock()
+    manager.translation_manager.enqueue.return_value = True
+    manager.translation_manager.has_active_target.return_value = False
+    manager.translation_manager.entry_for_orchestration.return_value = SimpleNamespace(
+        id="development-translation"
+    )
+
+    manager.set_orchestration_implementation("weixin-orchestration-dev")
+    manager.submit(
+        message_id="development-refinement",
+        prompt="检查服务",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+        preprocess=True,
+    )
+
+    request = manager._state.orchestration_requests[0]
+    stage = request.stage_chain[0]
+    assert request.implementation == "weixin-orchestration-dev"
+    assert stage.kind == "development"
+    assert stage.development_ref == "weixin-orchestration-dev"
+    assert stage.source_hash == "a" * 64
+    assert request.checkpoint == "development.weixin_refinement.queued"
+    manager.development_stage.execute_refinement.assert_called_once()
+    quick_interactions.submit.assert_not_called()
+
+
+def test_development_implementation_switch_only_affects_new_requests(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, _quick_interactions = configured_manager(settings)
+    manager.development_stage = development_stage()
+    manager.translation_manager = MagicMock()
+    manager.translation_manager.enqueue.return_value = True
+    manager.translation_manager.entry_for_orchestration.side_effect = [
+        SimpleNamespace(id="development-entry"),
+        SimpleNamespace(id="internal-entry"),
+    ]
+
+    manager.set_orchestration_implementation("weixin-orchestration-dev")
+    manager.submit(
+        message_id="development-existing",
+        prompt="检查服务",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+        preprocess=True,
+    )
+    manager.set_orchestration_implementation("internal")
+    manager.submit(
+        message_id="internal-new",
+        prompt="检查服务",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+        preprocess=True,
+    )
+
+    existing, new = manager._state.orchestration_requests
+    assert existing.stage_chain[0].kind == "development"
+    assert new.implementation == "internal"
+    assert new.stage_chain[0].kind == "internal"
+
+
+def test_development_preference_preserves_direct_and_confirmation_modes(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    manager.development_stage = development_stage()
+    manager.translation_manager = MagicMock()
+    manager.translation_manager.enqueue.return_value = True
+    manager.translation_manager.has_active_target.return_value = False
+    manager.translation_manager.entry_for_orchestration.return_value = SimpleNamespace(
+        id="development-confirmation-entry"
+    )
+    manager.set_orchestration_implementation("weixin-orchestration-dev")
+
+    manager.submit(
+        message_id="development-direct",
+        prompt="直接执行",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+    direct = manager._state.orchestration_requests[0]
+    assert direct.implementation == "internal"
+    assert direct.stage_chain == []
+    quick_interactions.submit.assert_called_once()
+
+    manager.submit(
+        message_id="development-confirmation",
+        prompt="确认执行",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+        preprocess=True,
+        confirmation_required=True,
+    )
+    source = manager._find_submission("development-confirmation")
+    outcome = manager.complete_optimized_task(
+        TranslationEntry(
+            id="development-confirmation-entry",
+            message_id="development-confirmation",
+            original="确认执行",
+            route=delivery_route(),
+            operation_id="development-confirmation-operation:translation",
+            source_ip="100.64.0.21",
+            target_session_id=source.session_id,
+            confirmation_required=True,
+            created_at=utc_now(),
+            updated_at=utc_now(),
+        ),
+        "请确认执行。",
+        "Please confirm execution.",
+        None,
+    )
+
+    assert outcome.status == "ready_confirmation"
+    request = manager._state.orchestration_requests[1]
+    assert request.checkpoint == "development.weixin_refinement.awaiting_confirmation"
+    assert quick_interactions.submit.call_count == 1
+
+
+def test_development_source_change_blocks_new_or_existing_request(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    manager.development_stage = development_stage()
+    manager.translation_manager = MagicMock()
+    manager.translation_manager.enqueue.return_value = True
+    manager.translation_manager.entry_for_orchestration.return_value = SimpleNamespace(
+        id="development-entry"
+    )
+    manager.set_orchestration_implementation("weixin-orchestration-dev")
+    manager.submit(
+        message_id="development-source-change",
+        prompt="检查服务",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+        preprocess=True,
+    )
+    source = manager._find_submission("development-source-change")
+    manager.development_stage.snapshot.return_value = WeixinDevelopmentImplementation(
+        implementation_id="weixin-orchestration-dev",
+        source_hash="b" * 64,
+    )
+
+    with pytest.raises(ApiError) as error:
+        manager.submit(
+            message_id="development-new-after-change",
+            prompt="检查服务",
+            correlation_id=None,
+            source_ip="100.64.0.21",
+            delivery_route=delivery_route(),
+            preprocess=True,
+        )
+
+    assert error.value.code == "weixin_orchestration_development_changed"
+    manager.development_stage.require_snapshot.side_effect = ApiError(
+        503,
+        "weixin_orchestration_development_changed",
+        "微信开发编排实现已变化，已受理任务未继续执行。",
+    )
+    outcome = manager.complete_optimized_task(
+        TranslationEntry(
+            id="development-entry",
+            message_id="development-source-change",
+            original="检查服务",
+            route=delivery_route(),
+            operation_id="development-operation:translation",
+            source_ip="100.64.0.21",
+            target_session_id=source.session_id,
+            created_at=utc_now(),
+            updated_at=utc_now(),
+        ),
+        "请检查服务。",
+        "Please check the service.",
+        None,
+    )
+
+    assert outcome.status == "failed"
+    quick_interactions.submit.assert_not_called()
+    request = manager._state.orchestration_requests[0]
+    assert request.status == "rejected"
+    assert request.checkpoint == "text_processing.failed"
+
+
+def test_unavailable_development_implementation_does_not_accept_a_task(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    manager.development_stage = development_stage()
+    manager.development_stage.snapshot.side_effect = ApiError(
+        503,
+        "weixin_orchestration_development_unavailable",
+        "微信开发编排实现当前不可用，本次任务未执行。",
+    )
+    manager._state.orchestration_implementation = "weixin-orchestration-dev"
+    manager._state.orchestration_development_source_hash = "a" * 64
+    manager.translation_manager = MagicMock()
+
+    with pytest.raises(ApiError) as error:
+        manager.submit(
+            message_id="development-unavailable",
+            prompt="检查服务",
+            correlation_id=None,
+            source_ip="100.64.0.21",
+            delivery_route=delivery_route(),
+            preprocess=True,
+        )
+
+    assert error.value.code == "weixin_orchestration_development_unavailable"
+    manager.translation_manager.enqueue.assert_not_called()
+    quick_interactions.submit.assert_not_called()
+
+
+def test_refinement_confirmation_keeps_the_stage_pending_until_confirmed(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    manager.translation_manager = MagicMock()
+    manager.translation_manager.enqueue.return_value = True
+    manager.translation_manager.entry_for_orchestration.return_value = SimpleNamespace(
+        id="translation-confirmation-entry"
+    )
+    manager.submit(
+        message_id="refinement-confirmation-source",
+        prompt="检查服务",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+        preprocess=True,
+        confirmation_required=True,
+    )
+    entry = TranslationEntry(
+        id="translation-confirmation-entry",
+        message_id="refinement-confirmation-source",
+        original="检查服务",
+        route=delivery_route(),
+        operation_id="operation-confirmation:translation",
+        source_ip="100.64.0.21",
+        confirmation_required=True,
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+
+    waiting = manager.complete_optimized_task(
+        entry,
+        "请检查服务。",
+        "Please check the service.",
+        None,
+    )
+
+    request = manager._state.orchestration_requests[0]
+    assert waiting.status == "ready_confirmation"
+    assert quick_interactions.submit.call_count == 0
+    assert request.current_prompt == "请检查服务。"
+    assert request.cursor == 0
+    assert request.checkpoint == "internal.weixin_refinement.awaiting_confirmation"
+
+    submitted = manager.retry_confirmed_optimized_task(
+        entry.model_copy(
+            update={
+                "confirmation_required": False,
+                "polished": "请检查服务。",
+                "english": "Please check the service.",
+            }
+        )
+    )
+
+    request = manager._state.orchestration_requests[0]
+    assert submitted.status == "submitted"
+    assert quick_interactions.submit.call_count == 1
+    assert request.cursor == 1
+    assert request.current_prompt == "请检查服务。"
+
+
+def test_cancelled_refinement_confirmation_discards_its_orchestration_request(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    manager.translation_manager = MagicMock()
+    manager.translation_manager.enqueue.return_value = True
+    manager.translation_manager.entry_for_orchestration.return_value = SimpleNamespace(
+        id="cancelled-confirmation-entry"
+    )
+    manager.submit(
+        message_id="cancelled-confirmation-source",
+        prompt="检查服务",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+        preprocess=True,
+        confirmation_required=True,
+    )
+    entry = TranslationEntry(
+        id="cancelled-confirmation-entry",
+        message_id="cancelled-confirmation-source",
+        original="检查服务",
+        route=delivery_route(),
+        operation_id="cancelled-operation:translation",
+        source_ip="100.64.0.21",
+        confirmation_required=True,
+        status="discarded",
+        error="Translation confirmation cancelled.",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+
+    manager.discard_optimized_task(entry)
+
+    request = manager._state.orchestration_requests[0]
+    source = manager._find_submission("cancelled-confirmation-source")
+    assert source is not None
+    assert quick_interactions.submit.call_count == 0
+    assert source.status == "rejected"
+    assert source.code == "submission_failed"
+    assert request.status == "rejected"
+    assert request.checkpoint == "text_processing.discarded"
 
 
 def test_interrupted_optimization_source_is_closed_and_replays_silently(
@@ -777,6 +1258,26 @@ def test_optimized_task_waits_if_target_becomes_busy(
     assert outcome.status == "confirmed_waiting_target"
     quick_interactions.submit.assert_not_called()
     assert manager._state.pending_retry is None
+
+    request = manager._state.orchestration_requests[0]
+    assert request.status == "waiting"
+    assert request.checkpoint == "dispatch.waiting_target"
+
+    quick_interactions.is_running.return_value = False
+    resumed = manager.retry_confirmed_optimized_task(
+        entry.model_copy(update={
+            "confirmation_required": False,
+            "polished": "请检查服务。",
+            "english": "Please check the service.",
+        })
+    )
+
+    assert resumed.status == "submitted"
+    quick_interactions.submit.assert_called_once()
+    request = manager._state.orchestration_requests[0]
+    assert request.status == "waiting"
+    assert request.checkpoint == "task.submitted"
+    assert request.task_id == "task-1"
 
 
 def test_submit_rejects_invalid_delivery_route_before_codex(

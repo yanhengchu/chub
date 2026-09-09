@@ -289,14 +289,17 @@ def test_codex_switch_task_uses_enabled_text_optimization(
     assert duplicate == first
     assert manager.session_id() == "session-2"
     quick_interactions.submit.assert_not_called()
-    manager.translation_manager.enqueue.assert_called_once_with(
-        message_id=manager._command_task_message_id("switch-optimized-task"),
-        original="检查服务状态",
-        route=delivery_route(),
-        operation_id=manager.translation_manager.enqueue.call_args.kwargs["operation_id"],
-        source_ip="100.64.0.21",
-        target_session_id="session-2",
+    manager.translation_manager.enqueue.assert_called_once()
+    enqueue_kwargs = manager.translation_manager.enqueue.call_args.kwargs
+    assert enqueue_kwargs["message_id"] == manager._command_task_message_id(
+        "switch-optimized-task"
     )
+    assert enqueue_kwargs["original"] == "检查服务状态"
+    assert enqueue_kwargs["route"] == delivery_route()
+    assert enqueue_kwargs["source_ip"] == "100.64.0.21"
+    assert enqueue_kwargs["target_session_id"] == "session-2"
+    assert enqueue_kwargs["confirmation_required"] is False
+    assert isinstance(enqueue_kwargs["orchestration_id"], str)
 
 
 def test_codex_switch_long_body_submits_directly(

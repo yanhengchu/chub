@@ -4,13 +4,17 @@
 > 主要读者：需要实现或维护 Runtime Adapter/Runner 的 AI Agent；维护人员用于确认接入边界。
 > 本文负责：Runtime 共享契约、实现槽位、Adapter/Runner 边界、Native Session 与新增 Runtime 的接入判定。
 > 本文不负责：Codex 等具体 Runtime 的私有行为、Chub Session 生命周期、Worker 任务恢复、外置模块安装和微信路由。
-> 维护说明：Runtime 外置已作为当前实现交付；本文定义所有 Runtime 共用的边界。当前唯一接入的 Codex 私有行为以[Chub Codex Runtime 设计](CHUB_CODEX_RUNTIME_DESIGN.md)为准，ZIP 生命周期以[Chub AI Runtime 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md)为准。
+> 维护说明：Runtime 外置已作为当前实现交付；本文定义所有 Runtime 共用的边界。本文“已验收”仅表示共享 Runtime 契约已验收，不替代各 Runtime ZIP 生命周期、目标平台或私有行为的专项验收。当前唯一接入的 Codex 私有行为以[Chub Codex Runtime 设计](CHUB_CODEX_RUNTIME_DESIGN.md)为准，ZIP 生命周期以[Chub AI Runtime 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md)为准。
 
 ## AI 可执行契约
 
 Runtime 是 Chub 的受控本机执行实现。客户端、页面、微信和其他外部入口不能选择 Runtime 命令、路径、环境变量、Native ID 或实现槽位；它们只调用 Chub 已定义的 Session 和任务用例。
 
 AI Runtime 通用配置保存在本机 `config/ai-runtimes.local.yaml`。其中的新建 Session 默认权限仅应用于创建时未明确指定权限的后续 Chub Session；已有 Session 与已受理任务不受影响。
+
+AI Agent 应先按问题范围选择文档：共享 Runtime 能力、Adapter/Runner 与 Native 兼容规则看本文；Codex 私有行为看[Chub Codex Runtime 设计](CHUB_CODEX_RUNTIME_DESIGN.md)；ZIP 导入、覆盖、删除和 `builtin-dev` 重载看[Chub AI Runtime 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md)；Session 与 Worker 领域状态分别看对应专项设计。
+
+Runtime 的 `implementation_id` 是可维护的**实现槽位**：默认实现只影响新建 Session，Session 创建后固定该槽位。它不是能力编排的 ZIP `implementation_ref`；后者是包含内容摘要的**不可变产物引用**，只用于编排请求快照，并由[Chub 能力编排外置架构设计](CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md)定义。两者不得跨领域复用或互相替代。
 
 每个 Runtime 实现以不可变 `RuntimeDescriptor` 注册：
 

@@ -9,7 +9,7 @@
 ## AI 可执行契约
 
 1. Chub 当前外置的是**可信本机 Runtime 模块**。模块以 ZIP 导入、在固定目录安装并由 Web 与 Quick Worker 分别加载；它不是多用户插件市场、Codex Skill、提示词文件或外部通道可调用的扩展机制。
-2. 当前安装协议只接受 `runtime` 类型，且维护入口端到端只支持 `runtime_id=codex` 的第一方 Codex 实现。第二 Runtime 尚未接入；其他 `runtime_id` 即使清单能够解析，也不得成为活动实现，必须在受控预检或激活回滚中保持未生效。能力编排外置由独立设计维护，当前微信任务润色继续由主项目的固定入口、设置页和既有状态所有权处理。
+2. 当前安装协议只接受 `runtime` 类型，且维护入口端到端只支持 `runtime_id=codex` 的第一方 Codex 实现。第二 Runtime 尚未接入；其他 `runtime_id` 即使清单能够解析，也不得成为活动实现，必须在受控预检或激活回滚中保持未生效。微信任务润色已使用独立的能力编排外置机制；其 ZIP 产物、活动分流和请求快照由[Chub 微信任务编排外置设计](WEIXIN_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md)及其通用编排设计维护，不复用 Runtime 模块协议、安装目录或注册表。
 3. Runtime 模块只提供 Runtime 私有实现和注册信息：Adapter、Worker Runner、能力、显示信息及可选专属设置。Chub 核心继续拥有认证、固定 API、逻辑 AI Session、Quick Worker 任务/租约/终态、通知、操作日志和页面交互。
 4. Codex 的逻辑 `runtime_id` 固定为 `codex`。每个 `implementation_id` 是可维护的版本槽位：正式 ZIP 使用 `codex-` 加六位数字，`builtin-dev` 直接加载仓库开发源码。兼容的 ZIP 可以覆盖同一正式槽位，开发刷新可原地重载 `builtin-dev`；两者只在目标槽位存在排队或运行的 Quick Worker 任务时拒绝。默认实现只用于新建 Chub Session；Session 创建时固定槽位，原生 Session 与后续任务均使用该槽位，默认切换不检查或影响已有 Session、排队任务和运行任务。维护者不能把已受理任务改失败、改投新版本或重试。Web 与 Worker 注册表都确认后才能报告最终结果；HTTP 成功或目录写入本身都不代表切换成功。
 5. 单个 ZIP、清单、依赖或入口故障只能令该模块不可用或本次操作失败，不得阻塞 Chub 控制面、无关 Runtime、只读能力或独立服务。外置机制不放宽 loopback/Tailnet 来源校验、固定路由、输入限制、敏感信息保护或失败关闭要求。
@@ -21,7 +21,7 @@
 
 当前生产从固定安装目录发现正式 Codex Runtime ZIP。第一方 Codex Runtime 的开发源码保留在仓库 `runtime-modules/codex-runtime/`，`builtin-dev` 直接从该目录重新加载，不复制到 ZIP 安装目录。设置页可设置一个健康且启用的默认实现；它只决定之后新建 Chub Session 的实现。Session 创建时立即保存固定槽位，Quick Worker、微信、自动化和周报等后续任务均从 Session 读取该槽位，页面、外部指令和请求正文均不提供 `implementation_id`。清单字段保留通用 `runtime_id` 是为后续独立接入做准备，不构成当前第二 Runtime 的安装或维护能力。
 
-设置页的“AI Runtime”分组动态读取已加载 Runtime 的名称和说明，并提供 Runtime ZIP 的预检、导入/覆盖、设为默认、移除及状态查看。导入覆盖和“刷新开发代码”只检查目标槽位的排队或运行任务，不暂停、检查或阻断已绑定 Session、旧 PID、历史 writer 或页面 `unknown`。Web 与 Quick Worker 都确认新注册表后才报告成功。只有明确物理删除 ZIP 槽位时，才检查该槽位是否仍被 Session 或非终态任务引用。页面不提供客户端 Runtime、Runner、命令、路径或环境变量选择器。当前微信任务润色仍是独立的固定设置页，不是外置能力编排模块；其通用目标边界见[Chub 能力编排外置架构设计](CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md)。
+设置页的“AI Runtime”分组动态读取已加载 Runtime 的名称和说明，并提供 Runtime ZIP 的预检、导入/覆盖、设为默认、移除及状态查看。导入覆盖和“刷新开发代码”只检查目标槽位的排队或运行任务，不暂停、检查或阻断已绑定 Session、旧 PID、历史 writer 或页面 `unknown`。Web 与 Quick Worker 都确认新注册表后才报告成功。只有明确物理删除 ZIP 槽位时，才检查该槽位是否仍被 Session 或非终态任务引用。页面不提供客户端 Runtime、Runner、命令、路径或环境变量选择器。微信任务润色使用独立的能力编排模块设置和注册表，其通用边界见[Chub 能力编排外置架构设计](CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md)。
 
 ```text
 维护者选择 Runtime ZIP

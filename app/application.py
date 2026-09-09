@@ -431,6 +431,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     weixin_translation.set_confirmed_handler(
         weixin_chub_mode.retry_confirmed_optimized_task
     )
+    weixin_translation.set_confirmation_discarded_handler(
+        weixin_chub_mode.discard_optimized_task
+    )
+    quick_interactions.set_task_finished_handler(
+        weixin_chub_mode.record_orchestration_task_finished
+    )
+    try:
+        weixin_chub_mode.reconcile_orchestration_requests()
+    except OSError:
+        logger.warning("Unable to reconcile persisted Weixin orchestration requests", exc_info=True)
 
     def restart_environment_readiness() -> str | None:
         return system_upgrade_restart_readiness(

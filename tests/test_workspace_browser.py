@@ -309,6 +309,29 @@ async def _mock_workspace_api_with_quick_sessions(route) -> None:
 
 async def _mock_workspace_api_with_task_orchestration(route) -> None:
     path = urlsplit(route.request.url).path
+    if (
+        path == "/api/settings/weixin-task-orchestration"
+        and route.request.method == "PUT"
+    ):
+        assert json.loads(route.request.post_data or "{}") == {
+            "implementation": "module",
+            "module_ref": "weixin-refinement@test",
+        }
+        await route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({
+                "success": True,
+                "data": {
+                    "implementation": "module",
+                    "module_ref": "weixin-refinement@test",
+                    "module_available": True,
+                    "development_available": True,
+                    "development_source_hash": "a" * 64,
+                },
+            }),
+        )
+        return
     payload = {
         "/api/settings/weixin-translation": {
             "success": True,
@@ -321,6 +344,26 @@ async def _mock_workspace_api_with_task_orchestration(route) -> None:
                 "running": 0,
                 "weixin_chub_mode_enabled": True,
             },
+        },
+        "/api/settings/weixin-task-orchestration": {
+            "success": True,
+            "data": {
+                "implementation": "internal",
+                "development_available": True,
+                "development_source_hash": "a" * 64,
+            },
+        },
+        "/api/settings/weixin-task-orchestration/modules": {
+            "success": True,
+            "data": {"modules": [{
+                "implementation_ref": "weixin-refinement@test",
+                "module_id": "weixin-refinement",
+                "version": "test",
+                "name": "Weixin Refinement",
+                "available": True,
+                "active": False,
+                "removable": True,
+            }]},
         },
         "/api/codex/models": {
             "success": True,
@@ -347,6 +390,227 @@ async def _mock_workspace_api_with_task_orchestration(route) -> None:
     await _mock_workspace_api(route)
 
 
+async def _mock_workspace_api_with_empty_module_lists(route) -> None:
+    path = urlsplit(route.request.url).path
+    payload = {
+        "/api/runtime-modules": {"success": True, "data": {"modules": []}},
+        "/api/codex/runtime-implementations": {
+            "success": True,
+            "data": {"default_implementation_id": None, "implementations": []},
+        },
+        "/api/runtime-modules/builtin-dev/refresh-availability": {
+            "success": True,
+            "data": {"available": False, "reason": "开发代码暂不可重新加载。"},
+        },
+        "/api/settings/weixin-task-orchestration/modules": {
+            "success": True,
+            "data": {"modules": []},
+        },
+    }.get(path)
+    if payload is not None:
+        await route.fulfill(status=200, content_type="application/json", body=json.dumps(payload))
+        return
+    await _mock_workspace_api(route)
+
+
+@pytest.mark.parametrize("viewport", [(390, 844), (1280, 900)], ids=["phone", "desktop"])
+async def test_runtime_module_imports_show_consistent_empty_rows(
+    workspace_browser_server: str,
+    viewport: tuple[int, int],
+) -> None:
+    browser_session = session_factory()
+    async with browser_session(ensure_page=False) as chrome:
+        context = await chrome.browser.new_context(
+            viewport={"width": viewport[0], "height": viewport[1]},
+            reduced_motion="reduce",
+        )
+        try:
+            await context.route(
+                f"{workspace_browser_server}/api/**",
+                _mock_workspace_api_with_empty_module_lists,
+            )
+            page = await context.new_page()
+            page_errors: list[str] = []
+            page.on("pageerror", lambda error: page_errors.append(str(error)))
+            response = await page.goto(
+                f"{workspace_browser_server}/settings/runtime",
+                wait_until="domcontentloaded",
+            )
+            assert response is not None and response.status == 200
+            runtime_empty = page.locator("#runtime-module-list .runtime-module-empty-row")
+            orchestration_empty = page.locator("#orchestration-module-list .runtime-module-empty-row")
+            await expect(runtime_empty).to_have_text("尚未导入 Runtime 模块。")
+            await expect(orchestration_empty).to_have_text("尚未导入能力模块。")
+            assert await page.evaluate("document.documentElement.scrollWidth - innerWidth") == 0
+        finally:
+            await context.close()
+
+    assert page_errors == []
+
+
+async def test_imported_modules_use_the_same_enabled_status_label(
+    workspace_browser_server: str,
+) -> None:
+    async def route_enabled_modules(route) -> None:
+        path = urlsplit(route.request.url).path
+        payload = {
+            "/api/runtime-modules": {
+                "success": True,
+                "data": {"modules": [{
+                    "name": "Codex",
+                    "module_id": "codex-010000",
+                    "version": "1.0.0",
+                    "status": "active",
+                    "description": "Runtime module.",
+                    "removable": True,
+                }]},
+            },
+            "/api/codex/runtime-implementations": {
+                "success": True,
+                "data": {"default_implementation_id": "codex-010000", "implementations": []},
+            },
+            "/api/runtime-modules/builtin-dev/refresh-availability": {
+                "success": True,
+                "data": {"available": False, "reason": "开发代码暂不可重新加载。"},
+            },
+            "/api/settings/weixin-task-orchestration/modules": {
+                "success": True,
+                "data": {"modules": [{
+                    "name": "Weixin Refinement",
+                    "module_id": "weixin-refinement",
+                    "version": "1.0.0",
+                    "available": True,
+                    "active": True,
+                    "removable": True,
+                }]},
+            },
+        }.get(path)
+        if payload is not None:
+            await route.fulfill(status=200, content_type="application/json", body=json.dumps(payload))
+            return
+        await _mock_workspace_api(route)
+
+    browser_session = session_factory()
+    async with browser_session(ensure_page=False) as chrome:
+        context = await chrome.browser.new_context(viewport={"width": 1280, "height": 900})
+        try:
+            await context.route(f"{workspace_browser_server}/api/**", route_enabled_modules)
+            page = await context.new_page()
+            page_errors: list[str] = []
+            page.on("pageerror", lambda error: page_errors.append(str(error)))
+            response = await page.goto(
+                f"{workspace_browser_server}/settings/runtime",
+                wait_until="domcontentloaded",
+            )
+            assert response is not None and response.status == 200
+            await expect(page.locator("#runtime-module-list .badge")).to_have_text("已启用")
+            await expect(page.locator("#orchestration-module-list .badge")).to_have_text("已启用")
+            await expect(page.locator("#runtime-module-list")).to_contain_text(
+                "Codex · 1.0.0",
+            )
+            await expect(page.locator("#orchestration-module-list")).to_contain_text(
+                "Weixin Refinement · 1.0.0",
+            )
+            await expect(
+                page.locator("#orchestration-module-list").get_by_role("button", name="移除"),
+            ).to_be_visible()
+        finally:
+            await context.close()
+
+    assert page_errors == []
+
+
+async def test_failed_module_import_keeps_a_removable_candidate(
+    workspace_browser_server: str,
+) -> None:
+    async def route_failed_module_import(route) -> None:
+        path = urlsplit(route.request.url).path
+        payload = {
+            "/api/runtime-modules/inspect": {
+                "success": True,
+                "data": {
+                    "name": "Codex",
+                    "module_id": "codex-010000",
+                    "version": "1.0.0",
+                    "description": "Runtime candidate.",
+                },
+            },
+            "/api/settings/weixin-task-orchestration/modules/inspect": {
+                "success": True,
+                "data": {
+                    "name": "Weixin Refinement",
+                    "version": "1.0.0",
+                    "description": "Capability candidate.",
+                },
+            },
+        }.get(path)
+        if payload is not None:
+            await route.fulfill(status=200, content_type="application/json", body=json.dumps(payload))
+            return
+        if path in {
+            "/api/runtime-modules/install",
+            "/api/settings/weixin-task-orchestration/modules/install",
+        }:
+            await route.fulfill(
+                status=400,
+                content_type="application/json",
+                body=json.dumps({
+                    "success": False,
+                    "error": {"code": "module_import_failed", "message": "模块导入失败。"},
+                }),
+            )
+            return
+        await _mock_workspace_api_with_empty_module_lists(route)
+
+    browser_session = session_factory()
+    async with browser_session(ensure_page=False) as chrome:
+        context = await chrome.browser.new_context(
+            viewport={"width": 1280, "height": 900},
+            reduced_motion="reduce",
+        )
+        try:
+            await context.route(
+                f"{workspace_browser_server}/api/**",
+                route_failed_module_import,
+            )
+            page = await context.new_page()
+            page_errors: list[str] = []
+            page.on("pageerror", lambda error: page_errors.append(str(error)))
+            response = await page.goto(
+                f"{workspace_browser_server}/settings/runtime",
+                wait_until="domcontentloaded",
+            )
+            assert response is not None and response.status == 200
+
+            await page.locator("#runtime-module-file").set_input_files({
+                "name": "runtime.zip",
+                "mimeType": "application/zip",
+                "buffer": b"runtime",
+            })
+            runtime_row = page.locator("#runtime-module-list .runtime-module-row")
+            await expect(runtime_row.get_by_role("button", name="移除")).to_be_visible()
+            await runtime_row.get_by_role("button", name="导入").click()
+            await expect(runtime_row.get_by_role("button", name="移除")).to_be_visible()
+            await runtime_row.get_by_role("button", name="移除").click()
+            await expect(page.locator("#runtime-module-list")).to_have_text("尚未导入 Runtime 模块。")
+
+            await page.locator("#orchestration-module-file").set_input_files({
+                "name": "capability.zip",
+                "mimeType": "application/zip",
+                "buffer": b"capability",
+            })
+            orchestration_row = page.locator("#orchestration-module-list .runtime-module-row")
+            await expect(orchestration_row.get_by_role("button", name="移除")).to_be_visible()
+            await orchestration_row.get_by_role("button", name="导入").click()
+            await expect(orchestration_row.get_by_role("button", name="移除")).to_be_visible()
+            await orchestration_row.get_by_role("button", name="移除").click()
+            await expect(page.locator("#orchestration-module-list")).to_have_text("尚未导入能力模块。")
+        finally:
+            await context.close()
+
+    assert page_errors == []
+
+
 @pytest.mark.parametrize("viewport", [(390, 844), (1280, 900)], ids=["phone", "desktop"])
 async def test_task_orchestration_opens_from_ai_runtime_settings_navigation(
     workspace_browser_server: str,
@@ -371,6 +635,8 @@ async def test_task_orchestration_opens_from_ai_runtime_settings_navigation(
                 wait_until="domcontentloaded",
             )
             assert response is not None and response.status == 200
+            await expect(page.get_by_role("heading", name="能力模块导入")).to_be_visible()
+            assert await page.evaluate("document.documentElement.scrollWidth - innerWidth") == 0
             if viewport[0] < 760:
                 await page.get_by_role("button", name="微信任务润色").click()
             else:
@@ -379,8 +645,29 @@ async def test_task_orchestration_opens_from_ai_runtime_settings_navigation(
             await expect(
                 page.get_by_role("region", name="微信任务润色"),
             ).to_be_visible()
+            await expect(page.locator("#workspace-task-enabled")).to_be_checked()
+            order = await page.locator(".workspace-task-orchestration-list").evaluate(
+                """(list) => Array.from(list.querySelectorAll('.workspace-task-orchestration-field')).map((row) => (
+                    row.querySelector('input')?.id || row.querySelector('button')?.id || ''
+                ))""",
+            )
+            assert order.index("workspace-task-show-internal-native-session") < order.index(
+                "workspace-task-implementation-trigger",
+            )
+            await expect(page.locator("#workspace-task-module-file")).to_have_count(0)
             await expect(page.locator("#workspace-task-processing-value")).to_have_text(
                 "自动润色后执行",
+            )
+            await expect(page.locator("#workspace-task-implementation-value")).to_have_text(
+                "内置实现",
+            )
+            await page.locator("#workspace-task-implementation-trigger").click()
+            await expect(page.locator("#workspace-task-implementation-menu")).to_contain_text(
+                "Weixin Refinement",
+            )
+            await page.get_by_role("option", name=re.compile("Weixin Refinement")).click()
+            await expect(page.locator("#workspace-task-implementation-value")).to_have_text(
+                "Weixin Refinement",
             )
             await page.locator("#workspace-task-processing-trigger").click()
             await expect(page.locator("#workspace-task-processing-menu")).to_contain_text(
@@ -443,8 +730,7 @@ async def test_task_orchestration_opens_from_ai_runtime_settings_navigation(
             assert bounds["left"] >= 0
             assert bounds["right"] <= viewport[0]
             assert bounds["top"] >= 0
-            assert bounds["bottom"] <= viewport[1]
-            assert bounds["bottom"] <= viewport[1]
+            assert await page.evaluate("document.documentElement.scrollWidth - innerWidth") == 0
         finally:
             await context.close()
 
@@ -637,6 +923,8 @@ async def test_codex_default_runtime_selection_persists_the_selected_implementat
                 wait_until="domcontentloaded",
             )
             assert response is not None and response.status == 200
+            await expect(page.locator("#codex-runtime-version-list")).to_have_count(0)
+            await expect(page.locator("#codex-builtin-runtime-refresh")).to_have_count(0)
             select = page.locator("#codex-default-runtime-implementation")
             await expect(select).to_have_value("builtin-dev")
             await page.locator(".settings-choice-picker-trigger").click()

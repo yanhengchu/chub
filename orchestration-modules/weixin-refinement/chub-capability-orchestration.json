@@ -1,0 +1,13 @@
+{
+  "protocol_version": 1,
+  "module_id": "weixin-refinement",
+  "version": "1.0.0",
+  "module_type": "capability-orchestration",
+  "scope": "weixin-normal-text",
+  "orchestration_protocol_version": 1,
+  "capability_protocol_version": 1,
+  "display_name": "Weixin Refinement",
+  "description": "Runs the fixed Weixin text-refinement stage through Chub's bounded capability callback.",
+  "chub_version": "0.1.0",
+  "entry": "weixin_refinement:execute_refinement"
+}

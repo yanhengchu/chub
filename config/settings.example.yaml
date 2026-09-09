@@ -89,6 +89,10 @@ openclaw:
     # Initial default for the Settings-page text-processing mode.  Existing
     # translation_enabled values map false to direct and true to auto.
     translation_enabled: false
+    # Trusted local ZIP implementations for the Weixin refinement stage.
+    # They are distinct from AI Runtime modules and only affect new tasks.
+    orchestration_modules_dir: "data/local/runtime/openclaw/weixin-orchestration-modules"
+    orchestration_module_max_archive_bytes: 8388608
     # translation_mode: "direct" # direct | auto | confirm
     translation_queue_limit: 10
     translation_max_wait_seconds: 1800

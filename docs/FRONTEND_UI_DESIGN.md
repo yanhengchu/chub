@@ -29,7 +29,8 @@ Chub Web 使用 FastAPI、Jinja2、原生 JavaScript 和 CSS，同源部署且�
 | 页面级切换与共享资源 | `workspace.js` / 页面 Controller | 组装页面、切换分区、触发受影响 Feature 刷新、释放已替换 Feature | 本文第 3 节 |
 | 外观偏好 | `theme.js` | 保存、恢复和应用有效主题与文字大小；为首屏同步非敏感 Cookie | 本文第 6 节 |
 | Runtime 模块管理 | 设置页 Feature | 预检、导入、替换、移除的受控交互与最终反馈；不解释 ZIP 或 Worker 状态 | [AI Runtime 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md) |
-| 任务编排设置 | 设置页 Feature | 展示当前固定处理配置；未来模块管理只呈现核心确认的最终状态，不解释编排流程或任务恢复 | [Chub 微信任务编排外置设计](WEIXIN_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md) |
+| 能力模块管理 | AI Runtime 通用配置 Feature | 预检、导入、列表与移除能力编排 ZIP；不解释具体任务流程或恢复 | [Chub 能力编排外置架构设计](CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md) |
+| 任务编排设置 | 微信任务润色 Feature | 展示并选择当前润色编排实现；不提供 ZIP 导入、列表或移除 | [Chub 微信任务编排外置设计](WEIXIN_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md) |
 | Runtime 用量展示 | 快速交互 Page Controller 与微信入口投影 | 工作台只消费后端 `display.long` 或不可用状态，不重新计算额度、Token 或格式 | [AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)、[集成能力清单](CHUB_INTEGRATION_CAPABILITIES.md) |
 | 设置 OpenClaw 信息 | 设置页 Feature | 读取本机配置、安装元数据和补丁清单；不读取 Gateway 运行状态 | OpenClaw 定制设计 |
 

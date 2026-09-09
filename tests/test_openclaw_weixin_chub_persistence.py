@@ -30,6 +30,7 @@ from app.services.openclaw_weixin_chub_models import (
     WeixinChubModeSessionSlot,
     WeixinChubModeState,
     WeixinChubModeSubmission,
+    WeixinTaskOrchestrationRequest,
 )
 
 from tests.openclaw_weixin_chub_mode_helpers import (
@@ -53,12 +54,24 @@ def test_restart_recovers_reserved_submission_as_fixed_failure(
                     message_id="message-1",
                     correlation_id=None,
                     operation_id="operation-1",
+                    orchestration_id="00000000-0000-0000-0000-000000000001",
                     delivery_route_fingerprint=(
                         WeixinChubModeManager._route_fingerprint(delivery_route())
                     ),
                     status="reserved",
                     code="submission_interrupted",
                     message="等待提交。",
+                    created_at=utc_now(),
+                    updated_at=utc_now(),
+                )
+            ],
+            orchestration_requests=[
+                WeixinTaskOrchestrationRequest(
+                    id="00000000-0000-0000-0000-000000000001",
+                    message_id="message-1",
+                    operation_id="operation-1",
+                    task_kind="direct",
+                    checkpoint="internal.submit",
                     created_at=utc_now(),
                     updated_at=utc_now(),
                 )
@@ -78,6 +91,9 @@ def test_restart_recovers_reserved_submission_as_fixed_failure(
 
     assert error.value.code == "weixin_chub_mode_submission_interrupted"
     assert "发送一条新消息重试" in error.value.message
+    request = manager._state.orchestration_requests[0]
+    assert request.status == "rejected"
+    assert request.checkpoint == "internal.rejected"
 
 
 def test_startup_repairs_legacy_success_http_status(
@@ -221,7 +237,10 @@ def test_state_failure_after_task_start_fails_closed(
     def fail_final_write(state: WeixinChubModeState) -> None:
         nonlocal write_count
         write_count += 1
-        if write_count == 3:
+        # The creation context, resolved Session and bounded capability result
+        # are persisted before Worker submission; the final write commits the
+        # submitted task reference.
+        if write_count == 7:
             raise OSError("disk unavailable")
         original_write(state)
 

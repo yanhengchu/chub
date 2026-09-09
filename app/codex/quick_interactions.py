@@ -383,6 +383,12 @@ class QuickInteractionManager:
                 continue
             if task.worker_task_id is None:
                 continue
+            if task.kind == "translation":
+                # Translation tasks are serialized by the Worker queue and
+                # bind their internal Native Session without this one-task
+                # claim. Restoring a claim for every queued translation would
+                # incorrectly reject the later FIFO entries.
+                continue
             try:
                 # The Chub Session state is reloaded independently from the
                 # Web task list. Restore the durable claimant before worker
@@ -610,10 +616,11 @@ class QuickInteractionManager:
             raise RuntimeError("Worker task identity is unavailable")
         self._log_status(task.id, "requested", session.id)
         try:
-            self.codex_manager.register_quick_native_claim(
-                session.id,
-                task.worker_task_id,
-            )
+            if not queued_translation:
+                self.codex_manager.register_quick_native_claim(
+                    session.id,
+                    task.worker_task_id,
+                )
             self._submit_worker_task(task, session, prompt)
         except _WorkerSubmissionUncertain as exc:
             with self._lock:
@@ -634,10 +641,11 @@ class QuickInteractionManager:
             # second task identity.
             return task
         except Exception as exc:
-            self._clear_quick_native_claim_safely(
-                session.id,
-                task.worker_task_id,
-            )
+            if not queued_translation:
+                self._clear_quick_native_claim_safely(
+                    session.id,
+                    task.worker_task_id,
+                )
             self._log_status(task.id, "failed", session.id)
             detail = self._worker_exception_detail(exc)
             with self._lock:

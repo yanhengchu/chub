@@ -8,9 +8,6 @@ const settingsPage = document.body.dataset.settingsPage || "";
 const THEME_DETAILS_EXPANDED_KEY = "hub.themeDetailsExpanded.v1";
 const settingsMessage = document.querySelector("#settings-message");
 const runtimeManagementList = document.querySelector("#runtime-management-list");
-const runtimeManagementDescription = document.querySelector(
-  "#runtime-management-description",
-);
 const runtimeManagementStatus = document.querySelector(
   "#runtime-management-status",
 );
@@ -21,11 +18,12 @@ const runtimeModuleInstallForm = document.querySelector("#runtime-module-install
 const runtimeModuleFile = document.querySelector("#runtime-module-file");
 const runtimeModuleFileTrigger = document.querySelector("#runtime-module-file-trigger");
 const runtimeModuleList = document.querySelector("#runtime-module-list");
+const orchestrationModuleFile = document.querySelector("#orchestration-module-file");
+const orchestrationModuleFileTrigger = document.querySelector("#orchestration-module-file-trigger");
+const orchestrationModuleList = document.querySelector("#orchestration-module-list");
 const codexDefaultRuntimeImplementation = document.querySelector(
   "#codex-default-runtime-implementation",
 );
-const codexRuntimeVersionList = document.querySelector("#codex-runtime-version-list");
-const codexBuiltinRuntimeRefresh = document.querySelector("#codex-builtin-runtime-refresh");
 const codexRuntimeSettingsMessage = document.querySelector(
   "#codex-runtime-settings-message",
 );
@@ -236,9 +234,6 @@ function renderFontSizeSelection(fontSize) {
 
 
 function setRuntimeManagementStatus(text, kind = "") {
-  if (runtimeManagementDescription instanceof HTMLElement) {
-    runtimeManagementDescription.hidden = Boolean(text);
-  }
   if (!(runtimeManagementStatus instanceof HTMLElement)) return;
   runtimeManagementStatus.hidden = !text;
   runtimeManagementStatus.textContent = text;
@@ -316,7 +311,7 @@ function runtimeModuleRow(module, { candidate = false } = {}) {
   const copy = document.createElement("span");
   const title = document.createElement("strong");
   const detail = document.createElement("small");
-  title.textContent = `${module.name || "Runtime"} · ${module.module_id} · ${module.version}`;
+  title.textContent = `${module.name || "Runtime"} · ${module.version || "未知版本"}`;
   detail.textContent = candidate
     ? (module.description || "等待导入。")
     : (module.status === "active"
@@ -333,10 +328,18 @@ function runtimeModuleRow(module, { candidate = false } = {}) {
     install.disabled = runtimeModuleBusy;
     install.addEventListener("click", () => void installSelectedRuntimeModule());
     actions.append(install);
+    const remove = document.createElement("button");
+    remove.className = "button-secondary";
+    remove.type = "button";
+    remove.textContent = "移除";
+    remove.title = "移除当前选择的 Runtime ZIP";
+    remove.disabled = runtimeModuleBusy;
+    remove.addEventListener("click", clearSelectedRuntimeModule);
+    actions.append(remove);
   } else {
     const badge = document.createElement("span");
     badge.className = `badge ${module.status === "active" ? "badge-success" : "badge-muted"}`;
-    badge.textContent = module.status === "active" ? "已激活" : "不可用";
+    badge.textContent = module.status === "active" ? "已启用" : "不可用";
     actions.append(badge);
     if (module.removable !== false) {
       const remove = document.createElement("button");
@@ -352,11 +355,38 @@ function runtimeModuleRow(module, { candidate = false } = {}) {
   return row;
 }
 
+function moduleEmptyRow(text) {
+  const row = document.createElement("div");
+  row.className = "settings-utility-row runtime-module-row runtime-module-empty-row";
+  const copy = document.createElement("span");
+  const detail = document.createElement("small");
+  detail.textContent = text;
+  copy.append(detail);
+  row.append(copy);
+  return row;
+}
+
 let runtimeModuleCandidate = null;
 let runtimeModuleBusy = false;
 let runtimeModuleData = { modules: [] };
 let codexRuntimeEnabled = null;
-let builtinRuntimeRefreshAvailability = { available: false, reason: "正在检查开发代码加载条件。" };
+let orchestrationModuleCandidate = null;
+let orchestrationModuleBusy = false;
+let orchestrationModuleData = { modules: [] };
+
+function clearSelectedRuntimeModule() {
+  if (runtimeModuleBusy) return;
+  runtimeModuleCandidate = null;
+  if (runtimeModuleFile instanceof HTMLInputElement) runtimeModuleFile.value = "";
+  renderRuntimeModules();
+}
+
+function clearSelectedOrchestrationModule() {
+  if (orchestrationModuleBusy) return;
+  orchestrationModuleCandidate = null;
+  if (orchestrationModuleFile instanceof HTMLInputElement) orchestrationModuleFile.value = "";
+  renderOrchestrationModules();
+}
 
 function showRuntimeModuleToast(text, kind = "info") {
   window.showChubToast?.(text, { kind });
@@ -372,29 +402,7 @@ function versionTitle(item) {
   return `${item.name} · ${item.version}`;
 }
 
-function implementationTitle(item) {
-  return `${item.name} · ${item.implementation_id} · ${item.version}`;
-}
-
-function implementationDescription(item) {
-  if (item.implementation_id === "builtin-dev") {
-    return "开发实现：直接加载本项目当前的 Codex Runtime 源码，适用于开发与验证。";
-  }
-  return `已导入正式版本：${item.description || "用于处理 Codex AI 任务。"}`;
-}
-
 function renderCodexRuntimeVersions(implementations) {
-  if (codexBuiltinRuntimeRefresh instanceof HTMLButtonElement) {
-    const unavailableReason = builtinRuntimeRefreshAvailability.reason || "开发代码暂不可重新加载。";
-    codexBuiltinRuntimeRefresh.disabled = runtimeModuleBusy
-      || codexRuntimeEnabled !== true
-      || builtinRuntimeRefreshAvailability.available !== true;
-    codexBuiltinRuntimeRefresh.title = codexBuiltinRuntimeRefresh.disabled && !runtimeModuleBusy
-      ? unavailableReason
-      : "重新加载本项目中的 Codex Runtime 开发代码。";
-    codexBuiltinRuntimeRefresh.textContent = runtimeModuleBusy ? "正在重新加载" : "重新加载开发代码";
-  }
-  if (!(codexRuntimeVersionList instanceof HTMLElement)) return;
   const versions = Array.isArray(implementations?.implementations)
     ? implementations.implementations
     : [];
@@ -413,79 +421,6 @@ function renderCodexRuntimeVersions(implementations) {
     codexDefaultRuntimeImplementation.disabled = runtimeModuleBusy
       || codexDefaultRuntimeImplementation.options.length === 0;
   }
-  const rows = versions.map((item) => {
-    const row = document.createElement("div");
-    row.className = "settings-utility-row runtime-module-row";
-    const copy = document.createElement("span");
-    const titleLine = document.createElement("span");
-    titleLine.className = "settings-integration-title";
-    const title = document.createElement("strong");
-    const detail = document.createElement("small");
-    title.textContent = implementationTitle(item);
-    detail.textContent = item.healthy
-      ? implementationDescription(item)
-      : (item.reason || "版本不可用。");
-    titleLine.append(title);
-    if (item.is_default) {
-      const badge = document.createElement("span");
-      badge.className = "badge badge-success";
-      badge.textContent = "默认";
-      titleLine.append(badge);
-    }
-    copy.append(titleLine, detail);
-    const actions = document.createElement("span");
-    actions.className = "runtime-module-row-actions";
-    const enabledLabel = document.createElement("label");
-    enabledLabel.className = "settings-switch";
-    enabledLabel.title = item.is_default ? "默认版本必须保持启用" : `启用 ${title.textContent}`;
-    const enabled = document.createElement("input");
-    enabled.type = "checkbox";
-    enabled.checked = item.enabled === true;
-    enabled.disabled = runtimeModuleBusy || item.healthy !== true || item.is_default === true;
-    enabled.setAttribute("aria-label", `启用 ${title.textContent}`);
-    const track = document.createElement("span");
-    track.className = "settings-switch-track";
-    track.setAttribute("aria-hidden", "true");
-    enabled.addEventListener("change", async () => {
-      if (runtimeModuleBusy) return;
-      runtimeModuleBusy = true;
-      renderRuntimeModules();
-      setCodexRuntimeSettingsMessage("");
-      try {
-        await fetchSettingsApi(`/api/codex/runtime-implementations/${encodeURIComponent(item.implementation_id)}/enabled`, {
-          method: "PUT",
-          body: JSON.stringify({ enabled: enabled.checked }),
-          headers: { "Content-Type": "application/json" },
-        });
-        await loadRuntimeModules();
-      } catch (error) {
-        showRuntimeModuleToast(
-          error instanceof Error ? error.message : "Runtime 版本状态未能更新。",
-          "error",
-        );
-      } finally {
-        runtimeModuleBusy = false;
-        await loadRuntimeModules();
-      }
-    });
-    enabledLabel.append(enabled, track);
-    actions.append(enabledLabel);
-    if (item.removable) {
-      const remove = document.createElement("button");
-      remove.className = "button-danger";
-      remove.type = "button";
-      remove.textContent = "移除";
-      remove.disabled = runtimeModuleBusy || item.is_default;
-      remove.addEventListener("click", () => void confirmRuntimeModuleRemoval({
-        module_id: item.implementation_id,
-        name: title.textContent,
-      }));
-      actions.append(remove);
-    }
-    row.append(copy, actions);
-    return row;
-  });
-  codexRuntimeVersionList.replaceChildren(...rows);
 }
 
 async function saveCodexDefaultRuntimeImplementation() {
@@ -513,25 +448,6 @@ async function saveCodexDefaultRuntimeImplementation() {
   }
 }
 
-async function refreshBuiltinCodexRuntime() {
-  if (runtimeModuleBusy) return;
-  runtimeModuleBusy = true;
-  renderRuntimeModules();
-  setCodexRuntimeSettingsMessage("");
-  try {
-    await runtimeModuleRequest("/api/runtime-modules/builtin-dev/refresh");
-    showRuntimeModuleToast("开发代码已重新加载，并已完成 Web 与 Quick Worker 校验。", "success");
-  } catch (error) {
-    showRuntimeModuleToast(
-      error instanceof Error ? error.message : "开发代码重新加载未能确认。",
-      "error",
-    );
-  } finally {
-    runtimeModuleBusy = false;
-    await loadRuntimeModules();
-  }
-}
-
 function renderRuntimeModules(data = runtimeModuleData) {
   runtimeModuleData = data || { modules: [] };
   const modules = Array.isArray(runtimeModuleData.modules) ? runtimeModuleData.modules : [];
@@ -540,26 +456,20 @@ function renderRuntimeModules(data = runtimeModuleData) {
   renderCodexRuntimeVersions(implementations);
   if (runtimeModuleCandidate) rows.push(runtimeModuleRow(runtimeModuleCandidate, { candidate: true }));
   rows.push(...modules.map((module) => runtimeModuleRow(module)));
+  if (rows.length === 0) rows.push(moduleEmptyRow("尚未导入 Runtime 模块。"));
   runtimeModuleList?.replaceChildren(...rows);
 }
 
 async function loadRuntimeModules() {
   try {
-    const [modules, implementations, refreshAvailability] = await Promise.all([
+    const [modules, implementations] = await Promise.all([
       fetchSettingsApi("/api/runtime-modules"),
       fetchSettingsApi("/api/codex/runtime-implementations"),
-      fetchSettingsApi("/api/runtime-modules/builtin-dev/refresh-availability"),
     ]);
-    builtinRuntimeRefreshAvailability = refreshAvailability;
     renderRuntimeModules({ ...modules, implementations });
   } catch (_error) {
-    builtinRuntimeRefreshAvailability = {
-      available: false,
-      reason: "暂时无法确认开发代码是否可以重新加载。",
-    };
     renderRuntimeModules();
     runtimeModuleList?.replaceChildren();
-    codexRuntimeVersionList?.replaceChildren();
     setCodexRuntimeSettingsMessage("暂时无法读取 Codex Runtime 版本状态。", "error");
     if (runtimeModuleList instanceof HTMLElement) {
       showRuntimeModuleToast("暂时无法读取 Runtime 模块状态。", "error");
@@ -591,10 +501,10 @@ async function installSelectedRuntimeModule() {
     await runtimeModuleRequest("/api/runtime-modules/install", { file });
     runtimeModuleCandidate = null;
     if (runtimeModuleFile instanceof HTMLInputElement) runtimeModuleFile.value = "";
-    showRuntimeModuleToast("Runtime 模块已激活。", "success");
+    showRuntimeModuleToast("Runtime 模块已导入并启用。", "success");
     await loadRuntimeModules();
   } catch (error) {
-    showRuntimeModuleToast(error instanceof Error ? error.message : "Runtime 模块未能激活。", "error");
+    showRuntimeModuleToast(error instanceof Error ? error.message : "Runtime 模块未能导入或启用。", "error");
   } finally {
     runtimeModuleBusy = false;
     renderRuntimeModules();
@@ -649,6 +559,181 @@ function initializeRuntimeModuleInstall() {
     }
   });
   void loadRuntimeModules();
+}
+
+function orchestrationModuleRow(module, { candidate = false } = {}) {
+  const row = document.createElement("div");
+  row.className = "settings-utility-row runtime-module-row";
+  const copy = document.createElement("span");
+  const title = document.createElement("strong");
+  const detail = document.createElement("small");
+  title.textContent = `${module.name || "能力模块"} · ${module.version || "未知版本"}`;
+  detail.textContent = candidate
+    ? (module.description || "等待导入。")
+    : (module.available
+      ? (module.active ? "当前由微信任务润色使用" : (module.description || "已导入，可在对应任务设置中启用。"))
+      : (module.reason || "模块当前不可用。"));
+  copy.append(title, detail);
+  const actions = document.createElement("span");
+  actions.className = "runtime-module-row-actions";
+  if (candidate) {
+    const install = document.createElement("button");
+    install.className = "button-secondary";
+    install.type = "button";
+    install.textContent = orchestrationModuleBusy ? "导入中" : "导入";
+    install.disabled = orchestrationModuleBusy;
+    install.addEventListener("click", () => void installSelectedOrchestrationModule());
+    actions.append(install);
+    const remove = document.createElement("button");
+    remove.className = "button-secondary";
+    remove.type = "button";
+    remove.textContent = "移除";
+    remove.title = "移除当前选择的能力模块 ZIP";
+    remove.disabled = orchestrationModuleBusy;
+    remove.addEventListener("click", clearSelectedOrchestrationModule);
+    actions.append(remove);
+  } else {
+    const badge = document.createElement("span");
+    badge.className = `badge ${module.available ? "badge-success" : "badge-muted"}`;
+    badge.textContent = module.active ? "已启用" : (module.available ? "可用" : "不可用");
+    actions.append(badge);
+    if (module.removable === true) {
+      const remove = document.createElement("button");
+      remove.className = "button-danger";
+      remove.type = "button";
+      remove.textContent = "移除";
+      remove.disabled = orchestrationModuleBusy;
+      remove.addEventListener("click", () => void confirmOrchestrationModuleRemoval(module));
+      actions.append(remove);
+    }
+  }
+  row.append(copy, actions);
+  return row;
+}
+
+function renderOrchestrationModules(data = orchestrationModuleData) {
+  orchestrationModuleData = data || { modules: [] };
+  if (!(orchestrationModuleList instanceof HTMLElement)) return;
+  const modules = Array.isArray(orchestrationModuleData.modules)
+    ? orchestrationModuleData.modules
+    : [];
+  const rows = [];
+  if (orchestrationModuleCandidate) {
+    rows.push(orchestrationModuleRow(orchestrationModuleCandidate, { candidate: true }));
+  }
+  rows.push(...modules.map((module) => orchestrationModuleRow(module)));
+  if (rows.length === 0) rows.push(moduleEmptyRow("尚未导入能力模块。"));
+  orchestrationModuleList.replaceChildren(...rows);
+}
+
+async function orchestrationModuleRequest(path, { method = "POST", file } = {}) {
+  const response = await fetch(path, {
+    method,
+    headers: file ? { "X-Chub-Module-Filename": file.name } : undefined,
+    body: file,
+    cache: "no-store",
+  });
+  const payload = await response.json();
+  if (!response.ok || payload.success !== true) {
+    throw new Error(payload?.error?.message || "能力模块操作失败。");
+  }
+  return payload.data;
+}
+
+async function loadOrchestrationModules() {
+  try {
+    const data = await fetchSettingsApi("/api/settings/weixin-task-orchestration/modules", {
+      cache: "no-store",
+    });
+    renderOrchestrationModules(data);
+  } catch (_error) {
+    renderOrchestrationModules();
+    if (orchestrationModuleList instanceof HTMLElement) {
+      orchestrationModuleList.replaceChildren();
+      const message = document.createElement("p");
+      message.className = "message message-error";
+      message.textContent = "暂时无法读取能力模块状态。";
+      orchestrationModuleList.append(message);
+    }
+  }
+}
+
+async function installSelectedOrchestrationModule() {
+  const file = orchestrationModuleCandidate?.file;
+  if (!file || orchestrationModuleBusy) return;
+  orchestrationModuleBusy = true;
+  renderOrchestrationModules();
+  try {
+    await orchestrationModuleRequest("/api/settings/weixin-task-orchestration/modules/install", { file });
+    orchestrationModuleCandidate = null;
+    if (orchestrationModuleFile instanceof HTMLInputElement) orchestrationModuleFile.value = "";
+    showRuntimeModuleToast("能力模块已导入；请在对应任务设置中选择启用。", "success");
+    await loadOrchestrationModules();
+  } catch (error) {
+    showRuntimeModuleToast(error instanceof Error ? error.message : "能力模块未能导入。", "error");
+  } finally {
+    orchestrationModuleBusy = false;
+    renderOrchestrationModules();
+  }
+}
+
+async function confirmOrchestrationModuleRemoval(module) {
+  if (orchestrationModuleBusy || typeof showConfirmationDialog !== "function") return;
+  await showConfirmationDialog({
+    title: "移除能力模块",
+    description: "移除后该 ZIP 产物不可恢复；如果当前正在启用，会先切回内置实现。仍被未结束任务引用的模块不能移除。",
+    details: [{ label: "模块", value: module.name || module.implementation_ref }],
+    confirmLabel: "移除",
+    pendingLabel: "正在移除…",
+    errorMessage: "能力模块未能移除。",
+    onConfirm: async () => {
+      orchestrationModuleBusy = true;
+      renderOrchestrationModules();
+      try {
+        await orchestrationModuleRequest(
+          `/api/settings/weixin-task-orchestration/modules/${encodeURIComponent(module.implementation_ref)}`,
+          { method: "DELETE" },
+        );
+        showRuntimeModuleToast(
+          module.active ? "能力模块已移除；微信任务润色已切回内置实现。" : "能力模块已移除。",
+          "success",
+        );
+        await loadOrchestrationModules();
+      } finally {
+        orchestrationModuleBusy = false;
+        renderOrchestrationModules();
+      }
+    },
+  });
+}
+
+function initializeOrchestrationModuleInstall() {
+  if (!(orchestrationModuleFile instanceof HTMLInputElement)) return;
+  orchestrationModuleFileTrigger?.addEventListener("click", () => orchestrationModuleFile.click());
+  orchestrationModuleFile.addEventListener("change", async () => {
+    const file = orchestrationModuleFile.files?.[0];
+    orchestrationModuleCandidate = null;
+    if (!file) {
+      renderOrchestrationModules();
+      return;
+    }
+    orchestrationModuleBusy = true;
+    renderOrchestrationModules();
+    try {
+      const preview = await orchestrationModuleRequest(
+        "/api/settings/weixin-task-orchestration/modules/inspect",
+        { file },
+      );
+      orchestrationModuleCandidate = { ...preview, file };
+    } catch (error) {
+      orchestrationModuleFile.value = "";
+      showRuntimeModuleToast(error instanceof Error ? error.message : "能力模块清单不可读取。", "error");
+    } finally {
+      orchestrationModuleBusy = false;
+      renderOrchestrationModules();
+    }
+  });
+  void loadOrchestrationModules();
 }
 
 function runtimeSettingOptions(field, catalog, values) {
@@ -1075,12 +1160,12 @@ if (settingsPage === "appearance") {
       "change",
       () => void saveCodexDefaultRuntimeImplementation(),
     );
-    codexBuiltinRuntimeRefresh?.addEventListener("click", () => void refreshBuiltinCodexRuntime());
     void loadRuntimeModules();
   }
 } else if (settingsPage === "runtime") {
   void loadGeneralRuntimeSettings();
   initializeRuntimeModuleInstall();
+  initializeOrchestrationModuleInstall();
 } else if (settingsPage === "task-orchestration") {
   window.initializeWorkspaceTaskOrchestration?.();
 } else if (settingsPage === "openclaw") {

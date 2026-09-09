@@ -31,6 +31,7 @@ def _runtime_archive(
     version: str = "1.0.0",
     dependencies: bool = False,
     compatibility_id: str = "codex-v1",
+    entry_import: str = "",
 ) -> bytes:
     manifest = {
         "protocol_version": 1,
@@ -48,6 +49,7 @@ def _runtime_archive(
     if dependencies:
         manifest["dependencies"] = "requirements.txt"
     source = f'''\
+{entry_import}
 from app.ai_runtime import RuntimeDescriptor, RuntimeStatus
 from chub_codex_runtime.runtime_adapter import CodexRuntimeAdapter, CODEX_RUNTIME_CAPABILITIES
 from chub_codex_runtime.worker_runtime import CodexWorkerRuntime
@@ -232,6 +234,23 @@ def test_runtime_zip_rejects_incompatible_chub_version(settings) -> None:
         )
 
     assert "不兼容" in raised.value.message
+
+
+def test_runtime_zip_reports_shared_contract_mismatch_at_entry_load(settings) -> None:
+    archive = _runtime_archive(
+        settings,
+        entry_import="from app.ai_runtime import RuntimeActivityEvent",
+    )
+
+    with pytest.raises(RuntimeModuleInstallError) as raised:
+        ExternalRuntimeModuleService(settings).install(
+            archive,
+            source_name="outdated-contract.zip",
+        )
+
+    assert raised.value.message == (
+        "模块依赖的 Runtime 共享契约与当前 Chub 不兼容，请使用当前源码重新构建 ZIP。"
+    )
 
 
 def test_codex_runtime_zip_rejects_non_versioned_implementation_id(settings) -> None:

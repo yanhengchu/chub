@@ -1469,6 +1469,84 @@ def test_native_list_hides_internal_translation_session_unless_requested(
     assert [item.cwd for item in visible] == [str(translation_cwd)]
 
 
+def test_translation_native_cleanup_removes_all_unbound_idle_sessions(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    now = datetime(2026, 9, 8, 10, tzinfo=UTC)
+    translation_cwd = settings.ai_runtime.codex.runtime_dir / "translation-workspace"
+    current_native_id = "11111111-1111-4111-8111-111111111111"
+    stale_native_id = "22222222-2222-4222-8222-222222222222"
+    manager.store.list = MagicMock(return_value=[
+        AiSession(
+            id="33333333-3333-4333-8333-333333333333",
+            runtime_id="codex",
+            workspace_id="weixin-translation",
+            workspace_name="微信文本优化与翻译",
+            cwd=translation_cwd,
+            native_session_id=current_native_id,
+        )
+    ])
+    manager.runtime_adapter = MagicMock()
+    manager.runtime_adapter.discover_sessions.return_value = RuntimeSessionDiscoveryResult(
+        sessions=(
+            RuntimeNativeSession(
+                runtime_id="codex",
+                native_session_id=current_native_id,
+                cwd=translation_cwd,
+                created_at=now,
+                updated_at=now,
+            ),
+            RuntimeNativeSession(
+                runtime_id="codex",
+                native_session_id=stale_native_id,
+                cwd=translation_cwd,
+                created_at=now,
+                updated_at=now,
+            ),
+        ),
+    )
+    manager.runtime_adapter.has_active_writer.return_value = False
+    manager.runtime_adapter.native_session_deleted_state.return_value = True
+
+    result = manager.cleanup_stale_translation_native_sessions()
+
+    assert result.pending == 0
+    assert result.reason is None
+    manager.runtime_adapter.run_native_action.assert_called_once_with(
+        "delete", stale_native_id
+    )
+
+
+def test_translation_native_cleanup_keeps_a_session_with_an_active_writer(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    now = datetime(2026, 9, 8, 10, tzinfo=UTC)
+    translation_cwd = settings.ai_runtime.codex.runtime_dir / "translation-workspace"
+    stale_native_id = "22222222-2222-4222-8222-222222222222"
+    manager.store.list = MagicMock(return_value=[])
+    manager.runtime_adapter = MagicMock()
+    manager.runtime_adapter.discover_sessions.return_value = RuntimeSessionDiscoveryResult(
+        sessions=(
+            RuntimeNativeSession(
+                runtime_id="codex",
+                native_session_id=stale_native_id,
+                cwd=translation_cwd,
+                created_at=now,
+                updated_at=now,
+            ),
+        ),
+    )
+    manager.runtime_adapter.has_active_writer.return_value = True
+
+    result = manager.cleanup_stale_translation_native_sessions()
+
+    assert result.pending == 1
+    assert result.retry_required is True
+    manager.runtime_adapter.run_native_action.assert_not_called()
+
+
 def test_native_discovery_projects_only_title_and_timestamp_to_chub_session() -> None:
     session = AiSession.model_validate(
         {

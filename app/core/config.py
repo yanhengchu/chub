@@ -219,6 +219,16 @@ class OpenClawWeixinChubModeConfig(StrictModel):
     model: str | None = Field(default=None, min_length=1, max_length=128)
     reasoning_effort: str | None = Field(default=None, min_length=1, max_length=32)
     state_file: Path = Path("data/local/state/openclaw/weixin-chub-mode.json")
+    # Orchestration ZIPs are intentionally separate from Runtime modules. They
+    # are loaded only by the Web coordinator and never by Quick Worker.
+    orchestration_modules_dir: Path = Path(
+        "data/local/runtime/openclaw/weixin-orchestration-modules"
+    )
+    orchestration_module_max_archive_bytes: int = Field(
+        default=8 * 1024 * 1024,
+        ge=1024,
+        le=32 * 1024 * 1024,
+    )
     session_name_max_width: int = Field(default=30, ge=4, le=96)
     task_name_max_width: int = Field(default=64, ge=4, le=96)
     # Translation runs an LLM over untrusted message text and must be opted in.
@@ -334,6 +344,11 @@ class Settings(StrictModel):
         if not self.openclaw.weixin_chub_mode.state_file.is_absolute():
             self.openclaw.weixin_chub_mode.state_file = (
                 PROJECT_ROOT / self.openclaw.weixin_chub_mode.state_file
+            )
+        if not self.openclaw.weixin_chub_mode.orchestration_modules_dir.is_absolute():
+            self.openclaw.weixin_chub_mode.orchestration_modules_dir = (
+                PROJECT_ROOT
+                / self.openclaw.weixin_chub_mode.orchestration_modules_dir
             )
         if self.openclaw.integration_config_path is not None:
             self.openclaw.integration_config_path = (

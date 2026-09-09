@@ -34,6 +34,11 @@ from app.services.deferred_restart import (
     DeferredRestartRequest,
 )
 from app.services.operation_log import write_operation
+from app.services.weixin_task_capabilities import WeixinTaskCapabilityHost
+from app.services.weixin_orchestration_dev import WeixinDevelopmentStage
+from app.services.weixin_orchestration_modules import (
+    WeixinOrchestrationModuleService,
+)
 from app.services.openclaw_weixin_chub_commands import (
     FIXED_COMMAND_KINDS,
     command_task_message_id,
@@ -96,6 +101,10 @@ from app.services.openclaw_weixin_chub_models import (
     WeixinChubModeSubmission,
     WeixinChubModeSubmissionCode,
     WeixinChubModeSubmissionResult,
+    WeixinTaskCapabilityCall,
+    WeixinTaskOrchestrationRequest,
+    WeixinTaskOrchestrationSettingsStatus,
+    WeixinTaskOrchestrationStage,
 )
 from app.services.weixin_translation import (
     TranslationEntry,
@@ -182,10 +191,15 @@ class WeixinChubModeManager:
             [str, str, QuickInteractionWeixinRoute, str], object
         ]
         | None = None,
+        development_stage: WeixinDevelopmentStage | None = None,
+        orchestration_module_service: WeixinOrchestrationModuleService | None = None,
     ) -> None:
         self.settings = settings
         self.codex_manager = codex_manager
         self.quick_interactions = quick_interactions
+        self.task_capabilities = WeixinTaskCapabilityHost(
+            quick_interactions, codex_manager
+        )
         self.route_validator = route_validator
         self.session_reclaimer = session_reclaimer
         self.codex_account_reader = codex_account_reader
@@ -204,6 +218,17 @@ class WeixinChubModeManager:
         self.restart_notifier = restart_notifier
         self.system_upgrade_starter = system_upgrade_starter
         self.maintenance_command_starter = maintenance_command_starter
+        self.development_stage = development_stage or WeixinDevelopmentStage()
+        self.orchestration_module_service = (
+            orchestration_module_service
+            or WeixinOrchestrationModuleService(settings)
+        )
+        try:
+            self.orchestration_module_service.recover()
+        except ApiError:
+            # A bad local module directory must not prevent the Web control
+            # plane, internal implementation or unrelated services from starting.
+            LOGGER.warning("Weixin orchestration module recovery is unavailable", exc_info=True)
         self.path = settings.openclaw.weixin_chub_mode.state_file
         request_state_file = settings.requests.state_file
         if not request_state_file.is_absolute() and self.path.is_absolute():
@@ -313,6 +338,33 @@ class WeixinChubModeManager:
                 submission.http_status != 200
             ):
                 submission.http_status = 200
+                changed = True
+        for request in state.orchestration_requests:
+            submission = next(
+                (
+                    item
+                    for item in state.submissions
+                    if item.orchestration_id == request.id
+                    and item.message_id == request.message_id
+                ),
+                None,
+            )
+            if submission is None or submission.status != "rejected":
+                continue
+            recovered_status = (
+                "unavailable" if submission.http_status == 503 else "rejected"
+            )
+            recovered_checkpoint = (
+                submission.orchestration_checkpoint
+                or "internal.rejected"
+            )
+            if (
+                request.status != recovered_status
+                or request.checkpoint != recovered_checkpoint
+            ):
+                request.status = recovered_status
+                request.checkpoint = recovered_checkpoint
+                request.updated_at = submission.updated_at
                 changed = True
         for operation in state.restart_operations:
             if operation.notification_status == "sending":
@@ -481,6 +533,217 @@ class WeixinChubModeManager:
         with self._lock:
             return self._state.configuration.model_copy(deep=True)
 
+    def orchestration_settings(self) -> WeixinTaskOrchestrationSettingsStatus:
+        with self._lock:
+            implementation = self._state.orchestration_implementation
+            module_ref = self._state.orchestration_module_ref
+        try:
+            snapshot = self.development_stage.snapshot()
+        except ApiError:
+            development_available = False
+            source_hash = None
+        else:
+            development_available = True
+            source_hash = snapshot.source_hash
+        module_available = False
+        if module_ref is not None:
+            try:
+                self.orchestration_module_service.require(module_ref)
+            except ApiError:
+                module_available = False
+            else:
+                module_available = True
+        return WeixinTaskOrchestrationSettingsStatus(
+            implementation=implementation,
+            development_available=development_available,
+            development_source_hash=source_hash,
+            module_ref=module_ref,
+            module_available=module_available,
+        )
+
+    def set_orchestration_implementation(
+        self,
+        implementation: Literal["internal", "weixin-orchestration-dev", "module"],
+        module_ref: str | None = None,
+    ) -> WeixinTaskOrchestrationSettingsStatus:
+        with self._lock:
+            if implementation == "internal":
+                if self._state.orchestration_implementation != implementation:
+                    next_state = self._state.model_copy(deep=True)
+                    next_state.orchestration_implementation = implementation
+                    next_state.orchestration_development_source_hash = None
+                    next_state.orchestration_module_ref = None
+                    self._write_state(next_state)
+                    self._state = next_state
+                return self.orchestration_settings()
+
+            if implementation == "module":
+                if module_ref is None:
+                    raise ApiError(
+                        422,
+                        "weixin_orchestration_module_ref_required",
+                        "请选择要启用的编排模块。",
+                    )
+                self.orchestration_module_service.require(module_ref)
+                if (
+                    self._state.orchestration_implementation != implementation
+                    or self._state.orchestration_module_ref != module_ref
+                ):
+                    next_state = self._state.model_copy(deep=True)
+                    next_state.orchestration_implementation = implementation
+                    next_state.orchestration_development_source_hash = None
+                    next_state.orchestration_module_ref = module_ref
+                    self._write_state(next_state)
+                    self._state = next_state
+                return self.orchestration_settings()
+
+            snapshot = self.development_stage.snapshot()
+            active_development_requests = [
+                request
+                for request in self._state.orchestration_requests
+                if request.status in {"accepted", "waiting", "unknown"}
+                and any(stage.kind == "development" for stage in request.stage_chain)
+            ]
+            if any(
+                stage.source_hash != snapshot.source_hash
+                for request in active_development_requests
+                for stage in request.stage_chain
+                if stage.kind == "development"
+            ):
+                raise ApiError(
+                    409,
+                    "weixin_orchestration_development_reload_blocked",
+                    "已有微信开发编排任务未结束，当前源码不能重新加载。",
+                )
+            if (
+                self._state.orchestration_implementation != implementation
+                or self._state.orchestration_development_source_hash
+                != snapshot.source_hash
+            ):
+                next_state = self._state.model_copy(deep=True)
+                next_state.orchestration_implementation = implementation
+                next_state.orchestration_development_source_hash = snapshot.source_hash
+                next_state.orchestration_module_ref = None
+                self._write_state(next_state)
+                self._state = next_state
+            return self.orchestration_settings()
+
+    def list_orchestration_modules(self):
+        with self._lock:
+            active_ref = self._state.orchestration_module_ref
+            referenced = {
+                stage.implementation_ref
+                for request in self._state.orchestration_requests
+                if request.status in {"accepted", "waiting", "unknown"}
+                for stage in request.stage_chain
+                if stage.kind == "module"
+            }
+        return tuple(
+            (
+                artifact,
+                artifact.implementation_ref == active_ref,
+                artifact.implementation_ref not in referenced,
+            )
+            for artifact in self.orchestration_module_service.list_artifacts()
+        )
+
+    def remove_orchestration_module(self, implementation_ref: str) -> None:
+        with self._lock:
+            if any(
+                request.status in {"accepted", "waiting", "unknown"}
+                and any(
+                    stage.kind == "module"
+                    and stage.implementation_ref == implementation_ref
+                    for stage in request.stage_chain
+                )
+                for request in self._state.orchestration_requests
+            ):
+                raise ApiError(
+                    409,
+                    "weixin_orchestration_module_referenced",
+                    "该编排模块仍被未结束微信任务引用，暂不能移除。",
+                )
+            previous_state = self._state
+            active = previous_state.orchestration_module_ref == implementation_ref
+            if active:
+                next_state = previous_state.model_copy(deep=True)
+                next_state.orchestration_implementation = "internal"
+                next_state.orchestration_development_source_hash = None
+                next_state.orchestration_module_ref = None
+                self._write_state(next_state)
+                self._state = next_state
+            try:
+                self.orchestration_module_service.remove(implementation_ref)
+            except ApiError:
+                if active:
+                    self._write_state(previous_state)
+                    self._state = previous_state
+                raise
+
+    def _new_request_stage_chain(
+        self,
+        *,
+        preprocess: bool,
+    ) -> tuple[
+        str,
+        list[WeixinTaskOrchestrationStage],
+    ]:
+        if not preprocess:
+            return "internal", []
+        if self._state.orchestration_implementation == "internal":
+            return "internal", [
+                WeixinTaskOrchestrationStage(
+                    kind="internal",
+                    stage_id="weixin_refinement",
+                )
+            ]
+        if self._state.orchestration_implementation == "module":
+            module_ref = self._state.orchestration_module_ref
+            self.orchestration_module_service.require(module_ref)
+            if module_ref is None:
+                raise ApiError(
+                    503,
+                    "weixin_orchestration_module_unavailable",
+                    "微信编排模块当前不可用，本次任务未执行。",
+                )
+            return module_ref, [
+                WeixinTaskOrchestrationStage(
+                    kind="module",
+                    stage_id="weixin_refinement",
+                    implementation_ref=module_ref,
+                )
+            ]
+        snapshot = self.development_stage.snapshot()
+        if (
+            self._state.orchestration_development_source_hash
+            != snapshot.source_hash
+        ):
+            raise ApiError(
+                503,
+                "weixin_orchestration_development_changed",
+                "微信开发编排实现已变化，请重新确认活动实现后再提交新任务。",
+            )
+        return snapshot.implementation_id, [
+            WeixinTaskOrchestrationStage(
+                kind="development",
+                stage_id="weixin_refinement",
+                development_ref=snapshot.implementation_id,
+                source_hash=snapshot.source_hash,
+            )
+        ]
+
+    @staticmethod
+    def _stage_checkpoint_prefix(stage: WeixinTaskOrchestrationStage) -> str:
+        return (
+            "internal.weixin_refinement"
+            if stage.kind == "internal"
+            else (
+                "development.weixin_refinement"
+                if stage.kind == "development"
+                else "module.weixin_refinement"
+            )
+        )
+
     def session_id(self) -> str | None:
         with self._lock:
             return self._state.session_id
@@ -553,6 +816,7 @@ class WeixinChubModeManager:
         target_session_id: str | None = None,
         retain_busy_retry: bool = True,
         ignore_translation_reservation: bool = False,
+        orchestration_id_override: str | None = None,
     ) -> WeixinChubModeSubmissionResult:
         with self._slot_lock, self._lock:
             if self._state_error:
@@ -562,8 +826,16 @@ class WeixinChubModeManager:
                     "微信 Chub 模式状态文件不可用。",
                 )
             route_fingerprint = self._route_fingerprint(delivery_route)
+            orchestration_id = orchestration_id_override or str(uuid4())
             duplicate = self._find_submission(message_id)
-            if duplicate is not None:
+            resume_waiting_target = (
+                duplicate is not None
+                and orchestration_id_override is not None
+                and duplicate.orchestration_id == orchestration_id
+                and duplicate.code in {"in_progress", "translation_queued"}
+                and duplicate.status in {"rejected", "routed"}
+            )
+            if duplicate is not None and not resume_waiting_target:
                 if duplicate.delivery_route_fingerprint != route_fingerprint:
                     raise ApiError(
                         409,
@@ -574,10 +846,29 @@ class WeixinChubModeManager:
 
             operation_id = uuid4().hex
             now = utc_now()
+            existing_orchestration = next(
+                (
+                    item
+                    for item in self._state.orchestration_requests
+                    if item.id == orchestration_id
+                ),
+                None,
+            )
+            if orchestration_id_override is not None and existing_orchestration is None:
+                raise ApiError(
+                    409,
+                    "weixin_chub_mode_orchestration_unavailable",
+                    "原始编排请求已不可用，本次任务未执行。",
+                )
+            if existing_orchestration is not None and existing_orchestration.current_prompt:
+                # A resumed stage must submit the durable stage result, never a
+                # callback argument that could differ after a restart or replay.
+                prompt = existing_orchestration.current_prompt
             reservation = WeixinChubModeSubmission(
                 message_id=message_id,
                 correlation_id=correlation_id,
                 operation_id=operation_id,
+                orchestration_id=orchestration_id,
                 delivery_route_fingerprint=route_fingerprint,
                 status="reserved",
                 code="submission_interrupted",
@@ -586,7 +877,46 @@ class WeixinChubModeManager:
                 updated_at=now,
             )
             next_state = self._state.model_copy(deep=True)
-            next_state.submissions.append(reservation)
+            if resume_waiting_target:
+                next_state.submissions = [
+                    reservation.model_copy(deep=True)
+                    if item.message_id == message_id else item
+                    for item in next_state.submissions
+                ]
+            else:
+                next_state.submissions.append(reservation)
+            if existing_orchestration is None:
+                implementation, stage_chain = self._new_request_stage_chain(
+                    preprocess=preprocess,
+                )
+                next_state.orchestration_requests.append(
+                    WeixinTaskOrchestrationRequest(
+                        id=orchestration_id,
+                        message_id=message_id,
+                        operation_id=operation_id,
+                        implementation=implementation,
+                        task_kind="text_processing" if preprocess else "direct",
+                        original_prompt=prompt,
+                        current_prompt=prompt,
+                        stage_chain=stage_chain,
+                        checkpoint=(
+                            "dispatch.stage_ready" if preprocess else "dispatch.final_ready"
+                        ),
+                        candidate_session_refs=[
+                            hashlib.sha256(
+                                f"{orchestration_id}:{slot.session_id}".encode("utf-8")
+                            ).hexdigest()
+                            for slot in self._state.session_slots
+                        ],
+                        creation_context=(
+                            "fixed_session"
+                            if target_session_id is not None
+                            else "default_slot"
+                        ),
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
             target = self.settings.node.id
             self._log(operation_id, "requested", target, source_ip)
             try:
@@ -600,6 +930,13 @@ class WeixinChubModeManager:
                     "微信 Chub 模式状态文件不可用。",
                 ) from None
             self._state = next_state
+
+            request = next(
+                item
+                for item in self._state.orchestration_requests
+                if item.id == orchestration_id
+            )
+            stage_pending = request.cursor < len(request.stage_chain)
 
             self._log(operation_id, "started", target, source_ip)
             session_id: str | None = None
@@ -635,9 +972,133 @@ class WeixinChubModeManager:
                     )
 
                 configuration = self._state.configuration
+                if stage_pending:
+                    stage = request.stage_chain[request.cursor]
+                    if stage.stage_id != "weixin_refinement":
+                        raise ApiError(
+                            503,
+                            "weixin_chub_mode_orchestration_unavailable",
+                            "当前编排阶段不可用，本次任务未执行。",
+                        )
+                    stage_checkpoint = self._stage_checkpoint_prefix(stage)
+                    if self.translation_manager is None:
+                        raise ApiError(
+                            503,
+                            "weixin_translation_unavailable",
+                            "文本优化服务当前不可用，本次任务未执行。",
+                        )
+                    session_slot: int | None = None
+                    session_title: str | None = None
+                    if target_session_id is not None:
+                        target_session = self.codex_manager.get_session(target_session_id)
+                        if (
+                            self._slot_for_session(target_session_id) is None
+                            or not self._session_matches_configuration(
+                                target_session,
+                                configuration,
+                            )
+                        ):
+                            raise ApiError(
+                                409,
+                                "weixin_chub_mode_target_unavailable",
+                                "原目标 Session 已不可用，本次任务未执行。",
+                            )
+                        session_slot = self._slot_for_session(target_session_id)
+                        session_title = build_session_title(
+                            target_session.title or prompt,
+                            self.settings.openclaw.weixin_chub_mode.session_name_max_width,
+                        )
+                    def enqueue_refinement() -> bool:
+                        return self.translation_manager.enqueue(
+                            message_id=message_id,
+                            original=prompt,
+                            route=delivery_route,
+                            operation_id=operation_id,
+                            source_ip=source_ip,
+                            target_session_id=target_session_id,
+                            confirmation_required=confirmation_required,
+                            orchestration_id=orchestration_id,
+                        )
+
+                    if stage.kind == "internal":
+                        accepted = enqueue_refinement()
+                    elif stage.kind == "development":
+                        accepted = self.development_stage.execute_refinement(
+                            implementation_id=stage.development_ref,
+                            source_hash=stage.source_hash,
+                            enqueue_refinement=enqueue_refinement,
+                        )
+                    else:
+                        accepted = self.orchestration_module_service.execute_refinement(
+                            implementation_ref=stage.implementation_ref,
+                            enqueue_refinement=enqueue_refinement,
+                        )
+                    if not accepted:
+                        raise ApiError(
+                            503,
+                            "weixin_translation_unavailable",
+                            "文本优化任务未能启动，本次任务未执行。",
+                        )
+                    entry = self.translation_manager.entry_for_orchestration(
+                        orchestration_id
+                    )
+                    entry_id = getattr(entry, "id", None)
+                    if isinstance(entry_id, str):
+                        self._update_orchestration_request(
+                            orchestration_id,
+                            checkpoint=f"{stage_checkpoint}.queued",
+                            translation_entry_id=entry_id,
+                        )
+                    task_summary = build_task_name(
+                        prompt,
+                        self.settings.openclaw.weixin_chub_mode.task_name_max_width,
+                    )
+                    reservation.status = "routed"
+                    reservation.code = "translation_queued"
+                    reservation.message = format_task_context(
+                        "Optimizing · Preparing to submit.",
+                        task_summary,
+                        session_slot=session_slot,
+                        session_title=session_title,
+                        current=self._state.session_id == target_session_id,
+                    )
+                    reservation.http_status = 200
+                    reservation.dispatch_disposition = "handled"
+                    reservation.updated_at = utc_now()
+                    reservation.orchestration_checkpoint = f"{stage_checkpoint}.queued"
+                    self._replace_submission(reservation)
+                    self._log(operation_id, "succeeded", target, source_ip)
+                    return self._result(
+                        reservation,
+                        duplicate=False,
+                        task_summary=task_summary,
+                    )
+
                 self._sync_session_slots(configuration, fill_candidates=False)
                 if target_session_id is None:
-                    session_id, new_session = self._ensure_session(configuration)
+                    creation_ref = hashlib.sha256(
+                        f"{orchestration_id}:weixin-default".encode("utf-8")
+                    ).hexdigest()
+                    next_state = self._state.model_copy(deep=True)
+                    next_state.orchestration_requests = [
+                        item.model_copy(update={"creation_ref": creation_ref, "updated_at": utc_now()})
+                        if item.id == orchestration_id else item
+                        for item in next_state.orchestration_requests
+                    ]
+                    self._write_state(next_state)
+                    self._state = next_state
+                    request = next(item for item in self._state.orchestration_requests if item.id == orchestration_id)
+                    session_id, new_session = self.task_capabilities.create_session(
+                        request,
+                        creation_ref,
+                        lambda: self._ensure_session(configuration),
+                    )
+                    self._record_orchestration_capability_call(
+                        orchestration_id,
+                        "create_session",
+                        "succeeded",
+                        "session.resolved",
+                    )
                 else:
                     session_id = target_session_id
                     new_session = False
@@ -654,6 +1115,22 @@ class WeixinChubModeManager:
                             "weixin_chub_mode_target_unavailable",
                             "原目标 Session 已不可用，本次任务未执行。",
                         )
+                session_ref = hashlib.sha256(
+                    f"{orchestration_id}:{session_id}".encode("utf-8")
+                ).hexdigest()
+                next_state = self._state.model_copy(deep=True)
+                next_state.orchestration_requests = [
+                    item.model_copy(update={
+                        "session_id": session_id,
+                        "session_ref": session_ref,
+                        "candidate_session_refs": [session_ref],
+                        "updated_at": utc_now(),
+                    })
+                    if item.id == orchestration_id else item
+                    for item in next_state.orchestration_requests
+                ]
+                self._write_state(next_state)
+                self._state = next_state
                 if (
                     not preprocess
                     and
@@ -680,6 +1157,23 @@ class WeixinChubModeManager:
                             route_fingerprint=route_fingerprint,
                             session_id=session_id,
                         )
+                    elif orchestration_id_override is not None:
+                        # This is a durable internal stage, not a new Weixin
+                        # message. Preserve its exact submission identity so
+                        # the translation retry can continue once the target
+                        # Session releases its current writer.
+                        reservation.status = "routed"
+                        reservation.code = "translation_queued"
+                        reservation.message = (
+                            "Optimized · Waiting for the target Session."
+                        )
+                        reservation.http_status = 200
+                        reservation.session_id = session_id
+                        reservation.orchestration_checkpoint = (
+                            "dispatch.waiting_target"
+                        )
+                        reservation.updated_at = utc_now()
+                        self._replace_submission(reservation)
                     else:
                         self._reject(
                             reservation,
@@ -742,8 +1236,10 @@ class WeixinChubModeManager:
                             session.title or prompt,
                             self.settings.openclaw.weixin_chub_mode.session_name_max_width,
                         )
-                        task = self.quick_interactions.submit(
-                            session_id,
+                        request = next(item for item in self._state.orchestration_requests if item.id == orchestration_id)
+                        task = self.task_capabilities.submit_task(
+                            request,
+                            session_ref,
                             prompt,
                             summary_max_chars=MAX_WEIXIN_TASK_SUMMARY_CHARS,
                             summary_max_width=(
@@ -752,6 +1248,12 @@ class WeixinChubModeManager:
                             operation_id=operation_id,
                             source_ip=source_ip,
                             notification_route=delivery_route,
+                        )
+                        self._record_orchestration_capability_call(
+                            orchestration_id,
+                            "submit_task",
+                            "succeeded",
+                            "task.submitted",
                         )
             except ApiError as exc:
                 if reservation.status == "reserved":
@@ -865,6 +1367,7 @@ class WeixinChubModeManager:
                 reservation.session_title = session_title
                 reservation.dispatch_disposition = "handled"
                 reservation.updated_at = utc_now()
+                reservation.orchestration_checkpoint = "text_processing.queued"
                 self._replace_submission(reservation)
                 self._log(operation_id, "succeeded", target, source_ip)
                 if new_session:
@@ -901,6 +1404,7 @@ class WeixinChubModeManager:
             reservation.session_slot = session_slot
             reservation.session_title = session_title
             reservation.updated_at = utc_now()
+            reservation.orchestration_checkpoint = "task.submitted"
             try:
                 self._replace_submission(reservation)
             except OSError:
@@ -925,6 +1429,106 @@ class WeixinChubModeManager:
                 duplicate=False,
                 task_summary=task_summary,
             )
+
+    def reconcile_orchestration_requests(self) -> None:
+        """Reconcile submitted tasks after a Web restart without replaying them."""
+        with self._lock:
+            if self._state_error:
+                return
+            next_state = self._state.model_copy(deep=True)
+            changed = False
+            for request in next_state.orchestration_requests:
+                if request.status == "waiting" and request.translation_entry_id:
+                    entry = (
+                        self.translation_manager.entry_for_orchestration(request.id)
+                        if self.translation_manager is not None
+                        else None
+                    )
+                    if (
+                        entry is not None
+                        and entry.id == request.translation_entry_id
+                        and entry.status in {"discarded", "failed"}
+                    ):
+                        request.status = "rejected"
+                        request.checkpoint = "text_processing.discarded"
+                        request.updated_at = utc_now()
+                        changed = True
+                        continue
+                if request.status != "waiting" or request.task_ref is None:
+                    continue
+                try:
+                    result = self.task_capabilities.await_task(request, request.task_ref)
+                except ApiError:
+                    result = "unknown"
+                if result == "waiting":
+                    continue
+                request.status = (
+                    "unknown"
+                    if result == "unknown"
+                    else "rejected"
+                    if result == "rejected"
+                    else "completed"
+                )
+                request.checkpoint = (
+                    "task.result_unknown"
+                    if result == "unknown"
+                    else "task.finished"
+                    if result == "succeeded"
+                    else "task.failed"
+                )
+                request.capability_calls.append(
+                    WeixinTaskCapabilityCall(
+                        name="await_task",
+                        outcome=result,
+                        checkpoint=request.checkpoint,
+                        at=utc_now(),
+                    )
+                )
+                request.updated_at = utc_now()
+                changed = True
+            if changed:
+                self._write_state(next_state)
+                self._state = next_state
+
+    def record_orchestration_task_finished(self, task: QuickInteractionTask) -> None:
+        """Advance only the request bound to a trusted Quick Worker terminal event."""
+        with self._lock:
+            if self._state_error:
+                return
+            status = task.status
+            if status == "succeeded":
+                outcome = "succeeded"
+                request_status = "completed"
+                checkpoint = "task.finished"
+            elif status in {"failed", "timed_out", "cancelled"}:
+                outcome = "rejected"
+                request_status = "rejected"
+                checkpoint = "task.failed"
+            else:
+                outcome = "unknown"
+                request_status = "unknown"
+                checkpoint = "task.result_unknown"
+            next_state = self._state.model_copy(deep=True)
+            matched = False
+            for request in next_state.orchestration_requests:
+                if request.task_id != task.id or request.status != "waiting":
+                    continue
+                request.status = request_status
+                request.checkpoint = checkpoint
+                request.updated_at = utc_now()
+                request.capability_calls.append(
+                    WeixinTaskCapabilityCall(
+                        name="await_task",
+                        outcome=outcome,
+                        checkpoint=checkpoint,
+                        at=request.updated_at,
+                    )
+                )
+                matched = True
+            if not matched:
+                return
+            self._write_state(next_state)
+            self._state = next_state
 
     def _format_submitted_task_message(
         self,
@@ -1024,31 +1628,32 @@ class WeixinChubModeManager:
         english: str | None,
         error: str | None,
     ) -> TranslationExecutionOutcome:
-        """Submit one persisted optimized draft to its original Session."""
-        if entry.target_session_id is None:
-            return TranslationExecutionOutcome(
-                status="failed",
-                error="文本优化任务缺少目标 Session。",
-            )
+        """Advance the refinement stage, then let the dispatcher submit the main task."""
         main_message_id = "optimized-" + hashlib.sha256(
             entry.message_id.encode("utf-8")
         ).hexdigest()
         route_fingerprint = self._route_fingerprint(entry.route)
         with self._lock:
             source = self._find_submission(entry.message_id)
+            request = next(
+                (
+                    item
+                    for item in self._state.orchestration_requests
+                    if source is not None and item.id == source.orchestration_id
+                ),
+                None,
+            )
             source_was_submitted = (
                 source is not None
                 and source.status == "submitted"
                 and source.code == "submitted"
                 and source.task_id is not None
-                and source.session_id == entry.target_session_id
                 and source.delivery_route_fingerprint == route_fingerprint
             )
             source_is_active = (
                 source is not None
                 and source.status == "routed"
                 and source.code == "translation_queued"
-                and source.session_id == entry.target_session_id
                 and source.delivery_route_fingerprint == route_fingerprint
             )
             source_was_interrupted = (
@@ -1093,8 +1698,70 @@ class WeixinChubModeManager:
                 error=error or "文本优化未返回有效结果。",
             )
 
+        if (
+            request is None
+            or not request.stage_chain
+            or request.cursor > len(request.stage_chain)
+        ):
+            reason = "原始编排阶段已失效，本次任务未执行。"
+            self._finish_optimized_source_submission(
+                entry,
+                f"Optimization failed · {reason}",
+                failed=True,
+            )
+            return TranslationExecutionOutcome(status="failed", error=reason)
+        # A waiting-target retry has already persisted the completed stage's
+        # cursor. Reuse that immutable snapshot instead of advancing it again.
+        stage = request.stage_chain[min(request.cursor, len(request.stage_chain) - 1)]
+        if stage.stage_id != "weixin_refinement":
+            reason = "原始编排阶段已失效，本次任务未执行。"
+            self._finish_optimized_source_submission(
+                entry,
+                f"Optimization failed · {reason}",
+                failed=True,
+            )
+            return TranslationExecutionOutcome(status="failed", error=reason)
+        if stage.kind == "development":
+            try:
+                self.development_stage.require_snapshot(
+                    stage.development_ref,
+                    stage.source_hash,
+                )
+            except ApiError as exc:
+                reason = self._safe_submission_error(exc)
+                self._finish_optimized_source_submission(
+                    entry,
+                    f"Optimization failed · {reason}",
+                    failed=True,
+                )
+                return TranslationExecutionOutcome(status="failed", error=reason)
+        elif stage.kind == "module":
+            try:
+                self.orchestration_module_service.require(stage.implementation_ref)
+            except ApiError as exc:
+                reason = self._safe_submission_error(exc)
+                self._finish_optimized_source_submission(
+                    entry,
+                    f"Optimization failed · {reason}",
+                    failed=True,
+                )
+                return TranslationExecutionOutcome(status="failed", error=reason)
+        stage_checkpoint = self._stage_checkpoint_prefix(stage)
+
         if entry.confirmation_required:
+            self._update_orchestration_request(
+                source.orchestration_id,
+                checkpoint=f"{stage_checkpoint}.awaiting_confirmation",
+                current_prompt=polished,
+            )
             return TranslationExecutionOutcome(status="ready_confirmation")
+
+        self._update_orchestration_request(
+            source.orchestration_id,
+            checkpoint="dispatch.final_ready",
+            current_prompt=polished,
+            cursor=1,
+        )
 
         try:
             submission = self.submit(
@@ -1106,6 +1773,7 @@ class WeixinChubModeManager:
                 target_session_id=entry.target_session_id,
                 retain_busy_retry=False,
                 ignore_translation_reservation=True,
+                orchestration_id_override=source.orchestration_id,
             )
         except ApiError as exc:
             reason = self._safe_submission_error(exc)
@@ -1150,6 +1818,7 @@ class WeixinChubModeManager:
         *,
         failed: bool,
         main_record: WeixinChubModeSubmission | None = None,
+        checkpoint: str | None = None,
     ) -> None:
         with self._slot_lock, self._lock:
             source = self._find_submission(entry.message_id)
@@ -1163,6 +1832,9 @@ class WeixinChubModeManager:
             source.http_status = 409 if failed else 200
             source.dispatch_disposition = "handled"
             source.updated_at = utc_now()
+            source.orchestration_checkpoint = checkpoint or (
+                "text_processing.failed" if failed else "task.submitted"
+            )
             if main_record is not None:
                 source.task_id = main_record.task_id
                 source.session_id = main_record.session_id
@@ -1298,21 +1970,29 @@ class WeixinChubModeManager:
         self,
         entry: TranslationEntry,
     ) -> TranslationExecutionOutcome:
-        if entry.target_session_id is None:
-            return TranslationExecutionOutcome(
-                status="failed", error="翻译确认任务缺少目标 Session。"
-            )
-        try:
-            busy = self.quick_interactions.is_running(entry.target_session_id)
-        except Exception:
-            busy = True
-        if busy:
-            return TranslationExecutionOutcome(status="confirmed_waiting_target")
         return self.complete_optimized_task(
             entry.model_copy(update={"confirmation_required": False}),
             entry.polished,
             entry.english,
             None,
+        )
+
+    def discard_optimized_task(self, entry: TranslationEntry) -> None:
+        """Close the original request after its required confirmation ends."""
+        with self._lock:
+            source = self._find_submission(entry.message_id)
+            if (
+                source is None
+                or source.status != "routed"
+                or source.code != "translation_queued"
+                or source.delivery_route_fingerprint != self._route_fingerprint(entry.route)
+            ):
+                return
+        self._finish_optimized_source_submission(
+            entry,
+            entry.error or "Translation confirmation cancelled.",
+            failed=True,
+            checkpoint="text_processing.discarded",
         )
 
     def dispatch(
@@ -8086,6 +8766,7 @@ class WeixinChubModeManager:
         submission.http_status = http_status
         submission.session_id = session_id
         submission.updated_at = utc_now()
+        submission.orchestration_checkpoint = "internal.rejected"
         self._replace_submission(submission)
 
     def _reject_busy_with_pending_retry(
@@ -8103,6 +8784,7 @@ class WeixinChubModeManager:
         submission.http_status = 409
         submission.session_id = session_id
         submission.updated_at = now
+        submission.orchestration_checkpoint = "dispatch.rejected_busy"
         next_state = self._state.model_copy(deep=True)
         next_state.pending_retry = WeixinChubModePendingRetry(
             original_message_id=submission.message_id,
@@ -8118,6 +8800,16 @@ class WeixinChubModeManager:
             else item
             for item in next_state.submissions
         ]
+        if submission.orchestration_id is not None:
+            next_state.orchestration_requests = [
+                request.model_copy(update={
+                    "status": "rejected",
+                    "checkpoint": submission.orchestration_checkpoint,
+                    "session_id": submission.session_id or request.session_id,
+                    "updated_at": submission.updated_at,
+                }) if request.id == submission.orchestration_id else request
+                for request in next_state.orchestration_requests
+            ]
         try:
             self._write_state(next_state)
         except OSError:
@@ -8133,11 +8825,105 @@ class WeixinChubModeManager:
             else item
             for item in next_state.submissions
         ]
+        if submission.orchestration_id is not None:
+            orchestration_status = (
+                "waiting" if submission.status in {"submitted", "routed"}
+                else "unavailable" if submission.http_status == 503
+                else "rejected" if submission.status == "rejected"
+                else "accepted"
+            )
+            next_state.orchestration_requests = [
+                request.model_copy(update={
+                    "status": orchestration_status,
+                    "checkpoint": submission.orchestration_checkpoint or request.checkpoint,
+                    "session_id": submission.session_id or request.session_id,
+                    "task_id": submission.task_id or request.task_id,
+                    "task_ref": (
+                        WeixinTaskCapabilityHost.task_ref(request.id, submission.task_id)
+                        if submission.task_id else request.task_ref
+                    ),
+                    "updated_at": submission.updated_at,
+                }) if request.id == submission.orchestration_id else request
+                for request in next_state.orchestration_requests
+            ]
         try:
             self._write_state(next_state)
         except OSError:
             self._state_error = True
             raise
+        self._state = next_state
+
+    def _record_orchestration_capability_call(
+        self,
+        orchestration_id: str,
+        name: Literal[
+            "create_session", "read_session", "submit_task", "read_task", "await_task"
+        ],
+        outcome: Literal["succeeded", "waiting", "rejected", "unavailable", "unknown"],
+        checkpoint: str,
+    ) -> None:
+        """Persist bounded capability evidence before later recovery can observe it."""
+        next_state = self._state.model_copy(deep=True)
+        updated = False
+        requests: list[WeixinTaskOrchestrationRequest] = []
+        for request in next_state.orchestration_requests:
+            if request.id != orchestration_id:
+                requests.append(request)
+                continue
+            calls = list(request.capability_calls)
+            if not any(call.name == name and call.checkpoint == checkpoint for call in calls):
+                calls.append(
+                    WeixinTaskCapabilityCall(
+                        name=name,
+                        outcome=outcome,
+                        checkpoint=checkpoint,
+                        at=utc_now(),
+                    )
+                )
+                updated = True
+            requests.append(request.model_copy(update={"capability_calls": calls, "updated_at": utc_now()}))
+        if not updated:
+            return
+        next_state.orchestration_requests = requests
+        self._write_state(next_state)
+        self._state = next_state
+
+    def _update_orchestration_request(
+        self,
+        orchestration_id: str | None,
+        *,
+        checkpoint: str,
+        current_prompt: str | None = None,
+        cursor: int | None = None,
+        translation_entry_id: str | None = None,
+    ) -> None:
+        """Persist a stage result before another dispatcher action can run."""
+        if orchestration_id is None:
+            raise ApiError(
+                409,
+                "weixin_chub_mode_orchestration_unavailable",
+                "原始编排请求已不可用，本次任务未执行。",
+            )
+        next_state = self._state.model_copy(deep=True)
+        request = next(
+            (item for item in next_state.orchestration_requests if item.id == orchestration_id),
+            None,
+        )
+        if request is None:
+            raise ApiError(
+                409,
+                "weixin_chub_mode_orchestration_unavailable",
+                "原始编排请求已不可用，本次任务未执行。",
+            )
+        request.checkpoint = checkpoint
+        if current_prompt is not None:
+            request.current_prompt = current_prompt
+        if cursor is not None:
+            request.cursor = cursor
+        if translation_entry_id is not None:
+            request.translation_entry_id = translation_entry_id
+        request.updated_at = utc_now()
+        self._write_state(next_state)
         self._state = next_state
 
     _safe_submission_error = staticmethod(safe_submission_error)

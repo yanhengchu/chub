@@ -1,5 +1,6 @@
 import httpx
 import pytest
+from tests.test_weixin_orchestration_modules import module_archive
 from unittest.mock import MagicMock
 
 from app.application import create_app
@@ -148,3 +149,97 @@ async def test_translation_settings_api_fails_closed_for_invalid_state(
     assert response.json()["error"]["code"] == (
         "weixin_translation_settings_unavailable"
     )
+
+
+@pytest.mark.anyio
+async def test_task_orchestration_settings_persist_development_selection(settings) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        initial = await client.get(
+            "/api/settings/weixin-task-orchestration",
+            headers=authorization(settings),
+        )
+        updated = await client.put(
+            "/api/settings/weixin-task-orchestration",
+            headers=authorization(settings),
+            json={"implementation": "weixin-orchestration-dev"},
+        )
+
+    assert initial.status_code == 200
+    assert initial.json()["data"]["implementation"] == "internal"
+    assert updated.status_code == 200
+    assert updated.json()["data"]["implementation"] == "weixin-orchestration-dev"
+    assert updated.json()["data"]["development_available"] is True
+
+    reloaded_transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(
+        transport=reloaded_transport,
+        base_url="http://test",
+    ) as client:
+        reloaded = await client.get(
+            "/api/settings/weixin-task-orchestration",
+            headers=authorization(settings),
+        )
+
+    assert reloaded.json()["data"]["implementation"] == "weixin-orchestration-dev"
+
+
+@pytest.mark.anyio
+async def test_task_orchestration_module_lifecycle_api(settings, tmp_path) -> None:
+    settings.openclaw.weixin_chub_mode.orchestration_modules_dir = tmp_path / "modules"
+    archive = module_archive(settings)
+    transport = httpx.ASGITransport(app=create_app(settings))
+    headers = {
+        **authorization(settings),
+        "X-Chub-Module-Filename": "weixin-refiner.zip",
+    }
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        inspected = await client.post(
+            "/api/settings/weixin-task-orchestration/modules/inspect",
+            headers=headers,
+            content=archive,
+        )
+        installed = await client.post(
+            "/api/settings/weixin-task-orchestration/modules/install",
+            headers=headers,
+            content=archive,
+        )
+        module_ref = installed.json()["data"]["implementation_ref"]
+        activated = await client.put(
+            "/api/settings/weixin-task-orchestration",
+            headers=authorization(settings),
+            json={"implementation": "module", "module_ref": module_ref},
+        )
+        listed = await client.get(
+            "/api/settings/weixin-task-orchestration/modules",
+            headers=authorization(settings),
+        )
+        removed = await client.delete(
+            f"/api/settings/weixin-task-orchestration/modules/{module_ref}",
+            headers=authorization(settings),
+        )
+        reloaded = await client.get(
+            "/api/settings/weixin-task-orchestration",
+            headers=authorization(settings),
+        )
+
+    assert inspected.status_code == 200
+    assert installed.status_code == 200
+    assert activated.json()["data"]["implementation"] == "module"
+    assert listed.json()["data"]["modules"][0]["active"] is True
+    assert listed.json()["data"]["modules"][0]["removable"] is True
+    assert removed.status_code == 200
+    assert reloaded.json()["data"]["implementation"] == "internal"
+
+
+@pytest.mark.anyio
+async def test_task_orchestration_settings_rejects_unrelated_module_reference(settings) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.put(
+            "/api/settings/weixin-task-orchestration",
+            headers=authorization(settings),
+            json={"implementation": "internal", "module_ref": "x" * 68},
+        )
+
+    assert response.status_code == 422

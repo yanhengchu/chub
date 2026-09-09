@@ -3489,6 +3489,36 @@ def test_submit_allows_idle_running_terminal(
     thread.start.assert_called_once()
 
 
+def test_translation_submissions_share_worker_queue_without_native_claim(
+    tmp_path: Path,
+) -> None:
+    quick_interactions = manager(tmp_path)
+    session = quick_interactions.codex_manager.get_session.return_value
+    session.workspace_id = "weixin-translation"
+    session.permission_mode = "read-only"
+    quick_interactions._start_worker_observer = MagicMock()
+
+    first = quick_interactions.submit(
+        "session-1",
+        "first translation",
+        operation_id="translation-operation-1",
+        source_ip="127.0.0.1",
+        kind="translation",
+    )
+    second = quick_interactions.submit(
+        "session-1",
+        "second translation",
+        operation_id="translation-operation-2",
+        source_ip="127.0.0.1",
+        kind="translation",
+    )
+
+    assert first.status == "requested"
+    assert second.status == "requested"
+    quick_interactions.codex_manager.register_quick_native_claim.assert_not_called()
+    assert quick_interactions._worker_call.call_count == 2
+
+
 def test_session_operation_rejects_running_quick_interaction(tmp_path: Path) -> None:
     quick_interactions = manager(tmp_path)
     quick_interactions._running_sessions.add("session-1")

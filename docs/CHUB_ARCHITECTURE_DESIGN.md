@@ -159,7 +159,8 @@ AI Runtime 层
 
 ```text
 核心/第三方入口完成认证与业务校验
-  -> AI Runtime 选择 Session 与提交门禁
+  -> Chub 任务分发点（零个或多个逻辑编排阶段）
+  -> AI Runtime 选择 Session 与最终主任务提交门禁
   -> Worker 幂等提交并原子获取租约
   -> 固定 Runtime Runner 执行
   -> Worker 写入任务终态并释放租约
@@ -167,6 +168,8 @@ AI Runtime 层
 ```
 
 微信/OpenClaw 是这条调用链的第三方入口和回送方，不拥有独立的 Session 创建或任务执行实现：它只能调用 Chub 已公开并在当前上下文获授权的 `chub.session.*`、`chub.task.*` 等能力；Chub 与 AI Runtime 仍分别维护 Session、任务和最终状态。能力标识、场景和当前调用方以[Chub 集成能力清单](CHUB_INTEGRATION_CAPABILITIES.md#11-核心能力)为准。
+
+微信任务编排位于第三方入口已完成认证、幂等、固定指令处理和输入限制之后、调用 AI Runtime 任务用例之前。文字正文与可信语音转写都作为用户需求进入 Chub 统一任务分发点；该点按请求创建时快照串行调用零个或多个逻辑编排阶段。阶段可为完成自身工作调用受限的 Chub 能力，但结束时只将当前任务文本和可信检查点交回同一分发点；分发点从下一阶段继续，或在无后续阶段时统一投递物理主任务。指令解释继续由 Chub 固定路由完成，不交给编排实现。当前 `internal` 路径与未来外置实现都不能直接操作 Worker、Runtime、原生 Session、路由或通知。具体分流、检查点和恢复规则以[Chub 微信任务编排外置设计](WEIXIN_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md)为准。
 
 ### 6.2 固定自动化与通知
 

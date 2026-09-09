@@ -804,12 +804,12 @@ input[type="password"] {
   margin: 0;
 }
 
-.settings-divided-list.runtime-module-list:empty {
-  display: none;
-}
-
 .runtime-module-row {
   align-items: center;
+}
+
+.runtime-module-empty-row > span {
+  color: var(--color-text-muted);
 }
 
 .runtime-module-file-input {

@@ -676,7 +676,7 @@ class ExternalRuntimeModuleService:
             for loaded_name in tuple(sys.modules):
                 if loaded_name == namespace or loaded_name.startswith(f"{namespace}."):
                     del sys.modules[loaded_name]
-            raise self._invalid("模块入口加载失败。") from exc
+            raise self._invalid(self._entry_load_message(exc)) from exc
         if not isinstance(module, BuiltinRuntimeModule):
             raise self._invalid("模块入口未返回 Runtime 注册对象。")
         if (
@@ -723,6 +723,13 @@ class ExternalRuntimeModuleService:
     def _reason(exc: BaseException) -> str:
         detail = " ".join(str(exc).split())
         return detail[:300] or "模块安装失败。"
+
+    @staticmethod
+    def _entry_load_message(exc: BaseException) -> str:
+        detail = str(exc)
+        if isinstance(exc, ImportError) and "from 'app.ai_runtime'" in detail:
+            return "模块依赖的 Runtime 共享契约与当前 Chub 不兼容，请使用当前源码重新构建 ZIP。"
+        return "模块入口或其依赖无法加载，请重新构建 ZIP 或检查模块依赖。"
 
     @staticmethod
     def _invalid(message: str) -> RuntimeModuleInstallError:

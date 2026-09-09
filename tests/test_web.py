@@ -703,6 +703,7 @@ async def settings_page_removes_quick_interaction_page_size_preference(
     assert "/api/codex/models" in script.text
     assert "/api/codex/session-defaults" not in script.text
     assert "/api/settings/weixin-translation" in script.text
+    assert "native_cleanup_pending" in script.text
     assert "当前 Codex 默认 ·" in script.text
     assert "defaultReasoningDescription(" in script.text
     assert "/api/openclaw/status" in script.text
@@ -823,6 +824,9 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert 'id="codex-default-runtime-implementation"' not in pages["runtime"].text
     assert "Runtime 模块导入" in pages["runtime"].text
     assert 'class="runtime-module-install-heading"' in pages["runtime"].text
+    assert "能力模块导入" in pages["runtime"].text
+    assert 'id="orchestration-module-file"' in pages["runtime"].text
+    assert 'id="orchestration-module-list" class="settings-divided-list runtime-module-list"' in pages["runtime"].text
     assert 'id="ai-runtime-general-settings"' in pages["runtime"].text
     assert 'href="/settings/runtime" aria-current="page"' in pages["runtime"].text
     assert 'id="runtime-module-list" class="settings-divided-list runtime-module-list"' in pages["runtime"].text
@@ -832,20 +836,17 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert "new-session-permission" in script.text
     assert 'data-settings-page="runtime-detail"' in pages["runtime-detail"].text
     assert 'id="runtime-management-list"' in pages["runtime-detail"].text
-    assert 'id="codex-runtime-versions-title">Codex Runtime 版本</h3>' in pages["runtime-detail"].text
-    assert 'class="runtime-module-versions-heading"' in pages["runtime-detail"].text
-    assert "查看版本状态，或重新加载当前开发代码。" in pages["runtime-detail"].text
     assert 'id="codex-default-runtime-implementation" data-settings-picker disabled' in pages["runtime-detail"].text
-    assert pages["runtime-detail"].text.index('id="runtime-management-list"') < pages["runtime-detail"].text.index('id="codex-default-runtime-implementation"') < pages["runtime-detail"].text.index('id="codex-runtime-versions-title"')
+    assert "当前使用版本" in pages["runtime-detail"].text
+    assert "Runtime 运行状态" not in pages["runtime-detail"].text
+    assert 'id="codex-runtime-version-list"' not in pages["runtime-detail"].text
+    assert 'id="codex-builtin-runtime-refresh"' not in pages["runtime-detail"].text
     assert 'id="codex-runtime-versions-message"' not in pages["runtime-detail"].text
     assert 'id="codex-runtime-settings-message"' in pages["runtime-detail"].text
-    assert 'id="codex-runtime-version-list"' in pages["runtime-detail"].text
-    assert 'id="codex-runtime-version-list" class="settings-divided-list runtime-module-list"' in pages["runtime-detail"].text
-    assert 'id="codex-builtin-runtime-refresh" class="button-secondary" type="button" disabled>重新加载开发代码</button>' in pages["runtime-detail"].text
     assert 'id="runtime-settings-panel"' not in pages["runtime-detail"].text
-    assert "控制是否接收新任务" in pages["runtime-detail"].text
+    assert "控制是否接收新任务" not in pages["runtime-detail"].text
     assert "ai_runtime.{{ settings_runtime_id }}" not in pages["runtime-detail"].text
-    assert "ai_runtime.codex" in pages["runtime-detail"].text
+    assert "ai_runtime.codex" not in pages["runtime-detail"].text
     assert "usage-timezone" not in pages["runtime-detail"].text
     assert '.settings-field input[type="text"]' in stylesheet.text
     assert 'background: var(--color-surface-field);' in stylesheet.text
@@ -855,19 +856,27 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert 'margin-top: 0.5rem;' in stylesheet.text
     assert '.settings-divided-list .settings-field > span' in stylesheet.text
     assert '.settings-divided-list.runtime-module-list' in stylesheet.text
-    assert '.settings-divided-list.runtime-module-list:empty' in stylesheet.text
+    assert '.runtime-module-empty-row > span' in stylesheet.text
     assert '.settings-divided-list .settings-utility-row + .settings-utility-row' in stylesheet.text
     assert '.settings-utility-list {' in stylesheet.text
     assert 'border-radius: 12px;' in stylesheet.text
     assert '.runtime-settings-form {\n  display: grid;\n  gap: 0.75rem;\n  margin-top: 0;' in stylesheet.text
     assert 'class="settings-divided-list runtime-detail-settings-list"' in pages["runtime-detail"].text
     assert 'data-runtime-id="codex"' in pages["runtime-detail"].text
-    assert pages["runtime-detail"].text.count('id="runtime-management-description"') == 1
+    assert 'id="runtime-management-description"' not in pages["runtime-detail"].text
     assert pages["runtime-detail"].text.count('id="runtime-management-status"') == 1
     assert 'id="runtime-management-message"' not in pages["runtime-detail"].text
     assert 'const field = document.createElement("section");' in script.text
     assert 'input.id = `runtime-enabled-${runtime.runtime_id}`;' in script.text
     assert 'control.htmlFor = input.id;' in script.text
+    assert 'moduleEmptyRow("尚未导入 Runtime 模块。")' in script.text
+    assert 'moduleEmptyRow("尚未导入能力模块。")' in script.text
+    assert '`${module.name || "Runtime"} · ${module.version || "未知版本"}`' in script.text
+    assert 'badge.textContent = module.status === "active" ? "已启用" : "不可用";' in script.text
+    assert 'Runtime 模块已导入并启用。' in script.text
+    assert '`${module.name || "能力模块"} · ${module.version || "未知版本"}`' in script.text
+    assert 'remove.addEventListener("click", clearSelectedRuntimeModule);' in script.text
+    assert 'remove.addEventListener("click", clearSelectedOrchestrationModule);' in script.text
     assert 'href="/settings/runtime/codex" aria-current="page"' in pages["runtime-detail"].text
     assert '新建 Session 默认项由 Chub 安全保存。' not in pages["openclaw"].text
     assert '浏览器拒绝保存时，主题和文字大小仅在当前页临时应用。' in pages["openclaw"].text
@@ -876,10 +885,15 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert 'id="workspace-task-processing-trigger"' in pages["task-orchestration"].text
     assert 'aria-label="微信任务润色"><section class="workstation-group workspace-task-orchestration-group"' in pages["task-orchestration"].text
     assert 'id="workspace-task-show-internal-native-session"' in pages["task-orchestration"].text
+    assert 'id="workspace-task-module-file"' not in pages["task-orchestration"].text
+    assert 'id="workspace-task-module-list"' not in pages["task-orchestration"].text
     assert pages["task-orchestration"].text.index(
         'id="workspace-task-show-internal-native-session"'
     ) < pages["task-orchestration"].text.index('id="workspace-task-processing-trigger"')
     assert 'label class="settings-switch" for="workspace-task-show-internal-native-session"' in pages["task-orchestration"].text
+    assert 'enabledTitle.textContent = "启用文本优化";' in workspace_script.text
+    assert 'enabledInput.id = "workspace-task-enabled";' in workspace_script.text
+    assert 'orchestrationList.insertBefore(internalSessionRow, implementationRow);' in workspace_script.text
     assert 'id="workspace-task-orchestration-title"' not in pages["task-orchestration"].text
     assert 'class="theme-option-groups" role="radiogroup" aria-label="主题选择"' in pages["appearance"].text
     assert 'id="theme-option-group-light-title">亮色系主题</h4>' in pages["appearance"].text

@@ -26,7 +26,7 @@ Chub 按维护者授信的个人工作站运行：优先保证本地可用、局
 | 外部集成与通知 | 接入 OpenClaw/微信 ClawBot，并向预配置飞书目标发送通知 | 设置页、微信 ClawBot、OpenClaw Tool、CLI |
 | 项目资料与外观 | 浏览已登记的项目资料，切换主题和文字大小 | 工作台、设置页 |
 
-微信任务能力编排目前仍由主项目提供；其外置通用架构见[Chub 能力编排外置架构设计](docs/CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md)，微信普通正文的具体目标见[Chub 微信任务编排外置设计](docs/WEIXIN_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md)，两者均尚未接入当前能力。
+微信任务能力编排已提供 `internal` 内置路径、固定仓库开发实现 `weixin-orchestration-dev`，以及受控 ZIP 模块的导入、启用、停用和移除。ZIP 产物按内容摘要不可变保存，已受理任务继续绑定创建时的阶段产物；通用架构见[Chub 能力编排外置架构设计](docs/CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md)，微信范围见[Chub 微信任务编排外置设计](docs/WEIXIN_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md)。
 
 ## 快速开始
 
@@ -120,7 +120,7 @@ Chub 始终提供 loopback 访问；启用默认的 Tailnet 可信访问后，�
 | 文档 | 唯一职责 |
 | --- | --- |
 | [Chub 能力编排外置架构设计](docs/CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md) | 外置编排模块的通用执行面、检查点、版本绑定和生命周期边界 |
-| [Chub 微信任务编排外置设计](docs/WEIXIN_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md) | 微信普通正文的内置/模块分流、首个模块范围、阶段目标和验收 |
+| [Chub 微信任务编排外置设计](docs/WEIXIN_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md) | 微信已验证任务正文的内置/模块分流、首个模块范围、阶段目标和验收 |
 | [Chub Session 状态模型设计](docs/AI_SESSION_STATE_DESIGN.md) | Chub Session、Native Session 数据消费与映射、Activity、usage 投影、入口、操作、槽位和单 writer 语义 |
 | [Chub Quick Worker 独立服务设计](docs/CHUB_QUICK_WORKER_DESIGN.md) | Quick Worker 独立服务、非实时任务、恢复、通知终态和重启协调 |
 
