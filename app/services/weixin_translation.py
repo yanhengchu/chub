@@ -104,6 +104,7 @@ class TranslationState(_StrictModel):
     processing_mode_override: Literal["direct", "auto", "confirm"] | None = None
     model: str | None = Field(default=None, max_length=128)
     reasoning_effort: str | None = Field(default=None, max_length=32)
+    show_internal_native_session: bool = False
     confirmation_next_order: int = Field(default=1, ge=1)
     generation: int = Field(default=0, ge=0)
     session_id: str | None = None
@@ -121,6 +122,7 @@ class TranslationSettingsStatus(_StrictModel):
     configured_default: bool
     model: str | None = Field(default=None, max_length=128)
     reasoning_effort: str | None = Field(default=None, max_length=32)
+    show_internal_native_session: bool
     weixin_chub_mode_enabled: bool
     queued: int = Field(ge=0)
     running: int = Field(ge=0)
@@ -1128,6 +1130,7 @@ class WeixinTranslationManager:
                 configured_default=self.config.translation_enabled,
                 model=self._state.model,
                 reasoning_effort=self._state.reasoning_effort,
+                show_internal_native_session=self._state.show_internal_native_session,
                 weixin_chub_mode_enabled=self.config.enabled,
                 queued=sum(item.status == "queued" for item in self._state.entries),
                 running=sum(
@@ -1156,6 +1159,20 @@ class WeixinTranslationManager:
                 next_state = self._state.model_copy(deep=True)
                 next_state.model = model
                 next_state.reasoning_effort = reasoning_effort
+                self._write(next_state)
+                self._state = next_state
+        return self.status()
+
+    def set_show_internal_native_session(
+        self,
+        show: bool,
+    ) -> TranslationSettingsStatus:
+        if self._state_error:
+            raise OSError("Weixin translation state is unavailable")
+        with self._lock:
+            if self._state.show_internal_native_session != show:
+                next_state = self._state.model_copy(deep=True)
+                next_state.show_internal_native_session = show
                 self._write(next_state)
                 self._state = next_state
         return self.status()

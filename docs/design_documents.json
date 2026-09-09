@@ -31,10 +31,17 @@
     },
     {
       "id": "chub-task-orchestration-externalization",
-      "title": "Chub 任务编排外置设计",
-      "summary": "定义任务编排模块的目标边界、受控计划、版本快照与接入验收；当前微信任务处理尚未外置。",
+      "title": "Chub 能力编排外置架构设计",
+      "summary": "定义外置能力编排模块的通用执行面、检查点、版本绑定、模块协议和生命周期；具体任务由专项设计维护。",
       "status": "调研中",
       "path": "CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md"
+    },
+    {
+      "id": "weixin-task-orchestration-externalization",
+      "title": "Chub 微信任务编排外置设计",
+      "summary": "定义微信普通正文的内置/模块分流、首个模块范围、实施阶段和微信验收；当前尚未外置。",
+      "status": "调研中",
+      "path": "WEIXIN_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md"
     },
     {
       "id": "ai-session-state",

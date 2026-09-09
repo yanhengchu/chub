@@ -51,6 +51,20 @@ def _general_runtime_settings(request: Request) -> AiRuntimeGeneralSettingsData:
             "AI Runtime 通用配置暂时无法读取。",
         ) from exc
     manager = request.app.state.ai_session_manager
+    new_session_section = RuntimeSettingsSection(
+        id="new-session-defaults",
+        title="新建 Session 默认值",
+        description="仅影响之后新建的 Chub Session，已有 Session 保持当前权限。",
+        fields=(
+            RuntimeSettingsField(
+                id="new-session-permission",
+                label="默认权限",
+                description="用于未在创建时明确选择权限的新 Session。",
+                input_type="select",
+                value=general.new_session_permission,
+            ),
+        ),
+    )
     weekly_runtime_available = manager.runtime_id in manager.runtime_modules.runtime_ids()
     weekly_report_section = RuntimeSettingsSection(
         id="weekly-report-session",
@@ -96,7 +110,7 @@ def _general_runtime_settings(request: Request) -> AiRuntimeGeneralSettingsData:
         ),
     )
     return AiRuntimeGeneralSettingsData(
-        sections=(weekly_report_section,),
+        sections=(new_session_section, weekly_report_section),
     )
 
 
@@ -121,6 +135,7 @@ def update_general_runtime_settings(
     field_ids = set(payload.values)
     if frozenset(field_ids) != frozenset(
         {
+            "new-session-permission",
             "weekly-report-runtime",
             "weekly-report-permission",
             "weekly-report-model",
@@ -147,12 +162,15 @@ def update_general_runtime_settings(
     )
     try:
         general = request.app.state.ai_session_manager.runtime_settings_store.read_general()
+        new_session_permission = payload.values["new-session-permission"]
         runtime_id = payload.values["weekly-report-runtime"]
         permission_mode = payload.values["weekly-report-permission"]
         model = payload.values["weekly-report-model"]
         reasoning_effort = payload.values["weekly-report-reasoning"]
-        if not all(isinstance(value, str) and value.strip() for value in (runtime_id, permission_mode, model, reasoning_effort)):
+        if not all(isinstance(value, str) and value.strip() for value in (new_session_permission, runtime_id, permission_mode, model, reasoning_effort)):
             raise ValueError("weekly report session settings are required")
+        if new_session_permission not in {"auto-review", "read-only", "full-access"}:
+            raise ValueError("new session permission is invalid")
         if runtime_id not in request.app.state.ai_session_manager.runtime_modules.runtime_ids():
             raise ApiError(
                 409,
@@ -165,6 +183,7 @@ def update_general_runtime_settings(
         general = AiRuntimeGeneralSettings.model_validate(
             {
                 **general.model_dump(mode="json"),
+                "new_session_permission": new_session_permission,
                 "weekly_report_session": {
                     "runtime_id": runtime_id,
                     "permission_mode": permission_mode,

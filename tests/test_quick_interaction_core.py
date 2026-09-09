@@ -216,7 +216,7 @@ process.stdout.write(JSON.stringify(result));
             "businessError": False,
             "serverErrorDuringRestart": True,
         },
-        "pageSizes": [5, 5, 5, 10, 5, 5],
+        "pageSizes": [5, 5, 5, 5, 5, 5],
         "delays": [1500, 1500, 3000, 6000, 10000, 10000],
         "unauthorized": False,
         "missing": False,

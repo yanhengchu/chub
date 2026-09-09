@@ -116,12 +116,17 @@
     max-width: none;
   }
 
-  .runtime-module-install-heading {
+  .runtime-module-install-heading,
+  .runtime-module-versions-heading {
     grid-template-columns: 1fr;
     align-items: stretch;
   }
 
   .runtime-module-file-button {
+    width: 100%;
+  }
+
+  .runtime-module-versions-heading .button-secondary {
     width: 100%;
   }
 

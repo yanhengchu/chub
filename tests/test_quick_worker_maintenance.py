@@ -62,6 +62,17 @@ class WaitingProcess:
         return self.result
 
 
+def wait_for_reload_monitors() -> None:
+    monitors = [
+        thread
+        for thread in threading.enumerate()
+        if thread.name == "chub-quick-worker-reload"
+    ]
+    for monitor in monitors:
+        monitor.join(timeout=2)
+        assert not monitor.is_alive()
+
+
 def test_reload_process_uses_only_fixed_command() -> None:
     command = Path("/fixed/scripts/chub")
     with patch("app.services.quick_worker_maintenance.subprocess.Popen") as popen:
@@ -206,6 +217,7 @@ async def test_quick_worker_restart_recovers_stopped_service(
         ) as client:
             response = await client.post("/api/maintenance/quick-worker/restart")
         process.release.set()
+        wait_for_reload_monitors()
 
     assert response.status_code == 200
     assert response.json()["data"]["state"] == "restarting"
@@ -445,6 +457,7 @@ async def test_quick_worker_restart_allows_idle_incompatible_protocol(
         ) as client:
             response = await client.post("/api/maintenance/quick-worker/restart")
         process.release.set()
+        wait_for_reload_monitors()
 
     assert response.status_code == 200
     assert response.json()["data"]["state"] == "restarting"
@@ -499,6 +512,7 @@ async def test_quick_worker_restart_allows_busy_worker(
         ) as client:
             response = await client.post("/api/maintenance/quick-worker/restart")
         launch.return_value.release.set()
+        wait_for_reload_monitors()
 
     assert response.status_code == 200
     assert response.json()["data"]["state"] == "restarting"
@@ -580,6 +594,7 @@ async def test_quick_worker_restart_uses_fixed_controlled_command(
             ):
                 break
             threading.Event().wait(0.01)
+        wait_for_reload_monitors()
 
     assert app.state.quick_worker_maintenance.operation().status == "succeeded"
     assert len(operation_log.call_args_list) >= 3
@@ -623,6 +638,7 @@ async def test_quick_worker_restart_remains_available_after_failed_upgrade(
         ) as client:
             response = await client.post("/api/maintenance/quick-worker/restart")
         process.release.set()
+        wait_for_reload_monitors()
 
     assert response.status_code == 200
     assert response.json()["data"]["state"] == "restarting"
@@ -655,6 +671,7 @@ async def test_quick_worker_restart_allows_unavailable_worker(
         ) as client:
             response = await client.post("/api/maintenance/quick-worker/restart")
         process.release.set()
+        wait_for_reload_monitors()
 
     assert response.status_code == 200
     assert response.json()["data"]["state"] == "restarting"
@@ -692,6 +709,7 @@ async def test_quick_worker_restart_allows_pending_chub_restart(
         ) as client:
             response = await client.post("/api/maintenance/quick-worker/restart")
         process.release.set()
+        wait_for_reload_monitors()
 
     assert response.status_code == 200
     launch_worker.assert_called_once()
@@ -741,6 +759,7 @@ async def test_concurrent_chub_and_worker_restarts_launch_independently(
                 client.post("/api/maintenance/restart"),
             )
         worker_process.release.set()
+        wait_for_reload_monitors()
 
     assert web_response.status_code == 200
     assert worker_response.status_code == 200
@@ -771,6 +790,7 @@ async def test_reload_reconciles_new_generation_after_web_restart(
         reloaded.reconcile("b" * 32, True)
 
     process.release.set()
+    wait_for_reload_monitors()
     assert reloaded.operation().status == "succeeded"
 
 

@@ -206,16 +206,6 @@ class SessionCreateRequest(BaseModel):
     reasoning_effort: str | None = Field(default=None, max_length=32)
 
 
-class SessionDefaultsUpdateRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    permission_mode: Literal["read-only", "full-access"]
-
-
-class SessionDefaultsData(BaseModel):
-    permission_mode: Literal["read-only", "full-access"]
-
-
 class SessionConfigurationUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

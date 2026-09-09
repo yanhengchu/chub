@@ -100,6 +100,34 @@ async def test_translation_settings_api_updates_model_and_level(settings) -> Non
 
 
 @pytest.mark.anyio
+async def test_translation_settings_api_persists_internal_native_session_display(
+    settings,
+) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        updated = await client.put(
+            "/api/settings/weixin-translation",
+            headers=authorization(settings),
+            json={"show_internal_native_session": True},
+        )
+
+    assert updated.status_code == 200
+    assert updated.json()["data"]["show_internal_native_session"] is True
+
+    reloaded_transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(
+        transport=reloaded_transport,
+        base_url="http://test",
+    ) as client:
+        reloaded = await client.get(
+            "/api/settings/weixin-translation",
+            headers=authorization(settings),
+        )
+
+    assert reloaded.json()["data"]["show_internal_native_session"] is True
+
+
+@pytest.mark.anyio
 async def test_translation_settings_api_fails_closed_for_invalid_state(
     settings,
 ) -> None:

@@ -780,27 +780,31 @@ input[type="password"] {
 }
 
 .runtime-module-install-heading,
+.runtime-module-versions-heading,
 .runtime-module-install-form,
 .runtime-module-list {
   display: grid;
   gap: 0.75rem;
 }
 
-.runtime-module-install-heading {
+.runtime-module-install-heading,
+.runtime-module-versions-heading {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
 }
 
-.runtime-module-install-heading > div {
+.runtime-module-install-heading > div,
+.runtime-module-versions-heading > div {
   display: grid;
   gap: 0.35rem;
 }
 
-.runtime-module-install-heading .settings-subsection-description {
+.runtime-module-install-heading .settings-subsection-description,
+.runtime-module-versions-heading .settings-subsection-description {
   margin: 0;
 }
 
-.runtime-module-list:empty {
+.settings-divided-list.runtime-module-list:empty {
   display: none;
 }
 
@@ -817,6 +821,11 @@ input[type="password"] {
 }
 
 .runtime-module-file-button {
+  width: fit-content;
+  margin: 0;
+}
+
+.runtime-module-versions-heading .button-secondary {
   width: fit-content;
   margin: 0;
 }
@@ -937,7 +946,7 @@ input[type="password"] {
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  background: var(--color-surface-raised);
+  background: var(--color-text-inverse);
   box-shadow: 0 1px 3px var(--color-shadow);
   content: "";
   transition: transform 120ms ease;

@@ -16,6 +16,9 @@
     const reasoningValue = document.getElementById("workspace-task-reasoning-value");
     const reasoningMenu = document.getElementById("workspace-task-reasoning-menu");
     const reasoningDescription = document.getElementById("workspace-task-reasoning-description");
+    const showInternalNativeSession = document.getElementById(
+      "workspace-task-show-internal-native-session",
+    );
 
     if (
       !(message instanceof HTMLElement)
@@ -30,6 +33,7 @@
       || !(reasoningValue instanceof HTMLElement)
       || !(reasoningMenu instanceof HTMLElement)
       || !(reasoningDescription instanceof HTMLElement)
+      || !(showInternalNativeSession instanceof HTMLInputElement)
       || typeof window.createChoicePicker !== "function"
     ) {
       return;
@@ -99,6 +103,7 @@
       processingPicker.setDisabled(disabled);
       modelPicker.setDisabled(disabled);
       reasoningPicker.setDisabled(disabled);
+      showInternalNativeSession.disabled = disabled;
     };
     const apiRequest = async (path, options = {}) => {
       const response = await fetch(path, options);
@@ -168,6 +173,7 @@
       }));
       reasoningPicker.setOptions(levels, status.reasoning_effort || "");
       reasoningTrigger.setAttribute("aria-label", `推理等级：${reasoningValue.textContent}`);
+      showInternalNativeSession.checked = status.show_internal_native_session === true;
       const active = Number(status.queued || 0) + Number(status.running || 0);
       const notes = [];
       if (active > 0) notes.push(`${active} 项文本优化仍在处理中`);
@@ -176,6 +182,7 @@
       modelPicker.setDisabled(saving || loading || (models.length === 0 && !status.model));
       reasoningPicker.setDisabled(saving || loading || !effectiveModel);
       processingPicker.setDisabled(saving || loading);
+      showInternalNativeSession.disabled = saving || loading;
     };
     const load = async () => {
       if (loading || disposed) return;
@@ -227,6 +234,13 @@
       model: status?.model || null,
       reasoning_effort: status?.model ? (status.reasoning_effort || null) : null,
     }, "文本优化运行参数保存失败，请稍后刷新页面重试。");
+
+    showInternalNativeSession.addEventListener("change", () => {
+      void save(
+        { show_internal_native_session: showInternalNativeSession.checked },
+        "内部翻译 Session 显示设置保存失败，请稍后刷新页面重试。",
+      );
+    });
 
     window.disposeWorkspaceTaskOrchestration = () => {
       disposed = true;

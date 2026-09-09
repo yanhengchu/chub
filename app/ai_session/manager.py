@@ -31,7 +31,10 @@ from app.ai_runtime.enablement import (
     RuntimeEnablementStore,
     RuntimeEnablementStoreUnavailable,
 )
-from app.ai_runtime.general_settings import AiRuntimeSettingsStore
+from app.ai_runtime.general_settings import (
+    AiRuntimeSettingsStore,
+    RuntimeSettingsStoreUnavailable,
+)
 from app.ai_runtime.implementation_preferences import (
     RuntimeImplementationPreferences,
     RuntimeImplementationPreferencesStore,
@@ -45,11 +48,6 @@ from app.ai_session.models import (
     utc_now,
 )
 from app.ai_session.store import AiSessionStore, AiSessionStoreUnavailable
-from app.ai_session.session_defaults import (
-    SessionDefaults,
-    SessionDefaultsStore,
-    SessionDefaultsStoreUnavailable,
-)
 from app.codex.models import (
     CodexModelCatalogData,
     CodexModelInfo,
@@ -132,9 +130,6 @@ class AiSessionManager:
         )
         AiSessionStore.discard_legacy_session_state(session_store_path)
         self.store = AiSessionStore(session_store_path)
-        self.session_defaults = SessionDefaultsStore(
-            settings.ai_runtime.codex.data_file.with_name("session-creation-defaults.json")
-        )
         self.runtime_enablement = RuntimeEnablementStore(
             settings.ai_runtime.codex.data_file.with_name("runtime-enablement.json")
         )
@@ -652,6 +647,8 @@ class AiSessionManager:
 
     def list_sessions_with_native_sessions(
         self,
+        *,
+        include_internal_translation_native_sessions: bool = False,
     ) -> tuple[list[SessionInfo], list[NativeSessionInfo]]:
         with self._lock:
             self._require_store()
@@ -682,6 +679,10 @@ class AiSessionManager:
                     item
                     for item in native_sessions
                     if (item.runtime_id, item.native_session_id) not in bound_sessions
+                    and (
+                        include_internal_translation_native_sessions
+                        or not self._is_translation_workspace(item.cwd)
+                    )
                 ]
             )
 
@@ -838,11 +839,11 @@ class AiSessionManager:
         self._require_runtime_submission(self.runtime_id)
         if permission_mode is None:
             try:
-                permission_mode = self.session_defaults.read().permission_mode
-            except SessionDefaultsStoreUnavailable as exc:
+                permission_mode = self.runtime_settings_store.read_general().new_session_permission
+            except RuntimeSettingsStoreUnavailable as exc:
                 raise ApiError(
                     503,
-                    "codex_session_defaults_unavailable",
+                    "ai_runtime_settings_unavailable",
                     "无法读取新建 Session 默认权限，请稍后重试。",
                 ) from exc
         if permission_mode == "ask":
@@ -1033,30 +1034,6 @@ class AiSessionManager:
             default_reasoning_effort=catalog.default_reasoning_effort,
         )
         return data
-
-    def read_session_defaults(self) -> str:
-        try:
-            return self.session_defaults.read().permission_mode
-        except SessionDefaultsStoreUnavailable as exc:
-            raise ApiError(
-                503,
-                "codex_session_defaults_unavailable",
-                "无法读取新建 Session 默认权限，请稍后重试。",
-            ) from exc
-
-    def update_session_defaults(self, permission_mode: str) -> str:
-        self._require_available()
-        try:
-            self.session_defaults.save(
-                SessionDefaults(permission_mode=permission_mode)
-            )
-        except OSError as exc:
-            raise ApiError(
-                503,
-                "codex_session_defaults_unavailable",
-                "无法保存新建 Session 默认权限，请稍后重试。",
-            ) from exc
-        return permission_mode
 
     def update_session_configuration(
         self,

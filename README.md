@@ -4,7 +4,7 @@
 
 本文是 Chub 的项目入口，负责说明项目定位、当前能力概览、最小启动方式、常用维护入口、数据与安全摘要，以及权威文档导航。
 
-本文不负责定义系统分层、状态所有权、服务恢复、Runtime 契约、任务执行、外置模块、微信指令、插件协议或页面交互规则；这些内容只在对应的专项文档中维护。需要确认“当前能调用什么”时，以[Chub 集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md)为准；历史资料不覆盖当前契约。
+本文不负责定义系统分层、状态所有权、服务恢复、Runtime 契约、任务执行、外置模块、微信指令、插件协议或页面交互规则；这些内容只在对应的专项文档中维护。需要确认“当前 Chub 能做什么”时，以[Chub 集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md)为准；历史资料不覆盖当前契约。
 
 ## 项目介绍
 
@@ -26,7 +26,7 @@ Chub 按维护者授信的个人工作站运行：优先保证本地可用、局
 | 外部集成与通知 | 接入 OpenClaw/微信 ClawBot，并向预配置飞书目标发送通知 | 设置页、微信 ClawBot、OpenClaw Tool、CLI |
 | 项目资料与外观 | 浏览已登记的项目资料，切换主题和文字大小 | 工作台、设置页 |
 
-任务编排目前仍由主项目提供；其外置目标尚未接入当前能力，见[Chub 任务编排外置设计](docs/CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md)。
+微信任务能力编排目前仍由主项目提供；其外置通用架构见[Chub 能力编排外置架构设计](docs/CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md)，微信普通正文的具体目标见[Chub 微信任务编排外置设计](docs/WEIXIN_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md)，两者均尚未接入当前能力。
 
 ## 快速开始
 
@@ -76,6 +76,18 @@ Chub 始终提供 loopback 访问；启用默认的 Tailnet 可信访问后，�
 
 当前文档的登记、摘要和状态以 `docs/design_documents.json` 为准。专项设计顶部统一声明状态、主要读者、本文负责和本文不负责；已验收文档还须保留验证范围、未承诺范围和复检触发条件。“第一阶段已验收”只表示该文档定义的第一阶段已通过验收，不代表所有长期目标完成。
 
+### 三份核心文档
+
+理解、设计或调整 Chub 能力时，依次阅读以下三份文档：
+
+| 文档 | 唯一职责 |
+| --- | --- |
+| 本项目说明 | 说明产品定位、当前能力概览、使用入口与文档导航。 |
+| [Chub 总体架构设计](docs/CHUB_ARCHITECTURE_DESIGN.md) | 定义分层、状态所有权、依赖方向，以及能力由谁实际执行和确认。 |
+| [Chub 集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md) | 按使用场景登记当前可用能力、入口映射与微信固定指令契约。 |
+
+三者共同构成当前项目理解基线：项目说明不替代架构边界，架构不重复逐项能力，能力清单不改变状态所有权或专项协议。出现表述冲突时，产品定位、分层/状态所有权、当前能力/入口契约依次以这三份文档中各自负责的范围为准；目标设计不得覆盖当前能力结论。新增能力先在能力清单明确场景与效果；若改变责任、权限、状态或恢复边界，再同步总体架构和对应专项设计。
+
 ## 测试
 
 ```bash
@@ -93,7 +105,7 @@ Chub 始终提供 loopback 访问；启用默认的 Tailnet 可信访问后，�
 | --- | --- |
 | [Chub 项目说明](README.md) | 项目概览、启动与维护入口、安全摘要和文档导航 |
 | [Chub 总体架构设计](docs/CHUB_ARCHITECTURE_DESIGN.md) | 核心、AI Runtime 与第三方服务三层架构、状态所有权和跨模块约束 |
-| [Chub 集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md) | 当前可用命令、插件、固定 API，以及微信固定指令唯一产品契约 |
+| [Chub 集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md) | 按场景登记当前可用能力、入口映射，以及微信固定指令唯一产品契约 |
 
 ### AI Runtime
 
@@ -107,7 +119,8 @@ Chub 始终提供 loopback 访问；启用默认的 Tailnet 可信访问后，�
 
 | 文档 | 唯一职责 |
 | --- | --- |
-| [Chub 任务编排外置设计](docs/CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md) | 任务编排模块的目标职责、受控任务计划、版本快照和后续接入验收边界 |
+| [Chub 能力编排外置架构设计](docs/CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md) | 外置编排模块的通用执行面、检查点、版本绑定和生命周期边界 |
+| [Chub 微信任务编排外置设计](docs/WEIXIN_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md) | 微信普通正文的内置/模块分流、首个模块范围、阶段目标和验收 |
 | [Chub Session 状态模型设计](docs/AI_SESSION_STATE_DESIGN.md) | Chub Session、Native Session 数据消费与映射、Activity、usage 投影、入口、操作、槽位和单 writer 语义 |
 | [Chub Quick Worker 独立服务设计](docs/CHUB_QUICK_WORKER_DESIGN.md) | Quick Worker 独立服务、非实时任务、恢复、通知终态和重启协调 |
 

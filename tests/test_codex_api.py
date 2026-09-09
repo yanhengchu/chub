@@ -402,30 +402,6 @@ async def test_codex_model_catalog_is_protected_and_filtered_by_manager(
 
 
 @pytest.mark.anyio
-async def test_update_codex_session_defaults_uses_manager_and_returns_permission(
-    settings: Settings,
-) -> None:
-    app = create_app(settings)
-    manager = MagicMock()
-    manager.update_session_defaults.return_value = "read-only"
-    app.state.ai_session_manager = manager
-    transport = httpx.ASGITransport(app=app)
-
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.put(
-            "/api/codex/session-defaults",
-            headers=authorization(settings),
-            json={"permission_mode": "read-only"},
-        )
-
-    assert response.status_code == 200
-    assert response.json()["data"]["permission_mode"] == "read-only"
-    manager.update_session_defaults.assert_called_once_with(
-        "read-only",
-    )
-
-
-@pytest.mark.anyio
 async def test_update_quick_session_configuration_uses_session_values(
     settings: Settings,
 ) -> None:

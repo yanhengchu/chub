@@ -20,6 +20,9 @@ class _StrictModel(BaseModel):
 
 
 class AiRuntimeGeneralSettings(_StrictModel):
+    new_session_permission: Literal["auto-review", "read-only", "full-access"] = (
+        "full-access"
+    )
     weekly_report_session: "WeeklyReportSessionSettings" = Field(
         default_factory=lambda: WeeklyReportSessionSettings()
     )

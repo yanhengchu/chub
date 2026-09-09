@@ -24,8 +24,6 @@ from app.codex.models import (
     SessionCreationAvailability,
     SessionCreateRequest,
     SessionConfigurationUpdateRequest,
-    SessionDefaultsData,
-    SessionDefaultsUpdateRequest,
     SessionInfo,
     SessionListData,
     NativeSessionInfo,
@@ -85,7 +83,15 @@ def list_sessions(
     listed_sessions: list[SessionInfo] = []
     native_sessions: list[NativeSessionInfo] = []
     if runtime_registered:
-        combined_sessions = manager.list_sessions_with_native_sessions()
+        try:
+            show_internal_native_session = (
+                request.app.state.weixin_translation.status().show_internal_native_session
+            )
+        except OSError:
+            show_internal_native_session = False
+        combined_sessions = manager.list_sessions_with_native_sessions(
+            include_internal_translation_native_sessions=show_internal_native_session,
+        )
         if (
             isinstance(combined_sessions, tuple)
             and len(combined_sessions) == 2
@@ -232,47 +238,6 @@ def read_session(session_id: str, request: Request) -> ApiResponse[SessionInfo]:
 @api_router.get("/models", response_model=ApiResponse[CodexModelCatalogData])
 def list_models(request: Request) -> ApiResponse[CodexModelCatalogData]:
     return ApiResponse(data=request.app.state.ai_session_manager.read_model_catalog())
-
-
-@api_router.get(
-    "/session-defaults",
-    response_model=ApiResponse[SessionDefaultsData],
-)
-def read_session_defaults(request: Request) -> ApiResponse[SessionDefaultsData]:
-    return ApiResponse(
-        data=SessionDefaultsData(
-            permission_mode=request.app.state.ai_session_manager.read_session_defaults(),
-        )
-    )
-
-
-@api_router.put(
-    "/session-defaults",
-    response_model=ApiResponse[SessionDefaultsData],
-)
-def update_session_defaults(
-    payload: SessionDefaultsUpdateRequest,
-    request: Request,
-) -> ApiResponse[SessionDefaultsData]:
-    try:
-        permission_mode = request.app.state.ai_session_manager.update_session_defaults(
-            payload.permission_mode,
-        )
-    except Exception:
-        log_operation(
-            request,
-            action="update_codex_session_defaults",
-            status="failed",
-            target="node",
-        )
-        raise
-    log_operation(
-        request,
-        action="update_codex_session_defaults",
-        status="succeeded",
-        target="node",
-    )
-    return ApiResponse(data=SessionDefaultsData(permission_mode=permission_mode))
 
 
 @api_router.get("/quota", response_model=ApiResponse[CodexQuotaData])

@@ -203,6 +203,7 @@ async def test_general_runtime_settings_save_weekly_report_session_defaults(
             "/api/ai/settings",
             json={
                 "values": {
+                    "new-session-permission": "read-only",
                     "weekly-report-runtime": "codex",
                     "weekly-report-permission": "auto-review",
                     "weekly-report-model": "__default__",
@@ -212,7 +213,11 @@ async def test_general_runtime_settings_save_weekly_report_session_defaults(
         )
 
     assert response.status_code == 200
-    section = response.json()["data"]["sections"][0]
+    sections = response.json()["data"]["sections"]
+    assert sections[0]["id"] == "new-session-defaults"
+    assert sections[0]["fields"][0]["id"] == "new-session-permission"
+    assert sections[0]["fields"][0]["value"] == "read-only"
+    section = sections[1]
     assert section["id"] == "weekly-report-session"
     assert {field["id"] for field in section["fields"]} == {
         "weekly-report-runtime",
@@ -221,6 +226,7 @@ async def test_general_runtime_settings_save_weekly_report_session_defaults(
         "weekly-report-reasoning",
     }
     saved = store.read_general().weekly_report_session
+    assert store.read_general().new_session_permission == "read-only"
     assert saved.permission_mode == "auto-review"
     assert saved.model is None
     assert saved.reasoning_effort is None
@@ -241,7 +247,7 @@ async def test_general_runtime_settings_keep_weekly_session_controls_with_builti
         response = await client.get("/api/ai/settings")
 
     assert response.status_code == 200
-    section = response.json()["data"]["sections"][0]
+    section = response.json()["data"]["sections"][1]
     assert section["id"] == "weekly-report-session"
     assert {field["id"] for field in section["fields"]} == {
         "weekly-report-runtime",
@@ -424,7 +430,7 @@ def test_account_mode_prefers_exact_account_today(settings: Settings) -> None:
     assert result.today is not None
     assert result.today.tokens == 3_000_000
     assert result.today.tokens_scope == "account"
-    assert result.display.short == "5h 42% · 18:20 · Weekly 78% · 8/20 · Today 3M"
+    assert result.display.short == "5h 42% · 18:20 · Weekly 78% · 8/20"
     assert result.five_hour is not None
     assert result.five_hour.remaining_percent == 42
     assert result.display.long == (

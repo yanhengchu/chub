@@ -4,7 +4,7 @@
 > 主要读者：AI Agent、实现和排障 Agent；维护人员用于确认数据口径、配置和验收。
 > 本文负责：定义当前 Codex Runtime 的专属能力与配置边界，并具体维护 Codex Native Session 发现、额度与用量采集、数据口径、安全和验收。
 > 本文不负责：Runtime 共享能力契约、Chub Session 状态和映射规则、Adapter/Runner 通用实现、Runtime ZIP 生命周期、其他 Runtime 的专属实现，以及由调用方选择认证来源、账号、订阅、时区、浏览器页面或本机目录。
-> 维护说明：Codex 是当前已接入 Runtime；本文只记录其私有行为和当前实现证据。所有 Runtime 共用的能力、状态所有权和接入判定以[Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)为准。
+> 维护说明：Codex 是当前唯一接入的 Runtime，并以外置 Runtime 模块的固定实现槽位加载；本文只记录其私有行为和当前实现证据。所有 Runtime 共用的能力、状态所有权和接入判定以[Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)为准，ZIP 的导入、覆盖、移除和恢复以[Chub AI Runtime 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md)为准。
 
 ## 0. AI Agent 快速理解
 
@@ -16,7 +16,7 @@
 4. 周额度是形成可用快照的必需数据；今日美元用量和 Token 是可选字段。缺失字段必须是 `null` 或省略展示，不得用 `0` 猜测。
 5. 失败降级只能复用同一来源、同一身份且仍在有效周期内的最近快照，并设置 `stale=true`；不能跨认证来源、账号、订阅或自然日复用。
 6. 认证失败、配置错误、采集超时和上游不可用要分别保持可诊断，但额度采集失败不得阻塞 Chub 健康检查、Session、任务或其他首页卡片。
-7. Codex Runtime 生成长、短展示文本；调用方直接消费同一份快照，不自行重算额度或维护第二套缓存。页面、微信和通知采用哪一种文本及其显示位置，由前端设计和当前能力契约维护。
+7. Codex Runtime 生成长、短展示文本；微信精确 `usage` 的详细完整格式由固定微信适配模板基于同一结构化快照生成，不属于调用方可自定义的第四套文案。调用方不自行重算额度或维护第二套缓存；页面、微信和通知采用哪一种格式及其显示位置，由前端设计和当前能力契约维护。
 8. `GET /api/ai/usage` 是受保护的默认 Runtime 只读接口；`refresh=true` 只触发一次共享刷新，不绕过认证、不创建后台任务。响应中的 `runtime_id=codex` 明确快照归属。
 
 AI Agent 排障顺序：先确认认证类型和当前身份，再确认当前 Codex provider 根地址和周额度快照，再判断今日 Token 来源，最后检查缓存/过期和浏览器采集；不得通过旧缓存、相邻日期、另一账号或另一来源推断当前值。Runtime 通过[Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)定义的 `usage_snapshot` 能力提供快照；支持固定 provider 登录恢复的 Runtime 还声明 `usage_login_page`。新 Runtime 接入时必须自行实现或明确拒绝对应能力。Codex 的认证来源、上游数据、缓存身份键和展示口径只在本文维护。
@@ -182,18 +182,26 @@ GET /api/ai/usage?refresh=true
 
 ## 4. 展示规则
 
-完整展示文本按以下顺序生成：
+当前产品固定使用短、长、详细完整三种格式。`display` 只提供短、长格式；详细完整格式是微信精确 `usage` 的受控适配输出，不新增通用 `display` 字段。
+
+| 类型 | 形式 | 当前入口 |
+| --- | --- | --- |
+| 短格式 | 单行、最多保留两个额度区块 | 微信普通状态尾部与主任务成功通知 |
+| 长格式 | 单行、保留重置日期时间、金额和 Token 单位等完整字段 | 外部工作台右上角 Runtime 用量 |
+| 详细完整格式 | 多行并带 `left`、`Resets`、`Remaining`、`Used` 等字段标签 | 微信精确无参数 `usage` 指令 |
+
+长格式按以下顺序生成：
 
 ```text
 5h 42% · 8/15 18:20 · Weekly 78% · $781.92 / $1,000 · 8/20 15:45 · Today $181.02 · 100M tokens
 ```
 
-`display.home` 保留为结构化兼容片段，当前首页不渲染它。`display.long` 提供完整纯文本展示；`display.short` 提供紧凑格式。具体页面、微信或通知是否使用及如何放置，由[Chub 前端 UI 模块化设计](FRONTEND_UI_DESIGN.md)和[Chub 集成能力清单](CHUB_INTEGRATION_CAPABILITIES.md)定义。
+`display.home` 保留为结构化兼容片段，当前首页不渲染它。`display.long` 是长格式，`display.short` 是短格式。具体页面、微信或通知是否使用及如何放置，由[Chub 前端 UI 模块化设计](FRONTEND_UI_DESIGN.md)和[Chub 集成能力清单](CHUB_INTEGRATION_CAPABILITIES.md)定义。
 
-完整纯文本使用相同的 `5h → Weekly → Today` 顺序；没有 5h 时以 `Weekly → Today` 展示。Weekly 固定先显示剩余百分比，再显示“剩余金额 / 限额”（两项同时可用时）；金额或限额只取得一项时仅显示该金额。短格式省略非必要详情，但保持同一数据顺序和单位语义。
+长格式使用 `5h → Weekly → Today` 顺序；没有 5h 时以 `Weekly → Today` 展示。Weekly 固定先显示剩余百分比，再显示“剩余金额 / 限额”（两项同时可用时）；金额或限额只取得一项时仅显示该金额。短格式最多展示两个额度区块，按 `5h → Weekly → Today` 优先保留：三者都有时展示 5h 和 Weekly；没有 5h 时展示 Weekly 和 Today。每个已保留区块维持原有的核心字段和单位语义。
 
 ```text
-5h 42% · 18:20 · Weekly 78% · 8/20 · Today 100M
+5h 42% · 18:20 · Weekly 78% · 8/20
 ```
 
 没有 5h 时：
@@ -202,14 +210,26 @@ GET /api/ai/usage?refresh=true
 Weekly 78% · 8/20 · Today 100M
 ```
 
+详细完整格式只用于微信精确 `usage`，同样保持 `5h → Weekly → Today` 的顺序，但为逐行阅读明确标记字段：
+
+```text
+Usage
+
+5h · 42% left · Resets · 2026-08-15 18:20
+Weekly · $781.92 Remaining · 78% left · Resets · 2026-08-20 15:45
+Today · $181.02 Used · 100M tokens
+```
+
+5h、金额、Token 仍是可选项，缺失时省略对应片段；Weekly 不可用时详细完整格式固定返回 `Weekly Unavailable`，整个快照不可用时返回 `Usage unavailable`。详细格式不附加 Session 状态，也不用于外部工作台或普通微信通知。
+
 统一规则：
 
-- 本机 Token 在长、短格式中都追加 `(local)`。
+- 本机 Token 在三种格式中都追加 `(local)`。
 - Token 缺失时省略 Token，不展示虚假零值或不可用占位。
 - 周额度不可用时不生成看似有效的百分比。
 - 5 小时窗口是可选数据，缺失时省略，不根据 weekly 推算，也不显示为 0。
 - Token 使用 `K`、`M`、`B` 紧凑格式，最多保留一位小数。
-- 调用方直接使用后端 `display`，不自行维护另一套文案或重新计算额度。当前产品入口选择 `long`、`short` 或不可用提示的规则不在本文维护。
+- 网页和短格式调用方直接使用后端 `display`，不自行维护另一套文案或重新计算额度。详细完整格式仅由固定微信 `usage` 适配模板使用同一快照生成；当前产品入口选择规则不在本文维护。
 
 ## 5. 缓存与失败处理
 

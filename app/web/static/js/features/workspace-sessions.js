@@ -84,10 +84,10 @@
     element.className = kind ? `message message-${kind}` : "message";
   };
 
-  const setSidebarMessage = (text = "") => {
+  const setSidebarMessage = (text = "", { minimumVisibleMs = sidebarMessageMinimumVisibleMs } = {}) => {
     window.clearTimeout(sidebarMessageClearTimer);
     if (text) {
-      sidebarMessageVisibleUntil = Date.now() + sidebarMessageMinimumVisibleMs;
+      sidebarMessageVisibleUntil = Date.now() + minimumVisibleMs;
       window.setWorkspaceToolbarError?.(text);
       return;
     }
@@ -111,7 +111,9 @@
     }
     const payload = await response.json().catch(() => null);
     if (!response.ok || payload?.success !== true) {
-      throw new Error(payload?.error?.message || `请求失败（HTTP ${response.status}）。`);
+      const error = new Error(payload?.error?.message || `请求失败（HTTP ${response.status}）。`);
+      error.code = payload?.error?.code || null;
+      throw error;
     }
     return payload.data;
   };
@@ -258,7 +260,6 @@
         stop: { disabled: true, title: "操作进行中" },
         archive: { disabled: true, title: "操作进行中" },
         delete: { disabled: true, title: "操作进行中" },
-        forget: { disabled: true, title: "操作进行中" },
       };
     }
     return {
@@ -276,7 +277,6 @@
             : "归档 Session",
       },
       delete: { disabled: false, title: "永久删除 Session" },
-      forget: { disabled: activeExecution, title: activeExecution ? "Session 当前正在执行，请先停止或等待任务结束后再停止管理。" : "停止由 Chub 管理此 Session" },
     };
   };
 
@@ -294,7 +294,6 @@
       stop: ["M6 6h12v12H6Z"],
       archive: ["M3 5h18v4H3Z", "M5 9v10h14V9", "M10 13h4"],
       delete: ["M4 7h16", "M10 11v6", "M14 11v6", "m6 7 1 13h10l1-13", "M9 7V4h6v3"],
-      forget: ["M4 4l16 16", "M20 4 4 20"],
     };
     (paths[action] || []).forEach((definition) => {
       const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
@@ -317,13 +316,12 @@
       ["stop", "停止"],
       ["archive", "归档"],
       ["delete", "删除"],
-      ["forget", "停止管理"],
     ].forEach(([action, label]) => {
       const actionButton = document.createElement("button");
       const actionLabel = document.createElement("span");
       actionButton.type = "button";
       actionButton.className = "workspace-session-action";
-      if (action === "delete" || action === "forget") actionButton.classList.add("is-danger");
+      if (action === "delete") actionButton.classList.add("is-danger");
       actionButton.dataset.sessionAction = action;
       actionButton.setAttribute("role", "menuitem");
       actionLabel.textContent = label;
@@ -655,7 +653,7 @@
       group.className = "workspace-preview-session-group workspace-preview-native-session-group";
       group.dataset.sessionGroup = "native-sessions";
       heading.className = "workspace-preview-session-group-title";
-      heading.textContent = "Native Sessions";
+      heading.textContent = "Native";
       list.className = "workspace-preview-session-group-list";
       group.append(heading, list);
     }
@@ -782,7 +780,7 @@
       } else {
         items.querySelector(":scope > .empty-state")?.remove();
         [
-          { title: "Chub Sessions" },
+          { title: "Chub" },
         ].forEach(({ title }) => {
           const groupSessions = runtimeSessions;
           const groupId = title.toLowerCase().replaceAll(" ", "-");
@@ -978,7 +976,7 @@
       await request(`/api/codex/sessions/${sessionId}/archive`, { method: "POST" });
     } else if (action === "delete") {
       await request(`/api/codex/sessions/${sessionId}`, { method: "DELETE" });
-    } else if (action === "forget") {
+    } else if (action === "chub-only-delete") {
       await request(`/api/codex/sessions/${sessionId}/management`, { method: "DELETE" });
     }
     await loadSessions();
@@ -995,13 +993,11 @@
       stop: `停止“${name}”将终止当前执行中的任务。停止后可以再次进入 Session，但在途任务不会恢复。`,
       archive: `归档“${name}”后，该 Session 将从活动列表移除。如已分配微信槽位，槽位也会释放。Chub 页面暂不提供恢复入口。`,
       delete: `删除“${name}”会永久移除该 Session 及其 Chub 记录，无法恢复。`,
-      forget: `停止管理“${name}”将移除 Chub 保存的 Session、任务记录和关联槽位，但不会确认、归档或删除 Native Session。此操作无法恢复。`,
     };
     const labels = {
       stop: ["停止 Session", "确认停止", "secondary"],
       archive: ["归档 Session", "确认归档", "danger"],
       delete: ["删除 Session", "确认删除", "danger"],
-      forget: ["停止由 Chub 管理", "确认停止管理", "danger"],
     };
     const [title, confirmLabel, tone] = labels[action];
     void showConfirmationDialog({
@@ -1013,11 +1009,38 @@
       onConfirm: async () => {
         if (pendingSessionMutations.has(session.id)) return;
         pendingSessionMutations.add(session.id);
-        setSidebarMessage(`${title}中…`);
+        setSidebarMessage(`${title}中…`, { minimumVisibleMs: 0 });
         try {
           await requestSessionMutation(session, action);
         } catch (error) {
-          setSidebarMessage(error.message || `${title}失败。`);
+          if (action === "delete" && error?.code !== "quick_interaction_cancel_failed") {
+            confirmChubOnlyDelete(session, error.message || "Native Session 无法删除。");
+          } else {
+            setSidebarMessage(error.message || `${title}失败。`);
+          }
+        } finally {
+          pendingSessionMutations.delete(session.id);
+        }
+      },
+    });
+  };
+
+  const confirmChubOnlyDelete = (session, nativeError) => {
+    if (!session || typeof showConfirmationDialog !== "function") return;
+    void showConfirmationDialog({
+      title: "仅删除 Chub 记录",
+      description: `Native Session 未能删除：${nativeError}。继续后将移除 Chub 保存的 Session、任务记录和关联槽位，但保留 Native Session。此操作无法恢复。`,
+      confirmLabel: "确认仅删除 Chub 记录",
+      tone: "danger",
+      closeOnConfirm: true,
+      onConfirm: async () => {
+        if (pendingSessionMutations.has(session.id)) return;
+        pendingSessionMutations.add(session.id);
+        setSidebarMessage("删除 Chub 记录中…", { minimumVisibleMs: 0 });
+        try {
+          await requestSessionMutation(session, "chub-only-delete");
+        } catch (error) {
+          setSidebarMessage(error.message || "删除 Chub 记录失败。");
         } finally {
           pendingSessionMutations.delete(session.id);
         }
@@ -1054,7 +1077,7 @@
       onConfirm: async () => {
         if (pendingNativeSessionMutations.has(nativeActionRef)) return;
         pendingNativeSessionMutations.add(nativeActionRef);
-        setSidebarMessage(`${title}中…`);
+        setSidebarMessage(`${title}中…`, { minimumVisibleMs: 0 });
         try {
           await requestNativeSessionMutation(nativeActionRef, action);
         } catch (error) {

@@ -2,12 +2,15 @@
 
 > 状态：已验收
 > 主要读者：需要实现或维护 Runtime Adapter/Runner 的 AI Agent；维护人员用于确认接入边界。
-> 本文负责：Runtime 共享契约、实现槽位、Adapter/Runner 边界、Native Session 和当前 Codex Runtime 行为。
-> 本文不负责：Chub Session 生命周期、Worker 任务恢复、外置模块安装和微信路由。
+> 本文负责：Runtime 共享契约、实现槽位、Adapter/Runner 边界、Native Session 与新增 Runtime 的接入判定。
+> 本文不负责：Codex 等具体 Runtime 的私有行为、Chub Session 生命周期、Worker 任务恢复、外置模块安装和微信路由。
+> 维护说明：Runtime 外置已作为当前实现交付；本文定义所有 Runtime 共用的边界。当前唯一接入的 Codex 私有行为以[Chub Codex Runtime 设计](CHUB_CODEX_RUNTIME_DESIGN.md)为准，ZIP 生命周期以[Chub AI Runtime 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md)为准。
 
 ## AI 可执行契约
 
 Runtime 是 Chub 的受控本机执行实现。客户端、页面、微信和其他外部入口不能选择 Runtime 命令、路径、环境变量、Native ID 或实现槽位；它们只调用 Chub 已定义的 Session 和任务用例。
+
+AI Runtime 通用配置保存在本机 `config/ai-runtimes.local.yaml`。其中的新建 Session 默认权限仅应用于创建时未明确指定权限的后续 Chub Session；已有 Session 与已受理任务不受影响。
 
 每个 Runtime 实现以不可变 `RuntimeDescriptor` 注册：
 
@@ -49,11 +52,9 @@ writer probe 的结果只回答当前 Native Session 是否由外部进程占用
 
 归档和删除由 Adapter 执行，并以原生最终状态查询作为幂等依据。无法确认原生终态时，Chub 保留自己的映射和任务记录，不宣称操作成功。
 
-## 当前 Codex Runtime
+## 当前接入摘要
 
-Codex Runtime 使用当前本机的 `codex` CLI 执行后台 Turn，并以 JSON 事件流取得 Native Session ID、结果和错误。其可用性只检查 Runtime 启用状态和 `codex` CLI；缺失依赖只关闭 Codex 相关的新提交。
-
-Adapter 从 Codex 本机状态读取模型目录、Native Sessions、writer 锁、归档/删除状态、用量和配置。Runner 使用受控权限映射、模型和推理等级构建 `codex exec --json` 请求；首次执行创建 Native Session，后续执行使用 `resume`。Codex 的私有路径、锁、命令细节和凭据不进入页面或公开 API。
+当前唯一接入的 Runtime 是 Codex，并以 `codex` CLI 作为其本机执行依赖；缺失依赖只关闭 Codex 相关的新提交。Codex 的 Native 数据来源、命令、用量、认证、缓存和展示口径均属于专属实现事实，以[Chub Codex Runtime 设计](CHUB_CODEX_RUNTIME_DESIGN.md)为唯一来源。本节不为 Codex 或后续 Runtime 增加第二份私有契约。
 
 ## 维护与失败边界
 

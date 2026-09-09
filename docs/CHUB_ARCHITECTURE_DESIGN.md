@@ -51,6 +51,12 @@ AI Runtime 层 ─────────────────────�
 
 通知是核心层提供的有界投递能力；某项通知是否代表业务完成，始终由发起它的领域决定。固定自动化默认属于核心层；自动化需要 AI 处理内容时，只能调用 AI Runtime 的公开任务用例，不能自行启动或管理 Agent。
 
+### 2.1.1 能力目录与公开用例
+
+[Chub 集成能力清单](CHUB_INTEGRATION_CAPABILITIES.md)按场景登记当前 Chub 能做什么，以及各入口能够使用哪些能力；它是产品能力的统一目录，不是新的执行层或第二份状态机。核心层与 AI Runtime 层各自以公开用例实际提供能力，仍由所属层维护权限、状态和最终结果。
+
+能力目录中的“可用”只表示 Chub 当前具备该项产品能力，不自动授予每个调用方。页面、CLI、OpenClaw、自动化和未来外置能力编排模块只能调用其入口、任务范围和当前状态允许的公开用例。能力 ID 本身不是 CLI、HTTP API 或可直接导入的函数；运行时发现实现后，才由 Chub 返回当前上下文已授权的能力投影。文档用于说明语义，运行时注册表和每次调用的校验才是实际可用性的权威来源。
+
 ### 2.2 AI Runtime 层
 
 AI Runtime 层提供 Chub 的 AI 能力。当前完整接入的 Runtime 是 Codex；新增 Runtime 必须通过稳定 Runtime 契约接入，不能把具体 Agent 逻辑泄漏到核心层或第三方服务层。
@@ -160,6 +166,8 @@ AI Runtime 层
   -> 核心层页面展示，或第三方层按保存路由回送
 ```
 
+微信/OpenClaw 是这条调用链的第三方入口和回送方，不拥有独立的 Session 创建或任务执行实现：它只能调用 Chub 已公开并在当前上下文获授权的 `chub.session.*`、`chub.task.*` 等能力；Chub 与 AI Runtime 仍分别维护 Session、任务和最终状态。能力标识、场景和当前调用方以[Chub 集成能力清单](CHUB_INTEGRATION_CAPABILITIES.md#11-核心能力)为准。
+
 ### 6.2 固定自动化与通知
 
 ```text
@@ -173,7 +181,7 @@ AI Runtime 层
 
 ### 6.3 外置能力维护
 
-核心层只提供受保护的外置能力维护入口，并执行固定的认证、操作记录和最终状态展示；它不解释 Runtime 模块协议或任务编排策略。Runtime 模块的安装、替换、移除、注册确认和状态清理由[Chub AI Runtime 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md)定义；任务编排外置的受控计划、版本快照和后续接入边界由[Chub 任务编排外置设计](CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md)定义。
+核心层只提供受保护的外置能力维护入口，并执行固定的认证、操作记录和最终状态展示；它不解释 Runtime 模块协议或外置模块的业务流程。Runtime 模块的安装、替换、移除、注册确认和状态清理由[Chub AI Runtime 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md)定义；能力编排模块通过 Chub 当前上下文授权的公开用例组合流程，具体发现、检查点和版本绑定边界由[Chub 能力编排外置架构设计](CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md)定义。
 
 ## 7. 维护与恢复边界
 

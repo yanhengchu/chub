@@ -400,7 +400,11 @@ class AiUsageService:
                 f"{reset.month}/{reset.day}",
             ]
         )
-        if data.today is not None and data.today.tokens is not None:
+        if (
+            data.five_hour is None
+            and data.today is not None
+            and data.today.tokens is not None
+        ):
             token_text = f"Today {cls.compact_tokens(data.today.tokens)}"
             if data.today.tokens_scope == "local_device":
                 token_text += " (local)"

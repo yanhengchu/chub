@@ -127,15 +127,6 @@ def settings_page(request: Request) -> RedirectResponse:
     return RedirectResponse(target, status_code=307)
 
 
-@router.get("/settings/quick-interaction", include_in_schema=False)
-def legacy_quick_interaction_settings(request: Request) -> RedirectResponse:
-    return_url = _settings_return_url(request)
-    target = "/settings/session-defaults"
-    if return_url != "/":
-        target = f"{target}?{urlencode({'return_to': return_url})}"
-    return RedirectResponse(target, status_code=307)
-
-
 @router.get("/settings/appearance", response_class=HTMLResponse, include_in_schema=False)
 def appearance_settings(request: Request) -> HTMLResponse:
     return render_settings_page(
@@ -190,11 +181,6 @@ def task_orchestration_settings(request: Request) -> HTMLResponse:
         title="微信任务润色",
         description="配置微信 ClawBot 普通文本任务的处理方式和 AI Runtime 参数。",
     )
-
-
-@router.get("/settings/session-defaults", response_class=HTMLResponse, include_in_schema=False)
-def session_defaults_settings(request: Request) -> HTMLResponse:
-    return render_settings_page(request, page="session-defaults", title="会话设置", description="调整快速交互记录加载方式和新建 Session 默认权限。")
 
 
 @router.get("/settings/weixin-text", include_in_schema=False)

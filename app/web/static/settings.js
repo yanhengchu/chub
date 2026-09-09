@@ -4,14 +4,9 @@
 window.initializeSettingsPage = () => {
   window.disposeSettingsPage?.();
 
-const QUICK_INTERACTION_PAGE_SIZE_KEY = "hub.quickInteractionPageSize.v1";
 const settingsPage = document.body.dataset.settingsPage || "";
 const THEME_DETAILS_EXPANDED_KEY = "hub.themeDetailsExpanded.v1";
 const settingsMessage = document.querySelector("#settings-message");
-const quickInteractionPageSize = document.querySelector(
-  "#quick-interaction-page-size",
-);
-const codexDefaultFullAccess = document.querySelector("#codex-default-full-access");
 const runtimeManagementList = document.querySelector("#runtime-management-list");
 const runtimeManagementDescription = document.querySelector(
   "#runtime-management-description",
@@ -35,9 +30,6 @@ const codexRuntimeSettingsMessage = document.querySelector(
   "#codex-runtime-settings-message",
 );
 const quickInteractionCore = window.QuickInteractionCore;
-const codexSessionSettingsMessage = document.querySelector(
-  "#codex-session-settings-message",
-);
 const settingsOpenClawIntegrationList = document.querySelector(
   "#settings-openclaw-integration-list",
 );
@@ -72,13 +64,6 @@ let maintenanceTerminalOpening = false;
 const settingsChoicePickers = new Map();
 const settingsChoicePickerObservers = [];
 let openSettingsChoicePicker = null;
-const SETTINGS_PICKER_DESCRIPTIONS = Object.freeze({
-  "quick-interaction-page-size": {
-    5: "每次加载 5 条交互记录",
-    10: "每次加载 10 条交互记录",
-  },
-});
-
 function settingsPickerLabel(select) {
   return select.closest(".settings-field")?.querySelector("strong")?.textContent.trim()
     || "选择设置";
@@ -86,7 +71,6 @@ function settingsPickerLabel(select) {
 
 function settingsPickerOptionDescription(select, option) {
   return option.dataset.description
-    || SETTINGS_PICKER_DESCRIPTIONS[select.id]?.[option.value]
     || "";
 }
 
@@ -250,42 +234,6 @@ function renderFontSizeSelection(fontSize) {
   });
 }
 
-function readQuickInteractionPageSize() {
-  try {
-    return localStorage.getItem(QUICK_INTERACTION_PAGE_SIZE_KEY) === "10"
-      ? "10"
-      : "5";
-  } catch (_error) {
-    return "5";
-  }
-}
-
-function saveQuickInteractionPageSize(value) {
-  const selected = value === "10" ? "10" : "5";
-  try {
-    localStorage.setItem(QUICK_INTERACTION_PAGE_SIZE_KEY, selected);
-    quickInteractionPageSize.value = selected;
-    settingsMessage.textContent = "";
-    settingsMessage.className = "message";
-  } catch (_error) {
-    quickInteractionPageSize.value = readQuickInteractionPageSize();
-    settingsMessage.textContent = "当前浏览器无法保存界面偏好。";
-    settingsMessage.className = "message message-error";
-  }
-}
-
-async function loadCodexSessionDefaults() {
-  try {
-    const response = await fetch("/api/codex/session-defaults", { cache: "no-store" });
-    const payload = await response.json();
-    if (!response.ok || payload.success !== true) throw new Error("session_defaults_unavailable");
-    codexDefaultFullAccess.checked = payload.data.permission_mode === "full-access";
-  } catch (_error) {
-    codexDefaultFullAccess.checked = true;
-    codexSessionSettingsMessage.textContent = "暂时无法读取新建 Session 默认权限。";
-    codexSessionSettingsMessage.className = "message message-error";
-  }
-}
 
 function setRuntimeManagementStatus(text, kind = "") {
   if (runtimeManagementDescription instanceof HTMLElement) {
@@ -308,7 +256,7 @@ function renderRuntimeManagement(data) {
   }
   runtimeManagementList.replaceChildren();
   for (const runtime of runtimes) {
-    const field = document.createElement("label");
+    const field = document.createElement("section");
     field.className = "settings-field settings-field-toggle";
     const copy = document.createElement("span");
     const title = document.createElement("span");
@@ -329,15 +277,17 @@ function renderRuntimeManagement(data) {
       description.className = "runtime-management-item-status is-warning";
     }
     copy.append(title, identifier, description);
-    const control = document.createElement("span");
+    const control = document.createElement("label");
     control.className = "settings-switch";
     const input = document.createElement("input");
     input.type = "checkbox";
+    input.id = `runtime-enabled-${runtime.runtime_id}`;
     input.checked = runtime.enabled === true;
     input.dataset.runtimeId = runtime.runtime_id;
     input.dataset.previousEnabled = String(runtime.enabled === true);
     input.setAttribute("aria-label", `${name.textContent} ${input.checked ? "正在接收新任务" : "已停止接收新任务"}`);
     input.addEventListener("change", () => void saveRuntimeEnablement(input));
+    control.htmlFor = input.id;
     const track = document.createElement("span");
     track.className = "settings-switch-track";
     track.setAttribute("aria-hidden", "true");
@@ -702,6 +652,10 @@ function initializeRuntimeModuleInstall() {
 }
 
 function runtimeSettingOptions(field, catalog, values) {
+  if (field.id === "new-session-permission") {
+    return (quickInteractionCore?.quickSessionPermissionOptions || [])
+      .filter((option) => option.value !== "ask");
+  }
   if (field.id === "weekly-report-runtime") {
     return [{ value: "codex", label: "Codex", description: "当前可用于周报自动化的 AI Runtime。" }];
   }
@@ -884,30 +838,6 @@ async function saveRuntimeEnablement(input) {
     input.checked = previousEnabled;
     input.disabled = false;
     setRuntimeManagementDescription("AI Runtime 任务接入策略保存失败，请稍后重试。", "error");
-  }
-}
-
-async function saveCodexSessionDefaults() {
-  const previous = codexDefaultFullAccess.checked;
-  codexDefaultFullAccess.disabled = true;
-  try {
-    const response = await fetch("/api/codex/session-defaults", {
-      method: "PUT",
-      headers: settingsHeaders(true),
-      body: JSON.stringify({
-        permission_mode: codexDefaultFullAccess.checked ? "full-access" : "read-only",
-      }),
-    });
-    const payload = await response.json();
-    if (!response.ok || payload.success !== true) throw new Error("session_defaults_update_failed");
-    codexSessionSettingsMessage.textContent = "";
-    codexSessionSettingsMessage.className = "message";
-  } catch (_error) {
-    codexDefaultFullAccess.checked = previous;
-    codexSessionSettingsMessage.textContent = "新建 Session 默认权限保存失败，请稍后重试。";
-    codexSessionSettingsMessage.className = "message message-error";
-  } finally {
-    codexDefaultFullAccess.disabled = false;
   }
 }
 
@@ -1153,12 +1083,6 @@ if (settingsPage === "appearance") {
   initializeRuntimeModuleInstall();
 } else if (settingsPage === "task-orchestration") {
   window.initializeWorkspaceTaskOrchestration?.();
-} else if (settingsPage === "session-defaults") {
-  quickInteractionPageSize.value = readQuickInteractionPageSize();
-  initializeSettingsChoicePickers();
-  quickInteractionPageSize.addEventListener("change", () => saveQuickInteractionPageSize(quickInteractionPageSize.value));
-  codexDefaultFullAccess.addEventListener("change", saveCodexSessionDefaults);
-  loadCodexSessionDefaults();
 } else if (settingsPage === "openclaw") {
   initializeOpenClawSettings();
 }

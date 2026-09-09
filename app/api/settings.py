@@ -27,6 +27,7 @@ class TranslationSettingsUpdate(BaseModel):
     enabled: bool | None = None
     model: str | None = Field(default=None, max_length=128)
     reasoning_effort: str | None = Field(default=None, max_length=32)
+    show_internal_native_session: bool | None = None
 
     @field_validator("model", "reasoning_effort", mode="before")
     @classmethod
@@ -40,11 +41,14 @@ class TranslationSettingsUpdate(BaseModel):
     def validate_mode(self):
         mode_fields = {"mode", "enabled"} & self.model_fields_set
         model_fields = {"model", "reasoning_effort"} & self.model_fields_set
-        if not mode_fields and not model_fields:
+        display_fields = {"show_internal_native_session"} & self.model_fields_set
+        if not mode_fields and not model_fields and not display_fields:
             raise ValueError("a translation setting is required")
+        if display_fields and self.show_internal_native_session is None:
+            raise ValueError("show_internal_native_session must be a boolean")
         if self.mode is not None and self.enabled is not None:
             raise ValueError("provide mode only")
-        if mode_fields and model_fields:
+        if sum(bool(fields) for fields in (mode_fields, model_fields, display_fields)) > 1:
             raise ValueError("provide mode or model settings only")
         if model_fields and model_fields != {"model", "reasoning_effort"}:
             raise ValueError("model and reasoning_effort must be provided together")
@@ -81,7 +85,12 @@ def update_weixin_translation_settings(
     if mode is None:
         mode = "auto" if payload.enabled else "direct"
     model_update = "model" in payload.model_fields_set
-    target = "translation_model" if model_update else mode
+    display_update = "show_internal_native_session" in payload.model_fields_set
+    target = (
+        "internal_native_session_display"
+        if display_update
+        else "translation_model" if model_update else mode
+    )
     operation_id = log_operation(
         request,
         action="update_weixin_translation_setting",
@@ -96,7 +105,11 @@ def update_weixin_translation_settings(
         operation_id=operation_id,
     )
     try:
-        if model_update:
+        if display_update:
+            result = request.app.state.weixin_translation.set_show_internal_native_session(
+                payload.show_internal_native_session
+            )
+        elif model_update:
             result = request.app.state.weixin_translation.set_model(
                 payload.model,
                 payload.reasoning_effort,

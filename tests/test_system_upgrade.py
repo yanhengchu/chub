@@ -913,6 +913,8 @@ def test_system_upgrade_restart_uses_fixed_linux_services(
             "CHUB_SERVICE_LOG_DIR": str(tmp_path / "logs"),
         }
     )
+    # Exercise the coordinated maintenance path, not the Quick Worker guard.
+    environment.pop("CHUB_QUICK_TASK_ID", None)
 
     launch = subprocess.run(
         [str(workspace / "scripts" / "chub-system-upgrade-start"), operation.operation_id],

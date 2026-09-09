@@ -327,7 +327,7 @@ async def test_removed_cyber_style_falls_back_to_standard_before_assets_load(set
         client.cookies.set("hub_ui_style", "cyber")
         pages = await asyncio.gather(
             client.get("/"),
-            client.get("/settings/session-defaults"),
+            client.get("/settings/runtime"),
                 client.get("/logs"),
                 client.get("/project-docs"),
         )
@@ -511,7 +511,7 @@ async def test_theme_packages_are_complete_and_component_css_uses_semantic_token
 
 
 @pytest.mark.anyio
-async def legacy_settings_page_supports_quick_interaction_page_size_preference(
+async def settings_page_removes_quick_interaction_page_size_preference(
     settings: Settings,
 ) -> None:
     transport = httpx.ASGITransport(app=create_app(settings))
@@ -542,7 +542,7 @@ async def legacy_settings_page_supports_quick_interaction_page_size_preference(
     assert 'src="/static/settings-sidebar.js"' in response.text
     assert 'class="settings-mobile-nav" aria-label="设置导航"' in response.text
     assert 'class="settings-mobile-nav-external" href="/"' in response.text
-    assert 'class="settings-mobile-nav-link" type="button" data-settings-url="/settings/quick-interaction"' in response.text
+    assert 'data-settings-url="/settings/quick-interaction"' not in response.text
     assert "history.replaceState(history.state, \"\", targetUrl.href);" in sidebar_script.text
     assert 'target.closest("a.settings-navigation-link")' in sidebar_script.text
     assert 'target.closest("button.settings-mobile-nav-link")' in sidebar_script.text
@@ -631,12 +631,8 @@ async def legacy_settings_page_supports_quick_interaction_page_size_preference(
     assert 'data-style-apply="cyber"' not in response.text
     assert 'name="quick-interaction-view"' not in response.text
     assert "任务视图" not in response.text
-    assert 'id="quick-interaction-page-size"' in response.text
-    assert 'name="quick-interaction-page-size" data-settings-picker' in response.text
-    assert '<option value="5" selected>5 条</option>' in response.text
-    assert '<option value="10">10 条</option>' in response.text
-    assert 'id="codex-default-full-access"' in response.text
-    assert 'name="codex-default-full-access"' in response.text
+    assert 'id="quick-interaction-page-size"' not in response.text
+    assert 'id="codex-default-full-access"' not in response.text
     assert "模型和推理等级默认跟随 AI" in response.text
     assert 'id="codex-show-translation-session"' not in response.text
     assert 'id="codex-default-model"' not in response.text
@@ -697,7 +693,7 @@ async def legacy_settings_page_supports_quick_interaction_page_size_preference(
     assert "overflow-y: auto;" in stylesheet.text
     assert "settingsWorkspaceMain.addEventListener(\"scroll\"" in script.text
     assert "hub.quickInteractionView.v1" not in script.text
-    assert "hub.quickInteractionPageSize.v1" in script.text
+    assert "hub.quickInteractionPageSize.v1" not in script.text
     assert "hub.codexDefaultPermission.v1" not in script.text
     assert "hub.codexDefaultModel.v1" not in script.text
     assert "hub.codexDefaultReasoningEffort.v1" not in script.text
@@ -705,7 +701,7 @@ async def legacy_settings_page_supports_quick_interaction_page_size_preference(
     assert "hub.openclawWeixinSettingsCache.v1" in script.text
     assert "hub.codexShowTranslationSession.v1" not in script.text
     assert "/api/codex/models" in script.text
-    assert "/api/codex/session-defaults" in script.text
+    assert "/api/codex/session-defaults" not in script.text
     assert "/api/settings/weixin-translation" in script.text
     assert "当前 Codex 默认 ·" in script.text
     assert "defaultReasoningDescription(" in script.text
@@ -768,15 +764,12 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
         "runtime": "/settings/runtime",
         "runtime-detail": "/settings/runtime/codex",
         "task-orchestration": "/settings/task-orchestration",
-        "session-defaults": "/settings/session-defaults",
         "openclaw": "/settings/openclaw",
     }
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         root = await client.get("/settings", follow_redirects=False)
-        legacy_quick_interaction = await client.get(
-            "/settings/quick-interaction",
-            follow_redirects=False,
-        )
+        removed_quick_interaction = await client.get("/settings/quick-interaction")
+        removed_session_defaults = await client.get("/settings/session-defaults")
         legacy_weixin_text = await client.get("/settings/weixin-text", follow_redirects=False)
         legacy_gateway = await client.get("/settings/openclaw/gateway", follow_redirects=False)
         legacy_clawbot = await client.get("/settings/openclaw/clawbot", follow_redirects=False)
@@ -794,8 +787,8 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
 
     assert root.status_code == 307
     assert root.headers["location"] == "/settings/appearance"
-    assert legacy_quick_interaction.status_code == 307
-    assert legacy_quick_interaction.headers["location"] == "/settings/session-defaults"
+    assert removed_quick_interaction.status_code == 404
+    assert removed_session_defaults.status_code == 404
     assert "通用设置" in pages["appearance"].text
     assert "会话与偏好" not in pages["appearance"].text
     assert legacy_weixin_text.status_code == 307
@@ -823,13 +816,7 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
             "frame-ancestors 'none'"
         )
 
-    assert 'href="/settings/session-defaults" aria-current="page"' in pages["session-defaults"].text
-    assert '<p class="settings-workspace-sidebar-label">设置</p>' not in pages["session-defaults"].text
-    assert 'id="quick-interaction-page-size"' in pages["session-defaults"].text
-    assert 'id="codex-default-full-access"' in pages["session-defaults"].text
-    assert 'class="settings-divided-list settings-session-defaults-list"' in pages["session-defaults"].text
-    assert 'id="runtime-management-list"' not in pages["session-defaults"].text
-    assert pages["appearance"].text.index('href="/settings/appearance"') < pages["appearance"].text.index('href="/settings/session-defaults"')
+    assert 'href="/settings/session-defaults"' not in pages["appearance"].text
     assert 'id="runtime-management-list"' not in pages["runtime"].text
     assert 'id="runtime-general-settings-title"' not in pages["runtime"].text
     assert "此处控制 Runtime 是否接收后续新 AI 任务" not in pages["runtime"].text
@@ -841,9 +828,13 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert 'id="runtime-module-list" class="settings-divided-list runtime-module-list"' in pages["runtime"].text
     assert 'href="/settings/runtime/codex"' in pages["runtime"].text
     assert 'id="quick-interaction-page-size"' not in pages["runtime"].text
+    assert 'id="codex-default-full-access"' not in pages["runtime"].text
+    assert "new-session-permission" in script.text
     assert 'data-settings-page="runtime-detail"' in pages["runtime-detail"].text
     assert 'id="runtime-management-list"' in pages["runtime-detail"].text
     assert 'id="codex-runtime-versions-title">Codex Runtime 版本</h3>' in pages["runtime-detail"].text
+    assert 'class="runtime-module-versions-heading"' in pages["runtime-detail"].text
+    assert "查看版本状态，或重新加载当前开发代码。" in pages["runtime-detail"].text
     assert 'id="codex-default-runtime-implementation" data-settings-picker disabled' in pages["runtime-detail"].text
     assert pages["runtime-detail"].text.index('id="runtime-management-list"') < pages["runtime-detail"].text.index('id="codex-default-runtime-implementation"') < pages["runtime-detail"].text.index('id="codex-runtime-versions-title"')
     assert 'id="codex-runtime-versions-message"' not in pages["runtime-detail"].text
@@ -864,6 +855,7 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert 'margin-top: 0.5rem;' in stylesheet.text
     assert '.settings-divided-list .settings-field > span' in stylesheet.text
     assert '.settings-divided-list.runtime-module-list' in stylesheet.text
+    assert '.settings-divided-list.runtime-module-list:empty' in stylesheet.text
     assert '.settings-divided-list .settings-utility-row + .settings-utility-row' in stylesheet.text
     assert '.settings-utility-list {' in stylesheet.text
     assert 'border-radius: 12px;' in stylesheet.text
@@ -873,6 +865,9 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert pages["runtime-detail"].text.count('id="runtime-management-description"') == 1
     assert pages["runtime-detail"].text.count('id="runtime-management-status"') == 1
     assert 'id="runtime-management-message"' not in pages["runtime-detail"].text
+    assert 'const field = document.createElement("section");' in script.text
+    assert 'input.id = `runtime-enabled-${runtime.runtime_id}`;' in script.text
+    assert 'control.htmlFor = input.id;' in script.text
     assert 'href="/settings/runtime/codex" aria-current="page"' in pages["runtime-detail"].text
     assert '新建 Session 默认项由 Chub 安全保存。' not in pages["openclaw"].text
     assert '浏览器拒绝保存时，主题和文字大小仅在当前页临时应用。' in pages["openclaw"].text
@@ -880,6 +875,11 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert 'href="/settings/task-orchestration" aria-current="page"' in pages["task-orchestration"].text
     assert 'id="workspace-task-processing-trigger"' in pages["task-orchestration"].text
     assert 'aria-label="微信任务润色"><section class="workstation-group workspace-task-orchestration-group"' in pages["task-orchestration"].text
+    assert 'id="workspace-task-show-internal-native-session"' in pages["task-orchestration"].text
+    assert pages["task-orchestration"].text.index(
+        'id="workspace-task-show-internal-native-session"'
+    ) < pages["task-orchestration"].text.index('id="workspace-task-processing-trigger"')
+    assert 'label class="settings-switch" for="workspace-task-show-internal-native-session"' in pages["task-orchestration"].text
     assert 'id="workspace-task-orchestration-title"' not in pages["task-orchestration"].text
     assert 'class="theme-option-groups" role="radiogroup" aria-label="主题选择"' in pages["appearance"].text
     assert 'id="theme-option-group-light-title">亮色系主题</h4>' in pages["appearance"].text
@@ -991,6 +991,7 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert 'src="/static/js/features/workspace-task-orchestration.js"' in pages["task-orchestration"].text
     assert workspace_script.status_code == 200
     assert '"/api/settings/weixin-translation"' in workspace_script.text
+    assert 'show_internal_native_session' in workspace_script.text
     assert '"/api/codex/models"' in workspace_script.text
     assert 'window.initializeWorkspaceTaskOrchestration' in workspace_script.text
     assert 'window.disposeWorkspaceTaskOrchestration' in workspace_script.text
@@ -1277,7 +1278,8 @@ async def test_workspace_preview_is_static_and_available(settings: Settings) -> 
     assert 'const sessionSection = document.getElementById("workspace-preview-sessions");' in workspace_sessions_script.text
     assert "sessionSection.hidden = groups.length === 0;" in workspace_sessions_script.text
     assert 'heading.textContent = `${runtimeGroup.name} Sessions`;' in workspace_sessions_script.text
-    assert 'title: "Native Sessions"' in workspace_sessions_script.text
+    assert 'heading.textContent = "Native";' in workspace_sessions_script.text
+    assert 'title: "Chub"' in workspace_sessions_script.text
     assert "const nativeSessionDetailLines = (session) => [" in workspace_sessions_script.text
     assert "`目录：${session.cwd}`" in workspace_sessions_script.text
     assert '`属性：${session.active_permission_mode || "未知"}' not in workspace_sessions_script.text
@@ -1290,7 +1292,9 @@ async def test_workspace_preview_is_static_and_available(settings: Settings) -> 
     assert '"归档 Native Session"' in workspace_sessions_script.text
     assert '"删除 Native Session"' in workspace_sessions_script.text
     assert '"/api/codex/native-sessions/${reference}/archive"' in workspace_sessions_script.text
-    assert '"停止由 Chub 管理"' in workspace_sessions_script.text
+    assert '"停止由 Chub 管理"' not in workspace_sessions_script.text
+    assert 'title: "仅删除 Chub 记录"' in workspace_sessions_script.text
+    assert 'action === "chub-only-delete"' in workspace_sessions_script.text
     assert '"/api/codex/sessions/${sessionId}/management"' in workspace_sessions_script.text
     assert "pendingNativeSessionMutations.delete(nativeActionRef);\n          await loadSessions();" in workspace_sessions_script.text
     assert 'details.className = "workspace-preview-native-session-details";' in workspace_sessions_script.text
@@ -1353,19 +1357,11 @@ async def test_root_page_is_the_workspace_and_legacy_workspace_redirects(
             "/settings?return_to=%2F%3Fsession%3Dsession-123",
             follow_redirects=False,
         )
-        legacy_settings_with_return_target = await client.get(
-            "/settings/quick-interaction?return_to=%2F%3Fsession%3Dsession-123",
-            follow_redirects=False,
-        )
-        legacy_invalid_settings_return_target = await client.get(
-            "/settings/quick-interaction?return_to=https%3A%2F%2Fexample.invalid",
-            follow_redirects=False,
-        )
         settings_with_return_target = await client.get(
-            "/settings/session-defaults?return_to=%2F%3Fsession%3Dsession-123"
+            "/settings/runtime?return_to=%2F%3Fsession%3Dsession-123"
         )
         invalid_settings_return_target = await client.get(
-            "/settings/session-defaults?return_to=https%3A%2F%2Fexample.invalid"
+            "/settings/runtime?return_to=https%3A%2F%2Fexample.invalid"
         )
         legacy_workspace = await client.get("/workspace", follow_redirects=False)
         legacy_automations = await client.get(
@@ -1387,12 +1383,6 @@ async def test_root_page_is_the_workspace_and_legacy_workspace_redirects(
     assert settings_redirect.headers["location"] == (
         "/settings/appearance?return_to=%2F%3Fsession%3Dsession-123"
     )
-    assert legacy_settings_with_return_target.status_code == 307
-    assert legacy_settings_with_return_target.headers["location"] == (
-        "/settings/session-defaults?return_to=%2F%3Fsession%3Dsession-123"
-    )
-    assert legacy_invalid_settings_return_target.status_code == 307
-    assert legacy_invalid_settings_return_target.headers["location"] == "/settings/session-defaults"
     assert 'id="settings-return-application" class="settings-workspace-return" href="/?session=session-123"' in settings_with_return_target.text
     assert 'class="settings-mobile-nav-external" href="/?session=session-123"' in settings_with_return_target.text
     assert 'id="settings-return-application" class="settings-workspace-return" href="/"' in invalid_settings_return_target.text
@@ -2679,6 +2669,8 @@ async def test_workspace_sessions_use_placeholder_for_empty_title(
     assert "void loadQuickSessionToolbarUsage();" in workspace_script.text
     assert "window.setWorkspaceToolbarError?.(text);" in response.text
     assert "const sidebarMessageMinimumVisibleMs = 6000;" in response.text
+    assert 'setSidebarMessage(`${title}中…`, { minimumVisibleMs: 0 });' in response.text
+    assert 'setSidebarMessage("删除 Chub 记录中…", { minimumVisibleMs: 0 });' in response.text
     assert "sidebarMessageClearTimer = window.setTimeout" in response.text
     assert "workspace-session-message" not in response.text
     assert ".workspace-preview-toolbar-error {" in stylesheet.text

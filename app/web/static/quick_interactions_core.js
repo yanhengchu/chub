@@ -5,7 +5,6 @@
   const INITIAL_POLL_DELAY_MS = 1500;
   const MAX_POLL_DELAY_MS = 10000;
   const CONNECTION_FAILURE_GRACE_ATTEMPTS = 3;
-  const PAGE_SIZE_KEY = "hub.quickInteractionPageSize.v1";
   const CREATION_PREFERENCE_ERRORS = new Set([
     "codex_model_catalog_unavailable",
     "codex_model_unavailable",
@@ -171,24 +170,7 @@
     return Boolean(prompt.trim() && session && !blocked);
   }
 
-  function readStoredValue(storageName, key) {
-    try {
-      return root[storageName]?.getItem(key) || "";
-    } catch (_error) {
-      return "";
-    }
-  }
-
-  function readPageSize(storage) {
-    try {
-      const value = storage === undefined
-        ? readStoredValue("localStorage", PAGE_SIZE_KEY)
-        : storage?.getItem(PAGE_SIZE_KEY);
-      return value === "10" ? 10 : 5;
-    } catch (_error) {
-      return 5;
-    }
-  }
+  function readPageSize(_storage) { return 5; }
 
   function sessionListPath() {
     return "/api/codex/sessions";

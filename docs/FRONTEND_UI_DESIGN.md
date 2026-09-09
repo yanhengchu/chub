@@ -29,16 +29,16 @@ Chub Web 使用 FastAPI、Jinja2、原生 JavaScript 和 CSS，同源部署且�
 | 页面级切换与共享资源 | `workspace.js` / 页面 Controller | 组装页面、切换分区、触发受影响 Feature 刷新、释放已替换 Feature | 本文第 3 节 |
 | 外观偏好 | `theme.js` | 保存、恢复和应用有效主题与文字大小；为首屏同步非敏感 Cookie | 本文第 6 节 |
 | Runtime 模块管理 | 设置页 Feature | 预检、导入、替换、移除的受控交互与最终反馈；不解释 ZIP 或 Worker 状态 | [AI Runtime 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md) |
-| 任务编排设置 | 设置页 Feature | 展示当前固定处理配置；未来模块管理只呈现核心确认的最终状态，不解释计划或任务恢复 | [任务编排外置设计](CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md) |
-| Runtime 用量展示 | 快速交互 Page Controller 与微信入口投影 | 只消费后端 `display` 或不可用状态，不重新计算额度、Token 或格式 | [AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)、[集成能力清单](CHUB_INTEGRATION_CAPABILITIES.md) |
+| 任务编排设置 | 设置页 Feature | 展示当前固定处理配置；未来模块管理只呈现核心确认的最终状态，不解释编排流程或任务恢复 | [Chub 微信任务编排外置设计](WEIXIN_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md) |
+| Runtime 用量展示 | 快速交互 Page Controller 与微信入口投影 | 工作台只消费后端 `display.long` 或不可用状态，不重新计算额度、Token 或格式 | [AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)、[集成能力清单](CHUB_INTEGRATION_CAPABILITIES.md) |
 | 设置 OpenClaw 信息 | 设置页 Feature | 读取本机配置、安装元数据和补丁清单；不读取 Gateway 运行状态 | OpenClaw 定制设计 |
 
 前端不得另行定义 Session owner、phase、入口权限或维护操作成功条件。Session 快照中的 `usage`、`status` 和 `activity` 含义以状态模型为准；HTTP 成功、任务受理或子进程创建都不能渲染为业务成功。
 
-Runtime 用量的字段、单位、长短文本和缺失项语义由对应 Runtime 专属设计定义；前端只决定当前页面是否请求、展示后端给出的 `display` 还是显示不可用反馈。微信和通知的展示入口以能力清单为准，前端不得根据当前 Codex 格式推断或拼接其他 Runtime 的用量文本。
+Runtime 用量的字段、单位、短格式、长格式和详细完整格式及缺失项语义由对应 Runtime 专属设计定义。外部工作台右上角固定展示后端给出的 `display.long`，不生成详细完整格式；读取失败时显示不可用反馈。微信和通知的格式选择以能力清单为准，前端不得根据当前 Codex 格式推断或拼接其他 Runtime 的用量文本。
 
 
-Native Sessions 读取时附加 `writer_lock_state` 与 `chub_writer_lock_state` 三态投影，不写入原生数据。已关联 Chub Session 的原生记录只在 Chub 列表展示，并由该 Chub Session 的三点菜单完成重命名、停止、归档或删除；Native 列表只保留未关联项，确认空闲时通过三点菜单归档或删除原生记录。Native 操作只使用短期不透明引用，后端执行前重新确认映射与 writer，成功或失败后刷新列表，且不改动 Chub Session、任务或槽位。首次 Chub 任务创建并认领 Native Session 的回写窗口中，前端不展示未关联 Native 列表；绑定完成或任务结束后的下一次刷新恢复展示。Native 状态长期不可确认时，Chub Session 菜单提供危险确认的“停止管理”：只清理 Chub Session、任务记录和关联槽位，明确不确认或改变 Native Session。
+Native Sessions 读取时附加 `writer_lock_state` 与 `chub_writer_lock_state` 三态投影，不写入原生数据。已关联 Chub Session 的原生记录只在 Chub 列表展示，并由该 Chub Session 的三点菜单完成重命名、停止、归档或删除；Native 列表只保留未关联项，确认空闲时通过三点菜单归档或删除原生记录。Native 操作只使用短期不透明引用，后端执行前重新确认映射与 writer，成功或失败后刷新列表，且不改动 Chub Session、任务或槽位。首次 Chub 任务创建并认领 Native Session 的回写窗口中，前端不展示未关联 Native 列表；绑定完成或任务结束后的下一次刷新恢复展示。Chub Session 只有一个删除入口：Native 删除失败且任务停止已确认时，原删除流程才展示第二次危险确认，允许仅清理 Chub Session、任务记录和关联槽位，并明确保留 Native Session。
 
 设置 OpenClaw 页面只呈现微信 ClawBot 适配器、Chub 插件的本机配置/安装元数据匹配，以及已验收补丁基线的清单登记。该读取应直接读取固定配置或清单，不因页面性能引入长时命令探测或 Gateway 检查；读取失败只表示元数据无法确认，不得推断 Gateway、插件加载或补丁运行结果。
 
@@ -109,7 +109,7 @@ Quick Interaction Core -> Session View -> Timeline View -> Page Controller
 - 折叠卡片只保留标题层和内容层两个直接子容器。标题负责折叠，内容内按钮、链接和表单控件不得触发折叠；必须支持键盘、`aria-expanded`、减少动态效果和本地偏好恢复。
 - 原生表单控件优先保留原生弹层。只有有限选项需要展示复杂选中态、说明或禁用项时，才使用现有自定义选择浮层，并保持 `listbox`/`option`、焦点、Escape 和点击外部关闭语义。
 - 模型、推理等级和权限的选择器在所有入口统一复用快速交互的双行下拉选项样式：选项第一行展示名称，第二行展示当前默认、能力说明或不可用原因；触发器可按页面采用通用带边框或紧凑样式，但不得为同一类选择器另行省略说明或引入不同的选中态。
-- 即时生效控件由控件自身表达当前状态。除失败或会影响判断的重要信息外，不展示常驻“已保存”反馈。
+- 即时生效控件由控件自身表达当前状态。设置项中的开关只允许开关本体及其关联的无障碍标签触发，条目标题与说明保持只读；除失败或会影响判断的重要信息外，不展示常驻“已保存”反馈。关闭状态的轨道、边框和滑块在每个主题中必须可区分。
 - 同一设置分区中有两个及以上同级即时生效控件时，使用一个带外框的连续列表容器；容器与标题、说明保持统一留白，行内以横线区分，并统一行高、内边距和失败反馈位置。单项控件、单选卡片和不同职责的维护操作不强行合并。
 - 桌面双列和手机单列均使用卡片自然高度；文本、按钮和状态不得遮挡或挤出容器。
 
