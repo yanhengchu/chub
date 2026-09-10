@@ -30,6 +30,9 @@ def parser() -> argparse.ArgumentParser:
     show = commands.add_parser("show", help="Show one active request")
     show.add_argument("slot", type=_slot)
 
+    archive = commands.add_parser("archive", help="Archive one active request")
+    archive.add_argument("slot", type=_slot)
+
     commands.add_parser("list", help="List active requests")
     return root
 
@@ -80,6 +83,11 @@ def main() -> int:
             item = store.get(arguments.slot)
             _write_log(operation_id, action, "succeeded", f"R{item.slot}")
             print(f"R{item.slot} · {item.title}\n\n{item.content}")
+            return 0
+        if arguments.command == "archive":
+            item = store.archive(arguments.slot)
+            _write_log(operation_id, action, "succeeded", f"R{item.slot}")
+            print(f"Archived R{item.slot} · {item.title}")
             return 0
         for item in store.list_active():
             print(f"R{item.slot} · {item.title}")

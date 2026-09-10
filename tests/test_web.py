@@ -627,10 +627,10 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert 'control.htmlFor = input.id;' in script.text
     assert 'moduleEmptyRow("尚未导入 Runtime 模块。")' in script.text
     assert 'moduleEmptyRow("尚未导入能力模块。")' in script.text
-    assert '`${module.name || "Runtime"} · ${module.version || "未知版本"}`' in script.text
+    assert 'formalImplementationTitle(module.name || "Runtime", module.version)' in script.text
     assert 'badge.textContent = module.status === "active" ? "已启用" : "不可用";' in script.text
     assert 'Runtime 模块已导入并启用。' in script.text
-    assert '`${module.name || "能力模块"} · ${module.version || "未知版本"}`' in script.text
+    assert 'formalImplementationTitle(module.name || "能力模块", module.version)' in script.text
     assert 'remove.addEventListener("click", clearSelectedRuntimeModule);' in script.text
     assert 'remove.addEventListener("click", clearSelectedOrchestrationModule);' in script.text
     assert 'href="/settings/runtime/codex" aria-current="page"' in pages["runtime-detail"].text
@@ -1029,8 +1029,9 @@ async def test_automation_section_uses_workstation_status_rows(
                 login_page_available=True,
             ),
             codex_runtime_account=RuntimeAccountEnvironmentState(
-                state="failed",
-                message="API Key 已配置，但 AI 额度账户未登录",
+                state="available",
+                auth_mode="api",
+                message="API Key 模式已启用",
                 checked_at=datetime(2026, 9, 5, 12, 31, tzinfo=timezone.utc),
                 login_page_available=True,
             ),
@@ -1116,15 +1117,23 @@ async def test_automation_section_uses_workstation_status_rows(
     assert 'id="workspace-automation-feishu-open-login" class="button-secondary" type="button" disabled title="请等待当前自动化任务完成">打开登录页面</button>' in response.text
     assert 'id="workspace-automation-feishu-detail"' in response.text
     assert 'id="workspace-automation-codex-account-check"' in response.text
+    assert 'id="workspace-automation-codex-account-switch"' in response.text
     assert 'id="workspace-automation-codex-account-open-login" class="button-secondary" type="button" disabled title="请等待当前自动化任务完成">打开登录页面</button>' in response.text
     assert 'id="workspace-automation-codex-account-detail"' in response.text
+    assert 'id="workspace-automation-codex-account-switch-dialog"' in response.text
+    assert 'id="workspace-automation-codex-account-switch-form"' in response.text
+    assert 'id="workspace-automation-codex-account-switch-feedback"' in response.text
+    assert 'id="workspace-automation-codex-account-switch-current"' in response.text
+    assert 'id="workspace-automation-codex-account-switch-flow-list"' in response.text
+    assert "切换 Codex Runtime 账户" in response.text
+    assert 'name="workspace-automation-codex-account-mode"' not in response.text
     assert 'data-browser-state="stopped"' in response.text
     assert 'data-account-state="login_required"' in response.text
-    assert 'data-account-state="failed"' in response.text
+    assert 'data-account-state="available"' in response.text
     assert "Debug Chrome 未启动，按需启动。 · 浏览器用户：Default · 无界面" in response.text
     assert 'id="workspace-automation-browser-message"' not in response.text
     assert "飞书登录已失效，请重新登录。 · 检查于 09-05 12:30" in response.text
-    assert "API Key 已配置，但 AI 额度账户未登录 · 检查于 09-05 12:31" in response.text
+    assert "API Key 模式已启用 · 检查于 09-05 12:31" in response.text
     assert 'id="workspace-automation-feishu-message"' not in response.text
     assert "周报资料准备 · 2026-08-31至2026-09-06" in response.text
     assert 'class="workstation-weekly-workflow"' in response.text
@@ -1168,6 +1177,10 @@ async def test_automation_section_uses_workstation_status_rows(
     assert "setAutomationFeishuMessage" not in workspace_script.text
     assert '"/api/automations/environment/feishu/login-page"' in workspace_script.text
     assert '"/api/automations/environment/codex/login-page"' in workspace_script.text
+    assert '"/api/automations/environment/codex/switch-authentication"' in workspace_script.text
+    assert 'let switchTargetMode = "";' in workspace_script.text
+    assert 'switchTargetMode = currentMode === "account"' in workspace_script.text
+    assert 'input[name="workspace-automation-codex-account-mode"]' not in workspace_script.text
     assert 'automationCodexAccountOpenLogin.hidden = state?.login_page_available !== true;' in workspace_script.text
     assert 'return match ? ` · 检查于 ${match[1]}-${match[2]} ${match[3]}:${match[4]}` : "";' in workspace_script.text
     assert 'const setAutomationAccountStatus = (detail, state, statusKind, fallbackMessage) => {' in workspace_script.text

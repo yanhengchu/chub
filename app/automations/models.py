@@ -417,9 +417,20 @@ class FeishuEnvironmentState(StrictAutomationModel):
 
 class RuntimeAccountEnvironmentState(StrictAutomationModel):
     state: Literal["unchecked", "checking", "available", "failed"] = "unchecked"
+    auth_mode: Literal["account", "api", "unknown"] = "unknown"
     message: str = "未检查"
     checked_at: datetime | None = None
     login_page_available: bool = False
+
+
+class CodexAuthSwitchRequest(StrictAutomationModel):
+    mode: Literal["account", "api"]
+
+
+class CodexAuthSwitchResult(StrictAutomationModel):
+    mode: Literal["account", "api"]
+    message: str
+    account: RuntimeAccountEnvironmentState
 
 
 class BrowserProfilePublic(StrictAutomationModel):

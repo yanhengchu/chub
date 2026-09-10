@@ -43,6 +43,8 @@ WeixinChubModeSubmissionCode = Literal[
     # Kept for state-file compatibility with the retired status route.
     "codex_status_checked",
     "codex_switch_checked",
+    "codex_auth_checked",
+    "codex_auth_switch_requested",
     "codex_session_renamed",
     "codex_session_stopped",
     "codex_session_archived",

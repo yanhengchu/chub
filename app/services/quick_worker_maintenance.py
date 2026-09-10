@@ -100,7 +100,7 @@ def worker_reload_audit(command: Path, old_generation: str | None) -> str:
     """Read a bounded, non-sensitive post-reload health summary for audit logs."""
     try:
         result = subprocess.run(
-            [str(command), "worker-health"],
+            [str(command), "worker", "health"],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -149,7 +149,7 @@ def worker_service_state(command: Path) -> str:
     """Read the fixed service manager state without exposing service commands."""
     try:
         result = subprocess.run(
-            [str(command), "worker-service-status"],
+            [str(command), "worker", "status"],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -170,7 +170,7 @@ def launch_quick_worker_reload_process(
     environment = os.environ.copy()
     environment["CHUB_WORKER_RELOAD_EXTERNAL_LOGGING"] = "1"
     return subprocess.Popen(
-        [str(command), "worker-recover" if recover else "worker-reload"],
+        [str(command), "worker", "recover" if recover else "reload"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
@@ -534,7 +534,7 @@ class QuickWorkerReloadCoordinator:
             command = process.cmdline()
         except (psutil.Error, OSError):
             return False
-        return str(self.command) in command and "worker-reload" in command
+        return command[:3] == [str(self.command), "worker", "reload"]
 
 
 async def inspect_quick_worker(

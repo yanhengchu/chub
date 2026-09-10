@@ -1251,40 +1251,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except RuntimeOperationError:
             return RuntimeAccountEnvironmentState(
                 state="failed",
-                message="Codex Runtime 当前不可用",
-                checked_at=checked_at,
-            )
-        if usage.status == "available" and usage.source == "account_login":
-            return RuntimeAccountEnvironmentState(
-                state="available",
-                message="ChatGPT 登录与 AI 额度可用",
-                checked_at=checked_at,
-            )
-        if usage.status == "available" and usage.source == "sub2api":
-            return RuntimeAccountEnvironmentState(
-                state="available",
-                message="API Key 已配置，AI 额度可用",
+                message="登录状态暂不可用",
                 checked_at=checked_at,
             )
         if usage.source == "account_login":
-            message = "ChatGPT 已登录，但 AI 额度不可用"
-        elif usage.source == "sub2api":
-            message = (
-                "API Key 已配置，但 AI 额度账户未登录"
-                if usage.message == "AI API 额度账户未登录。"
-                else "API Key 已配置，但 AI 额度暂不可用"
+            return RuntimeAccountEnvironmentState(
+                state="available",
+                auth_mode="account",
+                message="ChatGPT 账户已登录",
+                checked_at=checked_at,
             )
-        else:
-            message = usage.message or "Codex Runtime 认证状态暂时不可用"
+        if usage.source == "sub2api":
+            return RuntimeAccountEnvironmentState(
+                state="available",
+                auth_mode="api",
+                message="API Key 模式已启用",
+                checked_at=checked_at,
+            )
         return RuntimeAccountEnvironmentState(
             state="failed",
-            message=message,
+            auth_mode="unknown",
+            message="登录状态暂不可用",
             checked_at=checked_at,
-            login_page_available=(
-                usage.source == "sub2api"
-                and usage.message == "AI API 额度账户未登录。"
-                and ai_usage.login_page_available()
-            ),
         )
 
     def open_codex_runtime_login_page() -> None:
@@ -1295,6 +1283,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         detected_platform=detected_platform,
         codex_account_checker=check_codex_runtime_account,
         codex_account_login_opener=open_codex_runtime_login_page,
+    )
+    weixin_chub_mode.codex_auth_reader = (
+        application.state.automation_manager.check_codex_runtime_account
+    )
+    weixin_chub_mode.codex_auth_switcher = (
+        application.state.automation_manager.switch_codex_runtime_authentication
+    )
+    weixin_chub_mode.codex_auth_notifier = (
+        completion_notifier.notify_weixin_command_result
     )
     application.state.openclaw_manager = openclaw_manager
     application.state.notification_service = notification_service

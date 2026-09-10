@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import stat
+import sys
 
 import pytest
 
+from app.requests import command as request_command
 from app.services.request_backlog import (
     RequestBacklogBusy,
     RequestBacklogFull,
@@ -63,3 +65,23 @@ def test_request_backlog_rejects_invalid_or_oversized_state(tmp_path) -> None:
         store.save(title="标题", content="x" * 2001)
     with pytest.raises(RequestBacklogNotFound):
         store.get(1)
+
+
+def test_request_command_archives_active_request(monkeypatch, tmp_path, capsys) -> None:
+    store = RequestBacklogStore(tmp_path / "requests.json")
+    store.save(title="待归档需求", content="验收：完成。")
+    log_entries: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(request_command, "_store", lambda: store)
+    monkeypatch.setattr(
+        request_command,
+        "_write_log",
+        lambda _operation_id, action, status, target: log_entries.append(
+            (action, status, target)
+        ),
+    )
+    monkeypatch.setattr(sys, "argv", ["chub request", "archive", "R1"])
+
+    assert request_command.main() == 0
+    assert capsys.readouterr().out == "Archived R1 · 待归档需求\n"
+    assert store.list_active() == ()
+    assert log_entries[-1] == ("request_backlog_archive", "succeeded", "R1")

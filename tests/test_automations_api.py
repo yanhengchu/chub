@@ -14,6 +14,7 @@ from app.automations.models import (
     AccountLoginPageResult,
     BrowserControlResult,
     BrowserInitializationAccepted,
+    CodexAuthSwitchResult,
     FeishuEnvironmentState,
     RuntimeAccountEnvironmentState,
 )
@@ -34,6 +35,10 @@ async def test_automations_require_trusted_network(settings: Settings) -> None:
         run = await client.post("/api/automations/task/run")
         check_feishu = await client.post("/api/automations/environment/feishu/check")
         check_codex = await client.post("/api/automations/environment/codex/check")
+        switch_codex = await client.post(
+            "/api/automations/environment/codex/switch-authentication",
+            json={"mode": "api"},
+        )
         open_feishu_login = await client.post(
             "/api/automations/environment/feishu/login-page"
         )
@@ -50,6 +55,7 @@ async def test_automations_require_trusted_network(settings: Settings) -> None:
     assert run.status_code == 403
     assert check_feishu.status_code == 403
     assert check_codex.status_code == 403
+    assert switch_codex.status_code == 403
     assert open_feishu_login.status_code == 403
     assert open_codex_login.status_code == 403
     assert retired_qr.status_code == 404
@@ -98,6 +104,14 @@ async def test_automation_list_and_background_acceptance(
     manager.open_codex_runtime_login_page.return_value = AccountLoginPageResult(
         message="Codex Runtime 登录页面已打开"
     )
+    manager.switch_codex_runtime_authentication.return_value = CodexAuthSwitchResult(
+        mode="api",
+        message="已切换到 API Key 模式",
+        account=RuntimeAccountEnvironmentState(
+            state="available",
+            message="API Key 已配置，AI 额度可用",
+        ),
+    )
     app.state.automation_manager = manager
     transport = httpx.ASGITransport(app=app)
 
@@ -125,6 +139,10 @@ async def test_automation_list_and_background_acceptance(
             "/api/automations/browser/initialize",
             json={"profile_id": "Profile 2", "mode": "headed"},
         )
+        switch_codex = await client.post(
+            "/api/automations/environment/codex/switch-authentication",
+            json={"mode": "api"},
+        )
 
     assert listing.status_code == 200
     assert listing.json()["data"]["browser_state"] == "running"
@@ -143,6 +161,7 @@ async def test_automation_list_and_background_acceptance(
     assert open_codex_login.status_code == 200
     assert open_codex_login.json()["data"]["state"] == "opened"
     assert initialize_browser.status_code == 202
+    assert switch_codex.status_code == 200
     manager.list.assert_called_once_with(home_only=False)
     manager.start.assert_called_once()
     assert manager.start.call_args.args == ("monthly-report",)
@@ -156,11 +175,12 @@ async def test_automation_list_and_background_acceptance(
     manager.check_codex_runtime_account.assert_called_once_with()
     manager.open_feishu_login_page.assert_called_once_with()
     manager.open_codex_runtime_login_page.assert_called_once_with()
+    manager.switch_codex_runtime_authentication.assert_called_once_with("api")
     manager.initialize_browser.assert_called_once()
 
 
 @pytest.mark.anyio
-async def test_codex_runtime_account_check_requires_available_ai_usage(
+async def test_codex_runtime_account_check_reports_api_mode_when_usage_is_unavailable(
     settings: Settings,
 ) -> None:
     app = create_app(settings)
@@ -173,7 +193,37 @@ async def test_codex_runtime_account_check_requires_available_ai_usage(
             message="AI API 额度账户未登录。",
         )
     )
-    app.state.ai_usage.login_page_available = MagicMock(return_value=True)
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers=AUTH,
+    ) as client:
+        response = await client.post("/api/automations/environment/codex/check")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["state"] == "available"
+    assert response.json()["data"]["auth_mode"] == "api"
+    assert response.json()["data"]["message"] == "API Key 模式已启用"
+    assert response.json()["data"]["checked_at"]
+    assert response.json()["data"]["login_page_available"] is False
+    app.state.ai_usage.read.assert_called_once_with(force=True)
+
+
+@pytest.mark.anyio
+async def test_codex_runtime_account_check_reports_unknown_authentication(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    app.state.ai_usage.read = MagicMock(
+        return_value=AiUsageData(
+            status="unavailable",
+            provider="OpenAI",
+            timezone="Asia/Shanghai",
+            message="AI 认证状态暂不可用。",
+        )
+    )
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(
@@ -185,11 +235,10 @@ async def test_codex_runtime_account_check_requires_available_ai_usage(
 
     assert response.status_code == 200
     assert response.json()["data"]["state"] == "failed"
-    assert response.json()["data"]["message"] == "API Key 已配置，但 AI 额度账户未登录"
+    assert response.json()["data"]["auth_mode"] == "unknown"
+    assert response.json()["data"]["message"] == "登录状态暂不可用"
     assert response.json()["data"]["checked_at"]
-    assert response.json()["data"]["login_page_available"] is True
     app.state.ai_usage.read.assert_called_once_with(force=True)
-    app.state.ai_usage.login_page_available.assert_called_once_with()
 
 
 @pytest.mark.anyio

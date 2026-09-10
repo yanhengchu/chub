@@ -62,7 +62,7 @@ notifications:
   dedup_ttl_seconds: 600
 
 # Disabled by default. On Ubuntu, set the Wi-Fi device and both UUIDs in
-# settings.local.yaml to allow the fixed `chub network-restart` and WeChat
+# settings.local.yaml to allow the fixed `chub network restart` and WeChat
 # `restart network` action. macOS does not support this NetworkManager action.
 # The action never accepts connection names, UUIDs, commands, or paths from a
 # caller, and leaves Tailscale unchanged.

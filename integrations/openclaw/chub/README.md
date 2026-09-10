@@ -157,7 +157,7 @@ openclaw config set \
 
 `baseUrl` 同时供两个 Agent Tool 和微信调度使用。`weixinChubMode` 只是插件侧转发开关；
 微信 Chub 模式还要求 `config/settings.local.yaml` 中的
-`openclaw.weixin_chub_mode.enabled` 为 `true`。修改 Chub 配置后使用 `chub restart`
+`openclaw.weixin_chub_mode.enabled` 为 `true`。修改 Chub 配置后使用 `chub web restart`
 使 Web 配置生效；修改插件配置后使用 `openclaw gateway restart`。
 
 首次接入还必须确认唯一 Owner：首次获批准的私聊配对在 Owner 为空时可以自动建立 Owner；

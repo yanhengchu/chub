@@ -117,10 +117,10 @@ def test_core_upgrade_executor_does_not_manage_browser_or_dependencies() -> None
         encoding="utf-8"
     )
 
-    assert "runtime-dependencies" not in executor
+    assert "runtime dependencies" not in executor
     assert "chrome-supervisor" not in executor
     assert "chub-debug-chrome" not in executor
-    assert "service-definitions --core" in executor
+    assert "service definitions --core" in executor
     assert "scope=chub_ai_runtime,chub_web,quick_worker" in executor
 
 
@@ -1382,7 +1382,7 @@ def test_status_data_explains_non_resumable_upgrade_failure(tmp_path: Path) -> N
     assert status.resume is False
     assert status.message == (
         "Session 写入冻结未能确认，尚未开始清理运行状态。 当前恢复操作不能安全继续，升级入口已关闭；"
-        "请在本机终端检查 chub logs upgrade 和服务定义后再处理。"
+        "请在本机终端检查 chub upgrade logs 和服务定义后再处理。"
     )
 
 

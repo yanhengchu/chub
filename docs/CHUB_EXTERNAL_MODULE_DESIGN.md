@@ -21,7 +21,7 @@
 
 当前生产从固定安装目录发现正式 Codex Runtime ZIP。第一方 Codex Runtime 的开发源码保留在仓库 `runtime-modules/codex-runtime/`，`builtin-dev` 直接从该目录重新加载，不复制到 ZIP 安装目录。设置页可设置一个健康且启用的默认实现；它只决定之后新建 Chub Session 的实现。Session 创建时立即保存固定槽位，Quick Worker、微信、自动化和周报等后续任务均从 Session 读取该槽位，页面、外部指令和请求正文均不提供 `implementation_id`。清单字段保留通用 `runtime_id` 是为后续独立接入做准备，不构成当前第二 Runtime 的安装或维护能力。
 
-设置页的“AI Runtime”分组动态读取已加载 Runtime 的名称和说明，并提供 Runtime ZIP 的预检、导入/覆盖、设为默认、移除及状态查看。导入覆盖和“刷新开发代码”只检查目标槽位的排队或运行任务，不暂停、检查或阻断已绑定 Session、旧 PID、历史 writer 或页面 `unknown`。Web 与 Quick Worker 都确认新注册表后才报告成功。只有明确物理删除 ZIP 槽位时，才检查该槽位是否仍被 Session 或非终态任务引用。页面不提供客户端 Runtime、Runner、命令、路径或环境变量选择器。微信任务润色使用独立的能力编排模块设置和注册表，其通用边界见[Chub 能力编排外置架构设计](CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md)。
+设置页的“AI Runtime”分组动态读取已加载 Runtime 的名称和说明，并提供 Runtime ZIP 的预检、导入/覆盖、设为默认、移除及状态查看。外置实现的可见名称统一为“`<能力名称> · 开发实现`”或“`<能力名称> · 正式版 v<版本号>`”：开发实现不展示内部引用，正式实现必须展示清单版本；模块库存仍使用清单 `display_name` 作为能力名称。`builtin-dev`、`implementation_id`、`development_ref` 和 `implementation_ref` 仅用于后端绑定、快照和日志，不作为用户可见名称，也不能因文案调整而改变。导入覆盖和“刷新开发代码”只检查目标槽位的排队或运行任务，不暂停、检查或阻断已绑定 Session、旧 PID、历史 writer 或页面 `unknown`。Web 与 Quick Worker 都确认新注册表后才报告成功。只有明确物理删除 ZIP 槽位时，才检查该槽位是否仍被 Session 或非终态任务引用。页面不提供客户端 Runtime、Runner、命令、路径或环境变量选择器。微信任务润色使用独立的能力编排模块设置和注册表，其通用边界见[Chub 能力编排外置架构设计](CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md)。
 
 ```text
 维护者选择 Runtime ZIP
@@ -64,7 +64,7 @@ Runtime 模块只拥有 Runtime 私有实现和清单声明。Adapter/Runner 的
 | `module_id` | 全局唯一的小写实现标识；必须与 `implementation_id` 一致。 |
 | `runtime_id`、`implementation_id`、`native_session_compatibility_id` | 分别声明逻辑 Runtime、版本槽位和原生 Session 兼容组；三者必须与 Module、Adapter 和 Runner 的 Descriptor 一致。当前维护入口只接受并完整维护 `runtime_id=codex`；正式 Codex ZIP 的 `implementation_id` 固定为 `codex-` 加六位数字，覆盖同一槽位必须保持该原生兼容组。 |
 | `module_type` | 当前仅允许 `runtime`。 |
-| `display_name`、`description`、`version` | 用于设置页展示和安装记录；入口返回的展示信息必须与清单一致。正式 Codex ZIP 的 `description` 必须是本次发版的简短特性说明（最多 300 字），说明用户或维护者可感知的变化；不能只重复“使用 Codex CLI”。 |
+| `display_name`、`description`、`version` | 用于设置页展示和安装记录；入口返回的展示信息必须与清单一致。正式实现显示为“`<display_name> · 正式版 v<version>`”，不直接展示槽位 ID；正式 Codex ZIP 的 `description` 必须是本次发版的简短特性说明（最多 300 字），说明用户或维护者可感知的变化；不能只重复“使用 Codex CLI”。 |
 | `chub_version` | 必须精确匹配当前 Chub 版本。 |
 | `entry` | 固定为 `<python_module>:<factory>`；工厂接收当前 `Settings` 并返回 Runtime 注册对象。 |
 | `dependencies` | 可选的包内 requirements 相对路径；依赖安装到该模块自己的目录。 |

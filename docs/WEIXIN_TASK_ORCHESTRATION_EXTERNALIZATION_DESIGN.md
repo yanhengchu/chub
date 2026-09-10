@@ -32,7 +32,7 @@
 | `weixin-refinement` | 首个 ZIP 的 `module_id` | 仅用于识别模块产物；同版本不同内容仍是不同产物。 |
 | `implementation_ref` | ZIP 的模块标识、版本和内容摘要组成的不可变引用 | 请求恢复时必须使用同一 ZIP 产物，不得改投当前活动模块。 |
 
-关闭“启用文本优化”即直接投递，不创建润色阶段。开启后必须选择固定开发实现 `weixin-orchestration-dev` 或已导入的 `weixin-refinement` ZIP；没有可用实现时不得开启。开发实现与 ZIP 打包共用仓库 `orchestration-modules/weixin-refinement/` 源码，前者绑定源码 SHA-256 摘要，后者绑定包含内容摘要的不可变 `implementation_ref`。模块不接受页面、微信或配置传入的代码路径。
+关闭“启用文本优化”即直接投递，不创建润色阶段。开启后必须选择固定开发实现 `weixin-orchestration-dev` 或已导入的 `weixin-refinement` ZIP；没有可用实现时不得开启。设置页在“微信任务润色 → 编排实现”中统一显示“`微信任务润色 · 开发实现`”或“`微信任务润色 · 正式版 v<版本号>`”，不显示 `weixin-orchestration-dev`、源码摘要或 `implementation_ref`。这些内部引用仍是请求快照和恢复绑定的权威值，不能由可见名称推断或替代。开发实现与 ZIP 打包共用仓库 `orchestration-modules/weixin-refinement/` 源码，前者绑定源码 SHA-256 摘要，后者绑定包含内容摘要的不可变 `implementation_ref`。模块不接受页面、微信或配置传入的代码路径。
 
 ZIP 模块仅接受 `capability-orchestration`、`weixin-normal-text` 和协议版本 `1` 的产物。“AI Runtime → 通用配置”的“能力模块导入”负责预检、导入、列表与移除；“微信任务润色”只负责选择活动实现或关闭文本优化。导入不会自动启用。同版本但内容不同的 ZIP 是独立产物，不能覆盖仍被非终态请求引用的旧产物。当前活动模块必须先切换到开发实现或另一 ZIP 才能移除；被非终态请求引用的模块仍不能移除。
 

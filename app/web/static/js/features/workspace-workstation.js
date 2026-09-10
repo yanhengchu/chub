@@ -312,10 +312,15 @@ window.initializeWorkspaceWorkstation = () => {
     syncControls();
   };
 
+  const formalVersion = (version) => {
+    const normalized = typeof version === "string" ? version.trim().replace(/^v/i, "") : "";
+    return normalized ? `v${normalized}` : "未知版本";
+  };
+
   const implementationVersions = (items, fallback) => {
     const versions = items
       .filter((item) => item?.available !== false)
-      .map((item) => `${item.name || item.module_id || "正式版"} ${item.version || ""}`.trim());
+      .map((item) => `正式版 ${formalVersion(item.version)}`);
     return versions.length ? versions.join("、") : fallback;
   };
 
@@ -326,10 +331,9 @@ window.initializeWorkspaceWorkstation = () => {
       implementations.filter((item) => item.implementation_id !== "builtin-dev"),
       "暂无正式版",
     );
-    const codexDevelopmentVersion = builtin?.version || "未读取到";
     setStatus(
       elements.developmentCodexDetail,
-      `本地 AI Runtime · 开发版 ${codexDevelopmentVersion} · 正式版 ${codexFormalVersions}${developmentCodexConfirmed ? " · 已确认" : ""}`,
+      `Codex · 开发实现 · ${codexFormalVersions}${developmentCodexConfirmed ? " · 已确认" : ""}`,
       builtin ? "success" : "warning",
     );
 
@@ -340,7 +344,7 @@ window.initializeWorkspaceWorkstation = () => {
     const developmentAvailable = orchestration?.development_available === true;
     setStatus(
       elements.developmentWeixinDetail,
-      `微信普通任务润色 · 开发版 ${developmentAvailable ? "weixin-orchestration-dev" : "不可用"} · 正式版 ${weixinFormalVersions}${developmentWeixinConfirmed ? " · 已确认" : ""}`,
+      `微信任务润色 · ${developmentAvailable ? "开发实现" : "开发实现不可用"} · ${weixinFormalVersions}${developmentWeixinConfirmed ? " · 已确认" : ""}`,
       developmentAvailable ? "success" : "warning",
     );
     syncControls();

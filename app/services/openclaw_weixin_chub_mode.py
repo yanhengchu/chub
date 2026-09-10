@@ -191,6 +191,13 @@ class WeixinChubModeManager:
             [str, str, QuickInteractionWeixinRoute, str], object
         ]
         | None = None,
+        codex_auth_reader: Callable[[], object] | None = None,
+        codex_auth_switcher: Callable[[Literal["account", "api"]], object]
+        | None = None,
+        codex_auth_notifier: Callable[
+            [QuickInteractionWeixinRoute, Callable[[], str]], object
+        ]
+        | None = None,
         development_stage: WeixinDevelopmentStage | None = None,
         orchestration_module_service: WeixinOrchestrationModuleService | None = None,
     ) -> None:
@@ -218,6 +225,9 @@ class WeixinChubModeManager:
         self.restart_notifier = restart_notifier
         self.system_upgrade_starter = system_upgrade_starter
         self.maintenance_command_starter = maintenance_command_starter
+        self.codex_auth_reader = codex_auth_reader
+        self.codex_auth_switcher = codex_auth_switcher
+        self.codex_auth_notifier = codex_auth_notifier
         self.development_stage = development_stage or WeixinDevelopmentStage()
         self.orchestration_module_service = (
             orchestration_module_service
@@ -238,6 +248,7 @@ class WeixinChubModeManager:
         self._restart_lock = threading.Lock()
         self._text_mode_lock = threading.Lock()
         self._system_upgrade_lock = threading.Lock()
+        self._codex_auth_lock = threading.Lock()
         self._stop_lock = threading.Lock()
         self._slot_lock = threading.RLock()
         self._status_condition = threading.Condition()
@@ -2072,6 +2083,17 @@ class WeixinChubModeManager:
                 message_id=message_id,
                 route_fingerprint=self._route_fingerprint(delivery_route),
             )
+        if mode_enabled and command.kind == "codex_auth":
+            return self._finalize_fixed_command_result(
+                command.kind,
+                self._dispatch_codex_auth_status(
+                    message_id=message_id,
+                    correlation_id=correlation_id,
+                    route_fingerprint=self._route_fingerprint(delivery_route),
+                    source_ip=source_ip,
+                ),
+                delivery_route,
+            )
         if mode_enabled and command.kind == "text_control":
             return self._finalize_fixed_command_result(
                 command.kind,
@@ -2182,6 +2204,18 @@ class WeixinChubModeManager:
             )
         if ephemeral is not None:
             return ephemeral
+        if mode_enabled and command.kind == "codex_auth_switch":
+            return self._finalize_fixed_command_result(
+                command.kind,
+                self._dispatch_codex_auth_switch(
+                    message_id=message_id,
+                    correlation_id=correlation_id,
+                    route_fingerprint=route_fingerprint,
+                    source_ip=source_ip,
+                    delivery_route=delivery_route,
+                ),
+                delivery_route,
+            )
         if mode_enabled and command.kind == "restart_web":
             return self._finalize_fixed_command_result(
                 command.kind,
@@ -3225,6 +3259,193 @@ class WeixinChubModeManager:
             )
 
     @staticmethod
+    def _codex_auth_status_message(account: object) -> tuple[str, bool]:
+        if getattr(account, "state", None) != "available":
+            return "Codex Auth: Authentication status unavailable.", True
+        mode = getattr(account, "auth_mode", "unknown")
+        if mode == "account":
+            return "Codex Auth: ChatGPT account signed in.", False
+        if mode == "api":
+            return "Codex Auth: API Key mode enabled.", False
+        return "Codex Auth: Authentication status unavailable.", True
+
+    def _dispatch_codex_auth_status(
+        self,
+        *,
+        message_id: str,
+        correlation_id: str | None,
+        route_fingerprint: str,
+        source_ip: str,
+    ) -> WeixinChubModeDispatchResult:
+        operation_id = uuid4().hex
+        self._log_dispatch(operation_id, "requested", source_ip)
+        self._log_dispatch(operation_id, "started", source_ip)
+        try:
+            account = (
+                self.codex_auth_reader()
+                if self.codex_auth_reader is not None
+                else None
+            )
+        except Exception:
+            LOGGER.warning("Unable to read Codex authentication status", exc_info=True)
+            account = None
+        message, failed = self._codex_auth_status_message(account)
+        return self._remember_fixed_reply(
+            message_id=message_id,
+            correlation_id=correlation_id,
+            operation_id=operation_id,
+            route_fingerprint=route_fingerprint,
+            source_ip=source_ip,
+            message=message,
+            code="codex_auth_checked",
+            failed=failed,
+        )
+
+    def _dispatch_codex_auth_switch(
+        self,
+        *,
+        message_id: str,
+        correlation_id: str | None,
+        route_fingerprint: str,
+        source_ip: str,
+        delivery_route: QuickInteractionWeixinRoute,
+    ) -> WeixinChubModeDispatchResult:
+        operation_id = uuid4().hex
+        with self._lock:
+            if self._state_error:
+                self._log_standalone_dispatch("failed", source_ip)
+                return self._dispatch_failure("state_unavailable")
+            duplicate = self._find_submission(message_id)
+            if duplicate is not None:
+                if duplicate.delivery_route_fingerprint != route_fingerprint:
+                    self._log_standalone_dispatch("failed", source_ip)
+                    return self._dispatch_failure("message_conflict")
+                self._log_standalone_dispatch("succeeded", source_ip)
+                return WeixinChubModeDispatchResult(
+                    disposition=duplicate.dispatch_disposition or "reply",
+                    message=duplicate.message or None,
+                )
+
+        self._log_dispatch(operation_id, "requested", source_ip)
+        if self.codex_auth_reader is None or self.codex_auth_switcher is None:
+            return self._remember_fixed_reply(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                operation_id=operation_id,
+                route_fingerprint=route_fingerprint,
+                source_ip=source_ip,
+                message="Codex Auth: Switching is unavailable. Try again later.",
+                code="codex_auth_switch_requested",
+                failed=True,
+            )
+        try:
+            account = self.codex_auth_reader()
+        except Exception:
+            LOGGER.warning("Unable to prepare Codex authentication switch", exc_info=True)
+            account = None
+        current_mode = getattr(account, "auth_mode", "unknown")
+        if getattr(account, "state", None) != "available" or current_mode not in {
+            "account",
+            "api",
+        }:
+            return self._remember_fixed_reply(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                operation_id=operation_id,
+                route_fingerprint=route_fingerprint,
+                source_ip=source_ip,
+                message="Codex Auth: Authentication status unavailable. Switch was not started.",
+                code="codex_auth_switch_requested",
+                failed=True,
+            )
+        if not self._codex_auth_lock.acquire(blocking=False):
+            return self._remember_fixed_reply(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                operation_id=operation_id,
+                route_fingerprint=route_fingerprint,
+                source_ip=source_ip,
+                message="Codex Auth: A switch is already in progress.",
+                code="codex_auth_switch_requested",
+                failed=True,
+            )
+
+        target: Literal["account", "api"] = (
+            "api" if current_mode == "account" else "account"
+        )
+        target_label = "API Key mode" if target == "api" else "ChatGPT account mode"
+        for status in ("requested", "started"):
+            write_operation(
+                operation_id=operation_id,
+                action="weixin_codex_auth_switch",
+                status=status,
+                target=f"codex-runtime:{target}",
+                source_ip=source_ip,
+            )
+
+        def complete_switch() -> None:
+            try:
+                result = self.codex_auth_switcher(target)
+                verified = (
+                    getattr(result, "mode", None) == target
+                    and getattr(getattr(result, "account", None), "state", None)
+                    == "available"
+                    and getattr(getattr(result, "account", None), "auth_mode", None)
+                    == target
+                )
+                if verified:
+                    message = f"Codex Auth: Switched to {target_label}."
+                else:
+                    message = (
+                        "Codex Auth: Switch completed, but the final authentication "
+                        "status is unavailable."
+                    )
+            except Exception:
+                LOGGER.warning("Unable to complete Weixin Codex authentication switch", exc_info=True)
+                verified = False
+                message = f"Codex Auth: Switch to {target_label} failed."
+            finally:
+                self._codex_auth_lock.release()
+
+            write_operation(
+                operation_id=operation_id,
+                action="weixin_codex_auth_switch",
+                status="succeeded" if verified else "failed",
+                target=f"codex-runtime:{target}",
+                source_ip=source_ip,
+            )
+            if self.codex_auth_notifier is None:
+                return
+            try:
+                self.codex_auth_notifier(delivery_route, lambda: message)
+            except Exception:
+                LOGGER.warning("Unable to send Weixin Codex authentication result", exc_info=True)
+
+        receipt = self._remember_fixed_reply(
+            message_id=message_id,
+            correlation_id=correlation_id,
+            operation_id=operation_id,
+            route_fingerprint=route_fingerprint,
+            source_ip=source_ip,
+            message=(
+                f"Codex Auth: Switching to {target_label}. "
+                "The result will be sent when completed."
+            ),
+            code="codex_auth_switch_requested",
+            pending=True,
+        )
+        if not (receipt.message or "").startswith("Codex Auth: Switching to "):
+            self._codex_auth_lock.release()
+            return receipt
+        thread = threading.Thread(
+            target=complete_switch,
+            daemon=True,
+            name=f"weixin-codex-auth-{operation_id[:8]}",
+        )
+        thread.start()
+        return receipt
+
+    @staticmethod
     def _system_upgrade_message(data: object, *, started: bool = False) -> str:
         state = getattr(data, "state", "unknown")
         message = getattr(data, "message", "")
@@ -3680,10 +3901,10 @@ class WeixinChubModeManager:
                 if getattr(upgrade_status, "can_start", False):
                     upgrade_message = "升级与恢复：失败，可发送 upgrade 继续恢复。"
                 else:
-                    upgrade_message = "升级与恢复：失败，请在本机终端检查 chub logs upgrade。"
+                    upgrade_message = "升级与恢复：失败，请在本机终端检查 chub upgrade logs。"
             elif upgrade_state == "blocked":
                 failed = True
-                upgrade_message = "升级与恢复：不可用，请在本机终端检查 chub logs upgrade。"
+                upgrade_message = "升级与恢复：不可用，请在本机终端检查 chub upgrade logs。"
             elif getattr(upgrade_status, "plan_unavailable", False):
                 upgrade_message = "升级与恢复：仅可恢复，升级方案不可用。"
                 upgrade_attention = True
@@ -6283,6 +6504,8 @@ class WeixinChubModeManager:
             or command_kind == "model_list"
             or command_kind == "model_levels"
             or command_kind == "model_use"
+            or command_kind == "codex_auth"
+            or command_kind == "codex_auth_switch"
             or command_kind in {
                 "request_cat",
                 "request_archive",

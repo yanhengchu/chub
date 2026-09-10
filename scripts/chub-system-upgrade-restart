@@ -141,7 +141,7 @@ recover_on_failure() {
             fail-operation "$OPERATION_ID" \
             "服务切换脚本失败，退出码=$exit_code"
     ) >/dev/null 2>&1 || true
-    "$PROJECT_ROOT/scripts/chub" service-definitions --core >/dev/null 2>&1
+    "$PROJECT_ROOT/scripts/chub" service definitions --core >/dev/null 2>&1
     recover_worker >/dev/null 2>&1
     "$PROJECT_ROOT/scripts/chub-web-restart"
 }
@@ -162,7 +162,7 @@ case "$PLATFORM" in
             recover_worker >/dev/null 2>&1 || true
             exit 1
         fi
-        if ! "$PROJECT_ROOT/scripts/chub" service-definitions --core; then
+        if ! "$PROJECT_ROOT/scripts/chub" service definitions --core; then
             echo "chub-system-upgrade-restart: core service definitions could not be repaired" >&2
             exit 1
         fi
@@ -194,7 +194,7 @@ case "$PLATFORM" in
             recover_worker >/dev/null 2>&1 || true
             exit 1
         fi
-        if ! "$PROJECT_ROOT/scripts/chub" service-definitions --core; then
+        if ! "$PROJECT_ROOT/scripts/chub" service definitions --core; then
             echo "chub-system-upgrade-restart: core service definitions could not be repaired" >&2
             exit 1
         fi

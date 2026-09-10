@@ -273,7 +273,7 @@ def test_chub_restart_uses_same_quick_interaction_deferral(
         }
     )
 
-    result = run_chub("restart", env)
+    result = run_chub("web", env, "restart")
 
     assert result.returncode == 0, result.stderr
     assert (request_dir / "task-1.request").is_file()
@@ -518,13 +518,13 @@ def test_linux_install_restarts_service_to_apply_updated_environment(
     assert "systemctl --user restart chub.service" in manager_calls
 
 
-def test_chrome_supervisor_ensure_writes_and_starts_linux_service(
+def test_chrome_supervisor_reconcile_writes_and_starts_linux_service(
     service_env: tuple[dict[str, str], Path],
 ) -> None:
     env, calls = service_env
     env["CHUB_TEST_PLATFORM"] = "Linux"
 
-    result = run_chub("chrome-supervisor-ensure", env)
+    result = run_chub("chrome", env, "supervisor", "reconcile")
 
     assert result.returncode == 0, result.stderr
     unit = Path(env["CHUB_SYSTEMD_USER_DIR"]) / "chub-debug-chrome.service"
@@ -613,7 +613,7 @@ def test_help_works_outside_project_directory(
     result = run_chub("help", env, cwd=tmp_path)
 
     assert result.returncode == 0
-    assert "Usage: chub <command>" in result.stdout
+    assert "Usage: chub <resource> <action>" in result.stdout
 
 
 def test_logs_uses_configured_log_path(
@@ -647,7 +647,7 @@ def test_logs_uses_configured_log_path(
         encoding="utf-8",
     )
     process = subprocess.Popen(
-        ["bash", env["CHUB_TEST_SCRIPT"], "logs"],
+        ["bash", env["CHUB_TEST_SCRIPT"], "web", "logs"],
         cwd=tmp_path,
         env=env,
         text=True,
@@ -709,7 +709,7 @@ def test_restart_checks_configured_listen_address(
     env, _ = service_env
     env["CHUB_TEST_PLATFORM"] = "Linux"
     try:
-        result = run_chub("restart", env, cwd=tmp_path)
+        result = run_chub("web", env, "restart", cwd=tmp_path)
     finally:
         server.shutdown()
         server.server_close()
@@ -756,17 +756,61 @@ def test_help_and_unknown_command(service_env: tuple[dict[str, str], Path]) -> N
     invalid_result = run_chub("invalid", env)
 
     assert help_result.returncode == 0
-    assert "chub restart" not in help_result.stdout
-    assert "restart" in help_result.stdout
+    assert "chub web restart" not in help_result.stdout
+    assert "web <start|stop|restart|logs>" in help_result.stdout
     assert "check" in help_result.stdout
-    assert "worker-drain" in help_result.stdout
-    assert "worker-reload" in help_result.stdout
-    assert "Cancel queued and running Worker tasks" in help_result.stdout
-    assert "logs [web|worker|upgrade]" in help_result.stdout
+    assert "worker <health|drain|reload|recover|start|stop|status|logs>" in help_result.stdout
+    assert "reload cancels queued and running Worker tasks" in help_result.stdout
+    assert "upgrade <service|logs>" in help_result.stdout
     assert "version, --version" in help_result.stdout
-    assert "worker-recover" in help_result.stdout
+    assert "chrome supervisor reconcile [--restart]" in help_result.stdout
     assert invalid_result.returncode != 0
     assert "unknown command" in invalid_result.stderr
+
+
+@pytest.mark.parametrize(
+    "legacy_command",
+    [
+        "start",
+        "stop",
+        "restart",
+        "logs",
+        "worker-health",
+        "worker-drain",
+        "worker-reload",
+        "worker-recover",
+        "worker-start",
+        "worker-stop",
+        "worker-service-status",
+        "network-restart",
+        "service-definitions",
+        "runtime-dependencies",
+        "system-upgrade-service",
+        "chrome-supervisor-ensure",
+        "chrome-supervisor-reconcile",
+    ],
+)
+def test_legacy_flat_commands_are_unknown(
+    service_env: tuple[dict[str, str], Path],
+    legacy_command: str,
+) -> None:
+    env, _ = service_env
+
+    result = run_chub(legacy_command, env)
+
+    assert result.returncode != 0
+    assert f"unknown command: {legacy_command}" in result.stderr
+
+
+def test_chrome_supervisor_ensure_is_not_a_supported_subcommand(
+    service_env: tuple[dict[str, str], Path],
+) -> None:
+    env, _ = service_env
+
+    result = run_chub("chrome", env, "supervisor", "ensure")
+
+    assert result.returncode != 0
+    assert "usage: chub chrome supervisor reconcile [--restart]" in result.stderr
 
 
 def test_version_reports_configured_version_and_platform(
@@ -873,7 +917,7 @@ def test_stop_controls_only_chub_web_without_worker_precondition(
     calls.write_text("", encoding="utf-8")
     env["CHUB_TEST_SYSTEMCTL_INACTIVE"] = "1"
 
-    stopped = run_chub("stop", env)
+    stopped = run_chub("web", env, "stop")
 
     assert stopped.returncode == 0, stopped.stderr
     manager_calls = calls.read_text(encoding="utf-8")
@@ -881,7 +925,7 @@ def test_stop_controls_only_chub_web_without_worker_precondition(
     assert "chub-quick-worker.service" not in manager_calls
 
 
-@pytest.mark.parametrize("command", ["worker-drain", "worker-reload", "worker-recover"])
+@pytest.mark.parametrize("command", ["drain", "reload", "recover"])
 def test_worker_maintenance_refuses_to_wait_on_its_own_quick_task(
     service_env: tuple[dict[str, str], Path],
     command: str,
@@ -889,7 +933,7 @@ def test_worker_maintenance_refuses_to_wait_on_its_own_quick_task(
     env, calls = service_env
     env["CHUB_QUICK_TASK_ID"] = "task-1"
 
-    result = run_chub(command, env)
+    result = run_chub("worker", env, command)
 
     assert result.returncode != 0
     assert "local terminal" in result.stderr
@@ -897,7 +941,7 @@ def test_worker_maintenance_refuses_to_wait_on_its_own_quick_task(
 
 
 @pytest.mark.parametrize(
-    ("platform", "command", "manager_call"),
+    ("platform", "action", "manager_call"),
     [
         ("Darwin", "start", "launchctl bootstrap"),
         ("Darwin", "stop", "launchctl bootout"),
@@ -908,7 +952,7 @@ def test_worker_maintenance_refuses_to_wait_on_its_own_quick_task(
 def test_service_commands_use_platform_manager(
     service_env: tuple[dict[str, str], Path],
     platform: str,
-    command: str,
+    action: str,
     manager_call: str,
 ) -> None:
     env, calls = service_env
@@ -916,14 +960,14 @@ def test_service_commands_use_platform_manager(
     assert run_chub("install", env).returncode == 0
     calls.write_text("", encoding="utf-8")
 
-    result = run_chub(command, env, *(("--force",) if command == "stop" else ()))
+    result = run_chub("web", env, action, *(("--force",) if action == "stop" else ()))
 
     assert result.returncode == 0, result.stderr
     assert manager_call in calls.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize(
-    ("platform", "command", "web_call"),
+    ("platform", "action", "web_call"),
     [
         (
             "Darwin",
@@ -950,7 +994,7 @@ def test_service_commands_use_platform_manager(
 def test_chub_commands_manage_only_the_web_control_plane(
     service_env: tuple[dict[str, str], Path],
     platform: str,
-    command: str,
+    action: str,
     web_call: str,
 ) -> None:
     env, calls = service_env
@@ -958,7 +1002,7 @@ def test_chub_commands_manage_only_the_web_control_plane(
     assert run_chub("install", env).returncode == 0
     calls.write_text("", encoding="utf-8")
 
-    result = run_chub(command, env, *(("--force",) if command == "stop" else ()))
+    result = run_chub("web", env, action, *(("--force",) if action == "stop" else ()))
 
     assert result.returncode == 0, result.stderr
     manager_calls = calls.read_text(encoding="utf-8")

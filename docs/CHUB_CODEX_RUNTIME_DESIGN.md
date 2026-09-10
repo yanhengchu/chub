@@ -2,8 +2,8 @@
 
 > 状态：已验收
 > 主要读者：AI Agent、实现和排障 Agent；维护人员用于确认数据口径、配置和验收。
-> 本文负责：定义当前 Codex Runtime 的专属能力与配置边界，并具体维护 Codex Native Session 发现、额度与用量采集、数据口径、安全和验收。
-> 本文不负责：Runtime 共享能力契约、Chub Session 状态和映射规则、Adapter/Runner 通用实现、Runtime ZIP 生命周期、其他 Runtime 的专属实现，以及由调用方选择认证来源、账号、订阅、时区、浏览器页面或本机目录。
+> 本文负责：定义当前 Codex Runtime 的专属能力与配置边界，并具体维护认证方式切换、Codex Native Session 发现、额度与用量采集、数据口径、安全和验收。
+> 本文不负责：Runtime 共享能力契约、Chub Session 状态和映射规则、Adapter/Runner 通用实现、Runtime ZIP 生命周期、其他 Runtime 的专属实现，以及由外部调用方选择认证来源、账号、订阅、时区、浏览器页面或本机目录。
 > 维护说明：Codex 是当前唯一接入的 Runtime，并以外置 Runtime 模块的固定实现槽位加载；本文只记录其私有行为和当前实现证据。所有 Runtime 共用的能力、状态所有权和接入判定以[Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)为准，ZIP 的导入、覆盖、移除和恢复以[Chub AI Runtime 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md)为准。
 
 ## 0. AI Agent 快速理解
@@ -19,7 +19,7 @@
 | Runtime 共享能力、Adapter/Runner 契约或新增 Runtime 接入 | [Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md) |
 | Chub Session 映射、Quick Worker 任务/恢复或微信用户可见行为 | 对应的 Session、Quick Worker 或集成专项设计 |
 
-1. Chub 只支持两条已实现路径：当前 Codex Runtime 的 ChatGPT 账号登录，或通过固定 Sub2API 适配器使用 OpenAI API Key；调用方不能选择来源、账号、订阅、浏览器页面或本机目录。
+1. Chub 只支持两条已实现路径：当前 Codex Runtime 的 ChatGPT 账号登录，或通过固定 Sub2API 适配器使用 OpenAI API Key；外部调用方不能选择来源、账号、订阅、浏览器页面或本机目录。维护者可在自动化页调用固定的本机认证切换入口，仅可在两种既定模式间切换，不能传入账号、URL、配置路径或凭据。
 2. ChatGPT 账号登录优先使用 Codex 账户正式日桶；当天日桶尚未生成时，才读取当前系统用户可见的 Codex Session Token，并明确标记为 `local_device`。两者不能相加。
 3. Sub2API 路径从当前 `CODEX_HOME/config.toml` 的已选 provider 动态读取根地址，只能复用已经登录的受管 Debug Chrome，从固定订阅页和仪表盘读取数据；普通采集不会自动启动浏览器、弹出登录或读取 Cookie/Authorization。仅当账户检查明确判定为未登录、维护者点击固定恢复操作时，Runtime 才会在 Chub 已确认的有界面 Debug Chrome 中打开固定 provider 登录页。
 4. 周额度是形成可用快照的必需数据；今日美元用量和 Token 是可选字段。缺失字段必须是 `null` 或省略展示，不得用 `0` 猜测。
@@ -38,12 +38,36 @@ Codex 通过 Runtime 共享契约接入 Chub。通用的 Session、Worker、Adap
 | --- | --- | --- |
 | 共享 Runtime 能力 | 声明并实现已接入的能力；不改变能力模型或状态所有权 | [Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md) |
 | Runtime ZIP | 由第一方 Codex ZIP 打包、安装和维护 | [Chub AI Runtime 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md) |
-| Native Session 发现 | 从 Codex 固定本机数据源读取、校验并规范化当前原生 Session | 本文第 1.1 节 |
+| 认证方式切换 | 在固定 ChatGPT 账户登录与 API Key 两种既定模式间切换，并同步配置 | 本文第 1.1 节 |
+| Native Session 发现 | 从 Codex 固定本机数据源读取、校验并规范化当前原生 Session | 本文第 1.2 节 |
 | 用量快照 | 使用 Codex 账户或固定 Sub2API 路径生成 `usage_snapshot` | 本文第 2 节至第 7 节 |
 | 登录恢复 | 在已明确的 Sub2API 未登录状态下，打开固定 provider 登录页 | 本文第 2.2 节 |
 | 部署级配置 | 使用固定 `ai_runtime.codex` 与 `CODEX_HOME`；调用方不能指定路径或上游地址 | 本文与项目说明 |
 
-### 1.1 Codex Native Session 发现
+### 1.1 维护者认证方式切换
+
+这是一项“认证方式切换”，不是多账户管理：当前固定在 ChatGPT 账户登录与既有 API Key 配置之间切换，不接受维护者传入账号、URL、配置路径或凭据。自动化页的“Codex Runtime 账户”是唯一页面入口，底层由唯一固定脚本 `scripts/codex-auth-switch` 执行 `account` 或 `api` 模式；它不依赖 Codex Session、Quick Worker、额度或普通任务是否可用。
+
+#### 页面交互与最终状态
+
+| 阶段 | 维护者可见行为 | 脚本的完成判定 |
+| --- | --- | --- |
+| 打开切换 | 页面从当前认证类型自动推导相反模式，焦点位于“切换”按钮；不提供模式选择或账号输入。 | 仅允许两种既定模式。 |
+| 执行中 | 弹窗保留并持续显示当前流程阶段。 | 不以任务已提交或浏览器已打开作为成功。 |
+| 成功 | 弹窗展示新的认证方式及账户检查结果，由维护者点击“完成”关闭。 | 认证状态与配置同步均已确认。 |
+| 失败 | 弹窗保留失败原因，可由维护者关闭。 | 保留可见错误，不伪报切换成功。 |
+
+账户行只说明认证方式：账户模式为“ChatGPT 账户已登录”，API 模式为“API Key 模式已启用”。额度、provider 登录或上游可用性由独立 Runtime 用量状态表达，不改变上述认证结果。
+
+#### 两条固定流程
+
+- **切到账户模式**：脚本先取得自动化和 Debug Chrome 锁，记录原浏览器的启动状态、Profile 与显示模式，再临时以已初始化的固定 `Default`（延恒）Profile 启动有界面 Debug Chrome。它执行 `codex login --device-auth`，按“账户选择 → 授权确认 → 设备码”持续识别页面阶段；设备码填写后逐格在内存中核对，确认一致且最终按钮可用后才提交。只有 CLI 退出并由 `codex login status` 确认 ChatGPT 已登录，才进入配置同步。
+- **切到 API Key 模式**：脚本执行 `codex logout`，并由 `codex login status` 确认未登录后才进入配置同步。它不创建、读取或展示 API Key；API Key 的后续调用失败也不会自动回滚到账户模式。
+- **配置同步与浏览器恢复**：两条流程都先保存离开模式的当前 `CODEX_HOME/config.toml`，再原子替换目标模式模板。账户→API 依次更新 `config_account.toml`、`config_api.toml`；API→账户则依次更新 `config_api.toml`、`config_account.toml`。账户切换无论成功或失败都恢复原浏览器的启动状态、Profile 与显示模式；模板、读取、替换或恢复失败时停止并明确报告，不覆盖活动配置或宣称完整成功。
+
+该入口接受受保护的工作台请求、本机脚本调用，以及当前绑定微信 Owner 的两条固定认证指令；微信仅能读取当前认证方式或触发“切到另一既定模式”，不能指定账户、模式、设备码、URL、路径或凭据。OpenClaw Agent Tool、普通任务与任意命令入口均不能触发。微信切换沿本次保存的微信路由异步回送最终结果，且只有脚本认证终态、配置同步、浏览器恢复与最终账户检查均确认时才报成功。上游授权页结构、设备代码授权开关和多因素验证属于 OpenAI 外部依赖；页面变化、设备授权未开启或设备码过期时，脚本失败，不猜测、重放或记录认证内容。流程日志只记录阶段、脱敏路径、可见控件/输入数量与固定动作，不记录页面正文、账户标识、设备码或凭据。
+
+### 1.2 Codex Native Session 发现
 
 Codex 实现 `native_session_mapping` 的方式以[Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)为共享契约。本节只定义 Codex 的具体来源与字段映射；Chub Session 是否建立映射、何时导入实时会话以及页面如何使用结果，以[Chub Session 状态模型设计](AI_SESSION_STATE_DESIGN.md)为准。
 
@@ -103,7 +127,7 @@ Chub 通过当前 Codex Runtime 的结构化账户接口获取周额度和每日
 - 订阅响应提供周额度和今日美元用量；仪表盘响应补充今日 Token。
 - 周额度是形成新快照的必需数据；今日 Token 采集失败时只省略 Token。
 - 查询不会自动启动 Chrome、初始化 Profile 或弹出登录流程。
-- 当账户环境检查得到“API Key 已配置，但 AI 额度账户未登录”且页面显示恢复操作时，`usage_login_page` 只会打开当前 provider 根地址下固定的 `/subscriptions` 页。若 provider 要求登录，由该固定页自行跳转到其登录页；Runtime 不接收 URL、账号或认证参数，也不读取 Cookie、Authorization 或登录二维码。
+- 当 Runtime 用量读取确认 provider 未登录且页面显示恢复操作时，`usage_login_page` 只会打开当前 provider 根地址下固定的 `/subscriptions` 页。若 provider 要求登录，由该固定页自行跳转到其登录页；Runtime 不接收 URL、账号或认证参数，也不读取 Cookie、Authorization 或登录二维码。该恢复操作不改变自动化页账户行的 API Key 模式状态。
 - 有界面 Debug Chrome 已运行时可直接打开或聚焦该固定页面；需要从无界面或停止状态切换时，由 Chub 自动化服务先确认没有自动化任务、账户检查或浏览器用户初始化占用。无法切换或 Runtime 未声明该能力时，页面不应给出可用恢复操作。
 
 Sub2API 服务来源由当前 Codex Runtime 的 provider 配置决定，客户端不能指定。根地址缺失、格式不安全或该服务不提供固定接口时，额度读取失败关闭；Chub 不会回退为手工地址。额度重置时间和今日用量的日期边界固定为 `Asia/Shanghai`。Chub 不读取或保存 Cookie、Authorization 和浏览器存储。旧的 Codex Sub2API 地址、订阅 ID 和用量时区设置已移除，不再读取或写入。
@@ -270,6 +294,7 @@ Today · $181.02 Used · 100M tokens
 - 账号正式日桶优先，本机今日 Token 作为明确标记的降级值。
 - Sub2API API Key 方式的周额度与今日 Token 通过受管浏览器采集。
 - 缓存、并发合并、跨日、周重置、失败降级和敏感信息边界均有自动化测试覆盖。
+- 固定认证切换脚本已覆盖配置备份顺序、账户授权后的浏览器恢复和 API Key 模式退出确认；工作台入口仅在可信网络内调用固定模式。维护者已在 macOS 当前账户与当前 API Key 配置下完成多轮真实切换验收。
 
 真实环境验证：
 
@@ -283,9 +308,9 @@ Today · $181.02 Used · 100M tokens
 
 ### 7.1 验收范围与复检
 
-- 已验收范围：统一用量接口、账号登录与固定 Sub2API API Key 两种来源、今日 Token 降级标记、共享缓存、跨日/周重置、失败降级和安全边界；Ubuntu 已验收 Sub2API 采集，macOS 已验收账号登录和当前 Sub2API 配置采集。
-- 未验证或不承诺：其他认证来源、其他供应商、其他 API Key 平台和跨设备 Token 总量；缺少实机记录的路径不能视为已验收。
-- 复检触发：上游接口、认证来源判定、额度/Token 口径、缓存身份键、受管浏览器路径、响应字段或展示契约变化时，必须重新执行自动化测试并复验受影响来源的最终数据。
+- 已验收范围：统一用量接口、账号登录与固定 Sub2API API Key 两种来源、今日 Token 降级标记、共享缓存、跨日/周重置、失败降级和安全边界；Ubuntu 已验收 Sub2API 采集，macOS 已验收账号登录和当前 Sub2API 配置采集。认证切换脚本与工作台入口已完成自动化测试，并由维护者在 macOS 当前账户、设备授权页与当前 API Key 配置下完成多轮真实往返切换验收。
+- 未验证或不承诺：认证切换在 Ubuntu、其他账户、其他设备授权页变体、其他认证来源、其他供应商或其他 API Key 平台下的最终运行结果，以及跨设备 Token 总量；缺少实机记录的路径不能视为已验收。
+- 复检触发：上游接口、认证来源判定、设备授权页、配置切换顺序、额度/Token 口径、缓存身份键、受管浏览器路径、响应字段或展示契约变化时，必须重新执行自动化测试并复验受影响来源的最终数据。
 
 ## 相关文档
 

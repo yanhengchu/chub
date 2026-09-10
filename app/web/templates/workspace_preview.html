@@ -236,10 +236,11 @@
                   <div class="workstation-status-row">
                     <div class="workstation-status-copy">
                       <strong>Codex Runtime 账户</strong>
-                      <span id="workspace-automation-codex-account-detail" data-account-state="{{ automations.codex_runtime_account.state }}" class="workstation-status-detail workspace-automation-codex-account-detail{% if automations.codex_runtime_account.state == 'available' %} workstation-status-detail-success{% elif automations.codex_runtime_account.state == 'checking' %} workstation-status-detail-warning{% elif automations.codex_runtime_account.state == 'failed' %} workstation-status-detail-failed{% endif %}">{{ automations.codex_runtime_account.message }}{% if automations.codex_runtime_account.checked_at %} · 检查于 {{ automations.codex_runtime_account.checked_at.strftime('%m-%d %H:%M') }}{% endif %}</span>
+                      <span id="workspace-automation-codex-account-detail" data-account-state="{{ automations.codex_runtime_account.state }}" data-auth-mode="{{ automations.codex_runtime_account.auth_mode }}" class="workstation-status-detail workspace-automation-codex-account-detail{% if automations.codex_runtime_account.state == 'available' %} workstation-status-detail-success{% elif automations.codex_runtime_account.state == 'checking' %} workstation-status-detail-warning{% elif automations.codex_runtime_account.state == 'failed' %} workstation-status-detail-failed{% endif %}">{{ automations.codex_runtime_account.message }}{% if automations.codex_runtime_account.checked_at %} · 检查于 {{ automations.codex_runtime_account.checked_at.strftime('%m-%d %H:%M') }}{% endif %}</span>
                     </div>
                     <div class="workstation-status-actions">
                       <button id="workspace-automation-codex-account-check" class="button-secondary" type="button"{% if automations.codex_runtime_account.state == 'checking' %} disabled{% endif %}>检查</button>
+                      <button id="workspace-automation-codex-account-switch" class="button-secondary" type="button" aria-haspopup="dialog" aria-controls="workspace-automation-codex-account-switch-dialog">切换</button>
                       <button id="workspace-automation-codex-account-open-login" class="button-secondary" type="button"{% if not automations.codex_runtime_account.login_page_available %} hidden{% endif %}{% if automation_browser_in_use.value and automations.browser_mode != '有界面' %} disabled title="请等待当前自动化任务完成"{% endif %}>打开登录页面</button>
                     </div>
                   </div>
@@ -355,6 +356,26 @@
             <div class="confirmation-dialog-actions">
               <button id="workspace-automation-browser-stop-cancel" class="button-link" type="button">取消</button>
               <button id="workspace-automation-browser-stop-confirm" class="button-danger" type="submit">确认停止</button>
+            </div>
+          </form>
+        </dialog>
+        {% endif %}
+        {% if workspace_section == "automations" and automations %}
+        <dialog id="workspace-automation-codex-account-switch-dialog" class="codex-workspace-dialog" aria-labelledby="workspace-automation-codex-account-switch-title">
+          <form id="workspace-automation-codex-account-switch-form" class="codex-workspace-dialog-surface automation-browser-form codex-auth-switch-form">
+            <div class="codex-workspace-dialog-header">
+              <h3 id="workspace-automation-codex-account-switch-title">切换 Codex Runtime 账户</h3>
+              <button id="workspace-automation-codex-account-switch-close" class="button-link codex-workspace-dialog-close" type="button" aria-label="关闭账户切换窗口">关闭</button>
+            </div>
+            <p id="workspace-automation-codex-account-switch-current" class="codex-auth-switch-current">正在确认当前认证方式。</p>
+            <div class="codex-auth-switch-flow" aria-labelledby="workspace-automation-codex-account-switch-flow-title">
+              <strong id="workspace-automation-codex-account-switch-flow-title">切换流程</strong>
+              <ol id="workspace-automation-codex-account-switch-flow-list"></ol>
+            </div>
+            <p id="workspace-automation-codex-account-switch-feedback" class="codex-auth-switch-feedback" role="status" aria-live="polite" hidden></p>
+            <div class="dialog-actions">
+              <button id="workspace-automation-codex-account-switch-cancel" class="button-link" type="button">取消</button>
+              <button id="workspace-automation-codex-account-switch-confirm" class="button-secondary" type="submit">继续</button>
             </div>
           </form>
         </dialog>

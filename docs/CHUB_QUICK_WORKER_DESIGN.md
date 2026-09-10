@@ -25,7 +25,7 @@ Web 重启不停止 Worker、已受理 Runner、翻译 FIFO 或确认 FIFO。新
 
 ## 维护者操作
 
-普通 `chub restart` 只重启 Web；`restart worker` 才影响 Worker 任务恢复。两者都必须通过健康、任务/通知状态等最终结果确认，不能只看服务进程或 HTTP 回应。
+`chub web restart` 只重启 Web；`chub worker reload` 才影响 Worker 任务恢复。两者都必须通过健康、任务/通知状态等最终结果确认，不能只看服务进程或 HTTP 回应。
 
 ## 验收范围与复检
 

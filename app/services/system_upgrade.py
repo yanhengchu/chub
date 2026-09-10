@@ -318,7 +318,7 @@ def system_upgrade_restart_readiness(
             return (
                 "升级功能未就绪：独立升级执行器尚未安装或未通过安全校验；"
                 "当前 Chub 与 Quick Worker 不受影响。"
-                "请先在本机终端执行 chub system-upgrade-service。"
+                "请先在本机终端执行 chub upgrade service。"
             )
     elif detected_platform == "macos":
         if shutil.which("launchctl") is None:
@@ -335,7 +335,7 @@ def system_upgrade_restart_readiness(
             return (
                 "升级功能未就绪：独立升级执行器尚未安装或未通过安全校验；"
                 "当前 Chub 与 Quick Worker 不受影响。"
-                "请先在本机终端执行 chub system-upgrade-service。"
+                "请先在本机终端执行 chub upgrade service。"
             )
     else:
         return "当前平台不支持从页面执行系统升级。"
@@ -928,7 +928,7 @@ class SystemUpgradeCoordinator:
                 if not retryable:
                     guidance = (
                         " 当前恢复操作不能安全继续，升级入口已关闭；"
-                        "请在本机终端检查 chub logs upgrade 和服务定义后再处理。"
+                        "请在本机终端检查 chub upgrade logs 和服务定义后再处理。"
                     )
                     message = f"{message[: 500 - len(guidance)]}{guidance}"
                 return SystemUpgradeStatusData(

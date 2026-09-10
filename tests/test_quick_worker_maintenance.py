@@ -78,7 +78,7 @@ def test_reload_process_uses_only_fixed_command() -> None:
     with patch("app.services.quick_worker_maintenance.subprocess.Popen") as popen:
         launch_quick_worker_reload_process(command)
 
-    assert popen.call_args.args[0] == [str(command), "worker-reload"]
+    assert popen.call_args.args[0] == [str(command), "worker", "reload"]
     assert popen.call_args.kwargs["start_new_session"] is True
     assert popen.call_args.kwargs["env"][
         "CHUB_WORKER_RELOAD_EXTERNAL_LOGGING"

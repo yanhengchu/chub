@@ -169,13 +169,17 @@
       }
       return payload.data;
     };
+    const formalVersion = (version) => {
+      const normalized = typeof version === "string" ? version.trim().replace(/^v/i, "") : "";
+      return normalized ? `v${normalized}` : "未知版本";
+    };
     const render = () => {
       if (disposed || !status || !catalog || !orchestration) return;
       const models = Array.isArray(catalog.models) ? catalog.models : [];
       const implementationOptions = [
         {
           value: "weixin-orchestration-dev",
-          label: "开发实现",
+          label: "微信任务润色 · 开发实现",
           description: orchestration.development_available
             ? "使用仓库固定的开发阶段；只影响之后新接收的润色任务。"
             : "当前源码不可用，不能用于新任务。",
@@ -183,7 +187,7 @@
       ];
       modules.filter((item) => item.available).forEach((item) => implementationOptions.push({
         value: `module:${item.implementation_ref}`,
-        label: item.name,
+        label: `微信任务润色 · 正式版 ${formalVersion(item.version)}`,
         description: `ZIP 模块 · ${item.version} · 仅影响之后新接收的润色任务。`,
       }));
       const selectedImplementation = orchestration.implementation === "module"

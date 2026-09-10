@@ -311,7 +311,7 @@ function runtimeModuleRow(module, { candidate = false } = {}) {
   const copy = document.createElement("span");
   const title = document.createElement("strong");
   const detail = document.createElement("small");
-  title.textContent = `${module.name || "Runtime"} · ${module.version || "未知版本"}`;
+  title.textContent = formalImplementationTitle(module.name || "Runtime", module.version);
   detail.textContent = candidate
     ? (module.description || "等待导入。")
     : (module.status === "active"
@@ -398,8 +398,20 @@ function setCodexRuntimeSettingsMessage(text, kind = "") {
   codexRuntimeSettingsMessage.className = kind === "error" ? "message message-error" : "message";
 }
 
+function formalVersion(version) {
+  const normalized = typeof version === "string" ? version.trim().replace(/^v/i, "") : "";
+  return normalized ? `v${normalized}` : "未知版本";
+}
+
+function formalImplementationTitle(name, version) {
+  return `${name || "实现"} · 正式版 ${formalVersion(version)}`;
+}
+
 function versionTitle(item) {
-  return `${item.name} · ${item.version}`;
+  const name = item.name || "Codex";
+  return item.implementation_id === "builtin-dev"
+    ? `${name} · 开发实现`
+    : formalImplementationTitle(name, item.version);
 }
 
 function renderCodexRuntimeVersions(implementations) {
@@ -567,7 +579,7 @@ function orchestrationModuleRow(module, { candidate = false } = {}) {
   const copy = document.createElement("span");
   const title = document.createElement("strong");
   const detail = document.createElement("small");
-  title.textContent = `${module.name || "能力模块"} · ${module.version || "未知版本"}`;
+  title.textContent = formalImplementationTitle(module.name || "能力模块", module.version);
   detail.textContent = candidate
     ? (module.description || "等待导入。")
     : (module.available

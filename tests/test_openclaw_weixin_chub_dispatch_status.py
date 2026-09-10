@@ -677,9 +677,10 @@ def test_removed_status_aliases_are_submitted_as_normal_tasks(
             "help",
             "Commands\n\n"
             "S# = session · R# = request · <required> · [optional]\n\n"
-            "Quick\n\n"
-            "chub · sync · new [title] · S# [task]\n\n"
-            "Reference\n\n"
+            "chub · check · usage · sync · new [title] · S# [task]\n\n"
+            "codex auth · codex auth switch\n\n"
+            "stop [S#] · retry · archive S# · del S#\n\n"
+            "More commands\n\n"
             "model help · text help · session help · request help · system help",
         ),
         (

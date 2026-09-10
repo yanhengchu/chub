@@ -237,6 +237,19 @@ async def _mock_workspace_api(route) -> None:
                 }],
             },
         },
+        "/api/automations/environment/codex/switch-authentication": {
+            "success": True,
+            "data": {
+                "mode": "api",
+                "message": "已切换到 API Key 模式",
+                "account": {
+                    "state": "available",
+                    "message": "API Key 已配置，AI 额度可用",
+                    "checked_at": "2026-09-10T12:00:00+08:00",
+                    "login_page_available": False,
+                },
+            },
+        },
     }.get(path)
     if payload is None:
         payload = {
@@ -546,10 +559,10 @@ async def test_imported_modules_use_the_same_enabled_status_label(
             await expect(page.locator("#runtime-module-list .badge")).to_have_text("已启用")
             await expect(page.locator("#orchestration-module-list .badge")).to_have_text("已启用")
             await expect(page.locator("#runtime-module-list")).to_contain_text(
-                "Codex · 1.0.0",
+                "Codex · 正式版 v1.0.0",
             )
             await expect(page.locator("#orchestration-module-list")).to_contain_text(
-                "Weixin Refinement · 1.0.0",
+                "Weixin Refinement · 正式版 v1.0.0",
             )
             await expect(
                 page.locator("#orchestration-module-list").get_by_role("button", name="移除"),
@@ -701,15 +714,15 @@ async def test_task_orchestration_opens_from_ai_runtime_settings_navigation(
                 "自动润色后执行",
             )
             await expect(page.locator("#workspace-task-implementation-value")).to_have_text(
-                "开发实现",
+                "微信任务润色 · 开发实现",
             )
             await page.locator("#workspace-task-implementation-trigger").click()
             await expect(page.locator("#workspace-task-implementation-menu")).to_contain_text(
-                "Weixin Refinement",
+                "微信任务润色 · 正式版 vtest",
             )
-            await page.get_by_role("option", name=re.compile("Weixin Refinement")).click()
+            await page.get_by_role("option", name=re.compile("微信任务润色 · 正式版 vtest")).click()
             await expect(page.locator("#workspace-task-implementation-value")).to_have_text(
-                "Weixin Refinement",
+                "微信任务润色 · 正式版 vtest",
             )
             await page.locator("#workspace-task-processing-trigger").click()
             await expect(page.locator("#workspace-task-processing-menu")).to_contain_text(
@@ -972,7 +985,7 @@ async def test_codex_default_runtime_selection_persists_the_selected_implementat
             await page.locator(".settings-choice-picker-trigger").click()
             await page.locator(
                 ".settings-choice-picker-menu [role='option']",
-            ).filter(has_text="Codex · 1.0.1").click()
+            ).filter(has_text="Codex · 正式版 v1.0.1").click()
             await expect(select).to_have_value("codex-010001")
             await page.reload(wait_until="domcontentloaded")
             await expect(select).to_have_value("codex-010001")
@@ -1202,6 +1215,27 @@ async def test_workspace_section_switch_disposes_workstation_controller(
             )
             await page.get_by_role("link", name="自动化").click()
             await expect(page.get_by_role("heading", name="自动化环境")).to_be_visible()
+            await page.locator("#workspace-automation-codex-account-detail").evaluate(
+                "(element) => { element.dataset.authMode = 'api'; }",
+            )
+            await page.get_by_role("button", name="切换", exact=True).click()
+            await expect(page.get_by_role("heading", name="切换 Codex Runtime 账户")).to_be_visible()
+            await expect(page.get_by_role("button", name="切换到ChatGPT 账户模式", exact=True)).to_be_focused()
+            await page.get_by_role("button", name="切换到ChatGPT 账户模式", exact=True).click()
+            await expect(page.get_by_role("heading", name="切换 Codex Runtime 账户")).to_be_visible()
+            feedback_font_size = await page.locator(
+                "#workspace-automation-codex-account-switch-feedback",
+            ).evaluate(
+                "(element) => parseFloat(getComputedStyle(element).fontSize)",
+            )
+            body_font_size = await page.locator("body").evaluate(
+                "(element) => parseFloat(getComputedStyle(element).fontSize)",
+            )
+            assert feedback_font_size < body_font_size
+            await expect(page.locator("#workspace-automation-codex-account-detail")).to_contain_text(
+                "API Key 已配置，AI 额度可用",
+            )
+            await page.get_by_role("button", name="完成", exact=True).click()
             assert await page.locator(".workspace-automations").evaluate(
                 "(element) => getComputedStyle(element).borderTopStyle",
             ) == "none"
@@ -1301,10 +1335,10 @@ async def test_workstation_development_environment_reads_and_confirms_each_sourc
                     "(element) => getComputedStyle(element, '::before').display",
                 ) == "none"
             await expect(page.locator("#workspace-development-codex-detail")).to_contain_text(
-                "开发版 dev · 正式版 Codex 1.0.1",
+                "Codex · 开发实现 · 正式版 v1.0.1",
             )
             await expect(page.locator("#workspace-development-weixin-detail")).to_contain_text(
-                "开发版 weixin-orchestration-dev · 正式版 Weixin Refinement 1.0.0",
+                "微信任务润色 · 开发实现 · 正式版 v1.0.0",
             )
             await page.locator("#workspace-development-refresh").click()
             await expect(page.locator("#workspace-development-codex-detail")).to_contain_text("已确认")

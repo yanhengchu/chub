@@ -225,7 +225,7 @@ async def test_dispatch_requires_local_openclaw_source(
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("content", ["chub", "check", "help", "usage", "model list"])
+@pytest.mark.parametrize("content", ["chub", "check", "help", "usage", "model list", "codex auth"])
 async def test_upgrade_allows_weixin_read_only_commands(
     settings: Settings,
     content: str,
@@ -253,7 +253,7 @@ async def test_upgrade_allows_weixin_read_only_commands(
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("content", ["new", "model use M1", "text mode auto", "run tests"])
+@pytest.mark.parametrize("content", ["new", "model use M1", "text mode auto", "codex auth switch", "run tests"])
 async def test_upgrade_blocks_weixin_runtime_writes(
     settings: Settings,
     content: str,

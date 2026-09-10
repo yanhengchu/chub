@@ -8,6 +8,8 @@ from app.automations.models import (
     BrowserControlResult,
     BrowserInitializationAccepted,
     BrowserInitializationRequest,
+    CodexAuthSwitchRequest,
+    CodexAuthSwitchResult,
     BrowserStartRequest,
     FeishuEnvironmentState,
     AccountLoginPageResult,
@@ -309,6 +311,52 @@ def check_codex_runtime_account(
         target="codex-runtime",
         operation_id=operation_id,
         reason=f"account_state={result.state}",
+    )
+    return ApiResponse(data=result)
+
+
+@router.post(
+    "/environment/codex/switch-authentication",
+    response_model=ApiResponse[CodexAuthSwitchResult],
+)
+def switch_codex_runtime_authentication(
+    request: Request,
+    payload: CodexAuthSwitchRequest,
+) -> ApiResponse[CodexAuthSwitchResult]:
+    target = f"codex-runtime:{payload.mode}"
+    operation_id = log_operation(
+        request,
+        action="switch_codex_runtime_authentication",
+        status="requested",
+        target=target,
+    )
+    log_operation(
+        request,
+        action="switch_codex_runtime_authentication",
+        status="started",
+        target=target,
+        operation_id=operation_id,
+    )
+    try:
+        result = request.app.state.automation_manager.switch_codex_runtime_authentication(
+            payload.mode
+        )
+    except Exception:
+        log_operation(
+            request,
+            action="switch_codex_runtime_authentication",
+            status="failed",
+            target=target,
+            operation_id=operation_id,
+        )
+        raise
+    log_operation(
+        request,
+        action="switch_codex_runtime_authentication",
+        status="succeeded",
+        target=target,
+        operation_id=operation_id,
+        reason=f"mode={result.mode};account_state={result.account.state}",
     )
     return ApiResponse(data=result)
 

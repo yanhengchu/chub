@@ -23,9 +23,10 @@ CHUB_HELP_MESSAGE = "\n\n".join(
     (
         "Commands",
         "S# = session · R# = request · <required> · [optional]",
-        "Quick",
-        "chub · sync · new [title] · S# [task]",
-        "Reference",
+        "chub · check · usage · sync · new [title] · S# [task]",
+        "codex auth · codex auth switch",
+        "stop [S#] · retry · archive S# · del S#",
+        "More commands",
         "model help · text help · session help · request help · system help",
     )
 )

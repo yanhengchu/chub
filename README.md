@@ -51,7 +51,7 @@ Chub 始终提供 loopback 访问；启用默认的 Tailnet 可信访问后，�
 ./scripts/chub install
 ```
 
-日常维护使用 `chub status`、`chub check`、`chub restart`、`chub logs` 和 `chub version`。完整 CLI、Worker 操作、通知命令、平台差异及影响范围以[集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md)为准。
+日常维护使用 `chub status`、`chub check`、`chub web restart`、`chub web logs` 和 `chub version`。完整 CLI、Worker 操作、通知命令、平台差异及影响范围以[集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md)为准。
 
 普通 Web 重启、Quick Worker 重启、系统升级恢复和 OpenClaw Gateway 维护是相互独立的操作，必须按各自的最终状态确认；不要用一个服务的状态推断另一服务成功。具体范围与恢复方式见[总体架构](docs/CHUB_ARCHITECTURE_DESIGN.md)、[Quick Worker 设计](docs/CHUB_QUICK_WORKER_DESIGN.md)和[OpenClaw 定制集成设计](docs/OPENCLAW_CUSTOMIZATION_DESIGN.md)。
 

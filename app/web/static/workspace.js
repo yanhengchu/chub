@@ -336,6 +336,31 @@
   const automationFeishuOpenLogin = document.getElementById("workspace-automation-feishu-open-login");
   const automationCodexAccountDetail = document.getElementById("workspace-automation-codex-account-detail");
   const automationCodexAccountCheck = document.getElementById("workspace-automation-codex-account-check");
+  const automationCodexAccountSwitch = document.getElementById("workspace-automation-codex-account-switch");
+  const automationCodexAccountSwitchDialog = document.getElementById(
+    "workspace-automation-codex-account-switch-dialog",
+  );
+  const automationCodexAccountSwitchForm = document.getElementById(
+    "workspace-automation-codex-account-switch-form",
+  );
+  const automationCodexAccountSwitchClose = document.getElementById(
+    "workspace-automation-codex-account-switch-close",
+  );
+  const automationCodexAccountSwitchCancel = document.getElementById(
+    "workspace-automation-codex-account-switch-cancel",
+  );
+  const automationCodexAccountSwitchConfirm = document.getElementById(
+    "workspace-automation-codex-account-switch-confirm",
+  );
+  const automationCodexAccountSwitchFeedback = document.getElementById(
+    "workspace-automation-codex-account-switch-feedback",
+  );
+  const automationCodexAccountSwitchCurrent = document.getElementById(
+    "workspace-automation-codex-account-switch-current",
+  );
+  const automationCodexAccountSwitchFlowList = document.getElementById(
+    "workspace-automation-codex-account-switch-flow-list",
+  );
   const automationCodexAccountOpenLogin = document.getElementById("workspace-automation-codex-account-open-login");
   const automationStopButton = document.getElementById("workspace-automation-browser-stop");
   const automationStopDialog = document.getElementById("workspace-automation-browser-stop-dialog");
@@ -489,6 +514,9 @@
     if (automationCodexAccountOpenLogin instanceof HTMLButtonElement) {
       automationCodexAccountOpenLogin.hidden = state?.login_page_available !== true;
     }
+    if (automationCodexAccountDetail instanceof HTMLElement && typeof state?.auth_mode === "string") {
+      automationCodexAccountDetail.dataset.authMode = state.auth_mode;
+    }
   };
 
   const codexAccountStatusKind = (state) => {
@@ -497,6 +525,148 @@
     if (state === "failed") return "failed";
     return "muted";
   };
+
+  const setCodexAuthSwitchFeedback = (message = "", kind = "") => {
+    if (!(automationCodexAccountSwitchFeedback instanceof HTMLElement)) return;
+    automationCodexAccountSwitchFeedback.textContent = message;
+    automationCodexAccountSwitchFeedback.hidden = !message;
+    automationCodexAccountSwitchFeedback.dataset.status = kind;
+  };
+
+  const codexAuthModeLabel = (mode) => ({
+    account: "ChatGPT 账户模式",
+    api: "API Key 模式",
+    unknown: "当前模式未确认",
+  }[mode] || "当前模式未确认");
+
+  const codexAuthFlow = (mode) => (mode === "account"
+    ? [
+      "启动设备授权，并临时切换 Debug Chrome。",
+      "选择默认账户，完成授权确认与设备码核验。",
+      "确认账户登录，同步账户配置并恢复 Debug Chrome。",
+    ]
+    : [
+      "退出当前 ChatGPT 账户登录。",
+      "确认 Codex CLI 已退出账户认证。",
+      "备份账户配置，并启用 API Key 模式配置。",
+    ]);
+
+  const setCodexAuthSwitchPlan = (mode, currentMode) => {
+    if (!["account", "api"].includes(mode)) return;
+    if (automationCodexAccountSwitchCurrent instanceof HTMLElement) {
+      automationCodexAccountSwitchCurrent.textContent = currentMode === "unknown"
+        ? "当前认证方式暂未确认，请先检查登录状态。"
+        : `当前使用${codexAuthModeLabel(currentMode)}，将按当前状态自动切换。`;
+    }
+    if (automationCodexAccountSwitchFlowList instanceof HTMLOListElement) {
+      automationCodexAccountSwitchFlowList.replaceChildren(
+        ...codexAuthFlow(mode).map((text) => {
+          const item = document.createElement("li");
+          item.textContent = text;
+          return item;
+        }),
+      );
+    }
+    if (automationCodexAccountSwitchConfirm instanceof HTMLButtonElement) {
+      automationCodexAccountSwitchConfirm.textContent = `切换到${codexAuthModeLabel(mode)}`;
+    }
+  };
+
+  if (
+    automationCodexAccountSwitch instanceof HTMLButtonElement
+    && automationCodexAccountSwitchDialog instanceof HTMLDialogElement
+  ) {
+    let switchCompleted = false;
+    let switchTargetMode = "";
+    automationCodexAccountSwitch.addEventListener("click", () => {
+      switchCompleted = false;
+      setCodexAuthSwitchFeedback();
+      const currentMode = automationCodexAccountDetail?.dataset.authMode || "unknown";
+      switchTargetMode = currentMode === "account"
+        ? "api"
+        : currentMode === "api"
+          ? "account"
+          : "";
+      if (switchTargetMode) {
+        setCodexAuthSwitchPlan(switchTargetMode, currentMode);
+      } else if (automationCodexAccountSwitchCurrent instanceof HTMLElement) {
+        automationCodexAccountSwitchCurrent.textContent = "当前认证方式暂未确认，请先检查登录状态。";
+      }
+      if (automationCodexAccountSwitchConfirm instanceof HTMLButtonElement) {
+        automationCodexAccountSwitchConfirm.disabled = !switchTargetMode;
+        automationCodexAccountSwitchConfirm.textContent = switchTargetMode
+          ? `切换到${codexAuthModeLabel(switchTargetMode)}`
+          : "请先检查";
+      }
+      automationCodexAccountSwitchDialog.showModal();
+      if (switchTargetMode) automationCodexAccountSwitchConfirm?.focus();
+    });
+    [automationCodexAccountSwitchClose, automationCodexAccountSwitchCancel].forEach((button) => {
+      button?.addEventListener("click", () => closeDialog(automationCodexAccountSwitchDialog));
+    });
+    automationCodexAccountSwitchDialog.addEventListener("cancel", (event) => {
+      if (automationCodexAccountSwitchConfirm?.disabled) event.preventDefault();
+    });
+    if (
+      automationCodexAccountSwitchForm instanceof HTMLFormElement
+      && automationCodexAccountSwitchConfirm instanceof HTMLButtonElement
+    ) {
+      automationCodexAccountSwitchForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (switchCompleted) {
+          closeDialog(automationCodexAccountSwitchDialog);
+          return;
+        }
+        const mode = switchTargetMode;
+        if (!["account", "api"].includes(mode)) return;
+        automationCodexAccountSwitchConfirm.disabled = true;
+        automationCodexAccountSwitchClose?.setAttribute("disabled", "");
+        automationCodexAccountSwitchCancel?.setAttribute("disabled", "");
+        if (automationCodexAccountSwitchFlowList instanceof HTMLOListElement) {
+          for (const item of automationCodexAccountSwitchFlowList.children) {
+            item.dataset.status = "pending";
+          }
+        }
+        setCodexAuthSwitchFeedback(
+          `正在切换到${codexAuthModeLabel(mode)}。弹窗将在完成后保留最终结果。`,
+          "pending",
+        );
+        setAutomationCodexAccountStatus({
+          state: "checking",
+          message: "正在切换 Codex Runtime 认证方式。",
+        });
+        try {
+          const result = await automationRequest(
+            "/api/automations/environment/codex/switch-authentication",
+            { mode },
+          );
+          setAutomationCodexAccountStatus(result.account);
+          switchCompleted = true;
+          if (automationCodexAccountSwitchCurrent instanceof HTMLElement) {
+            automationCodexAccountSwitchCurrent.textContent = `已切换至：${codexAuthModeLabel(result.mode)}`;
+          }
+          if (automationCodexAccountSwitchFlowList instanceof HTMLOListElement) {
+            for (const item of automationCodexAccountSwitchFlowList.children) {
+              item.dataset.status = "completed";
+            }
+          }
+          setCodexAuthSwitchFeedback(
+            `${result.message} · ${result.account.message}`,
+            "success",
+          );
+          automationCodexAccountSwitchConfirm.textContent = "完成";
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Codex Runtime 认证方式切换失败。";
+          setAutomationCodexAccountStatus({ state: "failed", message });
+          setCodexAuthSwitchFeedback(message, "failed");
+        } finally {
+          automationCodexAccountSwitchConfirm.disabled = false;
+          automationCodexAccountSwitchClose?.removeAttribute("disabled");
+          automationCodexAccountSwitchCancel?.removeAttribute("disabled");
+        }
+      });
+    }
+  }
 
   if (
     automationStartButton instanceof HTMLButtonElement

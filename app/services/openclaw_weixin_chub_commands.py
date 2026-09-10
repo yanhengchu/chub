@@ -28,6 +28,8 @@ CHUB_RESTART_WORKER_PROMPT = "restart worker"
 CHUB_RESTART_CLAWBOT_PROMPT = "restart clawbot"
 CHUB_RESTART_NETWORK_PROMPT = "restart network"
 CHUB_UPGRADE_PROMPT = "upgrade"
+CODEX_AUTH_PROMPT = "codex auth"
+CODEX_AUTH_SWITCH_PROMPT = "codex auth switch"
 SESSION_RENAME_PROMPT = "rename"
 SESSION_NEW_PROMPT = "new"
 SESSION_ARCHIVE_PROMPT = "archive"
@@ -58,6 +60,8 @@ WeixinChubCommandKind = Literal[
     "restart_clawbot",
     "restart_network",
     "upgrade",
+    "codex_auth",
+    "codex_auth_switch",
     "retry",
     "new",
     "rename",
@@ -88,6 +92,8 @@ FIXED_COMMAND_KINDS = frozenset(
         "restart_clawbot",
         "restart_network",
         "upgrade",
+        "codex_auth",
+        "codex_auth_switch",
         "retry",
         "new",
         "rename",
@@ -111,6 +117,7 @@ _READ_ONLY_COMMAND_KINDS = frozenset(
         "model_list",
         "model_levels",
         "request_cat",
+        "codex_auth",
     }
 )
 
@@ -322,6 +329,10 @@ def parse_weixin_chub_command(prompt: str) -> WeixinChubCommand:
         return WeixinChubCommand("restart_network", normalized)
     if folded == CHUB_UPGRADE_PROMPT:
         return WeixinChubCommand("upgrade", normalized)
+    if folded == CODEX_AUTH_PROMPT:
+        return WeixinChubCommand("codex_auth", normalized)
+    if folded == CODEX_AUTH_SWITCH_PROMPT:
+        return WeixinChubCommand("codex_auth_switch", normalized)
     if folded == "retry":
         return WeixinChubCommand("retry", normalized)
 

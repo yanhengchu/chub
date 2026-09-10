@@ -10,7 +10,7 @@ from app.services.network_recovery import NetworkRecoveryError, restart_network
 def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     if arguments:
-        print("chub: network-restart does not accept arguments", file=sys.stderr)
+        print("chub: network restart does not accept arguments", file=sys.stderr)
         return 2
     try:
         settings = load_settings()
