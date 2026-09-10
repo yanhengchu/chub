@@ -73,251 +73,6 @@ def weekly_reports_root(
     return root
 
 
-@pytest.mark.anyio
-@pytest.mark.skip(reason="旧首页已移除，由根路径工作台测试替代")
-async def test_home_page_is_public_and_contains_no_credential_form(
-    settings: Settings,
-    weekly_reports_root: Path,
-) -> None:
-    transport = httpx.ASGITransport(app=create_app(settings))
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get("/")
-
-    assert response.status_code == 200
-    assert 'type="password"' not in response.text
-    assert 'src="/static/app.js"' in response.text
-    assert 'src="/static/js/core/ai-usage.js"' in response.text
-    assert 'src="/static/theme.js"' in response.text
-    assert '<html lang="zh-CN" data-ui-style="standard">' in response.text
-    assert '<meta name="color-scheme" content="light">' in response.text
-    assert (
-        '<meta name="viewport" content="width=device-width, initial-scale=1, '
-        'viewport-fit=cover, interactive-widget=resizes-content">'
-    ) in response.text
-    assert 'id="codex-rename-dialog"' in response.text
-    assert 'id="codex-rename-input"' in response.text
-    expected_stylesheets = [
-        "/static/css/tokens.css",
-        "/static/css/base.css",
-        "/static/css/components.css",
-        "/static/css/responsive.css",
-    ]
-    stylesheet_positions = [
-        response.text.index(f'<link rel="stylesheet" href="{href}">')
-        for href in expected_stylesheets
-    ]
-    assert stylesheet_positions == sorted(stylesheet_positions)
-    assert 'href="/static/app.css"' not in response.text
-    assert 'id="connected-bar"' in response.text
-    assert "更换凭证" not in response.text
-    assert "清除凭证" not in response.text
-    assert 'id="refresh-status"' not in response.text
-    assert "节点任务" not in response.text
-    assert 'id="codex-card-host"' in response.text
-    assert 'id="openclaw-title"' not in response.text
-    assert "OpenClaw 环境" not in response.text
-    assert "<strong>OpenClaw Gateway</strong>" in response.text
-    assert 'id="openclaw-badge"' not in response.text
-    assert 'id="refresh-openclaw"' not in response.text
-    assert 'id="openclaw-start"' in response.text
-    assert 'id="openclaw-restart"' in response.text
-    assert ">重启</button>" in response.text
-    assert 'id="openclaw-stop"' in response.text
-    assert 'id="openclaw-bind-weixin"' not in response.text
-    assert 'id="openclaw-weixin-dialog"' not in response.text
-    assert 'id="openclaw-access-open"' not in response.text
-    assert 'id="openclaw-access-url"' not in response.text
-    assert 'id="openclaw-access-unavailable"' not in response.text
-    assert "远程访问未启用" not in response.text
-    assert 'data-card-key="openclaw"' not in response.text
-    assert 'id="clawbot-badge"' not in response.text
-    assert 'id="clawbot-detail"' in response.text
-    assert 'id="openclaw-gateway-badge"' not in response.text
-    assert 'id="openclaw-channels"' not in response.text
-    assert "访问入口" not in response.text
-    assert 'class="openclaw-status-row openclaw-access"' not in response.text
-    assert "微信通道" not in response.text
-    assert 'id="openclaw-channels" class="badge badge-muted"' not in response.text
-    assert 'id="openclaw-owner"' not in response.text
-    assert 'id="openclaw-version"' not in response.text
-    assert 'id="openclaw-service"' not in response.text
-    assert 'id="openclaw-bind"' not in response.text
-    assert 'id="openclaw-checked-at"' not in response.text
-    assert 'id="automation-title"' in response.text
-    assert 'id="automation-list"' in response.text
-    assert 'id="automation-task-title" class="card-group-title"' in response.text
-    assert 'id="automation-environment-title"' in response.text
-    assert 'id="automation-environment-title" class="card-group-title"' in response.text
-    assert "自动化环境" in response.text
-    assert 'id="automation-environment-badge"' not in response.text
-    assert 'id="refresh-automation-environment"' not in response.text
-    assert 'id="automation-environment-message"' in response.text
-    assert 'class="automation-feishu-panel"' in response.text
-    assert 'class="automation-browser-panel"' in response.text
-    assert "复用飞书登录状态执行自动化任务。" in response.text
-    assert "查看 Chub 运行状态并进行必要维护。" in response.text
-    assert 'data-card-key="automation-environment"' not in response.text
-    assert 'data-card-key="core-capabilities" data-collapsible-card' in response.text
-    assert 'data-card-key="core-capabilities" data-collapsible-card data-collapsed="true"' not in response.text
-    assert 'data-card-key="third-party-services" data-collapsible-card' in response.text
-    assert '<h2 id="core-capabilities-title">核心服务</h2>' in response.text
-    assert '<h2 id="third-party-services-title">OpenClaw 与 ClawBot</h2>' in response.text
-    assert "<strong>Chub</strong>" in response.text
-    assert "<strong>Chub Quick Worker</strong>" in response.text
-    assert "<strong>Chub Debug Chrome</strong>" in response.text
-    assert "<strong>OpenClaw Gateway</strong>" in response.text
-    assert 'id="refresh-core-capabilities"' in response.text
-    assert 'id="refresh-third-party-services"' in response.text
-    assert 'id="core-services-title" class="card-group-title"' in response.text
-    assert response.text.count('class="workstation-status-row') == 6
-    assert '<article><span>Tailnet</span><strong id="workspace-tailnet-summary"></strong><small id="workspace-tailnet-summary-detail"></small></article>' in response.text
-    assert 'id="workspace-task-summary"' not in response.text
-    assert 'id="workspace-chub-summary"' not in response.text
-    assert 'id="workspace-worker-summary"' not in response.text
-    assert 'id="workspace-runtime-detail"' not in response.text
-    assert 'id="workspace-tailnet-row"' not in response.text
-    assert response.text.index("<strong>Chub Quick Worker</strong>") < response.text.index("<strong>升级与恢复</strong>")
-    assert "<strong>升级与恢复</strong>" in response.text
-    assert "<strong>系统升级与恢复</strong>" not in response.text
-    assert 'id="system-upgrade-badge"' not in response.text
-    assert 'id="system-upgrade-start"' in response.text
-    assert 'id="system-upgrade-detail" class="workstation-status-detail"' in response.text
-    assert 'id="system-upgrade-current-statuses"' not in response.text
-    assert 'id="system-upgrade-components"' not in response.text
-    assert 'id="system-upgrade-operation"' not in response.text
-    assert 'id="system-upgrade-runtime"' not in response.text
-    assert 'id="system-upgrade-flow"' not in response.text
-    assert 'id="system-upgrade-logs"' not in response.text
-    assert response.text.index('id="codex-card-host"') < response.text.index(
-        'data-card-key="project-docs"'
-    ) < response.text.index('data-card-key="automations"') < response.text.index(
-        'data-card-key="core-capabilities"'
-    ) < response.text.index(
-        'data-card-key="third-party-services"'
-    )
-    dashboard_markup = response.text.split('<div id="dashboard"', 1)[1].split('</div>\n    </main>', 1)[0]
-    assert dashboard_markup.index('data-card-key="core-capabilities"') < dashboard_markup.index(
-        'data-card-key="third-party-services"'
-    )
-    assert 'id="automation-browser-control"' in response.text
-    assert 'id="automation-browser-badge"' not in response.text
-    assert 'id="automation-browser-detail"' in response.text
-    assert 'id="automation-browser-message"' in response.text
-    assert 'aria-controls="automation-browser-dialog"' in response.text
-    assert response.text.index('id="automation-browser-detail"') > response.text.index(
-        'id="automation-environment-title"'
-    )
-    assert response.text.index('id="automation-browser-detail"') < response.text.index(
-        'id="automation-feishu-detail"'
-    )
-    assert response.text.index('id="automation-browser-detail"') < response.text.index(
-        'id="core-capabilities-title"'
-    )
-    assert response.text.count('id="automation-browser-control"') == 1
-    assert 'id="automation-browser-dialog"' in response.text
-    assert 'id="automation-browser-form"' in response.text
-    assert 'id="automation-browser-profile"' in response.text
-    assert 'name="automation-browser-mode" value="headless" checked' in response.text
-    assert 'name="automation-browser-mode" value="headed"' in response.text
-    assert 'id="automation-browser-mode"' not in response.text
-    assert 'id="automation-feishu-badge"' in response.text
-    assert 'id="automation-feishu-detail"' in response.text
-    assert 'id="automation-feishu-check"' in response.text
-    assert 'id="automation-feishu-verify"' not in response.text
-    assert "飞书环境" in response.text
-    assert "正在检查浏览器控制服务" in response.text
-    assert "用于飞书登录与任务执行" in response.text
-    assert "有界面" in response.text
-    assert "无界面" in response.text
-    assert response.text.index('value="headless" checked') < response.text.index(
-        'value="headed"'
-    )
-    assert 'id="refresh-automations"' in response.text
-    assert "复用飞书登录状态执行自动化任务。" in response.text
-    assert 'id="refresh-project-docs"' in response.text
-    assert 'id="project-docs-count"' not in response.text
-    assert 'href="/automations"' not in response.text
-    assert 'id="design-documents-title"' in response.text
-    assert "项目文档" in response.text
-    assert "查看设计方案和调研资料。" in response.text
-    assert 'id="automation-weekly-report-title" class="automation-item-title"' in response.text
-    assert ">V 国内业务本期周报</h3>" in response.text
-    assert 'id="automation-weekly-download-title"' in response.text
-    assert "本期下载" in response.text
-    assert 'id="automation-weekly-download-status"' in response.text
-    assert 'id="automation-weekly-download-action"' in response.text
-    assert 'id="automation-weekly-download"' in response.text
-    assert 'id="automation-weekly-documents-title"' in response.text
-    assert "周报文档 · 2026-08-03至2026-08-09" in response.text
-    assert 'id="automation-weekly-report-list"' in response.text
-    assert "本期工作重点确认清单" in response.text
-    assert "本期业务周报" in response.text
-    assert "重点范围与取舍确认" in response.text
-    assert "各端进展汇总" in response.text
-    assert 'class="weekly-report-heading"' in response.text
-    assert 'class="weekly-report-summary"' in response.text
-    assert "2026-08-03至2026-08-09 · 重点范围与取舍确认" not in response.text
-    assert 'href="/weekly-reports/2026-08-03至2026-08-09/focus"' in response.text
-    assert "待生成" in response.text
-    assert 'data-card-key="project-docs"' in response.text
-    assert 'data-card-key="automations" data-collapsible-card data-card-return-refresh="true"' in response.text
-    assert 'data-card-key="logs"' not in response.text
-    assert 'data-card-return-refresh="true"' in response.text
-    core_capabilities_card = response.text.split('data-card-key="core-capabilities"', 1)[1]
-    third_party_services_card = response.text.split('data-card-key="third-party-services"', 1)[1]
-    assert 'data-card-return-refresh="true"' not in core_capabilities_card
-    assert 'data-card-return-refresh="true"' not in third_party_services_card
-    assert "OpenClaw 方案调研" not in response.text
-    assert "持续维护" in response.text
-    assert response.text.count("document-archive-action") == 5
-    assert response.text.count(">隐藏</button>") == 5
-    assert "份设计资料 · 1 份周报可查看" not in response.text
-    assert 'href="/project-docs/openclaw-research"' not in response.text
-    assert 'target="_blank"' not in response.text
-    assert 'href="/project-docs"' in response.text
-    assert '>全部文档</a>' in response.text
-    assert "查看全部文档" not in response.text
-    assert 'href="/project-docs" target="_blank"' not in response.text
-    assert "节点维护" not in response.text
-    assert "维护检查" not in response.text
-    assert 'id="restart-hub"' in response.text
-    assert '<button id="restart-hub"' in response.text
-    assert '<button id="restart-hub" class="site-header-title"' not in response.text
-    assert 'class="site-header-title" href="/workspace"' in response.text
-    assert 'aria-label="进入新版首页"' in response.text
-    assert 'id="chub-service-badge"' not in response.text
-    assert 'id="quick-worker-badge"' not in response.text
-    assert 'id="quick-worker-restart"' in response.text
-    assert '>重启并清理任务</button>' not in response.text
-    assert 'id="automation-browser-restart"' in response.text
-    assert response.text.index('id="automation-browser-restart"') < response.text.index(
-        'id="automation-browser-control"'
-    )
-    assert 'id="system-upgrade-badge"' not in response.text
-    assert 'id="system-upgrade-start"' in response.text
-    assert 'aria-controls="confirmation-dialog"' in response.text
-    assert 'id="confirmation-dialog"' in response.text
-    assert 'id="confirmation-dialog-message"' in response.text
-    assert 'id="confirmation-dialog-details"' in response.text
-    assert response.text.index('id="global-message"') < response.text.index(
-        'id="connected-bar"'
-    )
-    assert 'id="site-settings"' in response.text
-    assert 'href="/settings" hidden' in response.text
-    assert f"v{settings.app.version}" not in response.text
-    assert "确认操作" in response.text
-    assert 'data-card-heading' in response.text
-    assert 'data-card-content' in response.text
-    assert 'data-collapsible-card' in response.text
-    assert response.text.count('class="card-content-inner"') == 4
-    assert "退出" not in response.text
-    assert 'id="task-list"' not in response.text
-    assert "data-log-source" not in response.text
-    assert 'href="/logs"' not in response.text
-    assert 'class="card logs-card"' not in response.text
-    assert '<h2 id="logs-title">日志</h2>' not in response.text
-    assert 'id="status-details"' not in response.text
-    assert "展开详情" not in response.text
 
 
 @pytest.mark.anyio
@@ -823,6 +578,7 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert "此处控制 Runtime 是否接收后续新 AI 任务" not in pages["runtime"].text
     assert 'id="codex-default-runtime-implementation"' not in pages["runtime"].text
     assert "Runtime 模块导入" in pages["runtime"].text
+    assert "可在对应 Runtime 设置页选择当前使用版本。" in pages["runtime"].text
     assert 'class="runtime-module-install-heading"' in pages["runtime"].text
     assert "能力模块导入" in pages["runtime"].text
     assert 'id="orchestration-module-file"' in pages["runtime"].text
@@ -929,6 +685,8 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert 'id="maintenance-terminal-dialog"' in pages["diagnostics"].text
     assert 'id="settings-openclaw-integration-list"' in pages["openclaw"].text
     assert 'id="settings-openclaw-patch-list"' in pages["openclaw"].text
+    assert "核对微信 ClawBot 适配器与 Chub 插件的本机安装元数据。" in pages["openclaw"].text
+    assert "查看当前已登记的兼容补丁基线。" in pages["openclaw"].text
     assert 'id="settings-openclaw-open"' not in pages["openclaw"].text
     assert 'id="settings-openclaw-bind-weixin"' not in pages["openclaw"].text
     assert 'id="weixin-processing-mode"' not in pages["openclaw"].text
@@ -1110,251 +868,6 @@ async def test_legacy_style_preview_routes_return_to_theme_settings(settings: Se
     assert removed_response.status_code == 404
 
 
-@pytest.mark.anyio
-@pytest.mark.skip(reason="并行新版入口已移除，由根路径工作台测试替代")
-async def test_workspace_preview_is_static_and_available(settings: Settings) -> None:
-    transport = httpx.ASGITransport(app=create_app(settings))
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get("/workspace")
-        project_documents_response = await client.get("/workspace?section=project-docs")
-        automations_response = await client.get("/workspace?section=automations")
-        removed_preview_response = await client.get("/settings/workspace-preview")
-        stylesheet = await client.get("/static/css/components.css")
-        workspace_script = await client.get("/static/workspace.js")
-        workspace_sessions_script = await client.get("/static/js/features/workspace-sessions.js")
-        workspace_workstation_script = await client.get("/static/js/features/workspace-workstation.js")
-        bootstrap_script = await client.get("/static/workspace-bootstrap.js")
-
-    assert response.status_code == 200
-    assert project_documents_response.status_code == 200
-    assert automations_response.status_code == 200
-    assert removed_preview_response.status_code == 404
-    assert "新版首页 · Hub" in response.text
-    assert "操作" in response.text
-    assert "工作台分区" not in response.text
-    assert "最近 Session" not in response.text
-    assert "AI Session" in response.text
-    assert "工作站环境" in response.text
-    assert 'class="workstation-group workspace-core-environment"' in response.text
-    assert 'class="workstation-group workspace-third-party-environment"' in response.text
-    assert "设备状态" not in response.text
-    assert "常用入口" not in response.text
-    assert 'id="workspace-chub-restart"' in response.text
-    assert 'id="workspace-worker-restart"' in response.text
-    assert 'id="workspace-upgrade-start"' in response.text
-    assert "workspace-preview-shell" in response.text
-    assert "workspace-preview-work-surface" in response.text
-    assert 'id="workspace-sidebar-toggle"' in response.text
-    assert 'id="workspace-sidebar-resizer"' in response.text
-    assert 'id="workspace-sidebar-scrim"' in response.text
-    assert 'role="separator"' in response.text
-    assert 'aria-valuemin="225"' in response.text
-    assert 'aria-valuemax="360"' in response.text
-    assert 'id="workspace-sidebar-close"' in response.text
-    assert 'aria-label="工作台操作"' in response.text
-    assert 'id="workspace-toolbar-error" class="workspace-preview-toolbar-error" aria-live="polite" hidden' in response.text
-    assert '<div class="workspace-preview-brand"><strong>Chub</strong><button id="workspace-sidebar-close"' in response.text
-    assert 'aria-label="工作台辅助导航"' in response.text
-    assert response.text.index('aria-label="工作台辅助导航"') > response.text.index(
-        'aria-label="Runtime Session 列表"',
-    )
-    assert "个人 AI 工作站" not in response.text
-    assert '>☰</span></button>' in response.text
-    assert "WORKSPACE" not in response.text
-    assert "<h1>工作台</h1>" not in response.text
-    assert "当前为并行建设页面" not in response.text
-    assert '<a href="/settings"><span class="workspace-preview-nav-icon"' in response.text
-    assert 'disabled title="功能建设中"' not in response.text
-    assert 'aria-controls="workspace-sidebar"' in response.text
-    assert 'src="/static/workspace-bootstrap.js"' in response.text
-    assert response.text.index('src="/static/workspace-bootstrap.js"') < response.text.index(
-        '/static/css/tokens.css',
-    )
-    assert 'src="/static/workspace.js"' in response.text
-    assert 'src="/static/js/features/workspace-sessions.js"' in response.text
-    assert 'src="/static/js/features/workspace-workstation.js"' in response.text
-    assert 'href="/workspace?section=project-docs"' in response.text
-    assert 'href="/workspace?section=automations"' in response.text
-    assert 'href="/workspace" aria-current="page" class="is-current"><span class="workspace-preview-nav-icon"' in response.text
-    assert response.text.count('class="workspace-preview-nav-icon" aria-hidden="true"') == 4
-    assert 'class="workspace-preview-compact-nav" data-workspace-section-navigation aria-label="折叠侧栏导航"' in response.text
-    assert 'aria-label="工作台" title="工作台"' in response.text
-    assert 'class="workspace-preview-compact-nav-external" href="/settings"' in response.text
-    assert 'id="workspace-preview-sessions" class="workspace-preview-sessions" aria-label="Runtime Session 列表" hidden' in response.text
-    assert 'id="workspace-session-create" class="workspace-preview-create" type="button" disabled>+ New Session</button>' in response.text
-    assert 'id="workspace-session-list"' in response.text
-    assert 'id="workspace-quick-session-toolbar" class="workspace-quick-session-toolbar" aria-label="Chub Session切换" hidden' in response.text
-    assert 'id="workspace-session-create-dialog"' in response.text
-    assert 'id="workspace-session-more-dialog"' not in response.text
-    assert 'id="workspace-session-rename-dialog"' in response.text
-    assert response.text.index('id="confirmation-dialog"') > response.text.index(
-        'id="workspace-sidebar-resizer"',
-    )
-    assert '<span>会话</span>' not in response.text
-    assert 'href="/workspace"' in project_documents_response.text
-    assert 'href="/workspace?section=project-docs" aria-current="page" class="is-current"><span class="workspace-preview-nav-icon"' in project_documents_response.text
-    assert "项目说明、设计方案与维护文档" in project_documents_response.text
-    assert "workspace-project-document-list" in project_documents_response.text
-    assert 'class="button-secondary workspace-project-documents-all" href="/project-docs"' in project_documents_response.text
-    assert "Chub 项目说明" in project_documents_response.text
-    assert 'href="/workspace?section=automations" aria-current="page" class="is-current"><span class="workspace-preview-nav-icon"' in automations_response.text
-    assert "自动化任务" in automations_response.text
-    assert "自动化环境" in automations_response.text
-    assert 'class="workspace-preview-panel workstation-card workspace-automation-details workspace-preview-work-section"' in automations_response.text
-    assert 'class="workstation-group automation-environment"' in automations_response.text
-    assert 'class="workstation-status-list"' in automations_response.text
-    assert 'id="workspace-automation-browser-start"' not in automations_response.text
-    assert 'href="/automations"' not in automations_response.text
-    assert ".workspace-preview-shell" in stylesheet.text
-    assert "workspace-preview-local-nav" not in response.text
-    assert ".workspace-project-documents-all {\n  display: inline-flex;" in stylesheet.text
-    assert ".workstation-group {\n  display: grid;" in stylesheet.text
-    assert ".workstation-group-heading h2,\n.workstation-group-heading h3 {\n  margin: 0;\n  font-size: 1rem;" in stylesheet.text
-    assert ".workstation-status-row {\n  display: flex;" in stylesheet.text
-    assert ".workspace-workstation {\n  gap: 0;" in stylesheet.text
-    assert ".workspace-workstation > .workstation-group + .workstation-group::before" in stylesheet.text
-    assert ".workspace-automation-details > .workstation-group + .workstation-group::before" in stylesheet.text
-    assert "right: -1rem;" in stylesheet.text
-    assert "left: -1rem;" in stylesheet.text
-    assert ".automation-environment .workstation-status-row,\n.automation-account-environment .workstation-status-row {\n  min-height: 0;" in stylesheet.text
-    assert ".workspace-preview-shell.is-sidebar-collapsed" in stylesheet.text
-    assert ".workspace-quick-session-toolbar-button" in stylesheet.text
-    assert "--workspace-sidebar-width: var(--workspace-sidebar-preload-width, 225px);" in stylesheet.text
-    assert "grid-template-columns: var(--workspace-sidebar-width) minmax(0, 1fr);" in stylesheet.text
-    assert '.workspace-preview-nav a[aria-current="page"] {' in stylesheet.text
-    assert ".workspace-preview-nav-icon {" in stylesheet.text
-    assert ".workspace-preview-compact-nav {" in stylesheet.text
-    assert ".workspace-preview-shell.is-sidebar-collapsed .workspace-preview-compact-nav" in stylesheet.text
-    assert ".workspace-preview-compact-nav a:not(.workspace-preview-compact-nav-external):hover" in stylesheet.text
-    assert ".workspace-preview-compact-nav-external:active" in stylesheet.text
-    assert "  min-width: 0;\n  overflow: hidden;" in stylesheet.text
-    assert ".workspace-preview-nav > span," in stylesheet.text
-    assert "border-color: var(--color-accent);" in stylesheet.text
-    assert ".workspace-preview-session {\n  display: grid;" in stylesheet.text
-    assert ".workspace-preview-session.is-current {\n  border-color: var(--color-accent);" in stylesheet.text
-    assert ".workspace-preview-session.is-current strong {\n  color: var(--color-accent-text);" in stylesheet.text
-    assert "  height: auto;\n  min-height: 3.75rem;" in stylesheet.text
-    assert ".workspace-preview-session strong {\n  color: var(--ink);" in stylesheet.text
-    assert "  padding: 0.6rem 0.65rem;" in stylesheet.text
-    assert "border-right: 1px solid var(--line);" in stylesheet.text
-    assert "width: 1.75rem;" in stylesheet.text
-    assert "--workspace-toolbar-height: 2.25rem;" in stylesheet.text
-    assert "--workspace-toolbar-top-gap: 0.45rem;" in stylesheet.text
-    assert "height: var(--workspace-toolbar-height);" in stylesheet.text
-    assert "padding: var(--workspace-toolbar-top-gap) 1rem 1rem;" in stylesheet.text
-    assert "padding: var(--workspace-toolbar-top-gap) clamp(0.75rem, 1.5vw, 1.25rem) 1rem;" in stylesheet.text
-    assert ".workspace-preview-brand {\n  display: flex;\n  height: var(--workspace-toolbar-height);" in stylesheet.text
-    assert "color: color-mix(in srgb, var(--accent-dark) 78%, var(--muted));" in stylesheet.text
-    assert ".workspace-preview-sidebar-footer {\n  display: grid;\n  gap: 0.75rem;\n  margin-top: auto;" in stylesheet.text
-    assert "gap: 0.75rem;" in stylesheet.text
-    assert ".workspace-preview-page {\n  width: 100%;\n  height: 100vh;\n  height: 100dvh;\n  overflow: hidden;" in stylesheet.text
-    assert ".workspace-preview-sidebar {\n  display: flex;" in stylesheet.text
-    assert stylesheet.text.count("overscroll-behavior-y: contain;") >= 4
-    assert ".workspace-preview-native-session:hover small.is-overflowing > span" in stylesheet.text
-    assert ".workspace-preview-native-session:hover,\n.workspace-preview-native-session:active" in stylesheet.text
-    assert ".workspace-preview-toolbar" in stylesheet.text
-    assert ".workspace-preview-main {\n  align-content: start;" in stylesheet.text
-    assert "  overflow-y: auto;\n  overscroll-behavior-y: contain;\n  scrollbar-gutter: stable;" in stylesheet.text
-    assert workspace_script.status_code == 200
-    assert workspace_sessions_script.status_code == 200
-    assert workspace_workstation_script.status_code == 200
-    assert bootstrap_script.status_code == 200
-    assert "event.metaKey || event.ctrlKey" in workspace_script.text
-    assert "window.location.replace(link.href);" in workspace_script.text
-    assert 'document.getElementById("workspace-section-content")' in workspace_script.text
-    assert "window.disposeWorkspaceWorkstation?.();" in workspace_script.text
-    assert "currentContent.replaceWith(nextContent);" in workspace_script.text
-    assert "const preserveWorkspaceReturnTarget = (event) =>" in workspace_script.text
-    assert 'targetUrl.searchParams.set(\n      "return_to",' in workspace_script.text
-    assert "const clearWorkspaceSectionSelection = () =>" in workspace_script.text
-    assert "clearWorkspaceSectionSelection();" in workspace_script.text
-    assert 'targetUrl.pathname !== "/workspace"' in workspace_script.text
-    assert "link.blur();" in workspace_script.text
-    assert "window.initializeWorkspaceAutomationControls?.();" in workspace_script.text
-    assert "window.initializeWorkspaceWorkstation?.();" in workspace_script.text
-    assert '"/api/automations/browser/start"' in workspace_script.text
-    assert '"/api/automations/browser/stop"' in workspace_script.text
-    assert '"/api/automations/environment/feishu/check"' in workspace_script.text
-    assert '"/api/automations/environment/codex/check"' in workspace_script.text
-    assert 'automationFeishuCheck.textContent = "检查中…";' in workspace_script.text
-    assert 'automationCodexAccountCheck.textContent = "检查中…";' in workspace_script.text
-    assert 'automationBrowserDetail.dataset.browserState === "running"' in workspace_script.text
-    assert 'detail.dataset.accountState === "unchecked"' in workspace_script.text
-    assert 'automationFeishuCheck?.click();' in workspace_script.text
-    assert 'automationCodexAccountCheck?.click();' in workspace_script.text
-    assert '"workspace-automation-browser-start-dialog"' in workspace_script.text
-    assert 'automationStartConfirm?.focus();' in workspace_script.text
-    assert 'automationStopConfirm?.focus();' in workspace_script.text
-    assert 'event.key.toLowerCase() !== "b"' in workspace_script.text
-    assert 'document.getElementById("workspace-sidebar-close")' in workspace_script.text
-    assert "chub.workspace.sidebarCollapsed" in workspace_script.text
-    assert '"/api/codex/sessions"' in workspace_sessions_script.text
-    assert 'const sessionSection = document.getElementById("workspace-preview-sessions");' in workspace_sessions_script.text
-    assert "sessionSection.hidden = groups.length === 0;" in workspace_sessions_script.text
-    assert 'heading.textContent = `${runtimeGroup.name} Sessions`;' in workspace_sessions_script.text
-    assert 'heading.textContent = "Native";' in workspace_sessions_script.text
-    assert 'title: "Chub"' in workspace_sessions_script.text
-    assert "const nativeSessionDetailLines = (session) => [" in workspace_sessions_script.text
-    assert "`目录：${session.cwd}`" in workspace_sessions_script.text
-    assert '`属性：${session.active_permission_mode || "未知"}' not in workspace_sessions_script.text
-    assert "const renderNativeSessions = (items, sessions) =>" in workspace_sessions_script.text
-    assert 'const unboundSessions = sessions.filter((session) => !session.chub_session_id);' in workspace_sessions_script.text
-    assert 'const ordered = [...unboundSessions].sort(' in workspace_sessions_script.text
-    assert 'createSessionButton(chubSession, { native: true })' not in workspace_sessions_script.text
-    assert 'if (session.native_action_ref) {' in workspace_sessions_script.text
-    assert 'nativeActionRef: session.native_action_ref,' in workspace_sessions_script.text
-    assert '"归档 Native Session"' in workspace_sessions_script.text
-    assert '"删除 Native Session"' in workspace_sessions_script.text
-    assert '"/api/codex/native-sessions/${reference}/archive"' in workspace_sessions_script.text
-    assert '"停止由 Chub 管理"' not in workspace_sessions_script.text
-    assert 'title: "仅删除 Chub 记录"' in workspace_sessions_script.text
-    assert 'action === "chub-only-delete"' in workspace_sessions_script.text
-    assert '"/api/codex/sessions/${sessionId}/management"' in workspace_sessions_script.text
-    assert "pendingNativeSessionMutations.delete(nativeActionRef);\n          await loadSessions();" in workspace_sessions_script.text
-    assert 'details.className = "workspace-preview-native-session-details";' in workspace_sessions_script.text
-    assert 'row.querySelectorAll(".workspace-preview-native-session small").forEach(updateSessionMarquee);' in workspace_sessions_script.text
-    assert 'JSON.stringify({ ...data, native_sessions: [] })' in workspace_sessions_script.text
-    assert 'nativeSessions = [];' in workspace_sessions_script.text
-    assert "const renderQuickSessionToolbar = (orderedSessions) =>" in workspace_sessions_script.text
-    assert "const quickSessionLabel = (session) =>" in workspace_sessions_script.text
-    assert 'workspace-quick-session-toolbar-button' in workspace_sessions_script.text
-    assert "/quick-interactions/conversation" in workspace_sessions_script.text
-    assert "/access" in workspace_sessions_script.text
-    assert '"/api/status"' in workspace_workstation_script.text
-    assert '"/api/maintenance/restart"' in workspace_workstation_script.text
-    assert '"/api/maintenance/quick-worker/restart"' in workspace_workstation_script.text
-    assert '"/api/maintenance/system-upgrade"' in workspace_workstation_script.text
-    assert "chub.sidebarWidth" in workspace_script.text
-    assert "chub.workspace.sidebarWidth" not in workspace_script.text
-    assert "minimumSidebarWidth = 225" in workspace_script.text
-    assert "maximumSidebarWidth = 360" in workspace_script.text
-    assert 'resizer.addEventListener("pointerdown"' in workspace_script.text
-    assert "ArrowLeft: currentSidebarWidth() - sidebarWidthStep" in workspace_script.text
-    assert 'toggle.title = sidebarLabel;' in workspace_script.text
-    assert '@media (min-width: 761px) and (max-width: 1080px)' in stylesheet.text
-    assert ".workspace-preview-shell.is-mobile-sidebar-open .workspace-preview-sidebar" in stylesheet.text
-    assert ".workspace-preview-sidebar-scrim" in stylesheet.text
-    assert ".workspace-preview-sidebar-close" in stylesheet.text
-    assert ':root[data-workspace-sidebar-collapsed="true"] .workspace-preview-shell,' in stylesheet.text
-    assert "const expandSidebar = () =>" in workspace_script.text
-    assert "const collapseSidebar = () =>" in workspace_script.text
-    assert "shell.classList.add(\"is-sidebar-opening\")" in workspace_script.text
-    assert "shell.classList.add(\"is-sidebar-closing\")" in workspace_script.text
-    assert "const setMobileSidebarOpen = (open) =>" in workspace_script.text
-    assert "sidebar.inert = !open;" in workspace_script.text
-    assert "const openMobileSidebar = () =>" in workspace_script.text
-    assert "history.pushState(" in workspace_script.text
-    assert 'window.addEventListener("popstate"' in workspace_script.text
-    assert 'sidebarClose.addEventListener("click"' in workspace_script.text
-    assert 'document.addEventListener("pointerdown"' in workspace_script.text
-    assert "sidebar.contains(event.target)" in workspace_script.text
-    assert 'requestAnimationFrame(() => shell.classList.add("is-layout-ready"));' in workspace_script.text
-    assert "workspace-sidebar-preload-width" in bootstrap_script.text
-    assert "chub.sidebarWidth" in bootstrap_script.text
-    assert "data-workspace-sidebar-collapsed" in stylesheet.text
-    assert ".workspace-preview-shell.is-layout-ready" in stylesheet.text
-    assert 'content.className = "workspace-preview-session-content";' in workspace_sessions_script.text
-    assert ".workspace-preview-session-content {" in stylesheet.text
 
 
 @pytest.mark.anyio
@@ -1429,6 +942,13 @@ async def test_home_workstation_third_party_controls_are_state_driven(
         script = await client.get("/static/js/features/workspace-workstation.js")
 
     assert response.status_code == 200
+    assert "开发环境" in response.text
+    assert response.text.index("工作站环境") < response.text.index("开发环境") < response.text.index("第三方服务环境")
+    assert 'id="workspace-development-refresh"' in response.text
+    assert 'id="workspace-development-codex-detail"' in response.text
+    assert 'id="workspace-development-weixin-detail"' in response.text
+    assert 'workspace-development-codex-refresh' not in response.text
+    assert 'workspace-development-weixin-refresh' not in response.text
     assert "第三方服务环境" in response.text
     assert 'id="workspace-third-party-refresh"' in response.text
     assert 'id="workspace-openclaw-start"' in response.text
@@ -1452,6 +972,12 @@ async def test_home_workstation_third_party_controls_are_state_driven(
     assert "正在检查固定插件、补丁和运行状态。" not in script.text
     assert '? "Gateway 运行正常并已通过连接探测。"' in script.text
     assert 'const thirdPartySnapshotCacheKey = "chub.workspace.thirdParty.v1";' in script.text
+    assert 'const developmentSnapshotCacheKey = "chub.workspace.development.v1";' in script.text
+    assert 'const refreshDevelopment = async () =>' in script.text
+    assert 'request("/api/runtime-modules/builtin-dev/refresh", { method: "POST" })' in script.text
+    assert 'request("/api/settings/weixin-task-orchestration", {' in script.text
+    assert 'body: JSON.stringify({ implementation: "weixin-orchestration-dev" }),' in script.text
+    assert 'void loadDevelopment();' in script.text
     assert 'window.sessionStorage.getItem(thirdPartySnapshotCacheKey)' in script.text
     assert 'window.sessionStorage.setItem(' in script.text
     assert script.text.count('cacheThirdPartySnapshot(status, login);') == 2
@@ -1569,6 +1095,7 @@ async def test_automation_section_uses_workstation_status_rows(
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/?section=automations")
         workspace_script = await client.get("/static/workspace.js")
+        stylesheet = await client.get("/static/css/components.css")
 
     assert response.status_code == 200
     assert 'aria-label="自动化总览"' in response.text
@@ -1625,6 +1152,9 @@ async def test_automation_section_uses_workstation_status_rows(
     assert 'title="请先启动 Debug Chrome"' in response.text
     assert 'data-automation-task-message' not in response.text
     assert workspace_script.status_code == 200
+    assert stylesheet.status_code == 200
+    assert ".workspace-automation-details > .workstation-group > .workstation-status-list > .workstation-weekly-workflow {" in stylesheet.text
+    assert "border: 0;" in stylesheet.text
     assert 'showConfirmationDialog({' in workspace_script.text
     assert '`/api/automations/${encodeURIComponent(taskId)}/run`' in workspace_script.text
     assert 'setWorkstationStatus(taskDetail, "任务已受理，正在刷新状态。", "warning");' in workspace_script.text
@@ -1861,334 +1391,6 @@ async def test_home_page_title_uses_application_name_by_default(
     assert "<title>Hub</title>" in response.text
 
 
-@pytest.mark.anyio
-@pytest.mark.skip(reason="旧首页资源已移除，由新版工作台资源测试替代")
-async def test_web_assets_are_available(settings: Settings) -> None:
-    transport = httpx.ASGITransport(app=create_app(settings))
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        scripts = [
-            await client.get("/static/js/core/ai-usage.js"),
-            await client.get("/static/theme.js"),
-            await client.get("/static/js/core/dashboard-core.js"),
-            await client.get("/static/js/components/ui.js"),
-            await client.get("/static/js/components/collapsible-card.js"),
-            await client.get("/static/js/features/node-status.js"),
-            await client.get("/static/js/features/codex-sessions.js"),
-            await client.get("/static/js/features/openclaw.js"),
-            await client.get("/static/js/features/automations.js"),
-            await client.get("/static/js/features/workstation.js"),
-            await client.get("/static/js/features/project-documents.js"),
-            await client.get("/static/app.js"),
-        ]
-        polling_script = await client.get("/static/codex_polling.js")
-        removed_stylesheet = await client.get("/static/app.css")
-        stylesheets = [
-            await client.get("/static/css/tokens.css"),
-            await client.get("/static/css/base.css"),
-            await client.get("/static/css/components.css"),
-            await client.get("/static/css/responsive.css"),
-        ]
-        terminal_stylesheet = await client.get("/static/terminal.css")
-        maintenance_terminal_script = await client.get("/static/maintenance_terminal.js")
-
-    assert all(script.status_code == 200 for script in scripts)
-    assert polling_script.status_code == 200
-    assert removed_stylesheet.status_code == 404
-
-    assert all(asset.status_code == 200 for asset in stylesheets)
-    assert terminal_stylesheet.status_code == 200
-    assert maintenance_terminal_script.status_code == 200
-    assert "/maintenance-terminal/connection/" in maintenance_terminal_script.text
-    dashboard_script = "\n".join(script.text for script in scripts)
-    script = MagicMock(text=dashboard_script)
-    stylesheet = MagicMock(
-        text="\n".join(asset.text for asset in stylesheets),
-    )
-    assert "innerHTML" not in dashboard_script
-    assert "window.confirm" not in dashboard_script
-    assert "showConfirmationDialog" in dashboard_script
-    assert "confirmationDialogBusy" in dashboard_script
-    assert "closeOnConfirm = false" in dashboard_script
-    assert "if (current.closeOnConfirm)" in dashboard_script
-    assert 'siteSettings: document.querySelector("#site-settings")' in dashboard_script
-    assert "elements.siteSettings.hidden = true" in dashboard_script
-    assert "elements.siteSettings.hidden = false" in dashboard_script
-    assert "/api/automations/browser/" in dashboard_script
-    assert "/api/openclaw/status" in dashboard_script
-    assert "/api/openclaw/weixin/login" in dashboard_script
-    assert "/api/maintenance/quick-worker" in dashboard_script
-    assert "/api/maintenance/system-upgrade" in dashboard_script
-    assert "browser_supervisor" not in dashboard_script
-    assert "debug_chrome_instance" not in dashboard_script
-    assert "未纳入升级" not in dashboard_script
-    assert "reloadDashboardAfterMaintenance" in dashboard_script
-    assert "systemUpgradeCurrentStatuses" not in dashboard_script
-    assert "systemUpgradeOperation" not in dashboard_script
-    assert "systemUpgradeRuntime" not in dashboard_script
-    assert "systemUpgradeFlow" not in dashboard_script
-    assert "maintenance-timeline-step" not in dashboard_script
-    assert "failed_stage" not in dashboard_script
-    assert "runtime_message ? ` · ${data.runtime_message}`" not in dashboard_script
-    assert "最近操作" not in dashboard_script
-    assert "SYSTEM_UPGRADE_TIMELINE" not in dashboard_script
-    assert "runtime_message" in dashboard_script
-    assert "data.runtimes" in dashboard_script
-    assert "maintenanceReloadTimer" in dashboard_script
-    assert "}, 2000);" in dashboard_script
-    assert "浏览器将在稍后自动刷新页面" in dashboard_script
-    assert "Chub Quick Worker、Ubuntu Chub Debug Chrome 和 OpenClaw Gateway 是独立服务，不会被重启" in dashboard_script
-    assert "原生 Codex 会话保留" in dashboard_script
-    assert 'setWorkstationStatus(elements.quickWorkerDetail, data.operation.message, "success")' in dashboard_script
-    assert "systemUpgradeReloadOperationId" in dashboard_script
-    assert 'data.operation?.status === "succeeded"' in dashboard_script
-    assert 'headers: { "Content-Type": "application/json" }' in dashboard_script
-    assert "syncCoreMaintenanceControls" in dashboard_script
-    assert 'sessionsTitle.className = "card-group-title codex-sessions-title"' in dashboard_script
-    assert "codex-sessions-divider" not in dashboard_script
-    assert "Promise.allSettled" in dashboard_script
-    assert "/api/openclaw/${action}" in dashboard_script
-    assert "OPENCLAW_STATUS_CACHE_KEY" in dashboard_script
-    assert "restoreOpenClawCache" in dashboard_script
-    assert 'data.owner_state === "not_configured"' in dashboard_script
-    assert 'data.owner_state === "unavailable"' in dashboard_script
-    assert 'dashboardNavigationEntry?.type === "back_forward"' in dashboard_script
-    assert "if (dashboardIsHistoryReturn && openclawCacheRestored)" in dashboard_script
-    assert "cardLoads.push(loadOpenClawWeixinStatus())" in dashboard_script
-    assert "无法读取最新任务执行服务状态，保留上次结果。" in dashboard_script
-    assert '"正在执行重启与恢复"' in dashboard_script
-    assert "operationVersion !== openclawOperationVersion" in dashboard_script
-    assert "if (openclawBusy) {" in dashboard_script
-    assert "正在重启 OpenClaw Gateway" not in dashboard_script
-    assert "OpenClaw Gateway 已停止" not in dashboard_script
-    assert "OPENCLAW_WEIXIN_ACTIVE_STATES" in dashboard_script
-    assert "pollOpenClawWeixinLogin" not in dashboard_script
-    assert "Promise.all([\n      apiFetch(\"/api/openclaw/status\")" not in dashboard_script
-    assert "automationBrowserModeInputs" in dashboard_script
-    assert "loadAutomationEnvironment" in dashboard_script
-    assert "automationBrowserDialog.showModal()" in dashboard_script
-    assert "automationBrowserDialogConfirm" in dashboard_script
-    assert 'return ["浏览器控制服务可用；实例按需启动", "muted"]' in dashboard_script
-    assert '"浏览器控制服务可用", "实例正在运行", mode' in dashboard_script
-    assert 'return "用于飞书登录与任务执行"' in dashboard_script
-    assert 'return `登录验证于 ${automationMonthDay(data.checked_at)}`' in dashboard_script
-    assert "appendWeeklyReportMaterials" in dashboard_script
-    assert "weeklyDownloadStatus" in dashboard_script
-    assert "weeklyValidationStatus" in dashboard_script
-    assert "下载成功" in dashboard_script
-    assert "校验通过" in dashboard_script
-    assert 'mainLabel.textContent = mainPassed ? "主文档 · 1/1 通过" : "主文档"' in dashboard_script
-    assert '`${waiting ? "等待原因" : "校验原因"} · ${task.state.validation_message}`' in dashboard_script
-    assert "上周参考 · ${linkedDocument.name}" in dashboard_script
-    assert "各端周报 · ${linkedSuccesses}/${currentDocuments.length} 通过" in dashboard_script
-    assert "automation-material-summary" in dashboard_script
-    assert "includeHeading = true, includeButton = true" in dashboard_script
-    assert "{ includeHeading: false, includeButton: false }" in dashboard_script
-    assert "automationWeeklyDownloadAction.append(rendered.button)" in dashboard_script
-    assert "automation-weekly-download-heading" in stylesheet.text
-    assert ".automation-weekly-report-group {\n  border: 1px solid var(--line);\n  border-radius: 8px;" in stylesheet.text
-    assert "border: 0;\n  padding: 0;\n  background: transparent;" in stylesheet.text
-    assert ".automation-item {\n  display: grid;\n  grid-template-columns: minmax(0, 1fr) auto;\n  align-items: start;" in stylesheet.text
-    assert "本期下载 ·" in dashboard_script
-    assert "待下载" in dashboard_script
-    assert "启动并运行" in dashboard_script
-    assert 'apiFetch("/api/automations/browser/start"' in dashboard_script
-    assert 'JSON.stringify({ mode: "headless" })' in dashboard_script
-    assert 'error.message || "Debug Chrome 启动失败。"' in dashboard_script
-    assert "Promise.all([loadAutomations(), loadAutomationEnvironment()])" in dashboard_script
-    assert 'apiFetch("/api/weekly-reports/current")' in dashboard_script
-    assert "loadWeeklyReports" in dashboard_script
-    assert "refreshAutomationCard" in script.text
-    assert "/api/project-docs" in dashboard_script
-    assert "loadProjectDocuments" in dashboard_script
-    assert 'document.createElement("time")' in dashboard_script
-    assert 'archive.textContent = "隐藏"' in dashboard_script
-    assert "此操作不会移动或冻结仓库文件" in dashboard_script
-    assert "正在刷新文档列表" not in dashboard_script
-    assert "文档列表已更新" not in dashboard_script
-    assert "文档已归档" not in dashboard_script
-    assert "sessionStorage" in dashboard_script
-    assert "localStorage" in dashboard_script
-    assert "accessVersion" in dashboard_script
-    assert "connectToHub" in dashboard_script
-    assert "connectWithToken" not in dashboard_script
-    assert "暂时无法读取节点状态，请稍后重试。" in dashboard_script
-    assert 'error.code === "trusted_network_required"' in dashboard_script
-    assert "createTaskCard" not in script.text
-    assert "createCodexCard" in script.text
-    assert 'createButton.textContent = "新建会话"' in script.text
-    assert 'workspaceDialogTitle.textContent = "选择工作目录"' in script.text
-    assert "首页列出三个常用目录；其他目录启动的 Codex 会话会自动出现在列表中。" in script.text
-    assert "workspaceDialog.showModal()" in script.text
-    assert "workspaceDialog.close()" in script.text
-    assert "ensureCodexCard" in script.text
-    assert "elements.codexCardHost.replaceChildren();" in script.text
-    assert "createCodexSession" in script.text
-    assert "enterCodexSession" in script.text
-    assert "CARD_RETURN_REFRESHERS" in script.text
-    assert "CARD_COLLAPSED_STATE_KEY" in script.text
-    assert "loadCardCollapsedState" in script.text
-    assert "saveCardCollapsedState" in script.text
-    assert "hub.cardCollapsedState.v1" in script.text
-    assert "hub.codexRefreshOnReturn" not in script.text
-    assert "hub.projectDocsRefreshOnReturn" not in script.text
-    assert 'data-card-return-refresh="true"' in script.text
-    assert "cardsRefreshAt" in script.text
-    assert 'now - cardsRefreshAt < 500' in script.text
-    assert "cardsRefreshAt = now;\n  loadStatus();" in script.text
-    assert 'window.addEventListener("pageshow"' in script.text
-    assert 'document.addEventListener("visibilitychange"' in script.text
-    assert "stopCodexSession" in script.text
-    assert "archiveCodexSession" in script.text
-    assert 'quickInteraction.textContent = "快速交互"' not in script.text
-    assert 'interactionHistory.textContent = "交互记录"' not in script.text
-    assert "codex-session-realtime" not in script.text
-    assert 'sessionModeTitle.textContent = "实时会话"' not in script.text
-    assert "QUICK_INTERACTION_VIEW_KEY" not in script.text
-    assert "quickInteractionUrl" in script.text
-    assert "quick-interactions/conversation" in script.text
-    assert "openCodexEntryDialog" not in script.text
-    assert "toggleCodexEntryMode" not in script.text
-    assert "actions.append(rename, stop, archive, remove);" in script.text
-    assert "renameCodexSession" in script.text
-    assert "closeCodexRenameDialog(true)" in script.text
-    assert "permissionPanel" not in script.text
-    assert "快速交互已提交" not in script.text
-    assert "quick-interaction-submit" not in script.text
-    assert "confirm_stop_unknown_terminal" not in script.text
-    assert "unknownConfirmationInput" not in script.text
-    assert "deleteCodexSession" in script.text
-    assert "renderCodexWorkspaces" in script.text
-    assert "renderCodexSessions" in script.text
-    assert "codexSessionsNewestFirst" in script.text
-    assert "visibleCodexSessions" in script.text
-    assert 'session.workspace_id !== "weixin-translation"' in script.text
-    assert "visibleSessions.length" in script.text
-    assert 'return "等待输入";' in script.text
-    assert 'return "执行中";' in script.text
-    assert 'return "正在使用";' not in script.text
-    assert "快速交互 · 待输入" not in script.text
-    assert "快速交互 · 执行中" not in script.text
-    assert "快速交互 · 等待结果" not in script.text
-    assert "活动状态未知 · 请刷新" in script.text
-    assert 'owner === "terminal"' not in script.text
-    assert 'session.error === "terminal_backend_failed"' not in script.text
-    assert 'session.status === "new"' in script.text
-    assert "尚未启动 · 可进入" in script.text
-    assert "终端连接异常 · 可重试" not in script.text
-    assert "会话异常 · 可重试" in script.text
-    assert "CODEX_POLL_FAST_MS = 2000" in script.text
-    assert "CODEX_POLL_SLOW_MS = 8000" in script.text
-    assert "CODEX_POLL_SLOW_AFTER_MS = 2 * 60 * 1000" in script.text
-    assert 'session.activity === "working"' in polling_script.text
-    assert "loadCodexSessions({ background: true })" in script.text
-    assert "loadCodexSessions({ force: true })" in script.text
-    assert "session.quick_interaction_running" in script.text
-    assert "CODEX_DEFAULT_PERMISSION_KEY" not in script.text
-    assert "readCodexDefaultPermission" not in script.text
-    assert "readCodexDefaultModel" not in script.text
-    assert "readCodexDefaultReasoningEffort" not in script.text
-    assert "clearCodexModelPreferences" not in script.text
-    assert "archive.disabled = !session.can_archive" in script.text
-    assert "|| quickInteractionRunning" not in script.text
-    assert "llmInteractionRunning" not in script.text
-    assert "codexLoadPromise" in script.text
-    assert 'CACHE_KEY = "hub.aiUsageCache"' in script.text
-    assert "REFRESH_MS = 5 * 60 * 1000" in script.text
-    assert "新建默认：" not in script.text
-    assert "codex-model-preference" not in script.text
-    assert "restoreCodexModelPreferenceCache" not in dashboard_script
-    assert "refreshModelPreference" not in dashboard_script
-    assert "/api/ai/usage" in script.text
-    assert "额度：正在读取…" in script.text
-    assert "renderCodexQuota" in script.text
-    assert '"codex-quota-compact"' in script.text
-    assert '"codex-quota-today-complete"' in script.text
-    assert "codex-quota-${kind}-break" in script.text
-    assert "codex-quota-${kind}-separator" in script.text
-    assert "Weekly" in script.text
-    assert "codexQuotaWindowLabel" not in script.text
-    assert "refreshQuota: true" in script.text
-    assert "codexMutationCount" in script.text
-    assert "codexSessionsSignature" in script.text
-    assert "codexLoadPromise = null" in script.text
-    assert "codexMutationCount = 0" in script.text
-    assert "if (handleAccessError(error))" in script.text
-    assert "loadProjectDocuments({ clearMessage: false })" not in script.text
-    assert "renderCodexData" in script.text
-    assert "restoreCodexCardCache" in script.text
-    assert "storeCodexCardCache" in script.text
-    assert "hub.codexCardCache" in script.text
-    assert "formatSessionTime" in script.text
-    assert "dependencyMessage" in script.text
-    assert "AI" in script.text
-    assert "会话工作台" in script.text
-    assert "会话工作台不可用。" in script.text
-    assert "showCodexPanel" not in script.text
-    assert "setupCollapsibleCard" in script.text
-    assert "cardContentInner.append(panel, workspaceDialog)" in script.text
-    assert "card.append(header, cardContent)" in script.text
-    assert 'aria-expanded' in script.text
-    assert "is-collapsed" in script.text
-    assert "setContentCollapsed" in script.text
-    assert "playContentAnimation" in script.text
-    assert "cancelContentAnimations" in script.text
-    assert "fadeTargets = Array.from(content.children)" in script.text
-    assert "CARD_FADE_DURATION_MS = 140" in script.text
-    assert "CARD_HEIGHT_DURATION_MS = 180" in script.text
-    assert 'card.dataset.collapsiblePersist !== "false"' in script.text
-    assert "if (shouldPersist)" in script.text
-    assert "transition: gap 180ms ease 140ms" in stylesheet.text
-    assert 'matchMedia("(prefers-reduced-motion: reduce)")' in script.text
-    assert "requestHubRestart" in script.text
-    assert "monitorHubRestart" in script.text
-    assert "hubRestartInProgress" in script.text
-    assert "syncCoreMaintenanceControls()" in script.text
-    assert "scrollCodexPanelIntoView" not in script.text
-    assert "任务状态已更新。" not in script.text
-    assert "/api/maintenance/restart" in script.text
-    assert "/api/health" in script.text
-    assert "waitForHubRestart" in script.text
-    assert "elements.globalMessage" in script.text
-    assert "reloadDashboardAfterMaintenance" in script.text
-    assert "previousInstanceId" in script.text
-    assert "正在检查 Tailnet 可信访问" not in script.text
-    assert "正在验证已保存凭证" not in script.text
-    assert "重启命令已下发，正在等待 Hub 恢复" not in script.text
-    assert "Chub 已恢复，正在同步卡片状态" not in script.text
-    assert "Chub 已重启并恢复连接" not in script.text
-    assert 'setMessage(elements.globalMessage, "")' in script.text
-    assert 'errorMessage: "重启失败。"' in script.text
-    assert "/api/codex/restart" not in script.text
-    assert "/api/codex/sessions" in script.text
-    assert ".section-heading > .button-link" in stylesheet.text
-    assert "white-space: nowrap" in stylesheet.text
-    assert ".dashboard > .card" in stylesheet.text
-    assert "#codex-card-host" in stylesheet.text
-    assert "align-self: start" in stylesheet.text
-    assert "container: codex-card / inline-size" in stylesheet.text
-    assert "@container codex-card (min-width: 40rem)" in stylesheet.text
-    assert ".codex-quota-compact .codex-quota-reset-break" in stylesheet.text
-    assert ".codex-quota-today-complete .codex-quota-reset-break" in stylesheet.text
-    assert ".confirmation-dialog-surface" in stylesheet.text
-    assert ".confirmation-dialog-actions" in stylesheet.text
-    assert "-webkit-tap-highlight-color: transparent" in stylesheet.text
-    assert ".workstation-card" in stylesheet.text
-    assert ".workstation-status-row" in stylesheet.text
-    assert ".session-path" in stylesheet.text
-    assert ".session-actions" in stylesheet.text
-    assert "grid-column: 1 / -1;" in stylesheet.text
-    assert ".session-permission-panel" not in stylesheet.text
-    assert ".quick-interaction-history" not in stylesheet.text
-    assert "grid-template-columns: minmax(0, 1fr) auto;" in stylesheet.text
-    assert "grid-template-columns: 1fr;" in stylesheet.text
-    assert "align-content: start" in stylesheet.text
-    assert ".markdown-body > :first-child" in stylesheet.text
-    assert ".message:empty" in stylesheet.text
-    assert "--page-top-space: 1.25rem" in stylesheet.text
-    assert "--page-top-space: 1.5rem" in stylesheet.text
-    assert "--content-card-top-space: 0.75rem" in stylesheet.text
-    assert "padding: var(--page-top-space) 0 1.25rem" in stylesheet.text
-    assert "margin-top: var(--content-card-top-space)" in stylesheet.text
 
 
 @pytest.mark.anyio
@@ -2650,130 +1852,6 @@ async def test_security_headers_apply_to_unhandled_errors(
     assert response.json()["error"]["code"] == "internal_error"
 
 
-@pytest.mark.anyio
-@pytest.mark.skip(reason="旧终端与双会话模式的静态断言已替换")
-async def test_workspace_sessions_use_placeholder_for_empty_title(
-    settings: Settings,
-) -> None:
-    transport = httpx.ASGITransport(app=create_app(settings))
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get("/static/js/features/workspace-sessions.js")
-        workspace_script = await client.get("/static/workspace.js")
-        conversation_script = await client.get("/static/quick_interaction_conversation.js")
-        stylesheet = await client.get("/static/css/components.css")
-
-    assert response.status_code == 200
-    assert workspace_script.status_code == 200
-    assert conversation_script.status_code == 200
-    assert stylesheet.status_code == 200
-    assert '"未命名 Session"' in response.text
-    assert "return relativeTime(session.last_activity_at || session.created_at);" in response.text
-    assert 'new URL(window.location.href).searchParams.get("session")' in response.text
-    assert "setSelectedQuickSessionLocation(session.id);" in response.text
-    assert "restoreSelectedQuickSession(data.sessions);" in response.text
-    assert 'if (!selectedSessionUnavailable) setSidebarMessage("");' in response.text
-    assert 'if (window.workspaceQuickSessionOpen) {' in response.text
-    assert "window.selectWorkspaceQuickSession = (sessionId) =>" in response.text
-    assert "window.clearWorkspaceQuickSessionSelection = () =>" in response.text
-    assert "window.setWorkspaceToolbarError = (text = \"\") =>" in workspace_script.text
-    assert "window.showWorkspaceToolbarFeedback = (text, kind = \"error\") =>" in workspace_script.text
-    assert 'fetch("/api/ai/usage", { signal: controller.signal })' in workspace_script.text
-    assert "result.data.display.long.trim()" in workspace_script.text
-    assert 'setToolbarStatus(usage || "AI 额度暂不可用。")' in workspace_script.text
-    assert "void loadQuickSessionToolbarUsage();" in workspace_script.text
-    assert "window.setWorkspaceToolbarError?.(text);" in response.text
-    assert "const sidebarMessageMinimumVisibleMs = 6000;" in response.text
-    assert 'setSidebarMessage(`${title}中…`, { minimumVisibleMs: 0 });' in response.text
-    assert 'setSidebarMessage("删除 Chub 记录中…", { minimumVisibleMs: 0 });' in response.text
-    assert "sidebarMessageClearTimer = window.setTimeout" in response.text
-    assert "workspace-session-message" not in response.text
-    assert ".workspace-preview-toolbar-error {" in stylesheet.text
-    assert ".workspace-preview-toolbar-error.workspace-preview-toolbar-error-warning" in stylesheet.text
-    assert ".chub-toast {" in stylesheet.text
-    assert 'className = "workspace-preview-session-more"' in response.text
-    assert 'more.setAttribute("aria-haspopup", "menu");' in response.text
-    assert 'menu.className = "workspace-session-action-menu";' in response.text
-    assert "document.body.append(menu);" in response.text
-    assert 'actionButton.setAttribute("role", "menuitem");' in response.text
-    assert "toggleSessionActionMenu(more, currentSession, clickPoint);" in response.text
-    assert "const eventIsInsideSessionActionMenu = (event) =>" in response.text
-    assert 'document.addEventListener("pointerdown", (event) => {' in response.text
-    assert 'Boolean(event.target.closest(".workspace-session-action-menu"))' in response.text
-    assert 'window.addEventListener("chub.workspace.session-action-menu-dismiss", closeSessionActionMenu);' in response.text
-    assert "const triggerRect = trigger.getBoundingClientRect();" in response.text
-    assert "const anchorX = Number.isFinite(clickPoint?.x) ? clickPoint.x : triggerRect.right;" in response.text
-    assert "const anchorY = Number.isFinite(clickPoint?.y) ? clickPoint.y : triggerRect.bottom;" in response.text
-    assert "openSessionActionSessionId = session.id;" in response.text
-    assert 'owner === "external"' in response.text
-    assert 'return "其他应用 · 正在使用";' in response.text
-    assert 'return "执行中";' in response.text
-    assert 'return "等待输入";' in response.text
-    assert 'return "执行中";' in response.text
-    assert "const sessionHasActiveExecution = (session) =>" in response.text
-    assert "const sessionNeedsRefresh = (session) =>" in response.text
-    assert "let sessionRequestGeneration = 0;" in response.text
-    assert "const requestGeneration = ++sessionRequestGeneration;" in response.text
-    assert "if (requestGeneration !== sessionRequestGeneration) return;" in response.text
-    assert "|| sessionNeedsRefresh(session)" in response.text
-    assert "session.status === \"running\" && session.activity === \"unknown\"" not in response.text
-    assert "const sessionIsExternallyOccupied = (session) => session.usage?.owner === \"external\";" in response.text
-    assert "more.hidden = sessionIsExternallyOccupied(session)" in response.text
-    assert "if (sessionIsExternallyOccupied(session)) return;" in response.text
-    assert "const externalQuickReadOnly = externallyOccupied;" in response.text
-    assert "button.disabled = externallyOccupied && !externalQuickReadOnly;" in response.text
-    assert "|| sessionIsExternallyOccupied(session)" in response.text
-    assert 'showConfirmationDialog({' in response.text
-    assert "/title`, {" in response.text
-    assert "const opensSessionInNewTab = (event) =>" in response.text
-    assert 'window.open(quickSessionUrl(session.id), "_blank", "noopener");' in response.text
-    assert 'const terminalTab = newTab ? window.open("", "_blank") : null;' in response.text
-    assert "terminalTab.location.replace(data.terminal_url);" in response.text
-    assert 'button.addEventListener("auxclick"' in response.text
-    assert '"chub.workspace.quick-session-selection"' in workspace_script.text
-    assert '"chub.workspace.quick-session-activity"' in workspace_script.text
-    assert '"chub.workspace.quick-session-interaction"' in workspace_script.text
-    assert '"chub.workspace.quick-session-changed"' in workspace_script.text
-    assert "window.refreshWorkspaceSessions?.();" in workspace_script.text
-    assert "window.refreshWorkspaceSessions = () =>" in response.text
-    assert "function notifyWorkspaceSessionChanged(sessionId, { returnToWorkspace = false } = {})" in conversation_script.text
-    assert "notifyWorkspaceSessionChanged(session.id);" in conversation_script.text
-    assert "notifyWorkspaceSessionChanged(archivedSessionId);" in conversation_script.text
-    assert "notifyWorkspaceSessionChanged(deletedSessionId);" in conversation_script.text
-    assert "notifyWorkspaceSessionChanged(conversationSessionId);" in conversation_script.text
-    assert "returnToWorkspace: true" in conversation_script.text
-    assert 'window.location.replace("/");' in workspace_script.text
-    assert "event.source !== frame.contentWindow" in workspace_script.text
-    assert "window.selectWorkspaceQuickSession?.(selection.sessionId);" in workspace_script.text
-    assert "window.updateWorkspaceQuickSessionActivity?.(" in workspace_script.text
-    assert "window.parent.postMessage(" in conversation_script.text
-    assert "window.parent !== window" in conversation_script.text
-    assert "function notifyWorkspaceSessionActivity()" in conversation_script.text
-    assert "function notifyWorkspaceSessionInteraction()" in conversation_script.text
-    assert 'document.addEventListener("pointerdown", notifyWorkspaceSessionInteraction, { capture: true });' in conversation_script.text
-    assert "notifyWorkspaceSessionActivity();" in conversation_script.text
-    assert "window.updateWorkspaceQuickSessionActivity = (sessionId, running, updatedAt) =>" in response.text
-    assert 'targetUrl.searchParams.set("embedded", "workspace");' in conversation_script.text
-    assert ".workspace-preview-session.is-current {\n  border-color: var(--color-accent);" in stylesheet.text
-    assert ".workspace-preview-session.is-current strong {\n  color: var(--color-accent-text);" in stylesheet.text
-    assert ".workspace-preview-session-row {" in stylesheet.text
-    assert ".workspace-preview-session-more {" in stylesheet.text
-    assert ".workspace-preview-session-row.is-current {" in stylesheet.text
-    assert ".workspace-preview-session-row.is-externally-occupied:hover," in stylesheet.text
-    assert ".workspace-preview-session-row.is-externally-occupied {" in stylesheet.text
-    assert ".workspace-preview-session-row.is-externally-occupied .workspace-preview-session:disabled {" in stylesheet.text
-    assert ".workspace-preview-session-more:hover," in stylesheet.text
-    assert ".workspace-session-action-menu {" in stylesheet.text
-    assert "position: fixed;" in stylesheet.text
-    assert "width: 10.5rem;" in stylesheet.text
-    assert "z-index: 100;" in stylesheet.text
-    assert ".workspace-session-action {" in stylesheet.text
-    assert ".workspace-session-action.is-danger {" in stylesheet.text
-    assert "grid-template-columns: minmax(0, 1fr) 24px;" in stylesheet.text
-    assert "grid-template-columns: minmax(0, 1fr) 30px;" in stylesheet.text
-    assert ".workspace-preview-session small {\n  color: var(--color-text-muted);" in stylesheet.text
-    assert "workspace-session-marquee" in stylesheet.text
-    assert "updateSessionMarquee" in response.text
-    assert "--workspace-session-marquee-duration" in response.text
 
 
 @pytest.mark.anyio
@@ -2823,6 +1901,19 @@ async def test_page_uses_external_script_only(settings: Settings) -> None:
         for source in expected_scripts
     ]
     assert positions == sorted(positions)
+
+
+@pytest.mark.anyio
+async def test_native_session_without_a_title_is_marked_as_unavailable(
+    settings: Settings,
+) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/static/js/features/workspace-sessions.js")
+
+    assert response.status_code == 200
+    assert 'return title || "标题暂未读取到";' in response.text
+    assert '"未命名 Native Session"' not in response.text
 
 
 @pytest.mark.anyio

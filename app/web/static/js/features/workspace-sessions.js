@@ -634,10 +634,18 @@
     return button;
   };
 
-  const nativeSessionDetailLines = (session) => [
-    `目录：${session.cwd}`,
-    `创建：${new Date(session.created_at).toLocaleString("zh-CN")} · 更新：${new Date(session.updated_at).toLocaleString("zh-CN")}`,
-  ];
+  const nativeSessionDetailLines = (session) => {
+    const timestamp = session.updated_at || session.created_at;
+    return [
+      `目录：${session.cwd}`,
+      `时间：${new Date(timestamp).toLocaleString("zh-CN")}`,
+    ];
+  };
+
+  const nativeSessionTitle = (session) => {
+    const title = typeof session.title === "string" ? session.title.trim() : "";
+    return title || "标题暂未读取到";
+  };
 
   const renderNativeSessions = (items, sessions) => {
     let group = items.querySelector(':scope > .workspace-preview-session-group[data-session-group="native-sessions"]');
@@ -669,7 +677,7 @@
       const details = document.createElement("div");
       row.className = "workspace-preview-native-session";
       row.classList.toggle("is-unavailable", unavailable);
-      title.textContent = session.title || "未命名 Native Session";
+      title.textContent = nativeSessionTitle(session);
       details.className = "workspace-preview-native-session-details";
       nativeSessionDetailLines(session).forEach((line) => {
         const detail = document.createElement("small");

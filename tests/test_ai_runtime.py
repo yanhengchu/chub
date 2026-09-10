@@ -1349,7 +1349,7 @@ def test_native_list_omits_bound_items_before_writer_probe(settings: Settings) -
             RuntimeNativeSession(
                 runtime_id="codex",
                 native_session_id=unbound_id,
-                cwd=Path("/workspace/unbound"),
+                cwd=Path.home() / "workspace/unbound",
                 created_at=now,
                 updated_at=now,
             ),
@@ -1363,7 +1363,7 @@ def test_native_list_omits_bound_items_before_writer_probe(settings: Settings) -
 
     _sessions, native_sessions = manager.list_sessions_with_native_sessions()
 
-    assert [item.cwd for item in native_sessions] == ["/workspace/unbound"]
+    assert [item.cwd for item in native_sessions] == ["~/workspace/unbound"]
     manager.runtime_adapter.has_active_writer.assert_called_once_with(unbound_id)
 
 

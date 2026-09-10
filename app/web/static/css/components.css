@@ -2528,6 +2528,21 @@ button.settings-utility-row > span:last-child {
   background: color-mix(in srgb, var(--color-surface) 92%, var(--color-surface-raised));
 }
 
+.workspace-preview-work-surface:not(.workspace-project-documents) {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.workspace-preview-work-surface:not(.workspace-project-documents) > .workspace-preview-work-section {
+  padding: 0;
+}
+
+.workspace-preview-work-surface:not(.workspace-project-documents) > .workspace-preview-work-section + .workspace-preview-work-section {
+  margin-top: 1rem;
+  border-top: 0;
+}
+
 .workspace-project-documents-heading,
 .workspace-project-document,
 .workspace-automation-task,
@@ -4605,6 +4620,14 @@ pre {
   background: var(--color-border);
 }
 
+.workspace-workstation > .workstation-group + .workstation-group::before {
+  display: none;
+}
+
+.workspace-automation-details > .workstation-group + .workstation-group::before {
+  display: none;
+}
+
 .workstation-group-heading {
   display: flex;
   align-items: center;
@@ -4636,6 +4659,30 @@ pre {
   min-width: 0;
 }
 
+.workspace-workstation .workstation-status-list {
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-surface-raised);
+}
+
+.workspace-automation-details > .workstation-group > .workstation-status-list {
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-surface-raised);
+}
+
+.workspace-workstation .workstation-status-row {
+  min-height: 66px;
+  padding: 0.75rem 1rem;
+}
+
+.workspace-automation-details > .workstation-group > .workstation-status-list > .workstation-status-row {
+  min-height: 66px;
+  padding: 0.75rem 1rem;
+}
+
 .workstation-weekly-workflow {
   display: grid;
   gap: 0.5rem;
@@ -4648,6 +4695,18 @@ pre {
 .workstation-weekly-workflow h4 {
   margin: 0;
   font-size: 0.86rem;
+}
+
+.workspace-automation-details > .workstation-group > .workstation-status-list > .workstation-weekly-workflow {
+  border: 0;
+  border-radius: 0;
+  padding: 0.75rem 1rem;
+}
+
+.workspace-automation-details > .workstation-group > .workstation-status-list > .workstation-weekly-workflow + .workstation-weekly-workflow,
+.workspace-automation-details > .workstation-group > .workstation-status-list > .workstation-weekly-workflow + .workstation-status-row,
+.workspace-automation-details > .workstation-group > .workstation-status-list > .workstation-status-row + .workstation-weekly-workflow {
+  border-top: 1px solid var(--color-border);
 }
 
 .workstation-status-row {
@@ -4748,8 +4807,8 @@ pre {
 
 .automation-environment .workstation-status-row,
 .automation-account-environment .workstation-status-row {
-  min-height: 0;
-  padding-block: 0.45rem;
+  min-height: 66px;
+  padding: 0.75rem 1rem;
 }
 
 .openclaw-actions {

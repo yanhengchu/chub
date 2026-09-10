@@ -274,6 +274,12 @@ class WeixinChubModeManager:
         configured = self._bootstrap_config(config)
         fallback = WeixinChubModeState(configuration=configured)
         try:
+            development_snapshot = self.development_stage.snapshot()
+        except ApiError:
+            development_snapshot = None
+        else:
+            fallback.orchestration_development_source_hash = development_snapshot.source_hash
+        try:
             if self.path.is_symlink():
                 raise OSError("Weixin Chub mode state must not be a symlink")
             content = self.path.read_bytes()
@@ -296,6 +302,17 @@ class WeixinChubModeManager:
                 exc_info=True,
             )
         changed = False
+        if state.orchestration_implementation == "internal":
+            state.orchestration_implementation = "weixin-orchestration-dev"
+            state.orchestration_module_ref = None
+            try:
+                snapshot = development_snapshot or self.development_stage.snapshot()
+            except ApiError:
+                self._state_error = True
+                LOGGER.warning("Weixin development implementation is unavailable")
+            else:
+                state.orchestration_development_source_hash = snapshot.source_hash
+            changed = True
         if state.configuration != configured:
             changed_session_configuration = any(
                 getattr(state.configuration, field) != getattr(configured, field)
@@ -563,20 +580,10 @@ class WeixinChubModeManager:
 
     def set_orchestration_implementation(
         self,
-        implementation: Literal["internal", "weixin-orchestration-dev", "module"],
+        implementation: Literal["weixin-orchestration-dev", "module"],
         module_ref: str | None = None,
     ) -> WeixinTaskOrchestrationSettingsStatus:
         with self._lock:
-            if implementation == "internal":
-                if self._state.orchestration_implementation != implementation:
-                    next_state = self._state.model_copy(deep=True)
-                    next_state.orchestration_implementation = implementation
-                    next_state.orchestration_development_source_hash = None
-                    next_state.orchestration_module_ref = None
-                    self._write_state(next_state)
-                    self._state = next_state
-                return self.orchestration_settings()
-
             if implementation == "module":
                 if module_ref is None:
                     raise ApiError(
@@ -628,6 +635,29 @@ class WeixinChubModeManager:
                 self._state = next_state
             return self.orchestration_settings()
 
+    def require_orchestration_implementation_available(self) -> None:
+        """Allow text optimization only when an external implementation is ready."""
+        with self._lock:
+            implementation = self._state.orchestration_implementation
+            module_ref = self._state.orchestration_module_ref
+            source_hash = self._state.orchestration_development_source_hash
+        if implementation == "module":
+            self.orchestration_module_service.require(module_ref)
+            return
+        if implementation != "weixin-orchestration-dev":
+            raise ApiError(
+                409,
+                "weixin_orchestration_implementation_required",
+                "请先选择可用的开发实现或 ZIP，再启用文本优化。",
+            )
+        snapshot = self.development_stage.snapshot()
+        if source_hash != snapshot.source_hash:
+            raise ApiError(
+                409,
+                "weixin_orchestration_development_changed",
+                "微信开发编排实现已变化，请重新确认后再启用文本优化。",
+            )
+
     def list_orchestration_modules(self):
         with self._lock:
             active_ref = self._state.orchestration_module_ref
@@ -666,18 +696,14 @@ class WeixinChubModeManager:
             previous_state = self._state
             active = previous_state.orchestration_module_ref == implementation_ref
             if active:
-                next_state = previous_state.model_copy(deep=True)
-                next_state.orchestration_implementation = "internal"
-                next_state.orchestration_development_source_hash = None
-                next_state.orchestration_module_ref = None
-                self._write_state(next_state)
-                self._state = next_state
+                raise ApiError(
+                    409,
+                    "weixin_orchestration_module_active",
+                    "当前模块正在用于文本优化，请先选择开发实现或其他 ZIP。",
+                )
             try:
                 self.orchestration_module_service.remove(implementation_ref)
             except ApiError:
-                if active:
-                    self._write_state(previous_state)
-                    self._state = previous_state
                 raise
 
     def _new_request_stage_chain(
@@ -689,14 +715,7 @@ class WeixinChubModeManager:
         list[WeixinTaskOrchestrationStage],
     ]:
         if not preprocess:
-            return "internal", []
-        if self._state.orchestration_implementation == "internal":
-            return "internal", [
-                WeixinTaskOrchestrationStage(
-                    kind="internal",
-                    stage_id="weixin_refinement",
-                )
-            ]
+            return "direct", []
         if self._state.orchestration_implementation == "module":
             module_ref = self._state.orchestration_module_ref
             self.orchestration_module_service.require(module_ref)
@@ -1021,8 +1040,12 @@ class WeixinChubModeManager:
                         )
 
                     if stage.kind == "internal":
-                        accepted = enqueue_refinement()
-                    elif stage.kind == "development":
+                        raise ApiError(
+                            503,
+                            "weixin_orchestration_implementation_retired",
+                            "旧版内置文本优化已停用，请重新提交任务。",
+                        )
+                    if stage.kind == "development":
                         accepted = self.development_stage.execute_refinement(
                             implementation_id=stage.development_ref,
                             source_hash=stage.source_hash,
@@ -1715,6 +1738,14 @@ class WeixinChubModeManager:
         stage = request.stage_chain[min(request.cursor, len(request.stage_chain) - 1)]
         if stage.stage_id != "weixin_refinement":
             reason = "原始编排阶段已失效，本次任务未执行。"
+            self._finish_optimized_source_submission(
+                entry,
+                f"Optimization failed · {reason}",
+                failed=True,
+            )
+            return TranslationExecutionOutcome(status="failed", error=reason)
+        if stage.kind == "internal":
+            reason = "旧版内置文本优化已停用，请重新提交任务。"
             self._finish_optimized_source_submission(
                 entry,
                 f"Optimization failed · {reason}",

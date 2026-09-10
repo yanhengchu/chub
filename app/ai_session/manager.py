@@ -703,7 +703,7 @@ class AiSessionManager:
                 [self._public(session) for session in self.store.list()],
                 [
                     NativeSessionInfo(
-                        cwd=str(item.cwd),
+                        cwd=self._native_session_cwd_display(item.cwd),
                         title=item.title,
                         created_at=item.created_at,
                         updated_at=item.updated_at,
@@ -718,6 +718,14 @@ class AiSessionManager:
                     for item in unbound_native_sessions
                 ],
             )
+
+    @staticmethod
+    def _native_session_cwd_display(cwd: Path) -> str:
+        try:
+            relative_path = cwd.relative_to(Path.home())
+        except ValueError:
+            return str(cwd)
+        return "~" if relative_path == Path(".") else f"~/{relative_path}"
 
     def _issue_native_action_ref(self, native_session_id: str) -> str:
         now = time.monotonic()

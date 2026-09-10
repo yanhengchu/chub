@@ -141,7 +141,7 @@ def test_dispatch_immediately_acknowledges_voice_task(
     assert result.message == submitted_task_message(settings, "检查语音任务")
 
 
-def test_submission_persists_one_internal_orchestration_request(
+def test_submission_persists_one_direct_orchestration_request(
     settings: Settings,
 ) -> None:
     manager, _codex_manager, quick_interactions = configured_manager(settings)
@@ -167,7 +167,7 @@ def test_submission_persists_one_internal_orchestration_request(
     assert len(manager._state.orchestration_requests) == 1
     request = manager._state.orchestration_requests[0]
     assert request.message_id == "orchestration-record-1"
-    assert request.implementation == "internal"
+    assert request.implementation == "direct"
     assert request.status == "waiting"
     assert request.checkpoint == "task.submitted"
     assert request.session_id == "session-1"
@@ -748,11 +748,11 @@ def test_optimized_task_selects_the_final_session_after_refinement(settings: Set
     assert request.original_prompt == "检查下服务咋样"
     assert request.current_prompt == "检查下服务咋样"
     assert [(stage.kind, stage.stage_id) for stage in request.stage_chain] == [
-        ("internal", "weixin_refinement")
+        ("development", "weixin_refinement")
     ]
     assert request.cursor == 0
     assert request.translation_entry_id == "translation-entry"
-    assert request.checkpoint == "internal.weixin_refinement.queued"
+    assert request.checkpoint == "development.weixin_refinement.queued"
     codex_manager.list_sessions.return_value = [codex_manager.get_session.return_value]
     entry = TranslationEntry(
         id="translation-entry",
@@ -873,7 +873,7 @@ def test_development_implementation_switch_only_affects_new_requests(
     manager.translation_manager.enqueue.return_value = True
     manager.translation_manager.entry_for_orchestration.side_effect = [
         SimpleNamespace(id="development-entry"),
-        SimpleNamespace(id="internal-entry"),
+        SimpleNamespace(id="development-next-entry"),
     ]
 
     manager.set_orchestration_implementation("weixin-orchestration-dev")
@@ -885,9 +885,9 @@ def test_development_implementation_switch_only_affects_new_requests(
         delivery_route=delivery_route(),
         preprocess=True,
     )
-    manager.set_orchestration_implementation("internal")
+    manager.set_orchestration_implementation("weixin-orchestration-dev")
     manager.submit(
-        message_id="internal-new",
+        message_id="development-new",
         prompt="检查服务",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -897,8 +897,8 @@ def test_development_implementation_switch_only_affects_new_requests(
 
     existing, new = manager._state.orchestration_requests
     assert existing.stage_chain[0].kind == "development"
-    assert new.implementation == "internal"
-    assert new.stage_chain[0].kind == "internal"
+    assert new.implementation == "weixin-orchestration-dev"
+    assert new.stage_chain[0].kind == "development"
 
 
 def test_development_preference_preserves_direct_and_confirmation_modes(
@@ -922,7 +922,7 @@ def test_development_preference_preserves_direct_and_confirmation_modes(
         delivery_route=delivery_route(),
     )
     direct = manager._state.orchestration_requests[0]
-    assert direct.implementation == "internal"
+    assert direct.implementation == "direct"
     assert direct.stage_chain == []
     quick_interactions.submit.assert_called_once()
 
@@ -1096,7 +1096,7 @@ def test_refinement_confirmation_keeps_the_stage_pending_until_confirmed(
     assert quick_interactions.submit.call_count == 0
     assert request.current_prompt == "请检查服务。"
     assert request.cursor == 0
-    assert request.checkpoint == "internal.weixin_refinement.awaiting_confirmation"
+    assert request.checkpoint == "development.weixin_refinement.awaiting_confirmation"
 
     submitted = manager.retry_confirmed_optimized_task(
         entry.model_copy(

@@ -64,7 +64,7 @@ class TranslationSettingsUpdate(BaseModel):
 class TaskOrchestrationSettingsUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    implementation: Literal["internal", "weixin-orchestration-dev", "module"]
+    implementation: Literal["weixin-orchestration-dev", "module"]
     module_ref: str | None = Field(default=None, min_length=68, max_length=180)
 
     @model_validator(mode="after")
@@ -175,6 +175,8 @@ def update_weixin_translation_settings(
                 payload.reasoning_effort,
             )
         else:
+            if mode != "direct":
+                request.app.state.weixin_chub_mode.require_orchestration_implementation_available()
             result = request.app.state.weixin_translation.set_processing_mode(mode)
     except ApiError:
         log_operation(

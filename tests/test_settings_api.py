@@ -166,7 +166,7 @@ async def test_task_orchestration_settings_persist_development_selection(setting
         )
 
     assert initial.status_code == 200
-    assert initial.json()["data"]["implementation"] == "internal"
+    assert initial.json()["data"]["implementation"] == "weixin-orchestration-dev"
     assert updated.status_code == 200
     assert updated.json()["data"]["implementation"] == "weixin-orchestration-dev"
     assert updated.json()["data"]["development_available"] is True
@@ -214,6 +214,15 @@ async def test_task_orchestration_module_lifecycle_api(settings, tmp_path) -> No
             "/api/settings/weixin-task-orchestration/modules",
             headers=authorization(settings),
         )
+        active_removal = await client.delete(
+            f"/api/settings/weixin-task-orchestration/modules/{module_ref}",
+            headers=authorization(settings),
+        )
+        switched = await client.put(
+            "/api/settings/weixin-task-orchestration",
+            headers=authorization(settings),
+            json={"implementation": "weixin-orchestration-dev"},
+        )
         removed = await client.delete(
             f"/api/settings/weixin-task-orchestration/modules/{module_ref}",
             headers=authorization(settings),
@@ -228,8 +237,11 @@ async def test_task_orchestration_module_lifecycle_api(settings, tmp_path) -> No
     assert activated.json()["data"]["implementation"] == "module"
     assert listed.json()["data"]["modules"][0]["active"] is True
     assert listed.json()["data"]["modules"][0]["removable"] is True
+    assert active_removal.status_code == 409
+    assert active_removal.json()["error"]["code"] == "weixin_orchestration_module_active"
+    assert switched.status_code == 200
     assert removed.status_code == 200
-    assert reloaded.json()["data"]["implementation"] == "internal"
+    assert reloaded.json()["data"]["implementation"] == "weixin-orchestration-dev"
 
 
 @pytest.mark.anyio
@@ -239,7 +251,7 @@ async def test_task_orchestration_settings_rejects_unrelated_module_reference(se
         response = await client.put(
             "/api/settings/weixin-task-orchestration",
             headers=authorization(settings),
-            json={"implementation": "internal", "module_ref": "x" * 68},
+            json={"implementation": "weixin-orchestration-dev", "module_ref": "x" * 68},
         )
 
     assert response.status_code == 422

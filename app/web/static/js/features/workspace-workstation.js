@@ -18,6 +18,9 @@ window.initializeWorkspaceWorkstation = () => {
     workerRestart: byId("workspace-worker-restart"),
     upgradeDetail: byId("workspace-upgrade-detail"),
     upgradeStart: byId("workspace-upgrade-start"),
+    developmentRefresh: byId("workspace-development-refresh"),
+    developmentCodexDetail: byId("workspace-development-codex-detail"),
+    developmentWeixinDetail: byId("workspace-development-weixin-detail"),
     thirdPartyRefresh: byId("workspace-third-party-refresh"),
     openclawDetail: byId("workspace-openclaw-detail"),
     openclawStart: byId("workspace-openclaw-start"),
@@ -45,6 +48,11 @@ window.initializeWorkspaceWorkstation = () => {
   let upgradeStarting = false;
   let openclawOperating = false;
   let thirdPartyLoading = false;
+  let developmentLoading = false;
+  let developmentRefreshing = false;
+  let developmentCodexConfirmed = false;
+  let developmentWeixinConfirmed = false;
+  let developmentSnapshot = null;
   let openclawStatus = null;
   let openclawWeixinLogin = null;
   let openclawWeixinPollTimer = 0;
@@ -61,6 +69,7 @@ window.initializeWorkspaceWorkstation = () => {
   let snapshot = { status: null, worker: null, upgrade: null };
   const snapshotCacheKey = "chub.workspace.workstation.v1";
   const thirdPartySnapshotCacheKey = "chub.workspace.thirdParty.v1";
+  const developmentSnapshotCacheKey = "chub.workspace.development.v1";
   const workbenchStatusLoadingMinimumMs = 220;
   const requestAbortController = new AbortController();
 
@@ -138,6 +147,33 @@ window.initializeWorkspaceWorkstation = () => {
       window.sessionStorage.setItem(
         thirdPartySnapshotCacheKey,
         JSON.stringify({ status, login }),
+      );
+    } catch {
+      // The latest server data remains usable when browser storage is unavailable.
+    }
+  };
+
+  const readDevelopmentSnapshot = () => {
+    try {
+      const cached = JSON.parse(
+        window.sessionStorage.getItem(developmentSnapshotCacheKey) || "null",
+      );
+      if (
+        !isSnapshotValue(cached?.runtime)
+        || !isSnapshotValue(cached?.orchestration)
+        || !isSnapshotValue(cached?.modules)
+      ) return null;
+      return cached;
+    } catch {
+      return null;
+    }
+  };
+
+  const cacheDevelopmentSnapshot = (runtime, orchestration, modules) => {
+    try {
+      window.sessionStorage.setItem(
+        developmentSnapshotCacheKey,
+        JSON.stringify({ runtime, orchestration, modules }),
       );
     } catch {
       // The latest server data remains usable when browser storage is unavailable.
@@ -228,6 +264,7 @@ window.initializeWorkspaceWorkstation = () => {
     elements.chubRestart.disabled = hubRestarting || upgradeRunning;
     elements.workerRestart.disabled = workerRestarting || !workerIsCurrent || !upgradeIsCurrent || !workerState?.can_restart || upgradeRunning;
     elements.upgradeStart.disabled = upgradeStarting || !upgradeIsCurrent || !upgradeState?.can_start;
+    elements.developmentRefresh.disabled = developmentLoading || developmentRefreshing;
     const gatewayReady = Boolean(openclawStatus?.installed && openclawStatus?.configured);
     const activeLogin = ["starting", "waiting_scan", "needs_verification", "confirming", "cancelling"].includes(openclawWeixinLogin?.state);
     const gatewayStopped = openclawStatus?.state === "stopped";
@@ -272,6 +309,40 @@ window.initializeWorkspaceWorkstation = () => {
   const renderUpgrade = (data) => {
     upgradeState = data;
     setStatus(elements.upgradeDetail, `状态：${upgradeLabel(data)}。${data.message}`, data.state === "failed" ? "failed" : data.can_start ? "success" : "warning");
+    syncControls();
+  };
+
+  const implementationVersions = (items, fallback) => {
+    const versions = items
+      .filter((item) => item?.available !== false)
+      .map((item) => `${item.name || item.module_id || "正式版"} ${item.version || ""}`.trim());
+    return versions.length ? versions.join("、") : fallback;
+  };
+
+  const renderDevelopment = (runtime, orchestration, modules) => {
+    const implementations = Array.isArray(runtime?.implementations) ? runtime.implementations : [];
+    const builtin = implementations.find((item) => item.implementation_id === "builtin-dev");
+    const codexFormalVersions = implementationVersions(
+      implementations.filter((item) => item.implementation_id !== "builtin-dev"),
+      "暂无正式版",
+    );
+    const codexDevelopmentVersion = builtin?.version || "未读取到";
+    setStatus(
+      elements.developmentCodexDetail,
+      `本地 AI Runtime · 开发版 ${codexDevelopmentVersion} · 正式版 ${codexFormalVersions}${developmentCodexConfirmed ? " · 已确认" : ""}`,
+      builtin ? "success" : "warning",
+    );
+
+    const weixinFormalVersions = implementationVersions(
+      Array.isArray(modules?.modules) ? modules.modules : [],
+      "暂无正式版",
+    );
+    const developmentAvailable = orchestration?.development_available === true;
+    setStatus(
+      elements.developmentWeixinDetail,
+      `微信普通任务润色 · 开发版 ${developmentAvailable ? "weixin-orchestration-dev" : "不可用"} · 正式版 ${weixinFormalVersions}${developmentWeixinConfirmed ? " · 已确认" : ""}`,
+      developmentAvailable ? "success" : "warning",
+    );
     syncControls();
   };
 
@@ -410,6 +481,64 @@ window.initializeWorkspaceWorkstation = () => {
       return false;
     } finally {
       thirdPartyLoading = false;
+      syncControls();
+    }
+  };
+
+  const loadDevelopment = async () => {
+    developmentLoading = true;
+    syncControls();
+    try {
+      const [runtime, orchestration, modules] = await Promise.all([
+        request("/api/codex/runtime-implementations", { cache: "no-store" }),
+        request("/api/settings/weixin-task-orchestration", { cache: "no-store" }),
+        request("/api/settings/weixin-task-orchestration/modules", { cache: "no-store" }),
+      ]);
+      if (disposed) return false;
+      developmentSnapshot = { runtime, orchestration, modules };
+      renderDevelopment(runtime, orchestration, modules);
+      cacheDevelopmentSnapshot(runtime, orchestration, modules);
+      return true;
+    } catch (error) {
+      if (disposed || error?.name === "AbortError") return false;
+      if (!developmentSnapshot) {
+        setStatus(elements.developmentCodexDetail, error.message || "Codex Runtime 开发实现读取失败。", "failed");
+        setStatus(elements.developmentWeixinDetail, error.message || "微信任务编排开发实现读取失败。", "failed");
+      } else {
+        showToolbarFeedback(error.message || "开发环境状态读取失败。");
+      }
+      return false;
+    } finally {
+      developmentLoading = false;
+      syncControls();
+    }
+  };
+
+  const refreshDevelopment = async () => {
+    developmentRefreshing = true;
+    syncControls();
+    setStatus(elements.developmentCodexDetail, "正在重新读取并确认 Codex Runtime 开发实现。", "warning");
+    setStatus(elements.developmentWeixinDetail, "正在重新读取并确认微信任务编排开发实现。", "warning");
+    try {
+      const [codexResult, weixinResult] = await Promise.allSettled([
+        request("/api/runtime-modules/builtin-dev/refresh", { method: "POST" }),
+        request("/api/settings/weixin-task-orchestration", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ implementation: "weixin-orchestration-dev" }),
+        }),
+      ]);
+      developmentCodexConfirmed = codexResult.status === "fulfilled";
+      developmentWeixinConfirmed = weixinResult.status === "fulfilled";
+      await loadDevelopment();
+      if (codexResult.status === "rejected") {
+        setStatus(elements.developmentCodexDetail, codexResult.reason?.message || "Codex Runtime 开发实现确认失败。", "failed");
+      }
+      if (weixinResult.status === "rejected") {
+        setStatus(elements.developmentWeixinDetail, weixinResult.reason?.message || "微信任务编排开发实现确认失败。", "failed");
+      }
+    } finally {
+      developmentRefreshing = false;
       syncControls();
     }
   };
@@ -660,6 +789,15 @@ window.initializeWorkspaceWorkstation = () => {
   if (cachedThirdPartySnapshot) {
     renderOpenClaw(cachedThirdPartySnapshot.status, cachedThirdPartySnapshot.login);
   }
+  const cachedDevelopmentSnapshot = readDevelopmentSnapshot();
+  if (cachedDevelopmentSnapshot) {
+    developmentSnapshot = cachedDevelopmentSnapshot;
+    renderDevelopment(
+      cachedDevelopmentSnapshot.runtime,
+      cachedDevelopmentSnapshot.orchestration,
+      cachedDevelopmentSnapshot.modules,
+    );
+  }
   syncControls();
 
   window.disposeWorkspaceWorkstation = () => {
@@ -676,6 +814,7 @@ window.initializeWorkspaceWorkstation = () => {
 
   elements.refresh.addEventListener("click", () => { void refresh(); });
   elements.thirdPartyRefresh.addEventListener("click", () => { void loadThirdParty(); });
+  elements.developmentRefresh.addEventListener("click", () => { void refreshDevelopment(); });
   elements.openclawStart.addEventListener("click", () => { void controlOpenClaw("start"); });
   elements.openclawRestart.addEventListener("click", () => {
     void showConfirmationDialog({
@@ -770,6 +909,7 @@ window.initializeWorkspaceWorkstation = () => {
   });
 
   void refresh();
+  void loadDevelopment();
   void loadThirdParty();
 };
 

@@ -142,7 +142,7 @@ class WeixinTaskOrchestrationRequest(_StrictModel):
     id: str = Field(min_length=36, max_length=36)
     message_id: str = Field(min_length=1, max_length=500)
     operation_id: str = Field(min_length=1, max_length=128)
-    implementation: str = Field(default="internal", min_length=1, max_length=180)
+    implementation: str = Field(default="direct", min_length=1, max_length=180)
     task_kind: Literal["direct", "text_processing"]
     original_prompt: str | None = Field(default=None, min_length=1, max_length=8_000)
     current_prompt: str | None = Field(default=None, min_length=1, max_length=8_000)
@@ -244,7 +244,7 @@ class WeixinChubModeState(_StrictModel):
     configuration: WeixinChubModeRuntimeConfig
     orchestration_implementation: Literal[
         "internal", "weixin-orchestration-dev", "module"
-    ] = "internal"
+    ] = "weixin-orchestration-dev"
     orchestration_development_source_hash: str | None = Field(
         default=None,
         min_length=64,
@@ -276,7 +276,7 @@ class WeixinChubModeStatus(_StrictModel):
 
 
 class WeixinTaskOrchestrationSettingsStatus(_StrictModel):
-    implementation: Literal["internal", "weixin-orchestration-dev", "module"]
+    implementation: Literal["weixin-orchestration-dev", "module"]
     development_available: bool
     development_source_hash: str | None = Field(default=None, min_length=64, max_length=64)
     module_ref: str | None = Field(default=None, min_length=68, max_length=180)

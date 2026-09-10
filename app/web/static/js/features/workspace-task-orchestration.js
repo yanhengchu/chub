@@ -174,11 +174,6 @@
       const models = Array.isArray(catalog.models) ? catalog.models : [];
       const implementationOptions = [
         {
-          value: "internal",
-          label: "内置实现",
-          description: "使用 Chub 已验收的内置润色阶段。",
-        },
-        {
           value: "weixin-orchestration-dev",
           label: "开发实现",
           description: orchestration.development_available
@@ -193,14 +188,14 @@
       }));
       const selectedImplementation = orchestration.implementation === "module"
         ? `module:${orchestration.module_ref || ""}`
-        : orchestration.implementation || "internal";
+        : orchestration.implementation || "weixin-orchestration-dev";
       implementationPicker.setOptions(
         implementationOptions,
         selectedImplementation,
       );
       implementationDescription.textContent = orchestration.development_available
         ? "只影响之后新接收的润色任务；已受理任务继续使用创建时的实现和产物快照。"
-        : "开发实现当前不可用；已受理任务不会回退到内置实现。";
+        : "开发实现当前不可用；请关闭文本优化或选择可用 ZIP。";
       implementationTrigger.setAttribute("aria-label", `编排实现：${implementationValue.textContent}`);
       const selectedMode = status.mode || (status.enabled ? "auto" : "direct");
       processingPicker.setOptions([
@@ -285,10 +280,14 @@
         saving
         || loading
         || (!orchestration.development_available
-          && orchestration.implementation === "internal"),
+          && !modules.some((item) => item.available)),
       );
       showInternalNativeSession.disabled = saving || loading;
-      enabledInput.disabled = saving || loading;
+      enabledInput.disabled = saving || loading || (
+        !status.enabled
+        && !orchestration.development_available
+        && !modules.some((item) => item.available)
+      );
     };
     const load = async () => {
       if (loading || disposed) return;

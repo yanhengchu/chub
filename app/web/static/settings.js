@@ -681,7 +681,7 @@ async function confirmOrchestrationModuleRemoval(module) {
   if (orchestrationModuleBusy || typeof showConfirmationDialog !== "function") return;
   await showConfirmationDialog({
     title: "移除能力模块",
-    description: "移除后该 ZIP 产物不可恢复；如果当前正在启用，会先切回内置实现。仍被未结束任务引用的模块不能移除。",
+    description: "移除后该 ZIP 产物不可恢复。当前正在使用的模块必须先切换到开发实现或其他 ZIP；仍被未结束任务引用的模块不能移除。",
     details: [{ label: "模块", value: module.name || module.implementation_ref }],
     confirmLabel: "移除",
     pendingLabel: "正在移除…",
@@ -695,7 +695,7 @@ async function confirmOrchestrationModuleRemoval(module) {
           { method: "DELETE" },
         );
         showRuntimeModuleToast(
-          module.active ? "能力模块已移除；微信任务润色已切回内置实现。" : "能力模块已移除。",
+          "能力模块已移除。",
           "success",
         );
         await loadOrchestrationModules();

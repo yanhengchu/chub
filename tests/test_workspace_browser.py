@@ -204,6 +204,25 @@ async def _mock_workspace_api(route) -> None:
         "/api/openclaw/status": OPENCLAW_RESPONSE,
         "/api/openclaw/integration": OPENCLAW_INTEGRATION_RESPONSE,
         "/api/openclaw/weixin/login": WEIXIN_LOGIN_RESPONSE,
+        "/api/codex/runtime-implementations": {
+            "success": True,
+            "data": {
+                "runtime_id": "codex",
+                "default_implementation_id": "builtin-dev",
+                "implementations": [
+                    {"implementation_id": "builtin-dev", "name": "Codex", "version": "dev"},
+                    {"implementation_id": "codex-010001", "name": "Codex", "version": "1.0.1"},
+                ],
+            },
+        },
+        "/api/settings/weixin-task-orchestration": {
+            "success": True,
+            "data": {"implementation": "weixin-orchestration-dev", "development_available": True},
+        },
+        "/api/settings/weixin-task-orchestration/modules": {
+            "success": True,
+            "data": {"modules": [{"module_id": "weixin-refinement", "name": "Weixin Refinement", "version": "1.0.0", "available": True}]},
+        },
         "/api/codex/sessions": {"success": True, "data": {"available": False, "sessions": []}},
         "/api/codex/runtimes": {
             "success": True,
@@ -260,6 +279,8 @@ async def test_openclaw_settings_only_requests_integration_metadata(
             await expect(page.locator("#settings-openclaw-integration-list")).to_contain_text(
                 "微信 ClawBot 适配器",
             )
+            await expect(page.get_by_text("核对微信 ClawBot 适配器与 Chub 插件的本机安装元数据。")).to_be_visible()
+            await expect(page.get_by_text("查看当前已登记的兼容补丁基线。")).to_be_visible()
             await expect(page.locator("#settings-openclaw-patch-list")).to_contain_text(
                 "已登记",
             )
@@ -309,6 +330,25 @@ async def _mock_workspace_api_with_quick_sessions(route) -> None:
 
 async def _mock_workspace_api_with_task_orchestration(route) -> None:
     path = urlsplit(route.request.url).path
+    if path == "/api/settings/weixin-translation" and route.request.method == "PUT":
+        assert json.loads(route.request.post_data or "{}") == {"enabled": False}
+        await route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({
+                "success": True,
+                "data": {
+                    "mode": "auto",
+                    "enabled": False,
+                    "model": None,
+                    "reasoning_effort": None,
+                    "queued": 0,
+                    "running": 0,
+                    "weixin_chub_mode_enabled": True,
+                },
+            }),
+        )
+        return
     if (
         path == "/api/settings/weixin-task-orchestration"
         and route.request.method == "PUT"
@@ -348,7 +388,7 @@ async def _mock_workspace_api_with_task_orchestration(route) -> None:
         "/api/settings/weixin-task-orchestration": {
             "success": True,
             "data": {
-                "implementation": "internal",
+                "implementation": "weixin-orchestration-dev",
                 "development_available": True,
                 "development_source_hash": "a" * 64,
             },
@@ -646,6 +686,8 @@ async def test_task_orchestration_opens_from_ai_runtime_settings_navigation(
                 page.get_by_role("region", name="微信任务润色"),
             ).to_be_visible()
             await expect(page.locator("#workspace-task-enabled")).to_be_checked()
+            await page.locator('label[for="workspace-task-enabled"]').click()
+            await expect(page.locator("#workspace-task-enabled")).not_to_be_checked()
             order = await page.locator(".workspace-task-orchestration-list").evaluate(
                 """(list) => Array.from(list.querySelectorAll('.workspace-task-orchestration-field')).map((row) => (
                     row.querySelector('input')?.id || row.querySelector('button')?.id || ''
@@ -659,7 +701,7 @@ async def test_task_orchestration_opens_from_ai_runtime_settings_navigation(
                 "自动润色后执行",
             )
             await expect(page.locator("#workspace-task-implementation-value")).to_have_text(
-                "内置实现",
+                "开发实现",
             )
             await page.locator("#workspace-task-implementation-trigger").click()
             await expect(page.locator("#workspace-task-implementation-menu")).to_contain_text(
@@ -765,7 +807,7 @@ async def test_runtime_settings_use_registered_navigation_and_presentation(
             await expect(page).to_have_url(re.compile(r"/settings/runtime/codex"))
             await expect(page.get_by_role("heading", name="Codex", exact=True)).to_be_visible()
             await expect(page.locator(".settings-workspace-description")).to_have_text(
-                "使用 Codex CLI 运行后台 AI 任务。",
+                "使用 Codex CLI 运行 Quick Worker 后台 AI 任务。",
             )
             await expect(page.locator("#runtime-management-list")).to_contain_text("健康")
             assert await page.evaluate("document.documentElement.scrollWidth - innerWidth") == 0
@@ -815,7 +857,7 @@ async def test_runtime_settings_keep_registered_description_when_status_is_unava
             )
             assert response is not None and response.status == 200
             await expect(page.locator(".settings-workspace-description")).to_have_text(
-                "使用 Codex CLI 运行后台 AI 任务。",
+                "使用 Codex CLI 运行 Quick Worker 后台 AI 任务。",
             )
             await expect(page.locator("#runtime-management-status")).to_have_text(
                 "暂时无法读取 AI Runtime 状态。",
@@ -1160,11 +1202,118 @@ async def test_workspace_section_switch_disposes_workstation_controller(
             )
             await page.get_by_role("link", name="自动化").click()
             await expect(page.get_by_role("heading", name="自动化环境")).to_be_visible()
+            assert await page.locator(".workspace-automations").evaluate(
+                "(element) => getComputedStyle(element).borderTopStyle",
+            ) == "none"
+            assert await page.locator(".workspace-automation-details").evaluate(
+                "(element) => getComputedStyle(element).borderTopStyle",
+            ) == "none"
+            assert await page.locator(
+                ".workspace-automations > .workspace-preview-work-section",
+            ).evaluate_all(
+                "(elements) => elements.every((element) => getComputedStyle(element).paddingTop === '0px')",
+            )
+            for selector in [
+                ".automation-environment > .workstation-status-list",
+                ".automation-account-environment > .workstation-status-list",
+            ]:
+                assert await page.locator(selector).evaluate(
+                    "(element) => getComputedStyle(element).borderTopStyle",
+                ) == "solid"
+            for selector in [
+                ".automation-account-environment",
+                ".workspace-automation-details > .workstation-group:last-child",
+            ]:
+                assert await page.locator(selector).evaluate(
+                    "(element) => getComputedStyle(element, '::before').display",
+                ) == "none"
             dispose_calls = await page.evaluate("window.__workstationDisposeCalls")
         finally:
             await context.close()
 
     assert dispose_calls >= 1
+    assert page_errors == []
+
+
+async def test_workstation_development_environment_reads_and_confirms_each_source(
+    workspace_browser_server: str,
+) -> None:
+    browser_session = session_factory()
+    requests: list[tuple[str, str]] = []
+
+    async def route_workspace_api(route) -> None:
+        path = urlsplit(route.request.url).path
+        requests.append((route.request.method, path))
+        if path == "/api/runtime-modules/builtin-dev/refresh" and route.request.method == "POST":
+            await route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"success": True, "data": {"module_id": "builtin-dev", "worker_generation": "test"}}),
+            )
+            return
+        if path == "/api/settings/weixin-task-orchestration" and route.request.method == "PUT":
+            assert json.loads(route.request.post_data or "{}") == {
+                "implementation": "weixin-orchestration-dev",
+            }
+            await route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"success": True, "data": {"implementation": "weixin-orchestration-dev", "development_available": True}}),
+            )
+            return
+        await _mock_workspace_api(route)
+
+    async with browser_session(ensure_page=False) as chrome:
+        context = await chrome.browser.new_context(viewport={"width": 390, "height": 844})
+        try:
+            await context.route(f"{workspace_browser_server}/api/**", route_workspace_api)
+            page = await context.new_page()
+            page_errors: list[str] = []
+            page.on("pageerror", lambda error: page_errors.append(str(error)))
+            response = await page.goto(workspace_browser_server, wait_until="domcontentloaded")
+            assert response is not None and response.status == 200
+
+            await expect(page.get_by_role("heading", name="开发环境")).to_be_visible()
+            assert await page.locator(".workspace-preview-work-surface").evaluate(
+                "(element) => getComputedStyle(element).borderTopStyle",
+            ) == "none"
+            assert await page.locator(".workspace-preview-work-surface > .workspace-preview-work-section").first.evaluate(
+                "(element) => getComputedStyle(element).paddingTop",
+            ) == "0px"
+            assert await page.locator(".workspace-workstation").evaluate(
+                "(element) => getComputedStyle(element).borderTopStyle",
+            ) == "none"
+            summary_box = await page.locator(".workspace-preview-summary").bounding_box()
+            workstation_box = await page.locator(".workspace-workstation").bounding_box()
+            assert summary_box is not None and workstation_box is not None
+            assert workstation_box["y"] - (summary_box["y"] + summary_box["height"]) >= 15
+            heading_box = await page.get_by_role("heading", name="开发环境").bounding_box()
+            group_box = await page.locator(".workspace-development-environment").bounding_box()
+            content_box = await page.locator(".workspace-development-environment .workstation-status-list").bounding_box()
+            assert heading_box is not None and group_box is not None and content_box is not None
+            assert abs(content_box["x"] - heading_box["x"]) <= 1
+            assert abs((group_box["x"] + group_box["width"]) - (content_box["x"] + content_box["width"])) <= 1
+            for selector in [
+                ".workspace-development-environment",
+                ".workspace-third-party-environment",
+            ]:
+                assert await page.locator(selector).evaluate(
+                    "(element) => getComputedStyle(element, '::before').display",
+                ) == "none"
+            await expect(page.locator("#workspace-development-codex-detail")).to_contain_text(
+                "开发版 dev · 正式版 Codex 1.0.1",
+            )
+            await expect(page.locator("#workspace-development-weixin-detail")).to_contain_text(
+                "开发版 weixin-orchestration-dev · 正式版 Weixin Refinement 1.0.0",
+            )
+            await page.locator("#workspace-development-refresh").click()
+            await expect(page.locator("#workspace-development-codex-detail")).to_contain_text("已确认")
+            await expect(page.locator("#workspace-development-weixin-detail")).to_contain_text("已确认")
+        finally:
+            await context.close()
+
+    assert ("POST", "/api/runtime-modules/builtin-dev/refresh") in requests
+    assert ("PUT", "/api/settings/weixin-task-orchestration") in requests
     assert page_errors == []
 
 

@@ -149,7 +149,7 @@ def test_finished_module_request_can_be_removed(settings, tmp_path) -> None:
             updated_at=utc_now(),
         )
     )
-    manager.set_orchestration_implementation("internal")
+    manager.set_orchestration_implementation("weixin-orchestration-dev")
 
     manager.remove_orchestration_module(module.implementation_ref)
 
