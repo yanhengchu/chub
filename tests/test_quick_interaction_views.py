@@ -42,6 +42,11 @@ const uncertainSession = {
 };
 const result = {
   preview: sessionView.buildSessionPreview(session),
+  untitledPreview: sessionView.buildSessionPreview({
+    ...session,
+    title: "  ",
+    workspace_name: "Chub",
+  }),
   ready: sessionView.buildSessionState({
     session,
     activeInteraction: false,
@@ -114,6 +119,8 @@ process.stdout.write(JSON.stringify(result));
         "renameAllowed": True,
         "loadingLabel": "正在读取 Session 状态",
     }
+    assert behavior["untitledPreview"]["displayTitle"] == "Chub"
+    assert behavior["untitledPreview"]["documentTitle"] == "Chub · 快速交互"
     assert behavior["ready"]["busy"] is False
     assert behavior["ready"]["stopReady"] is False
     assert behavior["ready"]["archiveReady"] is True

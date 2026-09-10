@@ -133,14 +133,38 @@ def test_model_update_is_serialized_with_quick_session_tasks(tmp_path: Path) -> 
     )
 
 
-def test_model_update_rejects_running_quick_session(tmp_path: Path) -> None:
+def test_model_update_allows_running_quick_session_for_the_next_task(tmp_path: Path) -> None:
     quick_interactions = manager(tmp_path)
     quick_interactions._running_sessions.add("session-1")
 
-    with pytest.raises(ApiError, match="正在执行"):
-        quick_interactions.update_session_model("session-1", "gpt-test", "high")
+    quick_interactions.update_session_model("session-1", "gpt-test", "high")
 
-    quick_interactions.codex_manager.update_session_model.assert_not_called()
+    quick_interactions.codex_manager.update_session_model.assert_called_once_with(
+        "session-1",
+        "gpt-test",
+        "high",
+    )
+
+
+def test_configuration_update_allows_running_quick_session_for_the_next_task(
+    tmp_path: Path,
+) -> None:
+    quick_interactions = manager(tmp_path)
+    quick_interactions._running_sessions.add("session-1")
+
+    quick_interactions.update_session_configuration(
+        "session-1",
+        "full-access",
+        "gpt-test",
+        "high",
+    )
+
+    quick_interactions.codex_manager.update_session_configuration.assert_called_once_with(
+        "session-1",
+        "full-access",
+        "gpt-test",
+        "high",
+    )
 
 
 def test_codex_execution_prompt_adds_delivery_guidance_without_changing_request(

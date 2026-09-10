@@ -773,15 +773,8 @@ class QuickInteractionManager:
         model: str,
         reasoning_effort: str,
     ):
-        """Compatibility wrapper for updating a quick Session model."""
+        """Persist a model choice for the next quick task in this Session."""
         with self._session_lock(session_id):
-            with self._lock:
-                if self._any_running(session_id):
-                    raise ApiError(
-                        409,
-                        "codex_session_model_update_busy",
-                        "Session 正在执行，请等待任务结束后重试。",
-                    )
             return self.codex_manager.update_session_model(
                 session_id,
                 model,
@@ -795,15 +788,8 @@ class QuickInteractionManager:
         model: str | None,
         reasoning_effort: str | None,
     ):
-        """Serialize a persistent future-task configuration update."""
+        """Serialize a persistent configuration update for subsequent tasks."""
         with self._session_lock(session_id):
-            with self._lock:
-                if self._any_running(session_id):
-                    raise ApiError(
-                        409,
-                        "codex_session_configuration_update_busy",
-                        "Session 正在执行，请等待任务结束后重试。",
-                    )
             return self.codex_manager.update_session_configuration(
                 session_id,
                 permission_mode,

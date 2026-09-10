@@ -559,6 +559,15 @@ input[type="password"] {
   opacity: 0.8;
 }
 
+.settings-field input.deployment-package-version-input {
+  flex: 0 0 calc(8ch + 1rem);
+  width: calc(8ch + 1rem);
+  min-width: 0;
+  max-width: calc(8ch + 1rem);
+  text-align: left;
+  font-variant-numeric: tabular-nums;
+}
+
 .settings-field select[data-settings-picker] {
   position: absolute;
   width: 1px;
@@ -899,6 +908,13 @@ input[type="password"] {
 
 .settings-divided-list .settings-utility-row + .settings-utility-row {
   border-top: 1px solid var(--color-border);
+}
+
+.settings-divided-list > #deployment-package-message {
+  margin: 0;
+  padding: 0.8rem 1rem;
+  border-top: 1px solid var(--color-border);
+  background: var(--color-surface);
 }
 
 .settings-form-actions {

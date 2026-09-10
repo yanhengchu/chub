@@ -87,6 +87,59 @@ def test_quick_interaction_timeout_defaults_to_six_hours(
     assert settings.ai_runtime.codex.quick_interaction_timeout_seconds == 21_600
 
 
+def test_extra_workspaces_are_resolved_and_keep_their_display_name(
+    tmp_path: Path,
+) -> None:
+    config_file = tmp_path / "settings.yaml"
+    config_file.write_text(
+        f"""{VALID_CONFIG}
+ai_runtime:
+  codex:
+    extra_workspaces:
+      - id: Deliveryline
+        name: Deliveryline Platform
+        path: {tmp_path}/deliveryline
+""",
+        encoding="utf-8",
+    )
+
+    settings = load_settings(config_file)
+
+    assert settings.ai_runtime.codex.extra_workspaces[0].id == "deliveryline"
+    assert settings.ai_runtime.codex.extra_workspaces[0].name == "Deliveryline Platform"
+    assert settings.ai_runtime.codex.extra_workspaces[0].path == tmp_path / "deliveryline"
+
+
+@pytest.mark.parametrize(
+    ("workspace_id", "message"),
+    [
+        ("chub", "extra workspace ID is reserved"),
+        ("workspace", "extra workspace ID is reserved"),
+        ("deliveryline!", "String should match pattern"),
+    ],
+)
+def test_extra_workspaces_reject_reserved_or_invalid_ids(
+    tmp_path: Path,
+    workspace_id: str,
+    message: str,
+) -> None:
+    config_file = tmp_path / "settings.yaml"
+    config_file.write_text(
+        f"""{VALID_CONFIG}
+ai_runtime:
+  codex:
+    extra_workspaces:
+      - id: {workspace_id}
+        name: Extra
+        path: {tmp_path}/extra
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match=message):
+        load_settings(config_file)
+
+
 def test_network_recovery_requires_fixed_connection_uuids_when_enabled() -> None:
     with pytest.raises(
         ValueError, match="requires a Wi-Fi device and connection UUIDs"

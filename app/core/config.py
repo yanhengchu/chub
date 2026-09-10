@@ -53,9 +53,36 @@ class LogsConfig(StrictModel):
     max_lines: int = Field(default=100, ge=1, le=500)
 
 
+_WORKSPACE_ID_PATTERN = r"^[a-z][a-z0-9-]{0,63}$"
+_BUILTIN_WORKSPACE_IDS = frozenset(
+    {"chub", "home", "workspace", "weixin-translation"}
+)
+
+
+class ExtraWorkspaceConfig(StrictModel):
+    """A locally trusted workspace that can be selected for new Sessions."""
+
+    id: str = Field(pattern=_WORKSPACE_ID_PATTERN)
+    name: str = Field(min_length=1, max_length=128)
+    path: Path
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def normalize_id(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        return value.strip().lower()
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalize_name(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+
 class CodexRuntimeConfig(StrictModel):
     enabled: bool = True
     workspace: Path = Path("~/workspace")
+    extra_workspaces: list[ExtraWorkspaceConfig] = Field(default_factory=list)
     data_file: Path = Path("data/local/state/codex/sessions.json")
     runtime_dir: Path = Path("data/local/runtime/codex")
     max_running: int = Field(default=3, ge=1, le=10)
@@ -64,6 +91,16 @@ class CodexRuntimeConfig(StrictModel):
         ge=10 * 60,
         le=24 * 60 * 60,
     )
+
+    @model_validator(mode="after")
+    def validate_extra_workspaces(self) -> "CodexRuntimeConfig":
+        workspace_ids = [workspace.id for workspace in self.extra_workspaces]
+        if len(workspace_ids) != len(set(workspace_ids)):
+            raise ValueError("extra workspace IDs must be unique")
+        reserved = set(workspace_ids) & _BUILTIN_WORKSPACE_IDS
+        if reserved:
+            raise ValueError("extra workspace ID is reserved")
+        return self
 
 
 class ExternalRuntimeModulesConfig(StrictModel):
@@ -98,6 +135,11 @@ class AiRuntimeConfig(StrictModel):
 
 class MaintenanceTerminalConfig(StrictModel):
     ticket_ttl_seconds: int = Field(default=600, ge=60, le=3600)
+
+
+class DeploymentPackageConfig(StrictModel):
+    state_file: Path = Path("data/local/state/deployment-package.json")
+    artifacts_dir: Path = Path("data/local/artifacts/releases")
 
 
 class ProjectDocumentsConfig(StrictModel):
@@ -271,6 +313,7 @@ class Settings(StrictModel):
     logs: LogsConfig = LogsConfig()
     ai_runtime: AiRuntimeConfig = AiRuntimeConfig()
     maintenance_terminal: MaintenanceTerminalConfig = MaintenanceTerminalConfig()
+    deployment_package: DeploymentPackageConfig = DeploymentPackageConfig()
     automations: AutomationsConfig = AutomationsConfig()
     project_documents: ProjectDocumentsConfig = ProjectDocumentsConfig()
     requests: RequestsConfig = RequestsConfig()
@@ -298,6 +341,8 @@ class Settings(StrictModel):
         self.ai_runtime.codex.workspace = (
             self.ai_runtime.codex.workspace.expanduser().resolve()
         )
+        for workspace in self.ai_runtime.codex.extra_workspaces:
+            workspace.path = workspace.path.expanduser().resolve()
         if not self.ai_runtime.codex.data_file.is_absolute():
             self.ai_runtime.codex.data_file = (
                 PROJECT_ROOT / self.ai_runtime.codex.data_file
@@ -334,6 +379,14 @@ class Settings(StrictModel):
         if not self.project_documents.state_file.is_absolute():
             self.project_documents.state_file = (
                 PROJECT_ROOT / self.project_documents.state_file
+            )
+        if not self.deployment_package.state_file.is_absolute():
+            self.deployment_package.state_file = (
+                PROJECT_ROOT / self.deployment_package.state_file
+            )
+        if not self.deployment_package.artifacts_dir.is_absolute():
+            self.deployment_package.artifacts_dir = (
+                PROJECT_ROOT / self.deployment_package.artifacts_dir
             )
         if not self.requests.state_file.is_absolute():
             self.requests.state_file = PROJECT_ROOT / self.requests.state_file

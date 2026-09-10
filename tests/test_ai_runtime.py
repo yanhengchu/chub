@@ -39,7 +39,10 @@ from app.codex.models import (
     CodexModelCatalogData,
     CodexModelInfo,
     CodexReasoningLevel,
+    SessionCreateRequest,
 )
+from app.core.config import ExtraWorkspaceConfig
+from app.quick_worker import production_codex_workspaces
 from chub_codex_runtime.runtime_adapter import CodexRuntimeAdapter
 from chub_codex_runtime.runtime_adapter import CODEX_RUNTIME_DESCRIPTOR
 from chub_codex_runtime.runtime_runner import CodexRuntimeRunner
@@ -534,6 +537,39 @@ def test_session_manager_pins_new_sessions_to_the_default_implementation(
     assert manager.get_session(first.id).implementation_id == "builtin-dev"
     assert manager.session_implementation_id(first.id) == "builtin-dev"
     assert manager.get_session(second.id).implementation_id == "codex-010000"
+
+
+def test_session_manager_uses_configured_extra_workspace(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    deliveryline = tmp_path / "deliveryline"
+    deliveryline.mkdir()
+    settings.ai_runtime.codex.extra_workspaces = [
+        ExtraWorkspaceConfig(
+            id="deliveryline",
+            name="Deliveryline",
+            path=deliveryline,
+        )
+    ]
+    manager = AiSessionManager(settings)
+
+    configured_workspaces = manager.workspaces()
+    workspaces = {workspace.id: workspace for workspace in configured_workspaces}
+    session = manager.create_session("deliveryline", permission_mode="full-access")
+
+    assert [workspace.id for workspace in configured_workspaces] == [
+        "home",
+        "workspace",
+        "chub",
+        "deliveryline",
+    ]
+    assert workspaces["deliveryline"].name == "Deliveryline"
+    assert workspaces["deliveryline"].path == str(deliveryline)
+    assert session.workspace_id == "deliveryline"
+    assert session.cwd == str(deliveryline)
+    assert production_codex_workspaces(settings)["deliveryline"] == deliveryline
+    assert SessionCreateRequest(workspace_id="deliveryline").workspace_id == "deliveryline"
 
 
 def test_session_manager_starts_with_builtin_runtime_when_no_formal_version_is_installed(settings: Settings) -> None:

@@ -111,6 +111,11 @@
     grid-template-columns: minmax(0, 1fr) auto;
   }
 
+  .settings-field .deployment-package-version-input {
+    width: 100%;
+    max-width: none;
+  }
+
   .settings-choice-picker {
     width: 100%;
     max-width: none;

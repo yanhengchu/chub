@@ -18,7 +18,7 @@ Chub 按维护者授信的个人工作站运行：优先保证本地可用、局
 
 | 功能域 | 当前可用能力 | 主要入口 |
 | --- | --- | --- |
-| 设备与维护 | 查看节点状态、执行白名单维护任务、查看受限日志 | 工作台、设置、日志页、`chub` CLI |
+| 设备与维护 | 查看节点状态、执行白名单维护任务、查看受限日志、生成本机正式部署包 | 工作台、设置、日志页、`chub` CLI |
 | AI Runtime 与会话 | 使用 Codex Runtime 创建 Chub Session，通过 Quick Worker 连续执行任务、查看原生会话和结果 | 工作台、Session 页、微信 ClawBot |
 | 任务执行 | 通过独立 Quick Worker 执行页面、微信和翻译快速任务 | 快速交互页、微信 ClawBot |
 | 需求储备 | 管理 R1-R9 轻量需求 | `chub` CLI、微信 ClawBot |
@@ -26,7 +26,7 @@ Chub 按维护者授信的个人工作站运行：优先保证本地可用、局
 | 外部集成与通知 | 接入 OpenClaw/微信 ClawBot，并向预配置飞书目标发送通知 | 设置页、微信 ClawBot、OpenClaw Tool、CLI |
 | 项目资料与外观 | 浏览已登记的项目资料，切换主题和文字大小 | 工作台、设置页 |
 
-微信任务能力编排已提供 `internal` 内置路径、固定仓库开发实现 `weixin-orchestration-dev`，以及受控 ZIP 模块的导入、启用、停用和移除。ZIP 产物按内容摘要不可变保存，已受理任务继续绑定创建时的阶段产物；通用架构见[Chub 能力编排外置架构设计](docs/CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md)，微信范围见[Chub 微信任务编排外置设计](docs/WEIXIN_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md)。
+微信任务能力编排已提供直接执行、固定仓库开发实现 `weixin-orchestration-dev`，以及受控 ZIP 模块的导入、启用、停用和移除。旧 `internal` 阶段仅用于识别历史运行态并失败关闭，不再接受新任务。ZIP 产物按内容摘要不可变保存，已受理任务继续绑定创建时的阶段产物；通用架构见[Chub 能力编排外置架构设计](docs/CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md)，微信范围见[Chub 微信任务编排外置设计](docs/WEIXIN_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md)。
 
 ## 快速开始
 
@@ -105,6 +105,7 @@ Chub 始终提供 loopback 访问；启用默认的 Tailnet 可信访问后，�
 | --- | --- |
 | [Chub 项目说明](README.md) | 项目概览、启动与维护入口、安全摘要和文档导航 |
 | [Chub 总体架构设计](docs/CHUB_ARCHITECTURE_DESIGN.md) | 核心、AI Runtime 与第三方服务三层架构、状态所有权和跨模块约束 |
+| [Chub 正式部署包与安装设计](docs/CHUB_DEPLOYMENT_PACKAGE_DESIGN.md) | 正式部署包、随包扩展 ZIP、新设备安装与可选 OpenClaw 接入边界 |
 | [Chub 集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md) | 按场景登记当前可用能力、入口映射，以及微信固定指令唯一产品契约 |
 
 ### AI Runtime

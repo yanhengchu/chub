@@ -9,6 +9,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.ai_runtime import RUNTIME_ID_PATTERN
 
+WORKSPACE_ID_PATTERN = r"^[a-z][a-z0-9-]{0,63}$"
+
 SessionStatus = Literal["new", "running", "stopped", "error"]
 TurnActivity = Literal["unknown", "working", "idle"]
 ActivitySource = Literal["none", "quick"]
@@ -200,7 +202,7 @@ class CodexTokenUsageData(BaseModel):
 class SessionCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    workspace_id: Literal["home", "workspace", "chub"]
+    workspace_id: str = Field(pattern=WORKSPACE_ID_PATTERN)
     permission_mode: PermissionMode | None = None
     model: str | None = Field(default=None, max_length=128)
     reasoning_effort: str | None = Field(default=None, max_length=32)

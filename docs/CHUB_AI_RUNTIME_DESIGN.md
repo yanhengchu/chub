@@ -12,6 +12,8 @@ Runtime 是 Chub 的受控本机执行实现。客户端、页面、微信和其
 
 AI Runtime 通用配置保存在本机 `config/ai-runtimes.local.yaml`。其中的新建 Session 默认权限仅应用于创建时未明确指定权限的后续 Chub Session；已有 Session 与已受理任务不受影响。
 
+新建 Session 固定提供 `chub`、`home` 与 `workspace` 三个内置工作目录。选择 `workspace` 后，任务可在该受信根目录及其全部子目录内工作，无需将每个项目子目录登记为独立工作区。只有需要把某个目录单独展示并作为 Session 的默认工作目录时，维护者才在本机 `settings.local.yaml` 的 `ai_runtime.codex.extra_workspaces` 显式登记；每项使用固定 ID、名称和路径，ID 不得覆盖内置目录。页面与 API 只接受后端已加载的目录 ID，不能传入任意路径；已创建 Session 继续保存其创建时的工作目录，移除已使用的额外目录前必须先处理关联 Session。Quick Worker 重载后才会使用新增或移除的额外目录映射执行新任务。
+
 AI Agent 应先按问题范围选择文档：共享 Runtime 能力、Adapter/Runner 与 Native 兼容规则看本文；Codex 私有行为看[Chub Codex Runtime 设计](CHUB_CODEX_RUNTIME_DESIGN.md)；ZIP 导入、覆盖、删除和 `builtin-dev` 重载看[Chub AI Runtime 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md)；Session 与 Worker 领域状态分别看对应专项设计。
 
 Runtime 的 `implementation_id` 是可维护的**实现槽位**：默认实现只影响新建 Session，Session 创建后固定该槽位。它不是能力编排的 ZIP `implementation_ref`；后者是包含内容摘要的**不可变产物引用**，只用于编排请求快照，并由[Chub 能力编排外置架构设计](CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md)定义。两者不得跨领域复用或互相替代。

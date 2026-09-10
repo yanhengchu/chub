@@ -30,6 +30,15 @@ ai_runtime:
   codex:
     enabled: true
     workspace: "~/workspace"
+    # Optional, locally trusted directories displayed as separate Session choices.
+    # Selecting the built-in `workspace` already permits work in all of its
+    # subdirectories; only add an item here when it needs its own direct choice.
+    # The built-in `chub`, `home`, and `workspace` directories are not repeated
+    # here; each extra ID must be unique and cannot use a built-in ID.
+    # extra_workspaces:
+    #   - id: "deliveryline"
+    #     name: "Deliveryline"
+    #     path: "~/workspace/deliveryline"
     data_file: "data/local/state/codex/sessions.json"
     runtime_dir: "data/local/runtime/codex"
     max_running: 3
@@ -37,6 +46,13 @@ ai_runtime:
 
 maintenance_terminal:
   ticket_ttl_seconds: 600
+
+# Local state and output location for the optional formal deployment package.
+# Packages are generated only from the maintenance page and never contain this
+# local state, credentials, task data, or other runtime files.
+deployment_package:
+  state_file: "data/local/state/deployment-package.json"
+  artifacts_dir: "data/local/artifacts/releases"
 
 automations:
   enabled: true

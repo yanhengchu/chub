@@ -1189,6 +1189,49 @@ async def test_workspace_new_session_dialog_focuses_create_button(
     assert page_errors == []
 
 
+async def test_workspace_worker_restart_recovers_from_a_failed_refresh(
+    workspace_browser_server: str,
+) -> None:
+    browser_session = session_factory()
+    worker_reads = 0
+
+    async def route_workspace_api(route) -> None:
+        nonlocal worker_reads
+        if urlsplit(route.request.url).path == "/api/maintenance/quick-worker":
+            worker_reads += 1
+            if worker_reads > 1:
+                await route.fulfill(
+                    status=503,
+                    content_type="application/json",
+                    body=json.dumps({
+                        "success": False,
+                        "error": {"code": "worker_unavailable", "message": "Worker status unavailable."},
+                    }),
+                )
+                return
+        await _mock_workspace_api(route)
+
+    async with browser_session(ensure_page=False) as chrome:
+        context = await chrome.browser.new_context(viewport={"width": 1280, "height": 900})
+        try:
+            await context.route(f"{workspace_browser_server}/api/**", route_workspace_api)
+            page = await context.new_page()
+            page_errors: list[str] = []
+            page.on("pageerror", lambda error: page_errors.append(str(error)))
+            response = await page.goto(workspace_browser_server, wait_until="domcontentloaded")
+            assert response is not None and response.status == 200
+            worker_restart = page.locator("#workspace-worker-restart")
+            await expect(worker_restart).to_be_enabled()
+            await page.locator("#workspace-workstation-refresh").click()
+            await expect(page.locator("#workspace-workstation-refresh")).to_be_enabled()
+            await expect(worker_restart).to_be_enabled()
+        finally:
+            await context.close()
+
+    assert worker_reads >= 2
+    assert page_errors == []
+
+
 async def test_workspace_section_switch_disposes_workstation_controller(
     workspace_browser_server: str,
 ) -> None:

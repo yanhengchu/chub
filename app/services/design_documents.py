@@ -38,7 +38,7 @@ _PROJECT_DOCUMENT_PATHS = {
     "@project/README.md": PROJECT_ROOT / "README.md",
 }
 _CORE_DOCUMENT_IDS = ("project-readme", "chub-architecture")
-_HOME_DOCUMENT_LIMIT = 5
+_HOME_DOCUMENT_LIMIT = 10
 
 
 @dataclass(frozen=True)

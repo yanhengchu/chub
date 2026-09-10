@@ -189,6 +189,10 @@ def production_codex_workspaces(settings: Settings) -> dict[str, Path]:
         "home": Path.home(),
         "workspace": settings.ai_runtime.codex.workspace,
         "chub": PROJECT_ROOT,
+        **{
+            workspace.id: workspace.path
+            for workspace in settings.ai_runtime.codex.extra_workspaces
+        },
         "weixin-translation": (
             settings.ai_runtime.codex.runtime_dir / "translation-workspace"
         ),
@@ -309,10 +313,13 @@ class QuickWorkerServer:
                 )
                 def build_registry(*, reload_builtin_source: bool = False) -> WorkerRuntimeRegistry:
                     runners = []
+                    builtin = load_builtin_codex_module(
+                        settings, reload_source=reload_builtin_source
+                    )
                     runtime_modules, failures = ExternalRuntimeModuleService(settings).build_registry(
-                        BuiltinRuntimeModuleRegistry([
-                            load_builtin_codex_module(settings, reload_source=reload_builtin_source)
-                        ])
+                        BuiltinRuntimeModuleRegistry(
+                            [] if builtin is None else [builtin]
+                        )
                     )
                     for failure in failures:
                         LOGGER.warning("Runtime module unavailable: module_id=%s reason=%s", failure.module_id, failure.reason)

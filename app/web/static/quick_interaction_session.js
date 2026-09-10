@@ -10,9 +10,19 @@
     return `/codex/${encodeURIComponent(sessionId)}/quick-interactions/conversation`;
   }
 
-  function buildSessionPreview(session) {
+  function sessionDisplayTitle(session) {
     const title = typeof session?.title === "string" ? session.title.trim() : "";
-    const displayTitle = title || "未命名 Session";
+    if (title) {
+      return title;
+    }
+    const workspaceName = typeof session?.workspace_name === "string"
+      ? session.workspace_name.trim()
+      : "";
+    return workspaceName || "未命名 Session";
+  }
+
+  function buildSessionPreview(session) {
+    const displayTitle = sessionDisplayTitle(session);
     const renameAllowed = session?.workspace_id !== "weixin-translation";
     return Object.freeze({
       displayTitle,
@@ -137,13 +147,13 @@
   }
 
   function archiveDescription(session) {
-    const title = session?.title?.trim() || "未命名 Session";
+    const title = sessionDisplayTitle(session);
     return `归档“${title}”后，该 Session 将从活动列表移除；`
       + "执行中的 Session 需要先等待任务结束。如已分配微信槽位，槽位也会释放。Chub 页面暂不提供恢复入口。";
   }
 
   function stopDescription(session) {
-    const title = session?.title?.trim() || "未命名 Session";
+    const title = sessionDisplayTitle(session);
     return `停止“${title}”将终止正在执行的快速任务；`
       + "停止后可以重新进入 Session，但在途任务不会恢复。";
   }
@@ -370,7 +380,7 @@
     }
 
     function deleteDescription(session) {
-      const title = session?.title?.trim() || "未命名 Session";
+      const title = sessionDisplayTitle(session);
     return `删除“${title}”后，该 Session 将永久删除，无法恢复；`
       + "执行中的 Quick Worker 任务会在删除过程中先停止；"
         + "如已分配微信槽位，槽位也会释放。";

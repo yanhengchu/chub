@@ -1549,7 +1549,8 @@ async def test_quick_interaction_conversation_page_is_available(
     assert 'text: `${label} · ${status}`' in session_script.text
     assert "core.sessionSwitcherStatus" in session_script.text
     assert "core.sessionSwitcherLabels" in session_script.text
-    assert 'const displayTitle = title || "未命名 Session"' in session_script.text
+    assert "function sessionDisplayTitle(session)" in session_script.text
+    assert 'return workspaceName || "未命名 Session"' in session_script.text
     assert 'documentTitle: `${displayTitle} · 快速交互`' in session_script.text
     assert "client.renameSession(title)" in script.text
     assert "conversationSessionView.openRename" in script.text
@@ -1779,7 +1780,7 @@ async def test_project_document_card_and_weekly_report_apis_allow_loopback(
     ]
     assert weekly_reports[0]["available"] is True
     assert weekly_reports[1]["available"] is False
-    assert len(data["documents"]) == 5
+    assert len(data["documents"]) == 10
     assert any(document["status"] == "持续维护" for document in data["documents"])
     assert "openclaw-research" not in {
         document["id"] for document in data["documents"]
@@ -1881,6 +1882,10 @@ async def test_workspace_chub_restart_refreshes_after_new_instance_is_confirmed(
     assert "elements.chubRestart.disabled = hubRestarting || upgradeRunning;" in response.text
     assert 'await waitForWorkerRestart(operationId);' in response.text
     assert '"Quick Worker 已重启并恢复。浏览器将在稍后自动刷新页面。"' in response.text
+    assert "elements.workerRestart.disabled = workerRestarting || !workerState?.can_restart || upgradeRunning;" in response.text
+    assert "workerRestarting || !workerIsCurrent" not in response.text
+    assert 'request("/api/maintenance/quick-worker", { timeoutMs: 12000 })' in response.text
+    assert "workerRetryDelay = Math.min(workerRetryDelay * 2, 10000);" in response.text
     assert "window.setTimeout(() => window.location.reload(), 2000);" in response.text
     assert 'unavailable: ["不可用", "远程访问", "warning"]' in response.text
     assert 'unknown: ["状态未知", "远程访问", "muted"]' in response.text

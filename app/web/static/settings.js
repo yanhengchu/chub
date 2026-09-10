@@ -58,6 +58,16 @@ const maintenanceTerminalDialogFeedback = document.querySelector(
 const styleOptionRows = document.querySelectorAll("[data-style-option]");
 const fontSizeOptionRows = document.querySelectorAll("[data-font-size-option]");
 let maintenanceTerminalOpening = false;
+const deploymentPackageForm = document.querySelector("#deployment-package-form");
+const deploymentPackageMessage = document.querySelector("#deployment-package-message");
+const deploymentPackageOutput = document.querySelector("#deployment-package-output");
+const deploymentPackageCurrentAppVersion = document.querySelector("#deployment-package-current-app-version");
+const deploymentPackageBuild = document.querySelector("#deployment-package-build");
+const deploymentPackageChubVersion = document.querySelector("#deployment-package-chub-version");
+const deploymentPackageRuntimeVersion = document.querySelector("#deployment-package-runtime-version");
+const deploymentPackageWeixinVersion = document.querySelector("#deployment-package-weixin-version");
+const deploymentPackageIncludeDevelopment = document.querySelector("#deployment-package-include-development");
+let deploymentPackagePolling = null;
 
 const settingsChoicePickers = new Map();
 const settingsChoicePickerObservers = [];
@@ -1086,6 +1096,70 @@ function initializeDiagnosticsSettings() {
       maintenanceTerminalDialogConfirm.disabled = false;
     }
   });
+  initializeDeploymentPackageSettings();
+}
+
+function initializeDeploymentPackageSettings() {
+  if (!(deploymentPackageForm instanceof HTMLFormElement)) return;
+  const inputs = [
+    deploymentPackageChubVersion,
+    deploymentPackageRuntimeVersion,
+    deploymentPackageWeixinVersion,
+    deploymentPackageIncludeDevelopment,
+  ].filter((item) => item instanceof HTMLInputElement);
+  const render = (data) => {
+    const configuration = data.configuration || {};
+    inputs.forEach((input) => { input.disabled = false; });
+    deploymentPackageCurrentAppVersion.textContent = `当前应用版本：v${data.app_version || "未知"}`;
+    deploymentPackageOutput.textContent = data.output_directory || "输出目录暂时无法读取。";
+    deploymentPackageChubVersion.value = configuration.chub_release_version || "";
+    deploymentPackageRuntimeVersion.value = configuration.runtime_release_version || "";
+    deploymentPackageWeixinVersion.value = configuration.weixin_release_version || "";
+    deploymentPackageIncludeDevelopment.checked = configuration.include_development_sources === true;
+    const operation = data.operation;
+    if (operation?.status === "requested" || operation?.status === "started") {
+      deploymentPackageBuild.disabled = true;
+      setSettingsMessage(deploymentPackageMessage, operation.message || "正在构建正式部署包。", "");
+      if (deploymentPackagePolling === null) {
+        deploymentPackagePolling = window.setInterval(() => void load(), 1000);
+      }
+    } else {
+      deploymentPackageBuild.disabled = false;
+      if (deploymentPackagePolling !== null) {
+        window.clearInterval(deploymentPackagePolling);
+        deploymentPackagePolling = null;
+      }
+      if (operation?.status === "succeeded") {
+        setSettingsMessage(deploymentPackageMessage, `${operation.message} ${operation.artifact_name || ""} · ${operation.artifact_size || 0} bytes`, "");
+      } else if (operation?.status === "failed") {
+        setSettingsMessage(deploymentPackageMessage, operation.message || "正式部署包构建失败。", "error");
+      }
+    }
+  };
+  const load = async () => {
+    try { render(await fetchSettingsApi("/api/settings/deployment-package")); }
+    catch (_error) { setSettingsMessage(deploymentPackageMessage, "暂时无法读取部署包发布配置。", "error"); }
+  };
+  deploymentPackageForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const configuration = {
+      chub_release_version: deploymentPackageChubVersion.value.trim(),
+      runtime_release_version: deploymentPackageRuntimeVersion.value.trim(),
+      weixin_release_version: deploymentPackageWeixinVersion.value.trim(),
+      include_development_sources: deploymentPackageIncludeDevelopment.checked,
+    };
+    inputs.forEach((input) => { input.disabled = true; });
+    deploymentPackageBuild.disabled = true;
+    try {
+      await fetchSettingsApi("/api/settings/deployment-package", { method: "PUT", headers: settingsHeaders(true), body: JSON.stringify(configuration) });
+      render(await fetchSettingsApi("/api/settings/deployment-package/build", { method: "POST", headers: settingsHeaders(true) }));
+    } catch (_error) {
+      inputs.forEach((input) => { input.disabled = false; });
+      deploymentPackageBuild.disabled = false;
+      setSettingsMessage(deploymentPackageMessage, "保存发布配置或启动构建失败。", "error");
+    }
+  });
+  void load();
 }
 
 function initializeOpenClawSettings() {
@@ -1192,6 +1266,7 @@ if (settingsPage === "appearance") {
     document.removeEventListener("pointerdown", closePickerOnPointerDown);
     document.removeEventListener("keydown", closePickerOnEscape);
     window.removeEventListener("resize", closePickerOnResize);
+    if (deploymentPackagePolling !== null) window.clearInterval(deploymentPackagePolling);
   };
 };
 

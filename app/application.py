@@ -94,6 +94,7 @@ from app.services.system_upgrade import (
     runtime_recovery_plan,
     system_upgrade_restart_readiness,
 )
+from app.services.deployment_package import DeploymentPackageService
 from app.quick_worker import (
     clear_runtime_state,
     read_health,
@@ -325,6 +326,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     ai_session_manager.set_system_upgrade_checker(system_upgrade.writes_blocked)
     maintenance_terminal = MaintenanceTerminalManager(resolved_settings)
+    deployment_package = DeploymentPackageService(resolved_settings)
     weixin_translation = WeixinTranslationManager(
         resolved_settings.openclaw.weixin_chub_mode,
         ai_session_manager,
@@ -1224,6 +1226,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     application.state.settings = resolved_settings
+    application.state.deployment_package = deployment_package
     application.state.instance_id = instance_id
     application.state.detected_platform = detected_platform
     application.state.tailnet_listener_available = None

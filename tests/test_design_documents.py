@@ -325,7 +325,7 @@ def test_home_documents_pin_visible_core_then_use_recent_updates() -> None:
                 status="已验收",
                 updated_at=now - timedelta(hours=index),
             )
-            for index in range(1, 5)
+            for index in range(1, 10)
         ],
     ]
 
@@ -337,6 +337,11 @@ def test_home_documents_pin_visible_core_then_use_recent_updates() -> None:
         "design-1",
         "design-2",
         "design-3",
+        "design-4",
+        "design-5",
+        "design-6",
+        "design-7",
+        "design-8",
     ]
 
 
@@ -358,7 +363,7 @@ def test_home_documents_do_not_restore_hidden_core_document() -> None:
                 status="已验收",
                 updated_at=now - timedelta(hours=index),
             )
-            for index in range(1, 6)
+            for index in range(1, 11)
         ],
     ]
 
@@ -370,4 +375,9 @@ def test_home_documents_do_not_restore_hidden_core_document() -> None:
         "design-2",
         "design-3",
         "design-4",
+        "design-5",
+        "design-6",
+        "design-7",
+        "design-8",
+        "design-9",
     ]

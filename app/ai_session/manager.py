@@ -143,11 +143,13 @@ class AiSessionManager:
         self.runtime_implementation_preferences = RuntimeImplementationPreferencesStore(
             settings.ai_runtime.codex.data_file.with_name("runtime-implementation-preferences.json")
         )
-        self._builtin_runtime_modules = (
-            BuiltinRuntimeModuleRegistry([load_builtin_codex_module(settings)])
-            if builtin_runtime_modules is None
-            else builtin_runtime_modules
-        )
+        if builtin_runtime_modules is None:
+            builtin = load_builtin_codex_module(settings)
+            self._builtin_runtime_modules = BuiltinRuntimeModuleRegistry(
+                [] if builtin is None else [builtin]
+            )
+        else:
+            self._builtin_runtime_modules = builtin_runtime_modules
         self.runtime_module_service = ExternalRuntimeModuleService(settings)
         self.runtime_module_recovery = (
             self.runtime_module_service.recover_incomplete_activation()
@@ -233,9 +235,10 @@ class AiSessionManager:
         """Reload the checked-out Codex module and return the prior registry."""
         previous_builtin = self._builtin_runtime_modules
         try:
-            candidate = BuiltinRuntimeModuleRegistry(
-                [load_builtin_codex_module(self.settings, reload_source=True)]
-            )
+            builtin = load_builtin_codex_module(self.settings, reload_source=True)
+            if builtin is None:
+                raise ApiError(503, "builtin_runtime_unavailable", "开发版 Runtime 源码未随当前部署包提供。")
+            candidate = BuiltinRuntimeModuleRegistry([builtin])
             self._builtin_runtime_modules = candidate
             self.refresh_external_runtime_modules()
             if "builtin-dev" not in self.runtime_modules.implementation_ids("codex"):
@@ -634,9 +637,13 @@ class AiSessionManager:
 
     def workspaces(self) -> list[WorkspaceInfo]:
         entries = [
-            ("chub", "Chub", PROJECT_ROOT),
             ("home", "用户目录", Path.home()),
             ("workspace", "Workspace", self.settings.ai_runtime.codex.workspace),
+            ("chub", "Chub", PROJECT_ROOT),
+            *[
+                (workspace.id, workspace.name, workspace.path)
+                for workspace in self.settings.ai_runtime.codex.extra_workspaces
+            ],
         ]
         return [
             WorkspaceInfo(
@@ -1107,13 +1114,6 @@ class AiSessionManager:
                 reasoning_effort,
                 implementation_id=self.session_implementation_id(session.id),
             )
-            usage = self._resolve_session_usage(session)
-            if usage.owner != "none" or usage.phase != "idle":
-                raise ApiError(
-                    409,
-                    "codex_session_configuration_update_busy",
-                    "Session 正在执行或被占用，请等待任务结束后重试。",
-                )
             session.permission_mode = permission_mode
             session.model = model
             session.reasoning_effort = reasoning_effort
@@ -1127,7 +1127,7 @@ class AiSessionManager:
         model: str,
         reasoning_effort: str,
     ) -> AiSession:
-        """Persist the model for a future quick task after final writer checks."""
+        """Persist the model for a future quick task."""
         self._require_available()
         with self._lock:
             session = self.get_session(session_id)
@@ -1136,13 +1136,6 @@ class AiSessionManager:
                 reasoning_effort,
                 implementation_id=self.session_implementation_id(session.id),
             )
-            usage = self._resolve_session_usage(session)
-            if usage.owner != "none" or usage.phase != "idle":
-                raise ApiError(
-                    409,
-                    "codex_session_model_update_busy",
-                    "Session 正在执行或被占用，请等待任务结束后重试。",
-                )
             session.model = model
             session.reasoning_effort = reasoning_effort
             session.updated_at = utc_now()

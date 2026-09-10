@@ -12,9 +12,11 @@ def load_builtin_codex_module(
     settings: Settings,
     *,
     reload_source: bool = False,
-) -> BuiltinRuntimeModule:
+) -> BuiltinRuntimeModule | None:
     """Load the checked-out Codex implementation only during explicit startup/refresh."""
     source_root = PROJECT_ROOT / "runtime-modules" / "codex-runtime"
+    if not source_root.is_dir():
+        return None
     if str(source_root) not in sys.path:
         sys.path.insert(0, str(source_root))
     if reload_source:

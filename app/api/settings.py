@@ -15,6 +15,12 @@ from app.services.openclaw_weixin_chub_models import (
 from app.services.weixin_orchestration_modules import (
     WeixinOrchestrationModulePreview,
 )
+from app.services.deployment_package import (
+    DeploymentPackageConfiguration,
+    DeploymentPackageStatus,
+    FORMAL_CODEX_DESCRIPTION,
+    FORMAL_CODEX_IMPLEMENTATION_ID,
+)
 
 
 router = APIRouter(
@@ -100,6 +106,15 @@ class TaskOrchestrationModulePreviewData(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     description: str = Field(min_length=1, max_length=300)
     implementation_ref: str = Field(min_length=68, max_length=180)
+
+
+class DeploymentPackageConfigurationUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    chub_release_version: str = Field(min_length=1, max_length=64)
+    runtime_release_version: str = Field(min_length=1, max_length=64)
+    weixin_release_version: str = Field(min_length=1, max_length=64)
+    include_development_sources: bool = False
 
 
 async def _read_orchestration_module_archive(request: Request) -> tuple[str, bytes]:
@@ -373,3 +388,51 @@ def remove_weixin_task_orchestration_module(
             implementation_ref=artifact.implementation_ref,
         )
     )
+
+@router.get(
+    "/deployment-package",
+    response_model=ApiResponse[DeploymentPackageStatus],
+)
+def get_deployment_package_status(request: Request) -> ApiResponse[DeploymentPackageStatus]:
+    return ApiResponse(data=request.app.state.deployment_package.status())
+
+
+@router.put(
+    "/deployment-package",
+    response_model=ApiResponse[DeploymentPackageStatus],
+)
+def update_deployment_package_configuration(
+    payload: DeploymentPackageConfigurationUpdate,
+    request: Request,
+) -> ApiResponse[DeploymentPackageStatus]:
+    operation_id = log_operation(
+        request,
+        action="update_deployment_package_configuration",
+        status="requested",
+        target="deployment-package",
+    )
+    try:
+        data = request.app.state.deployment_package.save_configuration(
+            DeploymentPackageConfiguration(
+                chub_release_version=payload.chub_release_version,
+                runtime_implementation_id=FORMAL_CODEX_IMPLEMENTATION_ID,
+                runtime_release_version=payload.runtime_release_version,
+                runtime_description=FORMAL_CODEX_DESCRIPTION,
+                weixin_release_version=payload.weixin_release_version,
+                include_development_sources=payload.include_development_sources,
+            )
+        )
+    except ApiError as exc:
+        log_operation(request, action="update_deployment_package_configuration", status="failed", target="deployment-package", operation_id=operation_id, reason=exc.code)
+        raise
+    log_operation(request, action="update_deployment_package_configuration", status="succeeded", target="deployment-package", operation_id=operation_id)
+    return ApiResponse(data=data)
+
+
+@router.post(
+    "/deployment-package/build",
+    response_model=ApiResponse[DeploymentPackageStatus],
+)
+def build_deployment_package(request: Request) -> ApiResponse[DeploymentPackageStatus]:
+    source_ip = request.client.host if request.client else "unknown"
+    return ApiResponse(data=request.app.state.deployment_package.start(source_ip=source_ip))

@@ -59,6 +59,7 @@ window.initializeWorkspaceWorkstation = () => {
   let openclawWeixinQrObjectUrl = "";
   let openclawWeixinQrUpdatedAt = "";
   let workerTimer = 0;
+  let workerRetryDelay = 1000;
   let upgradeTimer = 0;
   let pageReloadTimer = 0;
   const pendingWaits = new Map();
@@ -74,12 +75,31 @@ window.initializeWorkspaceWorkstation = () => {
   const requestAbortController = new AbortController();
 
   const request = async (path, options = {}) => {
+    const { timeoutMs, ...fetchOptions } = options;
+    const timeoutController = timeoutMs ? new AbortController() : null;
+    const abortForDispose = () => timeoutController?.abort();
+    let timeout = 0;
     let response;
+    if (timeoutController) {
+      requestAbortController.signal.addEventListener("abort", abortForDispose, { once: true });
+      timeout = window.setTimeout(() => timeoutController.abort(), timeoutMs);
+    }
     try {
-      response = await fetch(path, { ...options, signal: requestAbortController.signal });
+      response = await fetch(path, {
+        ...fetchOptions,
+        signal: timeoutController?.signal || requestAbortController.signal,
+      });
     } catch (error) {
-      if (error?.name === "AbortError") throw error;
+      if (requestAbortController.signal.aborted) throw error;
+      if (error?.name === "AbortError") {
+        throw new Error("请求超时，请稍后重试。");
+      }
       throw new Error("无法连接 Chub，请检查服务和网络。");
+    } finally {
+      if (timeout) window.clearTimeout(timeout);
+      if (timeoutController) {
+        requestAbortController.signal.removeEventListener("abort", abortForDispose);
+      }
     }
     const payload = await response.json().catch(() => null);
     if (!response.ok || payload?.success !== true) {
@@ -262,7 +282,7 @@ window.initializeWorkspaceWorkstation = () => {
     if (disposed) return;
     const upgradeRunning = Boolean(upgradeState?.operation?.status === "started");
     elements.chubRestart.disabled = hubRestarting || upgradeRunning;
-    elements.workerRestart.disabled = workerRestarting || !workerIsCurrent || !upgradeIsCurrent || !workerState?.can_restart || upgradeRunning;
+    elements.workerRestart.disabled = workerRestarting || !workerState?.can_restart || upgradeRunning;
     elements.upgradeStart.disabled = upgradeStarting || !upgradeIsCurrent || !upgradeState?.can_start;
     elements.developmentRefresh.disabled = developmentLoading || developmentRefreshing;
     const gatewayReady = Boolean(openclawStatus?.installed && openclawStatus?.configured);
@@ -350,10 +370,10 @@ window.initializeWorkspaceWorkstation = () => {
     syncControls();
   };
 
-  const scheduleWorkerRefresh = () => {
+  const scheduleWorkerRefresh = (delay = 1000) => {
     window.clearTimeout(workerTimer);
-    if (!disposed && ["busy", "draining", "recovering", "restarting"].includes(workerState?.state)) {
-      workerTimer = window.setTimeout(loadWorker, 1000);
+    if (!disposed && (!workerIsCurrent || ["busy", "draining", "recovering", "restarting"].includes(workerState?.state))) {
+      workerTimer = window.setTimeout(loadWorker, delay);
     }
   };
 
@@ -386,19 +406,24 @@ window.initializeWorkspaceWorkstation = () => {
 
   const loadWorker = async () => {
     try {
-      const data = await request("/api/maintenance/quick-worker");
+      const data = await request("/api/maintenance/quick-worker", { timeoutMs: 12000 });
       if (disposed) return false;
       renderWorker(data);
       snapshot.worker = data;
       workerIsCurrent = true;
+      workerRetryDelay = 1000;
       cacheSnapshot();
     } catch (error) {
       if (disposed || error?.name === "AbortError") return false;
+      workerIsCurrent = false;
       if (!snapshot.worker) {
         setStatus(elements.workerDetail, error.message || "无法读取当前任务执行服务状态。", "failed");
       } else {
         showToolbarFeedback(error.message || "Quick Worker 状态读取失败。");
       }
+      const retryDelay = workerRetryDelay;
+      workerRetryDelay = Math.min(workerRetryDelay * 2, 10000);
+      scheduleWorkerRefresh(retryDelay);
       return false;
     }
     scheduleWorkerRefresh();
@@ -692,7 +717,7 @@ window.initializeWorkspaceWorkstation = () => {
       if (disposed) throw new DOMException("Workspace workstation was disposed.", "AbortError");
       let data;
       try {
-        data = await request("/api/maintenance/quick-worker", { cache: "no-store" });
+        data = await request("/api/maintenance/quick-worker", { cache: "no-store", timeoutMs: 12000 });
       } catch {
         // Worker handoff can briefly make its status unavailable before the
         // maintenance operation records its final state.

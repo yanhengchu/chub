@@ -16,6 +16,13 @@
       "path": "CHUB_ARCHITECTURE_DESIGN.md"
     },
     {
+      "id": "chub-deployment-package",
+      "title": "Chub 正式部署包与安装设计",
+      "summary": "定义 Chub 正式部署包、随包 Runtime/微信编排 ZIP、目标设备核心安装与可选 OpenClaw 接入边界。",
+      "status": "已验收",
+      "path": "CHUB_DEPLOYMENT_PACKAGE_DESIGN.md"
+    },
+    {
       "id": "chub-ai-runtime",
       "title": "Chub AI Runtime 架构设计",
       "summary": "定义 AI Runtime 共享契约、能力矩阵、AI Session/Worker 边界及新增 Runtime 的实现规范。",

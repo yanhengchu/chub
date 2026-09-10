@@ -88,6 +88,132 @@ def test_device_code_values_must_match_each_character_before_confirmation() -> N
     )
 
 
+@pytest.mark.anyio
+async def test_device_auth_completes_each_page_stage_before_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    values = [""] * 9
+
+    class FakeInput:
+        def __init__(self, index: int) -> None:
+            self.index = index
+
+        async def fill(self, value: str) -> None:
+            values[self.index] = value
+            events.append(f"fill:{self.index}:{value}")
+
+        async def input_value(self) -> str:
+            return values[self.index]
+
+        async def blur(self) -> None:
+            return None
+
+        async def press(self, _key: str) -> None:
+            return None
+
+    class FakeLocator:
+        def __init__(self, page: "FakePage", selector: str) -> None:
+            self.page = page
+            self.selector = selector
+
+        @property
+        def first(self) -> "FakeLocator":
+            return self
+
+        async def count(self) -> int:
+            if self.selector == "input:visible":
+                return 9 if self.page.stage == "code" else 0
+            if self.selector == auth_switch.ACCOUNT_CONTROL_SELECTOR:
+                return 1 if self.page.stage == "account" else 0
+            if self.selector == 'button[value="grant"]:visible':
+                return 1 if self.page.stage in {"consent", "code"} else 0
+            return 0
+
+        def nth(self, index: int) -> FakeInput:
+            return FakeInput(index)
+
+        async def click(self, **_kwargs) -> None:
+            if self.selector == auth_switch.ACCOUNT_CONTROL_SELECTOR:
+                events.append("select-account")
+                self.page.stage = "consent"
+                return
+            if self.page.stage == "consent":
+                events.append("confirm-consent")
+                self.page.stage = "code"
+                return
+            events.append("confirm-device-code")
+            self.page.stage = "complete"
+
+        async def is_enabled(self) -> bool:
+            return self.page.stage == "code" and all(values)
+
+    class FakePage:
+        def __init__(self) -> None:
+            self.stage = "account"
+            self.closed = False
+
+        @property
+        def url(self) -> str:
+            return {
+                "account": auth_switch.DEVICE_URL,
+                "consent": "https://auth.openai.com/sign-in-with-chatgpt/codex/consent",
+                "code": "https://auth.openai.com/deviceauth/callback",
+                "complete": "https://auth.openai.com/deviceauth/success",
+            }[self.stage]
+
+        async def goto(self, url: str, **_kwargs) -> None:
+            assert url == auth_switch.DEVICE_URL
+            events.append("open-device-page")
+
+        def locator(self, selector: str) -> FakeLocator:
+            return FakeLocator(self, selector)
+
+        async def wait_for_timeout(self, _milliseconds: int) -> None:
+            return None
+
+        def is_closed(self) -> bool:
+            return self.closed
+
+        async def close(self) -> None:
+            self.closed = True
+            events.append("close-page")
+
+    page = FakePage()
+
+    class FakeChrome:
+        class Context:
+            async def new_page(self) -> FakePage:
+                return page
+
+        context = Context()
+
+    class FakeSession:
+        async def __aenter__(self) -> FakeChrome:
+            return FakeChrome()
+
+        async def __aexit__(self, *_args) -> None:
+            return None
+
+    monkeypatch.setattr(
+        auth_switch,
+        "session_factory",
+        lambda: lambda: FakeSession(),
+    )
+
+    await auth_switch._complete_device_auth("ABCD-EFGHI")
+
+    assert values == list("ABCDEFGHI")
+    assert events == [
+        "open-device-page",
+        "select-account",
+        "confirm-consent",
+        *[f"fill:{index}:{value}" for index, value in enumerate("ABCDEFGHI")],
+        "confirm-device-code",
+        "close-page",
+    ]
+
+
 def test_account_switch_uses_headed_yanheng_browser(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -208,6 +334,8 @@ def test_account_switch_restores_browser_when_activation_fails(
         auth_switch.switch("account", settings=settings)
 
     assert restored == [snapshot]
+
+
 def test_api_switch_verifies_logout_before_syncing_configuration(
     settings: Settings,
     tmp_path: Path,
