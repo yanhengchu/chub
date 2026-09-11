@@ -340,7 +340,7 @@ def test_successful_submission_lists_all_sessions_and_running_tasks(
     quick_interactions.is_running.side_effect = (
         lambda session_id: session_id == "session-2"
     )
-    quick_interactions.weixin_task_status_snapshot.return_value = SimpleNamespace(
+    quick_interactions.running_standard_task_summaries.return_value = SimpleNamespace(
         running_tasks=(("session-2", "检查后台日志"),)
     )
 
@@ -556,6 +556,7 @@ def test_enabled_translation_is_silently_accepted_and_replayed(
     manager, _codex_manager, quick_interactions = configured_manager(settings)
     manager.translation_manager = MagicMock()
     manager.translation_manager.enabled.return_value = True
+    manager._state.orchestration_enabled = True
     manager.translation_manager.has_active_target.return_value = False
     manager.translation_manager.enqueue.return_value = True
 
@@ -584,6 +585,35 @@ def test_enabled_translation_is_silently_accepted_and_replayed(
     quick_interactions.submit.assert_not_called()
 
 
+def test_disabled_orchestration_bypasses_confirm_mode_and_translation_reader(
+    settings: Settings,
+) -> None:
+    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    manager.translation_manager = MagicMock()
+    manager.translation_manager.active_confirmation.return_value = None
+    manager.translation_manager.processing_mode.side_effect = OSError("unavailable")
+    manager.submit = MagicMock(return_value=SimpleNamespace(message="Submitted"))
+
+    result = manager.dispatch(
+        message_id="translation-disabled-direct",
+        prompt="插件关闭时直接执行",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.disposition == "reply"
+    manager.translation_manager.processing_mode.assert_not_called()
+    manager.translation_manager.enqueue.assert_not_called()
+    manager.submit.assert_called_once()
+    assert manager.submit.call_args.kwargs["prompt"] == "插件关闭时直接执行"
+    assert manager.submit.call_args.kwargs["preprocess"] is False
+    assert manager.submit.call_args.kwargs["confirmation_required"] is False
+    assert result.message is not None
+    assert "Text optimization is unavailable" not in result.message
+
+
 def test_long_body_bypasses_text_processing_and_submits_directly(
     settings: Settings,
 ) -> None:
@@ -606,7 +636,8 @@ def test_long_body_bypasses_text_processing_and_submits_directly(
     assert result.disposition == "reply"
     assert result.message is not None
     assert result.message.startswith("Submitted\n\n")
-    quick_interactions.submit.assert_called_once()
+    assert result.message is not None
+    assert "Text optimization is unavailable" not in result.message
     assert quick_interactions.submit.call_args.args[1] == long_prompt
     manager.translation_manager.enqueue.assert_not_called()
 
@@ -765,6 +796,7 @@ def test_removed_direct_command_is_a_normal_task(settings: Settings) -> None:
     manager, _codex_manager, quick_interactions = configured_manager(settings)
     manager.translation_manager = MagicMock()
     manager.translation_manager.enabled.return_value = True
+    manager._state.orchestration_enabled = True
     manager.translation_manager.has_active_target.return_value = False
 
     result = manager.dispatch(
@@ -800,6 +832,8 @@ def test_optimized_task_selects_the_final_session_after_refinement(settings: Set
     )
     source = manager._find_submission("optimized-source")
     request = manager._state.orchestration_requests[0]
+    assert source is not None
+    assert source.session_id is None
     assert codex_manager.create_session.call_count == 0
     assert quick_interactions.submit.call_count == 0
     assert request.original_prompt == "检查下服务咋样"
@@ -847,6 +881,9 @@ def test_optimized_task_selects_the_final_session_after_refinement(settings: Set
         ("create_session", "succeeded"),
         ("submit_task", "succeeded"),
     ]
+    submitted_source = manager._find_submission("optimized-source")
+    assert submitted_source is not None
+    assert submitted_source.session_id == "session-1"
     recovered_outcome = manager.complete_optimized_task(
         entry,
         "请检查服务状态。",
@@ -869,7 +906,7 @@ def test_optimized_task_selects_the_final_session_after_refinement(settings: Set
     manager.translation_result_notifier.assert_called_once_with(
         completed_entry.route,
         outcome="started",
-        target_session_id=completed_entry.target_session_id,
+        target_session_id="session-1",
         task=completed_entry.polished,
         english=completed_entry.english,
         error=completed_entry.error,

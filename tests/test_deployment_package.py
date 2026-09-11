@@ -13,6 +13,10 @@ from app.services.deployment_package import (
     DeploymentPackageConfiguration,
     DeploymentPackageService,
 )
+from scripts.build_codex_runtime_zip import default_output as codex_runtime_default_output
+from scripts.build_weixin_orchestration_plugin_zip import (
+    default_output as weixin_refinement_default_output,
+)
 
 
 class _DeferredThread:
@@ -23,6 +27,17 @@ class _DeferredThread:
 
     def start(self) -> None:
         return None
+
+
+def test_formal_module_default_names_include_release_version_and_timestamp() -> None:
+    built_at = datetime(2026, 9, 11, 8, 30, 45, tzinfo=timezone.utc)
+
+    assert codex_runtime_default_output("2.0.0", built_at=built_at).name == (
+        "codex-runtime-release-2.0.0-20260911083045.zip"
+    )
+    assert weixin_refinement_default_output("2.0.0", built_at=built_at).name == (
+        "weixin-refinement-release-2.0.0-20260911083045.zip"
+    )
 
 
 def test_release_build_contains_formal_modules_and_excludes_local_state(
@@ -47,13 +62,19 @@ def test_release_build_contains_formal_modules_and_excludes_local_state(
     assert len(digest) == 64
     with zipfile.ZipFile(artifact) as archive:
         names = set(archive.namelist())
-        assert "bundled-modules/codex-runtime.zip" in names
-        assert "bundled-modules/weixin-refinement.zip" in names
+        bundled_modules = {
+            name for name in names if name.startswith("bundled-modules/")
+        }
+        assert len(bundled_modules) == 2
+        assert any(name.startswith("bundled-modules/codex-runtime-release-2.0.0-") for name in bundled_modules)
+        assert any(name.startswith("bundled-modules/weixin-refinement-release-2.0.0-") for name in bundled_modules)
         assert "DEPLOY_WITH_AI.md" in names
         assert "runtime-modules/codex-runtime/chub-module.json" not in names
         manifest = json.loads(archive.read("release-manifest.json"))
         assert manifest["chub_release_version"] == "1.2.3"
         assert manifest["include_development_sources"] is False
+        timestamp = artifact.stem.rsplit("-", 1)[1]
+        assert all(name.endswith(f"-{timestamp}.zip") for name in bundled_modules)
 
 
 def test_release_configuration_persists_without_changing_app_version(

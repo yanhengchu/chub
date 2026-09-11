@@ -1,7 +1,7 @@
 # Chub Codex Runtime 设计
 
 > 状态：已验收
-> 主要读者：AI Agent、实现和排障 Agent；维护人员用于确认数据口径、配置和验收。
+> 主要读者：AI Agent；维护者通过与 AI Agent 协作，理解并确认本文规则。
 > 本文负责：定义当前 Codex Runtime 的专属能力与配置边界，并具体维护认证方式切换、Codex Native Session 发现、额度与用量采集、数据口径、安全和验收。
 > 本文不负责：Runtime 共享能力契约、Chub Session 状态和映射规则、Adapter/Runner 通用实现、Runtime ZIP 生命周期、其他 Runtime 的专属实现，以及由外部调用方选择认证来源、账号、订阅、时区、浏览器页面或本机目录。
 > 维护说明：Codex 是当前唯一接入的 Runtime，并以 Runtime 插件模块的固定实现槽位加载；本文只记录其私有行为和当前实现证据。所有 Runtime 共用的能力、状态所有权和接入判定以[Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)为准，ZIP 的导入、覆盖、移除和恢复以[Chub AI Runtime 插件模块设计](CHUB_RUNTIME_PLUGIN_DESIGN.md)为准。
@@ -57,7 +57,7 @@ Codex 通过 Runtime 共享契约接入 Chub。通用的 Session、Worker、Adap
 | 成功 | 弹窗展示新的认证方式及账户检查结果，由维护者点击“完成”关闭。 | 认证状态与配置同步均已确认。 |
 | 失败 | 弹窗保留失败原因，可由维护者关闭。 | 保留可见错误，不伪报切换成功。 |
 
-账户行只说明认证方式：账户模式为“ChatGPT 账户已登录”，API 模式为“API Key 模式已启用”。额度、provider 登录或上游可用性由独立 Runtime 用量状态表达，不改变上述认证结果。
+账户行以同一次 Runtime 检查同时展示认证方式、5h 与 Weekly 剩余百分比及检查时间：例如“ChatGPT 账户已登录 · 5h 42% · Weekly 78% · 检查于 08-15 10:30”。账户模式为“ChatGPT 账户已登录”，API 模式为“API Key 模式已启用”；额度读取失败时认证结果保持不变，并显示“额度暂不可用”。5h 是可选项，缺失时只显示 Weekly；不在账户行展示重置时间、金额或 Token。
 
 #### 两条固定流程
 

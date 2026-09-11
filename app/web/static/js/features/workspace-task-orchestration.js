@@ -54,33 +54,33 @@
     if (implementationRow instanceof HTMLElement && internalSessionRow instanceof HTMLElement) {
       orchestrationList.insertBefore(internalSessionRow, implementationRow);
     }
-
-    document.getElementById("workspace-task-enabled-row")?.remove();
-    const enabledRow = document.createElement("section");
-    enabledRow.id = "workspace-task-enabled-row";
-    enabledRow.className = "workstation-status-row workspace-task-orchestration-field settings-field-toggle";
-    const enabledCopy = document.createElement("div");
-    enabledCopy.className = "workstation-status-copy";
-    const enabledTitle = document.createElement("strong");
-    enabledTitle.textContent = "启用文本优化";
-    const enabledDetail = document.createElement("small");
-    enabledDetail.className = "workstation-status-detail";
-    enabledDetail.textContent = "关闭时微信普通文本直接执行；不影响已受理任务。";
-    enabledCopy.append(enabledTitle, enabledDetail);
-    const enabledLabel = document.createElement("label");
-    enabledLabel.className = "settings-switch";
-    enabledLabel.htmlFor = "workspace-task-enabled";
-    enabledLabel.setAttribute("aria-label", "启用文本优化");
-    const enabledInput = document.createElement("input");
-    enabledInput.id = "workspace-task-enabled";
-    enabledInput.type = "checkbox";
-    enabledInput.disabled = true;
-    const enabledTrack = document.createElement("span");
-    enabledTrack.className = "settings-switch-track";
-    enabledTrack.setAttribute("aria-hidden", "true");
-    enabledLabel.append(enabledInput, enabledTrack);
-    enabledRow.append(enabledCopy, enabledLabel);
-    orchestrationList.prepend(enabledRow);
+    const pluginEnabledRow = document.createElement("section");
+    pluginEnabledRow.className = "workspace-task-orchestration-field settings-field settings-field-toggle";
+    const pluginEnabledCopy = document.createElement("span");
+    const pluginEnabledTitle = document.createElement("strong");
+    pluginEnabledTitle.textContent = "插件是否启用";
+    const pluginEnabledDescription = document.createElement("small");
+    pluginEnabledDescription.textContent = "关闭后，后续微信普通文本不进入润色插件流程；已受理任务不受影响。";
+    pluginEnabledCopy.append(pluginEnabledTitle, pluginEnabledDescription);
+    const pluginEnabledControl = document.createElement("label");
+    pluginEnabledControl.className = "settings-switch";
+    const pluginEnabledInput = document.createElement("input");
+    pluginEnabledInput.type = "checkbox";
+    pluginEnabledInput.id = "workspace-task-plugin-enabled";
+    pluginEnabledInput.setAttribute("aria-label", "插件是否启用");
+    const pluginEnabledTrack = document.createElement("span");
+    pluginEnabledTrack.className = "settings-switch-track";
+    pluginEnabledTrack.setAttribute("aria-hidden", "true");
+    pluginEnabledControl.htmlFor = pluginEnabledInput.id;
+    pluginEnabledControl.append(pluginEnabledInput, pluginEnabledTrack);
+    pluginEnabledRow.append(pluginEnabledCopy, pluginEnabledControl);
+    orchestrationList.prepend(pluginEnabledRow);
+    const processingTitle = document.getElementById("workspace-task-processing-title");
+    if (processingTitle instanceof HTMLElement) {
+      processingTitle.textContent = "润色模式";
+      processingTitle.nextElementSibling.textContent = "选择微信 ClawBot 普通文本的直接执行、自动润色或润色后确认。";
+    }
+    processingMenu.setAttribute("aria-label", "润色模式");
 
     const reasoningLabels = {
       low: "Low",
@@ -159,7 +159,7 @@
       modelPicker.setDisabled(disabled);
       reasoningPicker.setDisabled(disabled);
       showInternalNativeSession.disabled = disabled;
-      enabledInput.disabled = disabled;
+      pluginEnabledInput.disabled = disabled;
     };
     const apiRequest = async (path, options = {}) => {
       const response = await fetch(path, options);
@@ -214,7 +214,7 @@
         { value: "auto", label: "自动润色后执行", description: "先润色文本，再自动提交。" },
         { value: "confirm", label: "自动润色后确认执行", description: "先润色文本，确认后再提交。" },
       ], selectedMode);
-      processingTrigger.setAttribute("aria-label", `任务处理：${processingValue.textContent}`);
+      processingTrigger.setAttribute("aria-label", `润色模式：${processingValue.textContent}`);
       const defaultModel = models.find((item) => item.id === catalog.default_model);
       const modelOptions = [{
         value: "",
@@ -266,7 +266,11 @@
       reasoningPicker.setOptions(levels, status.reasoning_effort || "");
       reasoningTrigger.setAttribute("aria-label", `推理等级：${reasoningValue.textContent}`);
       showInternalNativeSession.checked = status.show_internal_native_session === true;
-      enabledInput.checked = status.enabled === true;
+      pluginEnabledInput.checked = orchestration.enabled === true;
+      pluginEnabledInput.setAttribute(
+        "aria-label",
+        `插件是否启用：${pluginEnabledInput.checked ? "已启用" : "未启用"}`,
+      );
       const active = Number(status.queued || 0) + Number(status.running || 0);
       const notes = [];
       if (active > 0) notes.push(`${active} 项文本优化仍在处理中`);
@@ -294,11 +298,7 @@
           && !modules.some((item) => item.available)),
       );
       showInternalNativeSession.disabled = saving || loading;
-      enabledInput.disabled = saving || loading || (
-        !status.enabled
-        && !orchestration.development_available
-        && !modules.some((item) => item.available)
-      );
+      pluginEnabledInput.disabled = saving || loading;
     };
     const load = async () => {
       if (loading || disposed) return;
@@ -389,18 +389,46 @@
       }
     };
 
+    const savePluginEnabled = async () => {
+      if (!orchestration || saving || disposed) return;
+      const enabled = pluginEnabledInput.checked;
+      // Keep the user-selected value through the immediate loading render.
+      // The server response remains authoritative and restores it on failure.
+      orchestration = { ...orchestration, enabled };
+      saving = true;
+      render();
+      try {
+        const nextOrchestration = await apiRequest(
+          "/api/settings/weixin-task-orchestration",
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ enabled }),
+          },
+        );
+        if (!disposed) orchestration = nextOrchestration;
+      } catch (error) {
+        if (!disposed) {
+          setMessage(
+            error instanceof Error ? error.message : "插件启用状态保存失败，请稍后刷新页面重试。",
+            "error",
+          );
+          await load();
+        }
+      } finally {
+        saving = false;
+        render();
+      }
+    };
+
     showInternalNativeSession.addEventListener("change", () => {
       void save(
         { show_internal_native_session: showInternalNativeSession.checked },
         "内部翻译 Session 显示设置保存失败，请稍后刷新页面重试。",
       );
     });
-
-    enabledInput.addEventListener("change", () => {
-      void save(
-        { enabled: enabledInput.checked },
-        "文本优化启用状态保存失败，请稍后刷新页面重试。",
-      );
+    pluginEnabledInput.addEventListener("change", () => {
+      void savePluginEnabled();
     });
 
     window.disposeWorkspaceTaskOrchestration = () => {

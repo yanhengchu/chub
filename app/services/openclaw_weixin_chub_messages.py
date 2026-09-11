@@ -23,7 +23,6 @@ WORKSPACE_LABEL_MAX_WIDTH = 12
 CHUB_HELP_MESSAGE = "\n\n".join(
     (
         "Commands",
-        "S# = session · R# = request · <required> · [optional]",
         "chub · check · usage · sync · new [title] · S# [task]",
         "codex auth · codex auth switch",
         "stop [S#] · retry · archive S# · del S#",

@@ -1,7 +1,7 @@
 # Chub OpenClaw 插件
 
 > 状态：已验收
-> 主要读者：需要构建、部署或升级 Chub OpenClaw 插件的 AI Agent；维护人员用于执行插件维护和验收。
+> 主要读者：AI Agent；维护者通过与 AI Agent 协作，理解并确认本文规则。
 > 本文负责：插件源码、构建、部署、固定调度协议和协议升级同步清单。
 > 本文不负责：业务身份、路由、幂等、安全边界、微信 Context Token、固定指令或用户可见回复格式；这些内容以[OpenClaw 定制集成设计](../../../docs/OPENCLAW_CUSTOMIZATION_DESIGN.md)和[Chub 集成能力清单](../../../docs/CHUB_INTEGRATION_CAPABILITIES.md)为准。
 > 维护说明：统一消息调度 v3 已部署，普通文字和可信语音已完成 macOS、Ubuntu 真实验收；插件协议边界已完成自动化验证。微信适配器的可信语音、Context Token 与日志脱敏补丁不属于本插件，普通文本原文首尾空格不属于兼容承诺。

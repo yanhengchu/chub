@@ -70,11 +70,14 @@ class TranslationSettingsUpdate(BaseModel):
 class TaskOrchestrationSettingsUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    implementation: Literal["weixin-orchestration-dev", "module"]
+    implementation: Literal["disabled", "weixin-orchestration-dev", "module"] | None = None
+    enabled: bool | None = None
     module_ref: str | None = Field(default=None, min_length=68, max_length=180)
 
     @model_validator(mode="after")
     def validate_module_reference(self):
+        if (self.implementation is None) == (self.enabled is None):
+            raise ValueError("provide exactly one of implementation or enabled")
         if self.implementation == "module" and self.module_ref is None:
             raise ValueError("module_ref is required for module implementation")
         if self.implementation != "module" and self.module_ref is not None:
@@ -190,7 +193,7 @@ def update_weixin_translation_settings(
                 payload.reasoning_effort,
             )
         else:
-            if mode != "direct":
+            if mode != "direct" and request.app.state.weixin_chub_mode.orchestration_enabled():
                 request.app.state.weixin_chub_mode.require_orchestration_implementation_available()
             result = request.app.state.weixin_translation.set_processing_mode(mode)
     except ApiError:
@@ -247,26 +250,29 @@ def update_weixin_task_orchestration_settings(
         request,
         action="update_weixin_task_orchestration",
         status="requested",
-        target=payload.implementation,
+        target=payload.implementation if payload.implementation is not None else "enabled",
     )
     log_operation(
         request,
         action="update_weixin_task_orchestration",
         status="started",
-        target=payload.implementation,
+        target=payload.implementation if payload.implementation is not None else "enabled",
         operation_id=operation_id,
     )
     try:
-        result = request.app.state.weixin_chub_mode.set_orchestration_implementation(
-            payload.implementation,
-            payload.module_ref,
-        )
+        if payload.enabled is not None:
+            result = request.app.state.weixin_chub_mode.set_orchestration_enabled(payload.enabled)
+        else:
+            result = request.app.state.weixin_chub_mode.set_orchestration_implementation(
+                payload.implementation,
+                payload.module_ref,
+            )
     except ApiError:
         log_operation(
             request,
             action="update_weixin_task_orchestration",
             status="failed",
-            target=payload.implementation,
+            target=payload.implementation if payload.implementation is not None else "enabled",
             operation_id=operation_id,
         )
         raise
@@ -275,7 +281,7 @@ def update_weixin_task_orchestration_settings(
             request,
             action="update_weixin_task_orchestration",
             status="failed",
-            target=payload.implementation,
+            target=payload.implementation if payload.implementation is not None else "enabled",
             operation_id=operation_id,
         )
         raise ApiError(
@@ -287,7 +293,7 @@ def update_weixin_task_orchestration_settings(
         request,
         action="update_weixin_task_orchestration",
         status="succeeded",
-        target=payload.implementation,
+        target=payload.implementation if payload.implementation is not None else "enabled",
         operation_id=operation_id,
     )
     return ApiResponse(data=result)

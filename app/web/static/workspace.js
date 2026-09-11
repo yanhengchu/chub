@@ -488,6 +488,19 @@
     return match ? ` · 检查于 ${match[1]}-${match[2]} ${match[3]}:${match[4]}` : "";
   };
 
+  const codexAccountQuota = (state) => {
+    if (state?.quota_state === "unavailable") return " · 额度暂不可用";
+    if (state?.quota_state !== "available") return "";
+    const parts = [];
+    if (Number.isInteger(state?.five_hour_remaining_percent)) {
+      parts.push(`5h ${state.five_hour_remaining_percent}%`);
+    }
+    if (Number.isInteger(state?.weekly_remaining_percent)) {
+      parts.push(`Weekly ${state.weekly_remaining_percent}%`);
+    }
+    return parts.length ? ` · ${parts.join(" · ")}` : " · 额度暂不可用";
+  };
+
   const setAutomationAccountStatus = (detail, state, statusKind, fallbackMessage) => {
     if (!(detail instanceof HTMLElement)) return;
     const message = state?.message || fallbackMessage;
@@ -510,12 +523,16 @@
   };
 
   const setAutomationCodexAccountStatus = (state) => {
-    setAutomationAccountStatus(
-      automationCodexAccountDetail,
-      state,
-      codexAccountStatusKind,
-      "Codex Runtime 账户状态暂时无法读取。",
-    );
+    if (automationCodexAccountDetail instanceof HTMLElement) {
+      const message = state?.message || "Codex Runtime 账户状态暂时无法读取。";
+      const quota = state?.state === "available" ? codexAccountQuota(state) : "";
+      const checkedAt = state?.state === "checking" ? "" : automationCheckedAt(state?.checked_at);
+      setWorkstationStatus(
+        automationCodexAccountDetail,
+        `${message}${quota}${checkedAt}`,
+        codexAccountStatusKind(state?.state),
+      );
+    }
     if (automationCodexAccountOpenLogin instanceof HTMLButtonElement) {
       automationCodexAccountOpenLogin.hidden = state?.login_page_available !== true;
     }

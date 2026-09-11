@@ -19,7 +19,10 @@ window.initializeWorkspaceWorkstation = () => {
     upgradeDetail: byId("workspace-upgrade-detail"),
     upgradeStart: byId("workspace-upgrade-start"),
     developmentRefresh: byId("workspace-development-refresh"),
+    developmentEnvironment: byId("workspace-development-environment"),
+    developmentCodexRow: byId("workspace-development-codex-row"),
     developmentCodexDetail: byId("workspace-development-codex-detail"),
+    developmentWeixinRow: byId("workspace-development-weixin-row"),
     developmentWeixinDetail: byId("workspace-development-weixin-detail"),
     thirdPartyRefresh: byId("workspace-third-party-refresh"),
     openclawDetail: byId("workspace-openclaw-detail"),
@@ -188,11 +191,11 @@ window.initializeWorkspaceWorkstation = () => {
     }
   };
 
-  const cacheDevelopmentSnapshot = (runtime, orchestration, modules) => {
+  const cacheDevelopmentSnapshot = (runtime, runtimeManagement, orchestration, modules) => {
     try {
       window.sessionStorage.setItem(
         developmentSnapshotCacheKey,
-        JSON.stringify({ runtime, orchestration, modules }),
+        JSON.stringify({ runtime, runtimeManagement, orchestration, modules }),
       );
     } catch {
       // The latest server data remains usable when browser storage is unavailable.
@@ -347,47 +350,72 @@ window.initializeWorkspaceWorkstation = () => {
     return normalized ? `v${normalized}` : "未知版本";
   };
 
-  const renderDevelopment = (runtime, orchestration, modules) => {
-    const implementations = Array.isArray(runtime?.implementations) ? runtime.implementations : [];
+  const renderDevelopment = (runtime, runtimeManagement, orchestration, modules) => {
+    const implementations = (Array.isArray(runtime?.implementations) ? runtime.implementations : [])
+      .filter((item) => item?.imported !== false);
     const defaultImplementationId = typeof runtime?.default_implementation_id === "string"
       ? runtime.default_implementation_id
       : "";
     const currentImplementation = implementations.find(
       (item) => item?.implementation_id === defaultImplementationId,
     ) || implementations.find((item) => item?.is_default === true);
-    const codexCurrentVersion = !currentImplementation
-      ? "当前使用版本不可用"
-      : currentImplementation.implementation_id === "builtin-dev"
-        ? "当前使用：开发实现"
-        : `当前使用：正式版 ${formalVersion(currentImplementation.version)}`;
-    setStatus(
-      elements.developmentCodexDetail,
-      `Codex · ${codexCurrentVersion}`,
-      currentImplementation && currentImplementation.enabled !== false && currentImplementation.healthy !== false
-        ? "success"
-        : "warning",
-    );
+    const codexRuntime = (Array.isArray(runtimeManagement?.runtimes) ? runtimeManagement.runtimes : [])
+      .find((item) => item?.runtime_id === "codex");
+    const runtimePluginTitle = (item) => item.implementation_id === "builtin-dev"
+      ? "Codex · 开发实现"
+      : `Codex · 正式版 ${formalVersion(item.version)}`;
+    const importedCodex = implementations.map(runtimePluginTitle);
+    const codexEnabled = codexRuntime?.enabled === true;
+    const codexAvailable = codexEnabled
+      && currentImplementation
+      && currentImplementation.enabled !== false
+      && currentImplementation.healthy !== false;
+    elements.developmentCodexRow.hidden = importedCodex.length === 0;
+    if (importedCodex.length > 0) {
+      const currentCodex = currentImplementation
+        ? runtimePluginTitle(currentImplementation)
+        : "未设置";
+      setStatus(
+        elements.developmentCodexDetail,
+        `插件版本：${currentCodex} · 导入状态：已导入 · 启用状态：${codexAvailable ? "已启用" : "未启用"}。`,
+        codexAvailable ? "success" : "warning",
+      );
+    }
 
     const orchestrationModules = Array.isArray(modules?.modules) ? modules.modules : [];
     const developmentAvailable = orchestration?.development_available === true;
+    const developmentImported = orchestration?.implementation === "weixin-orchestration-dev";
     const selectedWeixinModule = orchestration?.implementation === "module"
       ? orchestrationModules.find(
         (item) => item?.implementation_ref === orchestration?.module_ref,
       )
       : null;
-    const weixinCurrentVersion = orchestration?.implementation === "weixin-orchestration-dev"
-      ? (developmentAvailable ? "当前使用：开发实现" : "当前使用版本不可用")
-      : selectedWeixinModule?.available === true
-        ? `当前使用：正式版 ${formalVersion(selectedWeixinModule?.version)}`
-        : "当前使用版本不可用";
+    const importedWeixin = [
+      ...(developmentImported ? ["微信任务润色 · 开发实现"] : []),
+      ...orchestrationModules
+        .map((item) => `微信任务润色 · 正式版 ${formalVersion(item.version)}`),
+    ];
+    const weixinPlugin = orchestration?.implementation === "weixin-orchestration-dev"
+      ? "微信任务润色 · 开发实现"
+      : selectedWeixinModule
+        ? `微信任务润色 · 正式版 ${formalVersion(selectedWeixinModule.version)}`
+        : "未启用";
     const weixinCurrentAvailable = orchestration?.implementation === "weixin-orchestration-dev"
       ? developmentAvailable
       : selectedWeixinModule?.available === true;
-    setStatus(
-      elements.developmentWeixinDetail,
-      `微信任务润色 · ${weixinCurrentVersion}`,
-      weixinCurrentAvailable ? "success" : "warning",
-    );
+    elements.developmentWeixinRow.hidden = importedWeixin.length === 0;
+    if (importedWeixin.length > 0) {
+      const weixinEnabled = weixinCurrentAvailable && orchestration?.enabled === true;
+      const weixinEnablement = !weixinCurrentAvailable && orchestration?.implementation !== "disabled"
+        ? "不可用"
+        : weixinEnabled ? "已启用" : "未启用";
+      setStatus(
+        elements.developmentWeixinDetail,
+        `插件版本：${weixinPlugin} · 导入状态：已导入 · 启用状态：${weixinEnablement}。`,
+        weixinEnabled ? "success" : "warning",
+      );
+    }
+    elements.developmentEnvironment.hidden = importedCodex.length === 0 && importedWeixin.length === 0;
     syncControls();
   };
 
@@ -552,23 +580,23 @@ window.initializeWorkspaceWorkstation = () => {
     developmentLoading = true;
     syncControls();
     try {
-      const [runtime, orchestration, modules] = await Promise.all([
+      const [runtime, runtimeManagement, orchestration, modules] = await Promise.all([
         request("/api/codex/runtime-implementations", { cache: "no-store" }),
+        request("/api/codex/runtimes", { cache: "no-store" }),
         request("/api/settings/weixin-task-orchestration", { cache: "no-store" }),
         request("/api/settings/weixin-task-orchestration/modules", { cache: "no-store" }),
       ]);
       if (disposed) return false;
-      developmentSnapshot = { runtime, orchestration, modules };
-      renderDevelopment(runtime, orchestration, modules);
-      cacheDevelopmentSnapshot(runtime, orchestration, modules);
+      developmentSnapshot = { runtime, runtimeManagement, orchestration, modules };
+      renderDevelopment(runtime, runtimeManagement, orchestration, modules);
+      cacheDevelopmentSnapshot(runtime, runtimeManagement, orchestration, modules);
       return true;
     } catch (error) {
       if (disposed || error?.name === "AbortError") return false;
       if (!developmentSnapshot) {
-        setStatus(elements.developmentCodexDetail, error.message || "当前 Codex Runtime 实现读取失败。", "failed");
-        setStatus(elements.developmentWeixinDetail, error.message || "当前微信任务编排实现读取失败。", "failed");
+        elements.developmentEnvironment.hidden = true;
       } else {
-        showToolbarFeedback(error.message || "当前实现状态读取失败。");
+        showToolbarFeedback(error.message || "插件状态读取失败。");
       }
       return false;
     } finally {
@@ -581,7 +609,7 @@ window.initializeWorkspaceWorkstation = () => {
     developmentRefreshing = true;
     syncControls();
     setStatus(elements.developmentCodexDetail, "正在重新读取当前 Codex Runtime 实现。", "warning");
-    setStatus(elements.developmentWeixinDetail, "正在重新读取当前微信任务编排实现。", "warning");
+    setStatus(elements.developmentWeixinDetail, "正在重新读取当前微信任务润色实现。", "warning");
     try {
       await loadDevelopment();
     } finally {
@@ -845,6 +873,7 @@ window.initializeWorkspaceWorkstation = () => {
     developmentSnapshot = cachedDevelopmentSnapshot;
     renderDevelopment(
       cachedDevelopmentSnapshot.runtime,
+      cachedDevelopmentSnapshot.runtimeManagement,
       cachedDevelopmentSnapshot.orchestration,
       cachedDevelopmentSnapshot.modules,
     );

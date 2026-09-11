@@ -348,6 +348,36 @@ input[type="password"] {
   margin-top: 0;
 }
 
+.settings-navigation-link.settings-navigation-parent {
+  margin-top: 0.12rem;
+}
+
+.settings-navigation-tree {
+  position: relative;
+  display: grid;
+  gap: 0.12rem;
+  margin: 0.05rem 0.25rem 0.15rem 0.85rem;
+  padding-left: 0.7rem;
+}
+
+.settings-navigation-tree::before {
+  position: absolute;
+  top: 0.25rem;
+  bottom: 0.35rem;
+  left: 0;
+  width: 1px;
+  background: color-mix(in srgb, var(--color-border) 82%, var(--color-accent));
+  content: "";
+}
+
+.settings-navigation-subgroup {
+  margin: 0.18rem 0.25rem 0.02rem;
+  color: var(--color-text-muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
 .settings-navigation-link {
   display: flex;
   min-height: 34px;
@@ -360,6 +390,28 @@ input[type="password"] {
   font-size: 0.82rem;
   font-weight: 700;
   text-decoration: none;
+}
+
+.settings-navigation-link.settings-navigation-child {
+  position: relative;
+  min-height: 30px;
+  padding: 0.2rem 0.55rem 0.2rem 0.75rem;
+  font-size: 0.8rem;
+}
+
+.settings-navigation-link.settings-navigation-child::before {
+  position: absolute;
+  top: 50%;
+  left: -0.7rem;
+  width: 0.55rem;
+  height: 1px;
+  background: color-mix(in srgb, var(--color-border) 82%, var(--color-accent));
+  content: "";
+}
+
+.settings-navigation-link.settings-navigation-child .settings-navigation-icon {
+  width: 1rem;
+  height: 1rem;
 }
 
 .settings-navigation-icon {
@@ -384,7 +436,8 @@ input[type="password"] {
 }
 
 .settings-navigation-link[aria-current="page"] {
-  border-color: var(--color-accent);
+  border-color: transparent;
+  box-shadow: inset 2px 0 0 var(--color-accent);
   color: var(--color-accent-text);
   background: color-mix(in srgb, var(--color-accent) 8%, transparent);
 }
@@ -1732,7 +1785,6 @@ button.settings-utility-row > span:last-child {
   margin: 0;
   font-weight: 700;
   letter-spacing: 0.06em;
-  text-transform: uppercase;
 }
 
 .workspace-preview-nav {
@@ -1823,6 +1875,7 @@ button.settings-utility-row > span:last-child {
 
 .workspace-preview-create {
   width: 100%;
+  gap: 0.65rem;
   overflow: hidden;
   background: transparent;
   box-shadow: none;
@@ -1945,11 +1998,13 @@ button.settings-utility-row > span:last-child {
 
 .workspace-preview-native-session.has-actions {
   grid-template-columns: minmax(0, 1fr) 24px;
+  padding-right: 0;
 }
 
 .workspace-preview-native-session.has-actions > strong,
 .workspace-preview-native-session.has-actions > .workspace-preview-native-session-details {
   grid-column: 1;
+  padding-right: 0.3rem;
 }
 
 .workspace-preview-native-session-actions {
@@ -4836,8 +4891,7 @@ pre {
 }
 
 .workspace-automation-browser-detail,
-.workspace-automation-feishu-detail,
-.workspace-automation-codex-account-detail {
+.workspace-automation-feishu-detail {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

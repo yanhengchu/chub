@@ -127,7 +127,7 @@ def test_session_stop_final_notification_restores_other_running_task_name(
     quick_interactions.is_running.side_effect = lambda session_id: (
         session_id == other.id
     )
-    quick_interactions.weixin_task_status_snapshot.return_value = SimpleNamespace(
+    quick_interactions.running_standard_task_summaries.return_value = SimpleNamespace(
         running_tasks=((other.id, "检查后台服务运行状态"),),
     )
 
@@ -143,7 +143,7 @@ def test_session_stop_final_notification_restores_other_running_task_name(
     final_message = manager.session_stop_notifier.call_args.args[1]()
     assert "Task · 检查后台服务运行状态" in final_message
     assert "Task · Running" not in final_message
-    quick_interactions.weixin_task_status_snapshot.assert_called_with(delivery_route())
+    quick_interactions.running_standard_task_summaries.assert_called()
 
 
 def test_session_stop_duplicate_does_not_stop_twice(settings: Settings) -> None:

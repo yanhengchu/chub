@@ -141,6 +141,7 @@ class RuntimeImplementationItem(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     version: str = Field(min_length=1, max_length=64)
     description: str = Field(min_length=1, max_length=300)
+    imported: bool
     enabled: bool
     healthy: bool
     is_default: bool

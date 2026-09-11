@@ -1,7 +1,7 @@
 # Chub AI Runtime 插件模块设计
 
 > 状态：持续维护
-> 主要读者：需要维护 Runtime 插件模块或评估新增 Runtime 的 AI Agent；维护人员用于确认模块管理范围和恢复边界。
+> 主要读者：AI Agent；维护者通过与 AI Agent 协作，理解并确认本文规则。
 > 本文负责：定义当前 Runtime 插件模块的架构、ZIP 协议、版本槽位导入与覆盖、删除边界、设置页行为及复检要求。
 > 本文不负责：任务编排插件模块（见[Chub 任务编排插件模块架构设计](CHUB_TASK_ORCHESTRATION_PLUGIN_DESIGN.md)）、AI Runtime 的 Adapter/Runner 通用实现规范（见[Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)）、AI Session/Worker 的状态机与恢复细节，或微信固定指令和用户可见回复格式（见[Chub 集成能力清单](CHUB_INTEGRATION_CAPABILITIES.md)第 4 节）。
 > 维护说明：Runtime 插件模块已是当前实现：第一方 Codex 可由固定槽位的正式 ZIP 或 `builtin-dev` 开发源码提供。本文中的“插件模块”是统一架构名称；ZIP 仅表示正式交付与安装形态。本文中的“已验证”仅表示已有自动化或历史实机结论；未验证平台、第二 Runtime 及列出的复检项目不因此成为已验收能力。
@@ -19,9 +19,11 @@
 
 ### 当前范围
 
+Runtime 设置的首项统一为“插件是否启用”：关闭时只拒绝后续新 AI 任务，已受理任务继续按创建时快照收敛；默认版本仍独立决定新 Session 使用哪个已启用版本。工作台状态按导入状态、启用状态和启用版本展示，导入不等于启用或设为默认。
+
 当前生产从固定安装目录发现正式 Codex Runtime ZIP。第一方 Codex Runtime 的开发源码保留在仓库 `runtime-modules/codex-runtime/`，`builtin-dev` 直接从该目录重新加载，不复制到 ZIP 安装目录。设置页可设置一个健康且启用的默认实现；它只决定之后新建 Chub Session 的实现。Session 创建时立即保存固定槽位，Quick Worker、微信、自动化和周报等后续任务均从 Session 读取该槽位，页面、外部指令和请求正文均不提供 `implementation_id`。清单字段保留通用 `runtime_id` 是为后续独立接入做准备，不构成当前第二 Runtime 的安装或维护能力。
 
-设置页的“插件模块 → 插件管理”动态读取已加载 Runtime 的名称和说明，并提供 Runtime ZIP 的预检、导入/覆盖、设为默认、移除及状态查看。插件实现的可见名称统一为“`<能力名称> · 开发实现`”或“`<能力名称> · 正式版 v<版本号>`”：开发实现不展示内部引用，正式实现必须展示清单版本；插件库存仍使用清单 `display_name` 作为能力名称。`builtin-dev`、`implementation_id`、`development_ref` 和 `implementation_ref` 仅用于后端绑定、快照和日志，不作为用户可见名称，也不能因文案调整而改变。导入覆盖和“刷新开发代码”只检查目标槽位的排队或运行任务，不暂停、检查或阻断已绑定 Session、旧 PID、历史 writer 或页面 `unknown`。Web 与 Quick Worker 都确认新注册表后才报告成功。只有明确物理删除 ZIP 槽位时，才检查该槽位是否仍被 Session 或非终态任务引用。页面不提供客户端 Runtime、Runner、命令、路径或环境变量选择器。微信任务润色使用独立的任务编排插件模块设置和注册表，其通用边界见[Chub 任务编排插件模块架构设计](CHUB_TASK_ORCHESTRATION_PLUGIN_DESIGN.md)。
+设置页的“插件管理”固定提供 Runtime、任务编排和业务插件三个导入区域。Runtime ZIP 经预检、导入/覆盖后登记为已导入；是否用于新任务仍由 Runtime 的独立启用与默认版本配置决定。固定开发实现随当前部署提供，取消导入只影响之后的新 Session/任务，不删除源码或改写既有快照。插件管理列表与工作台都保留已导入但停用的实现，并展示导入、启用和可用状态；导入不等于启用或设为默认。插件实现的可见名称统一为“`<能力名称> · 开发实现`”或“`<能力名称> · 正式版 v<版本号>`”：开发实现不展示内部引用，正式实现必须展示清单版本；插件库存仍使用清单 `display_name` 作为能力名称。`builtin-dev`、`implementation_id`、`development_ref` 和 `implementation_ref` 仅用于后端绑定、快照和日志，不作为用户可见名称，也不能因文案调整而改变。导入覆盖和“刷新开发代码”只检查目标槽位的排队或运行任务，不暂停、检查或阻断已绑定 Session、旧 PID、历史 writer 或页面 `unknown`。Web 与 Quick Worker 都确认新注册表后才报告成功。只有明确物理删除 ZIP 槽位时，才检查该槽位是否仍被 Session 或非终态任务引用。页面不提供客户端 Runtime、Runner、命令、路径或环境变量选择器。微信任务润色使用独立的任务编排插件模块设置和注册表，其通用边界见[Chub 任务编排插件模块设计](WEIXIN_TASK_ORCHESTRATION_PLUGIN_DESIGN.md)。
 
 ```text
 维护者选择 Runtime ZIP
@@ -101,7 +103,7 @@ Chub 仅扫描固定 Runtime 安装目录。每个模块以 Runtime ID 私有 Py
 
 导入或覆盖会记录受限的激活日志。ZIP 的 Web 注册或 Worker 明确拒绝时，Chub 撤销本次目录替换并重新确认原槽位；开发重载被 Worker 明确拒绝时，Web 恢复此前已加载的开发 Runtime。Worker 通信或最终健康无法确认时，不猜测已恢复或已生效，操作明确进入状态未知。
 
-当 Web 与 Worker 已确认新注册表后，目标槽位可供新 Session 选择。默认切换只是偏好更新，不更换现有 Adapter、Runner、native session 或任务绑定。进程在导入中断时，下一次启动仅恢复或清理本次未完成的替换，不猜测成功。只有已存在的受控状态清理记录时，启动恢复才会处理其记录的 Chub 自有运行态；它不会由普通模块维护临时创建，也不会清理关联 Session、任务或用户数据。
+当 Web 与 Worker 已确认新注册表后，目标槽位显示为已导入；它是否可供新 Session 选择仍取决于独立的启用状态。默认切换只是偏好更新，不更换现有 Adapter、Runner、native session 或任务绑定。进程在导入中断时，下一次启动仅恢复或清理本次未完成的替换，不猜测成功。只有已存在的受控状态清理记录时，启动恢复才会处理其记录的 Chub 自有运行态；它不会由普通模块维护临时创建，也不会清理关联 Session、任务或用户数据。
 
 覆盖 Runtime 不会自动切换已有任务到其他 Runtime，也不影响无关 Runtime、只读能力或独立服务。物理删除是局部破坏操作：仅当目标槽位没有已绑定 Session、没有非终态任务且不是当前默认槽位时才允许；否则保持该槽位可运行并提示解除条件。开发源码不复制、删除或替换安装目录，刷新仅重载当前源码。
 
@@ -126,7 +128,7 @@ Chub 仅扫描固定 Runtime 安装目录。每个模块以 Runtime ID 私有 Py
 
 ## 维护者操作
 
-第一方 Codex 插件 ZIP 通过 `python scripts/build_codex_runtime_zip.py --implementation-id codex-010001 --version 1.0.1 --description "简短发版特性说明"` 构建，再从设置页的“插件模块 → 插件管理 → Runtime 插件导入”导入或覆盖。需要不兼容原生格式时使用新的正式标识；兼容修复可覆盖原有槽位。开发代码直接在 `runtime-modules/codex-runtime/` 修改后使用“重新加载开发代码”。不要直接复制、替换或删除固定安装目录中的文件；这会绕过 Web/Worker 注册确认与任务保护。
+第一方 Codex 插件 ZIP 通过 `python scripts/build_codex_runtime_zip.py --implementation-id codex-010001 --version 1.0.1 --description "简短发版特性说明"` 构建，默认产物命名为 `codex-runtime-release-<版本>-<UTC时间>.zip`，再从设置页的“插件模块 → 插件管理 → Runtime 插件导入”导入或覆盖。需要不兼容原生格式时使用新的正式标识；兼容修复可覆盖原有槽位。开发代码直接在 `runtime-modules/codex-runtime/` 修改后使用“重新加载开发代码”。不要直接复制、替换或删除固定安装目录中的文件；这会绕过 Web/Worker 注册确认与任务保护。
 
 模块操作失败时，以页面最终提示和操作日志为准。仅在提示状态无法确认或后续启动仍显示待恢复时，再按具体错误调查；不要手动清理其他 Runtime、Worker 或用户数据来解除单个模块故障。
 

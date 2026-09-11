@@ -225,8 +225,49 @@ async def test_codex_runtime_account_check_reports_api_mode_when_usage_is_unavai
     assert response.json()["data"]["state"] == "available"
     assert response.json()["data"]["auth_mode"] == "api"
     assert response.json()["data"]["message"] == "API Key 模式已启用"
+    assert response.json()["data"]["quota_state"] == "unavailable"
+    assert response.json()["data"]["five_hour_remaining_percent"] is None
+    assert response.json()["data"]["weekly_remaining_percent"] is None
     assert response.json()["data"]["checked_at"]
     assert response.json()["data"]["login_page_available"] is False
+    app.state.ai_usage.read.assert_called_once_with(force=True)
+
+
+@pytest.mark.anyio
+async def test_codex_runtime_account_check_includes_remaining_quota_percentages(
+    settings: Settings,
+) -> None:
+    checked_at = "2026-09-11T11:29:00+08:00"
+    app = create_app(settings)
+    app.state.ai_usage.read = MagicMock(
+        return_value=AiUsageData.model_validate(
+            {
+                "status": "available",
+                "provider": "openai",
+                "source": "account_login",
+                "timezone": "Asia/Shanghai",
+                "checked_at": checked_at,
+                "five_hour": {"remaining_percent": 42, "resets_at": "2026-09-11T14:00:00+08:00"},
+                "weekly": {"remaining_percent": 78, "resets_at": "2026-09-15T14:00:00+08:00"},
+            }
+        )
+    )
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers=AUTH,
+    ) as client:
+        response = await client.post("/api/automations/environment/codex/check")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["message"] == "ChatGPT 账户已登录"
+    assert data["quota_state"] == "available"
+    assert data["five_hour_remaining_percent"] == 42
+    assert data["weekly_remaining_percent"] == 78
+    assert data["checked_at"] == checked_at
     app.state.ai_usage.read.assert_called_once_with(force=True)
 
 

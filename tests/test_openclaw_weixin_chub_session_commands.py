@@ -241,6 +241,7 @@ def test_codex_switch_task_uses_enabled_text_optimization(
     manager, codex_manager, quick_interactions = configured_manager(settings)
     manager.translation_manager = MagicMock()
     manager.translation_manager.enabled.return_value = True
+    manager._state.orchestration_enabled = True
     manager.translation_manager.has_active_target.return_value = False
     manager.translation_manager.enqueue.return_value = True
     manager._state.session_id = "session-1"
@@ -302,10 +303,9 @@ def test_codex_switch_task_uses_enabled_text_optimization(
     assert isinstance(enqueue_kwargs["orchestration_id"], str)
 
 
-def test_codex_switch_long_body_submits_directly(
+def test_codex_switch_task_bypasses_confirm_mode_when_plugin_is_disabled(
     settings: Settings,
 ) -> None:
-    settings.openclaw.weixin_chub_mode.translation_preprocess_max_input_chars = 10
     manager, codex_manager, quick_interactions = configured_manager(settings)
     manager.translation_manager = MagicMock()
     manager.translation_manager.processing_mode.return_value = "confirm"
@@ -330,11 +330,11 @@ def test_codex_switch_long_body_submits_directly(
     ]
     codex_manager.list_sessions.return_value = sessions
     codex_manager.get_session.return_value = sessions[1]
-    long_prompt = "这是超过处理阈值的切换正文"
+    task_prompt = "检查服务状态"
 
     result = manager.dispatch(
-        message_id="switch-long-direct",
-        prompt=f"S2 {long_prompt}",
+        message_id="switch-disabled-direct",
+        prompt=f"S2 {task_prompt}",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -344,7 +344,7 @@ def test_codex_switch_long_body_submits_directly(
     assert result.message is not None
     assert result.message.startswith("Session: S2 selected. Task submitted.")
     quick_interactions.submit.assert_called_once()
-    assert quick_interactions.submit.call_args.args[1] == long_prompt
+    assert quick_interactions.submit.call_args.args[1] == task_prompt
     manager.translation_manager.enqueue.assert_not_called()
 
 
@@ -354,6 +354,7 @@ def test_codex_switch_task_keeps_selection_when_optimization_cannot_queue(
     manager, codex_manager, quick_interactions = configured_manager(settings)
     manager.translation_manager = MagicMock()
     manager.translation_manager.enabled.return_value = True
+    manager._state.orchestration_enabled = True
     manager.translation_manager.has_active_target.return_value = False
     manager.translation_manager.enqueue.return_value = False
     manager._state.session_id = "session-1"

@@ -246,8 +246,9 @@ class WeixinChubModeState(_StrictModel):
     version: Literal[1] = 1
     configuration: WeixinChubModeRuntimeConfig
     orchestration_implementation: Literal[
-        "internal", "weixin-orchestration-dev", "module"
-    ] = "weixin-orchestration-dev"
+        "internal", "disabled", "weixin-orchestration-dev", "module"
+    ] = "disabled"
+    orchestration_enabled: bool = False
     orchestration_development_source_hash: str | None = Field(
         default=None,
         min_length=64,
@@ -279,7 +280,8 @@ class WeixinChubModeStatus(_StrictModel):
 
 
 class WeixinTaskOrchestrationSettingsStatus(_StrictModel):
-    implementation: Literal["weixin-orchestration-dev", "module"]
+    implementation: Literal["disabled", "weixin-orchestration-dev", "module"]
+    enabled: bool
     development_available: bool
     development_source_hash: str | None = Field(default=None, min_length=64, max_length=64)
     module_ref: str | None = Field(default=None, min_length=68, max_length=180)

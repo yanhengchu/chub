@@ -1,7 +1,7 @@
 # Chub AI Runtime 架构设计
 
 > 状态：已验收
-> 主要读者：需要实现或维护 Runtime Adapter/Runner 的 AI Agent；维护人员用于确认接入边界。
+> 主要读者：AI Agent；维护者通过与 AI Agent 协作，理解并确认本文规则。
 > 本文负责：Runtime 共享契约、实现槽位、Adapter/Runner 边界、Native Session 与新增 Runtime 的接入判定。
 > 本文不负责：Codex 等具体 Runtime 的私有行为、Chub Session 生命周期、Worker 任务恢复、Runtime 插件模块安装和微信路由。
 > 维护说明：Runtime 插件模块已作为当前实现交付；本文定义所有 Runtime 共用的边界。本文“已验收”仅表示共享 Runtime 契约已验收，不替代各 Runtime ZIP 生命周期、目标平台或私有行为的专项验收。当前唯一接入的 Codex 私有行为以[Chub Codex Runtime 设计](CHUB_CODEX_RUNTIME_DESIGN.md)为准，ZIP 生命周期以[Chub AI Runtime 插件模块设计](CHUB_RUNTIME_PLUGIN_DESIGN.md)为准。

@@ -419,6 +419,9 @@ class RuntimeAccountEnvironmentState(StrictAutomationModel):
     state: Literal["unchecked", "checking", "available", "failed"] = "unchecked"
     auth_mode: Literal["account", "api", "unknown"] = "unknown"
     message: str = "未检查"
+    quota_state: Literal["unchecked", "available", "unavailable"] = "unchecked"
+    five_hour_remaining_percent: int | None = Field(default=None, ge=0, le=100)
+    weekly_remaining_percent: int | None = Field(default=None, ge=0, le=100)
     checked_at: datetime | None = None
     login_page_available: bool = False
     switching: bool = False

@@ -223,7 +223,7 @@ async def _mock_workspace_api(route) -> None:
         },
         "/api/settings/weixin-task-orchestration": {
             "success": True,
-            "data": {"implementation": "weixin-orchestration-dev", "development_available": True},
+            "data": {"implementation": "weixin-orchestration-dev", "enabled": True, "development_available": True},
         },
         "/api/settings/weixin-task-orchestration/modules": {
             "success": True,
@@ -251,6 +251,9 @@ async def _mock_workspace_api(route) -> None:
                 "account": {
                     "state": "available",
                     "message": "API Key 已配置，AI 额度可用",
+                    "quota_state": "available",
+                    "five_hour_remaining_percent": 42,
+                    "weekly_remaining_percent": 78,
                     "checked_at": "2026-09-10T12:00:00+08:00",
                     "login_page_available": False,
                 },
@@ -387,6 +390,7 @@ async def _mock_workspace_api_with_task_orchestration(route) -> None:
                 "success": True,
                 "data": {
                     "implementation": "module",
+                    "enabled": True,
                     "module_ref": "weixin-refinement@test",
                     "module_available": True,
                     "development_available": True,
@@ -412,6 +416,7 @@ async def _mock_workspace_api_with_task_orchestration(route) -> None:
             "success": True,
             "data": {
                 "implementation": "weixin-orchestration-dev",
+                "enabled": True,
                 "development_available": True,
                 "development_source_hash": "a" * 64,
             },
@@ -511,7 +516,7 @@ async def test_runtime_plugin_imports_show_consistent_empty_rows(
     assert page_errors == []
 
 
-async def test_imported_modules_use_the_same_enabled_status_label(
+async def test_imported_modules_distinguish_availability_from_current_use(
     workspace_browser_server: str,
 ) -> None:
     async def route_enabled_modules(route) -> None:
@@ -566,8 +571,8 @@ async def test_imported_modules_use_the_same_enabled_status_label(
                 wait_until="domcontentloaded",
             )
             assert response is not None and response.status == 200
-            await expect(page.locator("#runtime-module-list .badge")).to_have_text("已启用")
-            await expect(page.locator("#orchestration-module-list .badge")).to_have_text("已启用")
+            await expect(page.locator("#runtime-module-list .badge")).to_have_text("可用")
+            await expect(page.locator("#orchestration-module-list .badge")).to_have_text("当前使用")
             await expect(page.locator("#runtime-module-list")).to_contain_text(
                 "Codex · 正式版 v1.0.0",
             )
@@ -708,17 +713,17 @@ async def test_task_orchestration_opens_from_ai_runtime_settings_navigation(
             await expect(
                 page.get_by_role("region", name="微信任务润色"),
             ).to_be_visible()
-            await expect(page.locator("#workspace-task-enabled")).to_be_checked()
-            await page.locator('label[for="workspace-task-enabled"]').click()
-            await expect(page.locator("#workspace-task-enabled")).not_to_be_checked()
+            await expect(page.locator("#workspace-task-plugin-enabled")).to_have_count(1)
             order = await page.locator(".workspace-task-orchestration-list").evaluate(
                 """(list) => Array.from(list.querySelectorAll('.workspace-task-orchestration-field')).map((row) => (
                     row.querySelector('input')?.id || row.querySelector('button')?.id || ''
                 ))""",
             )
-            assert order.index("workspace-task-show-internal-native-session") < order.index(
+            assert order.index("workspace-task-plugin-enabled") < order.index(
+                "workspace-task-show-internal-native-session",
+            ) < order.index(
                 "workspace-task-implementation-trigger",
-            )
+            ) < order.index("workspace-task-processing-trigger")
             await expect(page.locator("#workspace-task-module-file")).to_have_count(0)
             await expect(page.locator("#workspace-task-processing-value")).to_have_text(
                 "自动润色后执行",
@@ -1359,6 +1364,9 @@ async def test_workspace_section_switch_disposes_workstation_controller(
             await expect(page.locator("#workspace-automation-codex-account-detail")).to_contain_text(
                 "API Key 已配置，AI 额度可用",
             )
+            await expect(page.locator("#workspace-automation-codex-account-detail")).to_contain_text(
+                "5h 42% · Weekly 78% · 检查于 09-10 12:00",
+            )
             await page.get_by_role("button", name="完成", exact=True).click()
             assert await page.locator(".workspace-automations").evaluate(
                 "(element) => getComputedStyle(element).borderTopStyle",
@@ -1492,7 +1500,7 @@ async def test_workstation_current_implementations_refresh_without_switching(
             response = await page.goto(workspace_browser_server, wait_until="domcontentloaded")
             assert response is not None and response.status == 200
 
-            await expect(page.get_by_role("heading", name="当前实现")).to_be_visible()
+            await expect(page.get_by_role("heading", name="插件状态")).to_be_visible()
             assert await page.locator(".workspace-preview-work-surface").evaluate(
                 "(element) => getComputedStyle(element).borderTopStyle",
             ) == "none"
@@ -1506,7 +1514,7 @@ async def test_workstation_current_implementations_refresh_without_switching(
             workstation_box = await page.locator(".workspace-workstation").bounding_box()
             assert summary_box is not None and workstation_box is not None
             assert workstation_box["y"] - (summary_box["y"] + summary_box["height"]) >= 15
-            heading_box = await page.get_by_role("heading", name="当前实现").bounding_box()
+            heading_box = await page.get_by_role("heading", name="插件状态").bounding_box()
             group_box = await page.locator(".workspace-development-environment").bounding_box()
             content_box = await page.locator(".workspace-development-environment .workstation-status-list").bounding_box()
             assert heading_box is not None and group_box is not None and content_box is not None
@@ -1520,17 +1528,17 @@ async def test_workstation_current_implementations_refresh_without_switching(
                     "(element) => getComputedStyle(element, '::before').display",
                 ) == "none"
             await expect(page.locator("#workspace-development-codex-detail")).to_contain_text(
-                "Codex · 当前使用：开发实现",
+                "插件版本：Codex · 开发实现 · 导入状态：已导入 · 启用状态：已启用。",
             )
             await expect(page.locator("#workspace-development-weixin-detail")).to_contain_text(
-                "微信任务润色 · 当前使用：开发实现",
+                "插件版本：微信任务润色 · 开发实现 · 导入状态：已导入 · 启用状态：已启用。",
             )
             await page.locator("#workspace-development-refresh").click()
             await expect(page.locator("#workspace-development-codex-detail")).to_have_text(
-                "Codex · 当前使用：开发实现",
+                "插件版本：Codex · 开发实现 · 导入状态：已导入 · 启用状态：已启用。",
             )
             await expect(page.locator("#workspace-development-weixin-detail")).to_have_text(
-                "微信任务润色 · 当前使用：开发实现",
+                "插件版本：微信任务润色 · 开发实现 · 导入状态：已导入 · 启用状态：已启用。",
             )
         finally:
             await context.close()
@@ -1575,6 +1583,7 @@ async def test_workstation_development_environment_shows_selected_formal_impleme
                     "success": True,
                     "data": {
                         "implementation": "module",
+                        "enabled": True,
                         "module_ref": module_ref,
                         "module_available": True,
                         "development_available": True,
@@ -1611,10 +1620,10 @@ async def test_workstation_development_environment_shows_selected_formal_impleme
             response = await page.goto(workspace_browser_server, wait_until="domcontentloaded")
             assert response is not None and response.status == 200
             await expect(page.locator("#workspace-development-codex-detail")).to_have_text(
-                "Codex · 当前使用：正式版 v1.0.1",
+                "插件版本：Codex · 正式版 v1.0.1 · 导入状态：已导入 · 启用状态：已启用。",
             )
             await expect(page.locator("#workspace-development-weixin-detail")).to_have_text(
-                "微信任务润色 · 当前使用：正式版 v1.0.0",
+                "插件版本：微信任务润色 · 正式版 v1.0.0 · 导入状态：已导入 · 启用状态：已启用。",
             )
         finally:
             await context.close()

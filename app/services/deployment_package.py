@@ -228,15 +228,16 @@ class DeploymentPackageService:
             root = Path(temp)
             modules = root / "bundled-modules"
             modules.mkdir()
-            runtime_zip = modules / "codex-runtime.zip"
-            weixin_zip = modules / "weixin-refinement.zip"
+            built_at = _now()
+            timestamp = built_at.strftime("%Y%m%d%H%M%S")
+            runtime_zip = modules / f"codex-runtime-release-{configuration.runtime_release_version}-{timestamp}.zip"
+            weixin_zip = modules / f"weixin-refinement-release-{configuration.weixin_release_version}-{timestamp}.zip"
             subprocess.run([sys.executable, str(PROJECT_ROOT / "scripts" / "build_codex_runtime_zip.py"), "--output", str(runtime_zip), "--implementation-id", configuration.runtime_implementation_id, "--version", configuration.runtime_release_version, "--description", configuration.runtime_description], cwd=PROJECT_ROOT, check=True, capture_output=True, text=True, timeout=60)
             subprocess.run([sys.executable, str(PROJECT_ROOT / "scripts" / "build_weixin_orchestration_plugin_zip.py"), "--output", str(weixin_zip), "--version", configuration.weixin_release_version], cwd=PROJECT_ROOT, check=True, capture_output=True, text=True, timeout=60)
-            timestamp = _now().strftime("%Y%m%d%H%M%S")
             name = f"chub-release-{configuration.chub_release_version}-{timestamp}.zip"
             destination = self.output_dir / name
             temporary = root / name
-            manifest: dict[str, object] = {"chub_release_version": configuration.chub_release_version, "built_at": _now().isoformat(), "include_development_sources": configuration.include_development_sources, "files": {}}
+            manifest: dict[str, object] = {"chub_release_version": configuration.chub_release_version, "built_at": built_at.isoformat(), "include_development_sources": configuration.include_development_sources, "files": {}}
             with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
                 self._add_sources(archive, manifest, configuration.include_development_sources)
                 self._add_file(

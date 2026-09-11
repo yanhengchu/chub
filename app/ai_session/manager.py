@@ -448,6 +448,10 @@ class AiSessionManager:
                         if manifest is not None
                         else module.description
                     ),
+                    imported=(
+                        implementation_id != "builtin-dev"
+                        or implementation_id not in preferences.disabled_implementation_ids
+                    ),
                     enabled=implementation_id not in preferences.disabled_implementation_ids,
                     healthy=status is not None and status.available,
                     is_default=implementation_id == self.default_implementation_id,
@@ -478,11 +482,23 @@ class AiSessionManager:
                     raise ApiError(409, "runtime_implementation_unavailable", "不可用的 Runtime 版本不能启用。")
                 disabled.discard(implementation_id)
             else:
-                if implementation_id == preferences.default_implementation_id:
-                    raise ApiError(409, "runtime_default_implementation_required", "请先选择其他默认 Runtime 版本。")
+                # A checked-out development implementation can be cancelled even
+                # when it is the only candidate.  This only changes the default
+                # for future work; existing Sessions keep their implementation
+                # snapshot and the source directory is deliberately untouched.
+                default_implementation_id = preferences.default_implementation_id
+                if implementation_id == default_implementation_id:
+                    default_implementation_id = None
                 disabled.add(implementation_id)
             self.runtime_implementation_preferences.save(
-                preferences.model_copy(update={"disabled_implementation_ids": sorted(disabled)})
+                preferences.model_copy(
+                    update={
+                        "disabled_implementation_ids": sorted(disabled),
+                        "default_implementation_id": default_implementation_id
+                        if not enabled
+                        else preferences.default_implementation_id,
+                    }
+                )
             )
             self.default_implementation_id = self._resolve_default_implementation_id()
             return self.read_runtime_implementations()

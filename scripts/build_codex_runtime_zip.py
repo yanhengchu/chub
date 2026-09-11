@@ -6,18 +6,30 @@ import re
 import sys
 import tomllib
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOT = PROJECT_ROOT / "runtime-modules" / "codex-runtime"
-DEFAULT_OUTPUT = PROJECT_ROOT / "data" / "local" / "artifacts" / "runtime-modules" / "codex-runtime.zip"
 IMPLEMENTATION_ID_PATTERN = re.compile(r"^codex-[0-9]{6}$")
 
 
 def current_version() -> str:
     with (PROJECT_ROOT / "pyproject.toml").open("rb") as file:
         return str(tomllib.load(file)["project"]["version"])
+
+
+def default_output(version: str, *, built_at: datetime | None = None) -> Path:
+    timestamp = (built_at or datetime.now(timezone.utc)).strftime("%Y%m%d%H%M%S")
+    return (
+        PROJECT_ROOT
+        / "data"
+        / "local"
+        / "artifacts"
+        / "runtime-modules"
+        / f"codex-runtime-release-{version}-{timestamp}.zip"
+    )
 
 
 def build(
@@ -57,7 +69,7 @@ def build(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--output", type=Path)
     parser.add_argument("--implementation-id", default="codex-010000")
     parser.add_argument("--version", default="1.0.0")
     parser.add_argument(
@@ -67,7 +79,7 @@ def main() -> int:
     )
     args = parser.parse_args()
     output = build(
-        args.output.expanduser().resolve(),
+        (args.output or default_output(args.version)).expanduser().resolve(),
         implementation_id=args.implementation_id,
         version=args.version,
         description=args.description,

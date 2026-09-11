@@ -16,7 +16,7 @@ Chub 按维护者授信的个人工作站运行：优先保证本地可用、局
 
 Chub 的长期定位是“个人本地工作站与统一控制面”：核心自身始终可独立运行，并可装载独立演进的插件模块。插件模块拥有自己的业务页面、设置、数据和流程，复用 Chub 的稳定能力与运行环境。核心优先保证可用性、局部恢复和最终状态确认，只在会造成直接数据破坏、安全越界或不可恢复冲突时施加最小门禁；单个插件模块未安装、停用或故障时，只影响其自身，不影响 Chub 核心和其他独立功能。
 
-“插件模块”是 Chub 的统一产品与架构术语；正式交付和安装形态统一称为“插件包”或“插件 ZIP”。当前已实现 Runtime 插件模块与微信任务编排插件模块；面向业务页面、设置和流程的通用“工作台业务插件模块”仍是后续目标，不应视为当前可安装能力。
+“插件模块”是 Chub 的统一产品与架构术语；正式交付和安装形态统一称为“插件包”或“插件 ZIP”。当前已实现 Runtime 插件模块与微信任务编排插件模块。工作台业务模块方向已确认：Deliveryline 将作为首个固定开发业务模块接入；其宿主、页面、数据和 ZIP 生命周期尚未实现，不应视为当前可安装能力。
 
 ## 当前能力
 
@@ -28,7 +28,7 @@ Chub 的长期定位是“个人本地工作站与统一控制面”：核心自
 | 需求储备 | 管理 R1-R9 轻量需求 | `chub` CLI、微信 ClawBot |
 | 自动化与周报 | 使用受管 Debug Chrome 运行固定自动化，准备并生成周报 | 自动化页、周报页、命令行 |
 | 外部集成与通知 | 接入 OpenClaw/微信 ClawBot，并向预配置飞书目标发送通知 | 设置页、微信 ClawBot、OpenClaw Tool、CLI |
-| 插件模块 | 管理已接入的 Runtime 插件模块与微信任务编排插件模块；业务工作台插件模块为后续方向 | 设置页、受控维护入口 |
+| 插件模块 | 管理已接入的 Runtime 插件模块与微信任务编排插件模块；Deliveryline 业务模块方向已确认但尚未实现 | 设置页、受控维护入口 |
 | 项目资料与外观 | 浏览已登记的项目资料，切换主题和文字大小 | 工作台、设置页 |
 
 微信任务编排插件模块已提供直接执行、固定仓库开发实现 `weixin-orchestration-dev`，以及正式 ZIP 的导入、启用、停用和移除。旧 `internal` 阶段仅用于识别历史运行态并失败关闭，不再接受新任务。ZIP 产物按内容摘要不可变保存，已受理任务继续绑定创建时的阶段产物；通用架构见[Chub 任务编排插件模块架构设计](docs/CHUB_TASK_ORCHESTRATION_PLUGIN_DESIGN.md)，微信范围见[Chub 微信任务编排插件模块设计](docs/WEIXIN_TASK_ORCHESTRATION_PLUGIN_DESIGN.md)。
@@ -129,6 +129,13 @@ Chub 始终提供 loopback 访问；启用默认的 Tailnet 可信访问后，�
 | [Chub 微信任务编排插件模块设计](docs/WEIXIN_TASK_ORCHESTRATION_PLUGIN_DESIGN.md) | 微信已验证任务正文的内置/插件分流、首个插件范围、阶段目标和验收 |
 | [Chub Session 状态模型设计](docs/AI_SESSION_STATE_DESIGN.md) | Chub Session、Native Session 数据消费与映射、Activity、usage 投影、入口、操作、槽位和单 writer 语义 |
 | [Chub Quick Worker 独立服务设计](docs/CHUB_QUICK_WORKER_DESIGN.md) | Quick Worker 独立服务、非实时任务、恢复、通知终态和重启协调 |
+
+### 工作台业务模块
+
+| 文档 | 唯一职责 |
+| --- | --- |
+| [Chub 工作台业务模块设计](docs/CHUB_BUSINESS_MODULE_DESIGN.md) | 定义工作台业务模块的最小宿主边界，以及首个 Deliveryline 固定开发模块的接入方向；当前未实现宿主或安装能力。 |
+| [Deliveryline 需求交付管理平台设计](docs/DELIVERYLINE_PLATFORM_DESIGN.md) | 定义 Deliveryline 的需求交付阶段、领域规则方向与 Chub 的职责边界。 |
 
 ### 专项能力与外部集成
 

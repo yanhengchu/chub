@@ -618,7 +618,7 @@ def test_dispatch_routes_chub_status_to_live_overview(
     prompt: str,
 ) -> None:
     manager, codex_manager, quick_interactions = configured_manager(settings)
-    quick_interactions.weixin_task_status_snapshot.return_value = SimpleNamespace(
+    quick_interactions.running_standard_task_summaries.return_value = SimpleNamespace(
         running_count=2,
         pending_notification_count=1,
         failed_notification_count=1,
@@ -676,7 +676,6 @@ def test_removed_status_aliases_are_submitted_as_normal_tasks(
         (
             "help",
             "Commands\n\n"
-            "S# = session · R# = request · <required> · [optional]\n\n"
             "chub · check · usage · sync · new [title] · S# [task]\n\n"
             "codex auth · codex auth switch\n\n"
             "stop [S#] · retry · archive S# · del S#\n\n"
@@ -1831,7 +1830,7 @@ def test_chub_overview_shows_running_task_on_refreshed_session(
         )
     ]
     quick_interactions.is_running.side_effect = lambda session_id: session_id == "session-1"
-    quick_interactions.weixin_task_status_snapshot.return_value = SimpleNamespace(
+    quick_interactions.running_standard_task_summaries.return_value = SimpleNamespace(
         running_count=1,
         pending_notification_count=0,
         failed_notification_count=0,

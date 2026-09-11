@@ -1,7 +1,7 @@
 # Chub Quick Worker 独立服务设计
 
 > 状态：已验收
-> 主要读者：AI Agent、实现和排障 Agent；维护人员用于确认运行边界和验收结果。
+> 主要读者：AI Agent；维护者通过与 AI Agent 协作，理解并确认本文规则。
 > 本文负责：Quick Worker 的任务状态、Session 租约、Native 绑定、恢复与通知终态。
 > 本文不负责：Runtime 私有 CLI、Session 页面展示、Runtime 插件模块生命周期和微信路由。
 

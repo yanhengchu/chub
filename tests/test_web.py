@@ -510,6 +510,27 @@ async def settings_page_removes_quick_interaction_page_size_preference(
 
 
 @pytest.mark.anyio
+async def test_settings_navigation_keeps_imported_unavailable_orchestration_plugin(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    app.state.weixin_chub_mode.orchestration_settings = MagicMock(
+        return_value=SimpleNamespace(implementation="disabled")
+    )
+    app.state.weixin_chub_mode.orchestration_plugin_service.list_artifacts = MagicMock(
+        return_value=(SimpleNamespace(available=False),)
+    )
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/settings/runtime")
+
+    assert response.status_code == 200
+    assert '<span class="settings-navigation-subgroup">任务编排</span>' in response.text
+    assert 'class="settings-navigation-link settings-navigation-child" href="/settings/task-orchestration"' in response.text
+
+
+@pytest.mark.anyio
 async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     settings: Settings,
 ) -> None:
@@ -579,12 +600,22 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert 'id="codex-default-runtime-implementation"' not in pages["runtime"].text
     assert '<h1 id="settings-title" class="settings-workspace-title">插件管理</h1>' in pages["runtime"].text
     assert "管理 Runtime 与任务编排插件模块的通用默认项、导入与版本。" in pages["runtime"].text
+    assert '<span class="settings-navigation-subgroup">AI Runtime</span>' in pages["runtime"].text
+    assert '<span class="settings-navigation-subgroup">任务编排</span>' not in pages["runtime"].text
+    assert 'class="settings-navigation-link settings-navigation-parent" href="/settings/runtime"' in pages["runtime"].text
+    assert '<span>插件管理</span>' in pages["runtime"].text
+    assert pages["runtime"].text.index('<span class="settings-navigation-group">通用设置</span>') < pages["runtime"].text.index('href="/settings/appearance"') < pages["runtime"].text.index('href="/settings/runtime"')
+    assert pages["runtime"].text.count('class="settings-navigation-tree"') == 1
+    assert 'class="settings-navigation-link settings-navigation-child" href="/settings/runtime/codex"' in pages["runtime"].text
+    assert 'class="settings-navigation-link settings-navigation-child" href="/settings/task-orchestration"' not in pages["runtime"].text
     assert "Runtime 插件导入" in pages["runtime"].text
-    assert "可在对应 Runtime 设置页选择当前使用版本。" in pages["runtime"].text
+    assert "导入只保存插件；是否用于新任务在下方单独启用。" in pages["runtime"].text
     assert 'class="runtime-module-install-heading"' in pages["runtime"].text
     assert "任务编排插件导入" in pages["runtime"].text
     assert 'id="orchestration-module-file"' in pages["runtime"].text
     assert 'id="orchestration-module-list" class="settings-divided-list runtime-module-list"' in pages["runtime"].text
+    assert 'id="business-module-install-title">业务插件导入</h3>' in pages["runtime"].text
+    assert "暂无可导入的业务插件。" in pages["runtime"].text
     assert 'id="ai-runtime-general-settings"' in pages["runtime"].text
     assert 'href="/settings/runtime" aria-current="page"' in pages["runtime"].text
     assert 'id="runtime-module-list" class="settings-divided-list runtime-module-list"' in pages["runtime"].text
@@ -614,6 +645,11 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert 'margin-top: 0.5rem;' in stylesheet.text
     assert '.settings-divided-list .settings-field > span' in stylesheet.text
     assert '.settings-divided-list.runtime-module-list' in stylesheet.text
+    assert '.settings-navigation-subgroup {' in stylesheet.text
+    assert '.settings-navigation-tree::before {' in stylesheet.text
+    assert '.settings-navigation-link.settings-navigation-parent {' in stylesheet.text
+    assert '.settings-navigation-link.settings-navigation-child {' in stylesheet.text
+    assert '.settings-navigation-link[aria-current="page"] {\n  border-color: transparent;\n  box-shadow: inset 2px 0 0 var(--color-accent);' in stylesheet.text
     assert '.runtime-module-empty-row > span' in stylesheet.text
     assert '.settings-divided-list .settings-utility-row + .settings-utility-row' in stylesheet.text
     assert '.settings-utility-list {' in stylesheet.text
@@ -630,17 +666,21 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert 'moduleEmptyRow("尚未导入 Runtime 插件。")' in script.text
     assert 'moduleEmptyRow("尚未导入任务编排插件。")' in script.text
     assert 'formalImplementationTitle(module.name || "Runtime", module.version)' in script.text
-    assert 'badge.textContent = module.status === "active" ? "已启用" : "不可用";' in script.text
-    assert 'Runtime 插件已导入并启用。' in script.text
+    assert 'badge.textContent = module.status === "active" ? "可用" : "不可用";' not in script.text
+    assert 'function refreshPluginManagementNavigation() {' in script.text
+    assert 'if (settingsPage === "runtime") window.location.reload();' in script.text
+    assert 'badge.textContent = module.active ? "当前使用" : (module.available ? "可用" : "不可用");' not in script.text
     assert 'formalImplementationTitle(module.name || "任务编排插件", module.version)' in script.text
     assert 'remove.addEventListener("click", clearSelectedRuntimePlugin);' in script.text
     assert 'remove.addEventListener("click", clearSelectedOrchestrationPlugin);' in script.text
     assert 'href="/settings/runtime/codex" aria-current="page"' in pages["runtime-detail"].text
     assert '新建 Session 默认项由 Chub 安全保存。' not in pages["openclaw"].text
     assert '浏览器拒绝保存时，主题和文字大小仅在当前页临时应用。' in pages["openclaw"].text
-    assert 'href="/settings/task-orchestration"' in pages["runtime"].text
-    assert 'href="/settings/task-orchestration" aria-current="page"' in pages["task-orchestration"].text
+    assert 'href="/settings/task-orchestration"' not in pages["runtime"].text
+    assert 'href="/settings/task-orchestration" aria-current="page"' not in pages["task-orchestration"].text
     assert 'id="workspace-task-processing-trigger"' in pages["task-orchestration"].text
+    assert 'id="workspace-task-processing-title">润色模式</strong>' in pages["task-orchestration"].text
+    assert 'aria-label="润色模式" hidden' in pages["task-orchestration"].text
     assert 'aria-label="微信任务润色"><section class="workstation-group workspace-task-orchestration-group"' in pages["task-orchestration"].text
     assert 'id="workspace-task-show-internal-native-session"' in pages["task-orchestration"].text
     assert 'id="workspace-task-module-file"' not in pages["task-orchestration"].text
@@ -649,8 +689,8 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
         'id="workspace-task-show-internal-native-session"'
     ) < pages["task-orchestration"].text.index('id="workspace-task-processing-trigger"')
     assert 'label class="settings-switch" for="workspace-task-show-internal-native-session"' in pages["task-orchestration"].text
-    assert 'enabledTitle.textContent = "启用文本优化";' in workspace_script.text
-    assert 'enabledInput.id = "workspace-task-enabled";' in workspace_script.text
+    assert 'processingTitle.textContent = "润色模式";' in workspace_script.text
+    assert 'processingMenu.setAttribute("aria-label", "润色模式");' in workspace_script.text
     assert 'orchestrationList.insertBefore(internalSessionRow, implementationRow);' in workspace_script.text
     assert 'id="workspace-task-orchestration-title"' not in pages["task-orchestration"].text
     assert 'class="theme-option-groups" role="radiogroup" aria-label="主题选择"' in pages["appearance"].text
@@ -819,6 +859,9 @@ async def test_runtime_settings_navigation_lists_each_registered_runtime(
         "local": local_runtime,
     }.__getitem__
     app.state.ai_session_manager.runtime_plugins = runtime_plugins
+    app.state.ai_session_manager.read_runtime_implementations = MagicMock(
+        return_value=SimpleNamespace(implementations=[SimpleNamespace(imported=True)])
+    )
     app.state.ai_session_manager.read_runtime_management = MagicMock(
         return_value=RuntimeManagementData(
             basic_mode=False,
@@ -944,16 +987,23 @@ async def test_home_workstation_third_party_controls_are_state_driven(
         script = await client.get("/static/js/features/workspace-workstation.js")
 
     assert response.status_code == 200
-    assert "当前实现" in response.text
-    assert response.text.index("工作站环境") < response.text.index("当前实现") < response.text.index("第三方服务环境")
+    assert "插件状态" in response.text
+    assert "展示各插件的导入状态、启用状态和启用版本。" in response.text
+    assert ">微信任务润色</strong>" in response.text
+    assert "微信任务编排</strong>" not in response.text
+    assert response.text.index("工作站环境") < response.text.index("插件状态") < response.text.index("第三方服务环境")
     assert 'id="workspace-development-refresh"' in response.text
-    assert 'id="workspace-development-codex-detail"' in response.text
-    assert 'id="workspace-development-weixin-detail"' in response.text
+    assert 'id="workspace-development-environment"' in response.text
+    assert 'id="workspace-development-codex-row"' in response.text
+    assert 'id="workspace-development-weixin-row"' in response.text
     assert 'const defaultImplementationId = typeof runtime?.default_implementation_id === "string"' in script.text
-    assert '"当前使用：开发实现"' in script.text
-    assert '`当前使用：正式版 ${formalVersion(currentImplementation.version)}`' in script.text
+    assert 'request("/api/codex/runtimes", { cache: "no-store" })' in script.text
+    assert "插件版本：${currentCodex} · 导入状态：已导入 · 启用状态：" in script.text
+    assert "插件版本：${weixinPlugin} · 导入状态：已导入 · 启用状态：" in script.text
+    assert '"Codex · 开发实现"' in script.text
+    assert '`Codex · 正式版 ${formalVersion(item.version)}`' in script.text
     assert 'item?.implementation_ref === orchestration?.module_ref' in script.text
-    assert '`当前使用：正式版 ${formalVersion(selectedWeixinModule?.version)}`' in script.text
+    assert '`微信任务润色 · 正式版 ${formalVersion(selectedWeixinModule.version)}`' in script.text
     assert 'workspace-development-codex-refresh' not in response.text
     assert 'workspace-development-weixin-refresh' not in response.text
     assert "第三方服务环境" in response.text
@@ -1041,6 +1091,9 @@ async def test_automation_section_uses_workstation_status_rows(
                 state="available",
                 auth_mode="api",
                 message="API Key 模式已启用",
+                quota_state="available",
+                five_hour_remaining_percent=42,
+                weekly_remaining_percent=78,
                 checked_at=datetime(2026, 9, 5, 12, 31, tzinfo=timezone.utc),
                 login_page_available=True,
             ),
@@ -1142,7 +1195,7 @@ async def test_automation_section_uses_workstation_status_rows(
     assert "Debug Chrome 未启动，按需启动。 · 浏览器用户：Default · 无界面" in response.text
     assert 'id="workspace-automation-browser-message"' not in response.text
     assert "飞书登录已失效，请重新登录。 · 检查于 09-05 12:30" in response.text
-    assert "API Key 模式已启用 · 检查于 09-05 12:31" in response.text
+    assert "API Key 模式已启用 · 5h 42% · Weekly 78% · 检查于 09-05 12:31" in response.text
     assert 'id="workspace-automation-feishu-message"' not in response.text
     assert "周报资料准备 · 2026-08-31至2026-09-06" in response.text
     assert 'class="workstation-weekly-workflow"' in response.text
@@ -1194,7 +1247,8 @@ async def test_automation_section_uses_workstation_status_rows(
     assert 'automationCodexAccountOpenLogin.hidden = state?.login_page_available !== true;' in workspace_script.text
     assert 'return match ? ` · 检查于 ${match[1]}-${match[2]} ${match[3]}:${match[4]}` : "";' in workspace_script.text
     assert 'const setAutomationAccountStatus = (detail, state, statusKind, fallbackMessage) => {' in workspace_script.text
-    assert 'setAutomationAccountStatus(\n      automationCodexAccountDetail,' in workspace_script.text
+    assert 'const codexAccountQuota = (state) => {' in workspace_script.text
+    assert 'const quota = state?.state === "available" ? codexAccountQuota(state) : "";' in workspace_script.text
     assert 'data-automation-refresh-active="' in response.text
     assert 'const refreshWorkspaceAutomations = async () =>' in workspace_script.text
     assert 'fetch("/?section=automations", {' in workspace_script.text
@@ -1719,6 +1773,8 @@ async def test_design_document_pages_render_markdown(settings: Settings) -> None
         home = await client.get("/?section=project-docs")
         listing = await client.get("/project-docs")
         detail = await client.get("/project-docs/automation-download")
+        deliveryline = await client.get("/project-docs/deliveryline-platform")
+        business_module = await client.get("/project-docs/chub-business-module")
         project_readme = await client.get("/project-docs/project-readme")
         missing = await client.get("/project-docs/not-registered")
 
@@ -1747,6 +1803,13 @@ async def test_design_document_pages_render_markdown(settings: Settings) -> None
     assert 'href="docs/CHUB_INTEGRATION_CAPABILITIES.md"' not in project_readme.text
     assert "docs/archive/phase-1/README.md" not in project_readme.text
     assert "本期工作周报自动化与生成设计" in listing.text
+    assert "Deliveryline 需求交付管理平台设计" in listing.text
+    assert deliveryline.status_code == 200
+    assert "Deliveryline 是需求交付管理平台" in deliveryline.text
+    assert "Deliveryline 以 Chub 固定开发业务模块接入" in deliveryline.text
+    assert "Chub 工作台业务模块设计" in listing.text
+    assert business_module.status_code == 200
+    assert "首个模块是 Deliveryline" in business_module.text
     assert "返回首页" not in listing.text
     assert "standalone-list-card" in listing.text
     assert 'target="_blank"' not in listing.text
@@ -1941,6 +2004,9 @@ async def test_native_session_without_a_title_is_marked_as_unavailable(
 
     assert response.status_code == 200
     assert 'return title || "标题暂未读取到";' in response.text
+    assert 'const nativeSessionDirectoryName = (session) => {' in response.text
+    assert 'return `${nativeSessionDirectoryName(session)} · ${new Date(timestamp).toLocaleString("zh-CN")}`;' in response.text
+    assert "nativeSessionDetailLines" not in response.text
     assert '"未命名 Native Session"' not in response.text
 
 

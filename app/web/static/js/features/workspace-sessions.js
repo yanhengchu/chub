@@ -200,12 +200,12 @@
     if (owner === "external") return "其他应用 · 正在使用";
     if (owner === "unknown") return "占用状态未知 · 请刷新";
     if (session.status === "error" || session.error) return "会话异常 · 可重试";
-    if (session.status === "new") return "等待输入";
+    if (session.status === "new") return "待输出";
     if (session.quick_interaction_running || session.activity === "working") {
       return "执行中";
     }
     if (session.activity === "unknown") return "活动状态未知 · 请刷新";
-    return "等待输入";
+    return "待输出";
   };
 
   const sessionTimeLabel = (session) => {
@@ -630,16 +630,37 @@
     button.dataset.runtimeId = runtimeGroup.runtime_id;
     button.disabled = true;
     button.title = `${runtimeGroup.name} 尚未提供新建 Session 入口。`;
-    button.textContent = "+ New Session";
+    const icon = document.createElement("span");
+    icon.className = "workspace-preview-nav-icon";
+    icon.setAttribute("aria-hidden", "true");
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute("focusable", "false");
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", "M12 5v14M5 12h14");
+    svg.append(path);
+    icon.append(svg);
+    const label = document.createElement("span");
+    label.textContent = "新建会话";
+    button.append(icon, label);
     return button;
   };
 
-  const nativeSessionDetailLines = (session) => {
+  const nativeSessionDirectoryName = (session) => {
+    const cwd = session.cwd.trim();
+    if (!cwd || cwd === "~") return "user";
+    const normalizedCwd = cwd.replace(/\/+$/, "");
+    if (!normalizedCwd || normalizedCwd === "~") return "user";
+    const directory = normalizedCwd.slice(normalizedCwd.lastIndexOf("/") + 1);
+    return directory || "root";
+  };
+
+  const nativeSessionDetail = (session) => {
     const timestamp = session.updated_at || session.created_at;
-    return [
-      `目录：${session.cwd}`,
-      `时间：${new Date(timestamp).toLocaleString("zh-CN")}`,
-    ];
+    return `${nativeSessionDirectoryName(session)} · ${new Date(timestamp).toLocaleString("zh-CN")}`;
   };
 
   const nativeSessionTitle = (session) => {
@@ -679,13 +700,11 @@
       row.classList.toggle("is-unavailable", unavailable);
       title.textContent = nativeSessionTitle(session);
       details.className = "workspace-preview-native-session-details";
-      nativeSessionDetailLines(session).forEach((line) => {
-        const detail = document.createElement("small");
-        const detailText = document.createElement("span");
-        detailText.textContent = line;
-        detail.append(detailText);
-        details.append(detail);
-      });
+      const detail = document.createElement("small");
+      const detailText = document.createElement("span");
+      detailText.textContent = nativeSessionDetail(session);
+      detail.append(detailText);
+      details.append(detail);
       row.append(title, details);
       row.addEventListener("pointerenter", (event) => {
         if (event.pointerType !== "mouse") return;

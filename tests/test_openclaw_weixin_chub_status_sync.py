@@ -761,7 +761,7 @@ def test_codex_status_distinguishes_writer_error_and_unknown_running_session(
     quick_interactions.submit.assert_not_called()
 
 
-def test_restart_codex_status_uses_route_scoped_running_task_summary(
+def test_restart_codex_status_uses_global_running_task_summary(
     settings: Settings,
 ) -> None:
     manager, _codex_manager, quick_interactions = configured_manager(settings)
@@ -778,16 +778,14 @@ def test_restart_codex_status_uses_route_scoped_running_task_summary(
         utc_now(),
     )
     quick_interactions.is_running.return_value = True
-    quick_interactions.weixin_task_status_snapshot.return_value = SimpleNamespace(
+    quick_interactions.running_standard_task_summaries.return_value = SimpleNamespace(
         running_tasks=(("session-1", "优化微信指令回复"),),
     )
-    route = delivery_route()
-
-    message = manager.codex_status_message(route)
+    message = manager.codex_status_message(delivery_route())
 
     assert "Task · 优化微信指令回复" in message
     assert "Task · Running" not in message
-    quick_interactions.weixin_task_status_snapshot.assert_called_once_with(route)
+    quick_interactions.running_standard_task_summaries.assert_called_once_with()
 
 
 def test_restart_codex_status_falls_back_when_task_snapshot_fails(
@@ -807,7 +805,7 @@ def test_restart_codex_status_falls_back_when_task_snapshot_fails(
         utc_now(),
     )
     quick_interactions.is_running.return_value = True
-    quick_interactions.weixin_task_status_snapshot.side_effect = OSError(
+    quick_interactions.running_standard_task_summaries.side_effect = OSError(
         "snapshot unavailable"
     )
 
@@ -840,7 +838,7 @@ def test_restart_codex_status_overrides_stale_cached_current_session(
         ),
         utc_now(),
     )
-    quick_interactions.weixin_task_status_snapshot.return_value = SimpleNamespace(
+    quick_interactions.running_standard_task_summaries.return_value = SimpleNamespace(
         running_tasks=(),
     )
 

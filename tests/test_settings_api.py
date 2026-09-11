@@ -164,12 +164,21 @@ async def test_task_orchestration_settings_persist_development_selection(setting
             headers=authorization(settings),
             json={"implementation": "weixin-orchestration-dev"},
         )
+        enabled = await client.put(
+            "/api/settings/weixin-task-orchestration",
+            headers=authorization(settings),
+            json={"enabled": True},
+        )
 
     assert initial.status_code == 200
-    assert initial.json()["data"]["implementation"] == "weixin-orchestration-dev"
+    assert initial.json()["data"]["implementation"] == "disabled"
+    assert initial.json()["data"]["enabled"] is False
     assert updated.status_code == 200
     assert updated.json()["data"]["implementation"] == "weixin-orchestration-dev"
+    assert updated.json()["data"]["enabled"] is False
     assert updated.json()["data"]["development_available"] is True
+    assert enabled.status_code == 200
+    assert enabled.json()["data"]["enabled"] is True
 
     reloaded_transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(
@@ -182,6 +191,38 @@ async def test_task_orchestration_settings_persist_development_selection(setting
         )
 
     assert reloaded.json()["data"]["implementation"] == "weixin-orchestration-dev"
+    assert reloaded.json()["data"]["enabled"] is True
+
+
+@pytest.mark.anyio
+async def test_clearing_orchestration_implementation_preserves_polish_mode(settings) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        selected_mode = await client.put(
+            "/api/settings/weixin-translation",
+            headers=authorization(settings),
+            json={"mode": "confirm"},
+        )
+        selected_implementation = await client.put(
+            "/api/settings/weixin-task-orchestration",
+            headers=authorization(settings),
+            json={"implementation": "weixin-orchestration-dev"},
+        )
+        cleared = await client.put(
+            "/api/settings/weixin-task-orchestration",
+            headers=authorization(settings),
+            json={"implementation": "disabled"},
+        )
+        reloaded_mode = await client.get(
+            "/api/settings/weixin-translation",
+            headers=authorization(settings),
+        )
+
+    assert selected_mode.json()["data"]["mode"] == "confirm"
+    assert selected_implementation.json()["data"]["implementation"] == "weixin-orchestration-dev"
+    assert cleared.json()["data"]["implementation"] == "disabled"
+    assert cleared.json()["data"]["enabled"] is False
+    assert reloaded_mode.json()["data"]["mode"] == "confirm"
 
 
 @pytest.mark.anyio
@@ -214,21 +255,21 @@ async def test_task_orchestration_plugin_lifecycle_api(settings, tmp_path) -> No
             "/api/settings/weixin-task-orchestration/modules",
             headers=authorization(settings),
         )
+        selected_mode = await client.put(
+            "/api/settings/weixin-translation",
+            headers=authorization(settings),
+            json={"mode": "confirm"},
+        )
         active_removal = await client.delete(
-            f"/api/settings/weixin-task-orchestration/modules/{module_ref}",
-            headers=authorization(settings),
-        )
-        switched = await client.put(
-            "/api/settings/weixin-task-orchestration",
-            headers=authorization(settings),
-            json={"implementation": "weixin-orchestration-dev"},
-        )
-        removed = await client.delete(
             f"/api/settings/weixin-task-orchestration/modules/{module_ref}",
             headers=authorization(settings),
         )
         reloaded = await client.get(
             "/api/settings/weixin-task-orchestration",
+            headers=authorization(settings),
+        )
+        reloaded_mode = await client.get(
+            "/api/settings/weixin-translation",
             headers=authorization(settings),
         )
 
@@ -237,11 +278,11 @@ async def test_task_orchestration_plugin_lifecycle_api(settings, tmp_path) -> No
     assert activated.json()["data"]["implementation"] == "module"
     assert listed.json()["data"]["modules"][0]["active"] is True
     assert listed.json()["data"]["modules"][0]["removable"] is True
-    assert active_removal.status_code == 409
-    assert active_removal.json()["error"]["code"] == "weixin_orchestration_plugin_active"
-    assert switched.status_code == 200
-    assert removed.status_code == 200
-    assert reloaded.json()["data"]["implementation"] == "weixin-orchestration-dev"
+    assert selected_mode.json()["data"]["mode"] == "confirm"
+    assert active_removal.status_code == 200
+    assert reloaded.json()["data"]["implementation"] == "disabled"
+    assert reloaded.json()["data"]["enabled"] is False
+    assert reloaded_mode.json()["data"]["mode"] == "confirm"
 
 
 @pytest.mark.anyio

@@ -1248,34 +1248,47 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.weixin_translation = weixin_translation
     application.state.maintenance_terminal = maintenance_terminal
     def check_codex_runtime_account() -> RuntimeAccountEnvironmentState:
-        checked_at = datetime.now().astimezone()
         try:
             usage = ai_usage.read(force=True)
         except RuntimeOperationError:
             return RuntimeAccountEnvironmentState(
                 state="failed",
                 message="登录状态暂不可用",
-                checked_at=checked_at,
+                checked_at=datetime.now().astimezone(),
             )
+        quota = {
+            "quota_state": "available" if usage.status == "available" else "unavailable",
+            "five_hour_remaining_percent": (
+                usage.five_hour.remaining_percent
+                if usage.status == "available" and usage.five_hour is not None
+                else None
+            ),
+            "weekly_remaining_percent": (
+                usage.weekly.remaining_percent
+                if usage.status == "available" and usage.weekly is not None
+                else None
+            ),
+            "checked_at": usage.checked_at or datetime.now().astimezone(),
+        }
         if usage.source == "account_login":
             return RuntimeAccountEnvironmentState(
                 state="available",
                 auth_mode="account",
                 message="ChatGPT 账户已登录",
-                checked_at=checked_at,
+                **quota,
             )
         if usage.source == "sub2api":
             return RuntimeAccountEnvironmentState(
                 state="available",
                 auth_mode="api",
                 message="API Key 模式已启用",
-                checked_at=checked_at,
+                **quota,
             )
         return RuntimeAccountEnvironmentState(
             state="failed",
             auth_mode="unknown",
             message="登录状态暂不可用",
-            checked_at=checked_at,
+            **quota,
         )
 
     def open_codex_runtime_login_page() -> None:

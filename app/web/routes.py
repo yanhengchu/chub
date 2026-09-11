@@ -98,9 +98,25 @@ def render_settings_page(
     settings = request.app.state.settings
     runtime_navigation = ()
     try:
-        runtime_navigation = request.app.state.ai_session_manager.runtime_plugins.navigation()
+        manager = request.app.state.ai_session_manager
+        implementations = manager.read_runtime_implementations().implementations
+        runtime_navigation = (
+            manager.runtime_plugins.navigation()
+            if any(item.imported for item in implementations)
+            else ()
+        )
     except RuntimeOperationError:
         # Runtime settings remain reachable when a live module registration is invalid.
+        pass
+    orchestration_navigation = False
+    try:
+        orchestration = request.app.state.weixin_chub_mode.orchestration_settings()
+        orchestration_navigation = orchestration.implementation != "disabled"
+        if not orchestration_navigation:
+            orchestration_navigation = bool(
+                request.app.state.weixin_chub_mode.orchestration_plugin_service.list_artifacts()
+            )
+    except (ApiError, OSError):
         pass
     return templates.TemplateResponse(
         request=request,
@@ -114,6 +130,7 @@ def render_settings_page(
             "settings_return_url": _settings_return_url(request),
             "settings_runtime_id": runtime_id,
             "runtime_navigation": runtime_navigation,
+            "orchestration_navigation": orchestration_navigation,
         },
     )
 

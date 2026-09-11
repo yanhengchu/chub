@@ -100,17 +100,17 @@
                 </div>
               </div>
               </section>
-              <section class="workstation-group workspace-development-environment" aria-labelledby="workspace-development-environment-title">
+              <section id="workspace-development-environment" class="workstation-group workspace-development-environment" aria-labelledby="workspace-development-environment-title" hidden>
                 <div class="workstation-group-heading">
-                  <div><h3 id="workspace-development-environment-title">当前实现</h3><p>查看当前 Codex Runtime 与微信任务编排实现。</p></div>
+                  <div><h3 id="workspace-development-environment-title">插件状态</h3><p>展示各插件的导入状态、启用状态和启用版本。</p></div>
                   <button id="workspace-development-refresh" class="button-secondary" type="button">刷新</button>
                 </div>
                 <div class="workstation-status-list">
-                  <div class="workstation-status-row">
+                  <div id="workspace-development-codex-row" class="workstation-status-row" hidden>
                     <div class="workstation-status-copy"><strong>Codex Runtime</strong><span id="workspace-development-codex-detail" class="workstation-status-detail">正在读取当前 Codex Runtime 实现。</span></div>
                   </div>
-                  <div class="workstation-status-row">
-                    <div class="workstation-status-copy"><strong>微信任务编排</strong><span id="workspace-development-weixin-detail" class="workstation-status-detail">正在读取当前微信任务编排实现。</span></div>
+                  <div id="workspace-development-weixin-row" class="workstation-status-row" hidden>
+                    <div class="workstation-status-copy"><strong>微信任务润色</strong><span id="workspace-development-weixin-detail" class="workstation-status-detail">正在读取当前微信任务润色实现。</span></div>
                   </div>
                 </div>
               </section>
@@ -236,7 +236,7 @@
                   <div class="workstation-status-row">
                     <div class="workstation-status-copy">
                       <strong>Codex Runtime 账户</strong>
-                      <span id="workspace-automation-codex-account-detail" data-account-state="{{ automations.codex_runtime_account.state }}" data-auth-mode="{{ automations.codex_runtime_account.auth_mode }}" data-auth-switching="{{ 'true' if automations.codex_runtime_account.switching else 'false' }}" class="workstation-status-detail workspace-automation-codex-account-detail{% if automations.codex_runtime_account.state == 'available' %} workstation-status-detail-success{% elif automations.codex_runtime_account.state == 'checking' %} workstation-status-detail-warning{% elif automations.codex_runtime_account.state == 'failed' %} workstation-status-detail-failed{% endif %}">{{ automations.codex_runtime_account.message }}{% if automations.codex_runtime_account.checked_at %} · 检查于 {{ automations.codex_runtime_account.checked_at.strftime('%m-%d %H:%M') }}{% endif %}</span>
+                      <span id="workspace-automation-codex-account-detail" data-account-state="{{ automations.codex_runtime_account.state }}" data-auth-mode="{{ automations.codex_runtime_account.auth_mode }}" data-auth-switching="{{ 'true' if automations.codex_runtime_account.switching else 'false' }}" class="workstation-status-detail workspace-automation-codex-account-detail{% if automations.codex_runtime_account.state == 'available' %} workstation-status-detail-success{% elif automations.codex_runtime_account.state == 'checking' %} workstation-status-detail-warning{% elif automations.codex_runtime_account.state == 'failed' %} workstation-status-detail-failed{% endif %}">{{ automations.codex_runtime_account.message }}{% if automations.codex_runtime_account.quota_state == 'available' %}{% if automations.codex_runtime_account.five_hour_remaining_percent is not none %} · 5h {{ automations.codex_runtime_account.five_hour_remaining_percent }}%{% endif %}{% if automations.codex_runtime_account.weekly_remaining_percent is not none %} · Weekly {{ automations.codex_runtime_account.weekly_remaining_percent }}%{% endif %}{% elif automations.codex_runtime_account.quota_state == 'unavailable' %} · 额度暂不可用{% endif %}{% if automations.codex_runtime_account.checked_at %} · 检查于 {{ automations.codex_runtime_account.checked_at.strftime('%m-%d %H:%M') }}{% endif %}</span>
                     </div>
                     <div class="workstation-status-actions">
                       <button id="workspace-automation-codex-account-check" class="button-secondary" type="button"{% if automations.codex_runtime_account.state == 'checking' %} disabled{% endif %}>检查</button>
@@ -387,14 +387,14 @@
 
           <aside id="workspace-sidebar" class="workspace-preview-sidebar">
             <div class="workspace-preview-brand"><strong>Chub</strong><button id="workspace-sidebar-close" class="button-secondary workspace-preview-sidebar-close" type="button" aria-label="关闭侧边栏导航" title="关闭侧边栏导航"><span aria-hidden="true">×</span></button></div>
-          <p class="workspace-preview-sidebar-label">操作</p>
+          <p class="workspace-preview-sidebar-label">Workspace</p>
           <nav class="workspace-preview-nav" data-workspace-section-navigation aria-label="工作台导航">
             <a href="/"{% if workspace_section == "workbench" %} aria-current="page" class="is-current"{% endif %}><span class="workspace-preview-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><rect x="4" y="4" width="6" height="6" rx="1"></rect><rect x="14" y="4" width="6" height="6" rx="1"></rect><rect x="4" y="14" width="6" height="6" rx="1"></rect><rect x="14" y="14" width="6" height="6" rx="1"></rect></svg></span><span>工作台</span></a>
             <a href="/?section=automations"{% if workspace_section == "automations" %} aria-current="page" class="is-current"{% endif %}><span class="workspace-preview-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><rect x="4" y="5" width="16" height="15" rx="2"></rect><path d="M4 9h16M7 3v4M17 3v4M14 12l4 2.5-4 2.5Z"></path></svg></span><span>自动化</span></a>
             <a href="/?section=project-docs"{% if workspace_section == "project-docs" %} aria-current="page" class="is-current"{% endif %}><span class="workspace-preview-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M6 3.5h9l3 3V20a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1Z"></path><path d="M14 3.5V7h4M8.5 11h7M8.5 15h7"></path></svg></span><span>项目资料</span></a>
           </nav>
           <section id="workspace-preview-sessions" class="workspace-preview-sessions" aria-label="Runtime Session 列表" hidden>
-            <div id="workspace-session-list" class="workspace-preview-session-list" aria-live="polite"><button id="workspace-session-create" class="workspace-preview-create" type="button" disabled>+ New Session</button></div>
+            <div id="workspace-session-list" class="workspace-preview-session-list" aria-live="polite"><button id="workspace-session-create" class="workspace-preview-create" type="button" disabled><span class="workspace-preview-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" focusable="false"><path d="M12 5v14M5 12h14"></path></svg></span><span>新建会话</span></button></div>
           </section>
           <div class="workspace-preview-sidebar-footer">
             <nav class="workspace-preview-nav" aria-label="工作台辅助导航">

@@ -47,7 +47,7 @@ def test_rename_current_session_normalizes_title_and_is_idempotent(
     codex_manager.get_session.return_value = current
     codex_manager.rename_session.return_value = renamed
     codex_manager.list_sessions.return_value = [renamed]
-    quick_interactions.weixin_task_status_snapshot.return_value = SimpleNamespace(
+    quick_interactions.running_standard_task_summaries.return_value = SimpleNamespace(
         running_tasks=(("session-1", "优化微信指令交互流程"),),
     )
     _enable_usage_snapshot(manager)

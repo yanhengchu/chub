@@ -1,7 +1,7 @@
 # Chub Session 状态模型设计
 
 > 状态：已验收
-> 主要读者：AI Agent、实现和排障 Agent；维护人员用于确认 Session 的核心状态和展示边界。
+> 主要读者：AI Agent；维护者通过与 AI Agent 协作，理解并确认本文规则。
 > 本文负责：Chub Session 的存储模型、Native Session 绑定、状态投影、Session 操作和恢复边界。
 > 本文不负责：Runtime 私有发现格式、Worker 任务恢复与通知、Runtime 插件模块生命周期和微信消息路由。
 

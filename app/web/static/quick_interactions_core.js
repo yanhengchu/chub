@@ -301,7 +301,7 @@
       || session.status === "stopped"
       || session.activity === "idle"
     ) {
-      return "待输入";
+      return "待输出";
     }
     return "状态未知";
   }

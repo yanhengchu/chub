@@ -307,6 +307,12 @@ class WeixinChubModeManager:
                 exc_info=True,
             )
         changed = False
+        if "orchestration_enabled" not in payload:
+            # Existing selected implementations were active before this explicit
+            # setting existed. Preserve that behavior during the one-time state
+            # shape upgrade instead of silently bypassing text processing.
+            state.orchestration_enabled = state.orchestration_implementation != "disabled"
+            changed = True
         if state.orchestration_implementation == "internal":
             state.orchestration_implementation = "weixin-orchestration-dev"
             state.orchestration_module_ref = None
@@ -559,6 +565,7 @@ class WeixinChubModeManager:
         with self._lock:
             implementation = self._state.orchestration_implementation
             module_ref = self._state.orchestration_module_ref
+            enabled = self._state.orchestration_enabled
         try:
             snapshot = self.development_stage.snapshot()
         except ApiError:
@@ -577,6 +584,7 @@ class WeixinChubModeManager:
                 module_available = True
         return WeixinTaskOrchestrationSettingsStatus(
             implementation=implementation,
+            enabled=enabled,
             development_available=development_available,
             development_source_hash=source_hash,
             module_ref=module_ref,
@@ -585,7 +593,7 @@ class WeixinChubModeManager:
 
     def set_orchestration_implementation(
         self,
-        implementation: Literal["weixin-orchestration-dev", "module"],
+        implementation: Literal["disabled", "weixin-orchestration-dev", "module"],
         module_ref: str | None = None,
     ) -> WeixinTaskOrchestrationSettingsStatus:
         with self._lock:
@@ -607,6 +615,16 @@ class WeixinChubModeManager:
                     next_state.orchestration_module_ref = module_ref
                     self._write_state(next_state)
                     self._state = next_state
+                return self.orchestration_settings()
+
+            if implementation == "disabled":
+                next_state = self._state.model_copy(deep=True)
+                next_state.orchestration_implementation = "disabled"
+                next_state.orchestration_enabled = False
+                next_state.orchestration_development_source_hash = None
+                next_state.orchestration_module_ref = None
+                self._write_state(next_state)
+                self._state = next_state
                 return self.orchestration_settings()
 
             snapshot = self.development_stage.snapshot()
@@ -640,15 +658,38 @@ class WeixinChubModeManager:
                 self._state = next_state
             return self.orchestration_settings()
 
-    def require_orchestration_implementation_available(self) -> None:
+    def set_orchestration_enabled(
+        self,
+        enabled: bool,
+    ) -> WeixinTaskOrchestrationSettingsStatus:
+        if enabled:
+            self.require_orchestration_implementation_available(ignore_enabled=True)
+        with self._lock:
+            if self._state.orchestration_enabled != enabled:
+                next_state = self._state.model_copy(deep=True)
+                next_state.orchestration_enabled = enabled
+                self._write_state(next_state)
+                self._state = next_state
+        return self.orchestration_settings()
+
+    def orchestration_enabled(self) -> bool:
+        with self._lock:
+            return self._state.orchestration_enabled
+
+    def require_orchestration_implementation_available(self, *, ignore_enabled: bool = False) -> None:
         """Allow text optimization only when the selected implementation is ready."""
         with self._lock:
             implementation = self._state.orchestration_implementation
             module_ref = self._state.orchestration_module_ref
             source_hash = self._state.orchestration_development_source_hash
+            enabled = self._state.orchestration_enabled
+        if not enabled and not ignore_enabled:
+            raise ApiError(409, "weixin_orchestration_plugin_disabled", "微信任务润色插件当前未启用，无法用于新任务。")
         if implementation == "module":
             self.orchestration_plugin_service.require(module_ref)
             return
+        if implementation == "disabled":
+            raise ApiError(409, "weixin_orchestration_implementation_required", "微信任务润色尚未导入，无法用于新任务。")
         if implementation != "weixin-orchestration-dev":
             raise ApiError(
                 409,
@@ -701,14 +742,27 @@ class WeixinChubModeManager:
             previous_state = self._state
             active = previous_state.orchestration_module_ref == implementation_ref
             if active:
-                raise ApiError(
-                    409,
-                    "weixin_orchestration_plugin_active",
-                    "当前任务编排插件正在用于文本优化，请先选择开发实现或其他 ZIP。",
-                )
+                next_state = previous_state.model_copy(deep=True)
+                next_state.orchestration_implementation = "disabled"
+                next_state.orchestration_enabled = False
+                next_state.orchestration_development_source_hash = None
+                next_state.orchestration_module_ref = None
+                self._write_state(next_state)
+                self._state = next_state
             try:
                 self.orchestration_plugin_service.remove(implementation_ref)
             except ApiError:
+                if active:
+                    try:
+                        self._write_state(previous_state)
+                        self._state = previous_state
+                    except OSError:
+                        self._state_error = True
+                        raise ApiError(
+                            503,
+                            "weixin_orchestration_plugin_removal_state_unknown",
+                            "插件移除失败，当前实现状态无法恢复确认。",
+                        ) from None
                 raise
 
     def _new_request_stage_chain(
@@ -1428,7 +1482,6 @@ class WeixinChubModeManager:
                     if getattr(task, "submission_verifying", False)
                     else "Submitted"
                 ),
-                delivery_route=delivery_route,
                 submitted_session_id=session_id,
                 submitted_session_slot=session_slot,
                 submitted_session_title=session_title,
@@ -1573,7 +1626,6 @@ class WeixinChubModeManager:
         self,
         status: str,
         *,
-        delivery_route: QuickInteractionWeixinRoute,
         submitted_session_id: str,
         submitted_session_slot: int | None,
         submitted_session_title: str,
@@ -1582,9 +1634,7 @@ class WeixinChubModeManager:
     ) -> str:
         task_summaries_by_session = {submitted_session_id: submitted_task_summary}
         try:
-            task_snapshot = self.quick_interactions.weixin_task_status_snapshot(
-                delivery_route
-            )
+            task_snapshot = self.quick_interactions.running_standard_task_summaries()
             task_summaries_by_session.update(
                 {
                     session_id: build_task_name(
@@ -1599,7 +1649,7 @@ class WeixinChubModeManager:
             )
         except Exception:
             LOGGER.warning(
-                "Unable to snapshot Weixin tasks after submission",
+                "Unable to snapshot running tasks after submission",
                 exc_info=True,
             )
 
@@ -1924,14 +1974,33 @@ class WeixinChubModeManager:
             outcome = "not_submitted"
         else:
             outcome = "failed"
+        target_session_id = self._optimized_task_notification_session_id(entry)
         return self.translation_result_notifier(
             entry.route,
             outcome=outcome,
-            target_session_id=entry.target_session_id,
+            target_session_id=target_session_id,
             task=entry.polished,
             english=entry.english,
             error=entry.error,
         )
+
+    def _optimized_task_notification_session_id(
+        self,
+        entry: TranslationEntry,
+    ) -> str | None:
+        """Use the durable final target when refinement selected the default slot."""
+        if entry.status != "submitted":
+            return entry.target_session_id
+        with self._lock:
+            source = self._find_submission(entry.message_id)
+            if (
+                source is None
+                or source.delivery_route_fingerprint
+                != self._route_fingerprint(entry.route)
+                or source.session_id is None
+            ):
+                return entry.target_session_id
+            return source.session_id
 
     @staticmethod
     def _replace_submission_status(message: str, status: str) -> str:
@@ -2507,12 +2576,15 @@ class WeixinChubModeManager:
                     command.task_prompt is not None
                     and len(command.task_prompt.strip())
                     <= self.settings.openclaw.weixin_chub_mode.translation_preprocess_max_input_chars
+                    and self.orchestration_enabled()
                     and self.translation_manager is not None
                 ):
                     try:
                         processing_mode = self.translation_manager.processing_mode()
                         preprocess_task = processing_mode != "direct"
-                        confirmation_task = processing_mode == "confirm"
+                        confirmation_task = (
+                            preprocess_task and processing_mode == "confirm"
+                        )
                     except OSError:
                         # The fixed slot selection remains independent. Its follow-up
                         # will fail closed if the optimization queue is down.
@@ -2556,12 +2628,13 @@ class WeixinChubModeManager:
                 command.kind == "normal"
                 and len(task_prompt.strip())
                 <= self.settings.openclaw.weixin_chub_mode.translation_preprocess_max_input_chars
+                and self.orchestration_enabled()
                 and self.translation_manager is not None
             ):
                 try:
                     processing_mode = self.translation_manager.processing_mode()
                     preprocess = processing_mode != "direct"
-                    confirmation_required = processing_mode == "confirm"
+                    confirmation_required = preprocess and processing_mode == "confirm"
                 except OSError:
                     return self._with_failure_task_summary(
                         WeixinChubModeDispatchResult(
@@ -6435,22 +6508,19 @@ class WeixinChubModeManager:
                     fill_candidates=False,
                 )
             message = codex_operation_message(message, status)
-        return self._with_running_task_summaries(message, delivery_route)
+        return self._with_running_task_summaries(message)
 
     def _with_running_task_summaries(
         self,
         message: str,
-        delivery_route: QuickInteractionWeixinRoute | None,
     ) -> str:
-        if delivery_route is None or "Task · Running" not in message:
+        if "Task · Running" not in message:
             return message
         try:
-            task_snapshot = self.quick_interactions.weixin_task_status_snapshot(
-                delivery_route
-            )
+            task_snapshot = self.quick_interactions.running_standard_task_summaries()
         except Exception:
             LOGGER.warning(
-                "Unable to snapshot Weixin tasks for command status",
+                "Unable to snapshot running tasks for command status",
                 exc_info=True,
             )
             return message
@@ -8583,23 +8653,20 @@ class WeixinChubModeManager:
         with self._lock:
             current_session_id = self._state.session_id
         running_tasks: dict[str, str] = {}
-        if route is not None:
-            try:
-                task_snapshot = self.quick_interactions.weixin_task_status_snapshot(
-                    route
+        try:
+            task_snapshot = self.quick_interactions.running_standard_task_summaries()
+            running_tasks = {
+                session_id: build_task_name(
+                    summary,
+                    self.settings.openclaw.weixin_chub_mode.task_name_max_width,
                 )
-                running_tasks = {
-                    session_id: build_task_name(
-                        summary,
-                        self.settings.openclaw.weixin_chub_mode.task_name_max_width,
-                    )
-                    for session_id, summary in task_snapshot.running_tasks
-                }
-            except Exception:
-                LOGGER.warning(
-                    "Unable to snapshot Weixin tasks for restart status",
-                    exc_info=True,
-                )
+                for session_id, summary in task_snapshot.running_tasks
+            }
+        except Exception:
+            LOGGER.warning(
+                "Unable to snapshot running tasks for restart status",
+                exc_info=True,
+            )
         if account_cached is None:
             try:
                 usage_message = self._usage_message(

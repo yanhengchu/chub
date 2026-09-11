@@ -4,6 +4,7 @@ import io
 import json
 import zipfile
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -149,11 +150,58 @@ def test_finished_module_request_can_be_removed(settings, tmp_path) -> None:
             updated_at=utc_now(),
         )
     )
-    manager.set_orchestration_implementation("weixin-orchestration-dev")
-
     manager.remove_orchestration_plugin(module.implementation_ref)
 
     assert service.list_artifacts() == ()
+    assert manager.orchestration_settings().implementation == "disabled"
+    assert manager.orchestration_settings().enabled is False
+
+
+def test_plugin_implementation_change_preserves_disabled_enablement(settings, tmp_path) -> None:
+    settings.openclaw.weixin_chub_mode.orchestration_modules_dir = tmp_path / "modules"
+    manager, _codex_manager, _quick_interactions = configured_manager(settings)
+    service = WeixinOrchestrationPluginService(settings)
+    module = service.install(module_archive(settings), source_name="refiner.zip")
+    manager.orchestration_plugin_service = service
+
+    manager.set_orchestration_implementation("weixin-orchestration-dev")
+    manager.set_orchestration_enabled(False)
+    disabled = manager.set_orchestration_implementation("module", module.implementation_ref)
+
+    assert disabled.implementation == "module"
+    assert disabled.module_ref == module.implementation_ref
+    assert disabled.enabled is False
+    with pytest.raises(ApiError) as error:
+        manager.require_orchestration_implementation_available()
+    assert error.value.code == "weixin_orchestration_plugin_disabled"
+
+
+def test_active_plugin_removal_failure_restores_selection_and_enablement(
+    settings,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    settings.openclaw.weixin_chub_mode.orchestration_modules_dir = tmp_path / "modules"
+    manager, _codex_manager, _quick_interactions = configured_manager(settings)
+    service = WeixinOrchestrationPluginService(settings)
+    module = service.install(module_archive(settings), source_name="refiner.zip")
+    manager.orchestration_plugin_service = service
+    manager.set_orchestration_implementation("module", module.implementation_ref)
+    manager.set_orchestration_enabled(True)
+    monkeypatch.setattr(
+        service,
+        "remove",
+        MagicMock(side_effect=ApiError(503, "plugin_remove_failed", "remove failed")),
+    )
+
+    with pytest.raises(ApiError) as error:
+        manager.remove_orchestration_plugin(module.implementation_ref)
+
+    assert error.value.code == "plugin_remove_failed"
+    restored = manager.orchestration_settings()
+    assert restored.implementation == "module"
+    assert restored.module_ref == module.implementation_ref
+    assert restored.enabled is True
 
 
 def test_broken_module_directory_does_not_block_internal_submission(

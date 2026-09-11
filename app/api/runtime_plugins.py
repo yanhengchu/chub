@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.ai_runtime.runtime_plugin_packages import RuntimePluginInstallError, is_runtime_plugin_id
+from app.core.config import PROJECT_ROOT
 from app.core.response import ApiError, ApiResponse
 from app.core.security import require_trusted_network
 from app.quick_worker import list_tasks, read_health, refresh_runtime_registry
@@ -29,6 +32,9 @@ class RuntimePluginData(BaseModel):
     status: Literal["active", "unavailable"]
     reason: str | None = Field(default=None, max_length=300)
     removable: bool = True
+    source: Literal["development", "zip"] = "zip"
+    imported: bool = True
+    enabled: bool = False
 
 
 class RuntimePluginListData(BaseModel):
@@ -58,6 +64,10 @@ _DEVELOPMENT_CODEX_IMPLEMENTATION_ID = "builtin-dev"
 def _module_list(request: Request) -> RuntimePluginListData:
     manager = request.app.state.ai_session_manager
     active_ids = set(manager.runtime_plugins.implementation_ids())
+    implementations = {
+        item.implementation_id: item
+        for item in manager.read_runtime_implementations().implementations
+    }
     entries: list[RuntimePluginData] = []
     loaded, discovery_failures = manager.runtime_plugin_service.discover()
     failures = {item.module_id: item for item in discovery_failures}
@@ -65,6 +75,7 @@ def _module_list(request: Request) -> RuntimePluginListData:
     for item in loaded:
         module_id = item.manifest.module_id
         failure = failures.get(module_id)
+        implementation = implementations.get(module_id)
         entries.append(
             RuntimePluginData(
                 module_id=module_id,
@@ -74,6 +85,7 @@ def _module_list(request: Request) -> RuntimePluginListData:
                 status="active" if module_id in active_ids and failure is None else "unavailable",
                 reason=None if failure is None else failure.reason,
                 removable=module_id not in manager._development_runtime_plugins.implementation_ids(),
+                enabled=implementation is not None and implementation.enabled,
             )
         )
     known = {item.module_id for item in entries}
@@ -86,10 +98,41 @@ def _module_list(request: Request) -> RuntimePluginListData:
             status="unavailable",
             reason=failure.reason,
             removable=False,
+            enabled=False,
         )
         for module_id, failure in failures.items()
         if module_id not in known
     )
+    manifest_path = PROJECT_ROOT / "runtime-modules" / "codex-runtime" / "chub-module.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if not isinstance(manifest, dict):
+            raise ValueError("invalid manifest")
+        implementation_id = manifest.get("implementation_id")
+        if implementation_id != _DEVELOPMENT_CODEX_IMPLEMENTATION_ID:
+            raise ValueError("unexpected implementation")
+        implementations = manager.read_runtime_implementations().implementations
+        implementation = next(
+            (item for item in implementations if item.implementation_id == implementation_id),
+            None,
+        )
+        entries.insert(
+            0,
+            RuntimePluginData(
+                module_id=implementation_id,
+                version=str(manifest.get("version", "dev")),
+                name=str(manifest.get("display_name", "Codex")),
+                description=str(manifest.get("description", "仓库固定的 Codex Runtime 开发实现。")),
+                status="active" if implementation is not None and implementation.healthy else "unavailable",
+                reason=None if implementation is not None and implementation.healthy else "开发实现当前不可用。",
+                removable=False,
+                source="development",
+                imported=implementation is not None and implementation.imported,
+                enabled=implementation is not None and implementation.enabled,
+            ),
+        )
+    except (OSError, UnicodeDecodeError, ValueError, TypeError):
+        pass
     return RuntimePluginListData(modules=entries)
 
 
