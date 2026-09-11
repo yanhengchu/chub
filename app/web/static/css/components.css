@@ -590,7 +590,9 @@ input[type="password"] {
   justify-content: space-between;
   gap: 0.75rem;
   width: 100%;
+  height: auto;
   min-height: var(--control-height);
+  box-sizing: border-box;
   border: 1px solid var(--color-border);
   border-radius: 8px;
   padding: 0.45rem 0.65rem;
@@ -605,6 +607,7 @@ input[type="password"] {
   color: var(--color-text-muted);
   font-size: 0.78rem;
   font-weight: 700;
+  line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -649,7 +652,9 @@ input[type="password"] {
   display: grid;
   gap: 0.12rem;
   min-width: 0;
+  height: auto;
   min-height: 44px;
+  box-sizing: border-box;
   border: 0;
   border-radius: 6px;
   padding: 0.45rem 0.55rem;
@@ -681,6 +686,7 @@ input[type="password"] {
   overflow: hidden;
   font-size: 0.8rem;
   font-weight: 700;
+  line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -4516,6 +4522,7 @@ pre {
   min-width: 0;
   height: 30px;
   min-height: 0;
+  box-sizing: border-box;
   border: 0;
   border-radius: 7px;
   padding: 0 0.45rem;
@@ -4548,6 +4555,7 @@ pre {
   color: var(--color-text-muted) !important;
   font-size: 0.78rem;
   font-weight: 700;
+  line-height: 1.35;
   text-overflow: ellipsis;
 }
 
@@ -4574,7 +4582,9 @@ pre {
   display: grid;
   gap: 0.12rem;
   min-width: 0;
+  height: auto;
   min-height: 44px;
+  box-sizing: border-box;
   border: 0;
   border-radius: 6px;
   padding: 0.45rem 0.55rem;
@@ -4595,6 +4605,7 @@ pre {
   overflow: hidden;
   font-size: 0.8rem;
   font-weight: 700;
+  line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

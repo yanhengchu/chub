@@ -70,7 +70,7 @@ def list_sessions(
     manager = request.app.state.ai_session_manager
     runtime_registered = (
         not isinstance(getattr(manager, "runtime_id", None), str)
-        or manager.runtime_id in manager.runtime_modules.runtime_ids()
+        or manager.runtime_id in manager.runtime_plugins.runtime_ids()
     )
     weixin_chub_mode = request.app.state.weixin_chub_mode
     session_slots = weixin_chub_mode.session_slots_snapshot()

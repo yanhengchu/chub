@@ -193,13 +193,20 @@
       const selectedImplementation = orchestration.implementation === "module"
         ? `module:${orchestration.module_ref || ""}`
         : orchestration.implementation || "weixin-orchestration-dev";
+      const selectedModule = orchestration.implementation === "module"
+        ? modules.find((item) => item.implementation_ref === orchestration.module_ref)
+        : null;
       implementationPicker.setOptions(
         implementationOptions,
         selectedImplementation,
       );
-      implementationDescription.textContent = orchestration.development_available
-        ? "只影响之后新接收的润色任务；已受理任务继续使用创建时的实现和产物快照。"
-        : "开发实现当前不可用；请关闭文本优化或选择可用 ZIP。";
+      implementationDescription.textContent = orchestration.implementation === "module"
+        ? (orchestration.module_available && selectedModule?.available
+          ? `当前使用正式版 ${formalVersion(selectedModule.version)}；只影响之后新接收的润色任务。`
+          : "当前选择的正式版不可用；请选择开发实现或其他可用 ZIP。")
+        : (orchestration.development_available
+          ? "当前使用开发实现；只影响之后新接收的润色任务。"
+          : "当前开发实现不可用；请选择可用 ZIP。")
       implementationTrigger.setAttribute("aria-label", `编排实现：${implementationValue.textContent}`);
       const selectedMode = status.mode || (status.enabled ? "auto" : "direct");
       processingPicker.setOptions([

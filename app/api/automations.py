@@ -15,7 +15,7 @@ from app.automations.models import (
     AccountLoginPageResult,
     RuntimeAccountEnvironmentState,
 )
-from app.core.response import ApiResponse
+from app.core.response import ApiError, ApiResponse
 from app.core.security import require_trusted_network
 from app.services.operation_log import log_operation
 
@@ -339,8 +339,19 @@ def switch_codex_runtime_authentication(
     )
     try:
         result = request.app.state.automation_manager.switch_codex_runtime_authentication(
-            payload.mode
+            payload.mode,
+            operation_id=operation_id,
         )
+    except ApiError as exc:
+        log_operation(
+            request,
+            action="switch_codex_runtime_authentication",
+            status="failed",
+            target=target,
+            operation_id=operation_id,
+            reason=exc.code,
+        )
+        raise
     except Exception:
         log_operation(
             request,
@@ -348,6 +359,7 @@ def switch_codex_runtime_authentication(
             status="failed",
             target=target,
             operation_id=operation_id,
+            reason="unexpected_error",
         )
         raise
     log_operation(
@@ -357,6 +369,48 @@ def switch_codex_runtime_authentication(
         target=target,
         operation_id=operation_id,
         reason=f"mode={result.mode};account_state={result.account.state}",
+    )
+    return ApiResponse(data=result)
+
+
+@router.post(
+    "/environment/codex/switch-authentication/stop",
+    response_model=ApiResponse[RuntimeAccountEnvironmentState],
+)
+def stop_codex_runtime_authentication_switch(
+    request: Request,
+) -> ApiResponse[RuntimeAccountEnvironmentState]:
+    operation_id = log_operation(
+        request,
+        action="stop_codex_runtime_authentication_switch",
+        status="requested",
+        target="codex-runtime",
+    )
+    log_operation(
+        request,
+        action="stop_codex_runtime_authentication_switch",
+        status="started",
+        target="codex-runtime",
+        operation_id=operation_id,
+    )
+    try:
+        result = request.app.state.automation_manager.stop_codex_runtime_authentication_switch()
+    except Exception:
+        log_operation(
+            request,
+            action="stop_codex_runtime_authentication_switch",
+            status="failed",
+            target="codex-runtime",
+            operation_id=operation_id,
+        )
+        raise
+    log_operation(
+        request,
+        action="stop_codex_runtime_authentication_switch",
+        status="succeeded",
+        target="codex-runtime",
+        operation_id=operation_id,
+        reason="cancellation_requested",
     )
     return ApiResponse(data=result)
 

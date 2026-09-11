@@ -220,7 +220,7 @@ def runtime_recovery_plan() -> LoadedSystemUpgradePlan:
         plan_id="runtime-recovery",
         action="runtime-data-reset",
         title="升级与恢复",
-        summary="重建 Chub AI 运行态、Chub Web 与 Quick Worker，并在完成后检查 AI Runtime 可用性。",
+        summary="清理 Chub 自有 AI 运行状态，并重启 Web 和 Quick Worker。",
         source_code_version=WEB_CODE_VERSION,
         target_code_version=WEB_CODE_VERSION,
         source_session_schema=SESSION_SCHEMA_VERSION,
@@ -564,7 +564,7 @@ class SystemUpgradeCoordinator:
                 old_instance_id=self.instance_id,
                 old_worker_generation=old_worker_generation,
                 old_worker_protocol=old_worker_protocol,
-                message="正在关闭新的写入并等待已有操作结束。",
+                message="已暂停新的 AI 写入，正在等待当前操作结束。",
                 requested_at=now,
                 updated_at=now,
             )
@@ -618,7 +618,7 @@ class SystemUpgradeCoordinator:
             state.status = "started"
             state.stage = "verifying_new_instance"
             state.failed_stage = None
-            state.message = "正在重新确认新服务的最终状态。"
+            state.message = "正在确认新服务的最终状态。"
             state.updated_at = utc_now()
             self._write(state)
             self._state = state
@@ -633,7 +633,7 @@ class SystemUpgradeCoordinator:
         return self._rebase_failed_recovery(
             loaded,
             allowed_stages={"verifying_new_instance"},
-            message="已按当前 Chub 版本更新恢复目标，正在重新确认新服务状态。",
+            message="恢复目标已更新，正在确认新服务状态。",
         )
 
     def rebase_failed_recovery(
@@ -707,7 +707,7 @@ class SystemUpgradeCoordinator:
             state = state.model_copy(deep=True)
             if state.failed_stage == "cleaning_state":
                 state.stage = "draining_worker"
-                state.message = "正在重新排空 Quick Worker，并继续未完成的运行状态清理。"
+                state.message = "正在停止 Quick Worker，并继续清理运行状态。"
             elif state.failed_stage in {
                 "launching_services",
                 "restarting_services",
@@ -715,10 +715,10 @@ class SystemUpgradeCoordinator:
                 state.stage = "launching_services"
                 state.restart_launch_state = "not_started"
                 state.restart_process_id = None
-                state.message = "正在重新启动固定服务切换程序。"
+                state.message = "正在启动服务恢复流程。"
             elif state.failed_stage == "verifying_new_instance":
                 state.stage = "verifying_new_instance"
-                state.message = "正在重新确认新服务的最终状态。"
+                state.message = "正在确认新服务的最终状态。"
             else:
                 return None
             state.status = "started"
@@ -815,7 +815,7 @@ class SystemUpgradeCoordinator:
             state.status = "succeeded"
             state.stage = "completed"
             state.restart_process_id = None
-            state.message = "升级与恢复已完成，Chub Web、Quick Worker 和本地运行态均已确认。"
+            state.message = "升级与恢复已完成，服务状态已确认。"
             state.updated_at = utc_now()
             self._write(state)
             self._state = state

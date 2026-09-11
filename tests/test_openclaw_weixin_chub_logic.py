@@ -372,6 +372,12 @@ def test_session_formatting_and_configuration_match_are_stateless() -> None:
     assert format_session_blocks([(1, "任务", "Available", True)]) == (
         "Sessions\n\n▶ S1 · 任务"
     )
+    assert format_session_blocks(
+        [(2, "交付管理", "Available", False, "Deliveryline")]
+    ) == "Sessions\n\nS2 · [Deliveryline] 交付管理"
+    assert format_session_blocks(
+        [(3, "任务", "Available", False, "客户交付管理平台")]
+    ) == "Sessions\n\nS3 · [客户交付管…] 任务"
     assert codex_operation_message("切换状态：成功。", "Sessions\n\nS1") == (
         "切换状态：成功。\n\nSessions\n\nS1"
     )

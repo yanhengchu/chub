@@ -421,6 +421,7 @@ class RuntimeAccountEnvironmentState(StrictAutomationModel):
     message: str = "未检查"
     checked_at: datetime | None = None
     login_page_available: bool = False
+    switching: bool = False
 
 
 class CodexAuthSwitchRequest(StrictAutomationModel):

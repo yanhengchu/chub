@@ -12,8 +12,8 @@ from app.services.weixin_translation import TranslationSettingsStatus
 from app.services.openclaw_weixin_chub_models import (
     WeixinTaskOrchestrationSettingsStatus,
 )
-from app.services.weixin_orchestration_modules import (
-    WeixinOrchestrationModulePreview,
+from app.services.weixin_orchestration_plugins import (
+    WeixinOrchestrationPluginPreview,
 )
 from app.services.deployment_package import (
     DeploymentPackageConfiguration,
@@ -82,7 +82,7 @@ class TaskOrchestrationSettingsUpdate(BaseModel):
         return self
 
 
-class TaskOrchestrationModuleData(BaseModel):
+class TaskOrchestrationPluginData(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     implementation_ref: str = Field(min_length=68, max_length=180)
@@ -96,11 +96,11 @@ class TaskOrchestrationModuleData(BaseModel):
     reason: str | None = Field(default=None, max_length=300)
 
 
-class TaskOrchestrationModuleListData(BaseModel):
-    modules: list[TaskOrchestrationModuleData]
+class TaskOrchestrationPluginListData(BaseModel):
+    modules: list[TaskOrchestrationPluginData]
 
 
-class TaskOrchestrationModulePreviewData(BaseModel):
+class TaskOrchestrationPluginPreviewData(BaseModel):
     module_id: str = Field(min_length=1, max_length=32)
     version: str = Field(min_length=1, max_length=64)
     name: str = Field(min_length=1, max_length=100)
@@ -117,16 +117,16 @@ class DeploymentPackageConfigurationUpdate(BaseModel):
     include_development_sources: bool = False
 
 
-async def _read_orchestration_module_archive(request: Request) -> tuple[str, bytes]:
+async def _read_orchestration_plugin_archive(request: Request) -> tuple[str, bytes]:
     source_name = request.headers.get("X-Chub-Module-Filename", "orchestration-module.zip")
     if len(source_name) > 255:
-        raise ApiError(422, "weixin_orchestration_module_filename_invalid", "模块文件名无效。")
+        raise ApiError(422, "weixin_orchestration_plugin_filename_invalid", "插件文件名无效。")
     maximum = request.app.state.settings.openclaw.weixin_chub_mode.orchestration_module_max_archive_bytes
     chunks = bytearray()
     async for chunk in request.stream():
         chunks.extend(chunk)
         if len(chunks) > maximum:
-            raise ApiError(413, "weixin_orchestration_module_too_large", "编排模块压缩包超过固定大小上限。")
+            raise ApiError(413, "weixin_orchestration_plugin_too_large", "任务编排插件包超过固定大小上限。")
     return source_name, bytes(chunks)
 
 
@@ -295,13 +295,13 @@ def update_weixin_task_orchestration_settings(
 
 @router.get(
     "/weixin-task-orchestration/modules",
-    response_model=ApiResponse[TaskOrchestrationModuleListData],
+    response_model=ApiResponse[TaskOrchestrationPluginListData],
 )
-def list_weixin_task_orchestration_modules(
+def list_weixin_task_orchestration_plugins(
     request: Request,
-) -> ApiResponse[TaskOrchestrationModuleListData]:
+) -> ApiResponse[TaskOrchestrationPluginListData]:
     modules = [
-        TaskOrchestrationModuleData(
+        TaskOrchestrationPluginData(
             implementation_ref=item.implementation_ref,
             module_id=item.module_id,
             version=item.version,
@@ -312,75 +312,75 @@ def list_weixin_task_orchestration_modules(
             removable=removable,
             reason=item.reason,
         )
-        for item, active, removable in request.app.state.weixin_chub_mode.list_orchestration_modules()
+        for item, active, removable in request.app.state.weixin_chub_mode.list_orchestration_plugins()
     ]
-    return ApiResponse(data=TaskOrchestrationModuleListData(modules=modules))
+    return ApiResponse(data=TaskOrchestrationPluginListData(modules=modules))
 
 
 @router.post(
     "/weixin-task-orchestration/modules/inspect",
-    response_model=ApiResponse[TaskOrchestrationModulePreviewData],
+    response_model=ApiResponse[TaskOrchestrationPluginPreviewData],
 )
-async def inspect_weixin_task_orchestration_module(
+async def inspect_weixin_task_orchestration_plugin(
     request: Request,
-) -> ApiResponse[TaskOrchestrationModulePreviewData]:
-    source_name, archive = await _read_orchestration_module_archive(request)
-    preview = request.app.state.weixin_chub_mode.orchestration_module_service.inspect_archive(
+) -> ApiResponse[TaskOrchestrationPluginPreviewData]:
+    source_name, archive = await _read_orchestration_plugin_archive(request)
+    preview = request.app.state.weixin_chub_mode.orchestration_plugin_service.inspect_archive(
         archive,
         source_name=source_name,
     )
-    return ApiResponse(data=TaskOrchestrationModulePreviewData(**preview.__dict__))
+    return ApiResponse(data=TaskOrchestrationPluginPreviewData(**preview.__dict__))
 
 
 @router.post(
     "/weixin-task-orchestration/modules/install",
-    response_model=ApiResponse[TaskOrchestrationModulePreviewData],
+    response_model=ApiResponse[TaskOrchestrationPluginPreviewData],
 )
-async def install_weixin_task_orchestration_module(
+async def install_weixin_task_orchestration_plugin(
     request: Request,
-) -> ApiResponse[TaskOrchestrationModulePreviewData]:
-    source_name, archive = await _read_orchestration_module_archive(request)
+) -> ApiResponse[TaskOrchestrationPluginPreviewData]:
+    source_name, archive = await _read_orchestration_plugin_archive(request)
     operation_id = log_operation(
         request,
-        action="install_weixin_orchestration_module",
+        action="install_weixin_orchestration_plugin",
         status="requested",
         target=source_name,
     )
-    log_operation(request, action="install_weixin_orchestration_module", status="started", target=source_name, operation_id=operation_id)
+    log_operation(request, action="install_weixin_orchestration_plugin", status="started", target=source_name, operation_id=operation_id)
     try:
-        preview = request.app.state.weixin_chub_mode.orchestration_module_service.install(
+        preview = request.app.state.weixin_chub_mode.orchestration_plugin_service.install(
             archive,
             source_name=source_name,
         )
     except ApiError as exc:
-        log_operation(request, action="install_weixin_orchestration_module", status="failed", target=source_name, operation_id=operation_id, reason=exc.code)
+        log_operation(request, action="install_weixin_orchestration_plugin", status="failed", target=source_name, operation_id=operation_id, reason=exc.code)
         raise
-    log_operation(request, action="install_weixin_orchestration_module", status="succeeded", target=preview.implementation_ref, operation_id=operation_id)
-    return ApiResponse(data=TaskOrchestrationModulePreviewData(**preview.__dict__))
+    log_operation(request, action="install_weixin_orchestration_plugin", status="succeeded", target=preview.implementation_ref, operation_id=operation_id)
+    return ApiResponse(data=TaskOrchestrationPluginPreviewData(**preview.__dict__))
 
 
 @router.delete(
     "/weixin-task-orchestration/modules/{implementation_ref}",
-    response_model=ApiResponse[TaskOrchestrationModulePreviewData],
+    response_model=ApiResponse[TaskOrchestrationPluginPreviewData],
 )
-def remove_weixin_task_orchestration_module(
+def remove_weixin_task_orchestration_plugin(
     implementation_ref: str,
     request: Request,
-) -> ApiResponse[TaskOrchestrationModulePreviewData]:
-    operation_id = log_operation(request, action="remove_weixin_orchestration_module", status="requested", target=implementation_ref)
-    log_operation(request, action="remove_weixin_orchestration_module", status="started", target=implementation_ref, operation_id=operation_id)
+) -> ApiResponse[TaskOrchestrationPluginPreviewData]:
+    operation_id = log_operation(request, action="remove_weixin_orchestration_plugin", status="requested", target=implementation_ref)
+    log_operation(request, action="remove_weixin_orchestration_plugin", status="started", target=implementation_ref, operation_id=operation_id)
     try:
-        artifacts = request.app.state.weixin_chub_mode.orchestration_module_service.list_artifacts()
+        artifacts = request.app.state.weixin_chub_mode.orchestration_plugin_service.list_artifacts()
         artifact = next((item for item in artifacts if item.implementation_ref == implementation_ref), None)
         if artifact is None:
-            raise ApiError(404, "weixin_orchestration_module_not_found", "编排模块不存在。")
-        request.app.state.weixin_chub_mode.remove_orchestration_module(implementation_ref)
+            raise ApiError(404, "weixin_orchestration_plugin_not_found", "任务编排插件不存在。")
+        request.app.state.weixin_chub_mode.remove_orchestration_plugin(implementation_ref)
     except ApiError as exc:
-        log_operation(request, action="remove_weixin_orchestration_module", status="failed", target=implementation_ref, operation_id=operation_id, reason=exc.code)
+        log_operation(request, action="remove_weixin_orchestration_plugin", status="failed", target=implementation_ref, operation_id=operation_id, reason=exc.code)
         raise
-    log_operation(request, action="remove_weixin_orchestration_module", status="succeeded", target=implementation_ref, operation_id=operation_id)
+    log_operation(request, action="remove_weixin_orchestration_plugin", status="succeeded", target=implementation_ref, operation_id=operation_id)
     return ApiResponse(
-        data=TaskOrchestrationModulePreviewData(
+        data=TaskOrchestrationPluginPreviewData(
             module_id=artifact.module_id,
             version=artifact.version,
             name=artifact.name,

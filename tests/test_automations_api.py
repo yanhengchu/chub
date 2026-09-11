@@ -39,6 +39,9 @@ async def test_automations_require_trusted_network(settings: Settings) -> None:
             "/api/automations/environment/codex/switch-authentication",
             json={"mode": "api"},
         )
+        stop_switch_codex = await client.post(
+            "/api/automations/environment/codex/switch-authentication/stop"
+        )
         open_feishu_login = await client.post(
             "/api/automations/environment/feishu/login-page"
         )
@@ -56,6 +59,7 @@ async def test_automations_require_trusted_network(settings: Settings) -> None:
     assert check_feishu.status_code == 403
     assert check_codex.status_code == 403
     assert switch_codex.status_code == 403
+    assert stop_switch_codex.status_code == 403
     assert open_feishu_login.status_code == 403
     assert open_codex_login.status_code == 403
     assert retired_qr.status_code == 404
@@ -112,6 +116,13 @@ async def test_automation_list_and_background_acceptance(
             message="API Key 已配置，AI 额度可用",
         ),
     )
+    manager.stop_codex_runtime_authentication_switch.return_value = (
+        RuntimeAccountEnvironmentState(
+            state="checking",
+            message="正在停止 Codex Runtime 认证切换",
+            switching=True,
+        )
+    )
     app.state.automation_manager = manager
     transport = httpx.ASGITransport(app=app)
 
@@ -143,6 +154,9 @@ async def test_automation_list_and_background_acceptance(
             "/api/automations/environment/codex/switch-authentication",
             json={"mode": "api"},
         )
+        stop_switch_codex = await client.post(
+            "/api/automations/environment/codex/switch-authentication/stop"
+        )
 
     assert listing.status_code == 200
     assert listing.json()["data"]["browser_state"] == "running"
@@ -162,6 +176,8 @@ async def test_automation_list_and_background_acceptance(
     assert open_codex_login.json()["data"]["state"] == "opened"
     assert initialize_browser.status_code == 202
     assert switch_codex.status_code == 200
+    assert stop_switch_codex.status_code == 200
+    assert stop_switch_codex.json()["data"]["switching"] is True
     manager.list.assert_called_once_with(home_only=False)
     manager.start.assert_called_once()
     assert manager.start.call_args.args == ("monthly-report",)
@@ -175,7 +191,10 @@ async def test_automation_list_and_background_acceptance(
     manager.check_codex_runtime_account.assert_called_once_with()
     manager.open_feishu_login_page.assert_called_once_with()
     manager.open_codex_runtime_login_page.assert_called_once_with()
-    manager.switch_codex_runtime_authentication.assert_called_once_with("api")
+    switch_call = manager.switch_codex_runtime_authentication.call_args
+    assert switch_call.args == ("api",)
+    assert len(switch_call.kwargs["operation_id"]) == 32
+    manager.stop_codex_runtime_authentication_switch.assert_called_once_with()
     manager.initialize_browser.assert_called_once()
 
 

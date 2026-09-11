@@ -20,7 +20,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from app.ai_runtime.contracts import RuntimeOperationError
-from app.ai_runtime.modules import BuiltinRuntimeModule, BuiltinRuntimeModuleRegistry
+from app.ai_runtime.runtime_plugins import RuntimePlugin, RuntimePluginRegistry
 from app.ai_runtime.registry import RuntimeRegistry, validate_runtime_wiring
 from app.ai_runtime.worker import WorkerRuntimeRegistry
 from app.core.config import Settings
@@ -33,26 +33,26 @@ STATE_CLEANUP_NAME = "runtime-module-state-cleanup.json"
 MODULE_PROTOCOL_VERSION = 1
 MAX_MANIFEST_BYTES = 32 * 1024
 MAX_ARCHIVE_MEMBERS = 500
-RUNTIME_MODULE_ID_PATTERN = r"^[a-z][a-z0-9-]{0,31}$"
+RUNTIME_PLUGIN_ID_PATTERN = r"^[a-z][a-z0-9-]{0,31}$"
 CODEX_FORMAL_IMPLEMENTATION_ID_PATTERN = r"^codex-[0-9]{6}$"
 _MODULE_IMPORT_LOCK = threading.RLock()
 
 
-class RuntimeModuleInstallError(RuntimeOperationError):
+class RuntimePluginInstallError(RuntimeOperationError):
     pass
 
 
-def is_runtime_module_id(value: str) -> bool:
-    return re.fullmatch(RUNTIME_MODULE_ID_PATTERN, value) is not None
+def is_runtime_plugin_id(value: str) -> bool:
+    return re.fullmatch(RUNTIME_PLUGIN_ID_PATTERN, value) is not None
 
 
 class _Manifest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     protocol_version: Literal[MODULE_PROTOCOL_VERSION]
-    module_id: str = Field(pattern=RUNTIME_MODULE_ID_PATTERN)
-    runtime_id: str = Field(pattern=RUNTIME_MODULE_ID_PATTERN)
-    implementation_id: str = Field(pattern=RUNTIME_MODULE_ID_PATTERN)
+    module_id: str = Field(pattern=RUNTIME_PLUGIN_ID_PATTERN)
+    runtime_id: str = Field(pattern=RUNTIME_PLUGIN_ID_PATTERN)
+    implementation_id: str = Field(pattern=RUNTIME_PLUGIN_ID_PATTERN)
     native_session_compatibility_id: str = Field(min_length=1, max_length=64)
     module_type: Literal["runtime"]
     display_name: str = Field(min_length=1, max_length=100)
@@ -90,8 +90,8 @@ class _ActivationJournal(BaseModel):
 
     version: Literal[1] = 1
     operation_id: str = Field(pattern=r"^[a-f0-9]{32}$")
-    runtime_id: str = Field(default="codex", pattern=RUNTIME_MODULE_ID_PATTERN)
-    module_id: str = Field(pattern=RUNTIME_MODULE_ID_PATTERN)
+    runtime_id: str = Field(default="codex", pattern=RUNTIME_PLUGIN_ID_PATTERN)
+    module_id: str = Field(pattern=RUNTIME_PLUGIN_ID_PATTERN)
     previous_name: str | None = Field(default=None, max_length=100)
     phase: Literal["activated", "worker_reload_requested", "removed"] = "activated"
 
@@ -102,26 +102,26 @@ class _StateCleanupRecord(BaseModel):
     version: Literal[1] = 1
     operation_id: str = Field(pattern=r"^[a-f0-9]{32}$")
     action: Literal["install_runtime_module", "remove_runtime_module"]
-    module_id: str = Field(pattern=RUNTIME_MODULE_ID_PATTERN)
+    module_id: str = Field(pattern=RUNTIME_PLUGIN_ID_PATTERN)
     session_ids: tuple[str, ...] = Field(default=(), max_length=500)
 
 
 @dataclass(frozen=True)
-class InstalledRuntimeModule:
+class InstalledRuntimePlugin:
     manifest: _Manifest
-    module: BuiltinRuntimeModule
+    module: RuntimePlugin
     root: Path
 
 
 @dataclass(frozen=True)
-class RuntimeModuleActivation:
-    installed: InstalledRuntimeModule
+class RuntimePluginActivation:
+    installed: InstalledRuntimePlugin
     previous_root: Path | None
     operation_id: str
 
 
 @dataclass(frozen=True)
-class RuntimeModuleRecovery:
+class RuntimePluginRecovery:
     operation_id: str
     runtime_id: str
     module_id: str
@@ -129,7 +129,7 @@ class RuntimeModuleRecovery:
 
 
 @dataclass(frozen=True)
-class RuntimeModuleStateCleanup:
+class RuntimePluginStateCleanup:
     operation_id: str
     action: Literal["install_runtime_module", "remove_runtime_module"]
     module_id: str
@@ -137,7 +137,7 @@ class RuntimeModuleStateCleanup:
 
 
 @dataclass(frozen=True)
-class RuntimeModulePreview:
+class RuntimePluginPreview:
     module_id: str
     runtime_id: str
     implementation_id: str
@@ -147,7 +147,7 @@ class RuntimeModulePreview:
 
 
 @dataclass(frozen=True)
-class RuntimeModuleRemoval:
+class RuntimePluginRemoval:
     runtime_id: str
     module_id: str
     previous_root: Path
@@ -155,7 +155,7 @@ class RuntimeModuleRemoval:
 
 
 @dataclass(frozen=True)
-class RuntimeModuleLoadFailure:
+class RuntimePluginLoadFailure:
     module_id: str
     reason: str
     name: str | None = None
@@ -177,7 +177,7 @@ def _module_import_paths(root: Path):
         sys.path[:] = original
 
 
-class ExternalRuntimeModuleService:
+class RuntimePluginService:
     """Install and discover trusted local Runtime modules from one fixed root."""
 
     def __init__(self, settings: Settings) -> None:
@@ -188,7 +188,7 @@ class ExternalRuntimeModuleService:
         self.activation_journal_path = self.staging_dir / ACTIVATION_JOURNAL_NAME
         self.state_cleanup_path = self.staging_dir / STATE_CLEANUP_NAME
 
-    def recover_incomplete_activation(self) -> RuntimeModuleRecovery | None:
+    def recover_incomplete_activation(self) -> RuntimePluginRecovery | None:
         """Restore the previous module after a process stopped mid-activation."""
         try:
             raw = self.activation_journal_path.read_bytes()
@@ -224,26 +224,26 @@ class ExternalRuntimeModuleService:
             if journal.phase == "removed"
             else "install_runtime_module"
         )
-        return RuntimeModuleRecovery(
+        return RuntimePluginRecovery(
             journal.operation_id,
             journal.runtime_id,
             journal.module_id,
             action,
         )
 
-    def discover(self) -> tuple[tuple[InstalledRuntimeModule, ...], tuple[RuntimeModuleLoadFailure, ...]]:
-        loaded: list[InstalledRuntimeModule] = []
-        failures: list[RuntimeModuleLoadFailure] = []
+    def discover(self) -> tuple[tuple[InstalledRuntimePlugin, ...], tuple[RuntimePluginLoadFailure, ...]]:
+        loaded: list[InstalledRuntimePlugin] = []
+        failures: list[RuntimePluginLoadFailure] = []
         try:
             self._discard_legacy_codex_layout()
-        except RuntimeModuleInstallError as exc:
-            return (), (RuntimeModuleLoadFailure("codex", exc.message),)
+        except RuntimePluginInstallError as exc:
+            return (), (RuntimePluginLoadFailure("codex", exc.message),)
         try:
             entries = sorted(self.runtimes_dir.iterdir())
         except FileNotFoundError:
             return (), ()
         except OSError as exc:
-            return (), (RuntimeModuleLoadFailure("unknown", self._reason(exc)),)
+            return (), (RuntimePluginLoadFailure("unknown", self._reason(exc)),)
         for runtime_root in entries:
             if not runtime_root.is_dir() or runtime_root.is_symlink():
                 continue
@@ -254,9 +254,9 @@ class ExternalRuntimeModuleService:
                 try:
                     manifest = self._read_manifest(root)
                     loaded.append(self._load_installed(root, manifest=manifest))
-                except RuntimeModuleInstallError as exc:
+                except RuntimePluginInstallError as exc:
                     failures.append(
-                        RuntimeModuleLoadFailure(
+                        RuntimePluginLoadFailure(
                             manifest.implementation_id if manifest is not None else root.name,
                             exc.message,
                             name=manifest.display_name if manifest is not None else None,
@@ -266,11 +266,11 @@ class ExternalRuntimeModuleService:
                     )
         return tuple(loaded), tuple(failures)
 
-    def inspect_archive(self, archive: bytes, *, source_name: str) -> RuntimeModulePreview:
+    def inspect_archive(self, archive: bytes, *, source_name: str) -> RuntimePluginPreview:
         if not archive or len(archive) > self.settings.ai_runtime.modules.max_archive_bytes:
             raise self._invalid("模块压缩包无效或超过固定大小上限。")
         if not Path(source_name).name.lower().endswith(".zip"):
-            raise self._invalid("只接受 ZIP 格式的 Runtime 模块。")
+            raise self._invalid("只接受 ZIP 格式的 Runtime 插件包。")
         self._prepare_root()
         candidate = self.staging_dir / uuid4().hex
         candidate.mkdir(mode=0o700)
@@ -279,7 +279,7 @@ class ExternalRuntimeModuleService:
             archive_path.write_bytes(archive)
             self._extract_archive(archive_path, candidate / "content")
             manifest = self._read_manifest(candidate / "content")
-            return RuntimeModulePreview(
+            return RuntimePluginPreview(
                 module_id=manifest.module_id,
                 runtime_id=manifest.runtime_id,
                 implementation_id=manifest.implementation_id,
@@ -287,7 +287,7 @@ class ExternalRuntimeModuleService:
                 name=manifest.display_name,
                 description=manifest.description,
             )
-        except RuntimeModuleInstallError:
+        except RuntimePluginInstallError:
             raise
         except (OSError, zipfile.BadZipFile, ValidationError) as exc:
             raise self._invalid(self._reason(exc)) from exc
@@ -296,17 +296,17 @@ class ExternalRuntimeModuleService:
 
     def build_registry(
         self,
-        builtin: BuiltinRuntimeModuleRegistry,
-    ) -> tuple[BuiltinRuntimeModuleRegistry, tuple[RuntimeModuleLoadFailure, ...]]:
+        builtin: RuntimePluginRegistry,
+    ) -> tuple[RuntimePluginRegistry, tuple[RuntimePluginLoadFailure, ...]]:
         modules, failures = self.discover()
-        registry = BuiltinRuntimeModuleRegistry()
+        registry = RuntimePluginRegistry()
         for implementation_id in builtin.implementation_ids():
             registry.register(builtin.require(implementation_id))
         for installed in modules:
             try:
                 registry.register(installed.module)
             except RuntimeOperationError as exc:
-                failures += (RuntimeModuleLoadFailure(installed.manifest.implementation_id, exc.message),)
+                failures += (RuntimePluginLoadFailure(installed.manifest.implementation_id, exc.message),)
         return registry, failures
 
     def install(
@@ -315,14 +315,14 @@ class ExternalRuntimeModuleService:
         *,
         source_name: str,
         operation_id: str | None = None,
-    ) -> RuntimeModuleActivation:
+    ) -> RuntimePluginActivation:
         if not archive:
             raise self._invalid("模块压缩包为空。")
         if len(archive) > self.settings.ai_runtime.modules.max_archive_bytes:
             raise self._invalid("模块压缩包超过固定大小上限。")
         safe_name = Path(source_name).name
         if not safe_name.lower().endswith(".zip"):
-            raise self._invalid("只接受 ZIP 格式的 Runtime 模块。")
+            raise self._invalid("只接受 ZIP 格式的 Runtime 插件包。")
         self._prepare_root()
         candidate = self.staging_dir / uuid4().hex
         candidate.mkdir(mode=0o700)
@@ -368,12 +368,12 @@ class ExternalRuntimeModuleService:
                 if backup.exists():
                     os.replace(backup, destination)
                 raise
-            return RuntimeModuleActivation(
-                InstalledRuntimeModule(manifest, installed.module, destination),
+            return RuntimePluginActivation(
+                InstalledRuntimePlugin(manifest, installed.module, destination),
                 previous_root,
                 resolved_operation_id,
             )
-        except RuntimeModuleInstallError:
+        except RuntimePluginInstallError:
             raise
         except Exception as exc:
             if activation_journal is not None:
@@ -384,18 +384,18 @@ class ExternalRuntimeModuleService:
         finally:
             shutil.rmtree(candidate, ignore_errors=True)
 
-    def finalize(self, activation: RuntimeModuleActivation) -> None:
+    def finalize(self, activation: RuntimePluginActivation) -> None:
         self._clear_activation_journal(activation.operation_id)
         if activation.previous_root is not None:
             shutil.rmtree(activation.previous_root, ignore_errors=True)
 
-    def mark_worker_reload_requested(self, activation: RuntimeModuleActivation) -> None:
+    def mark_worker_reload_requested(self, activation: RuntimePluginActivation) -> None:
         journal = self._read_activation_journal()
         if journal is None or journal.operation_id != activation.operation_id:
             raise self._invalid("模块激活恢复记录已变化。")
         self._write_activation_journal(journal.model_copy(update={"phase": "worker_reload_requested"}))
 
-    def rollback(self, activation: RuntimeModuleActivation) -> None:
+    def rollback(self, activation: RuntimePluginActivation) -> None:
         destination = activation.installed.root
         failed = self.staging_dir / f"{activation.installed.manifest.module_id}.failed.{uuid4().hex}"
         if destination.exists():
@@ -406,16 +406,16 @@ class ExternalRuntimeModuleService:
             shutil.rmtree(failed, ignore_errors=True)
         self._clear_activation_journal(activation.operation_id)
 
-    def remove(self, module_id: str, *, operation_id: str) -> RuntimeModuleRemoval:
-        if not is_runtime_module_id(module_id):
-            raise self._invalid("Runtime 模块标识无效。")
+    def remove(self, module_id: str, *, operation_id: str) -> RuntimePluginRemoval:
+        if not is_runtime_plugin_id(module_id):
+            raise self._invalid("Runtime 插件标识无效。")
         self._prepare_root()
         destination = self.runtimes_dir / "codex" / module_id
         if not destination.is_dir() or destination.is_symlink():
-            raise self._invalid("Runtime 模块不存在或不可移除。")
+            raise self._invalid("Runtime 插件不存在或不可移除。")
         manifest = self._read_manifest(destination)
         if manifest.implementation_id != module_id or manifest.module_id != module_id:
-            raise self._invalid("Runtime 模块安装标识无效。")
+            raise self._invalid("Runtime 插件安装标识无效。")
         destination = self.runtimes_dir / manifest.runtime_id / module_id
         backup = self.staging_dir / f"{module_id}.removed.{uuid4().hex}"
         journal = _ActivationJournal(
@@ -431,9 +431,9 @@ class ExternalRuntimeModuleService:
         except OSError:
             self._clear_activation_journal(operation_id)
             raise
-        return RuntimeModuleRemoval(manifest.runtime_id, module_id, backup, operation_id)
+        return RuntimePluginRemoval(manifest.runtime_id, module_id, backup, operation_id)
 
-    def finalize_removal(self, removal: RuntimeModuleRemoval) -> None:
+    def finalize_removal(self, removal: RuntimePluginRemoval) -> None:
         self._clear_activation_journal(removal.operation_id)
         shutil.rmtree(removal.previous_root, ignore_errors=True)
 
@@ -454,7 +454,7 @@ class ExternalRuntimeModuleService:
         )
         existing = self.pending_state_cleanup()
         if existing is not None and existing.operation_id != operation_id:
-            raise self._invalid("Runtime 模块状态清理仍在恢复。")
+            raise self._invalid("Runtime 插件状态清理仍在恢复。")
         temporary = self.state_cleanup_path.with_suffix(".tmp")
         try:
             temporary.write_text(record.model_dump_json(), encoding="utf-8")
@@ -462,22 +462,22 @@ class ExternalRuntimeModuleService:
             os.replace(temporary, self.state_cleanup_path)
         except OSError as exc:
             temporary.unlink(missing_ok=True)
-            raise self._invalid("Runtime 模块状态清理记录不可写入。") from exc
+            raise self._invalid("Runtime 插件状态清理记录不可写入。") from exc
 
-    def pending_state_cleanup(self) -> RuntimeModuleStateCleanup | None:
+    def pending_state_cleanup(self) -> RuntimePluginStateCleanup | None:
         try:
             raw = self.state_cleanup_path.read_bytes()
         except FileNotFoundError:
             return None
         except OSError as exc:
-            raise self._invalid("Runtime 模块状态清理记录不可读取。") from exc
+            raise self._invalid("Runtime 插件状态清理记录不可读取。") from exc
         if len(raw) > MAX_MANIFEST_BYTES:
-            raise self._invalid("Runtime 模块状态清理记录无效。")
+            raise self._invalid("Runtime 插件状态清理记录无效。")
         try:
             record = _StateCleanupRecord.model_validate_json(raw)
         except ValidationError as exc:
-            raise self._invalid("Runtime 模块状态清理记录无效。") from exc
-        return RuntimeModuleStateCleanup(
+            raise self._invalid("Runtime 插件状态清理记录无效。") from exc
+        return RuntimePluginStateCleanup(
             operation_id=record.operation_id,
             action=record.action,
             module_id=record.module_id,
@@ -489,15 +489,15 @@ class ExternalRuntimeModuleService:
         if record is None:
             return
         if record.operation_id != operation_id:
-            raise self._invalid("Runtime 模块状态清理记录已变化。")
+            raise self._invalid("Runtime 插件状态清理记录已变化。")
         try:
             self.state_cleanup_path.unlink(missing_ok=True)
         except OSError as exc:
-            raise self._invalid("Runtime 模块状态清理记录无法清理。") from exc
+            raise self._invalid("Runtime 插件状态清理记录无法清理。") from exc
 
-    def rollback_removal(self, removal: RuntimeModuleRemoval) -> None:
-        if not is_runtime_module_id(removal.module_id):
-            raise self._invalid("Runtime 模块标识无效。")
+    def rollback_removal(self, removal: RuntimePluginRemoval) -> None:
+        if not is_runtime_plugin_id(removal.module_id):
+            raise self._invalid("Runtime 插件标识无效。")
         destination = self.runtimes_dir / removal.runtime_id / removal.module_id
         if removal.previous_root.exists():
             os.replace(removal.previous_root, destination)
@@ -641,7 +641,7 @@ class ExternalRuntimeModuleService:
         root: Path,
         *,
         manifest: _Manifest | None = None,
-    ) -> InstalledRuntimeModule:
+    ) -> InstalledRuntimePlugin:
         manifest = manifest or self._read_manifest(root)
         module_name, factory_name = manifest.entry.split(":", 1)
         namespace = f"_chub_runtime_{manifest.module_id.replace('-', '_')}"
@@ -677,7 +677,7 @@ class ExternalRuntimeModuleService:
                 if loaded_name == namespace or loaded_name.startswith(f"{namespace}."):
                     del sys.modules[loaded_name]
             raise self._invalid(self._entry_load_message(exc)) from exc
-        if not isinstance(module, BuiltinRuntimeModule):
+        if not isinstance(module, RuntimePlugin):
             raise self._invalid("模块入口未返回 Runtime 注册对象。")
         if (
             module.descriptor.runtime_id != manifest.runtime_id
@@ -689,9 +689,9 @@ class ExternalRuntimeModuleService:
             raise self._invalid("模块清单与 Runtime 标识不一致。")
         if module.display_name != manifest.display_name or module.description != manifest.description:
             raise self._invalid("模块清单与 Runtime 展示信息不一致。")
-        return InstalledRuntimeModule(manifest, module, root)
+        return InstalledRuntimePlugin(manifest, module, root)
 
-    def _validate_worker_wiring(self, installed: InstalledRuntimeModule) -> None:
+    def _validate_worker_wiring(self, installed: InstalledRuntimePlugin) -> None:
         try:
             adapter = installed.module.build_adapter()
             runner = installed.module.build_worker_runner(adapter, workspaces={})
@@ -732,9 +732,9 @@ class ExternalRuntimeModuleService:
         return "模块入口或其依赖无法加载，请重新构建 ZIP 或检查模块依赖。"
 
     @staticmethod
-    def _invalid(message: str) -> RuntimeModuleInstallError:
-        return RuntimeModuleInstallError(
-            "runtime_module_install_invalid",
+    def _invalid(message: str) -> RuntimePluginInstallError:
+        return RuntimePluginInstallError(
+            "runtime_plugin_install_invalid",
             message,
             kind="invalid_request",
         )

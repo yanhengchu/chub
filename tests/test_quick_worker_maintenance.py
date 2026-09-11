@@ -39,6 +39,7 @@ def worker_health(
         "success": True,
         "data": {
             "protocol_version": protocol_version,
+            "code_version": "quick-worker-test",
             "status": status,
             "generation": generation,
             "active_tasks": active_tasks,
@@ -267,6 +268,9 @@ async def test_quick_worker_status_reports_disabled_runtime_without_failing_work
     assert response.status_code == 200
     data = response.json()["data"]
     assert data["state"] == "ready"
+    assert data["worker_version"] == "quick-worker-test"
+    assert data["protocol_version"] == PROTOCOL_VERSION
+    assert data["expected_protocol_version"] == PROTOCOL_VERSION
     assert data["runtime_state"] == "disabled"
     assert data["runtime_message"] == ""
     assert data["runtimes"] == [{"name": "Codex Runtime", "state": "disabled"}]

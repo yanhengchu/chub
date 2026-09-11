@@ -3,7 +3,7 @@
 > 状态：已验收
 > 主要读者：AI Agent、实现和排障 Agent；维护人员用于确认运行边界和验收结果。
 > 本文负责：Quick Worker 的任务状态、Session 租约、Native 绑定、恢复与通知终态。
-> 本文不负责：Runtime 私有 CLI、Session 页面展示、外置 Runtime 生命周期和微信路由。
+> 本文不负责：Runtime 私有 CLI、Session 页面展示、Runtime 插件模块生命周期和微信路由。
 
 ## AI 可执行契约
 

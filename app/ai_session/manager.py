@@ -19,14 +19,14 @@ from app.ai_runtime import (
     RuntimeRegistry,
     RuntimeStatus,
 )
-from app.ai_runtime.external_modules import (
-    ExternalRuntimeModuleService,
-    RuntimeModuleActivation,
-    RuntimeModuleLoadFailure,
-    RuntimeModuleRemoval,
+from app.ai_runtime.runtime_plugin_packages import (
+    RuntimePluginService,
+    RuntimePluginActivation,
+    RuntimePluginLoadFailure,
+    RuntimePluginRemoval,
 )
-from app.ai_runtime.modules import BuiltinRuntimeModuleRegistry
-from app.ai_runtime.codex_builtin import load_builtin_codex_module
+from app.ai_runtime.runtime_plugins import RuntimePluginRegistry
+from app.ai_runtime.codex_plugin import load_development_codex_plugin
 from app.ai_runtime.enablement import (
     RuntimeEnablement,
     RuntimeEnablementStore,
@@ -129,7 +129,7 @@ class AiSessionManager:
         self,
         settings: Settings,
         *,
-        builtin_runtime_modules: BuiltinRuntimeModuleRegistry | None = None,
+        development_runtime_plugins: RuntimePluginRegistry | None = None,
     ) -> None:
         self.settings = settings
         session_store_path = settings.ai_runtime.codex.data_file.with_name(
@@ -143,20 +143,20 @@ class AiSessionManager:
         self.runtime_implementation_preferences = RuntimeImplementationPreferencesStore(
             settings.ai_runtime.codex.data_file.with_name("runtime-implementation-preferences.json")
         )
-        if builtin_runtime_modules is None:
-            builtin = load_builtin_codex_module(settings)
-            self._builtin_runtime_modules = BuiltinRuntimeModuleRegistry(
-                [] if builtin is None else [builtin]
+        if development_runtime_plugins is None:
+            development_plugin = load_development_codex_plugin(settings)
+            self._development_runtime_plugins = RuntimePluginRegistry(
+                [] if development_plugin is None else [development_plugin]
             )
         else:
-            self._builtin_runtime_modules = builtin_runtime_modules
-        self.runtime_module_service = ExternalRuntimeModuleService(settings)
-        self.runtime_module_recovery = (
-            self.runtime_module_service.recover_incomplete_activation()
+            self._development_runtime_plugins = development_runtime_plugins
+        self.runtime_plugin_service = RuntimePluginService(settings)
+        self.runtime_plugin_recovery = (
+            self.runtime_plugin_service.recover_incomplete_activation()
         )
         self.runtime_id = "codex"
-        self.runtime_modules = BuiltinRuntimeModuleRegistry()
-        self.runtime_module_failures = ()
+        self.runtime_plugins = RuntimePluginRegistry()
+        self.runtime_plugin_failures = ()
         self.runtime_registry = RuntimeRegistry([])
         self.runtime_adapters: dict[str, object] = {}
         self.default_implementation_id: str | None = None
@@ -168,44 +168,44 @@ class AiSessionManager:
         self._quick_interaction_is_running: Callable[[str], bool] = lambda _id: False
         self._passive_session_cleanup: Callable[[str], bool] = lambda _id: True
         self._system_upgrade_writes_blocked: Callable[[], bool] = lambda: False
-        self.refresh_external_runtime_modules()
-    def install_runtime_module(
+        self.refresh_runtime_plugins()
+    def install_runtime_plugin(
         self,
         archive: bytes,
         *,
         source_name: str,
         operation_id: str,
-    ) -> RuntimeModuleActivation:
-        activation = self.runtime_module_service.install(
+    ) -> RuntimePluginActivation:
+        activation = self.runtime_plugin_service.install(
             archive,
             source_name=source_name,
             operation_id=operation_id,
         )
         try:
-            self.refresh_external_runtime_modules()
+            self.refresh_runtime_plugins()
             activated = (
                 activation.installed.manifest.implementation_id
-                in self.runtime_modules.implementation_ids("codex")
+                in self.runtime_plugins.implementation_ids("codex")
             )
         except Exception:
-            self.runtime_module_service.rollback(activation)
-            self.refresh_external_runtime_modules()
+            self.runtime_plugin_service.rollback(activation)
+            self.refresh_runtime_plugins()
             raise
         if not activated:
-            self.runtime_module_service.rollback(activation)
-            self.refresh_external_runtime_modules()
+            self.runtime_plugin_service.rollback(activation)
+            self.refresh_runtime_plugins()
             raise ApiError(
                 503,
-                "runtime_module_activation_unconfirmed",
-                "Runtime 模块已写入，但 Web 注册表未能确认激活。",
+                "runtime_plugin_activation_unconfirmed",
+                "Runtime 插件已写入，但 Web 注册表未能确认激活。",
             )
         return activation
 
-    def refresh_external_runtime_modules(self) -> None:
-        modules, failures = self.runtime_module_service.build_registry(
-            self._builtin_runtime_modules
+    def refresh_runtime_plugins(self) -> None:
+        modules, failures = self.runtime_plugin_service.build_registry(
+            self._development_runtime_plugins
         )
-        available_modules = BuiltinRuntimeModuleRegistry()
+        available_modules = RuntimePluginRegistry()
         adapters = []
         for implementation_id in modules.implementation_ids():
             module = modules.require(implementation_id)
@@ -216,13 +216,13 @@ class AiSessionManager:
                 adapters.append(adapter)
             except Exception:
                 failures += (
-                    RuntimeModuleLoadFailure(
+                    RuntimePluginLoadFailure(
                         implementation_id,
-                        "Runtime 模块装配失败。",
+                        "Runtime 插件装配失败。",
                     ),
                 )
-        self.runtime_modules = available_modules
-        self.runtime_module_failures = failures
+        self.runtime_plugins = available_modules
+        self.runtime_plugin_failures = failures
         self.runtime_registry = RuntimeRegistry(adapters)
         self.runtime_adapters = {
             adapter.descriptor.effective_implementation_id: adapter
@@ -231,32 +231,32 @@ class AiSessionManager:
         self.default_implementation_id = self._resolve_default_implementation_id()
         self._activate_default_implementation()
 
-    def refresh_builtin_codex_module(self) -> BuiltinRuntimeModuleRegistry:
-        """Reload the checked-out Codex module and return the prior registry."""
-        previous_builtin = self._builtin_runtime_modules
+    def refresh_development_codex_plugin(self) -> RuntimePluginRegistry:
+        """Reload the checked-out Codex plugin and return the prior registry."""
+        previous_development = self._development_runtime_plugins
         try:
-            builtin = load_builtin_codex_module(self.settings, reload_source=True)
-            if builtin is None:
-                raise ApiError(503, "builtin_runtime_unavailable", "开发版 Runtime 源码未随当前部署包提供。")
-            candidate = BuiltinRuntimeModuleRegistry([builtin])
-            self._builtin_runtime_modules = candidate
-            self.refresh_external_runtime_modules()
-            if "builtin-dev" not in self.runtime_modules.implementation_ids("codex"):
-                raise ApiError(503, "builtin_runtime_refresh_unconfirmed", "开发版 Runtime 未能通过 Web 注册表校验。")
-            return previous_builtin
+            development_plugin = load_development_codex_plugin(self.settings, reload_source=True)
+            if development_plugin is None:
+                raise ApiError(503, "development_runtime_plugin_unavailable", "开发版 Runtime 源码未随当前部署包提供。")
+            candidate = RuntimePluginRegistry([development_plugin])
+            self._development_runtime_plugins = candidate
+            self.refresh_runtime_plugins()
+            if "builtin-dev" not in self.runtime_plugins.implementation_ids("codex"):
+                raise ApiError(503, "development_runtime_plugin_refresh_unconfirmed", "开发版 Runtime 未能通过 Web 注册表校验。")
+            return previous_development
         except Exception:
-            self._builtin_runtime_modules = previous_builtin
-            self.refresh_external_runtime_modules()
+            self._development_runtime_plugins = previous_development
+            self.refresh_runtime_plugins()
             raise
 
-    def restore_builtin_codex_module(
+    def restore_development_codex_plugin(
         self,
-        previous_builtin: BuiltinRuntimeModuleRegistry,
+        previous_builtin: RuntimePluginRegistry,
     ) -> None:
-        """Restore Web's prior development Runtime after Worker rejects a refresh."""
+        """Restore Web's prior development plugin after Worker rejects a refresh."""
         with self._lock:
-            self._builtin_runtime_modules = previous_builtin
-            self.refresh_external_runtime_modules()
+            self._development_runtime_plugins = previous_builtin
+            self.refresh_runtime_plugins()
 
     def _activate_default_implementation(self) -> None:
         try:
@@ -282,28 +282,28 @@ class AiSessionManager:
                 else adapter.runtime_settings_store
             )
 
-    def remove_runtime_module(
+    def remove_runtime_plugin(
         self,
         module_id: str,
         *,
         operation_id: str,
-    ) -> RuntimeModuleRemoval:
-        if module_id in self._builtin_runtime_modules.implementation_ids():
-            raise ApiError(422, "runtime_module_remove_invalid", "内置 Runtime 不可移除。")
+    ) -> RuntimePluginRemoval:
+        if module_id in self._development_runtime_plugins.implementation_ids():
+            raise ApiError(422, "runtime_plugin_remove_invalid", "开发版 Runtime 不可移除。")
         if module_id == self.default_implementation_id:
             raise ApiError(
                 409,
                 "runtime_default_implementation_required",
                 "请先选择其他默认 Runtime 版本。",
             )
-        removal = self.runtime_module_service.remove(module_id, operation_id=operation_id)
+        removal = self.runtime_plugin_service.remove(module_id, operation_id=operation_id)
         try:
-            self.refresh_external_runtime_modules()
-            if module_id in self.runtime_modules.implementation_ids("codex"):
-                raise ApiError(503, "runtime_module_removal_unconfirmed", "Web 注册表未能确认 Runtime 已移除。")
+            self.refresh_runtime_plugins()
+            if module_id in self.runtime_plugins.implementation_ids("codex"):
+                raise ApiError(503, "runtime_plugin_removal_unconfirmed", "Web 注册表未能确认 Runtime 插件已移除。")
         except Exception:
-            self.runtime_module_service.rollback_removal(removal)
-            self.refresh_external_runtime_modules()
+            self.runtime_plugin_service.rollback_removal(removal)
+            self.refresh_runtime_plugins()
             raise
         return removal
 
@@ -322,7 +322,7 @@ class AiSessionManager:
                     "该 Runtime 版本仍被 Chub Session 绑定，归档或删除这些 Session 后再移除。",
                 )
 
-    def clear_runtime_module_state(self, module_id: str) -> None:
+    def clear_runtime_plugin_state(self, module_id: str) -> None:
         """Clear Chub-owned state covered by a Runtime upgrade boundary."""
         # Implementations share the logical Codex Session mapping. Replacing
         # or removing one version must never discard shared Session/history.
@@ -430,11 +430,11 @@ class AiSessionManager:
             preferences = self.runtime_implementation_preferences.read()
         except RuntimeImplementationPreferencesUnavailable as exc:
             raise ApiError(503, "runtime_implementation_preferences_unavailable", str(exc)) from exc
-        installed, _failures = self.runtime_module_service.discover()
+        installed, _failures = self.runtime_plugin_service.discover()
         manifests = {item.manifest.implementation_id: item.manifest for item in installed}
         items: list[RuntimeImplementationItem] = []
-        for implementation_id in self.runtime_modules.implementation_ids(self.runtime_id):
-            module = self.runtime_modules.require(implementation_id)
+        for implementation_id in self.runtime_plugins.implementation_ids(self.runtime_id):
+            module = self.runtime_plugins.require(implementation_id)
             adapter = self.runtime_adapters.get(implementation_id)
             status = adapter.status() if adapter is not None else None
             manifest = manifests.get(implementation_id)
@@ -468,7 +468,7 @@ class AiSessionManager:
         self, implementation_id: str, enabled: bool
     ) -> RuntimeImplementationData:
         with self._lock:
-            if implementation_id not in self.runtime_modules.implementation_ids(self.runtime_id):
+            if implementation_id not in self.runtime_plugins.implementation_ids(self.runtime_id):
                 raise ApiError(404, "runtime_implementation_not_found", "Codex Runtime 版本不存在。")
             preferences = self.runtime_implementation_preferences.read()
             disabled = set(preferences.disabled_implementation_ids)
@@ -544,11 +544,11 @@ class AiSessionManager:
                 "AI Runtime 启用状态不可用，请稍后重试。",
             ) from exc
         runtimes: list[RuntimeManagementItem] = []
-        for runtime_id in self.runtime_modules.runtime_ids():
+        for runtime_id in self.runtime_plugins.runtime_ids():
             implementation_id = (
                 self.default_implementation_id
                 if runtime_id == self.runtime_id
-                else next(iter(self.runtime_modules.implementation_ids(runtime_id)), None)
+                else next(iter(self.runtime_plugins.implementation_ids(runtime_id)), None)
             )
             adapter = (
                 self.runtime_adapters.get(implementation_id)
@@ -560,7 +560,7 @@ class AiSessionManager:
             runtimes.append(
                 RuntimeManagementItem(
                     runtime_id=runtime_id,
-                    name=self.runtime_modules.require_navigation(navigation_id).name,
+                    name=self.runtime_plugins.require_navigation(navigation_id).name,
                     enabled=runtime_id not in disabled,
                     healthy=status is not None and status.available,
                     reason=None if status is None else status.reason,

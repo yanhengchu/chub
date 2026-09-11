@@ -72,7 +72,7 @@ def test_rename_current_session_normalizes_title_and_is_idempotent(
     assert first.message is not None
     assert first.message.startswith(
         'Rename: Session 1 renamed to "新 标题".\n\n'
-        "Sessions\n\n▶ S1 · 新 标题\n\nTask · 优化微信指令交互流程\n\n"
+        "Sessions\n\n▶ S1 · [Chub] 新 标题\n\nTask · 优化微信指令交互流程\n\n"
     )
     assert first.message.endswith("Usage unavailable")
     assert duplicate == first
@@ -105,7 +105,7 @@ def test_rename_supports_chinese_alias(settings: Settings) -> None:
     assert result.message is not None
     assert result.message.startswith(
         'Rename: Session 3 renamed to "项目维护".\n\n'
-        "Sessions\n\n▶ S3 · 项目维护\n\n"
+        "Sessions\n\n▶ S3 · [Chub] 项目维护\n\n"
     )
     assert result.message.endswith("Usage unavailable")
     codex_manager.rename_session.assert_called_once_with("session-1", "项目维护")
@@ -139,7 +139,7 @@ def test_rename_result_keeps_full_title_and_shortens_session_list(
 
     assert result.message is not None
     assert result.message.startswith(f'Rename: Session 1 renamed to "{title}".')
-    assert f"▶ S1 · {'标' * 14}…" in result.message
+    assert f"▶ S1 · [Chub] {'标' * 14}…" in result.message
     assert result.message.endswith("Usage unavailable")
 
 

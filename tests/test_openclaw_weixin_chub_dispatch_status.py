@@ -403,7 +403,7 @@ def test_text_returns_current_mode_and_actionable_confirmation(
         "Mode · Automatic polish and confirm\n\n"
         "Model · translation-model · medium\n\n"
         "Current confirmation\n\n"
-        "▶ S1 · Unnamed Session\n\n"
+            "▶ S1 · [Chub] Unnamed Session\n\n"
         "Polished:\nPolished text in full\n\n"
         "English:\nPlease confirm the complete English wording."
     )
@@ -492,10 +492,10 @@ def test_text_list_shows_session_and_bounded_task_summaries(
 
     assert result.message == (
         "Text processing\n\n"
-        "Confirming\n\n▶ S1 · Unnamed Session\n\nTask · Secret body\n\n"
-        "Waiting confirmation\n\n▶ S1 · Unnamed Session\n\nTask · Another secret\n\n"
-        "Waiting target\n\n▶ S1 · Unnamed Session\n\nTask · Confirmed but target is busy\n\n"
-        "Optimizing\n\n▶ S1 · Unnamed Session\n\nTask · Still optimizing"
+            "Confirming\n\n▶ S1 · [Chub] Unnamed Session\n\nTask · Secret body\n\n"
+            "Waiting confirmation\n\n▶ S1 · [Chub] Unnamed Session\n\nTask · Another secret\n\n"
+            "Waiting target\n\n▶ S1 · [Chub] Unnamed Session\n\nTask · Confirmed but target is busy\n\n"
+            "Optimizing\n\n▶ S1 · [Chub] Unnamed Session\n\nTask · Still optimizing"
     )
     quick_interactions.submit.assert_not_called()
 
@@ -907,7 +907,7 @@ def test_model_command_reports_model_and_reasoning_effort(
     assert result.message is not None
     assert result.message == (
         "Session\n\n"
-        "▶ S1 · Unnamed Session\n\n"
+            "▶ S1 · [Chub] Unnamed Session\n\n"
         "Model · configured-model\n\n"
         "Level · medium"
     )
@@ -991,7 +991,7 @@ def test_model_command_uses_default_when_session_has_no_explicit_values(
     assert result.message is not None
     assert result.message == (
         "Session\n\n"
-        "▶ S1 · Unnamed Session\n\n"
+            "▶ S1 · [Chub] Unnamed Session\n\n"
         "Model · default-model\n\n"
         "Level · medium"
     )
@@ -1090,7 +1090,7 @@ def test_model_levels_command_reports_levels_for_model(
 
     assert result.message == (
         "Session\n\n"
-        "▶ S1 · Unnamed Session\n\n"
+            "▶ S1 · [Chub] Unnamed Session\n\n"
         "Model · M1 · active-model\n\n"
         "Level · high\n\n"
         "Levels\n"
@@ -1151,7 +1151,7 @@ def test_model_list_command_reports_current_and_available_models(
 
     assert result.message == (
         "Session\n\n"
-        "▶ S1 · Unnamed Session\n\n"
+            "▶ S1 · [Chub] Unnamed Session\n\n"
         "Model · M1 · active-model\n\n"
         "Models\n"
         "M1 · active-model\n"
@@ -1214,7 +1214,7 @@ def test_model_levels_for_index_resolves_from_current_catalog(
 
     assert result.message == (
         "Session\n\n"
-        "▶ S1 · Unnamed Session\n\n"
+            "▶ S1 · [Chub] Unnamed Session\n\n"
         "Model · M2 · other-model\n\n"
         "Levels\n"
         "L1 · low\n"
@@ -1848,7 +1848,7 @@ def test_chub_overview_shows_running_task_on_refreshed_session(
     )
 
     assert (
-        "▶ S1 · 运行任务\n\nTask · 优化状态展示"
+        "▶ S1 · [Chub] 运行任务\n\nTask · 优化状态展示"
         in (result.message or "")
     )
 
@@ -1982,7 +1982,7 @@ def test_chub_overview_shows_web_task_summary(
         delivery_route=delivery_route(),
     )
 
-    assert "▶ S1 ! · 终端任务" in (result.message or "")
+    assert "▶ S1 ! · [Chub] 终端任务" in (result.message or "")
     assert "Task · Running" not in (result.message or "")
 
 

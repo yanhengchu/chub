@@ -16,7 +16,7 @@ import pytest
 from app.ai_usage.models import AiTodayUsage, AiWeeklyUsage
 from app.ai_runtime.general_settings import RuntimeSettingsStoreUnavailable
 from app.ai_runtime import RuntimeOperationError
-from app.ai_runtime.external_modules import ExternalRuntimeModuleService
+from app.ai_runtime.runtime_plugin_packages import RuntimePluginService
 from app.ai_runtime.usage import RuntimeUsageService
 from chub_codex_runtime.provider_browser import (
     ProviderBrowserAdapter,
@@ -233,14 +233,14 @@ async def test_general_runtime_settings_save_weekly_report_session_defaults(
 
 
 @pytest.mark.anyio
-async def test_general_runtime_settings_keep_weekly_session_controls_with_builtin_runtime(
+async def test_general_runtime_settings_keep_weekly_session_controls_with_development_plugin(
     settings: Settings,
 ) -> None:
     app = create_app(settings)
     manager = app.state.ai_session_manager
-    removal = manager.runtime_module_service.remove("codex-010000", operation_id="a" * 32)
-    manager.runtime_module_service.finalize_removal(removal)
-    manager.refresh_external_runtime_modules()
+    removal = manager.runtime_plugin_service.remove("codex-010000", operation_id="a" * 32)
+    manager.runtime_plugin_service.finalize_removal(removal)
+    manager.refresh_runtime_plugins()
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -258,7 +258,7 @@ async def test_general_runtime_settings_keep_weekly_session_controls_with_builti
 
 
 @pytest.mark.anyio
-async def test_external_runtime_settings_failure_returns_service_unavailable(
+async def test_runtime_plugin_settings_failure_returns_service_unavailable(
     settings: Settings,
 ) -> None:
     app = create_app(settings)
@@ -277,10 +277,10 @@ async def test_external_runtime_settings_failure_returns_service_unavailable(
 
 
 @pytest.mark.anyio
-async def test_ai_usage_uses_builtin_runtime_when_no_formal_version_is_installed(
+async def test_ai_usage_uses_development_plugin_when_no_formal_version_is_installed(
     settings: Settings,
 ) -> None:
-    service = ExternalRuntimeModuleService(settings)
+    service = RuntimePluginService(settings)
     removal = service.remove("codex-010000", operation_id="a" * 32)
     service.finalize_removal(removal)
     app = create_app(settings)

@@ -114,6 +114,7 @@ class WeixinChubModeSubmission(_StrictModel):
     new_session: bool = False
     session_slot: int | None = Field(default=None, ge=1, le=MAX_WEIXIN_SESSION_SLOTS)
     session_title: str | None = Field(default=None, max_length=48)
+    session_workspace_name: str | None = Field(default=None, max_length=48)
     dispatch_disposition: Literal["pass", "reply", "handled"] | None = None
     continuation_kind: Literal["task", "translated_task", "confirmed_translated_task", "retry"] | None = None
     continuation_prompt: str | None = Field(
@@ -297,6 +298,7 @@ class WeixinChubModeSubmissionResult(_StrictModel):
     )
     session_slot: int | None = Field(default=None, ge=1, le=MAX_WEIXIN_SESSION_SLOTS)
     session_title: str | None = Field(default=None, max_length=48)
+    session_workspace_name: str | None = Field(default=None, max_length=48)
 
 
 class WeixinChubModeDispatchResult(_StrictModel):

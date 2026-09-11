@@ -36,7 +36,7 @@ def submitted_task_message(settings: Settings, prompt: str) -> str:
     return (
         "Submitted\n\n"
         "Sessions\n\n"
-        f"▶ S1 · {build_session_title(prompt, mode.session_name_max_width)}\n\n"
+        f"▶ S1 · [Chub] {build_session_title(prompt, mode.session_name_max_width)}\n\n"
         f"Task · {build_task_name(prompt, mode.task_name_max_width)}"
     )
 

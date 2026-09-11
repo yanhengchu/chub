@@ -110,7 +110,7 @@ def test_codex_switch_uses_creation_order_and_allows_busy_target(
         "Session: S3 selected.\n\n"
         "Sessions\n\n"
     )
-    assert "▶ S3 · 第三项" in result.message
+    assert "▶ S3 · [Chub] 第三项" in result.message
     assert result.message.endswith("Usage unavailable")
     assert manager.session_id() == "c-available"
     quick_interactions.submit.assert_not_called()
@@ -158,7 +158,7 @@ def test_canonical_switch_routes_to_numbered_session(
     )
 
     assert result.message is not None
-    assert "▶ S2 · 第 2 项" in result.message
+    assert "▶ S2 · [Chub] 第 2 项" in result.message
     assert "Task status:" not in result.message
     assert manager.session_id() == "session-2"
     quick_interactions.submit.assert_not_called()
@@ -223,8 +223,8 @@ def test_codex_switch_with_task_switches_and_submits_once(
     assert first.message is not None
     assert first.message.startswith("Session: S2 selected.")
     assert "\n\nSessions\n\n" in first.message
-    assert "S1 · 第 1 项" in first.message
-    assert f"▶ S2 · 第 2 项\n\nTask · {task_prompt}" in first.message
+    assert "S1 · [Chub] 第 1 项" in first.message
+    assert f"▶ S2 · [Chub] 第 2 项\n\nTask · {task_prompt}" in first.message
     assert "Weekly" not in first.message
     assert duplicate.message == first.message
     assert manager.session_id() == "session-2"
@@ -285,7 +285,7 @@ def test_codex_switch_task_uses_enabled_text_optimization(
     assert first.message.startswith(
         "Session: S2 selected. Optimizing · Preparing to submit."
     )
-    assert "▶ S2 · 第 2 项\n\nTask · 检查服务状态" in first.message
+    assert "▶ S2 · [Chub] 第 2 项\n\nTask · 检查服务状态" in first.message
     assert duplicate == first
     assert manager.session_id() == "session-2"
     quick_interactions.submit.assert_not_called()
@@ -491,7 +491,7 @@ def test_codex_switch_with_task_busy_target_uses_target_without_current_marker(
     assert result.message == (
         "Session: Not completed because the target Session is running. "
         "The task was not submitted.\n\n"
-        "S2 · 第 2 项\n\n"
+            "S2 · 第 2 项\n\n"
         "Task · 继续检查日志"
     )
     assert manager.session_id() == "session-1"
@@ -544,7 +544,7 @@ def test_codex_switch_without_current_uses_first_visible_session(
     )
 
     assert result.message is not None
-    assert "▶ S1 · 可用会话" in result.message
+    assert "▶ S1 · [Chub] 可用会话" in result.message
     assert manager.session_id() == "b-available"
 
 
@@ -611,7 +611,7 @@ def test_codex_archive_removes_target_and_clears_current_binding(
         "Sessions\n\n"
     )
     assert result.message.endswith("Usage unavailable")
-    assert "S1 · 候选 1" in result.message
+    assert "S1 · [Chub] 候选 1" in result.message
     assert "候选 2" not in result.message
     assert " · Current" not in result.message
     manager.session_archiver.assert_called_once_with("session-2")
@@ -767,7 +767,7 @@ def test_codex_archive_status_preserves_freed_slot_for_codex_new(
     )
 
     assert refreshed.message is not None
-    assert "S2 · 候选 10" in refreshed.message
+    assert "S2 · [Chub] 候选 10" in refreshed.message
     assert manager.session_slot_matches(2, "session-10") is True
 
 
@@ -1030,7 +1030,7 @@ def test_codex_archive_rejects_session_with_pending_retry(
     assert result.message.startswith(
         "Archive: Not completed because the Session has a pending retry task.\n\n"
     )
-    assert "Sessions\n\nS1 · 待续提" in result.message
+    assert "Sessions\n\nS1 · [Chub] 待续提" in result.message
     manager.session_archiver.assert_not_called()
 
 
@@ -1122,7 +1122,7 @@ def test_codex_switch_number_uses_fresh_visible_list(settings: Settings) -> None
     )
 
     assert result.message is not None
-    assert "▶ S2 · 候选 2" in result.message
+    assert "▶ S2 · [Chub] 候选 2" in result.message
     assert manager.session_id() == "session-2"
 
 
@@ -1185,7 +1185,7 @@ def test_codex_switch_uses_one_deadline_and_reuses_session_scan(
         "Sessions\n\n"
     )
     assert result.message.endswith("Usage unavailable")
-    assert "▶ S2 · 候选 2" in result.message
+    assert "▶ S2 · [Chub] 候选 2" in result.message
     assert manager.session_id() == "session-2"
     codex_manager.list_sessions.assert_called_once()
 
@@ -1221,7 +1221,7 @@ def test_codex_switch_out_of_range_returns_fresh_list_without_changing_binding(
         "Session: Not completed because the Session number is invalid.\n\n"
     )
     assert "Sessions" in result.message
-    assert "▶ S1 · 当前会话" in result.message
+    assert "▶ S1 · [Chub] 当前会话" in result.message
     assert manager.session_id() == "session-1"
     codex_manager.get_session.assert_not_called()
 

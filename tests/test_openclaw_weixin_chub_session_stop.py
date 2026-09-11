@@ -98,7 +98,7 @@ def test_session_stop_keeps_slot_and_current_binding(
     manager.session_stopper.assert_called_once_with(session.id)
     final_message = manager.session_stop_notifier.call_args.args[1]()
     assert final_message.startswith(
-        "Stop: Session 2 stopped.\n\nSessions\n\n▶ S2 · 运行任务"
+        "Stop: Session 2 stopped.\n\nSessions\n\n▶ S2 · [Chub] 运行任务"
     )
     assert "Task ·" not in final_message
     quick_interactions.submit.assert_not_called()

@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from app.core.config import Settings
-from app.ai_runtime.external_modules import ExternalRuntimeModuleService
+from app.ai_runtime.runtime_plugin_packages import RuntimePluginService
 from scripts.build_codex_runtime_zip import build as build_codex_runtime_zip
 
 
@@ -68,7 +68,7 @@ def settings(tmp_path: Path) -> Settings:
         tmp_path / "codex-runtime.zip",
         description="测试用 Codex Runtime 正式版本。",
     )
-    service = ExternalRuntimeModuleService(resolved)
+    service = RuntimePluginService(resolved)
     activation = service.install(archive.read_bytes(), source_name=archive.name)
     service.finalize(activation)
     return resolved

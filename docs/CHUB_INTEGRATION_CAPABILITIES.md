@@ -7,11 +7,13 @@
 
 Chub 的能力体系回答“能做什么”；指令体系回答“人如何输入文本调用”；程序化集成契约回答“系统如何调用”。当前只有两套面向人的指令体系：本机维护 CLI 与微信 ClawBot 固定指令。OpenClaw Tool、固定 HTTP API、工作台按钮和固定脚本均不构成第三套指令体系。微信固定指令的完整语法、用户可见行为和回复格式以第 2.2 节为准；身份、安全、并发、持久化和通知路由见对应设计文档；项目整体功能与使用方式见 [README](../README.md)。本文件描述的能力不等于所有入口均获授权：运行时能力由 Chub 根据入口、任务范围、权限和状态过滤，具体调用仍以实际校验结果为准。
 
+Chub 是个人本地工作站与统一控制面：核心能力可独立运行，插件模块可在本机安装、版本和启停边界内扩展业务。核心优先保持可用、局部恢复和最终状态确认，不因普通模块维护、单项故障或状态暂时未知增加全局门禁；只有直接数据破坏、安全越界或不可恢复冲突才需要拒绝。“插件模块”是统一产品与架构术语；正式交付和安装形态统一称为“插件包”或“插件 ZIP”。当前 Runtime 插件模块与微信任务编排插件模块已实现；带工作台页面、设置、业务数据和流程的通用业务插件模块尚未接入，不能根据本文件推断存在通用业务插件模块安装或调用入口。
+
 ## 1. Chub 能力体系
 
-处理能力相关需求时，先定位能力域和稳定能力 ID，确认其当前状态、允许调用方和外置编排边界；需要状态机、恢复或外部协议细节时，再进入本节给出的权威规则。能力表未登记的行为不得从页面、命令或相邻能力推断为可用。
+处理能力相关需求时，先定位能力域和稳定能力 ID，确认其当前状态、允许调用方和任务编排插件模块边界；需要状态机、恢复或插件协议细节时，再进入本节给出的权威规则。能力表未登记的行为不得从页面、命令或相邻能力推断为可用。
 
-“已实现”表示 Chub 当前自身已经具备该业务能力；不表示每个入口、Agent 或模块都能调用。表中的能力 ID 是能力目录的稳定语义标识，不是当前 CLI、HTTP API 或可直接导入的函数。“后续可发现”表示能力编排外置完成后可作为候选能力由 Chub 在运行时按任务范围、权限和状态过滤后返回；当前尚无此运行时发现或调用入口。
+“已实现”表示 Chub 当前自身已经具备该业务能力；不表示每个入口、Agent 或插件模块都能调用。表中的能力 ID 是能力目录的稳定语义标识，不是当前 CLI、HTTP API 或可直接导入的函数。“后续可发现”表示任务编排插件模块完成运行时发现后可作为候选能力由 Chub 按任务范围、权限和状态过滤后返回；当前尚无此运行时发现或调用入口。
 
 | 能力域 | 当前可完成的事 | 当前主要调用面 |
 | --- | --- | --- | --- |
@@ -22,11 +24,21 @@ Chub 的能力体系回答“能做什么”；指令体系回答“人如何输
 | 自动化与周报 | 运行固定浏览器自动化，准备资料、生成和复核周报 | 自动化页、周报页、固定脚本与技能 |
 | 服务维护与集成 | 检查、重启或恢复受管服务；查看和维护已接入的 OpenClaw、Runtime 与模块状态；在维护者明确进入时提供维护终端 | 本机 CLI、工作台、少量微信固定指令 |
 
+### 插件模块范围
+
+| 插件模块类型 | 当前状态 | Chub 保留的边界 |
+| --- | --- | --- |
+| Runtime 插件模块 | 已实现：第一方 Codex Runtime ZIP 与开发实现 | Chub 保留 Session、Worker、任务终态、维护操作和页面壳；详见 Runtime 插件模块设计。 |
+| 任务编排插件模块 | 已实现：微信普通正文的开发实现与 ZIP | Chub 保留入口认证、路由、幂等、主任务投递、通知与最终状态；当前不扩展到其他业务入口。 |
+| 工作台业务插件模块 | 后续目标：需求、流程或资料型功能 | 未来由 Chub 提供固定页面分区、模块设置、ZIP 生命周期和能力调用；当前没有安装、页面或调用入口。 |
+
+插件模块按当前业务范围使用 Chub 能力；模块故障、未安装或停用不得阻塞 Chub 核心、其他模块或无关服务。Chub 不为普通调用设置逐项审批或额外全局门禁，但模块不能通过能力目录获得任意命令、路径、Runtime、Worker、外部通道、收件人或凭据。
+
 ### 1.1 核心能力目录
 
-下表以稳定语义 ID 登记 Chub 的核心能力。微信、工作台、自动化等入口只是能力调用方；它们不重新定义创建 Session、提交任务或维护服务的业务能力。各 ID 的运行时发现与外置调用尚未实现，因此“外置编排”只定义后续接入方向，不宣称当前模块已经可调用。
+下表以稳定语义 ID 登记 Chub 的核心能力。微信、工作台、自动化等入口只是能力调用方；它们不重新定义创建 Session、提交任务或维护服务的业务能力。各 ID 的**通用运行时发现与调用接口**尚未实现，因此不能从本表推断任务编排插件模块可以按能力 ID 自由调用。当前微信任务编排插件模块已按其固定范围运行，但不通过这套通用发现接口调用能力。
 
-| 核心能力 | 使用场景与可见结果 | 当前状态与调用方 | 外置编排 |
+| 核心能力 | 使用场景与可见结果 | 当前状态与调用方 | 任务编排插件模块 |
 | --- | --- | --- | --- |
 | **Session 与任务** |  |  |  |
 | `chub.session.create` | 创建 Chub 逻辑 Session，返回受限 Session 引用；首次任务前不创建 Native Session | 已实现：工作台、微信 `new`、周报服务 | 后续可发现；仅在入口策略允许时创建。 |
@@ -35,43 +47,43 @@ Chub 的能力体系回答“能做什么”；指令体系回答“人如何输
 | `chub.task.submit` | 向固定或刚创建的 Chub Session 提交已登记 AI 任务，返回受限任务引用 | 已实现：快速交互、微信普通任务/续提、受管服务 | 后续可发现；只能提交 Chub 返回的受限任务意图。 |
 | `chub.task.read` | 读取已授权任务的进度、结果或失败摘要 | 已实现：工作台、微信任务回送、受管服务 | 后续可发现；Worker 仍是任务终态权威。 |
 | `chub.task.await` | 在任务、确认或目标可写结果确认后继续受控流程 | 已实现为内部协调：微信文本处理、受管服务 | 后续可发现；等待可信事件，不轮询任意任务。 |
-| `chub.session.stop` / `chub.session.archive` / `chub.session.delete` | 停止、归档或删除 Session，并按原生终态收敛 | 已实现：工作台、微信固定指令 | 当前不授予编排模块；未来必须单独定义高风险授权。 |
+| `chub.session.stop` / `chub.session.archive` / `chub.session.delete` | 停止、归档或删除 Session，并按原生终态收敛 | 已实现：工作台、微信固定指令 | 当前不授予任务编排插件；未来必须单独定义高风险授权。 |
 | **Runtime 与模型** |  |  |  |
 | `chub.runtime.read` | 读取 Runtime 健康、实现、模型目录和受限状态 | 已实现：工作台、设置、微信、状态接口 | 后续按只读范围发现。 |
-| `chub.runtime.configure` | 配置 Runtime 启停、默认实现或节点级默认值 | 已实现：设置与受控维护入口 | 当前不授予编排模块。 |
-| `chub.runtime.authentication.switch` | 在既定 ChatGPT 账户登录与 API Key 配置之间切换，并确认认证与配置同步结果 | 已实现：自动化页、固定本机脚本与微信固定指令 | 仅当前绑定的微信 Owner 可通过固定指令触发；不授予编排模块、OpenClaw Agent Tool 或普通任务，不接受账号、URL、路径或凭据。 |
+| `chub.runtime.configure` | 配置 Runtime 启停、默认实现或节点级默认值 | 已实现：设置与受控维护入口 | 当前不授予任务编排插件。 |
+| `chub.runtime.authentication.switch` | 在既定 ChatGPT 账户登录与 API Key 配置之间切换，并确认认证与配置同步结果 | 已实现：自动化页、固定本机脚本与微信固定指令 | 仅当前绑定的微信 Owner 可通过固定指令触发；不授予任务编排插件、OpenClaw Agent Tool 或普通任务，不接受账号、URL、路径或凭据。 |
 | `chub.usage.read` | 读取默认 Runtime 的受限用量快照，并由入口选择展示格式 | 已实现：工作台、微信、状态接口 | 后续按只读范围发现；不提供上游账户或凭据。 |
-| `chub.runtime.module.manage` | 预检、导入、刷新或移除受管 Runtime 模块 | 已实现：设置受控维护入口 | 当前不授予编排模块。 |
+| `chub.runtime.module.manage` | 预检、导入、刷新或移除受管 Runtime 插件 | 已实现：设置受控维护入口 | 当前不授予编排插件。 |
 | **文本、确认与通知** |  |  |  |
 | `chub.text.process` | 按直接、自动润色或确认模式处理微信普通正文 | 已实现：微信任务润色流程 | 后续可发现；只提交 Chub 已登记的文本处理意图。 |
 | `chub.text.confirm` | 对已送达的润色结果确认、取消或后移 | 已实现：微信确认流程 | 后续可发现；只能操作本流程已签发的确认项。 |
 | `chub.notification.send` | 向保存路由或预配置目标投递受控通知并记录终态 | 已实现：Worker、微信、CLI、OpenClaw Tool | 后续按任务范围发现；不得指定任意收件人、URL 或凭据。 |
 | **状态、资料与需求** |  |  |  |
 | `chub.status.read` | 查询节点、Web、Worker 与受限运行状态 | 已实现：工作台、CLI、微信、OpenClaw Tool | 后续按只读范围发现。 |
-| `chub.documents.read` | 浏览已登记的项目资料与受限内容 | 已实现：工作台可信网络页面 | 当前不授予编排模块。 |
-| `chub.requests.read` / `chub.requests.manage` | 查询、保存、更新、归档或删除活动需求 | 已实现：CLI 与微信固定指令各自开放的子集 | 当前不授予编排模块；写入仍须遵循需求储备规则。 |
-| `chub.logs.read` | 查看或下载受限日志 | 已实现：日志页、本机 CLI | 当前不授予编排模块。 |
+| `chub.documents.read` | 浏览已登记的项目资料与受限内容 | 已实现：工作台可信网络页面 | 当前不授予任务编排插件。 |
+| `chub.requests.read` / `chub.requests.manage` | 查询、保存、更新、归档或删除活动需求 | 已实现：CLI 与微信固定指令各自开放的子集 | 当前不授予任务编排插件；写入仍须遵循需求储备规则。 |
+| `chub.logs.read` | 查看或下载受限日志 | 已实现：日志页、本机 CLI | 当前不授予任务编排插件。 |
 | **自动化、周报与维护** |  |  |  |
-| `chub.automation.read` / `chub.automation.run` | 查看并运行固定自动化，管理受管 Debug Chrome | 已实现：自动化页、受控维护入口 | 当前不授予编排模块。 |
-| `chub.weekly_report.prepare` / `chub.weekly_report.generate` | 准备输入、生成和复核受管周报 | 已实现：周报页、固定脚本与技能 | 当前不授予编排模块。 |
-| `chub.maintenance.check` | 只读检查本机服务、配置和受限资源 | 已实现：CLI、工作台、微信 `check` | 当前不授予编排模块。 |
-| `chub.maintenance.recover` | 对固定服务执行重启、恢复或升级操作 | 已实现：本机 CLI、工作台、少量微信固定指令 | 当前不授予编排模块；不接受任意命令、路径或服务目标。 |
-| `chub.integration.openclaw.read` / `chub.integration.openclaw.manage` | 查询受管 OpenClaw 集成状态，或在固定维护范围内配置、启动、停止和恢复 Gateway 集成 | 已实现：设置与受控维护入口 | 当前不授予编排模块；不提供任意 Gateway 指令、账号或路由。 |
-| `chub.maintenance.terminal` | 为维护者的可信浏览器创建短期维护终端访问，并维持单一活动连接 | 已实现：工作台维护终端 | 当前不授予编排模块、微信、OpenClaw 或自动化；该能力等同本机用户 Shell 权限。 |
+| `chub.automation.read` / `chub.automation.run` | 查看并运行固定自动化，管理受管 Debug Chrome | 已实现：自动化页、受控维护入口 | 当前不授予任务编排插件。 |
+| `chub.weekly_report.prepare` / `chub.weekly_report.generate` | 准备输入、生成和复核受管周报 | 已实现：周报页、固定脚本与技能 | 当前不授予任务编排插件。 |
+| `chub.maintenance.check` | 只读检查本机服务、配置和受限资源 | 已实现：CLI、工作台、微信 `check` | 当前不授予任务编排插件。 |
+| `chub.maintenance.recover` | 对固定服务执行重启、恢复或升级操作 | 已实现：本机 CLI、工作台、少量微信固定指令 | 当前不授予任务编排插件；不接受任意命令、路径或服务目标。 |
+| `chub.integration.openclaw.read` / `chub.integration.openclaw.manage` | 查询受管 OpenClaw 集成状态，或在固定维护范围内配置、启动、停止和恢复 Gateway 集成 | 已实现：设置与受控维护入口 | 当前不授予任务编排插件；不提供任意 Gateway 指令、账号或路由。 |
+| `chub.maintenance.terminal` | 为维护者的可信浏览器创建短期维护终端访问，并维持单一活动连接 | 已实现：工作台维护终端 | 当前不授予任务编排插件、微信、OpenClaw 或自动化；该能力等同本机用户 Shell 权限。 |
 
-`chub.session.create`、`chub.session.read`、`chub.task.submit`、`chub.task.read` 与 `chub.task.await` 是外置任务编排的基础能力。其 Session 创建、Native 绑定、Worker 提交、任务终态与恢复规则分别以[Chub Session 状态模型设计](AI_SESSION_STATE_DESIGN.md)、[Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)和[Chub Quick Worker 独立服务设计](CHUB_QUICK_WORKER_DESIGN.md)为权威来源；本表只定义能力语义、当前状态和开放边界。
+`chub.session.create`、`chub.session.read`、`chub.task.submit`、`chub.task.read` 与 `chub.task.await` 是未来任务编排插件模块通用能力发现的基础能力。其 Session 创建、Native 绑定、Worker 提交、任务终态与恢复规则分别以[Chub Session 状态模型设计](AI_SESSION_STATE_DESIGN.md)、[Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)和[Chub Quick Worker 独立服务设计](CHUB_QUICK_WORKER_DESIGN.md)为权威来源；本表只定义能力语义、当前状态和开放边界。
 
 需要继续了解某项能力的完整规则时，按下表定位；不要从入口命令或页面文案推断其他能力的状态、权限或恢复方式。
 
 | 能力域 | 权威规则 |
 | --- | --- |
 | Session 与任务 | [Chub Session 状态模型设计](AI_SESSION_STATE_DESIGN.md)、[Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)、[Chub Quick Worker 独立服务设计](CHUB_QUICK_WORKER_DESIGN.md) |
-| Runtime、模型、用量与 Runtime 模块 | [Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)、[Chub Codex Runtime 设计](CHUB_CODEX_RUNTIME_DESIGN.md)、[Chub AI Runtime 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md) |
+| Runtime、模型、用量与 Runtime 插件模块 | [Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)、[Chub Codex Runtime 设计](CHUB_CODEX_RUNTIME_DESIGN.md)、[Chub AI Runtime 插件模块设计](CHUB_RUNTIME_PLUGIN_DESIGN.md) |
 | 文本处理、确认、微信回送与通知 | 本文第 2.2 节、[OpenClaw 定制集成设计](OPENCLAW_CUSTOMIZATION_DESIGN.md)、[Chub Quick Worker 独立服务设计](CHUB_QUICK_WORKER_DESIGN.md) |
 | 需求、资料、日志、自动化、周报与维护 | 本文第 2.1 节、[Chub 总体架构设计](CHUB_ARCHITECTURE_DESIGN.md)、[本期工作周报自动化与生成设计](WEEKLY_REPORT_AUTOMATION_DESIGN.md) |
-| 能力编排模块的发现、调用、检查点与版本绑定 | [Chub 能力编排外置架构设计](CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md) |
+| 任务编排插件模块的发现、调用、检查点与版本绑定 | [Chub 任务编排插件模块架构设计](CHUB_TASK_ORCHESTRATION_PLUGIN_DESIGN.md) |
 
-运行时能力发现是未来能力编排外置的目标机制，不是当前新增入口：模块应向 Chub 查询当前任务可使用的能力集合，并只调用返回的能力；能力目录、运行时注册表与调用校验分别负责语义说明、可用性和授权，不能相互替代。
+运行时能力发现是未来任务编排插件模块的目标机制，不是当前新增入口：模块应向 Chub 查询当前任务可使用的能力集合，并只调用返回的能力；能力目录、运行时注册表与调用校验分别负责语义说明、可用性和授权，不能相互替代。
 
 ### 1.2 能力与入口关系
 
@@ -181,7 +193,7 @@ chmod 600 \
 | `help`、`model help`、`text help`、`session help`、`request help`、`system help` | 无参数显示紧凑索引；带主题时只显示该类的完整语法；均不附加状态尾部 |
 | `text [mode [direct\|auto\|confirm]\|list\|ok\|next\|cancel]`、`text model list`、`text model level [M#]`、`text model use M# \| L# \| M# L#` / `text-check <English>` | 查询或调整微信后续正文处理方式、翻译任务默认模型和等级，或以英文复述确认队头 |
 | `model` / `model list` / `model level [M#]` / `model use M# \| L# \| M# L#` | 查询或配置当前 Session 后续任务的模型与推理等级 |
-| `sync` / `new [title]` / `rename <title>` / `retry` | 同步槽位、创建或重命名当前 Session，或提交待续提任务 |
+| `sync` / `new [title]` / `rename <title>` / `retry` | 同步当前已允许工作区中的 Session 槽位；创建或重命名当前 Session，或提交待续提任务 |
 | `S# [task]` | 选择目标 Session；有正文时切换后提交任务 |
 | `stop [S#]` / `archive S#` / `del S#` | 停止、归档或永久删除指定 Session；`stop` 无参数时作用于当前绑定 Session |
 | `cat R#` / `archive R#` / `del R#` | 查看、归档或永久删除活动需求 |
@@ -230,12 +242,12 @@ chmod 600 \
 - 当 Quick Worker 当前不可用时，微信 ClawBot 的 `new` 和普通任务固定回复 `Not submitted · Quick Worker is unavailable. Try again later.`；维护恢复指令仍按各自契约可用。
 - 当 Quick Worker 提交回执暂时无法确认时，微信回执以 `Submission is being verified by Quick Worker. Do not resend yet.` 开头，并保留当前 Session/Task 上下文。这不是任务失败：Chub 先进行有限次主动核验，随后持续以同一任务 ID 对账或幂等补交，Web 重启后继续；确认接收后继续交付，只有 Worker 明确确认未接收时才允许重试。
 
-- 微信和 ClawBot 为普通 Chub Session 分配 S1–S9 槽位；内部翻译 Session 不进入微信槽位或微信 Session 列表。微信 `new` 与首页新建使用同一种 Chub Session，不存在 Session 类型切换。
+- 微信和 ClawBot 为普通 Chub Session 分配 S1–S9 槽位；内部翻译 Session 不进入微信槽位或微信 Session 列表。可进入微信范围的目录仅包括当前微信主工作区和设置中显式配置的额外工作区；用户目录与 Chub 项目目录不会因内置存在而自动加入。目录仍在当前配置范围内但暂时不可用时，已分配槽位会保留并显示为不可用，拒绝新任务；只有归档或删除才释放这类槽位。将额外工作区从设置移除属于主动撤销范围：下一次同步会移除其微信槽位，Session 本身不被删除。微信 `new` 与首页新建使用同一种 Chub Session，不存在 Session 类型切换。
 
 ##### 文本处理与确认
 
 - 设置页 AI Runtime 分组下的微信任务润色配置页只影响之后新接收的正文任务：`直接执行`直接提交；`自动润色后执行`在独立只读 Session 生成中文润色和 English 后，自动提交润色后的中文；`自动润色后确认执行`生成同一份结果后进入确认队列。普通任务以及携带正文的 `S1`–`S9` 在正文不超过 `translation_preprocess_max_input_chars`（默认 1200 字符）时遵循该快照；超过阈值直接提交原正文，不润色、不翻译、不进入确认队列，以保持同步确认回复有界。其他固定指令和续提指令仍绕过文本优化。旧布尔配置 `translation_enabled=false/true` 分别等价于 `direct/auto`。
-- `text` 与设置页 AI Runtime 分组下的微信任务润色配置页读取、保存同一个节点级处理方式：`text` 按 `Text`、`Mode · <mode>`、`Model · <model> · <level>`、`Current confirmation` 的顺序返回当前状态；其中 `text` 返回目标 Session、完整 `Polished` 正文和完整 `English`，不使用摘要。`text mode direct|auto|confirm` 立即保存并只影响之后新接收的正文。`text list` 显示完整正文处理流水：当前可操作确认队头以 `Confirming` 固定在最上方，其余已润色待轮到的确认项为 `Waiting confirmation`，仍在排队或翻译中的项目为 `Optimizing`；已确认但目标暂忙的项目显示为 `Waiting target`。每项返回目标 `S<槽位> · <标题>` 与下一行 `Task · <受限正文摘要>`，目标已不可用时显示 `Session · Unavailable`。已经在润色、确认或等待目标可写的项目继续按创建时快照完成。`text` 控制指令及 `text-check` 参数错误只返回用法而不作为普通任务提交。
+- `text` 与设置页 AI Runtime 分组下的微信任务润色配置页读取、保存同一个节点级处理方式：`text` 按 `Text`、`Mode · <mode>`、`Model · <model> · <level>`、`Current confirmation` 的顺序返回当前状态；其中 `text` 返回目标 Session、完整 `Polished` 正文和完整 `English`，不使用摘要。`text mode direct|auto|confirm` 立即保存并只影响之后新接收的正文。`text list` 显示完整正文处理流水：当前可操作确认队头以 `Confirming` 固定在最上方，其余已润色待轮到的确认项为 `Waiting confirmation`，仍在排队或翻译中的项目为 `Optimizing`；已确认但目标暂忙的项目显示为 `Waiting target`。每项返回统一格式的目标 Session 行 `[▶ ]S<槽位> · [<工作区>] <标题>` 与下一行 `Task · <受限正文摘要>`，目标已不可用时显示 `Session · Unavailable`。已经在润色、确认或等待目标可写的项目继续按创建时快照完成。`text` 控制指令及 `text-check` 参数错误只返回用法而不作为普通任务提交。
 - 确认模式下，翻译 FIFO 不等待用户操作；完成的译文按翻译完成顺序进入独立确认 FIFO。仅当队头的 `Translation ready` 通知已经成功送达时，文字消息才可使用 `text ok`（提交润色中文）、`text cancel`（丢弃）、`text next`（移至确认队尾）或 `text-check <完整英文复述>`。英文比较忽略大小写、空白和常见标点，词级相似度达到 90% 即提交润色中文；未达到时保留队头并提示重试。没有已送达的待确认队头时，这些确认指令明确回复没有待确认正文；确认、取消或过期均不会提交原文；待确认项 24 小时后失效。
 - `text cancel` 与 `text next` 的同步回复先说明本次取消或后移结果，再附加更新后的 `text list` 正文处理流水；队头由此变化后，列表首项就是下一条可操作或待送达确认。
 - 翻译完成后目标暂忙时，自动执行正文与已确认正文都保留固定目标，待该目标可安全写入后自动重试；自动执行视为已确认，不得改投其他 Session，也不会要求再次英文复述。
@@ -265,7 +277,7 @@ chmod 600 \
 | --- | --- |
 | 固定文案 | 默认使用英文；任务标题保留来源原文，Session 名称按任务保存的 `session_id` 在展示时读取当前值 |
 | 帮助清单 | `help` 只显示符号说明及高频的状态、Session、认证和维护指令：`chub · check · usage · sync · new [title] · S# [task]`、`codex auth · codex auth switch`、`stop [S#] · retry · archive S# · del S#`；下方 `More commands` 保留五个主题入口。所有主题统一使用 `<topic> help`；各主题帮助分别显示本类完整语法，标题统一为 `Commands · <Topic>`；标题与每项均为独立段落 |
-| Session 行 | `[▶ ]S<槽位>[ !] · <标题>`；`▶` 仅表示当前绑定，`!` 表示不可用或状态未知 |
+| Session 行 | `[▶ ]S<槽位>[ !] · [<工作区>] <标题>`；工作区名称来自 Session 已保存的展示名，最大显示宽度为 12，超出以 `…` 截断；`▶` 仅表示当前绑定，`!` 表示不可用或状态未知 |
 | Task 行 | `Task · <摘要>`；`chub` 对当前微信槽位中的运行标准快速任务统一展示受限摘要，包含 Web 和微信入口；无可信摘要时使用 `Task · Running`；无 Task 行表示没有运行任务 |
 | Request 行 | `R<槽位> · <标题>`用于`chub`列表和需求查询结果 |
 | 成功任务回执 | `状态`、`Sessions`、全部已登记 Session 及各自运行 Task；可用 Session 不显示 Task |
@@ -280,6 +292,7 @@ chmod 600 \
 Session 标题与任务摘要的显示规则：
 
 - `session_name_max_width` 默认 30，`task_name_max_width` 默认 64；两项允许范围均为 4–96。
+- 工作区标签固定最大显示宽度为 12，不占用 Session 标题的 `session_name_max_width`；历史 Session 缺少展示名时回退保存目录的末级名称，再回退工作区 ID。
 - 半角字符按宽度 1，汉字与全角字符按宽度 2；Emoji 和组合字符保持完整字形。
 - 超出显示宽度时预留 `…`；原始 Session 标题和任务摘要另有 48 字符安全上限。
 
@@ -364,5 +377,5 @@ Session 标题与任务摘要的显示规则：
 | [Chub Session 状态模型设计](AI_SESSION_STATE_DESIGN.md) | Chub Session、Native Session 数据消费与映射、Activity、usage 投影、入口、槽位和单 writer 语义 |
 | [Chub Codex Runtime 设计](CHUB_CODEX_RUNTIME_DESIGN.md) | 当前 Codex Runtime 的专属边界，以及 Codex/OpenAI 用量来源、接口、缓存和展示口径 |
 | [Chub Quick Worker 独立服务设计](CHUB_QUICK_WORKER_DESIGN.md) | Quick Worker 独立服务、非实时任务、恢复、通知终态和重启协调 |
-| [Chub 能力编排外置架构设计](CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md) | 外置能力编排模块的通用未来边界；不改变本节当前固定指令契约 |
+| [Chub 任务编排插件模块架构设计](CHUB_TASK_ORCHESTRATION_PLUGIN_DESIGN.md) | 任务编排插件模块的通用未来边界；不改变本节当前固定指令契约 |
 | [Chub OpenClaw 插件说明](../integrations/openclaw/chub/README.md) | 插件协议、源码、构建、部署和协议验收 |

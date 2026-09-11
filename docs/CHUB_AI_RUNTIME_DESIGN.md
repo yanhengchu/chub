@@ -3,8 +3,8 @@
 > 状态：已验收
 > 主要读者：需要实现或维护 Runtime Adapter/Runner 的 AI Agent；维护人员用于确认接入边界。
 > 本文负责：Runtime 共享契约、实现槽位、Adapter/Runner 边界、Native Session 与新增 Runtime 的接入判定。
-> 本文不负责：Codex 等具体 Runtime 的私有行为、Chub Session 生命周期、Worker 任务恢复、外置模块安装和微信路由。
-> 维护说明：Runtime 外置已作为当前实现交付；本文定义所有 Runtime 共用的边界。本文“已验收”仅表示共享 Runtime 契约已验收，不替代各 Runtime ZIP 生命周期、目标平台或私有行为的专项验收。当前唯一接入的 Codex 私有行为以[Chub Codex Runtime 设计](CHUB_CODEX_RUNTIME_DESIGN.md)为准，ZIP 生命周期以[Chub AI Runtime 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md)为准。
+> 本文不负责：Codex 等具体 Runtime 的私有行为、Chub Session 生命周期、Worker 任务恢复、Runtime 插件模块安装和微信路由。
+> 维护说明：Runtime 插件模块已作为当前实现交付；本文定义所有 Runtime 共用的边界。本文“已验收”仅表示共享 Runtime 契约已验收，不替代各 Runtime ZIP 生命周期、目标平台或私有行为的专项验收。当前唯一接入的 Codex 私有行为以[Chub Codex Runtime 设计](CHUB_CODEX_RUNTIME_DESIGN.md)为准，ZIP 生命周期以[Chub AI Runtime 插件模块设计](CHUB_RUNTIME_PLUGIN_DESIGN.md)为准。
 
 ## AI 可执行契约
 
@@ -14,9 +14,9 @@ AI Runtime 通用配置保存在本机 `config/ai-runtimes.local.yaml`。其中�
 
 新建 Session 固定提供 `chub`、`home` 与 `workspace` 三个内置工作目录。选择 `workspace` 后，任务可在该受信根目录及其全部子目录内工作，无需将每个项目子目录登记为独立工作区。只有需要把某个目录单独展示并作为 Session 的默认工作目录时，维护者才在本机 `settings.local.yaml` 的 `ai_runtime.codex.extra_workspaces` 显式登记；每项使用固定 ID、名称和路径，ID 不得覆盖内置目录。页面与 API 只接受后端已加载的目录 ID，不能传入任意路径；已创建 Session 继续保存其创建时的工作目录，移除已使用的额外目录前必须先处理关联 Session。Quick Worker 重载后才会使用新增或移除的额外目录映射执行新任务。
 
-AI Agent 应先按问题范围选择文档：共享 Runtime 能力、Adapter/Runner 与 Native 兼容规则看本文；Codex 私有行为看[Chub Codex Runtime 设计](CHUB_CODEX_RUNTIME_DESIGN.md)；ZIP 导入、覆盖、删除和 `builtin-dev` 重载看[Chub AI Runtime 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md)；Session 与 Worker 领域状态分别看对应专项设计。
+AI Agent 应先按问题范围选择文档：共享 Runtime 能力、Adapter/Runner 与 Native 兼容规则看本文；Codex 私有行为看[Chub Codex Runtime 设计](CHUB_CODEX_RUNTIME_DESIGN.md)；Runtime 插件模块 ZIP 的导入、覆盖、删除和 `builtin-dev` 重载看[Chub AI Runtime 插件模块设计](CHUB_RUNTIME_PLUGIN_DESIGN.md)；Session 与 Worker 领域状态分别看对应专项设计。
 
-Runtime 的 `implementation_id` 是可维护的**实现槽位**：默认实现只影响新建 Session，Session 创建后固定该槽位。它不是能力编排的 ZIP `implementation_ref`；后者是包含内容摘要的**不可变产物引用**，只用于编排请求快照，并由[Chub 能力编排外置架构设计](CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md)定义。两者不得跨领域复用或互相替代。
+Runtime 的 `implementation_id` 是可维护的**实现槽位**：默认实现只影响新建 Session，Session 创建后固定该槽位。它不是任务编排插件模块 ZIP 的 `implementation_ref`；后者是包含内容摘要的**不可变产物引用**，只用于编排请求快照，并由[Chub 任务编排插件模块架构设计](CHUB_TASK_ORCHESTRATION_PLUGIN_DESIGN.md)定义。两者不得跨领域复用或互相替代。
 
 每个 Runtime 实现以不可变 `RuntimeDescriptor` 注册：
 
@@ -64,7 +64,7 @@ writer probe 的结果只回答当前 Native Session 是否由外部进程占用
 
 ## 维护与失败边界
 
-Runtime 停用只影响新的任务受理；已受理任务按创建快照收敛。实现槽位的导入、覆盖、移除和开发刷新按[Chub AI Runtime 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md)执行，只有 Web 与 Quick Worker 都确认注册表后才报告成功。
+Runtime 停用只影响新的任务受理；已受理任务按创建快照收敛。实现槽位的导入、覆盖、移除和开发刷新按[Chub AI Runtime 插件模块设计](CHUB_RUNTIME_PLUGIN_DESIGN.md)执行，只有 Web 与 Quick Worker 都确认注册表后才报告成功。
 
 单一实现加载、依赖或入口失败只能使该实现不可用；它不得阻断 Chub 控制面、只读状态、其他 Runtime 或独立服务。Runtime 操作的进程创建、HTTP 成功和文件写入均不是成功条件，必须由 Worker、Adapter 或原生最终状态确认。
 
@@ -72,4 +72,4 @@ Runtime 停用只影响新的任务受理；已受理任务按创建快照收敛
 
 已验证：Codex 后台提交、首个 Native 绑定、`resume`、模型校验、Native 发现投影、writer 保护和原生归档/删除的相关自动化路径。
 
-修改能力集合、Descriptor identity、Runner 请求/结果、Native 发现或 writer 判断、实现槽位兼容规则，必须重新验收 Web、Quick Worker 和受影响的 Runtime 模块操作。
+修改能力集合、Descriptor identity、Runner 请求/结果、Native 发现或 writer 判断、实现槽位兼容规则，必须重新验收 Web、Quick Worker 和受影响的 Runtime 插件操作。

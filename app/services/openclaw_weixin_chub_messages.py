@@ -19,6 +19,7 @@ from app.services.openclaw_weixin_chub_models import (
 
 
 WEEKLY_WINDOW_MINUTES = 7 * 24 * 60
+WORKSPACE_LABEL_MAX_WIDTH = 12
 CHUB_HELP_MESSAGE = "\n\n".join(
     (
         "Commands",
@@ -97,6 +98,7 @@ class ChubOverviewSession:
     title: str
     state: str
     current: bool
+    workspace_name: str | None = None
     task_summary: str | None = None
 
 
@@ -170,6 +172,7 @@ def format_chub_overview(
                 item.title,
                 item.state,
                 item.current,
+                item.workspace_name,
             )
             if item.state == "Busy":
                 session_block = (
@@ -256,12 +259,21 @@ def switch_candidate_hint(remaining: int) -> str:
 
 
 def format_session_blocks(
-    entries: Iterable[tuple[int, str, str, bool]],
+    entries: Iterable[
+        tuple[int, str, str, bool] | tuple[int, str, str, bool, str | None]
+    ],
     task_summaries: Mapping[int, str] | None = None,
 ) -> str:
     paragraphs = ["Sessions"]
-    for slot, title, state, current in entries:
-        session_block = format_session_name_line(slot, title, state, current)
+    for entry in entries:
+        slot, title, state, current, *workspace = entry
+        session_block = format_session_name_line(
+            slot,
+            title,
+            state,
+            current,
+            workspace[0] if workspace else None,
+        )
         if state == "Busy":
             summary = task_summaries.get(slot) if task_summaries is not None else None
             session_block = f"{session_block}\n\nTask · {summary or 'Running'}"
@@ -276,10 +288,13 @@ def format_session_name_line(
     title: str,
     state: str,
     current: bool,
+    workspace_name: str | None = None,
 ) -> str:
     current_marker = "▶ " if current else ""
     state_marker = " !" if state == "Unavailable" else ""
-    return f"{current_marker}S{slot}{state_marker} · {title}"
+    workspace_label = build_workspace_label(workspace_name)
+    workspace_prefix = f"[{workspace_label}] " if workspace_label else ""
+    return f"{current_marker}S{slot}{state_marker} · {workspace_prefix}{title}"
 
 
 def build_session_title(title: str, max_width: int) -> str:
@@ -287,6 +302,17 @@ def build_session_title(title: str, max_width: int) -> str:
         title or "Unnamed Session",
         max_chars=MAX_WEIXIN_TASK_SUMMARY_CHARS,
         max_width=max_width,
+    )
+
+
+def build_workspace_label(workspace_name: str | None) -> str | None:
+    normalized = workspace_name.strip() if isinstance(workspace_name, str) else ""
+    if not normalized:
+        return None
+    return build_task_summary(
+        normalized,
+        max_chars=MAX_WEIXIN_TASK_SUMMARY_CHARS,
+        max_width=WORKSPACE_LABEL_MAX_WIDTH,
     )
 
 
@@ -304,6 +330,7 @@ def format_task_context(
     *,
     session_slot: int | None = None,
     session_title: str | None = None,
+    session_workspace_name: str | None = None,
     current: bool = False,
 ) -> str:
     paragraphs = [status]
@@ -314,6 +341,7 @@ def format_task_context(
                 session_title,
                 "Available",
                 current,
+                session_workspace_name,
             )
         )
     paragraphs.append(f"Task · {task_summary}")
@@ -327,6 +355,7 @@ def with_task_summary(
     *,
     session_slot: int | None = None,
     session_title: str | None = None,
+    session_workspace_name: str | None = None,
     current: bool = False,
 ) -> str:
     paragraphs = message.split("\n\n")
@@ -343,6 +372,7 @@ def with_task_summary(
         build_task_name(prompt, max_width),
         session_slot=session_slot,
         session_title=session_title,
+        session_workspace_name=session_workspace_name,
         current=current,
     )
     if not separator:
@@ -366,6 +396,7 @@ def format_codex_sessions(
                 ),
                 state,
                 session.id == current_session_id,
+                getattr(session, "workspace_name", None),
             )
             for slot, session, state in visible
         )
@@ -378,9 +409,15 @@ def format_codex_sessions(
 def session_matches_configuration(
     session: object,
     configuration: WeixinChubModeRuntimeConfig,
+    *,
+    allowed_workspace_ids: frozenset[str] | None = None,
 ) -> bool:
     return bool(
-        getattr(session, "workspace_id", None) == configuration.workspace_id
+        (
+            getattr(session, "workspace_id", None) in allowed_workspace_ids
+            if allowed_workspace_ids is not None
+            else getattr(session, "workspace_id", None) == configuration.workspace_id
+        )
         and getattr(session, "permission_mode", None) == configuration.permission_mode
         and configuration.permission_mode != "ask"
         and (

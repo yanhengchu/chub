@@ -28,7 +28,11 @@ from app.automations.browser import (
 )
 from app.automations.chrome_supervisor import socket_path as chrome_supervisor_socket_path
 from app.automations.config import DuplicateAutomationTaskError, load_automations
-from app.automations.codex_auth_switch import CodexAuthSwitchError, switch as switch_codex_auth
+from app.automations.codex_auth_switch import (
+    CodexAuthSwitchCancelled,
+    CodexAuthSwitchError,
+    switch as switch_codex_auth,
+)
 from app.automations.models import (
     AutomationListData,
     AutomationRunAccepted,
@@ -111,6 +115,7 @@ class AutomationManager:
         self._codex_runtime_account = RuntimeAccountEnvironmentState()
         self._codex_runtime_account_checking = False
         self._codex_auth_switching = False
+        self._codex_auth_switch_cancel: threading.Event | None = None
         self._browser_initialization_path = (
             settings.automations.state_dir
             / "browser-profile-initialization.json"
@@ -616,6 +621,8 @@ class AutomationManager:
     def switch_codex_runtime_authentication(
         self,
         mode: Literal["account", "api"],
+        *,
+        operation_id: str | None = None,
     ) -> CodexAuthSwitchResult:
         with self._state_lock:
             if self._codex_auth_switching or self._codex_runtime_account_checking:
@@ -625,16 +632,40 @@ class AutomationManager:
                     "Codex Runtime 认证方式正在切换或检查",
                 )
             self._codex_auth_switching = True
+            cancel_event = threading.Event()
+            self._codex_auth_switch_cancel = cancel_event
             self._codex_runtime_account = RuntimeAccountEnvironmentState(
                 state="checking",
                 message="正在切换 Codex Runtime 认证方式",
+                switching=True,
             )
 
         try:
-            switched = switch_codex_auth(mode, settings=self._settings)
+            switched = switch_codex_auth(
+                mode,
+                settings=self._settings,
+                cancel_event=cancel_event,
+                operation_id=operation_id,
+            )
+        except CodexAuthSwitchCancelled as exc:
+            with self._state_lock:
+                self._codex_auth_switching = False
+                self._codex_auth_switch_cancel = None
+            stopped = RuntimeAccountEnvironmentState(
+                state="failed",
+                message="Codex Runtime 认证切换已停止，请重新检查认证状态",
+                checked_at=datetime.now().astimezone(),
+            )
+            self._set_codex_runtime_account(stopped)
+            raise ApiError(
+                409,
+                "codex_auth_switch_cancelled",
+                str(exc),
+            ) from exc
         except CodexAuthSwitchError as exc:
             with self._state_lock:
                 self._codex_auth_switching = False
+                self._codex_auth_switch_cancel = None
             failed = RuntimeAccountEnvironmentState(
                 state="failed",
                 message="认证方式切换失败",
@@ -650,6 +681,7 @@ class AutomationManager:
             LOGGER.exception("Codex Runtime authentication switch failed")
             with self._state_lock:
                 self._codex_auth_switching = False
+                self._codex_auth_switch_cancel = None
             failed = RuntimeAccountEnvironmentState(
                 state="failed",
                 message="认证方式切换失败",
@@ -679,6 +711,7 @@ class AutomationManager:
         finally:
             with self._state_lock:
                 self._codex_auth_switching = False
+                self._codex_auth_switch_cancel = None
 
         self._set_codex_runtime_account(account)
         return CodexAuthSwitchResult(
@@ -686,6 +719,22 @@ class AutomationManager:
             message=switched.message,
             account=account,
         )
+
+    def stop_codex_runtime_authentication_switch(self) -> RuntimeAccountEnvironmentState:
+        with self._state_lock:
+            if not self._codex_auth_switching or self._codex_auth_switch_cancel is None:
+                raise ApiError(
+                    409,
+                    "codex_auth_switch_not_running",
+                    "当前没有正在执行的 Codex Runtime 认证切换",
+                )
+            self._codex_auth_switch_cancel.set()
+            self._codex_runtime_account = RuntimeAccountEnvironmentState(
+                state="checking",
+                message="正在停止 Codex Runtime 认证切换",
+                switching=True,
+            )
+            return self._codex_runtime_account.model_copy()
 
     def check_feishu_environment(self) -> FeishuEnvironmentState:
         browser_state, _, _ = self._debug_chrome_status()

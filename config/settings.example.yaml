@@ -106,7 +106,7 @@ openclaw:
     # translation_enabled values map false to direct and true to auto.
     translation_enabled: false
     # Trusted local ZIP implementations for the Weixin refinement stage.
-    # They are distinct from AI Runtime modules and only affect new tasks.
+    # They are distinct from AI Runtime plugins and only affect new tasks.
     orchestration_modules_dir: "data/local/runtime/openclaw/weixin-orchestration-modules"
     orchestration_module_max_archive_bytes: 8388608
     # translation_mode: "direct" # direct | auto | confirm

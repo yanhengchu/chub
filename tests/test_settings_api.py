@@ -1,6 +1,6 @@
 import httpx
 import pytest
-from tests.test_weixin_orchestration_modules import module_archive
+from tests.test_weixin_orchestration_plugins import module_archive
 from unittest.mock import MagicMock
 
 from app.application import create_app
@@ -185,7 +185,7 @@ async def test_task_orchestration_settings_persist_development_selection(setting
 
 
 @pytest.mark.anyio
-async def test_task_orchestration_module_lifecycle_api(settings, tmp_path) -> None:
+async def test_task_orchestration_plugin_lifecycle_api(settings, tmp_path) -> None:
     settings.openclaw.weixin_chub_mode.orchestration_modules_dir = tmp_path / "modules"
     archive = module_archive(settings)
     transport = httpx.ASGITransport(app=create_app(settings))
@@ -238,7 +238,7 @@ async def test_task_orchestration_module_lifecycle_api(settings, tmp_path) -> No
     assert listed.json()["data"]["modules"][0]["active"] is True
     assert listed.json()["data"]["modules"][0]["removable"] is True
     assert active_removal.status_code == 409
-    assert active_removal.json()["error"]["code"] == "weixin_orchestration_module_active"
+    assert active_removal.json()["error"]["code"] == "weixin_orchestration_plugin_active"
     assert switched.status_code == 200
     assert removed.status_code == 200
     assert reloaded.json()["data"]["implementation"] == "weixin-orchestration-dev"

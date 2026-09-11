@@ -294,7 +294,7 @@ def test_registered_project_documents_exist() -> None:
         for document in documents
     )
     assert any(
-        document.id == "chub-external-module"
+        document.id == "chub-runtime-plugin"
         and document.status == "持续维护"
         for document in documents
     )

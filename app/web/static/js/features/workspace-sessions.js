@@ -843,7 +843,7 @@
     }
   };
 
-  const syncCreation = () => {
+  const syncCreation = ({ resetSelection = false } = {}) => {
     const usableWorkspaces = workspaces.filter((workspace) => workspace.available);
     const available = creation.quick.available;
     createButton.disabled = !available || !usableWorkspaces.length;
@@ -851,9 +851,12 @@
       ? creation.quick.reason || "当前没有可用工作目录"
       : "";
 
-    const selectedWorkspaceId = usableWorkspaces.some(
+    const preferredWorkspaceId = usableWorkspaces.find(
+      (workspace) => workspace.id === "chub",
+    )?.id || usableWorkspaces[0]?.id || "";
+    const selectedWorkspaceId = !resetSelection && usableWorkspaces.some(
       (workspace) => workspace.id === workspaceSelect.value,
-    ) ? workspaceSelect.value : usableWorkspaces[0]?.id || "";
+    ) ? workspaceSelect.value : preferredWorkspaceId;
     workspaceSelect.value = selectedWorkspaceId;
     workspacePicker.setOptions(
       usableWorkspaces.map((workspace) => ({ value: workspace.id, label: workspace.name })),
@@ -1220,6 +1223,7 @@
   };
 
   createButton.addEventListener("click", () => {
+    syncCreation({ resetSelection: true });
     setMessage(createMessage, "");
     dialog.showModal();
     window.requestAnimationFrame(() => {

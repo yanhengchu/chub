@@ -3,7 +3,7 @@
 > 状态：已验收
 > 主要读者：AI Agent、实现和排障 Agent；维护人员用于确认页面分层、交互边界和验收范围。
 > 本文负责：Chub Web 前端分层、页面状态归属、公共交互、固定资源加载顺序，以及主题、文字大小注册、完整 Token 包和语义 Token 契约，遵循[Chub 总体架构](CHUB_ARCHITECTURE_DESIGN.md)。
-> 本文不负责：后端 API、认证与安全契约、Runtime ZIP 协议和模块状态清理、任务编排模块协议、Quick Worker/OpenClaw 的业务状态、服务恢复流程和历史前端拆分过程；这些内容分别以总体架构、专项设计和能力清单为准。
+> 本文不负责：后端 API、认证与安全契约、Runtime 插件 ZIP 协议和插件状态清理、任务编排插件协议、Quick Worker/OpenClaw 的业务状态、服务恢复流程和历史前端拆分过程；这些内容分别以总体架构、专项设计和能力清单为准。
 
 ## 1. AI Agent 执行摘要
 
@@ -28,13 +28,15 @@ Chub Web 使用 FastAPI、Jinja2、原生 JavaScript 和 CSS，同源部署且�
 | 工作站、自动化、项目资料 | 各自 Feature | 独立读取、会话级成功缓存、局部刷新和局部失败反馈 | 本文第 3 节 |
 | 页面级切换与共享资源 | `workspace.js` / 页面 Controller | 组装页面、切换分区、触发受影响 Feature 刷新、释放已替换 Feature | 本文第 3 节 |
 | 外观偏好 | `theme.js` | 保存、恢复和应用有效主题与文字大小；为首屏同步非敏感 Cookie | 本文第 6 节 |
-| Runtime 模块管理 | 设置页 Feature | 预检、导入、替换、移除的受控交互与最终反馈；不解释 ZIP 或 Worker 状态 | [AI Runtime 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md) |
-| 能力模块管理 | AI Runtime 通用配置 Feature | 预检、导入、列表与移除能力编排 ZIP；不解释具体任务流程或恢复 | [Chub 能力编排外置架构设计](CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md) |
-| 任务编排设置 | 微信任务润色 Feature | 展示并选择当前润色编排实现；不提供 ZIP 导入、列表或移除 | [Chub 微信任务编排外置设计](WEIXIN_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md) |
+| Runtime 插件模块管理 | 设置页 Feature | 预检、导入、替换、移除的受控交互与最终反馈；不解释 ZIP 或 Worker 状态 | [Chub AI Runtime 插件模块设计](CHUB_RUNTIME_PLUGIN_DESIGN.md) |
+| 任务编排插件模块管理 | 插件管理 Feature | 预检、导入、列表与移除任务编排 ZIP；不解释具体任务流程或恢复 | [Chub 任务编排插件模块架构设计](CHUB_TASK_ORCHESTRATION_PLUGIN_DESIGN.md) |
+| 任务编排设置 | 微信任务润色 Feature | 展示并选择当前润色编排实现；不提供 ZIP 导入、列表或移除 | [Chub 微信任务编排插件模块设计](WEIXIN_TASK_ORCHESTRATION_PLUGIN_DESIGN.md) |
 | Runtime 用量展示 | 快速交互 Page Controller 与微信入口投影 | 工作台只消费后端 `display.long` 或不可用状态，不重新计算额度、Token 或格式 | [AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)、[集成能力清单](CHUB_INTEGRATION_CAPABILITIES.md) |
 | 设置 OpenClaw 信息 | 设置页 Feature | 读取本机配置、安装元数据和补丁清单；不读取 Gateway 运行状态 | OpenClaw 定制设计 |
 
 前端不得另行定义 Session owner、phase、入口权限或维护操作成功条件。Session 快照中的 `usage`、`status` 和 `activity` 含义以状态模型为准；HTTP 成功、任务受理或子进程创建都不能渲染为业务成功。
+
+项目资料工作区固定展示两份核心资料（项目说明、总体架构）以及按更新时间排序的最近资料，最多 10 份；隐藏资料不参与首页选择，完整资料列表继续在“全部项目资料”中查看。新增资料不能改变核心资料的优先顺序。
 
 Runtime 用量的字段、单位、短格式、长格式和详细完整格式及缺失项语义由对应 Runtime 专属设计定义。外部工作台右上角固定展示后端给出的 `display.long`，不生成详细完整格式；读取失败时显示不可用反馈。微信和通知的格式选择以能力清单为准，前端不得根据当前 Codex 格式推断或拼接其他 Runtime 的用量文本。
 

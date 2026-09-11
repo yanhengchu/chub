@@ -257,7 +257,7 @@ function renderRuntimeManagement(data) {
     .filter((runtime) => !runtimeId || runtime.runtime_id === runtimeId);
   if (runtimeId === "codex") {
     codexRuntimeEnabled = runtimes.find((runtime) => runtime.runtime_id === "codex")?.enabled === true;
-    renderRuntimeModules();
+    renderRuntimePlugins();
   }
   runtimeManagementList.replaceChildren();
   for (const runtime of runtimes) {
@@ -325,8 +325,8 @@ function runtimeModuleRow(module, { candidate = false } = {}) {
   detail.textContent = candidate
     ? (module.description || "等待导入。")
     : (module.status === "active"
-      ? (module.description || "模块已导入。")
-      : (module.reason || "模块不可用。"));
+      ? (module.description || "Runtime 插件已导入。")
+      : (module.reason || "Runtime 插件不可用。"));
   copy.append(title, detail);
   const actions = document.createElement("span");
   actions.className = "runtime-module-row-actions";
@@ -336,7 +336,7 @@ function runtimeModuleRow(module, { candidate = false } = {}) {
     install.type = "button";
     install.textContent = runtimeModuleBusy ? "导入中" : "导入";
     install.disabled = runtimeModuleBusy;
-    install.addEventListener("click", () => void installSelectedRuntimeModule());
+    install.addEventListener("click", () => void installSelectedRuntimePlugin());
     actions.append(install);
     const remove = document.createElement("button");
     remove.className = "button-secondary";
@@ -344,7 +344,7 @@ function runtimeModuleRow(module, { candidate = false } = {}) {
     remove.textContent = "移除";
     remove.title = "移除当前选择的 Runtime ZIP";
     remove.disabled = runtimeModuleBusy;
-    remove.addEventListener("click", clearSelectedRuntimeModule);
+    remove.addEventListener("click", clearSelectedRuntimePlugin);
     actions.append(remove);
   } else {
     const badge = document.createElement("span");
@@ -357,7 +357,7 @@ function runtimeModuleRow(module, { candidate = false } = {}) {
       remove.type = "button";
       remove.textContent = "移除";
       remove.disabled = runtimeModuleBusy;
-      remove.addEventListener("click", () => void confirmRuntimeModuleRemoval(module));
+      remove.addEventListener("click", () => void confirmRuntimePluginRemoval(module));
       actions.append(remove);
     }
   }
@@ -384,21 +384,21 @@ let orchestrationModuleCandidate = null;
 let orchestrationModuleBusy = false;
 let orchestrationModuleData = { modules: [] };
 
-function clearSelectedRuntimeModule() {
+function clearSelectedRuntimePlugin() {
   if (runtimeModuleBusy) return;
   runtimeModuleCandidate = null;
   if (runtimeModuleFile instanceof HTMLInputElement) runtimeModuleFile.value = "";
-  renderRuntimeModules();
+  renderRuntimePlugins();
 }
 
-function clearSelectedOrchestrationModule() {
+function clearSelectedOrchestrationPlugin() {
   if (orchestrationModuleBusy) return;
   orchestrationModuleCandidate = null;
   if (orchestrationModuleFile instanceof HTMLInputElement) orchestrationModuleFile.value = "";
-  renderOrchestrationModules();
+  renderOrchestrationPlugins();
 }
 
-function showRuntimeModuleToast(text, kind = "info") {
+function showRuntimePluginToast(text, kind = "info") {
   window.showChubToast?.(text, { kind });
 }
 
@@ -450,7 +450,7 @@ async function saveCodexDefaultRuntimeImplementation() {
   const implementationId = codexDefaultRuntimeImplementation.value;
   if (!implementationId) return;
   runtimeModuleBusy = true;
-  renderRuntimeModules();
+  renderRuntimePlugins();
   setCodexRuntimeSettingsMessage("");
   try {
     await fetchSettingsApi("/api/codex/runtime-implementations/default", {
@@ -458,19 +458,19 @@ async function saveCodexDefaultRuntimeImplementation() {
       body: JSON.stringify({ implementation_id: implementationId }),
       headers: { "Content-Type": "application/json" },
     });
-    await loadRuntimeModules();
+    await loadRuntimePlugins();
   } catch (error) {
-    showRuntimeModuleToast(
+    showRuntimePluginToast(
       error instanceof Error ? error.message : "默认 Runtime 版本未能更新。",
       "error",
     );
   } finally {
     runtimeModuleBusy = false;
-    await loadRuntimeModules();
+    await loadRuntimePlugins();
   }
 }
 
-function renderRuntimeModules(data = runtimeModuleData) {
+function renderRuntimePlugins(data = runtimeModuleData) {
   runtimeModuleData = data || { modules: [] };
   const modules = Array.isArray(runtimeModuleData.modules) ? runtimeModuleData.modules : [];
   const rows = [];
@@ -478,23 +478,23 @@ function renderRuntimeModules(data = runtimeModuleData) {
   renderCodexRuntimeVersions(implementations);
   if (runtimeModuleCandidate) rows.push(runtimeModuleRow(runtimeModuleCandidate, { candidate: true }));
   rows.push(...modules.map((module) => runtimeModuleRow(module)));
-  if (rows.length === 0) rows.push(moduleEmptyRow("尚未导入 Runtime 模块。"));
+  if (rows.length === 0) rows.push(moduleEmptyRow("尚未导入 Runtime 插件。"));
   runtimeModuleList?.replaceChildren(...rows);
 }
 
-async function loadRuntimeModules() {
+async function loadRuntimePlugins() {
   try {
     const [modules, implementations] = await Promise.all([
       fetchSettingsApi("/api/runtime-modules"),
       fetchSettingsApi("/api/codex/runtime-implementations"),
     ]);
-    renderRuntimeModules({ ...modules, implementations });
+    renderRuntimePlugins({ ...modules, implementations });
   } catch (_error) {
-    renderRuntimeModules();
+    renderRuntimePlugins();
     runtimeModuleList?.replaceChildren();
     setCodexRuntimeSettingsMessage("暂时无法读取 Codex Runtime 版本状态。", "error");
     if (runtimeModuleList instanceof HTMLElement) {
-      showRuntimeModuleToast("暂时无法读取 Runtime 模块状态。", "error");
+      showRuntimePluginToast("暂时无法读取 Runtime 插件状态。", "error");
     }
   }
 }
@@ -508,79 +508,79 @@ async function runtimeModuleRequest(path, { method = "POST", file } = {}) {
   });
   const payload = await response.json();
   if (!response.ok || payload.success !== true) {
-    throw new Error(payload?.error?.message || "Runtime 模块操作失败。");
+    throw new Error(payload?.error?.message || "Runtime 插件操作失败。");
   }
   return payload.data;
 }
 
-async function installSelectedRuntimeModule() {
+async function installSelectedRuntimePlugin() {
   const file = runtimeModuleCandidate?.file;
   if (!file || runtimeModuleBusy) return;
   runtimeModuleBusy = true;
-  renderRuntimeModules();
-  showRuntimeModuleToast("正在导入并确认 Runtime 模块。", "info");
+  renderRuntimePlugins();
+  showRuntimePluginToast("正在导入并确认 Runtime 插件。", "info");
   try {
     await runtimeModuleRequest("/api/runtime-modules/install", { file });
     runtimeModuleCandidate = null;
     if (runtimeModuleFile instanceof HTMLInputElement) runtimeModuleFile.value = "";
-    showRuntimeModuleToast("Runtime 模块已导入并启用。", "success");
-    await loadRuntimeModules();
+    showRuntimePluginToast("Runtime 插件已导入并启用。", "success");
+    await loadRuntimePlugins();
   } catch (error) {
-    showRuntimeModuleToast(error instanceof Error ? error.message : "Runtime 模块未能导入或启用。", "error");
+    showRuntimePluginToast(error instanceof Error ? error.message : "Runtime 插件未能导入或启用。", "error");
   } finally {
     runtimeModuleBusy = false;
-    renderRuntimeModules();
+    renderRuntimePlugins();
   }
 }
 
-async function confirmRuntimeModuleRemoval(module) {
+async function confirmRuntimePluginRemoval(module) {
   if (runtimeModuleBusy || typeof showConfirmationDialog !== "function") return;
   await showConfirmationDialog({
-    title: "移除 Runtime 模块",
-    description: "移除后，该模块的安装代码和关联 Chub 运行态将被清理；旧版本不会保留。",
+    title: "移除 Runtime 插件",
+    description: "移除后，该插件的安装代码和关联 Chub 运行态将被清理；旧版本不会保留。",
     details: [{ label: "Runtime", value: module.name || module.module_id }],
     confirmLabel: "移除",
     pendingLabel: "正在移除…",
-    errorMessage: "Runtime 模块未能移除。",
+    errorMessage: "Runtime 插件未能移除。",
     onConfirm: async () => {
       runtimeModuleBusy = true;
-      renderRuntimeModules();
+      renderRuntimePlugins();
       try {
         await runtimeModuleRequest(`/api/runtime-modules/${encodeURIComponent(module.module_id)}`, { method: "DELETE" });
-        showRuntimeModuleToast("Runtime 模块已移除。", "success");
-        await loadRuntimeModules();
+        showRuntimePluginToast("Runtime 插件已移除。", "success");
+        await loadRuntimePlugins();
       } finally {
         runtimeModuleBusy = false;
-        renderRuntimeModules();
+        renderRuntimePlugins();
       }
     },
   });
 }
 
-function initializeRuntimeModuleInstall() {
+function initializeRuntimePluginInstall() {
   if (!(runtimeModuleFile instanceof HTMLInputElement)) return;
   runtimeModuleFileTrigger?.addEventListener("click", () => runtimeModuleFile.click());
   runtimeModuleFile.addEventListener("change", async () => {
     const file = runtimeModuleFile.files?.[0];
     runtimeModuleCandidate = null;
     if (!file) {
-      renderRuntimeModules();
+      renderRuntimePlugins();
       return;
     }
     runtimeModuleBusy = true;
-    renderRuntimeModules();
+    renderRuntimePlugins();
     try {
       const preview = await runtimeModuleRequest("/api/runtime-modules/inspect", { file });
       runtimeModuleCandidate = { ...preview, file };
     } catch (error) {
       runtimeModuleFile.value = "";
-      showRuntimeModuleToast(error instanceof Error ? error.message : "Runtime 模块清单不可读取。", "error");
+      showRuntimePluginToast(error instanceof Error ? error.message : "Runtime 插件清单不可读取。", "error");
     } finally {
       runtimeModuleBusy = false;
-      renderRuntimeModules();
+      renderRuntimePlugins();
     }
   });
-  void loadRuntimeModules();
+  void loadRuntimePlugins();
 }
 
 function orchestrationModuleRow(module, { candidate = false } = {}) {
@@ -589,12 +589,12 @@ function orchestrationModuleRow(module, { candidate = false } = {}) {
   const copy = document.createElement("span");
   const title = document.createElement("strong");
   const detail = document.createElement("small");
-  title.textContent = formalImplementationTitle(module.name || "能力模块", module.version);
+  title.textContent = formalImplementationTitle(module.name || "任务编排插件", module.version);
   detail.textContent = candidate
     ? (module.description || "等待导入。")
     : (module.available
       ? (module.active ? "当前由微信任务润色使用" : (module.description || "已导入，可在对应任务设置中启用。"))
-      : (module.reason || "模块当前不可用。"));
+      : (module.reason || "任务编排插件当前不可用。"));
   copy.append(title, detail);
   const actions = document.createElement("span");
   actions.className = "runtime-module-row-actions";
@@ -604,15 +604,15 @@ function orchestrationModuleRow(module, { candidate = false } = {}) {
     install.type = "button";
     install.textContent = orchestrationModuleBusy ? "导入中" : "导入";
     install.disabled = orchestrationModuleBusy;
-    install.addEventListener("click", () => void installSelectedOrchestrationModule());
+    install.addEventListener("click", () => void installSelectedOrchestrationPlugin());
     actions.append(install);
     const remove = document.createElement("button");
     remove.className = "button-secondary";
     remove.type = "button";
     remove.textContent = "移除";
-    remove.title = "移除当前选择的能力模块 ZIP";
+    remove.title = "移除当前选择的任务编排插件 ZIP";
     remove.disabled = orchestrationModuleBusy;
-    remove.addEventListener("click", clearSelectedOrchestrationModule);
+    remove.addEventListener("click", clearSelectedOrchestrationPlugin);
     actions.append(remove);
   } else {
     const badge = document.createElement("span");
@@ -625,7 +625,7 @@ function orchestrationModuleRow(module, { candidate = false } = {}) {
       remove.type = "button";
       remove.textContent = "移除";
       remove.disabled = orchestrationModuleBusy;
-      remove.addEventListener("click", () => void confirmOrchestrationModuleRemoval(module));
+      remove.addEventListener("click", () => void confirmOrchestrationPluginRemoval(module));
       actions.append(remove);
     }
   }
@@ -633,7 +633,7 @@ function orchestrationModuleRow(module, { candidate = false } = {}) {
   return row;
 }
 
-function renderOrchestrationModules(data = orchestrationModuleData) {
+function renderOrchestrationPlugins(data = orchestrationModuleData) {
   orchestrationModuleData = data || { modules: [] };
   if (!(orchestrationModuleList instanceof HTMLElement)) return;
   const modules = Array.isArray(orchestrationModuleData.modules)
@@ -644,7 +644,7 @@ function renderOrchestrationModules(data = orchestrationModuleData) {
     rows.push(orchestrationModuleRow(orchestrationModuleCandidate, { candidate: true }));
   }
   rows.push(...modules.map((module) => orchestrationModuleRow(module)));
-  if (rows.length === 0) rows.push(moduleEmptyRow("尚未导入能力模块。"));
+  if (rows.length === 0) rows.push(moduleEmptyRow("尚未导入任务编排插件。"));
   orchestrationModuleList.replaceChildren(...rows);
 }
 
@@ -657,90 +657,90 @@ async function orchestrationModuleRequest(path, { method = "POST", file } = {}) 
   });
   const payload = await response.json();
   if (!response.ok || payload.success !== true) {
-    throw new Error(payload?.error?.message || "能力模块操作失败。");
+    throw new Error(payload?.error?.message || "任务编排插件操作失败。");
   }
   return payload.data;
 }
 
-async function loadOrchestrationModules() {
+async function loadOrchestrationPlugins() {
   try {
     const data = await fetchSettingsApi("/api/settings/weixin-task-orchestration/modules", {
       cache: "no-store",
     });
-    renderOrchestrationModules(data);
+    renderOrchestrationPlugins(data);
   } catch (_error) {
-    renderOrchestrationModules();
+    renderOrchestrationPlugins();
     if (orchestrationModuleList instanceof HTMLElement) {
       orchestrationModuleList.replaceChildren();
       const message = document.createElement("p");
       message.className = "message message-error";
-      message.textContent = "暂时无法读取能力模块状态。";
+      message.textContent = "暂时无法读取任务编排插件状态。";
       orchestrationModuleList.append(message);
     }
   }
 }
 
-async function installSelectedOrchestrationModule() {
+async function installSelectedOrchestrationPlugin() {
   const file = orchestrationModuleCandidate?.file;
   if (!file || orchestrationModuleBusy) return;
   orchestrationModuleBusy = true;
-  renderOrchestrationModules();
+  renderOrchestrationPlugins();
   try {
     await orchestrationModuleRequest("/api/settings/weixin-task-orchestration/modules/install", { file });
     orchestrationModuleCandidate = null;
     if (orchestrationModuleFile instanceof HTMLInputElement) orchestrationModuleFile.value = "";
-    showRuntimeModuleToast("能力模块已导入；请在对应任务设置中选择启用。", "success");
-    await loadOrchestrationModules();
+    showRuntimePluginToast("任务编排插件已导入；请在对应任务设置中选择启用。", "success");
+    await loadOrchestrationPlugins();
   } catch (error) {
-    showRuntimeModuleToast(error instanceof Error ? error.message : "能力模块未能导入。", "error");
+    showRuntimePluginToast(error instanceof Error ? error.message : "任务编排插件未能导入。", "error");
   } finally {
     orchestrationModuleBusy = false;
-    renderOrchestrationModules();
+    renderOrchestrationPlugins();
   }
 }
 
-async function confirmOrchestrationModuleRemoval(module) {
+async function confirmOrchestrationPluginRemoval(module) {
   if (orchestrationModuleBusy || typeof showConfirmationDialog !== "function") return;
   await showConfirmationDialog({
-    title: "移除能力模块",
-    description: "移除后该 ZIP 产物不可恢复。当前正在使用的模块必须先切换到开发实现或其他 ZIP；仍被未结束任务引用的模块不能移除。",
-    details: [{ label: "模块", value: module.name || module.implementation_ref }],
+    title: "移除任务编排插件",
+    description: "移除后该插件 ZIP 产物不可恢复。当前正在使用的插件必须先切换到开发实现或其他 ZIP；仍被未结束任务引用的插件不能移除。",
+    details: [{ label: "任务编排插件", value: module.name || module.implementation_ref }],
     confirmLabel: "移除",
     pendingLabel: "正在移除…",
-    errorMessage: "能力模块未能移除。",
+    errorMessage: "任务编排插件未能移除。",
     onConfirm: async () => {
       orchestrationModuleBusy = true;
-      renderOrchestrationModules();
+      renderOrchestrationPlugins();
       try {
         await orchestrationModuleRequest(
           `/api/settings/weixin-task-orchestration/modules/${encodeURIComponent(module.implementation_ref)}`,
           { method: "DELETE" },
         );
-        showRuntimeModuleToast(
-          "能力模块已移除。",
+        showRuntimePluginToast(
+          "任务编排插件已移除。",
           "success",
         );
-        await loadOrchestrationModules();
+        await loadOrchestrationPlugins();
       } finally {
         orchestrationModuleBusy = false;
-        renderOrchestrationModules();
+        renderOrchestrationPlugins();
       }
     },
   });
 }
 
-function initializeOrchestrationModuleInstall() {
+function initializeOrchestrationPluginInstall() {
   if (!(orchestrationModuleFile instanceof HTMLInputElement)) return;
   orchestrationModuleFileTrigger?.addEventListener("click", () => orchestrationModuleFile.click());
   orchestrationModuleFile.addEventListener("change", async () => {
     const file = orchestrationModuleFile.files?.[0];
     orchestrationModuleCandidate = null;
     if (!file) {
-      renderOrchestrationModules();
+      renderOrchestrationPlugins();
       return;
     }
     orchestrationModuleBusy = true;
-    renderOrchestrationModules();
+    renderOrchestrationPlugins();
     try {
       const preview = await orchestrationModuleRequest(
         "/api/settings/weixin-task-orchestration/modules/inspect",
@@ -749,13 +749,13 @@ function initializeOrchestrationModuleInstall() {
       orchestrationModuleCandidate = { ...preview, file };
     } catch (error) {
       orchestrationModuleFile.value = "";
-      showRuntimeModuleToast(error instanceof Error ? error.message : "能力模块清单不可读取。", "error");
+      showRuntimePluginToast(error instanceof Error ? error.message : "任务编排插件清单不可读取。", "error");
     } finally {
       orchestrationModuleBusy = false;
-      renderOrchestrationModules();
+      renderOrchestrationPlugins();
     }
   });
-  void loadOrchestrationModules();
+  void loadOrchestrationPlugins();
 }
 
 function runtimeSettingOptions(field, catalog, values) {
@@ -900,7 +900,7 @@ async function loadGeneralRuntimeSettings() {
     generalRuntimeSettingsPanel.replaceChildren();
     const message = document.createElement("p");
     message.className = "message message-error";
-    message.textContent = "暂时无法读取 AI Runtime 通用配置。";
+    message.textContent = "暂时无法读取 Runtime 默认项。";
     generalRuntimeSettingsPanel.append(message);
   }
 }
@@ -1246,12 +1246,12 @@ if (settingsPage === "appearance") {
       "change",
       () => void saveCodexDefaultRuntimeImplementation(),
     );
-    void loadRuntimeModules();
+    void loadRuntimePlugins();
   }
 } else if (settingsPage === "runtime") {
   void loadGeneralRuntimeSettings();
-  initializeRuntimeModuleInstall();
-  initializeOrchestrationModuleInstall();
+  initializeRuntimePluginInstall();
+  initializeOrchestrationPluginInstall();
 } else if (settingsPage === "task-orchestration") {
   window.initializeWorkspaceTaskOrchestration?.();
 } else if (settingsPage === "openclaw") {

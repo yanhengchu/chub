@@ -102,15 +102,15 @@
               </section>
               <section class="workstation-group workspace-development-environment" aria-labelledby="workspace-development-environment-title">
                 <div class="workstation-group-heading">
-                  <div><h3 id="workspace-development-environment-title">开发环境</h3><p>读取本地开发实现，并确认后续任务可使用的版本。</p></div>
+                  <div><h3 id="workspace-development-environment-title">当前实现</h3><p>查看当前 Codex Runtime 与微信任务编排实现。</p></div>
                   <button id="workspace-development-refresh" class="button-secondary" type="button">刷新</button>
                 </div>
                 <div class="workstation-status-list">
                   <div class="workstation-status-row">
-                    <div class="workstation-status-copy"><strong>Codex Runtime</strong><span id="workspace-development-codex-detail" class="workstation-status-detail">正在读取 Codex Runtime 开发实现。</span></div>
+                    <div class="workstation-status-copy"><strong>Codex Runtime</strong><span id="workspace-development-codex-detail" class="workstation-status-detail">正在读取当前 Codex Runtime 实现。</span></div>
                   </div>
                   <div class="workstation-status-row">
-                    <div class="workstation-status-copy"><strong>微信任务编排</strong><span id="workspace-development-weixin-detail" class="workstation-status-detail">正在读取微信任务编排开发实现。</span></div>
+                    <div class="workstation-status-copy"><strong>微信任务编排</strong><span id="workspace-development-weixin-detail" class="workstation-status-detail">正在读取当前微信任务编排实现。</span></div>
                   </div>
                 </div>
               </section>
@@ -236,11 +236,11 @@
                   <div class="workstation-status-row">
                     <div class="workstation-status-copy">
                       <strong>Codex Runtime 账户</strong>
-                      <span id="workspace-automation-codex-account-detail" data-account-state="{{ automations.codex_runtime_account.state }}" data-auth-mode="{{ automations.codex_runtime_account.auth_mode }}" class="workstation-status-detail workspace-automation-codex-account-detail{% if automations.codex_runtime_account.state == 'available' %} workstation-status-detail-success{% elif automations.codex_runtime_account.state == 'checking' %} workstation-status-detail-warning{% elif automations.codex_runtime_account.state == 'failed' %} workstation-status-detail-failed{% endif %}">{{ automations.codex_runtime_account.message }}{% if automations.codex_runtime_account.checked_at %} · 检查于 {{ automations.codex_runtime_account.checked_at.strftime('%m-%d %H:%M') }}{% endif %}</span>
+                      <span id="workspace-automation-codex-account-detail" data-account-state="{{ automations.codex_runtime_account.state }}" data-auth-mode="{{ automations.codex_runtime_account.auth_mode }}" data-auth-switching="{{ 'true' if automations.codex_runtime_account.switching else 'false' }}" class="workstation-status-detail workspace-automation-codex-account-detail{% if automations.codex_runtime_account.state == 'available' %} workstation-status-detail-success{% elif automations.codex_runtime_account.state == 'checking' %} workstation-status-detail-warning{% elif automations.codex_runtime_account.state == 'failed' %} workstation-status-detail-failed{% endif %}">{{ automations.codex_runtime_account.message }}{% if automations.codex_runtime_account.checked_at %} · 检查于 {{ automations.codex_runtime_account.checked_at.strftime('%m-%d %H:%M') }}{% endif %}</span>
                     </div>
                     <div class="workstation-status-actions">
                       <button id="workspace-automation-codex-account-check" class="button-secondary" type="button"{% if automations.codex_runtime_account.state == 'checking' %} disabled{% endif %}>检查</button>
-                      <button id="workspace-automation-codex-account-switch" class="button-secondary" type="button" aria-haspopup="dialog" aria-controls="workspace-automation-codex-account-switch-dialog">切换</button>
+                      <button id="workspace-automation-codex-account-switch" class="button-secondary" type="button"{% if automations.codex_runtime_account.switching %} title="停止当前认证切换">停止切换{% else %} aria-haspopup="dialog" aria-controls="workspace-automation-codex-account-switch-dialog">切换{% endif %}</button>
                       <button id="workspace-automation-codex-account-open-login" class="button-secondary" type="button"{% if not automations.codex_runtime_account.login_page_available %} hidden{% endif %}{% if automation_browser_in_use.value and automations.browser_mode != '有界面' %} disabled title="请等待当前自动化任务完成"{% endif %}>打开登录页面</button>
                     </div>
                   </div>
@@ -375,6 +375,7 @@
             <p id="workspace-automation-codex-account-switch-feedback" class="codex-auth-switch-feedback" role="status" aria-live="polite" hidden></p>
             <div class="dialog-actions">
               <button id="workspace-automation-codex-account-switch-cancel" class="button-link" type="button">取消</button>
+              <button id="workspace-automation-codex-account-switch-stop" class="button-secondary" type="button" hidden>停止切换</button>
               <button id="workspace-automation-codex-account-switch-confirm" class="button-secondary" type="submit">继续</button>
             </div>
           </form>

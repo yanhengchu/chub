@@ -352,6 +352,9 @@
   const automationCodexAccountSwitchConfirm = document.getElementById(
     "workspace-automation-codex-account-switch-confirm",
   );
+  const automationCodexAccountSwitchStop = document.getElementById(
+    "workspace-automation-codex-account-switch-stop",
+  );
   const automationCodexAccountSwitchFeedback = document.getElementById(
     "workspace-automation-codex-account-switch-feedback",
   );
@@ -378,6 +381,8 @@
   );
   let automationFeishuChecking = false;
   let automationCodexAccountChecking = false;
+  let automationCodexAuthSwitching = automationCodexAccountDetail?.dataset.authSwitching === "true";
+  let automationCodexAuthStopPending = false;
   let automationRefreshTimer = null;
   let automationRefreshInFlight = false;
   let automationRefreshDisposed = false;
@@ -517,6 +522,32 @@
     if (automationCodexAccountDetail instanceof HTMLElement && typeof state?.auth_mode === "string") {
       automationCodexAccountDetail.dataset.authMode = state.auth_mode;
     }
+    automationCodexAuthSwitching = state?.switching === true;
+    if (!automationCodexAuthSwitching) automationCodexAuthStopPending = false;
+    if (automationCodexAccountDetail instanceof HTMLElement) {
+      automationCodexAccountDetail.dataset.authSwitching = String(automationCodexAuthSwitching);
+    }
+    if (automationCodexAccountSwitch instanceof HTMLButtonElement) {
+      automationCodexAccountSwitch.disabled = automationCodexAuthStopPending;
+      automationCodexAccountSwitch.textContent = automationCodexAuthStopPending
+        ? "正在停止…"
+        : automationCodexAuthSwitching
+          ? "停止切换"
+          : "切换";
+      automationCodexAccountSwitch.title = automationCodexAuthSwitching
+        ? "停止当前认证切换"
+        : "";
+      if (automationCodexAuthSwitching) {
+        automationCodexAccountSwitch.removeAttribute("aria-haspopup");
+        automationCodexAccountSwitch.removeAttribute("aria-controls");
+      } else {
+        automationCodexAccountSwitch.setAttribute("aria-haspopup", "dialog");
+        automationCodexAccountSwitch.setAttribute(
+          "aria-controls",
+          "workspace-automation-codex-account-switch-dialog",
+        );
+      }
+    }
   };
 
   const codexAccountStatusKind = (state) => {
@@ -572,13 +603,49 @@
     }
   };
 
+  const requestCodexAuthSwitchStop = async () => {
+    if (!automationCodexAuthSwitching || automationCodexAuthStopPending) return;
+    automationCodexAuthStopPending = true;
+    if (automationCodexAccountSwitchStop instanceof HTMLButtonElement) {
+      automationCodexAccountSwitchStop.disabled = true;
+      automationCodexAccountSwitchStop.textContent = "正在停止…";
+    }
+    setAutomationCodexAccountStatus({
+      state: "checking",
+      message: "正在停止 Codex Runtime 认证切换。",
+      switching: true,
+    });
+    try {
+      const account = await automationRequest(
+        "/api/automations/environment/codex/switch-authentication/stop",
+        {},
+      );
+      setAutomationCodexAccountStatus(account);
+    } catch (error) {
+      automationCodexAuthStopPending = false;
+      if (automationCodexAccountSwitchStop instanceof HTMLButtonElement) {
+        automationCodexAccountSwitchStop.disabled = false;
+        automationCodexAccountSwitchStop.textContent = "停止切换";
+      }
+      setAutomationCodexAccountStatus({
+        state: "checking",
+        message: error instanceof Error ? error.message : "无法停止 Codex Runtime 认证切换。",
+        switching: true,
+      });
+    }
+  };
+
   if (
     automationCodexAccountSwitch instanceof HTMLButtonElement
     && automationCodexAccountSwitchDialog instanceof HTMLDialogElement
   ) {
     let switchCompleted = false;
     let switchTargetMode = "";
-    automationCodexAccountSwitch.addEventListener("click", () => {
+    automationCodexAccountSwitch.addEventListener("click", async () => {
+      if (automationCodexAuthSwitching) {
+        await requestCodexAuthSwitchStop();
+        return;
+      }
       switchCompleted = false;
       setCodexAuthSwitchFeedback();
       const currentMode = automationCodexAccountDetail?.dataset.authMode || "unknown";
@@ -604,6 +671,9 @@
     [automationCodexAccountSwitchClose, automationCodexAccountSwitchCancel].forEach((button) => {
       button?.addEventListener("click", () => closeDialog(automationCodexAccountSwitchDialog));
     });
+    automationCodexAccountSwitchStop?.addEventListener("click", () => {
+      void requestCodexAuthSwitchStop();
+    });
     automationCodexAccountSwitchDialog.addEventListener("cancel", (event) => {
       if (automationCodexAccountSwitchConfirm?.disabled) event.preventDefault();
     });
@@ -622,6 +692,11 @@
         automationCodexAccountSwitchConfirm.disabled = true;
         automationCodexAccountSwitchClose?.setAttribute("disabled", "");
         automationCodexAccountSwitchCancel?.setAttribute("disabled", "");
+        if (automationCodexAccountSwitchStop instanceof HTMLButtonElement) {
+          automationCodexAccountSwitchStop.hidden = false;
+          automationCodexAccountSwitchStop.disabled = false;
+          automationCodexAccountSwitchStop.textContent = "停止切换";
+        }
         if (automationCodexAccountSwitchFlowList instanceof HTMLOListElement) {
           for (const item of automationCodexAccountSwitchFlowList.children) {
             item.dataset.status = "pending";
@@ -634,6 +709,7 @@
         setAutomationCodexAccountStatus({
           state: "checking",
           message: "正在切换 Codex Runtime 认证方式。",
+          switching: true,
         });
         try {
           const result = await automationRequest(
@@ -663,6 +739,11 @@
           automationCodexAccountSwitchConfirm.disabled = false;
           automationCodexAccountSwitchClose?.removeAttribute("disabled");
           automationCodexAccountSwitchCancel?.removeAttribute("disabled");
+          if (automationCodexAccountSwitchStop instanceof HTMLButtonElement) {
+            automationCodexAccountSwitchStop.hidden = true;
+            automationCodexAccountSwitchStop.disabled = false;
+            automationCodexAccountSwitchStop.textContent = "停止切换";
+          }
         }
       });
     }

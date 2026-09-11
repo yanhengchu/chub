@@ -48,7 +48,7 @@ def _general_runtime_settings(request: Request) -> AiRuntimeGeneralSettingsData:
         raise ApiError(
             503,
             "ai_runtime_settings_unavailable",
-            "AI Runtime 通用配置暂时无法读取。",
+            "Runtime 默认项暂时无法读取。",
         ) from exc
     manager = request.app.state.ai_session_manager
     new_session_section = RuntimeSettingsSection(
@@ -65,7 +65,7 @@ def _general_runtime_settings(request: Request) -> AiRuntimeGeneralSettingsData:
             ),
         ),
     )
-    weekly_runtime_available = manager.runtime_id in manager.runtime_modules.runtime_ids()
+    weekly_runtime_available = manager.runtime_id in manager.runtime_plugins.runtime_ids()
     weekly_report_section = RuntimeSettingsSection(
         id="weekly-report-session",
         title="周报自动化会话",
@@ -145,7 +145,7 @@ def update_general_runtime_settings(
         raise ApiError(
             400,
             "ai_runtime_settings_invalid",
-            "AI Runtime 通用配置无效。",
+            "Runtime 默认项无效。",
         )
     operation_id = log_operation(
         request,
@@ -171,7 +171,7 @@ def update_general_runtime_settings(
             raise ValueError("weekly report session settings are required")
         if new_session_permission not in {"auto-review", "read-only", "full-access"}:
             raise ValueError("new session permission is invalid")
-        if runtime_id not in request.app.state.ai_session_manager.runtime_modules.runtime_ids():
+        if runtime_id not in request.app.state.ai_session_manager.runtime_plugins.runtime_ids():
             raise ApiError(
                 409,
                 "weekly_report_runtime_unavailable",
@@ -212,7 +212,7 @@ def update_general_runtime_settings(
         raise ApiError(
             400,
             "ai_runtime_settings_invalid",
-            "AI Runtime 通用配置无效。",
+            "Runtime 默认项无效。",
         ) from exc
     try:
         request.app.state.ai_session_manager.runtime_settings_store.save_general(general)
@@ -227,7 +227,7 @@ def update_general_runtime_settings(
         raise ApiError(
             503,
             "ai_runtime_settings_unavailable",
-            "AI Runtime 通用配置暂时无法保存。",
+            "Runtime 默认项暂时无法保存。",
         ) from exc
     log_operation(
         request,

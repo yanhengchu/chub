@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -43,6 +44,7 @@ STATUS_RESPONSE = {
             "memory_percent": 25.0,
             "disk_percent": 40.0,
         },
+        "hub": {"version": "0.1.0"},
         "tailnet": {"state": "unknown", "endpoints": []},
     },
 }
@@ -52,6 +54,9 @@ WORKER_RESPONSE = {
     "data": {
         "state": "ready",
         "message": "Quick Worker 已就绪。",
+        "worker_version": "quick-worker-11-runtime-maintenance",
+        "protocol_version": 11,
+        "expected_protocol_version": 11,
         "runtime_state": "available",
         "runtime_message": "Codex 可用。",
         "runtimes": [],
@@ -77,6 +82,7 @@ OPENCLAW_RESPONSE = {
         "installed": True,
         "configured": True,
         "state": "running",
+        "version": "2026.8.1",
         "message": "Gateway 正常。",
         "channel_state": "running",
         "channel_message": "微信通道已连接。",
@@ -315,7 +321,11 @@ async def _mock_workspace_api_with_quick_sessions(route) -> None:
             "available": True,
             "runtime_registered": True,
             "quick_creation": {"available": True},
-            "workspaces": [{"id": "chub", "name": "Chub", "available": True}],
+            "workspaces": [
+                {"id": "home", "name": "用户目录", "available": True},
+                {"id": "workspace", "name": "Workspace", "available": True},
+                {"id": "chub", "name": "Chub", "available": True},
+            ],
             "sessions": [
                 {
                     "id": "quick-slot",
@@ -467,7 +477,7 @@ async def _mock_workspace_api_with_empty_module_lists(route) -> None:
 
 
 @pytest.mark.parametrize("viewport", [(390, 844), (1280, 900)], ids=["phone", "desktop"])
-async def test_runtime_module_imports_show_consistent_empty_rows(
+async def test_runtime_plugin_imports_show_consistent_empty_rows(
     workspace_browser_server: str,
     viewport: tuple[int, int],
 ) -> None:
@@ -492,8 +502,8 @@ async def test_runtime_module_imports_show_consistent_empty_rows(
             assert response is not None and response.status == 200
             runtime_empty = page.locator("#runtime-module-list .runtime-module-empty-row")
             orchestration_empty = page.locator("#orchestration-module-list .runtime-module-empty-row")
-            await expect(runtime_empty).to_have_text("尚未导入 Runtime 模块。")
-            await expect(orchestration_empty).to_have_text("尚未导入能力模块。")
+            await expect(runtime_empty).to_have_text("尚未导入 Runtime 插件。")
+            await expect(orchestration_empty).to_have_text("尚未导入任务编排插件。")
             assert await page.evaluate("document.documentElement.scrollWidth - innerWidth") == 0
         finally:
             await context.close()
@@ -645,7 +655,7 @@ async def test_failed_module_import_keeps_a_removable_candidate(
             await runtime_row.get_by_role("button", name="导入").click()
             await expect(runtime_row.get_by_role("button", name="移除")).to_be_visible()
             await runtime_row.get_by_role("button", name="移除").click()
-            await expect(page.locator("#runtime-module-list")).to_have_text("尚未导入 Runtime 模块。")
+            await expect(page.locator("#runtime-module-list")).to_have_text("尚未导入 Runtime 插件。")
 
             await page.locator("#orchestration-module-file").set_input_files({
                 "name": "capability.zip",
@@ -657,7 +667,7 @@ async def test_failed_module_import_keeps_a_removable_candidate(
             await orchestration_row.get_by_role("button", name="导入").click()
             await expect(orchestration_row.get_by_role("button", name="移除")).to_be_visible()
             await orchestration_row.get_by_role("button", name="移除").click()
-            await expect(page.locator("#orchestration-module-list")).to_have_text("尚未导入能力模块。")
+            await expect(page.locator("#orchestration-module-list")).to_have_text("尚未导入任务编排插件。")
         finally:
             await context.close()
 
@@ -688,7 +698,7 @@ async def test_task_orchestration_opens_from_ai_runtime_settings_navigation(
                 wait_until="domcontentloaded",
             )
             assert response is not None and response.status == 200
-            await expect(page.get_by_role("heading", name="能力模块导入")).to_be_visible()
+            await expect(page.get_by_role("heading", name="任务编排插件导入")).to_be_visible()
             assert await page.evaluate("document.documentElement.scrollWidth - innerWidth") == 0
             if viewport[0] < 760:
                 await page.get_by_role("button", name="微信任务润色").click()
@@ -786,6 +796,69 @@ async def test_task_orchestration_opens_from_ai_runtime_settings_navigation(
             assert bounds["right"] <= viewport[0]
             assert bounds["top"] >= 0
             assert await page.evaluate("document.documentElement.scrollWidth - innerWidth") == 0
+        finally:
+            await context.close()
+
+    assert page_errors == []
+
+
+async def test_task_orchestration_selected_formal_version_ignores_development_availability(
+    workspace_browser_server: str,
+) -> None:
+    browser_session = session_factory()
+
+    async def route_workspace_api(route) -> None:
+        path = urlsplit(route.request.url).path
+        if path == "/api/settings/weixin-task-orchestration":
+            await route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({
+                    "success": True,
+                    "data": {
+                        "implementation": "module",
+                        "module_ref": "weixin-refinement@test",
+                        "module_available": True,
+                        "development_available": False,
+                    },
+                }),
+            )
+            return
+        if path == "/api/settings/weixin-task-orchestration/modules":
+            await route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({
+                    "success": True,
+                    "data": {"modules": [{
+                        "implementation_ref": "weixin-refinement@test",
+                        "module_id": "weixin-refinement",
+                        "version": "test",
+                        "available": True,
+                    }]},
+                }),
+            )
+            return
+        await _mock_workspace_api_with_task_orchestration(route)
+
+    async with browser_session(ensure_page=False) as chrome:
+        context = await chrome.browser.new_context(viewport={"width": 1280, "height": 900})
+        try:
+            await context.route(f"{workspace_browser_server}/api/**", route_workspace_api)
+            page = await context.new_page()
+            page_errors: list[str] = []
+            page.on("pageerror", lambda error: page_errors.append(str(error)))
+            response = await page.goto(
+                f"{workspace_browser_server}/settings/task-orchestration",
+                wait_until="domcontentloaded",
+            )
+            assert response is not None and response.status == 200
+            await expect(page.locator("#workspace-task-implementation-value")).to_have_text(
+                "微信任务润色 · 正式版 vtest",
+            )
+            await expect(page.locator("#workspace-task-implementation-description")).to_have_text(
+                "当前使用正式版 vtest；只影响之后新接收的润色任务。",
+            )
         finally:
             await context.close()
 
@@ -1022,10 +1095,17 @@ async def test_workspace_layout_in_managed_chrome(
             )
             response = await page.goto(workspace_browser_server, wait_until="domcontentloaded")
             assert response is not None and response.status == 200
-            await expect(page.locator("#workspace-chub-detail")).to_contain_text("Linux test")
-            await expect(page.locator("#workspace-worker-detail")).to_have_text("Quick Worker 已就绪。")
+            await expect(page.locator("#workspace-chub-detail")).to_have_text(
+                "Chub v0.1.0 · Linux test · Python 3.12"
+            )
+            await expect(page.locator("#workspace-worker-detail")).to_have_text(
+                "Worker v11 · 协议 v11 · Quick Worker 已就绪。"
+            )
             await expect(page.locator("#workspace-openclaw-detail")).to_have_text(
-                "Gateway 运行正常并已通过连接探测。"
+                "OpenClaw / Gateway v2026.8.1 · Gateway 运行正常并已通过连接探测。"
+            )
+            await expect(page.locator("#workspace-openclaw-weixin-detail")).to_have_text(
+                "微信 ClawBot v2.4.8 · 微信通道已连接。"
             )
             layout = await page.evaluate(
                 """() => ({
@@ -1179,6 +1259,7 @@ async def test_workspace_new_session_dialog_focuses_create_button(
             await expect(create_button).to_be_enabled()
             await create_button.click()
             await expect(page.locator("#workspace-session-create-dialog")).to_be_visible()
+            await expect(page.locator("#workspace-session-workspace")).to_have_value("chub")
             await expect(page.locator("#workspace-session-create-confirm")).to_be_focused()
             await page.keyboard.press("Escape")
             await expect(page.locator("#workspace-session-create-dialog")).not_to_be_visible()
@@ -1312,7 +1393,85 @@ async def test_workspace_section_switch_disposes_workstation_controller(
     assert page_errors == []
 
 
-async def test_workstation_development_environment_reads_and_confirms_each_source(
+async def test_workspace_codex_auth_switch_can_be_stopped(
+    workspace_browser_server: str,
+) -> None:
+    browser_session = session_factory()
+    switch_started = asyncio.Event()
+    release_switch = asyncio.Event()
+    requested_paths: list[str] = []
+
+    async def route_workspace_api(route) -> None:
+        path = urlsplit(route.request.url).path
+        if path == "/api/automations/environment/codex/switch-authentication":
+            requested_paths.append(path)
+            switch_started.set()
+            await release_switch.wait()
+            await route.fulfill(
+                status=409,
+                content_type="application/json",
+                body=json.dumps({
+                    "success": False,
+                    "error": {
+                        "code": "codex_auth_switch_cancelled",
+                        "message": "Codex 认证切换已停止",
+                    },
+                }),
+            )
+            return
+        if path == "/api/automations/environment/codex/switch-authentication/stop":
+            requested_paths.append(path)
+            release_switch.set()
+            await route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({
+                    "success": True,
+                    "data": {
+                        "state": "checking",
+                        "message": "正在停止 Codex Runtime 认证切换",
+                        "switching": True,
+                    },
+                }),
+            )
+            return
+        await _mock_workspace_api(route)
+
+    async with browser_session(ensure_page=False) as chrome:
+        context = await chrome.browser.new_context(viewport={"width": 1280, "height": 900})
+        try:
+            await context.route(f"{workspace_browser_server}/api/**", route_workspace_api)
+            page = await context.new_page()
+            page_errors: list[str] = []
+            page.on("pageerror", lambda error: page_errors.append(str(error)))
+            response = await page.goto(
+                f"{workspace_browser_server}/?section=automations",
+                wait_until="domcontentloaded",
+            )
+            assert response is not None and response.status == 200
+            await page.locator("#workspace-automation-codex-account-detail").evaluate(
+                "(element) => { element.dataset.authMode = 'api'; }",
+            )
+            await page.get_by_role("button", name="切换", exact=True).click()
+            await page.get_by_role("button", name="切换到ChatGPT 账户模式", exact=True).click()
+            await switch_started.wait()
+            stop = page.locator("#workspace-automation-codex-account-switch-stop")
+            await expect(stop).to_be_visible()
+            await stop.click()
+            await expect(
+                page.locator("#workspace-automation-codex-account-switch-feedback"),
+            ).to_contain_text("Codex 认证切换已停止")
+        finally:
+            await context.close()
+
+    assert requested_paths == [
+        "/api/automations/environment/codex/switch-authentication",
+        "/api/automations/environment/codex/switch-authentication/stop",
+    ]
+    assert page_errors == []
+
+
+async def test_workstation_current_implementations_refresh_without_switching(
     workspace_browser_server: str,
 ) -> None:
     browser_session = session_factory()
@@ -1321,23 +1480,6 @@ async def test_workstation_development_environment_reads_and_confirms_each_sourc
     async def route_workspace_api(route) -> None:
         path = urlsplit(route.request.url).path
         requests.append((route.request.method, path))
-        if path == "/api/runtime-modules/builtin-dev/refresh" and route.request.method == "POST":
-            await route.fulfill(
-                status=200,
-                content_type="application/json",
-                body=json.dumps({"success": True, "data": {"module_id": "builtin-dev", "worker_generation": "test"}}),
-            )
-            return
-        if path == "/api/settings/weixin-task-orchestration" and route.request.method == "PUT":
-            assert json.loads(route.request.post_data or "{}") == {
-                "implementation": "weixin-orchestration-dev",
-            }
-            await route.fulfill(
-                status=200,
-                content_type="application/json",
-                body=json.dumps({"success": True, "data": {"implementation": "weixin-orchestration-dev", "development_available": True}}),
-            )
-            return
         await _mock_workspace_api(route)
 
     async with browser_session(ensure_page=False) as chrome:
@@ -1350,7 +1492,7 @@ async def test_workstation_development_environment_reads_and_confirms_each_sourc
             response = await page.goto(workspace_browser_server, wait_until="domcontentloaded")
             assert response is not None and response.status == 200
 
-            await expect(page.get_by_role("heading", name="开发环境")).to_be_visible()
+            await expect(page.get_by_role("heading", name="当前实现")).to_be_visible()
             assert await page.locator(".workspace-preview-work-surface").evaluate(
                 "(element) => getComputedStyle(element).borderTopStyle",
             ) == "none"
@@ -1364,7 +1506,7 @@ async def test_workstation_development_environment_reads_and_confirms_each_sourc
             workstation_box = await page.locator(".workspace-workstation").bounding_box()
             assert summary_box is not None and workstation_box is not None
             assert workstation_box["y"] - (summary_box["y"] + summary_box["height"]) >= 15
-            heading_box = await page.get_by_role("heading", name="开发环境").bounding_box()
+            heading_box = await page.get_by_role("heading", name="当前实现").bounding_box()
             group_box = await page.locator(".workspace-development-environment").bounding_box()
             content_box = await page.locator(".workspace-development-environment .workstation-status-list").bounding_box()
             assert heading_box is not None and group_box is not None and content_box is not None
@@ -1378,19 +1520,105 @@ async def test_workstation_development_environment_reads_and_confirms_each_sourc
                     "(element) => getComputedStyle(element, '::before').display",
                 ) == "none"
             await expect(page.locator("#workspace-development-codex-detail")).to_contain_text(
-                "Codex · 开发实现 · 正式版 v1.0.1",
+                "Codex · 当前使用：开发实现",
             )
             await expect(page.locator("#workspace-development-weixin-detail")).to_contain_text(
-                "微信任务润色 · 开发实现 · 正式版 v1.0.0",
+                "微信任务润色 · 当前使用：开发实现",
             )
             await page.locator("#workspace-development-refresh").click()
-            await expect(page.locator("#workspace-development-codex-detail")).to_contain_text("已确认")
-            await expect(page.locator("#workspace-development-weixin-detail")).to_contain_text("已确认")
+            await expect(page.locator("#workspace-development-codex-detail")).to_have_text(
+                "Codex · 当前使用：开发实现",
+            )
+            await expect(page.locator("#workspace-development-weixin-detail")).to_have_text(
+                "微信任务润色 · 当前使用：开发实现",
+            )
         finally:
             await context.close()
 
-    assert ("POST", "/api/runtime-modules/builtin-dev/refresh") in requests
-    assert ("PUT", "/api/settings/weixin-task-orchestration") in requests
+    assert requests.count(("GET", "/api/codex/runtime-implementations")) >= 2
+    assert requests.count(("GET", "/api/settings/weixin-task-orchestration")) >= 2
+    assert ("POST", "/api/runtime-modules/builtin-dev/refresh") not in requests
+    assert ("PUT", "/api/settings/weixin-task-orchestration") not in requests
+    assert page_errors == []
+
+
+async def test_workstation_development_environment_shows_selected_formal_implementations(
+    workspace_browser_server: str,
+) -> None:
+    browser_session = session_factory()
+    module_ref = f"weixin-refinement@1.0.0#{'a' * 64}"
+
+    async def route_workspace_api(route) -> None:
+        path = urlsplit(route.request.url).path
+        if path == "/api/codex/runtime-implementations":
+            await route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({
+                    "success": True,
+                    "data": {
+                        "runtime_id": "codex",
+                        "default_implementation_id": "codex-010001",
+                        "implementations": [
+                            {"implementation_id": "builtin-dev", "name": "Codex", "version": "dev"},
+                            {"implementation_id": "codex-010001", "name": "Codex", "version": "1.0.1"},
+                        ],
+                    },
+                }),
+            )
+            return
+        if path == "/api/settings/weixin-task-orchestration":
+            await route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({
+                    "success": True,
+                    "data": {
+                        "implementation": "module",
+                        "module_ref": module_ref,
+                        "module_available": True,
+                        "development_available": True,
+                    },
+                }),
+            )
+            return
+        if path == "/api/settings/weixin-task-orchestration/modules":
+            await route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({
+                    "success": True,
+                    "data": {
+                        "modules": [{
+                            "implementation_ref": module_ref,
+                            "module_id": "weixin-refinement",
+                            "version": "1.0.0",
+                            "available": True,
+                        }],
+                    },
+                }),
+            )
+            return
+        await _mock_workspace_api(route)
+
+    async with browser_session(ensure_page=False) as chrome:
+        context = await chrome.browser.new_context(viewport={"width": 1280, "height": 900})
+        try:
+            await context.route(f"{workspace_browser_server}/api/**", route_workspace_api)
+            page = await context.new_page()
+            page_errors: list[str] = []
+            page.on("pageerror", lambda error: page_errors.append(str(error)))
+            response = await page.goto(workspace_browser_server, wait_until="domcontentloaded")
+            assert response is not None and response.status == 200
+            await expect(page.locator("#workspace-development-codex-detail")).to_have_text(
+                "Codex · 当前使用：正式版 v1.0.1",
+            )
+            await expect(page.locator("#workspace-development-weixin-detail")).to_have_text(
+                "微信任务润色 · 当前使用：正式版 v1.0.0",
+            )
+        finally:
+            await context.close()
+
     assert page_errors == []
 
 

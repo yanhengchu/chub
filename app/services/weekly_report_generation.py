@@ -162,7 +162,7 @@ class WeeklyReportGenerationService:
             raise ApiError(
                 503,
                 "ai_runtime_settings_unavailable",
-                "AI Runtime 通用配置暂时无法读取。",
+                "Runtime 默认项暂时无法读取。",
             ) from exc
         runtime_id = settings.weekly_report_session.runtime_id
         if runtime_id is None:

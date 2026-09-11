@@ -51,6 +51,7 @@ from app.automations.weekly_validation import (
     validate_weekly_linked_document,
 )
 import app.automations.runner as runner
+import app.automations.manager as automation_manager
 from app.automations.store import AutomationStateStore
 from app.core.config import Settings
 from app.core.response import ApiError
@@ -109,6 +110,52 @@ def configure_automations(settings: Settings, tmp_path: Path) -> Path:
     settings.automations.runtime_dir = tmp_path / "runtime"
     settings.automations.artifacts_dir = tmp_path / "artifacts"
     return config_file
+
+
+def test_codex_auth_switch_can_be_stopped_while_waiting(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = AutomationManager(settings)
+    started = threading.Event()
+    errors: list[Exception] = []
+
+    def waiting_switch(_mode, *, settings, cancel_event, operation_id=None) -> None:
+        assert settings is manager._settings
+        assert operation_id == "operation-123"
+        started.set()
+        assert cancel_event.wait(timeout=1)
+        from app.automations.codex_auth_switch import CodexAuthSwitchCancelled
+
+        raise CodexAuthSwitchCancelled("Codex 认证切换已停止")
+
+    monkeypatch.setattr(automation_manager, "switch_codex_auth", waiting_switch)
+
+    def run_switch() -> None:
+        try:
+            manager.switch_codex_runtime_authentication(
+                "account",
+                operation_id="operation-123",
+            )
+        except Exception as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=run_switch)
+    thread.start()
+    assert started.wait(timeout=1)
+
+    stopping = manager.stop_codex_runtime_authentication_switch()
+    thread.join(timeout=1)
+
+    assert stopping.state == "checking"
+    assert stopping.switching is True
+    assert not thread.is_alive()
+    assert len(errors) == 1
+    assert isinstance(errors[0], ApiError)
+    assert errors[0].code == "codex_auth_switch_cancelled"
+    state = manager._public_codex_runtime_account()
+    assert state.state == "failed"
+    assert state.switching is False
 
 
 def linked_documents_template(*, required_current_documents: int = 1):

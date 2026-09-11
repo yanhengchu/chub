@@ -15,8 +15,10 @@ import sys
 import tempfile
 import time
 import tomllib
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Event
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -33,18 +35,46 @@ Mode = Literal["account", "api"]
 TARGET_PROFILE = "Default"
 DEVICE_URL = "https://auth.openai.com/codex/device"
 MAX_CONFIG_BYTES = 1024 * 1024
-AUTH_TIMEOUT_SECONDS = 15 * 60
+AUTH_CALLBACK_TIMEOUT_SECONDS = 30
 AUTH_PAGE_TIMEOUT_SECONDS = 45
 DEVICE_CODE_CONFIRM_TIMEOUT_SECONDS = 10
+DEVICE_AUTH_RESULT_TIMEOUT_SECONDS = 10
+DEVICE_AUTH_SUCCESS_DWELL_MS = 1_000
+DEVICE_CODE_LENGTH = 9
+DEVICE_CODE_FILL_ATTEMPTS = 3
+DEVICE_CODE_VERIFY_POLLS = 4
+MAX_CLI_DIAGNOSTIC_BYTES = 8192
 ANSI = re.compile(chr(27) + r"\[[0-?]*[ -/]*[@-~]")
 DEVICE_CODE = re.compile(r"one-time code.*?([A-Z0-9]{4}-[A-Z0-9]{5})", re.S)
-AUTH_LOGGER = logging.getLogger("hub.automations.codex_auth_switch")
+DEVICE_CODE_FORMAT = re.compile(r"^[A-Z0-9]{4}-[A-Z0-9]{5}$")
+_AUTH_OPERATION_ID: ContextVar[str | None] = ContextVar(
+    "codex_auth_operation_id",
+    default=None,
+)
+
+
+class _AuthLoggerAdapter(logging.LoggerAdapter):
+    def process(self, message, kwargs):
+        operation_id = _AUTH_OPERATION_ID.get()
+        if operation_id:
+            message = f"{message} operation_id={operation_id}"
+        return message, kwargs
+
+
+AUTH_LOGGER = _AuthLoggerAdapter(
+    logging.getLogger("hub.automations.codex_auth_switch"),
+    {},
+)
 ACCOUNT_CONTROL_SELECTOR = (
     'button:visible, [role="button"]:visible, [role="option"]:visible'
 )
 
 
 class CodexAuthSwitchError(RuntimeError):
+    pass
+
+
+class CodexAuthSwitchCancelled(CodexAuthSwitchError):
     pass
 
 
@@ -98,6 +128,7 @@ def _replace_config(path: Path, data: bytes) -> None:
 
 
 def _sync_configuration(mode: Mode, home: Path) -> None:
+    AUTH_LOGGER.info("codex_auth_configuration phase=sync_started mode=%s", mode)
     current, account, api = _config_paths(home)
     current_data = _read_config(current)
     target = account if mode == "api" else api
@@ -105,6 +136,7 @@ def _sync_configuration(mode: Mode, home: Path) -> None:
     replacement_data = _read_config(replacement)
     _replace_config(target, current_data)
     _replace_config(current, replacement_data)
+    AUTH_LOGGER.info("codex_auth_configuration phase=sync_completed mode=%s", mode)
 
 
 def _run_status(codex: str) -> str:
@@ -126,19 +158,46 @@ def _run_status(codex: str) -> str:
 def _assert_status(codex: str, mode: Mode) -> None:
     status = _run_status(codex)
     if mode == "account" and "Logged in using ChatGPT" in status:
+        AUTH_LOGGER.info("codex_auth_cli phase=login_status_confirmed mode=account")
         return
     if mode == "api" and "Not logged in" in status:
+        AUTH_LOGGER.info("codex_auth_cli phase=login_status_confirmed mode=api")
         return
+    AUTH_LOGGER.info("codex_auth_cli phase=login_status_unconfirmed mode=%s", mode)
     raise CodexAuthSwitchError("Codex 认证最终状态无法确认")
 
 
-def _start_device_auth(codex: str) -> tuple[int, int, str]:
+def _raise_if_cancelled(cancel_event: Event | None) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise CodexAuthSwitchCancelled("Codex 认证切换已停止")
+
+
+def _device_code_characters(code: str) -> str:
+    if not DEVICE_CODE_FORMAT.fullmatch(code):
+        raise CodexAuthSwitchError("Codex 设备授权码格式无效")
+    characters = code.replace("-", "")
+    if len(characters) != DEVICE_CODE_LENGTH:
+        raise CodexAuthSwitchError("Codex 设备授权码长度无效")
+    return characters
+
+
+def _start_device_auth(
+    codex: str,
+    cancel_event: Event | None = None,
+) -> tuple[int, int, str]:
     pid, descriptor = pty.fork()
     if pid == 0:
         os.execvp(codex, [codex, "login", "--device-auth"])
     output = bytearray()
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
+        if cancel_event is not None and cancel_event.is_set():
+            _cancel_process(pid)
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+            raise CodexAuthSwitchCancelled("Codex 认证切换已停止")
         readable, _, _ = select.select([descriptor], [], [], 0.5)
         if not readable:
             continue
@@ -152,7 +211,13 @@ def _start_device_auth(codex: str) -> tuple[int, int, str]:
         parsed = ANSI.sub("", output.decode("utf-8", "replace"))
         matched = DEVICE_CODE.search(parsed)
         if matched:
-            return pid, descriptor, matched.group(1)
+            code = matched.group(1)
+            _device_code_characters(code)
+            AUTH_LOGGER.info(
+                "codex_auth_cli phase=device_code_parsed character_count=%d",
+                DEVICE_CODE_LENGTH,
+            )
+            return pid, descriptor, code
     _cancel_process(pid)
     try:
         os.close(descriptor)
@@ -172,22 +237,86 @@ def _cancel_process(pid: int) -> None:
         pass
 
 
-def _wait_for_success(pid: int, descriptor: int) -> None:
-    deadline = time.monotonic() + AUTH_TIMEOUT_SECONDS
+def _cli_terminal_phase(output: bytes) -> str:
+    """Classify CLI progress without retaining terminal text or authentication data."""
+    text = ANSI.sub("", output.decode("utf-8", "replace")).lower()
+    if any(marker in text for marker in ("waiting for authorization", "waiting for login")):
+        return "waiting_for_callback"
+    if any(marker in text for marker in ("denied", "declined", "rejected", "not authorized")):
+        return "authorization_rejected"
+    if any(marker in text for marker in ("expired", "expiration")):
+        return "authorization_expired"
+    if any(marker in text for marker in ("network", "connection", "dns", "offline")):
+        return "network_error"
+    if any(marker in text for marker in ("timed out", "timeout")):
+        return "cli_timeout"
+    if any(marker in text for marker in ("error", "failed", "failure")):
+        return "cli_reported_failure"
+    if output:
+        return "cli_output_received"
+    return "waiting_for_callback"
+
+
+def _wait_for_success(
+    pid: int,
+    descriptor: int,
+    cancel_event: Event | None = None,
+) -> None:
+    deadline = time.monotonic() + AUTH_CALLBACK_TIMEOUT_SECONDS
+    started_at = time.monotonic()
+    output = bytearray()
+    phase = "waiting_for_callback"
+    terminal_read_unavailable_logged = False
+    AUTH_LOGGER.info(
+        "codex_auth_cli phase=waiting_for_callback timeout_seconds=%d",
+        AUTH_CALLBACK_TIMEOUT_SECONDS,
+    )
     try:
         while time.monotonic() < deadline:
+            try:
+                _raise_if_cancelled(cancel_event)
+            except CodexAuthSwitchCancelled:
+                AUTH_LOGGER.info(
+                    "codex_auth_cli phase=cancelled elapsed_seconds=%d",
+                    round(time.monotonic() - started_at),
+                )
+                raise
             readable, _, _ = select.select([descriptor], [], [], 0.2)
             if readable:
                 try:
-                    os.read(descriptor, 4096)
+                    chunk = os.read(descriptor, 4096)
                 except OSError:
-                    pass
+                    if not terminal_read_unavailable_logged:
+                        AUTH_LOGGER.info("codex_auth_cli phase=terminal_read_unavailable")
+                        terminal_read_unavailable_logged = True
+                else:
+                    output.extend(chunk)
+                    if len(output) > MAX_CLI_DIAGNOSTIC_BYTES:
+                        del output[:-MAX_CLI_DIAGNOSTIC_BYTES]
+                    next_phase = _cli_terminal_phase(bytes(output))
+                    if next_phase != phase:
+                        phase = next_phase
+                        AUTH_LOGGER.info("codex_auth_cli phase=%s", phase)
             done, status = os.waitpid(pid, os.WNOHANG)
             if done:
-                if os.waitstatus_to_exitcode(status) == 0:
+                exit_code = os.waitstatus_to_exitcode(status)
+                AUTH_LOGGER.info(
+                    "codex_auth_cli phase=exited exit_code=%d elapsed_seconds=%d last_phase=%s",
+                    exit_code,
+                    round(time.monotonic() - started_at),
+                    phase,
+                )
+                if exit_code == 0:
                     return
-                raise CodexAuthSwitchError("Codex 账户登录失败")
-        raise CodexAuthSwitchError("Codex 设备授权超时")
+                raise CodexAuthSwitchError(
+                    f"Codex 账户登录失败（exit_code={exit_code};phase={phase}）"
+                )
+        AUTH_LOGGER.info(
+            "codex_auth_cli phase=timeout elapsed_seconds=%d last_phase=%s",
+            round(time.monotonic() - started_at),
+            phase,
+        )
+        raise CodexAuthSwitchError(f"Codex 设备授权超时（phase={phase}）")
     finally:
         try:
             os.close(descriptor)
@@ -239,17 +368,48 @@ async def _wait_for_device_code_values(
     page,
     inputs,
     characters: str,
-    deadline: float,
-) -> None:
-    while time.monotonic() < deadline:
+    cancel_event: Event | None = None,
+) -> bool:
+    for _ in range(DEVICE_CODE_VERIFY_POLLS):
+        _raise_if_cancelled(cancel_event)
         values = [await inputs.nth(index).input_value() for index in range(len(characters))]
         if _device_code_values_match(values, characters):
             AUTH_LOGGER.info("codex_auth_code inputs=confirmed count=%d", len(values))
-            return
+            return True
         await inputs.nth(len(characters) - 1).blur()
         await inputs.nth(len(characters) - 1).press("Tab")
         await page.wait_for_timeout(250)
-    raise CodexAuthSwitchError("Codex 设备码输入未完成")
+    return False
+
+
+async def _fill_device_code_with_retries(
+    page,
+    inputs,
+    characters: str,
+    cancel_event: Event | None = None,
+) -> None:
+    for attempt in range(1, DEVICE_CODE_FILL_ATTEMPTS + 1):
+        AUTH_LOGGER.info(
+            "codex_auth_code action=fill_device_code attempt=%d input_count=%d",
+            attempt,
+            len(characters),
+        )
+        for index, character in enumerate(characters):
+            await inputs.nth(index).fill(character)
+        if await _wait_for_device_code_values(
+            page,
+            inputs,
+            characters,
+            cancel_event,
+        ):
+            return
+        AUTH_LOGGER.info(
+            "codex_auth_code verification=failed attempt=%d",
+            attempt,
+        )
+    raise CodexAuthSwitchError(
+        f"Codex 设备码连续 {DEVICE_CODE_FILL_ATTEMPTS} 次填充校验失败"
+    )
 
 
 async def _device_code_confirmation_control(page):
@@ -262,9 +422,14 @@ async def _device_code_confirmation_control(page):
     return None
 
 
-async def _wait_for_device_code_confirmation(page, deadline: float):
+async def _wait_for_device_code_confirmation(
+    page,
+    deadline: float,
+    cancel_event: Event | None = None,
+):
     last_observation: tuple[int, bool] | None = None
     while time.monotonic() < deadline:
+        _raise_if_cancelled(cancel_event)
         control = await _device_code_confirmation_control(page)
         count = 0 if control is None else 1
         enabled = control is not None and await control.is_enabled()
@@ -282,17 +447,43 @@ async def _wait_for_device_code_confirmation(page, deadline: float):
     raise CodexAuthSwitchError("Codex 设备码确认按钮未就绪")
 
 
-async def _complete_device_auth(code: str) -> None:
+async def _wait_for_device_auth_result(
+    page,
+    code_input_count: int,
+    cancel_event: Event | None = None,
+) -> None:
+    deadline = time.monotonic() + DEVICE_AUTH_RESULT_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        _raise_if_cancelled(cancel_event)
+        input_count = await page.locator("input:visible").count()
+        if input_count != code_input_count:
+            AUTH_LOGGER.info(
+                "codex_auth_page stage=post_submit_result path=%s inputs=%d",
+                _safe_auth_path(page.url),
+                input_count,
+            )
+            await page.wait_for_timeout(DEVICE_AUTH_SUCCESS_DWELL_MS)
+            AUTH_LOGGER.info("codex_auth_page stage=post_submit_result_observed")
+            return
+        await page.wait_for_timeout(250)
+    raise CodexAuthSwitchError("Codex 设备码已提交，但未进入授权结果页")
+
+
+async def _complete_device_auth(
+    code: str,
+    cancel_event: Event | None = None,
+) -> None:
     async with session_factory()() as chrome:
         page = await chrome.context.new_page()
         try:
             await page.goto(DEVICE_URL, wait_until="domcontentloaded", timeout=30_000)
-            characters = code.replace("-", "")
+            characters = _device_code_characters(code)
             deadline = time.monotonic() + AUTH_PAGE_TIMEOUT_SECONDS
             selected_account_at: float | None = None
             submitted_consent_at: float | None = None
             last_observation: tuple[str, str, int, int] | None = None
             while time.monotonic() < deadline:
+                _raise_if_cancelled(cancel_event)
                 inputs = page.locator("input:visible")
                 controls = page.locator(ACCOUNT_CONTROL_SELECTOR)
                 input_count = await inputs.count()
@@ -340,25 +531,28 @@ async def _complete_device_auth(code: str) -> None:
                     elif time.monotonic() - submitted_consent_at >= 15:
                         raise CodexAuthSwitchError("Codex 授权确认未进入设备码页面")
                 elif state == "code":
-                    AUTH_LOGGER.info("codex_auth_action action=fill_device_code")
-                    for index, character in enumerate(characters):
-                        await inputs.nth(index).fill(character)
+                    await _fill_device_code_with_retries(
+                        page,
+                        inputs,
+                        characters,
+                        cancel_event,
+                    )
                     confirm_deadline = min(
                         deadline,
                         time.monotonic() + DEVICE_CODE_CONFIRM_TIMEOUT_SECONDS,
                     )
-                    await _wait_for_device_code_values(
-                        page,
-                        inputs,
-                        characters,
-                        confirm_deadline,
-                    )
                     confirmation = await _wait_for_device_code_confirmation(
                         page,
                         confirm_deadline,
+                        cancel_event,
                     )
                     AUTH_LOGGER.info("codex_auth_action action=confirm_device_code")
                     await confirmation.click(timeout=5_000, no_wait_after=True)
+                    await _wait_for_device_auth_result(
+                        page,
+                        len(characters),
+                        cancel_event,
+                    )
                     return
                 await page.wait_for_timeout(250)
             raise CodexAuthSwitchError("未识别 Codex 授权页面状态")
@@ -422,6 +616,7 @@ def _restore_browser(snapshot: BrowserSnapshot) -> None:
 
 
 def _logout(codex: str) -> None:
+    AUTH_LOGGER.info("codex_auth_cli phase=logout_started")
     try:
         result = subprocess.run(
             [codex, "logout"],
@@ -436,6 +631,7 @@ def _logout(codex: str) -> None:
         raise CodexAuthSwitchError("Codex 账户退出失败") from exc
     if result.returncode != 0:
         raise CodexAuthSwitchError("Codex 账户退出失败")
+    AUTH_LOGGER.info("codex_auth_cli phase=logout_completed")
 
 
 def switch(
@@ -443,53 +639,78 @@ def switch(
     *,
     codex_home: Path | None = None,
     settings: Settings | None = None,
+    cancel_event: Event | None = None,
+    operation_id: str | None = None,
 ) -> SwitchResult:
-    codex = shutil.which("codex")
-    if not codex:
-        raise CodexAuthSwitchError("未找到 Codex CLI")
-    home = codex_home or _codex_home()
-    resolved_settings = settings or load_settings()
-    lock_path = (
-        resolved_settings.automations.runtime_dir / "locks" / "codex-auth-switch.lock"
-    )
+    operation_token = _AUTH_OPERATION_ID.set(operation_id)
     try:
-        with file_lock(lock_path, 0):
-            if mode == "api":
-                _logout(codex)
-                _assert_status(codex, "api")
-                _sync_configuration("api", home)
-                return SwitchResult(mode="api", message="已切换到 API Key 模式")
+        AUTH_LOGGER.info("codex_auth_switch phase=requested mode=%s", mode)
+        codex = shutil.which("codex")
+        if not codex:
+            raise CodexAuthSwitchError("未找到 Codex CLI")
+        home = codex_home or _codex_home()
+        resolved_settings = settings or load_settings()
+        lock_path = (
+            resolved_settings.automations.runtime_dir / "locks" / "codex-auth-switch.lock"
+        )
+        try:
+            with file_lock(lock_path, 0):
+                AUTH_LOGGER.info("codex_auth_switch phase=lock_acquired mode=%s", mode)
+                _raise_if_cancelled(cancel_event)
+                if mode == "api":
+                    _logout(codex)
+                    _assert_status(codex, "api")
+                    _sync_configuration("api", home)
+                    AUTH_LOGGER.info("codex_auth_switch phase=completed mode=api")
+                    return SwitchResult(mode="api", message="已切换到 API Key 模式")
 
-            pid: int | None = None
-            descriptor: int | None = None
-            browser_lock = (
-                resolved_settings.automations.runtime_dir
-                / "locks"
-                / "debug-chrome.lock"
-            )
-            with file_lock(browser_lock, 0):
-                snapshot = _capture_browser_snapshot()
-                try:
-                    _switch_browser_for_account(snapshot)
-                    pid, descriptor, code = _start_device_auth(codex)
-                    asyncio.run(_complete_device_auth(code))
-                    _wait_for_success(pid, descriptor)
-                    descriptor = None
-                    pid = None
-                    _assert_status(codex, "account")
-                    _sync_configuration("account", home)
-                    return SwitchResult(mode="account", message="已切换到账户登录模式")
-                finally:
-                    if pid is not None:
-                        _cancel_process(pid)
-                    if descriptor is not None:
-                        try:
-                            os.close(descriptor)
-                        except OSError:
-                            pass
-                    _restore_browser(snapshot)
-    except LockBusy as exc:
-        raise CodexAuthSwitchError("认证切换脚本正在运行") from exc
+                pid: int | None = None
+                descriptor: int | None = None
+                browser_lock = (
+                    resolved_settings.automations.runtime_dir
+                    / "locks"
+                    / "debug-chrome.lock"
+                )
+                with file_lock(browser_lock, 0):
+                    snapshot = _capture_browser_snapshot()
+                    try:
+                        AUTH_LOGGER.info("codex_auth_browser phase=account_profile_starting")
+                        _switch_browser_for_account(snapshot)
+                        AUTH_LOGGER.info("codex_auth_browser phase=account_profile_ready")
+                        _raise_if_cancelled(cancel_event)
+                        pid, descriptor, code = _start_device_auth(codex, cancel_event)
+                        AUTH_LOGGER.info("codex_auth_cli phase=device_code_received")
+                        asyncio.run(_complete_device_auth(code, cancel_event))
+                        AUTH_LOGGER.info("codex_auth_cli phase=device_code_submitted")
+                        _wait_for_success(pid, descriptor, cancel_event)
+                        descriptor = None
+                        pid = None
+                        _assert_status(codex, "account")
+                        _sync_configuration("account", home)
+                        AUTH_LOGGER.info("codex_auth_switch phase=completed mode=account")
+                        return SwitchResult(mode="account", message="已切换到账户登录模式")
+                    finally:
+                        if pid is not None:
+                            _cancel_process(pid)
+                        if descriptor is not None:
+                            try:
+                                os.close(descriptor)
+                            except OSError:
+                                pass
+                        AUTH_LOGGER.info("codex_auth_browser phase=restore_started")
+                        _restore_browser(snapshot)
+                        AUTH_LOGGER.info("codex_auth_browser phase=restore_completed")
+        except LockBusy as exc:
+            AUTH_LOGGER.info("codex_auth_switch phase=blocked reason=auth_switch_busy")
+            raise CodexAuthSwitchError("认证切换脚本正在运行") from exc
+        except CodexAuthSwitchCancelled:
+            AUTH_LOGGER.info("codex_auth_switch phase=cancelled")
+            raise
+        except CodexAuthSwitchError:
+            AUTH_LOGGER.info("codex_auth_switch phase=failed reason=known_switch_error")
+            raise
+    finally:
+        _AUTH_OPERATION_ID.reset(operation_token)
 
 
 def main() -> None:

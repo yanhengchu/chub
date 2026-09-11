@@ -4,16 +4,16 @@ import importlib
 import sys
 from pathlib import Path
 
-from app.ai_runtime.modules import BuiltinRuntimeModule
+from app.ai_runtime.runtime_plugins import RuntimePlugin
 from app.core.config import PROJECT_ROOT, Settings
 
 
-def load_builtin_codex_module(
+def load_development_codex_plugin(
     settings: Settings,
     *,
     reload_source: bool = False,
-) -> BuiltinRuntimeModule | None:
-    """Load the checked-out Codex implementation only during explicit startup/refresh."""
+) -> RuntimePlugin | None:
+    """Load the checked-out Codex plugin only during explicit startup/refresh."""
     source_root = PROJECT_ROOT / "runtime-modules" / "codex-runtime"
     if not source_root.is_dir():
         return None

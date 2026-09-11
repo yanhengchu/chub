@@ -84,6 +84,15 @@ const result = {
       { id: "chub", available: true },
     ],
   }, false),
+  preferredWorkspace: sessionView.preferredCreateWorkspaceId([
+    { id: "home", available: true },
+    { id: "workspace", available: true },
+    { id: "chub", available: true },
+  ]),
+  fallbackWorkspace: sessionView.preferredCreateWorkspaceId([
+    { id: "home", available: true },
+    { id: "chub", available: false },
+  ]),
   switcher: sessionView.buildSwitcher({
     sessions: [
       session,
@@ -148,6 +157,8 @@ process.stdout.write(JSON.stringify(result));
     assert behavior["unavailable"]["submissionReason"] == "Codex Runtime is not installed"
     assert behavior["creation"]["disabled"] is False
     assert behavior["creation"]["label"] == "新建 Session"
+    assert behavior["preferredWorkspace"] == "chub"
+    assert behavior["fallbackWorkspace"] == "home"
     assert [item["id"] for item in behavior["switcher"]["items"]] == [
         "session/one",
         "session-two",

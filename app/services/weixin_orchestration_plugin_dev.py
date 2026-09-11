@@ -45,13 +45,13 @@ class WeixinDevelopmentStage:
         except OSError as exc:
             raise ApiError(
                 503,
-                "weixin_orchestration_development_unavailable",
+                "weixin_orchestration_plugin_development_unavailable",
                 "微信开发编排实现当前不可用，本次任务未执行。",
             ) from exc
         if not source or len(source) > MAX_DEVELOPMENT_SOURCE_BYTES:
             raise ApiError(
                 503,
-                "weixin_orchestration_development_unavailable",
+                "weixin_orchestration_plugin_development_unavailable",
                 "微信开发编排实现当前不可用，本次任务未执行。",
             )
         return WeixinDevelopmentImplementation(
@@ -73,17 +73,17 @@ class WeixinDevelopmentStage:
         ):
             raise ApiError(
                 503,
-                "weixin_orchestration_development_changed",
+                "weixin_orchestration_plugin_development_changed",
                 "微信开发编排实现已变化，已受理任务未继续执行。",
             )
         spec = importlib.util.spec_from_file_location(
-            f"chub_weixin_orchestration_dev_{snapshot.source_hash}",
+            f"chub_weixin_orchestration_plugin_dev_{snapshot.source_hash}",
             self.source_path,
         )
         if spec is None or spec.loader is None:
             raise ApiError(
                 503,
-                "weixin_orchestration_development_unavailable",
+                "weixin_orchestration_plugin_development_unavailable",
                 "微信开发编排实现当前不可用，本次任务未执行。",
             )
         module = importlib.util.module_from_spec(spec)
@@ -96,7 +96,7 @@ class WeixinDevelopmentStage:
         except (OSError, ImportError, TypeError, AttributeError) as exc:
             raise ApiError(
                 503,
-                "weixin_orchestration_development_unavailable",
+                "weixin_orchestration_plugin_development_unavailable",
                 "微信开发编排实现当前不可用，本次任务未执行。",
             ) from exc
 
@@ -112,6 +112,6 @@ class WeixinDevelopmentStage:
         ):
             raise ApiError(
                 503,
-                "weixin_orchestration_development_changed",
+                "weixin_orchestration_plugin_development_changed",
                 "微信开发编排实现已变化，已受理任务未继续执行。",
             )

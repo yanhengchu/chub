@@ -146,6 +146,13 @@
     });
   }
 
+  function preferredCreateWorkspaceId(workspaces) {
+    const usableWorkspaces = workspaces.filter((workspace) => workspace.available);
+    return usableWorkspaces.find((workspace) => workspace.id === "chub")?.id
+      || usableWorkspaces[0]?.id
+      || "";
+  }
+
   function archiveDescription(session) {
     const title = sessionDisplayTitle(session);
     return `归档“${title}”后，该 Session 将从活动列表移除；`
@@ -261,7 +268,7 @@
 
     function openCreate(workspaces, onCreate) {
       const usableWorkspaces = workspaces.filter((workspace) => workspace.available);
-      elements.createWorkspaces.value = usableWorkspaces[0]?.id || "";
+      elements.createWorkspaces.value = preferredCreateWorkspaceId(usableWorkspaces);
       elements.createWorkspacePicker.setOptions(
         usableWorkspaces.map((workspace) => ({ value: workspace.id, label: workspace.name })),
         elements.createWorkspaces.value,
@@ -450,6 +457,7 @@
     archiveDescription,
     stopDescription,
     buildCreationState,
+    preferredCreateWorkspaceId,
     buildSessionPreview,
     buildSessionState,
     buildSwitcher,

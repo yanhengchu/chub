@@ -1,10 +1,10 @@
-# Chub 微信任务编排外置设计
+# Chub 微信任务编排插件模块设计
 
 > 状态：已验收
-> 主要读者：需要维护或排障微信任务编排的 AI Agent；维护人员用于确认分流、恢复和模块维护边界。
-> 本文负责：定义微信普通任务正文在“直接执行”、共享源码的开发实现和 ZIP 编排模块之间的当前分流行为、恢复边界与验收范围。
-> 本文不负责：能力编排模块的通用协议和安装机制、Session/Worker 状态机、微信固定指令语法或用户可见回复格式。
-> 维护说明：首个微信润色编排模块已在 macOS 真实微信文字路径验收。后续改变阶段链、实现引用、恢复顺序、模块协议或外部路由时，须按本文“验收范围与复检”重新验收。
+> 主要读者：需要维护或排障微信任务编排插件模块的 AI Agent；维护人员用于确认分流、恢复和模块维护边界。
+> 本文负责：定义微信普通任务正文在“直接执行”、共享源码的开发实现和 ZIP 任务编排插件模块之间的当前分流行为、恢复边界与验收范围。
+> 本文不负责：任务编排插件模块的通用协议和安装机制、Session/Worker 状态机、微信固定指令语法或用户可见回复格式。
+> 维护说明：首个微信润色任务编排插件模块已在 macOS 真实微信文字路径验收。ZIP 仅表示正式交付与安装形态。后续改变阶段链、实现引用、恢复顺序、模块协议或外部路由时，须按本文“验收范围与复检”重新验收。
 
 ## AI 可执行契约
 
@@ -34,7 +34,7 @@
 
 关闭“启用文本优化”即直接投递，不创建润色阶段。开启后必须选择固定开发实现 `weixin-orchestration-dev` 或已导入的 `weixin-refinement` ZIP；没有可用实现时不得开启。设置页在“微信任务润色 → 编排实现”中统一显示“`微信任务润色 · 开发实现`”或“`微信任务润色 · 正式版 v<版本号>`”，不显示 `weixin-orchestration-dev`、源码摘要或 `implementation_ref`。这些内部引用仍是请求快照和恢复绑定的权威值，不能由可见名称推断或替代。开发实现与 ZIP 打包共用仓库 `orchestration-modules/weixin-refinement/` 源码，前者绑定源码 SHA-256 摘要，后者绑定包含内容摘要的不可变 `implementation_ref`。模块不接受页面、微信或配置传入的代码路径。
 
-ZIP 模块仅接受 `capability-orchestration`、`weixin-normal-text` 和协议版本 `1` 的产物。“AI Runtime → 通用配置”的“能力模块导入”负责预检、导入、列表与移除；“微信任务润色”只负责选择活动实现或关闭文本优化。导入不会自动启用。同版本但内容不同的 ZIP 是独立产物，不能覆盖仍被非终态请求引用的旧产物。当前活动模块必须先切换到开发实现或另一 ZIP 才能移除；被非终态请求引用的模块仍不能移除。
+插件 ZIP 仅接受 `capability-orchestration`、`weixin-normal-text` 和协议版本 `1` 的产物。“插件模块 → 插件管理”的“任务编排插件导入”负责预检、导入、列表与移除；“微信任务润色”只负责选择活动实现或关闭文本优化。导入不会自动启用。同版本但内容不同的 ZIP 是独立产物，不能覆盖仍被非终态请求引用的旧产物。当前活动插件必须先切换到开发实现或另一 ZIP 才能移除；被非终态请求引用的插件仍不能移除。
 
 携带正文的 `S# [task]` 仍由 Chub 先完成槽位选择和持久化，再向编排实现签发固定目标的受限上下文；模块不能改选目标。没有任务正文的固定指令、Web 快速交互、自动化和周报不进入本分流。续提、确认和取消只恢复或推进已有请求的检查点，不创建新编排请求。
 
@@ -46,17 +46,17 @@ Web 或 Quick Worker 重启后，Chub 先对账已提交子任务与主任务的
 
 Quick Worker 的可信终态事件会定向推进已绑定请求；启动对账只读取已有关联，不重新提交翻译子任务或主任务。Web 重启时，先恢复 Quick Worker 可用状态，再恢复等待中的投递，不能仅因 Worker 尚未就绪判定润色失败。通知终态独立记录；任务已受理、HTTP 成功或进程启动均不代表用户任务成功。
 
-通用模块协议、生命周期和能力执行面规则以[Chub 能力编排外置架构设计](CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md)为准；微信身份、路由、幂等与持久化边界以[OpenClaw 定制集成设计](OPENCLAW_CUSTOMIZATION_DESIGN.md)为准；固定指令和用户可见回复格式以[Chub 集成能力清单](CHUB_INTEGRATION_CAPABILITIES.md#4-微信-clawbot-指令)为准。
+通用模块协议、生命周期和能力执行面规则以[Chub 任务编排插件模块架构设计](CHUB_TASK_ORCHESTRATION_PLUGIN_DESIGN.md)为准；微信身份、路由、幂等与持久化边界以[OpenClaw 定制集成设计](OPENCLAW_CUSTOMIZATION_DESIGN.md)为准；固定指令和用户可见回复格式以[Chub 集成能力清单](CHUB_INTEGRATION_CAPABILITIES.md#4-微信-clawbot-指令)为准。
 
 ## 维护者操作
 
 构建首个模块使用：
 
 ```bash
-python scripts/build_weixin_orchestration_module_zip.py --version 1.0.0
+python scripts/build_weixin_orchestration_plugin_zip.py --version 1.0.0
 ```
 
-随后在“AI Runtime → 通用配置 → 能力模块导入”导入 ZIP，再在“微信任务润色 → 编排实现”中显式选择它。不要手动修改模块安装目录；内容摘要变化会使已绑定请求失败关闭。停用文本优化后，或切换到开发实现/另一 ZIP 且没有非终态引用后，再回到通用配置移除对应产物。
+随后在“插件模块 → 插件管理 → 任务编排插件导入”导入插件 ZIP，再在“微信任务润色 → 编排实现”中显式选择它。不要手动修改插件安装目录；内容摘要变化会使已绑定请求失败关闭。停用文本优化后，或切换到开发实现/另一 ZIP 且没有非终态引用后，再回到插件管理移除对应产物。
 
 ## 验收范围与复检
 
@@ -72,7 +72,7 @@ python scripts/build_weixin_orchestration_module_zip.py --version 1.0.0
 
 ## 相关文档
 
-- [Chub 能力编排外置架构设计](CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md)：通用模块、执行面、状态和生命周期规则。
+- [Chub 任务编排插件模块架构设计](CHUB_TASK_ORCHESTRATION_PLUGIN_DESIGN.md)：通用模块、执行面、状态和生命周期规则。
 - [Chub 集成能力清单](CHUB_INTEGRATION_CAPABILITIES.md)：当前微信指令和用户可见契约。
 - [OpenClaw 定制集成设计](OPENCLAW_CUSTOMIZATION_DESIGN.md)：微信身份、路由、幂等和持久化。
 - [Chub Quick Worker 独立服务设计](CHUB_QUICK_WORKER_DESIGN.md)：任务、恢复和通知终态。

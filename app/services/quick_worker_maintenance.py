@@ -79,6 +79,9 @@ class QuickWorkerStatusData(_StrictModel):
     runtimes: list[QuickWorkerRuntimeStatus] = Field(default_factory=list, max_length=32)
     active_tasks: int = Field(default=0, ge=0)
     queued_tasks: int = Field(default=0, ge=0)
+    worker_version: str | None = Field(default=None, min_length=1, max_length=128)
+    protocol_version: int | None = Field(default=None, ge=1)
+    expected_protocol_version: int | None = Field(default=None, ge=1)
     can_restart: bool = False
     upgrade_required: bool = False
     operation: QuickWorkerOperationView | None = None
@@ -617,6 +620,16 @@ async def inspect_quick_worker(
         )
 
     generation = data.get("generation") if isinstance(data.get("generation"), str) else None
+    worker_version = (
+        data.get("code_version")
+        if isinstance(data.get("code_version"), str) and data["code_version"].strip()
+        else None
+    )
+    protocol_version = (
+        data.get("protocol_version")
+        if isinstance(data.get("protocol_version"), int) and data["protocol_version"] >= 1
+        else None
+    )
     active_tasks = max(0, int(data.get("active_tasks", 0)))
     queued_tasks = max(0, int(data.get("queued_tasks", 0)))
     worker_healthy = (
@@ -673,6 +686,9 @@ async def inspect_quick_worker(
             runtimes=runtime_items,
             active_tasks=active_tasks,
             queued_tasks=queued_tasks,
+            worker_version=worker_version,
+            protocol_version=protocol_version,
+            expected_protocol_version=PROTOCOL_VERSION,
             can_restart=(
                 reload_coordinator.maintenance_available()
                 and not (

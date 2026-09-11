@@ -20,7 +20,6 @@ from app.codex.models import (
     QuickInteractionTask,
     QuickInteractionWeixinRoute,
     SessionRenameRequest,
-    sessions_newest_first,
     utc_now,
 )
 from app.codex.quick_interactions import build_task_summary
@@ -35,9 +34,9 @@ from app.services.deferred_restart import (
 )
 from app.services.operation_log import write_operation
 from app.services.weixin_task_capabilities import WeixinTaskCapabilityHost
-from app.services.weixin_orchestration_dev import WeixinDevelopmentStage
-from app.services.weixin_orchestration_modules import (
-    WeixinOrchestrationModuleService,
+from app.services.weixin_orchestration_plugin_dev import WeixinDevelopmentStage
+from app.services.weixin_orchestration_plugins import (
+    WeixinOrchestrationPluginService,
 )
 from app.services.openclaw_weixin_chub_commands import (
     FIXED_COMMAND_KINDS,
@@ -106,6 +105,12 @@ from app.services.openclaw_weixin_chub_models import (
     WeixinTaskOrchestrationSettingsStatus,
     WeixinTaskOrchestrationStage,
 )
+from app.services.openclaw_weixin_chub_sessions import (
+    ChubSessionSnapshot as _ChubSessionSnapshot,
+    build_synced_slots,
+    collect_assigned_session_snapshots,
+    visible_sessions,
+)
 from app.services.weixin_translation import (
     TranslationEntry,
     TranslationExecutionOutcome,
@@ -134,17 +139,6 @@ FIXED_COMMAND_STATUS_CODES = frozenset(
         "codex_switch_checked",
     }
 )
-
-
-@dataclass(frozen=True)
-class _ChubSessionSnapshot:
-    slot: int
-    session_id: str
-    title: str
-    state: str
-    current: bool
-    model: str | None = None
-    reasoning_effort: str | None = None
 
 
 @dataclass(frozen=True)
@@ -199,7 +193,7 @@ class WeixinChubModeManager:
         ]
         | None = None,
         development_stage: WeixinDevelopmentStage | None = None,
-        orchestration_module_service: WeixinOrchestrationModuleService | None = None,
+        orchestration_plugin_service: WeixinOrchestrationPluginService | None = None,
     ) -> None:
         self.settings = settings
         self.codex_manager = codex_manager
@@ -229,12 +223,12 @@ class WeixinChubModeManager:
         self.codex_auth_switcher = codex_auth_switcher
         self.codex_auth_notifier = codex_auth_notifier
         self.development_stage = development_stage or WeixinDevelopmentStage()
-        self.orchestration_module_service = (
-            orchestration_module_service
-            or WeixinOrchestrationModuleService(settings)
+        self.orchestration_plugin_service = (
+            orchestration_plugin_service
+            or WeixinOrchestrationPluginService(settings)
         )
         try:
-            self.orchestration_module_service.recover()
+            self.orchestration_plugin_service.recover()
         except ApiError:
             # A bad local module directory must not prevent the Web control
             # plane, internal implementation or unrelated services from starting.
@@ -576,7 +570,7 @@ class WeixinChubModeManager:
         module_available = False
         if module_ref is not None:
             try:
-                self.orchestration_module_service.require(module_ref)
+                self.orchestration_plugin_service.require(module_ref)
             except ApiError:
                 module_available = False
             else:
@@ -599,10 +593,10 @@ class WeixinChubModeManager:
                 if module_ref is None:
                     raise ApiError(
                         422,
-                        "weixin_orchestration_module_ref_required",
-                        "请选择要启用的编排模块。",
+                        "weixin_orchestration_plugin_ref_required",
+                        "请选择要启用的任务编排插件。",
                     )
-                self.orchestration_module_service.require(module_ref)
+                self.orchestration_plugin_service.require(module_ref)
                 if (
                     self._state.orchestration_implementation != implementation
                     or self._state.orchestration_module_ref != module_ref
@@ -630,7 +624,7 @@ class WeixinChubModeManager:
             ):
                 raise ApiError(
                     409,
-                    "weixin_orchestration_development_reload_blocked",
+                    "weixin_orchestration_plugin_development_reload_blocked",
                     "已有微信开发编排任务未结束，当前源码不能重新加载。",
                 )
             if (
@@ -647,13 +641,13 @@ class WeixinChubModeManager:
             return self.orchestration_settings()
 
     def require_orchestration_implementation_available(self) -> None:
-        """Allow text optimization only when an external implementation is ready."""
+        """Allow text optimization only when the selected implementation is ready."""
         with self._lock:
             implementation = self._state.orchestration_implementation
             module_ref = self._state.orchestration_module_ref
             source_hash = self._state.orchestration_development_source_hash
         if implementation == "module":
-            self.orchestration_module_service.require(module_ref)
+            self.orchestration_plugin_service.require(module_ref)
             return
         if implementation != "weixin-orchestration-dev":
             raise ApiError(
@@ -665,11 +659,11 @@ class WeixinChubModeManager:
         if source_hash != snapshot.source_hash:
             raise ApiError(
                 409,
-                "weixin_orchestration_development_changed",
+                "weixin_orchestration_plugin_development_changed",
                 "微信开发编排实现已变化，请重新确认后再启用文本优化。",
             )
 
-    def list_orchestration_modules(self):
+    def list_orchestration_plugins(self):
         with self._lock:
             active_ref = self._state.orchestration_module_ref
             referenced = {
@@ -685,10 +679,10 @@ class WeixinChubModeManager:
                 artifact.implementation_ref == active_ref,
                 artifact.implementation_ref not in referenced,
             )
-            for artifact in self.orchestration_module_service.list_artifacts()
+            for artifact in self.orchestration_plugin_service.list_artifacts()
         )
 
-    def remove_orchestration_module(self, implementation_ref: str) -> None:
+    def remove_orchestration_plugin(self, implementation_ref: str) -> None:
         with self._lock:
             if any(
                 request.status in {"accepted", "waiting", "unknown"}
@@ -701,19 +695,19 @@ class WeixinChubModeManager:
             ):
                 raise ApiError(
                     409,
-                    "weixin_orchestration_module_referenced",
-                    "该编排模块仍被未结束微信任务引用，暂不能移除。",
+                    "weixin_orchestration_plugin_referenced",
+                    "该任务编排插件仍被未结束微信任务引用，暂不能移除。",
                 )
             previous_state = self._state
             active = previous_state.orchestration_module_ref == implementation_ref
             if active:
                 raise ApiError(
                     409,
-                    "weixin_orchestration_module_active",
-                    "当前模块正在用于文本优化，请先选择开发实现或其他 ZIP。",
+                    "weixin_orchestration_plugin_active",
+                    "当前任务编排插件正在用于文本优化，请先选择开发实现或其他 ZIP。",
                 )
             try:
-                self.orchestration_module_service.remove(implementation_ref)
+                self.orchestration_plugin_service.remove(implementation_ref)
             except ApiError:
                 raise
 
@@ -729,12 +723,12 @@ class WeixinChubModeManager:
             return "direct", []
         if self._state.orchestration_implementation == "module":
             module_ref = self._state.orchestration_module_ref
-            self.orchestration_module_service.require(module_ref)
+            self.orchestration_plugin_service.require(module_ref)
             if module_ref is None:
                 raise ApiError(
                     503,
-                    "weixin_orchestration_module_unavailable",
-                    "微信编排模块当前不可用，本次任务未执行。",
+                    "weixin_orchestration_plugin_unavailable",
+                    "微信任务编排插件当前不可用，本次任务未执行。",
                 )
             return module_ref, [
                 WeixinTaskOrchestrationStage(
@@ -750,7 +744,7 @@ class WeixinChubModeManager:
         ):
             raise ApiError(
                 503,
-                "weixin_orchestration_development_changed",
+                "weixin_orchestration_plugin_development_changed",
                 "微信开发编排实现已变化，请重新确认活动实现后再提交新任务。",
             )
         return snapshot.implementation_id, [
@@ -1019,11 +1013,12 @@ class WeixinChubModeManager:
                         )
                     session_slot: int | None = None
                     session_title: str | None = None
+                    session_workspace_name: str | None = None
                     if target_session_id is not None:
                         target_session = self.codex_manager.get_session(target_session_id)
                         if (
                             self._slot_for_session(target_session_id) is None
-                            or not self._session_matches_configuration(
+                            or not self._session_matches_available_workspace(
                                 target_session,
                                 configuration,
                             )
@@ -1037,6 +1032,9 @@ class WeixinChubModeManager:
                         session_title = build_session_title(
                             target_session.title or prompt,
                             self.settings.openclaw.weixin_chub_mode.session_name_max_width,
+                        )
+                        session_workspace_name = self._session_workspace_name(
+                            target_session
                         )
                     def enqueue_refinement() -> bool:
                         return self.translation_manager.enqueue(
@@ -1063,7 +1061,7 @@ class WeixinChubModeManager:
                             enqueue_refinement=enqueue_refinement,
                         )
                     else:
-                        accepted = self.orchestration_module_service.execute_refinement(
+                        accepted = self.orchestration_plugin_service.execute_refinement(
                             implementation_ref=stage.implementation_ref,
                             enqueue_refinement=enqueue_refinement,
                         )
@@ -1094,6 +1092,7 @@ class WeixinChubModeManager:
                         task_summary,
                         session_slot=session_slot,
                         session_title=session_title,
+                        session_workspace_name=session_workspace_name,
                         current=self._state.session_id == target_session_id,
                     )
                     reservation.http_status = 200
@@ -1139,7 +1138,7 @@ class WeixinChubModeManager:
                     target_session = self.codex_manager.get_session(session_id)
                     if (
                         self._slot_for_session(session_id) is None
-                        or not self._session_matches_configuration(
+                            or not self._session_matches_available_workspace(
                             target_session,
                             configuration,
                         )
@@ -1224,6 +1223,7 @@ class WeixinChubModeManager:
                             else "目标 Session 正在执行其他任务，本次任务已丢弃。"
                         ),
                     )
+                session_workspace_name: str | None = None
                 if preprocess:
                     session = self.codex_manager.get_session(session_id)
                     session_slot = self._slot_for_session(session_id)
@@ -1231,6 +1231,7 @@ class WeixinChubModeManager:
                         session.title or prompt,
                         self.settings.openclaw.weixin_chub_mode.session_name_max_width,
                     )
+                    session_workspace_name = self._session_workspace_name(session)
                     if self.translation_manager is None:
                         raise ApiError(
                             503,
@@ -1270,6 +1271,7 @@ class WeixinChubModeManager:
                             session.title or prompt,
                             self.settings.openclaw.weixin_chub_mode.session_name_max_width,
                         )
+                        session_workspace_name = self._session_workspace_name(session)
                         request = next(item for item in self._state.orchestration_requests if item.id == orchestration_id)
                         task = self.task_capabilities.submit_task(
                             request,
@@ -1392,6 +1394,7 @@ class WeixinChubModeManager:
                     task_summary,
                     session_slot=session_slot,
                     session_title=session_title,
+                    session_workspace_name=session_workspace_name,
                     current=self._state.session_id == session_id,
                 )
                 reservation.http_status = 200
@@ -1429,6 +1432,7 @@ class WeixinChubModeManager:
                 submitted_session_id=session_id,
                 submitted_session_slot=session_slot,
                 submitted_session_title=session_title,
+                submitted_session_workspace_name=session_workspace_name,
                 submitted_task_summary=task_summary,
             )
             reservation.http_status = 200
@@ -1437,6 +1441,7 @@ class WeixinChubModeManager:
             reservation.new_session = new_session
             reservation.session_slot = session_slot
             reservation.session_title = session_title
+            reservation.session_workspace_name = session_workspace_name
             reservation.updated_at = utc_now()
             reservation.orchestration_checkpoint = "task.submitted"
             try:
@@ -1572,6 +1577,7 @@ class WeixinChubModeManager:
         submitted_session_id: str,
         submitted_session_slot: int | None,
         submitted_session_title: str,
+        submitted_session_workspace_name: str | None,
         submitted_task_summary: str,
     ) -> str:
         task_summaries_by_session = {submitted_session_id: submitted_task_summary}
@@ -1622,11 +1628,12 @@ class WeixinChubModeManager:
                     title=submitted_session_title,
                     state="Busy",
                     current=self._state.session_id == submitted_session_id,
+                    workspace_name=submitted_session_workspace_name,
                 )
             )
         snapshots.sort(key=lambda item: item.slot)
 
-        entries: list[tuple[int, str, str, bool]] = []
+        entries: list[tuple[int, str, str, bool, str | None]] = []
         task_summaries_by_slot: dict[int, str] = {}
         for item in snapshots:
             try:
@@ -1644,6 +1651,7 @@ class WeixinChubModeManager:
                     item.title,
                     "Busy" if busy else item.state,
                     item.current,
+                    item.workspace_name,
                 )
             )
             if item.session_id in task_summaries_by_session:
@@ -1779,7 +1787,7 @@ class WeixinChubModeManager:
                 return TranslationExecutionOutcome(status="failed", error=reason)
         elif stage.kind == "module":
             try:
-                self.orchestration_module_service.require(stage.implementation_ref)
+                self.orchestration_plugin_service.require(stage.implementation_ref)
             except ApiError as exc:
                 reason = self._safe_submission_error(exc)
                 self._finish_optimized_source_submission(
@@ -2806,7 +2814,7 @@ class WeixinChubModeManager:
                 refreshed = self.codex_manager.get_session(target.id)
                 if (
                     refreshed.id != target.id
-                    or not self._session_matches_configuration(
+                    or not self._session_matches_available_workspace(
                         refreshed,
                         configuration,
                     )
@@ -4080,13 +4088,19 @@ class WeixinChubModeManager:
         *,
         current_session_id: str | None,
     ) -> str:
-        slot, title = (
-            self._session_context(entry.target_session_id)
+        slot, title, workspace_name = (
+            self._session_display_context(entry.target_session_id)
             if entry.target_session_id is not None
-            else (None, None)
+            else (None, None, None)
         )
         session_line = (
-            f"{'▶ ' if entry.target_session_id == current_session_id else ''}S{slot} · {title}"
+            format_session_name_line(
+                slot,
+                title,
+                "Available",
+                entry.target_session_id == current_session_id,
+                workspace_name,
+            )
             if slot is not None and title is not None
             else "Session · Unavailable"
         )
@@ -4110,9 +4124,17 @@ class WeixinChubModeManager:
             return "Current confirmation: None."
         with self._lock:
             current_session_id = self._state.session_id
-        slot, title = self._session_context(entry.target_session_id)
+        slot, title, workspace_name = self._session_display_context(
+            entry.target_session_id
+        )
         session_line = (
-            f"{'▶ ' if entry.target_session_id == current_session_id else ''}S{slot} · {title}"
+            format_session_name_line(
+                slot,
+                title,
+                "Available",
+                entry.target_session_id == current_session_id,
+                workspace_name,
+            )
             if slot is not None and title is not None
             else "Session · Unavailable"
         )
@@ -4724,9 +4746,15 @@ class WeixinChubModeManager:
             self.settings.openclaw.weixin_chub_mode.session_name_max_width,
         )
         session_message = (
-            format_session_name_line(slot, title, "Available", True)
+            format_session_name_line(
+                slot,
+                title,
+                "Available",
+                True,
+                self._session_workspace_name(session),
+            )
             if slot is not None
-            else f"Session · {title}"
+            else f"Session · [{self._session_workspace_name(session)}] {title}"
         )
         next_lines = []
         if next_model and next_model != model:
@@ -4867,9 +4895,15 @@ class WeixinChubModeManager:
             self.settings.openclaw.weixin_chub_mode.session_name_max_width,
         )
         session_message = (
-            format_session_name_line(slot, title, "Available", True)
+            format_session_name_line(
+                slot,
+                title,
+                "Available",
+                True,
+                self._session_workspace_name(session),
+            )
             if slot is not None
-            else f"Session · {title}"
+            else f"Session · [{self._session_workspace_name(session)}] {title}"
         )
         level_ids = tuple(
             level_id
@@ -5136,9 +5170,15 @@ class WeixinChubModeManager:
             self.settings.openclaw.weixin_chub_mode.session_name_max_width,
         )
         session_message = (
-            format_session_name_line(slot, title, "Available", True)
+            format_session_name_line(
+                slot,
+                title,
+                "Available",
+                True,
+                self._session_workspace_name(session),
+            )
             if slot is not None
-            else f"Session · {title}"
+            else f"Session · [{self._session_workspace_name(session)}] {title}"
         )
         return self._remember_fixed_reply(
             message_id=message_id,
@@ -5759,30 +5799,17 @@ class WeixinChubModeManager:
         current_session_id: str | None,
         slots: list[WeixinChubModeSessionSlot],
     ) -> tuple[_ChubSessionSnapshot, ...]:
-        sessions = {
-            session.id: session
-            for session in self.codex_manager.list_sessions()
-            if self._session_matches_configuration(session, configuration)
-        }
-        slots_by_session_id = {entry.session_id: entry.slot for entry in slots}
-        return tuple(
-            _ChubSessionSnapshot(
-                slot=slots_by_session_id[session.id],
-                session_id=session.id,
-                title=build_session_title(
-                    getattr(session, "title", None)
-                    or "Unnamed Session",
-                    self.settings.openclaw.weixin_chub_mode.session_name_max_width,
-                ),
-                state=self._codex_session_dispatch_state(session),
-                current=session.id == current_session_id,
-                model=getattr(session, "model", None),
-                reasoning_effort=getattr(
-                    session, "reasoning_effort", None
-                ),
-            )
-            for session in sessions_newest_first(sessions.values())
-            if session.id in slots_by_session_id
+        return collect_assigned_session_snapshots(
+            sessions=self.codex_manager.list_sessions(),
+            configuration=configuration,
+            current_session_id=current_session_id,
+            slots=slots,
+            session_name_max_width=(
+                self.settings.openclaw.weixin_chub_mode.session_name_max_width
+            ),
+            session_matches=self._session_matches_allowed_workspace,
+            session_state=self._codex_session_dispatch_state,
+            workspace_name=self._session_workspace_name,
         )
 
     def verify_system_upgrade_readiness(self) -> None:
@@ -5892,6 +5919,7 @@ class WeixinChubModeManager:
                         else item.state
                     ),
                     current=item.current,
+                    workspace_name=getattr(item, "workspace_name", None),
                     task_summary=(
                         build_task_name(
                             running_tasks[item.session_id],
@@ -6110,7 +6138,13 @@ class WeixinChubModeManager:
                 )
                 sessions_message = self._format_session_blocks(
                     (
-                        (item.slot, item.title, item.state, item.current)
+                        (
+                            item.slot,
+                            item.title,
+                            item.state,
+                            item.current,
+                            item.workspace_name,
+                        )
                         for item in visible
                     )
                 )
@@ -6153,47 +6187,16 @@ class WeixinChubModeManager:
         current_session_id: str | None,
         sessions: list[object],
     ) -> list[WeixinChubModeSessionSlot]:
-        eligible = {
-            session.id: session
-            for session in sessions
-            if self._session_matches_configuration(session, configuration)
-        }
-        retained: list[WeixinChubModeSessionSlot] = []
-        used_slots: set[int] = set()
-        used_sessions: set[str] = set()
-        for entry in sorted(original_slots, key=lambda item: item.slot):
-            if (
-                entry.session_id in eligible
-                and entry.slot not in used_slots
-                and entry.session_id not in used_sessions
-            ):
-                retained.append(entry.model_copy(deep=True))
-                used_slots.add(entry.slot)
-                used_sessions.add(entry.session_id)
-        weixin_session_ids = self.quick_interactions.weixin_session_ids()
-        candidates = sorted(
-            (
-                session
-                for session in eligible.values()
-                if session.id not in used_sessions
-                and self._codex_session_dispatch_state(session) != "Unavailable"
-            ),
-            key=lambda session: (
-                session.id != current_session_id,
-                session.id not in weixin_session_ids,
-                session.id,
-            ),
+        return build_synced_slots(
+            configuration=configuration,
+            original_slots=original_slots,
+            current_session_id=current_session_id,
+            sessions=sessions,
+            weixin_session_ids=set(self.quick_interactions.weixin_session_ids()),
+            fill_candidates=True,
+            session_matches=self._session_matches_allowed_workspace,
+            session_state=self._codex_session_dispatch_state,
         )
-        free_slots = [
-            slot
-            for slot in range(1, MAX_WEIXIN_SESSION_SLOTS + 1)
-            if slot not in used_slots
-        ]
-        retained.extend(
-            WeixinChubModeSessionSlot(slot=slot, session_id=session.id)
-            for slot, session in zip(free_slots, candidates, strict=False)
-        )
-        return sorted(retained, key=lambda item: item.slot)
 
     def _session_snapshot_from_list(
         self,
@@ -6202,30 +6205,17 @@ class WeixinChubModeManager:
         slots: list[WeixinChubModeSessionSlot],
         sessions: list[object],
     ) -> tuple[_ChubSessionSnapshot, ...]:
-        eligible = {
-            session.id: session
-            for session in sessions
-            if self._session_matches_configuration(session, configuration)
-        }
-        slots_by_session_id = {entry.session_id: entry.slot for entry in slots}
-        return tuple(
-            _ChubSessionSnapshot(
-                slot=slots_by_session_id[session.id],
-                session_id=session.id,
-                title=build_session_title(
-                    getattr(session, "title", None)
-                    or "Unnamed Session",
-                    self.settings.openclaw.weixin_chub_mode.session_name_max_width,
-                ),
-                state=self._codex_session_dispatch_state(session),
-                current=session.id == current_session_id,
-                model=getattr(session, "model", None),
-                reasoning_effort=getattr(
-                    session, "reasoning_effort", None
-                ),
-            )
-            for session in sessions_newest_first(eligible.values())
-            if session.id in slots_by_session_id
+        return collect_assigned_session_snapshots(
+            sessions=sessions,
+            configuration=configuration,
+            current_session_id=current_session_id,
+            slots=slots,
+            session_name_max_width=(
+                self.settings.openclaw.weixin_chub_mode.session_name_max_width
+            ),
+            session_matches=self._session_matches_allowed_workspace,
+            session_state=self._codex_session_dispatch_state,
+            workspace_name=self._session_workspace_name,
         )
 
     def _codex_operation_message(
@@ -6544,10 +6534,10 @@ class WeixinChubModeManager:
     ) -> WeixinChubModeDispatchResult:
         if not result.message:
             return result
-        session_slot, session_title = (
-            self._task_session_context()
+        session_slot, session_title, session_workspace_name = (
+            self._task_session_display_context()
             if include_current_session
-            else (None, None)
+            else (None, None, None)
         )
         return result.model_copy(
             update={
@@ -6557,6 +6547,7 @@ class WeixinChubModeManager:
                     self.settings.openclaw.weixin_chub_mode.task_name_max_width,
                     session_slot=session_slot,
                     session_title=session_title,
+                    session_workspace_name=session_workspace_name,
                     current=session_slot is not None,
                 )
             }
@@ -6567,24 +6558,51 @@ class WeixinChubModeManager:
             return None, None
         return self._session_context(self._state.session_id)
 
+    def _task_session_display_context(
+        self,
+    ) -> tuple[int | None, str | None, str | None]:
+        if self._state_error or self._state.session_id is None:
+            return None, None, None
+        return self._session_display_context(self._state.session_id)
+
+    @staticmethod
+    def _session_workspace_name(session: object) -> str | None:
+        workspace_name = getattr(session, "workspace_name", None)
+        if isinstance(workspace_name, str) and workspace_name.strip():
+            return workspace_name
+        cwd = getattr(session, "cwd", None)
+        if isinstance(cwd, str) and cwd.strip():
+            name = Path(cwd).name
+            if name:
+                return name
+        workspace_id = getattr(session, "workspace_id", None)
+        return workspace_id if isinstance(workspace_id, str) and workspace_id else None
+
     def _session_context(
         self,
         session_id: str,
     ) -> tuple[int | None, str | None]:
+        slot, title, _workspace_name = self._session_display_context(session_id)
+        return slot, title
+
+    def _session_display_context(
+        self,
+        session_id: str,
+    ) -> tuple[int | None, str | None, str | None]:
         slot = self._slot_for_session(session_id)
         if slot is None:
-            return None, None
+            return None, None, None
         try:
             session = self.codex_manager.get_session(session_id)
         except Exception:
-            return None, None
+            return None, None, None
         if getattr(session, "id", None) != session_id:
-            return None, None
+            return None, None, None
         title = build_session_title(
             getattr(session, "title", None) or "Unnamed Session",
             self.settings.openclaw.weixin_chub_mode.session_name_max_width,
         )
-        return slot, title
+        return slot, title, self._session_workspace_name(session)
 
     _normalize_fixed_prompt = staticmethod(normalize_fixed_prompt)
     def _read_codex_status_message(
@@ -6712,7 +6730,7 @@ class WeixinChubModeManager:
             current = self.codex_manager.get_session(session_id)
             if (
                 current.id != session_id
-                or not self._session_matches_configuration(
+                or not self._session_matches_allowed_workspace(
                     current,
                     self._state.configuration,
                 )
@@ -6911,7 +6929,7 @@ class WeixinChubModeManager:
             if (
                 refreshed.id != target.id
                 or self._slot_for_session(refreshed.id) != target_slot
-                or not self._session_matches_configuration(refreshed, configuration)
+                or not self._session_matches_allowed_workspace(refreshed, configuration)
             ):
                 raise ValueError("Session configuration changed")
         except Exception:
@@ -7542,7 +7560,7 @@ class WeixinChubModeManager:
             if (
                 refreshed.id != target.id
                 or self._slot_for_session(refreshed.id) != target_slot
-                or not self._session_matches_configuration(refreshed, configuration)
+                or not self._session_matches_allowed_workspace(refreshed, configuration)
             ):
                 raise ValueError("Session is no longer safe to delete")
         except Exception:
@@ -7838,7 +7856,7 @@ class WeixinChubModeManager:
             if (
                 refreshed.id != target.id
                 or self._slot_for_session(refreshed.id) != target_slot
-                or not self._session_matches_configuration(refreshed, configuration)
+                or not self._session_matches_allowed_workspace(refreshed, configuration)
             ):
                 raise ValueError("Session is no longer safe to archive")
         except Exception:
@@ -8205,7 +8223,7 @@ class WeixinChubModeManager:
             refreshed = self.codex_manager.get_session(target.id)
             if (
                 refreshed.id != target.id
-                or not self._session_matches_configuration(refreshed, configuration)
+                or not self._session_matches_allowed_workspace(refreshed, configuration)
             ):
                 raise ValueError("Session configuration changed")
             refreshed_state = self._codex_session_dispatch_state(refreshed)
@@ -8479,30 +8497,13 @@ class WeixinChubModeManager:
             sessions=sessions,
             fill_candidates=fill_candidates,
         )
-        eligible = {
-            session.id: session
-            for session in sessions
-            if self._session_matches_configuration(session, configuration)
-        }
-        slots_by_session_id = {
-            entry.session_id: entry.slot for entry in self._state.session_slots
-        }
-        visible = [
-            (
-                slots_by_session_id[session.id],
-                session,
-                self._codex_session_dispatch_state(session),
-            )
-            for session in sessions_newest_first(eligible.values())
-            if session.id in slots_by_session_id
-        ]
-        assigned = {entry.session_id for entry in self._state.session_slots}
-        remaining = sum(
-            session_id not in assigned
-            and self._codex_session_dispatch_state(session) != "Unavailable"
-            for session_id, session in eligible.items()
+        return visible_sessions(
+            sessions=sessions,
+            configuration=configuration,
+            slots=self._state.session_slots,
+            session_matches=self._session_matches_allowed_workspace,
+            session_state=self._codex_session_dispatch_state,
         )
-        return visible, remaining
 
     def _sync_session_slots(
         self,
@@ -8513,66 +8514,20 @@ class WeixinChubModeManager:
     ) -> None:
         if sessions is None:
             sessions = self.codex_manager.list_sessions()
-        eligible = {
-            session.id: session
-            for session in sessions
-            if self._session_matches_configuration(session, configuration)
-        }
-        retained: list[WeixinChubModeSessionSlot] = []
-        used_slots: set[int] = set()
-        used_sessions: set[str] = set()
-        for entry in sorted(self._state.session_slots, key=lambda item: item.slot):
-            if (
-                entry.session_id not in eligible
-                or entry.slot in used_slots
-                or entry.session_id in used_sessions
-            ):
-                continue
-            retained.append(entry.model_copy(deep=True))
-            used_slots.add(entry.slot)
-            used_sessions.add(entry.session_id)
-
-        candidates: list[object] = []
-        current = eligible.get(self._state.session_id or "")
-        if (
-            current is not None
-            and current.id not in used_sessions
-            and self._codex_session_dispatch_state(current) != "Unavailable"
-        ):
-            candidates.append(current)
-        if fill_candidates:
-            weixin_session_ids = self.quick_interactions.weixin_session_ids()
-            candidates.extend(
-                sorted(
-                    (
-                        session
-                        for session in eligible.values()
-                        if session.id not in used_sessions
-                        and session.id != getattr(current, "id", None)
-                        and self._codex_session_dispatch_state(session) != "Unavailable"
-                    ),
-                    key=lambda session: (
-                        session.id not in weixin_session_ids,
-                        session.id,
-                    ),
-                )
-            )
-        free_slots = [
-            slot
-            for slot in range(1, MAX_WEIXIN_SESSION_SLOTS + 1)
-            if slot not in used_slots
-        ]
-        for slot, session in zip(free_slots, candidates, strict=False):
-            retained.append(
-                WeixinChubModeSessionSlot(slot=slot, session_id=session.id)
-            )
-            used_sessions.add(session.id)
-
-        retained.sort(key=lambda item: item.slot)
-        if retained == self._state.session_slots:
+        synced = build_synced_slots(
+            configuration=configuration,
+            original_slots=self._state.session_slots,
+            current_session_id=self._state.session_id,
+            sessions=sessions,
+            weixin_session_ids=set(self.quick_interactions.weixin_session_ids()),
+            fill_candidates=fill_candidates,
+            session_matches=self._session_matches_allowed_workspace,
+            session_state=self._codex_session_dispatch_state,
+        )
+        if synced == self._state.session_slots:
             return
         next_state = self._state.model_copy(deep=True)
-        next_state.session_slots = retained
+        next_state.session_slots = synced
         self._write_state(next_state)
         self._state = next_state
 
@@ -8673,6 +8628,7 @@ class WeixinChubModeManager:
                         if self.quick_interactions.is_running(item.session_id)
                         else item.state,
                         item.session_id == current_session_id,
+                        getattr(item, "workspace_name", None),
                     )
                     for item in sessions
                 ),
@@ -8723,7 +8679,66 @@ class WeixinChubModeManager:
 
     _session_matches_configuration = staticmethod(session_matches_configuration)
 
+    def _allowed_weixin_workspace_ids(
+        self,
+        configuration: WeixinChubModeRuntimeConfig,
+    ) -> frozenset[str]:
+        """Keep the configured primary workspace plus explicit extra workspaces.
+
+        Built-in Home and Chub directories are not implicit Weixin targets.  A
+        previously assigned Session remains visible when its configured
+        directory is temporarily unavailable; availability is a dispatch
+        decision, not a reason to discard the persistent slot.
+        """
+        return frozenset(
+            {
+                configuration.workspace_id,
+                *(
+                    workspace.id
+                    for workspace in self.settings.ai_runtime.codex.extra_workspaces
+                ),
+            }
+        )
+
+    def _workspace_is_available(self, workspace_id: object) -> bool:
+        if not isinstance(workspace_id, str) or not workspace_id:
+            return False
+        try:
+            return any(
+                workspace.id == workspace_id and workspace.available
+                for workspace in self.codex_manager.workspaces()
+            )
+        except Exception:
+            LOGGER.warning(
+                "Unable to read configured workspaces for Weixin Session dispatch",
+                exc_info=True,
+            )
+            return False
+
+    def _session_matches_allowed_workspace(
+        self,
+        session: object,
+        configuration: WeixinChubModeRuntimeConfig,
+    ) -> bool:
+        return self._session_matches_configuration(
+            session,
+            configuration,
+            allowed_workspace_ids=self._allowed_weixin_workspace_ids(configuration),
+        )
+
+    def _session_matches_available_workspace(
+        self,
+        session: object,
+        configuration: WeixinChubModeRuntimeConfig,
+    ) -> bool:
+        return self._session_matches_allowed_workspace(
+            session,
+            configuration,
+        ) and self._workspace_is_available(getattr(session, "workspace_id", None))
+
     def _codex_session_dispatch_state(self, session: object) -> str:
+        if not self._workspace_is_available(getattr(session, "workspace_id", None)):
+            return "Unavailable"
         if getattr(session, "status", None) == "error":
             return "Unavailable"
         session_id = getattr(session, "id", "")
@@ -8826,19 +8841,7 @@ class WeixinChubModeManager:
                 if exc.code != "codex_session_not_found":
                     raise
             else:
-                if (
-                    session.workspace_id == configuration.workspace_id
-                    and session.permission_mode == configuration.permission_mode
-                    and (
-                        configuration.model is None
-                        or session.model == configuration.model
-                    )
-                    and (
-                        configuration.reasoning_effort is None
-                        or session.reasoning_effort
-                        == configuration.reasoning_effort
-                    )
-                ):
+                if self._session_matches_available_workspace(session, configuration):
                     return session.id, False
         return self._create_session(configuration), True
 

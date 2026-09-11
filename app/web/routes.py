@@ -98,7 +98,7 @@ def render_settings_page(
     settings = request.app.state.settings
     runtime_navigation = ()
     try:
-        runtime_navigation = request.app.state.ai_session_manager.runtime_modules.navigation()
+        runtime_navigation = request.app.state.ai_session_manager.runtime_plugins.navigation()
     except RuntimeOperationError:
         # Runtime settings remain reachable when a live module registration is invalid.
         pass
@@ -147,8 +147,8 @@ def runtime_settings(request: Request) -> HTMLResponse:
     return render_settings_page(
         request,
         page="runtime",
-        title="通用配置",
-        description="查看适用于所有 AI Runtime 的管理规则。",
+        title="插件管理",
+        description="管理 Runtime 与任务编排插件模块的通用默认项、导入与版本。",
     )
 
 
@@ -159,7 +159,7 @@ def runtime_settings(request: Request) -> HTMLResponse:
 )
 def runtime_detail_settings(request: Request, runtime_id: str) -> HTMLResponse:
     try:
-        runtime = request.app.state.ai_session_manager.runtime_modules.require_navigation(
+        runtime = request.app.state.ai_session_manager.runtime_plugins.require_navigation(
             runtime_id
         )
     except RuntimeOperationError:

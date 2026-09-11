@@ -26,12 +26,12 @@ from app.core.logger import (
     configure_worker_runtime_logging,
 )
 from app.ai_runtime import (
-    BuiltinRuntimeModuleRegistry,
+    RuntimePluginRegistry,
     WorkerRuntimeRegistry,
     validate_runtime_wiring,
 )
-from app.ai_runtime.external_modules import ExternalRuntimeModuleService
-from app.ai_runtime.codex_builtin import load_builtin_codex_module
+from app.ai_runtime.runtime_plugin_packages import RuntimePluginService
+from app.ai_runtime.codex_plugin import load_development_codex_plugin
 from app.quick_worker_tasks import (
     RuntimeTaskSubmission,
     TestTaskSubmission,
@@ -313,28 +313,28 @@ class QuickWorkerServer:
                 )
                 def build_registry(*, reload_builtin_source: bool = False) -> WorkerRuntimeRegistry:
                     runners = []
-                    builtin = load_builtin_codex_module(
+                    development_plugin = load_development_codex_plugin(
                         settings, reload_source=reload_builtin_source
                     )
-                    runtime_modules, failures = ExternalRuntimeModuleService(settings).build_registry(
-                        BuiltinRuntimeModuleRegistry(
-                            [] if builtin is None else [builtin]
+                    runtime_plugins, failures = RuntimePluginService(settings).build_registry(
+                        RuntimePluginRegistry(
+                            [] if development_plugin is None else [development_plugin]
                         )
                     )
                     for failure in failures:
-                        LOGGER.warning("Runtime module unavailable: module_id=%s reason=%s", failure.module_id, failure.reason)
-                    for implementation_id in runtime_modules.implementation_ids():
-                        runtime_module = runtime_modules.require(implementation_id)
+                        LOGGER.warning("Runtime plugin unavailable: module_id=%s reason=%s", failure.module_id, failure.reason)
+                    for implementation_id in runtime_plugins.implementation_ids():
+                        runtime_plugin = runtime_plugins.require(implementation_id)
                         try:
-                            adapter = runtime_module.build_adapter()
-                            configure_worker_adapter = getattr(runtime_module, "configure_worker_adapter", None)
+                            adapter = runtime_plugin.build_adapter()
+                            configure_worker_adapter = getattr(runtime_plugin, "configure_worker_adapter", None)
                             if callable(configure_worker_adapter):
                                 configure_worker_adapter(adapter, executable=resolved_executable, codex_home=resolved_codex_home)
-                            runner = runtime_module.build_worker_runner(adapter, workspaces=codex_workspaces)
+                            runner = runtime_plugin.build_worker_runner(adapter, workspaces=codex_workspaces)
                             validate_runtime_wiring(adapter, runner)
                             runners.append(runner)
                         except Exception:
-                            LOGGER.warning("Runtime module unavailable during Worker refresh: module_id=%s", implementation_id, exc_info=True)
+                            LOGGER.warning("Runtime plugin unavailable during Worker refresh: module_id=%s", implementation_id, exc_info=True)
                     if allow_test_tasks:
                         runners.append(FixedTestWorkerRuntime())
                     return WorkerRuntimeRegistry(runners)

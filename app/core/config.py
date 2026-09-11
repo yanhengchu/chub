@@ -103,7 +103,7 @@ class CodexRuntimeConfig(StrictModel):
         return self
 
 
-class ExternalRuntimeModulesConfig(StrictModel):
+class RuntimePluginsConfig(StrictModel):
     """Fixed local storage for trusted Runtime ZIP installations."""
 
     install_dir: Path = Path("data/local/runtime/modules")
@@ -130,7 +130,7 @@ class AutomationsConfig(StrictModel):
 
 class AiRuntimeConfig(StrictModel):
     codex: CodexRuntimeConfig = CodexRuntimeConfig()
-    modules: ExternalRuntimeModulesConfig = ExternalRuntimeModulesConfig()
+    modules: RuntimePluginsConfig = RuntimePluginsConfig()
 
 
 class MaintenanceTerminalConfig(StrictModel):
@@ -261,7 +261,7 @@ class OpenClawWeixinChubModeConfig(StrictModel):
     model: str | None = Field(default=None, min_length=1, max_length=128)
     reasoning_effort: str | None = Field(default=None, min_length=1, max_length=32)
     state_file: Path = Path("data/local/state/openclaw/weixin-chub-mode.json")
-    # Orchestration ZIPs are intentionally separate from Runtime modules. They
+    # Orchestration plugin ZIPs are intentionally separate from Runtime plugins. They
     # are loaded only by the Web coordinator and never by Quick Worker.
     orchestration_modules_dir: Path = Path(
         "data/local/runtime/openclaw/weixin-orchestration-modules"

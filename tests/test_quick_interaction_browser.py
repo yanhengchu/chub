@@ -257,6 +257,18 @@ class ConversationApi:
                 "quick_creation": {"available": True, "reason": None},
                 "workspaces": [
                     {
+                        "id": "home",
+                        "name": "用户目录",
+                        "path": "/workspace/home",
+                        "available": True,
+                    },
+                    {
+                        "id": "workspace",
+                        "name": "Workspace",
+                        "path": "/workspace",
+                        "available": True,
+                    },
+                    {
                         "id": "chub",
                         "name": "Chub",
                         "path": "/workspace/chub",
@@ -859,7 +871,7 @@ async def test_conversation_workflows_in_managed_chrome(
             await session_create.click()
             await expect(page.locator("#conversation-create-workspaces")).to_have_value("chub")
             await page.locator("#conversation-create-workspaces-trigger").click()
-            await expect(page.locator("#conversation-create-workspaces-menu [role='option']")).to_have_count(4)
+            await expect(page.locator("#conversation-create-workspaces-menu [role='option']")).to_have_count(6)
             assert await page.locator("#conversation-create-workspaces-trigger").evaluate(
                 "node => node.getBoundingClientRect().right - node.lastElementChild.getBoundingClientRect().right"
             ) >= 14

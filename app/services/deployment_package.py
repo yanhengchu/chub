@@ -194,7 +194,7 @@ class DeploymentPackageService:
             if state.operation is None or state.operation.operation_id != operation_id:
                 return
             state.operation.status = "started"
-            state.operation.message = "正在构建主包和正式扩展 ZIP。"
+            state.operation.message = "正在构建主包和正式插件 ZIP。"
             self._write(state)
         write_operation(operation_id=operation_id, action="build_deployment_package", status="started", target="chub-release", source_ip=source_ip)
         try:
@@ -231,7 +231,7 @@ class DeploymentPackageService:
             runtime_zip = modules / "codex-runtime.zip"
             weixin_zip = modules / "weixin-refinement.zip"
             subprocess.run([sys.executable, str(PROJECT_ROOT / "scripts" / "build_codex_runtime_zip.py"), "--output", str(runtime_zip), "--implementation-id", configuration.runtime_implementation_id, "--version", configuration.runtime_release_version, "--description", configuration.runtime_description], cwd=PROJECT_ROOT, check=True, capture_output=True, text=True, timeout=60)
-            subprocess.run([sys.executable, str(PROJECT_ROOT / "scripts" / "build_weixin_orchestration_module_zip.py"), "--output", str(weixin_zip), "--version", configuration.weixin_release_version], cwd=PROJECT_ROOT, check=True, capture_output=True, text=True, timeout=60)
+            subprocess.run([sys.executable, str(PROJECT_ROOT / "scripts" / "build_weixin_orchestration_plugin_zip.py"), "--output", str(weixin_zip), "--version", configuration.weixin_release_version], cwd=PROJECT_ROOT, check=True, capture_output=True, text=True, timeout=60)
             timestamp = _now().strftime("%Y%m%d%H%M%S")
             name = f"chub-release-{configuration.chub_release_version}-{timestamp}.zip"
             destination = self.output_dir / name

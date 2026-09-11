@@ -41,7 +41,7 @@ from app.api.openclaw_wechat_chub_mode import (
 from app.api.project_documents import router as project_documents_router
 from app.api.weekly_reports import router as weekly_reports_router
 from app.api.settings import router as settings_router
-from app.api.runtime_modules import router as runtime_modules_router
+from app.api.runtime_plugins import router as runtime_plugins_router
 from app.api.status import router as status_router
 from app.ai_session import AiSessionManager
 from app.ai_session.operations import archive_session, delete_session
@@ -514,7 +514,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         system_upgrade.update(
             operation_id,
             stage="verifying_new_instance",
-            message="新 Chub 实例已启动，正在确认目标协议和 Worker 健康状态。",
+            message="正在确认新 Web 和 Quick Worker 的健康状态。",
         )
         try:
             if instance_id == operation.old_instance_id:
@@ -628,14 +628,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 operation_id,
                 stage="launching_services",
                 restart_launch_state="launching",
-                message="数据清理已完成，正在启动固定服务切换程序。",
+                message="运行状态已清理，正在启动服务恢复流程。",
             )
             launch_system_upgrade_restart(operation_id)
             system_upgrade.update(
                 operation_id,
                 stage="restarting_services",
                 restart_launch_state="launched",
-                message="服务切换程序已启动，正在重建 Chub Web 与 Quick Worker。",
+                message="正在重启 Chub Web 和 Quick Worker。",
             )
         except Exception as exc:
             logging.getLogger("hub.system_upgrade").warning(
@@ -699,7 +699,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             system_upgrade.update(
                 operation_id,
                 stage="draining_worker",
-                message="正在停止 Quick Worker，在途任务将终止并清理运行态。",
+                message="正在停止 Quick Worker；在途任务将终止。",
                 worker_drain_started=True,
             )
             if state.destructive_started:
@@ -721,7 +721,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 operation_id,
                 stage="cleaning_state",
                 destructive_started=True,
-                message="正在清理 Chub Session 关联和旧运行状态。",
+                message="正在清理 Chub AI Session 关联和 Worker 运行状态。",
                 sessions=sessions,
             )
             for session in sessions:
@@ -980,21 +980,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         restart_recovery_task = None
         worker_maintenance_recovery_task = None
         system_upgrade_recovery_task = None
-        runtime_module_recovery_task = None
+        runtime_plugin_recovery_task = None
         runtime_state_cleanup_task = None
-        runtime_module_recovery = ai_session_manager.runtime_module_recovery
-        if runtime_module_recovery is not None:
+        runtime_plugin_recovery = ai_session_manager.runtime_plugin_recovery
+        if runtime_plugin_recovery is not None:
             write_operation(
-                operation_id=runtime_module_recovery.operation_id,
-                action=runtime_module_recovery.action,
+                operation_id=runtime_plugin_recovery.operation_id,
+                action=runtime_plugin_recovery.action,
                 status="failed",
-                target=runtime_module_recovery.module_id,
+                target=runtime_plugin_recovery.module_id,
                 source_ip="127.0.0.1",
-                reason="recovered incomplete Runtime module operation before confirmation",
+                reason="recovered incomplete Runtime plugin operation before confirmation",
             )
 
-            async def restore_runtime_module_worker() -> None:
-                drain_id = f"runtime-module-recovery:{runtime_module_recovery.operation_id}"
+            async def restore_runtime_plugin_worker() -> None:
+                drain_id = f"runtime-module-recovery:{runtime_plugin_recovery.operation_id}"
                 try:
                     drained = await request_drain(
                         resolved_settings,
@@ -1017,48 +1017,48 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     if operation is None or operation.status != "succeeded":
                         raise OSError("Quick Worker reload could not be confirmed")
                     write_operation(
-                        operation_id=f"runtime-module-recovery:{runtime_module_recovery.operation_id}",
+                        operation_id=f"runtime-module-recovery:{runtime_plugin_recovery.operation_id}",
                         action=(
-                            "recover_runtime_module_removal"
-                            if runtime_module_recovery.action == "remove_runtime_module"
-                            else "recover_runtime_module_activation"
+                            "recover_runtime_plugin_removal"
+                            if runtime_plugin_recovery.action == "remove_runtime_module"
+                            else "recover_runtime_plugin_activation"
                         ),
                         status="succeeded",
-                        target=runtime_module_recovery.module_id,
+                        target=runtime_plugin_recovery.module_id,
                         source_ip="127.0.0.1",
                     )
                 except Exception:
-                    logging.getLogger("hub.runtime_modules").warning(
-                        "Unable to reconcile incomplete Runtime module activation",
+                    logging.getLogger("hub.runtime_plugins").warning(
+                        "Unable to reconcile incomplete Runtime plugin activation",
                         exc_info=True,
                     )
                     write_operation(
-                        operation_id=f"runtime-module-recovery:{runtime_module_recovery.operation_id}",
+                        operation_id=f"runtime-module-recovery:{runtime_plugin_recovery.operation_id}",
                         action=(
-                            "recover_runtime_module_removal"
-                            if runtime_module_recovery.action == "remove_runtime_module"
-                            else "recover_runtime_module_activation"
+                            "recover_runtime_plugin_removal"
+                            if runtime_plugin_recovery.action == "remove_runtime_module"
+                            else "recover_runtime_plugin_activation"
                         ),
                         status="failed",
-                        target=runtime_module_recovery.module_id,
+                        target=runtime_plugin_recovery.module_id,
                         source_ip="127.0.0.1",
                         reason="quick worker registry recovery could not be confirmed",
                     )
 
-            runtime_module_recovery_task = asyncio.create_task(
-                restore_runtime_module_worker()
+            runtime_plugin_recovery_task = asyncio.create_task(
+                restore_runtime_plugin_worker()
             )
             await asyncio.sleep(0)
 
-        async def recover_runtime_module_state_cleanup() -> None:
+        async def recover_runtime_plugin_state_cleanup() -> None:
             """Retry only the deferred local state cleanup for one Runtime."""
             reported_failure = False
             while True:
                 try:
-                    cleanup = ai_session_manager.runtime_module_service.pending_state_cleanup()
+                    cleanup = ai_session_manager.runtime_plugin_service.pending_state_cleanup()
                 except Exception:
-                    logging.getLogger("hub.runtime_modules").warning(
-                        "Unable to read deferred Runtime module state cleanup",
+                    logging.getLogger("hub.runtime_plugins").warning(
+                        "Unable to read deferred Runtime plugin state cleanup",
                         exc_info=True,
                     )
                     return
@@ -1075,13 +1075,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         raise OSError("Quick Worker Runtime state cleanup was not confirmed")
                     for session_id in cleanup.session_ids:
                         quick_interactions.remove_session_tasks(session_id)
-                    ai_session_manager.clear_runtime_module_state(cleanup.module_id)
-                    ai_session_manager.runtime_module_service.complete_state_cleanup(
+                    ai_session_manager.clear_runtime_plugin_state(cleanup.module_id)
+                    ai_session_manager.runtime_plugin_service.complete_state_cleanup(
                         cleanup.operation_id
                     )
                     write_operation(
                         operation_id=f"runtime-module-state-cleanup:{cleanup.operation_id}",
-                        action="recover_runtime_module_state_cleanup",
+                        action="recover_runtime_plugin_state_cleanup",
                         status="succeeded",
                         target=cleanup.module_id,
                         source_ip="127.0.0.1",
@@ -1090,23 +1090,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     continue
                 except Exception:
                     if not reported_failure:
-                        logging.getLogger("hub.runtime_modules").warning(
-                            "Deferred Runtime module state cleanup is pending",
+                        logging.getLogger("hub.runtime_plugins").warning(
+                            "Deferred Runtime plugin state cleanup is pending",
                             exc_info=True,
                         )
                         write_operation(
                             operation_id=f"runtime-module-state-cleanup:{cleanup.operation_id}",
-                            action="recover_runtime_module_state_cleanup",
+                            action="recover_runtime_plugin_state_cleanup",
                             status="failed",
                             target=cleanup.module_id,
                             source_ip="127.0.0.1",
-                            reason="runtime module state cleanup remains pending",
+                            reason="runtime plugin state cleanup remains pending",
                         )
                         reported_failure = True
                     await asyncio.sleep(5)
 
         runtime_state_cleanup_task = asyncio.create_task(
-            recover_runtime_module_state_cleanup()
+            recover_runtime_plugin_state_cleanup()
         )
         await asyncio.to_thread(quick_interactions.start_worker_reconciliation)
         if quick_interactions.recovery_ready and not system_upgrade.writes_blocked():
@@ -1190,10 +1190,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             yield
         finally:
-            if runtime_module_recovery_task is not None:
-                runtime_module_recovery_task.cancel()
+            if runtime_plugin_recovery_task is not None:
+                runtime_plugin_recovery_task.cancel()
                 with suppress(asyncio.CancelledError):
-                    await runtime_module_recovery_task
+                    await runtime_plugin_recovery_task
             if runtime_state_cleanup_task is not None:
                 runtime_state_cleanup_task.cancel()
                 with suppress(asyncio.CancelledError):
@@ -1329,7 +1329,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(project_documents_router)
     application.include_router(weekly_reports_router)
     application.include_router(settings_router)
-    application.include_router(runtime_modules_router)
+    application.include_router(runtime_plugins_router)
     application.include_router(status_router)
     application.include_router(codex_api_router)
     application.include_router(maintenance_terminal_api_router)

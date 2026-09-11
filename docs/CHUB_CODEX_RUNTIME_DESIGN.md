@@ -4,7 +4,7 @@
 > 主要读者：AI Agent、实现和排障 Agent；维护人员用于确认数据口径、配置和验收。
 > 本文负责：定义当前 Codex Runtime 的专属能力与配置边界，并具体维护认证方式切换、Codex Native Session 发现、额度与用量采集、数据口径、安全和验收。
 > 本文不负责：Runtime 共享能力契约、Chub Session 状态和映射规则、Adapter/Runner 通用实现、Runtime ZIP 生命周期、其他 Runtime 的专属实现，以及由外部调用方选择认证来源、账号、订阅、时区、浏览器页面或本机目录。
-> 维护说明：Codex 是当前唯一接入的 Runtime，并以外置 Runtime 模块的固定实现槽位加载；本文只记录其私有行为和当前实现证据。所有 Runtime 共用的能力、状态所有权和接入判定以[Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)为准，ZIP 的导入、覆盖、移除和恢复以[Chub AI Runtime 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md)为准。
+> 维护说明：Codex 是当前唯一接入的 Runtime，并以 Runtime 插件模块的固定实现槽位加载；本文只记录其私有行为和当前实现证据。所有 Runtime 共用的能力、状态所有权和接入判定以[Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)为准，ZIP 的导入、覆盖、移除和恢复以[Chub AI Runtime 插件模块设计](CHUB_RUNTIME_PLUGIN_DESIGN.md)为准。
 
 ## 0. AI Agent 快速理解
 
@@ -15,7 +15,7 @@
 | 需要判断的事项 | 先读的权威文档 |
 | --- | --- |
 | Codex 私有的 Native Session 发现、认证来源、用量口径、缓存或展示 | 本文 |
-| Codex ZIP 的导入、覆盖、移除、`builtin-dev` 重载或实现槽位保护 | [Chub AI Runtime 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md) |
+| Codex ZIP 的导入、覆盖、移除、`builtin-dev` 重载或实现槽位保护 | [Chub AI Runtime 插件模块设计](CHUB_RUNTIME_PLUGIN_DESIGN.md) |
 | Runtime 共享能力、Adapter/Runner 契约或新增 Runtime 接入 | [Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md) |
 | Chub Session 映射、Quick Worker 任务/恢复或微信用户可见行为 | 对应的 Session、Quick Worker 或集成专项设计 |
 
@@ -37,7 +37,7 @@ Codex 通过 Runtime 共享契约接入 Chub。通用的 Session、Worker、Adap
 | 内容 | 当前 Codex Runtime 的边界 | 权威文档 |
 | --- | --- | --- |
 | 共享 Runtime 能力 | 声明并实现已接入的能力；不改变能力模型或状态所有权 | [Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md) |
-| Runtime ZIP | 由第一方 Codex ZIP 打包、安装和维护 | [Chub AI Runtime 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md) |
+| Runtime ZIP | 由第一方 Codex 插件模块 ZIP 打包、安装和维护 | [Chub AI Runtime 插件模块设计](CHUB_RUNTIME_PLUGIN_DESIGN.md) |
 | 认证方式切换 | 在固定 ChatGPT 账户登录与 API Key 两种既定模式间切换，并同步配置 | 本文第 1.1 节 |
 | Native Session 发现 | 从 Codex 固定本机数据源读取、校验并规范化当前原生 Session | 本文第 1.2 节 |
 | 用量快照 | 使用 Codex 账户或固定 Sub2API 路径生成 `usage_snapshot` | 本文第 2 节至第 7 节 |
@@ -61,11 +61,11 @@ Codex 通过 Runtime 共享契约接入 Chub。通用的 Session、Worker、Adap
 
 #### 两条固定流程
 
-- **切到账户模式**：脚本先取得自动化和 Debug Chrome 锁，记录原浏览器的启动状态、Profile 与显示模式，再临时以已初始化的固定 `Default`（延恒）Profile 启动有界面 Debug Chrome。它执行 `codex login --device-auth`，按“账户选择 → 授权确认 → 设备码”持续识别页面阶段；设备码填写后逐格在内存中核对，确认一致且最终按钮可用后才提交。只有 CLI 退出并由 `codex login status` 确认 ChatGPT 已登录，才进入配置同步。
+- **切到账户模式**：脚本先取得自动化和 Debug Chrome 锁，记录原浏览器的启动状态、Profile 与显示模式，再临时以已初始化的固定 `Default`（延恒）Profile 启动有界面 Debug Chrome。它执行 `codex login --device-auth`，先验证解析到的是完整九位设备码，再按“账户选择 → 授权确认 → 设备码”持续识别页面阶段；每轮填写后逐格在内存中核对，未完全一致时最多重新填写两次，只有九位均确认一致且最终按钮可用后才提交。提交后必须进入非设备码的授权结果页，保留一秒后关闭页面；CLI 仅等待 30 秒回调，再由 `codex login status` 确认 ChatGPT 已登录，才进入配置同步。
 - **切到 API Key 模式**：脚本执行 `codex logout`，并由 `codex login status` 确认未登录后才进入配置同步。它不创建、读取或展示 API Key；API Key 的后续调用失败也不会自动回滚到账户模式。
 - **配置同步与浏览器恢复**：两条流程都先保存离开模式的当前 `CODEX_HOME/config.toml`，再原子替换目标模式模板。账户→API 依次更新 `config_account.toml`、`config_api.toml`；API→账户则依次更新 `config_api.toml`、`config_account.toml`。账户切换无论成功或失败都恢复原浏览器的启动状态、Profile 与显示模式；模板、读取、替换或恢复失败时停止并明确报告，不覆盖活动配置或宣称完整成功。
 
-该入口接受受保护的工作台请求、本机脚本调用，以及当前绑定微信 Owner 的两条固定认证指令；微信仅能读取当前认证方式或触发“切到另一既定模式”，不能指定账户、模式、设备码、URL、路径或凭据。OpenClaw Agent Tool、普通任务与任意命令入口均不能触发。微信切换沿本次保存的微信路由异步回送最终结果，且只有脚本认证终态、配置同步、浏览器恢复与最终账户检查均确认时才报成功。上游授权页结构、设备代码授权开关和多因素验证属于 OpenAI 外部依赖；页面变化、设备授权未开启或设备码过期时，脚本失败，不猜测、重放或记录认证内容。流程日志只记录阶段、脱敏路径、可见控件/输入数量与固定动作，不记录页面正文、账户标识、设备码或凭据。
+该入口接受受保护的工作台请求、本机脚本调用，以及当前绑定微信 Owner 的两条固定认证指令；微信仅能读取当前认证方式或触发“切到另一既定模式”，不能指定账户、模式、设备码、URL、路径或凭据。OpenClaw Agent Tool、普通任务与任意命令入口均不能触发。微信切换沿本次保存的微信路由异步回送最终结果，且只有脚本认证终态、配置同步、浏览器恢复与最终账户检查均确认时才报成功。上游授权页结构、设备代码授权开关和多因素验证属于 OpenAI 外部依赖；页面变化、设备授权未开启或设备码过期时，脚本失败，不猜测、重放或记录认证内容。工作台/API 触发的流程日志按操作 ID 关联；所有入口记录固定阶段、脱敏路径、可见控件/输入数量、固定动作、浏览器恢复、配置同步，以及认证子进程的受控终端阶段、退出码和等待时长；操作失败只记录固定错误码。账户授权回调最多等待 30 秒；不记录原始终端文本、页面正文、账户标识、设备码或凭据。
 
 ### 1.2 Codex Native Session 发现
 
@@ -315,5 +315,5 @@ Today · $181.02 Used · 100M tokens
 ## 相关文档
 
 - [Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)：Runtime 共享能力、`usage_snapshot`/`usage_login_page` 契约和接入判定。
-- [Chub AI Runtime 外置模块功能设计](CHUB_EXTERNAL_MODULE_DESIGN.md)：当前 Codex Runtime ZIP 的安装、替换、移除与状态清理。
+- [Chub AI Runtime 插件模块设计](CHUB_RUNTIME_PLUGIN_DESIGN.md)：当前 Codex Runtime ZIP 的安装、替换、移除与状态清理。
 - [Chub 集成能力清单](CHUB_INTEGRATION_CAPABILITIES.md)：当前 `usage` 入口和用户可见行为。

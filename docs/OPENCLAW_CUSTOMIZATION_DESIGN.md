@@ -3,7 +3,7 @@
 > 状态：已验收
 > 主要读者：AI Agent、实现和排障 Agent；维护人员用于确认定制范围、版本、部署和验收边界。
 > 本文负责：Chub 对 OpenClaw/微信 ClawBot 的最小定制范围、身份与路由边界、插件归属、第三方适配器兼容补丁、Context Token 持久化和验收规则。
-> 本文不负责：微信固定指令语法和用户可见回复格式（见[Chub 集成能力清单](CHUB_INTEGRATION_CAPABILITIES.md)），微信编排模块的流程与切换（见[Chub 微信任务编排外置设计](WEIXIN_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md)），插件协议、构建和部署命令（见[Chub OpenClaw 插件说明](../integrations/openclaw/chub/README.md)），以及 OpenClaw 或腾讯微信插件自身的上游功能。
+> 本文不负责：微信固定指令语法和用户可见回复格式（见[Chub 集成能力清单](CHUB_INTEGRATION_CAPABILITIES.md)），微信任务编排插件模块的流程与切换（见[Chub 微信任务编排插件模块设计](WEIXIN_TASK_ORCHESTRATION_PLUGIN_DESIGN.md)），插件协议、构建和部署命令（见[Chub OpenClaw 插件说明](../integrations/openclaw/chub/README.md)），以及 OpenClaw 或腾讯微信插件自身的上游功能。
 
 ## 0. 维护基线
 
@@ -50,7 +50,7 @@ OpenClaw 升级、重装或实际加载目录变化后，先检查运行版本�
 2. 微信请求只能走：`微信 -> OpenClaw 微信适配器 -> Chub 插件 -> Chub dispatch -> Codex/Worker -> Chub -> OpenClaw -> 微信`。
 3. Chub 插件和 Chub 服务不得调用 `openclaw agent`、Gateway Agent 或模型来决定微信请求路由。
 4. 微信高权限入口必须来自同机真实 loopback socket、当前绑定的单一微信 Owner、私聊消息和稳定消息 ID；任一条件不满足都失败关闭。
-5. 请求正文不得选择 Session、workspace、权限、模型、路径、命令或收件人；这些对象由 Chub 固定规则选择。
+5. 请求正文不得选择 Session、workspace、权限、模型、路径、命令或收件人；这些对象由 Chub 固定规则选择。微信 `sync` 只列出当前 Chub 已允许工作区中、且符合微信权限/模型设置的 Session；默认新建工作区仅影响 `new`，不缩窄已允许工作区的同步范围。
 6. 同一稳定消息 ID 与同一路由只能产生一个决定和一个派生任务；重复请求返回首次决定，路由冲突拒绝，未知副作用不自动重试。
 7. 任务结果和通知结果是两个状态；任务成功不等于通知成功，原保存路由失效时不得回退到全局收件人。
 8. Context Token 必须按 `accountId + userId` 持久化，Gateway 启动恢复，内存未命中时懒恢复；文件权限必须为 `600`。
@@ -232,4 +232,4 @@ Chub 插件升级只从 `integrations/openclaw/chub/` 构建并安装；插件�
 - [Chub OpenClaw 插件说明](../integrations/openclaw/chub/README.md)：插件源码、构建、安装、部署和协议升级操作手册。
 - [Chub 总体架构](CHUB_ARCHITECTURE_DESIGN.md)：系统边界和状态所有权。
 - [Chub Quick Worker 设计](CHUB_QUICK_WORKER_DESIGN.md)：任务执行、恢复、通知终态和重启协调。
-- [Chub 微信任务编排外置设计](WEIXIN_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md)：未来微信编排模块的流程与切换边界。
+- [Chub 微信任务编排插件模块设计](WEIXIN_TASK_ORCHESTRATION_PLUGIN_DESIGN.md)：微信任务编排插件的流程与切换边界。

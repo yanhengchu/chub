@@ -4,7 +4,7 @@
 
 本文是 Chub 的项目入口，负责说明项目定位、当前能力概览、最小启动方式、常用维护入口、数据与安全摘要，以及权威文档导航。
 
-本文不负责定义系统分层、状态所有权、服务恢复、Runtime 契约、任务执行、外置模块、微信指令、插件协议或页面交互规则；这些内容只在对应的专项文档中维护。需要确认“当前 Chub 能做什么”时，以[Chub 集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md)为准；历史资料不覆盖当前契约。
+本文不负责定义系统分层、状态所有权、服务恢复、Runtime 契约、任务执行、插件模块、微信指令、插件协议或页面交互规则；这些内容只在对应的专项文档中维护。需要确认“当前 Chub 能做什么”时，以[Chub 集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md)为准；历史资料不覆盖当前契约。
 
 ## 项目介绍
 
@@ -13,6 +13,10 @@ Chub 是面向个人设备、本地优先的轻量 AI 工作站控制面。它�
 当前 AI 能力由后端固定注册的本机 Runtime 提供，现有部署实例为 Codex。Quick Worker 承载跨 Web 重启继续运行的后台 AI 任务；OpenClaw 在微信链路中承担可信消息网关和通道适配。Chub 支持 macOS LaunchAgent 与 Ubuntu systemd user service。
 
 Chub 按维护者授信的个人工作站运行：优先保证本地可用、局部恢复和最终状态可确认，不按多用户平台或零信任插件市场设计。此定位不放宽外部入口边界，微信、OpenClaw 和远程浏览器仍只能通过固定身份、路由和受控能力访问。
+
+Chub 的长期定位是“个人本地工作站与统一控制面”：核心自身始终可独立运行，并可装载独立演进的插件模块。插件模块拥有自己的业务页面、设置、数据和流程，复用 Chub 的稳定能力与运行环境。核心优先保证可用性、局部恢复和最终状态确认，只在会造成直接数据破坏、安全越界或不可恢复冲突时施加最小门禁；单个插件模块未安装、停用或故障时，只影响其自身，不影响 Chub 核心和其他独立功能。
+
+“插件模块”是 Chub 的统一产品与架构术语；正式交付和安装形态统一称为“插件包”或“插件 ZIP”。当前已实现 Runtime 插件模块与微信任务编排插件模块；面向业务页面、设置和流程的通用“工作台业务插件模块”仍是后续目标，不应视为当前可安装能力。
 
 ## 当前能力
 
@@ -24,9 +28,10 @@ Chub 按维护者授信的个人工作站运行：优先保证本地可用、局
 | 需求储备 | 管理 R1-R9 轻量需求 | `chub` CLI、微信 ClawBot |
 | 自动化与周报 | 使用受管 Debug Chrome 运行固定自动化，准备并生成周报 | 自动化页、周报页、命令行 |
 | 外部集成与通知 | 接入 OpenClaw/微信 ClawBot，并向预配置飞书目标发送通知 | 设置页、微信 ClawBot、OpenClaw Tool、CLI |
+| 插件模块 | 管理已接入的 Runtime 插件模块与微信任务编排插件模块；业务工作台插件模块为后续方向 | 设置页、受控维护入口 |
 | 项目资料与外观 | 浏览已登记的项目资料，切换主题和文字大小 | 工作台、设置页 |
 
-微信任务能力编排已提供直接执行、固定仓库开发实现 `weixin-orchestration-dev`，以及受控 ZIP 模块的导入、启用、停用和移除。旧 `internal` 阶段仅用于识别历史运行态并失败关闭，不再接受新任务。ZIP 产物按内容摘要不可变保存，已受理任务继续绑定创建时的阶段产物；通用架构见[Chub 能力编排外置架构设计](docs/CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md)，微信范围见[Chub 微信任务编排外置设计](docs/WEIXIN_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md)。
+微信任务编排插件模块已提供直接执行、固定仓库开发实现 `weixin-orchestration-dev`，以及正式 ZIP 的导入、启用、停用和移除。旧 `internal` 阶段仅用于识别历史运行态并失败关闭，不再接受新任务。ZIP 产物按内容摘要不可变保存，已受理任务继续绑定创建时的阶段产物；通用架构见[Chub 任务编排插件模块架构设计](docs/CHUB_TASK_ORCHESTRATION_PLUGIN_DESIGN.md)，微信范围见[Chub 微信任务编排插件模块设计](docs/WEIXIN_TASK_ORCHESTRATION_PLUGIN_DESIGN.md)。
 
 ## 快速开始
 
@@ -105,7 +110,7 @@ Chub 始终提供 loopback 访问；启用默认的 Tailnet 可信访问后，�
 | --- | --- |
 | [Chub 项目说明](README.md) | 项目概览、启动与维护入口、安全摘要和文档导航 |
 | [Chub 总体架构设计](docs/CHUB_ARCHITECTURE_DESIGN.md) | 核心、AI Runtime 与第三方服务三层架构、状态所有权和跨模块约束 |
-| [Chub 正式部署包与安装设计](docs/CHUB_DEPLOYMENT_PACKAGE_DESIGN.md) | 正式部署包、随包扩展 ZIP、新设备安装与可选 OpenClaw 接入边界 |
+| [Chub 正式部署包与安装设计](docs/CHUB_DEPLOYMENT_PACKAGE_DESIGN.md) | 正式部署包、随包插件 ZIP、新设备安装与可选 OpenClaw 接入边界 |
 | [Chub 集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md) | 按场景登记当前可用能力、入口映射，以及微信固定指令唯一产品契约 |
 
 ### AI Runtime
@@ -113,15 +118,15 @@ Chub 始终提供 loopback 访问；启用默认的 Tailnet 可信访问后，�
 | 文档 | 唯一职责 |
 | --- | --- |
 | [Chub AI Runtime 架构设计](docs/CHUB_AI_RUNTIME_DESIGN.md) | Runtime 共享契约、能力矩阵、Adapter/Runner 边界与新增 Runtime 实现规范 |
-| [Chub AI Runtime 外置模块功能设计](docs/CHUB_EXTERNAL_MODULE_DESIGN.md) | Runtime ZIP 协议、安装/替换/移除、双端注册确认和模块状态清理边界 |
+| [Chub AI Runtime 插件模块设计](docs/CHUB_RUNTIME_PLUGIN_DESIGN.md) | Runtime 插件 ZIP 协议、安装/替换/移除、双端注册确认和模块状态清理边界 |
 | [Chub Codex Runtime 设计](docs/CHUB_CODEX_RUNTIME_DESIGN.md) | 当前 Codex Runtime 的专属边界、Codex/OpenAI 用量来源、接口、缓存和展示口径 |
 
 ### 任务执行
 
 | 文档 | 唯一职责 |
 | --- | --- |
-| [Chub 能力编排外置架构设计](docs/CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md) | 外置编排模块的通用执行面、检查点、版本绑定和生命周期边界 |
-| [Chub 微信任务编排外置设计](docs/WEIXIN_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md) | 微信已验证任务正文的内置/模块分流、首个模块范围、阶段目标和验收 |
+| [Chub 任务编排插件模块架构设计](docs/CHUB_TASK_ORCHESTRATION_PLUGIN_DESIGN.md) | 任务编排插件模块的通用执行面、检查点、版本绑定和生命周期边界 |
+| [Chub 微信任务编排插件模块设计](docs/WEIXIN_TASK_ORCHESTRATION_PLUGIN_DESIGN.md) | 微信已验证任务正文的内置/插件分流、首个插件范围、阶段目标和验收 |
 | [Chub Session 状态模型设计](docs/AI_SESSION_STATE_DESIGN.md) | Chub Session、Native Session 数据消费与映射、Activity、usage 投影、入口、操作、槽位和单 writer 语义 |
 | [Chub Quick Worker 独立服务设计](docs/CHUB_QUICK_WORKER_DESIGN.md) | Quick Worker 独立服务、非实时任务、恢复、通知终态和重启协调 |
 

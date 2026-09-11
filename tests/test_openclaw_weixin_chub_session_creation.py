@@ -281,7 +281,7 @@ def test_codex_new_creates_names_and_selects_without_submitting(
     assert first.message.startswith(
         "Create: S1 created and selected.\n\n"
     )
-    assert f"▶ S1 · {task_prompt}" in first.message
+    assert f"▶ S1 · [Chub] {task_prompt}" in first.message
     assert duplicate.message == first.message
     codex_manager.create_session.assert_called_once()
     codex_manager.rename_session.assert_called_once_with("session-new", task_prompt)
@@ -410,7 +410,7 @@ def test_codex_new_status_does_not_fill_unassigned_candidate(
     )
 
     assert result.message is not None
-    assert "▶ S2 · 新建会话" in result.message
+    assert "▶ S2 · [Chub] 新建会话" in result.message
     assert "等待候选" not in result.message
     assert "1 more Sessions" in result.message
     assert manager.session_slot_matches(2, "session-new") is True
@@ -449,7 +449,7 @@ def test_internal_codex_status_does_not_fill_unassigned_candidate(
 
     internal_status = manager.codex_status_message()
 
-    assert "▶ S1 · 候选 1" in internal_status
+    assert "▶ S1 · [Chub] 候选 1" in internal_status
     assert "候选 2" not in internal_status
     codex_manager.list_sessions.assert_not_called()
     assert manager.session_slot_matches(2, "session-2") is False
@@ -617,5 +617,5 @@ def test_chub_sync_uses_placeholder_for_untitled_session(
         delivery_route=delivery_route(),
     )
 
-    assert "S1 · Unnamed Session" in (result.message or "")
+    assert "S1 · [Chub] Unnamed Session" in (result.message or "")
     quick_interactions.submit.assert_not_called()

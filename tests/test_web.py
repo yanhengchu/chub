@@ -16,7 +16,7 @@ from app.automations.models import (
     FeishuEnvironmentState,
     RuntimeAccountEnvironmentState,
 )
-from app.ai_runtime import BuiltinRuntimeModuleRegistry, RuntimeDescriptor
+from app.ai_runtime import RuntimePluginRegistry, RuntimeDescriptor
 from app.application import create_app
 from app.codex.models import RuntimeManagementData, RuntimeManagementItem
 from app.core.config import Settings
@@ -577,10 +577,12 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert 'id="runtime-general-settings-title"' not in pages["runtime"].text
     assert "此处控制 Runtime 是否接收后续新 AI 任务" not in pages["runtime"].text
     assert 'id="codex-default-runtime-implementation"' not in pages["runtime"].text
-    assert "Runtime 模块导入" in pages["runtime"].text
+    assert '<h1 id="settings-title" class="settings-workspace-title">插件管理</h1>' in pages["runtime"].text
+    assert "管理 Runtime 与任务编排插件模块的通用默认项、导入与版本。" in pages["runtime"].text
+    assert "Runtime 插件导入" in pages["runtime"].text
     assert "可在对应 Runtime 设置页选择当前使用版本。" in pages["runtime"].text
     assert 'class="runtime-module-install-heading"' in pages["runtime"].text
-    assert "能力模块导入" in pages["runtime"].text
+    assert "任务编排插件导入" in pages["runtime"].text
     assert 'id="orchestration-module-file"' in pages["runtime"].text
     assert 'id="orchestration-module-list" class="settings-divided-list runtime-module-list"' in pages["runtime"].text
     assert 'id="ai-runtime-general-settings"' in pages["runtime"].text
@@ -625,14 +627,14 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert 'const field = document.createElement("section");' in script.text
     assert 'input.id = `runtime-enabled-${runtime.runtime_id}`;' in script.text
     assert 'control.htmlFor = input.id;' in script.text
-    assert 'moduleEmptyRow("尚未导入 Runtime 模块。")' in script.text
-    assert 'moduleEmptyRow("尚未导入能力模块。")' in script.text
+    assert 'moduleEmptyRow("尚未导入 Runtime 插件。")' in script.text
+    assert 'moduleEmptyRow("尚未导入任务编排插件。")' in script.text
     assert 'formalImplementationTitle(module.name || "Runtime", module.version)' in script.text
     assert 'badge.textContent = module.status === "active" ? "已启用" : "不可用";' in script.text
-    assert 'Runtime 模块已导入并启用。' in script.text
-    assert 'formalImplementationTitle(module.name || "能力模块", module.version)' in script.text
-    assert 'remove.addEventListener("click", clearSelectedRuntimeModule);' in script.text
-    assert 'remove.addEventListener("click", clearSelectedOrchestrationModule);' in script.text
+    assert 'Runtime 插件已导入并启用。' in script.text
+    assert 'formalImplementationTitle(module.name || "任务编排插件", module.version)' in script.text
+    assert 'remove.addEventListener("click", clearSelectedRuntimePlugin);' in script.text
+    assert 'remove.addEventListener("click", clearSelectedOrchestrationPlugin);' in script.text
     assert 'href="/settings/runtime/codex" aria-current="page"' in pages["runtime-detail"].text
     assert '新建 Session 默认项由 Chub 安全保存。' not in pages["openclaw"].text
     assert '浏览器拒绝保存时，主题和文字大小仅在当前页临时应用。' in pages["openclaw"].text
@@ -779,7 +781,7 @@ async def test_runtime_settings_navigation_lists_each_registered_runtime(
     settings: Settings,
 ) -> None:
     app = create_app(settings)
-    runtime_modules = MagicMock(spec=BuiltinRuntimeModuleRegistry)
+    runtime_plugins = MagicMock(spec=RuntimePluginRegistry)
     codex_runtime = SimpleNamespace(
         runtime_id="codex",
         name="Codex Runtime",
@@ -800,7 +802,7 @@ async def test_runtime_settings_navigation_lists_each_registered_runtime(
         display_name="Local Runtime",
         description="Local Runtime description",
     )
-    runtime_modules.navigation.return_value = (
+    runtime_plugins.navigation.return_value = (
         SimpleNamespace(
             runtime_id="codex",
             name="Codex Runtime",
@@ -812,11 +814,11 @@ async def test_runtime_settings_navigation_lists_each_registered_runtime(
             description="Local Runtime description",
         ),
     )
-    runtime_modules.require_navigation.side_effect = {
+    runtime_plugins.require_navigation.side_effect = {
         "codex": codex_runtime,
         "local": local_runtime,
     }.__getitem__
-    app.state.ai_session_manager.runtime_modules = runtime_modules
+    app.state.ai_session_manager.runtime_plugins = runtime_plugins
     app.state.ai_session_manager.read_runtime_management = MagicMock(
         return_value=RuntimeManagementData(
             basic_mode=False,
@@ -942,11 +944,16 @@ async def test_home_workstation_third_party_controls_are_state_driven(
         script = await client.get("/static/js/features/workspace-workstation.js")
 
     assert response.status_code == 200
-    assert "开发环境" in response.text
-    assert response.text.index("工作站环境") < response.text.index("开发环境") < response.text.index("第三方服务环境")
+    assert "当前实现" in response.text
+    assert response.text.index("工作站环境") < response.text.index("当前实现") < response.text.index("第三方服务环境")
     assert 'id="workspace-development-refresh"' in response.text
     assert 'id="workspace-development-codex-detail"' in response.text
     assert 'id="workspace-development-weixin-detail"' in response.text
+    assert 'const defaultImplementationId = typeof runtime?.default_implementation_id === "string"' in script.text
+    assert '"当前使用：开发实现"' in script.text
+    assert '`当前使用：正式版 ${formalVersion(currentImplementation.version)}`' in script.text
+    assert 'item?.implementation_ref === orchestration?.module_ref' in script.text
+    assert '`当前使用：正式版 ${formalVersion(selectedWeixinModule?.version)}`' in script.text
     assert 'workspace-development-codex-refresh' not in response.text
     assert 'workspace-development-weixin-refresh' not in response.text
     assert "第三方服务环境" in response.text
@@ -970,17 +977,19 @@ async def test_home_workstation_third_party_controls_are_state_driven(
     assert 'onConfirm: () => controlOpenClaw("restart"),' in script.text
     assert "OpenClaw Gateway 已完成重启与恢复检查。" not in script.text
     assert "正在检查固定插件、补丁和运行状态。" not in script.text
+    assert '? `OpenClaw / Gateway v${status.version} · `' in script.text
     assert '? "Gateway 运行正常并已通过连接探测。"' in script.text
+    assert '? `微信 ClawBot v${integration.weixin_adapter.version} · `' in script.text
+    assert 'request("/api/openclaw/integration", { cache: "no-store" }).catch(() => undefined)' in script.text
     assert 'const thirdPartySnapshotCacheKey = "chub.workspace.thirdParty.v1";' in script.text
     assert 'const developmentSnapshotCacheKey = "chub.workspace.development.v1";' in script.text
     assert 'const refreshDevelopment = async () =>' in script.text
-    assert 'request("/api/runtime-modules/builtin-dev/refresh", { method: "POST" })' in script.text
-    assert 'request("/api/settings/weixin-task-orchestration", {' in script.text
-    assert 'body: JSON.stringify({ implementation: "weixin-orchestration-dev" }),' in script.text
     assert 'void loadDevelopment();' in script.text
+    assert 'request("/api/runtime-modules/builtin-dev/refresh", { method: "POST" })' not in script.text
+    assert 'body: JSON.stringify({ implementation: "weixin-orchestration-dev" }),' not in script.text
     assert 'window.sessionStorage.getItem(thirdPartySnapshotCacheKey)' in script.text
     assert 'window.sessionStorage.setItem(' in script.text
-    assert script.text.count('cacheThirdPartySnapshot(status, login);') == 2
+    assert script.text.count('cacheThirdPartySnapshot(status, login, openclawIntegration);') == 2
     assert 'let thirdPartyLoading = false;' in script.text
     assert 'elements.thirdPartyRefresh.disabled = thirdPartyLoading;' in script.text
     assert 'elements.openclawBindWeixin.disabled = thirdPartyLoading ||' in script.text
@@ -1178,6 +1187,7 @@ async def test_automation_section_uses_workstation_status_rows(
     assert '"/api/automations/environment/feishu/login-page"' in workspace_script.text
     assert '"/api/automations/environment/codex/login-page"' in workspace_script.text
     assert '"/api/automations/environment/codex/switch-authentication"' in workspace_script.text
+    assert '"/api/automations/environment/codex/switch-authentication/stop"' in workspace_script.text
     assert 'let switchTargetMode = "";' in workspace_script.text
     assert 'switchTargetMode = currentMode === "account"' in workspace_script.text
     assert 'input[name="workspace-automation-codex-account-mode"]' not in workspace_script.text

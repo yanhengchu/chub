@@ -35,17 +35,17 @@ from app.ai_runtime.contracts import (
     RuntimeUsageLoginPageAdapter,
 )
 from app.ai_runtime.registry import RuntimeRegistry, validate_runtime_wiring
-from app.ai_runtime.modules import (
-    BuiltinRuntimeModule,
-    BuiltinRuntimeModuleRegistry,
-    BuiltinRuntimeNavigation,
+from app.ai_runtime.runtime_plugins import (
+    RuntimePlugin,
+    RuntimePluginRegistry,
+    RuntimePluginNavigation,
 )
-from app.ai_runtime.external_modules import (
-    ExternalRuntimeModuleService,
-    RuntimeModuleActivation,
-    RuntimeModuleInstallError,
-    RuntimeModuleLoadFailure,
-    RuntimeModuleRecovery,
+from app.ai_runtime.runtime_plugin_packages import (
+    RuntimePluginService,
+    RuntimePluginActivation,
+    RuntimePluginInstallError,
+    RuntimePluginLoadFailure,
+    RuntimePluginRecovery,
 )
 from app.ai_runtime.worker import (
     BACKGROUND_RUNTIME_CAPABILITIES,
@@ -85,14 +85,14 @@ __all__ = [
     "RuntimeReasoningLevel",
     "RuntimeRegistry",
     "validate_runtime_wiring",
-    "BuiltinRuntimeModule",
-    "BuiltinRuntimeModuleRegistry",
-    "BuiltinRuntimeNavigation",
-    "ExternalRuntimeModuleService",
-    "RuntimeModuleActivation",
-    "RuntimeModuleInstallError",
-    "RuntimeModuleLoadFailure",
-    "RuntimeModuleRecovery",
+    "RuntimePlugin",
+    "RuntimePluginRegistry",
+    "RuntimePluginNavigation",
+    "RuntimePluginService",
+    "RuntimePluginActivation",
+    "RuntimePluginInstallError",
+    "RuntimePluginLoadFailure",
+    "RuntimePluginRecovery",
     "RuntimeSessionDiscoveryResult",
     "RuntimeSessionArchiveAdapter",
     "RuntimeSettingsAdapter",

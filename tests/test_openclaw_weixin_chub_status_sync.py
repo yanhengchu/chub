@@ -7,6 +7,7 @@ import re
 import stat
 import threading
 from datetime import datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -20,7 +21,7 @@ from app.codex.models import (
     WorkspaceInfo,
     utc_now,
 )
-from app.core.config import Settings
+from app.core.config import ExtraWorkspaceConfig, Settings
 from app.core.response import ApiError
 from app.services.openclaw_weixin_chub_mode import WeixinChubModeManager
 from app.services.openclaw_weixin_chub_models import (
@@ -237,12 +238,12 @@ def test_chub_sync_lists_compatible_sessions_and_marks_current(
         "Sync: Completed · Removed 0 · Added 3 · Current 3\n\n"
         "Sessions\n\n"
     )
-    assert "▶ S1 · 微信 Chub" in result.message
-    assert "S2 · 项目维护" in result.message
-    assert "S3 · 正在排障\n\nTask · Running" in result.message
-    assert result.message.index("S3 · 正在排障") < result.message.index(
-        "▶ S1 · 微信 Chub"
-    ) < result.message.index("S2 · 项目维护")
+    assert "▶ S1 · [Chub] 微信 Chub" in result.message
+    assert "S2 · [Chub] 项目维护" in result.message
+    assert "S3 · [Chub] 正在排障\n\nTask · Running" in result.message
+    assert result.message.index("S3 · [Chub] 正在排障") < result.message.index(
+        "▶ S1 · [Chub] 微信 Chub"
+    ) < result.message.index("S2 · [Chub] 项目维护")
     assert result.message.endswith("Usage unavailable")
     assert "不应显示" not in result.message
     persisted = json.loads(
@@ -304,7 +305,7 @@ def test_chub_sync_limits_id_sorted_sessions_without_reordering_current(
 
     assert result.message is not None
     assert "private-value" not in result.message
-    assert "▶ S1 · token=[REDACTED] 当前" in result.message
+    assert "▶ S1 · [Chub] token=[REDACTED] 当前" in result.message
     assert "候选 7" in result.message
     assert "候选 8" not in result.message
     assert "候选 8" not in result.message
@@ -347,6 +348,211 @@ def test_chub_sync_hides_unavailable_sessions(settings: Settings) -> None:
     assert "不可用会话" not in result.message
 
 
+def test_chub_sync_includes_each_configured_workspace(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    settings.ai_runtime.codex.extra_workspaces = [
+        ExtraWorkspaceConfig(
+            id="deliveryline",
+            name="Deliveryline",
+            path=Path("/workspace/deliveryline"),
+        )
+    ]
+    codex_manager.workspaces.return_value = [
+        WorkspaceInfo(id="chub", name="Chub", path="/project", available=True),
+        WorkspaceInfo(
+            id="deliveryline",
+            name="Deliveryline",
+            path="/workspace/deliveryline",
+            available=True,
+        ),
+    ]
+    manager.codex_account_reader = MagicMock()
+    manager.codex_account_reader.read_account_status.return_value = (
+        CodexQuotaData(status="unavailable"),
+        CodexTokenUsageData(status="unavailable"),
+    )
+    codex_manager.list_sessions.return_value = [
+        CodexSession(
+            id="deliveryline-session",
+            workspace_id="deliveryline",
+            workspace_name="Deliveryline",
+            cwd="/workspace/deliveryline",
+            title="交付管理",
+            permission_mode="full-access",
+            status="stopped",
+            activity="idle",
+        )
+    ]
+
+    result = manager.dispatch(
+        message_id="chub-sync-deliveryline",
+        prompt="sync",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message is not None
+    assert "S1 · [Deliveryline] 交付管理" in result.message
+    assert manager.session_slot_matches(1, "deliveryline-session")
+
+
+def test_chub_sync_keeps_slot_when_an_extra_workspace_is_temporarily_unavailable(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    settings.ai_runtime.codex.extra_workspaces = [
+        ExtraWorkspaceConfig(
+            id="deliveryline",
+            name="Deliveryline",
+            path=Path("/workspace/deliveryline"),
+        )
+    ]
+    deliveryline = CodexSession(
+        id="deliveryline-session",
+        workspace_id="deliveryline",
+        workspace_name="Deliveryline",
+        cwd="/workspace/deliveryline",
+        title="交付管理",
+        permission_mode="full-access",
+        status="stopped",
+        activity="idle",
+    )
+    codex_manager.list_sessions.return_value = [deliveryline]
+    codex_manager.workspaces.return_value = [
+        WorkspaceInfo(id="chub", name="Chub", path="/project", available=True),
+        WorkspaceInfo(
+            id="deliveryline",
+            name="Deliveryline",
+            path="/workspace/deliveryline",
+            available=True,
+        ),
+    ]
+
+    manager.dispatch(
+        message_id="chub-sync-deliveryline-available",
+        prompt="sync",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+    assert manager.session_slot_matches(1, "deliveryline-session")
+
+    codex_manager.workspaces.return_value[1] = WorkspaceInfo(
+        id="deliveryline",
+        name="Deliveryline",
+        path="/workspace/deliveryline",
+        available=False,
+    )
+    result = manager.dispatch(
+        message_id="chub-sync-deliveryline-unavailable",
+        prompt="sync",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message is not None
+    assert "S1 ! · [Deliveryline] 交付管理" in result.message
+    assert manager.session_slot_matches(1, "deliveryline-session")
+
+
+def test_chub_sync_does_not_implicitly_include_the_home_workspace(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    codex_manager.workspaces.return_value = [
+        WorkspaceInfo(id="chub", name="Chub", path="/project", available=True),
+        WorkspaceInfo(id="home", name="用户目录", path="/users/test", available=True),
+    ]
+    codex_manager.list_sessions.return_value = [
+        CodexSession(
+            id="home-session",
+            workspace_id="home",
+            workspace_name="用户目录",
+            cwd="/users/test",
+            title="个人任务",
+            permission_mode="full-access",
+            status="stopped",
+            activity="idle",
+        )
+    ]
+
+    result = manager.dispatch(
+        message_id="chub-sync-home-workspace",
+        prompt="sync",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message is not None
+    assert "No sessions" in result.message
+    assert not manager.session_slot_matches(1, "home-session")
+
+
+def test_chub_sync_removes_session_when_its_extra_workspace_is_removed_from_settings(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    settings.ai_runtime.codex.extra_workspaces = [
+        ExtraWorkspaceConfig(
+            id="deliveryline",
+            name="Deliveryline",
+            path=Path("/workspace/deliveryline"),
+        )
+    ]
+    deliveryline = CodexSession(
+        id="deliveryline-session",
+        workspace_id="deliveryline",
+        workspace_name="Deliveryline",
+        cwd="/workspace/deliveryline",
+        title="交付管理",
+        permission_mode="full-access",
+        status="stopped",
+        activity="idle",
+    )
+    codex_manager.list_sessions.return_value = [deliveryline]
+    codex_manager.workspaces.return_value = [
+        WorkspaceInfo(id="chub", name="Chub", path="/project", available=True),
+        WorkspaceInfo(
+            id="deliveryline",
+            name="Deliveryline",
+            path="/workspace/deliveryline",
+            available=True,
+        ),
+    ]
+    manager.dispatch(
+        message_id="chub-sync-deliveryline-configured",
+        prompt="sync",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+    assert manager.session_slot_matches(1, "deliveryline-session")
+
+    settings.ai_runtime.codex.extra_workspaces = []
+    result = manager.dispatch(
+        message_id="chub-sync-deliveryline-removed",
+        prompt="sync",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message is not None
+    assert "No sessions" in result.message
+    assert not manager.session_slot_matches(1, "deliveryline-session")
+
+
 def test_chub_sync_keeps_success_when_usage_lookup_fails(
     settings: Settings,
 ) -> None:
@@ -381,7 +587,7 @@ def test_chub_sync_keeps_success_when_usage_lookup_fails(
     assert result.message.startswith(
         "Sync: Completed · Removed 0 · Added 1 · Current 1\n\n"
         "Sessions\n\n"
-        "S1 · 项目维护"
+        "S1 · [Chub] 项目维护"
     )
     assert result.message.endswith("Usage unavailable")
     assert manager.session_slot_matches(1, "available-session")
@@ -423,7 +629,7 @@ def test_chub_sync_retains_configured_unavailable_slot(
         delivery_route=delivery_route(),
     )
 
-    assert "S3 ! · 故障上下文" in (result.message or "")
+    assert "S3 ! · [Chub] 故障上下文" in (result.message or "")
     assert manager.session_slot_matches(3, "broken")
 
 

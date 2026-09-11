@@ -13,7 +13,7 @@ from pydantic import ValidationError
 
 from app.ai_runtime import (
     BACKGROUND_RUNTIME_CAPABILITIES,
-    BuiltinRuntimeModuleRegistry,
+    RuntimePluginRegistry,
     RUNTIME_CAPABILITIES,
     RuntimeDescriptor,
     RuntimeEventSummary,
@@ -29,7 +29,7 @@ from app.ai_runtime import (
     validate_runtime_wiring,
 )
 from app.ai_session.models import AiSession
-from app.ai_runtime.external_modules import ExternalRuntimeModuleService
+from app.ai_runtime.runtime_plugin_packages import RuntimePluginService
 from app.ai_runtime.implementation_preferences import RuntimeImplementationPreferences
 from app.ai_runtime.enablement import RuntimeEnablement
 from app.ai_session.manager import AiSessionManager
@@ -165,7 +165,7 @@ class IncompleteWorkerRuntime(StubWorkerRuntime):
     read_result = None
 
 
-class StubBuiltinRuntimeModule:
+class StubRuntimePlugin:
     def __init__(
         self,
         runtime_id: str,
@@ -211,7 +211,7 @@ class StubBuiltinRuntimeModule:
         return StubWorkerRuntime(self._runtime_id)
 
 
-class BrokenAdapterRuntimeModule(StubBuiltinRuntimeModule):
+class BrokenAdapterRuntimePlugin(StubRuntimePlugin):
     def build_adapter(self) -> StubRuntime:
         raise RuntimeError("adapter construction failed")
 
@@ -367,26 +367,26 @@ def test_runtime_wiring_rejects_capability_mismatch() -> None:
     assert invalid.value.code == "runtime_wiring_invalid"
 
 
-def test_builtin_runtime_module_registry_requires_one_unique_default() -> None:
-    registry = BuiltinRuntimeModuleRegistry(
-        [StubBuiltinRuntimeModule("codex", is_default=True)]
+def test_runtime_plugin_registry_requires_one_unique_default() -> None:
+    registry = RuntimePluginRegistry(
+        [StubRuntimePlugin("codex", is_default=True)]
     )
 
     assert registry.runtime_ids() == ("codex",)
     assert registry.default().descriptor.runtime_id == "codex"
     with pytest.raises(RuntimeOperationError) as duplicate:
-        registry.register(StubBuiltinRuntimeModule("other", is_default=True))
-    assert duplicate.value.code == "runtime_module_default_duplicate"
+        registry.register(StubRuntimePlugin("other", is_default=True))
+    assert duplicate.value.code == "runtime_plugin_default_duplicate"
 
 
-def test_builtin_runtime_module_registry_keeps_registered_presentation() -> None:
-    module = StubBuiltinRuntimeModule(
+def test_runtime_plugin_registry_keeps_registered_presentation() -> None:
+    module = StubRuntimePlugin(
         "codex",
         is_default=True,
         display_name="Codex",
         description="Initial description",
     )
-    registry = BuiltinRuntimeModuleRegistry([module])
+    registry = RuntimePluginRegistry([module])
     module._display_name = "Changed name"
     module._description = "Changed description"
 
@@ -396,16 +396,16 @@ def test_builtin_runtime_module_registry_keeps_registered_presentation() -> None
     assert presentation.description == "Initial description"
 
 
-def test_builtin_runtime_module_registry_navigation_groups_versions_by_runtime() -> None:
-    registry = BuiltinRuntimeModuleRegistry(
+def test_runtime_plugin_registry_navigation_groups_versions_by_runtime() -> None:
+    registry = RuntimePluginRegistry(
         [
-            StubBuiltinRuntimeModule(
+            StubRuntimePlugin(
                 "codex",
                 implementation_id="builtin-dev",
                 is_default=True,
                 display_name="Codex",
             ),
-            StubBuiltinRuntimeModule(
+            StubRuntimePlugin(
                 "codex",
                 implementation_id="codex-010001",
                 display_name="Codex",
@@ -422,51 +422,51 @@ def test_session_manager_isolates_external_adapter_construction_failure(
     settings: Settings,
 ) -> None:
     manager = AiSessionManager(settings)
-    modules = BuiltinRuntimeModuleRegistry(
+    modules = RuntimePluginRegistry(
         [
-            manager.runtime_modules.require("codex"),
-            BrokenAdapterRuntimeModule("broken-runtime"),
+            manager.runtime_plugins.require("codex"),
+            BrokenAdapterRuntimePlugin("broken-runtime"),
         ]
     )
-    manager.runtime_module_service.build_registry = MagicMock(return_value=(modules, ()))
+    manager.runtime_plugin_service.build_registry = MagicMock(return_value=(modules, ()))
 
-    manager.refresh_external_runtime_modules()
+    manager.refresh_runtime_plugins()
 
-    assert manager.runtime_modules.runtime_ids() == ("codex",)
-    assert manager.runtime_module_failures[0].module_id == "broken-runtime"
+    assert manager.runtime_plugins.runtime_ids() == ("codex",)
+    assert manager.runtime_plugin_failures[0].module_id == "broken-runtime"
 
 
-def test_session_manager_keeps_codex_adapter_when_a_healthy_external_runtime_loads(
+def test_session_manager_keeps_codex_adapter_when_a_healthy_runtime_plugin_loads(
     settings: Settings,
 ) -> None:
     manager = AiSessionManager(settings)
-    modules = BuiltinRuntimeModuleRegistry(
+    modules = RuntimePluginRegistry(
         [
-            manager.runtime_modules.require("codex"),
-            StubBuiltinRuntimeModule("healthy-runtime"),
+            manager.runtime_plugins.require("codex"),
+            StubRuntimePlugin("healthy-runtime"),
         ]
     )
-    manager.runtime_module_service.build_registry = MagicMock(return_value=(modules, ()))
+    manager.runtime_plugin_service.build_registry = MagicMock(return_value=(modules, ()))
 
-    manager.refresh_external_runtime_modules()
+    manager.refresh_runtime_plugins()
 
     assert manager.runtime_adapter.descriptor.runtime_id == "codex"
-    assert manager.runtime_modules.runtime_ids() == ("codex", "healthy-runtime")
+    assert manager.runtime_plugins.runtime_ids() == ("codex", "healthy-runtime")
 
 
 def test_session_manager_allows_default_version_change_while_existing_session_uses_current_version(
     settings: Settings,
 ) -> None:
     manager = AiSessionManager(settings)
-    modules = BuiltinRuntimeModuleRegistry(
+    modules = RuntimePluginRegistry(
         [
-            StubBuiltinRuntimeModule(
+            StubRuntimePlugin(
                 "codex",
                 implementation_id="builtin-dev",
                 is_default=True,
                 display_name="Codex",
             ),
-            StubBuiltinRuntimeModule(
+            StubRuntimePlugin(
                 "codex",
                 implementation_id="codex-010001",
                 display_name="Codex",
@@ -483,7 +483,7 @@ def test_session_manager_allows_default_version_change_while_existing_session_us
     available_status = RuntimeStatus(runtime_id="codex", available=True)
     builtin.status = MagicMock(return_value=available_status)
     formal.status = MagicMock(return_value=available_status)
-    manager.runtime_modules = modules
+    manager.runtime_plugins = modules
     manager.runtime_registry = RuntimeRegistry([builtin, formal])
     manager.runtime_adapters = {
         "builtin-dev": builtin,
@@ -572,15 +572,15 @@ def test_session_manager_uses_configured_extra_workspace(
     assert SessionCreateRequest(workspace_id="deliveryline").workspace_id == "deliveryline"
 
 
-def test_session_manager_starts_with_builtin_runtime_when_no_formal_version_is_installed(settings: Settings) -> None:
-    service = ExternalRuntimeModuleService(settings)
+def test_session_manager_starts_with_development_plugin_when_no_formal_version_is_installed(settings: Settings) -> None:
+    service = RuntimePluginService(settings)
     removal = service.remove("codex-010000", operation_id="0" * 32)
     service.finalize_removal(removal)
     manager = AiSessionManager(settings)
 
     available, reason = manager.submission_available()
 
-    assert manager.runtime_modules.implementation_ids("codex") == ("builtin-dev",)
+    assert manager.runtime_plugins.implementation_ids("codex") == ("builtin-dev",)
     assert manager.runtime_registry.runtime_ids() == ("codex",)
     assert available is True
     assert reason is None
@@ -734,10 +734,10 @@ def test_native_discovery_keeps_session_when_passive_cleanup_is_unconfirmed(
 
 
 @pytest.mark.anyio
-async def test_application_lifespan_starts_with_builtin_runtime_when_no_formal_version_is_installed(
+async def test_application_lifespan_starts_with_development_plugin_when_no_formal_version_is_installed(
     settings: Settings,
 ) -> None:
-    service = ExternalRuntimeModuleService(settings)
+    service = RuntimePluginService(settings)
     removal = service.remove("codex-010000", operation_id="1" * 32)
     service.finalize_removal(removal)
     application = create_app(settings)
@@ -753,7 +753,7 @@ async def test_application_lifespan_starts_with_builtin_runtime_when_no_formal_v
 async def test_application_lifespan_recovers_pending_runtime_state_cleanup(
     settings: Settings,
 ) -> None:
-    service = ExternalRuntimeModuleService(settings)
+    service = RuntimePluginService(settings)
     service.begin_state_cleanup(
         operation_id="e" * 32,
         action="remove_runtime_module",
@@ -762,7 +762,7 @@ async def test_application_lifespan_recovers_pending_runtime_state_cleanup(
     )
     application = create_app(settings)
     manager = application.state.ai_session_manager
-    manager.clear_runtime_module_state = MagicMock()
+    manager.clear_runtime_plugin_state = MagicMock()
     application.state.quick_interactions.remove_session_tasks = MagicMock()
 
     with patch(
@@ -781,15 +781,15 @@ async def test_application_lifespan_recovers_pending_runtime_state_cleanup(
         (("session-1",), {}),
         (("session-2",), {}),
     ]
-    manager.clear_runtime_module_state.assert_called_once_with("codex")
+    manager.clear_runtime_plugin_state.assert_called_once_with("codex")
 
 
-def test_external_codex_module_builds_matching_adapter_and_worker_runner(
+def test_codex_plugin_builds_matching_adapter_and_worker_runner(
     settings: Settings,
     tmp_path: Path,
 ) -> None:
-    registry, failures = ExternalRuntimeModuleService(settings).build_registry(
-        BuiltinRuntimeModuleRegistry()
+    registry, failures = RuntimePluginService(settings).build_registry(
+        RuntimePluginRegistry()
     )
     module = registry.require("codex-010000")
     adapter = module.build_adapter()

@@ -10,8 +10,8 @@ import pytest
 from app.core.response import ApiError
 from app.codex.models import utc_now
 from app.services.openclaw_weixin_chub_models import WeixinTaskOrchestrationRequest
-from app.services.weixin_orchestration_modules import WeixinOrchestrationModuleService
-from scripts.build_weixin_orchestration_module_zip import build as build_weixin_module_zip
+from app.services.weixin_orchestration_plugins import WeixinOrchestrationPluginService
+from scripts.build_weixin_orchestration_plugin_zip import build as build_weixin_plugin_zip
 from tests.openclaw_weixin_chub_mode_helpers import configured_manager, delivery_route
 
 
@@ -52,7 +52,7 @@ def module_archive(
 
 def test_install_keeps_same_version_artifacts_immutable(settings, tmp_path) -> None:
     settings.openclaw.weixin_chub_mode.orchestration_modules_dir = tmp_path / "modules"
-    service = WeixinOrchestrationModuleService(settings)
+    service = WeixinOrchestrationPluginService(settings)
 
     first = service.install(module_archive(settings, marker="first"), source_name="first.zip")
     second = service.install(module_archive(settings, marker="second"), source_name="second.zip")
@@ -67,21 +67,21 @@ def test_install_keeps_same_version_artifacts_immutable(settings, tmp_path) -> N
     ) == "accepted"
 
 
-def test_rejects_invalid_module_protocol(settings, tmp_path) -> None:
+def test_rejects_invalid_plugin_protocol(settings, tmp_path) -> None:
     settings.openclaw.weixin_chub_mode.orchestration_modules_dir = tmp_path / "modules"
-    service = WeixinOrchestrationModuleService(settings)
+    service = WeixinOrchestrationPluginService(settings)
     archive = module_archive(settings)
 
     with pytest.raises(ApiError) as error:
         service.inspect_archive(archive, source_name="not-a-zip.txt")
 
-    assert error.value.code == "weixin_orchestration_module_invalid"
+    assert error.value.code == "weixin_orchestration_plugin_invalid"
 
 
 def test_repository_module_builds_and_installs(settings, tmp_path) -> None:
     settings.openclaw.weixin_chub_mode.orchestration_modules_dir = tmp_path / "modules"
-    archive_path = build_weixin_module_zip(tmp_path / "weixin-refinement.zip")
-    service = WeixinOrchestrationModuleService(settings)
+    archive_path = build_weixin_plugin_zip(tmp_path / "weixin-refinement.zip")
+    service = WeixinOrchestrationPluginService(settings)
 
     preview = service.install(archive_path.read_bytes(), source_name=archive_path.name)
 
@@ -98,9 +98,9 @@ def test_module_selection_snapshots_request_and_blocks_referenced_removal(
 ) -> None:
     settings.openclaw.weixin_chub_mode.orchestration_modules_dir = tmp_path / "modules"
     manager, _codex_manager, quick_interactions = configured_manager(settings)
-    service = WeixinOrchestrationModuleService(settings)
+    service = WeixinOrchestrationPluginService(settings)
     module = service.install(module_archive(settings), source_name="refiner.zip")
-    manager.orchestration_module_service = service
+    manager.orchestration_plugin_service = service
     manager.translation_manager = SimpleNamespace(
         enqueue=lambda **_kwargs: True,
         entry_for_orchestration=lambda _orchestration_id: SimpleNamespace(id="translation-1"),
@@ -124,16 +124,16 @@ def test_module_selection_snapshots_request_and_blocks_referenced_removal(
     quick_interactions.submit.assert_not_called()
 
     with pytest.raises(ApiError) as referenced_error:
-        manager.remove_orchestration_module(module.implementation_ref)
-    assert referenced_error.value.code == "weixin_orchestration_module_referenced"
+        manager.remove_orchestration_plugin(module.implementation_ref)
+    assert referenced_error.value.code == "weixin_orchestration_plugin_referenced"
 
 
 def test_finished_module_request_can_be_removed(settings, tmp_path) -> None:
     settings.openclaw.weixin_chub_mode.orchestration_modules_dir = tmp_path / "modules"
     manager, _codex_manager, _quick_interactions = configured_manager(settings)
-    service = WeixinOrchestrationModuleService(settings)
+    service = WeixinOrchestrationPluginService(settings)
     module = service.install(module_archive(settings), source_name="refiner.zip")
-    manager.orchestration_module_service = service
+    manager.orchestration_plugin_service = service
     manager.set_orchestration_implementation("module", module.implementation_ref)
     manager._state.orchestration_requests.append(
         WeixinTaskOrchestrationRequest(
@@ -151,7 +151,7 @@ def test_finished_module_request_can_be_removed(settings, tmp_path) -> None:
     )
     manager.set_orchestration_implementation("weixin-orchestration-dev")
 
-    manager.remove_orchestration_module(module.implementation_ref)
+    manager.remove_orchestration_plugin(module.implementation_ref)
 
     assert service.list_artifacts() == ()
 

@@ -30,25 +30,25 @@
       "path": "CHUB_AI_RUNTIME_DESIGN.md"
     },
     {
-      "id": "chub-external-module",
-      "title": "Chub AI Runtime 外置模块功能设计",
-      "summary": "定义 Runtime 版本槽位、默认实现选择、ZIP 覆盖、开发重载和双端注册边界。",
+      "id": "chub-runtime-plugin",
+      "title": "Chub AI Runtime 插件模块设计",
+      "summary": "定义 Runtime 插件模块的版本槽位、默认实现选择、正式 ZIP 覆盖、开发重载和双端注册边界。",
       "status": "持续维护",
-      "path": "CHUB_EXTERNAL_MODULE_DESIGN.md"
+      "path": "CHUB_RUNTIME_PLUGIN_DESIGN.md"
     },
     {
       "id": "chub-task-orchestration-externalization",
-      "title": "Chub 能力编排外置架构设计",
-      "summary": "定义外置能力编排模块的通用执行面、检查点、版本绑定、模块协议和生命周期；首个微信 ZIP 已完成 macOS 实机生命周期、执行与 Web 重启恢复验证，通用架构持续维护。",
+      "title": "Chub 任务编排插件模块架构设计",
+      "summary": "定义任务编排插件模块的通用执行面、检查点、版本绑定、模块协议和生命周期；首个微信 ZIP 已完成 macOS 实机生命周期、执行与 Web 重启恢复验证，通用架构持续维护。",
       "status": "持续维护",
-      "path": "CHUB_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md"
+      "path": "CHUB_TASK_ORCHESTRATION_PLUGIN_DESIGN.md"
     },
     {
       "id": "weixin-task-orchestration-externalization",
-      "title": "Chub 微信任务编排外置设计",
-      "summary": "定义微信普通正文的内置、开发与 ZIP 编排分流、恢复和模块维护边界；已完成 macOS 下首个模块及 Web/Quick Worker 重启恢复的实机验收。",
+      "title": "Chub 微信任务编排插件模块设计",
+      "summary": "定义微信普通正文的内置、开发与 ZIP 插件分流、恢复和模块维护边界；已完成 macOS 下首个模块及 Web/Quick Worker 重启恢复的实机验收。",
       "status": "已验收",
-      "path": "WEIXIN_TASK_ORCHESTRATION_EXTERNALIZATION_DESIGN.md"
+      "path": "WEIXIN_TASK_ORCHESTRATION_PLUGIN_DESIGN.md"
     },
     {
       "id": "ai-session-state",

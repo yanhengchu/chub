@@ -7,6 +7,7 @@ import re
 import stat
 import threading
 from datetime import datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -20,10 +21,10 @@ from app.codex.models import (
     WorkspaceInfo,
     utc_now,
 )
-from app.core.config import Settings
+from app.core.config import ExtraWorkspaceConfig, Settings
 from app.core.response import ApiError
 from app.services.openclaw_weixin_chub_mode import WeixinChubModeManager
-from app.services.weixin_orchestration_dev import WeixinDevelopmentImplementation
+from app.services.weixin_orchestration_plugin_dev import WeixinDevelopmentImplementation
 from app.services.openclaw_weixin_chub_models import (
     MAX_STATE_BYTES,
     WeixinChubModePendingRetry,
@@ -184,6 +185,62 @@ def test_submission_persists_one_direct_orchestration_request(
     ]
 
 
+def test_submission_reuses_selected_session_in_an_allowed_extra_workspace(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, quick_interactions = configured_manager(settings)
+    settings.ai_runtime.codex.extra_workspaces = [
+        ExtraWorkspaceConfig(
+            id="deliveryline",
+            name="Deliveryline",
+            path=Path("/workspace/deliveryline"),
+        )
+    ]
+    deliveryline_session = CodexSession(
+        id="deliveryline-session",
+        workspace_id="deliveryline",
+        workspace_name="Deliveryline",
+        cwd="/workspace/deliveryline",
+        title="交付管理",
+        permission_mode="full-access",
+        status="stopped",
+        activity="idle",
+    )
+    manager._state.session_id = deliveryline_session.id
+    manager._state.session_slots = [
+        WeixinChubModeSessionSlot(slot=1, session_id=deliveryline_session.id)
+    ]
+    codex_manager.workspaces.return_value = [
+        WorkspaceInfo(id="chub", name="Chub", path="/project", available=True),
+        WorkspaceInfo(
+            id="deliveryline",
+            name="Deliveryline",
+            path="/workspace/deliveryline",
+            available=True,
+        ),
+    ]
+    codex_manager.list_sessions.return_value = [deliveryline_session]
+    codex_manager.get_session.return_value = deliveryline_session
+
+    result = manager.dispatch(
+        message_id="submit-selected-deliveryline-session",
+        prompt="继续整理交付流程",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message is not None
+    assert "▶ S1 · [Deliveryline] 交付管理" in result.message
+    codex_manager.create_session.assert_not_called()
+    quick_interactions.submit.assert_called_once()
+    assert quick_interactions.submit.call_args.args[:2] == (
+        "deliveryline-session",
+        "继续整理交付流程",
+    )
+
+
 def test_reconcile_records_terminal_task_without_resubmitting(
     settings: Settings,
 ) -> None:
@@ -298,8 +355,8 @@ def test_successful_submission_lists_all_sessions_and_running_tasks(
 
     assert result.message is not None
     assert result.message.startswith("Submitted\n\nSessions\n\n")
-    assert "▶ S1 · 当前工作\n\nTask · 继续当前任务" in result.message
-    assert "S2 · 后台检查\n\nTask · 检查后台日志" in result.message
+    assert "▶ S1 · [Chub] 当前工作\n\nTask · 继续当前任务" in result.message
+    assert "S2 · [Chub] 后台检查\n\nTask · 检查后台日志" in result.message
     assert "Weekly" not in result.message
 
 
@@ -335,7 +392,7 @@ def test_successful_submission_keeps_task_context_when_session_snapshot_fails(
 
     assert result.message == (
         "Submitted\n\nSessions\n\n"
-        "▶ S1 · 当前工作\n\nTask · 继续当前任务"
+            "▶ S1 · [Chub] 当前工作\n\nTask · 继续当前任务"
     )
     quick_interactions.submit.assert_called_once()
 
@@ -452,7 +509,7 @@ def test_duplicate_submission_refreshes_current_session_marker(
     )
 
     assert "\n▶ S1 ·" in first.message
-    assert "\n\nS1 · 检查设备状态\n\n" in duplicate.message
+    assert "\n\nS1 · [Chub] 检查设备状态\n\n" in duplicate.message
     assert "▶ S1" not in duplicate.message
 
     manager._state.session_slots = [
@@ -995,10 +1052,10 @@ def test_development_source_change_blocks_new_or_existing_request(
             preprocess=True,
         )
 
-    assert error.value.code == "weixin_orchestration_development_changed"
+    assert error.value.code == "weixin_orchestration_plugin_development_changed"
     manager.development_stage.require_snapshot.side_effect = ApiError(
         503,
-        "weixin_orchestration_development_changed",
+        "weixin_orchestration_plugin_development_changed",
         "微信开发编排实现已变化，已受理任务未继续执行。",
     )
     outcome = manager.complete_optimized_task(
@@ -1032,7 +1089,7 @@ def test_unavailable_development_implementation_does_not_accept_a_task(
     manager.development_stage = development_stage()
     manager.development_stage.snapshot.side_effect = ApiError(
         503,
-        "weixin_orchestration_development_unavailable",
+        "weixin_orchestration_plugin_development_unavailable",
         "微信开发编排实现当前不可用，本次任务未执行。",
     )
     manager._state.orchestration_implementation = "weixin-orchestration-dev"
@@ -1049,7 +1106,7 @@ def test_unavailable_development_implementation_does_not_accept_a_task(
             preprocess=True,
         )
 
-    assert error.value.code == "weixin_orchestration_development_unavailable"
+    assert error.value.code == "weixin_orchestration_plugin_development_unavailable"
     manager.translation_manager.enqueue.assert_not_called()
     quick_interactions.submit.assert_not_called()
 
