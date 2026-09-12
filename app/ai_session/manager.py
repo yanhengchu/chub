@@ -448,10 +448,7 @@ class AiSessionManager:
                         if manifest is not None
                         else module.description
                     ),
-                    imported=(
-                        implementation_id != "builtin-dev"
-                        or implementation_id not in preferences.disabled_implementation_ids
-                    ),
+                    imported=True,
                     enabled=implementation_id not in preferences.disabled_implementation_ids,
                     healthy=status is not None and status.available,
                     is_default=implementation_id == self.default_implementation_id,

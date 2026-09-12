@@ -43,6 +43,10 @@ def settings(tmp_path: Path) -> Settings:
                     "install_dir": tmp_path / "runtime-modules",
                 },
             },
+            "business_modules": {
+                "install_dir": tmp_path / "business-modules",
+                "state_file": tmp_path / "deliveryline-plugin.json",
+            },
             "maintenance_terminal": {"ticket_ttl_seconds": 600},
             "automations": {
                 "shared_config_file": tmp_path / "automations.yaml",

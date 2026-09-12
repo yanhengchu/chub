@@ -22,7 +22,8 @@ def default_output(version: str, *, built_at: datetime | None = None) -> Path:
         / "data"
         / "local"
         / "artifacts"
-        / "orchestration-modules"
+        / "plugins"
+        / "weixin-orchestration"
         / f"weixin-refinement-release-{version}-{timestamp}.zip"
     )
 

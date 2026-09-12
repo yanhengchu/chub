@@ -621,7 +621,7 @@ input[type="password"] {
   font-variant-numeric: tabular-nums;
 }
 
-.settings-field select[data-settings-picker] {
+select[data-settings-picker] {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -635,6 +635,22 @@ input[type="password"] {
   flex: none;
   max-width: 50%;
   min-width: 5.5rem;
+}
+
+.deliveryline-version-actions {
+  width: fit-content;
+  max-width: 50%;
+}
+
+.deliveryline-version-actions > .settings-choice-picker {
+  width: fit-content;
+  min-width: 0;
+  max-width: none;
+}
+
+.deliveryline-version-actions > .settings-choice-picker > .settings-choice-picker-trigger {
+  width: fit-content;
+  max-width: 100%;
 }
 
 .settings-choice-picker-trigger {
@@ -880,19 +896,6 @@ input[type="password"] {
   color: var(--color-text-muted);
 }
 
-.runtime-module-file-input {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  opacity: 0;
-  pointer-events: none;
-}
-
-.runtime-module-file-button {
-  width: fit-content;
-  margin: 0;
-}
-
 .runtime-module-versions-heading .button-secondary {
   width: fit-content;
   margin: 0;
@@ -947,7 +950,7 @@ input[type="password"] {
 }
 
 .settings-divided-list .settings-field + .settings-field,
-.settings-divided-list .runtime-management-list + .settings-field {
+.settings-divided-list .workstation-status-list + .settings-field {
   border-top: 1px solid var(--color-border);
 }
 
@@ -961,6 +964,11 @@ input[type="password"] {
 }
 
 .settings-divided-list .settings-utility-row {
+  min-height: 66px;
+  padding: 0.75rem 1rem;
+}
+
+.settings-divided-list .workstation-status-row {
   min-height: 66px;
   padding: 0.75rem 1rem;
 }

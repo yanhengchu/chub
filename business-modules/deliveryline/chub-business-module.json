@@ -1,0 +1,9 @@
+{
+  "protocol_version": 1,
+  "module_id": "deliveryline",
+  "module_type": "business",
+  "display_name": "Deliveryline",
+  "description": "需求交付管理业务插件；当前仅提供插件生命周期与状态入口。",
+  "version": "dev",
+  "chub_version": "0.1.0"
+}

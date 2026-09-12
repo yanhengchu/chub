@@ -27,7 +27,8 @@ def default_output(version: str, *, built_at: datetime | None = None) -> Path:
         / "data"
         / "local"
         / "artifacts"
-        / "runtime-modules"
+        / "plugins"
+        / "codex-runtime"
         / f"codex-runtime-release-{version}-{timestamp}.zip"
     )
 

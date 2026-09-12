@@ -539,22 +539,32 @@
     if (automationCodexAccountDetail instanceof HTMLElement && typeof state?.auth_mode === "string") {
       automationCodexAccountDetail.dataset.authMode = state.auth_mode;
     }
+    if (automationCodexAccountDetail instanceof HTMLElement && typeof state?.state === "string") {
+      automationCodexAccountDetail.dataset.accountState = state.state;
+    }
     automationCodexAuthSwitching = state?.switching === true;
     if (!automationCodexAuthSwitching) automationCodexAuthStopPending = false;
     if (automationCodexAccountDetail instanceof HTMLElement) {
       automationCodexAccountDetail.dataset.authSwitching = String(automationCodexAuthSwitching);
     }
     if (automationCodexAccountSwitch instanceof HTMLButtonElement) {
-      automationCodexAccountSwitch.disabled = automationCodexAuthStopPending;
+      const accountCheckInProgress = state?.state === "checking";
+      automationCodexAccountSwitch.disabled = (
+        automationCodexAuthStopPending || (accountCheckInProgress && !automationCodexAuthSwitching)
+      );
       automationCodexAccountSwitch.textContent = automationCodexAuthStopPending
         ? "正在停止…"
         : automationCodexAuthSwitching
           ? "停止切换"
-          : "切换";
+          : accountCheckInProgress
+            ? "检查中…"
+            : "切换";
       automationCodexAccountSwitch.title = automationCodexAuthSwitching
         ? "停止当前认证切换"
-        : "";
-      if (automationCodexAuthSwitching) {
+        : accountCheckInProgress
+          ? "正在检查 Codex Runtime 账户状态"
+          : "";
+      if (automationCodexAuthSwitching || accountCheckInProgress) {
         automationCodexAccountSwitch.removeAttribute("aria-haspopup");
         automationCodexAccountSwitch.removeAttribute("aria-controls");
       } else {
@@ -663,6 +673,7 @@
         await requestCodexAuthSwitchStop();
         return;
       }
+      if (automationCodexAccountDetail?.dataset.accountState === "checking") return;
       switchCompleted = false;
       setCodexAuthSwitchFeedback();
       const currentMode = automationCodexAccountDetail?.dataset.authMode || "unknown";

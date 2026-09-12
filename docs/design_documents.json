@@ -109,15 +109,15 @@
     {
       "id": "deliveryline-platform",
       "title": "Deliveryline 需求交付管理平台设计",
-      "summary": "定义 Deliveryline 作为 Chub 固定开发业务模块的产品定位、需求交付主体阶段与职责边界。",
-      "status": "调研中",
+      "summary": "定义 Deliveryline 业务插件的产品定位、需求交付主体阶段，以及当前仅含插件生命周期的接入边界。",
+      "status": "持续维护",
       "path": "DELIVERYLINE_PLATFORM_DESIGN.md"
     },
     {
       "id": "chub-business-module",
       "title": "Chub 工作台业务模块设计",
-      "summary": "定义工作台业务模块的最小宿主边界，以及 Deliveryline 固定开发模块的接入方向与验收范围。",
-      "status": "调研中",
+      "summary": "定义工作台业务模块的最小宿主边界，以及 Deliveryline 固定开发模块与受控 ZIP 生命周期的接入方向。",
+      "status": "持续维护",
       "path": "CHUB_BUSINESS_MODULE_DESIGN.md"
     }
   ]

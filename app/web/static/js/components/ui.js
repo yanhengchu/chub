@@ -18,15 +18,15 @@ function setWorkstationStatus(target, message, kind = "muted") {
   target.className = `workstation-status-detail workstation-status-detail-${kind}`;
 }
 
-const confirmationDialog = document.querySelector("#confirmation-dialog");
-const confirmationDialogForm = document.querySelector("#confirmation-dialog-form");
-const confirmationDialogTitle = document.querySelector("#confirmation-dialog-title");
-const confirmationDialogDescription = document.querySelector("#confirmation-dialog-description");
-let confirmationDialogDetails = document.querySelector("#confirmation-dialog-details");
-const confirmationDialogMessage = document.querySelector("#confirmation-dialog-message");
-const confirmationDialogClose = document.querySelector("#confirmation-dialog-close");
-const confirmationDialogCancel = document.querySelector("#confirmation-dialog-cancel");
-const confirmationDialogConfirm = document.querySelector("#confirmation-dialog-confirm");
+let confirmationDialog = null;
+let confirmationDialogForm = null;
+let confirmationDialogTitle = null;
+let confirmationDialogDescription = null;
+let confirmationDialogDetails = null;
+let confirmationDialogMessage = null;
+let confirmationDialogClose = null;
+let confirmationDialogCancel = null;
+let confirmationDialogConfirm = null;
 let confirmationDialogRequest = null;
 let confirmationDialogBusy = false;
 
@@ -88,7 +88,7 @@ function showConfirmationDialog({
   closeOnConfirm = false,
   onConfirm,
 }) {
-  if (!confirmationDialog || confirmationDialogRequest || typeof onConfirm !== "function") {
+  if (!bindConfirmationDialog() || confirmationDialogRequest || typeof onConfirm !== "function") {
     return Promise.resolve(false);
   }
   confirmationDialogTitle.textContent = title;
@@ -128,7 +128,33 @@ function showConfirmationDialog({
   });
 }
 
-if (confirmationDialog) {
+function bindConfirmationDialog() {
+  const dialog = document.querySelector("#confirmation-dialog");
+  if (dialog === confirmationDialog) return dialog instanceof HTMLDialogElement;
+  if (confirmationDialogRequest) {
+    confirmationDialogRequest.resolve(false);
+    confirmationDialogRequest = null;
+  }
+  confirmationDialogBusy = false;
+  confirmationDialog = dialog;
+  confirmationDialogForm = document.querySelector("#confirmation-dialog-form");
+  confirmationDialogTitle = document.querySelector("#confirmation-dialog-title");
+  confirmationDialogDescription = document.querySelector("#confirmation-dialog-description");
+  confirmationDialogDetails = document.querySelector("#confirmation-dialog-details");
+  confirmationDialogMessage = document.querySelector("#confirmation-dialog-message");
+  confirmationDialogClose = document.querySelector("#confirmation-dialog-close");
+  confirmationDialogCancel = document.querySelector("#confirmation-dialog-cancel");
+  confirmationDialogConfirm = document.querySelector("#confirmation-dialog-confirm");
+  if (
+    !(confirmationDialog instanceof HTMLDialogElement)
+    || !(confirmationDialogForm instanceof HTMLFormElement)
+    || !(confirmationDialogTitle instanceof HTMLElement)
+    || !(confirmationDialogDescription instanceof HTMLElement)
+    || !(confirmationDialogMessage instanceof HTMLElement)
+    || !(confirmationDialogClose instanceof HTMLButtonElement)
+    || !(confirmationDialogCancel instanceof HTMLButtonElement)
+    || !(confirmationDialogConfirm instanceof HTMLButtonElement)
+  ) return false;
   confirmationDialogForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     const current = confirmationDialogRequest;
@@ -169,7 +195,10 @@ if (confirmationDialog) {
     event.preventDefault();
     dismissConfirmationDialog();
   });
+  return true;
 }
+
+bindConfirmationDialog();
 
 (() => {
   let openChoicePicker = null;

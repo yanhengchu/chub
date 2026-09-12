@@ -28,9 +28,8 @@ Chub Web 使用 FastAPI、Jinja2、原生 JavaScript 和 CSS，同源部署且�
 | 工作站、自动化、项目资料 | 各自 Feature | 独立读取、会话级成功缓存、局部刷新和局部失败反馈 | 本文第 3 节 |
 | 页面级切换与共享资源 | `workspace.js` / 页面 Controller | 组装页面、切换分区、触发受影响 Feature 刷新、释放已替换 Feature | 本文第 3 节 |
 | 外观偏好 | `theme.js` | 保存、恢复和应用有效主题与文字大小；为首屏同步非敏感 Cookie | 本文第 6 节 |
-| Runtime 插件模块管理 | 设置页 Feature | 预检、导入、替换、移除的受控交互与最终反馈；不解释 ZIP 或 Worker 状态 | [Chub AI Runtime 插件模块设计](CHUB_RUNTIME_PLUGIN_DESIGN.md) |
-| 任务编排插件模块管理 | 插件管理 Feature | 预检、导入、列表与移除任务编排 ZIP；不解释具体任务流程或恢复 | [Chub 任务编排插件模块架构设计](CHUB_TASK_ORCHESTRATION_PLUGIN_DESIGN.md) |
-| 任务编排设置 | 微信任务润色 Feature | 展示并选择当前润色编排实现、插件是否启用和润色模式；不提供 ZIP 导入、列表或移除 | [Chub 微信任务编排插件模块设计](WEIXIN_TASK_ORCHESTRATION_PLUGIN_DESIGN.md) |
+| 插件生命周期 | 插件管理 Feature | 从固定制品目录导入，统一管理 Runtime、任务编排与 Deliveryline 的导入、移除、启用和禁用；插件自行确认内部动作结果 | [Chub AI Runtime 插件模块设计](CHUB_RUNTIME_PLUGIN_DESIGN.md)、[Chub 任务编排插件模块架构设计](CHUB_TASK_ORCHESTRATION_PLUGIN_DESIGN.md) |
+| 任务编排设置 | 微信任务润色 Feature | 展示当前插件状态、选择已导入且可用的版本，并设置润色模式；不提供插件导入、移除或独立启停 | [Chub 微信任务编排插件模块设计](WEIXIN_TASK_ORCHESTRATION_PLUGIN_DESIGN.md) |
 | Runtime 用量展示 | 快速交互 Page Controller 与微信入口投影 | 工作台只消费后端 `display.long` 或不可用状态，不重新计算额度、Token 或格式 | [AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)、[集成能力清单](CHUB_INTEGRATION_CAPABILITIES.md) |
 | 设置 OpenClaw 信息 | 设置页 Feature | 读取本机配置、安装元数据和补丁清单；不读取 Gateway 运行状态 | OpenClaw 定制设计 |
 

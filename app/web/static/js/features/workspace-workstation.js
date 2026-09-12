@@ -24,6 +24,8 @@ window.initializeWorkspaceWorkstation = () => {
     developmentCodexDetail: byId("workspace-development-codex-detail"),
     developmentWeixinRow: byId("workspace-development-weixin-row"),
     developmentWeixinDetail: byId("workspace-development-weixin-detail"),
+    developmentDeliverylineRow: byId("workspace-development-deliveryline-row"),
+    developmentDeliverylineDetail: byId("workspace-development-deliveryline-detail"),
     thirdPartyRefresh: byId("workspace-third-party-refresh"),
     openclawDetail: byId("workspace-openclaw-detail"),
     openclawStart: byId("workspace-openclaw-start"),
@@ -191,11 +193,11 @@ window.initializeWorkspaceWorkstation = () => {
     }
   };
 
-  const cacheDevelopmentSnapshot = (runtime, runtimeManagement, orchestration, modules) => {
+  const cacheDevelopmentSnapshot = (runtime, runtimeManagement, orchestration, modules, deliveryline, codex, weixin) => {
     try {
       window.sessionStorage.setItem(
         developmentSnapshotCacheKey,
-        JSON.stringify({ runtime, runtimeManagement, orchestration, modules }),
+        JSON.stringify({ runtime, runtimeManagement, orchestration, modules, deliveryline, codex, weixin }),
       );
     } catch {
       // The latest server data remains usable when browser storage is unavailable.
@@ -350,72 +352,55 @@ window.initializeWorkspaceWorkstation = () => {
     return normalized ? `v${normalized}` : "未知版本";
   };
 
-  const renderDevelopment = (runtime, runtimeManagement, orchestration, modules) => {
-    const implementations = (Array.isArray(runtime?.implementations) ? runtime.implementations : [])
-      .filter((item) => item?.imported !== false);
-    const defaultImplementationId = typeof runtime?.default_implementation_id === "string"
-      ? runtime.default_implementation_id
-      : "";
-    const currentImplementation = implementations.find(
-      (item) => item?.implementation_id === defaultImplementationId,
-    ) || implementations.find((item) => item?.is_default === true);
-    const codexRuntime = (Array.isArray(runtimeManagement?.runtimes) ? runtimeManagement.runtimes : [])
-      .find((item) => item?.runtime_id === "codex");
-    const runtimePluginTitle = (item) => item.implementation_id === "builtin-dev"
-      ? "Codex · 开发实现"
-      : `Codex · 正式版 ${formalVersion(item.version)}`;
-    const importedCodex = implementations.map(runtimePluginTitle);
-    const codexEnabled = codexRuntime?.enabled === true;
-    const codexAvailable = codexEnabled
-      && currentImplementation
-      && currentImplementation.enabled !== false
-      && currentImplementation.healthy !== false;
-    elements.developmentCodexRow.hidden = importedCodex.length === 0;
-    if (importedCodex.length > 0) {
-      const currentCodex = currentImplementation
-        ? runtimePluginTitle(currentImplementation)
-        : "未设置";
+  const renderDevelopment = (runtime, runtimeManagement, orchestration, modules, deliveryline, codex, weixin) => {
+    const artifactTitle = (plugin, artifactId) => {
+      const artifact = (plugin?.artifacts || []).find((item) => item.artifact_id === artifactId);
+      const name = plugin?.plugin_id === "codex-runtime" ? "Codex" : plugin?.name || "未知插件";
+      return artifact?.source === "development"
+        ? `${name} · 开发实现`
+        : artifact?.version
+          ? `${name} · 正式版 ${formalVersion(artifact.version)}`
+          : `${name} · 未知版本`;
+    };
+    const renderLifecyclePlugin = (plugin, row, detail) => {
+      const imported = Array.isArray(plugin?.imported_artifact_ids) ? plugin.imported_artifact_ids : [];
+      const enabled = Array.isArray(plugin?.enabled_artifact_ids) ? plugin.enabled_artifact_ids : [];
+      row.hidden = imported.length === 0;
+      if (imported.length === 0) return false;
+      const artifactId = enabled[0] || imported[0];
+      const isEnabled = enabled.length > 0;
       setStatus(
-        elements.developmentCodexDetail,
-        `插件版本：${currentCodex} · 导入状态：已导入 · 启用状态：${codexAvailable ? "已启用" : "未启用"}。`,
-        codexAvailable ? "success" : "warning",
+        detail,
+        `插件版本：${artifactTitle(plugin, artifactId)} · 导入状态：已导入 · 启用状态：${isEnabled ? "已启用" : "未启用"}。`,
+        isEnabled ? "success" : "warning",
+      );
+      return true;
+    };
+    const codexInstalled = renderLifecyclePlugin(codex, elements.developmentCodexRow, elements.developmentCodexDetail);
+    const weixinInstalled = renderLifecyclePlugin(weixin, elements.developmentWeixinRow, elements.developmentWeixinDetail);
+    elements.developmentEnvironment.hidden = !codexInstalled && !weixinInstalled;
+    const deliverylineInstalled = Array.isArray(deliveryline?.imported_artifact_ids) && deliveryline.imported_artifact_ids.length > 0;
+    elements.developmentDeliverylineRow.hidden = !deliverylineInstalled;
+    const deliverylineEnabled = Array.isArray(deliveryline?.enabled_artifact_ids) && deliveryline.enabled_artifact_ids.length > 0;
+    if (deliverylineInstalled) {
+      const deliverylineArtifactId = deliverylineEnabled
+        ? deliveryline.enabled_artifact_ids[0]
+        : deliveryline.imported_artifact_ids[0];
+      const deliverylineArtifact = (deliveryline.artifacts || []).find(
+        (item) => item.artifact_id === deliverylineArtifactId,
+      );
+      const deliverylineVersion = deliverylineArtifact?.source === "development"
+        ? "Deliveryline · 开发实现"
+        : deliverylineArtifact?.version
+          ? `Deliveryline · 正式版 ${formalVersion(deliverylineArtifact.version)}`
+          : "Deliveryline · 未知版本";
+      setStatus(
+        elements.developmentDeliverylineDetail,
+        `插件版本：${deliverylineVersion} · 导入状态：已导入 · 启用状态：${deliverylineEnabled ? "已启用" : "未启用"}。`,
+        deliverylineEnabled ? "success" : "warning",
       );
     }
-
-    const orchestrationModules = Array.isArray(modules?.modules) ? modules.modules : [];
-    const developmentAvailable = orchestration?.development_available === true;
-    const developmentImported = orchestration?.implementation === "weixin-orchestration-dev";
-    const selectedWeixinModule = orchestration?.implementation === "module"
-      ? orchestrationModules.find(
-        (item) => item?.implementation_ref === orchestration?.module_ref,
-      )
-      : null;
-    const importedWeixin = [
-      ...(developmentImported ? ["微信任务润色 · 开发实现"] : []),
-      ...orchestrationModules
-        .map((item) => `微信任务润色 · 正式版 ${formalVersion(item.version)}`),
-    ];
-    const weixinPlugin = orchestration?.implementation === "weixin-orchestration-dev"
-      ? "微信任务润色 · 开发实现"
-      : selectedWeixinModule
-        ? `微信任务润色 · 正式版 ${formalVersion(selectedWeixinModule.version)}`
-        : "未启用";
-    const weixinCurrentAvailable = orchestration?.implementation === "weixin-orchestration-dev"
-      ? developmentAvailable
-      : selectedWeixinModule?.available === true;
-    elements.developmentWeixinRow.hidden = importedWeixin.length === 0;
-    if (importedWeixin.length > 0) {
-      const weixinEnabled = weixinCurrentAvailable && orchestration?.enabled === true;
-      const weixinEnablement = !weixinCurrentAvailable && orchestration?.implementation !== "disabled"
-        ? "不可用"
-        : weixinEnabled ? "已启用" : "未启用";
-      setStatus(
-        elements.developmentWeixinDetail,
-        `插件版本：${weixinPlugin} · 导入状态：已导入 · 启用状态：${weixinEnablement}。`,
-        weixinEnabled ? "success" : "warning",
-      );
-    }
-    elements.developmentEnvironment.hidden = importedCodex.length === 0 && importedWeixin.length === 0;
+    elements.developmentEnvironment.hidden = elements.developmentEnvironment.hidden && !deliverylineInstalled;
     syncControls();
   };
 
@@ -580,16 +565,30 @@ window.initializeWorkspaceWorkstation = () => {
     developmentLoading = true;
     syncControls();
     try {
-      const [runtime, runtimeManagement, orchestration, modules] = await Promise.all([
+      const [runtime, runtimeManagement, lifecycle] = await Promise.all([
         request("/api/codex/runtime-implementations", { cache: "no-store" }),
         request("/api/codex/runtimes", { cache: "no-store" }),
-        request("/api/settings/weixin-task-orchestration", { cache: "no-store" }),
-        request("/api/settings/weixin-task-orchestration/modules", { cache: "no-store" }),
+        request("/api/plugins", { cache: "no-store" }),
       ]);
       if (disposed) return false;
-      developmentSnapshot = { runtime, runtimeManagement, orchestration, modules };
-      renderDevelopment(runtime, runtimeManagement, orchestration, modules);
-      cacheDevelopmentSnapshot(runtime, runtimeManagement, orchestration, modules);
+      const codex = lifecycle?.plugins?.find((plugin) => plugin.plugin_id === "codex-runtime") || null;
+      const weixin = lifecycle?.plugins?.find((plugin) => plugin.plugin_id === "weixin-orchestration") || null;
+      const enabledIds = Array.isArray(weixin?.enabled_artifact_ids) ? weixin.enabled_artifact_ids : [];
+      const activeId = enabledIds[0] || "";
+      const activeModule = activeId.startsWith("orchestration:") ? activeId.slice("orchestration:".length) : null;
+      const modules = { modules: (weixin?.artifacts || [])
+        .filter((item) => item.artifact_id?.startsWith("orchestration:"))
+        .map((item) => ({ ...item, implementation_ref: item.artifact_id.slice("orchestration:".length) })) };
+      const orchestration = {
+        implementation: activeId === "development:weixin-orchestration" ? "weixin-orchestration-dev" : activeModule ? "module" : "disabled",
+        module_ref: activeModule,
+        enabled: activeId !== "",
+        development_available: Boolean((weixin?.artifacts || []).find((item) => item.artifact_id === "development:weixin-orchestration")?.available),
+      };
+      const deliveryline = lifecycle?.plugins?.find((plugin) => plugin.plugin_id === "deliveryline") || null;
+      developmentSnapshot = { runtime, runtimeManagement, orchestration, modules, deliveryline, codex, weixin };
+      renderDevelopment(runtime, runtimeManagement, orchestration, modules, deliveryline, codex, weixin);
+      cacheDevelopmentSnapshot(runtime, runtimeManagement, orchestration, modules, deliveryline, codex, weixin);
       return true;
     } catch (error) {
       if (disposed || error?.name === "AbortError") return false;
@@ -876,6 +875,9 @@ window.initializeWorkspaceWorkstation = () => {
       cachedDevelopmentSnapshot.runtimeManagement,
       cachedDevelopmentSnapshot.orchestration,
       cachedDevelopmentSnapshot.modules,
+      cachedDevelopmentSnapshot.deliveryline,
+      cachedDevelopmentSnapshot.codex,
+      cachedDevelopmentSnapshot.weixin,
     );
   }
   syncControls();

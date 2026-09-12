@@ -41,7 +41,8 @@ from app.api.openclaw_wechat_chub_mode import (
 from app.api.project_documents import router as project_documents_router
 from app.api.weekly_reports import router as weekly_reports_router
 from app.api.settings import router as settings_router
-from app.api.runtime_plugins import router as runtime_plugins_router
+from app.api.plugins import router as plugins_router
+from app.plugin_lifecycle import PluginLifecycleService
 from app.api.status import router as status_router
 from app.ai_session import AiSessionManager
 from app.ai_session.operations import archive_session, delete_session
@@ -225,6 +226,7 @@ def _is_ai_runtime_mutation(request: Request) -> bool:
     return (
         path.startswith("/api/codex/")
         or path.startswith("/api/runtime-modules/")
+        or path.startswith("/api/plugins/codex-runtime/")
         or path.startswith("/api/ai/runtimes/")
         or path == "/api/ai/settings"
         or path.startswith("/api/weekly-reports/")
@@ -423,6 +425,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         translation_confirmation_notifier=(
             completion_notifier.notify_weixin_translation_confirmation
         ),
+    )
+    plugin_lifecycle = PluginLifecycleService(
+        resolved_settings,
+        ai_session_manager,
+        weixin_chub_mode,
     )
     weixin_translation.set_completion_handler(
         weixin_chub_mode.complete_optimized_task
@@ -1245,6 +1252,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.deferred_restart = deferred_restart
     application.state.maintenance_lock = threading.RLock()
     application.state.weixin_chub_mode = weixin_chub_mode
+    application.state.plugin_lifecycle = plugin_lifecycle
     application.state.weixin_translation = weixin_translation
     application.state.maintenance_terminal = maintenance_terminal
     def check_codex_runtime_account() -> RuntimeAccountEnvironmentState:
@@ -1342,7 +1350,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(project_documents_router)
     application.include_router(weekly_reports_router)
     application.include_router(settings_router)
-    application.include_router(runtime_plugins_router)
+    application.include_router(plugins_router)
     application.include_router(status_router)
     application.include_router(codex_api_router)
     application.include_router(maintenance_terminal_api_router)

@@ -299,6 +299,15 @@ async def inspect_runtime_plugin(request: Request) -> ApiResponse[RuntimePluginP
 @router.post("/install", response_model=ApiResponse[RuntimePluginInstallData])
 async def install_runtime_plugin(request: Request) -> ApiResponse[RuntimePluginInstallData]:
     source_name, archive = await _read_archive(request)
+    return ApiResponse(data=await install_runtime_plugin_archive(request, source_name, archive))
+
+
+async def install_runtime_plugin_archive(
+    request: Request,
+    source_name: str,
+    archive: bytes,
+) -> RuntimePluginInstallData:
+    """Install a server-side artifact through the same confirmed Runtime path."""
     manager = request.app.state.ai_session_manager
     operation_id = log_operation(request, action="install_runtime_plugin", status="requested", target=source_name)
     log_operation(request, action="install_runtime_plugin", status="started", target=source_name, operation_id=operation_id)
@@ -320,7 +329,7 @@ async def install_runtime_plugin(request: Request) -> ApiResponse[RuntimePluginI
         generation = await _confirm_worker_runtime(request, implementation_id, expected_present=True)
         manager.runtime_plugin_service.finalize(activation)
         log_operation(request, action="install_runtime_plugin", status="succeeded", target=implementation_id, operation_id=operation_id)
-        return ApiResponse(data=RuntimePluginInstallData(module_id=implementation_id, worker_generation=generation))
+        return RuntimePluginInstallData(module_id=implementation_id, worker_generation=generation)
     except RuntimePluginInstallError as exc:
         error = ApiError(422, exc.code, exc.message)
     except ApiError as exc:

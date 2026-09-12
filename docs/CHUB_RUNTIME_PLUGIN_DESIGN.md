@@ -19,11 +19,11 @@
 
 ### 当前范围
 
-Runtime 设置的首项统一为“插件是否启用”：关闭时只拒绝后续新 AI 任务，已受理任务继续按创建时快照收敛；默认版本仍独立决定新 Session 使用哪个已启用版本。工作台状态按导入状态、启用状态和启用版本展示，导入不等于启用或设为默认。
+“插件管理”的统一生命周期管理 Runtime 的导入、移除、启用与禁用：关闭时只拒绝后续新 AI 任务，已受理任务继续按创建时快照收敛；Codex 设置页的当前使用版本仍独立决定新 Session 使用哪个已启用版本。工作台状态按导入状态、启用状态和启用版本展示，导入不等于启用或设为默认。
 
 当前生产从固定安装目录发现正式 Codex Runtime ZIP。第一方 Codex Runtime 的开发源码保留在仓库 `runtime-modules/codex-runtime/`，`builtin-dev` 直接从该目录重新加载，不复制到 ZIP 安装目录。设置页可设置一个健康且启用的默认实现；它只决定之后新建 Chub Session 的实现。Session 创建时立即保存固定槽位，Quick Worker、微信、自动化和周报等后续任务均从 Session 读取该槽位，页面、外部指令和请求正文均不提供 `implementation_id`。清单字段保留通用 `runtime_id` 是为后续独立接入做准备，不构成当前第二 Runtime 的安装或维护能力。
 
-设置页的“插件管理”固定提供 Runtime、任务编排和业务插件三个导入区域。Runtime ZIP 经预检、导入/覆盖后登记为已导入；是否用于新任务仍由 Runtime 的独立启用与默认版本配置决定。固定开发实现随当前部署提供，取消导入只影响之后的新 Session/任务，不删除源码或改写既有快照。插件管理列表与工作台都保留已导入但停用的实现，并展示导入、启用和可用状态；导入不等于启用或设为默认。插件实现的可见名称统一为“`<能力名称> · 开发实现`”或“`<能力名称> · 正式版 v<版本号>`”：开发实现不展示内部引用，正式实现必须展示清单版本；插件库存仍使用清单 `display_name` 作为能力名称。`builtin-dev`、`implementation_id`、`development_ref` 和 `implementation_ref` 仅用于后端绑定、快照和日志，不作为用户可见名称，也不能因文案调整而改变。导入覆盖和“刷新开发代码”只检查目标槽位的排队或运行任务，不暂停、检查或阻断已绑定 Session、旧 PID、历史 writer 或页面 `unknown`。Web 与 Quick Worker 都确认新注册表后才报告成功。只有明确物理删除 ZIP 槽位时，才检查该槽位是否仍被 Session 或非终态任务引用。页面不提供客户端 Runtime、Runner、命令、路径或环境变量选择器。微信任务润色使用独立的任务编排插件模块设置和注册表，其通用边界见[Chub 任务编排插件模块设计](WEIXIN_TASK_ORCHESTRATION_PLUGIN_DESIGN.md)。
+设置页的“插件管理”固定呈现 Runtime、任务编排和业务插件的统一生命周期列表。Runtime ZIP 写入固定制品目录后由插件管理预检、导入或覆盖并登记为已导入；是否用于新任务由同一列表的启用状态和 Codex 设置页的当前使用版本共同决定。固定开发实现随当前部署提供，移除只影响之后的新 Session/任务，不删除源码或改写既有快照。插件管理列表与工作台都保留已导入但停用的实现，并展示导入、启用和可用状态；导入不等于启用或设为默认。不可用制品不得启用，但仍保留恢复或移除入口。插件实现的可见名称统一为“`<能力名称> · 开发实现`”或“`<能力名称> · 正式版 v<版本号>`”：开发实现不展示内部引用，正式实现必须展示清单版本；插件库存仍使用清单 `display_name` 作为能力名称。`builtin-dev`、`implementation_id`、`development_ref` 和 `implementation_ref` 仅用于后端绑定、快照和日志，不作为用户可见名称，也不能因文案调整而改变。导入覆盖和“刷新开发代码”只检查目标槽位的排队或运行任务，不暂停、检查或阻断已绑定 Session、旧 PID、历史 writer 或页面 `unknown`。Web 与 Quick Worker 都确认新注册表后才报告成功。只有明确物理删除 ZIP 槽位时，才检查该槽位是否仍被 Session 或非终态任务引用。页面不提供客户端 Runtime、Runner、命令、路径或环境变量选择器。微信任务润色使用独立的任务编排插件模块设置和注册表，其通用边界见[Chub 微信任务编排插件模块设计](WEIXIN_TASK_ORCHESTRATION_PLUGIN_DESIGN.md)。
 
 ```text
 维护者选择 Runtime ZIP
@@ -128,7 +128,7 @@ Chub 仅扫描固定 Runtime 安装目录。每个模块以 Runtime ID 私有 Py
 
 ## 维护者操作
 
-第一方 Codex 插件 ZIP 通过 `python scripts/build_codex_runtime_zip.py --implementation-id codex-010001 --version 1.0.1 --description "简短发版特性说明"` 构建，默认产物命名为 `codex-runtime-release-<版本>-<UTC时间>.zip`，再从设置页的“插件模块 → 插件管理 → Runtime 插件导入”导入或覆盖。需要不兼容原生格式时使用新的正式标识；兼容修复可覆盖原有槽位。开发代码直接在 `runtime-modules/codex-runtime/` 修改后使用“重新加载开发代码”。不要直接复制、替换或删除固定安装目录中的文件；这会绕过 Web/Worker 注册确认与任务保护。
+第一方 Codex 插件 ZIP 通过 `python scripts/build_codex_runtime_zip.py --implementation-id codex-010001 --version 1.0.1 --description "简短发版特性说明"` 构建，默认产物命名为 `codex-runtime-release-<版本>-<UTC时间>.zip`，写入固定制品目录后从设置页“插件管理”的统一生命周期导入。需要不兼容原生格式时使用新的正式标识；兼容修复可覆盖原有槽位。开发源码位于 `runtime-modules/codex-runtime/`，其导入、启用和移除同样通过统一生命周期管理。不要直接复制、替换或删除固定安装目录中的文件；这会绕过 Web/Worker 注册确认与任务保护。
 
 模块操作失败时，以页面最终提示和操作日志为准。仅在提示状态无法确认或后续启动仍显示待恢复时，再按具体错误调查；不要手动清理其他 Runtime、Worker 或用户数据来解除单个模块故障。
 

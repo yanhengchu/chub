@@ -54,27 +54,9 @@
     if (implementationRow instanceof HTMLElement && internalSessionRow instanceof HTMLElement) {
       orchestrationList.insertBefore(internalSessionRow, implementationRow);
     }
-    const pluginEnabledRow = document.createElement("section");
-    pluginEnabledRow.className = "workspace-task-orchestration-field settings-field settings-field-toggle";
-    const pluginEnabledCopy = document.createElement("span");
-    const pluginEnabledTitle = document.createElement("strong");
-    pluginEnabledTitle.textContent = "插件是否启用";
-    const pluginEnabledDescription = document.createElement("small");
-    pluginEnabledDescription.textContent = "关闭后，后续微信普通文本不进入润色插件流程；已受理任务不受影响。";
-    pluginEnabledCopy.append(pluginEnabledTitle, pluginEnabledDescription);
-    const pluginEnabledControl = document.createElement("label");
-    pluginEnabledControl.className = "settings-switch";
-    const pluginEnabledInput = document.createElement("input");
-    pluginEnabledInput.type = "checkbox";
-    pluginEnabledInput.id = "workspace-task-plugin-enabled";
-    pluginEnabledInput.setAttribute("aria-label", "插件是否启用");
-    const pluginEnabledTrack = document.createElement("span");
-    pluginEnabledTrack.className = "settings-switch-track";
-    pluginEnabledTrack.setAttribute("aria-hidden", "true");
-    pluginEnabledControl.htmlFor = pluginEnabledInput.id;
-    pluginEnabledControl.append(pluginEnabledInput, pluginEnabledTrack);
-    pluginEnabledRow.append(pluginEnabledCopy, pluginEnabledControl);
-    orchestrationList.prepend(pluginEnabledRow);
+    const implementationTitle = implementationDescription.previousElementSibling;
+    if (implementationTitle instanceof HTMLElement) implementationTitle.textContent = "当前使用版本";
+    implementationMenu.setAttribute("aria-label", "当前使用版本");
     const processingTitle = document.getElementById("workspace-task-processing-title");
     if (processingTitle instanceof HTMLElement) {
       processingTitle.textContent = "润色模式";
@@ -159,7 +141,6 @@
       modelPicker.setDisabled(disabled);
       reasoningPicker.setDisabled(disabled);
       showInternalNativeSession.disabled = disabled;
-      pluginEnabledInput.disabled = disabled;
     };
     const apiRequest = async (path, options = {}) => {
       const response = await fetch(path, options);
@@ -207,7 +188,7 @@
         : (orchestration.development_available
           ? "当前使用开发实现；只影响之后新接收的润色任务。"
           : "当前开发实现不可用；请选择可用 ZIP。")
-      implementationTrigger.setAttribute("aria-label", `编排实现：${implementationValue.textContent}`);
+      implementationTrigger.setAttribute("aria-label", `当前使用版本：${implementationValue.textContent}`);
       const selectedMode = status.mode || (status.enabled ? "auto" : "direct");
       processingPicker.setOptions([
         { value: "direct", label: "直接执行", description: "直接提交原始文本，不执行润色。" },
@@ -266,11 +247,6 @@
       reasoningPicker.setOptions(levels, status.reasoning_effort || "");
       reasoningTrigger.setAttribute("aria-label", `推理等级：${reasoningValue.textContent}`);
       showInternalNativeSession.checked = status.show_internal_native_session === true;
-      pluginEnabledInput.checked = orchestration.enabled === true;
-      pluginEnabledInput.setAttribute(
-        "aria-label",
-        `插件是否启用：${pluginEnabledInput.checked ? "已启用" : "未启用"}`,
-      );
       const active = Number(status.queued || 0) + Number(status.running || 0);
       const notes = [];
       if (active > 0) notes.push(`${active} 项文本优化仍在处理中`);
@@ -294,11 +270,11 @@
       implementationPicker.setDisabled(
         saving
         || loading
+        || !orchestration.enabled
         || (!orchestration.development_available
           && !modules.some((item) => item.available)),
       );
       showInternalNativeSession.disabled = saving || loading;
-      pluginEnabledInput.disabled = saving || loading;
     };
     const load = async () => {
       if (loading || disposed) return;
@@ -306,13 +282,27 @@
       setPickersDisabled(true);
       setMessage("");
       try {
-        const [nextStatus, nextCatalog, nextOrchestration, nextModules] = await Promise.all([
+        const [nextStatus, nextCatalog, lifecycle] = await Promise.all([
           apiRequest("/api/settings/weixin-translation", { cache: "no-store" }),
           apiRequest("/api/codex/models", { cache: "no-store" }),
-          apiRequest("/api/settings/weixin-task-orchestration", { cache: "no-store" }),
-          apiRequest("/api/settings/weixin-task-orchestration/modules", { cache: "no-store" }),
+          apiRequest("/api/plugins", { cache: "no-store" }),
         ]);
         if (!Array.isArray(nextCatalog?.models)) throw new Error("暂时无法读取 Codex 模型目录。");
+        const plugin = lifecycle?.plugins?.find((item) => item.plugin_id === "weixin-orchestration");
+        if (!plugin) throw new Error("暂时无法读取微信任务润色插件状态。");
+        const enabledIds = Array.isArray(plugin.enabled_artifact_ids) ? plugin.enabled_artifact_ids : [];
+        const activeId = enabledIds[0] || "";
+        const activeModule = activeId.startsWith("orchestration:") ? activeId.slice("orchestration:".length) : null;
+        const pluginArtifacts = Array.isArray(plugin.artifacts) ? plugin.artifacts : [];
+        const nextModules = pluginArtifacts
+          .filter((item) => typeof item.artifact_id === "string" && item.artifact_id.startsWith("orchestration:"))
+          .map((item) => ({ ...item, implementation_ref: item.artifact_id.slice("orchestration:".length), active: item.artifact_id === activeId }));
+        const nextOrchestration = {
+          implementation: activeId === "development:weixin-orchestration" ? "weixin-orchestration-dev" : activeModule ? "module" : "disabled",
+          module_ref: activeModule,
+          enabled: activeId !== "",
+          development_available: pluginArtifacts.some((item) => item.artifact_id === "development:weixin-orchestration" && item.available),
+        };
         if (!disposed) {
           status = nextStatus;
           catalog = nextCatalog;
@@ -357,60 +347,36 @@
 
     const saveImplementation = async (selection) => {
       if (!orchestration || saving || disposed) return;
-      const moduleRef = typeof selection === "string" && selection.startsWith("module:")
-        ? selection.slice("module:".length)
-        : null;
-      const implementation = moduleRef ? "module" : selection;
+      const artifactId = typeof selection === "string" && selection.startsWith("module:")
+        ? `orchestration:${selection.slice("module:".length)}`
+        : selection === "weixin-orchestration-dev" ? "development:weixin-orchestration" : "";
       saving = true;
       render();
       try {
-        const nextOrchestration = await apiRequest(
-          "/api/settings/weixin-task-orchestration",
-          {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(moduleRef ? { implementation, module_ref: moduleRef } : { implementation }),
-          },
-        );
-        if (!disposed) orchestration = nextOrchestration;
+        if (!artifactId) {
+          const active = orchestration.implementation === "weixin-orchestration-dev"
+            ? "development:weixin-orchestration"
+            : orchestration.module_ref ? `orchestration:${orchestration.module_ref}` : "";
+          if (active) await apiRequest(`/api/plugins/weixin-orchestration/enabled`, {
+            method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ artifact_id: active, enabled: false }),
+          });
+        } else {
+          await apiRequest(
+            "/api/plugins/weixin-orchestration/enabled",
+            {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ artifact_id: artifactId, enabled: true }),
+            },
+          );
+        }
+        await load();
       } catch (error) {
         if (!disposed) {
           setMessage(
             error instanceof Error
               ? error.message
-              : "任务编排实现保存失败，请稍后刷新页面重试。",
-            "error",
-          );
-          await load();
-        }
-      } finally {
-        saving = false;
-        render();
-      }
-    };
-
-    const savePluginEnabled = async () => {
-      if (!orchestration || saving || disposed) return;
-      const enabled = pluginEnabledInput.checked;
-      // Keep the user-selected value through the immediate loading render.
-      // The server response remains authoritative and restores it on failure.
-      orchestration = { ...orchestration, enabled };
-      saving = true;
-      render();
-      try {
-        const nextOrchestration = await apiRequest(
-          "/api/settings/weixin-task-orchestration",
-          {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ enabled }),
-          },
-        );
-        if (!disposed) orchestration = nextOrchestration;
-      } catch (error) {
-        if (!disposed) {
-          setMessage(
-            error instanceof Error ? error.message : "插件启用状态保存失败，请稍后刷新页面重试。",
+              : "当前使用版本保存失败，请稍后刷新页面重试。",
             "error",
           );
           await load();
@@ -426,9 +392,6 @@
         { show_internal_native_session: showInternalNativeSession.checked },
         "内部翻译 Session 显示设置保存失败，请稍后刷新页面重试。",
       );
-    });
-    pluginEnabledInput.addEventListener("change", () => {
-      void savePluginEnabled();
     });
 
     window.disposeWorkspaceTaskOrchestration = () => {

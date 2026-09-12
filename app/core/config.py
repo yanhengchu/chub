@@ -142,6 +142,12 @@ class DeploymentPackageConfig(StrictModel):
     artifacts_dir: Path = Path("data/local/artifacts/releases")
 
 
+class BusinessModulesConfig(StrictModel):
+    install_dir: Path = Path("data/local/runtime/business-modules")
+    state_file: Path = Path("data/local/state/business-modules/deliveryline.json")
+    max_archive_bytes: int = Field(default=8 * 1024 * 1024, ge=1024, le=32 * 1024 * 1024)
+
+
 class ProjectDocumentsConfig(StrictModel):
     state_file: Path = Path("data/local/state/project-documents.json")
 
@@ -314,6 +320,7 @@ class Settings(StrictModel):
     ai_runtime: AiRuntimeConfig = AiRuntimeConfig()
     maintenance_terminal: MaintenanceTerminalConfig = MaintenanceTerminalConfig()
     deployment_package: DeploymentPackageConfig = DeploymentPackageConfig()
+    business_modules: BusinessModulesConfig = BusinessModulesConfig()
     automations: AutomationsConfig = AutomationsConfig()
     project_documents: ProjectDocumentsConfig = ProjectDocumentsConfig()
     requests: RequestsConfig = RequestsConfig()
@@ -388,6 +395,10 @@ class Settings(StrictModel):
             self.deployment_package.artifacts_dir = (
                 PROJECT_ROOT / self.deployment_package.artifacts_dir
             )
+        if not self.business_modules.install_dir.is_absolute():
+            self.business_modules.install_dir = PROJECT_ROOT / self.business_modules.install_dir
+        if not self.business_modules.state_file.is_absolute():
+            self.business_modules.state_file = PROJECT_ROOT / self.business_modules.state_file
         if not self.requests.state_file.is_absolute():
             self.requests.state_file = PROJECT_ROOT / self.requests.state_file
         if not self.network_recovery.lock_file.is_absolute():

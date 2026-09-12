@@ -97,26 +97,21 @@ def render_settings_page(
 ) -> HTMLResponse:
     settings = request.app.state.settings
     runtime_navigation = ()
+    orchestration_navigation = False
+    deliveryline_navigation = False
     try:
+        imported_plugins = request.app.state.plugin_lifecycle.imported_plugin_ids()
+        runtime_imported = "codex-runtime" in imported_plugins
+        orchestration_navigation = "weixin-orchestration" in imported_plugins
+        deliveryline_navigation = "deliveryline" in imported_plugins
         manager = request.app.state.ai_session_manager
-        implementations = manager.read_runtime_implementations().implementations
         runtime_navigation = (
             manager.runtime_plugins.navigation()
-            if any(item.imported for item in implementations)
+            if runtime_imported
             else ()
         )
-    except RuntimeOperationError:
-        # Runtime settings remain reachable when a live module registration is invalid.
-        pass
-    orchestration_navigation = False
-    try:
-        orchestration = request.app.state.weixin_chub_mode.orchestration_settings()
-        orchestration_navigation = orchestration.implementation != "disabled"
-        if not orchestration_navigation:
-            orchestration_navigation = bool(
-                request.app.state.weixin_chub_mode.orchestration_plugin_service.list_artifacts()
-            )
-    except (ApiError, OSError):
+    except (ApiError, OSError, RuntimeOperationError):
+        # The plugin manager remains reachable when lifecycle state cannot be read.
         pass
     return templates.TemplateResponse(
         request=request,
@@ -131,6 +126,7 @@ def render_settings_page(
             "settings_runtime_id": runtime_id,
             "runtime_navigation": runtime_navigation,
             "orchestration_navigation": orchestration_navigation,
+            "deliveryline_navigation": deliveryline_navigation,
         },
     )
 
@@ -165,7 +161,7 @@ def runtime_settings(request: Request) -> HTMLResponse:
         request,
         page="runtime",
         title="插件管理",
-        description="管理 Runtime 与任务编排插件模块的通用默认项、导入与版本。",
+        description="统一管理插件的导入、移除、启用、禁用与版本。",
     )
 
 
@@ -198,6 +194,10 @@ def task_orchestration_settings(request: Request) -> HTMLResponse:
         title="微信任务润色",
         description="配置微信 ClawBot 普通文本任务的处理方式和 AI Runtime 参数。",
     )
+
+@router.get("/settings/deliveryline", response_class=HTMLResponse, include_in_schema=False)
+def deliveryline_settings(request: Request) -> HTMLResponse:
+    return render_settings_page(request, page="deliveryline", title="Deliveryline", description="管理 Deliveryline 业务插件的导入与启用状态；业务流程将在后续阶段接入。")
 
 
 @router.get("/settings/weixin-text", include_in_schema=False)
