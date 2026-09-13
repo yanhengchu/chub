@@ -318,30 +318,27 @@ async function loadRuntimePlugins() {
 }
 
 function runtimeSettingOptions(field, catalog, values) {
-  if (field.id === "new-session-permission") {
+  if (Array.isArray(field.options) && field.options.length) {
+    return field.options;
+  }
+  if (field.id === "session-default-permission") {
     return (quickInteractionCore?.quickSessionPermissionOptions || [])
       .filter((option) => option.value !== "ask");
   }
-  if (field.id === "weekly-report-runtime") {
-    return [{ value: "codex", label: "Codex", description: "当前可用于周报自动化的 AI Runtime。" }];
-  }
-  if (field.id === "weekly-report-permission") {
-    return quickInteractionCore?.quickSessionPermissionOptions || [];
-  }
-  if (field.id === "weekly-report-model") {
+  if (field.id === "session-default-model") {
     return quickInteractionCore?.quickSessionModelOptions(
       catalog,
-      values["weekly-report-model"] === "__default__" ? "" : values["weekly-report-model"],
+      values["session-default-model"] === "__default__" ? "" : values["session-default-model"],
     ).map((option) => ({
       ...option,
       value: option.value || "__default__",
     })) || [];
   }
-  if (field.id === "weekly-report-reasoning") {
+  if (field.id === "session-default-reasoning") {
     return quickInteractionCore?.quickSessionReasoningOptions(
       catalog,
-      values["weekly-report-model"] === "__default__" ? "" : values["weekly-report-model"],
-      values["weekly-report-reasoning"] === "__default__" ? "" : values["weekly-report-reasoning"],
+      values["session-default-model"] === "__default__" ? "" : values["session-default-model"],
+      values["session-default-reasoning"] === "__default__" ? "" : values["session-default-reasoning"],
     ).map((option) => ({
       ...option,
       value: option.value || "__default__",
@@ -398,15 +395,18 @@ function renderGeneralRuntimeSettings(data, catalog = null) {
   disposeGeneralRuntimeSettingsPickers();
   generalRuntimeSettingsPanel.replaceChildren();
   const sections = Array.isArray(data?.sections) ? data.sections : [];
+  const showSectionMetadata = sections.length > 1;
   for (const section of sections) {
-    const heading = document.createElement("h3");
-    heading.textContent = section.title;
-    generalRuntimeSettingsPanel.append(heading);
-    if (section.description) {
-      const description = document.createElement("p");
-      description.className = "settings-subsection-description";
-      description.textContent = section.description;
-      generalRuntimeSettingsPanel.append(description);
+    if (showSectionMetadata) {
+      const heading = document.createElement("h3");
+      heading.textContent = section.title;
+      generalRuntimeSettingsPanel.append(heading);
+      if (section.description) {
+        const description = document.createElement("p");
+        description.className = "settings-subsection-description";
+        description.textContent = section.description;
+        generalRuntimeSettingsPanel.append(description);
+      }
     }
     if (!Array.isArray(section.fields) || section.fields.length === 0) continue;
     const form = document.createElement("form");
@@ -430,8 +430,8 @@ function renderGeneralRuntimeSettings(data, catalog = null) {
         input.dataset.settingsPicker = "";
       }
       input.addEventListener("change", () => {
-        if (field.id === "weekly-report-model") {
-          const reasoning = form.querySelector("[data-runtime-setting='weekly-report-reasoning']");
+        if (field.id === "session-default-model") {
+          const reasoning = form.querySelector("[data-runtime-setting='session-default-reasoning']");
           if (reasoning instanceof HTMLSelectElement) reasoning.value = "__default__";
         }
         void saveGeneralRuntimeSettings(form, input, message);
@@ -787,8 +787,9 @@ if (settingsPage === "appearance") {
     );
     void loadRuntimePlugins();
   }
-} else if (settingsPage === "runtime") {
+} else if (settingsPage === "session") {
   void loadGeneralRuntimeSettings();
+} else if (settingsPage === "runtime") {
   window.initializeWorkspacePluginLifecycle?.();
 } else if (settingsPage === "task-orchestration") {
   window.initializeWorkspaceTaskOrchestration?.();

@@ -17,10 +17,19 @@
     const modelValue = document.getElementById("workspace-task-model-value");
     const modelMenu = document.getElementById("workspace-task-model-menu");
     const modelDescription = document.getElementById("workspace-task-model-description");
-    const reasoningTrigger = document.getElementById("workspace-task-reasoning-trigger");
-    const reasoningValue = document.getElementById("workspace-task-reasoning-value");
-    const reasoningMenu = document.getElementById("workspace-task-reasoning-menu");
-    const reasoningDescription = document.getElementById("workspace-task-reasoning-description");
+    const runtimeStaticDisplay = document.querySelector(
+      '.workspace-task-static-setting[aria-label^="翻译 Runtime："]',
+    );
+    const runtimeDescription = runtimeStaticDisplay
+      ?.closest(".workspace-task-orchestration-field")
+      ?.querySelector(".workstation-status-detail");
+    const reasoningStaticDisplay = document.querySelector(
+      '.workspace-task-static-setting[aria-label^="推理等级："]',
+    );
+    const reasoningStaticValue = reasoningStaticDisplay?.querySelector("span");
+    const reasoningDescription = reasoningStaticDisplay
+      ?.closest(".workspace-task-orchestration-field")
+      ?.querySelector(".workstation-status-detail");
     const showInternalNativeSession = document.getElementById(
       "workspace-task-show-internal-native-session",
     );
@@ -39,15 +48,62 @@
       || !(modelValue instanceof HTMLElement)
       || !(modelMenu instanceof HTMLElement)
       || !(modelDescription instanceof HTMLElement)
-      || !(reasoningTrigger instanceof HTMLButtonElement)
-      || !(reasoningValue instanceof HTMLElement)
-      || !(reasoningMenu instanceof HTMLElement)
+      || !(runtimeStaticDisplay instanceof HTMLElement)
+      || !(runtimeDescription instanceof HTMLElement)
+      || !(reasoningStaticDisplay instanceof HTMLElement)
+      || !(reasoningStaticValue instanceof HTMLElement)
       || !(reasoningDescription instanceof HTMLElement)
       || !(showInternalNativeSession instanceof HTMLInputElement)
       || typeof window.createChoicePicker !== "function"
     ) {
       return;
     }
+
+    const runtimePickerHost = document.createElement("div");
+    runtimePickerHost.className = "settings-choice-picker workspace-task-orchestration-picker";
+    const runtimeTrigger = document.createElement("button");
+    runtimeTrigger.id = "workspace-task-runtime-trigger";
+    runtimeTrigger.className = "settings-choice-picker-trigger";
+    runtimeTrigger.type = "button";
+    runtimeTrigger.setAttribute("aria-haspopup", "listbox");
+    runtimeTrigger.setAttribute("aria-controls", "workspace-task-runtime-menu");
+    runtimeTrigger.setAttribute("aria-expanded", "false");
+    runtimeTrigger.disabled = true;
+    const runtimeValue = document.createElement("span");
+    const runtimeArrow = document.createElement("span");
+    runtimeArrow.setAttribute("aria-hidden", "true");
+    runtimeTrigger.append(runtimeValue, runtimeArrow);
+    const runtimeMenu = document.createElement("div");
+    runtimeMenu.id = "workspace-task-runtime-menu";
+    runtimeMenu.className = "conversation-setting-menu workspace-task-orchestration-menu";
+    runtimeMenu.setAttribute("role", "listbox");
+    runtimeMenu.setAttribute("aria-label", "翻译 Runtime");
+    runtimeMenu.hidden = true;
+    runtimePickerHost.append(runtimeTrigger, runtimeMenu);
+    runtimeStaticDisplay.replaceWith(runtimePickerHost);
+
+    const reasoningPickerHost = document.createElement("div");
+    reasoningPickerHost.className = "settings-choice-picker workspace-task-orchestration-picker";
+    const reasoningTrigger = document.createElement("button");
+    reasoningTrigger.id = "workspace-task-reasoning-trigger";
+    reasoningTrigger.className = "settings-choice-picker-trigger";
+    reasoningTrigger.type = "button";
+    reasoningTrigger.setAttribute("aria-haspopup", "listbox");
+    reasoningTrigger.setAttribute("aria-controls", "workspace-task-reasoning-menu");
+    reasoningTrigger.setAttribute("aria-expanded", "false");
+    reasoningTrigger.disabled = true;
+    const reasoningValue = document.createElement("span");
+    const reasoningArrow = document.createElement("span");
+    reasoningArrow.setAttribute("aria-hidden", "true");
+    reasoningTrigger.append(reasoningValue, reasoningArrow);
+    const reasoningMenu = document.createElement("div");
+    reasoningMenu.id = "workspace-task-reasoning-menu";
+    reasoningMenu.className = "conversation-setting-menu workspace-task-orchestration-menu";
+    reasoningMenu.setAttribute("role", "listbox");
+    reasoningMenu.setAttribute("aria-label", "推理等级");
+    reasoningMenu.hidden = true;
+    reasoningPickerHost.append(reasoningTrigger, reasoningMenu);
+    reasoningStaticDisplay.replaceWith(reasoningPickerHost);
 
     const implementationRow = implementationTrigger.closest(".workspace-task-orchestration-field");
     const internalSessionRow = showInternalNativeSession.closest(".workspace-task-orchestration-field");
@@ -63,15 +119,11 @@
       processingTitle.nextElementSibling.textContent = "选择微信 ClawBot 普通文本的直接执行、自动润色或润色后确认。";
     }
     processingMenu.setAttribute("aria-label", "润色模式");
+    runtimeValue.textContent = "正在读取";
+    runtimeTrigger.setAttribute("aria-label", "翻译 Runtime：正在读取");
+    reasoningValue.textContent = "正在读取";
+    reasoningTrigger.setAttribute("aria-label", "推理等级：正在读取");
 
-    const reasoningLabels = {
-      low: "Low",
-      medium: "Medium",
-      high: "High",
-      xhigh: "Extra High",
-      max: "Max",
-      ultra: "Ultra",
-    };
     let status = null;
     let catalog = null;
     let orchestration = null;
@@ -110,14 +162,33 @@
       matchTriggerWidth: false,
       alignEnd: true,
       onSelect: (model) => {
-        const selected = catalog?.models?.find((item) => item.id === model);
+        const selectedModel = Array.isArray(catalog?.models)
+          ? catalog.models.find((item) => item.id === model)
+          : null;
+        const currentLevel = status?.reasoning_effort || "";
+        const nextLevel = selectedModel?.levels?.some((item) => item.id === currentLevel)
+          ? currentLevel
+          : (selectedModel?.default_level || catalog?.default_reasoning_effort || "");
         status = {
           ...status,
           model: model || null,
-          reasoning_effort: model ? (selected?.default_level || null) : null,
+          reasoning_effort: nextLevel || null,
         };
         render();
-        void saveModelSettings();
+        void saveExecutionSettings();
+      },
+    });
+    const runtimePicker = window.createChoicePicker({
+      trigger: runtimeTrigger,
+      value: runtimeValue,
+      menu: runtimeMenu,
+      optionClassName: "conversation-composer-control conversation-setting-option",
+      matchTriggerWidth: false,
+      alignEnd: true,
+      onSelect: (runtimeId) => {
+        status = { ...status, runtime_id: runtimeId || null };
+        render();
+        void saveExecutionSettings();
       },
     });
     const reasoningPicker = window.createChoicePicker({
@@ -128,16 +199,20 @@
       matchTriggerWidth: false,
       alignEnd: true,
       onSelect: (reasoningEffort) => {
-        status = { ...status, reasoning_effort: reasoningEffort || null };
+        status = {
+          ...status,
+          reasoning_effort: reasoningEffort || null,
+        };
         render();
-        void saveModelSettings();
+        void saveExecutionSettings();
       },
     });
-    if (!implementationPicker || !processingPicker || !modelPicker || !reasoningPicker) return;
+    if (!implementationPicker || !processingPicker || !runtimePicker || !modelPicker || !reasoningPicker) return;
 
     const setPickersDisabled = (disabled) => {
       processingPicker.setDisabled(disabled);
       implementationPicker.setDisabled(disabled);
+      runtimePicker.setDisabled(disabled);
       modelPicker.setDisabled(disabled);
       reasoningPicker.setDisabled(disabled);
       showInternalNativeSession.disabled = disabled;
@@ -153,6 +228,31 @@
     const formalVersion = (version) => {
       const normalized = typeof version === "string" ? version.trim().replace(/^v/i, "") : "";
       return normalized ? `v${normalized}` : "未知版本";
+    };
+    const renderReasoning = (effectiveModel) => {
+      const labels = window.QuickInteractionCore?.quickSessionReasoningLabels || {};
+      const selectedLevel = status.reasoning_effort || "";
+      const options = [];
+      if (selectedLevel && !effectiveModel?.levels?.some((item) => item.id === selectedLevel)) {
+        options.push({
+          value: selectedLevel,
+          label: labels[selectedLevel] || selectedLevel,
+          description: "当前任务配置，模型目录中不可用",
+        });
+      }
+      effectiveModel?.levels?.forEach((item) => options.push({
+        value: item.id,
+        label: labels[item.id] || item.id,
+        description: item.description || "",
+      }));
+      reasoningPicker.setOptions(options, selectedLevel);
+      const level = selectedLevel;
+      const label = level ? (labels[level] || level) : "暂时不可用";
+      reasoningValue.textContent = label;
+      reasoningTrigger.setAttribute("aria-label", `推理等级：${label}`);
+      reasoningDescription.textContent = selectedLevel
+        ? "当前微信任务润色专属推理等级；只影响之后新提交的文本优化任务。"
+        : "当前配置不可用，请重新选择模型。";
     };
     const render = () => {
       if (disposed || !status || !catalog || !orchestration) return;
@@ -196,14 +296,18 @@
         { value: "confirm", label: "自动润色后确认执行", description: "先润色文本，确认后再提交。" },
       ], selectedMode);
       processingTrigger.setAttribute("aria-label", `润色模式：${processingValue.textContent}`);
-      const defaultModel = models.find((item) => item.id === catalog.default_model);
-      const modelOptions = [{
-        value: "",
-        label: "跟随 Codex 默认",
-        description: defaultModel?.name
-          ? `当前默认 ${defaultModel.name}`
-          : "使用 Runtime 默认模型",
-      }];
+      runtimePicker.setOptions([
+        {
+          value: "codex",
+          label: "Codex",
+          description: "当前已接入并支持微信文本优化的 Runtime。",
+        },
+      ], status.runtime_id || "");
+      runtimeDescription.textContent = status.runtime_id === "codex"
+        ? "用于之后新提交的文本优化任务。"
+        : "当前配置不可用，请选择支持微信文本优化的 Runtime。";
+      runtimeTrigger.setAttribute("aria-label", `翻译 Runtime：${runtimeValue.textContent}`);
+      const modelOptions = [];
       if (status.model && !models.some((item) => item.id === status.model)) {
         modelOptions.push({
           value: status.model,
@@ -217,35 +321,12 @@
         description: item.description || "",
       }));
       modelPicker.setOptions(modelOptions, status.model || "");
-      const effectiveModel = models.find(
-        (item) => item.id === (status.model || catalog.default_model),
-      );
-      const effectiveReasoning = status.reasoning_effort
-        || (!status.model && catalog.default_reasoning_effort)
-        || effectiveModel?.default_level
-        || "不可用";
-      const effectiveReasoningLabel = reasoningLabels[effectiveReasoning] || effectiveReasoning;
+      const effectiveModel = models.find((item) => item.id === status.model);
       modelDescription.textContent = status.model
         ? `当前使用 ${effectiveModel?.name || effectiveModel?.id || status.model}；只影响之后新提交的文本优化任务。`
-        : `跟随 Codex 默认，当前为 ${effectiveModel?.name || effectiveModel?.id || "不可用"} · ${effectiveReasoningLabel}。`;
+        : "当前配置不可用，请重新选择模型。";
       modelTrigger.setAttribute("aria-label", `模型：${modelValue.textContent}`);
-      reasoningDescription.textContent = status.reasoning_effort
-        ? `当前使用 ${effectiveReasoningLabel}；只影响之后新提交的文本优化任务。`
-        : `跟随模型默认，当前为 ${effectiveReasoningLabel}。`;
-      const levels = [{
-        value: "",
-        label: "跟随模型默认",
-        description: effectiveModel?.default_level
-          ? `当前默认 ${reasoningLabels[effectiveModel.default_level] || effectiveModel.default_level}`
-          : "当前模型未提供默认等级",
-      }];
-      effectiveModel?.levels?.forEach((item) => levels.push({
-        value: item.id,
-        label: reasoningLabels[item.id] || item.id,
-        description: item.description || "",
-      }));
-      reasoningPicker.setOptions(levels, status.reasoning_effort || "");
-      reasoningTrigger.setAttribute("aria-label", `推理等级：${reasoningValue.textContent}`);
+      renderReasoning(effectiveModel);
       showInternalNativeSession.checked = status.show_internal_native_session === true;
       const active = Number(status.queued || 0) + Number(status.running || 0);
       const notes = [];
@@ -265,7 +346,12 @@
         status.native_cleanup_retry_required ? "error" : "",
       );
       modelPicker.setDisabled(saving || loading || (models.length === 0 && !status.model));
-      reasoningPicker.setDisabled(saving || loading || !effectiveModel);
+      runtimePicker.setDisabled(saving || loading);
+      reasoningPicker.setDisabled(
+        saving
+        || loading
+        || !status.model,
+      );
       processingPicker.setDisabled(saving || loading);
       implementationPicker.setDisabled(
         saving
@@ -307,7 +393,7 @@
           status = nextStatus;
           catalog = nextCatalog;
           orchestration = nextOrchestration;
-          modules = Array.isArray(nextModules?.modules) ? nextModules.modules : [];
+          modules = nextModules;
         }
       } catch (error) {
         if (!disposed) setMessage(
@@ -340,9 +426,10 @@
         render();
       }
     };
-    const saveModelSettings = () => save({
+    const saveExecutionSettings = () => save({
+      runtime_id: status?.runtime_id || null,
       model: status?.model || null,
-      reasoning_effort: status?.model ? (status.reasoning_effort || null) : null,
+      reasoning_effort: status?.reasoning_effort || null,
     }, "文本优化运行参数保存失败，请稍后刷新页面重试。");
 
     const saveImplementation = async (selection) => {

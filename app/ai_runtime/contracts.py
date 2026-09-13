@@ -180,6 +180,13 @@ RuntimeSettingInputType = Literal["text", "number", "select"]
 RuntimeSettingValue = str | int | None
 
 
+class RuntimeSettingsOption(_StrictModel):
+    value: str = Field(min_length=1, max_length=128)
+    label: str = Field(min_length=1, max_length=100)
+    description: str = Field(default="", max_length=300)
+    disabled: bool = False
+
+
 class RuntimeSettingsField(_StrictModel):
     id: str = Field(pattern=r"^[a-z][a-z0-9-]{0,63}$")
     label: str = Field(min_length=1, max_length=100)
@@ -187,6 +194,7 @@ class RuntimeSettingsField(_StrictModel):
     input_type: RuntimeSettingInputType
     value: RuntimeSettingValue = None
     placeholder: str | None = Field(default=None, max_length=200)
+    options: tuple[RuntimeSettingsOption, ...] = ()
 
 
 class RuntimeSettingsSection(_StrictModel):

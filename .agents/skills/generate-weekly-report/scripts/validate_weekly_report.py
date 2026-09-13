@@ -154,6 +154,11 @@ def report_validation(manifest: dict[str, Any], errors: list[str]) -> dict[str, 
             continue
         if not all(isinstance(text, str) and text.strip() for text in texts):
             errors.append("report_validation.required_section_text 必须只包含非空文本")
+    metrics_role = value.get("business_metrics_source_role")
+    if metrics_role is not None and (
+        not isinstance(metrics_role, str) or not metrics_role.strip()
+    ):
+        errors.append("report_validation.business_metrics_source_role 必须为非空字符串")
     return value
 
 
@@ -181,6 +186,11 @@ def load_and_validate(manifest_path: Path) -> tuple[dict[str, Any], list[str]]:
             errors.append(f"缺少必需角色：{role}")
     if len(roles) != len(set(roles)):
         errors.append("文档角色重复")
+    validation = manifest.get("report_validation")
+    if isinstance(validation, dict):
+        metrics_role = validation.get("business_metrics_source_role")
+        if isinstance(metrics_role, str) and metrics_role and metrics_role not in roles:
+            errors.append(f"业务关键指标来源角色不存在：{metrics_role}")
 
     for item in documents:
         if not isinstance(item, dict):
@@ -243,6 +253,41 @@ def safe_output_file(root: Path, value: Any) -> Path:
     return target
 
 
+def checklist_confirmation_matches(
+    checklist_text: str,
+    confirmation: dict[str, Any],
+) -> bool:
+    confirmed_at = confirmation.get("confirmed_at")
+    decisions = confirmation.get("decisions")
+    approved_gaps = confirmation.get("approved_gaps")
+    if (
+        not isinstance(confirmed_at, str)
+        or not confirmed_at
+        or not isinstance(decisions, list)
+        or not decisions
+        or not all(isinstance(item, str) and item for item in decisions)
+        or not isinstance(approved_gaps, list)
+        or not all(isinstance(item, str) and item for item in approved_gaps)
+    ):
+        return False
+    match = re.search(
+        r"^#{1,6}\s+维护者确认结果\s*#*\s*$\n?(.*?)(?=^#{1,6}\s+|\Z)",
+        checklist_text,
+        re.MULTILINE | re.DOTALL,
+    )
+    if match is None:
+        return False
+    body_lines = set(match.group(1).strip().splitlines())
+    decision_text = "；".join(decisions)
+    gaps_text = "无" if not approved_gaps else "；".join(approved_gaps)
+    return {
+        "- 状态：已确认。",
+        f"- 确认时间：{confirmed_at}。",
+        f"- 最终决定：{decision_text}",
+        f"- 批准缺口：{gaps_text}。",
+    }.issubset(body_lines)
+
+
 def load_confirmation(
     path: Path, manifest: dict[str, Any]
 ) -> tuple[dict[str, Any], list[str]]:
@@ -280,6 +325,8 @@ def load_confirmation(
         for required in dict.fromkeys(required_sections):
             if not any(required in title for title in checklist_titles):
                 errors.append(f"重点清单缺少章节：{required}")
+        if not checklist_confirmation_matches(checklist_text, confirmation):
+            errors.append("重点清单确认结果与确认记录不一致")
     except (OSError, UnicodeError, ValueError) as exc:
         errors.append(str(exc))
     return confirmation, errors
@@ -341,16 +388,27 @@ def validate_report(
     for marker in ("待核对", "口径待确认"):
         if marker in text_without_allowed_markers:
             errors.append(f"正式稿残留未处理标记：{marker}")
-    source_urls = list(dict.fromkeys(
-        item.get("source_url")
+    source_documents = [
+        item
         for item in manifest.get("documents", [])
-        if item.get("source_url") and item.get("role") != "previous-report"
-    ))
+        if isinstance(item, dict)
+        and isinstance(item.get("title"), str)
+        and item["title"]
+        and isinstance(item.get("source_url"), str)
+        and item["source_url"]
+    ]
     source_heading_lines = [
         line for line, title in headings(text) if "各端周报" in title
     ]
     source_section_line = source_heading_lines[-1] if source_heading_lines else None
-    for url in source_urls:
+    source_section_end = len(report_lines) + 1
+    if source_section_line is not None:
+        following = [line for line, _ in report_headings if line > source_section_line]
+        source_section_end = following[0] if following else len(report_lines) + 1
+    for document in source_documents:
+        title = document["title"].replace("\\", "")
+        url = document["source_url"]
+        expected = f"- {title}：{url}"
         occurrences = [
             line_no
             for line_no, line in enumerate(report_lines, start=1)
@@ -358,10 +416,16 @@ def validate_report(
         ]
         if not occurrences:
             errors.append(f"正式稿缺少来源链接：{url}")
-        elif source_section_line and any(
-            line_no <= source_section_line for line_no in occurrences
+        elif (
+            source_section_line is None
+            or any(
+                line_no <= source_section_line or line_no >= source_section_end
+                for line_no in occurrences
+            )
         ):
             errors.append(f"来源链接未统一放在各端周报章节：{url}")
+        elif expected not in [report_lines[line_no - 1] for line_no in occurrences]:
+            errors.append(f"来源链接格式错误，应为：{expected}")
 
     summary_lines = [
         line for line, title in headings(text) if "业务摘要" in title

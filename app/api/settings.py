@@ -30,11 +30,12 @@ class TranslationSettingsUpdate(BaseModel):
     # Compatibility for the previous settings switch. A boolean request maps
     # false to direct and true to automatic execution.
     enabled: bool | None = None
+    runtime_id: str | None = Field(default=None, max_length=32)
     model: str | None = Field(default=None, max_length=128)
     reasoning_effort: str | None = Field(default=None, max_length=32)
     show_internal_native_session: bool | None = None
 
-    @field_validator("model", "reasoning_effort", mode="before")
+    @field_validator("runtime_id", "model", "reasoning_effort", mode="before")
     @classmethod
     def normalize_selection(cls, value: object) -> object:
         if isinstance(value, str):
@@ -45,18 +46,16 @@ class TranslationSettingsUpdate(BaseModel):
     @model_validator(mode="after")
     def validate_mode(self):
         mode_fields = {"mode", "enabled"} & self.model_fields_set
-        model_fields = {"model", "reasoning_effort"} & self.model_fields_set
+        execution_fields = {"runtime_id", "model", "reasoning_effort"} & self.model_fields_set
         display_fields = {"show_internal_native_session"} & self.model_fields_set
-        if not mode_fields and not model_fields and not display_fields:
+        if not mode_fields and not execution_fields and not display_fields:
             raise ValueError("a translation setting is required")
         if display_fields and self.show_internal_native_session is None:
             raise ValueError("show_internal_native_session must be a boolean")
         if self.mode is not None and self.enabled is not None:
             raise ValueError("provide mode only")
-        if sum(bool(fields) for fields in (mode_fields, model_fields, display_fields)) > 1:
-            raise ValueError("provide mode or model settings only")
-        if model_fields and model_fields != {"model", "reasoning_effort"}:
-            raise ValueError("model and reasoning_effort must be provided together")
+        if sum(bool(fields) for fields in (mode_fields, execution_fields, display_fields)) > 1:
+            raise ValueError("provide mode or execution settings only")
         return self
 
 
@@ -98,12 +97,15 @@ def update_weixin_translation_settings(
     mode = payload.mode
     if mode is None:
         mode = "auto" if payload.enabled else "direct"
+    runtime_update = "runtime_id" in payload.model_fields_set
     model_update = "model" in payload.model_fields_set
+    reasoning_update = "reasoning_effort" in payload.model_fields_set
+    execution_update = runtime_update or model_update or reasoning_update
     display_update = "show_internal_native_session" in payload.model_fields_set
     target = (
         "internal_native_session_display"
         if display_update
-        else "translation_model" if model_update else mode
+        else "translation_execution_settings" if execution_update else mode
     )
     operation_id = log_operation(
         request,
@@ -123,10 +125,12 @@ def update_weixin_translation_settings(
             result = request.app.state.weixin_translation.set_show_internal_native_session(
                 payload.show_internal_native_session
             )
-        elif model_update:
-            result = request.app.state.weixin_translation.set_model(
-                payload.model,
-                payload.reasoning_effort,
+        elif execution_update:
+            current = request.app.state.weixin_translation.status()
+            result = request.app.state.weixin_translation.set_execution_settings(
+                payload.runtime_id if runtime_update else current.runtime_id,
+                payload.model if model_update else current.model,
+                payload.reasoning_effort if reasoning_update else current.reasoning_effort,
             )
         else:
             if mode != "direct" and request.app.state.weixin_chub_mode.orchestration_enabled():

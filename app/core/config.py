@@ -145,6 +145,8 @@ class DeploymentPackageConfig(StrictModel):
 class BusinessModulesConfig(StrictModel):
     install_dir: Path = Path("data/local/runtime/business-modules")
     state_file: Path = Path("data/local/state/business-modules/deliveryline.json")
+    deliveryline_requirements_dir: Path = Path("data/shared/deliveryline/requirements")
+    deliveryline_state_dir: Path = Path("data/local/state/deliveryline")
     max_archive_bytes: int = Field(default=8 * 1024 * 1024, ge=1024, le=32 * 1024 * 1024)
 
 
@@ -399,6 +401,10 @@ class Settings(StrictModel):
             self.business_modules.install_dir = PROJECT_ROOT / self.business_modules.install_dir
         if not self.business_modules.state_file.is_absolute():
             self.business_modules.state_file = PROJECT_ROOT / self.business_modules.state_file
+        if not self.business_modules.deliveryline_requirements_dir.is_absolute():
+            self.business_modules.deliveryline_requirements_dir = PROJECT_ROOT / self.business_modules.deliveryline_requirements_dir
+        if not self.business_modules.deliveryline_state_dir.is_absolute():
+            self.business_modules.deliveryline_state_dir = PROJECT_ROOT / self.business_modules.deliveryline_state_dir
         if not self.requests.state_file.is_absolute():
             self.requests.state_file = PROJECT_ROOT / self.requests.state_file
         if not self.network_recovery.lock_file.is_absolute():

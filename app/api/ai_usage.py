@@ -6,6 +6,7 @@ from app.ai_runtime import (
     RuntimeOperationError,
     RuntimeSettingsData,
     RuntimeSettingsField,
+    RuntimeSettingsOption,
     RuntimeSettingsSection,
     RuntimeSettingsUpdate,
 )
@@ -51,66 +52,51 @@ def _general_runtime_settings(request: Request) -> AiRuntimeGeneralSettingsData:
             "Runtime 默认项暂时无法读取。",
         ) from exc
     manager = request.app.state.ai_session_manager
-    new_session_section = RuntimeSettingsSection(
-        id="new-session-defaults",
-        title="新建 Session 默认值",
-        description="仅影响之后新建的 Chub Session，已有 Session 保持当前权限。",
+    runtime_navigation = manager.runtime_plugins.require_navigation(manager.runtime_id)
+    session_defaults = RuntimeSettingsSection(
+        id="session-defaults",
+        title="会话默认配置",
+        description="用于之后新建的 Chub Session 和未指定专属配置的自动化任务；已有 Session 保持创建时快照。",
         fields=(
             RuntimeSettingsField(
-                id="new-session-permission",
+                id="session-default-runtime",
+                label="默认 Runtime",
+                description="当前可用于新建 Chub Session 的 AI Runtime。",
+                input_type="select",
+                value=general.default_runtime_id,
+                options=(
+                    RuntimeSettingsOption(
+                        value=manager.runtime_id,
+                        label=runtime_navigation.name,
+                        description=runtime_navigation.description,
+                    ),
+                ),
+            ),
+            RuntimeSettingsField(
+                id="session-default-permission",
                 label="默认权限",
                 description="用于未在创建时明确选择权限的新 Session。",
                 input_type="select",
                 value=general.new_session_permission,
             ),
-        ),
-    )
-    weekly_runtime_available, _ = manager.submission_available()
-    weekly_report_section = RuntimeSettingsSection(
-        id="weekly-report-session",
-        title="周报自动化会话",
-        description=(
-            "用于生成重点确认清单和正式周报的新建 Chub Session。"
-            if weekly_runtime_available
-            else "当前没有可用于周报生成的 AI Runtime；资料下载仍可独立运行。"
-        ),
-        fields=(
-            (
-                RuntimeSettingsField(
-                    id="weekly-report-runtime",
-                    label="AI Runtime",
-                    description="当前只接入 Codex；后续已接入 Runtime 会在这里提供选择。",
-                    input_type="select",
-                    value=general.weekly_report_session.runtime_id or manager.runtime_id,
-                ),
-                RuntimeSettingsField(
-                    id="weekly-report-permission",
-                    label="权限",
-                    description="只读权限不能生成周报产物，运行入口会保持不可用。",
-                    input_type="select",
-                    value=general.weekly_report_session.permission_mode,
-                ),
-                RuntimeSettingsField(
-                    id="weekly-report-model",
-                    label="模型",
-                    description="仅影响之后新建的周报生成 Session。",
-                    input_type="select",
-                    value=general.weekly_report_session.model or "__default__",
-                ),
-                RuntimeSettingsField(
-                    id="weekly-report-reasoning",
-                    label="推理等级",
-                    description="仅影响之后新建的周报生成 Session。",
-                    input_type="select",
-                    value=general.weekly_report_session.reasoning_effort or "__default__",
-                ),
-            )
-            if weekly_runtime_available
-            else ()
+            RuntimeSettingsField(
+                id="session-default-model",
+                label="默认模型",
+                description="未明确指定模型时使用；可选择跟随 Runtime 默认。",
+                input_type="select",
+                value=general.model or "__default__",
+            ),
+            RuntimeSettingsField(
+                id="session-default-reasoning",
+                label="默认推理等级",
+                description="未明确指定推理等级时使用；可选择跟随 Runtime 默认。",
+                input_type="select",
+                value=general.reasoning_effort or "__default__",
+            ),
         ),
     )
     return AiRuntimeGeneralSettingsData(
-        sections=(new_session_section, weekly_report_section),
+        sections=(session_defaults,),
     )
 
 
@@ -135,11 +121,10 @@ def update_general_runtime_settings(
     field_ids = set(payload.values)
     if frozenset(field_ids) != frozenset(
         {
-            "new-session-permission",
-            "weekly-report-runtime",
-            "weekly-report-permission",
-            "weekly-report-model",
-            "weekly-report-reasoning",
+            "session-default-runtime",
+            "session-default-permission",
+            "session-default-model",
+            "session-default-reasoning",
         }
     ):
         raise ApiError(
@@ -161,23 +146,21 @@ def update_general_runtime_settings(
         operation_id=operation_id,
     )
     try:
-        general = request.app.state.ai_session_manager.runtime_settings_store.read_general()
-        new_session_permission = payload.values["new-session-permission"]
-        runtime_id = payload.values["weekly-report-runtime"]
-        permission_mode = payload.values["weekly-report-permission"]
-        model = payload.values["weekly-report-model"]
-        reasoning_effort = payload.values["weekly-report-reasoning"]
-        if not all(isinstance(value, str) and value.strip() for value in (new_session_permission, runtime_id, permission_mode, model, reasoning_effort)):
-            raise ValueError("weekly report session settings are required")
-        if new_session_permission not in {"auto-review", "read-only", "full-access"}:
-            raise ValueError("new session permission is invalid")
         manager = request.app.state.ai_session_manager
-        available, _ = manager.submission_available()
-        if runtime_id != manager.runtime_id or not available:
+        general = manager.runtime_settings_store.read_general()
+        runtime_id = payload.values["session-default-runtime"]
+        permission_mode = payload.values["session-default-permission"]
+        model = payload.values["session-default-model"]
+        reasoning_effort = payload.values["session-default-reasoning"]
+        if not all(isinstance(value, str) and value.strip() for value in (runtime_id, permission_mode, model, reasoning_effort)):
+            raise ValueError("session default settings are required")
+        if permission_mode not in {"auto-review", "read-only", "full-access"}:
+            raise ValueError("session default permission is invalid")
+        if runtime_id != manager.runtime_id:
             raise ApiError(
                 409,
-                "weekly_report_runtime_unavailable",
-                "当前周报自动化 Runtime 不可用。",
+                "session_default_runtime_unavailable",
+                "当前默认 Runtime 不可用于新建 Session。",
             )
         model = None if model == "__default__" else model
         reasoning_effort = None if reasoning_effort == "__default__" else reasoning_effort
@@ -185,13 +168,10 @@ def update_general_runtime_settings(
         general = AiRuntimeGeneralSettings.model_validate(
             {
                 **general.model_dump(mode="json"),
-                "new_session_permission": new_session_permission,
-                "weekly_report_session": {
-                    "runtime_id": runtime_id,
-                    "permission_mode": permission_mode,
-                    "model": model,
-                    "reasoning_effort": reasoning_effort,
-                },
+                "default_runtime_id": runtime_id,
+                "new_session_permission": permission_mode,
+                "model": model,
+                "reasoning_effort": reasoning_effort,
             }
         )
     except ApiError:

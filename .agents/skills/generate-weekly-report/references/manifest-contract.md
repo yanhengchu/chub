@@ -11,6 +11,7 @@ The adapter mapping is JSON:
     "timezone": "Asia/Shanghai"
   },
   "report_validation": {
+    "business_metrics_source_role": "music-product",
     "required_sections": ["业务关键指标", "各端周报"],
     "required_section_text": {
       "产品体验提升": ["目标：", "当前进展："]
@@ -67,7 +68,7 @@ Always set `download_status` and `content_status` explicitly. The adapter never 
 
 `report_period` always covers one complete Monday-through-Sunday week. Each non-reference source must declare `usage_period.start` and `usage_period.end` as ISO dates. A source belongs to the current period when its declared reporting date or range end falls within the report period; its start may precede Monday. The adapter and input validator enforce this rule. `reference-only` material, such as the previous formal report, is exempt because it is background rather than current-period fact input. A cross-period source still needs an explicit `heading-range` or maintainer-confirmed range; never include it solely because its download date or a portion of its content overlaps.
 
-`report_validation` is optional and keeps profile-specific formal-report checks out of the generic skill. `required_sections` lists headings that must occur in the formal report. `required_section_text` maps a section heading to exact labels or text that must occur within that section. `checklist_required_sections` lists the two business-content headings required in the confirmed focus checklist; `维护者确认结果` is always required by the validator. Other profiles can omit or replace this block.
+`report_validation` is optional and keeps profile-specific formal-report checks out of the generic skill. `business_metrics_source_role`, when present, names the only current-document role permitted to supply `业务关键指标`; it must match a Manifest role. `required_sections` lists headings that must occur in the formal report. `required_section_text` maps a section heading to exact labels or text that must occur within that section. `checklist_required_sections` lists the two business-content headings required in the confirmed focus checklist; `维护者确认结果` is always required by the validator. Other profiles can omit or replace this block.
 
 Supported usage modes:
 
@@ -96,4 +97,4 @@ After the maintainer confirms Stage A, create `output/weekly-report-confirmation
 }
 ```
 
-`decisions` must be non-empty. `approved_gaps` records every explicitly accepted missing scope for traceability; the current validator does not use it to bypass missing, failed, or otherwise blocking input validation. Only usable inputs with `ready` or explicitly `manually-approved` status can pass the input gate. `allowed_markers` contains each complete, exact unresolved phrase that may remain in the formal report; the validator removes only those full phrases before checking for residual markers. Do not whitelist broad words such as “待确认”. `checklist` binds the human-readable confirmation to the JSON gate with a safe output-relative path and SHA-256. The checklist must retain the current Manifest fingerprint and its configured required headings. Formal report validation fails without this binding or when either input changes.
+`decisions` must be non-empty. `approved_gaps` records every explicitly accepted missing scope for traceability; the current validator does not use it to bypass missing, failed, or otherwise blocking input validation. Only usable inputs with `ready` or explicitly `manually-approved` status can pass the input gate. `allowed_markers` contains each complete, exact unresolved phrase that may remain in the formal report; the validator removes only those full phrases before checking for residual markers. Do not whitelist broad words such as “待确认”. `checklist` binds the human-readable confirmation to the JSON gate with a safe output-relative path and SHA-256. The checklist must retain the current Manifest fingerprint, configured required headings, and the same confirmed status, time, decisions and approved gaps as the JSON record. Formal report validation fails without this binding or when either input changes.

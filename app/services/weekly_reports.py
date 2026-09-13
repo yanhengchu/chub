@@ -34,6 +34,26 @@ _REPORT_TYPES = {
     "focus": ("本期工作重点确认清单", "本期工作重点确认清单", "重点范围与取舍确认"),
     "report": ("本期业务周报", "本期业务周报", "各端进展汇总"),
 }
+_TEMPLATE_TYPES = {
+    "focus": (
+        "重点事项确认清单模板",
+        PROJECT_ROOT
+        / ".agents"
+        / "skills"
+        / "generate-weekly-report"
+        / "assets"
+        / "focus-checklist-template.md",
+    ),
+    "report": (
+        "正式周报模板",
+        PROJECT_ROOT
+        / ".agents"
+        / "skills"
+        / "generate-weekly-report"
+        / "assets"
+        / "formal-weekly-report-template.md",
+    ),
+}
 
 
 def _today() -> date:
@@ -314,6 +334,74 @@ def _checklist_has_required_sections(checklist_path: Path, manifest: dict[str, o
     return all(any(section in heading for heading in headings) for section in required)
 
 
+def _checklist_confirmation_body(checklist_text: str) -> str | None:
+    match = re.search(
+        r"^#{1,6}\s+维护者确认结果\s*#*\s*$\n?(.*?)(?=^#{1,6}\s+|\Z)",
+        checklist_text,
+        re.MULTILINE | re.DOTALL,
+    )
+    return match.group(1).strip() if match else None
+
+
+def _format_checklist_confirmation(
+    checklist_text: str,
+    *,
+    confirmed_at: str,
+    decisions: list[str],
+    approved_gaps: list[str],
+) -> str:
+    decision_text = "；".join(decisions)
+    gaps_text = "无" if not approved_gaps else "；".join(approved_gaps)
+    replacement = (
+        "## 维护者确认结果\n\n"
+        "- 状态：已确认。\n"
+        f"- 确认时间：{confirmed_at}。\n"
+        f"- 最终决定：{decision_text}\n"
+        f"- 批准缺口：{gaps_text}。"
+    )
+    updated, count = re.subn(
+        r"^#{1,6}\s+维护者确认结果\s*#*\s*$\n?.*?(?=^#{1,6}\s+|\Z)",
+        replacement + "\n\n",
+        checklist_text,
+        count=1,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    if count != 1:
+        raise ValueError("工作重点确认清单缺少维护者确认结果章节。")
+    return updated.rstrip() + "\n"
+
+
+def _checklist_confirmation_matches(
+    checklist_text: str,
+    *,
+    confirmed_at: object,
+    decisions: object,
+    approved_gaps: object,
+) -> bool:
+    if (
+        not isinstance(confirmed_at, str)
+        or not confirmed_at
+        or not isinstance(decisions, list)
+        or not decisions
+        or not all(isinstance(item, str) and item for item in decisions)
+        or not isinstance(approved_gaps, list)
+        or not all(isinstance(item, str) and item for item in approved_gaps)
+    ):
+        return False
+    body = _checklist_confirmation_body(checklist_text)
+    if body is None:
+        return False
+    decision_text = "；".join(decisions)
+    gaps_text = "无" if not approved_gaps else "；".join(approved_gaps)
+    expected = {
+        "- 状态：已确认。",
+        f"- 确认时间：{confirmed_at}。",
+        f"- 最终决定：{decision_text}",
+        f"- 批准缺口：{gaps_text}。",
+    }
+    return expected.issubset(set(body.splitlines()))
+
+
 def weekly_report_focus_confirmed(period: str) -> bool:
     """Return whether the current focus checklist has a usable confirmation record.
 
@@ -355,9 +443,17 @@ def weekly_report_focus_confirmed(period: str) -> bool:
             or checklist.get("path") != checklist_path.name
         ):
             return False
-        digest = hashlib.sha256(checklist_path.read_bytes()).hexdigest()
-        return checklist.get("sha256") == digest and _checklist_has_required_sections(
-            checklist_path, manifest
+        checklist_text = checklist_path.read_text(encoding="utf-8")
+        digest = hashlib.sha256(checklist_text.encode("utf-8")).hexdigest()
+        return (
+            checklist.get("sha256") == digest
+            and _checklist_has_required_sections(checklist_path, manifest)
+            and _checklist_confirmation_matches(
+                checklist_text,
+                confirmed_at=confirmation["confirmed_at"],
+                decisions=confirmation["decisions"],
+                approved_gaps=confirmation.get("approved_gaps", []),
+            )
         )
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         LOGGER.warning("Unable to inspect weekly report confirmation: period=%s", period)
@@ -389,32 +485,50 @@ def confirm_weekly_report_focus(period: str) -> None:
             raise ValueError("Manifest 指纹无效。")
         if not _checklist_has_required_sections(checklist_path, manifest):
             raise ValueError("工作重点确认清单缺少必需章节。")
+        confirmed_at = datetime.now().astimezone().isoformat()
+        decisions = ["维护者已确认按当前工作重点确认清单生成正式周报。"]
+        approved_gaps: list[str] = []
+        checklist_text = checklist_path.read_text(encoding="utf-8")
+        confirmed_checklist = _format_checklist_confirmation(
+            checklist_text,
+            confirmed_at=confirmed_at,
+            decisions=decisions,
+            approved_gaps=approved_gaps,
+        )
         payload = {
             "status": "confirmed",
-            "confirmed_at": datetime.now().astimezone().isoformat(),
+            "confirmed_at": confirmed_at,
             "manifest_fingerprint": fingerprint,
-            "decisions": ["维护者已确认按当前工作重点确认清单生成正式周报。"],
-            "approved_gaps": [],
+            "decisions": decisions,
+            "approved_gaps": approved_gaps,
             "allowed_markers": [],
             "checklist": {
                 "path": checklist_path.name,
-                "sha256": hashlib.sha256(checklist_path.read_bytes()).hexdigest(),
+                "sha256": hashlib.sha256(confirmed_checklist.encode("utf-8")).hexdigest(),
             },
         }
         output.mkdir(mode=0o700, parents=True, exist_ok=True)
-        with NamedTemporaryFile(
-            dir=output,
-            prefix=f".{confirmation_path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as file:
-            temporary = Path(file.name)
-            file.write(json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"))
+        temporary_files: list[Path] = []
         try:
-            os.chmod(temporary, 0o600)
-            temporary.replace(confirmation_path)
+            for target, content in (
+                (checklist_path, confirmed_checklist.encode("utf-8")),
+                (confirmation_path, json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")),
+            ):
+                with NamedTemporaryFile(
+                    dir=output,
+                    prefix=f".{target.name}.",
+                    suffix=".tmp",
+                    delete=False,
+                ) as file:
+                    temporary = Path(file.name)
+                    file.write(content)
+                os.chmod(temporary, 0o600)
+                temporary_files.append(temporary)
+            temporary_files[0].replace(checklist_path)
+            temporary_files[1].replace(confirmation_path)
         except OSError:
-            temporary.unlink(missing_ok=True)
+            for temporary in temporary_files:
+                temporary.unlink(missing_ok=True)
             raise
     except ValueError:
         raise
@@ -470,6 +584,61 @@ def get_weekly_report(period: str, report_type: str) -> WeeklyReportView | None:
         report_type=report_type,
         title=title,
         summary=summary,
+        status="可查看",
+        updated_at=updated_at,
+        available=True,
+        html=cleaned,
+    )
+
+
+def get_weekly_report_template(template_type: str) -> WeeklyReportView | None:
+    template = _TEMPLATE_TYPES.get(template_type)
+    if template is None:
+        return None
+    title, path = template
+    root = PROJECT_ROOT.resolve()
+    resolved = path.resolve()
+    if not resolved.is_relative_to(root):
+        return None
+    try:
+        file_size = resolved.stat().st_size
+        if not resolved.is_file() or file_size > MAX_DOCUMENT_BYTES:
+            return None
+        lines = []
+        total_bytes = 0
+        with resolved.open("r", encoding="utf-8") as file:
+            for line_number, line in enumerate(file, start=1):
+                if line_number > MAX_REPORT_LINES:
+                    return None
+                line_bytes = len(line.encode("utf-8"))
+                if line_bytes > MAX_REPORT_LINE_BYTES:
+                    return None
+                total_bytes += line_bytes
+                if total_bytes > MAX_DOCUMENT_BYTES:
+                    return None
+                lines.append(line)
+        source = "".join(lines)
+        updated_at = datetime.fromtimestamp(resolved.stat().st_mtime)
+    except (OSError, UnicodeDecodeError):
+        LOGGER.warning("Unable to read weekly report template: type=%s", template_type)
+        return None
+    rendered = markdown.markdown(
+        source,
+        extensions=["fenced_code", "tables", "toc"],
+        output_format="html",
+    )
+    cleaned = bleach.clean(
+        rendered,
+        tags=ALLOWED_TAGS,
+        attributes=ALLOWED_ATTRIBUTES,
+        protocols={"http", "https", "mailto"},
+        strip=True,
+    )
+    return WeeklyReportView(
+        period="固定模板",
+        report_type=template_type,
+        title=title,
+        summary="周报生成结构基线",
         status="可查看",
         updated_at=updated_at,
         available=True,

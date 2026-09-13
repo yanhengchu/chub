@@ -49,6 +49,7 @@ def build_mapping(source: Path, mapping_path: Path) -> None:
                     {
                         "role": "product",
                         "path": "product.md",
+                        "title": "产品周报",
                         "source_url": "https://tenant.example/docx/product",
                         "download_status": "succeeded",
                         "content_status": "ready",
@@ -73,14 +74,6 @@ def build_mapping(source: Path, mapping_path: Path) -> None:
 def write_confirmation(
     workspace: Path, fingerprint: str, **overrides: object
 ) -> Path:
-    checklist = workspace / "output" / "本期工作重点确认清单.md"
-    checklist.write_text(
-        "## 本周需要同步的事项\n\n"
-        "## 需要维护者确认的重点事项\n\n"
-        "## 维护者确认结果\n\n"
-        f"- 输入指纹：{fingerprint}\n",
-        encoding="utf-8",
-    )
     payload: dict[str, object] = {
         "status": "confirmed",
         "confirmed_at": "2026-07-24T20:00:00+08:00",
@@ -88,12 +81,27 @@ def write_confirmation(
         "decisions": ["按确认重点生成"],
         "approved_gaps": [],
         "allowed_markers": [],
-        "checklist": {
-            "path": checklist.name,
-            "sha256": hashlib.sha256(checklist.read_bytes()).hexdigest(),
-        },
     }
     payload.update(overrides)
+    decisions = "；".join(payload["decisions"])
+    approved_gaps = payload["approved_gaps"]
+    gaps = "无" if not approved_gaps else "；".join(approved_gaps)
+    checklist = workspace / "output" / "本期工作重点确认清单.md"
+    checklist.write_text(
+        "## 本周需要同步的事项\n\n"
+        "## 需要维护者确认的重点事项\n\n"
+        "## 维护者确认结果\n\n"
+        f"- 输入指纹：{fingerprint}\n"
+        "- 状态：已确认。\n"
+        f"- 确认时间：{payload['confirmed_at']}。\n"
+        f"- 最终决定：{decisions}\n"
+        f"- 批准缺口：{gaps}。\n",
+        encoding="utf-8",
+    )
+    payload["checklist"] = {
+        "path": checklist.name,
+        "sha256": hashlib.sha256(checklist.read_bytes()).hexdigest(),
+    }
     confirmation = workspace / "output" / "weekly-report-confirmation.json"
     confirmation.write_text(
         json.dumps(payload, ensure_ascii=False), encoding="utf-8"
@@ -138,7 +146,7 @@ def test_adapter_rejects_source_period_outside_current_week(tmp_path: Path) -> N
     data["documents"][1]["usage_period"]["end"] = "2026-07-27"
     mapping.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
-    result = run_script(
+    adapted = run_script(
         ADAPTER,
         "--data-root",
         data_root,
@@ -149,8 +157,8 @@ def test_adapter_rejects_source_period_outside_current_week(tmp_path: Path) -> N
         "--mapping",
         mapping,
     )
-    assert result.returncode == 1
-    assert "usage_period 结束日期不在本期内" in result.stderr
+    assert adapted.returncode == 1
+    assert "usage_period 结束日期不在本期内" in adapted.stderr
 
 
 def test_validator_detects_source_change(tmp_path: Path) -> None:
@@ -283,7 +291,7 @@ def test_adapter_requires_explicit_readiness(tmp_path: Path) -> None:
     del data["documents"][0]["content_status"]
     mapping.write_text(json.dumps(data), encoding="utf-8")
 
-    result = run_script(
+    adapted = run_script(
         ADAPTER,
         "--data-root",
         data_root,
@@ -294,8 +302,8 @@ def test_adapter_requires_explicit_readiness(tmp_path: Path) -> None:
         "--mapping",
         mapping,
     )
-    assert result.returncode == 1
-    assert "显式设置有效 content_status" in result.stderr
+    assert adapted.returncode == 1
+    assert "显式设置有效 content_status" in adapted.stderr
 
 
 def test_report_validator_accepts_complete_report(tmp_path: Path) -> None:
@@ -329,7 +337,7 @@ def test_report_validator_accepts_complete_report(tmp_path: Path) -> None:
         "| 项目 | 说明 |\n|---|---|\n| A | 保留转义竖线 \\| 内容 |\n\n"
         "负责人明确保留：口径待确认（等待周一反馈）\n\n"
         "## 各端周报\n\n"
-        "- [产品周报](https://tenant.example/docx/product)\n",
+        "- 产品周报：https://tenant.example/docx/product\n",
         encoding="utf-8",
     )
 
@@ -379,7 +387,7 @@ def test_report_validator_enforces_profile_template_and_checklist(tmp_path: Path
     report = workspace / "output" / "report.md"
     report.write_text(
         "## 产品体验提升\n\n目标：提升体验\n\n## 各端周报\n\n"
-        "- [产品周报](https://tenant.example/docx/product)\n",
+        "- 产品周报：https://tenant.example/docx/product\n",
         encoding="utf-8",
     )
 
@@ -411,6 +419,91 @@ def test_report_validator_enforces_profile_template_and_checklist(tmp_path: Path
     )
     assert result.returncode == 1
     assert "重点清单哈希已变化" in result.stdout
+
+
+def test_report_validator_rejects_confirmation_body_mismatch(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    source = data_root / "downloads"
+    workspace = data_root / "weekly-reports" / "period"
+    source.mkdir(parents=True)
+    mapping = tmp_path / "mapping.json"
+    build_mapping(source, mapping)
+    assert run_script(
+        ADAPTER,
+        "--data-root",
+        data_root,
+        "--source-root",
+        source,
+        "--workspace",
+        workspace,
+        "--mapping",
+        mapping,
+    ).returncode == 0
+    manifest = workspace / "manifest.json"
+    fingerprint = json.loads(manifest.read_text(encoding="utf-8"))["fingerprint"]
+    confirmation = write_confirmation(workspace, fingerprint)
+    checklist = workspace / "output" / "本期工作重点确认清单.md"
+    checklist_text = checklist.read_text(encoding="utf-8")
+    checklist.write_text(
+        checklist_text.replace("状态：已确认", "状态：待维护者确认"),
+        encoding="utf-8",
+    )
+    payload = json.loads(confirmation.read_text(encoding="utf-8"))
+    payload["checklist"]["sha256"] = hashlib.sha256(checklist.read_bytes()).hexdigest()
+    confirmation.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    report = workspace / "output" / "report.md"
+    report.write_text(
+        "## 各端周报\n\n- 产品周报：https://tenant.example/docx/product\n",
+        encoding="utf-8",
+    )
+
+    result = run_script(
+        VALIDATOR,
+        "report",
+        "--manifest",
+        manifest,
+        "--confirmation",
+        confirmation,
+        "--report",
+        report,
+    )
+
+    assert result.returncode == 1
+    assert "重点清单确认结果与确认记录不一致" in result.stdout
+
+
+def test_input_validator_rejects_missing_metrics_source_role(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    source = data_root / "downloads"
+    source.mkdir(parents=True)
+    mapping = tmp_path / "mapping.json"
+    build_mapping(source, mapping)
+    data = json.loads(mapping.read_text(encoding="utf-8"))
+    data["report_validation"] = {"business_metrics_source_role": "music-product"}
+    mapping.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    adapted = run_script(
+        ADAPTER,
+        "--data-root",
+        data_root,
+        "--source-root",
+        source,
+        "--workspace",
+        data_root / "weekly-reports" / "period",
+        "--mapping",
+        mapping,
+    )
+
+    assert adapted.returncode == 0, adapted.stderr
+    result = run_script(
+        VALIDATOR,
+        "inputs",
+        "--manifest",
+        data_root / "weekly-reports" / "period" / "manifest.json",
+    )
+
+    assert result.returncode == 1
+    assert "业务关键指标来源角色不存在：music-product" in result.stdout
 
 
 def test_validator_reports_non_object_document(tmp_path: Path) -> None:

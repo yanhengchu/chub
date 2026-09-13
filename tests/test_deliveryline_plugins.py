@@ -21,7 +21,7 @@ async def test_deliveryline_uses_shared_plugin_lifecycle(settings) -> None:
 
     assert any(item["plugin_id"] == "deliveryline" for item in initial.json()["data"]["plugins"])
     deliveryline = next(item for item in initial.json()["data"]["plugins"] if item["plugin_id"] == "deliveryline")
-    assert deliveryline["artifacts"][0]["description"] == "提供需求交付管理页面壳；当前不包含业务流程。"
+    assert deliveryline["artifacts"][0]["description"] == "提供需求提出档案、评审前校验与归档查看；后续交付阶段尚未接入。"
     assert imported.json()["data"]["imported_artifact_ids"] == ["development:deliveryline"]
     assert 'href="/settings/deliveryline"' in imported_navigation.text
     assert enabled.json()["data"]["enabled_artifact_ids"] == ["development:deliveryline"]

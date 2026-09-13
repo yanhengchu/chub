@@ -914,16 +914,29 @@ class AiSessionManager:
         model: str | None = None,
         reasoning_effort: str | None = None,
     ) -> SessionInfo:
-        self._require_runtime_submission(self.runtime_id)
-        if permission_mode is None:
+        if permission_mode is None or model is None or reasoning_effort is None:
             try:
-                permission_mode = self.runtime_settings_store.read_general().new_session_permission
+                defaults = self.runtime_settings_store.read_general()
             except RuntimeSettingsStoreUnavailable as exc:
                 raise ApiError(
                     503,
                     "ai_runtime_settings_unavailable",
-                    "无法读取新建 Session 默认权限，请稍后重试。",
+                    "无法读取新建 Session 默认配置，请稍后重试。",
                 ) from exc
+            if defaults.default_runtime_id != self.runtime_id:
+                raise ApiError(
+                    409,
+                    "session_default_runtime_unavailable",
+                    "当前默认 Runtime 不可用于新建 Session。",
+                )
+            permission_mode = permission_mode or defaults.new_session_permission
+            model = model if model is not None else defaults.model
+            reasoning_effort = (
+                reasoning_effort
+                if reasoning_effort is not None
+                else defaults.reasoning_effort
+            )
+        self._require_runtime_submission(self.runtime_id)
         if permission_mode == "ask":
             raise ApiError(
                 409,

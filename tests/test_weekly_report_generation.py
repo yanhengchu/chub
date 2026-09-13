@@ -6,10 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 import app.services.weekly_report_generation as generation
-from app.ai_runtime.general_settings import (
-    AiRuntimeGeneralSettings,
-    WeeklyReportSessionSettings,
-)
+from app.ai_runtime.general_settings import AiRuntimeGeneralSettings
 from app.core.response import ApiError
 
 
@@ -82,11 +79,9 @@ def test_focus_generation_creates_configured_quick_session_after_download(
     monkeypatch.setattr(generation, "reporting_period", lambda: period)
     monkeypatch.setattr(generation, "weekly_report_inputs_available", lambda _: True)
     settings = AiRuntimeGeneralSettings(
-        weekly_report_session=WeeklyReportSessionSettings(
-            permission_mode="auto-review",
-            model="gpt-5.2",
-            reasoning_effort="high",
-        )
+        new_session_permission="auto-review",
+        model="gpt-5.2",
+        reasoning_effort="high",
     )
     manager = _SessionManager(settings)
     quick = _QuickInteractions()
@@ -104,6 +99,12 @@ def test_focus_generation_creates_configured_quick_session_after_download(
     assert "不得生成正式周报" in (quick.prompt or "")
     assert "本周需要同步的事项" in (quick.prompt or "")
     assert "需要维护者确认的重点事项" in (quick.prompt or "")
+    assert "需要确认的事项清单" in (quick.prompt or "")
+    assert "无待确认事项" in (quick.prompt or "")
+    assert "已完成 Stage A，生成本期工作重点确认清单" in (quick.prompt or "")
+    assert "当前等待维护者确认后再进入 Stage B" in (quick.prompt or "")
+    assert "不列入维护者确认事项" in (quick.prompt or "")
+    assert "对正式周报的影响" in (quick.prompt or "")
 
     quick.tasks["task-1"] = SimpleNamespace(status="succeeded", error=None)
     assert service.read_current()["focus"].status == "succeeded"
@@ -122,6 +123,16 @@ def test_focus_generation_creates_configured_quick_session_after_download(
     assert report_step.session_id == "session-1"
     assert "已有重点确认清单和有效确认记录" in (quick.prompt or "")
     assert "不得重新生成重点确认清单" in (quick.prompt or "")
+    assert "business_metrics_source_role" in (quick.prompt or "")
+    assert "大盘数据表现" in (quick.prompt or "")
+    assert "阶段与月度 DAU 均值" in (quick.prompt or "")
+    assert "不写死 H1 或具体月份" in (quick.prompt or "")
+    assert "有白牌迁移事项时" in (quick.prompt or "")
+    assert "没有相关事项时省略该章节" in (quick.prompt or "")
+    assert "来源标题：source_url" in (quick.prompt or "")
+    assert "变化时写清可比基准" in (quick.prompt or "")
+    assert "已确认时写实际值" in (quick.prompt or "")
+    assert "迁移范围、当前阶段、本期完成和下一里程碑" in (quick.prompt or "")
     assert confirmed["value"] is True
 
 
@@ -177,11 +188,9 @@ def test_existing_weekly_session_keeps_its_creation_settings(
     monkeypatch.setattr(generation, "weekly_report_inputs_available", lambda _: True)
     monkeypatch.setattr(generation, "weekly_report_focus_confirmed", lambda _: True)
     initial_settings = AiRuntimeGeneralSettings(
-        weekly_report_session=WeeklyReportSessionSettings(
-            permission_mode="auto-review",
-            model="gpt-5.2",
-            reasoning_effort="high",
-        )
+        new_session_permission="auto-review",
+        model="gpt-5.2",
+        reasoning_effort="high",
     )
     manager = _SessionManager(initial_settings)
     quick = _QuickInteractions()
@@ -192,7 +201,7 @@ def test_existing_weekly_session_keeps_its_creation_settings(
     service.start("focus", source_ip="127.0.0.1")
     quick.tasks["task-1"] = SimpleNamespace(status="succeeded", error=None)
     manager.runtime_settings_store.read_general = lambda: AiRuntimeGeneralSettings(
-        weekly_report_session=WeeklyReportSessionSettings(permission_mode="read-only")
+        new_session_permission="read-only"
     )
 
     assert service.configuration_ready() == (True, None)
@@ -241,15 +250,11 @@ def test_focus_generation_requires_valid_manifest_inputs(tmp_path, monkeypatch) 
         service.start("focus", source_ip="127.0.0.1")
 
 
-def test_read_only_weekly_report_session_is_not_runnable(tmp_path) -> None:
+def test_read_only_session_default_is_not_runnable_for_weekly_reports(tmp_path) -> None:
     service = generation.WeeklyReportGenerationService(
         tmp_path / "weekly-report-generation.json",
         _SessionManager(
-            AiRuntimeGeneralSettings(
-                weekly_report_session=WeeklyReportSessionSettings(
-                    permission_mode="read-only"
-                )
-            )
+            AiRuntimeGeneralSettings(new_session_permission="read-only")
         ),
         _QuickInteractions(),
     )

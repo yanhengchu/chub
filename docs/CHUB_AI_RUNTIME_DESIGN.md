@@ -10,7 +10,7 @@
 
 Runtime 是 Chub 的受控本机执行实现。客户端、页面、微信和其他外部入口不能选择 Runtime 命令、路径、环境变量、Native ID 或实现槽位；它们只调用 Chub 已定义的 Session 和任务用例。
 
-AI Runtime 通用配置保存在本机 `config/ai-runtimes.local.yaml`。其中的新建 Session 默认权限仅应用于创建时未明确指定权限的后续 Chub Session；已有 Session 与已受理任务不受影响。
+会话默认配置保存在本机 `config/ai-runtimes.local.yaml`，包括默认 Runtime、权限、模型和推理等级。它仅应用于创建时未明确指定对应参数的后续 Chub Session；已有 Session 与已受理任务继续使用创建时快照。当前只有 Codex 可选；新增 Runtime 后，只有已实现新建 Session 能力的 Runtime 才能进入默认 Runtime 选择。
 
 新建 Session 固定提供 `chub`、`home` 与 `workspace` 三个内置工作目录。选择 `workspace` 后，任务可在该受信根目录及其全部子目录内工作，无需将每个项目子目录登记为独立工作区。只有需要把某个目录单独展示并作为 Session 的默认工作目录时，维护者才在本机 `settings.local.yaml` 的 `ai_runtime.codex.extra_workspaces` 显式登记；每项使用固定 ID、名称和路径，ID 不得覆盖内置目录。页面与 API 只接受后端已加载的目录 ID，不能传入任意路径；已创建 Session 继续保存其创建时的工作目录，移除已使用的额外目录前必须先处理关联 Session。Quick Worker 重载后才会使用新增或移除的额外目录映射执行新任务。
 

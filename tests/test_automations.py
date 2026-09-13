@@ -939,6 +939,8 @@ tasks:
     manifest = json.loads((input_root.parent / "manifest.json").read_text(encoding="utf-8"))
     assert mapping["report_validation"] == runner._WEEKLY_REPORT_VALIDATION
     assert manifest["report_validation"] == runner._WEEKLY_REPORT_VALIDATION
+    assert "【白牌迁移推进】" not in mapping["report_validation"]["required_sections"]
+    assert "【白牌迁移推进】" not in mapping["report_validation"]["required_section_text"]
     source_urls = {item["role"]: item.get("source_url") for item in manifest["documents"]}
     assert source_urls == {
         "main-report": "https://tenant.feishu.cn/wiki/source",

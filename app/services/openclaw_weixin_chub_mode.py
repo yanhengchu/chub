@@ -4322,7 +4322,7 @@ class WeixinChubModeManager:
                     "Text: Usage · text [mode [direct|auto|confirm]|list|ok|next|cancel]\n\n"
                     "text model list\n\n"
                     "text model level [M#]\n\n"
-                    "text model use M# | L# | M# L#\n\n"
+                    "text model use M#\n\n"
                     "text-check <English>"
                 ),
                 code="weixin_text_mode_checked",
@@ -4445,8 +4445,10 @@ class WeixinChubModeManager:
         """Resolve the concrete model and level used by the next text task."""
         configured_model = getattr(status, "model", None)
         configured_reasoning_effort = getattr(status, "reasoning_effort", None)
-        if configured_model and configured_reasoning_effort:
-            return configured_model, configured_reasoning_effort
+        if not isinstance(configured_model, str) or not configured_model:
+            raise ValueError("The configured translation model is unavailable")
+        if not isinstance(configured_reasoning_effort, str) or not configured_reasoning_effort:
+            raise ValueError("The configured translation level is unavailable")
         catalog = self.codex_manager.read_model_catalog()
         models = tuple(
             item
@@ -4455,21 +4457,17 @@ class WeixinChubModeManager:
         )
         if not models:
             raise ValueError("The Codex model catalog is empty")
-        model_id = configured_model or getattr(
-            catalog, "default_model", None
-        )
         selected_model = next(
-            (item for item in models if item.id == model_id),
+            (item for item in models if item.id == configured_model),
             None,
         )
         if selected_model is None:
             raise ValueError("The configured translation model is unavailable")
-        reasoning_effort = configured_reasoning_effort or getattr(
-            selected_model, "default_level", None
-        ) or getattr(catalog, "default_reasoning_effort", None)
-        if reasoning_effort is None:
-            raise ValueError("The configured translation level is unavailable")
-        return model_id, reasoning_effort
+        self.codex_manager.validate_model(
+            configured_model,
+            configured_reasoning_effort,
+        )
+        return configured_model, configured_reasoning_effort
 
     def _dispatch_text_model_list(
         self,
@@ -4497,9 +4495,9 @@ class WeixinChubModeManager:
                 failed=True,
             )
         try:
-            status, catalog, models = self._read_text_model_catalog()
-            model_id = getattr(status, "model", None) or getattr(
-                catalog, "default_model", None
+            status, _catalog, models = self._read_text_model_catalog()
+            model_id, _reasoning_effort = self._effective_text_model_configuration(
+                status
             )
             model_ids = tuple(item.id for item in models)
             if model_id not in model_ids:
@@ -4512,7 +4510,7 @@ class WeixinChubModeManager:
                 operation_id=operation_id,
                 route_fingerprint=route_fingerprint,
                 source_ip=source_ip,
-                message="Text model list: Unavailable. The translation model catalog could not be read.",
+                message="Text model list: Unavailable. The translation configuration could not be read.",
                 code="codex_model_checked",
                 failed=True,
             )
@@ -4570,9 +4568,7 @@ class WeixinChubModeManager:
                 display_model = f"M{model_index} · {selected_model.id}"
                 current_level = None
             else:
-                model_id = getattr(status, "model", None) or getattr(
-                    catalog, "default_model", None
-                )
+                model_id, current_level = self._effective_text_model_configuration(status)
                 selected_model = next(
                     (item for item in models if item.id == model_id),
                     None,
@@ -4580,11 +4576,6 @@ class WeixinChubModeManager:
                 if selected_model is None:
                     raise ValueError("The configured translation model is unavailable")
                 display_model = f"M{model_ids.index(model_id) + 1} · {model_id}"
-                current_level = getattr(status, "reasoning_effort", None) or getattr(
-                    selected_model, "default_level", None
-                ) or getattr(catalog, "default_reasoning_effort", None)
-                if current_level is None:
-                    raise ValueError("The current translation level is unavailable")
             level_ids = tuple(
                 level.id
                 for level in getattr(selected_model, "levels", ())
@@ -4671,45 +4662,18 @@ class WeixinChubModeManager:
                 failed=True,
             )
 
-        if invalid_usage or model_index is None and level_index is None:
-            return fail("Text model update: Usage · text model use M# | L# | M# L#.")
+        if invalid_usage or model_index is None or level_index is not None:
+            return fail("Text model update: Usage · text model use M#.")
         if self.translation_manager is None:
             return fail("Text model update: Unavailable.")
         try:
-            status, catalog, models = self._read_text_model_catalog()
+            _status, _catalog, models = self._read_text_model_catalog()
             model_ids = tuple(item.id for item in models)
-            if model_index is None:
-                model_id = getattr(status, "model", None)
-                if model_id is None:
-                    return fail(
-                        "Text model update: No translation model is configured. "
-                        "Select a model with M#."
-                    )
-                target_model = model_id
-            elif not 1 <= model_index <= len(models):
+            if not 1 <= model_index <= len(models):
                 return fail("Text model update: Model index is unavailable in the current catalog.")
-            else:
-                target_model = model_ids[model_index - 1]
-            selected_model = next(
-                (item for item in models if item.id == target_model),
-                None,
-            )
-            if selected_model is None:
-                return fail("Text model update: The configured translation model is unavailable.")
-            level_ids = tuple(
-                level.id
-                for level in getattr(selected_model, "levels", ())
-                if isinstance(getattr(level, "id", None), str) and level.id
-            )
-            if level_index is None:
-                target_level = getattr(selected_model, "default_level", None)
-            elif 1 <= level_index <= len(level_ids):
-                target_level = level_ids[level_index - 1]
-            else:
-                return fail("Text model update: Level index is unavailable for the selected model.")
-            if target_level is None:
-                return fail("Text model update: A default level is unavailable for the selected model.")
-            self.translation_manager.set_model(target_model, target_level)
+            target_model = model_ids[model_index - 1]
+            updated_status = self.translation_manager.set_model(target_model)
+            _model, target_level = self._effective_text_model_configuration(updated_status)
         except ApiError:
             LOGGER.warning("Unable to validate Weixin translation model update", exc_info=True)
             return fail("Text model update: The selected model or level is unavailable.")
@@ -4720,7 +4684,7 @@ class WeixinChubModeManager:
             operation_id=operation_id,
             action="update_weixin_translation_setting",
             status="succeeded",
-            target=f"{target_model}/{target_level}",
+            target=target_model,
             source_ip=source_ip,
         )
         return self._remember_fixed_reply(

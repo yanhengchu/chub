@@ -63,6 +63,12 @@ def configured_manager(
     settings.openclaw.quick_interaction_completion.enabled = True
     settings.openclaw.quick_interaction_completion.weixin_recipient = "recipient"
     codex_manager = MagicMock()
+    codex_manager.runtime_id = "codex"
+    codex_manager.runtime_settings_store.read_general.return_value = SimpleNamespace(
+        default_runtime_id="codex",
+        model="translation-model",
+        reasoning_effort="medium",
+    )
     codex_manager.workspaces.return_value = [
         WorkspaceInfo(id="chub", name="Chub", path="/project", available=True)
     ]

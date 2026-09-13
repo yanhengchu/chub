@@ -15,6 +15,7 @@ from app.core.response import ApiError
 from app.ai_runtime import RuntimeOperationError
 from app.services.weekly_reports import (
     get_weekly_report,
+    get_weekly_report_template,
     list_latest_weekly_reports,
     weekly_report_inputs_available,
     weekly_report_focus_confirmed,
@@ -42,6 +43,61 @@ def _settings_return_url(request: Request) -> str:
     return urlunsplit(("", "", parsed.path, parsed.query, ""))
 
 
+def _deliveryline_workspace_state(request: Request) -> dict[str, str] | None:
+    try:
+        lifecycle = request.app.state.plugin_lifecycle.list(request)
+    except (ApiError, OSError):
+        return None
+    plugins = lifecycle.get("plugins")
+    if not isinstance(plugins, list):
+        return None
+    plugin = next(
+        (
+            item
+            for item in plugins
+            if isinstance(item, dict) and item.get("plugin_id") == "deliveryline"
+        ),
+        None,
+    )
+    if plugin is None:
+        return None
+    imported_ids = plugin.get("imported_artifact_ids")
+    enabled_ids = plugin.get("enabled_artifact_ids")
+    artifacts = plugin.get("artifacts")
+    if not isinstance(imported_ids, list) or not imported_ids:
+        return None
+    if not isinstance(enabled_ids, list):
+        enabled_ids = []
+    if not isinstance(artifacts, list):
+        artifacts = []
+    imported = next(
+        (
+            item
+            for item in artifacts
+            if isinstance(item, dict) and item.get("artifact_id") in imported_ids
+        ),
+        {},
+    )
+    enabled = next(
+        (
+            item
+            for item in artifacts
+            if isinstance(item, dict) and item.get("artifact_id") in enabled_ids
+        ),
+        None,
+    )
+    if enabled is None or not enabled.get("available"):
+        return None
+    return {
+        "status": "enabled",
+        "label": "已启用",
+        "description": str(
+            imported.get("description") or "需求交付管理业务模块；业务流程将在后续阶段接入。"
+        ),
+        "detail": "需求提出档案已可创建、编辑、归档并提交评审；后续阶段尚未接入。",
+    }
+
+
 @router.get("/", response_class=HTMLResponse, include_in_schema=False)
 def index(request: Request, section: str = "workbench") -> HTMLResponse:
     workspace_session_id = request.query_params.get("session", "").strip()
@@ -51,6 +107,28 @@ def index(request: Request, section: str = "workbench") -> HTMLResponse:
         request,
         "workbench" if workspace_session_id else section,
         workspace_session_id=workspace_session_id or None,
+    )
+
+
+@router.get(
+    "/weekly-reports/templates/{template_type}",
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
+def weekly_report_template_detail(
+    request: Request,
+    template_type: str,
+) -> HTMLResponse:
+    report = get_weekly_report_template(template_type)
+    if report is None:
+        raise HTTPException(status_code=404, detail="Weekly report template not found")
+    return templates.TemplateResponse(
+        request=request,
+        name="weekly_report_detail.html",
+        context={
+            "app_name": request.app.state.settings.app.name,
+            "report": report,
+        },
     )
 
 
@@ -150,6 +228,16 @@ def appearance_settings(request: Request) -> HTMLResponse:
     )
 
 
+@router.get("/settings/session", response_class=HTMLResponse, include_in_schema=False)
+def session_settings(request: Request) -> HTMLResponse:
+    return render_settings_page(
+        request,
+        page="session",
+        title="会话",
+        description="设置之后新建会话和未指定专属配置任务的默认 Runtime、权限、模型与推理等级。",
+    )
+
+
 @router.get("/settings/diagnostics", response_class=HTMLResponse, include_in_schema=False)
 def diagnostics_settings(request: Request) -> HTMLResponse:
     return render_settings_page(request, page="diagnostics", title="维护与版本", description="查看节点记录、维护入口与当前版本。")
@@ -239,9 +327,13 @@ def legacy_code_dark_style_preview() -> RedirectResponse:
     include_in_schema=False,
 )
 def workspace_preview(
+    request: Request,
     section: str = "workbench",
 ) -> RedirectResponse:
-    if section not in {"workbench", "project-docs", "automations"}:
+    sections = {"workbench", "project-docs", "automations"}
+    if _deliveryline_workspace_state(request) is not None:
+        sections.add("deliveryline")
+    if section not in sections:
         raise HTTPException(status_code=404, detail="Workspace section not found")
     destination = "/" if section == "workbench" else f"/?section={section}"
     return RedirectResponse(destination, status_code=307)
@@ -254,7 +346,11 @@ def render_workspace(
     workspace_session_id: str | None = None,
 ) -> HTMLResponse:
     settings = request.app.state.settings
-    if section not in {"workbench", "project-docs", "automations"}:
+    deliveryline = _deliveryline_workspace_state(request)
+    sections = {"workbench", "project-docs", "automations"}
+    if deliveryline is not None:
+        sections.add("deliveryline")
+    if section not in sections:
         raise HTTPException(status_code=404, detail="Workspace section not found")
     documents_error = None
     documents = []
@@ -264,11 +360,13 @@ def render_workspace(
     automation_start_available = False
     weekly_reports = {}
     weekly_report_focus_is_confirmed = False
-    weekly_report_formal_is_current = False
     weekly_report_inputs_ready = False
     weekly_report_generation = {}
     weekly_report_generation_ready = False
     weekly_report_generation_unavailable_reason = None
+    deliveryline_requirements = []
+    deliveryline_archived_requirements = []
+    deliveryline_error = None
     if section == "project-docs":
         try:
             all_documents = list_design_documents(
@@ -297,18 +395,6 @@ def render_workspace(
                 weekly_report_inputs_ready = weekly_report_inputs_available(
                     latest_weekly_reports[0].period
                 )
-                focus_report = weekly_reports.get("focus")
-                formal_report = weekly_reports.get("report")
-                weekly_report_formal_is_current = bool(
-                    weekly_report_focus_is_confirmed
-                    and focus_report
-                    and focus_report.available
-                    and focus_report.updated_at
-                    and formal_report
-                    and formal_report.available
-                    and formal_report.updated_at
-                    and formal_report.updated_at >= focus_report.updated_at
-                )
             weekly_report_generation = (
                 request.app.state.weekly_report_generation.read_current()
             )
@@ -318,6 +404,21 @@ def render_workspace(
             ) = request.app.state.weekly_report_generation.configuration_ready()
         except ApiError as exc:
             automations_error = exc.message
+    elif section == "deliveryline" and deliveryline is not None and deliveryline["status"] == "enabled":
+        try:
+            records = request.app.state.deliveryline_store.list(include_archived=True)
+            deliveryline_requirements = [
+                record
+                for record in records
+                if record.workflow.delivery_status != "已归档"
+            ]
+            deliveryline_archived_requirements = [
+                record
+                for record in records
+                if record.workflow.delivery_status == "已归档"
+            ]
+        except (OSError, RuntimeError):
+            deliveryline_error = "需求档案暂时无法加载。"
     return templates.TemplateResponse(
         request=request,
         name="workspace_preview.html",
@@ -326,6 +427,11 @@ def render_workspace(
             "page_title": settings.app.page_title or settings.app.name,
             "workspace_section": section,
             "workspace_session_id": workspace_session_id,
+            "deliveryline": deliveryline,
+            "deliveryline_navigation": deliveryline is not None,
+            "deliveryline_requirements": deliveryline_requirements,
+            "deliveryline_archived_requirements": deliveryline_archived_requirements,
+            "deliveryline_error": deliveryline_error,
             "documents": documents,
             "document_count": document_count,
             "documents_error": documents_error,
@@ -334,7 +440,6 @@ def render_workspace(
             "automation_start_available": automation_start_available,
             "weekly_reports": weekly_reports,
             "weekly_report_focus_is_confirmed": weekly_report_focus_is_confirmed,
-            "weekly_report_formal_is_current": weekly_report_formal_is_current,
             "weekly_report_inputs_ready": weekly_report_inputs_ready,
             "weekly_report_generation": weekly_report_generation,
             "weekly_report_generation_ready": weekly_report_generation_ready,

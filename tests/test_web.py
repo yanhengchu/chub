@@ -458,6 +458,17 @@ async def settings_page_removes_quick_interaction_page_size_preference(
     assert "/api/codex/models" in script.text
     assert "/api/codex/session-defaults" not in script.text
     assert "/api/settings/weixin-translation" in script.text
+    assert "翻译权限" in response.text
+    assert "翻译权限：Read Only" in response.text
+    assert "翻译 Runtime" in response.text
+    assert "推理等级：正在读取" in response.text
+    assert "使用“会话”中设置的默认推理等级。" not in response.text
+    assert response.text.index("翻译 Runtime") < response.text.index("翻译权限")
+    assert response.text.index("翻译权限") < response.text.index("文本优化模型")
+    assert response.text.index("文本优化模型") < response.text.index("推理等级")
+    assert 'apiRequest("/api/ai/settings", { cache: "no-store" })' in workspace_script.text
+    assert "session-default-reasoning" in workspace_script.text
+    assert "quickSessionReasoningLabels" in workspace_script.text
     assert "native_cleanup_pending" in script.text
     assert "当前 Codex 默认 ·" in script.text
     assert "defaultReasoningDescription(" in script.text
@@ -537,6 +548,7 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     transport = httpx.ASGITransport(app=create_app(settings))
     paths = {
         "appearance": "/settings/appearance",
+        "session": "/settings/session",
         "diagnostics": "/settings/diagnostics",
         "runtime": "/settings/runtime",
         "runtime-detail": "/settings/runtime/codex",
@@ -546,7 +558,7 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         root = await client.get("/settings", follow_redirects=False)
         removed_quick_interaction = await client.get("/settings/quick-interaction")
-        removed_session_defaults = await client.get("/settings/session-defaults")
+        session_settings = await client.get("/settings/session")
         legacy_weixin_text = await client.get("/settings/weixin-text", follow_redirects=False)
         legacy_gateway = await client.get("/settings/openclaw/gateway", follow_redirects=False)
         legacy_clawbot = await client.get("/settings/openclaw/clawbot", follow_redirects=False)
@@ -569,7 +581,7 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert root.status_code == 307
     assert root.headers["location"] == "/settings/appearance"
     assert removed_quick_interaction.status_code == 404
-    assert removed_session_defaults.status_code == 404
+    assert session_settings.status_code == 200
     assert "通用设置" in pages["appearance"].text
     assert "会话与偏好" not in pages["appearance"].text
     assert legacy_weixin_text.status_code == 307
@@ -597,7 +609,7 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
             "frame-ancestors 'none'"
         )
 
-    assert 'href="/settings/session-defaults"' not in pages["appearance"].text
+    assert 'href="/settings/session"' in pages["appearance"].text
     assert 'id="runtime-management-list"' not in pages["runtime"].text
     assert 'id="runtime-general-settings-title"' not in pages["runtime"].text
     assert "此处控制 Runtime 是否接收后续新 AI 任务" not in pages["runtime"].text
@@ -608,21 +620,22 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert '<span class="settings-navigation-subgroup">任务编排</span>' not in pages["runtime"].text
     assert 'class="settings-navigation-link settings-navigation-parent" href="/settings/runtime"' in pages["runtime"].text
     assert '<span>插件管理</span>' in pages["runtime"].text
-    assert pages["runtime"].text.index('<span class="settings-navigation-group">通用设置</span>') < pages["runtime"].text.index('href="/settings/appearance"') < pages["runtime"].text.index('href="/settings/runtime"')
+    assert pages["runtime"].text.index('<span class="settings-navigation-group">通用设置</span>') < pages["runtime"].text.index('href="/settings/appearance"') < pages["runtime"].text.index('href="/settings/session"') < pages["runtime"].text.index('href="/settings/runtime"')
     assert pages["runtime"].text.count('class="settings-navigation-tree"') == 0
     assert 'class="settings-navigation-link settings-navigation-child" href="/settings/runtime/codex"' not in pages["runtime"].text
     assert 'class="settings-navigation-link settings-navigation-child" href="/settings/task-orchestration"' not in pages["runtime"].text
-    assert "插件生命周期" in pages["runtime"].text
-    assert "统一管理导入、移除、启用和禁用" in pages["runtime"].text
+    assert "插件生命周期" not in pages["runtime"].text
+    assert "统一管理导入、移除、启用和禁用" not in pages["runtime"].text
     assert 'id="plugin-lifecycle-list" class="settings-divided-list runtime-module-list"' in pages["runtime"].text
     assert 'id="runtime-module-file"' not in pages["runtime"].text
     assert 'id="orchestration-module-file"' not in pages["runtime"].text
-    assert 'id="ai-runtime-general-settings"' in pages["runtime"].text
+    assert 'id="ai-runtime-general-settings"' not in pages["runtime"].text
+    assert 'id="ai-runtime-general-settings"' in pages["session"].text
     assert 'href="/settings/runtime" aria-current="page"' in pages["runtime"].text
     assert 'href="/settings/runtime/codex"' not in pages["runtime"].text
     assert 'id="quick-interaction-page-size"' not in pages["runtime"].text
     assert 'id="codex-default-full-access"' not in pages["runtime"].text
-    assert "new-session-permission" in script.text
+    assert "session-default-permission" in script.text
     assert 'data-settings-page="runtime-detail"' in pages["runtime-detail"].text
     assert 'id="runtime-management-list"' not in pages["runtime-detail"].text
     assert 'id="codex-default-runtime-implementation" data-settings-picker disabled' in pages["runtime-detail"].text
@@ -652,7 +665,7 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert '.settings-navigation-tree::before {' in stylesheet.text
     assert '.settings-navigation-link.settings-navigation-parent {' in stylesheet.text
     assert '.settings-navigation-link.settings-navigation-child {' in stylesheet.text
-    assert '.settings-navigation-link[aria-current="page"] {\n  border-color: transparent;\n  box-shadow: inset 2px 0 0 var(--color-accent);' in stylesheet.text
+    assert '.settings-navigation-link[aria-current="page"] {\n  border-color: var(--color-accent);' in stylesheet.text
     assert '.runtime-module-empty-row > span' in stylesheet.text
     assert '.settings-divided-list .settings-utility-row + .settings-utility-row' in stylesheet.text
     assert '.settings-utility-list {' in stylesheet.text
@@ -821,6 +834,8 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert '"/api/settings/weixin-translation"' in workspace_script.text
     assert 'show_internal_native_session' in workspace_script.text
     assert '"/api/codex/models"' in workspace_script.text
+    assert '"/api/ai/settings"' not in workspace_script.text
+    assert 'workspace-task-runtime-trigger' in workspace_script.text
     assert 'window.initializeWorkspaceTaskOrchestration' in workspace_script.text
     assert 'window.disposeWorkspaceTaskOrchestration' in workspace_script.text
     assert '.workspace-preview-session-group + .workspace-preview-session-group' in stylesheet.text
@@ -994,6 +1009,139 @@ async def test_root_page_is_the_workspace_and_legacy_workspace_redirects(
     assert legacy_automations.status_code == 307
     assert legacy_automations.headers["location"] == "/?section=automations"
     assert all(response.status_code == 404 for response in removed_assets)
+
+
+@pytest.mark.anyio
+async def test_deliveryline_workspace_section_follows_import_lifecycle(
+    settings: Settings,
+) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        initial_home = await client.get("/")
+        unavailable_page = await client.get("/?section=deliveryline")
+        imported = await client.post(
+            "/api/plugins/deliveryline/imports",
+            json={"artifact_id": "development:deliveryline"},
+        )
+        imported_home = await client.get("/")
+        disabled_page = await client.get("/?section=deliveryline")
+        disabled_api = await client.post(
+            "/api/deliveryline/requirements",
+            json={"description": "未启用时不应创建需求。"},
+        )
+        legacy_deliveryline = await client.get(
+            "/workspace?section=deliveryline",
+            follow_redirects=False,
+        )
+        enabled = await client.put(
+            "/api/plugins/deliveryline/enabled",
+            json={"artifact_id": "development:deliveryline", "enabled": True},
+        )
+        created = await client.post(
+            "/api/deliveryline/requirements",
+            json={"description": "希望能够管理需求交付。"},
+        )
+        requirement_id = created.json()["data"]["id"]
+        updated = await client.put(
+            f"/api/deliveryline/requirements/{requirement_id}",
+            json={
+                "title": "管理需求交付",
+                "background": "交付过程缺少统一台账。",
+                "delivery_goal": "可查看并推进需求。",
+                "scope": "需求提出和评审准备。",
+                "out_of_scope": "不接入任务执行。",
+                "constraints": "暂无",
+                "acceptance_criteria": "可创建并提交评审。",
+                "risks_and_open_items": "暂无",
+            },
+        )
+        submitted = await client.post(
+            f"/api/deliveryline/requirements/{requirement_id}/submit-review"
+        )
+        archived_created = await client.post(
+            "/api/deliveryline/requirements",
+            json={"description": "需要保留的归档需求。"},
+        )
+        archived = await client.put(
+            f"/api/deliveryline/requirements/{archived_created.json()['data']['id']}/archive"
+        )
+        overview = await client.get("/api/deliveryline")
+        enabled_page = await client.get("/?section=deliveryline")
+        removed = await client.delete(
+            "/api/plugins/deliveryline/imports/development%3Adeliveryline"
+        )
+        removed_home = await client.get("/")
+        removed_page = await client.get("/?section=deliveryline")
+
+    assert initial_home.status_code == 200
+    assert unavailable_page.status_code == 404
+    assert 'aria-label="业务导航"' not in initial_home.text
+    assert imported.status_code == 200
+    assert 'aria-label="业务导航"' not in imported_home.text
+    assert disabled_page.status_code == 404
+    assert disabled_api.status_code == 409
+    assert disabled_api.json()["error"]["code"] == "deliveryline_not_enabled"
+    assert legacy_deliveryline.status_code == 404
+    assert enabled.status_code == 200
+    assert created.status_code == 200
+    assert updated.status_code == 200
+    assert submitted.status_code == 200
+    assert submitted.json()["data"]["current_stage"] == "需求评审"
+    assert archived.status_code == 200
+    assert overview.status_code == 200
+    assert [item["id"] for item in overview.json()["data"]["archived_requirements"]] == [
+        archived_created.json()["data"]["id"]
+    ]
+    assert 'href="/?section=deliveryline"' in enabled_page.text
+    assert 'href="/workspace?section=deliveryline"' in enabled_page.text
+    assert enabled_page.text.index("Business") < enabled_page.text.index(
+        'id="workspace-preview-sessions"'
+    )
+    assert "需求提出" in enabled_page.text
+    assert "管理需求交付" in enabled_page.text
+    assert "已归档需求" in enabled_page.text
+    assert "需要保留的归档需求。" in enabled_page.text
+    assert removed.status_code == 200
+    assert 'aria-label="业务导航"' not in removed_home.text
+    assert removed_page.status_code == 404
+
+
+@pytest.mark.anyio
+async def test_deliveryline_api_rejects_an_enabled_but_unavailable_plugin(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application = create_app(settings)
+    lifecycle_list = application.state.plugin_lifecycle.list
+    transport = httpx.ASGITransport(app=application)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        imported = await client.post(
+            "/api/plugins/deliveryline/imports",
+            json={"artifact_id": "development:deliveryline"},
+        )
+        enabled = await client.put(
+            "/api/plugins/deliveryline/enabled",
+            json={"artifact_id": "development:deliveryline", "enabled": True},
+        )
+
+        def unavailable(request):
+            payload = lifecycle_list(request)
+            plugin = next(item for item in payload["plugins"] if item["plugin_id"] == "deliveryline")
+            artifact = next(item for item in plugin["artifacts"] if item["artifact_id"] == "development:deliveryline")
+            artifact["available"] = False
+            artifact["reason"] = "模拟不可用"
+            return payload
+
+        monkeypatch.setattr(application.state.plugin_lifecycle, "list", unavailable)
+        rejected = await client.post(
+            "/api/deliveryline/requirements",
+            json={"description": "不可用时不得写入。"},
+        )
+
+    assert imported.status_code == 200
+    assert enabled.status_code == 200
+    assert rejected.status_code == 409
+    assert rejected.json()["error"]["code"] == "deliveryline_unavailable"
 
 
 @pytest.mark.anyio
@@ -1225,6 +1373,8 @@ async def test_automation_section_uses_workstation_status_rows(
     assert "等待重点确认完成" in response.text
     assert 'href="/weekly-reports/2026-08-31%E8%87%B32026-09-06/focus"' in response.text
     assert ">查看文档</a>" in response.text
+    assert 'href="/weekly-reports/templates/focus">查看模板</a>' in response.text
+    assert 'href="/weekly-reports/templates/report">查看模板</a>' in response.text
     assert 'data-weekly-report-stage="focus">重新运行</button>' in response.text
     assert 'href="/weekly-reports/2026-08-31%E8%87%B32026-09-06/report"' not in response.text
     assert 'class="button-secondary workspace-weekly-report-confirm-and-run"' in response.text
@@ -1309,9 +1459,10 @@ async def test_automation_section_uses_workstation_status_rows(
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         stale_report_response = await client.get("/?section=automations")
 
-    assert "正式周报基于旧确认清单，需重新生成" in stale_report_response.text
-    assert 'href="/weekly-reports/2026-08-31%E8%87%B32026-09-06/report">查看旧文档</a>' in stale_report_response.text
-    assert ">确认并生成正式周报</button>" in stale_report_response.text
+    assert "正式周报已生成，请查看" in stale_report_response.text
+    assert 'href="/weekly-reports/2026-08-31%E8%87%B32026-09-06/report">查看文档</a>' in stale_report_response.text
+    assert ">重新运行</button>" in stale_report_response.text
+    assert ">确认并生成正式周报</button>" not in stale_report_response.text
 
     app.state.weekly_report_generation.read_current = MagicMock(
         return_value={
@@ -1547,7 +1698,7 @@ async def test_quick_interaction_conversation_page_is_available(
     assert 'id="conversation-delete-confirm"' in page.text
     assert 'class="codex-workspace-dialog confirmation-dialog conversation-archive-dialog"' in page.text
     assert 'class="confirmation-dialog-description"' in page.text
-    assert 'id="conversation-create-dialog"' in page.text
+    assert 'id="conversation-create-dialog" class="codex-workspace-dialog conversation-create-dialog workspace-session-create-dialog"' in page.text
     assert 'id="conversation-create-form" class="codex-workspace-dialog-surface workspace-session-create-form"' in page.text
     assert 'id="conversation-create-workspaces" type="hidden"' in page.text
     assert 'id="conversation-create-workspaces-trigger" class="settings-choice-picker-trigger"' in page.text
@@ -1627,7 +1778,8 @@ async def test_quick_interaction_conversation_page_is_available(
     assert 'elements.createWorkspacePicker.setOptions(' in session_script.text
     assert 'elements.createForm.onsubmit = (event) => {' in session_script.text
     assert '.workspace-session-choice-picker .settings-choice-picker-menu {' in stylesheet.text
-    assert '.workspace-session-create-description {\n  margin: 0;\n  color: var(--color-text-muted);\n  line-height: 1.45;' in stylesheet.text
+    assert '.workspace-session-create-description,' in stylesheet.text
+    assert 'workspace-session-create-field-group' not in page.text
     assert "conversationCreationPending" in script.text
     assert "renderConversationSessionCreation(sessionContextResult.value)" in script.text
     assert "switchConversationSession(" in script.text
@@ -1796,7 +1948,7 @@ async def test_design_document_pages_render_markdown(settings: Settings) -> None
         listing = await client.get("/project-docs")
         detail = await client.get("/project-docs/automation-download")
         deliveryline = await client.get("/project-docs/deliveryline-platform")
-        business_module = await client.get("/project-docs/chub-business-module")
+        removed_business_module = await client.get("/project-docs/chub-business-module")
         project_readme = await client.get("/project-docs/project-readme")
         missing = await client.get("/project-docs/not-registered")
 
@@ -1816,6 +1968,9 @@ async def test_design_document_pages_render_markdown(settings: Settings) -> None
     assert listing.text.index('href="/project-docs/project-readme"') < listing.text.index(
         'href="/project-docs/chub-architecture"'
     )
+    assert listing.text.index('href="/project-docs/chub-architecture"') < listing.text.index(
+        'href="/project-docs/chub-integration-capabilities"'
+    )
     assert '<span class="badge badge-success">持续维护</span>' in listing.text
     assert project_readme.status_code == 200
     assert "面向个人设备、本地优先的轻量 AI 工作站控制面" in project_readme.text
@@ -1829,9 +1984,8 @@ async def test_design_document_pages_render_markdown(settings: Settings) -> None
     assert deliveryline.status_code == 200
     assert "Deliveryline 是需求交付管理平台" in deliveryline.text
     assert "Deliveryline 已以 Chub 业务插件接入" in deliveryline.text
-    assert "Chub 工作台业务模块设计" in listing.text
-    assert business_module.status_code == 200
-    assert "首个模块是 Deliveryline" in business_module.text
+    assert "Chub 工作台业务模块设计" not in listing.text
+    assert removed_business_module.status_code == 404
     assert "返回首页" not in listing.text
     assert "standalone-list-card" in listing.text
     assert 'target="_blank"' not in listing.text
@@ -1911,12 +2065,20 @@ async def test_weekly_report_detail_is_public_and_missing_report_is_404(
             "/weekly-reports/2026-08-03%E8%87%B32026-08-09/report"
         )
         unsafe = await client.get("/weekly-reports/not-a-period/focus")
+        focus_template = await client.get("/weekly-reports/templates/focus")
+        report_template = await client.get("/weekly-reports/templates/report")
+        unknown_template = await client.get("/weekly-reports/templates/unknown")
 
     assert detail.status_code == 200
     assert '<article class="markdown-body">' in detail.text
     assert "本期工作重点确认清单" in detail.text
     assert pending.status_code == 404
     assert unsafe.status_code == 404
+    assert focus_template.status_code == 200
+    assert "重点事项确认清单模板" in focus_template.text
+    assert report_template.status_code == 200
+    assert "正式周报模板" in report_template.text
+    assert unknown_template.status_code == 404
 
 
 @pytest.mark.anyio
@@ -2002,6 +2164,7 @@ async def test_page_uses_external_script_only(settings: Settings) -> None:
         "/static/workspace.js",
         "/static/js/features/workspace-sessions.js",
         "/static/js/features/workspace-workstation.js",
+        "/static/js/features/workspace-deliveryline.js",
     ]
     assert response.text.count("<script") == len(expected_scripts) + 2
     assert '<script src="/static/workspace-bootstrap.js"></script>' in response.text

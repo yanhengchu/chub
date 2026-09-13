@@ -96,14 +96,13 @@
           </div>
         </form>
 
-        <dialog id="conversation-create-dialog" class="codex-workspace-dialog conversation-create-dialog" aria-labelledby="conversation-create-title">
+        <dialog id="conversation-create-dialog" class="codex-workspace-dialog conversation-create-dialog workspace-session-create-dialog" aria-labelledby="conversation-create-title">
           <form id="conversation-create-form" class="codex-workspace-dialog-surface workspace-session-create-form" aria-labelledby="conversation-create-title">
             <div class="codex-workspace-dialog-header">
               <h3 id="conversation-create-title">新建 Session</h3>
               <button id="conversation-create-close" class="button-link codex-workspace-dialog-close" type="button" aria-label="关闭新建 Session 窗口">关闭</button>
             </div>
             <p class="workspace-session-create-description">选择工作目录后创建快速交互 Session。</p>
-            <label class="workspace-session-create-field" for="conversation-create-workspaces">工作目录</label>
             <input id="conversation-create-workspaces" type="hidden">
             <div class="settings-choice-picker workspace-session-choice-picker">
               <button id="conversation-create-workspaces-trigger" class="settings-choice-picker-trigger" type="button" aria-haspopup="listbox" aria-controls="conversation-create-workspaces-menu" aria-expanded="false"><span id="conversation-create-workspaces-value"></span><span aria-hidden="true"></span></button>

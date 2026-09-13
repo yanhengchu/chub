@@ -55,7 +55,7 @@ class WeeklyReportGenerationService:
             return False, exc.message
         if self._read_period_session_id(reporting_period()) is not None:
             return True, None
-        if settings.permission_mode == "read-only":
+        if settings.new_session_permission == "read-only":
             return False, "当前周报自动化会话为只读权限，无法生成周报产物。"
         return True, None
 
@@ -79,7 +79,7 @@ class WeeklyReportGenerationService:
             try:
                 if session_id is None:
                     settings = self._read_settings()
-                    if settings.permission_mode == "read-only":
+                    if settings.new_session_permission == "read-only":
                         raise ApiError(
                             409,
                             "weekly_report_generation_read_only",
@@ -88,7 +88,7 @@ class WeeklyReportGenerationService:
                     with self._quick_interactions.session_creation_guard():
                         session = self._session_manager.create_session(
                             "chub",
-                            settings.permission_mode,
+                            settings.new_session_permission,
                             settings.model,
                             settings.reasoning_effort,
                         )
@@ -164,15 +164,8 @@ class WeeklyReportGenerationService:
                 "ai_runtime_settings_unavailable",
                 "Runtime 默认项暂时无法读取。",
             ) from exc
-        runtime_id = settings.weekly_report_session.runtime_id
-        if runtime_id is None:
-            raise ApiError(
-                409,
-                "weekly_report_runtime_unavailable",
-                "当前周报自动化 Runtime 不可用。",
-            )
-        self._session_manager.require_runtime_submission(runtime_id)
-        return settings.weekly_report_session
+        self._session_manager.require_runtime_submission(settings.default_runtime_id)
+        return settings
 
     def _read_stage(self, period: str, stage: str) -> WeeklyReportGenerationStep:
         period_data = self._period_data(period)
@@ -296,10 +289,24 @@ class WeeklyReportGenerationService:
             "仅执行 Stage A：读取本期已发布输入并生成工作重点确认清单。清单业务内容只能包含"
             "“本周需要同步的事项”和“需要维护者确认的重点事项”两个简洁列表；保留最小输入指纹"
             "和维护者确认占位，但不得增加其他业务章节。完成后停止，等待维护者确认。不得生成正式周报，"
-            "不得自行填写维护者确认结果或创建有效确认记录。"
+            "不得自行填写维护者确认结果或创建有效确认记录。最终会话回复固定为三段：先写“已完成 Stage A，"
+            "生成本期工作重点确认清单：”；再写标题“需要确认的事项清单”和“需要维护者确认的重点事项”"
+            "中的简洁条目（每项写清待决定事项及其对正式周报的影响；没有待确认事项时写“- 无待确认事项。”）；"
+            "最后写“当前等待维护者确认后再进入 Stage B。”"
+            "已知的 DAU `？W` 及本期结束后下一周周一补数安排属于本周同步事项，不列入维护者确认事项。"
             if stage == "focus"
             else "仅执行 Stage B：先读取本期已发布输入、已有重点确认清单和有效确认记录；"
             "确认记录缺失或无效时停止并说明原因。不得重新生成重点确认清单；"
+            "业务关键指标在 Manifest report_validation.business_metrics_source_role 指定本期材料且该材料可用时才同步：标题下先写一条"
+            "“大盘数据表现：...”作为其对大盘指标的描述，变化时写清可比基准，紧接着写大盘指标表数据；保留描述的口径、"
+            "周期和必要解释，以及表格的字段、列顺序、单位、"
+            "统计窗口、空值和备注；未声明或不可用时省略业务关键指标章节并在核对记录说明，不得用主周报或其他端材料补齐、推算或替换指标。"
+            "产品体验提升的当前进展固定为两条：从上一期正式周报延续阶段与月度 DAU 均值，并按本期"
+            "最新可获得周期更新，不写死 H1 或具体月份；本期完整周 DAU 已确认时写实际值，未确认时才写"
+            "`？W` 占位和本期结束后下一周周一补数日期。"
+            "本期有白牌迁移事项时，作为与 AI 工程化推进同级的独立章节，集中记录迁移进展、依赖、风险和协同，"
+            "当前进展按迁移范围、当前阶段、本期完成和下一里程碑组织，保留产品材料直接点名的迁移资料链接；没有相关事项时省略该章节。"
+            "各端周报中的每项使用受控 URL，格式为“来源标题：source_url”。"
             "生成正式周报、核对记录并完成规定校验。"
         )
         return (

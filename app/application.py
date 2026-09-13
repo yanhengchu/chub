@@ -105,6 +105,8 @@ from app.quick_worker import (
 )
 from app.notifications import NotificationService
 from app.web.routes import STATIC_DIR, router as web_router
+from app.api.deliveryline import router as deliveryline_router
+from app.deliveryline import DeliverylineStore
 
 
 async def _confirm_healthy_instance(
@@ -1256,6 +1258,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.maintenance_lock = threading.RLock()
     application.state.weixin_chub_mode = weixin_chub_mode
     application.state.plugin_lifecycle = plugin_lifecycle
+    application.state.deliveryline_store = DeliverylineStore(
+        resolved_settings.business_modules.deliveryline_requirements_dir,
+        resolved_settings.business_modules.deliveryline_state_dir,
+    )
     application.state.weixin_translation = weixin_translation
     application.state.maintenance_terminal = maintenance_terminal
     def check_codex_runtime_account() -> RuntimeAccountEnvironmentState:
@@ -1351,6 +1357,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(openclaw_router)
     application.include_router(openclaw_wechat_chub_mode_router)
     application.include_router(project_documents_router)
+    application.include_router(deliveryline_router)
     application.include_router(weekly_reports_router)
     application.include_router(settings_router)
     application.include_router(plugins_router)

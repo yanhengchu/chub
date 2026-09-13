@@ -227,7 +227,7 @@ class PluginLifecycleService:
             rows = [{"artifact_id": "development:weixin-orchestration", "source": "development", "name": "开发实现", "version": "dev", "description": "处理微信普通文本的润色、确认与任务续提。", "available": status.development_available, "removable": True, "reason": None}]
             rows.extend({"artifact_id": f"orchestration:{item.implementation_ref}", "source": "zip", "name": item.name, "version": item.version, "description": item.description, "available": item.available, "removable": removable, "reason": item.reason} for item, _active, removable in self.weixin_chub_mode.list_orchestration_plugins())
             return rows + self._candidates(plugin_id)
-        return [{"artifact_id": "development:deliveryline", "source": "development", "name": "开发实现", "version": "dev", "description": "提供需求交付管理页面壳；当前不包含业务流程。", "available": (PROJECT_ROOT / "business-modules/deliveryline/chub-business-module.json").is_file(), "removable": True, "reason": None}] + self._candidates(plugin_id)
+        return [{"artifact_id": "development:deliveryline", "source": "development", "name": "开发实现", "version": "dev", "description": "提供需求提出档案、评审前校验与归档查看；后续交付阶段尚未接入。", "available": (PROJECT_ROOT / "business-modules/deliveryline/chub-business-module.json").is_file(), "removable": True, "reason": None}] + self._candidates(plugin_id)
 
     def _candidates(self, plugin_id: str) -> list[dict[str, object]]:
         directory = PROJECT_ROOT / "data/local/artifacts/plugins" / plugin_id

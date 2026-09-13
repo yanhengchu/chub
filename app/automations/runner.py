@@ -64,6 +64,7 @@ _WEEKLY_HEADING_RANGE_STARTS = {
     "server": "一、南京服务端 @薛峰",
 }
 _WEEKLY_REPORT_VALIDATION = {
+    "business_metrics_source_role": "music-product",
     "required_sections": [
         "业务关键指标",
         "【产品体验提升】",

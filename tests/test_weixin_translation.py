@@ -28,10 +28,23 @@ def route() -> QuickInteractionWeixinRoute:
     )
 
 
-def manager_without_worker(settings):
+def manager_without_worker(settings, *, catalog_side_effect=None):
     config = settings.openclaw.weixin_chub_mode
     config.translation_enabled = True
     codex_manager = MagicMock()
+    codex_manager.runtime_id = "codex"
+    codex_manager.runtime_settings_store.read_general.return_value = SimpleNamespace(
+        default_runtime_id="codex",
+        model=None,
+        reasoning_effort=None,
+    )
+    codex_manager.read_model_catalog.return_value = SimpleNamespace(
+        models=(SimpleNamespace(id="translation-model", default_level="medium"),),
+        default_model="translation-model",
+        default_reasoning_effort="medium",
+    )
+    if catalog_side_effect is not None:
+        codex_manager.read_model_catalog.side_effect = catalog_side_effect
     codex_manager.discard_unstarted_session.return_value = False
     codex_manager.create_translation_session.return_value = SimpleNamespace(
         id="translation-session"
@@ -340,10 +353,15 @@ def test_worker_submission_thread_failure_closes_targeted_entry(settings) -> Non
     completion_handler.assert_called_once()
 
 
-def test_translation_model_settings_are_persisted_and_snapshotted(settings) -> None:
+def test_translation_execution_overrides_are_snapshotted(settings) -> None:
     manager, codex_manager, quick_interactions = manager_without_worker(settings)
     codex_manager.validate_model = MagicMock()
-    manager.set_model("gpt-test", "high")
+    codex_manager.runtime_settings_store.read_general.return_value = SimpleNamespace(
+        default_runtime_id="codex",
+        model="gpt-default",
+        reasoning_effort="high",
+    )
+    manager.set_execution_settings("codex", "gpt-test", "low")
     manager._ensure_session = MagicMock(return_value="translation-session")
 
     assert manager.enqueue(
@@ -354,13 +372,19 @@ def test_translation_model_settings_are_persisted_and_snapshotted(settings) -> N
         source_ip="100.64.0.21",
     )
 
-    manager.set_model("gpt-next", "medium")
+    codex_manager.runtime_settings_store.read_general.return_value = SimpleNamespace(
+        default_runtime_id="codex",
+        model="gpt-default",
+        reasoning_effort="medium",
+    )
+    manager.set_execution_settings("codex", "gpt-next", "medium")
     assert wait_for(lambda: quick_interactions.submit.call_count == 1)
     entry = manager._state.entries[0]
+    assert entry.runtime_id == "codex"
     assert entry.model == "gpt-test"
-    assert entry.reasoning_effort == "high"
+    assert entry.reasoning_effort == "low"
     assert quick_interactions.submit.call_args.kwargs["model"] == "gpt-test"
-    assert quick_interactions.submit.call_args.kwargs["reasoning_effort"] == "high"
+    assert quick_interactions.submit.call_args.kwargs["reasoning_effort"] == "low"
 
     reloaded = WeixinTranslationManager(
         settings.openclaw.weixin_chub_mode,
@@ -369,6 +393,68 @@ def test_translation_model_settings_are_persisted_and_snapshotted(settings) -> N
     )
     assert reloaded.status().model == "gpt-next"
     assert reloaded.status().reasoning_effort == "medium"
+
+
+def test_translation_execution_settings_do_not_read_session_defaults(settings) -> None:
+    manager, codex_manager, _quick_interactions = manager_without_worker(settings)
+    codex_manager.runtime_settings_store.read_general.reset_mock()
+    manager._ensure_session = MagicMock(return_value="translation-session")
+
+    assert manager.status().model == "translation-model"
+    assert manager.status().reasoning_effort == "medium"
+    assert manager.enqueue(
+        message_id="independent-execution-settings",
+        original="使用微信任务润色独立配置",
+        route=route(),
+        operation_id="independent-execution-settings",
+        source_ip="100.64.0.21",
+    )
+
+    codex_manager.runtime_settings_store.read_general.assert_not_called()
+
+
+def test_worker_recovery_initializes_execution_settings_after_catalog_recovers(
+    settings,
+) -> None:
+    catalog = SimpleNamespace(
+        models=(SimpleNamespace(id="recovered-model", default_level="high"),),
+        default_model="recovered-model",
+        default_reasoning_effort="high",
+    )
+    manager, _codex_manager, _quick_interactions = manager_without_worker(
+        settings,
+        catalog_side_effect=[
+            ApiError(503, "catalog_unavailable", "模型目录暂时不可用。"),
+            catalog,
+        ],
+    )
+
+    assert manager.status().model is None
+    assert manager.status().reasoning_effort is None
+
+    manager.start_worker_recovery()
+
+    assert manager.status().model == "recovered-model"
+    assert manager.status().reasoning_effort == "high"
+
+
+def test_worker_recovery_does_not_replace_existing_execution_settings(settings) -> None:
+    manager, codex_manager, _quick_interactions = manager_without_worker(settings)
+    manager.set_execution_settings("codex", "saved-model", "low")
+    codex_manager.read_model_catalog.reset_mock()
+
+    manager.start_worker_recovery()
+
+    assert manager.status().model == "saved-model"
+    assert manager.status().reasoning_effort == "low"
+    codex_manager.read_model_catalog.assert_not_called()
+
+
+def test_translation_rejects_runtime_without_text_optimization_support(settings) -> None:
+    manager, _codex_manager, _quick_interactions = manager_without_worker(settings)
+
+    with pytest.raises(ApiError, match="当前 Runtime 尚不支持微信文本优化"):
+        manager.set_execution_settings("other-runtime", "translation-model", "medium")
 
 
 def test_targeted_translation_suppresses_legacy_notification(settings) -> None:

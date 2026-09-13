@@ -7,7 +7,9 @@
 
 Chub 的能力体系回答“能做什么”；指令体系回答“人如何输入文本调用”；程序化集成契约回答“系统如何调用”。当前只有两套面向人的指令体系：本机维护 CLI 与微信 ClawBot 固定指令。OpenClaw Tool、固定 HTTP API、工作台按钮和固定脚本均不构成第三套指令体系。微信固定指令的完整语法、用户可见行为和回复格式以第 2.2 节为准；身份、安全、并发、持久化和通知路由见对应设计文档；项目整体功能与使用方式见 [README](../README.md)。本文件描述的能力不等于所有入口均获授权：运行时能力由 Chub 根据入口、任务范围、权限和状态过滤，具体调用仍以实际校验结果为准。
 
-Chub 是个人本地工作站与统一控制面：核心能力可独立运行，插件模块可在本机安装、版本和启停边界内扩展业务。核心优先保持可用、局部恢复和最终状态确认，不因普通模块维护、单项故障或状态暂时未知增加全局门禁；只有直接数据破坏、安全越界或不可恢复冲突才需要拒绝。“插件模块”是统一产品与架构术语；正式交付和安装形态统一称为“插件包”或“插件 ZIP”。Runtime、微信任务编排与 Deliveryline 已接入统一生命周期：导入决定首页与设置侧栏的可见性，启用决定状态说明与版本切换能力。Deliveryline 当前仅提供空页面和生命周期状态，不提供业务数据或交付流程。
+Deliveryline 当前实际可用范围以“工作台业务模块”表项和 [Deliveryline 需求交付管理平台设计](DELIVERYLINE_PLATFORM_DESIGN.md)为准：启用后可创建、编辑、归档共享需求档案，并在资料完整时提交需求评审；后续阶段、Chub 执行关联和自动化测试流程尚未实现。
+
+Chub 是个人本地工作站与统一控制面：核心能力可独立运行，插件模块可在本机安装、版本和启停边界内扩展业务。核心优先保持可用、局部恢复和最终状态确认，不因普通模块维护、单项故障或状态暂时未知增加全局门禁；只有直接数据破坏、安全越界或不可恢复冲突才需要拒绝。“插件模块”是统一产品与架构术语；正式交付和安装形态统一称为“插件包”或“插件 ZIP”。Runtime、微信任务编排与 Deliveryline 已接入统一生命周期：导入决定首页与设置侧栏的可见性，启用决定业务入口和写入可用性。Deliveryline 当前已提供“需求提出”的共享需求档案创建、编辑、归档与评审前校验；后续业务阶段尚未接入。
 
 ## 1. Chub 能力体系
 
@@ -30,7 +32,7 @@ Chub 是个人本地工作站与统一控制面：核心能力可独立运行，
 | --- | --- | --- |
 | Runtime 插件模块 | 已实现：第一方 Codex Runtime ZIP 与开发实现 | Chub 保留 Session、Worker、任务终态、维护操作和页面壳；详见 Runtime 插件模块设计。 |
 | 任务编排插件模块 | 已实现：微信普通正文的开发实现与 ZIP | Chub 保留入口认证、路由、幂等、主任务投递、通知与最终状态；当前不扩展到其他业务入口。 |
-| 工作台业务模块 | 已实现基础宿主：首个固定开发模块为 Deliveryline | Chub 提供固定页面分区、统一导入/移除/启用/禁用与首页投影；当前为空页面，不创建业务数据、交付流程或受控能力调用。 |
+| 工作台业务模块 | 已实现首个业务阶段：Deliveryline | Chub 提供固定页面分区、统一导入/移除/启用/禁用、首页投影，以及“需求提出”的共享档案创建、编辑、归档和评审前校验；不提供后续业务阶段或受控能力调用。 |
 
 插件模块按当前业务范围使用 Chub 能力；模块故障、未安装或停用不得阻塞 Chub 核心、其他模块或无关服务。Chub 不为普通调用设置逐项审批或额外全局门禁，但模块不能通过能力目录获得任意命令、路径、Runtime、Worker、外部通道、收件人或凭据。
 
@@ -191,7 +193,7 @@ chmod 600 \
 | --- | --- |
 | `chub` / `check` / `usage` | 分别只读查询 Chub 摘要、核心服务维护检查与详细完整额度 |
 | `help`、`model help`、`text help`、`session help`、`request help`、`system help` | 无参数显示紧凑索引；带主题时只显示该类的完整语法；均不附加状态尾部 |
-| `text [mode [direct\|auto\|confirm]\|list\|ok\|next\|cancel]`、`text model list`、`text model level [M#]`、`text model use M# \| L# \| M# L#` / `text-check <English>` | 查询或调整微信后续正文处理方式、翻译任务默认模型和等级，或以英文复述确认队头 |
+| `text [mode [direct\|auto\|confirm]\|list\|ok\|next\|cancel]`、`text model list`、`text model level [M#]`、`text model use M#` / `text-check <English>` | 查询或调整微信后续正文处理方式、翻译任务专属模型，或以英文复述确认队头；任务专属推理等级在设置页维护 |
 | `model` / `model list` / `model level [M#]` / `model use M# \| L# \| M# L#` | 查询或配置当前 Session 后续任务的模型与推理等级 |
 | `sync` / `new [title]` / `rename <title>` / `retry` | 同步当前已允许工作区中的 Session 槽位；创建或重命名当前 Session，或提交待续提任务 |
 | `S# [task]` | 选择目标 Session；有正文时切换后提交任务 |
@@ -222,7 +224,7 @@ chmod 600 \
 - `model list` 是精确无参数指令；它显示当前 Session 为下一任务配置的模型，并以 `M1`…列出 Runtime 模型目录中当前可用的模型 ID。列表用于帮助选择，但不是后续切换的前置步骤；目录或当前模型无法确认时失败关闭，不返回残缺列表。
 - `model level` 可不带参数，或携带 `M#`。无参数时显示当前 Session 为下一任务配置的模型、当前等级及该模型的 `L1`…列表；带 `M#` 时按本次请求读取的当前 Runtime 目录选择目标模型，并只显示其 `L#` 列表而不切换。无需先执行 `model list`；索引、目录、模型、当前等级或等级列表无法确认时失败关闭。
 - `model use M# | L# | M# L#` 是精确参数指令。每次请求直接读取当前 Runtime 模型目录解析索引，无需先执行 `model list` 或 `model level`：仅模型时使用目标模型声明的默认等级；仅等级时保持当前模型；二者同时提供时，`L#` 按该目标模型本次可用等级列表解析并原子保存。切换任意时刻都只影响后续任务，不改变已经受理、排队或运行任务的配置快照；成功回执显示实际保存的下一任务模型和等级。目录可能在两次消息之间变化，因此回执是最终选择依据；目录、索引、兼容性或保存结果不能确认时失败关闭，不部分更新、不猜测且不接受原始模型或等级 ID。
-- `text` 是翻译处理方式的综合只读入口，返回当前 mode、下一次翻译实际使用的 model/level 和当前可操作确认项；`text model list`、`text model level [M#]` 和 `text model use M# | L# | M# L#` 使用同一组 `M#`/`L#` 语法，分别用于选择和切换翻译任务默认配置。读取设置页保存的翻译模型和等级，或读取当前 Runtime 目录展示可用选择；仅等级切换要求已有翻译模型，模型切换默认使用目标模型声明的默认等级。切换只保存下一次翻译任务提交时携带的模型和等级，不读取、切换或门禁隐藏翻译 Session，也不修改已进入队列或已运行任务；未选择模型和等级时继续跟随 Runtime 默认，但展示具体解析结果。目录、索引、兼容性或保存结果无法确认时失败关闭，不部分更新、不猜测且不接受原始模型或等级 ID。
+- `text` 是翻译处理方式的综合只读入口，返回当前 mode、下一次翻译实际使用的 model/level 和当前可操作确认项；`text model list`、`text model level [M#]` 用于查看 Runtime 目录，`text model use M#` 调整微信润色专属模型；若当前等级不被目标模型支持，同时切换为该模型的默认等级。任务专属推理等级也可在设置页维护。微信润色不继承会话默认配置。切换只影响下一次翻译任务的模型快照，不读取、切换或门禁隐藏翻译 Session，也不修改已进入队列或已运行任务。目录、索引、兼容性或保存结果无法确认时失败关闭，不部分更新、不猜测且不接受原始模型或等级 ID。
 - `help`、`model help`、`text help`、`session help`、`request help` 和 `system help` 是精确帮助指令。顶层帮助只显示符号说明、常用指令和主题入口；主题帮助只展示本类完整语法。旧的 `help <topic>` 和未知帮助主题按原文作为普通任务提交。
 - 无参数指令必须整句匹配。`S#` 后的剩余内容始终作为普通任务正文；例如 `S2 retry` 是切换并提交正文 `retry`，不会触发续提指令。`new retry` 作为普通任务，不创建 Session 或续提任务。
 - 只有表内英文规范格式属于固定指令。未登记的 `sn ...`、`session ...` 形式、旧别名和旧槽位写法均作为普通任务，不猜测为固定指令。
@@ -236,7 +238,7 @@ chmod 600 \
 
 ##### Session、任务与模型
 
-- 设置页 AI Runtime 分组下的微信任务润色配置页中的翻译模型和等级是独立的翻译任务默认配置，不修改隐藏翻译 Session 的逻辑配置。保存时校验模型与等级组合；每个翻译任务在提交时快照当前配置并携带给 Native Runtime，已经进入队列的任务继续使用提交时快照，设置变化只影响之后提交的任务。未选择模型和等级时跟随 Runtime 默认。
+- 微信任务润色页持久化独立的 Runtime、模型和推理等级，首次可用时使用 Codex 与其模型目录默认组合；当前内部翻译 Session、Worker 提交与恢复固定为 Codex，Runtime 快照也因此固定为 Codex。新增 Runtime 不会自动进入微信润色执行链，必须先完成该链路的独立接入。`text model use M#` 切换模型，并仅在原等级不兼容时改用目标模型的默认等级。每个翻译任务在提交时快照模型与推理等级；已进入队列的任务继续使用提交时快照。隐藏翻译 Session 固定 `Read Only`，不继承默认权限，以确保不可信正文不能获取工具或文件访问能力。
 - 微信任务润色配置页的“显示内部翻译 Session”默认关闭。关闭时，翻译工作目录中的未关联 Native Session 不显示在工作台；开启后仅供维护查看。该开关不创建、停止、删除或改写翻译任务、Chub Session 或 Codex 原生 Session。
 - 当当前 AI Runtime 被设置页停用时，微信 ClawBot 的新任务固定回复 `Not submitted · Codex Runtime is disabled. Chub is in base mode. Enable it in Settings to submit AI tasks.`；`chub` 状态摘要在 `Issues` 中显示 `AI Runtime is disabled. Chub is in base mode.`。这不取消已受理任务，也不影响既有 Session 的维护指令。
 - 当 Quick Worker 当前不可用时，微信 ClawBot 的 `new` 和普通任务固定回复 `Not submitted · Quick Worker is unavailable. Try again later.`；维护恢复指令仍按各自契约可用。
@@ -247,7 +249,7 @@ chmod 600 \
 ##### 文本处理与确认
 
 - 设置页 AI Runtime 分组下的微信任务润色配置页只影响之后新接收的正文任务：`直接执行`直接提交；`自动润色后执行`在独立只读 Session 生成中文润色和 English 后，自动提交润色后的中文；`自动润色后确认执行`生成同一份结果后进入确认队列。普通任务以及携带正文的 `S1`–`S9` 在正文不超过 `translation_preprocess_max_input_chars`（默认 1200 字符）时遵循该快照；超过阈值直接提交原正文，不润色、不翻译、不进入确认队列，以保持同步确认回复有界。其他固定指令和续提指令仍绕过文本优化。旧布尔配置 `translation_enabled=false/true` 分别等价于 `direct/auto`。
-- `text` 与设置页 AI Runtime 分组下的微信任务润色配置页读取、保存同一个节点级处理方式：`text` 按 `Text`、`Mode · <mode>`、`Model · <model> · <level>`、`Current confirmation` 的顺序返回当前状态；其中 `text` 返回目标 Session、完整 `Polished` 正文和完整 `English`，不使用摘要。`text mode direct|auto|confirm` 立即保存并只影响之后新接收的正文。`text list` 显示完整正文处理流水：当前可操作确认队头以 `Confirming` 固定在最上方，其余已润色待轮到的确认项为 `Waiting confirmation`，仍在排队或翻译中的项目为 `Optimizing`；已确认但目标暂忙的项目显示为 `Waiting target`。每项返回统一格式的目标 Session 行 `[▶ ]S<槽位> · [<工作区>] <标题>` 与下一行 `Task · <受限正文摘要>`，目标已不可用时显示 `Session · Unavailable`。已经在润色、确认或等待目标可写的项目继续按创建时快照完成。`text` 控制指令及 `text-check` 参数错误只返回用法而不作为普通任务提交。
+- `text` 与设置页 AI Runtime 分组下的微信任务润色配置页读取、保存同一个节点级处理方式：`text` 按 `Text`、`Mode · <mode>`、`Model · <model> · <level>`、`Current confirmation` 的顺序返回当前状态；模型和等级只读取微信任务润色独立配置，不回退会话或 Runtime 通用默认。首次可用时固定模型目录默认组合，配置缺失或目录不可用时失败关闭。其中 `text` 返回目标 Session、完整 `Polished` 正文和完整 `English`，不使用摘要。`text mode direct|auto|confirm` 立即保存并只影响之后新接收的正文。`text list` 显示完整正文处理流水：当前可操作确认队头以 `Confirming` 固定在最上方，其余已润色待轮到的确认项为 `Waiting confirmation`，仍在排队或翻译中的项目为 `Optimizing`；已确认但目标暂忙的项目显示为 `Waiting target`。每项返回统一格式的目标 Session 行 `[▶ ]S<槽位> · [<工作区>] <标题>` 与下一行 `Task · <受限正文摘要>`，目标已不可用时显示 `Session · Unavailable`。已经在润色、确认或等待目标可写的项目继续按创建时快照完成。`text` 控制指令及 `text-check` 参数错误只返回用法而不作为普通任务提交。
 - 确认模式下，翻译 FIFO 不等待用户操作；完成的译文按翻译完成顺序进入独立确认 FIFO。仅当队头的 `Translation ready` 通知已经成功送达时，文字消息才可使用 `text ok`（提交润色中文）、`text cancel`（丢弃）、`text next`（移至确认队尾）或 `text-check <完整英文复述>`。英文比较忽略大小写、空白和常见标点，词级相似度达到 90% 即提交润色中文；未达到时保留队头并提示重试。没有已送达的待确认队头时，这些确认指令明确回复没有待确认正文；确认、取消或过期均不会提交原文；待确认项 24 小时后失效。
 - `text cancel` 与 `text next` 的同步回复先说明本次取消或后移结果，再附加更新后的 `text list` 正文处理流水；队头由此变化后，列表首项就是下一条可操作或待送达确认。
 - 翻译完成后目标暂忙时，自动执行正文与已确认正文都保留固定目标，待该目标可安全写入后自动重试；自动执行视为已确认，不得改投其他 Session，也不会要求再次英文复述。

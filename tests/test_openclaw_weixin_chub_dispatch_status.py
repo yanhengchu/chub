@@ -181,8 +181,8 @@ def test_text_model_status_is_included_in_the_text_summary(
     translation_manager = MagicMock()
     translation_manager.status.return_value = SimpleNamespace(
         mode="confirm",
-        model=None,
-        reasoning_effort=None,
+        model="translation-model",
+        reasoning_effort="medium",
     )
     translation_manager.active_confirmation.return_value = None
     manager.translation_manager = translation_manager
@@ -206,6 +206,37 @@ def test_text_model_status_is_included_in_the_text_summary(
     translation_manager.status.assert_called_once_with()
     codex_manager.read_model_catalog.assert_called_once_with()
     quick_interactions.update_session_model.assert_not_called()
+
+
+def test_text_uses_task_reasoning_before_session_default(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    translation_manager = MagicMock()
+    translation_manager.status.return_value = SimpleNamespace(
+        mode="auto",
+        model="translation-model",
+        reasoning_effort="low",
+    )
+    translation_manager.active_confirmation.return_value = None
+    manager.translation_manager = translation_manager
+    codex_manager.read_model_catalog.return_value = _text_model_catalog()
+
+    result = manager.dispatch(
+        message_id="text-task-reasoning",
+        prompt="text",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == (
+        "Text\n\n"
+        "Mode · Automatic polish and submit\n\n"
+        "Model · translation-model · low\n\n"
+        "Current confirmation: None."
+    )
 
 
 def test_text_fails_closed_when_the_default_model_cannot_be_resolved(
@@ -246,6 +277,101 @@ def test_text_fails_closed_when_the_default_model_cannot_be_resolved(
     assert statuses == ["requested", "started", "failed"]
 
 
+def test_text_model_list_fails_closed_without_a_task_specific_model(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    translation_manager = MagicMock()
+    translation_manager.status.return_value = SimpleNamespace(
+        model=None,
+        reasoning_effort=None,
+    )
+    manager.translation_manager = translation_manager
+    codex_manager.read_model_catalog.return_value = _text_model_catalog()
+
+    result = manager.dispatch(
+        message_id="text-model-list-unavailable",
+        prompt="text model list",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == (
+        "Text model list: Unavailable. The translation configuration could not be read."
+    )
+
+
+def test_text_model_list_fails_closed_when_the_configured_level_is_no_longer_supported(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    translation_manager = MagicMock()
+    translation_manager.status.return_value = SimpleNamespace(
+        model="translation-model",
+        reasoning_effort="high",
+    )
+    manager.translation_manager = translation_manager
+    codex_manager.read_model_catalog.return_value = _text_model_catalog()
+    codex_manager.validate_model.side_effect = ApiError(
+        422,
+        "invalid_model_reasoning_effort",
+        "The model does not support the selected reasoning level.",
+    )
+
+    result = manager.dispatch(
+        message_id="text-model-list-level-unavailable",
+        prompt="text model list",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == (
+        "Text model list: Unavailable. The translation configuration could not be read."
+    )
+    assert codex_manager.validate_model.call_args_list[-1].args == (
+        "translation-model",
+        "high",
+    )
+
+
+def test_text_fails_closed_when_the_configured_level_is_no_longer_supported(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    translation_manager = MagicMock()
+    translation_manager.status.return_value = SimpleNamespace(
+        mode="confirm",
+        model="translation-model",
+        reasoning_effort="high",
+    )
+    manager.translation_manager = translation_manager
+    codex_manager.read_model_catalog.return_value = _text_model_catalog()
+    codex_manager.validate_model.side_effect = ApiError(
+        422,
+        "invalid_model_reasoning_effort",
+        "The model does not support the selected reasoning level.",
+    )
+
+    result = manager.dispatch(
+        message_id="text-model-level-unavailable",
+        prompt="text",
+        message_type="text",
+        correlation_id=None,
+        source_ip="100.64.0.21",
+        delivery_route=delivery_route(),
+    )
+
+    assert result.message == "Text: Model and level are unavailable."
+    assert codex_manager.validate_model.call_args_list[-1].args == (
+        "translation-model",
+        "high",
+    )
+
+
 def test_text_model_list_and_levels_use_the_current_translation_defaults(
     settings: Settings,
 ) -> None:
@@ -254,6 +380,10 @@ def test_text_model_list_and_levels_use_the_current_translation_defaults(
     translation_manager.status.return_value = SimpleNamespace(
         model="translation-model",
         reasoning_effort="medium",
+    )
+    translation_manager.set_model.return_value = SimpleNamespace(
+        model="other-model",
+        reasoning_effort="high",
     )
     manager.translation_manager = translation_manager
     codex_manager.read_model_catalog.return_value = _text_model_catalog()
@@ -317,12 +447,16 @@ def test_text_model_use_updates_translation_defaults_only_for_future_tasks(
         model="translation-model",
         reasoning_effort="medium",
     )
+    translation_manager.set_model.return_value = SimpleNamespace(
+        model="other-model",
+        reasoning_effort="high",
+    )
     manager.translation_manager = translation_manager
     codex_manager.read_model_catalog.return_value = _text_model_catalog()
 
     result = manager.dispatch(
         message_id="text-model-use",
-        prompt="text model use M2 L2",
+        prompt="text model use M2",
         message_type="text",
         correlation_id=None,
         source_ip="100.64.0.21",
@@ -334,7 +468,7 @@ def test_text_model_use_updates_translation_defaults_only_for_future_tasks(
         "Next model · other-model\n\n"
         "Next level · high"
     )
-    translation_manager.set_model.assert_called_once_with("other-model", "high")
+    translation_manager.set_model.assert_called_once_with("other-model")
     quick_interactions.update_session_model.assert_not_called()
 
 
@@ -359,10 +493,7 @@ def test_text_model_use_level_requires_a_configured_translation_model(
         delivery_route=delivery_route(),
     )
 
-    assert result.message == (
-        "Text model update: No translation model is configured. "
-        "Select a model with M#."
-    )
+    assert result.message == "Text model update: Usage · text model use M#."
     translation_manager.set_model.assert_not_called()
     quick_interactions.update_session_model.assert_not_called()
 
@@ -370,7 +501,7 @@ def test_text_model_use_level_requires_a_configured_translation_model(
 def test_text_returns_current_mode_and_actionable_confirmation(
     settings: Settings,
 ) -> None:
-    manager, _codex_manager, quick_interactions = configured_manager(settings)
+    manager, codex_manager, quick_interactions = configured_manager(settings)
     manager._state.session_slots = [
         WeixinChubModeSessionSlot(slot=1, session_id="session-1")
     ]
@@ -388,6 +519,7 @@ def test_text_returns_current_mode_and_actionable_confirmation(
         english="Please confirm the complete English wording.",
     )
     manager.translation_manager = translation_manager
+    codex_manager.read_model_catalog.return_value = _text_model_catalog()
 
     result = manager.dispatch(
         message_id="text-current-confirmation",
@@ -427,7 +559,7 @@ def test_text_mode_invalid_usage_never_submits_a_task(settings: Settings) -> Non
         "Text: Usage · text [mode [direct|auto|confirm]|list|ok|next|cancel]\n\n"
         "text model list\n\n"
         "text model level [M#]\n\n"
-        "text model use M# | L# | M# L#\n\n"
+        "text model use M#\n\n"
         "text-check <English>"
     )
     quick_interactions.submit.assert_not_called()
@@ -698,7 +830,7 @@ def test_removed_status_aliases_are_submitted_as_normal_tasks(
             "text list\n\n"
             "text model list\n\n"
             "text model level [M#]\n\n"
-            "text model use M# | L# | M# L#\n\n"
+            "text model use M#\n\n"
             "text ok | text next | text cancel\n\n"
             "text-check <English>",
         ),

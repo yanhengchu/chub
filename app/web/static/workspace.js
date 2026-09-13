@@ -33,10 +33,12 @@
     workbench: "正在读取工作台状态…",
     automations: "正在读取自动化状态…",
     "project-docs": "正在读取项目资料…",
+    deliveryline: "正在读取 Deliveryline 状态…",
   };
   const sectionToolbarLoadedStatus = {
     automations: "自动化已加载",
     "project-docs": "项目资料已加载",
+    deliveryline: "Deliveryline 已加载",
   };
   const toolbarLoadingMinimumMs = 220;
   let toolbarTransitionId = 0;
@@ -228,6 +230,7 @@
       });
       window.initializeWorkspaceAutomationControls?.();
       window.initializeWorkspaceWorkstation?.();
+      window.initializeWorkspaceDeliveryline?.();
       finishSectionToolbarLoading(targetSection);
       if (compactViewport.matches) closeMobileSidebar({ restoreHistory: false });
     } catch {
@@ -1064,6 +1067,7 @@
 
   };
   window.initializeWorkspaceAutomationControls();
+  window.initializeWorkspaceDeliveryline?.();
 
   const clampSidebarWidth = (value) => Math.min(
     maximumSidebarWidth,

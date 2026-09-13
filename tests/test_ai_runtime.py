@@ -988,7 +988,7 @@ def test_codex_runtime_usage_uses_default_timezone_despite_legacy_general_settin
     )
     adapter = CodexRuntimeAdapter(settings, runtime_settings_store=store)
 
-    assert store.read_general().weekly_report_session.runtime_id == "codex"
+    assert store.read_general().default_runtime_id == "codex"
     assert adapter._read_usage_settings().timezone == "Asia/Shanghai"
 
 

@@ -126,7 +126,16 @@ def test_weekly_report_focus_confirmation_requires_current_checklist_and_manifes
 ) -> None:
     monkeypatch.setattr(service, "WEEKLY_REPORTS_ROOT", tmp_path)
     period = "2026-07-27至2026-08-02"
-    checklist = _write_report(tmp_path, period, "focus", "## 维护者确认结果\n")
+    checklist = _write_report(
+        tmp_path,
+        period,
+        "focus",
+        "## 维护者确认结果\n\n"
+        "- 状态：已确认。\n"
+        "- 确认时间：2026-08-03T10:00:00+08:00。\n"
+        "- 最终决定：纳入重点\n"
+        "- 批准缺口：无。\n",
+    )
     (tmp_path / period / "manifest.json").write_text(
         json.dumps({"fingerprint": "manifest-fingerprint"}), encoding="utf-8"
     )
@@ -137,6 +146,7 @@ def test_weekly_report_focus_confirmation_requires_current_checklist_and_manifes
                 "confirmed_at": "2026-08-03T10:00:00+08:00",
                 "manifest_fingerprint": "manifest-fingerprint",
                 "decisions": ["纳入重点"],
+                "approved_gaps": [],
                 "checklist": {
                     "path": checklist.name,
                     "sha256": hashlib.sha256(checklist.read_bytes()).hexdigest(),
@@ -171,7 +181,15 @@ def test_maintainer_confirmation_writes_current_confirmation_record(
     )
     assert confirmation["status"] == "confirmed"
     assert confirmation["decisions"] == ["维护者已确认按当前工作重点确认清单生成正式周报。"]
+    checklist = tmp_path / period / "output" / f"本期工作重点确认清单-{period}.md"
+    checklist_text = checklist.read_text(encoding="utf-8")
+    assert "- 状态：已确认。" in checklist_text
+    assert f"- 确认时间：{confirmation['confirmed_at']}。" in checklist_text
+    assert "- 最终决定：维护者已确认按当前工作重点确认清单生成正式周报。" in checklist_text
     assert service.weekly_report_focus_confirmed(period) is True
+
+    checklist.write_text(checklist_text.replace("状态：已确认", "状态：待维护者确认"), encoding="utf-8")
+    assert service.weekly_report_focus_confirmed(period) is False
 
 
 def test_weekly_report_confirmation_requires_configured_checklist_sections(
@@ -287,6 +305,28 @@ def test_weekly_report_detail_renders_sanitized_markdown(
     assert "javascript:" not in report.html
     assert service.get_weekly_report("../../etc", "focus") is None
     assert service.get_weekly_report("2026-07-27至2026-07-31", "unknown") is None
+
+
+def test_weekly_report_templates_are_fixed_and_rendered() -> None:
+    focus = service.get_weekly_report_template("focus")
+    report = service.get_weekly_report_template("report")
+
+    assert focus is not None
+    assert focus.title == "重点事项确认清单模板"
+    assert "本周需要同步的事项" in (focus.html or "")
+    assert report is not None
+    assert report.title == "正式周报模板"
+    assert "业务关键指标" in (report.html or "")
+    assert "大盘数据表现" in (report.html or "")
+    assert "本期结束后下一周周一日期" in (report.html or "")
+    assert "阶段与月度 DAU 均值" in (report.html or "")
+    assert "白牌迁移推进" in (report.html or "")
+    assert "来源标题" in (report.html or "")
+    assert "source_url" in (report.html or "")
+    assert "可比统计周期" in (report.html or "")
+    assert "实际值；未确认时为" in (report.html or "")
+    assert "迁移范围" in (report.html or "")
+    assert service.get_weekly_report_template("../../etc") is None
 
 
 def test_weekly_report_detail_rejects_oversized_file(

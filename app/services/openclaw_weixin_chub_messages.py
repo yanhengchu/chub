@@ -48,7 +48,7 @@ CHUB_HELP_TOPICS = {
             "text list",
             "text model list",
             "text model level [M#]",
-            "text model use M# | L# | M# L#",
+            "text model use M#",
             "text ok | text next | text cancel",
             "text-check <English>",
         )

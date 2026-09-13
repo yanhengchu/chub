@@ -189,7 +189,7 @@ async def test_general_runtime_settings_reject_removed_usage_timezone(
 
 
 @pytest.mark.anyio
-async def test_general_runtime_settings_save_weekly_report_session_defaults(
+async def test_general_runtime_settings_save_session_defaults(
     settings: Settings,
     tmp_path,
 ) -> None:
@@ -213,69 +213,34 @@ async def test_general_runtime_settings_save_weekly_report_session_defaults(
             "/api/ai/settings",
             json={
                 "values": {
-                    "new-session-permission": "read-only",
-                    "weekly-report-runtime": "codex",
-                    "weekly-report-permission": "auto-review",
-                    "weekly-report-model": "__default__",
-                    "weekly-report-reasoning": "__default__",
+                    "session-default-runtime": "codex",
+                    "session-default-permission": "auto-review",
+                    "session-default-model": "__default__",
+                    "session-default-reasoning": "__default__",
                 }
             },
         )
 
     assert response.status_code == 200
     sections = response.json()["data"]["sections"]
-    assert sections[0]["id"] == "new-session-defaults"
-    assert sections[0]["fields"][0]["id"] == "new-session-permission"
-    assert sections[0]["fields"][0]["value"] == "read-only"
-    section = sections[1]
-    assert section["id"] == "weekly-report-session"
+    assert len(sections) == 1
+    section = sections[0]
+    assert section["id"] == "session-defaults"
     assert {field["id"] for field in section["fields"]} == {
-        "weekly-report-runtime",
-        "weekly-report-permission",
-        "weekly-report-model",
-        "weekly-report-reasoning",
+        "session-default-runtime",
+        "session-default-permission",
+        "session-default-model",
+        "session-default-reasoning",
     }
-    saved = store.read_general().weekly_report_session
-    assert store.read_general().new_session_permission == "read-only"
-    assert saved.permission_mode == "auto-review"
+    saved = store.read_general()
+    assert saved.default_runtime_id == "codex"
+    assert saved.new_session_permission == "auto-review"
     assert saved.model is None
     assert saved.reasoning_effort is None
 
 
 @pytest.mark.anyio
-async def test_general_runtime_settings_hide_and_reject_weekly_runtime_when_unimported(
-    settings: Settings,
-    tmp_path,
-) -> None:
-    app = create_app(settings)
-    app.state.ai_session_manager.runtime_settings_store = AiRuntimeSettingsStore(
-        tmp_path / "ai-runtimes.local.yaml"
-    )
-    transport = httpx.ASGITransport(app=app)
-
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        listed = await client.get("/api/ai/settings")
-        saved = await client.put(
-            "/api/ai/settings",
-            json={
-                "values": {
-                    "new-session-permission": "read-only",
-                    "weekly-report-runtime": "codex",
-                    "weekly-report-permission": "auto-review",
-                    "weekly-report-model": "__default__",
-                    "weekly-report-reasoning": "__default__",
-                }
-            },
-        )
-
-    weekly = listed.json()["data"]["sections"][1]
-    assert weekly["fields"] == []
-    assert saved.status_code == 409
-    assert saved.json()["error"]["code"] == "weekly_report_runtime_unavailable"
-
-
-@pytest.mark.anyio
-async def test_general_runtime_settings_keep_weekly_session_controls_with_development_plugin(
+async def test_general_runtime_settings_keep_session_defaults_with_development_plugin(
     settings: Settings,
 ) -> None:
     app = create_app(settings)
@@ -299,13 +264,13 @@ async def test_general_runtime_settings_keep_weekly_session_controls_with_develo
         response = await client.get("/api/ai/settings")
 
     assert response.status_code == 200
-    section = response.json()["data"]["sections"][1]
-    assert section["id"] == "weekly-report-session"
+    section = response.json()["data"]["sections"][0]
+    assert section["id"] == "session-defaults"
     assert {field["id"] for field in section["fields"]} == {
-        "weekly-report-runtime",
-        "weekly-report-permission",
-        "weekly-report-model",
-        "weekly-report-reasoning",
+        "session-default-runtime",
+        "session-default-permission",
+        "session-default-model",
+        "session-default-reasoning",
     }
 
 
