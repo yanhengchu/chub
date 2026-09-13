@@ -64,7 +64,7 @@ def service_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
         encoding="utf-8",
     )
 
-    for command in ("launchctl", "systemctl"):
+    for command in ("journalctl", "launchctl", "systemctl"):
         executable = fake_bin / command
         executable.write_text(
             (
@@ -153,6 +153,44 @@ def test_web_restart_uses_atomic_service_manager_restart(
     manager_calls = calls.read_text(encoding="utf-8")
     assert manager_call in manager_calls
     assert "quick-worker" not in manager_calls
+
+
+@pytest.mark.parametrize("platform", ["Darwin", "Linux"])
+def test_upgrade_logs_uses_the_platform_log_source(
+    service_env: tuple[dict[str, str], Path],
+    platform: str,
+) -> None:
+    env, calls = service_env
+    env["CHUB_TEST_PLATFORM"] = platform
+    if platform == "Darwin":
+        log_dir = Path(env["CHUB_SERVICE_LOG_DIR"])
+        log_dir.mkdir()
+        (log_dir / "system-upgrade.out.log").write_text(
+            "upgrade log entry\n", encoding="utf-8"
+        )
+        process = subprocess.Popen(
+            ["bash", env["CHUB_TEST_SCRIPT"], "upgrade", "logs"],
+            cwd=Path(env["CHUB_TEST_ROOT"]),
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        try:
+            assert process.stdout is not None
+            assert process.stdout.readline().strip() == "upgrade log entry"
+        finally:
+            os.killpg(process.pid, signal.SIGTERM)
+            process.wait(timeout=5)
+        assert not calls.exists() or "journalctl" not in calls.read_text(encoding="utf-8")
+        return
+
+    result = run_chub("upgrade", env, "logs")
+    assert result.returncode == 0, result.stderr
+    assert "journalctl --user -u chub-system-upgrade.service -n 100 -f" in (
+        calls.read_text(encoding="utf-8")
+    )
 
 
 def test_web_restart_is_deferred_inside_quick_interaction(

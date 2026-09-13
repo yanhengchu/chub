@@ -539,6 +539,24 @@ def test_session_manager_pins_new_sessions_to_the_default_implementation(
     assert manager.get_session(second.id).implementation_id == "codex-010000"
 
 
+def test_session_implementation_compatibility_requires_enabled_plugin_lifecycle(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    session = manager.create_session("chub", permission_mode="full-access")
+    manager.set_runtime_plugin_lifecycle_state_reader(
+        lambda _implementation_id: (True, False)
+    )
+
+    with pytest.raises(ApiError) as rejected:
+        manager.ensure_session_implementation_compatible(
+            session.id,
+            "builtin-dev",
+        )
+
+    assert rejected.value.code == "runtime_plugin_disabled"
+
+
 def test_session_manager_uses_configured_extra_workspace(
     settings: Settings,
     tmp_path: Path,
@@ -734,7 +752,7 @@ def test_native_discovery_keeps_session_when_passive_cleanup_is_unconfirmed(
 
 
 @pytest.mark.anyio
-async def test_application_lifespan_starts_with_development_plugin_when_no_formal_version_is_installed(
+async def test_application_lifespan_requires_development_plugin_to_be_imported_and_enabled(
     settings: Settings,
 ) -> None:
     service = RuntimePluginService(settings)
@@ -745,8 +763,8 @@ async def test_application_lifespan_starts_with_development_plugin_when_no_forma
     async with application.router.lifespan_context(application):
         available, reason = application.state.ai_session_manager.submission_available()
 
-    assert available is True
-    assert reason is None
+    assert available is False
+    assert reason == "当前 Runtime 插件尚未导入，无法提交新的 AI 任务。"
 
 
 @pytest.mark.anyio

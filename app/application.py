@@ -431,6 +431,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ai_session_manager,
         weixin_chub_mode,
     )
+    ai_session_manager.set_runtime_plugin_lifecycle_state_reader(
+        plugin_lifecycle.codex_runtime_implementation_lifecycle_state
+    )
     weixin_translation.set_completion_handler(
         weixin_chub_mode.complete_optimized_task
     )

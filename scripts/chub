@@ -1504,6 +1504,11 @@ quick_worker_recover() {
 show_logs() {
     local component="${1:-web}" log_file
     [[ "$#" -le 1 ]] || fail "usage: chub <web|worker|upgrade> logs"
+    if [[ "$component" == "upgrade" && "$(platform_name)" == "ubuntu" ]]; then
+        command -v journalctl >/dev/null 2>&1 \
+            || fail "journalctl is unavailable; cannot read the system upgrade log"
+        exec journalctl --user -u "$SYSTEM_UPGRADE_SERVICE_NAME.service" -n 100 -f
+    fi
     case "$component" in
         web)
             log_file="$(configured_value log_file 2>/dev/null)" \

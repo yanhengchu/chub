@@ -168,6 +168,12 @@ class AiSessionManager:
         self._quick_interaction_is_running: Callable[[str], bool] = lambda _id: False
         self._passive_session_cleanup: Callable[[str], bool] = lambda _id: True
         self._system_upgrade_writes_blocked: Callable[[], bool] = lambda: False
+        # The plugin lifecycle service is composed after this manager.  Keep the
+        # standalone manager usable in focused tests, then let the application
+        # install the authoritative import/enablement reader.
+        self._runtime_plugin_lifecycle_state: Callable[[str], tuple[bool, bool]] = (
+            lambda _implementation_id: (True, True)
+        )
         self.refresh_runtime_plugins()
     def install_runtime_plugin(
         self,
@@ -383,6 +389,23 @@ class AiSessionManager:
                 "ai_runtime_disabled",
                 "当前 AI Runtime 已停用，无法提交新的 AI 任务。",
             )
+        self.require_implementation_lifecycle_available(implementation_id)
+
+    def set_runtime_plugin_lifecycle_state_reader(
+        self,
+        reader: Callable[[str], tuple[bool, bool]],
+    ) -> None:
+        """Install the lifecycle-owned import and enablement state reader."""
+        self._runtime_plugin_lifecycle_state = reader
+
+    def require_implementation_lifecycle_available(
+        self, implementation_id: str
+    ) -> None:
+        imported, enabled = self._runtime_plugin_lifecycle_state(implementation_id)
+        if not imported:
+            raise ApiError(409, "runtime_plugin_not_imported", "当前 Runtime 插件尚未导入，无法使用。")
+        if not enabled:
+            raise ApiError(409, "runtime_plugin_disabled", "当前 Runtime 插件已停用，无法使用。")
         self.require_implementation_available(implementation_id)
 
     def require_implementation_available(self, implementation_id: str) -> None:
@@ -438,6 +461,7 @@ class AiSessionManager:
             adapter = self.runtime_adapters.get(implementation_id)
             status = adapter.status() if adapter is not None else None
             manifest = manifests.get(implementation_id)
+            imported, lifecycle_enabled = self._runtime_plugin_lifecycle_state(implementation_id)
             items.append(
                 RuntimeImplementationItem(
                     implementation_id=implementation_id,
@@ -448,8 +472,12 @@ class AiSessionManager:
                         if manifest is not None
                         else module.description
                     ),
-                    imported=True,
-                    enabled=implementation_id not in preferences.disabled_implementation_ids,
+                    imported=imported,
+                    enabled=(
+                        imported
+                        and lifecycle_enabled
+                        and implementation_id not in preferences.disabled_implementation_ids
+                    ),
                     healthy=status is not None and status.available,
                     is_default=implementation_id == self.default_implementation_id,
                     compatibility_id=(
@@ -502,7 +530,7 @@ class AiSessionManager:
 
     def update_default_implementation(self, implementation_id: str) -> RuntimeImplementationData:
         with self._lock:
-            self.require_implementation_available(implementation_id)
+            self.require_implementation_lifecycle_available(implementation_id)
             previous_id = self.default_implementation_id
             previous_adapter = self.runtime_adapter
             preferences = self.runtime_implementation_preferences.read()
@@ -558,6 +586,12 @@ class AiSessionManager:
             ) from exc
         runtimes: list[RuntimeManagementItem] = []
         for runtime_id in self.runtime_plugins.runtime_ids():
+            implementation_ids = self.runtime_plugins.implementation_ids(runtime_id)
+            if not any(
+                self._runtime_plugin_lifecycle_state(implementation_id)[0]
+                for implementation_id in implementation_ids
+            ):
+                continue
             implementation_id = (
                 self.default_implementation_id
                 if runtime_id == self.runtime_id
@@ -570,11 +604,20 @@ class AiSessionManager:
             )
             status = adapter.status() if adapter is not None else None
             navigation_id = implementation_id or runtime_id
+            imported, lifecycle_enabled = (
+                self._runtime_plugin_lifecycle_state(implementation_id)
+                if implementation_id is not None
+                else (False, False)
+            )
             runtimes.append(
                 RuntimeManagementItem(
                     runtime_id=runtime_id,
                     name=self.runtime_plugins.require_navigation(navigation_id).name,
-                    enabled=runtime_id not in disabled,
+                    enabled=(
+                        runtime_id not in disabled
+                        and imported
+                        and lifecycle_enabled
+                    ),
                     healthy=status is not None and status.available,
                     reason=None if status is None else status.reason,
                 )
@@ -604,7 +647,7 @@ class AiSessionManager:
                         "runtime_default_implementation_unavailable",
                         "默认 Codex Runtime 版本不可用。",
                     )
-                self.require_implementation_available(selected_id)
+                self.require_implementation_lifecycle_available(selected_id)
                 self.runtime_registry.require(selected_id)
                 disabled.discard(runtime_id)
             else:
@@ -1166,7 +1209,7 @@ class AiSessionManager:
                 "runtime_implementation_session_bound",
                 "该 Chub Session 已绑定其他 Runtime 版本，请新建 Session 后再使用该版本。",
             )
-        self.require_implementation_submission(implementation_id)
+        self.require_implementation_lifecycle_available(implementation_id)
         if session.native_session_id is None:
             return
         adapter = self.runtime_adapters[implementation_id]
@@ -1769,6 +1812,11 @@ class AiSessionManager:
                 "ai_runtime_disabled",
                 "当前 AI Runtime 已停用，无法提交新的 AI 任务。",
             )
+        imported, enabled = self._runtime_plugin_lifecycle_state(selected_id)
+        if not imported:
+            raise ApiError(409, "runtime_plugin_not_imported", "当前 Runtime 插件尚未导入，无法提交新的 AI 任务。")
+        if not enabled:
+            raise ApiError(409, "runtime_plugin_disabled", "当前 Runtime 插件已停用，无法提交新的 AI 任务。")
 
     def _require_store(self) -> None:
         if not self.store.available:

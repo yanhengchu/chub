@@ -69,9 +69,8 @@ async def test_codex_sessions_allow_loopback(settings: Settings) -> None:
         response = await client.get("/api/codex/sessions")
 
     assert response.status_code == 200
-    assert response.json()["data"]["runtime_groups"] == [
-        {"runtime_id": "codex", "name": "Codex"}
-    ]
+    assert response.json()["data"]["runtime_groups"] == []
+    assert response.json()["data"]["available"] is False
 
 
 @pytest.mark.anyio
@@ -80,11 +79,21 @@ async def test_disabled_runtime_keeps_sessions_and_blocks_creation(
 ) -> None:
     app = create_app(settings)
     manager = app.state.ai_session_manager
-    session = manager.create_session("chub")
-    manager.runtime_enablement.save(RuntimeEnablement(disabled_runtime_ids=["codex"]))
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        imported = await client.post(
+            "/api/plugins/codex-runtime/imports",
+            json={"artifact_id": "development:codex-runtime"},
+        )
+        enabled = await client.put(
+            "/api/plugins/codex-runtime/enabled",
+            json={"artifact_id": "development:codex-runtime", "enabled": True},
+        )
+        assert imported.status_code == 200
+        assert enabled.status_code == 200
+        session = manager.create_session("chub")
+        manager.runtime_enablement.save(RuntimeEnablement(disabled_runtime_ids=["codex"]))
         response = await client.get("/api/codex/sessions")
 
     assert response.status_code == 200

@@ -251,7 +251,6 @@ async def test_quick_worker_status_reports_disabled_runtime_without_failing_work
 ) -> None:
     app = create_app(settings)
     app.state.quick_interactions._recovery_ready = True
-    app.state.ai_session_manager.update_runtime_enabled("codex", False)
     transport = httpx.ASGITransport(app=app)
 
     with patch(
@@ -263,6 +262,17 @@ async def test_quick_worker_status_reports_disabled_runtime_without_failing_work
             base_url="http://test",
             headers=AUTHORIZATION,
         ) as client:
+            imported = await client.post(
+                "/api/plugins/codex-runtime/imports",
+                json={"artifact_id": "development:codex-runtime"},
+            )
+            enabled = await client.put(
+                "/api/plugins/codex-runtime/enabled",
+                json={"artifact_id": "development:codex-runtime", "enabled": True},
+            )
+            assert imported.status_code == 200
+            assert enabled.status_code == 200
+            app.state.ai_session_manager.update_runtime_enabled("codex", False)
             response = await client.get("/api/maintenance/quick-worker")
 
     assert response.status_code == 200

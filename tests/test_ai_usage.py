@@ -199,6 +199,16 @@ async def test_general_runtime_settings_save_weekly_report_session_defaults(
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        imported = await client.post(
+            "/api/plugins/codex-runtime/imports",
+            json={"artifact_id": "development:codex-runtime"},
+        )
+        enabled = await client.put(
+            "/api/plugins/codex-runtime/enabled",
+            json={"artifact_id": "development:codex-runtime", "enabled": True},
+        )
+        assert imported.status_code == 200
+        assert enabled.status_code == 200
         response = await client.put(
             "/api/ai/settings",
             json={
@@ -233,6 +243,38 @@ async def test_general_runtime_settings_save_weekly_report_session_defaults(
 
 
 @pytest.mark.anyio
+async def test_general_runtime_settings_hide_and_reject_weekly_runtime_when_unimported(
+    settings: Settings,
+    tmp_path,
+) -> None:
+    app = create_app(settings)
+    app.state.ai_session_manager.runtime_settings_store = AiRuntimeSettingsStore(
+        tmp_path / "ai-runtimes.local.yaml"
+    )
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        listed = await client.get("/api/ai/settings")
+        saved = await client.put(
+            "/api/ai/settings",
+            json={
+                "values": {
+                    "new-session-permission": "read-only",
+                    "weekly-report-runtime": "codex",
+                    "weekly-report-permission": "auto-review",
+                    "weekly-report-model": "__default__",
+                    "weekly-report-reasoning": "__default__",
+                }
+            },
+        )
+
+    weekly = listed.json()["data"]["sections"][1]
+    assert weekly["fields"] == []
+    assert saved.status_code == 409
+    assert saved.json()["error"]["code"] == "weekly_report_runtime_unavailable"
+
+
+@pytest.mark.anyio
 async def test_general_runtime_settings_keep_weekly_session_controls_with_development_plugin(
     settings: Settings,
 ) -> None:
@@ -244,6 +286,16 @@ async def test_general_runtime_settings_keep_weekly_session_controls_with_develo
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        imported = await client.post(
+            "/api/plugins/codex-runtime/imports",
+            json={"artifact_id": "development:codex-runtime"},
+        )
+        enabled = await client.put(
+            "/api/plugins/codex-runtime/enabled",
+            json={"artifact_id": "development:codex-runtime", "enabled": True},
+        )
+        assert imported.status_code == 200
+        assert enabled.status_code == 200
         response = await client.get("/api/ai/settings")
 
     assert response.status_code == 200
@@ -277,7 +329,7 @@ async def test_runtime_plugin_settings_failure_returns_service_unavailable(
 
 
 @pytest.mark.anyio
-async def test_ai_usage_uses_development_plugin_when_no_formal_version_is_installed(
+async def test_ai_usage_rejects_unimported_development_plugin_when_no_formal_version_is_installed(
     settings: Settings,
 ) -> None:
     service = RuntimePluginService(settings)
@@ -289,9 +341,8 @@ async def test_ai_usage_uses_development_plugin_when_no_formal_version_is_instal
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/api/ai/usage")
 
-    assert response.status_code in {200, 503}
-    if response.status_code == 503:
-        assert response.json()["error"]["code"] != "ai_runtime_unavailable"
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "runtime_plugin_not_imported"
 
 
 def test_today_usage_requires_token_scope_with_tokens() -> None:

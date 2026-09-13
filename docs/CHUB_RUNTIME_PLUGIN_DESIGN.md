@@ -21,7 +21,7 @@
 
 “插件管理”的统一生命周期管理 Runtime 的导入、移除、启用与禁用：关闭时只拒绝后续新 AI 任务，已受理任务继续按创建时快照收敛；Codex 设置页的当前使用版本仍独立决定新 Session 使用哪个已启用版本。工作台状态按导入状态、启用状态和启用版本展示，导入不等于启用或设为默认。
 
-当前生产从固定安装目录发现正式 Codex Runtime ZIP。第一方 Codex Runtime 的开发源码保留在仓库 `runtime-modules/codex-runtime/`，`builtin-dev` 直接从该目录重新加载，不复制到 ZIP 安装目录。设置页可设置一个健康且启用的默认实现；它只决定之后新建 Chub Session 的实现。Session 创建时立即保存固定槽位，Quick Worker、微信、自动化和周报等后续任务均从 Session 读取该槽位，页面、外部指令和请求正文均不提供 `implementation_id`。清单字段保留通用 `runtime_id` 是为后续独立接入做准备，不构成当前第二 Runtime 的安装或维护能力。
+当前生产从固定安装目录发现正式 Codex Runtime ZIP。第一方 Codex Runtime 的开发源码保留在仓库 `runtime-modules/codex-runtime/`，`builtin-dev` 直接从该目录重新加载，不复制到 ZIP 安装目录。源码可被加载以供受控维护，但 Runtime 对首页、设置和新任务的“可用”判定必须同时满足：对应制品已导入、已启用且 Adapter 健康；未导入或已停用的开发源码不得仅因已加载而显示或作为可提交 Runtime。所有 Runtime 启用、版本启用和默认版本写入也必须遵守同一条件，不能以旧 API 绕过统一插件生命周期。设置页可设置一个健康且启用的默认实现；它只决定之后新建 Chub Session 的实现。Session 创建时立即保存固定槽位，Quick Worker、微信、自动化和周报等后续任务均从 Session 读取该槽位，页面、外部指令和请求正文均不提供 `implementation_id`。清单字段保留通用 `runtime_id` 是为后续独立接入做准备，不构成当前第二 Runtime 的安装或维护能力。
 
 设置页的“插件管理”固定呈现 Runtime、任务编排和业务插件的统一生命周期列表。Runtime ZIP 写入固定制品目录后由插件管理预检、导入或覆盖并登记为已导入；是否用于新任务由同一列表的启用状态和 Codex 设置页的当前使用版本共同决定。固定开发实现随当前部署提供，移除只影响之后的新 Session/任务，不删除源码或改写既有快照。插件管理列表与工作台都保留已导入但停用的实现，并展示导入、启用和可用状态；导入不等于启用或设为默认。不可用制品不得启用，但仍保留恢复或移除入口。插件实现的可见名称统一为“`<能力名称> · 开发实现`”或“`<能力名称> · 正式版 v<版本号>`”：开发实现不展示内部引用，正式实现必须展示清单版本；插件库存仍使用清单 `display_name` 作为能力名称。`builtin-dev`、`implementation_id`、`development_ref` 和 `implementation_ref` 仅用于后端绑定、快照和日志，不作为用户可见名称，也不能因文案调整而改变。导入覆盖和“刷新开发代码”只检查目标槽位的排队或运行任务，不暂停、检查或阻断已绑定 Session、旧 PID、历史 writer 或页面 `unknown`。Web 与 Quick Worker 都确认新注册表后才报告成功。只有明确物理删除 ZIP 槽位时，才检查该槽位是否仍被 Session 或非终态任务引用。页面不提供客户端 Runtime、Runner、命令、路径或环境变量选择器。微信任务润色使用独立的任务编排插件模块设置和注册表，其通用边界见[Chub 微信任务编排插件模块设计](WEIXIN_TASK_ORCHESTRATION_PLUGIN_DESIGN.md)。
 

@@ -65,7 +65,7 @@ def _general_runtime_settings(request: Request) -> AiRuntimeGeneralSettingsData:
             ),
         ),
     )
-    weekly_runtime_available = manager.runtime_id in manager.runtime_plugins.runtime_ids()
+    weekly_runtime_available, _ = manager.submission_available()
     weekly_report_section = RuntimeSettingsSection(
         id="weekly-report-session",
         title="周报自动化会话",
@@ -171,7 +171,9 @@ def update_general_runtime_settings(
             raise ValueError("weekly report session settings are required")
         if new_session_permission not in {"auto-review", "read-only", "full-access"}:
             raise ValueError("new session permission is invalid")
-        if runtime_id not in request.app.state.ai_session_manager.runtime_plugins.runtime_ids():
+        manager = request.app.state.ai_session_manager
+        available, _ = manager.submission_available()
+        if runtime_id != manager.runtime_id or not available:
             raise ApiError(
                 409,
                 "weekly_report_runtime_unavailable",
@@ -179,7 +181,7 @@ def update_general_runtime_settings(
             )
         model = None if model == "__default__" else model
         reasoning_effort = None if reasoning_effort == "__default__" else reasoning_effort
-        request.app.state.ai_session_manager.validate_model(model, reasoning_effort)
+        manager.validate_model(model, reasoning_effort)
         general = AiRuntimeGeneralSettings.model_validate(
             {
                 **general.model_dump(mode="json"),

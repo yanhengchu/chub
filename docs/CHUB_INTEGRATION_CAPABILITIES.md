@@ -115,7 +115,7 @@ Chub 是个人本地工作站与统一控制面：核心能力可独立运行，
 
 `chub help` 是当前 CLI 的无服务帮助入口。
 
-命令统一采用“资源在前、动作在后”：项目级安装、卸载、汇总状态、检查、版本和帮助保持一级命令；Web、Worker、网络、服务定义、Runtime、升级和 Chrome Supervisor 使用分层命令。旧的连字符扁平命令不再支持。`chub status` 默认汇总 Web、Quick Worker、Debug Chrome Supervisor 与系统升级执行器的服务和最终健康状态；需要平台服务管理器原始信息时使用 `--verbose`。日志分别使用 `chub web logs`、`chub worker logs` 和 `chub upgrade logs`。`chub version` 输出当前本机版本与平台。
+命令统一采用“资源在前、动作在后”：项目级安装、卸载、汇总状态、检查、版本和帮助保持一级命令；Web、Worker、网络、服务定义、Runtime、升级和 Chrome Supervisor 使用分层命令。旧的连字符扁平命令不再支持。`chub status` 默认汇总 Web、Quick Worker、Debug Chrome Supervisor 与系统升级执行器的服务和最终健康状态；需要平台服务管理器原始信息时使用 `--verbose`。日志分别使用 `chub web logs`、`chub worker logs` 和 `chub upgrade logs`；升级日志在 macOS 跟随 LaunchAgent 文件日志，在 Ubuntu 跟随 `chub-system-upgrade.service` 的 user journal。`chub version` 输出当前本机版本与平台。
 
 `chub worker reload` 会取消排队和执行中的 Worker 任务，且不会自动重放；仅应在维护者确认可中断这些任务后使用。
 

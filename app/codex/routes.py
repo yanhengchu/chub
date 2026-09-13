@@ -159,12 +159,25 @@ def read_runtime_implementations(request: Request) -> ApiResponse[RuntimeImpleme
     "/runtime-implementations/{implementation_id}/enabled",
     response_model=ApiResponse[RuntimeImplementationData],
 )
-def update_runtime_implementation_enabled(
+async def update_runtime_implementation_enabled(
     implementation_id: str,
     payload: RuntimeImplementationEnabledUpdateRequest,
     request: Request,
 ) -> ApiResponse[RuntimeImplementationData]:
-    return ApiResponse(data=request.app.state.ai_session_manager.update_runtime_implementation_enabled(implementation_id, payload.enabled))
+    artifact_id = (
+        "development:codex-runtime"
+        if implementation_id == "builtin-dev"
+        else f"runtime:{implementation_id}"
+    )
+    await request.app.state.plugin_lifecycle.set_enabled(
+        request,
+        "codex-runtime",
+        artifact_id,
+        payload.enabled,
+    )
+    return ApiResponse(
+        data=request.app.state.ai_session_manager.read_runtime_implementations()
+    )
 
 
 @api_router.put(

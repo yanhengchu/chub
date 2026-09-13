@@ -48,6 +48,21 @@ class PluginLifecycleService:
                 if isinstance(imports.get(plugin_id), list) and imports[plugin_id]
             )
 
+    def codex_runtime_implementation_lifecycle_state(
+        self, implementation_id: str
+    ) -> tuple[bool, bool]:
+        """Return the lifecycle-authoritative import and enablement state."""
+        artifact_id = (
+            "development:codex-runtime"
+            if implementation_id == "builtin-dev"
+            else f"runtime:{implementation_id}"
+        )
+        with self._lock:
+            state = self._read()
+            imports = state.setdefault("imports", {}).setdefault("codex-runtime", [])
+            enabled = self._enabled_ids(state, "codex-runtime")
+            return artifact_id in imports, artifact_id in enabled
+
     async def import_artifact(self, request: Request, plugin_id: str, artifact_id: str) -> dict[str, object]:
         self._require(plugin_id)
         with self._lock:
