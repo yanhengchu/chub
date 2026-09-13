@@ -28,6 +28,8 @@ class ProjectDocumentSummary(BaseModel):
     title: str
     summary: str
     status: str
+    category: str
+    category_label: str
     updated_at: datetime
     archived: bool
 

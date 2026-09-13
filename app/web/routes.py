@@ -6,6 +6,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from app.services.design_documents import (
+    DOCUMENT_CATEGORIES,
+    DOCUMENT_CORE_STATUSES,
     DesignDocumentIndexError,
     get_design_document,
     list_design_documents,
@@ -429,6 +431,7 @@ def render_workspace(
             "workspace_session_id": workspace_session_id,
             "deliveryline": deliveryline,
             "deliveryline_navigation": deliveryline is not None,
+            "document_categories": DOCUMENT_CATEGORIES,
             "deliveryline_requirements": deliveryline_requirements,
             "deliveryline_archived_requirements": deliveryline_archived_requirements,
             "deliveryline_error": deliveryline_error,
@@ -465,6 +468,8 @@ def design_documents(request: Request) -> HTMLResponse:
         context={
             "app_name": settings.app.name,
             "documents": documents,
+            "document_categories": DOCUMENT_CATEGORIES,
+            "document_core_statuses": DOCUMENT_CORE_STATUSES,
             "documents_error": documents_error,
         },
     )

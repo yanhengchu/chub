@@ -9,51 +9,82 @@
     <title>项目资料 · {{ app_name }}</title>
     {% include "partials/app_styles.html" %}
   </head>
-  <body>
-    <main>
-      <section class="card document-list-card standalone-list-card" aria-labelledby="document-list-title">
-        <div class="card-heading-copy">
+  <body class="project-documents-page-body">
+    <main class="project-documents-page">
+      <section class="project-documents-page-content" aria-labelledby="document-list-title">
+        <header class="project-documents-page-heading">
+          <div>
           <p class="section-kicker">项目资料</p>
-          <h2 id="document-list-title">项目说明、设计方案与维护文档</h2>
-          <p class="section-description">共 {{ documents|length }} 份项目资料。</p>
-        </div>
-        <div class="document-filter-toolbar" role="group" aria-label="文档筛选">
-          <button class="button-secondary is-active" type="button" data-document-filter="all">全部</button>
-          <button class="button-secondary" type="button" data-document-filter="current">首页显示</button>
-          <button class="button-secondary" type="button" data-document-filter="archived">已隐藏</button>
+          <h1 id="document-list-title">项目资料</h1>
+          <p>查看项目基线、专项需求与设计，以及独立学习资料。</p>
+          </div>
+        </header>
+        <div class="document-filter-toolbar" aria-label="文档筛选">
+          <div class="document-filter-group" role="group" aria-label="资料分类筛选">
+            <span class="document-filter-label">分类</span>
+            <button class="button-secondary is-active" type="button" data-document-category-filter="all">全部</button>
+            {% for category_id, category_label, _category_description in document_categories %}
+            <button class="button-secondary" type="button" data-document-category-filter="{{ category_id }}">{{ category_label }}</button>
+            {% endfor %}
+          </div>
+          <div class="document-filter-group" role="group" aria-label="资料状态筛选">
+            <span class="document-filter-label">状态</span>
+            <button class="button-secondary is-active" type="button" data-document-status-filter="all">全部</button>
+            {% for document_status in document_core_statuses %}
+            <button class="button-secondary" type="button" data-document-status-filter="{{ document_status }}">{{ document_status }}</button>
+            {% endfor %}
+            <button class="button-secondary" type="button" data-document-status-filter="other">其他</button>
+          </div>
+          <div class="document-filter-group" role="group" aria-label="首页展示状态筛选">
+            <span class="document-filter-label">首页显示</span>
+            <button class="button-secondary is-active" type="button" data-document-display-filter="all">全部</button>
+            <button class="button-secondary" type="button" data-document-display-filter="visible">显示中</button>
+            <button class="button-secondary" type="button" data-document-display-filter="hidden">已隐藏</button>
+          </div>
         </div>
         <p id="document-list-message" class="message{% if documents_error %} message-error{% endif %}" aria-live="polite">{{ documents_error or '' }}</p>
-        <div id="document-list" class="design-document-list">
-          {% for document in documents %}
-          <article class="design-document-item" data-archived="{{ 'true' if document.archived else 'false' }}">
-            <a class="design-document-main" href="/project-docs/{{ document.id }}">
-              <span class="design-document-copy">
-                <strong>{{ document.title }}</strong>
-                <span>{{ document.summary }}</span>
-              </span>
-            </a>
-            <div class="design-document-footer">
-              <span class="design-document-meta">
-                <span class="badge badge-success">{{ document.status }}</span>
-                {% if document.archived %}
-                <span class="badge badge-muted document-archived-badge">已隐藏</span>
-                {% endif %}
-                <time datetime="{{ document.updated_at.isoformat() }}">{{ document.updated_at.strftime('%Y-%m-%d') }}</time>
-              </span>
-              <button class="button-secondary document-archive-action" type="button" data-document-id="{{ document.id }}" data-archived="{{ 'true' if document.archived else 'false' }}" aria-haspopup="dialog" aria-controls="confirmation-dialog">{{ '恢复显示' if document.archived else '隐藏' }}</button>
+        <div id="document-list" class="project-document-groups">
+          {% if documents %}
+          {% for category_id, category_label, category_description in document_categories %}
+          {% set category_documents = documents | selectattr('category', 'equalto', category_id) | list %}
+          {% if category_documents %}
+          <section class="project-document-group" data-document-category-group="{{ category_id }}" aria-labelledby="project-document-category-{{ category_id }}">
+            <header class="project-document-group-heading">
+              <h2 id="project-document-category-{{ category_id }}">{{ category_label }}</h2>
+              <p>{{ category_description }}</p>
+            </header>
+            <div class="project-document-list">
+            {% for document in category_documents %}
+            <article class="design-document-item" data-archived="{{ 'true' if document.archived else 'false' }}" data-category="{{ document.category }}" data-status="{{ document.status }}">
+              <a class="design-document-main" href="/project-docs/{{ document.id }}">
+                <span class="design-document-copy">
+                  <span class="design-document-title-line"><strong>{{ document.title }}</strong><time datetime="{{ document.updated_at.isoformat() }}">{{ document.updated_at.strftime('%Y-%m-%d') }}</time></span>
+                  <span class="design-document-summary">{{ document.summary }}</span>
+                </span>
+              </a>
+              <div class="design-document-footer">
+                <span class="design-document-badges">
+                  <span class="badge badge-success">{{ document.status }}</span>
+                  {% if document.archived %}
+                  <span class="badge badge-muted document-archived-badge">已隐藏</span>
+                  {% endif %}
+                </span>
+                <button class="button-secondary document-archive-action" type="button" data-document-id="{{ document.id }}" data-archived="{{ 'true' if document.archived else 'false' }}" aria-haspopup="dialog" aria-controls="confirmation-dialog">{{ '显示' if document.archived else '隐藏' }}</button>
+              </div>
+            </article>
+            {% endfor %}
             </div>
-          </article>
-          {% else %}
-          {% if not documents_error %}
-          <p class="empty-state">暂无项目资料。</p>
+          </section>
           {% endif %}
           {% endfor %}
+          {% elif not documents_error %}
+          <p class="empty-state">暂无项目资料。</p>
+          {% endif %}
         </div>
+        <p id="document-filter-empty" class="empty-state" hidden>没有符合当前筛选条件的资料。</p>
       </section>
       {% include "partials/confirmation_dialog.html" %}
     </main>
-
-    <footer>Hub 项目资料展示，首页显示管理需连接节点。</footer>
     <script src="/static/js/components/ui.js" defer></script>
     <script src="/static/design_documents.js" defer></script>
   </body>

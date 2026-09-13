@@ -13,9 +13,9 @@
 4. 方案经确认后才能进入开发实现；自动化测试通过只构成测试证据，测试验收按验收标准确认真实交付结果后才能标记需求合格。验收未通过时，根据问题性质回到方案设计或开发实现。
 5. Deliveryline 负责需求流程、阶段门槛、资料、决策、测试结果和验收结论；它不管理 AI Agent 在开发实现阶段内的具体推理、代码编辑或运行时状态。
 6. Chub 仍是个人 AI 工作站，负责工作台壳、可信入口、统一模块生命周期、通知、本机 AI Agent、Runtime、任务与运行环境的执行和最终运行状态。Deliveryline 负责需求流程、交付资料和阶段结论；在维护者明确触发“开发实现”时，只通过 Chub 已定义的受控 Session/任务用例发起执行，并保存关联和最终结果作为交付证据。
-7. Deliveryline 的固定开发源码位于 `business-modules/deliveryline/`。设置页在模块已导入时保留插件管理入口；首页只在模块已启用且当前可用时，在 `Workspace` 与 Runtime Sessions 之间显示 `Business → Deliveryline`，折叠侧栏和窄屏图标导航同步提供入口。业务页面与业务 API 使用同一可用性门槛。启用后，页面顶部以“进行中、待我处理、存在风险、已交付”四项跨阶段概览呈现整体交付状态，下方展示需求队列、已归档需求和选中需求的六阶段工作区；当前已实现“需求提出”的创建、编辑、归档与提交评审，仍不创建 Session、任务或后续阶段业务流程。
+7. Deliveryline 的固定开发源码位于 `business-modules/deliveryline/`。设置页在模块已导入时保留插件管理入口；首页只在模块已启用且当前可用时，在 `Workspace` 与 Runtime Sessions 之间显示 `Business → Deliveryline`，折叠侧栏和窄屏图标导航同步提供入口。业务页面与业务 API 使用同一可用性门槛。启用后，页面顶部以“进行中、待我处理、存在风险、已交付”四项跨阶段概览呈现整体交付状态，下方展示需求队列、已归档需求和选中需求的六阶段工作区；当前“需求提出”的首次入口只负责原始需求入库和初始化展示，不创建 Session、任务或后续阶段业务流程。
 8. Deliveryline 的正式需求档案是可共享的业务事实，权威根目录固定为 `data/shared/deliveryline/requirements/`；每条需求使用一个独立 JSON 文件。不得复用或编辑 `data/shared/chub/requests.json`，也不得把共享需求档案写入 Chub Session、任务、通知、配置或其他模块的数据文件。
-9. 一条需求档案的固定根字段为：`version`、`id`、`title`、`background`、`delivery_goal`、`scope`、`out_of_scope`、`constraints`、`acceptance_criteria`、`risks_and_open_items`、`workflow`、`activity`、`created_at` 和 `updated_at`。`workflow` 负责六阶段中的当前阶段、跨阶段交付状态、下一步和最近阶段结论；`activity` 只追加创建、编辑、推进、退回、归档等业务事实。顶部概览和各类工作队列必须从需求档案实时计算，不单独保存统计结果。
+9. 一条需求档案的固定根字段为：`version`、`id`、`title`、`original_request_content`、`background`、`delivery_goal`、`scope`、`out_of_scope`、`constraints`、`acceptance_criteria`、`risks_and_open_items`、`workflow`、`activity`、`created_at` 和 `updated_at`。首次入库只写入 `original_request_content` 与系统字段，创建后不可编辑；`title` 和其他正式需求字段在初始化档案中允许为空，页面使用“未命名需求 + 编号”作为临时展示。历史档案未保留原始内容时固定为 `null`，不得从当前背景反推补写。`workflow` 负责六阶段中的当前阶段、跨阶段交付状态、下一步和最近阶段结论；`activity` 只追加创建、编辑、推进、退回、归档等业务事实。顶部概览和各类工作队列必须从需求档案实时计算，不单独保存统计结果。
 10. `id` 使用不可修改的 `DL-日期-短随机码` 格式，不使用跨设备递增序号；页面可按创建时间或更新时间提供阅读排序。除系统字段外，需求可在草稿阶段不完整，但进入需求评审前必须满足该阶段的完整性规则。
 11. 本机锁、草稿恢复、缓存、导入状态和未来执行关联缓存只可位于 `data/local/state/deliveryline/` 或 `data/local/runtime/deliveryline/`，不属于业务事实，也不得进入 Git。停用、升级、重新导入或移除 Deliveryline 不得删除共享需求档案；归档仅改变业务状态。删除共享业务数据必须是独立的危险操作，明确说明影响范围并经过维护者确认。
 12. Chub 不自动执行 Git 同步。每次保存必须先校验当前文件，再以有界、原子写入替换单条需求文件；读取和写入必须限制文件大小、字段长度、活动记录数量和权限。出现 Git 未合并冲突、格式非法、文件超限或同步状态无法确认时，必须停止该需求写入并保留原文件，不自动覆盖、合并或丢弃活动记录。
@@ -49,7 +49,7 @@ Chub 工作台
 
 Deliveryline 已以 Chub 业务插件接入，而非独立控制台。设置页与首页都读取统一生命周期状态，但投影规则不同：导入决定设置页插件管理入口是否显示；首页业务入口、业务页面和业务 API 均要求已启用且当前可用。ZIP 由本机构建流程写入固定制品目录，不经浏览器上传或下载。启用不会创建业务数据、Session 或任务。
 
-当前已实现固定的“需求提出”业务闭环：维护者可用一句非空描述建立需求档案，随后补全交付目标、范围、不做什么、约束、验收标准和风险/待确认事项；只有这些资料完整后才能提交至“需求评审”。风险或待确认事项可填写“暂无”，已识别风险会在未提交前投影为“存在风险”，但不作为额外阻断条件。Chub 仅在维护者显式触发开发实现时创建受控 AI Session/任务，Deliveryline 当前不直接操作 Runtime、Worker 或原生 Session。
+当前已实现“需求提出”的首次入口：维护者提交任意非空原始需求内容后，Deliveryline 只建立共享档案并进行初始化展示。输入可以是一句话、链接或混合内容；当前不解析、不分类、不生成正式标题，也不把原始内容复制为背景与问题。本次不新增自动解析或 AI 处理；既有档案维护与需求评审能力保持不变。Chub 仅在维护者显式触发开发实现时创建受控 AI Session/任务，Deliveryline 当前不直接操作 Runtime、Worker 或原生 Session。
 
 当前业务模块宿主提供可信访问、固定 Deliveryline 插件包导入、实现选择、启停/可用状态、首页投影，以及第一阶段共享需求档案的读写 API 和页面交互。通用发现、任意第三方模块、动态页面注入、后续阶段治理、受控 Chub 用例和跨模块流程编排不属于当前阶段；出现第二个真实业务模块后，再依据共同需求定义标准协议。
 
@@ -74,7 +74,8 @@ data/local/runtime/deliveryline/
 | 字段组 | 字段 | 规则 |
 | --- | --- | --- |
 | 识别与时间 | `version`、`id`、`created_at`、`updated_at` | 系统写入；`id` 永不变更，`version` 只用于当前格式校验。 |
-| 需求档案 | `title`、`background`、`delivery_goal`、`scope`、`out_of_scope`、`constraints`、`acceptance_criteria`、`risks_and_open_items` | 维护者可编辑的业务正文；草稿可未完成，评审前按阶段规则校验完整性。 |
+| 原始需求 | `original_request_content` | 首次创建时输入的一句话、链接或混合内容；创建后只读，是首次入库的唯一业务输入。历史档案可为 `null`，不从后续编辑内容反推。 |
+| 需求档案 | `title`、`background`、`delivery_goal`、`scope`、`out_of_scope`、`constraints`、`acceptance_criteria`、`risks_and_open_items` | 初始化档案保持为空；既有档案维护可在后续使用时补充，本次不新增自动处理。 |
 | 交付工作流 | `workflow.current_stage`、`workflow.delivery_status`、`workflow.next_action`、`workflow.latest_stage_conclusion` | 当前阶段固定为六阶段之一；交付状态固定为“进行中、待我处理、存在风险、已交付、已归档”之一。 |
 | 活动事实 | `activity` | 按时间追加创建、编辑、推进、退回、归档等记录；每项记录包含时间、动作和有界摘要，不保存原始敏感内容。 |
 

@@ -159,17 +159,17 @@
               <section class="deliveryline-workbench-section" aria-labelledby="deliveryline-preview-queue-title">
                 <header class="deliveryline-preview-section-heading"><div><h3 id="deliveryline-preview-queue-title">进行中需求</h3><p>当前需要推进的需求</p></div><button id="deliveryline-create" class="button-secondary" type="button"{% if deliveryline.status != 'enabled' %} disabled{% endif %}>新建需求</button></header>
                 {% if deliveryline_error %}<p class="message message-error">{{ deliveryline_error }}</p>{% elif deliveryline_requirements %}
-                <div class="deliveryline-workbench-list">{% for item in deliveryline_requirements %}<button class="deliveryline-requirement-row{% if loop.first %} is-selected{% endif %}" type="button" data-deliveryline-select="{{ item.id }}"><span><strong>{{ item.id }} · {{ item.title }}</strong><small>{{ item.workflow.next_action }}</small></span><span class="badge badge-timeout">{{ item.workflow.current_stage }}</span><span class="deliveryline-workbench-next"><small>下一步</small>{{ item.workflow.next_action }}</span></button>{% endfor %}</div>
-                {% else %}<p class="empty-state">尚无需求。输入一句需求描述即可开始。</p>{% endif %}
+                <div class="deliveryline-workbench-list">{% for item in deliveryline_requirements %}<button class="deliveryline-requirement-row{% if loop.first %} is-selected{% endif %}" type="button" data-deliveryline-select="{{ item.id }}"><span><strong>{% if item.is_initialized %}未命名需求 · {{ item.id }}{% else %}{{ item.id }} · {{ item.title }}{% endif %}</strong><small>{{ item.workflow.next_action }}</small></span><span class="badge badge-timeout">{{ item.workflow.current_stage }}</span></button>{% endfor %}</div>
+                {% else %}<p class="empty-state">尚无需求。输入原始需求内容即可入库。</p>{% endif %}
               </section>
               {% if deliveryline_archived_requirements %}
               <section class="deliveryline-workbench-section" aria-labelledby="deliveryline-archived-title">
                 <header class="deliveryline-preview-section-heading"><div><h3 id="deliveryline-archived-title">已归档需求</h3><p>保留的需求档案与活动记录</p></div></header>
-                <div class="deliveryline-workbench-list">{% for item in deliveryline_archived_requirements %}<button class="deliveryline-requirement-row" type="button" data-deliveryline-select="{{ item.id }}"><span><strong>{{ item.id }} · {{ item.title }}</strong><small>已归档</small></span><span class="badge badge-success">{{ item.workflow.current_stage }}</span><span class="deliveryline-workbench-next"><small>状态</small>已归档</span></button>{% endfor %}</div>
+                <div class="deliveryline-workbench-list">{% for item in deliveryline_archived_requirements %}<button class="deliveryline-requirement-row" type="button" data-deliveryline-select="{{ item.id }}"><span><strong>{% if item.title %}{{ item.id }} · {{ item.title }}{% else %}未命名需求 · {{ item.id }}{% endif %}</strong><small>已归档</small></span><span class="badge badge-success">{{ item.workflow.current_stage }}</span></button>{% endfor %}</div>
               </section>
               {% endif %}
               <section class="deliveryline-detail-preview" aria-labelledby="deliveryline-preview-detail-title">
-                <header class="deliveryline-preview-section-heading"><div><p class="section-kicker">已选中需求</p><h3 id="deliveryline-preview-detail-title">{% if deliveryline_requirements %}{{ deliveryline_requirements[0].title }}{% else %}请选择或新建需求{% endif %}</h3><p id="deliveryline-detail-stage">{% if deliveryline_requirements %}当前阶段：{{ deliveryline_requirements[0].workflow.current_stage }}{% else %}需求提出允许从一句描述开始。{% endif %}</p></div></header>
+                <header class="deliveryline-preview-section-heading"><div><p class="section-kicker">已选中需求</p><h3 id="deliveryline-preview-detail-title">{% if deliveryline_requirements %}{% if deliveryline_requirements[0].is_initialized %}未命名需求 · {{ deliveryline_requirements[0].id }}{% else %}{{ deliveryline_requirements[0].title }}{% endif %}{% else %}请选择或新建需求{% endif %}</h3></div></header>
                 <div id="deliveryline-detail" class="deliveryline-detail-preview-content"{% if not deliveryline_requirements %} hidden{% endif %}></div>
               </section>
               {% if deliveryline.status != 'enabled' %}<p class="workstation-status-detail workstation-status-detail-warning">{{ deliveryline.detail }}</p>{% endif %}
@@ -179,9 +179,10 @@
                     <h3 id="deliveryline-editor-title">新建需求</h3>
                     <button class="button-link codex-workspace-dialog-close" type="button" data-deliveryline-close>关闭</button>
                   </div>
-                  <p id="deliveryline-editor-description" class="deliveryline-editor-description">记录希望解决的问题、机会或想法；一句话即可开始，后续再逐步补充。</p>
+                  <p id="deliveryline-editor-description" class="deliveryline-editor-description">将首次提出的原始需求内容直接入库；可输入一句话、链接或混合内容。</p>
                   <div class="deliveryline-editor-field deliveryline-editor-create-field" data-deliveryline-create-field>
-                    <textarea id="deliveryline-create-description" aria-label="需求描述" maxlength="4000" placeholder="输入一句需求描述"></textarea>
+                    <label for="deliveryline-create-description">原始需求内容</label>
+                    <textarea id="deliveryline-create-description" aria-label="原始需求内容" maxlength="4000" placeholder="输入一句需求描述、链接或其他原始需求内容"></textarea>
                   </div>
                   <div class="deliveryline-editor-fields" data-deliveryline-edit-fields hidden>
                     <label class="deliveryline-editor-field deliveryline-editor-field-wide"><span>标题</span><input name="title" maxlength="120"></label>
@@ -204,29 +205,39 @@
             <header class="workspace-project-documents-heading workspace-preview-work-section">
               <div>
                 <p class="section-kicker">项目资料</p>
-                <h2 id="workspace-project-documents-title">项目说明、设计方案与维护文档</h2>
-                <p>共 {{ document_count }} 份可查看资料；选择一项进入完整阅读。</p>
+                <h2 id="workspace-project-documents-title">项目资料</h2>
+                <p>共 {{ document_count }} 份可查看资料；首页按分类展示最近资料。</p>
               </div>
               <a class="button-secondary workspace-project-documents-all" href="/project-docs">全部项目资料</a>
             </header>
-            <div class="workspace-preview-work-section">
+            <div class="workspace-preview-work-section workspace-project-document-groups">
               {% if documents_error %}
               <p class="message message-error">{{ documents_error }}</p>
               {% elif documents %}
-              <div class="workspace-project-document-list">
-                {% for document in documents %}
+              {% for category_id, category_label, category_description in document_categories %}
+              {% set category_documents = documents | selectattr('category', 'equalto', category_id) | list %}
+              {% if category_documents %}
+              <section class="workspace-project-document-group" data-project-document-category="{{ category_id }}" aria-labelledby="workspace-project-document-category-{{ category_id }}">
+                <header class="workspace-project-document-group-heading">
+                  <h3 id="workspace-project-document-category-{{ category_id }}">{{ category_label }}</h3>
+                  <p>{{ category_description }}</p>
+                </header>
+                <div class="workspace-project-document-list">
+                {% for document in category_documents %}
                 <a class="workspace-project-document" href="/project-docs/{{ document.id }}">
-                  <span>
-                    <strong>{{ document.title }}</strong>
+                  <span class="workspace-project-document-copy">
+                    <span class="workspace-project-document-title-line"><strong>{{ document.title }}</strong><time datetime="{{ document.updated_at.isoformat() }}">{{ document.updated_at.strftime('%Y-%m-%d') }}</time></span>
                     <small>{{ document.summary }}</small>
                   </span>
                   <span class="workspace-project-document-meta">
-                    <span class="badge badge-success">{{ document.status }}</span>
-                    <time datetime="{{ document.updated_at.isoformat() }}">{{ document.updated_at.strftime('%Y-%m-%d') }}</time>
+                    <span class="workspace-project-document-badges"><span class="badge badge-success">{{ document.status }}</span></span>
                   </span>
                 </a>
                 {% endfor %}
-              </div>
+                </div>
+              </section>
+              {% endif %}
+              {% endfor %}
               {% else %}
               <p class="empty-state">暂无项目资料。</p>
               {% endif %}

@@ -9,11 +9,20 @@
     <title>{{ document.title }} · {{ app_name }}</title>
     {% include "partials/app_styles.html" %}
   </head>
-  <body>
-    <main>
-      <section class="card document-detail-card">
+  <body class="project-documents-page-body">
+    <main class="project-document-detail-page">
+      <article class="project-document-detail" aria-labelledby="document-detail-title">
+        <header class="project-document-detail-heading">
+          <p class="section-kicker">{{ document.category_label }}</p>
+          <h1 id="document-detail-title">{{ document.title }}</h1>
+          <p>{{ document.summary }}</p>
+          <div class="project-document-detail-meta">
+            <span class="badge badge-success">{{ document.status }}</span>
+            <time datetime="{{ document.updated_at.isoformat() }}">更新于 {{ document.updated_at.strftime('%Y-%m-%d') }}</time>
+          </div>
+        </header>
         <article class="markdown-body">{{ document.html|safe }}</article>
-      </section>
+      </article>
     </main>
   </body>
 </html>

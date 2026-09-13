@@ -57,12 +57,12 @@ async def test_archived_document_is_hidden_from_home_api_and_kept_in_full_list(
         document["id"] for document in home_api.json()["data"]["documents"][:2]
     ] == ["project-readme", "chub-architecture"]
     assert "automation-download" not in visible_document_ids
-    assert len(visible_document_ids) == 10
+    assert len(visible_document_ids) == 7
     assert 'href="/project-docs/automation-download"' not in home_page.text
     assert 'data-archived="true"' in full_list.text
     assert "已隐藏" in full_list.text
-    assert "首页显示" in full_list.text
-    assert "恢复显示" in full_list.text
+    assert "持续维护" in full_list.text
+    assert "显示" in full_list.text
     assert detail.status_code == 200
 
     state = json.loads(
@@ -155,7 +155,7 @@ async def test_document_list_updates_archive_state_without_page_reload(
     assert 'tone: archived ? "secondary" : "danger"' in script.text
     assert 'card.dataset.archived = String(payload.data.archived)' in script.text
     assert "此操作不会移动或冻结仓库文件" in script.text
-    assert 'payload.data.archived ? "恢复显示" : "隐藏"' in script.text
+    assert 'payload.data.archived ? "显示" : "隐藏"' in script.text
     assert "button.disabled = false" in script.text
-    assert "applyFilter(activeFilter)" in script.text
+    assert "applyFilters();" in script.text
     assert "hub.projectDocsRefreshOnReturn" not in script.text

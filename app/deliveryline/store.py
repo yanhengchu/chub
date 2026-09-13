@@ -66,7 +66,8 @@ class Activity(StrictModel):
 class Requirement(StrictModel):
     version: Literal[1] = 1
     id: str = Field(pattern=r"^DL-\d{8}-[A-Z0-9]{4}$")
-    title: str = Field(min_length=1, max_length=120)
+    title: str = Field(default="", max_length=120)
+    original_request_content: str | None = Field(default=None, max_length=4000)
     background: str = Field(default="", max_length=4000)
     delivery_goal: str = Field(default="", max_length=4000)
     scope: str = Field(default="", max_length=4000)
@@ -79,11 +80,18 @@ class Requirement(StrictModel):
     created_at: datetime
     updated_at: datetime
 
+    @property
+    def is_initialized(self) -> bool:
+        original = self.original_request_content
+        legacy_title = " ".join(original.split())[:120] if original else ""
+        return bool(original) and self.workflow.current_stage == "需求提出" and self.workflow.delivery_status == "待我处理" and self.title in ("", legacy_title) and self.background in ("", original) and not any((self.delivery_goal, self.scope, self.out_of_scope, self.constraints, self.acceptance_criteria, self.risks_and_open_items)) and all(item.action == "created" for item in self.activity)
+
 
 EDITABLE_FIELDS = (
     "title", "background", "delivery_goal", "scope", "out_of_scope", "constraints", "acceptance_criteria", "risks_and_open_items",
 )
 REVIEW_FIELDS = {
+    "title": "标题",
     "background": "背景与问题",
     "delivery_goal": "交付目标",
     "scope": "本次范围",
@@ -117,13 +125,11 @@ class DeliverylineStore:
         now = utc_now()
         with self._locked():
             requirement_id = self._new_id(now)
-            title = " ".join(content.split())[:120]
             record = Requirement(
                 id=requirement_id,
-                title=title,
-                background=content,
-                workflow=Workflow(next_action="补充需求档案，准备进入评审"),
-                activity=[Activity(id=uuid4().hex, occurred_at=now, action="created", summary="已创建需求提出档案。")],
+                original_request_content=content,
+                workflow=Workflow(next_action="需求已入库，等待后续处理"),
+                activity=[Activity(id=uuid4().hex, occurred_at=now, action="created", summary="已将原始需求内容入库。")],
                 created_at=now,
                 updated_at=now,
             )
@@ -171,6 +177,17 @@ class DeliverylineStore:
             self._append(record, now, "archived", "需求已归档。")
             self._write(record)
         return record
+
+    def delete(self, requirement_id: str) -> None:
+        with self._locked():
+            path = self._path(requirement_id)
+            self._read(path)
+            try:
+                path.unlink()
+            except FileNotFoundError as exc:
+                raise DeliverylineNotFound("需求不存在。") from exc
+            except OSError as exc:
+                raise DeliverylineUnavailable("需求档案无法删除。") from exc
 
     @staticmethod
     def review_missing(record: Requirement) -> list[str]:

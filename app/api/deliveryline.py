@@ -34,6 +34,8 @@ class RequirementUpdate(BaseModel):
 class RequirementData(BaseModel):
     id: str
     title: str
+    is_initialized: bool
+    original_request_content: str | None
     background: str
     delivery_goal: str
     scope: str
@@ -60,10 +62,15 @@ class DeliverylineOverview(BaseModel):
     archived_requirements: list[RequirementData]
 
 
+class RequirementDeleted(BaseModel):
+    id: str
+
+
 def _data(record: Requirement) -> RequirementData:
     from app.deliveryline.store import DeliverylineStore
     return RequirementData(
-        id=record.id, title=record.title, background=record.background,
+        id=record.id, title=record.title, is_initialized=record.is_initialized, original_request_content=record.original_request_content,
+        background=record.background,
         delivery_goal=record.delivery_goal, scope=record.scope, out_of_scope=record.out_of_scope,
         constraints=record.constraints, acceptance_criteria=record.acceptance_criteria,
         risks_and_open_items=record.risks_and_open_items,
@@ -162,3 +169,17 @@ def submit_review(requirement_id: str, request: Request) -> ApiResponse[Requirem
 def archive_requirement(requirement_id: str, request: Request) -> ApiResponse[RequirementData]:
     store = _store(request)
     return _operation(request, "archive_deliveryline_requirement", requirement_id, lambda: store.archive(requirement_id))
+
+
+@router.delete("/requirements/{requirement_id}", response_model=ApiResponse[RequirementDeleted])
+def delete_requirement(requirement_id: str, request: Request) -> ApiResponse[RequirementDeleted]:
+    store = _store(request)
+    operation_id = log_operation(request, action="delete_deliveryline_requirement", status="requested", target=requirement_id)
+    log_operation(request, action="delete_deliveryline_requirement", status="started", target=requirement_id, operation_id=operation_id)
+    try:
+        store.delete(requirement_id)
+    except DeliverylineError as exc:
+        log_operation(request, action="delete_deliveryline_requirement", status="failed", target=requirement_id, operation_id=operation_id, reason=exc.__class__.__name__)
+        _raise(exc)
+    log_operation(request, action="delete_deliveryline_requirement", status="succeeded", target=requirement_id, operation_id=operation_id)
+    return ApiResponse(data=RequirementDeleted(id=requirement_id))

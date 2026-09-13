@@ -461,10 +461,33 @@ async def test_deliveryline_workspace_navigation_follows_import_lifecycle(
             await expect(page.get_by_text("待我处理", exact=True)).to_be_visible()
             await expect(page.get_by_text("存在风险", exact=True)).to_be_visible()
             await expect(page.get_by_text("已交付", exact=True)).to_be_visible()
+            queue_heading_layout = await page.locator(
+                ".deliveryline-workbench-section .deliveryline-preview-section-heading"
+            ).evaluate("""(heading) => {
+                const copy = heading.querySelector(':scope > div');
+                const title = heading.querySelector('h3');
+                const description = heading.querySelector('p');
+                const button = heading.querySelector('button');
+                const copyRect = copy.getBoundingClientRect();
+                const buttonRect = button.getBoundingClientRect();
+                return {
+                    titleToDescription: description.getBoundingClientRect().top - title.getBoundingClientRect().bottom,
+                    copyHeight: copyRect.height,
+                    titleHeight: title.getBoundingClientRect().height,
+                    verticalCenterDelta: Math.abs(
+                        (copyRect.top + copyRect.height / 2) - (buttonRect.top + buttonRect.height / 2)
+                    ),
+                };
+            }""")
+            assert queue_heading_layout["titleToDescription"] < 8
+            assert queue_heading_layout["copyHeight"] < queue_heading_layout["titleHeight"] * 2.5
+            assert queue_heading_layout["verticalCenterDelta"] < 1
             await page.locator("#deliveryline-create").click()
             await expect(
-                page.get_by_text("记录希望解决的问题、机会或想法；一句话即可开始，后续再逐步补充。")
+                page.get_by_text("将首次提出的原始需求内容直接入库；可输入一句话、链接或混合内容。")
             ).to_be_visible()
+            await expect(page.get_by_text("原始需求内容", exact=True)).to_be_visible()
+            await expect(page.locator("#deliveryline-create-description")).to_be_focused()
             editor_layout = await page.locator("#deliveryline-editor-form").evaluate("""(form) => {
                 const dialog = document.querySelector("#deliveryline-editor");
                 const header = form.querySelector(".codex-workspace-dialog-header");
@@ -519,35 +542,111 @@ async def test_deliveryline_workspace_navigation_follows_import_lifecycle(
             for theme_field in editor_layout["themeFields"].values():
                 assert theme_field["background"] == theme_field["expectedBackground"]
                 assert theme_field["color"] != "rgba(0, 0, 0, 0)"
-            await page.locator("#deliveryline-create-description").fill("希望能够管理需求交付。")
+            await page.locator("#deliveryline-create-description").fill("https://example.com/requirements")
             await page.locator("#deliveryline-editor-submit").click()
-            await expect(page.get_by_text("希望能够管理需求交付。", exact=True)).to_be_visible()
-            await expect(page.get_by_role("heading", name="评审准备度")).to_be_visible()
-            await expect(page.get_by_role("heading", name="活动记录")).to_be_visible()
-            await page.get_by_role("button", name="归档", exact=True).click()
-            await page.locator("#confirmation-dialog-confirm").click()
-            await expect(page.get_by_role("heading", name="已归档需求")).to_be_visible()
-            await page.get_by_text("希望能够管理需求交付。", exact=True).last.click()
-            await expect(page.locator("#deliveryline-detail [data-deliveryline-archive]")).to_have_count(0)
-            section_gaps = await page.evaluate("""() => {
-                const gapAfter = (header, content) => {
-                  const headerRect = document.querySelector(header).getBoundingClientRect();
-                  const contentRect = document.querySelector(content).getBoundingClientRect();
-                  return contentRect.top - headerRect.bottom;
+            source_link = page.locator('#deliveryline-detail a[href="https://example.com/requirements"]')
+            await expect(source_link).to_be_visible()
+            await expect(source_link).to_have_attribute("target", "_blank")
+            await expect(source_link).to_have_attribute("rel", "noopener noreferrer")
+            await expect(page.locator(".deliveryline-workbench-list strong").filter(has_text=re.compile(r"^未命名需求 · DL-"))).to_be_visible()
+            await expect(page.get_by_text("当前工作目标", exact=True)).to_be_visible()
+            await expect(page.get_by_text("明确需求目标、范围、约束和验收预期，形成可编辑的需求档案。", exact=True)).to_be_visible()
+            await expect(page.get_by_role("heading", name="仍需补充的需求内容", exact=True)).to_be_visible()
+            await expect(page.get_by_role("button", name="AI 协助", exact=True)).to_be_disabled()
+            await expect(page.locator("#deliveryline-detail").get_by_text("原始需求内容", exact=True)).to_be_visible()
+            await expect(page.get_by_role("heading", name="评审准备度")).to_have_count(0)
+            await expect(page.get_by_role("heading", name="活动记录")).to_have_count(0)
+            await expect(page.locator(".deliveryline-detail-preview-content.is-initialized")).to_be_visible()
+            await expect(page.locator("#deliveryline-detail-stage")).to_have_count(0)
+            title_layout = await page.locator("#deliveryline-preview-detail-title").evaluate("""(title) => {
+                const detail = document.querySelector('#deliveryline-detail');
+                const measure = (value) => {
+                  title.textContent = value;
+                  return detail.getBoundingClientRect().top;
                 };
+                const chinese = measure('中文需求标题');
+                const latin = measure('DELIVERYLINEINITIALREQUIREMENTTITLE');
+                return { chinese, latin, titleHeight: title.getBoundingClientRect().height };
+            }""")
+            assert title_layout["chinese"] == title_layout["latin"]
+            assert 20 <= title_layout["titleHeight"] < 24
+            await page.evaluate("""async () => {
+                const response = await fetch('/api/deliveryline/requirements', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ description: '第二条需求' }),
+                });
+                if (!response.ok) throw new Error(`Unable to create second requirement: ${response.status}`);
+                const created = await response.json();
+                const update = await fetch(`/api/deliveryline/requirements/${created.data.id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        title: '正式需求档案',
+                        background: '需要统一管理需求交付信息。',
+                        delivery_goal: '建立可追踪的交付档案。',
+                        scope: '需求提出与评审准备。',
+                        out_of_scope: '不接入自动化执行。',
+                        constraints: '保留原始需求内容。',
+                        acceptance_criteria: '可查看完整需求档案。',
+                        risks_and_open_items: '后续处理方式待确认。',
+                    }),
+                });
+                if (!update.ok) throw new Error(`Unable to update second requirement: ${update.status}`);
+            }""")
+            await page.reload(wait_until="domcontentloaded")
+            rows = page.locator(".deliveryline-requirement-row")
+            await expect(rows).to_have_count(2)
+            await expect(page.locator(".deliveryline-workbench-next")).to_have_count(0)
+            await expect(page.get_by_role("heading", name="需求概要", exact=True)).to_be_visible()
+            await expect(page.get_by_role("heading", name="约束与验收", exact=True)).to_be_visible()
+            await expect(page.get_by_role("heading", name="来源记录", exact=True)).to_be_visible()
+            selected_row_layout = await page.locator(".deliveryline-workbench-list").evaluate("""(list) => {
+                const selected = list.querySelector('.deliveryline-requirement-row.is-selected');
+                const listRect = list.getBoundingClientRect();
+                const selectedRect = selected.getBoundingClientRect();
                 return {
-                  queue: gapAfter(
-                    '.deliveryline-workbench-section > .deliveryline-preview-section-heading',
-                    '.deliveryline-workbench-list',
-                  ),
-                  detail: gapAfter(
-                    '.deliveryline-detail-preview > .deliveryline-preview-section-heading',
-                    '.deliveryline-detail-preview-content',
-                  ),
+                    left: Math.abs(selectedRect.left - listRect.left),
+                    top: Math.abs(selectedRect.top - listRect.top),
+                    bottom: Math.abs(selectedRect.bottom - listRect.bottom),
+                    borderWidth: getComputedStyle(selected).borderLeftWidth,
+                    selectionInset: getComputedStyle(selected).boxShadow.includes('inset'),
+                    radius: getComputedStyle(selected).borderTopLeftRadius,
+                    listBorderWidth: getComputedStyle(list).borderLeftWidth,
+                    followingDivider: getComputedStyle(selected.nextElementSibling, '::before').display,
                 };
             }""")
-            assert section_gaps["queue"] >= 12
-            assert section_gaps["detail"] >= 12
+            assert selected_row_layout["left"] == 1
+            assert selected_row_layout["top"] == 1
+            assert selected_row_layout["bottom"] > 0
+            assert selected_row_layout["borderWidth"] == "0px"
+            assert selected_row_layout["selectionInset"] is True
+            assert selected_row_layout["radius"] == "7px"
+            assert selected_row_layout["listBorderWidth"] == "1px"
+            assert selected_row_layout["followingDivider"] == "none"
+            first_row_left = await rows.nth(0).locator("strong").evaluate("(item) => item.getBoundingClientRect().left")
+            second_row_left = await rows.nth(1).locator("strong").evaluate("(item) => item.getBoundingClientRect().left")
+            await rows.nth(1).click()
+            second_row_layout = await page.locator(".deliveryline-workbench-list").evaluate("""(list) => {
+                const selected = list.querySelector('.deliveryline-requirement-row.is-selected');
+                return {
+                    selectedDivider: getComputedStyle(selected, '::before').display,
+                    firstRowLeft: list.querySelector('.deliveryline-requirement-row strong').getBoundingClientRect().left,
+                    secondRowLeft: list.querySelectorAll('.deliveryline-requirement-row strong')[1].getBoundingClientRect().left,
+                };
+            }""")
+            assert second_row_layout["selectedDivider"] == "none"
+            assert second_row_layout["firstRowLeft"] == first_row_left
+            assert second_row_layout["secondRowLeft"] == second_row_left
+            initial_layout = await page.locator(".deliveryline-workbench-list").evaluate("""(list) => {
+                const second = list.querySelector('.deliveryline-requirement-row + .deliveryline-requirement-row');
+                return second ? getComputedStyle(second).borderTopWidth : '0px';
+            }""")
+            assert initial_layout == "0px"
+            await page.get_by_role("button", name="删除", exact=True).click()
+            await expect(page.get_by_role("heading", name="删除需求", exact=True)).to_be_visible()
+            await page.locator("#confirmation-dialog-confirm").click()
+            await expect(page.locator(".deliveryline-requirement-row")).to_have_count(1)
             await page.locator("#workspace-sidebar-toggle").click()
             await expect(
                 page.locator('.workspace-preview-compact-nav a[aria-label="Deliveryline"]')
@@ -566,6 +665,153 @@ async def test_deliveryline_workspace_navigation_follows_import_lifecycle(
             await expect(
                 page.locator('.workspace-preview-compact-nav a[aria-label="Deliveryline"]')
             ).to_have_count(0)
+        finally:
+            await context.close()
+
+    assert page_errors == []
+
+
+@pytest.mark.parametrize("viewport", [(1280, 900), (390, 844)], ids=["desktop", "phone"])
+async def test_project_documents_workspace_groups_limit_each_category(
+    workspace_browser_server: str,
+    viewport: tuple[int, int],
+) -> None:
+    browser_session = session_factory()
+    async with browser_session(ensure_page=False) as chrome:
+        context = await chrome.browser.new_context(viewport={"width": viewport[0], "height": viewport[1]})
+        try:
+            page = await context.new_page()
+            page_errors: list[str] = []
+            page.on("pageerror", lambda error: page_errors.append(str(error)))
+            response = await page.goto(
+                f"{workspace_browser_server}/?section=project-docs",
+                wait_until="domcontentloaded",
+            )
+
+            assert response is not None and response.status == 200
+            for category in (
+                "project_baseline",
+                "delivery_requirement",
+                "independent_learning",
+            ):
+                group = page.locator(f'[data-project-document-category="{category}"]')
+                await expect(group).to_have_count(1)
+                assert await group.locator(".workspace-project-document").count() <= 3
+            layout = await page.locator(".workspace-project-document-groups").evaluate("""(groups) => {
+                const groupRects = Array.from(groups.querySelectorAll("[data-project-document-category]"))
+                  .map((group) => group.getBoundingClientRect());
+                const surface = document.querySelector(".workspace-project-documents");
+                const lists = Array.from(groups.querySelectorAll(".workspace-project-document-list"));
+                const titleLine = groups.querySelector(".workspace-project-document-title-line");
+                const title = titleLine.querySelector("strong").getBoundingClientRect();
+                const time = titleLine.querySelector("time").getBoundingClientRect();
+                return {
+                  horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
+                  gaps: groupRects.slice(1).map((rect, index) => rect.top - groupRects[index].bottom),
+                  surfaceBorderWidth: getComputedStyle(surface).borderTopWidth,
+                  listBorderWidths: lists.map((list) => getComputedStyle(list).borderTopWidth),
+                  dateFollowsTitle: time.top < title.bottom && time.bottom > title.top && time.left >= title.left,
+                };
+            }""")
+            assert layout["horizontalOverflow"] is False
+            assert all(gap >= 12 for gap in layout["gaps"])
+            assert layout["surfaceBorderWidth"] == "0px"
+            assert layout["listBorderWidths"] == ["1px", "1px", "1px"]
+            assert layout["dateFollowsTitle"] is True
+        finally:
+            await context.close()
+
+    assert page_errors == []
+
+
+@pytest.mark.parametrize("viewport", [(1280, 900), (390, 844)], ids=["desktop", "phone"])
+async def test_project_document_library_and_detail_use_full_page_layout(
+    workspace_browser_server: str,
+    viewport: tuple[int, int],
+) -> None:
+    browser_session = session_factory()
+    async with browser_session(ensure_page=False) as chrome:
+        context = await chrome.browser.new_context(viewport={"width": viewport[0], "height": viewport[1]})
+        try:
+            page = await context.new_page()
+            page_errors: list[str] = []
+            page.on("pageerror", lambda error: page_errors.append(str(error)))
+
+            response = await page.goto(
+                f"{workspace_browser_server}/project-docs",
+                wait_until="domcontentloaded",
+            )
+            assert response is not None and response.status == 200
+            await expect(page.locator(".project-documents-page")).to_have_count(1)
+            await expect(page.locator(".standalone-list-card")).to_have_count(0)
+            assert await page.locator(".project-document-list").count() == 3
+            assert await page.locator("[data-document-category-filter]").count() == 5
+            assert await page.locator("[data-document-status-filter]").count() == 6
+            assert await page.locator("[data-document-display-filter]").count() == 3
+            await page.locator('[data-document-category-filter="project_baseline"]').click()
+            await page.locator('[data-document-status-filter="持续维护"]').click()
+            await page.locator('[data-document-display-filter="visible"]').click()
+            await expect(page.locator('[data-document-category-filter="project_baseline"]')).to_have_class(
+                "button-secondary is-active"
+            )
+            await expect(page.locator('[data-document-status-filter="持续维护"]')).to_have_class(
+                "button-secondary is-active"
+            )
+            await expect(page.locator('[data-document-display-filter="visible"]')).to_have_class(
+                "button-secondary is-active"
+            )
+            active_filter_styles = await page.locator('[data-document-category-filter="project_baseline"]').evaluate(
+                "(button) => ({ active: getComputedStyle(button).backgroundColor, inactive: getComputedStyle(document.querySelector('[data-document-category-filter=all]')).backgroundColor })"
+            )
+            assert active_filter_styles["active"] != active_filter_styles["inactive"]
+            await expect(page.locator('.design-document-item:not([hidden])')).to_have_count(3)
+            await expect(page.locator('[data-document-category-group="delivery_requirement"]')).to_be_hidden()
+            await page.locator('[data-document-display-filter="hidden"]').click()
+            await expect(page.locator("#document-filter-empty")).to_be_visible()
+            await page.locator('[data-document-display-filter="visible"]').click()
+            await expect(page.locator("#document-filter-empty")).to_be_hidden()
+            library_layout = await page.locator(".project-documents-page").evaluate("""(root) => ({
+                horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
+                rootBorderWidth: getComputedStyle(root).borderTopWidth,
+                listBorderWidths: Array.from(root.querySelectorAll(".project-document-list"))
+                  .map((list) => getComputedStyle(list).borderTopWidth),
+                toolbarToFirstGroupGap: root.querySelector(".project-document-groups").getBoundingClientRect().top
+                  - root.querySelector(".document-filter-toolbar").getBoundingClientRect().bottom,
+                dateFollowsTitle: (() => {
+                  const line = root.querySelector(".design-document-title-line");
+                  const title = line.querySelector("strong").getBoundingClientRect();
+                  const time = line.querySelector("time").getBoundingClientRect();
+                  return time.top < title.bottom && time.bottom > title.top && time.left >= title.left;
+                })(),
+                metadataAndActionShareRow: (() => {
+                  const footer = root.querySelector(".design-document-footer");
+                  const badges = footer.querySelector(".design-document-badges").getBoundingClientRect();
+                  const action = footer.querySelector(".document-archive-action").getBoundingClientRect();
+                  return Math.abs((badges.top + badges.height / 2) - (action.top + action.height / 2)) <= 1;
+                })(),
+            })""")
+            assert library_layout["horizontalOverflow"] is False
+            assert library_layout["rootBorderWidth"] == "0px"
+            assert library_layout["listBorderWidths"] == ["1px", "1px", "1px"]
+            assert library_layout["toolbarToFirstGroupGap"] >= 24
+            assert library_layout["dateFollowsTitle"] is True
+            assert library_layout["metadataAndActionShareRow"] is True
+
+            response = await page.goto(
+                f"{workspace_browser_server}/project-docs/project-readme",
+                wait_until="domcontentloaded",
+            )
+            assert response is not None and response.status == 200
+            await expect(page.locator(".project-document-detail-page")).to_have_count(1)
+            await expect(page.locator(".project-document-detail")).to_have_count(1)
+            detail_layout = await page.locator(".project-document-detail").evaluate("""(detail) => ({
+                horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
+                detailBorderWidth: getComputedStyle(detail).borderTopWidth,
+                headingBorderWidth: getComputedStyle(detail.querySelector(".project-document-detail-heading")).borderBottomWidth,
+            })""")
+            assert detail_layout["horizontalOverflow"] is False
+            assert detail_layout["detailBorderWidth"] == "0px"
+            assert detail_layout["headingBorderWidth"] == "1px"
         finally:
             await context.close()
 

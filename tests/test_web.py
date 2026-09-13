@@ -1003,7 +1003,7 @@ async def test_root_page_is_the_workspace_and_legacy_workspace_redirects(
     assert 'class="workspace-preview-main is-showing-quick-session"' in selected_session.text
     assert "workspace-chub-summary" not in selected_session.text
     assert "自动化任务" in automations.text
-    assert "项目说明、设计方案与维护文档" in project_documents.text
+    assert '<h2 id="workspace-project-documents-title">项目资料</h2>' in project_documents.text
     assert legacy_workspace.status_code == 307
     assert legacy_workspace.headers["location"] == "/"
     assert legacy_automations.status_code == 307
@@ -1042,6 +1042,11 @@ async def test_deliveryline_workspace_section_follows_import_lifecycle(
             json={"description": "希望能够管理需求交付。"},
         )
         requirement_id = created.json()["data"]["id"]
+        assert created.json()["data"]["original_request_content"] == "希望能够管理需求交付。"
+        assert created.json()["data"]["title"] == ""
+        assert created.json()["data"]["background"] == ""
+        assert created.json()["data"]["next_action"] == "需求已入库，等待后续处理"
+        assert created.json()["data"]["is_initialized"] is True
         updated = await client.put(
             f"/api/deliveryline/requirements/{requirement_id}",
             json={
@@ -1064,6 +1069,13 @@ async def test_deliveryline_workspace_section_follows_import_lifecycle(
         )
         archived = await client.put(
             f"/api/deliveryline/requirements/{archived_created.json()['data']['id']}/archive"
+        )
+        deleted_created = await client.post(
+            "/api/deliveryline/requirements",
+            json={"description": "需要删除的需求。"},
+        )
+        deleted = await client.delete(
+            f"/api/deliveryline/requirements/{deleted_created.json()['data']['id']}"
         )
         overview = await client.get("/api/deliveryline")
         enabled_page = await client.get("/?section=deliveryline")
@@ -1088,7 +1100,12 @@ async def test_deliveryline_workspace_section_follows_import_lifecycle(
     assert submitted.status_code == 200
     assert submitted.json()["data"]["current_stage"] == "需求评审"
     assert archived.status_code == 200
+    assert deleted.status_code == 200
+    assert deleted.json()["data"]["id"] == deleted_created.json()["data"]["id"]
     assert overview.status_code == 200
+    assert deleted_created.json()["data"]["id"] not in {
+        item["id"] for item in [*overview.json()["data"]["requirements"], *overview.json()["data"]["archived_requirements"]]
+    }
     assert [item["id"] for item in overview.json()["data"]["archived_requirements"]] == [
         archived_created.json()["data"]["id"]
     ]
@@ -1100,7 +1117,7 @@ async def test_deliveryline_workspace_section_follows_import_lifecycle(
     assert "需求提出" in enabled_page.text
     assert "管理需求交付" in enabled_page.text
     assert "已归档需求" in enabled_page.text
-    assert "需要保留的归档需求。" in enabled_page.text
+    assert f"未命名需求 · {archived_created.json()['data']['id']}" in enabled_page.text
     assert removed.status_code == 200
     assert 'aria-label="业务导航"' not in removed_home.text
     assert removed_page.status_code == 404
@@ -1953,9 +1970,15 @@ async def test_design_document_pages_render_markdown(settings: Settings) -> None
         missing = await client.get("/project-docs/not-registered")
 
     assert listing.status_code == 200
-    assert "项目说明、设计方案与维护文档" in listing.text
-    assert "份项目资料" in listing.text
-    assert "Hub 项目资料展示" in listing.text
+    assert '<h1 id="document-list-title">项目资料</h1>' in listing.text
+    assert "查看项目基线、专项需求与设计，以及独立学习资料。" in listing.text
+    assert 'data-document-category-filter="project_baseline"' in listing.text
+    assert 'data-document-category-filter="delivery_requirement"' in listing.text
+    assert 'data-document-status-filter="持续维护"' in listing.text
+    assert 'data-document-status-filter="other"' in listing.text
+    assert 'data-document-display-filter="hidden"' in listing.text
+    assert 'id="document-filter-empty"' in listing.text
+    assert 'data-document-category-filter="all">全部</button>' in listing.text
     assert 'id="confirmation-dialog"' in listing.text
     assert listing.text.index('/static/js/components/ui.js') < listing.text.index(
         '/static/design_documents.js'
@@ -1965,6 +1988,12 @@ async def test_design_document_pages_render_markdown(settings: Settings) -> None
     assert home.text.index('href="/project-docs/project-readme"') < home.text.index(
         'href="/project-docs/chub-architecture"'
     )
+    assert home.text.index("项目基线") < home.text.index("专项需求与设计")
+    assert 'data-project-document-category="project_baseline"' in home.text
+    assert 'data-project-document-category="delivery_requirement"' in home.text
+    assert 'data-project-document-category="independent_learning"' in home.text
+    assert home.text.count('class="workspace-project-document"') == 7
+    assert '<span class="badge badge-muted">项目基线</span>' not in home.text
     assert listing.text.index('href="/project-docs/project-readme"') < listing.text.index(
         'href="/project-docs/chub-architecture"'
     )
@@ -1972,6 +2001,8 @@ async def test_design_document_pages_render_markdown(settings: Settings) -> None
         'href="/project-docs/chub-integration-capabilities"'
     )
     assert '<span class="badge badge-success">持续维护</span>' in listing.text
+    assert "独立学习资料" in listing.text
+    assert listing.text.index("项目基线") < listing.text.index("专项需求与设计")
     assert project_readme.status_code == 200
     assert "面向个人设备、本地优先的轻量 AI 工作站控制面" in project_readme.text
     assert 'href="/project-docs/chub-architecture"' in project_readme.text
@@ -1983,11 +2014,13 @@ async def test_design_document_pages_render_markdown(settings: Settings) -> None
     assert "Deliveryline 需求交付管理平台设计" in listing.text
     assert deliveryline.status_code == 200
     assert "Deliveryline 是需求交付管理平台" in deliveryline.text
+    assert "专项需求与设计" in deliveryline.text
     assert "Deliveryline 已以 Chub 业务插件接入" in deliveryline.text
     assert "Chub 工作台业务模块设计" not in listing.text
     assert removed_business_module.status_code == 404
     assert "返回首页" not in listing.text
-    assert "standalone-list-card" in listing.text
+    assert 'class="project-documents-page"' in listing.text
+    assert "standalone-list-card" not in listing.text
     assert 'target="_blank"' not in listing.text
     assert detail.status_code == 200
     assert "返回全部文档" not in detail.text
@@ -1997,6 +2030,9 @@ async def test_design_document_pages_render_markdown(settings: Settings) -> None
     assert '<p class="eyebrow">设计文档</p>' not in detail.text
     assert '<span class="badge badge-success">已实现并验收</span>' not in detail.text
     assert '<article class="markdown-body">' in detail.text
+    assert 'class="project-document-detail-page"' in detail.text
+    assert 'id="document-detail-title"' in detail.text
+    assert "更新于 " in detail.text
     assert "<h2" in detail.text
     assert "阶段一：资料准备与发布" in detail.text
     assert "阶段二：重点确认与正式生成" in detail.text
@@ -2029,8 +2065,10 @@ async def test_project_document_card_and_weekly_report_apis_allow_loopback(
     ]
     assert weekly_reports[0]["available"] is True
     assert weekly_reports[1]["available"] is False
-    assert len(data["documents"]) == 10
+    assert len(data["documents"]) == 7
     assert any(document["status"] == "持续维护" for document in data["documents"])
+    assert any(document["category"] == "project_baseline" for document in data["documents"])
+    assert any(document["category_label"] == "专项需求与设计" for document in data["documents"])
     assert "openclaw-research" not in {
         document["id"] for document in data["documents"]
     }

@@ -280,24 +280,9 @@
     flex-wrap: wrap;
   }
 
-  .design-document-meta {
-    display: flex;
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 0.4rem;
-    text-align: left;
-  }
-
-  .design-document-footer {
-    align-items: flex-end;
-  }
-
-  .design-document-meta time {
-    padding-left: 0.55rem;
-  }
-
-  .design-document-meta time {
-    margin-top: 0;
+  .project-document-list .design-document-footer {
+    align-items: center;
+    justify-content: flex-end;
   }
 
   .log-toolbar,

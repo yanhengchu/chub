@@ -14,13 +14,14 @@ def configure_document(monkeypatch, root: Path, content: str) -> None:
     index.write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": service.DOCUMENT_INDEX_VERSION,
                 "documents": [
                     {
                         "id": "design",
                         "title": "测试方案",
                         "summary": "测试摘要",
                         "status": "调研中",
+                        "category": "delivery_requirement",
                         "path": "design.md",
                     }
                 ],
@@ -64,13 +65,14 @@ def test_registered_markdown_links_use_project_document_routes(
     index.write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": service.DOCUMENT_INDEX_VERSION,
                 "documents": [
                     {
                         "id": "source",
                         "title": "来源",
                         "summary": "来源文档",
                         "status": "持续维护",
+                        "category": "project_baseline",
                         "path": "source.md",
                     },
                     {
@@ -78,6 +80,7 @@ def test_registered_markdown_links_use_project_document_routes(
                         "title": "目标",
                         "summary": "目标文档",
                         "status": "持续维护",
+                        "category": "project_baseline",
                         "path": "target.md",
                     },
                 ],
@@ -189,13 +192,14 @@ def test_design_document_index_is_reloaded(monkeypatch, tmp_path: Path) -> None:
     service.DOCUMENTS_INDEX.write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": service.DOCUMENT_INDEX_VERSION,
                 "documents": [
                     {
                         "id": "new-design",
                         "title": "新增方案",
                         "summary": "刷新后可见",
                         "status": "调研中",
+                        "category": "delivery_requirement",
                         "path": "new.md",
                     }
                 ],
@@ -237,13 +241,14 @@ def test_design_document_index_rejects_unsafe_path(
     index.write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": service.DOCUMENT_INDEX_VERSION,
                 "documents": [
                     {
                         "id": "unsafe",
                         "title": "越界文档",
                         "summary": "不应读取",
                         "status": "调研中",
+                        "category": "delivery_requirement",
                         "path": "../outside.md",
                     }
                 ],
@@ -287,6 +292,10 @@ def test_registered_project_documents_exist() -> None:
         and 2 <= len(document.status) <= 7
         for document in documents
     )
+    assert all(
+        document.category in service.ALLOWED_DOCUMENT_CATEGORIES
+        for document in documents
+    )
     assert any(
         document.id == "project-readme"
         and document.status == "持续维护"
@@ -298,9 +307,37 @@ def test_registered_project_documents_exist() -> None:
         and document.status == "持续维护"
         for document in documents
     )
+    assert any(
+        document.id == "deliveryline-platform"
+        and document.category == "delivery_requirement"
+        for document in documents
+    )
 
 
-def test_home_documents_pin_visible_core_then_use_recent_updates() -> None:
+def test_design_document_index_rejects_missing_or_unknown_category(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    configure_document(monkeypatch, tmp_path, "# 测试内容")
+    payload = json.loads(service.DOCUMENTS_INDEX.read_text(encoding="utf-8"))
+    payload["documents"][0].pop("category")
+    service.DOCUMENTS_INDEX.write_text(
+        json.dumps(payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    assert service.list_design_documents() == []
+
+    payload["documents"][0]["category"] = "custom_tag"
+    service.DOCUMENTS_INDEX.write_text(
+        json.dumps(payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    assert service.list_design_documents() == []
+
+
+def test_home_documents_group_by_category_and_limit_each_group() -> None:
     now = datetime(2026, 8, 18, 12, 0)
     documents = [
         service.DesignDocumentView(
@@ -309,6 +346,8 @@ def test_home_documents_pin_visible_core_then_use_recent_updates() -> None:
             summary="入口",
             status="持续维护",
             updated_at=now - timedelta(days=10),
+            category="project_baseline",
+            category_label="项目基线",
         ),
         service.DesignDocumentView(
             id="chub-architecture",
@@ -316,6 +355,8 @@ def test_home_documents_pin_visible_core_then_use_recent_updates() -> None:
             summary="架构",
             status="持续维护",
             updated_at=now - timedelta(days=5),
+            category="project_baseline",
+            category_label="项目基线",
         ),
         *[
             service.DesignDocumentView(
@@ -324,6 +365,8 @@ def test_home_documents_pin_visible_core_then_use_recent_updates() -> None:
                 summary="专项",
                 status="已验收",
                 updated_at=now - timedelta(hours=index),
+                category="delivery_requirement",
+                category_label="专项需求与设计",
             )
             for index in range(1, 10)
         ],
@@ -337,11 +380,6 @@ def test_home_documents_pin_visible_core_then_use_recent_updates() -> None:
         "design-1",
         "design-2",
         "design-3",
-        "design-4",
-        "design-5",
-        "design-6",
-        "design-7",
-        "design-8",
     ]
 
 
@@ -354,6 +392,8 @@ def test_home_documents_do_not_restore_hidden_core_document() -> None:
             summary="架构",
             status="持续维护",
             updated_at=now - timedelta(days=5),
+            category="project_baseline",
+            category_label="项目基线",
         ),
         *[
             service.DesignDocumentView(
@@ -362,6 +402,8 @@ def test_home_documents_do_not_restore_hidden_core_document() -> None:
                 summary="专项",
                 status="已验收",
                 updated_at=now - timedelta(hours=index),
+                category="delivery_requirement",
+                category_label="专项需求与设计",
             )
             for index in range(1, 11)
         ],
@@ -374,10 +416,4 @@ def test_home_documents_do_not_restore_hidden_core_document() -> None:
         "design-1",
         "design-2",
         "design-3",
-        "design-4",
-        "design-5",
-        "design-6",
-        "design-7",
-        "design-8",
-        "design-9",
     ]

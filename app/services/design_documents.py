@@ -20,25 +20,40 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DOCUMENTS_ROOT = PROJECT_ROOT / "docs"
 DOCUMENTS_INDEX = DOCUMENTS_ROOT / "design_documents.json"
 MAX_DOCUMENT_BYTES = 512 * 1024
-ALLOWED_DOCUMENT_STATUSES = frozenset(
-    {
-        "调研中",
-        "待实现",
-        "进行中",
-        "待验收",
-        "第一阶段已验收",
-        "已验收",
-        "持续维护",
-    }
+DOCUMENT_INDEX_VERSION = 2
+DOCUMENT_STATUSES = (
+    "调研中",
+    "待实现",
+    "进行中",
+    "待验收",
+    "第一阶段已验收",
+    "已验收",
+    "持续维护",
 )
+DOCUMENT_CORE_STATUSES = (
+    "进行中",
+    "待验收",
+    "已验收",
+    "持续维护",
+)
+ALLOWED_DOCUMENT_STATUSES = frozenset(DOCUMENT_STATUSES)
+DOCUMENT_CATEGORIES = (
+    ("project_baseline", "项目基线", "定义项目定位、全局边界和当前能力。"),
+    ("delivery_requirement", "专项需求与设计", "定义可独立讨论、实施和验收的专题能力。"),
+    ("independent_learning", "独立学习资料", "记录独立于当前主交付链路的探索与学习。"),
+    ("historical_archive", "历史归档", "保留已结束阶段的冻结资料，仅用于追溯。"),
+)
+DOCUMENT_CATEGORY_LABELS = {
+    category: label for category, label, _description in DOCUMENT_CATEGORIES
+}
+ALLOWED_DOCUMENT_CATEGORIES = frozenset(DOCUMENT_CATEGORY_LABELS)
 LOGGER = logging.getLogger("hub.project_documents")
 _STATE_LOCK = Lock()
 _DOCUMENT_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 _PROJECT_DOCUMENT_PATHS = {
     "@project/README.md": PROJECT_ROOT / "README.md",
 }
-_CORE_DOCUMENT_IDS = ("project-readme", "chub-architecture")
-_HOME_DOCUMENT_LIMIT = 10
+_HOME_DOCUMENTS_PER_CATEGORY = 3
 
 
 @dataclass(frozen=True)
@@ -48,6 +63,7 @@ class DesignDocument:
     summary: str
     status: str
     relative_path: str
+    category: str = "project_baseline"
 
 
 @dataclass(frozen=True)
@@ -57,6 +73,8 @@ class DesignDocumentView:
     summary: str
     status: str
     updated_at: datetime
+    category: str = "project_baseline"
+    category_label: str = "项目基线"
     archived: bool = False
     html: str | None = None
 
@@ -178,7 +196,7 @@ def _load_documents() -> tuple[DesignDocument, ...]:
     values = payload.get("documents") if isinstance(payload, dict) else None
     if (
         not isinstance(payload, dict)
-        or payload.get("version") != 1
+        or payload.get("version") != DOCUMENT_INDEX_VERSION
         or not isinstance(values, list)
     ):
         LOGGER.error("Project document index has an unsupported format")
@@ -196,6 +214,7 @@ def _load_documents() -> tuple[DesignDocument, ...]:
         title = value.get("title")
         summary = value.get("summary")
         status = value.get("status")
+        category = value.get("category")
         relative_path = value.get("path")
         if (
             not isinstance(document_id, str)
@@ -209,6 +228,8 @@ def _load_documents() -> tuple[DesignDocument, ...]:
             or len(summary) > 300
             or not isinstance(status, str)
             or status.strip() not in ALLOWED_DOCUMENT_STATUSES
+            or not isinstance(category, str)
+            or category.strip() not in ALLOWED_DOCUMENT_CATEGORIES
             or not isinstance(relative_path, str)
             or not relative_path
         ):
@@ -220,6 +241,7 @@ def _load_documents() -> tuple[DesignDocument, ...]:
             summary=summary.strip(),
             status=status.strip(),
             relative_path=relative_path,
+            category=category.strip(),
         )
         try:
             _document_path(document)
@@ -305,6 +327,8 @@ def _metadata(
         summary=document.summary,
         status=document.status,
         updated_at=datetime.fromtimestamp(path.stat().st_mtime),
+        category=document.category,
+        category_label=DOCUMENT_CATEGORY_LABELS[document.category],
         archived=document.id in (archived_document_ids or set()),
     )
 
@@ -339,26 +363,19 @@ def list_design_documents(
 def select_home_design_documents(
     documents: list[DesignDocumentView],
     *,
-    limit: int = _HOME_DOCUMENT_LIMIT,
+    per_category_limit: int = _HOME_DOCUMENTS_PER_CATEGORY,
 ) -> list[DesignDocumentView]:
-    if limit <= 0:
+    if per_category_limit <= 0:
         return []
-    by_id = {document.id: document for document in documents}
-    core_documents = [
-        by_id[document_id]
-        for document_id in _CORE_DOCUMENT_IDS
-        if document_id in by_id
-    ]
-    recent_documents = sorted(
-        (
-            document
-            for document in documents
-            if document.id not in _CORE_DOCUMENT_IDS
-        ),
-        key=lambda item: item.updated_at,
-        reverse=True,
-    )
-    return (core_documents + recent_documents)[:limit]
+    selected = []
+    for category, _label, _description in DOCUMENT_CATEGORIES:
+        category_documents = [
+            document for document in documents if document.category == category
+        ]
+        if category != "project_baseline":
+            category_documents.sort(key=lambda item: item.updated_at, reverse=True)
+        selected.extend(category_documents[:per_category_limit])
+    return selected
 
 
 def set_design_document_archived(
@@ -442,6 +459,8 @@ def get_design_document(
         summary=metadata.summary,
         status=metadata.status,
         updated_at=metadata.updated_at,
+        category=metadata.category,
+        category_label=metadata.category_label,
         archived=metadata.archived,
         html=cleaned,
     )
