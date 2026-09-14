@@ -153,6 +153,29 @@ class OpenClawCompletionNotifier:
             message_factory=lambda: [message_factory()],
         )
 
+    def resend_weixin_task_result(
+        self,
+        task: QuickInteractionTask,
+        route: QuickInteractionWeixinRoute,
+    ) -> CompletionNotificationResult:
+        """Re-deliver one stored main-task result to the current Weixin route."""
+        if task.kind != "standard" or task.status not in {
+            "succeeded",
+            "failed",
+            "timed_out",
+        }:
+            return CompletionNotificationResult("skipped", "该任务没有可回送的执行结果。")
+        if not self.config.enabled:
+            return CompletionNotificationResult("skipped", "微信完成通知未启用。")
+        return self._send_messages(
+            required_account_id=route.account_id,
+            recipient=route.recipient,
+            messages=[],
+            require_unique=True,
+            unavailable_status="failed",
+            message_factory=lambda: self._messages_for(task),
+        )
+
     def notify_weixin_optimized_task(
         self,
         route: QuickInteractionWeixinRoute,

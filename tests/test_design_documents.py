@@ -112,6 +112,18 @@ def test_design_document_rejects_unregistered_and_oversized_files(
     assert service.get_design_document("design") is None
 
 
+def test_design_document_source_is_registered_and_bounded(monkeypatch, tmp_path: Path) -> None:
+    configure_document(monkeypatch, tmp_path, "abcdefgh")
+
+    source = service.get_design_document_source("design", max_chars=5)
+
+    assert source is not None
+    assert source.id == "design"
+    assert source.content == "abcde"
+    assert source.truncated is True
+    assert service.get_design_document_source("missing") is None
+
+
 def test_design_document_rejects_path_outside_docs(
     monkeypatch,
     tmp_path: Path,

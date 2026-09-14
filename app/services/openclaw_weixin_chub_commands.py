@@ -11,6 +11,7 @@ CHUB_STATUS_PROMPT = "chub"
 CHUB_CHECK_PROMPT = "check"
 CHUB_HELP_PROMPT = "help"
 CHUB_USAGE_PROMPT = "usage"
+CHUB_LAST_PROMPT = "last"
 TEXT_PROMPT = "text"
 TEXT_CHECK_PROMPT = "text-check"
 TEXT_MODE_VALUES = frozenset({"direct", "auto", "confirm"})
@@ -47,6 +48,7 @@ WeixinChubCommandKind = Literal[
     "status",
     "check",
     "usage",
+    "last",
     "text_control",
     "text_check",
     "help",
@@ -79,6 +81,7 @@ FIXED_COMMAND_KINDS = frozenset(
         "status",
         "check",
         "usage",
+        "last",
         "text_control",
         "text_check",
         "help",
@@ -112,6 +115,7 @@ _READ_ONLY_COMMAND_KINDS = frozenset(
         "status",
         "check",
         "usage",
+        "last",
         "help",
         "model",
         "model_list",
@@ -220,6 +224,8 @@ def parse_weixin_chub_command(prompt: str) -> WeixinChubCommand:
         return WeixinChubCommand("check", normalized)
     if folded == CHUB_USAGE_PROMPT:
         return WeixinChubCommand("usage", normalized)
+    if folded == CHUB_LAST_PROMPT:
+        return WeixinChubCommand("last", normalized)
     help_parts = folded.split()
     if help_parts == [CHUB_HELP_PROMPT]:
         return WeixinChubCommand("help", normalized)

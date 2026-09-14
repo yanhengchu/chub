@@ -8,6 +8,7 @@ from unicodedata import category
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.ai_runtime import RUNTIME_ID_PATTERN
+from app.task_capabilities import TaskCapabilityId
 
 WORKSPACE_ID_PATTERN = r"^[a-z][a-z0-9-]{0,63}$"
 
@@ -357,6 +358,7 @@ class QuickInteractionTask(BaseModel):
     # tasks use their own read-only permission and private model selection.
     model: str | None = Field(default=None, max_length=128)
     reasoning_effort: str | None = Field(default=None, max_length=32)
+    capability_ids: list[TaskCapabilityId] = Field(default_factory=list, max_length=8)
     restart_sensitive: bool = False
     # A lost IPC response does not prove that the Worker rejected the task.
     # Keep this explicit, persisted intermediate state separate from a failure

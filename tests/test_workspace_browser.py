@@ -549,11 +549,34 @@ async def test_deliveryline_workspace_navigation_follows_import_lifecycle(
             await expect(source_link).to_have_attribute("target", "_blank")
             await expect(source_link).to_have_attribute("rel", "noopener noreferrer")
             await expect(page.locator(".deliveryline-workbench-list strong").filter(has_text=re.compile(r"^未命名需求 · DL-"))).to_be_visible()
-            await expect(page.get_by_text("当前工作目标", exact=True)).to_be_visible()
-            await expect(page.get_by_text("明确需求目标、范围、约束和验收预期，形成可编辑的需求档案。", exact=True)).to_be_visible()
-            await expect(page.get_by_role("heading", name="仍需补充的需求内容", exact=True)).to_be_visible()
-            await expect(page.get_by_role("button", name="AI 协助", exact=True)).to_be_disabled()
-            await expect(page.locator("#deliveryline-detail").get_by_text("原始需求内容", exact=True)).to_be_visible()
+            await expect(page.get_by_role("heading", name="需求详情", exact=True)).to_be_visible()
+            await expect(page.get_by_text("查看所选需求的阶段进度、当前工作和需求档案。", exact=True)).to_be_visible()
+            await expect(page.locator(".deliveryline-detail-preview-identifier strong")).to_have_text(re.compile(r"^未命名需求 · DL-"))
+            detail_order = await page.locator("#deliveryline-detail").evaluate("""(detail) =>
+                [...detail.children].slice(0, 3).map((item) => item.className)
+            """)
+            assert detail_order == [
+                "deliveryline-detail-preview-identifier",
+                "deliveryline-detail-preview-progress",
+                "deliveryline-detail-preview-current",
+            ]
+            await expect(page.get_by_text("推进进度", exact=True)).to_be_visible()
+            await expect(page.get_by_text("大阶段", exact=True)).to_have_count(0)
+            await expect(page.get_by_text("小阶段", exact=True)).to_have_count(0)
+            await expect(page.get_by_text("当前阶段", exact=True)).to_be_visible()
+            await expect(page.get_by_role("heading", name="需求提出 · 需求整理与档案补全", exact=True)).to_be_visible()
+            await expect(page.get_by_text("阶段目标：形成可讨论的需求目标、场景、范围、约束和验收预期。", exact=True)).to_have_count(0)
+            await expect(page.get_by_text("当前目标：保留原始需求，补全为可提交评审的正式档案。", exact=True)).to_be_visible()
+            await expect(page.get_by_role("heading", name="待补充内容", exact=True)).to_be_visible()
+            await expect(page.get_by_text("原始需求入库", exact=True)).to_be_visible()
+            await expect(page.get_by_text("1-1", exact=True)).to_have_count(0)
+            await expect(page.get_by_text("1-2", exact=True)).to_have_count(0)
+            await expect(page.locator(".deliveryline-preview-substages").get_by_text("需求整理与档案补全", exact=True)).to_be_visible()
+            substages = page.locator(".deliveryline-preview-substages li")
+            await expect(substages.nth(0)).to_have_class(re.compile(r"\bis-complete\b"))
+            await expect(substages.nth(1)).to_have_class(re.compile(r"\bis-current\b"))
+            await expect(page.get_by_role("button", name="AI 协作", exact=True)).to_be_enabled()
+            await expect(page.locator("#deliveryline-detail").get_by_text("原始需求内容", exact=True)).to_have_count(0)
             await expect(page.get_by_role("heading", name="评审准备度")).to_have_count(0)
             await expect(page.get_by_role("heading", name="活动记录")).to_have_count(0)
             await expect(page.locator(".deliveryline-detail-preview-content.is-initialized")).to_be_visible()
@@ -598,9 +621,12 @@ async def test_deliveryline_workspace_navigation_follows_import_lifecycle(
             rows = page.locator(".deliveryline-requirement-row")
             await expect(rows).to_have_count(2)
             await expect(page.locator(".deliveryline-workbench-next")).to_have_count(0)
-            await expect(page.get_by_role("heading", name="需求概要", exact=True)).to_be_visible()
-            await expect(page.get_by_role("heading", name="约束与验收", exact=True)).to_be_visible()
-            await expect(page.get_by_role("heading", name="来源记录", exact=True)).to_be_visible()
+            await expect(page.get_by_role("heading", name="待补充内容", exact=True)).to_be_visible()
+            await expect(page.get_by_role("heading", name="需求概要", exact=True)).to_have_count(0)
+            await expect(page.get_by_role("heading", name="约束与验收", exact=True)).to_have_count(0)
+            await expect(page.get_by_role("heading", name="来源记录", exact=True)).to_have_count(0)
+            await expect(page.get_by_text("阶段目标：形成可讨论的需求目标、场景、范围、约束和验收预期。", exact=True)).to_have_count(0)
+            await expect(page.get_by_text("当前目标：保留原始需求，补全为可提交评审的正式档案。", exact=True)).to_be_visible()
             selected_row_layout = await page.locator(".deliveryline-workbench-list").evaluate("""(list) => {
                 const selected = list.querySelector('.deliveryline-requirement-row.is-selected');
                 const listRect = list.getBoundingClientRect();
@@ -626,7 +652,9 @@ async def test_deliveryline_workspace_navigation_follows_import_lifecycle(
             assert selected_row_layout["followingDivider"] == "none"
             first_row_left = await rows.nth(0).locator("strong").evaluate("(item) => item.getBoundingClientRect().left")
             second_row_left = await rows.nth(1).locator("strong").evaluate("(item) => item.getBoundingClientRect().left")
-            await rows.nth(1).click()
+            await rows.filter(has_text="正式需求档案").click()
+            await expect(page.locator("#deliveryline-preview-detail-title")).to_have_text("需求详情")
+            await expect(page.locator("#deliveryline-detail").get_by_text("需要统一管理需求交付信息。", exact=True)).to_be_visible()
             second_row_layout = await page.locator(".deliveryline-workbench-list").evaluate("""(list) => {
                 const selected = list.querySelector('.deliveryline-requirement-row.is-selected');
                 return {
@@ -643,6 +671,14 @@ async def test_deliveryline_workspace_navigation_follows_import_lifecycle(
                 return second ? getComputedStyle(second).borderTopWidth : '0px';
             }""")
             assert initial_layout == "0px"
+            await page.evaluate("""async () => {
+                const selected = document.querySelector('.deliveryline-requirement-row.is-selected');
+                const id = selected?.dataset.deliverylineSelect;
+                const response = await fetch(`/api/deliveryline/requirements/${id}/submit-review`, { method: 'POST' });
+                if (!response.ok) throw new Error(`Unable to submit requirement for review: ${response.status}`);
+            }""")
+            await page.reload(wait_until="domcontentloaded")
+            await expect(page.get_by_text("阶段说明：详细阶段契约待制定。", exact=True)).to_be_visible()
             await page.get_by_role("button", name="删除", exact=True).click()
             await expect(page.get_by_role("heading", name="删除需求", exact=True)).to_be_visible()
             await page.locator("#confirmation-dialog-confirm").click()

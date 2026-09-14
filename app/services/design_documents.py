@@ -20,6 +20,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DOCUMENTS_ROOT = PROJECT_ROOT / "docs"
 DOCUMENTS_INDEX = DOCUMENTS_ROOT / "design_documents.json"
 MAX_DOCUMENT_BYTES = 512 * 1024
+MAX_DOCUMENT_SOURCE_CHARS = 6_000
 DOCUMENT_INDEX_VERSION = 2
 DOCUMENT_STATUSES = (
     "调研中",
@@ -77,6 +78,16 @@ class DesignDocumentView:
     category_label: str = "项目基线"
     archived: bool = False
     html: str | None = None
+
+
+@dataclass(frozen=True)
+class DesignDocumentSource:
+    """A bounded plaintext source for a registered project document."""
+
+    id: str
+    title: str
+    content: str
+    truncated: bool
 
 
 class DesignDocumentIndexError(RuntimeError):
@@ -463,4 +474,33 @@ def get_design_document(
         category_label=metadata.category_label,
         archived=metadata.archived,
         html=cleaned,
+    )
+
+
+def get_design_document_source(
+    document_id: str,
+    *,
+    max_chars: int = MAX_DOCUMENT_SOURCE_CHARS,
+) -> DesignDocumentSource | None:
+    """Read a registered document only through its fixed registry entry."""
+
+    if not 1 <= max_chars <= MAX_DOCUMENT_SOURCE_CHARS:
+        raise ValueError("Project document source length is invalid")
+    registered_documents = _load_documents()
+    document = next(
+        (item for item in registered_documents if item.id == document_id),
+        None,
+    )
+    if document is None:
+        return None
+    path = _document_path(document)
+    if not path.is_file() or path.stat().st_size > MAX_DOCUMENT_BYTES:
+        return None
+    source = path.read_text(encoding="utf-8")
+    content = source[:max_chars]
+    return DesignDocumentSource(
+        id=document.id,
+        title=document.title,
+        content=content,
+        truncated=len(source) > max_chars,
     )

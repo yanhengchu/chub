@@ -2,10 +2,17 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from subprocess import CompletedProcess
 
 import pytest
 
-from app.deliveryline.store import DeliverylineNotFound, DeliverylineReviewNotReady, DeliverylineStore
+from app.deliveryline.store import (
+    DeliverylineNotFound,
+    DeliverylineReviewNotReady,
+    DeliverylineStore,
+    DeliverylineTransitionNotAllowed,
+    DeliverylineUnavailable,
+)
 
 
 def test_requirement_can_start_from_one_sentence_and_then_enter_review(tmp_path: Path) -> None:
@@ -102,3 +109,36 @@ def test_requirement_can_be_permanently_deleted(tmp_path: Path) -> None:
     assert not (tmp_path / "requirements" / f"{record.id}.json").exists()
     with pytest.raises(DeliverylineNotFound):
         store.get(record.id)
+
+
+def test_only_proposed_unarchived_requirement_can_enter_review(tmp_path: Path) -> None:
+    store = DeliverylineStore(tmp_path / "requirements")
+    record = store.create("需要进入评审的需求。")
+    store.update(record.id, {
+        "title": "评审需求", "background": "背景", "delivery_goal": "目标", "scope": "范围",
+        "out_of_scope": "不做什么", "constraints": "暂无", "acceptance_criteria": "验收",
+        "risks_and_open_items": "暂无",
+    })
+    store.submit_for_review(record.id)
+
+    with pytest.raises(DeliverylineTransitionNotAllowed):
+        store.submit_for_review(record.id)
+
+    store.archive(record.id)
+    with pytest.raises(DeliverylineTransitionNotAllowed):
+        store.submit_for_review(record.id)
+
+
+def test_conflicted_shared_requirement_is_not_overwritten(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = DeliverylineStore(tmp_path / "requirements")
+    record = store.create("冲突需求。")
+    monkeypatch.setattr(store, "_git_repository_root", lambda _path: tmp_path)
+    monkeypatch.setattr(
+        "app.deliveryline.store.subprocess.run",
+        lambda args, **_kwargs: CompletedProcess(args, 0, b"100644 conflict\trequirements/record.json\n", b""),
+    )
+
+    with pytest.raises(DeliverylineUnavailable, match="未解决的 Git 冲突"):
+        store.update(record.id, {"title": "不应覆盖"})
+
+    assert store.get(record.id).title == ""

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ipaddress
+import socket
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +13,11 @@ from app.core.config import PROJECT_ROOT
 
 
 SKILL_SCRIPTS = PROJECT_ROOT / ".agents" / "skills" / "chrome-cdp" / "scripts"
+DEFAULT_PAGE_READ_TIMEOUT_MS = 30_000
+MAX_PAGE_READ_TIMEOUT_MS = 120_000
+DEFAULT_PAGE_CONTENT_CHARS = 64 * 1024
+MAX_PAGE_CONTENT_CHARS = 256 * 1024
+MAX_PAGE_TITLE_CHARS = 512
 
 
 @dataclass(frozen=True)
@@ -20,6 +27,21 @@ class BrowserProfileInfo:
     initialized: bool
     source_available: bool
     active: bool
+
+
+@dataclass(frozen=True)
+class DebugChromePageContent:
+    """A bounded, read-only snapshot created from an owned temporary page."""
+
+    source_url: str
+    final_url: str
+    title: str
+    content: str
+    truncated: bool
+
+
+class DebugChromePageReadError(RuntimeError):
+    """Raised when the shared browser cannot safely produce a page snapshot."""
 
 
 def _load_skill_scripts() -> None:
@@ -33,6 +55,148 @@ def session_factory() -> Any:
     from playwright_session import session
 
     return session
+
+
+def _validate_public_page_url(value: str) -> str:
+    try:
+        parsed = urlsplit(value)
+    except ValueError as exc:
+        raise DebugChromePageReadError("网页地址无效") from exc
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        raise DebugChromePageReadError("网页地址仅支持不含凭据的 HTTP(S) 地址")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise DebugChromePageReadError("网页地址端口无效") from exc
+    if port is not None and port != {"http": 80, "https": 443}[parsed.scheme]:
+        raise DebugChromePageReadError("网页地址仅支持标准 HTTP(S) 端口")
+    _assert_public_host(parsed.hostname)
+    return value
+
+
+def _assert_public_host(host: str) -> None:
+    normalized = host.rstrip(".")
+    if normalized.lower() == "localhost":
+        raise DebugChromePageReadError("网页地址不能访问本机或内网地址")
+    try:
+        addresses = {ipaddress.ip_address(normalized)}
+    except ValueError:
+        try:
+            resolved = socket.getaddrinfo(normalized, None, type=socket.SOCK_STREAM)
+        except OSError as exc:
+            raise DebugChromePageReadError("无法解析网页地址") from exc
+        try:
+            addresses = {ipaddress.ip_address(item[4][0]) for item in resolved}
+        except ValueError as exc:
+            raise DebugChromePageReadError("网页地址解析结果无效") from exc
+    if not addresses or any(not address.is_global for address in addresses):
+        raise DebugChromePageReadError("网页地址不能访问本机或内网地址")
+
+
+def _normalize_page_content(value: str, maximum: int) -> tuple[str, bool]:
+    content = "\n".join(line.strip() for line in value.splitlines() if line.strip())
+    if len(content) <= maximum:
+        return content, False
+    return content[:maximum], True
+
+
+async def read_debug_chrome_page(
+    url: str,
+    *,
+    timeout_ms: int = DEFAULT_PAGE_READ_TIMEOUT_MS,
+    max_content_chars: int = DEFAULT_PAGE_CONTENT_CHARS,
+) -> DebugChromePageContent:
+    """Read one public webpage through the currently running managed Debug Chrome.
+
+    This intentionally owns only the temporary page it creates.  It neither starts,
+    stops nor reconfigures Debug Chrome, and it exposes no browser context, cookies,
+    storage or interaction controls to callers.
+    """
+
+    source_url = _validate_public_page_url(url.strip())
+    if not 100 <= timeout_ms <= MAX_PAGE_READ_TIMEOUT_MS:
+        raise DebugChromePageReadError("网页读取超时设置无效")
+    if not 1 <= max_content_chars <= MAX_PAGE_CONTENT_CHARS:
+        raise DebugChromePageReadError("网页正文长度限制无效")
+    state, _, _ = debug_chrome_status()
+    if state != "running":
+        raise DebugChromePageReadError("Debug Chrome 未运行")
+
+    page = None
+    blocked_navigation: DebugChromePageReadError | None = None
+
+    async def allow_public_request(route) -> None:
+        nonlocal blocked_navigation
+        request = route.request
+        parsed = urlsplit(request.url)
+        if parsed.scheme not in {"http", "https"}:
+            await route.continue_()
+            return
+        try:
+            _validate_public_page_url(request.url)
+        except DebugChromePageReadError as exc:
+            if request.is_navigation_request():
+                blocked_navigation = exc
+            await route.abort()
+            return
+        await route.continue_()
+
+    try:
+        async with session_factory()(ensure_page=False, retry_connection=True) as chrome:
+            page = await chrome.context.new_page()
+            await page.route("**/*", allow_public_request)
+            await page.goto(
+                source_url,
+                timeout=timeout_ms,
+                wait_until="domcontentloaded",
+            )
+            if blocked_navigation is not None:
+                raise blocked_navigation
+            final_url = _validate_public_page_url(page.url)
+            title = (await page.title()).strip()[:MAX_PAGE_TITLE_CHARS]
+            raw_content = await page.evaluate(
+                """(maximum) => {
+                    const content = document.body?.innerText || "";
+                    return {
+                        content: content.slice(0, maximum + 1),
+                        truncated: content.length > maximum,
+                    };
+                }""",
+                max_content_chars,
+            )
+            if not isinstance(raw_content, dict) or not isinstance(
+                raw_content.get("content"), str
+            ):
+                raise DebugChromePageReadError("网页正文读取失败")
+            content, normalized_truncated = _normalize_page_content(
+                raw_content["content"],
+                max_content_chars,
+            )
+            truncated = bool(raw_content.get("truncated")) or normalized_truncated
+            return DebugChromePageContent(
+                source_url=source_url,
+                final_url=final_url,
+                title=title,
+                content=content,
+                truncated=truncated,
+            )
+    except DebugChromePageReadError:
+        raise
+    except Exception as exc:
+        if blocked_navigation is not None:
+            raise blocked_navigation from exc
+        raise DebugChromePageReadError("网页内容读取失败") from exc
+    finally:
+        if page is not None and not page.is_closed():
+            try:
+                await page.close()
+            except Exception:
+                pass
 
 
 def _chrome_debug_module():

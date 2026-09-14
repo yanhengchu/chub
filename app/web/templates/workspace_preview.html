@@ -169,7 +169,7 @@
               </section>
               {% endif %}
               <section class="deliveryline-detail-preview" aria-labelledby="deliveryline-preview-detail-title">
-                <header class="deliveryline-preview-section-heading"><div><p class="section-kicker">已选中需求</p><h3 id="deliveryline-preview-detail-title">{% if deliveryline_requirements %}{% if deliveryline_requirements[0].is_initialized %}未命名需求 · {{ deliveryline_requirements[0].id }}{% else %}{{ deliveryline_requirements[0].title }}{% endif %}{% else %}请选择或新建需求{% endif %}</h3></div></header>
+                <header class="deliveryline-preview-section-heading"><div><h3 id="deliveryline-preview-detail-title">需求详情</h3><p>查看所选需求的阶段进度、当前工作和需求档案。</p></div></header>
                 <div id="deliveryline-detail" class="deliveryline-detail-preview-content"{% if not deliveryline_requirements %} hidden{% endif %}></div>
               </section>
               {% if deliveryline.status != 'enabled' %}<p class="workstation-status-detail workstation-status-detail-warning">{{ deliveryline.detail }}</p>{% endif %}

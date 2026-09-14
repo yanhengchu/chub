@@ -462,6 +462,27 @@ def test_multipart_notification_repeats_summary_within_each_limit() -> None:
     assert all("Task · 检查 Ubuntu 服务状态" in message for message in messages)
 
 
+def test_resend_task_result_uses_current_route_for_page_task() -> None:
+    notifier = OpenClawCompletionNotifier(
+        OpenClawCompletionNotificationConfig(enabled=True)
+    )
+    notifier._send_messages = MagicMock(
+        return_value=CompletionNotificationResult("sent")
+    )
+    route = QuickInteractionWeixinRoute(
+        account_id="weixin-account",
+        recipient="owner@im.wechat",
+    )
+
+    result = notifier.resend_weixin_task_result(task(result="电脑端完成结果"), route)
+
+    assert result.status == "sent"
+    kwargs = notifier._send_messages.call_args.kwargs
+    assert kwargs["required_account_id"] == "weixin-account"
+    assert kwargs["recipient"] == "owner@im.wechat"
+    assert "电脑端完成结果" in kwargs["message_factory"]()[0]
+
+
 def test_multipart_notification_uses_one_current_session_snapshot() -> None:
     notifier = OpenClawCompletionNotifier(
         OpenClawCompletionNotificationConfig(max_message_chars=256)

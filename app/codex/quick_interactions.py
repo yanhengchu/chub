@@ -49,6 +49,7 @@ from app.quick_worker_tasks import (
     WorkerTaskView,
     new_worker_task_id,
 )
+from app.task_capabilities import TaskCapabilityId
 
 
 MAX_RESULT_BYTES = 100_000
@@ -454,9 +455,11 @@ class QuickInteractionManager:
         suppress_completion_notification: bool = False,
         summary_max_chars: int = TASK_SUMMARY_MAX_LENGTH,
         summary_max_width: int | None = None,
+        capability_ids: tuple[TaskCapabilityId, ...] | list[TaskCapabilityId] = (),
     ) -> QuickInteractionTask:
         self._require_worker_recovery()
         queued_translation = kind == "translation"
+        normalized_capability_ids = sorted(set(capability_ids))
         with self._session_lock(session_id):
             session = self.codex_manager.get_session(session_id)
             if session.status == "error" and not queued_translation:
@@ -559,6 +562,7 @@ class QuickInteractionManager:
                         if kind == "translation"
                         else session.reasoning_effort
                     ),
+                    capability_ids=normalized_capability_ids,
                     restart_sensitive=restart_sensitive,
                     status="requested",
                     notification_status=(
@@ -1497,6 +1501,24 @@ class QuickInteractionManager:
             reverse=True,
         )
 
+    def latest_completed_standard_task(
+        self,
+        session_id: str,
+    ) -> QuickInteractionTask | None:
+        """Return the latest deliverable main-task result for one Session."""
+        self.codex_manager.get_session(session_id)
+        with self._lock:
+            candidates = [
+                task.model_copy(deep=True)
+                for task in self._tasks.values()
+                if task.session_id == session_id
+                and task.kind == "standard"
+                and task.status in {"succeeded", "failed", "timed_out"}
+            ]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda item: (item.created_at, item.id))
+
     def weixin_task_status_snapshot(
         self,
         route: QuickInteractionWeixinRoute,
@@ -2201,12 +2223,13 @@ class QuickInteractionManager:
             prompt=(
                 prompt
                 if task.kind == "translation"
-                else self._codex_execution_prompt(prompt)
+                else self._codex_execution_prompt(prompt, task.capability_ids)
             ),
             permission_profile=permission_profile,
             native_session_id=session.native_session_id,
             model=model,
             reasoning_effort=reasoning_effort,
+            capability_ids=task.capability_ids,
             timeout_seconds=self.timeout_seconds,
             task_kind=task_kind,
             restart_sensitive=task.restart_sensitive,
@@ -2229,9 +2252,12 @@ class QuickInteractionManager:
         try:
             for retry_delay in (*WORKER_CONNECTION_RETRY_DELAYS, None):
                 try:
+                    task_payload = submission.model_dump(mode="json")
+                    if not submission.capability_ids:
+                        task_payload.pop("capability_ids", None)
                     accepted = self._worker_call(
                         "runtime_task_submit",
-                        task=submission.model_dump(mode="json"),
+                        task=task_payload,
                     )
                     break
                 except WorkerRequestNotSent:
@@ -2245,9 +2271,12 @@ class QuickInteractionManager:
             raise
         except OSError as submit_error:
             try:
+                task_payload = submission.model_dump(mode="json")
+                if not submission.capability_ids:
+                    task_payload.pop("capability_ids", None)
                 accepted = self._worker_call(
                     "runtime_task_submit",
-                    task=submission.model_dump(mode="json"),
+                    task=task_payload,
                 )
             except OSError as retry_error:
                 raise _WorkerSubmissionUncertain(submission) from retry_error
@@ -2425,8 +2454,19 @@ class QuickInteractionManager:
         )
 
     @staticmethod
-    def _codex_execution_prompt(prompt: str) -> str:
-        return f"[用户需求]\n{prompt}\n\n{CODEX_QUICK_INTERACTION_INSTRUCTIONS}"
+    def _codex_execution_prompt(
+        prompt: str,
+        capability_ids: tuple[TaskCapabilityId, ...] | list[TaskCapabilityId] = (),
+    ) -> str:
+        grants = ""
+        if "chub.debug_chrome.page.read" in capability_ids:
+            grants = (
+                "\n\n[本次任务已授予的 Chub 能力]\n"
+                "- chub.debug_chrome.page.read：仅在需要读取公共网页正文时，调用 "
+                "`chub capability page-read --url <URL>`。该命令返回 JSON 正文快照；"
+                "不得改用 Debug Chrome、CDP、浏览器配置或其他页面交互方式。"
+            )
+        return f"[用户需求]\n{prompt}{grants}\n\n{CODEX_QUICK_INTERACTION_INSTRUCTIONS}"
 
     @staticmethod
     def _session_title(prompt: str) -> str:

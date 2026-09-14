@@ -5,6 +5,7 @@ import json
 import os
 import re
 import stat
+import subprocess
 import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -40,6 +41,10 @@ class DeliverylineReviewNotReady(DeliverylineError):
     def __init__(self, fields: list[str]) -> None:
         self.fields = fields
         super().__init__("进入需求评审前仍需补充：" + "、".join(fields))
+
+
+class DeliverylineTransitionNotAllowed(DeliverylineError):
+    pass
 
 
 class StrictModel(BaseModel):
@@ -154,6 +159,10 @@ class DeliverylineStore:
     def submit_for_review(self, requirement_id: str) -> Requirement:
         with self._locked():
             record = self._read(self._path(requirement_id))
+            if record.workflow.delivery_status == "已归档":
+                raise DeliverylineTransitionNotAllowed("已归档需求不能提交需求评审。")
+            if record.workflow.current_stage != "需求提出":
+                raise DeliverylineTransitionNotAllowed("仅处于需求提出阶段的需求可以提交需求评审。")
             missing = self.review_missing(record)
             if missing:
                 raise DeliverylineReviewNotReady(missing)
@@ -182,6 +191,7 @@ class DeliverylineStore:
         with self._locked():
             path = self._path(requirement_id)
             self._read(path)
+            self._assert_git_write_safe(path)
             try:
                 path.unlink()
             except FileNotFoundError as exc:
@@ -252,6 +262,7 @@ class DeliverylineStore:
         if len(content) > MAX_REQUIREMENT_BYTES:
             raise DeliverylineUnavailable("需求档案超过固定大小上限。")
         path = self._path(record.id)
+        self._assert_git_write_safe(path)
         temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
         try:
             with open(temporary, "xb") as file:
@@ -265,6 +276,45 @@ class DeliverylineStore:
             raise DeliverylineUnavailable("需求档案无法保存。") from exc
         finally:
             temporary.unlink(missing_ok=True)
+
+    @staticmethod
+    def _git_repository_root(path: Path) -> Path | None:
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+                capture_output=True,
+                check=False,
+                timeout=2,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise DeliverylineUnavailable("无法确认需求档案同步状态。") from exc
+        if result.returncode == 0:
+            try:
+                return Path(result.stdout.decode("utf-8").strip()).resolve()
+            except (UnicodeError, OSError) as exc:
+                raise DeliverylineUnavailable("无法确认需求档案同步状态。") from exc
+        if result.returncode == 128 and b"not a git repository" in result.stderr.lower():
+            return None
+        raise DeliverylineUnavailable("无法确认需求档案同步状态。")
+
+    def _assert_git_write_safe(self, path: Path) -> None:
+        repository = self._git_repository_root(path.parent)
+        if repository is None:
+            return
+        try:
+            relative_path = path.resolve().relative_to(repository).as_posix()
+            result = subprocess.run(
+                ["git", "-C", str(repository), "ls-files", "-u", "--", relative_path],
+                capture_output=True,
+                check=False,
+                timeout=2,
+            )
+        except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+            raise DeliverylineUnavailable("无法确认需求档案同步状态。") from exc
+        if result.returncode != 0:
+            raise DeliverylineUnavailable("无法确认需求档案同步状态。")
+        if result.stdout.strip():
+            raise DeliverylineUnavailable("需求档案存在未解决的 Git 冲突，请先处理后再保存。")
 
     @staticmethod
     def _append(record: Requirement, now: datetime, action: Literal["created", "updated", "submitted_for_review", "archived"], summary: str) -> None:

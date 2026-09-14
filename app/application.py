@@ -106,7 +106,7 @@ from app.quick_worker import (
 from app.notifications import NotificationService
 from app.web.routes import STATIC_DIR, router as web_router
 from app.api.deliveryline import router as deliveryline_router
-from app.deliveryline import DeliverylineStore
+from app.deliveryline import DeliverylineCollaboration, DeliverylineStore
 
 
 async def _confirm_healthy_instance(
@@ -427,6 +427,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         translation_confirmation_notifier=(
             completion_notifier.notify_weixin_translation_confirmation
         ),
+        last_result_notifier=completion_notifier.resend_weixin_task_result,
     )
     plugin_lifecycle = PluginLifecycleService(
         resolved_settings,
@@ -1260,6 +1261,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.plugin_lifecycle = plugin_lifecycle
     application.state.deliveryline_store = DeliverylineStore(
         resolved_settings.business_modules.deliveryline_requirements_dir,
+        resolved_settings.business_modules.deliveryline_state_dir,
+    )
+    application.state.deliveryline_collaboration = DeliverylineCollaboration(
         resolved_settings.business_modules.deliveryline_state_dir,
     )
     application.state.weixin_translation = weixin_translation

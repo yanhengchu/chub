@@ -808,7 +808,7 @@ def test_removed_status_aliases_are_submitted_as_normal_tasks(
         (
             "help",
             "Commands\n\n"
-            "chub · check · usage · sync · new [title] · S# [task]\n\n"
+            "chub · check · usage · last · sync · new [title] · S# [task]\n\n"
             "codex auth · codex auth switch\n\n"
             "stop [S#] · retry · archive S# · del S#\n\n"
             "More commands\n\n"
@@ -844,7 +844,8 @@ def test_removed_status_aliases_are_submitted_as_normal_tasks(
             "stop [S#]\n\n"
             "archive S#\n\n"
             "del S#\n\n"
-            "retry",
+            "retry\n\n"
+            "last",
         ),
         (
             "REQUEST HELP",

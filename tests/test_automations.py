@@ -23,7 +23,11 @@ from app.automations.extensions import (
 )
 from app.automations.lock import file_lock
 from app.automations.manager import AutomationManager, _feishu_environment_for_url
-from app.automations.browser import BrowserProfileInfo
+from app.automations.browser import (
+    BrowserProfileInfo,
+    DebugChromePageReadError,
+    read_debug_chrome_page,
+)
 from app.automations.models import (
     AutomationState,
     BrowserControlResult,
@@ -1370,6 +1374,155 @@ def test_browser_task_uses_and_closes_its_own_page(
     assert target.parent.stat().st_mode & 0o777 == 0o700
     assert task_page.closed is True
     assert existing_page.closed is False
+
+
+def test_debug_chrome_page_reader_returns_bounded_owned_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakePage:
+        url = "https://example.com/final"
+        closed = False
+
+        async def goto(self, url, **_kwargs):
+            assert url == "https://example.com/source"
+
+        async def title(self):
+            return " 示例页面 "
+
+        async def route(self, pattern, handler):
+            assert pattern == "**/*"
+            self.route_handler = handler
+
+        async def evaluate(self, _script, maximum):
+            assert maximum == 5
+            return {"content": "  第一段  \n\n第二段\n", "truncated": True}
+
+        def is_closed(self):
+            return self.closed
+
+        async def close(self):
+            self.closed = True
+
+    page = FakePage()
+
+    class FakeContext:
+        async def new_page(self):
+            return page
+
+    session_options = {}
+
+    @asynccontextmanager
+    async def fake_session(**kwargs):
+        session_options.update(kwargs)
+        yield SimpleNamespace(context=FakeContext())
+
+    monkeypatch.setattr(
+        "app.automations.browser.debug_chrome_status",
+        lambda: ("running", "已运行", "无界面"),
+    )
+    monkeypatch.setattr("app.automations.browser._assert_public_host", lambda _host: None)
+    monkeypatch.setattr("app.automations.browser.session_factory", lambda: fake_session)
+
+    snapshot = asyncio.run(
+        read_debug_chrome_page(
+            "https://example.com/source",
+            max_content_chars=5,
+        )
+    )
+
+    assert snapshot.source_url == "https://example.com/source"
+    assert snapshot.final_url == "https://example.com/final"
+    assert snapshot.title == "示例页面"
+    assert snapshot.content == "第一段\n第"
+    assert snapshot.truncated is True
+    assert page.closed is True
+    assert session_options == {"ensure_page": False, "retry_connection": True}
+
+
+def test_debug_chrome_page_reader_blocks_private_redirect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeRequest:
+        url = "https://127.0.0.1/internal"
+
+        def is_navigation_request(self):
+            return True
+
+    class FakeRoute:
+        request = FakeRequest()
+        aborted = False
+
+        async def abort(self):
+            self.aborted = True
+
+        async def continue_(self):
+            raise AssertionError("private redirect must not continue")
+
+    class FakePage:
+        closed = False
+
+        async def route(self, _pattern, handler):
+            self.handler = handler
+
+        async def goto(self, _url, **_kwargs):
+            route = FakeRoute()
+            await self.handler(route)
+            assert route.aborted is True
+            raise RuntimeError("navigation aborted")
+
+        def is_closed(self):
+            return self.closed
+
+        async def close(self):
+            self.closed = True
+
+    page = FakePage()
+
+    class FakeContext:
+        async def new_page(self):
+            return page
+
+    @asynccontextmanager
+    async def fake_session(**_kwargs):
+        yield SimpleNamespace(context=FakeContext())
+
+    monkeypatch.setattr(
+        "app.automations.browser.debug_chrome_status",
+        lambda: ("running", "已运行", "无界面"),
+    )
+    from app.automations.browser import _assert_public_host as assert_public_host
+
+    def allow_initial_host(host: str) -> None:
+        if host == "example.com":
+            return
+        assert_public_host(host)
+
+    monkeypatch.setattr(
+        "app.automations.browser._assert_public_host",
+        allow_initial_host,
+    )
+    monkeypatch.setattr("app.automations.browser.session_factory", lambda: fake_session)
+
+    with pytest.raises(DebugChromePageReadError, match="本机或内网"):
+        asyncio.run(read_debug_chrome_page("https://example.com/source"))
+
+    assert page.closed is True
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "file:///etc/passwd",
+        "https://user:secret@example.com/page",
+        "https://127.0.0.1/page",
+        "https://example.com:8443/page",
+        "http://example.com:443/page",
+        "https://example.com:80/page",
+    ],
+)
+def test_debug_chrome_page_reader_rejects_unsafe_urls(url: str) -> None:
+    with pytest.raises(DebugChromePageReadError):
+        asyncio.run(read_debug_chrome_page(url))
 
 
 def test_run_automation_rejects_duplicate_task_lock(

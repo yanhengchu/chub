@@ -131,6 +131,7 @@ FIXED_COMMAND_STATUS_CODES = frozenset(
         "network_restart_requested",
         "chub_slots_synced",
         "codex_retry_checked",
+        "codex_last_checked",
         "codex_session_archived",
         "codex_session_deleted",
         "codex_session_created",
@@ -192,6 +193,10 @@ class WeixinChubModeManager:
             [QuickInteractionWeixinRoute, Callable[[], str]], object
         ]
         | None = None,
+        last_result_notifier: Callable[
+            [QuickInteractionTask, QuickInteractionWeixinRoute], object
+        ]
+        | None = None,
         development_stage: WeixinDevelopmentStage | None = None,
         orchestration_plugin_service: WeixinOrchestrationPluginService | None = None,
     ) -> None:
@@ -222,6 +227,7 @@ class WeixinChubModeManager:
         self.codex_auth_reader = codex_auth_reader
         self.codex_auth_switcher = codex_auth_switcher
         self.codex_auth_notifier = codex_auth_notifier
+        self.last_result_notifier = last_result_notifier
         self.development_stage = development_stage or WeixinDevelopmentStage()
         self.orchestration_plugin_service = (
             orchestration_plugin_service
@@ -2380,6 +2386,19 @@ class WeixinChubModeManager:
                         ),
                         delivery_route,
                     )
+                if (
+                    duplicate.status == "reserved"
+                    and duplicate.code == "codex_last_checked"
+                ):
+                    self._log_standalone_dispatch("failed", source_ip)
+                    return self._finalize_fixed_command_result(
+                        command.kind,
+                        WeixinChubModeDispatchResult(
+                            disposition="reply",
+                            message=duplicate.message,
+                        ),
+                        delivery_route,
+                    )
                 if duplicate.dispatch_disposition == "handled":
                     self._log_standalone_dispatch("succeeded", source_ip)
                     return WeixinChubModeDispatchResult(
@@ -2452,6 +2471,15 @@ class WeixinChubModeManager:
                         create_new_session=False,
                     ),
                     delivery_route,
+                )
+
+            if command.kind == "last":
+                return self._dispatch_last_result(
+                    message_id=message_id,
+                    correlation_id=correlation_id,
+                    route_fingerprint=route_fingerprint,
+                    source_ip=source_ip,
+                    delivery_route=delivery_route,
                 )
 
             if command.kind == "new":
@@ -3056,6 +3084,138 @@ class WeixinChubModeManager:
             task_session_id=self._state.session_id,
             task_session_slot=submission.session_slot,
             task_session_title=submission.session_title,
+        )
+
+    def _dispatch_last_result(
+        self,
+        *,
+        message_id: str,
+        correlation_id: str | None,
+        route_fingerprint: str,
+        source_ip: str,
+        delivery_route: QuickInteractionWeixinRoute,
+    ) -> WeixinChubModeDispatchResult:
+        operation_id = uuid4().hex
+        self._log_dispatch(operation_id, "requested", source_ip)
+        self._log_dispatch(operation_id, "started", source_ip)
+        session_id = self._state.session_id
+        if session_id is None:
+            return self._remember_fixed_reply(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                operation_id=operation_id,
+                route_fingerprint=route_fingerprint,
+                source_ip=source_ip,
+                message="Last: No current Session is selected.",
+                code="codex_last_checked",
+                failed=True,
+            )
+        try:
+            task = self.quick_interactions.latest_completed_standard_task(session_id)
+        except Exception:
+            LOGGER.warning("Unable to read the latest completed Weixin task", exc_info=True)
+            return self._remember_fixed_reply(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                operation_id=operation_id,
+                route_fingerprint=route_fingerprint,
+                source_ip=source_ip,
+                message="Last: The previous task result is unavailable.",
+                code="codex_last_checked",
+                session_id=session_id,
+                failed=True,
+            )
+        if task is None:
+            return self._remember_fixed_reply(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                operation_id=operation_id,
+                route_fingerprint=route_fingerprint,
+                source_ip=source_ip,
+                message="Last: No completed task result is available in the current Session.",
+                code="codex_last_checked",
+                session_id=session_id,
+                failed=True,
+            )
+        if self.last_result_notifier is None:
+            return self._remember_fixed_reply(
+                message_id=message_id,
+                correlation_id=correlation_id,
+                operation_id=operation_id,
+                route_fingerprint=route_fingerprint,
+                source_ip=source_ip,
+                message="Last: Result delivery is unavailable.",
+                code="codex_last_checked",
+                session_id=session_id,
+                failed=True,
+            )
+
+        now = utc_now()
+        reservation = WeixinChubModeSubmission(
+            message_id=message_id,
+            correlation_id=correlation_id,
+            operation_id=operation_id,
+            delivery_route_fingerprint=route_fingerprint,
+            status="reserved",
+            code="codex_last_checked",
+            message="Last: Result delivery could not be confirmed. Send last again.",
+            http_status=503,
+            session_id=session_id,
+            dispatch_disposition="reply",
+            created_at=now,
+            updated_at=now,
+        )
+        next_state = self._state.model_copy(deep=True)
+        next_state.submissions.append(reservation)
+        try:
+            self._write_state(next_state)
+        except OSError:
+            self._state_error = True
+            self._log_dispatch(operation_id, "failed", source_ip)
+            return self._dispatch_failure("state_unavailable")
+        self._state = next_state
+
+        try:
+            notification = self.last_result_notifier(task, delivery_route)
+            sent = getattr(notification, "status", None) == "sent"
+            error = getattr(notification, "error", None)
+        except Exception:
+            LOGGER.warning("Unable to resend the latest Weixin task result", exc_info=True)
+            sent = False
+            error = "微信结果未送达。"
+        if sent:
+            reservation.status = "routed"
+            reservation.message = "Last: Result was resent."
+            reservation.http_status = 200
+            reservation.dispatch_disposition = "handled"
+        else:
+            reservation.status = "routed"
+            reservation.message = (
+                "Last: Result was not resent. "
+                f"{error or 'Try again later.'}"
+            )
+            reservation.http_status = 503
+            reservation.dispatch_disposition = "reply"
+        reservation.updated_at = utc_now()
+        try:
+            self._replace_submission(reservation)
+        except OSError:
+            self._state_error = True
+            self._log_dispatch(operation_id, "failed", source_ip)
+            return WeixinChubModeDispatchResult(
+                disposition="reply",
+                message="Last: Result delivery could not be confirmed. Send last again.",
+            )
+        self._log_dispatch(operation_id, "succeeded" if sent else "failed", source_ip)
+        if sent:
+            return WeixinChubModeDispatchResult(disposition="handled")
+        return self._finalize_fixed_command_result(
+            "last",
+            WeixinChubModeDispatchResult(
+                disposition="reply",
+                message=reservation.message,
+            ),
+            delivery_route,
         )
 
     def _finish_retry_command(

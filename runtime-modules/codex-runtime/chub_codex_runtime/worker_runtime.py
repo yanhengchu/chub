@@ -92,6 +92,20 @@ class CodexWorkerRuntime:
                 "CHUB_QUICK_TASK_ID": request.task_id,
                 "CHUB_QUICK_RESTART_DIR": str(request.restart_request_dir),
             }
+        if request.turn is not None and request.turn.capability_ids:
+            if request.capability_token is None:
+                raise RuntimeOperationError(
+                    "task_capability_context_unavailable",
+                    "Task capability context is unavailable",
+                )
+            environment.update(
+                {
+                    "CHUB_TASK_CAPABILITY_CONTEXT": str(
+                        request.task_dir / "capability-context.json"
+                    ),
+                    "CHUB_TASK_CAPABILITY_TOKEN": request.capability_token,
+                }
+            )
         return RuntimeWorkerLaunchSpec(
             argv=tuple(argv),
             stdin_prompt=True,

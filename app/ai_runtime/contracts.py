@@ -6,6 +6,8 @@ from typing import Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.task_capabilities import TaskCapabilityId
+
 
 RuntimeCapability = Literal[
     "runtime_status",
@@ -123,6 +125,7 @@ class RuntimeTurnRequest(_StrictModel):
     native_session_id: str | None = Field(default=None, min_length=1, max_length=128)
     model: str | None = Field(default=None, min_length=1, max_length=128)
     reasoning_effort: str | None = Field(default=None, min_length=1, max_length=32)
+    capability_ids: list[TaskCapabilityId] = Field(default_factory=list, max_length=8)
 
 
 class RuntimeNativeSession(_StrictModel):

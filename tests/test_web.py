@@ -1063,6 +1063,9 @@ async def test_deliveryline_workspace_section_follows_import_lifecycle(
         submitted = await client.post(
             f"/api/deliveryline/requirements/{requirement_id}/submit-review"
         )
+        resubmitted = await client.post(
+            f"/api/deliveryline/requirements/{requirement_id}/submit-review"
+        )
         archived_created = await client.post(
             "/api/deliveryline/requirements",
             json={"description": "需要保留的归档需求。"},
@@ -1099,6 +1102,8 @@ async def test_deliveryline_workspace_section_follows_import_lifecycle(
     assert updated.status_code == 200
     assert submitted.status_code == 200
     assert submitted.json()["data"]["current_stage"] == "需求评审"
+    assert resubmitted.status_code == 409
+    assert resubmitted.json()["error"]["code"] == "deliveryline_transition_not_allowed"
     assert archived.status_code == 200
     assert deleted.status_code == 200
     assert deleted.json()["data"]["id"] == deleted_created.json()["data"]["id"]
@@ -1116,6 +1121,8 @@ async def test_deliveryline_workspace_section_follows_import_lifecycle(
     )
     assert "需求提出" in enabled_page.text
     assert "管理需求交付" in enabled_page.text
+    assert 'id="deliveryline-preview-detail-title">需求详情</h3>' in enabled_page.text
+    assert "查看所选需求的阶段进度、当前工作和需求档案。" in enabled_page.text
     assert "已归档需求" in enabled_page.text
     assert f"未命名需求 · {archived_created.json()['data']['id']}" in enabled_page.text
     assert removed.status_code == 200

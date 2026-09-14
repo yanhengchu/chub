@@ -51,6 +51,7 @@ WeixinChubModeSubmissionCode = Literal[
     "codex_session_deleted",
     "codex_session_created",
     "codex_retry_checked",
+    "codex_last_checked",
     "chub_slots_synced",
     "chub_restart_requested",
     "quick_worker_restart_requested",

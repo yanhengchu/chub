@@ -102,6 +102,16 @@ def list_sessions(
             listed_sessions, native_sessions = combined_sessions
         else:
             listed_sessions = manager.list_sessions()
+    deliveryline_collaboration = getattr(
+        request.app.state,
+        "deliveryline_collaboration",
+        None,
+    )
+    hidden_deliveryline_session_ids = (
+        deliveryline_collaboration.hidden_session_ids()
+        if deliveryline_collaboration is not None
+        else set()
+    )
     sessions = [
         session.model_copy(
             update={
@@ -116,6 +126,7 @@ def list_sessions(
         )
         for session in listed_sessions
         if session.workspace_id != "weixin-translation"
+        and session.id not in hidden_deliveryline_session_ids
     ]
     available, unavailable_reason = manager.submission_available()
     if available:

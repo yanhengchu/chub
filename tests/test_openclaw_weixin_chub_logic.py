@@ -63,6 +63,7 @@ from app.services.openclaw_weixin_chub_models import (
         ("restart network", "restart_network", None, None, False),
         ("upgrade", "upgrade", None, None, False),
         ("retry", "retry", None, None, False),
+        ("LAST。", "last", None, None, False),
         ("stop", "stop", None, None, False),
         ("stop S2", "stop", 2, None, False),
         ("rename Project maintenance", "rename", None, "Project maintenance", False),

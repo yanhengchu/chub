@@ -81,6 +81,8 @@ Commands:
   notification
              Validate, list, test, or send configured notifications
   request    Save, update, archive, or inspect the local request backlog
+  capability page-read --url <URL>
+             Read one public page when the current Chub AI task granted it
   uninstall [--force]
              Remove the user service and chub command
   help       Show this help
@@ -1631,6 +1633,14 @@ case "$command" in
         (
             cd "$PROJECT_ROOT"
             "$PYTHON_BIN" -m app.requests.command "$@"
+        )
+        ;;
+    capability)
+        shift
+        [[ "${1:-}" == "page-read" ]] || { usage >&2; fail "usage: chub capability page-read --url <URL>"; }
+        (
+            cd "$PROJECT_ROOT"
+            "$PYTHON_BIN" -m app.task_capabilities.command "$@"
         )
         ;;
     chrome)

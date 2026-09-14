@@ -87,6 +87,42 @@ def test_runtime_task_stored_digest_includes_implementation_id() -> None:
         native_session_id=submission.native_session_id,
         model=submission.model,
         reasoning_effort=submission.reasoning_effort,
+        capability_ids=submission.capability_ids,
+        timeout_seconds=submission.timeout_seconds,
+        task_kind=submission.task_kind,
+        restart_sensitive=submission.restart_sensitive,
+        created_at=created_at,
+        deadline_at=created_at + timedelta(seconds=submission.timeout_seconds),
+    )
+
+    assert _digest_stored_spec(spec) == spec.spec_sha256
+
+
+def test_runtime_task_capability_ids_are_part_of_the_stored_digest() -> None:
+    created_at = datetime.now(UTC)
+    submission = RuntimeTaskSubmission(
+        task_id=new_worker_task_id(created_at),
+        runtime_id="codex",
+        implementation_id="builtin-dev",
+        session_id="quick-session",
+        workspace_id="isolated",
+        prompt="read a page",
+        permission_profile="read-only",
+        capability_ids=["chub.debug_chrome.page.read"],
+        timeout_seconds=60,
+    )
+    spec = StoredTaskSpec(
+        protocol_version=PROTOCOL_VERSION,
+        task_id=submission.task_id,
+        runtime_id=submission.runtime_id,
+        implementation_id=submission.implementation_id,
+        prompt=submission.prompt,
+        prompt_sha256=hashlib.sha256(submission.prompt.encode()).hexdigest(),
+        spec_sha256=_digest_submission(submission),
+        session_id=submission.session_id,
+        workspace_id=submission.workspace_id,
+        permission_profile=submission.permission_profile,
+        capability_ids=submission.capability_ids,
         timeout_seconds=submission.timeout_seconds,
         task_kind=submission.task_kind,
         restart_sensitive=submission.restart_sensitive,
@@ -319,6 +355,38 @@ def test_worker_remains_available_when_shortcut_directory_is_missing(
     )
 
     assert runtime.available is True
+
+
+def test_codex_runtime_passes_only_task_capability_context(tmp_path: Path) -> None:
+    runtime = CodexWorkerRuntime(
+        MagicMock(),
+        executable=str(_fake_codex(tmp_path)),
+        workspaces={"isolated": tmp_path},
+    )
+    turn = RuntimeTurnRequest(
+        permission_profile="read-only",
+        capability_ids=["chub.debug_chrome.page.read"],
+    )
+
+    launch = runtime.build_launch(
+        RuntimeWorkerLaunchRequest(
+            task_id="task-1",
+            task_dir=tmp_path / "task-1",
+            release_fd=0,
+            session_id="session-1",
+            task_kind="standard",
+            workspace_id="isolated",
+            turn=turn,
+            capability_token="a" * 32,
+            restart_request_dir=tmp_path / "restart",
+        )
+    )
+
+    assert launch.environment["CHUB_TASK_CAPABILITY_CONTEXT"] == str(
+        tmp_path / "task-1" / "capability-context.json"
+    )
+    assert launch.environment["CHUB_TASK_CAPABILITY_TOKEN"] == "a" * 32
+    assert "CHUB_DEBUG_CHROME_CDP" not in launch.environment
 
 
 def _set_native_archive_state(

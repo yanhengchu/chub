@@ -180,6 +180,21 @@ def test_codex_execution_prompt_adds_delivery_guidance_without_changing_request(
     assert "只能调用 scripts/chub-web-restart 一次" in prompt
 
 
+def test_codex_execution_prompt_includes_only_granted_task_capabilities(
+    tmp_path: Path,
+) -> None:
+    quick_interactions = manager(tmp_path)
+
+    prompt = quick_interactions._codex_execution_prompt(
+        "读取链接正文",
+        ("chub.debug_chrome.page.read",),
+    )
+
+    assert "[本次任务已授予的 Chub 能力]" in prompt
+    assert "chub capability page-read --url <URL>" in prompt
+    assert "CDP" in prompt
+
+
 def test_system_upgrade_reset_prevents_late_task_state_rewrite(tmp_path: Path) -> None:
     quick_interactions = manager(tmp_path)
 
@@ -2550,6 +2565,51 @@ def test_list_for_session_returns_latest_first(tmp_path: Path) -> None:
 
     assert [task.id for task in tasks] == ["newer", "older"]
     assert tasks[0].prompt == "较新"
+
+
+def test_latest_completed_standard_task_excludes_translation_and_active_tasks(
+    tmp_path: Path,
+) -> None:
+    quick_interactions = manager(tmp_path)
+    base = utc_now()
+    completed = QuickInteractionTask(
+        id="completed-standard",
+        session_id="session-1",
+        prompt="电脑端任务",
+        status="succeeded",
+        result="已完成",
+        created_at=base,
+        updated_at=base,
+    )
+    translation = completed.model_copy(
+        update={
+            "id": "translation",
+            "kind": "translation",
+            "prompt": "内部翻译",
+            "created_at": base + timedelta(minutes=2),
+            "updated_at": base + timedelta(minutes=2),
+        }
+    )
+    active = completed.model_copy(
+        update={
+            "id": "active-standard",
+            "status": "running",
+            "result": None,
+            "prompt": "仍在运行",
+            "created_at": base + timedelta(minutes=3),
+            "updated_at": base + timedelta(minutes=3),
+        }
+    )
+    quick_interactions._tasks = {
+        completed.id: completed,
+        translation.id: translation,
+        active.id: active,
+    }
+
+    selected = quick_interactions.latest_completed_standard_task("session-1")
+
+    assert selected is not None
+    assert selected.id == "completed-standard"
 
 
 def test_remove_session_tasks_cleans_persisted_task_and_sidecar_state(
