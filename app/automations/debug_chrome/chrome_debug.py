@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Start, stop, and inspect the Chrome instance owned by chrome-cdp."""
+"""Start, stop, and inspect Chub's managed Debug Chrome instance."""
 
 from __future__ import annotations
 
@@ -23,34 +23,19 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-try:
-    from .chrome_process import (
-        ChromeProcess,
-        is_stable_chrome_executable,
-        linux_chrome_processes,
-        run_process_command,
-    )
-    from .profile_store import (
-        MANIFEST_FILE,
-        active_profile,
-        copied_profiles,
-        profile_display_name,
-        select_profile,
-    )
-except ImportError:
-    from chrome_process import (
-        ChromeProcess,
-        is_stable_chrome_executable,
-        linux_chrome_processes,
-        run_process_command,
-    )
-    from profile_store import (
-        MANIFEST_FILE,
-        active_profile,
-        copied_profiles,
-        profile_display_name,
-        select_profile,
-    )
+from .chrome_process import (
+    ChromeProcess,
+    is_stable_chrome_executable,
+    linux_chrome_processes,
+    run_process_command,
+)
+from .profile_store import (
+    MANIFEST_FILE,
+    active_profile,
+    copied_profiles,
+    profile_display_name,
+    select_profile,
+)
 
 
 DEFAULT_USER_DATA_DIR = Path.home() / "chrome-debug-data"
@@ -735,7 +720,7 @@ def main() -> int:
         else:
             result = status(args.user_data_dir)
     except (OSError, RuntimeError) as exc:
-        print(f"chrome-cdp: {exc}", file=sys.stderr)
+        print(f"Chub Debug Chrome: {exc}", file=sys.stderr)
         return 1
 
     if args.json:

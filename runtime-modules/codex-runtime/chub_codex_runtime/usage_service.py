@@ -41,6 +41,7 @@ class _CollectionOutcome:
     data: AiUsageData | None
     message: str
     identity_key: str | None = None
+    allow_stale: bool = True
 
 
 class AiUsageService:
@@ -164,13 +165,18 @@ class AiUsageService:
                 message = (
                     "AI API 额度账户未登录。"
                     if str(exc) == "provider_login_unavailable"
-                    else "AI API 额度暂不可用。"
+                    else (
+                        "浏览器未启动，额度暂无法获取。"
+                        if str(exc) == "debug_chrome_not_running"
+                        else "AI API 额度暂不可用。"
+                    )
                 )
                 return _CollectionOutcome(
                     "sub2api",
                     None,
                     message,
                     self._sub2api_identity_key(),
+                    allow_stale=False,
                 )
         LOGGER.info("AI authentication type is unavailable: %s", account.message)
         return _CollectionOutcome(None, None, "AI 认证状态暂不可用。")
@@ -271,7 +277,8 @@ class AiUsageService:
     def _stale_or_unavailable(self, outcome: _CollectionOutcome) -> AiUsageData:
         cached = self._cached
         if (
-            cached is not None
+            outcome.allow_stale
+            and cached is not None
             and cached.source == outcome.source
             and cached.weekly
             and outcome.identity_key is not None

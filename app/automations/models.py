@@ -420,6 +420,7 @@ class RuntimeAccountEnvironmentState(StrictAutomationModel):
     auth_mode: Literal["account", "api", "unknown"] = "unknown"
     message: str = "未检查"
     quota_state: Literal["unchecked", "available", "unavailable"] = "unchecked"
+    quota_message: str | None = Field(default=None, min_length=1, max_length=160)
     five_hour_remaining_percent: int | None = Field(default=None, ge=0, le=100)
     weekly_remaining_percent: int | None = Field(default=None, ge=0, le=100)
     checked_at: datetime | None = None

@@ -537,6 +537,55 @@ def test_api_key_mode_reports_provider_account_login_required(
     assert result.message == "AI API 额度账户未登录。"
 
 
+def test_api_key_mode_does_not_retain_cached_quota_after_provider_logout(
+    settings: Settings,
+) -> None:
+    usage_settings = _provider_config().model_copy(
+        update={"provider_base_url": "http://10.20.30.40"}
+    )
+    codex = MagicMock()
+    codex.collect_ai_account_status.return_value = CodexAccountCollection("apiKey")
+    browser = MagicMock()
+    fresh = _provider_collection()
+    fresh = replace(
+        fresh,
+        weekly=fresh.weekly.model_copy(
+            update={"resets_at": datetime.fromisoformat("2099-08-22T15:45:56+08:00")}
+        ),
+    )
+    browser.collect.side_effect = [
+        fresh,
+        ProviderBrowserUnavailable("provider_login_unavailable"),
+    ]
+    service = AiUsageService(usage_settings, codex, settings.automations, browser)
+
+    first = service.read(force=True)
+    second = service.read(force=True)
+
+    assert first.status == "available"
+    assert second.status == "unavailable"
+    assert second.stale is False
+    assert second.weekly is None
+    assert second.five_hour is None
+    assert second.message == "AI API 额度账户未登录。"
+
+
+def test_api_key_mode_reports_browser_not_running_for_quota_collection(
+    settings: Settings,
+) -> None:
+    codex = MagicMock()
+    codex.collect_ai_account_status.return_value = CodexAccountCollection("apiKey")
+    browser = MagicMock()
+    browser.collect.side_effect = ProviderBrowserUnavailable("debug_chrome_not_running")
+    service = AiUsageService(settings, codex, browser)
+
+    result = service.read(force=True)
+
+    assert result.status == "unavailable"
+    assert result.source == "sub2api"
+    assert result.message == "浏览器未启动，额度暂无法获取。"
+
+
 def test_refresh_failure_only_retains_same_source_snapshot(settings: Settings) -> None:
     usage_settings = _provider_config().model_copy(
         update={"provider_base_url": "http://10.20.30.40"}

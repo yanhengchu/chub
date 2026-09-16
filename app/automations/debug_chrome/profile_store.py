@@ -65,7 +65,7 @@ def profile_store_lock(user_data_dir: Path, timeout: float = LOCK_TIMEOUT):
                 continue
             if time.monotonic() >= deadline:
                 raise RuntimeError(
-                    "Another chrome-cdp profile operation is still running"
+                    "Another Chub Debug Chrome profile operation is still running"
                 )
             time.sleep(0.1)
     try:

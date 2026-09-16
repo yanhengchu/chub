@@ -54,9 +54,9 @@ WORKER_RESPONSE = {
     "data": {
         "state": "ready",
         "message": "Quick Worker 已就绪。",
-        "worker_version": "quick-worker-11-runtime-maintenance",
-        "protocol_version": 11,
-        "expected_protocol_version": 11,
+        "worker_version": "quick-worker-12-ai-search-capabilities",
+        "protocol_version": 12,
+        "expected_protocol_version": 12,
         "runtime_state": "available",
         "runtime_message": "Codex 可用。",
         "runtimes": [],
@@ -457,12 +457,12 @@ async def test_deliveryline_workspace_navigation_follows_import_lifecycle(
             await expect(
                 page.get_by_role("heading", name="Deliveryline", exact=True)
             ).to_be_visible()
-            await expect(page.get_by_role("heading", name="进行中需求")).to_be_visible()
-            await expect(page.get_by_text("待我处理", exact=True)).to_be_visible()
-            await expect(page.get_by_text("存在风险", exact=True)).to_be_visible()
-            await expect(page.get_by_text("已交付", exact=True)).to_be_visible()
+            await expect(page.get_by_role("heading", name="交付线列表")).to_be_visible()
+            await expect(page.get_by_text("待澄清", exact=True)).to_be_visible()
+            await expect(page.get_by_text("变更评估中", exact=True)).to_be_visible()
+            await expect(page.get_by_text("已结束", exact=True)).to_be_visible()
             queue_heading_layout = await page.locator(
-                ".deliveryline-workbench-section .deliveryline-preview-section-heading"
+                ".deliveryline-workbench-section:not([hidden]) .deliveryline-preview-section-heading"
             ).evaluate("""(heading) => {
                 const copy = heading.querySelector(':scope > div');
                 const title = heading.querySelector('h3');
@@ -484,9 +484,9 @@ async def test_deliveryline_workspace_navigation_follows_import_lifecycle(
             assert queue_heading_layout["verticalCenterDelta"] < 1
             await page.locator("#deliveryline-create").click()
             await expect(
-                page.get_by_text("将首次提出的原始需求内容直接入库；可输入一句话、链接或混合内容。")
+                page.get_by_text("将原始资料作为一条待澄清交付线入库；可输入一句话、链接或混合内容。")
             ).to_be_visible()
-            await expect(page.get_by_text("原始需求内容", exact=True)).to_be_visible()
+            await expect(page.get_by_text("原始资料", exact=True)).to_be_visible()
             await expect(page.locator("#deliveryline-create-description")).to_be_focused()
             editor_layout = await page.locator("#deliveryline-editor-form").evaluate("""(form) => {
                 const dialog = document.querySelector("#deliveryline-editor");
@@ -544,43 +544,45 @@ async def test_deliveryline_workspace_navigation_follows_import_lifecycle(
                 assert theme_field["color"] != "rgba(0, 0, 0, 0)"
             await page.locator("#deliveryline-create-description").fill("https://example.com/requirements")
             await page.locator("#deliveryline-editor-submit").click()
-            source_link = page.locator('#deliveryline-detail a[href="https://example.com/requirements"]')
+            await expect(page.locator("#deliveryline-active-list .deliveryline-requirement-row")).to_have_count(1)
+            source_link = page.locator('#deliveryline-detail a[href="https://example.com/requirements"]').first
             await expect(source_link).to_be_visible()
             await expect(source_link).to_have_attribute("target", "_blank")
             await expect(source_link).to_have_attribute("rel", "noopener noreferrer")
-            await expect(page.locator(".deliveryline-workbench-list strong").filter(has_text=re.compile(r"^未命名需求 · DL-"))).to_be_visible()
-            await expect(page.get_by_role("heading", name="需求详情", exact=True)).to_be_visible()
-            await expect(page.get_by_text("查看所选需求的阶段进度、当前工作和需求档案。", exact=True)).to_be_visible()
-            await expect(page.locator(".deliveryline-detail-preview-identifier strong")).to_have_text(re.compile(r"^未命名需求 · DL-"))
-            detail_order = await page.locator("#deliveryline-detail").evaluate("""(detail) =>
-                [...detail.children].slice(0, 3).map((item) => item.className)
-            """)
-            assert detail_order == [
-                "deliveryline-detail-preview-identifier",
-                "deliveryline-detail-preview-progress",
-                "deliveryline-detail-preview-current",
-            ]
-            await expect(page.get_by_text("推进进度", exact=True)).to_be_visible()
-            await expect(page.get_by_text("大阶段", exact=True)).to_have_count(0)
-            await expect(page.get_by_text("小阶段", exact=True)).to_have_count(0)
-            await expect(page.get_by_text("当前阶段", exact=True)).to_be_visible()
-            await expect(page.get_by_role("heading", name="需求提出 · 需求整理与档案补全", exact=True)).to_be_visible()
-            await expect(page.get_by_text("阶段目标：形成可讨论的需求目标、场景、范围、约束和验收预期。", exact=True)).to_have_count(0)
-            await expect(page.get_by_text("当前目标：保留原始需求，补全为可提交评审的正式档案。", exact=True)).to_be_visible()
-            await expect(page.get_by_role("heading", name="待补充内容", exact=True)).to_be_visible()
-            await expect(page.get_by_text("原始需求入库", exact=True)).to_be_visible()
-            await expect(page.get_by_text("1-1", exact=True)).to_have_count(0)
-            await expect(page.get_by_text("1-2", exact=True)).to_have_count(0)
-            await expect(page.locator(".deliveryline-preview-substages").get_by_text("需求整理与档案补全", exact=True)).to_be_visible()
-            substages = page.locator(".deliveryline-preview-substages li")
-            await expect(substages.nth(0)).to_have_class(re.compile(r"\bis-complete\b"))
-            await expect(substages.nth(1)).to_have_class(re.compile(r"\bis-current\b"))
-            await expect(page.get_by_role("button", name="AI 协作", exact=True)).to_be_enabled()
-            await expect(page.locator("#deliveryline-detail").get_by_text("原始需求内容", exact=True)).to_have_count(0)
-            await expect(page.get_by_role("heading", name="评审准备度")).to_have_count(0)
-            await expect(page.get_by_role("heading", name="活动记录")).to_have_count(0)
-            await expect(page.locator(".deliveryline-detail-preview-content.is-initialized")).to_be_visible()
-            await expect(page.locator("#deliveryline-detail-stage")).to_have_count(0)
+            await expect(page.get_by_role("heading", name="交付线详情", exact=True)).to_be_visible()
+            await expect(page.get_by_text("先澄清并确认整体目标；确认后才出现交付项。", exact=True)).to_be_visible()
+            await expect(page.get_by_role("heading", name="等待 AI 整体澄清", exact=True)).to_be_visible()
+            await expect(page.get_by_text("目标版本", exact=True)).to_be_visible()
+            await expect(page.get_by_text("尚未建立", exact=True)).to_be_visible()
+            await expect(page.get_by_text("AI 先理解资料并给出候选；维护者确认或修正后才会形成交付项。", exact=True)).to_be_visible()
+            await expect(page.locator("#deliveryline-detail > .deliveryline-line-overview")).to_have_count(1)
+            await expect(page.locator(".deliveryline-detail-preview-identifier")).to_have_count(1)
+            await expect(page.locator(".deliveryline-detail-preview-current")).to_have_count(0)
+            await expect(page.locator(".deliveryline-preview-stages")).to_have_count(0)
+            await expect(page.get_by_role("button", name="AI 整体澄清", exact=True)).to_have_count(1)
+            await expect(page.get_by_role("button", name="删除", exact=True)).to_be_enabled()
+            assert await page.locator("#deliveryline-preview-detail-title").evaluate("""(title) => {
+                const actions = title.closest('.deliveryline-preview-section-heading')?.querySelector('.deliveryline-detail-actions');
+                return [...(actions?.children || [])].map((button) => button.id);
+            }""") == ["deliveryline-ai-clarify", "deliveryline-end", "deliveryline-delete"]
+            await expect(page.locator("#deliveryline-detail [data-deliveryline-end], #deliveryline-detail [data-deliveryline-delete]")).to_have_count(0)
+            await page.locator("#deliveryline-delete").click()
+            await expect(page.locator("#confirmation-dialog")).to_be_visible()
+            await expect(page.locator("#confirmation-dialog-title")).to_have_text("删除交付线")
+            await page.locator("#confirmation-dialog-cancel").click()
+            await page.locator("#deliveryline-end").click()
+            await expect(page.locator("#confirmation-dialog")).to_be_visible()
+            await expect(page.locator("#confirmation-dialog-title")).to_have_text("结束交付线")
+            await page.locator("#confirmation-dialog-cancel").click()
+            await expect(page.get_by_role("button", name="阶段确认", exact=True)).to_have_count(0)
+            await page.reload(wait_until="domcontentloaded")
+            await expect(page.locator("#deliveryline-active-list .deliveryline-requirement-row")).to_have_count(1)
+            await expect(page.locator("#deliveryline-detail > .deliveryline-line-overview")).to_have_count(1)
+            await expect(source_link).to_be_visible()
+            await page.locator("#deliveryline-end").click()
+            await page.locator("#confirmation-dialog-confirm").click()
+            await expect(page.locator("#deliveryline-ended-list .deliveryline-requirement-row")).to_have_count(1)
+            await expect(page.locator("#deliveryline-delete")).to_be_enabled()
             title_layout = await page.locator("#deliveryline-preview-detail-title").evaluate("""(title) => {
                 const detail = document.querySelector('#deliveryline-detail');
                 const measure = (value) => {
@@ -593,96 +595,6 @@ async def test_deliveryline_workspace_navigation_follows_import_lifecycle(
             }""")
             assert title_layout["chinese"] == title_layout["latin"]
             assert 20 <= title_layout["titleHeight"] < 24
-            await page.evaluate("""async () => {
-                const response = await fetch('/api/deliveryline/requirements', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ description: '第二条需求' }),
-                });
-                if (!response.ok) throw new Error(`Unable to create second requirement: ${response.status}`);
-                const created = await response.json();
-                const update = await fetch(`/api/deliveryline/requirements/${created.data.id}`, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        title: '正式需求档案',
-                        background: '需要统一管理需求交付信息。',
-                        delivery_goal: '建立可追踪的交付档案。',
-                        scope: '需求提出与评审准备。',
-                        out_of_scope: '不接入自动化执行。',
-                        constraints: '保留原始需求内容。',
-                        acceptance_criteria: '可查看完整需求档案。',
-                        risks_and_open_items: '后续处理方式待确认。',
-                    }),
-                });
-                if (!update.ok) throw new Error(`Unable to update second requirement: ${update.status}`);
-            }""")
-            await page.reload(wait_until="domcontentloaded")
-            rows = page.locator(".deliveryline-requirement-row")
-            await expect(rows).to_have_count(2)
-            await expect(page.locator(".deliveryline-workbench-next")).to_have_count(0)
-            await expect(page.get_by_role("heading", name="待补充内容", exact=True)).to_be_visible()
-            await expect(page.get_by_role("heading", name="需求概要", exact=True)).to_have_count(0)
-            await expect(page.get_by_role("heading", name="约束与验收", exact=True)).to_have_count(0)
-            await expect(page.get_by_role("heading", name="来源记录", exact=True)).to_have_count(0)
-            await expect(page.get_by_text("阶段目标：形成可讨论的需求目标、场景、范围、约束和验收预期。", exact=True)).to_have_count(0)
-            await expect(page.get_by_text("当前目标：保留原始需求，补全为可提交评审的正式档案。", exact=True)).to_be_visible()
-            selected_row_layout = await page.locator(".deliveryline-workbench-list").evaluate("""(list) => {
-                const selected = list.querySelector('.deliveryline-requirement-row.is-selected');
-                const listRect = list.getBoundingClientRect();
-                const selectedRect = selected.getBoundingClientRect();
-                return {
-                    left: Math.abs(selectedRect.left - listRect.left),
-                    top: Math.abs(selectedRect.top - listRect.top),
-                    bottom: Math.abs(selectedRect.bottom - listRect.bottom),
-                    borderWidth: getComputedStyle(selected).borderLeftWidth,
-                    selectionInset: getComputedStyle(selected).boxShadow.includes('inset'),
-                    radius: getComputedStyle(selected).borderTopLeftRadius,
-                    listBorderWidth: getComputedStyle(list).borderLeftWidth,
-                    followingDivider: getComputedStyle(selected.nextElementSibling, '::before').display,
-                };
-            }""")
-            assert selected_row_layout["left"] == 1
-            assert selected_row_layout["top"] == 1
-            assert selected_row_layout["bottom"] > 0
-            assert selected_row_layout["borderWidth"] == "0px"
-            assert selected_row_layout["selectionInset"] is True
-            assert selected_row_layout["radius"] == "7px"
-            assert selected_row_layout["listBorderWidth"] == "1px"
-            assert selected_row_layout["followingDivider"] == "none"
-            first_row_left = await rows.nth(0).locator("strong").evaluate("(item) => item.getBoundingClientRect().left")
-            second_row_left = await rows.nth(1).locator("strong").evaluate("(item) => item.getBoundingClientRect().left")
-            await rows.filter(has_text="正式需求档案").click()
-            await expect(page.locator("#deliveryline-preview-detail-title")).to_have_text("需求详情")
-            await expect(page.locator("#deliveryline-detail").get_by_text("需要统一管理需求交付信息。", exact=True)).to_be_visible()
-            second_row_layout = await page.locator(".deliveryline-workbench-list").evaluate("""(list) => {
-                const selected = list.querySelector('.deliveryline-requirement-row.is-selected');
-                return {
-                    selectedDivider: getComputedStyle(selected, '::before').display,
-                    firstRowLeft: list.querySelector('.deliveryline-requirement-row strong').getBoundingClientRect().left,
-                    secondRowLeft: list.querySelectorAll('.deliveryline-requirement-row strong')[1].getBoundingClientRect().left,
-                };
-            }""")
-            assert second_row_layout["selectedDivider"] == "none"
-            assert second_row_layout["firstRowLeft"] == first_row_left
-            assert second_row_layout["secondRowLeft"] == second_row_left
-            initial_layout = await page.locator(".deliveryline-workbench-list").evaluate("""(list) => {
-                const second = list.querySelector('.deliveryline-requirement-row + .deliveryline-requirement-row');
-                return second ? getComputedStyle(second).borderTopWidth : '0px';
-            }""")
-            assert initial_layout == "0px"
-            await page.evaluate("""async () => {
-                const selected = document.querySelector('.deliveryline-requirement-row.is-selected');
-                const id = selected?.dataset.deliverylineSelect;
-                const response = await fetch(`/api/deliveryline/requirements/${id}/submit-review`, { method: 'POST' });
-                if (!response.ok) throw new Error(`Unable to submit requirement for review: ${response.status}`);
-            }""")
-            await page.reload(wait_until="domcontentloaded")
-            await expect(page.get_by_text("阶段说明：详细阶段契约待制定。", exact=True)).to_be_visible()
-            await page.get_by_role("button", name="删除", exact=True).click()
-            await expect(page.get_by_role("heading", name="删除需求", exact=True)).to_be_visible()
-            await page.locator("#confirmation-dialog-confirm").click()
-            await expect(page.locator(".deliveryline-requirement-row")).to_have_count(1)
             await page.locator("#workspace-sidebar-toggle").click()
             await expect(
                 page.locator('.workspace-preview-compact-nav a[aria-label="Deliveryline"]')
@@ -701,6 +613,201 @@ async def test_deliveryline_workspace_navigation_follows_import_lifecycle(
             await expect(
                 page.locator('.workspace-preview-compact-nav a[aria-label="Deliveryline"]')
             ).to_have_count(0)
+        finally:
+            await context.close()
+
+    assert page_errors == []
+
+
+@pytest.mark.parametrize("viewport", [(1280, 900), (390, 844)], ids=["desktop", "phone"])
+async def test_workspace_ai_search_renders_task_result_list(
+    workspace_browser_server: str,
+    viewport: tuple[int, int],
+) -> None:
+    browser_session = session_factory()
+    async with browser_session(ensure_page=False) as chrome:
+        context = await chrome.browser.new_context(viewport={"width": viewport[0], "height": viewport[1]})
+        try:
+            imported = await context.request.post(
+                f"{workspace_browser_server}/api/plugins/codex-runtime/imports",
+                data={"artifact_id": "development:codex-runtime"},
+            )
+            assert imported.ok
+            enabled = await context.request.put(
+                f"{workspace_browser_server}/api/plugins/codex-runtime/enabled",
+                data={"artifact_id": "development:codex-runtime", "enabled": True},
+            )
+            assert enabled.ok
+
+            async def route_ai_search(route) -> None:
+                run = {
+                    "id": "a" * 32,
+                    "session_id": "session-1",
+                    "task_id": "task-1",
+                    "query": "agent skills",
+                    "prompt": "\n".join(["搜索提示词内容。"] * 80),
+                    "status": "succeeded",
+                    "summary": "找到一个公开候选。",
+                    "results": [{
+                        "title": "Example Skill",
+                        "url": "https://github.com/example/skill",
+                        "description": "A public browser automation skill.",
+                        "source": "GitHub",
+                    }],
+                    "error": None,
+                    "created_at": "2026-09-15T00:00:00Z",
+                    "updated_at": "2026-09-15T00:00:01Z",
+                }
+                if "/runs/" in route.request.url:
+                    payload = {"success": True, "data": run}
+                elif route.request.method == "POST":
+                    payload = {
+                        "success": True,
+                        "data": {
+                            "current": {
+                                **run,
+                                "status": "requested",
+                                "summary": None,
+                                "results": [],
+                                "updated_at": "2026-09-15T00:00:00Z",
+                            },
+                            "runs": [],
+                        },
+                    }
+                else:
+                    payload = {
+                        "success": True,
+                        "data": {
+                            "current": None,
+                            "runs": [run],
+                        },
+                    }
+                await route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps(payload),
+                )
+
+            await context.route(
+                f"{workspace_browser_server}/api/search/**",
+                route_ai_search,
+            )
+            page = await context.new_page()
+            page_errors: list[str] = []
+            page.on("pageerror", lambda error: page_errors.append(str(error)))
+            response = await page.goto(
+                f"{workspace_browser_server}/?section=search",
+                wait_until="domcontentloaded",
+            )
+            assert response is not None and response.status == 200
+            history_item = page.locator(".workspace-search-history-item")
+            await expect(history_item).to_have_count(1)
+            await expect(history_item.locator(".workspace-search-history-title")).to_have_text("agent skills")
+            await expect(history_item.locator(".workspace-search-history-description")).to_have_text("找到一个公开候选。")
+            await page.locator("#workspace-ai-search-query").fill("agent skills")
+            await page.get_by_role("button", name="搜索", exact=True).click()
+            await expect(page).to_have_url(f"{workspace_browser_server}/?section=search&search={'a' * 32}")
+            await expect(page.locator("#workspace-search-detail-prompt")).to_contain_text("搜索提示词内容。")
+            await expect(page.get_by_role("link", name="Example Skill")).to_be_visible()
+            await expect(page.locator("#workspace-search-detail-status")).to_be_hidden()
+            await expect(page.locator(".workspace-search-detail .workspace-search-summary")).to_have_count(1)
+            detail_layout = await page.locator(".workspace-search-detail").evaluate(
+                """(element) => {
+                  const title = element.querySelector('.workspace-search-detail-heading h1');
+                  const prompt = element.querySelector('#workspace-search-detail-prompt');
+                  return {
+                    hasNoHorizontalOverflow: element.scrollWidth <= element.clientWidth,
+                    titleSize: Number.parseFloat(getComputedStyle(title).fontSize),
+                    promptScrolls: prompt.scrollHeight > prompt.clientHeight,
+                    promptOverflow: getComputedStyle(prompt).overflowY,
+                  };
+                }"""
+            )
+        finally:
+            await context.close()
+
+    assert page_errors == []
+    assert detail_layout["hasNoHorizontalOverflow"]
+    assert detail_layout["titleSize"] < 24
+    assert detail_layout["promptScrolls"]
+    assert detail_layout["promptOverflow"] == "auto"
+
+
+async def test_workspace_ai_search_keeps_history_when_submission_fails(
+    workspace_browser_server: str,
+) -> None:
+    browser_session = session_factory()
+    async with browser_session(ensure_page=False) as chrome:
+        context = await chrome.browser.new_context(viewport={"width": 1280, "height": 900})
+        try:
+            imported = await context.request.post(
+                f"{workspace_browser_server}/api/plugins/codex-runtime/imports",
+                data={"artifact_id": "development:codex-runtime"},
+            )
+            assert imported.ok
+            enabled = await context.request.put(
+                f"{workspace_browser_server}/api/plugins/codex-runtime/enabled",
+                data={"artifact_id": "development:codex-runtime", "enabled": True},
+            )
+            assert enabled.ok
+
+            async def route_ai_search(route) -> None:
+                if route.request.method == "POST":
+                    await route.fulfill(
+                        status=503,
+                        content_type="application/json",
+                        body=json.dumps({
+                            "success": False,
+                            "error": {
+                                "code": "ai_search_submit_failed",
+                                "message": "搜索任务未能提交，可再次发起。",
+                                "source": "chub",
+                            },
+                        }),
+                    )
+                    return
+                await route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({
+                        "success": True,
+                        "data": {
+                            "current": None,
+                            "runs": [{
+                                "id": "a" * 32,
+                                "session_id": "session-1",
+                                "task_id": "task-1",
+                                "query": "已有搜索记录",
+                                "prompt": "搜索提示词",
+                                "status": "succeeded",
+                                "summary": "已有搜索摘要。",
+                                "results": [],
+                                "error": None,
+                                "created_at": "2026-09-15T00:00:00Z",
+                                "updated_at": "2026-09-15T00:00:01Z",
+                            }],
+                        },
+                    }),
+                )
+
+            await context.route(f"{workspace_browser_server}/api/search/**", route_ai_search)
+            page = await context.new_page()
+            page_errors: list[str] = []
+            page.on("pageerror", lambda error: page_errors.append(str(error)))
+            response = await page.goto(
+                f"{workspace_browser_server}/?section=search",
+                wait_until="domcontentloaded",
+            )
+            assert response is not None and response.status == 200
+            await expect(page.locator(".workspace-search-history-item")).to_have_count(1)
+            await expect(page.get_by_text("最多保留 8 条", exact=True)).to_be_visible()
+            await page.locator("#workspace-ai-search-query").fill("新的搜索")
+            await page.get_by_role("button", name="搜索", exact=True).click()
+            await expect(page.locator("#workspace-ai-search-submit-feedback")).to_have_text(
+                "搜索任务未能提交，可再次发起。"
+            )
+            await expect(page.locator(".workspace-search-history-item")).to_have_count(1)
+            await expect(page.locator(".workspace-search-history-title")).to_have_text("已有搜索记录")
         finally:
             await context.close()
 
@@ -1488,7 +1595,7 @@ async def test_workspace_layout_in_managed_chrome(
                 "Chub v0.1.0 · Linux test · Python 3.12"
             )
             await expect(page.locator("#workspace-worker-detail")).to_have_text(
-                "Worker v11 · 协议 v11 · Quick Worker 已就绪。"
+                "Worker v12 · 协议 v12 · Quick Worker 已就绪。"
             )
             await expect(page.locator("#workspace-openclaw-detail")).to_have_text(
                 "OpenClaw / Gateway v2026.8.1 · Gateway 运行正常并已通过连接探测。"
@@ -1566,6 +1673,56 @@ async def test_workspace_toolbar_feedback_in_managed_chrome(
         finally:
             await context.close()
 
+    assert page_errors == []
+
+
+@pytest.mark.parametrize("viewport", [(1280, 900), (390, 844)], ids=["desktop", "phone"])
+async def test_workspace_toolbar_stays_visible_while_section_content_scrolls(
+    workspace_browser_server: str,
+    viewport: tuple[int, int],
+) -> None:
+    browser_session = session_factory()
+    async with browser_session(ensure_page=False) as chrome:
+        context = await chrome.browser.new_context(viewport={"width": viewport[0], "height": viewport[1]})
+        try:
+            await context.route(f"{workspace_browser_server}/api/**", _mock_workspace_api)
+            page = await context.new_page()
+            page_errors: list[str] = []
+            page.on("pageerror", lambda error: page_errors.append(str(error)))
+            response = await page.goto(workspace_browser_server, wait_until="domcontentloaded")
+            assert response is not None and response.status == 200
+            placement = await page.evaluate(
+                """() => {
+                  const toolbar = document.querySelector('.workspace-preview-toolbar');
+                  const main = document.querySelector('.workspace-preview-main');
+                  const content = document.getElementById('workspace-section-content');
+                  if (!(toolbar instanceof HTMLElement) || !(main instanceof HTMLElement)
+                    || !(content instanceof HTMLElement)) return null;
+                  const filler = document.createElement('div');
+                  filler.style.height = '1200px';
+                  filler.setAttribute('aria-hidden', 'true');
+                  content.append(filler);
+                  const toolbarTop = toolbar.getBoundingClientRect().top;
+                  content.scrollTop = 500;
+                  return {
+                    toolbarTop,
+                    toolbarTopAfterScroll: toolbar.getBoundingClientRect().top,
+                    contentScrollTop: content.scrollTop,
+                    mainScrollTop: main.scrollTop,
+                    mainOverflow: getComputedStyle(main).overflowY,
+                    contentOverflow: getComputedStyle(content).overflowY,
+                  };
+                }""",
+            )
+        finally:
+            await context.close()
+
+    assert placement is not None
+    assert placement["contentScrollTop"] > 0
+    assert placement["mainScrollTop"] == 0
+    assert placement["toolbarTopAfterScroll"] == placement["toolbarTop"]
+    assert placement["mainOverflow"] == "hidden"
+    assert placement["contentOverflow"] == "auto"
     assert page_errors == []
 
 
@@ -1747,6 +1904,11 @@ async def test_workspace_section_switch_disposes_workstation_controller(
             )
             await page.get_by_role("link", name="自动化").click()
             await expect(page.get_by_role("heading", name="自动化环境")).to_be_visible()
+            await expect(page.locator("#workspace-automation-browser-start-dialog")).to_have_count(1)
+            await expect(page.locator("#workspace-automation-browser-stop-dialog")).to_have_count(1)
+            await page.get_by_role("button", name="启动 Debug Chrome").click()
+            await expect(page.get_by_role("heading", name="启动 Debug Chrome")).to_be_visible()
+            await page.get_by_role("button", name="取消", exact=True).click()
             await page.locator("#workspace-automation-codex-account-detail").evaluate(
                 "(element) => { element.dataset.authMode = 'api'; }",
             )
@@ -1844,6 +2006,7 @@ async def test_workspace_codex_account_switch_waits_for_account_check(
             assert response is not None and response.status == 200
             await page.get_by_role("link", name="自动化").click()
             switch = page.locator("#workspace-automation-codex-account-switch")
+            await page.get_by_role("button", name="检查", exact=True).last.click()
             await check_started.wait()
             await expect(switch).to_be_disabled()
             await expect(switch).to_have_text("检查中…")

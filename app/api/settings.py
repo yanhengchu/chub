@@ -14,6 +14,7 @@ from app.services.deployment_package import (
     DeploymentPackageStatus,
     FORMAL_CODEX_DESCRIPTION,
     FORMAL_CODEX_IMPLEMENTATION_ID,
+    RELEASE_VERSION_PATTERN,
 )
 
 
@@ -62,9 +63,7 @@ class TranslationSettingsUpdate(BaseModel):
 class DeploymentPackageConfigurationUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    chub_release_version: str = Field(min_length=1, max_length=64)
-    runtime_release_version: str = Field(min_length=1, max_length=64)
-    weixin_release_version: str = Field(min_length=1, max_length=64)
+    release_version: str = Field(pattern=RELEASE_VERSION_PATTERN)
     include_development_sources: bool = False
 
 
@@ -193,11 +192,11 @@ def update_deployment_package_configuration(
     try:
         data = request.app.state.deployment_package.save_configuration(
             DeploymentPackageConfiguration(
-                chub_release_version=payload.chub_release_version,
+                chub_release_version=payload.release_version,
                 runtime_implementation_id=FORMAL_CODEX_IMPLEMENTATION_ID,
-                runtime_release_version=payload.runtime_release_version,
+                runtime_release_version=payload.release_version,
                 runtime_description=FORMAL_CODEX_DESCRIPTION,
-                weixin_release_version=payload.weixin_release_version,
+                weixin_release_version=payload.release_version,
                 include_development_sources=payload.include_development_sources,
             )
         )

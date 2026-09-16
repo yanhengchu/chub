@@ -802,6 +802,7 @@ def test_help_and_unknown_command(service_env: tuple[dict[str, str], Path]) -> N
     assert "upgrade <service|logs>" in help_result.stdout
     assert "version, --version" in help_result.stdout
     assert "chrome supervisor reconcile [--restart]" in help_result.stdout
+    assert "capability <page-read|page-interact> ..." in help_result.stdout
     assert invalid_result.returncode != 0
     assert "unknown command" in invalid_result.stderr
 
@@ -849,6 +850,26 @@ def test_chrome_supervisor_ensure_is_not_a_supported_subcommand(
 
     assert result.returncode != 0
     assert "usage: chub chrome supervisor reconcile [--restart]" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("command", "arguments"),
+    [
+        ("page-read", ("--url", "https://example.com")),
+        ("page-interact", ("--url", "https://example.com", "--follow-link", "Next")),
+    ],
+)
+def test_capability_commands_reach_the_task_bound_entrypoint(
+    service_env: tuple[dict[str, str], Path],
+    command: str,
+    arguments: tuple[str, ...],
+) -> None:
+    env, _ = service_env
+
+    result = run_chub("capability", env, command, *arguments)
+
+    assert result.returncode != 0
+    assert "task_capability_context_missing" in result.stdout
 
 
 def test_version_reports_configured_version_and_platform(

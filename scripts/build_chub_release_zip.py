@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the current Chub formal deployment package from local release settings."""
+"""Publish the current Chub formal deployment package from local release settings."""
 
 from __future__ import annotations
 
@@ -18,16 +18,36 @@ if VENV_PYTHON.is_file() and Path(sys.executable).resolve() != VENV_PYTHON.resol
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.core.config import load_settings  # noqa: E402
+from app.core.response import ApiError  # noqa: E402
 from app.services.deployment_package import DeploymentPackageService  # noqa: E402
 
 
 def main() -> int:
     service = DeploymentPackageService(load_settings())
-    configuration = service.status().configuration
-    artifact, digest = service._build(configuration)
+    try:
+        status = service.publish(source_ip="127.0.0.1")
+    except ApiError as exc:
+        print(
+            json.dumps(
+                {"success": False, "code": exc.code, "message": exc.message},
+                ensure_ascii=False,
+            ),
+            file=sys.stderr,
+        )
+        return 1
+    operation = status.operation
+    if operation is None or operation.status != "succeeded":
+        message = operation.message if operation is not None else "版本发布未完成。"
+        print(json.dumps({"success": False, "message": message}, ensure_ascii=False), file=sys.stderr)
+        return 1
     print(
         json.dumps(
-            {"artifact_name": artifact.name, "artifact_size": artifact.stat().st_size, "sha256": digest},
+            {
+                "artifact_name": operation.artifact_name,
+                "artifact_size": operation.artifact_size,
+                "sha256": operation.sha256,
+                "build_id": operation.build_id,
+            },
             ensure_ascii=False,
         )
     )

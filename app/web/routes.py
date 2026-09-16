@@ -2,7 +2,7 @@ from pathlib import Path
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
 from app.services.design_documents import (
@@ -43,6 +43,21 @@ def _settings_return_url(request: Request) -> str:
     ):
         return "/"
     return urlunsplit(("", "", parsed.path, parsed.query, ""))
+
+
+def _imported_runtime_navigation(request: Request) -> tuple:
+    try:
+        imported_plugins = request.app.state.plugin_lifecycle.imported_plugin_ids()
+        if "codex-runtime" not in imported_plugins:
+            return ()
+        return request.app.state.ai_session_manager.runtime_plugins.navigation()
+    except (ApiError, OSError, RuntimeOperationError):
+        return ()
+
+
+def _search_navigation_available(request: Request) -> bool:
+    """Search is an AI Runtime entry and must disappear without one."""
+    return bool(_imported_runtime_navigation(request))
 
 
 def _deliveryline_workspace_state(request: Request) -> dict[str, str] | None:
@@ -101,7 +116,7 @@ def _deliveryline_workspace_state(request: Request) -> dict[str, str] | None:
 
 
 @router.get("/", response_class=HTMLResponse, include_in_schema=False)
-def index(request: Request, section: str = "workbench") -> HTMLResponse:
+def index(request: Request, section: str = "workbench", search: str = "") -> HTMLResponse:
     workspace_session_id = request.query_params.get("session", "").strip()
     if len(workspace_session_id) > 200:
         workspace_session_id = ""
@@ -109,6 +124,7 @@ def index(request: Request, section: str = "workbench") -> HTMLResponse:
         request,
         "workbench" if workspace_session_id else section,
         workspace_session_id=workspace_session_id or None,
+        workspace_search_id=search if len(search) == 32 and search.isalnum() else None,
     )
 
 
@@ -181,15 +197,9 @@ def render_settings_page(
     deliveryline_navigation = False
     try:
         imported_plugins = request.app.state.plugin_lifecycle.imported_plugin_ids()
-        runtime_imported = "codex-runtime" in imported_plugins
         orchestration_navigation = "weixin-orchestration" in imported_plugins
         deliveryline_navigation = "deliveryline" in imported_plugins
-        manager = request.app.state.ai_session_manager
-        runtime_navigation = (
-            manager.runtime_plugins.navigation()
-            if runtime_imported
-            else ()
-        )
+        runtime_navigation = _imported_runtime_navigation(request)
     except (ApiError, OSError, RuntimeOperationError):
         # The plugin manager remains reachable when lifecycle state cannot be read.
         pass
@@ -231,12 +241,18 @@ def appearance_settings(request: Request) -> HTMLResponse:
 
 
 @router.get("/settings/session", response_class=HTMLResponse, include_in_schema=False)
-def session_settings(request: Request) -> HTMLResponse:
+def session_settings(request: Request) -> Response:
+    if not _imported_runtime_navigation(request):
+        return_url = _settings_return_url(request)
+        target = "/settings/runtime"
+        if return_url != "/":
+            target = f"{target}?{urlencode({'return_to': return_url})}"
+        return RedirectResponse(target, status_code=307)
     return render_settings_page(
         request,
         page="session",
         title="会话",
-        description="设置之后新建会话和未指定专属配置任务的默认 Runtime、权限、模型与推理等级。",
+        description="管理新会话默认配置，以及模块内部会话在工作台中的显示方式。",
     )
 
 
@@ -332,7 +348,10 @@ def workspace_preview(
     request: Request,
     section: str = "workbench",
 ) -> RedirectResponse:
+    search_navigation = _search_navigation_available(request)
     sections = {"workbench", "project-docs", "automations"}
+    if search_navigation:
+        sections.add("search")
     if _deliveryline_workspace_state(request) is not None:
         sections.add("deliveryline")
     if section not in sections:
@@ -346,10 +365,14 @@ def render_workspace(
     section: str,
     *,
     workspace_session_id: str | None = None,
+    workspace_search_id: str | None = None,
 ) -> HTMLResponse:
     settings = request.app.state.settings
     deliveryline = _deliveryline_workspace_state(request)
+    search_navigation = _search_navigation_available(request)
     sections = {"workbench", "project-docs", "automations"}
+    if search_navigation:
+        sections.add("search")
     if deliveryline is not None:
         sections.add("deliveryline")
     if section not in sections:
@@ -412,12 +435,12 @@ def render_workspace(
             deliveryline_requirements = [
                 record
                 for record in records
-                if record.workflow.delivery_status != "已归档"
+                if record.status != "已结束"
             ]
             deliveryline_archived_requirements = [
                 record
                 for record in records
-                if record.workflow.delivery_status == "已归档"
+                if record.status == "已结束"
             ]
         except (OSError, RuntimeError):
             deliveryline_error = "需求档案暂时无法加载。"
@@ -429,8 +452,10 @@ def render_workspace(
             "page_title": settings.app.page_title or settings.app.name,
             "workspace_section": section,
             "workspace_session_id": workspace_session_id,
+            "workspace_search_id": workspace_search_id,
             "deliveryline": deliveryline,
             "deliveryline_navigation": deliveryline is not None,
+            "search_navigation": search_navigation,
             "document_categories": DOCUMENT_CATEGORIES,
             "deliveryline_requirements": deliveryline_requirements,
             "deliveryline_archived_requirements": deliveryline_archived_requirements,

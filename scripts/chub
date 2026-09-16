@@ -81,8 +81,8 @@ Commands:
   notification
              Validate, list, test, or send configured notifications
   request    Save, update, archive, or inspect the local request backlog
-  capability page-read --url <URL>
-             Read one public page when the current Chub AI task granted it
+  capability <page-read|page-interact> ...
+             Read a network page or follow one link when the current Chub AI task granted it
   uninstall [--force]
              Remove the user service and chub command
   help       Show this help
@@ -1637,7 +1637,11 @@ case "$command" in
         ;;
     capability)
         shift
-        [[ "${1:-}" == "page-read" ]] || { usage >&2; fail "usage: chub capability page-read --url <URL>"; }
+        case "${1:-}" in
+            page-read) ;;
+            page-interact) ;;
+            *) usage >&2; fail "usage: chub capability <page-read|page-interact> ..." ;;
+        esac
         (
             cd "$PROJECT_ROOT"
             "$PYTHON_BIN" -m app.task_capabilities.command "$@"

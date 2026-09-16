@@ -2,22 +2,27 @@ from __future__ import annotations
 
 import ipaddress
 import socket
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 from urllib.request import urlopen
 
-from app.core.config import PROJECT_ROOT
+from app.automations.debug_chrome import (
+    chrome_debug,
+    chrome_profiles,
+    copy_profile,
+    profile_store,
+)
+from app.automations.debug_chrome.playwright_session import session
 
 
-SKILL_SCRIPTS = PROJECT_ROOT / ".agents" / "skills" / "chrome-cdp" / "scripts"
 DEFAULT_PAGE_READ_TIMEOUT_MS = 30_000
 MAX_PAGE_READ_TIMEOUT_MS = 120_000
 DEFAULT_PAGE_CONTENT_CHARS = 64 * 1024
 MAX_PAGE_CONTENT_CHARS = 256 * 1024
 MAX_PAGE_TITLE_CHARS = 512
+MAX_PAGE_LINK_TEXT_CHARS = 512
 
 
 @dataclass(frozen=True)
@@ -41,19 +46,10 @@ class DebugChromePageContent:
 
 
 class DebugChromePageReadError(RuntimeError):
-    """Raised when the shared browser cannot safely produce a page snapshot."""
-
-
-def _load_skill_scripts() -> None:
-    scripts = str(SKILL_SCRIPTS)
-    if scripts not in sys.path:
-        sys.path.insert(0, scripts)
+    """Raised when the managed browser cannot produce a bounded page snapshot."""
 
 
 def session_factory() -> Any:
-    _load_skill_scripts()
-    from playwright_session import session
-
     return session
 
 
@@ -105,17 +101,53 @@ def _normalize_page_content(value: str, maximum: int) -> tuple[str, bool]:
     return content[:maximum], True
 
 
+async def _page_snapshot(
+    page: Any,
+    source_url: str,
+    *,
+    max_content_chars: int,
+) -> DebugChromePageContent:
+    final_url = _validate_public_page_url(page.url)
+    title = (await page.title()).strip()[:MAX_PAGE_TITLE_CHARS]
+    raw_content = await page.evaluate(
+        """(maximum) => {
+            const content = document.body?.innerText || "";
+            return {
+                content: content.slice(0, maximum + 1),
+                truncated: content.length > maximum,
+            };
+        }""",
+        max_content_chars,
+    )
+    if not isinstance(raw_content, dict) or not isinstance(
+        raw_content.get("content"), str
+    ):
+        raise DebugChromePageReadError("网页正文读取失败")
+    content, normalized_truncated = _normalize_page_content(
+        raw_content["content"],
+        max_content_chars,
+    )
+    return DebugChromePageContent(
+        source_url=source_url,
+        final_url=final_url,
+        title=title,
+        content=content,
+        truncated=bool(raw_content.get("truncated")) or normalized_truncated,
+    )
+
+
 async def read_debug_chrome_page(
     url: str,
     *,
     timeout_ms: int = DEFAULT_PAGE_READ_TIMEOUT_MS,
     max_content_chars: int = DEFAULT_PAGE_CONTENT_CHARS,
 ) -> DebugChromePageContent:
-    """Read one public webpage through the currently running managed Debug Chrome.
+    """Read one network-reachable webpage through managed Debug Chrome.
 
     This intentionally owns only the temporary page it creates.  It neither starts,
-    stops nor reconfigures Debug Chrome, and it exposes no browser context, cookies,
-    storage or interaction controls to callers.
+    stops nor reconfigures Debug Chrome. The page uses the selected Debug Chrome
+    Profile, including its existing website sign-in state, but exposes only a bounded
+    text snapshot to callers.
     """
 
     source_url = _validate_public_page_url(url.strip())
@@ -157,33 +189,10 @@ async def read_debug_chrome_page(
             )
             if blocked_navigation is not None:
                 raise blocked_navigation
-            final_url = _validate_public_page_url(page.url)
-            title = (await page.title()).strip()[:MAX_PAGE_TITLE_CHARS]
-            raw_content = await page.evaluate(
-                """(maximum) => {
-                    const content = document.body?.innerText || "";
-                    return {
-                        content: content.slice(0, maximum + 1),
-                        truncated: content.length > maximum,
-                    };
-                }""",
-                max_content_chars,
-            )
-            if not isinstance(raw_content, dict) or not isinstance(
-                raw_content.get("content"), str
-            ):
-                raise DebugChromePageReadError("网页正文读取失败")
-            content, normalized_truncated = _normalize_page_content(
-                raw_content["content"],
-                max_content_chars,
-            )
-            truncated = bool(raw_content.get("truncated")) or normalized_truncated
-            return DebugChromePageContent(
-                source_url=source_url,
-                final_url=final_url,
-                title=title,
-                content=content,
-                truncated=truncated,
+            return await _page_snapshot(
+                page,
+                source_url,
+                max_content_chars=max_content_chars,
             )
     except DebugChromePageReadError:
         raise
@@ -199,19 +208,111 @@ async def read_debug_chrome_page(
                 pass
 
 
-def _chrome_debug_module():
-    _load_skill_scripts()
-    import chrome_debug
+async def interact_debug_chrome_page(
+    url: str,
+    *,
+    follow_link_text: str,
+    timeout_ms: int = DEFAULT_PAGE_READ_TIMEOUT_MS,
+    max_content_chars: int = DEFAULT_PAGE_CONTENT_CHARS,
+) -> DebugChromePageContent:
+    """Follow one exact visible link on a network-reachable page.
 
+    This is intentionally limited to GET navigation. It reuses the selected Debug
+    Chrome Profile's existing website sign-in state, but does not expose
+    selectors, forms, scripts, downloads, storage, or existing browser pages.
+    """
+
+    source_url = _validate_public_page_url(url.strip())
+    link_text = follow_link_text.strip()
+    if not link_text or len(link_text) > MAX_PAGE_LINK_TEXT_CHARS:
+        raise DebugChromePageReadError("网页链接文字无效")
+    if not 100 <= timeout_ms <= MAX_PAGE_READ_TIMEOUT_MS:
+        raise DebugChromePageReadError("网页读取超时设置无效")
+    if not 1 <= max_content_chars <= MAX_PAGE_CONTENT_CHARS:
+        raise DebugChromePageReadError("网页正文长度限制无效")
+    state, _, _ = debug_chrome_status()
+    if state != "running":
+        raise DebugChromePageReadError("Debug Chrome 未运行")
+
+    page = None
+    blocked_navigation: DebugChromePageReadError | None = None
+
+    async def allow_public_request(route) -> None:
+        nonlocal blocked_navigation
+        request = route.request
+        parsed = urlsplit(request.url)
+        if parsed.scheme not in {"http", "https"}:
+            await route.continue_()
+            return
+        try:
+            _validate_public_page_url(request.url)
+        except DebugChromePageReadError as exc:
+            if request.is_navigation_request():
+                blocked_navigation = exc
+            await route.abort()
+            return
+        await route.continue_()
+
+    try:
+        async with session_factory()(ensure_page=False, retry_connection=True) as chrome:
+            page = await chrome.context.new_page()
+            await page.route("**/*", allow_public_request)
+            await page.goto(
+                source_url,
+                timeout=timeout_ms,
+                wait_until="domcontentloaded",
+            )
+            if blocked_navigation is not None:
+                raise blocked_navigation
+            link = await page.evaluate(
+                """(expected) => {
+                    const matches = [...document.querySelectorAll("a[href]")]
+                        .filter((anchor) => (anchor.innerText || anchor.textContent || "").trim() === expected);
+                    if (matches.length !== 1) {
+                        return { count: matches.length, href: null };
+                    }
+                    return { count: 1, href: matches[0].href };
+                }""",
+                link_text,
+            )
+            if (
+                not isinstance(link, dict)
+                or link.get("count") != 1
+                or not isinstance(link.get("href"), str)
+            ):
+                raise DebugChromePageReadError("未找到唯一匹配的网页链接")
+            target_url = _validate_public_page_url(link["href"])
+            await page.goto(
+                target_url,
+                timeout=timeout_ms,
+                wait_until="domcontentloaded",
+            )
+            if blocked_navigation is not None:
+                raise blocked_navigation
+            return await _page_snapshot(
+                page,
+                source_url,
+                max_content_chars=max_content_chars,
+            )
+    except DebugChromePageReadError:
+        raise
+    except Exception as exc:
+        if blocked_navigation is not None:
+            raise blocked_navigation from exc
+        raise DebugChromePageReadError("网页链接操作失败") from exc
+    finally:
+        if page is not None and not page.is_closed():
+            try:
+                await page.close()
+            except Exception:
+                pass
+
+
+def _chrome_debug_module():
     return chrome_debug
 
 
 def _profile_modules():
-    _load_skill_scripts()
-    import chrome_profiles
-    import copy_profile
-    import profile_store
-
     return chrome_profiles, copy_profile, profile_store
 
 
@@ -333,7 +434,11 @@ def debug_chrome_status(
         }.get(current.mode)
         return "running", "已运行", mode
     if current.state == "stopped":
-        return "stopped", "未启动", None
+        return (
+            "stopped",
+            "未启动，启动后可执行自动化、飞书检查和 API 额度读取。",
+            None,
+        )
     return "invalid", "状态异常", None
 
 

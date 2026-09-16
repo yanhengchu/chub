@@ -13,7 +13,11 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from app.automations.browser import DebugChromePageReadError, read_debug_chrome_page
+from app.automations.browser import (
+    DebugChromePageReadError,
+    interact_debug_chrome_page,
+    read_debug_chrome_page,
+)
 from app.task_capabilities import TaskCapabilityContext
 
 _CONTEXT_ENV = "CHUB_TASK_CAPABILITY_CONTEXT"
@@ -31,8 +35,17 @@ class TaskCapabilityError(ValueError):
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="chub capability")
     commands = root.add_subparsers(dest="command", required=True)
-    page_read = commands.add_parser("page-read", help="Read one granted public page")
+    page_read = commands.add_parser(
+        "page-read",
+        help="Read one granted network-reachable page",
+    )
     page_read.add_argument("--url", required=True)
+    page_interact = commands.add_parser(
+        "page-interact",
+        help="Follow one granted network-reachable page link",
+    )
+    page_interact.add_argument("--url", required=True)
+    page_interact.add_argument("--follow-link", required=True)
     return root
 
 
@@ -99,6 +112,22 @@ async def run(arguments: argparse.Namespace) -> dict[str, object]:
             snapshot = await read_debug_chrome_page(arguments.url)
         except DebugChromePageReadError as exc:
             raise TaskCapabilityError("debug_chrome_page_read_failed", str(exc)) from exc
+        return {
+            "source_url": snapshot.source_url,
+            "final_url": snapshot.final_url,
+            "title": snapshot.title,
+            "content": snapshot.content,
+            "truncated": snapshot.truncated,
+        }
+    if arguments.command == "page-interact":
+        _require(context, "chub.debug_chrome.page.interact")
+        try:
+            snapshot = await interact_debug_chrome_page(
+                arguments.url,
+                follow_link_text=arguments.follow_link,
+            )
+        except DebugChromePageReadError as exc:
+            raise TaskCapabilityError("debug_chrome_page_interact_failed", str(exc)) from exc
         return {
             "source_url": snapshot.source_url,
             "final_url": snapshot.final_url,

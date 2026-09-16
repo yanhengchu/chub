@@ -36,6 +36,8 @@ from app.quick_worker import (
     worker_socket_path,
 )
 from app.quick_worker_tasks import (
+    MAX_EVENT_CAPTURE_BYTES,
+    MAX_EVENT_PRIORITY_BYTES,
     RuntimeTaskSubmission,
     StoredTaskSpec,
     _digest_stored_spec,
@@ -278,6 +280,18 @@ time.sleep(float(os.environ.get("FAKE_CODEX_DELAY", "0")))
 if os.environ.get("FAKE_CODEX_HUGE_EVENT") == "1":
     print("x" * (2 * 1024 * 1024 + 1), flush=True)
     raise SystemExit(23)
+if os.environ.get("FAKE_CODEX_HUGE_SUCCESS") == "1":
+    print("x" * (2 * 1024 * 1024 + 1), flush=True)
+if os.environ.get("FAKE_CODEX_FILL_EVENT_STREAM") == "1":
+    print("x" * 262000, flush=True)
+if os.environ.get("FAKE_CODEX_CONFLICT_ID"):
+    print(
+        json.dumps({"type": "thread.started", "thread_id": os.environ["FAKE_CODEX_CONFLICT_ID"]}),
+        flush=True,
+    )
+output_bytes = int(os.environ.get("FAKE_CODEX_OUTPUT_BYTES", "0"))
+if output_bytes:
+    print("x" * output_bytes, flush=True)
 upstream_error = os.environ.get("FAKE_CODEX_ERROR")
 if upstream_error:
     print(
@@ -1529,6 +1543,10 @@ async def test_codex_upstream_error_is_returned_from_runtime_event_stream(
         assert failed["error_code"] == "runner_failed"
         assert failed["error_source"] == "runtime"
         assert failed["error"] == upstream_error
+        stdout_path = worker_tasks_dir(settings, PROTOCOL_VERSION) / task_id / "stdout.txt"
+        assert stdout_path.stat().st_size <= (
+            MAX_EVENT_CAPTURE_BYTES + MAX_EVENT_PRIORITY_BYTES
+        )
         assert "fallback stderr" not in failed["error"]
         assert failed["runner_pid"] is None
     finally:
@@ -1536,7 +1554,7 @@ async def test_codex_upstream_error_is_returned_from_runtime_event_stream(
 
 
 @pytest.mark.anyio
-async def test_runtime_parser_error_is_preserved_instead_of_generic_runner_error(
+async def test_oversized_codex_event_is_bounded_and_nonzero_runner_still_fails(
     settings,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1563,10 +1581,156 @@ async def test_runtime_parser_error_is_preserved_instead_of_generic_runner_error
             codex_session_id=native_id,
         )
         failed = await _wait_for_status(settings, task_id, {"failed"})
+        assert failed["error_code"] == "runner_failed"
+        assert failed["exit_code"] == 23
+        stdout_path = worker_tasks_dir(settings, PROTOCOL_VERSION) / task_id / "stdout.txt"
+        assert stdout_path.stat().st_size <= MAX_EVENT_CAPTURE_BYTES
+    finally:
+        await server.close()
+
+
+@pytest.mark.anyio
+async def test_codex_success_reuses_observed_native_session_when_event_stream_grows(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    native_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+    monkeypatch.setenv("FAKE_CODEX_SESSION_ID", native_id)
+    monkeypatch.setenv("FAKE_CODEX_HUGE_SUCCESS", "1")
+    monkeypatch.setenv("FAKE_CODEX_DELAY", "0.1")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server = QuickWorkerServer(
+        settings,
+        allow_test_tasks=True,
+        codex_workspaces={"isolated": workspace},
+        codex_executable=_fake_codex(tmp_path),
+        codex_home=tmp_path / "codex-home",
+    )
+    await server.start()
+    task_id = new_worker_task_id()
+    try:
+        await _submit_codex(
+            settings,
+            task_id=task_id,
+            session_id="observed-native-session",
+        )
+        completed = await _wait_for_status(settings, task_id, {"succeeded"})
+        assert completed["native_session_id"] == native_id
+        assert completed["result"] == f"created:{native_id}:isolated Codex task"
+        stdout_path = worker_tasks_dir(settings, PROTOCOL_VERSION) / task_id / "stdout.txt"
+        assert stdout_path.stat().st_size <= MAX_EVENT_CAPTURE_BYTES
+    finally:
+        await server.close()
+
+
+@pytest.mark.anyio
+async def test_codex_conflicting_native_session_after_capture_budget_fails_closed(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    native_id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+    conflict_id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+    monkeypatch.setenv("FAKE_CODEX_SESSION_ID", native_id)
+    monkeypatch.setenv("FAKE_CODEX_DELAY", "0.1")
+    monkeypatch.setenv("FAKE_CODEX_FILL_EVENT_STREAM", "1")
+    monkeypatch.setenv("FAKE_CODEX_CONFLICT_ID", conflict_id)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server = QuickWorkerServer(
+        settings,
+        allow_test_tasks=True,
+        codex_workspaces={"isolated": workspace},
+        codex_executable=_fake_codex(tmp_path),
+        codex_home=tmp_path / "codex-home",
+    )
+    await server.start()
+    task_id = new_worker_task_id()
+    try:
+        await _submit_codex(
+            settings,
+            task_id=task_id,
+            session_id="conflicting-native-session",
+        )
+        failed = await _wait_for_status(settings, task_id, {"failed"})
+        assert failed["error_code"] == "codex_event_session_conflict"
         assert failed["error_source"] == "chub"
-        assert failed["error_code"] == "codex_event_stream_unsafe"
-        assert "Chub Runtime error (codex_event_stream_unsafe)" in failed["error"]
-        assert "Worker could not start or supervise" not in failed["error"]
+        stdout_path = worker_tasks_dir(settings, PROTOCOL_VERSION) / task_id / "stdout.txt"
+        assert stdout_path.stat().st_size <= (
+            MAX_EVENT_CAPTURE_BYTES + MAX_EVENT_PRIORITY_BYTES
+        )
+    finally:
+        await server.close()
+
+
+@pytest.mark.anyio
+async def test_codex_error_after_capture_budget_is_preserved(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    native_id = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+    upstream_error = "upstream failure after large tool output"
+    monkeypatch.setenv("FAKE_CODEX_SESSION_ID", native_id)
+    monkeypatch.setenv("FAKE_CODEX_FILL_EVENT_STREAM", "1")
+    monkeypatch.setenv("FAKE_CODEX_ERROR", upstream_error)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server = QuickWorkerServer(
+        settings,
+        allow_test_tasks=True,
+        codex_workspaces={"isolated": workspace},
+        codex_executable=_fake_codex(tmp_path),
+        codex_home=tmp_path / "codex-home",
+    )
+    await server.start()
+    task_id = new_worker_task_id()
+    try:
+        await _submit_codex(
+            settings,
+            task_id=task_id,
+            session_id="error-after-capture-budget",
+            codex_session_id=native_id,
+        )
+        failed = await _wait_for_status(settings, task_id, {"failed"})
+        assert failed["error_code"] == "runner_failed"
+        assert failed["error_source"] == "runtime"
+        assert failed["error"] == upstream_error
+    finally:
+        await server.close()
+
+
+@pytest.mark.anyio
+async def test_codex_output_above_read_limit_stops_runner(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    native_id = "ffffffff-ffff-4fff-8fff-ffffffffffff"
+    monkeypatch.setenv("FAKE_CODEX_SESSION_ID", native_id)
+    monkeypatch.setenv("FAKE_CODEX_OUTPUT_BYTES", str(9 * 1024 * 1024))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    server = QuickWorkerServer(
+        settings,
+        allow_test_tasks=True,
+        codex_workspaces={"isolated": workspace},
+        codex_executable=_fake_codex(tmp_path),
+        codex_home=tmp_path / "codex-home",
+    )
+    await server.start()
+    task_id = new_worker_task_id()
+    try:
+        await _submit_codex(
+            settings,
+            task_id=task_id,
+            session_id="output-limit-session",
+        )
+        failed = await _wait_for_status(settings, task_id, {"failed"})
+        assert failed["error_code"] == "runtime_output_exceeded"
+        assert failed["error_source"] == "chub"
     finally:
         await server.close()
 

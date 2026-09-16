@@ -6,8 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-import chrome_debug
-from chrome_process import ChromeProcess
+from app.automations.debug_chrome import chrome_debug
+from app.automations.debug_chrome.chrome_process import ChromeProcess
 
 
 class ChromeDebugTest(unittest.TestCase):
@@ -55,10 +55,10 @@ class ChromeDebugTest(unittest.TestCase):
             )
             self.assertIn("--headless", headless_command)
 
-    @patch("chrome_debug.listener_process_ids", return_value=[123])
-    @patch("chrome_debug.probe_cdp", return_value="ws://127.0.0.1/devtools/browser/id")
+    @patch("app.automations.debug_chrome.chrome_debug.listener_process_ids", return_value=[123])
+    @patch("app.automations.debug_chrome.chrome_debug.probe_cdp", return_value="ws://127.0.0.1/devtools/browser/id")
     @patch(
-        "chrome_debug.debug_processes",
+        "app.automations.debug_chrome.chrome_debug.debug_processes",
         return_value=[
             ChromeProcess(
                 123,
@@ -88,11 +88,11 @@ class ChromeDebugTest(unittest.TestCase):
         self.assertEqual(result.process_ids, [123])
         _processes.assert_called_once_with(root)
 
-    @patch("chrome_debug.request_debug_close")
-    @patch("chrome_debug.status")
-    @patch("chrome_debug.wait_for_debug_exit", return_value=True)
-    @patch("chrome_debug.debug_main_process_ids", return_value=[123])
-    @patch("chrome_debug.debug_process_ids", return_value=[123, 124])
+    @patch("app.automations.debug_chrome.chrome_debug.request_debug_close")
+    @patch("app.automations.debug_chrome.chrome_debug.status")
+    @patch("app.automations.debug_chrome.chrome_debug.wait_for_debug_exit", return_value=True)
+    @patch("app.automations.debug_chrome.chrome_debug.debug_main_process_ids", return_value=[123])
+    @patch("app.automations.debug_chrome.chrome_debug.debug_process_ids", return_value=[123, 124])
     def test_stop_targets_only_debug_process(
         self,
         _processes: object,
@@ -118,7 +118,7 @@ class ChromeDebugTest(unittest.TestCase):
             request_close.assert_called_once_with(root, [123])
             self.assertEqual(result, expected)
 
-    @patch("chrome_debug.linux_chrome_processes")
+    @patch("app.automations.debug_chrome.chrome_debug.linux_chrome_processes")
     def test_process_listing_includes_helpers_but_main_listing_does_not(
         self, linux_processes: object
     ) -> None:
@@ -148,7 +148,7 @@ class ChromeDebugTest(unittest.TestCase):
             [101, 102],
         )
         with patch(
-            "chrome_debug.debug_processes",
+            "app.automations.debug_chrome.chrome_debug.debug_processes",
             return_value=linux_processes.return_value,
         ):
             self.assertEqual(
@@ -160,7 +160,7 @@ class ChromeDebugTest(unittest.TestCase):
                 [101],
             )
 
-    @patch("chrome_debug.linux_chrome_processes")
+    @patch("app.automations.debug_chrome.chrome_debug.linux_chrome_processes")
     def test_linux_debug_listing_excludes_non_chrome_process(
         self, linux_processes: object
     ) -> None:
@@ -213,7 +213,7 @@ class ChromeDebugTest(unittest.TestCase):
             ],
         )
 
-    @patch("chrome_debug.run_process_command")
+    @patch("app.automations.debug_chrome.chrome_debug.run_process_command")
     def test_macos_debug_listing_includes_official_helper_only(
         self, run_command: object
     ) -> None:
@@ -237,9 +237,9 @@ class ChromeDebugTest(unittest.TestCase):
 
         self.assertEqual([process.pid for process in processes], [101, 102])
 
-    @patch("chrome_debug.os.kill")
-    @patch("chrome_debug.status")
-    @patch("chrome_debug.debug_process_ids", return_value=[])
+    @patch("app.automations.debug_chrome.chrome_debug.os.kill")
+    @patch("app.automations.debug_chrome.chrome_debug.status")
+    @patch("app.automations.debug_chrome.chrome_debug.debug_process_ids", return_value=[])
     def test_stop_does_not_signal_unrecognized_process(
         self, _processes: object, status: object, kill: object
     ) -> None:
@@ -257,10 +257,10 @@ class ChromeDebugTest(unittest.TestCase):
         self.assertEqual(chrome_debug.stop(root), expected)
         kill.assert_not_called()
 
-    @patch("chrome_debug.listener_process_ids", return_value=[999])
-    @patch("chrome_debug.probe_cdp", return_value="ws://127.0.0.1/devtools/browser/id")
+    @patch("app.automations.debug_chrome.chrome_debug.listener_process_ids", return_value=[999])
+    @patch("app.automations.debug_chrome.chrome_debug.probe_cdp", return_value="ws://127.0.0.1/devtools/browser/id")
     @patch(
-        "chrome_debug.debug_processes",
+        "app.automations.debug_chrome.chrome_debug.debug_processes",
         return_value=[
             ChromeProcess(
                 123,
@@ -284,7 +284,7 @@ class ChromeDebugTest(unittest.TestCase):
         self.assertEqual(result.state, "broken")
         self.assertIsNone(result.mode)
 
-    @patch("chrome_debug.status")
+    @patch("app.automations.debug_chrome.chrome_debug.status")
     def test_start_rejects_switching_a_running_instance_mode(
         self, status: object
     ) -> None:
@@ -303,7 +303,7 @@ class ChromeDebugTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "stop it before starting"):
                 chrome_debug.start(root, headless=True)
 
-    @patch("chrome_debug.status")
+    @patch("app.automations.debug_chrome.chrome_debug.status")
     def test_start_is_idempotent_for_the_same_mode(self, status: object) -> None:
         expected = chrome_debug.DebugStatus(
             state="running",
@@ -323,10 +323,10 @@ class ChromeDebugTest(unittest.TestCase):
                 expected,
             )
 
-    @patch("chrome_debug.listener_process_ids", return_value=[101])
-    @patch("chrome_debug.probe_cdp", return_value="ws://127.0.0.1/devtools/browser/id")
+    @patch("app.automations.debug_chrome.chrome_debug.listener_process_ids", return_value=[101])
+    @patch("app.automations.debug_chrome.chrome_debug.probe_cdp", return_value="ws://127.0.0.1/devtools/browser/id")
     @patch(
-        "chrome_debug.debug_processes",
+        "app.automations.debug_chrome.chrome_debug.debug_processes",
         return_value=[
             ChromeProcess(
                 101,
@@ -351,10 +351,10 @@ class ChromeDebugTest(unittest.TestCase):
         self.assertEqual(result.state, "running")
         self.assertEqual(result.mode, "headless")
 
-    @patch("chrome_debug.listener_process_ids", return_value=[123])
-    @patch("chrome_debug.debug_cdp_main_process_ids", return_value=[123])
-    @patch("chrome_debug.probe_cdp", return_value="ws://127.0.0.1:9222/devtools/browser/id")
-    @patch("chrome_debug.send_browser_close")
+    @patch("app.automations.debug_chrome.chrome_debug.listener_process_ids", return_value=[123])
+    @patch("app.automations.debug_chrome.chrome_debug.debug_cdp_main_process_ids", return_value=[123])
+    @patch("app.automations.debug_chrome.chrome_debug.probe_cdp", return_value="ws://127.0.0.1:9222/devtools/browser/id")
+    @patch("app.automations.debug_chrome.chrome_debug.send_browser_close")
     def test_cdp_close_requires_and_uses_owned_endpoint(
         self,
         send_close: object,
@@ -367,12 +367,12 @@ class ChromeDebugTest(unittest.TestCase):
             "ws://127.0.0.1:9222/devtools/browser/id"
         )
 
-    @patch("chrome_debug.force_debug_close_windows")
-    @patch("chrome_debug.request_debug_close")
-    @patch("chrome_debug.debug_main_process_ids", return_value=[123])
-    @patch("chrome_debug.wait_for_debug_exit", side_effect=[False, True])
-    @patch("chrome_debug.request_cdp_close", return_value=False)
-    @patch("chrome_debug.debug_process_ids", return_value=[123, 124])
+    @patch("app.automations.debug_chrome.chrome_debug.force_debug_close_windows")
+    @patch("app.automations.debug_chrome.chrome_debug.request_debug_close")
+    @patch("app.automations.debug_chrome.chrome_debug.debug_main_process_ids", return_value=[123])
+    @patch("app.automations.debug_chrome.chrome_debug.wait_for_debug_exit", side_effect=[False, True])
+    @patch("app.automations.debug_chrome.chrome_debug.request_cdp_close", return_value=False)
+    @patch("app.automations.debug_chrome.chrome_debug.debug_process_ids", return_value=[123, 124])
     def test_windows_headless_cleanup_uses_validated_force_stop_as_last_resort(
         self,
         _processes: object,
@@ -383,14 +383,14 @@ class ChromeDebugTest(unittest.TestCase):
         force_close: object,
     ) -> None:
         root = Path("/tmp/debug")
-        with patch("chrome_debug.sys.platform", "win32"):
+        with patch("app.automations.debug_chrome.chrome_debug.sys.platform", "win32"):
             self.assertTrue(chrome_debug.close_owned_debug_processes(root))
 
         request_close.assert_called_once_with(root, [123])
         force_close.assert_called_once_with(root)
 
-    @patch("chrome_debug.run_process_command")
-    @patch("chrome_debug.debug_process_ids", return_value=[123, 124])
+    @patch("app.automations.debug_chrome.chrome_debug.run_process_command")
+    @patch("app.automations.debug_chrome.chrome_debug.debug_process_ids", return_value=[123, 124])
     def test_windows_force_stop_uses_only_validated_debug_processes(
         self, _processes: object, run_command: object
     ) -> None:
@@ -403,17 +403,21 @@ class ChromeDebugTest(unittest.TestCase):
         self.assertIn("Stop-Process -Force", command[-1])
         self.assertIn("$ids = @(123,124)", command[-1])
 
-    @patch("chrome_debug.wait_for_debug_exit", return_value=True)
-    @patch("chrome_debug.request_debug_close")
-    @patch("chrome_debug.debug_main_process_ids", return_value=[456])
-    @patch("chrome_debug.debug_process_ids", return_value=[456, 457])
-    @patch("chrome_debug.status")
-    @patch("chrome_debug.time.sleep")
-    @patch("chrome_debug.time.monotonic", side_effect=[0, 16])
-    @patch("chrome_debug.subprocess.Popen")
-    @patch("chrome_debug.chrome_executable", return_value=Path("/chrome"))
+    @patch("app.automations.debug_chrome.chrome_debug.wait_for_debug_exit", return_value=True)
+    @patch("app.automations.debug_chrome.chrome_debug.request_debug_close")
+    @patch("app.automations.debug_chrome.chrome_debug.debug_main_process_ids", return_value=[456])
+    @patch("app.automations.debug_chrome.chrome_debug.debug_process_ids", return_value=[456, 457])
+    @patch("app.automations.debug_chrome.chrome_debug.status")
+    @patch("app.automations.debug_chrome.chrome_debug.time.sleep")
+    @patch("app.automations.debug_chrome.chrome_debug.time.monotonic", side_effect=[0, 16])
+    @patch("app.automations.debug_chrome.chrome_debug.subprocess.Popen")
+    @patch("app.automations.debug_chrome.chrome_debug.chrome_executable", return_value=Path("/chrome"))
+    @patch("app.automations.debug_chrome.chrome_debug.port_is_in_use", return_value=False)
+    @patch("app.automations.debug_chrome.chrome_debug.request_cdp_close", return_value=False)
     def test_failed_start_closes_launched_debug_chrome(
         self,
+        _request_cdp_close: object,
+        _port_in_use: object,
         _executable: object,
         popen: object,
         _monotonic: object,

@@ -323,7 +323,7 @@ window.initializeWorkspaceWorkstation = () => {
     const workerVersionNumber = data.worker_version?.match(/^quick-worker-(\d+)(?:-|$)/)?.[1];
     const workerVersion = workerVersionNumber ? `v${workerVersionNumber}` : data.worker_version;
     const versionDetail = data.worker_version && data.protocol_version
-      ? `Worker ${workerVersion} · 协议 v${data.protocol_version}${data.state === "incompatible" && data.expected_protocol_version ? `（需要 v${data.expected_protocol_version}）` : ""} · `
+      ? `Worker ${workerVersion} · 协议 v${data.protocol_version}${data.state === "incompatible" && data.expected_protocol_version ? `（当前 Chub 需要 v${data.expected_protocol_version}）` : ""} · `
       : "";
     setStatus(
       elements.workerDetail,

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from chrome_profiles import list_profiles, read_profile_names
+from app.automations.debug_chrome.chrome_profiles import list_profiles, read_profile_names
 
 
 class ChromeProfilesTest(unittest.TestCase):

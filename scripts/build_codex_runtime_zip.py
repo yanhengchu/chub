@@ -39,6 +39,7 @@ def build(
     implementation_id: str = "codex-010000",
     version: str = "1.0.0",
     description: str,
+    chub_version: str | None = None,
 ) -> Path:
     if IMPLEMENTATION_ID_PATTERN.fullmatch(implementation_id) is None:
         raise ValueError("implementation_id must be codex- followed by six digits")
@@ -53,7 +54,7 @@ def build(
             relative = source.relative_to(SOURCE_ROOT)
             if relative.name == "chub-module.json":
                 manifest = json.loads(source.read_text("utf-8"))
-                manifest["chub_version"] = current_version()
+                manifest["chub_version"] = chub_version or current_version()
                 manifest["module_id"] = implementation_id
                 manifest["implementation_id"] = implementation_id
                 manifest["version"] = version
@@ -73,6 +74,7 @@ def main() -> int:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--implementation-id", default="codex-010000")
     parser.add_argument("--version", default="1.0.0")
+    parser.add_argument("--chub-version")
     parser.add_argument(
         "--description",
         required=True,
@@ -84,6 +86,7 @@ def main() -> int:
         implementation_id=args.implementation_id,
         version=args.version,
         description=args.description,
+        chub_version=args.chub_version,
     )
     print(output)
     return 0

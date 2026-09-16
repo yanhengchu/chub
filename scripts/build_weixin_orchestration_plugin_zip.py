@@ -28,7 +28,12 @@ def default_output(version: str, *, built_at: datetime | None = None) -> Path:
     )
 
 
-def build(output: Path, *, version: str = "1.0.0") -> Path:
+def build(
+    output: Path,
+    *,
+    version: str = "1.0.0",
+    chub_version: str | None = None,
+) -> Path:
     normalized_version = version.strip()
     if not normalized_version or len(normalized_version) > 64:
         raise ValueError("version must contain at most 64 characters")
@@ -40,7 +45,7 @@ def build(output: Path, *, version: str = "1.0.0") -> Path:
             relative = source.relative_to(SOURCE_ROOT)
             if relative.name == "chub-capability-orchestration.json":
                 manifest = json.loads(source.read_text("utf-8"))
-                manifest["chub_version"] = current_version()
+                manifest["chub_version"] = chub_version or current_version()
                 manifest["version"] = normalized_version
                 archive.writestr(
                     str(relative),
@@ -56,9 +61,10 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path)
     parser.add_argument("--version", default="1.0.0")
+    parser.add_argument("--chub-version")
     args = parser.parse_args()
     output = (args.output or default_output(args.version)).expanduser().resolve()
-    print(build(output, version=args.version))
+    print(build(output, version=args.version, chub_version=args.chub_version))
     return 0
 
 

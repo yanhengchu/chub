@@ -46,6 +46,9 @@ MAX_COMPLETION_BYTES = 128 * 1024
 MAX_RESULT_BYTES = 100_000
 MAX_ERROR_BYTES = 4_000
 MAX_EVENT_BYTES = 2 * 1024 * 1024
+MAX_EVENT_CAPTURE_BYTES = 256 * 1024
+MAX_EVENT_PRIORITY_BYTES = 32 * 1024
+MAX_EVENT_READ_BYTES = 8 * 1024 * 1024
 MAX_TASK_DIRECTORIES = 2_000
 MAX_ACTIVE_TASKS = 8
 CAPABILITY_CONTEXT_FILE = "capability-context.json"
@@ -362,6 +365,10 @@ class _RuntimeBoundaryError(OSError):
         super().__init__(error.message)
         self.code = error.code
         self.message = error.message
+
+
+class _RuntimeOutputLimitError(OSError):
+    """Raised when a Runner exceeds the bounded event-stream read budget."""
 
 
 def _private_directory(path: Path) -> None:
@@ -1348,6 +1355,7 @@ class WorkerTaskManager:
         release_write: int | None = None
         stdout_file = None
         stderr_file = None
+        stdout_capture: asyncio.Task[None] | None = None
         native_observer: asyncio.Task[None] | None = None
         runner = None
         capability_context_path: Path | None = None
@@ -1458,10 +1466,16 @@ class WorkerTaskManager:
                         if launch.stdin_prompt
                         else asyncio.subprocess.DEVNULL
                     ),
-                    stdout=stdout_file,
+                    stdout=asyncio.subprocess.PIPE,
                     stderr=stderr_file,
                     start_new_session=True,
                     pass_fds=(release_read,),
+                )
+                if process.stdout is None:
+                    raise OSError("Runtime Runner output pipe is unavailable")
+                stdout_capture = asyncio.create_task(
+                    self._capture_event_stream(process.stdout, stdout_file),
+                    name=f"quick-worker-event-stream-{task_id}",
                 )
                 os.close(release_read)
                 release_read = None
@@ -1499,7 +1513,13 @@ class WorkerTaskManager:
             execution_deadline = state.execution_deadline_at or spec.deadline_at
             remaining = max(0.0, (execution_deadline - utc_now()).total_seconds())
             try:
-                exit_code = await asyncio.wait_for(process.wait(), timeout=remaining)
+                if stdout_capture is None:
+                    raise OSError("Runtime Runner output capture is unavailable")
+                process_result, _ = await asyncio.wait_for(
+                    asyncio.gather(process.wait(), stdout_capture),
+                    timeout=remaining,
+                )
+                exit_code = process_result
             except asyncio.TimeoutError:
                 await self._terminate_process(process)
                 async with self._lock:
@@ -1650,6 +1670,23 @@ class WorkerTaskManager:
                 except Exception:
                     self._corrupt_task_ids.add(task_id)
         finally:
+            if stdout_capture is not None:
+                capture_failed = (
+                    stdout_capture.done()
+                    and not stdout_capture.cancelled()
+                    and stdout_capture.exception() is not None
+                )
+                if capture_failed and process is not None and process.stdout is not None:
+                    try:
+                        await asyncio.wait_for(
+                            process.stdout.read(),
+                            timeout=TERMINATE_KILL_SECONDS,
+                        )
+                    except (asyncio.TimeoutError, OSError):
+                        pass
+                if not stdout_capture.done():
+                    stdout_capture.cancel()
+                await asyncio.gather(stdout_capture, return_exceptions=True)
             if native_observer is not None:
                 native_observer.cancel()
                 await asyncio.gather(native_observer, return_exceptions=True)
@@ -1670,6 +1707,67 @@ class WorkerTaskManager:
                 except OSError:
                     LOGGER.warning("Unable to remove task capability context: %s", task_id)
             self._processes.pop(task_id, None)
+
+    @staticmethod
+    async def _capture_event_stream(
+        reader: asyncio.StreamReader,
+        destination,
+    ) -> None:
+        """Persist only complete, bounded event lines while continuously draining Codex."""
+        remaining = MAX_EVENT_CAPTURE_BYTES
+        priority_remaining = MAX_EVENT_PRIORITY_BYTES
+        total_read = 0
+        line = bytearray()
+        discarding_line = False
+        while chunk := await reader.read(64 * 1024):
+            total_read += len(chunk)
+            if total_read > MAX_EVENT_READ_BYTES:
+                raise _RuntimeOutputLimitError(
+                    "Runtime event stream exceeded its fixed read limit"
+                )
+            offset = 0
+            while offset < len(chunk):
+                newline = chunk.find(b"\n", offset)
+                end = len(chunk) if newline < 0 else newline + 1
+                fragment = chunk[offset:end]
+                offset = end
+                if discarding_line:
+                    if newline >= 0:
+                        discarding_line = False
+                    continue
+                if len(line) + len(fragment) > MAX_EVENT_CAPTURE_BYTES:
+                    line.clear()
+                    discarding_line = newline < 0
+                    continue
+                line.extend(fragment)
+                if newline >= 0:
+                    if len(line) <= remaining:
+                        destination.write(line)
+                        destination.flush()
+                        remaining -= len(line)
+                    elif (
+                        len(line) <= priority_remaining
+                        and WorkerTaskManager._is_priority_event_line(line)
+                    ):
+                        destination.write(line)
+                        destination.flush()
+                        priority_remaining -= len(line)
+                    line.clear()
+        if not discarding_line and line and len(line) <= remaining:
+            destination.write(line)
+        destination.flush()
+
+    @staticmethod
+    def _is_priority_event_line(raw_line: bytes) -> bool:
+        try:
+            event = json.loads(raw_line)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return False
+        if not isinstance(event, dict):
+            return False
+        if event.get("type") == "thread.started":
+            return isinstance(event.get("thread_id"), str)
+        return "error" in event or "message" in event
 
     async def _observe_native_session(self, task_id: str) -> None:
         path = self.tasks_dir / task_id / "stdout.txt"
@@ -1742,6 +1840,7 @@ class WorkerTaskManager:
             timeout=TERMINATE_GRACE_SECONDS,
         )
         if not self._process_group_members(process.pid):
+            await process.wait()
             return
         try:
             os.killpg(process.pid, signal.SIGKILL)
@@ -1756,6 +1855,7 @@ class WorkerTaskManager:
                 "worker_process_group_alive",
                 "Task process group could not be confirmed stopped",
             )
+        await process.wait()
 
     async def _terminate_identity(self, pid: int, created_at: float) -> None:
         if not self._group_identity_matches(pid, created_at):
@@ -2312,6 +2412,12 @@ class WorkerTaskManager:
         self,
         error: BaseException,
     ) -> tuple[str, str, TaskErrorSource]:
+        if isinstance(error, _RuntimeOutputLimitError):
+            return (
+                "runtime_output_exceeded",
+                "Runtime event stream exceeded its fixed read limit.",
+                "chub",
+            )
         if isinstance(error, _RuntimeBoundaryError):
             return (
                 error.code,

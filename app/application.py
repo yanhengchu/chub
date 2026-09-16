@@ -22,6 +22,7 @@ from starlette.responses import Response
 
 from app.api.ai_usage import router as ai_usage_router
 from app.api.health import router as health_router
+from app.api.ai_search import router as ai_search_router
 from app.api.automations import router as automations_router
 from app.api.logs import router as logs_router
 from app.api.maintenance import (
@@ -107,6 +108,7 @@ from app.notifications import NotificationService
 from app.web.routes import STATIC_DIR, router as web_router
 from app.api.deliveryline import router as deliveryline_router
 from app.deliveryline import DeliverylineCollaboration, DeliverylineStore
+from app.ai_search import AiSearchService
 
 
 async def _confirm_healthy_instance(
@@ -231,6 +233,7 @@ def _is_ai_runtime_mutation(request: Request) -> bool:
         or path.startswith("/api/plugins/codex-runtime/")
         or path.startswith("/api/ai/runtimes/")
         or path == "/api/ai/settings"
+        or path.startswith("/api/search/")
         or path.startswith("/api/weekly-reports/")
     )
 
@@ -1266,6 +1269,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.deliveryline_collaboration = DeliverylineCollaboration(
         resolved_settings.business_modules.deliveryline_state_dir,
     )
+    application.state.ai_search = AiSearchService(
+        resolved_settings.ai_runtime.codex.data_file.with_name("ai-search.json")
+    )
     application.state.weixin_translation = weixin_translation
     application.state.maintenance_terminal = maintenance_terminal
     def check_codex_runtime_account() -> RuntimeAccountEnvironmentState:
@@ -1279,6 +1285,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         quota = {
             "quota_state": "available" if usage.status == "available" else "unavailable",
+            "quota_message": (
+                usage.message
+                if usage.source == "sub2api" and usage.status != "available"
+                else None
+            ),
             "five_hour_remaining_percent": (
                 usage.five_hour.remaining_percent
                 if usage.status == "available" and usage.five_hour is not None
@@ -1353,6 +1364,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.add_exception_handler(StarletteHTTPException, http_error_handler)
     application.add_exception_handler(Exception, internal_error_handler)
     application.include_router(health_router)
+    application.include_router(ai_search_router)
     application.include_router(ai_usage_router)
     application.include_router(automations_router)
     application.include_router(logs_router)

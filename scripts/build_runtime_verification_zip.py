@@ -23,9 +23,10 @@ def current_version() -> str:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--chub-version")
     args = parser.parse_args()
     manifest = json.loads((SOURCE_DIR / "chub-module.json").read_text("utf-8"))
-    manifest["chub_version"] = current_version()
+    manifest["chub_version"] = args.chub_version or current_version()
     output = args.output.expanduser().resolve()
     output.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:

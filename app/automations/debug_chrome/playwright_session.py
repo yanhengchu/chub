@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Connect Playwright to the Chrome instance owned by chrome-cdp."""
+"""Connect Playwright to Chub's managed Debug Chrome instance."""
 
 from __future__ import annotations
 
@@ -13,10 +13,7 @@ from urllib.error import URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-try:
-    from .chrome_debug import DEFAULT_USER_DATA_DIR, DebugStatus, status
-except ImportError:
-    from chrome_debug import DEFAULT_USER_DATA_DIR, DebugStatus, status
+from .chrome_debug import DEFAULT_USER_DATA_DIR, DebugStatus, status
 
 
 @dataclass(frozen=True)
@@ -50,7 +47,7 @@ def playwright_factory() -> Callable[[], Any]:
         from playwright.async_api import async_playwright
     except ImportError as exc:
         raise RuntimeError(
-            "Playwright is not installed; install the chrome-cdp requirements first"
+            "Playwright is not installed; install Chub's requirements first"
         ) from exc
     return async_playwright
 

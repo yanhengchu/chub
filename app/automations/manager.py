@@ -259,19 +259,52 @@ class AutomationManager:
     def _public_feishu_environment(self, browser_state: str) -> FeishuEnvironmentState:
         with self._state_lock:
             if browser_state != "running":
-                self._feishu_environment = FeishuEnvironmentState()
-                return FeishuEnvironmentState(
-                    state="browser_stopped",
-                    message="浏览器未启动",
+                message = (
+                    "Debug Chrome 未启动，飞书账户暂无法检查。"
+                    if browser_state == "stopped"
+                    else "Debug Chrome 状态暂不可用，飞书账户暂无法检查。"
                 )
+                if (
+                    self._feishu_environment.state != "browser_stopped"
+                    or self._feishu_environment.message != message
+                ):
+                    self._feishu_environment = FeishuEnvironmentState(
+                        state="browser_stopped",
+                        message=message,
+                        checked_at=datetime.now().astimezone(),
+                    )
+                return self._feishu_environment.model_copy()
             return self._feishu_environment.model_copy()
 
     def _set_feishu_environment(self, state: FeishuEnvironmentState) -> None:
         with self._state_lock:
             self._feishu_environment = state
 
-    def _public_codex_runtime_account(self) -> RuntimeAccountEnvironmentState:
+    def _public_codex_runtime_account(
+        self,
+        browser_state: str | None = None,
+    ) -> RuntimeAccountEnvironmentState:
         with self._state_lock:
+            if (
+                browser_state is not None
+                and browser_state != "running"
+                and self._codex_runtime_account.state == "available"
+                and self._codex_runtime_account.auth_mode == "api"
+                and not self._codex_runtime_account.switching
+            ):
+                quota_message = (
+                    "浏览器未启动，额度暂无法获取"
+                    if browser_state == "stopped"
+                    else "Debug Chrome 状态暂不可用，额度暂无法获取"
+                )
+                self._codex_runtime_account = self._codex_runtime_account.model_copy(
+                    update={
+                        "quota_state": "unavailable",
+                        "quota_message": quota_message,
+                        "five_hour_remaining_percent": None,
+                        "weekly_remaining_percent": None,
+                    }
+                )
             return self._codex_runtime_account.model_copy()
 
     def _set_codex_runtime_account(
@@ -507,7 +540,7 @@ class AutomationManager:
                 browser_mode=None,
                 feishu_environment=FeishuEnvironmentState(
                     state="browser_stopped",
-                    message="浏览器未启动",
+                    message="自动化任务未启用，飞书账户暂无法检查。",
                 ),
                 codex_runtime_account=self._public_codex_runtime_account(),
                 enabled_count=0,
@@ -570,7 +603,7 @@ class AutomationManager:
             browser_profiles=profiles,
             browser_profiles_error=profiles_error,
             feishu_environment=self._public_feishu_environment(browser_state),
-            codex_runtime_account=self._public_codex_runtime_account(),
+            codex_runtime_account=self._public_codex_runtime_account(browser_state),
             enabled_count=sum(task.enabled for task in config.tasks.values()),
             tasks=tasks,
         )

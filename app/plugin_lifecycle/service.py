@@ -224,10 +224,22 @@ class PluginLifecycleService:
             return rows + self._candidates(plugin_id)
         if plugin_id == "weixin-orchestration":
             status = self.weixin_chub_mode.orchestration_settings()
-            rows = [{"artifact_id": "development:weixin-orchestration", "source": "development", "name": "开发实现", "version": "dev", "description": "处理微信普通文本的润色、确认与任务续提。", "available": status.development_available, "removable": True, "reason": None}]
+            development_version = self._development_weixin_version()
+            rows = [{"artifact_id": "development:weixin-orchestration", "source": "development", "name": "开发实现", "version": development_version, "description": "处理微信普通文本的润色、确认与任务续提。", "available": status.development_available, "removable": True, "reason": None}]
             rows.extend({"artifact_id": f"orchestration:{item.implementation_ref}", "source": "zip", "name": item.name, "version": item.version, "description": item.description, "available": item.available, "removable": removable, "reason": item.reason} for item, _active, removable in self.weixin_chub_mode.list_orchestration_plugins())
             return rows + self._candidates(plugin_id)
         return [{"artifact_id": "development:deliveryline", "source": "development", "name": "开发实现", "version": "dev", "description": "提供需求提出档案、评审前校验与归档查看；后续交付阶段尚未接入。", "available": (PROJECT_ROOT / "business-modules/deliveryline/chub-business-module.json").is_file(), "removable": True, "reason": None}] + self._candidates(plugin_id)
+
+    @staticmethod
+    def _development_weixin_version() -> str:
+        try:
+            manifest = json.loads(
+                (PROJECT_ROOT / "orchestration-modules" / "weixin-refinement" / "chub-capability-orchestration.json").read_text("utf-8")
+            )
+            version = manifest.get("version") if isinstance(manifest, dict) else None
+            return version if isinstance(version, str) and version.strip() else "未知"
+        except (OSError, ValueError):
+            return "未知"
 
     def _candidates(self, plugin_id: str) -> list[dict[str, object]]:
         directory = PROJECT_ROOT / "data/local/artifacts/plugins" / plugin_id

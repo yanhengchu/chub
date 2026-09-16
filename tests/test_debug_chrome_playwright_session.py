@@ -6,8 +6,8 @@ from io import BytesIO
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-import playwright_session
-from chrome_debug import DebugStatus
+from app.automations.debug_chrome import playwright_session
+from app.automations.debug_chrome.chrome_debug import DebugStatus
 
 
 ORIGINAL_ENSURE_PAGE_TARGET = playwright_session._ensure_page_target
@@ -92,7 +92,7 @@ def running_status(root: Path, state: str = "running") -> DebugStatus:
 
 class PlaywrightSessionTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
-        self.ensure_target_patch = patch("playwright_session._ensure_page_target")
+        self.ensure_target_patch = patch("app.automations.debug_chrome.playwright_session._ensure_page_target")
         self.ensure_target = self.ensure_target_patch.start()
 
     async def asyncTearDown(self) -> None:
@@ -106,7 +106,7 @@ class PlaywrightSessionTest(unittest.IsolatedAsyncioTestCase):
             browser = FakeBrowser(context)
             playwright = FakePlaywright(browser)
             with patch(
-                "playwright_session.status", return_value=running_status(root)
+                "app.automations.debug_chrome.playwright_session.status", return_value=running_status(root)
             ):
                 async with playwright_session.session(
                     root,
@@ -130,7 +130,7 @@ class PlaywrightSessionTest(unittest.IsolatedAsyncioTestCase):
             browser = FakeBrowser(context)
             playwright = FakePlaywright(browser)
             with patch(
-                "playwright_session.status", return_value=running_status(root)
+                "app.automations.debug_chrome.playwright_session.status", return_value=running_status(root)
             ):
                 async with playwright_session.session(
                     root,
@@ -144,7 +144,7 @@ class PlaywrightSessionTest(unittest.IsolatedAsyncioTestCase):
             browser = FakeBrowser(FakeContext([object()]))
             playwright = FakePlaywright(browser)
             with patch(
-                "playwright_session.status", return_value=running_status(root)
+                "app.automations.debug_chrome.playwright_session.status", return_value=running_status(root)
             ):
                 with self.assertRaisesRegex(RuntimeError, "caller failed"):
                     async with playwright_session.session(
@@ -162,7 +162,7 @@ class PlaywrightSessionTest(unittest.IsolatedAsyncioTestCase):
             playwright = FakePlaywright(FakeBrowser(FakeContext()))
             playwright.chromium = FailingChromium()
             with patch(
-                "playwright_session.status", return_value=running_status(root)
+                "app.automations.debug_chrome.playwright_session.status", return_value=running_status(root)
             ):
                 with self.assertRaisesRegex(RuntimeError, "connection failed"):
                     async with playwright_session.session(
@@ -182,7 +182,7 @@ class PlaywrightSessionTest(unittest.IsolatedAsyncioTestCase):
             playwright.chromium = chromium
             self.ensure_target.reset_mock()
             with patch(
-                "playwright_session.status",
+                "app.automations.debug_chrome.playwright_session.status",
                 return_value=running_status(root),
             ):
                 async with playwright_session.session(
@@ -205,7 +205,7 @@ class PlaywrightSessionTest(unittest.IsolatedAsyncioTestCase):
             playwright.chromium = chromium
             self.ensure_target.reset_mock()
             with patch(
-                "playwright_session.status",
+                "app.automations.debug_chrome.playwright_session.status",
                 return_value=running_status(root),
             ):
                 with self.assertRaisesRegex(
@@ -231,7 +231,7 @@ class PlaywrightSessionTest(unittest.IsolatedAsyncioTestCase):
             playwright.chromium = chromium
             self.ensure_target.reset_mock()
             with patch(
-                "playwright_session.status",
+                "app.automations.debug_chrome.playwright_session.status",
                 return_value=running_status(root),
             ):
                 async with playwright_session.session(
@@ -250,19 +250,19 @@ class PlaywrightSessionTest(unittest.IsolatedAsyncioTestCase):
         existing_page = BytesIO(
             b'[{"type":"page","webSocketDebuggerUrl":"ws://target"}]'
         )
-        with patch("playwright_session.urlopen", return_value=no_targets):
-            with patch("playwright_session._create_page_target") as create_target:
+        with patch("app.automations.debug_chrome.playwright_session.urlopen", return_value=no_targets):
+            with patch("app.automations.debug_chrome.playwright_session._create_page_target") as create_target:
                 ORIGINAL_ENSURE_PAGE_TARGET("http://127.0.0.1:9222")
                 create_target.assert_called_once_with("http://127.0.0.1:9222")
-        with patch("playwright_session.urlopen", return_value=existing_page):
-            with patch("playwright_session._create_page_target") as create_target:
+        with patch("app.automations.debug_chrome.playwright_session.urlopen", return_value=existing_page):
+            with patch("app.automations.debug_chrome.playwright_session._create_page_target") as create_target:
                 ORIGINAL_ENSURE_PAGE_TARGET("http://127.0.0.1:9222")
                 create_target.assert_not_called()
 
     async def test_refuses_stopped_or_broken_debug_chrome(self) -> None:
         for state in ("stopped", "broken"):
             with patch(
-                "playwright_session.status",
+                "app.automations.debug_chrome.playwright_session.status",
                 return_value=running_status(Path("/tmp/debug"), state),
             ):
                 with self.assertRaises(RuntimeError):

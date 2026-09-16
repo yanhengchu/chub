@@ -30,9 +30,6 @@
     const reasoningDescription = reasoningStaticDisplay
       ?.closest(".workspace-task-orchestration-field")
       ?.querySelector(".workstation-status-detail");
-    const showInternalNativeSession = document.getElementById(
-      "workspace-task-show-internal-native-session",
-    );
 
     if (
       !(message instanceof HTMLElement)
@@ -53,7 +50,6 @@
       || !(reasoningStaticDisplay instanceof HTMLElement)
       || !(reasoningStaticValue instanceof HTMLElement)
       || !(reasoningDescription instanceof HTMLElement)
-      || !(showInternalNativeSession instanceof HTMLInputElement)
       || typeof window.createChoicePicker !== "function"
     ) {
       return;
@@ -105,11 +101,6 @@
     reasoningPickerHost.append(reasoningTrigger, reasoningMenu);
     reasoningStaticDisplay.replaceWith(reasoningPickerHost);
 
-    const implementationRow = implementationTrigger.closest(".workspace-task-orchestration-field");
-    const internalSessionRow = showInternalNativeSession.closest(".workspace-task-orchestration-field");
-    if (implementationRow instanceof HTMLElement && internalSessionRow instanceof HTMLElement) {
-      orchestrationList.insertBefore(internalSessionRow, implementationRow);
-    }
     const implementationTitle = implementationDescription.previousElementSibling;
     if (implementationTitle instanceof HTMLElement) implementationTitle.textContent = "当前使用版本";
     implementationMenu.setAttribute("aria-label", "当前使用版本");
@@ -215,7 +206,6 @@
       runtimePicker.setDisabled(disabled);
       modelPicker.setDisabled(disabled);
       reasoningPicker.setDisabled(disabled);
-      showInternalNativeSession.disabled = disabled;
     };
     const apiRequest = async (path, options = {}) => {
       const response = await fetch(path, options);
@@ -327,7 +317,6 @@
         : "当前配置不可用，请重新选择模型。";
       modelTrigger.setAttribute("aria-label", `模型：${modelValue.textContent}`);
       renderReasoning(effectiveModel);
-      showInternalNativeSession.checked = status.show_internal_native_session === true;
       const active = Number(status.queued || 0) + Number(status.running || 0);
       const notes = [];
       if (active > 0) notes.push(`${active} 项文本优化仍在处理中`);
@@ -360,7 +349,6 @@
         || (!orchestration.development_available
           && !modules.some((item) => item.available)),
       );
-      showInternalNativeSession.disabled = saving || loading;
     };
     const load = async () => {
       if (loading || disposed) return;
@@ -473,13 +461,6 @@
         render();
       }
     };
-
-    showInternalNativeSession.addEventListener("change", () => {
-      void save(
-        { show_internal_native_session: showInternalNativeSession.checked },
-        "内部翻译 Session 显示设置保存失败，请稍后刷新页面重试。",
-      );
-    });
 
     window.disposeWorkspaceTaskOrchestration = () => {
       disposed = true;

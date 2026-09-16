@@ -1264,6 +1264,14 @@ class WeixinTranslationManager:
                 "weixin_translation_execution_settings_required",
                 "微信文本优化必须同时配置 Runtime、模型和推理等级。",
             )
+        with self._lock:
+            unchanged = (
+                self._state.runtime_id == runtime_id
+                and self._state.model == model
+                and self._state.reasoning_effort == reasoning_effort
+            )
+        if unchanged:
+            return self.status()
         self._require_translation_runtime(runtime_id)
         self.codex_manager.validate_model(model, reasoning_effort)
         with self._lock:

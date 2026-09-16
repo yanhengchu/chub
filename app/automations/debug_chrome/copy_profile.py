@@ -12,10 +12,10 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from chrome_process import close_running_chrome, is_chrome_running
-from chrome_profiles import default_user_data_dir, is_user_profile_directory
-from chrome_profiles import read_profile_names
-from profile_store import (
+from .chrome_process import close_running_chrome, is_chrome_running
+from .chrome_profiles import default_user_data_dir, is_user_profile_directory
+from .chrome_profiles import read_profile_names
+from .profile_store import (
     MANIFEST_VERSION,
     load_manifest,
     profile_store_lock,
@@ -82,7 +82,7 @@ def existing_manifest(target: Path) -> dict[str, object] | None:
         return load_manifest(target)
     except RuntimeError as exc:
         raise RuntimeError(
-            f"Target contains data not managed by chrome-cdp: {target}"
+            f"Target contains data not managed by Chub Debug Chrome: {target}"
         ) from exc
 
 
@@ -153,7 +153,7 @@ def copy_profile(
             "Existing Debug Chrome profiles use a different source User Data"
         )
 
-    from chrome_debug import debug_process_ids
+    from .chrome_debug import debug_process_ids
 
     if debug_process_ids(target):
         raise RuntimeError("Stop Debug Chrome before copying a regular Chrome profile")
@@ -279,7 +279,7 @@ def main() -> int:
             close_running=not args.require_stopped,
         )
     except (OSError, RuntimeError) as exc:
-        print(f"chrome-cdp: {exc}", file=sys.stderr)
+        print(f"Chub Debug Chrome: {exc}", file=sys.stderr)
         return 1
 
     print(f"Copied profile '{args.profile}' to: {target}")

@@ -209,7 +209,7 @@ async def test_codex_runtime_account_check_reports_api_mode_when_usage_is_unavai
             provider="OpenAI",
             source="sub2api",
             timezone="Asia/Shanghai",
-            message="AI API 额度账户未登录。",
+            message="浏览器未启动，额度暂无法获取。",
         )
     )
     transport = httpx.ASGITransport(app=app)
@@ -226,11 +226,46 @@ async def test_codex_runtime_account_check_reports_api_mode_when_usage_is_unavai
     assert response.json()["data"]["auth_mode"] == "api"
     assert response.json()["data"]["message"] == "API Key 模式已启用"
     assert response.json()["data"]["quota_state"] == "unavailable"
+    assert response.json()["data"]["quota_message"] == "浏览器未启动，额度暂无法获取。"
     assert response.json()["data"]["five_hour_remaining_percent"] is None
     assert response.json()["data"]["weekly_remaining_percent"] is None
     assert response.json()["data"]["checked_at"]
     assert response.json()["data"]["login_page_available"] is False
     app.state.ai_usage.read.assert_called_once_with(force=True)
+
+
+@pytest.mark.anyio
+async def test_codex_runtime_account_check_clears_quota_after_provider_logout(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    app.state.ai_usage.read = MagicMock(
+        return_value=AiUsageData(
+            status="unavailable",
+            provider="OpenAI",
+            source="sub2api",
+            timezone="Asia/Shanghai",
+            message="AI API 额度账户未登录。",
+        )
+    )
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers=AUTH,
+    ) as client:
+        response = await client.post("/api/automations/environment/codex/check")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["state"] == "available"
+    assert data["auth_mode"] == "api"
+    assert data["message"] == "API Key 模式已启用"
+    assert data["quota_state"] == "unavailable"
+    assert data["quota_message"] == "AI API 额度账户未登录。"
+    assert data["five_hour_remaining_percent"] is None
+    assert data["weekly_remaining_percent"] is None
 
 
 @pytest.mark.anyio

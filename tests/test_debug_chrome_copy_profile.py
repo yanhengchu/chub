@@ -6,8 +6,8 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from copy_profile import copy_profile
-from profile_store import load_manifest
+from app.automations.debug_chrome.copy_profile import copy_profile
+from app.automations.debug_chrome.profile_store import load_manifest
 
 
 class CopyProfileTest(unittest.TestCase):
@@ -23,7 +23,7 @@ class CopyProfileTest(unittest.TestCase):
             (source / "Local State").write_text("{}", encoding="utf-8")
 
             target = root / "chrome-debug-data"
-            with patch("copy_profile.is_chrome_running", return_value=False):
+            with patch("app.automations.debug_chrome.copy_profile.is_chrome_running", return_value=False):
                 result = copy_profile(
                     "Profile 2",
                     source_user_data=source,
@@ -46,7 +46,7 @@ class CopyProfileTest(unittest.TestCase):
             target.mkdir()
             (target / "existing.txt").write_text("keep", encoding="utf-8")
 
-            with patch("copy_profile.is_chrome_running", return_value=False):
+            with patch("app.automations.debug_chrome.copy_profile.is_chrome_running", return_value=False):
                 with self.assertRaisesRegex(RuntimeError, "not managed"):
                     copy_profile(
                         "Default",
@@ -68,7 +68,7 @@ class CopyProfileTest(unittest.TestCase):
             (source / "Local State").write_text("{}", encoding="utf-8")
             target = root / "chrome-debug-data"
 
-            with patch("copy_profile.is_chrome_running", return_value=False):
+            with patch("app.automations.debug_chrome.copy_profile.is_chrome_running", return_value=False):
                 copy_profile(
                     "Profile 2",
                     source_user_data=source,
@@ -108,7 +108,7 @@ class CopyProfileTest(unittest.TestCase):
             )
             target = root / "chrome-debug-data"
 
-            with patch("copy_profile.is_chrome_running", return_value=False):
+            with patch("app.automations.debug_chrome.copy_profile.is_chrome_running", return_value=False):
                 copy_profile("Default", source_user_data=source, target=target)
                 target_state = json.loads(
                     (target / "Local State").read_text(encoding="utf-8")
@@ -150,13 +150,13 @@ class CopyProfileTest(unittest.TestCase):
                 encoding="utf-8",
             )
             target = root / "chrome-debug-data"
-            with patch("copy_profile.is_chrome_running", return_value=False):
+            with patch("app.automations.debug_chrome.copy_profile.is_chrome_running", return_value=False):
                 copy_profile("Default", source_user_data=source, target=target)
             original_local_state = (target / "Local State").read_bytes()
 
             with (
-                patch("copy_profile.is_chrome_running", return_value=False),
-                patch("copy_profile.save_manifest", side_effect=OSError("disk full")),
+                patch("app.automations.debug_chrome.copy_profile.is_chrome_running", return_value=False),
+                patch("app.automations.debug_chrome.copy_profile.save_manifest", side_effect=OSError("disk full")),
             ):
                 with self.assertRaisesRegex(OSError, "disk full"):
                     copy_profile(
@@ -172,8 +172,8 @@ class CopyProfileTest(unittest.TestCase):
             )
             self.assertNotIn("Profile 2", load_manifest(target)["profiles"])
 
-    @patch("copy_profile.close_running_chrome")
-    @patch("copy_profile.is_chrome_running", return_value=True)
+    @patch("app.automations.debug_chrome.copy_profile.close_running_chrome")
+    @patch("app.automations.debug_chrome.copy_profile.is_chrome_running", return_value=True)
     def test_running_chrome_is_closed_before_copy(
         self, _running: object, close_chrome: object
     ) -> None:
@@ -190,8 +190,8 @@ class CopyProfileTest(unittest.TestCase):
 
         close_chrome.assert_called_once_with()
 
-    @patch("copy_profile.close_running_chrome")
-    @patch("copy_profile.is_chrome_running", return_value=True)
+    @patch("app.automations.debug_chrome.copy_profile.close_running_chrome")
+    @patch("app.automations.debug_chrome.copy_profile.is_chrome_running", return_value=True)
     def test_require_stopped_refuses_without_closing_chrome(
         self, _running: object, close_chrome: object
     ) -> None:
@@ -210,8 +210,8 @@ class CopyProfileTest(unittest.TestCase):
 
         close_chrome.assert_not_called()
 
-    @patch("copy_profile.close_running_chrome")
-    @patch("copy_profile.is_chrome_running", side_effect=[False, True])
+    @patch("app.automations.debug_chrome.copy_profile.close_running_chrome")
+    @patch("app.automations.debug_chrome.copy_profile.is_chrome_running", side_effect=[False, True])
     def test_require_stopped_checks_running_chrome_only_once(
         self, running: object, close_chrome: object
     ) -> None:
@@ -240,7 +240,7 @@ class CopyProfileTest(unittest.TestCase):
             stale.mkdir()
             (stale / "partial").write_text("partial", encoding="utf-8")
 
-            with patch("copy_profile.is_chrome_running", return_value=False):
+            with patch("app.automations.debug_chrome.copy_profile.is_chrome_running", return_value=False):
                 copy_profile(
                     "Default",
                     source_user_data=source,
@@ -250,8 +250,8 @@ class CopyProfileTest(unittest.TestCase):
 
         self.assertFalse(stale.exists())
 
-    @patch("copy_profile.close_running_chrome")
-    @patch("copy_profile.is_chrome_running", return_value=True)
+    @patch("app.automations.debug_chrome.copy_profile.close_running_chrome")
+    @patch("app.automations.debug_chrome.copy_profile.is_chrome_running", return_value=True)
     def test_invalid_existing_target_does_not_close_chrome(
         self, _running: object, close_chrome: object
     ) -> None:
@@ -276,11 +276,11 @@ class CopyProfileTest(unittest.TestCase):
             (source / "Profile 2").mkdir()
             (source / "Local State").write_text("{}", encoding="utf-8")
             target = root / "target"
-            with patch("copy_profile.is_chrome_running", return_value=False):
+            with patch("app.automations.debug_chrome.copy_profile.is_chrome_running", return_value=False):
                 copy_profile("Default", source_user_data=source, target=target)
             (source / "Local State").write_text("[]", encoding="utf-8")
 
-            with patch("copy_profile.is_chrome_running", return_value=False):
+            with patch("app.automations.debug_chrome.copy_profile.is_chrome_running", return_value=False):
                 with self.assertRaisesRegex(RuntimeError, "Invalid source"):
                     copy_profile("Profile 2", source_user_data=source, target=target)
 

@@ -1,250 +1,284 @@
 (() => {
-  let records = [];
+  let lines = [];
   let selectedId = null;
-  let workflowStages = [];
-  const collaborationCommentFields = new Set();
-  const collaborationCommentValues = new Map();
-  let collaborationRefreshTimer = null;
+  let refreshTimer = null;
 
   const request = async (path, options = {}) => {
     const response = await fetch(path, { headers: { "Content-Type": "application/json" }, ...options });
     const body = await response.json().catch(() => null);
-    if (!response.ok || body?.success !== true) throw new Error(body?.error?.message || "需求操作失败。");
+    if (!response.ok || body?.success !== true) throw new Error(body?.error?.message || "交付线操作失败。");
     return body.data;
   };
-
   const text = (value) => String(value || "");
+  const list = (value) => Array.isArray(value) ? value : [];
+  const linesFromText = (value) => text(value).split("\n").map((item) => item.trim()).filter(Boolean);
+
+  const appendLinkedText = (element, value) => {
+    const source = text(value || "待补充");
+    const pattern = /https?:\/\/[^\s<>"']+/g;
+    let cursor = 0;
+    source.replace(pattern, (match, index) => {
+      const url = match.replace(/[),.;!?]+$/, "");
+      element.append(document.createTextNode(source.slice(cursor, index)));
+      if (url) {
+        const link = document.createElement("a");
+        link.href = url; link.target = "_blank"; link.rel = "noopener noreferrer"; link.textContent = url;
+        element.append(link, document.createTextNode(match.slice(url.length)));
+      } else element.append(document.createTextNode(match));
+      cursor = index + match.length;
+      return match;
+    });
+    element.append(document.createTextNode(source.slice(cursor)));
+  };
+
+  const node = (tag, value = "", className = "") => {
+    const element = document.createElement(tag);
+    element.textContent = value;
+    element.className = className;
+    return element;
+  };
+
+  const field = (label, value, linked = false) => {
+    const section = node("section", "", "deliveryline-preview-field");
+    const content = node("strong");
+    if (linked) appendLinkedText(content, value); else content.textContent = value || "待确认";
+    section.append(node("span", label), content);
+    return section;
+  };
+
+  const comparisonField = (label, currentValue, suggestedValue, currentLabel = "当前档案") => {
+    const section = node("section", "", "deliveryline-ai-comparison-field");
+    const current = node("div", "", "deliveryline-ai-comparison-value is-current");
+    const suggested = node("div", "", "deliveryline-ai-comparison-value is-suggested");
+    current.append(node("span", currentLabel), node("strong", currentValue || "未确认"));
+    suggested.append(node("span", "AI 建议"), node("strong", suggestedValue || "未提供"));
+    section.append(node("h6", label), current, suggested);
+    return section;
+  };
+
+  const bulletSection = (title, values, className = "") => {
+    const section = node("section", "", `deliveryline-collaboration-open-questions ${className}`.trim());
+    section.append(node("h6", title));
+    const items = node("ul", "", "deliveryline-collaboration-questions");
+    values.forEach((value) => items.append(node("li", value)));
+    section.append(items);
+    return section;
+  };
+
+  const updateSummary = (data) => {
+    const values = [data.pending_clarification, data.planning, data.change_assessment, data.ended_lines?.length || 0];
+    document.querySelectorAll(".deliveryline-workbench-summary strong").forEach((element, index) => { element.textContent = String(values[index] || 0); });
+  };
+
+  const lineRow = (line, ended = false) => {
+    const button = node("button", "", "deliveryline-requirement-row");
+    button.type = "button";
+    button.dataset.deliverylineSelect = line.id;
+    const copy = node("span");
+    copy.append(node("strong", `${line.title || "未命名交付线"} · ${line.id}`), node("small", ended ? "已结束" : line.status === "待澄清" ? "等待整体澄清" : "整体目标已确认"));
+    const badge = node("span", ended ? "已结束" : line.status, ended ? "badge badge-success" : "badge badge-timeout");
+    button.append(copy, badge);
+    return button;
+  };
+
+  const renderLists = (active, ended) => {
+    const activeList = document.getElementById("deliveryline-active-list");
+    const activeEmpty = document.getElementById("deliveryline-active-empty");
+    const endedSection = document.getElementById("deliveryline-ended-section");
+    const endedList = document.getElementById("deliveryline-ended-list");
+    if (activeList) {
+      activeList.replaceChildren(...active.map((line) => lineRow(line)));
+      activeList.hidden = active.length === 0;
+    }
+    if (activeEmpty) activeEmpty.hidden = active.length > 0;
+    if (endedList) endedList.replaceChildren(...ended.map((line) => lineRow(line, true)));
+    if (endedSection) endedSection.hidden = ended.length === 0;
+  };
 
   const render = () => {
     const detail = document.getElementById("deliveryline-detail");
-    const selected = records.find((item) => item.id === selectedId) || records[0];
+    const aiButton = document.getElementById("deliveryline-ai-clarify");
+    const endButton = document.getElementById("deliveryline-end");
+    const deleteButton = document.getElementById("deliveryline-delete");
+    const selected = lines.find((item) => item.id === selectedId) || lines[0];
     selectedId = selected?.id || null;
     document.querySelectorAll("[data-deliveryline-select]").forEach((button) => button.classList.toggle("is-selected", button.dataset.deliverylineSelect === selectedId));
-    if (!selected || !(detail instanceof HTMLElement)) {
+    if (!detail || !selected) {
       if (detail) detail.hidden = true;
+      if (aiButton) aiButton.disabled = true;
+      if (endButton) endButton.disabled = true;
+      if (deleteButton) deleteButton.disabled = true;
       return;
     }
     detail.hidden = false;
-    const isInitialized = selected.is_initialized;
-    const canCollaborate = selected.current_stage === "需求提出" && selected.delivery_status !== "已归档";
-    const stages = workflowStages.length ? workflowStages : [{ name: selected.current_stage, substages: [] }];
-    const fieldDefinitions = [["title", "标题", selected.title], ["background", "背景与问题", selected.background], ["delivery_goal", "交付目标", selected.delivery_goal], ["scope", "本次范围", selected.scope], ["out_of_scope", "不做什么", selected.out_of_scope], ["constraints", "约束与依赖", selected.constraints], ["acceptance_criteria", "验收标准", selected.acceptance_criteria], ["risks_and_open_items", "风险与待确认事项", selected.risks_and_open_items]];
     detail.textContent = "";
-    detail.classList.toggle("is-initialized", isInitialized);
-    const stagesList = document.createElement("ol"); stagesList.className = "deliveryline-preview-stages";
-    const node = (tag, value = "", className = "") => { const element = document.createElement(tag); element.textContent = value; element.className = className; return element; };
-    const requirementId = node("header", "", "deliveryline-detail-preview-identifier");
-    requirementId.append(node("strong", `${selected.title || "未命名需求"} · ${selected.id}`));
-    const progress = node("section", "", "deliveryline-detail-preview-progress");
-    const stageTrack = node("section", "", "deliveryline-detail-preview-progress-track");
-    const appendLinkedText = (element, value) => {
-      const source = text(value || "待补充");
-      const pattern = /https?:\/\/[^\s<>"']+/g;
-      let cursor = 0;
-      source.replace(pattern, (match, index) => {
-        const url = match.replace(/[),.;!?]+$/, "");
-        element.append(document.createTextNode(source.slice(cursor, index)));
-        if (!url) {
-          element.append(document.createTextNode(match));
-        } else {
-          const link = document.createElement("a");
-          link.href = url;
-          link.target = "_blank";
-          link.rel = "noopener noreferrer";
-          link.textContent = url;
-          element.append(link, document.createTextNode(match.slice(url.length)));
-        }
-        cursor = index + match.length;
-        return match;
-      });
-      element.append(document.createTextNode(source.slice(cursor)));
-    };
-    if (selected.original_request_content) { const originalDescription = node("p", "", "deliveryline-detail-preview-description is-collapsed"); appendLinkedText(originalDescription, selected.original_request_content); requirementId.append(originalDescription); if (selected.original_request_content.length > 240) { const toggle = node("button", "展开", "button-link deliveryline-description-toggle"); toggle.type = "button"; toggle.dataset.deliverylineToggleDescription = ""; toggle.setAttribute("aria-expanded", "false"); requirementId.append(toggle); } }
-    const stageIndex = Math.max(0, stages.findIndex((stage) => stage.name === selected.current_stage));
-    const currentStage = stages[stageIndex] || { name: selected.current_stage, substages: [] };
-    const stageStatus = (index) => index < stageIndex ? ["is-complete", "✓", "已完成"] : index === stageIndex ? ["is-current", String(index + 1), "进行中"] : ["is-pending", String(index + 1), "未开始"];
-    stages.forEach((stage, index) => { const item = node("li"); const [className, symbol, status] = stageStatus(index); item.className = className; item.append(node("span", symbol, "deliveryline-stage-node"), node("strong", stage.name), node("small", status)); stagesList.append(item); });
-    const mobileSummary = node("div", "", "deliveryline-mobile-workflow-summary"); const workflowToggle = node("button", "查看全部流程", "button-link"); workflowToggle.type = "button"; workflowToggle.dataset.deliverylineToggleWorkflow = ""; workflowToggle.setAttribute("aria-expanded", "false"); mobileSummary.append(node("span", `${currentStage.name} · 阶段 ${stageIndex + 1} / ${stages.length}`), workflowToggle); stageTrack.append(mobileSummary, stagesList);
-    const substage = node("section", "", "deliveryline-preview-substages");
-    const substageList = node("ol");
-    const intakeComplete = Boolean(selected.original_request_content) || stageIndex > 0;
-    const archiveCompletionCurrent = selected.current_stage === "需求提出" && selected.delivery_status !== "已归档";
-    const currentSubstageIndex = currentStage.name === "需求提出" ? (archiveCompletionCurrent ? 1 : 0) : -1;
-    const currentSubstage = currentStage.substages[currentSubstageIndex] || null;
-    if (currentStage.substages.length) {
-      currentStage.substages.forEach((substageDefinition, index) => { const complete = index === 0 ? intakeComplete : index < currentSubstageIndex; const active = index === currentSubstageIndex; const status = complete ? ["is-complete", "✓", "已完成"] : active ? ["is-current", String(index + 1), "进行中"] : ["is-pending", "", "未开始"]; const item = node("li"); item.className = status[0]; item.append(node("span", status[1], "deliveryline-substage-node"), node("strong", substageDefinition.name), node("small", status[2])); substageList.append(item); });
-      substage.append(substageList);
-    }
-    progress.append(node("p", "推进进度", "section-kicker"), stageTrack);
-    if (currentStage.substages.length) {
-      progress.append(substage);
-    }
     const collaboration = selected.collaboration;
-    const fieldGrid = (fields, className = "") => {
-      const grid = node("div", "", `deliveryline-preview-fields ${className}`.trim());
-      fields.forEach(([key, name, value]) => {
-        const field = node("section", "", "deliveryline-preview-field");
-        const content = node("strong");
-        appendLinkedText(content, value);
-        field.append(node("span", name), content);
-        const suggestion = collaboration?.status === "suggested" ? collaboration.suggestion?.fields?.[key] : null;
-        if (suggestion && suggestion.status !== "accepted") {
-          const preview = node("div", "", "deliveryline-field-suggestion");
-          const suggestionCopy = node("p");
-          suggestionCopy.append(node("span", "AI 建议："), node("strong", suggestion.value));
-          preview.append(suggestionCopy);
-          const commentId = `${selected.id}:${key}`;
-          const commentOpen = collaborationCommentFields.has(commentId) && suggestion.status === "suggested";
-          if (suggestion.status === "suggested") {
-            if (!commentOpen) {
-              const actions = node("div", "", "deliveryline-field-suggestion-actions");
-              const accept = node("button", "采纳", "button-secondary"); accept.type = "button"; accept.dataset.deliverylineAiFieldAccept = key;
-              const comment = node("button", "建议", "button-link"); comment.type = "button"; comment.dataset.deliverylineAiFieldComment = key;
-              actions.append(accept, comment); preview.append(actions);
-            }
-          } else if (suggestion.status === "applying") preview.append(node("p", "正在采纳建议。", "deliveryline-field-suggestion-status"));
-          else if (suggestion.status === "commented") preview.append(node("p", `已记录建议：${suggestion.comment}`, "deliveryline-field-suggestion-status"));
-          if (commentOpen) {
-            const form = node("div", "", "deliveryline-collaboration-comment");
-            const input = document.createElement("textarea"); input.rows = 2; input.maxLength = 4000; input.placeholder = `输入对“${name}”的建议`; input.dataset.deliverylineAiFieldCommentInput = key; input.value = collaborationCommentValues.get(commentId) || "";
-            form.append(input); preview.append(form);
-          }
-          field.append(preview);
-        }
-        grid.append(field);
-      });
-      return grid;
-    };
-    const current = node("section", "", "deliveryline-detail-preview-current"); const currentHeader = node("header"); const currentObjective = currentSubstage?.objective || "详细阶段契约待制定。"; currentHeader.append(node("p", "当前阶段", "section-kicker"), node("h4", currentSubstage ? `${currentStage.name} · ${currentSubstage.name}` : currentStage.name), node("p", `${currentSubstage ? "当前目标" : "阶段说明"}：${currentObjective}`, "deliveryline-current-stage-goal"));
-    const content = (() => { const groups = node("div", "", "deliveryline-preview-field-groups"); const group = node("section", "", "deliveryline-preview-field-group is-source"); group.append(node("h5", selected.current_stage === "需求提出" ? "待补充内容" : "需求档案"), fieldGrid(fieldDefinitions)); if (collaboration?.sources?.length) { const sources = node("ul", "", "deliveryline-collaboration-questions"); collaboration.sources.forEach((source) => sources.append(node("li", source.label || "资料来源"))); const sourceGroup = node("section", "", "deliveryline-collaboration-open-questions"); sourceGroup.append(node("h6", "本轮资料来源"), sources); group.append(sourceGroup); } if (collaboration?.error) group.append(node("p", collaboration.error, "deliveryline-collaboration-status is-error")); if (collaboration?.status === "suggested" && collaboration.suggestion?.open_questions?.length) { const questions = node("ul", "", "deliveryline-collaboration-questions"); collaboration.suggestion.open_questions.forEach((question) => questions.append(node("li", question))); const openQuestions = node("section", "", "deliveryline-collaboration-open-questions"); openQuestions.append(node("h6", "仍待确认"), questions); group.append(openQuestions); } groups.append(group); return groups; })();
-    if (selected.delivery_status !== "已归档") { const actions = node("div", "", "deliveryline-preview-actions"); const collaborationRunning = collaboration?.status === "requested" || collaboration?.status === "running"; const unresolvedSuggestions = collaboration?.status === "suggested" && Object.values(collaboration?.suggestion?.fields || {}).some((item) => item.status === "suggested" || item.status === "applying"); const hasRemainingSuggestions = collaboration?.status === "suggested" && collaboration.can_continue; const noFieldsToRevise = collaboration?.status === "suggested" && !collaboration.can_continue; if (canCollaborate) { if (collaborationRunning) { const processing = node("button", "AI 协作处理中", "button-secondary"); processing.type = "button"; processing.disabled = true; actions.append(processing); } else { const collaborate = node("button", hasRemainingSuggestions ? "继续 AI 协作" : "AI 协作", "button-secondary"); collaborate.type = "button"; collaborate.dataset.deliverylineAiStart = ""; collaborate.disabled = Boolean(noFieldsToRevise); if (noFieldsToRevise) collaborate.title = "所有字段建议均已采纳，无需再次生成。"; actions.append(collaborate); } const confirmStage = node("button", "阶段确认", "button-secondary"); confirmStage.type = "button"; confirmStage.dataset.deliverylineSubmitReview = ""; confirmStage.disabled = selected.current_stage !== "需求提出" || selected.readiness_missing.length > 0 || Boolean(unresolvedSuggestions) || collaborationRunning; if (confirmStage.disabled) confirmStage.title = collaborationRunning ? "请等待当前 AI 协作完成。" : unresolvedSuggestions ? "请先逐项处理当前 AI 建议。" : "请先补全当前阶段所需内容。"; actions.append(confirmStage); } if (!isInitialized) { const edit = node("button", "编辑档案", "button-link"); edit.type = "button"; edit.dataset.deliverylineEdit = ""; actions.append(edit); } const archive = node("button", "归档", "button-danger"); archive.type = "button"; archive.dataset.deliverylineArchive = ""; const remove = node("button", "删除", "button-danger"); remove.type = "button"; remove.dataset.deliverylineDelete = ""; actions.append(archive, remove); current.append(currentHeader, content, actions); } else current.append(currentHeader, content);
-    if (selected.current_stage === "需求提出") { detail.append(requirementId, progress, current); if (collaboration?.status === "requested" || collaboration?.status === "running") { window.clearTimeout(collaborationRefreshTimer); collaborationRefreshTimer = window.setTimeout(() => load().catch((error) => window.setWorkspaceToolbarError?.(error.message)), 1600); } return; }
-    const layout = node("div", "", "deliveryline-detail-preview-layout");
-    const context = node("aside", "", "deliveryline-detail-preview-context"); const readiness = node("section", "", "deliveryline-preview-readiness"); const readinessHeader = node("header"); readinessHeader.append(node("h4", "评审准备度"), node("p", "进入评审前仍需确认的事项。")); const readinessList = node("ul"); (selected.readiness_missing.length ? selected.readiness_missing : ["需求档案已具备提交评审条件"]).forEach((item) => readinessList.append(node("li", item, selected.readiness_missing.length ? "is-pending" : "is-ready"))); readiness.append(readinessHeader, readinessList);
-    const activity = node("section", "", "deliveryline-detail-preview-activity"); const activityHeader = node("header"); activityHeader.append(node("h4", "活动记录"), node("p", "需求档案的最近更新。")); activity.append(activityHeader); selected.activity.slice().reverse().slice(0, 4).forEach((item) => { const row = node("p"); row.append(node("strong", item.action), node("span", item.summary)); activity.append(row); }); context.append(readiness, activity); layout.append(current, context);
-    detail.append(requirementId, progress, layout);
-    if (collaboration?.status === "requested" || collaboration?.status === "running") { window.clearTimeout(collaborationRefreshTimer); collaborationRefreshTimer = window.setTimeout(() => load().catch((error) => window.setWorkspaceToolbarError?.(error.message)), 1600); }
+    const busy = collaboration?.status === "requested" || collaboration?.status === "running";
+    if (aiButton instanceof HTMLButtonElement) {
+      aiButton.disabled = selected.status !== "待澄清" || busy;
+      aiButton.textContent = busy ? "AI 澄清处理中" : collaboration?.status === "suggested" ? "继续 AI 整体澄清" : "AI 整体澄清";
+    }
+    if (endButton instanceof HTMLButtonElement) endButton.disabled = busy || selected.status === "已结束";
+    if (deleteButton instanceof HTMLButtonElement) deleteButton.disabled = busy;
+
+    const identifier = node("header", "", "deliveryline-detail-preview-identifier");
+    identifier.append(node("p", "整体交付线", "section-kicker"), node("strong", `${selected.title || "未命名交付线"} · ${selected.id}`));
+    const source = node("p", "", "deliveryline-detail-preview-description");
+    appendLinkedText(source, selected.original_request_content);
+    identifier.append(source);
+
+    const overview = node("section", "", "deliveryline-line-overview");
+    const header = node("header");
+    header.append(node("p", selected.goal_confirmed ? "已确认整体目标" : "整体目标待澄清", "section-kicker"), node("h4", selected.goal_confirmed ? selected.title : "等待 AI 整体澄清"), node("p", selected.goal_confirmed ? `当前为整体目标 V${selected.goal_versions.length}，后续可进入交付项规划。` : "AI 先理解资料并给出候选；维护者确认或修正后才会形成交付项。", "deliveryline-current-stage-goal"));
+    const fields = node("div", "", "deliveryline-preview-fields is-source");
+    fields.append(field("状态", selected.status), field("资料定位", selected.source_role), field("整体目标", selected.overall_goal || "待通过 AI 整体澄清确认"), field("目标版本", selected.goal_confirmed ? `V${selected.goal_versions.length}` : "尚未建立"));
+    const suggestion = collaboration?.status === "suggested" ? collaboration.suggestion : null;
+    if (!suggestion) {
+      overview.append(header, fields, field("原始资料", selected.original_request_content, true));
+      if (collaboration?.sources?.length) overview.append(bulletSection("本轮资料来源", collaboration.sources.map((item) => item.label || "资料来源")));
+      if (collaboration?.error) overview.append(node("p", collaboration.error, "deliveryline-collaboration-status is-error"));
+    } else {
+      const candidate = node("section", "", "deliveryline-ai-comparison");
+      const candidateHeader = node("header");
+      candidateHeader.append(node("h5", "AI 整体澄清对照"), node("p", "候选内容尚未写入交付线。请对照当前档案确认或修正后，再确认整体目标。"));
+      const comparison = node("div", "", "deliveryline-ai-comparison-list");
+      comparison.append(
+        comparisonField("资料定位", selected.source_role, suggestion.source_role),
+        comparisonField("交付线标题", selected.title, suggestion.title),
+        comparisonField("整体目标", selected.overall_goal, suggestion.overall_goal),
+        comparisonField("已确认事实", list(selected.confirmed_facts).join("\n"), list(suggestion.known_facts).join("\n")),
+        comparisonField("范围与边界", selected.scope_boundary, suggestion.scope_boundary),
+        comparisonField("仍待确认事项", list(selected.open_questions).join("\n"), list(suggestion.open_questions).join("\n")),
+        comparisonField("AI 推断，待维护者判断", "不写入正式档案", list(suggestion.assumptions).join("\n"), "处理规则"),
+      );
+      candidate.append(candidateHeader, comparison);
+      const actions = node("div", "", "deliveryline-preview-actions");
+      const confirm = node("button", "确认整体目标", "button-secondary"); confirm.type = "button"; confirm.dataset.deliverylineConfirmGoal = "";
+      const rerun = node("button", "带意见再次澄清", "button-link"); rerun.type = "button"; rerun.dataset.deliverylineShowComment = "";
+      actions.append(confirm, rerun); candidate.append(actions);
+      overview.append(candidate);
+    }
+    if (collaboration?.status === "suggested" && collaboration?.suggestion && detail.dataset.deliverylineCommentOpen === "true") {
+      const comment = node("section", "", "deliveryline-collaboration-comment");
+      const input = document.createElement("textarea"); input.rows = 3; input.maxLength = 4000; input.placeholder = "说明需要修正、补充或确认的内容"; input.dataset.deliverylineComment = "";
+      const submit = node("button", "再次 AI 整体澄清", "button-secondary"); submit.type = "button"; submit.dataset.deliverylineAiStart = "";
+      comment.append(input, submit); overview.append(comment);
+    }
+    if (selected.goal_confirmed) {
+      overview.append(node("p", "当前尚未创建交付项。后续规划确认后，才在交付项列表中生成和推进具体工作。", "deliveryline-current-stage-goal"));
+    }
+    detail.append(identifier, overview);
+    if (busy) { window.clearTimeout(refreshTimer); refreshTimer = window.setTimeout(() => load().catch((error) => window.setWorkspaceToolbarError?.(error.message)), 1600); }
   };
 
-  const load = async () => { const data = await request("/api/deliveryline"); records = [...data.requirements, ...data.archived_requirements]; workflowStages = Array.isArray(data.workflow_stages) ? data.workflow_stages : []; render(); };
+  const load = async () => {
+    const data = await request("/api/deliveryline");
+    const active = list(data.lines);
+    const ended = list(data.ended_lines);
+    lines = [...active, ...ended];
+    updateSummary(data);
+    renderLists(active, ended);
+    render();
+  };
 
   window.initializeWorkspaceDeliveryline = () => {
     const root = document.querySelector("[data-deliveryline-enabled]");
     if (!(root instanceof HTMLElement) || root.dataset.deliverylineEnabled !== "true") return;
-    const dialog = document.getElementById("deliveryline-editor");
-    const form = document.getElementById("deliveryline-editor-form");
-    const feedback = document.getElementById("deliveryline-editor-feedback");
+    const createDialog = document.getElementById("deliveryline-editor");
+    const createForm = document.getElementById("deliveryline-editor-form");
+    const createFeedback = document.getElementById("deliveryline-editor-feedback");
+    const goalDialog = document.getElementById("deliveryline-goal-confirmation");
+    const goalForm = document.getElementById("deliveryline-goal-confirmation-form");
+    const goalFeedback = document.getElementById("deliveryline-goal-confirmation-feedback");
     const create = document.getElementById("deliveryline-create");
-    const description = document.getElementById("deliveryline-editor-description");
-    if (!(dialog instanceof HTMLDialogElement) || !(form instanceof HTMLFormElement)) return;
-    let editingId = null;
-    const open = (item = null) => {
-      editingId = item?.id || null;
-      form.reset();
-      form.querySelector("[data-deliveryline-create-field]").hidden = Boolean(item);
-      form.querySelector("[data-deliveryline-edit-fields]").hidden = !item;
-      document.getElementById("deliveryline-editor-title").textContent = item ? "编辑需求档案" : "新建需求";
-      document.getElementById("deliveryline-editor-submit").textContent = item ? "保存" : "创建";
-      if (description) description.textContent = item
-        ? "补充需求背景、目标、范围与验收信息，形成可进入评审的需求档案。"
-        : "将首次提出的原始需求内容直接入库；可输入一句话、链接或混合内容。";
-      if (item) Object.entries(item).forEach(([key, value]) => { const field = form.elements.namedItem(key); if (field && "value" in field) field.value = value || ""; });
-      const initialFocus = item ? form.elements.namedItem("title") : document.getElementById("deliveryline-create-description");
-      feedback.hidden = true; dialog.showModal();
-      window.requestAnimationFrame(() => initialFocus?.focus());
-    };
-    create?.addEventListener("click", () => open());
+    const ai = document.getElementById("deliveryline-ai-clarify");
+    const end = document.getElementById("deliveryline-end");
+    const remove = document.getElementById("deliveryline-delete");
+    if (!(createDialog instanceof HTMLDialogElement) || !(createForm instanceof HTMLFormElement) || !(goalDialog instanceof HTMLDialogElement) || !(goalForm instanceof HTMLFormElement)) return;
+    create?.addEventListener("click", () => { createForm.reset(); createFeedback.hidden = true; createDialog.showModal(); window.requestAnimationFrame(() => document.getElementById("deliveryline-create-description")?.focus()); });
+    ai?.addEventListener("click", async () => {
+      const selected = lines.find((item) => item.id === selectedId);
+      if (!selected) return;
+      try {
+        await request(`/api/deliveryline/lines/${selected.id}/ai-clarification`, { method: "POST", body: JSON.stringify({}) });
+        await load();
+      } catch (error) {
+        window.setWorkspaceToolbarError?.(error.message);
+      }
+    });
+    remove?.addEventListener("click", async () => {
+      const selected = lines.find((item) => item.id === selectedId);
+      if (!selected) return;
+      try {
+        const confirmed = await showConfirmationDialog({
+          title: "删除交付线",
+          description: "删除会移除原始资料、已确认目标和本地协作记录，无法恢复。",
+          details: [{ label: "交付线", value: selected.title || selected.id }],
+          confirmLabel: "删除",
+          errorMessage: "删除交付线失败。",
+          onConfirm: () => request(`/api/deliveryline/lines/${selected.id}`, { method: "DELETE" }),
+        });
+        if (confirmed) { selectedId = null; await load(); }
+      } catch (error) { window.setWorkspaceToolbarError?.(error.message); }
+    });
+    end?.addEventListener("click", async () => {
+      const selected = lines.find((item) => item.id === selectedId);
+      if (!selected) return;
+      try {
+        const confirmed = await showConfirmationDialog({
+          title: "结束交付线",
+          description: "结束后不会再发起整体澄清或生成新的交付项，已有资料会保留。",
+          details: [{ label: "交付线", value: selected.title || selected.id }],
+          confirmLabel: "结束交付线",
+          errorMessage: "结束交付线失败。",
+          onConfirm: () => request(`/api/deliveryline/lines/${selected.id}/end`, { method: "PUT" }),
+        });
+        if (confirmed) await load();
+      } catch (error) { window.setWorkspaceToolbarError?.(error.message); }
+    });
     root.addEventListener("click", async (event) => {
       const button = event.target instanceof Element ? event.target.closest("button") : null;
       if (!button) return;
-      if (button.matches("[data-deliveryline-toggle-workflow]")) { const track = button.closest(".deliveryline-detail-preview-progress-track"); const expanded = track?.classList.toggle("is-expanded"); button.textContent = expanded ? "收起完整流程" : "查看全部流程"; button.setAttribute("aria-expanded", String(Boolean(expanded))); return; }
-      if (button.matches("[data-deliveryline-toggle-description]")) { const description = button.previousElementSibling; const expanded = description?.classList.toggle("is-collapsed") === false; button.textContent = expanded ? "收起" : "展开"; button.setAttribute("aria-expanded", String(Boolean(expanded))); return; }
       const id = button.dataset.deliverylineSelect;
-      if (id) { selectedId = id; collaborationCommentFields.clear(); collaborationCommentValues.clear(); render(); return; }
-      const selected = records.find((item) => item.id === selectedId);
+      if (id) { selectedId = id; const detail = document.getElementById("deliveryline-detail"); if (detail) delete detail.dataset.deliverylineCommentOpen; render(); return; }
+      const selected = lines.find((item) => item.id === selectedId);
       try {
+        if (button.matches("[data-deliveryline-show-comment]")) { const detail = document.getElementById("deliveryline-detail"); if (detail) detail.dataset.deliverylineCommentOpen = "true"; render(); return; }
         if (button.matches("[data-deliveryline-ai-start]") && selected) {
-          const comments = {};
-          for (const [commentId, value] of collaborationCommentValues.entries()) {
-            if (!commentId.startsWith(`${selected.id}:`)) continue;
-            const field = commentId.slice(selected.id.length + 1);
-            if (!value.trim()) throw new Error("请填写已选择字段的建议后再进行 AI 协作。");
-            comments[field] = value.trim();
-          }
-          await request(`/api/deliveryline/requirements/${selected.id}/ai-collaboration`, { method: "POST", body: JSON.stringify({ comments }) });
-          collaborationCommentFields.clear(); collaborationCommentValues.clear();
-          await load();
-          return;
+          const comment = root.querySelector("[data-deliveryline-comment]")?.value || "";
+          await request(`/api/deliveryline/lines/${selected.id}/ai-clarification`, { method: "POST", body: JSON.stringify({ comment }) });
+          const detail = document.getElementById("deliveryline-detail"); if (detail) delete detail.dataset.deliverylineCommentOpen;
+          await load(); return;
         }
-        if (button.matches("[data-deliveryline-ai-field-accept]") && selected) {
-          const field = button.dataset.deliverylineAiFieldAccept;
-          await request(`/api/deliveryline/requirements/${selected.id}/ai-collaboration/fields/${encodeURIComponent(field)}/accept`, { method: "POST" });
-          collaborationCommentFields.delete(`${selected.id}:${field}`); collaborationCommentValues.delete(`${selected.id}:${field}`);
-          await load();
-          return;
+        if (button.matches("[data-deliveryline-confirm-goal]") && selected) {
+          const suggestion = selected.collaboration?.suggestion;
+          if (!suggestion) throw new Error("当前没有可确认的 AI 整体澄清候选。");
+          goalForm.reset(); goalFeedback.hidden = true;
+          goalForm.elements.title.value = suggestion.title || "";
+          goalForm.elements.source_role.value = suggestion.source_role || "混合资料";
+          goalForm.elements.overall_goal.value = suggestion.overall_goal || "";
+          goalForm.elements.confirmed_facts.value = list(suggestion.known_facts).join("\n");
+          goalForm.elements.scope_boundary.value = suggestion.scope_boundary || "";
+          goalForm.elements.open_questions.value = list(suggestion.open_questions).join("\n");
+          goalDialog.showModal(); window.requestAnimationFrame(() => goalForm.elements.title.focus()); return;
         }
-        if (button.matches("[data-deliveryline-ai-field-comment]") && selected) {
-          const field = button.dataset.deliverylineAiFieldComment;
-          const commentId = `${selected.id}:${field}`;
-          collaborationCommentFields.add(commentId);
-          if (!collaborationCommentValues.has(commentId)) collaborationCommentValues.set(commentId, "");
-          render();
-          window.requestAnimationFrame(() => root.querySelector(`[data-deliveryline-ai-field-comment-input="${field}"]`)?.focus());
-          return;
-        }
-        if (button.matches("[data-deliveryline-edit]") && selected) open(selected);
-        if (button.matches("[data-deliveryline-submit-review]") && selected) {
-          const confirmed = await window.showConfirmationDialog?.({
-            title: "确认当前阶段",
-            description: "确认后，需求将从需求提出进入需求评审。当前阶段的字段和已采纳内容会保留；未处理的 AI 建议不能进入下一阶段。",
-            details: [{ label: "需求", value: selected.title || `未命名需求 · ${selected.id}` }],
-            confirmLabel: "确认阶段",
-            errorMessage: "阶段确认失败。",
-            onConfirm: async () => request(`/api/deliveryline/requirements/${selected.id}/submit-review`, { method: "POST" }),
-          });
-          if (confirmed) window.location.reload();
-          return;
-        }
-        if (button.matches("[data-deliveryline-archive]") && selected) {
-          const confirmed = await window.showConfirmationDialog?.({
-            title: "归档需求",
-            description: "归档后，该需求将从当前队列移除。业务档案仍会保留，后续不能在本阶段页面继续推进。",
-            details: [{ label: "需求", value: selected.title || `未命名需求 · ${selected.id}` }],
-            confirmLabel: "归档",
-            errorMessage: "需求归档失败。",
-            onConfirm: async () => request(`/api/deliveryline/requirements/${selected.id}/archive`, { method: "PUT" }),
-          });
-          if (confirmed) window.location.reload();
-        }
-        if (button.matches("[data-deliveryline-delete]") && selected) {
-          const confirmed = await window.showConfirmationDialog?.({
-            title: "删除需求",
-            description: "删除后会永久移除此需求档案及其活动记录，Deliveryline 无法恢复。",
-            details: [{ label: "需求", value: selected.title || `未命名需求 · ${selected.id}` }],
-            confirmLabel: "删除",
-            errorMessage: "需求删除失败。",
-            onConfirm: async () => request(`/api/deliveryline/requirements/${selected.id}`, { method: "DELETE" }),
-          });
-          if (confirmed) window.location.reload();
-        }
-      } catch (error) { window.showWorkspaceToolbarFeedback?.(error.message, "warning"); }
+      } catch (error) { window.setWorkspaceToolbarError?.(error.message); }
     });
-    root.addEventListener("input", (event) => {
-      const input = event.target instanceof HTMLTextAreaElement ? event.target : null;
-      if (!input?.dataset.deliverylineAiFieldCommentInput || !selectedId) return;
-      collaborationCommentValues.set(`${selectedId}:${input.dataset.deliverylineAiFieldCommentInput}`, input.value);
-    });
-    form.addEventListener("submit", async (event) => {
+    root.addEventListener("click", (event) => { const button = event.target instanceof Element ? event.target.closest("[data-deliveryline-close]") : null; if (button) createDialog.close(); const goalClose = event.target instanceof Element ? event.target.closest("[data-deliveryline-goal-close]") : null; if (goalClose) goalDialog.close(); });
+    createForm.addEventListener("submit", async (event) => {
       event.preventDefault();
-      try {
-        if (editingId) {
-          const payload = Object.fromEntries(new FormData(form));
-          await request(`/api/deliveryline/requirements/${editingId}`, { method: "PUT", body: JSON.stringify(payload) });
-        } else await request("/api/deliveryline/requirements", { method: "POST", body: JSON.stringify({ description: document.getElementById("deliveryline-create-description").value }) });
-        window.location.reload();
-      } catch (error) { feedback.textContent = error.message; feedback.hidden = false; }
+      try { await request("/api/deliveryline/lines", { method: "POST", body: JSON.stringify({ source: document.getElementById("deliveryline-create-description")?.value || "" }) }); createDialog.close(); await load(); }
+      catch (error) { createFeedback.textContent = error.message; createFeedback.hidden = false; }
     });
-    dialog.querySelectorAll("[data-deliveryline-close]").forEach((button) => button.addEventListener("click", () => dialog.close()));
+    goalForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const selected = lines.find((item) => item.id === selectedId);
+      if (!selected) return;
+      try {
+        await request(`/api/deliveryline/lines/${selected.id}/confirm-goal`, { method: "POST", body: JSON.stringify({ title: goalForm.elements.title.value, source_role: goalForm.elements.source_role.value, overall_goal: goalForm.elements.overall_goal.value, confirmed_facts: linesFromText(goalForm.elements.confirmed_facts.value), scope_boundary: goalForm.elements.scope_boundary.value, open_questions: linesFromText(goalForm.elements.open_questions.value) }) });
+        goalDialog.close(); await load();
+      } catch (error) { goalFeedback.textContent = error.message; goalFeedback.hidden = false; }
+    });
     load().catch((error) => window.setWorkspaceToolbarError?.(error.message));
   };
   window.initializeWorkspaceDeliveryline();

@@ -5,8 +5,16 @@ from typing import Literal, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-TaskCapabilityId: TypeAlias = Literal["chub.debug_chrome.page.read"]
-TASK_CAPABILITY_IDS = frozenset({"chub.debug_chrome.page.read"})
+TaskCapabilityId: TypeAlias = Literal[
+    "chub.debug_chrome.page.interact",
+    "chub.debug_chrome.page.read",
+]
+TASK_CAPABILITY_IDS = frozenset(
+    {
+        "chub.debug_chrome.page.interact",
+        "chub.debug_chrome.page.read",
+    }
+)
 
 
 class TaskCapabilityContext(BaseModel):

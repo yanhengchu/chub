@@ -32,12 +32,14 @@
   const sectionToolbarLoadingStatus = {
     workbench: "正在读取工作台状态…",
     automations: "正在读取自动化状态…",
+    search: "AI 搜索已就绪",
     "project-docs": "正在读取项目资料…",
     deliveryline: "正在读取 Deliveryline 状态…",
   };
   const sectionToolbarLoadedStatus = {
     automations: "自动化已加载",
     "project-docs": "项目资料已加载",
+    search: "AI 搜索已就绪",
     deliveryline: "Deliveryline 已加载",
   };
   const toolbarLoadingMinimumMs = 220;
@@ -215,6 +217,7 @@
       if (!(nextContent instanceof HTMLElement)) throw new Error("工作台分区响应无效。");
       window.disposeWorkspaceWorkstation?.();
       window.disposeWorkspaceAutomationControls?.();
+      window.disposeWorkspaceSearch?.();
       cancelQuickSessionUsageRequest();
       currentContent.replaceWith(nextContent);
       window.workspaceQuickSessionOpen = false;
@@ -231,6 +234,7 @@
       window.initializeWorkspaceAutomationControls?.();
       window.initializeWorkspaceWorkstation?.();
       window.initializeWorkspaceDeliveryline?.();
+      window.initializeWorkspaceSearch?.();
       finishSectionToolbarLoading(targetSection);
       if (compactViewport.matches) closeMobileSidebar({ restoreHistory: false });
     } catch {
@@ -314,6 +318,7 @@
     panel.append(frame);
     window.disposeWorkspaceWorkstation?.();
     window.disposeWorkspaceAutomationControls?.();
+    window.disposeWorkspaceSearch?.();
     currentContent.replaceWith(panel);
     window.workspaceQuickSessionOpen = true;
     workspaceMain?.classList.add("is-showing-quick-session");
@@ -429,11 +434,12 @@
       if (!(nextSurface instanceof HTMLElement)) throw new Error("自动化状态响应无效。");
       currentSurface.replaceWith(nextSurface);
       window.initializeWorkspaceAutomationControls?.();
-      return;
+      return true;
     } catch (error) {
       if (!automationRefreshDisposed && error?.name !== "AbortError") {
         scheduleAutomationRefresh();
       }
+      return false;
     } finally {
       if (automationRefreshRequest === controller) automationRefreshRequest = null;
       automationRefreshInFlight = false;
@@ -492,7 +498,9 @@
   };
 
   const codexAccountQuota = (state) => {
-    if (state?.quota_state === "unavailable") return " · 额度暂不可用";
+    if (state?.quota_state === "unavailable") {
+      return ` · ${state.quota_message || "额度暂不可用"}`;
+    }
     if (state?.quota_state !== "available") return "";
     const parts = [];
     if (Number.isInteger(state?.five_hour_remaining_percent)) {
@@ -502,6 +510,21 @@
       parts.push(`Weekly ${state.weekly_remaining_percent}%`);
     }
     return parts.length ? ` · ${parts.join(" · ")}` : " · 额度暂不可用";
+  };
+
+  const refreshAfterBrowserControl = (button, message, attempt = 0) => {
+    window.setTimeout(async () => {
+      if (automationRefreshDisposed) return;
+      if (await refreshWorkspaceAutomations()) return;
+      if (attempt < 2) {
+        refreshAfterBrowserControl(button, message, attempt + 1);
+        return;
+      }
+      if (button instanceof HTMLButtonElement && button.isConnected) {
+        button.disabled = false;
+      }
+      setAutomationBrowserStatus(`${message}，但状态刷新失败，请重试。`, "warning");
+    }, attempt === 0 ? 0 : 1_000);
   };
 
   const setAutomationAccountStatus = (detail, state, statusKind, fallbackMessage) => {
@@ -815,7 +838,10 @@
         setAutomationBrowserStatus(initializing
           ? "浏览器账户初始化已受理，正在刷新状态。"
           : "Debug Chrome 已启动，正在刷新状态。", "success");
-        window.setTimeout(refreshWorkspaceAutomations, 500);
+        refreshAfterBrowserControl(
+          automationStartButton,
+          initializing ? "浏览器账户初始化已受理" : "Debug Chrome 已启动",
+        );
       } catch (error) {
         setAutomationBrowserStatus(
           error instanceof Error ? error.message : "Debug Chrome 启动失败。",
@@ -846,7 +872,7 @@
       try {
         await automationRequest("/api/automations/browser/stop");
         setAutomationBrowserStatus("Debug Chrome 已停止，正在刷新状态。", "success");
-        window.setTimeout(refreshWorkspaceAutomations, 500);
+        refreshAfterBrowserControl(automationStopButton, "Debug Chrome 已停止");
       } catch (error) {
         setAutomationBrowserStatus(
           error instanceof Error ? error.message : "Debug Chrome 停止失败。",
@@ -920,27 +946,39 @@
     "无法打开 Codex Runtime 登录页面。",
   );
 
+  const checkCodexRuntimeAccount = async () => {
+    if (
+      !(automationCodexAccountCheck instanceof HTMLButtonElement)
+      || automationCodexAccountChecking
+      || automationCodexAccountCheck.disabled
+    ) {
+      return false;
+    }
+    automationCodexAccountChecking = true;
+    automationCodexAccountCheck.disabled = true;
+    automationCodexAccountCheck.textContent = "检查中…";
+    setAutomationCodexAccountStatus({ state: "checking", message: "正在检查 Codex Runtime 账户状态。" });
+    try {
+      setAutomationCodexAccountStatus(
+        await automationRequest("/api/automations/environment/codex/check"),
+      );
+      return true;
+    } catch (error) {
+      setAutomationCodexAccountStatus({
+        state: "failed",
+        message: error instanceof Error ? error.message : "Codex Runtime 账户检查失败。",
+      });
+      return false;
+    } finally {
+      automationCodexAccountChecking = false;
+      automationCodexAccountCheck.disabled = false;
+      automationCodexAccountCheck.textContent = "检查";
+    }
+  };
+
   if (automationCodexAccountCheck instanceof HTMLButtonElement) {
-    automationCodexAccountCheck.addEventListener("click", async () => {
-      if (automationCodexAccountChecking || automationCodexAccountCheck.disabled) return;
-      automationCodexAccountChecking = true;
-      automationCodexAccountCheck.disabled = true;
-      automationCodexAccountCheck.textContent = "检查中…";
-      setAutomationCodexAccountStatus({ state: "checking", message: "正在检查 Codex Runtime 账户状态。" });
-      try {
-        setAutomationCodexAccountStatus(
-          await automationRequest("/api/automations/environment/codex/check"),
-        );
-      } catch (error) {
-        setAutomationCodexAccountStatus({
-          state: "failed",
-          message: error instanceof Error ? error.message : "Codex Runtime 账户检查失败。",
-        });
-      } finally {
-        automationCodexAccountChecking = false;
-        automationCodexAccountCheck.disabled = false;
-        automationCodexAccountCheck.textContent = "检查";
-      }
+    automationCodexAccountCheck.addEventListener("click", () => {
+      void checkCodexRuntimeAccount();
     });
   }
 
@@ -956,7 +994,7 @@
       automationFeishuCheck?.click();
     }
     if (isUncheckedAccount(automationCodexAccountDetail)) {
-      automationCodexAccountCheck?.click();
+      void checkCodexRuntimeAccount();
     }
   }
 

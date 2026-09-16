@@ -648,7 +648,7 @@ async def inspect_quick_worker(
         message = "正在重启并等待健康恢复。"
     elif data.get("protocol_version") != PROTOCOL_VERSION:
         state = "incompatible"
-        message = "Worker 协议与当前 Chub 不兼容，可重启到当前版本。"
+        message = "Worker 协议不兼容，暂不能接收新任务；请重启 Worker 以切换到当前版本。"
     elif data.get("uncertain_tasks") != 0:
         state = "unavailable"
         message = "Worker 存在未确认任务，可通过重启清理并恢复。"

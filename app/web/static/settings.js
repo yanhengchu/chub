@@ -53,8 +53,6 @@ const deploymentPackageOutput = document.querySelector("#deployment-package-outp
 const deploymentPackageCurrentAppVersion = document.querySelector("#deployment-package-current-app-version");
 const deploymentPackageBuild = document.querySelector("#deployment-package-build");
 const deploymentPackageChubVersion = document.querySelector("#deployment-package-chub-version");
-const deploymentPackageRuntimeVersion = document.querySelector("#deployment-package-runtime-version");
-const deploymentPackageWeixinVersion = document.querySelector("#deployment-package-weixin-version");
 const deploymentPackageIncludeDevelopment = document.querySelector("#deployment-package-include-development");
 let deploymentPackagePolling = null;
 
@@ -642,23 +640,19 @@ function initializeDeploymentPackageSettings() {
   if (!(deploymentPackageForm instanceof HTMLFormElement)) return;
   const inputs = [
     deploymentPackageChubVersion,
-    deploymentPackageRuntimeVersion,
-    deploymentPackageWeixinVersion,
     deploymentPackageIncludeDevelopment,
   ].filter((item) => item instanceof HTMLInputElement);
   const render = (data) => {
     const configuration = data.configuration || {};
     inputs.forEach((input) => { input.disabled = false; });
-    deploymentPackageCurrentAppVersion.textContent = `当前应用版本：v${data.app_version || "未知"}`;
+    deploymentPackageCurrentAppVersion.textContent = `当前版本：v${data.app_version || "未知"}；发布后同步当前节点、项目与随包插件。`;
     deploymentPackageOutput.textContent = data.output_directory || "输出目录暂时无法读取。";
     deploymentPackageChubVersion.value = configuration.chub_release_version || "";
-    deploymentPackageRuntimeVersion.value = configuration.runtime_release_version || "";
-    deploymentPackageWeixinVersion.value = configuration.weixin_release_version || "";
     deploymentPackageIncludeDevelopment.checked = configuration.include_development_sources === true;
     const operation = data.operation;
     if (operation?.status === "requested" || operation?.status === "started") {
       deploymentPackageBuild.disabled = true;
-      setSettingsMessage(deploymentPackageMessage, operation.message || "正在构建正式部署包。", "");
+      setSettingsMessage(deploymentPackageMessage, operation.message || "正在发布版本。", "");
       if (deploymentPackagePolling === null) {
         deploymentPackagePolling = window.setInterval(() => void load(), 1000);
       }
@@ -669,22 +663,33 @@ function initializeDeploymentPackageSettings() {
         deploymentPackagePolling = null;
       }
       if (operation?.status === "succeeded") {
-        setSettingsMessage(deploymentPackageMessage, `${operation.message} ${operation.artifact_name || ""} · ${operation.artifact_size || 0} bytes`, "");
+        const moduleSummary = Array.isArray(operation.bundled_modules)
+          ? operation.bundled_modules.map((module) => {
+            const identity = module.implementation_id || module.module_id || "未知模块";
+            return `${identity} v${module.version || "未知"} · ${module.sha256 || "无摘要"}`;
+          }).join("\n")
+          : "";
+        const details = [
+          operation.artifact_name ? `${operation.artifact_name} · ${operation.artifact_size || 0} bytes` : "",
+          operation.build_id ? `构建标识：${operation.build_id}` : "",
+          operation.built_at ? `构建时间：${new Date(operation.built_at).toLocaleString()}` : "",
+          operation.sha256 ? `SHA-256：${operation.sha256}` : "",
+          moduleSummary ? `随包模块：\n${moduleSummary}` : "",
+        ].filter(Boolean).join("\n");
+        setSettingsMessage(deploymentPackageMessage, [operation.message, details].filter(Boolean).join("\n"), "");
       } else if (operation?.status === "failed") {
-        setSettingsMessage(deploymentPackageMessage, operation.message || "正式部署包构建失败。", "error");
+        setSettingsMessage(deploymentPackageMessage, operation.message || "版本发布失败。", "error");
       }
     }
   };
   const load = async () => {
     try { render(await fetchSettingsApi("/api/settings/deployment-package")); }
-    catch (_error) { setSettingsMessage(deploymentPackageMessage, "暂时无法读取部署包发布配置。", "error"); }
+    catch (_error) { setSettingsMessage(deploymentPackageMessage, "暂时无法读取版本发布配置。", "error"); }
   };
   deploymentPackageForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     const configuration = {
-      chub_release_version: deploymentPackageChubVersion.value.trim(),
-      runtime_release_version: deploymentPackageRuntimeVersion.value.trim(),
-      weixin_release_version: deploymentPackageWeixinVersion.value.trim(),
+      release_version: deploymentPackageChubVersion.value.trim(),
       include_development_sources: deploymentPackageIncludeDevelopment.checked,
     };
     inputs.forEach((input) => { input.disabled = true; });
@@ -692,10 +697,10 @@ function initializeDeploymentPackageSettings() {
     try {
       await fetchSettingsApi("/api/settings/deployment-package", { method: "PUT", headers: settingsHeaders(true), body: JSON.stringify(configuration) });
       render(await fetchSettingsApi("/api/settings/deployment-package/build", { method: "POST", headers: settingsHeaders(true) }));
-    } catch (_error) {
+    } catch (error) {
       inputs.forEach((input) => { input.disabled = false; });
       deploymentPackageBuild.disabled = false;
-      setSettingsMessage(deploymentPackageMessage, "保存发布配置或启动构建失败。", "error");
+      setSettingsMessage(deploymentPackageMessage, error instanceof Error ? error.message : "保存版本发布配置或启动发布失败。", "error");
     }
   });
   void load();
@@ -789,6 +794,7 @@ if (settingsPage === "appearance") {
   }
 } else if (settingsPage === "session") {
   void loadGeneralRuntimeSettings();
+  window.initializeSessionVisibilitySettings?.();
 } else if (settingsPage === "runtime") {
   window.initializeWorkspacePluginLifecycle?.();
 } else if (settingsPage === "task-orchestration") {
@@ -802,6 +808,7 @@ if (settingsPage === "appearance") {
 }
 
   window.disposeSettingsPage = () => {
+    window.disposeSessionVisibilitySettings?.();
     window.disposeWorkspaceTaskOrchestration?.();
     closeSettingsChoicePicker();
     settingsChoicePickerObservers.forEach((observer) => observer.disconnect());

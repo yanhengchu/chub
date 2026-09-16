@@ -270,6 +270,21 @@ async def test_codex_session_list_hides_internal_translation_session(
             created_at="2026-08-14T11:00:00Z",
             updated_at="2026-08-14T11:00:00Z",
         ),
+        SessionInfo(
+            id="search-session",
+            runtime_id="codex",
+            workspace_id="home",
+            workspace_name="用户目录",
+            cwd="/users/test",
+            title="搜索 · 浏览器自动化技能",
+            can_archive=True,
+            status="stopped",
+            activity="idle",
+            permission_mode="read-only",
+            error=None,
+            created_at="2026-08-14T12:00:00Z",
+            updated_at="2026-08-14T12:00:00Z",
+        ),
     ]
     manager.list_sessions_with_native_sessions.return_value = (
         manager.list_sessions.return_value,
@@ -277,6 +292,8 @@ async def test_codex_session_list_hides_internal_translation_session(
     )
     manager.read_session.return_value = manager.list_sessions.return_value[1]
     app.state.ai_session_manager = manager
+    app.state.ai_search = MagicMock()
+    app.state.ai_search.hidden_session_ids.return_value = {"search-session"}
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:

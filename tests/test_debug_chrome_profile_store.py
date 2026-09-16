@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from profile_store import (
+from app.automations.debug_chrome.profile_store import (
     active_profile,
     copied_profiles,
     load_manifest,

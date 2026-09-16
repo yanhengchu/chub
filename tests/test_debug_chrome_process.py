@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import chrome_process
+from app.automations.debug_chrome import chrome_process
 
 
 def result(returncode: int, stdout: str = "") -> subprocess.CompletedProcess[str]:
@@ -14,11 +14,11 @@ def result(returncode: int, stdout: str = "") -> subprocess.CompletedProcess[str
 
 
 class ChromeProcessTest(unittest.TestCase):
-    @patch("chrome_process.run_process_command", return_value=result(0))
+    @patch("app.automations.debug_chrome.chrome_process.run_process_command", return_value=result(0))
     def test_detects_running_chrome_on_macos(self, _check: object) -> None:
         self.assertTrue(chrome_process.is_chrome_running_macos())
 
-    @patch("chrome_process.run_process_command", return_value=result(1))
+    @patch("app.automations.debug_chrome.chrome_process.run_process_command", return_value=result(1))
     def test_detects_stopped_chrome_on_macos(self, _check: object) -> None:
         self.assertFalse(chrome_process.is_chrome_running_macos())
 
@@ -108,22 +108,22 @@ class ChromeProcessTest(unittest.TestCase):
         )
 
     @patch(
-        "chrome_process.run_process_command",
+        "app.automations.debug_chrome.chrome_process.run_process_command",
         return_value=result(0, '"chrome.exe","123","Console","1","100,000 K"'),
     )
     def test_detects_running_chrome_on_windows(self, _check: object) -> None:
         self.assertTrue(chrome_process.is_chrome_running_windows())
 
     @patch(
-        "chrome_process.run_process_command",
+        "app.automations.debug_chrome.chrome_process.run_process_command",
         return_value=result(0, "INFO: No tasks are running"),
     )
     def test_detects_stopped_chrome_on_windows(self, _check: object) -> None:
         self.assertFalse(chrome_process.is_chrome_running_windows())
 
-    @patch("chrome_process.wait_for_chrome_exit", return_value=True)
-    @patch("chrome_process.request_chrome_close")
-    @patch("chrome_process.is_chrome_running", return_value=True)
+    @patch("app.automations.debug_chrome.chrome_process.wait_for_chrome_exit", return_value=True)
+    @patch("app.automations.debug_chrome.chrome_process.request_chrome_close")
+    @patch("app.automations.debug_chrome.chrome_process.is_chrome_running", return_value=True)
     def test_closes_running_chrome_normally(
         self, _running: object, request_close: object, _wait: object
     ) -> None:
@@ -131,9 +131,9 @@ class ChromeProcessTest(unittest.TestCase):
 
         request_close.assert_called_once()
 
-    @patch("chrome_process.os.kill")
+    @patch("app.automations.debug_chrome.chrome_process.os.kill")
     @patch(
-        "chrome_process.linux_chrome_processes",
+        "app.automations.debug_chrome.chrome_process.linux_chrome_processes",
         return_value=[
             chrome_process.ChromeProcess(
                 100, Path("/opt/google/chrome/chrome"), ["/opt/google/chrome/chrome"]

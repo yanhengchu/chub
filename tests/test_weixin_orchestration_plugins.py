@@ -81,7 +81,10 @@ def test_rejects_invalid_plugin_protocol(settings, tmp_path) -> None:
 
 def test_repository_module_builds_and_installs(settings, tmp_path) -> None:
     settings.openclaw.weixin_chub_mode.orchestration_modules_dir = tmp_path / "modules"
-    archive_path = build_weixin_plugin_zip(tmp_path / "weixin-refinement.zip")
+    archive_path = build_weixin_plugin_zip(
+        tmp_path / "weixin-refinement.zip",
+        chub_version=settings.app.version,
+    )
     service = WeixinOrchestrationPluginService(settings)
 
     preview = service.install(archive_path.read_bytes(), source_name=archive_path.name)

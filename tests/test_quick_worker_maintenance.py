@@ -499,6 +499,9 @@ async def test_quick_worker_restart_allows_busy_incompatible_worker(
 
     assert inspection.data.state == "incompatible"
     assert inspection.data.can_restart is True
+    assert inspection.data.message == (
+        "Worker 协议不兼容，暂不能接收新任务；请重启 Worker 以切换到当前版本。"
+    )
 
 
 @pytest.mark.anyio

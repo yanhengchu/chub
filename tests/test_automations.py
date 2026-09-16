@@ -26,6 +26,7 @@ from app.automations.manager import AutomationManager, _feishu_environment_for_u
 from app.automations.browser import (
     BrowserProfileInfo,
     DebugChromePageReadError,
+    interact_debug_chrome_page,
     read_debug_chrome_page,
 )
 from app.automations.models import (
@@ -1509,6 +1510,120 @@ def test_debug_chrome_page_reader_blocks_private_redirect(
     assert page.closed is True
 
 
+def test_debug_chrome_page_interact_follows_one_public_link(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakePage:
+        url = "https://example.com/next"
+        closed = False
+
+        async def route(self, pattern, _handler):
+            assert pattern == "**/*"
+
+        async def goto(self, url, **_kwargs):
+            assert url in {"https://example.com/source", "https://example.com/next"}
+
+        async def title(self):
+            return "Next page"
+
+        async def evaluate(self, script, value):
+            if "querySelectorAll" in script:
+                assert value == "Next"
+                return {"count": 1, "href": "https://example.com/next"}
+            return {"content": "next page text", "truncated": False}
+
+        def is_closed(self):
+            return self.closed
+
+        async def close(self):
+            self.closed = True
+
+    page = FakePage()
+
+    class FakeContext:
+        async def new_page(self):
+            return page
+
+    @asynccontextmanager
+    async def fake_session(**kwargs):
+        assert kwargs == {"ensure_page": False, "retry_connection": True}
+        yield SimpleNamespace(context=FakeContext())
+
+    monkeypatch.setattr(
+        "app.automations.browser.debug_chrome_status",
+        lambda: ("running", "已运行", "无界面"),
+    )
+    monkeypatch.setattr("app.automations.browser._assert_public_host", lambda _host: None)
+    monkeypatch.setattr("app.automations.browser.session_factory", lambda: fake_session)
+
+    snapshot = asyncio.run(
+        interact_debug_chrome_page(
+            "https://example.com/source",
+            follow_link_text="Next",
+        )
+    )
+
+    assert snapshot.final_url == "https://example.com/next"
+    assert snapshot.content == "next page text"
+    assert page.closed is True
+
+
+def test_debug_chrome_page_interact_rejects_private_link_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakePage:
+        closed = False
+
+        async def route(self, _pattern, _handler):
+            return None
+
+        async def goto(self, url, **_kwargs):
+            assert url == "https://example.com/source"
+
+        async def evaluate(self, _script, _value):
+            return {"count": 1, "href": "https://127.0.0.1/private"}
+
+        def is_closed(self):
+            return self.closed
+
+        async def close(self):
+            self.closed = True
+
+    page = FakePage()
+
+    class FakeContext:
+        async def new_page(self):
+            return page
+
+    @asynccontextmanager
+    async def fake_session(**_kwargs):
+        yield SimpleNamespace(context=FakeContext())
+
+    monkeypatch.setattr(
+        "app.automations.browser.debug_chrome_status",
+        lambda: ("running", "已运行", "无界面"),
+    )
+    from app.automations.browser import _assert_public_host as assert_public_host
+
+    def allow_initial_host(host: str) -> None:
+        if host == "example.com":
+            return
+        assert_public_host(host)
+
+    monkeypatch.setattr("app.automations.browser._assert_public_host", allow_initial_host)
+    monkeypatch.setattr("app.automations.browser.session_factory", lambda: fake_session)
+
+    with pytest.raises(DebugChromePageReadError, match="本机或内网"):
+        asyncio.run(
+            interact_debug_chrome_page(
+                "https://example.com/source",
+                follow_link_text="Private",
+            )
+        )
+
+    assert page.closed is True
+
+
 @pytest.mark.parametrize(
     "url",
     [
@@ -1819,8 +1934,75 @@ def test_manager_resets_feishu_environment_when_browser_stops(
         return_value=("stopped", "Debug Chrome 未启动", None),
     ):
         stopped = manager.list()
+        repeated = manager.list()
 
     assert stopped.feishu_environment.state == "browser_stopped"
+    assert stopped.feishu_environment.message == "Debug Chrome 未启动，飞书账户暂无法检查。"
+    assert stopped.feishu_environment.checked_at is not None
+    assert repeated.feishu_environment.checked_at == stopped.feishu_environment.checked_at
+
+
+def test_manager_clears_api_quota_when_browser_stops(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    configure_automations(settings, tmp_path)
+    manager = AutomationManager(settings)
+    manager._set_codex_runtime_account(
+        RuntimeAccountEnvironmentState(
+            state="available",
+            auth_mode="api",
+            message="API Key 模式已启用",
+            quota_state="available",
+            five_hour_remaining_percent=42,
+            weekly_remaining_percent=78,
+        )
+    )
+
+    with patch(
+        "app.automations.manager.debug_chrome_status",
+        return_value=("stopped", "Debug Chrome 未启动", None),
+    ):
+        stopped = manager.list()
+
+    account = stopped.codex_runtime_account
+    assert account.state == "available"
+    assert account.auth_mode == "api"
+    assert account.message == "API Key 模式已启用"
+    assert account.quota_state == "unavailable"
+    assert account.quota_message == "浏览器未启动，额度暂无法获取"
+    assert account.five_hour_remaining_percent is None
+    assert account.weekly_remaining_percent is None
+
+
+def test_manager_marks_api_quota_unavailable_when_browser_state_is_unknown(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    configure_automations(settings, tmp_path)
+    manager = AutomationManager(settings)
+    manager._set_codex_runtime_account(
+        RuntimeAccountEnvironmentState(
+            state="available",
+            auth_mode="api",
+            message="API Key 模式已启用",
+            quota_state="available",
+            five_hour_remaining_percent=42,
+            weekly_remaining_percent=78,
+        )
+    )
+
+    with patch(
+        "app.automations.manager.debug_chrome_status",
+        return_value=("unavailable", "无法检查状态", None),
+    ):
+        unavailable = manager.list()
+
+    account = unavailable.codex_runtime_account
+    assert account.quota_state == "unavailable"
+    assert account.quota_message == "Debug Chrome 状态暂不可用，额度暂无法获取"
+    assert account.five_hour_remaining_percent is None
+    assert account.weekly_remaining_percent is None
 
 
 

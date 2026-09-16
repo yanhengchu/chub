@@ -124,7 +124,7 @@ def main() -> int:
         root = (args.user_data_dir or default_user_data_dir()).expanduser().resolve()
         profiles = list_profiles(root)
     except (OSError, RuntimeError) as exc:
-        print(f"chrome-cdp: {exc}", file=sys.stderr)
+        print(f"Chub Debug Chrome: {exc}", file=sys.stderr)
         return 1
 
     if args.json:

@@ -2459,13 +2459,21 @@ class QuickInteractionManager:
         capability_ids: tuple[TaskCapabilityId, ...] | list[TaskCapabilityId] = (),
     ) -> str:
         grants = ""
+        entries = []
         if "chub.debug_chrome.page.read" in capability_ids:
-            grants = (
-                "\n\n[本次任务已授予的 Chub 能力]\n"
+            entries.append(
                 "- chub.debug_chrome.page.read：仅在需要读取公共网页正文时，调用 "
                 "`chub capability page-read --url <URL>`。该命令返回 JSON 正文快照；"
-                "不得改用 Debug Chrome、CDP、浏览器配置或其他页面交互方式。"
+                "不得改用 Debug Chrome、CDP 或浏览器配置。"
             )
+        if "chub.debug_chrome.page.interact" in capability_ids:
+            entries.append(
+                "- chub.debug_chrome.page.interact：仅可跟随公共页面中唯一匹配的可见链接，调用 "
+                "`chub capability page-interact --url <URL> --follow-link <链接文字>`。"
+                "不得填写或提交表单、下载、执行脚本，或改用 Debug Chrome、CDP、浏览器配置。"
+            )
+        if entries:
+            grants = "\n\n[本次任务已授予的 Chub 能力]\n" + "\n".join(entries)
         return f"[用户需求]\n{prompt}{grants}\n\n{CODEX_QUICK_INTERACTION_INSTRUCTIONS}"
 
     @staticmethod

@@ -14,6 +14,7 @@
     <script src="/static/js/features/workspace-sessions.js" defer></script>
     <script src="/static/js/features/workspace-workstation.js" defer></script>
     <script src="/static/js/features/workspace-deliveryline.js" defer></script>
+    <script src="/static/js/features/workspace-search.js" defer></script>
   </head>
   <body class="workspace-preview-body">
     <dialog id="workspace-openclaw-weixin-dialog" class="codex-workspace-dialog" aria-labelledby="workspace-openclaw-weixin-dialog-title">
@@ -41,13 +42,14 @@
                 <a href="/workspace"{% if workspace_section == "workbench" %} aria-current="page" class="is-current"{% endif %} aria-label="工作台" title="工作台"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><rect x="4" y="4" width="6" height="6" rx="1"></rect><rect x="14" y="4" width="6" height="6" rx="1"></rect><rect x="4" y="14" width="6" height="6" rx="1"></rect><rect x="14" y="14" width="6" height="6" rx="1"></rect></svg></a>
                 <a href="/workspace?section=automations"{% if workspace_section == "automations" %} aria-current="page" class="is-current"{% endif %} aria-label="自动化" title="自动化"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><rect x="4" y="5" width="16" height="15" rx="2"></rect><path d="M4 9h16M7 3v4M17 3v4M14 12l4 2.5-4 2.5Z"></path></svg></a>
                 <a href="/workspace?section=project-docs"{% if workspace_section == "project-docs" %} aria-current="page" class="is-current"{% endif %} aria-label="项目资料" title="项目资料"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M6 3.5h9l3 3V20a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1Z"></path><path d="M14 3.5V7h4M8.5 11h7M8.5 15h7"></path></svg></a>
+                {% if search_navigation %}<a href="/workspace?section=search"{% if workspace_section == "search" %} aria-current="page" class="is-current"{% endif %} aria-label="搜索" title="搜索"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><circle cx="11" cy="11" r="6"></circle><path d="m16 16 4 4"></path></svg></a>{% endif %}
                 {% if deliveryline_navigation %}<a href="/workspace?section=deliveryline"{% if workspace_section == "deliveryline" %} aria-current="page" class="is-current"{% endif %} aria-label="Deliveryline" title="Deliveryline"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M6 3.5h9l3 3V20a1 1 0 0 1-1 1H6a1 1 0 0 1 1-1V4.5a1 1 0 0 1 1-1Z"></path><path d="M14 3.5V7h4M8.5 11h7M8.5 15h7"></path></svg></a>{% endif %}
                 <a class="workspace-preview-compact-nav-external" href="/settings" aria-label="设置" title="设置"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2 2-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5v.2h-2.8v-.2a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1-2-2 .1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H5.7v-2.8h.2a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.9L7 8.2l2-2 .1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.5v-.2h2.8v.2a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1 2 2-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.5 1h.2V14h-.2a1.7 1.7 0 0 0-1.5 1Z"></path></svg></a>
               </nav>
               <nav id="workspace-quick-session-toolbar" class="workspace-quick-session-toolbar" aria-label="Chub Session切换" hidden></nav>
             </div>
             <p id="workspace-toolbar-error" class="workspace-preview-toolbar-error" aria-live="polite" hidden></p>
-            <div id="workspace-preview-health" class="workspace-preview-health"><span class="workspace-preview-health-dot" aria-hidden="true"></span>{% if workspace_section == "workbench" %}正在读取工作台状态…{% elif workspace_section == "automations" %}正在读取自动化状态…{% elif workspace_section == "deliveryline" %}正在读取 Deliveryline 状态…{% else %}正在读取项目资料…{% endif %}</div>
+            <div id="workspace-preview-health" class="workspace-preview-health"><span class="workspace-preview-health-dot" aria-hidden="true"></span>{% if workspace_section == "workbench" %}正在读取工作台状态…{% elif workspace_section == "automations" %}正在读取自动化状态…{% elif workspace_section == "deliveryline" %}正在读取 Deliveryline 状态…{% elif workspace_section == "search" %}AI 搜索已就绪{% else %}正在读取项目资料…{% endif %}</div>
           </header>
           {% if workspace_session_id %}
           <div id="workspace-section-content" class="workspace-inline-quick-session" data-workspace-session-id="{{ workspace_session_id }}" aria-label="Chub Session">
@@ -144,58 +146,57 @@
               <div>
                 <p class="section-kicker">Business</p>
                 <h2 id="workspace-deliveryline-title">Deliveryline</h2>
-                <p>从需求提出到测试验收的需求交付工作台。</p>
+                <p>从原始资料澄清整体目标，拆分并推进当前交付项。</p>
               </div>
             </header>
             <section class="deliveryline-preview workspace-preview-work-section deliveryline-workbench-preview" aria-label="Deliveryline 工作台" data-deliveryline-enabled="{{ 'true' if deliveryline.status == 'enabled' else 'false' }}">
-              {% set summary = namespace(in_progress=0, action_required=0, at_risk=0, delivered=0) %}
-              {% for item in deliveryline_requirements %}{% if item.workflow.delivery_status == '进行中' %}{% set summary.in_progress = summary.in_progress + 1 %}{% elif item.workflow.delivery_status == '待我处理' %}{% set summary.action_required = summary.action_required + 1 %}{% elif item.workflow.delivery_status == '存在风险' %}{% set summary.at_risk = summary.at_risk + 1 %}{% elif item.workflow.delivery_status == '已交付' %}{% set summary.delivered = summary.delivered + 1 %}{% endif %}{% endfor %}
-              <section class="workspace-preview-summary deliveryline-workbench-summary" aria-label="需求概览">
-                <article class="is-active"><span>进行中</span><strong>{{ summary.in_progress }}</strong><small>正在推进的需求</small></article>
-                <article class="is-action"><span>待我处理</span><strong>{{ summary.action_required }}</strong><small>等待补充、确认或决策</small></article>
-                <article class="is-risk"><span>存在风险</span><strong>{{ summary.at_risk }}</strong><small>已记录的风险与待确认事项</small></article>
-                <article class="is-complete"><span>已交付</span><strong>{{ summary.delivered }}</strong><small>已完成验收的需求</small></article>
+              <section class="workspace-preview-summary deliveryline-workbench-summary" aria-label="交付线概览">
+                <article class="is-action"><span>待澄清</span><strong>0</strong><small>等待 AI 与维护者完成整体澄清</small></article>
+                <article class="is-active"><span>规划中</span><strong>0</strong><small>整体目标已确认，等待交付项规划</small></article>
+                <article class="is-risk"><span>变更评估中</span><strong>0</strong><small>需要评估整体目标变化的影响</small></article>
+                <article class="is-complete"><span>已结束</span><strong>0</strong><small>已完成或停止的交付线</small></article>
               </section>
               <section class="deliveryline-workbench-section" aria-labelledby="deliveryline-preview-queue-title">
-                <header class="deliveryline-preview-section-heading"><div><h3 id="deliveryline-preview-queue-title">进行中需求</h3><p>当前需要推进的需求</p></div><button id="deliveryline-create" class="button-secondary" type="button"{% if deliveryline.status != 'enabled' %} disabled{% endif %}>新建需求</button></header>
-                {% if deliveryline_error %}<p class="message message-error">{{ deliveryline_error }}</p>{% elif deliveryline_requirements %}
-                <div class="deliveryline-workbench-list">{% for item in deliveryline_requirements %}<button class="deliveryline-requirement-row{% if loop.first %} is-selected{% endif %}" type="button" data-deliveryline-select="{{ item.id }}"><span><strong>{% if item.is_initialized %}未命名需求 · {{ item.id }}{% else %}{{ item.id }} · {{ item.title }}{% endif %}</strong><small>{{ item.workflow.next_action }}</small></span><span class="badge badge-timeout">{{ item.workflow.current_stage }}</span></button>{% endfor %}</div>
-                {% else %}<p class="empty-state">尚无需求。输入原始需求内容即可入库。</p>{% endif %}
+                <header class="deliveryline-preview-section-heading"><div><h3 id="deliveryline-preview-queue-title">交付线列表</h3><p>每条导入资料先形成待澄清的交付线；确认整体目标后再拆分交付项。</p></div><button id="deliveryline-create" class="button-secondary" type="button"{% if deliveryline.status != 'enabled' %} disabled{% endif %}>新建交付线</button></header>
+                {% if deliveryline_error %}<p class="message message-error">{{ deliveryline_error }}</p>{% else %}
+                <div id="deliveryline-active-list" class="deliveryline-workbench-list"{% if not deliveryline_requirements %} hidden{% endif %}>{% for item in deliveryline_requirements %}<button class="deliveryline-requirement-row{% if loop.first %} is-selected{% endif %}" type="button" data-deliveryline-select="{{ item.id }}"><span><strong>{% if item.title %}{{ item.title }} · {{ item.id }}{% else %}未命名交付线 · {{ item.id }}{% endif %}</strong><small>{% if item.status == '待澄清' %}等待整体澄清{% else %}整体目标已确认{% endif %}</small></span><span class="badge badge-timeout">{{ item.status }}</span></button>{% endfor %}</div>
+                <p id="deliveryline-active-empty" class="empty-state"{% if deliveryline_requirements %} hidden{% endif %}>尚无交付线。输入原始资料后先进行整体需求澄清。</p>{% endif %}
               </section>
-              {% if deliveryline_archived_requirements %}
-              <section class="deliveryline-workbench-section" aria-labelledby="deliveryline-archived-title">
-                <header class="deliveryline-preview-section-heading"><div><h3 id="deliveryline-archived-title">已归档需求</h3><p>保留的需求档案与活动记录</p></div></header>
-                <div class="deliveryline-workbench-list">{% for item in deliveryline_archived_requirements %}<button class="deliveryline-requirement-row" type="button" data-deliveryline-select="{{ item.id }}"><span><strong>{% if item.title %}{{ item.id }} · {{ item.title }}{% else %}未命名需求 · {{ item.id }}{% endif %}</strong><small>已归档</small></span><span class="badge badge-success">{{ item.workflow.current_stage }}</span></button>{% endfor %}</div>
+              <section id="deliveryline-ended-section" class="deliveryline-workbench-section" aria-labelledby="deliveryline-archived-title"{% if not deliveryline_archived_requirements %} hidden{% endif %}>
+                <header class="deliveryline-preview-section-heading"><div><h3 id="deliveryline-archived-title">已结束交付线</h3><p>保留的资料与活动记录</p></div></header>
+                <div id="deliveryline-ended-list" class="deliveryline-workbench-list">{% for item in deliveryline_archived_requirements %}<button class="deliveryline-requirement-row" type="button" data-deliveryline-select="{{ item.id }}"><span><strong>{% if item.title %}{{ item.title }} · {{ item.id }}{% else %}未命名交付线 · {{ item.id }}{% endif %}</strong><small>已结束</small></span><span class="badge badge-success">已结束</span></button>{% endfor %}</div>
               </section>
-              {% endif %}
               <section class="deliveryline-detail-preview" aria-labelledby="deliveryline-preview-detail-title">
-                <header class="deliveryline-preview-section-heading"><div><h3 id="deliveryline-preview-detail-title">需求详情</h3><p>查看所选需求的阶段进度、当前工作和需求档案。</p></div></header>
+                <header class="deliveryline-preview-section-heading"><div><h3 id="deliveryline-preview-detail-title">交付线详情</h3><p>先澄清并确认整体目标；确认后才出现交付项。</p></div><div class="deliveryline-detail-actions"><button id="deliveryline-ai-clarify" class="button-secondary" type="button" disabled>AI 整体澄清</button><button id="deliveryline-end" class="button-danger" type="button" disabled>结束交付线</button><button id="deliveryline-delete" class="button-danger" type="button" disabled>删除</button></div></header>
                 <div id="deliveryline-detail" class="deliveryline-detail-preview-content"{% if not deliveryline_requirements %} hidden{% endif %}></div>
               </section>
               {% if deliveryline.status != 'enabled' %}<p class="workstation-status-detail workstation-status-detail-warning">{{ deliveryline.detail }}</p>{% endif %}
               <dialog id="deliveryline-editor" class="codex-workspace-dialog deliveryline-editor-dialog" aria-labelledby="deliveryline-editor-title" aria-describedby="deliveryline-editor-description">
                 <form id="deliveryline-editor-form" class="codex-workspace-dialog-surface deliveryline-editor-form">
                   <div class="codex-workspace-dialog-header">
-                    <h3 id="deliveryline-editor-title">新建需求</h3>
+                    <h3 id="deliveryline-editor-title">新建交付线</h3>
                     <button class="button-link codex-workspace-dialog-close" type="button" data-deliveryline-close>关闭</button>
                   </div>
-                  <p id="deliveryline-editor-description" class="deliveryline-editor-description">将首次提出的原始需求内容直接入库；可输入一句话、链接或混合内容。</p>
+                  <p id="deliveryline-editor-description" class="deliveryline-editor-description">将原始资料作为一条待澄清交付线入库；可输入一句话、链接或混合内容。</p>
                   <div class="deliveryline-editor-field deliveryline-editor-create-field" data-deliveryline-create-field>
-                    <label for="deliveryline-create-description">原始需求内容</label>
-                    <textarea id="deliveryline-create-description" aria-label="原始需求内容" maxlength="4000" placeholder="输入一句需求描述、链接或其他原始需求内容"></textarea>
-                  </div>
-                  <div class="deliveryline-editor-fields" data-deliveryline-edit-fields hidden>
-                    <label class="deliveryline-editor-field deliveryline-editor-field-wide"><span>标题</span><input name="title" maxlength="120"></label>
-                    <label class="deliveryline-editor-field deliveryline-editor-field-wide"><span>背景与问题</span><textarea name="background" maxlength="4000"></textarea></label>
-                    <label class="deliveryline-editor-field"><span>交付目标</span><textarea name="delivery_goal" maxlength="4000"></textarea></label>
-                    <label class="deliveryline-editor-field"><span>本次范围</span><textarea name="scope" maxlength="4000"></textarea></label>
-                    <label class="deliveryline-editor-field"><span>不做什么</span><textarea name="out_of_scope" maxlength="4000"></textarea></label>
-                    <label class="deliveryline-editor-field"><span>约束与依赖</span><textarea name="constraints" maxlength="4000"></textarea></label>
-                    <label class="deliveryline-editor-field"><span>验收标准</span><textarea name="acceptance_criteria" maxlength="4000"></textarea></label>
-                    <label class="deliveryline-editor-field"><span>风险与待确认事项</span><textarea name="risks_and_open_items" maxlength="4000"></textarea></label>
+                    <label for="deliveryline-create-description">原始资料</label>
+                    <textarea id="deliveryline-create-description" aria-label="原始资料" maxlength="4000" placeholder="输入一句需求描述、链接或其他原始资料"></textarea>
                   </div>
                   <p id="deliveryline-editor-feedback" class="message" aria-live="polite" hidden></p>
                   <div class="dialog-actions"><button class="button-link" type="button" data-deliveryline-close>取消</button><button id="deliveryline-editor-submit" class="button-secondary" type="submit">创建</button></div>
+                </form>
+              </dialog>
+              <dialog id="deliveryline-goal-confirmation" class="codex-workspace-dialog deliveryline-editor-dialog" aria-labelledby="deliveryline-goal-confirmation-title">
+                <form id="deliveryline-goal-confirmation-form" class="codex-workspace-dialog-surface deliveryline-editor-form">
+                  <div class="codex-workspace-dialog-header"><h3 id="deliveryline-goal-confirmation-title">确认整体目标</h3><button class="button-link codex-workspace-dialog-close" type="button" data-deliveryline-goal-close>关闭</button></div>
+                  <label class="deliveryline-editor-field deliveryline-editor-field-wide"><span>交付线标题</span><input name="title" maxlength="120" required></label>
+                  <label class="deliveryline-editor-field deliveryline-editor-field-wide"><span>资料定位</span><select name="source_role"><option>相对完整需求</option><option>持续演进需求</option><option>设计提案</option><option>现状说明</option><option>混合资料</option></select></label>
+                  <label class="deliveryline-editor-field deliveryline-editor-field-wide"><span>整体目标</span><textarea name="overall_goal" maxlength="4000" required></textarea></label>
+                  <label class="deliveryline-editor-field deliveryline-editor-field-wide"><span>已确认事实（每行一项）</span><textarea name="confirmed_facts" maxlength="12000"></textarea></label>
+                  <label class="deliveryline-editor-field deliveryline-editor-field-wide"><span>范围与边界</span><textarea name="scope_boundary" maxlength="4000"></textarea></label>
+                  <label class="deliveryline-editor-field deliveryline-editor-field-wide"><span>仍待确认事项（每行一项）</span><textarea name="open_questions" maxlength="12000"></textarea></label>
+                  <p id="deliveryline-goal-confirmation-feedback" class="message" aria-live="polite" hidden></p>
+                  <div class="dialog-actions"><button class="button-link" type="button" data-deliveryline-goal-close>取消</button><button class="button-secondary" type="submit">确认整体目标</button></div>
                 </form>
               </dialog>
             </section>
@@ -242,6 +243,25 @@
               <p class="empty-state">暂无项目资料。</p>
               {% endif %}
             </div>
+          </section>
+          {% elif workspace_section == "search" and workspace_search_id %}
+          <section class="workspace-preview-work-surface workspace-search-detail" aria-labelledby="workspace-search-detail-title" data-search-id="{{ workspace_search_id }}">
+            <header class="workspace-search-detail-heading workspace-preview-work-section"><h1 id="workspace-search-detail-title">搜索详情</h1><p id="workspace-search-detail-status" class="workspace-search-feedback" aria-live="polite" hidden></p></header>
+            <section class="workspace-search-detail-section workspace-preview-work-section"><h2>搜索原文</h2><p id="workspace-search-detail-query" class="workspace-search-detail-copy"></p></section>
+            <section class="workspace-search-detail-section workspace-preview-work-section"><h2>搜索提示词</h2><pre id="workspace-search-detail-prompt" class="workspace-search-detail-prompt"></pre></section>
+            <section class="workspace-search-detail-section workspace-preview-work-section"><h2>搜索结果</h2><div id="workspace-ai-search-detail-results"></div></section>
+          </section>
+          {% elif workspace_section == "search" %}
+          <section class="workspace-preview-work-surface workspace-search" aria-labelledby="workspace-search-title">
+            <header class="workspace-search-hero workspace-preview-work-section">
+              <h1 id="workspace-search-title">Chub</h1>
+              <form id="workspace-ai-search-form" class="workspace-search-form" aria-label="AI 搜索">
+                <label class="visually-hidden" for="workspace-ai-search-query">描述需要检索的内容</label>
+                <div class="workspace-search-box"><svg class="workspace-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="11" cy="11" r="6"></circle><path d="m16 16 4 4"></path></svg><input id="workspace-ai-search-query" name="query" type="search" minlength="2" maxlength="2000" autocomplete="off" placeholder="例如：查找类似 aihero.dev/skills 的高星技能库" required><button id="workspace-ai-search-submit" class="workspace-search-submit" type="submit" aria-label="搜索" title="搜索"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m8 5 7 7-7 7"></path></svg></button></div>
+                <p id="workspace-ai-search-submit-feedback" class="workspace-search-submit-feedback message message-error" aria-live="polite" hidden></p>
+              </form>
+            </header>
+            <section class="workspace-search-history workspace-preview-work-section" aria-labelledby="workspace-search-history-title"><h2 id="workspace-search-history-title">搜索记录 <span class="workspace-search-history-limit">最多保留 8 条</span></h2><div id="workspace-ai-search-history" class="workspace-search-history-list" aria-live="polite"></div></section>
           </section>
           {% else %}
           {% set automation_refresh_active = namespace(value=false) %}
@@ -313,7 +333,7 @@
                   <div class="workstation-status-row">
                     <div class="workstation-status-copy">
                       <strong>Codex Runtime 账户</strong>
-                      <span id="workspace-automation-codex-account-detail" data-account-state="{{ automations.codex_runtime_account.state }}" data-auth-mode="{{ automations.codex_runtime_account.auth_mode }}" data-auth-switching="{{ 'true' if automations.codex_runtime_account.switching else 'false' }}" class="workstation-status-detail workspace-automation-codex-account-detail{% if automations.codex_runtime_account.state == 'available' %} workstation-status-detail-success{% elif automations.codex_runtime_account.state == 'checking' %} workstation-status-detail-warning{% elif automations.codex_runtime_account.state == 'failed' %} workstation-status-detail-failed{% endif %}">{{ automations.codex_runtime_account.message }}{% if automations.codex_runtime_account.quota_state == 'available' %}{% if automations.codex_runtime_account.five_hour_remaining_percent is not none %} · 5h {{ automations.codex_runtime_account.five_hour_remaining_percent }}%{% endif %}{% if automations.codex_runtime_account.weekly_remaining_percent is not none %} · Weekly {{ automations.codex_runtime_account.weekly_remaining_percent }}%{% endif %}{% elif automations.codex_runtime_account.quota_state == 'unavailable' %} · 额度暂不可用{% endif %}{% if automations.codex_runtime_account.checked_at %} · 检查于 {{ automations.codex_runtime_account.checked_at.strftime('%m-%d %H:%M') }}{% endif %}</span>
+                      <span id="workspace-automation-codex-account-detail" data-account-state="{{ automations.codex_runtime_account.state }}" data-auth-mode="{{ automations.codex_runtime_account.auth_mode }}" data-auth-switching="{{ 'true' if automations.codex_runtime_account.switching else 'false' }}" class="workstation-status-detail workspace-automation-codex-account-detail{% if automations.codex_runtime_account.state == 'available' %} workstation-status-detail-success{% elif automations.codex_runtime_account.state == 'checking' %} workstation-status-detail-warning{% elif automations.codex_runtime_account.state == 'failed' %} workstation-status-detail-failed{% endif %}">{{ automations.codex_runtime_account.message }}{% if automations.codex_runtime_account.quota_state == 'available' %}{% if automations.codex_runtime_account.five_hour_remaining_percent is not none %} · 5h {{ automations.codex_runtime_account.five_hour_remaining_percent }}%{% endif %}{% if automations.codex_runtime_account.weekly_remaining_percent is not none %} · Weekly {{ automations.codex_runtime_account.weekly_remaining_percent }}%{% endif %}{% elif automations.codex_runtime_account.quota_state == 'unavailable' %} · {{ automations.codex_runtime_account.quota_message or '额度暂不可用' }}{% endif %}{% if automations.codex_runtime_account.checked_at %} · 检查于 {{ automations.codex_runtime_account.checked_at.strftime('%m-%d %H:%M') }}{% endif %}</span>
                     </div>
                     <div class="workstation-status-actions">
                       <button id="workspace-automation-codex-account-check" class="button-secondary" type="button"{% if automations.codex_runtime_account.state == 'checking' %} disabled{% endif %}>检查</button>
@@ -392,7 +412,7 @@
           </section>
           {% endif %}
 
-        {% if workspace_section == "automations" and automations and automations.browser_state == "stopped" %}
+        {% if workspace_section == "automations" and automations %}
         <dialog id="workspace-automation-browser-start-dialog" class="codex-workspace-dialog" aria-labelledby="workspace-automation-browser-start-title">
           <form id="workspace-automation-browser-start-form" class="codex-workspace-dialog-surface automation-browser-form">
             <div class="codex-workspace-dialog-header">
@@ -420,7 +440,7 @@
         </dialog>
         {% endif %}
 
-        {% if workspace_section == "automations" and automations and automations.browser_state == "running" %}
+        {% if workspace_section == "automations" and automations %}
         <dialog id="workspace-automation-browser-stop-dialog" class="codex-workspace-dialog confirmation-dialog" aria-labelledby="workspace-automation-browser-stop-title">
           <form id="workspace-automation-browser-stop-form" class="codex-workspace-dialog-surface confirmation-dialog-surface">
             <div class="codex-workspace-dialog-header">
@@ -467,6 +487,7 @@
             <a href="/"{% if workspace_section == "workbench" %} aria-current="page" class="is-current"{% endif %}><span class="workspace-preview-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><rect x="4" y="4" width="6" height="6" rx="1"></rect><rect x="14" y="4" width="6" height="6" rx="1"></rect><rect x="4" y="14" width="6" height="6" rx="1"></rect><rect x="14" y="14" width="6" height="6" rx="1"></rect></svg></span><span>工作台</span></a>
             <a href="/?section=automations"{% if workspace_section == "automations" %} aria-current="page" class="is-current"{% endif %}><span class="workspace-preview-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><rect x="4" y="5" width="16" height="15" rx="2"></rect><path d="M4 9h16M7 3v4M17 3v4M14 12l4 2.5-4 2.5Z"></path></svg></span><span>自动化</span></a>
             <a href="/?section=project-docs"{% if workspace_section == "project-docs" %} aria-current="page" class="is-current"{% endif %}><span class="workspace-preview-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M6 3.5h9l3 3V20a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1Z"></path><path d="M14 3.5V7h4M8.5 11h7M8.5 15h7"></path></svg></span><span>项目资料</span></a>
+            {% if search_navigation %}<a href="/?section=search"{% if workspace_section == "search" %} aria-current="page" class="is-current"{% endif %}><span class="workspace-preview-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><circle cx="11" cy="11" r="6"></circle><path d="m16 16 4 4"></path></svg></span><span>搜索</span></a>{% endif %}
           </nav>
           {% if deliveryline_navigation %}
           <p class="workspace-preview-sidebar-label">Business</p>

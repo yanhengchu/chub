@@ -43,8 +43,8 @@ from app.services.operation_log import write_operation
 
 
 HEALTH_PROTOCOL_VERSION = 1
-PROTOCOL_VERSION = 11
-WORKER_CODE_VERSION = "quick-worker-11-runtime-maintenance"
+PROTOCOL_VERSION = 12
+WORKER_CODE_VERSION = "quick-worker-12-ai-search-capabilities"
 MAX_REQUEST_BYTES = 64 * 1024
 MAX_RESPONSE_BYTES = 256 * 1024
 CLIENT_TIMEOUT_SECONDS = 2.0

@@ -195,6 +195,21 @@ def test_codex_execution_prompt_includes_only_granted_task_capabilities(
     assert "CDP" in prompt
 
 
+def test_codex_execution_prompt_includes_granted_page_interaction_only(
+    tmp_path: Path,
+) -> None:
+    quick_interactions = manager(tmp_path)
+
+    prompt = quick_interactions._codex_execution_prompt(
+        "进入下一页",
+        ("chub.debug_chrome.page.interact",),
+    )
+
+    assert "chub capability page-interact" in prompt
+    assert "不得填写或提交表单" in prompt
+    assert "page-read" not in prompt
+
+
 def test_system_upgrade_reset_prevents_late_task_state_rewrite(tmp_path: Path) -> None:
     quick_interactions = manager(tmp_path)
 

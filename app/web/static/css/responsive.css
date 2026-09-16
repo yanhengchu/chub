@@ -101,6 +101,14 @@
 }
 
 @media (max-width: 420px) {
+  .workspace-search {
+    gap: 1.5rem;
+  }
+
+  .workspace-search-hero h1 {
+    font-size: 2.25rem;
+  }
+
   .settings-field {
     align-items: stretch;
     flex-direction: column;
