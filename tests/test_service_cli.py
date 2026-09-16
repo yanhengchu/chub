@@ -855,11 +855,11 @@ def test_chrome_supervisor_ensure_is_not_a_supported_subcommand(
 @pytest.mark.parametrize(
     ("command", "arguments"),
     [
-        ("page-read", ("--url", "https://example.com")),
-        ("page-interact", ("--url", "https://example.com", "--follow-link", "Next")),
+        ("page-read", ("--help",)),
+        ("page-interact", ("--help",)),
     ],
 )
-def test_capability_commands_reach_the_task_bound_entrypoint(
+def test_capability_commands_reach_the_direct_local_entrypoint(
     service_env: tuple[dict[str, str], Path],
     command: str,
     arguments: tuple[str, ...],
@@ -868,8 +868,8 @@ def test_capability_commands_reach_the_task_bound_entrypoint(
 
     result = run_chub("capability", env, command, *arguments)
 
-    assert result.returncode != 0
-    assert "task_capability_context_missing" in result.stdout
+    assert result.returncode == 0
+    assert command in result.stdout
 
 
 def test_version_reports_configured_version_and_platform(

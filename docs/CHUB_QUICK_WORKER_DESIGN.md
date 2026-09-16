@@ -15,9 +15,11 @@ Quick Worker 是与 Web 独立的后台服务，承载页面、微信 Chub 模�
 - 任务状态单向推进：`accepted -> starting -> running -> succeeded|failed|timed_out|cancelled`。进程创建、HTTP 200 或已受理均不等于任务成功。
 - Worker 不可用、协议不兼容或恢复未完成时，新的 Session 创建和写入失败关闭；只读 Session/Native 列表、无关服务及已运行任务不受影响。
 
+当前 Worker 协议为 v13。此版本移除了任务级 Debug Chrome 授权上下文；升级后新 Worker 只使用 `tasks-v13` 等新版本目录，不读取或重放旧协议目录中的任务。保留该旧授权上下文的 Web 任务会收敛为失败且不重放，不得阻塞当前 Worker 对账和新的 Session 写入。
+
 ## 当前行为与边界
 
-Web 重启不停止 Worker、已受理 Runner、翻译 FIFO 或确认 FIFO。新 Web 先核对 Worker 健康、协议、活动任务、租约、通知和重启状态，完成后才开放新的写入。Worker 或宿主机崩溃使任务结果不确定时按失败收敛，不自动重放。
+Web 重启不停止 Worker、已受理 Runner、翻译 FIFO 或确认 FIFO。新 Web 先核对 Worker 健康、协议、活动任务、租约、通知和重启状态，完成后才开放新的写入。Worker 或宿主机崩溃使任务结果不确定时按失败收敛，不自动重放。Web 投影不可读或 Worker 存在无可恢复 Web 元数据的任务时，恢复流程立即取消并确认丢弃对应 Chub 自有任务状态，同时清除其 Chub Session 的 Quick Worker 原生声明；若固定状态路径异常为目录等非文件，会隔离旧路径并重建空投影。无法确认取消、丢弃或声明清理时明确报告恢复失败并指向升级与恢复，不无限等待。
 
 任务终态、通知终态、Web 重启终态和 Worker 重启终态分别确认。页面来源任务只在页面展示结果；微信任务仅按受理时保存的可信账号与发送者回送，路由失效不得回退全局收件人。
 

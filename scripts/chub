@@ -34,6 +34,19 @@ PLATFORM="${CHUB_TEST_PLATFORM:-$(uname -s)}"
 SERVICE_LOG_MAX_BYTES=$((2 * 1024 * 1024))
 SERVICE_LOG_DIR="${CHUB_SERVICE_LOG_DIR:-$PROJECT_ROOT/logs}"
 
+if [[ "${1:-}" == "capability" ]]; then
+    shift
+    case "${1:-}" in
+        page-read|page-interact) ;;
+        *)
+            echo "chub: usage: chub capability <page-read|page-interact> ..." >&2
+            exit 1
+            ;;
+    esac
+    cd "$PROJECT_ROOT"
+    exec "$PYTHON_BIN" -m app.task_capabilities.command "$@"
+fi
+
 add_runtime_command_dir() {
     local command_path command_dir
     command_path="$(type -P "$1" 2>/dev/null || true)"
@@ -82,7 +95,7 @@ Commands:
              Validate, list, test, or send configured notifications
   request    Save, update, archive, or inspect the local request backlog
   capability <page-read|page-interact> ...
-             Read a network page or follow one link when the current Chub AI task granted it
+             Read a public page or follow one unique public link through Debug Chrome
   uninstall [--force]
              Remove the user service and chub command
   help       Show this help
@@ -1633,18 +1646,6 @@ case "$command" in
         (
             cd "$PROJECT_ROOT"
             "$PYTHON_BIN" -m app.requests.command "$@"
-        )
-        ;;
-    capability)
-        shift
-        case "${1:-}" in
-            page-read) ;;
-            page-interact) ;;
-            *) usage >&2; fail "usage: chub capability <page-read|page-interact> ..." ;;
-        esac
-        (
-            cd "$PROJECT_ROOT"
-            "$PYTHON_BIN" -m app.task_capabilities.command "$@"
         )
         ;;
     chrome)

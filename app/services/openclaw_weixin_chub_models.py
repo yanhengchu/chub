@@ -6,7 +6,6 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.codex.models import (
-    PermissionMode,
     QuickInteractionWeixinRoute,
 )
 
@@ -93,9 +92,6 @@ class _StrictModel(BaseModel):
 class WeixinChubModeRuntimeConfig(_StrictModel):
     enabled: bool = False
     workspace_id: Literal["home", "workspace", "chub"] = "chub"
-    permission_mode: PermissionMode = "full-access"
-    model: str | None = Field(default=None, max_length=128)
-    reasoning_effort: str | None = Field(default=None, max_length=32)
 
 
 class WeixinChubModeSubmission(_StrictModel):

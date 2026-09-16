@@ -545,6 +545,7 @@ async def inspect_quick_worker(
     recovery_ready: bool,
     reload_coordinator: QuickWorkerReloadCoordinator,
     *,
+    recovery_error: str | None = None,
     runtime_state: Literal[
         "available",
         "disabled",
@@ -658,6 +659,12 @@ async def inspect_quick_worker(
     elif data.get("status") == "draining":
         state = "draining"
         message = "正在排空已受理任务。"
+    elif not recovery_ready and recovery_error:
+        state = "unavailable"
+        message = (
+            "任务状态无法自动恢复，已停止等待："
+            f"{recovery_error[:180]}。请执行升级与恢复清理 Chub 运行态。"
+        )
     elif active_tasks or queued_tasks:
         state = "busy"
         parts = []

@@ -49,11 +49,12 @@ const fontSizeOptionRows = document.querySelectorAll("[data-font-size-option]");
 let maintenanceTerminalOpening = false;
 const deploymentPackageForm = document.querySelector("#deployment-package-form");
 const deploymentPackageMessage = document.querySelector("#deployment-package-message");
-const deploymentPackageOutput = document.querySelector("#deployment-package-output");
 const deploymentPackageCurrentAppVersion = document.querySelector("#deployment-package-current-app-version");
 const deploymentPackageBuild = document.querySelector("#deployment-package-build");
 const deploymentPackageChubVersion = document.querySelector("#deployment-package-chub-version");
 const deploymentPackageIncludeDevelopment = document.querySelector("#deployment-package-include-development");
+const deploymentPackageReleaseNote = document.querySelector("#deployment-package-release-note");
+const deploymentPackageOpenOutput = document.querySelector("#deployment-package-open-output");
 let deploymentPackagePolling = null;
 
 const settingsChoicePickers = new Map();
@@ -250,9 +251,16 @@ function formalImplementationTitle(name, version) {
 
 function versionTitle(item) {
   const name = item.name || "Codex";
-  return item.implementation_id === "builtin-dev"
+  return item.implementation_id === "codex-runtime-dev"
     ? `${name} · 开发实现`
     : formalImplementationTitle(name, item.version);
+}
+
+function versionDescription(item) {
+  const version = formalVersion(item.version);
+  return item.implementation_id === "codex-runtime-dev"
+    ? "使用仓库固定的开发实现；仅影响之后新建的 Session 和任务。"
+    : `使用正式插件包 ${version}；仅影响之后新建的 Session 和任务。`;
 }
 
 function renderCodexRuntimeVersions(implementations) {
@@ -270,7 +278,7 @@ function renderCodexRuntimeVersions(implementations) {
         const option = document.createElement("option");
         option.value = item.implementation_id;
         option.textContent = versionTitle(item);
-        option.dataset.description = item.implementation_id;
+        option.dataset.description = versionDescription(item);
         option.selected = item === selectedVersion;
         codexDefaultRuntimeImplementation.append(option);
       });
@@ -641,66 +649,148 @@ function initializeDeploymentPackageSettings() {
   const inputs = [
     deploymentPackageChubVersion,
     deploymentPackageIncludeDevelopment,
-  ].filter((item) => item instanceof HTMLInputElement);
-  const render = (data) => {
-    const configuration = data.configuration || {};
-    inputs.forEach((input) => { input.disabled = false; });
-    deploymentPackageCurrentAppVersion.textContent = `当前版本：v${data.app_version || "未知"}；发布后同步当前节点、项目与随包插件。`;
-    deploymentPackageOutput.textContent = data.output_directory || "输出目录暂时无法读取。";
-    deploymentPackageChubVersion.value = configuration.chub_release_version || "";
-    deploymentPackageIncludeDevelopment.checked = configuration.include_development_sources === true;
-    const operation = data.operation;
-    if (operation?.status === "requested" || operation?.status === "started") {
-      deploymentPackageBuild.disabled = true;
-      setSettingsMessage(deploymentPackageMessage, operation.message || "正在发布版本。", "");
+    deploymentPackageReleaseNote,
+  ].filter((item) => item instanceof HTMLInputElement || item instanceof HTMLTextAreaElement);
+  let noteDirty = false;
+  let latestGeneration = null;
+  let latestOperation = null;
+
+  const generationActive = () => (
+    latestGeneration?.status === "requested" || latestGeneration?.status === "running"
+  );
+  const publishActive = () => (
+    latestOperation?.status === "requested" || latestOperation?.status === "started"
+  );
+  const generationRequired = () => (
+    deploymentPackageReleaseNote.value.trim() === ""
+    || (latestGeneration?.status === "stale" && !noteDirty)
+  );
+  const updateAction = () => {
+    if (!(deploymentPackageBuild instanceof HTMLButtonElement)) return;
+    const busy = publishActive() || generationActive();
+    deploymentPackageBuild.disabled = busy;
+    if (publishActive()) {
+      deploymentPackageBuild.textContent = "正在发布";
+    } else if (generationActive()) {
+      deploymentPackageBuild.textContent = "正在生成";
+    } else {
+      deploymentPackageBuild.textContent = generationRequired()
+        ? "生成发版说明"
+        : "发布版本";
+    }
+  };
+  const updatePolling = () => {
+    if (publishActive() || generationActive()) {
       if (deploymentPackagePolling === null) {
         deploymentPackagePolling = window.setInterval(() => void load(), 1000);
       }
-    } else {
-      deploymentPackageBuild.disabled = false;
-      if (deploymentPackagePolling !== null) {
-        window.clearInterval(deploymentPackagePolling);
-        deploymentPackagePolling = null;
-      }
-      if (operation?.status === "succeeded") {
-        const moduleSummary = Array.isArray(operation.bundled_modules)
-          ? operation.bundled_modules.map((module) => {
-            const identity = module.implementation_id || module.module_id || "未知模块";
-            return `${identity} v${module.version || "未知"} · ${module.sha256 || "无摘要"}`;
-          }).join("\n")
-          : "";
-        const details = [
-          operation.artifact_name ? `${operation.artifact_name} · ${operation.artifact_size || 0} bytes` : "",
-          operation.build_id ? `构建标识：${operation.build_id}` : "",
-          operation.built_at ? `构建时间：${new Date(operation.built_at).toLocaleString()}` : "",
-          operation.sha256 ? `SHA-256：${operation.sha256}` : "",
-          moduleSummary ? `随包模块：\n${moduleSummary}` : "",
-        ].filter(Boolean).join("\n");
-        setSettingsMessage(deploymentPackageMessage, [operation.message, details].filter(Boolean).join("\n"), "");
-      } else if (operation?.status === "failed") {
-        setSettingsMessage(deploymentPackageMessage, operation.message || "版本发布失败。", "error");
-      }
+    } else if (deploymentPackagePolling !== null) {
+      window.clearInterval(deploymentPackagePolling);
+      deploymentPackagePolling = null;
+    }
+  };
+  const render = (data) => {
+    const configuration = data.configuration || {};
+    latestOperation = data.operation || null;
+    latestGeneration = data.release_note_generation || null;
+    const busy = publishActive() || generationActive();
+    inputs.forEach((input) => { input.disabled = busy; });
+    const sourceVersions = data.source_versions || {};
+    deploymentPackageCurrentAppVersion.textContent = `已提交版本：Chub v${sourceVersions.chub || "未知"}；Runtime v${sourceVersions.runtime || "未知"}；微信编排 v${sourceVersions.weixin || "未知"}。发布版本必须一致。`;
+    deploymentPackageChubVersion.value = configuration.chub_release_version || "";
+    deploymentPackageIncludeDevelopment.checked = configuration.include_development_sources === true;
+    deploymentPackageReleaseNote.value = configuration.release_note || "";
+    noteDirty = false;
+    updateAction();
+    updatePolling();
+    if (publishActive()) {
+      setSettingsMessage(deploymentPackageMessage, latestOperation.message || "正在发布版本。", "");
+      return;
+    }
+    if (generationActive() || latestGeneration?.status === "failed" || latestGeneration?.status === "stale") {
+      setSettingsMessage(deploymentPackageMessage, latestGeneration?.message || "正在生成发版说明。", latestGeneration?.status === "failed" ? "error" : "");
+      return;
+    }
+    if (latestGeneration?.status === "succeeded") {
+      setSettingsMessage(deploymentPackageMessage, latestGeneration.message || "发版说明已生成，可编辑后发布。", "");
+    }
+    if (latestOperation?.status === "succeeded") {
+      const moduleSummary = Array.isArray(latestOperation.bundled_modules)
+        ? latestOperation.bundled_modules.map((module) => {
+          const identity = module.implementation_id || module.module_id || "未知模块";
+          return `${identity} v${module.version || "未知"} · ${module.sha256 || "无摘要"}`;
+        }).join("\n")
+        : "";
+      const details = [
+        latestOperation.artifact_name ? `${latestOperation.artifact_name} · ${latestOperation.artifact_size || 0} bytes` : "",
+        latestOperation.build_id ? `构建标识：${latestOperation.build_id}` : "",
+        latestOperation.built_at ? `构建时间：${new Date(latestOperation.built_at).toLocaleString()}` : "",
+        latestOperation.sha256 ? `SHA-256：${latestOperation.sha256}` : "",
+        latestOperation.git_commit ? `提交：${latestOperation.git_commit}` : "",
+        latestOperation.tag_name ? `本地 tag：${latestOperation.tag_name}` : "",
+        latestOperation.release_record_name ? `发版记录：${latestOperation.release_record_name}` : "",
+        latestOperation.release_note ? `发版说明：\n${latestOperation.release_note}` : "",
+        moduleSummary ? `随包模块：\n${moduleSummary}` : "",
+      ].filter(Boolean).join("\n");
+      setSettingsMessage(deploymentPackageMessage, ["最近一次成功发布的产物如下。", details].filter(Boolean).join("\n"), "");
+    } else if (latestOperation?.status === "failed") {
+      setSettingsMessage(deploymentPackageMessage, latestOperation.message || "版本发布失败。", "error");
     }
   };
   const load = async () => {
     try { render(await fetchSettingsApi("/api/settings/deployment-package")); }
     catch (_error) { setSettingsMessage(deploymentPackageMessage, "暂时无法读取版本发布配置。", "error"); }
   };
-  deploymentPackageForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const configuration = {
-      release_version: deploymentPackageChubVersion.value.trim(),
-      include_development_sources: deploymentPackageIncludeDevelopment.checked,
-    };
+  const runAction = async () => {
+    const generating = generationRequired();
     inputs.forEach((input) => { input.disabled = true; });
     deploymentPackageBuild.disabled = true;
     try {
+      if (generating) {
+        render(await fetchSettingsApi("/api/settings/deployment-package/release-note", {
+          method: "POST",
+          headers: settingsHeaders(true),
+          body: JSON.stringify({
+            release_version: deploymentPackageChubVersion.value.trim(),
+            include_development_sources: deploymentPackageIncludeDevelopment.checked,
+          }),
+        }));
+        return;
+      }
+      const configuration = {
+        release_version: deploymentPackageChubVersion.value.trim(),
+        include_development_sources: deploymentPackageIncludeDevelopment.checked,
+        release_note: deploymentPackageReleaseNote.value.trim(),
+      };
       await fetchSettingsApi("/api/settings/deployment-package", { method: "PUT", headers: settingsHeaders(true), body: JSON.stringify(configuration) });
       render(await fetchSettingsApi("/api/settings/deployment-package/build", { method: "POST", headers: settingsHeaders(true) }));
     } catch (error) {
       inputs.forEach((input) => { input.disabled = false; });
-      deploymentPackageBuild.disabled = false;
-      setSettingsMessage(deploymentPackageMessage, error instanceof Error ? error.message : "保存版本发布配置或启动发布失败。", "error");
+      updateAction();
+      setSettingsMessage(deploymentPackageMessage, error instanceof Error ? error.message : "版本发布操作未能完成。", "error");
+    }
+  };
+  deploymentPackageForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void runAction();
+  });
+  deploymentPackageBuild.addEventListener("click", () => void runAction());
+  deploymentPackageReleaseNote.addEventListener("input", () => {
+    noteDirty = true;
+    updateAction();
+  });
+  deploymentPackageOpenOutput.addEventListener("click", async () => {
+    deploymentPackageOpenOutput.disabled = true;
+    try {
+      await fetchSettingsApi("/api/settings/deployment-package/open-output", {
+        method: "POST",
+        headers: settingsHeaders(true),
+      });
+      setSettingsMessage(deploymentPackageMessage, "已请求使用本机文件管理器打开发布产物目录。", "");
+    } catch (error) {
+      setSettingsMessage(deploymentPackageMessage, error instanceof Error ? error.message : "无法打开本机发版产物目录。", "error");
+    } finally {
+      deploymentPackageOpenOutput.disabled = false;
     }
   });
   void load();

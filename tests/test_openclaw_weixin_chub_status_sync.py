@@ -235,7 +235,7 @@ def test_chub_sync_lists_compatible_sessions_and_marks_current(
 
     assert result.message is not None
     assert result.message.startswith(
-        "Sync: Completed · Removed 0 · Added 3 · Current 3\n\n"
+        "Sync: Completed · Removed 0 · Added 4 · Current 4\n\n"
         "Sessions\n\n"
     )
     assert "▶ S1 · [Chub] 微信 Chub" in result.message
@@ -245,7 +245,8 @@ def test_chub_sync_lists_compatible_sessions_and_marks_current(
         "▶ S1 · [Chub] 微信 Chub"
     ) < result.message.index("S2 · [Chub] 项目维护")
     assert result.message.endswith("Usage unavailable")
-    assert "不应显示" not in result.message
+    assert "也不应显示" in result.message
+    assert "用户目录" not in result.message
     persisted = json.loads(
         settings.openclaw.weixin_chub_mode.state_file.read_text(encoding="utf-8")
     )
@@ -692,14 +693,8 @@ def test_chub_refresh_keeps_cached_overview_when_session_lookup_fails(
     assert "Sessions\n\nUnavailable" in result.message
     assert "异常" not in result.message
 
-def test_codex_status_session_matching_respects_explicit_model_and_effort() -> None:
-    configuration = WeixinChubModeRuntimeConfig(
-        enabled=True,
-        workspace_id="chub",
-        permission_mode="full-access",
-        model="gpt-test",
-        reasoning_effort="high",
-    )
+def test_codex_status_session_matching_uses_the_allowed_workspace() -> None:
+    configuration = WeixinChubModeRuntimeConfig(enabled=True, workspace_id="chub")
     matching = CodexSession(
         id="matching",
         workspace_id="chub",
@@ -715,11 +710,7 @@ def test_codex_status_session_matching_respects_explicit_model_and_effort() -> N
         configuration,
     )
     assert not WeixinChubModeManager._session_matches_configuration(
-        matching.model_copy(update={"model": "different"}),
-        configuration,
-    )
-    assert not WeixinChubModeManager._session_matches_configuration(
-        matching.model_copy(update={"reasoning_effort": "medium"}),
+        matching.model_copy(update={"workspace_id": "home"}),
         configuration,
     )
 

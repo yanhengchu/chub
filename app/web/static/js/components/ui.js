@@ -22,6 +22,7 @@ let confirmationDialog = null;
 let confirmationDialogForm = null;
 let confirmationDialogTitle = null;
 let confirmationDialogDescription = null;
+let confirmationDialogBody = null;
 let confirmationDialogDetails = null;
 let confirmationDialogMessage = null;
 let confirmationDialogClose = null;
@@ -79,7 +80,8 @@ function confirmationDialogDetailsTarget() {
 
 function showConfirmationDialog({
   title,
-  description,
+  description = "",
+  body = "",
   details = [],
   confirmLabel = "确认",
   pendingLabel = "处理中…",
@@ -93,6 +95,9 @@ function showConfirmationDialog({
   }
   confirmationDialogTitle.textContent = title;
   confirmationDialogDescription.textContent = description;
+  confirmationDialogDescription.hidden = !description.trim();
+  confirmationDialogBody.textContent = body;
+  confirmationDialogBody.hidden = !body.trim();
   const detailsTarget = confirmationDialogDetailsTarget();
   if (detailsTarget) {
     detailsTarget.replaceChildren();
@@ -140,6 +145,7 @@ function bindConfirmationDialog() {
   confirmationDialogForm = document.querySelector("#confirmation-dialog-form");
   confirmationDialogTitle = document.querySelector("#confirmation-dialog-title");
   confirmationDialogDescription = document.querySelector("#confirmation-dialog-description");
+  confirmationDialogBody = document.querySelector("#confirmation-dialog-body");
   confirmationDialogDetails = document.querySelector("#confirmation-dialog-details");
   confirmationDialogMessage = document.querySelector("#confirmation-dialog-message");
   confirmationDialogClose = document.querySelector("#confirmation-dialog-close");
@@ -150,6 +156,7 @@ function bindConfirmationDialog() {
     || !(confirmationDialogForm instanceof HTMLFormElement)
     || !(confirmationDialogTitle instanceof HTMLElement)
     || !(confirmationDialogDescription instanceof HTMLElement)
+    || !(confirmationDialogBody instanceof HTMLElement)
     || !(confirmationDialogMessage instanceof HTMLElement)
     || !(confirmationDialogClose instanceof HTMLButtonElement)
     || !(confirmationDialogCancel instanceof HTMLButtonElement)

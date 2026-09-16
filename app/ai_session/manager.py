@@ -26,7 +26,11 @@ from app.ai_runtime.runtime_plugin_packages import (
     RuntimePluginRemoval,
 )
 from app.ai_runtime.runtime_plugins import RuntimePluginRegistry
-from app.ai_runtime.codex_plugin import load_development_codex_plugin
+from app.ai_runtime.codex_plugin import (
+    DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
+    LEGACY_DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
+    load_development_codex_plugin,
+)
 from app.ai_runtime.enablement import (
     RuntimeEnablement,
     RuntimeEnablementStore,
@@ -145,8 +149,14 @@ class AiSessionManager:
         )
         if development_runtime_plugins is None:
             development_plugin = load_development_codex_plugin(settings)
+            legacy_development_plugin = load_development_codex_plugin(
+                settings,
+                implementation_id=LEGACY_DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
+            )
             self._development_runtime_plugins = RuntimePluginRegistry(
-                [] if development_plugin is None else [development_plugin]
+                []
+                if development_plugin is None
+                else [development_plugin, legacy_development_plugin]
             )
         else:
             self._development_runtime_plugins = development_runtime_plugins
@@ -175,6 +185,7 @@ class AiSessionManager:
             lambda _implementation_id: (True, True)
         )
         self.refresh_runtime_plugins()
+
     def install_runtime_plugin(
         self,
         archive: bytes,
@@ -244,10 +255,16 @@ class AiSessionManager:
             development_plugin = load_development_codex_plugin(self.settings, reload_source=True)
             if development_plugin is None:
                 raise ApiError(503, "development_runtime_plugin_unavailable", "开发版 Runtime 源码未随当前部署包提供。")
-            candidate = RuntimePluginRegistry([development_plugin])
+            legacy_development_plugin = load_development_codex_plugin(
+                self.settings,
+                implementation_id=LEGACY_DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
+            )
+            candidate = RuntimePluginRegistry(
+                [development_plugin, legacy_development_plugin]
+            )
             self._development_runtime_plugins = candidate
             self.refresh_runtime_plugins()
-            if "builtin-dev" not in self.runtime_plugins.implementation_ids("codex"):
+            if DEVELOPMENT_CODEX_IMPLEMENTATION_ID not in self.runtime_plugins.implementation_ids("codex"):
                 raise ApiError(503, "development_runtime_plugin_refresh_unconfirmed", "开发版 Runtime 未能通过 Web 注册表校验。")
             return previous_development
         except Exception:
@@ -257,11 +274,11 @@ class AiSessionManager:
 
     def restore_development_codex_plugin(
         self,
-        previous_builtin: RuntimePluginRegistry,
+        previous_development: RuntimePluginRegistry,
     ) -> None:
         """Restore Web's prior development plugin after Worker rejects a refresh."""
         with self._lock:
-            self._development_runtime_plugins = previous_builtin
+            self._development_runtime_plugins = previous_development
             self.refresh_runtime_plugins()
 
     def _activate_default_implementation(self) -> None:
@@ -355,6 +372,32 @@ class AiSessionManager:
             preferences = self.runtime_implementation_preferences.read()
         except RuntimeImplementationPreferencesUnavailable:
             return None
+        if (
+            preferences.default_implementation_id
+            == LEGACY_DEVELOPMENT_CODEX_IMPLEMENTATION_ID
+            or LEGACY_DEVELOPMENT_CODEX_IMPLEMENTATION_ID
+            in preferences.disabled_implementation_ids
+        ):
+            disabled = [
+                (
+                    DEVELOPMENT_CODEX_IMPLEMENTATION_ID
+                    if implementation_id == LEGACY_DEVELOPMENT_CODEX_IMPLEMENTATION_ID
+                    else implementation_id
+                )
+                for implementation_id in preferences.disabled_implementation_ids
+            ]
+            preferences = preferences.model_copy(
+                update={
+                    "default_implementation_id": (
+                        DEVELOPMENT_CODEX_IMPLEMENTATION_ID
+                        if preferences.default_implementation_id
+                        == LEGACY_DEVELOPMENT_CODEX_IMPLEMENTATION_ID
+                        else preferences.default_implementation_id
+                    ),
+                    "disabled_implementation_ids": list(dict.fromkeys(disabled)),
+                }
+            )
+            self.runtime_implementation_preferences.save(preferences)
         available = {
             implementation_id
             for implementation_id, adapter in self.runtime_adapters.items()
@@ -367,7 +410,11 @@ class AiSessionManager:
                 if preferences.default_implementation_id in available
                 else None
             )
-        selected = "builtin-dev" if "builtin-dev" in available else next(iter(available), None)
+        selected = (
+            DEVELOPMENT_CODEX_IMPLEMENTATION_ID
+            if DEVELOPMENT_CODEX_IMPLEMENTATION_ID in available
+            else next(iter(available), None)
+        )
         if selected is not None:
             self.runtime_implementation_preferences.save(
                 preferences.model_copy(update={"default_implementation_id": selected})
@@ -436,7 +483,7 @@ class AiSessionManager:
             session = self.get_session(session_id, reconcile=False)
             if session.implementation_id is not None:
                 return session.implementation_id
-            implementation_id = "builtin-dev"
+            implementation_id = DEVELOPMENT_CODEX_IMPLEMENTATION_ID
             if implementation_id not in self.runtime_adapters:
                 raise ApiError(
                     503,
@@ -457,6 +504,8 @@ class AiSessionManager:
         manifests = {item.manifest.implementation_id: item.manifest for item in installed}
         items: list[RuntimeImplementationItem] = []
         for implementation_id in self.runtime_plugins.implementation_ids(self.runtime_id):
+            if implementation_id == LEGACY_DEVELOPMENT_CODEX_IMPLEMENTATION_ID:
+                continue
             module = self.runtime_plugins.require(implementation_id)
             adapter = self.runtime_adapters.get(implementation_id)
             status = adapter.status() if adapter is not None else None
@@ -483,7 +532,7 @@ class AiSessionManager:
                     compatibility_id=(
                         module.descriptor.native_session_compatibility_id
                     ),
-                    removable=implementation_id != "builtin-dev",
+                    removable=implementation_id != DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
                     reason=None if status is None else status.reason,
                 )
             )
@@ -1008,7 +1057,10 @@ class AiSessionManager:
                 try:
                     if session.native_session_id and self.has_active_writer(
                         session.native_session_id,
-                        implementation_id=session.implementation_id or "builtin-dev",
+                    implementation_id=(
+                        session.implementation_id
+                        or DEVELOPMENT_CODEX_IMPLEMENTATION_ID
+                    ),
                     ):
                         continue
                     self.delete_session(session.id)
@@ -1294,7 +1346,9 @@ class AiSessionManager:
     def _resolve_session_usage(self, session: AiSession) -> SessionUsage:
         native_session_present = session.native_session_id is not None
         try:
-            implementation_id = session.implementation_id or "builtin-dev"
+            implementation_id = (
+                session.implementation_id or DEVELOPMENT_CODEX_IMPLEMENTATION_ID
+            )
             adapter = self.runtime_adapters.get(implementation_id)
             if adapter is None or not adapter.status().available:
                 return SessionUsage(
@@ -1585,6 +1639,21 @@ class AiSessionManager:
             session.quick_native_claim_execution_id = None
             session.updated_at = utc_now()
             self.store.save(session)
+
+    def discard_quick_native_claims(self) -> int:
+        """Clear Chub-owned Quick Worker claims after its task projection is discarded."""
+        with self._lock:
+            self._require_store()
+            cleared = 0
+            for session in self.store.list():
+                if session.quick_native_claim_task_id is None:
+                    continue
+                session.quick_native_claim_task_id = None
+                session.quick_native_claim_execution_id = None
+                session.updated_at = utc_now()
+                self.store.save(session)
+                cleared += 1
+            return cleared
 
     def recover_interrupted_quick_interaction(self, session_id: str) -> None:
         with self._lock:
@@ -1888,7 +1957,8 @@ class AiSessionManager:
         stored = self.store.list()
         default_implementation_id = self.default_implementation_id
         implementation_ids = {
-            session.implementation_id or "builtin-dev" for session in stored
+            session.implementation_id or DEVELOPMENT_CODEX_IMPLEMENTATION_ID
+            for session in stored
         }
         if default_implementation_id is not None:
             implementation_ids.add(default_implementation_id)
@@ -1926,7 +1996,9 @@ class AiSessionManager:
             native_session_id = session.native_session_id
             if native_session_id is None:
                 continue
-            implementation_id = session.implementation_id or "builtin-dev"
+            implementation_id = (
+                session.implementation_id or DEVELOPMENT_CODEX_IMPLEMENTATION_ID
+            )
             discovery = discoveries.get(implementation_id)
             if discovery is None:
                 continue

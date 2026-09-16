@@ -209,8 +209,7 @@ def format_fixed_reply(message: str) -> str:
             "如需继续执行本任务，请回复：retry、重试或继续执行。"
         ): "Retry: Send retry to continue in the current Session.",
         (
-            "任务提交失败：微信 Chub 模式配置无效，请检查工作区、权限、模型和"
-            "微信通知配置。"
+            "任务提交失败：微信 Chub 模式配置无效，请检查工作区和通用会话默认设置。"
         ): "Not submitted · The WeChat Chub configuration is invalid.",
         "任务提交失败：Codex 当前不可用，请稍后重试。": (
             "Not submitted · Codex is unavailable. Try again later."
@@ -417,17 +416,6 @@ def session_matches_configuration(
             getattr(session, "workspace_id", None) in allowed_workspace_ids
             if allowed_workspace_ids is not None
             else getattr(session, "workspace_id", None) == configuration.workspace_id
-        )
-        and getattr(session, "permission_mode", None) == configuration.permission_mode
-        and configuration.permission_mode != "ask"
-        and (
-            configuration.model is None
-            or getattr(session, "model", None) == configuration.model
-        )
-        and (
-            configuration.reasoning_effort is None
-            or getattr(session, "reasoning_effort", None)
-            == configuration.reasoning_effort
         )
     )
 

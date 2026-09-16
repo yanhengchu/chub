@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import zipfile
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,6 +18,7 @@ from app.application import create_app
 from app.core.response import ApiError
 from app.services.deployment_package import (
     DeploymentPackageConfiguration,
+    DeploymentPackageSourceVersions,
     DeploymentPackageService,
 )
 from scripts import build_chub_release_zip
@@ -33,6 +36,51 @@ class _DeferredThread:
 
     def start(self) -> None:
         return None
+
+
+class _ReleaseNoteSessionManager:
+    def __init__(self) -> None:
+        self.sessions: dict[str, object] = {}
+        self.created_with: tuple[object, ...] | None = None
+        self.renamed: tuple[str, str] | None = None
+
+    def get_session(self, session_id: str):
+        if session_id not in self.sessions:
+            raise ApiError(404, "codex_session_not_found", "not found")
+        return self.sessions[session_id]
+
+    def create_session(self, *args):
+        self.created_with = args
+        session = SimpleNamespace(id="release-note-session")
+        self.sessions[session.id] = session
+        return session
+
+    def rename_session(self, session_id: str, title: str):
+        self.renamed = (session_id, title)
+
+    def discard_unstarted_session(self, session_id: str) -> bool:
+        self.sessions.pop(session_id, None)
+        return True
+
+
+class _ReleaseNoteQuickInteractions:
+    def __init__(self) -> None:
+        self.task = SimpleNamespace(id="release-note-task", status="requested", result=None, error=None)
+        self.submissions: list[tuple[str, str, str, str]] = []
+
+    def session_creation_guard(self):
+        return nullcontext()
+
+    def session_operation_guard(self, _session_id: str):
+        return nullcontext()
+
+    def submit(self, session_id: str, prompt: str, *, operation_id: str, source_ip: str):
+        self.submissions.append((session_id, prompt, operation_id, source_ip))
+        return self.task
+
+    def get(self, task_id: str):
+        assert task_id == self.task.id
+        return self.task
 
 
 def test_formal_module_default_names_include_release_version_and_timestamp() -> None:
@@ -53,30 +101,35 @@ def test_release_build_contains_formal_modules_and_excludes_local_state(
     settings.deployment_package.artifacts_dir = tmp_path / "releases"
     settings.deployment_package.state_file = tmp_path / "state.json"
     service = DeploymentPackageService(settings)
+    source_versions = service._source_versions()
     configuration = DeploymentPackageConfiguration(
-        chub_release_version="1.2.3",
+        chub_release_version=source_versions.chub,
         runtime_implementation_id="codex-010001",
-        runtime_release_version="2.0.0",
+        runtime_release_version=source_versions.runtime,
         runtime_description="正式 Runtime。",
-        weixin_release_version="2.0.0",
+        weixin_release_version=source_versions.weixin,
         include_development_sources=False,
+        release_note="正式部署包。",
     )
 
-    built = service._build(configuration)
+    built = service._build(configuration, source_commit="a" * 40)
     artifact = built.artifact
     digest = built.sha256
 
     assert artifact.parent == settings.deployment_package.artifacts_dir
     assert len(digest) == 64
-    assert built.build_id == artifact.stem.rsplit("-", 1)[1]
+    assert built.build_id == "{}-{}".format(
+        built.built_at.strftime("%Y%m%d%H%M"),
+        "a" * 12,
+    )
     with zipfile.ZipFile(artifact) as archive:
         names = set(archive.namelist())
         bundled_modules = {
             name for name in names if name.startswith("bundled-modules/")
         }
         assert len(bundled_modules) == 2
-        assert any(name.startswith("bundled-modules/codex-runtime-release-2.0.0-") for name in bundled_modules)
-        assert any(name.startswith("bundled-modules/weixin-refinement-release-2.0.0-") for name in bundled_modules)
+        assert any(name.startswith(f"bundled-modules/codex-runtime-release-{source_versions.runtime}-") for name in bundled_modules)
+        assert any(name.startswith(f"bundled-modules/weixin-refinement-release-{source_versions.weixin}-") for name in bundled_modules)
         assert "DEPLOY_WITH_AI.md" in names
         assert "app/automations/debug_chrome/chrome_debug.py" in names
         assert "app/automations/debug_chrome/playwright_session.py" in names
@@ -84,11 +137,12 @@ def test_release_build_contains_formal_modules_and_excludes_local_state(
         assert "config/automations.yaml" not in names
         assert "config/settings.example.yaml" in names
         assert "runtime-modules/codex-runtime/chub-module.json" not in names
-        assert archive.read("pyproject.toml").decode("utf-8").count('version = "1.2.3"') == 1
-        assert 'version: "1.2.3"' in archive.read("config/settings.example.yaml").decode("utf-8")
+        assert archive.read("pyproject.toml").decode("utf-8").count(f'version = "{source_versions.chub}"') == 1
+        assert f'version: "{source_versions.chub}"' in archive.read("config/settings.example.yaml").decode("utf-8")
         manifest = json.loads(archive.read("release-manifest.json"))
-        assert manifest["chub_release_version"] == "1.2.3"
+        assert manifest["chub_release_version"] == source_versions.chub
         assert manifest["build_id"] == built.build_id
+        assert manifest["release_note"] == "正式部署包。"
         assert manifest["include_development_sources"] is False
         assert manifest["bundled_modules"] == [
             {
@@ -96,7 +150,7 @@ def test_release_build_contains_formal_modules_and_excludes_local_state(
                 "artifact_name": built.bundled_modules[0].artifact_name,
                 "module_id": "codex-010001",
                 "implementation_id": "codex-010001",
-                "version": "2.0.0",
+                "version": source_versions.runtime,
                 "sha256": built.bundled_modules[0].sha256,
             },
             {
@@ -104,22 +158,21 @@ def test_release_build_contains_formal_modules_and_excludes_local_state(
                 "artifact_name": built.bundled_modules[1].artifact_name,
                 "module_id": "weixin-refinement",
                 "implementation_id": None,
-                "version": "2.0.0",
+                "version": source_versions.weixin,
                 "sha256": built.bundled_modules[1].sha256,
             },
         ]
-        timestamp = artifact.stem.rsplit("-", 1)[1]
-        assert all(name.endswith(f"-{timestamp}.zip") for name in bundled_modules)
+        assert all(name.endswith(f"-{built.build_id}.zip") for name in bundled_modules)
         runtime_archive = next(name for name in bundled_modules if "codex-runtime" in name)
         weixin_archive = next(name for name in bundled_modules if "weixin-refinement" in name)
         with zipfile.ZipFile(archive.open(runtime_archive)) as module:
             runtime_manifest = json.loads(module.read("chub-module.json"))
         with zipfile.ZipFile(archive.open(weixin_archive)) as module:
             weixin_manifest = json.loads(module.read("chub-capability-orchestration.json"))
-        assert runtime_manifest["version"] == "2.0.0"
-        assert runtime_manifest["chub_version"] == "1.2.3"
-        assert weixin_manifest["version"] == "2.0.0"
-        assert weixin_manifest["chub_version"] == "1.2.3"
+        assert runtime_manifest["version"] == source_versions.runtime
+        assert runtime_manifest["chub_version"] == source_versions.chub
+        assert weixin_manifest["version"] == source_versions.weixin
+        assert weixin_manifest["chub_version"] == source_versions.chub
 
     extracted = tmp_path / "extracted-release"
     with zipfile.ZipFile(artifact) as archive:
@@ -160,6 +213,7 @@ def test_release_configuration_persists_without_changing_app_version(
         runtime_description="下一次发布。",
         weixin_release_version="3.0.0",
         include_development_sources=True,
+        release_note="下一次发布。",
     )
 
     saved = service.save_configuration(configuration)
@@ -169,7 +223,236 @@ def test_release_configuration_persists_without_changing_app_version(
     assert json.loads(settings.deployment_package.state_file.read_text())["configuration"]["chub_release_version"] == "9.9.9"
 
 
-def test_release_version_sources_are_synchronized_after_a_successful_publish(
+def test_release_note_generation_reuses_a_general_internal_session_and_marks_stale(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings.deployment_package.artifacts_dir = tmp_path / "releases"
+    settings.deployment_package.state_file = tmp_path / "state.json"
+    sessions = _ReleaseNoteSessionManager()
+    quick = _ReleaseNoteQuickInteractions()
+    service = DeploymentPackageService(settings, sessions, quick)
+    operation_log: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "app.services.deployment_package.write_operation",
+        lambda **fields: operation_log.append(fields),
+    )
+    source_versions = DeploymentPackageSourceVersions(chub="1.0.0", runtime="1.0.0", weixin="1.0.0")
+    head = {"value": "b" * 40, "fingerprint": "d" * 64}
+    monkeypatch.setattr(service, "_source_versions", lambda: source_versions)
+    monkeypatch.setattr(
+        service,
+        "_require_git_generation_target",
+        lambda: (head["value"], head["fingerprint"]),
+    )
+    monkeypatch.setattr(service, "_git", lambda *arguments, **_kwargs: head["value"])
+    monkeypatch.setattr(service, "_working_tree_fingerprint", lambda: head["fingerprint"])
+    history = settings.deployment_package.artifacts_dir / "history"
+    history.mkdir(parents=True)
+    (history / "chub-release-0.9.0.json").write_text(
+        json.dumps(
+            {
+                "release_version": "0.9.0",
+                "tag_name": "chub-v0.9.0",
+                "commit": "a" * 40,
+                "built_at": "2026-09-15T00:00:00+00:00",
+            }
+        )
+    )
+
+    requested = service.generate_release_note(
+        release_version="1.0.0",
+        include_development_sources=False,
+        source_ip="127.0.0.1",
+        operation_id="release-note-operation",
+    )
+
+    assert sessions.created_with == ("chub",)
+    assert sessions.renamed == ("release-note-session", "版本发布说明")
+    assert requested.release_note_generation.status == "running"
+    assert requested.release_note_generation.baseline_tag_name == "chub-v0.9.0"
+    assert requested.release_note_generation.baseline_commit == "a" * 40
+    assert "当前 commit" in quick.submissions[0][1]
+    assert service.hidden_release_note_session_ids() == {"release-note-session"}
+
+    quick.task.status = "succeeded"
+    quick.task.result = "- 支持正式发布\n- 补充部署流程"
+    service.record_release_note_task_finished(quick.task)
+
+    persisted = json.loads(settings.deployment_package.state_file.read_text())
+    assert persisted["configuration"]["release_note"] == "- 支持正式发布\n- 补充部署流程"
+    assert persisted["release_note_generation"]["status"] == "succeeded"
+    assert operation_log == [
+        {
+            "operation_id": "release-note-operation",
+            "action": "generate_deployment_package_release_note",
+            "status": "succeeded",
+            "target": "1.0.0",
+            "source_ip": "127.0.0.1",
+            "reason": None,
+        }
+    ]
+    completed = service.status()
+
+    assert completed.configuration.release_note == "- 支持正式发布\n- 补充部署流程"
+    assert completed.configuration.release_note_generated_for_commit == "b" * 40
+    assert completed.release_note_generation.status == "succeeded"
+    head["fingerprint"] = "c" * 64
+    stale = service.status()
+
+    assert stale.release_note_generation.status == "stale"
+    assert "重新生成" in stale.release_note_generation.message
+    service.save_configuration(completed.configuration)
+    assert service.hidden_release_note_session_ids() == {"release-note-session"}
+    assert service.set_show_release_note_session(True) is True
+    assert service.hidden_release_note_session_ids() == set()
+
+
+def test_release_note_prompt_requires_a_direct_summary_and_change_focused_bullets() -> None:
+    prompt = DeploymentPackageService._release_note_prompt(
+        SimpleNamespace(
+            target_version="1.0.0",
+            target_commit="b" * 40,
+            baseline_version="0.9.0",
+            baseline_tag_name="chub-v0.9.0",
+            baseline_commit="a" * 40,
+        )
+    )
+
+    assert "不加“概述：”或其他前缀" in prompt
+    assert "随后输出 3-6 条" in prompt
+    assert "未变化的能力域不得重复" in prompt
+
+
+def test_release_note_generation_allows_dirty_worktree_without_git_identity(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings.deployment_package.artifacts_dir = tmp_path / "releases"
+    service = DeploymentPackageService(settings)
+    calls: list[tuple[str, ...]] = []
+
+    def git(*arguments: str, **_kwargs: object) -> str:
+        calls.append(arguments)
+        if arguments[:2] == ("rev-parse", "--is-inside-work-tree"):
+            return "true"
+        if arguments == ("rev-parse", "HEAD"):
+            return "a" * 40
+        if arguments[:2] == ("status", "--porcelain=v1"):
+            return " M app/services/deployment_package.py\0?? notes.txt\0"
+        if arguments[:3] == ("diff", "--binary", "--no-ext-diff"):
+            return "diff --git a/file b/file\n"
+        if arguments[:2] == ("ls-files", "--others"):
+            return "notes.txt\0"
+        if arguments == ("hash-object", "--no-filters", "--", "notes.txt"):
+            return "b" * 40
+        raise AssertionError(arguments)
+
+    monkeypatch.setattr(service, "_git", git)
+
+    commit, fingerprint = service._require_git_generation_target()
+
+    assert commit == "a" * 40
+    assert re.fullmatch(r"[a-f0-9]{64}", fingerprint)
+    assert ("var", "GIT_COMMITTER_IDENT") not in calls
+
+
+@pytest.mark.anyio
+async def test_release_note_generation_api_records_no_premature_success(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings.deployment_package.artifacts_dir = tmp_path / "releases"
+    settings.deployment_package.state_file = tmp_path / "state.json"
+    app = create_app(settings)
+    result = app.state.deployment_package.status()
+    submitted: list[dict[str, object]] = []
+    logs: list[dict[str, object]] = []
+
+    def generate_release_note(**fields: object):
+        submitted.append(fields)
+        return result
+
+    def log_operation(_request, **fields: object) -> str:
+        logs.append(fields)
+        return "release-note-operation"
+
+    app.state.deployment_package.generate_release_note = generate_release_note
+    monkeypatch.setattr("app.api.settings.log_operation", log_operation)
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/settings/deployment-package/release-note",
+            json={"release_version": "1.0.0"},
+        )
+
+    assert response.status_code == 200
+    assert submitted == [
+        {
+            "release_version": "1.0.0",
+            "include_development_sources": False,
+            "source_ip": "127.0.0.1",
+            "operation_id": "release-note-operation",
+        }
+    ]
+    assert [item["status"] for item in logs] == ["requested", "started"]
+
+
+def test_release_note_generation_uses_the_latest_successful_release_record(
+    settings,
+    tmp_path: Path,
+) -> None:
+    settings.deployment_package.artifacts_dir = tmp_path / "releases"
+    service = DeploymentPackageService(settings)
+    history = settings.deployment_package.artifacts_dir / "history"
+    history.mkdir(parents=True)
+    for version, commit, built_at in (
+        ("0.9.0", "a" * 40, "2026-09-15T10:00:00+00:00"),
+        ("1.0.0", "b" * 40, "2026-09-16T10:00:00+00:00"),
+    ):
+        (history / f"chub-release-{version}.json").write_text(
+            json.dumps(
+                {
+                    "release_version": version,
+                    "tag_name": f"chub-v{version}",
+                    "commit": commit,
+                    "built_at": built_at,
+                }
+            )
+        )
+
+    baseline = service._latest_successful_release_record()
+
+    assert baseline.version == "1.0.0"
+    assert baseline.tag_name == "chub-v1.0.0"
+    assert baseline.commit == "b" * 40
+
+
+def test_release_output_directory_uses_the_fixed_platform_file_manager(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings.deployment_package.artifacts_dir = tmp_path / "releases"
+    service = DeploymentPackageService(settings)
+    calls: list[list[str]] = []
+    monkeypatch.setattr("app.services.deployment_package.detect_platform", lambda: "macos")
+    monkeypatch.setattr(
+        "app.services.deployment_package.subprocess.run",
+        lambda command, **_kwargs: calls.append(command) or SimpleNamespace(returncode=0),
+    )
+
+    service.open_output_directory()
+
+    assert calls == [["open", str(settings.deployment_package.artifacts_dir)]]
+    assert settings.deployment_package.artifacts_dir.is_dir()
+
+
+def test_release_source_versions_require_all_chub_declarations_to_match(
     settings,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -178,39 +461,108 @@ def test_release_version_sources_are_synchronized_after_a_successful_publish(
     (project / "config").mkdir(parents=True)
     (project / "runtime-modules" / "codex-runtime").mkdir(parents=True)
     (project / "orchestration-modules" / "weixin-refinement").mkdir(parents=True)
-    (project / "pyproject.toml").write_text('[project]\nname = "chub"\nversion = "0.1.0"\n')
-    (project / "config" / "settings.example.yaml").write_text('app:\n  name: "Hub"\n  version: "0.1.0"\n')
-    (project / "config" / "settings.local.yaml").write_text('app:\n  name: "Hub"\n  version: "0.1.0"\n')
+    (project / "pyproject.toml").write_text('[project]\nversion = "1.2.3"\n')
+    (project / "config" / "settings.example.yaml").write_text('app:\n  version: "1.2.3"\n')
     (project / "runtime-modules" / "codex-runtime" / "chub-module.json").write_text(
-        '{"version":"dev","chub_version":"0.1.0"}\n'
+        '{"version":"1.2.3","chub_version":"1.2.3"}\n'
     )
     (project / "orchestration-modules" / "weixin-refinement" / "chub-capability-orchestration.json").write_text(
-        '{"version":"1.0.0","chub_version":"0.1.0"}\n'
+        '{"version":"1.2.3","chub_version":"1.2.2"}\n'
     )
     monkeypatch.setattr("app.services.deployment_package.PROJECT_ROOT", project)
     service = DeploymentPackageService(settings)
-    configuration = DeploymentPackageConfiguration(
-        chub_release_version="1.2.3",
-        runtime_implementation_id="codex-010001",
-        runtime_release_version="2.0.0",
-        runtime_description="正式 Runtime。",
-        weixin_release_version="3.0.0",
+
+    assert service._source_versions().chub == "1.2.3"
+    assert service._chub_source_declarations_match("1.2.3") is False
+
+
+def test_release_rejects_dirty_git_worktree(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings.deployment_package.artifacts_dir = tmp_path / "releases"
+    settings.deployment_package.state_file = tmp_path / "state.json"
+    service = DeploymentPackageService(settings)
+    monkeypatch.setattr(
+        service,
+        "_git",
+        lambda *arguments, **_kwargs: "true"
+        if arguments[:2] == ("rev-parse", "--is-inside-work-tree")
+        else " M docs/DEPLOY_WITH_AI.md",
     )
 
-    updates = service._version_updates(configuration)
-    service._synchronize_project_versions(updates)
+    with pytest.raises(ApiError, match="提交所有") as error:
+        service._require_git_release_baseline(service.status().configuration)
 
-    assert 'version = "1.2.3"' in (project / "pyproject.toml").read_text()
-    assert 'version: "1.2.3"' in (project / "config" / "settings.example.yaml").read_text()
-    assert 'version: "1.2.3"' in (project / "config" / "settings.local.yaml").read_text()
-    assert json.loads((project / "runtime-modules" / "codex-runtime" / "chub-module.json").read_text()) == {
-        "version": "2.0.0",
-        "chub_version": "1.2.3",
-    }
-    assert json.loads((project / "orchestration-modules" / "weixin-refinement" / "chub-capability-orchestration.json").read_text()) == {
-        "version": "3.0.0",
-        "chub_version": "1.2.3",
-    }
+    assert error.value.code == "release_git_worktree_dirty"
+
+
+def test_release_rejects_a_version_that_differs_from_committed_sources(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings.deployment_package.artifacts_dir = tmp_path / "releases"
+    settings.deployment_package.state_file = tmp_path / "state.json"
+    service = DeploymentPackageService(settings)
+
+    def git(*arguments: str, **_kwargs: object) -> str:
+        if arguments[:2] == ("rev-parse", "--is-inside-work-tree"):
+            return "true"
+        if arguments[:2] == ("status", "--porcelain=v1"):
+            return ""
+        if arguments == ("rev-parse", "HEAD"):
+            return "a" * 40
+        raise AssertionError(arguments)
+
+    monkeypatch.setattr(service, "_git", git)
+    configuration = service.status().configuration.model_copy(
+        update={"chub_release_version": "9.9.9"}
+    )
+
+    with pytest.raises(ApiError, match="版本声明一致") as error:
+        service._require_git_release_baseline(configuration)
+
+    assert error.value.code == "release_source_version_mismatch"
+
+
+def test_release_rejects_without_a_local_git_committer_identity(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings.deployment_package.artifacts_dir = tmp_path / "releases"
+    settings.deployment_package.state_file = tmp_path / "state.json"
+    service = DeploymentPackageService(settings)
+
+    def git(*arguments: str, **_kwargs: object) -> str:
+        if arguments[:2] == ("rev-parse", "--is-inside-work-tree"):
+            return "true"
+        if arguments[:2] == ("status", "--porcelain=v1"):
+            return ""
+        if arguments == ("rev-parse", "HEAD"):
+            return "a" * 40
+        if arguments[:1] == ("check-ref-format",):
+            return ""
+        if arguments == ("var", "GIT_COMMITTER_IDENT"):
+            return ""
+        raise AssertionError(arguments)
+
+    monkeypatch.setattr(service, "_git", git)
+    source_versions = service._source_versions()
+    configuration = DeploymentPackageConfiguration(
+        chub_release_version=source_versions.chub,
+        runtime_implementation_id="codex-010000",
+        runtime_release_version=source_versions.runtime,
+        runtime_description="发布测试。",
+        weixin_release_version=source_versions.weixin,
+    )
+
+    with pytest.raises(ApiError) as error:
+        service._require_git_release_baseline(configuration)
+
+    assert error.value.code == "release_git_identity_unavailable"
 
 
 def test_release_build_optionally_includes_development_sources(settings, tmp_path: Path) -> None:
@@ -231,6 +583,80 @@ def test_release_build_optionally_includes_development_sources(settings, tmp_pat
     with zipfile.ZipFile(built.artifact) as archive:
         assert "runtime-modules/codex-runtime/chub-module.json" in archive.namelist()
         assert "orchestration-modules/weixin-refinement/chub-capability-orchestration.json" in archive.namelist()
+
+
+def test_release_record_replaces_the_previous_same_version_record(
+    settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings.deployment_package.artifacts_dir = tmp_path / "releases"
+    settings.deployment_package.state_file = tmp_path / "state.json"
+    service = DeploymentPackageService(settings)
+    service.output_dir.mkdir()
+    first_artifact = service.output_dir / "chub-release-1.2.3-202609161122-a1b2c3d4e5f6.zip"
+    second_artifact = service.output_dir / "chub-release-1.2.3-202609161123-b1c2d3e4f5a6.zip"
+    first_artifact.write_bytes(b"first")
+    second_artifact.write_bytes(b"second")
+    baseline = SimpleNamespace(tag_name="chub-v1.2.3", commit="a" * 40, previous_tag_ref=None, previous_tag_commit=None)
+    monkeypatch.setattr(service, "_dependency_snapshot", lambda: ())
+    configuration = service.status().configuration.model_copy(update={"release_note": "首次发布。"})
+    first = service._write_release_record(
+        baseline,
+        SimpleNamespace(artifact=first_artifact, build_id="202609161122-a1b2c3d4e5f6", built_at=datetime.now(timezone.utc), sha256="b" * 64, bundled_modules=()),
+        configuration,
+    )
+    second = service._write_release_record(
+        baseline,
+        SimpleNamespace(artifact=second_artifact, build_id="202609161123-b1c2d3e4f5a6", built_at=datetime.now(timezone.utc), sha256="c" * 64, bundled_modules=()),
+        configuration.model_copy(update={"release_note": "重新发布。"}),
+    )
+
+    assert first.path == second.path
+    assert first.previous is None
+    assert second.previous is not None
+    assert json.loads(second.path.read_text())["release_note"] == "重新发布。"
+    assert first_artifact.exists() and second_artifact.exists()
+
+
+def test_release_cleanup_replaces_only_same_version_artifacts(settings, tmp_path: Path) -> None:
+    settings.deployment_package.artifacts_dir = tmp_path / "releases"
+    service = DeploymentPackageService(settings)
+    service.output_dir.mkdir()
+    current = service.output_dir / "chub-release-1.2.3-202609161123-b1c2d3e4f5a6.zip"
+    previous = service.output_dir / "chub-release-1.2.3-202609161122-a1b2c3d4e5f6.zip"
+    other = service.output_dir / "chub-release-1.2.4-202609161122-a1b2c3d4e5f6.zip"
+    for artifact in (current, previous, other):
+        artifact.write_bytes(b"release")
+
+    assert service._remove_superseded_release_artifacts(current, "1.2.3") == 0
+
+    assert current.exists()
+    assert not previous.exists()
+    assert other.exists()
+
+
+def test_release_cleanup_reports_unremovable_same_version_artifact(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings.deployment_package.artifacts_dir = tmp_path / "releases"
+    service = DeploymentPackageService(settings)
+    service.output_dir.mkdir()
+    current = service.output_dir / "chub-release-1.2.3-202609161123-b1c2c3d4e5f6.zip"
+    previous = service.output_dir / "chub-release-1.2.3-202609161122-a1b2c3d4e5f6.zip"
+    current.write_bytes(b"current")
+    previous.write_bytes(b"previous")
+    original_unlink = Path.unlink
+
+    def unlink(path: Path, *args, **kwargs) -> None:
+        if path == previous:
+            raise OSError("permission denied")
+        original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+
+    assert service._remove_superseded_release_artifacts(current, "1.2.3") == 1
+    assert previous.exists()
 
 
 def test_release_build_does_not_publish_when_module_preflight_fails(
@@ -264,27 +690,51 @@ async def test_deployment_package_settings_api_reads_and_updates_configuration(
 ) -> None:
     settings.deployment_package.artifacts_dir = tmp_path / "releases"
     settings.deployment_package.state_file = tmp_path / "state.json"
-    transport = httpx.ASGITransport(app=create_app(settings))
+    app = create_app(settings)
+    opened: list[bool] = []
+    app.state.deployment_package.open_output_directory = lambda: opened.append(True)
+    transport = httpx.ASGITransport(app=app)
     payload = {
         "release_version": "4.0.0",
         "include_development_sources": True,
+        "release_note": "发布说明。",
     }
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         before = await client.get("/api/settings/deployment-package")
         updated = await client.put("/api/settings/deployment-package", json=payload)
+        cleared = await client.put(
+            "/api/settings/deployment-package",
+            json={**payload, "release_note": "   "},
+        )
+        visibility_before = await client.get(
+            "/api/settings/deployment-package/release-note-session"
+        )
+        visibility_updated = await client.put(
+            "/api/settings/deployment-package/release-note-session",
+            json={"show_sessions": True},
+        )
+        opened_output = await client.post("/api/settings/deployment-package/open-output")
 
     assert before.status_code == 200
     assert before.json()["data"]["app_version"] == settings.app.version
     assert set(before.json()["data"]["source_versions"]) == {"chub", "runtime", "weixin"}
     assert updated.status_code == 200
+    assert cleared.status_code == 200
+    assert visibility_before.json()["data"] == {"show_sessions": False}
+    assert visibility_updated.json()["data"] == {"show_sessions": True}
+    assert opened_output.status_code == 200
+    assert opened_output.json()["data"] == {"status": "succeeded"}
+    assert opened == [True]
     configuration = updated.json()["data"]["configuration"]
     assert configuration["chub_release_version"] == payload["release_version"]
     assert configuration["runtime_release_version"] == payload["release_version"]
     assert configuration["weixin_release_version"] == payload["release_version"]
     assert configuration["include_development_sources"] is payload["include_development_sources"]
+    assert configuration["release_note"] == payload["release_note"]
     assert configuration["runtime_implementation_id"] == "codex-010000"
     assert "AI Session" in configuration["runtime_description"]
+    assert cleared.json()["data"]["configuration"]["release_note"] == ""
 
 
 def test_release_build_snapshots_configuration_at_start(
@@ -296,8 +746,13 @@ def test_release_build_snapshots_configuration_at_start(
     settings.deployment_package.state_file = tmp_path / "state.json"
     service = DeploymentPackageService(settings)
     monkeypatch.setattr(service, "_require_idle_worker", lambda: None)
+    monkeypatch.setattr(
+        service,
+        "_require_git_release_baseline",
+        lambda _configuration: SimpleNamespace(commit="a" * 40, tag_name="chub-v1.0.0", previous_tag_ref=None, previous_tag_commit=None),
+    )
     initial = service.status().configuration.model_copy(
-        update={"chub_release_version": "1.0.0"}
+        update={"chub_release_version": "1.0.0", "release_note": "冻结说明。"}
     )
     service.save_configuration(initial)
     _DeferredThread.calls = []
@@ -334,84 +789,76 @@ def test_release_rejects_a_busy_worker_before_registering_the_operation(
     assert not settings.deployment_package.state_file.exists()
 
 
-def test_release_rolls_back_versions_when_success_state_cannot_be_written(
+def test_release_tag_rollback_restores_the_previous_local_ref(
     settings,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    project = tmp_path / "project"
-    (project / "config").mkdir(parents=True)
-    (project / "runtime-modules" / "codex-runtime").mkdir(parents=True)
-    (project / "orchestration-modules" / "weixin-refinement").mkdir(parents=True)
-    (project / "pyproject.toml").write_text('[project]\nname = "chub"\nversion = "0.1.0"\n')
-    (project / "config" / "settings.example.yaml").write_text('app:\n  version: "0.1.0"\n')
-    (project / "config" / "settings.local.yaml").write_text('app:\n  version: "0.1.0"\n')
-    (project / "runtime-modules" / "codex-runtime" / "chub-module.json").write_text(
-        '{"version":"0.1.0","chub_version":"0.1.0"}\n'
-    )
-    (project / "orchestration-modules" / "weixin-refinement" / "chub-capability-orchestration.json").write_text(
-        '{"version":"0.1.0","chub_version":"0.1.0"}\n'
-    )
-    monkeypatch.setattr("app.services.deployment_package.PROJECT_ROOT", project)
     settings.deployment_package.artifacts_dir = tmp_path / "releases"
     settings.deployment_package.state_file = tmp_path / "state.json"
     service = DeploymentPackageService(settings)
-    configuration = service.status().configuration.model_copy(
-        update={
-            "chub_release_version": "1.2.3",
-            "runtime_release_version": "1.2.3",
-            "weixin_release_version": "1.2.3",
-        }
+    calls: list[tuple[str, ...]] = []
+    updated = SimpleNamespace(
+        baseline=SimpleNamespace(
+            tag_name="chub-v1.2.3",
+            previous_tag_ref="old-tag-object",
+        ),
+        current_ref="new-tag-object",
     )
-    service.save_configuration(configuration)
-    updates = service._version_updates(configuration)
-    artifact = tmp_path / "release.zip"
-    artifact.write_bytes(b"release")
     monkeypatch.setattr(
         service,
-        "_build",
-        lambda _configuration: SimpleNamespace(
-            artifact=artifact,
-            sha256="a" * 64,
-            build_id="test-build",
-            built_at=datetime.now(timezone.utc),
-            bundled_modules=(),
-            version_updates=updates,
-        ),
+        "_git",
+        lambda *arguments, **_kwargs: calls.append(arguments) or "",
     )
-    monkeypatch.setattr(service, "_require_idle_worker", lambda: None)
-    write_state = service._write
 
-    def fail_success_state(state) -> None:
-        if state.operation is not None and state.operation.status == "succeeded":
-            raise OSError("state write failed")
-        write_state(state)
+    service._restore_local_release_tag(updated)
 
-    monkeypatch.setattr(service, "_write", fail_success_state)
+    assert calls == [
+        (
+            "update-ref",
+            "refs/tags/chub-v1.2.3",
+            "old-tag-object",
+            "new-tag-object",
+        )
+    ]
 
-    class _InlineThread:
-        def __init__(self, *, target, args, **kwargs) -> None:
-            self.target = target
-            self.args = args
 
-        def start(self) -> None:
-            self.target(*self.args)
+def test_release_updates_the_local_annotated_tag_for_a_republished_version(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings.deployment_package.artifacts_dir = tmp_path / "releases"
+    settings.deployment_package.state_file = tmp_path / "state.json"
+    service = DeploymentPackageService(settings)
+    artifact = tmp_path / "chub-release-1.2.3-20260916112233.zip"
+    artifact.write_bytes(b"release")
+    baseline = SimpleNamespace(
+        tag_name="chub-v1.2.3",
+        commit="a" * 40,
+        previous_tag_ref="old-tag-object",
+    )
+    built = SimpleNamespace(
+        artifact=artifact,
+        build_id="20260916112233",
+        sha256="b" * 64,
+    )
+    calls: list[tuple[str, ...]] = []
 
-    monkeypatch.setattr("app.services.deployment_package.threading.Thread", _InlineThread)
+    def git(*arguments: str, **_kwargs: object) -> str:
+        calls.append(arguments)
+        if arguments[:3] == ("rev-parse", "--verify", "-q"):
+            return "old-tag-object"
+        if arguments[:3] == ("rev-parse", "--verify", "refs/tags/chub-v1.2.3"):
+            return "new-tag-object"
+        return ""
 
-    service.start(source_ip="127.0.0.1")
+    monkeypatch.setattr(service, "_git", git)
 
-    assert settings.app.version == "0.1.0"
-    assert not artifact.exists()
-    assert 'version = "0.1.0"' in (project / "pyproject.toml").read_text()
-    assert 'version: "0.1.0"' in (project / "config" / "settings.example.yaml").read_text()
-    assert 'version: "0.1.0"' in (project / "config" / "settings.local.yaml").read_text()
-    assert json.loads((project / "runtime-modules" / "codex-runtime" / "chub-module.json").read_text())["version"] == "0.1.0"
-    assert json.loads(
-        (project / "orchestration-modules" / "weixin-refinement" / "chub-capability-orchestration.json").read_text()
-    )["version"] == "0.1.0"
-    assert service.status().operation is not None
-    assert service.status().operation.status == "failed"
+    updated = service._update_local_release_tag(baseline, built)
+
+    assert updated.current_ref == "new-tag-object"
+    assert ("tag", "-f", "-a", "chub-v1.2.3", "a" * 40) == calls[1][:5]
 
 
 def test_release_cli_uses_the_guarded_publish_path(
@@ -480,7 +927,7 @@ def test_interrupted_release_build_is_closed_and_can_be_retried(
     settings.deployment_package.state_file = tmp_path / "state.json"
     service = DeploymentPackageService(settings)
     monkeypatch.setattr(service, "_require_idle_worker", lambda: None)
-    configuration = service.status().configuration
+    configuration = service.status().configuration.model_copy(update={"release_note": "重试说明。"})
     settings.deployment_package.state_file.write_text(
         json.dumps(
             {
@@ -504,6 +951,11 @@ def test_interrupted_release_build_is_closed_and_can_be_retried(
     monkeypatch.setattr("app.services.deployment_package.threading.Thread", _DeferredThread)
     retried_service = DeploymentPackageService(settings)
     monkeypatch.setattr(retried_service, "_require_idle_worker", lambda: None)
+    monkeypatch.setattr(
+        retried_service,
+        "_require_git_release_baseline",
+        lambda _configuration: SimpleNamespace(commit="a" * 40, tag_name="chub-v1.0.0", previous_tag_ref=None, previous_tag_commit=None),
+    )
     retried = retried_service.start(source_ip="127.0.0.1")
     assert retried.operation is not None
     assert retried.operation.status == "requested"

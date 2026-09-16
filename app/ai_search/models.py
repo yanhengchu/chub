@@ -49,16 +49,23 @@ class SearchRun(_StrictModel):
 
 
 class AiSearchState(_StrictModel):
-    version: Literal[2] = 2
+    version: Literal[6] = 6
     show_sessions: bool = False
     session_id: str | None = Field(default=None, min_length=1, max_length=64)
+    retired_session_id: str | None = Field(default=None, min_length=1, max_length=64)
     pending_run: SearchRun | None = None
-    runs: list[SearchRun] = Field(default_factory=list, max_length=8)
+    latest_run: SearchRun | None = None
 
 
 class AiSearchData(_StrictModel):
     current: SearchRun | None = None
-    runs: list[SearchRun] = Field(default_factory=list, max_length=8)
+    latest: SearchRun | None = None
+
+
+class AiPageOpenResult(_StrictModel):
+    summary: str = Field(min_length=1, max_length=1000)
+    opened_count: int = Field(ge=0, le=4)
+    failed_sources: list[str] = Field(default_factory=list, max_length=4)
 
 
 class AiSearchSettings(_StrictModel):

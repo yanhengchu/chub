@@ -212,7 +212,7 @@
       try {
         const confirmed = await showConfirmationDialog({
           title: "删除交付线",
-          description: "删除会移除原始资料、已确认目标和本地协作记录，无法恢复。",
+          body: "删除会移除原始资料、已确认目标和本地协作记录，无法恢复。",
           details: [{ label: "交付线", value: selected.title || selected.id }],
           confirmLabel: "删除",
           errorMessage: "删除交付线失败。",
@@ -227,7 +227,7 @@
       try {
         const confirmed = await showConfirmationDialog({
           title: "结束交付线",
-          description: "结束后不会再发起整体澄清或生成新的交付项，已有资料会保留。",
+          body: "结束后不会再发起整体澄清或生成新的交付项，已有资料会保留。",
           details: [{ label: "交付线", value: selected.title || selected.id }],
           confirmLabel: "结束交付线",
           errorMessage: "结束交付线失败。",

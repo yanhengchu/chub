@@ -15,7 +15,7 @@
 | 需要判断的事项 | 先读的权威文档 |
 | --- | --- |
 | Codex 私有的 Native Session 发现、认证来源、用量口径、缓存或展示 | 本文 |
-| Codex ZIP 的导入、覆盖、移除、`builtin-dev` 重载或实现槽位保护 | [Chub AI Runtime 插件模块设计](CHUB_RUNTIME_PLUGIN_DESIGN.md) |
+| Codex ZIP 的导入、覆盖、移除、`codex-runtime-dev` 重载或实现槽位保护 | [Chub AI Runtime 插件模块设计](CHUB_RUNTIME_PLUGIN_DESIGN.md) |
 | Runtime 共享能力、Adapter/Runner 契约或新增 Runtime 接入 | [Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md) |
 | Chub Session 映射、Quick Worker 任务/恢复或微信用户可见行为 | 对应的 Session、Quick Worker 或集成专项设计 |
 
@@ -96,6 +96,12 @@ Codex Adapter 将上述数据规范化为共享 `RuntimeNativeSession`：
 
 整体原生来源无法读取时，Adapter 返回 `codex_session_discovery_unavailable`；无可用会话时返回空列表。发现过程只读 Codex 数据，绝不改写 JSONL、Session Index 或状态库，也不保存 Chub 原生发现副本。
 
+### 1.3 `read-only` 与固定网页读取的当前限制
+
+Codex Runner 将 `read-only` 映射为 Codex 的只读执行隔离。2026年9月16日的今日关注排障确认：同一受管 Debug Chrome 已能正常打开固定 AI 来源，且 Chub 宿主直接执行 `chub capability page-read --url <URL>` 可以读取正文；但由 `read-only` 后台任务执行该固定命令时，域名解析在连接浏览器前失败。通用 `full-access` 后台任务可读取同一来源。
+
+因此该现象是当前 Codex 只读运行环境与本机 `page-read` 命令的网络解析兼容性限制，不得表述为 Debug Chrome 未打开、等待不足、网页正文解析失败或站点反爬。今日关注已不再由任务自行调用 `page-read`：Chub 核心先在固定能力边界内取得四个固定来源的有界快照，再将快照交给 Session 总结。今日关注创建时仍继承通用会话默认值，通用 `read-only` 不再因该 DNS 限制而阻断刷新；旧搜索/今日关注状态在升级时直接退役并清理其关联内部 Session，不保留旧权限快照或历史结果。
+
 ## 2. Codex 用量与额度能力
 
 Codex 的用量提供方固定为 OpenAI，但两条路径的实现边界不同：账号登录复用当前 Codex Runtime 的结构化账户和用量接口，不依赖 Sub2API；API Key 则由固定的 Sub2API 采集器提供，不表示 Chub 已支持任意供应商或任意 API Key 平台。用量日期和重置时间固定使用 `Asia/Shanghai`，不提供时区设置。API Key 路径每次读取时从 `CODEX_HOME/config.toml` 的 `model_provider` 和对应 `model_providers.<name>.base_url` 解析当前根地址；Chub 不保存第二份地址或订阅 ID。采集器固定使用该来源下的订阅页、活跃订阅接口和 Dashboard 统计接口，并按上游返回顺序使用第一条活跃 OpenAI 订阅。Chub 将账号登录和 Sub2API 两种用量来源收敛为同一份 Codex 快照，供微信状态、Session 回执、任务通知和受控调用方复用。调用方不选择来源，Chub 根据 Codex 返回的认证类型自动路由：
@@ -127,6 +133,7 @@ Chub 通过当前 Codex Runtime 的结构化账户接口获取周额度和每日
 - 订阅响应提供周额度和今日美元用量；仪表盘响应补充今日 Token。
 - 周额度是形成新快照的必需数据；今日 Token 采集失败时只省略 Token。
 - 查询不会自动启动 Chrome、初始化 Profile 或弹出登录流程。
+- 自动化页成功启动 Debug Chrome 后，仅当当前 Codex Runtime 已确认处于 API Key 模式时，才触发一次额度检查；ChatGPT 账户模式不因浏览器启动而额外检查。
 - 当 Runtime 用量读取确认 provider 未登录且页面显示恢复操作时，`usage_login_page` 只会打开当前 provider 根地址下固定的 `/subscriptions` 页。若 provider 要求登录，由该固定页自行跳转到其登录页；Runtime 不接收 URL、账号或认证参数，也不读取 Cookie、Authorization 或登录二维码。该恢复操作不改变自动化页账户行的 API Key 模式状态。
 - 有界面 Debug Chrome 已运行时可直接打开或聚焦该固定页面；需要从无界面或停止状态切换时，由 Chub 自动化服务先确认没有自动化任务、账户检查或浏览器用户初始化占用。无法切换或 Runtime 未声明该能力时，页面不应给出可用恢复操作。
 

@@ -59,6 +59,24 @@ def test_load_settings_ignores_removed_legacy_tasks_config(
     assert "tasks" not in settings.model_fields_set
 
 
+def test_load_settings_discards_retired_weixin_chub_session_profile(tmp_path: Path) -> None:
+    config_file = tmp_path / "settings.yaml"
+    config_file.write_text(
+        f"""{VALID_CONFIG}
+openclaw:
+  weixin_chub_mode:
+    permission_mode: read-only
+    model: legacy-model
+    reasoning_effort: high
+""",
+        encoding="utf-8",
+    )
+
+    settings = load_settings(config_file)
+
+    assert settings.openclaw.weixin_chub_mode.workspace_id == "chub"
+
+
 def test_load_settings_rejects_removed_ai_usage_config(tmp_path: Path) -> None:
     config_file = tmp_path / "settings.yaml"
     config_file.write_text(

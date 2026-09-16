@@ -17,6 +17,7 @@ from playwright.async_api import expect
 from app.application import create_app
 from app.automations.browser import session_factory
 from app.core.config import Settings
+from app.quick_worker import PROTOCOL_VERSION, WORKER_CODE_VERSION
 from app.web.themes import WEB_FONT_SIZES, WEB_THEMES
 
 
@@ -54,9 +55,9 @@ WORKER_RESPONSE = {
     "data": {
         "state": "ready",
         "message": "Quick Worker 已就绪。",
-        "worker_version": "quick-worker-12-ai-search-capabilities",
-        "protocol_version": 12,
-        "expected_protocol_version": 12,
+        "worker_version": WORKER_CODE_VERSION,
+        "protocol_version": PROTOCOL_VERSION,
+        "expected_protocol_version": PROTOCOL_VERSION,
         "runtime_state": "available",
         "runtime_message": "Codex 可用。",
         "runtimes": [],
@@ -220,9 +221,9 @@ async def _mock_workspace_api(route) -> None:
             "success": True,
             "data": {
                 "runtime_id": "codex",
-                "default_implementation_id": "builtin-dev",
+                "default_implementation_id": "codex-runtime-dev",
                 "implementations": [
-                    {"implementation_id": "builtin-dev", "name": "Codex", "version": "dev"},
+                    {"implementation_id": "codex-runtime-dev", "name": "Codex", "version": "dev"},
                     {"implementation_id": "codex-010001", "name": "Codex", "version": "1.0.1"},
                 ],
             },
@@ -1454,7 +1455,7 @@ async def test_codex_default_runtime_selection_persists_the_selected_implementat
     workspace_browser_server: str,
 ) -> None:
     browser_session = session_factory()
-    selected_implementation = "builtin-dev"
+    selected_implementation = "codex-runtime-dev"
     updates: list[str] = []
 
     def implementations_response() -> dict[str, object]:
@@ -1464,13 +1465,13 @@ async def test_codex_default_runtime_selection_persists_the_selected_implementat
                 "default_implementation_id": selected_implementation,
                 "implementations": [
                     {
-                        "implementation_id": "builtin-dev",
+                        "implementation_id": "codex-runtime-dev",
                         "name": "Codex",
                         "version": "dev",
                         "description": "开发实现。",
                         "enabled": True,
                         "healthy": True,
-                        "is_default": selected_implementation == "builtin-dev",
+                        "is_default": selected_implementation == "codex-runtime-dev",
                         "compatibility_id": "codex-v1",
                         "removable": False,
                         "reason": None,
@@ -1520,7 +1521,7 @@ async def test_codex_default_runtime_selection_persists_the_selected_implementat
                 body=json.dumps({"success": True, "data": {"modules": []}}),
             )
             return
-        if path == "/api/runtime-modules/builtin-dev/refresh-availability":
+        if path == "/api/runtime-modules/codex-runtime-dev/refresh-availability":
             await route.fulfill(
                 status=200,
                 content_type="application/json",
@@ -1550,7 +1551,7 @@ async def test_codex_default_runtime_selection_persists_the_selected_implementat
             await expect(page.locator("#codex-runtime-version-list")).to_have_count(0)
             await expect(page.locator("#codex-builtin-runtime-refresh")).to_have_count(0)
             select = page.locator("#codex-default-runtime-implementation")
-            await expect(select).to_have_value("builtin-dev")
+            await expect(select).to_have_value("codex-runtime-dev")
             await page.locator(".settings-choice-picker-trigger").click()
             await page.locator(
                 ".settings-choice-picker-menu [role='option']",

@@ -84,6 +84,7 @@ async def _inspect_quick_worker(request: Request):
         request.app.state.settings,
         request.app.state.quick_interactions.recovery_ready,
         request.app.state.quick_worker_maintenance,
+        recovery_error=request.app.state.quick_interactions.recovery_error,
         runtime_state=runtime_state,
         runtime_message=runtime_message,
         runtimes=runtimes,

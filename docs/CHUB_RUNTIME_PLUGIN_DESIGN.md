@@ -4,14 +4,14 @@
 > 主要读者：AI Agent；维护者通过与 AI Agent 协作，理解并确认本文规则。
 > 本文负责：定义当前 Runtime 插件模块的架构、ZIP 协议、版本槽位导入与覆盖、删除边界、设置页行为及复检要求。
 > 本文不负责：任务编排插件模块（见[Chub 任务编排插件模块架构设计](CHUB_TASK_ORCHESTRATION_PLUGIN_DESIGN.md)）、AI Runtime 的 Adapter/Runner 通用实现规范（见[Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)）、AI Session/Worker 的状态机与恢复细节，或微信固定指令和用户可见回复格式（见[Chub 集成能力清单](CHUB_INTEGRATION_CAPABILITIES.md)第 4 节）。
-> 维护说明：Runtime 插件模块已是当前实现：第一方 Codex 可由固定槽位的正式 ZIP 或 `builtin-dev` 开发源码提供。本文中的“插件模块”是统一架构名称；ZIP 仅表示正式交付与安装形态。本文中的“已验证”仅表示已有自动化或历史实机结论；未验证平台、第二 Runtime 及列出的复检项目不因此成为已验收能力。
+> 维护说明：Runtime 插件模块已是当前实现：第一方 Codex 可由固定槽位的正式 ZIP 或 `codex-runtime-dev` 开发源码提供。本文中的“插件模块”是统一架构名称；ZIP 仅表示正式交付与安装形态。本文中的“已验证”仅表示已有自动化或历史实机结论；未验证平台、第二 Runtime 及列出的复检项目不因此成为已验收能力。
 
 ## AI 可执行契约
 
 1. Chub 当前接入的是**可信本机 Runtime 插件模块**。模块以 ZIP 导入、在固定目录安装并由 Web 与 Quick Worker 分别加载；它不是多用户插件市场、Codex Skill、提示词文件或外部通道可调用的扩展机制。
 2. 当前安装协议只接受 `runtime` 类型，且维护入口端到端只支持 `runtime_id=codex` 的第一方 Codex 实现。第二 Runtime 尚未接入；其他 `runtime_id` 即使清单能够解析，也不得成为活动实现，必须在受控预检或激活回滚中保持未生效。微信任务润色已使用独立的任务编排插件模块；其 ZIP 产物、活动分流和请求快照由[Chub 微信任务编排插件模块设计](WEIXIN_TASK_ORCHESTRATION_PLUGIN_DESIGN.md)及其通用编排设计维护，不复用 Runtime 插件模块协议、安装目录或注册表。
 3. Runtime 插件只提供 Runtime 私有实现和注册信息：Adapter、Worker Runner、能力、显示信息及可选专属设置。Chub 核心继续拥有认证、固定 API、逻辑 AI Session、Quick Worker 任务/租约/终态、通知、操作日志和页面交互。
-4. Codex 的逻辑 `runtime_id` 固定为 `codex`。每个 `implementation_id` 是可维护的版本槽位：正式 ZIP 使用 `codex-` 加六位数字，`builtin-dev` 直接加载仓库开发源码。兼容的 ZIP 可以覆盖同一正式槽位，开发刷新可原地重载 `builtin-dev`；两者只在目标槽位存在排队或运行的 Quick Worker 任务时拒绝。默认实现只用于新建 Chub Session；Session 创建时固定槽位，原生 Session 与后续任务均使用该槽位，默认切换不检查或影响已有 Session、排队任务和运行任务。维护者不能把已受理任务改失败、改投新版本或重试。Web 与 Worker 注册表都确认后才能报告最终结果；HTTP 成功或目录写入本身都不代表切换成功。
+4. Codex 的逻辑 `runtime_id` 固定为 `codex`。每个 `implementation_id` 是可维护的版本槽位：正式 ZIP 使用 `codex-` 加六位数字，开发实现使用 `<插件 ID>-dev`，当前为 `codex-runtime-dev`，直接加载仓库开发源码。兼容的 ZIP 可以覆盖同一正式槽位，开发刷新可原地重载 `codex-runtime-dev`；两者只在目标槽位存在排队或运行的 Quick Worker 任务时拒绝。默认实现只用于新建 Chub Session；Session 创建时固定槽位，原生 Session 与后续任务均使用该槽位，默认切换不检查或影响已有 Session、排队任务和运行任务。维护者不能把已受理任务改失败、改投新版本或重试。Web 与 Worker 都保留旧 `builtin-dev` 的解析直到它绑定的任务与 Session 收敛：旧快照继续使用旧 ID，但复用当前开发制品的导入、启用与可用状态；它不会显示、选择或接收新任务。两端确认新注册表后才能报告最终结果；HTTP 成功或目录写入本身都不代表切换成功。
 5. 单个 ZIP、清单、依赖或入口故障只能令该插件模块不可用或本次操作失败，不得阻塞 Chub 控制面、无关 Runtime、只读能力或独立服务。插件模块不放宽 loopback/Tailnet 来源校验、固定路由、输入限制、敏感信息保护或失败关闭要求。
 6. 覆盖或开发刷新不改写既有 Session 或任务；已启动任务保留已取得的 Runner，不提供把旧 Session 或旧任务迁移、重放或改投的机制。物理删除仍只在不再被 Session 引用且无非终态任务时允许。状态清理恢复记录不等于正常模块操作的清理步骤；它只在已有受控恢复记录时重试固定的 Chub 自有运行态收敛，普通导入、覆盖和删除不会清理 Session、任务或第三方原生数据。Chub 通用设置、其他模块设置、第三方原生数据、操作日志和明确要求保留的数据不在清理范围。
 
@@ -21,9 +21,9 @@
 
 “插件管理”的统一生命周期管理 Runtime 的导入、移除、启用与禁用：关闭时只拒绝后续新 AI 任务，已受理任务继续按创建时快照收敛；Codex 设置页的当前使用版本仍独立决定新 Session 使用哪个已启用版本。工作台状态按导入状态、启用状态和启用版本展示，导入不等于启用或设为默认。
 
-当前生产从固定安装目录发现正式 Codex Runtime ZIP。第一方 Codex Runtime 的开发源码保留在仓库 `runtime-modules/codex-runtime/`，`builtin-dev` 直接从该目录重新加载，不复制到 ZIP 安装目录。源码可被加载以供受控维护，但 Runtime 对首页、设置和新任务的“可用”判定必须同时满足：对应制品已导入、已启用且 Adapter 健康；未导入或已停用的开发源码不得仅因已加载而显示或作为可提交 Runtime。所有 Runtime 启用、版本启用和默认版本写入也必须遵守同一条件，不能以旧 API 绕过统一插件生命周期。设置页可设置一个健康且启用的默认实现；它只决定之后新建 Chub Session 的实现。Session 创建时立即保存固定槽位，Quick Worker、微信、自动化和周报等后续任务均从 Session 读取该槽位，页面、外部指令和请求正文均不提供 `implementation_id`。清单字段保留通用 `runtime_id` 是为后续独立接入做准备，不构成当前第二 Runtime 的安装或维护能力。
+当前生产从固定安装目录发现正式 Codex Runtime ZIP。第一方 Codex Runtime 的开发源码保留在仓库 `runtime-modules/codex-runtime/`，`codex-runtime-dev` 直接从该目录重新加载，不复制到 ZIP 安装目录。源码可被加载以供受控维护，但 Runtime 对首页、设置和新任务的“可用”判定必须同时满足：对应制品已导入、已启用且 Adapter 健康；未导入或已停用的开发源码不得仅因已加载而显示或作为可提交 Runtime。所有 Runtime 启用、版本启用和默认版本写入也必须遵守同一条件，不能以旧 API 绕过统一插件生命周期。设置页可设置一个健康且启用的默认实现；它只决定之后新建 Chub Session 的实现。Session 创建时立即保存固定槽位，Quick Worker、微信、自动化和周报等后续任务均从 Session 读取该槽位，页面、外部指令和请求正文均不提供 `implementation_id`。清单字段保留通用 `runtime_id` 是为后续独立接入做准备，不构成当前第二 Runtime 的安装或维护能力。
 
-设置页的“插件管理”固定呈现 Runtime、任务编排和业务插件的统一生命周期列表。Runtime ZIP 写入固定制品目录后由插件管理预检、导入或覆盖并登记为已导入；是否用于新任务由同一列表的启用状态和 Codex 设置页的当前使用版本共同决定。固定开发实现随当前部署提供，移除只影响之后的新 Session/任务，不删除源码或改写既有快照。插件管理列表与工作台都保留已导入但停用的实现，并展示导入、启用和可用状态；导入不等于启用或设为默认。不可用制品不得启用，但仍保留恢复或移除入口。插件实现的可见名称统一为“`<能力名称> · 开发实现`”或“`<能力名称> · 正式版 v<版本号>`”：开发实现不展示内部引用，正式实现必须展示清单版本；插件库存仍使用清单 `display_name` 作为能力名称。`builtin-dev`、`implementation_id`、`development_ref` 和 `implementation_ref` 仅用于后端绑定、快照和日志，不作为用户可见名称，也不能因文案调整而改变。导入覆盖和“刷新开发代码”只检查目标槽位的排队或运行任务，不暂停、检查或阻断已绑定 Session、旧 PID、历史 writer 或页面 `unknown`。Web 与 Quick Worker 都确认新注册表后才报告成功。只有明确物理删除 ZIP 槽位时，才检查该槽位是否仍被 Session 或非终态任务引用。页面不提供客户端 Runtime、Runner、命令、路径或环境变量选择器。微信任务润色使用独立的任务编排插件模块设置和注册表，其通用边界见[Chub 微信任务编排插件模块设计](WEIXIN_TASK_ORCHESTRATION_PLUGIN_DESIGN.md)。
+设置页的“插件管理”固定呈现 Runtime、任务编排和业务插件的统一生命周期列表。Runtime ZIP 写入固定制品目录后由插件管理预检、导入或覆盖并登记为已导入；是否用于新任务由同一列表的启用状态和 Codex 设置页的当前使用版本共同决定。固定开发实现随当前部署提供，移除只影响之后的新 Session/任务，不删除源码或改写既有快照。插件管理列表与工作台都保留已导入但停用的实现，并展示导入、启用和可用状态；导入不等于启用或设为默认。不可用制品不得启用，但仍保留恢复或移除入口。所有版本选择器使用同一规则：名称为“`<能力名称> · 开发实现`”或“`<能力名称> · 正式版 v<版本号>`”；第二行说明分别为“使用仓库固定的开发实现；仅影响之后新建的<对象>。”或“使用正式插件包 v<版本号>；仅影响之后新建的<对象>。”。开发实现不展示内部引用，正式实现必须展示清单版本；插件库存仍使用清单 `display_name` 作为能力名称。`codex-runtime-dev`、`implementation_id`、`development_ref` 和 `implementation_ref` 仅用于后端绑定、快照和日志，不作为用户可见名称，也不能因文案调整而改变。导入覆盖和“刷新开发代码”只检查目标槽位的排队或运行任务，不暂停、检查或阻断已绑定 Session、旧 PID、历史 writer 或页面 `unknown`。Web 与 Quick Worker 都确认新注册表后才报告成功。只有明确物理删除 ZIP 槽位时，才检查该槽位是否仍被 Session 或非终态任务引用。页面不提供客户端 Runtime、Runner、命令、路径或环境变量选择器。微信任务润色使用独立的任务编排插件模块设置和注册表，其通用边界见[Chub 微信任务编排插件模块设计](WEIXIN_TASK_ORCHESTRATION_PLUGIN_DESIGN.md)。
 
 ```text
 维护者选择 Runtime ZIP
@@ -67,11 +67,12 @@ Runtime 插件只拥有 Runtime 私有实现和清单声明。Adapter/Runner 的
 | `runtime_id`、`implementation_id`、`native_session_compatibility_id` | 分别声明逻辑 Runtime、版本槽位和原生 Session 兼容组；三者必须与 Module、Adapter 和 Runner 的 Descriptor 一致。当前维护入口只接受并完整维护 `runtime_id=codex`；正式 Codex ZIP 的 `implementation_id` 固定为 `codex-` 加六位数字，覆盖同一槽位必须保持该原生兼容组。 |
 | `module_type` | 当前仅允许 `runtime`。 |
 
-`module_id`、`module_type`、`builtin-dev`、现有 `/api/runtime-modules` 路径、插件安装目录、`orchestration_modules_dir` 配置键及安装恢复记录中的 `*_runtime_module` action 都是已发布插件包或本机运行态的兼容字段。它们不代表产品仍使用“外置模块”定位，后续不得仅为文案统一改写；新增产品文案、代码对象和操作记录统一使用“插件”。
 | `display_name`、`description`、`version` | 用于设置页展示和安装记录；入口返回的展示信息必须与清单一致。正式实现显示为“`<display_name> · 正式版 v<version>`”，不直接展示槽位 ID；正式 Codex ZIP 的 `description` 必须是本次发版的简短特性说明（最多 300 字），说明用户或维护者可感知的变化；不能只重复“使用 Codex CLI”。 |
 | `chub_version` | 必须精确匹配当前 Chub 版本。 |
 | `entry` | 固定为 `<python_module>:<factory>`；工厂接收当前 `Settings` 并返回 Runtime 注册对象。 |
 | `dependencies` | 可选的包内 requirements 相对路径；依赖安装到该模块自己的目录。 |
+
+`module_id`、`module_type`、现有 `/api/runtime-modules` 路径、插件安装目录、`orchestration_modules_dir` 配置键及安装恢复记录中的 `*_runtime_module` action 都是已发布插件包或本机运行态的兼容字段。`builtin-dev` 仅是已受理旧任务与 Session 的临时解析标识；新运行态不得写入它。它们不代表产品仍使用“外置模块”定位，后续不得仅为文案统一改写；新增产品文案、代码对象和操作记录统一使用“插件”。
 
 ZIP 不以文件名或存放目录决定模块身份。压缩包和清单都受固定大小、文件数量和路径限制；绝对路径、`..` 路径和符号链接会被拒绝。安装目录、暂存目录、清单、安装元数据和恢复记录均以受限权限创建。
 

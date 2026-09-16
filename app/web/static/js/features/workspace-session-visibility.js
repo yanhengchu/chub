@@ -13,8 +13,16 @@
     const translationToggle = document.getElementById(
       "workspace-task-show-internal-native-session",
     );
-    const searchToggle = document.getElementById("search-show-sessions");
-    const controls = [deliverylineToggle, translationToggle, searchToggle].filter(
+    const todayFocusToggle = document.getElementById("today-focus-show-sessions");
+    const deploymentPackageToggle = document.getElementById(
+      "deployment-package-show-release-note-session",
+    );
+    const controls = [
+      deliverylineToggle,
+      translationToggle,
+      todayFocusToggle,
+      deploymentPackageToggle,
+    ].filter(
       (control) => control instanceof HTMLInputElement,
     );
     let disposed = false;
@@ -82,11 +90,18 @@
       failureMessage: "内部翻译 Session 显示设置保存失败，请稍后刷新页面重试。",
     });
     bind({
-      control: searchToggle,
-      path: "/api/search/settings",
+      control: todayFocusToggle,
+      path: "/api/today-focus/settings",
       field: "show_sessions",
-      feedback: feedbackFor("search"),
-      failureMessage: "搜索 Session 显示设置保存失败，请稍后刷新页面重试。",
+      feedback: feedbackFor("today-focus"),
+      failureMessage: "今日关注 Session 显示设置保存失败，请稍后刷新页面重试。",
+    });
+    bind({
+      control: deploymentPackageToggle,
+      path: "/api/settings/deployment-package/release-note-session",
+      field: "show_sessions",
+      feedback: feedbackFor("deployment-package"),
+      failureMessage: "版本发布说明 Session 显示设置保存失败，请稍后刷新页面重试。",
     });
     window.disposeSessionVisibilitySettings = () => {
       disposed = true;

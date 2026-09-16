@@ -47,6 +47,10 @@ def main() -> int:
                 "artifact_size": operation.artifact_size,
                 "sha256": operation.sha256,
                 "build_id": operation.build_id,
+                "git_commit": getattr(operation, "git_commit", None),
+                "tag_name": getattr(operation, "tag_name", None),
+                "release_record_name": getattr(operation, "release_record_name", None),
+                "release_note": getattr(operation, "release_note", None),
             },
             ensure_ascii=False,
         )

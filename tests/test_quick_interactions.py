@@ -180,34 +180,28 @@ def test_codex_execution_prompt_adds_delivery_guidance_without_changing_request(
     assert "只能调用 scripts/chub-web-restart 一次" in prompt
 
 
-def test_codex_execution_prompt_includes_only_granted_task_capabilities(
+def test_codex_execution_prompt_includes_local_browser_capabilities(
     tmp_path: Path,
 ) -> None:
     quick_interactions = manager(tmp_path)
 
-    prompt = quick_interactions._codex_execution_prompt(
-        "读取链接正文",
-        ("chub.debug_chrome.page.read",),
-    )
+    prompt = quick_interactions._codex_execution_prompt("读取链接正文")
 
-    assert "[本次任务已授予的 Chub 能力]" in prompt
+    assert "[Chub 本机浏览器能力]" in prompt
     assert "chub capability page-read --url <URL>" in prompt
     assert "CDP" in prompt
 
 
-def test_codex_execution_prompt_includes_granted_page_interaction_only(
+def test_codex_execution_prompt_includes_page_interaction_with_page_read(
     tmp_path: Path,
 ) -> None:
     quick_interactions = manager(tmp_path)
 
-    prompt = quick_interactions._codex_execution_prompt(
-        "进入下一页",
-        ("chub.debug_chrome.page.interact",),
-    )
+    prompt = quick_interactions._codex_execution_prompt("进入下一页")
 
     assert "chub capability page-interact" in prompt
     assert "不得填写或提交表单" in prompt
-    assert "page-read" not in prompt
+    assert "page-read" in prompt
 
 
 def test_system_upgrade_reset_prevents_late_task_state_rewrite(tmp_path: Path) -> None:
@@ -1424,7 +1418,12 @@ def test_restart_marks_incomplete_notification_failed(tmp_path: Path) -> None:
         created_at=utc_now(),
         updated_at=utc_now(),
     )
-    state.write_text(json.dumps([task.model_dump(mode="json")]), encoding="utf-8")
+    serialized = task.model_dump(mode="json")
+    serialized["_operation_context"] = {
+        "operation_id": "operation-1",
+        "source_ip": "127.0.0.1",
+    }
+    state.write_text(json.dumps([serialized]), encoding="utf-8")
 
     quick_interactions = manager(tmp_path)
 
@@ -1443,14 +1442,19 @@ def test_worker_restart_preserves_active_task_and_pending_notification(
         id="task-1",
         worker_task_id="qw-1750000000000-11111111111111111111111111111111",
         session_id="session-1",
-        implementation_id="builtin-dev",
+        implementation_id="codex-runtime-dev",
         prompt="检查状态",
         status="running",
         notification_status="pending",
         created_at=utc_now(),
         updated_at=utc_now(),
     )
-    state.write_text(json.dumps([task.model_dump(mode="json")]), encoding="utf-8")
+    serialized = task.model_dump(mode="json")
+    serialized["_operation_context"] = {
+        "operation_id": "operation-1",
+        "source_ip": "127.0.0.1",
+    }
+    state.write_text(json.dumps([serialized]), encoding="utf-8")
 
     codex_manager = MagicMock()
     recovered = QuickInteractionManager(
@@ -1515,7 +1519,7 @@ def test_worker_claim_restore_conflict_is_local_and_reconciles_task(
         id="task-claim-conflict",
         worker_task_id="qw-1750000000000-11111111111111111111111111111111",
         session_id="session-1",
-        implementation_id="builtin-dev",
+        implementation_id="codex-runtime-dev",
         prompt="检查状态",
         status="running",
         created_at=utc_now(),
@@ -1552,7 +1556,7 @@ def test_worker_claim_restore_conflict_is_local_and_reconciles_task(
     view = {
         "task_id": task.worker_task_id,
         "runtime_id": "codex",
-        "implementation_id": "builtin-dev",
+        "implementation_id": "codex-runtime-dev",
         "status": "succeeded",
         "prompt_sha256": "a" * 64,
         "created_at": now.isoformat(),
@@ -1600,7 +1604,7 @@ def test_worker_claim_restore_store_unavailable_is_local(
         id="task-store-unavailable",
         worker_task_id="qw-1750000000000-11111111111111111111111111111111",
         session_id="session-1",
-        implementation_id="builtin-dev",
+        implementation_id="codex-runtime-dev",
         prompt="检查状态",
         status="running",
         created_at=utc_now(),
@@ -1642,7 +1646,7 @@ def test_missing_session_discards_stale_web_task_without_hiding_worker_recovery(
         id="task-missing-session",
         worker_task_id="qw-1750000000000-11111111111111111111111111111111",
         session_id="missing-session",
-        implementation_id="builtin-dev",
+        implementation_id="codex-runtime-dev",
         prompt="检查状态",
         status="running",
         created_at=utc_now(),
@@ -1696,7 +1700,7 @@ def test_final_untracked_worker_task_without_session_is_acknowledged(
     summary = {
         "task_id": "qw-1750000000000-11111111111111111111111111111111",
         "runtime_id": "codex",
-        "implementation_id": "builtin-dev",
+        "implementation_id": "codex-runtime-dev",
         "status": "succeeded",
         "prompt_sha256": "a" * 64,
         "session_id": "missing-session",
@@ -1723,6 +1727,66 @@ def test_final_untracked_worker_task_without_session_is_acknowledged(
     assert quick_interactions.recovery_ready is True
     assert [call.args[0] for call in quick_interactions._worker_call.call_args_list] == [
         "task_list",
+        "task_acknowledge",
+    ]
+
+
+def test_active_untracked_worker_task_is_cancelled_and_acknowledged(
+    settings,
+    tmp_path: Path,
+) -> None:
+    quick_interactions = worker_manager(tmp_path, settings)
+    now = utc_now()
+    task_id = "qw-1750000000000-11111111111111111111111111111111"
+    summary = {
+        "task_id": task_id,
+        "runtime_id": "codex",
+        "implementation_id": "codex-runtime-dev",
+        "status": "running",
+        "prompt_sha256": "a" * 64,
+        "session_id": "orphaned-session",
+        "task_kind": "standard",
+        "execution_id": "11111111111111111111111111111111",
+        "restart_sensitive": False,
+        "native_session_id": "11111111-1111-4111-8111-111111111111",
+        "delivery_acknowledged": False,
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat(),
+    }
+    cancelled = {
+        "task_id": task_id,
+        "runtime_id": "codex",
+        "implementation_id": "codex-runtime-dev",
+        "status": "cancelled",
+        "prompt_sha256": "a" * 64,
+        "created_at": now.isoformat(),
+        "deadline_at": now.isoformat(),
+        "updated_at": now.isoformat(),
+        "worker_generation": "generation-1",
+        "execution_id": "11111111111111111111111111111111",
+        "runner_pid": None,
+        "cancellation_requested": True,
+        "restart_sensitive": False,
+        "native_session_id": "11111111-1111-4111-8111-111111111111",
+    }
+
+    def worker_call(action: str, **_payload):
+        if action == "task_list":
+            return {"success": True, "data": {"tasks": [summary]}}
+        if action == "task_cancel":
+            return {"success": True, "data": {"task": cancelled}}
+        if action == "task_acknowledge":
+            return {"success": True, "data": {"delivery": {}}}
+        raise AssertionError(action)
+
+    quick_interactions._worker_call = MagicMock(side_effect=worker_call)
+
+    quick_interactions._reconcile_worker_once(initial=True)
+
+    assert quick_interactions.recovery_ready is True
+    assert [call.args[0] for call in quick_interactions._worker_call.call_args_list] == [
+        "task_list",
+        "task_cancel",
         "task_acknowledge",
     ]
 
@@ -2135,7 +2199,7 @@ def test_worker_reconciliation_allows_translation_native_session_rotation(
         id="task-translation-rotation",
         worker_task_id="qw-1750000000000-33333333333333333333333333333333",
         session_id="session-1",
-        implementation_id="builtin-dev",
+        implementation_id="codex-runtime-dev",
         prompt="优化文本",
         kind="translation",
         status="running",
@@ -2150,7 +2214,7 @@ def test_worker_reconciliation_allows_translation_native_session_rotation(
     view = {
         "task_id": task.worker_task_id,
         "runtime_id": "codex",
-        "implementation_id": "builtin-dev",
+        "implementation_id": "codex-runtime-dev",
         "status": "succeeded",
         "prompt_sha256": "b" * 64,
         "created_at": now.isoformat(),
@@ -2188,7 +2252,7 @@ def test_worker_reconciliation_allows_translation_native_session_rotation(
     quick_interactions.codex_manager.bind_quick_interaction_native_session.assert_called_once_with(
         task.session_id,
         new_native_session_id,
-        implementation_id="builtin-dev",
+        implementation_id="codex-runtime-dev",
     )
     assert quick_interactions.is_running(task.session_id) is False
     assert quick_interactions.recovery_ready is True
@@ -2260,14 +2324,13 @@ def test_resident_reconciliation_does_not_race_worker_submission(
         json.dumps([{"id": "broken"}]),
     ],
 )
-def test_worker_recovery_fails_closed_on_invalid_web_state(
+def test_worker_recovery_discards_invalid_web_state_without_waiting(
     settings,
     tmp_path: Path,
     payload: str,
 ) -> None:
     state = tmp_path / "quick-interactions.json"
     state.write_text(payload, encoding="utf-8")
-    original = state.read_text(encoding="utf-8")
     recovered = QuickInteractionManager(
         tmp_path / "codex-sessions.json",
         tmp_path / "runtime",
@@ -2278,11 +2341,110 @@ def test_worker_recovery_fails_closed_on_invalid_web_state(
         return_value={"success": True, "data": {"tasks": []}}
     )
 
-    with pytest.raises(OSError):
-        recovered._reconcile_worker_once(initial=True)
+    recovered._reconcile_worker_once(initial=True)
 
-    assert recovered.recovery_ready is False
-    assert state.read_text(encoding="utf-8") == original
+    assert recovered.recovery_ready is True
+    assert json.loads(state.read_text(encoding="utf-8")) == []
+
+
+def test_worker_recovery_discards_invalid_entry_and_keeps_valid_task(
+    settings,
+    tmp_path: Path,
+) -> None:
+    valid = QuickInteractionTask(
+        id="valid-task",
+        session_id="session-1",
+        prompt="已完成",
+        status="succeeded",
+        result="完成",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    state = tmp_path / "quick-interactions.json"
+    state.write_text(
+        json.dumps([valid.model_dump(mode="json"), {"id": "broken"}]),
+        encoding="utf-8",
+    )
+    recovered = QuickInteractionManager(
+        tmp_path / "codex-sessions.json",
+        tmp_path / "runtime",
+        MagicMock(),
+        worker_settings=settings,
+    )
+    recovered._worker_call = MagicMock(
+        return_value={"success": True, "data": {"tasks": []}}
+    )
+
+    recovered._reconcile_worker_once(initial=True)
+
+    assert recovered.recovery_ready is True
+    assert recovered.get(valid.id).result == "完成"
+    persisted = json.loads(state.read_text(encoding="utf-8"))
+    assert [item["id"] for item in persisted] == [valid.id]
+
+
+def test_retired_weixin_task_keeps_a_failure_notification(
+    settings,
+    tmp_path: Path,
+) -> None:
+    task = QuickInteractionTask(
+        id="legacy-weixin-task",
+        worker_task_id="qw-1750000000000-11111111111111111111111111111111",
+        session_id="session-1",
+        implementation_id="codex-runtime-dev",
+        prompt="旧微信任务",
+        status="running",
+        notification_route="weixin-task",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    payload = task.model_dump(mode="json")
+    payload["capability_ids"] = ["chub.debug_chrome.page.read"]
+    payload["_notification_route"] = {
+        "account_id": "weixin-account",
+        "recipient": "owner@im.wechat",
+    }
+    payload["_operation_context"] = {
+        "operation_id": "operation-1",
+        "source_ip": "127.0.0.1",
+    }
+    (tmp_path / "quick-interactions.json").write_text(
+        json.dumps([payload]),
+        encoding="utf-8",
+    )
+
+    recovered = QuickInteractionManager(
+        tmp_path / "codex-sessions.json",
+        tmp_path / "runtime",
+        MagicMock(),
+        completion_notifier=MagicMock(),
+        worker_settings=settings,
+    )
+
+    current = recovered.get(task.id)
+    assert current.status == "failed"
+    assert current.notification_status == "pending"
+
+
+def test_discarding_unreadable_web_state_keeps_pending_claim_clears(
+    settings,
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "quick-interactions.json"
+    state.write_text("not-json", encoding="utf-8")
+    recovered = QuickInteractionManager(
+        tmp_path / "codex-sessions.json",
+        tmp_path / "runtime",
+        MagicMock(),
+        worker_settings=settings,
+    )
+    claim = ("session-1", "qw-1750000000000-11111111111111111111111111111111")
+    recovered._pending_native_claim_clears.add(claim)
+
+    recovered._discard_unrecoverable_local_state()
+
+    assert claim in recovered._pending_native_claim_clears
+    recovered.codex_manager.discard_quick_native_claims.assert_called_once_with()
 
 
 def test_load_discards_legacy_pinned_state(tmp_path: Path) -> None:
@@ -2313,8 +2475,57 @@ def test_load_discards_legacy_pinned_state(tmp_path: Path) -> None:
     assert "weixin_session_title" not in persisted[0]
 
 
-@pytest.mark.parametrize("invalid_kind", ["non_utf8", "oversized", "symlink"])
-def test_worker_recovery_fails_closed_on_unsafe_web_state_file(
+def test_load_retires_legacy_task_capabilities_without_blocking_recovery(
+    settings,
+    tmp_path: Path,
+) -> None:
+    task = QuickInteractionTask(
+        id="legacy-capability-task",
+        worker_task_id="qw-1750000000000-11111111111111111111111111111111",
+        session_id="session-1",
+        implementation_id="codex-runtime-dev",
+        prompt="旧任务",
+        status="running",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    payload = task.model_dump(mode="json")
+    payload["capability_ids"] = ["chub.debug_chrome.page.read"]
+    (tmp_path / "quick-interactions.json").write_text(
+        json.dumps([payload]),
+        encoding="utf-8",
+    )
+
+    recovered = QuickInteractionManager(
+        tmp_path / "codex-sessions.json",
+        tmp_path / "runtime",
+        MagicMock(),
+        worker_settings=settings,
+    )
+    recovered._worker_call = MagicMock(
+        side_effect=lambda action, **_payload: (
+            {"success": True, "data": {"tasks": []}}
+            if action == "task_list"
+            else {
+                "success": False,
+                "error": {"code": "worker_task_not_found", "message": "not found"},
+            }
+        )
+    )
+
+    recovered._reconcile_worker_once(initial=True)
+
+    current = recovered.get(task.id)
+    assert current.status == "failed"
+    assert current.submission_verifying is False
+    assert "已废弃的 Worker 协议" in (current.error or "")
+    assert recovered.recovery_ready is True
+    persisted = json.loads(recovered.path.read_text(encoding="utf-8"))
+    assert "capability_ids" not in persisted[0]
+
+
+@pytest.mark.parametrize("invalid_kind", ["non_utf8", "oversized", "symlink", "directory"])
+def test_worker_recovery_discards_unsafe_web_state_file_without_waiting(
     settings,
     tmp_path: Path,
     invalid_kind: str,
@@ -2327,9 +2538,12 @@ def test_worker_recovery_fails_closed_on_unsafe_web_state_file(
             state_file.seek(MAX_QUICK_INTERACTION_STATE_BYTES)
             state_file.write(b"x")
     else:
-        target = tmp_path / "state-target.json"
-        target.write_text("[]", encoding="utf-8")
-        state.symlink_to(target)
+        if invalid_kind == "directory":
+            state.mkdir()
+        else:
+            target = tmp_path / "state-target.json"
+            target.write_text("[]", encoding="utf-8")
+            state.symlink_to(target)
 
     recovered = QuickInteractionManager(
         tmp_path / "codex-sessions.json",
@@ -2337,9 +2551,17 @@ def test_worker_recovery_fails_closed_on_unsafe_web_state_file(
         MagicMock(),
         worker_settings=settings,
     )
+    recovered._worker_call = MagicMock(
+        return_value={"success": True, "data": {"tasks": []}}
+    )
 
-    with pytest.raises(OSError):
-        recovered._reconcile_worker_once(initial=True)
+    recovered._reconcile_worker_once(initial=True)
+
+    assert recovered.recovery_ready is True
+    assert state.is_symlink() is False
+    assert json.loads(state.read_text(encoding="utf-8")) == []
+    if invalid_kind == "directory":
+        assert list(tmp_path.glob("quick-interactions.json.discarded-*"))
 
 
 def test_worker_recovery_rejects_mismatched_task_identity(

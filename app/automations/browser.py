@@ -45,6 +45,15 @@ class DebugChromePageContent:
     truncated: bool
 
 
+@dataclass(frozen=True)
+class DebugChromeOpenedPage:
+    """One fixed public page left open in the current headed Debug Chrome."""
+
+    source_url: str
+    final_url: str | None
+    error: str | None
+
+
 class DebugChromePageReadError(RuntimeError):
     """Raised when the managed browser cannot produce a bounded page snapshot."""
 
@@ -136,6 +145,43 @@ async def _page_snapshot(
     )
 
 
+def _track_owned_popups(page: Any) -> list[Any]:
+    """Keep cleanup scoped to windows spawned by an owned temporary page."""
+
+    popups: list[Any] = []
+
+    def track(popup: Any) -> None:
+        popups.append(popup)
+        on = getattr(popup, "on", None)
+        if callable(on):
+            on("popup", track)
+
+    on = getattr(page, "on", None)
+    if callable(on):
+        on("popup", track)
+    return popups
+
+
+async def _close_owned_pages(page: Any | None, popups: list[Any]) -> None:
+    cleanup_failed = False
+    for owned_page in reversed([*popups, page]):
+        if owned_page is None:
+            continue
+        try:
+            if not owned_page.is_closed():
+                await owned_page.close()
+        except Exception:
+            cleanup_failed = True
+            continue
+        try:
+            if not owned_page.is_closed():
+                cleanup_failed = True
+        except Exception:
+            cleanup_failed = True
+    if cleanup_failed:
+        raise DebugChromePageReadError("网页临时页面未能关闭")
+
+
 async def read_debug_chrome_page(
     url: str,
     *,
@@ -160,6 +206,7 @@ async def read_debug_chrome_page(
         raise DebugChromePageReadError("Debug Chrome 未运行")
 
     page = None
+    popups: list[Any] = []
     blocked_navigation: DebugChromePageReadError | None = None
 
     async def allow_public_request(route) -> None:
@@ -180,32 +227,92 @@ async def read_debug_chrome_page(
 
     try:
         async with session_factory()(ensure_page=False, retry_connection=True) as chrome:
-            page = await chrome.context.new_page()
-            await page.route("**/*", allow_public_request)
-            await page.goto(
-                source_url,
-                timeout=timeout_ms,
-                wait_until="domcontentloaded",
-            )
-            if blocked_navigation is not None:
-                raise blocked_navigation
-            return await _page_snapshot(
-                page,
-                source_url,
-                max_content_chars=max_content_chars,
-            )
+            try:
+                page = await chrome.context.new_page()
+                popups = _track_owned_popups(page)
+                await page.route("**/*", allow_public_request)
+                await page.goto(
+                    source_url,
+                    timeout=timeout_ms,
+                    wait_until="domcontentloaded",
+                )
+                if blocked_navigation is not None:
+                    raise blocked_navigation
+                return await _page_snapshot(
+                    page,
+                    source_url,
+                    max_content_chars=max_content_chars,
+                )
+            finally:
+                await _close_owned_pages(page, popups)
     except DebugChromePageReadError:
         raise
     except Exception as exc:
         if blocked_navigation is not None:
             raise blocked_navigation from exc
         raise DebugChromePageReadError("网页内容读取失败") from exc
-    finally:
-        if page is not None and not page.is_closed():
+
+
+async def open_debug_chrome_pages(
+    urls: tuple[str, ...],
+    *,
+    timeout_ms: int = DEFAULT_PAGE_READ_TIMEOUT_MS,
+) -> tuple[DebugChromeOpenedPage, ...]:
+    """Open fixed public pages in the current headed Debug Chrome and leave them open."""
+
+    source_urls = tuple(_validate_public_page_url(url.strip()) for url in urls)
+    if not source_urls:
+        raise DebugChromePageReadError("没有可打开的网页地址")
+    if not 100 <= timeout_ms <= MAX_PAGE_READ_TIMEOUT_MS:
+        raise DebugChromePageReadError("网页读取超时设置无效")
+    state, _, mode = debug_chrome_status()
+    if state != "running":
+        raise DebugChromePageReadError("Debug Chrome 未运行")
+    if mode != "有界面":
+        raise DebugChromePageReadError("Debug Chrome 未以有界面模式运行")
+
+    opened: list[DebugChromeOpenedPage] = []
+    async with session_factory()(ensure_page=False, retry_connection=True) as chrome:
+        for source_url in source_urls:
+            page = await chrome.context.new_page()
+            blocked_navigation: DebugChromePageReadError | None = None
+
+            async def allow_public_request(route) -> None:
+                nonlocal blocked_navigation
+                request = route.request
+                parsed = urlsplit(request.url)
+                if parsed.scheme not in {"http", "https"}:
+                    await route.continue_()
+                    return
+                try:
+                    _validate_public_page_url(request.url)
+                except DebugChromePageReadError as exc:
+                    if request.is_navigation_request():
+                        blocked_navigation = exc
+                    await route.abort()
+                    return
+                await route.continue_()
+
             try:
-                await page.close()
+                await page.route("**/*", allow_public_request)
+                await page.bring_to_front()
+                await page.goto(
+                    source_url,
+                    timeout=timeout_ms,
+                    wait_until="domcontentloaded",
+                )
+                if blocked_navigation is not None:
+                    raise blocked_navigation
+                final_url = _validate_public_page_url(page.url)
+                opened.append(DebugChromeOpenedPage(source_url, final_url, None))
+            except DebugChromePageReadError as exc:
+                if not page.is_closed():
+                    await page.close()
+                opened.append(DebugChromeOpenedPage(source_url, None, str(exc)))
             except Exception:
-                pass
+                # Keep a browser-generated error page open for maintenance inspection.
+                opened.append(DebugChromeOpenedPage(source_url, None, "页面未能完成打开"))
+    return tuple(opened)
 
 
 async def interact_debug_chrome_page(
@@ -235,6 +342,7 @@ async def interact_debug_chrome_page(
         raise DebugChromePageReadError("Debug Chrome 未运行")
 
     page = None
+    popups: list[Any] = []
     blocked_navigation: DebugChromePageReadError | None = None
 
     async def allow_public_request(route) -> None:
@@ -255,57 +363,55 @@ async def interact_debug_chrome_page(
 
     try:
         async with session_factory()(ensure_page=False, retry_connection=True) as chrome:
-            page = await chrome.context.new_page()
-            await page.route("**/*", allow_public_request)
-            await page.goto(
-                source_url,
-                timeout=timeout_ms,
-                wait_until="domcontentloaded",
-            )
-            if blocked_navigation is not None:
-                raise blocked_navigation
-            link = await page.evaluate(
-                """(expected) => {
-                    const matches = [...document.querySelectorAll("a[href]")]
-                        .filter((anchor) => (anchor.innerText || anchor.textContent || "").trim() === expected);
-                    if (matches.length !== 1) {
-                        return { count: matches.length, href: null };
-                    }
-                    return { count: 1, href: matches[0].href };
-                }""",
-                link_text,
-            )
-            if (
-                not isinstance(link, dict)
-                or link.get("count") != 1
-                or not isinstance(link.get("href"), str)
-            ):
-                raise DebugChromePageReadError("未找到唯一匹配的网页链接")
-            target_url = _validate_public_page_url(link["href"])
-            await page.goto(
-                target_url,
-                timeout=timeout_ms,
-                wait_until="domcontentloaded",
-            )
-            if blocked_navigation is not None:
-                raise blocked_navigation
-            return await _page_snapshot(
-                page,
-                source_url,
-                max_content_chars=max_content_chars,
-            )
+            try:
+                page = await chrome.context.new_page()
+                popups = _track_owned_popups(page)
+                await page.route("**/*", allow_public_request)
+                await page.goto(
+                    source_url,
+                    timeout=timeout_ms,
+                    wait_until="domcontentloaded",
+                )
+                if blocked_navigation is not None:
+                    raise blocked_navigation
+                link = await page.evaluate(
+                    """(expected) => {
+                        const matches = [...document.querySelectorAll("a[href]")]
+                            .filter((anchor) => (anchor.innerText || anchor.textContent || "").trim() === expected);
+                        if (matches.length !== 1) {
+                            return { count: matches.length, href: null };
+                        }
+                        return { count: 1, href: matches[0].href };
+                    }""",
+                    link_text,
+                )
+                if (
+                    not isinstance(link, dict)
+                    or link.get("count") != 1
+                    or not isinstance(link.get("href"), str)
+                ):
+                    raise DebugChromePageReadError("未找到唯一匹配的网页链接")
+                target_url = _validate_public_page_url(link["href"])
+                await page.goto(
+                    target_url,
+                    timeout=timeout_ms,
+                    wait_until="domcontentloaded",
+                )
+                if blocked_navigation is not None:
+                    raise blocked_navigation
+                return await _page_snapshot(
+                    page,
+                    source_url,
+                    max_content_chars=max_content_chars,
+                )
+            finally:
+                await _close_owned_pages(page, popups)
     except DebugChromePageReadError:
         raise
     except Exception as exc:
         if blocked_navigation is not None:
             raise blocked_navigation from exc
         raise DebugChromePageReadError("网页链接操作失败") from exc
-    finally:
-        if page is not None and not page.is_closed():
-            try:
-                await page.close()
-            except Exception:
-                pass
 
 
 def _chrome_debug_module():

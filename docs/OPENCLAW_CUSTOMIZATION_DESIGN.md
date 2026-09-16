@@ -50,7 +50,7 @@ OpenClaw 升级、重装或实际加载目录变化后，先检查运行版本�
 2. 微信请求只能走：`微信 -> OpenClaw 微信适配器 -> Chub 插件 -> Chub dispatch -> Codex/Worker -> Chub -> OpenClaw -> 微信`。
 3. Chub 插件和 Chub 服务不得调用 `openclaw agent`、Gateway Agent 或模型来决定微信请求路由。
 4. 微信高权限入口必须来自同机真实 loopback socket、当前绑定的单一微信 Owner、私聊消息和稳定消息 ID；任一条件不满足都失败关闭。
-5. 请求正文不得选择 Session、workspace、权限、模型、路径、命令或收件人；这些对象由 Chub 固定规则选择。微信 `sync` 只列出当前 Chub 已允许工作区中、且符合微信权限/模型设置的 Session；默认新建工作区仅影响 `new`，不缩窄已允许工作区的同步范围。
+5. 请求正文不得选择 Session、workspace、权限、模型、路径、命令或收件人；这些对象由 Chub 固定规则选择。微信 `sync` 只列出当前 Chub 已允许工作区中的 Session；新建 Session 使用通用会话默认配置，默认新建工作区仅影响 `new`，不缩窄已允许工作区的同步范围。
 6. 同一稳定消息 ID 与同一路由只能产生一个决定和一个派生任务；重复请求返回首次决定，路由冲突拒绝，未知副作用不自动重试。
 7. 任务结果和通知结果是两个状态；任务成功不等于通知成功，原保存路由失效时不得回退到全局收件人。
 8. Context Token 必须按 `accountId + userId` 持久化，Gateway 启动恢复，内存未命中时懒恢复；文件权限必须为 `600`。

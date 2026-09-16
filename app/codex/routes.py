@@ -35,6 +35,7 @@ from app.ai_session.operations import (
     delete_session as delete_session_operation,
     forget_session as forget_session_operation,
 )
+from app.ai_runtime.codex_plugin import DEVELOPMENT_CODEX_IMPLEMENTATION_ID
 from app.core.response import ApiError, ApiResponse
 from app.core.security import require_trusted_network
 from app.services.operation_log import log_operation, write_operation
@@ -118,6 +119,15 @@ def list_sessions(
         if ai_search is not None
         else set()
     )
+    deployment_package = getattr(request.app.state, "deployment_package", None)
+    try:
+        hidden_release_note_session_ids = (
+            deployment_package.hidden_release_note_session_ids()
+            if deployment_package is not None
+            else set()
+        )
+    except ApiError:
+        hidden_release_note_session_ids = set()
     sessions = [
         session.model_copy(
             update={
@@ -134,6 +144,7 @@ def list_sessions(
         if session.workspace_id != "weixin-translation"
         and session.id not in hidden_deliveryline_session_ids
         and session.id not in hidden_search_session_ids
+        and session.id not in hidden_release_note_session_ids
     ]
     available, unavailable_reason = manager.submission_available()
     if available:
@@ -184,7 +195,7 @@ async def update_runtime_implementation_enabled(
 ) -> ApiResponse[RuntimeImplementationData]:
     artifact_id = (
         "development:codex-runtime"
-        if implementation_id == "builtin-dev"
+        if implementation_id == DEVELOPMENT_CODEX_IMPLEMENTATION_ID
         else f"runtime:{implementation_id}"
     )
     await request.app.state.plugin_lifecycle.set_enabled(

@@ -1,8 +1,8 @@
 {
   "protocol_version": 1,
-  "module_id": "builtin-dev",
+  "module_id": "codex-runtime-dev",
   "runtime_id": "codex",
-  "implementation_id": "builtin-dev",
+  "implementation_id": "codex-runtime-dev",
   "native_session_compatibility_id": "codex-v1",
   "module_type": "runtime",
   "display_name": "Codex",

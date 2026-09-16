@@ -74,6 +74,24 @@ async def test_codex_sessions_allow_loopback(settings: Settings) -> None:
 
 
 @pytest.mark.anyio
+async def test_codex_session_list_ignores_unavailable_release_note_state(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+
+    def unavailable() -> set[str]:
+        raise ApiError(503, "deployment_package_state_invalid", "state unavailable")
+
+    app.state.deployment_package.hidden_release_note_session_ids = unavailable
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/api/codex/sessions")
+
+    assert response.status_code == 200
+
+
+@pytest.mark.anyio
 async def test_disabled_runtime_keeps_sessions_and_blocks_creation(
     settings: Settings,
 ) -> None:

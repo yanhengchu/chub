@@ -17,13 +17,13 @@ from .worker_runtime import CodexWorkerRuntime
 
 
 class CodexRuntimeModule:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, *, implementation_id: str | None = None) -> None:
         self._settings = settings
         manifest = json.loads(Path(__file__).parent.parent.joinpath("chub-module.json").read_text("utf-8"))
         self._descriptor = CODEX_RUNTIME_DESCRIPTOR.model_copy(
             update={
                 "runtime_id": manifest["runtime_id"],
-                "implementation_id": manifest["implementation_id"],
+                "implementation_id": implementation_id or manifest["implementation_id"],
                 "native_session_compatibility_id": manifest["native_session_compatibility_id"],
             }
         )
@@ -43,7 +43,7 @@ class CodexRuntimeModule:
 
     @property
     def is_default(self) -> bool:
-        return self._descriptor.effective_implementation_id == "builtin-dev"
+        return self._descriptor.effective_implementation_id == "codex-runtime-dev"
 
     def build_adapter(self) -> CodexRuntimeAdapter:
         return CodexRuntimeAdapter(self._settings, descriptor=self._descriptor)
@@ -85,5 +85,9 @@ class CodexRuntimeModule:
         )
 
 
-def create_runtime_module(settings: Settings) -> CodexRuntimeModule:
-    return CodexRuntimeModule(settings)
+def create_runtime_module(
+    settings: Settings,
+    *,
+    implementation_id: str | None = None,
+) -> CodexRuntimeModule:
+    return CodexRuntimeModule(settings, implementation_id=implementation_id)

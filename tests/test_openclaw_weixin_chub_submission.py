@@ -422,12 +422,7 @@ def test_submit_creates_one_private_session_and_replays_duplicate(
     assert duplicate.duplicate is True
     assert duplicate.task_summary is None
     assert duplicate.message == first.message
-    codex_manager.create_session.assert_called_once_with(
-        "chub",
-        "full-access",
-        None,
-        None,
-    )
+    codex_manager.create_session.assert_called_once_with("chub")
     codex_manager.set_initial_quick_interaction_title.assert_not_called()
     quick_interactions.submit.assert_called_once_with(
         "session-1",
@@ -1552,16 +1547,15 @@ def test_submit_reuses_session_when_defaults_resolve_to_effective_model(
     assert manager.session_id() == "session-1"
 
 
-def test_submit_replaces_session_when_explicit_model_no_longer_matches(
+def test_submit_replaces_session_when_workspace_no_longer_matches(
     settings: Settings,
 ) -> None:
-    settings.openclaw.weixin_chub_mode.model = "configured-model"
     manager, codex_manager, quick_interactions = configured_manager(settings)
     manager._state.session_id = "old-session"
     codex_manager.get_session.return_value = CodexSession(
         id="old-session",
-        workspace_id="chub",
-        workspace_name="Chub",
+        workspace_id="home",
+        workspace_name="Home",
         cwd="/project",
         permission_mode="full-access",
         model="different-model",
@@ -1572,21 +1566,16 @@ def test_submit_replaces_session_when_explicit_model_no_longer_matches(
 
     result = manager.submit(
         message_id="message-1",
-        prompt="检查模型配置",
+        prompt="检查工作区配置",
         correlation_id=None,
         source_ip="100.64.0.21",
     )
 
     assert result.new_session is True
-    codex_manager.create_session.assert_called_once_with(
-        "chub",
-        "full-access",
-        "configured-model",
-        None,
-    )
+    codex_manager.create_session.assert_called_once_with("chub")
     quick_interactions.submit.assert_called_once_with(
         "new-session",
-        "检查模型配置",
+        "检查工作区配置",
         summary_max_chars=48,
         summary_max_width=64,
         operation_id=quick_interactions.submit.call_args.kwargs["operation_id"],

@@ -23,7 +23,7 @@ Chub 是个人本地工作站与统一控制面：核心能力可独立运行，
 | Runtime 与模型 | 查询 Runtime 健康、模型、实现与用量；配置后续任务的模型、推理等级和默认实现 | 工作台、设置、微信、状态接口 |
 | 文本处理、确认与通知 | 对微信普通正文直接执行、润色后执行或确认后执行；投递微信回送和预配置通知 | 微信、Quick Worker、CLI、OpenClaw Tool |
 | 状态、资料与需求 | 查询节点状态、项目资料、受限日志、活动需求和需求归档 | 工作台、CLI、微信、OpenClaw Tool |
-| AI 搜索 | 创建通用 AI Session，读取公开网页并返回有界的搜索摘要、候选名称、说明、来源与链接 | 工作台搜索页 |
+| 今日关注 | 在当前有界面 Debug Chrome 打开固定公开来源页面，或使用固定内部 AI Session 整理固定公开来源的 AI 动态；页面同时展示今日计划和待办区块 | 工作台今日关注页 |
 | Debug Chrome、自动化与周报 | 复用受管浏览器执行受控页面操作，运行固定自动化，准备资料、生成和复核周报 | 自动化页、周报页、固定脚本与技能 |
 | 服务维护与集成 | 检查、重启或恢复受管服务；查看和维护已接入的 OpenClaw、Runtime 与模块状态；在维护者明确进入时提供维护终端 | 本机 CLI、工作台、少量微信固定指令 |
 
@@ -66,16 +66,17 @@ Chub 是个人本地工作站与统一控制面：核心能力可独立运行，
 | `chub.documents.read` | 浏览已登记的项目资料与受限内容 | 已实现：工作台可信网络页面 | 当前不授予任务编排插件。 |
 | `chub.requests.read` / `chub.requests.manage` | 查询、保存、更新、归档或删除活动需求 | 已实现：CLI 与微信固定指令各自开放的子集 | 当前不授予任务编排插件；写入仍须遵循需求储备规则。 |
 | `chub.logs.read` | 查看或下载受限日志 | 已实现：日志页、本机 CLI | 当前不授予任务编排插件。 |
-| `chub.ai_search.session` | 复用一个固定只读的内部 AI Session 提交工作台搜索；工作台最多保留最近 8 条搜索记录，超出后仅清除最早记录，详情展示原始搜索、提交提示词、终态和结构化结果 | 已实现：工作台搜索页 | 搜索 Session 默认不在 Runtime Sessions 主列表展示，可在会话设置“内部会话显示”中单独开启；每条搜索以持久化操作标识精确关联 Quick Worker 任务，提交回执缺失时只在有限核验窗口内等待，不会取共享 Session 的其他任务作为结果。当前 Session 不存在、异常或不再符合内部搜索约束时，先确认清理旧 Session 再创建替代项；旧版按记录创建的搜索 Session 在首次新搜索时清理。当前不授予任务编排插件、OpenClaw 或外部 Agent；无已导入 Runtime 时搜索入口不展示。 |
+| `chub.ai_today_focus.session` | 复用一个内部 AI Session 刷新工作台当天 AI 动态；页面另提供固定四个 AI 来源的有界面打开操作 | 已实现：工作台今日关注页 | 今日关注 Session 默认不在 Runtime Sessions 主列表展示，可在会话设置“内部会话显示”中单独开启。创建或重建时继承通用新会话的 Runtime、权限、模型和推理等级；既有按当前规则创建的 Session 保留创建快照。刷新前由 Chub 核心在固定能力边界内读取四个固定来源的有界快照，初始地址与最终跳转地址均须属于对应官方域名，否则该来源按读取失败处理。Session 只根据快照总结，不能使用工具、命令或快照中的网页指令；结果链接由服务端限制为对应官方域名并回填来源名称。刷新任务以持久化操作标识精确关联 Quick Worker 任务，提交回执缺失时只在有限核验窗口内等待，不会取共享 Session 的其他任务作为结果。`read-only` Runner 的 DNS 限制不再影响该流程。打开页面不读取或解析正文，不接受 URL、Profile 或浏览器控制参数，且 Debug Chrome 未运行或未以有界面模式运行时明确失败，不自动启动、停止或切换浏览器。旧搜索/今日关注运行状态升级时直接退役，并清理其关联内部 Session，不保留历史结果或旧专属权限。今日计划和待办一期仅展示空状态，不把需求储备、Deliveryline 或 AI 推测伪装成待办。当前不授予任务编排插件、OpenClaw 或外部 Agent；无已导入 Runtime 时入口不展示。 |
 | **Debug Chrome** |  |  |  |
 | `chub.debug_chrome.manage` | 管理受管 Debug Chrome 的状态、已初始化 Profile 与有界面/无界面实例 | 已实现：自动化页与 Chub 内置 Debug Chrome 能力 | 当前不授予任务编排插件、普通 AI Session 或外部 Agent。 |
-| `chub.debug_chrome.page.read` | 使用已运行的受管 Debug Chrome 创建临时页面，读取公网 HTTP(S) 页面的最终地址、标题和有界正文快照；可复用所选 Profile 已有的网站登录态 | 已实现：Chub 内部调用；获得任务级授权的 AI Session 可通过固定 `chub capability page-read` 命令调用。Deliveryline 仅在 `1-2` 协作的原始需求包含公网网页链接时，对该次任务显式授予 | 当前不授予任务编排插件、OpenClaw 或外部 Agent；Deliveryline 不默认获得，仅限其已登记的单次协作输入。 |
-| `chub.debug_chrome.page.interact` | 在公网 HTTP(S) 页面中按精确可见链接文字进入唯一匹配的下一页面，并返回有界正文快照；可复用所选 Profile 已有的网站登录态 | 已实现：获得任务级授权的 AI Session 可通过固定 `chub capability page-interact` 命令调用 | 当前不默认授予任何入口；后续调用方必须在任务创建时显式授予，且不能扩展为表单填写、提交、下载或脚本操作。 |
+| `chub.debug_chrome.page.read` | 使用已运行的受管 Debug Chrome 创建临时页面，读取公网 HTTP(S) 页面的最终地址、标题和有界正文快照；可复用所选 Profile 已有的网站登录态 | 已实现：Chub Session 与本机 CLI 通过固定 `chub capability page-read` 命令调用 | 不授予任务编排插件、OpenClaw、远程浏览器或其他外部 Agent；不能扩展为 Profile/CDP 控制。 |
+| `chub.debug_chrome.page.interact` | 在公网 HTTP(S) 页面中按精确可见链接文字进入唯一匹配的下一页面，并返回有界正文快照；可复用所选 Profile 已有的网站登录态 | 已实现：Chub Session 与本机 CLI 通过固定 `chub capability page-interact` 命令调用 | 不授予任务编排插件、OpenClaw、远程浏览器或其他外部 Agent；不能扩展为表单填写、提交、下载或脚本操作。 |
 | **自动化、周报与维护** |  |  |  |
 | `chub.automation.read` / `chub.automation.run` | 查看并运行固定自动化；自动化通过 Debug Chrome 基础能力执行固定步骤 | 已实现：自动化页、受控维护入口 | 当前不授予任务编排插件。 |
 | `chub.weekly_report.prepare` / `chub.weekly_report.generate` | 准备输入、生成和复核受管周报 | 已实现：周报页、固定脚本与技能 | 当前不授予任务编排插件。 |
 | `chub.maintenance.check` | 只读检查本机服务、配置和受限资源 | 已实现：CLI、工作台、微信 `check` | 当前不授予任务编排插件。 |
 | `chub.maintenance.recover` | 对固定服务执行重启、恢复或升级操作 | 已实现：本机 CLI、工作台、少量微信固定指令 | 当前不授予任务编排插件；不接受任意命令、路径或服务目标。 |
+| `chub.deployment.release_note` | 在发版说明为空时复用固定内部 Session，基于最近成功发版记录、当前 HEAD 与工作区改动生成简短发版说明草稿 | 已实现：维护与版本页 | 不自动发布；生成结果可编辑且须通过正常发布门禁。内部 Session 默认隐藏，可在会话设置单独显示；Runtime 或 Worker 不可用时仍可手工填写后发布。 |
 | `chub.integration.openclaw.read` / `chub.integration.openclaw.manage` | 查询受管 OpenClaw 集成状态，或在固定维护范围内配置、启动、停止和恢复 Gateway 集成 | 已实现：设置与受控维护入口 | 当前不授予任务编排插件；不提供任意 Gateway 指令、账号或路由。 |
 | `chub.maintenance.terminal` | 为维护者的可信浏览器创建短期维护终端访问，并维持单一活动连接 | 已实现：工作台维护终端 | 当前不授予任务编排插件、微信、OpenClaw 或自动化；该能力等同本机用户 Shell 权限。 |
 
@@ -86,11 +87,11 @@ Chub 是个人本地工作站与统一控制面：核心能力可独立运行，
 Debug Chrome 是 Chub 核心层唯一受管的浏览器执行环境。其生命周期、Profile 初始化和 Playwright/CDP 会话由 Chub 内置实现负责，并通过本机 CDP 连接提供页面会话；自动化、账号登录、Runtime 页面采集和后续业务模块都是调用方，不得各自启动浏览器、管理 Profile 或直接持有 CDP 端点。
 
 - `chub.debug_chrome.manage` 负责 Profile、实例启动/停止、模式和最终状态；生命周期操作与 Profile 切换保持独占。
-- `chub.debug_chrome.page.read` 是首个稳定的只读页面用例：调用方只能请求已运行实例读取一个公网 HTTP(S) 页面，结果为原始地址、最终地址、标题、正文和截断标记。临时页面复用所选 Profile 的既有网站登录态，因此可读取已完成登录的网站；结果不单独读取或返回 Cookie、浏览器存储、Profile 路径或 CDP 地址。它只关闭自身创建的页面，也不隐式启动、停止或切换浏览器。
+- `chub.debug_chrome.page.read` 是首个稳定的只读页面用例：调用方只能请求已运行实例读取一个公网 HTTP(S) 页面，结果为原始地址、最终地址、标题、正文和截断标记。临时页面复用所选 Profile 的既有网站登录态，因此可读取已完成登录的网站；结果不单独读取或返回 Cookie、浏览器存储、Profile 路径或 CDP 地址。读取结束后关闭自身创建的页面及其派生页面；关闭未确认时以受控错误收敛，不触碰已有页面，也不隐式启动、停止或切换浏览器。
 - 页面读取使用非变更 CDP 连接，不创建保留基础页；它拒绝含凭据、非标准 HTTP(S) 端口、本机或内网地址，并在每次页面请求与最终地址上重复校验。正文与标题固定有界，读取失败以受控错误收敛，不将浏览器异常或页面敏感内容写入日志。
-- `chub.debug_chrome.page.interact` 是受控的低风险浏览动作：调用方只能在临时页面中按精确可见链接文字找到唯一一个锚点，再以其公网 HTTP(S) 地址进入下一页面并取得相同的有界快照。页面可使用既有登录态，但它不执行页面点击事件，不接受选择器、表单值、键盘输入、脚本或下载，也不触碰已有页面。
-- 能力目录不自动授予调用权。Chub 可在创建已授权 Worker 任务时写入不可变的能力授权快照；未获授权的普通任务不携带该扩展字段，保持既有 Worker 提交路径。只有已授权的该次任务才能使用固定 `chub capability page-read --url <URL>` 或 `chub capability page-interact --url <URL> --follow-link <链接文字>` 命令。命令读取临时、私有的任务上下文，并在任务结束后清除；它不接受能力 ID、Profile、CDP 地址、Cookie、脚本、选择器或浏览器操作参数。工作台 AI 搜索创建的任务显式获得这两个只读/导航授权；普通 AI Session、任务编排插件、OpenClaw 和外部浏览器不默认获得。Deliveryline 仅在其 `1-2` 协作任务含合规公共网页链接时显式获得 `page.read`，不能扩大到其他阶段或任务。
-- Chub 内置实现只承载固定浏览器能力，不构成调用授权。Session 只接收稳定能力 ID 与固定命令，不直接获得 Debug Chrome Profile 或 CDP 控制权；后续业务模块必须在任务创建时显式传入其阶段允许的能力集合。
+- `chub.debug_chrome.page.interact` 是受控的低风险浏览动作：调用方只能在临时页面中按精确可见链接文字找到唯一一个锚点，再以其公网 HTTP(S) 地址进入下一页面并取得相同的有界快照。读取结束后关闭自身创建的页面及其派生页面；关闭未确认时以受控错误收敛。页面可使用既有登录态，但它不执行页面点击事件，不接受选择器、表单值、键盘输入、脚本或下载，也不触碰已有页面。
+- `chub capability page-read --url <URL>` 与 `chub capability page-interact --url <URL> --follow-link <链接文字>` 是 Chub Session 和本机 CLI 的固定本机入口，不读取任务上下文、能力 ID、Profile、CDP 地址、Cookie、脚本或选择器。CLI 在识别该资源后直接进入轻量 Python 入口，不创建临时授权文件。
+- Chub 内置实现只承载固定浏览器能力，不提供 Debug Chrome Profile 或 CDP 控制权。任务编排插件、OpenClaw、远程浏览器和其他外部 Agent 不获得本机 CLI/Shell 入口，不能通过本能力访问浏览器。
 
 需要继续了解某项能力的完整规则时，按下表定位；不要从入口命令或页面文案推断其他能力的状态、权限或恢复方式。
 
@@ -256,6 +257,7 @@ chmod 600 \
 ##### Session、任务与模型
 
 - 微信任务润色页持久化独立的 Runtime、模型和推理等级，首次可用时使用 Codex 与其模型目录默认组合；当前内部翻译 Session、Worker 提交与恢复固定为 Codex，Runtime 快照也因此固定为 Codex。新增 Runtime 不会自动进入微信润色执行链，必须先完成该链路的独立接入。`text model use M#` 切换模型，并仅在原等级不兼容时改用目标模型的默认等级。每个翻译任务在提交时快照模型与推理等级；已进入队列的任务继续使用提交时快照。隐藏翻译 Session 固定 `Read Only`，不继承默认权限，以确保不可信正文不能获取工具或文件访问能力。
+- 会话设置页“内部会话显示”只控制内部 Session 的可见性，不提供另一套权限设置。除上述微信润色外，今日关注及后续内部会话在创建时均继承通用新会话设置；默认设置调整不追溯改写已存在的内部 Session。
 - 会话设置页“内部会话显示”分组的“显示内部翻译 Session”默认关闭。关闭时，翻译工作目录中的未关联 Native Session 不显示在工作台；开启后仅供维护查看。该开关仍由微信任务润色模块独立保存，不创建、停止、删除或改写翻译任务、Chub Session 或 Codex 原生 Session。
 - 当当前 AI Runtime 被设置页停用时，微信 ClawBot 的新任务固定回复 `Not submitted · Codex Runtime is disabled. Chub is in base mode. Enable it in Settings to submit AI tasks.`；`chub` 状态摘要在 `Issues` 中显示 `AI Runtime is disabled. Chub is in base mode.`。这不取消已受理任务，也不影响既有 Session 的维护指令。
 - 当 Quick Worker 当前不可用时，微信 ClawBot 的 `new` 和普通任务固定回复 `Not submitted · Quick Worker is unavailable. Try again later.`；维护恢复指令仍按各自契约可用。
@@ -275,7 +277,7 @@ chmod 600 \
 - 普通提交路径中，当前 Session 忙时拒绝提交，并短期保存最近一次待续提正文。
 - `last` 只读取当前 Quick Worker 保留的最近 30 条任务记录窗口，并在当前绑定 Session 内选择最近一条状态已收敛为成功、失败或超时的普通任务，按当前可信微信路由重新发送结果；不扫描已淘汰的历史记录，也不区分原任务来自微信、电脑端还是 Web。翻译、取消、运行中和没有终态结果的任务不参与筛选。窗口内没有符合条件的任务时明确回复未找到。长结果继续使用既有固定分段和总条数上限；重复同一微信消息不会重复发送；投递状态无法确认时不宣称成功，需发送新的 `last` 重试。
 - 普通任务、切换后提交和续提任务成功后，回执必须列出全部已登记 Session；每个运行中的 Session 紧跟对应 `Task`，当前绑定继续使用 `▶` 标记，方便直接判断可切换槽位。列表采集失败不得把已成功提交误报为失败，至少保留本次可信任务上下文。
-- `new [title]` 创建成功后即选中新 Session；无标题时保留创建后的默认名称，提供标题时再执行命名；当微信 Chub 模式未显式配置模型和推理等级时，使用设置页保存的当前节点新建默认，命名失败时保留该 Session，并提示使用 `rename` 修正。显式微信配置优先于节点默认，已有 Session 不受新默认变化影响。
+- `new [title]` 创建成功后即选中新 Session；无标题时保留创建后的默认名称，提供标题时再执行命名；新建 Session 使用设置页保存的当前节点默认 Runtime、权限、模型和推理等级。已有 Session 不受新默认变化影响。
 - `stop [S#]` 先回复已安排，再异步取消目标 Session 中当前由 Quick Worker 执行的任务；省略槽位时目标为当前绑定 Session。原生 Session 被外部进程占用、占用状态未知或当前没有执行任务时拒绝。最终结果只发送到本次保存的微信路由。停止不释放槽位，只有归档或删除操作释放槽位。
 - `archive S#` 仅在明确知道 Session 正处于执行中时拒绝，并与 Web 使用同一条归档流程；状态未知时先交给 native session 尝试归档，由 native 返回可行性和最终结果。有原生 Session 时，原生失败或结果未知则保留 Chub 记录、任务和槽位并返回原因；原生归档成功后再清理记录并释放槽位。没有原生 Session 时直接完成 Chub 侧清理。若原生归档已完成但 Chub 清理或槽位同步中断，保留记录并允许重试，重试先确认原生已归档，不重复执行原生归档。
 - `del S#` 永久删除目标 Session 及其 Chub 记录；删除前先取消可取消的 Quick Worker 任务，再由 Runtime 确认原生删除，成功后释放槽位。外部占用、运行态或结果未知时失败关闭并保留槽位；删除结果未知时不得宣告成功。

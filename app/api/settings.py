@@ -65,6 +65,25 @@ class DeploymentPackageConfigurationUpdate(BaseModel):
 
     release_version: str = Field(pattern=RELEASE_VERSION_PATTERN)
     include_development_sources: bool = False
+    release_note: str = Field(default="", max_length=2000)
+
+    @field_validator("release_note")
+    @classmethod
+    def normalize_release_note(cls, value: str) -> str:
+        return value.strip()
+
+
+class DeploymentPackageReleaseNoteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    release_version: str = Field(pattern=RELEASE_VERSION_PATTERN)
+    include_development_sources: bool = False
+
+
+class DeploymentPackageReleaseNoteSessionVisibilityUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    show_sessions: bool
 
 
 @router.get(
@@ -198,6 +217,7 @@ def update_deployment_package_configuration(
                 runtime_description=FORMAL_CODEX_DESCRIPTION,
                 weixin_release_version=payload.release_version,
                 include_development_sources=payload.include_development_sources,
+                release_note=payload.release_note,
             )
         )
     except ApiError as exc:
@@ -205,6 +225,127 @@ def update_deployment_package_configuration(
         raise
     log_operation(request, action="update_deployment_package_configuration", status="succeeded", target="deployment-package", operation_id=operation_id)
     return ApiResponse(data=data)
+
+
+@router.post(
+    "/deployment-package/release-note",
+    response_model=ApiResponse[DeploymentPackageStatus],
+)
+def generate_deployment_package_release_note(
+    payload: DeploymentPackageReleaseNoteRequest,
+    request: Request,
+) -> ApiResponse[DeploymentPackageStatus]:
+    source_ip = request.client.host if request.client else "unknown"
+    operation_id = log_operation(
+        request,
+        action="generate_deployment_package_release_note",
+        status="requested",
+        target=payload.release_version,
+    )
+    log_operation(
+        request,
+        action="generate_deployment_package_release_note",
+        status="started",
+        target=payload.release_version,
+        operation_id=operation_id,
+    )
+    try:
+        data = request.app.state.deployment_package.generate_release_note(
+            release_version=payload.release_version,
+            include_development_sources=payload.include_development_sources,
+            source_ip=source_ip,
+            operation_id=operation_id,
+        )
+    except ApiError as exc:
+        log_operation(
+            request,
+            action="generate_deployment_package_release_note",
+            status="failed",
+            target=payload.release_version,
+            operation_id=operation_id,
+            reason=exc.code,
+        )
+        raise
+    except Exception:
+        log_operation(
+            request,
+            action="generate_deployment_package_release_note",
+            status="failed",
+            target=payload.release_version,
+            operation_id=operation_id,
+            reason="submission_failed",
+        )
+        raise
+    return ApiResponse(data=data)
+
+
+@router.get(
+    "/deployment-package/release-note-session",
+    response_model=ApiResponse[dict[str, bool]],
+)
+def get_deployment_package_release_note_session_visibility(
+    request: Request,
+) -> ApiResponse[dict[str, bool]]:
+    return ApiResponse(
+        data={"show_sessions": request.app.state.deployment_package.show_release_note_session()}
+    )
+
+
+@router.put(
+    "/deployment-package/release-note-session",
+    response_model=ApiResponse[dict[str, bool]],
+)
+def update_deployment_package_release_note_session_visibility(
+    payload: DeploymentPackageReleaseNoteSessionVisibilityUpdate,
+    request: Request,
+) -> ApiResponse[dict[str, bool]]:
+    return ApiResponse(
+        data={
+            "show_sessions": request.app.state.deployment_package.set_show_release_note_session(
+                payload.show_sessions
+            )
+        }
+    )
+
+
+@router.post(
+    "/deployment-package/open-output",
+    response_model=ApiResponse[dict[str, str]],
+)
+def open_deployment_package_output(request: Request) -> ApiResponse[dict[str, str]]:
+    operation_id = log_operation(
+        request,
+        action="open_deployment_package_output",
+        status="requested",
+        target="deployment-package-output",
+    )
+    log_operation(
+        request,
+        action="open_deployment_package_output",
+        status="started",
+        target="deployment-package-output",
+        operation_id=operation_id,
+    )
+    try:
+        request.app.state.deployment_package.open_output_directory()
+    except ApiError as exc:
+        log_operation(
+            request,
+            action="open_deployment_package_output",
+            status="failed",
+            target="deployment-package-output",
+            operation_id=operation_id,
+            reason=exc.code,
+        )
+        raise
+    log_operation(
+        request,
+        action="open_deployment_package_output",
+        status="succeeded",
+        target="deployment-package-output",
+        operation_id=operation_id,
+    )
+    return ApiResponse(data={"status": "succeeded"})
 
 
 @router.post(

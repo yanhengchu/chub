@@ -64,7 +64,6 @@ def main() -> int:
         native_session_id=native_session_id,
         model=spec.model,
         reasoning_effort=spec.reasoning_effort,
-        capability_ids=spec.capability_ids,
     )
     process_spec = CodexRuntimeRunner.command(
         args.runtime_executable,

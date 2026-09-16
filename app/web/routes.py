@@ -55,8 +55,8 @@ def _imported_runtime_navigation(request: Request) -> tuple:
         return ()
 
 
-def _search_navigation_available(request: Request) -> bool:
-    """Search is an AI Runtime entry and must disappear without one."""
+def _today_focus_navigation_available(request: Request) -> bool:
+    """Today Focus is an AI Runtime entry and must disappear without one."""
     return bool(_imported_runtime_navigation(request))
 
 
@@ -116,7 +116,7 @@ def _deliveryline_workspace_state(request: Request) -> dict[str, str] | None:
 
 
 @router.get("/", response_class=HTMLResponse, include_in_schema=False)
-def index(request: Request, section: str = "workbench", search: str = "") -> HTMLResponse:
+def index(request: Request, section: str = "workbench") -> HTMLResponse:
     workspace_session_id = request.query_params.get("session", "").strip()
     if len(workspace_session_id) > 200:
         workspace_session_id = ""
@@ -124,7 +124,6 @@ def index(request: Request, section: str = "workbench", search: str = "") -> HTM
         request,
         "workbench" if workspace_session_id else section,
         workspace_session_id=workspace_session_id or None,
-        workspace_search_id=search if len(search) == 32 and search.isalnum() else None,
     )
 
 
@@ -348,10 +347,10 @@ def workspace_preview(
     request: Request,
     section: str = "workbench",
 ) -> RedirectResponse:
-    search_navigation = _search_navigation_available(request)
+    today_focus_navigation = _today_focus_navigation_available(request)
     sections = {"workbench", "project-docs", "automations"}
-    if search_navigation:
-        sections.add("search")
+    if today_focus_navigation:
+        sections.add("today-focus")
     if _deliveryline_workspace_state(request) is not None:
         sections.add("deliveryline")
     if section not in sections:
@@ -365,14 +364,13 @@ def render_workspace(
     section: str,
     *,
     workspace_session_id: str | None = None,
-    workspace_search_id: str | None = None,
 ) -> HTMLResponse:
     settings = request.app.state.settings
     deliveryline = _deliveryline_workspace_state(request)
-    search_navigation = _search_navigation_available(request)
+    today_focus_navigation = _today_focus_navigation_available(request)
     sections = {"workbench", "project-docs", "automations"}
-    if search_navigation:
-        sections.add("search")
+    if today_focus_navigation:
+        sections.add("today-focus")
     if deliveryline is not None:
         sections.add("deliveryline")
     if section not in sections:
@@ -452,10 +450,9 @@ def render_workspace(
             "page_title": settings.app.page_title or settings.app.name,
             "workspace_section": section,
             "workspace_session_id": workspace_session_id,
-            "workspace_search_id": workspace_search_id,
             "deliveryline": deliveryline,
             "deliveryline_navigation": deliveryline is not None,
-            "search_navigation": search_navigation,
+            "today_focus_navigation": today_focus_navigation,
             "document_categories": DOCUMENT_CATEGORIES,
             "deliveryline_requirements": deliveryline_requirements,
             "deliveryline_archived_requirements": deliveryline_archived_requirements,

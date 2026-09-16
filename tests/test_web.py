@@ -564,6 +564,29 @@ async def test_settings_navigation_keeps_session_for_an_imported_disabled_runtim
 
 
 @pytest.mark.anyio
+async def test_workspace_navigation_places_today_focus_before_project_documents(
+    settings: Settings,
+) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        imported = await client.post(
+            "/api/plugins/codex-runtime/imports",
+            json={"artifact_id": "development:codex-runtime"},
+        )
+        response = await client.get("/")
+
+    assert imported.status_code == 200
+    assert response.status_code == 200
+    assert response.text.index('aria-label="今日关注"') < response.text.index(
+        'aria-label="项目资料"'
+    )
+    assert response.text.index("<span>今日关注</span>") < response.text.index(
+        "<span>项目资料</span>"
+    )
+
+
+@pytest.mark.anyio
 async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     settings: Settings,
 ) -> None:
@@ -683,13 +706,35 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert 'id="maintenance-tools-title">维护工具</h3>' in pages["diagnostics"].text
     assert "查看节点记录、打开维护终端并核对当前 Chub 版本。" in pages["diagnostics"].text
     assert pages["diagnostics"].text.index('id="deployment-package-include-development"') < pages["diagnostics"].text.index('id="deployment-package-chub-version"')
-    assert "构建标识：${operation.build_id}" in script.text
+    assert 'id="deployment-package-release-note" maxlength="2000" rows="2"' in pages["diagnostics"].text
+    assert 'id="deployment-package-release-note" maxlength="2000" rows="2" required' not in pages["diagnostics"].text
+    assert 'id="deployment-package-output"' not in pages["diagnostics"].text
+    assert 'id="deployment-package-build" class="button-secondary" type="button">生成发版说明</button>' in pages["diagnostics"].text
+    assert 'id="deployment-package-artifacts-title">发版产物</h4>' in pages["diagnostics"].text
+    assert 'id="deployment-package-open-output" class="button-secondary" type="button">打开</button>' in pages["diagnostics"].text
+    deployment_form_start = pages["diagnostics"].text.index('id="deployment-package-form"')
+    deployment_form_end = pages["diagnostics"].text.index("</form>", deployment_form_start)
+    deployment_artifacts = pages["diagnostics"].text.index('id="deployment-package-artifacts-title"')
+    assert deployment_form_start < deployment_artifacts < deployment_form_end
+    assert "构建标识：${latestOperation.build_id}" in script.text
+    assert "release_note: deploymentPackageReleaseNote.value.trim()" in script.text
+    assert '"/api/settings/deployment-package/release-note"' in script.text
+    assert 'deploymentPackageBuild.textContent = generationRequired()' in script.text
+    assert "最近一次成功发布的产物如下。" in script.text
+    assert '"/api/settings/deployment-package/open-output"' in script.text
     assert "随包模块：\\n${moduleSummary}" in script.text
     assert 'release_version: deploymentPackageChubVersion.value.trim()' in script.text
     assert 'id="deployment-package-runtime-version"' not in pages["diagnostics"].text
     assert 'id="deployment-package-weixin-version"' not in pages["diagnostics"].text
     assert '<strong>发布版本</strong>' in pages["diagnostics"].text
+    assert 'deployment-package-show-release-note-session' in session_visibility_script.text
+    assert '"/api/settings/deployment-package/release-note-session"' in session_visibility_script.text
     assert '.settings-field input[type="text"]' in stylesheet.text
+    assert ".deployment-package-heading" in stylesheet.text
+    assert ".deployment-package-artifacts" in stylesheet.text
+    assert ".deployment-package-artifacts-heading" in stylesheet.text
+    assert ".deployment-package-artifacts-heading p" in stylesheet.text
+    assert ".settings-field textarea:focus-visible" in stylesheet.text
     assert 'background: var(--color-surface-field);' in stylesheet.text
     assert '.settings-divided-list .settings-field + .settings-field' in stylesheet.text
     assert '.settings-divided-list .settings-field + .settings-utility-row' in stylesheet.text
@@ -704,6 +749,14 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert '.settings-navigation-link.settings-navigation-parent {' in stylesheet.text
     assert '.settings-navigation-link.settings-navigation-child {' in stylesheet.text
     assert '.settings-navigation-link[aria-current="page"] {\n  border-color: var(--color-accent);' in stylesheet.text
+    assert ".confirmation-dialog-description" in stylesheet.text
+    assert ".confirmation-dialog-body" in stylesheet.text
+    assert "--dialog-title-font-size: 1.05rem;" in stylesheet.text
+    assert "--dialog-body-font-size: 0.9rem;" in stylesheet.text
+    assert "--dialog-description-font-size: 0.78rem;" in stylesheet.text
+    assert ".codex-workspace-dialog-header :is(h2, h3)" in stylesheet.text
+    assert ".confirmation-dialog-details li" in stylesheet.text
+    assert "font-size: 0.86rem;" in stylesheet.text
     assert '.runtime-module-empty-row > span' in stylesheet.text
     assert '.settings-divided-list .settings-utility-row + .settings-utility-row' in stylesheet.text
     assert '.settings-utility-list {' in stylesheet.text
@@ -749,11 +802,12 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert 'showInternalNativeSession' not in workspace_script.text
     assert '"/api/deliveryline/settings"' in session_visibility_script.text
     assert '"/api/settings/weixin-translation"' in session_visibility_script.text
-    assert '"/api/search/settings"' in session_visibility_script.text
+    assert '"/api/today-focus/settings"' in session_visibility_script.text
     assert 'show_internal_native_session' in session_visibility_script.text
     assert 'data-session-visibility-feedback' in session_visibility_script.text
     assert 'internal-session-visibility-message' not in session_visibility_script.text
-    assert 'ai_search_submission_recording_pending' in workspace_search_script.text
+    assert '"/api/today-focus/refresh"' in workspace_search_script.text
+    assert '"/api/today-focus/open-pages"' in workspace_search_script.text
     assert 'id="workspace-task-orchestration-title"' not in pages["task-orchestration"].text
     assert 'window.initializeWorkspacePluginLifecycle?.();' in script.text
     assert 'workstation-status-detail-${enabled.length ? "success" : "warning"}' in lifecycle_script.text
@@ -1195,6 +1249,7 @@ async def test_home_workstation_third_party_controls_are_state_driven(
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/")
         script = await client.get("/static/js/features/workspace-workstation.js")
+        ui_script = await client.get("/static/js/components/ui.js")
 
     assert response.status_code == 200
     assert "插件状态" in response.text
@@ -1223,6 +1278,8 @@ async def test_home_workstation_third_party_controls_are_state_driven(
     assert 'id="workspace-openclaw-stop"' not in response.text
     assert 'id="workspace-openclaw-bind-weixin"' in response.text
     assert 'id="workspace-openclaw-weixin-dialog"' in response.text
+    assert 'class="confirmation-dialog-body openclaw-weixin-lead"' in response.text
+    assert 'id="confirmation-dialog-body" class="confirmation-dialog-body" hidden' in response.text
     assert 'id="workspace-chub-message"' not in response.text
     assert 'id="workspace-worker-message"' not in response.text
     assert 'id="workspace-openclaw-message"' not in response.text
@@ -1234,6 +1291,11 @@ async def test_home_workstation_third_party_controls_are_state_driven(
     assert '"正在重启与恢复 OpenClaw Gateway，并确认 Gateway 与消息通道最终状态。"' in script.text
     assert 'closeOnConfirm: true,' in script.text
     assert 'onConfirm: () => controlOpenClaw("restart"),' in script.text
+    assert 'confirmationDialogDescription.hidden = !description.trim();' in ui_script.text
+    assert 'body: "Gateway 和微信消息通道会短暂中断。' in script.text
+    assert 'body: "只重启 Chub Web 控制面；' in script.text
+    assert 'body: "排队任务会取消，执行中的快速任务会停止并标记为未完成，且不会自动重试。' in script.text
+    assert 'body: "此操作会清理 Chub 自有 AI 运行状态并重启 Chub Web 与 Quick Worker；' in script.text
     assert "OpenClaw Gateway 已完成重启与恢复检查。" not in script.text
     assert "正在检查固定插件、补丁和运行状态。" not in script.text
     assert '? `OpenClaw / Gateway v${status.version} · `' in script.text
@@ -1244,7 +1306,7 @@ async def test_home_workstation_third_party_controls_are_state_driven(
     assert 'const developmentSnapshotCacheKey = "chub.workspace.development.v1";' in script.text
     assert 'const refreshDevelopment = async () =>' in script.text
     assert 'void loadDevelopment();' in script.text
-    assert 'request("/api/runtime-modules/builtin-dev/refresh", { method: "POST" })' not in script.text
+    assert 'request("/api/runtime-modules/codex-runtime-dev/refresh", { method: "POST" })' not in script.text
     assert 'body: JSON.stringify({ implementation: "weixin-orchestration-dev" }),' not in script.text
     assert 'window.sessionStorage.getItem(thirdPartySnapshotCacheKey)' in script.text
     assert 'window.sessionStorage.setItem(' in script.text
@@ -1440,6 +1502,8 @@ async def test_automation_section_uses_workstation_status_rows(
     assert "border: 0;" in stylesheet.text
     assert 'showConfirmationDialog({' in workspace_script.text
     assert '`/api/automations/${encodeURIComponent(taskId)}/run`' in workspace_script.text
+    assert 'body: `即将运行“${taskTitle}”。任务将使用当前 Debug Chrome 与登录状态，执行已配置的固定步骤。`' in workspace_script.text
+    assert 'body: `将创建独立的周报生成会话并执行“${label}”。生成过程不会重新下载资料。`' in workspace_script.text
     assert 'setWorkstationStatus(taskDetail, "任务已受理，正在刷新状态。", "warning");' in workspace_script.text
     assert '".workspace-weekly-report-view-session"' in workspace_script.text
     assert "window.selectWorkspaceQuickSession?.(sessionId);" in workspace_script.text
@@ -1447,6 +1511,7 @@ async def test_automation_section_uses_workstation_status_rows(
     assert "window.location.assign(`/?session=${encodeURIComponent(sessionId)}`);" in workspace_script.text
     assert '".workspace-weekly-report-confirm-and-run"' in workspace_script.text
     assert '"/api/weekly-reports/current/report/confirm-and-run"' in workspace_script.text
+    assert 'body: "将确认当前工作重点确认清单，并立即在同一周报会话中生成正式周报。"' in workspace_script.text
     assert "setAutomationBrowserMessage" not in workspace_script.text
     assert "setAutomationFeishuMessage" not in workspace_script.text
     assert '"/api/automations/environment/feishu/login-page"' in workspace_script.text
@@ -1466,7 +1531,7 @@ async def test_automation_section_uses_workstation_status_rows(
     assert 'const codexAccountQuota = (state) => {' in workspace_script.text
     assert 'const quota = state?.state === "available" ? codexAccountQuota(state) : "";' in workspace_script.text
     assert 'data-automation-refresh-active="' in response.text
-    assert 'const refreshWorkspaceAutomations = async () =>' in workspace_script.text
+    assert 'const refreshWorkspaceAutomations = async ({ checkCodexApiQuota = false } = {}) =>' in workspace_script.text
     assert 'fetch("/?section=automations", {' in workspace_script.text
     assert 'currentSurface.replaceWith(nextSurface);' in workspace_script.text
     assert 'document.hidden ? 5_000 : 1_500' in workspace_script.text
@@ -1662,11 +1727,12 @@ async def test_automation_section_keeps_browser_dialogs_for_partial_refresh(
     assert workspace_script.status_code == 200
     assert 'id="workspace-automation-browser-start-dialog"' in response.text
     assert 'id="workspace-automation-browser-stop-dialog"' in response.text
+    assert '<p class="confirmation-dialog-body">停止会关闭当前调试浏览器页面；正在使用该环境的自动化任务可能失败。</p>' in response.text
     assert "API Key 模式已启用 · 浏览器未启动，额度暂无法获取" in response.text
-    assert "const refreshAfterBrowserControl = (button, message, attempt = 0) => {" in workspace_script.text
+    assert "const refreshAfterBrowserControl = (button, message, attempt = 0, checkCodexApiQuota = false) => {" in workspace_script.text
     assert "if (attempt < 2)" in workspace_script.text
-    assert "scheduleCodexApiQuotaCheck" not in workspace_script.text
-    assert "isApiQuotaAccount" not in workspace_script.text
+    assert 'nextSurface.dataset.checkCodexApiQuotaAfterBrowserStart = "true";' in workspace_script.text
+    assert "shouldCheckCodexApiQuotaAfterBrowserStart" in workspace_script.text
 
 
 @pytest.mark.anyio
@@ -1778,7 +1844,7 @@ async def test_quick_interaction_conversation_page_is_available(
     assert 'id="conversation-delete-dialog"' in page.text
     assert 'id="conversation-delete-confirm"' in page.text
     assert 'class="codex-workspace-dialog confirmation-dialog conversation-archive-dialog"' in page.text
-    assert 'class="confirmation-dialog-description"' in page.text
+    assert 'id="conversation-archive-description" class="confirmation-dialog-body"' in page.text
     assert 'id="conversation-create-dialog" class="codex-workspace-dialog conversation-create-dialog workspace-session-create-dialog"' in page.text
     assert 'id="conversation-create-form" class="codex-workspace-dialog-surface workspace-session-create-form"' in page.text
     assert 'id="conversation-create-workspaces" type="hidden"' in page.text

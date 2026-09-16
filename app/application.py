@@ -233,7 +233,7 @@ def _is_ai_runtime_mutation(request: Request) -> bool:
         or path.startswith("/api/plugins/codex-runtime/")
         or path.startswith("/api/ai/runtimes/")
         or path == "/api/ai/settings"
-        or path.startswith("/api/search/")
+        or path.startswith("/api/today-focus/")
         or path.startswith("/api/weekly-reports/")
     )
 
@@ -333,7 +333,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     ai_session_manager.set_system_upgrade_checker(system_upgrade.writes_blocked)
     maintenance_terminal = MaintenanceTerminalManager(resolved_settings)
-    deployment_package = DeploymentPackageService(resolved_settings)
+    deployment_package = DeploymentPackageService(
+        resolved_settings,
+        ai_session_manager,
+        quick_interactions,
+    )
     weixin_translation = WeixinTranslationManager(
         resolved_settings.openclaw.weixin_chub_mode,
         ai_session_manager,
@@ -452,9 +456,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     weixin_translation.set_confirmation_discarded_handler(
         weixin_chub_mode.discard_optimized_task
     )
-    quick_interactions.set_task_finished_handler(
-        weixin_chub_mode.record_orchestration_task_finished
-    )
+
+    def record_quick_task_finished(task) -> None:
+        try:
+            deployment_package.record_release_note_task_finished(task)
+        except Exception:
+            logger.warning(
+                "Unable to persist deployment package release-note task result",
+                exc_info=True,
+            )
+        weixin_chub_mode.record_orchestration_task_finished(task)
+
+    quick_interactions.set_task_finished_handler(record_quick_task_finished)
     try:
         weixin_chub_mode.reconcile_orchestration_requests()
     except OSError:

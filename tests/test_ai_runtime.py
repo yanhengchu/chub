@@ -299,12 +299,12 @@ def test_runtime_capability_matrix_accepts_multiple_implementations_of_one_runti
             )
 
     registry = RuntimeRegistry(
-        [CodexImplementation("builtin-dev"), CodexImplementation("codex-010000")]
+        [CodexImplementation("codex-runtime-dev"), CodexImplementation("codex-010000")]
     )
 
     assert registry.runtime_ids() == ("codex",)
     assert registry.implementation_ids("codex") == (
-        "builtin-dev",
+        "codex-runtime-dev",
         "codex-010000",
     )
     assert [item.runtime_id for item in registry.capability_matrix()] == [
@@ -401,7 +401,7 @@ def test_runtime_plugin_registry_navigation_groups_versions_by_runtime() -> None
         [
             StubRuntimePlugin(
                 "codex",
-                implementation_id="builtin-dev",
+                implementation_id="codex-runtime-dev",
                 is_default=True,
                 display_name="Codex",
             ),
@@ -415,7 +415,7 @@ def test_runtime_plugin_registry_navigation_groups_versions_by_runtime() -> None
 
     assert registry.runtime_ids() == ("codex",)
     assert [item.runtime_id for item in registry.navigation()] == ["codex"]
-    assert registry.require_navigation("codex").implementation_id == "builtin-dev"
+    assert registry.require_navigation("codex").implementation_id == "codex-runtime-dev"
 
 
 def test_session_manager_isolates_external_adapter_construction_failure(
@@ -462,7 +462,7 @@ def test_session_manager_allows_default_version_change_while_existing_session_us
         [
             StubRuntimePlugin(
                 "codex",
-                implementation_id="builtin-dev",
+                implementation_id="codex-runtime-dev",
                 is_default=True,
                 display_name="Codex",
             ),
@@ -486,13 +486,13 @@ def test_session_manager_allows_default_version_change_while_existing_session_us
     manager.runtime_plugins = modules
     manager.runtime_registry = RuntimeRegistry([builtin, formal])
     manager.runtime_adapters = {
-        "builtin-dev": builtin,
+        "codex-runtime-dev": builtin,
         "codex-010001": formal,
     }
-    manager.default_implementation_id = "builtin-dev"
+    manager.default_implementation_id = "codex-runtime-dev"
     manager.runtime_adapter = builtin
     manager.runtime_implementation_preferences.save(
-        RuntimeImplementationPreferences(default_implementation_id="builtin-dev")
+        RuntimeImplementationPreferences(default_implementation_id="codex-runtime-dev")
     )
     manager.runtime_enablement.save(RuntimeEnablement(disabled_runtime_ids=["codex"]))
     manager.store.list = MagicMock(
@@ -534,8 +534,8 @@ def test_session_manager_pins_new_sessions_to_the_default_implementation(
         permission_mode="full-access",
     )
 
-    assert manager.get_session(first.id).implementation_id == "builtin-dev"
-    assert manager.session_implementation_id(first.id) == "builtin-dev"
+    assert manager.get_session(first.id).implementation_id == "codex-runtime-dev"
+    assert manager.session_implementation_id(first.id) == "codex-runtime-dev"
     assert manager.get_session(second.id).implementation_id == "codex-010000"
 
 
@@ -551,7 +551,7 @@ def test_session_implementation_compatibility_requires_enabled_plugin_lifecycle(
     with pytest.raises(ApiError) as rejected:
         manager.ensure_session_implementation_compatible(
             session.id,
-            "builtin-dev",
+            "codex-runtime-dev",
         )
 
     assert rejected.value.code == "runtime_plugin_disabled"
@@ -598,7 +598,14 @@ def test_session_manager_starts_with_development_plugin_when_no_formal_version_i
 
     available, reason = manager.submission_available()
 
-    assert manager.runtime_plugins.implementation_ids("codex") == ("builtin-dev",)
+    assert manager.runtime_plugins.implementation_ids("codex") == (
+        "codex-runtime-dev",
+        "builtin-dev",
+    )
+    assert [
+        item.implementation_id
+        for item in manager.read_runtime_implementations().implementations
+    ] == ["codex-runtime-dev"]
     assert manager.runtime_registry.runtime_ids() == ("codex",)
     assert available is True
     assert reason is None
@@ -648,7 +655,7 @@ def test_native_discovery_keeps_bound_session_when_record_is_missing(
     session = SimpleNamespace(
         id="session-1",
         runtime_id="codex",
-        implementation_id="builtin-dev",
+        implementation_id="codex-runtime-dev",
         native_session_id="11111111-1111-4111-8111-111111111111",
     )
     adapter = MagicMock()
@@ -657,8 +664,8 @@ def test_native_discovery_keeps_bound_session_when_record_is_missing(
         sessions=(),
         archive_states={},
     )
-    manager.runtime_adapters = {"builtin-dev": adapter}
-    manager.default_implementation_id = "builtin-dev"
+    manager.runtime_adapters = {"codex-runtime-dev": adapter}
+    manager.default_implementation_id = "codex-runtime-dev"
     manager.store.list = MagicMock(return_value=[session])
     manager.store.delete = MagicMock()
 
@@ -675,7 +682,7 @@ def test_native_discovery_removes_bound_session_only_after_explicit_archive(
     session = SimpleNamespace(
         id="session-1",
         runtime_id="codex",
-        implementation_id="builtin-dev",
+        implementation_id="codex-runtime-dev",
         native_session_id=native_session_id,
     )
     adapter = MagicMock()
@@ -684,8 +691,8 @@ def test_native_discovery_removes_bound_session_only_after_explicit_archive(
         sessions=(),
         archive_states={native_session_id: True},
     )
-    manager.runtime_adapters = {"builtin-dev": adapter}
-    manager.default_implementation_id = "builtin-dev"
+    manager.runtime_adapters = {"codex-runtime-dev": adapter}
+    manager.default_implementation_id = "codex-runtime-dev"
     manager.store.list = MagicMock(return_value=[session])
     manager.store.delete = MagicMock()
 
@@ -702,7 +709,7 @@ def test_native_discovery_removes_bound_session_after_complete_delete(
     session = SimpleNamespace(
         id="session-1",
         runtime_id="codex",
-        implementation_id="builtin-dev",
+        implementation_id="codex-runtime-dev",
         native_session_id=native_session_id,
     )
     adapter = MagicMock()
@@ -712,8 +719,8 @@ def test_native_discovery_removes_bound_session_after_complete_delete(
         archive_states={},
         complete=True,
     )
-    manager.runtime_adapters = {"builtin-dev": adapter}
-    manager.default_implementation_id = "builtin-dev"
+    manager.runtime_adapters = {"codex-runtime-dev": adapter}
+    manager.default_implementation_id = "codex-runtime-dev"
     manager.store.list = MagicMock(return_value=[session])
     manager.store.delete = MagicMock()
 
@@ -730,7 +737,7 @@ def test_native_discovery_keeps_session_when_passive_cleanup_is_unconfirmed(
     session = SimpleNamespace(
         id="session-1",
         runtime_id="codex",
-        implementation_id="builtin-dev",
+        implementation_id="codex-runtime-dev",
         native_session_id=native_session_id,
     )
     adapter = MagicMock()
@@ -740,8 +747,8 @@ def test_native_discovery_keeps_session_when_passive_cleanup_is_unconfirmed(
     )
     cleanup = MagicMock(return_value=False)
     manager.set_passive_session_cleanup(cleanup)
-    manager.runtime_adapters = {"builtin-dev": adapter}
-    manager.default_implementation_id = "builtin-dev"
+    manager.runtime_adapters = {"codex-runtime-dev": adapter}
+    manager.default_implementation_id = "codex-runtime-dev"
     manager.store.list = MagicMock(return_value=[session])
     manager.store.delete = MagicMock()
 
@@ -852,7 +859,7 @@ def test_worker_runtime_registry_is_fixed_and_fails_before_submission() -> None:
 def test_worker_runtime_registry_reports_logical_runtime_ids_for_versions() -> None:
     registry = WorkerRuntimeRegistry(
         [
-            StubWorkerRuntime("codex", implementation_id="builtin-dev"),
+            StubWorkerRuntime("codex", implementation_id="codex-runtime-dev"),
             StubWorkerRuntime("codex", implementation_id="codex-010000"),
         ]
     )
@@ -860,7 +867,7 @@ def test_worker_runtime_registry_reports_logical_runtime_ids_for_versions() -> N
     assert registry.runtime_ids() == ("codex",)
     assert registry.available_runtime_ids() == ("codex",)
     assert registry.available_implementation_ids() == (
-        "builtin-dev",
+        "codex-runtime-dev",
         "codex-010000",
     )
 
@@ -1606,7 +1613,7 @@ def test_native_discovery_projects_only_title_and_timestamp_to_chub_session() ->
         {
             "id": "11111111-1111-4111-8111-111111111111",
             "runtime_id": "codex",
-            "implementation_id": "builtin-dev",
+            "implementation_id": "codex-runtime-dev",
             "workspace_id": "chub",
             "workspace_name": "Chub",
             "cwd": "/workspace/chub",

@@ -95,7 +95,7 @@
           if (typeof window.showConfirmationDialog !== "function") { void remove(); return; }
           void window.showConfirmationDialog({
             title: "移除插件",
-            description: "移除会停止该实现用于后续新任务；已受理任务按原有快照与恢复规则继续处理。",
+            body: "移除会停止该实现用于后续新任务；已受理任务按原有快照与恢复规则继续处理。",
             details: [{ label: "插件", value: `${plugin.name} · ${artifact.name}` }],
             confirmLabel: "移除",
             pendingLabel: "正在移除…",
@@ -153,6 +153,9 @@
         const option = document.createElement("option");
         option.value = artifact.artifact_id;
         option.textContent = `${plugin.name} · ${artifact.source === "development" ? "开发实现" : artifact.version ? `正式版 v${artifact.version}` : artifact.name}`;
+        option.dataset.description = artifact.source === "development"
+          ? "使用仓库固定的开发实现；仅影响之后新建的交付线操作。"
+          : `使用正式插件包 v${artifact.version || "未知版本"}；仅影响之后新建的交付线操作。`;
         deliverylineVersion.append(option);
       });
       deliverylineVersion.value = selectedId || artifacts[0]?.artifact_id || "";

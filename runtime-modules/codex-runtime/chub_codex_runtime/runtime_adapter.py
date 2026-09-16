@@ -44,7 +44,7 @@ CODEX_RUNTIME_CAPABILITIES: frozenset[RuntimeCapability] = (
 )
 CODEX_RUNTIME_DESCRIPTOR = RuntimeDescriptor(
     runtime_id="codex",
-    implementation_id="builtin-dev",
+    implementation_id="codex-runtime-dev",
     native_session_compatibility_id="codex-v1",
     capabilities=CODEX_RUNTIME_CAPABILITIES,
 )

@@ -10,11 +10,11 @@
 
 Runtime 是 Chub 的受控本机执行实现。客户端、页面、微信和其他外部入口不能选择 Runtime 命令、路径、环境变量、Native ID 或实现槽位；它们只调用 Chub 已定义的 Session 和任务用例。
 
-会话默认配置保存在本机 `config/ai-runtimes.local.yaml`，包括默认 Runtime、权限、模型和推理等级。它仅应用于创建时未明确指定对应参数的后续 Chub Session；已有 Session 与已受理任务继续使用创建时快照。当前只有 Codex 可选；新增 Runtime 后，只有已实现新建 Session 能力的 Runtime 才能进入默认 Runtime 选择。
+会话默认配置保存在本机 `config/ai-runtimes.local.yaml`，包括默认 Runtime、权限、模型和推理等级。它仅应用于创建时未明确指定对应参数的后续 Chub Session；已有 Session 与已受理任务继续使用创建时快照。今日关注等内部会话也遵循此规则，创建或重建时不得覆写通用 Runtime、权限、模型或推理等级；只有微信任务润色这一明确的专项链路保留独立 Runtime、模型、推理等级和固定 `read-only` 权限。旧搜索/今日关注运行状态及微信 Chub 已废弃的专属权限、模型、推理等级字段不做兼容，升级时直接清理；按当前规则创建的 Session 不因此被追溯修改。当前只有 Codex 可选；新增 Runtime 后，只有已实现新建 Session 能力的 Runtime 才能进入默认 Runtime 选择。
 
 新建 Session 固定提供 `chub`、`home` 与 `workspace` 三个内置工作目录。选择 `workspace` 后，任务可在该受信根目录及其全部子目录内工作，无需将每个项目子目录登记为独立工作区。只有需要把某个目录单独展示并作为 Session 的默认工作目录时，维护者才在本机 `settings.local.yaml` 的 `ai_runtime.codex.extra_workspaces` 显式登记；每项使用固定 ID、名称和路径，ID 不得覆盖内置目录。页面与 API 只接受后端已加载的目录 ID，不能传入任意路径；已创建 Session 继续保存其创建时的工作目录，移除已使用的额外目录前必须先处理关联 Session。Quick Worker 重载后才会使用新增或移除的额外目录映射执行新任务。
 
-AI Agent 应先按问题范围选择文档：共享 Runtime 能力、Adapter/Runner 与 Native 兼容规则看本文；Codex 私有行为看[Chub Codex Runtime 设计](CHUB_CODEX_RUNTIME_DESIGN.md)；Runtime 插件模块 ZIP 的导入、覆盖、删除和 `builtin-dev` 重载看[Chub AI Runtime 插件模块设计](CHUB_RUNTIME_PLUGIN_DESIGN.md)；Session 与 Worker 领域状态分别看对应专项设计。
+AI Agent 应先按问题范围选择文档：共享 Runtime 能力、Adapter/Runner 与 Native 兼容规则看本文；Codex 私有行为看[Chub Codex Runtime 设计](CHUB_CODEX_RUNTIME_DESIGN.md)；Runtime 插件模块 ZIP 的导入、覆盖、删除和 `codex-runtime-dev` 重载看[Chub AI Runtime 插件模块设计](CHUB_RUNTIME_PLUGIN_DESIGN.md)；Session 与 Worker 领域状态分别看对应专项设计。
 
 Runtime 的 `implementation_id` 是可维护的**实现槽位**：默认实现只影响新建 Session，Session 创建后固定该槽位。它不是任务编排插件模块 ZIP 的 `implementation_ref`；后者是包含内容摘要的**不可变产物引用**，只用于编排请求快照，并由[Chub 任务编排插件模块架构设计](CHUB_TASK_ORCHESTRATION_PLUGIN_DESIGN.md)定义。两者不得跨领域复用或互相替代。
 
@@ -23,7 +23,7 @@ Runtime 的 `implementation_id` 是可维护的**实现槽位**：默认实现�
 | 字段 | 规则 |
 | --- | --- |
 | `runtime_id` | 稳定的逻辑 Runtime 标识；当前为 `codex`。 |
-| `implementation_id` | 具体可信实现槽位；当前开发实现为 `builtin-dev`。 |
+| `implementation_id` | 具体可信实现槽位；当前开发实现为 `codex-runtime-dev`。 |
 | `native_session_compatibility_id` | 同一 Native 格式的兼容组；已绑定 Session 只能使用兼容实现。 |
 | `capabilities` | 固定能力集合；Adapter 与 Runner 必须声明完全一致的 Runtime 身份和能力。 |
 

@@ -31,7 +31,10 @@ from app.ai_runtime import (
     validate_runtime_wiring,
 )
 from app.ai_runtime.runtime_plugin_packages import RuntimePluginService
-from app.ai_runtime.codex_plugin import load_development_codex_plugin
+from app.ai_runtime.codex_plugin import (
+    LEGACY_DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
+    load_development_codex_plugin,
+)
 from app.quick_worker_tasks import (
     RuntimeTaskSubmission,
     TestTaskSubmission,
@@ -43,8 +46,8 @@ from app.services.operation_log import write_operation
 
 
 HEALTH_PROTOCOL_VERSION = 1
-PROTOCOL_VERSION = 12
-WORKER_CODE_VERSION = "quick-worker-12-ai-search-capabilities"
+PROTOCOL_VERSION = 13
+WORKER_CODE_VERSION = "quick-worker-13-local-browser-capabilities"
 MAX_REQUEST_BYTES = 64 * 1024
 MAX_RESPONSE_BYTES = 256 * 1024
 CLIENT_TIMEOUT_SECONDS = 2.0
@@ -119,7 +122,7 @@ class WorkerRuntimeRegistryRefreshRequest(_StrictModel):
     action: Literal["runtime_registry_refresh"]
     implementation_id: str = Field(pattern=r"^[a-z][a-z0-9-]{0,31}$")
     expected_present: bool
-    reload_builtin_source: bool = False
+    reload_development_source: bool = False
 
 
 class WorkerTaskGetRequest(_StrictModel):
@@ -311,14 +314,20 @@ class QuickWorkerServer:
                     if codex_home is not None
                     else Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
                 )
-                def build_registry(*, reload_builtin_source: bool = False) -> WorkerRuntimeRegistry:
+                def build_registry(*, reload_development_source: bool = False) -> WorkerRuntimeRegistry:
                     runners = []
                     development_plugin = load_development_codex_plugin(
-                        settings, reload_source=reload_builtin_source
+                        settings, reload_source=reload_development_source
+                    )
+                    legacy_development_plugin = load_development_codex_plugin(
+                        settings,
+                        implementation_id=LEGACY_DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
                     )
                     runtime_plugins, failures = RuntimePluginService(settings).build_registry(
                         RuntimePluginRegistry(
-                            [] if development_plugin is None else [development_plugin]
+                            []
+                            if development_plugin is None
+                            else [development_plugin, legacy_development_plugin]
                         )
                     )
                     for failure in failures:
@@ -497,7 +506,7 @@ class QuickWorkerServer:
         implementation_id: str,
         *,
         expected_present: bool,
-        reload_builtin_source: bool = False,
+        reload_development_source: bool = False,
     ) -> None:
         """Reload trusted Runtime modules without interrupting other implementations."""
         if self._runtime_registry_factory is None:
@@ -511,7 +520,7 @@ class QuickWorkerServer:
                     "worker_draining", "Worker is not accepting Runtime maintenance."
                 )
             async with self.task_manager._lock:
-                discovered = self._runtime_registry_factory(reload_builtin_source=reload_builtin_source)
+                discovered = self._runtime_registry_factory(reload_development_source=reload_development_source)
                 registered = implementation_id in discovered.implementation_ids()
                 if registered != expected_present:
                     raise WorkerTaskError(
@@ -750,6 +759,16 @@ class QuickWorkerServer:
 
     async def _dispatch(self, request) -> dict[str, object]:
         if isinstance(request, WorkerRequest):
+            visible_implementation_ids = [
+                implementation_id
+                for implementation_id in self.runtime_registry.implementation_ids()
+                if implementation_id != LEGACY_DEVELOPMENT_CODEX_IMPLEMENTATION_ID
+            ]
+            visible_available_implementation_ids = [
+                implementation_id
+                for implementation_id in self.runtime_registry.available_implementation_ids()
+                if implementation_id != LEGACY_DEVELOPMENT_CODEX_IMPLEMENTATION_ID
+            ]
             health = WorkerHealth(
                 status=self.status,
                 generation=self.generation,
@@ -764,15 +783,14 @@ class QuickWorkerServer:
                 available_runtime_ids=list(
                     self.runtime_registry.available_runtime_ids()
                 ),
-                implementation_ids=list(self.runtime_registry.implementation_ids()),
-                available_implementation_ids=list(
-                    self.runtime_registry.available_implementation_ids()
-                ),
+                implementation_ids=visible_implementation_ids,
+                available_implementation_ids=visible_available_implementation_ids,
                 runtime_workspace_ids={
                     runtime_id: list(workspace_ids)
                     for runtime_id, workspace_ids in (
                         self.runtime_registry.workspace_ids().items()
                     )
+                    if runtime_id != LEGACY_DEVELOPMENT_CODEX_IMPLEMENTATION_ID
                 },
                 drain_operation_id=self._drain_operation_id,
                 drain_complete=self._drain_complete,
@@ -805,7 +823,7 @@ class QuickWorkerServer:
             await self.refresh_runtime_registry(
                 request.implementation_id,
                 expected_present=request.expected_present,
-                reload_builtin_source=request.reload_builtin_source,
+                reload_development_source=request.reload_development_source,
             )
             return {
                 "implementation_id": request.implementation_id,
@@ -958,7 +976,7 @@ async def refresh_runtime_registry(
     *,
     implementation_id: str,
     expected_present: bool,
-    reload_builtin_source: bool = False,
+    reload_development_source: bool = False,
 ) -> dict[str, object]:
     return await worker_request(
         settings,
@@ -968,7 +986,7 @@ async def refresh_runtime_registry(
             "action": "runtime_registry_refresh",
             "implementation_id": implementation_id,
             "expected_present": expected_present,
-            "reload_builtin_source": reload_builtin_source,
+            "reload_development_source": reload_development_source,
         },
     )
 

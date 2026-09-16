@@ -68,7 +68,7 @@ def test_runtime_task_stored_digest_includes_implementation_id() -> None:
     submission = RuntimeTaskSubmission(
         task_id=new_worker_task_id(created_at),
         runtime_id="codex",
-        implementation_id="builtin-dev",
+        implementation_id="codex-runtime-dev",
         session_id="quick-session",
         workspace_id="chub",
         prompt="hello",
@@ -89,42 +89,6 @@ def test_runtime_task_stored_digest_includes_implementation_id() -> None:
         native_session_id=submission.native_session_id,
         model=submission.model,
         reasoning_effort=submission.reasoning_effort,
-        capability_ids=submission.capability_ids,
-        timeout_seconds=submission.timeout_seconds,
-        task_kind=submission.task_kind,
-        restart_sensitive=submission.restart_sensitive,
-        created_at=created_at,
-        deadline_at=created_at + timedelta(seconds=submission.timeout_seconds),
-    )
-
-    assert _digest_stored_spec(spec) == spec.spec_sha256
-
-
-def test_runtime_task_capability_ids_are_part_of_the_stored_digest() -> None:
-    created_at = datetime.now(UTC)
-    submission = RuntimeTaskSubmission(
-        task_id=new_worker_task_id(created_at),
-        runtime_id="codex",
-        implementation_id="builtin-dev",
-        session_id="quick-session",
-        workspace_id="isolated",
-        prompt="read a page",
-        permission_profile="read-only",
-        capability_ids=["chub.debug_chrome.page.read"],
-        timeout_seconds=60,
-    )
-    spec = StoredTaskSpec(
-        protocol_version=PROTOCOL_VERSION,
-        task_id=submission.task_id,
-        runtime_id=submission.runtime_id,
-        implementation_id=submission.implementation_id,
-        prompt=submission.prompt,
-        prompt_sha256=hashlib.sha256(submission.prompt.encode()).hexdigest(),
-        spec_sha256=_digest_submission(submission),
-        session_id=submission.session_id,
-        workspace_id=submission.workspace_id,
-        permission_profile=submission.permission_profile,
-        capability_ids=submission.capability_ids,
         timeout_seconds=submission.timeout_seconds,
         task_kind=submission.task_kind,
         restart_sensitive=submission.restart_sensitive,
@@ -194,7 +158,7 @@ async def _submit_codex(
         task={
             "task_id": task_id,
             "runtime_id": "codex",
-            "implementation_id": "builtin-dev",
+            "implementation_id": "codex-runtime-dev",
             "session_id": session_id,
             "workspace_id": "isolated",
             "prompt": prompt,
@@ -215,7 +179,7 @@ def test_restart_sensitive_is_derived_and_cannot_be_spoofed() -> None:
     fields = {
         "task_id": new_worker_task_id(),
         "runtime_id": "codex",
-        "implementation_id": "builtin-dev",
+        "implementation_id": "codex-runtime-dev",
         "session_id": "session-1",
         "workspace_id": "chub",
         "prompt": "modify Chub",
@@ -371,16 +335,13 @@ def test_worker_remains_available_when_shortcut_directory_is_missing(
     assert runtime.available is True
 
 
-def test_codex_runtime_passes_only_task_capability_context(tmp_path: Path) -> None:
+def test_codex_runtime_does_not_pass_browser_control_environment(tmp_path: Path) -> None:
     runtime = CodexWorkerRuntime(
         MagicMock(),
         executable=str(_fake_codex(tmp_path)),
         workspaces={"isolated": tmp_path},
     )
-    turn = RuntimeTurnRequest(
-        permission_profile="read-only",
-        capability_ids=["chub.debug_chrome.page.read"],
-    )
+    turn = RuntimeTurnRequest(permission_profile="read-only")
 
     launch = runtime.build_launch(
         RuntimeWorkerLaunchRequest(
@@ -391,15 +352,12 @@ def test_codex_runtime_passes_only_task_capability_context(tmp_path: Path) -> No
             task_kind="standard",
             workspace_id="isolated",
             turn=turn,
-            capability_token="a" * 32,
             restart_request_dir=tmp_path / "restart",
         )
     )
 
-    assert launch.environment["CHUB_TASK_CAPABILITY_CONTEXT"] == str(
-        tmp_path / "task-1" / "capability-context.json"
-    )
-    assert launch.environment["CHUB_TASK_CAPABILITY_TOKEN"] == "a" * 32
+    assert "CHUB_TASK_CAPABILITY_CONTEXT" not in launch.environment
+    assert "CHUB_TASK_CAPABILITY_TOKEN" not in launch.environment
     assert "CHUB_DEBUG_CHROME_CDP" not in launch.environment
 
 
@@ -870,7 +828,7 @@ async def test_codex_capability_does_not_enable_fixed_test_tasks(
         assert health["data"]["runtime_ids"] == ["codex"]
         assert health["data"]["available_runtime_ids"] == ["codex"]
         assert health["data"]["runtime_workspace_ids"] == {
-            "builtin-dev": ["isolated", "runtime-session"],
+            "codex-runtime-dev": ["isolated", "runtime-session"],
             "codex-010000": ["isolated", "runtime-session"],
         }
         rejected = await _submit(settings, task_id=new_worker_task_id())
@@ -974,7 +932,7 @@ async def test_worker_persists_restart_sensitive_through_final_state(
             task={
                 "task_id": task_id,
                 "runtime_id": "codex",
-                "implementation_id": "builtin-dev",
+                "implementation_id": "codex-runtime-dev",
                 "session_id": "sensitive-session",
                 "workspace_id": "chub",
                 "prompt": "modify Chub",
@@ -2113,7 +2071,7 @@ async def test_runtime_maintenance_rejects_a_queued_target_task(
         refreshed = await _request(
             settings,
             "runtime_registry_refresh",
-            implementation_id="builtin-dev",
+            implementation_id="codex-runtime-dev",
             expected_present=True,
         )
 

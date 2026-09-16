@@ -10,6 +10,10 @@ from typing import Any
 
 from fastapi import Request
 
+from app.ai_runtime.codex_plugin import (
+    DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
+    LEGACY_DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
+)
 from app.core.config import PROJECT_ROOT, Settings
 from app.core.response import ApiError
 
@@ -54,7 +58,11 @@ class PluginLifecycleService:
         """Return the lifecycle-authoritative import and enablement state."""
         artifact_id = (
             "development:codex-runtime"
-            if implementation_id == "builtin-dev"
+            if implementation_id
+            in {
+                DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
+                LEGACY_DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
+            }
             else f"runtime:{implementation_id}"
         )
         with self._lock:
@@ -161,7 +169,11 @@ class PluginLifecycleService:
                     )
         extension_updated = False
         if plugin_id == "codex-runtime":
-            implementation_id = "builtin-dev" if artifact_id == "development:codex-runtime" else artifact_id.removeprefix("runtime:")
+            implementation_id = (
+                DEVELOPMENT_CODEX_IMPLEMENTATION_ID
+                if artifact_id == "development:codex-runtime"
+                else artifact_id.removeprefix("runtime:")
+            )
             self.ai_session_manager.update_runtime_implementation_enabled(implementation_id, enabled)
             extension_updated = True
         elif plugin_id == "weixin-orchestration":

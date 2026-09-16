@@ -276,9 +276,6 @@ class WeixinChubModeManager:
         return WeixinChubModeRuntimeConfig(
             enabled=config.enabled,
             workspace_id=config.workspace_id,
-            permission_mode=config.permission_mode,
-            model=config.model,
-            reasoning_effort=config.reasoning_effort,
         )
 
     def _load(self, config: OpenClawWeixinChubModeConfig) -> WeixinChubModeState:
@@ -297,6 +294,13 @@ class WeixinChubModeManager:
             if len(content) > MAX_STATE_BYTES:
                 raise ValueError("Weixin Chub mode state is too large")
             payload = json.loads(content.decode("utf-8"))
+            configuration_payload = payload.get("configuration")
+            retired_configuration_fields_removed = False
+            if isinstance(configuration_payload, dict):
+                for field in ("permission_mode", "model", "reasoning_effort"):
+                    if field in configuration_payload:
+                        configuration_payload.pop(field)
+                        retired_configuration_fields_removed = True
             state = WeixinChubModeState.model_validate(payload)
         except FileNotFoundError:
             return fallback
@@ -312,7 +316,11 @@ class WeixinChubModeManager:
                 "Unable to protect Weixin Chub mode state",
                 exc_info=True,
             )
-        changed = False
+        changed = retired_configuration_fields_removed
+        if retired_configuration_fields_removed and state.session_id is not None:
+            # The previous bound Session was created from a now-retired private
+            # profile. Drop only that binding; user-managed slots remain intact.
+            state.session_id = None
         if "orchestration_enabled" not in payload:
             # Existing selected implementations were active before this explicit
             # setting existed. Preserve that behavior during the one-time state
@@ -335,9 +343,6 @@ class WeixinChubModeManager:
                 getattr(state.configuration, field) != getattr(configured, field)
                 for field in (
                     "workspace_id",
-                    "permission_mode",
-                    "model",
-                    "reasoning_effort",
                 )
             )
             state.configuration = configured
@@ -471,13 +476,6 @@ class WeixinChubModeManager:
         self,
         configuration: WeixinChubModeRuntimeConfig,
     ) -> WeixinChubModeStatus:
-        if configuration.permission_mode == "ask":
-            return WeixinChubModeStatus(
-                enabled=configuration.enabled,
-                ready=False,
-                code="configuration_invalid",
-                message="Ask for approval 不支持微信 Chub 模式。",
-            )
         workspace = next(
             (
                 item
@@ -527,26 +525,6 @@ class WeixinChubModeManager:
                 ready=False,
                 code="quick_worker_unavailable",
                 message="Quick Worker 当前不可用，微信任务暂不能提交。",
-            )
-        try:
-            self.codex_manager.validate_model(
-                configuration.model,
-                configuration.reasoning_effort,
-            )
-        except ApiError as exc:
-            return WeixinChubModeStatus(
-                enabled=configuration.enabled,
-                ready=False,
-                code=(
-                    "codex_unavailable"
-                    if exc.status_code >= 500
-                    else "configuration_invalid"
-                ),
-                message=(
-                    "Codex 模型目录当前不可用。"
-                    if exc.status_code >= 500
-                    else "所选模型或推理等级当前不可用。"
-                ),
             )
         completion = self.settings.openclaw.quick_interaction_completion
         if not completion.enabled:
@@ -842,9 +820,6 @@ class WeixinChubModeManager:
                 getattr(current, field) != getattr(configuration, field)
                 for field in (
                     "workspace_id",
-                    "permission_mode",
-                    "model",
-                    "reasoning_effort",
                 )
             )
             if current.enabled and changed_session_configuration:
@@ -9056,12 +9031,7 @@ class WeixinChubModeManager:
                 "9 个微信 Session 槽位已满，请先归档或删除一个 Session。",
             )
         with self.quick_interactions.session_creation_guard():
-            created = self.codex_manager.create_session(
-                configuration.workspace_id,
-                configuration.permission_mode,
-                configuration.model,
-                configuration.reasoning_effort,
-            )
+            created = self.codex_manager.create_session(configuration.workspace_id)
         next_state = self._state.model_copy(deep=True)
         next_state.session_id = created.id
         next_state.session_slots.append(

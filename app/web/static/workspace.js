@@ -32,14 +32,14 @@
   const sectionToolbarLoadingStatus = {
     workbench: "正在读取工作台状态…",
     automations: "正在读取自动化状态…",
-    search: "AI 搜索已就绪",
+    "today-focus": "今日关注已就绪",
     "project-docs": "正在读取项目资料…",
     deliveryline: "正在读取 Deliveryline 状态…",
   };
   const sectionToolbarLoadedStatus = {
     automations: "自动化已加载",
     "project-docs": "项目资料已加载",
-    search: "AI 搜索已就绪",
+    "today-focus": "今日关注已就绪",
     deliveryline: "Deliveryline 已加载",
   };
   const toolbarLoadingMinimumMs = 220;
@@ -412,7 +412,7 @@
     );
   };
 
-  const refreshWorkspaceAutomations = async () => {
+  const refreshWorkspaceAutomations = async ({ checkCodexApiQuota = false } = {}) => {
     if (automationRefreshDisposed || automationRefreshInFlight) return;
     const currentSurface = document.querySelector(".workspace-automations");
     if (!(currentSurface instanceof HTMLElement)) return;
@@ -432,6 +432,9 @@
       );
       const nextSurface = nextDocument.querySelector(".workspace-automations");
       if (!(nextSurface instanceof HTMLElement)) throw new Error("自动化状态响应无效。");
+      if (checkCodexApiQuota) {
+        nextSurface.dataset.checkCodexApiQuotaAfterBrowserStart = "true";
+      }
       currentSurface.replaceWith(nextSurface);
       window.initializeWorkspaceAutomationControls?.();
       return true;
@@ -512,12 +515,19 @@
     return parts.length ? ` · ${parts.join(" · ")}` : " · 额度暂不可用";
   };
 
-  const refreshAfterBrowserControl = (button, message, attempt = 0) => {
+  const refreshAfterBrowserControl = (button, message, attempt = 0, checkCodexApiQuota = false) => {
     window.setTimeout(async () => {
       if (automationRefreshDisposed) return;
-      if (await refreshWorkspaceAutomations()) return;
+      if (await refreshWorkspaceAutomations({ checkCodexApiQuota })) {
+        const browserRunning = document.getElementById("workspace-automation-browser-detail")
+          ?.dataset.browserState === "running";
+        if (checkCodexApiQuota && !browserRunning && attempt < 2) {
+          refreshAfterBrowserControl(button, message, attempt + 1, checkCodexApiQuota);
+        }
+        return;
+      }
       if (attempt < 2) {
-        refreshAfterBrowserControl(button, message, attempt + 1);
+        refreshAfterBrowserControl(button, message, attempt + 1, checkCodexApiQuota);
         return;
       }
       if (button instanceof HTMLButtonElement && button.isConnected) {
@@ -841,6 +851,8 @@
         refreshAfterBrowserControl(
           automationStartButton,
           initializing ? "浏览器账户初始化已受理" : "Debug Chrome 已启动",
+          0,
+          true,
         );
       } catch (error) {
         setAutomationBrowserStatus(
@@ -989,6 +1001,20 @@
   const isUncheckedAccount = (detail) => (
     detail instanceof HTMLElement && detail.dataset.accountState === "unchecked"
   );
+  const shouldCheckCodexApiQuotaAfterBrowserStart = () => (
+    automationSurface instanceof HTMLElement
+    && automationSurface.dataset.checkCodexApiQuotaAfterBrowserStart === "true"
+    && automationBrowserDetail instanceof HTMLElement
+    && automationBrowserDetail.dataset.browserState === "running"
+    && automationCodexAccountDetail instanceof HTMLElement
+    && automationCodexAccountDetail.dataset.authMode === "api"
+    && automationCodexAccountDetail.dataset.accountState !== "checking"
+    && automationCodexAccountDetail.dataset.authSwitching !== "true"
+  );
+  const checkCodexApiQuotaAfterBrowserStart = shouldCheckCodexApiQuotaAfterBrowserStart();
+  if (automationSurface instanceof HTMLElement) {
+    delete automationSurface.dataset.checkCodexApiQuotaAfterBrowserStart;
+  }
   if (shouldAutomaticallyCheckAccounts()) {
     if (isUncheckedAccount(automationFeishuDetail)) {
       automationFeishuCheck?.click();
@@ -996,6 +1022,9 @@
     if (isUncheckedAccount(automationCodexAccountDetail)) {
       void checkCodexRuntimeAccount();
     }
+  }
+  if (checkCodexApiQuotaAfterBrowserStart) {
+    void checkCodexRuntimeAccount();
   }
 
   automationRunButtons.forEach((button) => {
@@ -1006,7 +1035,7 @@
       if (!taskId || !taskTitle || button.disabled) return;
       const confirmed = await showConfirmationDialog({
         title: "运行自动化任务",
-        description: `即将运行“${taskTitle}”。任务将使用当前 Debug Chrome 与登录状态，执行已配置的固定步骤。`,
+        body: `即将运行“${taskTitle}”。任务将使用当前 Debug Chrome 与登录状态，执行已配置的固定步骤。`,
         details: [{ label: "提交后", value: "任务会在此页面显示执行状态和最终结果。" }],
         confirmLabel: "确认运行",
         pendingLabel: "提交中…",
@@ -1035,7 +1064,7 @@
       const label = stage === "focus" ? "生成工作重点确认清单" : "生成正式周报";
       const confirmed = await showConfirmationDialog({
         title: label,
-        description: `将创建独立的周报生成会话并执行“${label}”。生成过程不会重新下载资料。`,
+        body: `将创建独立的周报生成会话并执行“${label}”。生成过程不会重新下载资料。`,
         details: [{ label: "提交后", value: "可在本步骤查看会话和最终产物。" }],
         confirmLabel: "确认运行",
         pendingLabel: "创建会话中…",
@@ -1062,7 +1091,7 @@
       if (button.disabled) return;
       const confirmed = await showConfirmationDialog({
         title: "确认并生成正式周报",
-        description: "将确认当前工作重点确认清单，并立即在同一周报会话中生成正式周报。",
+        body: "将确认当前工作重点确认清单，并立即在同一周报会话中生成正式周报。",
         details: [
           { label: "确认内容", value: "按当前确认清单生成正式周报" },
           { label: "如需调整", value: "请先查看确认清单并重新生成，再执行确认。" },

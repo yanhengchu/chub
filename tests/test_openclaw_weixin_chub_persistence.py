@@ -154,6 +154,32 @@ def test_startup_configuration_change_resets_bound_session(
     assert manager.session_id() is None
 
 
+def test_startup_removes_retired_weixin_session_configuration_fields(
+    settings: Settings,
+) -> None:
+    state_file = settings.openclaw.weixin_chub_mode.state_file
+    state_file.write_text(
+        json.dumps({
+            "configuration": {
+                "enabled": False,
+                "workspace_id": "chub",
+                "permission_mode": "full-access",
+                "model": "old-model",
+                "reasoning_effort": "high",
+            },
+            "session_id": "legacy-session",
+            "submissions": [],
+        }),
+        encoding="utf-8",
+    )
+
+    WeixinChubModeManager(settings, MagicMock(), MagicMock())
+
+    payload = json.loads(state_file.read_text(encoding="utf-8"))
+    assert payload["configuration"] == {"enabled": False, "workspace_id": "chub"}
+    assert payload["session_id"] is None
+
+
 def test_invalid_state_blocks_submission_without_overwriting_file(
     settings: Settings,
 ) -> None:

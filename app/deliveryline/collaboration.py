@@ -142,7 +142,7 @@ class DeliverylineCollaboration:
                     manager.discard_unstarted_session(session.id)
                     raise
             operation_id = uuid4().hex
-            sources, prompt_sources, capability_ids = self._linked_sources(line)
+            sources, prompt_sources = self._linked_sources(line)
             pending = CollaborationRound(id=uuid4().hex, operation_id=operation_id, sources=sources, status="submitting", created_at=utc_now(), updated_at=utc_now())
             next_state = self._state.model_copy(deep=True)
             next_association = self._association_in(next_state, line.id)
@@ -157,7 +157,6 @@ class DeliverylineCollaboration:
                         self._prompt(line, previous, normalized_comment, prompt_sources),
                         operation_id=operation_id,
                         source_ip=source_ip,
-                        capability_ids=capability_ids,
                     )
             except Exception:
                 finder = getattr(quick_interactions, "find_for_operation", None)
@@ -333,7 +332,7 @@ class DeliverylineCollaboration:
         )
 
     @staticmethod
-    def _linked_sources(line: DeliveryLine) -> tuple[list[dict[str, str]], list[dict[str, object]], tuple[str, ...]]:
+    def _linked_sources(line: DeliveryLine) -> tuple[list[dict[str, str]], list[dict[str, object]]]:
         urls: list[str] = []
         for match in _HTTP_URL_PATTERN.finditer(line.original_request_content):
             candidate = match.group(0).rstrip(").,;!?")
@@ -365,8 +364,8 @@ class DeliverylineCollaboration:
             sources.append({"kind": "project_document", "label": document.title, "url": url})
             prompt_sources.append({"kind": "project_document", "url": url, "document_id": document.id, "title": document.title, "content": document.content, "truncated": document.truncated})
         if public_urls:
-            prompt_sources.append({"kind": "public_pages", "urls": public_urls, "instruction": "必须先用已授予的 chub capability page-read 命令逐一读取网页。只能依据读取结果生成候选；失败时写入 open_questions。"})
-        return sources, prompt_sources, ("chub.debug_chrome.page.read",) if public_urls else ()
+            prompt_sources.append({"kind": "public_pages", "urls": public_urls, "instruction": "必须先用 chub capability page-read 命令逐一读取网页。只能依据读取结果生成候选；失败时写入 open_questions。"})
+        return sources, prompt_sources
 
     def _read(self) -> CollaborationState:
         try:

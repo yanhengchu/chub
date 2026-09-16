@@ -5,7 +5,6 @@ import hashlib
 import json
 import os
 import re
-import secrets
 import signal
 import shutil
 import stat
@@ -34,7 +33,6 @@ from app.ai_runtime import (
 )
 from app.core.config import Settings
 from app.services.log_reader import redact_log_line
-from app.task_capabilities import TaskCapabilityContext, TaskCapabilityId
 
 
 MAX_PROMPT_CHARS = 50_000
@@ -51,7 +49,6 @@ MAX_EVENT_PRIORITY_BYTES = 32 * 1024
 MAX_EVENT_READ_BYTES = 8 * 1024 * 1024
 MAX_TASK_DIRECTORIES = 2_000
 MAX_ACTIVE_TASKS = 8
-CAPABILITY_CONTEXT_FILE = "capability-context.json"
 TASK_RETRY_WINDOW = timedelta(days=7)
 TASK_FUTURE_SKEW = timedelta(minutes=5)
 TERMINATE_GRACE_SECONDS = 0.5
@@ -140,7 +137,6 @@ class RuntimeTaskSubmission(_StrictModel):
     native_session_id: str | None = Field(default=None, min_length=1, max_length=128)
     model: str | None = Field(default=None, min_length=1, max_length=128)
     reasoning_effort: str | None = Field(default=None, min_length=1, max_length=32)
-    capability_ids: list[TaskCapabilityId] = Field(default_factory=list, max_length=8)
     timeout_seconds: float = Field(gt=0.0, le=24 * 60 * 60)
     task_kind: Literal["standard", "weixin", "translation"] = "standard"
     restart_sensitive: bool | None = None
@@ -157,8 +153,6 @@ class RuntimeTaskSubmission(_StrictModel):
 
     @model_validator(mode="after")
     def validate_queue_fields(self) -> RuntimeTaskSubmission:
-        if self.capability_ids != sorted(set(self.capability_ids)):
-            raise ValueError("capability IDs must be unique and sorted")
         queue_fields = (self.queue_key, self.queue_limit, self.queue_wait_seconds)
         if self.task_kind == "translation":
             if any(item is None for item in queue_fields):
@@ -191,7 +185,6 @@ class StoredTaskSpec(_StrictModel):
     native_session_id: str | None = Field(default=None, min_length=1, max_length=128)
     model: str | None = Field(default=None, min_length=1, max_length=128)
     reasoning_effort: str | None = Field(default=None, min_length=1, max_length=32)
-    capability_ids: list[TaskCapabilityId] = Field(default_factory=list, max_length=8)
     timeout_seconds: float
     task_kind: WorkerTaskKind
     restart_sensitive: bool = False
@@ -218,7 +211,6 @@ class StoredTaskSpec(_StrictModel):
                     self.native_session_id,
                     self.model,
                     self.reasoning_effort,
-                    self.capability_ids or None,
                 )
             ) or self.task_kind != "test":
                 raise ValueError("fixed test task fields are inconsistent")
@@ -226,8 +218,6 @@ class StoredTaskSpec(_StrictModel):
             item is None for item in runtime_fields
         ) or self.task_kind == "test":
             raise ValueError("Runtime task fields are inconsistent")
-        if self.capability_ids != sorted(set(self.capability_ids)):
-            raise ValueError("capability IDs must be unique and sorted")
         if self.runtime_id == "fixed-test" and self.restart_sensitive:
             raise ValueError("fixed test tasks cannot be restart sensitive")
         if (
@@ -401,8 +391,6 @@ def _digest_submission(submission: TestTaskSubmission | RuntimeTaskSubmission) -
         }
     else:
         payload = submission.model_dump(mode="json", exclude={"task_id"})
-        if not submission.capability_ids:
-            payload.pop("capability_ids", None)
     return hashlib.sha256(_canonical_json(payload)).hexdigest()
 
 
@@ -433,8 +421,6 @@ def _digest_stored_spec(spec: StoredTaskSpec) -> str:
             "queue_wait_seconds": spec.queue_wait_seconds,
             "restart_sensitive": spec.restart_sensitive,
         }
-        if spec.capability_ids:
-            payload["capability_ids"] = spec.capability_ids
     return hashlib.sha256(_canonical_json(payload)).hexdigest()
 
 
@@ -468,26 +454,6 @@ def _atomic_write(path: Path, content: bytes, *, max_bytes: int) -> None:
             temporary.unlink()
         except FileNotFoundError:
             pass
-
-
-def _create_capability_context(
-    task_dir: Path,
-    *,
-    task_id: str,
-    capability_ids: list[TaskCapabilityId],
-) -> str:
-    token = secrets.token_urlsafe(32)
-    context = TaskCapabilityContext(
-        task_id=task_id,
-        token=token,
-        capability_ids=capability_ids,
-    )
-    _atomic_write(
-        task_dir / CAPABILITY_CONTEXT_FILE,
-        context.model_dump_json().encode("utf-8"),
-        max_bytes=4 * 1024,
-    )
-    return token
 
 
 def _write_model(path: Path, model: BaseModel, *, max_bytes: int) -> None:
@@ -780,11 +746,6 @@ class WorkerTaskManager:
                     submission.reasoning_effort
                     if isinstance(submission, RuntimeTaskSubmission)
                     else None
-                ),
-                capability_ids=(
-                    submission.capability_ids
-                    if isinstance(submission, RuntimeTaskSubmission)
-                    else []
                 ),
                 timeout_seconds=submission.timeout_seconds,
                 task_kind=(
@@ -1358,7 +1319,6 @@ class WorkerTaskManager:
         stdout_capture: asyncio.Task[None] | None = None
         native_observer: asyncio.Task[None] | None = None
         runner = None
-        capability_context_path: Path | None = None
         try:
             if not await self._wait_for_queue_turn(task_id):
                 return
@@ -1404,21 +1364,12 @@ class WorkerTaskManager:
                 stdout_file = self._open_private_output(stdout_path)
                 stderr_file = self._open_private_output(stderr_path)
                 release_read, release_write = os.pipe()
-                capability_token = None
-                if spec.capability_ids:
-                    capability_context_path = task_dir / CAPABILITY_CONTEXT_FILE
-                    capability_token = _create_capability_context(
-                        task_dir,
-                        task_id=spec.task_id,
-                        capability_ids=spec.capability_ids,
-                    )
                 turn = (
                     RuntimeTurnRequest(
                         permission_profile=spec.permission_profile,
                         native_session_id=expected_native_id,
                         model=spec.model,
                         reasoning_effort=spec.reasoning_effort,
-                        capability_ids=spec.capability_ids,
                     )
                     if spec.permission_profile is not None
                     else None
@@ -1436,7 +1387,6 @@ class WorkerTaskManager:
                             task_kind=spec.task_kind,
                             workspace_id=spec.workspace_id,
                             turn=turn,
-                            capability_token=capability_token,
                             start_new_session=(
                                 spec.task_kind == "translation"
                                 and expected_native_id is None
@@ -1452,8 +1402,6 @@ class WorkerTaskManager:
                 for name in (
                     "CHUB_QUICK_TASK_ID",
                     "CHUB_QUICK_RESTART_DIR",
-                    "CHUB_TASK_CAPABILITY_CONTEXT",
-                    "CHUB_TASK_CAPABILITY_TOKEN",
                 ):
                     runner_env.pop(name, None)
                 runner_env.update(launch.environment)
@@ -1699,13 +1647,6 @@ class WorkerTaskManager:
             for file in (stdout_file, stderr_file):
                 if file is not None:
                     file.close()
-            if capability_context_path is not None:
-                try:
-                    capability_context_path.unlink()
-                except FileNotFoundError:
-                    pass
-                except OSError:
-                    LOGGER.warning("Unable to remove task capability context: %s", task_id)
             self._processes.pop(task_id, None)
 
     @staticmethod

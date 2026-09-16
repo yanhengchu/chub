@@ -9,44 +9,62 @@
     pollTimer = null;
   };
 
-  const statusText = (run) => {
-    if (PENDING_STATUSES.has(run.status)) return "正在搜索公开网页…";
-    if (run.status === "failed") return run.error || "AI 搜索未能完成。";
-    return run.summary || "AI 搜索已完成。";
+  const readJson = async (url, options = {}) => {
+    const response = await fetch(url, options);
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || payload?.success !== true) {
+      const error = new Error(payload?.error?.message || "今日关注暂时不可用。");
+      error.code = payload?.error?.code;
+      throw error;
+    }
+    return payload.data;
+  };
+
+  const formatUpdatedAt = (value) => {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "已更新";
+    return `更新于 ${new Intl.DateTimeFormat("zh-CN", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).format(date)}`;
   };
 
   const renderResults = (container, run) => {
     container.replaceChildren();
-    const summary = document.createElement("p");
-    summary.className = run.status === "failed" ? "message message-error" : "workspace-search-summary";
-    summary.textContent = statusText(run);
-    container.append(summary);
-    if (PENDING_STATUSES.has(run.status) || run.status === "failed") return;
-    if (!Array.isArray(run.results) || run.results.length === 0) {
+    if (!run) {
       const empty = document.createElement("p");
-      empty.className = "workspace-search-feedback";
-      empty.textContent = "没有可展示的可靠候选。";
+      empty.className = "empty-state";
+      empty.textContent = "尚未生成今日 AI 动态。";
       container.append(empty);
       return;
     }
+    const summary = document.createElement("p");
+    summary.className = run.status === "failed"
+      ? "message message-error"
+      : "workspace-today-focus-summary";
+    summary.textContent = run.status === "failed"
+      ? (run.error || "今日 AI 动态未能完成。")
+      : (run.summary || "尚未生成今日 AI 动态。")
+    container.append(summary);
+    if (run.status === "failed" || !Array.isArray(run.results) || run.results.length === 0) return;
     const list = document.createElement("div");
-    list.className = "workspace-search-results";
+    list.className = "workspace-today-focus-list";
     run.results.forEach((result) => {
       const item = document.createElement("article");
-      item.className = "workspace-search-result";
+      item.className = "workspace-today-focus-result";
       const link = document.createElement("a");
       link.href = result.url;
       link.target = "_blank";
       link.rel = "noopener noreferrer";
       link.textContent = result.title;
-      item.append(link);
       const source = document.createElement("p");
-      source.className = "workspace-search-result-meta";
+      source.className = "workspace-today-focus-result-meta";
       source.textContent = result.source || "网页";
-      item.append(source);
+      item.append(link, source);
       if (result.description) {
         const description = document.createElement("p");
-        description.className = "workspace-search-result-description";
+        description.className = "workspace-today-focus-result-description";
         description.textContent = result.description;
         item.append(description);
       }
@@ -55,135 +73,73 @@
     container.append(list);
   };
 
-  const renderHistory = (container, runs) => {
-    container.replaceChildren();
-    if (!Array.isArray(runs) || runs.length === 0) {
-      const empty = document.createElement("p");
-      empty.className = "empty-state";
-      empty.textContent = "暂无搜索记录。";
-      container.append(empty);
-      return;
-    }
-    runs.forEach((run) => {
-      const link = document.createElement("a");
-      link.className = "workspace-search-history-item";
-      link.href = `/?section=search&search=${encodeURIComponent(run.id)}`;
-      const title = document.createElement("strong");
-      title.className = "workspace-search-history-title";
-      title.textContent = run.query;
-      const detail = document.createElement("small");
-      detail.className = "workspace-search-history-description";
-      detail.textContent = statusText(run);
-      link.append(title, detail);
-      container.append(link);
-    });
-  };
+  const initializeTodayFocus = () => {
+    const openPagesButton = document.getElementById("workspace-today-focus-open-pages");
+    const refreshButton = document.getElementById("workspace-today-focus-refresh");
+    const status = document.getElementById("workspace-today-focus-status");
+    const results = document.getElementById("workspace-today-focus-results");
+    if (!(openPagesButton instanceof HTMLButtonElement)
+      || !(refreshButton instanceof HTMLButtonElement)
+      || !(status instanceof HTMLElement) || !(results instanceof HTMLElement)) return;
 
-  const readJson = async (url, options = {}) => {
-    const response = await fetch(url, options);
-    const payload = await response.json().catch(() => null);
-    if (!response.ok || payload?.success !== true) {
-      const error = new Error(payload?.error?.message || "AI 搜索暂时不可用。");
-      error.code = payload?.error?.code;
-      throw error;
-    }
-    return payload.data;
-  };
-
-  const initializeHome = () => {
-    const form = document.getElementById("workspace-ai-search-form");
-    const query = document.getElementById("workspace-ai-search-query");
-    const submit = document.getElementById("workspace-ai-search-submit");
-    const history = document.getElementById("workspace-ai-search-history");
-    const feedback = document.getElementById("workspace-ai-search-submit-feedback");
-    if (!(form instanceof HTMLFormElement) || !(query instanceof HTMLInputElement)
-      || !(submit instanceof HTMLButtonElement) || !(history instanceof HTMLElement)
-      || !(feedback instanceof HTMLElement)) return;
-    const setFeedback = (message = "", tone = "error") => {
-      feedback.textContent = message;
-      feedback.hidden = !message;
-      feedback.className = `workspace-search-submit-feedback message${message ? ` message-${tone}` : ""}`;
+    const showError = (error) => {
+      status.textContent = error instanceof Error ? error.message : "今日关注暂时不可用。";
     };
     const refresh = async () => {
-      const data = await readJson("/api/search/session", { cache: "no-store" });
-      renderHistory(history, data.runs);
-      submit.disabled = Boolean(data.current && PENDING_STATUSES.has(data.current.status));
-    };
-    void refresh().catch((error) => {
-      const message = document.createElement("p");
-      message.className = "message message-error";
-      message.textContent = error.message;
-      history.replaceChildren(message);
-    });
-    form.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const value = query.value.trim();
-      if (value.length < 2) {
-        query.focus();
-        return;
+      const data = await readJson("/api/today-focus", { cache: "no-store" });
+      const current = data?.current;
+      const latest = data?.latest;
+      refreshButton.disabled = Boolean(current && PENDING_STATUSES.has(current.status));
+      renderResults(results, latest);
+      if (current && PENDING_STATUSES.has(current.status)) {
+        status.textContent = "正在更新今日 AI 动态…";
+        clearPoll();
+        pollTimer = window.setTimeout(() => void refresh().catch(showError), 1500);
+      } else if (latest?.status === "failed") {
+        status.textContent = "上次更新失败。";
+      } else if (latest?.updated_at) {
+        status.textContent = formatUpdatedAt(latest.updated_at);
+      } else {
+        status.textContent = "尚未生成今日 AI 动态。";
       }
+    };
+
+    void refresh().catch(showError);
+    openPagesButton.addEventListener("click", async () => {
+      openPagesButton.disabled = true;
+      status.textContent = "正在打开固定 AI 来源页面…";
+      try {
+        const opened = await readJson("/api/today-focus/open-pages", { method: "POST" });
+        status.textContent = opened?.summary || "固定 AI 来源页面已打开。";
+      } catch (error) {
+        showError(error);
+      } finally {
+        openPagesButton.disabled = false;
+      }
+    });
+
+    refreshButton.addEventListener("click", async () => {
       request?.abort();
       request = new AbortController();
-      submit.disabled = true;
-      setFeedback();
+      refreshButton.disabled = true;
+      status.textContent = "正在提交今日 AI 动态…";
       try {
-        const data = await readJson("/api/search/session", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query: value }),
-          signal: request.signal,
-        });
-        if (!data.current?.id) throw new Error("搜索任务状态无法确认。");
-        window.location.assign(`/?section=search&search=${encodeURIComponent(data.current.id)}`);
+        await refreshTodayFocus();
       } catch (error) {
-        if (error?.name !== "AbortError") {
-          const message = error instanceof Error ? error.message : "AI 搜索暂时不可用。";
-          const accepted = error?.code === "ai_search_submission_recording_pending";
-          setFeedback(message, accepted ? "warning" : "error");
-          if (accepted) {
-            void refresh().catch(() => {});
-          } else {
-            submit.disabled = false;
-          }
-        }
+        if (error?.name !== "AbortError") showError(error);
+        refreshButton.disabled = false;
       } finally {
         if (request?.signal.aborted === false) request = null;
       }
     });
-  };
 
-  const initializeDetail = () => {
-    const detail = document.querySelector(".workspace-search-detail[data-search-id]");
-    const status = document.getElementById("workspace-search-detail-status");
-    const query = document.getElementById("workspace-search-detail-query");
-    const prompt = document.getElementById("workspace-search-detail-prompt");
-    const results = document.getElementById("workspace-ai-search-detail-results");
-    if (!(detail instanceof HTMLElement) || !(status instanceof HTMLElement)
-      || !(query instanceof HTMLElement) || !(prompt instanceof HTMLElement) || !(results instanceof HTMLElement)) return;
-    const id = detail.dataset.searchId;
-    if (!id) return;
-    const refresh = async () => {
-      const run = await readJson(`/api/search/runs/${encodeURIComponent(id)}`, { cache: "no-store" });
-      query.textContent = run.query;
-      prompt.textContent = run.prompt;
-      status.hidden = true;
-      status.textContent = "";
-      status.className = "workspace-search-feedback";
-      renderResults(results, run);
-      clearPoll();
-      if (PENDING_STATUSES.has(run.status)) {
-        pollTimer = window.setTimeout(() => void refresh().catch((error) => {
-          status.className = "message message-error";
-          status.textContent = error.message;
-          status.hidden = false;
-        }), 1500);
-      }
+    const refreshTodayFocus = async () => {
+      await readJson("/api/today-focus/refresh", {
+        method: "POST",
+        signal: request.signal,
+      });
+      await refresh();
     };
-    void refresh().catch((error) => {
-      status.className = "message message-error";
-      status.textContent = error.message;
-      status.hidden = false;
-    });
   };
 
   window.disposeWorkspaceSearch = () => {
@@ -194,8 +150,7 @@
 
   window.initializeWorkspaceSearch = () => {
     window.disposeWorkspaceSearch?.();
-    initializeHome();
-    initializeDetail();
+    initializeTodayFocus();
   };
 
   window.initializeWorkspaceSearch?.();

@@ -505,6 +505,31 @@ async def test_quick_worker_restart_allows_busy_incompatible_worker(
 
 
 @pytest.mark.anyio
+async def test_quick_worker_status_reports_recovery_failure_without_waiting(
+    settings: Settings,
+) -> None:
+    coordinator = QuickWorkerReloadCoordinator(
+        settings.ai_runtime.codex.data_file.with_name("quick-worker-maintenance.json"),
+        settings.ai_runtime.codex.data_file.parent / "chub",
+    )
+
+    with patch(
+        "app.services.quick_worker_maintenance.read_health",
+        new=AsyncMock(return_value=worker_health(active_tasks=1)),
+    ):
+        inspection = await inspect_quick_worker(
+            settings,
+            False,
+            coordinator,
+            recovery_error="Worker task store could not be read",
+        )
+
+    assert inspection.data.state == "unavailable"
+    assert "已停止等待" in inspection.data.message
+    assert "升级与恢复" in inspection.data.message
+
+
+@pytest.mark.anyio
 async def test_quick_worker_restart_allows_busy_worker(
     settings: Settings,
 ) -> None:

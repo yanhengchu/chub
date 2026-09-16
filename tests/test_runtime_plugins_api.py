@@ -1,7 +1,11 @@
+from types import SimpleNamespace
+
 import httpx
 import pytest
 
 from app.application import create_app
+from app.api import runtime_plugins
+from app.ai_runtime.codex_plugin import LEGACY_DEVELOPMENT_CODEX_IMPLEMENTATION_ID
 
 
 @pytest.mark.anyio
@@ -63,6 +67,9 @@ async def test_codex_runtime_is_available_only_after_import_and_enablement(setti
     assert after_import.json()["data"]["runtime_state"] == "disabled"
     assert enabled.status_code == 200
     assert after_enablement.json()["data"]["runtime_state"] == "available"
+    assert app.state.plugin_lifecycle.codex_runtime_implementation_lifecycle_state(
+        LEGACY_DEVELOPMENT_CODEX_IMPLEMENTATION_ID
+    ) == (True, True)
 
 
 @pytest.mark.anyio
@@ -72,12 +79,12 @@ async def test_legacy_codex_runtime_writes_do_not_bypass_plugin_lifecycle(settin
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         runtime = await client.put("/api/codex/runtimes/codex", json={"enabled": True})
         implementation = await client.put(
-            "/api/codex/runtime-implementations/builtin-dev/enabled",
+            "/api/codex/runtime-implementations/codex-runtime-dev/enabled",
             json={"enabled": True},
         )
         default = await client.put(
             "/api/codex/runtime-implementations/default",
-            json={"implementation_id": "builtin-dev"},
+            json={"implementation_id": "codex-runtime-dev"},
         )
 
     assert runtime.status_code == 409
@@ -86,6 +93,37 @@ async def test_legacy_codex_runtime_writes_do_not_bypass_plugin_lifecycle(settin
     assert implementation.json()["error"]["code"] == "plugin_not_imported"
     assert default.status_code == 409
     assert default.json()["error"]["code"] == "runtime_plugin_not_imported"
+
+
+@pytest.mark.anyio
+async def test_development_runtime_refresh_availability_uses_current_implementation_id(
+    settings, monkeypatch
+) -> None:
+    app = create_app(settings)
+
+    async def worker_ready(_request) -> str:
+        return "worker-generation"
+
+    async def implementation_idle(_request, implementation_id: str) -> None:
+        assert implementation_id == "codex-runtime-dev"
+
+    monkeypatch.setattr(runtime_plugins, "_worker_generation", worker_ready)
+    monkeypatch.setattr(runtime_plugins, "_require_implementation_idle", implementation_idle)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.post(
+            "/api/plugins/codex-runtime/imports",
+            json={"artifact_id": "development:codex-runtime"},
+        )
+        await client.put(
+            "/api/plugins/codex-runtime/enabled",
+            json={"artifact_id": "development:codex-runtime", "enabled": True},
+        )
+    response = await runtime_plugins.read_development_runtime_plugin_refresh_availability(
+        SimpleNamespace(app=app)
+    )
+
+    assert response.data.model_dump() == {"available": True, "reason": None}
 
 
 @pytest.mark.anyio

@@ -7,11 +7,15 @@ from pathlib import Path
 from app.ai_runtime.runtime_plugins import RuntimePlugin
 from app.core.config import PROJECT_ROOT, Settings
 
+DEVELOPMENT_CODEX_IMPLEMENTATION_ID = "codex-runtime-dev"
+LEGACY_DEVELOPMENT_CODEX_IMPLEMENTATION_ID = "builtin-dev"
+
 
 def load_development_codex_plugin(
     settings: Settings,
     *,
     reload_source: bool = False,
+    implementation_id: str = DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
 ) -> RuntimePlugin | None:
     """Load the checked-out Codex plugin only during explicit startup/refresh."""
     source_root = PROJECT_ROOT / "runtime-modules" / "codex-runtime"
@@ -26,4 +30,4 @@ def load_development_codex_plugin(
                 sys.modules.pop(module_name, None)
     module = importlib.import_module("chub_codex_runtime.entry")
     factory = getattr(module, "create_runtime_module")
-    return factory(settings)
+    return factory(settings, implementation_id=implementation_id)

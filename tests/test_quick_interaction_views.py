@@ -180,7 +180,7 @@ const oldTask = {
   status: "succeeded",
   prompt: "old prompt",
   result: "old result",
-  implementation_id: "builtin-dev",
+  implementation_id: "codex-runtime-dev",
   created_at: "2026-08-15T08:00:00Z",
   updated_at: "2026-08-15T08:01:00Z",
   notification_status: "sent",
@@ -245,7 +245,7 @@ process.stdout.write(JSON.stringify({
     ]
     assert behavior["trimmed"] == ["failed", "newest"]
     assert behavior["old"]["assistantText"] == "updated result"
-    assert behavior["old"]["runtime"] == "Runtime：builtin-dev"
+    assert behavior["old"]["runtime"] == "Runtime：codex-runtime-dev"
     assert behavior["old"]["notification"]["label"] == "已通知"
     assert behavior["failed"]["error"] is True
     assert behavior["failed"]["runtime"] == "Runtime：codex-010001"

@@ -27,6 +27,7 @@ from app.automations.browser import (
     BrowserProfileInfo,
     DebugChromePageReadError,
     interact_debug_chrome_page,
+    open_debug_chrome_pages,
     read_debug_chrome_page,
 )
 from app.automations.models import (
@@ -1440,6 +1441,195 @@ def test_debug_chrome_page_reader_returns_bounded_owned_snapshot(
     assert session_options == {"ensure_page": False, "retry_connection": True}
 
 
+def test_debug_chrome_page_reader_closes_owned_popups(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = {"open": False}
+
+    class FakePopup:
+        closed = False
+
+        def on(self, _event, _handler):
+            return None
+
+        def is_closed(self):
+            return self.closed
+
+        async def close(self):
+            assert connection["open"] is True
+            self.closed = True
+
+    popup = FakePopup()
+
+    class FakePage:
+        url = "https://example.com/final"
+        closed = False
+
+        def on(self, event, handler):
+            assert event == "popup"
+            self.popup_handler = handler
+
+        async def goto(self, _url, **_kwargs):
+            self.popup_handler(popup)
+
+        async def title(self):
+            return "Example"
+
+        async def route(self, _pattern, _handler):
+            return None
+
+        async def evaluate(self, _script, _maximum):
+            return {"content": "page text", "truncated": False}
+
+        def is_closed(self):
+            return self.closed
+
+        async def close(self):
+            assert connection["open"] is True
+            self.closed = True
+
+    page = FakePage()
+
+    class FakeContext:
+        async def new_page(self):
+            return page
+
+    @asynccontextmanager
+    async def fake_session(**_kwargs):
+        connection["open"] = True
+        try:
+            yield SimpleNamespace(context=FakeContext())
+        finally:
+            connection["open"] = False
+
+    monkeypatch.setattr(
+        "app.automations.browser.debug_chrome_status",
+        lambda: ("running", "已运行", "有界面"),
+    )
+    monkeypatch.setattr("app.automations.browser._assert_public_host", lambda _host: None)
+    monkeypatch.setattr("app.automations.browser.session_factory", lambda: fake_session)
+
+    asyncio.run(read_debug_chrome_page("https://example.com/source"))
+
+    assert page.closed is True
+    assert popup.closed is True
+
+
+def test_debug_chrome_page_reader_fails_when_temporary_page_cannot_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakePage:
+        url = "https://example.com/final"
+        close_calls = 0
+
+        async def goto(self, _url, **_kwargs):
+            return None
+
+        async def title(self):
+            return "Example"
+
+        async def route(self, _pattern, _handler):
+            return None
+
+        async def evaluate(self, _script, _maximum):
+            return {"content": "page text", "truncated": False}
+
+        def is_closed(self):
+            return False
+
+        async def close(self):
+            self.close_calls += 1
+
+    page = FakePage()
+
+    class FakeContext:
+        async def new_page(self):
+            return page
+
+    @asynccontextmanager
+    async def fake_session(**_kwargs):
+        yield SimpleNamespace(context=FakeContext())
+
+    monkeypatch.setattr(
+        "app.automations.browser.debug_chrome_status",
+        lambda: ("running", "已运行", "有界面"),
+    )
+    monkeypatch.setattr("app.automations.browser._assert_public_host", lambda _host: None)
+    monkeypatch.setattr("app.automations.browser.session_factory", lambda: fake_session)
+
+    with pytest.raises(DebugChromePageReadError, match="未能关闭"):
+        asyncio.run(read_debug_chrome_page("https://example.com/source"))
+
+    assert page.close_calls == 1
+
+
+def test_debug_chrome_page_opener_leaves_fixed_pages_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakePage:
+        def __init__(self, index: int) -> None:
+            self.url = f"https://example{index}.com/final"
+            self.closed = False
+            self.fronted = False
+
+        async def route(self, pattern, _handler):
+            assert pattern == "**/*"
+
+        async def goto(self, url, **_kwargs):
+            assert url in {"https://example1.com", "https://example2.com"}
+
+        async def bring_to_front(self):
+            self.fronted = True
+
+        def is_closed(self):
+            return self.closed
+
+        async def close(self):
+            self.closed = True
+
+    created_pages = [FakePage(1), FakePage(2)]
+    pages = list(created_pages)
+
+    class FakeContext:
+        async def new_page(self):
+            return pages.pop(0)
+
+    @asynccontextmanager
+    async def fake_session(**kwargs):
+        assert kwargs == {"ensure_page": False, "retry_connection": True}
+        yield SimpleNamespace(context=FakeContext())
+
+    monkeypatch.setattr(
+        "app.automations.browser.debug_chrome_status",
+        lambda: ("running", "已运行", "有界面"),
+    )
+    monkeypatch.setattr("app.automations.browser._assert_public_host", lambda _host: None)
+    monkeypatch.setattr("app.automations.browser.session_factory", lambda: fake_session)
+
+    opened = asyncio.run(open_debug_chrome_pages(("https://example1.com", "https://example2.com")))
+
+    assert [item.final_url for item in opened] == [
+        "https://example1.com/final",
+        "https://example2.com/final",
+    ]
+    assert all(item.error is None for item in opened)
+    assert not pages
+    assert all(page.fronted and not page.closed for page in created_pages)
+
+
+def test_debug_chrome_page_opener_requires_headed_browser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.automations.browser.debug_chrome_status",
+        lambda: ("running", "已运行", "无界面"),
+    )
+    monkeypatch.setattr("app.automations.browser._assert_public_host", lambda _host: None)
+
+    with pytest.raises(DebugChromePageReadError, match="有界面"):
+        asyncio.run(open_debug_chrome_pages(("https://example.com",)))
+
+
 def test_debug_chrome_page_reader_blocks_private_redirect(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1513,6 +1703,8 @@ def test_debug_chrome_page_reader_blocks_private_redirect(
 def test_debug_chrome_page_interact_follows_one_public_link(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    connection = {"open": False}
+
     class FakePage:
         url = "https://example.com/next"
         closed = False
@@ -1536,6 +1728,7 @@ def test_debug_chrome_page_interact_follows_one_public_link(
             return self.closed
 
         async def close(self):
+            assert connection["open"] is True
             self.closed = True
 
     page = FakePage()
@@ -1547,7 +1740,11 @@ def test_debug_chrome_page_interact_follows_one_public_link(
     @asynccontextmanager
     async def fake_session(**kwargs):
         assert kwargs == {"ensure_page": False, "retry_connection": True}
-        yield SimpleNamespace(context=FakeContext())
+        connection["open"] = True
+        try:
+            yield SimpleNamespace(context=FakeContext())
+        finally:
+            connection["open"] = False
 
     monkeypatch.setattr(
         "app.automations.browser.debug_chrome_status",

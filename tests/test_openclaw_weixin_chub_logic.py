@@ -356,12 +356,7 @@ def test_format_chub_overview_omits_sessions_heading_when_empty() -> None:
 
 
 def test_session_formatting_and_configuration_match_are_stateless() -> None:
-    configuration = WeixinChubModeRuntimeConfig(
-        workspace_id="chub",
-        permission_mode="full-access",
-        model="gpt-5",
-        reasoning_effort="high",
-    )
+    configuration = WeixinChubModeRuntimeConfig(workspace_id="chub")
     session = SimpleNamespace(
         workspace_id="chub",
         permission_mode="full-access",
@@ -382,7 +377,7 @@ def test_session_formatting_and_configuration_match_are_stateless() -> None:
     assert codex_operation_message("切换状态：成功。", "Sessions\n\nS1") == (
         "切换状态：成功。\n\nSessions\n\nS1"
     )
-    session.reasoning_effort = "medium"
+    session.workspace_id = "home"
     assert not session_matches_configuration(session, configuration)
 
 
@@ -439,16 +434,13 @@ def test_task_summary_is_inserted_before_status_suffix_once() -> None:
     assert with_task_summary(result, "不会重复") == result
 
 
-def test_legacy_state_round_trip_preserves_compatibility_fields() -> None:
+def test_state_round_trip_rejects_retired_session_configuration_fields() -> None:
     now = datetime(2026, 8, 15, tzinfo=timezone.utc)
     payload = {
         "version": 1,
         "configuration": {
             "enabled": True,
             "workspace_id": "chub",
-            "permission_mode": "full-access",
-            "model": None,
-            "reasoning_effort": None,
         },
         "session_id": "session-1",
         "pending_retry": None,
@@ -482,5 +474,14 @@ def test_legacy_state_round_trip_preserves_compatibility_fields() -> None:
     assert dumped["submissions"][0]["code"] == "codex_usage_checked"
     assert dumped["submissions"][0]["session_slot"] == 1
     assert dumped["session_slots"] == [{"slot": 1, "session_id": "session-1"}]
+    retired = {
+        **payload,
+        "configuration": {
+            **payload["configuration"],
+            "permission_mode": "full-access",
+        },
+    }
+    with pytest.raises(ValidationError):
+        WeixinChubModeState.model_validate(retired)
     with pytest.raises(ValidationError):
         WeixinChubModeState.model_validate({**payload, "unexpected": True})

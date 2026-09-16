@@ -20,12 +20,12 @@
     <dialog id="workspace-openclaw-weixin-dialog" class="codex-workspace-dialog" aria-labelledby="workspace-openclaw-weixin-dialog-title">
       <div class="codex-workspace-dialog-surface openclaw-weixin-dialog-surface">
         <div class="codex-workspace-dialog-header"><h2 id="workspace-openclaw-weixin-dialog-title">微信绑定</h2><button id="workspace-openclaw-weixin-close" class="button-link codex-workspace-dialog-close" type="button" aria-label="关闭微信绑定">关闭</button></div>
-        <p class="openclaw-weixin-lead">为当前微信 ClawBot 生成新的微信连接二维码。</p>
+        <p class="confirmation-dialog-body openclaw-weixin-lead">为当前微信 ClawBot 生成新的微信连接二维码。</p>
         <section class="openclaw-weixin-context" aria-label="当前微信绑定配置">
           <div class="openclaw-weixin-context-row"><span class="openclaw-weixin-context-label">消息通道</span><strong id="workspace-openclaw-weixin-account-summary" class="openclaw-weixin-context-value">正在读取当前账户状态</strong></div>
           <div class="openclaw-weixin-context-row"><span class="openclaw-weixin-context-label">Owner 授权</span><strong id="workspace-openclaw-weixin-owner-summary" class="openclaw-weixin-context-value">正在读取当前 Owner 配置</strong></div>
         </section>
-        <p class="openclaw-weixin-notice">重新扫码可能使该 ClawBot 在其他设备上的服务端绑定失效。绑定只建立消息通道，不会自动完成发送者配对或 Owner 授权。</p>
+        <p class="confirmation-dialog-description openclaw-weixin-notice">重新扫码可能使该 ClawBot 在其他设备上的服务端绑定失效。绑定只建立消息通道，不会自动完成发送者配对或 Owner 授权。</p>
         <div id="workspace-openclaw-weixin-qr-panel" class="openclaw-weixin-qr-panel" hidden><img id="workspace-openclaw-weixin-qr" alt="微信 ClawBot 绑定二维码"><p>请使用手机微信扫码，并在手机上确认连接。</p></div>
         <form id="workspace-openclaw-weixin-verify-form" class="openclaw-weixin-verify-form" hidden><label for="workspace-openclaw-weixin-verify-code">手机显示的数字验证码</label><div class="token-row"><input id="workspace-openclaw-weixin-verify-code" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" maxlength="12" required><button type="submit">提交验证码</button></div></form>
         <p id="workspace-openclaw-weixin-message" class="message" role="status" aria-live="polite">点击“生成二维码”开始绑定。</p>
@@ -41,15 +41,15 @@
               <nav class="workspace-preview-compact-nav" data-workspace-section-navigation aria-label="折叠侧栏导航">
                 <a href="/workspace"{% if workspace_section == "workbench" %} aria-current="page" class="is-current"{% endif %} aria-label="工作台" title="工作台"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><rect x="4" y="4" width="6" height="6" rx="1"></rect><rect x="14" y="4" width="6" height="6" rx="1"></rect><rect x="4" y="14" width="6" height="6" rx="1"></rect><rect x="14" y="14" width="6" height="6" rx="1"></rect></svg></a>
                 <a href="/workspace?section=automations"{% if workspace_section == "automations" %} aria-current="page" class="is-current"{% endif %} aria-label="自动化" title="自动化"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><rect x="4" y="5" width="16" height="15" rx="2"></rect><path d="M4 9h16M7 3v4M17 3v4M14 12l4 2.5-4 2.5Z"></path></svg></a>
+                {% if today_focus_navigation %}<a href="/workspace?section=today-focus"{% if workspace_section == "today-focus" %} aria-current="page" class="is-current"{% endif %} aria-label="今日关注" title="今日关注"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><circle cx="12" cy="12" r="7"></circle><path d="M12 8v4l2.5 2"></path></svg></a>{% endif %}
                 <a href="/workspace?section=project-docs"{% if workspace_section == "project-docs" %} aria-current="page" class="is-current"{% endif %} aria-label="项目资料" title="项目资料"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M6 3.5h9l3 3V20a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1Z"></path><path d="M14 3.5V7h4M8.5 11h7M8.5 15h7"></path></svg></a>
-                {% if search_navigation %}<a href="/workspace?section=search"{% if workspace_section == "search" %} aria-current="page" class="is-current"{% endif %} aria-label="搜索" title="搜索"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><circle cx="11" cy="11" r="6"></circle><path d="m16 16 4 4"></path></svg></a>{% endif %}
                 {% if deliveryline_navigation %}<a href="/workspace?section=deliveryline"{% if workspace_section == "deliveryline" %} aria-current="page" class="is-current"{% endif %} aria-label="Deliveryline" title="Deliveryline"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M6 3.5h9l3 3V20a1 1 0 0 1-1 1H6a1 1 0 0 1 1-1V4.5a1 1 0 0 1 1-1Z"></path><path d="M14 3.5V7h4M8.5 11h7M8.5 15h7"></path></svg></a>{% endif %}
                 <a class="workspace-preview-compact-nav-external" href="/settings" aria-label="设置" title="设置"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2 2-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5v.2h-2.8v-.2a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1-2-2 .1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H5.7v-2.8h.2a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.9L7 8.2l2-2 .1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.5v-.2h2.8v.2a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1 2 2-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.5 1h.2V14h-.2a1.7 1.7 0 0 0-1.5 1Z"></path></svg></a>
               </nav>
               <nav id="workspace-quick-session-toolbar" class="workspace-quick-session-toolbar" aria-label="Chub Session切换" hidden></nav>
             </div>
             <p id="workspace-toolbar-error" class="workspace-preview-toolbar-error" aria-live="polite" hidden></p>
-            <div id="workspace-preview-health" class="workspace-preview-health"><span class="workspace-preview-health-dot" aria-hidden="true"></span>{% if workspace_section == "workbench" %}正在读取工作台状态…{% elif workspace_section == "automations" %}正在读取自动化状态…{% elif workspace_section == "deliveryline" %}正在读取 Deliveryline 状态…{% elif workspace_section == "search" %}AI 搜索已就绪{% else %}正在读取项目资料…{% endif %}</div>
+            <div id="workspace-preview-health" class="workspace-preview-health"><span class="workspace-preview-health-dot" aria-hidden="true"></span>{% if workspace_section == "workbench" %}正在读取工作台状态…{% elif workspace_section == "automations" %}正在读取自动化状态…{% elif workspace_section == "deliveryline" %}正在读取 Deliveryline 状态…{% elif workspace_section == "today-focus" %}今日关注已就绪{% else %}正在读取项目资料…{% endif %}</div>
           </header>
           {% if workspace_session_id %}
           <div id="workspace-section-content" class="workspace-inline-quick-session" data-workspace-session-id="{{ workspace_session_id }}" aria-label="Chub Session">
@@ -244,24 +244,18 @@
               {% endif %}
             </div>
           </section>
-          {% elif workspace_section == "search" and workspace_search_id %}
-          <section class="workspace-preview-work-surface workspace-search-detail" aria-labelledby="workspace-search-detail-title" data-search-id="{{ workspace_search_id }}">
-            <header class="workspace-search-detail-heading workspace-preview-work-section"><h1 id="workspace-search-detail-title">搜索详情</h1><p id="workspace-search-detail-status" class="workspace-search-feedback" aria-live="polite" hidden></p></header>
-            <section class="workspace-search-detail-section workspace-preview-work-section"><h2>搜索原文</h2><p id="workspace-search-detail-query" class="workspace-search-detail-copy"></p></section>
-            <section class="workspace-search-detail-section workspace-preview-work-section"><h2>搜索提示词</h2><pre id="workspace-search-detail-prompt" class="workspace-search-detail-prompt"></pre></section>
-            <section class="workspace-search-detail-section workspace-preview-work-section"><h2>搜索结果</h2><div id="workspace-ai-search-detail-results"></div></section>
-          </section>
-          {% elif workspace_section == "search" %}
-          <section class="workspace-preview-work-surface workspace-search" aria-labelledby="workspace-search-title">
-            <header class="workspace-search-hero workspace-preview-work-section">
-              <h1 id="workspace-search-title">Chub</h1>
-              <form id="workspace-ai-search-form" class="workspace-search-form" aria-label="AI 搜索">
-                <label class="visually-hidden" for="workspace-ai-search-query">描述需要检索的内容</label>
-                <div class="workspace-search-box"><svg class="workspace-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="11" cy="11" r="6"></circle><path d="m16 16 4 4"></path></svg><input id="workspace-ai-search-query" name="query" type="search" minlength="2" maxlength="2000" autocomplete="off" placeholder="例如：查找类似 aihero.dev/skills 的高星技能库" required><button id="workspace-ai-search-submit" class="workspace-search-submit" type="submit" aria-label="搜索" title="搜索"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m8 5 7 7-7 7"></path></svg></button></div>
-                <p id="workspace-ai-search-submit-feedback" class="workspace-search-submit-feedback message message-error" aria-live="polite" hidden></p>
-              </form>
+          {% elif workspace_section == "today-focus" %}
+          <section class="workspace-preview-work-surface workspace-today-focus" aria-labelledby="workspace-today-focus-title">
+            <header class="workspace-today-focus-heading workspace-preview-work-section">
+              <div><p class="section-kicker">Today</p><h2 id="workspace-today-focus-title">今日关注</h2><p>打开固定 AI 来源页面，或刷新今日 AI 动态，并集中查看今日计划与待办。</p></div>
+              <div class="workspace-today-focus-actions"><button id="workspace-today-focus-open-pages" class="button-secondary" type="button">打开页面</button><button id="workspace-today-focus-refresh" class="button-secondary" type="button">刷新</button></div>
             </header>
-            <section class="workspace-search-history workspace-preview-work-section" aria-labelledby="workspace-search-history-title"><h2 id="workspace-search-history-title">搜索记录 <span class="workspace-search-history-limit">最多保留 8 条</span></h2><div id="workspace-ai-search-history" class="workspace-search-history-list" aria-live="polite"></div></section>
+            <section class="workspace-today-focus-section workspace-preview-work-section" aria-labelledby="workspace-today-focus-ai-title">
+              <header class="workspace-today-focus-section-heading"><div><h3 id="workspace-today-focus-ai-title">AI 动态</h3><p id="workspace-today-focus-status" class="workspace-today-focus-status" aria-live="polite">正在读取今日动态。</p></div></header>
+              <div id="workspace-today-focus-results" class="workspace-today-focus-results" aria-live="polite"></div>
+            </section>
+            <section class="workspace-today-focus-section workspace-preview-work-section" aria-labelledby="workspace-today-focus-plan-title"><header class="workspace-today-focus-section-heading"><div><h3 id="workspace-today-focus-plan-title">今日计划</h3></div></header><p class="empty-state">暂无今日计划。</p></section>
+            <section class="workspace-today-focus-section workspace-preview-work-section" aria-labelledby="workspace-today-focus-todo-title"><header class="workspace-today-focus-section-heading"><div><h3 id="workspace-today-focus-todo-title">待办</h3></div></header><p class="empty-state">暂无待办事项。</p></section>
           </section>
           {% else %}
           {% set automation_refresh_active = namespace(value=false) %}
@@ -447,7 +441,7 @@
               <h3 id="workspace-automation-browser-stop-title">停止 Debug Chrome</h3>
               <button id="workspace-automation-browser-stop-close" class="button-link codex-workspace-dialog-close" type="button" aria-label="关闭停止确认窗口">关闭</button>
             </div>
-            <p class="confirmation-dialog-description">停止会关闭当前调试浏览器页面；正在使用该环境的自动化任务可能失败。</p>
+            <p class="confirmation-dialog-body">停止会关闭当前调试浏览器页面；正在使用该环境的自动化任务可能失败。</p>
             <div class="confirmation-dialog-actions">
               <button id="workspace-automation-browser-stop-cancel" class="button-link" type="button">取消</button>
               <button id="workspace-automation-browser-stop-confirm" class="button-danger" type="submit">确认停止</button>
@@ -462,7 +456,7 @@
               <h3 id="workspace-automation-codex-account-switch-title">切换 Codex Runtime 账户</h3>
               <button id="workspace-automation-codex-account-switch-close" class="button-link codex-workspace-dialog-close" type="button" aria-label="关闭账户切换窗口">关闭</button>
             </div>
-            <p id="workspace-automation-codex-account-switch-current" class="codex-auth-switch-current">正在确认当前认证方式。</p>
+            <p id="workspace-automation-codex-account-switch-current" class="confirmation-dialog-body codex-auth-switch-current">正在确认当前认证方式。</p>
             <div class="codex-auth-switch-flow" aria-labelledby="workspace-automation-codex-account-switch-flow-title">
               <strong id="workspace-automation-codex-account-switch-flow-title">切换流程</strong>
               <ol id="workspace-automation-codex-account-switch-flow-list"></ol>
@@ -486,8 +480,8 @@
           <nav class="workspace-preview-nav" data-workspace-section-navigation aria-label="工作台导航">
             <a href="/"{% if workspace_section == "workbench" %} aria-current="page" class="is-current"{% endif %}><span class="workspace-preview-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><rect x="4" y="4" width="6" height="6" rx="1"></rect><rect x="14" y="4" width="6" height="6" rx="1"></rect><rect x="4" y="14" width="6" height="6" rx="1"></rect><rect x="14" y="14" width="6" height="6" rx="1"></rect></svg></span><span>工作台</span></a>
             <a href="/?section=automations"{% if workspace_section == "automations" %} aria-current="page" class="is-current"{% endif %}><span class="workspace-preview-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><rect x="4" y="5" width="16" height="15" rx="2"></rect><path d="M4 9h16M7 3v4M17 3v4M14 12l4 2.5-4 2.5Z"></path></svg></span><span>自动化</span></a>
+            {% if today_focus_navigation %}<a href="/?section=today-focus"{% if workspace_section == "today-focus" %} aria-current="page" class="is-current"{% endif %}><span class="workspace-preview-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><circle cx="12" cy="12" r="7"></circle><path d="M12 8v4l2.5 2"></path></svg></span><span>今日关注</span></a>{% endif %}
             <a href="/?section=project-docs"{% if workspace_section == "project-docs" %} aria-current="page" class="is-current"{% endif %}><span class="workspace-preview-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M6 3.5h9l3 3V20a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1Z"></path><path d="M14 3.5V7h4M8.5 11h7M8.5 15h7"></path></svg></span><span>项目资料</span></a>
-            {% if search_navigation %}<a href="/?section=search"{% if workspace_section == "search" %} aria-current="page" class="is-current"{% endif %}><span class="workspace-preview-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><circle cx="11" cy="11" r="6"></circle><path d="m16 16 4 4"></path></svg></span><span>搜索</span></a>{% endif %}
           </nav>
           {% if deliveryline_navigation %}
           <p class="workspace-preview-sidebar-label">Business</p>

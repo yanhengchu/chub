@@ -148,7 +148,7 @@ def _task(
     result: str,
     created_at: str,
     *,
-    implementation_id: str = "builtin-dev",
+    implementation_id: str = "codex-runtime-dev",
     notification_status: str = "sent",
 ) -> dict:
     return {

@@ -901,7 +901,7 @@ window.initializeWorkspaceWorkstation = () => {
   elements.openclawRestart.addEventListener("click", () => {
     void showConfirmationDialog({
       title: "重启与恢复 OpenClaw Gateway",
-      description: "Gateway 和微信消息通道会短暂中断。Chub 将先检查固定插件和补丁基线，再确认 Gateway 与消息通道最终状态。",
+      body: "Gateway 和微信消息通道会短暂中断。Chub 将先检查固定插件和补丁基线，再确认 Gateway 与消息通道最终状态。",
       confirmLabel: "确认重启与恢复",
       tone: "secondary",
       closeOnConfirm: true,
@@ -961,7 +961,7 @@ window.initializeWorkspaceWorkstation = () => {
   elements.chubRestart.addEventListener("click", () => {
     void showConfirmationDialog({
       title: "重启 Chub",
-      description: "只重启 Chub Web 控制面；已接受的快速任务、Quick Worker 和原生 Codex 不会被停止。",
+      body: "只重启 Chub Web 控制面；已接受的快速任务、Quick Worker 和原生 Codex 不会被停止。",
       confirmLabel: "确认重启",
       pendingLabel: "正在等待新实例…",
       tone: "secondary",
@@ -972,7 +972,7 @@ window.initializeWorkspaceWorkstation = () => {
   elements.workerRestart.addEventListener("click", () => {
     void showConfirmationDialog({
       title: "重启 Chub Quick Worker",
-      description: "排队任务会取消，执行中的快速任务会停止并标记为未完成，且不会自动重试。Chub 和 OpenClaw 不受影响。",
+      body: "排队任务会取消，执行中的快速任务会停止并标记为未完成，且不会自动重试。Chub 和 OpenClaw 不受影响。",
       confirmLabel: "确认重启",
       pendingLabel: "正在下发…",
       errorMessage: "Quick Worker 重启失败。",
@@ -982,7 +982,7 @@ window.initializeWorkspaceWorkstation = () => {
   elements.upgradeStart.addEventListener("click", () => {
     void showConfirmationDialog({
       title: "升级与恢复",
-      description: "此操作会清理 Chub 自有 AI 运行状态并重启 Chub Web 与 Quick Worker；本地关联 Session 会按固定边界清理，Codex 原生会话保留。",
+      body: "此操作会清理 Chub 自有 AI 运行状态并重启 Chub Web 与 Quick Worker；本地关联 Session 会按固定边界清理，Codex 原生会话保留。",
       confirmLabel: upgradeState?.resume ? "继续恢复" : "确认升级与恢复",
       pendingLabel: "正在开始…",
       errorMessage: "升级与恢复未能启动。",

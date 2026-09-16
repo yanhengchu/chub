@@ -1032,7 +1032,7 @@
     const [title, confirmLabel, tone] = labels[action];
     void showConfirmationDialog({
       title,
-      description: descriptions[action],
+      body: descriptions[action],
       confirmLabel,
       tone,
       closeOnConfirm: true,
@@ -1059,7 +1059,7 @@
     if (!session || typeof showConfirmationDialog !== "function") return;
     void showConfirmationDialog({
       title: "仅删除 Chub 记录",
-      description: `Native Session 未能删除：${nativeError}。继续后将移除 Chub 保存的 Session、任务记录和关联槽位，但保留 Native Session。此操作无法恢复。`,
+      body: `Native Session 未能删除：${nativeError}。继续后将移除 Chub 保存的 Session、任务记录和关联槽位，但保留 Native Session。此操作无法恢复。`,
       confirmLabel: "确认仅删除 Chub 记录",
       tone: "danger",
       closeOnConfirm: true,
@@ -1100,7 +1100,7 @@
     const [title, confirmLabel] = labels[action];
     void showConfirmationDialog({
       title,
-      description: descriptions[action],
+      body: descriptions[action],
       confirmLabel,
       tone: "danger",
       closeOnConfirm: true,

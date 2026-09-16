@@ -13,10 +13,7 @@ from app.services.openclaw_weixin_chub_sessions import (
 
 
 def _configuration() -> WeixinChubModeRuntimeConfig:
-    return WeixinChubModeRuntimeConfig(
-        workspace_id="chub",
-        permission_mode="full-access",
-    )
+    return WeixinChubModeRuntimeConfig(workspace_id="chub")
 
 
 def _session(session_id: str, *, title: str, activity: str = "idle") -> object:

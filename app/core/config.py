@@ -260,14 +260,6 @@ class OpenClawCompletionNotificationConfig(StrictModel):
 class OpenClawWeixinChubModeConfig(StrictModel):
     enabled: bool = False
     workspace_id: Literal["home", "workspace", "chub"] = "chub"
-    permission_mode: Literal[
-        "ask",
-        "auto-review",
-        "read-only",
-        "full-access",
-    ] = "full-access"
-    model: str | None = Field(default=None, min_length=1, max_length=128)
-    reasoning_effort: str | None = Field(default=None, min_length=1, max_length=32)
     state_file: Path = Path("data/local/state/openclaw/weixin-chub-mode.json")
     # Orchestration plugin ZIPs are intentionally separate from Runtime plugins. They
     # are loaded only by the Web coordinator and never by Quick Worker.
@@ -292,15 +284,6 @@ class OpenClawWeixinChubModeConfig(StrictModel):
     # Longer task bodies submit directly so a confirmation response can remain
     # within the fixed Weixin reply boundary.
     translation_preprocess_max_input_chars: int = Field(default=1200, ge=1, le=8000)
-
-    @field_validator("model", "reasoning_effort", mode="before")
-    @classmethod
-    def normalize_optional_selection(cls, value: object) -> object:
-        if isinstance(value, str):
-            value = value.strip()
-            return value or None
-        return value
-
 
 class OpenClawConfig(StrictModel):
     integration_config_path: Path | None = None
@@ -463,6 +446,12 @@ def load_settings(config_file: str | Path | None = None) -> Settings:
         path = PROJECT_ROOT / path
     path = path.resolve()
     data = _read_yaml(path)
+    openclaw = data.get("openclaw")
+    if isinstance(openclaw, dict):
+        weixin_chub_mode = openclaw.get("weixin_chub_mode")
+        if isinstance(weixin_chub_mode, dict):
+            for retired_field in ("permission_mode", "model", "reasoning_effort"):
+                weixin_chub_mode.pop(retired_field, None)
     security = data.setdefault("security", {})
     if not isinstance(security, dict):
         raise RuntimeError("Configuration field 'security' must be a mapping")

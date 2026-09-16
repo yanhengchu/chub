@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.ai_runtime.runtime_plugin_packages import RuntimePluginInstallError, is_runtime_plugin_id
+from app.ai_runtime.codex_plugin import DEVELOPMENT_CODEX_IMPLEMENTATION_ID
 from app.core.config import PROJECT_ROOT
 from app.core.response import ApiError, ApiResponse
 from app.core.security import require_trusted_network
@@ -58,9 +59,6 @@ class DevelopmentRuntimePluginRefreshAvailabilityData(BaseModel):
     reason: str | None = Field(default=None, max_length=300)
 
 
-_DEVELOPMENT_CODEX_IMPLEMENTATION_ID = "builtin-dev"
-
-
 def _module_list(request: Request) -> RuntimePluginListData:
     manager = request.app.state.ai_session_manager
     active_ids = set(manager.runtime_plugins.implementation_ids())
@@ -109,7 +107,7 @@ def _module_list(request: Request) -> RuntimePluginListData:
         if not isinstance(manifest, dict):
             raise ValueError("invalid manifest")
         implementation_id = manifest.get("implementation_id")
-        if implementation_id != _DEVELOPMENT_CODEX_IMPLEMENTATION_ID:
+        if implementation_id != DEVELOPMENT_CODEX_IMPLEMENTATION_ID:
             raise ValueError("unexpected implementation")
         implementations = manager.read_runtime_implementations().implementations
         implementation = next(
@@ -182,7 +180,7 @@ async def _require_implementation_idle(request: Request, implementation_id: str)
         raise ApiError(409, "runtime_implementation_busy", "该 Runtime 版本仍有已受理任务，请等待其结束后再维护源码。")
 
 
-@router.get("/builtin-dev/refresh-availability", response_model=ApiResponse[DevelopmentRuntimePluginRefreshAvailabilityData])
+@router.get("/codex-runtime-dev/refresh-availability", response_model=ApiResponse[DevelopmentRuntimePluginRefreshAvailabilityData])
 async def read_development_runtime_plugin_refresh_availability(
     request: Request,
 ) -> ApiResponse[DevelopmentRuntimePluginRefreshAvailabilityData]:
@@ -192,7 +190,7 @@ async def read_development_runtime_plugin_refresh_availability(
         await _worker_generation(request)
         await _require_implementation_idle(
             request,
-            _DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
+            DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
         )
     except ApiError as exc:
         return ApiResponse(
@@ -239,7 +237,7 @@ async def _confirm_worker_runtime(
     return generation
 
 
-def _require_builtin_refresh_worker_confirmation(payload: dict[str, object]) -> None:
+def _require_development_refresh_worker_confirmation(payload: dict[str, object]) -> None:
     if payload.get("success") is True:
         return
     error = payload.get("error")
@@ -357,7 +355,7 @@ async def install_runtime_plugin_archive(
     raise error
 
 
-@router.post("/builtin-dev/refresh", response_model=ApiResponse[RuntimePluginInstallData])
+@router.post("/codex-runtime-dev/refresh", response_model=ApiResponse[RuntimePluginInstallData])
 async def refresh_development_codex_plugin(request: Request) -> ApiResponse[RuntimePluginInstallData]:
     """Explicitly reload the checked-out Codex source in Web and Quick Worker."""
     manager = request.app.state.ai_session_manager
@@ -366,46 +364,46 @@ async def refresh_development_codex_plugin(request: Request) -> ApiResponse[Runt
         request,
         action="refresh_development_runtime_plugin",
         status="requested",
-        target=_DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
+        target=DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
     )
     log_operation(
         request,
         action="refresh_development_runtime_plugin",
         status="started",
-        target=_DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
+        target=DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
         operation_id=operation_id,
     )
-    previous_builtin = None
+    previous_development = None
     worker_refresh_outcome_known = False
     worker_refresh_confirmed = False
     try:
-        await _require_implementation_idle(request, _DEVELOPMENT_CODEX_IMPLEMENTATION_ID)
+        await _require_implementation_idle(request, DEVELOPMENT_CODEX_IMPLEMENTATION_ID)
         await _worker_generation(request)
-        previous_builtin = manager.refresh_development_codex_plugin()
+        previous_development = manager.refresh_development_codex_plugin()
         refreshed = await refresh_runtime_registry(
             request.app.state.settings,
-            implementation_id=_DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
+            implementation_id=DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
             expected_present=True,
-            reload_builtin_source=True,
+            reload_development_source=True,
         )
         worker_refresh_outcome_known = True
         worker_refresh_confirmed = refreshed.get("success") is True
-        _require_builtin_refresh_worker_confirmation(refreshed)
+        _require_development_refresh_worker_confirmation(refreshed)
         generation = await _confirm_worker_runtime(
             request,
-            _DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
+            DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
             expected_present=True,
         )
         log_operation(
             request,
             action="refresh_development_runtime_plugin",
             status="succeeded",
-            target=_DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
+            target=DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
             operation_id=operation_id,
         )
         return ApiResponse(
             data=RuntimePluginInstallData(
-                module_id=_DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
+                module_id=DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
                 worker_generation=generation,
             )
         )
@@ -416,12 +414,12 @@ async def refresh_development_codex_plugin(request: Request) -> ApiResponse[Runt
     except Exception:
         error = ApiError(500, "development_runtime_plugin_refresh_failed", "开发版 Runtime 刷新失败，当前状态请以设置页和操作日志为准。")
     if (
-        previous_builtin is not None
+        previous_development is not None
         and worker_refresh_outcome_known
         and not worker_refresh_confirmed
     ):
         try:
-            manager.restore_development_codex_plugin(previous_builtin)
+            manager.restore_development_codex_plugin(previous_development)
         except Exception:
             error = ApiError(
                 503,
@@ -432,7 +430,7 @@ async def refresh_development_codex_plugin(request: Request) -> ApiResponse[Runt
         request,
         action="refresh_development_runtime_plugin",
         status="failed",
-        target=_DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
+        target=DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
         operation_id=operation_id,
         reason=error.code,
     )

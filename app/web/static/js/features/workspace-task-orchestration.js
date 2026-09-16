@@ -71,7 +71,7 @@
     runtimeTrigger.append(runtimeValue, runtimeArrow);
     const runtimeMenu = document.createElement("div");
     runtimeMenu.id = "workspace-task-runtime-menu";
-    runtimeMenu.className = "conversation-setting-menu workspace-task-orchestration-menu";
+    runtimeMenu.className = "settings-choice-picker-menu workspace-task-orchestration-menu";
     runtimeMenu.setAttribute("role", "listbox");
     runtimeMenu.setAttribute("aria-label", "翻译 Runtime");
     runtimeMenu.hidden = true;
@@ -94,7 +94,7 @@
     reasoningTrigger.append(reasoningValue, reasoningArrow);
     const reasoningMenu = document.createElement("div");
     reasoningMenu.id = "workspace-task-reasoning-menu";
-    reasoningMenu.className = "conversation-setting-menu workspace-task-orchestration-menu";
+    reasoningMenu.className = "settings-choice-picker-menu workspace-task-orchestration-menu";
     reasoningMenu.setAttribute("role", "listbox");
     reasoningMenu.setAttribute("aria-label", "推理等级");
     reasoningMenu.hidden = true;
@@ -131,7 +131,7 @@
       trigger: implementationTrigger,
       value: implementationValue,
       menu: implementationMenu,
-      optionClassName: "conversation-composer-control conversation-setting-option",
+      optionClassName: "settings-choice-picker-option",
       matchTriggerWidth: false,
       alignEnd: true,
       onSelect: (implementation) => void saveImplementation(implementation),
@@ -140,7 +140,7 @@
       trigger: processingTrigger,
       value: processingValue,
       menu: processingMenu,
-      optionClassName: "conversation-composer-control conversation-setting-option",
+      optionClassName: "settings-choice-picker-option",
       matchTriggerWidth: false,
       alignEnd: true,
       onSelect: (mode) => void save({ mode }, "设置结果未知，请稍后刷新页面重试。"),
@@ -149,7 +149,7 @@
       trigger: modelTrigger,
       value: modelValue,
       menu: modelMenu,
-      optionClassName: "conversation-composer-control conversation-setting-option",
+      optionClassName: "settings-choice-picker-option",
       matchTriggerWidth: false,
       alignEnd: true,
       onSelect: (model) => {
@@ -173,7 +173,7 @@
       trigger: runtimeTrigger,
       value: runtimeValue,
       menu: runtimeMenu,
-      optionClassName: "conversation-composer-control conversation-setting-option",
+      optionClassName: "settings-choice-picker-option",
       matchTriggerWidth: false,
       alignEnd: true,
       onSelect: (runtimeId) => {
@@ -186,7 +186,7 @@
       trigger: reasoningTrigger,
       value: reasoningValue,
       menu: reasoningMenu,
-      optionClassName: "conversation-composer-control conversation-setting-option",
+      optionClassName: "settings-choice-picker-option",
       matchTriggerWidth: false,
       alignEnd: true,
       onSelect: (reasoningEffort) => {
@@ -219,6 +219,10 @@
       const normalized = typeof version === "string" ? version.trim().replace(/^v/i, "") : "";
       return normalized ? `v${normalized}` : "未知版本";
     };
+    const developmentDescription = "使用仓库固定的开发实现；仅影响之后新建的润色任务。";
+    const formalDescription = (version) => (
+      `使用正式插件包 ${formalVersion(version)}；仅影响之后新建的润色任务。`
+    );
     const renderReasoning = (effectiveModel) => {
       const labels = window.QuickInteractionCore?.quickSessionReasoningLabels || {};
       const selectedLevel = status.reasoning_effort || "";
@@ -252,14 +256,14 @@
           value: "weixin-orchestration-dev",
           label: "微信任务润色 · 开发实现",
           description: orchestration.development_available
-            ? "使用仓库固定的开发阶段；只影响之后新接收的润色任务。"
+            ? developmentDescription
             : "当前源码不可用，不能用于新任务。",
         },
       ];
       modules.filter((item) => item.available).forEach((item) => implementationOptions.push({
         value: `module:${item.implementation_ref}`,
         label: `微信任务润色 · 正式版 ${formalVersion(item.version)}`,
-        description: `ZIP 模块 · ${item.version} · 仅影响之后新接收的润色任务。`,
+        description: formalDescription(item.version),
       }));
       const selectedImplementation = orchestration.implementation === "module"
         ? `module:${orchestration.module_ref || ""}`

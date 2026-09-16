@@ -49,7 +49,6 @@ from app.quick_worker_tasks import (
     WorkerTaskView,
     new_worker_task_id,
 )
-from app.task_capabilities import TaskCapabilityId
 
 
 MAX_RESULT_BYTES = 100_000
@@ -234,7 +233,8 @@ class QuickInteractionManager:
         seen_worker_task_ids: set[str] = set()
         for item in payload:
             if not isinstance(item, dict):
-                self._local_state_error = "Web quick interaction state contains an invalid entry"
+                recovered_tasks = True
+                LOGGER.warning("Discarded invalid Web quick interaction entry")
                 continue
             task_payload = dict(item)
             removed_session_display_snapshot = False
@@ -245,6 +245,12 @@ class QuickInteractionManager:
             # Older records may contain the removed pin state.
             removed_legacy_pin_state = "pinned_at" in task_payload
             task_payload.pop("pinned_at", None)
+            # v12 stored a task-scoped browser capability context. v13 retired
+            # that protocol and its Worker task directory, so a retained v12
+            # task cannot be resumed by the current Worker. Do not let this
+            # known obsolete field make the complete Web state unreadable.
+            retired_task_capabilities = "capability_ids" in task_payload
+            task_payload.pop("capability_ids", None)
             route_payload = task_payload.pop("_notification_route", None)
             restart_context_payload = task_payload.pop(
                 "_deferred_restart_context",
@@ -269,8 +275,10 @@ class QuickInteractionManager:
             try:
                 task = QuickInteractionTask.model_validate(task_payload)
             except ValueError:
-                self._local_state_error = "Web quick interaction state contains an invalid task"
+                recovered_tasks = True
+                LOGGER.warning("Discarded invalid Web quick interaction task")
                 continue
+            discard_reason: str | None = None
             if task.implementation_id == "codex" and task.status in {"requested", "running"}:
                 # The pre-R1 record had no implementation snapshot. Its Worker
                 # protocol state is intentionally incompatible, so never retry
@@ -283,11 +291,29 @@ class QuickInteractionManager:
                 task.error_source = "chub"
                 task.updated_at = utc_now()
                 recovered_tasks = True
+            if retired_task_capabilities and task.status in {"requested", "running"}:
+                task.status = "failed"
+                task.submission_verifying = False
+                task.error = (
+                    "该任务创建于已废弃的 Worker 协议，无法安全恢复，未重新执行。"
+                )
+                task.error_source = "chub"
+                task.updated_at = utc_now()
+                recovered_tasks = True
+            if retired_task_capabilities:
+                # Its Worker directory is deliberately not readable under the
+                # new protocol. This final local outcome is the recovery
+                # boundary, not a delivery that a current Worker can confirm.
+                self._worker_delivery_confirmed.add(task.id)
             if task.id in seen_task_ids or (
                 task.worker_task_id is not None
                 and task.worker_task_id in seen_worker_task_ids
             ):
-                self._local_state_error = "Web quick interaction state contains duplicate task identities"
+                recovered_tasks = True
+                LOGGER.warning(
+                    "Discarded duplicate Web quick interaction task: %s",
+                    task.id,
+                )
                 continue
             seen_task_ids.add(task.id)
             if task.worker_task_id is not None:
@@ -297,45 +323,44 @@ class QuickInteractionManager:
                     route = QuickInteractionWeixinRoute.model_validate(route_payload)
                 except ValueError:
                     route = None
-                if route is not None:
-                    self._notification_routes[task.id] = route
-                elif worker_delivery_confirmed is not True:
-                    self._local_state_error = (
+                if (
+                    route is None
+                    and worker_delivery_confirmed is not True
+                    and task.status in {"requested", "running"}
+                ):
+                    discard_reason = (
                         "Recoverable Weixin quick interaction has no valid delivery route"
                     )
+            else:
+                route = None
             try:
                 restart_context = QuickInteractionDeferredRestartContext.model_validate(
                     restart_context_payload
                 )
             except ValueError:
                 restart_context = None
-            if restart_context is not None:
-                self._deferred_restart_contexts[task.id] = restart_context
             try:
                 operation_context = QuickInteractionOperationContext.model_validate(
                     operation_context_payload
                 )
             except ValueError:
                 operation_context = None
-            if operation_context is not None:
-                self._operation_contexts[task.id] = operation_context
-                self._operations[task.id] = (
-                    operation_context.operation_id,
-                    operation_context.source_ip,
+            if (
+                operation_context is None
+                and task.status in {"requested", "running"}
+                and (
+                    task.worker_task_id is not None
+                    and worker_delivery_confirmed is not True
+                    and not retired_task_capabilities
                 )
-            elif (
-                task.worker_task_id is not None
-                and worker_delivery_confirmed is not True
             ):
-                self._local_state_error = (
+                discard_reason = discard_reason or (
                     "Recoverable quick interaction has no valid operation context"
                 )
             if not isinstance(worker_delivery_confirmed, bool):
-                self._local_state_error = (
+                discard_reason = discard_reason or (
                     "Web quick interaction state has an invalid delivery marker"
                 )
-            if worker_delivery_confirmed is True:
-                self._worker_delivery_confirmed.add(task.id)
             if task.status in {"requested", "running"}:
                 recovered_tasks = True
                 if task.worker_task_id is not None:
@@ -343,10 +368,41 @@ class QuickInteractionManager:
                     self._active_task_ids.add(task.id)
                     self._task_done_events[task.id] = threading.Event()
                 else:
-                    self._local_state_error = (
+                    discard_reason = discard_reason or (
                         "Active Web quick interaction has no Worker identity"
                     )
-            if removed_legacy_pin_state or removed_session_display_snapshot:
+            if discard_reason is not None:
+                self._running_sessions.discard(task.session_id)
+                self._active_task_ids.discard(task.id)
+                self._task_done_events.pop(task.id, None)
+                if task.worker_task_id is not None:
+                    self._pending_native_claim_clears.add(
+                        (task.session_id, task.worker_task_id)
+                    )
+                recovered_tasks = True
+                LOGGER.warning(
+                    "Discarded unrecoverable Web quick interaction task %s: %s",
+                    task.id,
+                    discard_reason,
+                )
+                continue
+            if route is not None:
+                self._notification_routes[task.id] = route
+            if restart_context is not None:
+                self._deferred_restart_contexts[task.id] = restart_context
+            if operation_context is not None:
+                self._operation_contexts[task.id] = operation_context
+                self._operations[task.id] = (
+                    operation_context.operation_id,
+                    operation_context.source_ip,
+                )
+            if worker_delivery_confirmed is True or retired_task_capabilities:
+                self._worker_delivery_confirmed.add(task.id)
+            if (
+                removed_legacy_pin_state
+                or removed_session_display_snapshot
+                or retired_task_capabilities
+            ):
                 recovered_tasks = True
             if task.notification_status == "sending":
                 recovered_tasks = True
@@ -365,6 +421,15 @@ class QuickInteractionManager:
                 task.notification_status = "skipped"
                 task.notification_error = "页面任务结果仅在 Chub 快速交互页面展示。"
                 task.notification_updated_at = utc_now()
+            if retired_task_capabilities and task.notification_status is None:
+                if task.notification_route == "weixin-task":
+                    if task.kind != "translation" and self.completion_notifier is not None:
+                        task.notification_status = "pending"
+                        task.notification_updated_at = utc_now()
+                else:
+                    task.notification_status = "skipped"
+                    task.notification_error = "页面任务结果仅在 Chub 快速交互页面展示。"
+                    task.notification_updated_at = utc_now()
             if task.deferred_restart_notification_status == "sending":
                 recovered_tasks = True
                 task.deferred_restart_notification_status = "failed"
@@ -455,11 +520,9 @@ class QuickInteractionManager:
         suppress_completion_notification: bool = False,
         summary_max_chars: int = TASK_SUMMARY_MAX_LENGTH,
         summary_max_width: int | None = None,
-        capability_ids: tuple[TaskCapabilityId, ...] | list[TaskCapabilityId] = (),
     ) -> QuickInteractionTask:
         self._require_worker_recovery()
         queued_translation = kind == "translation"
-        normalized_capability_ids = sorted(set(capability_ids))
         with self._session_lock(session_id):
             session = self.codex_manager.get_session(session_id)
             if session.status == "error" and not queued_translation:
@@ -496,7 +559,7 @@ class QuickInteractionManager:
                 selected_implementation_id = (
                     resolved_implementation_id
                     if isinstance(resolved_implementation_id, str)
-                    else "builtin-dev"
+                    else "codex-runtime-dev"
                 )
             if implementation_id is not None and implementation_id != selected_implementation_id:
                 raise ApiError(
@@ -562,7 +625,6 @@ class QuickInteractionManager:
                         if kind == "translation"
                         else session.reasoning_effort
                     ),
-                    capability_ids=normalized_capability_ids,
                     restart_sensitive=restart_sensitive,
                     status="requested",
                     notification_status=(
@@ -868,7 +930,7 @@ class QuickInteractionManager:
         if self._closed.is_set():
             return
         if self._local_state_error is not None:
-            raise OSError(self._local_state_error)
+            self._discard_unrecoverable_local_state()
         self._retry_pending_native_claim_clears()
         listed = self._worker_call("task_list", limit=100, recovery_only=True)
         if listed.get("success") is not True:
@@ -906,19 +968,8 @@ class QuickInteractionManager:
             for worker_task_id, summary in recovery_worker_tasks.items()
             if summary.session_id is not None and worker_task_id not in local_by_worker_id
         ]
-        unknown_recovery = self._discard_final_worker_tasks_without_session(
-            unknown_recovery
-        )
-        with self._lock:
-            self._untracked_worker_sessions.update(
-                summary.session_id
-                for summary in unknown_recovery
-                if summary.session_id is not None
-            )
         if unknown_recovery:
-            raise OSError(
-                "Worker has an active or undelivered Codex task without Web delivery metadata"
-            )
+            self._discard_untracked_worker_tasks(unknown_recovery)
         for task_id in candidates:
             if self._closed.is_set():
                 return
@@ -944,39 +995,79 @@ class QuickInteractionManager:
         if self.deferred_restart is not None:
             self.deferred_restart.maybe_schedule()
 
-    def _discard_final_worker_tasks_without_session(
+    def _discard_unrecoverable_local_state(self) -> None:
+        """Drop an unreadable Chub-owned Web projection before Worker recovery."""
+        with self._lock:
+            reason = self._local_state_error or "Web quick interaction state is unreadable"
+            self._quarantine_non_file_state_path()
+            self._tasks.clear()
+            self._running_sessions.clear()
+            self._active_task_ids.clear()
+            self._cancelled_task_ids.clear()
+            self._task_done_events.clear()
+            self._operations.clear()
+            self._notification_routes.clear()
+            self._deferred_restart_contexts.clear()
+            self._operation_contexts.clear()
+            self._worker_delivery_confirmed.clear()
+            self._submitting_task_ids.clear()
+            self._native_claim_restore_errors.clear()
+            self._untracked_worker_sessions.clear()
+            self._local_state_error = None
+            self.codex_manager.discard_quick_native_claims()
+            self._write()
+        LOGGER.warning(
+            "Discarded unreadable Chub quick interaction state before Worker recovery: %s",
+            reason,
+        )
+
+    def _quarantine_non_file_state_path(self) -> None:
+        """Move a malformed fixed state path aside so the empty projection can persist."""
+        if self.path.is_symlink() or not self.path.exists() or self.path.is_file():
+            return
+        quarantine = self.path.with_name(
+            f"{self.path.name}.discarded-{uuid.uuid4().hex}"
+        )
+        self.path.replace(quarantine)
+        LOGGER.warning(
+            "Quarantined non-file Chub quick interaction state path: %s",
+            quarantine,
+        )
+
+    def _discard_untracked_worker_tasks(
         self,
         tasks: list[WorkerTaskSummary],
-    ) -> list[WorkerTaskSummary]:
-        """Acknowledge only final Worker tasks whose Chub Session was discarded."""
-        unresolved: list[WorkerTaskSummary] = []
+    ) -> None:
+        """Cancel and acknowledge Worker tasks with no recoverable Web metadata."""
         for task in tasks:
-            if task.status not in FINAL_STATUSES or task.session_id is None:
-                unresolved.append(task)
-                continue
-            try:
-                self.codex_manager.get_session(task.session_id)
-            except ApiError as exc:
-                if exc.code != "codex_session_not_found":
-                    unresolved.append(task)
-                    continue
-            except Exception:
-                unresolved.append(task)
-                continue
-            else:
-                unresolved.append(task)
-                continue
+            if task.status not in FINAL_STATUSES:
+                cancelled = self._worker_call("task_cancel", task_id=task.task_id)
+                if cancelled.get("success") is not True:
+                    raise OSError(self._worker_error(cancelled))
+                data = cancelled.get("data")
+                try:
+                    snapshot = WorkerTaskView.model_validate_json(
+                        json.dumps(
+                            data.get("task") if isinstance(data, dict) else None,
+                            ensure_ascii=False,
+                        )
+                    )
+                except ValueError as exc:
+                    raise OSError("Worker returned invalid discarded task data") from exc
+                if snapshot.task_id != task.task_id or snapshot.status not in FINAL_STATUSES:
+                    raise OSError("Worker did not finish the discarded task")
             acknowledged = self._worker_call(
                 "task_acknowledge",
                 task_id=task.task_id,
             )
             if acknowledged.get("success") is not True:
                 raise OSError(self._worker_error(acknowledged))
+            if task.session_id is not None:
+                self._clear_quick_native_claim_safely(task.session_id, task.task_id)
             LOGGER.info(
-                "Discarded final Worker task without Chub Session: %s",
+                "Discarded Worker task without recoverable Web metadata: %s",
                 task.task_id,
             )
-        return unresolved
 
     def _require_worker_recovery(self) -> None:
         with self._lock:
@@ -2223,13 +2314,12 @@ class QuickInteractionManager:
             prompt=(
                 prompt
                 if task.kind == "translation"
-                else self._codex_execution_prompt(prompt, task.capability_ids)
+                else self._codex_execution_prompt(prompt)
             ),
             permission_profile=permission_profile,
             native_session_id=session.native_session_id,
             model=model,
             reasoning_effort=reasoning_effort,
-            capability_ids=task.capability_ids,
             timeout_seconds=self.timeout_seconds,
             task_kind=task_kind,
             restart_sensitive=task.restart_sensitive,
@@ -2253,8 +2343,6 @@ class QuickInteractionManager:
             for retry_delay in (*WORKER_CONNECTION_RETRY_DELAYS, None):
                 try:
                     task_payload = submission.model_dump(mode="json")
-                    if not submission.capability_ids:
-                        task_payload.pop("capability_ids", None)
                     accepted = self._worker_call(
                         "runtime_task_submit",
                         task=task_payload,
@@ -2272,8 +2360,6 @@ class QuickInteractionManager:
         except OSError as submit_error:
             try:
                 task_payload = submission.model_dump(mode="json")
-                if not submission.capability_ids:
-                    task_payload.pop("capability_ids", None)
                 accepted = self._worker_call(
                     "runtime_task_submit",
                     task=task_payload,
@@ -2456,25 +2542,16 @@ class QuickInteractionManager:
     @staticmethod
     def _codex_execution_prompt(
         prompt: str,
-        capability_ids: tuple[TaskCapabilityId, ...] | list[TaskCapabilityId] = (),
     ) -> str:
-        grants = ""
-        entries = []
-        if "chub.debug_chrome.page.read" in capability_ids:
-            entries.append(
-                "- chub.debug_chrome.page.read：仅在需要读取公共网页正文时，调用 "
-                "`chub capability page-read --url <URL>`。该命令返回 JSON 正文快照；"
-                "不得改用 Debug Chrome、CDP 或浏览器配置。"
-            )
-        if "chub.debug_chrome.page.interact" in capability_ids:
-            entries.append(
-                "- chub.debug_chrome.page.interact：仅可跟随公共页面中唯一匹配的可见链接，调用 "
-                "`chub capability page-interact --url <URL> --follow-link <链接文字>`。"
-                "不得填写或提交表单、下载、执行脚本，或改用 Debug Chrome、CDP、浏览器配置。"
-            )
-        if entries:
-            grants = "\n\n[本次任务已授予的 Chub 能力]\n" + "\n".join(entries)
-        return f"[用户需求]\n{prompt}{grants}\n\n{CODEX_QUICK_INTERACTION_INSTRUCTIONS}"
+        browser_capabilities = (
+            "\n\n[Chub 本机浏览器能力]\n"
+            "- 读取公共网页正文时，使用 `chub capability page-read --url <URL>`；"
+            "该命令返回 JSON 正文快照。\n"
+            "- 仅可按唯一匹配的可见链接继续页面时，使用 "
+            "`chub capability page-interact --url <URL> --follow-link <链接文字>`。\n"
+            "- 不得改用 Debug Chrome、CDP 或浏览器配置；不得填写或提交表单、下载或执行脚本。"
+        )
+        return f"[用户需求]\n{prompt}{browser_capabilities}\n\n{CODEX_QUICK_INTERACTION_INSTRUCTIONS}"
 
     @staticmethod
     def _session_title(prompt: str) -> str:

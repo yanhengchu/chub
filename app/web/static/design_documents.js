@@ -74,7 +74,7 @@ async function updateArchiveState(button) {
   }
   await showConfirmationDialog({
     title: `${action}项目资料`,
-    description: archived
+    body: archived
       ? `显示“${title}”后，该资料会重新显示在首页。`
       : `隐藏“${title}”后，该资料不再显示在首页，但仍保留在“已隐藏”列表中。此操作不会移动或冻结仓库文件。`,
     confirmLabel: `确认${action}`,

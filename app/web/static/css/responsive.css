@@ -101,17 +101,36 @@
 }
 
 @media (max-width: 420px) {
-  .workspace-search {
-    gap: 1.5rem;
+  .workspace-today-focus-heading {
+    align-items: stretch;
+    grid-template-columns: 1fr;
   }
 
-  .workspace-search-hero h1 {
-    font-size: 2.25rem;
+  .workspace-today-focus-heading > .workspace-today-focus-actions {
+    justify-self: start;
   }
 
   .settings-field {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .deployment-package-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .deployment-package-artifacts-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .deployment-package-heading .button-secondary {
+    align-self: start;
+  }
+
+  .deployment-package-artifacts-heading .button-secondary {
+    align-self: start;
   }
 
   .settings-field-toggle {
