@@ -93,7 +93,7 @@ class DeploymentPackageSourceVersions(_StrictModel):
 
 
 class DeploymentPackageReleaseNoteGeneration(_StrictModel):
-    status: Literal["idle", "requested", "running", "succeeded", "failed", "stale"] = "idle"
+    status: Literal["idle", "requested", "running", "succeeded", "failed"] = "idle"
     message: str = Field(default="等待生成发版说明。", max_length=300)
     session_id: str | None = Field(default=None, min_length=1, max_length=64)
     task_id: str | None = Field(default=None, min_length=1, max_length=64)
@@ -209,11 +209,24 @@ class DeploymentPackageService:
         if len(raw) > 64 * 1024:
             raise ApiError(503, "deployment_package_state_invalid", "部署包发布配置无效。")
         try:
-            state = _State.model_validate_json(raw)
-        except ValueError as exc:
+            payload = json.loads(raw)
+            cleared_legacy_generation = (
+                isinstance(payload, dict)
+                and isinstance(payload.get("release_note_generation"), dict)
+                and payload["release_note_generation"].get("status") == "stale"
+            )
+            if cleared_legacy_generation:
+                payload = dict(payload)
+                payload["release_note_generation"] = (
+                    DeploymentPackageReleaseNoteGeneration().model_dump(mode="json")
+                )
+            state = _State.model_validate(payload)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
             raise ApiError(503, "deployment_package_state_invalid", "部署包发布配置无效。") from exc
+        changed = cleared_legacy_generation
         if state.release_note_session_id is None:
             state.release_note_session_id = state.release_note_generation.session_id
+            changed = True
         if (
             state.configuration.release_note
             or state.configuration.release_note_generated_for_version is not None
@@ -226,6 +239,9 @@ class DeploymentPackageService:
                     "release_note_generated_for_commit": None,
                 }
             )
+            changed = True
+        if changed:
+            self._write(state)
         return state
 
     def _write(self, state: _State) -> None:
@@ -457,7 +473,7 @@ class DeploymentPackageService:
 
     def _refresh_release_note_generation(self, state: _State) -> None:
         generation = state.release_note_generation
-        if generation.status not in {"requested", "running", "succeeded"}:
+        if generation.status not in {"requested", "running"}:
             return
         changed = False
         if generation.status in {"requested", "running"} and generation.task_id is not None:
@@ -481,15 +497,6 @@ class DeploymentPackageService:
                 changed = True
             else:
                 changed = self._apply_release_note_task_result(state, task)
-        elif generation.status == "succeeded" and self._generation_is_stale(generation):
-            self._clear_release_note_draft(task_id=generation.task_id)
-            state.release_note_generation = generation.model_copy(
-                update={
-                    "status": "stale",
-                    "message": "发版说明对应的版本或提交已变化，请重新生成或手工更新。",
-                }
-            )
-            changed = True
         if changed:
             self._write(state)
 
@@ -545,20 +552,6 @@ class DeploymentPackageService:
                 status="failed",
                 reason="invalid_result",
             )
-        elif self._generation_is_stale(generation):
-            self._clear_release_note_draft(task_id=generation.task_id)
-            state.release_note_generation = generation.model_copy(
-                update={
-                    "status": "stale",
-                    "message": "生成期间版本或提交已变化，请重新生成发版说明。",
-                    "finished_at": _now(),
-                }
-            )
-            self._write_release_note_generation_terminal(
-                state.release_note_generation,
-                status="failed",
-                reason="worktree_changed",
-            )
         else:
             if generation.task_id == self._release_note_draft_task_id:
                 self._release_note_draft = note
@@ -599,23 +592,6 @@ class DeploymentPackageService:
         self._release_note_draft_token = None
         self._release_note_draft = None
         self._release_note_draft_expires_at = None
-
-    def _generation_is_stale(self, generation: DeploymentPackageReleaseNoteGeneration) -> bool:
-        if (
-            generation.target_commit is None
-            or generation.target_version is None
-            or generation.target_worktree_fingerprint is None
-        ):
-            return True
-        try:
-            current_commit = self._git("rev-parse", "HEAD")
-            current_fingerprint = self._working_tree_fingerprint()
-        except OSError:
-            return False
-        return (
-            current_commit != generation.target_commit
-            or current_fingerprint != generation.target_worktree_fingerprint
-        )
 
     @staticmethod
     def _write_release_note_generation_terminal(

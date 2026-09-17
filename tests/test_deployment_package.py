@@ -223,7 +223,7 @@ def test_release_configuration_persists_without_changing_app_version(
     assert json.loads(settings.deployment_package.state_file.read_text())["configuration"]["chub_release_version"] == "9.9.9"
 
 
-def test_release_note_generation_reuses_a_general_internal_session_and_marks_stale(
+def test_release_note_generation_reuses_a_general_internal_session_and_keeps_generated_draft(
     settings,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -303,13 +303,18 @@ def test_release_note_generation_reuses_a_general_internal_session_and_marks_sta
     assert service.status().generated_release_note is None
     assert service.status(release_note_draft_token="b" * 32).generated_release_note is None
     assert DeploymentPackageService(settings, sessions, quick).status().generated_release_note is None
+    head["fingerprint"] = "c" * 64
+    unchanged = service.status(release_note_draft_token=draft_token)
+
+    assert unchanged.release_note_generation.status == "succeeded"
+    assert unchanged.generated_release_note == "- 支持正式发布\n- 补充部署流程"
     service._release_note_draft_expires_at = 0
     assert service.status(release_note_draft_token=draft_token).generated_release_note is None
-    head["fingerprint"] = "c" * 64
-    stale = service.status()
-
-    assert stale.release_note_generation.status == "stale"
-    assert "重新生成" in stale.release_note_generation.message
+    persisted["release_note_generation"]["status"] = "stale"
+    settings.deployment_package.state_file.write_text(json.dumps(persisted), encoding="utf-8")
+    reset = DeploymentPackageService(settings, sessions, quick).status()
+    assert reset.release_note_generation.status == "idle"
+    assert json.loads(settings.deployment_package.state_file.read_text())["release_note_generation"]["status"] == "idle"
     service.save_configuration(completed.configuration)
     assert service.hidden_release_note_session_ids() == {"release-note-session"}
     assert service.set_show_release_note_session(True) is True

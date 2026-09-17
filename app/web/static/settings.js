@@ -732,7 +732,7 @@ function initializeDeploymentPackageSettings() {
       setSettingsMessage(deploymentPackageMessage, latestOperation.message || "正在发布版本。", "");
       return;
     }
-    if (generationActive() || latestGeneration?.status === "failed" || latestGeneration?.status === "stale") {
+    if (generationActive() || latestGeneration?.status === "failed") {
       setSettingsMessage(deploymentPackageMessage, latestGeneration?.message || "正在生成发版说明。", latestGeneration?.status === "failed" ? "error" : "");
       return;
     }
