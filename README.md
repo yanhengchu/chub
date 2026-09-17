@@ -59,12 +59,15 @@ Chub 始终提供 loopback 访问；启用默认的 Tailnet 可信访问后，�
 
 日常维护使用 `chub status`、`chub check`、`chub web restart`、`chub web logs` 和 `chub version`。完整 CLI、Worker 操作、通知命令、平台差异及影响范围以[集成能力清单](docs/CHUB_INTEGRATION_CAPABILITIES.md)为准。
 
+`scripts/chub` 是唯一稳定的本机 CLI 门面。当前已完成 Debug Chrome 第一阶段收敛：`chub chrome supervisor reconcile [--restart]` 只解析固定参数并转发到核心维护公开用例；Ubuntu 的 Supervisor unit 和固定 systemd 动作由内部 `scripts/platform/` 适配，不是供维护者直接调用的泛化服务脚本。Web 重启、Quick Worker 重启和系统升级 oneshot 的进程内触发分别由 `WebRestartUseCase`、`QuickWorkerMaintenanceUseCase` 和 `SystemUpgradeMaintenanceUseCase` 接管，业务代码不再重新执行 `scripts/chub`。维护脚本只编排 Chub 专属流程、清理与最终确认，不直接执行服务管理器命令；核心服务定义、安装前停机、升级执行器加载/启动/状态、Web/Worker 固定生命周期、Chrome Supervisor 定义/状态和完整卸载均只在 `scripts/platform/service-management.sh` 的已枚举动作中实现。`chub` 只做固定校验、路由、必要的 Chub 运行态处理和最终健康确认。独立维护脚本的唯一正式位置是 `scripts/maintenance/`，正式构建入口集中在 `scripts/build/`；旧根目录维护与构建路径已移除，不提供兼容调用。失败的系统升级操作记录属于 Chub 自有运行态，下一次确认升级会清除旧记录并从当前固定方案重新开始，不兼容或续跑旧方案。
+
 普通 Web 重启、Quick Worker 重启、系统升级恢复和 OpenClaw Gateway 维护是相互独立的操作，必须按各自的最终状态确认；不要用一个服务的状态推断另一服务成功。具体范围与恢复方式见[总体架构](docs/CHUB_ARCHITECTURE_DESIGN.md)、[Quick Worker 设计](docs/CHUB_QUICK_WORKER_DESIGN.md)和[OpenClaw 定制集成设计](docs/OPENCLAW_CUSTOMIZATION_DESIGN.md)。
 
 ## 数据与安全摘要
 
 - `config/settings.local.yaml`、`config/automations.local.yaml` 和凭据文件只保存本机，不提交。
 - `data/shared/` 只保存明确允许 Git 同步的共享资料；`data/local/` 保存本机运行态、缓存和产物，不提交。
+- `modules/` 保存随仓库维护的开发模块，并由 `modules/chub-modules.json` 决定哪些目录可被发现；其中 `runtime/` 放 AI Runtime，`orchestration/` 放受控任务编排，`business/` 放工作台业务模块。与项目目录平级的 `chub-local-modules/` 保存设备定制模块，使用独立索引且不属于发布或升级清理范围。
 - 受保护接口只接受真实 loopback，或在启用时的真实 Tailnet socket 来源；不信任客户端转发 Header。
 - 客户端和外部通道不能提供任意命令、路径、Runtime、原生 Session、收件人或凭据；公开页面、日志、通知和示例配置不得包含秘密。
 

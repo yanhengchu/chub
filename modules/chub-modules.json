@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "modules": [
+    {
+      "module_id": "codex-runtime-dev",
+      "module_type": "runtime",
+      "path": "runtime/codex-runtime"
+    },
+    {
+      "module_id": "weixin-refinement",
+      "module_type": "orchestration",
+      "path": "orchestration/weixin-refinement"
+    },
+    {
+      "module_id": "deliveryline",
+      "module_type": "business",
+      "path": "business/deliveryline"
+    }
+  ]
+}

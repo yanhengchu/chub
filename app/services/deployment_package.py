@@ -24,6 +24,7 @@ from app.ai_runtime.runtime_plugin_packages import RuntimePluginService
 from app.core.config import PROJECT_ROOT, Settings
 from app.core.platform import detect_platform
 from app.core.response import ApiError
+from app.quick_worker import read_health_sync
 from app.services.operation_log import write_operation
 from app.services.weixin_orchestration_plugins import WeixinOrchestrationPluginService
 
@@ -31,6 +32,22 @@ FORMAL_CODEX_IMPLEMENTATION_ID = "codex-010000"
 FORMAL_CODEX_DESCRIPTION = "Chub Codex Runtime：提供 AI Session、Quick Worker 任务执行和模型配置能力。"
 RELEASE_VERSION_PATTERN = r"^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$"
 RELEASE_NOTE_DRAFT_TTL_SECONDS = 30 * 60
+RELEASE_EXECUTABLE_SCRIPTS = frozenset(
+    {
+        "scripts/chub",
+        "scripts/maintenance/chub-data-migrate",
+        "scripts/maintenance/chub-system-upgrade-restart",
+        "scripts/maintenance/chub-system-upgrade-start",
+        "scripts/maintenance/chub-web-restart",
+        "scripts/maintenance/chub-worker-reload",
+        "scripts/build/build-chub-release-zip.py",
+        "scripts/build/build-codex-runtime-zip.py",
+        "scripts/build/build-deliveryline-plugin-zip.py",
+        "scripts/build/build-runtime-verification-zip.py",
+        "scripts/build/build-weixin-orchestration-plugin-zip.py",
+        "scripts/platform/service-management.sh",
+    }
+)
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -308,12 +325,13 @@ class DeploymentPackageService:
             with (PROJECT_ROOT / "pyproject.toml").open("rb") as file:
                 chub = tomllib.load(file)["project"]["version"]
             runtime_manifest = json.loads(
-                (PROJECT_ROOT / "runtime-modules" / "codex-runtime" / "chub-module.json").read_text("utf-8")
+                (PROJECT_ROOT / "modules" / "runtime" / "codex-runtime" / "chub-module.json").read_text("utf-8")
             )
             weixin_manifest = json.loads(
                 (
                     PROJECT_ROOT
-                    / "orchestration-modules"
+                    / "modules"
+                    / "orchestration"
                     / "weixin-refinement"
                     / "chub-capability-orchestration.json"
                 ).read_text("utf-8")
@@ -764,20 +782,9 @@ class DeploymentPackageService:
         self._active_operation_id = operation.operation_id
         return operation, configuration, baseline
 
-    @staticmethod
-    def _require_idle_worker() -> None:
+    def _require_idle_worker(self) -> None:
         try:
-            result = subprocess.run(
-                [str(PROJECT_ROOT / "scripts" / "chub"), "worker", "health"],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                timeout=5,
-                check=False,
-            )
-            if result.returncode != 0 or len(result.stdout) > 16 * 1024:
-                raise ValueError("worker health unavailable")
-            payload = json.loads(result.stdout)
+            payload = read_health_sync(self.settings)
             data = payload.get("data") if payload.get("success") is True else None
             if not isinstance(data, dict):
                 raise ValueError("worker health unavailable")
@@ -793,7 +800,7 @@ class DeploymentPackageService:
                 or queued < 0
             ):
                 raise ValueError("worker health unavailable")
-        except (OSError, subprocess.TimeoutExpired, ValueError, json.JSONDecodeError):
+        except (OSError, ValueError):
             raise ApiError(503, "release_worker_status_unavailable", "无法确认 Quick Worker 空闲，本次不能发布。") from None
         if active or queued:
             raise ApiError(
@@ -907,12 +914,13 @@ class DeploymentPackageService:
                 (PROJECT_ROOT / "config" / "settings.example.yaml").read_text("utf-8")
             )
             runtime_manifest = json.loads(
-                (PROJECT_ROOT / "runtime-modules" / "codex-runtime" / "chub-module.json").read_text("utf-8")
+                (PROJECT_ROOT / "modules" / "runtime" / "codex-runtime" / "chub-module.json").read_text("utf-8")
             )
             weixin_manifest = json.loads(
                 (
                     PROJECT_ROOT
-                    / "orchestration-modules"
+                    / "modules"
+                    / "orchestration"
                     / "weixin-refinement"
                     / "chub-capability-orchestration.json"
                 ).read_text("utf-8")
@@ -1151,8 +1159,8 @@ class DeploymentPackageService:
             build_id = f"{built_at.strftime('%Y%m%d%H%M')}-{source_hash}"
             runtime_zip = modules / f"codex-runtime-release-{configuration.runtime_release_version}-{build_id}.zip"
             weixin_zip = modules / f"weixin-refinement-release-{configuration.weixin_release_version}-{build_id}.zip"
-            subprocess.run([sys.executable, str(PROJECT_ROOT / "scripts" / "build_codex_runtime_zip.py"), "--output", str(runtime_zip), "--implementation-id", configuration.runtime_implementation_id, "--version", configuration.runtime_release_version, "--description", configuration.runtime_description, "--chub-version", configuration.chub_release_version], cwd=PROJECT_ROOT, check=True, capture_output=True, text=True, timeout=60)
-            subprocess.run([sys.executable, str(PROJECT_ROOT / "scripts" / "build_weixin_orchestration_plugin_zip.py"), "--output", str(weixin_zip), "--version", configuration.weixin_release_version, "--chub-version", configuration.chub_release_version], cwd=PROJECT_ROOT, check=True, capture_output=True, text=True, timeout=60)
+            subprocess.run([sys.executable, str(PROJECT_ROOT / "scripts" / "build" / "build-codex-runtime-zip.py"), "--output", str(runtime_zip), "--implementation-id", configuration.runtime_implementation_id, "--version", configuration.runtime_release_version, "--description", configuration.runtime_description, "--chub-version", configuration.chub_release_version], cwd=PROJECT_ROOT, check=True, capture_output=True, text=True, timeout=60)
+            subprocess.run([sys.executable, str(PROJECT_ROOT / "scripts" / "build" / "build-weixin-orchestration-plugin-zip.py"), "--output", str(weixin_zip), "--version", configuration.weixin_release_version, "--chub-version", configuration.chub_release_version], cwd=PROJECT_ROOT, check=True, capture_output=True, text=True, timeout=60)
             bundled_modules = self._validate_bundled_modules(
                 root,
                 runtime_zip,
@@ -1325,7 +1333,9 @@ class DeploymentPackageService:
             "config/system-upgrade.json",
         ]
         if include_development_sources:
-            paths.extend(["runtime-modules", "orchestration-modules"])
+            paths.append("modules")
+        else:
+            paths.append("modules/chub-local-modules.example.json")
         for value in paths:
             source = PROJECT_ROOT / value
             if source.is_file():
@@ -1374,7 +1384,16 @@ class DeploymentPackageService:
             raise OSError("release source is unsafe")
         if data is None:
             data = source.read_bytes()
-        archive.writestr(str(target), data)
+        target_name = target.as_posix()
+        mode = (
+            0o755
+            if target_name in RELEASE_EXECUTABLE_SCRIPTS
+            else source.stat().st_mode & 0o777
+        )
+        entry = zipfile.ZipInfo(target_name)
+        entry.create_system = 3
+        entry.external_attr = (0o100000 | mode) << 16
+        archive.writestr(entry, data, compress_type=zipfile.ZIP_DEFLATED)
         files = manifest["files"]
         assert isinstance(files, dict)
-        files[str(target)] = hashlib.sha256(data).hexdigest()
+        files[target_name] = hashlib.sha256(data).hexdigest()

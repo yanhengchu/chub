@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -322,41 +324,24 @@ async def test_device_auth_completes_each_page_stage_before_confirmation(
 def test_account_switch_uses_headed_yanheng_browser(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    launches: list[bool] = []
-
-    class ChromeDebug:
-        DEFAULT_USER_DATA_DIR = Path("/tmp/chub-debug-chrome")
-
-        @staticmethod
-        def status():
-            return type("Status", (), {"state": "stopped"})()
-
-        @staticmethod
-        def start(*, headless: bool):
-            launches.append(headless)
-            return type(
-                "Started",
-                (),
-                {"state": "running", "profile_directory": auth_switch.TARGET_PROFILE},
-            )()
-
-    class ProfileStore:
-        @staticmethod
-        def select_profile(_, profile: str) -> None:
-            assert profile == auth_switch.TARGET_PROFILE
-
-    monkeypatch.setattr(auth_switch, "_chrome_debug_module", lambda: ChromeDebug)
-    monkeypatch.setattr(
-        auth_switch,
-        "_profile_modules",
-        lambda: (None, None, ProfileStore()),
+    lifecycle = MagicMock()
+    lifecycle.status_snapshot.return_value = SimpleNamespace(state="stopped")
+    lifecycle.select_profile_and_start.return_value = SimpleNamespace(
+        state="running",
+        profile_directory=auth_switch.TARGET_PROFILE,
     )
+    token = auth_switch._BROWSER_LIFECYCLE.set(lifecycle)
+    try:
+        auth_switch._switch_browser_for_account(
+            auth_switch.BrowserSnapshot(profile="Profile 4", mode="headless"),
+        )
+    finally:
+        auth_switch._BROWSER_LIFECYCLE.reset(token)
 
-    auth_switch._switch_browser_for_account(
-        auth_switch.BrowserSnapshot(profile="Profile 4", mode="headless"),
+    lifecycle.select_profile_and_start.assert_called_once_with(
+        auth_switch.TARGET_PROFILE,
+        "headed",
     )
-
-    assert launches == [False]
 
 
 def test_account_switch_restores_browser_after_success(

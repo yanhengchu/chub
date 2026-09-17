@@ -30,6 +30,9 @@ from app.automations.browser import (
     open_debug_chrome_pages,
     read_debug_chrome_page,
 )
+import app.automations.browser as browser_module
+import app.automations.chrome_maintenance as chrome_maintenance
+from app.automations.chrome_supervisor import ChromeStatusSnapshot
 from app.automations.models import (
     AutomationState,
     BrowserControlResult,
@@ -1441,6 +1444,22 @@ def test_debug_chrome_page_reader_returns_bounded_owned_snapshot(
     assert session_options == {"ensure_page": False, "retry_connection": True}
 
 
+def test_debug_chrome_page_reader_reports_unavailable_status_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.automations.browser.debug_chrome_status",
+        lambda: (
+            "unavailable",
+            "未检测到 Google Chrome；安装后可使用受管浏览器自动化能力。",
+            None,
+        ),
+    )
+
+    with pytest.raises(DebugChromePageReadError, match="未检测到 Google Chrome"):
+        asyncio.run(read_debug_chrome_page("https://example.com/source"))
+
+
 def test_debug_chrome_page_reader_closes_owned_popups(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1952,6 +1971,7 @@ def test_feishu_environment_url_classification() -> None:
     )
 
     assert available.state == "available"
+    assert available.message == "飞书账户已登录"
     assert login_required.state == "login_required"
     assert failed.state == "failed"
 
@@ -1968,7 +1988,7 @@ def test_manager_checks_and_caches_feishu_environment(
     async def fake_check():
         return FeishuEnvironmentState(
             state="available",
-            message="登录有效",
+            message="飞书账户已登录",
             checked_at=checked_at,
         )
 
@@ -1984,6 +2004,28 @@ def test_manager_checks_and_caches_feishu_environment(
 
     assert result.state == "available"
     assert listing.feishu_environment == result
+
+
+def test_manager_reports_browser_status_message_when_checking_feishu(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    configure_automations(settings, tmp_path)
+    manager = AutomationManager(settings)
+    with patch.object(
+        manager,
+        "_debug_chrome_status",
+        return_value=(
+            "unavailable",
+            "未检测到 Google Chrome；安装后可使用受管浏览器自动化能力。",
+            None,
+        ),
+    ):
+        with pytest.raises(ApiError) as raised:
+            manager.check_feishu_environment()
+
+    assert raised.value.code == "debug_chrome_not_running"
+    assert raised.value.message == "未检测到 Google Chrome；安装后可使用受管浏览器自动化能力。"
 
 
 def test_manager_opens_feishu_login_page_in_headed_browser(
@@ -2002,7 +2044,7 @@ def test_manager_opens_feishu_login_page_in_headed_browser(
     with (
         patch(
             "app.automations.manager.debug_chrome_status",
-            return_value=("running", "Debug Chrome 已运行", "headed"),
+            return_value=("running", "Debug Chrome 已运行", "有界面"),
         ),
         patch.object(manager, "_open_feishu_login_page", fake_open),
         patch.object(manager, "control_browser") as control_browser,
@@ -2027,7 +2069,7 @@ def test_manager_switches_idle_headless_browser_before_opening_feishu_login_page
     with (
         patch(
             "app.automations.manager.debug_chrome_status",
-            return_value=("running", "Debug Chrome 已运行", "headless"),
+            return_value=("running", "Debug Chrome 已运行", "无界面"),
         ),
         patch.object(manager, "_open_feishu_login_page", fake_open),
         patch.object(
@@ -2056,7 +2098,7 @@ def test_manager_does_not_switch_busy_browser_for_feishu_login_page(
 
     with patch(
         "app.automations.manager.debug_chrome_status",
-        return_value=("running", "Debug Chrome 已运行", "headless"),
+        return_value=("running", "Debug Chrome 已运行", "无界面"),
     ):
         with pytest.raises(ApiError, match="自动化任务正在使用 Debug Chrome"):
             manager.open_feishu_login_page()
@@ -2074,7 +2116,7 @@ def test_manager_opens_codex_runtime_login_page_in_headed_browser(
     with (
         patch(
             "app.automations.manager.debug_chrome_status",
-            return_value=("running", "Debug Chrome 已运行", "headed"),
+            return_value=("running", "Debug Chrome 已运行", "有界面"),
         ),
         patch.object(manager, "control_browser") as control_browser,
     ):
@@ -2104,7 +2146,7 @@ def test_manager_checks_and_caches_codex_runtime_account(
     checked_at = datetime.now().astimezone()
     checker = lambda: RuntimeAccountEnvironmentState(
         state="available",
-        message="ChatGPT 登录有效",
+        message="ChatGPT 账户已登录",
         checked_at=checked_at,
     )
     manager = AutomationManager(settings, codex_account_checker=checker)
@@ -2123,7 +2165,7 @@ def test_manager_resets_feishu_environment_when_browser_stops(
     configure_automations(settings, tmp_path)
     manager = AutomationManager(settings)
     manager._set_feishu_environment(
-        FeishuEnvironmentState(state="available", message="登录有效")
+        FeishuEnvironmentState(state="available", message="飞书账户已登录")
     )
 
     with patch(
@@ -2313,6 +2355,25 @@ def test_manager_starts_debug_chrome_headless(
     start.assert_called_once_with("headless")
 
 
+def test_manager_reports_missing_chrome_when_starting_browser(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    configure_automations(settings, tmp_path)
+    manager = AutomationManager(settings)
+
+    with patch.object(
+        manager,
+        "_start_debug_chrome",
+        side_effect=RuntimeError("Google Chrome executable was not found"),
+    ):
+        with pytest.raises(ApiError) as raised:
+            manager.control_browser("start")
+
+    assert raised.value.code == "debug_chrome_control_failed"
+    assert raised.value.message == "未检测到 Google Chrome；安装后可使用受管浏览器自动化能力。"
+
+
 def test_manager_restarts_debug_chrome_with_current_profile_and_mode(
     settings: Settings,
     tmp_path: Path,
@@ -2320,7 +2381,7 @@ def test_manager_restarts_debug_chrome_with_current_profile_and_mode(
     configure_automations(settings, tmp_path)
     manager = AutomationManager(settings)
     with (
-        patch.object(manager, "_debug_chrome_status", return_value=("running", "headed", None)),
+        patch.object(manager, "_debug_chrome_status", return_value=("running", "已运行", "有界面")),
         patch.object(manager, "_current_debug_chrome_profile", return_value="Profile 2"),
         patch.object(manager, "_stop_debug_chrome", return_value=SimpleNamespace(state="stopped")) as stop,
         patch.object(
@@ -2355,6 +2416,70 @@ def test_manager_restarts_debug_chrome_with_current_profile_and_mode(
     assert result.mode == "有界面"
     stop.assert_called_once_with()
     start.assert_called_once_with("Profile 2", "headed")
+
+
+def test_manager_restarts_debug_chrome_headless_with_current_profile(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    configure_automations(settings, tmp_path)
+    manager = AutomationManager(settings)
+    with (
+        patch.object(manager, "_debug_chrome_status", return_value=("running", "已运行", "无界面")),
+        patch.object(manager, "_current_debug_chrome_profile", return_value="Profile 2"),
+        patch.object(
+            manager,
+            "_stop_debug_chrome",
+            return_value=SimpleNamespace(state="stopped"),
+        ),
+        patch.object(
+            manager,
+            "_select_and_start_debug_chrome",
+            return_value=SimpleNamespace(
+                state="running",
+                mode="headless",
+                profile_directory="Profile 2",
+            ),
+        ) as start,
+        patch(
+            "app.automations.manager.browser_profiles",
+            return_value=(
+                [
+                    BrowserProfileInfo(
+                        id="Profile 2",
+                        name="工作",
+                        initialized=True,
+                        source_available=True,
+                        active=True,
+                    )
+                ],
+                None,
+            ),
+        ),
+    ):
+        result = manager.control_browser("restart")
+
+    assert result.state == "running"
+    assert result.profile_id == "Profile 2"
+    assert result.mode == "无界面"
+    start.assert_called_once_with("Profile 2", "headless")
+
+
+def test_manager_does_not_stop_browser_when_restart_mode_is_unknown(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    configure_automations(settings, tmp_path)
+    manager = AutomationManager(settings)
+    with (
+        patch.object(manager, "_debug_chrome_status", return_value=("running", "已运行", None)),
+        patch.object(manager, "_current_debug_chrome_profile", return_value="Profile 2"),
+        patch.object(manager, "_stop_debug_chrome") as stop,
+    ):
+        with pytest.raises(ApiError, match="无法确认 Debug Chrome 当前启动模式"):
+            manager.control_browser("restart")
+
+    stop.assert_not_called()
 
 
 def test_manager_starts_selected_initialized_profile(
@@ -2579,3 +2704,87 @@ def test_manager_refuses_to_stop_browser_while_automation_task_is_running(
 
     with pytest.raises(ApiError, match="自动化任务正在使用"):
         manager.control_browser("stop")
+
+
+def test_debug_chrome_status_distinguishes_missing_chrome_from_stopped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chrome = SimpleNamespace(
+        status=lambda: SimpleNamespace(state="stopped", mode=None),
+        chrome_executable=lambda: (_ for _ in ()).throw(
+            RuntimeError("Google Chrome executable was not found")
+        ),
+    )
+    monkeypatch.setattr(chrome_maintenance, "chrome_debug", chrome)
+
+    assert browser_module.debug_chrome_status() == (
+        "unavailable",
+        "未检测到 Google Chrome；安装后可使用受管浏览器自动化能力。",
+        None,
+    )
+
+    chrome.chrome_executable = lambda: Path("/Applications/Google Chrome.app")
+    assert browser_module.debug_chrome_status() == (
+        "stopped",
+        "未启动，启动后可提供受管浏览器自动化能力。",
+        None,
+    )
+
+
+def test_debug_chrome_status_reports_missing_chrome_when_status_check_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chrome = SimpleNamespace(
+        status=lambda: (_ for _ in ()).throw(
+            RuntimeError("Google Chrome executable was not found")
+        ),
+    )
+    monkeypatch.setattr(chrome_maintenance, "chrome_debug", chrome)
+
+    assert browser_module.debug_chrome_status() == (
+        "unavailable",
+        "未检测到 Google Chrome；安装后可使用受管浏览器自动化能力。",
+        None,
+    )
+
+
+def test_debug_chrome_status_fails_closed_when_supervisor_is_stopped(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    chrome = SimpleNamespace(
+        status=lambda: SimpleNamespace(state="running", mode="headless"),
+    )
+    monkeypatch.setattr(chrome_maintenance, "chrome_debug", chrome)
+
+    assert browser_module.debug_chrome_status(
+        supervisor_socket=tmp_path / "debug-chrome-supervisor.sock"
+    ) == ("unavailable", "Debug Chrome Supervisor 当前不可用", None)
+
+
+def test_ubuntu_debug_chrome_status_reports_missing_chrome_from_supervisor(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        chrome_maintenance,
+        "request_supervisor",
+        lambda *_args, **_kwargs: ChromeStatusSnapshot(
+            state="stopped",
+            mode=None,
+            endpoint="http://127.0.0.1:9222",
+            user_data_dir="/tmp/debug",
+            profile_directory=None,
+            process_ids=[],
+            chrome_available=False,
+        ),
+    )
+
+    assert chrome_maintenance.ChromeLifecycleUseCase(
+        detected_platform="ubuntu",
+        supervisor_socket=tmp_path / "debug-chrome-supervisor.sock",
+    ).public_status() == (
+        "unavailable",
+        "未检测到 Google Chrome；安装后可使用受管浏览器自动化能力。",
+        None,
+    )

@@ -23,6 +23,7 @@ done
 SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd)"
 SCRIPT_PATH="$SCRIPT_DIR/$(basename "$SCRIPT_PATH")"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+LOCAL_MODULES_ROOT="$(cd "$PROJECT_ROOT/.." && pwd)/chub-local-modules"
 
 PYTHON_BIN="$PROJECT_ROOT/.venv/bin/python"
 MAIN_FILE="$PROJECT_ROOT/main.py"
@@ -31,7 +32,6 @@ COMMAND_DIR="${CHUB_COMMAND_DIR:-$HOME/.local/bin}"
 COMMAND_PATH="$COMMAND_DIR/chub"
 RUNTIME_PATH="$PROJECT_ROOT/.venv/bin:$HOME/.local/bin:$HOME/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 PLATFORM="${CHUB_TEST_PLATFORM:-$(uname -s)}"
-SERVICE_LOG_MAX_BYTES=$((2 * 1024 * 1024))
 SERVICE_LOG_DIR="${CHUB_SERVICE_LOG_DIR:-$PROJECT_ROOT/logs}"
 
 if [[ "${1:-}" == "capability" ]]; then
@@ -164,459 +164,24 @@ check_codex_runtime_requirements() {
     done
 }
 
-rotate_service_logs() {
-    local log_file
-    for log_file in "$@"; do
-        [[ -f "$log_file" ]] || continue
-        "$PYTHON_BIN" - "$log_file" "$SERVICE_LOG_MAX_BYTES" <<'PY'
-from pathlib import Path
-import os
-import stat
-import sys
-
-path = Path(sys.argv[1])
-max_bytes = int(sys.argv[2])
-metadata = path.lstat()
-if not stat.S_ISREG(metadata.st_mode):
-    raise SystemExit(f"service log is not a regular file: {path}")
-if metadata.st_size > max_bytes:
-    backup = path.with_name(f"{path.name}.1")
-    try:
-        backup_metadata = backup.lstat()
-    except FileNotFoundError:
-        pass
-    else:
-        if not stat.S_ISREG(backup_metadata.st_mode):
-            raise SystemExit(f"rotated service log is not a regular file: {backup}")
-        backup.unlink()
-    path.replace(backup)
-    os.chmod(backup, 0o600)
-PY
-    done
-}
-
-secure_service_logs() {
-    local log_file
-    [[ "$SERVICE_LOG_DIR" == /* ]] || fail "service log directory must be absolute"
-    [[ ! -L "$SERVICE_LOG_DIR" ]] || fail "service log directory must not be a symlink"
-    mkdir -p "$SERVICE_LOG_DIR"
-    [[ -d "$SERVICE_LOG_DIR" && ! -L "$SERVICE_LOG_DIR" ]] \
-        || fail "service log directory is unavailable"
-    chmod 700 "$SERVICE_LOG_DIR"
-    for log_file in "$@"; do
-        "$PYTHON_BIN" - "$log_file" <<'PY'
-import os
-import stat
-import sys
-from pathlib import Path
-
-path = Path(sys.argv[1])
-try:
-    metadata = path.lstat()
-except FileNotFoundError:
-    flags = os.O_CREAT | os.O_APPEND | os.O_WRONLY
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    descriptor = os.open(path, flags, 0o600)
-    os.close(descriptor)
-else:
-    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
-        raise SystemExit(f"service log is not a regular file: {path}")
-os.chmod(path, 0o600)
-PY
-    done
-}
-
-macos_plist_path() {
-    echo "${CHUB_LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}/$MACOS_LABEL.plist"
-}
-
-worker_macos_plist_path() {
-    echo "${CHUB_LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}/$WORKER_MACOS_LABEL.plist"
-}
-
-prepare_service_definition_path() {
-    local path="$1"
-    mkdir -p "$(dirname "$path")"
-    chmod 700 "$(dirname "$path")"
-    "$PYTHON_BIN" - "$path" <<'PY'
-import os
-import stat
-import sys
-from pathlib import Path
-
-path = Path(sys.argv[1])
-parent = path.parent.lstat()
-if (
-    not stat.S_ISDIR(parent.st_mode)
-    or stat.S_ISLNK(parent.st_mode)
-    or parent.st_uid != os.getuid()
-    or stat.S_IMODE(parent.st_mode) & 0o077
-):
-    raise SystemExit("service definition directory is unsafe")
-try:
-    metadata = path.lstat()
-except FileNotFoundError:
-    raise SystemExit(0)
-if (
-    stat.S_ISLNK(metadata.st_mode)
-    or not stat.S_ISREG(metadata.st_mode)
-    or metadata.st_uid != os.getuid()
-    or stat.S_IMODE(metadata.st_mode) & 0o077
-):
-    raise SystemExit("service definition path is unsafe")
-PY
-}
-
-systemd_unit_path() {
-    echo "${CHUB_SYSTEMD_USER_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user}/$SERVICE_NAME.service"
-}
-
-worker_systemd_unit_path() {
-    echo "${CHUB_SYSTEMD_USER_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user}/$WORKER_SERVICE_NAME.service"
-}
-
-chrome_supervisor_systemd_unit_path() {
-    echo "${CHUB_SYSTEMD_USER_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user}/$CHROME_SUPERVISOR_SERVICE_NAME.service"
-}
-
-system_upgrade_systemd_unit_path() {
-    echo "${CHUB_SYSTEMD_USER_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user}/$SYSTEM_UPGRADE_SERVICE_NAME.service"
-}
-
-system_upgrade_macos_plist_path() {
-    echo "${CHUB_LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}/$SYSTEM_UPGRADE_MACOS_LABEL.plist"
-}
-
-macos_domain() {
-    echo "gui/$(id -u)"
-}
-
-wait_for_macos_unload() {
-    local label="$1"
-    local domain attempt
-    domain="$(macos_domain)"
-    for attempt in 1 2 3 4 5 6 7 8 9 10; do
-        if ! launchctl print "$domain/$label" >/dev/null 2>&1; then
-            return
-        fi
-        sleep 0.5
-    done
-    fail "macOS service did not stop"
-}
-
-stop_macos_service() {
-    local domain
-    domain="$(macos_domain)"
-    launchctl bootout "$domain/$MACOS_LABEL" >/dev/null 2>&1 || true
-    wait_for_macos_unload "$MACOS_LABEL"
-}
-
-stop_macos_worker() {
-    local domain
-    domain="$(macos_domain)"
-    launchctl bootout "$domain/$WORKER_MACOS_LABEL" >/dev/null 2>&1 || true
-    wait_for_macos_unload "$WORKER_MACOS_LABEL"
-}
-
-start_macos_service() {
-    local domain plist_path stdout_log stderr_log
-    domain="$(macos_domain)"
-    plist_path="$(macos_plist_path)"
-    stdout_log="$SERVICE_LOG_DIR/service.out.log"
-    stderr_log="$SERVICE_LOG_DIR/service.err.log"
-    [[ -f "$plist_path" ]] || fail "service is not installed; run chub install"
-    if launchctl print "$domain/$MACOS_LABEL" >/dev/null 2>&1; then
-        secure_service_logs "$stdout_log" "$stderr_log"
-        launchctl kickstart "$domain/$MACOS_LABEL"
-    else
-        secure_service_logs "$stdout_log" "$stderr_log"
-        rotate_service_logs "$stdout_log" "$stderr_log"
-        secure_service_logs "$stdout_log" "$stderr_log"
-        launchctl bootstrap "$domain" "$plist_path"
+run_platform_service_action() {
+    local output
+    if ! output="$(CHUB_SERVICE_RUNTIME_PATH="$RUNTIME_PATH" \
+        "$PROJECT_ROOT/scripts/platform/service-management.sh" "$@" 2>&1)"; then
+        output="${output#service-management: }"
+        fail "${output:-fixed service operation failed}"
     fi
+    [[ -z "$output" ]] || printf '%s\n' "$output"
 }
 
-start_macos_worker() {
-    local domain plist_path stdout_log stderr_log
-    domain="$(macos_domain)"
-    plist_path="$(worker_macos_plist_path)"
-    stdout_log="$SERVICE_LOG_DIR/quick-worker.out.log"
-    stderr_log="$SERVICE_LOG_DIR/quick-worker.err.log"
-    [[ -f "$plist_path" ]] || fail "Quick Worker service is not installed; run chub install"
-    if launchctl print "$domain/$WORKER_MACOS_LABEL" >/dev/null 2>&1; then
-        secure_service_logs "$stdout_log" "$stderr_log"
-        launchctl kickstart "$domain/$WORKER_MACOS_LABEL"
-    else
-        secure_service_logs "$stdout_log" "$stderr_log"
-        rotate_service_logs "$stdout_log" "$stderr_log"
-        secure_service_logs "$stdout_log" "$stderr_log"
-        launchctl bootstrap "$domain" "$plist_path"
-    fi
-}
-
-load_macos_system_upgrade_service() {
-    local domain plist_path
-    domain="$(macos_domain)"
-    plist_path="$(system_upgrade_macos_plist_path)"
-    [[ -f "$plist_path" ]] || fail "system upgrade service is not installed; run chub install"
-    if ! launchctl print "$domain/$SYSTEM_UPGRADE_MACOS_LABEL" >/dev/null 2>&1; then
-        launchctl bootstrap "$domain" "$plist_path"
-    fi
-}
-
-write_macos_service() {
-    local plist_path
-    plist_path="$(macos_plist_path)"
-    prepare_service_definition_path "$plist_path"
-    mkdir -p "$SERVICE_LOG_DIR"
-    {
-        echo '<?xml version="1.0" encoding="UTF-8"?>'
-        echo '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
-        echo '<plist version="1.0">'
-        echo '<dict>'
-        echo '  <key>Label</key>'
-        echo "  <string>$MACOS_LABEL</string>"
-        echo '  <key>ProgramArguments</key>'
-        echo '  <array>'
-        echo "    <string>$PYTHON_BIN</string>"
-        echo "    <string>$MAIN_FILE</string>"
-        echo '  </array>'
-        echo '  <key>WorkingDirectory</key>'
-        echo "  <string>$PROJECT_ROOT</string>"
-        echo '  <key>EnvironmentVariables</key>'
-        echo '  <dict>'
-        echo '    <key>PATH</key>'
-        echo "    <string>$RUNTIME_PATH</string>"
-        echo '  </dict>'
-        echo '  <key>RunAtLoad</key>'
-        echo '  <true/>'
-        echo '  <key>KeepAlive</key>'
-        echo '  <dict>'
-        echo '    <key>SuccessfulExit</key>'
-        echo '    <false/>'
-        echo '  </dict>'
-        echo '  <key>ThrottleInterval</key>'
-        echo '  <integer>5</integer>'
-        echo '  <key>Umask</key>'
-        echo '  <integer>63</integer>'
-        echo '  <key>StandardOutPath</key>'
-        echo "  <string>$SERVICE_LOG_DIR/service.out.log</string>"
-        echo '  <key>StandardErrorPath</key>'
-        echo "  <string>$SERVICE_LOG_DIR/service.err.log</string>"
-        echo '</dict>'
-        echo '</plist>'
-    } > "$plist_path"
-    chmod 0600 "$plist_path"
-}
-
-write_macos_worker_service() {
-    local plist_path
-    plist_path="$(worker_macos_plist_path)"
-    prepare_service_definition_path "$plist_path"
-    mkdir -p "$SERVICE_LOG_DIR"
-    {
-        echo '<?xml version="1.0" encoding="UTF-8"?>'
-        echo '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
-        echo '<plist version="1.0">'
-        echo '<dict>'
-        echo '  <key>Label</key>'
-        echo "  <string>$WORKER_MACOS_LABEL</string>"
-        echo '  <key>ProgramArguments</key>'
-        echo '  <array>'
-        echo "    <string>$PYTHON_BIN</string>"
-        echo '    <string>-m</string>'
-        echo '    <string>app.quick_worker</string>'
-        echo '    <string>serve</string>'
-        echo '  </array>'
-        echo '  <key>WorkingDirectory</key>'
-        echo "  <string>$PROJECT_ROOT</string>"
-        echo '  <key>EnvironmentVariables</key>'
-        echo '  <dict>'
-        echo '    <key>PATH</key>'
-        echo "    <string>$RUNTIME_PATH</string>"
-        echo '  </dict>'
-        echo '  <key>RunAtLoad</key>'
-        echo '  <true/>'
-        echo '  <key>KeepAlive</key>'
-        echo '  <dict>'
-        echo '    <key>SuccessfulExit</key>'
-        echo '    <false/>'
-        echo '  </dict>'
-        echo '  <key>ThrottleInterval</key>'
-        echo '  <integer>5</integer>'
-        echo '  <key>Umask</key>'
-        echo '  <integer>63</integer>'
-        echo '  <key>StandardOutPath</key>'
-        echo "  <string>$SERVICE_LOG_DIR/quick-worker.out.log</string>"
-        echo '  <key>StandardErrorPath</key>'
-        echo "  <string>$SERVICE_LOG_DIR/quick-worker.err.log</string>"
-        echo '</dict>'
-        echo '</plist>'
-    } > "$plist_path"
-    chmod 0600 "$plist_path"
-}
-
-write_macos_system_upgrade_service() {
-    local plist_path
-    plist_path="$(system_upgrade_macos_plist_path)"
-    prepare_service_definition_path "$plist_path"
-    secure_service_logs \
-        "$SERVICE_LOG_DIR/system-upgrade.out.log" \
-        "$SERVICE_LOG_DIR/system-upgrade.err.log"
-    {
-        echo '<?xml version="1.0" encoding="UTF-8"?>'
-        echo '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
-        echo '<plist version="1.0">'
-        echo '<dict>'
-        echo '  <key>Label</key>'
-        echo "  <string>$SYSTEM_UPGRADE_MACOS_LABEL</string>"
-        echo '  <key>ProgramArguments</key>'
-        echo '  <array>'
-        echo "    <string>$PROJECT_ROOT/scripts/chub-system-upgrade-restart</string>"
-        echo '    <string>--pending</string>'
-        echo '  </array>'
-        echo '  <key>WorkingDirectory</key>'
-        echo "  <string>$PROJECT_ROOT</string>"
-        echo '  <key>EnvironmentVariables</key>'
-        echo '  <dict>'
-        echo '    <key>PATH</key>'
-        echo "    <string>$RUNTIME_PATH</string>"
-        echo '  </dict>'
-        echo '  <key>RunAtLoad</key>'
-        echo '  <false/>'
-        echo '  <key>KeepAlive</key>'
-        echo '  <false/>'
-        echo '  <key>ProcessType</key>'
-        echo '  <string>Background</string>'
-        echo '  <key>ThrottleInterval</key>'
-        echo '  <integer>5</integer>'
-        echo '  <key>Umask</key>'
-        echo '  <integer>63</integer>'
-        echo '  <key>StandardOutPath</key>'
-        echo "  <string>$SERVICE_LOG_DIR/system-upgrade.out.log</string>"
-        echo '  <key>StandardErrorPath</key>'
-        echo "  <string>$SERVICE_LOG_DIR/system-upgrade.err.log</string>"
-        echo '</dict>'
-        echo '</plist>'
-    } > "$plist_path"
-    chmod 0600 "$plist_path"
-}
-
-write_systemd_service() {
-    local unit_path
-    unit_path="$(systemd_unit_path)"
-    prepare_service_definition_path "$unit_path"
-    mkdir -p "$SERVICE_LOG_DIR"
-    {
-        echo '[Unit]'
-        echo 'Description=Chub personal device node'
-        echo 'After=network.target'
-        echo 'StartLimitIntervalSec=60'
-        echo 'StartLimitBurst=5'
-        echo
-        echo '[Service]'
-        echo 'Type=simple'
-        printf 'WorkingDirectory=%s\n' "$PROJECT_ROOT"
-        printf 'ExecStart=%s %s\n' "$PYTHON_BIN" "$MAIN_FILE"
-        printf 'Environment=PATH=%s\n' "$RUNTIME_PATH"
-        echo 'UMask=0077'
-        echo 'Restart=on-failure'
-        echo 'RestartSec=5'
-        echo
-        echo '[Install]'
-        echo 'WantedBy=default.target'
-    } > "$unit_path"
-    chmod 0600 "$unit_path"
-}
-
-write_systemd_worker_service() {
-    local unit_path
-    unit_path="$(worker_systemd_unit_path)"
-    prepare_service_definition_path "$unit_path"
-    mkdir -p "$SERVICE_LOG_DIR"
-    {
-        echo '[Unit]'
-        echo 'Description=Chub Quick Worker'
-        echo 'After=network.target'
-        echo 'StartLimitIntervalSec=60'
-        echo 'StartLimitBurst=5'
-        echo
-        echo '[Service]'
-        echo 'Type=simple'
-        printf 'WorkingDirectory=%s\n' "$PROJECT_ROOT"
-        printf 'ExecStart=%s -m app.quick_worker serve\n' "$PYTHON_BIN"
-        printf 'Environment=PATH=%s\n' "$RUNTIME_PATH"
-        echo 'UMask=0077'
-        echo 'KillMode=control-group'
-        echo 'Restart=on-failure'
-        echo 'RestartSec=5'
-        echo
-        echo '[Install]'
-        echo 'WantedBy=default.target'
-    } > "$unit_path"
-    chmod 0600 "$unit_path"
-}
-
-write_systemd_chrome_supervisor_service() {
-    local unit_path
-    unit_path="$(chrome_supervisor_systemd_unit_path)"
-    prepare_service_definition_path "$unit_path"
-    mkdir -p "$SERVICE_LOG_DIR"
-    {
-        echo '[Unit]'
-        echo 'Description=Chub Debug Chrome supervisor'
-        echo 'After=network.target'
-        echo 'StartLimitIntervalSec=60'
-        echo 'StartLimitBurst=5'
-        echo
-        echo '[Service]'
-        echo 'Type=simple'
-        printf 'WorkingDirectory=%s\n' "$PROJECT_ROOT"
-        printf 'ExecStart=%s -m app.automations.chrome_supervisor serve\n' "$PYTHON_BIN"
-        printf 'Environment=PATH=%s\n' "$RUNTIME_PATH"
-        echo 'UMask=0077'
-        echo 'KillMode=control-group'
-        echo 'Restart=on-failure'
-        echo 'RestartSec=5'
-        echo
-        echo '[Install]'
-        echo 'WantedBy=default.target'
-    } > "$unit_path"
-    chmod 0600 "$unit_path"
-}
-
-write_systemd_system_upgrade_service() {
-    local unit_path
-    unit_path="$(system_upgrade_systemd_unit_path)"
-    prepare_service_definition_path "$unit_path"
-    {
-        echo '[Unit]'
-        echo 'Description=Chub system upgrade and recovery runner'
-        echo
-        echo '[Service]'
-        echo 'Type=oneshot'
-        printf 'WorkingDirectory=%s\n' "$PROJECT_ROOT"
-        printf 'ExecStart=%s --pending\n' "$PROJECT_ROOT/scripts/chub-system-upgrade-restart"
-        printf 'Environment=PATH=%s\n' "$RUNTIME_PATH"
-        echo 'UMask=0077'
-        echo 'TimeoutStartSec=infinity'
-    } > "$unit_path"
-    chmod 0600 "$unit_path"
+write_core_service_definitions() {
+    run_platform_service_action core-service-definitions
 }
 
 install_system_upgrade_service() {
     check_project
-    case "$(platform_name)" in
-        macos)
-            write_macos_system_upgrade_service
-            load_macos_system_upgrade_service
-            ;;
-        ubuntu)
-            write_systemd_system_upgrade_service
-            systemctl --user daemon-reload
-            ;;
-    esac
+    write_core_service_definitions
+    run_platform_service_action system-upgrade-load >/dev/null
 }
 
 recover_system_upgrade_service() {
@@ -631,14 +196,7 @@ recover_system_upgrade_service() {
             echo "System upgrade service is installed"
             ;;
         1)
-            case "$(platform_name)" in
-                macos)
-                    launchctl kickstart "$(macos_domain)/$SYSTEM_UPGRADE_MACOS_LABEL"
-                    ;;
-                ubuntu)
-                    systemctl --user --no-block start "$SYSTEM_UPGRADE_SERVICE_NAME.service"
-                    ;;
-            esac
+            run_platform_service_action system-upgrade-start >/dev/null
             echo "System upgrade service recovery started"
             ;;
         *)
@@ -649,26 +207,15 @@ recover_system_upgrade_service() {
 
 reconcile_chrome_supervisor_service() {
     check_project
-    local action="start"
     if [[ "${1:-}" == "--restart" ]]; then
-        action="restart"
+        [[ "$#" -eq 1 ]] || fail "usage: chub chrome supervisor reconcile [--restart]"
     elif [[ "${1:-}" != "" ]]; then
         fail "usage: chub chrome supervisor reconcile [--restart]"
     fi
-    case "$(platform_name)" in
-        macos)
-            return 0
-            ;;
-        ubuntu)
-            write_systemd_chrome_supervisor_service
-            systemctl --user daemon-reload
-            systemctl --user enable "$CHROME_SUPERVISOR_SERVICE_NAME.service"
-            systemctl --user "$action" "$CHROME_SUPERVISOR_SERVICE_NAME.service"
-            systemctl --user is-active --quiet "$CHROME_SUPERVISOR_SERVICE_NAME.service" \
-                || fail "Debug Chrome Supervisor did not become active"
-            echo "Debug Chrome Supervisor is active"
-            ;;
-    esac
+    (
+        cd "$PROJECT_ROOT"
+        "$PYTHON_BIN" -m app.automations.chrome_maintenance reconcile "$@"
+    )
 }
 
 write_service_definitions() {
@@ -679,27 +226,10 @@ write_service_definitions() {
     elif [[ "$#" -ne 0 ]]; then
         fail "usage: chub service definitions [--core]"
     fi
-    case "$(platform_name)" in
-        macos)
-            write_macos_service
-            write_macos_worker_service
-            write_macos_system_upgrade_service
-            ;;
-        ubuntu)
-            write_systemd_service
-            write_systemd_worker_service
-            write_systemd_system_upgrade_service
-            if [[ "$core_only" != true ]]; then
-                write_systemd_chrome_supervisor_service
-            fi
-            systemctl --user daemon-reload
-            systemctl --user enable "$SERVICE_NAME.service"
-            systemctl --user enable "$WORKER_SERVICE_NAME.service"
-            if [[ "$core_only" != true ]]; then
-                systemctl --user enable "$CHROME_SUPERVISOR_SERVICE_NAME.service"
-            fi
-            ;;
-    esac
+    write_core_service_definitions
+    if [[ "$core_only" != true ]]; then
+        run_platform_service_action chrome-supervisor-definitions >/dev/null
+    fi
 }
 
 install_runtime_dependencies() {
@@ -753,10 +283,9 @@ maintenance_force_requested() {
 }
 
 worker_service_definition_exists() {
-    case "$(platform_name)" in
-        macos) [[ -f "$(worker_macos_plist_path)" ]] ;;
-        ubuntu) [[ -f "$(worker_systemd_unit_path)" ]] ;;
-    esac
+    CHUB_SERVICE_RUNTIME_PATH="$RUNTIME_PATH" \
+        "$PROJECT_ROOT/scripts/platform/service-management.sh" \
+        worker-definition-exists >/dev/null 2>&1
 }
 
 worker_protocol_version() {
@@ -876,6 +405,23 @@ PY
     )
 }
 
+ensure_local_modules_root() {
+    if [[ -e "$LOCAL_MODULES_ROOT" ]]; then
+        [[ ! -L "$LOCAL_MODULES_ROOT" && -d "$LOCAL_MODULES_ROOT" ]] \
+            || fail "local modules root is not a directory: $LOCAL_MODULES_ROOT"
+        return
+    fi
+    mkdir -m 700 "$LOCAL_MODULES_ROOT"
+    if [[ -f "$PROJECT_ROOT/modules/chub-local-modules.example.json" ]]; then
+        cp "$PROJECT_ROOT/modules/chub-local-modules.example.json" \
+            "$LOCAL_MODULES_ROOT/chub-modules.json"
+    else
+        printf '%s\n' '{"schema_version":1,"modules":[]}' \
+            > "$LOCAL_MODULES_ROOT/chub-modules.json"
+    fi
+    chmod 600 "$LOCAL_MODULES_ROOT/chub-modules.json"
+}
+
 install_service() {
     local force=false
     if maintenance_force_requested install "$@"; then
@@ -885,93 +431,34 @@ install_service() {
     require_system_upgrade_idle
     check_codex_runtime_requirements
     require_worker_idle_for_maintenance install "$force"
+    ensure_local_modules_root
     install_command
-    case "$(platform_name)" in
-        macos)
-            local plist_path worker_plist_path
-            plist_path="$(macos_plist_path)"
-            worker_plist_path="$(worker_macos_plist_path)"
-            if [[ -f "$(system_upgrade_macos_plist_path)" ]]; then
-                launchctl bootout "$(macos_domain)/$SYSTEM_UPGRADE_MACOS_LABEL" >/dev/null 2>&1 || true
-            fi
-            if [[ -f "$plist_path" ]]; then
-                stop_macos_service
-            fi
-            if [[ -f "$worker_plist_path" ]]; then
-                stop_macos_worker
-            fi
-            clear_retired_worker_state
-            write_macos_service
-            write_macos_worker_service
-            write_macos_system_upgrade_service
-            load_macos_system_upgrade_service
-            start_macos_worker
-            start_macos_service
-            ;;
-        ubuntu)
-            systemctl --user stop "$SERVICE_NAME.service" >/dev/null 2>&1 || true
-            systemctl --user stop "$WORKER_SERVICE_NAME.service" >/dev/null 2>&1 || true
-            systemctl --user stop "$CHROME_SUPERVISOR_SERVICE_NAME.service" >/dev/null 2>&1 || true
-            clear_retired_worker_state
-            write_systemd_service
-            write_systemd_worker_service
-            write_systemd_chrome_supervisor_service
-            write_systemd_system_upgrade_service
-            systemctl --user daemon-reload
-            systemctl --user enable "$SERVICE_NAME.service"
-            systemctl --user enable "$WORKER_SERVICE_NAME.service"
-            systemctl --user enable "$CHROME_SUPERVISOR_SERVICE_NAME.service"
-            systemctl --user restart "$WORKER_SERVICE_NAME.service"
-            systemctl --user restart "$CHROME_SUPERVISOR_SERVICE_NAME.service"
-            systemctl --user restart "$SERVICE_NAME.service"
-            ;;
-    esac
+    run_platform_service_action core-stop >/dev/null
+    run_platform_service_action chrome-supervisor-stop >/dev/null
+    clear_retired_worker_state
+    write_core_service_definitions
+    run_platform_service_action system-upgrade-load >/dev/null
+    run_platform_service_action worker-restart >/dev/null
+    if [[ "$(platform_name)" == "ubuntu" ]]; then
+        reconcile_chrome_supervisor_service --restart >/dev/null
+    fi
+    run_platform_service_action web-restart >/dev/null
     echo "Chub service installed from $PROJECT_ROOT"
 }
 
 start_service() {
     check_codex_runtime_requirements
-    case "$(platform_name)" in
-        macos) start_macos_service ;;
-        ubuntu) systemctl --user start "$SERVICE_NAME.service" ;;
-    esac
+    run_platform_service_action web-start >/dev/null
     health_check || fail "Chub Web did not become healthy"
 }
 
 worker_service_status() {
-    case "$(platform_name)" in
-        macos)
-            local plist_path
-            plist_path="$(worker_macos_plist_path)"
-            [[ -f "$plist_path" ]] || { echo unknown; return 0; }
-            if launchctl print "$(macos_domain)/$WORKER_MACOS_LABEL" >/dev/null 2>&1; then
-                echo running
-            else
-                echo stopped
-            fi
-            ;;
-        ubuntu)
-            local unit_path
-            unit_path="$(worker_systemd_unit_path)"
-            [[ -f "$unit_path" ]] || { echo unknown; return 0; }
-            if systemctl --user is-active --quiet "$WORKER_SERVICE_NAME.service"; then
-                echo running
-            else
-                echo stopped
-            fi
-            ;;
-        *)
-            echo unknown
-            ;;
-    esac
+    run_platform_service_action worker-status
 }
 
 start_worker_service() {
     check_codex_runtime_requirements
-    case "$(platform_name)" in
-        macos) start_macos_worker ;;
-        ubuntu) systemctl --user start "$WORKER_SERVICE_NAME.service" ;;
-    esac
+    run_platform_service_action worker-start >/dev/null
     local attempt payload
     for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
         if [[ "$(worker_service_status)" == "running" ]] \
@@ -993,10 +480,7 @@ stop_worker_service() {
     fi
     require_system_upgrade_idle
     require_worker_idle_for_maintenance stop-worker "$force"
-    case "$(platform_name)" in
-        macos) stop_macos_worker ;;
-        ubuntu) systemctl --user stop "$WORKER_SERVICE_NAME.service" ;;
-    esac
+    run_platform_service_action worker-stop >/dev/null
     [[ "$(worker_service_status)" == "stopped" ]] || fail "Quick Worker did not stop"
     echo "Quick Worker stopped"
 }
@@ -1008,10 +492,7 @@ stop_service() {
         fail "usage: chub web stop [--force]"
     fi
     require_system_upgrade_idle
-    case "$(platform_name)" in
-        macos) stop_macos_service ;;
-        ubuntu) systemctl --user stop "$SERVICE_NAME.service" ;;
-    esac
+    run_platform_service_action web-stop >/dev/null
     echo "Chub Web stopped"
 }
 
@@ -1120,58 +601,24 @@ check_service() {
 restart_service() {
     require_system_upgrade_idle
     if [[ -n "${CHUB_QUICK_TASK_ID:-}" ]]; then
-        "$PROJECT_ROOT/scripts/chub-web-restart"
+        "$PROJECT_ROOT/scripts/maintenance/chub-web-restart"
         return
     fi
     check_codex_runtime_requirements
-    "$PROJECT_ROOT/scripts/chub-web-restart"
+    "$PROJECT_ROOT/scripts/maintenance/chub-web-restart"
     health_check || fail "service restart health verification failed"
 }
 
 web_service_status() {
-    case "$(platform_name)" in
-        macos)
-            [[ -f "$(macos_plist_path)" ]] || { echo unknown; return 0; }
-            if launchctl print "$(macos_domain)/$MACOS_LABEL" >/dev/null 2>&1; then
-                echo running
-            else
-                echo stopped
-            fi
-            ;;
-        ubuntu)
-            [[ -f "$(systemd_unit_path)" ]] || { echo unknown; return 0; }
-            if systemctl --user is-active --quiet "$SERVICE_NAME.service"; then
-                echo running
-            else
-                echo stopped
-            fi
-            ;;
-    esac
+    run_platform_service_action web-status
 }
 
 chrome_supervisor_status() {
-    case "$(platform_name)" in
-        macos) echo not-managed ;;
-        ubuntu)
-            [[ -f "$(chrome_supervisor_systemd_unit_path)" ]] || { echo unknown; return 0; }
-            if systemctl --user is-active --quiet "$CHROME_SUPERVISOR_SERVICE_NAME.service"; then
-                echo running
-            else
-                echo stopped
-            fi
-            ;;
-    esac
+    run_platform_service_action chrome-supervisor-status
 }
 
 system_upgrade_executor_status() {
-    case "$(platform_name)" in
-        macos)
-            [[ -f "$(system_upgrade_macos_plist_path)" ]] && echo installed || echo missing
-            ;;
-        ubuntu)
-            [[ -f "$(system_upgrade_systemd_unit_path)" ]] && echo installed || echo missing
-            ;;
-    esac
+    run_platform_service_action system-upgrade-status
 }
 
 web_health_status() {
@@ -1228,26 +675,7 @@ raise SystemExit(0 if status == "ready" else 1)
 }
 
 status_service_verbose() {
-    local result=0
-    case "$(platform_name)" in
-        macos)
-            launchctl print "gui/$(id -u)/$MACOS_LABEL" \
-                | awk '/^[[:space:]]*(inherited |default )?environment =/{exit} {print}' \
-                || result=1
-            launchctl print "gui/$(id -u)/$WORKER_MACOS_LABEL" \
-                | awk '/^[[:space:]]*(inherited |default )?environment =/{exit} {print}' \
-                || result=1
-            ;;
-        ubuntu)
-            systemctl --user show "$SERVICE_NAME.service" \
-                -p LoadState -p ActiveState -p SubState -p MainPID --no-pager || result=1
-            systemctl --user show "$WORKER_SERVICE_NAME.service" \
-                -p LoadState -p ActiveState -p SubState -p MainPID --no-pager || result=1
-            systemctl --user show "$CHROME_SUPERVISOR_SERVICE_NAME.service" \
-                -p LoadState -p ActiveState -p SubState -p MainPID --no-pager || result=1
-            ;;
-    esac
-    return "$result"
+    run_platform_service_action service-details
 }
 
 status_service() {
@@ -1306,65 +734,6 @@ quick_worker_drain() {
     )
 }
 
-new_worker_reload_operation_id() {
-    "$PYTHON_BIN" -c 'import uuid; print(f"worker-reload:{uuid.uuid4().hex}")'
-}
-
-record_worker_reload_operation() {
-    local operation_id="$1"
-    local operation_status="$2"
-    local generation="$3"
-    local reason="${4:-}"
-    if [[ "${CHUB_WORKER_RELOAD_EXTERNAL_LOGGING:-}" == "1" ]]; then
-        return 0
-    fi
-    (
-        cd "$PROJECT_ROOT"
-        "$PYTHON_BIN" - "$CONFIG_FILE" "$operation_id" "$operation_status" "$generation" "$reason" <<'PY'
-import re
-import sys
-
-from app.core.config import load_settings
-from app.core.logger import configure_worker_operation_logging
-from app.services.operation_log import write_operation
-
-config_file, operation_id, status, generation, reason = sys.argv[1:]
-if re.fullmatch(r"worker-reload:[a-f0-9]{32}", operation_id) is None:
-    raise SystemExit(2)
-if status not in {"requested", "started", "succeeded", "failed"}:
-    raise SystemExit(2)
-if generation and re.fullmatch(r"[a-f0-9]{32}", generation) is None:
-    generation = "unknown"
-settings = load_settings(config_file)
-configure_worker_operation_logging(settings.logs)
-write_operation(
-    operation_id=operation_id,
-    action="quick_worker_reload",
-    status=status,
-    target=f"quick-worker:{generation or 'unknown'}",
-    source_ip="127.0.0.1",
-    reason=reason or None,
-)
-PY
-    )
-}
-
-worker_health_generation_any() {
-    local payload="$1"
-    "$PYTHON_BIN" -c '
-import json
-import re
-import sys
-
-payload = json.loads(sys.stdin.read())
-data = payload.get("data") if payload.get("success") is True else None
-generation = data.get("generation") if isinstance(data, dict) else None
-if not isinstance(generation, str) or re.fullmatch(r"[a-f0-9]{32}", generation) is None:
-    raise SystemExit(1)
-print(generation)
-' <<<"$payload"
-}
-
 worker_health_generation() {
     local payload="$1"
     local expected_status="$2"
@@ -1399,25 +768,6 @@ print(generation)
 ' "$expected_protocol" "$expected_status" "$previous_generation" "$allow_incompatible" <<<"$payload"
 }
 
-worker_health_protocol() {
-    local payload="$1"
-    "$PYTHON_BIN" -c '
-import json
-import sys
-
-payload = json.loads(sys.stdin.read())
-data = payload.get("data") if payload.get("success") is True else None
-protocol_version = data.get("protocol_version") if isinstance(data, dict) else None
-if (
-    not isinstance(protocol_version, int)
-    or isinstance(protocol_version, bool)
-    or protocol_version < 1
-):
-    raise SystemExit(1)
-print(protocol_version)
-' <<<"$payload"
-}
-
 worker_health_is_idle() {
     local payload="$1"
     "$PYTHON_BIN" -c '
@@ -1435,85 +785,12 @@ for name in ("active_tasks", "queued_tasks", "uncertain_tasks", "corrupt_tasks")
 ' <<<"$payload"
 }
 
-reload_worker_service() {
-    case "$(platform_name)" in
-        macos)
-            stop_macos_worker
-            clear_retired_worker_state
-            start_macos_worker
-            ;;
-        ubuntu)
-            systemctl --user stop "$WORKER_SERVICE_NAME.service"
-            clear_retired_worker_state
-            systemctl --user start "$WORKER_SERVICE_NAME.service"
-            ;;
-    esac
-}
-
 quick_worker_reload() {
-    if [[ -n "${CHUB_QUICK_TASK_ID:-}" ]]; then
-        fail "worker reload must be run from a local terminal, not from a Quick Worker task"
-    fi
-    check_project
-    local old_payload old_generation old_protocol current_protocol
-    local new_payload new_generation operation_id attempt
-    old_payload="$(quick_worker_health 2>/dev/null || true)"
-    old_generation=""
-    if [[ -n "$old_payload" ]]; then
-        old_generation="$(worker_health_generation_any "$old_payload" 2>/dev/null || true)"
-        old_protocol="$(worker_health_protocol "$old_payload" 2>/dev/null || true)"
-    fi
-    current_protocol="$(worker_protocol_version)" \
-        || fail "Quick Worker protocol could not be read"
-    operation_id="$(new_worker_reload_operation_id)"
-    record_worker_reload_operation "$operation_id" requested "$old_generation" || true
-    if [[ -n "$old_payload" && "$old_protocol" == "$current_protocol" ]]; then
-        quick_worker_drain "$operation_id" >/dev/null 2>&1 || true
-    fi
-    record_worker_reload_operation "$operation_id" started "$old_generation" || true
-    if ! (reload_worker_service); then
-        record_worker_reload_operation "$operation_id" failed "$old_generation" || true
-        fail "Quick Worker service reload failed"
-    fi
-    for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-        if new_payload="$(quick_worker_health 2>/dev/null)" \
-            && new_generation="$(
-                worker_health_generation "$new_payload" ready "$old_generation"
-            )" \
-            && worker_health_is_idle "$new_payload"; then
-            record_worker_reload_operation \
-                "$operation_id" succeeded "$new_generation" \
-                "old_generation=${old_generation:-unknown} new_generation=$new_generation protocol=$current_protocol verified_idle=true" || true
-            echo "Quick Worker reloaded: $old_generation -> $new_generation"
-            return
-        fi
-        sleep 0.5
-    done
-    record_worker_reload_operation "$operation_id" failed "$old_generation" || true
-    fail "Quick Worker did not complete healthy takeover"
+    "$PROJECT_ROOT/scripts/maintenance/chub-worker-reload" reload
 }
 
 quick_worker_recover() {
-    if [[ -n "${CHUB_QUICK_TASK_ID:-}" ]]; then
-        fail "worker recovery must be run from a local terminal, not from a Quick Worker task"
-    fi
-    check_project
-    if ! reload_worker_service; then
-        fail "Quick Worker service recovery failed"
-    fi
-    local new_payload new_generation attempt
-    for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-        if new_payload="$(quick_worker_health 2>/dev/null)" \
-            && new_generation="$(
-                worker_health_generation "$new_payload" ready ""
-            )" \
-            && worker_health_is_idle "$new_payload"; then
-            echo "Quick Worker recovered: $new_generation"
-            return
-        fi
-        sleep 0.5
-    done
-    fail "Quick Worker did not recover healthy state"
+    "$PROJECT_ROOT/scripts/maintenance/chub-worker-reload" recover
 }
 
 show_logs() {
@@ -1551,37 +828,7 @@ uninstall_service() {
     fi
     require_system_upgrade_idle
     require_worker_idle_for_maintenance uninstall "$force"
-    case "$(platform_name)" in
-        macos)
-            local plist_path worker_plist_path upgrade_plist_path
-            plist_path="$(macos_plist_path)"
-            worker_plist_path="$(worker_macos_plist_path)"
-            upgrade_plist_path="$(system_upgrade_macos_plist_path)"
-            launchctl bootout "gui/$(id -u)/$MACOS_LABEL" >/dev/null 2>&1 || true
-            launchctl bootout "gui/$(id -u)/$WORKER_MACOS_LABEL" >/dev/null 2>&1 || true
-            launchctl bootout "gui/$(id -u)/$SYSTEM_UPGRADE_MACOS_LABEL" >/dev/null 2>&1 || true
-            rm -f "$plist_path"
-            rm -f "$worker_plist_path"
-            rm -f "$upgrade_plist_path"
-            ;;
-        ubuntu)
-            local unit_path worker_unit_path upgrade_unit_path
-            unit_path="$(systemd_unit_path)"
-            worker_unit_path="$(worker_systemd_unit_path)"
-            upgrade_unit_path="$(system_upgrade_systemd_unit_path)"
-            local chrome_supervisor_unit_path
-            chrome_supervisor_unit_path="$(chrome_supervisor_systemd_unit_path)"
-            systemctl --user disable --now "$SERVICE_NAME.service" >/dev/null 2>&1 || true
-            systemctl --user disable --now "$WORKER_SERVICE_NAME.service" >/dev/null 2>&1 || true
-            systemctl --user disable --now "$CHROME_SUPERVISOR_SERVICE_NAME.service" >/dev/null 2>&1 || true
-            systemctl --user disable --now "$SYSTEM_UPGRADE_SERVICE_NAME.service" >/dev/null 2>&1 || true
-            rm -f "$unit_path"
-            rm -f "$worker_unit_path"
-            rm -f "$chrome_supervisor_unit_path"
-            rm -f "$upgrade_unit_path"
-            systemctl --user daemon-reload
-            ;;
-    esac
+    run_platform_service_action all-services-uninstall >/dev/null
     if [[ -L "$COMMAND_PATH" && "$(readlink "$COMMAND_PATH")" == "$SCRIPT_PATH" ]]; then
         rm "$COMMAND_PATH"
     fi

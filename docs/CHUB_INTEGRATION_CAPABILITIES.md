@@ -148,7 +148,7 @@ Debug Chrome 是 Chub 核心层唯一受管的浏览器执行环境。其生命�
 
 `chub check` 是只读的完整系统检查入口，依次检查项目配置、用户服务、Web 健康、Quick Worker 健康和 `/api/status` 系统状态；任一必需检查失败时返回非零退出码，不执行重启、升级或任务清理。
 
-`chub worker status` 只读取 Quick Worker 服务状态。`chub service definitions` 重建当前工作区对应的固定服务定义；`chub service definitions --core` 仅重建 Chub Web、Quick Worker 和升级执行器定义，供升级与恢复内部使用，不处理 Debug Chrome。`chub runtime dependencies` 按仓库 `requirements.txt` 修复当前虚拟环境依赖；它是独立部署修复入口，不属于升级与恢复步骤。上述服务定义和依赖修复命令都不重启现有服务。`chub upgrade service` 只安装或恢复独立升级执行器，发现未完成升级时启动该执行器，不停止无关服务。`chub chrome supervisor reconcile [--restart]` 会重建、启用并确认 Ubuntu Debug Chrome Supervisor，`--restart` 会重启 Supervisor；macOS 不执行额外服务操作。上述命令均应从本机终端运行。
+`chub worker status` 只读取 Quick Worker 服务状态。`chub service definitions` 重建当前工作区对应的固定服务定义；`chub service definitions --core` 仅重建 Chub Web、Quick Worker 和升级执行器定义，供升级与恢复内部使用，不处理 Debug Chrome。核心定义的生成、Linux daemon reload 与核心服务 enable，安装前停机、升级执行器加载/启动/状态、Web/Worker 固定生命周期、Chrome Supervisor 定义/状态以及完整卸载，只在 `scripts/platform/service-management.sh` 的已枚举动作中实现；维护脚本仅编排固定 Chub 流程、运行态清理和最终确认，不直接调用服务管理器。CLI 只校验、路由并保留 Chub 运行态处理与最终健康确认。`chub runtime dependencies` 按仓库 `requirements.txt` 修复当前虚拟环境依赖；它是独立部署修复入口，不属于升级与恢复步骤。上述服务定义和依赖修复命令都不重启现有服务。`chub upgrade service` 只安装或恢复独立升级执行器，发现未完成升级时启动该执行器，不停止无关服务。系统升级失败的操作记录是可清除的 Chub 自有运行态，下一次确认升级会清除旧记录并从当前固定方案重新开始，不兼容或续跑旧方案。`chub chrome supervisor reconcile [--restart]` 只接受该固定动作和可选 `--restart`：Ubuntu 会重建、启用并确认 Debug Chrome Supervisor，成功同时要求 systemd active 和 Unix socket `status` 可响应；浏览器实例无需已启动。macOS 返回无需 Supervisor 操作的成功结果且不调用服务管理器。`scripts/platform/service-management.sh` 是内部固定动作适配，不是稳定 CLI，不接受任意服务名、路径或子命令。独立维护脚本的唯一正式路径是 `scripts/maintenance/`，已安装服务定义使用该路径；正式 ZIP 只携带当前正式入口，根目录旧维护与旧构建入口不再提供。上述命令均应从本机终端运行。
 
 当前 Chub 管理的三个服务和一个第三方 Gateway 的入口边界如下；这里的“Chub 管理”是服务安装范围，不等同于三层架构中的 Chub 核心层。
 

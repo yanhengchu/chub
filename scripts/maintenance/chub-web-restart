@@ -2,9 +2,8 @@
 
 set -euo pipefail
 
-SERVICE_NAME="chub"
-MACOS_LABEL="com.chub.node"
-PLATFORM="${CHUB_TEST_PLATFORM:-$(uname -s)}"
+SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 if [[ -n "${CHUB_QUICK_TASK_ID:-}" ]]; then
     REQUEST_DIR="${CHUB_QUICK_RESTART_DIR:-}"
@@ -41,24 +40,4 @@ if [[ -n "${CHUB_QUICK_TASK_ID:-}" ]]; then
     exit 0
 fi
 
-case "$PLATFORM" in
-    Darwin)
-        domain="gui/$(id -u)"
-        plist_path="$HOME/Library/LaunchAgents/$MACOS_LABEL.plist"
-        if launchctl print "$domain/$MACOS_LABEL" >/dev/null 2>&1; then
-            exec launchctl kickstart -k "$domain/$MACOS_LABEL"
-        fi
-        [[ -f "$plist_path" ]] || {
-            echo "chub-web-restart: LaunchAgent plist is unavailable" >&2
-            exit 1
-        }
-        exec launchctl bootstrap "$domain" "$plist_path"
-        ;;
-    Linux)
-        exec systemctl --user --no-block restart "$SERVICE_NAME.service"
-        ;;
-    *)
-        echo "chub-web-restart: unsupported platform: $PLATFORM" >&2
-        exit 1
-        ;;
-esac
+exec "$PROJECT_ROOT/scripts/platform/service-management.sh" web-restart-async

@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import subprocess
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -82,8 +81,10 @@ from app.services.deferred_restart import (
     DeferredRestartCoordinator,
 )
 from app.services.openclaw_weixin_chub_mode import WeixinChubModeManager
-from app.services.restart_command import RestartProcess, launch_restart_process
+from app.services.restart_command import RestartProcess
+from app.services.web_restart import WebRestartUseCase
 from app.services.quick_worker_maintenance import (
+    QuickWorkerMaintenanceUseCase,
     QuickWorkerReloadCoordinator,
     inspect_quick_worker,
 )
@@ -96,7 +97,10 @@ from app.services.system_upgrade import (
     SystemUpgradeSession,
     runtime_cleanup_readiness,
     runtime_recovery_plan,
-    system_upgrade_restart_readiness,
+)
+from app.services.system_upgrade_maintenance import (
+    SystemUpgradeMaintenanceUnavailableError,
+    SystemUpgradeMaintenanceUseCase,
 )
 from app.services.deployment_package import DeploymentPackageService
 from app.quick_worker import (
@@ -282,11 +286,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         resolved_settings.openclaw.quick_interaction_completion
     )
 
+    web_restart = WebRestartUseCase()
+
     def start_deferred_restart() -> RestartProcess:
-        command = PROJECT_ROOT / "scripts" / "chub-web-restart"
-        if not command.is_file():
-            raise OSError("Chub restart command is unavailable")
-        return launch_restart_process(command)
+        return web_restart.launch()
 
     deferred_restart = DeferredRestartCoordinator(
         resolved_settings.ai_runtime.shared.state_dir / "deferred-restart.json",
@@ -316,7 +319,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     quick_worker_maintenance = QuickWorkerReloadCoordinator(
         resolved_settings.ai_runtime.shared.state_dir / "quick-worker-maintenance.json",
-        PROJECT_ROOT / "scripts" / "chub",
+        QuickWorkerMaintenanceUseCase(),
     )
     system_upgrade = SystemUpgradeCoordinator(
         resolved_settings.ai_runtime.shared.state_dir / "system-upgrade.json",
@@ -438,6 +441,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         resolved_settings,
         ai_session_manager,
         weixin_chub_mode,
+        weixin_translation,
     )
     ai_session_manager.set_runtime_plugin_lifecycle_state_reader(
         plugin_lifecycle.runtime_implementation_lifecycle_state
@@ -471,28 +475,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     except OSError:
         logger.warning("Unable to reconcile persisted Weixin orchestration requests", exc_info=True)
 
+    system_upgrade_maintenance = SystemUpgradeMaintenanceUseCase(detected_platform)
+
     def restart_environment_readiness() -> str | None:
-        return system_upgrade_restart_readiness(
-            PROJECT_ROOT,
-            detected_platform,
-        )
+        try:
+            system_upgrade_maintenance.ensure_available()
+        except SystemUpgradeMaintenanceUnavailableError as error:
+            return str(error) or "系统升级服务切换脚本不可用。"
+        return None
 
     def launch_system_upgrade_restart(operation_id: str):
-        command = PROJECT_ROOT / "scripts" / "chub-system-upgrade-start"
-        readiness = restart_environment_readiness()
-        if readiness is not None:
-            raise OSError(readiness)
-        result = subprocess.run(
-            [str(command), operation_id],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
-        )
-        if result.returncode != 0:
-            detail = (result.stderr or result.stdout).strip()
-            raise OSError(detail[-500:] or "系统升级独立服务未能启动。")
+        system_upgrade_maintenance.start(operation_id)
 
     def recover_drained_worker(operation_id: str, protocol_version: int) -> str | None:
         try:
@@ -522,13 +515,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return None
 
     def launch_system_upgrade_worker_recovery(operation_id: str):
-        command = PROJECT_ROOT / "scripts" / "chub-system-upgrade-restart"
-        return subprocess.Popen(
-            [str(command), operation_id, "--recover-worker"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
+        return system_upgrade_maintenance.launch_worker_recovery(operation_id)
 
     async def verify_system_upgrade_new_instance(operation_id: str) -> None:
         operation = system_upgrade.operation()
@@ -704,12 +691,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             }:
                 launch_system_upgrade_services(operation_id)
                 return
-            loaded = system_upgrade.plan()
-            if (
-                loaded is not None
-                and loaded.plan.plan_id == "runtime-recovery"
-                and loaded.plan.action == "runtime-data-reset"
-            ):
+            try:
+                loaded = system_upgrade.plan()
+            except OSError:
                 loaded = runtime_recovery_plan()
             loaded = loaded or runtime_recovery_plan()
             if loaded.fingerprint != state.fingerprint:
@@ -1145,14 +1129,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         upgrade_operation = system_upgrade.operation()
         if (
             upgrade_operation is not None
-            and upgrade_operation.status == "failed"
-            and upgrade_operation.destructive_started
-            and upgrade_operation.failed_stage == "verifying_new_instance"
-        ):
-            system_upgrade.rebase_failed_verification(runtime_recovery_plan())
-            upgrade_operation = system_upgrade.operation()
-        if (
-            upgrade_operation is not None
             and upgrade_operation.status in {"requested", "started"}
             and upgrade_operation.stage
             not in {"restarting_services", "verifying_new_instance"}
@@ -1166,21 +1142,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     and upgrade_operation.stage
                     in {"restarting_services", "verifying_new_instance"}
                 )
-                or (
-                    upgrade_operation.status == "failed"
-                    and upgrade_operation.destructive_started
-                    and (
-                        upgrade_operation.failed_stage == "verifying_new_instance"
-                        or (
-                            upgrade_operation.failed_stage == "restarting_services"
-                            and upgrade_operation.restart_launch_state == "launched"
-                        )
-                    )
-                )
             )
         ):
-            if upgrade_operation.status == "failed":
-                upgrade_operation = system_upgrade.resume_verification()
             system_upgrade_recovery_task = asyncio.create_task(
                 verify_system_upgrade_new_instance(upgrade_operation.operation_id)
             )
@@ -1265,10 +1228,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.weekly_report_generation = weekly_report_generation
     application.state.quick_worker_maintenance = quick_worker_maintenance
     application.state.system_upgrade = system_upgrade
+    application.state.system_upgrade_maintenance = system_upgrade_maintenance
     application.state.run_system_upgrade = run_system_upgrade
     application.state.system_upgrade_restart_readiness = (
         restart_environment_readiness
     )
+    application.state.web_restart = web_restart
     application.state.deferred_restart = deferred_restart
     application.state.maintenance_lock = threading.RLock()
     application.state.weixin_chub_mode = weixin_chub_mode

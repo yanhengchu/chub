@@ -144,12 +144,14 @@ def _browser_settings(root: Path) -> Settings:
                 "level": "ERROR",
                 "max_lines": 100,
             },
-            "ai_runtime": {"codex": {
-                "enabled": True,
+            "ai_runtime": {
+                "shared": {
                 "workspace": root / "workspace",
-                "data_file": root / "codex-sessions.json",
                 "runtime_dir": root / "codex-runtime",
-            }},
+                "state_dir": root / "ai-runtime-state",
+                },
+                "codex": {"enabled": True},
+            },
             "automations": {
                 "shared_config_file": root / "automations.yaml",
                 "local_config_file": root / "automations.local.yaml",
@@ -321,6 +323,85 @@ async def _mock_workspace_api(route) -> None:
     await route.fulfill(status=status, content_type="application/json", body=json.dumps(payload))
 
 
+async def test_workstation_runtime_status_is_scoped_to_imported_artifact(
+    workspace_browser_server: str,
+) -> None:
+    browser_session = session_factory()
+    bluecode_only_plugins = {
+        "success": True,
+        "data": {
+            "plugins": [
+                {
+                    "plugin_id": "runtime",
+                    "name": "AI Runtime",
+                    "imported_artifact_ids": ["development:bluecode-runtime-dev"],
+                    "enabled_artifact_ids": [],
+                    "artifacts": [
+                        {
+                            "artifact_id": "development:codex-runtime-dev",
+                            "name": "Codex",
+                            "source": "development",
+                            "version": "dev",
+                        },
+                        {
+                            "artifact_id": "development:bluecode-runtime-dev",
+                            "name": "BlueCode",
+                            "source": "development",
+                            "version": "dev",
+                        },
+                    ],
+                },
+                {
+                    "plugin_id": "weixin-orchestration",
+                    "name": "微信任务润色",
+                    "imported_artifact_ids": [],
+                    "enabled_artifact_ids": [],
+                    "artifacts": [],
+                },
+                {
+                    "plugin_id": "deliveryline",
+                    "name": "Deliveryline",
+                    "imported_artifact_ids": [],
+                    "enabled_artifact_ids": [],
+                    "artifacts": [],
+                },
+            ],
+        },
+    }
+
+    async def route_workspace_api(route) -> None:
+        if urlsplit(route.request.url).path == "/api/plugins":
+            await route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(bluecode_only_plugins),
+            )
+            return
+        await _mock_workspace_api(route)
+
+    async with browser_session(ensure_page=False) as chrome:
+        context = await chrome.browser.new_context(viewport={"width": 1280, "height": 900})
+        try:
+            await context.route(f"{workspace_browser_server}/api/**", route_workspace_api)
+            page = await context.new_page()
+            page_errors: list[str] = []
+            page.on("pageerror", lambda error: page_errors.append(str(error)))
+            response = await page.goto(workspace_browser_server, wait_until="domcontentloaded")
+
+            assert response is not None and response.status == 200
+            runtime_rows = page.locator(
+                "#workspace-development-runtime-list .workstation-status-row"
+            )
+            await expect(runtime_rows).to_have_count(1)
+            await expect(runtime_rows).to_contain_text("AI Runtime · BlueCode · 开发实现")
+            await expect(runtime_rows).to_contain_text("导入状态：已导入 · 启用状态：未启用。")
+            await expect(page.get_by_text("AI Runtime · Codex · 开发实现", exact=True)).to_have_count(0)
+        finally:
+            await context.close()
+
+    assert page_errors == []
+
+
 async def test_openclaw_settings_only_requests_integration_metadata(
     workspace_browser_server: str,
 ) -> None:
@@ -361,6 +442,56 @@ async def test_openclaw_settings_only_requests_integration_metadata(
 
     assert requested_paths == ["/api/openclaw/status", "/api/openclaw/integration"]
     assert page_errors == []
+
+
+async def test_openclaw_settings_shows_declared_patches_when_not_installed(
+    no_openclaw_workspace_browser_server: str,
+) -> None:
+    browser_session = session_factory()
+    async with browser_session(ensure_page=False) as chrome:
+        context = await chrome.browser.new_context(viewport={"width": 1280, "height": 900})
+        requested_paths: list[str] = []
+
+        async def route_workspace_api(route) -> None:
+            path = urlsplit(route.request.url).path
+            requested_paths.append(path)
+            if path == "/api/openclaw/status":
+                await route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({
+                        "success": True,
+                        "data": {"installed": False, "message": "当前节点未安装 OpenClaw。"},
+                    }),
+                )
+                return
+            await _mock_workspace_api(route)
+
+        try:
+            await context.route(
+                f"{no_openclaw_workspace_browser_server}/api/**",
+                route_workspace_api,
+            )
+            page = await context.new_page()
+            response = await page.goto(
+                f"{no_openclaw_workspace_browser_server}/settings/openclaw",
+                wait_until="domcontentloaded",
+            )
+
+            assert response is not None and response.status == 200
+            await expect(page.locator("#settings-openclaw-integration-list")).to_contain_text(
+                "未安装",
+            )
+            await expect(page.locator("#settings-openclaw-patch-list")).to_contain_text(
+                "尚未部署或核验",
+            )
+            await expect(page.locator("#settings-openclaw-patch-list")).to_contain_text(
+                "已登记",
+            )
+        finally:
+            await context.close()
+
+    assert requested_paths == ["/api/openclaw/status", "/api/openclaw/integration"]
 
 
 async def test_workspace_ignores_cached_openclaw_state_when_not_installed(
@@ -1036,15 +1167,25 @@ async def test_project_document_library_and_detail_use_full_page_layout(
                 wait_until="domcontentloaded",
             )
             assert response is not None and response.status == 200
-            await expect(page.locator(".project-document-detail-page")).to_have_count(1)
+            await expect(page.locator(".workspace-preview-shell")).to_have_count(1)
             await expect(page.locator(".project-document-detail")).to_have_count(1)
             detail_layout = await page.locator(".project-document-detail").evaluate("""(detail) => ({
                 horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
                 detailBorderWidth: getComputedStyle(detail).borderTopWidth,
+                detailPaddingLeft: getComputedStyle(detail).paddingLeft,
+                isCentered: (() => {
+                    const content = document.getElementById("workspace-section-content").getBoundingClientRect();
+                    const detailBox = detail.getBoundingClientRect();
+                    return Math.abs(
+                        (detailBox.left + detailBox.width / 2) - (content.left + content.width / 2),
+                    ) <= 1;
+                })(),
                 headingBorderWidth: getComputedStyle(detail.querySelector(".project-document-detail-heading")).borderBottomWidth,
             })""")
             assert detail_layout["horizontalOverflow"] is False
             assert detail_layout["detailBorderWidth"] == "0px"
+            assert detail_layout["detailPaddingLeft"] == "0px"
+            assert detail_layout["isCentered"] is True
             assert detail_layout["headingBorderWidth"] == "1px"
         finally:
             await context.close()
@@ -1225,6 +1366,7 @@ async def _mock_workspace_api_with_task_orchestration(route) -> None:
                 "mode": "auto",
                 "enabled": True,
                 "runtime_id": "codex",
+                "runtime_available": True,
                 "model": "gpt-test",
                 "reasoning_effort": "medium",
                 "queued": 0,
@@ -1238,6 +1380,7 @@ async def _mock_workspace_api_with_task_orchestration(route) -> None:
                 "plugins": [{
                     "plugin_id": "weixin-orchestration",
                     "enabled_artifact_ids": ["development:weixin-orchestration"],
+                    "execution_ready": True,
                     "artifacts": [
                         {
                             "artifact_id": "development:weixin-orchestration",
@@ -1276,6 +1419,59 @@ async def _mock_workspace_api_with_task_orchestration(route) -> None:
         await route.fulfill(status=200, content_type="application/json", body=json.dumps(payload))
         return
     await _mock_workspace_api(route)
+
+
+async def _mock_workspace_api_without_task_runtime(route) -> None:
+    path = urlsplit(route.request.url).path
+    payload = {
+        "/api/settings/weixin-translation": {
+            "success": True,
+            "data": {
+                "mode": "confirm",
+                "enabled": True,
+                "runtime_id": None,
+                "runtime_available": False,
+                "model": None,
+                "reasoning_effort": None,
+                "queued": 0,
+                "running": 0,
+                "weixin_chub_mode_enabled": True,
+            },
+        },
+        "/api/plugins": {
+            "success": True,
+            "data": {
+                "plugins": [{
+                    "plugin_id": "weixin-orchestration",
+                    "enabled_artifact_ids": ["development:weixin-orchestration"],
+                    "execution_ready": False,
+                    "artifacts": [{
+                        "artifact_id": "development:weixin-orchestration",
+                        "available": True,
+                        "version": "dev",
+                    }],
+                }],
+            },
+        },
+    }.get(path)
+    if payload is not None:
+        await route.fulfill(status=200, content_type="application/json", body=json.dumps(payload))
+        return
+    await _mock_workspace_api(route)
+
+
+async def _mock_workspace_api_with_task_catalog_unavailable(route) -> None:
+    if urlsplit(route.request.url).path == "/api/ai/models":
+        await route.fulfill(
+            status=503,
+            content_type="application/json",
+            body=json.dumps({
+                "success": False,
+                "error": {"message": "模型目录暂时无法读取。"},
+            }),
+        )
+        return
+    await _mock_workspace_api_with_task_orchestration(route)
 
 
 @pytest.mark.parametrize("viewport", [(390, 844), (1280, 900)], ids=["phone", "desktop"])
@@ -1379,6 +1575,85 @@ async def test_task_orchestration_execution_settings_render_on_supported_viewpor
             assert bounds["left"] >= 0
             assert bounds["right"] <= viewport[0]
             assert await page.evaluate("document.documentElement.scrollWidth - innerWidth") == 0
+        finally:
+            await context.close()
+
+    assert page_errors == []
+
+
+async def test_task_orchestration_keeps_version_and_mode_when_catalog_is_unavailable(
+    workspace_browser_server: str,
+) -> None:
+    browser_session = session_factory()
+    async with browser_session(ensure_page=False) as chrome:
+        context = await chrome.browser.new_context(viewport={"width": 1280, "height": 900})
+        try:
+            await context.route(
+                f"{workspace_browser_server}/api/**",
+                _mock_workspace_api_with_task_catalog_unavailable,
+            )
+            page = await context.new_page()
+            page_errors: list[str] = []
+            page.on("pageerror", lambda error: page_errors.append(str(error)))
+            response = await page.goto(
+                f"{workspace_browser_server}/settings/task-orchestration",
+                wait_until="domcontentloaded",
+            )
+            assert response is not None and response.status == 200
+            await expect(page.locator("#workspace-task-implementation-value")).to_have_text(
+                "微信任务润色 · 开发实现",
+            )
+            await expect(page.locator("#workspace-task-processing-value")).to_have_text(
+                "自动润色后执行",
+            )
+            await expect(page.locator("#workspace-task-orchestration-message")).to_contain_text(
+                "模型目录暂时无法读取，已保留当前执行配置",
+            )
+            await expect(page.locator("#workspace-task-model-trigger")).to_be_disabled()
+            await expect(page.locator("#workspace-task-reasoning-trigger")).to_be_disabled()
+        finally:
+            await context.close()
+
+    assert page_errors == []
+
+
+async def test_task_orchestration_hides_execution_settings_without_runtime(
+    workspace_browser_server: str,
+) -> None:
+    browser_session = session_factory()
+    async with browser_session(ensure_page=False) as chrome:
+        context = await chrome.browser.new_context(viewport={"width": 1280, "height": 900})
+        try:
+            await context.route(
+                f"{workspace_browser_server}/api/**",
+                _mock_workspace_api_without_task_runtime,
+            )
+            page = await context.new_page()
+            page_errors: list[str] = []
+            page.on("pageerror", lambda error: page_errors.append(str(error)))
+            response = await page.goto(
+                f"{workspace_browser_server}/settings/task-orchestration",
+                wait_until="domcontentloaded",
+            )
+            assert response is not None and response.status == 200
+            await expect(page.locator(".plugin-lifecycle-status-row")).to_contain_text(
+                "当前默认 Runtime 不可用于微信润色",
+            )
+            await expect(page.locator("#workspace-task-implementation-value")).to_have_text(
+                "微信任务润色 · 开发实现",
+            )
+            await expect(page.locator("#workspace-task-processing-value")).to_have_text(
+                "自动润色后确认执行",
+            )
+            for label in ("翻译 Runtime", "翻译权限", "文本优化模型", "推理等级"):
+                await expect(
+                    page.locator(".workspace-task-orchestration-field").filter(
+                        has=page.get_by_text(label, exact=True),
+                    ),
+                ).to_be_hidden()
+            await expect(page.locator("#workspace-task-orchestration-message")).to_contain_text(
+                "文本优化尚未初始化，不会接收润色任务",
+            )
         finally:
             await context.close()
 

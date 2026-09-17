@@ -94,11 +94,20 @@ AI Agent 处理任何需求前先用下面的规则建立判断基线，详细�
 - 页面渲染外部内容和日志时使用 `textContent`，不要使用 `innerHTML`。
 - 文件读取必须限制行数、字节数和单行长度，避免一次加载无界内容。
 - 后台服务行为需同时考虑 macOS 和 Ubuntu；无法实机验证的平台要在结果中说明。
-- Web 重启的唯一入口是 `scripts/chub-web-restart`。不得从服务内部执行 `bootout`，也不得直接调用
-  `launchctl`、`systemctl` 或其他服务管理命令。
+- Web 重启的进程内唯一入口是 `WebRestartUseCase`；它只启动固定的
+  `scripts/maintenance/chub-web-restart` 独立适配。根目录旧维护脚本已移除；不得从服务内部执行
+  `bootout`，也不得直接调用 `launchctl`、`systemctl` 或其他服务管理命令。
+- `scripts/maintenance/` 只负责编排独立维护流程、Chub 运行态清理和最终状态确认；其固定服务操作必须委托
+  `scripts/platform/service-management.sh`，维护脚本不得自行调用 `launchctl`、`systemctl` 或接受可变服务、路径、子命令。
 - 只有当前代码、配置或页面改动必须重新加载 Web 才能生效时，Agent 才调用一次
-  `scripts/chub-web-restart`；文档、测试或无需重新加载即可生效的改动不重启。快速交互环境会将该调用登记为
+  `scripts/maintenance/chub-web-restart`；文档、测试或无需重新加载即可生效的改动不重启。快速交互环境会将该调用登记为
   受协调的延迟 Web 重启，Agent 不等待维护者再次确认，继续完成验证和最终回复，也不得重复调用重启脚本。
+- Quick Worker 重启的进程内唯一入口是 `QuickWorkerMaintenanceUseCase`；它只启动固定的
+  `scripts/maintenance/chub-worker-reload` 独立适配。页面、恢复和微信维护入口不得通过 `subprocess` 重新执行
+  `scripts/chub`，也不得自行调用 `launchctl`、`systemctl` 或接受服务名、路径和子命令。
+- 系统升级 oneshot 的进程内唯一入口是 `SystemUpgradeMaintenanceUseCase`；它只启动固定的
+  `scripts/maintenance/chub-system-upgrade-start` 或受限的 `chub-system-upgrade-restart --recover-worker`。Coordinator、
+  页面和微信入口不得重新执行 `scripts/chub`，也不得自行拼接升级服务脚本、服务名或平台命令。
 - Web 重启只替换 Chub Web 控制面，不停止 Quick Worker、已接受的 Runner/任务、翻译 FIFO、确认 FIFO 或原生
   Session；不得为 Web 重启等待、取消或阻塞这些独立资源。Worker 代码或 Worker 服务变更使用既有
   Worker reload/recover 入口，不用 Web 重启替代。

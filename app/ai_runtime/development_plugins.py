@@ -16,7 +16,8 @@ from app.ai_runtime.runtime_plugin_packages import (
     load_runtime_plugin_from_root,
 )
 from app.ai_runtime.runtime_plugins import RuntimePlugin, RuntimePluginRegistry
-from app.core.config import PROJECT_ROOT, Settings
+from app.core.config import Settings
+from app.core.module_sources import registered_module_sources
 
 
 @dataclass(frozen=True)
@@ -36,28 +37,39 @@ def discover_development_runtime_plugins(
     source_root: Path | None = None,
 ) -> tuple[RuntimePluginRegistry, tuple[DevelopmentRuntimePlugin, ...], tuple[RuntimePluginLoadFailure, ...]]:
     """Discover checked-out Runtime sources without assigning identity by path."""
-    root = source_root or PROJECT_ROOT / "runtime-modules"
+    if source_root is not None:
+        candidates = ((source_root.name, source_root, "development"),)
+    else:
+        candidates = tuple(
+            (entry.module_id, entry.root, entry.source)
+            for entry in registered_module_sources("runtime")
+        )
     modules: list[RuntimePlugin] = []
     loaded: list[DevelopmentRuntimePlugin] = []
     failures: list[RuntimePluginLoadFailure] = []
-    try:
-        candidates = sorted(root.iterdir())
-    except FileNotFoundError:
-        return RuntimePluginRegistry(), (), ()
-    except OSError as exc:
-        return RuntimePluginRegistry(), (), (
-            RuntimePluginLoadFailure("development", _reason(exc)),
-        )
-    for candidate in candidates:
-        if (
-            candidate.name.startswith(".")
-            or not candidate.is_dir()
-            or candidate.is_symlink()
-        ):
-            continue
+    if source_root is not None:
+        try:
+            candidates = tuple(
+                (candidate.name, candidate, "development")
+                for candidate in sorted(source_root.iterdir())
+                if not candidate.name.startswith(".")
+                and candidate.is_dir()
+                and not candidate.is_symlink()
+            )
+        except FileNotFoundError:
+            return RuntimePluginRegistry(), (), ()
+        except OSError as exc:
+            return RuntimePluginRegistry(), (), (
+                RuntimePluginLoadFailure("development", _reason(exc)),
+            )
+    for registered_id, candidate, source_name in candidates:
         manifest: RuntimePluginManifest | None = None
         try:
             manifest = _read_manifest(settings, candidate)
+            if source_root is None and manifest.module_id != registered_id:
+                raise _invalid("开发 Runtime 插件清单与模块索引不一致。")
+            if source_name == "local" and manifest.chub_version != settings.app.version:
+                continue
             namespace = _namespace(candidate, manifest)
             module = load_runtime_plugin_from_root(
                 settings,
@@ -70,7 +82,7 @@ def discover_development_runtime_plugins(
         except RuntimePluginInstallError as exc:
             failures.append(
                 RuntimePluginLoadFailure(
-                    manifest.implementation_id if manifest is not None else candidate.name,
+                    manifest.implementation_id if manifest is not None else registered_id,
                     exc.message,
                     name=manifest.display_name if manifest is not None else None,
                     version=manifest.version if manifest is not None else None,

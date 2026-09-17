@@ -71,7 +71,7 @@ QUICK_INTERACTION_INSTRUCTIONS = (
     "验证结果、验收方法及必要风险。默认不要展开代码实现、逐文件清单、函数或"
     "样式细节，除非这些内容会影响验收、安全或兼容性。如果本次任务只是分析或"
     "评审，直接给出结论、影响和建议。\n"
-    "如果本次任务需要重启 Chub，只能调用 scripts/chub-web-restart 一次；快速交互"
+    "如果本次任务需要重启 Chub，只能调用 scripts/maintenance/chub-web-restart 一次；快速交互"
     "环境会把重启登记为延迟操作。不得绕过该脚本直接调用 launchctl、systemctl 或"
     "其他服务管理命令，也不得重复调用重启脚本。"
 )

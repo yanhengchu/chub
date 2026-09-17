@@ -6,7 +6,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
     <meta name="color-scheme" content="{{ ui_theme.color_scheme }}">
-    <title>{{ page_title }}</title>
+    <title>{% if workspace_reading_detail %}{% if workspace_reading_detail.kind == "project-document" %}{{ workspace_reading_detail.document.title }}{% else %}{{ workspace_reading_detail.report.title }}{% endif %} · {% endif %}{{ page_title }}</title>
     <script src="/static/workspace-bootstrap.js"></script>
     {% include "partials/app_styles.html" %}
     <script src="/static/js/components/ui.js" defer></script>
@@ -49,11 +49,37 @@
               <nav id="workspace-quick-session-toolbar" class="workspace-quick-session-toolbar" aria-label="Chub Session切换" hidden></nav>
             </div>
             <p id="workspace-toolbar-error" class="workspace-preview-toolbar-error" aria-live="polite" hidden></p>
-            <div id="workspace-preview-health" class="workspace-preview-health"><span class="workspace-preview-health-dot" aria-hidden="true"></span>{% if workspace_section == "workbench" %}正在读取工作台状态…{% elif workspace_section == "automations" %}正在读取自动化状态…{% elif workspace_section == "deliveryline" %}正在读取 Deliveryline 状态…{% elif workspace_section == "today-focus" %}今日关注已就绪{% else %}正在读取项目资料…{% endif %}</div>
+            <div id="workspace-preview-health" class="workspace-preview-health"><span class="workspace-preview-health-dot" aria-hidden="true"></span>{% if workspace_reading_detail %}{% if workspace_reading_detail.kind == "project-document" %}项目资料详情{% elif workspace_reading_detail.kind == "weekly-template" %}周报模板详情{% else %}周报详情{% endif %}{% elif workspace_section == "workbench" %}正在读取工作台状态…{% elif workspace_section == "automations" %}正在读取自动化状态…{% elif workspace_section == "deliveryline" %}正在读取 Deliveryline 状态…{% elif workspace_section == "today-focus" %}今日关注已就绪{% else %}正在读取项目资料…{% endif %}</div>
           </header>
           {% if workspace_session_id %}
           <div id="workspace-section-content" class="workspace-inline-quick-session" data-workspace-session-id="{{ workspace_session_id }}" aria-label="Chub Session">
             <iframe class="workspace-inline-quick-session-frame" title="Chub Session" src="/ai/sessions/{{ workspace_session_id | urlencode }}/quick-interactions/conversation?embedded=workspace"></iframe>
+          </div>
+          {% elif workspace_reading_detail %}
+          <div id="workspace-section-content" class="workspace-reading-detail-content">
+            {% if workspace_reading_detail.kind == "project-document" %}
+            {% set document = workspace_reading_detail.document %}
+            <article class="project-document-detail" aria-labelledby="document-detail-title">
+              <header class="project-document-detail-heading">
+                <p class="section-kicker">{{ document.category_label }}</p>
+                <h1 id="document-detail-title">{{ document.title }}</h1>
+                <p>{{ document.summary }}</p>
+                <div class="project-document-detail-meta"><span class="badge badge-success">{{ document.status }}</span><time datetime="{{ document.updated_at.isoformat() }}">更新于 {{ document.updated_at.strftime('%Y-%m-%d') }}</time></div>
+              </header>
+              <article class="markdown-body">{{ document.html|safe }}</article>
+            </article>
+            {% else %}
+            {% set report = workspace_reading_detail.report %}
+            <article class="project-document-detail" aria-labelledby="weekly-report-detail-title">
+              <header class="project-document-detail-heading">
+                <p class="section-kicker">{% if workspace_reading_detail.kind == "weekly-template" %}周报模板{% else %}周报详情{% endif %}</p>
+                <h1 id="weekly-report-detail-title">{{ report.title }}</h1>
+                <p>{{ report.summary }}</p>
+                <div class="project-document-detail-meta"><span class="badge badge-success">{{ report.status }}</span>{% if report.updated_at %}<time datetime="{{ report.updated_at.isoformat() }}">更新于 {{ report.updated_at.strftime('%Y-%m-%d') }}</time>{% endif %}</div>
+              </header>
+              <article class="markdown-body">{{ report.html|safe }}</article>
+            </article>
+            {% endif %}
           </div>
           {% else %}
           <div id="workspace-section-content">
@@ -110,9 +136,7 @@
                   <button id="workspace-development-refresh" class="button-secondary" type="button">刷新</button>
                 </div>
                 <div class="workstation-status-list">
-                  <div id="workspace-development-codex-row" class="workstation-status-row" hidden>
-                    <div class="workstation-status-copy"><strong>Codex Runtime</strong><span id="workspace-development-codex-detail" class="workstation-status-detail">正在读取当前 Codex Runtime 实现。</span></div>
-                  </div>
+                  <div id="workspace-development-runtime-list" class="workspace-development-runtime-list"></div>
                   <div id="workspace-development-weixin-row" class="workstation-status-row" hidden>
                     <div class="workstation-status-copy"><strong>微信任务润色</strong><span id="workspace-development-weixin-detail" class="workstation-status-detail">正在读取当前微信任务润色实现。</span></div>
                   </div>

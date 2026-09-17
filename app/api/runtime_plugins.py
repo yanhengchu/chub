@@ -189,31 +189,93 @@ async def _confirm_worker_runtime(
     except OSError as exc:
         raise ApiError(
             503,
-            "runtime_plugin_worker_refresh_unconfirmed",
-            "Quick Worker 未能确认新的 Runtime 注册表，插件未激活。",
+            "runtime_plugin_worker_health_unavailable",
+            "无法连接 Quick Worker，尚未确认 Runtime 插件激活。请检查 Quick Worker 后重试。",
         ) from exc
     implementation_ids = data.get("implementation_ids")
     available_implementation_ids = data.get("available_implementation_ids")
     generation = data.get("generation")
-    if (
-        data.get("status") != "ready"
-        or not isinstance(implementation_ids, list)
-        or (implementation_id in implementation_ids) != expected_present
-        or (
-            expected_present
-            and (
-                not isinstance(available_implementation_ids, list)
-                or implementation_id not in available_implementation_ids
-            )
+    if data.get("status") != "ready":
+        raise ApiError(
+            409,
+            "runtime_plugin_worker_not_ready",
+            "Quick Worker 当前未处于可维护状态，尚未确认 Runtime 插件激活。",
         )
-        or not isinstance(generation, str)
-    ):
+    if not isinstance(implementation_ids, list) or not isinstance(generation, str):
         raise ApiError(
             503,
-            "runtime_plugin_worker_refresh_unconfirmed",
-            "Quick Worker 未能确认新的 Runtime 注册表。",
+            "runtime_plugin_worker_health_invalid",
+            "Quick Worker 返回的 Runtime 注册状态无效，尚未确认插件激活。",
+        )
+    if (implementation_id in implementation_ids) != expected_present:
+        action = "发现" if expected_present else "移除"
+        raise ApiError(
+            503,
+            "runtime_plugin_worker_registry_mismatch",
+            f"Quick Worker 刷新后未能{action}目标 Runtime 版本，尚未确认插件激活。",
+        )
+    if expected_present and (
+        not isinstance(available_implementation_ids, list)
+        or implementation_id not in available_implementation_ids
+    ):
+        raise ApiError(
+            409,
+            "runtime_plugin_worker_runtime_unavailable",
+            "Runtime 插件已被 Quick Worker 识别，但当前不可执行；请安装或修复本机所需的 AI 工具后重试。",
         )
     return generation
+
+
+def _require_runtime_refresh_confirmation(
+    payload: dict[str, object], *, expected_present: bool
+) -> None:
+    """Map bounded Worker refresh outcomes without exposing its raw diagnostics."""
+    if payload.get("success") is True:
+        return
+    error = payload.get("error")
+    code = error.get("code") if isinstance(error, dict) else None
+    if code == "runtime_unavailable":
+        raise ApiError(
+            409,
+            "runtime_plugin_worker_runtime_unavailable",
+            "Runtime 插件已被 Quick Worker 识别，但当前不可执行；请安装或修复本机所需的 AI 工具后重试。",
+        )
+    if code == "worker_draining":
+        raise ApiError(
+            409,
+            "runtime_plugin_worker_not_ready",
+            "Quick Worker 当前正在维护中，尚未确认 Runtime 插件激活。",
+        )
+    if code == "runtime_implementation_busy":
+        raise ApiError(
+            409,
+            code,
+            "目标 Runtime 仍有运行中任务，请等待任务结束后再重试。",
+        )
+    if code == "runtime_registry_refresh_unavailable":
+        raise ApiError(
+            409,
+            "quick_worker_refresh_upgrade_required",
+            "Quick Worker 当前不支持 Runtime 注册表刷新；请完成 Worker 重载后重试。",
+        )
+    if code in {"worker_request_invalid", "worker_protocol_incompatible"}:
+        raise ApiError(
+            409,
+            "quick_worker_refresh_upgrade_required",
+            "Quick Worker 尚未加载 Runtime 刷新能力；请完成 Worker 重载后重试。",
+        )
+    if code == "runtime_registry_refresh_unconfirmed":
+        outcome = "发现" if expected_present else "移除"
+        raise ApiError(
+            503,
+            "runtime_plugin_worker_registry_mismatch",
+            f"Quick Worker 刷新后未能{outcome}目标 Runtime 版本，尚未确认插件状态。",
+        )
+    raise ApiError(
+        503,
+        "runtime_plugin_worker_refresh_failed",
+        "Quick Worker 拒绝刷新 Runtime 注册表，尚未确认插件激活。",
+    )
 
 
 def _require_development_refresh_worker_confirmation(payload: dict[str, object]) -> None:
@@ -229,16 +291,34 @@ def _require_development_refresh_worker_confirmation(payload: dict[str, object])
         )
     if code == "worker_draining":
         raise ApiError(409, code, "Quick Worker 正在维护中，请稍后再刷新开发 Runtime 插件。")
+    if code == "runtime_unavailable":
+        raise ApiError(
+            409,
+            "runtime_plugin_worker_runtime_unavailable",
+            "开发 Runtime 已被 Quick Worker 识别，但当前不可执行；请安装或修复本机所需的 AI 工具后重试。",
+        )
+    if code == "runtime_registry_refresh_unavailable":
+        raise ApiError(
+            409,
+            "quick_worker_refresh_upgrade_required",
+            "Quick Worker 当前不支持开发 Runtime 注册表刷新；请完成 Worker 重载后重试。",
+        )
     if code in {"worker_request_invalid", "worker_protocol_incompatible"}:
         raise ApiError(
             409,
             "quick_worker_refresh_upgrade_required",
             "Quick Worker 尚未加载开发 Runtime 刷新能力；请等待当前任务结束后重载 Quick Worker，再重试。",
         )
+    if code == "runtime_registry_refresh_unconfirmed":
+        raise ApiError(
+            503,
+            "runtime_plugin_worker_registry_mismatch",
+            "Quick Worker 刷新后未发现目标开发 Runtime 版本，尚未确认插件刷新。",
+        )
     raise ApiError(
         503,
-        "development_runtime_plugin_worker_refresh_unconfirmed",
-        "Quick Worker 未能确认开发 Runtime 插件刷新。",
+        "development_runtime_plugin_worker_refresh_failed",
+        "Quick Worker 拒绝刷新开发 Runtime 注册表，尚未确认插件刷新。",
     )
 
 
@@ -301,10 +381,10 @@ async def install_runtime_plugin_archive(
             implementation_id=implementation_id,
             expected_present=True,
         )
-        if refreshed.get("success") is not True:
-            raise ApiError(503, "runtime_plugin_worker_refresh_unconfirmed", "Quick Worker 未能确认新的 Runtime 注册表，插件未激活。")
+        _require_runtime_refresh_confirmation(refreshed, expected_present=True)
         generation = await _confirm_worker_runtime(request, implementation_id, expected_present=True)
         manager.runtime_plugin_service.finalize(activation)
+        request.app.state.weixin_translation.reconcile_execution_settings()
         log_operation(request, action="install_runtime_plugin", status="succeeded", target=implementation_id, operation_id=operation_id)
         return RuntimePluginInstallData(module_id=implementation_id, worker_generation=generation)
     except RuntimePluginInstallError as exc:
@@ -312,7 +392,11 @@ async def install_runtime_plugin_archive(
     except ApiError as exc:
         error = exc
     except OSError:
-        error = ApiError(503, "runtime_plugin_worker_refresh_unconfirmed", "Quick Worker 未能确认新的 Runtime 注册表，插件未激活。")
+        error = ApiError(
+            503,
+            "runtime_plugin_worker_health_unavailable",
+            "无法连接 Quick Worker，尚未确认 Runtime 插件激活。请检查 Quick Worker 后重试。",
+        )
     except Exception:
         error = ApiError(500, "runtime_plugin_install_failed", "Runtime 插件安装失败，当前插件已保持不变。")
     rollback_confirmed = True
@@ -386,6 +470,7 @@ async def refresh_development_runtime_plugin(
             implementation_id,
             expected_present=True,
         )
+        request.app.state.weixin_translation.reconcile_execution_settings()
         log_operation(
             request,
             action="refresh_development_runtime_plugin",
@@ -402,7 +487,11 @@ async def refresh_development_runtime_plugin(
     except ApiError as exc:
         error = exc
     except OSError:
-        error = ApiError(503, "development_runtime_plugin_worker_refresh_unconfirmed", "Quick Worker 未能确认开发 Runtime 插件刷新。")
+        error = ApiError(
+            503,
+            "runtime_plugin_worker_health_unavailable",
+            "无法连接 Quick Worker，尚未确认开发 Runtime 插件刷新。请检查 Quick Worker 后重试。",
+        )
     except Exception:
         error = ApiError(500, "development_runtime_plugin_refresh_failed", "开发 Runtime 插件刷新失败，当前状态请以设置页和操作日志为准。")
     if (
@@ -447,8 +536,7 @@ async def remove_runtime_plugin(module_id: str, request: Request) -> ApiResponse
             implementation_id=module_id,
             expected_present=False,
         )
-        if refreshed.get("success") is not True:
-            raise ApiError(503, "runtime_plugin_worker_refresh_unconfirmed", "Quick Worker 未能确认 Runtime 插件已移除。")
+        _require_runtime_refresh_confirmation(refreshed, expected_present=False)
         generation = await _confirm_worker_runtime(request, module_id, expected_present=False)
         manager.runtime_plugin_service.finalize_removal(removal)
         log_operation(request, action="remove_runtime_plugin", status="succeeded", target=module_id, operation_id=operation_id)
@@ -456,7 +544,11 @@ async def remove_runtime_plugin(module_id: str, request: Request) -> ApiResponse
     except ApiError as exc:
         error = exc
     except OSError:
-        error = ApiError(503, "runtime_plugin_worker_refresh_unconfirmed", "Quick Worker 未能确认 Runtime 插件已移除。")
+        error = ApiError(
+            503,
+            "runtime_plugin_worker_health_unavailable",
+            "无法连接 Quick Worker，尚未确认 Runtime 插件移除。请检查 Quick Worker 后重试。",
+        )
     except Exception:
         error = ApiError(500, "runtime_plugin_remove_failed", "Runtime 插件移除失败，当前插件已保持不变。")
     rollback_confirmed = True

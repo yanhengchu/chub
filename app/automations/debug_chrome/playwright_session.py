@@ -13,6 +13,8 @@ from urllib.error import URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
+from app.automations.chrome_maintenance import ChromeLifecycleError, ChromeLifecycleUseCase
+
 from .chrome_debug import DEFAULT_USER_DATA_DIR, DebugStatus, status
 
 
@@ -29,8 +31,16 @@ class ChromeSession:
 
 def require_running_debug_chrome(
     user_data_dir: Path = DEFAULT_USER_DATA_DIR,
-) -> DebugStatus:
-    current = status(user_data_dir)
+) -> DebugStatus | object:
+    # The default managed profile is owned by the Ubuntu Supervisor. Custom
+    # paths remain a test-only/debug helper and retain the local adapter.
+    if user_data_dir == DEFAULT_USER_DATA_DIR:
+        try:
+            current = ChromeLifecycleUseCase().status_snapshot()
+        except ChromeLifecycleError as exc:
+            raise RuntimeError(str(exc)) from exc
+    else:
+        current = status(user_data_dir)
     if current.state == "stopped":
         raise RuntimeError(
             "Debug Chrome is not running; start it with chrome_debug.py start"

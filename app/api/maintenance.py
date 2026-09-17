@@ -5,15 +5,10 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.core.config import PROJECT_ROOT
 from app.core.response import ApiError, ApiResponse, error_response
 from app.core.security import require_trusted_network
 from app.services.operation_log import log_operation
-from app.services.restart_command import (
-    describe_restart_launch_error,
-    launch_restart_process,
-    monitor_restart_process,
-)
+from app.services.restart_command import monitor_restart_process
 from app.services.quick_worker_maintenance import (
     QuickWorkerRuntimeStatus,
     QuickWorkerStatusData,
@@ -24,6 +19,7 @@ from app.services.system_upgrade import (
     runtime_cleanup_readiness,
     runtime_recovery_plan,
 )
+from app.services.web_restart import WebRestartLaunchError, WebRestartUnavailableError
 
 
 router = APIRouter(
@@ -101,16 +97,6 @@ def _system_upgrade_session_label(session: object) -> str:
     return " · ".join(part for part in (name, workspace, suffix) if part)[:128]
 
 
-def _current_runtime_recovery_plan(loaded):
-    if (
-        loaded is not None
-        and loaded.plan.plan_id == "runtime-recovery"
-        and loaded.plan.action == "runtime-data-reset"
-    ):
-        return runtime_recovery_plan()
-    return loaded
-
-
 async def system_upgrade_status_data(application) -> SystemUpgradeStatusData:
     """Return the single authoritative upgrade readiness view for all entry points."""
     coordinator = application.state.system_upgrade
@@ -123,7 +109,6 @@ async def system_upgrade_status_data(application) -> SystemUpgradeStatusData:
         # recovery path. The fallback never claims to perform a code upgrade.
         loaded = runtime_recovery_plan()
         recovery_fallback = True
-    loaded = _current_runtime_recovery_plan(loaded)
     session_labels = []
     try:
         current_sessions = application.state.ai_session_manager.system_upgrade_sessions()
@@ -193,7 +178,7 @@ async def start_system_upgrade_for_source(
     if coordinator.in_progress():
         return await system_upgrade_status_data(application)
     try:
-        loaded = _current_runtime_recovery_plan(coordinator.plan())
+        loaded = coordinator.plan()
     except OSError:
         # The fixed runtime reset is the recovery fallback when a prepared
         # upgrade plan cannot be read or validated.
@@ -212,22 +197,13 @@ async def start_system_upgrade_for_source(
         and operation.destructive_started
     ):
         with application.state.maintenance_lock:
-            if operation.fingerprint != loaded.fingerprint:
-                rebound = coordinator.rebase_failed_recovery(loaded)
-                if not rebound:
-                    raise ApiError(
-                        409,
-                        "system_upgrade_plan_changed",
-                        "升级方案已经变化，不能继续已清理运行状态的升级。",
-                    )
-            resumed = coordinator.resume_failed(application.state.run_system_upgrade)
-        if resumed is None:
+            discarded = coordinator.discard_failed_destructive_state()
+        if not discarded:
             raise ApiError(
-                409,
-                "system_upgrade_recovery_unavailable",
-                "当前失败阶段不能自动继续，请检查运行日志后处理。",
+                503,
+                "system_upgrade_state_unavailable",
+                "失败的升级运行状态无法安全清除，本次未执行新的升级。",
             )
-        return await system_upgrade_status_data(application)
     status = await system_upgrade_status_data(application)
     if not status.can_start:
         raise ApiError(
@@ -287,8 +263,10 @@ def restart_hub(request: Request) -> ApiResponse[dict[str, str]]:
     with request.app.state.maintenance_lock:
         _require_runtime_maintenance_available(request)
         proposed_operation_id = uuid4().hex
-        command = PROJECT_ROOT / "scripts" / "chub-web-restart"
-        if not command.is_file():
+        restart = request.app.state.web_restart
+        try:
+            restart.ensure_available()
+        except WebRestartUnavailableError:
             log_operation(
                 request,
                 action="restart_hub",
@@ -324,17 +302,16 @@ def restart_hub(request: Request) -> ApiResponse[dict[str, str]]:
             )
 
         try:
-            process = launch_restart_process(
-                command,
-                environment={
-                    "CHUB_OPERATION_ID": operation_id,
-                    "CHUB_OPERATION_SOURCE_IP": (
-                        request.client.host if request.client else "unknown"
-                    ),
-                },
+            process = restart.launch(
+                operation_id=operation_id,
+                source_ip=request.client.host if request.client else "unknown",
             )
-        except OSError as error:
-            failure_reason = describe_restart_launch_error(error)
+        except WebRestartUnavailableError as error:
+            failure_reason = str(error)
+            coordinator.fail_immediate_restart(failure_reason)
+            return error_response(503, "command_not_found", failure_reason)
+        except WebRestartLaunchError as error:
+            failure_reason = str(error)
             coordinator.fail_immediate_restart(failure_reason)
             return error_response(500, "restart_failed", failure_reason)
 

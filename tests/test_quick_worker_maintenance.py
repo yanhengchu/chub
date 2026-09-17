@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 import stat
 import threading
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -15,6 +15,7 @@ from app.core.config import Settings
 from app.core.response import ApiError
 from app.quick_worker import PROTOCOL_VERSION
 from app.services.quick_worker_maintenance import (
+    QuickWorkerMaintenanceUseCase,
     QuickWorkerReloadCoordinator,
     QuickWorkerReloadState,
     QuickWorkerStatusData,
@@ -76,23 +77,45 @@ def wait_for_reload_monitors() -> None:
 
 
 def test_reload_process_uses_only_fixed_command() -> None:
-    command = Path("/fixed/scripts/chub")
+    command = Path("/fixed/scripts/maintenance/chub-worker-reload")
     with patch("app.services.quick_worker_maintenance.subprocess.Popen") as popen:
         launch_quick_worker_reload_process(command)
 
-    assert popen.call_args.args[0] == [str(command), "worker", "reload"]
+    assert popen.call_args.args[0] == [str(command), "reload"]
     assert popen.call_args.kwargs["start_new_session"] is True
     assert popen.call_args.kwargs["env"][
         "CHUB_WORKER_RELOAD_EXTERNAL_LOGGING"
     ] == "1"
 
 
+def test_reload_process_match_accepts_fixed_shell_interpreter_form() -> None:
+    maintenance = QuickWorkerMaintenanceUseCase()
+    process = MagicMock()
+    process.cmdline.return_value = [
+        "/bin/bash",
+        str(maintenance.command),
+        "reload",
+    ]
+
+    with patch(
+        "app.services.quick_worker_maintenance.psutil.Process",
+        return_value=process,
+    ):
+        assert maintenance.process_matches(12345) is True
+
+    process.cmdline.return_value = ["/bin/bash", str(maintenance.command), "status"]
+    with patch(
+        "app.services.quick_worker_maintenance.psutil.Process",
+        return_value=process,
+    ):
+        assert maintenance.process_matches(12345) is False
+
+
 def test_corrupt_reload_state_fails_closed(settings: Settings) -> None:
     state_path = settings.ai_runtime.shared.state_dir / "quick-worker-maintenance.json"
     state_path.write_text("{not-json", encoding="utf-8")
     coordinator = QuickWorkerReloadCoordinator(
-        state_path,
-        settings.ai_runtime.shared.state_dir / "chub",
+        state_path
     )
 
     assert coordinator.maintenance_available() is False
@@ -104,8 +127,7 @@ def test_corrupt_reload_state_fails_closed(settings: Settings) -> None:
 def test_clear_completed_operation_removes_obsolete_result(settings: Settings) -> None:
     state_path = settings.ai_runtime.shared.state_dir / "quick-worker-maintenance.json"
     coordinator = QuickWorkerReloadCoordinator(
-        state_path,
-        settings.ai_runtime.shared.state_dir / "chub",
+        state_path
     )
     now = utc_now()
     coordinator._write(
@@ -120,8 +142,7 @@ def test_clear_completed_operation_removes_obsolete_result(settings: Settings) -
         )
     )
     coordinator = QuickWorkerReloadCoordinator(
-        state_path,
-        settings.ai_runtime.shared.state_dir / "chub",
+        state_path
     )
 
     assert coordinator.clear_completed_operation() is True
@@ -131,8 +152,7 @@ def test_clear_completed_operation_removes_obsolete_result(settings: Settings) -
 
 def test_reload_state_write_failure_does_not_launch(settings: Settings) -> None:
     coordinator = QuickWorkerReloadCoordinator(
-        settings.ai_runtime.shared.state_dir / "quick-worker-maintenance.json",
-        settings.ai_runtime.shared.state_dir / "chub",
+        settings.ai_runtime.shared.state_dir / "quick-worker-maintenance.json"
     )
     with (
         patch.object(coordinator, "_write", side_effect=OSError("read only")),
@@ -167,8 +187,7 @@ async def test_quick_worker_status_exposes_stopped_service_as_restartable(
     settings: Settings,
 ) -> None:
     coordinator = QuickWorkerReloadCoordinator(
-        settings.ai_runtime.shared.state_dir / "quick-worker-maintenance.json",
-        Path("scripts/chub"),
+        settings.ai_runtime.shared.state_dir / "quick-worker-maintenance.json"
     )
     with (
         patch(
@@ -227,8 +246,7 @@ async def test_quick_worker_remains_ready_without_an_available_runtime(
     settings: Settings,
 ) -> None:
     coordinator = QuickWorkerReloadCoordinator(
-        settings.ai_runtime.shared.state_dir / "quick-worker-maintenance.json",
-        Path("scripts/chub"),
+        settings.ai_runtime.shared.state_dir / "quick-worker-maintenance.json"
     )
     health = worker_health()
     health["data"]["available_runtime_ids"] = []
@@ -480,8 +498,7 @@ async def test_quick_worker_restart_allows_busy_incompatible_worker(
     settings: Settings,
 ) -> None:
     coordinator = QuickWorkerReloadCoordinator(
-        settings.ai_runtime.shared.state_dir / "quick-worker-maintenance.json",
-        settings.ai_runtime.shared.state_dir / "chub",
+        settings.ai_runtime.shared.state_dir / "quick-worker-maintenance.json"
     )
     health = worker_health(
         protocol_version=PROTOCOL_VERSION - 1,
@@ -506,8 +523,7 @@ async def test_quick_worker_status_reports_recovery_failure_without_waiting(
     settings: Settings,
 ) -> None:
     coordinator = QuickWorkerReloadCoordinator(
-        settings.ai_runtime.shared.state_dir / "quick-worker-maintenance.json",
-        settings.ai_runtime.shared.state_dir / "chub",
+        settings.ai_runtime.shared.state_dir / "quick-worker-maintenance.json"
     )
 
     with patch(
@@ -561,8 +577,7 @@ async def test_quick_worker_restart_allows_busy_worker(
 @pytest.mark.anyio
 async def test_busy_quick_worker_cannot_be_stopped(settings: Settings) -> None:
     coordinator = QuickWorkerReloadCoordinator(
-        settings.ai_runtime.shared.state_dir / "quick-worker-maintenance.json",
-        settings.ai_runtime.shared.state_dir / "chub",
+        settings.ai_runtime.shared.state_dir / "quick-worker-maintenance.json"
     )
 
     with patch(
@@ -781,7 +796,7 @@ async def test_concurrent_chub_and_worker_restarts_launch_independently(
             return_value=worker_process,
         ) as launch_worker,
         patch(
-            "app.api.maintenance.launch_restart_process",
+            "app.services.web_restart.launch_restart_process",
             side_effect=launch_chub,
         ) as launch_web,
         patch("app.api.maintenance.monitor_restart_process"),
@@ -819,9 +834,9 @@ async def test_reload_reconciles_new_generation_after_web_restart(
         ),
         patch("app.services.quick_worker_maintenance.write_operation"),
     ):
-        coordinator = QuickWorkerReloadCoordinator(state_path, command)
+        coordinator = QuickWorkerReloadCoordinator(state_path)
         assert coordinator.begin("a" * 32, "127.0.0.1") is True
-        reloaded = QuickWorkerReloadCoordinator(state_path, command)
+        reloaded = QuickWorkerReloadCoordinator(state_path)
         reloaded.reconcile("b" * 32, True)
 
     process.release.set()
@@ -835,7 +850,6 @@ def test_reload_waits_for_pid_handoff_after_web_crash(settings: Settings) -> Non
     now = utc_now()
     coordinator = QuickWorkerReloadCoordinator(
         state_path,
-        command,
         handoff_grace_seconds=60,
     )
     coordinator._write(
@@ -850,7 +864,6 @@ def test_reload_waits_for_pid_handoff_after_web_crash(settings: Settings) -> Non
     )
     reloaded = QuickWorkerReloadCoordinator(
         state_path,
-        command,
         handoff_grace_seconds=60,
     )
 
@@ -869,7 +882,7 @@ def test_reload_monitor_start_failure_falls_back_to_reconciliation(
     command = settings.ai_runtime.shared.state_dir / "chub"
     command.touch(mode=0o700)
     process = WaitingProcess()
-    coordinator = QuickWorkerReloadCoordinator(state_path, command)
+    coordinator = QuickWorkerReloadCoordinator(state_path)
 
     with (
         patch(
@@ -901,7 +914,6 @@ def test_reload_pid_handoff_expires_to_failed(settings: Settings) -> None:
     now = utc_now()
     writer = QuickWorkerReloadCoordinator(
         state_path,
-        command,
         handoff_grace_seconds=0,
     )
     writer._write(
@@ -916,7 +928,6 @@ def test_reload_pid_handoff_expires_to_failed(settings: Settings) -> None:
     )
     coordinator = QuickWorkerReloadCoordinator(
         state_path,
-        command,
         handoff_grace_seconds=0,
     )
 
@@ -931,8 +942,7 @@ async def test_inspection_allows_idle_incompatible_protocol(
     settings: Settings,
 ) -> None:
     coordinator = QuickWorkerReloadCoordinator(
-        settings.ai_runtime.shared.state_dir / "quick-worker-maintenance.json",
-        settings.ai_runtime.shared.state_dir / "chub",
+        settings.ai_runtime.shared.state_dir / "quick-worker-maintenance.json"
     )
     health = worker_health()
     health["data"]["protocol_version"] = PROTOCOL_VERSION - 1

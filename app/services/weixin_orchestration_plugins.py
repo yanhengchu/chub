@@ -186,6 +186,25 @@ class WeixinOrchestrationPluginService:
             finally:
                 shutil.rmtree(candidate, ignore_errors=True)
 
+    def inspect_archive_identity(
+        self,
+        archive: bytes,
+        *,
+        source_name: str,
+    ) -> WeixinOrchestrationPluginPreview:
+        """Return the immutable archive identity without importing its entry points."""
+        with self._lock:
+            source_name = self._validate_archive_input(archive, source_name)
+            del source_name
+            self._prepare_root()
+            candidate = self.staging_dir / uuid4().hex
+            try:
+                content = self._extract_candidate(candidate, archive)
+                manifest = self._read_manifest(content)
+                return self._preview(manifest, self._content_hash(content))
+            finally:
+                shutil.rmtree(candidate, ignore_errors=True)
+
     def install(
         self,
         archive: bytes,

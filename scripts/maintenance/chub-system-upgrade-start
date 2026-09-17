@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+OPERATION_ID="${1:-}"
+SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+PYTHON_BIN="$PROJECT_ROOT/.venv/bin/python"
+
+if [[ ! "$OPERATION_ID" =~ ^[a-f0-9]{32}$ ]]; then
+    echo "chub-system-upgrade-start: invalid operation id" >&2
+    exit 2
+fi
+
+if [[ ! -x "$PYTHON_BIN" ]]; then
+    echo "chub-system-upgrade-start: Python environment is unavailable" >&2
+    exit 1
+fi
+
+(
+    cd "$PROJECT_ROOT"
+    "$PYTHON_BIN" -m app.system_upgrade_cli validate-launch "$OPERATION_ID"
+)
+
+exec "$PROJECT_ROOT/scripts/platform/service-management.sh" system-upgrade-start

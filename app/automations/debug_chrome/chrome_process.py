@@ -48,6 +48,11 @@ class ChromeProcess:
 def is_stable_chrome_executable(executable: Path, *, platform: str) -> bool:
     normalized = executable.as_posix()
     if platform == "linux":
+        # Linux keeps a deleted executable target visible through /proc/<pid>/exe
+        # until its process exits. Preserve recognition so a managed Chrome can be
+        # stopped after its package has been removed.
+        normalized = normalized.removesuffix(" (deleted)")
+        executable = Path(normalized)
         return (
             executable.name in {"google-chrome", "google-chrome-stable"}
             or (

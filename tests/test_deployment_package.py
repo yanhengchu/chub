@@ -21,9 +21,9 @@ from app.services.deployment_package import (
     DeploymentPackageSourceVersions,
     DeploymentPackageService,
 )
-from scripts import build_chub_release_zip
-from scripts.build_codex_runtime_zip import default_output as codex_runtime_default_output
-from scripts.build_weixin_orchestration_plugin_zip import (
+from scripts.build import chub_release_zip
+from scripts.build.codex_runtime_zip import default_output as codex_runtime_default_output
+from scripts.build.weixin_orchestration_plugin_zip import (
     default_output as weixin_refinement_default_output,
 )
 
@@ -131,12 +131,41 @@ def test_release_build_contains_formal_modules_and_excludes_local_state(
         assert any(name.startswith(f"bundled-modules/codex-runtime-release-{source_versions.runtime}-") for name in bundled_modules)
         assert any(name.startswith(f"bundled-modules/weixin-refinement-release-{source_versions.weixin}-") for name in bundled_modules)
         assert "DEPLOY_WITH_AI.md" in names
+        deployment_guide = archive.read("DEPLOY_WITH_AI.md").decode("utf-8")
+        for marker in (
+            "DEPLOYMENT_CHECKPOINT_PATH",
+            "DEPLOYMENT_NOTES_PATH",
+            "record_stage",
+            "unzip -t \"$SOURCE_ZIP\"",
+            "core_services_verified",
+            "不得使用无上下文正则替换 YAML 字段",
+            'app["page_title"] = f"{sys.argv[2]} · Hub"',
+            "Windows localhost 请求再次返回 `200`",
+            "Runtime、插件包、OpenClaw 和其他第三方能力不属于本条件",
+        ):
+            assert marker in deployment_guide
         assert "app/automations/debug_chrome/chrome_debug.py" in names
         assert "app/automations/debug_chrome/playwright_session.py" in names
         assert not any(name.startswith(".agents/") for name in names)
         assert "config/automations.yaml" not in names
         assert "config/settings.example.yaml" in names
-        assert "runtime-modules/codex-runtime/chub-module.json" not in names
+        assert "modules/runtime/codex-runtime/chub-module.json" not in names
+        assert "modules/chub-local-modules.example.json" in names
+        for script in (
+            "scripts/chub",
+            "scripts/maintenance/chub-data-migrate",
+            "scripts/maintenance/chub-system-upgrade-restart",
+            "scripts/maintenance/chub-system-upgrade-start",
+            "scripts/maintenance/chub-web-restart",
+            "scripts/maintenance/chub-worker-reload",
+            "scripts/build/build-chub-release-zip.py",
+            "scripts/build/build-codex-runtime-zip.py",
+            "scripts/build/build-deliveryline-plugin-zip.py",
+            "scripts/build/build-runtime-verification-zip.py",
+            "scripts/build/build-weixin-orchestration-plugin-zip.py",
+            "scripts/platform/service-management.sh",
+        ):
+            assert (archive.getinfo(script).external_attr >> 16) & 0o777 == 0o755
         assert archive.read("pyproject.toml").decode("utf-8").count(f'version = "{source_versions.chub}"') == 1
         assert f'version: "{source_versions.chub}"' in archive.read("config/settings.example.yaml").decode("utf-8")
         manifest = json.loads(archive.read("release-manifest.json"))
@@ -473,14 +502,14 @@ def test_release_source_versions_require_all_chub_declarations_to_match(
 ) -> None:
     project = tmp_path / "project"
     (project / "config").mkdir(parents=True)
-    (project / "runtime-modules" / "codex-runtime").mkdir(parents=True)
-    (project / "orchestration-modules" / "weixin-refinement").mkdir(parents=True)
+    (project / "modules" / "runtime" / "codex-runtime").mkdir(parents=True)
+    (project / "modules" / "orchestration" / "weixin-refinement").mkdir(parents=True)
     (project / "pyproject.toml").write_text('[project]\nversion = "1.2.3"\n')
     (project / "config" / "settings.example.yaml").write_text('app:\n  version: "1.2.3"\n')
-    (project / "runtime-modules" / "codex-runtime" / "chub-module.json").write_text(
+    (project / "modules" / "runtime" / "codex-runtime" / "chub-module.json").write_text(
         '{"version":"1.2.3","chub_version":"1.2.3"}\n'
     )
-    (project / "orchestration-modules" / "weixin-refinement" / "chub-capability-orchestration.json").write_text(
+    (project / "modules" / "orchestration" / "weixin-refinement" / "chub-capability-orchestration.json").write_text(
         '{"version":"1.2.3","chub_version":"1.2.2"}\n'
     )
     monkeypatch.setattr("app.services.deployment_package.PROJECT_ROOT", project)
@@ -595,8 +624,8 @@ def test_release_build_optionally_includes_development_sources(settings, tmp_pat
     )
 
     with zipfile.ZipFile(built.artifact) as archive:
-        assert "runtime-modules/codex-runtime/chub-module.json" in archive.namelist()
-        assert "orchestration-modules/weixin-refinement/chub-capability-orchestration.json" in archive.namelist()
+        assert "modules/runtime/codex-runtime/chub-module.json" in archive.namelist()
+        assert "modules/orchestration/weixin-refinement/chub-capability-orchestration.json" in archive.namelist()
 
 
 def test_release_record_replaces_the_previous_same_version_record(
@@ -819,11 +848,11 @@ def test_release_rejects_a_busy_worker_before_registering_the_operation(
     settings.deployment_package.state_file = tmp_path / "state.json"
     service = DeploymentPackageService(settings)
     monkeypatch.setattr(
-        "app.services.deployment_package.subprocess.run",
-        lambda *args, **kwargs: SimpleNamespace(
-            returncode=0,
-            stdout=b'{"success":true,"data":{"status":"ready","active_tasks":1,"queued_tasks":0}}',
-        ),
+        "app.services.deployment_package.read_health_sync",
+        lambda _settings: {
+            "success": True,
+            "data": {"status": "ready", "active_tasks": 1, "queued_tasks": 0},
+        },
     )
 
     for publish in (service.start, service.publish):
@@ -833,6 +862,37 @@ def test_release_rejects_a_busy_worker_before_registering_the_operation(
         assert error.value.status_code == 409
         assert error.value.code == "release_worker_busy"
     assert not settings.deployment_package.state_file.exists()
+
+
+def test_cli_release_runs_the_registered_publish_once(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings.deployment_package.artifacts_dir = tmp_path / "releases"
+    settings.deployment_package.state_file = tmp_path / "state.json"
+    service = DeploymentPackageService(settings)
+    operation = SimpleNamespace(operation_id="release-operation")
+    release_configuration = SimpleNamespace()
+    baseline = SimpleNamespace()
+    begin_calls: list[str] = []
+    run_calls: list[tuple[object, ...]] = []
+    completed = SimpleNamespace(operation=SimpleNamespace(status="succeeded"))
+
+    def begin(*, source_ip: str, configuration=None):
+        assert configuration is None
+        begin_calls.append(source_ip)
+        return operation, release_configuration, baseline
+
+    monkeypatch.setattr(service, "_begin_publish", begin)
+    monkeypatch.setattr(service, "_run", lambda *args: run_calls.append(args))
+    monkeypatch.setattr(service, "status", lambda: completed)
+
+    assert service.publish(source_ip="127.0.0.1") is completed
+    assert begin_calls == ["127.0.0.1"]
+    assert run_calls == [
+        ("release-operation", "127.0.0.1", release_configuration, baseline)
+    ]
 
 
 def test_release_tag_rollback_restores_the_previous_local_ref(
@@ -908,7 +968,6 @@ def test_release_updates_the_local_annotated_tag_for_a_republished_version(
 
 
 def test_release_cli_uses_the_guarded_publish_path(
-    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     calls: list[str] = []
@@ -929,16 +988,18 @@ def test_release_cli_uses_the_guarded_publish_path(
                 )
             )
 
-    monkeypatch.setattr(build_chub_release_zip, "load_settings", lambda: "settings")
-    monkeypatch.setattr(build_chub_release_zip, "DeploymentPackageService", _Service)
-
-    assert build_chub_release_zip.main() == 0
+    assert (
+        chub_release_zip.main(
+            load_settings_fn=lambda: "settings",
+            deployment_package_service=_Service,
+        )
+        == 0
+    )
     assert calls == ["127.0.0.1"]
     assert json.loads(capsys.readouterr().out)["artifact_name"] == "chub-release-1.0.0.zip"
 
 
 def test_release_cli_reports_a_worker_gate_failure_without_a_traceback(
-    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     class _Service:
@@ -952,10 +1013,13 @@ def test_release_cli_reports_a_worker_gate_failure_without_a_traceback(
                 "Quick Worker 仍有 1 个执行中、0 个排队任务；完成后再发布。",
             )
 
-    monkeypatch.setattr(build_chub_release_zip, "load_settings", lambda: "settings")
-    monkeypatch.setattr(build_chub_release_zip, "DeploymentPackageService", _Service)
-
-    assert build_chub_release_zip.main() == 1
+    assert (
+        chub_release_zip.main(
+            load_settings_fn=lambda: "settings",
+            deployment_package_service=_Service,
+        )
+        == 1
+    )
     payload = json.loads(capsys.readouterr().err)
     assert payload == {
         "success": False,

@@ -12,7 +12,7 @@ from app.core.response import ApiError
 from app.ai_session.models import utc_now
 from app.services.openclaw_weixin_chub_models import WeixinTaskOrchestrationRequest
 from app.services.weixin_orchestration_plugins import WeixinOrchestrationPluginService
-from scripts.build_weixin_orchestration_plugin_zip import build as build_weixin_plugin_zip
+from scripts.build.weixin_orchestration_plugin_zip import build as build_weixin_plugin_zip
 from tests.openclaw_weixin_chub_mode_helpers import configured_manager, delivery_route
 
 

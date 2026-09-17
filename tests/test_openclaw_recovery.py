@@ -207,3 +207,20 @@ def test_integration_check_reads_json5_configuration_and_plugin_index_without_pl
     assert report.weixin_adapter.state == "verified"
     assert report.patches == ()
     assert "补丁内容仅在重启与恢复时核验" in report.message
+
+
+def test_integration_check_keeps_declared_patches_without_local_openclaw(
+    tmp_path: Path,
+) -> None:
+    report = inspect_openclaw_integration(
+        config_path=tmp_path / "missing" / "openclaw.json",
+        state_dir=tmp_path / "missing-state",
+    )
+
+    assert report.weixin_adapter.state == "unknown"
+    assert report.chub_plugin.state == "unknown"
+    assert [patch.identifier for patch in report.patches] == [
+        "weixin-chub-compatibility",
+        "openclaw-cli-plugin-message-channel",
+    ]
+    assert all(patch.state == "declared" for patch in report.patches)

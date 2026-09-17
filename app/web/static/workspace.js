@@ -51,6 +51,9 @@
   const initialQuickSessionPanel = document.querySelector(
     "#workspace-section-content.workspace-inline-quick-session",
   );
+  const initialReadingDetail = document.querySelector(
+    "#workspace-section-content.workspace-reading-detail-content",
+  );
   const quickSessionSelectionMessageType = "chub.workspace.quick-session-selection";
   const quickSessionActivityMessageType = "chub.workspace.quick-session-activity";
   const quickSessionInteractionMessageType = "chub.workspace.quick-session-interaction";
@@ -246,9 +249,11 @@
   sectionNavigations.forEach((navigation) => {
     navigation.addEventListener("click", replaceWorkspaceSection);
   });
-  finishSectionToolbarLoading(
-    new URL(window.location.href).searchParams.get("section") || "workbench",
-  );
+  if (!(initialReadingDetail instanceof HTMLElement)) {
+    finishSectionToolbarLoading(
+      new URL(window.location.href).searchParams.get("section") || "workbench",
+    );
+  }
   if (initialQuickSessionPanel instanceof HTMLElement) {
     clearWorkspaceSectionSelection();
     setToolbarStatus("正在加载Chub Session…");

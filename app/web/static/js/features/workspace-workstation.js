@@ -20,8 +20,7 @@ window.initializeWorkspaceWorkstation = () => {
     upgradeStart: byId("workspace-upgrade-start"),
     developmentRefresh: byId("workspace-development-refresh"),
     developmentEnvironment: byId("workspace-development-environment"),
-    developmentCodexRow: byId("workspace-development-codex-row"),
-    developmentCodexDetail: byId("workspace-development-codex-detail"),
+    developmentRuntimeList: byId("workspace-development-runtime-list"),
     developmentWeixinRow: byId("workspace-development-weixin-row"),
     developmentWeixinDetail: byId("workspace-development-weixin-detail"),
     developmentDeliverylineRow: byId("workspace-development-deliveryline-row"),
@@ -195,11 +194,11 @@ window.initializeWorkspaceWorkstation = () => {
     }
   };
 
-  const cacheDevelopmentSnapshot = (runtime, runtimeManagement, orchestration, modules, deliveryline, codex, weixin) => {
+  const cacheDevelopmentSnapshot = (runtime, runtimeManagement, orchestration, modules, deliveryline, runtimePlugin, weixin) => {
     try {
       window.sessionStorage.setItem(
         developmentSnapshotCacheKey,
-        JSON.stringify({ runtime, runtimeManagement, orchestration, modules, deliveryline, codex, weixin }),
+        JSON.stringify({ runtime, runtimeManagement, orchestration, modules, deliveryline, runtimePlugin, weixin }),
       );
     } catch {
       // The latest server data remains usable when browser storage is unavailable.
@@ -354,15 +353,40 @@ window.initializeWorkspaceWorkstation = () => {
     return normalized ? `v${normalized}` : "未知版本";
   };
 
-  const renderDevelopment = (runtime, runtimeManagement, orchestration, modules, deliveryline, codex, weixin) => {
-    const artifactTitle = (plugin, artifactId) => {
-      const artifact = (plugin?.artifacts || []).find((item) => item.artifact_id === artifactId);
+  const renderDevelopment = (runtime, runtimeManagement, orchestration, modules, deliveryline, runtimePlugin, weixin) => {
+    const artifactTitle = (plugin, artifact, includeArtifactName = false) => {
       const name = plugin?.name || "未知插件";
+      const artifactName = includeArtifactName ? ` · ${artifact?.name || "未知实现"}` : "";
       return artifact?.source === "development"
-        ? `${name} · 开发实现`
+        ? `${name}${artifactName} · 开发实现`
         : artifact?.version
-          ? `${name} · 正式版 ${formalVersion(artifact.version)}`
+          ? `${name}${artifactName} · 正式版 ${formalVersion(artifact.version)}`
           : `${name} · 未知版本`;
+    };
+    const renderRuntimeArtifacts = (plugin) => {
+      const imported = Array.isArray(plugin?.imported_artifact_ids) ? plugin.imported_artifact_ids : [];
+      const enabled = Array.isArray(plugin?.enabled_artifact_ids) ? plugin.enabled_artifact_ids : [];
+      const artifacts = Array.isArray(plugin?.artifacts) ? plugin.artifacts : [];
+      const importedArtifacts = artifacts.filter((artifact) => imported.includes(artifact.artifact_id));
+      elements.developmentRuntimeList.replaceChildren(...importedArtifacts.map((artifact) => {
+        const row = document.createElement("div");
+        row.className = "workstation-status-row";
+        const copy = document.createElement("div");
+        copy.className = "workstation-status-copy";
+        const title = document.createElement("strong");
+        title.textContent = artifactTitle(plugin, artifact, true);
+        const detail = document.createElement("span");
+        const isEnabled = enabled.includes(artifact.artifact_id);
+        setStatus(
+          detail,
+          `导入状态：已导入 · 启用状态：${isEnabled ? "已启用" : "未启用"}。`,
+          isEnabled ? "success" : "warning",
+        );
+        copy.append(title, detail);
+        row.append(copy);
+        return row;
+      }));
+      return importedArtifacts.length > 0;
     };
     const renderLifecyclePlugin = (plugin, row, detail) => {
       const imported = Array.isArray(plugin?.imported_artifact_ids) ? plugin.imported_artifact_ids : [];
@@ -370,17 +394,18 @@ window.initializeWorkspaceWorkstation = () => {
       row.hidden = imported.length === 0;
       if (imported.length === 0) return false;
       const artifactId = enabled[0] || imported[0];
+      const artifact = (plugin?.artifacts || []).find((item) => item.artifact_id === artifactId);
       const isEnabled = enabled.length > 0;
       setStatus(
         detail,
-        `插件版本：${artifactTitle(plugin, artifactId)} · 导入状态：已导入 · 启用状态：${isEnabled ? "已启用" : "未启用"}。`,
+        `插件版本：${artifactTitle(plugin, artifact)} · 导入状态：已导入 · 启用状态：${isEnabled ? "已启用" : "未启用"}。`,
         isEnabled ? "success" : "warning",
       );
       return true;
     };
-    const codexInstalled = renderLifecyclePlugin(codex, elements.developmentCodexRow, elements.developmentCodexDetail);
+    const runtimeInstalled = renderRuntimeArtifacts(runtimePlugin);
     const weixinInstalled = renderLifecyclePlugin(weixin, elements.developmentWeixinRow, elements.developmentWeixinDetail);
-    elements.developmentEnvironment.hidden = !codexInstalled && !weixinInstalled;
+    elements.developmentEnvironment.hidden = !runtimeInstalled && !weixinInstalled;
     const deliverylineInstalled = Array.isArray(deliveryline?.imported_artifact_ids) && deliveryline.imported_artifact_ids.length > 0;
     elements.developmentDeliverylineRow.hidden = !deliverylineInstalled;
     const deliverylineEnabled = Array.isArray(deliveryline?.enabled_artifact_ids) && deliveryline.enabled_artifact_ids.length > 0;
@@ -584,7 +609,7 @@ window.initializeWorkspaceWorkstation = () => {
         request("/api/plugins", { cache: "no-store" }),
       ]);
       if (disposed) return false;
-      const codex = lifecycle?.plugins?.find((plugin) => plugin.plugin_id === "runtime") || null;
+      const runtimePlugin = lifecycle?.plugins?.find((plugin) => plugin.plugin_id === "runtime") || null;
       const weixin = lifecycle?.plugins?.find((plugin) => plugin.plugin_id === "weixin-orchestration") || null;
       const enabledIds = Array.isArray(weixin?.enabled_artifact_ids) ? weixin.enabled_artifact_ids : [];
       const activeId = enabledIds[0] || "";
@@ -599,9 +624,9 @@ window.initializeWorkspaceWorkstation = () => {
         development_available: Boolean((weixin?.artifacts || []).find((item) => item.artifact_id === "development:weixin-orchestration")?.available),
       };
       const deliveryline = lifecycle?.plugins?.find((plugin) => plugin.plugin_id === "deliveryline") || null;
-      developmentSnapshot = { runtime, runtimeManagement, orchestration, modules, deliveryline, codex, weixin };
-      renderDevelopment(runtime, runtimeManagement, orchestration, modules, deliveryline, codex, weixin);
-      cacheDevelopmentSnapshot(runtime, runtimeManagement, orchestration, modules, deliveryline, codex, weixin);
+      developmentSnapshot = { runtime, runtimeManagement, orchestration, modules, deliveryline, runtimePlugin, weixin };
+      renderDevelopment(runtime, runtimeManagement, orchestration, modules, deliveryline, runtimePlugin, weixin);
+      cacheDevelopmentSnapshot(runtime, runtimeManagement, orchestration, modules, deliveryline, runtimePlugin, weixin);
       return true;
     } catch (error) {
       if (disposed || error?.name === "AbortError") return false;
@@ -620,7 +645,6 @@ window.initializeWorkspaceWorkstation = () => {
   const refreshDevelopment = async () => {
     developmentRefreshing = true;
     syncControls();
-    setStatus(elements.developmentCodexDetail, "正在重新读取当前 Runtime 实现。", "warning");
     setStatus(elements.developmentWeixinDetail, "正在重新读取当前微信任务润色实现。", "warning");
     try {
       await loadDevelopment();
@@ -902,7 +926,7 @@ window.initializeWorkspaceWorkstation = () => {
       cachedDevelopmentSnapshot.orchestration,
       cachedDevelopmentSnapshot.modules,
       cachedDevelopmentSnapshot.deliveryline,
-      cachedDevelopmentSnapshot.codex,
+      cachedDevelopmentSnapshot.runtimePlugin || cachedDevelopmentSnapshot.codex,
       cachedDevelopmentSnapshot.weixin,
     );
   }
@@ -1009,7 +1033,7 @@ window.initializeWorkspaceWorkstation = () => {
     void showConfirmationDialog({
       title: "升级与恢复",
       body: "此操作会清理 Chub 自有 AI 运行状态并重启 Chub Web 与 Quick Worker；本地关联 Session 会按固定边界清理，Runtime 原生会话保留。",
-      confirmLabel: upgradeState?.resume ? "继续恢复" : "确认升级与恢复",
+      confirmLabel: "确认升级与恢复",
       pendingLabel: "正在开始…",
       errorMessage: "升级与恢复未能启动。",
       onConfirm: startUpgrade,

@@ -24,6 +24,7 @@ from app.services.system_upgrade import (
     runtime_recovery_plan,
     system_upgrade_restart_readiness,
 )
+from app.services.system_upgrade_maintenance import SystemUpgradeMaintenanceUseCase
 from app.system_upgrade_cli import prepare_restart
 from app.quick_worker_tasks import (
     worker_leases_dir,
@@ -104,7 +105,9 @@ def test_plan_view_lists_only_actual_upgrade_points(tmp_path: Path) -> None:
 
 
 def test_core_upgrade_executor_does_not_manage_openclaw() -> None:
-    executor = (PROJECT_ROOT / "scripts" / "chub-system-upgrade-restart").read_text(
+    executor = (
+        PROJECT_ROOT / "scripts" / "maintenance" / "chub-system-upgrade-restart"
+    ).read_text(
         encoding="utf-8"
     )
 
@@ -113,14 +116,22 @@ def test_core_upgrade_executor_does_not_manage_openclaw() -> None:
 
 
 def test_core_upgrade_executor_does_not_manage_browser_or_dependencies() -> None:
-    executor = (PROJECT_ROOT / "scripts" / "chub-system-upgrade-restart").read_text(
+    executor = (
+        PROJECT_ROOT / "scripts" / "maintenance" / "chub-system-upgrade-restart"
+    ).read_text(
         encoding="utf-8"
     )
 
     assert "runtime dependencies" not in executor
     assert "chrome-supervisor" not in executor
     assert "chub-debug-chrome" not in executor
-    assert "service definitions --core" in executor
+    assert "core-service-definitions" in executor
+    assert 'scripts/chub" service definitions' not in executor
+    assert "run_platform_action web-stop" in executor
+    assert "run_platform_action worker-stop" in executor
+    assert "run_platform_action worker-restart" in executor
+    assert "launchctl" not in executor
+    assert "systemctl" not in executor
     assert "scope=chub_ai_runtime,chub_web,quick_worker" in executor
 
 
@@ -171,6 +182,15 @@ def test_plan_loader_allows_fixed_runtime_data_reset(tmp_path: Path) -> None:
     assert load_system_upgrade_plan(path) is not None
 
 
+def test_plan_loader_rejects_persisted_runtime_recovery_plan(tmp_path: Path) -> None:
+    path = tmp_path / "system-upgrade.json"
+    path.write_text(runtime_recovery_plan().plan.model_dump_json(), encoding="utf-8")
+    path.chmod(0o600)
+
+    with pytest.raises(OSError, match="旧运行态恢复方案"):
+        load_system_upgrade_plan(path)
+
+
 def test_app_uses_ai_session_manager_without_reading_legacy_store(
     settings: Settings,
 ) -> None:
@@ -191,8 +211,8 @@ def test_restart_environment_repairs_missing_service_definitions(
 ) -> None:
     project_root = tmp_path / "project"
     scripts = (
-        project_root / "scripts" / "chub-system-upgrade-start",
-        project_root / "scripts" / "chub-system-upgrade-restart",
+        project_root / "scripts" / "maintenance" / "chub-system-upgrade-start",
+        project_root / "scripts" / "maintenance" / "chub-system-upgrade-restart",
     )
     python = project_root / ".venv" / "bin" / "python"
     systemd_root = tmp_path / "systemd"
@@ -224,13 +244,48 @@ def test_restart_environment_repairs_missing_service_definitions(
         )
 
 
+def test_system_upgrade_maintenance_uses_only_fixed_start_adapter() -> None:
+    maintenance = SystemUpgradeMaintenanceUseCase("macos")
+    operation_id = "a" * 32
+
+    with (
+        patch(
+            "app.services.system_upgrade_maintenance.system_upgrade_restart_readiness",
+            return_value=None,
+        ),
+        patch(
+            "app.services.system_upgrade_maintenance.subprocess.run",
+            return_value=subprocess.CompletedProcess([], 0, "", ""),
+        ) as run,
+    ):
+        maintenance.start(operation_id)
+
+    assert run.call_args.args[0] == [str(maintenance.start_command), operation_id]
+    assert run.call_args.kwargs["cwd"] == PROJECT_ROOT
+    assert run.call_args.kwargs["timeout"] == 15
+
+
+def test_system_upgrade_worker_recovery_uses_only_fixed_restart_adapter() -> None:
+    maintenance = SystemUpgradeMaintenanceUseCase("macos")
+    operation_id = "b" * 32
+
+    with patch("app.services.system_upgrade_maintenance.subprocess.Popen") as popen:
+        maintenance.launch_worker_recovery(operation_id)
+
+    assert popen.call_args.args[0] == [
+        str(maintenance.restart_command),
+        operation_id,
+        "--recover-worker",
+    ]
+    assert popen.call_args.kwargs["start_new_session"] is True
+
+
 def test_coordinator_blocks_writes_and_releases_before_destructive_failure(
     tmp_path: Path,
 ) -> None:
     plan_path = tmp_path / "plan.json"
     write_plan(plan_path)
-    loaded = load_system_upgrade_plan(plan_path)
-    assert loaded is not None
+    loaded = runtime_recovery_plan()
     coordinator = SystemUpgradeCoordinator(
         tmp_path / "state" / "system-upgrade.json",
         plan_path,
@@ -481,18 +536,17 @@ def test_final_verification_failure_reopens_gate_after_web_and_worker_recover(
 
 
 @pytest.mark.parametrize(
-    ("failed_stage", "expected_stage"),
+    "failed_stage",
     [
-        ("cleaning_state", "draining_worker"),
-        ("launching_services", "launching_services"),
-        ("restarting_services", "launching_services"),
-        ("verifying_new_instance", "verifying_new_instance"),
+        "cleaning_state",
+        "launching_services",
+        "restarting_services",
+        "verifying_new_instance",
     ],
 )
-def test_coordinator_resumes_destructive_failure_from_durable_checkpoint(
+def test_coordinator_discards_destructive_failure_before_new_upgrade(
     tmp_path: Path,
     failed_stage: str,
-    expected_stage: str,
 ) -> None:
     plan_path = tmp_path / "plan.json"
     write_plan(plan_path)
@@ -517,117 +571,17 @@ def test_coordinator_resumes_destructive_failure_from_durable_checkpoint(
     )
     coordinator.fail(operation.operation_id, "interrupted")
 
-    resumed = coordinator.resume_failed(lambda _operation_id: None)
-
-    assert resumed is not None
-    assert resumed.operation_id == operation.operation_id
-    assert resumed.status == "started"
-    assert resumed.stage == expected_stage
-    assert coordinator.writes_blocked() is True
-
-
-def test_coordinator_rebases_stale_final_verification_to_current_recovery_plan(
-    tmp_path: Path,
-) -> None:
-    plan_path = tmp_path / "plan.json"
-    write_plan(plan_path)
-    loaded = load_system_upgrade_plan(plan_path)
-    assert loaded is not None
-    coordinator = SystemUpgradeCoordinator(
-        tmp_path / "state" / "system-upgrade.json",
-        plan_path,
-        "old-instance",
-    )
-    operation = coordinator.begin(
-        loaded,
+    assert coordinator.discard_failed_destructive_state() is True
+    assert coordinator.operation() is None
+    assert not coordinator.path.exists()
+    assert coordinator.writes_blocked() is False
+    restarted = coordinator.begin(
+        runtime_recovery_plan(),
         source_ip="127.0.0.1",
-        old_worker_generation="e" * 32,
+        old_worker_generation=None,
         runner=lambda _operation_id: None,
     )
-    coordinator.mark_started(operation.operation_id)
-    coordinator.update(
-        operation.operation_id,
-        stage="verifying_new_instance",
-        destructive_started=True,
-        restart_launch_state="launched",
-    )
-    coordinator.fail(operation.operation_id, "目标版本已过期")
-
-    current = runtime_recovery_plan()
-    assert coordinator.rebase_failed_verification(current) is True
-    rebound = coordinator.operation()
-    assert rebound is not None
-    assert rebound.plan.plan_id == "runtime-recovery"
-    assert rebound.fingerprint == current.fingerprint
-
-    resumed = coordinator.resume_verification()
-    assert resumed is not None
-    assert resumed.status == "started"
-    assert resumed.stage == "verifying_new_instance"
-    assert coordinator.writes_blocked() is True
-
-
-def test_coordinator_does_not_rebase_before_final_verification(
-    tmp_path: Path,
-) -> None:
-    plan_path = tmp_path / "plan.json"
-    write_plan(plan_path)
-    loaded = load_system_upgrade_plan(plan_path)
-    assert loaded is not None
-    coordinator = SystemUpgradeCoordinator(
-        tmp_path / "state" / "system-upgrade.json",
-        plan_path,
-        "old-instance",
-    )
-    operation = coordinator.begin(
-        loaded,
-        source_ip="127.0.0.1",
-        old_worker_generation="f" * 32,
-        runner=lambda _operation_id: None,
-    )
-    coordinator.update(
-        operation.operation_id,
-        stage="cleaning_state",
-        destructive_started=True,
-    )
-    coordinator.fail(operation.operation_id, "cleanup interrupted")
-
-    assert coordinator.rebase_failed_verification(runtime_recovery_plan()) is False
-
-
-def test_coordinator_rebases_failed_cleanup_to_current_recovery_plan(
-    tmp_path: Path,
-) -> None:
-    plan_path = tmp_path / "plan.json"
-    write_plan(plan_path)
-    loaded = load_system_upgrade_plan(plan_path)
-    assert loaded is not None
-    coordinator = SystemUpgradeCoordinator(
-        tmp_path / "state" / "system-upgrade.json",
-        plan_path,
-        "old-instance",
-    )
-    operation = coordinator.begin(
-        loaded,
-        source_ip="127.0.0.1",
-        old_worker_generation="g" * 32,
-        runner=lambda _operation_id: None,
-    )
-    coordinator.mark_started(operation.operation_id)
-    coordinator.update(
-        operation.operation_id,
-        stage="cleaning_state",
-        destructive_started=True,
-    )
-    coordinator.fail(operation.operation_id, "旧恢复目标已过期")
-
-    current = runtime_recovery_plan()
-    assert coordinator.rebase_failed_recovery(current) is True
-    rebound = coordinator.operation()
-    assert rebound is not None
-    assert rebound.plan.plan_id == "runtime-recovery"
-    assert rebound.fingerprint == current.fingerprint
-    assert coordinator.resume_failed(lambda _operation_id: None) is not None
+    assert restarted.operation_id != operation.operation_id
 
 
 def test_coordinator_persists_session_cleanup_journal(tmp_path: Path) -> None:
@@ -1002,7 +956,10 @@ def test_system_upgrade_restart_uses_fixed_linux_services(
     environment.pop("CHUB_QUICK_TASK_ID", None)
 
     launch = subprocess.run(
-        [str(workspace / "scripts" / "chub-system-upgrade-start"), operation.operation_id],
+        [
+            str(workspace / "scripts" / "maintenance" / "chub-system-upgrade-start"),
+            operation.operation_id,
+        ],
         cwd=workspace,
         env=environment,
         capture_output=True,
@@ -1013,7 +970,12 @@ def test_system_upgrade_restart_uses_fixed_linux_services(
 
     process = subprocess.Popen(
         [
-                str(workspace / "scripts" / "chub-system-upgrade-restart"),
+                str(
+                    workspace
+                    / "scripts"
+                    / "maintenance"
+                    / "chub-system-upgrade-restart"
+                ),
                 operation.operation_id,
             ],
             cwd=workspace,
@@ -1189,7 +1151,7 @@ async def test_failed_upgrade_does_not_block_maintenance_restarts(
     transport = httpx.ASGITransport(app=app)
 
     with (
-        patch("app.api.maintenance.launch_restart_process") as launch_restart,
+        patch("app.services.web_restart.launch_restart_process") as launch_restart,
         patch("app.api.maintenance.monitor_restart_process"),
     ):
         async with httpx.AsyncClient(
@@ -1218,7 +1180,7 @@ async def test_active_upgrade_still_blocks_maintenance_restarts(
     app.state.system_upgrade.in_progress = lambda: True
     transport = httpx.ASGITransport(app=app)
 
-    with patch("app.api.maintenance.launch_restart_process") as launch_restart:
+    with patch("app.services.web_restart.launch_restart_process") as launch_restart:
         async with httpx.AsyncClient(
             transport=transport,
             base_url="http://test",
@@ -1240,7 +1202,7 @@ async def test_failed_upgrade_does_not_preempt_maintenance_request(
     transport = httpx.ASGITransport(app=app)
 
     with (
-        patch("app.api.maintenance.launch_restart_process") as launch_restart,
+        patch("app.services.web_restart.launch_restart_process") as launch_restart,
         patch("app.api.maintenance.monitor_restart_process"),
     ):
         async with httpx.AsyncClient(
@@ -1373,7 +1335,7 @@ async def test_valid_plan_is_previewed_and_started_by_fingerprint(
 
 
 @pytest.mark.anyio
-async def test_destructive_upgrade_failure_can_continue_with_same_operation(
+async def test_destructive_upgrade_failure_starts_a_new_operation_after_cleanup(
     settings: Settings,
     tmp_path: Path,
 ) -> None:
@@ -1424,19 +1386,19 @@ async def test_destructive_upgrade_failure_can_continue_with_same_operation(
     assert preview.status_code == 200
     assert preview.json()["data"]["state"] == "failed"
     assert preview.json()["data"]["can_start"] is True
-    assert preview.json()["data"]["resume"] is True
+    assert preview.json()["data"]["resume"] is False
     assert preview.json()["data"]["plan"]["fingerprint"] == loaded.fingerprint
     assert resumed.status_code == 200
-    assert resumed.json()["data"]["state"] == "draining"
+    assert resumed.json()["data"]["state"] == "preparing"
     continued = app.state.system_upgrade.operation()
     assert continued is not None
-    assert continued.operation_id == operation.operation_id
-    assert continued.status == "started"
-    assert continued.stage == "draining_worker"
+    assert continued.operation_id != operation.operation_id
+    assert continued.status == "requested"
+    assert continued.stage == "waiting_for_writes"
     assert app.state.system_upgrade.writes_blocked() is True
 
 
-def test_status_data_explains_non_resumable_upgrade_failure(tmp_path: Path) -> None:
+def test_status_data_explains_destructive_restart_cleanup(tmp_path: Path) -> None:
     plan_path = tmp_path / "plan.json"
     write_plan(plan_path)
     loaded = load_system_upgrade_plan(plan_path)
@@ -1463,16 +1425,16 @@ def test_status_data_explains_non_resumable_upgrade_failure(tmp_path: Path) -> N
     status = coordinator.status_data(loaded, session_count=0)
 
     assert status.state == "failed"
-    assert status.can_start is False
+    assert status.can_start is True
     assert status.resume is False
     assert status.message == (
-        "Session 写入冻结未能确认，尚未开始清理运行状态。 当前恢复操作不能安全继续，升级入口已关闭；"
-        "请在本机终端检查 chub upgrade logs 和服务定义后再处理。"
+        "Session 写入冻结未能确认，尚未开始清理运行状态。 "
+        "重新开始会清除本次失败升级的 Chub 自有运行状态和操作记录，不会兼容或续跑旧方案。"
     )
 
 
 @pytest.mark.anyio
-async def test_changed_recovery_plan_can_continue_failed_cleanup(
+async def test_changed_recovery_plan_discards_failed_operation_before_restart(
     settings: Settings,
     tmp_path: Path,
 ) -> None:
@@ -1483,8 +1445,7 @@ async def test_changed_recovery_plan_can_continue_failed_cleanup(
     old_plan["summary"] = "旧恢复目标"
     plan_path.write_text(json.dumps(old_plan), encoding="utf-8")
     plan_path.chmod(0o600)
-    loaded = load_system_upgrade_plan(plan_path)
-    assert loaded is not None
+    loaded = runtime_recovery_plan()
     app.state.system_upgrade.plan_path = plan_path
     operation = app.state.system_upgrade.begin(
         loaded,
@@ -1522,11 +1483,15 @@ async def test_changed_recovery_plan_can_continue_failed_cleanup(
     assert preview.json()["data"]["can_start"] is True
     assert preview.json()["data"]["plan"]["fingerprint"] == current.fingerprint
     assert resumed.status_code == 200
-    assert resumed.json()["data"]["state"] == "draining"
+    assert resumed.json()["data"]["state"] == "preparing"
+    continued = app.state.system_upgrade.operation()
+    assert continued is not None
+    assert continued.operation_id != operation.operation_id
+    assert continued.fingerprint == current.fingerprint
 
 
 @pytest.mark.anyio
-async def test_stale_runtime_recovery_plan_rebases_failed_final_verification(
+async def test_stale_runtime_recovery_plan_starts_a_new_current_recovery(
     settings: Settings,
     tmp_path: Path,
 ) -> None:
@@ -1538,8 +1503,7 @@ async def test_stale_runtime_recovery_plan_rebases_failed_final_verification(
     old_plan["source_worker_protocol"] = PROTOCOL_VERSION - 1
     plan_path.write_text(json.dumps(old_plan), encoding="utf-8")
     plan_path.chmod(0o600)
-    loaded = load_system_upgrade_plan(plan_path)
-    assert loaded is not None
+    loaded = runtime_recovery_plan()
     app.state.system_upgrade.plan_path = plan_path
     operation = app.state.system_upgrade.begin(
         loaded,
@@ -1578,8 +1542,9 @@ async def test_stale_runtime_recovery_plan_rebases_failed_final_verification(
     continued = app.state.system_upgrade.operation()
     assert continued is not None
     assert continued.fingerprint == current.fingerprint
-    assert continued.status == "started"
-    assert continued.stage == "verifying_new_instance"
+    assert continued.operation_id != operation.operation_id
+    assert continued.status == "requested"
+    assert continued.stage == "waiting_for_writes"
 
 
 @pytest.mark.anyio

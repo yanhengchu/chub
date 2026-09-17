@@ -41,7 +41,11 @@ ZIP 不以文件名或存放路径决定身份。压缩包、清单、文件数�
 
 ### 开发实现与装配
 
-开发源码受控发现于 `runtime-modules/<module>/` 的一级目录。每个候选需要有效清单，并以独立 Python 命名空间加载；损坏清单、缺失依赖或入口失败只隔离该候选。目录重命名不改变 Runtime 身份，刷新只清理目标实现自己的缓存。
+开发源码只有登记在模块索引中的目录才可发现。内置模块源为 `chub/modules/`，索引为 `chub/modules/chub-modules.json`；本机模块源为与 `chub/` 平级的 `chub-local-modules/`，索引为 `chub-local-modules/chub-modules.json`。两者均使用 `runtime/<module>/` 布局，扫描顺序固定为内置后本机；内置同 `module_id` 已登记时，本机重名项直接忽略，不覆盖、不报错也不替换内置模块。未登记目录、符号链接、无效索引项和本机 `chub_version` 不匹配项均不加载。每个候选需要有效清单，并以独立 Python 命名空间加载；损坏清单、缺失依赖或入口失败只隔离该候选。目录重命名不改变 Runtime 身份，刷新只清理目标实现自己的缓存。
+
+`runtime/<module>/` 是一个 Runtime 开发模块的根目录：根目录放 `chub-module.json` 与该模块私有依赖声明；需要多个 Python 文件时，模块在根目录下定义自己的 Python 包，例如 Codex 的 `chub_codex_runtime/`。该包是 Manifest `entry` 的导入命名空间，不是额外的模块类型或生命周期层级。`orchestration/` 与 `business/` 的目录职责由总体架构定义，不由 Runtime 加载器解释。
+
+`chub-local-modules/` 是维护者授信的设备定制代码，不属于发布包、部署包、升级或恢复的清理边界。`chub install` 仅在该目录不存在时创建目录及空索引模板，之后绝不覆盖、补写、迁移或删除其中内容。外置 Runtime 仅在 Manifest 精确匹配当前 Chub 版本时进入可用列表；不匹配时不展示为可用，也不影响 Chub、内置 Runtime 或其他模块。加载期间仅临时使用模块自己的依赖路径，随后恢复原 `sys.path`；外置目录不会成为进程的长期全局导入路径。
 
 正式 ZIP 与开发源码都由 Web 和 Quick Worker 独立发现。启动扫描与导入预检验证清单、Chub 版本、可选依赖、入口、显示信息、Descriptor 身份和共享能力。Adapter 与 Runner 应从同一 Descriptor 构造；若未来允许独立构造，必须新增完整身份比较及拒绝测试。当前 Codex 正式槽位标识为 `codex-` 加六位数字；这是 Codex 私有发布规则，不是通用协议要求。
 
@@ -59,13 +63,13 @@ ZIP 不以文件名或存放路径决定身份。压缩包、清单、文件数�
 
 ## 页面、外部入口与维护者操作
 
-设置页只向维护者可信网络展示 Runtime 插件的名称、版本、导入/启用/可用状态和受控失败原因。导入不等于启用，启用不等于成为默认；删除必须使用明确说明解除条件与不可恢复性的确认交互。Runtime 不可用时，只拒绝直接依赖它的新提交。
+设置页只向维护者可信网络展示 Runtime 插件的名称、版本、导入/启用/可用状态和受控失败原因。导入不等于启用，启用不等于成为默认；删除必须使用明确说明解除条件与不可恢复性的确认交互。导入或激活失败必须区分 Quick Worker 通信、Worker 未就绪、注册表缺少目标实现和“已识别但 Runtime 不可执行”；最后一种提示维护者安装或修复本机所需 AI 工具。页面只展示固定、受长度限制的诊断，绝不透传 Worker 原始异常、命令输出、路径或凭据。Runtime 不可用时，只拒绝直接依赖它的新提交。
 
 每个逻辑 Runtime 的详情页只读取和更新该 `runtime_id` 自己的默认 `implementation_id`；它不改变全局新 Session 默认 Runtime，也不能把其他 Runtime 的实现槽位写入本 Runtime。开发源码制品以实际发现结果识别，不以 Codex 的固定实现 ID 判断。
 
 Runtime 如需提供微信固定指令组，Chub 必须在受控前缀目录中预先登记其逻辑 Runtime 与前缀，才能在该 Runtime 未导入时明确回复未导入状态；目录不保存子命令语法或处理逻辑。Runtime 导入、启用且可用后，只有目标 Runtime 自己的解析器可以解释该组子命令。当前 `codex` 前缀固定归 Codex Runtime；未导入、停用或不可用时不得回退为普通任务。
 
-维护者通过设置页执行模块操作。第一方 Codex ZIP 可用 `python scripts/build_codex_runtime_zip.py --implementation-id codex-010001 --version 1.0.1 --description "简短发版特性说明"` 构建；不要直接复制、替换或删除安装目录。页面最终状态和操作日志是维护结果依据；无法确认时再调查对应错误，不手动清理其他 Runtime、Worker 或用户数据。
+维护者通过设置页执行模块操作。第一方 Codex ZIP 可用 `python scripts/build/build-codex-runtime-zip.py --implementation-id codex-010001 --version 1.0.1 --description "简短发版特性说明"` 构建。不要直接复制、替换或删除安装目录。页面最终状态和操作日志是维护结果依据；无法确认时再调查对应错误，不手动清理其他 Runtime、Worker 或用户数据。
 
 ## 新 Runtime 接入检查表
 

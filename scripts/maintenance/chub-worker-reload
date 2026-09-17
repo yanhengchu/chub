@@ -1,0 +1,273 @@
+#!/usr/bin/env bash
+
+# Fixed independent adapter for Quick Worker service replacement. It is invoked
+# only through `chub worker <reload|recover>` or the in-process public use case.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+PYTHON_BIN="$PROJECT_ROOT/.venv/bin/python"
+CONFIG_FILE="$PROJECT_ROOT/config/settings.local.yaml"
+
+fail() {
+    echo "chub: $*" >&2
+    exit 1
+}
+
+check_project() {
+    [[ -x "$PYTHON_BIN" ]] || fail "Python environment not found: $PYTHON_BIN"
+    [[ -f "$CONFIG_FILE" ]] || fail "configuration not found: $CONFIG_FILE"
+}
+
+run_platform_action() {
+    "$PROJECT_ROOT/scripts/platform/service-management.sh" "$@"
+}
+
+quick_worker_health() {
+    (
+        cd "$PROJECT_ROOT"
+        "$PYTHON_BIN" -m app.quick_worker health
+    )
+}
+
+quick_worker_drain() {
+    local operation_id="$1"
+    (
+        cd "$PROJECT_ROOT"
+        "$PYTHON_BIN" -m app.quick_worker drain --operation-id "$operation_id"
+    )
+}
+
+worker_protocol_version() {
+    (
+        cd "$PROJECT_ROOT"
+        "$PYTHON_BIN" -c 'from app.quick_worker import PROTOCOL_VERSION; print(PROTOCOL_VERSION)'
+    )
+}
+
+worker_health_generation_any() {
+    "$PYTHON_BIN" -c '
+import json
+import re
+import sys
+
+payload = json.loads(sys.stdin.read())
+data = payload.get("data") if payload.get("success") is True else None
+generation = data.get("generation") if isinstance(data, dict) else None
+if not isinstance(generation, str) or re.fullmatch(r"[a-f0-9]{32}", generation) is None:
+    raise SystemExit(1)
+print(generation)
+'
+}
+
+worker_health_protocol() {
+    "$PYTHON_BIN" -c '
+import json
+import sys
+
+payload = json.loads(sys.stdin.read())
+data = payload.get("data") if payload.get("success") is True else None
+protocol_version = data.get("protocol_version") if isinstance(data, dict) else None
+if not isinstance(protocol_version, int) or isinstance(protocol_version, bool) or protocol_version < 1:
+    raise SystemExit(1)
+print(protocol_version)
+'
+}
+
+worker_health_generation() {
+    local payload="$1"
+    local expected_status="$2"
+    local previous_generation="${3:-}"
+    local expected_protocol
+    expected_protocol="$(worker_protocol_version)" || return 1
+    "$PYTHON_BIN" -c '
+import json
+import re
+import sys
+
+payload = json.loads(sys.stdin.read())
+data = payload.get("data") if payload.get("success") is True else None
+if not isinstance(data, dict):
+    raise SystemExit(1)
+generation = data.get("generation")
+protocol_version = data.get("protocol_version")
+if (
+    not isinstance(protocol_version, int)
+    or isinstance(protocol_version, bool)
+    or protocol_version < 1
+    or protocol_version != int(sys.argv[1])
+    or data.get("status") != sys.argv[2]
+    or data.get("corrupt_tasks") != 0
+    or not isinstance(generation, str)
+    or re.fullmatch(r"[a-f0-9]{32}", generation) is None
+    or (sys.argv[3] and generation == sys.argv[3])
+):
+    raise SystemExit(1)
+print(generation)
+' "$expected_protocol" "$expected_status" "$previous_generation" <<<"$payload"
+}
+
+worker_health_is_idle() {
+    "$PYTHON_BIN" -c '
+import json
+import sys
+
+payload = json.loads(sys.stdin.read())
+data = payload.get("data") if payload.get("success") is True else None
+if not isinstance(data, dict):
+    raise SystemExit(1)
+for name in ("active_tasks", "queued_tasks", "uncertain_tasks", "corrupt_tasks"):
+    value = data.get(name)
+    if not isinstance(value, int) or isinstance(value, bool) or value != 0:
+        raise SystemExit(1)
+'
+}
+
+clear_retired_worker_state() {
+    (
+        cd "$PROJECT_ROOT"
+        "$PYTHON_BIN" - "$CONFIG_FILE" <<'PY'
+import os
+import shutil
+import stat
+import sys
+
+from app.core.config import load_settings
+from app.quick_worker_tasks import worker_state_dir
+
+root = worker_state_dir(load_settings(sys.argv[1]))
+try:
+    root_metadata = root.lstat()
+except FileNotFoundError:
+    raise SystemExit(0)
+if (
+    not stat.S_ISDIR(root_metadata.st_mode)
+    or root_metadata.st_uid != os.getuid()
+    or stat.S_IMODE(root_metadata.st_mode) & 0o077
+):
+    raise SystemExit("Quick Worker state directory is unsafe")
+for name in ("tasks", "tombstones", "session-leases", "legacy-deliveries-v7"):
+    path = root / name
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        continue
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != os.getuid()
+        or stat.S_IMODE(metadata.st_mode) & 0o077
+    ):
+        raise SystemExit(f"Retired Quick Worker path is unsafe: {name}")
+    shutil.rmtree(path)
+PY
+    )
+}
+
+reload_worker_service() {
+    run_platform_action worker-definition-exists \
+        || fail "Quick Worker service is not installed; run chub install"
+    run_platform_action worker-stop
+    clear_retired_worker_state
+    run_platform_action worker-start
+}
+
+worker_service_status() {
+    run_platform_action worker-status
+}
+
+record_worker_reload_operation() {
+    local operation_id="$1"
+    local operation_status="$2"
+    local generation="$3"
+    local reason="${4:-}"
+    [[ "${CHUB_WORKER_RELOAD_EXTERNAL_LOGGING:-}" != "1" ]] || return 0
+    (
+        cd "$PROJECT_ROOT"
+        "$PYTHON_BIN" - "$CONFIG_FILE" "$operation_id" "$operation_status" "$generation" "$reason" <<'PY'
+import re
+import sys
+
+from app.core.config import load_settings
+from app.core.logger import configure_worker_operation_logging
+from app.services.operation_log import write_operation
+
+config_file, operation_id, status, generation, reason = sys.argv[1:]
+if re.fullmatch(r"worker-reload:[a-f0-9]{32}", operation_id) is None:
+    raise SystemExit(2)
+if status not in {"requested", "started", "succeeded", "failed"}:
+    raise SystemExit(2)
+settings = load_settings(config_file)
+configure_worker_operation_logging(settings.logs)
+write_operation(
+    operation_id=operation_id,
+    action="quick_worker_reload",
+    status=status,
+    target=f"quick-worker:{generation or 'unknown'}",
+    source_ip="127.0.0.1",
+    reason=reason or None,
+)
+PY
+    )
+}
+
+reload_worker() {
+    [[ -z "${CHUB_QUICK_TASK_ID:-}" ]] || fail "worker reload must be run from a local terminal, not from a Quick Worker task"
+    local old_payload old_generation old_protocol current_protocol new_payload new_generation operation_id attempt
+    old_payload="$(quick_worker_health 2>/dev/null || true)"
+    old_generation=""
+    old_protocol=""
+    if [[ -n "$old_payload" ]]; then
+        old_generation="$(worker_health_generation_any <<<"$old_payload" 2>/dev/null || true)"
+        old_protocol="$(worker_health_protocol <<<"$old_payload" 2>/dev/null || true)"
+    fi
+    current_protocol="$(worker_protocol_version)" || fail "Quick Worker protocol could not be read"
+    operation_id="worker-reload:$($PYTHON_BIN -c 'import uuid; print(uuid.uuid4().hex)')"
+    record_worker_reload_operation "$operation_id" requested "$old_generation" || true
+    if [[ -n "$old_payload" && "$old_protocol" == "$current_protocol" ]]; then
+        quick_worker_drain "$operation_id" >/dev/null 2>&1 || true
+    fi
+    record_worker_reload_operation "$operation_id" started "$old_generation" || true
+    if ! reload_worker_service; then
+        record_worker_reload_operation "$operation_id" failed "$old_generation" || true
+        fail "Quick Worker service reload failed"
+    fi
+    for attempt in {1..20}; do
+        if new_payload="$(quick_worker_health 2>/dev/null)" \
+            && new_generation="$(worker_health_generation "$new_payload" ready "$old_generation")" \
+            && worker_health_is_idle <<<"$new_payload"; then
+            record_worker_reload_operation "$operation_id" succeeded "$new_generation" \
+                "old_generation=${old_generation:-unknown} new_generation=$new_generation protocol=$current_protocol verified_idle=true" || true
+            echo "Quick Worker reloaded: $old_generation -> $new_generation"
+            return
+        fi
+        sleep 0.5
+    done
+    record_worker_reload_operation "$operation_id" failed "$old_generation" || true
+    fail "Quick Worker did not complete healthy takeover"
+}
+
+recover_worker() {
+    [[ -z "${CHUB_QUICK_TASK_ID:-}" ]] || fail "worker recovery must be run from a local terminal, not from a Quick Worker task"
+    local new_payload new_generation attempt
+    reload_worker_service || fail "Quick Worker service recovery failed"
+    for attempt in {1..20}; do
+        if new_payload="$(quick_worker_health 2>/dev/null)" \
+            && new_generation="$(worker_health_generation "$new_payload" ready "")" \
+            && worker_health_is_idle <<<"$new_payload"; then
+            echo "Quick Worker recovered: $new_generation"
+            return
+        fi
+        sleep 0.5
+    done
+    fail "Quick Worker did not recover healthy state"
+}
+
+[[ "$#" -ge 1 ]] || fail "usage: chub worker <health|reload|recover|status>"
+check_project
+case "$1" in
+    health) shift; [[ "$#" -eq 0 ]] || fail "usage: chub worker health"; quick_worker_health ;;
+    status) shift; [[ "$#" -eq 0 ]] || fail "usage: chub worker status"; worker_service_status ;;
+    reload) shift; [[ "$#" -eq 0 ]] || fail "usage: chub worker reload"; reload_worker ;;
+    recover) shift; [[ "$#" -eq 0 ]] || fail "usage: chub worker recover"; recover_worker ;;
+    *) fail "usage: chub worker <health|reload|recover|status>" ;;
+esac

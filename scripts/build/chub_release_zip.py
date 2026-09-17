@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 VENV_PYTHON = PROJECT_ROOT / ".venv" / "bin" / "python"
 if VENV_PYTHON.is_file() and Path(sys.executable).resolve() != VENV_PYTHON.resolve():
     import os
@@ -22,8 +22,12 @@ from app.core.response import ApiError  # noqa: E402
 from app.services.deployment_package import DeploymentPackageService  # noqa: E402
 
 
-def main() -> int:
-    service = DeploymentPackageService(load_settings())
+def main(
+    *,
+    load_settings_fn=load_settings,
+    deployment_package_service=DeploymentPackageService,
+) -> int:
+    service = deployment_package_service(load_settings_fn())
     try:
         status = service.publish(source_ip="127.0.0.1")
     except ApiError as exc:

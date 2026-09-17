@@ -134,6 +134,22 @@ def inspect_openclaw_integration(
         )
 
     try:
+        declared_patches = tuple(_declared_patch_states(manifest))
+    except ApiError:
+        unavailable = OpenClawIntegrationComponent(
+            version=None,
+            expected_version=None,
+            state="unknown",
+            message="固定插件或补丁清单不可用。",
+        )
+        return OpenClawIntegrationReport(
+            weixin_adapter=unavailable,
+            chub_plugin=unavailable,
+            patches=(),
+            message="固定插件或补丁清单不可用。",
+        )
+
+    try:
         paths = _openclaw_integration_paths(config_path, state_dir)
         config = _load_openclaw_config(paths.config_path)
         install_records = _installed_plugin_records(paths.state_dir)
@@ -145,7 +161,6 @@ def inspect_openclaw_integration(
             expected_adapter,
             expected_integrity,
         )
-        patches = _declared_patch_states(manifest)
     except ApiError:
         unknown = OpenClawIntegrationComponent(
             version=None,
@@ -166,7 +181,7 @@ def inspect_openclaw_integration(
                 state="unknown",
                 message=unknown.message,
             ),
-            patches=(),
+            patches=declared_patches,
             message="本机插件配置检查失败，请刷新后重试。",
         )
     components_verified = all(
@@ -181,7 +196,7 @@ def inspect_openclaw_integration(
     return OpenClawIntegrationReport(
         weixin_adapter=adapter,
         chub_plugin=plugin,
-        patches=tuple(patches),
+        patches=declared_patches,
         message=message,
     )
 

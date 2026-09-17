@@ -30,6 +30,7 @@ class ChromeStatusSnapshot:
     user_data_dir: str
     profile_directory: str | None
     process_ids: list[int]
+    chrome_available: bool
 
 
 class ChromeSupervisorError(RuntimeError):
@@ -40,7 +41,7 @@ def socket_path(runtime_dir: Path) -> Path:
     return runtime_dir / SOCKET_NAME
 
 
-def _status_snapshot(current: Any) -> ChromeStatusSnapshot:
+def _status_snapshot(current: Any, *, chrome_available: bool) -> ChromeStatusSnapshot:
     return ChromeStatusSnapshot(
         state=str(current.state),
         mode=current.mode if isinstance(current.mode, str) else None,
@@ -56,6 +57,7 @@ def _status_snapshot(current: Any) -> ChromeStatusSnapshot:
             for process_id in current.process_ids
             if isinstance(process_id, int) and not isinstance(process_id, bool)
         ],
+        chrome_available=chrome_available,
     )
 
 
@@ -78,7 +80,14 @@ def _execute(request: dict[str, Any]) -> ChromeStatusSnapshot:
         current = _chrome_debug_module().stop()
     else:
         current = _chrome_debug_module().status()
-    return _status_snapshot(current)
+    try:
+        _chrome_debug_module().chrome_executable()
+        chrome_available = True
+    except RuntimeError as exc:
+        if str(exc) != "Google Chrome executable was not found":
+            raise
+        chrome_available = False
+    return _status_snapshot(current, chrome_available=chrome_available)
 
 
 def _validate_socket_parent(path: Path) -> None:
@@ -244,6 +253,7 @@ def request(socket_file: Path, action: str, *, mode: str | None = None) -> Chrom
                 else None
             ),
             process_ids=[int(value) for value in data["process_ids"]],
+            chrome_available=data["chrome_available"] is True,
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ChromeSupervisorError("browser supervisor response is invalid") from exc

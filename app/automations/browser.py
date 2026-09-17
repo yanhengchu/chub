@@ -14,6 +14,7 @@ from app.automations.debug_chrome import (
     copy_profile,
     profile_store,
 )
+from app.automations.chrome_maintenance import ChromeLifecycleError, ChromeLifecycleUseCase
 from app.automations.debug_chrome.playwright_session import session
 
 
@@ -182,6 +183,13 @@ async def _close_owned_pages(page: Any | None, popups: list[Any]) -> None:
         raise DebugChromePageReadError("网页临时页面未能关闭")
 
 
+def _require_running_debug_chrome() -> str | None:
+    state, message, mode = debug_chrome_status()
+    if state != "running":
+        raise DebugChromePageReadError(message)
+    return mode
+
+
 async def read_debug_chrome_page(
     url: str,
     *,
@@ -201,9 +209,7 @@ async def read_debug_chrome_page(
         raise DebugChromePageReadError("网页读取超时设置无效")
     if not 1 <= max_content_chars <= MAX_PAGE_CONTENT_CHARS:
         raise DebugChromePageReadError("网页正文长度限制无效")
-    state, _, _ = debug_chrome_status()
-    if state != "running":
-        raise DebugChromePageReadError("Debug Chrome 未运行")
+    _require_running_debug_chrome()
 
     page = None
     popups: list[Any] = []
@@ -265,9 +271,7 @@ async def open_debug_chrome_pages(
         raise DebugChromePageReadError("没有可打开的网页地址")
     if not 100 <= timeout_ms <= MAX_PAGE_READ_TIMEOUT_MS:
         raise DebugChromePageReadError("网页读取超时设置无效")
-    state, _, mode = debug_chrome_status()
-    if state != "running":
-        raise DebugChromePageReadError("Debug Chrome 未运行")
+    mode = _require_running_debug_chrome()
     if mode != "有界面":
         raise DebugChromePageReadError("Debug Chrome 未以有界面模式运行")
 
@@ -337,9 +341,7 @@ async def interact_debug_chrome_page(
         raise DebugChromePageReadError("网页读取超时设置无效")
     if not 1 <= max_content_chars <= MAX_PAGE_CONTENT_CHARS:
         raise DebugChromePageReadError("网页正文长度限制无效")
-    state, _, _ = debug_chrome_status()
-    if state != "running":
-        raise DebugChromePageReadError("Debug Chrome 未运行")
+    _require_running_debug_chrome()
 
     page = None
     popups: list[Any] = []
@@ -423,47 +425,17 @@ def _profile_modules():
 
 
 def browser_profiles() -> tuple[list[BrowserProfileInfo], str | None]:
-    chrome_debug = _chrome_debug_module()
-    chrome_profiles, _, profile_store = _profile_modules()
-    target = chrome_debug.DEFAULT_USER_DATA_DIR
-    source_error = None
-    try:
-        source = {
-            profile.directory: profile
-            for profile in chrome_profiles.list_profiles()
-        }
-    except (OSError, RuntimeError):
-        source = {}
-        source_error = "无法读取默认 Chrome 用户"
-
-    try:
-        initialized = set(profile_store.copied_profiles(target))
-        active = profile_store.active_profile(target)
-    except (OSError, RuntimeError):
-        initialized = set()
-        active = None
-
-    profile_ids = set(source) | initialized
-    profiles = []
-    for profile_id in sorted(profile_ids, key=chrome_profiles.profile_sort_key):
-        source_profile = source.get(profile_id)
-        if source_profile is not None:
-            name = source_profile.name
-        else:
-            try:
-                name = profile_store.profile_display_name(target, profile_id)
-            except (OSError, RuntimeError):
-                name = profile_id
-        profiles.append(
-            BrowserProfileInfo(
-                id=profile_id,
-                name=name,
-                initialized=profile_id in initialized,
-                source_available=source_profile is not None,
-                active=profile_id == active,
-            )
+    profiles, source_error = ChromeLifecycleUseCase().browser_profiles()
+    return [
+        BrowserProfileInfo(
+            id=item.profile_id,
+            name=item.name,
+            initialized=item.initialized,
+            source_available=item.source_available,
+            active=item.active,
         )
-    return profiles, source_error
+        for item in profiles
+    ], source_error
 
 
 def initialize_and_start_debug_chrome(
@@ -472,33 +444,16 @@ def initialize_and_start_debug_chrome(
     *,
     supervisor_socket: Path | None = None,
 ):
-    chrome_debug = _chrome_debug_module()
-    chrome_profiles, copy_profile, profile_store = _profile_modules()
-    profiles, _ = browser_profiles()
-    selected = next((profile for profile in profiles if profile.id == profile_id), None)
-    if selected is None:
-        raise RuntimeError("Chrome profile is not available")
-    if not selected.initialized:
-        if not selected.source_available:
-            raise RuntimeError("Chrome profile source is not available")
-        copy_profile.copy_profile(
-            profile_id,
-            target=chrome_debug.DEFAULT_USER_DATA_DIR,
-            close_running=False,
-        )
-    profile_store.select_profile(chrome_debug.DEFAULT_USER_DATA_DIR, profile_id)
-    current = start_debug_chrome(mode, supervisor_socket=supervisor_socket)
-    if current.state != "running" or current.profile_directory != profile_id:
-        raise RuntimeError("Debug Chrome did not start with the selected profile")
-    return current
+    try:
+        return ChromeLifecycleUseCase(
+            supervisor_socket=supervisor_socket
+        ).initialize_and_start(profile_id, mode)
+    except ChromeLifecycleError as exc:
+        raise RuntimeError(str(exc)) from exc
 
 
 def cleanup_interrupted_profile_copy() -> None:
-    chrome_debug = _chrome_debug_module()
-    _, copy_profile, profile_store = _profile_modules()
-    target = chrome_debug.DEFAULT_USER_DATA_DIR
-    with profile_store.profile_store_lock(target):
-        copy_profile.cleanup_stale_staging(target)
+    ChromeLifecycleUseCase().cleanup_interrupted_profile_copy()
 
 
 def select_and_start_debug_chrome(
@@ -507,51 +462,25 @@ def select_and_start_debug_chrome(
     *,
     supervisor_socket: Path | None = None,
 ):
-    chrome_debug = _chrome_debug_module()
-    _, _, profile_store = _profile_modules()
-    profiles, _ = browser_profiles()
-    selected = next((profile for profile in profiles if profile.id == profile_id), None)
-    if selected is None or not selected.initialized:
-        raise RuntimeError("Debug Chrome profile is not initialized")
-    profile_store.select_profile(chrome_debug.DEFAULT_USER_DATA_DIR, profile_id)
-    current = start_debug_chrome(mode, supervisor_socket=supervisor_socket)
-    if current.state != "running" or current.profile_directory != profile_id:
-        raise RuntimeError("Debug Chrome did not start with the selected profile")
-    return current
+    try:
+        return ChromeLifecycleUseCase(
+            supervisor_socket=supervisor_socket
+        ).select_and_start(profile_id, mode)
+    except ChromeLifecycleError as exc:
+        raise RuntimeError(str(exc)) from exc
 
 
 def debug_chrome_status(
     *,
     supervisor_socket: Path | None = None,
 ) -> tuple[str, str, str | None]:
-    try:
-        if supervisor_socket is not None:
-            from app.automations.chrome_supervisor import request
-
-            current = request(supervisor_socket, "status")
-        else:
-            current = _chrome_debug_module().status()
-    except Exception:
-        return "unavailable", "无法检查状态", None
-    if current.state == "running":
-        mode = {
-            "headed": "有界面",
-            "headless": "无界面",
-        }.get(current.mode)
-        return "running", "已运行", mode
-    if current.state == "stopped":
-        return (
-            "stopped",
-            "未启动，启动后可执行自动化、飞书检查和 API 额度读取。",
-            None,
-        )
-    return "invalid", "状态异常", None
+    return ChromeLifecycleUseCase(supervisor_socket=supervisor_socket).public_status()
 
 
 def debug_chrome_websocket_url() -> str | None:
     """Return the validated browser CDP websocket without exposing credentials."""
     try:
-        current = _chrome_debug_module().status()
+        current = ChromeLifecycleUseCase().require_running()
         if current.state != "running":
             return None
         endpoint = urlsplit(current.endpoint)
@@ -581,15 +510,11 @@ def current_debug_chrome_profile(
     supervisor_socket: Path | None = None,
 ) -> str | None:
     try:
-        if supervisor_socket is not None:
-            from app.automations.chrome_supervisor import request
-
-            current = request(supervisor_socket, "status")
-        else:
-            current = _chrome_debug_module().status()
-    except Exception:
+        return ChromeLifecycleUseCase(
+            supervisor_socket=supervisor_socket
+        ).current_profile()
+    except ChromeLifecycleError:
         return None
-    return current.profile_directory if current.state == "running" else None
 
 
 def start_debug_chrome(
@@ -597,16 +522,14 @@ def start_debug_chrome(
     *,
     supervisor_socket: Path | None = None,
 ):
-    if supervisor_socket is not None:
-        from app.automations.chrome_supervisor import request
-
-        return request(supervisor_socket, "start", mode=mode)
-    return _chrome_debug_module().start(headless=mode == "headless")
+    try:
+        return ChromeLifecycleUseCase(supervisor_socket=supervisor_socket).start(mode)
+    except ChromeLifecycleError as exc:
+        raise RuntimeError(str(exc)) from exc
 
 
 def stop_debug_chrome(*, supervisor_socket: Path | None = None):
-    if supervisor_socket is not None:
-        from app.automations.chrome_supervisor import request
-
-        return request(supervisor_socket, "stop")
-    return _chrome_debug_module().stop()
+    try:
+        return ChromeLifecycleUseCase(supervisor_socket=supervisor_socket).stop()
+    except ChromeLifecycleError as exc:
+        raise RuntimeError(str(exc)) from exc

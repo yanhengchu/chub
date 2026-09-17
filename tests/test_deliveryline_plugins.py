@@ -1,4 +1,5 @@
 import json
+import shutil
 import zipfile
 
 import httpx
@@ -8,8 +9,27 @@ from app.ai_runtime.runtime_plugin_packages import RuntimePluginService
 from app.application import create_app
 from app.quick_worker import QuickWorkerServer, read_health
 import app.plugin_lifecycle.service as plugin_lifecycle_service
-from scripts.build_codex_runtime_zip import build as build_codex_runtime_zip
-from scripts.build_weixin_orchestration_plugin_zip import build as build_weixin_orchestration_plugin_zip
+from scripts.build.codex_runtime_zip import build as build_codex_runtime_zip
+from scripts.build.deliveryline_plugin_zip import build as build_deliveryline_plugin_zip
+from scripts.build.weixin_orchestration_plugin_zip import (
+    build as build_weixin_orchestration_plugin_zip,
+)
+
+
+def test_deliveryline_formal_zip_build_uses_the_current_chub_version(tmp_path) -> None:
+    archive_path = tmp_path / "deliveryline-release-1.2.3.zip"
+
+    built = build_deliveryline_plugin_zip(archive_path, version="1.2.3")
+
+    assert built == archive_path
+    assert (built.stat().st_mode & 0o777) == 0o600
+    with zipfile.ZipFile(built) as archive:
+        manifest = json.loads(
+            archive.read("chub-business-module.json").decode("utf-8")
+        )
+        assert manifest["version"] == "1.2.3"
+        assert manifest["chub_version"]
+        assert archive.namelist() == ["chub-business-module.json"]
 
 
 @pytest.mark.anyio
@@ -19,6 +39,7 @@ async def test_plugin_lifecycle_discovers_bundled_release_archives_only_when_pre
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(plugin_lifecycle_service, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr("app.core.module_sources.PROJECT_ROOT", tmp_path)
     bundled = tmp_path / "bundled-modules"
     bundled.mkdir()
     for name in (
@@ -160,11 +181,187 @@ async def test_plugin_lifecycle_imports_and_enables_valid_bundled_weixin_archive
             f"/api/plugins/weixin-orchestration/enabled",
             json={"artifact_id": artifact_id, "enabled": True},
         )
+        listed = await client.get("/api/plugins")
 
     assert imported.status_code == 200
     assert artifact_id.startswith("orchestration:weixin-refinement@1.0.1+")
     assert enabled.status_code == 200
     assert enabled.json()["data"]["enabled_artifact_ids"] == [artifact_id]
+    orchestration = next(
+        item
+        for item in listed.json()["data"]["plugins"]
+        if item["plugin_id"] == "weixin-orchestration"
+    )
+    assert f"bundled:{filename}" not in {
+        item["artifact_id"] for item in orchestration["artifacts"]
+    }
+    assert artifact_id in {item["artifact_id"] for item in orchestration["artifacts"]}
+
+
+@pytest.mark.anyio
+async def test_plugin_lifecycle_keeps_new_bundled_weixin_candidate_with_same_module_id(
+    settings,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(plugin_lifecycle_service, "PROJECT_ROOT", tmp_path)
+    settings.openclaw.weixin_chub_mode.orchestration_modules_dir = (
+        tmp_path / "installed-orchestration-modules"
+    )
+    bundled = tmp_path / "bundled-modules"
+    bundled.mkdir()
+    imported_filename = "weixin-refinement-release-2.0.0.zip"
+    update_filename = "weixin-refinement-release-2.0.1.zip"
+    for filename, version in ((imported_filename, "2.0.0"), (update_filename, "2.0.1")):
+        build_weixin_orchestration_plugin_zip(
+            bundled / filename,
+            version=version,
+            chub_version=settings.app.version,
+        )
+
+    app = create_app(settings)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        imported = await client.post(
+            "/api/plugins/weixin-orchestration/imports",
+            json={"artifact_id": f"bundled:{imported_filename}"},
+        )
+        listed = await client.get("/api/plugins")
+
+    assert imported.status_code == 200
+    orchestration = next(
+        item
+        for item in listed.json()["data"]["plugins"]
+        if item["plugin_id"] == "weixin-orchestration"
+    )
+    artifact_ids = {item["artifact_id"] for item in orchestration["artifacts"]}
+    assert f"bundled:{imported_filename}" not in artifact_ids
+    assert f"bundled:{update_filename}" in artifact_ids
+
+
+@pytest.mark.anyio
+async def test_plugin_lifecycle_keeps_same_version_bundled_weixin_candidate_when_content_differs(
+    settings,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(plugin_lifecycle_service, "PROJECT_ROOT", tmp_path)
+    settings.openclaw.weixin_chub_mode.orchestration_modules_dir = (
+        tmp_path / "installed-orchestration-modules"
+    )
+    bundled = tmp_path / "bundled-modules"
+    bundled.mkdir()
+    imported_filename = "weixin-refinement-release-3.0.0.zip"
+    changed_filename = "weixin-refinement-release-3.0.0-rebuilt.zip"
+    for filename in (imported_filename, changed_filename):
+        build_weixin_orchestration_plugin_zip(
+            bundled / filename,
+            version="3.0.0",
+            chub_version=settings.app.version,
+        )
+    with zipfile.ZipFile(bundled / changed_filename, "a") as package:
+        package.writestr("release-notes.txt", "rebuilt package")
+
+    app = create_app(settings)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        imported = await client.post(
+            "/api/plugins/weixin-orchestration/imports",
+            json={"artifact_id": f"bundled:{imported_filename}"},
+        )
+        listed = await client.get("/api/plugins")
+
+    assert imported.status_code == 200
+    orchestration = next(
+        item
+        for item in listed.json()["data"]["plugins"]
+        if item["plugin_id"] == "weixin-orchestration"
+    )
+    assert f"bundled:{changed_filename}" in {
+        item["artifact_id"] for item in orchestration["artifacts"]
+    }
+
+
+@pytest.mark.anyio
+async def test_plugin_lifecycle_keeps_bundled_weixin_candidate_when_imported_artifact_is_unavailable(
+    settings,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(plugin_lifecycle_service, "PROJECT_ROOT", tmp_path)
+    settings.openclaw.weixin_chub_mode.orchestration_modules_dir = (
+        tmp_path / "installed-orchestration-modules"
+    )
+    bundled = tmp_path / "bundled-modules"
+    bundled.mkdir()
+    filename = "weixin-refinement-release-4.0.0.zip"
+    build_weixin_orchestration_plugin_zip(
+        bundled / filename,
+        version="4.0.0",
+        chub_version=settings.app.version,
+    )
+
+    app = create_app(settings)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        imported = await client.post(
+            "/api/plugins/weixin-orchestration/imports",
+            json={"artifact_id": f"bundled:{filename}"},
+        )
+        implementation_ref = imported.json()["data"]["imported_artifact_ids"][0].removeprefix(
+            "orchestration:"
+        )
+        content_hash = implementation_ref.rsplit("+", 1)[1]
+        shutil.rmtree(
+            app.state.weixin_chub_mode.orchestration_plugin_service.artifacts_dir / content_hash
+        )
+        listed = await client.get("/api/plugins")
+
+    assert imported.status_code == 200
+    orchestration = next(
+        item
+        for item in listed.json()["data"]["plugins"]
+        if item["plugin_id"] == "weixin-orchestration"
+    )
+    assert f"bundled:{filename}" in {
+        item["artifact_id"] for item in orchestration["artifacts"]
+    }
+
+
+@pytest.mark.anyio
+async def test_plugin_lifecycle_marks_invalid_bundled_weixin_archive_unavailable(
+    settings,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(plugin_lifecycle_service, "PROJECT_ROOT", tmp_path)
+    settings.openclaw.weixin_chub_mode.orchestration_modules_dir = (
+        tmp_path / "installed-orchestration-modules"
+    )
+    bundled = tmp_path / "bundled-modules"
+    bundled.mkdir()
+    filename = "weixin-refinement-release-invalid.zip"
+    with zipfile.ZipFile(bundled / filename, "w") as package:
+        package.writestr("unexpected.txt", "not a plugin")
+
+    app = create_app(settings)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        listed = await client.get("/api/plugins")
+
+    assert listed.status_code == 200
+    orchestration = next(
+        item
+        for item in listed.json()["data"]["plugins"]
+        if item["plugin_id"] == "weixin-orchestration"
+    )
+    candidate = next(
+        item
+        for item in orchestration["artifacts"]
+        if item["artifact_id"] == f"bundled:{filename}"
+    )
+    assert candidate["available"] is False
+    assert candidate["reason"].startswith("随包 ZIP 不可导入：")
 
 
 @pytest.mark.anyio

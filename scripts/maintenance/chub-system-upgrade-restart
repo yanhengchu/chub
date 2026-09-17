@@ -2,16 +2,11 @@
 
 set -euo pipefail
 
-SERVICE_NAME="chub"
-WORKER_SERVICE_NAME="chub-quick-worker"
-MACOS_LABEL="com.chub.node"
-WORKER_MACOS_LABEL="com.chub.quick-worker"
 SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 PYTHON_BIN="$PROJECT_ROOT/.venv/bin/python"
 PLATFORM="${CHUB_TEST_PLATFORM:-$(uname -s)}"
 MODE="${2:-restart}"
-LAUNCH_AGENTS_DIR="${CHUB_LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}"
 
 if [[ "${1:-}" == "--pending" ]]; then
     OPERATION_ID="$("$PYTHON_BIN" -m app.system_upgrade_cli pending-operation)"
@@ -67,6 +62,10 @@ record_component() {
     fi
 }
 
+run_platform_action() {
+    "$PROJECT_ROOT/scripts/platform/service-management.sh" "$@"
+}
+
 confirm_recovered_worker() {
     # Linux relies on the new Web instance to perform the existing final
     # health reconciliation.  macOS must confirm here because bootstrap is
@@ -84,20 +83,7 @@ if [[ "$MODE" == "restart" ]]; then
 fi
 
 recover_worker() {
-    case "$PLATFORM" in
-        Linux)
-            systemctl --user restart "$WORKER_SERVICE_NAME.service"
-            ;;
-        Darwin)
-            DOMAIN="gui/$(id -u)"
-            launchctl bootout "$DOMAIN/$WORKER_MACOS_LABEL" >/dev/null 2>&1 || true
-            launchctl bootstrap "$DOMAIN" "$LAUNCH_AGENTS_DIR/$WORKER_MACOS_LABEL.plist"
-            ;;
-        *)
-            echo "chub-system-upgrade-restart: unsupported platform: $PLATFORM" >&2
-            return 1
-            ;;
-    esac
+    run_platform_action worker-restart
 }
 
 wait_for_worker_ready() {
@@ -141,9 +127,9 @@ recover_on_failure() {
             fail-operation "$OPERATION_ID" \
             "服务切换脚本失败，退出码=$exit_code"
     ) >/dev/null 2>&1 || true
-    "$PROJECT_ROOT/scripts/chub" service definitions --core >/dev/null 2>&1
+    run_platform_action core-service-definitions >/dev/null 2>&1
     recover_worker >/dev/null 2>&1
-    "$PROJECT_ROOT/scripts/chub-web-restart"
+    "$PROJECT_ROOT/scripts/maintenance/chub-web-restart"
 }
 
 trap 'recover_on_failure "$?"' EXIT
@@ -155,52 +141,20 @@ if [[ "$MODE" == "--recover-worker" ]]; then
 fi
 
 case "$PLATFORM" in
-    Linux)
-        systemctl --user stop "$SERVICE_NAME.service" >/dev/null 2>&1 || true
-        systemctl --user stop "$WORKER_SERVICE_NAME.service"
+    Darwin|Linux)
+        run_platform_action web-stop >/dev/null 2>&1 || true
+        run_platform_action worker-stop
         if ! prepare_restart; then
             recover_worker >/dev/null 2>&1 || true
             exit 1
         fi
-        if ! "$PROJECT_ROOT/scripts/chub" service definitions --core; then
+        if ! run_platform_action core-service-definitions; then
             echo "chub-system-upgrade-restart: core service definitions could not be repaired" >&2
             exit 1
         fi
         recover_worker
         confirm_recovered_worker
-        exec "$PROJECT_ROOT/scripts/chub-web-restart"
-        ;;
-    Darwin)
-        DOMAIN="gui/$(id -u)"
-        launchctl bootout "$DOMAIN/$MACOS_LABEL" >/dev/null 2>&1 || true
-        launchctl bootout "$DOMAIN/$WORKER_MACOS_LABEL" >/dev/null 2>&1 || true
-        web_stopped=false
-        worker_stopped=false
-        for _attempt in 1 2 3 4 5 6 7 8 9 10; do
-            if ! launchctl print "$DOMAIN/$MACOS_LABEL" >/dev/null 2>&1; then
-                web_stopped=true
-            fi
-            if ! launchctl print "$DOMAIN/$WORKER_MACOS_LABEL" >/dev/null 2>&1; then
-                worker_stopped=true
-            fi
-            [[ "$web_stopped" == "true" && "$worker_stopped" == "true" ]] && break
-            sleep 0.5
-        done
-        if [[ "$web_stopped" != "true" || "$worker_stopped" != "true" ]]; then
-            echo "chub-system-upgrade-restart: Chub Web or Quick Worker did not stop" >&2
-            exit 1
-        fi
-        if ! prepare_restart; then
-            recover_worker >/dev/null 2>&1 || true
-            exit 1
-        fi
-        if ! "$PROJECT_ROOT/scripts/chub" service definitions --core; then
-            echo "chub-system-upgrade-restart: core service definitions could not be repaired" >&2
-            exit 1
-        fi
-        recover_worker
-        confirm_recovered_worker
-        exec "$PROJECT_ROOT/scripts/chub-web-restart"
+        exec "$PROJECT_ROOT/scripts/maintenance/chub-web-restart"
         ;;
     *)
         echo "chub-system-upgrade-restart: unsupported platform: $PLATFORM" >&2

@@ -20,7 +20,8 @@ from app.quick_worker import PROTOCOL_VERSION
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CHUB = PROJECT_ROOT / "scripts" / "chub"
-WEB_RESTART = PROJECT_ROOT / "scripts" / "chub-web-restart"
+WEB_RESTART = PROJECT_ROOT / "scripts" / "maintenance" / "chub-web-restart"
+WORKER_RELOAD = PROJECT_ROOT / "scripts" / "maintenance" / "chub-worker-reload"
 
 
 @pytest.fixture
@@ -53,6 +54,9 @@ def service_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir()
     calls = tmp_path / "manager-calls.log"
+    supervisor_runtime = Path("/tmp") / (
+        "chub-service-" + hashlib.sha256(str(tmp_path).encode()).hexdigest()[:12]
+    )
     settings_file = workspace / "config" / "settings.local.yaml"
     settings_file.write_text(
         "\n".join(
@@ -75,14 +79,40 @@ def service_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
                 "  shared:",
                 f"    workspace: {tmp_path / 'workspace'}",
                 f"    state_dir: {tmp_path / 'state'}",
-                f"    runtime_dir: {tmp_path / 'runtime'}",
+                f"    runtime_dir: {supervisor_runtime}",
                 "  codex:",
                 "    enabled: true",
+                "automations:",
+                f"  runtime_dir: {supervisor_runtime}",
                 "",
             ]
         ),
         encoding="utf-8",
     )
+    supervisor_socket = supervisor_runtime / "debug-chrome-supervisor.sock"
+    supervisor_socket.parent.mkdir(mode=0o700)
+    supervisor_listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    supervisor_listener.bind(str(supervisor_socket))
+    supervisor_listener.listen(8)
+    supervisor_listener.settimeout(0.1)
+    supervisor_stopping = threading.Event()
+
+    def serve_supervisor_status() -> None:
+        while not supervisor_stopping.is_set():
+            try:
+                connection, _ = supervisor_listener.accept()
+            except TimeoutError:
+                continue
+            with connection:
+                connection.recv(4096)
+                connection.sendall(
+                    b'{"ok":true,"data":{"state":"stopped","mode":null,'
+                    b'"endpoint":"http://127.0.0.1:9222","user_data_dir":"/tmp/debug",'
+                    b'"profile_directory":null,"process_ids":[],"chrome_available":true}}\n'
+                )
+
+    supervisor_thread = threading.Thread(target=serve_supervisor_status, daemon=True)
+    supervisor_thread.start()
 
     for command in ("journalctl", "launchctl", "systemctl"):
         executable = fake_bin / command
@@ -117,11 +147,17 @@ def service_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
             "CHUB_TEST_CALLS": str(calls),
             "CHUB_TEST_ROOT": str(workspace),
             "CHUB_TEST_SCRIPT": str(workspace / "scripts" / "chub"),
+            "CHUB_TEST_SUPERVISOR_SOCKET": str(supervisor_socket),
         }
     )
     try:
         yield env, calls
     finally:
+        supervisor_stopping.set()
+        supervisor_thread.join(timeout=3)
+        supervisor_listener.close()
+        supervisor_socket.unlink(missing_ok=True)
+        supervisor_runtime.rmdir()
         health_server.shutdown()
         health_server.server_close()
         health_thread.join(timeout=3)
@@ -544,6 +580,31 @@ def test_install_is_repeatable(
     assert result.returncode == 0, result.stderr
 
 
+def test_install_creates_and_preserves_the_sibling_local_modules_root(
+    service_env: tuple[dict[str, str], Path],
+) -> None:
+    env, _ = service_env
+    env["CHUB_TEST_PLATFORM"] = "Linux"
+    workspace = Path(env["CHUB_TEST_ROOT"])
+    local_root = workspace.parent / "chub-local-modules"
+
+    result = run_chub("install", env)
+
+    assert result.returncode == 0, result.stderr
+    index = local_root / "chub-modules.json"
+    assert json.loads(index.read_text("utf-8")) == {
+        "schema_version": 1,
+        "modules": [],
+    }
+    marker = local_root / "device-module.py"
+    marker.write_text("keep", encoding="utf-8")
+
+    result = run_chub("install", env, "--force")
+
+    assert result.returncode == 0, result.stderr
+    assert marker.read_text("utf-8") == "keep"
+
+
 def test_install_adds_discovered_nvm_codex_directory_to_service_path(
     service_env: tuple[dict[str, str], Path],
     tmp_path: Path,
@@ -601,6 +662,65 @@ def test_chrome_supervisor_reconcile_writes_and_starts_linux_service(
         "systemctl --user start chub-debug-chrome.service",
         "systemctl --user is-active --quiet chub-debug-chrome.service",
     ]
+
+
+def test_chrome_supervisor_reconcile_restarts_linux_service(
+    service_env: tuple[dict[str, str], Path],
+) -> None:
+    env, calls = service_env
+    env["CHUB_TEST_PLATFORM"] = "Linux"
+
+    result = run_chub("chrome", env, "supervisor", "reconcile", "--restart")
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "Debug Chrome Supervisor is active\n"
+    assert calls.read_text(encoding="utf-8").splitlines() == [
+        "systemctl --user daemon-reload",
+        "systemctl --user enable chub-debug-chrome.service",
+        "systemctl --user restart chub-debug-chrome.service",
+        "systemctl --user is-active --quiet chub-debug-chrome.service",
+    ]
+
+
+def test_chrome_supervisor_reconcile_fails_when_socket_is_unavailable(
+    service_env: tuple[dict[str, str], Path],
+) -> None:
+    env, _ = service_env
+    env["CHUB_TEST_PLATFORM"] = "Linux"
+    Path(env["CHUB_TEST_SUPERVISOR_SOCKET"]).unlink()
+
+    result = run_chub("chrome", env, "supervisor", "reconcile")
+
+    assert result.returncode == 1
+    assert result.stderr == "chub: Debug Chrome Supervisor socket did not become ready\n"
+    assert "service-management" not in result.stderr
+
+
+def test_chrome_supervisor_reconcile_preserves_fixed_systemd_failure_output(
+    service_env: tuple[dict[str, str], Path],
+) -> None:
+    env, _ = service_env
+    env["CHUB_TEST_PLATFORM"] = "Linux"
+    env["CHUB_TEST_SYSTEMCTL_INACTIVE"] = "1"
+
+    result = run_chub("chrome", env, "supervisor", "reconcile")
+
+    assert result.returncode == 1
+    assert result.stderr == "chub: Debug Chrome Supervisor did not become active\n"
+    assert "service-management" not in result.stderr
+
+
+def test_chrome_supervisor_reconcile_is_a_macos_noop(
+    service_env: tuple[dict[str, str], Path],
+) -> None:
+    env, calls = service_env
+    env["CHUB_TEST_PLATFORM"] = "Darwin"
+
+    result = run_chub("chrome", env, "supervisor", "reconcile")
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert not calls.exists()
 
 
 def test_install_refuses_to_replace_unrelated_command(
@@ -953,15 +1073,25 @@ def test_check_is_read_only_and_returns_failure_when_system_is_unhealthy(
     assert "bootout" not in manager_calls
 
 def test_worker_reload_command_drains_tasks_and_checks_worker_final_state() -> None:
-    content = CHUB.read_text(encoding="utf-8")
-    reload_body = content[content.index("quick_worker_reload() {") :]
+    cli_content = CHUB.read_text(encoding="utf-8")
+    content = WORKER_RELOAD.read_text(encoding="utf-8")
+    reload_body = content[content.index("reload_worker() {") :]
 
+    assert 'scripts/maintenance/chub-worker-reload" reload' in cli_content
     assert "quick_worker_drain" in reload_body
     reload_service_body = content[
         content.index("reload_worker_service() {") :
-        content.index("quick_worker_reload() {")
+        content.index("reload_worker() {")
     ]
     assert "clear_retired_worker_state" in reload_service_body
+    assert "run_platform_action worker-definition-exists" in reload_service_body
+    assert "run_platform_action worker-stop" in reload_service_body
+    assert "run_platform_action worker-start" in reload_service_body
+    assert reload_service_body.index("worker-stop") < reload_service_body.index(
+        "clear_retired_worker_state"
+    ) < reload_service_body.index("worker-start")
+    assert "launchctl" not in content
+    assert "systemctl" not in content
     assert "worker_health_generation" in reload_body
     assert "worker_health_protocol" in reload_body
     assert "worker_health_is_idle" in reload_body
@@ -974,15 +1104,15 @@ def test_worker_reload_command_drains_tasks_and_checks_worker_final_state() -> N
     )
 
     maintenance_body = content[
-        content.index("require_worker_idle_for_maintenance() {") :
-        content.index("install_service() {")
+        content.index("quick_worker_drain() {") :
+        content.index("clear_retired_worker_state() {")
     ]
     assert "quick_worker_drain" in maintenance_body
     assert "worker_protocol_version" in content
     assert 'data.get("protocol_version") != 7' not in content
     record_body = content[
         content.index("record_worker_reload_operation() {") :
-        content.index("worker_health_generation() {")
+        content.index("reload_worker() {")
     ]
     assert 'CHUB_WORKER_RELOAD_EXTERNAL_LOGGING:-' in record_body
     assert record_body.index("CHUB_WORKER_RELOAD_EXTERNAL_LOGGING") < record_body.index(
@@ -990,6 +1120,21 @@ def test_worker_reload_command_drains_tasks_and_checks_worker_final_state() -> N
     )
     assert "verified_idle=true" in reload_body
     assert "reason=reason or None" in record_body
+
+
+def test_maintenance_service_adapters_delegate_platform_manager() -> None:
+    maintenance_scripts = (
+        WEB_RESTART,
+        WORKER_RELOAD,
+        PROJECT_ROOT / "scripts" / "maintenance" / "chub-system-upgrade-start",
+        PROJECT_ROOT / "scripts" / "maintenance" / "chub-system-upgrade-restart",
+    )
+
+    for script in maintenance_scripts:
+        content = script.read_text(encoding="utf-8")
+        assert "scripts/platform/service-management.sh" in content
+        assert "launchctl" not in content
+        assert "systemctl" not in content
 
 
 def test_stop_controls_only_chub_web_without_worker_precondition(
@@ -1048,6 +1193,45 @@ def test_service_commands_use_platform_manager(
 
     assert result.returncode == 0, result.stderr
     assert manager_call in calls.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("action", "expected_usage"),
+    [
+        ("web-start", "usage: service-management.sh web-start"),
+        ("core-stop", "usage: service-management.sh core-stop"),
+        (
+            "all-services-uninstall",
+            "usage: service-management.sh all-services-uninstall",
+        ),
+    ],
+)
+def test_platform_service_adapter_rejects_extra_arguments(
+    service_env: tuple[dict[str, str], Path],
+    action: str,
+    expected_usage: str,
+) -> None:
+    env, calls = service_env
+    env["CHUB_TEST_PLATFORM"] = "Linux"
+    workspace = Path(env["CHUB_TEST_ROOT"])
+
+    result = subprocess.run(
+        [
+            "bash",
+            str(workspace / "scripts" / "platform" / "service-management.sh"),
+            action,
+            "unexpected",
+        ],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert expected_usage in result.stderr
+    assert not calls.exists()
 
 
 @pytest.mark.parametrize(

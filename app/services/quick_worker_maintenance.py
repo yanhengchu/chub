@@ -99,11 +99,67 @@ class WorkerReloadProcess(Protocol):
     def wait(self) -> int: ...
 
 
+class QuickWorkerMaintenanceUnavailableError(RuntimeError):
+    """The fixed Worker maintenance adapter is unavailable."""
+
+
+class QuickWorkerMaintenanceLaunchError(RuntimeError):
+    """The fixed Worker maintenance adapter could not be started."""
+
+
+class QuickWorkerMaintenanceUseCase:
+    """Public fixed use case for independent Quick Worker maintenance."""
+
+    def __init__(self) -> None:
+        self._command = PROJECT_ROOT / "scripts" / "maintenance" / "chub-worker-reload"
+
+    @property
+    def command(self) -> Path:
+        return self._command
+
+    def ensure_available(self) -> None:
+        if not self.command.is_file():
+            raise QuickWorkerMaintenanceUnavailableError(
+                "找不到 Quick Worker 重启脚本"
+            )
+
+    def launch(self, *, recover: bool = False) -> WorkerReloadProcess:
+        self.ensure_available()
+        try:
+            if recover:
+                return launch_quick_worker_reload_process(self.command, recover=True)
+            return launch_quick_worker_reload_process(self.command)
+        except OSError as exc:
+            raise QuickWorkerMaintenanceLaunchError(
+                "系统未能启动 Quick Worker 重启命令。"
+            ) from exc
+
+    def service_state(self) -> str:
+        return worker_service_state(self.command)
+
+    def reload_audit(self, old_generation: str | None) -> str:
+        return worker_reload_audit(self.command, old_generation)
+
+    def process_matches(self, process_id: int) -> bool:
+        try:
+            process = psutil.Process(process_id)
+            command = process.cmdline()
+        except (psutil.Error, OSError):
+            return False
+        for index, argument in enumerate(command[:-1]):
+            if argument == str(self.command) and command[index + 1] in {
+                "reload",
+                "recover",
+            }:
+                return True
+        return False
+
+
 def worker_reload_audit(command: Path, old_generation: str | None) -> str:
     """Read a bounded, non-sensitive post-reload health summary for audit logs."""
     try:
         result = subprocess.run(
-            [str(command), "worker", "health"],
+            [str(command), "health"],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -152,7 +208,7 @@ def worker_service_state(command: Path) -> str:
     """Read the fixed service manager state without exposing service commands."""
     try:
         result = subprocess.run(
-            [str(command), "worker", "status"],
+            [str(command), "status"],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -173,7 +229,7 @@ def launch_quick_worker_reload_process(
     environment = os.environ.copy()
     environment["CHUB_WORKER_RELOAD_EXTERNAL_LOGGING"] = "1"
     return subprocess.Popen(
-        [str(command), "worker", "recover" if recover else "reload"],
+        [str(command), "recover" if recover else "reload"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
@@ -187,18 +243,23 @@ class QuickWorkerReloadCoordinator:
     def __init__(
         self,
         state_file: Path,
-        command: Path,
+        maintenance: QuickWorkerMaintenanceUseCase | None = None,
         *,
         handoff_grace_seconds: float = RELOAD_HANDOFF_GRACE_SECONDS,
     ) -> None:
         self.path = state_file
-        self.command = command
+        self.maintenance = maintenance or QuickWorkerMaintenanceUseCase()
         self.handoff_grace_seconds = max(0.0, handoff_grace_seconds)
         self._lock = threading.RLock()
         self._state_error = False
         self._state = self._load()
         self._process: WorkerReloadProcess | None = None
         self._completion_handler: Callable[[], object] | None = None
+
+    @property
+    def command(self) -> Path:
+        """Compatibility view for local state/tests; not a caller-provided command."""
+        return self.maintenance.command
 
     def set_completion_handler(self, handler: Callable[[], object]) -> None:
         self._completion_handler = handler
@@ -300,7 +361,9 @@ class QuickWorkerReloadCoordinator:
             self._state = state
         self._record(state, "requested")
 
-        if not self.command.is_file():
+        try:
+            self.maintenance.ensure_available()
+        except QuickWorkerMaintenanceUnavailableError as error:
             self._finish(
                 state.operation_id,
                 "failed",
@@ -310,16 +373,10 @@ class QuickWorkerReloadCoordinator:
                 503,
                 "quick_worker_reload_command_not_found",
                 "找不到 Quick Worker 重启命令",
-            )
+            ) from error
         try:
-            if recover:
-                process = launch_quick_worker_reload_process(
-                    self.command,
-                    recover=True,
-                )
-            else:
-                process = launch_quick_worker_reload_process(self.command)
-        except OSError as error:
+            process = self.maintenance.launch(recover=recover)
+        except QuickWorkerMaintenanceLaunchError as error:
             LOGGER.warning("Unable to launch Quick Worker reload", exc_info=True)
             self._finish(
                 state.operation_id,
@@ -417,8 +474,7 @@ class QuickWorkerReloadCoordinator:
                 operation_id,
                 "succeeded",
                 "Quick Worker 已重启并恢复。",
-                audit=worker_reload_audit(
-                    self.command,
+                audit=self.maintenance.reload_audit(
                     state.old_generation if state is not None else None,
                 ),
             )
@@ -532,12 +588,7 @@ class QuickWorkerReloadCoordinator:
             temporary.unlink(missing_ok=True)
 
     def _reload_process_is_running(self, process_id: int) -> bool:
-        try:
-            process = psutil.Process(process_id)
-            command = process.cmdline()
-        except (psutil.Error, OSError):
-            return False
-        return command[:3] == [str(self.command), "worker", "reload"]
+        return self.maintenance.process_matches(process_id)
 
 
 async def inspect_quick_worker(
@@ -575,9 +626,7 @@ async def inspect_quick_worker(
                 ),
                 None,
             )
-        service_state = worker_service_state(
-            PROJECT_ROOT / "scripts" / "chub"
-        )
+        service_state = reload_coordinator.maintenance.service_state()
         if service_state == "stopped":
             return QuickWorkerInspection(
                 QuickWorkerStatusData(

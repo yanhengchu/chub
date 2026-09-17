@@ -83,7 +83,7 @@ async def test_removed_cyber_style_falls_back_to_standard_before_assets_load(set
         pages = await asyncio.gather(
             client.get("/"),
             client.get("/settings/runtime"),
-                client.get("/logs"),
+                client.get("/settings/logs"),
                 client.get("/project-docs"),
         )
 
@@ -103,7 +103,7 @@ async def test_invalid_font_size_falls_back_to_default_before_assets_load(
         pages = await asyncio.gather(
             client.get("/"),
             client.get("/settings/appearance"),
-            client.get("/logs"),
+            client.get("/settings/logs"),
             client.get("/project-docs"),
         )
 
@@ -122,7 +122,7 @@ async def test_registered_font_size_is_applied_before_assets_load(settings: Sett
         pages = await asyncio.gather(
             client.get("/"),
             client.get("/settings/appearance"),
-            client.get("/logs"),
+            client.get("/settings/logs"),
             client.get("/project-docs"),
         )
 
@@ -141,7 +141,7 @@ async def test_registered_theme_is_applied_before_assets_load(settings: Settings
         pages = await asyncio.gather(
             client.get("/"),
             client.get("/settings/appearance"),
-            client.get("/logs"),
+            client.get("/settings/logs"),
             client.get("/project-docs"),
         )
 
@@ -380,7 +380,7 @@ async def settings_page_removes_quick_interaction_page_size_preference(
     assert 'id="cyber-rain-density"' not in response.text
     assert "风格选择保存在当前浏览器" in response.text
     assert '<h3 id="utility-settings-title">诊断与关于</h3>' in response.text
-    assert 'class="settings-utility-row" href="/logs"' in response.text
+    assert 'class="settings-utility-row" href="/settings/logs"' in response.text
     assert 'id="settings-maintenance-terminal" class="settings-utility-row" type="button"' in response.text
     assert 'id="maintenance-terminal-dialog" class="codex-workspace-dialog confirmation-dialog"' in response.text
     assert "打开维护终端" in response.text
@@ -813,6 +813,8 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert '.settings-divided-list .settings-utility-row + .settings-utility-row' in stylesheet.text
     assert '.settings-utility-list {' in stylesheet.text
     assert 'border-radius: 12px;' in stylesheet.text
+    assert '.settings-utility-list > .settings-utility-row {' in stylesheet.text
+    assert 'border-radius: 0;' in stylesheet.text
     assert '.runtime-settings-form {\n  display: grid;\n  gap: 0.75rem;\n  margin-top: 0;' in stylesheet.text
     assert 'class="settings-divided-list runtime-detail-settings-list"' in pages["runtime-detail"].text
     assert 'data-runtime-id="codex"' not in pages["runtime-detail"].text
@@ -1312,15 +1314,16 @@ async def test_home_workstation_third_party_controls_are_state_driven(
     assert response.text.index("工作站环境") < response.text.index("插件状态") < response.text.index("第三方服务环境")
     assert 'id="workspace-development-refresh"' in response.text
     assert 'id="workspace-development-environment"' in response.text
-    assert 'id="workspace-development-codex-row"' in response.text
+    assert 'id="workspace-development-runtime-list" class="workspace-development-runtime-list"' in response.text
     assert 'id="workspace-development-weixin-row"' in response.text
-    assert 'const artifactTitle = (plugin, artifactId) =>' in script.text
+    assert 'const renderRuntimeArtifacts = (plugin) =>' in script.text
     assert 'request("/api/plugins", { cache: "no-store" })' in script.text
-    assert "插件版本：${artifactTitle(plugin, artifactId)} · 导入状态：已导入 · 启用状态：" in script.text
+    assert 'title.textContent = artifactTitle(plugin, artifact, true);' in script.text
+    assert 'const isEnabled = enabled.includes(artifact.artifact_id);' in script.text
     assert "插件版本：${deliverylineVersion} · 导入状态：已导入 · 启用状态：" in script.text
-    assert "renderLifecyclePlugin(codex" in script.text
+    assert "renderRuntimeArtifacts(runtimePlugin)" in script.text
     assert "renderLifecyclePlugin(weixin" in script.text
-    assert 'const name = plugin?.name || "未知插件";' in script.text
+    assert 'workspace-development-codex-row' not in response.text
     assert 'workspace-development-codex-refresh' not in response.text
     assert 'workspace-development-weixin-refresh' not in response.text
     assert "第三方服务环境" in response.text
@@ -1400,7 +1403,7 @@ async def test_automation_section_uses_workstation_status_rows(
         return_value=AutomationListData(
             enabled=True,
             browser_state="stopped",
-            browser_message="未启动，启动后可执行自动化、飞书检查和 API 额度读取。",
+            browser_message="未启动，启动后可提供受管浏览器自动化能力。",
             browser_profile_name="Default",
             browser_mode="无界面",
             browser_profiles=[
@@ -1524,7 +1527,7 @@ async def test_automation_section_uses_workstation_status_rows(
     assert 'data-browser-state="stopped"' in response.text
     assert 'data-account-state="login_required"' in response.text
     assert 'data-account-state="available"' in response.text
-    assert "未启动，启动后可执行自动化、飞书检查和 API 额度读取。 · 浏览器用户：Default · 无界面" in response.text
+    assert "未启动，启动后可提供受管浏览器自动化能力。 · 浏览器用户：Default · 无界面" in response.text
     assert 'id="workspace-automation-browser-message"' not in response.text
     assert "飞书登录已失效，请重新登录。 · 检查于 09-05 12:30" in response.text
     assert "API Key 模式已启用 · 5h 42% · Weekly 78% · 检查于 09-05 12:31" in response.text
@@ -1767,7 +1770,7 @@ async def test_automation_section_keeps_browser_dialogs_for_partial_refresh(
         return_value=AutomationListData(
             enabled=True,
             browser_state="stopped",
-            browser_message="未启动，启动后可执行自动化、飞书检查和 API 额度读取。",
+            browser_message="未启动，启动后可提供受管浏览器自动化能力。",
             codex_runtime_account=RuntimeAccountEnvironmentState(
                 state="available",
                 auth_mode="api",
@@ -2137,10 +2140,17 @@ async def test_quick_interaction_conversation_page_is_available(
 async def test_log_details_page_and_script_are_available(settings: Settings) -> None:
     transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        page = await client.get("/logs")
+        legacy_page = await client.get("/logs")
+        page = await client.get("/settings/logs")
         script = await client.get("/static/logs.js")
+        session_script = await client.get("/static/js/features/workspace-sessions.js")
+        session_workspace = await client.get("/?session=session-1")
 
     assert page.status_code == 200
+    assert legacy_page.status_code == 307
+    assert legacy_page.headers["location"] == "/settings/logs"
+    assert 'class="settings-workspace-shell"' in page.text
+    assert 'data-settings-page="logs"' in page.text
     assert 'id="detail-log-source"' in page.text
     assert 'value="worker-operations"' in page.text
     assert "返回首页" not in page.text
@@ -2149,6 +2159,29 @@ async def test_log_details_page_and_script_are_available(settings: Settings) -> 
     assert "/api/logs/page" in script.text
     assert "/api/logs/download" in script.text
     assert "innerHTML" not in script.text
+
+    assert 'document.createElement("a")' in session_script.text
+    assert 'button.href = `/?session=${encodeURIComponent(session.id)}`' in session_script.text
+    assert "event.metaKey" in session_script.text
+    assert "event.ctrlKey" in session_script.text
+    session_list_button_source = session_script.text.split(
+        "const createSessionButton =", 1
+    )[1].split("const createUnavailableRuntimeCreateButton =", 1)[0]
+    assert 'button.addEventListener("auxclick"' not in session_list_button_source
+    session_open_handler = session_list_button_source.split("const openFromEvent =", 1)[1].split(
+        'button.addEventListener("click"', 1
+    )[0]
+    assert session_open_handler.index("event.metaKey") < session_open_handler.index(
+        "event.preventDefault()"
+    )
+    assert session_open_handler.index("event.ctrlKey") < session_open_handler.index(
+        "event.preventDefault()"
+    )
+    assert session_workspace.status_code == 200
+    assert 'class="workspace-preview-shell"' in session_workspace.text
+    assert 'src="/ai/sessions/session-1/quick-interactions/conversation?embedded=workspace"' in (
+        session_workspace.text
+    )
 
 
 @pytest.mark.anyio
@@ -2235,8 +2268,12 @@ async def test_design_document_pages_render_markdown(settings: Settings) -> None
     assert '<p class="eyebrow">设计文档</p>' not in detail.text
     assert '<span class="badge badge-success">已实现并验收</span>' not in detail.text
     assert '<article class="markdown-body">' in detail.text
-    assert 'class="project-document-detail-page"' in detail.text
+    assert 'class="workspace-preview-shell"' in detail.text
+    assert 'class="project-document-detail"' in detail.text
+    assert 'href="/?section=project-docs" aria-current="page"' in detail.text
     assert 'id="document-detail-title"' in detail.text
+    assert "正在读取项目资料…" not in detail.text
+    assert "项目资料详情" in detail.text
     assert "更新于 " in detail.text
     assert "<h2" in detail.text
     assert "阶段一：资料准备与发布" in detail.text
@@ -2246,6 +2283,31 @@ async def test_design_document_pages_render_markdown(settings: Settings) -> None
     for response in [listing, detail]:
         assert "default-src 'self'" in response.headers["content-security-policy"]
         assert response.headers["x-content-type-options"] == "nosniff"
+
+
+@pytest.mark.anyio
+async def test_workspace_reading_details_skip_section_data_loading(
+    settings: Settings,
+    weekly_reports_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_app(settings)
+    documents = MagicMock(side_effect=AssertionError("detail must not load the document list"))
+    automations = MagicMock(side_effect=AssertionError("detail must not load automation data"))
+    monkeypatch.setattr(web_routes, "list_design_documents", documents)
+    app.state.automation_manager.list = automations
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        document_detail = await client.get("/project-docs/automation-download")
+        weekly_detail = await client.get(
+            "/weekly-reports/2026-08-03%E8%87%B32026-08-09/focus"
+        )
+
+    assert document_detail.status_code == 200
+    assert weekly_detail.status_code == 200
+    documents.assert_not_called()
+    automations.assert_not_called()
 
 
 @pytest.mark.anyio
@@ -2313,11 +2375,15 @@ async def test_weekly_report_detail_is_public_and_missing_report_is_404(
         unknown_template = await client.get("/weekly-reports/templates/unknown")
 
     assert detail.status_code == 200
+    assert 'class="workspace-preview-shell"' in detail.text
+    assert 'href="/?section=automations" aria-current="page"' in detail.text
     assert '<article class="markdown-body">' in detail.text
     assert "本期工作重点确认清单" in detail.text
     assert pending.status_code == 404
     assert unsafe.status_code == 404
     assert focus_template.status_code == 200
+    assert 'class="workspace-preview-shell"' in focus_template.text
+    assert 'href="/?section=automations" aria-current="page"' in focus_template.text
     assert "重点事项确认清单模板" in focus_template.text
     assert report_template.status_code == 200
     assert "正式周报模板" in report_template.text
@@ -2437,6 +2503,7 @@ async def test_native_session_without_a_title_is_marked_as_unavailable(
     assert 'return `${nativeSessionDirectoryName(session)} · ${new Date(timestamp).toLocaleString("zh-CN")}`;' in response.text
     assert "nativeSessionDetailLines" not in response.text
     assert '"未命名 Native Session"' not in response.text
+    assert 'empty.textContent = "暂无会话。";' in response.text
 
 
 @pytest.mark.anyio

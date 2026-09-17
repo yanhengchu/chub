@@ -332,7 +332,10 @@ class AiSessionManager:
                 NEW_SESSION_RUNTIME_CAPABILITIES,
             )
         except RuntimeOperationError:
-            adapter = _UnavailableRuntime(self.runtime_id)
+            # The control plane must remain available before any Runtime module
+            # is installed.  ``runtime_id`` is empty in that state, while a
+            # RuntimeDescriptor requires a valid identifier.
+            adapter = _UnavailableRuntime(self.runtime_id or "ai-runtime")
         if adapter is not self.runtime_adapter:
             self.runtime_adapter = adapter
 

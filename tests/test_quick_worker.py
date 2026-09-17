@@ -2572,7 +2572,10 @@ async def test_codex_runner_restart_script_only_registers_deferred_request(
     native_id = "33333333-3333-4333-8333-333333333333"
     monkeypatch.setenv("FAKE_CODEX_SESSION_ID", native_id)
     monkeypatch.setenv("CHUB_TEST_PLATFORM", "Unsupported")
-    restart_script = Path(__file__).resolve().parents[1] / "scripts/chub-web-restart"
+    restart_script = (
+        Path(__file__).resolve().parents[1]
+        / "scripts/maintenance/chub-web-restart"
+    )
     monkeypatch.setenv("FAKE_CODEX_RESTART_SCRIPT", str(restart_script))
     workspace = tmp_path / "workspace"
     workspace.mkdir()

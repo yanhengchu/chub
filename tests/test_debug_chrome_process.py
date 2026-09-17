@@ -56,18 +56,24 @@ class ChromeProcessTest(unittest.TestCase):
             main.mkdir()
             helper.mkdir()
             other.mkdir()
+            deleted = proc_root / "103"
+            deleted.mkdir()
             (main / "exe").symlink_to("/opt/google/chrome/chrome")
             (helper / "exe").symlink_to("/opt/google/chrome/chrome")
             (other / "exe").symlink_to("/usr/bin/firefox")
+            (deleted / "exe").symlink_to("/opt/google/chrome/chrome (deleted)")
             (main / "cmdline").write_bytes(b"/opt/google/chrome/chrome\0")
             (helper / "cmdline").write_bytes(
                 b"/opt/google/chrome/chrome\0--type=renderer\0"
             )
             (other / "cmdline").write_bytes(b"/usr/bin/firefox\0")
+            (deleted / "cmdline").write_bytes(
+                b"/opt/google/chrome/chrome\0--user-data-dir=/tmp/debug\0"
+            )
 
             processes = chrome_process.linux_chrome_processes(proc_root)
 
-        self.assertEqual([process.pid for process in processes], [100, 101])
+        self.assertEqual([process.pid for process in processes], [100, 101, 103])
 
     def test_ubuntu_requires_real_google_chrome_executable(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

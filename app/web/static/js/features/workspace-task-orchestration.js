@@ -23,6 +23,11 @@
     const runtimeDescription = runtimeStaticDisplay
       ?.closest(".workspace-task-orchestration-field")
       ?.querySelector(".workstation-status-detail");
+    const runtimeField = runtimeStaticDisplay?.closest(".workspace-task-orchestration-field");
+    const permissionField = document.querySelector(
+      '.workspace-task-static-setting[aria-label^="翻译权限："]',
+    )?.closest(".workspace-task-orchestration-field");
+    const modelField = modelTrigger?.closest(".workspace-task-orchestration-field");
     const reasoningStaticDisplay = document.querySelector(
       '.workspace-task-static-setting[aria-label^="推理等级："]',
     );
@@ -30,6 +35,7 @@
     const reasoningDescription = reasoningStaticDisplay
       ?.closest(".workspace-task-orchestration-field")
       ?.querySelector(".workstation-status-detail");
+    const reasoningField = reasoningStaticDisplay?.closest(".workspace-task-orchestration-field");
 
     if (
       !(message instanceof HTMLElement)
@@ -47,9 +53,13 @@
       || !(modelDescription instanceof HTMLElement)
       || !(runtimeStaticDisplay instanceof HTMLElement)
       || !(runtimeDescription instanceof HTMLElement)
+      || !(runtimeField instanceof HTMLElement)
+      || !(permissionField instanceof HTMLElement)
+      || !(modelField instanceof HTMLElement)
       || !(reasoningStaticDisplay instanceof HTMLElement)
       || !(reasoningStaticValue instanceof HTMLElement)
       || !(reasoningDescription instanceof HTMLElement)
+      || !(reasoningField instanceof HTMLElement)
       || typeof window.createChoicePicker !== "function"
     ) {
       return;
@@ -94,6 +104,7 @@
 
     let status = null;
     let catalog = null;
+    let catalogAvailable = false;
     let orchestration = null;
     let modules = [];
     let loading = false;
@@ -208,7 +219,9 @@
       reasoningValue.textContent = label;
       reasoningTrigger.setAttribute("aria-label", `推理等级：${label}`);
       reasoningDescription.textContent = selectedLevel
-        ? "当前微信任务润色专属推理等级；只影响之后新提交的文本优化任务。"
+        ? (catalogAvailable
+          ? "当前微信任务润色专属推理等级；只影响之后新提交的文本优化任务。"
+          : "模型目录暂时无法读取，已保留当前推理等级。")
         : "当前配置不可用，请重新选择模型。";
     };
     const render = () => {
@@ -254,12 +267,16 @@
       ], selectedMode);
       processingTrigger.setAttribute("aria-label", `润色模式：${processingValue.textContent}`);
       const runtimeId = typeof status.runtime_id === "string" ? status.runtime_id : "";
-      const runtimeLabel = runtimeId || "不可用";
+      const runtimeAvailable = status.runtime_available === true;
+      [runtimeField, permissionField, modelField, reasoningField].forEach((field) => {
+        field.hidden = !runtimeAvailable;
+      });
+      const runtimeLabel = runtimeAvailable ? runtimeId : (runtimeId || "未配置");
       runtimeStaticDisplay.querySelector("span").textContent = runtimeLabel;
       runtimeStaticDisplay.setAttribute("aria-label", `翻译 Runtime：${runtimeLabel}`);
-      runtimeDescription.textContent = runtimeId
+      runtimeDescription.textContent = runtimeAvailable
         ? "用于之后新提交的文本优化任务；Runtime 由通用默认设置决定。"
-        : "当前默认 Runtime 配置不可用。";
+        : "尚未导入可用于文本优化的 Runtime；导入并启用后会自动初始化。";
       const modelOptions = [];
       if (status.model && !models.some((item) => item.id === status.model)) {
         modelOptions.push({
@@ -276,7 +293,9 @@
       modelPicker.setOptions(modelOptions, status.model || "");
       const effectiveModel = models.find((item) => item.id === status.model);
       modelDescription.textContent = status.model
-        ? `当前使用 ${effectiveModel?.name || effectiveModel?.id || status.model}；只影响之后新提交的文本优化任务。`
+        ? (catalogAvailable
+          ? `当前使用 ${effectiveModel?.name || effectiveModel?.id || status.model}；只影响之后新提交的文本优化任务。`
+          : `当前使用 ${status.model}；模型目录暂时无法读取，无法调整。`)
         : "当前配置不可用，请重新选择模型。";
       modelTrigger.setAttribute("aria-label", `模型：${modelValue.textContent}`);
       renderReasoning(effectiveModel);
@@ -292,16 +311,27 @@
       } else if (status.native_cleanup_error) {
         notes.push(`历史翻译 Session 清理状态未知：${status.native_cleanup_error}`);
       }
+      if (status.execution_settings_recovery_required) {
+        notes.push(status.execution_settings_recovery_error || "微信润色配置待恢复");
+      }
+      if (!runtimeAvailable) notes.push("文本优化尚未初始化，不会接收润色任务");
+      if (runtimeAvailable && !catalogAvailable) {
+        notes.push("模型目录暂时无法读取，已保留当前执行配置");
+      }
       if (!status.weixin_chub_mode_enabled) notes.push("微信 Chub 模式当前未启用");
       setMessage(
         notes.join(" · "),
-        status.native_cleanup_retry_required ? "error" : "",
+        (status.native_cleanup_retry_required || status.execution_settings_recovery_required) ? "error" : "",
       );
-      modelPicker.setDisabled(saving || loading || (models.length === 0 && !status.model));
+      modelPicker.setDisabled(
+        saving || loading || !runtimeAvailable || !catalogAvailable || (models.length === 0 && !status.model),
+      );
       reasoningPicker.setDisabled(
         saving
         || loading
-        || !status.model,
+        || !status.model
+        || !runtimeAvailable
+        || !catalogAvailable,
       );
       processingPicker.setDisabled(saving || loading);
       implementationPicker.setDisabled(
@@ -318,12 +348,25 @@
       setPickersDisabled(true);
       setMessage("");
       try {
-        const [nextStatus, nextCatalog, lifecycle] = await Promise.all([
+        const [nextStatus, lifecycle] = await Promise.all([
           apiRequest("/api/settings/weixin-translation", { cache: "no-store" }),
-          apiRequest("/api/ai/models", { cache: "no-store" }),
           apiRequest("/api/plugins", { cache: "no-store" }),
         ]);
-        if (!Array.isArray(nextCatalog?.models)) throw new Error("暂时无法读取 Runtime 模型目录。");
+        let nextCatalog = { models: [], default_model: null, default_reasoning_effort: null };
+        let nextCatalogAvailable = false;
+        if (nextStatus?.runtime_available === true) {
+          try {
+            const loadedCatalog = await apiRequest("/api/ai/models", { cache: "no-store" });
+            if (!Array.isArray(loadedCatalog?.models)) {
+              throw new Error("暂时无法读取 Runtime 模型目录。");
+            }
+            nextCatalog = loadedCatalog;
+            nextCatalogAvailable = true;
+          } catch {
+            // Version and processing-mode settings remain useful while the
+            // optional model catalog is recovering.
+          }
+        }
         const plugin = lifecycle?.plugins?.find((item) => item.plugin_id === "weixin-orchestration");
         if (!plugin) throw new Error("暂时无法读取微信任务润色插件状态。");
         const enabledIds = Array.isArray(plugin.enabled_artifact_ids) ? plugin.enabled_artifact_ids : [];
@@ -342,6 +385,7 @@
         if (!disposed) {
           status = nextStatus;
           catalog = nextCatalog;
+          catalogAvailable = nextCatalogAvailable;
           orchestration = nextOrchestration;
           modules = nextModules;
         }

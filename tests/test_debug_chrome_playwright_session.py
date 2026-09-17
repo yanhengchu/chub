@@ -261,9 +261,11 @@ class PlaywrightSessionTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_refuses_stopped_or_broken_debug_chrome(self) -> None:
         for state in ("stopped", "broken"):
+            lifecycle = Mock()
+            lifecycle.status_snapshot.return_value = running_status(Path("/tmp/debug"), state)
             with patch(
-                "app.automations.debug_chrome.playwright_session.status",
-                return_value=running_status(Path("/tmp/debug"), state),
+                "app.automations.debug_chrome.playwright_session.ChromeLifecycleUseCase",
+                return_value=lifecycle,
             ):
                 with self.assertRaises(RuntimeError):
                     async with playwright_session.session(

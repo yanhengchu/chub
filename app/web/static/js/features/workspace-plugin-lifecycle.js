@@ -79,8 +79,9 @@
       copy.append(title, detail);
       const actions = document.createElement("span");
       actions.className = "runtime-module-row-actions";
-      if (!imported && !unavailable) actions.append(button("导入", "button-secondary", () => void perform(() => request(`/api/plugins/${encodeURIComponent(plugin.plugin_id)}/imports`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ artifact_id: artifact.artifact_id }) }), { refreshNavigation: true })));
-      else {
+      if (!imported) {
+        if (!unavailable) actions.append(button("导入", "button-secondary", () => void perform(() => request(`/api/plugins/${encodeURIComponent(plugin.plugin_id)}/imports`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ artifact_id: artifact.artifact_id }) }), { refreshNavigation: true })));
+      } else {
         const toggle = button(enabled ? "禁用" : "启用", "button-secondary", () => void perform(() => request(`/api/plugins/${encodeURIComponent(plugin.plugin_id)}/enabled`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ artifact_id: artifact.artifact_id, enabled: !enabled }) })));
         if (!enabled && unavailable) {
           toggle.disabled = true;
@@ -130,7 +131,18 @@
       const detail = document.createElement("span");
       detail.className = `workstation-status-detail workstation-status-detail-${enabled.length ? "success" : "warning"}`;
       title.textContent = "当前插件状态";
-      detail.textContent = `插件版本：${plugin.name} · ${source} · 导入状态：${selectedId ? "已导入" : "未导入"} · 启用状态：${enabled.length ? "已启用" : "未启用"}。`;
+      const executionUnavailable = plugin.plugin_id === "weixin-orchestration"
+        && plugin.execution_ready === false;
+      const executionUnknown = plugin.plugin_id === "weixin-orchestration"
+        && Object.hasOwn(plugin, "execution_ready")
+        && plugin.execution_ready === null;
+      detail.textContent = `插件版本：${plugin.name} · ${source} · 导入状态：${selectedId ? "已导入" : "未导入"} · 启用状态：${enabled.length ? "已启用" : "未启用"}。${
+        executionUnavailable
+          ? "当前默认 Runtime 不可用于微信润色；插件配置会保留，导入并启用支持后台任务的 Runtime 后自动恢复。"
+          : executionUnknown
+            ? "微信润色执行状态暂时无法读取；插件管理仍可用。"
+            : ""
+      }`;
       copy.append(title, detail);
       item.append(copy);
       if (target.classList.contains("workspace-task-orchestration-list") || target.id === "deliveryline-plugin-status") {

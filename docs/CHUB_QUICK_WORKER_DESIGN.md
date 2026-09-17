@@ -27,7 +27,7 @@ Web 重启不停止 Worker、已受理 Runner、翻译 FIFO 或确认 FIFO。新
 
 ## 维护者操作
 
-`chub web restart` 只重启 Web；`chub worker reload` 才影响 Worker 任务恢复。两者都必须通过健康、任务/通知状态等最终结果确认，不能只看服务进程或 HTTP 回应。
+`chub web restart` 只重启 Web；`chub worker reload` 才影响 Worker 任务恢复。页面、恢复和微信维护入口通过 `QuickWorkerMaintenanceUseCase` 请求固定 `scripts/maintenance/chub-worker-reload` 适配，不重新执行 `scripts/chub`，且不接受可变服务、路径或命令。CLI 保持原有固定语法并转发到同一适配。两者都必须通过健康、任务/通知状态等最终结果确认，不能只看服务进程或 HTTP 回应。
 
 ## 验收范围与复检
 

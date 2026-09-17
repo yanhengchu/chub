@@ -72,7 +72,7 @@ def _feishu_environment_for_url(
     if host == FEISHU_TENANT_HOST:
         return FeishuEnvironmentState(
             state="available",
-            message="登录有效",
+            message="飞书账户已登录",
             checked_at=checked_at,
         )
     if host == FEISHU_LOGIN_HOST:
@@ -139,6 +139,11 @@ class AutomationManager:
         return debug_chrome_status(
             supervisor_socket=self._browser_supervisor_socket,
         )
+
+    def _require_running_debug_chrome(self) -> None:
+        browser_state, browser_message, _ = self._debug_chrome_status()
+        if browser_state != "running":
+            raise ApiError(409, "debug_chrome_not_running", browser_message)
 
     def _current_debug_chrome_profile(self) -> str | None:
         if self._browser_supervisor_socket is None:
@@ -382,7 +387,7 @@ class AutomationManager:
 
     def _prepare_headed_browser_for_login_page(self) -> bool:
         browser_state, _, browser_mode = self._debug_chrome_status()
-        if browser_state == "running" and browser_mode == "headed":
+        if browser_state == "running" and browser_mode == "有界面":
             return False
         if browser_state not in {"running", "stopped"}:
             raise ApiError(409, "debug_chrome_unavailable", "Debug Chrome 当前不可用")
@@ -794,9 +799,7 @@ class AutomationManager:
             return self._codex_runtime_account.model_copy()
 
     def check_feishu_environment(self) -> FeishuEnvironmentState:
-        browser_state, _, _ = self._debug_chrome_status()
-        if browser_state != "running":
-            raise ApiError(409, "debug_chrome_not_running", "Debug Chrome 未运行")
+        self._require_running_debug_chrome()
 
         with self._launch_lock:
             if self._feishu_checking:
@@ -847,9 +850,7 @@ class AutomationManager:
                 raise ApiError(404, "automation_not_found", "自动化任务不存在")
             if not task.enabled:
                 raise ApiError(409, "automation_disabled", "自动化任务未启用")
-            browser_state, _, _ = self._debug_chrome_status()
-            if browser_state != "running":
-                raise ApiError(409, "debug_chrome_not_running", "Debug Chrome 未运行")
+            self._require_running_debug_chrome()
             current = self._current_state(task_id)
             if current.status in {"queued", "running"}:
                 raise ApiError(409, "automation_running", "自动化任务正在执行")
@@ -936,6 +937,8 @@ class AutomationManager:
             raise ApiError(404, "browser_action_not_found", "浏览器操作不存在")
         if action == "start" and mode not in {"headed", "headless"}:
             raise ApiError(422, "browser_mode_invalid", "Debug Chrome 启动模式无效")
+        if action == "restart" and restart_mode not in {None, "headed", "headless"}:
+            raise ApiError(422, "browser_mode_invalid", "Debug Chrome 启动模式无效")
         with self._launch_lock:
             if self._browser_initialization["state"] == "running":
                 raise ApiError(
@@ -973,7 +976,7 @@ class AutomationManager:
                     elif action == "stop":
                         current = self._stop_debug_chrome()
                     else:
-                        browser_state, browser_mode, _ = self._debug_chrome_status()
+                        browser_state, _, browser_mode = self._debug_chrome_status()
                         if browser_state != "running":
                             raise ApiError(
                                 409,
@@ -987,15 +990,31 @@ class AutomationManager:
                                 "debug_chrome_profile_unavailable",
                                 "无法确认 Debug Chrome 当前浏览器账户",
                             )
+                        resolved_restart_mode = restart_mode or {
+                            "有界面": "headed",
+                            "无界面": "headless",
+                        }.get(browser_mode)
+                        if resolved_restart_mode is None:
+                            raise ApiError(
+                                409,
+                                "debug_chrome_mode_unavailable",
+                                "无法确认 Debug Chrome 当前启动模式",
+                            )
                         self._stop_debug_chrome()
                         current = self._select_and_start_debug_chrome(
                             restart_profile,
-                            restart_mode or browser_mode or "headless",
+                            resolved_restart_mode,
                         )
                 except RuntimeError as exc:
                     message = str(exc)
-                    if "profile" in message.lower() or "managed" in message.lower():
+                    if message == "Google Chrome executable was not found":
+                        public_message = (
+                            "未检测到 Google Chrome；安装后可使用受管浏览器自动化能力。"
+                        )
+                    elif "profile" in message.lower() or "managed" in message.lower():
                         public_message = "浏览器用户尚未初始化"
+                    elif "Supervisor" in message:
+                        public_message = "Debug Chrome Supervisor 当前不可用"
                     elif "port 9222" in message.lower():
                         public_message = "调试端口 9222 已被其他程序占用"
                     else:

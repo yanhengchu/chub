@@ -1263,6 +1263,29 @@ async def test_application_lifespan_requires_development_plugin_to_be_imported_a
     assert reason == "当前 Runtime 插件尚未导入，无法提交新的 AI 任务。"
 
 
+def test_session_manager_starts_without_any_runtime_plugin(settings: Settings) -> None:
+    service = RuntimePluginService(settings)
+    removal = service.remove("codex-010000", operation_id="1" * 32)
+    service.finalize_removal(removal)
+    settings_store = AiRuntimeSettingsStore(
+        settings.ai_runtime.shared.state_dir / "ai-runtimes.local.yaml"
+    )
+    settings_store.save_general(
+        settings_store.read_general().model_copy(update={"default_runtime_id": None})
+    )
+
+    manager = AiSessionManager(
+        settings,
+        development_runtime_plugins=RuntimePluginRegistry(),
+    )
+    manager.runtime_settings_store = settings_store
+    manager.sync_default_runtime_selection()
+
+    assert manager.runtime_id == ""
+    assert manager.runtime_adapter.descriptor.runtime_id == "ai-runtime"
+    assert manager.submission_available() == (False, "默认 Runtime 版本不可用。")
+
+
 @pytest.mark.anyio
 async def test_application_lifespan_recovers_pending_runtime_state_cleanup(
     settings: Settings,

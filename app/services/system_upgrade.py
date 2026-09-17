@@ -230,6 +230,8 @@ def load_system_upgrade_plan(path: Path) -> LoadedSystemUpgradePlan | None:
         raise OSError("系统升级方案与当前 Chub 代码版本不匹配。")
     if plan.source_session_schema != SESSION_SCHEMA_VERSION:
         raise OSError("系统升级方案与当前 Session 数据版本不匹配。")
+    if plan.plan_id == "runtime-recovery":
+        raise OSError("旧运行态恢复方案不可兼容。")
     return LoadedSystemUpgradePlan(
         plan=plan,
         fingerprint=hashlib.sha256(content).hexdigest(),
@@ -308,8 +310,8 @@ def system_upgrade_restart_readiness(
 ) -> str | None:
     environment = os.environ if environment is None else environment
     for command in (
-        project_root / "scripts" / "chub-system-upgrade-start",
-        project_root / "scripts" / "chub-system-upgrade-restart",
+        project_root / "scripts" / "maintenance" / "chub-system-upgrade-start",
+        project_root / "scripts" / "maintenance" / "chub-system-upgrade-restart",
     ):
         try:
             metadata = command.lstat()
@@ -577,7 +579,7 @@ class SystemUpgradeCoordinator:
                 raise ApiError(
                     409,
                     "system_upgrade_recovery_required",
-                    "上次升级已清理运行状态但未通过最终验证，请继续当前恢复操作后再发起新的升级。",
+                    "上次升级已清理运行状态但未通过最终验证；下一次确认会清除旧运行态并重新开始。",
                 )
             now = utc_now()
             state = SystemUpgradeOperation(
@@ -620,141 +622,39 @@ class SystemUpgradeCoordinator:
         self._start_runner(operation_id, runner)
         return True
 
-    def resume_verification(self) -> SystemUpgradeOperation | None:
-        with self._lock:
-            state = self._state
-            can_verify = bool(
-                state is not None
-                and (
-                    state.failed_stage == "verifying_new_instance"
-                    or (
-                        state.failed_stage == "restarting_services"
-                        and state.restart_launch_state == "launched"
-                    )
-                )
-            )
-            if (
-                state is None
-                or state.status != "failed"
-                or not state.destructive_started
-                or not can_verify
-            ):
-                return None
-            state = state.model_copy(deep=True)
-            state.status = "started"
-            state.stage = "verifying_new_instance"
-            state.failed_stage = None
-            state.message = "正在确认新服务的最终状态。"
-            state.updated_at = utc_now()
-            self._write(state)
-            self._state = state
-        self._record(state, "started")
-        return state.model_copy(deep=True)
+    def discard_failed_destructive_state(self) -> bool:
+        """Discard an interrupted Chub-owned reset before starting a new one.
 
-    def rebase_failed_verification(
-        self,
-        loaded: LoadedSystemUpgradePlan,
-    ) -> bool:
-        """Bind a post-cleanup verification to the running version only."""
-        return self._rebase_failed_recovery(
-            loaded,
-            allowed_stages={"verifying_new_instance"},
-            message="恢复目标已更新，正在确认新服务状态。",
-        )
-
-    def rebase_failed_recovery(
-        self,
-        loaded: LoadedSystemUpgradePlan,
-    ) -> bool:
-        """Bind a failed destructive recovery to the fixed current plan."""
-        return self._rebase_failed_recovery(
-            loaded,
-            allowed_stages={
-                "cleaning_state",
-                "launching_services",
-                "restarting_services",
-                "verifying_new_instance",
-            },
-            message="已按当前 Chub 版本更新恢复目标，正在继续失败的恢复操作。",
-        )
-
-    def _rebase_failed_recovery(
-        self,
-        loaded: LoadedSystemUpgradePlan,
-        *,
-        allowed_stages: set[str],
-        message: str,
-    ) -> bool:
-        if not _is_current_runtime_recovery_plan(loaded):
-            return False
+        Upgrade plans and operation journals are local implementation state, not
+        user data. A later build must not reinterpret a failed journal or bind
+        it to a new plan. The operation log remains available for diagnosis.
+        """
         with self._lock:
             state = self._state
             if (
                 state is None
                 or state.status != "failed"
                 or not state.destructive_started
-                or state.failed_stage not in allowed_stages
-                or (
-                    state.failed_stage == "verifying_new_instance"
-                    and state.restart_launch_state != "launched"
-                )
             ):
                 return False
-            previous_fingerprint = state.fingerprint
-            state = state.model_copy(deep=True)
-            state.plan = loaded.plan
-            state.fingerprint = loaded.fingerprint
-            state.message = message
-            state.updated_at = utc_now()
-            self._write(state)
-            self._state = state
+            try:
+                self._remove_owned_state_file(self.path)
+                self._remove_owned_state_file(component_report_path(self.path))
+            except OSError:
+                self._state_error = True
+                self._writes_blocked = True
+                LOGGER.warning(
+                    "Unable to discard failed system upgrade state",
+                    exc_info=True,
+                )
+                return False
+            self._state = None
+            self._writes_blocked = False
         LOGGER.warning(
-            "Rebound failed system upgrade recovery to current runtime "
-            "operation_id=%s previous_fingerprint=%s current_fingerprint=%s",
+            "Discarded failed destructive system upgrade operation_id=%s",
             state.operation_id,
-            previous_fingerprint,
-            loaded.fingerprint,
         )
         return True
-
-    def resume_failed(
-        self,
-        runner: Callable[[str], None],
-    ) -> SystemUpgradeOperation | None:
-        """Resume a failed destructive upgrade from its durable checkpoint."""
-        with self._lock:
-            state = self._state
-            if (
-                state is None
-                or state.status != "failed"
-                or not state.destructive_started
-            ):
-                return None
-            state = state.model_copy(deep=True)
-            if state.failed_stage == "cleaning_state":
-                state.stage = "draining_worker"
-                state.message = "正在停止 Quick Worker，并继续清理运行状态。"
-            elif state.failed_stage in {
-                "launching_services",
-                "restarting_services",
-            }:
-                state.stage = "launching_services"
-                state.restart_launch_state = "not_started"
-                state.restart_process_id = None
-                state.message = "正在启动服务恢复流程。"
-            elif state.failed_stage == "verifying_new_instance":
-                state.stage = "verifying_new_instance"
-                state.message = "正在确认新服务的最终状态。"
-            else:
-                return None
-            state.status = "started"
-            state.failed_stage = None
-            state.updated_at = utc_now()
-            self._write(state)
-            self._state = state
-        self._record(state, "started")
-        self._start_runner(state.operation_id, runner)
-        return state.model_copy(deep=True)
 
     def _start_runner(self, operation_id: str, runner: Callable[[str], None]) -> None:
         with self._lock:
@@ -930,44 +830,21 @@ class SystemUpgradeCoordinator:
                 )
             if operation.status == "failed":
                 effective_plan = loaded or runtime_recovery_plan()
-                retryable = bool(
-                    (
-                        effective_plan.fingerprint == operation.fingerprint
-                        or not operation.destructive_started
-                        or self._can_rebase_failed_recovery(
-                            operation,
-                            effective_plan,
-                        )
-                    )
-                    and (
-                        not operation.destructive_started
-                        or operation.failed_stage
-                        in {
-                            "cleaning_state",
-                            "launching_services",
-                            "restarting_services",
-                            "verifying_new_instance",
-                        }
-                    )
-                )
+                retryable = True
                 message = operation.message
-                if not retryable:
+                if operation.destructive_started:
                     guidance = (
-                        " 当前恢复操作不能安全继续，升级入口已关闭；"
-                        "请在本机终端检查 chub upgrade logs 和服务定义后再处理。"
+                        " 重新开始会清除本次失败升级的 Chub 自有运行状态和操作记录，"
+                        "不会兼容或续跑旧方案。"
                     )
                     message = f"{message[: 500 - len(guidance)]}{guidance}"
                 return SystemUpgradeStatusData(
                     state="failed",
                     message=message,
                     can_start=retryable,
-                    resume=retryable and operation.destructive_started,
+                    resume=False,
                     writes_blocked=writes_blocked,
-                    plan=(
-                        self._plan_view(effective_plan, session_count, session_labels)
-                        if retryable
-                        else None
-                    ),
+                    plan=self._plan_view(effective_plan, session_count, session_labels),
                     operation=operation_view,
                 )
             # A completed operation is history, not a permanent maintenance lock.
@@ -986,39 +863,6 @@ class SystemUpgradeCoordinator:
             can_start=True,
             plan=self._plan_view(loaded, session_count, session_labels),
             operation=operation_view,
-        )
-
-    @staticmethod
-    def _can_rebase_failed_verification(
-        operation: SystemUpgradeOperation,
-        loaded: LoadedSystemUpgradePlan,
-    ) -> bool:
-        return bool(
-            operation.destructive_started
-            and operation.failed_stage == "verifying_new_instance"
-            and operation.restart_launch_state == "launched"
-            and _is_current_runtime_recovery_plan(loaded)
-        )
-
-    @staticmethod
-    def _can_rebase_failed_recovery(
-        operation: SystemUpgradeOperation,
-        loaded: LoadedSystemUpgradePlan,
-    ) -> bool:
-        return bool(
-            operation.destructive_started
-            and operation.failed_stage
-            in {
-                "cleaning_state",
-                "launching_services",
-                "restarting_services",
-                "verifying_new_instance",
-            }
-            and (
-                operation.failed_stage != "verifying_new_instance"
-                or operation.restart_launch_state == "launched"
-            )
-            and _is_current_runtime_recovery_plan(loaded)
         )
 
     @staticmethod
@@ -1109,6 +953,21 @@ class SystemUpgradeCoordinator:
             temporary.unlink(missing_ok=True)
 
     @staticmethod
+    def _remove_owned_state_file(path: Path) -> None:
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            return
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or stat.S_IMODE(metadata.st_mode) & 0o077
+        ):
+            raise OSError("system upgrade state is unsafe")
+        path.unlink()
+
+    @staticmethod
     def _record(state: SystemUpgradeOperation, status: UpgradeStatus) -> None:
         try:
             reason = (
@@ -1163,10 +1022,10 @@ class SystemUpgradeCoordinator:
             "draining_worker": "Quick Worker 停止或任务收敛未能确认，尚未开始清理运行状态。",
             "freezing_sessions": "Session 写入冻结未能确认，尚未开始清理运行状态。",
             "archiving_sessions": "Session 归档未能确认，尚未完成运行状态清理。",
-            "cleaning_state": "运行状态清理未能确认，请继续当前恢复操作。",
-            "launching_services": "固定服务切换程序未能启动，请继续当前恢复操作。",
-            "restarting_services": "服务切换未能确认，请继续当前恢复操作。",
-            "verifying_new_instance": "新 Web 或 Quick Worker 的最终健康状态未能确认，请继续当前恢复操作。",
+            "cleaning_state": "运行状态清理未能确认，可以重新开始固定清理。",
+            "launching_services": "固定服务切换程序未能启动，可以重新开始固定清理。",
+            "restarting_services": "服务切换未能确认，可以重新开始固定清理。",
+            "verifying_new_instance": "新 Web 或 Quick Worker 的最终健康状态未能确认，可以重新开始固定清理。",
         }
         return messages.get(failed_stage, "升级与恢复未能确认最终状态。")
 
@@ -1183,14 +1042,3 @@ class SystemUpgradeCoordinator:
             "verifying_new_instance": "new web or quick worker health could not be confirmed",
         }
         return reasons.get(state.failed_stage, "system upgrade final state could not be confirmed")
-
-
-def _is_current_runtime_recovery_plan(loaded: LoadedSystemUpgradePlan) -> bool:
-    plan = loaded.plan
-    return bool(
-        plan.plan_id == "runtime-recovery"
-        and plan.action == "runtime-data-reset"
-        and plan.target_code_version == WEB_CODE_VERSION
-        and plan.target_session_schema == SESSION_SCHEMA_VERSION
-        and plan.target_worker_protocol == PROTOCOL_VERSION
-    )

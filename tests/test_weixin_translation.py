@@ -451,6 +451,7 @@ def test_translation_execution_settings_do_not_read_session_defaults(settings) -
     )
 
     ai_session_manager.runtime_settings_store.read_general.assert_not_called()
+    assert manager._state.execution_settings_implementation_id == "codex"
 
 
 def test_worker_recovery_initializes_execution_settings_after_catalog_recovers(
@@ -478,9 +479,134 @@ def test_worker_recovery_initializes_execution_settings_after_catalog_recovers(
     assert manager.status().reasoning_effort == "high"
 
 
+def test_translation_stays_uninitialized_without_a_runtime(settings, caplog) -> None:
+    settings.openclaw.weixin_chub_mode.translation_mode = "auto"
+
+    class NoRuntimeSessionManager:
+        def configured_default_runtime_id(self) -> str:
+            raise ApiError(
+                409,
+                "session_default_runtime_unavailable",
+                "当前没有可用于新建 Session 的默认 Runtime。",
+            )
+
+        def select_new_session_runtime(self, *, required_capabilities):
+            assert required_capabilities == frozenset({"background_turn"})
+            raise ApiError(
+                409,
+                "session_default_runtime_unavailable",
+                "当前没有可用于新建 Session 的默认 Runtime。",
+            )
+
+    quick_interactions = MagicMock()
+    quick_interactions.deferred_restart = None
+    with caplog.at_level("WARNING"):
+        manager = WeixinTranslationManager(
+            settings.openclaw.weixin_chub_mode,
+            NoRuntimeSessionManager(),
+            quick_interactions,
+        )
+        manager.start_worker_recovery()
+
+    status = manager.status()
+    assert status.runtime_id is None
+    assert status.runtime_available is False
+    assert status.model is None
+    assert status.reasoning_effort is None
+    assert manager.enqueue(
+        message_id="no-runtime",
+        original="请优化这段文字",
+        route=route(),
+        operation_id="no-runtime",
+        source_ip="100.64.0.21",
+    ) is False
+    assert manager._state.entries == []
+    quick_interactions.submit.assert_not_called()
+    assert "Unable to initialize Weixin translation execution settings" not in caplog.text
+
+
+def test_translation_status_absorbs_uninstalled_runtime_error(settings, caplog) -> None:
+    class UninstalledRuntimeSessionManager:
+        def configured_default_runtime_id(self) -> str:
+            return "ai-runtime"
+
+        def select_new_session_runtime(self, *, required_capabilities):
+            assert required_capabilities == frozenset({"background_turn"})
+            raise ApiError(503, "runtime_unavailable", "Runtime is not installed")
+
+    quick_interactions = MagicMock()
+    quick_interactions.deferred_restart = None
+    with caplog.at_level("WARNING"):
+        manager = WeixinTranslationManager(
+            settings.openclaw.weixin_chub_mode,
+            UninstalledRuntimeSessionManager(),
+            quick_interactions,
+        )
+
+    status = manager.status()
+
+    assert status.runtime_id == "ai-runtime"
+    assert status.runtime_available is False
+    assert "Unable to initialize Weixin translation execution settings" not in caplog.text
+
+
+def test_translation_stays_uninitialized_when_runtime_implementation_is_disabled(
+    settings, caplog
+) -> None:
+    settings.openclaw.weixin_chub_mode.translation_mode = "auto"
+
+    class DisabledImplementationSessionManager:
+        def configured_default_runtime_id(self) -> str:
+            return "codex"
+
+        def select_new_session_runtime(self, *, required_capabilities):
+            assert required_capabilities == frozenset({"background_turn"})
+            raise ApiError(
+                409,
+                "runtime_implementation_disabled",
+                "当前 Runtime 版本已停用，无法提交新任务。",
+            )
+
+    quick_interactions = MagicMock()
+    quick_interactions.deferred_restart = None
+    with caplog.at_level("WARNING"):
+        manager = WeixinTranslationManager(
+            settings.openclaw.weixin_chub_mode,
+            DisabledImplementationSessionManager(),
+            quick_interactions,
+        )
+        manager.start_worker_recovery()
+
+    status = manager.status()
+    assert status.runtime_id == "codex"
+    assert status.runtime_available is False
+    assert "Unable to initialize Weixin translation execution settings" not in caplog.text
+
+
+def test_translation_reconciles_stale_model_after_runtime_catalog_changes(settings) -> None:
+    manager, ai_session_manager, _quick_interactions = manager_without_worker(settings)
+    manager.set_execution_settings("codex", "saved-model", "low")
+    ai_session_manager.read_model_catalog.return_value = SimpleNamespace(
+        models=(SimpleNamespace(id="replacement-model", default_level="high"),),
+        default_model="replacement-model",
+        default_reasoning_effort="high",
+    )
+
+    manager.reconcile_execution_settings()
+
+    status = manager.status()
+    assert status.model == "replacement-model"
+    assert status.reasoning_effort == "high"
+
+
 def test_worker_recovery_does_not_replace_existing_execution_settings(settings) -> None:
     manager, ai_session_manager, _quick_interactions = manager_without_worker(settings)
     manager.set_execution_settings("codex", "saved-model", "low")
+    ai_session_manager.read_model_catalog.return_value = SimpleNamespace(
+        models=(SimpleNamespace(id="saved-model", default_level="low"),),
+        default_model="saved-model",
+        default_reasoning_effort="low",
+    )
     ai_session_manager.read_model_catalog.reset_mock()
 
     manager.start_worker_recovery()
@@ -488,6 +614,34 @@ def test_worker_recovery_does_not_replace_existing_execution_settings(settings) 
     assert manager.status().model == "saved-model"
     assert manager.status().reasoning_effort == "low"
     ai_session_manager.read_model_catalog.assert_not_called()
+
+
+def test_translation_reports_pending_execution_settings_recovery(settings) -> None:
+    manager, ai_session_manager, quick_interactions = manager_without_worker(settings)
+    manager.set_execution_settings("codex", "saved-model", "low")
+    ai_session_manager.read_model_catalog.return_value = SimpleNamespace(
+        models=(SimpleNamespace(id="replacement-model", default_level="high"),),
+        default_model="replacement-model",
+        default_reasoning_effort="high",
+    )
+
+    def fail_write(_state) -> None:
+        raise OSError("state storage unavailable")
+
+    manager._write = fail_write
+    manager.reconcile_execution_settings()
+
+    status = manager.status()
+    assert status.execution_settings_recovery_required is True
+    assert status.execution_settings_recovery_error is not None
+    assert manager.enqueue(
+        message_id="pending-settings",
+        original="请优化这段文字",
+        route=route(),
+        operation_id="pending-settings",
+        source_ip="100.64.0.21",
+    ) is False
+    quick_interactions.submit.assert_not_called()
 
 
 def test_translation_rejects_runtime_without_text_optimization_support(settings) -> None:

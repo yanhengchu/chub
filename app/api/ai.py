@@ -239,11 +239,13 @@ def update_default_runtime_implementation(
     request: Request,
     runtime_id: str | None = Query(default=None),
 ) -> ApiResponse[RuntimeImplementationData]:
+    data = request.app.state.ai_session_manager.update_default_implementation(
+        payload.implementation_id,
+        runtime_id=runtime_id,
+    )
+    request.app.state.weixin_translation.reconcile_execution_settings()
     return ApiResponse(
-        data=request.app.state.ai_session_manager.update_default_implementation(
-            payload.implementation_id,
-            runtime_id=runtime_id,
-        )
+        data=data
     )
 
 
@@ -261,6 +263,8 @@ def update_runtime_enablement(
             runtime_id,
             payload.enabled,
         )
+        if payload.enabled:
+            request.app.state.weixin_translation.reconcile_execution_settings()
     except Exception:
         log_operation(
             request,

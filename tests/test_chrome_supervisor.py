@@ -48,6 +48,7 @@ def test_supervisor_request_uses_bounded_fixed_protocol(tmp_path: Path) -> None:
                                 "user_data_dir": "/tmp/debug",
                                 "profile_directory": "Profile 1",
                                 "process_ids": [],
+                                "chrome_available": True,
                             },
                         }
                     )

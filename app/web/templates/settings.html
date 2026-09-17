@@ -16,6 +16,7 @@
     <script src="/static/js/features/workspace-session-visibility.js" defer></script>
     <script src="/static/js/features/workspace-task-orchestration.js" defer></script>
     <script src="/static/js/features/workspace-plugin-lifecycle.js" defer></script>
+    {% if settings_page == "logs" %}<script src="/static/logs.js" defer></script>{% endif %}
   </head>
   <body data-settings-page="{{ settings_page }}" data-settings-runtime-id="{{ settings_runtime_id or '' }}">
     <div id="settings-page-dialogs">
@@ -45,7 +46,7 @@
             <span class="settings-navigation-group">第三方服务</span>
             <a class="settings-navigation-link" href="/settings/openclaw"{% if settings_page == "openclaw" %} aria-current="page"{% endif %}><span class="settings-navigation-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><circle cx="6" cy="12" r="2"></circle><circle cx="18" cy="6" r="2"></circle><circle cx="18" cy="18" r="2"></circle><path d="m7.8 11 8.4-4M7.8 13l8.4 4"></path></svg></span><span>OpenClaw</span></a>
             <span class="settings-navigation-group">维护</span>
-            <a class="settings-navigation-link" href="/settings/diagnostics"{% if settings_page == "diagnostics" %} aria-current="page"{% endif %}><span class="settings-navigation-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><circle cx="12" cy="12" r="9"></circle><path d="M9.8 9a2.3 2.3 0 1 1 3.7 1.8c-1.2.9-1.5 1.3-1.5 2.7"></path><path d="M12 16.5h.01"></path></svg></span><span>维护与版本</span></a>
+            <a class="settings-navigation-link" href="/settings/diagnostics"{% if settings_page in ["diagnostics", "logs"] %} aria-current="page"{% endif %}><span class="settings-navigation-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><circle cx="12" cy="12" r="9"></circle><path d="M9.8 9a2.3 2.3 0 1 1 3.7 1.8c-1.2.9-1.5 1.3-1.5 2.7"></path><path d="M12 16.5h.01"></path></svg></span><span>维护与版本</span></a>
           </nav>
         </aside>
         <div id="settings-sidebar-resizer" class="settings-sidebar-resizer" role="separator" aria-orientation="vertical" aria-controls="settings-sidebar" aria-label="调整设置侧边栏宽度" aria-valuemin="225" aria-valuemax="360" aria-valuenow="225" tabindex="0"></div>
@@ -59,7 +60,7 @@
               {% if orchestration_navigation %}<button class="settings-mobile-nav-link" type="button" data-settings-url="/settings/task-orchestration"{% if settings_page == "task-orchestration" %} aria-current="page"{% endif %} aria-label="微信任务润色" title="微信任务润色"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="m14 4 6 6-8 8H6v-6l8-8Z"></path><path d="m13 5 6 6"></path><path d="M4 20h8"></path></svg></button>{% endif %}
               {% if deliveryline_navigation %}<button class="settings-mobile-nav-link" type="button" data-settings-url="/settings/deliveryline"{% if settings_page == "deliveryline" %} aria-current="page"{% endif %} aria-label="Deliveryline" title="Deliveryline"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M5 4h14v16H5z"></path><path d="M8 8h8M8 12h8M8 16h5"></path></svg></button>{% endif %}
               <button class="settings-mobile-nav-link" type="button" data-settings-url="/settings/openclaw"{% if settings_page == "openclaw" %} aria-current="page"{% endif %} aria-label="OpenClaw" title="OpenClaw"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><circle cx="6" cy="12" r="2"></circle><circle cx="18" cy="6" r="2"></circle><circle cx="18" cy="18" r="2"></circle><path d="m7.8 11 8.4-4M7.8 13l8.4 4"></path></svg></button>
-              <button class="settings-mobile-nav-link" type="button" data-settings-url="/settings/diagnostics"{% if settings_page == "diagnostics" %} aria-current="page"{% endif %} aria-label="维护与版本" title="维护与版本"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><circle cx="12" cy="12" r="9"></circle><path d="M9.8 9a2.3 2.3 0 1 1 3.7 1.8c-1.2.9-1.5 1.3-1.5 2.7M12 16.5h.01"></path></svg></button>
+              <button class="settings-mobile-nav-link" type="button" data-settings-url="/settings/diagnostics"{% if settings_page in ["diagnostics", "logs"] %} aria-current="page"{% endif %} aria-label="维护与版本" title="维护与版本"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><circle cx="12" cy="12" r="9"></circle><path d="M9.8 9a2.3 2.3 0 1 1 3.7 1.8c-1.2.9-1.5 1.3-1.5 2.7M12 16.5h.01"></path></svg></button>
             </nav>
             <p class="section-kicker">功能配置</p><h1 id="settings-title" class="settings-workspace-title">{{ settings_title }}</h1><p class="settings-workspace-description">{{ settings_description }}</p>
           </header>
@@ -85,7 +86,7 @@
               <div class="settings-subsection" aria-labelledby="maintenance-tools-title">
                 <h3 id="maintenance-tools-title">维护工具</h3>
                 <p class="settings-subsection-description">查看节点记录、打开维护终端并核对当前 Chub 版本。</p>
-                <div class="settings-utility-list"><a class="settings-utility-row" href="/logs"><span><strong>日志详情</strong><small>节点操作与运行记录</small></span><span aria-hidden="true">打开</span></a><button id="settings-maintenance-terminal" class="settings-utility-row" type="button"><span><strong>维护终端</strong><small id="settings-maintenance-terminal-detail">在独立标签页打开当前项目目录的 Shell。</small></span><span id="settings-maintenance-terminal-label" aria-hidden="true">打开</span></button><div class="settings-utility-row"><span><strong>Chub 版本</strong><small>当前节点运行版本</small></span><b>v{{ app_version }}</b></div></div>
+                <div class="settings-utility-list"><a class="settings-utility-row" href="/settings/logs"><span><strong>日志详情</strong><small>节点操作与运行记录</small></span><span aria-hidden="true">打开</span></a><button id="settings-maintenance-terminal" class="settings-utility-row" type="button"><span><strong>维护终端</strong><small id="settings-maintenance-terminal-detail">在独立标签页打开当前项目目录的 Shell。</small></span><span id="settings-maintenance-terminal-label" aria-hidden="true">打开</span></button><div class="settings-utility-row"><span><strong>Chub 版本</strong><small>当前节点运行版本</small></span><b>v{{ app_version }}</b></div></div>
               </div>
               <div id="deployment-package-settings" class="settings-subsection" aria-labelledby="deployment-package-title">
                 <div class="deployment-package-heading"><div><h3 id="deployment-package-title">版本发布</h3><p class="settings-subsection-description">从已提交的项目版本声明发布 Chub 与两个正式插件 ZIP，并更新本地 tag 与发版记录；不自动提交或推送。</p></div><button id="deployment-package-build" class="button-secondary" type="button">生成发版说明</button></div>
@@ -97,6 +98,8 @@
                 </form>
               </div>
             </section>
+            {% elif settings_page == "logs" %}
+            <section class="settings-section" aria-labelledby="logs-settings-title"><div class="settings-section-heading"><h2 id="logs-settings-title">日志详情</h2><p>查看节点操作与运行记录。</p></div><div class="settings-subsection"><div class="log-detail-toolbar"><label>日志来源<select id="detail-log-source"><option value="operations">操作日志</option><option value="worker-operations">Worker 操作日志</option><option value="application">应用日志</option><option value="service-out">服务标准输出</option><option value="service-error">服务错误输出</option></select></label><button id="refresh-detail-logs" class="button-secondary" type="button">刷新</button><button id="load-earlier-logs" class="button-secondary" type="button">加载更早</button><button id="download-detail-logs" class="button-secondary" type="button">下载日志</button></div><p id="detail-logs-message" class="message">正在读取最近 500 行…</p><pre id="detail-logs-output" class="logs-output log-detail-output"></pre></div></section>
             {% elif settings_page == "session" %}
             <section class="settings-section" aria-label="会话设置">
               <div class="settings-subsection" aria-labelledby="session-defaults-title">

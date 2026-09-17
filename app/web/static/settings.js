@@ -867,6 +867,17 @@ function initializeOpenClawSettings() {
     row.append(copy);
     return row;
   };
+  const renderPatches = (patches, notInstalled) => {
+    settingsOpenClawPatchList.replaceChildren(...(patches.length
+      ? patches.map((patch) => createRow(
+        `${patch.identifier}${patch.version ? ` @ ${patch.version}` : ""}`,
+        notInstalled
+          ? `${patch.scope === "runtime-dist" ? "OpenClaw 运行产物补丁" : "微信 ClawBot 适配器补丁"}；当前节点未安装 OpenClaw，尚未部署或核验。`
+          : `${patch.scope === "runtime-dist" ? "OpenClaw 运行产物补丁" : "微信 ClawBot 适配器补丁"}；内容仅在重启与恢复时核验。`,
+        patch.state,
+      ))
+      : [createRow("补丁状态", "暂时无法读取已登记的兼容补丁基线。", "unavailable")]));
+  };
   const render = (status, data) => {
     if (!settingsOpenClawIntegrationList || !settingsOpenClawPatchList) return;
     if (!status?.installed) {
@@ -875,7 +886,7 @@ function initializeOpenClawSettings() {
         status?.message || "当前节点未安装 OpenClaw。",
         "not_installed",
       ));
-      settingsOpenClawPatchList.replaceChildren();
+      renderPatches(Array.isArray(data?.patches) ? data.patches : [], true);
       setSettingsMessage(settingsOpenClawIntegrationMessage, "");
       return;
     }
@@ -892,22 +903,12 @@ function initializeOpenClawSettings() {
       ),
     );
     const patches = Array.isArray(data.patches) ? data.patches : [];
-    settingsOpenClawPatchList.replaceChildren(...(patches.length
-      ? patches.map((patch) => createRow(
-        `${patch.identifier}${patch.version ? ` @ ${patch.version}` : ""}`,
-        `${patch.scope === "runtime-dist" ? "OpenClaw 运行产物补丁" : "微信 ClawBot 适配器补丁"}；内容仅在重启与恢复时核验。`,
-        patch.state,
-      ))
-      : [createRow("补丁状态", "当前组合不满足已验收基线，未读取补丁清单。", "unavailable")]));
+    renderPatches(patches, false);
     setSettingsMessage(settingsOpenClawIntegrationMessage, "");
   };
   const load = async () => {
     try {
       const status = await fetchSettingsApi("/api/openclaw/status");
-      if (!status?.installed) {
-        render(status, null);
-        return;
-      }
       const data = await fetchSettingsApi("/api/openclaw/integration");
       render(status, data);
     } catch (_error) {

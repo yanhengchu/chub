@@ -134,13 +134,10 @@ def weekly_report_template_detail(
     report = get_weekly_report_template(template_type)
     if report is None:
         raise HTTPException(status_code=404, detail="Weekly report template not found")
-    return templates.TemplateResponse(
-        request=request,
-        name="weekly_report_detail.html",
-        context={
-            "app_name": request.app.state.settings.app.name,
-            "report": report,
-        },
+    return render_workspace(
+        request,
+        "automations",
+        reading_detail={"kind": "weekly-template", "report": report},
     )
 
 
@@ -157,24 +154,16 @@ def weekly_report_detail(
     report = get_weekly_report(period, report_type)
     if report is None:
         raise HTTPException(status_code=404, detail="Weekly report not found")
-    return templates.TemplateResponse(
-        request=request,
-        name="weekly_report_detail.html",
-        context={
-            "app_name": request.app.state.settings.app.name,
-            "report": report,
-        },
+    return render_workspace(
+        request,
+        "automations",
+        reading_detail={"kind": "weekly-report", "report": report},
     )
 
 
 @router.get("/logs", response_class=HTMLResponse, include_in_schema=False)
 def log_details(request: Request) -> HTMLResponse:
-    settings = request.app.state.settings
-    return templates.TemplateResponse(
-        request=request,
-        name="logs.html",
-        context={"app_name": settings.app.name},
-    )
+    return RedirectResponse("/settings/logs", status_code=307)
 
 
 def render_settings_page(
@@ -253,6 +242,16 @@ def session_settings(request: Request) -> Response:
 @router.get("/settings/diagnostics", response_class=HTMLResponse, include_in_schema=False)
 def diagnostics_settings(request: Request) -> HTMLResponse:
     return render_settings_page(request, page="diagnostics", title="维护与版本", description="查看节点记录、维护入口与当前版本。")
+
+
+@router.get("/settings/logs", response_class=HTMLResponse, include_in_schema=False)
+def logs_settings(request: Request) -> HTMLResponse:
+    return render_settings_page(
+        request,
+        page="logs",
+        title="日志详情",
+        description="查看节点操作与运行记录。",
+    )
 
 
 @router.get("/settings/runtime", response_class=HTMLResponse, include_in_schema=False)
@@ -356,6 +355,7 @@ def render_workspace(
     section: str,
     *,
     workspace_session_id: str | None = None,
+    reading_detail: dict[str, object] | None = None,
 ) -> HTMLResponse:
     settings = request.app.state.settings
     third_party_environment_available = request.app.state.openclaw_manager.is_installed()
@@ -383,7 +383,7 @@ def render_workspace(
     deliveryline_requirements = []
     deliveryline_archived_requirements = []
     deliveryline_error = None
-    if section == "project-docs":
+    if reading_detail is None and section == "project-docs":
         try:
             all_documents = list_design_documents(
                 settings.project_documents.state_file,
@@ -393,7 +393,7 @@ def render_workspace(
             document_count = len(all_documents)
         except DesignDocumentIndexError:
             documents_error = "项目资料暂时无法加载，请检查资料索引。"
-    elif section == "automations":
+    elif reading_detail is None and section == "automations":
         try:
             automations = request.app.state.automation_manager.list(home_only=False)
             automation_start_available = any(
@@ -443,6 +443,7 @@ def render_workspace(
             "page_title": settings.app.page_title or settings.app.name,
             "workspace_section": section,
             "workspace_session_id": workspace_session_id,
+            "workspace_reading_detail": reading_detail,
             "deliveryline": deliveryline,
             "deliveryline_navigation": deliveryline is not None,
             "today_focus_ai_available": today_focus_ai_available,
@@ -511,8 +512,8 @@ def design_document_detail(request: Request, document_id: str) -> HTMLResponse:
     if document is None:
         raise HTTPException(status_code=404, detail="Design document not found")
 
-    return templates.TemplateResponse(
-        request=request,
-        name="design_document_detail.html",
-        context={"app_name": settings.app.name, "document": document},
+    return render_workspace(
+        request,
+        "project-docs",
+        reading_detail={"kind": "project-document", "document": document},
     )

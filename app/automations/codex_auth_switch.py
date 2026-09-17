@@ -22,10 +22,10 @@ from threading import Event
 from typing import Literal
 from urllib.parse import urlsplit
 
-from app.automations.browser import (
-    _chrome_debug_module,
-    _profile_modules,
-    session_factory,
+from app.automations.browser import session_factory
+from app.automations.chrome_maintenance import (
+    ChromeLifecycleError,
+    ChromeLifecycleUseCase,
 )
 from app.automations.lock import LockBusy, file_lock
 from app.core.config import Settings, load_settings
@@ -49,6 +49,10 @@ DEVICE_CODE = re.compile(r"one-time code.*?([A-Z0-9]{4}-[A-Z0-9]{5})", re.S)
 DEVICE_CODE_FORMAT = re.compile(r"^[A-Z0-9]{4}-[A-Z0-9]{5}$")
 _AUTH_OPERATION_ID: ContextVar[str | None] = ContextVar(
     "codex_auth_operation_id",
+    default=None,
+)
+_BROWSER_LIFECYCLE: ContextVar[ChromeLifecycleUseCase | None] = ContextVar(
+    "codex_auth_browser_lifecycle",
     default=None,
 )
 
@@ -572,45 +576,52 @@ class BrowserSnapshot:
 
 
 def _capture_browser_snapshot() -> BrowserSnapshot:
-    chrome_debug = _chrome_debug_module()
-    _, _, profile_store = _profile_modules()
-    current = chrome_debug.status()
+    lifecycle = _BROWSER_LIFECYCLE.get() or ChromeLifecycleUseCase()
+    try:
+        current = lifecycle.status_snapshot()
+    except ChromeLifecycleError as exc:
+        raise CodexAuthSwitchError("Debug Chrome 当前不可用") from exc
     if current.state not in {"running", "stopped"}:
         raise CodexAuthSwitchError("Debug Chrome 当前不可用")
     return BrowserSnapshot(
         profile=(
             current.profile_directory
             if current.state == "running"
-            else profile_store.active_profile(chrome_debug.DEFAULT_USER_DATA_DIR)
+            else lifecycle.active_profile()
         ),
         mode=current.mode if current.state == "running" else None,
     )
 
 
 def _switch_browser_for_account(snapshot: BrowserSnapshot) -> None:
-    chrome_debug = _chrome_debug_module()
-    _, _, profile_store = _profile_modules()
-    current = chrome_debug.status()
-    if current.state == "running":
-        chrome_debug.stop()
-    profile_store.select_profile(chrome_debug.DEFAULT_USER_DATA_DIR, TARGET_PROFILE)
-    started = chrome_debug.start(headless=False)
+    lifecycle = _BROWSER_LIFECYCLE.get() or ChromeLifecycleUseCase()
+    try:
+        current = lifecycle.status_snapshot()
+        if current.state == "running":
+            lifecycle.stop()
+        started = lifecycle.select_profile_and_start(TARGET_PROFILE, "headed")
+    except ChromeLifecycleError as exc:
+        raise CodexAuthSwitchError("无法启动目标 Debug Chrome 账户") from exc
     if started.state != "running" or started.profile_directory != TARGET_PROFILE:
         raise CodexAuthSwitchError("无法启动目标 Debug Chrome 账户")
 
 
 def _restore_browser(snapshot: BrowserSnapshot) -> None:
-    chrome_debug = _chrome_debug_module()
-    _, _, profile_store = _profile_modules()
-    current = chrome_debug.status()
-    if current.state == "running":
-        chrome_debug.stop()
+    lifecycle = _BROWSER_LIFECYCLE.get() or ChromeLifecycleUseCase()
+    try:
+        current = lifecycle.status_snapshot()
+        if current.state == "running":
+            lifecycle.stop()
+    except ChromeLifecycleError as exc:
+        raise CodexAuthSwitchError("Debug Chrome 未能恢复到原状态") from exc
     if snapshot.profile is None:
         return
-    profile_store.select_profile(chrome_debug.DEFAULT_USER_DATA_DIR, snapshot.profile)
     if snapshot.mode is None:
         return
-    restored = chrome_debug.start(headless=snapshot.mode != "headed")
+    try:
+        restored = lifecycle.select_profile_and_start(snapshot.profile, snapshot.mode)
+    except ChromeLifecycleError as exc:
+        raise CodexAuthSwitchError("Codex 已切换，但 Debug Chrome 未能恢复到原状态") from exc
     if restored.state != "running" or restored.profile_directory != snapshot.profile:
         raise CodexAuthSwitchError("Codex 已切换，但 Debug Chrome 未能恢复到原状态")
 
@@ -643,6 +654,7 @@ def switch(
     operation_id: str | None = None,
 ) -> SwitchResult:
     operation_token = _AUTH_OPERATION_ID.set(operation_id)
+    browser_lifecycle_token: object | None = None
     try:
         AUTH_LOGGER.info("codex_auth_switch phase=requested mode=%s", mode)
         codex = shutil.which("codex")
@@ -650,6 +662,9 @@ def switch(
             raise CodexAuthSwitchError("未找到 Codex CLI")
         home = codex_home or _codex_home()
         resolved_settings = settings or load_settings()
+        browser_lifecycle_token = _BROWSER_LIFECYCLE.set(
+            ChromeLifecycleUseCase(resolved_settings)
+        )
         lock_path = (
             resolved_settings.automations.runtime_dir / "locks" / "codex-auth-switch.lock"
         )
@@ -710,6 +725,8 @@ def switch(
             AUTH_LOGGER.info("codex_auth_switch phase=failed reason=known_switch_error")
             raise
     finally:
+        if browser_lifecycle_token is not None:
+            _BROWSER_LIFECYCLE.reset(browser_lifecycle_token)
         _AUTH_OPERATION_ID.reset(operation_token)
 
 

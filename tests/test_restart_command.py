@@ -4,15 +4,18 @@ import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from app.services.restart_command import (
     describe_restart_launch_error,
     launch_restart_process,
     monitor_restart_process,
 )
+from app.services.web_restart import WebRestartUnavailableError, WebRestartUseCase
 
 
 def test_launch_restart_process_uses_detached_fixed_command() -> None:
-    command = Path("/project/scripts/chub-web-restart")
+    command = Path("/project/scripts/maintenance/chub-web-restart")
 
     with patch("app.services.restart_command.subprocess.Popen") as popen:
         process = launch_restart_process(command)
@@ -20,6 +23,32 @@ def test_launch_restart_process_uses_detached_fixed_command() -> None:
     assert process is popen.return_value
     assert popen.call_args.args[0] == [str(command)]
     assert popen.call_args.kwargs["start_new_session"] is True
+
+
+def test_web_restart_use_case_uses_only_the_canonical_maintenance_adapter(
+    tmp_path: Path,
+) -> None:
+    command = tmp_path / "scripts" / "maintenance" / "chub-web-restart"
+    command.parent.mkdir(parents=True)
+    command.touch()
+    restart = WebRestartUseCase(project_root=tmp_path)
+
+    with patch("app.services.web_restart.launch_restart_process") as launch:
+        process = restart.launch(operation_id="operation-1", source_ip="127.0.0.1")
+
+    assert process is launch.return_value
+    assert launch.call_args.args == (command,)
+    assert launch.call_args.kwargs["environment"] == {
+        "CHUB_OPERATION_ID": "operation-1",
+        "CHUB_OPERATION_SOURCE_IP": "127.0.0.1",
+    }
+
+
+def test_web_restart_use_case_rejects_a_missing_canonical_adapter(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(WebRestartUnavailableError, match="找不到 Chub 重启脚本"):
+        WebRestartUseCase(project_root=tmp_path).ensure_available()
 
 
 def test_monitor_restart_process_reports_nonzero_exit() -> None:

@@ -11,6 +11,10 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 build/
+!scripts/build/
+!scripts/build/**
+scripts/build/__pycache__/
+scripts/build/*.py[cod]
 dist/
 node_modules/
 

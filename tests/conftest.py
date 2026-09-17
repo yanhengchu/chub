@@ -5,10 +5,10 @@ import pytest
 
 from app.core.config import Settings
 from app.ai_runtime.runtime_plugin_packages import RuntimePluginService
-from scripts.build_codex_runtime_zip import build as build_codex_runtime_zip
+from scripts.build.codex_runtime_zip import build as build_codex_runtime_zip
 
 
-CODEX_RUNTIME_SOURCE_ROOT = Path(__file__).resolve().parents[1] / "runtime-modules" / "codex-runtime"
+CODEX_RUNTIME_SOURCE_ROOT = Path(__file__).resolve().parents[1] / "modules" / "runtime" / "codex-runtime"
 if str(CODEX_RUNTIME_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(CODEX_RUNTIME_SOURCE_ROOT))
 TESTS_ROOT = Path(__file__).resolve().parent

@@ -56,7 +56,9 @@ AI Runtime 层 ─────────────────────�
 
 ### 2.1.1 插件模块边界
 
-插件模块分为 Runtime、任务编排和工作台业务模块三类。它们使用各自的协议、安装目录、注册表和恢复规则，不能互相借用模块类型或扩大为通用插件市场。前两类已实现；业务模块的首个固定开发实现是 Deliveryline，源码根目录为 `business-modules/deliveryline/`。当前业务模块宿主管理其受控实现与启用状态，并为 Deliveryline 提供可信网络内的共享需求档案页面与 API；后续阶段业务代码和 Chub 执行关联尚未接入。
+插件模块分为 Runtime、任务编排和工作台业务模块三类。它们使用各自的协议、安装目录、注册表和恢复规则，不能互相借用模块类型或扩大为通用插件市场。内置开发源码统一位于 `modules/`，由 `modules/chub-modules.json` 显式登记；平级 `chub-local-modules/` 是同构的本机模块源，必须使用自己的显式索引，且不属于 Chub 部署、升级或恢复边界。扫描始终先内置、后本机；本机同 ID 项直接忽略。前两类已实现；业务模块的首个固定开发实现是 Deliveryline，源码根目录为 `modules/business/deliveryline/`。当前业务模块宿主管理其受控实现与启用状态，并为 Deliveryline 提供可信网络内的共享需求档案页面与 API；后续阶段业务代码和 Chub 执行关联尚未接入。
+
+`modules/` 只保存受版本控制的开发模块，不保存已安装 ZIP、任务、缓存或其他运行态。`chub-modules.json` 是内置目录的发现索引；`runtime/` 放实现 Adapter 与 Worker Runner 的 AI Runtime，`orchestration/` 放受限任务编排实现，`business/` 放工作台业务模块的开发制品。每个类型目录可以包含多个模块，实际加载身份始终以索引和各模块 Manifest 为准。平级 `chub-local-modules/` 采用相同的类型目录布局，但只承载当前设备维护者自行登记的代码。
 
 模块可在 Chub 工作台中拥有固定分区和模块专属设置。核心不因模块维护、普通配置变化、单项故障或状态暂时未知增加全局门禁；能由模块或执行层安全尝试的操作应先尝试并按最终结果收敛。只有会造成直接数据破坏、安全越界或不可恢复冲突的操作才需拒绝。模块升级、停用或故障默认只影响后续新业务请求；已受理业务记录按其创建时快照和专项恢复规则收敛。移除模块时，只能处理该模块声明的模块专属数据，不能清理 Chub 通用设置、其他模块、Session、Worker 任务或第三方原生数据。
 
@@ -138,7 +140,8 @@ AI Runtime 层
 | --- | --- | --- |
 | `app/core/`、`app/tasks/`、`app/automations/`、`app/notifications/`、`app/requests/` | 核心层 | 配置、安全、日志、维护任务、固定自动化、通知和需求储备 |
 | `app/application.py`、`app/api/`、`app/web/`、`scripts/`、`config/` | 部署组合根与核心层入口 | Web、CLI、受控服务维护与配置；仅注册或调用对应层公开能力 |
-| `app/ai_runtime/`、`app/ai_session/`、`app/ai_interactions/`、`app/api/ai.py`、`app/quick_worker*.py`、`app/ai_usage/`、`runtime-modules/` | AI Runtime 层 | Runtime 契约、插件 ZIP、Session、快速交互与 Worker、Runner、`/api/ai/*` 入口，以及由 Runtime 归属的 AI 用量与专属设置 |
+| `app/ai_runtime/`、`app/ai_session/`、`app/ai_interactions/`、`app/api/ai.py`、`app/quick_worker*.py`、`app/ai_usage/`、`modules/runtime/` | AI Runtime 层 | Runtime 契约、插件 ZIP、Session、快速交互与 Worker、Runner、`/api/ai/*` 入口，以及由 Runtime 归属的 AI 用量与专属设置 |
+| `modules/orchestration/`、`modules/business/` | 模块开发源码 | 分别保存任务编排和工作台业务模块的受控开发制品；模块是否可用仍由各自协议、生命周期和宿主状态决定 |
 | `integrations/openclaw/chub/`、OpenClaw/微信适配协调 | 第三方服务层 | 插件、通道、绑定、固定路由和第三方协议 |
 | `app/services/` | 过渡区 | 已有跨领域协调；新增逻辑不得以此作为新的通用领域，应按三层归属落位 |
 
@@ -191,7 +194,9 @@ AI Runtime 层
 业务终态 -> 核心层预配置通知目标 -> 有界文本投递 -> 投递终态回写业务记录
 ```
 
-Debug Chrome 是核心层的受管浏览器基础能力；固定自动化、账号登录和 Runtime 页面采集通过各自受控用例调用它，不持有浏览器生命周期或 Profile 所有权。自动化只执行固定任务；通知投递成功不替代主业务成功。自动化需要 AI 时，从 Runner 的明确步骤调用 AI Runtime 公开用例，任务本身仍由 AI Runtime 维护终态。
+Debug Chrome 是核心层的受管浏览器基础能力；固定自动化、账号登录和 Runtime 页面采集通过各自受控用例调用它，不持有浏览器生命周期或 Profile 所有权。当前公开边界分为 `ChromeLifecycleUseCase`（只读状态、Profile 生命周期和固定启停）与 `ChromeSupervisorMaintenanceUseCase`（仅 `restart: bool` 的 Supervisor reconcile）。Ubuntu 的生命周期状态、启停和默认 Playwright 连接均必须经过 Supervisor Unix socket；socket 不可用时失败关闭，不能回退为 Web/Worker 进程直接读取或控制本地 Chrome。Supervisor 服务健康要求 systemd active 且 socket `status` 可响应；浏览器实例本身可以是 stopped。macOS 返回无需 Supervisor 操作的成功结果，不创建额外服务。自动化只执行固定任务；通知投递成功不替代主业务成功。自动化需要 AI 时，从 Runner 的明确步骤调用 AI Runtime 公开用例，任务本身仍由 AI Runtime 维护终态。
+
+本机稳定命令只经 `scripts/chub` 公开。Web 页面、API 与 deferred restart 通过 `WebRestartUseCase` 请求固定 Web 重启；Quick Worker 页面、恢复和微信维护入口通过 `QuickWorkerMaintenanceUseCase` 请求固定 Worker 重启；系统升级 Coordinator 通过 `SystemUpgradeMaintenanceUseCase` 请求固定升级 oneshot 的启动或 Worker 恢复。三个公开用例只启动各自的 `scripts/maintenance/` 独立适配，不重新执行 `scripts/chub`，也不接受调用方给出的脚本、服务或平台命令。维护适配只保留 Chub 的固定流程、运行态清理与最终状态确认，全部 `launchctl`/`systemctl` 调用必须再委托给平台适配。独立进程必须执行的固定维护实现集中在 `scripts/maintenance/`，服务定义必须指向该 canonical 路径；根目录旧维护路径已移除。正式 ZIP 构建入口集中在 `scripts/build/`，根目录旧 Python 构建入口已移除。`scripts/platform/service-management.sh` 只承载已枚举的固定平台动作：核心 Web、Quick Worker 与升级 oneshot 的定义、安装前停机、升级执行器加载/启动/状态和卸载，核心 Web/Quick Worker 的启动、重启、停止和状态读取，Debug Chrome Supervisor 的定义、停止、状态和固定 reconcile，以及平台服务详情读取；它不能成为接收任意服务名、路径或子命令的通用接口。CLI 仅解析固定命令、调用这些动作，并保留 Chub 运行态清理、维护门禁与 Web/Worker 最终状态确认。失败的系统升级操作记录属于 Chub 自有运行态，不重绑到新方案或续跑；下一次确认升级会先安全清除该记录和组件报告，再从当前固定方案重新开始。外置模块的 `tools/` 不属于运行时发现、加载或调度边界。
 
 ### 6.3 插件模块维护
 

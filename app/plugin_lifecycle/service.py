@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import os
 import zipfile
 from pathlib import Path
@@ -11,6 +12,7 @@ from typing import Any
 from fastapi import Request
 
 from app.ai_runtime.development_plugins import development_runtime_artifact_id
+from app.core.module_sources import registered_module_source
 from app.core.config import PROJECT_ROOT, Settings
 from app.core.response import ApiError
 
@@ -24,17 +26,28 @@ _DELIVERYLINE_MANIFEST = "chub-business-module.json"
 _BUNDLED_MODULE_PREFIXES = {
     "weixin-orchestration": "weixin-refinement-release-",
 }
+LOGGER = logging.getLogger("hub.plugin_lifecycle")
 
 
 class PluginLifecycleService:
     """Coordinates common operations; plugins retain final-state confirmation."""
 
-    def __init__(self, settings: Settings, ai_session_manager: Any, weixin_chub_mode: Any) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        ai_session_manager: Any,
+        weixin_chub_mode: Any,
+        weixin_translation: Any,
+    ) -> None:
         self.settings = settings
         self.ai_session_manager = ai_session_manager
         self.weixin_chub_mode = weixin_chub_mode
+        self.weixin_translation = weixin_translation
         self.path = settings.business_modules.state_file.with_name("plugin-lifecycle.json")
         self._lock = RLock()
+        self._bundled_orchestration_identity_cache: dict[
+            Path, tuple[tuple[int, int, int, int, int], str | None, str | None]
+        ] = {}
 
     def list(self, request: Request) -> dict[str, object]:
         with self._lock:
@@ -197,6 +210,8 @@ class PluginLifecycleService:
                     state.setdefault("enabled", {}).pop(plugin_id, None)
                 self._write_after_extension_action(state, extension_updated)
                 lifecycle_state_written = True
+                if plugin_id == "runtime" and enabled:
+                    self.weixin_translation.reconcile_execution_settings()
                 return self._status(request, plugin_id, state)
         except ApiError as exc:
             if (
@@ -239,18 +254,44 @@ class PluginLifecycleService:
                 artifact.update(metadata[artifact_id])
             artifact["imported"] = artifact_id in imports
             artifact["enabled"] = artifact_id in enabled
+        imported_implementation_refs = self._imported_implementation_refs(plugin_id, imports)
         artifacts = [
             artifact
             for artifact in artifacts
-            if artifact["imported"] or artifact.get("available") is not False
+            if (
+                artifact["imported"]
+                or artifact.get("available") is not False
+                or artifact.get("source") == "bundled"
+            )
+            and not (
+                artifact.get("source") == "bundled"
+                and artifact.get("implementation_ref") in imported_implementation_refs
+            )
         ]
-        return {
+        for artifact in artifacts:
+            artifact.pop("implementation_ref", None)
+        result: dict[str, object] = {
             "plugin_id": plugin_id,
             "name": _PLUGIN_NAMES[plugin_id],
             "imported_artifact_ids": imports,
             "enabled_artifact_ids": enabled,
             "artifacts": artifacts,
         }
+        if plugin_id == "weixin-orchestration":
+            # Lifecycle enablement remains independent from this optional
+            # execution dependency.  The page uses this projection only to
+            # explain why newly received refinement tasks are dormant.
+            try:
+                result["execution_ready"] = self.weixin_translation.runtime_available()
+            except (ApiError, OSError):
+                result["execution_ready"] = None
+            except Exception:
+                LOGGER.warning(
+                    "Unable to read Weixin refinement Runtime availability",
+                    exc_info=True,
+                )
+                result["execution_ready"] = None
+        return result
 
     def _artifacts(self, request: Request, plugin_id: str) -> list[dict[str, object]]:
         if plugin_id == "runtime":
@@ -271,14 +312,16 @@ class PluginLifecycleService:
             rows = [{"artifact_id": "development:weixin-orchestration", "source": "development", "name": "开发实现", "version": development_version, "description": "处理微信普通文本的润色、确认与任务续提。", "available": status.development_available, "removable": True, "reason": None}]
             rows.extend({"artifact_id": f"orchestration:{item.implementation_ref}", "source": "zip", "name": item.name, "version": item.version, "description": item.description, "available": item.available, "removable": removable, "reason": item.reason} for item, _active, removable in self.weixin_chub_mode.list_orchestration_plugins())
             return rows + self._candidates(plugin_id)
-        return [{"artifact_id": "development:deliveryline", "source": "development", "name": "开发实现", "version": "dev", "description": "提供需求提出档案、评审前校验与归档查看；后续交付阶段尚未接入。", "available": (PROJECT_ROOT / "business-modules/deliveryline/chub-business-module.json").is_file(), "removable": True, "reason": None}] + self._candidates(plugin_id)
+        deliveryline = registered_module_source("business", "deliveryline")
+        return [{"artifact_id": "development:deliveryline", "source": "development", "name": "开发实现", "version": "dev", "description": "提供需求提出档案、评审前校验与归档查看；后续交付阶段尚未接入。", "available": bool(deliveryline and (deliveryline.root / "chub-business-module.json").is_file()), "removable": True, "reason": None}] + self._candidates(plugin_id)
 
     @staticmethod
     def _development_weixin_version() -> str:
         try:
-            manifest = json.loads(
-                (PROJECT_ROOT / "orchestration-modules" / "weixin-refinement" / "chub-capability-orchestration.json").read_text("utf-8")
-            )
+            source = registered_module_source("orchestration", "weixin-refinement")
+            if source is None:
+                return "未知"
+            manifest = json.loads((source.root / "chub-capability-orchestration.json").read_text("utf-8"))
             version = manifest.get("version") if isinstance(manifest, dict) else None
             return version if isinstance(version, str) and version.strip() else "未知"
         except (OSError, ValueError):
@@ -311,7 +354,7 @@ class PluginLifecycleService:
             for path in sorted(bundled_directory.glob(pattern)) if pattern else ():
                 if not path.is_file() or path.is_symlink():
                     continue
-                rows.append({
+                row: dict[str, object] = {
                     "artifact_id": f"bundled:{path.name}",
                     "source": "bundled",
                     "name": f"{path.stem}（随包）",
@@ -320,8 +363,66 @@ class PluginLifecycleService:
                     "available": True,
                     "removable": True,
                     "reason": None,
-                })
+                }
+                if plugin_id == "weixin-orchestration":
+                    implementation_ref, invalid_reason = self._bundled_orchestration_implementation_ref(path)
+                    if implementation_ref is not None:
+                        row["implementation_ref"] = implementation_ref
+                    elif invalid_reason is not None:
+                        row["available"] = False
+                        row["reason"] = f"随包 ZIP 不可导入：{invalid_reason}"
+                rows.append(row)
         return rows
+
+    def _imported_implementation_refs(
+        self, plugin_id: str, imports: list[str]
+    ) -> set[str]:
+        if plugin_id != "weixin-orchestration":
+            return set()
+        return {
+            artifact.implementation_ref
+            for artifact, _active, _removable in self.weixin_chub_mode.list_orchestration_plugins()
+            if artifact.available
+            and f"orchestration:{artifact.implementation_ref}" in imports
+        }
+
+    def _bundled_orchestration_implementation_ref(
+        self, path: Path
+    ) -> tuple[str | None, str | None]:
+        """Return a bundled artifact's immutable identity without loading its code."""
+        try:
+            stat = path.stat()
+        except OSError:
+            return None, "无法读取随包 ZIP。"
+        fingerprint = (
+            stat.st_dev,
+            stat.st_ino,
+            stat.st_ctime_ns,
+            stat.st_mtime_ns,
+            stat.st_size,
+        )
+        cached = self._bundled_orchestration_identity_cache.get(path)
+        if cached is not None and cached[0] == fingerprint:
+            return cached[1], cached[2]
+        try:
+            archive = self._read_zip("weixin-orchestration", f"bundled:{path.name}")
+            preview = self.weixin_chub_mode.orchestration_plugin_service.inspect_archive_identity(
+                archive,
+                source_name=path.name,
+            )
+            implementation_ref = preview.implementation_ref
+            invalid_reason = None
+        except ApiError as exc:
+            implementation_ref = None
+            invalid_reason = exc.message
+        self._bundled_orchestration_identity_cache[path] = (
+            fingerprint,
+            implementation_ref,
+            invalid_reason,
+        )
+        while len(self._bundled_orchestration_identity_cache) > 32:
+            self._bundled_orchestration_identity_cache.pop(next(iter(self._bundled_orchestration_identity_cache)))
+        return implementation_ref, invalid_reason
 
     def _find(self, request: Request, plugin_id: str, artifact_id: str) -> dict[str, object]:
         item = next((item for item in self._artifacts(request, plugin_id) if item["artifact_id"] == artifact_id), None)

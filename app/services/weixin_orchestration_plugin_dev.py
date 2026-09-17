@@ -14,14 +14,17 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.core.response import ApiError
+from app.core.module_sources import registered_module_source
 
 
 DEVELOPMENT_IMPLEMENTATION_ID = "weixin-orchestration-dev"
 MAX_DEVELOPMENT_SOURCE_BYTES = 128 * 1024
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEVELOPMENT_SOURCE_PATH = (
-    PROJECT_ROOT / "orchestration-modules" / "weixin-refinement" / "weixin_refinement.py"
-)
+
+
+def development_source_path() -> Path:
+    source = registered_module_source("orchestration", "weixin-refinement")
+    return (source.root if source is not None else PROJECT_ROOT / "modules" / "orchestration" / "weixin-refinement") / "weixin_refinement.py"
 
 
 @dataclass(frozen=True)
@@ -34,7 +37,7 @@ class WeixinDevelopmentStage:
     """Read and verify the one repository-owned development implementation."""
 
     def __init__(self, source_path: Path | None = None) -> None:
-        self.source_path = source_path or DEVELOPMENT_SOURCE_PATH
+        self.source_path = source_path or development_source_path()
 
     def snapshot(self) -> WeixinDevelopmentImplementation:
         path = self.source_path

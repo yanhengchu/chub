@@ -412,14 +412,6 @@
     menu.querySelector("[data-session-action]:not(:disabled):not([hidden])")?.focus();
   };
 
-  const quickSessionUrl = (sessionId) => (
-    `/ai/sessions/${encodeURIComponent(sessionId)}/quick-interactions/conversation`
-  );
-
-  const opensSessionInNewTab = (event) => (
-    event.button === 1 || event.metaKey || event.ctrlKey || event.shiftKey
-  );
-
   const updateSessionButton = (button, session) => {
     const dot = button.querySelector(".workspace-preview-session-dot");
     const title = button.querySelector(".workspace-preview-session-content strong");
@@ -429,7 +421,6 @@
     const externallyOccupied = sessionIsExternallyOccupied(session);
     const externalQuickReadOnly = externallyOccupied;
 
-    button.disabled = externallyOccupied && !externalQuickReadOnly;
     button.title = externallyOccupied
       ? externalQuickReadOnly
         ? "其他应用正在使用此 Session；仅可查看历史。"
@@ -501,9 +492,7 @@
       const currentSession = sessionsById.get(button.dataset.sessionId);
       if (!currentSession) return;
       event.preventDefault();
-      void openSession(currentSession, button, {
-        newTab: opensSessionInNewTab(event),
-      });
+      void openSession(currentSession, button);
     };
     button.addEventListener("click", (event) => {
       if (event.button === 0) openFromEvent(event);
@@ -548,7 +537,7 @@
 
   const createSessionButton = (session) => {
     const row = document.createElement("div");
-    const button = document.createElement("button");
+    const button = document.createElement("a");
     const dot = document.createElement("span");
     const content = document.createElement("span");
     const title = document.createElement("strong");
@@ -559,9 +548,9 @@
     const more = document.createElement("button");
     const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
 
-    button.type = "button";
     button.className = "workspace-preview-session";
     button.dataset.sessionId = session.id;
+    button.href = `/?session=${encodeURIComponent(session.id)}`;
     dot.className = "workspace-preview-session-dot";
     dot.setAttribute("aria-hidden", "true");
     content.className = "workspace-preview-session-content";
@@ -570,19 +559,21 @@
     content.append(title, meta);
     button.append(dot, content);
     const openFromEvent = (event) => {
-      if (event.defaultPrevented) return;
+      if (
+        event.defaultPrevented
+        || event.button !== 0
+        || event.metaKey
+        || event.ctrlKey
+        || event.shiftKey
+        || event.altKey
+      ) return;
       const currentSession = sessionsById.get(button.dataset.sessionId);
       if (!currentSession) return;
       event.preventDefault();
-      void openSession(currentSession, button, {
-        newTab: opensSessionInNewTab(event),
-      });
+      void openSession(currentSession, button);
     };
     button.addEventListener("click", (event) => {
       if (event.button === 0) openFromEvent(event);
-    });
-    button.addEventListener("auxclick", (event) => {
-      if (event.button === 1) openFromEvent(event);
     });
     row.className = "workspace-preview-session-row";
     row.dataset.sessionId = session.id;
@@ -809,7 +800,7 @@
         if (!empty) {
           empty = document.createElement("p");
           empty.className = "empty-state";
-          empty.textContent = "暂无 Session。";
+          empty.textContent = "暂无会话。";
           items.append(empty);
         }
       } else {
@@ -848,7 +839,7 @@
             const row = existingRows.get(session.id) || createSessionButton(session);
             const button = row.querySelector(".workspace-preview-session");
             const more = row.querySelector(".workspace-preview-session-more");
-            if (!(button instanceof HTMLButtonElement) || !(more instanceof HTMLButtonElement)) return;
+            if (!(button instanceof HTMLAnchorElement) || !(more instanceof HTMLButtonElement)) return;
             updateSessionButton(button, session);
             more.hidden = sessionIsExternallyOccupied(session);
             if (more.hidden && openSessionActionSessionId === session.id) closeSessionActionMenu();
@@ -969,28 +960,21 @@
     }
   };
 
-  const openSession = async (session, button, { newTab = false } = {}) => {
+  const openSession = async (session, button) => {
     closeSessionActionMenu();
     setSidebarMessage("");
-    if (newTab) {
-      window.open(quickSessionUrl(session.id), "_blank", "noopener");
-      return;
-    }
 
-    button.disabled = true;
     try {
       activeQuickSessionId = session.id;
       setSelectedQuickSessionLocation(session.id);
       renderSessions([...sessionsById.values()]);
       if (typeof window.openWorkspaceQuickSession === "function") {
         window.openWorkspaceQuickSession(session);
-        button.disabled = false;
         return;
       }
-      window.location.assign(quickSessionUrl(session.id));
+      window.location.assign(`/?session=${encodeURIComponent(session.id)}`);
     } catch (error) {
       setSidebarMessage(error.message || "打开 Session 失败，请稍后重试。");
-      button.disabled = false;
       loadSessions();
     }
   };

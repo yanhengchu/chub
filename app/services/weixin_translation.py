@@ -45,6 +45,23 @@ English：
 SOURCE_JSON:
 {source_json}"""
 
+_OPTIONAL_RUNTIME_UNAVAILABLE_CODES = frozenset({
+    "session_default_runtime_unavailable",
+    "runtime_default_implementation_unavailable",
+    "runtime_implementation_unavailable",
+    "runtime_implementation_disabled",
+    "runtime_unavailable",
+    "ai_runtime_unavailable",
+    "ai_runtime_disabled",
+    "runtime_plugin_disabled",
+    "runtime_plugin_not_imported",
+    "weixin_translation_runtime_unavailable",
+})
+_TRANSLATION_EXECUTION_SETTING_UNAVAILABLE_CODES = frozenset({
+    "weixin_translation_model_unavailable",
+    "weixin_translation_reasoning_unavailable",
+})
+
 
 class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -110,6 +127,7 @@ class TranslationState(_StrictModel):
     processing_mode_override: Literal["direct", "auto", "confirm"] | None = None
     model: str | None = Field(default=None, max_length=128)
     reasoning_effort: str | None = Field(default=None, max_length=32)
+    execution_settings_implementation_id: str | None = Field(default=None, max_length=64)
     show_internal_native_session: bool = False
     confirmation_next_order: int = Field(default=1, ge=1)
     generation: int = Field(default=0, ge=0)
@@ -129,7 +147,10 @@ class TranslationSettingsStatus(_StrictModel):
     mode: Literal["direct", "auto", "confirm"]
     enabled: bool
     configured_default: bool
-    runtime_id: str = Field(min_length=1, max_length=32)
+    runtime_id: str | None = Field(default=None, max_length=32)
+    runtime_available: bool
+    execution_settings_recovery_required: bool = False
+    execution_settings_recovery_error: str | None = Field(default=None, max_length=300)
     model: str | None = Field(default=None, max_length=128)
     reasoning_effort: str | None = Field(default=None, max_length=32)
     show_internal_native_session: bool
@@ -175,6 +196,7 @@ class WeixinTranslationManager:
         self._closed = False
         self._system_upgrade_reset = False
         self._state_error = False
+        self._execution_settings_recovery_error: str | None = None
         self._worker_watchers: set[str] = set()
         self._worker_submissions: set[str] = set()
         self._confirmed_retry_timer: threading.Timer | None = None
@@ -261,6 +283,10 @@ class WeixinTranslationManager:
         self._advance_confirmation_queue()
         self._resume_confirmed_submissions()
 
+    def reconcile_execution_settings(self) -> None:
+        """Refresh only future-task settings after a Runtime selection changes."""
+        self._initialize_execution_settings(reconcile=True)
+
     def enqueue(
         self,
         *,
@@ -289,6 +315,9 @@ class WeixinTranslationManager:
             )
             return False
         with self._lock:
+            if self._execution_settings_recovery_error is not None:
+                self._reject(operation_id, source_ip)
+                return False
             if self._processing_mode_locked() == "direct":
                 return False
             if any(item.message_id == message_id for item in self._state.entries):
@@ -1231,11 +1260,17 @@ class WeixinTranslationManager:
         if self._state_error:
             raise OSError("Weixin translation state is unavailable")
         with self._lock:
+            runtime_id, runtime_available = self._translation_runtime_status()
             return TranslationSettingsStatus(
                 mode=self._processing_mode_locked(),
                 enabled=self._enabled_locked(),
                 configured_default=self.config.translation_mode != "direct",
-                runtime_id=self._configured_translation_runtime_id(),
+                runtime_id=runtime_id,
+                runtime_available=runtime_available,
+                execution_settings_recovery_required=(
+                    self._execution_settings_recovery_error is not None
+                ),
+                execution_settings_recovery_error=self._execution_settings_recovery_error,
                 model=self._state.model,
                 reasoning_effort=self._state.reasoning_effort,
                 show_internal_native_session=self._state.show_internal_native_session,
@@ -1300,64 +1335,98 @@ class WeixinTranslationManager:
                 "weixin_translation_runtime_unavailable",
                 "微信文本优化使用会话默认 Runtime，请先在会话默认配置中切换 Runtime。",
             )
-        with self._lock:
-            unchanged = (
-                self._state.model == model
-                and self._state.reasoning_effort == reasoning_effort
-        )
-        if unchanged:
-            return self.status()
         _selected_runtime_id, implementation_id = self._select_translation_runtime()
         self._validate_translation_model(
             model,
             reasoning_effort,
             implementation_id=implementation_id,
         )
+        settings_identity = implementation_id or configured_runtime_id
         with self._lock:
             if (
-                self._state.model != model
-                or self._state.reasoning_effort != reasoning_effort
+                self._state.model == model
+                and self._state.reasoning_effort == reasoning_effort
+                and self._state.execution_settings_implementation_id == settings_identity
             ):
-                next_state = self._state.model_copy(deep=True)
-                next_state.model = model
-                next_state.reasoning_effort = reasoning_effort
-                self._write(next_state)
-                self._state = next_state
+                return self.status()
+            next_state = self._state.model_copy(deep=True)
+            next_state.model = model
+            next_state.reasoning_effort = reasoning_effort
+            next_state.execution_settings_implementation_id = settings_identity
+            self._write(next_state)
+            self._state = next_state
         return self.status()
 
-    def _initialize_execution_settings(self) -> None:
+    def _initialize_execution_settings(self, *, reconcile: bool = False) -> None:
         """Persist a standalone default for the Weixin refinement feature."""
         if self._state_error:
             return
         with self._lock:
-            if self._state.model is not None and self._state.reasoning_effort is not None:
-                return
             try:
-                _runtime_id, implementation_id = self._select_translation_runtime()
-                model, reasoning_effort = self._resolve_execution_settings(
-                    self._state.model,
-                    self._state.reasoning_effort,
-                    implementation_id=implementation_id,
+                runtime_id, implementation_id = self._select_translation_runtime()
+                settings_identity = implementation_id or runtime_id
+                if (
+                    not reconcile
+                    and self._state.model is not None
+                    and self._state.reasoning_effort is not None
+                    and self._state.execution_settings_implementation_id == settings_identity
+                ):
+                    return
+                try:
+                    model, reasoning_effort = self._resolve_execution_settings(
+                        self._state.model,
+                        self._state.reasoning_effort,
+                        implementation_id=implementation_id,
+                    )
+                except ApiError as exc:
+                    if exc.code not in _TRANSLATION_EXECUTION_SETTING_UNAVAILABLE_CODES:
+                        raise
+                    model, reasoning_effort = self._resolve_execution_settings(
+                        None,
+                        None,
+                        implementation_id=implementation_id,
+                    )
+            except ApiError as exc:
+                if exc.code in _OPTIONAL_RUNTIME_UNAVAILABLE_CODES:
+                    # A Runtime plugin is optional for the Chub control plane.
+                    # Keep translation explicitly uninitialized until one can
+                    # supply a background-turn model catalog.
+                    return
+                LOGGER.warning(
+                    "Unable to initialize Weixin translation execution settings",
+                    exc_info=True,
                 )
+                return
             except Exception:
                 LOGGER.warning(
                     "Unable to initialize Weixin translation execution settings",
                     exc_info=True,
                 )
                 return
+            if (
+                self._state.model == model
+                and self._state.reasoning_effort == reasoning_effort
+                and self._state.execution_settings_implementation_id == settings_identity
+            ):
+                self._execution_settings_recovery_error = None
+                return
             next_state = self._state.model_copy(deep=True)
             next_state.model = model
             next_state.reasoning_effort = reasoning_effort
+            next_state.execution_settings_implementation_id = settings_identity
             try:
                 self._write(next_state)
             except OSError:
-                self._state_error = True
+                self._execution_settings_recovery_error = (
+                    "微信润色配置未能写入；请恢复本机状态存储后重新启用或切换 Runtime。"
+                )
                 LOGGER.warning(
                     "Unable to persist Weixin translation execution settings",
                     exc_info=True,
                 )
                 return
             self._state = next_state
+            self._execution_settings_recovery_error = None
 
     def _resolve_execution_settings(
         self,
@@ -1434,6 +1503,27 @@ class WeixinTranslationManager:
                 "默认 AI Runtime 当前不可用。",
             )
         return runtime_id
+
+    def _translation_runtime_status(self) -> tuple[str | None, bool]:
+        """Project the optional Runtime dependency without making settings unavailable."""
+        try:
+            runtime_id = self._configured_translation_runtime_id()
+            self._select_translation_runtime()
+            return runtime_id, True
+        except ApiError as exc:
+            if exc.code not in _OPTIONAL_RUNTIME_UNAVAILABLE_CODES:
+                raise
+            try:
+                return self._configured_translation_runtime_id(), False
+            except ApiError as configured_exc:
+                if configured_exc.code in _OPTIONAL_RUNTIME_UNAVAILABLE_CODES:
+                    return None, False
+                raise
+
+    def runtime_available(self) -> bool:
+        """Read the Runtime dependency without requiring translation state storage."""
+        _runtime_id, available = self._translation_runtime_status()
+        return available
 
     def _validate_translation_model(
         self,

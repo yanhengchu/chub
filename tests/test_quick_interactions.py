@@ -213,7 +213,7 @@ def test_execution_prompt_adds_delivery_guidance_without_changing_request(
     assert prompt.endswith(QUICK_INTERACTION_INSTRUCTIONS)
     assert "完成效果" in prompt
     assert "验收方法" in prompt
-    assert "只能调用 scripts/chub-web-restart 一次" in prompt
+    assert "只能调用 scripts/maintenance/chub-web-restart 一次" in prompt
 
 
 def test_execution_prompt_includes_local_browser_capabilities(

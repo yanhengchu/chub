@@ -1,5 +1,5 @@
 import threading
-from unittest.mock import ANY, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import httpx
 import pytest
@@ -9,6 +9,7 @@ from app.ai_interactions.models import QuickInteractionTask
 from app.ai_session.models import utc_now
 from app.core.config import Settings
 from app.services.deferred_restart import DeferredRestartCoordinator
+from app.services.web_restart import WebRestartUnavailableError
 
 
 @pytest.mark.anyio
@@ -32,7 +33,7 @@ async def test_restart_allows_active_quick_worker_reload(
     transport = httpx.ASGITransport(app=app)
 
     with (
-        patch("app.api.maintenance.launch_restart_process") as launch_restart,
+        patch("app.services.web_restart.launch_restart_process") as launch_restart,
         patch("app.api.maintenance.monitor_restart_process"),
     ):
         async with httpx.AsyncClient(
@@ -48,15 +49,12 @@ async def test_restart_allows_active_quick_worker_reload(
 
 
 @pytest.mark.anyio
-async def test_restart_uses_chub_service_command(settings: Settings) -> None:
-    transport = httpx.ASGITransport(app=create_app(settings))
-    with (
-        patch("app.api.maintenance.PROJECT_ROOT") as project_root,
-        patch("app.api.maintenance.launch_restart_process") as launch_restart,
-        patch("app.api.maintenance.monitor_restart_process") as monitor_restart,
-    ):
-        command = project_root / "scripts" / "chub-web-restart"
-        command.is_file.return_value = True
+async def test_restart_uses_public_web_restart_use_case(settings: Settings) -> None:
+    app = create_app(settings)
+    restart = MagicMock()
+    app.state.web_restart = restart
+    transport = httpx.ASGITransport(app=app)
+    with patch("app.api.maintenance.monitor_restart_process") as monitor_restart:
         async with httpx.AsyncClient(
             transport=transport,
             base_url="http://test",
@@ -66,9 +64,32 @@ async def test_restart_uses_chub_service_command(settings: Settings) -> None:
 
     assert response.status_code == 200
     assert response.json()["data"] == {"status": "restarting"}
-    assert launch_restart.call_args.args == (command,)
-    assert launch_restart.call_args.kwargs["environment"]["CHUB_OPERATION_ID"]
-    monitor_restart.assert_called_once_with(launch_restart.return_value, ANY)
+    restart.ensure_available.assert_called_once_with()
+    assert restart.launch.call_args.kwargs["operation_id"]
+    assert restart.launch.call_args.kwargs["source_ip"] == "127.0.0.1"
+    monitor_restart.assert_called_once_with(restart.launch.return_value, ANY)
+
+
+@pytest.mark.anyio
+async def test_restart_clears_pending_state_when_adapter_disappears_after_check(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    restart = MagicMock()
+    restart.launch.side_effect = WebRestartUnavailableError("找不到 Chub 重启脚本")
+    app.state.web_restart = restart
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers={"Authorization": "Bearer test-token-that-is-long-enough-for-tests"},
+    ) as client:
+        response = await client.post("/api/maintenance/restart")
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "command_not_found"
+    assert app.state.deferred_restart.pending() is False
 
 
 @pytest.mark.anyio
@@ -78,7 +99,7 @@ async def test_restart_allows_active_quick_interaction(settings: Settings) -> No
     transport = httpx.ASGITransport(app=app)
 
     with (
-        patch("app.api.maintenance.launch_restart_process") as launch_restart,
+        patch("app.services.web_restart.launch_restart_process") as launch_restart,
         patch("app.api.maintenance.monitor_restart_process"),
     ):
         async with httpx.AsyncClient(
@@ -110,12 +131,9 @@ async def test_restart_allows_active_translation(settings: Settings) -> None:
     transport = httpx.ASGITransport(app=app)
 
     with (
-        patch("app.api.maintenance.PROJECT_ROOT") as project_root,
-        patch("app.api.maintenance.launch_restart_process") as launch_restart,
+        patch("app.services.web_restart.launch_restart_process") as launch_restart,
         patch("app.api.maintenance.monitor_restart_process"),
     ):
-        command = project_root / "scripts" / "chub-web-restart"
-        command.is_file.return_value = True
         async with httpx.AsyncClient(
             transport=transport,
             base_url="http://test",
@@ -141,7 +159,7 @@ async def test_restart_immediately_claims_existing_deferred_restart(
     transport = httpx.ASGITransport(app=app)
 
     with (
-        patch("app.api.maintenance.launch_restart_process") as launch_restart,
+        patch("app.services.web_restart.launch_restart_process") as launch_restart,
         patch("app.api.maintenance.monitor_restart_process"),
     ):
         async with httpx.AsyncClient(
@@ -171,7 +189,7 @@ async def test_restart_reuses_restart_that_is_already_starting(
     transport = httpx.ASGITransport(app=app)
 
     with (
-        patch("app.api.maintenance.launch_restart_process") as launch_restart,
+        patch("app.services.web_restart.launch_restart_process") as launch_restart,
         patch("app.api.maintenance.monitor_restart_process"),
     ):
         async with httpx.AsyncClient(
@@ -194,7 +212,7 @@ async def test_restart_reuses_manual_restart_without_deferred_request(
     transport = httpx.ASGITransport(app=app)
 
     with (
-        patch("app.api.maintenance.launch_restart_process") as launch_restart,
+        patch("app.services.web_restart.launch_restart_process") as launch_restart,
         patch("app.api.maintenance.monitor_restart_process"),
     ):
         async with httpx.AsyncClient(
@@ -218,7 +236,7 @@ async def test_manual_restart_is_confirmed_by_a_new_healthy_instance(
     transport = httpx.ASGITransport(app=app)
 
     with (
-        patch("app.api.maintenance.launch_restart_process"),
+        patch("app.services.web_restart.launch_restart_process"),
         patch("app.api.maintenance.monitor_restart_process"),
     ):
         async with httpx.AsyncClient(
@@ -260,10 +278,9 @@ async def test_restart_launch_failure_ends_claim_without_background_retry(
 
     with (
         patch(
-            "app.api.maintenance.launch_restart_process",
+            "app.services.web_restart.launch_restart_process",
             side_effect=OSError("restart unavailable"),
         ),
-        patch("app.application.launch_restart_process") as automatic_restart,
     ):
         async with httpx.AsyncClient(
             transport=transport,
@@ -277,7 +294,6 @@ async def test_restart_launch_failure_ends_claim_without_background_retry(
     threading.Event().wait(0.05)
 
     assert app.state.deferred_restart.pending() is False
-    automatic_restart.assert_not_called()
 
 
 @pytest.mark.anyio
@@ -293,7 +309,7 @@ async def test_restart_async_failure_ends_claimed_deferred_restart(
     transport = httpx.ASGITransport(app=app)
 
     with (
-        patch("app.api.maintenance.launch_restart_process") as launch_restart,
+        patch("app.services.web_restart.launch_restart_process") as launch_restart,
         patch("app.api.maintenance.monitor_restart_process") as monitor_restart,
     ):
         async with httpx.AsyncClient(
@@ -317,7 +333,7 @@ async def test_restart_async_failure_records_manual_operation_failure(
     transport = httpx.ASGITransport(app=app)
 
     with (
-        patch("app.api.maintenance.launch_restart_process"),
+        patch("app.services.web_restart.launch_restart_process"),
         patch("app.api.maintenance.monitor_restart_process") as monitor_restart,
         patch("app.services.deferred_restart.write_operation") as write_operation,
     ):

@@ -9,10 +9,11 @@ from unittest.mock import patch
 
 import pytest
 
+from app.core import module_sources
 from app.ai_runtime import RuntimePluginRegistry
 from app.ai_runtime.development_plugins import discover_development_runtime_plugins
 from app.ai_runtime.runtime_plugin_packages import RuntimePluginService, RuntimePluginInstallError
-from scripts.build_codex_runtime_zip import build as build_codex_runtime_zip
+from scripts.build.codex_runtime_zip import build as build_codex_runtime_zip
 
 
 @pytest.fixture(autouse=True)
@@ -33,6 +34,7 @@ def _runtime_archive(
     dependencies: bool = False,
     compatibility_id: str = "codex-v1",
     entry_import: str = "",
+    tool_marker: Path | None = None,
 ) -> bytes:
     manifest = {
         "protocol_version": 1,
@@ -86,6 +88,14 @@ def create_runtime_module(settings):
         package.writestr("runtime_entry.py", source)
         if dependencies:
             package.writestr("requirements.txt", "example-package==1.0.0\n")
+        if tool_marker is not None:
+            package.writestr(
+                "tools/must-not-run.py",
+                (
+                    "from pathlib import Path\n"
+                    f"Path({str(tool_marker)!r}).write_text('executed')\n"
+                ),
+            )
     return archive.getvalue()
 
 
@@ -252,6 +262,108 @@ def test_development_runtime_sources_are_isolated_and_one_bad_source_is_skipped(
     ]
 
 
+def test_indexed_runtime_sources_prefer_bundled_and_skip_incompatible_local_entries(
+    settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "chub"
+    bundled = project / "modules"
+    local = tmp_path / "chub-local-modules"
+    _development_runtime_source(
+        bundled / "runtime",
+        directory="bundled",
+        runtime_id="bundled",
+        implementation_id="bundled-runtime-dev",
+        label="Bundled",
+    )
+    _development_runtime_source(
+        local / "runtime",
+        directory="duplicate",
+        runtime_id="duplicate",
+        implementation_id="bundled-runtime-dev",
+        label="Duplicate",
+    )
+    _development_runtime_source(
+        local / "runtime",
+        directory="local",
+        runtime_id="local",
+        implementation_id="local-runtime-dev",
+        label="Local",
+    )
+    _development_runtime_source(
+        local / "runtime",
+        directory="incompatible",
+        runtime_id="incompatible",
+        implementation_id="incompatible-runtime-dev",
+        label="Incompatible",
+    )
+    for directory in ("duplicate", "local", "incompatible"):
+        manifest_path = local / "runtime" / directory / "chub-module.json"
+        manifest = json.loads(manifest_path.read_text("utf-8"))
+        manifest["chub_version"] = settings.app.version
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    incompatible_path = local / "runtime" / "incompatible" / "chub-module.json"
+    incompatible = json.loads(incompatible_path.read_text("utf-8"))
+    incompatible["chub_version"] = "incompatible"
+    incompatible_path.write_text(json.dumps(incompatible), encoding="utf-8")
+    tool_marker = tmp_path / "runtime-tool-executed"
+    tools = local / "runtime" / "local" / "tools"
+    tools.mkdir()
+    (tools / "must-not-run.py").write_text(
+        f'from pathlib import Path\nPath({str(tool_marker)!r}).write_text("executed")\n',
+        encoding="utf-8",
+    )
+    (bundled / "chub-modules.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "modules": [
+                    {
+                        "module_id": "bundled-runtime-dev",
+                        "module_type": "runtime",
+                        "path": "runtime/bundled",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (local / "chub-modules.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "modules": [
+                    {
+                        "module_id": "bundled-runtime-dev",
+                        "module_type": "runtime",
+                        "path": "runtime/duplicate",
+                    },
+                    {
+                        "module_id": "local-runtime-dev",
+                        "module_type": "runtime",
+                        "path": "runtime/local",
+                    },
+                    {
+                        "module_id": "incompatible-runtime-dev",
+                        "module_type": "runtime",
+                        "path": "runtime/incompatible",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(module_sources, "PROJECT_ROOT", project)
+
+    registry, loaded, failures = discover_development_runtime_plugins(settings)
+
+    assert registry.implementation_ids() == ("bundled-runtime-dev", "local-runtime-dev")
+    assert [item.module.display_name for item in loaded] == ["Bundled", "Local"]
+    assert failures == ()
+    assert not tool_marker.exists()
+
+
 def test_runtime_zip_installs_and_discovers_a_non_default_module(settings) -> None:
     service = RuntimePluginService(settings)
 
@@ -262,6 +374,28 @@ def test_runtime_zip_installs_and_discovers_a_non_default_module(settings) -> No
     assert activation.installed.manifest.module_id == "codex-010001"
     assert [item.manifest.module_id for item in installed] == ["codex-010001"]
     assert failures == ()
+
+
+def test_runtime_zip_tools_are_not_executed_during_preview_install_or_load(
+    settings,
+    tmp_path: Path,
+) -> None:
+    marker = tmp_path / "runtime-zip-tool-executed"
+    archive = _runtime_archive(settings, tool_marker=marker)
+    service = RuntimePluginService(settings)
+
+    preview = service.inspect_archive(archive, source_name="external-runtime.zip")
+    activation = service.install(archive, source_name="external-runtime.zip")
+    service.finalize(activation)
+    installed, failures = service.discover()
+    registry, registry_failures = service.build_registry(RuntimePluginRegistry())
+
+    assert preview.module_id == "codex-010001"
+    assert [item.manifest.module_id for item in installed] == ["codex-010001"]
+    assert failures == ()
+    assert registry.require("codex-010001")
+    assert registry_failures == ()
+    assert not marker.exists()
 
 
 def test_runtime_zip_rejects_cover_with_a_different_native_compatibility_group(
@@ -491,7 +625,7 @@ def test_generated_verification_runtime_zip_is_installable(settings, tmp_path: P
     result = subprocess.run(
         [
             sys.executable,
-            "scripts/build_runtime_verification_zip.py",
+            "scripts/build/build-runtime-verification-zip.py",
             "--output",
             str(output),
             "--chub-version",
@@ -522,7 +656,7 @@ def test_generated_codex_runtime_zip_loads_the_packaged_runtime_implementation(
     result = subprocess.run(
         [
             sys.executable,
-            "scripts/build_codex_runtime_zip.py",
+            "scripts/build/build-codex-runtime-zip.py",
             "--output",
             str(output),
             "--description",

@@ -128,11 +128,11 @@ async def test_automation_list_and_background_acceptance(
     )
     manager.check_feishu_environment.return_value = FeishuEnvironmentState(
         state="available",
-        message="登录有效",
+        message="飞书账户已登录",
     )
     manager.check_codex_runtime_account.return_value = RuntimeAccountEnvironmentState(
         state="available",
-        message="ChatGPT 登录有效",
+        message="ChatGPT 账户已登录",
     )
     manager.open_feishu_login_page.return_value = AccountLoginPageResult(
         message="飞书登录页面已打开"

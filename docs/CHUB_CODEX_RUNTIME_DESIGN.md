@@ -50,7 +50,7 @@ Codex 通过 Runtime 共享契约接入 Chub。通用的 Session、Worker、Adap
 
 ### 1.1 维护者认证方式切换
 
-这是一项“认证方式切换”，不是多账户管理：当前固定在 ChatGPT 账户登录与既有 API Key 配置之间切换，不接受维护者传入账号、URL、配置路径或凭据。自动化页的“Codex Runtime 账户”是唯一页面入口，底层由唯一固定脚本 `scripts/codex-auth-switch` 执行 `account` 或 `api` 模式；它不依赖 Codex Session、Quick Worker、额度或普通任务是否可用。
+这是一项“认证方式切换”，不是多账户管理：当前固定在 ChatGPT 账户登录与既有 API Key 配置之间切换，不接受维护者传入账号、URL、配置路径或凭据。自动化页的“Codex Runtime 账户”是唯一页面入口，底层调用固定的认证公开用例执行 `account` 或 `api` 模式；它不依赖 Codex Session、Quick Worker、额度或普通任务是否可用，也不提供独立脚本入口。
 
 #### 页面交互与最终状态
 
