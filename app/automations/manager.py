@@ -98,6 +98,7 @@ class AutomationManager:
         detected_platform: str | None = None,
         codex_account_checker: Callable[[], RuntimeAccountEnvironmentState] | None = None,
         codex_account_login_opener: Callable[[], None] | None = None,
+        codex_runtime_available: Callable[[], bool] | None = None,
     ) -> None:
         self._settings = settings
         self._browser_supervisor_socket = (
@@ -112,6 +113,7 @@ class AutomationManager:
         self._feishu_checking = False
         self._codex_account_checker = codex_account_checker
         self._codex_account_login_opener = codex_account_login_opener
+        self._codex_runtime_available = codex_runtime_available
         self._codex_runtime_account = RuntimeAccountEnvironmentState()
         self._codex_runtime_account_checking = False
         self._codex_auth_switching = False
@@ -314,6 +316,23 @@ class AutomationManager:
         with self._state_lock:
             self._codex_runtime_account = state
 
+    def _has_codex_runtime_account_environment(self) -> bool:
+        if self._codex_runtime_available is None:
+            return True
+        try:
+            return self._codex_runtime_available()
+        except Exception:
+            LOGGER.warning("Codex Runtime availability could not be read", exc_info=True)
+            return False
+
+    def _require_codex_runtime_account_environment(self) -> None:
+        if not self._has_codex_runtime_account_environment():
+            raise ApiError(
+                409,
+                "codex_runtime_not_enabled",
+                "请先导入并启用 Codex Runtime，再管理其账户。",
+            )
+
     async def _check_feishu_page(self) -> FeishuEnvironmentState:
         session = session_factory()
         async with session(ensure_page=True) as chrome:
@@ -436,6 +455,7 @@ class AutomationManager:
         )
 
     def open_codex_runtime_login_page(self) -> AccountLoginPageResult:
+        self._require_codex_runtime_account_environment()
         if self._codex_account_login_opener is None:
             raise ApiError(
                 409,
@@ -543,6 +563,7 @@ class AutomationManager:
                     message="自动化任务未启用，飞书账户暂无法检查。",
                 ),
                 codex_runtime_account=self._public_codex_runtime_account(),
+                codex_runtime_account_available=self._has_codex_runtime_account_environment(),
                 enabled_count=0,
                 tasks=[],
             )
@@ -604,11 +625,13 @@ class AutomationManager:
             browser_profiles_error=profiles_error,
             feishu_environment=self._public_feishu_environment(browser_state),
             codex_runtime_account=self._public_codex_runtime_account(browser_state),
+            codex_runtime_account_available=self._has_codex_runtime_account_environment(),
             enabled_count=sum(task.enabled for task in config.tasks.values()),
             tasks=tasks,
         )
 
     def check_codex_runtime_account(self) -> RuntimeAccountEnvironmentState:
+        self._require_codex_runtime_account_environment()
         with self._state_lock:
             if self._codex_auth_switching:
                 raise ApiError(
@@ -657,6 +680,7 @@ class AutomationManager:
         *,
         operation_id: str | None = None,
     ) -> CodexAuthSwitchResult:
+        self._require_codex_runtime_account_environment()
         with self._state_lock:
             if self._codex_auth_switching or self._codex_runtime_account_checking:
                 raise ApiError(

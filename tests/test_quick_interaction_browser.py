@@ -130,7 +130,7 @@ def _session(
         "id": session_id,
         "title": title,
         "created_at": created_at,
-        "codex_session_id": f"native-{session_id}",
+        "session_id": f"native-{session_id}",
         "can_archive": can_archive,
                 "workspace_id": "chub",
         "status": "stopped",
@@ -229,7 +229,7 @@ class ConversationApi:
         data: dict | None = None
 
         if (
-            path == "/api/codex/sessions"
+            path == "/api/ai/sessions"
             and request.method == "GET"
             and self._recovery_failure_pending
         ):
@@ -250,7 +250,7 @@ class ConversationApi:
                 ),
             )
             return
-        if path == "/api/codex/sessions" and request.method == "GET":
+        if path == "/api/ai/sessions" and request.method == "GET":
             data = {
                 "available": True,
                 "unavailable_reason": None,
@@ -301,7 +301,7 @@ class ConversationApi:
                 ],
                 "sessions": deepcopy(self.sessions),
             }
-        elif path == "/api/codex/models" and request.method == "GET":
+        elif path == "/api/ai/models" and request.method == "GET":
             data = {
                 "models": [
                     {
@@ -318,7 +318,7 @@ class ConversationApi:
                 "default_model": "gpt-test",
                 "default_reasoning_effort": "medium",
             }
-        elif path == "/api/codex/sessions" and request.method == "POST":
+        elif path == "/api/ai/sessions" and request.method == "POST":
             session = _session(
                 "session-3",
                 "New Session",
@@ -326,12 +326,12 @@ class ConversationApi:
                 None,
                 can_archive=False,
             )
-            session["codex_session_id"] = None
+            session["session_id"] = None
             self.sessions.insert(0, session)
             self.tasks[session["id"]] = []
             data = deepcopy(session)
-        elif path.startswith("/api/codex/sessions/"):
-            remainder = path.removeprefix("/api/codex/sessions/")
+        elif path.startswith("/api/ai/sessions/"):
+            remainder = path.removeprefix("/api/ai/sessions/")
             encoded_session_id, _, action = remainder.partition("/")
             session_id = unquote(encoded_session_id)
             session = self._find_session(session_id)
@@ -435,7 +435,7 @@ async def _open_conversation(
         )
     )
     response = await page.goto(
-        f"{server}/codex/session-1/quick-interactions/conversation",
+        f"{server}/ai/sessions/session-1/quick-interactions/conversation",
         wait_until="domcontentloaded",
     )
     assert response is not None and response.status == 200
@@ -463,7 +463,7 @@ async def test_terminal_page_returns_home_after_connection_takeover(
                 ),
             )
             await context.route(
-                f"{conversation_browser_server}/codex/session-1/connection/page-1",
+                f"{conversation_browser_server}/ai/sessions/session-1/connection/page-1",
                 lambda route: route.fulfill(
                     content_type="application/json",
                     body='{"state":"displaced"}',
@@ -717,7 +717,7 @@ async def test_conversation_composer_options_show_current_values_and_disable_app
             await page.locator("#conversation-model-menu [data-value='gpt-test']").click()
             await expect(page.locator("#conversation-model-value")).to_have_text("GPT Test")
             await expect(page.locator("#conversation-model-trigger")).to_be_enabled()
-            assert "PATCH /api/codex/sessions/session-1/configuration" in api.requested_paths
+            assert "PATCH /api/ai/sessions/session-1/configuration" in api.requested_paths
             await page.locator("#conversation-permission-trigger").click()
             await expect(page.locator("#conversation-permission-menu")).to_be_visible()
         finally:
@@ -816,7 +816,7 @@ async def test_conversation_workflows_in_managed_chrome(
             await page.evaluate(
                 """() => switchConversationSession(
                     "session-2",
-                    "/codex/session-2/quick-interactions/conversation",
+                    "/ai/sessions/session-2/quick-interactions/conversation",
                 )"""
             )
             switch_state = await page.locator(".conversation-setting-trigger").evaluate_all(
@@ -830,7 +830,7 @@ async def test_conversation_workflows_in_managed_chrome(
             assert all(item["color"] == switch_state[0]["color"] for item in switch_state)
             assert all(item["opacity"] == "1" for item in switch_state)
             await expect(page).to_have_url(
-                f"{conversation_browser_server}/codex/session-2/quick-interactions/conversation"
+                f"{conversation_browser_server}/ai/sessions/session-2/quick-interactions/conversation"
             )
             await expect(page.locator("#conversation-session-title")).to_have_text(
                 "Second Session"
@@ -847,7 +847,7 @@ async def test_conversation_workflows_in_managed_chrome(
             await page.locator("#conversation-session-archive").click()
             await page.locator("#conversation-archive-confirm").click()
             await expect(page).to_have_url(
-                f"{conversation_browser_server}/codex/session-1/quick-interactions/conversation"
+                f"{conversation_browser_server}/ai/sessions/session-1/quick-interactions/conversation"
             )
             await expect(page.locator("#conversation-session-title")).to_have_text("Main Session")
 
@@ -884,7 +884,7 @@ async def test_conversation_workflows_in_managed_chrome(
             await page.locator("#conversation-create-workspaces-menu [role='option']").first.click()
             await page.locator("#conversation-create-confirm").click()
             await expect(page).to_have_url(
-                f"{conversation_browser_server}/codex/session-3/quick-interactions/conversation"
+                f"{conversation_browser_server}/ai/sessions/session-3/quick-interactions/conversation"
             )
             await expect(page.locator("#conversation-session-title")).to_have_text("New Session")
 
@@ -896,7 +896,7 @@ async def test_conversation_workflows_in_managed_chrome(
             await page.locator("#conversation-session-delete").click()
             await page.locator("#conversation-delete-confirm").click()
             await expect(page).to_have_url(
-                f"{conversation_browser_server}/codex/session-1/quick-interactions/conversation"
+                f"{conversation_browser_server}/ai/sessions/session-1/quick-interactions/conversation"
             )
             await expect(page.locator("#conversation-session-title")).to_have_text("Main Session")
         finally:
@@ -904,11 +904,11 @@ async def test_conversation_workflows_in_managed_chrome(
 
     assert page_errors == []
     assert not any(path.endswith("/pin") for path in api.requested_paths)
-    assert "PATCH /api/codex/sessions/session-2/title" in api.requested_paths
-    assert "POST /api/codex/sessions/session-2/archive" in api.requested_paths
-    assert "POST /api/codex/sessions" in api.requested_paths
-    assert "POST /api/codex/sessions/session-3/quick-interactions" in api.requested_paths
-    assert "DELETE /api/codex/sessions/session-3" in api.requested_paths
+    assert "PATCH /api/ai/sessions/session-2/title" in api.requested_paths
+    assert "POST /api/ai/sessions/session-2/archive" in api.requested_paths
+    assert "POST /api/ai/sessions" in api.requested_paths
+    assert "POST /api/ai/sessions/session-3/quick-interactions" in api.requested_paths
+    assert "DELETE /api/ai/sessions/session-3" in api.requested_paths
 
 
 async def test_conversation_stop_requires_confirmation_in_managed_chrome(
@@ -942,7 +942,7 @@ async def test_conversation_stop_requires_confirmation_in_managed_chrome(
             )
             await page.locator("#conversation-stop-cancel").click()
             await expect(page.locator("#conversation-stop-dialog")).not_to_be_visible()
-            assert "POST /api/codex/sessions/session-1/stop" not in api.requested_paths
+            assert "POST /api/ai/sessions/session-1/stop" not in api.requested_paths
 
             await page.locator("#conversation-session-stop").click()
             await page.locator("#conversation-stop-confirm").click()
@@ -952,7 +952,7 @@ async def test_conversation_stop_requires_confirmation_in_managed_chrome(
             await context.close()
 
     assert page_errors == []
-    assert "POST /api/codex/sessions/session-1/stop" in api.requested_paths
+    assert "POST /api/ai/sessions/session-1/stop" in api.requested_paths
 
 
 async def test_conversation_keeps_draft_editable_while_session_is_working(

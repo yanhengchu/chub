@@ -386,13 +386,33 @@ def test_translation_execution_overrides_are_snapshotted(settings) -> None:
     assert quick_interactions.submit.call_args.kwargs["model"] == "gpt-test"
     assert quick_interactions.submit.call_args.kwargs["reasoning_effort"] == "low"
 
+    reloaded_codex_manager = MagicMock()
+    reloaded_codex_manager.runtime_id = "codex"
     reloaded = WeixinTranslationManager(
         settings.openclaw.weixin_chub_mode,
-        MagicMock(),
+        reloaded_codex_manager,
         MagicMock(),
     )
     assert reloaded.status().model == "gpt-next"
     assert reloaded.status().reasoning_effort == "medium"
+
+
+def test_legacy_translation_state_drops_its_runtime_selection(settings) -> None:
+    manager, codex_manager, quick_interactions = manager_without_worker(settings)
+    payload = manager._state.model_dump(mode="json")
+    payload.update({"version": 1, "runtime_id": "legacy-runtime"})
+    manager.path.write_text(json.dumps(payload), encoding="utf-8")
+
+    reloaded = WeixinTranslationManager(
+        settings.openclaw.weixin_chub_mode,
+        codex_manager,
+        quick_interactions,
+    )
+
+    persisted = json.loads(reloaded.path.read_text(encoding="utf-8"))
+    assert reloaded.status().runtime_id == "codex"
+    assert persisted["version"] == 2
+    assert "runtime_id" not in persisted
 
 
 def test_translation_execution_settings_do_not_read_session_defaults(settings) -> None:
@@ -453,7 +473,7 @@ def test_worker_recovery_does_not_replace_existing_execution_settings(settings) 
 def test_translation_rejects_runtime_without_text_optimization_support(settings) -> None:
     manager, _codex_manager, _quick_interactions = manager_without_worker(settings)
 
-    with pytest.raises(ApiError, match="当前 Runtime 尚不支持微信文本优化"):
+    with pytest.raises(ApiError, match="使用会话默认 Runtime"):
         manager.set_execution_settings("other-runtime", "translation-model", "medium")
 
 
@@ -1631,8 +1651,8 @@ def test_new_translation_session_cleans_stale_translation_sessions(settings) -> 
     manager, codex_manager, _quick_interactions = manager_without_worker(settings)
     codex_manager.get_session.side_effect = ApiError(
         404,
-        "codex_session_not_found",
-        "Codex session not found",
+        "session_not_found",
+        "AI Session not found",
     )
 
     assert manager._ensure_session() == "translation-session"
@@ -1643,18 +1663,22 @@ def test_new_translation_session_cleans_stale_translation_sessions(settings) -> 
 
 def test_translation_setting_persists_across_manager_restart(settings) -> None:
     settings.openclaw.weixin_chub_mode.translation_enabled = False
+    codex_manager = MagicMock()
+    codex_manager.runtime_id = "codex"
     manager = WeixinTranslationManager(
         settings.openclaw.weixin_chub_mode,
-        MagicMock(),
+        codex_manager,
         MagicMock(),
     )
 
     status = manager.set_enabled(True)
 
     assert status.enabled is True
+    reloaded_codex_manager = MagicMock()
+    reloaded_codex_manager.runtime_id = "codex"
     reloaded = WeixinTranslationManager(
         settings.openclaw.weixin_chub_mode,
-        MagicMock(),
+        reloaded_codex_manager,
         MagicMock(),
     )
     assert reloaded.status().enabled is True
@@ -1762,6 +1786,7 @@ def test_native_cleanup_failure_is_persisted_and_retry_is_bounded(settings) -> N
     assert manager._state.native_cleanup_attempts == 3
     assert manager._native_cleanup_timer is None
     reloaded_codex_manager = MagicMock()
+    reloaded_codex_manager.runtime_id = "codex"
     reloaded_codex_manager.cleanup_stale_translation_native_sessions.return_value = (
         SimpleNamespace(
             pending=2,

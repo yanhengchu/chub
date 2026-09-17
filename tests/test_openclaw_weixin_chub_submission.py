@@ -189,7 +189,7 @@ def test_submission_reuses_selected_session_in_an_allowed_extra_workspace(
     settings: Settings,
 ) -> None:
     manager, codex_manager, quick_interactions = configured_manager(settings)
-    settings.ai_runtime.codex.extra_workspaces = [
+    settings.ai_runtime.shared.extra_workspaces = [
         ExtraWorkspaceConfig(
             id="deliveryline",
             name="Deliveryline",
@@ -1423,11 +1423,28 @@ def test_mode_readiness_no_longer_requires_global_recipient(
     assert status.ready is True
 
 
+def test_mode_readiness_uses_the_selected_default_runtime(
+    settings: Settings,
+) -> None:
+    manager, codex_manager, _quick_interactions = configured_manager(settings)
+    codex_manager.select_new_session_runtime.return_value = (
+        "test-runtime",
+        "test-runtime-dev",
+    )
+    codex_manager.select_new_session_runtime.reset_mock()
+
+    status = manager.status()
+
+    assert status.ready is True
+    codex_manager.select_new_session_runtime.assert_called_once_with()
+    codex_manager.require_runtime_submission.assert_not_called()
+
+
 def test_disabled_runtime_has_specific_weixin_reply_and_chub_status(
     settings: Settings,
 ) -> None:
     manager, codex_manager, quick_interactions = configured_manager(settings)
-    codex_manager.require_runtime_submission.side_effect = ApiError(
+    codex_manager.select_new_session_runtime.side_effect = ApiError(
         409,
         "ai_runtime_disabled",
         "当前 AI Runtime 已停用，无法提交新的 AI 任务。",
@@ -1446,7 +1463,7 @@ def test_disabled_runtime_has_specific_weixin_reply_and_chub_status(
     assert status.ready is False
     assert status.code == "ai_runtime_disabled"
     assert result.message == (
-        "Not submitted · Codex Runtime is disabled. Chub is in base mode. "
+        "Not submitted · The default AI Runtime is disabled. Chub is in base mode. "
         "Enable it in Settings to submit AI tasks.\n\n"
         "Task · 检查设备状态"
     )

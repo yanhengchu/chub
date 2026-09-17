@@ -159,7 +159,8 @@ class WeeklyReportGenerationService:
                 "ai_runtime_settings_unavailable",
                 "Runtime 默认项暂时无法读取。",
             ) from exc
-        self._session_manager.require_runtime_submission(settings.default_runtime_id)
+        runtime_id, _implementation_id = self._session_manager.select_new_session_runtime()
+        self._session_manager.require_runtime_submission(runtime_id)
         return settings
 
     def _read_stage(self, period: str, stage: str) -> WeeklyReportGenerationStep:
@@ -211,7 +212,7 @@ class WeeklyReportGenerationService:
         try:
             self._session_manager.get_session(session_id)
         except ApiError as exc:
-            if exc.code == "codex_session_not_found":
+            if exc.code == "session_not_found":
                 return None
             raise
         return session_id

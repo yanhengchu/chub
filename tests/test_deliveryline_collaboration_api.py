@@ -141,7 +141,7 @@ async def test_delete_preserves_line_when_associated_session_cannot_be_deleted(s
     app.state.quick_interactions = quick
     monkeypatch.setattr(
         "app.deliveryline.collaboration.delete_session",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(ApiError(409, "codex_session_busy", "关联 Session 仍在执行。")),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ApiError(409, "session_busy", "关联 Session 仍在执行。")),
     )
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -154,7 +154,7 @@ async def test_delete_preserves_line_when_associated_session_cannot_be_deleted(s
         overview = await client.get("/api/deliveryline")
 
     assert deleted.status_code == 409
-    assert deleted.json()["error"]["code"] == "codex_session_busy"
+    assert deleted.json()["error"]["code"] == "session_busy"
     assert [item["id"] for item in overview.json()["data"]["lines"]] == [line_id]
 
 

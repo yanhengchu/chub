@@ -178,10 +178,9 @@ def _browser_settings(root: Path) -> Settings:
     )
 
 
-@pytest.fixture(scope="module")
-def workspace_browser_server(tmp_path_factory: pytest.TempPathFactory) -> str:
-    root = tmp_path_factory.mktemp("workspace-browser")
-    application = create_app(_browser_settings(root))
+@pytest.fixture
+def workspace_browser_server(tmp_path: Path) -> str:
+    application = create_app(_browser_settings(tmp_path))
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     listener.bind(("127.0.0.1", 0))
@@ -202,10 +201,46 @@ def workspace_browser_server(tmp_path_factory: pytest.TempPathFactory) -> str:
         yield f"http://127.0.0.1:{port}"
     finally:
         server.should_exit = True
-        thread.join(timeout=10)
         listener.close()
+        thread.join(timeout=10)
         if thread.is_alive():
             pytest.fail("isolated Chub workspace browser test server did not stop")
+
+
+@pytest.fixture
+def no_openclaw_workspace_browser_server(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> str:
+    monkeypatch.setattr(
+        "app.services.openclaw.OpenClawManager.is_installed",
+        lambda _manager: False,
+    )
+    application = create_app(_browser_settings(tmp_path))
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(128)
+    port = listener.getsockname()[1]
+    server = uvicorn.Server(uvicorn.Config(application, log_level="critical", lifespan="off"))
+    thread = Thread(target=server.run, kwargs={"sockets": [listener]}, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 10
+    while not server.started and thread.is_alive() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    if not server.started:
+        server.should_exit = True
+        thread.join(timeout=5)
+        listener.close()
+        pytest.fail("isolated no-OpenClaw workspace browser test server did not start")
+    try:
+        yield f"http://127.0.0.1:{port}"
+    finally:
+        server.should_exit = True
+        listener.close()
+        thread.join(timeout=10)
+        if thread.is_alive():
+            pytest.fail("isolated no-OpenClaw workspace browser test server did not stop")
 
 
 async def _mock_workspace_api(route) -> None:
@@ -217,7 +252,7 @@ async def _mock_workspace_api(route) -> None:
         "/api/openclaw/status": OPENCLAW_RESPONSE,
         "/api/openclaw/integration": OPENCLAW_INTEGRATION_RESPONSE,
         "/api/openclaw/weixin/login": WEIXIN_LOGIN_RESPONSE,
-        "/api/codex/runtime-implementations": {
+        "/api/ai/runtime-implementations": {
             "success": True,
             "data": {
                 "runtime_id": "codex",
@@ -228,8 +263,8 @@ async def _mock_workspace_api(route) -> None:
                 ],
             },
         },
-        "/api/codex/sessions": {"success": True, "data": {"available": False, "sessions": []}},
-        "/api/codex/runtimes": {
+        "/api/ai/sessions": {"success": True, "data": {"available": False, "sessions": []}},
+        "/api/ai/runtimes": {
             "success": True,
             "data": {
                 "basic_mode": False,
@@ -324,8 +359,98 @@ async def test_openclaw_settings_only_requests_integration_metadata(
         finally:
             await context.close()
 
-    assert requested_paths == ["/api/openclaw/integration"]
+    assert requested_paths == ["/api/openclaw/status", "/api/openclaw/integration"]
     assert page_errors == []
+
+
+async def test_workspace_ignores_cached_openclaw_state_when_not_installed(
+    no_openclaw_workspace_browser_server: str,
+) -> None:
+    browser_session = session_factory()
+    async with browser_session(ensure_page=False) as chrome:
+        context = await chrome.browser.new_context(viewport={"width": 1280, "height": 900})
+        requested_openclaw_paths: list[str] = []
+
+        async def route_workspace_api(route) -> None:
+            path = urlsplit(route.request.url).path
+            if path.startswith("/api/openclaw/"):
+                requested_openclaw_paths.append(path)
+                if path == "/api/openclaw/status":
+                    await route.fulfill(
+                        status=200,
+                        content_type="application/json",
+                        body=json.dumps({
+                            "success": True,
+                            "data": {"installed": False, "message": "当前节点未安装 OpenClaw。"},
+                        }),
+                    )
+                    return
+            await _mock_workspace_api(route)
+
+        try:
+            await context.route(
+                f"{no_openclaw_workspace_browser_server}/api/**",
+                route_workspace_api,
+            )
+            page = await context.new_page()
+            page_errors: list[str] = []
+            page.on("pageerror", lambda error: page_errors.append(str(error)))
+            await page.add_init_script(
+                script=(
+                    "sessionStorage.setItem('chub.workspace.thirdParty.v1', "
+                    + json.dumps(json.dumps({
+                        "status": OPENCLAW_RESPONSE["data"],
+                        "login": WEIXIN_LOGIN_RESPONSE["data"],
+                        "integration": OPENCLAW_INTEGRATION_RESPONSE["data"],
+                    }))
+                    + ");"
+                )
+            )
+
+            response = await page.goto(
+                no_openclaw_workspace_browser_server,
+                wait_until="domcontentloaded",
+            )
+
+            assert response is not None and response.status == 200
+            await expect(page.locator("#workspace-third-party-environment")).to_be_hidden()
+            await page.wait_for_timeout(100)
+            assert requested_openclaw_paths == []
+            await page.locator("#workspace-workstation-refresh").click()
+            await expect(page.locator("#workspace-workstation-refresh")).to_be_enabled()
+        finally:
+            await context.close()
+
+    assert requested_openclaw_paths == ["/api/openclaw/status"]
+    assert page_errors == []
+
+
+async def test_workspace_reads_openclaw_status_before_dependent_endpoints(
+    workspace_browser_server: str,
+) -> None:
+    browser_session = session_factory()
+    async with browser_session(ensure_page=False) as chrome:
+        context = await chrome.browser.new_context(viewport={"width": 1280, "height": 900})
+        requested_openclaw_paths: list[str] = []
+
+        async def route_workspace_api(route) -> None:
+            path = urlsplit(route.request.url).path
+            if path.startswith("/api/openclaw/"):
+                requested_openclaw_paths.append(path)
+                if path != "/api/openclaw/status":
+                    assert "/api/openclaw/status" in requested_openclaw_paths
+            await _mock_workspace_api(route)
+
+        try:
+            await context.route(f"{workspace_browser_server}/api/**", route_workspace_api)
+            page = await context.new_page()
+            response = await page.goto(workspace_browser_server, wait_until="domcontentloaded")
+            assert response is not None and response.status == 200
+            await expect(page.locator("#workspace-openclaw-detail")).to_contain_text("Gateway 运行正常")
+        finally:
+            await context.close()
+
+    assert requested_openclaw_paths[0] == "/api/openclaw/status"
 
 
 async def test_settings_navigation_rebinds_confirmation_dialog(
@@ -335,6 +460,11 @@ async def test_settings_navigation_rebinds_confirmation_dialog(
     async with browser_session(ensure_page=False) as chrome:
         context = await chrome.browser.new_context(viewport={"width": 1280, "height": 900})
         try:
+            imported = await context.request.post(
+                f"{workspace_browser_server}/api/plugins/runtime/imports",
+                data={"artifact_id": "development:codex-runtime-dev"},
+            )
+            assert imported.ok
             await context.route(f"{workspace_browser_server}/api/**", _mock_workspace_api)
             page = await context.new_page()
             page_errors: list[str] = []
@@ -348,7 +478,7 @@ async def test_settings_navigation_rebinds_confirmation_dialog(
             await expect(page).to_have_url(re.compile(r"/settings/appearance"))
             await page.get_by_role("link", name="会话").click()
             await expect(page).to_have_url(re.compile(r"/settings/session"))
-            await expect(page.get_by_role("heading", name="会话默认配置")).to_have_count(0)
+            await expect(page.get_by_role("heading", name="会话默认配置")).to_be_visible()
             await expect(page.get_by_text("默认 Runtime", exact=True)).to_be_visible()
             await expect(page.get_by_text("默认权限", exact=True)).to_be_visible()
             await expect(page.get_by_text("默认模型", exact=True)).to_be_visible()
@@ -364,6 +494,131 @@ async def test_settings_navigation_rebinds_confirmation_dialog(
             }""")
             await expect(page.locator("#confirmation-dialog")).to_be_visible()
             await page.locator("#confirmation-dialog-cancel").click()
+        finally:
+            await context.close()
+
+    assert page_errors == []
+
+
+async def test_internal_session_visibility_bulk_toggle(
+    workspace_browser_server: str,
+) -> None:
+    browser_session = session_factory()
+    async with browser_session(ensure_page=False) as chrome:
+        context = await chrome.browser.new_context(viewport={"width": 1280, "height": 900})
+        try:
+            page = await context.new_page()
+            page_errors: list[str] = []
+            page.on("pageerror", lambda error: page_errors.append(str(error)))
+            response = await page.goto(
+                f"{workspace_browser_server}/settings/runtime",
+                wait_until="domcontentloaded",
+            )
+            assert response is not None and response.status == 200
+            await page.evaluate("""async () => {
+                await fetch("/api/plugins/runtime/imports", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ artifact_id: "development:codex-runtime-dev" }),
+                });
+                await fetch("/api/settings/internal-session-visibility", {
+                  method: "PUT",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ show_sessions: false }),
+                });
+                await fetch("/api/today-focus/settings", {
+                  method: "PUT",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ show_sessions: true }),
+                });
+            }""")
+            await page.goto(
+                f"{workspace_browser_server}/settings/session",
+                wait_until="domcontentloaded",
+            )
+            toggle = page.locator("#internal-session-visibility-toggle")
+            today_focus = page.locator("#today-focus-show-sessions")
+            release_note = page.locator("#deployment-package-show-release-note-session")
+            layout = await page.locator("#internal-session-visibility-settings").evaluate("""(section) => {
+                const rect = (selector) => section.querySelector(selector).getBoundingClientRect();
+                const internalTitle = rect("#internal-session-visibility-title");
+                const internalDescription = rect(".internal-session-visibility-copy .settings-subsection-description");
+                const copy = rect(".internal-session-visibility-copy");
+                const button = rect("#internal-session-visibility-toggle");
+                const defaultTitle = document.querySelector("#session-defaults-title").getBoundingClientRect();
+                const defaultDescription = document.querySelector("#session-defaults-title + .settings-subsection-description").getBoundingClientRect();
+                return {
+                    buttonCenter: button.top + button.height / 2,
+                    copyCenter: copy.top + copy.height / 2,
+                    internalGap: internalDescription.top - internalTitle.bottom,
+                    defaultGap: defaultDescription.top - defaultTitle.bottom,
+                };
+            }""")
+            assert abs(layout["buttonCenter"] - layout["copyCenter"]) < 1
+            assert abs(layout["internalGap"] - layout["defaultGap"]) < 1
+            await expect(toggle).to_have_text("展示")
+            await expect(today_focus).to_be_checked()
+            await expect(release_note).not_to_be_checked()
+            await toggle.click()
+            await expect(toggle).to_have_text("隐藏")
+            await expect(today_focus).to_be_checked()
+            await expect(release_note).to_be_checked()
+            await toggle.click()
+            await expect(toggle).to_have_text("展示")
+            await expect(today_focus).not_to_be_checked()
+            await expect(release_note).not_to_be_checked()
+        finally:
+            await context.close()
+
+    assert page_errors == []
+
+
+async def test_today_focus_refresh_is_in_ai_digest_heading(
+    workspace_browser_server: str,
+) -> None:
+    browser_session = session_factory()
+    async with browser_session(ensure_page=False) as chrome:
+        context = await chrome.browser.new_context(viewport={"width": 1280, "height": 900})
+        try:
+            page = await context.new_page()
+            page_errors: list[str] = []
+            page.on("pageerror", lambda error: page_errors.append(str(error)))
+            response = await page.goto(
+                f"{workspace_browser_server}/settings/runtime",
+                wait_until="domcontentloaded",
+            )
+            assert response is not None and response.status == 200
+            await page.evaluate("""async () => {
+                await fetch("/api/plugins/runtime/imports", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ artifact_id: "development:codex-runtime-dev" }),
+                });
+                await fetch("/api/plugins/runtime/enabled", {
+                  method: "PUT",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ artifact_id: "development:codex-runtime-dev", enabled: true }),
+                });
+            }""")
+            await page.goto(
+                f"{workspace_browser_server}/?section=today-focus",
+                wait_until="domcontentloaded",
+            )
+            heading = page.locator(".workspace-today-focus-section-heading").filter(
+                has=page.locator("#workspace-today-focus-ai-title"),
+            )
+            refresh = page.locator("#workspace-today-focus-refresh")
+            await expect(refresh).to_be_visible()
+            await expect(page.locator("#workspace-today-focus-open-pages")).to_have_count(0)
+            layout = await heading.evaluate("""(element) => {
+                const copy = element.querySelector("div").getBoundingClientRect();
+                const button = element.querySelector("button").getBoundingClientRect();
+                return {
+                    copyCenter: copy.top + copy.height / 2,
+                    buttonCenter: button.top + button.height / 2,
+                };
+            }""")
+            assert abs(layout["buttonCenter"] - layout["copyCenter"]) < 1
         finally:
             await context.close()
 
@@ -621,201 +876,6 @@ async def test_deliveryline_workspace_navigation_follows_import_lifecycle(
 
 
 @pytest.mark.parametrize("viewport", [(1280, 900), (390, 844)], ids=["desktop", "phone"])
-async def test_workspace_ai_search_renders_task_result_list(
-    workspace_browser_server: str,
-    viewport: tuple[int, int],
-) -> None:
-    browser_session = session_factory()
-    async with browser_session(ensure_page=False) as chrome:
-        context = await chrome.browser.new_context(viewport={"width": viewport[0], "height": viewport[1]})
-        try:
-            imported = await context.request.post(
-                f"{workspace_browser_server}/api/plugins/codex-runtime/imports",
-                data={"artifact_id": "development:codex-runtime"},
-            )
-            assert imported.ok
-            enabled = await context.request.put(
-                f"{workspace_browser_server}/api/plugins/codex-runtime/enabled",
-                data={"artifact_id": "development:codex-runtime", "enabled": True},
-            )
-            assert enabled.ok
-
-            async def route_ai_search(route) -> None:
-                run = {
-                    "id": "a" * 32,
-                    "session_id": "session-1",
-                    "task_id": "task-1",
-                    "query": "agent skills",
-                    "prompt": "\n".join(["搜索提示词内容。"] * 80),
-                    "status": "succeeded",
-                    "summary": "找到一个公开候选。",
-                    "results": [{
-                        "title": "Example Skill",
-                        "url": "https://github.com/example/skill",
-                        "description": "A public browser automation skill.",
-                        "source": "GitHub",
-                    }],
-                    "error": None,
-                    "created_at": "2026-09-15T00:00:00Z",
-                    "updated_at": "2026-09-15T00:00:01Z",
-                }
-                if "/runs/" in route.request.url:
-                    payload = {"success": True, "data": run}
-                elif route.request.method == "POST":
-                    payload = {
-                        "success": True,
-                        "data": {
-                            "current": {
-                                **run,
-                                "status": "requested",
-                                "summary": None,
-                                "results": [],
-                                "updated_at": "2026-09-15T00:00:00Z",
-                            },
-                            "runs": [],
-                        },
-                    }
-                else:
-                    payload = {
-                        "success": True,
-                        "data": {
-                            "current": None,
-                            "runs": [run],
-                        },
-                    }
-                await route.fulfill(
-                    status=200,
-                    content_type="application/json",
-                    body=json.dumps(payload),
-                )
-
-            await context.route(
-                f"{workspace_browser_server}/api/search/**",
-                route_ai_search,
-            )
-            page = await context.new_page()
-            page_errors: list[str] = []
-            page.on("pageerror", lambda error: page_errors.append(str(error)))
-            response = await page.goto(
-                f"{workspace_browser_server}/?section=search",
-                wait_until="domcontentloaded",
-            )
-            assert response is not None and response.status == 200
-            history_item = page.locator(".workspace-search-history-item")
-            await expect(history_item).to_have_count(1)
-            await expect(history_item.locator(".workspace-search-history-title")).to_have_text("agent skills")
-            await expect(history_item.locator(".workspace-search-history-description")).to_have_text("找到一个公开候选。")
-            await page.locator("#workspace-ai-search-query").fill("agent skills")
-            await page.get_by_role("button", name="搜索", exact=True).click()
-            await expect(page).to_have_url(f"{workspace_browser_server}/?section=search&search={'a' * 32}")
-            await expect(page.locator("#workspace-search-detail-prompt")).to_contain_text("搜索提示词内容。")
-            await expect(page.get_by_role("link", name="Example Skill")).to_be_visible()
-            await expect(page.locator("#workspace-search-detail-status")).to_be_hidden()
-            await expect(page.locator(".workspace-search-detail .workspace-search-summary")).to_have_count(1)
-            detail_layout = await page.locator(".workspace-search-detail").evaluate(
-                """(element) => {
-                  const title = element.querySelector('.workspace-search-detail-heading h1');
-                  const prompt = element.querySelector('#workspace-search-detail-prompt');
-                  return {
-                    hasNoHorizontalOverflow: element.scrollWidth <= element.clientWidth,
-                    titleSize: Number.parseFloat(getComputedStyle(title).fontSize),
-                    promptScrolls: prompt.scrollHeight > prompt.clientHeight,
-                    promptOverflow: getComputedStyle(prompt).overflowY,
-                  };
-                }"""
-            )
-        finally:
-            await context.close()
-
-    assert page_errors == []
-    assert detail_layout["hasNoHorizontalOverflow"]
-    assert detail_layout["titleSize"] < 24
-    assert detail_layout["promptScrolls"]
-    assert detail_layout["promptOverflow"] == "auto"
-
-
-async def test_workspace_ai_search_keeps_history_when_submission_fails(
-    workspace_browser_server: str,
-) -> None:
-    browser_session = session_factory()
-    async with browser_session(ensure_page=False) as chrome:
-        context = await chrome.browser.new_context(viewport={"width": 1280, "height": 900})
-        try:
-            imported = await context.request.post(
-                f"{workspace_browser_server}/api/plugins/codex-runtime/imports",
-                data={"artifact_id": "development:codex-runtime"},
-            )
-            assert imported.ok
-            enabled = await context.request.put(
-                f"{workspace_browser_server}/api/plugins/codex-runtime/enabled",
-                data={"artifact_id": "development:codex-runtime", "enabled": True},
-            )
-            assert enabled.ok
-
-            async def route_ai_search(route) -> None:
-                if route.request.method == "POST":
-                    await route.fulfill(
-                        status=503,
-                        content_type="application/json",
-                        body=json.dumps({
-                            "success": False,
-                            "error": {
-                                "code": "ai_search_submit_failed",
-                                "message": "搜索任务未能提交，可再次发起。",
-                                "source": "chub",
-                            },
-                        }),
-                    )
-                    return
-                await route.fulfill(
-                    status=200,
-                    content_type="application/json",
-                    body=json.dumps({
-                        "success": True,
-                        "data": {
-                            "current": None,
-                            "runs": [{
-                                "id": "a" * 32,
-                                "session_id": "session-1",
-                                "task_id": "task-1",
-                                "query": "已有搜索记录",
-                                "prompt": "搜索提示词",
-                                "status": "succeeded",
-                                "summary": "已有搜索摘要。",
-                                "results": [],
-                                "error": None,
-                                "created_at": "2026-09-15T00:00:00Z",
-                                "updated_at": "2026-09-15T00:00:01Z",
-                            }],
-                        },
-                    }),
-                )
-
-            await context.route(f"{workspace_browser_server}/api/search/**", route_ai_search)
-            page = await context.new_page()
-            page_errors: list[str] = []
-            page.on("pageerror", lambda error: page_errors.append(str(error)))
-            response = await page.goto(
-                f"{workspace_browser_server}/?section=search",
-                wait_until="domcontentloaded",
-            )
-            assert response is not None and response.status == 200
-            await expect(page.locator(".workspace-search-history-item")).to_have_count(1)
-            await expect(page.get_by_text("最多保留 8 条", exact=True)).to_be_visible()
-            await page.locator("#workspace-ai-search-query").fill("新的搜索")
-            await page.get_by_role("button", name="搜索", exact=True).click()
-            await expect(page.locator("#workspace-ai-search-submit-feedback")).to_have_text(
-                "搜索任务未能提交，可再次发起。"
-            )
-            await expect(page.locator(".workspace-search-history-item")).to_have_count(1)
-            await expect(page.locator(".workspace-search-history-title")).to_have_text("已有搜索记录")
-        finally:
-            await context.close()
-
-    assert page_errors == []
-
-
-@pytest.mark.parametrize("viewport", [(1280, 900), (390, 844)], ids=["desktop", "phone"])
 async def test_project_documents_workspace_groups_limit_each_category(
     workspace_browser_server: str,
     viewport: tuple[int, int],
@@ -1024,7 +1084,7 @@ async def test_plugin_removal_failure_keeps_the_confirmation_dialog_open(
 @pytest.mark.parametrize(
     ("plugin_id", "artifact_id", "navigation_name", "version_selector"),
     [
-        ("codex-runtime", "development:codex-runtime", "Codex", "#codex-default-runtime-implementation"),
+        ("runtime", "development:codex-runtime-dev", "Codex", "#codex-default-runtime-implementation"),
         ("weixin-orchestration", "development:weixin-orchestration", "微信任务润色", "#workspace-task-implementation-trigger"),
     ],
 )
@@ -1087,7 +1147,7 @@ async def test_plugin_lifecycle_keeps_codex_and_weixin_navigation_and_versions_i
 
 async def _mock_workspace_api_with_quick_sessions(route) -> None:
     path = urlsplit(route.request.url).path
-    if path != "/api/codex/sessions":
+    if path != "/api/ai/sessions":
         await _mock_workspace_api(route)
         return
     payload = {
@@ -1163,7 +1223,7 @@ async def _mock_workspace_api_with_task_orchestration(route) -> None:
                 }],
             },
         },
-        "/api/codex/models": {
+        "/api/ai/models": {
             "success": True,
             "data": {
                 "default_model": "gpt-test",
@@ -1217,13 +1277,11 @@ async def test_task_orchestration_execution_settings_render_on_supported_viewpor
             ).to_be_visible()
             order = await page.locator(".workspace-task-orchestration-list").evaluate(
                 """(list) => Array.from(list.querySelectorAll('.workspace-task-orchestration-field')).map((row) => (
-                    row.querySelector('input')?.id || row.querySelector('button')?.id || ''
+                    row.querySelector('strong')?.textContent || ''
                 ))""",
             )
-            assert order.index("workspace-task-runtime-trigger") < order.index(
-                "workspace-task-model-trigger",
-            ) < order.index("workspace-task-reasoning-trigger")
-            await expect(page.locator("#workspace-task-runtime-trigger")).to_have_text("Codex")
+            assert order.index("翻译 Runtime") < order.index("文本优化模型") < order.index("推理等级")
+            await expect(page.locator('[aria-label="翻译 Runtime：codex"]')).to_have_text("codex")
             await expect(page.locator('[aria-label="翻译权限：Read Only"]')).to_have_count(1)
             await expect(page.locator("#workspace-task-processing-value")).to_have_text(
                 "自动润色后执行",
@@ -1384,7 +1442,7 @@ async def test_task_orchestration_execution_settings_persist_across_page_reload(
                 body=json.dumps({"success": True, "data": {}}),
             )
             return
-        if path == "/api/codex/models":
+        if path == "/api/ai/models":
             await route.fulfill(
                 status=200,
                 content_type="application/json",
@@ -1496,7 +1554,7 @@ async def test_codex_default_runtime_selection_persists_the_selected_implementat
         nonlocal selected_implementation
         request = route.request
         path = urlsplit(request.url).path
-        if path == "/api/codex/runtime-implementations/default":
+        if path == "/api/ai/runtime-implementations/default":
             if request.method == "PUT":
                 payload = json.loads(request.post_data or "{}")
                 selected_implementation = payload["implementation_id"]
@@ -1507,7 +1565,7 @@ async def test_codex_default_runtime_selection_persists_the_selected_implementat
                 body=json.dumps(implementations_response()),
             )
             return
-        if path == "/api/codex/runtime-implementations":
+        if path == "/api/ai/runtime-implementations":
             await route.fulfill(
                 status=200,
                 content_type="application/json",
@@ -1521,7 +1579,7 @@ async def test_codex_default_runtime_selection_persists_the_selected_implementat
                 body=json.dumps({"success": True, "data": {"modules": []}}),
             )
             return
-        if path == "/api/runtime-modules/codex-runtime-dev/refresh-availability":
+        if path == "/api/runtime-modules/development/codex-runtime-dev/refresh-availability":
             await route.fulfill(
                 status=200,
                 content_type="application/json",
@@ -1596,7 +1654,7 @@ async def test_workspace_layout_in_managed_chrome(
                 "Chub v0.1.0 · Linux test · Python 3.12"
             )
             await expect(page.locator("#workspace-worker-detail")).to_have_text(
-                "Worker v12 · 协议 v12 · Quick Worker 已就绪。"
+                f"Worker v{PROTOCOL_VERSION} · 协议 v{PROTOCOL_VERSION} · Quick Worker 已就绪。"
             )
             await expect(page.locator("#workspace-openclaw-detail")).to_have_text(
                 "OpenClaw / Gateway v2026.8.1 · Gateway 运行正常并已通过连接探测。"
@@ -1886,6 +1944,16 @@ async def test_workspace_section_switch_disposes_workstation_controller(
     async with browser_session(ensure_page=False) as chrome:
         context = await chrome.browser.new_context(viewport={"width": 1280, "height": 900})
         try:
+            imported = await context.request.post(
+                f"{workspace_browser_server}/api/plugins/runtime/imports",
+                data={"artifact_id": "development:codex-runtime-dev"},
+            )
+            assert imported.ok
+            enabled = await context.request.put(
+                f"{workspace_browser_server}/api/plugins/runtime/enabled",
+                data={"artifact_id": "development:codex-runtime-dev", "enabled": True},
+            )
+            assert enabled.ok
             await context.route(f"{workspace_browser_server}/api/**", _mock_workspace_api)
             page = await context.new_page()
             page_errors: list[str] = []
@@ -1907,9 +1975,6 @@ async def test_workspace_section_switch_disposes_workstation_controller(
             await expect(page.get_by_role("heading", name="自动化环境")).to_be_visible()
             await expect(page.locator("#workspace-automation-browser-start-dialog")).to_have_count(1)
             await expect(page.locator("#workspace-automation-browser-stop-dialog")).to_have_count(1)
-            await page.get_by_role("button", name="启动 Debug Chrome").click()
-            await expect(page.get_by_role("heading", name="启动 Debug Chrome")).to_be_visible()
-            await page.get_by_role("button", name="取消", exact=True).click()
             await page.locator("#workspace-automation-codex-account-detail").evaluate(
                 "(element) => { element.dataset.authMode = 'api'; }",
             )
@@ -1999,6 +2064,16 @@ async def test_workspace_codex_account_switch_waits_for_account_check(
     async with browser_session(ensure_page=False) as chrome:
         context = await chrome.browser.new_context(viewport={"width": 1280, "height": 900})
         try:
+            imported = await context.request.post(
+                f"{workspace_browser_server}/api/plugins/runtime/imports",
+                data={"artifact_id": "development:codex-runtime-dev"},
+            )
+            assert imported.ok
+            enabled = await context.request.put(
+                f"{workspace_browser_server}/api/plugins/runtime/enabled",
+                data={"artifact_id": "development:codex-runtime-dev", "enabled": True},
+            )
+            assert enabled.ok
             await context.route(f"{workspace_browser_server}/api/**", route_workspace_api)
             page = await context.new_page()
             page_errors: list[str] = []
@@ -2070,6 +2145,16 @@ async def test_workspace_codex_auth_switch_can_be_stopped(
     async with browser_session(ensure_page=False) as chrome:
         context = await chrome.browser.new_context(viewport={"width": 1280, "height": 900})
         try:
+            imported = await context.request.post(
+                f"{workspace_browser_server}/api/plugins/runtime/imports",
+                data={"artifact_id": "development:codex-runtime-dev"},
+            )
+            assert imported.ok
+            enabled = await context.request.put(
+                f"{workspace_browser_server}/api/plugins/runtime/enabled",
+                data={"artifact_id": "development:codex-runtime-dev", "enabled": True},
+            )
+            assert enabled.ok
             await context.route(f"{workspace_browser_server}/api/**", route_workspace_api)
             page = await context.new_page()
             page_errors: list[str] = []

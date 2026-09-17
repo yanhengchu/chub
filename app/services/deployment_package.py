@@ -411,7 +411,7 @@ class DeploymentPackageService:
                 self._session_manager.get_session(session_id)
                 return session_id, False
             except ApiError as exc:
-                if exc.code != "codex_session_not_found":
+                if exc.code != "session_not_found":
                     raise
         with self._quick_interactions.session_creation_guard():
             session = self._session_manager.create_session("chub")

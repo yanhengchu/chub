@@ -353,7 +353,7 @@ def test_chub_sync_includes_each_configured_workspace(
     settings: Settings,
 ) -> None:
     manager, codex_manager, _quick_interactions = configured_manager(settings)
-    settings.ai_runtime.codex.extra_workspaces = [
+    settings.ai_runtime.shared.extra_workspaces = [
         ExtraWorkspaceConfig(
             id="deliveryline",
             name="Deliveryline",
@@ -405,7 +405,7 @@ def test_chub_sync_keeps_slot_when_an_extra_workspace_is_temporarily_unavailable
     settings: Settings,
 ) -> None:
     manager, codex_manager, _quick_interactions = configured_manager(settings)
-    settings.ai_runtime.codex.extra_workspaces = [
+    settings.ai_runtime.shared.extra_workspaces = [
         ExtraWorkspaceConfig(
             id="deliveryline",
             name="Deliveryline",
@@ -502,7 +502,7 @@ def test_chub_sync_removes_session_when_its_extra_workspace_is_removed_from_sett
     settings: Settings,
 ) -> None:
     manager, codex_manager, _quick_interactions = configured_manager(settings)
-    settings.ai_runtime.codex.extra_workspaces = [
+    settings.ai_runtime.shared.extra_workspaces = [
         ExtraWorkspaceConfig(
             id="deliveryline",
             name="Deliveryline",
@@ -539,7 +539,7 @@ def test_chub_sync_removes_session_when_its_extra_workspace_is_removed_from_sett
     )
     assert manager.session_slot_matches(1, "deliveryline-session")
 
-    settings.ai_runtime.codex.extra_workspaces = []
+    settings.ai_runtime.shared.extra_workspaces = []
     result = manager.dispatch(
         message_id="chub-sync-deliveryline-removed",
         prompt="sync",
@@ -665,7 +665,7 @@ def test_codex_new_rejects_before_creation_when_nine_slots_are_full(
     )
 
     assert result.message is not None
-    assert "Create: Failed. Codex could not create a Session." in result.message
+    assert "Create: Failed. The default AI Runtime could not create a Session." in result.message
     codex_manager.create_session.assert_not_called()
 
 
@@ -731,8 +731,8 @@ def test_codex_status_distinguishes_writer_error_and_unknown_running_session(
     )
     codex_manager.has_active_writer.return_value = True
 
-    assert manager._codex_session_dispatch_state(writer_session) == "Busy"
-    assert manager._codex_session_dispatch_state(
+    assert manager._session_dispatch_state(writer_session) == "Busy"
+    assert manager._session_dispatch_state(
         writer_session.model_copy(
             update={
                 "status": "error",
@@ -741,7 +741,7 @@ def test_codex_status_distinguishes_writer_error_and_unknown_running_session(
         )
     ) == "Unavailable"
     codex_manager.has_active_writer.return_value = False
-    assert manager._codex_session_dispatch_state(
+    assert manager._session_dispatch_state(
         writer_session.model_copy(
             update={
                 "status": "running",
@@ -856,7 +856,7 @@ def test_codex_status_keeps_sessions_available_while_restart_is_pending(
         activity="idle",
     )
 
-    assert manager._codex_session_dispatch_state(session) == "Available"
+    assert manager._session_dispatch_state(session) == "Available"
 
 
 def test_chub_refresh_bounds_slow_session_lookup(

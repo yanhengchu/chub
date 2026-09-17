@@ -123,7 +123,7 @@ class DeliverylineCollaboration:
                 try:
                     manager.get_session(association.session_id)
                 except ApiError as exc:
-                    if exc.code != "codex_session_not_found":
+                    if exc.code != "session_not_found":
                         raise
                     next_state = self._state.model_copy(deep=True)
                     next_state.lines = [item for item in next_state.lines if item.line_id != line.id]

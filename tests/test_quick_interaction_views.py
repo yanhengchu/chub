@@ -72,7 +72,7 @@ const result = {
     promptLength: 4,
   }),
   unavailable: sessionView.buildSessionState({
-    session: { ...session, runtime_submission_available: false, runtime_submission_reason: "Codex Runtime is not installed" },
+    session: { ...session, runtime_submission_available: false, runtime_submission_reason: "Runtime is not installed" },
     activeInteraction: false,
     archivePending: false,
     promptLength: 4,
@@ -154,7 +154,7 @@ process.stdout.write(JSON.stringify(result));
     assert behavior["uncertain"]["archiveBusy"] is False
     assert behavior["uncertain"]["archiveLabel"] == "归档 Session"
     assert behavior["uncertain"]["deleteBusy"] is False
-    assert behavior["unavailable"]["submissionReason"] == "Codex Runtime is not installed"
+    assert behavior["unavailable"]["submissionReason"] == "Runtime is not installed"
     assert behavior["creation"]["disabled"] is False
     assert behavior["creation"]["label"] == "新建 Session"
     assert behavior["preferredWorkspace"] == "chub"
@@ -168,7 +168,7 @@ process.stdout.write(JSON.stringify(result));
     assert "Chub 页面暂不提供恢复入口" in behavior["archiveDescription"]
     assert "将终止正在执行的快速任务" in behavior["stopDescription"]
     assert "在途任务不会恢复" in behavior["stopDescription"]
-    assert behavior["url"] == "/codex/session%2Fone/quick-interactions/conversation"
+    assert behavior["url"] == "/ai/sessions/session%2Fone/quick-interactions/conversation"
 
 
 @pytest.mark.skipif(NODE is None, reason="Node.js is required for JavaScript behavior tests")
@@ -249,7 +249,7 @@ process.stdout.write(JSON.stringify({
     assert behavior["old"]["notification"]["label"] == "已通知"
     assert behavior["failed"]["error"] is True
     assert behavior["failed"]["runtime"] == "Runtime：codex-010001"
-    assert behavior["failed"]["errorSource"] == "Codex CLI（上游 Runtime）"
+    assert behavior["failed"]["errorSource"] == "上游 Runtime"
     assert behavior["timedOut"]["errorSource"] == ""
     assert behavior["unknownFailed"]["errorSource"] == "来源未确认"
     assert behavior["failed"]["notification"] == {

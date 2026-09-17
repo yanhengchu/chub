@@ -3,9 +3,10 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict
 
-from app.ai_search.models import AiPageOpenResult, AiSearchData, AiSearchSettings
+from app.ai_search.models import AiSearchData, AiSearchSettings
 from app.core.response import ApiResponse
 from app.core.security import require_trusted_network
+from app.services.internal_session_visibility import internal_session_visibility_lock
 
 
 router = APIRouter(prefix="/api/today-focus", tags=["today-focus"], dependencies=[Depends(require_trusted_network)])
@@ -37,16 +38,11 @@ def update_today_focus_settings(
     payload: AiSearchSettingsUpdate,
     request: Request,
 ) -> ApiResponse[AiSearchSettings]:
+    with internal_session_visibility_lock:
+        show_sessions = request.app.state.ai_search.set_show_sessions(payload.show_sessions)
     return ApiResponse(
-        data=AiSearchSettings(
-            show_sessions=request.app.state.ai_search.set_show_sessions(payload.show_sessions)
-        )
+        data=AiSearchSettings(show_sessions=show_sessions)
     )
-
-
-@router.post("/open-pages", response_model=ApiResponse[AiPageOpenResult])
-def open_today_focus_pages(request: Request) -> ApiResponse[AiPageOpenResult]:
-    return ApiResponse(data=request.app.state.ai_search.open_pages())
 
 
 @router.post("/refresh", response_model=ApiResponse[AiSearchData])

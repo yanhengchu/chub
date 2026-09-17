@@ -4,6 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 import re
 from typing import Any, Literal
+import warnings
 
 import yaml
 from pydantic import (
@@ -81,19 +82,33 @@ class ExtraWorkspaceConfig(StrictModel):
 
 class CodexRuntimeConfig(StrictModel):
     enabled: bool = True
+    # Kept only while existing local configuration is upgraded to shared.
+    workspace: Path | None = None
+    extra_workspaces: list[ExtraWorkspaceConfig] | None = None
+    data_file: Path | None = None
+    runtime_dir: Path | None = None
+    max_running: int | None = Field(default=None, ge=1, le=10)
+    quick_interaction_timeout_seconds: int | None = Field(
+        default=None, ge=10 * 60, le=24 * 60 * 60
+    )
+
+
+class AiRuntimeSharedConfig(StrictModel):
+    """Chub-owned state and workspace mapping shared by every Runtime."""
+
     workspace: Path = Path("~/workspace")
     extra_workspaces: list[ExtraWorkspaceConfig] = Field(default_factory=list)
-    data_file: Path = Path("data/local/state/codex/sessions.json")
-    runtime_dir: Path = Path("data/local/runtime/codex")
+    state_dir: Path = Path("data/local/state/codex")
+    # Fixed upgrade input only; never used as active Runtime state.
+    legacy_state_file: Path | None = None
+    runtime_dir: Path = Path("data/local/runtime/ai-runtime")
     max_running: int = Field(default=3, ge=1, le=10)
     quick_interaction_timeout_seconds: int = Field(
-        default=6 * 60 * 60,
-        ge=10 * 60,
-        le=24 * 60 * 60,
+        default=6 * 60 * 60, ge=10 * 60, le=24 * 60 * 60
     )
 
     @model_validator(mode="after")
-    def validate_extra_workspaces(self) -> "CodexRuntimeConfig":
+    def validate_extra_workspaces(self) -> "AiRuntimeSharedConfig":
         workspace_ids = [workspace.id for workspace in self.extra_workspaces]
         if len(workspace_ids) != len(set(workspace_ids)):
             raise ValueError("extra workspace IDs must be unique")
@@ -129,8 +144,51 @@ class AutomationsConfig(StrictModel):
 
 
 class AiRuntimeConfig(StrictModel):
+    shared: AiRuntimeSharedConfig = AiRuntimeSharedConfig()
     codex: CodexRuntimeConfig = CodexRuntimeConfig()
     modules: RuntimePluginsConfig = RuntimePluginsConfig()
+
+    @model_validator(mode="after")
+    def migrate_legacy_codex_shared_fields(self) -> "AiRuntimeConfig":
+        """Map the retired Codex-owned shared fields without rewriting local config."""
+        legacy = self.codex
+        shared_explicit = "shared" in self.model_fields_set
+        if shared_explicit:
+            return self
+        legacy_shared_fields = (
+            legacy.workspace,
+            legacy.extra_workspaces,
+            legacy.data_file,
+            legacy.runtime_dir,
+            legacy.max_running,
+            legacy.quick_interaction_timeout_seconds,
+        )
+        if any(value is not None for value in legacy_shared_fields):
+            warnings.warn(
+                "ai_runtime.codex shared fields are retired; move them to "
+                "ai_runtime.shared before the next configuration update.",
+                UserWarning,
+                stacklevel=2,
+            )
+        if legacy.workspace is not None:
+            self.shared.workspace = legacy.workspace
+        if legacy.extra_workspaces is not None:
+            self.shared.extra_workspaces = legacy.extra_workspaces
+        if legacy.data_file is not None:
+            self.shared.state_dir = legacy.data_file.parent
+            self.shared.legacy_state_file = legacy.data_file
+        if legacy.runtime_dir is not None:
+            self.shared.runtime_dir = legacy.runtime_dir
+        if legacy.max_running is not None:
+            self.shared.max_running = legacy.max_running
+        if legacy.quick_interaction_timeout_seconds is not None:
+            self.shared.quick_interaction_timeout_seconds = (
+                legacy.quick_interaction_timeout_seconds
+            )
+        # Legacy values enter after Pydantic has validated the default shared
+        # object, so validate the merged mapping once before it is used.
+        self.shared = AiRuntimeSharedConfig.model_validate(self.shared.model_dump())
+        return self
 
 
 class MaintenanceTerminalConfig(StrictModel):
@@ -330,19 +388,20 @@ class Settings(StrictModel):
             self.logs.worker_operations_file = (
                 PROJECT_ROOT / self.logs.worker_operations_file
             )
-        self.ai_runtime.codex.workspace = (
-            self.ai_runtime.codex.workspace.expanduser().resolve()
-        )
-        for workspace in self.ai_runtime.codex.extra_workspaces:
+        self.ai_runtime.shared.workspace = self.ai_runtime.shared.workspace.expanduser().resolve()
+        for workspace in self.ai_runtime.shared.extra_workspaces:
             workspace.path = workspace.path.expanduser().resolve()
-        if not self.ai_runtime.codex.data_file.is_absolute():
-            self.ai_runtime.codex.data_file = (
-                PROJECT_ROOT / self.ai_runtime.codex.data_file
+        if not self.ai_runtime.shared.state_dir.is_absolute():
+            self.ai_runtime.shared.state_dir = PROJECT_ROOT / self.ai_runtime.shared.state_dir
+        if (
+            self.ai_runtime.shared.legacy_state_file is not None
+            and not self.ai_runtime.shared.legacy_state_file.is_absolute()
+        ):
+            self.ai_runtime.shared.legacy_state_file = (
+                PROJECT_ROOT / self.ai_runtime.shared.legacy_state_file
             )
-        if not self.ai_runtime.codex.runtime_dir.is_absolute():
-            self.ai_runtime.codex.runtime_dir = (
-                PROJECT_ROOT / self.ai_runtime.codex.runtime_dir
-            )
+        if not self.ai_runtime.shared.runtime_dir.is_absolute():
+            self.ai_runtime.shared.runtime_dir = PROJECT_ROOT / self.ai_runtime.shared.runtime_dir
         if not self.ai_runtime.modules.install_dir.is_absolute():
             self.ai_runtime.modules.install_dir = (
                 PROJECT_ROOT / self.ai_runtime.modules.install_dir

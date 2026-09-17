@@ -102,7 +102,7 @@ def test_quick_interaction_timeout_defaults_to_six_hours(
     config_file.write_text(VALID_CONFIG, encoding="utf-8")
     settings = load_settings(config_file)
 
-    assert settings.ai_runtime.codex.quick_interaction_timeout_seconds == 21_600
+    assert settings.ai_runtime.shared.quick_interaction_timeout_seconds == 21_600
 
 
 def test_extra_workspaces_are_resolved_and_keep_their_display_name(
@@ -112,7 +112,7 @@ def test_extra_workspaces_are_resolved_and_keep_their_display_name(
     config_file.write_text(
         f"""{VALID_CONFIG}
 ai_runtime:
-  codex:
+  shared:
     extra_workspaces:
       - id: Deliveryline
         name: Deliveryline Platform
@@ -123,9 +123,34 @@ ai_runtime:
 
     settings = load_settings(config_file)
 
-    assert settings.ai_runtime.codex.extra_workspaces[0].id == "deliveryline"
-    assert settings.ai_runtime.codex.extra_workspaces[0].name == "Deliveryline Platform"
-    assert settings.ai_runtime.codex.extra_workspaces[0].path == tmp_path / "deliveryline"
+    assert settings.ai_runtime.shared.extra_workspaces[0].id == "deliveryline"
+    assert settings.ai_runtime.shared.extra_workspaces[0].name == "Deliveryline Platform"
+    assert settings.ai_runtime.shared.extra_workspaces[0].path == tmp_path / "deliveryline"
+
+
+def test_legacy_codex_shared_fields_map_without_overwriting_local_config(
+    tmp_path: Path,
+) -> None:
+    config_file = tmp_path / "settings.yaml"
+    config_file.write_text(
+        f"""{VALID_CONFIG}
+ai_runtime:
+  codex:
+    workspace: {tmp_path}/workspace
+    data_file: {tmp_path}/legacy-state/sessions.json
+    runtime_dir: {tmp_path}/legacy-runtime
+""",
+        encoding="utf-8",
+    )
+
+    settings = load_settings(config_file)
+
+    assert settings.ai_runtime.shared.workspace == tmp_path / "workspace"
+    assert settings.ai_runtime.shared.state_dir == tmp_path / "legacy-state"
+    assert settings.ai_runtime.shared.runtime_dir == tmp_path / "legacy-runtime"
+    assert settings.ai_runtime.shared.legacy_state_file == (
+        tmp_path / "legacy-state/sessions.json"
+    )
 
 
 @pytest.mark.parametrize(
@@ -145,7 +170,7 @@ def test_extra_workspaces_reject_reserved_or_invalid_ids(
     config_file.write_text(
         f"""{VALID_CONFIG}
 ai_runtime:
-  codex:
+  shared:
     extra_workspaces:
       - id: {workspace_id}
         name: Extra
@@ -257,8 +282,8 @@ def test_runtime_data_defaults_are_separated(
     config_file.write_text(VALID_CONFIG, encoding="utf-8")
     settings = load_settings(config_file)
 
-    assert settings.ai_runtime.codex.data_file.name == "sessions.json"
-    assert settings.ai_runtime.codex.runtime_dir.parts[-3:] == ("local", "runtime", "codex")
+    assert settings.ai_runtime.shared.state_dir.parts[-3:] == ("local", "state", "codex")
+    assert settings.ai_runtime.shared.runtime_dir.parts[-3:] == ("local", "runtime", "ai-runtime")
     assert settings.automations.state_dir.parts[-3:] == ("local", "state", "automations")
     assert settings.automations.runtime_dir.parts[-3:] == ("local", "runtime", "automations")
     assert settings.automations.artifacts_dir.parts[-4:] == (

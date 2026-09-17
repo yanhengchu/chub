@@ -7,7 +7,7 @@
       : null);
 
   function sessionUrl(sessionId) {
-    return `/codex/${encodeURIComponent(sessionId)}/quick-interactions/conversation`;
+    return `/ai/sessions/${encodeURIComponent(sessionId)}/quick-interactions/conversation`;
   }
 
   function sessionDisplayTitle(session) {
@@ -132,7 +132,7 @@
       (workspace) => workspace.available === true,
     );
     const label = !available
-      ? context.unavailableReason || "Codex 当前不可用"
+      ? context.unavailableReason || "当前默认 Runtime 不可用"
       : !hasAvailableWorkspace
         ? "当前没有可用工作目录"
         : pending

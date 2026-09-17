@@ -55,29 +55,6 @@
       return;
     }
 
-    const runtimePickerHost = document.createElement("div");
-    runtimePickerHost.className = "settings-choice-picker workspace-task-orchestration-picker";
-    const runtimeTrigger = document.createElement("button");
-    runtimeTrigger.id = "workspace-task-runtime-trigger";
-    runtimeTrigger.className = "settings-choice-picker-trigger";
-    runtimeTrigger.type = "button";
-    runtimeTrigger.setAttribute("aria-haspopup", "listbox");
-    runtimeTrigger.setAttribute("aria-controls", "workspace-task-runtime-menu");
-    runtimeTrigger.setAttribute("aria-expanded", "false");
-    runtimeTrigger.disabled = true;
-    const runtimeValue = document.createElement("span");
-    const runtimeArrow = document.createElement("span");
-    runtimeArrow.setAttribute("aria-hidden", "true");
-    runtimeTrigger.append(runtimeValue, runtimeArrow);
-    const runtimeMenu = document.createElement("div");
-    runtimeMenu.id = "workspace-task-runtime-menu";
-    runtimeMenu.className = "settings-choice-picker-menu workspace-task-orchestration-menu";
-    runtimeMenu.setAttribute("role", "listbox");
-    runtimeMenu.setAttribute("aria-label", "翻译 Runtime");
-    runtimeMenu.hidden = true;
-    runtimePickerHost.append(runtimeTrigger, runtimeMenu);
-    runtimeStaticDisplay.replaceWith(runtimePickerHost);
-
     const reasoningPickerHost = document.createElement("div");
     reasoningPickerHost.className = "settings-choice-picker workspace-task-orchestration-picker";
     const reasoningTrigger = document.createElement("button");
@@ -110,8 +87,8 @@
       processingTitle.nextElementSibling.textContent = "选择微信 ClawBot 普通文本的直接执行、自动润色或润色后确认。";
     }
     processingMenu.setAttribute("aria-label", "润色模式");
-    runtimeValue.textContent = "正在读取";
-    runtimeTrigger.setAttribute("aria-label", "翻译 Runtime：正在读取");
+    runtimeStaticDisplay.querySelector("span").textContent = "正在读取";
+    runtimeStaticDisplay.setAttribute("aria-label", "翻译 Runtime：正在读取");
     reasoningValue.textContent = "正在读取";
     reasoningTrigger.setAttribute("aria-label", "推理等级：正在读取");
 
@@ -169,19 +146,6 @@
         void saveExecutionSettings();
       },
     });
-    const runtimePicker = window.createChoicePicker({
-      trigger: runtimeTrigger,
-      value: runtimeValue,
-      menu: runtimeMenu,
-      optionClassName: "settings-choice-picker-option",
-      matchTriggerWidth: false,
-      alignEnd: true,
-      onSelect: (runtimeId) => {
-        status = { ...status, runtime_id: runtimeId || null };
-        render();
-        void saveExecutionSettings();
-      },
-    });
     const reasoningPicker = window.createChoicePicker({
       trigger: reasoningTrigger,
       value: reasoningValue,
@@ -198,12 +162,11 @@
         void saveExecutionSettings();
       },
     });
-    if (!implementationPicker || !processingPicker || !runtimePicker || !modelPicker || !reasoningPicker) return;
+    if (!implementationPicker || !processingPicker || !modelPicker || !reasoningPicker) return;
 
     const setPickersDisabled = (disabled) => {
       processingPicker.setDisabled(disabled);
       implementationPicker.setDisabled(disabled);
-      runtimePicker.setDisabled(disabled);
       modelPicker.setDisabled(disabled);
       reasoningPicker.setDisabled(disabled);
     };
@@ -290,17 +253,13 @@
         { value: "confirm", label: "自动润色后确认执行", description: "先润色文本，确认后再提交。" },
       ], selectedMode);
       processingTrigger.setAttribute("aria-label", `润色模式：${processingValue.textContent}`);
-      runtimePicker.setOptions([
-        {
-          value: "codex",
-          label: "Codex",
-          description: "当前已接入并支持微信文本优化的 Runtime。",
-        },
-      ], status.runtime_id || "");
-      runtimeDescription.textContent = status.runtime_id === "codex"
-        ? "用于之后新提交的文本优化任务。"
-        : "当前配置不可用，请选择支持微信文本优化的 Runtime。";
-      runtimeTrigger.setAttribute("aria-label", `翻译 Runtime：${runtimeValue.textContent}`);
+      const runtimeId = typeof status.runtime_id === "string" ? status.runtime_id : "";
+      const runtimeLabel = runtimeId || "不可用";
+      runtimeStaticDisplay.querySelector("span").textContent = runtimeLabel;
+      runtimeStaticDisplay.setAttribute("aria-label", `翻译 Runtime：${runtimeLabel}`);
+      runtimeDescription.textContent = runtimeId
+        ? "用于之后新提交的文本优化任务；Runtime 由通用默认设置决定。"
+        : "当前默认 Runtime 配置不可用。";
       const modelOptions = [];
       if (status.model && !models.some((item) => item.id === status.model)) {
         modelOptions.push({
@@ -339,7 +298,6 @@
         status.native_cleanup_retry_required ? "error" : "",
       );
       modelPicker.setDisabled(saving || loading || (models.length === 0 && !status.model));
-      runtimePicker.setDisabled(saving || loading);
       reasoningPicker.setDisabled(
         saving
         || loading
@@ -362,10 +320,10 @@
       try {
         const [nextStatus, nextCatalog, lifecycle] = await Promise.all([
           apiRequest("/api/settings/weixin-translation", { cache: "no-store" }),
-          apiRequest("/api/codex/models", { cache: "no-store" }),
+          apiRequest("/api/ai/models", { cache: "no-store" }),
           apiRequest("/api/plugins", { cache: "no-store" }),
         ]);
-        if (!Array.isArray(nextCatalog?.models)) throw new Error("暂时无法读取 Codex 模型目录。");
+        if (!Array.isArray(nextCatalog?.models)) throw new Error("暂时无法读取 Runtime 模型目录。");
         const plugin = lifecycle?.plugins?.find((item) => item.plugin_id === "weixin-orchestration");
         if (!plugin) throw new Error("暂时无法读取微信任务润色插件状态。");
         const enabledIds = Array.isArray(plugin.enabled_artifact_ids) ? plugin.enabled_artifact_ids : [];
@@ -419,7 +377,6 @@
       }
     };
     const saveExecutionSettings = () => save({
-      runtime_id: status?.runtime_id || null,
       model: status?.model || null,
       reasoning_effort: status?.reasoning_effort || null,
     }, "文本优化运行参数保存失败，请稍后刷新页面重试。");

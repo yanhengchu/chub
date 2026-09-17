@@ -200,12 +200,12 @@ async def test_general_runtime_settings_save_session_defaults(
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         imported = await client.post(
-            "/api/plugins/codex-runtime/imports",
-            json={"artifact_id": "development:codex-runtime"},
+            "/api/plugins/runtime/imports",
+            json={"artifact_id": "development:codex-runtime-dev"},
         )
         enabled = await client.put(
-            "/api/plugins/codex-runtime/enabled",
-            json={"artifact_id": "development:codex-runtime", "enabled": True},
+            "/api/plugins/runtime/enabled",
+            json={"artifact_id": "development:codex-runtime-dev", "enabled": True},
         )
         assert imported.status_code == 200
         assert enabled.status_code == 200
@@ -252,12 +252,12 @@ async def test_general_runtime_settings_keep_session_defaults_with_development_p
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         imported = await client.post(
-            "/api/plugins/codex-runtime/imports",
-            json={"artifact_id": "development:codex-runtime"},
+            "/api/plugins/runtime/imports",
+            json={"artifact_id": "development:codex-runtime-dev"},
         )
         enabled = await client.put(
-            "/api/plugins/codex-runtime/enabled",
-            json={"artifact_id": "development:codex-runtime", "enabled": True},
+            "/api/plugins/runtime/enabled",
+            json={"artifact_id": "development:codex-runtime-dev", "enabled": True},
         )
         assert imported.status_code == 200
         assert enabled.status_code == 200
@@ -280,7 +280,9 @@ async def test_runtime_plugin_settings_failure_returns_service_unavailable(
 ) -> None:
     app = create_app(settings)
     adapter = app.state.ai_session_manager.runtime_adapter
-    assert adapter.__class__.__module__ == "chub_codex_runtime.runtime_adapter"
+    assert adapter.__class__.__module__.endswith(
+        ".chub_codex_runtime.runtime_adapter"
+    )
     app.state.ai_session_manager.runtime_settings_store.read_general = MagicMock(
         side_effect=RuntimeSettingsStoreUnavailable("settings unavailable")
     )

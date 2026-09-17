@@ -21,7 +21,7 @@
     const list = document.getElementById("plugin-lifecycle-list");
     const message = document.getElementById("plugin-lifecycle-message");
     const statusTargets = {
-      "codex-runtime": document.getElementById("runtime-plugin-status"),
+      runtime: document.getElementById("runtime-plugin-status"),
       "weixin-orchestration": document.querySelector(".workspace-task-orchestration-list"),
       deliveryline: document.getElementById("deliveryline-plugin-status"),
     };
@@ -79,7 +79,7 @@
       copy.append(title, detail);
       const actions = document.createElement("span");
       actions.className = "runtime-module-row-actions";
-      if (!imported) actions.append(button("导入", "button-secondary", () => void perform(() => request(`/api/plugins/${encodeURIComponent(plugin.plugin_id)}/imports`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ artifact_id: artifact.artifact_id }) }), { refreshNavigation: true })));
+      if (!imported && !unavailable) actions.append(button("导入", "button-secondary", () => void perform(() => request(`/api/plugins/${encodeURIComponent(plugin.plugin_id)}/imports`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ artifact_id: artifact.artifact_id }) }), { refreshNavigation: true })));
       else {
         const toggle = button(enabled ? "禁用" : "启用", "button-secondary", () => void perform(() => request(`/api/plugins/${encodeURIComponent(plugin.plugin_id)}/enabled`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ artifact_id: artifact.artifact_id, enabled: !enabled }) })));
         if (!enabled && unavailable) {

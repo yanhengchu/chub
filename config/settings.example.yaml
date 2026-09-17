@@ -27,8 +27,8 @@ logs:
   max_lines: 100
 
 ai_runtime:
-  codex:
-    enabled: true
+  # Chub-owned configuration shared by every installed AI Runtime.
+  shared:
     workspace: "~/workspace"
     # Optional, locally trusted directories displayed as separate Session choices.
     # Selecting the built-in `workspace` already permits work in all of its
@@ -39,10 +39,12 @@ ai_runtime:
     #   - id: "deliveryline"
     #     name: "Deliveryline"
     #     path: "~/workspace/deliveryline"
-    data_file: "data/local/state/codex/sessions.json"
-    runtime_dir: "data/local/runtime/codex"
+    state_dir: "data/local/state/codex"
+    runtime_dir: "data/local/runtime/ai-runtime"
     max_running: 3
     quick_interaction_timeout_seconds: 21600
+  codex:
+    enabled: true
 
 maintenance_terminal:
   ticket_ttl_seconds: 600

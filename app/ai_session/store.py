@@ -51,7 +51,16 @@ class AiSessionStore:
             }.intersection(session)
             for session in sessions
         )
-        if payload.get("version") != 2 and not obsolete_projection:
+        obsolete_runtime_binding = isinstance(sessions, list) and any(
+            isinstance(session, dict)
+            and session.get("implementation_id") in {None, "builtin-dev"}
+            for session in sessions
+        )
+        if (
+            payload.get("version") != 2
+            and not obsolete_projection
+            and not obsolete_runtime_binding
+        ):
             return False
         temporary_store._sessions = {}
         try:

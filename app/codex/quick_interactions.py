@@ -61,8 +61,8 @@ WORKER_RECONCILE_INTERVAL_SECONDS = 1.0
 WORKER_CONNECTION_RETRY_DELAYS = (0.2, 0.5, 1.0, 2.0, 2.0)
 UNCERTAIN_SUBMISSION_MAX_ATTEMPTS = 8
 UNCERTAIN_SUBMISSION_RETRY_SECONDS = 0.25
-LOGGER = logging.getLogger("hub.codex.quick_interactions")
-CODEX_QUICK_INTERACTION_INSTRUCTIONS = (
+LOGGER = logging.getLogger("hub.ai.quick_interactions")
+QUICK_INTERACTION_INSTRUCTIONS = (
     "[Chub 快速交互交付要求]\n"
     "完成后请面向项目维护者汇报产品结果，重点说明完成效果、页面或交互变化、"
     "验证结果、验收方法及必要风险。默认不要展开代码实现、逐文件清单、函数或"
@@ -74,7 +74,7 @@ CODEX_QUICK_INTERACTION_INSTRUCTIONS = (
 )
 DEFERRED_RESTART_RESULT_SUFFIX = "本次处理已完成，即将重启 Chub 服务。"
 DEFERRED_RESTART_FAILED_SUFFIX = "Chub 重启登记失败，本次不会自动重启。"
-ACTIVE_WRITER_ERROR = "Codex Session 正在由其他进程使用，请等待任务结束后重试。"
+ACTIVE_WRITER_ERROR = "AI Session 正在由其他进程使用，请等待任务结束后重试。"
 VOICE_TRANSCRIPT_MARKER = "[[chub-weixin-voice-transcript]]"
 SENSITIVE_SUMMARY_VALUE_PATTERN = re.compile(
     r"(?i)\b(token|secret|password|passwd|webhook)"
@@ -279,7 +279,7 @@ class QuickInteractionManager:
                 LOGGER.warning("Discarded invalid Web quick interaction task")
                 continue
             discard_reason: str | None = None
-            if task.implementation_id == "codex" and task.status in {"requested", "running"}:
+            if task.implementation_id is None and task.status in {"requested", "running"}:
                 # The pre-R1 record had no implementation snapshot. Its Worker
                 # protocol state is intentionally incompatible, so never retry
                 # it through an arbitrary current version.
@@ -465,7 +465,7 @@ class QuickInteractionManager:
                     task.worker_task_id,
                 )
             except (ApiError, AiSessionStoreUnavailable) as exc:
-                if isinstance(exc, ApiError) and exc.code == "codex_session_not_found":
+                if isinstance(exc, ApiError) and exc.code == "session_not_found":
                     # The Session mapping is authoritative. A retained Web
                     # task without it cannot safely receive a Worker result or
                     # be replayed. Drop the local Worker identity so a still
@@ -544,23 +544,9 @@ class QuickInteractionManager:
                         "quick_interaction_in_progress",
                         "该会话已有快速交互任务正在执行。",
                     )
-            selected_implementation_id = getattr(session, "implementation_id", None)
-            if not isinstance(selected_implementation_id, str):
-                resolve_session_implementation = getattr(
-                    self.codex_manager,
-                    "session_implementation_id",
-                    None,
-                )
-                resolved_implementation_id = (
-                    resolve_session_implementation(session_id)
-                    if callable(resolve_session_implementation)
-                    else None
-                )
-                selected_implementation_id = (
-                    resolved_implementation_id
-                    if isinstance(resolved_implementation_id, str)
-                    else "codex-runtime-dev"
-                )
+            selected_implementation_id = self.codex_manager.session_implementation_id(
+                session_id
+            )
             if implementation_id is not None and implementation_id != selected_implementation_id:
                 raise ApiError(
                     409,
@@ -826,11 +812,14 @@ class QuickInteractionManager:
             health = WorkerHealth.model_validate(payload.get("data"))
             if health.status != "ready":
                 raise OSError("Quick Worker is not ready")
+            implementation_id = self.codex_manager.default_submission_implementation_id()
+            if implementation_id not in health.available_implementation_ids:
+                raise OSError("Quick Worker cannot execute the default Runtime implementation")
         except (OSError, ValueError) as exc:
             raise ApiError(
                 503,
                 "quick_worker_unavailable",
-                "Quick Worker 当前不可用，无法创建快速交互 Session。",
+                "Quick Worker 当前无法执行默认 Runtime，无法创建快速交互 Session。",
             ) from exc
 
     def update_session_model(
@@ -2296,25 +2285,40 @@ class QuickInteractionManager:
         worker_task_id = task.worker_task_id
         if worker_task_id is None:
             raise OSError("Worker task identity is unavailable")
-        runtime_id = getattr(self.codex_manager, "runtime_id", "codex")
+        runtime_id = getattr(session, "runtime_id", None)
         if not isinstance(runtime_id, str):
-            runtime_id = "codex"
-        session_runtime_id = getattr(session, "runtime_id", runtime_id)
-        if session_runtime_id != runtime_id:
-            raise OSError("Session Runtime owner does not match the active Runtime")
+            raise OSError("Session Runtime identity is unavailable")
+        implementation_id = task.implementation_id
+        if not isinstance(implementation_id, str):
+            raise OSError("Task Runtime implementation identity is unavailable")
+        resolve_implementation = getattr(
+            self.codex_manager,
+            "session_implementation_id",
+            None,
+        )
+        resolved_implementation_id = (
+            resolve_implementation(session.id)
+            if callable(resolve_implementation)
+            else None
+        )
+        if (
+            isinstance(resolved_implementation_id, str)
+            and resolved_implementation_id != implementation_id
+        ):
+            raise OSError("Task Runtime implementation does not match its Session")
         model = task.model
         reasoning_effort = task.reasoning_effort
         permission_profile = task.permission_mode or session.permission_mode
         return RuntimeTaskSubmission(
             task_id=worker_task_id,
             runtime_id=runtime_id,
-            implementation_id=task.implementation_id,
+            implementation_id=implementation_id,
             session_id=session.id,
             workspace_id=session.workspace_id,
             prompt=(
                 prompt
                 if task.kind == "translation"
-                else self._codex_execution_prompt(prompt)
+                else self._execution_prompt(prompt)
             ),
             permission_profile=permission_profile,
             native_session_id=session.native_session_id,
@@ -2402,12 +2406,12 @@ class QuickInteractionManager:
         snapshot: WorkerTaskView,
     ) -> None:
         if snapshot.status == "succeeded":
-            result = snapshot.result or "Codex 未返回最终结果。"
+            result = snapshot.result or "Runtime 未返回最终结果。"
             if task.kind == "translation" and not self._valid_translation_result(result):
                 self._finish(
                     task_id,
                     "failed",
-                    "Codex 未返回有效的润色与英文翻译。",
+                    "Runtime 未返回有效的润色与英文翻译。",
                     error_source="chub",
                 )
             else:
@@ -2427,14 +2431,14 @@ class QuickInteractionManager:
             message = (
                 "翻译任务排队超时。"
                 if snapshot.error_code == "queue_deadline_exceeded"
-                else f"Codex 已达到配置的执行上限（{self.timeout_seconds} 秒）。"
+                else f"Runtime 已达到配置的执行上限（{self.timeout_seconds} 秒）。"
             )
             self._finish(task_id, "timed_out", message)
         else:
             self._finish(
                 task_id,
                 "failed",
-                snapshot.error or "Codex 执行失败。",
+                snapshot.error or "Runtime 执行失败。",
                 error_source=getattr(snapshot, "error_source", None),
             )
         if task.worker_task_id is not None:
@@ -2540,7 +2544,7 @@ class QuickInteractionManager:
         )
 
     @staticmethod
-    def _codex_execution_prompt(
+    def _execution_prompt(
         prompt: str,
     ) -> str:
         browser_capabilities = (
@@ -2551,7 +2555,7 @@ class QuickInteractionManager:
             "`chub capability page-interact --url <URL> --follow-link <链接文字>`。\n"
             "- 不得改用 Debug Chrome、CDP 或浏览器配置；不得填写或提交表单、下载或执行脚本。"
         )
-        return f"[用户需求]\n{prompt}{browser_capabilities}\n\n{CODEX_QUICK_INTERACTION_INSTRUCTIONS}"
+        return f"[用户需求]\n{prompt}{browser_capabilities}\n\n{QUICK_INTERACTION_INSTRUCTIONS}"
 
     @staticmethod
     def _session_title(prompt: str) -> str:

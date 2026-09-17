@@ -204,7 +204,9 @@ def test_text_model_status_is_included_in_the_text_summary(
         "Current confirmation: None."
     )
     translation_manager.status.assert_called_once_with()
-    codex_manager.read_model_catalog.assert_called_once_with()
+    codex_manager.read_model_catalog.assert_called_once_with(
+        implementation_id="codex-runtime-dev"
+    )
     quick_interactions.update_session_model.assert_not_called()
 
 
@@ -1289,6 +1291,10 @@ def test_model_list_command_reports_current_and_available_models(
         "M1 · active-model\n"
         "M2 · other-model"
     )
+    codex_manager.session_implementation_id.assert_called_once_with("session-1")
+    codex_manager.read_model_catalog.assert_called_once_with(
+        implementation_id="codex-runtime-dev"
+    )
     quick_interactions.submit.assert_not_called()
 
 
@@ -1621,6 +1627,7 @@ def test_usage_returns_complete_usage_without_session_status(
     manager, codex_manager, quick_interactions = configured_manager(settings)
     manager.ai_usage_reader = MagicMock()
     manager.ai_usage_reader.read.return_value = AiUsageData(
+        runtime_id="codex",
         status="available",
         provider="openai",
         source="sub2api",

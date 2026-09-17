@@ -20,7 +20,7 @@ MAX_COMMAND_OUTPUT_BYTES = 64 * 1024
 MAX_COMPLETION_MESSAGE_PARTS = 5
 ERROR_SOURCE_LABELS = {
     "chub": "Chub",
-    "runtime": "Codex CLI (upstream Runtime)",
+    "runtime": "Upstream Runtime",
 }
 OVERFLOW_MESSAGE = "结果超过微信发送上限，剩余内容请在 Chub 快速交互页面查看。"
 COMPLETION_OVERFLOW_MESSAGE = "More in Chub."

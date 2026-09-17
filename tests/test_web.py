@@ -455,8 +455,8 @@ async def settings_page_removes_quick_interaction_page_size_preference(
     assert "hub.weixinTranslationSettingsCache" in script.text
     assert "hub.openclawWeixinSettingsCache.v1" in script.text
     assert "hub.codexShowTranslationSession.v1" not in script.text
-    assert "/api/codex/models" in script.text
-    assert "/api/codex/session-defaults" not in script.text
+    assert "/api/ai/models" in script.text
+    assert "/api/ai/session-defaults" not in script.text
     assert "/api/settings/weixin-translation" in script.text
     assert "翻译权限" in response.text
     assert "翻译权限：Read Only" in response.text
@@ -549,8 +549,8 @@ async def test_settings_navigation_keeps_session_for_an_imported_disabled_runtim
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         imported = await client.post(
-            "/api/plugins/codex-runtime/imports",
-            json={"artifact_id": "development:codex-runtime"},
+            "/api/plugins/runtime/imports",
+            json={"artifact_id": "development:codex-runtime-dev"},
         )
         appearance = await client.get("/settings/appearance")
         session = await client.get("/settings/session", follow_redirects=False)
@@ -571,8 +571,8 @@ async def test_workspace_navigation_places_today_focus_before_project_documents(
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         imported = await client.post(
-            "/api/plugins/codex-runtime/imports",
-            json={"artifact_id": "development:codex-runtime"},
+            "/api/plugins/runtime/imports",
+            json={"artifact_id": "development:codex-runtime-dev"},
         )
         response = await client.get("/")
 
@@ -584,6 +584,44 @@ async def test_workspace_navigation_places_today_focus_before_project_documents(
     assert response.text.index("<span>今日关注</span>") < response.text.index(
         "<span>项目资料</span>"
     )
+
+
+@pytest.mark.anyio
+async def test_today_focus_keeps_non_ai_groups_without_runtime(settings: Settings) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/?section=today-focus")
+
+    assert response.status_code == 200
+    assert 'aria-label="今日关注"' in response.text
+    assert 'id="workspace-today-focus-plan-title">今日计划</h3>' in response.text
+    assert 'id="workspace-today-focus-todo-title">待办</h3>' in response.text
+    assert "workspace-today-focus-ai-title" not in response.text
+    assert "workspace-today-focus-refresh" not in response.text
+
+
+@pytest.mark.anyio
+async def test_today_focus_refresh_belongs_to_ai_digest_section(settings: Settings) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.post(
+            "/api/plugins/runtime/imports",
+            json={"artifact_id": "development:codex-runtime-dev"},
+        )
+        await client.put(
+            "/api/plugins/runtime/enabled",
+            json={"artifact_id": "development:codex-runtime-dev", "enabled": True},
+        )
+        response = await client.get("/?section=today-focus")
+
+    assert response.status_code == 200
+    assert "打开固定 AI 来源页面" not in response.text
+    assert "workspace-today-focus-open-pages" not in response.text
+    assert response.text.index('id="workspace-today-focus-ai-title"') < response.text.index(
+        'id="workspace-today-focus-refresh"'
+    ) < response.text.index('id="workspace-today-focus-results"')
 
 
 @pytest.mark.anyio
@@ -729,6 +767,8 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert '<strong>发布版本</strong>' in pages["diagnostics"].text
     assert 'deployment-package-show-release-note-session' in session_visibility_script.text
     assert '"/api/settings/deployment-package/release-note-session"' in session_visibility_script.text
+    assert '"/api/settings/internal-session-visibility"' in session_visibility_script.text
+    assert 'bulkToggle.textContent = allShown() ? "隐藏" : "展示";' in session_visibility_script.text
     assert '.settings-field input[type="text"]' in stylesheet.text
     assert ".deployment-package-heading" in stylesheet.text
     assert ".deployment-package-artifacts" in stylesheet.text
@@ -807,7 +847,7 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert 'data-session-visibility-feedback' in session_visibility_script.text
     assert 'internal-session-visibility-message' not in session_visibility_script.text
     assert '"/api/today-focus/refresh"' in workspace_search_script.text
-    assert '"/api/today-focus/open-pages"' in workspace_search_script.text
+    assert '"/api/today-focus/open-pages"' not in workspace_search_script.text
     assert 'id="workspace-task-orchestration-title"' not in pages["task-orchestration"].text
     assert 'window.initializeWorkspacePluginLifecycle?.();' in script.text
     assert 'workstation-status-detail-${enabled.length ? "success" : "warning"}' in lifecycle_script.text
@@ -928,9 +968,10 @@ async def test_settings_pages_use_independent_routes_and_page_scoped_content(
     assert workspace_script.status_code == 200
     assert '"/api/settings/weixin-translation"' in workspace_script.text
     assert 'show_internal_native_session' not in workspace_script.text
-    assert '"/api/codex/models"' in workspace_script.text
+    assert '"/api/ai/models"' in workspace_script.text
     assert '"/api/ai/settings"' not in workspace_script.text
-    assert 'workspace-task-runtime-trigger' in workspace_script.text
+    assert 'workspace-task-runtime-trigger' not in workspace_script.text
+    assert 'runtimeStaticDisplay.setAttribute("aria-label"' in workspace_script.text
     assert 'window.initializeWorkspaceTaskOrchestration' in workspace_script.text
     assert 'window.disposeWorkspaceTaskOrchestration' in workspace_script.text
     assert '.workspace-preview-session-group + .workspace-preview-session-group' in stylesheet.text
@@ -1008,7 +1049,7 @@ async def test_runtime_settings_navigation_lists_each_registered_runtime(
     )
     app.state.plugin_lifecycle.path.parent.mkdir(parents=True, exist_ok=True)
     app.state.plugin_lifecycle.path.write_text(
-        '{"imports":{"codex-runtime":["development:codex-runtime"]},"enabled":{}}',
+        '{"imports":{"runtime":["development:codex-runtime-dev"]},"enabled":{}}',
         encoding="utf-8",
     )
     transport = httpx.ASGITransport(app=app)
@@ -1101,7 +1142,7 @@ async def test_root_page_is_the_workspace_and_legacy_workspace_redirects(
     assert "工作站环境" in home.text
     assert 'aria-label="Runtime Session 列表"' in home.text
     assert 'data-workspace-session-id="session-123"' in selected_session.text
-    assert 'src="/codex/session-123/quick-interactions/conversation?embedded=workspace"' in selected_session.text
+    assert 'src="/ai/sessions/session-123/quick-interactions/conversation?embedded=workspace"' in selected_session.text
     assert 'class="workspace-preview-main is-showing-quick-session"' in selected_session.text
     assert "workspace-chub-summary" not in selected_session.text
     assert "自动化任务" in automations.text
@@ -1267,7 +1308,7 @@ async def test_home_workstation_third_party_controls_are_state_driven(
     assert "插件版本：${deliverylineVersion} · 导入状态：已导入 · 启用状态：" in script.text
     assert "renderLifecyclePlugin(codex" in script.text
     assert "renderLifecyclePlugin(weixin" in script.text
-    assert 'plugin?.plugin_id === "codex-runtime" ? "Codex"' in script.text
+    assert 'const name = plugin?.name || "未知插件";' in script.text
     assert 'workspace-development-codex-refresh' not in response.text
     assert 'workspace-development-weixin-refresh' not in response.text
     assert "第三方服务环境" in response.text
@@ -1302,6 +1343,13 @@ async def test_home_workstation_third_party_controls_are_state_driven(
     assert '? "Gateway 运行正常并已通过连接探测。"' in script.text
     assert '? `微信 ClawBot v${integration.weixin_adapter.version} · `' in script.text
     assert 'request("/api/openclaw/integration", { cache: "no-store" }).catch(() => undefined)' in script.text
+    status_request = 'const status = await request("/api/openclaw/status", { cache: "no-store" });'
+    login_request = 'request("/api/openclaw/weixin/login", { cache: "no-store" })'
+    assert status_request in script.text
+    assert login_request in script.text
+    assert script.text.index(status_request) < script.text.index(login_request)
+    assert 'if (status?.installed !== true) {' in script.text
+    assert 'window.sessionStorage.removeItem(thirdPartySnapshotCacheKey);' in script.text
     assert 'const thirdPartySnapshotCacheKey = "chub.workspace.thirdParty.v1";' in script.text
     assert 'const developmentSnapshotCacheKey = "chub.workspace.development.v1";' in script.text
     assert 'const refreshDevelopment = async () =>' in script.text
@@ -1368,6 +1416,7 @@ async def test_automation_section_uses_workstation_status_rows(
                 checked_at=datetime(2026, 9, 5, 12, 31, tzinfo=timezone.utc),
                 login_page_available=True,
             ),
+            codex_runtime_account_available=True,
             enabled_count=2,
             tasks=[
                 AutomationTaskPublic(
@@ -1515,9 +1564,9 @@ async def test_automation_section_uses_workstation_status_rows(
     assert "setAutomationBrowserMessage" not in workspace_script.text
     assert "setAutomationFeishuMessage" not in workspace_script.text
     assert '"/api/automations/environment/feishu/login-page"' in workspace_script.text
-    assert '"/api/automations/environment/codex/login-page"' in workspace_script.text
-    assert '"/api/automations/environment/codex/switch-authentication"' in workspace_script.text
-    assert '"/api/automations/environment/codex/switch-authentication/stop"' in workspace_script.text
+    assert '"/api/automations/environment/ai/sessions/login-page"' in workspace_script.text
+    assert '"/api/automations/environment/ai/sessions/switch-authentication"' in workspace_script.text
+    assert '"/api/automations/environment/ai/sessions/switch-authentication/stop"' in workspace_script.text
     assert 'let switchTargetMode = "";' in workspace_script.text
     assert 'switchTargetMode = currentMode === "account"' in workspace_script.text
     assert 'input[name="workspace-automation-codex-account-mode"]' not in workspace_script.text
@@ -1622,7 +1671,7 @@ async def test_automation_section_uses_workstation_status_rows(
     assert 'data-weekly-report-session-id="weekly-session-1"' in session_response.text
     assert 'href="/weekly-reports/2026-08-31%E8%87%B32026-09-06/focus">查看文档</a>' in session_response.text
     assert 'data-weekly-report-stage="focus"' in session_response.text
-    assert 'href="/codex/weekly-session-1/quick-interactions/conversation"' not in session_response.text
+    assert 'href="/ai/sessions/weekly-session-1/quick-interactions/conversation"' not in session_response.text
 
     app.state.weekly_report_generation.read_current = MagicMock(
         return_value={
@@ -1714,6 +1763,7 @@ async def test_automation_section_keeps_browser_dialogs_for_partial_refresh(
                 quota_state="unavailable",
                 quota_message="浏览器未启动，额度暂无法获取",
             ),
+            codex_runtime_account_available=True,
             tasks=[],
         )
     )
@@ -1733,6 +1783,19 @@ async def test_automation_section_keeps_browser_dialogs_for_partial_refresh(
     assert "if (attempt < 2)" in workspace_script.text
     assert 'nextSurface.dataset.checkCodexApiQuotaAfterBrowserStart = "true";' in workspace_script.text
     assert "shouldCheckCodexApiQuotaAfterBrowserStart" in workspace_script.text
+
+
+@pytest.mark.anyio
+async def test_automation_hides_codex_account_without_an_enabled_runtime(
+    settings: Settings,
+) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/?section=automations")
+
+    assert response.status_code == 200
+    assert "workspace-automation-codex-account-detail" not in response.text
+    assert "workspace-automation-codex-account-switch-dialog" not in response.text
 
 
 @pytest.mark.anyio
@@ -1800,12 +1863,12 @@ async def test_quick_interaction_conversation_page_is_available(
     app.state.ai_session_manager = manager
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        removed_page = await client.get("/codex/session-1/quick-interactions")
+        removed_page = await client.get("/ai/sessions/session-1/quick-interactions")
         page = await client.get(
-            "/codex/session-1/quick-interactions/conversation"
+            "/ai/sessions/session-1/quick-interactions/conversation"
         )
         embedded_page = await client.get(
-            "/codex/session-1/quick-interactions/conversation?embedded=workspace"
+            "/ai/sessions/session-1/quick-interactions/conversation?embedded=workspace"
         )
         session_script = await client.get("/static/quick_interaction_session.js")
         timeline_script = await client.get("/static/quick_interaction_timeline.js")
@@ -2143,9 +2206,9 @@ async def test_design_document_pages_render_markdown(settings: Settings) -> None
     assert "本期工作周报自动化与生成设计" in listing.text
     assert "Deliveryline 需求交付管理平台设计" in listing.text
     assert deliveryline.status_code == 200
-    assert "Deliveryline 是需求交付管理平台" in deliveryline.text
+    assert "Deliveryline 是 Chub 中独立的需求交付业务模块" in deliveryline.text
     assert "专项需求与设计" in deliveryline.text
-    assert "Deliveryline 已以 Chub 业务插件接入" in deliveryline.text
+    assert "Deliveryline 是交付意图、业务决策、证据记录和验收结论的权威来源" in deliveryline.text
     assert "Chub 工作台业务模块设计" not in listing.text
     assert removed_business_module.status_code == 404
     assert "返回首页" not in listing.text

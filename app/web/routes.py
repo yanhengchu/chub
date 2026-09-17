@@ -48,16 +48,11 @@ def _settings_return_url(request: Request) -> str:
 def _imported_runtime_navigation(request: Request) -> tuple:
     try:
         imported_plugins = request.app.state.plugin_lifecycle.imported_plugin_ids()
-        if "codex-runtime" not in imported_plugins:
+        if "runtime" not in imported_plugins:
             return ()
         return request.app.state.ai_session_manager.runtime_plugins.navigation()
     except (ApiError, OSError, RuntimeOperationError):
         return ()
-
-
-def _today_focus_navigation_available(request: Request) -> bool:
-    """Today Focus is an AI Runtime entry and must disappear without one."""
-    return bool(_imported_runtime_navigation(request))
 
 
 def _deliveryline_workspace_state(request: Request) -> dict[str, str] | None:
@@ -347,10 +342,7 @@ def workspace_preview(
     request: Request,
     section: str = "workbench",
 ) -> RedirectResponse:
-    today_focus_navigation = _today_focus_navigation_available(request)
-    sections = {"workbench", "project-docs", "automations"}
-    if today_focus_navigation:
-        sections.add("today-focus")
+    sections = {"workbench", "project-docs", "automations", "today-focus"}
     if _deliveryline_workspace_state(request) is not None:
         sections.add("deliveryline")
     if section not in sections:
@@ -366,11 +358,12 @@ def render_workspace(
     workspace_session_id: str | None = None,
 ) -> HTMLResponse:
     settings = request.app.state.settings
+    third_party_environment_available = request.app.state.openclaw_manager.is_installed()
     deliveryline = _deliveryline_workspace_state(request)
-    today_focus_navigation = _today_focus_navigation_available(request)
-    sections = {"workbench", "project-docs", "automations"}
-    if today_focus_navigation:
-        sections.add("today-focus")
+    today_focus_ai_available, _today_focus_ai_unavailable_reason = (
+        request.app.state.ai_session_manager.submission_available()
+    )
+    sections = {"workbench", "project-docs", "automations", "today-focus"}
     if deliveryline is not None:
         sections.add("deliveryline")
     if section not in sections:
@@ -452,7 +445,7 @@ def render_workspace(
             "workspace_session_id": workspace_session_id,
             "deliveryline": deliveryline,
             "deliveryline_navigation": deliveryline is not None,
-            "today_focus_navigation": today_focus_navigation,
+            "today_focus_ai_available": today_focus_ai_available,
             "document_categories": DOCUMENT_CATEGORIES,
             "deliveryline_requirements": deliveryline_requirements,
             "deliveryline_archived_requirements": deliveryline_archived_requirements,
@@ -469,6 +462,7 @@ def render_workspace(
             "weekly_report_generation": weekly_report_generation,
             "weekly_report_generation_ready": weekly_report_generation_ready,
             "weekly_report_generation_unavailable_reason": weekly_report_generation_unavailable_reason,
+            "third_party_environment_available": third_party_environment_available,
         },
     )
 

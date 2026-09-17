@@ -463,6 +463,7 @@ class AutomationListData(StrictAutomationModel):
     codex_runtime_account: RuntimeAccountEnvironmentState = Field(
         default_factory=RuntimeAccountEnvironmentState
     )
+    codex_runtime_account_available: bool = False
     enabled_count: int = 0
     tasks: list[AutomationTaskPublic]
 

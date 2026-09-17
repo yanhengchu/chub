@@ -20,8 +20,8 @@ from app.codex.models import (
     utc_now,
 )
 from app.codex.quick_interactions import (
-    CODEX_QUICK_INTERACTION_INSTRUCTIONS,
     MAX_QUICK_INTERACTION_STATE_BYTES,
+    QUICK_INTERACTION_INSTRUCTIONS,
     QuickInteractionManager,
     build_task_summary,
 )
@@ -49,6 +49,8 @@ def manager(
         permission_mode="auto-review",
     )
     codex_manager.has_active_writer.return_value = False
+    codex_manager.default_submission_implementation_id.return_value = "codex-runtime-dev"
+    codex_manager.session_implementation_id.return_value = "codex-runtime-dev"
     quick_interactions = QuickInteractionManager(
         tmp_path / "codex-sessions.json",
         tmp_path / "runtime",
@@ -93,6 +95,7 @@ def accepted_worker_task(submission: dict[str, object]) -> dict[str, object]:
             "task": {
                 "task_id": submission["task_id"],
                 "runtime_id": submission["runtime_id"],
+                "implementation_id": submission["implementation_id"],
                 "status": "accepted",
                 "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
                 "created_at": now.isoformat(),
@@ -119,6 +122,36 @@ def test_quick_interaction_timeout_is_configurable(tmp_path: Path) -> None:
 
     assert quick_interactions.timeout_seconds == 21_600
     assert configured.timeout_seconds == 7_200
+
+
+def test_worker_submission_uses_the_session_runtime_snapshot(tmp_path: Path) -> None:
+    quick_interactions = manager(tmp_path)
+    quick_interactions.codex_manager.session_implementation_id.return_value = "test-runtime-dev"
+    task = QuickInteractionTask(
+        id="task-1",
+        worker_task_id=f"qw-1750000000000-{'a' * 32}",
+        session_id="session-1",
+        implementation_id="test-runtime-dev",
+        prompt="test",
+        restart_sensitive=True,
+        status="requested",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    session = SimpleNamespace(
+        id="session-1",
+        runtime_id="test",
+        workspace_id="chub",
+        permission_mode="full-access",
+        native_session_id=None,
+    )
+
+    submission = quick_interactions._worker_submission(task, session, "test")
+
+    assert submission.runtime_id == "test"
+    assert submission.implementation_id == "test-runtime-dev"
+    assert submission.prompt.startswith("[用户需求]\ntest")
+    assert submission.prompt.endswith(QUICK_INTERACTION_INSTRUCTIONS)
 
 
 def test_model_update_is_serialized_with_quick_session_tasks(tmp_path: Path) -> None:
@@ -167,37 +200,37 @@ def test_configuration_update_allows_running_quick_session_for_the_next_task(
     )
 
 
-def test_codex_execution_prompt_adds_delivery_guidance_without_changing_request(
+def test_execution_prompt_adds_delivery_guidance_without_changing_request(
     tmp_path: Path,
 ) -> None:
     quick_interactions = manager(tmp_path)
-    prompt = quick_interactions._codex_execution_prompt("调整页面布局")
+    prompt = quick_interactions._execution_prompt("调整页面布局")
 
     assert prompt.startswith("[用户需求]\n调整页面布局")
-    assert prompt.endswith(CODEX_QUICK_INTERACTION_INSTRUCTIONS)
+    assert prompt.endswith(QUICK_INTERACTION_INSTRUCTIONS)
     assert "完成效果" in prompt
     assert "验收方法" in prompt
     assert "只能调用 scripts/chub-web-restart 一次" in prompt
 
 
-def test_codex_execution_prompt_includes_local_browser_capabilities(
+def test_execution_prompt_includes_local_browser_capabilities(
     tmp_path: Path,
 ) -> None:
     quick_interactions = manager(tmp_path)
 
-    prompt = quick_interactions._codex_execution_prompt("读取链接正文")
+    prompt = quick_interactions._execution_prompt("读取链接正文")
 
     assert "[Chub 本机浏览器能力]" in prompt
     assert "chub capability page-read --url <URL>" in prompt
     assert "CDP" in prompt
 
 
-def test_codex_execution_prompt_includes_page_interaction_with_page_read(
+def test_execution_prompt_includes_page_interaction_with_page_read(
     tmp_path: Path,
 ) -> None:
     quick_interactions = manager(tmp_path)
 
-    prompt = quick_interactions._codex_execution_prompt("进入下一页")
+    prompt = quick_interactions._execution_prompt("进入下一页")
 
     assert "chub capability page-interact" in prompt
     assert "不得填写或提交表单" in prompt
@@ -865,6 +898,46 @@ def test_worker_error_within_worker_limit_survives_web_state_reload(
     assert reloaded.get(task.id).error == error_text
 
 
+@pytest.mark.parametrize(
+    ("status", "result", "error", "expected_field", "expected"),
+    [
+        ("succeeded", None, None, "result", "Runtime 未返回最终结果。"),
+        ("timed_out", None, None, "error", "Runtime 已达到配置的执行上限（21600 秒）。"),
+        ("failed", None, None, "error", "Runtime 执行失败。"),
+    ],
+)
+def test_worker_terminal_fallbacks_are_runtime_generic(
+    tmp_path: Path,
+    status: str,
+    result: str | None,
+    error: str | None,
+    expected_field: str,
+    expected: str,
+) -> None:
+    quick_interactions = manager(tmp_path)
+    task = QuickInteractionTask(
+        id=f"task-{status}",
+        session_id="session-1",
+        prompt="执行任务",
+        status="running",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    quick_interactions._tasks[task.id] = task
+    quick_interactions._active_task_ids.add(task.id)
+    snapshot = SimpleNamespace(
+        status=status,
+        result=result,
+        error=error,
+        error_code=None,
+        error_source="runtime",
+    )
+
+    quick_interactions._finish_from_worker_snapshot(task.id, task, snapshot)
+
+    assert getattr(quick_interactions.get(task.id), expected_field) == expected
+
+
 @pytest.mark.anyio
 async def test_isolated_business_adapter_runs_page_weixin_and_translation_via_worker(
     settings,
@@ -1014,11 +1087,12 @@ result_path.write_text(f"recovered:{prompt}", encoding="utf-8")
             workspace_id="isolated",
             workspace_name="Isolated",
             cwd=workspace,
-            codex_session_id=native_id,
+            session_id=native_id,
             status="stopped",
             permission_mode="read-only",
         )
         value.has_active_writer.return_value = False
+        value.session_implementation_id.return_value = "codex-runtime-dev"
         return value
 
     def new_manager() -> QuickInteractionManager:
@@ -1661,8 +1735,8 @@ def test_missing_session_discards_stale_web_task_without_hiding_worker_recovery(
     codex_manager = MagicMock()
     codex_manager.register_quick_native_claim.side_effect = ApiError(
         404,
-        "codex_session_not_found",
-        "Codex session not found",
+        "session_not_found",
+        "AI Session not found",
     )
     quick_interactions = QuickInteractionManager(
         tmp_path / "codex-sessions.json",
@@ -1693,8 +1767,8 @@ def test_final_untracked_worker_task_without_session_is_acknowledged(
     quick_interactions = worker_manager(tmp_path, settings)
     quick_interactions.codex_manager.get_session.side_effect = ApiError(
         404,
-        "codex_session_not_found",
-        "Codex session not found",
+        "session_not_found",
+        "AI Session not found",
     )
     now = utc_now()
     summary = {
@@ -1811,7 +1885,7 @@ def test_worker_reconciliation_logs_maintenance_disconnect_without_traceback(
     quick_interactions = manager(tmp_path)
     quick_interactions.set_maintenance_window_checker(lambda: True)
 
-    with caplog.at_level("INFO", logger="hub.codex.quick_interactions"):
+    with caplog.at_level("INFO", logger="hub.ai.quick_interactions"):
         quick_interactions._record_reconciliation_failure(
             WorkerRequestNotSent("worker socket unavailable")
         )
@@ -1831,7 +1905,7 @@ def test_worker_reconciliation_keeps_traceback_for_unexpected_disconnect(
 ) -> None:
     quick_interactions = manager(tmp_path)
 
-    with caplog.at_level("WARNING", logger="hub.codex.quick_interactions"):
+    with caplog.at_level("WARNING", logger="hub.ai.quick_interactions"):
         quick_interactions._record_reconciliation_failure(
             WorkerRequestNotSent("worker socket unavailable")
         )
@@ -1923,6 +1997,34 @@ def test_quick_session_creation_requires_ready_worker(
     assert error.value.code == "quick_worker_unavailable"
 
 
+def test_quick_session_creation_requires_default_worker_implementation(
+    settings,
+    tmp_path: Path,
+) -> None:
+    quick_interactions = worker_manager(tmp_path, settings)
+    quick_interactions._recovery_ready = True
+    quick_interactions._worker_call = MagicMock(
+        return_value={
+            "success": True,
+            "data": {
+                "status": "ready",
+                "generation": "generation-1",
+                "code_version": "test",
+                "pid": 1,
+                "available_implementation_ids": [],
+            },
+        }
+    )
+
+    with pytest.raises(ApiError) as error:
+        with quick_interactions.session_creation_guard():
+            pass
+
+    assert error.value.status_code == 503
+    assert error.value.code == "quick_worker_unavailable"
+    assert "无法执行默认 Runtime" in error.value.message
+
+
 def test_worker_reconciliation_merges_once_and_acknowledges_after_persistence(
     settings,
     tmp_path: Path,
@@ -1933,6 +2035,7 @@ def test_worker_reconciliation_merges_once_and_acknowledges_after_persistence(
         id="task-1",
         worker_task_id="qw-1750000000000-22222222222222222222222222222222",
         session_id="session-1",
+        implementation_id="codex-runtime-dev",
         prompt="检查状态",
         status="running",
         created_at=utc_now(),
@@ -1948,6 +2051,7 @@ def test_worker_reconciliation_merges_once_and_acknowledges_after_persistence(
     summary = {
         "task_id": task.worker_task_id,
         "runtime_id": "codex",
+        "implementation_id": "codex-runtime-dev",
         "status": "succeeded",
         "prompt_sha256": "a" * 64,
         "session_id": task.session_id,
@@ -1959,6 +2063,7 @@ def test_worker_reconciliation_merges_once_and_acknowledges_after_persistence(
     view = {
         "task_id": task.worker_task_id,
         "runtime_id": "codex",
+        "implementation_id": "codex-runtime-dev",
         "status": "succeeded",
         "prompt_sha256": "a" * 64,
         "created_at": now.isoformat(),
@@ -2018,6 +2123,7 @@ def test_worker_reconciliation_not_found_delivers_failure_notification(
         id="task-1",
         worker_task_id="qw-1750000000000-22222222222222222222222222222222",
         session_id="session-1",
+        implementation_id="codex-runtime-dev",
         prompt="检查状态",
         status="running",
         notification_route="weixin-task",
@@ -2133,6 +2239,7 @@ def test_worker_reconciliation_converges_native_session_conflict(
     view = {
         "task_id": task.worker_task_id,
         "runtime_id": "codex",
+        "implementation_id": "codex-runtime-dev",
         "status": "succeeded",
         "prompt_sha256": "a" * 64,
         "created_at": now.isoformat(),
@@ -2166,7 +2273,7 @@ def test_worker_reconciliation_converges_native_session_conflict(
         ApiError(
             409,
             "quick_interaction_native_session_conflict",
-            "Codex 原生 Session 已归属于其他 Chub Session。",
+            "该 Runtime 原生 Session 已归属于其他 Chub Session。",
         )
     )
 
@@ -2174,7 +2281,7 @@ def test_worker_reconciliation_converges_native_session_conflict(
 
     finished = quick_interactions.get(task.id)
     assert finished.status == "failed"
-    assert finished.error == "Codex 原生 Session 已归属于其他 Chub Session。"
+    assert finished.error == "该 Runtime 原生 Session 已归属于其他 Chub Session。"
     assert quick_interactions.is_running(task.session_id) is False
     assert quick_interactions.recovery_ready is True
     assert calls == ["task_list", "task_get", "task_acknowledge"]
@@ -2191,7 +2298,7 @@ def test_worker_reconciliation_allows_translation_native_session_rotation(
         workspace_id="weixin-translation",
         workspace_name="微信文本优化与翻译",
         cwd=tmp_path,
-        codex_session_id="old-native-session",
+        session_id="old-native-session",
         status="stopped",
         permission_mode="read-only",
     )
@@ -2585,9 +2692,10 @@ def test_worker_recovery_rejects_mismatched_task_identity(
             "success": True,
             "data": {
                 "task": {
-                    "task_id": "qw-1750000000000-44444444444444444444444444444444",
-                    "runtime_id": "codex",
-                    "status": "running",
+                "task_id": "qw-1750000000000-44444444444444444444444444444444",
+                "runtime_id": "codex",
+                "implementation_id": "codex-runtime-dev",
+                "status": "running",
                     "prompt_sha256": "a" * 64,
                     "created_at": now.isoformat(),
                     "updated_at": now.isoformat(),
@@ -2713,9 +2821,10 @@ def test_worker_reconciliation_recovers_missing_started_operation_log(
             "success": True,
             "data": {
                 "task": {
-                    "task_id": task.worker_task_id,
-                    "runtime_id": "codex",
-                    "status": "running",
+                "task_id": task.worker_task_id,
+                "runtime_id": "codex",
+                "implementation_id": "codex-runtime-dev",
+                "status": "running",
                     "prompt_sha256": "a" * 64,
                     "created_at": now.isoformat(),
                     "updated_at": now.isoformat(),
@@ -3851,7 +3960,7 @@ def test_session_operation_rejects_running_quick_interaction(tmp_path: Path) -> 
     assert error.value.code == "quick_interaction_in_progress"
 
 
-def test_cancel_codex_session_rejects_untracked_active_session(tmp_path: Path) -> None:
+def test_cancel_session_rejects_untracked_active_session(tmp_path: Path) -> None:
     quick_interactions = manager(tmp_path)
     quick_interactions._running_sessions.add("session-1")
 

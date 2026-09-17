@@ -26,7 +26,7 @@
 5. 失败降级只能复用同一来源、同一身份且仍在有效周期内的最近快照，并设置 `stale=true`；不能跨认证来源、账号、订阅或自然日复用。
 6. 认证失败、配置错误、采集超时和上游不可用要分别保持可诊断，但额度采集失败不得阻塞 Chub 健康检查、Session、任务或其他首页卡片。
 7. Codex Runtime 生成长、短展示文本；微信精确 `usage` 的详细完整格式由固定微信适配模板基于同一结构化快照生成，不属于调用方可自定义的第四套文案。调用方不自行重算额度或维护第二套缓存；页面、微信和通知采用哪一种格式及其显示位置，由前端设计和当前能力契约维护。
-8. `GET /api/ai/usage` 是受保护的默认 Runtime 只读接口；`refresh=true` 只触发一次共享刷新，不绕过认证、不创建后台任务。响应中的 `runtime_id=codex` 明确快照归属。
+8. `GET /api/ai/usage` 是受保护的默认 Runtime 只读接口；`refresh=true` 只触发一次共享刷新，不绕过认证、不创建后台任务。当默认 Runtime 为 Codex 时，响应必须显式返回 `runtime_id=codex`；其他 Runtime 的快照身份及私有展示口径由其专项设计定义。
 
 AI Agent 排障顺序：先确认认证类型和当前身份，再确认当前 Codex provider 根地址和周额度快照，再判断今日 Token 来源，最后检查缓存/过期和浏览器采集；不得通过旧缓存、相邻日期、另一账号或另一来源推断当前值。Runtime 通过[Chub AI Runtime 架构设计](CHUB_AI_RUNTIME_DESIGN.md)定义的 `usage_snapshot` 能力提供快照；支持固定 provider 登录恢复的 Runtime 还声明 `usage_login_page`。新 Runtime 接入时必须自行实现或明确拒绝对应能力。Codex 的认证来源、上游数据、缓存身份键和展示口径只在本文维护。
 

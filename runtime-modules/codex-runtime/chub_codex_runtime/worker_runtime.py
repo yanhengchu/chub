@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -43,6 +44,9 @@ class CodexWorkerRuntime:
         if not self._executable:
             return False
         executable = Path(self._executable)
+        if not executable.is_file():
+            resolved = shutil.which(self._executable)
+            executable = Path(resolved) if resolved is not None else executable
         # Fixed workspace paths are validated when a turn uses them. Native
         # Sessions resolve their own trusted working directory at submission
         # time, so one missing shortcut must not disable the Runtime globally.

@@ -23,7 +23,7 @@ def archive_session(
             # A stale page may race with native reconciliation that already
             # removed the Chub mapping. The archive goal is already reached;
             # continue the idempotent cleanup instead of surfacing a 404.
-            if exc.code != "codex_session_not_found":
+            if exc.code != "session_not_found":
                 raise
         quick_interactions.cancel_codex_session(session_id)
         quick_interactions.remove_session_tasks(session_id)
@@ -50,7 +50,7 @@ def delete_session(
         except ApiError as exc:
             # A concurrent native reconciliation may already have removed the
             # mapping. Treat that stale-page case as an idempotent cleanup.
-            if exc.code != "codex_session_not_found":
+            if exc.code != "session_not_found":
                 raise
         # Delete is allowed to attempt a running Quick Worker cleanup. The
         # native action is still blocked until cancellation reaches a final
@@ -62,7 +62,7 @@ def delete_session(
             # A stale page may race with native reconciliation that already
             # removed the Chub mapping. Deletion is already complete for that
             # mapping, so continue clearing retained Chub-side state.
-            if exc.code != "codex_session_not_found":
+            if exc.code != "session_not_found":
                 raise
         quick_interactions.remove_session_tasks(session_id)
         if release_slot is not None and not release_slot(session_id):

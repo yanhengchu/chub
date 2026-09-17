@@ -119,6 +119,9 @@ class OpenClawManager:
     def _resolve_executable() -> str | None:
         return shutil.which("openclaw")
 
+    def is_installed(self) -> bool:
+        return self._resolve_executable() is not None
+
     def status(self) -> OpenClawStatus:
         status, executable = self._gateway_status()
         if executable is None:

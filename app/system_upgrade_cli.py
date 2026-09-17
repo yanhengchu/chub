@@ -58,7 +58,7 @@ def _read_operation(operation_id: str) -> SystemUpgradeOperation:
     if re.fullmatch(r"[a-f0-9]{32}", operation_id) is None:
         raise OSError("Invalid system upgrade operation ID")
     settings = load_settings()
-    state_path = settings.ai_runtime.codex.data_file.with_name("system-upgrade.json")
+    state_path = settings.ai_runtime.shared.state_dir / "system-upgrade.json"
     metadata = state_path.lstat()
     if (
         not stat.S_ISREG(metadata.st_mode)
@@ -79,7 +79,7 @@ def _read_operation(operation_id: str) -> SystemUpgradeOperation:
 
 def _state_path():
     settings = load_settings()
-    return settings.ai_runtime.codex.data_file.with_name("system-upgrade.json")
+    return settings.ai_runtime.shared.state_dir / "system-upgrade.json"
 
 
 def _read_current_operation() -> SystemUpgradeOperation:
@@ -183,9 +183,14 @@ def prepare_restart(operation_id: str) -> None:
     # This is the fixed, post-Worker-stop cleanup boundary. It intentionally
     # removes only Chub's local Session mappings and Worker restart requests; native Codex
     # sessions, configuration, logs and other user data are outside this list.
-    for path in (
-        settings.ai_runtime.codex.data_file,
-        settings.ai_runtime.codex.data_file.with_name("ai-sessions.json"),
+    for path in tuple(
+        path
+        for path in (
+            settings.ai_runtime.shared.legacy_state_file,
+            settings.ai_runtime.shared.state_dir / "sessions.json",
+            settings.ai_runtime.shared.state_dir / "ai-sessions.json",
+        )
+        if path is not None
     ):
         _remove_private_file(path)
     for path in (worker_restart_request_dir(settings),):
@@ -203,7 +208,7 @@ def record_component(
         raise OSError("System upgrade is not active")
     settings = load_settings()
     record_component_result(
-        settings.ai_runtime.codex.data_file.with_name("system-upgrade.json"),
+        settings.ai_runtime.shared.state_dir / "system-upgrade.json",
         operation_id,
         component,
         status,

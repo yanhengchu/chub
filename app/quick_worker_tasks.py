@@ -88,7 +88,7 @@ def new_worker_task_id(now: datetime | None = None) -> str:
 
 
 def worker_state_dir(settings: Settings) -> Path:
-    return settings.ai_runtime.codex.data_file.parent / "quick-worker"
+    return settings.ai_runtime.shared.state_dir / "quick-worker"
 
 
 def worker_tasks_dir(settings: Settings, protocol_version: int) -> Path:
@@ -238,7 +238,7 @@ class StoredTaskSpec(_StrictModel):
 class StoredTaskState(_StrictModel):
     task_id: str = Field(pattern=TASK_ID_PATTERN)
     runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
-    implementation_id: str = Field(default="codex", pattern=RUNTIME_ID_PATTERN)
+    implementation_id: str = Field(pattern=RUNTIME_ID_PATTERN)
     spec_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     status: TaskStatus
     worker_generation: str
@@ -255,7 +255,7 @@ class StoredTaskState(_StrictModel):
 class StoredRuntimeEvent(_StrictModel):
     task_id: str = Field(pattern=TASK_ID_PATTERN)
     runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
-    implementation_id: str = Field(default="codex", pattern=RUNTIME_ID_PATTERN)
+    implementation_id: str = Field(pattern=RUNTIME_ID_PATTERN)
     spec_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     execution_id: str = Field(pattern=EXECUTION_ID_PATTERN)
     native_session_id: str = Field(min_length=1, max_length=128)
@@ -265,7 +265,7 @@ class StoredRuntimeEvent(_StrictModel):
 class StoredTaskCompletion(_StrictModel):
     task_id: str = Field(pattern=TASK_ID_PATTERN)
     runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
-    implementation_id: str = Field(default="codex", pattern=RUNTIME_ID_PATTERN)
+    implementation_id: str = Field(pattern=RUNTIME_ID_PATTERN)
     spec_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     execution_id: str | None = Field(default=None, pattern=EXECUTION_ID_PATTERN)
     status: FinalTaskStatus
@@ -282,7 +282,7 @@ class TaskTombstone(_StrictModel):
     protocol_version: int
     task_id: str = Field(pattern=TASK_ID_PATTERN)
     runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
-    implementation_id: str = Field(default="codex", pattern=RUNTIME_ID_PATTERN)
+    implementation_id: str = Field(pattern=RUNTIME_ID_PATTERN)
     spec_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     completed_at: datetime
     expires_at: datetime
@@ -292,7 +292,7 @@ class SessionLease(_StrictModel):
     session_id: str = Field(pattern=SESSION_ID_PATTERN)
     task_id: str = Field(pattern=TASK_ID_PATTERN)
     runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
-    implementation_id: str = Field(default="codex", pattern=RUNTIME_ID_PATTERN)
+    implementation_id: str = Field(pattern=RUNTIME_ID_PATTERN)
     spec_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     created_at: datetime
 
@@ -300,7 +300,7 @@ class SessionLease(_StrictModel):
 class WorkerTaskView(_StrictModel):
     task_id: str = Field(pattern=TASK_ID_PATTERN)
     runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
-    implementation_id: str = Field(default="codex", pattern=RUNTIME_ID_PATTERN)
+    implementation_id: str = Field(pattern=RUNTIME_ID_PATTERN)
     status: TaskStatus
     prompt_sha256: str
     created_at: datetime
@@ -322,7 +322,7 @@ class WorkerTaskView(_StrictModel):
 class WorkerTaskSummary(_StrictModel):
     task_id: str = Field(pattern=TASK_ID_PATTERN)
     runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
-    implementation_id: str = Field(default="codex", pattern=RUNTIME_ID_PATTERN)
+    implementation_id: str = Field(pattern=RUNTIME_ID_PATTERN)
     status: TaskStatus
     prompt_sha256: str
     session_id: str | None = None

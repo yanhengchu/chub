@@ -13,7 +13,6 @@ from app.ai_search.models import SearchRun
 from app.ai_search.service import AiSearchService
 from app.application import create_app
 from app.automations.browser import (
-    DebugChromeOpenedPage,
     DebugChromePageContent,
     DebugChromePageReadError,
 )
@@ -44,10 +43,13 @@ class _Manager:
         self.sessions[session.id] = session
         return session
 
+    def submission_available(self) -> tuple[bool, str | None]:
+        return True, None
+
     def get_session(self, session_id: str):
         session = self.sessions.get(session_id)
         if session is None:
-            raise ApiError(404, "codex_session_not_found", "Codex session not found")
+            raise ApiError(404, "session_not_found", "AI Session not found")
         return session
 
     def rename_session(self, _session_id: str, title: str) -> None:
@@ -105,28 +107,6 @@ class _QuickInteractions:
         return None
 
 
-def _opened_pages(*, failed: tuple[str, ...] = ()) -> tuple[DebugChromeOpenedPage, ...]:
-    return tuple(
-        DebugChromeOpenedPage(
-            source_url=url,
-            final_url=None if name in failed else url,
-            error="页面未能完成打开" if name in failed else None,
-        )
-        for name, url in (
-            ("OpenAI", "https://openai.com/news/"),
-            ("Anthropic", "https://www.anthropic.com/news"),
-            ("Google AI", "https://blog.google/technology/ai/"),
-            ("Hugging Face", "https://huggingface.co/blog"),
-        )
-    )
-
-
-async def _async_opened_pages(
-    pages: tuple[DebugChromeOpenedPage, ...] | None = None,
-) -> tuple[DebugChromeOpenedPage, ...]:
-    return _opened_pages() if pages is None else pages
-
-
 async def _read_page(url: str, *, max_content_chars: int) -> DebugChromePageContent:
     return DebugChromePageContent(
         source_url=url,
@@ -139,29 +119,6 @@ async def _read_page(url: str, *, max_content_chars: int) -> DebugChromePageCont
 
 def _service(path: Path, **kwargs) -> AiSearchService:
     return AiSearchService(path, page_reader=_read_page, **kwargs)
-
-
-def test_today_focus_opens_fixed_pages_without_submitting_an_ai_task(tmp_path: Path) -> None:
-    observed_urls: tuple[str, ...] | None = None
-
-    async def open_pages(urls: tuple[str, ...]) -> tuple[DebugChromeOpenedPage, ...]:
-        nonlocal observed_urls
-        observed_urls = urls
-        return _opened_pages()
-
-    service = _service(tmp_path / "ai-search.json", page_opener=open_pages)
-
-    result = service.open_pages()
-
-    assert observed_urls == (
-        "https://openai.com/news/",
-        "https://www.anthropic.com/news",
-        "https://blog.google/technology/ai/",
-        "https://huggingface.co/blog",
-    )
-    assert result.opened_count == 4
-    assert result.failed_sources == []
-    assert result.summary == "已在当前 Debug Chrome 中打开 4 个固定 AI 来源页面。"
 
 
 def test_today_focus_refreshes_one_latest_snapshot(tmp_path: Path) -> None:
@@ -261,6 +218,26 @@ def test_today_focus_reads_sources_before_creating_a_session(tmp_path: Path) -> 
     assert len(events) == 5
 
 
+def test_today_focus_rejects_unavailable_runtime_before_reading_sources(tmp_path: Path) -> None:
+    reads: list[str] = []
+
+    class UnavailableManager(_Manager):
+        def submission_available(self) -> tuple[bool, str | None]:
+            return False, "当前 Runtime 插件尚未导入，无法提交新的 AI 任务。"
+
+    async def read_page(url: str, *, max_content_chars: int) -> DebugChromePageContent:
+        reads.append(url)
+        return await _read_page(url, max_content_chars=max_content_chars)
+
+    service = AiSearchService(tmp_path / "ai-search.json", page_reader=read_page)
+
+    with pytest.raises(ApiError) as raised:
+        service.refresh(UnavailableManager(), _QuickInteractions(), source_ip="127.0.0.1")
+
+    assert raised.value.code == "today_focus_runtime_unavailable"
+    assert reads == []
+
+
 def test_today_focus_rejects_source_snapshots_redirected_outside_official_hosts(tmp_path: Path) -> None:
     async def read_page(url: str, *, max_content_chars: int) -> DebugChromePageContent:
         if url == "https://openai.com/news/":
@@ -350,6 +327,17 @@ async def test_today_focus_api_requires_trusted_network(settings) -> None:
 
     assert response.status_code == 403
     assert response.json()["error"]["code"] == "trusted_network_required"
+
+
+@pytest.mark.anyio
+async def test_today_focus_no_longer_exposes_page_opening(settings) -> None:
+    app = create_app(settings)
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/api/today-focus/open-pages")
+
+    assert response.status_code == 404
 
 
 @pytest.mark.anyio

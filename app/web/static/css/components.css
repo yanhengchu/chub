@@ -547,6 +547,26 @@ input[type="password"] {
   font-size: 0.9rem;
 }
 
+.internal-session-visibility-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.internal-session-visibility-heading .button-secondary {
+  flex: none;
+}
+
+.internal-session-visibility-copy {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.internal-session-visibility-copy .settings-subsection-description {
+  margin: 0;
+}
+
 .settings-subsection-description {
   margin: -0.3rem 0 0;
   color: var(--color-text-muted);
@@ -6879,11 +6899,8 @@ footer {
   gap: 1rem;
 }
 
-.workspace-today-focus-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  justify-content: flex-end;
+.workspace-today-focus-section-heading {
+  align-items: center;
 }
 
 .workspace-today-focus-heading h2,

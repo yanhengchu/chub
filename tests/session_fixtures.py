@@ -13,6 +13,8 @@ class CodexSession(BaseModel):
     """Minimal Session double for callers that only need a public snapshot."""
 
     id: str
+    runtime_id: str = "codex"
+    implementation_id: str = "codex-runtime-dev"
     workspace_id: str
     workspace_name: str
     cwd: Path

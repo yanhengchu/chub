@@ -10,20 +10,20 @@ from typing import Any
 
 from fastapi import Request
 
-from app.ai_runtime.codex_plugin import (
-    DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
-    LEGACY_DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
-)
+from app.ai_runtime.development_plugins import development_runtime_artifact_id
 from app.core.config import PROJECT_ROOT, Settings
 from app.core.response import ApiError
 
-_PLUGIN_IDS = ("codex-runtime", "weixin-orchestration", "deliveryline")
+_PLUGIN_IDS = ("runtime", "weixin-orchestration", "deliveryline")
 _PLUGIN_NAMES = {
-    "codex-runtime": "Codex Runtime",
+    "runtime": "AI Runtime",
     "weixin-orchestration": "微信任务润色",
     "deliveryline": "Deliveryline",
 }
 _DELIVERYLINE_MANIFEST = "chub-business-module.json"
+_BUNDLED_MODULE_PREFIXES = {
+    "weixin-orchestration": "weixin-refinement-release-",
+}
 
 
 class PluginLifecycleService:
@@ -52,23 +52,20 @@ class PluginLifecycleService:
                 if isinstance(imports.get(plugin_id), list) and imports[plugin_id]
             )
 
-    def codex_runtime_implementation_lifecycle_state(
+    def runtime_implementation_lifecycle_state(
         self, implementation_id: str
     ) -> tuple[bool, bool]:
         """Return the lifecycle-authoritative import and enablement state."""
         artifact_id = (
-            "development:codex-runtime"
+            development_runtime_artifact_id(implementation_id)
             if implementation_id
-            in {
-                DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
-                LEGACY_DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
-            }
+            in self.ai_session_manager.development_runtime_implementation_ids()
             else f"runtime:{implementation_id}"
         )
         with self._lock:
             state = self._read()
-            imports = state.setdefault("imports", {}).setdefault("codex-runtime", [])
-            enabled = self._enabled_ids(state, "codex-runtime")
+            imports = state.setdefault("imports", {}).setdefault("runtime", [])
+            enabled = self._enabled_ids(state, "runtime")
             return artifact_id in imports, artifact_id in enabled
 
     async def import_artifact(self, request: Request, plugin_id: str, artifact_id: str) -> dict[str, object]:
@@ -84,18 +81,18 @@ class PluginLifecycleService:
         final_id = artifact_id
         metadata = self._artifact_metadata(artifact)
         extension_updated = False
-        if artifact_id.startswith("zip:"):
+        if artifact_id.startswith(("zip:", "bundled:")):
             archive = self._read_zip(plugin_id, artifact_id)
-            if plugin_id == "codex-runtime":
+            if plugin_id == "runtime":
                 from app.api.runtime_plugins import install_runtime_plugin_archive
 
-                result = await install_runtime_plugin_archive(request, artifact_id[4:], archive)
+                result = await install_runtime_plugin_archive(request, artifact_id.split(":", 1)[1], archive)
                 final_id = f"runtime:{result.module_id}"
                 extension_updated = True
             elif plugin_id == "weixin-orchestration":
                 preview = self.weixin_chub_mode.orchestration_plugin_service.install(
                     archive,
-                    source_name=artifact_id[4:],
+                    source_name=artifact_id.split(":", 1)[1],
                 )
                 final_id = f"orchestration:{preview.implementation_ref}"
                 extension_updated = True
@@ -122,7 +119,7 @@ class PluginLifecycleService:
             is_enabled = artifact_id in self._enabled_ids(state, plugin_id)
         if is_enabled:
             await self.set_enabled(request, plugin_id, artifact_id, False)
-        extension_updated = is_enabled and plugin_id in {"codex-runtime", "weixin-orchestration"}
+        extension_updated = is_enabled and plugin_id in {"runtime", "weixin-orchestration"}
         if artifact_id.startswith("runtime:"):
             from app.api.runtime_plugins import remove_runtime_plugin
 
@@ -168,12 +165,8 @@ class PluginLifecycleService:
                         str((artifact or {}).get("reason") or "插件制品当前不可用，无法启用。"),
                     )
         extension_updated = False
-        if plugin_id == "codex-runtime":
-            implementation_id = (
-                DEVELOPMENT_CODEX_IMPLEMENTATION_ID
-                if artifact_id == "development:codex-runtime"
-                else artifact_id.removeprefix("runtime:")
-            )
+        if plugin_id == "runtime":
+            implementation_id = self._runtime_implementation_id(artifact_id)
             self.ai_session_manager.update_runtime_implementation_enabled(implementation_id, enabled)
             extension_updated = True
         elif plugin_id == "weixin-orchestration":
@@ -217,6 +210,11 @@ class PluginLifecycleService:
                 artifact.update(metadata[artifact_id])
             artifact["imported"] = artifact_id in imports
             artifact["enabled"] = artifact_id in enabled
+        artifacts = [
+            artifact
+            for artifact in artifacts
+            if artifact["imported"] or artifact.get("available") is not False
+        ]
         return {
             "plugin_id": plugin_id,
             "name": _PLUGIN_NAMES[plugin_id],
@@ -226,13 +224,17 @@ class PluginLifecycleService:
         }
 
     def _artifacts(self, request: Request, plugin_id: str) -> list[dict[str, object]]:
-        if plugin_id == "codex-runtime":
+        if plugin_id == "runtime":
             from app.api.runtime_plugins import _module_list
 
             rows = []
             for item in _module_list(request).modules:
-                identifier = "development:codex-runtime" if item.source == "development" else f"runtime:{item.module_id}"
-                rows.append({"artifact_id": identifier, "source": item.source, "name": item.name, "version": item.version, "description": item.description or "提供 Codex Runtime 执行能力。", "available": item.status == "active", "removable": item.removable, "reason": item.reason})
+                identifier = (
+                    development_runtime_artifact_id(item.module_id)
+                    if item.source == "development"
+                    else f"runtime:{item.module_id}"
+                )
+                rows.append({"artifact_id": identifier, "source": item.source, "name": item.name, "version": item.version, "description": item.description or "提供 AI Runtime 执行能力。", "available": item.status == "active", "removable": item.removable, "reason": item.reason})
             return rows + self._candidates(plugin_id)
         if plugin_id == "weixin-orchestration":
             status = self.weixin_chub_mode.orchestration_settings()
@@ -254,10 +256,43 @@ class PluginLifecycleService:
             return "未知"
 
     def _candidates(self, plugin_id: str) -> list[dict[str, object]]:
-        directory = PROJECT_ROOT / "data/local/artifacts/plugins" / plugin_id
-        if not directory.is_dir() or directory.is_symlink():
-            return []
-        return [{"artifact_id": f"zip:{path.name}", "source": "zip", "name": path.stem, "version": "", "description": "待导入的 ZIP 制品；导入时由插件校验其能力。", "available": True, "removable": True, "reason": None} for path in sorted(directory.glob("*.zip")) if path.is_file() and not path.is_symlink()]
+        rows = []
+        local_directory = PROJECT_ROOT / "data/local/artifacts/plugins" / plugin_id
+        if local_directory.is_dir() and not local_directory.is_symlink():
+            for path in sorted(local_directory.glob("*.zip")):
+                if not path.is_file() or path.is_symlink():
+                    continue
+                rows.append({
+                    "artifact_id": f"zip:{path.name}",
+                    "source": "zip",
+                    "name": path.stem,
+                    "version": "",
+                    "description": "待导入的 ZIP 制品；导入时由插件校验其能力。",
+                    "available": True,
+                    "removable": True,
+                    "reason": None,
+                })
+        bundled_directory = PROJECT_ROOT / "bundled-modules"
+        if bundled_directory.is_dir() and not bundled_directory.is_symlink():
+            pattern = "*-runtime-*.zip" if plugin_id == "runtime" else (
+                f"{_BUNDLED_MODULE_PREFIXES[plugin_id]}*.zip"
+                if plugin_id in _BUNDLED_MODULE_PREFIXES
+                else None
+            )
+            for path in sorted(bundled_directory.glob(pattern)) if pattern else ():
+                if not path.is_file() or path.is_symlink():
+                    continue
+                rows.append({
+                    "artifact_id": f"bundled:{path.name}",
+                    "source": "bundled",
+                    "name": f"{path.stem}（随包）",
+                    "version": "",
+                    "description": "随正式包提供的 ZIP 制品；可直接导入。",
+                    "available": True,
+                    "removable": True,
+                    "reason": None,
+                })
+        return rows
 
     def _find(self, request: Request, plugin_id: str, artifact_id: str) -> dict[str, object]:
         item = next((item for item in self._artifacts(request, plugin_id) if item["artifact_id"] == artifact_id), None)
@@ -266,7 +301,21 @@ class PluginLifecycleService:
         return item
 
     def _read_zip(self, plugin_id: str, artifact_id: str) -> bytes:
-        path = PROJECT_ROOT / "data/local/artifacts/plugins" / plugin_id / artifact_id[4:]
+        source, separator, filename = artifact_id.partition(":")
+        if not separator or Path(filename).name != filename:
+            raise ApiError(422, "plugin_artifact_invalid", "插件 ZIP 格式无效。")
+        if source == "zip":
+            path = PROJECT_ROOT / "data/local/artifacts/plugins" / plugin_id / filename
+        elif source == "bundled" and plugin_id == "runtime" and "-runtime-" in filename:
+            path = PROJECT_ROOT / "bundled-modules" / filename
+        elif (
+            source == "bundled"
+            and (prefix := _BUNDLED_MODULE_PREFIXES.get(plugin_id)) is not None
+            and filename.startswith(prefix)
+        ):
+            path = PROJECT_ROOT / "bundled-modules" / filename
+        else:
+            raise ApiError(422, "plugin_artifact_invalid", "插件 ZIP 格式无效。")
         maximum_bytes = 32 * 1024 * 1024
         if plugin_id == "deliveryline":
             maximum_bytes = self.settings.business_modules.max_archive_bytes
@@ -328,6 +377,15 @@ class PluginLifecycleService:
         if plugin_id not in _PLUGIN_IDS:
             raise ApiError(404, "plugin_not_found", "插件不存在。")
 
+    def _runtime_implementation_id(self, artifact_id: str) -> str:
+        if artifact_id.startswith("development:"):
+            implementation_id = artifact_id.removeprefix("development:")
+            if implementation_id in self.ai_session_manager.development_runtime_implementation_ids():
+                return implementation_id
+        elif artifact_id.startswith("runtime:"):
+            return artifact_id.removeprefix("runtime:")
+        raise ApiError(422, "plugin_artifact_invalid", "Runtime 插件制品标识无效。")
+
     @staticmethod
     def _enabled_ids(state: dict[str, object], plugin_id: str) -> list[str]:
         value = state.setdefault("enabled", {}).get(plugin_id, [])
@@ -351,6 +409,14 @@ class PluginLifecycleService:
         try:
             state = json.loads(self.path.read_text(encoding="utf-8"))
             if isinstance(state, dict) and isinstance(state.get("imports", {}), dict) and isinstance(state.get("enabled", {}), dict):
+                obsolete = False
+                for key in ("imports", "enabled", "metadata"):
+                    value = state.get(key)
+                    if isinstance(value, dict) and "codex-runtime" in value:
+                        value.pop("codex-runtime", None)
+                        obsolete = True
+                if obsolete:
+                    self._write(state)
                 return state
         except FileNotFoundError:
             pass

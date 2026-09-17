@@ -74,12 +74,10 @@
   };
 
   const initializeTodayFocus = () => {
-    const openPagesButton = document.getElementById("workspace-today-focus-open-pages");
     const refreshButton = document.getElementById("workspace-today-focus-refresh");
     const status = document.getElementById("workspace-today-focus-status");
     const results = document.getElementById("workspace-today-focus-results");
-    if (!(openPagesButton instanceof HTMLButtonElement)
-      || !(refreshButton instanceof HTMLButtonElement)
+    if (!(refreshButton instanceof HTMLButtonElement)
       || !(status instanceof HTMLElement) || !(results instanceof HTMLElement)) return;
 
     const showError = (error) => {
@@ -105,19 +103,6 @@
     };
 
     void refresh().catch(showError);
-    openPagesButton.addEventListener("click", async () => {
-      openPagesButton.disabled = true;
-      status.textContent = "正在打开固定 AI 来源页面…";
-      try {
-        const opened = await readJson("/api/today-focus/open-pages", { method: "POST" });
-        status.textContent = opened?.summary || "固定 AI 来源页面已打开。";
-      } catch (error) {
-        showError(error);
-      } finally {
-        openPagesButton.disabled = false;
-      }
-    });
-
     refreshButton.addEventListener("click", async () => {
       request?.abort();
       request = new AbortController();

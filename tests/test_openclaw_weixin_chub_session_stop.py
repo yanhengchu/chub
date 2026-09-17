@@ -27,7 +27,7 @@ def configured_stop_target(settings: Settings):
     manager, codex_manager, quick_interactions = configured_manager(settings)
     session = CodexSession(
         id="session-2",
-        codex_session_id="native-2",
+        session_id="native-2",
         workspace_id="chub",
         workspace_name="Chub",
         cwd="/project",
@@ -174,7 +174,7 @@ def test_session_stop_duplicate_does_not_stop_twice(settings: Settings) -> None:
     stop_entries = [
         call.kwargs
         for call in write_operation.call_args_list
-        if call.kwargs["action"] == "stop_codex_session"
+        if call.kwargs["action"] == "stop_ai_session"
     ]
     assert [entry["status"] for entry in stop_entries] == [
         "requested",
@@ -361,7 +361,7 @@ def test_session_stop_requires_confirmed_final_state_and_logs_failure(
     stop_entries = [
         call.kwargs
         for call in write_operation.call_args_list
-        if call.kwargs["action"] == "stop_codex_session"
+        if call.kwargs["action"] == "stop_ai_session"
     ]
     assert [entry["status"] for entry in stop_entries] == [
         "requested",

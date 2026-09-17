@@ -564,7 +564,7 @@ def test_codex_archive_removes_target_and_clears_current_binding(
     sessions = [
         CodexSession(
             id=f"session-{index}",
-            codex_session_id=f"native-{index}",
+            session_id=f"native-{index}",
             workspace_id="chub",
             workspace_name="Chub",
             cwd="/project",
@@ -622,7 +622,7 @@ def test_codex_archive_removes_target_and_clears_current_binding(
     archive_entries = [
         call.kwargs
         for call in write_operation.call_args_list
-        if call.kwargs["action"] == "archive_codex_session"
+        if call.kwargs["action"] == "archive_ai_session"
     ]
     assert [entry["status"] for entry in archive_entries] == [
         "requested",
@@ -672,7 +672,7 @@ def test_duplicate_codex_archive_does_not_archive_twice(settings: Settings) -> N
     manager, codex_manager, _quick_interactions = configured_manager(settings)
     session = CodexSession(
         id="session-1",
-        codex_session_id="native-1",
+        session_id="native-1",
         workspace_id="chub",
         workspace_name="Chub",
         cwd="/project",
@@ -715,7 +715,7 @@ def test_codex_archive_status_preserves_freed_slot_for_codex_new(
     sessions = [
         CodexSession(
             id=f"session-{index}",
-            codex_session_id=f"native-{index}",
+            session_id=f"native-{index}",
             workspace_id="chub",
             workspace_name="Chub",
             cwd="/project",
@@ -779,7 +779,7 @@ def test_codex_archive_does_not_fill_unassigned_candidate(
     sessions = [
         CodexSession(
             id=f"session-{index}",
-            codex_session_id=f"native-{index}",
+            session_id=f"native-{index}",
             workspace_id="chub",
             workspace_name="Chub",
             cwd="/project",
@@ -842,7 +842,7 @@ def test_codex_archive_rejects_session_that_is_not_safely_idle(
     manager, codex_manager, quick_interactions = configured_manager(settings)
     session = CodexSession(
         id="session-1",
-        codex_session_id="native-1",
+        session_id="native-1",
         workspace_id="chub",
         workspace_name="Chub",
         cwd="/project",
@@ -861,13 +861,13 @@ def test_codex_archive_rejects_session_that_is_not_safely_idle(
     if activity == "working" or quick_running:
         manager.session_archiver.side_effect = ApiError(
             409,
-            "codex_session_in_progress",
+            "session_in_progress",
             "Session 当前正在执行，请等待任务结束后再归档。",
         )
     elif writer_active:
         manager.session_archiver.side_effect = ApiError(
             409,
-            "codex_session_writer_active",
+            "session_writer_active",
             "This is open in another app, close it there to continue here.",
         )
     else:
@@ -951,7 +951,7 @@ def test_codex_archive_failure_keeps_slot_and_explains_possible_stop(
     manager, codex_manager, _quick_interactions = configured_manager(settings)
     session = CodexSession(
         id="session-1",
-        codex_session_id="native-1",
+        session_id="native-1",
         workspace_id="chub",
         workspace_name="Chub",
         cwd="/project",
@@ -967,7 +967,7 @@ def test_codex_archive_failure_keeps_slot_and_explains_possible_stop(
     ]
     manager.session_archiver.side_effect = ApiError(
         503,
-        "codex_session_archive_failed",
+        "session_archive_failed",
         "private failure",
     )
 
@@ -995,7 +995,7 @@ def test_codex_archive_rejects_session_with_pending_retry(
     manager, codex_manager, _quick_interactions = configured_manager(settings)
     session = CodexSession(
         id="session-1",
-        codex_session_id="native-1",
+        session_id="native-1",
         workspace_id="chub",
         workspace_name="Chub",
         cwd="/project",
@@ -1041,7 +1041,7 @@ def test_codex_archive_state_sync_failure_reports_partial_success(
     manager, codex_manager, _quick_interactions = configured_manager(settings)
     session = CodexSession(
         id="session-1",
-        codex_session_id="native-1",
+        session_id="native-1",
         workspace_id="chub",
         workspace_name="Chub",
         cwd="/project",
@@ -1488,7 +1488,7 @@ def test_codex_delete_removes_target_and_clears_current_binding(
     manager, codex_manager, _quick_interactions = configured_manager(settings)
     session = CodexSession(
         id="session-1",
-        codex_session_id="native-1",
+        session_id="native-1",
         workspace_id="chub",
         workspace_name="Chub",
         cwd="/project",

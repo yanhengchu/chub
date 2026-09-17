@@ -1,15 +1,11 @@
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.ai_runtime.runtime_plugin_packages import RuntimePluginInstallError, is_runtime_plugin_id
-from app.ai_runtime.codex_plugin import DEVELOPMENT_CODEX_IMPLEMENTATION_ID
-from app.core.config import PROJECT_ROOT
 from app.core.response import ApiError, ApiResponse
 from app.core.security import require_trusted_network
 from app.quick_worker import list_tasks, read_health, refresh_runtime_registry
@@ -62,10 +58,6 @@ class DevelopmentRuntimePluginRefreshAvailabilityData(BaseModel):
 def _module_list(request: Request) -> RuntimePluginListData:
     manager = request.app.state.ai_session_manager
     active_ids = set(manager.runtime_plugins.implementation_ids())
-    implementations = {
-        item.implementation_id: item
-        for item in manager.read_runtime_implementations().implementations
-    }
     entries: list[RuntimePluginData] = []
     loaded, discovery_failures = manager.runtime_plugin_service.discover()
     failures = {item.module_id: item for item in discovery_failures}
@@ -73,7 +65,6 @@ def _module_list(request: Request) -> RuntimePluginListData:
     for item in loaded:
         module_id = item.manifest.module_id
         failure = failures.get(module_id)
-        implementation = implementations.get(module_id)
         entries.append(
             RuntimePluginData(
                 module_id=module_id,
@@ -83,7 +74,21 @@ def _module_list(request: Request) -> RuntimePluginListData:
                 status="active" if module_id in active_ids and failure is None else "unavailable",
                 reason=None if failure is None else failure.reason,
                 removable=module_id not in manager._development_runtime_plugins.implementation_ids(),
-                enabled=implementation is not None and implementation.enabled,
+            )
+        )
+    for item in manager.development_runtime_plugins():
+        module_id = item.manifest.implementation_id
+        failure = failures.get(module_id)
+        entries.append(
+            RuntimePluginData(
+                module_id=module_id,
+                version=item.manifest.version,
+                name=item.manifest.display_name,
+                description=item.manifest.description,
+                status="active" if module_id in active_ids and failure is None else "unavailable",
+                reason=None if failure is None else failure.reason,
+                removable=False,
+                source="development",
             )
         )
     known = {item.module_id for item in entries}
@@ -101,36 +106,6 @@ def _module_list(request: Request) -> RuntimePluginListData:
         for module_id, failure in failures.items()
         if module_id not in known
     )
-    manifest_path = PROJECT_ROOT / "runtime-modules" / "codex-runtime" / "chub-module.json"
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if not isinstance(manifest, dict):
-            raise ValueError("invalid manifest")
-        implementation_id = manifest.get("implementation_id")
-        if implementation_id != DEVELOPMENT_CODEX_IMPLEMENTATION_ID:
-            raise ValueError("unexpected implementation")
-        implementations = manager.read_runtime_implementations().implementations
-        implementation = next(
-            (item for item in implementations if item.implementation_id == implementation_id),
-            None,
-        )
-        entries.insert(
-            0,
-            RuntimePluginData(
-                module_id=implementation_id,
-                version=str(manifest.get("version", "dev")),
-                name=str(manifest.get("display_name", "Codex")),
-                description=str(manifest.get("description", "仓库固定的 Codex Runtime 开发实现。")),
-                status="active" if implementation is not None and implementation.healthy else "unavailable",
-                reason=None if implementation is not None and implementation.healthy else "开发实现当前不可用。",
-                removable=False,
-                source="development",
-                imported=implementation is not None and implementation.imported,
-                enabled=implementation is not None and implementation.enabled,
-            ),
-        )
-    except (OSError, UnicodeDecodeError, ValueError, TypeError):
-        pass
     return RuntimePluginListData(modules=entries)
 
 
@@ -180,23 +155,27 @@ async def _require_implementation_idle(request: Request, implementation_id: str)
         raise ApiError(409, "runtime_implementation_busy", "该 Runtime 版本仍有已受理任务，请等待其结束后再维护源码。")
 
 
-@router.get("/codex-runtime-dev/refresh-availability", response_model=ApiResponse[DevelopmentRuntimePluginRefreshAvailabilityData])
+@router.get("/development/{implementation_id}/refresh-availability", response_model=ApiResponse[DevelopmentRuntimePluginRefreshAvailabilityData])
 async def read_development_runtime_plugin_refresh_availability(
+    implementation_id: str,
     request: Request,
 ) -> ApiResponse[DevelopmentRuntimePluginRefreshAvailabilityData]:
     manager = request.app.state.ai_session_manager
     try:
-        manager.require_runtime_enabled_for_maintenance("codex")
-        await _worker_generation(request)
-        await _require_implementation_idle(
-            request,
-            DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
+        plugin = next(
+            item
+            for item in manager.development_runtime_plugins()
+            if item.manifest.implementation_id == implementation_id
         )
-    except ApiError as exc:
+        manager.require_runtime_enabled_for_maintenance(plugin.manifest.runtime_id)
+        await _worker_generation(request)
+        await _require_implementation_idle(request, implementation_id)
+    except (ApiError, StopIteration) as exc:
+        reason = exc.message if isinstance(exc, ApiError) else "开发 Runtime 插件不存在。"
         return ApiResponse(
             data=DevelopmentRuntimePluginRefreshAvailabilityData(
                 available=False,
-                reason=exc.message,
+                reason=reason,
             )
         )
     return ApiResponse(data=DevelopmentRuntimePluginRefreshAvailabilityData(available=True))
@@ -246,20 +225,20 @@ def _require_development_refresh_worker_confirmation(payload: dict[str, object])
         raise ApiError(
             409,
             code,
-            "开发版仍有运行中任务，请等待任务结束后再刷新。",
+            "开发 Runtime 插件仍有运行中任务，请等待任务结束后再刷新。",
         )
     if code == "worker_draining":
-        raise ApiError(409, code, "Quick Worker 正在维护中，请稍后再刷新开发版。")
+        raise ApiError(409, code, "Quick Worker 正在维护中，请稍后再刷新开发 Runtime 插件。")
     if code in {"worker_request_invalid", "worker_protocol_incompatible"}:
         raise ApiError(
             409,
             "quick_worker_refresh_upgrade_required",
-            "Quick Worker 尚未加载开发版刷新能力；请等待当前任务结束后重载 Quick Worker，再重试开发版刷新。",
+            "Quick Worker 尚未加载开发 Runtime 刷新能力；请等待当前任务结束后重载 Quick Worker，再重试。",
         )
     raise ApiError(
         503,
         "development_runtime_plugin_worker_refresh_unconfirmed",
-        "Quick Worker 未能确认开发版 Runtime 刷新。",
+        "Quick Worker 未能确认开发 Runtime 插件刷新。",
     )
 
 
@@ -355,34 +334,47 @@ async def install_runtime_plugin_archive(
     raise error
 
 
-@router.post("/codex-runtime-dev/refresh", response_model=ApiResponse[RuntimePluginInstallData])
-async def refresh_development_codex_plugin(request: Request) -> ApiResponse[RuntimePluginInstallData]:
-    """Explicitly reload the checked-out Codex source in Web and Quick Worker."""
+@router.post("/development/{implementation_id}/refresh", response_model=ApiResponse[RuntimePluginInstallData])
+async def refresh_development_runtime_plugin(
+    implementation_id: str,
+    request: Request,
+) -> ApiResponse[RuntimePluginInstallData]:
+    """Explicitly reload one checked-out Runtime source in Web and Quick Worker."""
     manager = request.app.state.ai_session_manager
-    manager.require_runtime_enabled_for_maintenance("codex")
+    plugin = next(
+        (
+            item
+            for item in manager.development_runtime_plugins()
+            if item.manifest.implementation_id == implementation_id
+        ),
+        None,
+    )
+    if plugin is None:
+        raise ApiError(404, "development_runtime_plugin_not_found", "开发 Runtime 插件不存在。")
+    manager.require_runtime_enabled_for_maintenance(plugin.manifest.runtime_id)
     operation_id = log_operation(
         request,
         action="refresh_development_runtime_plugin",
         status="requested",
-        target=DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
+        target=implementation_id,
     )
     log_operation(
         request,
         action="refresh_development_runtime_plugin",
         status="started",
-        target=DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
+        target=implementation_id,
         operation_id=operation_id,
     )
     previous_development = None
     worker_refresh_outcome_known = False
     worker_refresh_confirmed = False
     try:
-        await _require_implementation_idle(request, DEVELOPMENT_CODEX_IMPLEMENTATION_ID)
+        await _require_implementation_idle(request, implementation_id)
         await _worker_generation(request)
-        previous_development = manager.refresh_development_codex_plugin()
+        previous_development = manager.refresh_development_runtime_plugins(implementation_id)
         refreshed = await refresh_runtime_registry(
             request.app.state.settings,
-            implementation_id=DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
+            implementation_id=implementation_id,
             expected_present=True,
             reload_development_source=True,
         )
@@ -391,46 +383,46 @@ async def refresh_development_codex_plugin(request: Request) -> ApiResponse[Runt
         _require_development_refresh_worker_confirmation(refreshed)
         generation = await _confirm_worker_runtime(
             request,
-            DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
+            implementation_id,
             expected_present=True,
         )
         log_operation(
             request,
             action="refresh_development_runtime_plugin",
             status="succeeded",
-            target=DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
+            target=implementation_id,
             operation_id=operation_id,
         )
         return ApiResponse(
             data=RuntimePluginInstallData(
-                module_id=DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
+                module_id=implementation_id,
                 worker_generation=generation,
             )
         )
     except ApiError as exc:
         error = exc
     except OSError:
-        error = ApiError(503, "development_runtime_plugin_worker_refresh_unconfirmed", "Quick Worker 未能确认开发版 Runtime 刷新。")
+        error = ApiError(503, "development_runtime_plugin_worker_refresh_unconfirmed", "Quick Worker 未能确认开发 Runtime 插件刷新。")
     except Exception:
-        error = ApiError(500, "development_runtime_plugin_refresh_failed", "开发版 Runtime 刷新失败，当前状态请以设置页和操作日志为准。")
+        error = ApiError(500, "development_runtime_plugin_refresh_failed", "开发 Runtime 插件刷新失败，当前状态请以设置页和操作日志为准。")
     if (
         previous_development is not None
         and worker_refresh_outcome_known
         and not worker_refresh_confirmed
     ):
         try:
-            manager.restore_development_codex_plugin(previous_development)
+            manager.restore_development_runtime_plugins(previous_development)
         except Exception:
             error = ApiError(
                 503,
                 "development_runtime_plugin_rollback_unconfirmed",
-                "开发版刷新被 Quick Worker 拒绝，但 Web 注册表恢复状态无法确认。",
+                "开发 Runtime 插件刷新被 Quick Worker 拒绝，但 Web 注册表恢复状态无法确认。",
             )
     log_operation(
         request,
         action="refresh_development_runtime_plugin",
         status="failed",
-        target=DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
+        target=implementation_id,
         operation_id=operation_id,
         reason=error.code,
     )

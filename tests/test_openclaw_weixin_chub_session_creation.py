@@ -358,7 +358,9 @@ def test_codex_new_creation_failure_does_not_link_current_session(
     )
 
     assert result.message is not None
-    assert result.message.startswith("Create: Failed. Codex could not create a Session.")
+    assert result.message.startswith(
+        "Create: Failed. The default AI Runtime could not create a Session."
+    )
     assert manager.session_id() == "session-1"
     quick_interactions.submit.assert_not_called()
 

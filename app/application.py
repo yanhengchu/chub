@@ -51,7 +51,10 @@ from app.codex.quick_interactions import QuickInteractionManager
 from app.quick_worker_tasks import worker_restart_request_dir
 from app.ai_runtime import RuntimeOperationError
 from app.ai_runtime.usage import RuntimeUsageService
-from app.codex.routes import api_router as codex_api_router
+from app.codex.routes import (
+    api_router as ai_session_api_router,
+    codex_private_router,
+)
 from app.codex.routes import web_router as codex_web_router
 from app.automations.manager import AutomationManager
 from app.automations.models import RuntimeAccountEnvironmentState
@@ -166,7 +169,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                 "base-uri 'none'; "
                 "frame-ancestors 'none'"
             )
-        elif request.url.path.startswith("/codex/"):
+        elif request.url.path.startswith("/ai/sessions/"):
             if "/terminal" in request.url.path:
                 response.headers["Content-Security-Policy"] = (
                     "default-src 'self' data: blob:; "
@@ -228,9 +231,9 @@ def _is_ai_runtime_mutation(request: Request) -> bool:
         return False
     path = request.url.path
     return (
-        path.startswith("/api/codex/")
+        path.startswith("/api/ai/")
         or path.startswith("/api/runtime-modules/")
-        or path.startswith("/api/plugins/codex-runtime/")
+        or path.startswith("/api/plugins/runtime/")
         or path.startswith("/api/ai/runtimes/")
         or path == "/api/ai/settings"
         or path.startswith("/api/today-focus/")
@@ -287,18 +290,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return launch_restart_process(command)
 
     deferred_restart = DeferredRestartCoordinator(
-        resolved_settings.ai_runtime.codex.data_file.with_name("deferred-restart.json"),
+        resolved_settings.ai_runtime.shared.state_dir / "deferred-restart.json",
         instance_id,
         start_deferred_restart,
     )
     quick_interactions = QuickInteractionManager(
-        resolved_settings.ai_runtime.codex.data_file,
+        resolved_settings.ai_runtime.shared.state_dir / "quick-interactions.json",
         worker_restart_request_dir(resolved_settings),
         ai_session_manager,
         completion_notifier.notify,
         deferred_restart,
         restart_notifier=completion_notifier.notify_restart,
-        timeout_seconds=resolved_settings.ai_runtime.codex.quick_interaction_timeout_seconds,
+        timeout_seconds=resolved_settings.ai_runtime.shared.quick_interaction_timeout_seconds,
         worker_settings=resolved_settings,
     )
     quick_interactions.configure_translation_worker_queue(
@@ -308,20 +311,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ),
     )
     weekly_report_generation = WeeklyReportGenerationService(
-        resolved_settings.ai_runtime.codex.data_file.with_name(
-            "weekly-report-generation.json"
-        ),
+        resolved_settings.ai_runtime.shared.state_dir / "weekly-report-generation.json",
         ai_session_manager,
         quick_interactions,
     )
     quick_worker_maintenance = QuickWorkerReloadCoordinator(
-        resolved_settings.ai_runtime.codex.data_file.with_name(
-            "quick-worker-maintenance.json"
-        ),
+        resolved_settings.ai_runtime.shared.state_dir / "quick-worker-maintenance.json",
         PROJECT_ROOT / "scripts" / "chub",
     )
     system_upgrade = SystemUpgradeCoordinator(
-        resolved_settings.ai_runtime.codex.data_file.with_name("system-upgrade.json"),
+        resolved_settings.ai_runtime.shared.state_dir / "system-upgrade.json",
         PROJECT_ROOT / "config" / "system-upgrade.json",
         instance_id,
     )
@@ -442,7 +441,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         weixin_chub_mode,
     )
     ai_session_manager.set_runtime_plugin_lifecycle_state_reader(
-        plugin_lifecycle.codex_runtime_implementation_lifecycle_state
+        plugin_lifecycle.runtime_implementation_lifecycle_state
     )
     weixin_translation.set_completion_handler(
         weixin_chub_mode.complete_optimized_task
@@ -1098,13 +1097,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 try:
                     cleared = await clear_runtime_state(
                         resolved_settings,
-                        runtime_id=cleanup.module_id,
+                        runtime_id=cleanup.runtime_id,
                     )
                     if cleared.get("success") is not True:
                         raise OSError("Quick Worker Runtime state cleanup was not confirmed")
                     for session_id in cleanup.session_ids:
                         quick_interactions.remove_session_tasks(session_id)
-                    ai_session_manager.clear_runtime_plugin_state(cleanup.module_id)
+                    ai_session_manager.clear_runtime_plugin_state(cleanup.runtime_id)
                     ai_session_manager.runtime_plugin_service.complete_state_cleanup(
                         cleanup.operation_id
                     )
@@ -1283,7 +1282,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         resolved_settings.business_modules.deliveryline_state_dir,
     )
     application.state.ai_search = AiSearchService(
-        resolved_settings.ai_runtime.codex.data_file.with_name("ai-search.json")
+        resolved_settings.ai_runtime.shared.state_dir / "ai-search.json"
     )
     application.state.weixin_translation = weixin_translation
     application.state.maintenance_terminal = maintenance_terminal
@@ -1339,11 +1338,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def open_codex_runtime_login_page() -> None:
         ai_usage.open_login_page()
 
+    def codex_runtime_account_available() -> bool:
+        try:
+            # Codex authentication and usage are Runtime-private.  Their
+            # availability must not follow the global default Runtime, which
+            # may legitimately point to another implementation.
+            implementation_id = ai_session_manager.default_submission_implementation_id(
+                "codex"
+            )
+        except ApiError:
+            return False
+        imported, enabled = plugin_lifecycle.runtime_implementation_lifecycle_state(
+            implementation_id
+        )
+        if not imported or not enabled:
+            return False
+        try:
+            ai_session_manager.require_implementation_submission(implementation_id)
+        except ApiError:
+            return False
+        return True
+
     application.state.automation_manager = AutomationManager(
         resolved_settings,
         detected_platform=detected_platform,
         codex_account_checker=check_codex_runtime_account,
         codex_account_login_opener=open_codex_runtime_login_page,
+        codex_runtime_available=codex_runtime_account_available,
     )
     weixin_chub_mode.codex_auth_reader = (
         application.state.automation_manager.check_codex_runtime_account
@@ -1391,7 +1412,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(settings_router)
     application.include_router(plugins_router)
     application.include_router(status_router)
-    application.include_router(codex_api_router)
+    application.include_router(ai_session_api_router)
+    application.include_router(codex_private_router)
     application.include_router(maintenance_terminal_api_router)
     application.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     application.include_router(codex_web_router)

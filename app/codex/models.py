@@ -100,6 +100,7 @@ class SessionRuntimeGroup(BaseModel):
 class NativeSessionInfo(BaseModel):
     """Public read-only projection of a Runtime-native discovery record."""
 
+    runtime_id: str = Field(pattern=RUNTIME_ID_PATTERN)
     cwd: str
     title: str | None = Field(default=None, max_length=500)
     created_at: datetime
@@ -114,6 +115,7 @@ class SessionListData(BaseModel):
     available: bool
     unavailable_reason: str | None = None
     runtime_registered: bool
+    default_runtime_id: str | None = Field(default=None, pattern=RUNTIME_ID_PATTERN)
     quick_creation: SessionCreationAvailability
     dependencies: dict[str, bool]
     workspaces: list[WorkspaceInfo]
@@ -342,7 +344,9 @@ class QuickInteractionTask(BaseModel):
         pattern=r"^qw-[0-9]{13}-[a-f0-9]{32}$",
     )
     session_id: str
-    implementation_id: str = Field(default="codex", pattern=RUNTIME_ID_PATTERN)
+    # New tasks always persist an implementation snapshot. ``None`` only
+    # represents pre-multi-Runtime local history and is never submitted.
+    implementation_id: str | None = Field(default=None, pattern=RUNTIME_ID_PATTERN)
     # Internal translation tasks add a fixed bounded instruction around an
     # otherwise API-limited 8000-character source.
     prompt: str | None = Field(default=None, max_length=20_000)

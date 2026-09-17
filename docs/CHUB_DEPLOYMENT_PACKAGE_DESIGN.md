@@ -70,7 +70,7 @@ Web 健康、Quick Worker 健康和服务安装后的可恢复状态都已确认
 
 ### 可选扩展导入
 
-核心部署成功后，维护者将 `bundled-modules/` 中所需 ZIP 分别放入 `data/local/artifacts/plugins/codex-runtime/` 或 `data/local/artifacts/plugins/weixin-orchestration/`，再在设置页“插件管理”导入并启用。Runtime 还需在 Codex 设置中选择当前使用版本；微信任务润色在其设置中选择已启用版本。未导入任一扩展不影响 Chub 核心运行；导入失败只按该扩展的恢复边界收敛，不回滚 Chub 核心部署。部署包未包含开发源码时，目标设备不提供 `codex-runtime-dev` 或微信开发实现；这不是核心部署故障，维护者可导入随包正式 ZIP 后继续使用对应能力。
+核心部署成功后，设置页“插件管理”会自动发现解压目录 `bundled-modules/` 中的正式 ZIP，可直接导入并启用；如需从其他位置恢复制品，也可分别放入 `data/local/artifacts/plugins/runtime/` 或 `data/local/artifacts/plugins/weixin-orchestration/`。Runtime 还需在 Codex 设置中选择当前使用版本；微信任务润色在其设置中选择已启用版本。未导入任一扩展不影响 Chub 核心运行；导入失败只按该扩展的恢复边界收敛，不回滚 Chub 核心部署。部署包未包含开发源码时，目标设备不提供 `codex-runtime-dev` 或微信开发实现；这不是核心部署故障，维护者可导入随包正式 ZIP 后继续使用对应能力。
 
 ### 可选 OpenClaw 接入
 

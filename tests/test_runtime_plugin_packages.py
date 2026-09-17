@@ -10,6 +10,7 @@ from unittest.mock import patch
 import pytest
 
 from app.ai_runtime import RuntimePluginRegistry
+from app.ai_runtime.development_plugins import discover_development_runtime_plugins
 from app.ai_runtime.runtime_plugin_packages import RuntimePluginService, RuntimePluginInstallError
 from scripts.build_codex_runtime_zip import build as build_codex_runtime_zip
 
@@ -143,6 +144,112 @@ def create_runtime_module(settings):
             f'DISPLAY_NAME = "{label} Runtime"\nDESCRIPTION = "{label} Runtime module."\n',
         )
     return archive.getvalue()
+
+
+def _development_runtime_source(
+    root: Path,
+    *,
+    directory: str,
+    runtime_id: str,
+    implementation_id: str,
+    label: str,
+) -> None:
+    source = root / directory
+    package = source / "runtime_source"
+    package.mkdir(parents=True)
+    (source / "chub-module.json").write_text(
+        json.dumps(
+            {
+                "protocol_version": 1,
+                "module_id": implementation_id,
+                "runtime_id": runtime_id,
+                "implementation_id": implementation_id,
+                "native_session_compatibility_id": f"{runtime_id}-v1",
+                "module_type": "runtime",
+                "display_name": label,
+                "description": f"{label} development Runtime.",
+                "version": "dev",
+                "chub_version": "ignored-for-development",
+                "entry": "runtime_source.entry:create_runtime_module",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "helper.py").write_text(
+        f'LABEL = "{label}"\nDESCRIPTION = "{label} development Runtime."\n',
+        encoding="utf-8",
+    )
+    (package / "entry.py").write_text(
+        """from app.ai_runtime import RuntimeDescriptor
+from .helper import DESCRIPTION, LABEL
+
+
+class Module:
+    descriptor = RuntimeDescriptor(
+        runtime_id=%r,
+        implementation_id=%r,
+        native_session_compatibility_id=%r,
+        capabilities=frozenset({"runtime_status"}),
+    )
+    display_name = LABEL
+    description = DESCRIPTION
+    is_default = False
+
+    def build_adapter(self):
+        return None
+
+    def build_worker_runner(self, adapter, *, workspaces):
+        return None
+
+
+def create_runtime_module(settings):
+    return Module()
+"""
+        % (runtime_id, implementation_id, f"{runtime_id}-v1"),
+        encoding="utf-8",
+    )
+
+
+def test_development_runtime_sources_are_isolated_and_one_bad_source_is_skipped(
+    settings,
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "development-runtime-sources"
+    _development_runtime_source(
+        source_root,
+        directory="first-directory",
+        runtime_id="first",
+        implementation_id="first-runtime-dev",
+        label="First",
+    )
+    _development_runtime_source(
+        source_root,
+        directory="second-directory",
+        runtime_id="second",
+        implementation_id="second-runtime-dev",
+        label="Second",
+    )
+    broken = source_root / "broken-directory"
+    broken.mkdir()
+    (broken / "chub-module.json").write_text("{}", encoding="utf-8")
+
+    registry, loaded, failures = discover_development_runtime_plugins(
+        settings,
+        source_root=source_root,
+    )
+
+    assert registry.implementation_ids() == (
+        "first-runtime-dev",
+        "second-runtime-dev",
+    )
+    assert [(item.manifest.runtime_id, item.module.display_name) for item in loaded] == [
+        ("first", "First"),
+        ("second", "Second"),
+    ]
+    assert [(item.module_id, item.reason) for item in failures] == [
+        ("broken-directory", "开发 Runtime 插件清单格式无效。"),
+    ]
 
 
 def test_runtime_zip_installs_and_discovers_a_non_default_module(settings) -> None:
@@ -522,6 +629,7 @@ def test_runtime_state_cleanup_record_survives_service_recreation(settings) -> N
     service.begin_state_cleanup(
         operation_id="d" * 32,
         action="remove_runtime_module",
+        runtime_id="codex",
         module_id="codex-010001",
         session_ids=("session-1", "session-2"),
     )
@@ -531,6 +639,7 @@ def test_runtime_state_cleanup_record_survives_service_recreation(settings) -> N
     assert pending is not None
     assert pending.operation_id == "d" * 32
     assert pending.action == "remove_runtime_module"
+    assert pending.runtime_id == "codex"
     assert pending.module_id == "codex-010001"
     assert pending.session_ids == ("session-1", "session-2")
 

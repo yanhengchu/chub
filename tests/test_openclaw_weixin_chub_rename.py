@@ -204,7 +204,7 @@ def test_rename_failure_keeps_command_out_of_normal_submission(
     codex_manager.get_session.return_value = _current_session()
     codex_manager.rename_session.side_effect = ApiError(
         503,
-        "codex_session_rename_failed",
+        "session_rename_failed",
         "rename failed",
     )
 
@@ -237,7 +237,7 @@ def test_rename_external_writer_explains_how_to_recover(
     codex_manager.get_session.return_value = _current_session()
     codex_manager.rename_session.side_effect = ApiError(
         409,
-        "codex_session_writer_active",
+        "session_writer_active",
         "This is open in another app, close it there to continue here.",
     )
 

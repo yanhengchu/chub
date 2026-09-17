@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Callable, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.codex.models import QuickInteractionWeixinRoute, utc_now
 from app.core.config import OpenClawWeixinChubModeConfig
@@ -71,7 +71,9 @@ class TranslationEntry(_StrictModel):
     ] = "queued"
     quick_task_id: str | None = None
     worker_submission_started_at: datetime | None = None
-    runtime_id: str = Field(default="codex", min_length=1, max_length=32)
+    # New entries always snapshot the selected Runtime. None is reserved for
+    # pre-snapshot history, which is never used to create a new Worker task.
+    runtime_id: str | None = Field(default=None, min_length=1, max_length=32)
     model: str | None = Field(default=None, max_length=128)
     reasoning_effort: str | None = Field(default=None, max_length=32)
     target_session_id: str | None = Field(default=None, max_length=128)
@@ -103,10 +105,9 @@ class TranslationRetiredSession(_StrictModel):
 
 
 class TranslationState(_StrictModel):
-    version: Literal[1] = 1
+    version: Literal[2] = 2
     enabled_override: bool | None = None
     processing_mode_override: Literal["direct", "auto", "confirm"] | None = None
-    runtime_id: str = Field(default="codex", min_length=1, max_length=32)
     model: str | None = Field(default=None, max_length=128)
     reasoning_effort: str | None = Field(default=None, max_length=32)
     show_internal_native_session: bool = False
@@ -123,6 +124,16 @@ class TranslationState(_StrictModel):
     native_cleanup_error: str | None = Field(default=None, max_length=1000)
     native_cleanup_retry_required: bool = False
     entries: list[TranslationEntry] = Field(default_factory=list, max_length=50)
+
+    @model_validator(mode="before")
+    @classmethod
+    def discard_legacy_runtime_selection(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        migrated = dict(value)
+        migrated.pop("runtime_id", None)
+        migrated["version"] = 2
+        return migrated
 
 
 class TranslationSettingsStatus(_StrictModel):
@@ -307,7 +318,7 @@ class WeixinTranslationManager:
                 )
                 return False
             try:
-                runtime_id = self._require_translation_runtime(self._state.runtime_id)
+                runtime_id, implementation_id = self._select_translation_runtime()
                 model = self._state.model
                 reasoning_effort = self._state.reasoning_effort
                 if model is None or reasoning_effort is None:
@@ -316,7 +327,11 @@ class WeixinTranslationManager:
                         "weixin_translation_execution_settings_unavailable",
                         "微信文本优化的模型和推理等级尚未配置。",
                     )
-                self.codex_manager.validate_model(model, reasoning_effort)
+                self._validate_translation_model(
+                    model,
+                    reasoning_effort,
+                    implementation_id=implementation_id,
+                )
             except ApiError:
                 self._reject(operation_id, source_ip)
                 return False
@@ -1208,7 +1223,7 @@ class WeixinTranslationManager:
                 mode=self._processing_mode_locked(),
                 enabled=self._enabled_locked(),
                 configured_default=self.config.translation_enabled,
-                runtime_id=self._state.runtime_id,
+                runtime_id=self._configured_translation_runtime_id(),
                 model=self._state.model,
                 reasoning_effort=self._state.reasoning_effort,
                 show_internal_native_session=self._state.show_internal_native_session,
@@ -1239,15 +1254,20 @@ class WeixinTranslationManager:
             )
         with self._lock:
             current_reasoning_effort = self._state.reasoning_effort
+        _runtime_id, implementation_id = self._select_translation_runtime()
         try:
             _model, reasoning_effort = self._resolve_execution_settings(
                 model,
                 current_reasoning_effort,
+                implementation_id=implementation_id,
             )
         except ApiError:
-            _model, reasoning_effort = self._resolve_execution_settings(model, None)
-        with self._lock:
-            runtime_id = self._state.runtime_id
+            _model, reasoning_effort = self._resolve_execution_settings(
+                model,
+                None,
+                implementation_id=implementation_id,
+            )
+        runtime_id = self._configured_translation_runtime_id()
         return self.set_execution_settings(runtime_id, model, reasoning_effort)
 
     def set_execution_settings(
@@ -1264,24 +1284,32 @@ class WeixinTranslationManager:
                 "weixin_translation_execution_settings_required",
                 "微信文本优化必须同时配置 Runtime、模型和推理等级。",
             )
+        configured_runtime_id = self._configured_translation_runtime_id()
+        if runtime_id != configured_runtime_id:
+            raise ApiError(
+                422,
+                "weixin_translation_runtime_unavailable",
+                "微信文本优化使用会话默认 Runtime，请先在会话默认配置中切换 Runtime。",
+            )
         with self._lock:
             unchanged = (
-                self._state.runtime_id == runtime_id
-                and self._state.model == model
+                self._state.model == model
                 and self._state.reasoning_effort == reasoning_effort
-            )
+        )
         if unchanged:
             return self.status()
-        self._require_translation_runtime(runtime_id)
-        self.codex_manager.validate_model(model, reasoning_effort)
+        _selected_runtime_id, implementation_id = self._select_translation_runtime()
+        self._validate_translation_model(
+            model,
+            reasoning_effort,
+            implementation_id=implementation_id,
+        )
         with self._lock:
             if (
-                self._state.runtime_id != runtime_id
-                or self._state.model != model
+                self._state.model != model
                 or self._state.reasoning_effort != reasoning_effort
             ):
                 next_state = self._state.model_copy(deep=True)
-                next_state.runtime_id = runtime_id
                 next_state.model = model
                 next_state.reasoning_effort = reasoning_effort
                 self._write(next_state)
@@ -1296,9 +1324,11 @@ class WeixinTranslationManager:
             if self._state.model is not None and self._state.reasoning_effort is not None:
                 return
             try:
+                _runtime_id, implementation_id = self._select_translation_runtime()
                 model, reasoning_effort = self._resolve_execution_settings(
                     self._state.model,
                     self._state.reasoning_effort,
+                    implementation_id=implementation_id,
                 )
             except Exception:
                 LOGGER.warning(
@@ -1324,8 +1354,15 @@ class WeixinTranslationManager:
         self,
         model: str | None,
         reasoning_effort: str | None,
+        *,
+        implementation_id: str | None,
     ) -> tuple[str, str]:
-        catalog = self.codex_manager.read_model_catalog()
+        if implementation_id is None:
+            catalog = self.codex_manager.read_model_catalog()
+        else:
+            catalog = self.codex_manager.read_model_catalog(
+                implementation_id=implementation_id
+            )
         models = tuple(
             item
             for item in getattr(catalog, "models", ())
@@ -1351,19 +1388,59 @@ class WeixinTranslationManager:
                 "weixin_translation_reasoning_unavailable",
                 "微信文本优化的推理等级暂时不可用。",
             )
-        self.codex_manager.validate_model(selected_model.id, selected_reasoning_effort)
+        self._validate_translation_model(
+            selected_model.id,
+            selected_reasoning_effort,
+            implementation_id=implementation_id,
+        )
         return selected_model.id, selected_reasoning_effort
 
-    def _require_translation_runtime(self, runtime_id: str) -> str:
-        current_runtime_id = getattr(self.codex_manager, "runtime_id", "codex")
-        if runtime_id != current_runtime_id:
+    def _select_translation_runtime(self) -> tuple[str, str | None]:
+        selector = getattr(type(self.codex_manager), "select_new_session_runtime", None)
+        if callable(selector):
+            runtime_id, implementation_id = self.codex_manager.select_new_session_runtime(
+                required_capabilities=frozenset({"background_turn"})
+            )
+            return runtime_id, implementation_id
+
+        runtime_id = getattr(self.codex_manager, "runtime_id", None)
+        if not isinstance(runtime_id, str) or not runtime_id:
             raise ApiError(
-                422,
+                503,
                 "weixin_translation_runtime_unavailable",
-                "当前 Runtime 尚不支持微信文本优化。",
+                "默认 AI Runtime 当前不可用。",
             )
         self.codex_manager.require_runtime_submission(runtime_id)
+        return runtime_id, None
+
+    def _configured_translation_runtime_id(self) -> str:
+        reader = getattr(type(self.codex_manager), "configured_default_runtime_id", None)
+        if callable(reader):
+            return self.codex_manager.configured_default_runtime_id()
+        runtime_id = getattr(self.codex_manager, "runtime_id", None)
+        if not isinstance(runtime_id, str) or not runtime_id:
+            raise ApiError(
+                503,
+                "weixin_translation_runtime_unavailable",
+                "默认 AI Runtime 当前不可用。",
+            )
         return runtime_id
+
+    def _validate_translation_model(
+        self,
+        model: str | None,
+        reasoning_effort: str | None,
+        *,
+        implementation_id: str | None,
+    ) -> None:
+        if implementation_id is None:
+            self.codex_manager.validate_model(model, reasoning_effort)
+        else:
+            self.codex_manager.validate_model(
+                model,
+                reasoning_effort,
+                implementation_id=implementation_id,
+            )
 
     def set_show_internal_native_session(
         self,
@@ -1495,7 +1572,6 @@ class WeixinTranslationManager:
             next_state = TranslationState(
                 enabled_override=self._state.enabled_override,
                 processing_mode_override=self._state.processing_mode_override,
-                runtime_id=self._state.runtime_id,
                 model=self._state.model,
                 reasoning_effort=self._state.reasoning_effort,
                 show_internal_native_session=self._state.show_internal_native_session,
@@ -1515,6 +1591,7 @@ class WeixinTranslationManager:
                 raise ValueError("Weixin translation state is too large")
             payload = json.loads(content.decode("utf-8"))
             legacy_session_display_snapshot = False
+            legacy_runtime_selection = isinstance(payload, dict) and "runtime_id" in payload
             if isinstance(payload, dict) and isinstance(payload.get("entries"), list):
                 for item in payload["entries"]:
                     if not isinstance(item, dict):
@@ -1537,7 +1614,7 @@ class WeixinTranslationManager:
             LOGGER.warning("Unable to protect Weixin translation state", exc_info=True)
             return TranslationState()
         next_state = state.model_copy(deep=True)
-        changed = legacy_session_display_snapshot
+        changed = legacy_session_display_snapshot or legacy_runtime_selection
         enabled = self._processing_mode_for_state(next_state) != "direct"
         if not enabled and next_state.session_id is not None:
             self._retire_current_session(next_state)

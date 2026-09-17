@@ -101,12 +101,13 @@
 }
 
 @media (max-width: 420px) {
-  .workspace-today-focus-heading {
+  .workspace-today-focus-heading,
+  .workspace-today-focus-section-heading {
     align-items: stretch;
     grid-template-columns: 1fr;
   }
 
-  .workspace-today-focus-heading > .workspace-today-focus-actions {
+  .workspace-today-focus-section-heading > .button-secondary {
     justify-self: start;
   }
 
@@ -120,12 +121,21 @@
     flex-direction: column;
   }
 
+  .internal-session-visibility-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
   .deployment-package-artifacts-heading {
     align-items: stretch;
     flex-direction: column;
   }
 
   .deployment-package-heading .button-secondary {
+    align-self: start;
+  }
+
+  .internal-session-visibility-heading .button-secondary {
     align-self: start;
   }
 

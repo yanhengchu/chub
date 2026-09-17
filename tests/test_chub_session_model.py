@@ -7,10 +7,6 @@ from uuid import uuid4
 from app.ai_session.manager import AiSessionManager
 from app.ai_session.models import AiSession
 from app.ai_session.store import AiSessionStore
-from app.ai_runtime.codex_plugin import (
-    DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
-    LEGACY_DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
-)
 
 
 def test_legacy_v2_state_is_discarded_before_loading_current_schema(tmp_path: Path) -> None:
@@ -78,7 +74,7 @@ def test_session_manager_registers_quick_native_claim_for_current_session_schema
     assert manager.store.get(session.id).quick_native_claim_task_id == worker_task_id
 
 
-def test_session_manager_preserves_legacy_development_implementation_snapshot(
+def test_session_manager_discards_legacy_development_implementation_snapshot(
     settings,
     tmp_path: Path,
 ) -> None:
@@ -86,7 +82,7 @@ def test_session_manager_preserves_legacy_development_implementation_snapshot(
     session = AiSession(
         id=str(uuid4()),
         runtime_id="codex",
-        implementation_id=LEGACY_DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
+        implementation_id="builtin-dev",
         native_session_id="legacy-native-session",
         native_session_compatibility_id="codex-v1",
         workspace_id="chub",
@@ -100,11 +96,7 @@ def test_session_manager_preserves_legacy_development_implementation_snapshot(
 
     manager = AiSessionManager(settings)
 
-    preserved = manager.get_session(session.id, reconcile=False)
-    assert preserved.implementation_id == LEGACY_DEVELOPMENT_CODEX_IMPLEMENTATION_ID
-    assert manager.session_implementation_id(session.id) == LEGACY_DEVELOPMENT_CODEX_IMPLEMENTATION_ID
-    assert preserved.native_session_id == "legacy-native-session"
-    assert preserved.native_session_compatibility_id == "codex-v1"
+    assert manager.store.list() == []
 
 
 def test_session_manager_discards_all_quick_native_claims(tmp_path: Path, settings) -> None:

@@ -41,7 +41,7 @@
               <nav class="workspace-preview-compact-nav" data-workspace-section-navigation aria-label="折叠侧栏导航">
                 <a href="/workspace"{% if workspace_section == "workbench" %} aria-current="page" class="is-current"{% endif %} aria-label="工作台" title="工作台"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><rect x="4" y="4" width="6" height="6" rx="1"></rect><rect x="14" y="4" width="6" height="6" rx="1"></rect><rect x="4" y="14" width="6" height="6" rx="1"></rect><rect x="14" y="14" width="6" height="6" rx="1"></rect></svg></a>
                 <a href="/workspace?section=automations"{% if workspace_section == "automations" %} aria-current="page" class="is-current"{% endif %} aria-label="自动化" title="自动化"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><rect x="4" y="5" width="16" height="15" rx="2"></rect><path d="M4 9h16M7 3v4M17 3v4M14 12l4 2.5-4 2.5Z"></path></svg></a>
-                {% if today_focus_navigation %}<a href="/workspace?section=today-focus"{% if workspace_section == "today-focus" %} aria-current="page" class="is-current"{% endif %} aria-label="今日关注" title="今日关注"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><circle cx="12" cy="12" r="7"></circle><path d="M12 8v4l2.5 2"></path></svg></a>{% endif %}
+                <a href="/workspace?section=today-focus"{% if workspace_section == "today-focus" %} aria-current="page" class="is-current"{% endif %} aria-label="今日关注" title="今日关注"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><circle cx="12" cy="12" r="7"></circle><path d="M12 8v4l2.5 2"></path></svg></a>
                 <a href="/workspace?section=project-docs"{% if workspace_section == "project-docs" %} aria-current="page" class="is-current"{% endif %} aria-label="项目资料" title="项目资料"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M6 3.5h9l3 3V20a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1Z"></path><path d="M14 3.5V7h4M8.5 11h7M8.5 15h7"></path></svg></a>
                 {% if deliveryline_navigation %}<a href="/workspace?section=deliveryline"{% if workspace_section == "deliveryline" %} aria-current="page" class="is-current"{% endif %} aria-label="Deliveryline" title="Deliveryline"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M6 3.5h9l3 3V20a1 1 0 0 1-1 1H6a1 1 0 0 1 1-1V4.5a1 1 0 0 1 1-1Z"></path><path d="M14 3.5V7h4M8.5 11h7M8.5 15h7"></path></svg></a>{% endif %}
                 <a class="workspace-preview-compact-nav-external" href="/settings" aria-label="设置" title="设置"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2 2-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5v.2h-2.8v-.2a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1-2-2 .1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H5.7v-2.8h.2a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.9L7 8.2l2-2 .1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.5v-.2h2.8v.2a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1 2 2-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.5 1h.2V14h-.2a1.7 1.7 0 0 0-1.5 1Z"></path></svg></a>
@@ -53,7 +53,7 @@
           </header>
           {% if workspace_session_id %}
           <div id="workspace-section-content" class="workspace-inline-quick-session" data-workspace-session-id="{{ workspace_session_id }}" aria-label="Chub Session">
-            <iframe class="workspace-inline-quick-session-frame" title="Chub Session" src="/codex/{{ workspace_session_id | urlencode }}/quick-interactions/conversation?embedded=workspace"></iframe>
+            <iframe class="workspace-inline-quick-session-frame" title="Chub Session" src="/ai/sessions/{{ workspace_session_id | urlencode }}/quick-interactions/conversation?embedded=workspace"></iframe>
           </div>
           {% else %}
           <div id="workspace-section-content">
@@ -121,7 +121,7 @@
                   </div>
                 </div>
               </section>
-              <section class="workstation-group workspace-third-party-environment" aria-labelledby="workspace-third-party-environment-title">
+              <section id="workspace-third-party-environment" class="workstation-group workspace-third-party-environment" aria-labelledby="workspace-third-party-environment-title" data-third-party-available="{{ 'true' if third_party_environment_available else 'false' }}"{% if not third_party_environment_available %} hidden{% endif %}>
                 <div class="workstation-group-heading">
                   <div><h3 id="workspace-third-party-environment-title">第三方服务环境</h3><p>管理 OpenClaw Gateway 与微信 ClawBot 的当前连接。</p></div>
                   <button id="workspace-third-party-refresh" class="button-secondary" type="button">刷新</button>
@@ -247,13 +247,14 @@
           {% elif workspace_section == "today-focus" %}
           <section class="workspace-preview-work-surface workspace-today-focus" aria-labelledby="workspace-today-focus-title">
             <header class="workspace-today-focus-heading workspace-preview-work-section">
-              <div><p class="section-kicker">Today</p><h2 id="workspace-today-focus-title">今日关注</h2><p>打开固定 AI 来源页面，或刷新今日 AI 动态，并集中查看今日计划与待办。</p></div>
-              <div class="workspace-today-focus-actions"><button id="workspace-today-focus-open-pages" class="button-secondary" type="button">打开页面</button><button id="workspace-today-focus-refresh" class="button-secondary" type="button">刷新</button></div>
+              <div><p class="section-kicker">Today</p><h2 id="workspace-today-focus-title">今日关注</h2><p>集中查看今日 AI 动态、计划与待办。</p></div>
             </header>
+            {% if today_focus_ai_available %}
             <section class="workspace-today-focus-section workspace-preview-work-section" aria-labelledby="workspace-today-focus-ai-title">
-              <header class="workspace-today-focus-section-heading"><div><h3 id="workspace-today-focus-ai-title">AI 动态</h3><p id="workspace-today-focus-status" class="workspace-today-focus-status" aria-live="polite">正在读取今日动态。</p></div></header>
+              <header class="workspace-today-focus-section-heading"><div><h3 id="workspace-today-focus-ai-title">AI 动态</h3><p id="workspace-today-focus-status" class="workspace-today-focus-status" aria-live="polite">正在读取今日动态。</p></div><button id="workspace-today-focus-refresh" class="button-secondary" type="button">刷新</button></header>
               <div id="workspace-today-focus-results" class="workspace-today-focus-results" aria-live="polite"></div>
             </section>
+            {% endif %}
             <section class="workspace-today-focus-section workspace-preview-work-section" aria-labelledby="workspace-today-focus-plan-title"><header class="workspace-today-focus-section-heading"><div><h3 id="workspace-today-focus-plan-title">今日计划</h3></div></header><p class="empty-state">暂无今日计划。</p></section>
             <section class="workspace-today-focus-section workspace-preview-work-section" aria-labelledby="workspace-today-focus-todo-title"><header class="workspace-today-focus-section-heading"><div><h3 id="workspace-today-focus-todo-title">待办</h3></div></header><p class="empty-state">暂无待办事项。</p></section>
           </section>
@@ -324,7 +325,7 @@
                       <button id="workspace-automation-feishu-open-login" class="button-secondary" type="button"{% if not automations.feishu_environment.login_page_available %} hidden{% endif %}{% if automation_browser_in_use.value and automations.browser_mode != '有界面' %} disabled title="请等待当前自动化任务完成"{% endif %}>打开登录页面</button>
                     </div>
                   </div>
-                  <div class="workstation-status-row">
+                  {% if automations.codex_runtime_account_available %}<div class="workstation-status-row">
                     <div class="workstation-status-copy">
                       <strong>Codex Runtime 账户</strong>
                       <span id="workspace-automation-codex-account-detail" data-account-state="{{ automations.codex_runtime_account.state }}" data-auth-mode="{{ automations.codex_runtime_account.auth_mode }}" data-auth-switching="{{ 'true' if automations.codex_runtime_account.switching else 'false' }}" class="workstation-status-detail workspace-automation-codex-account-detail{% if automations.codex_runtime_account.state == 'available' %} workstation-status-detail-success{% elif automations.codex_runtime_account.state == 'checking' %} workstation-status-detail-warning{% elif automations.codex_runtime_account.state == 'failed' %} workstation-status-detail-failed{% endif %}">{{ automations.codex_runtime_account.message }}{% if automations.codex_runtime_account.quota_state == 'available' %}{% if automations.codex_runtime_account.five_hour_remaining_percent is not none %} · 5h {{ automations.codex_runtime_account.five_hour_remaining_percent }}%{% endif %}{% if automations.codex_runtime_account.weekly_remaining_percent is not none %} · Weekly {{ automations.codex_runtime_account.weekly_remaining_percent }}%{% endif %}{% elif automations.codex_runtime_account.quota_state == 'unavailable' %} · {{ automations.codex_runtime_account.quota_message or '额度暂不可用' }}{% endif %}{% if automations.codex_runtime_account.checked_at %} · 检查于 {{ automations.codex_runtime_account.checked_at.strftime('%m-%d %H:%M') }}{% endif %}</span>
@@ -334,7 +335,7 @@
                       <button id="workspace-automation-codex-account-switch" class="button-secondary" type="button"{% if automations.codex_runtime_account.switching %} title="停止当前认证切换">停止切换{% elif automations.codex_runtime_account.state == 'checking' %} disabled title="正在检查 Codex Runtime 账户状态">检查中…{% else %} aria-haspopup="dialog" aria-controls="workspace-automation-codex-account-switch-dialog">切换{% endif %}</button>
                       <button id="workspace-automation-codex-account-open-login" class="button-secondary" type="button"{% if not automations.codex_runtime_account.login_page_available %} hidden{% endif %}{% if automation_browser_in_use.value and automations.browser_mode != '有界面' %} disabled title="请等待当前自动化任务完成"{% endif %}>打开登录页面</button>
                     </div>
-                  </div>
+                  </div>{% endif %}
                 </div>
               </section>
               <section class="workstation-group" aria-labelledby="workspace-automation-task-title">
@@ -449,7 +450,7 @@
           </form>
         </dialog>
         {% endif %}
-        {% if workspace_section == "automations" and automations %}
+        {% if workspace_section == "automations" and automations and automations.codex_runtime_account_available %}
         <dialog id="workspace-automation-codex-account-switch-dialog" class="codex-workspace-dialog" aria-labelledby="workspace-automation-codex-account-switch-title">
           <form id="workspace-automation-codex-account-switch-form" class="codex-workspace-dialog-surface automation-browser-form codex-auth-switch-form">
             <div class="codex-workspace-dialog-header">
@@ -480,7 +481,7 @@
           <nav class="workspace-preview-nav" data-workspace-section-navigation aria-label="工作台导航">
             <a href="/"{% if workspace_section == "workbench" %} aria-current="page" class="is-current"{% endif %}><span class="workspace-preview-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><rect x="4" y="4" width="6" height="6" rx="1"></rect><rect x="14" y="4" width="6" height="6" rx="1"></rect><rect x="4" y="14" width="6" height="6" rx="1"></rect><rect x="14" y="14" width="6" height="6" rx="1"></rect></svg></span><span>工作台</span></a>
             <a href="/?section=automations"{% if workspace_section == "automations" %} aria-current="page" class="is-current"{% endif %}><span class="workspace-preview-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><rect x="4" y="5" width="16" height="15" rx="2"></rect><path d="M4 9h16M7 3v4M17 3v4M14 12l4 2.5-4 2.5Z"></path></svg></span><span>自动化</span></a>
-            {% if today_focus_navigation %}<a href="/?section=today-focus"{% if workspace_section == "today-focus" %} aria-current="page" class="is-current"{% endif %}><span class="workspace-preview-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><circle cx="12" cy="12" r="7"></circle><path d="M12 8v4l2.5 2"></path></svg></span><span>今日关注</span></a>{% endif %}
+            <a href="/?section=today-focus"{% if workspace_section == "today-focus" %} aria-current="page" class="is-current"{% endif %}><span class="workspace-preview-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><circle cx="12" cy="12" r="7"></circle><path d="M12 8v4l2.5 2"></path></svg></span><span>今日关注</span></a>
             <a href="/?section=project-docs"{% if workspace_section == "project-docs" %} aria-current="page" class="is-current"{% endif %}><span class="workspace-preview-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M6 3.5h9l3 3V20a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1Z"></path><path d="M14 3.5V7h4M8.5 11h7M8.5 15h7"></path></svg></span><span>项目资料</span></a>
           </nav>
           {% if deliveryline_navigation %}

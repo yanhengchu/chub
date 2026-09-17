@@ -228,7 +228,7 @@ def runtime_recovery_plan() -> LoadedSystemUpgradePlan:
         source_worker_protocol=PROTOCOL_VERSION,
         target_worker_protocol=PROTOCOL_VERSION,
         effects=["在途快速任务将停止，Chub Session 关联和 Worker 运行态将清理"],
-        preserves=["Codex 原生 Session、配置、日志、资料和业务数据继续保留"],
+        preserves=["Runtime 原生 Session、配置、日志、资料和业务数据继续保留"],
     )
     content = plan.model_dump_json().encode("utf-8")
     return LoadedSystemUpgradePlan(
@@ -239,9 +239,14 @@ def runtime_recovery_plan() -> LoadedSystemUpgradePlan:
 
 def runtime_cleanup_readiness(settings) -> str | None:
     """Validate the fixed local paths before accepting a destructive reset."""
-    files = (
-        settings.ai_runtime.codex.data_file,
-        settings.ai_runtime.codex.data_file.with_name("ai-sessions.json"),
+    files = tuple(
+        path
+        for path in (
+            settings.ai_runtime.shared.legacy_state_file,
+            settings.ai_runtime.shared.state_dir / "sessions.json",
+            settings.ai_runtime.shared.state_dir / "ai-sessions.json",
+        )
+        if path is not None
     )
     directories = (worker_restart_request_dir(settings),)
     for path in files:

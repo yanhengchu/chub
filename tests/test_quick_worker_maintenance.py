@@ -263,12 +263,12 @@ async def test_quick_worker_status_reports_disabled_runtime_without_failing_work
             headers=AUTHORIZATION,
         ) as client:
             imported = await client.post(
-                "/api/plugins/codex-runtime/imports",
-                json={"artifact_id": "development:codex-runtime"},
+                "/api/plugins/runtime/imports",
+                json={"artifact_id": "development:codex-runtime-dev"},
             )
             enabled = await client.put(
-                "/api/plugins/codex-runtime/enabled",
-                json={"artifact_id": "development:codex-runtime", "enabled": True},
+                "/api/plugins/runtime/enabled",
+                json={"artifact_id": "development:codex-runtime-dev", "enabled": True},
             )
             assert imported.status_code == 200
             assert enabled.status_code == 200

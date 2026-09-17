@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.core.response import ApiError, ApiResponse
 from app.core.security import require_trusted_network
 from app.deliveryline.store import DeliveryLine, DeliverylineError, DeliverylineNotFound, DeliverylineTransitionNotAllowed
+from app.services.internal_session_visibility import internal_session_visibility_lock
 from app.services.operation_log import log_operation
 
 
@@ -255,4 +256,6 @@ def get_collaboration_settings(request: Request) -> ApiResponse[CollaborationSet
 @router.put("/settings", response_model=ApiResponse[CollaborationSettingsData])
 def update_collaboration_settings(payload: CollaborationSettingsUpdate, request: Request) -> ApiResponse[CollaborationSettingsData]:
     _deliveryline_plugin(request)
-    return ApiResponse(data=CollaborationSettingsData(show_sessions=request.app.state.deliveryline_collaboration.set_show_sessions(payload.show_sessions)))
+    with internal_session_visibility_lock:
+        show_sessions = request.app.state.deliveryline_collaboration.set_show_sessions(payload.show_sessions)
+    return ApiResponse(data=CollaborationSettingsData(show_sessions=show_sessions))

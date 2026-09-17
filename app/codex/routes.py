@@ -43,8 +43,13 @@ from app.web.routes import WEB_DIR
 from app.web.themes import configure_theme_templates
 
 
-LOGGER = logging.getLogger("hub.codex")
+LOGGER = logging.getLogger("hub.ai")
 api_router = APIRouter(
+    prefix="/api/ai",
+    tags=["ai"],
+    dependencies=[Depends(require_trusted_network)],
+)
+codex_private_router = APIRouter(
     prefix="/api/codex",
     tags=["codex"],
     dependencies=[Depends(require_trusted_network)],
@@ -83,6 +88,7 @@ def list_sessions(
     )
     listed_sessions: list[SessionInfo] = []
     native_sessions: list[NativeSessionInfo] = []
+    default_runtime_id: str | None = None
     if runtime_registered:
         try:
             show_internal_native_session = (
@@ -146,7 +152,16 @@ def list_sessions(
         and session.id not in hidden_search_session_ids
         and session.id not in hidden_release_note_session_ids
     ]
-    available, unavailable_reason = manager.submission_available()
+    try:
+        configured_runtime_id = manager.configured_default_runtime_id()
+    except ApiError as exc:
+        available, unavailable_reason = False, exc.message
+    else:
+        if not isinstance(configured_runtime_id, str):
+            available, unavailable_reason = False, "默认 AI Runtime 配置无效。"
+        else:
+            default_runtime_id = configured_runtime_id
+            available, unavailable_reason = manager.submission_available()
     if available:
         available, unavailable_reason = (
             request.app.state.quick_interactions.quick_session_creation_availability()
@@ -161,6 +176,7 @@ def list_sessions(
             available=available,
             unavailable_reason=unavailable_reason,
             runtime_registered=runtime_registered,
+            default_runtime_id=default_runtime_id,
             quick_creation=SessionCreationAvailability(
                 available=available,
                 reason=unavailable_reason,
@@ -194,13 +210,13 @@ async def update_runtime_implementation_enabled(
     request: Request,
 ) -> ApiResponse[RuntimeImplementationData]:
     artifact_id = (
-        "development:codex-runtime"
+        f"development:{implementation_id}"
         if implementation_id == DEVELOPMENT_CODEX_IMPLEMENTATION_ID
         else f"runtime:{implementation_id}"
     )
     await request.app.state.plugin_lifecycle.set_enabled(
         request,
-        "codex-runtime",
+        "runtime",
         artifact_id,
         payload.enabled,
     )
@@ -278,11 +294,17 @@ def read_session(session_id: str, request: Request) -> ApiResponse[SessionInfo]:
 
 
 @api_router.get("/models", response_model=ApiResponse[CodexModelCatalogData])
-def list_models(request: Request) -> ApiResponse[CodexModelCatalogData]:
-    return ApiResponse(data=request.app.state.ai_session_manager.read_model_catalog())
+def list_models(
+    request: Request,
+    session_id: str | None = Query(default=None),
+) -> ApiResponse[CodexModelCatalogData]:
+    manager = request.app.state.ai_session_manager
+    if session_id:
+        return ApiResponse(data=manager.read_session_model_catalog(session_id))
+    return ApiResponse(data=manager.read_model_catalog())
 
 
-@api_router.get("/quota", response_model=ApiResponse[CodexQuotaData])
+@codex_private_router.get("/quota", response_model=ApiResponse[CodexQuotaData])
 def read_quota(
     request: Request,
     refresh: bool = Query(default=False),
@@ -306,14 +328,14 @@ def create_session(
     except Exception:
         log_operation(
             request,
-            action="create_codex_session",
+            action="create_ai_session",
             status="failed",
             target=payload.workspace_id,
         )
         raise
     log_operation(
         request,
-        action="create_codex_session",
+        action="create_ai_session",
         status="succeeded",
         target=session.id,
     )
@@ -337,14 +359,14 @@ async def stop_session(session_id: str, request: Request) -> ApiResponse[Session
     except Exception:
         log_operation(
             request,
-            action="stop_codex_session",
+            action="stop_ai_session",
             status="failed",
             target=session_id,
         )
         raise
     log_operation(
         request,
-        action="stop_codex_session",
+        action="stop_ai_session",
         status="succeeded",
         target=session_id,
     )
@@ -364,7 +386,7 @@ async def rename_session(
     for status in ("requested", "started"):
         log_operation(
             request,
-            action="rename_codex_session",
+            action="rename_ai_session",
             status=status,
             target=session_id,
             operation_id=operation_id,
@@ -378,7 +400,7 @@ async def rename_session(
     except Exception:
         log_operation(
             request,
-            action="rename_codex_session",
+            action="rename_ai_session",
             status="failed",
             target=session_id,
             operation_id=operation_id,
@@ -386,7 +408,7 @@ async def rename_session(
         raise
     log_operation(
         request,
-        action="rename_codex_session",
+        action="rename_ai_session",
         status="succeeded",
         target=session_id,
         operation_id=operation_id,
@@ -414,14 +436,14 @@ async def update_session_configuration(
     except Exception:
         log_operation(
             request,
-            action="update_codex_session_configuration",
+            action="update_ai_session_configuration",
             status="failed",
             target=session_id,
         )
         raise
     log_operation(
         request,
-        action="update_codex_session_configuration",
+        action="update_ai_session_configuration",
         status="succeeded",
         target=session_id,
     )
@@ -560,7 +582,7 @@ async def archive_session(session_id: str, request: Request) -> ApiResponse[None
     for status in ("requested", "started"):
         log_operation(
             request,
-            action="archive_codex_session",
+            action="archive_ai_session",
             status=status,
             target=session_id,
             operation_id=operation_id,
@@ -578,7 +600,7 @@ async def archive_session(session_id: str, request: Request) -> ApiResponse[None
     except Exception:
         log_operation(
             request,
-            action="archive_codex_session",
+            action="archive_ai_session",
             status="failed",
             target=session_id,
             operation_id=operation_id,
@@ -586,7 +608,7 @@ async def archive_session(session_id: str, request: Request) -> ApiResponse[None
         raise
     log_operation(
         request,
-        action="archive_codex_session",
+        action="archive_ai_session",
         status="succeeded",
         target=session_id,
         operation_id=operation_id,
@@ -600,7 +622,7 @@ async def delete_session(session_id: str, request: Request) -> ApiResponse[None]
     for status in ("requested", "started"):
         log_operation(
             request,
-            action="delete_codex_session",
+            action="delete_ai_session",
             status=status,
             target=session_id,
             operation_id=operation_id,
@@ -618,7 +640,7 @@ async def delete_session(session_id: str, request: Request) -> ApiResponse[None]
     except Exception:
         log_operation(
             request,
-            action="delete_codex_session",
+            action="delete_ai_session",
             status="failed",
             target=session_id,
             operation_id=operation_id,
@@ -626,7 +648,7 @@ async def delete_session(session_id: str, request: Request) -> ApiResponse[None]
         raise
     log_operation(
         request,
-        action="delete_codex_session",
+        action="delete_ai_session",
         status="succeeded",
         target=session_id,
         operation_id=operation_id,
@@ -642,14 +664,14 @@ async def forget_session(session_id: str, request: Request) -> ApiResponse[None]
     operation_id = uuid4().hex
     log_operation(
         request,
-        action="forget_codex_session",
+        action="forget_ai_session",
         status="requested",
         target=session_id,
         operation_id=operation_id,
     )
     log_operation(
         request,
-        action="forget_codex_session",
+        action="forget_ai_session",
         status="started",
         target=session_id,
         operation_id=operation_id,
@@ -667,7 +689,7 @@ async def forget_session(session_id: str, request: Request) -> ApiResponse[None]
     except Exception:
         log_operation(
             request,
-            action="forget_codex_session",
+            action="forget_ai_session",
             status="failed",
             target=session_id,
             operation_id=operation_id,
@@ -675,7 +697,7 @@ async def forget_session(session_id: str, request: Request) -> ApiResponse[None]
         raise
     log_operation(
         request,
-        action="forget_codex_session",
+        action="forget_ai_session",
         status="succeeded",
         target=session_id,
         operation_id=operation_id,
@@ -816,7 +838,7 @@ def _with_weixin_session_slot(
 
 
 @web_router.get(
-    "/codex/{session_id}/quick-interactions/conversation",
+    "/ai/sessions/{session_id}/quick-interactions/conversation",
     response_class=HTMLResponse,
     include_in_schema=False,
 )

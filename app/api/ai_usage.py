@@ -52,7 +52,20 @@ def _general_runtime_settings(request: Request) -> AiRuntimeGeneralSettingsData:
             "Runtime 默认项暂时无法读取。",
         ) from exc
     manager = request.app.state.ai_session_manager
-    runtime_navigation = manager.runtime_plugins.require_navigation(manager.runtime_id)
+    runtime_options: list[RuntimeSettingsOption] = []
+    for runtime_id in manager.runtime_plugins.runtime_ids():
+        try:
+            implementation_id = manager.new_session_implementation_id(runtime_id)
+        except ApiError:
+            continue
+        navigation = manager.runtime_plugins.require_navigation(implementation_id)
+        runtime_options.append(
+            RuntimeSettingsOption(
+                value=runtime_id,
+                label=navigation.name,
+                description=navigation.description,
+            )
+        )
     session_defaults = RuntimeSettingsSection(
         id="session-defaults",
         title="会话默认配置",
@@ -64,13 +77,7 @@ def _general_runtime_settings(request: Request) -> AiRuntimeGeneralSettingsData:
                 description="当前可用于新建 Chub Session 的 AI Runtime。",
                 input_type="select",
                 value=general.default_runtime_id,
-                options=(
-                    RuntimeSettingsOption(
-                        value=manager.runtime_id,
-                        label=runtime_navigation.name,
-                        description=runtime_navigation.description,
-                    ),
-                ),
+                options=tuple(runtime_options),
             ),
             RuntimeSettingsField(
                 id="session-default-permission",
@@ -156,15 +163,14 @@ def update_general_runtime_settings(
             raise ValueError("session default settings are required")
         if permission_mode not in {"auto-review", "read-only", "full-access"}:
             raise ValueError("session default permission is invalid")
-        if runtime_id != manager.runtime_id:
-            raise ApiError(
-                409,
-                "session_default_runtime_unavailable",
-                "当前默认 Runtime 不可用于新建 Session。",
-            )
+        implementation_id = manager.new_session_implementation_id(runtime_id)
         model = None if model == "__default__" else model
         reasoning_effort = None if reasoning_effort == "__default__" else reasoning_effort
-        manager.validate_model(model, reasoning_effort)
+        manager.validate_model(
+            model,
+            reasoning_effort,
+            implementation_id=implementation_id,
+        )
         general = AiRuntimeGeneralSettings.model_validate(
             {
                 **general.model_dump(mode="json"),
@@ -197,7 +203,8 @@ def update_general_runtime_settings(
             "Runtime 默认项无效。",
         ) from exc
     try:
-        request.app.state.ai_session_manager.runtime_settings_store.save_general(general)
+        manager.runtime_settings_store.save_general(general)
+        manager.sync_default_runtime_selection()
     except RuntimeSettingsStoreUnavailable as exc:
         log_operation(
             request,

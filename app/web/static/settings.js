@@ -296,7 +296,7 @@ async function saveCodexDefaultRuntimeImplementation() {
   renderCodexRuntimeVersions();
   setCodexRuntimeSettingsMessage("");
   try {
-    await fetchSettingsApi("/api/codex/runtime-implementations/default", {
+    await fetchSettingsApi("/api/ai/runtime-implementations/default", {
       method: "PUT",
       body: JSON.stringify({ implementation_id: implementationId }),
       headers: { "Content-Type": "application/json" },
@@ -315,7 +315,7 @@ async function saveCodexDefaultRuntimeImplementation() {
 
 async function loadRuntimePlugins() {
   try {
-    const implementations = await fetchSettingsApi("/api/codex/runtime-implementations");
+    const implementations = await fetchSettingsApi("/api/ai/runtime-implementations");
     renderCodexRuntimeVersions(implementations);
     setCodexRuntimeSettingsMessage("");
   } catch (_error) {
@@ -801,6 +801,7 @@ function initializeOpenClawSettings() {
     verified: ["已匹配", "success"],
     mismatch: ["不匹配", "failed"],
     unavailable: ["不可检查", "muted"],
+    not_installed: ["未安装", "muted"],
     unknown: ["状态未知", "timeout"],
     declared: ["已登记", "muted"],
   };
@@ -823,8 +824,18 @@ function initializeOpenClawSettings() {
     row.append(copy);
     return row;
   };
-  const render = (data) => {
+  const render = (status, data) => {
     if (!settingsOpenClawIntegrationList || !settingsOpenClawPatchList) return;
+    if (!status?.installed) {
+      settingsOpenClawIntegrationList.replaceChildren(createRow(
+        "OpenClaw",
+        status?.message || "当前节点未安装 OpenClaw。",
+        "not_installed",
+      ));
+      settingsOpenClawPatchList.replaceChildren();
+      setSettingsMessage(settingsOpenClawIntegrationMessage, "");
+      return;
+    }
     settingsOpenClawIntegrationList.replaceChildren(
       createRow(
         "微信 ClawBot 适配器",
@@ -849,8 +860,13 @@ function initializeOpenClawSettings() {
   };
   const load = async () => {
     try {
+      const status = await fetchSettingsApi("/api/openclaw/status");
+      if (!status?.installed) {
+        render(status, null);
+        return;
+      }
       const data = await fetchSettingsApi("/api/openclaw/integration");
-      render(data);
+      render(status, data);
     } catch (_error) {
       settingsOpenClawIntegrationList?.replaceChildren(createRow(
         "集成状态",

@@ -144,7 +144,7 @@ async def _submit_codex(
     *,
     task_id: str,
     session_id: str,
-    codex_session_id: str | None = None,
+    native_session_id: str | None = None,
     prompt: str = "isolated Codex task",
     timeout_seconds: float = 5.0,
     task_kind: str = "standard",
@@ -163,7 +163,7 @@ async def _submit_codex(
             "workspace_id": "isolated",
             "prompt": prompt,
             "permission_profile": "read-only",
-            "native_session_id": codex_session_id,
+            "native_session_id": native_session_id,
             "model": None,
             "reasoning_effort": None,
             "timeout_seconds": timeout_seconds,
@@ -335,6 +335,24 @@ def test_worker_remains_available_when_shortcut_directory_is_missing(
     assert runtime.available is True
 
 
+def test_worker_resolves_a_command_name_from_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable_dir = tmp_path / "bin"
+    executable_dir.mkdir()
+    executable = _fake_codex(executable_dir)
+    executable.rename(executable_dir / "codex")
+    monkeypatch.setenv("PATH", str(executable_dir))
+    runtime = CodexWorkerRuntime(
+        MagicMock(),
+        executable="codex",
+        workspaces={"workspace": tmp_path},
+    )
+
+    assert runtime.available is True
+
+
 def test_codex_runtime_does_not_pass_browser_control_environment(tmp_path: Path) -> None:
     runtime = CodexWorkerRuntime(
         MagicMock(),
@@ -434,7 +452,7 @@ async def test_health_client_rejects_previous_worker_protocol(
                 "corrupt_tasks": 0,
                 "test_tasks_enabled": False,
                 "codex_tasks_enabled": True,
-                "codex_workspace_ids": ["chub"],
+                "workspace_ids": ["chub"],
             },
         }
 
@@ -1314,13 +1332,13 @@ async def test_failed_acceptance_rolls_back_owned_session_lease(
             settings,
             task_id=failed_task,
             session_id="rollback-session",
-            codex_session_id=native_id,
+            native_session_id=native_id,
         )
         accepted = await _submit_codex(
             settings,
             task_id=replacement_task,
             session_id="rollback-session",
-            codex_session_id=native_id,
+            native_session_id=native_id,
         )
 
         assert rejected["success"] is False
@@ -1495,7 +1513,7 @@ async def test_codex_upstream_error_is_returned_from_runtime_event_stream(
             settings,
             task_id=task_id,
             session_id="upstream-error-session",
-            codex_session_id=native_id,
+            native_session_id=native_id,
         )
         failed = await _wait_for_status(settings, task_id, {"failed"})
         assert failed["error_code"] == "runner_failed"
@@ -1536,7 +1554,7 @@ async def test_oversized_codex_event_is_bounded_and_nonzero_runner_still_fails(
             settings,
             task_id=task_id,
             session_id="parser-error-session",
-            codex_session_id=native_id,
+            native_session_id=native_id,
         )
         failed = await _wait_for_status(settings, task_id, {"failed"})
         assert failed["error_code"] == "runner_failed"
@@ -1650,7 +1668,7 @@ async def test_codex_error_after_capture_budget_is_preserved(
             settings,
             task_id=task_id,
             session_id="error-after-capture-budget",
-            codex_session_id=native_id,
+            native_session_id=native_id,
         )
         failed = await _wait_for_status(settings, task_id, {"failed"})
         assert failed["error_code"] == "runner_failed"
@@ -1950,7 +1968,7 @@ async def test_codex_first_turn_persists_native_id_and_resume_uses_it(
             settings,
             task_id=second_task_id,
             session_id="chub-session-1",
-            codex_session_id=native_id,
+            native_session_id=native_id,
             prompt="second turn",
         )
         assert resumed_submission["success"] is True
@@ -2240,7 +2258,7 @@ async def test_translation_queue_replaces_archived_native_session(
             settings,
             task_id=task_id,
             session_id="translation-session",
-            codex_session_id=archived_id,
+            native_session_id=archived_id,
             prompt="replace archived",
             task_kind="translation",
             queue_key="translation-queue",
@@ -2441,7 +2459,7 @@ async def test_codex_resume_rejects_unexpected_native_session_id(
             settings,
             task_id=task_id,
             session_id="mismatched-resume",
-            codex_session_id=expected_id,
+            native_session_id=expected_id,
         )
         failed = await _wait_for_status(settings, task_id, {"failed"})
         assert failed["error_code"] == "native_session_unconfirmed"
@@ -2452,7 +2470,7 @@ async def test_codex_resume_rejects_unexpected_native_session_id(
 
 
 @pytest.mark.anyio
-async def test_codex_session_lease_blocks_same_session_but_not_other_sessions(
+async def test_session_lease_blocks_same_session_but_not_other_sessions(
     settings,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2480,7 +2498,7 @@ async def test_codex_session_lease_blocks_same_session_but_not_other_sessions(
                 settings,
                 task_id=first_task,
                 session_id="session-a",
-                codex_session_id=native_a,
+                native_session_id=native_a,
             )
         )["success"] is True
         await _wait_for_status(settings, first_task, {"running"})
@@ -2489,13 +2507,13 @@ async def test_codex_session_lease_blocks_same_session_but_not_other_sessions(
             settings,
             task_id=blocked_task,
             session_id="session-a",
-            codex_session_id=native_a,
+            native_session_id=native_a,
         )
         parallel = await _submit_codex(
             settings,
             task_id=parallel_task,
             session_id="session-b",
-            codex_session_id=native_b,
+            native_session_id=native_b,
         )
 
         assert blocked["success"] is False
@@ -2532,7 +2550,7 @@ async def test_codex_runner_process_is_owned_by_worker_process(
             settings,
             task_id=task_id,
             session_id="owned-runner-session",
-            codex_session_id=native_id,
+            native_session_id=native_id,
         )
         assert submitted["success"] is True
         running = await _wait_for_status(settings, task_id, {"running"})
@@ -2639,7 +2657,7 @@ async def test_codex_native_writer_is_final_start_arbitrator(
             settings,
             task_id=task_id,
             session_id="session-with-writer",
-            codex_session_id=native_id,
+            native_session_id=native_id,
         )
         assert submitted["success"] is True
         failed = await _wait_for_status(settings, task_id, {"failed"})
@@ -2739,7 +2757,7 @@ async def test_codex_recovery_does_not_adopt_mismatched_resume_id(
         settings,
         task_id=task_id,
         session_id="mismatched-recovery",
-        codex_session_id=expected_id,
+        native_session_id=expected_id,
         timeout_seconds=30.0,
     )
     running = await _wait_for_status(settings, task_id, {"running"})

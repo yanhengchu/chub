@@ -36,7 +36,7 @@
     {
       "id": "chub-ai-runtime",
       "title": "Chub AI Runtime 架构设计",
-      "summary": "定义 AI Runtime 共享契约、能力矩阵、AI Session/Worker 边界及新增 Runtime 的实现规范。",
+      "summary": "定义 AI Runtime 共享契约、能力矩阵、AI Session/Worker 边界及多 Runtime 接入判定。",
       "status": "已验收",
       "category": "delivery_requirement",
       "path": "CHUB_AI_RUNTIME_DESIGN.md"

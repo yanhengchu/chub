@@ -53,7 +53,7 @@ def write_plan(path: Path) -> None:
   "source_worker_protocol": %d,
   "target_worker_protocol": %d,
   "effects": ["旧 Session 与运行记录将被清理"],
-  "preserves": ["配置、日志、资料和 Codex 原生 Session 继续保留"]
+  "preserves": ["配置、日志、资料和 Runtime 原生 Session 继续保留"]
 }
 """
         % (
@@ -1114,7 +1114,7 @@ async def test_failed_upgrade_does_not_block_maintenance_restarts(
         ) as client:
             restart = await client.post("/api/maintenance/restart")
             clawbot = await client.post("/api/openclaw/restart")
-            session_read = await client.get("/api/codex/sessions")
+            session_read = await client.get("/api/ai/sessions")
             health = await client.get("/api/health")
 
     assert restart.status_code == 200

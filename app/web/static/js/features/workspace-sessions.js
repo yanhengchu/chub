@@ -54,6 +54,7 @@
   let sessionsById = new Map();
   let runtimeSessionGroups = [];
   let nativeSessions = [];
+  let defaultRuntimeId = null;
   const pendingSessionMutations = new Set();
   const pendingNativeSessionMutations = new Set();
   let activeQuickSessionId = new URL(window.location.href).searchParams.get("session");
@@ -135,8 +136,9 @@
         && group.name.trim()
       ));
     }
-    // Keep a previously cached Session snapshot usable while upgrading the Web API.
-    return data.runtime_registered ? [{ runtime_id: "codex", name: "Codex" }] : [];
+    // A missing grouping field is an incomplete historic snapshot, not evidence
+    // that a particular Runtime owns its Sessions.
+    return [];
   };
 
   const nativeSessionList = (data) => (
@@ -144,6 +146,7 @@
       ? data.native_sessions.filter((session) => (
         session
         && typeof session.cwd === "string"
+        && typeof session.runtime_id === "string"
         && typeof session.created_at === "string"
         && typeof session.updated_at === "string"
       ))
@@ -410,7 +413,7 @@
   };
 
   const quickSessionUrl = (sessionId) => (
-    `/codex/${encodeURIComponent(sessionId)}/quick-interactions/conversation`
+    `/ai/sessions/${encodeURIComponent(sessionId)}/quick-interactions/conversation`
   );
 
   const opensSessionInNewTab = (event) => (
@@ -629,7 +632,7 @@
     button.className = "workspace-preview-create";
     button.dataset.runtimeId = runtimeGroup.runtime_id;
     button.disabled = true;
-    button.title = `${runtimeGroup.name} 尚未提供新建 Session 入口。`;
+    button.title = `${runtimeGroup.name} 不是当前默认 Runtime。`;
     const icon = document.createElement("span");
     icon.className = "workspace-preview-nav-icon";
     icon.setAttribute("aria-hidden", "true");
@@ -786,7 +789,10 @@
       if (!(heading instanceof HTMLElement) || !(items instanceof HTMLElement)) return;
       heading.textContent = `${runtimeGroup.name} Sessions`;
 
-      if (runtimeId === "codex") {
+      if (runtimeId === defaultRuntimeId) {
+        runtimeContainer.querySelector(
+          ':scope > .workspace-preview-create:not(#workspace-session-create)',
+        )?.remove();
         if (createButton.parentElement !== runtimeContainer) {
           runtimeContainer.insertBefore(createButton, items);
         }
@@ -794,7 +800,9 @@
         runtimeContainer.insertBefore(createUnavailableRuntimeCreateButton(runtimeGroup), items);
       }
 
-      const runtimeNativeSessions = runtimeId === "codex" ? visibleNativeSessions : [];
+      const runtimeNativeSessions = visibleNativeSessions.filter(
+        (session) => session.runtime_id === runtimeId,
+      );
       if (!runtimeSessions.length && !runtimeNativeSessions.length) {
         items.querySelectorAll(":scope > .workspace-preview-session-group").forEach((group) => group.remove());
         let empty = items.querySelector(":scope > .empty-state");
@@ -857,7 +865,7 @@
         sessionList.insertBefore(runtimeContainer, sessionList.children[runtimeIndex] || null);
       }
     });
-    if (!visibleRuntimeGroups.some((group) => group.runtime_id === "codex")) {
+    if (!visibleRuntimeGroups.some((group) => group.runtime_id === defaultRuntimeId)) {
       createButton.remove();
     }
   };
@@ -919,6 +927,9 @@
     const groups = runtimeGroups(data);
     runtimeSessionGroups = groups;
     nativeSessions = nativeSessionList(data);
+    defaultRuntimeId = typeof data.default_runtime_id === "string"
+      ? data.default_runtime_id
+      : null;
     sessionSection.hidden = groups.length === 0;
     creation = {
       quick: data.quick_creation || { available: false },
@@ -933,7 +944,7 @@
   const loadSessions = async () => {
     const requestGeneration = ++sessionRequestGeneration;
     try {
-      const data = await request("/api/codex/sessions");
+      const data = await request("/api/ai/sessions");
       if (requestGeneration !== sessionRequestGeneration) return;
       if (!isSessionListData(data)) {
         throw new Error("Chub 返回了无法识别的会话数据。");
@@ -1001,13 +1012,13 @@
   const requestSessionMutation = async (session, action) => {
     const sessionId = encodeURIComponent(session.id);
     if (action === "stop") {
-      await request(`/api/codex/sessions/${sessionId}/stop`, { method: "POST" });
+      await request(`/api/ai/sessions/${sessionId}/stop`, { method: "POST" });
     } else if (action === "archive") {
-      await request(`/api/codex/sessions/${sessionId}/archive`, { method: "POST" });
+      await request(`/api/ai/sessions/${sessionId}/archive`, { method: "POST" });
     } else if (action === "delete") {
-      await request(`/api/codex/sessions/${sessionId}`, { method: "DELETE" });
+      await request(`/api/ai/sessions/${sessionId}`, { method: "DELETE" });
     } else if (action === "chub-only-delete") {
-      await request(`/api/codex/sessions/${sessionId}/management`, { method: "DELETE" });
+      await request(`/api/ai/sessions/${sessionId}/management`, { method: "DELETE" });
     }
     await loadSessions();
   };
@@ -1081,9 +1092,9 @@
   const requestNativeSessionMutation = async (nativeActionRef, action) => {
     const reference = encodeURIComponent(nativeActionRef);
     if (action === "archive") {
-      await request(`/api/codex/native-sessions/${reference}/archive`, { method: "POST" });
+      await request(`/api/ai/native-sessions/${reference}/archive`, { method: "POST" });
     } else if (action === "delete") {
-      await request(`/api/codex/native-sessions/${reference}`, { method: "DELETE" });
+      await request(`/api/ai/native-sessions/${reference}`, { method: "DELETE" });
     }
   };
 
@@ -1217,7 +1228,7 @@
     if (renameCancelButton instanceof HTMLButtonElement) renameCancelButton.disabled = true;
     setMessage(renameMessage, "");
     try {
-      await request(`/api/codex/sessions/${encodeURIComponent(renameSessionId)}/title`, {
+      await request(`/api/ai/sessions/${encodeURIComponent(renameSessionId)}/title`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title }),
@@ -1267,7 +1278,7 @@
     if (cancelButton instanceof HTMLButtonElement) cancelButton.disabled = true;
     setMessage(createMessage, "正在创建 Session…");
     try {
-      await request("/api/codex/sessions", {
+      await request("/api/ai/sessions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ workspace_id: workspaceSelect.value }),

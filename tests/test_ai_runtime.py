@@ -19,6 +19,7 @@ from app.ai_runtime import (
     RuntimeEventSummary,
     RuntimeOperationError,
     RuntimeRegistry,
+    RuntimeModelCatalog,
     RuntimeSessionDiscoveryResult,
     RuntimeStatus,
     RuntimeTurnRequest,
@@ -34,7 +35,10 @@ from app.ai_runtime.implementation_preferences import RuntimeImplementationPrefe
 from app.ai_runtime.enablement import RuntimeEnablement
 from app.ai_session.manager import AiSessionManager
 from app.application import create_app
-from app.ai_runtime.general_settings import AiRuntimeSettingsStore
+from app.ai_runtime.general_settings import (
+    AiRuntimeSettingsStore,
+    RuntimeSettingsStoreUnavailable,
+)
 from app.codex.models import (
     CodexModelCatalogData,
     CodexModelInfo,
@@ -42,7 +46,7 @@ from app.codex.models import (
     SessionCreateRequest,
 )
 from app.core.config import ExtraWorkspaceConfig
-from app.quick_worker import production_codex_workspaces
+from app.quick_worker import production_runtime_workspaces
 from chub_codex_runtime.runtime_adapter import CodexRuntimeAdapter
 from chub_codex_runtime.runtime_adapter import CODEX_RUNTIME_DESCRIPTOR
 from chub_codex_runtime.runtime_runner import CodexRuntimeRunner
@@ -214,6 +218,102 @@ class StubRuntimePlugin:
 class BrokenAdapterRuntimePlugin(StubRuntimePlugin):
     def build_adapter(self) -> StubRuntime:
         raise RuntimeError("adapter construction failed")
+
+
+class SessionRuntime(StubRuntime):
+    def __init__(
+        self,
+        runtime_id: str,
+        implementation_id: str,
+        settings_store: AiRuntimeSettingsStore,
+        *,
+        available: bool = True,
+        supports_background_turn: bool = False,
+    ) -> None:
+        super().__init__(
+            runtime_id,
+            implementation_id=implementation_id,
+            available=available,
+        )
+        self.runtime_settings_store = settings_store
+        self.native_sessions: tuple[RuntimeNativeSession, ...] = ()
+        self.validated_models: list[tuple[str | None, str | None]] = []
+        self.supports_background_turn = supports_background_turn
+
+    @property
+    def descriptor(self) -> RuntimeDescriptor:
+        capabilities = {
+            "runtime_status",
+            "native_session_mapping",
+            "session_resume",
+            "session_archive",
+            "writer_probe",
+            "model_catalog",
+            "permission_profiles",
+        }
+        if self.supports_background_turn:
+            capabilities.add("background_turn")
+        return RuntimeDescriptor(
+            runtime_id=self._runtime_id,
+            implementation_id=self._implementation_id,
+            capabilities=frozenset(capabilities),
+        )
+
+    def validate_model(self, model: str | None, reasoning_effort: str | None) -> None:
+        self.validated_models.append((model, reasoning_effort))
+
+    def read_model_catalog(self) -> RuntimeModelCatalog:
+        return RuntimeModelCatalog(models=())
+
+    def validate_native_session_id(self, _native_session_id: str) -> None:
+        return None
+
+    def discover_sessions(self) -> RuntimeSessionDiscoveryResult:
+        return RuntimeSessionDiscoveryResult(sessions=self.native_sessions)
+
+    def native_session_available(self, _native_session_id: str) -> bool:
+        return True
+
+    def has_active_writer(self, _native_session_id: str | None) -> bool:
+        return False
+
+    def wait_for_writer_release(
+        self,
+        _native_session_id: str | None,
+        *,
+        timeout: float = 3.0,
+    ) -> bool:
+        del timeout
+        return True
+
+    def runtime_process_matches(self, _command: tuple[str, ...]) -> bool:
+        return False
+
+    def native_session_deleted_state(self, _native_session_id: str) -> bool | None:
+        return True
+
+    def native_session_archive_state(self, _native_session_id: str) -> bool | None:
+        return True
+
+    def run_native_action(self, _action: str, _native_session_id: str) -> None:
+        return None
+
+
+class SessionRuntimePlugin(StubRuntimePlugin):
+    def __init__(self, adapter: SessionRuntime) -> None:
+        self._adapter = adapter
+        super().__init__(
+            adapter.descriptor.runtime_id,
+            implementation_id=adapter.descriptor.effective_implementation_id,
+            display_name="Test Runtime",
+        )
+
+    @property
+    def descriptor(self) -> RuntimeDescriptor:
+        return self._adapter.descriptor
+
+    def build_adapter(self) -> SessionRuntime:
+        return self._adapter
 
 
 class MutableWorkerDescriptorRuntime(StubWorkerRuntime):
@@ -492,7 +592,9 @@ def test_session_manager_allows_default_version_change_while_existing_session_us
     manager.default_implementation_id = "codex-runtime-dev"
     manager.runtime_adapter = builtin
     manager.runtime_implementation_preferences.save(
-        RuntimeImplementationPreferences(default_implementation_id="codex-runtime-dev")
+        RuntimeImplementationPreferences(
+            default_implementation_ids={"codex": "codex-runtime-dev"}
+        )
     )
     manager.runtime_enablement.save(RuntimeEnablement(disabled_runtime_ids=["codex"]))
     manager.store.list = MagicMock(
@@ -539,6 +641,261 @@ def test_session_manager_pins_new_sessions_to_the_default_implementation(
     assert manager.get_session(second.id).implementation_id == "codex-010000"
 
 
+def test_session_manager_pins_sessions_to_their_runtime_and_implementation(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    settings_store = AiRuntimeSettingsStore(
+        settings.ai_runtime.codex.data_file.with_name("ai-runtimes.local.yaml")
+    )
+    test_adapter = SessionRuntime("test", "test-runtime-dev", settings_store)
+    modules = RuntimePluginRegistry(
+        [manager.runtime_plugins.require("codex"), SessionRuntimePlugin(test_adapter)]
+    )
+    manager.runtime_plugin_service.build_registry = MagicMock(return_value=(modules, ()))
+    manager.runtime_settings_store = settings_store
+    settings_store.save_general(
+        settings_store.read_general().model_copy(update={"default_runtime_id": "codex"})
+    )
+    manager.refresh_runtime_plugins()
+    manager.runtime_settings_store = settings_store
+    assert manager.runtime_plugins.runtime_ids() == ("codex", "test")
+
+    codex_session = manager.create_session("chub", permission_mode="full-access")
+    settings_store.save_general(
+        settings_store.read_general().model_copy(update={"default_runtime_id": "test"})
+    )
+    test_session = manager.create_session("chub", permission_mode="full-access")
+    settings_store.save_general(
+        settings_store.read_general().model_copy(update={"default_runtime_id": "codex"})
+    )
+
+    manager.update_session_model(test_session.id, "test-model", "high")
+
+    assert manager.get_session(codex_session.id).runtime_id == "codex"
+    assert manager.session_implementation_id(codex_session.id) == "codex-runtime-dev"
+    assert manager.get_session(test_session.id).runtime_id == "test"
+    assert manager.session_implementation_id(test_session.id) == "test-runtime-dev"
+    assert test_adapter.validated_models[-1] == ("test-model", "high")
+    assert manager._issue_native_action_ref("codex", "same-native") != manager._issue_native_action_ref(
+        "test", "same-native"
+    )
+
+
+def test_general_session_defaults_do_not_follow_active_runtime_adapter(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    manager = AiSessionManager(settings)
+    general_store = AiRuntimeSettingsStore(tmp_path / "general-runtime.yaml")
+    private_runtime_store = AiRuntimeSettingsStore(tmp_path / "test-runtime.yaml")
+    test_adapter = SessionRuntime("test", "test-runtime-dev", private_runtime_store)
+    modules = RuntimePluginRegistry(
+        [manager.runtime_plugins.require("codex"), SessionRuntimePlugin(test_adapter)]
+    )
+    manager.runtime_plugin_service.build_registry = MagicMock(return_value=(modules, ()))
+    manager.runtime_settings_store = general_store
+
+    manager.refresh_runtime_plugins()
+    general_store.save_general(
+        general_store.read_general().model_copy(update={"default_runtime_id": "test"})
+    )
+    manager.sync_default_runtime_selection()
+    session = manager.create_session("chub", permission_mode="full-access")
+
+    assert manager.runtime_adapter is test_adapter
+    assert manager.runtime_settings_store is general_store
+    assert manager.configured_default_runtime_id() == "test"
+    assert manager.default_submission_implementation_id() == "test-runtime-dev"
+    assert session.runtime_id == "test"
+    assert private_runtime_store.read_general().default_runtime_id is None
+
+
+def test_unreadable_general_settings_never_fall_back_to_codex_runtime(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    manager.default_implementation_ids = {"test": "test-runtime-dev"}
+    manager.runtime_settings_store = MagicMock()
+    manager.runtime_settings_store.read_general.side_effect = (
+        RuntimeSettingsStoreUnavailable("unavailable")
+    )
+
+    assert manager._resolve_default_runtime_id() == "test"
+
+
+def test_unavailable_runtime_only_blocks_its_default_new_session(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    settings_store = AiRuntimeSettingsStore(
+        settings.ai_runtime.codex.data_file.with_name("ai-runtimes.local.yaml")
+    )
+    test_adapter = SessionRuntime(
+        "test",
+        "test-runtime-dev",
+        settings_store,
+        available=False,
+    )
+    modules = RuntimePluginRegistry(
+        [manager.runtime_plugins.require("codex"), SessionRuntimePlugin(test_adapter)]
+    )
+    manager.runtime_plugin_service.build_registry = MagicMock(return_value=(modules, ()))
+    manager.runtime_settings_store = settings_store
+    settings_store.save_general(
+        settings_store.read_general().model_copy(update={"default_runtime_id": "codex"})
+    )
+    manager.refresh_runtime_plugins()
+    manager.runtime_settings_store = settings_store
+    codex_session = manager.create_session("chub", permission_mode="full-access")
+
+    settings_store.save_general(
+        settings_store.read_general().model_copy(update={"default_runtime_id": "test"})
+    )
+    with pytest.raises(ApiError) as rejected:
+        manager.create_session("chub", permission_mode="full-access")
+
+    assert rejected.value.code == "runtime_default_implementation_unavailable"
+    assert manager.get_session(codex_session.id).runtime_id == "codex"
+
+
+def test_runtime_default_implementation_cannot_cross_runtime(settings: Settings) -> None:
+    manager = AiSessionManager(settings)
+    settings_store = AiRuntimeSettingsStore(
+        settings.ai_runtime.codex.data_file.with_name("ai-runtimes.local.yaml")
+    )
+    test_adapter = SessionRuntime("test", "test-runtime-dev", settings_store)
+    modules = RuntimePluginRegistry(
+        [manager.runtime_plugins.require("codex"), SessionRuntimePlugin(test_adapter)]
+    )
+    manager.runtime_plugin_service.build_registry = MagicMock(return_value=(modules, ()))
+    manager.runtime_settings_store = settings_store
+    manager.refresh_runtime_plugins()
+    assert manager.runtime_plugins.runtime_ids() == ("codex", "test")
+
+    with pytest.raises(ApiError) as rejected:
+        manager.update_default_implementation("test-runtime-dev")
+
+    assert rejected.value.code == "runtime_implementation_not_found"
+
+
+def test_non_default_runtime_lifecycle_updates_its_own_preferences(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    settings_store = AiRuntimeSettingsStore(
+        settings.ai_runtime.codex.data_file.with_name("ai-runtimes.local.yaml")
+    )
+    test_adapter = SessionRuntime("test", "test-runtime-dev", settings_store)
+    modules = RuntimePluginRegistry(
+        [manager.runtime_plugins.require("codex"), SessionRuntimePlugin(test_adapter)]
+    )
+    manager.runtime_plugin_service.build_registry = MagicMock(return_value=(modules, ()))
+    manager.runtime_settings_store = settings_store
+    manager.refresh_runtime_plugins()
+
+    manager.update_runtime_implementation_enabled("test-runtime-dev", False)
+
+    disabled = manager.runtime_implementation_preferences.read()
+    assert "test-runtime-dev" in disabled.disabled_implementation_ids
+    assert "test" not in disabled.default_implementation_ids
+    assert disabled.default_implementation_ids["codex"] == "codex-runtime-dev"
+
+    manager.update_runtime_implementation_enabled("test-runtime-dev", True)
+
+    restored = manager.runtime_implementation_preferences.read()
+    assert "test-runtime-dev" not in restored.disabled_implementation_ids
+    assert restored.default_implementation_ids["test"] == "test-runtime-dev"
+
+
+def test_non_default_runtime_enablement_uses_its_default_implementation(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    settings_store = AiRuntimeSettingsStore(
+        settings.ai_runtime.codex.data_file.with_name("ai-runtimes.local.yaml")
+    )
+    test_adapter = SessionRuntime("test", "test-runtime-dev", settings_store)
+    modules = RuntimePluginRegistry(
+        [manager.runtime_plugins.require("codex"), SessionRuntimePlugin(test_adapter)]
+    )
+    manager.runtime_plugin_service.build_registry = MagicMock(return_value=(modules, ()))
+    manager.runtime_settings_store = settings_store
+    manager.refresh_runtime_plugins()
+    manager.runtime_enablement.save(RuntimeEnablement(disabled_runtime_ids=["test"]))
+
+    management = manager.update_runtime_enabled("test", True)
+
+    test_runtime = next(item for item in management.runtimes if item.runtime_id == "test")
+    assert test_runtime.enabled is True
+    assert test_runtime.healthy is True
+    assert manager.runtime_enablement.read().disabled_runtime_ids == []
+
+
+def test_saved_runtime_default_survives_transient_unavailability(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    settings_store = AiRuntimeSettingsStore(
+        settings.ai_runtime.codex.data_file.with_name("ai-runtimes.local.yaml")
+    )
+    test_adapter = SessionRuntime("test", "test-runtime-dev", settings_store)
+    modules = RuntimePluginRegistry(
+        [manager.runtime_plugins.require("codex"), SessionRuntimePlugin(test_adapter)]
+    )
+    manager.runtime_plugin_service.build_registry = MagicMock(return_value=(modules, ()))
+    manager.runtime_settings_store = settings_store
+    manager.refresh_runtime_plugins()
+    assert manager.runtime_plugins.runtime_ids() == ("codex", "test")
+    manager.runtime_implementation_preferences.save(
+        RuntimeImplementationPreferences(
+            default_implementation_ids={"codex": "codex-runtime-dev", "test": "test-runtime-dev"}
+        )
+    )
+    assert manager.runtime_implementation_preferences.read().default_implementation_ids == {
+        "codex": "codex-runtime-dev",
+        "test": "test-runtime-dev",
+    }
+    assert manager.runtime_plugins.implementation_ids("test") == ("test-runtime-dev",)
+    test_adapter._available = False
+
+    manager.default_implementation_ids = manager._resolve_default_implementation_ids()
+
+    assert manager.runtime_implementation_preferences.read().default_implementation_ids[
+        "test"
+    ] == "test-runtime-dev"
+
+
+def test_translation_session_uses_live_default_runtime_with_background_turn(
+    settings: Settings,
+) -> None:
+    manager = AiSessionManager(settings)
+    settings_store = AiRuntimeSettingsStore(
+        settings.ai_runtime.codex.data_file.with_name("ai-runtimes.local.yaml")
+    )
+    test_adapter = SessionRuntime(
+        "test",
+        "test-runtime-dev",
+        settings_store,
+        supports_background_turn=True,
+    )
+    modules = RuntimePluginRegistry(
+        [manager.runtime_plugins.require("codex"), SessionRuntimePlugin(test_adapter)]
+    )
+    manager.runtime_plugin_service.build_registry = MagicMock(return_value=(modules, ()))
+    manager.runtime_settings_store = settings_store
+    settings_store.save_general(
+        settings_store.read_general().model_copy(update={"default_runtime_id": "test"})
+    )
+    manager.refresh_runtime_plugins()
+    manager.runtime_settings_store = settings_store
+
+    session = manager.create_translation_session()
+
+    assert session.runtime_id == "test"
+    assert manager.get_session(session.id).implementation_id == "test-runtime-dev"
+
+
 def test_session_implementation_compatibility_requires_enabled_plugin_lifecycle(
     settings: Settings,
 ) -> None:
@@ -563,7 +920,7 @@ def test_session_manager_uses_configured_extra_workspace(
 ) -> None:
     deliveryline = tmp_path / "deliveryline"
     deliveryline.mkdir()
-    settings.ai_runtime.codex.extra_workspaces = [
+    settings.ai_runtime.shared.extra_workspaces = [
         ExtraWorkspaceConfig(
             id="deliveryline",
             name="Deliveryline",
@@ -586,7 +943,7 @@ def test_session_manager_uses_configured_extra_workspace(
     assert workspaces["deliveryline"].path == str(deliveryline)
     assert session.workspace_id == "deliveryline"
     assert session.cwd == str(deliveryline)
-    assert production_codex_workspaces(settings)["deliveryline"] == deliveryline
+    assert production_runtime_workspaces(settings)["deliveryline"] == deliveryline
     assert SessionCreateRequest(workspace_id="deliveryline").workspace_id == "deliveryline"
 
 
@@ -600,7 +957,6 @@ def test_session_manager_starts_with_development_plugin_when_no_formal_version_i
 
     assert manager.runtime_plugins.implementation_ids("codex") == (
         "codex-runtime-dev",
-        "builtin-dev",
     )
     assert [
         item.implementation_id
@@ -624,14 +980,20 @@ def test_discovered_native_actions_revalidate_and_bound_references(
     assert len(manager._native_action_refs) == 256
 
     manager._native_action_refs = {
-        reference: (native_id, time.monotonic() + 60),
+        reference: ("codex", native_id, "codex-runtime-dev", time.monotonic() + 60),
     }
-    manager._native_action_refs_by_native_id = {native_id: reference}
+    manager._native_action_refs_by_native_id = {("codex", native_id): reference}
     manager._sync_bound_native_sessions = MagicMock(
-        return_value=[SimpleNamespace(native_session_id=native_id)]
+        return_value=[
+            SimpleNamespace(runtime_id="codex", native_session_id=native_id)
+        ]
     )
+    manager._native_discovery_implementations = {
+        ("codex", native_id): "codex-runtime-dev"
+    }
     manager.store.list = MagicMock(return_value=[])
     manager.runtime_adapter = MagicMock()
+    manager.runtime_adapters["codex-runtime-dev"] = manager.runtime_adapter
     manager.runtime_adapter.has_active_writer.return_value = False
     manager.runtime_adapter.native_session_archive_state.return_value = True
 
@@ -641,7 +1003,9 @@ def test_discovered_native_actions_revalidate_and_bound_references(
     manager.runtime_adapter.native_session_archive_state.assert_called_once_with(native_id)
 
     stale_reference = manager._issue_native_action_ref(native_id)
-    manager.store.list.return_value = [SimpleNamespace(native_session_id=native_id)]
+    manager.store.list.return_value = [
+        SimpleNamespace(runtime_id="codex", native_session_id=native_id)
+    ]
     with pytest.raises(ApiError) as stale:
         manager.run_discovered_native_action("delete", stale_reference)
     assert stale.value.code == "native_session_action_stale"
@@ -782,7 +1146,8 @@ async def test_application_lifespan_recovers_pending_runtime_state_cleanup(
     service.begin_state_cleanup(
         operation_id="e" * 32,
         action="remove_runtime_module",
-        module_id="codex",
+        runtime_id="test",
+        module_id="test-runtime-dev",
         session_ids=("session-1", "session-2"),
     )
     application = create_app(settings)
@@ -801,12 +1166,12 @@ async def test_application_lifespan_recovers_pending_runtime_state_cleanup(
                 await asyncio.sleep(0.01)
 
     assert service.pending_state_cleanup() is None
-    clear_runtime_state.assert_awaited_once_with(settings, runtime_id="codex")
+    clear_runtime_state.assert_awaited_once_with(settings, runtime_id="test")
     assert application.state.quick_interactions.remove_session_tasks.call_args_list == [
         (("session-1",), {}),
         (("session-2",), {}),
     ]
-    manager.clear_runtime_plugin_state.assert_called_once_with("codex")
+    manager.clear_runtime_plugin_state.assert_called_once_with("test")
 
 
 def test_codex_plugin_builds_matching_adapter_and_worker_runner(
@@ -995,7 +1360,7 @@ def test_codex_runtime_usage_uses_default_timezone_despite_legacy_general_settin
     )
     adapter = CodexRuntimeAdapter(settings, runtime_settings_store=store)
 
-    assert store.read_general().default_runtime_id == "codex"
+    assert store.read_general().default_runtime_id is None
     assert adapter._read_usage_settings().timezone == "Asia/Shanghai"
 
 
@@ -1549,24 +1914,22 @@ def test_translation_native_cleanup_removes_all_unbound_idle_sessions(
         )
     ])
     manager.runtime_adapter = MagicMock()
-    manager.runtime_adapter.discover_sessions.return_value = RuntimeSessionDiscoveryResult(
-        sessions=(
-            RuntimeNativeSession(
-                runtime_id="codex",
-                native_session_id=current_native_id,
-                cwd=translation_cwd,
-                created_at=now,
-                updated_at=now,
-            ),
-            RuntimeNativeSession(
-                runtime_id="codex",
-                native_session_id=stale_native_id,
-                cwd=translation_cwd,
-                created_at=now,
-                updated_at=now,
-            ),
+    manager._sync_bound_native_sessions = MagicMock(return_value=(
+        RuntimeNativeSession(
+            runtime_id="codex",
+            native_session_id=current_native_id,
+            cwd=translation_cwd,
+            created_at=now,
+            updated_at=now,
         ),
-    )
+        RuntimeNativeSession(
+            runtime_id="codex",
+            native_session_id=stale_native_id,
+            cwd=translation_cwd,
+            created_at=now,
+            updated_at=now,
+        ),
+    ))
     manager.runtime_adapter.has_active_writer.return_value = False
     manager.runtime_adapter.native_session_deleted_state.return_value = True
 
@@ -1588,17 +1951,15 @@ def test_translation_native_cleanup_keeps_a_session_with_an_active_writer(
     stale_native_id = "22222222-2222-4222-8222-222222222222"
     manager.store.list = MagicMock(return_value=[])
     manager.runtime_adapter = MagicMock()
-    manager.runtime_adapter.discover_sessions.return_value = RuntimeSessionDiscoveryResult(
-        sessions=(
-            RuntimeNativeSession(
-                runtime_id="codex",
-                native_session_id=stale_native_id,
-                cwd=translation_cwd,
-                created_at=now,
-                updated_at=now,
-            ),
+    manager._sync_bound_native_sessions = MagicMock(return_value=(
+        RuntimeNativeSession(
+            runtime_id="codex",
+            native_session_id=stale_native_id,
+            cwd=translation_cwd,
+            created_at=now,
+            updated_at=now,
         ),
-    )
+    ))
     manager.runtime_adapter.has_active_writer.return_value = True
 
     result = manager.cleanup_stale_translation_native_sessions()

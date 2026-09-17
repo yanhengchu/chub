@@ -27,7 +27,7 @@ class _SessionManager:
 
     def get_session(self, session_id: str):
         if session_id not in self.sessions:
-            raise ApiError(404, "codex_session_not_found", "Codex session not found")
+            raise ApiError(404, "session_not_found", "AI Session not found")
         return SimpleNamespace(id=session_id)
 
     def rename_session(self, session_id: str, title: str) -> None:
@@ -40,10 +40,13 @@ class _SessionManager:
     def require_runtime_submission(self, runtime_id: str) -> None:
         assert runtime_id == self.runtime_id
 
+    def select_new_session_runtime(self) -> tuple[str, str]:
+        return self.runtime_id, "codex-runtime-dev"
+
 
 class _UnavailableSessionManager(_SessionManager):
     def require_runtime_submission(self, runtime_id: str) -> None:
-        raise ApiError(503, "runtime_unavailable", "Codex Runtime is not installed")
+        raise ApiError(503, "runtime_unavailable", "Runtime is not installed")
 
 
 class _QuickInteractions:
@@ -278,4 +281,4 @@ def test_missing_runtime_disables_weekly_generation_even_with_existing_session(
     )
     service._save_stage(period, "focus", session_id="session-1", task_id="task-1")
 
-    assert service.configuration_ready() == (False, "Codex Runtime is not installed")
+    assert service.configuration_ready() == (False, "Runtime is not installed")

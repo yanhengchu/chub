@@ -46,7 +46,7 @@ class _ReleaseNoteSessionManager:
 
     def get_session(self, session_id: str):
         if session_id not in self.sessions:
-            raise ApiError(404, "codex_session_not_found", "not found")
+            raise ApiError(404, "session_not_found", "not found")
         return self.sessions[session_id]
 
     def create_session(self, *args):

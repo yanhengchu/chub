@@ -56,7 +56,7 @@ class AiUsageDisplay(_StrictModel):
 
 
 class AiUsageData(_StrictModel):
-    runtime_id: str = Field(default="codex", pattern=r"^[a-z][a-z0-9-]{0,31}$")
+    runtime_id: str = Field(pattern=r"^[a-z][a-z0-9-]{0,31}$")
     status: AiUsageStatus
     provider: str
     source: AiUsageSource | None = None

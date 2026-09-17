@@ -20,7 +20,9 @@ class _StrictModel(BaseModel):
 
 
 class AiRuntimeGeneralSettings(_StrictModel):
-    default_runtime_id: str = Field(default="codex", pattern=r"^[a-z][a-z0-9-]{0,31}$")
+    # Runtime discovery owns the first concrete default.  A settings file must
+    # not identify a first-party Runtime before one has been discovered.
+    default_runtime_id: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9-]{0,31}$")
     new_session_permission: Literal["auto-review", "read-only", "full-access"] = (
         "full-access"
     )
@@ -44,7 +46,7 @@ class AiRuntimeSettingsStore:
             general = {key: value for key, value in general.items() if key != "timezone"}
             legacy_weekly = general.pop("weekly_report_session", None)
             if isinstance(legacy_weekly, dict):
-                general.setdefault("default_runtime_id", legacy_weekly.get("runtime_id", "codex"))
+                general.setdefault("default_runtime_id", legacy_weekly.get("runtime_id"))
                 general.setdefault("model", legacy_weekly.get("model"))
                 general.setdefault("reasoning_effort", legacy_weekly.get("reasoning_effort"))
         try:

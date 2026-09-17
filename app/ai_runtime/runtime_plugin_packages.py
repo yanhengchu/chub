@@ -17,7 +17,7 @@ from pathlib import Path, PurePosixPath
 from typing import Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.ai_runtime.contracts import RuntimeOperationError
 from app.ai_runtime.runtime_plugins import RuntimePlugin, RuntimePluginRegistry
@@ -46,7 +46,7 @@ def is_runtime_plugin_id(value: str) -> bool:
     return re.fullmatch(RUNTIME_PLUGIN_ID_PATTERN, value) is not None
 
 
-class _Manifest(BaseModel):
+class RuntimePluginManifest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     protocol_version: Literal[MODULE_PROTOCOL_VERSION]
@@ -65,15 +65,6 @@ class _Manifest(BaseModel):
     )
     dependencies: str | None = Field(default=None, max_length=160)
 
-    @model_validator(mode="after")
-    def validate_codex_implementation_identity(self) -> _Manifest:
-        if self.runtime_id == "codex" and re.fullmatch(
-            CODEX_FORMAL_IMPLEMENTATION_ID_PATTERN,
-            self.implementation_id,
-        ) is None:
-            raise ValueError("Codex 正式 Runtime 版本标识必须为 codex- 加六位数字。")
-        return self
-
 
 class _InstallMetadata(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
@@ -90,7 +81,7 @@ class _ActivationJournal(BaseModel):
 
     version: Literal[1] = 1
     operation_id: str = Field(pattern=r"^[a-f0-9]{32}$")
-    runtime_id: str = Field(default="codex", pattern=RUNTIME_PLUGIN_ID_PATTERN)
+    runtime_id: str = Field(pattern=RUNTIME_PLUGIN_ID_PATTERN)
     module_id: str = Field(pattern=RUNTIME_PLUGIN_ID_PATTERN)
     previous_name: str | None = Field(default=None, max_length=100)
     phase: Literal["activated", "worker_reload_requested", "removed"] = "activated"
@@ -99,16 +90,17 @@ class _ActivationJournal(BaseModel):
 class _StateCleanupRecord(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    version: Literal[1] = 1
+    version: Literal[2] = 2
     operation_id: str = Field(pattern=r"^[a-f0-9]{32}$")
     action: Literal["install_runtime_module", "remove_runtime_module"]
+    runtime_id: str = Field(pattern=RUNTIME_PLUGIN_ID_PATTERN)
     module_id: str = Field(pattern=RUNTIME_PLUGIN_ID_PATTERN)
     session_ids: tuple[str, ...] = Field(default=(), max_length=500)
 
 
 @dataclass(frozen=True)
 class InstalledRuntimePlugin:
-    manifest: _Manifest
+    manifest: RuntimePluginManifest
     module: RuntimePlugin
     root: Path
 
@@ -132,6 +124,7 @@ class RuntimePluginRecovery:
 class RuntimePluginStateCleanup:
     operation_id: str
     action: Literal["install_runtime_module", "remove_runtime_module"]
+    runtime_id: str
     module_id: str
     session_ids: tuple[str, ...]
 
@@ -161,6 +154,82 @@ class RuntimePluginLoadFailure:
     name: str | None = None
     version: str | None = None
     description: str | None = None
+
+
+def load_runtime_plugin_from_root(
+    settings: Settings,
+    root: Path,
+    manifest: RuntimePluginManifest,
+    *,
+    namespace: str,
+) -> RuntimePlugin:
+    """Load one trusted Runtime source tree in an isolated package namespace."""
+    module_name, factory_name = manifest.entry.split(":", 1)
+    qualified_module_name = f"{namespace}.{module_name}"
+    try:
+        # Runtime source trees share one interpreter in Web and Worker. Keep
+        # their packages isolated so equal internal module names cannot leak.
+        with _MODULE_IMPORT_LOCK, _module_import_paths(root):
+            importlib.invalidate_caches()
+            for loaded_name in tuple(sys.modules):
+                if loaded_name == namespace or loaded_name.startswith(f"{namespace}."):
+                    del sys.modules[loaded_name]
+            package_spec = importlib.machinery.ModuleSpec(
+                namespace,
+                loader=None,
+                is_package=True,
+            )
+            package_spec.submodule_search_locations = [str(root)]
+            package = types.ModuleType(namespace)
+            package.__package__ = namespace
+            package.__path__ = package_spec.submodule_search_locations
+            package.__spec__ = package_spec
+            sys.modules[namespace] = package
+            imported = importlib.import_module(qualified_module_name)
+            factory = getattr(imported, factory_name)
+            if not callable(factory):
+                raise TypeError("module entry is not callable")
+            module = factory(settings)
+    except Exception as exc:
+        for loaded_name in tuple(sys.modules):
+            if loaded_name == namespace or loaded_name.startswith(f"{namespace}."):
+                del sys.modules[loaded_name]
+        detail = str(exc)
+        message = (
+            "模块依赖的 Runtime 共享契约与当前 Chub 不兼容，请使用当前源码重新构建 ZIP。"
+            if isinstance(exc, ImportError) and "from 'app.ai_runtime'" in detail
+            else "模块入口或其依赖无法加载，请检查 Runtime 插件源码或依赖。"
+        )
+        raise RuntimePluginInstallError(
+            "runtime_plugin_install_invalid",
+            message,
+            kind="invalid_request",
+        ) from exc
+    if not isinstance(module, RuntimePlugin):
+        raise RuntimePluginInstallError(
+            "runtime_plugin_install_invalid",
+            "模块入口未返回 Runtime 注册对象。",
+            kind="invalid_request",
+        )
+    if (
+        module.descriptor.runtime_id != manifest.runtime_id
+        or module.descriptor.effective_implementation_id != manifest.implementation_id
+        or manifest.module_id != manifest.implementation_id
+        or module.descriptor.native_session_compatibility_id
+        != manifest.native_session_compatibility_id
+    ):
+        raise RuntimePluginInstallError(
+            "runtime_plugin_install_invalid",
+            "模块清单与 Runtime 标识不一致。",
+            kind="invalid_request",
+        )
+    if module.display_name != manifest.display_name or module.description != manifest.description:
+        raise RuntimePluginInstallError(
+            "runtime_plugin_install_invalid",
+            "模块清单与 Runtime 展示信息不一致。",
+            kind="invalid_request",
+        )
+    return module
 
 
 @contextmanager
@@ -250,7 +319,7 @@ class RuntimePluginService:
             for root in sorted(runtime_root.iterdir()):
                 if not root.is_dir() or root.is_symlink():
                     continue
-                manifest: _Manifest | None = None
+                manifest: RuntimePluginManifest | None = None
                 try:
                     manifest = self._read_manifest(root)
                     loaded.append(self._load_installed(root, manifest=manifest))
@@ -410,9 +479,20 @@ class RuntimePluginService:
         if not is_runtime_plugin_id(module_id):
             raise self._invalid("Runtime 插件标识无效。")
         self._prepare_root()
-        destination = self.runtimes_dir / "codex" / module_id
-        if not destination.is_dir() or destination.is_symlink():
+        try:
+            candidates = [
+                runtime_root / module_id
+                for runtime_root in self.runtimes_dir.iterdir()
+                if runtime_root.is_dir()
+                and not runtime_root.is_symlink()
+                and (runtime_root / module_id).is_dir()
+                and not (runtime_root / module_id).is_symlink()
+            ]
+        except OSError as exc:
+            raise self._invalid("Runtime 插件安装目录不可读取。") from exc
+        if len(candidates) != 1:
             raise self._invalid("Runtime 插件不存在或不可移除。")
+        destination = candidates[0]
         manifest = self._read_manifest(destination)
         if manifest.implementation_id != module_id or manifest.module_id != module_id:
             raise self._invalid("Runtime 插件安装标识无效。")
@@ -442,6 +522,7 @@ class RuntimePluginService:
         *,
         operation_id: str,
         action: Literal["install_runtime_module", "remove_runtime_module"],
+        runtime_id: str,
         module_id: str,
         session_ids: tuple[str, ...],
     ) -> None:
@@ -449,6 +530,7 @@ class RuntimePluginService:
         record = _StateCleanupRecord(
             operation_id=operation_id,
             action=action,
+            runtime_id=runtime_id,
             module_id=module_id,
             session_ids=session_ids,
         )
@@ -474,12 +556,25 @@ class RuntimePluginService:
         if len(raw) > MAX_MANIFEST_BYTES:
             raise self._invalid("Runtime 插件状态清理记录无效。")
         try:
+            payload = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise self._invalid("Runtime 插件状态清理记录无效。") from exc
+        # Version 1 did not record the logical Runtime identity, so it cannot
+        # safely target Worker cleanup after multi-Runtime routing was added.
+        if isinstance(payload, dict) and payload.get("version") == 1:
+            try:
+                self.state_cleanup_path.unlink(missing_ok=True)
+            except OSError as exc:
+                raise self._invalid("旧 Runtime 插件状态清理记录无法清理。") from exc
+            return None
+        try:
             record = _StateCleanupRecord.model_validate_json(raw)
         except ValidationError as exc:
             raise self._invalid("Runtime 插件状态清理记录无效。") from exc
         return RuntimePluginStateCleanup(
             operation_id=record.operation_id,
             action=record.action,
+            runtime_id=record.runtime_id,
             module_id=record.module_id,
             session_ids=record.session_ids,
         )
@@ -586,7 +681,7 @@ class RuntimePluginService:
                     shutil.copyfileobj(source, output)
                 os.chmod(target, 0o600)
 
-    def _read_manifest(self, root: Path) -> _Manifest:
+    def _read_manifest(self, root: Path) -> RuntimePluginManifest:
         manifest_path = root / MANIFEST_NAME
         try:
             raw = manifest_path.read_bytes()
@@ -596,18 +691,23 @@ class RuntimePluginService:
             raise self._invalid("模块清单超过固定大小上限。")
         try:
             value = json.loads(raw.decode("utf-8"))
-            manifest = _Manifest.model_validate(value)
+            manifest = RuntimePluginManifest.model_validate(value)
         except (UnicodeError, json.JSONDecodeError, ValidationError) as exc:
             raise self._invalid("模块清单格式无效。") from exc
         if manifest.chub_version != self.settings.app.version:
             raise self._invalid("模块与当前 Chub 版本不兼容。")
+        if manifest.runtime_id == "codex" and re.fullmatch(
+            CODEX_FORMAL_IMPLEMENTATION_ID_PATTERN,
+            manifest.implementation_id,
+        ) is None:
+            raise self._invalid("Codex 正式 Runtime 版本标识必须为 codex- 加六位数字。")
         if manifest.dependencies is not None:
             dependency_path = PurePosixPath(manifest.dependencies)
             if dependency_path.is_absolute() or ".." in dependency_path.parts:
                 raise self._invalid("模块依赖清单路径无效。")
         return manifest
 
-    def _install_dependencies(self, root: Path, manifest: _Manifest) -> None:
+    def _install_dependencies(self, root: Path, manifest: RuntimePluginManifest) -> None:
         if manifest.dependencies is None:
             return
         requirements = root.joinpath(*PurePosixPath(manifest.dependencies).parts)
@@ -640,55 +740,19 @@ class RuntimePluginService:
         self,
         root: Path,
         *,
-        manifest: _Manifest | None = None,
+        manifest: RuntimePluginManifest | None = None,
     ) -> InstalledRuntimePlugin:
         manifest = manifest or self._read_manifest(root)
-        module_name, factory_name = manifest.entry.split(":", 1)
         namespace = f"_chub_runtime_{manifest.module_id.replace('-', '_')}"
-        qualified_module_name = f"{namespace}.{module_name}"
         try:
-            # ZIP imports manipulate process-global sys.modules and sys.path.
-            # Requests can discover the same implementation concurrently.
-            with _MODULE_IMPORT_LOCK, _module_import_paths(root):
-                importlib.invalidate_caches()
-                for loaded_name in tuple(sys.modules):
-                    if loaded_name == namespace or loaded_name.startswith(
-                        f"{namespace}."
-                    ):
-                        del sys.modules[loaded_name]
-                package_spec = importlib.machinery.ModuleSpec(
-                    namespace,
-                    loader=None,
-                    is_package=True,
-                )
-                package_spec.submodule_search_locations = [str(root)]
-                package = types.ModuleType(namespace)
-                package.__package__ = namespace
-                package.__path__ = package_spec.submodule_search_locations
-                package.__spec__ = package_spec
-                sys.modules[namespace] = package
-                imported = importlib.import_module(qualified_module_name)
-                factory = getattr(imported, factory_name)
-                if not callable(factory):
-                    raise TypeError("module entry is not callable")
-                module = factory(self.settings)
-        except Exception as exc:
-            for loaded_name in tuple(sys.modules):
-                if loaded_name == namespace or loaded_name.startswith(f"{namespace}."):
-                    del sys.modules[loaded_name]
-            raise self._invalid(self._entry_load_message(exc)) from exc
-        if not isinstance(module, RuntimePlugin):
-            raise self._invalid("模块入口未返回 Runtime 注册对象。")
-        if (
-            module.descriptor.runtime_id != manifest.runtime_id
-            or module.descriptor.effective_implementation_id != manifest.implementation_id
-            or manifest.module_id != manifest.implementation_id
-            or module.descriptor.native_session_compatibility_id
-            != manifest.native_session_compatibility_id
-        ):
-            raise self._invalid("模块清单与 Runtime 标识不一致。")
-        if module.display_name != manifest.display_name or module.description != manifest.description:
-            raise self._invalid("模块清单与 Runtime 展示信息不一致。")
+            module = load_runtime_plugin_from_root(
+                self.settings,
+                root,
+                manifest,
+                namespace=namespace,
+            )
+        except RuntimePluginInstallError as exc:
+            raise self._invalid(exc.message) from exc
         return InstalledRuntimePlugin(manifest, module, root)
 
     def _validate_worker_wiring(self, installed: InstalledRuntimePlugin) -> None:
@@ -707,7 +771,12 @@ class RuntimePluginService:
         except RuntimeOperationError as exc:
             raise self._invalid(exc.message) from exc
 
-    def _write_metadata(self, root: Path, manifest: _Manifest, source_name: str) -> None:
+    def _write_metadata(
+        self,
+        root: Path,
+        manifest: RuntimePluginManifest,
+        source_name: str,
+    ) -> None:
         metadata = _InstallMetadata(
             module_id=manifest.module_id,
             runtime_id=manifest.runtime_id,

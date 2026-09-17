@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from fastapi import APIRouter, Depends, Request
 from typing import Literal
 
@@ -7,6 +9,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from app.core.response import ApiError, ApiResponse
 from app.core.security import require_trusted_network
+from app.deliveryline.store import DeliverylineError
+from app.services.internal_session_visibility import internal_session_visibility_lock
 from app.services.operation_log import log_operation
 from app.services.weixin_translation import TranslationSettingsStatus
 from app.services.deployment_package import (
@@ -31,12 +35,11 @@ class TranslationSettingsUpdate(BaseModel):
     # Compatibility for the previous settings switch. A boolean request maps
     # false to direct and true to automatic execution.
     enabled: bool | None = None
-    runtime_id: str | None = Field(default=None, max_length=32)
     model: str | None = Field(default=None, max_length=128)
     reasoning_effort: str | None = Field(default=None, max_length=32)
     show_internal_native_session: bool | None = None
 
-    @field_validator("runtime_id", "model", "reasoning_effort", mode="before")
+    @field_validator("model", "reasoning_effort", mode="before")
     @classmethod
     def normalize_selection(cls, value: object) -> object:
         if isinstance(value, str):
@@ -47,7 +50,7 @@ class TranslationSettingsUpdate(BaseModel):
     @model_validator(mode="after")
     def validate_mode(self):
         mode_fields = {"mode", "enabled"} & self.model_fields_set
-        execution_fields = {"runtime_id", "model", "reasoning_effort"} & self.model_fields_set
+        execution_fields = {"model", "reasoning_effort"} & self.model_fields_set
         display_fields = {"show_internal_native_session"} & self.model_fields_set
         if not mode_fields and not execution_fields and not display_fields:
             raise ValueError("a translation setting is required")
@@ -86,6 +89,68 @@ class DeploymentPackageReleaseNoteSessionVisibilityUpdate(BaseModel):
     show_sessions: bool
 
 
+class InternalSessionVisibilityUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    show_sessions: bool
+
+
+class InternalSessionVisibilityData(BaseModel):
+    deliveryline: bool | None = None
+    translation: bool | None = None
+    today_focus: bool
+    deployment_package: bool
+
+
+def _internal_session_visibility_data(request: Request) -> InternalSessionVisibilityData:
+    try:
+        imported_plugins = request.app.state.plugin_lifecycle.imported_plugin_ids()
+        deliveryline = None
+        if "deliveryline" in imported_plugins:
+            deliveryline = request.app.state.deliveryline_collaboration.show_sessions()
+        translation = None
+        if "weixin-orchestration" in imported_plugins:
+            translation = request.app.state.weixin_translation.status().show_internal_native_session
+        return InternalSessionVisibilityData(
+            deliveryline=deliveryline,
+            translation=translation,
+            today_focus=request.app.state.ai_search.show_sessions(),
+            deployment_package=request.app.state.deployment_package.show_release_note_session(),
+        )
+    except (DeliverylineError, OSError):
+        raise ApiError(
+            503,
+            "internal_session_visibility_unavailable",
+            "内部会话显示设置暂时不可用。",
+        ) from None
+
+
+def _internal_session_visibility_setters(
+    request: Request,
+    current: InternalSessionVisibilityData,
+) -> list[tuple[Callable[[bool], object], bool]]:
+    setters: list[tuple[Callable[[bool], object], bool]] = []
+    if current.deliveryline is not None:
+        setters.append((request.app.state.deliveryline_collaboration.set_show_sessions, current.deliveryline))
+    if current.translation is not None:
+        setters.append(
+            (
+                request.app.state.weixin_translation.set_show_internal_native_session,
+                current.translation,
+            )
+        )
+    setters.extend(
+        (
+            (request.app.state.ai_search.set_show_sessions, current.today_focus),
+            (
+                request.app.state.deployment_package.set_show_release_note_session,
+                current.deployment_package,
+            ),
+        )
+    )
+    return setters
+
+
 @router.get(
     "/weixin-translation",
     response_model=ApiResponse[TranslationSettingsStatus],
@@ -115,10 +180,9 @@ def update_weixin_translation_settings(
     mode = payload.mode
     if mode is None:
         mode = "auto" if payload.enabled else "direct"
-    runtime_update = "runtime_id" in payload.model_fields_set
     model_update = "model" in payload.model_fields_set
     reasoning_update = "reasoning_effort" in payload.model_fields_set
-    execution_update = runtime_update or model_update or reasoning_update
+    execution_update = model_update or reasoning_update
     display_update = "show_internal_native_session" in payload.model_fields_set
     target = (
         "internal_native_session_display"
@@ -140,13 +204,14 @@ def update_weixin_translation_settings(
     )
     try:
         if display_update:
-            result = request.app.state.weixin_translation.set_show_internal_native_session(
-                payload.show_internal_native_session
-            )
+            with internal_session_visibility_lock:
+                result = request.app.state.weixin_translation.set_show_internal_native_session(
+                    payload.show_internal_native_session
+                )
         elif execution_update:
             current = request.app.state.weixin_translation.status()
             result = request.app.state.weixin_translation.set_execution_settings(
-                payload.runtime_id if runtime_update else current.runtime_id,
+                current.runtime_id,
                 payload.model if model_update else current.model,
                 payload.reasoning_effort if reasoning_update else current.reasoning_effort,
             )
@@ -183,6 +248,46 @@ def update_weixin_translation_settings(
         target=target,
         operation_id=operation_id,
     )
+    return ApiResponse(data=result)
+
+
+@router.put(
+    "/internal-session-visibility",
+    response_model=ApiResponse[InternalSessionVisibilityData],
+)
+def update_internal_session_visibility(
+    request: Request,
+    payload: InternalSessionVisibilityUpdate,
+) -> ApiResponse[InternalSessionVisibilityData]:
+    with internal_session_visibility_lock:
+        applied: list[tuple[Callable[[bool], object], bool]] = []
+        try:
+            current = _internal_session_visibility_data(request)
+            for setter, previous in _internal_session_visibility_setters(request, current):
+                if previous != payload.show_sessions:
+                    setter(payload.show_sessions)
+                    applied.append((setter, previous))
+            result = _internal_session_visibility_data(request)
+        except (ApiError, DeliverylineError, OSError) as exc:
+            if not applied and isinstance(exc, ApiError):
+                raise
+            rollback_failed = False
+            for setter, previous in reversed(applied):
+                try:
+                    setter(previous)
+                except (ApiError, DeliverylineError, OSError):
+                    rollback_failed = True
+            if rollback_failed:
+                raise ApiError(
+                    503,
+                    "internal_session_visibility_state_unknown",
+                    "部分内部会话显示设置状态暂时无法确认，请刷新后重试。",
+                ) from None
+            raise ApiError(
+                503,
+                "internal_session_visibility_update_failed",
+                "内部会话显示设置未能完成，已恢复原状态。",
+            ) from None
     return ApiResponse(data=result)
 
 
@@ -299,13 +404,11 @@ def update_deployment_package_release_note_session_visibility(
     payload: DeploymentPackageReleaseNoteSessionVisibilityUpdate,
     request: Request,
 ) -> ApiResponse[dict[str, bool]]:
-    return ApiResponse(
-        data={
-            "show_sessions": request.app.state.deployment_package.set_show_release_note_session(
-                payload.show_sessions
-            )
-        }
-    )
+    with internal_session_visibility_lock:
+        show_sessions = request.app.state.deployment_package.set_show_release_note_session(
+            payload.show_sessions
+        )
+    return ApiResponse(data={"show_sessions": show_sessions})
 
 
 @router.post(

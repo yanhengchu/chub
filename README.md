@@ -27,7 +27,7 @@ Chub 的长期定位是“个人本地工作站与统一控制面”：核心自
 | 任务执行 | 通过独立 Quick Worker 执行页面、微信和翻译快速任务 | 快速交互页、微信 ClawBot |
 | 需求储备 | 管理 R1-R9 轻量需求 | `chub` CLI、微信 ClawBot |
 | 自动化与周报 | 使用受管 Debug Chrome 运行固定自动化，准备并生成周报 | 自动化页、周报页、命令行 |
-| 今日关注 | 在当前有界面 Debug Chrome 中打开固定 AI 来源页面，或使用固定内部 AI Session 整理固定公开来源的 AI 动态，并展示今日计划与待办区块 | 工作台今日关注页 |
+| 今日关注 | 使用固定内部 AI Session 整理固定公开来源的 AI 动态，并展示今日计划与待办区块 | 工作台今日关注页 |
 | 外部集成与通知 | 接入 OpenClaw/微信 ClawBot，并向预配置飞书目标发送通知 | 设置页、微信 ClawBot、OpenClaw Tool、CLI |
 | 插件模块 | 统一管理 Runtime、微信任务编排与 Deliveryline 的导入、移除、启用和禁用；Deliveryline 已提供需求提出档案与评审前校验 | 设置页、受控维护入口 |
 | 项目资料与外观 | 浏览已登记的项目资料，切换主题和文字大小 | 工作台、设置页 |
@@ -118,7 +118,7 @@ Chub 始终提供 loopback 访问；启用默认的 Tailnet 可信访问后，�
 
 | 文档 | 唯一职责 |
 | --- | --- |
-| [Chub AI Runtime 架构设计](docs/CHUB_AI_RUNTIME_DESIGN.md) | Runtime 共享契约、能力矩阵、Adapter/Runner 边界与新增 Runtime 实现规范 |
+| [Chub AI Runtime 架构设计](docs/CHUB_AI_RUNTIME_DESIGN.md) | Runtime 共享契约、能力矩阵、Adapter/Runner 边界与多 Runtime 接入判定 |
 | [Chub AI Runtime 插件模块设计](docs/CHUB_RUNTIME_PLUGIN_DESIGN.md) | Runtime 插件 ZIP 协议、安装/替换/移除、双端注册确认和模块状态清理边界 |
 | [Chub Codex Runtime 设计](docs/CHUB_CODEX_RUNTIME_DESIGN.md) | 当前 Codex Runtime 的专属边界、Codex/OpenAI 用量来源、接口、缓存和展示口径 |
 

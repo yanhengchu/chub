@@ -54,7 +54,7 @@ async def test_quick_interaction_rejects_caller_selected_runtime_implementation(
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
-            "/api/codex/sessions/session-1/quick-interactions",
+            "/api/ai/sessions/session-1/quick-interactions",
             headers=authorization(settings),
             json={"prompt": "检查状态", "implementation_id": "codex-010001"},
         )
@@ -66,7 +66,7 @@ async def test_quick_interaction_rejects_caller_selected_runtime_implementation(
 async def test_codex_sessions_allow_loopback(settings: Settings) -> None:
     transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get("/api/codex/sessions")
+        response = await client.get("/api/ai/sessions")
 
     assert response.status_code == 200
     assert response.json()["data"]["runtime_groups"] == []
@@ -74,7 +74,7 @@ async def test_codex_sessions_allow_loopback(settings: Settings) -> None:
 
 
 @pytest.mark.anyio
-async def test_codex_session_list_ignores_unavailable_release_note_state(
+async def test_session_list_ignores_unavailable_release_note_state(
     settings: Settings,
 ) -> None:
     app = create_app(settings)
@@ -86,7 +86,7 @@ async def test_codex_session_list_ignores_unavailable_release_note_state(
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get("/api/codex/sessions")
+        response = await client.get("/api/ai/sessions")
 
     assert response.status_code == 200
 
@@ -101,18 +101,18 @@ async def test_disabled_runtime_keeps_sessions_and_blocks_creation(
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         imported = await client.post(
-            "/api/plugins/codex-runtime/imports",
-            json={"artifact_id": "development:codex-runtime"},
+            "/api/plugins/runtime/imports",
+            json={"artifact_id": "development:codex-runtime-dev"},
         )
         enabled = await client.put(
-            "/api/plugins/codex-runtime/enabled",
-            json={"artifact_id": "development:codex-runtime", "enabled": True},
+            "/api/plugins/runtime/enabled",
+            json={"artifact_id": "development:codex-runtime-dev", "enabled": True},
         )
         assert imported.status_code == 200
         assert enabled.status_code == 200
         session = manager.create_session("chub")
         manager.runtime_enablement.save(RuntimeEnablement(disabled_runtime_ids=["codex"]))
-        response = await client.get("/api/codex/sessions")
+        response = await client.get("/api/ai/sessions")
 
     assert response.status_code == 200
     data = response.json()["data"]
@@ -122,9 +122,10 @@ async def test_disabled_runtime_keeps_sessions_and_blocks_creation(
 
 
 @pytest.mark.anyio
-async def test_codex_session_list_reports_workspaces(settings: Settings) -> None:
+async def test_session_list_reports_workspaces(settings: Settings) -> None:
     app = create_app(settings)
     manager = MagicMock()
+    manager.configured_default_runtime_id.return_value = "codex"
     manager.submission_available.return_value = (
         False,
         "Codex Runtime requires Codex CLI",
@@ -139,12 +140,13 @@ async def test_codex_session_list_reports_workspaces(settings: Settings) -> None
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get(
-            "/api/codex/sessions",
+            "/api/ai/sessions",
             headers=authorization(settings),
         )
 
     assert response.status_code == 200
     data = response.json()["data"]
+    assert data["default_runtime_id"] == "codex"
     assert data["available"] is False
     assert data["runtime_registered"] is True
     assert data["quick_creation"] == {
@@ -156,11 +158,12 @@ async def test_codex_session_list_reports_workspaces(settings: Settings) -> None
 
 
 @pytest.mark.anyio
-async def test_codex_session_list_blocks_creation_without_worker(
+async def test_session_list_blocks_creation_without_worker(
     settings: Settings,
 ) -> None:
     app = create_app(settings)
     manager = MagicMock()
+    manager.configured_default_runtime_id.return_value = "codex"
     manager.submission_available.return_value = (True, None)
     manager.dependencies.return_value = {"codex": True}
     manager.workspaces.return_value = []
@@ -180,7 +183,7 @@ async def test_codex_session_list_blocks_creation_without_worker(
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get(
-            "/api/codex/sessions",
+            "/api/ai/sessions",
             headers=authorization(settings),
         )
 
@@ -223,9 +226,9 @@ async def test_runtime_management_lists_and_updates_enablement(settings: Setting
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        listed = await client.get("/api/codex/runtimes", headers=authorization(settings))
+        listed = await client.get("/api/ai/runtimes", headers=authorization(settings))
         updated = await client.put(
-            "/api/codex/runtimes/codex",
+            "/api/ai/runtimes/codex",
             headers=authorization(settings),
             json={"enabled": False},
         )
@@ -238,7 +241,7 @@ async def test_runtime_management_lists_and_updates_enablement(settings: Setting
 
 
 @pytest.mark.anyio
-async def test_codex_session_list_hides_internal_translation_session(
+async def test_session_list_hides_internal_translation_session(
     settings: Settings,
 ) -> None:
     app = create_app(settings)
@@ -248,6 +251,7 @@ async def test_codex_session_list_hides_internal_translation_session(
     manager.workspaces.return_value = []
     native_sessions = [
         NativeSessionInfo(
+            runtime_id="codex",
             cwd="/workspace/chub",
             title="发现的终端",
             model="gpt-test",
@@ -316,15 +320,15 @@ async def test_codex_session_list_hides_internal_translation_session(
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         hidden = await client.get(
-            "/api/codex/sessions",
+            "/api/ai/sessions",
             headers=authorization(settings),
         )
         visible = await client.get(
-            "/api/codex/sessions?include_translation=true",
+            "/api/ai/sessions?include_translation=true",
             headers=authorization(settings),
         )
         detail = await client.get(
-            "/api/codex/sessions/translation-session",
+            "/api/ai/sessions/translation-session",
             headers=authorization(settings),
         )
 
@@ -333,6 +337,7 @@ async def test_codex_session_list_hides_internal_translation_session(
         "ordinary-session"
     ]
     assert hidden.json()["data"]["native_sessions"][0]["title"] == "发现的终端"
+    assert hidden.json()["data"]["native_sessions"][0]["runtime_id"] == "codex"
     assert [item["id"] for item in visible.json()["data"]["sessions"]] == [
         "ordinary-session"
     ]
@@ -365,7 +370,7 @@ async def test_create_session_uses_requested_permission_mode(settings: Settings)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
-            "/api/codex/sessions",
+            "/api/ai/sessions",
             headers=authorization(settings),
             json={
                 "workspace_id": "chub",
@@ -402,7 +407,7 @@ async def test_create_session_defaults_to_full_access(settings: Settings) -> Non
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
-            "/api/codex/sessions",
+            "/api/ai/sessions",
             headers=authorization(settings),
             json={"workspace_id": "chub"},
         )
@@ -435,7 +440,7 @@ async def test_codex_model_catalog_is_protected_and_filtered_by_manager(
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get(
-            "/api/codex/models",
+            "/api/ai/models",
             headers=authorization(settings),
         )
 
@@ -443,6 +448,27 @@ async def test_codex_model_catalog_is_protected_and_filtered_by_manager(
     assert response.json()["data"]["models"][0]["id"] == "gpt-test"
     assert response.json()["data"]["default_model"] == "gpt-test"
     assert response.json()["data"]["default_reasoning_effort"] == "medium"
+
+
+@pytest.mark.anyio
+async def test_model_catalog_for_session_uses_its_pinned_implementation(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    manager = MagicMock()
+    manager.read_session_model_catalog.return_value = CodexModelCatalogData(models=[])
+    app.state.ai_session_manager = manager
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            "/api/ai/models?session_id=session-test",
+            headers=authorization(settings),
+        )
+
+    assert response.status_code == 200
+    manager.read_session_model_catalog.assert_called_once_with("session-test")
+    manager.read_model_catalog.assert_not_called()
 
 
 @pytest.mark.anyio
@@ -473,7 +499,7 @@ async def test_update_quick_session_configuration_uses_session_values(
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.patch(
-            "/api/codex/sessions/session-1/configuration",
+            "/api/ai/sessions/session-1/configuration",
             headers=authorization(settings),
             json={
                 "permission_mode": "full-access",
@@ -520,7 +546,7 @@ async def test_create_session_uses_requested_model_and_reasoning_level(
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
-            "/api/codex/sessions",
+            "/api/ai/sessions",
             headers=authorization(settings),
             json={
                 "workspace_id": "chub",
@@ -568,7 +594,7 @@ async def test_codex_quota_is_protected_and_can_be_refreshed(settings: Settings)
 
 
 @pytest.mark.anyio
-async def test_codex_session_list_includes_active_quick_interaction(
+async def test_session_list_includes_active_quick_interaction(
     settings: Settings,
 ) -> None:
     app = create_app(settings)
@@ -626,7 +652,7 @@ async def test_codex_session_list_includes_active_quick_interaction(
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get(
-            "/api/codex/sessions",
+            "/api/ai/sessions",
             headers=authorization(settings),
         )
 
@@ -663,7 +689,7 @@ async def test_page_quick_interaction_preserves_bound_weixin_session_context(
         workspace_name="Chub",
         cwd=Path("/workspace/chub"),
         title="设备状态检查",
-        codex_session_id="codex-session-1",
+        session_id="codex-session-1",
         status="running",
         activity="idle",
         permission_mode="auto-review",
@@ -684,7 +710,7 @@ async def test_page_quick_interaction_preserves_bound_weixin_session_context(
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
-            "/api/codex/sessions/session-1/quick-interactions",
+            "/api/ai/sessions/session-1/quick-interactions",
             headers=authorization(settings),
             json={"prompt": "检查状态"},
         )
@@ -716,11 +742,11 @@ async def test_quick_interaction_history_is_paginated(
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         first = await client.get(
-            "/api/codex/sessions/session-1/quick-interactions",
+            "/api/ai/sessions/session-1/quick-interactions",
             headers=authorization(settings),
         )
         second = await client.get(
-            "/api/codex/sessions/session-1/quick-interactions?offset=5&limit=5",
+            "/api/ai/sessions/session-1/quick-interactions?offset=5&limit=5",
             headers=authorization(settings),
         )
 
@@ -749,7 +775,7 @@ async def test_quick_interaction_history_supports_timeline_order(
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get(
-            "/api/codex/sessions/session-1/quick-interactions?order=timeline",
+            "/api/ai/sessions/session-1/quick-interactions?order=timeline",
             headers=authorization(settings),
         )
 
@@ -792,12 +818,12 @@ async def test_quick_interaction_timeline_cursor_is_stable_when_new_task_arrives
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         first = await client.get(
-            "/api/codex/sessions/session-1/quick-interactions",
+            "/api/ai/sessions/session-1/quick-interactions",
             params={"order": "timeline", "limit": 2},
             headers=authorization(settings),
         )
         second = await client.get(
-            "/api/codex/sessions/session-1/quick-interactions",
+            "/api/ai/sessions/session-1/quick-interactions",
             params={
                 "order": "timeline",
                 "limit": 2,
@@ -869,7 +895,7 @@ async def test_quick_interaction_timeline_rejects_invalid_cursor(
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get(
-            "/api/codex/sessions/session-1/quick-interactions",
+            "/api/ai/sessions/session-1/quick-interactions",
             params=params,
             headers=authorization(settings),
         )
@@ -890,7 +916,7 @@ async def test_quick_interaction_pin_endpoint_is_removed(settings: Settings) -> 
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.patch(
-            "/api/codex/sessions/session-1/quick-interactions/task-1/pin",
+            "/api/ai/sessions/session-1/quick-interactions/task-1/pin",
             headers=authorization(settings),
             json={"pinned": True},
         )
@@ -934,7 +960,7 @@ async def test_stop_cancels_running_quick_interaction_before_session(
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
-            "/api/codex/sessions/session-1/stop",
+            "/api/ai/sessions/session-1/stop",
             headers=authorization(settings),
         )
 
@@ -953,7 +979,7 @@ async def test_stop_rejects_external_writer_before_cancelling_chub_work(
     manager = MagicMock()
     manager.ensure_stop_allowed.side_effect = ApiError(
         409,
-        "codex_session_writer_active",
+        "session_writer_active",
         "This is open in another app, close it there to continue here.",
     )
     quick_interactions = MagicMock()
@@ -963,12 +989,12 @@ async def test_stop_rejects_external_writer_before_cancelling_chub_work(
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
-            "/api/codex/sessions/session-1/stop",
+            "/api/ai/sessions/session-1/stop",
             headers=authorization(settings),
         )
 
     assert response.status_code == 409
-    assert response.json()["error"]["code"] == "codex_session_writer_active"
+    assert response.json()["error"]["code"] == "session_writer_active"
     manager.ensure_stop_allowed.assert_called_once_with("session-1")
     quick_interactions.cancel_codex_session.assert_not_called()
 
@@ -1013,7 +1039,7 @@ async def test_rename_session_allows_running_task_and_logs_lifecycle(
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.patch(
-            "/api/codex/sessions/session-1/title",
+            "/api/ai/sessions/session-1/title",
             headers=authorization(settings),
             json={"title": "  新标题  "},
         )
@@ -1035,8 +1061,8 @@ async def test_rename_session_logs_manager_failure(
     manager = MagicMock()
     manager.rename_session.side_effect = ApiError(
         404,
-        "codex_session_not_found",
-        "Codex session not found",
+        "session_not_found",
+        "AI Session not found",
     )
     app.state.ai_session_manager = manager
     statuses = []
@@ -1050,7 +1076,7 @@ async def test_rename_session_logs_manager_failure(
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.patch(
-            "/api/codex/sessions/session-1/title",
+            "/api/ai/sessions/session-1/title",
             headers=authorization(settings),
             json={"title": "新标题"},
         )
@@ -1069,7 +1095,7 @@ async def test_rename_session_preserves_external_writer_error(
     manager = MagicMock()
     manager.rename_session.side_effect = ApiError(
         409,
-        "codex_session_writer_active",
+        "session_writer_active",
         "This is open in another app, close it there to continue here.",
     )
     app.state.ai_session_manager = manager
@@ -1084,13 +1110,13 @@ async def test_rename_session_preserves_external_writer_error(
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.patch(
-            "/api/codex/sessions/session-1/title",
+            "/api/ai/sessions/session-1/title",
             headers=authorization(settings),
             json={"title": "新标题"},
         )
 
     assert response.status_code == 409
-    assert response.json()["error"]["code"] == "codex_session_writer_active"
+    assert response.json()["error"]["code"] == "session_writer_active"
     manager.rename_session.assert_called_once_with("session-1", "新标题")
     assert statuses == ["requested", "started", "failed"]
 
@@ -1129,7 +1155,7 @@ async def test_archive_session_revokes_access_and_calls_manager(
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
-            "/api/codex/sessions/session-1/archive",
+            "/api/ai/sessions/session-1/archive",
             headers=authorization(settings),
         )
 
@@ -1169,11 +1195,11 @@ async def test_native_session_actions_use_opaque_reference(
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         archived = await client.post(
-            f"/api/codex/native-sessions/{reference}/archive",
+            f"/api/ai/native-sessions/{reference}/archive",
             headers=authorization(settings),
         )
         deleted = await client.delete(
-            f"/api/codex/native-sessions/{reference}",
+            f"/api/ai/native-sessions/{reference}",
             headers=authorization(settings),
         )
 
@@ -1205,8 +1231,8 @@ async def test_archive_session_is_idempotent_when_stale_mapping_is_gone(
     quick_interactions.stop_operation_guard.return_value = MagicMock()
     manager.archive_native_session.side_effect = ApiError(
         404,
-        "codex_session_not_found",
-        "Codex session not found",
+        "session_not_found",
+        "AI Session not found",
     )
     manager.finalize_archive_session = MagicMock()
     app.state.ai_session_manager = manager
@@ -1216,7 +1242,7 @@ async def test_archive_session_is_idempotent_when_stale_mapping_is_gone(
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
-            "/api/codex/sessions/session-1/archive",
+            "/api/ai/sessions/session-1/archive",
             headers=authorization(settings),
         )
 
@@ -1247,11 +1273,11 @@ async def test_chub_session_archive_and_delete_log_full_lifecycle(
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         archived = await client.post(
-            "/api/codex/sessions/session-1/archive",
+            "/api/ai/sessions/session-1/archive",
             headers=authorization(settings),
         )
         deleted = await client.delete(
-            "/api/codex/sessions/session-2",
+            "/api/ai/sessions/session-2",
             headers=authorization(settings),
         )
 
@@ -1280,13 +1306,13 @@ async def test_delete_session_is_idempotent_when_stale_mapping_is_gone(
     quick_interactions.destructive_operation_guard.return_value = MagicMock()
     manager.ensure_delete_allowed.side_effect = ApiError(
         404,
-        "codex_session_not_found",
-        "Codex session not found",
+        "session_not_found",
+        "AI Session not found",
     )
     manager.delete_native_session.side_effect = ApiError(
         404,
-        "codex_session_not_found",
-        "Codex session not found",
+        "session_not_found",
+        "AI Session not found",
     )
     manager.finalize_delete_session = MagicMock()
     app.state.ai_session_manager = manager
@@ -1296,7 +1322,7 @@ async def test_delete_session_is_idempotent_when_stale_mapping_is_gone(
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.delete(
-            "/api/codex/sessions/session-1",
+            "/api/ai/sessions/session-1",
             headers=authorization(settings),
         )
 
@@ -1327,7 +1353,7 @@ async def test_forget_session_only_cleans_chub_state(
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.delete(
-            "/api/codex/sessions/session-1/management",
+            "/api/ai/sessions/session-1/management",
             headers=authorization(settings),
         )
 
@@ -1359,7 +1385,7 @@ async def test_forget_session_logs_failed_lifecycle(
     manager = MagicMock()
     manager.forget_session.side_effect = ApiError(
         status_code=409,
-        code="codex_session_forget_failed",
+        code="session_forget_failed",
         message="Session is still active.",
     )
     quick_interactions = MagicMock()
@@ -1372,7 +1398,7 @@ async def test_forget_session_logs_failed_lifecycle(
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.delete(
-            "/api/codex/sessions/session-1/management",
+            "/api/ai/sessions/session-1/management",
             headers=authorization(settings),
         )
 
@@ -1404,7 +1430,7 @@ async def test_archive_session_fails_when_slot_release_cannot_be_confirmed(
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
-            "/api/codex/sessions/session-1/archive",
+            "/api/ai/sessions/session-1/archive",
             headers=authorization(settings),
         )
 
@@ -1455,7 +1481,7 @@ async def test_delete_session_releases_slot_after_destructive_guard(
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.delete(
-            "/api/codex/sessions/session-1",
+            "/api/ai/sessions/session-1",
             headers=authorization(settings),
         )
 
@@ -1487,7 +1513,7 @@ async def test_delete_session_continues_when_session_stop_is_already_unavailable
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.delete(
-            "/api/codex/sessions/session-1",
+            "/api/ai/sessions/session-1",
             headers=authorization(settings),
         )
 
@@ -1511,7 +1537,7 @@ async def test_archive_session_uses_stop_guard_before_manager_gate(
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
-            "/api/codex/sessions/session-1/archive",
+            "/api/ai/sessions/session-1/archive",
             headers=authorization(settings),
         )
 
@@ -1529,7 +1555,7 @@ async def test_archive_session_stops_before_cleaning_when_native_archive_fails(
     manager = MagicMock()
     manager.archive_native_session.side_effect = ApiError(
         409,
-        "codex_session_writer_active",
+        "session_writer_active",
         "This is open in another app, close it there to continue here.",
     )
     app.state.ai_session_manager = manager
@@ -1539,12 +1565,12 @@ async def test_archive_session_stops_before_cleaning_when_native_archive_fails(
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
-            "/api/codex/sessions/session-1/archive",
+            "/api/ai/sessions/session-1/archive",
             headers=authorization(settings),
         )
 
     assert response.status_code == 409
-    assert response.json()["error"]["code"] == "codex_session_writer_active"
+    assert response.json()["error"]["code"] == "session_writer_active"
     app.state.quick_interactions.cancel_codex_session.assert_not_called()
     manager.finalize_archive_session.assert_not_called()
 
@@ -1568,7 +1594,7 @@ async def test_delete_session_preserves_state_when_quick_cancellation_fails(
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.delete(
-            "/api/codex/sessions/session-1",
+            "/api/ai/sessions/session-1",
             headers=authorization(settings),
         )
 

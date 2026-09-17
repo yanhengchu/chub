@@ -31,10 +31,7 @@ from app.ai_runtime import (
     validate_runtime_wiring,
 )
 from app.ai_runtime.runtime_plugin_packages import RuntimePluginService
-from app.ai_runtime.codex_plugin import (
-    LEGACY_DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
-    load_development_codex_plugin,
-)
+from app.ai_runtime.development_plugins import discover_development_runtime_plugins
 from app.quick_worker_tasks import (
     RuntimeTaskSubmission,
     TestTaskSubmission,
@@ -178,7 +175,7 @@ class WorkerHealth(_StrictModel):
 
 def worker_runtime_dir(settings: Settings) -> Path:
     identity = hashlib.sha256(
-        str(settings.ai_runtime.codex.runtime_dir).encode("utf-8")
+        str(settings.ai_runtime.shared.runtime_dir).encode("utf-8")
     ).hexdigest()[:12]
     return Path("/tmp") / f"chub-qw-{os.getuid()}-{identity}"
 
@@ -187,17 +184,17 @@ def worker_socket_path(settings: Settings) -> Path:
     return worker_runtime_dir(settings) / "worker.sock"
 
 
-def production_codex_workspaces(settings: Settings) -> dict[str, Path]:
+def production_runtime_workspaces(settings: Settings) -> dict[str, Path]:
     return {
         "home": Path.home(),
-        "workspace": settings.ai_runtime.codex.workspace,
+        "workspace": settings.ai_runtime.shared.workspace,
         "chub": PROJECT_ROOT,
         **{
             workspace.id: workspace.path
-            for workspace in settings.ai_runtime.codex.extra_workspaces
+            for workspace in settings.ai_runtime.shared.extra_workspaces
         },
         "weixin-translation": (
-            settings.ai_runtime.codex.runtime_dir / "translation-workspace"
+            settings.ai_runtime.shared.runtime_dir / "translation-workspace"
         ),
     }
 
@@ -292,6 +289,9 @@ class QuickWorkerServer:
         *,
         allow_test_tasks: bool = False,
         request_timeout_seconds: float = CLIENT_TIMEOUT_SECONDS,
+        runtime_workspaces: dict[str, Path] | None = None,
+        # Test-only compatibility inputs. Production startup supplies neither;
+        # Runtime plugins own their private dependency discovery.
         codex_workspaces: dict[str, Path] | None = None,
         codex_executable: str | Path | None = None,
         codex_home: Path | None = None,
@@ -302,44 +302,42 @@ class QuickWorkerServer:
         self.generation = uuid.uuid4().hex
         self.status: Literal["ready", "draining"] = "ready"
         self._runtime_registry_factory = None
+        runtime_workspaces = runtime_workspaces or codex_workspaces
         if runtime_registry is None:
-            if codex_workspaces:
-                resolved_executable = (
-                    str(codex_executable)
-                    if codex_executable is not None
-                    else shutil.which("codex")
-                )
-                resolved_codex_home = (
-                    codex_home
-                    if codex_home is not None
-                    else Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
-                )
+            if runtime_workspaces:
                 def build_registry(*, reload_development_source: bool = False) -> WorkerRuntimeRegistry:
                     runners = []
-                    development_plugin = load_development_codex_plugin(
-                        settings, reload_source=reload_development_source
-                    )
-                    legacy_development_plugin = load_development_codex_plugin(
-                        settings,
-                        implementation_id=LEGACY_DEVELOPMENT_CODEX_IMPLEMENTATION_ID,
-                    )
-                    runtime_plugins, failures = RuntimePluginService(settings).build_registry(
-                        RuntimePluginRegistry(
-                            []
-                            if development_plugin is None
-                            else [development_plugin, legacy_development_plugin]
+                    development_plugins, _records, development_failures = (
+                        discover_development_runtime_plugins(
+                            settings,
                         )
                     )
-                    for failure in failures:
+                    runtime_plugins, package_failures = RuntimePluginService(
+                        settings,
+                    ).build_registry(development_plugins)
+                    for failure in development_failures + package_failures:
                         LOGGER.warning("Runtime plugin unavailable: module_id=%s reason=%s", failure.module_id, failure.reason)
                     for implementation_id in runtime_plugins.implementation_ids():
                         runtime_plugin = runtime_plugins.require(implementation_id)
                         try:
                             adapter = runtime_plugin.build_adapter()
-                            configure_worker_adapter = getattr(runtime_plugin, "configure_worker_adapter", None)
-                            if callable(configure_worker_adapter):
-                                configure_worker_adapter(adapter, executable=resolved_executable, codex_home=resolved_codex_home)
-                            runner = runtime_plugin.build_worker_runner(adapter, workspaces=codex_workspaces)
+                            if codex_executable is not None or codex_home is not None:
+                                configure_worker_adapter = getattr(
+                                    runtime_plugin, "configure_worker_adapter", None
+                                )
+                                if callable(configure_worker_adapter):
+                                    configure_worker_adapter(
+                                        adapter,
+                                        executable=(
+                                            str(codex_executable)
+                                            if codex_executable is not None
+                                            else None
+                                        ),
+                                        codex_home=codex_home or Path.home() / ".codex",
+                                    )
+                            runner = runtime_plugin.build_worker_runner(
+                                adapter, workspaces=runtime_workspaces
+                            )
                             validate_runtime_wiring(adapter, runner)
                             runners.append(runner)
                         except Exception:
@@ -759,16 +757,6 @@ class QuickWorkerServer:
 
     async def _dispatch(self, request) -> dict[str, object]:
         if isinstance(request, WorkerRequest):
-            visible_implementation_ids = [
-                implementation_id
-                for implementation_id in self.runtime_registry.implementation_ids()
-                if implementation_id != LEGACY_DEVELOPMENT_CODEX_IMPLEMENTATION_ID
-            ]
-            visible_available_implementation_ids = [
-                implementation_id
-                for implementation_id in self.runtime_registry.available_implementation_ids()
-                if implementation_id != LEGACY_DEVELOPMENT_CODEX_IMPLEMENTATION_ID
-            ]
             health = WorkerHealth(
                 status=self.status,
                 generation=self.generation,
@@ -783,14 +771,15 @@ class QuickWorkerServer:
                 available_runtime_ids=list(
                     self.runtime_registry.available_runtime_ids()
                 ),
-                implementation_ids=visible_implementation_ids,
-                available_implementation_ids=visible_available_implementation_ids,
+                implementation_ids=list(self.runtime_registry.implementation_ids()),
+                available_implementation_ids=list(
+                    self.runtime_registry.available_implementation_ids()
+                ),
                 runtime_workspace_ids={
                     runtime_id: list(workspace_ids)
                     for runtime_id, workspace_ids in (
                         self.runtime_registry.workspace_ids().items()
                     )
-                    if runtime_id != LEGACY_DEVELOPMENT_CODEX_IMPLEMENTATION_ID
                 },
                 drain_operation_id=self._drain_operation_id,
                 drain_complete=self._drain_complete,
@@ -1131,12 +1120,12 @@ def main() -> int:
         return 1
     if args.command == "serve":
         try:
-            workspaces = production_codex_workspaces(settings)
+            workspaces = production_runtime_workspaces(settings)
             _private_directory(workspaces["weixin-translation"])
             asyncio.run(
                 QuickWorkerServer(
                     settings,
-                    codex_workspaces=workspaces,
+                    runtime_workspaces=workspaces,
                 ).serve()
             )
         except (OSError, RuntimeError) as exc:

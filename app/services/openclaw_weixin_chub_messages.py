@@ -211,11 +211,11 @@ def format_fixed_reply(message: str) -> str:
         (
             "任务提交失败：微信 Chub 模式配置无效，请检查工作区和通用会话默认设置。"
         ): "Not submitted · The WeChat Chub configuration is invalid.",
-        "任务提交失败：Codex 当前不可用，请稍后重试。": (
-            "Not submitted · Codex is unavailable. Try again later."
+        "任务提交失败：默认 AI Runtime 当前不可用，请稍后重试。": (
+            "Not submitted · The default AI Runtime is unavailable. Try again later."
         ),
-        "Codex Runtime 已停用，Chub 当前处于基础功能模式。请在设置页启用后再提交 AI 任务。": (
-            "Not submitted · Codex Runtime is disabled. Chub is in base mode. "
+        "默认 AI Runtime 已停用，Chub 当前处于基础功能模式。请在设置页启用后再提交 AI 任务。": (
+            "Not submitted · The default AI Runtime is disabled. Chub is in base mode. "
             "Enable it in Settings to submit AI tasks."
         ),
         "任务提交失败：无法确认本次消息的微信回送通道，请稍后重试。": (
@@ -594,9 +594,9 @@ def dispatch_failure(
         "configuration_invalid": (
             "Not submitted · The WeChat Chub configuration is invalid."
         ),
-        "codex_unavailable": "Not submitted · Codex is unavailable. Try again later.",
+        "ai_runtime_unavailable": "Not submitted · The default AI Runtime is unavailable. Try again later.",
         "ai_runtime_disabled": (
-            "Not submitted · Codex Runtime is disabled. Chub is in base mode. "
+            "Not submitted · The default AI Runtime is disabled. Chub is in base mode. "
             "Enable it in Settings to submit AI tasks."
         ),
         "quick_worker_unavailable": (
@@ -621,7 +621,7 @@ def dispatch_failure_from_error(exc: ApiError) -> WeixinChubModeDispatchResult:
     code_map: dict[str, WeixinChubModeDispatchCode] = {
         "weixin_chub_mode_in_progress": "in_progress",
         "weixin_chub_mode_configuration_invalid": "configuration_invalid",
-        "weixin_chub_mode_codex_unavailable": "codex_unavailable",
+        "weixin_chub_mode_ai_runtime_unavailable": "ai_runtime_unavailable",
         "weixin_chub_mode_ai_runtime_disabled": "ai_runtime_disabled",
         "weixin_chub_mode_quick_worker_unavailable": "quick_worker_unavailable",
         "weixin_chub_mode_delivery_route_invalid": "delivery_route_invalid",

@@ -24,6 +24,38 @@ from app.core.config import Settings
 AUTH = {"Authorization": "Bearer test-token-that-is-long-enough-for-tests"}
 
 
+async def _enable_development_codex_runtime(client: httpx.AsyncClient) -> None:
+    imported = await client.post(
+        "/api/plugins/runtime/imports",
+        json={"artifact_id": "development:codex-runtime-dev"},
+    )
+    enabled = await client.put(
+        "/api/plugins/runtime/enabled",
+        json={"artifact_id": "development:codex-runtime-dev", "enabled": True},
+    )
+    assert imported.status_code == 200
+    assert enabled.status_code == 200
+
+
+def test_codex_account_availability_is_bound_to_codex_runtime(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    ai_session_manager = app.state.ai_session_manager
+    ai_session_manager.default_submission_implementation_id = MagicMock(
+        return_value="codex-runtime-dev"
+    )
+    ai_session_manager.require_implementation_submission = MagicMock()
+    app.state.plugin_lifecycle.runtime_implementation_lifecycle_state = MagicMock(
+        return_value=(True, True)
+    )
+
+    assert app.state.automation_manager._codex_runtime_available() is True
+    ai_session_manager.default_submission_implementation_id.assert_called_once_with(
+        "codex"
+    )
+
+
 @pytest.mark.anyio
 async def test_automations_require_trusted_network(settings: Settings) -> None:
     transport = httpx.ASGITransport(
@@ -205,6 +237,7 @@ async def test_codex_runtime_account_check_reports_api_mode_when_usage_is_unavai
     app = create_app(settings)
     app.state.ai_usage.read = MagicMock(
         return_value=AiUsageData(
+            runtime_id="codex",
             status="unavailable",
             provider="OpenAI",
             source="sub2api",
@@ -219,6 +252,7 @@ async def test_codex_runtime_account_check_reports_api_mode_when_usage_is_unavai
         base_url="http://test",
         headers=AUTH,
     ) as client:
+        await _enable_development_codex_runtime(client)
         response = await client.post("/api/automations/environment/codex/check")
 
     assert response.status_code == 200
@@ -241,6 +275,7 @@ async def test_codex_runtime_account_check_clears_quota_after_provider_logout(
     app = create_app(settings)
     app.state.ai_usage.read = MagicMock(
         return_value=AiUsageData(
+            runtime_id="codex",
             status="unavailable",
             provider="OpenAI",
             source="sub2api",
@@ -255,6 +290,7 @@ async def test_codex_runtime_account_check_clears_quota_after_provider_logout(
         base_url="http://test",
         headers=AUTH,
     ) as client:
+        await _enable_development_codex_runtime(client)
         response = await client.post("/api/automations/environment/codex/check")
 
     assert response.status_code == 200
@@ -277,6 +313,7 @@ async def test_codex_runtime_account_check_includes_remaining_quota_percentages(
     app.state.ai_usage.read = MagicMock(
         return_value=AiUsageData.model_validate(
             {
+                "runtime_id": "codex",
                 "status": "available",
                 "provider": "openai",
                 "source": "account_login",
@@ -294,6 +331,7 @@ async def test_codex_runtime_account_check_includes_remaining_quota_percentages(
         base_url="http://test",
         headers=AUTH,
     ) as client:
+        await _enable_development_codex_runtime(client)
         response = await client.post("/api/automations/environment/codex/check")
 
     assert response.status_code == 200
@@ -313,6 +351,7 @@ async def test_codex_runtime_account_check_reports_unknown_authentication(
     app = create_app(settings)
     app.state.ai_usage.read = MagicMock(
         return_value=AiUsageData(
+            runtime_id="codex",
             status="unavailable",
             provider="OpenAI",
             timezone="Asia/Shanghai",
@@ -326,6 +365,7 @@ async def test_codex_runtime_account_check_reports_unknown_authentication(
         base_url="http://test",
         headers=AUTH,
     ) as client:
+        await _enable_development_codex_runtime(client)
         response = await client.post("/api/automations/environment/codex/check")
 
     assert response.status_code == 200

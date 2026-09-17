@@ -26,6 +26,7 @@ window.initializeWorkspaceWorkstation = () => {
     developmentWeixinDetail: byId("workspace-development-weixin-detail"),
     developmentDeliverylineRow: byId("workspace-development-deliveryline-row"),
     developmentDeliverylineDetail: byId("workspace-development-deliveryline-detail"),
+    thirdPartyEnvironment: byId("workspace-third-party-environment"),
     thirdPartyRefresh: byId("workspace-third-party-refresh"),
     openclawDetail: byId("workspace-openclaw-detail"),
     openclawStart: byId("workspace-openclaw-start"),
@@ -45,6 +46,7 @@ window.initializeWorkspaceWorkstation = () => {
     openclawWeixinStart: byId("workspace-openclaw-weixin-start"),
   };
   if (!Object.values(elements).every((element) => element instanceof HTMLElement)) return;
+  const thirdPartyAvailable = elements.thirdPartyEnvironment.dataset.thirdPartyAvailable === "true";
 
   let workerState = null;
   let upgradeState = null;
@@ -355,7 +357,7 @@ window.initializeWorkspaceWorkstation = () => {
   const renderDevelopment = (runtime, runtimeManagement, orchestration, modules, deliveryline, codex, weixin) => {
     const artifactTitle = (plugin, artifactId) => {
       const artifact = (plugin?.artifacts || []).find((item) => item.artifact_id === artifactId);
-      const name = plugin?.plugin_id === "codex-runtime" ? "Codex" : plugin?.name || "未知插件";
+      const name = plugin?.name || "未知插件";
       return artifact?.source === "development"
         ? `${name} · 开发实现`
         : artifact?.version
@@ -484,6 +486,7 @@ window.initializeWorkspaceWorkstation = () => {
   };
 
   const renderOpenClaw = (status, login, integration = openclawIntegration) => {
+    elements.thirdPartyEnvironment.hidden = status?.installed !== true;
     openclawStatus = status;
     openclawIntegration = integration;
     openclawWeixinLogin = login;
@@ -536,8 +539,18 @@ window.initializeWorkspaceWorkstation = () => {
     thirdPartyLoading = true;
     syncControls();
     try {
-      const [status, login, integration] = await Promise.all([
-        request("/api/openclaw/status", { cache: "no-store" }),
+      const status = await request("/api/openclaw/status", { cache: "no-store" });
+      if (disposed) return false;
+      if (status?.installed !== true) {
+        renderOpenClaw(status, null, null);
+        try {
+          window.sessionStorage.removeItem(thirdPartySnapshotCacheKey);
+        } catch {
+          // Cached third-party state is optional.
+        }
+        return true;
+      }
+      const [login, integration] = await Promise.all([
         request("/api/openclaw/weixin/login", { cache: "no-store" }),
         request("/api/openclaw/integration", { cache: "no-store" }).catch(() => undefined),
       ]);
@@ -566,12 +579,12 @@ window.initializeWorkspaceWorkstation = () => {
     syncControls();
     try {
       const [runtime, runtimeManagement, lifecycle] = await Promise.all([
-        request("/api/codex/runtime-implementations", { cache: "no-store" }),
-        request("/api/codex/runtimes", { cache: "no-store" }),
+        request("/api/ai/runtime-implementations", { cache: "no-store" }),
+        request("/api/ai/runtimes", { cache: "no-store" }),
         request("/api/plugins", { cache: "no-store" }),
       ]);
       if (disposed) return false;
-      const codex = lifecycle?.plugins?.find((plugin) => plugin.plugin_id === "codex-runtime") || null;
+      const codex = lifecycle?.plugins?.find((plugin) => plugin.plugin_id === "runtime") || null;
       const weixin = lifecycle?.plugins?.find((plugin) => plugin.plugin_id === "weixin-orchestration") || null;
       const enabledIds = Array.isArray(weixin?.enabled_artifact_ids) ? weixin.enabled_artifact_ids : [];
       const activeId = enabledIds[0] || "";
@@ -607,7 +620,7 @@ window.initializeWorkspaceWorkstation = () => {
   const refreshDevelopment = async () => {
     developmentRefreshing = true;
     syncControls();
-    setStatus(elements.developmentCodexDetail, "正在重新读取当前 Codex Runtime 实现。", "warning");
+    setStatus(elements.developmentCodexDetail, "正在重新读取当前 Runtime 实现。", "warning");
     setStatus(elements.developmentWeixinDetail, "正在重新读取当前微信任务润色实现。", "warning");
     try {
       await loadDevelopment();
@@ -716,7 +729,19 @@ window.initializeWorkspaceWorkstation = () => {
     }
   };
 
-  const refresh = async () => {
+  const discoverThirdPartyAfterRefresh = async () => {
+    if (thirdPartyAvailable) return false;
+    try {
+      const status = await request("/api/openclaw/status", { cache: "no-store" });
+      if (status?.installed !== true || disposed) return false;
+      window.location.reload();
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const refresh = async ({ discoverThirdParty = false } = {}) => {
     const refreshStartedAt = window.performance.now();
     elements.refresh.disabled = true;
     statusIsCurrent = false;
@@ -725,6 +750,7 @@ window.initializeWorkspaceWorkstation = () => {
     syncControls();
     setToolbarStatus("正在读取工作台状态…");
     const results = await Promise.all([loadStatus(), loadWorker(), loadUpgrade()]);
+    if (discoverThirdParty && await discoverThirdPartyAfterRefresh()) return;
     if (disposed) return;
     const remainingLoadingTime = Math.max(
       0,
@@ -859,7 +885,7 @@ window.initializeWorkspaceWorkstation = () => {
     if (snapshot.worker) renderWorker(snapshot.worker);
     if (snapshot.upgrade) renderUpgrade(snapshot.upgrade);
   }
-  const cachedThirdPartySnapshot = readThirdPartySnapshot();
+  const cachedThirdPartySnapshot = thirdPartyAvailable ? readThirdPartySnapshot() : null;
   if (cachedThirdPartySnapshot) {
     renderOpenClaw(
       cachedThirdPartySnapshot.status,
@@ -894,11 +920,11 @@ window.initializeWorkspaceWorkstation = () => {
     releaseOpenClawWeixinQr();
   };
 
-  elements.refresh.addEventListener("click", () => { void refresh(); });
-  elements.thirdPartyRefresh.addEventListener("click", () => { void loadThirdParty(); });
+  elements.refresh.addEventListener("click", () => { void refresh({ discoverThirdParty: true }); });
+  if (thirdPartyAvailable) elements.thirdPartyRefresh.addEventListener("click", () => { void loadThirdParty(); });
   elements.developmentRefresh.addEventListener("click", () => { void refreshDevelopment(); });
-  elements.openclawStart.addEventListener("click", () => { void controlOpenClaw("start"); });
-  elements.openclawRestart.addEventListener("click", () => {
+  if (thirdPartyAvailable) elements.openclawStart.addEventListener("click", () => { void controlOpenClaw("start"); });
+  if (thirdPartyAvailable) elements.openclawRestart.addEventListener("click", () => {
     void showConfirmationDialog({
       title: "重启与恢复 OpenClaw Gateway",
       body: "Gateway 和微信消息通道会短暂中断。Chub 将先检查固定插件和补丁基线，再确认 Gateway 与消息通道最终状态。",
@@ -908,13 +934,13 @@ window.initializeWorkspaceWorkstation = () => {
       onConfirm: () => controlOpenClaw("restart"),
     });
   });
-  elements.openclawBindWeixin.addEventListener("click", async () => {
+  if (thirdPartyAvailable) elements.openclawBindWeixin.addEventListener("click", async () => {
     elements.openclawWeixinDialog.showModal();
     setMessage(elements.openclawWeixinMessage, "正在读取微信绑定状态…");
     await pollOpenClawWeixinLogin();
   });
-  elements.openclawWeixinClose.addEventListener("click", closeOpenClawWeixinDialog);
-  elements.openclawWeixinStart.addEventListener("click", async () => {
+  if (thirdPartyAvailable) elements.openclawWeixinClose.addEventListener("click", closeOpenClawWeixinDialog);
+  if (thirdPartyAvailable) elements.openclawWeixinStart.addEventListener("click", async () => {
     elements.openclawWeixinStart.disabled = true;
     setMessage(elements.openclawWeixinMessage, "正在生成微信绑定二维码…");
     try {
@@ -926,7 +952,7 @@ window.initializeWorkspaceWorkstation = () => {
       elements.openclawWeixinStart.disabled = false;
     }
   });
-  elements.openclawWeixinCancel.addEventListener("click", async () => {
+  if (thirdPartyAvailable) elements.openclawWeixinCancel.addEventListener("click", async () => {
     elements.openclawWeixinCancel.disabled = true;
     try {
       renderOpenClawWeixinLogin(await request("/api/openclaw/weixin/login", { method: "DELETE" }));
@@ -936,7 +962,7 @@ window.initializeWorkspaceWorkstation = () => {
       elements.openclawWeixinCancel.disabled = false;
     }
   });
-  elements.openclawWeixinVerifyForm.addEventListener("submit", async (event) => {
+  if (thirdPartyAvailable) elements.openclawWeixinVerifyForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     const code = elements.openclawWeixinVerifyCode.value.trim();
     if (!code) return;
@@ -951,17 +977,17 @@ window.initializeWorkspaceWorkstation = () => {
       setMessage(elements.openclawWeixinMessage, error.message || "验证码提交失败。", "error");
     }
   });
-  elements.openclawWeixinDialog.addEventListener("click", (event) => {
+  if (thirdPartyAvailable) elements.openclawWeixinDialog.addEventListener("click", (event) => {
     if (event.target === elements.openclawWeixinDialog) closeOpenClawWeixinDialog();
   });
-  elements.openclawWeixinDialog.addEventListener("close", () => {
+  if (thirdPartyAvailable) elements.openclawWeixinDialog.addEventListener("close", () => {
     stopOpenClawWeixinPolling();
     releaseOpenClawWeixinQr();
   });
   elements.chubRestart.addEventListener("click", () => {
     void showConfirmationDialog({
       title: "重启 Chub",
-      body: "只重启 Chub Web 控制面；已接受的快速任务、Quick Worker 和原生 Codex 不会被停止。",
+      body: "只重启 Chub Web 控制面；已接受的快速任务、Quick Worker 和原生 Runtime 会话不会被停止。",
       confirmLabel: "确认重启",
       pendingLabel: "正在等待新实例…",
       tone: "secondary",
@@ -982,7 +1008,7 @@ window.initializeWorkspaceWorkstation = () => {
   elements.upgradeStart.addEventListener("click", () => {
     void showConfirmationDialog({
       title: "升级与恢复",
-      body: "此操作会清理 Chub 自有 AI 运行状态并重启 Chub Web 与 Quick Worker；本地关联 Session 会按固定边界清理，Codex 原生会话保留。",
+      body: "此操作会清理 Chub 自有 AI 运行状态并重启 Chub Web 与 Quick Worker；本地关联 Session 会按固定边界清理，Runtime 原生会话保留。",
       confirmLabel: upgradeState?.resume ? "继续恢复" : "确认升级与恢复",
       pendingLabel: "正在开始…",
       errorMessage: "升级与恢复未能启动。",
@@ -992,7 +1018,7 @@ window.initializeWorkspaceWorkstation = () => {
 
   void refresh();
   void loadDevelopment();
-  void loadThirdParty();
+  if (thirdPartyAvailable) void loadThirdParty();
 };
 
 window.initializeWorkspaceWorkstation();

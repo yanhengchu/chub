@@ -9,7 +9,7 @@
 
 Chub 只管理一种 `Chub Session`。页面、API、微信槽位和任务入口统一使用 `session_id`；调用方不能提交或替换 `native_session_id`、`runtime_id` 或 `implementation_id`。
 
-Session Store 的当前格式为 v3，严格校验文件类型、所有者、权限、大小和字段结构。读取失败时，Session 写入失败关闭；不根据页面缓存、标题或工作目录猜测状态。Chub 自有的旧格式状态不兼容时整体初始化为当前格式，Codex 原生数据不在该边界内。
+Session Store 的当前格式为 v3，严格校验文件类型、所有者、权限、大小和字段结构。读取失败时，Session 写入失败关闭；不根据页面缓存、标题或工作目录猜测状态。Chub 自有的旧格式状态不兼容时整体初始化为当前格式，第三方或 Runtime 原生数据不在该边界内。
 
 每条 Session 固定保存以下业务事实：
 

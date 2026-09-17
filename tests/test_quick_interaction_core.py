@@ -23,7 +23,7 @@ const core = require(process.argv[1]);
 const session = { status: "stopped", activity: "idle" };
 const otherSessionActive = { status: "running", activity: "working" };
 const unauthorized = { status: 401, retryable: false };
-const missing = { code: "codex_session_not_found", retryable: false };
+const missing = { code: "session_not_found", retryable: false };
 const serverError = { status: 503, retryable: true };
 const networkError = new Error("network unavailable");
 const transportError = { transport: true, retryable: true };
@@ -175,7 +175,7 @@ const result = {
     { model: "gpt-test", reasoningEffort: null },
   ),
   skipsUnrelatedCreationError: core.shouldRetrySessionCreationWithDefaults(
-    { code: "codex_workspace_unavailable" },
+    { code: "workspace_unavailable" },
     { model: "gpt-test", reasoningEffort: null },
   ),
   errorMessages: [
@@ -263,7 +263,7 @@ process.stdout.write(JSON.stringify(result));
         "retriesKnownPreferenceError": True,
         "skipsUnrelatedCreationError": False,
         "errorMessages": [
-            "Codex CLI（上游 Runtime）：CLI failed",
+            "上游 Runtime：CLI failed",
             "Chub：Worker failed",
             "Unknown failure",
         ],
@@ -287,7 +287,7 @@ global.fetch = async () => {
   throw new TypeError("Failed to fetch");
 };
 const core = require(process.argv[1]);
-core.request("/api/codex/sessions").then(() => {
+core.request("/api/ai/sessions").then(() => {
   process.exitCode = 1;
 }).catch((error) => {
   process.stdout.write(JSON.stringify({
@@ -397,12 +397,12 @@ const client = core.createClient({ token: "", sessionId: "session/one" });
 
     requests = json.loads(result.stdout)
     assert requests == [
-        "/api/codex/sessions/session%2Fone/quick-interactions?limit=5&order=task",
-        "/api/codex/sessions/session%2Fone/quick-interactions?limit=10&order=timeline&before_created_at=2026-08-02T10%3A00%3A00%2B08%3A00&before_id=task%2Fone",
-        "/api/codex/sessions/session%2Fone/title",
-        "/api/codex/sessions/session%2Fone/archive",
-        "/api/codex/sessions/session%2Fone/stop",
-        "/api/codex/sessions/session%2Fone",
+        "/api/ai/sessions/session%2Fone/quick-interactions?limit=5&order=task",
+        "/api/ai/sessions/session%2Fone/quick-interactions?limit=10&order=timeline&before_created_at=2026-08-02T10%3A00%3A00%2B08%3A00&before_id=task%2Fone",
+        "/api/ai/sessions/session%2Fone/title",
+        "/api/ai/sessions/session%2Fone/archive",
+        "/api/ai/sessions/session%2Fone/stop",
+        "/api/ai/sessions/session%2Fone",
     ]
 
 
@@ -465,7 +465,7 @@ const client = core.createClient({ token: "", sessionId: "session-2" });
             ],
         },
         "session": {"id": "session-2"},
-        "requests": ["/api/codex/sessions", "/api/codex/sessions"],
+        "requests": ["/api/ai/sessions", "/api/ai/sessions"],
     }
 
 
@@ -508,8 +508,8 @@ const client = core.createClient({ token: "", sessionId: "translation-session" }
     assert behavior["context"]["session"]["id"] == "translation-session"
     assert behavior["context"]["sessions"] == [{"id": "ordinary"}]
     assert behavior["requests"] == [
-        "/api/codex/sessions",
-        "/api/codex/sessions/translation-session",
+        "/api/ai/sessions",
+        "/api/ai/sessions/translation-session",
     ]
 
 
@@ -553,7 +553,7 @@ const client = core.createClient({ token: "", sessionId: "current-session" });
 
     assert json.loads(result.stdout) == {
         "captured": {
-            "path": "/api/codex/sessions",
+            "path": "/api/ai/sessions",
             "method": "POST",
             "body": {
                 "workspace_id": "workspace/one",

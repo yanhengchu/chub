@@ -38,7 +38,7 @@ def test_discovers_all_active_sessions_in_creation_order(tmp_path: Path) -> None
 
     assert [session.id for session in sessions] == [second_id, first_id]
     assert next(session for session in sessions if session.id == first_id).title == "已有会话"
-    assert all(session.codex_session_id == session.id for session in sessions)
+    assert all(session.native_session_id == session.id for session in sessions)
 
 
 def test_ignores_archived_and_malformed_sessions(tmp_path: Path) -> None:

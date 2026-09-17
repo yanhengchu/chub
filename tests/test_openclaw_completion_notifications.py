@@ -370,7 +370,7 @@ def test_notification_labels_runtime_error_source() -> None:
     )
 
     assert notifier._messages_for(failed_task) == [
-        "Failed · Codex CLI (upstream Runtime)\n\nTask · 检查设备状态\n\nupstream unavailable"
+        "Failed · Upstream Runtime\n\nTask · 检查设备状态\n\nupstream unavailable"
     ]
 
 

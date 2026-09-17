@@ -16,7 +16,7 @@ async def test_translation_settings_remain_available_without_legacy_plugin_route
 
 
 @pytest.mark.anyio
-async def test_translation_runtime_is_part_of_the_execution_configuration(settings) -> None:
+async def test_translation_runtime_is_read_only_from_session_defaults(settings) -> None:
     transport = httpx.ASGITransport(app=create_app(settings))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         current = await client.get("/api/settings/weixin-translation")
@@ -24,5 +24,6 @@ async def test_translation_runtime_is_part_of_the_execution_configuration(settin
             "/api/settings/weixin-translation",
             json={"runtime_id": "codex"},
         )
-    assert updated.status_code == 200
-    assert updated.json()["data"]["runtime_id"] == "codex"
+    assert current.status_code == 200
+    assert current.json()["data"]["runtime_id"] == "codex"
+    assert updated.status_code == 422

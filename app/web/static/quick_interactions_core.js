@@ -5,19 +5,19 @@
   const INITIAL_POLL_DELAY_MS = 1500;
   const MAX_POLL_DELAY_MS = 10000;
   const CONNECTION_FAILURE_GRACE_ATTEMPTS = 3;
-  const CREATION_PREFERENCE_ERRORS = new Set([
-    "codex_model_catalog_unavailable",
-    "codex_model_unavailable",
-    "codex_reasoning_effort_requires_model",
-    "codex_reasoning_effort_unsupported",
+  const CREATION_PREFERENCE_ERROR_SUFFIXES = Object.freeze([
+    "model_catalog_unavailable",
+    "model_unavailable",
+    "reasoning_effort_requires_model",
+    "reasoning_effort_unsupported",
   ]);
   const ERROR_SOURCE_LABELS = Object.freeze({
     chub: "Chub",
-    runtime: "Codex CLI（上游 Runtime）",
+    runtime: "上游 Runtime",
   });
   const QUICK_SESSION_PERMISSION_OPTIONS = Object.freeze([
     Object.freeze({ value: "full-access", label: "Full access", description: "不请求操作审批" }),
-    Object.freeze({ value: "auto-review", label: "Approve for me", description: "由 Codex 自动审核越界请求" }),
+    Object.freeze({ value: "auto-review", label: "Approve for me", description: "由 Runtime 按其权限策略自动处理" }),
     Object.freeze({ value: "read-only", label: "Read Only", description: "只能查看和分析" }),
     Object.freeze({ value: "ask", label: "Ask for approval", description: "快速交互不支持", disabled: true }),
   ]);
@@ -35,7 +35,7 @@
     const defaultModel = models.find((item) => item.id === catalog?.default_model);
     const options = [{
       value: "",
-      label: "跟随 Codex 默认",
+      label: "跟随 Runtime 默认",
       description: defaultModel?.name
         ? `当前默认 ${defaultModel.name}`
         : "使用 Runtime 默认模型",
@@ -173,7 +173,7 @@
   function readPageSize(_storage) { return 5; }
 
   function sessionListPath() {
-    return "/api/codex/sessions";
+    return "/api/ai/sessions";
   }
 
   function readSessionCreationPreferences(storage) {
@@ -189,7 +189,9 @@
   function shouldRetrySessionCreationWithDefaults(error, preferences) {
     return Boolean(
       (preferences.model || preferences.reasoningEffort)
-      && CREATION_PREFERENCE_ERRORS.has(error?.code),
+      && CREATION_PREFERENCE_ERROR_SUFFIXES.some(
+        (suffix) => error?.code === suffix || error?.code?.endsWith(`_${suffix}`),
+      ),
     );
   }
 
@@ -438,11 +440,11 @@
         .filter(isQuickInteractionSession);
       let session = sessions.find((item) => item.id === sessionId);
       if (!session) {
-        session = await request(`/api/codex/sessions/${encodedSessionId}`);
+        session = await request(`/api/ai/sessions/${encodedSessionId}`);
       }
       if (!session) {
         const error = new Error("会话不存在或已经归档。");
-        error.code = "codex_session_not_found";
+        error.code = "session_not_found";
         error.source = "chub";
         error.retryable = false;
         throw error;
@@ -465,7 +467,7 @@
 
       updateSessionConfiguration({ permissionMode, model, reasoningEffort }) {
         return request(
-          `/api/codex/sessions/${encodedSessionId}/configuration`,
+          `/api/ai/sessions/${encodedSessionId}/configuration`,
           {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -480,7 +482,7 @@
 
       createSession({ workspaceId, permissionMode, model, reasoningEffort }) {
         return request(
-          "/api/codex/sessions",
+          "/api/ai/sessions",
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -493,7 +495,7 @@
 
       renameSession(title) {
         return request(
-          `/api/codex/sessions/${encodedSessionId}/title`,
+          `/api/ai/sessions/${encodedSessionId}/title`,
           {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -504,21 +506,21 @@
 
       archiveSession() {
         return request(
-          `/api/codex/sessions/${encodedSessionId}/archive`,
+          `/api/ai/sessions/${encodedSessionId}/archive`,
           { method: "POST" },
         );
       },
 
       stopSession() {
         return request(
-          `/api/codex/sessions/${encodedSessionId}/stop`,
+          `/api/ai/sessions/${encodedSessionId}/stop`,
           { method: "POST" },
         );
       },
 
       deleteSession() {
         return request(
-          `/api/codex/sessions/${encodedSessionId}`,
+          `/api/ai/sessions/${encodedSessionId}`,
           { method: "DELETE" },
         );
       },
@@ -540,13 +542,13 @@
           query.set("offset", String(offset));
         }
         return request(
-          `/api/codex/sessions/${encodedSessionId}/quick-interactions?${query}`,
+          `/api/ai/sessions/${encodedSessionId}/quick-interactions?${query}`,
         );
       },
 
       submitTask({ prompt }) {
         return request(
-          `/api/codex/sessions/${encodedSessionId}/quick-interactions`,
+          `/api/ai/sessions/${encodedSessionId}/quick-interactions`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -571,7 +573,11 @@
     shouldSuppressReconnectError,
     pollDelay,
     readPageSize,
-    readModelCatalog: () => request("/api/codex/models"),
+    readModelCatalog: (sessionId = "") => request(
+      sessionId
+        ? `/api/ai/models?session_id=${encodeURIComponent(sessionId)}`
+        : "/api/ai/models",
+    ),
     quickSessionModelOptions,
     quickSessionPermissionOptions: QUICK_SESSION_PERMISSION_OPTIONS,
     quickSessionReasoningLabels: QUICK_SESSION_REASONING_LABELS,

@@ -64,6 +64,11 @@ def configured_manager(
     settings.openclaw.quick_interaction_completion.weixin_recipient = "recipient"
     codex_manager = MagicMock()
     codex_manager.runtime_id = "codex"
+    codex_manager.select_new_session_runtime.return_value = (
+        "codex",
+        "codex-runtime-dev",
+    )
+    codex_manager.session_implementation_id.return_value = "codex-runtime-dev"
     codex_manager.runtime_settings_store.read_general.return_value = SimpleNamespace(
         default_runtime_id="codex",
         model="translation-model",

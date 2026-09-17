@@ -22,7 +22,7 @@
   });
   const ERROR_SOURCE_LABELS = Object.freeze({
     chub: "Chub",
-    runtime: "Codex CLI（上游 Runtime）",
+    runtime: "上游 Runtime",
   });
 
   function taskSignature(task) {

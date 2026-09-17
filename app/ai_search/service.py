@@ -13,7 +13,6 @@ from zoneinfo import ZoneInfo
 from urllib.parse import urlsplit
 
 from app.ai_search.models import (
-    AiPageOpenResult,
     AiSearchData,
     AiSearchState,
     SearchResultItem,
@@ -22,10 +21,8 @@ from app.ai_search.models import (
 )
 from app.ai_session.operations import delete_session
 from app.automations.browser import (
-    DebugChromeOpenedPage,
     DebugChromePageContent,
     DebugChromePageReadError,
-    open_debug_chrome_pages,
     read_debug_chrome_page,
 )
 from app.core.response import ApiError
@@ -60,17 +57,15 @@ def _now() -> datetime:
 
 
 class AiSearchService:
-    """Own one daily AI digest run and separately open fixed source pages."""
+    """Own one daily AI digest run from fixed source snapshots."""
 
     def __init__(
         self,
         state_path: Path,
         *,
-        page_opener=open_debug_chrome_pages,
         page_reader=read_debug_chrome_page,
     ) -> None:
         self.path = state_path
-        self._page_opener = page_opener
         self._page_reader = page_reader
         self._lock = threading.RLock()
         self._state_error: str | None = None
@@ -109,20 +104,6 @@ class AiSearchService:
                 if session_id is not None
             }
 
-    def open_pages(self) -> AiPageOpenResult:
-        with self._lock:
-            self._require_available()
-            try:
-                pages = asyncio.run(
-                    self._page_opener(tuple(url for _, url in TODAY_FOCUS_SOURCES))
-                )
-            except DebugChromePageReadError as exc:
-                raise ApiError(409, "today_focus_page_open_unavailable", str(exc)) from exc
-            except Exception as exc:
-                LOGGER.warning("Today focus page opening failed exception_type=%s", type(exc).__name__)
-                raise ApiError(503, "today_focus_page_open_failed", "固定 AI 页面未能打开，可再次重试。") from exc
-            return self._opened_page_result(pages)
-
     def refresh(self, manager, quick_interactions, *, source_ip: str) -> AiSearchData:
         with self._lock:
             self._require_available()
@@ -131,6 +112,13 @@ class AiSearchService:
                 self._refresh(quick_interactions)
             if self._active_run() is not None:
                 raise ApiError(409, "today_focus_in_progress", "今日关注仍在更新，请等待结果。")
+            available, reason = manager.submission_available()
+            if not available:
+                raise ApiError(
+                    409,
+                    "today_focus_runtime_unavailable",
+                    reason or "当前 AI Runtime 不可提交新的任务。",
+                )
             # Read external pages before creating an internal Session so a process
             # interruption cannot leave an untracked Session behind.
             snapshots = self._read_source_snapshots()
@@ -289,7 +277,7 @@ class AiSearchService:
             try:
                 session = manager.get_session(session_id)
             except ApiError as exc:
-                if exc.code != "codex_session_not_found":
+                if exc.code != "session_not_found":
                     raise ApiError(503, "today_focus_session_unavailable", "今日关注 Session 状态无法确认，请稍后重试。") from exc
             except Exception as exc:
                 LOGGER.warning("Today focus Session lookup failed session_id=%s exception_type=%s", session_id, type(exc).__name__)
@@ -376,31 +364,6 @@ class AiSearchService:
             LOGGER.warning("Today focus untracked Session cleanup failed session_id=%s exception_type=%s", session_id, type(exc).__name__)
             return False
         return True
-
-    @staticmethod
-    def _opened_page_result(
-        pages: tuple[DebugChromeOpenedPage, ...],
-    ) -> AiPageOpenResult:
-        source_names = {url: name for name, url in TODAY_FOCUS_SOURCES}
-        failed: list[str] = []
-        for page in pages:
-            source = source_names[page.source_url]
-            if page.error is not None:
-                failed.append(source)
-        opened_count = len(pages) - len(failed)
-        if failed:
-            return AiPageOpenResult(
-                summary=(
-                    f"已打开 {opened_count}/{len(TODAY_FOCUS_SOURCES)} 个固定 AI 来源页面；"
-                    f"未完成：{'、'.join(failed)}。"
-                ),
-                opened_count=opened_count,
-                failed_sources=failed,
-            )
-        return AiPageOpenResult(
-            summary=f"已在当前 Debug Chrome 中打开 {opened_count} 个固定 AI 来源页面。",
-            opened_count=opened_count,
-        )
 
     @staticmethod
     def _parse_result(value: str) -> SearchResultPayload:

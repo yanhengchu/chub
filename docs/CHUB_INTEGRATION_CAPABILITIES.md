@@ -23,7 +23,7 @@ Chub 是个人本地工作站与统一控制面：核心能力可独立运行，
 | Runtime 与模型 | 查询 Runtime 健康、模型、实现与用量；配置后续任务的模型、推理等级和默认实现 | 工作台、设置、微信、状态接口 |
 | 文本处理、确认与通知 | 对微信普通正文直接执行、润色后执行或确认后执行；投递微信回送和预配置通知 | 微信、Quick Worker、CLI、OpenClaw Tool |
 | 状态、资料与需求 | 查询节点状态、项目资料、受限日志、活动需求和需求归档 | 工作台、CLI、微信、OpenClaw Tool |
-| 今日关注 | 在当前有界面 Debug Chrome 打开固定公开来源页面，或使用固定内部 AI Session 整理固定公开来源的 AI 动态；页面同时展示今日计划和待办区块 | 工作台今日关注页 |
+| 今日关注 | 展示今日计划与待办；AI Runtime 可提交任务时，使用固定内部 AI Session 整理固定公开来源的 AI 动态 | 工作台今日关注页 |
 | Debug Chrome、自动化与周报 | 复用受管浏览器执行受控页面操作，运行固定自动化，准备资料、生成和复核周报 | 自动化页、周报页、固定脚本与技能 |
 | 服务维护与集成 | 检查、重启或恢复受管服务；查看和维护已接入的 OpenClaw、Runtime 与模块状态；在维护者明确进入时提供维护终端 | 本机 CLI、工作台、少量微信固定指令 |
 
@@ -66,7 +66,7 @@ Chub 是个人本地工作站与统一控制面：核心能力可独立运行，
 | `chub.documents.read` | 浏览已登记的项目资料与受限内容 | 已实现：工作台可信网络页面 | 当前不授予任务编排插件。 |
 | `chub.requests.read` / `chub.requests.manage` | 查询、保存、更新、归档或删除活动需求 | 已实现：CLI 与微信固定指令各自开放的子集 | 当前不授予任务编排插件；写入仍须遵循需求储备规则。 |
 | `chub.logs.read` | 查看或下载受限日志 | 已实现：日志页、本机 CLI | 当前不授予任务编排插件。 |
-| `chub.ai_today_focus.session` | 复用一个内部 AI Session 刷新工作台当天 AI 动态；页面另提供固定四个 AI 来源的有界面打开操作 | 已实现：工作台今日关注页 | 今日关注 Session 默认不在 Runtime Sessions 主列表展示，可在会话设置“内部会话显示”中单独开启。创建或重建时继承通用新会话的 Runtime、权限、模型和推理等级；既有按当前规则创建的 Session 保留创建快照。刷新前由 Chub 核心在固定能力边界内读取四个固定来源的有界快照，初始地址与最终跳转地址均须属于对应官方域名，否则该来源按读取失败处理。Session 只根据快照总结，不能使用工具、命令或快照中的网页指令；结果链接由服务端限制为对应官方域名并回填来源名称。刷新任务以持久化操作标识精确关联 Quick Worker 任务，提交回执缺失时只在有限核验窗口内等待，不会取共享 Session 的其他任务作为结果。`read-only` Runner 的 DNS 限制不再影响该流程。打开页面不读取或解析正文，不接受 URL、Profile 或浏览器控制参数，且 Debug Chrome 未运行或未以有界面模式运行时明确失败，不自动启动、停止或切换浏览器。旧搜索/今日关注运行状态升级时直接退役，并清理其关联内部 Session，不保留历史结果或旧专属权限。今日计划和待办一期仅展示空状态，不把需求储备、Deliveryline 或 AI 推测伪装成待办。当前不授予任务编排插件、OpenClaw 或外部 Agent；无已导入 Runtime 时入口不展示。 |
+| `chub.ai_today_focus.session` | 复用一个内部 AI Session 刷新工作台当天 AI 动态 | 已实现：工作台今日关注页 | 今日关注页面始终展示今日计划和待办；AI 动态分组及其刷新入口仅在 Runtime 可提交新任务时展示。今日关注 Session 默认不在 Runtime Sessions 主列表展示，可在会话设置“内部会话显示”中单独开启。创建或重建时继承通用新会话的 Runtime、权限、模型和推理等级；既有按当前规则创建的 Session 保留创建快照。刷新前由 Chub 核心在固定能力边界内读取四个固定来源的有界快照，初始地址与最终跳转地址均须属于对应官方域名，否则该来源按读取失败处理。Session 只根据快照总结，不能使用工具、命令或快照中的网页指令；结果链接由服务端限制为对应官方域名并回填来源名称。刷新任务以持久化操作标识精确关联 Quick Worker 任务，提交回执缺失时只在有限核验窗口内等待，不会取共享 Session 的其他任务作为结果。`read-only` Runner 的 DNS 限制不再影响该流程。旧搜索/今日关注运行状态升级时直接退役，并清理其关联内部 Session，不保留历史结果或旧专属权限。今日计划和待办一期仅展示空状态，不把需求储备、Deliveryline 或 AI 推测伪装成待办。当前不授予任务编排插件、OpenClaw 或外部 Agent。 |
 | **Debug Chrome** |  |  |  |
 | `chub.debug_chrome.manage` | 管理受管 Debug Chrome 的状态、已初始化 Profile 与有界面/无界面实例 | 已实现：自动化页与 Chub 内置 Debug Chrome 能力 | 当前不授予任务编排插件、普通 AI Session 或外部 Agent。 |
 | `chub.debug_chrome.page.read` | 使用已运行的受管 Debug Chrome 创建临时页面，读取公网 HTTP(S) 页面的最终地址、标题和有界正文快照；可复用所选 Profile 已有的网站登录态 | 已实现：Chub Session 与本机 CLI 通过固定 `chub capability page-read` 命令调用 | 不授予任务编排插件、OpenClaw、远程浏览器或其他外部 Agent；不能扩展为 Profile/CDP 控制。 |
@@ -256,10 +256,10 @@ chmod 600 \
 
 ##### Session、任务与模型
 
-- 微信任务润色页持久化独立的 Runtime、模型和推理等级，首次可用时使用 Codex 与其模型目录默认组合；当前内部翻译 Session、Worker 提交与恢复固定为 Codex，Runtime 快照也因此固定为 Codex。新增 Runtime 不会自动进入微信润色执行链，必须先完成该链路的独立接入。`text model use M#` 切换模型，并仅在原等级不兼容时改用目标模型的默认等级。每个翻译任务在提交时快照模型与推理等级；已进入队列的任务继续使用提交时快照。隐藏翻译 Session 固定 `Read Only`，不继承默认权限，以确保不可信正文不能获取工具或文件访问能力。
+- 微信任务润色页持久化独立的模型和推理等级；内部翻译 Session 从当前默认 AI Runtime 选择具备 `background_turn` 能力的实现，并在提交时固定 Runtime、实现、模型与推理等级快照。缺少该能力时拒绝新的润色任务，不回退到 Codex；已进入队列的任务继续使用既有快照。`text model use M#` 切换模型，并仅在原等级不兼容时改用目标模型的默认等级。隐藏翻译 Session 固定 `Read Only`，不继承默认权限，以确保不可信正文不能获取工具或文件访问能力。
 - 会话设置页“内部会话显示”只控制内部 Session 的可见性，不提供另一套权限设置。除上述微信润色外，今日关注及后续内部会话在创建时均继承通用新会话设置；默认设置调整不追溯改写已存在的内部 Session。
-- 会话设置页“内部会话显示”分组的“显示内部翻译 Session”默认关闭。关闭时，翻译工作目录中的未关联 Native Session 不显示在工作台；开启后仅供维护查看。该开关仍由微信任务润色模块独立保存，不创建、停止、删除或改写翻译任务、Chub Session 或 Codex 原生 Session。
-- 当当前 AI Runtime 被设置页停用时，微信 ClawBot 的新任务固定回复 `Not submitted · Codex Runtime is disabled. Chub is in base mode. Enable it in Settings to submit AI tasks.`；`chub` 状态摘要在 `Issues` 中显示 `AI Runtime is disabled. Chub is in base mode.`。这不取消已受理任务，也不影响既有 Session 的维护指令。
+- 会话设置页“内部会话显示”分组的“显示内部翻译 Session”默认关闭。关闭时，翻译工作目录中的未关联 Native Session 不显示在工作台；开启后仅供维护查看。该开关仍由微信任务润色模块独立保存，不创建、停止、删除或改写翻译任务、Chub Session 或 Runtime 原生 Session。
+- 当默认 AI Runtime 被设置页停用时，微信 ClawBot 的新任务固定回复 `Not submitted · The default AI Runtime is disabled. Chub is in base mode. Enable it in Settings to submit AI tasks.`；`chub` 状态摘要在 `Issues` 中显示 `AI Runtime is disabled. Chub is in base mode.`。这不取消已受理任务，也不影响既有 Session 的维护指令。
 - 当 Quick Worker 当前不可用时，微信 ClawBot 的 `new` 和普通任务固定回复 `Not submitted · Quick Worker is unavailable. Try again later.`；维护恢复指令仍按各自契约可用。
 - 当 Quick Worker 提交回执暂时无法确认时，微信回执以 `Submission is being verified by Quick Worker. Do not resend yet.` 开头，并保留当前 Session/Task 上下文。这不是任务失败：Chub 先进行有限次主动核验，随后持续以同一任务 ID 对账或幂等补交，Web 重启后继续；确认接收后继续交付，只有 Worker 明确确认未接收时才允许重试。
 
@@ -344,7 +344,7 @@ Session 标题与任务摘要的显示规则：
 - 尾部读取失败只降级对应状态，不得覆盖指令本身的成功或失败语义。所有微信回执的额度读取超时、异常或空结果固定显示 `Usage unavailable`，不误报为 Weekly 窗口异常；`Weekly Unavailable` 只用于已取得额度响应但缺少 Weekly 窗口的场景。
 - 异步任务和文本优化队列只保存目标 `session_id`；`Started`、完成和失败通知发送时按该 ID 读取当前槽位与 Session 名称。润色任务的 `Started` 使用 `Started`、发送时校验的 `[▶ ]S<槽位> · <标题>`、`Submitted:` 完整润色中文及 `English:`；确认模式在确认结果持久化后立即结束微信入口请求，主任务提交与这一条 `Started` 均由确认队列异步处理，不再额外发送 `Translation confirmed · Preparing to submit.`，也不把 Worker 或通知耗时误报为提交未知。槽位暂忙时先回复等待，待实际接收后再发送 `Started`。槽位已释放或复用时标记 `Unavailable`，不得把新 Session 显示成原任务目标。
 - 主任务终态继续使用 `Done`、`Failed` 或 `Timed out`，`Task · <摘要>` 必须来源于实际提交文本。微信 ClawBot 任务正常成功链路通常产生 `Started` 和 `Done` 两次异步通知；Web 快速交互任务默认只在页面时间线展示结果，不主动回送 ClawBot，但当前绑定 Session 的维护者可通过 `last` 主动请求回送窗口内最近一条普通任务结果。两者不设置到达顺序门禁，极快任务允许偶发轻微乱序。
-- 失败任务页面时间线明确显示错误来源：`Chub` 表示 Chub/Worker/解析边界错误，`Codex CLI（上游 Runtime）` 表示当前 Codex Runtime 子进程提供的原始诊断。微信完成通知只在 `Failed` 或文本优化失败标题中追加 `Chub` 或 `Codex CLI (upstream Runtime)`；`Timed out` 和 `Cancelled` 不追加错误来源。错误正文仍按 Worker 固定上限脱敏并以纯文本发送。`error_source=runtime` 保持 Runtime 通用语义，未来接入其他 Runtime 时必须重新定义对应展示标签并同步本节。
+- 失败任务页面时间线明确显示错误来源：`Chub` 表示 Chub/Worker/解析边界错误，`上游 Runtime`（微信为 `Upstream Runtime`）表示目标 Runtime 子进程提供的原始诊断；该标签不识别具体 Runtime 身份。微信完成通知只在 `Failed` 或文本优化失败标题中追加该来源；`Timed out` 和 `Cancelled` 不追加错误来源。错误正文仍按 Worker 固定上限脱敏并以纯文本发送。`error_source=runtime` 保持 Runtime 通用语义，新增 Runtime 不得要求主模块修改展示标签。
 - 文本优化失败或目标不可提交时只发送对应的一次异步失败通知。确认提示使用 `Translation ready`，包含固定目标、`Polished:`、`English:`，底部仅提示 `Please confirm.`；可用确认指令仍以本节命令契约为准。提示送达失败时不开放确认命令并持续按恢复规则重试。所有通知继续执行固定分段和总条数上限，超长内容可能拆成多条物理消息。
 - 普通任务结果通知失败保留在后台任务状态和运行日志中，不在 `chub` 中长期展示。
 - 重启、停止结果通知失败会影响维护操作终态判断，继续在 `chub` 的 Issues 中展示。

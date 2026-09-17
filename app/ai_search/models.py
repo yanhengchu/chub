@@ -62,11 +62,5 @@ class AiSearchData(_StrictModel):
     latest: SearchRun | None = None
 
 
-class AiPageOpenResult(_StrictModel):
-    summary: str = Field(min_length=1, max_length=1000)
-    opened_count: int = Field(ge=0, le=4)
-    failed_sources: list[str] = Field(default_factory=list, max_length=4)
-
-
 class AiSearchSettings(_StrictModel):
     show_sessions: bool

@@ -132,11 +132,11 @@ FIXED_COMMAND_STATUS_CODES = frozenset(
         "chub_slots_synced",
         "codex_retry_checked",
         "codex_last_checked",
-        "codex_session_archived",
-        "codex_session_deleted",
-        "codex_session_created",
-        "codex_session_renamed",
-        "codex_session_stopped",
+        "session_archived",
+        "session_deleted",
+        "session_created",
+        "session_renamed",
+        "session_stopped",
         "codex_switch_checked",
     }
 )
@@ -150,7 +150,7 @@ class _ChubCollectedSnapshot:
 
 
 class WeixinChubModeManager:
-    """Own the current Weixin-bound Codex session and inbound deduplication."""
+    """Own the current Weixin-bound AI Session and inbound deduplication."""
 
     def __init__(
         self,
@@ -491,15 +491,8 @@ class WeixinChubModeManager:
                 code="configuration_invalid",
                 message="固定工作区当前不可用。",
             )
-        if not self.codex_manager.available():
-            return WeixinChubModeStatus(
-                enabled=configuration.enabled,
-                ready=False,
-                code="codex_unavailable",
-                message="Codex 运行依赖当前不可用。",
-            )
         try:
-            self.codex_manager.require_runtime_submission("codex")
+            self.codex_manager.select_new_session_runtime()
         except ApiError as exc:
             if exc.code == "ai_runtime_disabled":
                 return WeixinChubModeStatus(
@@ -507,15 +500,15 @@ class WeixinChubModeManager:
                     ready=False,
                     code="ai_runtime_disabled",
                     message=(
-                        "Codex Runtime 已停用，Chub 当前处于基础功能模式。"
+                        "默认 AI Runtime 已停用，Chub 当前处于基础功能模式。"
                         "请在设置页启用后再提交 AI 任务。"
                     ),
                 )
             return WeixinChubModeStatus(
                 enabled=configuration.enabled,
                 ready=False,
-                code="codex_unavailable",
-                message="Codex 运行依赖当前不可用。",
+                code="ai_runtime_unavailable",
+                message="默认 AI Runtime 当前不可用。",
             )
         try:
             self.quick_interactions.require_quick_session_creation()
@@ -2696,7 +2689,7 @@ class WeixinChubModeManager:
                     route_fingerprint=route_fingerprint,
                     source_ip=source_ip,
                     message=usage,
-                    code="codex_session_created",
+                    code="session_created",
                     failed=True,
                 )
         now = utc_now()
@@ -2726,7 +2719,7 @@ class WeixinChubModeManager:
         try:
             session_id = self._create_session(self._state.configuration)
         except ApiError:
-            message = "Create: Failed. Codex could not create a Session."
+            message = "Create: Failed. The default AI Runtime could not create a Session."
             message, _status_failed = self._codex_operation_message(message)
             return self._remember_fixed_reply(
                 message_id=message_id,
@@ -2735,7 +2728,7 @@ class WeixinChubModeManager:
                 route_fingerprint=route_fingerprint,
                 source_ip=source_ip,
                 message=message,
-                code="codex_session_created",
+                code="session_created",
                 failed=True,
             )
         except Exception:
@@ -2750,7 +2743,7 @@ class WeixinChubModeManager:
                     "Create: Failed. The current Session was not changed. "
                     "Try again later."
                 ),
-                code="codex_session_created",
+                code="session_created",
                 failed=True,
             )
         slot = self._slot_for_session(session_id)
@@ -2777,7 +2770,7 @@ class WeixinChubModeManager:
                     route_fingerprint=route_fingerprint,
                     source_ip=source_ip,
                     message=message,
-                    code="codex_session_created",
+                    code="session_created",
                     session_id=session_id,
                     failed=True,
                 )
@@ -2792,7 +2785,7 @@ class WeixinChubModeManager:
             route_fingerprint=route_fingerprint,
             source_ip=source_ip,
             message=message,
-            code="codex_session_created",
+            code="session_created",
             session_id=session_id,
             failed=False,
         )
@@ -2894,7 +2887,7 @@ class WeixinChubModeManager:
                         refreshed,
                         configuration,
                     )
-                    or self._codex_session_dispatch_state(refreshed) != "Available"
+                    or self._session_dispatch_state(refreshed) != "Available"
                 ):
                     raise ValueError("Session became unavailable")
             except Exception:
@@ -3352,11 +3345,11 @@ class WeixinChubModeManager:
             source_ip,
         )
         if code in {
-            "codex_session_created",
-            "codex_session_archived",
-            "codex_session_deleted",
-            "codex_session_renamed",
-            "codex_session_stopped",
+            "session_created",
+            "session_archived",
+            "session_deleted",
+            "session_renamed",
+            "session_stopped",
             "codex_switch_checked",
         }:
             self._schedule_session_snapshot_refresh()
@@ -4566,14 +4559,14 @@ class WeixinChubModeManager:
         if self.translation_manager is None:
             raise OSError("Weixin translation settings are unavailable")
         status = self.translation_manager.status()
-        catalog = self.codex_manager.read_model_catalog()
+        catalog = self._translation_model_catalog(status)
         models = tuple(
             item
             for item in getattr(catalog, "models", ())
             if isinstance(getattr(item, "id", None), str) and item.id
         )
         if not models:
-            raise ValueError("The Codex model catalog is empty")
+            raise ValueError("The Runtime model catalog is empty")
         return status, catalog, models
 
     def _effective_text_model_configuration(self, status: object) -> tuple[str, str]:
@@ -4584,25 +4577,44 @@ class WeixinChubModeManager:
             raise ValueError("The configured translation model is unavailable")
         if not isinstance(configured_reasoning_effort, str) or not configured_reasoning_effort:
             raise ValueError("The configured translation level is unavailable")
-        catalog = self.codex_manager.read_model_catalog()
+        catalog = self._translation_model_catalog(status)
         models = tuple(
             item
             for item in getattr(catalog, "models", ())
             if isinstance(getattr(item, "id", None), str) and item.id
         )
         if not models:
-            raise ValueError("The Codex model catalog is empty")
+            raise ValueError("The Runtime model catalog is empty")
         selected_model = next(
             (item for item in models if item.id == configured_model),
             None,
         )
         if selected_model is None:
             raise ValueError("The configured translation model is unavailable")
+        implementation_id = self._translation_implementation_id(status)
         self.codex_manager.validate_model(
             configured_model,
             configured_reasoning_effort,
+            implementation_id=implementation_id,
         )
         return configured_model, configured_reasoning_effort
+
+    def _translation_model_catalog(self, status: object):
+        implementation_id = self._translation_implementation_id(status)
+        return self.codex_manager.read_model_catalog(
+            implementation_id=implementation_id
+        )
+
+    def _translation_implementation_id(self, status: object) -> str:
+        runtime_id = getattr(status, "runtime_id", None)
+        if isinstance(runtime_id, str) and runtime_id:
+            return self.codex_manager.default_submission_implementation_id(
+                runtime_id
+            )
+        _runtime_id, implementation_id = self.codex_manager.select_new_session_runtime(
+            required_capabilities=frozenset({"background_turn"})
+        )
+        return implementation_id
 
     def _dispatch_text_model_list(
         self,
@@ -4885,10 +4897,10 @@ class WeixinChubModeManager:
         next_reasoning_effort = getattr(session, "reasoning_effort", None)
         if model is None or reasoning_effort is None:
             try:
-                catalog = self.codex_manager.read_model_catalog()
+                catalog = self._session_model_catalog(session)
             except Exception:
                 LOGGER.warning(
-                    "Unable to read Codex model defaults for Weixin Session",
+                    "Unable to read Runtime model defaults for Weixin Session",
                     exc_info=True,
                 )
             else:
@@ -4979,7 +4991,7 @@ class WeixinChubModeManager:
             session = self.codex_manager.get_session(session_id)
             if getattr(session, "id", None) != session_id:
                 raise ValueError("Current Session identity could not be confirmed")
-            catalog = self.codex_manager.read_model_catalog()
+            catalog = self._session_model_catalog(session)
         except Exception:
             LOGGER.warning(
                 "Unable to read current Weixin Session model levels",
@@ -5146,7 +5158,7 @@ class WeixinChubModeManager:
             session = self.codex_manager.get_session(session_id)
             if getattr(session, "id", None) != session_id:
                 raise ValueError("Current Session identity could not be confirmed")
-            catalog = self.codex_manager.read_model_catalog()
+            catalog = self._session_model_catalog(session)
         except Exception:
             LOGGER.warning("Unable to read Weixin Session model update context", exc_info=True)
             return self._remember_fixed_reply(
@@ -5301,7 +5313,7 @@ class WeixinChubModeManager:
             session = self.codex_manager.get_session(session_id)
             if getattr(session, "id", None) != session_id:
                 raise ValueError("Current Session identity could not be confirmed")
-            catalog = self.codex_manager.read_model_catalog()
+            catalog = self._session_model_catalog(session)
         except Exception:
             LOGGER.warning(
                 "Unable to read current Weixin Session model list",
@@ -5332,7 +5344,7 @@ class WeixinChubModeManager:
                 operation_id=operation_id,
                 route_fingerprint=route_fingerprint,
                 source_ip=source_ip,
-                message="Model list: Unavailable. The current model is not in the Codex model catalog.",
+                message="Model list: Unavailable. The current model is not in the Runtime model catalog.",
                 code="codex_model_checked",
                 failed=True,
             )
@@ -5980,7 +5992,7 @@ class WeixinChubModeManager:
                 self.settings.openclaw.weixin_chub_mode.session_name_max_width
             ),
             session_matches=self._session_matches_allowed_workspace,
-            session_state=self._codex_session_dispatch_state,
+            session_state=self._session_dispatch_state,
             workspace_name=self._session_workspace_name,
         )
 
@@ -6367,7 +6379,7 @@ class WeixinChubModeManager:
             weixin_session_ids=set(self.quick_interactions.weixin_session_ids()),
             fill_candidates=True,
             session_matches=self._session_matches_allowed_workspace,
-            session_state=self._codex_session_dispatch_state,
+            session_state=self._session_dispatch_state,
         )
 
     def _session_snapshot_from_list(
@@ -6386,7 +6398,7 @@ class WeixinChubModeManager:
                 self.settings.openclaw.weixin_chub_mode.session_name_max_width
             ),
             session_matches=self._session_matches_allowed_workspace,
-            session_state=self._codex_session_dispatch_state,
+            session_state=self._session_dispatch_state,
             workspace_name=self._session_workspace_name,
         )
 
@@ -6402,6 +6414,16 @@ class WeixinChubModeManager:
             fill_candidates=fill_session_candidates,
         )
         return codex_operation_message(operation_status, codex_message), codex_failed
+
+    def _session_model_catalog(self, session: object):
+        """Read the model catalog pinned to a logical AI Session."""
+        session_id = getattr(session, "id", None)
+        if not isinstance(session_id, str) or not session_id:
+            raise ValueError("Session identity could not be confirmed")
+        implementation_id = self.codex_manager.session_implementation_id(session_id)
+        return self.codex_manager.read_model_catalog(
+            implementation_id=implementation_id
+        )
 
     @staticmethod
     def _is_sessions_heading(value: str) -> bool:
@@ -6863,7 +6885,7 @@ class WeixinChubModeManager:
                 route_fingerprint=route_fingerprint,
                 source_ip=source_ip,
                 message=usage,
-                code="codex_session_renamed",
+                code="session_renamed",
                 failed=True,
             )
 
@@ -6876,7 +6898,7 @@ class WeixinChubModeManager:
                 route_fingerprint=route_fingerprint,
                 source_ip=source_ip,
                 message="Rename: Not completed because no Session is selected.",
-                code="codex_session_renamed",
+                code="session_renamed",
                 failed=True,
             )
         session_slot = self._slot_for_session(session_id)
@@ -6891,7 +6913,7 @@ class WeixinChubModeManager:
                     "Rename: Not completed because the current Session is not "
                     "registered. Send sync first."
                 ),
-                code="codex_session_renamed",
+                code="session_renamed",
                 failed=True,
             )
 
@@ -6916,7 +6938,7 @@ class WeixinChubModeManager:
                 message=(
                     "Rename: Not completed because the current Session is unavailable."
                 ),
-                code="codex_session_renamed",
+                code="session_renamed",
                 failed=True,
             )
 
@@ -6930,7 +6952,7 @@ class WeixinChubModeManager:
         except Exception as exc:
             LOGGER.warning("Codex Session rename failed", exc_info=True)
             self._log_rename(operation_id, "failed", session_id, source_ip)
-            if isinstance(exc, ApiError) and exc.code == "codex_session_writer_active":
+            if isinstance(exc, ApiError) and exc.code == "session_writer_active":
                 message = (
                     "Rename: Not completed. This is open in another app, "
                     "close it there to continue here."
@@ -6947,7 +6969,7 @@ class WeixinChubModeManager:
                 route_fingerprint=route_fingerprint,
                 source_ip=source_ip,
                 message=message,
-                code="codex_session_renamed",
+                code="session_renamed",
                 failed=True,
             )
         self._log_rename(operation_id, "succeeded", session_id, source_ip)
@@ -6963,7 +6985,7 @@ class WeixinChubModeManager:
             route_fingerprint=route_fingerprint,
             source_ip=source_ip,
             message=message,
-            code="codex_session_renamed",
+            code="session_renamed",
             session_id=session_id,
         )
 
@@ -7040,7 +7062,7 @@ class WeixinChubModeManager:
                 route_fingerprint=route_fingerprint,
                 source_ip=source_ip,
                 message=message,
-                code="codex_session_stopped",
+                code="session_stopped",
                 session_id=session_id,
                 failed=failed,
             )
@@ -7778,13 +7800,13 @@ class WeixinChubModeManager:
         except Exception as exc:
             LOGGER.warning("Codex delete command failed", exc_info=True)
             self._log_delete(operation_id, "failed", refreshed.id, source_ip)
-            if isinstance(exc, ApiError) and exc.code == "codex_session_writer_active":
+            if isinstance(exc, ApiError) and exc.code == "session_writer_active":
                 message = (
                     "Delete: Not completed. This is open in another app, "
                     "close it there to continue here."
                 )
             elif isinstance(exc, ApiError) and exc.code in {
-                "codex_session_in_progress",
+                "session_in_progress",
                 "quick_interaction_in_progress",
             }:
                 message = (
@@ -7811,7 +7833,7 @@ class WeixinChubModeManager:
         )
         was_current = self._state.session_id == refreshed.id
         record.status = "routed"
-        record.code = "codex_session_deleted"
+        record.code = "session_deleted"
         record.message = "Delete: Completed, but status refresh was interrupted. Send chub."
         record.http_status = 200
         record.session_id = refreshed.id
@@ -7888,7 +7910,7 @@ class WeixinChubModeManager:
     ) -> WeixinChubModeDispatchResult:
         message = self._with_command_status_suffix(message)
         record.status = "routed"
-        record.code = "codex_session_deleted"
+        record.code = "session_deleted"
         record.message = message
         record.http_status = 200
         record.dispatch_disposition = "reply"
@@ -8075,7 +8097,7 @@ class WeixinChubModeManager:
             LOGGER.warning("Codex archive command failed", exc_info=True)
             self._log_archive(operation_id, "failed", refreshed.id, source_ip)
             if isinstance(exc, ApiError) and exc.code in {
-                "codex_session_writer_active",
+                "session_writer_active",
                 "quick_interaction_writer_active",
             }:
                 message = (
@@ -8083,7 +8105,7 @@ class WeixinChubModeManager:
                     "close it there to continue here."
                 )
             elif isinstance(exc, ApiError) and exc.code in {
-                "codex_session_in_progress",
+                "session_in_progress",
                 "quick_interaction_in_progress",
             }:
                 message = (
@@ -8110,7 +8132,7 @@ class WeixinChubModeManager:
         )
         was_current = self._state.session_id == refreshed.id
         record.status = "routed"
-        record.code = "codex_session_archived"
+        record.code = "session_archived"
         record.message = (
             "Archive: Completed, but status refresh was interrupted. Send chub."
         )
@@ -8189,7 +8211,7 @@ class WeixinChubModeManager:
     ) -> WeixinChubModeDispatchResult:
         message = self._with_command_status_suffix(message)
         record.status = "routed"
-        record.code = "codex_session_archived"
+        record.code = "session_archived"
         record.message = message
         record.http_status = 200
         record.dispatch_disposition = "reply"
@@ -8395,7 +8417,7 @@ class WeixinChubModeManager:
                 or not self._session_matches_allowed_workspace(refreshed, configuration)
             ):
                 raise ValueError("Session configuration changed")
-            refreshed_state = self._codex_session_dispatch_state(refreshed)
+            refreshed_state = self._session_dispatch_state(refreshed)
             if refreshed_state == "Unavailable" or (
                 task_prompt is not None and refreshed_state != "Available"
             ):
@@ -8671,7 +8693,7 @@ class WeixinChubModeManager:
             configuration=configuration,
             slots=self._state.session_slots,
             session_matches=self._session_matches_allowed_workspace,
-            session_state=self._codex_session_dispatch_state,
+            session_state=self._session_dispatch_state,
         )
 
     def _sync_session_slots(
@@ -8691,7 +8713,7 @@ class WeixinChubModeManager:
             weixin_session_ids=set(self.quick_interactions.weixin_session_ids()),
             fill_candidates=fill_candidates,
             session_matches=self._session_matches_allowed_workspace,
-            session_state=self._codex_session_dispatch_state,
+            session_state=self._session_dispatch_state,
         )
         if synced == self._state.session_slots:
             return
@@ -8861,7 +8883,7 @@ class WeixinChubModeManager:
                 configuration.workspace_id,
                 *(
                     workspace.id
-                    for workspace in self.settings.ai_runtime.codex.extra_workspaces
+                    for workspace in self.settings.ai_runtime.shared.extra_workspaces
                 ),
             }
         )
@@ -8902,7 +8924,7 @@ class WeixinChubModeManager:
             configuration,
         ) and self._workspace_is_available(getattr(session, "workspace_id", None))
 
-    def _codex_session_dispatch_state(self, session: object) -> str:
+    def _session_dispatch_state(self, session: object) -> str:
         if not self._workspace_is_available(getattr(session, "workspace_id", None)):
             return "Unavailable"
         if getattr(session, "status", None) == "error":
@@ -9004,7 +9026,7 @@ class WeixinChubModeManager:
             try:
                 session = self.codex_manager.get_session(session_id)
             except ApiError as exc:
-                if exc.code != "codex_session_not_found":
+                if exc.code != "session_not_found":
                     raise
             else:
                 if self._session_matches_available_workspace(session, configuration):
@@ -9384,7 +9406,7 @@ class WeixinChubModeManager:
     ) -> None:
         write_operation(
             operation_id=operation_id,
-            action="archive_codex_session",
+            action="archive_ai_session",
             status=status,
             target=target,
             source_ip=source_ip,
@@ -9399,7 +9421,7 @@ class WeixinChubModeManager:
     ) -> None:
         write_operation(
             operation_id=operation_id,
-            action="delete_codex_session",
+            action="delete_ai_session",
             status=status,
             target=target,
             source_ip=source_ip,
@@ -9414,7 +9436,7 @@ class WeixinChubModeManager:
     ) -> None:
         write_operation(
             operation_id=operation_id,
-            action="rename_codex_session",
+            action="rename_ai_session",
             status=status,
             target=target,
             source_ip=source_ip,
@@ -9429,7 +9451,7 @@ class WeixinChubModeManager:
     ) -> None:
         write_operation(
             operation_id=operation_id,
-            action="stop_codex_session",
+            action="stop_ai_session",
             status=status,
             target=target,
             source_ip=source_ip,

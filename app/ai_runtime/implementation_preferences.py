@@ -5,11 +5,14 @@ import os
 import re
 import threading
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from app.ai_runtime.contracts import RUNTIME_IMPLEMENTATION_ID_PATTERN
+from app.ai_runtime.contracts import (
+    RUNTIME_ID_PATTERN,
+    RUNTIME_IMPLEMENTATION_ID_PATTERN,
+)
 
 
 class RuntimeImplementationPreferencesUnavailable(OSError):
@@ -19,12 +22,32 @@ class RuntimeImplementationPreferencesUnavailable(OSError):
 class RuntimeImplementationPreferences(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    version: Literal[1] = 1
-    default_implementation_id: str | None = Field(
-        default=None,
-        max_length=32,
-    )
+    version: Literal[2] = 2
+    default_implementation_ids: dict[str, str] = Field(default_factory=dict)
     disabled_implementation_ids: list[str] = Field(default_factory=list, max_length=32)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_single_default(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        # New in-memory objects may not have serialized the default version
+        # yet. Only the former single-default shape is eligible for migration.
+        if "default_implementation_ids" in value or value.get("version", 1) != 1:
+            return value
+        default_implementation_id = value.get("default_implementation_id")
+        defaults = (
+            {"codex": default_implementation_id}
+            if isinstance(default_implementation_id, str)
+            else {}
+        )
+        return {
+            "version": 2,
+            "default_implementation_ids": defaults,
+            "disabled_implementation_ids": value.get(
+                "disabled_implementation_ids", []
+            ),
+        }
 
 
 class RuntimeImplementationPreferencesStore:
@@ -50,11 +73,14 @@ class RuntimeImplementationPreferencesStore:
                 raise RuntimeImplementationPreferencesUnavailable("Runtime 实现偏好格式无效。") from exc
             identifiers = [
                 *value.disabled_implementation_ids,
-                *([value.default_implementation_id] if value.default_implementation_id else []),
+                *value.default_implementation_ids.values(),
             ]
             if len(set(value.disabled_implementation_ids)) != len(value.disabled_implementation_ids) or any(
                 re.fullmatch(RUNTIME_IMPLEMENTATION_ID_PATTERN, item) is None
                 for item in identifiers
+            ) or any(
+                re.fullmatch(RUNTIME_ID_PATTERN, runtime_id) is None
+                for runtime_id in value.default_implementation_ids
             ):
                 raise RuntimeImplementationPreferencesUnavailable("Runtime 实现偏好格式无效。")
             return value

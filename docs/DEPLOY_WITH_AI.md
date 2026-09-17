@@ -187,8 +187,8 @@ wsl.exe --shutdown
 Chub 核心成功后，才处理随包模块：
 
 1. 维护者在实际运行 Chub 的系统内安装 Codex CLI，并亲自完成登录或其他认证；Windows 主机上的 Codex CLI 或登录状态不等于 WSL 服务可用。
-2. 将 `bundled-modules/` 中所需 ZIP 分别放入 `data/local/artifacts/plugins/codex-runtime/` 或 `data/local/artifacts/plugins/weixin-orchestration/`。
-3. 在 Chub 设置页“插件管理”导入并启用；Codex Runtime 再在其设置页选择当前使用版本。
+2. 在 Chub 设置页“插件管理”直接发现并导入 `bundled-modules/` 中所需 ZIP；只有制品被移动到其他位置时，才分别放入 `data/local/artifacts/plugins/runtime/` 或 `data/local/artifacts/plugins/weixin-orchestration/`。
+3. 启用已导入插件；Codex Runtime 再在其设置页选择当前使用版本。
 4. 重新运行 `./scripts/chub check`，再创建一个低风险 Chub Session 验证 Codex Runtime 的最终结果。
 
 未导入任一模块不影响 Chub 核心。模块导入或 Codex 登录失败只影响该模块，不回滚已通过的核心安装。OpenClaw、微信、Tailnet 与 Debug Chrome 只在核心和 Runtime 已完成后按对应专项文档单独设计、安装和验收；真实微信文字、语音、点击和收件只能由维护者本人在微信客户端完成。

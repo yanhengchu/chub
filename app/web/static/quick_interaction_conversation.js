@@ -487,10 +487,15 @@ async function selectConversationComposerOption(kind, value) {
   }
 }
 
-async function loadConversationModelCatalog() {
+async function loadConversationModelCatalog(sessionId) {
+  if (!sessionId) {
+    conversationModelCatalog = null;
+    return;
+  }
   try {
-    conversationModelCatalog = await readConversationModelCatalog();
-    if (conversationSession) {
+    const catalog = await readConversationModelCatalog(sessionId);
+    if (conversationSession?.id === sessionId) {
+      conversationModelCatalog = catalog;
       renderConversationComposerOptions(conversationSession);
     }
   } catch (_error) {
@@ -713,7 +718,12 @@ function mergeConversationTasks(tasks) {
 }
 
 function renderConversationSession(session) {
+  const sessionChanged = conversationSession?.id !== session.id;
   conversationSession = session;
+  if (sessionChanged) {
+    conversationModelCatalog = null;
+    void loadConversationModelCatalog(session.id);
+  }
   renderConversationComposerOptions(session);
   const state = conversationSessionView.renderSession({
     session,
@@ -917,7 +927,7 @@ async function archiveConversationSession(event) {
     if (generation !== conversationGeneration) {
       return;
     }
-    if (error?.code === "codex_session_not_found") {
+    if (error?.code === "session_not_found") {
       // The list can be stale while another reconciliation or client has
       // already removed this Session. Archive is then already complete from
       // the user's perspective; leave the retired conversation page.
@@ -976,7 +986,7 @@ async function deleteConversationSession(event) {
     if (generation !== conversationGeneration) {
       return;
     }
-    if (error?.code === "codex_session_not_found") {
+    if (error?.code === "session_not_found") {
       // The list can be stale while another reconciliation or client has
       // already removed this Session. Deletion is already complete from the
       // user's perspective; leave the retired conversation page.
@@ -1395,4 +1405,3 @@ document.addEventListener("visibilitychange", () => {
 conversationPrompt.value = readConversationDraft();
 resizeConversationPrompt();
 loadConversation();
-loadConversationModelCatalog();

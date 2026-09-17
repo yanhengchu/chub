@@ -263,6 +263,7 @@ class AiUsageService:
     ) -> AiUsageData:
         checked_at = datetime.now(ZoneInfo(self._settings.timezone))
         data = AiUsageData(
+            runtime_id="codex",
             status="available",
             provider="openai",
             source=source,
@@ -306,6 +307,7 @@ class AiUsageService:
                 )
                 return stale.model_copy(update={"display": self._display(stale)})
         return AiUsageData(
+            runtime_id="codex",
             status="unavailable",
             provider="openai",
             source=outcome.source,
